@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 import uuid
 
 import pytest
@@ -26,10 +27,13 @@ async def _seed_approved_ticket(owner_sessionmaker, *, expires_at: datetime | No
     from app.models.tenant import Tenant
     from app.models.user import User
     from app.services.approval_ticket import (
+        build_approval_execution_envelope,
         build_live_approval_policy_snapshot,
+        hash_approval_execution_envelope,
         hash_policy_snapshot,
         hash_tool_input,
     )
+    from app.tools.runtime import ToolExecutionContext
 
     tenant_id = uuid.uuid4()
     user_id = uuid.uuid4()
@@ -57,6 +61,18 @@ async def _seed_approved_ticket(owner_sessionmaker, *, expires_at: datetime | No
             agent_id=agent_id,
             tool_name="write_file",
         )
+        execution_envelope = build_approval_execution_envelope(
+            context=ToolExecutionContext(
+                agent_id=agent_id,
+                user_id=user_id,
+                tenant_id=str(tenant_id),
+                workspace=Path("/tmp/approval-ticket-workspace"),
+                session_id=f"channel-session:{approval_id}",
+                origin_channel="test",
+            ),
+            tool_call_id=f"tool-call:{approval_id}",
+            emit_runtime_hooks=True,
+        )
         db.add(
             ApprovalRequest(
                 id=approval_id,
@@ -71,6 +87,8 @@ async def _seed_approved_ticket(owner_sessionmaker, *, expires_at: datetime | No
                 input_hash=hash_tool_input("write_file", arguments),
                 policy_snapshot_hash=hash_policy_snapshot(policy_snapshot),
                 policy_snapshot=policy_snapshot,
+                execution_envelope=execution_envelope,
+                execution_envelope_hash=hash_approval_execution_envelope(execution_envelope),
                 requested_by=user_id,
                 expires_at=expires_at or datetime.now(timezone.utc) + timedelta(minutes=30),
                 execution_status="approved",
@@ -106,6 +124,8 @@ async def test_consume_approval_ticket_binds_principal_input_policy_expiry_and_r
     assert ticket.arguments == arguments
     assert ticket.idempotency_key == f"approval:{approval_id}"
     assert ticket.decision_id == f"decision:{approval_id}"
+    assert ticket.execution_envelope["tool_call_id"] == f"tool-call:{approval_id}"
+    assert ticket.execution_envelope_hash
 
     with pytest.raises(ApprovalTicketError, match="already consumed"):
         await consume_approval_ticket(
@@ -219,6 +239,102 @@ async def test_consume_approval_ticket_rejects_live_policy_drift(owner_sessionma
             approval_id=approval_id,
             expected_agent_id=agent_id,
             expected_user_id=user_id,
+        )
+
+
+@pytest.mark.asyncio
+async def test_consume_approval_ticket_rechecks_cancelled_task_and_exhausted_budget(
+    owner_sessionmaker,
+    monkeypatch,
+) -> None:
+    import app.database as database
+    from app.models.audit import ApprovalRequest
+    from app.models.runtime_budget import RuntimeBudgetRun
+    from app.models.runtime_task import RuntimeTask
+    from app.services.approval_ticket import (
+        ApprovalTicketError,
+        build_approval_execution_envelope,
+        consume_approval_ticket,
+        hash_approval_execution_envelope,
+    )
+    from app.tools.runtime import ToolExecutionContext
+
+    tenant_id, user_id, agent_id, cancelled_approval_id, _ = await _seed_approved_ticket(owner_sessionmaker)
+    cancelled_task_id = uuid.uuid4()
+    async with owner_sessionmaker() as db:
+        db.add(
+            RuntimeTask(
+                id=cancelled_task_id,
+                task_type="web_chat_turn",
+                parent_agent_id=agent_id,
+                tenant_id=tenant_id,
+                status="killed",
+                root_idempotency_key=f"test-task:{cancelled_task_id}",
+                config_snapshot_hash="config",
+                policy_snapshot_hash="policy",
+            )
+        )
+        row = await db.get(ApprovalRequest, cancelled_approval_id)
+        assert row is not None
+        envelope = build_approval_execution_envelope(
+            context=ToolExecutionContext(
+                agent_id=agent_id,
+                user_id=user_id,
+                tenant_id=str(tenant_id),
+                workspace=Path("/tmp/approval-ticket-workspace"),
+                runtime_task_id=str(cancelled_task_id),
+            ),
+            tool_call_id=f"tool-call:{cancelled_approval_id}",
+            emit_runtime_hooks=True,
+        )
+        row.execution_envelope = envelope
+        row.execution_envelope_hash = hash_approval_execution_envelope(envelope)
+        await db.commit()
+
+    monkeypatch.setattr(database, "async_session", owner_sessionmaker)
+    with pytest.raises(ApprovalTicketError, match="runtime task was cancelled"):
+        await consume_approval_ticket(
+            approval_id=cancelled_approval_id,
+            expected_agent_id=agent_id,
+            expected_user_id=user_id,
+        )
+
+    tenant_id2, user_id2, agent_id2, budget_approval_id, _ = await _seed_approved_ticket(owner_sessionmaker)
+    budget_run_id = uuid.uuid4()
+    async with owner_sessionmaker() as db:
+        db.add(
+            RuntimeBudgetRun(
+                id=budget_run_id,
+                tenant_id=tenant_id2,
+                root_run_kind="approval-test",
+                root_run_key=f"approval-test:{budget_run_id}",
+                root_agent_id=agent_id2,
+                root_user_id=user_id2,
+                status="exhausted",
+            )
+        )
+        row = await db.get(ApprovalRequest, budget_approval_id)
+        assert row is not None
+        envelope = build_approval_execution_envelope(
+            context=ToolExecutionContext(
+                agent_id=agent_id2,
+                user_id=user_id2,
+                tenant_id=str(tenant_id2),
+                workspace=Path("/tmp/approval-ticket-workspace"),
+                budget_run_id=str(budget_run_id),
+            ),
+            tool_call_id=f"tool-call:{budget_approval_id}",
+            emit_runtime_hooks=True,
+        )
+        row.execution_envelope = envelope
+        row.execution_envelope_hash = hash_approval_execution_envelope(envelope)
+        await db.commit()
+
+    with pytest.raises(ApprovalTicketError, match="budget is not active: exhausted"):
+        await consume_approval_ticket(
+            approval_id=budget_approval_id,
+            expected_agent_id=agent_id2,
+            expected_user_id=user_id2,
         )
 
 

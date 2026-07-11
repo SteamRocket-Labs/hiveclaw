@@ -61,6 +61,8 @@ class ApprovalRequest(Base):
     input_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     policy_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     policy_snapshot_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    execution_envelope: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    execution_envelope_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     execution_status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")

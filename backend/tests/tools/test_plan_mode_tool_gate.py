@@ -16,6 +16,8 @@ and that the registry is never called when blocked.
 from __future__ import annotations
 
 import json
+import hashlib
+import uuid
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
@@ -92,7 +94,7 @@ def _context():
     return ToolExecutionContext(
         agent_id=uuid4(),
         user_id=uuid4(),
-        tenant_id="tenant-1",
+        tenant_id=str(uuid4()),
         workspace=Path("/tmp/ws"),
     )
 
@@ -341,8 +343,16 @@ async def test_execute_does_not_plan_gate_create_digital_employee():
 
 
 @pytest.mark.asyncio
-async def test_execute_approved_consumes_bound_ticket_without_second_plan_gate():
-    from app.services.approval_ticket import ApprovalExecutionTicket
+async def test_execute_approved_verifies_consumed_plan_evidence_without_second_plan_gate(monkeypatch):
+    from app.services.approval_ticket import (
+        ApprovalExecutionTicket,
+        build_approval_execution_envelope,
+        hash_approval_execution_envelope,
+        hash_tool_input,
+    )
+    from app.services.plan_authorization_lease import canonical_action_artifact, canonical_json
+    from app.tools.plan_gate_registry import hard_gated_action_kind
+    from app.tools.service import _plan_gate_action_artifact
 
     context = _context()
     registry = _FakeRegistry("APPROVED")
@@ -350,25 +360,72 @@ async def test_execute_approved_consumes_bound_ticket_without_second_plan_gate()
     service = _make_service(context=context, registry=registry, gate=gate)
     approval_id = uuid4()
     approved_by = uuid4()
+    confirmed_plan_id = uuid4()
+    tool_call_id = "approved-plan-tool-call"
+    action_arguments = {
+        "name": "Recurring sweep",
+        "type": "cron",
+        "config": {"expr": "0 9 * * *"},
+        "reason": "approved recurring sweep",
+        "confirmed_plan_id": str(confirmed_plan_id),
+    }
+    action_kind = hard_gated_action_kind("set_trigger", action_arguments)
+    assert action_kind is not None
+    artifact = _plan_gate_action_artifact("set_trigger", action_arguments, action_kind)
+    args_hash = hashlib.sha256(
+        canonical_json(canonical_action_artifact(artifact)).encode("utf-8")
+    ).hexdigest()
+    evidence = {
+        "schema": "hive.plan_authorization_evidence.v1",
+        "lease_id": str(uuid4()),
+        "canonical_args_hash": args_hash,
+        "target_ref": "tool:set_trigger",
+        "requester_user_id": str(context.user_id),
+        "session_id": None,
+        "runtime_task_id": None,
+        "evidence_id": f"tool:{tool_call_id}",
+    }
+    ticket_arguments = {**action_arguments, "_plan_authorization": evidence}
+    envelope = build_approval_execution_envelope(
+        context=context,
+        tool_call_id=tool_call_id,
+        emit_runtime_hooks=True,
+    )
+
+    async def verify_consumed(**kwargs):
+        assert kwargs["tenant_id"] == context.tenant_id
+        assert kwargs["agent_id"] == context.agent_id
+        assert kwargs["plan_id"] == str(confirmed_plan_id)
+        assert kwargs["evidence"] == evidence
+        return SimpleNamespace(
+            binding=SimpleNamespace(
+                action_kind=action_kind,
+                target_ref="tool:set_trigger",
+                canonical_args_hash=args_hash,
+            )
+        )
+
+    monkeypatch.setattr(
+        "app.services.plan_authorization_lease.verify_consumed_plan_authorization_lease",
+        verify_consumed,
+    )
 
     async def consume_ticket(**_kwargs):
         return ApprovalExecutionTicket(
             approval_id=approval_id,
-            tenant_id=uuid4(),
+            tenant_id=uuid.UUID(context.tenant_id),
             agent_id=context.agent_id,
             requested_by_user_id=context.user_id,
             approved_by_user_id=approved_by,
             tool_name="set_trigger",
-            arguments={
-                "name": "Recurring sweep",
-                "type": "cron",
-                "config": {"expr": "0 9 * * *"},
-                "reason": "approved recurring sweep",
-            },
-            input_hash="input-hash",
+            arguments=ticket_arguments,
+            input_hash=hash_tool_input("set_trigger", ticket_arguments),
             policy_snapshot_hash="policy-hash",
             idempotency_key=f"approval:{approval_id}",
             decision_id="decision-plan-approved-1",
+            action_type="trigger.manage",
+            execution_envelope=envelope,
+            execution_envelope_hash=hash_approval_execution_envelope(envelope),
         )
 
     async def complete_ticket(**_kwargs):

@@ -83,7 +83,7 @@ Codex 的 PermissionProfile、thread identity、sandbox policy 和 approval even
 | ID | 模块 | 优先级 | 状态 | I | A | X | E | R | C | T |
 |---|---|---:|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
 | SA-01 | Plan 授权未绑定具体动作 | P0 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| SA-02 | Approval 后存在第二工具执行入口 | P0 | 断点 | ✓ | △ | ✗ | △ | ✗ | △ | △ |
+| SA-02 | Approval 后存在第二工具执行入口 | P0 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | SA-03 | Business Task 双状态机与错误终态 | P0 | 断点 | △ | △ | ✗ | ✗ | ✗ | ✗ | ✗ |
 | SA-04 | Workspace Rewind 操作 Agent 共享目录 | P0 | 断点 | ✓ | ✗ | ✗ | △ | ✗ | △ | △ |
 | SA-05 | Channel ingress 无 durable inbox | P0 | 断点 | △ | △ | △ | ✗ | ✗ | △ | △ |
@@ -126,6 +126,8 @@ Codex 的 PermissionProfile、thread identity、sandbox policy 和 approval even
 **验收**：跨用户、跨 session、跨目标、标点/字段改变、过期、并发双消费、重放、fork 后复用全部必须 fail closed。
 
 ### SA-02：批准后工具调用绕开正常工具内核 — P0
+
+**修复状态（2026-07-11）**：**闭环**。`ApprovalRequest` 现在保存 hash-bound `hive.approval_execution_envelope.v1`，审批只产生一次性 `ApprovalDecisionSet`；`execute_approved()` 恢复原 runtime authority 后重新进入唯一的 `ToolRuntimeService.execute()`。原 `_execute_without_governance` 已物理删除。批准后的动作会再次经过 Plan 证据复验、当前 hooks、validation、L2、完整 Governance、Action Preflight、runtime-task fence、统一 timeout、backend、artifact/asset usage 与 terminal lifecycle；批准只能覆盖原 action_type 对应的 exact approval gate，不能覆盖 live deny、RLS、资源消失、取消、预算耗尽或 preflight drift。
 
 **机械事实**：正常路径 `backend/app/tools/service.py:715-1011` 依次执行 Plan gate、完整 runtime context、hook、validation、L2 policy、governance runner、Action Preflight、timeout；批准路径 `execute_approved` 在 `1259-1333` 进入 `_execute_without_governance`（`1335-1573`）。后者只恢复 agent/user，未恢复 session_id、turn_id、runtime_task_id、budget_run_id、origin_channel、permission profile、T0 refs、workspace override 和 cancellation，并跳过 hard Plan gate、governance runner、Action Preflight 和正常 timeout。`1755-1769` 的 docstring 反而声称 approved execution 共用 gate，与代码不符。
 
@@ -645,3 +647,68 @@ alembic heads
 ```
 
 结果：`plan_authorization_lease_0711 (head)`。
+
+### SA-02 — ApprovalExecutionEnvelope 与单一工具执行内核
+
+状态：**闭环**。提交主题：`fix(SA-02): reenter one tool kernel after approval`。
+
+七原子证据：
+
+1. **输入**：正常工具调用在 governance 之前从受信 `ToolExecutionContext` 捕获不可变 envelope；字段覆盖 tenant、Agent、requester、session、tool_call、turn、RuntimeTask、BudgetRun、PermissionProfile、DelegationToken、workspace、origin、round state、T0 refs、hook 与 Plan mode capability。Command escalation 同样先构造该 envelope，不能创建无 requester 的可执行票据。
+2. **权威**：envelope 与 tool input、policy snapshot 分别使用 canonical SHA-256 绑定；创建和消费时均校验 tenant/Agent/requester。消费前重查 UUID ChatSession、RuntimeTask tenant/Agent/cancel 状态、BudgetRun tenant/root principal/live status 与 DelegationToken TTL/child authority；opaque 外部 channel session 保留精确字符串绑定，不伪造数据库资源。
+3. **执行**：`execute_approved()` 只消费票据、恢复 envelope 并调用 `ToolRuntimeService.execute(..., _approval_decision=...)`；旧 `_execute_without_governance` 及其独立 backend/fallback/hook 路径已删除。direct/approved 共用相同 Plan、hook、validation、L2、governance、preflight、timeout、backend 和 lifecycle。
+4. **证据**：`ApprovalRequest.execution_envelope` / `execution_envelope_hash`、input/policy hashes、single-use `consumed_at`、execution status/result/receipt、tool decision、preflight metadata、activity lifecycle 与 approval result publication 形成同一机械证据链。
+5. **恢复**：票据仍使用 row lock 单次消费；crash-window 继续进入 `needs_reconciliation` 且禁止自动重放。审批后 payload/hook 变化 fail closed；已消费 Plan lease只允许按原 evidence 复验，不会二次消费。取消 RuntimeTask、exhausted/cancelled BudgetRun、过期 DelegationToken 和 policy drift 均阻止执行。迁移把无法安全补齐 envelope 的历史 pending/approved tool ticket 转为 `rejected + needs_reapproval`，并保存原 status、execution status、resolved_at 供 downgrade 精确恢复。
+6. **消费**：企业 CapabilityPolicy 的 exact approval gate消费 `ApprovalDecisionSet`；live deny 仍优先。Tool activity、invocation evidence、AI asset usage、PostTool hook、approval receipt、origin session/active run 通知均消费唯一执行路径的产物，不再各自产生第二套结果。
+7. **验收**：覆盖 envelope round-trip/tamper/schema、缺 tenant、票据 principal/input/policy/replay、取消任务、耗尽预算、Plan evidence、hook block/mutation、exact approval、live deny、command escalation、迁移单 head 与 AST 单入口约束。
+
+RED 证据（修复前失败）：
+
+- envelope 与单入口契约：`pytest tests/services/test_approval_execution_envelope.py tests/architecture/test_tool_runtime_single_entry.py -q` → `4 failed, 3 passed`；缺少 envelope API，且 `_execute_without_governance` 仍存在。
+- legacy invalidation migration：目标测试 → `1 failed`（迁移文件不存在）。
+- command escalation envelope：目标测试 → `1 failed`（`execution_envelope` 缺失）。
+
+GREEN 证据：
+
+```bash
+cd backend
+source .venv/bin/activate
+pytest \
+  tests/services/test_approval_execution_envelope.py \
+  tests/services/test_approval_ticket.py \
+  tests/services/test_approval_service.py \
+  tests/services/test_command_escalation.py \
+  tests/tools/test_service.py \
+  tests/tools/test_plan_mode_tool_gate.py \
+  tests/tools/test_governance.py \
+  tests/tools/test_governance_resolver.py \
+  tests/architecture/test_tool_runtime_single_entry.py \
+  tests/architecture/test_ai_asset_mutation_wiring.py \
+  tests/migrations/test_approval_execution_envelope_migration.py -q
+```
+
+结果：`126 passed, 5 warnings in 11.28s`。
+
+```bash
+cd backend
+source .venv/bin/activate
+pytest tests/tools \
+  tests/services/test_approval_service.py \
+  tests/services/test_approval_ticket.py \
+  tests/services/test_approval_execution_envelope.py \
+  tests/services/test_command_escalation.py \
+  tests/architecture -q
+```
+
+结果：`651 passed, 4 warnings in 9.06s`。
+
+```bash
+cd backend
+source .venv/bin/activate
+ruff check app/services/approval_ticket.py app/services/approval_service.py \
+  app/services/command_escalation_service.py app/tools/service.py app/tools/runtime.py \
+  app/tools/governance.py app/tools/governance_resolver.py
+alembic heads
+```
+
+结果：Ruff `All checks passed!`；Alembic 单 head：`approval_execution_envelope_0711 (head)`。

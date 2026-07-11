@@ -126,6 +126,15 @@ class ToolGovernanceResolver:
         tool_call_id: str | None = None,
         delegation_token: Any | None = None,
     ) -> ToolGovernanceContext:
+        from app.services.approval_ticket import build_approval_execution_envelope
+
+        execution_envelope = build_approval_execution_envelope(
+            context=runtime_context,
+            tool_call_id=str(tool_call_id or ""),
+            emit_runtime_hooks=runtime_context.emit_runtime_hooks,
+            plan_mode_interactive_available=runtime_context.plan_mode_interactive_available,
+            plan_mode_unattended_available=runtime_context.plan_mode_unattended_available,
+        )
         return ToolGovernanceContext(
             agent_id=runtime_context.agent_id,
             user_id=runtime_context.user_id,
@@ -134,14 +143,27 @@ class ToolGovernanceResolver:
             arguments=arguments,
             session_id=runtime_context.session_id,
             tool_call_id=tool_call_id,
-            decision_id=f"decision:{tool_call_id}" if tool_call_id else None,
+            decision_id=(
+                str(runtime_context.approval_decision.decision_id)
+                if runtime_context.approval_decision is not None
+                else (f"decision:{tool_call_id}" if tool_call_id else None)
+            ),
+            approval_id=(
+                str(runtime_context.approval_decision.approval_id)
+                if runtime_context.approval_decision is not None
+                else None
+            ),
             delegation_token=delegation_token,
             permission_profile=runtime_context.permission_profile,
             turn_id=runtime_context.turn_id,
             runtime_task_id=runtime_context.runtime_task_id,
+            budget_run_id=runtime_context.budget_run_id,
             origin_channel=runtime_context.origin_channel,
             round_state=dict(runtime_context.round_state or {}),
             t0_refs=tuple(runtime_context.t0_refs or ()),
+            workspace=str(runtime_context.workspace),
+            execution_envelope=execution_envelope,
+            approval_decision=runtime_context.approval_decision,
         )
 
     def build_dependencies(self) -> GovernanceDependencies:
@@ -216,6 +238,7 @@ class ToolGovernanceResolver:
             session_id: str | None = None,
             approval_origin_type: str | None = None,
             decision_id: str | None = None,
+            execution_envelope: dict[str, Any] | None = None,
         ) -> dict:
             from app.services.approval_ticket import build_live_approval_policy_snapshot
             from app.services.tenant_resolver import resolve_tenant_for_agent
@@ -247,6 +270,7 @@ class ToolGovernanceResolver:
                         "session_id": session_id,
                         "decision_id": decision_id,
                         "policy_snapshot": policy_snapshot,
+                        "execution_envelope": execution_envelope,
                         "origin": {
                             "type": origin_type,
                             "session_id": session_id,

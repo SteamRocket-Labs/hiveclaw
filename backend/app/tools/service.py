@@ -31,6 +31,7 @@ from app.services.action_preflight import (
 )
 from app.services.decision_trace import TenantScopedSqlDecisionTraceStore
 from app.services.plan_mode_gate import PlanModeGate, get_plan_mode_gate
+from app.services.approval_ticket import ApprovalDecisionSet, hash_tool_input
 from app.services.privacy_layer import PrivacyLayer
 from app.services.governance_capability_taxonomy import capability_descriptor_for_tool, is_l2_tool
 from app.services.capability_group_policy_service import (
@@ -104,7 +105,7 @@ def _plan_gate_action_artifact(tool_name: str, arguments: dict, action_kind: str
     return {
         "tool_name": str(tool_name),
         "action_kind": str(action_kind),
-        "arguments": safe(dict(arguments or {})),
+        "arguments": safe({key: value for key, value in dict(arguments or {}).items() if key != "_plan_authorization"}),
     }
 
 
@@ -749,8 +750,22 @@ class ToolRuntimeService:
         emit_runtime_hooks: bool = True,
         trace_metadata_sink: dict[str, Any] | None = None,
         workspace_override: Path | str | None = None,
+        _approval_decision: ApprovalDecisionSet | None = None,
     ) -> str | ToolContentEnvelope:
         effective_tool_call_id = tool_call_id or _new_runtime_tool_call_id()
+        if _approval_decision is not None:
+            if (
+                _approval_decision.tool_name != tool_name
+                or _approval_decision.input_hash != hash_tool_input(tool_name, dict(arguments or {}))
+            ):
+                return render_tool_error(
+                    tool_name=tool_name,
+                    error_class="approval_payload_mutation",
+                    message="The approved tool request no longer matches its immutable approval ticket.",
+                    provider="approval_execution_kernel",
+                    retryable=False,
+                    actionable_hint="Submit a new approval request for the exact current action.",
+                )
         plan_mode_block = self._interactive_plan_mode_readonly_block(tool_name, arguments)
         if plan_mode_block:
             _record_precontext_tool_decision(
@@ -780,6 +795,14 @@ class ToolRuntimeService:
             authorization_sink=plan_authorization,
             plan_mode_interactive_available=plan_mode_interactive_available,
             plan_mode_unattended_available=plan_mode_unattended_available,
+            consumed_plan_authorization=(
+                _approval_decision.plan_authorization if _approval_decision is not None else None
+            ),
+            approval_tenant_id=(
+                str(getattr(_approval_decision, "tenant_id", ""))
+                if _approval_decision is not None
+                else None
+            ),
         )
         if plan_block:
             _record_precontext_tool_decision(
@@ -815,6 +838,10 @@ class ToolRuntimeService:
             t0_refs=t0_refs,
         )
         runtime_context.delegation_token = delegation_token
+        runtime_context.approval_decision = _approval_decision
+        runtime_context.emit_runtime_hooks = emit_runtime_hooks
+        runtime_context.plan_mode_interactive_available = plan_mode_interactive_available
+        runtime_context.plan_mode_unattended_available = plan_mode_unattended_available
         if workspace_override is not None:
             runtime_context.workspace = Path(workspace_override)
         original_arguments = dict(arguments or {})
@@ -827,6 +854,26 @@ class ToolRuntimeService:
             effective_arguments=dict(arguments or {}),
         )
         arguments = _inject_runtime_context_arguments(tool_name, arguments, runtime_context)
+        if _approval_decision is not None and _approval_decision.input_hash != hash_tool_input(
+            tool_name, dict(arguments or {})
+        ):
+            _record_tool_lifecycle(
+                runtime_context,
+                tool_call_id=effective_tool_call_id,
+                tool_name=tool_name,
+                state="blocked",
+                original_arguments=original_arguments,
+                effective_arguments=dict(arguments or {}),
+                governance_decisions=("approval_payload_mutation",),
+            )
+            return render_tool_error(
+                tool_name=tool_name,
+                error_class="approval_payload_mutation",
+                message="Runtime context injection changed the immutable approved request.",
+                provider="approval_execution_kernel",
+                retryable=False,
+                actionable_hint="Submit a new approval request from the current runtime context.",
+            )
         if emit_runtime_hooks:
             hook_result = await self._emit_pre_tool_hook(
                 tool_name,
@@ -854,9 +901,33 @@ class ToolRuntimeService:
                     reason_codes=("pre_tool_hook_block",),
                     tool_call_id=effective_tool_call_id,
                 )
+                if _approval_decision is not None:
+                    return render_tool_error(
+                        tool_name=tool_name,
+                        error_class="approval_hook_block",
+                        message=(
+                            "Approved execution was blocked by the current PRE_TOOL_USE hook: "
+                            f"{hook_result.reason or 'policy'}"
+                        ),
+                        provider="approval_execution_kernel",
+                        retryable=False,
+                        actionable_hint="Review the changed hook or submit a new approval request.",
+                    )
                 return "Blocked by hook: " + (hook_result.reason or "policy")
             if hook_result and hook_result.modified_args is not None:
-                arguments = hook_result.modified_args
+                modified_arguments = dict(hook_result.modified_args)
+                if _approval_decision is not None and _approval_decision.input_hash != hash_tool_input(
+                    tool_name, modified_arguments
+                ):
+                    return render_tool_error(
+                        tool_name=tool_name,
+                        error_class="approval_payload_mutation",
+                        message="PRE_TOOL_USE cannot change an immutable approved request.",
+                        provider="approval_execution_kernel",
+                        retryable=False,
+                        actionable_hint="Submit a new approval request for the modified action.",
+                    )
+                arguments = modified_arguments
         validation_block = _validate_tool_arguments_block(tool_name, arguments)
         if validation_block:
             _record_tool_lifecycle(
@@ -1038,12 +1109,37 @@ class ToolRuntimeService:
             # logging / error extraction, but return the value untouched.
             result_text = str(result)
             tool_error_payload = _extract_tool_error_payload(result_text)
+            _record_tool_lifecycle(
+                runtime_context,
+                tool_call_id=effective_tool_call_id,
+                tool_name=tool_name,
+                state="completed",
+                original_arguments=original_arguments,
+                effective_arguments=dict(arguments or {}),
+            )
             if self.activity_logger:
+                approval_detail = (
+                    {
+                        "approved": True,
+                        "requested_by_user_id": str(_approval_decision.requested_by_user_id),
+                        "approved_by_user_id": str(_approval_decision.approved_by_user_id),
+                        "approval_id": str(_approval_decision.approval_id),
+                        "input_hash": _approval_decision.input_hash,
+                        "policy_snapshot_hash": _approval_decision.policy_snapshot_hash,
+                        "decision_id": _approval_decision.decision_id,
+                    }
+                    if _approval_decision is not None
+                    else {}
+                )
                 await _maybe_await(
                     self.activity_logger(
                         agent_id,
-                        "tool_call",
-                        f"Called tool {tool_name}: {result_text[:80]}",
+                        "tool_call_approved" if _approval_decision is not None else "tool_call",
+                        (
+                            f"Approved-executed {tool_name}: {result_text[:80]}"
+                            if _approval_decision is not None
+                            else f"Called tool {tool_name}: {result_text[:80]}"
+                        ),
                         tenant_id=runtime_context.tenant_id,
                         detail={
                             "tool": tool_name,
@@ -1059,6 +1155,7 @@ class ToolRuntimeService:
                             "result": result_text[:300],
                             "tool_call_lifecycle": _latest_context_record(runtime_context, "tool_lifecycle_records"),
                             "tool_execution_frame": _latest_context_record(runtime_context, "tool_execution_frames"),
+                            **approval_detail,
                         },
                     )
                 )
@@ -1073,14 +1170,6 @@ class ToolRuntimeService:
                         )
                     )
             if emit_runtime_hooks:
-                _record_tool_lifecycle(
-                    runtime_context,
-                    tool_call_id=effective_tool_call_id,
-                    tool_name=tool_name,
-                    state="completed",
-                    original_arguments=original_arguments,
-                    effective_arguments=dict(arguments or {}),
-                )
                 post_hook_result = await self._emit_post_tool_hook(
                     tool_name,
                     arguments,
@@ -1096,15 +1185,6 @@ class ToolRuntimeService:
                         if isinstance(rewrite, str)
                         else _json.dumps(rewrite, ensure_ascii=False, sort_keys=True)
                     )
-            elif not emit_runtime_hooks:
-                _record_tool_lifecycle(
-                    runtime_context,
-                    tool_call_id=effective_tool_call_id,
-                    tool_name=tool_name,
-                    state="completed",
-                    original_arguments=original_arguments,
-                    effective_arguments=dict(arguments or {}),
-                )
             return result
         except asyncio.TimeoutError:
             rendered = render_tool_error(
@@ -1299,16 +1379,36 @@ class ToolRuntimeService:
                 expected_user_id=approved_by_user_id,
             )
         )
-        detail = {
-            "approved": True,
-            "requested_by_user_id": str(ticket.requested_by_user_id),
-            "approved_by_user_id": str(ticket.approved_by_user_id),
-            "approval_id": str(ticket.approval_id),
-            "input_hash": ticket.input_hash,
-            "policy_snapshot_hash": ticket.policy_snapshot_hash,
-            "idempotency_key": ticket.idempotency_key,
-            "decision_id": ticket.decision_id,
-        }
+        from app.services.approval_ticket import restore_approval_execution_envelope
+
+        envelope = restore_approval_execution_envelope(
+            ticket.execution_envelope,
+            expected_hash=ticket.execution_envelope_hash,
+        )
+        if (
+            envelope.tenant_id != ticket.tenant_id
+            or envelope.agent_id != ticket.agent_id
+            or envelope.requester_user_id != ticket.requested_by_user_id
+        ):
+            raise RuntimeError("approval_execution_envelope_authority_mismatch")
+        decision = ApprovalDecisionSet(
+            approval_id=ticket.approval_id,
+            tenant_id=ticket.tenant_id,
+            action_type=ticket.action_type,
+            tool_name=ticket.tool_name,
+            input_hash=ticket.input_hash,
+            policy_snapshot_hash=ticket.policy_snapshot_hash,
+            envelope_hash=ticket.execution_envelope_hash,
+            decision_id=ticket.decision_id,
+            requested_by_user_id=ticket.requested_by_user_id,
+            approved_by_user_id=ticket.approved_by_user_id,
+            plan_authorization=(
+                dict(ticket.arguments.get("_plan_authorization"))
+                if isinstance(ticket.arguments.get("_plan_authorization"), dict)
+                else None
+            ),
+        )
+        trace_metadata: dict[str, Any] = {}
         receipt = {
             "tool_name": ticket.tool_name,
             "requested_by_user_id": str(ticket.requested_by_user_id),
@@ -1317,16 +1417,30 @@ class ToolRuntimeService:
             "policy_snapshot_hash": ticket.policy_snapshot_hash,
             "idempotency_key": ticket.idempotency_key,
             "decision_id": ticket.decision_id,
+            "execution_envelope_hash": ticket.execution_envelope_hash,
         }
         try:
-            result = await self._execute_without_governance(
+            result = await self.execute(
                 ticket.tool_name,
                 ticket.arguments,
                 agent_id=ticket.agent_id,
                 user_id=ticket.requested_by_user_id,
-                activity_type="tool_call_approved",
-                activity_detail=detail,
-                log_label="execute_approved",
+                tool_call_id=envelope.tool_call_id,
+                delegation_token=envelope.delegation_token,
+                session_id=envelope.session_id,
+                permission_profile=envelope.permission_profile,
+                turn_id=envelope.turn_id,
+                runtime_task_id=envelope.runtime_task_id,
+                budget_run_id=envelope.budget_run_id,
+                origin_channel=envelope.origin_channel,
+                round_state=dict(envelope.round_state),
+                t0_refs=tuple(envelope.t0_refs),
+                plan_mode_interactive_available=envelope.plan_mode_interactive_available,
+                plan_mode_unattended_available=envelope.plan_mode_unattended_available,
+                emit_runtime_hooks=envelope.emit_runtime_hooks,
+                trace_metadata_sink=trace_metadata,
+                workspace_override=envelope.workspace,
+                _approval_decision=decision,
             )
         except Exception as exc:
             await _maybe_await(
@@ -1344,257 +1458,24 @@ class ToolRuntimeService:
             )
             raise
         result_text = str(result)
-        execution_status = "failed" if _extract_tool_error_payload(result_text) else "succeeded"
+        tool_error = _extract_tool_error_payload(result_text)
+        execution_status = "failed" if tool_error else "succeeded"
         await _maybe_await(
             self.approval_ticket_completer(
                 approval_id=ticket.approval_id,
                 tenant_id=ticket.tenant_id,
                 status=execution_status,
                 result=result_text,
-                receipt={**receipt, "status": execution_status},
+                receipt={
+                    **receipt,
+                    "status": execution_status,
+                    "tool_decision": trace_metadata.get("tool_decision"),
+                    "runtime_evidence": trace_metadata,
+                    **({"error": tool_error} if tool_error else {}),
+                },
             )
         )
         return result
-
-    async def _execute_without_governance(
-        self,
-        tool_name: str,
-        arguments: dict,
-        *,
-        agent_id: uuid.UUID,
-        user_id: uuid.UUID | None = None,
-        activity_type: str,
-        activity_detail: dict[str, Any],
-        log_label: str,
-    ) -> str | ToolContentEnvelope:
-        _logger = logging.getLogger(__name__)
-
-        plan_mode_block = self._interactive_plan_mode_readonly_block(tool_name, arguments)
-        if plan_mode_block:
-            return plan_mode_block
-
-        self.ensure_registry()
-
-        resolved_user_id = user_id or agent_id
-        _logger.info("[ToolService] %s: tool=%s agent=%s user=%s", log_label, tool_name, agent_id, resolved_user_id)
-
-        runtime_context = await self.runtime_resolver.resolve(agent_id=agent_id, user_id=resolved_user_id)
-        effective_tool_call_id = _new_runtime_tool_call_id()
-        original_arguments = dict(arguments or {})
-        _record_tool_lifecycle(
-            runtime_context,
-            tool_call_id=effective_tool_call_id,
-            tool_name=tool_name,
-            state="created",
-            original_arguments=original_arguments,
-            effective_arguments=dict(arguments or {}),
-            governance_decisions=(log_label,),
-        )
-        try:
-            hook_result = await self._emit_pre_tool_hook(
-                tool_name,
-                arguments,
-                runtime_context,
-                tool_call_id=effective_tool_call_id,
-                source=log_label,
-            )
-            if hook_result and hook_result.block:
-                _record_tool_lifecycle(
-                    runtime_context,
-                    tool_call_id=effective_tool_call_id,
-                    tool_name=tool_name,
-                    state="blocked",
-                    original_arguments=original_arguments,
-                    effective_arguments=dict(arguments or {}),
-                    governance_decisions=("pre_tool_hook_block", log_label),
-                )
-                return render_tool_error(
-                    tool_name=tool_name,
-                    error_class="approval_hook_block",
-                    message=(
-                        "Approved execution was blocked by the current PRE_TOOL_USE hook: "
-                        f"{hook_result.reason or 'policy'}"
-                    ),
-                    provider="runtime",
-                    retryable=False,
-                    actionable_hint="Review the changed hook or submit a new approval request.",
-                )
-            if hook_result and hook_result.modified_args is not None:
-                modified_arguments = dict(hook_result.modified_args)
-                if modified_arguments != original_arguments:
-                    raise RuntimeError(
-                        "approval_payload_mutation: PRE_TOOL_USE cannot change an immutable approved request"
-                    )
-                arguments = modified_arguments
-            validation_block = _validate_tool_arguments_block(tool_name, arguments)
-            if validation_block:
-                _record_tool_lifecycle(
-                    runtime_context,
-                    tool_call_id=effective_tool_call_id,
-                    tool_name=tool_name,
-                    state="blocked",
-                    original_arguments=original_arguments,
-                    effective_arguments=dict(arguments or {}),
-                    governance_decisions=("validate_input_block", log_label),
-                )
-                return validation_block
-            _record_tool_lifecycle(
-                runtime_context,
-                tool_call_id=effective_tool_call_id,
-                tool_name=tool_name,
-                state="validated",
-                original_arguments=original_arguments,
-                effective_arguments=dict(arguments or {}),
-                governance_decisions=(log_label,),
-            )
-            l2_policy_block = await self._l2_extension_policy_block(tool_name, runtime_context)
-            if l2_policy_block:
-                _record_tool_lifecycle(
-                    runtime_context,
-                    tool_call_id=effective_tool_call_id,
-                    tool_name=tool_name,
-                    state="blocked",
-                    original_arguments=original_arguments,
-                    effective_arguments=dict(arguments or {}),
-                    governance_decisions=("l2_policy_block", log_label),
-                )
-                return l2_policy_block
-            request = ToolExecutionRequest(
-                tool_name=tool_name,
-                arguments=arguments,
-                context=runtime_context,
-            )
-
-            async def _execute_approved_request(inner_request: ToolExecutionRequest) -> str | ToolContentEnvelope:
-                direct_result = await _maybe_await(self.registry.try_execute(inner_request))
-                if direct_result is not None:
-                    return direct_result
-                return await _maybe_await(
-                    self.direct_fallback_executor(
-                        inner_request.tool_name,
-                        inner_request.arguments,
-                        inner_request.context,
-                    )
-                )
-
-            await _renew_runtime_task_lease_before_execution()
-            _record_tool_lifecycle(
-                runtime_context,
-                tool_call_id=effective_tool_call_id,
-                tool_name=tool_name,
-                state="executing",
-                original_arguments=original_arguments,
-                effective_arguments=dict(arguments or {}),
-                governance_decisions=(log_label,),
-            )
-            started_frame = _record_tool_execution_frame(
-                runtime_context,
-                tool_call_id=effective_tool_call_id,
-                tool_name=tool_name,
-                executor=self.backend.name if self.backend else "unknown",
-                arguments=arguments,
-                status="executing",
-            )
-            result = await self.backend.execute(request, _execute_approved_request)
-            _record_tool_execution_frame(
-                runtime_context,
-                tool_call_id=effective_tool_call_id,
-                tool_name=tool_name,
-                executor=self.backend.name if self.backend else "unknown",
-                arguments=arguments,
-                status="completed",
-                result=str(result),
-                started_at=started_frame.get("started_at"),
-            )
-            _record_tool_lifecycle(
-                runtime_context,
-                tool_call_id=effective_tool_call_id,
-                tool_name=tool_name,
-                state="completed",
-                original_arguments=original_arguments,
-                effective_arguments=dict(arguments or {}),
-                governance_decisions=(log_label,),
-            )
-            # result may be a ToolContentEnvelope — text rendering for logging only.
-            result_text = str(result)
-            # Activity log for audit trail (mirrors execute() behavior)
-            if self.activity_logger:
-                try:
-                    detail = {
-                        "tool": tool_name,
-                        "backend": self.backend.name if self.backend else "unknown",
-                        "result": result_text[:300],
-                        "tool_call_lifecycle": _latest_context_record(runtime_context, "tool_lifecycle_records"),
-                        "tool_execution_frame": _latest_context_record(runtime_context, "tool_execution_frames"),
-                        **activity_detail,
-                    }
-                    await _maybe_await(
-                        self.activity_logger(
-                            agent_id,
-                            activity_type,
-                            f"Approved-executed {tool_name}: {result_text[:80]}",
-                            tenant_id=runtime_context.tenant_id,
-                            detail=detail,
-                        )
-                    )
-                except Exception as _log_err:
-                    _logger.warning("[ToolService] Activity logging failed for %s: %s", log_label, _log_err)
-            await self._record_ai_asset_usage_for_tool(
-                tool_name=tool_name,
-                arguments=arguments,
-                context=runtime_context,
-                tool_call_id=effective_tool_call_id,
-                result=result,
-            )
-            post_hook_result = await self._emit_post_tool_hook(
-                tool_name,
-                arguments,
-                result_text,
-                runtime_context,
-                tool_call_id=effective_tool_call_id,
-                source=log_label,
-            )
-            if post_hook_result and post_hook_result.output_rewrite is not None:
-                rewrite = post_hook_result.output_rewrite
-                return rewrite if isinstance(rewrite, str) else _json.dumps(rewrite, ensure_ascii=False, sort_keys=True)
-            return result
-        except Exception as exc:
-            _logger.error("[ToolService] %s failed: tool=%s agent=%s error=%s", log_label, tool_name, agent_id, exc)
-            rendered = render_tool_error(
-                tool_name=tool_name,
-                error_class="tool_execution_error",
-                message=f"{tool_name} failed with {type(exc).__name__}: {exc}",
-                provider="runtime",
-                retryable=False,
-                actionable_hint="Check tool arguments and retry with a more targeted request.",
-            )
-            _record_tool_execution_frame(
-                runtime_context,
-                tool_call_id=effective_tool_call_id,
-                tool_name=tool_name,
-                executor=self.backend.name if self.backend else "unknown",
-                arguments=arguments,
-                status="failed",
-                result={"error": type(exc).__name__, "message": str(exc)[:500]},
-            )
-            _record_tool_lifecycle(
-                runtime_context,
-                tool_call_id=effective_tool_call_id,
-                tool_name=tool_name,
-                state="failed",
-                original_arguments=original_arguments,
-                effective_arguments=dict(arguments or {}),
-                governance_decisions=("tool_execution_error", log_label),
-            )
-            await self._emit_tool_failure_hook(
-                tool_name,
-                arguments,
-                rendered,
-                runtime_context,
-                tool_call_id=effective_tool_call_id,
-                source=log_label,
-            )
-            return rendered
 
     async def execute_with_context(
         self,
@@ -1789,6 +1670,8 @@ class ToolRuntimeService:
         authorization_sink: dict[str, Any] | None = None,
         plan_mode_interactive_available: bool = False,
         plan_mode_unattended_available: bool = False,
+        consumed_plan_authorization: dict[str, Any] | None = None,
+        approval_tenant_id: str | None = None,
     ) -> str | None:
         """Return a confirmation-required JSON block when a gated action is blocked.
 
@@ -1818,6 +1701,73 @@ class ToolRuntimeService:
         plan_version = arguments.get("confirmed_plan_version")
         plan_hash = arguments.get("confirmed_plan_hash")
         action_artifact = _plan_gate_action_artifact(tool_name, arguments, action_kind)
+
+        if consumed_plan_authorization is not None:
+            from app.services.plan_authorization_lease import (
+                PlanAuthorizationLeaseError,
+                canonical_action_artifact,
+                canonical_json,
+                verify_consumed_plan_authorization_lease,
+            )
+
+            expected_runtime_task_id = str(runtime_task_id) if runtime_task_id is not None and session_id is None else None
+            live_bindings = {
+                "target_ref": f"tool:{tool_name}",
+                "requester_user_id": str(user_id),
+                "session_id": str(session_id) if session_id is not None else None,
+                "runtime_task_id": expected_runtime_task_id,
+                "evidence_id": str(evidence_id),
+            }
+            mismatch = next(
+                (
+                    key
+                    for key, expected in live_bindings.items()
+                    if (str(consumed_plan_authorization.get(key)) if consumed_plan_authorization.get(key) is not None else None)
+                    != (str(expected) if expected is not None else None)
+                ),
+                None,
+            )
+            try:
+                if mismatch is not None:
+                    raise PlanAuthorizationLeaseError(
+                        "evidence_mismatch",
+                        f"approved plan authorization {mismatch} no longer matches the runtime",
+                    )
+                if not approval_tenant_id or not confirmed_plan_id:
+                    raise PlanAuthorizationLeaseError(
+                        "authority_missing",
+                        "approved plan authorization is missing tenant or plan authority",
+                    )
+                lease = await verify_consumed_plan_authorization_lease(
+                    tenant_id=approval_tenant_id,
+                    agent_id=agent_id,
+                    plan_id=confirmed_plan_id,
+                    evidence=consumed_plan_authorization,
+                    session_factory=self.plan_mode_session_factory,
+                )
+                canonical_artifact = canonical_action_artifact(action_artifact)
+                live_args_hash = hashlib.sha256(canonical_json(canonical_artifact).encode("utf-8")).hexdigest()
+                if (
+                    lease.binding.action_kind != action_kind
+                    or lease.binding.target_ref != f"tool:{tool_name}"
+                    or lease.binding.canonical_args_hash != live_args_hash
+                ):
+                    raise PlanAuthorizationLeaseError(
+                        "action_mismatch",
+                        "approved plan authorization no longer matches this exact tool action",
+                    )
+            except PlanAuthorizationLeaseError as exc:
+                return render_tool_error(
+                    tool_name=tool_name,
+                    error_class=f"approval_plan_authorization_{exc.code}",
+                    message=exc.message,
+                    provider="approval_execution_kernel",
+                    retryable=False,
+                    actionable_hint="Submit a new approval request from a newly confirmed plan.",
+                )
+            if authorization_sink is not None:
+                authorization_sink.update(dict(consumed_plan_authorization))
+            return None
 
         async with self.plan_mode_session_factory() as db:
             decision = await self.plan_mode_gate.check(

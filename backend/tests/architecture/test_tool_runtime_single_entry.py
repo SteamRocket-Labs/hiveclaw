@@ -81,10 +81,38 @@ def test_tool_runtime_service_is_the_only_class_that_executes_registry_requests(
     assert violations == []
 
 
-def test_tool_runtime_service_exposes_explicit_normal_and_approved_paths() -> None:
+def test_tool_runtime_service_approved_path_reenters_the_single_execution_kernel() -> None:
     service_source = (APP_ROOT / "tools/service.py").read_text(encoding="utf-8")
     tree = ast.parse(service_source)
     methods = {node.name for node in ast.walk(tree) if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef))}
 
     assert {"execute", "execute_approved", "execute_with_context"} <= methods
     assert "execute_direct" not in methods
+    assert "_execute_without_governance" not in methods
+
+    service_class = next(
+        node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "ToolRuntimeService"
+    )
+    approved_method = next(
+        node for node in service_class.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "execute_approved"
+    )
+    self_calls = {
+        node.func.attr
+        for node in ast.walk(approved_method)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "self"
+    }
+    assert "execute" in self_calls
+    assert "execute_with_context" not in self_calls
+    backend_calls = [
+        node
+        for node in ast.walk(service_class)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "execute"
+        and isinstance(node.func.value, ast.Attribute)
+        and node.func.value.attr == "backend"
+    ]
+    assert len(backend_calls) == 1

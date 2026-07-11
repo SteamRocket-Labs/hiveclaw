@@ -4,9 +4,33 @@ import asyncio
 from pathlib import Path
 import json
 from types import SimpleNamespace
+import uuid
 from uuid import uuid4
 
 import pytest
+
+
+def _approved_ticket_runtime_fields(context, *, tool_name: str, arguments: dict) -> dict:
+    from app.services.approval_ticket import (
+        build_approval_execution_envelope,
+        hash_approval_execution_envelope,
+        hash_tool_input,
+    )
+
+    envelope = build_approval_execution_envelope(
+        context=context,
+        tool_call_id=f"approved-tool-call:{uuid4()}",
+        emit_runtime_hooks=True,
+    )
+    return {
+        "tenant_id": uuid.UUID(str(context.tenant_id)),
+        "tool_name": tool_name,
+        "arguments": arguments,
+        "input_hash": hash_tool_input(tool_name, arguments),
+        "action_type": f"test.{tool_name}",
+        "execution_envelope": envelope,
+        "execution_envelope_hash": hash_approval_execution_envelope(envelope),
+    }
 
 
 class _FakeRuntimeResolver:
@@ -54,7 +78,7 @@ async def test_tool_runtime_service_executes_through_registry_and_logs(monkeypat
     context = ToolExecutionContext(
         agent_id=uuid4(),
         user_id=uuid4(),
-        tenant_id="tenant-1",
+        tenant_id=str(uuid4()),
         workspace=Path("/tmp/ws"),
     )
     governance_context = ToolGovernanceContext(
@@ -828,7 +852,7 @@ async def test_tool_runtime_service_execute_approved_logs_approval_metadata():
     context = ToolExecutionContext(
         agent_id=agent_id,
         user_id=requested_by,
-        tenant_id="tenant-1",
+        tenant_id=str(uuid4()),
         workspace=Path("/tmp/ws"),
     )
     logged = []
@@ -843,18 +867,16 @@ async def test_tool_runtime_service_execute_approved_logs_approval_metadata():
             "expected_agent_id": agent_id,
             "expected_user_id": approved_by,
         }
+        arguments = {"path": "workspace/notes.md", "content": "done"}
         return ApprovalExecutionTicket(
             approval_id=approval_id,
-            tenant_id=uuid4(),
             agent_id=agent_id,
             requested_by_user_id=requested_by,
             approved_by_user_id=approved_by,
-            tool_name="write_file",
-            arguments={"path": "workspace/notes.md", "content": "done"},
-            input_hash="input-hash",
             policy_snapshot_hash="policy-hash",
             idempotency_key=f"approval:{approval_id}",
             decision_id="decision-approved-1",
+            **_approved_ticket_runtime_fields(context, tool_name="write_file", arguments=arguments),
         )
 
     async def complete_ticket(**kwargs):
@@ -886,12 +908,14 @@ async def test_tool_runtime_service_execute_approved_logs_approval_metadata():
     assert logged[0][1]["detail"]["approved_by_user_id"] == str(approved_by)
     assert logged[0][1]["detail"]["requested_by_user_id"] == str(requested_by)
     assert logged[0][1]["detail"]["approval_id"] == str(approval_id)
-    assert logged[0][1]["detail"]["input_hash"] == "input-hash"
+    assert logged[0][1]["detail"]["input_hash"] == completions[0]["receipt"]["input_hash"]
     assert completions[0]["status"] == "succeeded"
     assert completions[0]["receipt"]["decision_id"] == "decision-approved-1"
     assert [record["lifecycle_state"] for record in context.tool_lifecycle_records] == [
         "created",
         "validated",
+        "governed",
+        "preflight",
         "executing",
         "completed",
     ]
@@ -923,25 +947,23 @@ async def test_execute_approved_rejects_hook_changes_after_ticket_consumption(
     context = ToolExecutionContext(
         agent_id=agent_id,
         user_id=requester_id,
-        tenant_id="tenant-1",
+        tenant_id=str(uuid4()),
         workspace=Path("/tmp/ws"),
     )
     registry = _FakeRegistry("MUST_NOT_EXECUTE")
     completions = []
 
     async def consume_ticket(**_kwargs):
+        arguments = {"path": "workspace/approved.md", "content": "approved"}
         return ApprovalExecutionTicket(
             approval_id=approval_id,
-            tenant_id=uuid4(),
             agent_id=agent_id,
             requested_by_user_id=requester_id,
             approved_by_user_id=approver_id,
-            tool_name="write_file",
-            arguments={"path": "workspace/approved.md", "content": "approved"},
-            input_hash="input-hash",
             policy_snapshot_hash="policy-hash",
             idempotency_key=f"approval:{approval_id}",
             decision_id="decision-immutable-payload",
+            **_approved_ticket_runtime_fields(context, tool_name="write_file", arguments=arguments),
         )
 
     async def complete_ticket(**kwargs):
@@ -990,20 +1012,26 @@ async def test_execute_approved_records_failed_receipt_when_runtime_bootstrap_ra
     agent_id = uuid4()
     approved_by = uuid4()
     completions = []
+    from app.tools.runtime import ToolExecutionContext
+
+    context = ToolExecutionContext(
+        agent_id=agent_id,
+        user_id=approved_by,
+        tenant_id=str(tenant_id),
+        workspace=Path("/tmp/ws"),
+    )
 
     async def consume_ticket(**_kwargs):
+        arguments = {"path": "workspace/notes.md", "content": "done"}
         return ApprovalExecutionTicket(
             approval_id=approval_id,
-            tenant_id=tenant_id,
             agent_id=agent_id,
             requested_by_user_id=approved_by,
             approved_by_user_id=approved_by,
-            tool_name="write_file",
-            arguments={"path": "workspace/notes.md", "content": "done"},
-            input_hash="input-hash",
             policy_snapshot_hash="policy-hash",
             idempotency_key=f"approval:{approval_id}",
             decision_id="decision-failed-1",
+            **_approved_ticket_runtime_fields(context, tool_name="write_file", arguments=arguments),
         )
 
     async def complete_ticket(**kwargs):
@@ -1049,7 +1077,7 @@ async def test_tool_runtime_service_execute_approved_logs_readonly_tools():
     context = ToolExecutionContext(
         agent_id=agent_id,
         user_id=approved_by,
-        tenant_id="tenant-1",
+        tenant_id=str(uuid4()),
         workspace=Path("/tmp/ws"),
     )
     logged = []
@@ -1059,18 +1087,16 @@ async def test_tool_runtime_service_execute_approved_logs_readonly_tools():
         logged.append((args, kwargs))
 
     async def consume_ticket(**_kwargs):
+        arguments = {"path": "workspace/notes.md"}
         return ApprovalExecutionTicket(
             approval_id=approval_id,
-            tenant_id=uuid4(),
             agent_id=agent_id,
             requested_by_user_id=approved_by,
             approved_by_user_id=approved_by,
-            tool_name="read_file",
-            arguments={"path": "workspace/notes.md"},
-            input_hash="input-hash",
             policy_snapshot_hash="policy-hash",
             idempotency_key=f"approval:{approval_id}",
             decision_id="decision-readonly-1",
+            **_approved_ticket_runtime_fields(context, tool_name="read_file", arguments=arguments),
         )
 
     async def complete_ticket(**_kwargs):

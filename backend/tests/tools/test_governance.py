@@ -303,6 +303,125 @@ async def test_governance_creates_enterprise_approval_when_capability_policy_req
 
 
 @pytest.mark.asyncio
+async def test_consumed_approval_suppresses_only_the_exact_live_approval_gate() -> None:
+    from app.services.approval_ticket import ApprovalDecisionSet, hash_tool_input
+    from app.tools.governance import GovernanceDependencies, ToolGovernanceContext, run_tool_governance
+
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    requester_id = uuid4()
+    approver_id = uuid4()
+    approval_id = uuid4()
+    arguments = {"member_name": "张三", "message": "approved"}
+    capability = "channel.feishu.message"
+    decision_id = "decision:exact-approved-call"
+    approval_decision = ApprovalDecisionSet(
+        approval_id=approval_id,
+        tenant_id=tenant_id,
+        action_type=capability,
+        tool_name="send_feishu_message",
+        input_hash=hash_tool_input("send_feishu_message", arguments),
+        policy_snapshot_hash="policy-hash",
+        envelope_hash="envelope-hash",
+        decision_id=decision_id,
+        requested_by_user_id=requester_id,
+        approved_by_user_id=approver_id,
+    )
+    approval_requests: list[dict] = []
+    events: list[dict] = []
+
+    async def check_capability(*_args):
+        return SimpleNamespace(
+            denied=False,
+            escalate_to_l3=True,
+            capability=capability,
+            reason="company policy requires approval",
+            policy_found=True,
+        )
+
+    async def request_approval(**kwargs):
+        approval_requests.append(kwargs)
+        raise AssertionError("a consumed exact approval must not open another approval")
+
+    result = await run_tool_governance(
+        ToolGovernanceContext(
+            agent_id=agent_id,
+            user_id=requester_id,
+            tenant_id=str(tenant_id),
+            tool_name="send_feishu_message",
+            arguments=arguments,
+            tool_call_id="approved-call",
+            decision_id=decision_id,
+            approval_decision=approval_decision,
+        ),
+        GovernanceDependencies(
+            resolve_security_zone=lambda _agent_id: "standard",
+            check_capability=check_capability,
+            write_audit_event=lambda **_kwargs: None,
+            request_approval=request_approval,
+        ),
+        event_callback=events.append,
+    )
+
+    assert result is None
+    assert approval_requests == []
+    assert any(event.get("status") == "permission_resolved" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_consumed_approval_cannot_override_a_live_capability_deny() -> None:
+    from app.services.approval_ticket import ApprovalDecisionSet, hash_tool_input
+    from app.tools.governance import GovernanceDependencies, ToolGovernanceContext, run_tool_governance
+
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    requester_id = uuid4()
+    arguments = {"member_name": "张三", "message": "approved"}
+    approval_decision = ApprovalDecisionSet(
+        approval_id=uuid4(),
+        tenant_id=tenant_id,
+        action_type="channel.feishu.message",
+        tool_name="send_feishu_message",
+        input_hash=hash_tool_input("send_feishu_message", arguments),
+        policy_snapshot_hash="policy-hash",
+        envelope_hash="envelope-hash",
+        decision_id="decision:denied-after-approval",
+        requested_by_user_id=requester_id,
+        approved_by_user_id=uuid4(),
+    )
+
+    async def check_capability(*_args):
+        return SimpleNamespace(
+            denied=True,
+            escalate_to_l3=False,
+            capability="channel.feishu.message",
+            reason="company policy now denies this action",
+            policy_found=True,
+        )
+
+    result = await run_tool_governance(
+        ToolGovernanceContext(
+            agent_id=agent_id,
+            user_id=requester_id,
+            tenant_id=str(tenant_id),
+            tool_name="send_feishu_message",
+            arguments=arguments,
+            decision_id=approval_decision.decision_id,
+            approval_decision=approval_decision,
+        ),
+        GovernanceDependencies(
+            resolve_security_zone=lambda _agent_id: "standard",
+            check_capability=check_capability,
+            write_audit_event=lambda **_kwargs: None,
+            request_approval=lambda **_kwargs: (_ for _ in ()).throw(AssertionError("must not request approval")),
+        ),
+    )
+
+    assert result is not None
+    assert "company policy now denies" in result
+
+
+@pytest.mark.asyncio
 async def test_restricted_zone_sensitive_tool_uses_session_policy_not_enterprise_approval():
     from app.services.capability_gate import CapabilityCheckResult
     from app.tools.governance import GovernanceDependencies, ToolGovernanceContext, run_tool_governance

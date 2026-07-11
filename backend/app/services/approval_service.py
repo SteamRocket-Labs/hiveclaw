@@ -19,9 +19,12 @@ from app.services.channel_user_service import channel_user_service
 from app.services.enterprise_approval_visibility import is_session_tool_approval
 from app.services.feishu_service import feishu_service
 from app.services.approval_ticket import (
+    ApprovalTicketError,
+    hash_approval_execution_envelope,
     hash_policy_snapshot,
     hash_tool_input,
     normalize_tool_arguments,
+    restore_approval_execution_envelope,
 )
 
 
@@ -81,6 +84,20 @@ class ApprovalService:
                 "origin": details.get("origin"),
             }
         )
+        execution_envelope = details.get("execution_envelope")
+        execution_envelope_hash = None
+        if tool_name:
+            if not isinstance(execution_envelope, dict):
+                raise ApprovalTicketError("tool approval requires an immutable execution envelope")
+            execution_envelope_hash = hash_approval_execution_envelope(execution_envelope)
+            restored_envelope = restore_approval_execution_envelope(
+                execution_envelope,
+                expected_hash=execution_envelope_hash,
+            )
+            if restored_envelope.agent_id != agent.id or restored_envelope.tenant_id != agent.tenant_id:
+                raise ApprovalTicketError("approval execution envelope agent or tenant mismatch")
+            if requested_by is None or restored_envelope.requester_user_id != requested_by:
+                raise ApprovalTicketError("approval execution envelope requester mismatch")
         approval = ApprovalRequest(
             id=approval_id,
             agent_id=agent.id,
@@ -94,6 +111,8 @@ class ApprovalService:
             input_hash=hash_tool_input(tool_name, arguments) if tool_name and arguments is not None else None,
             policy_snapshot=policy_snapshot,
             policy_snapshot_hash=hash_policy_snapshot(policy_snapshot),
+            execution_envelope=dict(execution_envelope) if isinstance(execution_envelope, dict) else None,
+            execution_envelope_hash=execution_envelope_hash,
             expires_at=datetime.now(timezone.utc) + timedelta(minutes=30),
             execution_status="pending",
             execution_idempotency_key=f"approval:{approval_id}",

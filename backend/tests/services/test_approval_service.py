@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -35,6 +36,62 @@ class _FakeDb:
 
     async def execute(self, _query):
         return _FakeResult(self.rows)
+
+    async def flush(self):
+        return None
+
+
+@pytest.mark.asyncio
+async def test_request_approval_persists_immutable_execution_envelope() -> None:
+    from app.models.audit import ApprovalRequest
+    from app.services.approval_service import ApprovalService
+    from app.services.approval_ticket import (
+        build_approval_execution_envelope,
+        hash_approval_execution_envelope,
+    )
+    from app.tools.runtime import ToolExecutionContext
+
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    requester_id = uuid4()
+    agent = SimpleNamespace(id=agent_id, tenant_id=tenant_id, name="Approval Agent")
+    context = ToolExecutionContext(
+        agent_id=agent_id,
+        user_id=requester_id,
+        tenant_id=str(tenant_id),
+        workspace=Path("/tmp/approval-service-workspace"),
+        session_id="channel-session:approval-service",
+        origin_channel="web",
+    )
+    envelope = build_approval_execution_envelope(
+        context=context,
+        tool_call_id="approval-service-tool-call",
+        emit_runtime_hooks=True,
+    )
+    db = _FakeDb([])
+
+    class _Service(ApprovalService):
+        async def _notify_pending_approval(self, *_args, **_kwargs):
+            return None
+
+    outcome = await _Service().request_approval(
+        db,  # type: ignore[arg-type]
+        agent,  # type: ignore[arg-type]
+        action_type="workspace.file.write",
+        details={
+            "tool": "write_file",
+            "args": {"path": "workspace/notes.md", "content": "approved"},
+            "requested_by": str(requester_id),
+            "execution_envelope": envelope,
+            "policy_snapshot": {"schema": "test-policy"},
+        },
+    )
+
+    approval = next(item for item in db.added if isinstance(item, ApprovalRequest))
+    assert outcome["approval_id"] == str(approval.id)
+    assert approval.execution_envelope == envelope
+    assert approval.execution_envelope_hash == hash_approval_execution_envelope(envelope)
+    assert approval.requested_by == requester_id
 
 
 class _FakeOneResult:

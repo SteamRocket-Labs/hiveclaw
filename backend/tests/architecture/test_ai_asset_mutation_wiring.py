@@ -85,7 +85,7 @@ def test_native_runtime_consumers_record_ai_asset_usage_evidence() -> None:
 
     assert "record_asset_usage" in _source("app.services.invocation_trace", "record_invocation_span")
     assert "_record_ai_asset_usage_for_tool" in inspect.getsource(ToolRuntimeService.execute_with_context)
-    assert "_record_ai_asset_usage_for_tool" in inspect.getsource(ToolRuntimeService._execute_without_governance)
+    assert not hasattr(ToolRuntimeService, "_execute_without_governance")
     tool_usage_source = inspect.getsource(ToolRuntimeService._record_ai_asset_usage_for_tool)
     assert '"load_skill"' in tool_usage_source
     assert '"spawn_subagent"' in tool_usage_source

@@ -184,9 +184,13 @@ class ToolGovernanceContext:
     permission_profile: PermissionProfileV1 | None = None
     turn_id: str | None = None
     runtime_task_id: str | None = None
+    budget_run_id: str | None = None
     origin_channel: str | None = None
     round_state: dict[str, Any] | None = None
     t0_refs: tuple[str, ...] = ()
+    workspace: str | None = None
+    execution_envelope: dict[str, Any] | None = None
+    approval_decision: Any | None = None
     guard_policy_snapshot: dict[str, Any] | None = None
     guard_policy_verdict: dict[str, Any] | None = None
     capability_snapshot: dict[str, Any] | None = None
@@ -604,6 +608,53 @@ async def _emit_enterprise_approval_result(
     above the Session mode layer, so full-access/bypass can skip only missing
     policy prompts, not an explicit "requires approval" company setting.
     """
+    if context.approval_decision is not None:
+        from app.services.approval_ticket import hash_tool_input
+
+        decision = context.approval_decision
+        mismatches: list[str] = []
+        if str(decision.tool_name) != context.tool_name:
+            mismatches.append("tool")
+        if str(decision.action_type) != str(capability or context.tool_name):
+            mismatches.append("capability")
+        if str(decision.input_hash) != hash_tool_input(context.tool_name, dict(context.arguments or {})):
+            mismatches.append("input")
+        if str(decision.decision_id) != str(context.decision_id or ""):
+            mismatches.append("decision")
+        if mismatches:
+            message = _teaching_block_message(
+                context.tool_name,
+                reason=f"approved decision no longer matches live request ({', '.join(mismatches)})",
+                capability=capability,
+                next_steps=["submit a new approval request for the exact current action"],
+            )
+            await _emit_event(
+                event_callback,
+                {
+                    "type": "permission",
+                    "tool_name": context.tool_name,
+                    "status": "approval_decision_mismatch",
+                    "message": message,
+                    "approval_id": str(decision.approval_id),
+                },
+            )
+            return message
+        context.approval_id = str(decision.approval_id)
+        await _emit_event(
+            event_callback,
+            {
+                "type": "permission",
+                "tool_name": context.tool_name,
+                "status": "permission_resolved",
+                "decision": "allow_once",
+                "message": f"Company approval authorized this exact '{context.tool_name}' request once.",
+                "capability": capability,
+                "approval_id": str(decision.approval_id),
+                "decision_id": str(decision.decision_id),
+            },
+        )
+        return None
+
     decision_id = context.decision_id or f"decision:{context.tool_call_id or uuid.uuid4()}"
     context.decision_id = decision_id
     approval_kwargs = {
@@ -624,6 +675,8 @@ async def _emit_enterprise_approval_result(
         accepts_kwargs = False
     if accepts_kwargs or "decision_id" in request_params:
         approval_kwargs["decision_id"] = decision_id
+    if accepts_kwargs or "execution_envelope" in request_params:
+        approval_kwargs["execution_envelope"] = context.execution_envelope
     approval = await _maybe_await(deps.request_approval(**approval_kwargs))
     if approval and approval.get("allowed") is True:
         await _emit_event(

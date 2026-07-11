@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -21,7 +22,7 @@ async def test_tool_governance_resolver_builds_context_from_runtime_context():
         agent_id=agent_id,
         user_id=user_id,
         tenant_id=str(uuid4()),
-        workspace=SimpleNamespace(),
+        workspace=Path("/tmp/governance-resolver-test"),
         execution_identity=ExecutionIdentity(
             identity_type="delegated_user",
             identity_id=user_id,
@@ -35,6 +36,7 @@ async def test_tool_governance_resolver_builds_context_from_runtime_context():
         runtime_context=runtime_context,
         tool_name="write_file",
         arguments={"path": "workspace/notes.md", "content": "x"},
+        tool_call_id="governance-tool-call-1",
         delegation_token="token-1",
     )
 
@@ -140,6 +142,7 @@ async def test_tool_governance_resolver_dependencies_wrap_services(monkeypatch):
         capability="workspace.write",
         reason="manual escalation",
         session_id="session-approval",
+        execution_envelope={"schema": "test.execution-envelope"},
     )
     assert result == {"allowed": False, "approval_id": "approval-1"}
     assert approval_calls[0][2] == "workspace.write"
@@ -151,6 +154,7 @@ async def test_tool_governance_resolver_dependencies_wrap_services(monkeypatch):
         "schema": "hive.approval_policy_snapshot.v1",
         "version": "live-1",
     }
+    assert approval_calls[0][3]["execution_envelope"] == {"schema": "test.execution-envelope"}
 
 
 @pytest.mark.asyncio

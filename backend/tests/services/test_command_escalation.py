@@ -128,6 +128,11 @@ async def test_request_command_escalation_creates_pending_approval(monkeypatch):
     assert recorded["action_type"] == COMMAND_ESCALATION_ACTION_TYPE
     assert recorded["details"]["args"]["command"] == _BLOCKED_COMMAND
     assert recorded["details"]["requested_by"] == str(user_id)
+    assert recorded["details"]["execution_envelope"]["tenant_id"] == str(agent.tenant_id)
+    assert recorded["details"]["execution_envelope"]["agent_id"] == str(agent_id)
+    assert recorded["details"]["execution_envelope"]["requester_user_id"] == str(user_id)
+    assert recorded["details"]["execution_envelope"]["session_id"] == "sess-9"
+    assert recorded["details"]["execution_envelope"]["origin_channel"] == COMMAND_ESCALATION_ORIGIN_TYPE
 
 
 @pytest.mark.asyncio

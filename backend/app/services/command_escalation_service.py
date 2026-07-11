@@ -86,6 +86,9 @@ async def request_command_escalation(
     tenant_uuid = _normalize_uuid(tenant_id)
     if tenant_uuid is None:
         return {"allowed": False, "error": "tenant_id is required for escalation."}
+    requester_uuid = _normalize_uuid(requested_by)
+    if requester_uuid is None:
+        return {"allowed": False, "error": "requested_by is required for escalation."}
 
     action_type, details = build_command_escalation_request(
         normalized_command,
@@ -109,6 +112,25 @@ async def request_command_escalation(
         agent = result.scalar_one_or_none()
         if agent is None:
             return {"allowed": False, "error": "Agent not found for escalation."}
+        from app.runtime.ccplus_contracts import PermissionProfileV1
+        from app.services.approval_ticket import build_approval_execution_envelope
+        from app.tools.runtime import ToolExecutionContext
+        from app.tools.workspace import WORKSPACE_ROOT
+
+        execution_context = ToolExecutionContext(
+            agent_id=agent_id,
+            user_id=requester_uuid,
+            tenant_id=str(tenant_uuid),
+            workspace=WORKSPACE_ROOT / str(agent_id),
+            session_id=session_id,
+            permission_profile=PermissionProfileV1(),
+            origin_channel=COMMAND_ESCALATION_ORIGIN_TYPE,
+        )
+        details["execution_envelope"] = build_approval_execution_envelope(
+            context=execution_context,
+            tool_call_id=f"command-escalation:{uuid.uuid4()}",
+            emit_runtime_hooks=True,
+        )
         outcome = await approval_service.request_approval(db, agent, action_type=action_type, details=details)
         return outcome
 

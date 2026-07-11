@@ -33,6 +33,10 @@ class ToolExecutionContext:
     origin_channel: str | None = None
     round_state: dict[str, Any] | None = None
     t0_refs: tuple[str, ...] = ()
+    approval_decision: Any | None = None
+    emit_runtime_hooks: bool = True
+    plan_mode_interactive_available: bool = False
+    plan_mode_unattended_available: bool = False
     tool_lifecycle_records: list[dict[str, Any]] = field(default_factory=list)
     tool_execution_frames: list[dict[str, Any]] = field(default_factory=list)
 

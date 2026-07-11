@@ -24,7 +24,7 @@
 - **P1：13 个**。会造成恢复能力、CC parity、自进化、资产统计、实时 UI 或验收可信度不足，不能作为“上线后再补”的债务。
 - **P2：1 个**。是确定的 KISS/维护性残留，应与本轮一起清理。
 
-当前修复进度：**10 / 28**（SA-01 至 SA-10 已按七原子闭环并分别提交）；其余断点未全部关闭前，结论继续保持 NO-GO。
+当前修复进度：**11 / 28**（SA-01 至 SA-11 已按七原子闭环并分别提交）；其余断点未全部关闭前，结论继续保持 NO-GO。
 
 这里的“95% 以上信心”指的是：**对当前 checkout 根断点清单完整度的置信度为 95.3%**，不代表系统有 95.3% 的上线成熟度。只要任一 P0 尚存，上线结论就是 NO-GO。
 
@@ -94,7 +94,7 @@ Codex 的 PermissionProfile、thread identity、sandbox policy 和 approval even
 | SA-08 | CC Hook surface 有 no-op/planned 壳 | P1 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | SA-09 | Frozen prompt cache 依赖签名不完整 | P1 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | SA-10 | 智能上下文机械截断无恢复指针 | P1 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| SA-11 | Local Bridge receipt 文件并发丢写 | P1 | 断点 | ✓ | ✓ | △ | △ | ✗ | △ | ✗ |
+| SA-11 | Local Bridge receipt 文件并发丢写 | P1 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | SA-12 | 全量测试入口不 hermetic | P1 | 断点 | ✓ | ✓ | △ | △ | ✗ | △ | ✗ |
 | HN-01 | Personal KB 浏览器继承 Agent owner 权威 | P0 | 断点 | ✓ | ✗ | △ | △ | △ | ✗ | △ |
 | HN-02 | Memory/Skill 原生资产缺统一事务锁 | P0 | 断点 | ✓ | ✓ | ✗ | △ | ✗ | △ | △ |
@@ -230,6 +230,8 @@ Task logs 在 `backend/app/api/tasks.py:181-207` 只按 task_id 查写，没有�
 关闭方式：保留短 resident summary，但附带 `context_ref` 和按需读取工具；由模型判断是否检索。个人知识库继续严格 tool-only，不能借此重新直接注入。
 
 ### SA-11：Local Bridge replay receipt 并发不安全 — P1
+
+**修复状态（2026-07-11）**：**闭环**。Python runner 的 canonical receipt 已由整文件 JSON 替换为 SQLite/WAL：`replay_key` 主键 first-writer-wins、`BEGIN IMMEDIATE`、`synchronous=FULL`、事务内 retention、row hash、quick-check、DB/row quarantine，并自动把旧 `.json` backfill 到相邻 `.sqlite3`，不删除 legacy source。审计时进一步发现实际 npm 主 CLI 原本完全没有 replay receipt；现已补为跨进程 exclusive-lock + stale-owner recovery 的 append-only JSONL，append/snapshot 均 fsync、compact 用同目录 atomic rename、损坏行单独 quarantine。两端都在 result 发送前持久化；若持久化失败，向云端返回 `failed + requires_reconciliation`，不把未留本地证据的执行伪装成 completed。
 
 `local_bridge/hive_bridge/execution_receipts.py:18-69` 每次读取整份 JSON、内存修改、写固定 `.tmp` 后 replace，无 file lock/CAS。两个本地执行并发完成会丢记录或争用同一 temp 文件；当前 tests 没有并发 case。
 
@@ -1280,3 +1282,66 @@ alembic heads
 ```
 
 结果：Ruff lint `All checks passed!`，15 个变更 Python 文件格式通过；Alembic 单 head：`channel_delivery_outbox_0711 (head)`。SA-10 不新增 schema migration。
+
+### SA-11 — Local Bridge Replay Receipt 并发与崩溃闭环
+
+状态：**闭环**。提交主题：`fix(SA-11): make local execution receipts crash safe`。
+
+七原子证据：
+
+1. **输入**：云端签发的 `replay_key` 是唯一 receipt key；未提供时只为 legacy message 确定性生成 `local-message:<message_id>`。Python/npm runner 都在 adapter 执行前查询 receipt，命中后复用原 result 并标记 `idempotent_replay=true`。
+2. **权威**：ledger 只存在本地 Bridge 数据目录，文件权限为 `0600`；key 由受信云端 message envelope 提供，不从模型输出或附件路径派生。Runner 只能读写自身 ledger，不接触云端 tenant/RLS 数据库。
+3. **执行**：Python 使用 SQLite `replay_key PRIMARY KEY + INSERT OR IGNORE`，npm 使用 exclusive lock 下的 first-writer-wins append；不存在 read-whole/write-fixed-tmp 的丢写入口。两端都严格执行“persist receipt → send result”；持久化失败只能上报 `failed/requires_reconciliation`，不能返回 completed。
+4. **证据**：Python row 保存 canonical result JSON、SHA-256 与 UTC stored_at，WAL 是 crash journal；npm 每行保存 versioned schema、replay key、stored_at 与完整 result，文件/快照均 fsync。Cloud result metadata继续携带 replay key/idempotent flag；腐损 DB、row/line与 recovery lock均有 quarantine 文件/表。
+5. **恢复**：SQLite `synchronous=FULL`、`BEGIN IMMEDIATE`、WAL rollback 可消除 uncommitted ghost；quick-check/known corruption error触发 DB quarantine 后重建；legacy JSON按内容 hash幂等 backfill。npm lock记录 pid/时间，dead/stale owner可恢复；corrupt line隔离后保留有效 records；compact 使用同目录唯一 temp + atomic rename + directory fsync。
+6. **消费**：Python WebSocket runner继续消费同一 `LocalExecutionReceiptStore`；实际发布的 npm CLI `src/channel-runner.mjs` 现在也真实消费 `src/execution-receipts.mjs`，`npm pack --dry-run` 已证明新模块进入发布包。命中 receipt 后 adapter/command 不再执行。
+7. **验收**：覆盖 80 路 Python concurrent writers、40 路 npm concurrent writers、first-writer-wins、legacy backfill、WAL mode、uncommitted rollback、DB/line corruption quarantine、stale lock、真实 channel replay、receipt persistence fail-closed、完整 Python/npm suites、Python Ruff、Node syntax、npm package dry-run与全量 backend。
+
+KISS/奥卡姆证据：Python 直接使用标准库 SQLite/WAL，不自研文件 CAS/事务；npm Node 20 基线没有内置稳定 SQLite，因此只实现一个 bounded append-only ledger与单一 lock primitive，不增加 native dependency。原 JSON 整体重写实现被完整替换，不保留双写路径。
+
+RED 证据：
+
+```text
+Python: 5 failed
+- parallel put 争用同一 .tmp 并 FileNotFoundError
+- 相同 replay key 被后写覆盖
+- 无 SQLite/WAL、无 legacy backfill、无 corruption quarantine、无 rollback table
+
+npm: 2 failed
+- 主 CLI 缺 src/execution-receipts.mjs
+- 同一 replay_key 执行两次
+
+receipt fail-closed 补强: Python 1 failed + npm 1 failed
+- put 失败直接抛出并断线，未生成 requires_reconciliation terminal result
+```
+
+GREEN 证据：
+
+```bash
+cd local_bridge
+../backend/.venv/bin/pytest tests -q
+npm test
+```
+
+结果：Python `30 passed in 0.27s`；npm `14 passed, 0 failed`。
+
+```bash
+cd local_bridge
+../backend/.venv/bin/ruff check \
+  hive_bridge/execution_receipts.py hive_bridge/channel_runner.py \
+  tests/test_execution_receipts.py tests/test_channel_runner.py
+../backend/.venv/bin/ruff format --check <同上>
+node --check src/execution-receipts.mjs
+node --check src/channel-runner.mjs
+npm pack --dry-run --json
+```
+
+结果：Ruff lint/format 全绿；Node syntax exit 0；npm dry-run 包含 `src/execution-receipts.mjs`，package entry count `8`，无新 runtime dependency。
+
+```bash
+cd backend
+source .venv/bin/activate
+pytest tests -q
+```
+
+结果：`6318 passed, 1 skipped, 5 warnings in 146.73s`，零失败。SA-11 只修改 Local Bridge 本地持久层/协议客户端，不新增 backend schema migration。

@@ -205,7 +205,18 @@ class HiveBridgeChannelRunner:
                 "artifacts": [],
                 "metadata": error_metadata,
             }
-            self.receipt_store.put(replay_key, result_payload)
+            try:
+                self.receipt_store.put(replay_key, result_payload)
+            except Exception as receipt_exc:
+                self._send_receipt_persistence_failure(
+                    connection,
+                    session_id=session_id,
+                    message_id=message_id,
+                    replay_key=replay_key,
+                    original_result=result_payload,
+                    error=receipt_exc,
+                )
+                return
             connection.send_json(result_payload)
             return
         result_payload = {
@@ -221,8 +232,62 @@ class HiveBridgeChannelRunner:
                 "replay_key": replay_key,
             },
         }
-        self.receipt_store.put(replay_key, result_payload)
+        try:
+            self.receipt_store.put(replay_key, result_payload)
+        except Exception as receipt_exc:
+            self._send_receipt_persistence_failure(
+                connection,
+                session_id=session_id,
+                message_id=message_id,
+                replay_key=replay_key,
+                original_result=result_payload,
+                error=receipt_exc,
+            )
+            return
         connection.send_json(result_payload)
+
+    def _send_receipt_persistence_failure(
+        self,
+        connection: JsonConnection,
+        *,
+        session_id: str,
+        message_id: str,
+        replay_key: str,
+        original_result: dict[str, Any],
+        error: Exception,
+    ) -> None:
+        original_status = str(original_result.get("status") or "unknown")
+        metadata = {
+            "error": str(error) or type(error).__name__,
+            "error_type": type(error).__name__,
+            "error_code": "receipt_persistence_failed",
+            "requires_reconciliation": True,
+            "original_status": original_status,
+            "runtime_kind": self.runtime_kind,
+            "capability_snapshot_hash": self.capability_snapshot_hash,
+            "replay_key": replay_key,
+        }
+        self._send_event(connection, session_id, message_id, "error", metadata)
+        original_output = str(original_result.get("output") or "")
+        connection.send_json(
+            {
+                "type": "result",
+                "session_id": session_id,
+                "message_id": message_id,
+                "status": "failed",
+                "output": (
+                    "Local execution produced a result, but its durable replay receipt could not be persisted. "
+                    "Manual reconciliation is required before retrying."
+                    + (
+                        f"\n\nOriginal output:\n{original_output}"
+                        if original_output
+                        else ""
+                    )
+                ),
+                "artifacts": list(original_result.get("artifacts") or []),
+                "metadata": metadata,
+            }
+        )
 
     @staticmethod
     def _send_event(

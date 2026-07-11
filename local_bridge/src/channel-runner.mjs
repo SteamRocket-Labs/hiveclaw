@@ -1,6 +1,8 @@
 import { mkdir } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { spawn } from 'node:child_process';
+
+import { LocalExecutionReceiptStore } from './execution-receipts.mjs';
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -53,6 +55,8 @@ export class HiveBridgeChannelRunner {
     downloadsDir = '.hive/local-agent-channel/attachments',
     webSocketClass = null,
     reconnectDelayMs = 1000,
+    receiptStore = null,
+    receiptPath = null,
   }) {
     this.client = client;
     this.runtime = runtime;
@@ -61,6 +65,9 @@ export class HiveBridgeChannelRunner {
     this.downloadsDir = downloadsDir;
     this.webSocketClass = webSocketClass;
     this.reconnectDelayMs = reconnectDelayMs;
+    this.receiptStore = receiptStore || new LocalExecutionReceiptStore({
+      path: receiptPath || join(dirname(downloadsDir), 'execution-receipts.jsonl'),
+    });
   }
 
   async connectUrl() {
@@ -102,7 +109,24 @@ export class HiveBridgeChannelRunner {
     await mkdir(this.downloadsDir, { recursive: true });
     const messageId = String(message.id);
     const sessionId = String(message.session_id);
+    const replayKey = String(message.replay_key || `local-message:${messageId}`);
     ws.send(JSON.stringify({ type: 'ack', message_id: messageId }));
+    const cachedResult = await this.receiptStore.get(replayKey);
+    if (cachedResult) {
+      ws.send(JSON.stringify({
+        ...cachedResult,
+        type: 'result',
+        session_id: sessionId,
+        message_id: messageId,
+        metadata: {
+          ...(cachedResult.metadata || {}),
+          replay_key: replayKey,
+          idempotent_replay: true,
+        },
+      }));
+      return;
+    }
+    let resultPayload;
     try {
       const prepared = await this.prepareMessage(message);
       this.sendEvent(ws, sessionId, messageId, 'typing', { status: 'running' });
@@ -112,24 +136,25 @@ export class HiveBridgeChannelRunner {
           onEvent: (eventType, payload) => this.sendEvent(ws, sessionId, messageId, eventType, payload),
         })
         : await noopResult(prepared);
-      ws.send(JSON.stringify({
+      resultPayload = {
         type: 'result',
         session_id: sessionId,
         message_id: messageId,
         status: 'completed',
         output: String(result.result || ''),
         artifacts: result.attachments || [],
-        metadata: result.metadata || {},
-      }));
+        metadata: { ...(result.metadata || {}), replay_key: replayKey },
+      };
     } catch (error) {
       const errorText = String(error?.message || error?.name || error || 'Unknown local runtime error');
       const metadata = {
         error: errorText,
         error_type: String(error?.name || 'Error'),
         runtime_kind: this.runtime,
+        replay_key: replayKey,
       };
       this.sendEvent(ws, sessionId, messageId, 'error', metadata);
-      ws.send(JSON.stringify({
+      resultPayload = {
         type: 'result',
         session_id: sessionId,
         message_id: messageId,
@@ -137,8 +162,52 @@ export class HiveBridgeChannelRunner {
         output: `Local runtime failed: ${errorText}`,
         artifacts: [],
         metadata,
-      }));
+      };
     }
+    try {
+      await this.receiptStore.put(replayKey, resultPayload);
+    } catch (error) {
+      this.reportReceiptPersistenceFailure(ws, {
+        sessionId,
+        messageId,
+        replayKey,
+        originalResult: resultPayload,
+        error,
+      });
+      return;
+    }
+    ws.send(JSON.stringify(resultPayload));
+  }
+
+  reportReceiptPersistenceFailure(ws, {
+    sessionId,
+    messageId,
+    replayKey,
+    originalResult,
+    error,
+  }) {
+    const metadata = {
+      error: String(error?.message || error?.name || error || 'Unknown receipt persistence error'),
+      error_type: String(error?.name || 'Error'),
+      error_code: 'receipt_persistence_failed',
+      requires_reconciliation: true,
+      original_status: String(originalResult?.status || 'unknown'),
+      runtime_kind: this.runtime,
+      replay_key: replayKey,
+    };
+    this.sendEvent(ws, sessionId, messageId, 'error', metadata);
+    const originalOutput = String(originalResult?.output || '');
+    ws.send(JSON.stringify({
+      type: 'result',
+      session_id: sessionId,
+      message_id: messageId,
+      status: 'failed',
+      output: 'Local execution produced a result, but its durable replay receipt could not be persisted. '
+        + 'Manual reconciliation is required before retrying.'
+        + (originalOutput ? `\n\nOriginal output:\n${originalOutput}` : ''),
+      artifacts: originalResult?.artifacts || [],
+      metadata,
+    }));
   }
 
   async runSession({ maxMessages = Number.POSITIVE_INFINITY } = {}) {

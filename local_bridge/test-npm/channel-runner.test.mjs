@@ -23,7 +23,78 @@ class FakeClient {
   }
 }
 
+function memoryReceiptStore() {
+  const records = new Map();
+  return {
+    async get(key) { return records.has(key) ? structuredClone(records.get(key)) : null; },
+    async put(key, value) { if (!records.has(key)) records.set(key, structuredClone(value)); },
+  };
+}
+
 describe('npm hive-bridge channel runner', () => {
+  it('replays a durable result without executing the same replay key twice', async () => {
+    const sent = [];
+    const records = new Map();
+    const receiptStore = {
+      async get(key) { return records.has(key) ? structuredClone(records.get(key)) : null; },
+      async put(key, value) { if (!records.has(key)) records.set(key, structuredClone(value)); },
+    };
+    const runner = new HiveBridgeChannelRunner({
+      client: new FakeClient(),
+      runtime: 'noop',
+      receiptStore,
+    });
+    let preparations = 0;
+    runner.prepareMessage = async (message) => {
+      preparations += 1;
+      return { ...message, attachments: [] };
+    };
+    const ws = { send(payload) { sent.push(JSON.parse(payload)); } };
+    const message = {
+      id: 'message-1',
+      session_id: 'session-1',
+      replay_key: 'local:message-1',
+      content: 'run once',
+      attachments: [],
+    };
+
+    await runner.handleMessage(ws, message);
+    await runner.handleMessage(ws, { ...message, id: 'message-replay' });
+
+    assert.equal(preparations, 1);
+    const results = sent.filter((payload) => payload.type === 'result');
+    assert.equal(results.length, 2);
+    assert.equal(results[1].metadata.idempotent_replay, true);
+    assert.equal(results[1].metadata.replay_key, 'local:message-1');
+  });
+
+  it('fails closed when an executed result cannot be persisted for replay', async () => {
+    const sent = [];
+    const runner = new HiveBridgeChannelRunner({
+      client: new FakeClient(),
+      runtime: 'noop',
+      receiptStore: {
+        async get() { return null; },
+        async put() { throw new Error('receipt disk unavailable'); },
+      },
+    });
+    const ws = { send(payload) { sent.push(JSON.parse(payload)); } };
+
+    await runner.handleMessage(ws, {
+      id: 'message-1',
+      session_id: 'session-1',
+      replay_key: 'local:message-1',
+      content: 'run once',
+      attachments: [],
+    });
+
+    const result = sent.at(-1);
+    assert.equal(result.status, 'failed');
+    assert.equal(result.metadata.error_code, 'receipt_persistence_failed');
+    assert.equal(result.metadata.requires_reconciliation, true);
+    assert.equal(result.metadata.original_status, 'completed');
+  });
+
   it('treats websocket close before work as offline presence, not login failure', async () => {
     const sent = [];
     class ClosingWebSocket extends EventEmitter {
@@ -116,6 +187,7 @@ describe('npm hive-bridge channel runner', () => {
       runtime: 'noop',
       webSocketClass: MultiMessageWebSocket,
       reconnectDelayMs: 0,
+      receiptStore: memoryReceiptStore(),
     });
 
     assert.equal(await runner.runSession({ maxMessages: 2 }), 2);
@@ -171,6 +243,7 @@ describe('npm hive-bridge channel runner', () => {
       command: [process.execPath, script],
       webSocketClass: OneMessageWebSocket,
       reconnectDelayMs: 0,
+      receiptStore: memoryReceiptStore(),
     });
 
     assert.equal(await runner.runSession({ maxMessages: 1 }), 1);
@@ -213,6 +286,7 @@ describe('npm hive-bridge channel runner', () => {
       runtime: 'noop',
       webSocketClass: OneMessageWebSocket,
       reconnectDelayMs: 0,
+      receiptStore: memoryReceiptStore(),
     });
     runner.prepareMessage = async () => {
       throw new Error('prepare exploded');
@@ -232,6 +306,7 @@ describe('npm hive-bridge channel runner', () => {
           error: 'prepare exploded',
           error_type: 'Error',
           runtime_kind: 'noop',
+          replay_key: 'local-message:message-1',
         },
       },
     ]);
@@ -246,6 +321,7 @@ describe('npm hive-bridge channel runner', () => {
         error: 'prepare exploded',
         error_type: 'Error',
         runtime_kind: 'noop',
+        replay_key: 'local-message:message-1',
       },
     });
   });

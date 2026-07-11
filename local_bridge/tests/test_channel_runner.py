@@ -104,6 +104,14 @@ class _MemoryReceiptStore:
         self.records[replay_key] = dict(result)
 
 
+class _FailingReceiptStore:
+    def get(self, _replay_key):
+        return None
+
+    def put(self, _replay_key, _result):
+        raise OSError("receipt disk unavailable")
+
+
 class _AttachmentConnection(_FakeConnection):
     def __init__(self):
         super().__init__()
@@ -231,6 +239,28 @@ def test_channel_runner_processes_one_websocket_message() -> None:
             },
         },
     ]
+
+
+def test_channel_runner_fails_closed_when_completed_result_cannot_be_receipted() -> (
+    None
+):
+    connection = _FakeConnection()
+    adapter = _FakeAdapter()
+    runner = HiveBridgeChannelRunner(
+        client=_FakeClient(),
+        adapter=adapter,
+        connection_factory=lambda _url: connection,
+        runtime_kind="codex",
+        receipt_store=_FailingReceiptStore(),
+    )
+
+    assert runner.run_once() == 1
+    assert len(adapter.messages) == 1
+    result = connection.sent[-1]
+    assert result["status"] == "failed"
+    assert result["metadata"]["error_code"] == "receipt_persistence_failed"
+    assert result["metadata"]["requires_reconciliation"] is True
+    assert result["metadata"]["original_status"] == "completed"
     assert runner.capability_snapshot_hash == "snapshot-1"
 
 

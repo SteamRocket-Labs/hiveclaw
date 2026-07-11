@@ -35,6 +35,8 @@ hive-bridge run --transport websocket
 
 `hive-bridge login` creates a long-lived binding. `hive-bridge run --transport websocket` is the online runner: it keeps one WebSocket session open for consecutive cloud messages, streams command stdout/stderr as `delta` events, and reconnects after transient WebSocket failures.
 
+Completed local executions are recorded before their result is sent. The npm runner uses a locked, fsync-backed append-only ledger at `.hive/local-agent-channel/execution-receipts.jsonl`; replaying the same server-issued `replay_key` returns the original result without running the local command again. Corrupt rows and stale locks are quarantined/recovered, while receipt persistence failure is reported as `requires_reconciliation` instead of silently risking duplicate execution.
+
 The GitHub skill package and the npm CLI package are intentionally separate:
 
 - `https://github.com/rocky2431/hive-bridge-skill`: installed by `npx skills add`.

@@ -12,7 +12,6 @@ Two layers:
 
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 
 import pytest
@@ -25,10 +24,45 @@ from app.services.subprocess_sandbox import (
     _linux_bwrap_command,
     _resolve_writable_roots,
     build_sandboxed_agent_command,
+    probe_os_sandbox_capability,
 )
 
-_HAS_SANDBOX_EXEC = shutil.which("sandbox-exec") is not None
-_HAS_BWRAP = shutil.which("bwrap") is not None
+_SANDBOX_CAPABILITY = probe_os_sandbox_capability()
+
+
+def test_sandbox_capability_probe_rejects_present_but_nonfunctional_binary(monkeypatch):
+    monkeypatch.setattr(subprocess_sandbox.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(subprocess_sandbox.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        subprocess_sandbox.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess_sandbox.subprocess.CompletedProcess([], 1, "", "operation denied"),
+    )
+    probe_os_sandbox_capability.cache_clear()
+
+    probe = probe_os_sandbox_capability()
+
+    assert probe.available is False
+    assert probe.provider == "sandbox-exec"
+    assert "operation denied" in probe.reason
+    probe_os_sandbox_capability.cache_clear()
+
+
+def test_sandbox_capability_probe_accepts_successful_real_launch(monkeypatch):
+    monkeypatch.setattr(subprocess_sandbox.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(subprocess_sandbox.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        subprocess_sandbox.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess_sandbox.subprocess.CompletedProcess([], 0, "hive-sandbox-probe-ok\n", ""),
+    )
+    probe_os_sandbox_capability.cache_clear()
+
+    probe = probe_os_sandbox_capability()
+
+    assert probe.available is True
+    assert probe.provider == "sandbox-exec"
+    probe_os_sandbox_capability.cache_clear()
 
 
 # ── Pure writable-root resolution (unconditional) ──────────────────────
@@ -178,7 +212,7 @@ def test_build_without_spec_uses_legacy_full_access(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(not (_HAS_SANDBOX_EXEC or _HAS_BWRAP), reason="no OS sandbox (sandbox-exec/bwrap) available")
+@pytest.mark.skipif(not _SANDBOX_CAPABILITY.available, reason=_SANDBOX_CAPABILITY.reason)
 async def test_read_only_profile_blocks_workspace_write(tmp_path):
     from app.services.code_execution.local_provider import execute_local_sandboxed_command
 
@@ -201,7 +235,7 @@ async def test_read_only_profile_blocks_workspace_write(tmp_path):
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(not (_HAS_SANDBOX_EXEC or _HAS_BWRAP), reason="no OS sandbox (sandbox-exec/bwrap) available")
+@pytest.mark.skipif(not _SANDBOX_CAPABILITY.available, reason=_SANDBOX_CAPABILITY.reason)
 async def test_workspace_write_profile_allows_workspace_write(tmp_path):
     from app.services.code_execution.local_provider import execute_local_sandboxed_command
 

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import os
+import shutil
 import sys
 from pathlib import Path
+import tempfile
 from types import SimpleNamespace
 import uuid
 
@@ -12,6 +15,76 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
+
+
+_HERMETIC_ENV_KEYS = (
+    "HOME",
+    "AGENT_DATA_DIR",
+    "HIVE_TEST_HERMETIC_ROOT",
+    "XDG_CACHE_HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "DOCKER_HOST",
+)
+
+
+def pytest_configure(config):
+    """Pin every test process to a disposable filesystem authority root.
+
+    This hook runs before test-module collection, which matters because several
+    runtime modules resolve ``get_settings()`` into module-level path constants.
+    """
+
+    original_env = {key: os.environ.get(key) for key in _HERMETIC_ENV_KEYS}
+    original_home = Path.home()
+    if not os.environ.get("DOCKER_HOST"):
+        desktop_socket = original_home / ".docker" / "run" / "docker.sock"
+        if desktop_socket.exists():
+            os.environ["DOCKER_HOST"] = f"unix://{desktop_socket}"
+
+    root = Path(tempfile.mkdtemp(prefix="hive-pytest-hermetic-"))
+    home = root / "home"
+    agent_data = root / "agents"
+    for path in (
+        home,
+        agent_data,
+        root / "xdg-cache",
+        root / "xdg-config",
+        root / "xdg-data",
+    ):
+        path.mkdir(parents=True, exist_ok=True)
+
+    os.environ.update(
+        {
+            "HOME": str(home),
+            "AGENT_DATA_DIR": str(agent_data),
+            "HIVE_TEST_HERMETIC_ROOT": str(root),
+            "XDG_CACHE_HOME": str(root / "xdg-cache"),
+            "XDG_CONFIG_HOME": str(root / "xdg-config"),
+            "XDG_DATA_HOME": str(root / "xdg-data"),
+        }
+    )
+    config._hive_hermetic_root = root
+    config._hive_original_env = original_env
+
+    # Defensive for third-party pytest plugins that may have imported config
+    # before collection. Normal runs have no cached instance at this point.
+    config_module = sys.modules.get("app.config")
+    if config_module is not None:
+        config_module.get_settings.cache_clear()
+
+
+def pytest_unconfigure(config):
+    original_env = getattr(config, "_hive_original_env", {})
+    for key in _HERMETIC_ENV_KEYS:
+        value = original_env.get(key)
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+    root = getattr(config, "_hive_hermetic_root", None)
+    if root is not None:
+        shutil.rmtree(root, ignore_errors=True)
 
 
 @pytest.fixture(autouse=True)

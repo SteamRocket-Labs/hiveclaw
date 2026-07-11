@@ -6,6 +6,14 @@ from uuid import uuid4
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _inject_invocation_quota(monkeypatch):
+    async def allow_quota(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr("app.runtime.invoker.check_user_token_quota", allow_quota, raising=False)
+
+
 @pytest.mark.asyncio
 async def test_invoker_emits_setup_before_user_prompt_submit_and_session_start(monkeypatch) -> None:
     from app.runtime.hooks import HookEvent, hook_registry

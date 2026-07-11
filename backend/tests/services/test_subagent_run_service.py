@@ -402,6 +402,7 @@ async def test_kernel_skill_fork_handoff_calls_real_spawn_tool_and_records_child
     from app.runtime.session import SessionContext
     from app.tools.handlers import subagent as subagent_handler
     from app.tools.runtime import ToolExecutionContext, ToolExecutionRequest
+    import app.services.subagent_run_service as subagent_run_service
     import app.services.runtime_task_service as runtime_task_service
 
     tenant_id = uuid.uuid4()
@@ -458,8 +459,15 @@ async def test_kernel_skill_fork_handoff_calls_real_spawn_tool_and_records_child
     monkeypatch.setattr(subagent_handler, "resolve_tenant_for_agent", resolve_tenant)
     monkeypatch.setattr(runtime_task_service, "tenant_scoped_session", scoped_session)
     monkeypatch.setattr(runtime_task_service, "resolve_tenant_for_agent", resolve_tenant)
+    monkeypatch.setattr(subagent_run_service, "tenant_scoped_session", scoped_session)
+    monkeypatch.setattr(subagent_run_service, "resolve_tenant_for_agent", resolve_tenant)
     monkeypatch.setattr(subagent_handler, "memory_store_for_agent", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(subagent_handler, "memory_store_for_tenant", lambda *_args, **_kwargs: None)
+
+    async def no_active_agent_team(_request):
+        return None
+
+    monkeypatch.setattr(subagent_handler, "active_agent_team_contract_from_tool_request", no_active_agent_team)
 
     async def fake_resolve_parent_runtime(_agent_id):
         return (

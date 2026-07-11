@@ -19,8 +19,9 @@ jobs:
       SECRET_KEY: harness-ci-secret
       JWT_SECRET_KEY: harness-ci-jwt-secret
       SECRETS_MASTER_KEY: harness-ci-master-secret
-      AGENT_DATA_DIR: /tmp/hive-agent-data
-      DATABASE_URL: sqlite+aiosqlite:///tmp/hive-ci.db
+      # Unit tests must inject DB/session dependencies. Real PostgreSQL tests
+      # use Testcontainers and override this URL explicitly.
+      DATABASE_URL: postgresql+asyncpg://hive:hive@127.0.0.1:1/hive_ci_no_db
       REDIS_URL: redis://localhost:6379/0
     steps:
       - name: Checkout
@@ -41,10 +42,8 @@ jobs:
       - name: Ruff
         run: ruff check app tests
 
-      - name: Pytest eval and harness suites
-        run: |
-          pytest tests/evals tests/runtime/test_prompt_cache.py tests/runtime/test_prompt_eval.py \
-            tests/services/test_prompt_contracts.py -q
+      - name: Pytest full hermetic suite
+        run: pytest tests -q
 
       - name: Prompt contract eval
         run: python -m app.runtime.prompt_eval --fail-severity=critical,high

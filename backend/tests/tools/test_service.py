@@ -339,7 +339,7 @@ async def test_tool_runtime_service_exports_truth_evidence_to_trace_metadata_sin
 
 
 @pytest.mark.asyncio
-async def test_tool_decision_links_the_durable_approval_ticket():
+async def test_tool_decision_links_the_durable_approval_ticket(monkeypatch):
     from app.tools.governance import ToolGovernanceContext
     from app.tools.runtime import ToolExecutionContext
     from app.tools.service import ToolRuntimeService
@@ -363,6 +363,11 @@ async def test_tool_decision_links_the_durable_approval_ticket():
         inner_context.approval_id = "approval-1"
         return '{"status":"approval_required","approval_id":"approval-1"}'
 
+    def forbidden_database_access(*_args, **_kwargs):
+        raise AssertionError("unit test must inject capability policy instead of opening PostgreSQL")
+
+    monkeypatch.setattr("app.database.tenant_scoped_session", forbidden_database_access)
+
     trace_metadata = {}
     service = ToolRuntimeService(
         runtime_resolver=_FakeRuntimeResolver(context),
@@ -372,6 +377,7 @@ async def test_tool_decision_links_the_durable_approval_ticket():
         governance_runner=require_approval,
         fallback_executor=lambda *_args, **_kwargs: "fallback",
         direct_fallback_executor=lambda *_args, **_kwargs: "direct-fallback",
+        capability_group_policy_loader=lambda _context: {"email_pack": True},
     )
 
     result = await service.execute(

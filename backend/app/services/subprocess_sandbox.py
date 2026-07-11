@@ -26,8 +26,10 @@ from __future__ import annotations
 import os
 import platform
 import shutil
+import subprocess
 import tempfile
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 
 from app.runtime.ccplus_contracts import SandboxProfile
@@ -59,6 +61,13 @@ class AgentSandboxCommand:
     command: list[str] | None
     cleanup_paths: list[Path] = field(default_factory=list)
     error: str | None = None
+
+
+@dataclass(frozen=True)
+class SandboxCapabilityProbe:
+    available: bool
+    provider: str | None
+    reason: str
 
 
 def _allow_unsandboxed_code_exec() -> bool:
@@ -211,3 +220,60 @@ def build_sandboxed_agent_command(
     if _allow_unsandboxed_code_exec():
         return AgentSandboxCommand(command=command)
     return AgentSandboxCommand(command=None, error=_sandbox_unavailable_message(mode))
+
+
+@lru_cache(maxsize=1)
+def probe_os_sandbox_capability() -> SandboxCapabilityProbe:
+    """Prove that the installed OS sandbox can actually launch a process.
+
+    Binary presence is insufficient on hosts that forbid nested Seatbelt/user
+    namespaces. The probe never falls back to a raw command and has no network
+    or write side effect outside its disposable work/home directories.
+    """
+
+    provider: str | None = None
+    builder = None
+    system = platform.system()
+    if system == "Darwin" and shutil.which("sandbox-exec"):
+        provider = "sandbox-exec"
+        builder = _darwin_sandbox_command
+    elif shutil.which("bwrap"):
+        provider = "bubblewrap"
+        builder = _linux_bwrap_command
+    if builder is None:
+        return SandboxCapabilityProbe(False, None, "no OS sandbox binary is installed")
+
+    cleanup_paths: list[Path] = []
+    try:
+        with tempfile.TemporaryDirectory(prefix="hive-sandbox-capability-") as temporary:
+            root = Path(temporary)
+            work = root / "work"
+            home = root / "home"
+            work.mkdir()
+            home.mkdir()
+            command, cleanup_paths = builder(
+                ["/bin/sh", "-c", "printf hive-sandbox-probe-ok"],
+                work_dir=work,
+                home=home,
+                spec=SandboxBuildSpec(profile=SandboxProfile.READ_ONLY),
+            )
+            if not command:
+                return SandboxCapabilityProbe(False, provider, f"{provider} command construction failed")
+            completed = subprocess.run(
+                command,
+                cwd=work,
+                env={**os.environ, "HOME": str(home)},
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            if completed.returncode == 0 and "hive-sandbox-probe-ok" in completed.stdout:
+                return SandboxCapabilityProbe(True, provider, "sandbox launch probe passed")
+            detail = (completed.stderr or completed.stdout or f"exit={completed.returncode}").strip()
+            return SandboxCapabilityProbe(False, provider, f"sandbox launch probe failed: {detail[-500:]}")
+    except (OSError, subprocess.SubprocessError) as exc:
+        return SandboxCapabilityProbe(False, provider, f"sandbox launch probe failed: {exc}")
+    finally:
+        for path in cleanup_paths:
+            path.unlink(missing_ok=True)

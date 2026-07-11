@@ -24,7 +24,7 @@
 - **P1：13 个**。会造成恢复能力、CC parity、自进化、资产统计、实时 UI 或验收可信度不足，不能作为“上线后再补”的债务。
 - **P2：1 个**。是确定的 KISS/维护性残留，应与本轮一起清理。
 
-当前修复进度：**11 / 28**（SA-01 至 SA-11 已按七原子闭环并分别提交）；其余断点未全部关闭前，结论继续保持 NO-GO。
+当前修复进度：**12 / 28**（单 Agent SA-01 至 SA-12 已按七原子闭环并分别提交）；其余断点未全部关闭前，结论继续保持 NO-GO。
 
 这里的“95% 以上信心”指的是：**对当前 checkout 根断点清单完整度的置信度为 95.3%**，不代表系统有 95.3% 的上线成熟度。只要任一 P0 尚存，上线结论就是 NO-GO。
 
@@ -95,7 +95,7 @@ Codex 的 PermissionProfile、thread identity、sandbox policy 和 approval even
 | SA-09 | Frozen prompt cache 依赖签名不完整 | P1 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | SA-10 | 智能上下文机械截断无恢复指针 | P1 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | SA-11 | Local Bridge receipt 文件并发丢写 | P1 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| SA-12 | 全量测试入口不 hermetic | P1 | 断点 | ✓ | ✓ | △ | △ | ✗ | △ | ✗ |
+| SA-12 | 全量测试入口不 hermetic | P1 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | HN-01 | Personal KB 浏览器继承 Agent owner 权威 | P0 | 断点 | ✓ | ✗ | △ | △ | △ | ✗ | △ |
 | HN-02 | Memory/Skill 原生资产缺统一事务锁 | P0 | 断点 | ✓ | ✓ | ✗ | △ | ✗ | △ | △ |
 | HN-03 | A2A REST 丢 requester 且 consult 假成功 | P0 | 断点 | △ | ✗ | △ | ✗ | △ | ✗ | △ |
@@ -238,6 +238,8 @@ Task logs 在 `backend/app/api/tasks.py:181-207` 只按 task_id 查写，没有�
 关闭方式：SQLite/WAL 或带 flock 的 append-only receipt ledger；唯一 replay_key、fsync、corruption quarantine、并发与 crash 测试。
 
 ### SA-12：全量测试命令不是 hermetic 机械事实源 — P1
+
+**修复状态（2026-07-11）**：**闭环**。Root `tests/conftest.py` 现在在 test-module collection 前建立进程级 disposable authority root，并强制重定向 `HOME/AGENT_DATA_DIR/XDG_*`；macOS Docker socket 在 HOME 切换前解析并保留，因此 hermetic filesystem 与真实 Testcontainers 可并存。真实 sandbox behavior mark 不再检查二进制是否存在，而是运行无网络/无外部写的 launch probe；宿主禁止 nested Seatbelt/user namespace 时稳定 skip。所有本轮暴露的 unit/integration hidden DB dependencies 已显式注入：approval test 的 email capability policy、hook tests 的 quota、subagent skill-fork 的 team/session services。GitHub Harness CI 不再跑子集或用伪 SQLite RLS 环境，而是在不可达 PostgreSQL sentinel 下执行唯一 `pytest tests -q`；需要数据库的测试只能显式进入 Testcontainers。`aiosqlite` 已从生产依赖移至 dev-only。
 
 默认 `pytest tests -q` 会写 `~/.hive/data/agents`；在受限环境中产生 116 个失败。显式设置可写 `AGENT_DATA_DIR` 后收敛为 3 个失败，其中 2 个是当前宿主禁止嵌套 `sandbox-exec`，1 个是 `tests/tools/test_service.py::test_tool_decision_links_the_durable_approval_ticket` 没有注入 capability policy loader，意外连接 PostgreSQL。
 
@@ -1345,3 +1347,74 @@ pytest tests -q
 ```
 
 结果：`6318 passed, 1 skipped, 5 warnings in 146.73s`，零失败。SA-11 只修改 Local Bridge 本地持久层/协议客户端，不新增 backend schema migration。
+
+### SA-12 — Hermetic Full-Suite 机械事实闭环
+
+状态：**闭环**。提交主题：`fix(SA-12): make the full test suite hermetic`。
+
+七原子证据：
+
+1. **输入**：开发者与 CI 使用同一条 `cd backend && pytest tests -q`；`.github/workflows/harness-ci.yml` 的反漂移测试要求该完整命令存在，不再把 eval/prompt 子集冒充全量。
+2. **权威**：`pytest_configure` 在 collection 前创建唯一临时 root，并把 `HOME/AGENT_DATA_DIR/XDG_CACHE_HOME/XDG_CONFIG_HOME/XDG_DATA_HOME` 全部绑定进去；session 结束恢复原 env并清理。真实 PG 权威只来自显式 Testcontainers fixture，普通测试的默认 DB 是不可达 PostgreSQL sentinel。
+3. **执行**：模块级 `get_settings()`/workspace constants在 hermetic env 建立后才加载；approval、quota、Agent Team/child-session等单测依赖全部通过 DI/monkeypatch 明确给出，未注入 DB 会立即 connection-refused，而不是借用开发机数据库。Sandbox behavior test只在真实 launch probe成功后执行。
+4. **证据**：`HIVE_TEST_HERMETIC_ROOT` 及两个 contract tests证明 HOME/Agent data 均位于临时 root；sandbox probe返回 provider/available/reason；CI workflow本身由 architecture test消费；full-suite terminal summary是唯一完成证据。
+5. **恢复**：每个 pytest process独立创建/删除 root，不复用上次运行状态；Docker socket在 HOME 重定向前解析，避免失去真实 integration fixture。sandbox installed-but-blocked稳定 skip，不因宿主策略产生随机红灯；测试失败不污染 `~/.hive`。
+6. **消费**：所有使用 `get_settings().AGENT_DATA_DIR`、`Path.home()` 或 module-level workspace root 的生产测试路径自动消费 hermetic env；GitHub PR/main gate真实消费全量命令。`aiosqlite` 只保留给显式 SQLite dev tests，不再进入 PostgreSQL/RLS生产依赖。
+7. **验收**：覆盖 temp HOME/Agent root、cached settings、CI command、sandbox present-but-denied/success probe、DB-forbidden approval test、quota injection、Agent Team/child-session injection、不可写 host paths、SQLite CI反例、不可达 PostgreSQL sentinel终态、Ruff、Alembic single-head与全量 backend。
+
+KISS/奥卡姆证据：一个 pytest lifecycle hook替代数百个测试逐一设置 path；一个真实 sandbox probe替代两套“binary exists”猜测；CI只保留一个全量 pytest命令。没有为测试引入第二 Settings、fake RLS database或 custom runner。
+
+RED 证据：
+
+```text
+初始新增契约：
+- hermetic env 2 failed（HIVE_TEST_HERMETIC_ROOT / AGENT_DATA_DIR 不存在）
+- sandbox probe collection error（无真实 capability probe）
+- approval test 1 failed（触碰被禁止的 tenant_scoped_session）
+
+第一次 CI SQLite 全量：3 failed / 6320 passed
+- 2 个 hook tests 漏注入 token quota
+- 1 个 subagent skill-fork test 漏注入 active Team/child-session DB
+
+PostgreSQL sentinel 首轮：1 failed / 6322 passed
+- 旧 architecture test仍要求 CI 使用 SQLite
+```
+
+GREEN 证据：
+
+```bash
+cd backend
+HOME=/dev/null \
+AGENT_DATA_DIR=/dev/null/hive-agents \
+XDG_CACHE_HOME=/dev/null \
+XDG_CONFIG_HOME=/dev/null \
+XDG_DATA_HOME=/dev/null \
+.venv/bin/pytest tests -q
+```
+
+结果：`6322 passed, 1 skipped, 5 warnings in 145.28s`；证明 suite 自己覆盖不可写 host paths。
+
+CI 等价最终门禁：
+
+```bash
+cd backend
+SECRET_KEY=harness-ci-secret \
+JWT_SECRET_KEY=harness-ci-jwt-secret \
+SECRETS_MASTER_KEY=harness-ci-master-secret \
+DATABASE_URL=postgresql+asyncpg://hive:hive@127.0.0.1:1/hive_ci_no_db \
+REDIS_URL=redis://localhost:6379/0 \
+HOME=/dev/null \
+.venv/bin/pytest tests -q
+```
+
+结果：`6323 passed, 1 skipped, 5 warnings in 137.76s`，零失败；显式 Testcontainers tests仍通过，任何非注入全局 DB访问都会 fail-fast。
+
+```bash
+cd backend
+source .venv/bin/activate
+ruff check <SA-12 当前变更 Python 文件>
+ruff format --check <SA-12 当前变更 Python 文件>
+alembic heads
+```
+
+结果：Ruff lint/format 全绿；Alembic 单 head：`channel_delivery_outbox_0711 (head)`。SA-12 不新增 schema migration。

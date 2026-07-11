@@ -33,13 +33,15 @@ def test_docker_compose_forwards_debug_and_secrets_master_key() -> None:
     assert "SECRETS_MASTER_KEY: ${SECRETS_MASTER_KEY:-}" in backend_block
 
 
-def test_harness_ci_sqlite_driver_is_declared() -> None:
-    """Harness CI imports app.database with sqlite+aiosqlite, so the driver must
-    be present in the default backend install rather than only in local venvs."""
+def test_harness_ci_uses_fail_fast_postgres_and_keeps_sqlite_test_only() -> None:
+    """Unit tests inject sessions; real DB tests provision PostgreSQL explicitly."""
 
     workflow = _read(".github/workflows/harness-ci.yml")
-    assert "sqlite+aiosqlite" in workflow
+    assert "postgresql+asyncpg://hive:hive@127.0.0.1:1/hive_ci_no_db" in workflow
+    assert "sqlite+aiosqlite" not in workflow
 
     pyproject = tomllib.loads(_read("backend/pyproject.toml"))
     dependencies = pyproject["project"]["dependencies"]
-    assert any(dependency.split(">=", 1)[0] == "aiosqlite" for dependency in dependencies)
+    dev_dependencies = pyproject["project"]["optional-dependencies"]["dev"]
+    assert not any(dependency.split(">=", 1)[0] == "aiosqlite" for dependency in dependencies)
+    assert any(dependency.split(">=", 1)[0] == "aiosqlite" for dependency in dev_dependencies)

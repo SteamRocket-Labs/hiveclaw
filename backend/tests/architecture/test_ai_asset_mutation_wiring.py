@@ -21,7 +21,7 @@ def test_every_agent_constructor_path_registers_control_plane_asset() -> None:
         ("app.services.local_bridge_service", "ensure_default_local_agent_for_pairing"),
         ("app.services.auto_provision", "ensure_main_agent"),
         ("app.api.agents", "get_or_create_hr_agent"),
-        ("app.tools.handlers.hr", "create_digital_employee"),
+        ("app.services.hr_provisioning_runner", "run_hr_provisioning"),
         ("app.api.desktop_agents", "create_sub_agent"),
     )
     for module_name, function_name in constructors:
@@ -73,7 +73,7 @@ def test_auto_evolved_subagent_definition_registers_asset_revision() -> None:
 
 
 def test_auto_evolved_workspace_skill_registers_asset_revision() -> None:
-    source = _source("app.services.skill_distiller", "run_skill_distillation_cycle")
+    source = _source("app.services.skill_distillation_runner", "run_skill_distillation")
     assert "_commit_skill_with_asset_revision" in source
     helper = _source("app.services.skill_distiller", "_commit_skill_with_asset_revision")
     assert "register_evolved_workspace_skill_asset" in helper
@@ -89,7 +89,7 @@ def test_native_runtime_consumers_record_ai_asset_usage_evidence() -> None:
     tool_usage_source = inspect.getsource(ToolRuntimeService._record_resolved_asset_usage_for_tool)
     assert "record_tool_asset_usage" in tool_usage_source
     assert "arguments.get" not in tool_usage_source
-    assert "resolve_tool_asset_refs" in inspect.getsource(ToolRuntimeService.execute)
+    assert "resolve_tool_asset_refs" in _source("app.tools.execution_pipeline", "run_tool_execution")
     assert "record_asset_usage" not in inspect.getsource(WorkflowDefinitionService.resolve_for_execution)
     assert "asset_ref" in inspect.getsource(WorkflowDefinitionService.resolve_for_execution)
     assert "record_asset_usage" not in _source(

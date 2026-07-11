@@ -809,9 +809,9 @@ async def test_hr_soul_refinement_model_falls_back_when_hr_model_is_unavailable(
 
 
 def test_create_digital_employee_uses_validated_model_resolution() -> None:
-    from app.tools.handlers import hr
+    from app.services.hr_provisioning_runner import run_hr_provisioning
 
-    src = inspect.getsource(hr.create_digital_employee)
+    src = inspect.getsource(run_hr_provisioning)
 
     assert "_resolve_employee_creation_model" in src
     assert "_resolve_employee_refinement_model" in src
@@ -820,9 +820,9 @@ def test_create_digital_employee_uses_validated_model_resolution() -> None:
 
 
 def test_create_digital_employee_uses_audited_identity_bootstrap_bypass() -> None:
-    from app.tools.handlers import hr
+    from app.services.hr_provisioning_runner import run_hr_provisioning
 
-    src = inspect.getsource(hr.create_digital_employee)
+    src = inspect.getsource(run_hr_provisioning)
 
     assert "rls_bypass_reason=" in src
     assert "HR digital employee identity bootstrap" in src
@@ -830,9 +830,9 @@ def test_create_digital_employee_uses_audited_identity_bootstrap_bypass() -> Non
 
 
 def test_create_digital_employee_has_no_agent_row_equals_ready_recovery_bypass() -> None:
-    from app.tools.handlers import hr
+    from app.services.hr_provisioning_runner import run_hr_provisioning
 
-    src = inspect.getsource(hr.create_digital_employee)
+    src = inspect.getsource(run_hr_provisioning)
 
     assert "ensure_hr_provisioning_steps" in src
     assert "derive_hr_provisioning_readiness" in src

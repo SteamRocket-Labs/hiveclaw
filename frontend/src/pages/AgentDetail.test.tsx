@@ -124,33 +124,34 @@ describe('AgentDetail session permission state', () => {
 
 describe('AgentDetail realtime refresh contract', () => {
   it('refreshes durable session history after terminal websocket events', async () => {
-    const source = await readSource('./AgentDetail.tsx');
+    const source = await readSource('./agent-detail/sessionSocketEventProjector.ts');
 
     expect(source).toContain('isTerminalRealtimeChatEvent');
     expect(source).toContain('applyTranscriptToSession(agentId, sessionId, transcriptEvent, isActiveRuntime)');
     expect(source).toContain('if (isActiveRuntime && isTerminalRealtimeChatEvent(transcriptEvent))');
-    expect(source).toContain('void selectSession(sess)');
+    expect(source).toContain('void selectSession(session)');
   });
 
   it('keeps the initial transcript read window slim', async () => {
-    const source = await readSource('./AgentDetail.tsx');
+    const source = await readSource('./agent-detail/agentDetailPolicy.ts');
 
-    expect(source).toContain('const TRANSCRIPT_INITIAL_WINDOW = 25;');
-    expect(source).toContain('const TRANSCRIPT_OLDER_PAGE = 50;');
+    expect(source).toContain('export const TRANSCRIPT_INITIAL_WINDOW = 25;');
+    expect(source).toContain('export const TRANSCRIPT_OLDER_PAGE = 50;');
   });
 
   it('never gives up transient reconnects and recovers missed durable transcript events', async () => {
-    const source = await readSource('./AgentDetail.tsx');
+    const source = await readSource('./agent-detail/useSessionTransportController.ts');
+    const pageSource = await readSource('./AgentDetail.tsx');
 
     expect(source).not.toContain('attempts >= 20');
     expect(source).not.toContain('Giving up reconnect');
     expect(source).toContain('reconnectDelayMs(previousAttempts)');
-    expect(source).toContain("window.addEventListener('online', handleOnline)");
+    expect(source).toContain("window.addEventListener('online', wake)");
     expect(source).toContain("window.addEventListener('offline', handleOffline)");
     expect(source).toContain("document.addEventListener('visibilitychange', handleVisibility)");
     expect(source).toContain('transportPollIntervalMs(');
-    expect(source).toContain('await backfillSessionTranscript(activeSession, id)');
-    expect(source).toContain('onReconnectTransport={reconnectActiveTransport}');
+    expect(source).toContain('await optionsRef.current.callbacks.onBackfill(activeSession, agentId)');
+    expect(pageSource).toContain('onReconnectTransport={reconnectActiveTransport}');
   });
 });
 

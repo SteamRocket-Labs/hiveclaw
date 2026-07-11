@@ -33,7 +33,7 @@ def test_self_evolution_validation_contract_exists() -> None:
 
 
 def test_skill_distiller_promotion_records_evolution_ledger() -> None:
-    source = (APP_ROOT / "services" / "skill_distiller.py").read_text(encoding="utf-8")
+    source = (APP_ROOT / "services" / "skill_distillation_runner.py").read_text(encoding="utf-8")
 
     assert "record_evolution_candidate" in source
     assert "record_verification_eval" in source

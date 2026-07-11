@@ -30,7 +30,9 @@ APP_ROOT = BACKEND_ROOT / "app"
 API_ROOT = APP_ROOT / "api"
 
 INVOKER_PATH = APP_ROOT / "runtime" / "invoker.py"
+INVOCATION_OWNER_PATH = APP_ROOT / "runtime" / "invocation_orchestrator.py"
 SERVICE_PATH = APP_ROOT / "tools" / "service.py"
+TOOL_EXECUTION_OWNER_PATH = APP_ROOT / "tools" / "execution_pipeline.py"
 AGENT_TOOLS_PATH = APP_ROOT / "services" / "agent_tools.py"
 GOVERNANCE_PATH = APP_ROOT / "tools" / "governance.py"
 
@@ -76,10 +78,10 @@ def test_no_bypass_kernel_is_instantiated_in_exactly_one_module() -> None:
     )
 
 
-def test_no_bypass_kernel_handle_called_only_from_invoker() -> None:
+def test_no_bypass_kernel_handle_called_only_from_invocation_owner() -> None:
     """``.handle(`` on the kernel may be called from exactly one site.
 
-    The invoker funnels every entry point into a single
+    The invoker facade funnels every entry point into a single owner-side
     ``_resolve_kernel_for_request(request).handle(kernel_request)`` call. A
     second ``.handle(`` call somewhere else would mean an entry point drives the
     kernel directly. We scan every app file (excluding the invoker itself) and
@@ -87,7 +89,7 @@ def test_no_bypass_kernel_handle_called_only_from_invoker() -> None:
     """
     offenders: list[str] = []
     for path in _iter_app_python_files():
-        if path == INVOKER_PATH:
+        if path == INVOCATION_OWNER_PATH:
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         if "handle" in _attr_call_names(tree):
@@ -96,18 +98,22 @@ def test_no_bypass_kernel_handle_called_only_from_invoker() -> None:
                     offenders.append(f"{path.relative_to(BACKEND_ROOT)}:{node.lineno}")
 
     assert not offenders, (
-        f"Only the invoker may call kernel.handle(); a direct .handle() call elsewhere is a kernel bypass: {offenders}"
+        "Only the invocation owner may call kernel.handle(); "
+        f"a direct .handle() call elsewhere is a kernel bypass: {offenders}"
     )
 
-    # And inside the invoker the handle call is wired to the kernel resolver,
+    # And inside the owner the handle call is wired to the kernel resolver,
     # not to some other object — the single funnel really runs the kernel.
-    invoker_tree = ast.parse(INVOKER_PATH.read_text(encoding="utf-8"), filename=str(INVOKER_PATH))
+    invoker_tree = ast.parse(
+        INVOCATION_OWNER_PATH.read_text(encoding="utf-8"),
+        filename=str(INVOCATION_OWNER_PATH),
+    )
     handle_calls = [
         node
         for node in ast.walk(invoker_tree)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "handle"
     ]
-    assert len(handle_calls) == 1, "invoker must contain exactly one kernel.handle() call"
+    assert len(handle_calls) == 1, "invocation owner must contain exactly one kernel.handle() call"
     funnel_call = handle_calls[0]
     assert (
         isinstance(funnel_call.func.value, ast.Call)
@@ -170,9 +176,12 @@ def test_no_bypass_governed_execute_runs_governance_before_any_executor() -> Non
     executor). A refactor that moved execution ahead of the governance gate, or
     dropped the governance call, fails this guard.
     """
-    tree = ast.parse(SERVICE_PATH.read_text(encoding="utf-8"), filename=str(SERVICE_PATH))
+    tree = ast.parse(
+        TOOL_EXECUTION_OWNER_PATH.read_text(encoding="utf-8"),
+        filename=str(TOOL_EXECUTION_OWNER_PATH),
+    )
     execute_fn = next(
-        node for node in ast.walk(tree) if isinstance(node, ast.AsyncFunctionDef) and node.name == "execute"
+        node for node in ast.walk(tree) if isinstance(node, ast.AsyncFunctionDef) and node.name == "run_tool_execution"
     )
 
     governance_line: int | None = None

@@ -17,7 +17,9 @@ def test_session_key_contract_exists() -> None:
 
 
 def test_invoker_normalizes_session_key_for_all_entrypoints() -> None:
-    source = (APP_ROOT / "runtime" / "invoker.py").read_text(encoding="utf-8")
+    facade = (APP_ROOT / "runtime" / "invoker.py").read_text(encoding="utf-8")
+    source = (APP_ROOT / "runtime" / "invocation_orchestrator.py").read_text(encoding="utf-8")
 
-    assert "ensure_session_key" in source
+    assert "run_agent_invocation" in facade
+    assert "ensure_session_key" in facade
     assert "_normalize_invocation_session_context(request)" in source

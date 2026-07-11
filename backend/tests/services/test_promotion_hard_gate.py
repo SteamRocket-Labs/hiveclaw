@@ -147,7 +147,7 @@ def test_provisional_gate_enters_trial_for_skill_candidate_with_passed_artifact_
 
 
 def test_skill_distiller_real_promotion_paths_use_provisional_gate() -> None:
-    source = (Path(__file__).resolve().parents[2] / "app" / "services" / "skill_distiller.py").read_text(
+    source = (Path(__file__).resolve().parents[2] / "app" / "services" / "skill_distillation_runner.py").read_text(
         encoding="utf-8"
     )
 

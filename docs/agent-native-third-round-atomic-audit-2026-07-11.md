@@ -24,7 +24,7 @@
 - **P1：13 个**。会造成恢复能力、CC parity、自进化、资产统计、实时 UI 或验收可信度不足，不能作为“上线后再补”的债务。
 - **P2：1 个**。是确定的 KISS/维护性残留，应与本轮一起清理。
 
-当前修复进度：**26 / 28**（单 Agent SA-01 至 SA-12、Hive Native HN-01 至 HN-07、公司治理 GOV-01 至 GOV-04、用户体验 UX-01 至 UX-03 已按七原子闭环并分别提交）；其余断点未全部关闭前，结论继续保持 NO-GO。
+当前修复进度：**27 / 28**（单 Agent SA-01 至 SA-12、Hive Native HN-01 至 HN-07、公司治理 GOV-01 至 GOV-04、用户体验 UX-01 至 UX-04 已按七原子闭环并分别提交）；其余断点未全部关闭前，结论继续保持 NO-GO。
 
 这里的“95% 以上信心”指的是：**对当前 checkout 根断点清单完整度的置信度为 96.6%**，不代表系统有 96.6% 的上线成熟度。任一断点尚存，上线结论仍是 NO-GO。
 
@@ -110,7 +110,7 @@ Codex 的 PermissionProfile、thread identity、sandbox policy 和 approval even
 | UX-01 | 普通用户直接看到运行时/治理原始字段 | P1 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | UX-02 | WebSocket 20 次后永久放弃且无恢复入口 | P1 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | UX-03 | 当前 UI 无新鲜像素基线与 CI gate | P1 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| UX-04 | 核心运行时/前端巨型模块维持多责任 | P1 | 局部闭环 | ✓ | △ | △ | △ | ✗ | △ | △ |
+| UX-04 | 核心运行时/前端巨型模块维持多责任 | P1 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | UX-05 | Sidebar pin/search 状态已无消费方 | P2 | 断点 | ✓ | ✓ | ✗ | ✗ | ✓ | ✗ | ✗ |
 
 ## 4. 第一块：单 Agent
@@ -423,7 +423,22 @@ RLS 基础设施本身不是本轮主断点：`backend/app/database.py` 已有 t
 
 ### UX-04：代码层还没有达到 KISS/奥卡姆目标 — P1
 
-当前高风险热点：
+**修复状态（2026-07-11）**：**闭环**。六个后端高风险入口保留公共签名作为薄 facade，每条生命周期只有一个命名的 orchestration owner；owner 通过每次调用的显式 dependency snapshot 消费原模块能力，不复制 globals、不回调 facade、不新增执行旁路。前端把 policy、transport、socket event projection、lineage、artifact、runtime panel 和 structured tool result 分成显式组合边界；`AgentDetail` 只保留页面编排，`AgentChatSection` 只组合会话表面。
+
+修复后边界：
+
+| 公共入口 | 唯一 owner | facade / owner 行数 |
+|---|---|---:|
+| `AgentKernel.handle` | `run_agent_turn` | 3435 / 2514 |
+| `execute_web_chat_run` | `run_web_chat_task` | 4147 / 921 |
+| `ToolRuntimeService.execute` | `run_tool_execution` | 1673 / 663 |
+| `invoke_agent` | `run_agent_invocation` | 1301 / 374 |
+| `create_digital_employee` | `run_hr_provisioning` | 1708 / 1210 |
+| `run_skill_distillation_cycle` | `run_skill_distillation` | 1777 / 903 |
+| `AgentDetail` | policy + transport + event projection | 2855 / 307 + 377 + 238 |
+| `AgentChatSection` | lineage + artifact + runtime + tool result | 2349 / 549 + 357 + 1037 + 445 |
+
+修复前高风险热点：
 
 | 文件 | 行数 |
 |---|---:|
@@ -2425,3 +2440,76 @@ AGENT_BROWSER_SESSION=hive-ux03 agent-browser snapshot -i
 ```
 
 结果：真实dev server打开`HiveClaw`，登录入口、语言/登录/注册控件可访问，`.vite-error-overlay=false`；browser session随后正常关闭。
+
+### UX-04 — 单一编排 owner 与前端显式组合边界
+
+状态：**闭环**。提交主题：`fix(UX-04): split orchestration and frontend composition owners`。
+
+七原子证据：
+
+1. **输入**：`AgentKernel.handle`、`execute_web_chat_run`、`ToolRuntimeService.execute`、`invoke_agent`、`create_digital_employee`和`run_skill_distillation_cycle`的公共签名与调用方保持不变；前端route、Session props、typed thread item与artifact输入保持不变。拆分是内部边界变更，不要求上游复制或重建请求。
+2. **权威**：六个owner每次调用绑定facade的显式dependency snapshot，tenant/principal/Plan/Approval/Tool governance判定仍由原权威函数完成；无`import *`、`globals().update`、`exec`或owner回调facade。普通用户与Operator projection边界不因UI拆分改变。
+3. **执行**：公共入口都是不超过60行的单跳转facade，分别进入唯一命名owner；AST gate证明owner不反向调入口、kernel仍只有一个`.handle()`调用点、tool governance仍严格先于executor。前端WebSocket创建、退避、keepalive、offline/visibility恢复只在`useSessionTransportController`；socket event到transcript/run/UI的投影只在`sessionSocketEventProjector`。
+4. **证据**：后端owner保留原`RuntimeTask`、transcript、span、audit、HR provisioning receipt、Skill evolution ledger与AI asset usage写入；静态契约测试已跟随实现owner，不再对facade做假阳性字符串扫描。前端仍以durable transcript sequence为恢复事实，socket只是低延迟信号。
+5. **恢复**：web chat restart/resume、HR claim/lease/step recovery、Skill provisional/rollback、tool approval resume的原状态机完整迁移。transport owner保留无限有上限退避、online/visibility唤醒、degraded polling、manual reconnect、auth fail-closed和unmount cleanup；event projector对background terminal连接只在完成状态投影后关闭。
+6. **消费**：原入口调用方实际消费新owner；AI asset、evolution ledger、session key和no-bypass契约也改为读取owner。`AgentDetail`实际import policy/transport/event projection，`AgentChatSection`实际import lineage/artifact/runtime/tool-result并渲染原产品surface，不是无消费的新文件。
+7. **验收**：后端AST架构门禁覆盖薄facade、owner数量、行数预算、无动态namespace和kernel纯度；前端门禁覆盖页面/chat行数、必须import的组合边界和owner行数上限。socket projector的terminal transcript、background close和auth expiry有行为测试。后端全量、前端全量、TypeScript production build与Ruff全部通过。
+
+KISS/奥卡姆证据：没有引入新framework、状态库、event store或执行层；公共facade仅保留稳定API与可测试helper，lifecycle只有一个owner。`AgentDetail` 从3247行降到2855行，`AgentChatSection`从4638行降到2349行；拆出模块都有上限预算，禁止把整个旧monolith换名搬走。后端dependency是逐名显式绑定，不使用隐式namespace copy，保留现有monkeypatch/DI语义而不创建第二份配置。
+
+RED证据：
+
+```text
+后端架构门禁首次：3 failed
+- 六个命名orchestration owner均不存在，高风险入口仍自行拥有整个生命周期
+
+前端架构门禁首次：3 failed
+- policy、transport、lineage、artifact、runtime、tool-result owner不存在
+- AgentDetail和AgentChatSection均超出上限
+
+首次backend全量：8 failed / 6443 passed / 1 skipped
+- 8条失败全部是旧架构测试仍扫描facade函数体
+- 测试改为检查当前owner后36条相关契约全绿，再跑全量零失败
+```
+
+GREEN证据：
+
+```bash
+cd backend
+source .venv/bin/activate
+pytest -q \
+  tests/architecture/test_ux04_orchestration_boundaries.py \
+  tests/kernel tests/runtime/test_invoker.py tests/runtime/test_invoker_cc_hooks.py \
+  tests/services/test_web_chat_runtime.py tests/services/test_skill_distiller.py \
+  tests/services/test_skill_distillation_stages.py \
+  tests/services/test_skill_distiller_asset_revision.py \
+  tests/services/test_skill_distiller_audit.py \
+  tests/tools/test_service.py tests/tools/test_hr_handler.py
+```
+
+结果：`524 passed, 4 warnings in 5.72s`。
+
+```bash
+cd backend
+source .venv/bin/activate
+pytest tests -q
+```
+
+结果：`6451 passed, 1 skipped, 5 warnings in 153.14s`，零失败。
+
+```bash
+cd frontend
+npm test -- --run
+npm run build
+```
+
+结果：`107 test files / 616 tests passed`；TypeScript + Vite production build exit 0，`7082 modules transformed`。
+
+```bash
+cd backend
+source .venv/bin/activate
+ruff check <UX-04 changed Python files>
+ruff format --check <UX-04 changed Python files>
+```
+
+结果：Ruff lint全绿，19个Python文件格式检查通过；`git diff --check`无空白错误。

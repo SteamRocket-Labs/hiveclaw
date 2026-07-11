@@ -125,6 +125,43 @@ function displayableSideEffects(value: unknown): DisplaySideEffect[] {
   });
 }
 
+interface DisplayAuthorizationScope {
+  label: string;
+  singleUse: boolean;
+}
+
+const ACTION_KIND_LABELS: Record<string, string> = {
+  create_enabled_trigger: 'Create and enable an automation',
+  continue_plan_session: 'Continue execution in this session',
+  start_delegation: 'Delegate work to another agent',
+  start_agent_team: 'Start an agent team',
+  start_long_task: 'Start a background task',
+  start_workflow: 'Start the approved workflow',
+};
+
+const HANDOFF_TARGET_LABELS: Record<string, string> = {
+  scheduled_trigger: 'Create and enable the schedule described above',
+  detached_runtime_task: 'Start the approved task in the background',
+  continue_current_session: 'Continue this plan in the current session',
+  long_task: 'Continue this plan in the current session',
+  delegation: 'Delegate the work described above to another agent',
+  agent_team: 'Start the agent team described above',
+  workflow: 'Start the workflow described above',
+};
+
+function displayableAuthorizationScopes(value: unknown): DisplayAuthorizationScope[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((scope) => {
+    if (!scope || typeof scope !== 'object' || Array.isArray(scope)) return [];
+    const record = scope as Record<string, unknown>;
+    const actionKind = stringValue(record.action_kind);
+    const summary = stringValue(record.summary);
+    const label = summary || ACTION_KIND_LABELS[actionKind];
+    if (!label) return [];
+    return [{ label, singleUse: Number(record.max_uses ?? 1) === 1 }];
+  });
+}
+
 type PlanConfirmationApi = Pick<typeof planApi, 'confirmAndHandoff'>;
 
 export async function confirmAndHandoffPlan(
@@ -159,6 +196,13 @@ export default function PlanCard({ agentId, plan, onChanged, dense = false }: Pl
   const steps = Array.isArray(planJson.steps) ? planJson.steps : [];
   const successCriteria = Array.isArray(planJson.success_criteria) ? planJson.success_criteria : [];
   const sideEffects = displayableSideEffects(planJson.external_side_effects);
+  const explicitAuthorizationScopes = displayableAuthorizationScopes(planJson.authorization_scopes);
+  const handoffTarget = stringValue(planJson.handoff?.target);
+  const authorizationScopes = explicitAuthorizationScopes.length
+    ? explicitAuthorizationScopes
+    : HANDOFF_TARGET_LABELS[handoffTarget]
+      ? [{ label: HANDOFF_TARGET_LABELS[handoffTarget], singleUse: true }]
+      : [];
   const stopConditions = Array.isArray(planJson.stop_conditions) ? planJson.stop_conditions : [];
   const assumptions = Array.isArray(planJson.assumptions) ? planJson.assumptions : [];
   const openQuestions = Array.isArray(planJson.open_questions) ? planJson.open_questions : [];
@@ -314,6 +358,22 @@ export default function PlanCard({ agentId, plan, onChanged, dense = false }: Pl
                 {effect.label}
                 {effect.requiresConfirmation && (
                   <span className="plan-card-warn-inline"> — {t('agent.plan.requiresConfirmation', 'requires confirmation')}</span>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {authorizationScopes.length > 0 && (
+        <div>
+          <div className="plan-card-label">{t('agent.plan.approvedActions', 'Approved actions')}</div>
+          <ul className="plan-card-list">
+            {authorizationScopes.map((scope, index) => (
+              <li key={`${scope.label}-${index}`} className="plan-card-item">
+                {scope.label}
+                {scope.singleUse && (
+                  <span className="plan-card-warn-inline"> — {t('agent.plan.singleUse', 'single use')}</span>
                 )}
               </li>
             ))}

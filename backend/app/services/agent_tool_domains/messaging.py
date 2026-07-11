@@ -1317,6 +1317,10 @@ async def _delegate_to_agent_async(from_agent_id: uuid.UUID, args: dict) -> str:
             confirmed_plan_id=args.get("confirmed_plan_id"),
             confirmed_plan_version=args.get("confirmed_plan_version"),
             confirmed_plan_hash=args.get("confirmed_plan_hash"),
+            confirmed_plan_session_id=args.get("confirmed_plan_session_id"),
+            plan_authorization=(
+                dict(args.get("plan_authorization") or args.get("_plan_authorization") or {}) or None
+            ),
             ledger_todo_id=str(args.get("ledger_todo_id") or "").strip() or None,
             permission_profile=args.get("_permission_profile"),
             target_artifact_path=str(args.get("target_artifact_path") or "").strip() or None,

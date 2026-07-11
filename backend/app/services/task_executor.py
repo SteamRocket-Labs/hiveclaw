@@ -20,6 +20,10 @@ from app.runtime.invoker import AgentInvocationRequest, invoke_agent
 from app.runtime.session import SessionContext
 from app.services.agent_identity_lifecycle import get_agent_lifecycle_block_reason
 from app.services.chat_transcript import AppendSessionEventResult, append_session_event
+from app.services.plan_authorization_lease import (
+    PlanAuthorizationLeaseError,
+    verify_consumed_plan_authorization_lease,
+)
 from app.services.tenant_resolver import resolve_tenant_for_agent
 
 
@@ -263,7 +267,13 @@ def _seal_task_t0_segment(
         logger.debug("[TaskExec] T0 seal skipped for task {}: {}", task_id, exc)
 
 
-async def _task_plan_gate_allows(db, *, task: Task, agent_id: uuid.UUID) -> tuple[bool, str | None]:
+async def _task_plan_gate_allows(
+    db,
+    *,
+    task: Task,
+    agent_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+) -> tuple[bool, str | None]:
     """Final Plan Mode backstop for background task execution.
 
     REST/tool entrypoints gate before creating/running todo tasks, but
@@ -274,19 +284,23 @@ async def _task_plan_gate_allows(db, *, task: Task, agent_id: uuid.UUID) -> tupl
     if str(getattr(task, "type", "todo") or "todo").strip() != "todo":
         return True, None
 
-    from app.services.plan_mode_gate import get_plan_mode_gate
-
-    gate = get_plan_mode_gate()
-    decision = await gate.check(
-        db,
-        agent_id=agent_id,
-        action_kind="start_long_task",
-        confirmed_plan_id=getattr(task, "plan_id", None),
-        plan_version=getattr(task, "plan_version", None),
-        plan_hash=getattr(task, "plan_hash", None),
-        action_artifact={"metadata": {"plan_exempt_reason": getattr(task, "plan_exempt_reason", None)}},
-    )
-    return decision.allowed, decision.reason
+    if str(getattr(task, "plan_exempt_reason", "") or "").strip():
+        return True, "plan_exempt"
+    plan_id = getattr(task, "plan_id", None)
+    evidence = getattr(task, "plan_authorization", None)
+    if plan_id is None or not isinstance(evidence, dict):
+        return False, "plan_authorization_evidence_missing"
+    try:
+        await verify_consumed_plan_authorization_lease(
+            db=db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            plan_id=plan_id,
+            evidence=evidence,
+        )
+    except PlanAuthorizationLeaseError as exc:
+        return False, f"plan_authorization_{exc.code}"
+    return True, "confirmed_plan_lease_verified"
 
 
 async def execute_task(task_id: uuid.UUID, agent_id: uuid.UUID) -> None:
@@ -313,7 +327,12 @@ async def execute_task(task_id: uuid.UUID, agent_id: uuid.UUID) -> None:
             logger.warning(f"[TaskExec] Task {task_id} not found")
             return
 
-        plan_allowed, plan_reason = await _task_plan_gate_allows(db, task=task, agent_id=agent_id)
+        plan_allowed, plan_reason = await _task_plan_gate_allows(
+            db,
+            task=task,
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+        )
         if not plan_allowed:
             db.add(
                 TaskLog(

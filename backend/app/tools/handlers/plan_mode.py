@@ -327,6 +327,9 @@ async def exit_plan_mode(request: ToolExecutionRequest) -> str:
     }
     if execution_contract:
         fill["execution_contract"] = execution_contract
+    trusted_scopes = metadata.get("authorization_scopes")
+    if isinstance(trusted_scopes, list) and trusted_scopes:
+        fill["authorization_scopes"] = [dict(scope) for scope in trusted_scopes if isinstance(scope, dict)]
     # P1 binding: Plan Mode entered from a blocked gated tool carries the
     # action artifact computed at gate-check time (e.g. start_workflow's
     # definition/args hashes). Landing it in the fill puts it in plan_json —

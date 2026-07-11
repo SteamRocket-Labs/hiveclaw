@@ -224,7 +224,13 @@ def _client(user, monkeypatch, *, gate_allowed=True, gate_reason=None, access_le
 
     async def fake_gate_check(db, **kwargs):
         fake_gate_check.calls.append(kwargs)
-        return SimpleNamespace(allowed=gate_allowed, reason=gate_reason)
+        return SimpleNamespace(
+            allowed=gate_allowed,
+            reason=gate_reason,
+            authorization_lease_id="lease-1" if gate_allowed else None,
+            canonical_args_hash="args-hash" if gate_allowed else None,
+            target_ref=kwargs.get("target_ref") if gate_allowed else None,
+        )
 
     fake_gate_check.calls = []
     monkeypatch.setattr(workflows_api, "_plan_gate_check", fake_gate_check)
@@ -370,9 +376,10 @@ def test_external_effect_start_with_preview_binding_still_runs_without_plan_mode
     assert client.fake_gate_check.calls == []
 
 
-def test_confirmed_plan_metadata_is_forwarded_as_optional_provenance_without_gate(monkeypatch):
+def test_confirmed_plan_is_consumed_for_the_exact_workflow_preview(monkeypatch):
     agent_id = uuid.uuid4()
-    client = _client(_user(), monkeypatch, gate_allowed=True)
+    user = _user()
+    client = _client(user, monkeypatch, gate_allowed=True)
     plan_id = str(uuid.uuid4())
     preview_resp = client.post(
         f"/agents/{agent_id}/workflows/preview",
@@ -389,9 +396,31 @@ def test_confirmed_plan_metadata_is_forwarded_as_optional_provenance_without_gat
         },
     )
     assert resp.status_code == 200
-    assert client.fake_gate_check.calls == []
+    assert len(client.fake_gate_check.calls) == 1
+    gate_call = client.fake_gate_check.calls[0]
+    assert gate_call["requester_user_id"]
+    assert gate_call["session_id"] == preview["session_id"]
+    assert gate_call["action_kind"] == "start_workflow"
+    assert gate_call["target_ref"] == f"workflow-preview:{preview['preview_id']}"
+    assert gate_call["action_artifact"] == {
+        "preview_id": preview["preview_id"],
+        "definition_hash": preview["definition_hash"],
+        "args_hash": preview["args_hash"],
+        "artifact_version": preview["artifact_version"],
+        "artifact_hash": preview["artifact_hash"],
+    }
     launch_kwargs = client.fake_launch.calls[0]
     assert launch_kwargs["confirmed_plan_id"] == plan_id
+    assert launch_kwargs["run_metadata"]["plan_authorization"] == {
+        "schema": "hive.plan_authorization_evidence.v1",
+        "lease_id": "lease-1",
+        "canonical_args_hash": "args-hash",
+        "target_ref": f"workflow-preview:{preview['preview_id']}",
+        "requester_user_id": str(user.id),
+        "session_id": preview["session_id"],
+        "runtime_task_id": None,
+        "evidence_id": launch_kwargs["run_metadata"]["plan_authorization"]["evidence_id"],
+    }
     assert len(client.fake_launch.calls) == 1
 
 

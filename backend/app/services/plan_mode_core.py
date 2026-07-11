@@ -1363,6 +1363,13 @@ def stamp_confirmed_plan_provenance(
     plan_id: object | None,
     plan_version: object | None,
     plan_hash: object | None,
+    authorization_lease_id: object | None = None,
+    canonical_args_hash: object | None = None,
+    target_ref: object | None = None,
+    requester_user_id: object | None = None,
+    session_id: object | None = None,
+    runtime_task_id: object | None = None,
+    evidence_id: object | None = None,
 ) -> dict:
     """Return ``artifact`` with confirmed-plan provenance stamped when complete.
 
@@ -1377,6 +1384,23 @@ def stamp_confirmed_plan_provenance(
     stamped["plan_id"] = str(plan_id)
     stamped["plan_version"] = int(plan_version)
     stamped["plan_hash"] = str(plan_hash)
+    if all(
+        str(value or "").strip()
+        for value in (authorization_lease_id, canonical_args_hash, target_ref, requester_user_id)
+    ):
+        resolved_session_id = str(session_id) if session_id is not None else None
+        stamped["plan_authorization"] = {
+            "schema": "hive.plan_authorization_evidence.v1",
+            "lease_id": str(authorization_lease_id),
+            "canonical_args_hash": str(canonical_args_hash),
+            "target_ref": str(target_ref),
+            "requester_user_id": str(requester_user_id),
+            "session_id": resolved_session_id,
+            "runtime_task_id": (
+                str(runtime_task_id) if runtime_task_id is not None and resolved_session_id is None else None
+            ),
+            "evidence_id": str(evidence_id) if evidence_id is not None else None,
+        }
     return stamped
 
 

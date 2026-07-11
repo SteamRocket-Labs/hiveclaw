@@ -103,6 +103,17 @@ class _PlanSession:
     async def execute(self, stmt):
         plan_id = getattr(stmt, "_plan_lookup_id", None)
         agent_id = getattr(stmt, "_plan_lookup_agent_id", None)
+        lease_key = getattr(stmt, "_plan_lease_lookup_key", None)
+        if lease_key is not None:
+            match = next(
+                (
+                    row
+                    for row in self.rows
+                    if getattr(row, "execution_idempotency_key", None) == lease_key
+                ),
+                None,
+            )
+            return _ScalarOneResult(match)
         if plan_id is not None:
             match = next((r for r in self.rows if str(r.id) == str(plan_id)), None)
             return _ScalarOneResult(match)
@@ -465,6 +476,15 @@ async def test_confirm_plan_success_sets_confirmed(patched_service):
     assert result.confirmed_by_user_id == confirmer
     assert result.confirmed_at is not None
     assert result.handoff_status == "not_started"
+
+    from app.models.audit import ApprovalRequest
+
+    tickets = [row for row in session.rows if isinstance(row, ApprovalRequest)]
+    assert len(tickets) == 1
+    assert tickets[0].action_type == "plan_authorization"
+    assert tickets[0].requested_by == requester
+    assert tickets[0].resolved_by == confirmer
+    assert tickets[0].consumed_at is None
 
     # Markdown re-rendered with confirmation reflected in frontmatter.
     md = (data_dir / str(plan.agent_id) / "plans" / f"{plan.id}.md").read_text(encoding="utf-8")

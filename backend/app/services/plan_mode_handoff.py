@@ -40,6 +40,7 @@ from sqlalchemy import select
 
 from app.database import tenant_scoped_session
 from app.services.tenant_resolver import resolve_tenant_for_agent
+from app.services.plan_authorization_lease import require_active_plan_authorization
 from app.models.agent import Agent
 from app.models.trigger import AgentTrigger
 
@@ -112,6 +113,7 @@ def _trigger_payload_from_plan(plan: Any, *, force_once: bool = False, now: date
     config["plan_id"] = str(plan.id)  # load-bearing backstop contract
     config["plan_version"] = plan.plan_version
     config["plan_hash"] = plan.plan_hash
+    config["plan_authorization"] = require_active_plan_authorization(plan)
 
     reason = (
         f"Confirmed plan: {_plan_title(plan)}\n"

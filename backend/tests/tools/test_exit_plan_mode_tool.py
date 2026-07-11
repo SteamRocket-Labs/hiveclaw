@@ -333,6 +333,100 @@ async def test_exit_plan_mode_preserves_metadata_execution_contract(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_exit_plan_mode_preserves_trusted_authorization_scopes_and_rejects_model_widening(monkeypatch):
+    from app.services.plan_mode_runtime_context import reset_interactive_plan_mode, set_interactive_plan_mode
+    from app.tools.handlers import plan_mode as handler
+
+    service = _PlanService()
+    monkeypatch.setattr(handler, "get_plan_mode_service", lambda: service)
+    trusted_scopes = [
+        {
+            "action_kind": "start_long_task",
+            "target_ref": "task:new",
+            "arguments": {"title": "Exact report", "description": "Approved body"},
+            "summary": "Create the exact report task",
+        }
+    ]
+    token = set_interactive_plan_mode(
+        {
+            "active": True,
+            "original_request": "Create the report",
+            "intent_type": "in_session_execution",
+            "authorization_scopes": trusted_scopes,
+        }
+    )
+    try:
+        result = json.loads(
+            await handler.exit_plan_mode(
+                _request(
+                    {
+                        "title": "Report plan",
+                        "objective": "Create the approved report.",
+                        "plan_markdown": "## Plan\nCreate the approved report and validate it.",
+                        "steps": ["Create report", "Validate report"],
+                        "success_criteria": ["Report delivered"],
+                        "stop_conditions": ["User rejects"],
+                        "authorization_scopes": [
+                            {
+                                "action_kind": "start_long_task",
+                                "target_ref": "task:other",
+                                "arguments": {"title": "Widened task"},
+                            }
+                        ],
+                    }
+                )
+            )
+        )
+    finally:
+        reset_interactive_plan_mode(token)
+
+    assert result["status"] == "needs_plan"
+    assert result["plan_json"]["authorization_scopes"] == trusted_scopes
+    assert service.calls[0]["fill"]["authorization_scopes"] == trusted_scopes
+
+
+@pytest.mark.asyncio
+async def test_exit_plan_mode_ignores_model_authored_scopes_without_a_trusted_prearm(monkeypatch):
+    from app.services.plan_mode_runtime_context import reset_interactive_plan_mode, set_interactive_plan_mode
+    from app.tools.handlers import plan_mode as handler
+
+    service = _PlanService()
+    monkeypatch.setattr(handler, "get_plan_mode_service", lambda: service)
+    token = set_interactive_plan_mode(
+        {"active": True, "original_request": "Create the report", "intent_type": "in_session_execution"}
+    )
+    try:
+        result = json.loads(
+            await handler.exit_plan_mode(
+                _request(
+                    {
+                        "title": "Report plan",
+                        "objective": "Create the report.",
+                        "plan_markdown": "## Plan\nCreate and validate the report.",
+                        "steps": ["Create report"],
+                        "success_criteria": ["Report delivered"],
+                        "stop_conditions": ["User rejects"],
+                        "authorization_scopes": [
+                            {
+                                "action_kind": "create_enabled_trigger",
+                                "target_ref": "hidden:widened-target",
+                                "arguments": {"unseen": "side effect"},
+                                "summary": "Looks harmless",
+                            }
+                        ],
+                    }
+                )
+            )
+        )
+    finally:
+        reset_interactive_plan_mode(token)
+
+    assert result["status"] == "needs_plan"
+    assert "authorization_scopes" not in result["plan_json"]
+    assert "authorization_scopes" not in service.calls[0]["fill"]
+
+
+@pytest.mark.asyncio
 async def test_exit_plan_mode_rejects_blocking_open_questions(monkeypatch):
     """Open questions are not confirmable choices.
 

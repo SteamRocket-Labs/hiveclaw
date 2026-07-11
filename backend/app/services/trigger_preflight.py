@@ -159,6 +159,33 @@ async def _plan_gate_block_for_triggers(
             continue
         cfg = _config(trigger)
         plan_id = str(cfg.get("plan_id") or "").strip() or None
+        plan_authorization = cfg.get("plan_authorization")
+        if plan_id and isinstance(plan_authorization, dict):
+            from app.services.plan_authorization_lease import (
+                PlanAuthorizationLeaseError,
+                verify_consumed_plan_authorization_lease,
+            )
+
+            try:
+                await verify_consumed_plan_authorization_lease(
+                    db=db,
+                    tenant_id=getattr(agent, "tenant_id", None),
+                    agent_id=getattr(agent, "id"),
+                    plan_id=plan_id,
+                    evidence=plan_authorization,
+                )
+                continue
+            except PlanAuthorizationLeaseError as exc:
+                return TriggerPreflightResult(
+                    False,
+                    "plan_required",
+                    f"Trigger '{getattr(trigger, 'name', '')}' has invalid plan authorization evidence.",
+                    {
+                        "trigger_id": str(getattr(trigger, "id", "")),
+                        "trigger_name": getattr(trigger, "name", None),
+                        "plan_gate_reason": f"plan_authorization_{exc.code}",
+                    },
+                )
         decision = await gate.check(
             db,
             agent_id=getattr(agent, "id"),

@@ -46,7 +46,7 @@ def _confirmed_plan(
     plan_json = {"objective": "出 RWA 周报", "plan_markdown": plan_markdown}
     if execution_contract:
         plan_json["execution_contract"] = execution_contract
-    return SimpleNamespace(
+    plan = SimpleNamespace(
         id=uuid4(),
         agent_id=uuid4(),
         status="confirmed",
@@ -57,6 +57,19 @@ def _confirmed_plan(
         original_request="做 RWA 周报",
         plan_json=plan_json,
     )
+    plan.metadata_json = {
+        "active_plan_authorization": {
+            "schema": "hive.plan_authorization_evidence.v1",
+            "lease_id": str(uuid4()),
+            "canonical_args_hash": "args-hash",
+            "target_ref": f"plan:{plan.id}:handoff:continue_current_session",
+            "requester_user_id": str(user_id),
+            "session_id": str(session_id) if session_id else None,
+            "runtime_task_id": None,
+            "evidence_id": f"plan-handoff:{plan.id}:continue_current_session",
+        }
+    }
+    return plan
 
 
 def _stub_entities(monkeypatch, *, expired=False):
@@ -101,6 +114,7 @@ async def test_continuation_starts_current_session_run_with_plan_in_prompt(monke
     # Audit provenance stamped on the run metadata.
     assert captured["extra_metadata"]["approved_plan_id"] == str(plan.id)
     assert captured["extra_metadata"]["source"] == "plan_mode_handoff"
+    assert captured["extra_metadata"]["plan_authorization"] == plan.metadata_json["active_plan_authorization"]
 
 
 @pytest.mark.asyncio

@@ -82,7 +82,7 @@ Codex 的 PermissionProfile、thread identity、sandbox policy 和 approval even
 
 | ID | 模块 | 优先级 | 状态 | I | A | X | E | R | C | T |
 |---|---|---:|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| SA-01 | Plan 授权未绑定具体动作 | P0 | 断点 | ✓ | ✗ | ✗ | △ | ✗ | △ | △ |
+| SA-01 | Plan 授权未绑定具体动作 | P0 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | SA-02 | Approval 后存在第二工具执行入口 | P0 | 断点 | ✓ | △ | ✗ | △ | ✗ | △ | △ |
 | SA-03 | Business Task 双状态机与错误终态 | P0 | 断点 | △ | △ | ✗ | ✗ | ✗ | ✗ | ✗ |
 | SA-04 | Workspace Rewind 操作 Agent 共享目录 | P0 | 断点 | ✓ | ✗ | ✗ | △ | ✗ | △ | △ |
@@ -114,6 +114,8 @@ Codex 的 PermissionProfile、thread identity、sandbox policy 和 approval even
 ## 4. 第一块：单 Agent
 
 ### SA-01：Plan 授权没有绑定“这一次具体执行” — P0
+
+**修复状态（2026-07-11）**：**闭环**。Plan confirmation 现在签发基于 canonical `ApprovalRequest` 账本的单次 `PlanAuthorizationLease`；旧 confirmed plan 在迁移时显式过期，不能继承宽泛授权。模型不能自行加入或扩大 scope；受信 runtime 预置的 scope 或从 plan 确定性派生的 handoff scope，均随 plan hash 一起确认。PlanCard 只显示用户可理解的授权摘要，不显示 `target_ref`、canonical arguments、lease id 或 evidence id。
 
 **机械事实**：`backend/app/services/plan_mode_gate.py:81-283` 只检查 plan 是否存在、是否属于同一 Agent、intent 是否相同、status/version/hash 是否匹配；`backend/app/models/plan_request.py:79` 虽有 `expires_at`，gate 没有消费它。检查过程只读，不记录 `consumed_at`，也没有绑定 current user、session、run、target 或 canonical arguments hash。
 
@@ -569,3 +571,77 @@ npm test
 6. Railway 三服务部署成功并完成生产 smoke、权限矩阵、外部通道与附件交付 canary。
 
 最终判断：**前两轮已经修掉了 HR canonical blueprint、Artifact delivery、Workspace 信息架构等显性断点；第三轮发现的主要债务已经下沉到“执行身份是否连续、是否只有一个内核、文件与数据库是否同事务、资源授权是否比 Agent access 更细、状态是否真的被最终消费者使用”。这些不是小修小补，必须按上述单轮施工图关闭后再上线。**
+
+## 14. 第三轮修复证据账本
+
+### SA-01 — PlanAuthorizationLease 单次动作绑定
+
+状态：**闭环**。提交主题：`fix(SA-01): bind confirmed plans to single-use actions`。
+
+七原子证据：
+
+1. **输入**：`PlanModeState.authorization_scopes` 只接受受信 runtime pre-arm；无 pre-arm 时由 confirmed plan 的 handoff 确定性生成单次 scope。`exit_plan_mode` 的模型参数不能新增或扩大 scope。
+2. **权威**：`backend/app/services/plan_authorization_lease.py` 将 tenant、Agent、requester、confirmer、plan id/version/hash、session-or-runtime context、action kind、target 与 canonical arguments hash 绑定到同一 lease；跨用户、跨 session/fork、跨目标、字段或标点改变均 fail closed。
+3. **执行**：REST Schedule/Trigger/Task/Workflow/Delegation、Tool Runtime、Plan handoff 与后台 preflight 使用同一 lease/receipt 契约；没有第二种“只读 plan 就放行”的生产路径。消费与资源写入共用调用方事务；跨 runtime 启动前先提交消费事实。
+4. **证据**：复用 canonical `ApprovalRequest(action_type='plan_authorization')`，以 row lock、`consumed_at`、`use_count=1`、execution receipt 和 durable resource `plan_authorization` 形成机械事实链；没有新增重复授权表。
+5. **恢复**：同 evidence id 仅允许显式 handoff recovery；普通重放、并发双消费和 fork 复用被拒绝。Task、Trigger、Delegation restart 只验证已消费 receipt，不会再消费第二张票。
+6. **消费**：Trigger preflight、Task executor、Delegation orchestrator、Workflow run metadata、current-session run、Agent Team 与 PlanCard 均消费新证据；PlanCard 仅呈现安全的“Approved actions / single use”摘要。
+7. **验收**：迁移 `plan_authorization_lease_0711` 为单 Alembic head，给 Task 增加 evidence 列；历史 confirmed plan 若无 lease 会转 `expired`，downgrade 精确恢复原 expiry。
+
+RED 证据（修复前失败）：
+
+- lease 模块缺失：`pytest tests/services/test_plan_authorization_lease.py -q` → `8 failed`。
+- Workflow confirmed plan 未消费 exact preview：目标测试 → `1 failed`（gate call 为 0）。
+- Tool gate 未提交消费：目标测试 → `1 failed`（`commit_calls == 0`）。
+- model-only scope 被写入 plan：目标测试 → `1 failed`。
+- session binding 错绑 ephemeral RuntimeTask：目标测试 → `1 failed`。
+
+GREEN 证据：
+
+```bash
+cd backend
+source .venv/bin/activate
+pytest \
+  tests/integration/test_plan_authorization_lease_postgres.py \
+  tests/migrations/test_plan_authorization_lease_migration.py \
+  tests/services/test_plan_authorization_lease.py \
+  tests/services/test_plan_mode_core.py \
+  tests/services/test_plan_mode_gate.py \
+  tests/services/test_plan_mode_gate_core.py \
+  tests/services/test_plan_mode_service.py \
+  tests/services/test_plan_mode_handoff.py \
+  tests/services/test_plan_mode_session_handoff.py \
+  tests/services/test_plan_mode_delegation_handoff.py \
+  tests/services/test_plan_mode_agent_team_handoff.py \
+  tests/services/test_plan_mode_system_run.py \
+  tests/services/test_task_executor.py \
+  tests/services/test_trigger_preflight.py \
+  tests/api/test_plan_gate_helper.py \
+  tests/api/test_plan_mode_plans_api.py \
+  tests/api/test_plan_mode_rest_gate.py \
+  tests/api/test_workflows.py \
+  tests/agents/test_orchestrator_plan_gate.py \
+  tests/agents/test_orchestrator.py \
+  tests/services/test_collaboration_service.py \
+  tests/tools/test_exit_plan_mode_tool.py \
+  tests/tools/test_plan_mode_tool_gate.py \
+  tests/tools/test_workflow_tool.py -q
+```
+
+结果：`388 passed, 5 warnings in 11.62s`。
+
+```bash
+cd frontend
+npm test -- --run src/pages/agent-detail/AgentDetailSections.test.tsx
+npm run build
+```
+
+结果：`103 passed`；TypeScript + Vite production build exit 0，`7068 modules transformed`。
+
+```bash
+cd backend
+source .venv/bin/activate
+alembic heads
+```
+
+结果：`plan_authorization_lease_0711 (head)`。

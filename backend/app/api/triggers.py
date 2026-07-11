@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api._plan_gate import enforce_plan_gate, get_plan_mode_gate
+from app.api._plan_gate import enforce_plan_gate, get_plan_mode_gate, stamp_plan_gate_decision
 from app.core.permissions import check_agent_access
 from app.core.security import get_current_user
 from app.database import get_db
@@ -15,7 +15,6 @@ from app.models.trigger import AgentTrigger
 from app.models.user import User
 from app.services.plan_mode_core import (
     plan_mode_user_declined,
-    stamp_confirmed_plan_provenance,
     stamp_user_declined_plan_exemption,
 )
 from app.services.plan_mode_recommendation_service import (
@@ -72,6 +71,7 @@ class TriggerCreate(BaseModel):
     confirmed_plan_id: str | None = None
     confirmed_plan_version: int | None = None
     confirmed_plan_hash: str | None = None
+    confirmed_plan_session_id: str | None = None
     plan_mode_decision: str | None = None
     plan_recommendation_id: str | None = None
 
@@ -88,6 +88,7 @@ class TriggerUpdate(BaseModel):
     confirmed_plan_id: str | None = None
     confirmed_plan_version: int | None = None
     confirmed_plan_hash: str | None = None
+    confirmed_plan_session_id: str | None = None
     plan_mode_decision: str | None = None
     plan_recommendation_id: str | None = None
 
@@ -225,22 +226,42 @@ async def create_trigger(
     # autonomous trigger. A confirmed plan is required unless the caller carries
     # an explicit user opt-out bound to a declined recommendation row.
     user_declined_plan_mode = plan_mode_user_declined(body.plan_mode_decision)
+    plan_decision = None
+    evidence_id = f"trigger-create:{uuid.uuid4()}"
+    action_artifact = {
+        "name": name,
+        "type": trigger_type,
+        "config": config,
+        "reason": reason,
+        "trigger_class": body.trigger_class,
+        "max_fires": body.max_fires,
+        "cooldown_seconds": body.cooldown_seconds,
+        "expires_at": body.expires_at,
+    }
     if not user_declined_plan_mode:
-        await enforce_plan_gate(
+        plan_decision = await enforce_plan_gate(
             db,
             agent_id=agent_id,
+            requester_user_id=current_user.id,
+            session_id=body.confirmed_plan_session_id,
             action_kind="create_enabled_trigger",
+            target_ref="trigger:new",
             gate=get_plan_mode_gate(),
             confirmed_plan_id=body.confirmed_plan_id,
             confirmed_plan_version=body.confirmed_plan_version,
             confirmed_plan_hash=body.confirmed_plan_hash,
-            action_artifact={"config": config},
+            action_artifact=action_artifact,
+            evidence_id=evidence_id,
         )
-        config = stamp_confirmed_plan_provenance(
+        config = stamp_plan_gate_decision(
             config,
-            plan_id=body.confirmed_plan_id,
-            plan_version=body.confirmed_plan_version,
-            plan_hash=body.confirmed_plan_hash,
+            decision=plan_decision,
+            confirmed_plan_id=body.confirmed_plan_id,
+            confirmed_plan_version=body.confirmed_plan_version,
+            confirmed_plan_hash=body.confirmed_plan_hash,
+            requester_user_id=current_user.id,
+            session_id=body.confirmed_plan_session_id,
+            evidence_id=evidence_id,
         )
     else:
         try:
@@ -299,6 +320,8 @@ async def update_trigger(
     # and keep their existing contract.
     user_declined_plan_mode = plan_mode_user_declined(body.plan_mode_decision)
     recommendation = None
+    plan_decision = None
+    evidence_id = f"trigger-enable:{trigger.id}:{uuid.uuid4()}"
     if body.is_enabled is True:
         if user_declined_plan_mode:
             try:
@@ -312,15 +335,24 @@ async def update_trigger(
             except PlanRecommendationError as exc:
                 raise _plan_recommendation_error(exc) from exc
         else:
-            await enforce_plan_gate(
+            action_artifact = {
+                "trigger_id": str(trigger.id),
+                "updates": body.model_dump(mode="json", exclude_unset=True),
+                "resulting_config": body.config if body.config is not None else trigger.config,
+            }
+            plan_decision = await enforce_plan_gate(
                 db,
                 agent_id=agent_id,
+                requester_user_id=current_user.id,
+                session_id=body.confirmed_plan_session_id,
                 action_kind="enable_autonomous_wake",
+                target_ref=f"trigger:{trigger.id}",
                 gate=get_plan_mode_gate(),
                 confirmed_plan_id=body.confirmed_plan_id,
                 confirmed_plan_version=body.confirmed_plan_version,
                 confirmed_plan_hash=body.confirmed_plan_hash,
-                action_artifact={"config": body.config if body.config is not None else trigger.config},
+                action_artifact=action_artifact,
+                evidence_id=evidence_id,
             )
 
     if body.config is not None:
@@ -329,11 +361,15 @@ async def update_trigger(
         if user_declined_plan_mode:
             trigger.config = _stamp_recommendation_exemption(trigger.config, recommendation.id)
         else:
-            trigger.config = stamp_confirmed_plan_provenance(
+            trigger.config = stamp_plan_gate_decision(
                 trigger.config,
-                plan_id=body.confirmed_plan_id,
-                plan_version=body.confirmed_plan_version,
-                plan_hash=body.confirmed_plan_hash,
+                decision=plan_decision,
+                confirmed_plan_id=body.confirmed_plan_id,
+                confirmed_plan_version=body.confirmed_plan_version,
+                confirmed_plan_hash=body.confirmed_plan_hash,
+                requester_user_id=current_user.id,
+                session_id=body.confirmed_plan_session_id,
+                evidence_id=evidence_id,
             )
     if body.reason is not None:
         trigger.reason = body.reason

@@ -38,6 +38,21 @@ VALID_DELIVERY_MODES = {"new_invocation", "same_session"}
 EVENT_WAIT_TRIGGER_TYPES = {"poll", "on_message", "webhook"}
 SCHEDULED_TRIGGER_TYPES = {"cron", "once", "interval"}
 
+
+def _plan_authorization_stamp_kwargs(arguments: dict) -> dict:
+    evidence = arguments.get("_plan_authorization")
+    if not isinstance(evidence, dict):
+        return {}
+    return {
+        "authorization_lease_id": evidence.get("lease_id"),
+        "canonical_args_hash": evidence.get("canonical_args_hash"),
+        "target_ref": evidence.get("target_ref"),
+        "requester_user_id": evidence.get("requester_user_id"),
+        "session_id": evidence.get("session_id"),
+        "runtime_task_id": evidence.get("runtime_task_id"),
+        "evidence_id": evidence.get("evidence_id"),
+    }
+
 #: Exec/automation CC-alignment (docs/trigger-cc-alignment.md §2): the three
 #: driving-semantic buckets every wire-level ``type`` collapses into. The 6 type
 #: strings are just the schedule/detection mechanisms; these three are the
@@ -434,6 +449,7 @@ async def _handle_set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
         plan_id=arguments.get("confirmed_plan_id"),
         plan_version=arguments.get("confirmed_plan_version"),
         plan_hash=arguments.get("confirmed_plan_hash"),
+        **_plan_authorization_stamp_kwargs(arguments),
     )
     config = _stamp_user_declined_plan_mode(config)
 
@@ -638,6 +654,7 @@ async def _handle_update_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
                 plan_id=arguments.get("confirmed_plan_id"),
                 plan_version=arguments.get("confirmed_plan_version"),
                 plan_hash=arguments.get("confirmed_plan_hash"),
+                **_plan_authorization_stamp_kwargs(arguments),
             )
             final_config = _stamp_user_declined_plan_mode(final_config)
 

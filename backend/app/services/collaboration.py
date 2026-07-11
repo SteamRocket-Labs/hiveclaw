@@ -32,6 +32,8 @@ class CollaborationService:
         confirmed_plan_id: str | None = None,
         confirmed_plan_version: int | None = None,
         confirmed_plan_hash: str | None = None,
+        confirmed_plan_session_id: str | None = None,
+        plan_authorization: dict | None = None,
     ) -> dict:
         """Delegate work through the runtime async delegation path."""
         from app.services.agent_tool_domains.messaging import _delegate_to_agent_async
@@ -59,6 +61,8 @@ class CollaborationService:
                 "confirmed_plan_id": confirmed_plan_id,
                 "confirmed_plan_version": confirmed_plan_version,
                 "confirmed_plan_hash": confirmed_plan_hash,
+                "confirmed_plan_session_id": confirmed_plan_session_id,
+                "plan_authorization": dict(plan_authorization or {}),
             },
         )
         if raw_result.startswith(("❌", "⚠️")):
@@ -76,6 +80,7 @@ class CollaborationService:
                     "task_title": task_title,
                     "runtime_task_id": payload.get("task_id"),
                     "trace_id": payload.get("trace_id"),
+                    "plan_authorization": dict(plan_authorization or {}),
                 },
             )
         )

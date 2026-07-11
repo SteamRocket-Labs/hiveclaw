@@ -11,6 +11,7 @@ from app.services.agent_team_runtime_service import (
     spawn_agent_team_member_runtime,
 )
 from app.services.plan_mode_core import build_plan_execution_instruction
+from app.services.plan_authorization_lease import require_active_plan_authorization
 
 AGENT_TEAM_TARGET = "agent_team"
 
@@ -114,6 +115,8 @@ async def agent_team_handoff(db: Any, plan: Any) -> dict[str, Any]:
     if is_agent_expired(agent):
         raise AgentTeamHandoffError(f"agent {plan.agent_id} is expired")
 
+    plan_authorization = require_active_plan_authorization(plan)
+
     create_result = await create_agent_team_runtime_result(
         db=db,
         agent=agent,
@@ -128,6 +131,7 @@ async def agent_team_handoff(db: Any, plan: Any) -> dict[str, Any]:
             "approved_plan_hash": getattr(plan, "plan_hash", None),
             "execution_contract_type": "agent_team",
             "team_create_semantics": "container_only",
+            "plan_authorization": plan_authorization,
         },
     )
     team = create_result.team
@@ -153,6 +157,7 @@ async def agent_team_handoff(db: Any, plan: Any) -> dict[str, Any]:
                     "approved_plan_version": getattr(plan, "plan_version", None),
                     "approved_plan_hash": getattr(plan, "plan_hash", None),
                     "execution_contract_type": "agent_team",
+                    "plan_authorization": plan_authorization,
                 },
             ),
             prompt=_plan_prompt(plan, member=raw_member),

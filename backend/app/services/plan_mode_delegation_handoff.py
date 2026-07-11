@@ -5,6 +5,8 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
+from app.services.plan_authorization_lease import require_active_plan_authorization
+
 DELEGATION_HANDOFF_TARGET = "delegation"
 
 
@@ -84,6 +86,7 @@ async def delegation_handoff_handler(_db: Any, plan: Any) -> dict[str, Any]:
     from app.agents.orchestrator import OrchestrationPolicy, delegate_async
 
     tool_profile = str(payload.get("tool_profile") or "worker_safe").strip() or "worker_safe"
+    plan_authorization = require_active_plan_authorization(plan)
     handle = await delegate_async(
         target=target,
         target_model=target_model,
@@ -106,6 +109,8 @@ async def delegation_handoff_handler(_db: Any, plan: Any) -> dict[str, Any]:
         confirmed_plan_id=plan.id,
         confirmed_plan_version=plan.plan_version,
         confirmed_plan_hash=plan.plan_hash,
+        confirmed_plan_session_id=getattr(plan, "session_id", None),
+        plan_authorization=plan_authorization,
     )
     if str(getattr(handle, "status", "")).startswith("plan_required"):
         raise ValueError(f"Delegation handoff was blocked by Plan Mode: {handle.status}")

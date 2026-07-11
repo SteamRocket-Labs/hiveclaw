@@ -86,12 +86,26 @@ def _redact_args(arguments: Any) -> dict[str, Any]:
 def _plan_gate_action_artifact(tool_name: str, arguments: dict, action_kind: str) -> dict | None:
     """Build an exact action payload for confirmed-plan handoff checks.
 
-    Workflow no longer uses PlanModeGate, so no current tool needs a separate
-    action artifact. Keep this seam for legacy confirmed-plan callers without
-    reintroducing risk-grade based Plan Mode routing.
+    Sensitive values are represented by one-way hashes: the lease still changes
+    when a credential-bearing value changes, but approval storage never receives
+    the secret itself.
     """
-    _ = (tool_name, arguments, action_kind)
-    return None
+
+    def safe(value: Any, *, key: str = "") -> Any:
+        if any(marker in key.lower() for marker in ("secret", "token", "password", "credential", "api_key")):
+            digest = hashlib.sha256(str(value).encode("utf-8")).hexdigest()
+            return {"sha256": digest}
+        if isinstance(value, dict):
+            return {str(k): safe(v, key=str(k)) for k, v in value.items()}
+        if isinstance(value, list):
+            return [safe(item, key=key) for item in value]
+        return value
+
+    return {
+        "tool_name": str(tool_name),
+        "action_kind": str(action_kind),
+        "arguments": safe(dict(arguments or {})),
+    }
 
 
 def _confirmation_required_payload(payload: dict | None) -> dict:
@@ -754,10 +768,16 @@ class ToolRuntimeService:
             )
             return plan_mode_block
 
+        plan_authorization: dict[str, Any] = {}
         plan_block = await self._plan_mode_gate_block(
             tool_name,
             arguments,
             agent_id=agent_id,
+            user_id=user_id,
+            session_id=session_id,
+            runtime_task_id=runtime_task_id,
+            evidence_id=f"tool:{effective_tool_call_id}",
+            authorization_sink=plan_authorization,
             plan_mode_interactive_available=plan_mode_interactive_available,
             plan_mode_unattended_available=plan_mode_unattended_available,
         )
@@ -776,6 +796,10 @@ class ToolRuntimeService:
                 session_id=session_id,
             )
             return plan_block
+        if plan_authorization:
+            arguments = {**dict(arguments or {}), "_plan_authorization": plan_authorization}
+            if isinstance(trace_metadata_sink, dict):
+                trace_metadata_sink["plan_authorization"] = dict(plan_authorization)
 
         runtime_context = await _resolve_runtime_context(
             self.runtime_resolver,
@@ -1758,6 +1782,11 @@ class ToolRuntimeService:
         arguments: dict,
         *,
         agent_id: uuid.UUID,
+        user_id: uuid.UUID,
+        session_id: str | None,
+        runtime_task_id: str | None,
+        evidence_id: str,
+        authorization_sink: dict[str, Any] | None = None,
         plan_mode_interactive_available: bool = False,
         plan_mode_unattended_available: bool = False,
     ) -> str | None:
@@ -1794,14 +1823,41 @@ class ToolRuntimeService:
             decision = await self.plan_mode_gate.check(
                 db,
                 agent_id=agent_id,
+                requester_user_id=user_id,
+                session_id=session_id,
+                runtime_task_id=runtime_task_id,
                 action_kind=action_kind,
+                target_ref=f"tool:{tool_name}",
                 confirmed_plan_id=confirmed_plan_id,
                 plan_version=plan_version,
                 plan_hash=plan_hash,
                 action_artifact=action_artifact,
+                evidence_id=evidence_id,
             )
+            if getattr(decision, "authorization_lease_id", None):
+                # This session is owned only by the tool gate; without an
+                # explicit commit the row-locked lease consumption would be
+                # rolled back when the context closes and could be replayed.
+                await db.commit()
 
         if not decision.needs_plan:
+            if getattr(decision, "authorization_lease_id", None) and authorization_sink is not None:
+                authorization_sink.update(
+                    {
+                        "schema": "hive.plan_authorization_evidence.v1",
+                        "lease_id": str(decision.authorization_lease_id),
+                        "canonical_args_hash": str(decision.canonical_args_hash or ""),
+                        "target_ref": str(decision.target_ref or f"tool:{tool_name}"),
+                        "requester_user_id": str(user_id),
+                        "session_id": str(session_id) if session_id is not None else None,
+                        "runtime_task_id": (
+                            str(runtime_task_id)
+                            if runtime_task_id is not None and session_id is None
+                            else None
+                        ),
+                        "evidence_id": str(evidence_id),
+                    }
+                )
             return None
 
         _ = (plan_mode_interactive_available, plan_mode_unattended_available, action_artifact)

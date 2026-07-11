@@ -580,6 +580,8 @@ class AgentDelegationRequest:
     confirmed_plan_id: str | uuid.UUID | None = None
     confirmed_plan_version: int | None = None
     confirmed_plan_hash: str | None = None
+    confirmed_plan_session_id: str | None = None
+    plan_authorization: dict[str, Any] | None = None
     plan_exempt_reason: str | None = None
     # §9 P0: initiating tenant travels WITH the request so background tasks
     # (which outlive the request ContextVar) can pin their DB sessions to it.
@@ -631,6 +633,8 @@ def _delegation_authority_snapshot_hash(request: AgentDelegationRequest) -> str:
             "plan_id": str(request.confirmed_plan_id or ""),
             "plan_version": request.confirmed_plan_version,
             "plan_hash": request.confirmed_plan_hash,
+            "plan_session_id": request.confirmed_plan_session_id,
+            "plan_authorization": request.plan_authorization,
             "plan_exempt_reason": request.plan_exempt_reason,
         }
     )
@@ -977,6 +981,8 @@ def _build_runtime_task_metadata(request: AgentDelegationRequest, *, task_id: st
                 "plan_id": str(request.confirmed_plan_id),
                 "plan_version": request.confirmed_plan_version,
                 "plan_hash": request.confirmed_plan_hash,
+                "plan_session_id": request.confirmed_plan_session_id,
+                "plan_authorization": dict(request.plan_authorization or {}),
             }
         )
     if request.plan_exempt_reason:
@@ -1047,26 +1053,76 @@ async def _delegation_plan_gate_allows(request: AgentDelegationRequest) -> tuple
     """Final Plan Mode backstop for async delegation startup."""
     if request.interaction_type != "delegation":
         return True, None
-    if _is_user_initiated_delegation(request):
+    has_explicit_plan_evidence = request.confirmed_plan_id is not None and isinstance(
+        request.plan_authorization, dict
+    )
+    if _is_user_initiated_delegation(request) and not has_explicit_plan_evidence:
         return True, "user_initiated_delegation"
     parent_agent_id = _maybe_uuid(request.parent_agent_id)
     if parent_agent_id is None:
         return False, "missing_parent_agent"
 
     from app.database import tenant_scoped_session
+    from app.services.plan_authorization_lease import (
+        PlanAuthorizationLeaseError,
+        verify_consumed_plan_authorization_lease,
+    )
     from app.services.plan_mode_gate import get_plan_mode_gate
 
     tenant = str(request.tenant_id) if request.tenant_id else None
+    authorization_session_id = request.confirmed_plan_session_id or request.parent_session_id
+    authorization_runtime_task_id = request.runtime_task_id if not authorization_session_id else None
     async with tenant_scoped_session(tenant) as db:
+        if has_explicit_plan_evidence:
+            try:
+                await verify_consumed_plan_authorization_lease(
+                    db=db,
+                    tenant_id=request.tenant_id,
+                    agent_id=parent_agent_id,
+                    plan_id=request.confirmed_plan_id,
+                    evidence=request.plan_authorization,
+                )
+            except PlanAuthorizationLeaseError as exc:
+                return False, f"plan_authorization_{exc.code}"
+            return True, "confirmed_plan_lease_verified"
         decision = await get_plan_mode_gate().check(
             db,
             agent_id=parent_agent_id,
+            requester_user_id=request.owner_id,
+            session_id=authorization_session_id,
+            runtime_task_id=authorization_runtime_task_id,
             action_kind="start_delegation",
+            target_ref=f"agent:{getattr(request.target, 'id', '')}:delegation",
             confirmed_plan_id=request.confirmed_plan_id,
             plan_version=request.confirmed_plan_version,
             plan_hash=request.confirmed_plan_hash,
-            action_artifact={"metadata": {"plan_exempt_reason": request.plan_exempt_reason}},
+            action_artifact={
+                "target_agent_id": str(getattr(request.target, "id", "")),
+                "message": _delegation_user_message(request.conversation_messages),
+                "tool_profile": request.policy.tool_profile,
+                "target_artifact_path": request.target_artifact_path,
+                "target_artifacts": request.target_artifacts,
+                "edit_mode": request.edit_mode,
+                **(
+                    {"metadata": {"plan_exempt_reason": request.plan_exempt_reason}}
+                    if request.plan_exempt_reason
+                    else {}
+                ),
+            },
+            evidence_id=f"delegation-start:{request.runtime_task_id or request.session_id}",
         )
+        if decision.allowed and getattr(decision, "authorization_lease_id", None):
+            request.plan_authorization = {
+                "schema": "hive.plan_authorization_evidence.v1",
+                "lease_id": str(decision.authorization_lease_id),
+                "canonical_args_hash": str(getattr(decision, "canonical_args_hash", "") or ""),
+                "target_ref": str(getattr(decision, "target_ref", "") or ""),
+                "requester_user_id": str(request.owner_id),
+                "session_id": authorization_session_id,
+                "runtime_task_id": authorization_runtime_task_id,
+                "evidence_id": f"delegation-start:{request.runtime_task_id or request.session_id}",
+            }
+            await db.commit()
     return decision.allowed, decision.reason
 
 
@@ -2350,6 +2406,10 @@ async def _build_delegation_request_from_runtime_record(record: dict[str, Any]) 
         confirmed_plan_id=metadata.get("plan_id"),
         confirmed_plan_version=metadata.get("plan_version"),
         confirmed_plan_hash=metadata.get("plan_hash"),
+        confirmed_plan_session_id=metadata.get("plan_session_id"),
+        plan_authorization=metadata.get("plan_authorization")
+        if isinstance(metadata.get("plan_authorization"), dict)
+        else None,
         plan_exempt_reason=metadata.get("plan_exempt_reason"),
         tenant_id=metadata.get("tenant_id") or record.get("tenant_id"),
         ledger_todo_id=metadata.get("ledger_todo_id"),
@@ -2419,6 +2479,8 @@ async def delegate_async(
     confirmed_plan_id: str | uuid.UUID | None = None,
     confirmed_plan_version: int | None = None,
     confirmed_plan_hash: str | None = None,
+    confirmed_plan_session_id: str | None = None,
+    plan_authorization: dict[str, Any] | None = None,
     plan_exempt_reason: str | None = None,
     ledger_todo_id: str | None = None,
     permission_profile: Any | None = None,
@@ -2461,6 +2523,8 @@ async def delegate_async(
         confirmed_plan_id=confirmed_plan_id,
         confirmed_plan_version=confirmed_plan_version,
         confirmed_plan_hash=confirmed_plan_hash,
+        confirmed_plan_session_id=confirmed_plan_session_id,
+        plan_authorization=dict(plan_authorization or {}) or None,
         plan_exempt_reason=plan_exempt_reason,
         tenant_id=tenant_id,
         ledger_todo_id=ledger_todo_id,
@@ -3029,6 +3093,10 @@ async def resume_persisted_async_delegations(*, limit: int = 50) -> list[str]:
             confirmed_plan_id=metadata.get("plan_id"),
             confirmed_plan_version=metadata.get("plan_version"),
             confirmed_plan_hash=metadata.get("plan_hash"),
+            confirmed_plan_session_id=metadata.get("plan_session_id"),
+            plan_authorization=metadata.get("plan_authorization")
+            if isinstance(metadata.get("plan_authorization"), dict)
+            else None,
             plan_exempt_reason=metadata.get("plan_exempt_reason"),
             runtime_task_id=task_id,
             restart_replay_contract=metadata.get("restart_replay_contract")

@@ -36,6 +36,12 @@ from app.config import get_settings
 from app.database import tenant_scoped_session
 from app.models.plan_request import AgentPlanRequest
 from app.services import plan_mode_core as core
+from app.services.plan_authorization_lease import (
+    PlanAuthorizationLeaseError,
+    build_plan_handoff_authorization_scope,
+    consume_plan_authorization_lease,
+    issue_plan_authorization_leases,
+)
 from app.services.tenant_resolver import resolve_tenant_for_agent, resolve_tenant_for_plan
 
 logger = logging.getLogger(__name__)
@@ -610,10 +616,29 @@ class PlanModeService:
                 plan.confirmed_by_user_id = confirming_user_id
                 plan.confirmed_at = _now()
                 plan.handoff_status = "not_started"
+                if plan.tenant_id is None and _tenant_id is not None:
+                    plan.tenant_id = _tenant_id
                 if reason:
                     metadata = dict(plan.metadata_json or {})
                     metadata["confirm_reason"] = reason
                     plan.metadata_json = metadata
+                try:
+                    leases = await issue_plan_authorization_leases(
+                        db=db,
+                        plan=plan,
+                        confirming_user_id=confirming_user_id,
+                        now=plan.confirmed_at,
+                    )
+                except PlanAuthorizationLeaseError as exc:
+                    raise PlanConflictError(exc.code, exc.message) from exc
+                metadata = dict(plan.metadata_json or {})
+                metadata["plan_authorization"] = {
+                    "schema": "hive.plan_authorization_lease_set.v1",
+                    "lease_ids": [str(lease.lease_id) for lease in leases],
+                    "scope_count": len(leases),
+                    "issued_at": plan.confirmed_at.isoformat(),
+                }
+                plan.metadata_json = metadata
                 plan.plan_markdown_path = self._render_and_write_markdown(plan)
 
                 await db.commit()
@@ -737,6 +762,53 @@ class PlanModeService:
 
                 if plan.handoff_status == "completed":
                     return plan  # idempotent: already done
+
+                target = str((plan.plan_json or {}).get("handoff", {}).get("target") or "")
+                if target and self._handoff_handlers.get(target) is not None:
+                    scope = build_plan_handoff_authorization_scope(plan)
+                    evidence_id = f"plan-handoff:{plan.id}:{target}"
+                    try:
+                        lease = await consume_plan_authorization_lease(
+                            db=db,
+                            tenant_id=plan.tenant_id,
+                            agent_id=plan.agent_id,
+                            plan_id=plan.id,
+                            requester_user_id=plan.requested_by_user_id,
+                            session_id=plan.session_id,
+                            runtime_task_id=plan.runtime_task_id,
+                            action_kind=scope["action_kind"],
+                            target_ref=scope["target_ref"],
+                            action_artifact=scope["arguments"],
+                            evidence_id=evidence_id,
+                            confirmed_by_user_id=plan.confirmed_by_user_id,
+                            plan_version=plan.plan_version,
+                            plan_hash=plan.plan_hash,
+                            allow_idempotent_resume=plan.handoff_status == "failed",
+                        )
+                    except PlanAuthorizationLeaseError as exc:
+                        plan.handoff_status = "failed"
+                        plan.handoff_payload = {
+                            "error": exc.message,
+                            "error_code": f"plan_authorization_{exc.code}",
+                            "target": target,
+                            "failed_at": _now().isoformat(),
+                        }
+                        await db.commit()
+                        return plan
+                    metadata = dict(plan.metadata_json or {})
+                    metadata["active_plan_authorization"] = {
+                        "schema": "hive.plan_authorization_evidence.v1",
+                        "lease_id": str(lease.lease_id),
+                        "canonical_args_hash": lease.binding.canonical_args_hash,
+                        "target_ref": lease.binding.target_ref,
+                        "requester_user_id": str(lease.binding.requester_user_id),
+                        "session_id": lease.binding.session_id,
+                        "runtime_task_id": str(lease.binding.runtime_task_id)
+                        if lease.binding.runtime_task_id
+                        else None,
+                        "evidence_id": evidence_id,
+                    }
+                    plan.metadata_json = metadata
 
                 await self._run_handoff(db, plan)
                 await db.commit()

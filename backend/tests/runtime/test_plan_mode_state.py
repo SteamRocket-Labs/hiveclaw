@@ -191,3 +191,18 @@ def test_to_metadata_carries_execution_contract_when_present():
     restored = PlanModeState.from_metadata(data)
     assert restored.execution_contract == contract
     assert PlanModeState.from_metadata({"active": True}).execution_contract is None
+
+
+def test_to_metadata_carries_hash_bound_authorization_scopes_when_present():
+    scopes = [
+        {
+            "action_kind": "start_long_task",
+            "target_ref": "task:new",
+            "arguments": {"title": "Bound task"},
+        }
+    ]
+    state = PlanModeState(active=True, authorization_scopes=scopes)
+    data = state.to_metadata()
+    assert data["authorization_scopes"] == scopes
+    assert "authorization_scopes" not in PlanModeState(active=True).to_metadata()
+    assert PlanModeState.from_metadata(data).authorization_scopes == scopes

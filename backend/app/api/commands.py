@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api._plan_gate import enforce_plan_gate, get_plan_mode_gate
+from app.api._plan_gate import enforce_plan_gate, get_plan_mode_gate, stamp_plan_gate_decision
 from app.core.permissions import authorize_session_action, check_agent_access
 from app.core.security import get_current_user
 from app.database import get_db
@@ -38,7 +38,6 @@ from app.services.diagnostic_command_runtime import DIAGNOSTIC_COMMAND_NAMES, ex
 from app.services.mcp_server_service import get_agent_extensions
 from app.services.plan_mode_core import (
     plan_mode_user_declined,
-    stamp_confirmed_plan_provenance,
     stamp_user_declined_plan_exemption,
 )
 from app.services.plan_mode_recommendation_service import (
@@ -522,6 +521,8 @@ async def _execute_schedule_command(
 
     user_declined_plan_mode = plan_mode_user_declined(arguments.get("plan_mode_decision"))
     recommendation = None
+    consumed_plan_decision = None
+    plan_evidence_id = f"command:{command_name}:{uuid.uuid4()}"
     if is_enabled and user_declined_plan_mode:
         try:
             recommendation = await require_declined_plan_recommendation(
@@ -534,14 +535,27 @@ async def _execute_schedule_command(
         except PlanRecommendationError as exc:
             raise _plan_recommendation_http_error(exc) from exc
     elif is_enabled:
-        await enforce_plan_gate(
+        consumed_plan_decision = await enforce_plan_gate(
             db,
             agent_id=agent.id,
+            requester_user_id=user.id,
+            session_id=session_id,
             action_kind="create_enabled_trigger",
+            target_ref=f"command:{command_name}:new",
             gate=get_plan_mode_gate(),
             confirmed_plan_id=arguments.get("confirmed_plan_id"),
             confirmed_plan_version=arguments.get("confirmed_plan_version"),
             confirmed_plan_hash=arguments.get("confirmed_plan_hash"),
+            action_artifact={
+                "command_name": command_name,
+                "name": name,
+                "instruction": instruction,
+                "is_enabled": is_enabled,
+                "trigger_type": trigger_type,
+                "config": config,
+                "delivery_target_json": arguments.get("delivery_target_json"),
+            },
+            evidence_id=plan_evidence_id,
         )
     if not is_enabled:
         plan_gate_decision = {"allowed": True, "reason": "disabled_draft"}
@@ -560,11 +574,15 @@ async def _execute_schedule_command(
         if user_declined_plan_mode:
             config = _stamp_declined_schedule_exemption(config, recommendation.id)
         else:
-            config = stamp_confirmed_plan_provenance(
+            config = stamp_plan_gate_decision(
                 config,
-                plan_id=arguments.get("confirmed_plan_id"),
-                plan_version=arguments.get("confirmed_plan_version"),
-                plan_hash=arguments.get("confirmed_plan_hash"),
+                decision=consumed_plan_decision,
+                confirmed_plan_id=arguments.get("confirmed_plan_id"),
+                confirmed_plan_version=arguments.get("confirmed_plan_version"),
+                confirmed_plan_hash=arguments.get("confirmed_plan_hash"),
+                requester_user_id=user.id,
+                session_id=session_id,
+                evidence_id=plan_evidence_id,
             )
 
     trigger = AgentTrigger(
@@ -795,20 +813,35 @@ async def _execute_loop_command(
 
     # /loop creates an ENABLED autonomous interval trigger → same confirmation
     # gate as any other enabled-trigger creation (no bypass of trigger governance).
-    await enforce_plan_gate(
+    plan_evidence_id = f"command:loop:{session.id}:{uuid.uuid4()}"
+    plan_decision = await enforce_plan_gate(
         db,
         agent_id=agent.id,
+        requester_user_id=user.id,
+        session_id=str(session.id),
         action_kind="create_enabled_trigger",
+        target_ref=f"session:{session.id}:loop",
         gate=get_plan_mode_gate(),
         confirmed_plan_id=arguments.get("confirmed_plan_id"),
         confirmed_plan_version=arguments.get("confirmed_plan_version"),
         confirmed_plan_hash=arguments.get("confirmed_plan_hash"),
+        action_artifact={
+            "session_id": str(session.id),
+            "interval": interval_token,
+            "prompt": prompt,
+            "config": config,
+        },
+        evidence_id=plan_evidence_id,
     )
-    config = stamp_confirmed_plan_provenance(
+    config = stamp_plan_gate_decision(
         config,
-        plan_id=arguments.get("confirmed_plan_id"),
-        plan_version=arguments.get("confirmed_plan_version"),
-        plan_hash=arguments.get("confirmed_plan_hash"),
+        decision=plan_decision,
+        confirmed_plan_id=arguments.get("confirmed_plan_id"),
+        confirmed_plan_version=arguments.get("confirmed_plan_version"),
+        confirmed_plan_hash=arguments.get("confirmed_plan_hash"),
+        requester_user_id=user.id,
+        session_id=str(session.id),
+        evidence_id=plan_evidence_id,
     )
 
     name = str(arguments.get("name") or "").strip() or f"loop-{uuid.uuid4().hex[:8]}"

@@ -115,7 +115,7 @@ def _confirmed_wake_plan(*, agent_id=None, tenant_id=None, version=1):
         "stop_conditions": ["User cancels the plan."],
         "handoff": {"target": "scheduled_trigger", "create_trigger": True},
     }
-    return SimpleNamespace(
+    plan = SimpleNamespace(
         id=uuid4(),
         agent_id=agent_id or uuid4(),
         tenant_id=tenant_id,
@@ -125,6 +125,19 @@ def _confirmed_wake_plan(*, agent_id=None, tenant_id=None, version=1):
         plan_json=plan_json,
         original_request="每天 9 点帮我整理新闻",
     )
+    plan.metadata_json = {
+        "active_plan_authorization": {
+            "schema": "hive.plan_authorization_evidence.v1",
+            "lease_id": str(uuid4()),
+            "canonical_args_hash": "args-hash",
+            "target_ref": f"plan:{plan.id}:handoff:scheduled_trigger",
+            "requester_user_id": str(uuid4()),
+            "session_id": "session-1",
+            "runtime_task_id": None,
+            "evidence_id": f"plan-handoff:{plan.id}:scheduled_trigger",
+        }
+    }
+    return plan
 
 
 def _agent(plan):
@@ -176,6 +189,7 @@ async def test_handoff_creates_enabled_trigger_with_plan_id_and_no_objective(mon
     assert trigger.config["plan_id"] == str(plan.id)
     assert trigger.config["plan_version"] == plan.plan_version
     assert trigger.config["plan_hash"] == plan.plan_hash
+    assert trigger.config["plan_authorization"] == plan.metadata_json["active_plan_authorization"]
     assert trigger.config["trigger_class"] == "scheduled_job"
     assert "objective_id" not in trigger.config
 

@@ -7,7 +7,7 @@ from pydantic import AliasChoices, BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api._plan_gate import enforce_plan_gate, get_plan_mode_gate
+from app.api._plan_gate import enforce_plan_gate, get_plan_mode_gate, stamp_plan_gate_decision
 from app.core.permissions import check_agent_access, effective_agent_owner_id, require_agent_manage_access
 from app.core.security import get_current_user
 from app.database import get_db
@@ -28,6 +28,7 @@ class DelegateRequest(BaseModel):
     confirmed_plan_id: str | None = None
     confirmed_plan_version: int | None = None
     confirmed_plan_hash: str | None = None
+    confirmed_plan_session_id: str | None = None
 
 
 class InterAgentMessage(BaseModel):
@@ -58,15 +59,41 @@ async def delegate_task(
     await check_agent_access(db, current_user, agent_id)
     # Plan Mode early intercept (§9.3): delegation hands execution to another agent
     # to run asynchronously, so it needs a confirmed plan (or cutover exemption).
-    await enforce_plan_gate(
+    action_artifact = {
+        "to_agent_id": str(data.to_agent_id),
+        "task_title": data.task_title,
+        "task_description": data.task_description,
+    }
+    evidence_id = f"delegation:{agent_id}:{data.to_agent_id}:{uuid.uuid4()}"
+    plan_decision = await enforce_plan_gate(
         db,
         agent_id=agent_id,
+        requester_user_id=current_user.id,
+        session_id=data.confirmed_plan_session_id,
         action_kind="start_delegation",
+        target_ref=f"agent:{data.to_agent_id}:delegation",
         gate=get_plan_mode_gate(),
         confirmed_plan_id=data.confirmed_plan_id,
         confirmed_plan_version=data.confirmed_plan_version,
         confirmed_plan_hash=data.confirmed_plan_hash,
+        action_artifact=action_artifact,
+        evidence_id=evidence_id,
     )
+    plan_evidence = stamp_plan_gate_decision(
+        {},
+        decision=plan_decision,
+        confirmed_plan_id=data.confirmed_plan_id,
+        confirmed_plan_version=data.confirmed_plan_version,
+        confirmed_plan_hash=data.confirmed_plan_hash,
+        requester_user_id=current_user.id,
+        session_id=data.confirmed_plan_session_id,
+        evidence_id=evidence_id,
+    ).get("plan_authorization")
+    if plan_evidence:
+        # Delegation launches work in a separate durable runtime. Commit the
+        # consumed lease before crossing that boundary so a later API-session
+        # rollback can never leave an unauthorized child run alive.
+        await db.commit()
     try:
         result = await collaboration_service.delegate_task(
             db,
@@ -77,6 +104,8 @@ async def delegate_task(
             confirmed_plan_id=data.confirmed_plan_id,
             confirmed_plan_version=data.confirmed_plan_version,
             confirmed_plan_hash=data.confirmed_plan_hash,
+            confirmed_plan_session_id=data.confirmed_plan_session_id,
+            plan_authorization=plan_evidence,
         )
         return result
     except ValueError as e:

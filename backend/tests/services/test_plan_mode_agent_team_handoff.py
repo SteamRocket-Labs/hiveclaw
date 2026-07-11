@@ -33,7 +33,7 @@ class _AgentLoaderProbeDB:
 
 
 def _confirmed_team_plan():
-    return SimpleNamespace(
+    plan = SimpleNamespace(
         id=uuid4(),
         agent_id=uuid4(),
         status="confirmed",
@@ -58,6 +58,19 @@ def _confirmed_team_plan():
             },
         },
     )
+    plan.metadata_json = {
+        "active_plan_authorization": {
+            "schema": "hive.plan_authorization_evidence.v1",
+            "lease_id": str(uuid4()),
+            "canonical_args_hash": "args-hash",
+            "target_ref": f"plan:{plan.id}:handoff:agent_team",
+            "requester_user_id": str(plan.requested_by_user_id),
+            "session_id": str(plan.session_id),
+            "runtime_task_id": None,
+            "evidence_id": f"plan-handoff:{plan.id}:agent_team",
+        }
+    }
+    return plan
 
 
 @pytest.mark.asyncio
@@ -109,6 +122,8 @@ async def test_agent_team_handoff_creates_member_sessions_and_starts_runtime(mon
     assert mailbox_calls[0]["runtime_task_type"] == "team_member"
     assert mailbox_calls[0]["parent_session_id"] == plan.session_id
     assert mailbox_calls[0]["message"] == "Review hook and session parity gaps."
+    team = next(item for item in db.added if isinstance(item, AgentTeam))
+    assert team.metadata_json["plan_authorization"] == plan.metadata_json["active_plan_authorization"]
 
 
 @pytest.mark.asyncio

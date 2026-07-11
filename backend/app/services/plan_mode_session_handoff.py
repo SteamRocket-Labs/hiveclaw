@@ -30,6 +30,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from app.services.plan_mode_core import build_plan_execution_instruction
+from app.services.plan_authorization_lease import require_active_plan_authorization
 
 logger = logging.getLogger(__name__)
 
@@ -140,6 +141,7 @@ async def continue_current_session_handoff(db: Any, plan: Any) -> dict[str, Any]
         "approved_plan_version": plan.plan_version,
         "approved_plan_hash": plan.plan_hash,
         "source": "plan_mode_handoff",
+        "plan_authorization": require_active_plan_authorization(plan),
     }
     plan_json = plan.plan_json if isinstance(plan.plan_json, dict) else {}
     execution_contract = plan_json.get("execution_contract")

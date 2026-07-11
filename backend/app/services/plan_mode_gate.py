@@ -35,10 +35,15 @@ from typing import Any, Awaitable, Callable
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.database import async_session
 from app.models.plan_request import AgentPlanRequest
 from app.services import plan_mode_core as core
+from app.services.plan_authorization_lease import (
+    PlanAuthorizationLeaseError,
+    consume_plan_authorization_lease,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +73,9 @@ class PlanGateDecision:
     reason: str
     needs_plan_payload: dict | None = None
     exempt_reason: str | None = None
+    authorization_lease_id: str | None = None
+    canonical_args_hash: str | None = None
+    target_ref: str | None = None
 
     @property
     def needs_plan(self) -> bool:
@@ -78,17 +86,29 @@ class PlanGateDecision:
 class PlanModeGate:
     """Stateless decision service. Holds no per-request state."""
 
+    def __init__(
+        self,
+        *,
+        plan_authorization_session_factory: async_sessionmaker[AsyncSession] | None = None,
+    ) -> None:
+        self.plan_authorization_session_factory = plan_authorization_session_factory
+
     async def check(
         self,
         db: Any,
         *,
         agent_id: UUID,
+        requester_user_id: UUID | str | None = None,
+        session_id: str | None = None,
+        runtime_task_id: UUID | str | None = None,
         action_kind: str,
+        target_ref: str | None = None,
         action_ref: Any = None,
         confirmed_plan_id: UUID | str | None = None,
         plan_version: int | None = None,
         plan_hash: str | None = None,
         action_artifact: dict | None = None,
+        evidence_id: str | None = None,
         artifact_resolver: ArtifactResolver | None = None,
     ) -> PlanGateDecision:
         """Decide whether ``action_kind`` may start for ``agent_id`` (§9.0 / §9.2).
@@ -132,10 +152,15 @@ class PlanModeGate:
                 action_kind=action_kind,
                 intent_type=intent_type,
                 agent_id=agent_id,
+                requester_user_id=requester_user_id,
+                session_id=session_id,
+                runtime_task_id=runtime_task_id,
                 confirmed_plan_id=confirmed_plan_id,
                 plan_version=plan_version,
                 plan_hash=plan_hash,
+                target_ref=target_ref,
                 action_artifact=action_artifact,
+                evidence_id=evidence_id,
             )
             if decision is not None:
                 return decision
@@ -181,10 +206,15 @@ class PlanModeGate:
         action_kind: str,
         intent_type: str,
         agent_id: UUID,
+        requester_user_id: UUID | str | None,
+        session_id: str | None,
+        runtime_task_id: UUID | str | None,
         confirmed_plan_id: UUID | str,
         plan_version: int | None,
         plan_hash: str | None,
+        target_ref: str | None,
         action_artifact: dict | None,
+        evidence_id: str | None,
     ) -> PlanGateDecision | None:
         """Resolve and validate the referenced plan.
 
@@ -258,7 +288,61 @@ class PlanModeGate:
             submitted_hash=plan_hash,
         )
         if check.ok:
-            return PlanGateDecision(allowed=True, reason="confirmed_plan_handoff")
+            if requester_user_id is None:
+                return self._authorization_block(
+                    plan=plan,
+                    reason="plan_authorization_requester_missing",
+                    summary="The confirmed plan is not bound to an authenticated requester for this action.",
+                )
+            if not str(target_ref or "").strip():
+                return self._authorization_block(
+                    plan=plan,
+                    reason="plan_authorization_target_missing",
+                    summary="The confirmed plan action has no concrete target binding.",
+                )
+            if not isinstance(action_artifact, dict):
+                return self._authorization_block(
+                    plan=plan,
+                    reason="plan_authorization_arguments_missing",
+                    summary="The confirmed plan action has no canonical argument binding.",
+                )
+            if getattr(plan, "tenant_id", None) is None:
+                return self._authorization_block(
+                    plan=plan,
+                    reason="plan_authorization_tenant_missing",
+                    summary="The confirmed plan has no tenant authority and cannot authorize execution.",
+                )
+            try:
+                lease = await consume_plan_authorization_lease(
+                    db=db,
+                    tenant_id=plan.tenant_id,
+                    agent_id=agent_id,
+                    plan_id=plan.id,
+                    requester_user_id=requester_user_id,
+                    session_id=session_id,
+                    runtime_task_id=runtime_task_id,
+                    action_kind=action_kind,
+                    target_ref=str(target_ref),
+                    action_artifact=action_artifact,
+                    evidence_id=str(evidence_id or f"plan-gate:{plan.id}:{action_kind}"),
+                    confirmed_by_user_id=plan.confirmed_by_user_id,
+                    plan_version=plan_version,
+                    plan_hash=plan_hash,
+                    session_factory=self.plan_authorization_session_factory,
+                )
+            except PlanAuthorizationLeaseError as exc:
+                return self._authorization_block(
+                    plan=plan,
+                    reason=f"plan_authorization_{exc.code}",
+                    summary=exc.message,
+                )
+            return PlanGateDecision(
+                allowed=True,
+                reason="confirmed_plan_lease_consumed",
+                authorization_lease_id=str(lease.lease_id),
+                canonical_args_hash=lease.binding.canonical_args_hash,
+                target_ref=lease.binding.target_ref,
+            )
 
         logger.info(
             "plan_gate_needs_plan",
@@ -271,6 +355,27 @@ class PlanModeGate:
                 plan_id=plan.id,
                 plan_version=plan.plan_version,
                 summary=check.message or core.default_needs_plan_summary(),
+            ),
+        )
+
+    @staticmethod
+    def _authorization_block(
+        *,
+        plan: AgentPlanRequest,
+        reason: str,
+        summary: str,
+    ) -> PlanGateDecision:
+        logger.info(
+            "plan_gate_needs_plan",
+            extra={"reason": reason, "plan_id": str(plan.id)},
+        )
+        return PlanGateDecision(
+            allowed=False,
+            reason=reason,
+            needs_plan_payload=core.build_confirmation_required_payload(
+                plan_id=plan.id,
+                plan_version=plan.plan_version,
+                summary=summary,
             ),
         )
 

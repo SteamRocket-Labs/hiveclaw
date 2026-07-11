@@ -75,11 +75,17 @@ class _RecordingGate:
 
 
 class _FakeSession:
+    def __init__(self):
+        self.commit_calls = 0
+
     async def __aenter__(self):
         return self
 
     async def __aexit__(self, exc_type, exc, tb):
         return False
+
+    async def commit(self):
+        self.commit_calls += 1
 
 
 def _context():
@@ -112,7 +118,7 @@ def _awaiting_plan_stub():
     )
 
 
-def _make_service(*, context, registry, gate, plan_mode_service=None):
+def _make_service(*, context, registry, gate, plan_mode_service=None, plan_session=None):
     from app.tools.service import ToolRuntimeService
 
     return ToolRuntimeService(
@@ -126,7 +132,7 @@ def _make_service(*, context, registry, gate, plan_mode_service=None):
         activity_logger=None,
         preflight_enabled=False,  # isolate the Plan Mode gate from ActionPreflight
         plan_mode_gate=gate,
-        plan_mode_session_factory=lambda: _FakeSession(),
+        plan_mode_session_factory=lambda: plan_session or _FakeSession(),
         plan_mode_service=plan_mode_service,
     )
 
@@ -416,6 +422,46 @@ async def test_execute_passes_confirmed_plan_args_to_gate():
     assert str(call["confirmed_plan_id"]) == str(plan_id)
     assert call["plan_version"] == 1
     assert call["plan_hash"] == "sha256:abc"
+
+
+@pytest.mark.asyncio
+async def test_execute_commits_consumed_plan_lease_before_tool_dispatch():
+    context = _context()
+    registry = _FakeRegistry("OK")
+    session = _FakeSession()
+    decision = PlanGateDecision(
+        allowed=True,
+        reason="confirmed_plan_lease_consumed",
+        authorization_lease_id=str(uuid4()),
+        canonical_args_hash="args-hash",
+        target_ref="tool:set_trigger",
+    )
+    service = _make_service(
+        context=context,
+        registry=registry,
+        gate=_RecordingGate(decision),
+        plan_session=session,
+    )
+
+    result = await service.execute(
+        "set_trigger",
+        {
+            "name": "daily",
+            "type": "cron",
+            "config": {"expr": "0 9 * * *"},
+            "reason": "brief",
+            "confirmed_plan_id": str(uuid4()),
+            "confirmed_plan_version": 1,
+            "confirmed_plan_hash": "sha256:abc",
+        },
+        agent_id=context.agent_id,
+        user_id=context.user_id,
+        session_id="session-1",
+    )
+
+    assert result == "OK"
+    assert session.commit_calls == 1
+    assert registry.calls[0].arguments["_plan_authorization"]["lease_id"] == decision.authorization_lease_id
 
 
 @pytest.mark.asyncio

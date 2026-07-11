@@ -150,7 +150,7 @@ def patched_gate(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_check_allows_when_confirmed_plan_id_version_hash_match(patched_gate):
+async def test_check_requires_bound_requester_even_when_plan_version_hash_match(patched_gate):
     gate, session = patched_gate
     agent_id = uuid4()
     plan = _make_confirmed_plan(session, agent_id=agent_id, version=1, plan_hash="sha256:abc")
@@ -164,9 +164,9 @@ async def test_check_allows_when_confirmed_plan_id_version_hash_match(patched_ga
         plan_hash="sha256:abc",
     )
 
-    assert decision.allowed is True
-    assert decision.reason == "confirmed_plan_handoff"
-    assert decision.needs_plan_payload is None
+    assert decision.allowed is False
+    assert decision.reason == "plan_authorization_requester_missing"
+    assert decision.needs_plan_payload["status"] == "requires_confirmation"
 
 
 @pytest.mark.asyncio
@@ -425,8 +425,8 @@ async def test_check_confirmed_plan_takes_precedence_over_exemption_lookup(patch
         artifact_resolver=resolver,
     )
 
-    assert decision.allowed is True
-    assert decision.reason == "confirmed_plan_handoff"
+    assert decision.allowed is False
+    assert decision.reason == "plan_authorization_requester_missing"
     assert resolver_called["n"] == 0  # short-circuited before exemption lookup
 
 

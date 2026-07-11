@@ -41,6 +41,9 @@ class PlanModeState:
     # Optional model-authored execution contract for the confirmed handoff. This
     # is machine-readable runtime state, not visible plan prose.
     execution_contract: dict[str, Any] | None = None
+    # Hash-covered action scopes pre-armed by a trusted runtime entrypoint. The
+    # model may describe them, but cannot widen a pre-armed scope at submission.
+    authorization_scopes: list[dict[str, Any]] | None = None
     original_request: str | None = None
     handoff_target: str | None = None
     reason: str | None = None
@@ -75,6 +78,8 @@ class PlanModeState:
             data["action_artifact"] = dict(self.action_artifact)
         if self.execution_contract:
             data["execution_contract"] = dict(self.execution_contract)
+        if self.authorization_scopes:
+            data["authorization_scopes"] = [dict(scope) for scope in self.authorization_scopes]
         # Phase 4B: the read-only gate reads the plan file off the ContextVar
         # mirror, so a provisioned plan_file_path must round-trip.
         if self.plan_file_path:
@@ -99,6 +104,9 @@ class PlanModeState:
             action_artifact=dict(data["action_artifact"]) if isinstance(data.get("action_artifact"), dict) else None,
             execution_contract=dict(data["execution_contract"])
             if isinstance(data.get("execution_contract"), dict)
+            else None,
+            authorization_scopes=[dict(scope) for scope in data["authorization_scopes"] if isinstance(scope, dict)]
+            if isinstance(data.get("authorization_scopes"), list)
             else None,
             original_request=data.get("original_request"),
             handoff_target=data.get("handoff_target"),

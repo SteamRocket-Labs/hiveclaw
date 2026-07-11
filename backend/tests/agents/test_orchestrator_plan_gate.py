@@ -24,6 +24,163 @@ def _request(*, execution_identity=None):
 
 
 @pytest.mark.asyncio
+async def test_unattended_delegation_verifies_consumed_plan_evidence_without_reconsuming(monkeypatch):
+    from app.agents.orchestrator import AgentDelegationRequest, OrchestrationPolicy, _delegation_plan_gate_allows
+
+    tenant_id = uuid4()
+    parent_agent_id = uuid4()
+    plan_id = uuid4()
+    requester_id = uuid4()
+    evidence = {
+        "schema": "hive.plan_authorization_evidence.v1",
+        "lease_id": str(uuid4()),
+        "canonical_args_hash": "args-hash",
+        "target_ref": f"plan:{plan_id}:handoff:delegation",
+        "requester_user_id": str(requester_id),
+        "session_id": "wechat-parent-session",
+        "runtime_task_id": None,
+        "evidence_id": f"plan-handoff:{plan_id}:delegation",
+    }
+    request = AgentDelegationRequest(
+        target=SimpleNamespace(id=uuid4(), name="投研助理"),
+        target_model=SimpleNamespace(provider="openai", model="gpt-4.1"),
+        conversation_messages=[{"role": "user", "content": "分析融资动态"}],
+        owner_id=requester_id,
+        session_id="child-session",
+        parent_agent_id=parent_agent_id,
+        parent_session_id="wechat-parent-session",
+        policy=OrchestrationPolicy(tool_profile="worker_safe"),
+        execution_identity=None,
+        tenant_id=tenant_id,
+        confirmed_plan_id=plan_id,
+        confirmed_plan_version=2,
+        confirmed_plan_hash="sha256:plan",
+        confirmed_plan_session_id="wechat-parent-session",
+        plan_authorization=evidence,
+    )
+    db = object()
+    calls = []
+
+    class _SessionContext:
+        async def __aenter__(self):
+            return db
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    async def fake_verify(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(lease_id=evidence["lease_id"])
+
+    monkeypatch.setattr("app.database.tenant_scoped_session", lambda *_args, **_kwargs: _SessionContext())
+    monkeypatch.setattr("app.services.plan_authorization_lease.verify_consumed_plan_authorization_lease", fake_verify)
+    monkeypatch.setattr(
+        "app.services.plan_mode_gate.get_plan_mode_gate",
+        lambda: (_ for _ in ()).throw(AssertionError("must verify consumed evidence, not consume another lease")),
+    )
+
+    allowed, reason = await _delegation_plan_gate_allows(request)
+
+    assert allowed is True
+    assert reason == "confirmed_plan_lease_verified"
+    assert calls == [
+        {
+            "db": db,
+            "tenant_id": tenant_id,
+            "agent_id": parent_agent_id,
+            "plan_id": plan_id,
+            "evidence": evidence,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_unattended_direct_delegation_consumes_and_stamps_exact_action(monkeypatch):
+    from app.agents.orchestrator import AgentDelegationRequest, OrchestrationPolicy, _delegation_plan_gate_allows
+
+    tenant_id = uuid4()
+    parent_agent_id = uuid4()
+    target_id = uuid4()
+    plan_id = uuid4()
+    owner_id = uuid4()
+    request = AgentDelegationRequest(
+        target=SimpleNamespace(id=target_id, name="投研助理"),
+        target_model=SimpleNamespace(provider="openai", model="gpt-4.1"),
+        conversation_messages=[{"role": "user", "content": "分析融资动态"}],
+        owner_id=owner_id,
+        session_id="child-session",
+        parent_agent_id=parent_agent_id,
+        parent_session_id="parent-session",
+        policy=OrchestrationPolicy(tool_profile="research_readonly"),
+        execution_identity=None,
+        tenant_id=tenant_id,
+        confirmed_plan_id=plan_id,
+        confirmed_plan_version=3,
+        confirmed_plan_hash="sha256:plan",
+        confirmed_plan_session_id="parent-session",
+        runtime_task_id="runtime-1",
+    )
+
+    class _DB:
+        def __init__(self):
+            self.commits = 0
+
+        async def commit(self):
+            self.commits += 1
+
+    db = _DB()
+    gate_calls = []
+
+    class _SessionContext:
+        async def __aenter__(self):
+            return db
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class _Gate:
+        async def check(self, _db, **kwargs):
+            gate_calls.append(kwargs)
+            return SimpleNamespace(
+                allowed=True,
+                reason="confirmed_plan_lease_consumed",
+                authorization_lease_id="lease-1",
+                canonical_args_hash="args-hash",
+                target_ref=kwargs["target_ref"],
+            )
+
+    monkeypatch.setattr("app.database.tenant_scoped_session", lambda *_args, **_kwargs: _SessionContext())
+    monkeypatch.setattr("app.services.plan_mode_gate.get_plan_mode_gate", lambda: _Gate())
+
+    allowed, reason = await _delegation_plan_gate_allows(request)
+
+    assert allowed is True
+    assert reason == "confirmed_plan_lease_consumed"
+    assert db.commits == 1
+    assert gate_calls[0]["requester_user_id"] == owner_id
+    assert gate_calls[0]["session_id"] == "parent-session"
+    assert gate_calls[0]["target_ref"] == f"agent:{target_id}:delegation"
+    assert gate_calls[0]["action_artifact"] == {
+        "target_agent_id": str(target_id),
+        "message": "分析融资动态",
+        "tool_profile": "research_readonly",
+        "target_artifact_path": None,
+        "target_artifacts": [],
+        "edit_mode": None,
+    }
+    assert request.plan_authorization == {
+        "schema": "hive.plan_authorization_evidence.v1",
+        "lease_id": "lease-1",
+        "canonical_args_hash": "args-hash",
+        "target_ref": f"agent:{target_id}:delegation",
+        "requester_user_id": str(owner_id),
+        "session_id": "parent-session",
+        "runtime_task_id": None,
+        "evidence_id": "delegation-start:runtime-1",
+    }
+
+
+@pytest.mark.asyncio
 async def test_user_initiated_delegation_bypasses_plan_gate_db_lookup(monkeypatch):
     from app.agents.orchestrator import _delegation_plan_gate_allows
     from app.kernel.contracts import ExecutionIdentityRef

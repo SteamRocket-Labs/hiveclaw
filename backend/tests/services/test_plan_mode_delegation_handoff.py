@@ -59,6 +59,18 @@ async def test_delegation_handoff_starts_async_delegation_with_confirmed_plan(mo
                 },
             },
         },
+        metadata_json={
+            "active_plan_authorization": {
+                "schema": "hive.plan_authorization_evidence.v1",
+                "lease_id": str(uuid4()),
+                "canonical_args_hash": "args-hash",
+                "target_ref": f"plan:{plan_id}:handoff:delegation",
+                "requester_user_id": str(confirmer_id),
+                "session_id": "wechat-session",
+                "runtime_task_id": None,
+                "evidence_id": f"plan-handoff:{plan_id}:delegation",
+            }
+        },
     )
 
     payload = await delegation_handoff_handler(None, plan)
@@ -78,6 +90,8 @@ async def test_delegation_handoff_starts_async_delegation_with_confirmed_plan(mo
     assert captured["confirmed_plan_id"] == plan_id
     assert captured["confirmed_plan_version"] == 2
     assert captured["confirmed_plan_hash"] == "sha256:abc"
+    assert captured["confirmed_plan_session_id"] == "wechat-session"
+    assert captured["plan_authorization"] == plan.metadata_json["active_plan_authorization"]
     assert captured["policy"].tool_profile == "research_readonly"
     assert captured["max_tool_rounds"] == 16
     assert captured["conversation_messages"][0]["content"].startswith("[Plan Mode confirmed delegation]")

@@ -119,16 +119,34 @@ async def test_autonomous_trigger_without_plan_is_blocked():
 
 
 @pytest.mark.asyncio
-async def test_autonomous_trigger_with_confirmed_plan_passes():
+async def test_autonomous_trigger_with_consumed_plan_evidence_passes(monkeypatch):
     from app.services.trigger_preflight import evaluate_trigger_preflight
 
     agent = _agent()
     plan = _confirmed_plan(agent_id=agent.id)
     trigger = _trigger(
         trigger_type="cron",
-        config={"plan_id": str(plan.id), "plan_version": plan.plan_version, "plan_hash": plan.plan_hash},
+        config={
+            "plan_id": str(plan.id),
+            "plan_version": plan.plan_version,
+            "plan_hash": plan.plan_hash,
+            "plan_authorization": {
+                "schema": "hive.plan_authorization_evidence.v1",
+                "lease_id": str(uuid4()),
+            },
+        },
     )
     db = _PlanLookupSession(plans=[plan])
+    verified = []
+
+    async def fake_verify(**kwargs):
+        verified.append(kwargs)
+        return SimpleNamespace()
+
+    monkeypatch.setattr(
+        "app.services.plan_authorization_lease.verify_consumed_plan_authorization_lease",
+        fake_verify,
+    )
 
     result = await evaluate_trigger_preflight(
         db, agent=agent, model=_model(), triggers=[trigger], now=datetime.now(timezone.utc)
@@ -136,6 +154,8 @@ async def test_autonomous_trigger_with_confirmed_plan_passes():
 
     assert result.ok is True
     assert result.skip_reason is None
+    assert verified[0]["db"] is db
+    assert verified[0]["plan_id"] == str(plan.id)
 
 
 @pytest.mark.asyncio

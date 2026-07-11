@@ -5460,6 +5460,15 @@ describe('AgentDetail extracted sections', () => {
         stop_conditions: ['User cancels the plan.'],
         assumptions: ['User wants Asia-market focus by default.'],
         open_questions: [],
+        authorization_scopes: [
+          {
+            action_kind: 'create_enabled_trigger',
+            target_ref: 'internal:trigger:new:opaque-id',
+            arguments: { secret_runtime_field: 'do-not-render' },
+            summary: 'Create one weekday 09:00 industry brief schedule',
+            max_uses: 1,
+          },
+        ],
       },
       handoff_status: null,
       handoff_payload: null,
@@ -5498,6 +5507,11 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('medium');
     expect(markup).toContain('User cancels the plan.');
     expect(markup).toContain('User wants Asia-market focus by default.');
+    expect(markup).toContain('Approved actions');
+    expect(markup).toContain('Create one weekday 09:00 industry brief schedule');
+    expect(markup).toContain('single use');
+    expect(markup).not.toContain('internal:trigger:new:opaque-id');
+    expect(markup).not.toContain('secret_runtime_field');
     // Actionable while awaiting confirmation; confirmation should clearly start handoff.
     expect(markup).toContain('Implement this plan');
     expect(markup).toContain('Adjust plan');

@@ -200,6 +200,7 @@ class TaskCreate(BaseModel):
     confirmed_plan_id: str | None = None
     confirmed_plan_version: int | None = None
     confirmed_plan_hash: str | None = None
+    confirmed_plan_session_id: str | None = None
 
 
 class TaskOut(BaseModel):
@@ -218,6 +219,7 @@ class TaskOut(BaseModel):
     plan_version: int | None = None
     plan_hash: str | None = None
     plan_exempt_reason: str | None = None
+    plan_authorization: dict | None = None
     created_at: datetime
     updated_at: datetime
     completed_at: datetime | None = None

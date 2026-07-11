@@ -137,6 +137,7 @@ async def launch_system_plan_run(
 
     user_id = plan.requested_by_user_id or getattr(agent, "owner_user_id", None) or agent.creator_id
 
+    seeded_scopes = (seed_context or {}).get("authorization_scopes")
     state = PlanModeState(
         active=True,
         plan_id=str(plan.id),
@@ -144,6 +145,9 @@ async def launch_system_plan_run(
         original_request=plan.original_request,
         source=SYSTEM_PLAN_RUN_SOURCE,
         reason="system_plan_run",
+        authorization_scopes=[dict(scope) for scope in seeded_scopes if isinstance(scope, dict)]
+        if isinstance(seeded_scopes, list)
+        else None,
     )
     session_context = SessionContext(
         source=SYSTEM_PLAN_RUN_SOURCE,

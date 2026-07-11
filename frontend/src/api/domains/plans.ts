@@ -91,6 +91,17 @@ export interface PlanHandoffSpec {
   [key: string]: unknown;
 }
 
+export interface PlanAuthorizationScope {
+  action_kind: string;
+  /** User-facing explanation of the exact action covered by confirmation. */
+  summary?: string;
+  max_uses?: number;
+  /** Opaque enforcement fields. They remain available to the runtime but are
+   * deliberately not rendered by the user-facing PlanCard. */
+  target_ref?: string;
+  arguments?: Record<string, unknown>;
+}
+
 /** Structured plan body — the canonical execution contract (§6.3). */
 export interface PlanJson {
   schema?: string;
@@ -112,6 +123,7 @@ export interface PlanJson {
   assumptions?: string[];
   open_questions?: string[];
   handoff?: PlanHandoffSpec | null;
+  authorization_scopes?: PlanAuthorizationScope[];
   [key: string]: unknown;
 }
 

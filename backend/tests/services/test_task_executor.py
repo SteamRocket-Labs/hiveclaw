@@ -55,6 +55,10 @@ async def _fake_resolve_tenant(_agent_id, **_kwargs):
     return uuid4()
 
 
+async def _verified_plan_authorization(task, **_kwargs):
+    return SimpleNamespace(lease_id=task.plan_authorization["lease_id"])
+
+
 @pytest.mark.asyncio
 async def test_execute_task_delegates_to_runtime_invoker(monkeypatch):
     from app.services.task_executor import execute_task
@@ -76,14 +80,16 @@ async def test_execute_task_delegates_to_runtime_invoker(monkeypatch):
         plan_version=1,
         plan_hash="sha256:task",
         plan_exempt_reason=None,
-    )
-    plan = SimpleNamespace(
-        id=plan_id,
-        agent_id=agent_id,
-        intent_type="in_session_execution",
-        status="confirmed",
-        plan_version=1,
-        plan_hash="sha256:task",
+        plan_authorization={
+            "schema": "hive.plan_authorization_evidence.v1",
+            "lease_id": str(uuid4()),
+            "canonical_args_hash": "args-hash",
+            "target_ref": f"task:{task_id}:run",
+            "requester_user_id": str(creator_id),
+            "session_id": "task-session",
+            "runtime_task_id": None,
+            "evidence_id": f"task-run:{task_id}:request-1",
+        },
     )
     tenant_id = uuid4()
     agent = SimpleNamespace(
@@ -105,13 +111,14 @@ async def test_execute_task_delegates_to_runtime_invoker(monkeypatch):
         tenant_id=tenant_id,
     )
 
-    setup_session = _FakeSession([task, plan])
+    setup_session = _FakeSession([task])
     model_session = _FakeSession([agent, model, None])
     final_session = _FakeSession([task])
     sessions = [setup_session, model_session, final_session]
 
     captured = {}
     activity_calls = []
+    verified_authorizations = []
 
     async def fake_invoke_agent(request):
         captured["request"] = request
@@ -120,10 +127,18 @@ async def test_execute_task_delegates_to_runtime_invoker(monkeypatch):
     async def fake_log_activity(*args, **kwargs):
         activity_calls.append((args, kwargs))
 
+    async def fake_verify_authorization(**kwargs):
+        verified_authorizations.append(kwargs)
+        return SimpleNamespace(lease_id=task.plan_authorization["lease_id"])
+
     monkeypatch.setattr("app.services.task_executor.resolve_tenant_for_agent", _fake_resolve_tenant)
     monkeypatch.setattr("app.services.task_executor.tenant_scoped_session", lambda *a, **k: sessions.pop(0))
     monkeypatch.setattr("app.services.task_executor.TaskLog", lambda **kwargs: SimpleNamespace(**kwargs))
     monkeypatch.setattr("app.services.task_executor.invoke_agent", fake_invoke_agent)
+    monkeypatch.setattr(
+        "app.services.task_executor.verify_consumed_plan_authorization_lease",
+        fake_verify_authorization,
+    )
     monkeypatch.setattr("app.services.activity_logger.log_activity", fake_log_activity)
 
     await execute_task(task_id, agent_id)
@@ -158,6 +173,10 @@ async def test_execute_task_delegates_to_runtime_invoker(monkeypatch):
     assert task.completed_at is not None
     assert any("✅ 任务完成" in entry.content and "任务已完成" in entry.content for entry in final_session.added)
     assert activity_calls
+    assert len(verified_authorizations) == 1
+    assert verified_authorizations[0]["db"] is setup_session
+    assert verified_authorizations[0]["plan_id"] == plan_id
+    assert verified_authorizations[0]["evidence"] == task.plan_authorization
 
 
 @pytest.mark.asyncio
@@ -177,6 +196,7 @@ async def test_execute_task_blocks_without_confirmed_plan(monkeypatch):
         plan_version=None,
         plan_hash=None,
         plan_exempt_reason=None,
+        plan_authorization=None,
     )
     setup_session = _FakeSession([task])
     monkeypatch.setattr("app.services.task_executor.resolve_tenant_for_agent", _fake_resolve_tenant)
@@ -217,14 +237,16 @@ async def test_execute_task_persists_reflection_session_tool_calls_and_t0_ledger
         plan_version=1,
         plan_hash="sha256:task",
         plan_exempt_reason=None,
-    )
-    plan = SimpleNamespace(
-        id=plan_id,
-        agent_id=agent_id,
-        intent_type="in_session_execution",
-        status="confirmed",
-        plan_version=1,
-        plan_hash="sha256:task",
+        plan_authorization={
+            "schema": "hive.plan_authorization_evidence.v1",
+            "lease_id": str(uuid4()),
+            "canonical_args_hash": "args-hash",
+            "target_ref": f"task:{task_id}:run",
+            "requester_user_id": str(creator_id),
+            "session_id": "task-session",
+            "runtime_task_id": None,
+            "evidence_id": f"task-run:{task_id}:request-2",
+        },
     )
     tenant_id = uuid4()
     agent = SimpleNamespace(
@@ -248,7 +270,7 @@ async def test_execute_task_persists_reflection_session_tool_calls_and_t0_ledger
     )
     participant = SimpleNamespace(id=participant_id)
 
-    setup_session = _FakeSession([task, plan])
+    setup_session = _FakeSession([task])
     prepare_session = _FakeSession([agent, model, participant])
     tool_call_session = _FakeSession([])
     final_session = _FakeSession([task])
@@ -270,6 +292,10 @@ async def test_execute_task_persists_reflection_session_tool_calls_and_t0_ledger
     monkeypatch.setattr("app.services.task_executor.tenant_scoped_session", lambda *a, **k: sessions.pop(0))
     monkeypatch.setattr("app.services.task_executor.TaskLog", lambda **kwargs: SimpleNamespace(**kwargs))
     monkeypatch.setattr("app.services.task_executor.invoke_agent", fake_invoke_agent)
+    monkeypatch.setattr(
+        "app.services.task_executor.verify_consumed_plan_authorization_lease",
+        lambda **kwargs: _verified_plan_authorization(task, **kwargs),
+    )
     monkeypatch.setattr(
         "app.memory.t0.ledger.get_settings",
         lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),

@@ -173,6 +173,35 @@ async def test_launch_passes_seed_context_into_prompt(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_launch_prearms_trusted_authorization_scopes_from_seed_context(monkeypatch):
+    from app.services import plan_mode_system_run as mod
+
+    agent = _agent()
+    model = SimpleNamespace(id=agent.primary_model_id, provider="openai", model="x")
+    plan = _draft_plan(agent)
+    _patch_resolve(monkeypatch, _ResolveSession(agent=agent, model=model))
+    scopes = [
+        {
+            "action_kind": "create_enabled_trigger",
+            "target_ref": "trigger:new",
+            "arguments": {"type": "cron", "config": {"expr": "0 9 * * *"}},
+        }
+    ]
+    captured = {}
+
+    async def fake_invoke_agent(request):
+        captured["typed"] = request.session_context.plan_mode.authorization_scopes
+        captured["mirror"] = request.session_context.metadata["plan_mode"]["authorization_scopes"]
+        return SimpleNamespace(content="planned", tokens_used=0)
+
+    monkeypatch.setattr("app.runtime.invoker.invoke_agent", fake_invoke_agent)
+    await mod.launch_system_plan_run(plan, seed_context={"authorization_scopes": scopes})
+
+    assert captured["typed"] == scopes
+    assert captured["mirror"] == scopes
+
+
+@pytest.mark.asyncio
 async def test_launch_is_fail_closed_when_invoke_raises(monkeypatch):
     """A failed agent run must NOT propagate and must reset the ContextVar — the
     plan is simply left non-confirmable; the launcher never executes the work."""

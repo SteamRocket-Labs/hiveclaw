@@ -68,6 +68,7 @@ from app.services.workflow_launch import inspect_workflow_confirmation_needs, st
 from app.services.workflow_promote_suggestions import collect_promote_suggestions
 from app.services.workflow_runtime_service import LoadedWorkflowRun, WorkflowRuntimeService
 from app.services.workflow_user_control import queue_workflow_resume_record
+from app.services.plan_mode_core import stamp_confirmed_plan_provenance
 
 router = APIRouter(prefix="/agents", tags=["workflows"])
 logger = logging.getLogger(__name__)
@@ -416,7 +417,6 @@ async def start_workflow_endpoint(
             confirmation_source="api_explicit_start",
             confirmation_evidence_id=request_id,
         )
-        await db.commit()
     except WorkflowConfirmationConflict as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail={"code": exc.code, "message": exc.message}
@@ -432,6 +432,53 @@ async def start_workflow_endpoint(
             "confirmation_required": bool((preview.preview_json or {}).get("confirmation_required")),
             "confirmation_reasons": list((preview.preview_json or {}).get("confirmation_reasons") or []),
         }
+
+    plan_authorization: dict[str, Any] | None = None
+    if payload.confirmed_plan_id:
+        action_artifact = {
+            "preview_id": str(preview.id),
+            "definition_hash": preview.definition_hash,
+            "args_hash": preview.args_hash,
+            "artifact_version": preview.artifact_version,
+            "artifact_hash": preview.artifact_hash,
+        }
+        evidence_id = f"workflow-start:{preview.id}:{request_id}"
+        decision = await _plan_gate_check(
+            db,
+            agent_id=agent_id,
+            requester_user_id=current_user.id,
+            session_id=str(preview.session_id),
+            action_kind="start_workflow",
+            target_ref=f"workflow-preview:{preview.id}",
+            confirmed_plan_id=payload.confirmed_plan_id,
+            plan_version=payload.plan_version,
+            plan_hash=payload.plan_hash,
+            action_artifact=action_artifact,
+            evidence_id=evidence_id,
+        )
+        if not decision.allowed:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=getattr(decision, "needs_plan_payload", None)
+                or {"code": getattr(decision, "reason", "plan_authorization_denied")},
+            )
+        plan_authorization = stamp_confirmed_plan_provenance(
+            {},
+            plan_id=payload.confirmed_plan_id,
+            plan_version=payload.plan_version,
+            plan_hash=payload.plan_hash,
+            authorization_lease_id=getattr(decision, "authorization_lease_id", None),
+            canonical_args_hash=getattr(decision, "canonical_args_hash", None),
+            target_ref=getattr(decision, "target_ref", None),
+            requester_user_id=current_user.id,
+            session_id=str(preview.session_id),
+            evidence_id=evidence_id,
+        ).get("plan_authorization")
+
+    # The preview claim and optional PlanAuthorizationLease consumption share
+    # this commit. A failed launch can be retried through the preview recovery
+    # state with the same immutable evidence id.
+    await db.commit()
 
     claim_token = preview.claim_token
     run_id = preview.run_id
@@ -462,6 +509,8 @@ async def start_workflow_endpoint(
         "confirmation_source": preview.confirmation_source,
         "confirmation_evidence_id": preview.confirmation_evidence_id,
     }
+    if plan_authorization:
+        run_metadata["plan_authorization"] = plan_authorization
     try:
         handle = await start_ephemeral_workflow_for_agent(
             agent_id=agent_id,

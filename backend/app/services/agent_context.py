@@ -268,16 +268,23 @@ async def _build_runtime_metadata_sections(
     return parts
 
 
-async def _build_a2a_collaborators_context(agent_id: uuid.UUID, *, budget_chars: int = 6000) -> str:
+async def _build_a2a_collaborators_context(
+    agent_id: uuid.UUID,
+    *,
+    tenant_id: uuid.UUID | str | None = None,
+    budget_chars: int = 6000,
+) -> str:
     """Build live A2A collaborator prompt context from DB policy state."""
 
     try:
         from app.database import tenant_scoped_session
         from app.runtime.prompt_sections import build_a2a_collaborators_section
         from app.services.a2a_collaboration_policy import build_a2a_collaboration_read_model
-        from app.services.tenant_resolver import resolve_tenant_for_agent
 
-        tenant_id = await resolve_tenant_for_agent(agent_id)
+        if tenant_id is None:
+            from app.services.tenant_resolver import resolve_tenant_for_agent
+
+            tenant_id = await resolve_tenant_for_agent(agent_id)
         async with tenant_scoped_session(tenant_id) as db:
             read_model = await build_a2a_collaboration_read_model(db, agent_id)
         return build_a2a_collaborators_section(read_model, max_chars=budget_chars)
@@ -326,6 +333,7 @@ async def build_agent_context(
     include_skill_catalog: bool = True,  # Step 9: invoker sets False — catalog flows via dynamic suffix
     budget_profile: ContextBudget | None = None,
     invocation_scope: str = "conversation",
+    tenant_id: uuid.UUID | str | None = None,
 ) -> str:
     """Build a rich system prompt incorporating agent's full context.
 
@@ -341,6 +349,14 @@ async def build_agent_context(
     """
     tool_ws = TOOL_WORKSPACE / str(agent_id)
     data_ws = PERSISTENT_DATA / str(agent_id)
+    _agent_tenant_id = tenant_id
+    if _agent_tenant_id is None:
+        try:
+            from app.services.tenant_resolver import resolve_tenant_for_agent
+
+            _agent_tenant_id = await resolve_tenant_for_agent(agent_id)
+        except Exception as exc:
+            logger.warning("Failed to resolve tenant for frozen agent context {}: {}", agent_id, exc)
 
     # --- Soul ---
     soul_budget = budget_profile.soul_budget_chars if budget_profile else 16000
@@ -381,15 +397,22 @@ async def build_agent_context(
     # --- Channel integration skills (agent reads on demand from skills/ directory) ---
     _configured_channels = []
     try:
+        if _agent_tenant_id is None:
+            raise RuntimeError("agent tenant is required for channel context")
         from app.models.channel_config import ChannelConfig
-        from app.database import async_session as _ctx_session
+        from app.database import tenant_scoped_session
         from sqlalchemy import select as sa_select
 
-        async with _ctx_session() as _ctx_db:
+        async with tenant_scoped_session(
+            _agent_tenant_id,
+            require_tenant=True,
+            source="frozen_agent_channel_context",
+        ) as _ctx_db:
             _cfgs = await _ctx_db.execute(
                 sa_select(ChannelConfig)
                 .where(
                     ChannelConfig.agent_id == agent_id,
+                    ChannelConfig.tenant_id == _agent_tenant_id,
                     ChannelConfig.is_configured,
                 )
                 .order_by(ChannelConfig.channel_type)
@@ -410,14 +433,15 @@ async def build_agent_context(
     try:
         from app.database import tenant_scoped_session
         from app.models.system_settings import SystemSetting
-        from app.services.tenant_resolver import resolve_tenant_for_agent
         from sqlalchemy import select as sa_select
 
-        # Pin the GUC to the agent's tenant so the agents/tenant_settings reads
-        # below survive under enforced (non-owner) RLS; without it the agent row
-        # is invisible and the company intro silently vanishes from the prompt.
-        _agent_tenant_id = await resolve_tenant_for_agent(agent_id)
-        async with tenant_scoped_session(_agent_tenant_id) as db:
+        if _agent_tenant_id is None:
+            raise RuntimeError("agent tenant is required for company context")
+        async with tenant_scoped_session(
+            _agent_tenant_id,
+            require_tenant=True,
+            source="frozen_agent_company_context",
+        ) as db:
             company_intro = ""
 
             # Priority 1: tenant_settings table (new)
@@ -460,7 +484,6 @@ async def build_agent_context(
                 context_parts.append(f"### Company Information\n{company_intro}")
     except Exception as exc:
         logger.debug("Failed to load company intro for agent {}: {}", agent_id, exc)
-        _agent_tenant_id = None
 
     # --- Organization Structure (from synced workspace file) ---
     if _agent_tenant_id:
@@ -481,7 +504,11 @@ async def build_agent_context(
     skills_section = (
         build_skill_catalog_section_for_agent(agent_id, budget_profile=budget_profile) if include_skill_catalog else ""
     )
-    a2a_section = await _build_a2a_collaborators_context(agent_id, budget_chars=a2a_budget)
+    a2a_section = await _build_a2a_collaborators_context(
+        agent_id,
+        tenant_id=_agent_tenant_id,
+        budget_chars=a2a_budget,
+    )
 
     # Operating contract via modular section
     operating_contract = build_executing_actions_section(invocation_scope)

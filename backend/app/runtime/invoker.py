@@ -562,7 +562,6 @@ async def _build_system_prompt(
         return standalone
     if current_user_name is None:
         current_user_name = await _resolve_current_user_name(request.user_id)
-    del tenant_id  # reserved for future prompt builders
     budget_profile = _resolve_context_budget(request)
     context_window_tokens = getattr(request.model, "max_input_tokens", None) if request.model else None
     agent_context = await build_agent_context(
@@ -576,6 +575,7 @@ async def _build_system_prompt(
         include_skill_catalog=False,  # Step 9: catalog flows via dynamic suffix, not the frozen prefix
         budget_profile=budget_profile,
         invocation_scope=request.invocation_scope or "conversation",
+        tenant_id=tenant_id,
     )
     return build_frozen_prompt_prefix(
         agent_context=agent_context,

@@ -24,7 +24,7 @@
 - **P1：13 个**。会造成恢复能力、CC parity、自进化、资产统计、实时 UI 或验收可信度不足，不能作为“上线后再补”的债务。
 - **P2：1 个**。是确定的 KISS/维护性残留，应与本轮一起清理。
 
-当前修复进度：**8 / 28**（SA-01 至 SA-08 已按七原子闭环并分别提交）；其余断点未全部关闭前，结论继续保持 NO-GO。
+当前修复进度：**9 / 28**（SA-01 至 SA-09 已按七原子闭环并分别提交）；其余断点未全部关闭前，结论继续保持 NO-GO。
 
 这里的“95% 以上信心”指的是：**对当前 checkout 根断点清单完整度的置信度为 95.3%**，不代表系统有 95.3% 的上线成熟度。只要任一 P0 尚存，上线结论就是 NO-GO。
 
@@ -92,7 +92,7 @@ Codex 的 PermissionProfile、thread identity、sandbox policy 和 approval even
 | SA-06 | 外部通道身份被建成全局 User | P0 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | SA-07 | 最终通道交付无 durable outbox | P0 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | SA-08 | CC Hook surface 有 no-op/planned 壳 | P1 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| SA-09 | Frozen prompt cache 依赖签名不完整 | P1 | 局部闭环 | ✓ | △ | △ | △ | △ | △ | △ |
+| SA-09 | Frozen prompt cache 依赖签名不完整 | P1 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | SA-10 | 智能上下文机械截断无恢复指针 | P1 | 局部闭环 | △ | ✓ | △ | △ | ✗ | △ | △ |
 | SA-11 | Local Bridge receipt 文件并发丢写 | P1 | 断点 | ✓ | ✓ | △ | △ | ✗ | △ | ✗ |
 | SA-12 | 全量测试入口不 hermetic | P1 | 断点 | ✓ | ✓ | △ | △ | ✗ | △ | ✗ |
@@ -214,6 +214,8 @@ Task logs 在 `backend/app/api/tasks.py:181-207` 只按 task_id 查写，没有�
 关闭标准不是“把事件 emit 出去”，而是每个 hook 有：确定触发点、blocking/observe 语义、timeout、修改输入规则、失败恢复、transcript evidence、测试 fixture。Hive 不支持 worktree 时应明确标“缺失”或映射到 cloud workspace transaction，不能保留假 parity 壳。
 
 ### SA-09：Frozen prompt cache 可能复用过时治理上下文 — P1
+
+**修复状态（2026-07-11）**：**闭环**。内部 cache 不再相信调用方可选 metadata signature 或 mtime/size 猜测。Kernel 每轮先从 tenant-pinned 的真实文件/数据库 read model 重建一次 frozen prefix，再以模型实际看到的完整 rendered bytes 生成 `hive.frozen_context_dependency_manifest.v1`；只有本轮 root hash 与 session cache key 完全相同时才报告 verified hit，缺少本轮渲染结果直接禁用复用，重建失败清除旧 cache 并向上失败，绝不回退到旧治理上下文。manifest 记录 root hash 和每个 section 的 content hash/尺寸/token，并进入 RuntimeAssemblyState/PromptAssemblyManifest。ChannelConfig 与 Company reads 现在复用 runtime 已解析 tenant，通过 `tenant_scoped_session(require_tenant=True)` 执行；Agent invoker 显式把 tenant 传入 context builder。FreeCode/Codex 所需的 provider prompt caching仍保留，因为相同 frozen bytes 仍稳定发送；删除的只是会产生 stale hit 的进程内猜测层。
 
 `backend/app/kernel/engine.py:2462-2644` 的 cache key支持若干可选 signature，但全仓未发现生产路径写入 configured channel/company/org/A2A 等 signature。workspace 文件有 hash，DB-driven ChannelConfig、Company Intro、协作者状态不一定失效。`backend/app/services/agent_context.py:381-399` 查询 ChannelConfig 使用裸 `async_session`，在强制 RLS/background 下异常会被吞掉并静默省略。
 
@@ -1150,3 +1152,63 @@ alembic heads
 ```
 
 结果：Ruff lint `All checks passed!`，22 个变更 Python 文件格式通过；Alembic 单 head：`channel_delivery_outbox_0711 (head)`。SA-08 不新增 schema migration，复用 canonical `InvocationSpan` 与现有 transcript/session facts。
+
+### SA-09 — Frozen Context 可证明失效闭环
+
+状态：**闭环**。提交主题：`fix(SA-09): verify rendered frozen context before cache reuse`。
+
+七原子证据：
+
+1. **输入**：每次 Agent invocation 都以本轮真实 tenant、Agent、invocation scope、model window、soul、company、org、configured channels、A2A collaborators 与 subagent definitions 重新渲染 frozen prefix；不再要求入口方手工写 `configured_channel_signature` 等可选 metadata。
+2. **权威**：Invoker 把 Kernel 已解析的 tenant 显式传给 `build_agent_context()`；ChannelConfig 和 Company/TenantSetting 查询都使用 `tenant_scoped_session(require_tenant=True)`，ChannelConfig SQL 同时绑定 tenant 与 Agent。A2A context 复用同一 tenant，不再重新猜测或走裸 session。
+3. **执行**：Kernel 的唯一规则是“先重建、再比较”；`_build_frozen_prompt_cache_key()` 没有 `rendered_prefix` 时返回 `None`，因此不存在未验证 cache hit。相同 rendered bytes 可复用 session snapshot并继续获得 provider prompt cache；内容改变立即 miss。上下文重建异常会清除旧 snapshot并抛出，禁止 stale fallback。
+4. **证据**：`hive.frozen_context_dependency_manifest.v1` 保存完整 root SHA-256、总字符数，以及每个 rendered section 的 name/content hash/chars/tokens；同一 manifest 写入 SessionContext 与 canonical `RuntimeAssemblyState.prompt_assembly_manifest`，随后由 Web Chat Runtime 持久化到 RuntimeTask terminal metadata并供 Session Control Plane 消费。
+5. **恢复**：cache schema 升为 `frozen-v5`，旧 persisted key 自动失效。相同内容重试得到相同 deterministic key；缺 manifest、内容变化、soul 中途写入或重建失败均不会复用旧 bytes。tool expansion 若在同轮触发 frozen rebuild，会同步刷新 manifest 与 cache key。
+6. **消费**：Provider 继续收到稳定 frozen prefix与动态 suffix 分界；cache decision ledger 的 hit 现在表示“本轮 rendered bytes 已验证一致”，不是“metadata 看起来没变”。PromptAssemblyManifest、Session Control Plane 与 context diagnostics 消费 section hashes，管理员可定位是哪一段发生变化，而不暴露 prompt 明文。
+7. **验收**：覆盖无外部 signature 的 company context 变化、重建失败不回退、missing rendered prefix 禁用 cache、user/model metadata 纯度、standalone prompt、subagent definition、per-section hash、manifest 持久消费、tenant-pinned ChannelConfig/Company reads、tool expansion、prompt builder/invoker/session control 回归、Ruff 与后端全量。
+
+KISS/奥卡姆证据：删除 workspace mtime/size 扫描、可选 metadata signature 汇总和 subagent 独立 signature 等重复猜测层；`backend/app/kernel/engine.py` 本项净减少 89 行。完整 rendered bytes 已经是更强且唯一的事实，不再维护第二套不完备依赖模型。
+
+RED 证据（修复前由新增回归测试稳定复现）：
+
+- 核心三测试为 `3 failed`：company context 从 v1 变为 v2 时 build 只执行一次；第二轮 context builder 明确抛错时旧 prefix 仍被发送；`build_agent_context(tenant_id=...)` 不存在且 ChannelConfig 仍走裸 session。
+- section 证据补强测试为 `1 failed`：已有 root hash，但每个 frozen section 没有 `content_hash`。
+- PromptAssemblyManifest 消费补强测试为 `1 failed`：运行时 manifest 未携带 frozen dependency manifest。
+
+GREEN 证据：
+
+```bash
+cd backend
+source .venv/bin/activate
+pytest -q \
+  tests/kernel/test_prompt_cache_integration.py \
+  tests/services/test_agent_context.py \
+  tests/services/test_prompt_contracts.py \
+  tests/runtime/test_prompt_builder.py \
+  tests/runtime/test_invoker.py \
+  tests/runtime/test_standalone_prompt.py \
+  tests/runtime/test_turn_envelope_prompt_manifest.py \
+  tests/services/test_session_control_plane.py \
+  tests/kernel/test_engine.py::test_execute_tool_with_hooks_tracks_filesystem_facade_events \
+  tests/api/test_chat_sessions_permissions.py::test_get_session_context_usage_returns_context_diagnostics
+```
+
+结果：`185 passed, 4 warnings in 1.66s`。
+
+```bash
+cd backend
+source .venv/bin/activate
+pytest tests -q
+```
+
+结果：`6312 passed, 1 skipped, 5 warnings in 146.46s`，零失败。
+
+```bash
+cd backend
+source .venv/bin/activate
+ruff check <SA-09 当前变更 Python 文件>
+ruff format --check <SA-09 当前变更 Python 文件>
+alembic heads
+```
+
+结果：Ruff lint `All checks passed!`，7 个变更 Python 文件格式通过；Alembic 单 head：`channel_delivery_outbox_0711 (head)`。SA-09 不新增 schema migration。

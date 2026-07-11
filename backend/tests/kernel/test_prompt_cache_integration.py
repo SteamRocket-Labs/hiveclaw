@@ -37,7 +37,7 @@ def _make_model():
 
 
 @pytest.mark.asyncio
-async def test_kernel_reuses_frozen_prefix_but_refreshes_dynamic_retrieval():
+async def test_kernel_verifies_frozen_prefix_and_refreshes_dynamic_retrieval():
     from app.kernel.contracts import InvocationRequest, RuntimeConfig
     from app.kernel.engine import AgentKernel, KernelDependencies
 
@@ -98,7 +98,9 @@ async def test_kernel_reuses_frozen_prefix_but_refreshes_dynamic_retrieval():
 
     assert result1.content == "first"
     assert result2.content == "second"
-    assert build_calls["count"] == 1
+    # Re-rendering is the dependency verification pass. The provider still sees
+    # byte-identical frozen content and can reuse its prompt cache.
+    assert build_calls["count"] == 2
     assert session_ctx.prompt_prefix == "FROZEN"
     assert session_ctx.prompt_fingerprint
 
@@ -115,6 +117,124 @@ async def test_kernel_reuses_frozen_prefix_but_refreshes_dynamic_retrieval():
     assert second_dynamic.count("SNAPSHOT_BLOCK") == 1
     assert "RETRIEVAL_1" in first_dynamic
     assert "RETRIEVAL_2" in second_dynamic
+
+
+@pytest.mark.asyncio
+async def test_kernel_revalidates_rendered_frozen_context_without_external_signature():
+    from app.kernel.contracts import InvocationRequest, RuntimeConfig
+    from app.kernel.engine import AgentKernel, KernelDependencies
+
+    tenant_id = uuid4()
+    state = {"company": "Company policy v1"}
+    build_calls = []
+    session_ctx = SessionContext(session_id="s-live-context", source="chat")
+
+    async def build_system_prompt(*_args, **_kwargs):
+        build_calls.append(state["company"])
+        return f"FROZEN::{state['company']}"
+
+    fake_client = _FakeClient(
+        [
+            SimpleNamespace(content="first", tool_calls=[], reasoning_content=None, usage={"total_tokens": 3}),
+            SimpleNamespace(content="second", tool_calls=[], reasoning_content=None, usage={"total_tokens": 3}),
+        ]
+    )
+    kernel = AgentKernel(
+        KernelDependencies(
+            resolve_runtime_config=lambda _agent_id: RuntimeConfig(tenant_id=tenant_id, max_tool_rounds=3),
+            resolve_current_user_name=lambda _user_id: "Rocky",
+            build_system_prompt=build_system_prompt,
+            resolve_memory_context=lambda *_args, **_kwargs: "",
+            get_tools=lambda *_args, **_kwargs: [],
+            maybe_compress_messages=lambda messages, **_kwargs: messages,
+            create_client=lambda _model: fake_client,
+            execute_tool=lambda *_args, **_kwargs: "OK",
+            persist_memory=lambda **_kwargs: None,
+            record_token_usage=lambda *_args, **_kwargs: None,
+            get_max_tokens=lambda *_args, **_kwargs: 1024,
+            extract_usage_tokens=lambda usage: usage.get("total_tokens"),
+            estimate_tokens_from_chars=lambda chars: chars // 4,
+        )
+    )
+    request = InvocationRequest(
+        model=_make_model(),
+        messages=[{"role": "user", "content": "hello"}],
+        agent_name="Agent",
+        role_description="desc",
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        session_context=session_ctx,
+    )
+
+    await kernel.handle(request)
+    state["company"] = "Company policy v2"
+    await kernel.handle(request)
+
+    assert build_calls == ["Company policy v1", "Company policy v2"]
+    assert "Company policy v1" in fake_client.calls[0]["messages"][0].content
+    assert "Company policy v2" in fake_client.calls[1]["messages"][0].content
+    manifest = session_ctx.metadata["frozen_context_dependency_manifest"]
+    assert manifest["root_hash"]
+    assert manifest["sections"]
+    assert all(section["content_hash"] for section in manifest["sections"])
+    prompt_manifest = session_ctx.metadata["runtime_assembly_state"]["prompt_assembly_manifest"]
+    assert prompt_manifest["frozen_context_dependency_manifest"]["root_hash"] == manifest["root_hash"]
+
+
+@pytest.mark.asyncio
+async def test_kernel_never_falls_back_to_stale_prefix_when_context_rebuild_fails():
+    from app.kernel.contracts import InvocationRequest, RuntimeConfig
+    from app.kernel.engine import AgentKernel, KernelDependencies
+
+    tenant_id = uuid4()
+    build_count = 0
+
+    async def build_system_prompt(*_args, **_kwargs):
+        nonlocal build_count
+        build_count += 1
+        if build_count == 2:
+            raise RuntimeError("governed context unavailable")
+        return "FROZEN::complete"
+
+    fake_client = _FakeClient(
+        [
+            SimpleNamespace(content="first", tool_calls=[], reasoning_content=None, usage={"total_tokens": 3}),
+            SimpleNamespace(content="stale", tool_calls=[], reasoning_content=None, usage={"total_tokens": 3}),
+        ]
+    )
+    kernel = AgentKernel(
+        KernelDependencies(
+            resolve_runtime_config=lambda _agent_id: RuntimeConfig(tenant_id=tenant_id, max_tool_rounds=3),
+            resolve_current_user_name=lambda _user_id: "Rocky",
+            build_system_prompt=build_system_prompt,
+            resolve_memory_context=lambda *_args, **_kwargs: "",
+            get_tools=lambda *_args, **_kwargs: [],
+            maybe_compress_messages=lambda messages, **_kwargs: messages,
+            create_client=lambda _model: fake_client,
+            execute_tool=lambda *_args, **_kwargs: "OK",
+            persist_memory=lambda **_kwargs: None,
+            record_token_usage=lambda *_args, **_kwargs: None,
+            get_max_tokens=lambda *_args, **_kwargs: 1024,
+            extract_usage_tokens=lambda usage: usage.get("total_tokens"),
+            estimate_tokens_from_chars=lambda chars: chars // 4,
+        )
+    )
+    request = InvocationRequest(
+        model=_make_model(),
+        messages=[{"role": "user", "content": "hello"}],
+        agent_name="Agent",
+        role_description="desc",
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        session_context=SessionContext(session_id="s-no-stale", source="chat"),
+    )
+
+    await kernel.handle(request)
+    with pytest.raises(RuntimeError, match="governed context unavailable"):
+        await kernel.handle(request)
+
+    assert build_count == 2
+    assert len(fake_client.calls) == 1
 
 
 @pytest.mark.asyncio
@@ -463,11 +583,21 @@ def test_cache_key_ignores_current_user_name():
     cfg = RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=10)
     req = _base_request(user_id=uuid4())
 
-    key_alice = _build_frozen_prompt_cache_key(req, cfg, current_user_name="Alice")
-    key_bob = _build_frozen_prompt_cache_key(req, cfg, current_user_name="Bob")
-    key_none = _build_frozen_prompt_cache_key(req, cfg, current_user_name=None)
+    key_alice = _build_frozen_prompt_cache_key(req, cfg, current_user_name="Alice", rendered_prefix="FROZEN")
+    key_bob = _build_frozen_prompt_cache_key(req, cfg, current_user_name="Bob", rendered_prefix="FROZEN")
+    key_none = _build_frozen_prompt_cache_key(req, cfg, current_user_name=None, rendered_prefix="FROZEN")
 
     assert key_alice == key_bob == key_none, "current_user_name must not affect frozen-prefix cache key (P1-1a)"
+
+
+def test_cache_key_is_disabled_without_verified_rendered_prefix():
+    from app.kernel.contracts import RuntimeConfig
+    from app.kernel.engine import _build_frozen_prompt_cache_key
+
+    cfg = RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=10)
+    req = _base_request(user_id=uuid4())
+
+    assert _build_frozen_prompt_cache_key(req, cfg, current_user_name="Rocky") is None
 
 
 def test_cache_key_ignores_context_window_tokens():
@@ -503,14 +633,13 @@ def test_cache_key_ignores_context_window_tokens():
     req_large.agent_id = req_small.agent_id
     req_large.session_context = req_small.session_context
 
-    key_small = _build_frozen_prompt_cache_key(req_small, cfg, current_user_name="x")
-    key_large = _build_frozen_prompt_cache_key(req_large, cfg, current_user_name="x")
+    key_small = _build_frozen_prompt_cache_key(req_small, cfg, current_user_name="x", rendered_prefix="FROZEN")
+    key_large = _build_frozen_prompt_cache_key(req_large, cfg, current_user_name="x", rendered_prefix="FROZEN")
     assert key_small == key_large, "context_window_tokens must not affect frozen-prefix cache key (P1-1a)"
 
 
-def test_cache_key_changes_on_model_swap():
-    """Different model name (real model swap, not just window size) MUST
-    produce a different key — the prefix's token-budget shaping changes."""
+def test_cache_key_uses_rendered_content_instead_of_model_metadata():
+    """A model swap matters only if it changes the bytes actually rendered."""
     from app.kernel.contracts import RuntimeConfig
     from app.kernel.engine import _build_frozen_prompt_cache_key
 
@@ -530,9 +659,12 @@ def test_cache_key_changes_on_model_swap():
     req_b.agent_id = req_a.agent_id
     req_b.session_context = req_a.session_context
 
-    key_a = _build_frozen_prompt_cache_key(req_a, cfg, current_user_name="x")
-    key_b = _build_frozen_prompt_cache_key(req_b, cfg, current_user_name="x")
-    assert key_a != key_b, "model swap must invalidate cache (different provider/name)"
+    key_a = _build_frozen_prompt_cache_key(req_a, cfg, current_user_name="x", rendered_prefix="FROZEN")
+    key_b = _build_frozen_prompt_cache_key(req_b, cfg, current_user_name="x", rendered_prefix="FROZEN")
+    assert key_a == key_b
+
+    changed = _build_frozen_prompt_cache_key(req_b, cfg, current_user_name="x", rendered_prefix="FROZEN v2")
+    assert changed != key_b
 
 
 def test_cache_key_changes_on_standalone_system_prompt_change():
@@ -547,13 +679,23 @@ def test_cache_key_changes_on_standalone_system_prompt_change():
     req_a.standalone_system_prompt = "You are a read-only reviewer."
     req_b.standalone_system_prompt = "You are a code execution worker."
 
-    key_a = _build_frozen_prompt_cache_key(req_a, cfg, current_user_name="x")
-    key_b = _build_frozen_prompt_cache_key(req_b, cfg, current_user_name="x")
+    key_a = _build_frozen_prompt_cache_key(
+        req_a,
+        cfg,
+        current_user_name="x",
+        rendered_prefix=req_a.standalone_system_prompt,
+    )
+    key_b = _build_frozen_prompt_cache_key(
+        req_b,
+        cfg,
+        current_user_name="x",
+        rendered_prefix=req_b.standalone_system_prompt,
+    )
 
     assert key_a != key_b
 
 
-def test_cache_key_changes_on_runtime_frozen_context_signature_change():
+def test_cache_key_ignores_optional_metadata_signatures_and_tracks_rendered_context():
     from app.kernel.contracts import RuntimeConfig
     from app.kernel.engine import _build_frozen_prompt_cache_key
 
@@ -566,15 +708,17 @@ def test_cache_key_changes_on_runtime_frozen_context_signature_change():
         "a2a": "a2a-v1",
         "configured_channels": ["feishu"],
     }
-    key_v1 = _build_frozen_prompt_cache_key(req, cfg, current_user_name="x")
+    key_v1 = _build_frozen_prompt_cache_key(req, cfg, current_user_name="x", rendered_prefix="COMPANY v1")
     req.session_context.metadata["frozen_context_signature"] = {
         "company": "company-v2",
         "org": "org-v1",
         "a2a": "a2a-v1",
         "configured_channels": ["feishu"],
     }
-    key_v2 = _build_frozen_prompt_cache_key(req, cfg, current_user_name="x")
+    same_rendered_key = _build_frozen_prompt_cache_key(req, cfg, current_user_name="x", rendered_prefix="COMPANY v1")
+    key_v2 = _build_frozen_prompt_cache_key(req, cfg, current_user_name="x", rendered_prefix="COMPANY v2")
 
+    assert key_v1 == same_rendered_key
     assert key_v1 != key_v2
 
 
@@ -583,6 +727,7 @@ def test_cache_key_changes_on_subagent_definition_change(tmp_path):
     from app.agents.subagent_definition import definition_store_for_agent
     from app.kernel.contracts import RuntimeConfig
     from app.kernel.engine import _build_frozen_prompt_cache_key
+    from app.runtime.prompt_sections import build_subagent_listing_section
 
     cfg = RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=10)
     req = _base_request(user_id=uuid4())
@@ -590,17 +735,19 @@ def test_cache_key_changes_on_subagent_definition_change(tmp_path):
     store = definition_store_for_agent(req.agent_id, agent_data_dir=tmp_path)
 
     store.save(SubagentSpec(name="scout", description="Research scout", system_prompt="Find sources."))
-    key_v1 = _build_frozen_prompt_cache_key(req, cfg, current_user_name="x")
+    rendered_v1 = build_subagent_listing_section(agent_id=req.agent_id, agent_data_dir=tmp_path)
+    key_v1 = _build_frozen_prompt_cache_key(req, cfg, current_user_name="x", rendered_prefix=rendered_v1)
 
     store.save(SubagentSpec(name="scout", description="Senior research scout", system_prompt="Find primary sources."))
-    key_v2 = _build_frozen_prompt_cache_key(req, cfg, current_user_name="x")
+    rendered_v2 = build_subagent_listing_section(agent_id=req.agent_id, agent_data_dir=tmp_path)
+    key_v2 = _build_frozen_prompt_cache_key(req, cfg, current_user_name="x", rendered_prefix=rendered_v2)
 
     assert key_v1 != key_v2
 
 
-def test_cache_key_version_bumped_for_rtd_06():
+def test_cache_key_version_bumped_for_sa_09():
     """Sanity check that the version constant reflects the schema change so
     persisted prefixes from older deployments invalidate cleanly on rollout."""
     from app.kernel.engine import _FROZEN_PROMPT_CACHE_VERSION
 
-    assert _FROZEN_PROMPT_CACHE_VERSION == "frozen-v4"
+    assert _FROZEN_PROMPT_CACHE_VERSION == "frozen-v5"

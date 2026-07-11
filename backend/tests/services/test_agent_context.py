@@ -145,3 +145,42 @@ async def test_build_agent_context_default_excludes_runtime_time_from_frozen_pre
 
     assert "Current Time" not in prompt
     assert "Asia/Shanghai" not in prompt
+
+
+@pytest.mark.asyncio
+async def test_frozen_context_uses_pinned_tenant_session_for_channel_and_company_reads(monkeypatch, tmp_path):
+    import app.services.agent_context as agent_context
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    tenant_calls = []
+    sessions = [
+        _FakeSession([[SimpleNamespace(channel_type="slack")]]),
+        _FakeSession([None, None, None]),
+    ]
+
+    def fake_tenant_scoped_session(requested_tenant_id, **_kwargs):
+        tenant_calls.append(requested_tenant_id)
+        return sessions.pop(0)
+
+    async def no_a2a(*_args, **_kwargs):
+        return ""
+
+    monkeypatch.setattr("app.database.tenant_scoped_session", fake_tenant_scoped_session)
+    monkeypatch.setattr(
+        "app.database.async_session",
+        lambda: (_ for _ in ()).throw(AssertionError("frozen context must not use an unscoped DB session")),
+    )
+    monkeypatch.setattr(agent_context, "TOOL_WORKSPACE", tmp_path)
+    monkeypatch.setattr(agent_context, "PERSISTENT_DATA", tmp_path)
+    monkeypatch.setattr(agent_context, "_build_a2a_collaborators_context", no_a2a)
+
+    prompt = await agent_context.build_agent_context(
+        agent_id,
+        "Ops Agent",
+        tenant_id=tenant_id,
+        include_skill_catalog=False,
+    )
+
+    assert tenant_calls == [tenant_id, tenant_id]
+    assert "You have slack channel(s) configured" in prompt

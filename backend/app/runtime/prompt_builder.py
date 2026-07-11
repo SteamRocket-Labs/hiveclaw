@@ -90,6 +90,7 @@ class FrozenPrefixSection:
     name: str
     chars: int
     tokens: int
+    content_hash: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -276,6 +277,7 @@ def _measure_frozen_prefix_sections(prefix: str) -> list[FrozenPrefixSection]:
                 name="unsectioned",
                 chars=chars,
                 tokens=estimate_tokens_from_text(prefix),
+                content_hash=hashlib.sha256(prefix.encode("utf-8")).hexdigest(),
             )
         ]
 
@@ -287,6 +289,7 @@ def _measure_frozen_prefix_sections(prefix: str) -> list[FrozenPrefixSection]:
                 name="preamble",
                 chars=chars,
                 tokens=estimate_tokens_from_text(preamble),
+                content_hash=hashlib.sha256(preamble.encode("utf-8")).hexdigest(),
             )
         )
 
@@ -301,10 +304,38 @@ def _measure_frozen_prefix_sections(prefix: str) -> list[FrozenPrefixSection]:
                 name=_normalize_frozen_prefix_section_name(match.group(1)),
                 chars=chars,
                 tokens=estimate_tokens_from_text(block),
+                content_hash=hashlib.sha256(block.encode("utf-8")).hexdigest(),
             )
         )
 
     return sections
+
+
+def build_frozen_context_dependency_manifest(prefix: str) -> dict[str, Any]:
+    """Build the deterministic cache/evidence manifest from what the model sees.
+
+    The rendered frozen prefix is the only complete dependency closure: every
+    file, DB read model, policy-facing section, and fallback that actually
+    reached the model is represented in these bytes. Deriving the key from
+    optional caller-supplied signatures can silently omit a dependency, so
+    callers must rebuild once per turn and verify this manifest before reuse.
+    """
+    sections = _measure_frozen_prefix_sections(prefix)
+    return {
+        "schema": "hive.frozen_context_dependency_manifest.v1",
+        "complete": True,
+        "root_hash": hashlib.sha256(prefix.encode("utf-8")).hexdigest(),
+        "chars": len(prefix),
+        "sections": [
+            {
+                "name": section.name,
+                "chars": section.chars,
+                "tokens": section.tokens,
+                "content_hash": section.content_hash,
+            }
+            for section in sections
+        ],
+    }
 
 
 def _format_frozen_prefix_top_sections(sections: list[FrozenPrefixSection], *, limit: int) -> str:

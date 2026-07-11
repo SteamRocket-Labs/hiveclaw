@@ -2478,9 +2478,8 @@ def _fingerprint_prompt(prompt_prefix: str) -> str:
     return hashlib.sha256(prompt_prefix.encode("utf-8")).hexdigest()
 
 
-_FROZEN_PROMPT_CACHE_VERSION = "frozen-v4"  # RTD-06: add volatile frozen-context signatures
+_FROZEN_PROMPT_CACHE_VERSION = "frozen-v5"  # SA-09: key is verified rendered-context content
 _FROZEN_PROMPT_FILE_PATHS = ("soul.md",)
-_FROZEN_PROMPT_DIRS = ("skills",)
 _PROMPT_CACHE_KEY_FIELD = "prompt_cache_key"
 
 
@@ -2491,7 +2490,7 @@ def _is_frozen_prompt_workspace_path(path: str) -> bool:
         return False
     if normalized in _FROZEN_PROMPT_FILE_PATHS:
         return True
-    return any(normalized == dirname or normalized.startswith(f"{dirname}/") for dirname in _FROZEN_PROMPT_DIRS)
+    return False
 
 
 def _invalidate_prompt_prefix_cache(session_context: SessionContext | None, *, reason: str) -> None:
@@ -2517,153 +2516,35 @@ def _invalidate_prompt_prefix_cache(session_context: SessionContext | None, *, r
     session_context.metadata["prompt_cache_invalidated_reason"] = reason
 
 
-def _safe_file_stat_entry(root_label: str, root: Path, path: Path) -> list[Any] | None:
-    try:
-        stat = path.stat()
-    except OSError as exc:
-        # File may have been deleted/renamed between listing and stat — fall
-        # back to "not part of signature" rather than failing the cache key
-        # build. Logged at debug because this is expected during workspace
-        # mutation and would otherwise spam logs.
-        logger.debug("[Engine] stat() failed for %s under %s: %s — skipping signature entry", path, root_label, exc)
-        return None
-    try:
-        rel = path.relative_to(root).as_posix()
-    except ValueError:
-        rel = path.name
-    return [root_label, rel, stat.st_mtime_ns, stat.st_size]
-
-
-def _frozen_prompt_workspace_signature(agent_id: Any | None, *, tenant_id: Any | None = None) -> str:
-    """Fingerprint workspace files that are rendered into the frozen prompt prefix.
-
-    This keeps prompt-prefix reuse high while preventing stale cache hits after
-    identity, relationship, or skill files change.
-    """
-    if not agent_id:
-        return ""
-
-    try:
-        from app.config import get_settings
-
-        settings = get_settings()
-        roots = [
-            ("tool", Path("/tmp/hive_workspaces") / str(agent_id)),
-            ("persistent", Path(settings.AGENT_DATA_DIR) / str(agent_id)),
-        ]
-        if tenant_id:
-            roots.append(("tenant", Path(settings.AGENT_DATA_DIR) / f"enterprise_info_{tenant_id}"))
-    except Exception:
-        roots = [("tool", Path("/tmp/hive_workspaces") / str(agent_id))]
-
-    entries: list[list[Any]] = []
-    for root_label, root in roots:
-        rel_paths = _FROZEN_PROMPT_FILE_PATHS
-        if root_label == "tenant":
-            rel_paths = ("org_structure.md",)
-        for rel_path in rel_paths:
-            entry = _safe_file_stat_entry(root_label, root, root / rel_path)
-            if entry:
-                entries.append(entry)
-        for dirname in _FROZEN_PROMPT_DIRS:
-            skill_dir = root / dirname
-            if not skill_dir.exists():
-                continue
-            try:
-                candidates = sorted(path for path in skill_dir.rglob("*.md") if path.is_file())
-            except OSError:
-                continue
-            for path in candidates:
-                entry = _safe_file_stat_entry(root_label, root, path)
-                if entry:
-                    entries.append(entry)
-
-    payload = json.dumps(entries, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
-def _frozen_prompt_runtime_signature(request: InvocationRequest, *, tenant_id: Any | None = None) -> dict[str, Any]:
-    metadata = request.session_context.metadata if request.session_context is not None else {}
-    metadata = metadata if isinstance(metadata, dict) else {}
-    agent_data_dir = metadata.get("agent_data_dir")
-    visible_signatures = {
-        key: metadata.get(key)
-        for key in (
-            "frozen_context_signature",
-            "configured_channel_signature",
-            "company_context_signature",
-            "org_structure_signature",
-            "a2a_collaborator_signature",
-            "subagent_listing_signature",
-        )
-        if metadata.get(key) is not None
-    }
-    standalone_prompt = str(request.standalone_system_prompt or "")
-    subagent_definition_sig = ""
-    try:
-        from app.agents.subagent_definition import subagent_definition_signature
-
-        subagent_definition_sig = subagent_definition_signature(
-            agent_id=request.agent_id,
-            tenant_id=tenant_id,
-            agent_data_dir=str(agent_data_dir) if agent_data_dir else None,
-        )
-    except Exception as exc:
-        logger.debug("[Engine] subagent definition signature unavailable: %s", exc)
-    return {
-        "standalone_system_prompt_hash": hashlib.sha256(standalone_prompt.encode("utf-8")).hexdigest()
-        if standalone_prompt
-        else "",
-        "allowed_tool_names": sorted(str(name) for name in (request.allowed_tool_names or ())),
-        "excluded_tool_names": sorted(str(name) for name in (request.excluded_tool_names or ())),
-        "core_tools_only": bool(request.core_tools_only),
-        "subagent_definition_signature": subagent_definition_sig,
-        "visible_context_signatures": visible_signatures,
-    }
-
-
 def _build_frozen_prompt_cache_key(
     request: InvocationRequest,
     runtime_config: RuntimeConfig,
     *,
     current_user_name: str | None,  # accepted for back-compat; intentionally NOT in the key
-) -> str:
+    rendered_prefix: str | None = None,
+) -> str | None:
     """Build a provider-neutral cache key for the session-stable prompt prefix.
 
-    P1-1a: removed `current_user_name` and `context_window_tokens` from the key.
-    Both polluted the cache without representing real prefix changes:
-      * current_user_name is rendered in the *dynamic suffix*, not the frozen
-        prefix. Including it forced a miss every time a different user
-        addressed the same agent (collaboration scenarios, shared bots).
-      * context_window_tokens varies whenever a fallback model swap happens,
-        even though the prefix content (system, tasks, tools, soul) is
-        identical. model_provider + model_name already capture the cases
-        where the prefix really should change.
-
-    Cache version bumped to invalidate any persisted prompt_prefix entries
-    on the previous schema.
+    SA-09: optional signatures are not a dependency closure. Reuse is allowed
+    only after this turn has rebuilt the full frozen prefix and supplied its
+    exact rendered bytes. Missing rendered content disables reuse.
     """
     del current_user_name  # explicitly dropped from cache key — keep param for callers
+    if rendered_prefix is None:
+        return None
     payload = {
         "version": _FROZEN_PROMPT_CACHE_VERSION,
         "agent_id": str(request.agent_id or ""),
         "tenant_id": str(runtime_config.tenant_id or ""),
-        "agent_name": request.agent_name or "",
-        "role_description": request.role_description or "",
-        "execution_mode": request.invocation_scope or "conversation",
-        "model_provider": str(getattr(request.model, "provider", "") or ""),
-        "model_name": str(getattr(request.model, "model", "") or ""),
-        "workspace_signature": _frozen_prompt_workspace_signature(
-            request.agent_id,
-            tenant_id=runtime_config.tenant_id,
-        ),
-        "runtime_signature": _frozen_prompt_runtime_signature(request, tenant_id=runtime_config.tenant_id),
+        "rendered_prefix_hash": hashlib.sha256(rendered_prefix.encode("utf-8")).hexdigest(),
     }
     encoded = json.dumps(payload, sort_keys=True, default=str, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
-def _cached_prompt_prefix(session_context: SessionContext | None, cache_key: str) -> str | None:
+def _cached_prompt_prefix(session_context: SessionContext | None, cache_key: str | None) -> str | None:
+    if not cache_key:
+        return None
     if session_context is None or not session_context.prompt_prefix:
         return None
     if session_context.metadata.get(_PROMPT_CACHE_KEY_FIELD) != cache_key:
@@ -2671,8 +2552,12 @@ def _cached_prompt_prefix(session_context: SessionContext | None, cache_key: str
     return session_context.prompt_prefix
 
 
-def _store_prompt_prefix_cache(session_context: SessionContext | None, prompt_prefix: str, cache_key: str) -> None:
-    if session_context is None:
+def _store_prompt_prefix_cache(
+    session_context: SessionContext | None,
+    prompt_prefix: str,
+    cache_key: str | None,
+) -> None:
+    if session_context is None or not cache_key:
         return
     session_context.prompt_prefix = prompt_prefix
     session_context.prompt_fingerprint = _fingerprint_prompt(prompt_prefix)
@@ -3625,7 +3510,11 @@ class AgentKernel:
             current_user_name = await _maybe_await(self._deps.resolve_current_user_name(request.user_id))
 
             # Prompt cache: reuse frozen prefix from session if available
-            from app.runtime.prompt_builder import assemble_runtime_prompt, build_dynamic_prompt_suffix
+            from app.runtime.prompt_builder import (
+                assemble_runtime_prompt,
+                build_dynamic_prompt_suffix,
+                build_frozen_context_dependency_manifest,
+            )
             from app.runtime.turn_envelope import build_runtime_prompt_assembly_manifest
 
             session_ctx = request.session_context
@@ -3642,22 +3531,31 @@ class AgentKernel:
                         ensure_runtime_assembly_state(session_ctx).record_deferred_tools(available_deferred_tools)
                 except Exception as exc:
                     logger.debug("[Kernel] available deferred tool list unavailable: %s", exc)
-            # Prompt cache: reuse frozen prefix if available and still matches
-            # the session-stable inputs that are rendered into that prefix.
-            # The frozen prefix is session-stable by design — it contains
-            # agent_context (soul, identity, tone_style, company info) +
-            # system + tasks + tools. None of these change within a session.
-            # Memory AND the skill catalog (Step 9) live in the dynamic suffix,
-            # which is rebuilt every round — so adding/distilling a skill never
-            # invalidates the cached frozen prefix.
-            #
-            # Memory is a dynamic suffix, so it does not invalidate this key.
-            # Static identity, execution mode, model window, and prompt-rendered
-            # workspace files do invalidate it.
+            # SA-09: rebuild the frozen prefix once per turn before considering
+            # reuse. The rendered bytes are the only complete dependency
+            # closure across workspace files and DB-backed company/channel/A2A
+            # context. Provider prompt caching still benefits from an identical
+            # prefix; this small in-process cache never serves unverified bytes.
+            try:
+                _fresh_prompt_prefix = await _maybe_await(
+                    self._deps.build_system_prompt(
+                        request,
+                        runtime_config.tenant_id,
+                        resolved_memory_context,
+                        current_user_name,
+                    )
+                )
+            except Exception:
+                _invalidate_prompt_prefix_cache(session_ctx, reason="frozen_context_rebuild_failed")
+                raise
+            _frozen_context_manifest = build_frozen_context_dependency_manifest(_fresh_prompt_prefix)
+            if session_ctx is not None:
+                session_ctx.metadata["frozen_context_dependency_manifest"] = _frozen_context_manifest
             _prompt_cache_key = _build_frozen_prompt_cache_key(
                 request,
                 runtime_config,
                 current_user_name=current_user_name,
+                rendered_prefix=_fresh_prompt_prefix,
             )
             _cached_prefix = _cached_prompt_prefix(session_ctx, _prompt_cache_key)
             _cache_valid = bool(_cached_prefix)
@@ -3733,15 +3631,8 @@ class AgentKernel:
                 )
                 system_prompt, dynamic_prompt_suffix = _split_system_prompt_for_api(combined_prompt)
             else:
-                # First call in session: build and cache the frozen prefix only.
-                prompt_prefix = await _maybe_await(
-                    self._deps.build_system_prompt(
-                        request,
-                        runtime_config.tenant_id,
-                        resolved_memory_context,
-                        current_user_name,
-                    )
-                )
+                # First call or changed rendered dependency manifest.
+                prompt_prefix = _fresh_prompt_prefix
                 frozen_prefix_for_manifest = prompt_prefix
                 if session_ctx is not None:
                     _store_prompt_prefix_cache(session_ctx, prompt_prefix, _prompt_cache_key)
@@ -3823,6 +3714,7 @@ class AgentKernel:
                     hook_added_context=hook_added_context,
                     available_agent_types=list(session_ctx.metadata.get("available_agent_types") or []),
                     messages=request.messages,
+                    frozen_context_dependency_manifest=_frozen_context_manifest,
                 )
                 prompt_manifest["dynamic_context_section_ledger"] = {
                     "schema": "hive.ccplus.dynamic_context_section_ledger.v1",
@@ -5604,15 +5496,7 @@ class AgentKernel:
                                                 "status": "info",
                                             }
                                             await _emit_event(event_payload)
-                                            _current_prompt_cache_key = _build_frozen_prompt_cache_key(
-                                                request,
-                                                runtime_config,
-                                                current_user_name=current_user_name,
-                                            )
-                                            prompt_prefix = _cached_prompt_prefix(
-                                                session_context,
-                                                _current_prompt_cache_key,
-                                            )
+                                            prompt_prefix = session_context.prompt_prefix
                                             if prompt_prefix is None:
                                                 prompt_prefix = await _maybe_await(
                                                     self._deps.build_system_prompt(
@@ -5621,6 +5505,33 @@ class AgentKernel:
                                                         resolved_memory_context,
                                                         current_user_name,
                                                     )
+                                                )
+                                                current_manifest = build_frozen_context_dependency_manifest(
+                                                    prompt_prefix
+                                                )
+                                                session_context.metadata["frozen_context_dependency_manifest"] = (
+                                                    current_manifest
+                                                )
+                                                from app.runtime.context import ensure_runtime_assembly_state
+
+                                                assembly_state = ensure_runtime_assembly_state(session_context)
+                                                refreshed_prompt_manifest = dict(
+                                                    assembly_state.prompt_assembly_manifest
+                                                )
+                                                refreshed_prompt_manifest["frozen_context_dependency_manifest"] = (
+                                                    current_manifest
+                                                )
+                                                refreshed_prompt_manifest["frozen_sections"] = [
+                                                    section["name"]
+                                                    for section in current_manifest.get("sections", [])
+                                                    if section.get("name")
+                                                ]
+                                                assembly_state.record_prompt_manifest(refreshed_prompt_manifest)
+                                                _current_prompt_cache_key = _build_frozen_prompt_cache_key(
+                                                    request,
+                                                    runtime_config,
+                                                    current_user_name=current_user_name,
+                                                    rendered_prefix=prompt_prefix,
                                                 )
                                                 _store_prompt_prefix_cache(
                                                     session_context,

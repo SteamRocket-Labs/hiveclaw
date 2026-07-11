@@ -692,6 +692,7 @@ def build_runtime_prompt_assembly_manifest(
     available_agent_types: list[Any] | tuple[Any, ...] | None = None,
     messages: list[Any] | tuple[Any, ...] | None = None,
     loaded_memory_values: list[Any] | tuple[Any, ...] | None = None,
+    frozen_context_dependency_manifest: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the manifest from the actual prompt surface sent to the provider."""
     deferred_tool_candidates = deferred_tool_candidate_payload(available_deferred_tools)
@@ -772,6 +773,7 @@ def build_runtime_prompt_assembly_manifest(
         "turn_id": turn_id,
         "session_id": session_id,
         "frozen_sections": frozen_sections,
+        "frozen_context_dependency_manifest": dict(frozen_context_dependency_manifest or {}),
         "dynamic_sections": dynamic_sections,
         "context_budget": _budget_manifest(context_budget, model_window),
         "loaded_skills": loaded_skill_names,

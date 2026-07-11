@@ -11,6 +11,11 @@ from app.services.office_document_service import (
 )
 from app.services.officecli_adapter import OfficeCLIError
 from app.services.connector_acl import authoritative_connector_source_item
+from app.services.workspace_resource_authority import (
+    WorkspaceAuthorityError,
+    WorkspaceAuthorityScope,
+    authorize_workspace_tool_path,
+)
 from app.tools.decorator import ToolMeta, tool
 
 
@@ -64,6 +69,8 @@ def _json_error(error: str, message: str, **payload: Any) -> str:
 
 
 def _handle_office_error(exc: Exception) -> str:
+    if isinstance(exc, WorkspaceAuthorityError):
+        return _json_error(exc.code, exc.message)
     if isinstance(exc, OfficeDocumentActiveSessionError):
         return _json_error(exc.error_code, str(exc))
     if isinstance(exc, OfficeDocumentError):
@@ -96,8 +103,28 @@ def _handle_office_error(exc: Exception) -> str:
         adapter="workspace_args",
     )
 )
-async def office_document_create(workspace: Path, arguments: dict, tenant_id: str | None = None) -> str:
+async def office_document_create(
+    workspace: Path,
+    arguments: dict,
+    tenant_id: str | None = None,
+    authority_scope: WorkspaceAuthorityScope | None = None,
+) -> str:
     try:
+        authorize_workspace_tool_path(
+            workspace,
+            authority_scope,
+            str(arguments.get("path", "")),
+            action="create",
+            require_user_workspace=True,
+        )
+        if arguments.get("template_path"):
+            authorize_workspace_tool_path(
+                workspace,
+                authority_scope,
+                str(arguments["template_path"]),
+                action="read",
+                require_user_workspace=True,
+            )
         service = OfficeDocumentService(workspace)
         result = service.create_document(
             str(arguments.get("path", "")),
@@ -139,8 +166,20 @@ async def office_document_create(workspace: Path, arguments: dict, tenant_id: st
         adapter="workspace_args",
     )
 )
-async def office_document_view(workspace: Path, arguments: dict, tenant_id: str | None = None) -> str:
+async def office_document_view(
+    workspace: Path,
+    arguments: dict,
+    tenant_id: str | None = None,
+    authority_scope: WorkspaceAuthorityScope | None = None,
+) -> str:
     try:
+        authorize_workspace_tool_path(
+            workspace,
+            authority_scope,
+            str(arguments.get("path", "")),
+            action="read",
+            require_user_workspace=True,
+        )
         payload = OfficeDocumentService(workspace).run_view(
             str(arguments.get("path", "")),
             mode=str(arguments.get("mode") or "outline"),
@@ -177,8 +216,20 @@ async def office_document_view(workspace: Path, arguments: dict, tenant_id: str 
         adapter="workspace_args",
     )
 )
-async def office_document_query(workspace: Path, arguments: dict, tenant_id: str | None = None) -> str:
+async def office_document_query(
+    workspace: Path,
+    arguments: dict,
+    tenant_id: str | None = None,
+    authority_scope: WorkspaceAuthorityScope | None = None,
+) -> str:
     try:
+        authorize_workspace_tool_path(
+            workspace,
+            authority_scope,
+            str(arguments.get("path", "")),
+            action="read",
+            require_user_workspace=True,
+        )
         payload = OfficeDocumentService(workspace).run_query(
             str(arguments.get("path", "")),
             selector=str(arguments.get("selector", "")),
@@ -225,8 +276,30 @@ async def office_document_query(workspace: Path, arguments: dict, tenant_id: str
         adapter="workspace_args",
     )
 )
-async def office_document_apply(workspace: Path, arguments: dict, tenant_id: str | None = None) -> str:
+async def office_document_apply(
+    workspace: Path,
+    arguments: dict,
+    tenant_id: str | None = None,
+    authority_scope: WorkspaceAuthorityScope | None = None,
+) -> str:
     try:
+        source_path = str(arguments.get("path", ""))
+        authorize_workspace_tool_path(
+            workspace,
+            authority_scope,
+            source_path,
+            action="write",
+            require_user_workspace=True,
+        )
+        output_path = str(arguments.get("output_path") or source_path)
+        if output_path != source_path:
+            authorize_workspace_tool_path(
+                workspace,
+                authority_scope,
+                output_path,
+                action="write",
+                require_user_workspace=True,
+            )
         operations = arguments.get("operations") or []
         if not isinstance(operations, list):
             raise ValueError("operations must be a list")
@@ -265,8 +338,20 @@ async def office_document_apply(workspace: Path, arguments: dict, tenant_id: str
         adapter="workspace_args",
     )
 )
-async def office_document_validate(workspace: Path, arguments: dict, tenant_id: str | None = None) -> str:
+async def office_document_validate(
+    workspace: Path,
+    arguments: dict,
+    tenant_id: str | None = None,
+    authority_scope: WorkspaceAuthorityScope | None = None,
+) -> str:
     try:
+        authorize_workspace_tool_path(
+            workspace,
+            authority_scope,
+            str(arguments.get("path", "")),
+            action="read",
+            require_user_workspace=True,
+        )
         payload = OfficeDocumentService(workspace).run_validate(str(arguments.get("path", "")))
         return _json_ok_with_office_sources(
             tenant_id=tenant_id,
@@ -297,8 +382,20 @@ async def office_document_validate(workspace: Path, arguments: dict, tenant_id: 
         adapter="workspace_args",
     )
 )
-async def office_document_dump(workspace: Path, arguments: dict, tenant_id: str | None = None) -> str:
+async def office_document_dump(
+    workspace: Path,
+    arguments: dict,
+    tenant_id: str | None = None,
+    authority_scope: WorkspaceAuthorityScope | None = None,
+) -> str:
     try:
+        authorize_workspace_tool_path(
+            workspace,
+            authority_scope,
+            str(arguments.get("path", "")),
+            action="read",
+            require_user_workspace=True,
+        )
         payload = OfficeDocumentService(workspace).run_dump(str(arguments.get("path", "")))
         return _json_ok_with_office_sources(
             tenant_id=tenant_id,

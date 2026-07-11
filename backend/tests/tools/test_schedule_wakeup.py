@@ -81,11 +81,14 @@ def patched_db(monkeypatch):
 @pytest.mark.asyncio
 async def test_schedule_wakeup_creates_same_session_once_trigger(patched_db):
     agent_id = uuid.uuid4()
+    user_id = uuid.uuid4()
     session_id = str(uuid.uuid4())
 
     result = await _handle_schedule_wakeup(
         agent_id,
-        {"delay_seconds": 300, "prompt": "check the deploy status", "source_session_id": session_id},
+        {"delay_seconds": 300, "prompt": "check the deploy status"},
+        user_id=user_id,
+        session_id=session_id,
     )
 
     assert '"ok": true' in result.lower()
@@ -95,6 +98,8 @@ async def test_schedule_wakeup_creates_same_session_once_trigger(patched_db):
     config = dict(trigger.config)
     assert config["delivery"] == "same_session"
     assert config["source_session_id"] == session_id
+    assert config["root_session_id"] == session_id
+    assert config["created_by"] == str(user_id)
     assert config["self_pace"] is True
     scheduled = datetime.fromisoformat(config["at"].replace("Z", "+00:00"))
     delta = (scheduled - datetime.now(UTC)).total_seconds()
@@ -104,14 +109,23 @@ async def test_schedule_wakeup_creates_same_session_once_trigger(patched_db):
 @pytest.mark.asyncio
 async def test_schedule_wakeup_clamps_delay(patched_db):
     agent_id = uuid.uuid4()
+    user_id = uuid.uuid4()
     session_id = str(uuid.uuid4())
 
-    await _handle_schedule_wakeup(agent_id, {"delay_seconds": 5, "prompt": "too soon", "source_session_id": session_id})
+    await _handle_schedule_wakeup(
+        agent_id,
+        {"delay_seconds": 5, "prompt": "too soon"},
+        user_id=user_id,
+        session_id=session_id,
+    )
     low = datetime.fromisoformat(dict(patched_db.added[-1].config)["at"].replace("Z", "+00:00"))
     assert (low - datetime.now(UTC)).total_seconds() >= SELF_PACE_WAKEUP_MIN_SECONDS - 5
 
     await _handle_schedule_wakeup(
-        agent_id, {"delay_seconds": 999999, "prompt": "too late", "source_session_id": session_id}
+        agent_id,
+        {"delay_seconds": 999999, "prompt": "too late"},
+        user_id=user_id,
+        session_id=session_id,
     )
     high = datetime.fromisoformat(dict(patched_db.added[-1].config)["at"].replace("Z", "+00:00"))
     assert (high - datetime.now(UTC)).total_seconds() <= SELF_PACE_WAKEUP_MAX_SECONDS + 5
@@ -122,6 +136,7 @@ async def test_schedule_wakeup_replaces_pending_and_stop_cancels(monkeypatch):
     import app.services.agent_tool_domains.triggers as domain
 
     agent_id = uuid.uuid4()
+    user_id = uuid.uuid4()
     session_id = str(uuid.uuid4())
     from types import SimpleNamespace
 
@@ -129,7 +144,14 @@ async def test_schedule_wakeup_replaces_pending_and_stop_cancels(monkeypatch):
         id=uuid.uuid4(),
         type="once",
         is_enabled=True,
-        config={"self_pace": True, "source_session_id": session_id, "delivery": "same_session"},
+        config={
+            "self_pace": True,
+            "source_session_id": session_id,
+            "root_session_id": session_id,
+            "delivery": "same_session",
+            "created_by": str(user_id),
+            "authority_state": "owned",
+        },
         reason="old wakeup",
     )
     db = _FakeDB(rows=[pending])
@@ -148,12 +170,20 @@ async def test_schedule_wakeup_replaces_pending_and_stop_cancels(monkeypatch):
     monkeypatch.setattr(domain, "tenant_scoped_session", lambda *_a, **_k: _CM(), raising=False)
 
     await _handle_schedule_wakeup(
-        agent_id, {"delay_seconds": 120, "prompt": "new wakeup", "source_session_id": session_id}
+        agent_id,
+        {"delay_seconds": 120, "prompt": "new wakeup"},
+        user_id=user_id,
+        session_id=session_id,
     )
     assert pending.is_enabled is False, "a new wakeup supersedes the pending one"
 
     pending.is_enabled = True
-    result = await _handle_schedule_wakeup(agent_id, {"stop": True, "source_session_id": session_id})
+    result = await _handle_schedule_wakeup(
+        agent_id,
+        {"stop": True},
+        user_id=user_id,
+        session_id=session_id,
+    )
     assert '"ok": true' in result.lower()
     assert pending.is_enabled is False, "stop must cancel the pending wakeup"
     assert '"stopped"' in result or "stopped" in result
@@ -161,5 +191,26 @@ async def test_schedule_wakeup_replaces_pending_and_stop_cancels(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_schedule_wakeup_requires_prompt(patched_db):
-    result = await _handle_schedule_wakeup(uuid.uuid4(), {"delay_seconds": 120, "source_session_id": str(uuid.uuid4())})
+    result = await _handle_schedule_wakeup(
+        uuid.uuid4(),
+        {"delay_seconds": 120},
+        user_id=uuid.uuid4(),
+        session_id=str(uuid.uuid4()),
+    )
     assert '"ok": false' in result.lower()
+
+
+@pytest.mark.asyncio
+async def test_schedule_wakeup_rejects_model_supplied_session_without_trusted_context(patched_db):
+    result = await _handle_schedule_wakeup(
+        uuid.uuid4(),
+        {
+            "delay_seconds": 120,
+            "prompt": "spoofed wakeup",
+            "source_session_id": str(uuid.uuid4()),
+        },
+        user_id=uuid.uuid4(),
+    )
+
+    assert "live chat session" in result
+    assert patched_db.added == []

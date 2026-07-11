@@ -22,6 +22,7 @@ from app.models.runtime_task import RuntimeTask
 from app.models.trigger import AgentTrigger
 from app.core.execution_context import ExecutionPrincipal
 from app.services.runtime_task_authority import authorize_runtime_task_record
+from app.services.trigger_resource_authority import filter_authorized_triggers
 
 EVENT_WAIT_TRIGGER_TYPES = {"poll", "on_message", "webhook"}
 SCHEDULED_TRIGGER_TYPES = {"cron", "once", "interval"}
@@ -303,6 +304,7 @@ async def _query_agent_runtime_tasks(
     task_type: str | None = None,
     status: str | None = None,
     limit: int = 100,
+    root_user_id: uuid.UUID | None = None,
 ) -> list[RuntimeTask]:
     cutoff = datetime.now(timezone.utc) - timedelta(hours=lookback_hours)
     stmt = (
@@ -317,6 +319,8 @@ async def _query_agent_runtime_tasks(
         stmt = stmt.where(RuntimeTask.task_type.in_(("trigger", "heartbeat", "delegation")))
     if status:
         stmt = stmt.where(RuntimeTask.status == status)
+    if root_user_id is not None:
+        stmt = stmt.where(RuntimeTask.root_user_id == root_user_id)
     result = await db.execute(stmt)
     return list(result.scalars().all())
 
@@ -328,13 +332,30 @@ async def build_agent_autonomy_overview(
     lookback_hours: int = 24,
     include_diagnostics: bool = False,
     principal: ExecutionPrincipal | None = None,
+    resource_user: Any | None = None,
+    agent_access: tuple[Any, str] | None = None,
 ) -> dict[str, Any]:
     agent_id = getattr(agent, "id")
     trigger_result = await db.execute(
         select(AgentTrigger).where(AgentTrigger.agent_id == agent_id).order_by(AgentTrigger.created_at.desc())
     )
     triggers = list(trigger_result.scalars().all())
-    attempts = await _query_agent_runtime_tasks(db, agent_id=agent_id, lookback_hours=lookback_hours, limit=100)
+    if resource_user is not None and agent_access is not None:
+        authorized_triggers = await filter_authorized_triggers(
+            db,
+            resource_user,
+            agent_id=agent_id,
+            triggers=triggers,
+            agent_access=agent_access,
+        )
+        triggers = [trigger for trigger, _decision in authorized_triggers]
+    attempts = await _query_agent_runtime_tasks(
+        db,
+        agent_id=agent_id,
+        lookback_hours=lookback_hours,
+        limit=100,
+        root_user_id=principal.requester_user_id if principal is not None else None,
+    )
     if principal is not None:
         attempts = [
             task
@@ -400,6 +421,7 @@ async def list_agent_runtime_task_views(
         status=status,
         limit=max(limit, 1),
         lookback_hours=720,
+        root_user_id=None if allow_operator_override else principal.requester_user_id,
     )
     filtered: list[Any] = []
     for task in tasks:

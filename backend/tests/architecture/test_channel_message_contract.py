@@ -60,8 +60,14 @@ def test_agent_pair_session_creation_uses_shared_service() -> None:
         assert "source_channel='agent'" not in source
 
 
-def test_chat_sessions_use_canonical_channel_names() -> None:
-    chat_sessions_source = (APP_ROOT / "api" / "chat_sessions.py").read_text(encoding="utf-8")
+def test_channel_config_uses_canonical_channel_names() -> None:
+    """Keep the canonical name contract at the channel-type authority.
 
-    assert '"microsoft_teams"' in chat_sessions_source
-    assert '"teams"' not in chat_sessions_source
+    Chat session listing no longer contains channel-specific visibility rules;
+    pinning this assertion to that API would re-introduce a dead coupling.
+    """
+
+    channel_config_source = (APP_ROOT / "models" / "channel_config.py").read_text(encoding="utf-8")
+
+    assert '"microsoft_teams"' in channel_config_source
+    assert '"teams"' not in channel_config_source

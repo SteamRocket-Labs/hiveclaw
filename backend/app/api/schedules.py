@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api._plan_gate import enforce_plan_gate, get_plan_mode_gate, stamp_plan_gate_decision
 from app.core.permissions import check_agent_access, require_agent_manage_access
+from app.core.resource_authority import authorize_resource_action, filter_authorized_resources
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.activity_log import AgentActivityLog
@@ -82,6 +83,8 @@ class ScheduleOut(BaseModel):
     creator_username: str | None = None
     delivery_target_json: dict | None = None
     created_at: datetime | None = None
+    authority_source: str | None = None
+    operator_view: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -128,7 +131,30 @@ def _created_by_from_config(config: dict) -> uuid.UUID | None:
         return None
 
 
-def _schedule_out(trigger: AgentTrigger, *, creator_username: str | None = None) -> ScheduleOut:
+def _root_session_from_config(config: dict) -> uuid.UUID | None:
+    raw = config.get("root_session_id") or config.get("confirmed_plan_session_id")
+    if not raw:
+        return None
+    try:
+        return uuid.UUID(str(raw))
+    except (TypeError, ValueError):
+        return None
+
+
+def _authority_state_from_config(config: dict) -> str:
+    state = str(config.get("authority_state") or "").strip().lower()
+    if state in {"owned", "quarantined"}:
+        return state
+    return "owned" if _created_by_from_config(config) else "quarantined"
+
+
+def _schedule_out(
+    trigger: AgentTrigger,
+    *,
+    creator_username: str | None = None,
+    authority_source: str | None = None,
+    operator_view: bool = False,
+) -> ScheduleOut:
     config = _trigger_config(trigger)
     cron_expr = str(config.get("expr") or "")
     return ScheduleOut(
@@ -147,11 +173,17 @@ def _schedule_out(trigger: AgentTrigger, *, creator_username: str | None = None)
         creator_username=creator_username,
         delivery_target_json=trigger.reply_context or config.get("delivery_target_json"),
         created_at=trigger.created_at,
+        authority_source=authority_source,
+        operator_view=operator_view,
     )
 
 
 def _schedule_config(
-    cron_expr: str, *, created_by: uuid.UUID | None = None, delivery_target_json: dict | None = None
+    cron_expr: str,
+    *,
+    created_by: uuid.UUID | None = None,
+    root_session_id: uuid.UUID | str | None = None,
+    delivery_target_json: dict | None = None,
 ) -> dict:
     config = {
         "expr": cron_expr,
@@ -160,6 +192,11 @@ def _schedule_config(
     }
     if created_by:
         config["created_by"] = str(created_by)
+        config["authority_state"] = "owned"
+    else:
+        config["authority_state"] = "quarantined"
+    if root_session_id:
+        config["root_session_id"] = str(root_session_id)
     if delivery_target_json is not None:
         config["delivery_target_json"] = delivery_target_json
     return config
@@ -179,23 +216,67 @@ async def _load_schedule_trigger(db: AsyncSession, agent_id: uuid.UUID, schedule
     return trigger
 
 
+async def _authorize_schedule(
+    db: AsyncSession,
+    current_user: User,
+    *,
+    agent_id: uuid.UUID,
+    trigger: AgentTrigger,
+    action: str,
+    agent_access,
+    operator_view: bool,
+    operator_reason: str | None,
+):
+    config = _trigger_config(trigger)
+    return await authorize_resource_action(
+        db,
+        current_user,
+        agent_id=agent_id,
+        resource_kind="schedule",
+        resource_id=trigger.id,
+        action=action,
+        owner_user_id=_created_by_from_config(config),
+        root_session_id=_root_session_from_config(config),
+        authority_state=_authority_state_from_config(config),
+        allow_manager_override=operator_view,
+        manager_override_reason=operator_reason,
+        agent_access=agent_access,
+    )
+
+
 @router.get("/", response_model=list[ScheduleOut])
 async def list_schedules(
     agent_id: uuid.UUID,
+    operator_view: bool = False,
+    operator_reason: str | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """List cron wake policies through the legacy schedules surface."""
-    await check_agent_access(db, current_user, agent_id)
+    agent_access = await check_agent_access(db, current_user, agent_id)
     result = await db.execute(
         select(AgentTrigger)
         .where(AgentTrigger.agent_id == agent_id, AgentTrigger.type == "cron")
         .order_by(AgentTrigger.created_at.desc())
     )
     triggers = result.scalars().all()
+    authorized = await filter_authorized_resources(
+        db,
+        current_user,
+        agent_id=agent_id,
+        resource_kind="schedule",
+        action="read",
+        resources=triggers,
+        owner_user_id_of=lambda trigger: _created_by_from_config(_trigger_config(trigger)),
+        root_session_id_of=lambda trigger: _root_session_from_config(_trigger_config(trigger)),
+        authority_state_of=lambda trigger: _authority_state_from_config(_trigger_config(trigger)),
+        operator_view=operator_view,
+        operator_reason=operator_reason,
+        agent_access=agent_access,
+    )
     creator_ids = {
         created_by
-        for trigger in triggers
+        for trigger, _decision in authorized
         if (created_by := _created_by_from_config(_trigger_config(trigger))) is not None
     }
     creator_map = {}
@@ -203,8 +284,13 @@ async def list_schedules(
         users_result = await db.execute(select(User).where(User.id.in_(creator_ids)))
         creator_map = {user.id: user.username for user in users_result.scalars().all()}
     return [
-        _schedule_out(trigger, creator_username=creator_map.get(_created_by_from_config(_trigger_config(trigger))))
-        for trigger in triggers
+        _schedule_out(
+            trigger,
+            creator_username=creator_map.get(_created_by_from_config(_trigger_config(trigger))),
+            authority_source=decision.authority_source,
+            operator_view=decision.operator_view,
+        )
+        for trigger, decision in authorized
     ]
 
 
@@ -229,6 +315,7 @@ async def create_schedule(
     config = _schedule_config(
         data.cron_expr,
         created_by=current_user.id,
+        root_session_id=data.confirmed_plan_session_id,
         delivery_target_json=data.delivery_target_json,
     )
     plan_decision = None
@@ -304,13 +391,25 @@ async def update_schedule(
     agent_id: uuid.UUID,
     schedule_id: uuid.UUID,
     data: ScheduleUpdate,
+    operator_view: bool = False,
+    operator_reason: str | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Update a scheduled wake policy."""
-    await require_agent_manage_access(db, current_user, agent_id)
+    agent = await require_agent_manage_access(db, current_user, agent_id)
 
     trigger = await _load_schedule_trigger(db, agent_id, schedule_id)
+    decision = await _authorize_schedule(
+        db,
+        current_user,
+        agent_id=agent_id,
+        trigger=trigger,
+        action="write",
+        agent_access=(agent, "manage"),
+        operator_view=operator_view,
+        operator_reason=operator_reason,
+    )
     updates = data.model_dump(exclude_unset=True)
     # Plan Mode early intercept (§9.3): only re-enabling a schedule is gated,
     # unless the user explicitly declined a bound recommendation.
@@ -384,20 +483,36 @@ async def update_schedule(
     trigger.config = config
 
     await db.flush()
-    return _schedule_out(trigger)
+    return _schedule_out(
+        trigger,
+        authority_source=decision.authority_source,
+        operator_view=decision.operator_view,
+    )
 
 
 @router.delete("/{schedule_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_schedule(
     agent_id: uuid.UUID,
     schedule_id: uuid.UUID,
+    operator_view: bool = False,
+    operator_reason: str | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Delete a scheduled wake policy."""
-    await require_agent_manage_access(db, current_user, agent_id)
+    agent = await require_agent_manage_access(db, current_user, agent_id)
 
     trigger = await _load_schedule_trigger(db, agent_id, schedule_id)
+    await _authorize_schedule(
+        db,
+        current_user,
+        agent_id=agent_id,
+        trigger=trigger,
+        action="delete",
+        agent_access=(agent, "manage"),
+        operator_view=operator_view,
+        operator_reason=operator_reason,
+    )
     await db.delete(trigger)
     await db.flush()
 
@@ -407,12 +522,24 @@ async def trigger_schedule(
     agent_id: uuid.UUID,
     schedule_id: uuid.UUID,
     data: ScheduleRunIn | None = None,
+    operator_view: bool = False,
+    operator_reason: str | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Queue a one-shot trigger instead of directly invoking a scheduler runtime."""
     agent, _access = await check_agent_access(db, current_user, agent_id)
     trigger = await _load_schedule_trigger(db, agent_id, schedule_id)
+    await _authorize_schedule(
+        db,
+        current_user,
+        agent_id=agent_id,
+        trigger=trigger,
+        action="execute",
+        agent_access=(agent, _access),
+        operator_view=operator_view,
+        operator_reason=operator_reason,
+    )
     trigger_tenant_id = getattr(trigger, "tenant_id", None)
     if trigger_tenant_id is None:
         trigger.tenant_id = agent.tenant_id
@@ -460,6 +587,9 @@ async def trigger_schedule(
         "trigger_class": "scheduled_job",
         "source_schedule_id": str(schedule_id),
         "legacy_surface": "schedules_api_manual_run",
+        "created_by": str(current_user.id),
+        "root_session_id": str(run.confirmed_plan_session_id) if run.confirmed_plan_session_id else None,
+        "authority_state": "owned",
     }
     if user_declined_plan_mode:
         manual_config = _stamp_recommendation_exemption(manual_config, recommendation.id)
@@ -495,11 +625,24 @@ async def trigger_schedule(
 async def get_schedule_history(
     agent_id: uuid.UUID,
     schedule_id: uuid.UUID,
+    operator_view: bool = False,
+    operator_reason: str | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Get execution history for a legacy schedule id from activity logs."""
-    await check_agent_access(db, current_user, agent_id)
+    agent_access = await check_agent_access(db, current_user, agent_id)
+    trigger = await _load_schedule_trigger(db, agent_id, schedule_id)
+    decision = await _authorize_schedule(
+        db,
+        current_user,
+        agent_id=agent_id,
+        trigger=trigger,
+        action="read",
+        agent_access=agent_access,
+        operator_view=operator_view,
+        operator_reason=operator_reason,
+    )
     result = await db.execute(
         select(AgentActivityLog)
         .where(
@@ -520,6 +663,8 @@ async def get_schedule_history(
                     "summary": log.summary,
                     "instruction": detail.get("instruction", ""),
                     "reply": detail.get("reply", ""),
+                    "authority_source": decision.authority_source,
+                    "operator_view": decision.operator_view,
                 }
             )
         if len(history) >= 20:

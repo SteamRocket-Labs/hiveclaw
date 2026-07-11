@@ -214,6 +214,10 @@ class TaskOut(BaseModel):
     priority: str
     assignee: str
     created_by: uuid.UUID
+    root_session_id: uuid.UUID | None = None
+    authority_state: str = "owned"
+    authority_source: str | None = None
+    operator_view: bool = False
     request_id: str
     request_hash: str
     active_runtime_task_id: uuid.UUID | None = None

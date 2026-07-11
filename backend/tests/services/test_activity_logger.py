@@ -108,6 +108,40 @@ async def test_log_activity_commits_successfully(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_log_activity_persists_owner_and_root_session_or_quarantines_unknown_provenance(monkeypatch):
+    from app.services.activity_logger import log_activity
+
+    owner_id = uuid.uuid4()
+    root_session_id = uuid.uuid4()
+    owned_session = _FailingSession(fail_on_commit=False)
+    unknown_session = _FailingSession(fail_on_commit=False)
+    sessions = iter([owned_session, unknown_session])
+    _patch_tenant_scoped_session(monkeypatch, lambda: next(sessions))
+
+    await log_activity(
+        agent_id=uuid.uuid4(),
+        action_type="tool_call",
+        summary="Owned execution",
+        owner_user_id=owner_id,
+        root_session_id=root_session_id,
+    )
+    await log_activity(
+        agent_id=uuid.uuid4(),
+        action_type="heartbeat",
+        summary="Autonomous legacy activity",
+    )
+
+    owned = owned_session.added[0]
+    assert owned.owner_user_id == owner_id
+    assert owned.root_session_id == root_session_id
+    assert owned.authority_state == "owned"
+    unknown = unknown_session.added[0]
+    assert unknown.owner_user_id is None
+    assert unknown.root_session_id is None
+    assert unknown.authority_state == "quarantined"
+
+
+@pytest.mark.asyncio
 async def test_log_activity_falls_back_when_runtime_enum_value_is_missing(monkeypatch):
     from app.services.activity_logger import log_activity
 

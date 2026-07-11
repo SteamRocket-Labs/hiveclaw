@@ -108,7 +108,7 @@ def test_inject_runtime_context_no_injection_for_default_delivery():
     assert "source_session_id" not in enriched
 
 
-def test_inject_runtime_context_does_not_clobber_explicit_source_session():
+def test_inject_runtime_context_overwrites_model_supplied_source_session():
     from app.tools.service import _inject_runtime_context_arguments
 
     explicit = str(uuid4())
@@ -119,7 +119,8 @@ def test_inject_runtime_context_does_not_clobber_explicit_source_session():
         ctx,
     )
 
-    assert enriched["source_session_id"] == explicit
+    assert enriched["source_session_id"] == ctx.session_id
+    assert enriched["source_session_id"] != explicit
 
 
 # ── schema surface ───────────────────────────────────────────────────────
@@ -184,6 +185,7 @@ async def test_handle_set_trigger_persists_same_session_delivery(monkeypatch):
     from app.models.trigger import AgentTrigger
 
     agent_id = uuid4()
+    user_id = uuid4()
     session_id = str(uuid4())
     agent_obj = SimpleNamespace(id=agent_id, max_triggers=None)
 
@@ -211,12 +213,16 @@ async def test_handle_set_trigger_persists_same_session_delivery(monkeypatch):
             "delivery": "same_session",
             "source_session_id": session_id,
         },
+        user_id=user_id,
+        session_id=session_id,
     )
 
     assert "✅" in result
     stored = next(item for item in session.added if isinstance(item, AgentTrigger))
     assert stored.config["delivery"] == "same_session"
     assert stored.config["source_session_id"] == session_id
+    assert stored.config["created_by"] == str(user_id)
+    assert stored.config["root_session_id"] == session_id
     assert stored.type == "interval"
 
 
@@ -250,7 +256,30 @@ async def test_handle_set_trigger_default_delivery_is_unmarked(monkeypatch):
             "config": {"expr": "0 9 * * *"},
             "reason": "Daily report.",
         },
+        user_id=uuid4(),
     )
 
     stored = next(item for item in session.added if isinstance(item, AgentTrigger))
     assert "delivery" not in stored.config  # default path is byte-for-byte unchanged
+
+
+@pytest.mark.asyncio
+async def test_handle_set_trigger_fails_closed_without_runtime_requester(monkeypatch):
+    import app.services.agent_tool_domains.triggers as triggers_domain
+
+    async def _must_not_resolve(*_args, **_kwargs):
+        raise AssertionError("unauthenticated trigger creation must stop before persistence")
+
+    monkeypatch.setattr(triggers_domain, "resolve_tenant_for_agent", _must_not_resolve)
+
+    result = await triggers_domain._handle_set_trigger(
+        uuid4(),
+        {
+            "name": "unowned",
+            "type": "cron",
+            "config": {"expr": "0 9 * * *"},
+            "reason": "must not be created",
+        },
+    )
+
+    assert "auth_or_permission" in result

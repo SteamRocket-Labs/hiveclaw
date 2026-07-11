@@ -30,6 +30,12 @@ from app.services.agent_tool_domains.triggers import (
     _validate_trigger_lifecycle_policy,
 )
 from app.services.autonomy_overview import build_trigger_view
+from app.services.trigger_resource_authority import (
+    authorize_trigger_action,
+    filter_authorized_triggers,
+    preserve_trigger_authority,
+    stamp_trigger_authority,
+)
 
 router = APIRouter(prefix="/agents", tags=["triggers"])
 
@@ -56,6 +62,8 @@ class TriggerResponse(BaseModel):
     last_attempt: dict | None = None
     last_artifact: dict | None = None
     diagnostics: dict | None = None
+    authority_source: str | None = None
+    operator_view: bool = False
 
 
 class TriggerCreate(BaseModel):
@@ -93,7 +101,14 @@ class TriggerUpdate(BaseModel):
     plan_recommendation_id: str | None = None
 
 
-def _trigger_response(trigger: AgentTrigger, *, diagnostics: bool = False, view: dict | None = None) -> TriggerResponse:
+def _trigger_response(
+    trigger: AgentTrigger,
+    *,
+    diagnostics: bool = False,
+    view: dict | None = None,
+    authority_source: str | None = None,
+    operator_view: bool = False,
+) -> TriggerResponse:
     view = view or build_trigger_view(trigger, include_diagnostics=diagnostics)
     return TriggerResponse(
         id=str(trigger.id),
@@ -117,6 +132,8 @@ def _trigger_response(trigger: AgentTrigger, *, diagnostics: bool = False, view:
         last_attempt=view.get("last_attempt"),
         last_artifact=view.get("last_artifact"),
         diagnostics=view.get("diagnostics") if diagnostics else None,
+        authority_source=authority_source,
+        operator_view=operator_view,
     )
 
 
@@ -149,18 +166,39 @@ def _raise_trigger_validation_error(error: str | None) -> None:
 async def list_agent_triggers(
     agent_id: uuid.UUID,
     diagnostics: bool = Query(default=False),
+    operator_view: bool = Query(default=False),
+    operator_reason: str | None = Query(default=None),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """List all triggers for an agent."""
     include_diagnostics = diagnostics is True
-    await check_agent_access(db, current_user, agent_id)
+    use_operator_view = operator_view is True
+    normalized_operator_reason = operator_reason if isinstance(operator_reason, str) else None
+    agent_access = await check_agent_access(db, current_user, agent_id)
     result = await db.execute(
         select(AgentTrigger).where(AgentTrigger.agent_id == agent_id).order_by(AgentTrigger.created_at.desc())
     )
     triggers = result.scalars().all()
+    authorized = await filter_authorized_triggers(
+        db,
+        current_user,
+        agent_id=agent_id,
+        triggers=triggers,
+        agent_access=agent_access,
+        operator_view=use_operator_view,
+        operator_reason=normalized_operator_reason,
+    )
 
-    return [_trigger_response(t, diagnostics=include_diagnostics) for t in triggers]
+    return [
+        _trigger_response(
+            trigger,
+            diagnostics=include_diagnostics,
+            authority_source=decision.authority_source,
+            operator_view=decision.operator_view,
+        )
+        for trigger, decision in authorized
+    ]
 
 
 @router.post("/{agent_id}/triggers", response_model=TriggerResponse, status_code=status.HTTP_201_CREATED)
@@ -276,6 +314,12 @@ async def create_trigger(
             raise _plan_recommendation_error(exc) from exc
         config = _stamp_recommendation_exemption(config, recommendation.id)
 
+    config = stamp_trigger_authority(
+        config,
+        owner_user_id=current_user.id,
+        root_session_id=body.confirmed_plan_session_id,
+    )
+
     trigger = AgentTrigger(
         agent_id=agent_id,
         tenant_id=agent.tenant_id,
@@ -292,7 +336,7 @@ async def create_trigger(
     await db.commit()
     if hasattr(db, "refresh"):
         await db.refresh(trigger)
-    return _trigger_response(trigger)
+    return _trigger_response(trigger, authority_source="resource_owner")
 
 
 @router.patch("/{agent_id}/triggers/{trigger_id}")
@@ -300,11 +344,15 @@ async def update_trigger(
     agent_id: uuid.UUID,
     trigger_id: uuid.UUID,
     body: TriggerUpdate,
+    operator_view: bool = Query(default=False),
+    operator_reason: str | None = Query(default=None),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Update a trigger (from frontend management UI)."""
-    await check_agent_access(db, current_user, agent_id)
+    use_operator_view = operator_view is True
+    normalized_operator_reason = operator_reason if isinstance(operator_reason, str) else None
+    agent_access = await check_agent_access(db, current_user, agent_id)
     result = await db.execute(
         select(AgentTrigger).where(
             AgentTrigger.id == trigger_id,
@@ -314,6 +362,16 @@ async def update_trigger(
     trigger = result.scalar_one_or_none()
     if not trigger:
         raise HTTPException(404, "Trigger not found")
+    decision = await authorize_trigger_action(
+        db,
+        current_user,
+        agent_id=agent_id,
+        trigger=trigger,
+        action="write",
+        agent_access=agent_access,
+        operator_view=use_operator_view,
+        operator_reason=normalized_operator_reason,
+    )
 
     # Plan Mode early intercept (§9.3): only enabling an autonomous wake is
     # gated. Disables, config edits, and reason/lifecycle changes are low-risk
@@ -356,7 +414,7 @@ async def update_trigger(
             )
 
     if body.config is not None:
-        trigger.config = body.config
+        trigger.config = preserve_trigger_authority(trigger, body.config)
     if body.is_enabled is True:
         if user_declined_plan_mode:
             trigger.config = _stamp_recommendation_exemption(trigger.config, recommendation.id)
@@ -405,18 +463,26 @@ async def update_trigger(
 
     await db.commit()
 
-    return {"ok": True}
+    return {
+        "ok": True,
+        "authority_source": decision.authority_source,
+        "operator_view": decision.operator_view,
+    }
 
 
 @router.delete("/{agent_id}/triggers/{trigger_id}")
 async def delete_trigger(
     agent_id: uuid.UUID,
     trigger_id: uuid.UUID,
+    operator_view: bool = Query(default=False),
+    operator_reason: str | None = Query(default=None),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Delete a trigger entirely."""
-    await check_agent_access(db, current_user, agent_id)
+    use_operator_view = operator_view is True
+    normalized_operator_reason = operator_reason if isinstance(operator_reason, str) else None
+    agent_access = await check_agent_access(db, current_user, agent_id)
     result = await db.execute(
         select(AgentTrigger).where(
             AgentTrigger.id == trigger_id,
@@ -426,8 +492,22 @@ async def delete_trigger(
     trigger = result.scalar_one_or_none()
     if not trigger:
         raise HTTPException(404, "Trigger not found")
+    decision = await authorize_trigger_action(
+        db,
+        current_user,
+        agent_id=agent_id,
+        trigger=trigger,
+        action="delete",
+        agent_access=agent_access,
+        operator_view=use_operator_view,
+        operator_reason=normalized_operator_reason,
+    )
 
     await db.delete(trigger)
     await db.commit()
 
-    return {"ok": True}
+    return {
+        "ok": True,
+        "authority_source": decision.authority_source,
+        "operator_view": decision.operator_view,
+    }

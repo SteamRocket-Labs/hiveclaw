@@ -35,6 +35,10 @@ async def test_get_agent_tool_failure_summary_returns_aggregated_payload(monkeyp
         [
             [
                 SimpleNamespace(
+                    id=uuid4(),
+                    owner_user_id=user.id,
+                    root_session_id=None,
+                    authority_state="owned",
                     action_type="error",
                     summary="Tool firecrawl_fetch failed",
                     detail_json={
@@ -54,7 +58,7 @@ async def test_get_agent_tool_failure_summary_returns_aggregated_payload(monkeyp
         assert db_session is db
         assert current_user is user
         assert target_agent_id == agent_id
-        return None
+        return SimpleNamespace(id=agent_id, tenant_id=user.tenant_id), "use"
 
     monkeypatch.setattr(activity_api, "check_agent_access", fake_check_agent_access)
 

@@ -2,12 +2,13 @@
 
 import uuid
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.channel_message_contracts import extract_sender_label_from_message, strip_sender_label_prefix
 from app.core.permissions import check_agent_access
+from app.core.resource_authority import authorize_resource_action, filter_authorized_resources
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.activity_log import AgentActivityLog
@@ -16,28 +17,82 @@ from app.models.audit import ChatMessage
 from app.models.chat_session import ChatSession
 from app.models.participant import Participant
 from app.models.user import User
-from app.services.tool_telemetry import collect_agent_tool_failure_summary
+from app.services.tool_telemetry import summarize_tool_failure_logs
 
 router = APIRouter(tags=["activity"])
+
+
+async def _load_authorized_activity_rows(
+    db: AsyncSession,
+    current_user: User,
+    *,
+    agent_id: uuid.UUID,
+    query,
+    limit: int,
+    operator_view: bool,
+    operator_reason: str | None,
+    agent_access,
+):
+    """Apply the caller-visible limit after authority filtering.
+
+    Shared Agents can have a newer foreign row window. Paging until enough
+    authorized rows are found prevents that window from starving the owner's
+    older activity without loading the whole Agent history into memory.
+    """
+
+    page_size = max(1, int(limit))
+    offset = 0
+    authorized = []
+    while len(authorized) < limit:
+        page = (await db.execute(query.offset(offset).limit(page_size))).scalars().all()
+        if not page:
+            break
+        authorized.extend(
+            await filter_authorized_resources(
+                db,
+                current_user,
+                agent_id=agent_id,
+                resource_kind="agent_activity",
+                action="read",
+                resources=page,
+                operator_view=operator_view,
+                operator_reason=operator_reason,
+                agent_access=agent_access,
+            )
+        )
+        if len(page) < page_size:
+            break
+        offset += len(page)
+    return authorized[:limit]
 
 
 @router.get("/agents/{agent_id}/activity")
 async def get_agent_activity(
     agent_id: uuid.UUID,
     limit: int = Query(50, le=200),
+    operator_view: bool = False,
+    operator_reason: str | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Get recent activity logs for an agent."""
-    await check_agent_access(db, current_user, agent_id)
+    agent_access = await check_agent_access(db, current_user, agent_id)
 
-    result = await db.execute(
+    query = (
         select(AgentActivityLog)
         .where(AgentActivityLog.agent_id == agent_id)
         .order_by(AgentActivityLog.created_at.desc())
-        .limit(limit)
     )
-    logs = result.scalars().all()
+    authorized = await _load_authorized_activity_rows(
+        db,
+        current_user,
+        agent_id=agent_id,
+        query=query,
+        limit=limit,
+        operator_view=operator_view,
+        operator_reason=operator_reason,
+        agent_access=agent_access,
+    )
 
     return [
         {
@@ -47,8 +102,10 @@ async def get_agent_activity(
             "detail": log.detail_json,
             "related_id": str(log.related_id) if log.related_id else None,
             "created_at": log.created_at.isoformat() if log.created_at else None,
+            "authority_source": decision.authority_source,
+            "operator_view": decision.operator_view,
         }
-        for log in logs
+        for log, decision in authorized
     ]
 
 
@@ -57,17 +114,33 @@ async def get_agent_tool_failure_summary(
     agent_id: uuid.UUID,
     hours: int = Query(24, ge=1, le=24 * 30),
     limit: int = Query(500, ge=10, le=2000),
+    operator_view: bool = False,
+    operator_reason: str | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Get aggregated tool failure telemetry for an agent."""
-    await check_agent_access(db, current_user, agent_id)
-    return await collect_agent_tool_failure_summary(
-        db,
-        agent_id=agent_id,
-        hours=hours,
-        limit=limit,
+    agent_access = await check_agent_access(db, current_user, agent_id)
+    from datetime import UTC, datetime, timedelta
+
+    query = (
+        select(AgentActivityLog)
+        .where(AgentActivityLog.agent_id == agent_id)
+        .where(AgentActivityLog.action_type == "error")
+        .where(AgentActivityLog.created_at >= datetime.now(UTC) - timedelta(hours=max(hours, 1)))
+        .order_by(AgentActivityLog.created_at.desc())
     )
+    authorized = await _load_authorized_activity_rows(
+        db,
+        current_user,
+        agent_id=agent_id,
+        query=query,
+        limit=limit,
+        operator_view=operator_view,
+        operator_reason=operator_reason,
+        agent_access=agent_access,
+    )
+    return summarize_tool_failure_logs([log for log, _decision in authorized])
 
 
 def _coerce_limit(limit, default: int = 100) -> int:
@@ -228,14 +301,46 @@ async def _append_legacy_prefix_conversations(
             )
 
 
+def _session_authority_state(session: ChatSession) -> str:
+    return "owned" if getattr(session, "user_id", None) else "quarantined"
+
+
+async def _filter_authorized_sessions(
+    db: AsyncSession,
+    current_user: User,
+    *,
+    agent_id: uuid.UUID,
+    sessions: list[ChatSession],
+    operator_view: bool,
+    operator_reason: str | None,
+    agent_access,
+):
+    return await filter_authorized_resources(
+        db,
+        current_user,
+        agent_id=agent_id,
+        resource_kind="chat_session",
+        action="read",
+        resources=sessions,
+        owner_user_id_of=lambda session: getattr(session, "user_id", None),
+        root_session_id_of=lambda session: getattr(session, "root_session_id", None),
+        authority_state_of=_session_authority_state,
+        operator_view=operator_view,
+        operator_reason=operator_reason,
+        agent_access=agent_access,
+    )
+
+
 @router.get("/agents/{agent_id}/chat-history/conversations")
 async def list_conversations(
     agent_id: uuid.UUID,
+    operator_view: bool = False,
+    operator_reason: str | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """List all conversation partners for this agent using ChatSession as the canonical entrypoint."""
-    await check_agent_access(db, current_user, agent_id)
+    agent_access = await check_agent_access(db, current_user, agent_id)
 
     conversations = []
 
@@ -248,7 +353,16 @@ async def list_conversations(
         .order_by(ChatSession.last_message_at.desc().nulls_last(), ChatSession.created_at.desc())
     )
     channel_sessions = channel_sessions_q.scalars().all()
-    for session in channel_sessions:
+    authorized_channel_sessions = await _filter_authorized_sessions(
+        db,
+        current_user,
+        agent_id=agent_id,
+        sessions=channel_sessions,
+        operator_view=operator_view,
+        operator_reason=operator_reason,
+        agent_access=agent_access,
+    )
+    for session, decision in authorized_channel_sessions:
         conv_id = str(session.id)
         count, last_at = await _get_session_message_stats(db, agent_id=session.agent_id, conversation_id=conv_id)
         last_message = await _get_last_session_message(db, agent_id=session.agent_id, conversation_id=conv_id)
@@ -268,6 +382,8 @@ async def list_conversations(
                 "last_message": last_message[:80],
                 "message_count": count,
                 "last_at": last_at.isoformat() if last_at else None,
+                "authority_source": decision.authority_source,
+                "operator_view": decision.operator_view,
             }
         )
 
@@ -278,7 +394,16 @@ async def list_conversations(
         )
     )
     agent_sessions = agent_sessions_q.scalars().all()
-    for session in agent_sessions:
+    authorized_agent_sessions = await _filter_authorized_sessions(
+        db,
+        current_user,
+        agent_id=agent_id,
+        sessions=agent_sessions,
+        operator_view=operator_view,
+        operator_reason=operator_reason,
+        agent_access=agent_access,
+    )
+    for session, decision in authorized_agent_sessions:
         partner_id = session.peer_agent_id if session.agent_id == agent_id else session.agent_id
         agent_r = await db.execute(select(Agent.name).where(Agent.id == partner_id))
         partner_name = agent_r.scalar_one_or_none() or "未知数字员工"
@@ -295,11 +420,28 @@ async def list_conversations(
                 "last_message": last_message[:80],
                 "message_count": count,
                 "last_at": last_at.isoformat() if last_at else None,
+                "authority_source": decision.authority_source,
+                "operator_view": decision.operator_view,
             }
         )
 
-    if not conversations:
+    if not conversations and operator_view:
+        legacy_decision = await authorize_resource_action(
+            db,
+            current_user,
+            agent_id=agent_id,
+            resource_kind="legacy_chat_history",
+            resource_id=uuid.uuid5(agent_id, "legacy-chat-history"),
+            action="read",
+            authority_state="quarantined",
+            allow_manager_override=True,
+            manager_override_reason=operator_reason,
+            agent_access=agent_access,
+        )
         await _append_legacy_prefix_conversations(db, agent_id=agent_id, conversations=conversations)
+        for conversation in conversations:
+            conversation["authority_source"] = legacy_decision.authority_source
+            conversation["operator_view"] = legacy_decision.operator_view
 
     conversations.sort(key=lambda c: c["last_at"] or "", reverse=True)
     return conversations
@@ -358,15 +500,31 @@ async def get_conversation_messages(
     agent_id: uuid.UUID,
     conv_id: str,
     limit: int = Query(100, le=500),
+    operator_view: bool = False,
+    operator_reason: str | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Get messages for a canonical ChatSession or a legacy channel conversation id."""
-    await check_agent_access(db, current_user, agent_id)
+    agent_access = await check_agent_access(db, current_user, agent_id)
     limit_value = _coerce_limit(limit)
 
     session = await _load_accessible_session(db, agent_id=agent_id, conv_id=conv_id)
     if session is not None:
+        decision = await authorize_resource_action(
+            db,
+            current_user,
+            agent_id=agent_id,
+            resource_kind="chat_session",
+            resource_id=session.id,
+            action="read",
+            owner_user_id=getattr(session, "user_id", None),
+            root_session_id=getattr(session, "root_session_id", None),
+            authority_state=_session_authority_state(session),
+            allow_manager_override=operator_view,
+            manager_override_reason=operator_reason,
+            agent_access=agent_access,
+        )
         include_sender = getattr(session, "source_channel", None) == "agent"
         messages = await _list_messages_by_conversation(
             db,
@@ -374,16 +532,39 @@ async def get_conversation_messages(
             agent_id=session.agent_id,
             limit=limit_value,
         )
-        return [await _format_session_message(message, include_sender=include_sender, db=db) for message in messages]
+        payload = [await _format_session_message(message, include_sender=include_sender, db=db) for message in messages]
+        for item in payload:
+            item["authority_source"] = decision.authority_source
+            item["operator_view"] = decision.operator_view
+        return payload
 
     legacy_prefixes = ("web_", "feishu_", "slack_", "discord_")
     if conv_id.startswith(legacy_prefixes):
+        try:
+            decision = await authorize_resource_action(
+                db,
+                current_user,
+                agent_id=agent_id,
+                resource_kind="legacy_chat_history",
+                resource_id=uuid.uuid5(agent_id, f"legacy-chat-history:{conv_id}"),
+                action="read",
+                authority_state="quarantined",
+                allow_manager_override=operator_view,
+                manager_override_reason=operator_reason,
+                agent_access=agent_access,
+            )
+        except HTTPException:
+            return []
         messages = await _list_messages_by_conversation(
             db,
             conversation_id=conv_id,
             agent_id=agent_id,
             limit=limit_value,
         )
-        return [await _format_session_message(message, include_sender=False, db=db) for message in messages]
+        payload = [await _format_session_message(message, include_sender=False, db=db) for message in messages]
+        for item in payload:
+            item["authority_source"] = decision.authority_source
+            item["operator_view"] = decision.operator_view
+        return payload
 
     return []

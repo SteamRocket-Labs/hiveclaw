@@ -48,7 +48,7 @@ async def test_list_conversations_returns_canonical_uuid_for_web_session(monkeyp
     agent_id = uuid4()
     user_id = uuid4()
     session_id = uuid4()
-    current_user = SimpleNamespace(id=uuid4(), role="member")
+    current_user = SimpleNamespace(id=user_id, role="member")
     web_session = SimpleNamespace(
         id=session_id,
         agent_id=agent_id,
@@ -71,7 +71,7 @@ async def test_list_conversations_returns_canonical_uuid_for_web_session(monkeyp
         assert db_arg is db
         assert user_arg is current_user
         assert requested_agent_id == agent_id
-        return None
+        return SimpleNamespace(id=agent_id), "use"
 
     monkeypatch.setattr(activity_api, "check_agent_access", fake_check_agent_access)
 
@@ -90,6 +90,8 @@ async def test_list_conversations_returns_canonical_uuid_for_web_session(monkeyp
             "last_message": "hello from web",
             "message_count": 3,
             "last_at": "2026-04-14T12:00:00+00:00",
+            "authority_source": "resource_owner",
+            "operator_view": False,
         }
     ]
 
@@ -101,7 +103,13 @@ async def test_get_conversation_messages_uses_channel_session_uuid_and_strips_se
     agent_id = uuid4()
     session_id = uuid4()
     current_user = SimpleNamespace(id=uuid4(), role="member")
-    session = SimpleNamespace(id=session_id, agent_id=agent_id, source_channel="feishu", peer_agent_id=None)
+    session = SimpleNamespace(
+        id=session_id,
+        agent_id=agent_id,
+        user_id=current_user.id,
+        source_channel="feishu",
+        peer_agent_id=None,
+    )
     message = SimpleNamespace(
         id=uuid4(),
         role="user",
@@ -119,7 +127,7 @@ async def test_get_conversation_messages_uses_channel_session_uuid_and_strips_se
         assert db_arg is db
         assert user_arg is current_user
         assert requested_agent_id == agent_id
-        return None
+        return SimpleNamespace(id=agent_id), "use"
 
     monkeypatch.setattr(activity_api, "check_agent_access", fake_check_agent_access)
 
@@ -136,6 +144,8 @@ async def test_get_conversation_messages_uses_channel_session_uuid_and_strips_se
             "role": "user",
             "content": "你好",
             "created_at": "2026-04-14T12:30:00+00:00",
+            "authority_source": "resource_owner",
+            "operator_view": False,
         }
     ]
 
@@ -148,7 +158,13 @@ async def test_get_conversation_messages_keeps_agent_sender_names_for_agent_sess
     session_id = uuid4()
     participant_id = uuid4()
     current_user = SimpleNamespace(id=uuid4(), role="member")
-    session = SimpleNamespace(id=session_id, agent_id=agent_id, source_channel="agent", peer_agent_id=uuid4())
+    session = SimpleNamespace(
+        id=session_id,
+        agent_id=agent_id,
+        user_id=current_user.id,
+        source_channel="agent",
+        peer_agent_id=uuid4(),
+    )
     message = SimpleNamespace(
         id=uuid4(),
         role="assistant",
@@ -165,7 +181,7 @@ async def test_get_conversation_messages_keeps_agent_sender_names_for_agent_sess
     )
 
     async def fake_check_agent_access(db_arg, user_arg, requested_agent_id):
-        return None
+        return SimpleNamespace(id=agent_id), "use"
 
     monkeypatch.setattr(activity_api, "check_agent_access", fake_check_agent_access)
 
@@ -183,6 +199,8 @@ async def test_get_conversation_messages_keeps_agent_sender_names_for_agent_sess
             "sender_name": "执行助手",
             "content": "agent reply",
             "created_at": "2026-04-14T13:00:00+00:00",
+            "authority_source": "resource_owner",
+            "operator_view": False,
         }
     ]
 
@@ -194,7 +212,7 @@ async def test_list_conversations_includes_telegram_session_with_delivery_target
     agent_id = uuid4()
     user_id = uuid4()
     session_id = uuid4()
-    current_user = SimpleNamespace(id=uuid4(), role="member")
+    current_user = SimpleNamespace(id=user_id, role="member")
     telegram_session = SimpleNamespace(
         id=session_id,
         agent_id=agent_id,
@@ -218,7 +236,7 @@ async def test_list_conversations_includes_telegram_session_with_delivery_target
         assert db_arg is db
         assert user_arg is current_user
         assert requested_agent_id == agent_id
-        return None
+        return SimpleNamespace(id=agent_id), "use"
 
     monkeypatch.setattr(activity_api, "check_agent_access", fake_check_agent_access)
 
@@ -237,6 +255,8 @@ async def test_list_conversations_includes_telegram_session_with_delivery_target
             "last_message": "ping from telegram",
             "message_count": 2,
             "last_at": "2026-04-14T14:00:00+00:00",
+            "authority_source": "resource_owner",
+            "operator_view": False,
         }
     ]
 
@@ -248,7 +268,7 @@ async def test_list_conversations_uses_feishu_delivery_target_label_when_sender_
     agent_id = uuid4()
     user_id = uuid4()
     session_id = uuid4()
-    current_user = SimpleNamespace(id=uuid4(), role="member")
+    current_user = SimpleNamespace(id=user_id, role="member")
     feishu_session = SimpleNamespace(
         id=session_id,
         agent_id=agent_id,
@@ -273,7 +293,7 @@ async def test_list_conversations_uses_feishu_delivery_target_label_when_sender_
         assert db_arg is db
         assert user_arg is current_user
         assert requested_agent_id == agent_id
-        return None
+        return SimpleNamespace(id=agent_id), "use"
 
     monkeypatch.setattr(activity_api, "check_agent_access", fake_check_agent_access)
 
@@ -292,6 +312,8 @@ async def test_list_conversations_uses_feishu_delivery_target_label_when_sender_
             "last_message": "普通消息",
             "message_count": 2,
             "last_at": "2026-04-14T14:30:00+00:00",
+            "authority_source": "resource_owner",
+            "operator_view": False,
         }
     ]
 
@@ -303,7 +325,7 @@ async def test_list_conversations_falls_back_to_user_display_name_for_teams_sess
     agent_id = uuid4()
     user_id = uuid4()
     session_id = uuid4()
-    current_user = SimpleNamespace(id=uuid4(), role="member")
+    current_user = SimpleNamespace(id=user_id, role="member")
     teams_session = SimpleNamespace(
         id=session_id,
         agent_id=agent_id,
@@ -328,7 +350,7 @@ async def test_list_conversations_falls_back_to_user_display_name_for_teams_sess
         assert db_arg is db
         assert user_arg is current_user
         assert requested_agent_id == agent_id
-        return None
+        return SimpleNamespace(id=agent_id), "use"
 
     monkeypatch.setattr(activity_api, "check_agent_access", fake_check_agent_access)
 
@@ -347,6 +369,8 @@ async def test_list_conversations_falls_back_to_user_display_name_for_teams_sess
             "last_message": "hello from teams",
             "message_count": 1,
             "last_at": "2026-04-14T15:00:00+00:00",
+            "authority_source": "resource_owner",
+            "operator_view": False,
         }
     ]
 
@@ -381,7 +405,7 @@ async def test_list_conversations_reads_agent_session_stats_from_canonical_sessi
         assert db_arg is db
         assert user_arg is current_user
         assert requested_agent_id_arg == requested_agent_id
-        return None
+        return SimpleNamespace(id=requested_agent_id), "use"
 
     async def fake_get_session_message_stats(db_arg, *, agent_id, conversation_id):
         assert db_arg is db
@@ -414,5 +438,7 @@ async def test_list_conversations_reads_agent_session_stats_from_canonical_sessi
             "last_message": "agent reply",
             "message_count": 4,
             "last_at": "2026-04-14T16:00:00+00:00",
+            "authority_source": "resource_owner",
+            "operator_view": False,
         }
     ]

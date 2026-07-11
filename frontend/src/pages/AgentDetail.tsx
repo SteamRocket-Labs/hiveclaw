@@ -469,7 +469,10 @@ function AgentDetailInner() {
     const { data: reflectionSessions = [] } = useQuery({
         queryKey: ['reflection-sessions', id],
         queryFn: async () => {
-            const all = await chatApi.listSessions(id!, 'all').catch(() => [] as any[]);
+            const all = await chatApi.listSessions(id!, 'all', {
+                operatorView: true,
+                operatorReason: 'Agent reflection monitoring',
+            }).catch(() => [] as any[]);
             return all.filter((s: any) => s.source_channel === 'trigger');
         },
         enabled: canLoadAgentScopedData && canManage && activeTab === 'aware',
@@ -483,10 +486,16 @@ function AgentDetailInner() {
     const [reflectionPage, setReflectionPage] = useState(0);
 
     const workspacePath = 'workspace';
+    const [activityOperatorView, setActivityOperatorView] = useState(false);
+    useEffect(() => setActivityOperatorView(false), [id]);
 
     const { data: activityLogs = [] } = useQuery({
-        queryKey: ['activity', id],
-        queryFn: () => activityApi.list(id!, 100),
+        queryKey: ['activity', id, activityOperatorView ? 'operator' : 'owner'],
+        queryFn: () => activityApi.list(
+            id!,
+            100,
+            activityOperatorView ? { operatorView: true, reason: 'Agent activity administration' } : undefined,
+        ),
         enabled: canLoadAgentScopedData && (activeTab === 'activityLog' || activeTab === 'status'),
         refetchInterval: activeTab === 'activityLog' ? 10000 : false,
     });
@@ -506,8 +515,13 @@ function AgentDetailInner() {
     });
 
     const { data: toolFailureSummary } = useQuery({
-        queryKey: ['activity', 'tool-failures', id],
-        queryFn: () => activityApi.getToolFailureSummary(id!, 24, 200),
+        queryKey: ['activity', 'tool-failures', id, activityOperatorView ? 'operator' : 'owner'],
+        queryFn: () => activityApi.getToolFailureSummary(
+            id!,
+            24,
+            200,
+            activityOperatorView ? { operatorView: true, reason: 'Agent activity administration' } : undefined,
+        ),
         enabled: canLoadAgentScopedData && activeTab === 'activityLog',
         refetchInterval: activeTab === 'activityLog' ? 10000 : false,
     });
@@ -760,7 +774,10 @@ function AgentDetailInner() {
         }
         setAllSessionsLoading(true);
         try {
-            const all = filterSessionsForAgent(await chatApi.listSessions(id, 'all'), id);
+            const all = filterSessionsForAgent(await chatApi.listSessions(id, 'all', {
+                operatorView: true,
+                operatorReason: 'Agent session administration',
+            }), id);
             if (currentAgentIdRef.current === id) {
                 setAllSessions(all.filter((s: any) => s.source_channel !== 'trigger'));
             }
@@ -778,6 +795,9 @@ function AgentDetailInner() {
         const activeRunState = activeRunStateRef.current[runtimeKey];
         const writableSession = isWritableSession(sess);
         const draftSession = isDraftHumanChatSession(sess);
+        const operatorOptions = sess?.operator_view
+            ? { operatorView: true, operatorReason: 'Agent session administration' }
+            : undefined;
         const transcriptSurface = writableSession ? 'chat' : 'history';
         const nextTranscriptLoad: SessionTranscriptLoadDescriptor = {
             key: runtimeKey,
@@ -834,6 +854,7 @@ function AgentDetailInner() {
                 direction: 'backward',
                 limit: TRANSCRIPT_INITIAL_WINDOW,
                 signal: controller.signal,
+                ...operatorOptions,
             });
             if (controller.signal.aborted || loadSeq !== sessionLoadSeqRef.current) return;
             if (currentAgentIdRef.current !== targetAgentId) return;
@@ -850,7 +871,10 @@ function AgentDetailInner() {
                 sessionUiStateRef.current[runtimeKey] = replay.ui;
                 preParsed = replay.messages.map(parseChatMsg);
             } else {
-                const msgs = await chatApi.getSessionMessages(targetAgentId, sessionId, { signal: controller.signal });
+                const msgs = await chatApi.getSessionMessages(targetAgentId, sessionId, {
+                    signal: controller.signal,
+                    ...operatorOptions,
+                });
                 if (controller.signal.aborted || loadSeq !== sessionLoadSeqRef.current) return;
                 preParsed = msgs.map((m: any) => parseChatMsg(normalizeStoredChatMessage(m)));
                 transcriptReplayStateRef.current[runtimeKey] = {
@@ -931,6 +955,9 @@ function AgentDetailInner() {
             const older = await chatApi.getSessionTranscript(targetAgentId, sessionId, {
                 beforeSequence: earliestSequence,
                 limit: TRANSCRIPT_OLDER_PAGE,
+                ...(activeSession?.operator_view
+                    ? { operatorView: true, operatorReason: 'Agent session administration' }
+                    : undefined),
             });
             if (activeSessionIdRef.current !== sessionId) return;
             setTranscriptHasOlder((prev) => ({ ...prev, [runtimeKey]: older.length >= TRANSCRIPT_OLDER_PAGE }));
@@ -960,7 +987,13 @@ function AgentDetailInner() {
         }
         setBranchLineageLoading(true);
         try {
-            const lineage = await chatApi.getSessionLineage(agentId, sessionId);
+            const lineage = await chatApi.getSessionLineage(
+                agentId,
+                sessionId,
+                activeSession?.operator_view
+                    ? { operatorView: true, operatorReason: 'Agent session administration' }
+                    : undefined,
+            );
             setBranchLineage((lineage || []).map((item: any) => ({
                 id: String(item.id),
                 parent_session_id: item.parent_session_id ?? null,
@@ -2488,14 +2521,25 @@ function AgentDetailInner() {
 
     const { data: persistedRuntimeSummary } = useQuery({
         queryKey: ['chat-runtime-summary', id, activeSession?.id],
-        queryFn: () => chatApi.getRuntimeSummary(String(activeSession!.id)),
+        queryFn: () => chatApi.getRuntimeSummary(
+            String(activeSession!.id),
+            activeSession?.operator_view
+                ? { operatorView: true, operatorReason: 'Agent session administration' }
+                : undefined,
+        ),
         enabled: canLoadAgentScopedData && activeTab === 'chat' && !!activeSession?.id && !isDraftHumanChatSession(activeSession),
         refetchInterval: activeTab === 'chat' && activeSession?.id && !isDraftHumanChatSession(activeSession) ? 10000 : false,
     });
 
     const { data: activeSessionRun } = useQuery({
         queryKey: ['chat-active-run', id, activeSession?.id],
-        queryFn: () => chatApi.getActiveSessionRun(id!, String(activeSession!.id)),
+        queryFn: () => chatApi.getActiveSessionRun(
+            id!,
+            String(activeSession!.id),
+            activeSession?.operator_view
+                ? { operatorView: true, operatorReason: 'Agent session administration' }
+                : undefined,
+        ),
         enabled: canLoadAgentScopedData && activeTab === 'chat' && !!activeSession?.id && !!activeSession && isWritableSession(activeSession) && !isDraftHumanChatSession(activeSession),
         // Idle sessions rely on WS run events (run_started/done invalidate this
         // query); the 3s timer is only a live-run fallback (plan D1).
@@ -2859,6 +2903,14 @@ function AgentDetailInner() {
                         onRefetchTriggers={refetchTriggers}
                         autonomyOverview={autonomyOverview}
                         onRefetchAutonomy={refetchAutonomy}
+                        onLoadReflectionMessages={(sessionId) => chatApi.getSessionMessages(
+                            id!,
+                            sessionId,
+                            {
+                                operatorView: true,
+                                operatorReason: 'Agent reflection monitoring',
+                            },
+                        )}
                     />
                 )}
 
@@ -2900,7 +2952,7 @@ function AgentDetailInner() {
                         (agent as any)?.agent_type === 'local_agent' ? (
                             <LocalAgents key="workspace" agentId={id!} agentName={agent.name} embedded initialTab="workspace" />
                         ) : (
-                            <AgentWorkspaceSection agentId={id!} />
+                            <AgentWorkspaceSection agentId={id!} canUseOperatorView={canManage} />
                         )
                     )
                 }
@@ -3021,6 +3073,9 @@ function AgentDetailInner() {
                             expandedLogId={expandedLogId}
                             onFilterChange={setLogFilter}
                             onToggleExpandedLog={setExpandedLogId}
+                            canUseOperatorView={canManage}
+                            operatorView={activityOperatorView}
+                            onOperatorViewChange={setActivityOperatorView}
                         />
                     )
                 }

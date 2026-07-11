@@ -10,7 +10,8 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
 from app.config import get_settings
-from app.core.permissions import check_agent_access
+from app.core.permissions import check_agent_access, require_agent_manage_access
+from app.core.resource_authority import authorize_resource_action
 from app.core.security import get_current_user
 from app.database import get_db, pin_rls_tenant_context
 from app.models.chat_artifact import ChatArtifact
@@ -35,6 +36,8 @@ class FileInfo(BaseModel):
     is_dir: bool
     size: int = 0
     modified_at: str = ""
+    authority_source: str | None = None
+    operator_view: bool = False
 
 
 class FileContent(BaseModel):
@@ -45,6 +48,8 @@ class FileContent(BaseModel):
     workspace_changed: bool | None = None
     snapshot_hash: str | None = None
     content_hash: str | None = None
+    authority_source: str | None = None
+    operator_view: bool = False
 
 
 class FileWrite(BaseModel):
@@ -87,6 +92,23 @@ def _normalized_rel_path(path: str) -> str:
 def _is_governed_memory_path(path: str) -> bool:
     normalized = _normalized_rel_path(path)
     return normalized == "memory" or normalized.startswith("memory/")
+
+
+def _is_user_workspace_path(path: str) -> bool:
+    normalized = _normalized_rel_path(path)
+    return normalized == "workspace" or normalized.startswith("workspace/")
+
+
+def _workspace_authority_http_error(exc: Exception) -> HTTPException:
+    from app.services.workspace_resource_authority import WorkspaceAuthorityError
+
+    if not isinstance(exc, WorkspaceAuthorityError):
+        return HTTPException(status_code=403, detail=str(exc))
+    status_code = 404 if exc.code == "workspace_resource_not_found" else 403
+    return HTTPException(
+        status_code=status_code,
+        detail={"code": exc.code, "message": exc.message},
+    )
 
 
 def _managed_system_path_message(path: str) -> str | None:
@@ -197,15 +219,41 @@ def _raise_raw_memory_read_guard() -> None:
     )
 
 
+def _raise_raw_system_read_guard(path: str, *, access_level: str) -> None:
+    """Agent use permits execution, not browsing internal Agent state."""
+
+    normalized = _normalized_rel_path(path)
+    if not normalized:
+        return
+    top_level = normalized.split("/", 1)[0]
+    if top_level in {"runtime_artifacts", "logs"}:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Runtime artifacts and logs are available only through their governed read models.",
+        )
+    if access_level != "use" or _is_user_workspace_path(normalized):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail=(
+            "Raw Agent system files are not part of Agent use access. Use the scoped Knowledge, "
+            "RuntimeTask, Skill, Activity, or Evolution read model instead."
+        ),
+    )
+
+
 @router.get("/", response_model=list[FileInfo])
 async def list_files(
     agent_id: uuid.UUID,
     path: str = "",
+    operator_view: bool = False,
+    operator_reason: str | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """List files and directories in an agent's file system."""
     _agent, access_level = await check_agent_access(db, current_user, agent_id)
+    _raise_raw_system_read_guard(path, access_level=access_level)
     if access_level == "use" and _is_governed_memory_path(path):
         _raise_raw_memory_read_guard()
     target = _safe_path(agent_id, path)
@@ -215,10 +263,30 @@ async def list_files(
     if not target.is_dir():
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Path is not a directory")
 
+    scope = None
+    if _is_user_workspace_path(path):
+        from app.services.workspace_resource_authority import load_workspace_authority_scope
+
+        try:
+            scope = await load_workspace_authority_scope(
+                db,
+                current_user,
+                agent_id=agent_id,
+                operator_view=operator_view,
+                operator_reason=operator_reason,
+                agent_access=(_agent, access_level),
+            )
+        except Exception as exc:
+            raise _workspace_authority_http_error(exc) from exc
+
     items = []
     base_abs = _agent_base_dir(agent_id).resolve()
     for entry in sorted(target.iterdir(), key=lambda e: (not e.is_dir(), e.name)):
         if entry.name == ".gitkeep" or _is_hidden_browser_entry(entry):
+            continue
+        if access_level == "use" and not _normalized_rel_path(path) and entry.name != "workspace":
+            continue
+        if scope is not None and not scope.visible_child(path, entry.name, is_dir=entry.is_dir()):
             continue
         rel = str(entry.resolve().relative_to(base_abs))
         stat = entry.stat()
@@ -229,6 +297,8 @@ async def list_files(
                 is_dir=entry.is_dir(),
                 size=stat.st_size if entry.is_file() else 0,
                 modified_at=str(stat.st_mtime),
+                authority_source=scope.authority_source if scope is not None else None,
+                operator_view=bool(scope and scope.operator_view),
             )
         )
     return items
@@ -238,14 +308,35 @@ async def list_files(
 async def read_file(
     agent_id: uuid.UUID,
     path: str,
+    operator_view: bool = False,
+    operator_reason: str | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Read the content of a file."""
     _agent, access_level = await check_agent_access(db, current_user, agent_id)
+    _raise_raw_system_read_guard(path, access_level=access_level)
     if access_level == "use" and _is_governed_memory_path(path):
         _raise_raw_memory_read_guard()
     target = _safe_path(agent_id, path)
+    resource_decision = None
+    if _is_user_workspace_path(path):
+        from app.services.workspace_resource_authority import authorize_workspace_path
+
+        try:
+            resource_decision = await authorize_workspace_path(
+                db,
+                current_user,
+                agent_id=agent_id,
+                path=path,
+                action="read",
+                path_exists=target.exists(),
+                allow_manager_override=operator_view,
+                manager_override_reason=operator_reason,
+                agent_access=(_agent, access_level),
+            )
+        except Exception as exc:
+            raise _workspace_authority_http_error(exc) from exc
 
     if not target.exists() or not target.is_file():
         # Known agent files return empty content instead of 404
@@ -285,14 +376,29 @@ async def read_file(
         ".pyo",
     }
     if target.suffix.lower() in _BINARY_EXTS:
-        return FileContent(path=path, content=f"[二进制文件: {target.name}, {target.stat().st_size} bytes]")
+        return FileContent(
+            path=path,
+            content=f"[二进制文件: {target.name}, {target.stat().st_size} bytes]",
+            authority_source=resource_decision.authority_source if resource_decision else None,
+            operator_view=bool(resource_decision and resource_decision.operator_view),
+        )
 
     try:
         async with aiofiles.open(target, "r", encoding="utf-8") as f:
             content = await f.read()
     except (UnicodeDecodeError, ValueError):
-        return FileContent(path=path, content=f"[二进制文件: {target.name}, {target.stat().st_size} bytes]")
-    return FileContent(path=path, content=content)
+        return FileContent(
+            path=path,
+            content=f"[二进制文件: {target.name}, {target.stat().st_size} bytes]",
+            authority_source=resource_decision.authority_source if resource_decision else None,
+            operator_view=bool(resource_decision and resource_decision.operator_view),
+        )
+    return FileContent(
+        path=path,
+        content=content,
+        authority_source=resource_decision.authority_source if resource_decision else None,
+        operator_view=bool(resource_decision and resource_decision.operator_view),
+    )
 
 
 async def _load_chat_artifact_or_404(
@@ -345,13 +451,31 @@ async def _load_download_user_from_jwt(*, db: AsyncSession, jwt_token: str) -> U
 async def read_artifact_content(
     agent_id: uuid.UUID,
     artifact_id: uuid.UUID,
+    operator_view: bool = False,
+    operator_reason: str | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Read the delivery-time snapshot for a chat artifact."""
-    await check_agent_access(db, current_user, agent_id)
+    agent_access = await check_agent_access(db, current_user, agent_id)
     artifact = await _load_chat_artifact_or_404(db=db, agent_id=agent_id, artifact_id=artifact_id)
+    decision = await authorize_resource_action(
+        db,
+        current_user,
+        agent_id=agent_id,
+        resource_kind="chat_artifact",
+        resource_id=artifact.id,
+        action="read",
+        owner_user_id=getattr(artifact, "owner_user_id", None),
+        root_session_id=getattr(artifact, "root_session_id", None) or getattr(artifact, "session_id", None),
+        authority_state=getattr(artifact, "authority_state", None) or "quarantined",
+        allow_manager_override=operator_view,
+        manager_override_reason=operator_reason,
+        agent_access=agent_access,
+    )
     content = read_chat_artifact_snapshot_content(artifact, _agent_base_dir(agent_id))
+    content["authority_source"] = decision.authority_source
+    content["operator_view"] = decision.operator_view
     return FileContent(**content)
 
 
@@ -360,6 +484,8 @@ async def download_file(
     agent_id: uuid.UUID,
     path: str,
     token: str = "",
+    operator_view: bool = False,
+    operator_reason: str | None = None,
     credentials: HTTPAuthorizationCredentials | None = Depends(HTTPBearer(auto_error=False)),
     db: AsyncSession = Depends(get_db),
 ):
@@ -375,6 +501,11 @@ async def download_file(
         except InvalidChannelFileDownloadToken as exc:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
         else:
+            if not _normalized_rel_path(path).startswith("workspace/"):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Scoped channel file tokens may download only workspace/ deliverables.",
+                )
             if _is_governed_memory_path(path):
                 _raise_raw_memory_read_guard()
             target = _safe_path(agent_id, path)
@@ -395,9 +526,27 @@ async def download_file(
     user = await _load_download_user_from_jwt(db=db, jwt_token=jwt_token)
 
     _agent, access_level = await check_agent_access(db, user, agent_id)
+    _raise_raw_system_read_guard(path, access_level=access_level)
     if access_level == "use" and _is_governed_memory_path(path):
         _raise_raw_memory_read_guard()
     target = _safe_path(agent_id, path)
+    if _is_user_workspace_path(path):
+        from app.services.workspace_resource_authority import authorize_workspace_path
+
+        try:
+            await authorize_workspace_path(
+                db,
+                user,
+                agent_id=agent_id,
+                path=path,
+                action="read",
+                path_exists=target.exists(),
+                allow_manager_override=operator_view,
+                manager_override_reason=operator_reason,
+                agent_access=(_agent, access_level),
+            )
+        except Exception as exc:
+            raise _workspace_authority_http_error(exc) from exc
     if not target.exists() or not target.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
     return FileResponse(path=str(target), filename=target.name)
@@ -408,6 +557,8 @@ async def download_artifact(
     agent_id: uuid.UUID,
     artifact_id: uuid.UUID,
     token: str = "",
+    operator_view: bool = False,
+    operator_reason: str | None = None,
     credentials: HTTPAuthorizationCredentials | None = Depends(HTTPBearer(auto_error=False)),
     db: AsyncSession = Depends(get_db),
 ):
@@ -417,8 +568,22 @@ async def download_artifact(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
     user = await _load_download_user_from_jwt(db=db, jwt_token=jwt_token)
 
-    await check_agent_access(db, user, agent_id)
+    agent_access = await check_agent_access(db, user, agent_id)
     artifact = await _load_chat_artifact_or_404(db=db, agent_id=agent_id, artifact_id=artifact_id)
+    await authorize_resource_action(
+        db,
+        user,
+        agent_id=agent_id,
+        resource_kind="chat_artifact",
+        resource_id=artifact.id,
+        action="read",
+        owner_user_id=getattr(artifact, "owner_user_id", None),
+        root_session_id=getattr(artifact, "root_session_id", None) or getattr(artifact, "session_id", None),
+        authority_state=getattr(artifact, "authority_state", None) or "quarantined",
+        allow_manager_override=operator_view,
+        manager_override_reason=operator_reason,
+        agent_access=agent_access,
+    )
     snapshot = artifact.snapshot_json or {}
     storage_rel = str(snapshot.get("snapshot_storage_path") or "").strip()
     target: Path | None = None
@@ -438,32 +603,76 @@ async def write_file(
     agent_id: uuid.UUID,
     path: str,
     data: FileWrite,
+    operator_view: bool = False,
+    operator_reason: str | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Write content to a file (create or overwrite)."""
-    await check_agent_access(db, current_user, agent_id)
+    agent, _access = await check_agent_access(db, current_user, agent_id)
     _raise_managed_path_write_guard(path)
     from app.services.session_workspace_snapshot import async_agent_workspace_lock
 
     async with async_agent_workspace_lock(agent_id):
         target = _safe_path(agent_id, path)
+        resource_decision = None
+        if _is_user_workspace_path(path):
+            from app.services.workspace_resource_authority import authorize_workspace_path
+
+            try:
+                resource_decision = await authorize_workspace_path(
+                    db,
+                    current_user,
+                    agent_id=agent_id,
+                    path=path,
+                    action="write",
+                    path_exists=target.exists(),
+                    allow_manager_override=operator_view,
+                    manager_override_reason=operator_reason,
+                    for_update=True,
+                    agent_access=(agent, _access),
+                )
+            except Exception as exc:
+                raise _workspace_authority_http_error(exc) from exc
         target.parent.mkdir(parents=True, exist_ok=True)
         async with aiofiles.open(target, "w", encoding="utf-8") as f:
             await f.write(data.content)
+        if resource_decision is not None:
+            import hashlib
 
-    return {"status": "ok", "path": path}
+            from app.services.workspace_resource_authority import register_workspace_path
+
+            await register_workspace_path(
+                db,
+                tenant_id=agent.tenant_id,
+                agent_id=agent_id,
+                path=path,
+                owner_user_id=resource_decision.owner_user_id or current_user.id,
+                root_session_id=resource_decision.root_session_id,
+                source="workspace_api_write",
+                content_hash=hashlib.sha256(data.content.encode("utf-8")).hexdigest(),
+                allow_owner_rebind=resource_decision.operator_view and resource_decision.manifest is None,
+            )
+
+    return {
+        "status": "ok",
+        "path": path,
+        "authority_source": resource_decision.authority_source if resource_decision else None,
+        "operator_view": bool(resource_decision and resource_decision.operator_view),
+    }
 
 
 @router.delete("/content")
 async def delete_file(
     agent_id: uuid.UUID,
     path: str,
+    operator_view: bool = False,
+    operator_reason: str | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Delete a file."""
-    await check_agent_access(db, current_user, agent_id)
+    agent, _access_level = await check_agent_access(db, current_user, agent_id)
     _raise_managed_path_write_guard(path)
     from app.services.session_workspace_snapshot import async_agent_workspace_lock
 
@@ -472,6 +681,49 @@ async def delete_file(
         if not target.exists():
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
 
+        resource_decisions = []
+        if _is_user_workspace_path(path):
+            from app.services.workspace_resource_authority import authorize_workspace_path
+
+            candidate_paths = (
+                [
+                    str(item.resolve().relative_to(_agent_base_dir(agent_id).resolve()))
+                    for item in target.rglob("*")
+                    if item.is_file()
+                ]
+                if target.is_dir()
+                else [path]
+            )
+            if not candidate_paths and target.is_dir():
+                raise HTTPException(
+                    status_code=403,
+                    detail={
+                        "code": "workspace_empty_directory_unowned",
+                        "message": "Empty legacy directories have no owner and require Operator View.",
+                    },
+                )
+            for candidate_path in candidate_paths:
+                try:
+                    resource_decisions.append(
+                        (
+                            candidate_path,
+                            await authorize_workspace_path(
+                                db,
+                                current_user,
+                                agent_id=agent_id,
+                                path=candidate_path,
+                                action="delete",
+                                path_exists=True,
+                                allow_manager_override=operator_view,
+                                manager_override_reason=operator_reason,
+                                for_update=True,
+                                agent_access=(agent, _access_level),
+                            ),
+                        )
+                    )
+                except Exception as exc:
+                    raise _workspace_authority_http_error(exc) from exc
+
         if target.is_dir():
             import shutil
 
@@ -479,7 +731,17 @@ async def delete_file(
         else:
             target.unlink()
 
-    return {"status": "ok", "path": path}
+        from app.services.workspace_resource_authority import mark_workspace_path_deleted
+
+        for candidate_path, _decision in resource_decisions:
+            await mark_workspace_path_deleted(db, agent_id=agent_id, path=candidate_path)
+
+    return {
+        "status": "ok",
+        "path": path,
+        "authority_source": resource_decisions[0][1].authority_source if resource_decisions else None,
+        "operator_view": any(decision.operator_view for _path, decision in resource_decisions),
+    }
 
 
 class ImportSkillBody(BaseModel):
@@ -498,7 +760,7 @@ async def import_skill_to_agent(
     Copies all files from the global skill registry into
     <agent_workspace>/skills/<folder_name>/.
     """
-    await check_agent_access(db, current_user, agent_id)
+    await require_agent_manage_access(db, current_user, agent_id)
 
     from sqlalchemy.orm import selectinload
     from app.models.skill import Skill
@@ -546,11 +808,13 @@ async def upload_file_to_workspace(
     agent_id: uuid.UUID,
     file: UploadFileType = FastFile(...),
     path: str = "workspace/knowledge_base",
+    operator_view: bool = False,
+    operator_reason: str | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Upload a binary file to agent workspace."""
-    await check_agent_access(db, current_user, agent_id)
+    agent, _access = await check_agent_access(db, current_user, agent_id)
 
     # Validate path prefix
     if not path.startswith("workspace/"):
@@ -573,8 +837,40 @@ async def upload_file_to_workspace(
     from app.services.session_workspace_snapshot import async_agent_workspace_lock
 
     async with async_agent_workspace_lock(agent_id):
+        from app.services.workspace_resource_authority import authorize_workspace_path, register_workspace_path
+
+        relative_save_path = f"{path.rstrip('/')}/{filename}"
+        try:
+            resource_decision = await authorize_workspace_path(
+                db,
+                current_user,
+                agent_id=agent_id,
+                path=relative_save_path,
+                action="upload",
+                path_exists=save_path.exists(),
+                allow_manager_override=operator_view,
+                manager_override_reason=operator_reason,
+                for_update=True,
+                agent_access=(agent, _access),
+            )
+        except Exception as exc:
+            raise _workspace_authority_http_error(exc) from exc
         target_dir.mkdir(parents=True, exist_ok=True)
         save_path.write_bytes(content)
+
+        import hashlib
+
+        await register_workspace_path(
+            db,
+            tenant_id=agent.tenant_id,
+            agent_id=agent_id,
+            path=relative_save_path,
+            owner_user_id=resource_decision.owner_user_id or current_user.id,
+            root_session_id=resource_decision.root_session_id,
+            source="workspace_api_upload",
+            content_hash=hashlib.sha256(content).hexdigest(),
+            allow_owner_rebind=resource_decision.operator_view and resource_decision.manifest is None,
+        )
 
         # Auto-extract text from non-text files
         extracted_path = None
@@ -585,6 +881,18 @@ async def upload_file_to_workspace(
             if txt_file:
                 base_abs = base.resolve()
                 extracted_path = str(txt_file.resolve().relative_to(base_abs))
+                extracted_content = txt_file.read_bytes()
+                await register_workspace_path(
+                    db,
+                    tenant_id=agent.tenant_id,
+                    agent_id=agent_id,
+                    path=extracted_path,
+                    owner_user_id=resource_decision.owner_user_id or current_user.id,
+                    root_session_id=resource_decision.root_session_id,
+                    source="workspace_api_extraction",
+                    content_hash=hashlib.sha256(extracted_content).hexdigest(),
+                    allow_owner_rebind=False,
+                )
 
     return {
         "status": "ok",
@@ -592,6 +900,8 @@ async def upload_file_to_workspace(
         "filename": filename,
         "size": len(content),
         "extracted_text_path": extracted_path,
+        "authority_source": resource_decision.authority_source,
+        "operator_view": resource_decision.operator_view,
     }
 
 

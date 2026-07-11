@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from datetime import timedelta
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
@@ -24,6 +25,52 @@ def _settings(tmp_path, *, secret: str = "onlyoffice-secret", token_seconds: int
     )
 
 
+@pytest.fixture(autouse=True)
+def _office_resource_authority_stubs(tmp_path, monkeypatch):
+    import app.api.office as office_api
+
+    tenant_id = uuid4()
+
+    async def fake_access(_db, _user, agent_id):
+        return SimpleNamespace(id=agent_id, tenant_id=tenant_id), "use"
+
+    async def fake_authorize(_db, user, **_kwargs):
+        return SimpleNamespace(
+            owner_user_id=user.id,
+            root_session_id=None,
+            authority_source="resource_owner",
+            operator_view=False,
+            manifest=SimpleNamespace(),
+        )
+
+    async def fake_register(*_args, **_kwargs):
+        return None
+
+    @asynccontextmanager
+    async def fake_token_authority(*, agent_id, path, payload, expected_action):
+        assert payload["authority_action"] == expected_action
+        user = SimpleNamespace(id=uuid4())
+        decision = SimpleNamespace(
+            owner_user_id=user.id,
+            root_session_id=None,
+            authority_source="resource_owner",
+            operator_view=False,
+        )
+        yield {
+            "db": SimpleNamespace(),
+            "user": user,
+            "agent": SimpleNamespace(id=agent_id, tenant_id=tenant_id),
+            "decision": decision,
+            "target": tmp_path / str(agent_id) / path,
+            "path": path,
+        }
+
+    monkeypatch.setattr(office_api, "check_agent_access", fake_access)
+    monkeypatch.setattr(office_api, "authorize_workspace_path", fake_authorize)
+    monkeypatch.setattr(office_api, "register_workspace_path", fake_register)
+    monkeypatch.setattr(office_api, "_authorize_office_token_payload", fake_token_authority)
+
+
 @pytest.mark.asyncio
 async def test_office_editor_config_contains_onlyoffice_jwt(tmp_path, monkeypatch):
     import app.api.office as office_api
@@ -31,7 +78,7 @@ async def test_office_editor_config_contains_onlyoffice_jwt(tmp_path, monkeypatc
     monkeypatch.setattr(office_api, "settings", _settings(tmp_path))
 
     async def fake_access(*_args, **_kwargs):
-        return None
+        return SimpleNamespace(id=agent_id, tenant_id=uuid4()), "use"
 
     monkeypatch.setattr(office_api, "check_agent_access", fake_access)
 
@@ -73,7 +120,7 @@ async def test_office_editor_config_uses_tenant_scoped_non_email_identity(tmp_pa
     monkeypatch.setattr(office_api, "settings", _settings(tmp_path))
 
     async def fake_access(*_args, **_kwargs):
-        return None
+        return SimpleNamespace(id=agent_id, tenant_id=tenant_id), "use"
 
     monkeypatch.setattr(office_api, "check_agent_access", fake_access)
 
@@ -124,6 +171,7 @@ async def test_office_download_rejects_expired_token(tmp_path, monkeypatch):
         agent_id=agent_id,
         path="workspace/demo.docx",
         purpose="download",
+        user_id=uuid4(),
         expires_delta=timedelta(seconds=-1),
     )
 
@@ -152,6 +200,7 @@ async def test_office_callback_status_2_saves_downloaded_file(tmp_path, monkeypa
         agent_id=agent_id,
         path="workspace/demo.docx",
         purpose="callback",
+        user_id=uuid4(),
     )
 
     class _Response:
@@ -201,6 +250,7 @@ async def test_office_callback_status_4_closes_active_session(tmp_path, monkeypa
         agent_id=agent_id,
         path="workspace/demo.docx",
         purpose="callback",
+        user_id=uuid4(),
     )
 
     result = await office_api.onlyoffice_callback(
@@ -234,6 +284,7 @@ async def test_office_callback_error_status_records_audit_event(tmp_path, monkey
         agent_id=agent_id,
         path="workspace/demo.docx",
         purpose="callback",
+        user_id=uuid4(),
     )
 
     result = await office_api.onlyoffice_callback(
@@ -261,7 +312,7 @@ async def test_office_force_save_posts_signed_command_to_document_server(tmp_pat
     monkeypatch.setattr(office_api, "settings", _settings(tmp_path))
 
     async def fake_access(*_args, **_kwargs):
-        return None
+        return SimpleNamespace(id=agent_id, tenant_id=uuid4()), "use"
 
     monkeypatch.setattr(office_api, "check_agent_access", fake_access)
 

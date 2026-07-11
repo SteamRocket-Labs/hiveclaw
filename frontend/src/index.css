@@ -961,6 +961,23 @@
   background: var(--bg-primary);
 }
 
+.session-operator-view {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: color-mix(in srgb, var(--warning, #d97706) 8%, var(--bg-primary));
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.session-operator-view strong {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
 .session-runtime-panel {
   position: relative;
   display: flex;

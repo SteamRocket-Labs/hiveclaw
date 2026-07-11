@@ -1574,11 +1574,13 @@ function ArtifactCards({
   artifacts,
   onOpenArtifact,
   context = 'assistant',
+  operatorView = false,
 }: {
   agentId?: string | null;
   artifacts?: ChatArtifactPart[];
   onOpenArtifact?: (artifact: ChatArtifactPart) => void;
   context?: ArtifactDeliveryContext;
+  operatorView?: boolean;
 }) {
   const { t } = useTranslation();
   const visibleArtifacts = (artifacts || []).filter((artifact) => (
@@ -1595,8 +1597,13 @@ function ArtifactCards({
       </div>
       {visibleArtifacts.map((artifact) => {
         const downloadAgentId = artifactWorkspaceAgentId(artifact, agentId);
+        const authority = operatorView
+          ? { operatorView: true, reason: 'Agent session administration' }
+          : undefined;
         const href = downloadAgentId
-          ? (artifact.id ? fileApi.artifactDownloadUrl(downloadAgentId, artifact.id) : fileApi.downloadUrl(downloadAgentId, artifact.path))
+          ? (artifact.id
+              ? fileApi.artifactDownloadUrl(downloadAgentId, artifact.id, authority)
+              : fileApi.downloadUrl(downloadAgentId, artifact.path, authority))
           : '#';
         const size = formatArtifactSize(artifact.size);
         const openArtifact = () => onOpenArtifact?.(artifact);
@@ -3181,6 +3188,7 @@ interface ChatMessageItemProps {
   onFeedbackMessage?: (message: AgentChatMessage, label: RecordSessionFeedbackInput['label']) => void | Promise<unknown>;
   onRewindMessage?: (message: AgentChatMessage) => void | Promise<unknown>;
   t: Translate;
+  operatorView?: boolean;
 }
 
 const ChatMessageItem = React.memo(function ChatMessageItem({
@@ -3194,6 +3202,7 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
   onFeedbackMessage,
   onRewindMessage,
   t,
+  operatorView = false,
 }: ChatMessageItemProps) {
   const extension = msg.fileName?.split('.').pop()?.toLowerCase() ?? '';
   const fileIcon =
@@ -3293,7 +3302,13 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
         ) : (
           <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
         )}
-        <ArtifactCards agentId={effectiveAgentId} artifacts={msg.artifacts} onOpenArtifact={onOpenArtifact} context="assistant" />
+        <ArtifactCards
+          agentId={effectiveAgentId}
+          artifacts={msg.artifacts}
+          onOpenArtifact={onOpenArtifact}
+          context="assistant"
+          operatorView={operatorView}
+        />
         {inlinePlanId && effectiveAgentId && (
           <div style={{ marginTop: '10px', minWidth: 'min(520px, 100%)' }} data-testid="chat-inline-plan-card">
             <InlinePlanCard agentId={effectiveAgentId} planId={inlinePlanId} />
@@ -3389,6 +3404,13 @@ function AgentChatSection({
   const isDraftSession = isDraftHumanChatSession(activeSession as any);
   const canUseComposer = Boolean(activeSession) && !isReadOnlySession && !agentExpired;
   const activeSessionId = activeSession?.id ? String(activeSession.id) : null;
+  const sessionAuthorityMode = activeSession?.operator_view ? 'operator' : 'owner';
+  const sessionOperatorOptions = activeSession?.operator_view
+    ? { operatorView: true, operatorReason: 'Agent session administration' }
+    : undefined;
+  const resourceOperatorOptions = activeSession?.operator_view
+    ? { operatorView: true, reason: 'Agent session administration' }
+    : undefined;
   const visibleHistoryMsgs = historyMessagesSessionId === activeSessionId ? historyMsgs : EMPTY_CHAT_MESSAGES;
   const visibleChatMessages = chatMessagesSessionId === activeSessionId ? chatMessages : EMPTY_CHAT_MESSAGES;
   const visibleTimeline = isReadOnlySession ? visibleHistoryMsgs : visibleChatMessages;
@@ -3514,8 +3536,8 @@ function AgentChatSection({
     const artifactAgentId = artifactWorkspaceAgentId(artifact, effectiveAgentId);
     if (!artifactAgentId) return;
     const href = artifact.id
-      ? fileApi.artifactDownloadUrl(artifactAgentId, artifact.id)
-      : fileApi.downloadUrl(artifactAgentId, artifact.path);
+      ? fileApi.artifactDownloadUrl(artifactAgentId, artifact.id, resourceOperatorOptions)
+      : fileApi.downloadUrl(artifactAgentId, artifact.path, resourceOperatorOptions);
     if (getArtifactOpenMode(artifact) === 'download') {
       window.open(href, '_blank', 'noopener,noreferrer');
       return;
@@ -3526,8 +3548,8 @@ function AgentChatSection({
       setArtifactPreview({ artifact, loading: true });
       try {
         const response = artifact.id
-          ? await fileApi.readArtifact(artifactAgentId, artifact.id)
-          : await fileApi.read(artifactAgentId, artifact.path);
+          ? await fileApi.readArtifact(artifactAgentId, artifact.id, resourceOperatorOptions)
+          : await fileApi.read(artifactAgentId, artifact.path, resourceOperatorOptions);
         setArtifactPreview({
           artifact,
           content: response.content || '',
@@ -3558,7 +3580,7 @@ function AgentChatSection({
     }
 
     setArtifactPreview({ artifact, url: href });
-  }, [effectiveAgentId, t]);
+  }, [effectiveAgentId, resourceOperatorOptions, t]);
 
   const requestSubagentRetry = React.useCallback(
     async (worker: RuntimeSectionItemModel) => {
@@ -3664,7 +3686,13 @@ function AgentChatSection({
           t={t}
         />
       )}
-      <ArtifactCards agentId={effectiveAgentId} artifacts={msg.artifacts} onOpenArtifact={openArtifact} context="tool" />
+      <ArtifactCards
+        agentId={effectiveAgentId}
+        artifacts={msg.artifacts}
+        onOpenArtifact={openArtifact}
+        context="tool"
+        operatorView={Boolean(activeSession?.operator_view)}
+      />
     </div>
   );
 
@@ -3710,6 +3738,7 @@ function AgentChatSection({
           onFeedbackMessage={submitMessageFeedback}
           onRewindMessage={rewindUnavailableReason ? undefined : rewindFromMessage}
           t={t}
+          operatorView={Boolean(activeSession?.operator_view)}
 	      />
 	    );
 	  };
@@ -3805,15 +3834,15 @@ function AgentChatSection({
   // commands, WS run boundaries); a long staleTime plus no focus-refetch keeps
   // tab switching from re-pulling the payloads (plan D3).
   const { data: sessionIndexData } = useQuery({
-    queryKey: ['chat-session-index', effectiveAgentId, activeSessionId],
-    queryFn: () => chatApi.getSessionIndex(effectiveAgentId!, activeSessionId!),
+    queryKey: ['chat-session-index', effectiveAgentId, activeSessionId, sessionAuthorityMode],
+    queryFn: () => chatApi.getSessionIndex(effectiveAgentId!, activeSessionId!, sessionOperatorOptions),
     enabled: Boolean(effectiveAgentId && activeSessionId),
     staleTime: 60_000,
     refetchOnWindowFocus: false,
   });
   const { data: sessionWorkbenchData, refetch: refetchSessionWorkbench } = useQuery({
-    queryKey: ['chat-session-workbench', effectiveAgentId, activeSessionId],
-    queryFn: () => ccParityApi.getSessionWorkbench(effectiveAgentId!, activeSessionId!),
+    queryKey: ['chat-session-workbench', effectiveAgentId, activeSessionId, sessionAuthorityMode],
+    queryFn: () => ccParityApi.getSessionWorkbench(effectiveAgentId!, activeSessionId!, sessionOperatorOptions),
     enabled: Boolean(effectiveAgentId && activeSessionId),
     staleTime: 60_000,
     refetchOnWindowFocus: false,
@@ -3851,15 +3880,15 @@ function AgentChatSection({
     [effectiveAgentId, refetchSessionWorkbench, t],
   );
   const { data: sessionContextUsageData } = useQuery({
-    queryKey: ['chat-session-context-usage', effectiveAgentId, activeSessionId],
-    queryFn: () => ccParityApi.getSessionContextUsage(effectiveAgentId!, activeSessionId!),
+    queryKey: ['chat-session-context-usage', effectiveAgentId, activeSessionId, sessionAuthorityMode],
+    queryFn: () => ccParityApi.getSessionContextUsage(effectiveAgentId!, activeSessionId!, sessionOperatorOptions),
     enabled: Boolean(effectiveAgentId && activeSessionId),
     staleTime: 60_000,
     refetchOnWindowFocus: false,
   });
   const { data: gitLineAxisSessionIndexData, isLoading: gitLineAxisSessionIndexLoading } = useQuery({
     queryKey: ['chat-session-index', effectiveAgentId, gitLineAxisSessionId, 'gitline-axis'],
-    queryFn: () => chatApi.getSessionIndex(effectiveAgentId!, gitLineAxisSessionId!),
+    queryFn: () => chatApi.getSessionIndex(effectiveAgentId!, gitLineAxisSessionId!, sessionOperatorOptions),
     enabled: Boolean(effectiveAgentId && gitLineAxisSessionId && shouldUseGitLineAxisSession),
     staleTime: 60_000,
     refetchOnWindowFocus: false,
@@ -3875,7 +3904,11 @@ function AgentChatSection({
   );
   const { data: gitLineAxisSessionWorkbenchData, isLoading: gitLineAxisSessionWorkbenchLoading } = useQuery({
     queryKey: ['chat-session-workbench', effectiveAgentId, gitLineAxisSessionId, 'gitline-axis'],
-    queryFn: () => ccParityApi.getSessionWorkbench(effectiveAgentId!, gitLineAxisSessionId!),
+    queryFn: () => ccParityApi.getSessionWorkbench(
+      effectiveAgentId!,
+      gitLineAxisSessionId!,
+      sessionOperatorOptions,
+    ),
     enabled: Boolean(
       effectiveAgentId && gitLineAxisSessionId && shouldUseGitLineAxisSession && gitLineAxisIndexMissingCheckpoints,
     ),
@@ -4235,15 +4268,17 @@ function AgentChatSection({
                           {session.message_count ? ` · ${session.message_count}` : ''}
                         </span>
                       </button>
-                      <button
-                        type="button"
-                        className="detail-session-row-action"
-                        aria-label={`Delete session ${session.title || t('agent.chat.session', 'Session')}`}
-                        title={t('common.delete', 'Delete')}
-                        onClick={() => onDeleteSession(String(session.id))}
-                      >
-                        <IconTrash size={13} stroke={1.8} />
-                      </button>
+                      {!session.operator_view && String(session.user_id || '') === String(currentUser?.id || '') && (
+                        <button
+                          type="button"
+                          className="detail-session-row-action"
+                          aria-label={`Delete session ${session.title || t('agent.chat.session', 'Session')}`}
+                          title={t('common.delete', 'Delete')}
+                          onClick={() => onDeleteSession(String(session.id))}
+                        >
+                          <IconTrash size={13} stroke={1.8} />
+                        </button>
+                      )}
                     </div>
                   );
                 })
@@ -4253,6 +4288,12 @@ function AgentChatSection({
       )}
       <div className="session-tui-center">
         <SessionWorkbenchHeader model={threadTimelineModel.header} />
+        {activeSession?.operator_view && (
+          <div className="session-operator-view" data-testid="session-operator-view" role="status">
+            <strong>{t('agent.chat.operatorView', 'Operator View')}</strong>
+            <span>{t('agent.chat.operatorViewDesc', 'Audited, read-only access to another user’s session.')}</span>
+          </div>
+        )}
         {!activeSession ? (
           <div
             style={{
@@ -4479,6 +4520,7 @@ function AgentChatSection({
                   sessionId={String(activeSession.id)}
                   runtimeTaskId={activeRuntimeTaskId || undefined}
                   live={sessionWorkLedgerLive}
+                  operatorView={Boolean(activeSession.operator_view)}
                 />
               )}
               {artifactPreview && (

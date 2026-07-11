@@ -561,8 +561,32 @@ async def send_channel_message(agent_id: uuid.UUID, arguments: dict) -> str:
         adapter="agent_workspace_args",
     )
 )
-async def send_channel_file(agent_id: uuid.UUID, workspace: Path, arguments: dict) -> str:
-    from app.services.agent_tools import _send_channel_file
+async def send_channel_file(
+    agent_id: uuid.UUID,
+    workspace: Path,
+    arguments: dict,
+    authority_scope=None,
+) -> str:
+    from app.services.agent_tools import _resolve_channel_file_path, _send_channel_file
+    from app.services.workspace_resource_authority import (
+        WorkspaceAuthorityError,
+        authorize_workspace_tool_path,
+    )
+
+    if authority_scope is not None:
+        resolved, error = _resolve_channel_file_path(workspace, str(arguments.get("file_path") or ""))
+        if error is None and resolved is not None:
+            relative = resolved.resolve().relative_to(workspace.resolve()).as_posix()
+            try:
+                authorize_workspace_tool_path(
+                    workspace,
+                    authority_scope,
+                    relative,
+                    action="deliver",
+                    require_user_workspace=True,
+                )
+            except WorkspaceAuthorityError as exc:
+                return f"❌ {exc.code}: {exc.message}"
 
     return await _send_channel_file(agent_id, workspace, arguments)
 
@@ -606,7 +630,30 @@ async def send_channel_file(agent_id: uuid.UUID, workspace: Path, arguments: dic
         adapter="agent_workspace_args",
     )
 )
-async def upload_image(agent_id: uuid.UUID, workspace: Path, arguments: dict) -> str:
+async def upload_image(
+    agent_id: uuid.UUID,
+    workspace: Path,
+    arguments: dict,
+    authority_scope=None,
+) -> str:
+    from app.services.workspace_resource_authority import (
+        WorkspaceAuthorityError,
+        authorize_workspace_tool_path,
+    )
+
+    local_path = arguments.get("file_path")
+    if authority_scope is not None and local_path:
+        try:
+            authorize_workspace_tool_path(
+                workspace,
+                authority_scope,
+                str(local_path),
+                action="publish",
+                require_user_workspace=True,
+            )
+        except WorkspaceAuthorityError as exc:
+            return f"❌ {exc.code}: {exc.message}"
+
     from app.services.agent_tools import _upload_image
 
     return await _upload_image(agent_id, workspace, arguments)

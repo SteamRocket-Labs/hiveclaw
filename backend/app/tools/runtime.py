@@ -40,6 +40,7 @@ class ToolExecutionContext:
     tool_lifecycle_records: list[dict[str, Any]] = field(default_factory=list)
     tool_execution_frames: list[dict[str, Any]] = field(default_factory=list)
     resolved_asset_refs: tuple["ResolvedAssetRefV1", ...] = ()
+    workspace_authority_scope: Any | None = None
 
 
 @dataclass(slots=True)

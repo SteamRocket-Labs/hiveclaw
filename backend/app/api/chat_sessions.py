@@ -146,6 +146,8 @@ class SessionOut(BaseModel):
     break_glass: dict[str, Any] | None = None
     is_current_user_session: bool = False
     read_only: bool = False
+    authority_source: str | None = None
+    operator_view: bool = False
     # Agent-to-agent session fields
     peer_agent_id: Optional[str] = None
     peer_agent_name: Optional[str] = None
@@ -1302,6 +1304,9 @@ async def _get_run_session_and_agent(
     agent_id: uuid.UUID,
     session_id: uuid.UUID,
     current_user: User,
+    action: str = "use_session",
+    operator_view: bool = False,
+    operator_reason: str | None = None,
 ) -> tuple[ChatSession, Agent, str]:
     result = await db.execute(select(ChatSession).where(ChatSession.id == session_id, ChatSession.agent_id == agent_id))
     session = result.scalar_one_or_none()
@@ -1309,15 +1314,56 @@ async def _get_run_session_and_agent(
         raise HTTPException(status_code=404, detail="Session not found")
 
     agent, access_level = await check_agent_access(db, current_user, agent_id)
-    if str(session.user_id) != str(current_user.id) and not _can_manage_sessions(current_user, agent, access_level):
-        raise HTTPException(status_code=403, detail="Not authorized to use this session")
+    await _authorize_loaded_session(
+        session=session,
+        agent=agent,
+        access_level=access_level,
+        current_user=current_user,
+        action=action,
+        operator_view=operator_view,
+        operator_reason=operator_reason,
+    )
     return session, agent, access_level
+
+
+async def _authorize_loaded_session(
+    *,
+    session: ChatSession,
+    agent: Agent,
+    access_level: str,
+    current_user: User,
+    action: str,
+    operator_view: bool = False,
+    operator_reason: str | None = None,
+) -> str:
+    if str(session.user_id) == str(current_user.id):
+        return "session_owner"
+    reason = operator_reason if isinstance(operator_reason, str) else None
+    reason = str(reason or "").strip()
+    if access_level == "manage" and operator_view is True and reason:
+        from app.services.audit_logger import write_audit_log
+
+        await write_audit_log(
+            "session_authority_override",
+            details={
+                "session_id": str(session.id),
+                "session_user_id": str(session.user_id),
+                "action": action,
+                "reason": reason,
+                "authority_source": "manager_override",
+            },
+            agent_id=agent.id,
+            user_id=current_user.id,
+        )
+        return "manager_override"
+    raise HTTPException(status_code=403, detail="This session belongs to a different user")
 
 
 @router.get("/{agent_id}/sessions")
 async def list_sessions(
     agent_id: uuid.UUID,
     scope: str = Query("mine", description="'mine' or 'all'"),
+    operator_reason: str | None = Query(default=None),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -1327,6 +1373,23 @@ async def list_sessions(
     if scope == "all":
         if not _can_manage_sessions(current_user, agent, access_level):
             raise HTTPException(status_code=403, detail="Not authorized to view all sessions")
+        reason = operator_reason if isinstance(operator_reason, str) else None
+        reason = str(reason or "").strip()
+        if not reason:
+            raise HTTPException(status_code=403, detail="Operator View requires an audit reason")
+        from app.services.audit_logger import write_audit_log
+
+        await write_audit_log(
+            "session_collection_authority_override",
+            details={
+                "resource_kind": "chat_session_collection",
+                "action": "read",
+                "reason": reason,
+                "authority_source": "manager_override",
+            },
+            agent_id=agent_id,
+            user_id=current_user.id,
+        )
 
         # Fetch all sessions (including agent-to-agent where this agent is peer)
         result = await db.execute(
@@ -1381,31 +1444,15 @@ async def list_sessions(
                     peer_agent_id=peer_agent_id,
                     peer_agent_name=peer_agent_name,
                     participant_type=participant_type,
+                    authority_source="manager_override",
+                    operator_view=True,
                     **_session_contract_fields(session),
                 )
             )
         return out
 
     else:  # scope == "mine"
-        # For agent creator/admin: also show inbound channel sessions
-        # (Telegram, Feishu, Slack, etc.) so they can monitor all conversations
-        _channel_types = (
-            "feishu",
-            "telegram",
-            "slack",
-            "discord",
-            "dingtalk",
-            "wecom",
-            "microsoft_teams",
-            "wechat_personal",
-        )
-        if _can_manage_sessions(current_user, agent, access_level):
-            ownership_filter = or_(
-                ChatSession.user_id == current_user.id,
-                ChatSession.source_channel.in_(_channel_types),
-            )
-        else:
-            ownership_filter = ChatSession.user_id == current_user.id
+        ownership_filter = ChatSession.user_id == current_user.id
         direct_session_filter = (ChatSession.agent_id == agent_id) & ownership_filter
         a2a_peer_session_filter = (
             (ChatSession.peer_agent_id == agent_id)
@@ -1516,8 +1563,13 @@ async def rename_session(
         raise HTTPException(status_code=404, detail="Session not found")
 
     agent, access_level = await check_agent_access(db, current_user, agent_id)
-    if str(session.user_id) != str(current_user.id) and not _can_manage_sessions(current_user, agent, access_level):
-        raise HTTPException(status_code=403, detail="Not authorized")
+    await _authorize_loaded_session(
+        session=session,
+        agent=agent,
+        access_level=access_level,
+        current_user=current_user,
+        action="rename_session",
+    )
 
     session.title = body.title
     await db.commit()
@@ -1645,6 +1697,8 @@ async def get_session_activation_feedback_sidecar(
     agent_id: uuid.UUID,
     session_id: uuid.UUID,
     limit: int = Query(100, ge=1, le=500),
+    operator_view: bool = Query(default=False),
+    operator_reason: str | None = Query(default=None),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -1654,6 +1708,9 @@ async def get_session_activation_feedback_sidecar(
         agent_id=agent_id,
         session_id=session_id,
         current_user=current_user,
+        action="read_activation_feedback",
+        operator_view=operator_view is True,
+        operator_reason=operator_reason,
     )
     return read_activation_feedback_sidecar(
         agent_id=agent.id,
@@ -1821,6 +1878,8 @@ async def branch_session(
 async def list_session_branches(
     agent_id: uuid.UUID,
     session_id: uuid.UUID,
+    operator_view: bool = Query(default=False),
+    operator_reason: str | None = Query(default=None),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -1830,6 +1889,9 @@ async def list_session_branches(
         agent_id=agent_id,
         session_id=session_id,
         current_user=current_user,
+        action="read_branches",
+        operator_view=operator_view is True,
+        operator_reason=operator_reason,
     )
     result = await db.execute(
         select(ChatSession)
@@ -1862,6 +1924,8 @@ async def list_session_branches(
 async def get_session_lineage(
     agent_id: uuid.UUID,
     session_id: uuid.UUID,
+    operator_view: bool = Query(default=False),
+    operator_reason: str | None = Query(default=None),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -1871,6 +1935,9 @@ async def get_session_lineage(
         agent_id=agent_id,
         session_id=session_id,
         current_user=current_user,
+        action="read_lineage",
+        operator_view=operator_view is True,
+        operator_reason=operator_reason,
     )
     root_id = session.root_session_id or session.id
     result = await db.execute(
@@ -1900,6 +1967,8 @@ async def get_session_lineage(
 async def get_session_index(
     agent_id: uuid.UUID,
     session_id: uuid.UUID,
+    operator_view: bool = Query(default=False),
+    operator_reason: str | None = Query(default=None),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
@@ -1908,6 +1977,9 @@ async def get_session_index(
         agent_id=agent_id,
         session_id=session_id,
         current_user=current_user,
+        action="read_session_index",
+        operator_view=operator_view is True,
+        operator_reason=operator_reason,
     )
     index = await read_session_index(db, agent_id=agent_id, session_id=session_id)
     if index is None:
@@ -1919,6 +1991,8 @@ async def get_session_index(
 async def get_session_context_usage(
     agent_id: uuid.UUID,
     session_id: uuid.UUID,
+    operator_view: bool = Query(default=False),
+    operator_reason: str | None = Query(default=None),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
@@ -1927,6 +2001,9 @@ async def get_session_context_usage(
         agent_id=agent_id,
         session_id=session_id,
         current_user=current_user,
+        action="read_context_usage",
+        operator_view=operator_view is True,
+        operator_reason=operator_reason,
     )
     return _session_context_usage_payload(session)
 
@@ -1937,6 +2014,8 @@ async def get_session_workbench(
     session_id: uuid.UUID,
     timeline_limit: int = 50,
     include: str = "",
+    operator_view: bool = Query(default=False),
+    operator_reason: str | None = Query(default=None),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
@@ -1945,6 +2024,9 @@ async def get_session_workbench(
         agent_id=agent_id,
         session_id=session_id,
         current_user=current_user,
+        action="read_workbench",
+        operator_view=operator_view is True,
+        operator_reason=operator_reason,
     )
     include_sections = {part.strip() for part in include.split(",") if part.strip()}
     payload = await build_session_workbench(
@@ -1962,6 +2044,8 @@ async def get_session_workbench(
 async def export_session_json(
     agent_id: uuid.UUID,
     session_id: uuid.UUID,
+    operator_view: bool = Query(default=False),
+    operator_reason: str | None = Query(default=None),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
@@ -1970,6 +2054,9 @@ async def export_session_json(
         agent_id=agent_id,
         session_id=session_id,
         current_user=current_user,
+        action="export_session",
+        operator_view=operator_view is True,
+        operator_reason=operator_reason,
     )
     payload = await build_session_json_export(db, agent=agent, session=session)
     await db.commit()
@@ -1980,6 +2067,8 @@ async def export_session_json(
 async def get_active_session_run(
     agent_id: uuid.UUID,
     session_id: uuid.UUID,
+    operator_view: bool = Query(default=False),
+    operator_reason: str | None = Query(default=None),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -1989,6 +2078,9 @@ async def get_active_session_run(
         agent_id=agent_id,
         session_id=session_id,
         current_user=current_user,
+        action="read_active_run",
+        operator_view=operator_view is True,
+        operator_reason=operator_reason,
     )
     return await get_active_web_chat_run(db=db, agent_id=agent_id, session_id=session_id)
 
@@ -2364,6 +2456,8 @@ async def resolve_session_permission(
 async def read_thread(
     agent_id: uuid.UUID,
     session_id: uuid.UUID,
+    operator_view: bool = Query(default=False),
+    operator_reason: str | None = Query(default=None),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
@@ -2373,6 +2467,9 @@ async def read_thread(
         agent_id=agent_id,
         session_id=session_id,
         current_user=current_user,
+        action="read_thread",
+        operator_view=operator_view is True,
+        operator_reason=operator_reason,
     )
     payload = await build_session_json_export(db, agent=agent, session=session)
     await db.commit()
@@ -2387,6 +2484,8 @@ async def get_session_transcript(
     before_sequence: int | None = None,
     direction: str = "forward",
     limit: int = 200,
+    operator_view: bool = Query(default=False),
+    operator_reason: str | None = Query(default=None),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -2413,8 +2512,15 @@ async def get_session_transcript(
         raise HTTPException(status_code=404, detail="Session not found")
 
     agent, access_level = await check_agent_access(db, current_user, agent_id)
-    if str(session.user_id) != str(current_user.id) and not _can_manage_sessions(current_user, agent, access_level):
-        raise HTTPException(status_code=403, detail="Not authorized to view this session")
+    await _authorize_loaded_session(
+        session=session,
+        agent=agent,
+        access_level=access_level,
+        current_user=current_user,
+        action="read_transcript",
+        operator_view=operator_view is True,
+        operator_reason=operator_reason,
+    )
 
     limit = max(1, min(limit, 1000))
     if direction == "backward" or before_sequence is not None:
@@ -2502,8 +2608,13 @@ async def delete_session(
         raise HTTPException(status_code=404, detail="Session not found")
 
     agent, access_level = await check_agent_access(db, current_user, agent_id)
-    if str(session.user_id) != str(current_user.id) and not _can_manage_sessions(current_user, agent, access_level):
-        raise HTTPException(status_code=403, detail="Not authorized")
+    await _authorize_loaded_session(
+        session=session,
+        agent=agent,
+        access_level=access_level,
+        current_user=current_user,
+        action="delete_session",
+    )
 
     parent_session_id = getattr(session, "parent_session_id", None)
     if parent_session_id is not None:
@@ -2545,6 +2656,8 @@ async def delete_session(
 async def get_session_messages(
     agent_id: uuid.UUID,
     session_id: uuid.UUID,
+    operator_view: bool = Query(default=False),
+    operator_reason: str | None = Query(default=None),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -2561,8 +2674,15 @@ async def get_session_messages(
         raise HTTPException(status_code=404, detail="Session not found")
 
     agent, access_level = await check_agent_access(db, current_user, agent_id)
-    if str(session.user_id) != str(current_user.id) and not _can_manage_sessions(current_user, agent, access_level):
-        raise HTTPException(status_code=403, detail="Not authorized to view this session")
+    await _authorize_loaded_session(
+        session=session,
+        agent=agent,
+        access_level=access_level,
+        current_user=current_user,
+        action="read_messages",
+        operator_view=operator_view is True,
+        operator_reason=operator_reason,
+    )
 
     # Query messages by conversation_id only (agent-to-agent uses session_agent_id)
     msgs_result = await db.execute(

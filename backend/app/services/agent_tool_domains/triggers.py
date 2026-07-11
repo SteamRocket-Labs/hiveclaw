@@ -6,6 +6,7 @@ import uuid
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
+from fastapi import HTTPException
 from sqlalchemy import select
 
 from app.database import tenant_scoped_session
@@ -19,6 +20,15 @@ from app.services.plan_mode_runtime_context import (
     trusted_plan_mode_user_declined,
 )
 from app.services.tenant_resolver import resolve_tenant_for_agent
+from app.services.trigger_resource_authority import (
+    authorize_trigger_action,
+    filter_authorized_triggers,
+    load_trigger_requester,
+    preserve_trigger_authority,
+    stamp_trigger_authority,
+    trigger_authority_state,
+    trigger_owner_user_id,
+)
 from app.tools.result_envelope import render_tool_error
 
 logger = logging.getLogger(__name__)
@@ -52,6 +62,7 @@ def _plan_authorization_stamp_kwargs(arguments: dict) -> dict:
         "runtime_task_id": evidence.get("runtime_task_id"),
         "evidence_id": evidence.get("evidence_id"),
     }
+
 
 #: Exec/automation CC-alignment (docs/trigger-cc-alignment.md §2): the three
 #: driving-semantic buckets every wire-level ``type`` collapses into. The 6 type
@@ -369,13 +380,26 @@ def _apply_trigger_delivery(tool_name: str, config: dict, arguments: dict) -> st
     return None
 
 
-async def _handle_set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
+async def _handle_set_trigger(
+    agent_id: uuid.UUID,
+    arguments: dict,
+    *,
+    user_id: uuid.UUID | None = None,
+    session_id: str | None = None,
+) -> str:
     """Create a new trigger for the agent."""
     from app.models.trigger import AgentTrigger
 
+    if user_id is None:
+        return _trigger_error(
+            "set_trigger",
+            "auth_or_permission",
+            "Trigger ownership could not be resolved for this runtime requester.",
+        )
+
     name = arguments.get("name", "").strip()
     ttype = arguments.get("type", "").strip()
-    config = arguments.get("config", {})
+    config = dict(arguments.get("config", {}) or {})
     reason = arguments.get("reason", "").strip()
 
     if not name:
@@ -404,6 +428,16 @@ async def _handle_set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
     lifecycle_error = _validate_trigger_lifecycle_policy("set_trigger", ttype, config, arguments)
     if lifecycle_error:
         return lifecycle_error
+    requested_delivery = str(arguments.get("delivery") or config.get("delivery") or "").strip()
+    if requested_delivery == "same_session":
+        trusted_session_id = str(session_id or "").strip()
+        if not trusted_session_id:
+            return _trigger_error(
+                "set_trigger",
+                "not_configured",
+                "delivery=same_session requires an active chat session supplied by the runtime.",
+            )
+        config["source_session_id"] = trusted_session_id
     delivery_error = _apply_trigger_delivery("set_trigger", config, arguments)
     if delivery_error:
         return delivery_error
@@ -452,6 +486,11 @@ async def _handle_set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
         **_plan_authorization_stamp_kwargs(arguments),
     )
     config = _stamp_user_declined_plan_mode(config)
+    config = stamp_trigger_authority(
+        config,
+        owner_user_id=user_id,
+        root_session_id=session_id,
+    )
 
     try:
         # RLS 阶段1: reads the policy-bearing `agents` row for the trigger limit;
@@ -493,6 +532,28 @@ async def _handle_set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
             )
             existing = result.scalar_one_or_none()
             if existing:
+                requester = await load_trigger_requester(db, user_id)
+                if requester is None:
+                    return _trigger_error(
+                        "set_trigger",
+                        "auth_or_permission",
+                        "Trigger ownership could not be resolved for this runtime requester.",
+                    )
+                try:
+                    await authorize_trigger_action(
+                        db,
+                        requester,
+                        agent_id=agent_id,
+                        trigger=existing,
+                        action="write",
+                        agent_access=(_agent_obj, "use"),
+                    )
+                except HTTPException:
+                    return _trigger_error(
+                        "set_trigger",
+                        "auth_or_permission",
+                        "A trigger with this name exists outside the requester authority.",
+                    )
                 if existing.is_enabled:
                     return _trigger_error(
                         "set_trigger",
@@ -507,14 +568,17 @@ async def _handle_set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
                         "reply_to_current_sender requires a live channel conversation with a persisted reply target.",
                     )
                 existing.type = ttype
-                existing.config = {
-                    **config,
-                    "schedule_decision_entry": _set_trigger_schedule_decision_entry(
-                        arguments,
-                        trigger_id=existing.id,
-                        trigger_type=ttype,
-                    ),
-                }
+                existing.config = preserve_trigger_authority(
+                    existing,
+                    {
+                        **config,
+                        "schedule_decision_entry": _set_trigger_schedule_decision_entry(
+                            arguments,
+                            trigger_id=existing.id,
+                            trigger_type=ttype,
+                        ),
+                    },
+                )
                 existing.reason = reason
                 existing.is_enabled = True
                 existing.max_fires = _coerce_int(arguments.get("max_fires") or config.get("max_fires"))
@@ -599,9 +663,21 @@ async def _handle_set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
         return _trigger_error("set_trigger", "operation_failed", f"Failed to create trigger: {e}", retryable=True)
 
 
-async def _handle_update_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
+async def _handle_update_trigger(
+    agent_id: uuid.UUID,
+    arguments: dict,
+    *,
+    user_id: uuid.UUID | None = None,
+) -> str:
     """Update an existing trigger's config or reason."""
     from app.models.trigger import AgentTrigger
+
+    if user_id is None:
+        return _trigger_error(
+            "update_trigger",
+            "auth_or_permission",
+            "Trigger ownership could not be resolved for this runtime requester.",
+        )
 
     name = arguments.get("name", "").strip()
     if not name:
@@ -639,6 +715,27 @@ async def _handle_update_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
             trigger = result.scalar_one_or_none()
             if not trigger:
                 return _trigger_error("update_trigger", "not_found", f"Trigger '{name}' not found.")
+            requester = await load_trigger_requester(db, user_id)
+            if requester is None:
+                return _trigger_error(
+                    "update_trigger",
+                    "auth_or_permission",
+                    "Trigger ownership could not be resolved for this runtime requester.",
+                )
+            try:
+                await authorize_trigger_action(
+                    db,
+                    requester,
+                    agent_id=agent_id,
+                    trigger=trigger,
+                    action="write",
+                )
+            except HTTPException:
+                return _trigger_error(
+                    "update_trigger",
+                    "auth_or_permission",
+                    "The trigger belongs to a different requester.",
+                )
 
             changes = []
             final_config = dict(trigger.config or {})
@@ -657,6 +754,7 @@ async def _handle_update_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
                 **_plan_authorization_stamp_kwargs(arguments),
             )
             final_config = _stamp_user_declined_plan_mode(final_config)
+            final_config = preserve_trigger_authority(trigger, final_config)
 
             _trigger_class, binding_error = _resolve_trigger_class(
                 "update_trigger",
@@ -721,9 +819,21 @@ async def _handle_update_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
         return _trigger_error("update_trigger", "operation_failed", f"Failed to update trigger: {e}", retryable=True)
 
 
-async def _handle_cancel_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
+async def _handle_cancel_trigger(
+    agent_id: uuid.UUID,
+    arguments: dict,
+    *,
+    user_id: uuid.UUID | None = None,
+) -> str:
     """Cancel (disable) a trigger by name."""
     from app.models.trigger import AgentTrigger
+
+    if user_id is None:
+        return _trigger_error(
+            "cancel_trigger",
+            "auth_or_permission",
+            "Trigger ownership could not be resolved for this runtime requester.",
+        )
 
     name = arguments.get("name", "").strip()
     if not name:
@@ -743,6 +853,27 @@ async def _handle_cancel_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
             trigger = result.scalar_one_or_none()
             if not trigger:
                 return _trigger_error("cancel_trigger", "not_found", f"Trigger '{name}' not found.")
+            requester = await load_trigger_requester(db, user_id)
+            if requester is None:
+                return _trigger_error(
+                    "cancel_trigger",
+                    "auth_or_permission",
+                    "Trigger ownership could not be resolved for this runtime requester.",
+                )
+            try:
+                await authorize_trigger_action(
+                    db,
+                    requester,
+                    agent_id=agent_id,
+                    trigger=trigger,
+                    action="delete",
+                )
+            except HTTPException:
+                return _trigger_error(
+                    "cancel_trigger",
+                    "auth_or_permission",
+                    "The trigger belongs to a different requester.",
+                )
             if not trigger.is_enabled:
                 return f"ℹ️ Trigger '{name}' is already disabled"
 
@@ -762,7 +893,13 @@ async def _handle_cancel_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
         return _trigger_error("cancel_trigger", "operation_failed", f"Failed to cancel trigger: {e}", retryable=True)
 
 
-async def _handle_schedule_wakeup(agent_id: uuid.UUID, arguments: dict) -> str:
+async def _handle_schedule_wakeup(
+    agent_id: uuid.UUID,
+    arguments: dict,
+    *,
+    user_id: uuid.UUID | None = None,
+    session_id: str | None = None,
+) -> str:
     """B2 self-pace: the model schedules (or cancels) its own next wakeup.
 
     Creates a ``once`` trigger delivered into the SAME session (B3 rail): the
@@ -777,8 +914,14 @@ async def _handle_schedule_wakeup(agent_id: uuid.UUID, arguments: dict) -> str:
 
     from app.models.trigger import AgentTrigger
 
-    session_id = str(arguments.get("source_session_id") or "").strip()
-    if not session_id:
+    if user_id is None:
+        return _trigger_error(
+            "schedule_wakeup",
+            "auth_or_permission",
+            "Wakeup ownership could not be resolved for this runtime requester.",
+        )
+    trusted_session_id = str(session_id or "").strip()
+    if not trusted_session_id:
         return _trigger_error(
             "schedule_wakeup",
             "bad_arguments",
@@ -812,7 +955,12 @@ async def _handle_schedule_wakeup(agent_id: uuid.UUID, arguments: dict) -> str:
         cancelled: list[str] = []
         for row in pending_rows:
             config = dict(getattr(row, "config", None) or {})
-            if config.get("self_pace") and str(config.get("source_session_id") or "") == session_id:
+            if (
+                config.get("self_pace")
+                and str(config.get("source_session_id") or "") == trusted_session_id
+                and trigger_authority_state(row) == "owned"
+                and trigger_owner_user_id(row) == user_id
+            ):
                 row.is_enabled = False
                 cancelled.append(str(getattr(row, "id", "")))
 
@@ -839,13 +987,17 @@ async def _handle_schedule_wakeup(agent_id: uuid.UUID, arguments: dict) -> str:
             tenant_id=tid,
             name=f"wakeup-{uuid.uuid4().hex[:8]}",
             type="once",
-            config={
-                "at": fire_at.isoformat(),
-                "trigger_class": "scheduled_job",
-                "delivery": "same_session",
-                "source_session_id": session_id,
-                "self_pace": True,
-            },
+            config=stamp_trigger_authority(
+                {
+                    "at": fire_at.isoformat(),
+                    "trigger_class": "scheduled_job",
+                    "delivery": "same_session",
+                    "source_session_id": trusted_session_id,
+                    "self_pace": True,
+                },
+                owner_user_id=user_id,
+                root_session_id=trusted_session_id,
+            ),
             reason=prompt,
             is_enabled=True,
             cooldown_seconds=1,
@@ -875,11 +1027,22 @@ def _json_payload(payload: dict) -> str:
     return json.dumps(payload, ensure_ascii=False)
 
 
-async def _handle_list_triggers(agent_id: uuid.UUID) -> str:
+async def _handle_list_triggers(
+    agent_id: uuid.UUID,
+    *,
+    user_id: uuid.UUID | None = None,
+) -> str:
     """List all active triggers for the agent."""
     import app.services.autonomous_audit as autonomous_audit
     from app.models.agent import Agent
     from app.models.trigger import AgentTrigger
+
+    if user_id is None:
+        return _trigger_error(
+            "list_triggers",
+            "auth_or_permission",
+            "Trigger ownership could not be resolved for this runtime requester.",
+        )
 
     try:
         # RLS 阶段1: reads the policy-bearing `agents` row for the autonomy
@@ -896,6 +1059,21 @@ async def _handle_list_triggers(agent_id: uuid.UUID) -> str:
             triggers = result.scalars().all()
             agent_result = await db.execute(select(Agent).where(Agent.id == agent_id))
             agent = agent_result.scalar_one_or_none()
+            requester = await load_trigger_requester(db, user_id)
+            if requester is None or agent is None:
+                return _trigger_error(
+                    "list_triggers",
+                    "auth_or_permission",
+                    "Trigger ownership could not be resolved for this runtime requester.",
+                )
+            authorized = await filter_authorized_triggers(
+                db,
+                requester,
+                agent_id=agent_id,
+                triggers=triggers,
+                agent_access=(agent, "use"),
+            )
+            triggers = [trigger for trigger, _decision in authorized]
 
         lines = []
         if not triggers:

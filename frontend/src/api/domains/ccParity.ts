@@ -1,4 +1,8 @@
 import { get, patch, post } from '../core';
+import {
+  withSessionOperatorQuery,
+  type SessionOperatorOptions,
+} from './chat';
 
 export interface CommandIndexEntry {
   name: string;
@@ -362,16 +366,34 @@ export const ccParityApi = {
     });
   },
 
-  getSessionWorkbench(agentId: string, sessionId: string): Promise<SessionWorkbench> {
-    return get<SessionWorkbench>(`/agents/${agentId}/sessions/${sessionId}/workbench`);
+  getSessionWorkbench(
+    agentId: string,
+    sessionId: string,
+    options?: SessionOperatorOptions,
+  ): Promise<SessionWorkbench> {
+    return get<SessionWorkbench>(
+      withSessionOperatorQuery(`/agents/${agentId}/sessions/${sessionId}/workbench`, options),
+    );
   },
 
-  getSessionContextUsage(agentId: string, sessionId: string): Promise<SessionContextUsage> {
-    return get<SessionContextUsage>(`/agents/${agentId}/sessions/${sessionId}/context-usage`);
+  getSessionContextUsage(
+    agentId: string,
+    sessionId: string,
+    options?: SessionOperatorOptions,
+  ): Promise<SessionContextUsage> {
+    return get<SessionContextUsage>(
+      withSessionOperatorQuery(`/agents/${agentId}/sessions/${sessionId}/context-usage`, options),
+    );
   },
 
-  exportSessionJson(agentId: string, sessionId: string): Promise<SessionJsonExport> {
-    return get<SessionJsonExport>(`/agents/${agentId}/sessions/${sessionId}/export`);
+  exportSessionJson(
+    agentId: string,
+    sessionId: string,
+    options?: SessionOperatorOptions,
+  ): Promise<SessionJsonExport> {
+    return get<SessionJsonExport>(
+      withSessionOperatorQuery(`/agents/${agentId}/sessions/${sessionId}/export`, options),
+    );
   },
 
   listHooks(agentId: string): Promise<HookControlPlane> {

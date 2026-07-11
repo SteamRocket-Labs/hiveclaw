@@ -6,13 +6,25 @@ import inspect
 from pathlib import Path
 
 from app.tools.decorator import RESULT_CHARS_UNLIMITED, ToolMeta, tool
-from app.tools.result_envelope import ToolContentEnvelope
+from app.tools.result_envelope import ToolContentEnvelope, render_tool_error
 
 
 async def _maybe_await_tool_result(value):
     if inspect.isawaitable(value):
         return await value
     return value
+
+
+def _call_with_optional_authority(handler, workspace, arguments, tenant_id, authority_scope):
+    """Preserve the public three-argument handler contract outside governed runtime calls."""
+    if authority_scope is None:
+        return handler(workspace, arguments, tenant_id)
+    return handler(
+        workspace,
+        arguments,
+        tenant_id,
+        authority_scope=authority_scope,
+    )
 
 
 # -- list_files ---------------------------------------------------------------
@@ -41,10 +53,10 @@ async def _maybe_await_tool_result(value):
         adapter="workspace_args",
     )
 )
-def list_files(workspace: Path, arguments: dict, tenant_id: str | None = None) -> str:
+def list_files(workspace: Path, arguments: dict, tenant_id: str | None = None, authority_scope=None) -> str:
     from app.services.agent_tool_domains.workspace import _list_files
 
-    return _list_files(workspace, arguments.get("path", ""), tenant_id)
+    return _list_files(workspace, arguments.get("path", ""), tenant_id, authority_scope=authority_scope)
 
 
 # -- read_file ----------------------------------------------------------------
@@ -84,10 +96,15 @@ def list_files(workspace: Path, arguments: dict, tenant_id: str | None = None) -
         adapter="workspace_args",
     )
 )
-def read_file(workspace: Path, arguments: dict, tenant_id: str | None = None) -> "str | ToolContentEnvelope":
+def read_file(
+    workspace: Path,
+    arguments: dict,
+    tenant_id: str | None = None,
+    authority_scope=None,
+) -> "str | ToolContentEnvelope":
     from app.services.agent_tool_domains.workspace import _read_file
 
-    return _read_file(workspace, arguments.get("path", ""), tenant_id)
+    return _read_file(workspace, arguments.get("path", ""), tenant_id, authority_scope=authority_scope)
 
 
 # -- write_file ---------------------------------------------------------------
@@ -132,10 +149,15 @@ def read_file(workspace: Path, arguments: dict, tenant_id: str | None = None) ->
         adapter="workspace_args",
     )
 )
-def write_file(workspace: Path, arguments: dict, tenant_id: str | None = None) -> str:
+def write_file(workspace: Path, arguments: dict, tenant_id: str | None = None, authority_scope=None) -> str:
     from app.services.agent_tool_domains.workspace import _write_file
 
-    return _write_file(workspace, arguments.get("path", ""), arguments.get("content", ""))
+    return _write_file(
+        workspace,
+        arguments.get("path", ""),
+        arguments.get("content", ""),
+        authority_scope=authority_scope,
+    )
 
 
 # -- edit_file ----------------------------------------------------------------
@@ -184,7 +206,7 @@ def write_file(workspace: Path, arguments: dict, tenant_id: str | None = None) -
         adapter="workspace_args",
     )
 )
-def edit_file(workspace: Path, arguments: dict, tenant_id: str | None = None) -> str:
+def edit_file(workspace: Path, arguments: dict, tenant_id: str | None = None, authority_scope=None) -> str:
     from app.services.agent_tool_domains.workspace import _edit_file
 
     return _edit_file(
@@ -193,6 +215,7 @@ def edit_file(workspace: Path, arguments: dict, tenant_id: str | None = None) ->
         arguments.get("old_text", ""),
         arguments.get("new_text", ""),
         arguments.get("replace_all", False),
+        authority_scope=authority_scope,
     )
 
 
@@ -225,10 +248,15 @@ def edit_file(workspace: Path, arguments: dict, tenant_id: str | None = None) ->
         adapter="workspace_args",
     )
 )
-def glob_search(workspace: Path, arguments: dict, tenant_id: str | None = None) -> str:
+def glob_search(workspace: Path, arguments: dict, tenant_id: str | None = None, authority_scope=None) -> str:
     from app.services.agent_tool_domains.workspace import _glob_search
 
-    return _glob_search(workspace, arguments.get("pattern", ""), arguments.get("root", ""))
+    return _glob_search(
+        workspace,
+        arguments.get("pattern", ""),
+        arguments.get("root", ""),
+        authority_scope=authority_scope,
+    )
 
 
 # -- grep_search --------------------------------------------------------------
@@ -264,7 +292,7 @@ def glob_search(workspace: Path, arguments: dict, tenant_id: str | None = None) 
         adapter="workspace_args",
     )
 )
-def grep_search(workspace: Path, arguments: dict, tenant_id: str | None = None) -> str:
+def grep_search(workspace: Path, arguments: dict, tenant_id: str | None = None, authority_scope=None) -> str:
     from app.services.agent_tool_domains.workspace import _grep_search
 
     return _grep_search(
@@ -272,6 +300,7 @@ def grep_search(workspace: Path, arguments: dict, tenant_id: str | None = None) 
         arguments.get("pattern", ""),
         arguments.get("root", ""),
         arguments.get("max_results", 50),
+        authority_scope=authority_scope,
     )
 
 
@@ -307,10 +336,10 @@ def grep_search(workspace: Path, arguments: dict, tenant_id: str | None = None) 
         adapter="workspace_args",
     )
 )
-def delete_file(workspace: Path, arguments: dict, tenant_id: str | None = None) -> str:
+def delete_file(workspace: Path, arguments: dict, tenant_id: str | None = None, authority_scope=None) -> str:
     from app.services.agent_tool_domains.workspace import _delete_file
 
-    return _delete_file(workspace, arguments.get("path", ""))
+    return _delete_file(workspace, arguments.get("path", ""), authority_scope=authority_scope)
 
 
 # -- read_document ------------------------------------------------------------
@@ -360,7 +389,7 @@ def delete_file(workspace: Path, arguments: dict, tenant_id: str | None = None) 
         adapter="workspace_args",
     )
 )
-async def read_document(workspace: Path, arguments: dict, tenant_id: str | None = None) -> str:
+async def read_document(workspace: Path, arguments: dict, tenant_id: str | None = None, authority_scope=None) -> str:
     from app.services.agent_tool_domains.workspace import _read_document
 
     max_chars = arguments.get("max_chars", 8000)
@@ -377,6 +406,7 @@ async def read_document(workspace: Path, arguments: dict, tenant_id: str | None 
         max_pages=arguments.get("max_pages"),
         force_refresh=bool(arguments.get("force_refresh", False)),
         return_format=str(arguments.get("return_format") or "preview"),
+        authority_scope=authority_scope,
     )
 
 
@@ -427,10 +457,29 @@ async def read_document(workspace: Path, arguments: dict, tenant_id: str | None 
         adapter="workspace_args",
     )
 )
-async def execute_code(workspace: Path, arguments: dict, tenant_id: str | None = None) -> str:
+async def execute_code(workspace: Path, arguments: dict, tenant_id: str | None = None, authority_scope=None) -> str:
+    from app.services.agent_tool_domains.code_exec import (
+        WorkspaceExecutionAuthorityError,
+        authorized_execution_workspace,
+    )
     from app.services.agent_tools import _execute_code
 
-    return await _execute_code(workspace, arguments)
+    try:
+        with authorized_execution_workspace(workspace, authority_scope) as execution_workspace:
+            return await _execute_code(
+                execution_workspace,
+                arguments,
+                canonical_workspace=workspace,
+            )
+    except WorkspaceExecutionAuthorityError as exc:
+        return render_tool_error(
+            tool_name="execute_code",
+            error_class=exc.code,
+            message=exc.message,
+            provider="resource_authority",
+            retryable=False,
+            actionable_hint="Use a new path in your workspace or request an explicit resource grant.",
+        )
 
 
 # -- run_command --------------------------------------------------------------
@@ -472,10 +521,25 @@ async def execute_code(workspace: Path, arguments: dict, tenant_id: str | None =
         adapter="workspace_args",
     )
 )
-async def run_command(workspace: Path, arguments: dict, tenant_id: str | None = None) -> str:
+async def run_command(workspace: Path, arguments: dict, tenant_id: str | None = None, authority_scope=None) -> str:
+    from app.services.agent_tool_domains.code_exec import (
+        WorkspaceExecutionAuthorityError,
+        authorized_execution_workspace,
+    )
     from app.services.agent_tools import _run_command
 
-    return await _run_command(workspace, arguments)
+    try:
+        with authorized_execution_workspace(workspace, authority_scope) as execution_workspace:
+            return await _run_command(execution_workspace, arguments)
+    except WorkspaceExecutionAuthorityError as exc:
+        return render_tool_error(
+            tool_name="run_command",
+            error_class=exc.code,
+            message=exc.message,
+            provider="resource_authority",
+            retryable=False,
+            actionable_hint="Use a new path in your workspace or request an explicit resource grant.",
+        )
 
 
 # ── P1-W3-6 — Unified filesystem facades ─────────────────────────
@@ -527,29 +591,45 @@ async def run_command(workspace: Path, arguments: dict, tenant_id: str | None = 
         adapter="workspace_args",
     )
 )
-def fs_read(workspace: Path, arguments: dict, tenant_id: str | None = None) -> str:
+def fs_read(workspace: Path, arguments: dict, tenant_id: str | None = None, authority_scope=None) -> str:
     mode = (arguments.get("mode") or "text").strip().lower()
     if mode == "text":
-        return read_file(workspace, {"path": arguments.get("path", "")}, tenant_id)
+        return _call_with_optional_authority(
+            read_file,
+            workspace,
+            {"path": arguments.get("path", "")},
+            tenant_id,
+            authority_scope,
+        )
     if mode == "document":
-        return read_document(workspace, {"path": arguments.get("path", "")}, tenant_id)
+        return _call_with_optional_authority(
+            read_document,
+            workspace,
+            {"path": arguments.get("path", "")},
+            tenant_id,
+            authority_scope,
+        )
     if mode == "glob":
-        return glob_search(
+        return _call_with_optional_authority(
+            glob_search,
             workspace,
             {
                 "root": arguments.get("path", ""),
                 "pattern": arguments.get("pattern") or "*",
             },
             tenant_id,
+            authority_scope,
         )
     if mode == "grep":
-        return grep_search(
+        return _call_with_optional_authority(
+            grep_search,
             workspace,
             {
                 "root": arguments.get("path", ""),
                 "pattern": arguments.get("pattern") or "",
             },
             tenant_id,
+            authority_scope,
         )
     return f"⚠️ fs_read: unknown mode {mode!r}. Use one of: text, document, glob, grep."
 
@@ -588,22 +668,25 @@ def fs_read(workspace: Path, arguments: dict, tenant_id: str | None = None) -> s
         adapter="workspace_args",
     )
 )
-async def fs_write(workspace: Path, arguments: dict, tenant_id: str | None = None) -> str:
+async def fs_write(workspace: Path, arguments: dict, tenant_id: str | None = None, authority_scope=None) -> str:
     mode = (arguments.get("mode") or "write").strip().lower()
     if mode == "write":
         return await _maybe_await_tool_result(
-            write_file(
+            _call_with_optional_authority(
+                write_file,
                 workspace,
                 {
                     "path": arguments.get("path", ""),
                     "content": arguments.get("content", ""),
                 },
                 tenant_id,
+                authority_scope,
             )
         )
     if mode == "edit":
         return await _maybe_await_tool_result(
-            edit_file(
+            _call_with_optional_authority(
+                edit_file,
                 workspace,
                 {
                     "path": arguments.get("path", ""),
@@ -611,10 +694,19 @@ async def fs_write(workspace: Path, arguments: dict, tenant_id: str | None = Non
                     "new_text": arguments.get("new_string", ""),
                 },
                 tenant_id,
+                authority_scope,
             )
         )
     if mode == "delete":
-        return await _maybe_await_tool_result(delete_file(workspace, {"path": arguments.get("path", "")}, tenant_id))
+        return await _maybe_await_tool_result(
+            _call_with_optional_authority(
+                delete_file,
+                workspace,
+                {"path": arguments.get("path", "")},
+                tenant_id,
+                authority_scope,
+            )
+        )
     return f"⚠️ fs_write: unknown mode {mode!r}. Use one of: write, edit, delete."
 
 
@@ -644,5 +736,11 @@ async def fs_write(workspace: Path, arguments: dict, tenant_id: str | None = Non
         adapter="workspace_args",
     )
 )
-def fs_list(workspace: Path, arguments: dict, tenant_id: str | None = None) -> str:
-    return list_files(workspace, {"path": arguments.get("path", "")}, tenant_id)
+def fs_list(workspace: Path, arguments: dict, tenant_id: str | None = None, authority_scope=None) -> str:
+    return _call_with_optional_authority(
+        list_files,
+        workspace,
+        {"path": arguments.get("path", "")},
+        tenant_id,
+        authority_scope,
+    )

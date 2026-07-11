@@ -30,6 +30,8 @@ export interface ChatSession {
   permission_mode?: string | null;
   is_current_user_session?: boolean;
   read_only?: boolean;
+  authority_source?: string | null;
+  operator_view?: boolean;
   is_draft?: boolean;
   draft_client_id?: string;
   permission_profile?: {
@@ -47,6 +49,34 @@ export interface ChatSession {
     expires_at: string;
   } | null;
   transcript_metadata_json?: Record<string, unknown> | null;
+}
+
+export interface SessionOperatorOptions {
+  operatorView?: boolean;
+  operatorReason?: string;
+}
+
+export type SessionReadOptions = RequestOptions & SessionOperatorOptions;
+
+export function withSessionOperatorQuery(
+  path: string,
+  options?: SessionOperatorOptions,
+  params: URLSearchParams = new URLSearchParams(),
+): string {
+  if (options?.operatorView) {
+    const reason = String(options.operatorReason || '').trim();
+    if (!reason) throw new Error('Operator View requires an audit reason');
+    params.set('operator_view', 'true');
+    params.set('operator_reason', reason);
+  }
+  const query = params.toString();
+  return `${path}${query ? `?${query}` : ''}`;
+}
+
+function requestOptionsOnly(options?: SessionReadOptions): RequestOptions | undefined {
+  if (!options) return undefined;
+  const { operatorView: _operatorView, operatorReason: _operatorReason, ...requestOptions } = options;
+  return Object.keys(requestOptions).length > 0 ? requestOptions : undefined;
 }
 
 export interface UploadedChatFile {
@@ -226,16 +256,26 @@ export const chatApi = {
     upload<UploadedChatFile>('/chat/upload', file, agentId ? { agent_id: agentId } : undefined),
 
   /** Session management */
-  listSessions: (agentId: string, scope?: 'mine' | 'all') =>
-    get<ChatSession[]>(`/agents/${agentId}/sessions${scope ? `?scope=${scope}` : ''}`),
+  listSessions: (agentId: string, scope: 'mine' | 'all' = 'mine', options?: SessionOperatorOptions) => {
+    const params = new URLSearchParams({ scope });
+    if (scope === 'all') {
+      const reason = String(options?.operatorReason || '').trim();
+      if (!reason) throw new Error('Listing all sessions requires an Operator View audit reason');
+      params.set('operator_reason', reason);
+    }
+    return get<ChatSession[]>(`/agents/${agentId}/sessions?${params.toString()}`);
+  },
   createSession: (agentId: string, title?: string) => post<ChatSession>(`/agents/${agentId}/sessions`, { title }),
   deleteSession: (agentId: string, sessionId: string) => del(`/agents/${agentId}/sessions/${sessionId}`),
-  getSessionMessages: (agentId: string, sessionId: string, options?: RequestOptions) =>
-    get<ChatMessage[]>(`/agents/${agentId}/sessions/${sessionId}/messages`, options),
+  getSessionMessages: (agentId: string, sessionId: string, options?: SessionReadOptions) =>
+    get<ChatMessage[]>(
+      withSessionOperatorQuery(`/agents/${agentId}/sessions/${sessionId}/messages`, options),
+      requestOptionsOnly(options),
+    ),
   getSessionTranscript: (
     agentId: string,
     sessionId: string,
-    options?: RequestOptions & {
+    options?: SessionReadOptions & {
       afterSequence?: number;
       beforeSequence?: number;
       direction?: 'forward' | 'backward';
@@ -247,22 +287,26 @@ export const chatApi = {
     if (typeof options?.beforeSequence === 'number') params.set('before_sequence', String(options.beforeSequence));
     if (options?.direction) params.set('direction', options.direction);
     if (typeof options?.limit === 'number') params.set('limit', String(options.limit));
-    const query = params.toString();
     const requestOptions = options ? { ...options } : undefined;
     if (requestOptions) {
       delete requestOptions.afterSequence;
       delete requestOptions.beforeSequence;
       delete requestOptions.direction;
       delete requestOptions.limit;
+      delete requestOptions.operatorView;
+      delete requestOptions.operatorReason;
     }
     const remainingOptions = requestOptions && Object.keys(requestOptions).length > 0 ? requestOptions : undefined;
     return get<ChatTranscriptEvent[]>(
-      `/agents/${agentId}/sessions/${sessionId}/transcript${query ? `?${query}` : ''}`,
+      withSessionOperatorQuery(`/agents/${agentId}/sessions/${sessionId}/transcript`, options, params),
       remainingOptions,
     );
   },
-  getRuntimeSummary: (sessionId: string, options?: RequestOptions) =>
-    get<SessionRuntimeSummary>(`/chat/sessions/${sessionId}/runtime-summary`, options),
+  getRuntimeSummary: (sessionId: string, options?: SessionReadOptions) =>
+    get<SessionRuntimeSummary>(
+      withSessionOperatorQuery(`/chat/sessions/${sessionId}/runtime-summary`, options),
+      requestOptionsOnly(options),
+    ),
   createSessionRun: (agentId: string, input: CreateSessionRunInput) =>
     post<CreateSessionRunResponse>(`/agents/${agentId}/sessions/runs`, input),
   startSessionRun: (agentId: string, sessionId: string, input: StartSessionRunInput) =>
@@ -271,15 +315,19 @@ export const chatApi = {
     post<BranchSessionResponse>(`/agents/${agentId}/sessions/${sessionId}/branches`, input),
   recordSessionFeedback: (agentId: string, sessionId: string, input: RecordSessionFeedbackInput) =>
     post<unknown>(`/agents/${agentId}/sessions/${sessionId}/feedback`, input),
-  listSessionBranches: (agentId: string, sessionId: string) =>
-    get<ChatSession[]>(`/agents/${agentId}/sessions/${sessionId}/branches`),
-  getSessionLineage: (agentId: string, sessionId: string) =>
-    get<Array<Record<string, unknown>>>(`/agents/${agentId}/sessions/${sessionId}/lineage`),
-  getSessionIndex: (agentId: string, sessionId: string) =>
-    get<SessionIndex>(`/agents/${agentId}/sessions/${sessionId}/index`),
-  getActiveSessionRun: async (agentId: string, sessionId: string) => {
+  listSessionBranches: (agentId: string, sessionId: string, options?: SessionOperatorOptions) =>
+    get<ChatSession[]>(withSessionOperatorQuery(`/agents/${agentId}/sessions/${sessionId}/branches`, options)),
+  getSessionLineage: (agentId: string, sessionId: string, options?: SessionOperatorOptions) =>
+    get<Array<Record<string, unknown>>>(
+      withSessionOperatorQuery(`/agents/${agentId}/sessions/${sessionId}/lineage`, options),
+    ),
+  getSessionIndex: (agentId: string, sessionId: string, options?: SessionOperatorOptions) =>
+    get<SessionIndex>(withSessionOperatorQuery(`/agents/${agentId}/sessions/${sessionId}/index`, options)),
+  getActiveSessionRun: async (agentId: string, sessionId: string, options?: SessionOperatorOptions) => {
     try {
-      return await get<SessionRun | null>(`/agents/${agentId}/sessions/${sessionId}/runs/active`);
+      return await get<SessionRun | null>(
+        withSessionOperatorQuery(`/agents/${agentId}/sessions/${sessionId}/runs/active`, options),
+      );
     } catch (err) {
       if (err instanceof ApiError && err.status === 404) return null;
       throw err;

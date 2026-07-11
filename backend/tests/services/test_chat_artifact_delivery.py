@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import select
 
 
 def test_artifact_policy_accepts_workspace_user_artifact(tmp_path):
@@ -154,6 +154,7 @@ def test_chat_artifact_insert_statement_uses_postgres_on_conflict(tmp_path):
     session_id = uuid4()
     runtime_task_id = uuid4()
     message_id = uuid4()
+    owner_user_id = uuid4()
     workspace = tmp_path / "agent"
     report = workspace / "workspace" / "report.md"
     report.parent.mkdir(parents=True)
@@ -176,11 +177,18 @@ def test_chat_artifact_insert_statement_uses_postgres_on_conflict(tmp_path):
         message_id=message_id,
         runtime_task_id=runtime_task_id,
         source="workspace_write",
+        owner_user_id=owner_user_id,
+        root_session_id=session_id,
+        authority_state="owned",
     )
     compiled = str(statement.compile(dialect=postgresql.dialect()))
+    params = statement.compile(dialect=postgresql.dialect()).params
 
     assert "ON CONFLICT ON CONSTRAINT uq_chat_artifacts_agent_session_run_path_snapshot DO NOTHING" in compiled
     assert "RETURNING chat_artifacts.id" in compiled
+    assert params["owner_user_id"] == owner_user_id
+    assert params["root_session_id"] == session_id
+    assert params["authority_state"] == "owned"
 
 
 @pytest.mark.asyncio
@@ -443,9 +451,9 @@ async def test_chat_artifact_delivery_real_pg_concurrent_idempotency(owner_sessi
 
     assert first[0]["artifact_id"] == second[0]["artifact_id"]
     async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as db:
-        row_count = (
+        artifact = (
             await db.execute(
-                select(func.count(ChatArtifact.id)).where(
+                select(ChatArtifact).where(
                     ChatArtifact.agent_id == agent_id,
                     ChatArtifact.session_id == session_id,
                     ChatArtifact.runtime_task_id == runtime_task_id,
@@ -453,7 +461,22 @@ async def test_chat_artifact_delivery_real_pg_concurrent_idempotency(owner_sessi
                 )
             )
         ).scalar_one()
-    assert row_count == 1
+        from app.models.workspace_resource import WorkspaceResourceManifest
+
+        manifest = (
+            await db.execute(
+                select(WorkspaceResourceManifest).where(
+                    WorkspaceResourceManifest.agent_id == agent_id,
+                    WorkspaceResourceManifest.path == "workspace/report.md",
+                )
+            )
+        ).scalar_one()
+    assert artifact.owner_user_id == user_id
+    assert artifact.root_session_id == session_id
+    assert artifact.authority_state == "owned"
+    assert manifest.owner_user_id == user_id
+    assert manifest.root_session_id == session_id
+    assert manifest.authority_state == "owned"
 
 
 def test_artifact_policy_preserves_a2a_producer_as_download_owner(tmp_path):

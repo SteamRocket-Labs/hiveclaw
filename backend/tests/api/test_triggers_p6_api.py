@@ -79,11 +79,18 @@ def _client(monkeypatch, db):
 async def test_list_triggers_returns_normalized_display_without_default_diagnostics(monkeypatch):
     agent_id = uuid4()
     trigger_id = uuid4()
+    owner_id = uuid4()
     trigger = SimpleNamespace(
         id=trigger_id,
         name="daily_report",
         type="cron",
-        config={"expr": "0 9 * * *", "trigger_class": "scheduled_job", "model_id": str(uuid4())},
+        config={
+            "expr": "0 9 * * *",
+            "trigger_class": "scheduled_job",
+            "model_id": str(uuid4()),
+            "created_by": str(owner_id),
+            "authority_state": "owned",
+        },
         reason="Send daily report",
         is_enabled=True,
         fire_count=2,
@@ -112,7 +119,11 @@ async def test_list_triggers_returns_normalized_display_without_default_diagnost
     monkeypatch.setattr(triggers_api, "build_trigger_view", fake_view)
     monkeypatch.setattr(triggers_api, "check_agent_access", allow_access)
 
-    result = await triggers_api.list_agent_triggers(agent_id=agent_id, current_user=SimpleNamespace(), db=db)
+    result = await triggers_api.list_agent_triggers(
+        agent_id=agent_id,
+        current_user=SimpleNamespace(id=owner_id, tenant_id=uuid4(), role="member"),
+        db=db,
+    )
 
     assert result[0].id == str(trigger_id)
     assert result[0].display_kind == "scheduled_job"
@@ -124,11 +135,17 @@ async def test_list_triggers_returns_normalized_display_without_default_diagnost
 @pytest.mark.asyncio
 async def test_list_triggers_can_return_diagnostics_when_requested(monkeypatch):
     agent_id = uuid4()
+    owner_id = uuid4()
     trigger = SimpleNamespace(
         id=uuid4(),
         name="daily_report",
         type="cron",
-        config={"expr": "0 9 * * *", "trigger_class": "scheduled_job"},
+        config={
+            "expr": "0 9 * * *",
+            "trigger_class": "scheduled_job",
+            "created_by": str(owner_id),
+            "authority_state": "owned",
+        },
         reason="Send daily report",
         is_enabled=True,
         fire_count=2,
@@ -157,7 +174,7 @@ async def test_list_triggers_can_return_diagnostics_when_requested(monkeypatch):
 
     result = await triggers_api.list_agent_triggers(
         agent_id=agent_id,
-        current_user=SimpleNamespace(),
+        current_user=SimpleNamespace(id=owner_id, tenant_id=uuid4(), role="member"),
         db=db,
         diagnostics=True,
     )

@@ -3,13 +3,13 @@
 import logging
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import get_current_admin, get_current_user
-from app.core.permissions import check_agent_access
+from app.core.permissions import authorize_session_action, check_agent_access
 from app.core.tenant_scope import resolve_and_pin_tenant_scope
 from app.database import get_db
 from app.models.chat_session import ChatSession
@@ -346,6 +346,8 @@ async def get_agent_capability_summary(
 @router.get("/chat/sessions/{session_id}/runtime-summary")
 async def get_session_runtime(
     session_id: uuid.UUID,
+    operator_view: bool = Query(default=False),
+    operator_reason: str | None = Query(default=None),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -354,7 +356,15 @@ async def get_session_runtime(
     session = result.scalar_one_or_none()
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
-    await check_agent_access(db, current_user, session.agent_id)
+    await authorize_session_action(
+        db,
+        current_user,
+        agent_id=session.agent_id,
+        session_id=session.id,
+        action="read_runtime_summary",
+        allow_manager_override=operator_view is True,
+        manager_override_reason=operator_reason,
+    )
     return await get_session_runtime_summary(db, session_id)
 
 

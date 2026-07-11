@@ -9,6 +9,9 @@ type AgentActivityLogSectionProps = {
   expandedLogId: string | null;
   onFilterChange: (value: string) => void;
   onToggleExpandedLog: (value: string | null) => void;
+  canUseOperatorView?: boolean;
+  operatorView?: boolean;
+  onOperatorViewChange?: (value: boolean) => void;
 };
 
 export default function AgentActivityLogSection({
@@ -18,6 +21,9 @@ export default function AgentActivityLogSection({
   expandedLogId,
   onFilterChange,
   onToggleExpandedLog,
+  canUseOperatorView = false,
+  operatorView = false,
+  onOperatorViewChange,
 }: AgentActivityLogSectionProps) {
   const { t } = useTranslation();
 
@@ -52,6 +58,25 @@ export default function AgentActivityLogSection({
   return (
     <div>
       <h3 className="agent-activity-title">{t('agent.activityLog.title')}</h3>
+
+      {canUseOperatorView ? (
+        <div className="agent-activity-operator-controls">
+          <button
+            type="button"
+            className="btn btn-secondary"
+            aria-pressed={operatorView}
+            onClick={() => onOperatorViewChange?.(!operatorView)}
+          >
+            {operatorView ? 'Exit operator view' : 'Enter operator view'}
+          </button>
+        </div>
+      ) : null}
+
+      {operatorView ? (
+        <div className="agent-activity-operator-note" role="status">
+          <strong>Operator view</strong> · Tenant-wide activity and failures are visible; cross-owner access is audited.
+        </div>
+      ) : null}
 
       {toolFailureSummary && (
         <div className="card agent-activity-failure-card">

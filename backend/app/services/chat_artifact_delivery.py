@@ -726,6 +726,9 @@ def _chat_artifact_insert_statement(
     message_id: uuid.UUID,
     runtime_task_id: str | uuid.UUID | None,
     source: str,
+    owner_user_id: uuid.UUID | None = None,
+    root_session_id: uuid.UUID | None = None,
+    authority_state: str = "quarantined",
 ) -> Any:
     """Build the atomic artifact insert used by concurrent web-chat runs."""
     runtime_uuid = uuid.UUID(str(runtime_task_id)) if runtime_task_id else None
@@ -738,6 +741,9 @@ def _chat_artifact_insert_statement(
             session_id=uuid.UUID(str(session_id)),
             message_id=message_id,
             runtime_task_id=runtime_uuid,
+            owner_user_id=owner_user_id,
+            root_session_id=root_session_id,
+            authority_state=authority_state,
             path=candidate["path"],
             name=candidate["name"],
             mime_type=candidate.get("mime_type"),
@@ -795,12 +801,45 @@ async def create_chat_artifacts_for_message(
     download_agent_id: str | uuid.UUID | None = None,
     delivery_agent_id: str | uuid.UUID | None = None,
     rebind_existing_to_message: bool = False,
+    owner_user_id: uuid.UUID | None = None,
+    root_session_id: uuid.UUID | None = None,
 ) -> list[dict[str, Any]]:
     """Create artifact rows for safe candidate paths and return message parts."""
     parts: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
     session_uuid = uuid.UUID(str(session_id))
     runtime_uuid = uuid.UUID(str(runtime_task_id)) if runtime_task_id else None
+    if isinstance(db, AsyncSession) and (owner_user_id is None or root_session_id is None):
+        authority_session = (
+            await db.execute(
+                select(ChatSession).where(
+                    ChatSession.id == session_uuid,
+                    ChatSession.agent_id == agent_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if authority_session is not None:
+            owner_user_id = owner_user_id or authority_session.user_id
+            root_session_id = root_session_id or authority_session.root_session_id or authority_session.id
+    authority_state = "owned" if owner_user_id is not None else "quarantined"
+
+    async def _register_path(candidate: dict[str, Any]) -> None:
+        if not isinstance(db, AsyncSession) or tenant_id is None:
+            return
+        from app.services.workspace_resource_authority import register_workspace_path
+
+        await register_workspace_path(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            path=candidate["path"],
+            owner_user_id=owner_user_id,
+            root_session_id=root_session_id,
+            source="chat_artifact_delivery",
+            content_hash=candidate.get("content_hash"),
+            allow_owner_rebind=False,
+        )
+
     for path in paths:
         candidate = build_artifact_candidate(
             agent_id=agent_id,
@@ -832,6 +871,9 @@ async def create_chat_artifacts_for_message(
                 message_id=message_id,
                 runtime_task_id=runtime_uuid,
                 source=source,
+                owner_user_id=owner_user_id,
+                root_session_id=root_session_id,
+                authority_state=authority_state,
             )
         )
         inserted_id = insert_result.scalar_one_or_none()
@@ -854,6 +896,9 @@ async def create_chat_artifacts_for_message(
                     session_id=session_uuid,
                     message_id=message_id,
                     runtime_task_id=runtime_uuid,
+                    owner_user_id=owner_user_id,
+                    root_session_id=root_session_id,
+                    authority_state=authority_state,
                     path=candidate["path"],
                     name=candidate["name"],
                     mime_type=candidate.get("mime_type"),
@@ -873,11 +918,13 @@ async def create_chat_artifacts_for_message(
                 # assistant message instead of creating a second fact source.
                 existing.message_id = message_id
             part = artifact_part_from_model(existing)
+            await _register_path(candidate)
             record_workspace_artifact_provenance(workspace_root, part)
             parts.append(part)
             continue
         candidate["artifact_id"] = str(inserted_id)
         candidate["id"] = str(inserted_id)
+        await _register_path(candidate)
         record_workspace_artifact_provenance(workspace_root, candidate)
         parts.append(_artifact_part_from_candidate(candidate))
     return parts

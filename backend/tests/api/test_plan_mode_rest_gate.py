@@ -371,6 +371,7 @@ def test_update_trigger_enable_without_plan_returns_409(monkeypatch):
     )
     db = _QueuedDB([_ScalarResult(trigger)])
     app, _user, allow_access = _make_client(mod, db=db)
+    trigger.config.update(created_by=str(_user.id), authority_state="owned")
     monkeypatch.setattr(mod, "check_agent_access", allow_access)
     gate = _StubGate(_requires_confirmation_decision())
     monkeypatch.setattr(mod, "get_plan_mode_gate", lambda: gate)
@@ -410,6 +411,7 @@ def test_update_trigger_disable_is_not_gated(monkeypatch):
     )
     db = _QueuedDB([_ScalarResult(trigger)])
     app, _user, allow_access = _make_client(mod, db=db)
+    trigger.config.update(created_by=str(_user.id), authority_state="owned")
     monkeypatch.setattr(mod, "check_agent_access", allow_access)
 
     def _boom():
@@ -454,6 +456,7 @@ def test_update_trigger_enable_after_user_declines_plan_recommendation_passes(mo
     )
     db = _QueuedDB([_ScalarResult(trigger), _ScalarResult(recommendation)])
     app, _user, allow_access = _make_client(mod, db=db, user=user)
+    trigger.config.update(created_by=str(user.id), authority_state="owned")
     monkeypatch.setattr(mod, "check_agent_access", allow_access)
     monkeypatch.setattr(mod, "get_plan_mode_gate", lambda: (_ for _ in ()).throw(AssertionError("not gated")))
 
@@ -495,6 +498,7 @@ def test_update_trigger_reason_only_is_not_gated(monkeypatch):
     )
     db = _QueuedDB([_ScalarResult(trigger)])
     app, _user, allow_access = _make_client(mod, db=db)
+    trigger.config.update(created_by=str(_user.id), authority_state="owned")
     monkeypatch.setattr(mod, "check_agent_access", allow_access)
     monkeypatch.setattr(mod, "get_plan_mode_gate", lambda: (_ for _ in ()).throw(AssertionError("not gated")))
 
@@ -639,7 +643,7 @@ def test_update_schedule_enable_after_user_declines_plan_recommendation_passes(m
         agent_id=uuid4(),
         name="nightly",
         type="cron",
-        config={"expr": "0 9 * * *"},
+        config={"expr": "0 9 * * *", "created_by": str(user.id), "authority_state": "owned"},
         reason="do it",
         reply_context=None,
         last_fired_at=None,
@@ -695,6 +699,7 @@ def test_schedule_run_without_plan_returns_409(monkeypatch):
     )
     db = _QueuedDB([_ScalarResult(schedule)])
     app, _user, allow_access = _make_client(mod, db=db)
+    schedule.config.update({"created_by": str(_user.id), "authority_state": "owned"})
     monkeypatch.setattr(mod, "check_agent_access", allow_access)
     gate = _StubGate(_requires_confirmation_decision())
     monkeypatch.setattr(mod, "get_plan_mode_gate", lambda: gate)
@@ -727,6 +732,7 @@ def test_schedule_run_with_confirmed_plan_passes(monkeypatch):
     )
     db = _QueuedDB([_ScalarResult(schedule)])
     app, _user, allow_access = _make_client(mod, db=db)
+    schedule.config.update({"created_by": str(_user.id), "authority_state": "owned"})
     monkeypatch.setattr(mod, "check_agent_access", allow_access)
     gate = _StubGate(_allow_decision())
     monkeypatch.setattr(mod, "get_plan_mode_gate", lambda: gate)
@@ -764,6 +770,7 @@ def test_schedule_run_after_user_declines_plan_recommendation_passes(monkeypatch
     recommendation = _declined_recommendation(agent_id=schedule.agent_id, user=user)
     db = _QueuedDB([_ScalarResult(schedule), _ScalarResult(recommendation)])
     app, _user, allow_access = _make_client(mod, db=db, user=user)
+    schedule.config.update({"created_by": str(_user.id), "authority_state": "owned"})
     monkeypatch.setattr(mod, "check_agent_access", allow_access)
     monkeypatch.setattr(mod, "get_plan_mode_gate", lambda: (_ for _ in ()).throw(AssertionError("not gated")))
 
@@ -982,6 +989,9 @@ def test_trigger_task_without_plan_returns_409(monkeypatch):
     # check_agent_access returns a non-expired agent; then the task lookup.
     db = _QueuedDB([_ScalarResult(task), _ScalarResult(None)])
     app, _user, allow_access = _make_client(mod, db=db)
+    task.created_by = _user.id
+    task.root_session_id = None
+    task.authority_state = "owned"
     monkeypatch.setattr(mod, "check_agent_access", allow_access)
     monkeypatch.setattr("app.core.permissions.is_agent_expired", lambda _a: False)
     gate = _StubGate(_requires_confirmation_decision())
@@ -1012,6 +1022,9 @@ def test_trigger_task_with_confirmed_plan_enqueues_runtime_task(monkeypatch):
     task = SimpleNamespace(id=uuid4(), agent_id=uuid4(), description="go")
     db = _QueuedDB([_ScalarResult(task), _ScalarResult(None)])
     app, _user, allow_access = _make_client(mod, db=db)
+    task.created_by = _user.id
+    task.root_session_id = None
+    task.authority_state = "owned"
     monkeypatch.setattr(mod, "check_agent_access", allow_access)
     monkeypatch.setattr("app.core.permissions.is_agent_expired", lambda _a: False)
     gate = _StubGate(_allow_decision())
@@ -1098,6 +1111,9 @@ def test_trigger_task_recovers_concurrent_same_request(monkeypatch):
     task = SimpleNamespace(id=uuid4(), agent_id=uuid4(), description="go")
     db = _QueuedDB([_ScalarResult(task)])
     app, _user, allow_access = _make_client(mod, db=db)
+    task.created_by = _user.id
+    task.root_session_id = None
+    task.authority_state = "owned"
     monkeypatch.setattr(mod, "check_agent_access", allow_access)
     monkeypatch.setattr("app.core.permissions.is_agent_expired", lambda _a: False)
     monkeypatch.setattr(mod, "get_plan_mode_gate", lambda: _StubGate(_allow_decision()))
@@ -1139,6 +1155,9 @@ def test_trigger_task_rejects_a_different_request_while_task_is_active(monkeypat
     task = SimpleNamespace(id=uuid4(), agent_id=uuid4(), description="go")
     db = _QueuedDB([_ScalarResult(task), _ScalarResult(None)])
     app, _user, allow_access = _make_client(mod, db=db)
+    task.created_by = _user.id
+    task.root_session_id = None
+    task.authority_state = "owned"
     monkeypatch.setattr(mod, "check_agent_access", allow_access)
     monkeypatch.setattr("app.core.permissions.is_agent_expired", lambda _a: False)
     monkeypatch.setattr(mod, "get_plan_mode_gate", lambda: _StubGate(_allow_decision()))

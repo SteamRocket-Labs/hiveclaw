@@ -68,15 +68,24 @@ def _client(monkeypatch, db=None, *, user=None, access_level="manage", agent=Non
     return TestClient(app), user
 
 
+def _allow_runtime_resource(monkeypatch):
+    async def allow(**_kwargs):
+        return SimpleNamespace(), SimpleNamespace(authority_source="root_owner")
+
+    monkeypatch.setattr(autonomy_api, "_authorize_runtime_task_read", allow)
+
+
 def test_agent_autonomy_overview_is_agent_scoped_and_readable_by_member(monkeypatch):
     agent_id = uuid4()
     captured = {}
 
-    async def fake_overview(*, db, agent, lookback_hours, include_diagnostics, principal):
+    async def fake_overview(*, db, agent, lookback_hours, include_diagnostics, principal, resource_user, agent_access):
         captured["agent"] = agent
         captured["lookback_hours"] = lookback_hours
         captured["include_diagnostics"] = include_diagnostics
         captured["principal"] = principal
+        captured["resource_user"] = resource_user
+        captured["agent_access"] = agent_access
         return {
             "agent_id": str(agent.id),
             "lookback_hours": lookback_hours,
@@ -98,13 +107,15 @@ def test_agent_autonomy_overview_is_agent_scoped_and_readable_by_member(monkeypa
     assert captured["lookback_hours"] == 6
     assert captured["include_diagnostics"] is False
     assert captured["principal"].requester_user_id == _user.id
+    assert captured["resource_user"] is _user
+    assert captured["agent_access"][1] == "manage"
 
 
 def test_agent_autonomy_diagnostics_explicitly_includes_diagnostics(monkeypatch):
     agent_id = uuid4()
     captured = {}
 
-    async def fake_overview(*, db, agent, lookback_hours, include_diagnostics, principal):
+    async def fake_overview(*, db, agent, lookback_hours, include_diagnostics, principal, resource_user, agent_access):
         captured["include_diagnostics"] = include_diagnostics
         captured["principal"] = principal
         return {
@@ -222,6 +233,7 @@ def test_agent_runtime_artifact_endpoint_returns_display_payload(monkeypatch):
         return {"title": "daily_report", "summary": "Report delivered.", "final_reply": "Report delivered."}
 
     monkeypatch.setattr(autonomy_api, "read_agent_trigger_artifact_view", fake_artifact)
+    _allow_runtime_resource(monkeypatch)
     client, _user = _client(monkeypatch)
 
     response = client.get(f"/agents/{agent_id}/runtime-artifacts/{runtime_task_id}")
@@ -231,6 +243,38 @@ def test_agent_runtime_artifact_endpoint_returns_display_payload(monkeypatch):
     assert captured["agent_id"] == agent_id
     assert captured["runtime_task_id"] == runtime_task_id
     assert captured["include_diagnostics"] is False
+
+
+def test_runtime_artifact_rejects_foreign_root_principal_before_reading_file(monkeypatch):
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    task_id = uuid4()
+    user = SimpleNamespace(id=uuid4(), role="member", tenant_id=tenant_id, username="member")
+    runtime_task = SimpleNamespace(
+        id=task_id,
+        tenant_id=tenant_id,
+        parent_agent_id=agent_id,
+        root_user_id=uuid4(),
+        root_session_id=str(uuid4()),
+        root_runtime_task_id=task_id,
+        delegation_chain_json=[{"agent_id": str(agent_id)}],
+        metadata_json={},
+    )
+    db = _SessionDB(runtime_task)
+    read_called = False
+
+    async def fake_artifact(**_kwargs):
+        nonlocal read_called
+        read_called = True
+        return {"summary": "foreign"}
+
+    monkeypatch.setattr(autonomy_api, "read_agent_trigger_artifact_view", fake_artifact)
+    client, _ = _client(monkeypatch, db=db, user=user, access_level="use")
+
+    response = client.get(f"/agents/{agent_id}/runtime-artifacts/{task_id}")
+
+    assert response.status_code == 403
+    assert read_called is False
 
 
 def test_agent_runtime_work_ledger_endpoint_returns_chat_safe_todolist(monkeypatch):
@@ -254,6 +298,7 @@ def test_agent_runtime_work_ledger_endpoint_returns_chat_safe_todolist(monkeypat
         }
 
     monkeypatch.setattr(autonomy_api, "read_agent_work_ledger_view", fake_work_ledger)
+    _allow_runtime_resource(monkeypatch)
     client, _user = _client(monkeypatch)
 
     response = client.get(f"/agents/{agent_id}/runtime-work-ledgers/{runtime_task_id}")
@@ -275,6 +320,7 @@ def test_agent_runtime_work_ledger_endpoint_404s_when_missing(monkeypatch):
         return None
 
     monkeypatch.setattr(autonomy_api, "read_agent_work_ledger_view", fake_work_ledger)
+    _allow_runtime_resource(monkeypatch)
     client, _user = _client(monkeypatch)
 
     response = client.get(f"/agents/{agent_id}/runtime-work-ledgers/{runtime_task_id}")
@@ -371,7 +417,7 @@ def test_agent_session_work_ledger_endpoint_rejects_cross_user_session_without_m
     assert called is False
 
 
-def test_agent_session_work_ledger_endpoint_allows_cross_user_session_for_manager(monkeypatch):
+def test_agent_session_work_ledger_endpoint_requires_explicit_manager_override(monkeypatch):
     agent_id = uuid4()
     session_id = uuid4()
     user = SimpleNamespace(id=uuid4(), role="member", tenant_id=uuid4(), username="member")
@@ -392,5 +438,23 @@ def test_agent_session_work_ledger_endpoint_allows_cross_user_session_for_manage
 
     response = client.get(f"/agents/{agent_id}/sessions/{session_id}/work-ledger")
 
+    assert response.status_code == 403
+
+    audited = []
+
+    async def fake_audit(*args, **kwargs):
+        audited.append((args, kwargs))
+
+    monkeypatch.setattr("app.services.audit_logger.write_audit_log", fake_audit)
+    response = client.get(
+        f"/agents/{agent_id}/sessions/{session_id}/work-ledger",
+        params={
+            "operator_override": "true",
+            "operator_reason": "Reviewing a failed delegated run",
+        },
+    )
+
     assert response.status_code == 200
     assert response.json()["todo_items"][0]["title"] == "Manager visible todo"
+    assert response.json()["operator_view"] is True
+    assert audited[0][1]["details"]["action"] == "read_work_ledger"

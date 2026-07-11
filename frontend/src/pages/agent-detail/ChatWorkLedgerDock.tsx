@@ -9,6 +9,7 @@ interface ChatWorkLedgerDockProps {
   runtimeTaskId?: string | null;
   sessionId?: string | null;
   live?: boolean;
+  operatorView?: boolean;
   /** Deprecated: task details are now revealed by hover/focus, not click collapse. */
   initialCollapsed?: boolean;
 }
@@ -81,11 +82,16 @@ export default function ChatWorkLedgerDock({
   runtimeTaskId,
   sessionId,
   live = false,
+  operatorView = false,
 }: ChatWorkLedgerDockProps) {
   const { t } = useTranslation();
   const sessionQuery = useQuery({
-    queryKey: ['chat-session-work-ledger', agentId, sessionId],
-    queryFn: () => autonomyApi.getSessionWorkLedger(agentId, sessionId as string),
+    queryKey: ['chat-session-work-ledger', agentId, sessionId, operatorView ? 'operator' : 'owner'],
+    queryFn: () => autonomyApi.getSessionWorkLedger(
+      agentId,
+      sessionId as string,
+      operatorView ? { operatorView: true, reason: 'Agent session administration' } : undefined,
+    ),
     enabled: Boolean(agentId && sessionId),
     refetchInterval: live ? 5000 : false,
     refetchOnMount: 'always',
@@ -103,8 +109,12 @@ export default function ChatWorkLedgerDock({
     agentId && runtimeTaskKey && (!sessionId || sessionQuery.isError || preferRuntimeLedger),
   );
   const runtimeQuery = useQuery({
-    queryKey: ['chat-work-ledger', agentId, runtimeTaskId],
-    queryFn: () => autonomyApi.getRuntimeWorkLedger(agentId, runtimeTaskId as string),
+    queryKey: ['chat-work-ledger', agentId, runtimeTaskId, operatorView ? 'operator' : 'owner'],
+    queryFn: () => autonomyApi.getRuntimeWorkLedger(
+      agentId,
+      runtimeTaskId as string,
+      operatorView ? { operatorView: true, reason: 'Agent session administration' } : undefined,
+    ),
     enabled: runtimeQueryEnabled,
     refetchInterval: live ? 5000 : false,
     refetchOnMount: 'always',

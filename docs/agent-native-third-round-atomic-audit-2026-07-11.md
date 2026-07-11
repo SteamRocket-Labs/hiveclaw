@@ -24,7 +24,7 @@
 - **P1：13 个**。会造成恢复能力、CC parity、自进化、资产统计、实时 UI 或验收可信度不足，不能作为“上线后再补”的债务。
 - **P2：1 个**。是确定的 KISS/维护性残留，应与本轮一起清理。
 
-当前修复进度：**19 / 28**（单 Agent SA-01 至 SA-12、Hive Native HN-01 至 HN-07 已按七原子闭环并分别提交）；其余断点未全部关闭前，结论继续保持 NO-GO。
+当前修复进度：**20 / 28**（单 Agent SA-01 至 SA-12、Hive Native HN-01 至 HN-07、公司治理 GOV-01 已按七原子闭环并分别提交）；其余断点未全部关闭前，结论继续保持 NO-GO。
 
 这里的“95% 以上信心”指的是：**对当前 checkout 根断点清单完整度的置信度为 95.3%**，不代表系统有 95.3% 的上线成熟度。只要任一 P0 尚存，上线结论就是 NO-GO。
 
@@ -103,7 +103,7 @@ Codex 的 PermissionProfile、thread identity、sandbox policy 和 approval even
 | HN-05 | HR provisioning 恢复会假完成 | P0 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | HN-06 | Skill provisional 只有负向回滚，无正向转正 | P1 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | HN-07 | AI 资产用量投影只覆盖部分实际消费 | P1 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| GOV-01 | Agent use 与 Session/Resource ownership 混用 | P0 | 断点 | ✓ | ✗ | △ | ✗ | ✗ | ✗ | △ |
+| GOV-01 | Agent use 与 Session/Resource ownership 混用 | P0 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | GOV-02 | 企业知识库“语义缺失、产品已上线” | P0 | 断点 | ✓ | △ | ✗ | ✗ | ✗ | ✗ | ✗ |
 | GOV-03 | Workflow promotion 需要 manager 又要求原会话 owner | P1 | 断点 | ✓ | ✗ | △ | △ | △ | ✗ | △ |
 | GOV-04 | Budget 状态通知声称有 outbox，实际不存在 | P1 | 断点 | ✓ | ✓ | △ | ✓ | ✗ | ✗ | △ |
@@ -321,7 +321,11 @@ Skill身份来自 `WorkspaceSkillLoader` 真正选择的文件，不再由模型
 
 ### GOV-01：generic Agent use 被当成 workspace/session/resource ownership — P0
 
-**机械事实**：
+**修复状态（2026-07-11）**：**闭环**。Agent `use` 现在只授予发起执行的能力，不再隐式授予该 Agent 下所有 Session、Workspace 文件、Artifact、Activity、Task、Schedule、Trigger、Office 文档、Work Ledger 或运行产物的浏览与修改权。中央 `ResourceAuthority` 统一执行 owner、root session owner、显式 resource grant、显式 manager operator override 四种权威；manager 跨 owner/legacy quarantine 边界必须同时提交 Operator View 开关和原因，并写入审计。普通列表默认只返回本人资源，不能通过分页、目录枚举、已删除文件、tool runtime 或 code-exec merge 旁路探测他人数据。
+
+Workspace 内容事实仍在文件系统，新增 manifest 只保存 authority metadata 与 tombstone；ChatArtifact、Task、Activity 补齐 owner/root-session/state。Session read model 的 `mine` 只认 owner；manager 查看全部会话、transcript、messages、branch/lineage、context/workbench、active run 与 runtime summary 均复用显式 Operator View。前端在 operator session/workspace/activity 状态下显示清晰 banner，并把 operator reason 传给所有后续读取；普通用户不再看到跨 owner 内容。
+
+**修复前机械事实**：
 
 - Workspace list/read/write/delete/upload 只调用 `check_agent_access`（`backend/app/api/files.py:200-248,436-478,540-588`），共享 use user 可读写整个 Agent workspace。
 - ChatArtifact loader 只校验 artifact.agent_id（`files.py:298-310,344-355,406-433`），没有校验 artifact.session_id 的当前用户 ownership。
@@ -330,11 +334,11 @@ Skill身份来自 `WorkspaceSkillLoader` 真正选择的文件，不再由模型
 - Schedule 手工 run/history 也只需要 generic use；其动作和历史没有独立资源授权。
 - 项目已有正确邻近实现 `authorize_session_action`（`backend/app/core/permissions.py:147-208`），但上述 routes 没使用。
 
-**断链**：能“使用某 Agent”被错误扩大成能浏览所有人的文件、产物、错误、任务、自动化历史，甚至修改共享目录。
+**修复前断链**：能“使用某 Agent”被错误扩大成能浏览所有人的文件、产物、错误、任务、自动化历史，甚至修改共享目录。
 
-**一次性关闭**：中央 `ResourceAuthority` 按 resource kind/action 计算 owner/session/grant/operator 权限。Agent use 只代表可发起执行，不自动获得 browse/mutate Agent 全部状态。Manager override 必须显式、可审计、UI 标 operator view。
+**落地结果**：中央 `ResourceAuthority` 已按 resource kind/action 计算 owner/session/grant/operator 权限。Agent use 只代表可发起执行，不自动获得 browse/mutate Agent 全部状态。Manager override 必须显式、可审计，UI 标记 Operator View。
 
-**迁移**：ChatArtifact/Task/Workspace manifest 回填 owner_user_id、root_session_id；无法证明归属的 legacy 数据进入 admin-only quarantine，不默认开放。
+**迁移结果**：ChatArtifact/Task/Activity/Workspace manifest 已回填 owner_user_id、root_session_id 与 authority_state；无法证明归属的 legacy 数据进入 manager-only quarantine，不默认开放。迁移启用并强制 tenant RLS，backfill script 支持 dry-run/apply 且不会把未知文件猜成某个用户所有。
 
 ### GOV-02：企业知识库是“幽灵能力” — P0
 
@@ -1903,3 +1907,56 @@ pytest tests -q
 ```
 
 结果：Ruff lint/format全绿；最终全量backend `6396 passed, 1 skipped, 5 warnings in 149.81s`，零失败。
+
+### GOV-01 — ResourceAuthority 与显式 Operator View
+
+状态：**闭环**。提交主题：`fix(GOV-01): separate agent use from resource ownership`。
+
+七原子证据：
+
+1. **输入**：所有 resource surface 都从 authenticated user、path/row id、action 与受信 session/run context 构造授权输入。Tool Runtime 会覆盖模型传入的 `source_session_id`/creator 字段；Trigger、Schedule、Workspace 与 Artifact 不接受模型自称 owner。manager 只有显式提交 `operator_view=true + operator_reason` 才能跨 owner 边界。
+2. **权威**：`authorize_resource_action()` 是中央判定器，顺序只允许 resource owner、root-session owner、显式 user/department grant、带原因的 manager override。Agent `check_agent_access(use)` 仅证明可使用 Agent，不能证明资源 ownership。未知 legacy row/file 一律 `quarantined`；普通 user 和无理由 manager 均 fail closed。
+3. **执行**：Workspace REST、tool filesystem、Office、code execution merge、Artifact preview/download/delivery、Task、Activity、Schedule、Trigger、Session、Autonomy Work Ledger、capability/pack runtime summary 都进入同一 authority contract。Workspace 还在最后文件边界用 `known_paths + tombstone` 检查不存在于当前磁盘但已登记的他人路径，关闭先删除再覆写旁路。
+4. **证据**：`workspace_resource_manifests` 保存 path、owner、root session、state、source、content hash 与 delete tombstone；ChatArtifact、Task、Activity row 保存同类 ownership 投影。manager override 写 `resource_authority_override` audit；Session operator read 同样写审计。文件内容、ChatSession/Artifact/Task/Activity row 继续是各自机械事实源，manifest 不复制内容。
+5. **恢复**：owner/root-session metadata 随创建一次写入，更新不能转移 ownership；Trigger update 显式保留 authority keys。删除只写 tombstone，重建相同路径仍受旧 authority 约束。backfill 可重复执行，能证明 session owner 的历史资源回填为 owned，无法证明的资源进入 quarantine；migration upgrade/downgrade 与单 Alembic head 已验收。
+6. **消费**：普通 Workspace/Deliverables/Activity/Session/Task/Automation 查询只消费本人或显式 grant 资源；manager 显式 Operator View 才消费全集。前端 Workspace、Activity 与 Session operator surface 显示持续 banner，并把 reason 传播到 transcript、messages、lineage、index、context、workbench、active run、runtime summary、artifact preview/download 与 work ledger；operator session 不显示普通 delete 动作。
+7. **验收**：覆盖 owner/root-session/grant/operator/quarantine、foreign newest-row pagination、session read/write 分离、trigger tool context spoof、schedule/task/activity、Office/Artifact delivery、workspace absent-path/tombstone、code-exec merge、backfill、FORCE RLS migration、前端 operator 参数传播/呈现、canonical channel静态契约、Ruff、Alembic、前后端全量与生产构建。
+
+KISS/奥卡姆证据：没有为每种资源复制一套 ACL 引擎；一个纯 authority decision kernel 加一个通用 list filter承担 row 级判断。Workspace 只增加小型 metadata manifest，不把文件复制进数据库；Trigger authority 复用既有 config，Session 复用既有 owner。Operator View 是现有 manager 权限的显式、审计式投影，不新增隐式超级用户角色。
+
+RED 证据：
+
+```text
+GOV-01 初始契约逐项证明：
+- generic Agent use 可以读取/修改其他用户 Workspace、Artifact、Activity、Task、Schedule 与 Trigger
+- manager session list/read 没有统一的显式 Operator View reason/audit 传播
+- Workspace 没有 durable owner/root-session manifest，legacy 文件默认开放
+- Tool/Trigger 可接受模型提供的 creator/source-session authority 字段
+- 文件由 code execution 同步回来但缺 owner manifest，附件与侧边栏消费无法可靠授权
+- 不存在 ResourceAuthority migration/backfill/FORCE-RLS 验收
+```
+
+GREEN 证据：
+
+```bash
+cd backend
+source .venv/bin/activate
+pytest tests/architecture/test_channel_message_contract.py -q
+alembic heads
+ruff check app tests
+ruff format --check \
+  app/services/trigger_resource_authority.py \
+  app/services/workspace_resource_authority.py \
+  tests/tools/test_workspace_resource_tool_authority.py
+pytest tests -q
+```
+
+结果：canonical channel契约 `4 passed`；Alembic 单 head `resource_authority_0711 (head)`；Ruff lint与本次变更format全绿；最终 backend 全量 `6429 passed, 1 skipped, 5 warnings in 150.98s`，零失败。
+
+```bash
+cd frontend
+npm test -- --run
+npm run build
+```
+
+结果：`101 test files / 588 tests passed`；TypeScript + Vite production build exit 0，`7072 modules transformed`。

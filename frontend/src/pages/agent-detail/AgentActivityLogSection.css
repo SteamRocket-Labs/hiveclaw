@@ -8,6 +8,22 @@
   margin-bottom: var(--space-3);
 }
 
+.agent-activity-operator-controls {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: var(--space-3);
+}
+
+.agent-activity-operator-note {
+  margin-bottom: var(--space-3);
+  padding: 10px 12px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: var(--text-row);
+}
+
 /* ── Tool failure summary card（复用 .card 骨架） ───────── */
 .agent-activity-failure-card {
   margin-bottom: var(--space-4);

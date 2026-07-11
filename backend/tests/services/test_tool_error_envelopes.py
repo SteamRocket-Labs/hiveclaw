@@ -63,14 +63,21 @@ def test_workspace_read_file_returns_structured_access_denied(tmp_path):
 async def test_update_trigger_rejects_invalid_replacement_config(monkeypatch):
     from app.services.agent_tool_domains import triggers as trigger_domain
 
+    requester_id = uuid4()
     existing = SimpleNamespace(
+        id=uuid4(),
         agent_id=uuid4(),
         name="daily-briefing",
         type="cron",
-        config={"expr": "0 9 * * *"},
+        config={
+            "expr": "0 9 * * *",
+            "created_by": str(requester_id),
+            "authority_state": "owned",
+        },
         reason="send summary",
     )
-    db = _QueuedDB([_ScalarResult(existing)])
+    requester = SimpleNamespace(id=requester_id, tenant_id=uuid4(), role="member", is_active=True)
+    db = _QueuedDB([_ScalarResult(existing), _ScalarResult(requester)])
     # RLS 阶段2b: _handle_update_trigger now resolves the agent's tenant and
     # opens a tenant-scoped session (the bare async_session binding was removed).
     monkeypatch.setattr(trigger_domain, "tenant_scoped_session", lambda *_a, **_k: _AsyncSessionContext(db))
@@ -80,9 +87,15 @@ async def test_update_trigger_rejects_invalid_replacement_config(monkeypatch):
 
     monkeypatch.setattr(trigger_domain, "resolve_tenant_for_agent", _resolve)
 
+    async def _authorize(*_args, **_kwargs):
+        return SimpleNamespace(authority_source="resource_owner", operator_view=False)
+
+    monkeypatch.setattr(trigger_domain, "authorize_trigger_action", _authorize)
+
     result = await trigger_domain._handle_update_trigger(
         existing.agent_id,
         {"name": "daily-briefing", "config": {"expr": "not-a-cron"}},
+        user_id=requester_id,
     )
 
     payload = _extract_tool_error_payload(result)

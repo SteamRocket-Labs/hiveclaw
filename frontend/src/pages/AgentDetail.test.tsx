@@ -153,7 +153,7 @@ describe('AgentDetail access failures', () => {
     const getEnabled = (queryKey: unknown[]) =>
       queryCalls.find((entry) => JSON.stringify(entry.key) === JSON.stringify(queryKey))?.enabled;
 
-    expect(getEnabled(['activity', 'agent-403'])).toBe(false);
+    expect(getEnabled(['activity', 'agent-403', 'owner'])).toBe(false);
     expect(getEnabled(['agent-capability-installs', 'agent-403'])).toBe(false);
     expect(getEnabled(['agent-channel-capabilities', 'agent-403'])).toBe(false);
     expect(getEnabled(['metrics', 'agent-403'])).toBe(false);

@@ -16,7 +16,7 @@ async def test_file_api_rejects_direct_soul_and_skill_writes(tmp_path, monkeypat
     monkeypatch.setattr(files_api, "settings", SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
 
     async def fake_access(*_args, **_kwargs):
-        return None
+        return SimpleNamespace(id=agent_id, tenant_id=uuid4()), "manage"
 
     monkeypatch.setattr(files_api, "check_agent_access", fake_access)
 

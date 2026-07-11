@@ -40,6 +40,10 @@ class Task(Base):
     )
     assignee: Mapped[str] = mapped_column(String(50), default="self")  # "self" or user_id
     created_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    root_session_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("chat_sessions.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    authority_state: Mapped[str] = mapped_column(String(24), nullable=False, default="owned", index=True)
     request_id: Mapped[str] = mapped_column(String(128), nullable=False)
     request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     active_runtime_task_id: Mapped[uuid.UUID | None] = mapped_column(

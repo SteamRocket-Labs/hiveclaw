@@ -11,6 +11,7 @@ from sqlalchemy import select
 from app.core.execution_context import get_execution_identity
 from app.database import async_session, tenant_scoped_session
 from app.models.runtime_task import RuntimeTask
+from app.models.user import User
 from app.runtime.tenant_admission import RuntimeTenantPreconditionError
 from app.services.tenant_resolver import resolve_tenant_for_agent, resolve_tenant_for_runtime_task
 from app.tools.runtime import ToolExecutionContext
@@ -55,6 +56,9 @@ async def _resolve_budget_run_id_from_runtime_task(runtime_task_id: str | None) 
 class ToolRuntimeResolver:
     """Build ToolExecutionContext from agent/user identifiers."""
 
+    def __init__(self, *, workspace_authority_loader=None) -> None:
+        self.workspace_authority_loader = workspace_authority_loader or _load_workspace_authority_scope
+
     async def resolve(
         self,
         *,
@@ -94,6 +98,16 @@ class ToolRuntimeResolver:
         tenant_id = str(tenant)
 
         workspace = await ensure_workspace(agent_id, tenant_id=tenant_id)
+        try:
+            session_uuid = uuid.UUID(str(session_id)) if session_id else None
+        except (TypeError, ValueError):
+            session_uuid = None
+        workspace_authority_scope = await self.workspace_authority_loader(
+            tenant_id=tenant,
+            agent_id=agent_id,
+            user_id=user_id,
+            session_id=session_uuid,
+        )
         resolved_budget_run_id = (
             str(budget_run_id) if budget_run_id else await _resolve_budget_run_id_from_runtime_task(runtime_task_id)
         )
@@ -111,4 +125,36 @@ class ToolRuntimeResolver:
             origin_channel=origin_channel,
             round_state=dict(round_state or {}),
             t0_refs=tuple(str(ref) for ref in (t0_refs or ()) if str(ref).strip()),
+            workspace_authority_scope=workspace_authority_scope,
+        )
+
+
+async def _load_workspace_authority_scope(
+    *,
+    tenant_id: uuid.UUID,
+    agent_id: uuid.UUID,
+    user_id: uuid.UUID,
+    session_id: uuid.UUID | None,
+):
+    async with tenant_scoped_session(
+        tenant_id,
+        session_factory=async_session,
+        require_tenant=True,
+        source="tool_workspace_resource_authority",
+    ) as authority_db:
+        user = (await authority_db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+        if user is None:
+            raise RuntimeTenantPreconditionError(
+                reason_code="tool_requester_not_found",
+                message="tool runtime is blocked because the authenticated requester could not be resolved.",
+                source="tool_runtime",
+                agent_id=agent_id,
+            )
+        from app.services.workspace_resource_authority import load_workspace_authority_scope
+
+        return await load_workspace_authority_scope(
+            authority_db,
+            user,
+            agent_id=agent_id,
+            session_id=session_id,
         )

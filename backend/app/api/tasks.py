@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api._plan_gate import enforce_plan_gate, get_plan_mode_gate, stamp_plan_gate_decision
 from app.core.permissions import check_agent_access
+from app.core.resource_authority import authorize_resource_action, filter_authorized_resources
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.task import Task, TaskLog
@@ -139,16 +140,51 @@ async def _enrich_task_out(task: Task, db: AsyncSession) -> TaskOut:
     return out
 
 
+def _stamp_task_authority(out: TaskOut, decision) -> TaskOut:
+    out.authority_source = decision.authority_source
+    out.operator_view = decision.operator_view
+    return out
+
+
+async def _authorize_task(
+    db: AsyncSession,
+    current_user: User,
+    *,
+    agent_id: uuid.UUID,
+    task: Task,
+    action: str,
+    agent_access,
+    operator_view: bool,
+    operator_reason: str | None,
+):
+    return await authorize_resource_action(
+        db,
+        current_user,
+        agent_id=agent_id,
+        resource_kind="task",
+        resource_id=task.id,
+        action=action,
+        owner_user_id=task.created_by,
+        root_session_id=task.root_session_id,
+        authority_state=task.authority_state,
+        allow_manager_override=operator_view,
+        manager_override_reason=operator_reason,
+        agent_access=agent_access,
+    )
+
+
 @router.get("/", response_model=list[TaskOut])
 async def list_tasks(
     agent_id: uuid.UUID,
     status_filter: str | None = None,
     type_filter: str | None = None,
+    operator_view: bool = False,
+    operator_reason: str | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """List tasks for an agent."""
-    await check_agent_access(db, current_user, agent_id)
+    agent_access = await check_agent_access(db, current_user, agent_id)
     query = select(Task).where(Task.agent_id == agent_id)
     if status_filter:
         query = query.where(Task.status == status_filter)
@@ -157,16 +193,29 @@ async def list_tasks(
     query = query.order_by(Task.created_at.desc())
     result = await db.execute(query)
     tasks_list = result.scalars().all()
+    authorized = await filter_authorized_resources(
+        db,
+        current_user,
+        agent_id=agent_id,
+        resource_kind="task",
+        action="read",
+        resources=tasks_list,
+        owner_user_id_of=lambda task: task.created_by,
+        operator_view=operator_view,
+        operator_reason=operator_reason,
+        agent_access=agent_access,
+    )
     # Batch-load creator usernames
-    creator_ids = {t.created_by for t in tasks_list if t.created_by}
+    creator_ids = {task.created_by for task, _decision in authorized if task.created_by}
     creator_map = {}
     if creator_ids:
         users_result = await db.execute(select(User).where(User.id.in_(creator_ids)))
         creator_map = {u.id: u.username for u in users_result.scalars().all()}
     out_list = []
-    for t in tasks_list:
+    for t, decision in authorized:
         t_out = TaskOut.model_validate(t)
         t_out.creator_username = creator_map.get(t.created_by)
+        _stamp_task_authority(t_out, decision)
         out_list.append(t_out)
     return out_list
 
@@ -235,6 +284,7 @@ async def create_task(
         priority=data.priority,
         due_date=data.due_date,
         created_by=current_user.id,
+        authority_state="owned",
         request_id=data.request_id,
         request_hash=request_hash,
         plan_id=uuid.UUID(data.confirmed_plan_id) if data.confirmed_plan_id else None,
@@ -249,6 +299,7 @@ async def create_task(
         agent_id=agent_id,
         requester_user_id=current_user.id,
     )
+    task.root_session_id = root_session_id
     try:
         db.add(task)
         await db.flush()
@@ -292,34 +343,58 @@ async def update_task(
     agent_id: uuid.UUID,
     task_id: uuid.UUID,
     data: TaskUpdate,
+    operator_view: bool = False,
+    operator_reason: str | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Update a task."""
-    await check_agent_access(db, current_user, agent_id)
+    agent_access = await check_agent_access(db, current_user, agent_id)
     result = await db.execute(select(Task).where(Task.id == task_id, Task.agent_id == agent_id).with_for_update())
     task = result.scalar_one_or_none()
     if not task:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
+    decision = await _authorize_task(
+        db,
+        current_user,
+        agent_id=agent_id,
+        task=task,
+        action="write",
+        agent_access=agent_access,
+        operator_view=operator_view,
+        operator_reason=operator_reason,
+    )
 
     for field, value in data.model_dump(exclude_unset=True).items():
         setattr(task, field, value)
     await db.flush()
-    return await _enrich_task_out(task, db)
+    return _stamp_task_authority(await _enrich_task_out(task, db), decision)
 
 
 @router.get("/{task_id}/logs", response_model=list[TaskLogOut])
 async def get_task_logs(
     agent_id: uuid.UUID,
     task_id: uuid.UUID,
+    operator_view: bool = False,
+    operator_reason: str | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Get progress logs for a task."""
-    await check_agent_access(db, current_user, agent_id)
+    agent_access = await check_agent_access(db, current_user, agent_id)
     task = (await db.execute(select(Task).where(Task.id == task_id, Task.agent_id == agent_id))).scalar_one_or_none()
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
+    await _authorize_task(
+        db,
+        current_user,
+        agent_id=agent_id,
+        task=task,
+        action="read",
+        agent_access=agent_access,
+        operator_view=operator_view,
+        operator_reason=operator_reason,
+    )
     result = await db.execute(select(TaskLog).where(TaskLog.task_id == task_id).order_by(TaskLog.created_at.asc()))
     return [TaskLogOut.model_validate(log_item) for log_item in result.scalars().all()]
 
@@ -329,14 +404,26 @@ async def add_task_log(
     agent_id: uuid.UUID,
     task_id: uuid.UUID,
     data: TaskLogCreate,
+    operator_view: bool = False,
+    operator_reason: str | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Add a progress log entry to a task."""
-    agent, _access_level = await check_agent_access(db, current_user, agent_id)
+    agent, access_level = await check_agent_access(db, current_user, agent_id)
     task = (await db.execute(select(Task).where(Task.id == task_id, Task.agent_id == agent_id))).scalar_one_or_none()
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
+    await _authorize_task(
+        db,
+        current_user,
+        agent_id=agent_id,
+        task=task,
+        action="write",
+        agent_access=(agent, access_level),
+        operator_view=operator_view,
+        operator_reason=operator_reason,
+    )
     log = TaskLog(tenant_id=agent.tenant_id, task_id=task_id, content=data.content)
     db.add(log)
     await db.flush()
@@ -348,6 +435,8 @@ async def trigger_task(
     agent_id: uuid.UUID,
     task_id: uuid.UUID,
     data: TaskTriggerIn,
+    operator_view: bool = False,
+    operator_reason: str | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -364,6 +453,16 @@ async def trigger_task(
     task = result.scalar_one_or_none()
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
+    await _authorize_task(
+        db,
+        current_user,
+        agent_id=agent_id,
+        task=task,
+        action="execute",
+        agent_access=(agent, _access),
+        operator_view=operator_view,
+        operator_reason=operator_reason,
+    )
 
     # Plan Mode early intercept (§9.3): a manual trigger fires the background
     # execute_task loop, so it needs a confirmed plan.

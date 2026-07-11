@@ -327,7 +327,7 @@ async def test_list_sessions_mine_keeps_empty_owned_web_sessions_writable(monkey
 
 
 @pytest.mark.asyncio
-async def test_list_sessions_all_scope_allows_manage_access_for_non_creator(monkeypatch):
+async def test_list_sessions_all_scope_requires_explicit_audited_operator_view(monkeypatch):
     import app.api.chat_sessions as chat_sessions_api
 
     agent_id = uuid4()
@@ -353,15 +353,35 @@ async def test_list_sessions_all_scope_allows_manage_access_for_non_creator(monk
 
     monkeypatch.setattr(chat_sessions_api, "check_agent_access", fake_check_agent_access, raising=False)
 
+    with pytest.raises(HTTPException) as exc:
+        await chat_sessions_api.list_sessions(
+            agent_id=agent_id,
+            scope="all",
+            current_user=current_user,
+            db=db,
+        )
+    assert exc.value.status_code == 403
+
+    audited = []
+
+    async def fake_audit(*args, **kwargs):
+        audited.append((args, kwargs))
+
+    monkeypatch.setattr("app.services.audit_logger.write_audit_log", fake_audit)
+
     result = await chat_sessions_api.list_sessions(
         agent_id=agent_id,
         scope="all",
+        operator_reason="Investigating an Agent delivery incident",
         current_user=current_user,
         db=db,
     )
 
     assert len(result) == 1
     assert result[0].id == str(session_id)
+    assert result[0].operator_view is True
+    assert result[0].authority_source == "manager_override"
+    assert audited[0][1]["details"]["reason"] == "Investigating an Agent delivery incident"
 
 
 @pytest.mark.asyncio
@@ -453,10 +473,10 @@ async def test_list_sessions_mine_scope_uses_canonical_microsoft_teams_channel(m
         db=db,
     )
 
-    session_query_params = db.statements[0].compile().params
-    channel_values = tuple(session_query_params["source_channel_1"])
-    assert "microsoft_teams" in channel_values
-    assert "teams" not in channel_values
+    session_query = db.statements[0]
+    session_query_params = session_query.compile().params
+    assert "chat_sessions.user_id" in str(session_query)
+    assert owner_id in session_query_params.values()
     assert session_query_params["listed_surface_1"] == "chat"
     assert len(result) == 1
     assert result[0].source_channel == "microsoft_teams"
@@ -590,7 +610,7 @@ async def test_list_sessions_mine_batches_message_counts_for_multiple_sessions(m
 
 
 @pytest.mark.asyncio
-async def test_get_session_messages_allows_manage_access_for_non_owner(monkeypatch):
+async def test_get_session_messages_requires_explicit_operator_view_for_non_owner(monkeypatch):
     import app.api.chat_sessions as chat_sessions_api
 
     agent_id = uuid4()
@@ -621,9 +641,27 @@ async def test_get_session_messages_allows_manage_access_for_non_owner(monkeypat
 
     monkeypatch.setattr(chat_sessions_api, "check_agent_access", fake_check_agent_access, raising=False)
 
+    with pytest.raises(HTTPException) as exc:
+        await chat_sessions_api.get_session_messages(
+            agent_id=agent_id,
+            session_id=session_id,
+            current_user=current_user,
+            db=db,
+        )
+    assert exc.value.status_code == 403
+
+    audited = []
+
+    async def fake_audit(*args, **kwargs):
+        audited.append((args, kwargs))
+
+    monkeypatch.setattr("app.services.audit_logger.write_audit_log", fake_audit)
+
     result = await chat_sessions_api.get_session_messages(
         agent_id=agent_id,
         session_id=session_id,
+        operator_view=True,
+        operator_reason="Reviewing another user's failed delivery",
         current_user=current_user,
         db=db,
     )
@@ -631,6 +669,7 @@ async def test_get_session_messages_allows_manage_access_for_non_owner(monkeypat
     assert len(result) == 1
     assert result[0]["role"] == "assistant"
     assert result[0]["content"] == "done"
+    assert audited[0][1]["details"]["action"] == "read_messages"
 
 
 @pytest.mark.asyncio

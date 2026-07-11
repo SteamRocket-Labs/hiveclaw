@@ -504,6 +504,7 @@ async def test_agent_import_skill_cannot_escape_skill_folder(monkeypatch, tmp_pa
             )
 
     monkeypatch.setattr(files_api, "check_agent_access", fake_check_agent_access)
+    monkeypatch.setattr(files_api, "require_agent_manage_access", fake_check_agent_access)
     current_user = SimpleNamespace(id=uuid.uuid4(), tenant_id=tenant_id, role="member")
 
     with pytest.raises(HTTPException) as exc:
@@ -578,11 +579,15 @@ async def test_list_agent_triggers_checks_agent_access(monkeypatch):
     import app.api.triggers as triggers_api
 
     agent_id = uuid.uuid4()
+    current_user = SimpleNamespace(id=uuid.uuid4(), tenant_id=uuid.uuid4(), role="member")
     trigger = SimpleNamespace(
         id=uuid.uuid4(),
         name="wake-up",
         type="once",
-        config={},
+        config={
+            "created_by": str(current_user.id),
+            "authority_state": "owned",
+        },
         reason="check in",
         is_enabled=True,
         fire_count=0,
@@ -593,7 +598,6 @@ async def test_list_agent_triggers_checks_agent_access(monkeypatch):
         expires_at=None,
     )
     db = _QueuedDB([_ListResult([trigger])])
-    current_user = SimpleNamespace(id=uuid.uuid4(), tenant_id=uuid.uuid4(), role="member")
     called = {}
 
     async def fake_check_agent_access(db_arg, user_arg, requested_agent_id):

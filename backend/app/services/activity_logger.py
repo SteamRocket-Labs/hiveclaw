@@ -32,6 +32,8 @@ async def _insert_activity(
     summary: str,
     detail: dict | None,
     related_id: uuid.UUID | None,
+    owner_user_id: uuid.UUID | None,
+    root_session_id: uuid.UUID | None,
 ) -> None:
     db = None
     try:
@@ -45,6 +47,9 @@ async def _insert_activity(
                 AgentActivityLog(
                     agent_id=agent_id,
                     tenant_id=resolved_tenant_id,
+                    owner_user_id=owner_user_id,
+                    root_session_id=root_session_id,
+                    authority_state="owned" if owner_user_id is not None else "quarantined",
                     action_type=action_type,
                     summary=summary[:500] if summary else "",
                     detail_json=detail,
@@ -68,8 +73,25 @@ async def log_activity(
     detail: dict | None = None,
     related_id: uuid.UUID | None = None,
     tenant_id: uuid.UUID | str | None = None,
+    owner_user_id: uuid.UUID | None = None,
+    root_session_id: uuid.UUID | str | None = None,
 ) -> None:
     """Record an agent activity. Fire-and-forget, never raises."""
+    if owner_user_id is None:
+        try:
+            from app.core.execution_context import get_execution_identity
+
+            identity = get_execution_identity()
+            if identity and identity.identity_type in {"delegated_user", "external_principal_bound"}:
+                owner_user_id = identity.identity_id
+        except Exception:
+            owner_user_id = None
+    if root_session_id is None and isinstance(detail, dict):
+        root_session_id = detail.get("root_session_id") or detail.get("session_id")
+    try:
+        root_session_uuid = uuid.UUID(str(root_session_id)) if root_session_id else None
+    except (TypeError, ValueError):
+        root_session_uuid = None
     try:
         await _insert_activity(
             agent_id=agent_id,
@@ -78,6 +100,8 @@ async def log_activity(
             summary=summary,
             detail=detail,
             related_id=related_id,
+            owner_user_id=owner_user_id,
+            root_session_id=root_session_uuid,
         )
     except Exception as e:
         fallback = _fallback_action_type(action_type, e)
@@ -99,6 +123,8 @@ async def log_activity(
                     summary=summary,
                     detail=fallback_detail,
                     related_id=related_id,
+                    owner_user_id=owner_user_id,
+                    root_session_id=root_session_uuid,
                 )
                 return
             except Exception as fallback_err:

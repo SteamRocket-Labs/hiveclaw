@@ -72,7 +72,24 @@ def _append_workspace_provenance_hint(
     return f"{result}\n\n{hint}" if hint else result
 
 
-def _list_files(ws: Path, rel_path: str, tenant_id: str | None = None, tool_name: str = "list_files") -> str:
+def _authority_allows_path(authority_scope, rel_path: str, *, directory: bool = False) -> bool:
+    if authority_scope is None:
+        return True
+    normalized = str(rel_path or "").replace("\\", "/").strip().lstrip("/")
+    if not (normalized == "workspace" or normalized.startswith("workspace/")):
+        return True
+    if directory:
+        return authority_scope.can_read(normalized)
+    return normalized in authority_scope.allowed_paths or authority_scope.operator_view
+
+
+def _list_files(
+    ws: Path,
+    rel_path: str,
+    tenant_id: str | None = None,
+    tool_name: str = "list_files",
+    authority_scope=None,
+) -> str:
     if rel_path and rel_path.startswith("enterprise_info"):
         if tenant_id:
             enterprise_root = (WORKSPACE_ROOT / f"enterprise_info_{tenant_id}").resolve()
@@ -110,6 +127,12 @@ def _list_files(ws: Path, rel_path: str, tenant_id: str | None = None, tool_name
     for p in sorted(target.iterdir()):
         if p.name.startswith("."):
             continue
+        if authority_scope is not None and not authority_scope.visible_child(
+            rel_path,
+            p.name,
+            is_dir=p.is_dir(),
+        ):
+            continue
         if p.is_dir():
             dir_count += 1
             child_count = len([c for c in p.iterdir() if not c.name.startswith(".")])
@@ -133,8 +156,14 @@ def _list_files(ws: Path, rel_path: str, tenant_id: str | None = None, tool_name
 
 
 def _read_file(
-    ws: Path, rel_path: str, tenant_id: str | None = None, tool_name: str = "read_file"
+    ws: Path,
+    rel_path: str,
+    tenant_id: str | None = None,
+    tool_name: str = "read_file",
+    authority_scope=None,
 ) -> "str | ToolContentEnvelope":
+    if not _authority_allows_path(authority_scope, rel_path):
+        return _workspace_error(tool_name, "auth_or_permission", "Access denied for this resource owner.")
     if rel_path and rel_path.startswith("enterprise_info"):
         if tenant_id:
             enterprise_root = (WORKSPACE_ROOT / f"enterprise_info_{tenant_id}").resolve()
@@ -763,7 +792,10 @@ async def _read_document(
     max_pages: int | None = None,
     force_refresh: bool = False,
     return_format: str = "preview",
+    authority_scope=None,
 ) -> str:
+    if not _authority_allows_path(authority_scope, rel_path):
+        return _workspace_error(tool_name, "auth_or_permission", "Access denied for this resource owner.")
     workspace_root = ws
     if rel_path and rel_path.startswith("enterprise_info"):
         if tenant_id:
@@ -939,7 +971,13 @@ def _skill_package_path_guard_message(rel_path: str, *, operation: str) -> str |
     )
 
 
-def _write_file(ws: Path, rel_path: str, content: str, tool_name: str = "write_file") -> str:
+def _write_file(
+    ws: Path,
+    rel_path: str,
+    content: str,
+    tool_name: str = "write_file",
+    authority_scope=None,
+) -> str:
     if not rel_path or not rel_path.strip("/"):
         return _workspace_error(
             tool_name,
@@ -987,6 +1025,8 @@ def _write_file(ws: Path, rel_path: str, content: str, tool_name: str = "write_f
     file_path = (ws / rel_path).resolve()
     if not _is_within_path(file_path, ws):
         return _workspace_error(tool_name, "auth_or_permission", "Access denied for this path.")
+    if file_path.exists() and not _authority_allows_path(authority_scope, rel_path):
+        return _workspace_error(tool_name, "auth_or_permission", "Access denied for this resource owner.")
 
     try:
         file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1003,6 +1043,7 @@ def _edit_file(
     new_text: str,
     replace_all: bool = False,
     tool_name: str = "edit_file",
+    authority_scope=None,
 ) -> str:
     managed_message = _managed_system_path_message(rel_path)
     if managed_message:
@@ -1038,6 +1079,8 @@ def _edit_file(
         return _workspace_error(tool_name, "auth_or_permission", "Access denied for this path.")
     if not file_path.exists():
         return _workspace_error(tool_name, "not_found", f"File not found: {rel_path}")
+    if not _authority_allows_path(authority_scope, rel_path):
+        return _workspace_error(tool_name, "auth_or_permission", "Access denied for this resource owner.")
 
     try:
         original = file_path.read_text(encoding="utf-8", errors="replace")
@@ -1063,7 +1106,13 @@ def _edit_file(
         return _workspace_error(tool_name, "operation_failed", f"Edit failed: {e}")
 
 
-def _glob_search(ws: Path, pattern: str, root: str = "", tool_name: str = "glob_search") -> str:
+def _glob_search(
+    ws: Path,
+    pattern: str,
+    root: str = "",
+    tool_name: str = "glob_search",
+    authority_scope=None,
+) -> str:
     search_root = (ws / root).resolve() if root else ws.resolve()
     if not _is_within_path(search_root, ws):
         return _workspace_error(tool_name, "auth_or_permission", "Access denied for this path.")
@@ -1076,7 +1125,10 @@ def _glob_search(ws: Path, pattern: str, root: str = "", tool_name: str = "glob_
             resolved = path.resolve()
             if not _is_within_path(resolved, ws):
                 continue
-            matches.append(resolved.relative_to(ws).as_posix())
+            rel = resolved.relative_to(ws).as_posix()
+            if not _authority_allows_path(authority_scope, rel, directory=resolved.is_dir()):
+                continue
+            matches.append(rel)
             if len(matches) >= 100:
                 break
     except Exception as e:
@@ -1089,7 +1141,14 @@ def _glob_search(ws: Path, pattern: str, root: str = "", tool_name: str = "glob_
     return "\n".join(lines)
 
 
-def _grep_search(ws: Path, pattern: str, root: str = "", max_results: int = 50, tool_name: str = "grep_search") -> str:
+def _grep_search(
+    ws: Path,
+    pattern: str,
+    root: str = "",
+    max_results: int = 50,
+    tool_name: str = "grep_search",
+    authority_scope=None,
+) -> str:
     search_root = (ws / root).resolve() if root else ws.resolve()
     if not _is_within_path(search_root, ws):
         return _workspace_error(tool_name, "auth_or_permission", "Access denied for this path.")
@@ -1119,6 +1178,9 @@ def _grep_search(ws: Path, pattern: str, root: str = "", max_results: int = 50, 
             if proc.stdout.strip():
                 for line in proc.stdout.splitlines():
                     normalized = line.replace(str(ws.resolve()) + os.sep, "")
+                    result_path = normalized.split(":", 1)[0].replace("\\", "/")
+                    if not _authority_allows_path(authority_scope, result_path):
+                        continue
                     matches.append(normalized)
             elif proc.returncode not in (0, 1):
                 return _workspace_error(
@@ -1143,6 +1205,9 @@ def _grep_search(ws: Path, pattern: str, root: str = "", max_results: int = 50, 
                 if len(matches) >= max_results:
                     break
                 if not path.is_file():
+                    continue
+                rel_path = path.relative_to(ws).as_posix()
+                if not _authority_allows_path(authority_scope, rel_path):
                     continue
                 try:
                     with path.open("r", encoding="utf-8", errors="replace") as handle:
@@ -1231,7 +1296,7 @@ async def _tool_search(ws: Path, query: str = "", agent_id: uuid.UUID | str | No
     return "\n".join(lines)
 
 
-def _delete_file(ws: Path, rel_path: str, tool_name: str = "delete_file") -> str:
+def _delete_file(ws: Path, rel_path: str, tool_name: str = "delete_file", authority_scope=None) -> str:
     protected = {"tasks.json", "soul.md"}
     if rel_path.strip("/") in protected:
         return _workspace_error(tool_name, "auth_or_permission", f"{rel_path} cannot be deleted (protected)")
@@ -1272,6 +1337,16 @@ def _delete_file(ws: Path, rel_path: str, tool_name: str = "delete_file") -> str
         return _workspace_error(tool_name, "auth_or_permission", "Access denied for this path.")
     if not file_path.exists():
         return _workspace_error(tool_name, "not_found", f"File not found: {rel_path}")
+    if file_path.is_dir():
+        unauthorized = any(
+            not _authority_allows_path(authority_scope, item.relative_to(ws).as_posix())
+            for item in file_path.rglob("*")
+            if item.is_file()
+        )
+        if unauthorized:
+            return _workspace_error(tool_name, "auth_or_permission", "Directory contains another owner's resources.")
+    elif not _authority_allows_path(authority_scope, rel_path):
+        return _workspace_error(tool_name, "auth_or_permission", "Access denied for this resource owner.")
 
     try:
         if file_path.is_dir():

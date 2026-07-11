@@ -69,10 +69,21 @@ from app.tools.decorator import RESULT_CHARS_UNLIMITED, ToolMeta, tool
         adapter="agent_args",
     )
 )
-async def set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
+async def set_trigger(
+    agent_id: uuid.UUID,
+    arguments: dict,
+    *,
+    user_id: uuid.UUID | None = None,
+    session_id: str | None = None,
+) -> str:
     from app.services.agent_tools import _handle_set_trigger
 
-    return await _handle_set_trigger(agent_id, arguments)
+    return await _handle_set_trigger(
+        agent_id,
+        arguments,
+        user_id=user_id,
+        session_id=session_id,
+    )
 
 
 # -- schedule_wakeup (B2 self-pace) --------------------------------------------
@@ -116,10 +127,21 @@ async def set_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
         adapter="agent_args",
     )
 )
-async def schedule_wakeup(agent_id: uuid.UUID, arguments: dict) -> str:
+async def schedule_wakeup(
+    agent_id: uuid.UUID,
+    arguments: dict,
+    *,
+    user_id: uuid.UUID | None = None,
+    session_id: str | None = None,
+) -> str:
     from app.services.agent_tool_domains.triggers import _handle_schedule_wakeup
 
-    return await _handle_schedule_wakeup(agent_id, arguments)
+    return await _handle_schedule_wakeup(
+        agent_id,
+        arguments,
+        user_id=user_id,
+        session_id=session_id,
+    )
 
 
 # -- update_trigger -----------------------------------------------------------
@@ -168,10 +190,15 @@ async def schedule_wakeup(agent_id: uuid.UUID, arguments: dict) -> str:
         adapter="agent_args",
     )
 )
-async def update_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
+async def update_trigger(
+    agent_id: uuid.UUID,
+    arguments: dict,
+    *,
+    user_id: uuid.UUID | None = None,
+) -> str:
     from app.services.agent_tools import _handle_update_trigger
 
-    return await _handle_update_trigger(agent_id, arguments)
+    return await _handle_update_trigger(agent_id, arguments, user_id=user_id)
 
 
 # -- cancel_trigger -----------------------------------------------------------
@@ -203,10 +230,15 @@ async def update_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
         adapter="agent_args",
     )
 )
-async def cancel_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
+async def cancel_trigger(
+    agent_id: uuid.UUID,
+    arguments: dict,
+    *,
+    user_id: uuid.UUID | None = None,
+) -> str:
     from app.services.agent_tools import _handle_cancel_trigger
 
-    return await _handle_cancel_trigger(agent_id, arguments)
+    return await _handle_cancel_trigger(agent_id, arguments, user_id=user_id)
 
 
 # -- list_triggers ------------------------------------------------------------
@@ -235,7 +267,11 @@ async def cancel_trigger(agent_id: uuid.UUID, arguments: dict) -> str:
         adapter="agent_only",
     )
 )
-async def list_triggers(agent_id: uuid.UUID) -> str:
+async def list_triggers(
+    agent_id: uuid.UUID,
+    *,
+    user_id: uuid.UUID | None = None,
+) -> str:
     from app.services.agent_tools import _handle_list_triggers
 
-    return await _handle_list_triggers(agent_id)
+    return await _handle_list_triggers(agent_id, user_id=user_id)

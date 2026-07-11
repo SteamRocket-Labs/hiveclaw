@@ -161,6 +161,12 @@ async def test_workspace_download_query_jwt_pins_token_tenant_before_user_lookup
         return SimpleNamespace(id=agent_id, tenant_id=tenant_id), "manage"
 
     monkeypatch.setattr(files_api, "check_agent_access", fake_check_agent_access)
+    from app.services import workspace_resource_authority
+
+    async def fake_authorize_workspace_path(*_args, **_kwargs):
+        return SimpleNamespace(authority_source="resource_owner", operator_view=False)
+
+    monkeypatch.setattr(workspace_resource_authority, "authorize_workspace_path", fake_authorize_workspace_path)
 
     response = await files_api.download_file(
         agent_id=agent_id,
@@ -218,6 +224,11 @@ async def test_artifact_download_query_jwt_pins_token_tenant_before_user_lookup(
 
     monkeypatch.setattr(files_api, "check_agent_access", fake_check_agent_access)
     monkeypatch.setattr(files_api, "_load_chat_artifact_or_404", fake_load_artifact_or_404)
+
+    async def fake_authorize_resource_action(*_args, **_kwargs):
+        return SimpleNamespace(authority_source="resource_owner", operator_view=False)
+
+    monkeypatch.setattr(files_api, "authorize_resource_action", fake_authorize_resource_action)
 
     response = await files_api.download_artifact(
         agent_id=agent_id,

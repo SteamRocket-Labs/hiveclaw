@@ -12,6 +12,11 @@ export interface RuntimeTaskQuery {
   diagnostics?: boolean;
 }
 
+export interface RuntimeAuthorityOptions {
+  operatorView?: boolean;
+  reason?: string;
+}
+
 export interface RuntimeWorkLedgerItem {
   id: string;
   title: string;
@@ -86,6 +91,13 @@ const withParams = (path: string, params: Record<string, string | number | boole
   return query ? `${path}?${query}` : path;
 };
 
+const authorityParams = (authority?: RuntimeAuthorityOptions) => ({
+  operator_override: authority?.operatorView || undefined,
+  operator_reason: authority?.operatorView
+    ? (authority.reason || 'Agent runtime administration')
+    : undefined,
+});
+
 export const autonomyApi = {
   getOverview: (agentId: string, query: AutonomyQuery = {}) =>
     get<any>(withParams(`/agents/${agentId}/autonomy/overview`, {
@@ -103,12 +115,24 @@ export const autonomyApi = {
       limit: query.limit,
       diagnostics: query.diagnostics,
     })),
-  getRuntimeArtifact: (agentId: string, runtimeTaskId: string, diagnostics = false) =>
+  getRuntimeArtifact: (
+    agentId: string,
+    runtimeTaskId: string,
+    diagnostics = false,
+    authority?: RuntimeAuthorityOptions,
+  ) =>
     get<any>(withParams(`/agents/${agentId}/runtime-artifacts/${runtimeTaskId}`, {
       diagnostics: diagnostics || undefined,
+      ...authorityParams(authority),
     })),
-  getRuntimeWorkLedger: (agentId: string, runtimeTaskId: string) =>
-    get<RuntimeWorkLedgerView>(`/agents/${agentId}/runtime-work-ledgers/${runtimeTaskId}`),
-  getSessionWorkLedger: (agentId: string, sessionId: string) =>
-    get<RuntimeWorkLedgerView>(`/agents/${agentId}/sessions/${sessionId}/work-ledger`),
+  getRuntimeWorkLedger: (agentId: string, runtimeTaskId: string, authority?: RuntimeAuthorityOptions) =>
+    get<RuntimeWorkLedgerView>(withParams(
+      `/agents/${agentId}/runtime-work-ledgers/${runtimeTaskId}`,
+      authorityParams(authority),
+    )),
+  getSessionWorkLedger: (agentId: string, sessionId: string, authority?: RuntimeAuthorityOptions) =>
+    get<RuntimeWorkLedgerView>(withParams(
+      `/agents/${agentId}/sessions/${sessionId}/work-ledger`,
+      authorityParams(authority),
+    )),
 };

@@ -224,19 +224,23 @@ def _inject_runtime_context_arguments(
             str((arguments.get("delivery") or (arguments.get("config") or {}).get("delivery") or "")).strip()
             == "same_session"
         )
-        if not (wants_same_session and runtime_context.session_id and not arguments.get("source_session_id")):
+        if not wants_same_session:
             return arguments
         enriched = dict(arguments)
-        enriched["source_session_id"] = runtime_context.session_id
+        if runtime_context.session_id:
+            enriched["source_session_id"] = runtime_context.session_id
+        else:
+            enriched.pop("source_session_id", None)
         return enriched
 
     if tool_name == "schedule_wakeup":
         # B2: a self-pace wakeup is always same-session by definition — the
         # runtime supplies the live session id, never the model.
-        if not runtime_context.session_id or arguments.get("source_session_id"):
-            return arguments
         enriched = dict(arguments)
-        enriched["source_session_id"] = runtime_context.session_id
+        if runtime_context.session_id:
+            enriched["source_session_id"] = runtime_context.session_id
+        else:
+            enriched.pop("source_session_id", None)
         return enriched
 
     if tool_name not in {"delegate_to_agent", "send_message_to_agent"}:
@@ -1312,6 +1316,8 @@ class ToolRuntimeService:
                             else f"Called tool {tool_name}: {result_text[:80]}"
                         ),
                         tenant_id=runtime_context.tenant_id,
+                        owner_user_id=runtime_context.user_id,
+                        root_session_id=runtime_context.session_id,
                         detail={
                             "tool": tool_name,
                             "backend": self.backend.name if self.backend else "unknown",
@@ -1337,6 +1343,8 @@ class ToolRuntimeService:
                             "error",
                             f"Tool {tool_name} failed: {tool_error_payload.get('error_class', 'unknown')}",
                             tenant_id=runtime_context.tenant_id,
+                            owner_user_id=runtime_context.user_id,
+                            root_session_id=runtime_context.session_id,
                             detail=tool_error_payload,
                         )
                     )
@@ -1411,6 +1419,8 @@ class ToolRuntimeService:
                         "error",
                         f"Tool {tool_name} timed out",
                         tenant_id=runtime_context.tenant_id,
+                        owner_user_id=runtime_context.user_id,
+                        root_session_id=runtime_context.session_id,
                         detail={
                             "tool_name": tool_name,
                             "error_class": "timeout",
@@ -1465,6 +1475,8 @@ class ToolRuntimeService:
                         "error",
                         f"Tool {tool_name} failed with {type(exc).__name__}",
                         tenant_id=runtime_context.tenant_id,
+                        owner_user_id=runtime_context.user_id,
+                        root_session_id=runtime_context.session_id,
                         detail={
                             "tool_name": tool_name,
                             "error_class": "tool_execution_error",
@@ -1791,6 +1803,15 @@ class ToolRuntimeService:
                         workspace=context.workspace,
                     )
                 value = await self.backend.execute(request, _execute_request)
+                if context.workspace_authority_scope is not None:
+                    from app.services.workspace_resource_authority import record_workspace_tool_mutations
+
+                    await record_workspace_tool_mutations(
+                        context=context,
+                        tool_name=tool_name,
+                        arguments=arguments,
+                        result=value,
+                    )
                 if workspace_mutating and trace_metadata_sink is not None:
                     states, errors, lineage = _capture_workspace_mutation_evidence(
                         tool_name=tool_name,
@@ -2187,6 +2208,8 @@ class ToolRuntimeService:
                 "action_preflight",
                 f"Preflight {preflight.decision.value} for {tool_name}",
                 tenant_id=runtime_context.tenant_id,
+                owner_user_id=runtime_context.user_id,
+                root_session_id=runtime_context.session_id,
                 detail={
                     "tool": tool_name,
                     "decision": preflight.decision.value,

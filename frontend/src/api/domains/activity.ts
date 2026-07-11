@@ -1,5 +1,19 @@
 import { get } from '../core';
 
+export interface ActivityAuthorityOptions {
+  operatorView?: boolean;
+  reason?: string;
+}
+
+function authorityQuery(authority?: ActivityAuthorityOptions): string {
+  if (!authority?.operatorView) return '';
+  const params = new URLSearchParams({
+    operator_view: 'true',
+    operator_reason: authority.reason || 'Agent activity administration',
+  });
+  return `&${params.toString()}`;
+}
+
 export interface ToolFailureCountRow {
   count: number;
   tool_name?: string;
@@ -28,7 +42,8 @@ export interface ToolFailureSummary {
 }
 
 export const activityApi = {
-  list: (agentId: string, limit = 50) => get<any[]>(`/agents/${agentId}/activity?limit=${limit}`),
-  getToolFailureSummary: (agentId: string, hours = 24, limit = 500) =>
-    get<ToolFailureSummary>(`/agents/${agentId}/activity/tool-failures?hours=${hours}&limit=${limit}`),
+  list: (agentId: string, limit = 50, authority?: ActivityAuthorityOptions) =>
+    get<any[]>(`/agents/${agentId}/activity?limit=${limit}${authorityQuery(authority)}`),
+  getToolFailureSummary: (agentId: string, hours = 24, limit = 500, authority?: ActivityAuthorityOptions) =>
+    get<ToolFailureSummary>(`/agents/${agentId}/activity/tool-failures?hours=${hours}&limit=${limit}${authorityQuery(authority)}`),
 };

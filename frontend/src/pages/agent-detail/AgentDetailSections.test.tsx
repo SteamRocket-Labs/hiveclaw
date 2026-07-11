@@ -862,6 +862,7 @@ describe('AgentDetail extracted sections', () => {
           title: 'Customer IM thread',
           source_channel: 'feishu',
           username: 'Customer',
+          operator_view: true,
           created_at: '2026-03-27T10:00:00Z',
         }}
         wsConnected={false}
@@ -872,6 +873,7 @@ describe('AgentDetail extracted sections', () => {
             title: 'Customer IM thread',
             source_channel: 'feishu',
             username: 'Customer',
+            operator_view: true,
             created_at: '2026-03-27T10:00:00Z',
           },
         ]}
@@ -924,6 +926,9 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).not.toContain('My launch sync');
     expect(markup).toContain('Customer IM thread');
     expect(markup).toContain('class="detail-session-row active"');
+    expect(markup).toContain('data-testid="session-operator-view"');
+    expect(markup).toContain('Operator View');
+    expect(markup).not.toContain('aria-label="Delete session Customer IM thread"');
     expect(markup).not.toContain('session-only');
   });
 
@@ -1616,6 +1621,9 @@ describe('AgentDetail extracted sections', () => {
         expandedLogId="log-1"
         onFilterChange={() => {}}
         onToggleExpandedLog={() => {}}
+        canUseOperatorView
+        operatorView={false}
+        onOperatorViewChange={() => {}}
       />,
     );
 
@@ -1625,6 +1633,8 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('Tool Failure Summary');
     expect(markup).toContain('firecrawl_fetch');
     expect(markup).toContain('quota_or_billing');
+    expect(markup).toContain('Enter operator view');
+    expect(markup).not.toContain('Tenant-wide activity and failures are visible');
   });
 
   it('renders AgentApprovalsSection as a standalone approvals module', () => {
@@ -1682,6 +1692,13 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).not.toContain('Save to shared memory');
     expect(markup).not.toContain('Delete entry');
     expect(markup).not.toContain('Document rollback before the final promotion.');
+  });
+
+  it('keeps managers in owner view until they explicitly enter operator view', () => {
+    const markup = renderToStaticMarkup(<AgentWorkspaceSection agentId="agent-1" canUseOperatorView />);
+
+    expect(markup).toContain('Enter operator view');
+    expect(markup).not.toContain('tenant-wide workspace resources');
   });
 
   it('renders AgentAwareSection as a standalone aware module', () => {
@@ -2537,8 +2554,8 @@ describe('AgentDetail extracted sections', () => {
       />,
     );
 
-    expect(queryKeyCalls).toContainEqual(['chat-session-index', 'route-agent', 'session-1']);
-    expect(queryKeyCalls).not.toContainEqual(['chat-session-index', 'stale-agent', 'session-1']);
+    expect(queryKeyCalls).toContainEqual(['chat-session-index', 'route-agent', 'session-1', 'owner']);
+    expect(queryKeyCalls).not.toContainEqual(['chat-session-index', 'stale-agent', 'session-1', 'owner']);
   });
 
   it('renders assistant artifacts directly inside the chat transcript', () => {

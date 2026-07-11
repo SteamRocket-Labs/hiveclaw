@@ -1,9 +1,11 @@
 """Code execution domain — sandboxed Python/Bash/Node execution."""
 
 import hashlib
+import contextlib
 import logging
 import os
 import shutil
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +22,22 @@ logger = logging.getLogger(__name__)
 MAX_WORKSPACE_LINEAGE_FILES = 1000
 MAX_WORKSPACE_LINEAGE_FILE_BYTES = 5 * 1024 * 1024
 MAX_WORKSPACE_LINEAGE_TOTAL_BYTES = 50 * 1024 * 1024
+
+
+class WorkspaceExecutionAuthorityError(RuntimeError):
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+    except ValueError:
+        return False
+    return True
+
 
 # Dangerous patterns to block
 _DANGEROUS_BASH = [
@@ -154,6 +172,76 @@ def _prepare_execution_environment(ws: Path) -> tuple[Path, dict[str, str]]:
     exec_home.mkdir(parents=True, exist_ok=True)
     safe_env = build_agent_subprocess_env(home=exec_home)
     return work_dir, safe_env
+
+
+@contextlib.contextmanager
+def authorized_execution_workspace(canonical_workspace: Path, authority_scope):
+    """Materialize and merge a least-authority code-execution workspace."""
+
+    canonical_workspace = canonical_workspace.resolve()
+    if authority_scope is None or authority_scope.operator_view:
+        yield canonical_workspace
+        return
+
+    isolated = Path(tempfile.mkdtemp(prefix="hive-authority-workspace-"))
+    isolated_work = isolated / "workspace"
+    isolated_work.mkdir(parents=True, exist_ok=True)
+    canonical_work = canonical_workspace / "workspace"
+    try:
+        for allowed_path in sorted(authority_scope.allowed_paths):
+            if not allowed_path.startswith("workspace/"):
+                continue
+            rel = Path(allowed_path.removeprefix("workspace/"))
+            source = (canonical_work / rel).resolve()
+            if not _is_within(source, canonical_work) or not source.is_file() or source.is_symlink():
+                continue
+            target = isolated_work / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+        before = _workspace_file_state(isolated_work)
+        yield isolated
+        after = _workspace_file_state(isolated_work)
+        changed = {
+            rel: state
+            for rel, state in after.items()
+            if any(before.get(rel, {}).get(key) != state.get(key) for key in ("size", "mtime_ns", "sha256"))
+        }
+        deleted = set(before) - set(after)
+
+        # Validate the complete merge before mutating the canonical directory.
+        for rel in changed:
+            canonical_target = (canonical_work / rel).resolve()
+            resource_path = f"workspace/{rel}"
+            if not _is_within(canonical_target, canonical_work):
+                raise WorkspaceExecutionAuthorityError(
+                    "workspace_resource_escape",
+                    f"Code execution output escapes workspace/: {resource_path}",
+                )
+            if (
+                resource_path in authority_scope.known_paths and resource_path not in authority_scope.allowed_paths
+            ) or (canonical_target.exists() and resource_path not in authority_scope.allowed_paths):
+                raise WorkspaceExecutionAuthorityError(
+                    "workspace_resource_collision",
+                    f"Code execution attempted to overwrite another owner's resource: {resource_path}",
+                )
+        for rel in deleted:
+            if f"workspace/{rel}" not in authority_scope.allowed_paths:
+                raise WorkspaceExecutionAuthorityError(
+                    "workspace_resource_delete_forbidden",
+                    f"Code execution attempted to delete another owner's resource: workspace/{rel}",
+                )
+
+        for rel in sorted(deleted):
+            target = canonical_work / rel
+            if target.exists() and target.is_file():
+                target.unlink()
+        for rel in sorted(changed):
+            source = isolated_work / rel
+            target = canonical_work / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+    finally:
+        shutil.rmtree(isolated, ignore_errors=True)
 
 
 def _promote_nested_workspace_artifacts(work_dir: Path) -> list[str]:
@@ -296,7 +384,12 @@ def _with_code_execution_evidence(
     )
 
 
-async def _execute_code(ws: Path, arguments: dict) -> str | ToolContentEnvelope:
+async def _execute_code(
+    ws: Path,
+    arguments: dict,
+    *,
+    canonical_workspace: Path | None = None,
+) -> str | ToolContentEnvelope:
     """Execute code in a sandboxed subprocess within the agent's workspace."""
     language = arguments.get("language", "python")
     code = arguments.get("code", "")
@@ -358,7 +451,7 @@ async def _execute_code(ws: Path, arguments: dict) -> str | ToolContentEnvelope:
                     if not (skill_dir / "SKILL.md").is_file():
                         continue
                     review_result = await stage_external_skill_package_review_for_agent_workspace(
-                        workspace=ws,
+                        workspace=canonical_workspace or ws,
                         source_uri="execute_code:sandbox_home",
                         folder_name=skill_dir.name,
                         files=collect_skill_package_files(skill_dir),

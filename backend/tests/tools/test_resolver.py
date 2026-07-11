@@ -36,7 +36,18 @@ async def test_tool_runtime_resolver_builds_execution_context(monkeypatch):
         ),
     )
 
-    resolver = ToolRuntimeResolver()
+    authority_scope = object()
+
+    async def fake_workspace_authority_loader(**kwargs):
+        assert kwargs == {
+            "tenant_id": tenant_id,
+            "agent_id": agent_id,
+            "user_id": user_id,
+            "session_id": None,
+        }
+        return authority_scope
+
+    resolver = ToolRuntimeResolver(workspace_authority_loader=fake_workspace_authority_loader)
     context = await resolver.resolve(agent_id=agent_id, user_id=user_id)
 
     assert context.agent_id == agent_id
@@ -46,6 +57,7 @@ async def test_tool_runtime_resolver_builds_execution_context(monkeypatch):
     assert context.execution_identity is not None
     assert context.execution_identity.identity_type == "delegated_user"
     assert context.execution_identity.identity_id == user_id
+    assert context.workspace_authority_scope is authority_scope
 
 
 @pytest.mark.asyncio

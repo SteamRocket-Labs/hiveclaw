@@ -213,9 +213,14 @@ describe('request cleanup adapters', () => {
     const { get } = await import('./core/request');
     vi.mocked(get).mockResolvedValue([]);
 
-    await chatApi.listSessions('agent-1', 'all');
+    await chatApi.listSessions('agent-1', 'all', {
+      operatorView: true,
+      operatorReason: 'Reviewing an Agent incident',
+    });
 
-    expect(get).toHaveBeenCalledWith('/agents/agent-1/sessions?scope=all');
+    expect(get).toHaveBeenCalledWith(
+      '/agents/agent-1/sessions?scope=all&operator_reason=Reviewing+an+Agent+incident',
+    );
   });
 
   it('routes agent lists through the summary projection by default', async () => {

@@ -224,6 +224,7 @@ def record_promotion_decision(
     reason: str,
     rollback_ref: str | None = None,
     metadata: dict[str, Any] | None = None,
+    transaction: AgentAssetTransaction | None = None,
 ) -> dict[str, Any]:
     return _append(
         workspace,
@@ -236,6 +237,7 @@ def record_promotion_decision(
             "rollback_ref": rollback_ref,
             "metadata": metadata or {},
         },
+        transaction=transaction,
     )
 
 

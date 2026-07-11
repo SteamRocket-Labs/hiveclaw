@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from app.services.skill_evolution_registry import is_skill_runtime_loadable
+
 from .parser import SkillParser
 from .retired import RETIRED_BUILTIN_SKILL_FOLDERS
 from .types import ParsedSkill
@@ -101,16 +103,26 @@ class WorkspaceSkillLoader:
                 return None
         for skills_dir in self._discover_skill_dirs(workspace_root):
             direct = skills_dir / normalized
-            if (
-                direct.is_dir()
-                and self._is_inside_workspace(direct.resolve(), workspace_root)
-                and any(
-                    (direct / filename).exists()
-                    and self._is_inside_workspace((direct / filename).resolve(), workspace_root)
+            if not direct.is_dir() or not self._is_inside_workspace(direct.resolve(), workspace_root):
+                continue
+            instruction_file = next(
+                (
+                    direct / filename
                     for filename in ("SKILL.md", "skill.md")
-                )
-            ):
-                return direct
+                    if (direct / filename).exists()
+                    and self._is_inside_workspace((direct / filename).resolve(), workspace_root)
+                ),
+                None,
+            )
+            if instruction_file is None:
+                continue
+            relative_instruction = instruction_file.resolve().relative_to(workspace_root).as_posix()
+            if not is_skill_runtime_loadable(
+                workspace_root,
+                normalized,
+            ) or not is_skill_runtime_loadable(workspace_root, relative_instruction):
+                continue
+            return direct
         return None
 
     @staticmethod
@@ -191,7 +203,14 @@ class WorkspaceSkillLoader:
             if entry.is_dir():
                 for filename in ("SKILL.md", "skill.md"):
                     skill_file = entry / filename
-                    if skill_file.exists() and self._is_inside_workspace(skill_file.resolve(), workspace_root):
+                    if (
+                        skill_file.exists()
+                        and self._is_inside_workspace(skill_file.resolve(), workspace_root)
+                        and is_skill_runtime_loadable(
+                            workspace_root,
+                            skill_file.resolve().relative_to(workspace_root).as_posix(),
+                        )
+                    ):
                         skills.append(
                             self.parser.parse_file(
                                 skill_file,
@@ -201,7 +220,13 @@ class WorkspaceSkillLoader:
                         )
                         break
             elif (
-                entry.is_file() and entry.suffix == ".md" and self._is_inside_workspace(entry.resolve(), workspace_root)
+                entry.is_file()
+                and entry.suffix == ".md"
+                and self._is_inside_workspace(entry.resolve(), workspace_root)
+                and is_skill_runtime_loadable(
+                    workspace_root,
+                    entry.resolve().relative_to(workspace_root).as_posix(),
+                )
             ):
                 skills.append(
                     self.parser.parse_file(

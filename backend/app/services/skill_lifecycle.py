@@ -607,6 +607,46 @@ def record_skill_runtime_usage(
             "last_status": normalized_status or "unknown",
         }
 
+    registry_entry = get_skill_evolution_entry(workspace, primary_skill, transaction=transaction)
+    is_provisional = (
+        used_skill
+        and isinstance(registry_entry, dict)
+        and str(registry_entry.get("state") or "").strip().lower() == "provisional"
+    )
+    trial_kind = (
+        "positive"
+        if normalized_status == "success" and not (blocker or "").strip()
+        else "negative"
+        if normalized_status in {"failed", "workaround"}
+        else None
+    )
+    if is_provisional and trial_kind is not None:
+        from app.services.provisional_trial import record_provisional_trial_signal
+
+        trial_result = record_provisional_trial_signal(
+            workspace,
+            skill_name=primary_skill,
+            kind=trial_kind,
+            signal={
+                "source": usage_event["source"],
+                "status": normalized_status,
+                "reason": note.strip(),
+                "session_id": usage_event["session_id"],
+                "runtime_task_id": usage_event["runtime_task_id"],
+                "trace_id": usage_event["trace_id"],
+            },
+            occurred_at=stamp,
+            transaction=transaction,
+        )
+        return {
+            "decision": str(trial_result.get("trial_decision") or "provisional_trial"),
+            "workflow_signature": workflow_signature,
+            "promote_candidate_count": 0,
+            "patch_candidate_count": 0,
+            "last_status": normalized_status,
+            **trial_result,
+        }
+
     if (
         used_skill
         and normalized_status in {"failed", "workaround"}
@@ -639,34 +679,4 @@ def record_skill_runtime_usage(
             candidate_result=result,
             transaction=transaction,
         )
-    if used_skill and normalized_status in {"failed", "workaround"}:
-        registry_entry = get_skill_evolution_entry(workspace, primary_skill)
-        metadata = registry_entry.get("metadata") if isinstance(registry_entry, dict) else {}
-        is_provisional = (
-            isinstance(registry_entry, dict)
-            and str(registry_entry.get("state") or "").strip().lower() == "provisional"
-            and isinstance(metadata, dict)
-            and str(metadata.get("commit_status") or "").strip().lower() == "provisional"
-        )
-        candidate_id = str((registry_entry or {}).get("last_candidate_id") or "").strip()
-        rollback_ref = str((registry_entry or {}).get("target_path") or "").strip()
-        if is_provisional and candidate_id and rollback_ref:
-            from app.services.provisional_trial import evaluate_provisional_trial_signal
-
-            trial_result = evaluate_provisional_trial_signal(
-                workspace=workspace,
-                candidate_id=candidate_id,
-                rollback_ref=rollback_ref,
-                signal={
-                    "kind": "skill_runtime_failure",
-                    "status": normalized_status,
-                    "reason": note.strip(),
-                    "usage_event": usage_event,
-                },
-                negative_signal_count=int(result.get("patch_candidate_count") or 0),
-                transaction=transaction,
-            )
-            if trial_result["decision"] == "rolled_back":
-                result["trial_decision"] = trial_result["decision"]
-                result["rollback_event"] = trial_result["rollback_event"]
     return result

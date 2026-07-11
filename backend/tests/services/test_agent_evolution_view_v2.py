@@ -58,9 +58,10 @@ def test_agent_evolution_view_v2_uses_unified_memory_and_skill_paths(tmp_path: P
                     "skill_name": "incident-response",
                     "skill_origin": "user_skill_creator",
                     "evolvable": True,
-                    "state": "active",
+                    "state": "provisional",
                     "active_version_hash": "sha256:active",
                     "last_candidate_id": "cand-patch",
+                    "metadata": {"trial_path": "evolution/skill_trials/cand-patch/trial.json"},
                 },
                 "web-search": {
                     "skill_name": "web-search",
@@ -69,6 +70,19 @@ def test_agent_evolution_view_v2_uses_unified_memory_and_skill_paths(tmp_path: P
                     "state": "active",
                 },
             },
+        },
+    )
+    _write_json(
+        evolution / "skill_trials" / "cand-patch" / "trial.json",
+        {
+            "schema": "skill_provisional_trial.v1",
+            "candidate_id": "cand-patch",
+            "state": "provisional",
+            "started_at": "2026-07-11T00:00:00Z",
+            "updated_at": "2026-07-11T00:03:00Z",
+            "window_days": 14,
+            "thresholds": {"positive": 3, "negative": 2},
+            "signals": {"positive": [{"id": "p1"}, {"id": "p2"}], "negative": [{"id": "n1"}]},
         },
     )
     _write_json(
@@ -115,6 +129,18 @@ def test_agent_evolution_view_v2_uses_unified_memory_and_skill_paths(tmp_path: P
     assert view["soul"]["pending_candidates"][0]["candidate_id"] == "soul-1"
     assert view["skill_ecosystem"]["summary"]["by_origin"]["user_skill_creator"] == 1
     assert view["skill_ecosystem"]["summary"]["by_origin"]["system_builtin"] == 1
+    assert view["skill_ecosystem"]["summary"]["provisional"] == 1
+    trial_skill = next(item for item in view["skill_ecosystem"]["skills"] if item["skill_name"] == "incident-response")
+    assert trial_skill["trial"] == {
+        "state": "provisional",
+        "positive_count": 2,
+        "positive_threshold": 3,
+        "negative_count": 1,
+        "negative_threshold": 2,
+        "window_days": 14,
+        "started_at": "2026-07-11T00:00:00Z",
+        "updated_at": "2026-07-11T00:03:00Z",
+    }
     assert view["skill_ecosystem"]["skills"][0]["skill_name"] == "web-search"
     assert view["skill_ecosystem"]["skills"][0]["evolvable"] is False
     assert view["skill_tuning"]["candidates"][0]["candidate_id"] == "cand-patch"

@@ -647,7 +647,24 @@ def _commit_skill_markdown_exact(
     if len(target_parts) != 3 or target_parts[0] != "skills" or target_parts[2] != "SKILL.md":
         return f"❌ skill commit failed: target must be skills/<folder>/SKILL.md: {target_relative_path}"
 
+    from app.services.skill_evolution_registry import (
+        ORIGIN_T3_AUTO_CREATED,
+        ORIGIN_USER_SKILL_CREATOR,
+        get_skill_evolution_entry,
+        upsert_skill_evolution_entry,
+    )
     from app.services.skill_installation import install_active_skill_package
+
+    baseline_content = transaction.read_bytes(target_relative_path)
+    baseline_registry_entry = get_skill_evolution_entry(
+        workspace,
+        skill_name,
+        transaction=transaction,
+    ) or get_skill_evolution_entry(
+        workspace,
+        target_relative_path,
+        transaction=transaction,
+    )
 
     try:
         install_active_skill_package(
@@ -680,16 +697,7 @@ def _commit_skill_markdown_exact(
     except Exception as exc:
         return f"❌ skill curator transaction failed: {type(exc).__name__}: {exc}"
     try:
-        from app.services.skill_evolution_registry import (
-            ORIGIN_T3_AUTO_CREATED,
-            ORIGIN_USER_SKILL_CREATOR,
-            get_skill_evolution_entry,
-            upsert_skill_evolution_entry,
-        )
-
-        existing = get_skill_evolution_entry(workspace, skill_name) or get_skill_evolution_entry(
-            workspace, target_relative_path
-        )
+        existing = baseline_registry_entry
         resolved_origin = (
             skill_origin
             or (
@@ -708,6 +716,24 @@ def _commit_skill_markdown_exact(
             metadata={"committed_by": "skill_distiller", "commit_status": status},
             transaction=transaction,
         )
+        if status == "provisional":
+            if not candidate_id:
+                return "❌ skill registry transaction failed: provisional commit requires candidate_id"
+            from app.services.provisional_trial import initialize_provisional_trial
+
+            candidate_content = transaction.read_bytes(target_relative_path)
+            if candidate_content is None:
+                return "❌ skill registry transaction failed: provisional candidate content is missing"
+            initialize_provisional_trial(
+                workspace,
+                candidate_id=candidate_id,
+                skill_name=skill_name,
+                target_path=target_relative_path,
+                candidate_content=candidate_content,
+                baseline_content=baseline_content,
+                baseline_registry_entry=baseline_registry_entry,
+                transaction=transaction,
+            )
     except Exception as exc:
         return f"❌ skill registry transaction failed: {type(exc).__name__}: {exc}"
     return f"✅ committed exact skill draft at {target_relative_path}"

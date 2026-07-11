@@ -241,6 +241,25 @@ def _load_skill(ws: Path, skill_name: str, tool_name: str = "load_skill", *, ses
     workspace_root = ws.resolve()
     skills_dir = (ws / "skills").resolve()
 
+    from app.services.skill_evolution_registry import LOADABLE_STATES, skill_runtime_state
+
+    def _apply_trial_state(content: str, identity: str) -> str:
+        state = skill_runtime_state(ws, identity)
+        if state not in LOADABLE_STATES:
+            return _workspace_error(
+                tool_name,
+                "skill_state_blocked",
+                f"Skill cannot be loaded while its governed state is {state}.",
+            )
+        if state == "provisional":
+            return (
+                content
+                + "\n\n---\n"
+                + "**Provisional trial:** this Skill version is active under monitored trial. "
+                + "Use it normally; runtime evidence may promote or roll it back automatically."
+            )
+        return content
+
     def _read_skill_file(path: Path) -> str:
         if (
             not _is_within_path(path, workspace_root)
@@ -250,7 +269,8 @@ def _load_skill(ws: Path, skill_name: str, tool_name: str = "load_skill", *, ses
             return _workspace_error(tool_name, "auth_or_permission", "Access denied for this skill path.")
         try:
             content = path.read_text(encoding="utf-8", errors="replace")
-            return sanitize_managed_credential_guidance(content)
+            relative_path = path.relative_to(workspace_root).as_posix()
+            return _apply_trial_state(sanitize_managed_credential_guidance(content), relative_path)
         except Exception as e:
             return _workspace_error(tool_name, "operation_failed", f"Read failed: {e}")
 
@@ -265,6 +285,8 @@ def _load_skill(ws: Path, skill_name: str, tool_name: str = "load_skill", *, ses
     for explicit_path in explicit_paths:
         if explicit_path.is_file():
             body = _read_skill_file(explicit_path)
+            if "skill_state_blocked" in body:
+                return body
             try:
                 rel = explicit_path.relative_to(ws).as_posix()
                 slug = _skill_slug_from_relative_path(rel)
@@ -285,6 +307,9 @@ def _load_skill(ws: Path, skill_name: str, tool_name: str = "load_skill", *, ses
         skill = registry.resolve(requested)
         body = sanitize_managed_credential_guidance(skill.body)
         body += _skill_scope_guidance(skill.metadata)
+        body = _apply_trial_state(body, skill.relative_path or requested)
+        if "skill_state_blocked" in body:
+            return body
         _curator_bump_use(ws, requested)
         return body
     except KeyError:

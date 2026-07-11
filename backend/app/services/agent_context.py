@@ -234,7 +234,16 @@ def _load_skills_index(
             for index, decision in enumerate(ranked, start=1)
         ]
 
-    return registry.render_catalog(budget_chars=budget_chars)
+    catalog = registry.render_catalog(budget_chars=budget_chars)
+    provisional_names = [decision.skill.metadata.name for decision in ranked if decision.state == "provisional"]
+    if provisional_names:
+        catalog += (
+            "\n\n**Skills on provisional trial:** "
+            + ", ".join(provisional_names)
+            + ". These versions are loadable and monitored; successful use promotes them, "
+            + "while repeated negative evidence rolls them back."
+        )
+    return catalog
 
 
 def build_skill_catalog_section_for_agent(

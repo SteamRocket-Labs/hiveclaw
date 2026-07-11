@@ -10,9 +10,14 @@ from typing import Any, Iterable
 from app.runtime.activation_candidates import ActivationCandidate, ActivationScore, ActivationSurface
 from app.runtime.context_candidates import build_metadata_activation_keys
 from app.services.skill_curator import STATE_ACTIVE, STATE_ARCHIVED, STATE_STALE, load_skill_usage
+from app.services.skill_evolution_registry import (
+    LOADABLE_STATES,
+    STATE_PROVISIONAL,
+    get_skill_evolution_entry,
+)
 from app.skills.types import ParsedSkill
 
-_STATE_RANK = {STATE_ACTIVE: 0, STATE_STALE: 1, STATE_ARCHIVED: 2}
+_STATE_RANK = {STATE_ACTIVE: 0, STATE_PROVISIONAL: 1, STATE_STALE: 2, STATE_ARCHIVED: 3}
 _PATH_TRIGGER_SCORE = 1000
 _ACTIVE_SKILL_SCORE = 500
 _SCENARIO_OVERLAP_SCORE = 100
@@ -133,7 +138,12 @@ def rank_skills_for_prompt_with_reasons(
     decisions: list[SkillRankingDecision] = []
     for skill in skills:
         record = _usage_for_skill(usage, skill)
-        state = str(record.get("state") or STATE_ACTIVE)
+        evolution_entry = get_skill_evolution_entry(workspace, skill.metadata.name) or get_skill_evolution_entry(
+            workspace, skill.relative_path
+        )
+        state = str((evolution_entry or {}).get("state") or record.get("state") or STATE_ACTIVE)
+        if evolution_entry is not None and state not in LOADABLE_STATES:
+            continue
         use_count = int(record.get("use_count") or 0)
         score = 0
         reasons: list[str] = []

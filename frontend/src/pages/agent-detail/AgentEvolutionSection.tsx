@@ -33,6 +33,8 @@ const STATE_COLORS: Record<string, { fg: string; bg: string }> = {
   stale: { fg: 'var(--warning)', bg: 'var(--warning-subtle)' },
   archived: { fg: 'var(--text-tertiary)', bg: 'var(--bg-secondary)' },
   provisional: { fg: 'var(--info)', bg: 'color-mix(in srgb, var(--info) 12%, transparent)' },
+  rolled_back: { fg: 'var(--text-tertiary)', bg: 'var(--bg-secondary)' },
+  needs_review: { fg: 'var(--warning)', bg: 'var(--warning-subtle)' },
 };
 
 function manifestTitle(item: EvolutionManifest): string {
@@ -305,14 +307,30 @@ export default function AgentEvolutionSection({ agentId, active, canManage = fal
                 )}
               </p>
               <div className="agent-evolution-list">
-                {provisionalSkills.map((item, idx) => (
-                  <div key={`${manifestTitle(item)}-${idx}`} className="agent-evolution-list-row">
-                    <span>{manifestTitle(item)}</span>
-                    <span className="agent-evolution-state-badge agent-evolution-state-info">
-                      provisional
-                    </span>
-                  </div>
-                ))}
+                {provisionalSkills.map((item, idx) => {
+                  const runtimeSkill = skills.find(
+                    (skill) => skill.last_candidate_id === item.candidate_id
+                      || skill.skill_name === item.skill_name,
+                  );
+                  const trial = runtimeSkill?.trial;
+                  return (
+                    <div key={`${manifestTitle(item)}-${idx}`} className="agent-evolution-list-row">
+                      <span>{manifestTitle(item)}</span>
+                      <span className="agent-evolution-item-right">
+                        {trial && (
+                          <span className="u-meta u-tertiary">
+                            {t('agent.evolution.trialPositive', '正向')} {trial.positive_count} / {trial.positive_threshold}
+                            {' · '}
+                            {t('agent.evolution.trialNegative', '负向')} {trial.negative_count} / {trial.negative_threshold}
+                          </span>
+                        )}
+                        <span className="agent-evolution-state-badge agent-evolution-state-info">
+                          provisional
+                        </span>
+                      </span>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           )}

@@ -17,6 +17,7 @@ from typing import Any
 from app.memory.t3_platform_gate import LEGACY_T3_FILES
 from app.services.skill_curator import STATE_ACTIVE, STATE_ARCHIVED, STATE_STALE, load_skill_usage
 from app.services.skill_evolution_registry import registry_rel_path
+from app.services.provisional_trial import trial_rel_path
 
 _LEGACY_EVOLUTION_FILES = (
     "evolution/scorecard.md",
@@ -54,6 +55,7 @@ def _empty_view() -> dict[str, Any]:
             "soul_staging": "memory/.staging/soul_candidates/<candidate_id>/",
             "skill_registry": registry_rel_path(),
             "skill_candidates": "evolution/skill_candidates/<candidate_id>/",
+            "skill_trials": "evolution/skill_trials/<candidate_id>/trial.json",
         },
         "lanes": {lane: [] for lane in _LANES},
         "timeline": [],
@@ -63,6 +65,9 @@ def _empty_view() -> dict[str, Any]:
             "summary": {
                 "total": 0,
                 "active": 0,
+                "provisional": 0,
+                "rolled_back": 0,
+                "needs_review": 0,
                 "stale": 0,
                 "archived": 0,
                 "evolvable": 0,
@@ -155,6 +160,9 @@ def _build_skill_ecosystem(workspace: Path) -> dict[str, Any]:
     summary = {
         "total": 0,
         "active": 0,
+        "provisional": 0,
+        "rolled_back": 0,
+        "needs_review": 0,
         "stale": 0,
         "archived": 0,
         "evolvable": 0,
@@ -171,26 +179,51 @@ def _build_skill_ecosystem(workspace: Path) -> dict[str, Any]:
         use_count = int(usage_record.get("use_count") or 0)
 
         summary["total"] += 1
-        if state in {STATE_ACTIVE, STATE_STALE, STATE_ARCHIVED}:
+        if state in {STATE_ACTIVE, "provisional", "rolled_back", "needs_review", STATE_STALE, STATE_ARCHIVED}:
             summary[state] += 1
         if evolvable:
             summary["evolvable"] += 1
         summary["by_origin"][origin] = int(summary["by_origin"].get(origin) or 0) + 1
-        skills.append(
-            {
-                "skill_name": str(entry.get("skill_name") or key),
-                "skill_origin": origin,
-                "evolvable": evolvable,
-                "state": state,
-                "use_count": use_count,
-                "last_used_at": usage_record.get("last_used_at"),
-                "target_path": entry.get("target_path"),
-                "active_version_hash": entry.get("active_version_hash"),
-                "last_candidate_id": entry.get("last_candidate_id"),
-            }
-        )
+        item: dict[str, Any] = {
+            "skill_name": str(entry.get("skill_name") or key),
+            "skill_origin": origin,
+            "evolvable": evolvable,
+            "state": state,
+            "use_count": use_count,
+            "last_used_at": usage_record.get("last_used_at"),
+            "target_path": entry.get("target_path"),
+            "active_version_hash": entry.get("active_version_hash"),
+            "last_candidate_id": entry.get("last_candidate_id"),
+        }
+        candidate_id = str(entry.get("last_candidate_id") or "").strip()
+        if candidate_id:
+            try:
+                trial = _read_json(workspace / trial_rel_path(candidate_id))
+            except ValueError:
+                trial = None
+            if isinstance(trial, dict):
+                signals = trial.get("signals") if isinstance(trial.get("signals"), dict) else {}
+                thresholds = trial.get("thresholds") if isinstance(trial.get("thresholds"), dict) else {}
+                item["trial"] = {
+                    "state": str(trial.get("state") or state),
+                    "positive_count": len(signals.get("positive") or []),
+                    "positive_threshold": int(thresholds.get("positive") or 3),
+                    "negative_count": len(signals.get("negative") or []),
+                    "negative_threshold": int(thresholds.get("negative") or 2),
+                    "window_days": int(trial.get("window_days") or 14),
+                    "started_at": trial.get("started_at"),
+                    "updated_at": trial.get("updated_at"),
+                }
+        skills.append(item)
 
-    state_rank = {STATE_ACTIVE: 0, STATE_STALE: 1, STATE_ARCHIVED: 2}
+    state_rank = {
+        STATE_ACTIVE: 0,
+        "provisional": 1,
+        "needs_review": 2,
+        STATE_STALE: 3,
+        "rolled_back": 4,
+        STATE_ARCHIVED: 5,
+    }
     skills.sort(key=lambda item: (state_rank.get(str(item["state"]), 9), -int(item["use_count"]), item["skill_name"]))
     return {"summary": summary, "skills": skills}
 

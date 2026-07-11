@@ -1395,3 +1395,63 @@ class TestSkillDistillerOutputContract:
         assert "description: ..." in source
         assert "\\ntools: [...]" not in source
         assert "\\npacks: [...]" not in source
+
+
+def test_provisional_distiller_commit_persists_version_bound_rollback_anchor(tmp_path: Path) -> None:
+    from app.services.provisional_trial import load_provisional_trial
+    from app.services.skill_distiller import _commit_skill_markdown_exact
+    from app.services.skill_evolution_registry import (
+        ORIGIN_USER_SKILL_CREATOR,
+        get_skill_evolution_entry,
+        upsert_skill_evolution_entry,
+    )
+
+    workspace = tmp_path / "agent"
+    target_path = "skills/research/SKILL.md"
+    target = workspace / target_path
+    target.parent.mkdir(parents=True)
+    old_content = b"---\nname: research\ndescription: old\n---\n# Research\nOld.\n"
+    target.write_bytes(old_content)
+    upsert_skill_evolution_entry(
+        workspace,
+        skill_name="research",
+        target_path=target_path,
+        skill_origin=ORIGIN_USER_SKILL_CREATOR,
+        state="active",
+    )
+    manifest_path = workspace / "evolution/skill_candidates/cand-distiller/manifest.json"
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema": "skill_candidate_package.v1",
+                "candidate_id": "cand-distiller",
+                "skill_name": "research",
+                "status": "verified",
+                "metadata": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    new_content = "---\nname: research\ndescription: improved\n---\n# Research\nImproved.\n"
+
+    result = _commit_skill_markdown_exact(
+        workspace=workspace,
+        target_relative_path=target_path,
+        rendered_markdown=new_content,
+        skill_name="research",
+        overwrite=True,
+        status="provisional",
+        candidate_id="cand-distiller",
+        skill_origin=ORIGIN_USER_SKILL_CREATOR,
+    )
+
+    trial = load_provisional_trial(workspace, "cand-distiller")
+    entry = get_skill_evolution_entry(workspace, "research")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert result.startswith("✅")
+    assert trial is not None and trial["state"] == "provisional"
+    assert (workspace / trial["rollback"]["ref"]).read_bytes() == old_content
+    assert trial["candidate_version_hash"] == entry["active_version_hash"]
+    assert entry["metadata"]["trial_path"] == "evolution/skill_trials/cand-distiller/trial.json"
+    assert manifest["status"] == "provisional"

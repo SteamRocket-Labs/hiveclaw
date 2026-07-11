@@ -24,7 +24,7 @@
 - **P1：13 个**。会造成恢复能力、CC parity、自进化、资产统计、实时 UI 或验收可信度不足，不能作为“上线后再补”的债务。
 - **P2：1 个**。是确定的 KISS/维护性残留，应与本轮一起清理。
 
-当前修复进度：**17 / 28**（单 Agent SA-01 至 SA-12、Hive Native HN-01 至 HN-05 已按七原子闭环并分别提交）；其余断点未全部关闭前，结论继续保持 NO-GO。
+当前修复进度：**18 / 28**（单 Agent SA-01 至 SA-12、Hive Native HN-01 至 HN-06 已按七原子闭环并分别提交）；其余断点未全部关闭前，结论继续保持 NO-GO。
 
 这里的“95% 以上信心”指的是：**对当前 checkout 根断点清单完整度的置信度为 95.3%**，不代表系统有 95.3% 的上线成熟度。只要任一 P0 尚存，上线结论就是 NO-GO。
 
@@ -101,7 +101,7 @@ Codex 的 PermissionProfile、thread identity、sandbox policy 和 approval even
 | HN-03 | A2A REST 丢 requester 且 consult 假成功 | P0 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | HN-04 | Subagent/async 查询取消只按 parent Agent | P0 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | HN-05 | HR provisioning 恢复会假完成 | P0 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| HN-06 | Skill provisional 只有负向回滚，无正向转正 | P1 | 断点 | ✓ | ✓ | △ | △ | ✗ | ✗ | △ |
+| HN-06 | Skill provisional 只有负向回滚，无正向转正 | P1 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | HN-07 | AI 资产用量投影只覆盖部分实际消费 | P1 | 局部闭环 | ✓ | △ | △ | △ | △ | ✗ | △ |
 | GOV-01 | Agent use 与 Session/Resource ownership 混用 | P0 | 断点 | ✓ | ✗ | △ | ✗ | ✗ | ✗ | △ |
 | GOV-02 | 企业知识库“语义缺失、产品已上线” | P0 | 断点 | ✓ | △ | ✗ | ✗ | ✗ | ✗ | ✗ |
@@ -305,9 +305,9 @@ Task logs 在 `backend/app/api/tasks.py:181-207` 只按 task_id 查写，没有�
 
 ### HN-06：Skill provisional trial 没有正向转正路径 — P1
 
-`backend/app/services/provisional_trial.py:14-55` 只返回 continue_trial 或 rolled_back；`skill_lifecycle.py:551-579` 仅在 failed/workaround 时调用它。虽然 `skill_lifecycle.py:413-448` 会从成功用量产生 promote candidate，但没有任何路径把已安装 registry entry 的 state 从 provisional 改为 active。全仓 active state 只在初次非 provisional 安装时写入。
+**修复状态（2026-07-11）**：**闭环**。provisional commit现在在同一 `AgentAssetTransaction` 中保存候选版本 hash、旧 Skill内容备份、旧 registry snapshot和每候选 TrialLedger；真实调用过 `load_skill` 的 runtime telemetry才可写正/负信号。14日窗口内三个不同成功证据把 registry/candidate/lifecycle/ledger原子转为active/promoted；两个负向证据对 patch真实恢复旧内容和旧 registry，对新 Skill删除候选文件并保留rolled-back tombstone。重复证据不计数，候选文件漂移、备份损坏、窗口过期和无备份的legacy provisional一律进入needs_review，不伪装成已回滚。
 
-关闭方式：TrialLedger 记录正/负信号、窗口、版本 hash；达到正向阈值后显式 `promote_to_active`，失败则恢复 rollback ref；loader/catalog 必须按 registry state 决定是否可用，并显示 trial 状态。
+`WorkspaceSkillLoader`、显式/按名 `load_skill`、resource/script解析、prompt ranker/catalog和Agent Evolution read model/UI都消费同一 registry state。provisional可用但带监控提示；rolled_back、needs_review、blocked、archived不能通过目录fallback重新进入运行时。普通用户只看到正/负进度与状态，不看到trial path、版本hash或rollback控制面细节。
 
 ### HN-07：企业 AI 资产“有注册表”，但用量不是全执行面事实 — P1
 
@@ -1742,3 +1742,86 @@ pytest tests -q
 ```
 
 结果：Ruff lint/format全绿；Alembic单head `hr_provisioning_steps_0711 (head)`；全量backend `6365 passed, 1 skipped, 5 warnings in 148.49s`，零失败。
+
+### HN-06 — Version-bound Skill TrialLedger
+
+状态：**闭环**。提交主题：`fix(HN-06): close provisional skill trials`。
+
+七原子证据：
+
+1. **输入**：只有 `skill_runtime_telemetry` 证明本轮真实加载过 Skill 后，`record_skill_runtime_usage()` 才会把 success 或 failed/workaround 转成 trial signal。信号绑定 candidate、session、runtime task、trace、status 与 occurred_at；相同证据生成稳定 signal id并去重，模型不能靠重复复述推进阈值。
+2. **权威**：`skill_registry.json` 是 runtime state权威；候选只可在 registry仍为provisional且candidate id匹配时推进。candidate version hash绑定当前 Skill字节；owner手工改写、文件缺失、trial过期、rollback备份损坏均fail closed到needs_review。普通用户read model不返回trial/rollback路径或版本hash。
+3. **执行**：`record_provisional_trial_signal()` 是唯一 trial transition kernel。正向阈值3次执行promoted→active；负向阈值2次执行真实restore/delete。所有content、registry、trial、candidate manifest、lifecycle和evolution ledger变更共用一次 `AgentAssetTransaction`。generic Skill candidate聚合不再替 provisional Skill决定终态。
+4. **证据**：`evolution/skill_trials/<candidate_id>/trial.json`保存窗口、threshold、去重信号、状态与版本绑定；rollback目录保存patch前不可变字节。`skill_registry.json`保存当前state/version/candidate linkage，candidate manifest保存面向UI的安全进度，`skill_usage.jsonl`、`skill_review.md`和`evolution_ledger.jsonl`保留调用、生命周期、promotion/rollback机械事件。
+5. **恢复**：patch rollback同时恢复旧 Skill字节和完整旧 registry snapshot；new-Skill rollback删除候选文件并留下不可加载tombstone。重复信号幂等；进程崩溃由既有Agent asset journal roll-forward/rollback。legacy provisional没有可信旧版本时只允许manual review，禁止写一条rollback event冒充恢复成功。
+6. **消费**：`WorkspaceSkillLoader`过滤terminal/blocked state，目录fallback同样受控，因此 `list_resources` 与 `run_skill_tool`不能绕过；显式路径和按名 `load_skill`共享state gate。ranker和prompt catalog从registry读取provisional状态；Evolution read model只投影正/负计数、阈值、窗口和状态，前端“技能试用中”真实显示 `2 / 3`、`0 / 2`等进度。
+7. **验收**：覆盖正向转正、证据去重、patch真实恢复、新Skill删除、版本漂移、legacy无备份、窗口过期、显式加载、目录/resource/script旁路、catalog activation key、prompt提示、read model安全投影、前端显示、distiller同事务rollback anchor、邻接lifecycle/registry/evolution契约、Ruff、frontend全量/build和backend全量。
+
+KISS/奥卡姆证据：未新增数据库表、daemon、队列或第二套Skill registry；每个provisional candidate只增加一个小型TrialLedger和必要时一个原字节备份。状态判定集中在既有registry helper，写入复用 `AgentAssetTransaction`，用户投影复用现有Agent Evolution API。被删除的是“generic candidate计数 + 只写假rollback事件”的双重语义，而不是再叠一层workflow。
+
+RED证据：
+
+```text
+HN-06初始契约：10 failed, 18 passed
+- 无load/initialize TrialLedger API
+- success不会把provisional转active
+- rollback只写event，不恢复文件或registry
+- 显式load、WorkspaceSkillLoader和catalog不消费registry state
+- Evolution read model无trial进度
+
+resource/script旁路补充契约：1 failed
+- registry display name与folder slug不同时，needs_review Skill仍可由目录fallback列出scripts/run.py
+
+candidate identity补充契约：1 failed
+- 非法candidate id被静默归一化，可能与合法TrialLedger路径碰撞
+```
+
+GREEN证据：
+
+```bash
+cd backend
+source .venv/bin/activate
+pytest -q \
+  tests/services/test_provisional_trial.py \
+  tests/services/test_skill_loading.py \
+  tests/services/test_skill_catalog_ranker.py \
+  tests/services/test_agent_evolution_view_v2.py \
+  tests/services/test_skill_distiller.py \
+  tests/services/test_skill_tool_runtime.py
+```
+
+结果：`68 passed, 4 warnings in 3.35s`。
+
+```bash
+cd backend
+source .venv/bin/activate
+pytest -q \
+  tests/services/test_skill_lifecycle.py \
+  tests/services/test_skill_evolution_registry.py \
+  tests/services/test_skill_runtime_telemetry.py \
+  tests/services/test_skill_registry.py \
+  tests/services/test_evolution_ledger.py \
+  tests/services/test_evolution_validation.py \
+  tests/services/test_harness_validation_report.py \
+  tests/services/test_harness_canary.py \
+  tests/architecture/test_h5_evolution_ledger_contract.py
+```
+
+邻接契约结果：`38 passed in 1.01s`。
+
+```bash
+cd frontend
+npm test -- --run
+npm run build
+```
+
+结果：`100 test files / 585 tests passed`；TypeScript + Vite production build exit 0，`7071 modules transformed`。
+
+```bash
+cd backend
+source .venv/bin/activate
+ruff check <HN-06当前变更Python文件>
+pytest tests -q
+```
+
+结果：Ruff lint/format全绿；最终全量backend `6376 passed, 1 skipped, 5 warnings in 150.10s`，零失败。

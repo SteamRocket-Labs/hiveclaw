@@ -46,6 +46,17 @@ AUTHORING_CONTRACT = {
 
 _REGISTRY_REL_PATH = Path("evolution") / "skill_registry.json"
 
+STATE_ACTIVE = "active"
+STATE_PROVISIONAL = "provisional"
+STATE_STALE = "stale"
+STATE_ARCHIVED = "archived"
+STATE_ROLLED_BACK = "rolled_back"
+STATE_NEEDS_REVIEW = "needs_review"
+STATE_BLOCKED = "blocked"
+
+LOADABLE_STATES = frozenset({STATE_ACTIVE, STATE_PROVISIONAL, STATE_STALE})
+BLOCKED_RUNTIME_STATES = frozenset({STATE_ARCHIVED, STATE_ROLLED_BACK, STATE_NEEDS_REVIEW, STATE_BLOCKED})
+
 
 def registry_rel_path() -> str:
     return _REGISTRY_REL_PATH.as_posix()
@@ -220,8 +231,13 @@ def upsert_skill_evolution_entry(
     return entry
 
 
-def get_skill_evolution_entry(workspace: Path, skill_name_or_path: str) -> dict[str, Any] | None:
-    registry = load_skill_evolution_registry(workspace)
+def get_skill_evolution_entry(
+    workspace: Path,
+    skill_name_or_path: str,
+    *,
+    transaction: AgentAssetTransaction | None = None,
+) -> dict[str, Any] | None:
+    registry = load_skill_evolution_registry(workspace, transaction=transaction)
     skills = registry.get("skills") if isinstance(registry.get("skills"), dict) else {}
     key = normalize_skill_name(skill_name_or_path)
     if key in skills and isinstance(skills[key], dict):
@@ -237,6 +253,66 @@ def get_skill_evolution_entry(workspace: Path, skill_name_or_path: str) -> dict[
     return None
 
 
+def restore_skill_evolution_entry(
+    workspace: Path,
+    *,
+    skill_name: str,
+    entry: dict[str, Any] | None,
+    transaction: AgentAssetTransaction | None = None,
+) -> dict[str, Any] | None:
+    """Restore one registry entry as part of the same native-asset revision.
+
+    Trial rollback uses the exact pre-trial registry snapshot instead of
+    reconstructing it from the provisional entry. This keeps provenance,
+    version, and evolvability coupled to the content that is restored.
+    """
+
+    if transaction is None:
+        with AgentAssetTransaction(workspace, operation="skill_registry_restore") as own_transaction:
+            restored = restore_skill_evolution_entry(
+                workspace,
+                skill_name=skill_name,
+                entry=entry,
+                transaction=own_transaction,
+            )
+            own_transaction.commit()
+            return restored
+
+    registry = load_skill_evolution_registry(workspace, transaction=transaction)
+    skills = registry.setdefault("skills", {})
+    key = normalize_skill_name(skill_name)
+    if entry is None:
+        skills.pop(key, None)
+        restored = None
+    else:
+        restored = dict(entry)
+        restored["skill_name"] = str(restored.get("skill_name") or skill_name)
+        skills[key] = restored
+    save_skill_evolution_registry(workspace, registry, transaction=transaction)
+    return restored
+
+
+def skill_runtime_state(
+    workspace: Path,
+    skill_name_or_path: str,
+    *,
+    transaction: AgentAssetTransaction | None = None,
+) -> str:
+    """Return the authoritative runtime state; unregistered legacy skills stay active."""
+
+    entry = get_skill_evolution_entry(workspace, skill_name_or_path, transaction=transaction)
+    return str(entry.get("state") or STATE_ACTIVE).strip().lower() if entry is not None else STATE_ACTIVE
+
+
+def is_skill_runtime_loadable(
+    workspace: Path,
+    skill_name_or_path: str,
+    *,
+    transaction: AgentAssetTransaction | None = None,
+) -> bool:
+    return skill_runtime_state(workspace, skill_name_or_path, transaction=transaction) in LOADABLE_STATES
+
+
 def can_self_evolve_skill(workspace: Path, skill_name_or_path: str) -> bool:
     """Return whether an existing active Skill can enter patch/tuning.
 
@@ -248,5 +324,7 @@ def can_self_evolve_skill(workspace: Path, skill_name_or_path: str) -> bool:
     entry = get_skill_evolution_entry(workspace, skill_name_or_path)
     if entry is None:
         return True
+    if str(entry.get("state") or STATE_ACTIVE).strip().lower() not in LOADABLE_STATES:
+        return False
     origin = normalize_skill_origin(str(entry.get("skill_origin") or ORIGIN_UNKNOWN))
     return bool(entry.get("evolvable")) and default_evolvable_for_origin(origin)

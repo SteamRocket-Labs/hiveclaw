@@ -2,6 +2,9 @@ import { get, post } from '../core';
 
 export type EvolutionSkillEcosystemSummary = {
   active: number;
+  provisional: number;
+  rolled_back: number;
+  needs_review: number;
   stale: number;
   archived: number;
   evolvable: number;
@@ -19,6 +22,16 @@ export type EvolutionSkillEcosystemItem = {
   target_path?: string | null;
   active_version_hash?: string | null;
   last_candidate_id?: string | null;
+  trial?: {
+    state: string;
+    positive_count: number;
+    positive_threshold: number;
+    negative_count: number;
+    negative_threshold: number;
+    window_days: number;
+    started_at?: string | null;
+    updated_at?: string | null;
+  } | null;
 };
 
 export type EvolutionManifest = {

@@ -313,3 +313,105 @@ def test_load_skill_without_allowed_tools_has_no_scope_guidance(tmp_path):
 
     assert "# Plain" in content
     assert "Tool scope (skill guidance)" not in content
+
+
+def test_load_skill_allows_provisional_with_trial_notice_and_blocks_terminal_states(tmp_path):
+    from app.services.agent_tools import _load_skill
+    from app.services.skill_evolution_registry import ORIGIN_T3_AUTO_CREATED, upsert_skill_evolution_entry
+
+    workspace = tmp_path / "agent"
+    skill_dir = workspace / "skills" / "trial-skill"
+    skill_dir.mkdir(parents=True)
+    target_path = "skills/trial-skill/SKILL.md"
+    (workspace / target_path).write_text(
+        "---\nname: Trial Skill\ndescription: Trial guidance.\n---\n# Trial Skill\nUse it.\n",
+        encoding="utf-8",
+    )
+    upsert_skill_evolution_entry(
+        workspace,
+        skill_name="Trial Skill",
+        target_path=target_path,
+        skill_origin=ORIGIN_T3_AUTO_CREATED,
+        state="provisional",
+        last_candidate_id="cand-trial",
+    )
+
+    provisional = _load_skill(workspace, target_path)
+    assert "provisional trial" in provisional.lower()
+    assert "# Trial Skill" in provisional
+
+    upsert_skill_evolution_entry(
+        workspace,
+        skill_name="Trial Skill",
+        target_path=target_path,
+        skill_origin=ORIGIN_T3_AUTO_CREATED,
+        state="rolled_back",
+        last_candidate_id="cand-trial",
+    )
+    blocked = _load_skill(workspace, target_path)
+    assert "skill_state_blocked" in blocked
+    assert "rolled_back" in blocked
+    assert "# Trial Skill" not in blocked
+
+
+def test_workspace_skill_loader_filters_non_loadable_registry_states(tmp_path):
+    from app.services.skill_evolution_registry import ORIGIN_T3_AUTO_CREATED, upsert_skill_evolution_entry
+    from app.skills.loader import WorkspaceSkillLoader
+
+    for slug in ("active-skill", "trial-skill", "review-skill"):
+        path = tmp_path / "skills" / slug / "SKILL.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            f"---\nname: {slug}\ndescription: test\n---\n# {slug}\n",
+            encoding="utf-8",
+        )
+    review_script = tmp_path / "skills" / "review-skill" / "scripts" / "run.py"
+    review_script.parent.mkdir(parents=True)
+    review_script.write_text("print('must remain blocked')\n", encoding="utf-8")
+    for slug, skill_name, state in (
+        ("active-skill", "active-skill", "active"),
+        ("trial-skill", "trial-skill", "provisional"),
+        ("review-skill", "Review Display Name", "needs_review"),
+    ):
+        upsert_skill_evolution_entry(
+            tmp_path,
+            skill_name=skill_name,
+            target_path=f"skills/{slug}/SKILL.md",
+            skill_origin=ORIGIN_T3_AUTO_CREATED,
+            state=state,
+        )
+
+    names = [skill.metadata.name for skill in WorkspaceSkillLoader().load_from_workspace(tmp_path)]
+    assert names == ["active-skill", "trial-skill"]
+    assert WorkspaceSkillLoader().list_resources(tmp_path, "review-skill") == ()
+
+
+def test_skill_catalog_surfaces_provisional_trial_without_raw_control_paths(monkeypatch, tmp_path):
+    from app.services.agent_context import _load_skills_index
+    from app.services.skill_evolution_registry import ORIGIN_T3_AUTO_CREATED, upsert_skill_evolution_entry
+
+    agent_id = uuid4()
+    workspace = tmp_path / str(agent_id)
+    skill_path = workspace / "skills" / "trial-skill" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text(
+        "---\nname: Trial Skill\ndescription: monitored guidance\n---\n# Trial\n",
+        encoding="utf-8",
+    )
+    upsert_skill_evolution_entry(
+        workspace,
+        skill_name="Trial Skill",
+        target_path="skills/trial-skill/SKILL.md",
+        skill_origin=ORIGIN_T3_AUTO_CREATED,
+        state="provisional",
+        last_candidate_id="cand-trial",
+        metadata={"trial_path": "evolution/skill_trials/cand-trial/trial.json"},
+    )
+    monkeypatch.setattr("app.services.agent_context.TOOL_WORKSPACE", tmp_path)
+    monkeypatch.setattr("app.services.agent_context.PERSISTENT_DATA", tmp_path)
+
+    catalog = _load_skills_index(agent_id)
+
+    assert "Skills on provisional trial" in catalog
+    assert "Trial Skill" in catalog
+    assert "evolution/skill_trials" not in catalog

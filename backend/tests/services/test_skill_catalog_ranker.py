@@ -147,3 +147,26 @@ def test_skill_gatherer_outputs_activation_candidates(tmp_path: Path) -> None:
     assert manifest["value_pointer"]["loader"] == "load_skill"
     assert manifest["surface"]["surface_kind"] == "skill_catalog"
     assert manifest["source_refs"] == ["skills/python-api/SKILL.md"]
+
+
+def test_skill_catalog_uses_evolution_registry_state_and_excludes_blocked_skills(tmp_path: Path) -> None:
+    from app.services.skill_catalog_ranker import rank_skills_for_prompt_with_reasons
+    from app.services.skill_evolution_registry import ORIGIN_T3_AUTO_CREATED, upsert_skill_evolution_entry
+
+    for name, state in (("trial-skill", "provisional"), ("blocked-skill", "needs_review")):
+        upsert_skill_evolution_entry(
+            tmp_path,
+            skill_name=name,
+            target_path=f"skills/{name}/SKILL.md",
+            skill_origin=ORIGIN_T3_AUTO_CREATED,
+            state=state,
+        )
+
+    ranked = rank_skills_for_prompt_with_reasons(
+        tmp_path,
+        [_skill("trial-skill"), _skill("blocked-skill")],
+    )
+
+    assert [item.skill.metadata.name for item in ranked] == ["trial-skill"]
+    assert ranked[0].state == "provisional"
+    assert ranked[0].activation_keys["key_features"]["state"] == ["provisional"]

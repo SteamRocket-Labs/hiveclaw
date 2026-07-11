@@ -34,7 +34,20 @@ const evolutionData = {
       { candidate_id: 'soulcand-auto', status: 'committed', reason: 'ok' },
     ],
   },
-  skill_ecosystem: { summary: { total: 0, active: 0, stale: 0, archived: 0, evolvable: 0, by_origin: {} }, skills: [] },
+  skill_ecosystem: {
+    summary: { total: 1, active: 0, provisional: 1, rolled_back: 0, needs_review: 0, stale: 0, archived: 0, evolvable: 1, by_origin: {} },
+    skills: [
+      {
+        skill_name: 'deploy-checklist',
+        skill_origin: 't3_auto_created',
+        evolvable: true,
+        state: 'provisional',
+        use_count: 2,
+        last_candidate_id: 'skill-trial-1',
+        trial: { state: 'provisional', positive_count: 2, positive_threshold: 3, negative_count: 0, negative_threshold: 2, window_days: 14 },
+      },
+    ],
+  },
   skill_tuning: {
     candidates: [
       { candidate_id: 'skill-trial-1', skill_name: 'deploy-checklist', status: 'provisional' },
@@ -118,5 +131,7 @@ describe('AgentEvolutionSection', () => {
     expect(html).toContain('技能试用中');
     expect(html).toContain('deploy-checklist');
     expect(html).toContain('provisional');
+    expect(html).toContain('2 / 3');
+    expect(html).toContain('0 / 2');
   });
 });

@@ -31,8 +31,9 @@ from app.agents.subagent import (
 )
 from app.agents.subagent_definition import (
     SCOPE_AGENT,
+    SCOPE_SESSION,
     list_subagent_definitions,
-    resolve_subagent_definition,
+    resolve_runtime_subagent_definition,
     validate_subagent_name,
 )
 from app.agents.subagent_memory import make_llm_how_distiller, memory_store_for_agent, memory_store_for_tenant
@@ -578,7 +579,13 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
     resolved = None
     if candidate_definition_name:
         try:
-            resolved = resolve_subagent_definition(candidate_definition_name, agent_id=agent_id, tenant_id=tenant_id)
+            resolved = resolve_runtime_subagent_definition(
+                candidate_definition_name,
+                agent_id=agent_id,
+                tenant_id=tenant_id,
+                workspace=request.context.workspace,
+                session_id=request.context.session_id,
+            )
         except ValueError as exc:
             if definition_name:
                 return _json({"ok": False, "error": str(exc)})
@@ -627,6 +634,10 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
         if str(normalized_args.get("isolation") or "").strip() in {"none", "all", "worktree"}:
             spec.isolation = str(normalized_args["isolation"])  # type: ignore[assignment]
         definition_scope = resolved.scope
+        if definition_scope == SCOPE_SESSION:
+            # A chat trial may execute but cannot create durable memory or
+            # evolve a session-scoped definition into tenant state.
+            spec.has_own_memory = False
     else:
         subagent_type = subagent_type_arg
         if subagent_type not in PUBLIC_BUILTIN_SUBAGENT_TYPES:

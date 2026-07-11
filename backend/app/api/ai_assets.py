@@ -59,8 +59,19 @@ async def get_ai_asset(
     if record is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="AI asset not found")
     history = await ai_asset_service.revision_history(db, tenant_id=tenant_id, asset_id=asset_id, limit=20)
+    usage_events = await ai_asset_service.list_asset_usage_events(
+        db,
+        tenant_id=tenant_id,
+        asset_id=asset_id,
+        limit=100,
+    )
     active = history[0] if history else None
-    return {"asset": ai_asset_service.asset_payload(record), "active_revision": active, "history": history}
+    return {
+        "asset": ai_asset_service.asset_payload(record),
+        "active_revision": active,
+        "history": history,
+        "usage_events": usage_events,
+    }
 
 
 @router.get("/{asset_id}/revisions")

@@ -10,7 +10,7 @@ import pytest
 def test_approval_execution_envelope_round_trips_every_runtime_authority() -> None:
     from app.agents.delegation_token import DelegationToken
     from app.core.execution_context import ExecutionIdentity
-    from app.runtime.ccplus_contracts import PermissionMode, PermissionProfileV1, SandboxProfile
+    from app.runtime.ccplus_contracts import PermissionMode, PermissionProfileV1, ResolvedAssetRefV1, SandboxProfile
     from app.services.approval_ticket import (
         build_approval_execution_envelope,
         hash_approval_execution_envelope,
@@ -57,6 +57,17 @@ def test_approval_execution_envelope_round_trips_every_runtime_authority() -> No
         granted_capabilities=frozenset({"workspace.file.write"}),
         inherit_parent_capabilities=False,
     )
+    context.resolved_asset_refs = (
+        ResolvedAssetRefV1(
+            asset_id=str(uuid.uuid4()),
+            asset_type="skill",
+            native_key=f"skill:agent:{agent_id}:report",
+            revision_id=str(uuid.uuid4()),
+            revision_version=4,
+            content_hash="sha256:report-v4",
+            source_ref=f"agent:{agent_id}/skills/report",
+        ),
+    )
 
     envelope = build_approval_execution_envelope(
         context=context,
@@ -94,6 +105,7 @@ def test_approval_execution_envelope_round_trips_every_runtime_authority() -> No
     assert restored.emit_runtime_hooks is True
     assert restored.plan_mode_interactive_available is True
     assert restored.plan_mode_unattended_available is False
+    assert restored.resolved_asset_refs == context.resolved_asset_refs
 
 
 def test_approval_execution_envelope_rejects_tamper_and_wrong_schema() -> None:
@@ -131,6 +143,36 @@ def test_approval_execution_envelope_rejects_tamper_and_wrong_schema() -> None:
             wrong_schema,
             expected_hash=hash_approval_execution_envelope(wrong_schema),
         )
+
+
+def test_legacy_v1_envelope_remains_readable_only_as_an_empty_asset_ref_snapshot() -> None:
+    from app.services.approval_ticket import (
+        build_approval_execution_envelope,
+        hash_approval_execution_envelope,
+        restore_approval_execution_envelope,
+    )
+    from app.tools.runtime import ToolExecutionContext
+
+    context = ToolExecutionContext(
+        agent_id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        tenant_id=str(uuid.uuid4()),
+        workspace=Path("/tmp/legacy-v1"),
+    )
+    envelope = build_approval_execution_envelope(
+        context=context,
+        tool_call_id="legacy-call",
+        emit_runtime_hooks=True,
+    )
+    envelope["schema"] = "hive.approval_execution_envelope.v1"
+    envelope.pop("resolved_asset_refs")
+
+    restored = restore_approval_execution_envelope(
+        envelope,
+        expected_hash=hash_approval_execution_envelope(envelope),
+    )
+
+    assert restored.resolved_asset_refs == ()
 
 
 def test_approval_execution_envelope_requires_tenant_and_requester_authority() -> None:

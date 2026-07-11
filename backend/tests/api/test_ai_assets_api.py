@@ -103,3 +103,41 @@ async def test_failed_rollback_persists_projection_failure_evidence(monkeypatch)
     db.rollback.assert_awaited_once()
     mark_failure.assert_awaited_once()
     db.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_asset_detail_returns_durable_version_bound_usage_events(monkeypatch) -> None:
+    from app.api import ai_assets as api
+
+    tenant_id = uuid4()
+    asset_id = uuid4()
+    record = SimpleNamespace(id=asset_id)
+    monkeypatch.setattr(api.ai_asset_service, "get_asset_record", AsyncMock(return_value=record))
+    monkeypatch.setattr(api.ai_asset_service, "asset_payload", lambda _record: {"id": str(asset_id)})
+    monkeypatch.setattr(api.ai_asset_service, "revision_history", AsyncMock(return_value=[]))
+    usage_events = AsyncMock(
+        return_value=[
+            {
+                "id": "usage-1",
+                "usage_kind": "tool_consumption",
+                "revision_version": 3,
+                "tool_call_id": "call-1",
+            }
+        ]
+    )
+    monkeypatch.setattr(api.ai_asset_service, "list_asset_usage_events", usage_events)
+    db = object()
+
+    result = await api.get_ai_asset(
+        asset_id=asset_id,
+        current_user=SimpleNamespace(tenant_id=tenant_id, role="org_admin"),
+        db=db,
+    )
+
+    assert result["usage_events"][0]["revision_version"] == 3
+    usage_events.assert_awaited_once_with(
+        db,
+        tenant_id=tenant_id,
+        asset_id=asset_id,
+        limit=100,
+    )

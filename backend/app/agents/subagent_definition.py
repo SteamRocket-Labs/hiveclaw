@@ -20,6 +20,7 @@ import logging
 import hashlib
 import json
 import re
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
@@ -48,6 +49,7 @@ _SAFE_SUBAGENT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 SCOPE_AGENT = "agent"
 SCOPE_TENANT = "tenant"
 SCOPE_BUILTIN = "builtin"
+SCOPE_SESSION = "session"
 
 
 def validate_subagent_name(name: str) -> str:
@@ -381,6 +383,38 @@ def resolve_subagent_definition(
         if spec is not None:
             return ResolvedSubagentDefinition(spec=spec, scope=SCOPE_TENANT)
     return None
+
+
+def resolve_runtime_subagent_definition(
+    name: str,
+    *,
+    agent_id: object | None,
+    tenant_id: object | None,
+    workspace: Path | str,
+    session_id: object | None,
+    agent_data_dir: Path | str | None = None,
+) -> ResolvedSubagentDefinition | None:
+    """Resolve the current session overlay before durable Agent/Tenant scopes."""
+
+    raw_session_id = str(session_id or "").strip()
+    if raw_session_id:
+        try:
+            safe_session_id = str(uuid.UUID(raw_session_id))
+        except ValueError:
+            safe_session_id = ""
+        if safe_session_id:
+            root = Path(workspace).resolve()
+            overlay = (root / "session_extensions" / safe_session_id / "subagents").resolve()
+            if overlay.is_relative_to(root):
+                spec = SubagentDefinitionStore(overlay).load(name)
+                if spec is not None:
+                    return ResolvedSubagentDefinition(spec=spec, scope=SCOPE_SESSION)
+    return resolve_subagent_definition(
+        name,
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        agent_data_dir=agent_data_dir,
+    )
 
 
 def _definition_row(spec: SubagentSpec, scope: str) -> dict:

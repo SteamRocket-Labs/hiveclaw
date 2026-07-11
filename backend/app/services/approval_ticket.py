@@ -21,7 +21,7 @@ class ApprovalTicketError(RuntimeError):
     """Raised when an approval cannot authorize exactly one execution."""
 
 
-_APPROVAL_EXECUTION_ENVELOPE_SCHEMA = "hive.approval_execution_envelope.v1"
+_APPROVAL_EXECUTION_ENVELOPE_SCHEMA = "hive.approval_execution_envelope.v2"
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +51,7 @@ class ApprovalExecutionEnvelope:
     emit_runtime_hooks: bool
     plan_mode_interactive_available: bool
     plan_mode_unattended_available: bool
+    resolved_asset_refs: tuple[Any, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,6 +160,7 @@ def build_approval_execution_envelope(
         "origin_channel": str(context.origin_channel) if context.origin_channel is not None else None,
         "round_state": _json_safe(dict(context.round_state or {})),
         "t0_refs": [str(ref) for ref in tuple(context.t0_refs or ()) if str(ref).strip()],
+        "resolved_asset_refs": _json_safe(tuple(getattr(context, "resolved_asset_refs", ()) or ())),
         "emit_runtime_hooks": bool(emit_runtime_hooks),
         "plan_mode_interactive_available": bool(plan_mode_interactive_available),
         "plan_mode_unattended_available": bool(plan_mode_unattended_available),
@@ -178,11 +180,14 @@ def restore_approval_execution_envelope(
 
     from app.agents.delegation_token import DelegationToken
     from app.core.execution_context import ExecutionIdentity
-    from app.runtime.ccplus_contracts import SandboxProfile, build_permission_profile
+    from app.runtime.ccplus_contracts import ResolvedAssetRefV1, SandboxProfile, build_permission_profile
 
     if not isinstance(envelope, dict):
         raise ApprovalTicketError("approval execution envelope must be an object")
-    if envelope.get("schema") != _APPROVAL_EXECUTION_ENVELOPE_SCHEMA:
+    if envelope.get("schema") not in {
+        "hive.approval_execution_envelope.v1",
+        _APPROVAL_EXECUTION_ENVELOPE_SCHEMA,
+    }:
         raise ApprovalTicketError("unsupported approval execution envelope schema")
     actual_hash = hash_approval_execution_envelope(envelope)
     if not expected_hash or not hmac.compare_digest(actual_hash, str(expected_hash)):
@@ -273,6 +278,27 @@ def restore_approval_execution_envelope(
     t0_refs = envelope.get("t0_refs") or []
     if not isinstance(t0_refs, list):
         raise ApprovalTicketError("approval execution envelope evidence refs are invalid")
+    raw_asset_refs = envelope.get("resolved_asset_refs") or []
+    if not isinstance(raw_asset_refs, list):
+        raise ApprovalTicketError("approval execution envelope asset refs are invalid")
+    resolved_asset_refs = []
+    try:
+        for item in raw_asset_refs:
+            if not isinstance(item, dict):
+                raise TypeError("asset ref must be an object")
+            resolved_asset_refs.append(
+                ResolvedAssetRefV1(
+                    asset_id=str(item["asset_id"]),
+                    asset_type=str(item["asset_type"]),
+                    native_key=str(item["native_key"]),
+                    revision_id=str(item["revision_id"]),
+                    revision_version=int(item["revision_version"]),
+                    content_hash=str(item["content_hash"]),
+                    source_ref=str(item["source_ref"]) if item.get("source_ref") is not None else None,
+                )
+            )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ApprovalTicketError("approval execution envelope asset refs are invalid") from exc
     return ApprovalExecutionEnvelope(
         tenant_id=tenant_id,
         agent_id=agent_id,
@@ -292,6 +318,7 @@ def restore_approval_execution_envelope(
         emit_runtime_hooks=bool(envelope.get("emit_runtime_hooks", True)),
         plan_mode_interactive_available=bool(envelope.get("plan_mode_interactive_available", False)),
         plan_mode_unattended_available=bool(envelope.get("plan_mode_unattended_available", False)),
+        resolved_asset_refs=tuple(resolved_asset_refs),
     )
 
 
@@ -497,9 +524,18 @@ async def consume_approval_ticket(
             raise ApprovalTicketError("approval ticket expired")
         if approval.consumed_at is not None:
             raise ApprovalTicketError("approval ticket already consumed")
+        if approval.execution_status != "approved":
+            raise ApprovalTicketError(
+                f"approval ticket execution state requires reapproval: {approval.execution_status}"
+            )
         tool_name = str(approval.tool_name or "").strip()
         if not tool_name:
             raise ApprovalTicketError("approval ticket has no tool")
+        if (
+            tool_name in {"load_skill", "run_skill_tool", "spawn_subagent", "call_mcp_tool"}
+            or tool_name.startswith("mcp__")
+        ) and (approval.execution_envelope or {}).get("schema") != _APPROVAL_EXECUTION_ENVELOPE_SCHEMA:
+            raise ApprovalTicketError("approval ticket asset revision binding requires reapproval")
         arguments = normalize_tool_arguments(approval.normalized_arguments)
         input_hash = hash_tool_input(tool_name, arguments)
         if not approval.input_hash or input_hash != approval.input_hash:

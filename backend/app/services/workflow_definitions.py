@@ -48,6 +48,7 @@ class WorkflowDefinitionError(ValueError):
 class ResolvedDefinition:
     record: WorkflowDefinitionRecord
     compiled: CompiledWorkflow
+    asset_ref: object | None = None
 
 
 class WorkflowDefinitionService:
@@ -303,34 +304,36 @@ class WorkflowDefinitionService:
                 f"agent {agent_id} is not authorized to execute definition {name!r} (call_policy/visibility)"
             )
         compiled = compile_workflow(record.definition_json)
-        try:
-            async with self._session(tenant_id) as usage_session:
-                from app.services.ai_assets import record_asset_usage
+        async with self._session(tenant_id) as asset_session:
+            from app.services.ai_asset_adapters import project_workflow
+            from app.services.ai_assets import register_projection, resolve_asset_ref
 
-                await record_asset_usage(
-                    usage_session,
+            native_key = f"workflow:{record.name}@{record.definition_version}"
+            asset_ref = await resolve_asset_ref(
+                asset_session,
+                tenant_id=tenant_id,
+                asset_type="workflow",
+                native_key=native_key,
+            )
+            if asset_ref is None:
+                await register_projection(
+                    asset_session,
+                    project_workflow(record),
+                    change_source="reconcile",
+                    actor_agent_id=agent_id,
+                    change_message="Execution-bound Workflow asset reconciliation",
+                )
+                asset_ref = await resolve_asset_ref(
+                    asset_session,
                     tenant_id=tenant_id,
                     asset_type="workflow",
-                    native_key=f"workflow:{record.name}",
-                    evidence={
-                        "kind": "workflow_resolution",
-                        "agent_id": str(agent_id),
-                        "definition_id": str(record.id),
-                        "definition_version": record.definition_version,
-                        "definition_hash": record.definition_hash,
-                    },
+                    native_key=native_key,
                 )
-        except Exception as exc:
-            # Usage projection must not turn an already-authorized workflow into
-            # an execution failure; reconciliation exposes any catalog drift.
-            logger.warning(
-                "Workflow asset usage projection failed: tenant=%s definition=%s agent=%s error=%s",
-                tenant_id,
-                record.id,
-                agent_id,
-                exc,
-            )
-        return ResolvedDefinition(record=record, compiled=compiled)
+            if asset_ref is None:
+                raise WorkflowDefinitionError(
+                    f"definition {name!r} v{record.definition_version} has no immutable AI asset revision"
+                )
+        return ResolvedDefinition(record=record, compiled=compiled, asset_ref=asset_ref)
 
     # ── promote (§10 decision 4) ─────────────────────────────────
 

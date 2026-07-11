@@ -46,6 +46,26 @@ export interface AIAssetDetail {
   asset: AIAssetRecord;
   active_revision: AIAssetRevision | null;
   history: AIAssetRevision[];
+  usage_events: AIAssetUsageEvent[];
+}
+
+export interface AIAssetUsageEvent {
+  id: string;
+  asset_id: string;
+  asset_revision_id: string;
+  revision_version: number;
+  content_hash: string;
+  native_key: string;
+  source_ref: string | null;
+  usage_kind: string;
+  usage_units: number;
+  idempotency_key: string;
+  runtime_task_id: string | null;
+  session_id: string | null;
+  trace_id: string | null;
+  span_id: string | null;
+  tool_call_id: string | null;
+  created_at: string | null;
 }
 
 export interface AIAssetListFilters {

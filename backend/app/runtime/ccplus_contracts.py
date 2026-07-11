@@ -222,6 +222,24 @@ class ToolCallLifecycleV1:
 
 
 @dataclass(frozen=True, slots=True)
+class ResolvedAssetRefV1:
+    """Immutable identity of one AI asset revision consumed by a runtime.
+
+    Native selectors such as a Skill display name are intentionally absent:
+    the ref is minted only after the native runtime has resolved the concrete
+    asset and the control plane has bound its active ConfigRevision.
+    """
+
+    asset_id: str
+    asset_type: str
+    native_key: str
+    revision_id: str
+    revision_version: int
+    content_hash: str
+    source_ref: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class ToolExecutionFrameV1:
     """Execution-side frame after a tool call passes schema and governance."""
 
@@ -241,6 +259,7 @@ class ToolExecutionFrameV1:
     status: str = "pending"
     invocation_span_id: str | None = None
     t0_refs: tuple[str, ...] = ()
+    resolved_asset_refs: tuple[ResolvedAssetRefV1, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

@@ -130,6 +130,45 @@ async def test_deprecated_resolves_only_when_explicitly_allowed(service, tenant_
     assert resolved.compiled.definition.name == "dp"
 
 
+async def test_workflow_resolution_returns_version_ref_without_counting_a_run(
+    service,
+    tenant_id,
+    actor_user_id,
+    owner_sessionmaker,
+):
+    from sqlalchemy import select
+
+    from app.models.ai_asset import AIAssetRecord
+
+    record = await service.create_draft(
+        tenant_id=tenant_id,
+        definition_data=_definition_data("asset-bound"),
+        created_by_user_id=actor_user_id,
+    )
+    await service.activate(record.id, tenant_id=tenant_id, actor_user_id=actor_user_id)
+
+    resolved = await service.resolve_for_execution(
+        tenant_id=tenant_id,
+        name="asset-bound",
+        agent_id=uuid.uuid4(),
+        version=record.definition_version,
+    )
+
+    assert resolved.asset_ref is not None
+    assert resolved.asset_ref.native_key == f"workflow:asset-bound@{record.definition_version}"
+    assert resolved.asset_ref.revision_id
+    async with tenant_scoped_session(tenant_id, session_factory=owner_sessionmaker) as db:
+        asset = (
+            await db.execute(
+                select(AIAssetRecord).where(
+                    AIAssetRecord.tenant_id == tenant_id,
+                    AIAssetRecord.native_key == resolved.asset_ref.native_key,
+                )
+            )
+        ).scalar_one()
+        assert asset.usage_count == 0
+
+
 async def test_agent_scope_visibility_only_owner_executes(service, tenant_id, actor_user_id):
     owner_agent = uuid.uuid4()
     other_agent = uuid.uuid4()

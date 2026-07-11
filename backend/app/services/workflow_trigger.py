@@ -432,6 +432,33 @@ async def fire_workflow_for_trigger(
             )
         return WorkflowTriggerFireResult(status="invalid_ref", reason=reason, session_id=parent_session_id)
 
+    from app.database import tenant_scoped_session
+    from app.services.ai_assets import record_resolved_asset_usage
+
+    async with tenant_scoped_session(
+        tenant_id,
+        session_factory=session_factory,
+        require_tenant=True,
+        source="workflow_run_asset_usage",
+    ) as usage_db:
+        recorded = await record_resolved_asset_usage(
+            usage_db,
+            tenant_id=tenant_id,
+            asset_ref=resolved.asset_ref,
+            evidence={
+                "kind": "workflow_run",
+                "idempotency_key": f"workflow-run:{handle.run_id}",
+                "runtime_task_id": str(handle.run_id),
+                "session_id": parent_session_id,
+                "agent_id": str(agent_id),
+                "definition_id": str(resolved.record.id),
+                "definition_version": resolved.record.definition_version,
+                "definition_hash": resolved.record.definition_hash,
+            },
+        )
+        if not recorded:
+            raise RuntimeError("workflow asset revision drifted before usage evidence commit")
+
     if parent_session_id:
         await _append_workflow_trigger_session_event(
             tenant_id=tenant_id,

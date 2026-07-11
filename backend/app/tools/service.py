@@ -6,7 +6,6 @@ import asyncio
 import hashlib
 import inspect
 import json as _json
-import logging
 import re
 import traceback
 import uuid
@@ -285,6 +284,20 @@ def _extract_tool_error_payload(result: str) -> dict[str, Any] | None:
         return None
 
 
+def _tool_result_failed(result: Any) -> bool:
+    rendered = str(result or "")
+    if _extract_tool_error_payload(rendered) is not None or rendered.lstrip().startswith("❌"):
+        return True
+    try:
+        payload = _json.loads(rendered)
+    except (TypeError, ValueError):
+        return False
+    return isinstance(payload, dict) and (
+        payload.get("ok") is False
+        or str(payload.get("status") or "").lower() in {"error", "failed", "rejected", "blocked"}
+    )
+
+
 def _capture_workspace_mutation_evidence(
     *,
     tool_name: str,
@@ -301,16 +314,7 @@ def _capture_workspace_mutation_evidence(
     # A rejected path-bearing write did not establish ownership. Structured
     # execution artifacts remain valid even when a command exits non-zero.
     rendered_result = str(result)
-    failed = _extract_tool_error_payload(rendered_result) is not None
-    if not failed:
-        try:
-            parsed_result = _json.loads(rendered_result)
-        except (TypeError, ValueError):
-            parsed_result = None
-        failed = isinstance(parsed_result, dict) and (
-            parsed_result.get("ok") is False
-            or str(parsed_result.get("status") or "").lower() in {"error", "failed", "rejected"}
-        )
+    failed = _tool_result_failed(rendered_result)
     paths = tool_session_write_paths(
         "" if failed else tool_name,
         {} if failed else arguments,
@@ -492,6 +496,7 @@ def _record_tool_execution_frame(
     status: str,
     result: Any | None = None,
     started_at: str | None = None,
+    trace_metadata_sink: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     now = datetime.now(UTC).isoformat()
     frame = ToolExecutionFrameV1(
@@ -505,9 +510,13 @@ def _record_tool_execution_frame(
         completed_at=now if status in {"completed", "failed", "blocked"} else None,
         status=status,
         t0_refs=tuple(str(ref) for ref in (runtime_context.t0_refs or ()) if str(ref).strip()),
+        resolved_asset_refs=tuple(runtime_context.resolved_asset_refs or ()),
     )
     payload = _json_safe_runtime_value(asdict(frame))
     runtime_context.tool_execution_frames.append(payload)
+    if trace_metadata_sink is not None:
+        trace_metadata_sink["tool_execution_frame"] = payload
+        trace_metadata_sink["resolved_asset_refs"] = payload.get("resolved_asset_refs", [])
     return payload
 
 
@@ -569,6 +578,9 @@ def _record_final_tool_decision(
     spec = tool_spec_v1(tool_name)
     capability_snapshot = {
         "descriptor": asdict(spec) if spec is not None else {"tool_name": tool_name},
+        "resolved_asset_refs": [
+            _json_safe_runtime_value(asdict(ref)) for ref in tuple(runtime_context.resolved_asset_refs or ())
+        ],
     }
     live_capability_snapshot = getattr(governance_context, "capability_snapshot", None)
     if live_capability_snapshot is not None:
@@ -696,6 +708,8 @@ class ToolRuntimeService:
     plan_mode_service: Any | None = None
     approval_ticket_consumer: Any | None = None
     approval_ticket_completer: Any | None = None
+    asset_ref_resolver: Callable[..., Any] | None = None
+    asset_usage_recorder: Callable[..., Any] | None = None
 
     def __post_init__(self) -> None:
         if self.backend is None:
@@ -727,6 +741,11 @@ class ToolRuntimeService:
 
             self.approval_ticket_consumer = self.approval_ticket_consumer or consume_approval_ticket
             self.approval_ticket_completer = self.approval_ticket_completer or complete_approval_ticket
+        if self.asset_ref_resolver is None or self.asset_usage_recorder is None:
+            from app.services.ai_asset_resolution import record_tool_asset_usage, resolve_tool_asset_refs
+
+            self.asset_ref_resolver = self.asset_ref_resolver or resolve_tool_asset_refs
+            self.asset_usage_recorder = self.asset_usage_recorder or record_tool_asset_usage
 
     @staticmethod
     async def _emit_loaded_instruction_hook(
@@ -737,7 +756,7 @@ class ToolRuntimeService:
         tool_call_id: str,
         result: str | ToolContentEnvelope,
     ) -> None:
-        if tool_name != "load_skill" or _extract_tool_error_payload(str(result)):
+        if tool_name != "load_skill" or _tool_result_failed(result):
             return
         skill_name = str(arguments.get("name") or "").strip()
         if not skill_name:
@@ -763,67 +782,27 @@ class ToolRuntimeService:
             },
         )
 
-    async def _record_ai_asset_usage_for_tool(
+    async def _record_resolved_asset_usage_for_tool(
         self,
         *,
         tool_name: str,
-        arguments: dict,
         context: ToolExecutionContext,
         tool_call_id: str,
         result: str | ToolContentEnvelope,
     ) -> None:
-        if tool_name not in {"load_skill", "spawn_subagent"} or not context.tenant_id:
+        if not context.resolved_asset_refs or _tool_result_failed(result):
             return
-        if _extract_tool_error_payload(str(result)):
-            return
-        try:
-            tenant_id = uuid.UUID(str(context.tenant_id))
-            evidence = {
-                "kind": "tool_consumption",
-                "tool_name": tool_name,
-                "idempotency_key": f"tool:{context.session_id or 'none'}:{tool_call_id}",
-                "session_id": str(context.session_id) if context.session_id else None,
-                "agent_id": str(context.agent_id),
-            }
-            from app.services.ai_assets import record_runtime_asset_usage
+        from app.services.ai_asset_resolution import record_tool_asset_usage
 
-            if tool_name == "load_skill":
-                skill_name = str(arguments.get("name") or "").strip()
-                if not skill_name:
-                    return
-                recorded = await record_runtime_asset_usage(
-                    tenant_id=tenant_id,
-                    asset_type="skill",
-                    native_key=f"skill:agent:{context.agent_id}:{skill_name}",
-                    evidence=evidence,
-                )
-                if recorded:
-                    return
-                await record_runtime_asset_usage(
-                    tenant_id=tenant_id,
-                    asset_type="skill",
-                    source_ref=f"skills/{skill_name}",
-                    evidence=evidence,
-                )
-                return
-            payload = _json.loads(str(result))
-            if not payload.get("ok") or payload.get("definition_scope") not in {"agent", "tenant"}:
-                return
-            scope = str(payload["definition_scope"])
-            owner = context.agent_id if scope == "agent" else tenant_id
-            await record_runtime_asset_usage(
-                tenant_id=tenant_id,
-                asset_type="subagent",
-                native_key=f"subagent:{scope}:{owner}:{payload['subagent']}",
-                evidence=evidence,
+        recorder = self.asset_usage_recorder or record_tool_asset_usage
+        await _maybe_await(
+            recorder(
+                asset_refs=tuple(context.resolved_asset_refs),
+                context=context,
+                tool_name=tool_name,
+                tool_call_id=tool_call_id,
             )
-        except Exception as exc:  # noqa: BLE001 - evidence projection cannot break the tool result
-            logging.getLogger(__name__).warning(
-                "[ToolService] AI asset usage projection failed: tool=%s agent=%s error=%s",
-                tool_name,
-                context.agent_id,
-                exc,
-            )
+        )
 
     async def _load_capability_group_policies(self, runtime_context: ToolExecutionContext) -> dict[str, bool]:
         policy_loader = self.capability_group_policy_loader or self.pack_policy_loader
@@ -904,6 +883,7 @@ class ToolRuntimeService:
         trace_metadata_sink: dict[str, Any] | None = None,
         workspace_override: Path | str | None = None,
         _approval_decision: ApprovalDecisionSet | None = None,
+        _expected_asset_refs: tuple[Any, ...] | None = None,
     ) -> str | ToolContentEnvelope:
         effective_tool_call_id = tool_call_id or _new_runtime_tool_call_id()
         if _approval_decision is not None:
@@ -1109,6 +1089,33 @@ class ToolRuntimeService:
             original_arguments=original_arguments,
             effective_arguments=dict(arguments or {}),
         )
+        from app.services.ai_asset_resolution import resolved_asset_refs_match, resolve_tool_asset_refs
+
+        resolver = self.asset_ref_resolver or resolve_tool_asset_refs
+        resolved_refs = await _maybe_await(
+            resolver(tool_name=tool_name, arguments=dict(arguments or {}), context=runtime_context)
+        )
+        runtime_context.resolved_asset_refs = tuple(resolved_refs or ())
+        if _expected_asset_refs is not None and not resolved_asset_refs_match(
+            tuple(_expected_asset_refs), runtime_context.resolved_asset_refs
+        ):
+            _record_tool_lifecycle(
+                runtime_context,
+                tool_call_id=effective_tool_call_id,
+                tool_name=tool_name,
+                state="blocked",
+                original_arguments=original_arguments,
+                effective_arguments=dict(arguments or {}),
+                governance_decisions=("approval_asset_revision_drift",),
+            )
+            return render_tool_error(
+                tool_name=tool_name,
+                error_class="approval_asset_revision_drift",
+                message="The approved AI asset revision is no longer the active resolved revision.",
+                provider="approval_execution_kernel",
+                retryable=False,
+                actionable_hint="Review the new asset revision and submit a new approval request.",
+            )
         l2_policy_block = await self._l2_extension_policy_block(tool_name, runtime_context)
         if l2_policy_block:
             _record_tool_lifecycle(
@@ -1266,11 +1273,18 @@ class ToolRuntimeService:
             # logging / error extraction, but return the value untouched.
             result_text = str(result)
             tool_error_payload = _extract_tool_error_payload(result_text)
+            tool_failed = _tool_result_failed(result)
+            if tool_failed and tool_error_payload is None:
+                tool_error_payload = {
+                    "error_class": "legacy_tool_error",
+                    "message": result_text[:500],
+                    "retryable": False,
+                }
             _record_tool_lifecycle(
                 runtime_context,
                 tool_call_id=effective_tool_call_id,
                 tool_name=tool_name,
-                state="completed",
+                state="failed" if tool_failed else "completed",
                 original_arguments=original_arguments,
                 effective_arguments=dict(arguments or {}),
             )
@@ -1327,21 +1341,31 @@ class ToolRuntimeService:
                         )
                     )
             if emit_runtime_hooks:
-                post_hook_result = await self._emit_post_tool_hook(
-                    tool_name,
-                    arguments,
-                    result_text,
-                    runtime_context,
-                    tool_call_id=effective_tool_call_id,
-                    source="tool_runtime_service",
-                )
-                if post_hook_result and post_hook_result.output_rewrite is not None:
-                    rewrite = post_hook_result.output_rewrite
-                    return (
-                        rewrite
-                        if isinstance(rewrite, str)
-                        else _json.dumps(rewrite, ensure_ascii=False, sort_keys=True)
+                if tool_failed:
+                    await self._emit_tool_failure_hook(
+                        tool_name,
+                        arguments,
+                        result_text,
+                        runtime_context,
+                        tool_call_id=effective_tool_call_id,
+                        source="tool_runtime_service",
                     )
+                else:
+                    post_hook_result = await self._emit_post_tool_hook(
+                        tool_name,
+                        arguments,
+                        result_text,
+                        runtime_context,
+                        tool_call_id=effective_tool_call_id,
+                        source="tool_runtime_service",
+                    )
+                    if post_hook_result and post_hook_result.output_rewrite is not None:
+                        rewrite = post_hook_result.output_rewrite
+                        return (
+                            rewrite
+                            if isinstance(rewrite, str)
+                            else _json.dumps(rewrite, ensure_ascii=False, sort_keys=True)
+                        )
             return result
         except asyncio.TimeoutError:
             rendered = render_tool_error(
@@ -1369,6 +1393,7 @@ class ToolRuntimeService:
                 arguments=arguments,
                 status="failed",
                 result={"error": "timeout", "message": rendered[:500]},
+                trace_metadata_sink=trace_metadata_sink,
             )
             if emit_runtime_hooks:
                 await self._emit_tool_failure_hook(
@@ -1422,6 +1447,7 @@ class ToolRuntimeService:
                 arguments=arguments,
                 status="failed",
                 result={"error": type(exc).__name__, "message": str(exc)[:500]},
+                trace_metadata_sink=trace_metadata_sink,
             )
             if emit_runtime_hooks:
                 await self._emit_tool_failure_hook(
@@ -1599,6 +1625,7 @@ class ToolRuntimeService:
                 trace_metadata_sink=trace_metadata,
                 workspace_override=envelope.workspace,
                 _approval_decision=decision,
+                _expected_asset_refs=tuple(envelope.resolved_asset_refs),
             )
         except Exception as exc:
             await _maybe_await(
@@ -1722,6 +1749,15 @@ class ToolRuntimeService:
             context=context,
         )
 
+        if not context.resolved_asset_refs:
+            from app.services.ai_asset_resolution import resolve_tool_asset_refs
+
+            resolver = self.asset_ref_resolver or resolve_tool_asset_refs
+            context.resolved_asset_refs = tuple(
+                await _maybe_await(resolver(tool_name=tool_name, arguments=dict(arguments or {}), context=context))
+                or ()
+            )
+
         async def _execute_request(inner_request: ToolExecutionRequest) -> str | ToolContentEnvelope:
             registry_result = await _maybe_await(self.registry.try_execute(inner_request))
             if registry_result is not None:
@@ -1737,6 +1773,7 @@ class ToolRuntimeService:
             executor=self.backend.name if self.backend else "unknown",
             arguments=arguments,
             status="executing",
+            trace_metadata_sink=trace_metadata_sink,
         )
         try:
             from app.services.session_workspace_snapshot import async_agent_workspace_lock
@@ -1783,6 +1820,7 @@ class ToolRuntimeService:
                 status="failed",
                 result={"error": type(exc).__name__, "message": str(exc)[:500]},
                 started_at=started_frame.get("started_at"),
+                trace_metadata_sink=trace_metadata_sink,
             )
             if owns_lifecycle:
                 _record_tool_lifecycle(
@@ -1795,22 +1833,24 @@ class ToolRuntimeService:
                     governance_decisions=("tool_execution_error",),
                 )
             raise
+        result_failed = _tool_result_failed(result)
         _record_tool_execution_frame(
             context,
             tool_call_id=tool_call_id,
             tool_name=tool_name,
             executor=self.backend.name if self.backend else "unknown",
             arguments=arguments,
-            status="completed",
+            status="failed" if result_failed else "completed",
             result=str(result),
             started_at=started_frame.get("started_at"),
+            trace_metadata_sink=trace_metadata_sink,
         )
         if owns_lifecycle:
             _record_tool_lifecycle(
                 context,
                 tool_call_id=tool_call_id,
                 tool_name=tool_name,
-                state="completed",
+                state="failed" if result_failed else "completed",
                 original_arguments=original_arguments,
                 effective_arguments=dict(arguments or {}),
             )
@@ -1821,9 +1861,8 @@ class ToolRuntimeService:
             tool_call_id=tool_call_id,
             result=result,
         )
-        await self._record_ai_asset_usage_for_tool(
+        await self._record_resolved_asset_usage_for_tool(
             tool_name=tool_name,
-            arguments=arguments,
             context=context,
             tool_call_id=tool_call_id,
             result=result,

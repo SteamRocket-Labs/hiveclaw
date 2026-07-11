@@ -84,18 +84,18 @@ def test_native_runtime_consumers_record_ai_asset_usage_evidence() -> None:
     from app.tools.service import ToolRuntimeService
 
     assert "record_asset_usage" in _source("app.services.invocation_trace", "record_invocation_span")
-    assert "_record_ai_asset_usage_for_tool" in inspect.getsource(ToolRuntimeService.execute_with_context)
+    assert "_record_resolved_asset_usage_for_tool" in inspect.getsource(ToolRuntimeService.execute_with_context)
     assert not hasattr(ToolRuntimeService, "_execute_without_governance")
-    tool_usage_source = inspect.getsource(ToolRuntimeService._record_ai_asset_usage_for_tool)
-    assert '"load_skill"' in tool_usage_source
-    assert '"spawn_subagent"' in tool_usage_source
-    assert "record_runtime_asset_usage" in tool_usage_source
-    assert "skill:agent:" in tool_usage_source
-    assert "record_asset_usage" in inspect.getsource(WorkflowDefinitionService.resolve_for_execution)
-    assert "record_asset_usage" in _source(
+    tool_usage_source = inspect.getsource(ToolRuntimeService._record_resolved_asset_usage_for_tool)
+    assert "record_tool_asset_usage" in tool_usage_source
+    assert "arguments.get" not in tool_usage_source
+    assert "resolve_tool_asset_refs" in inspect.getsource(ToolRuntimeService.execute)
+    assert "record_asset_usage" not in inspect.getsource(WorkflowDefinitionService.resolve_for_execution)
+    assert "asset_ref" in inspect.getsource(WorkflowDefinitionService.resolve_for_execution)
+    assert "record_asset_usage" not in _source(
         "app.services.external_capabilities.activation", "activate_external_extension_for_agent"
     )
-    assert "record_asset_usage" in _source(
+    assert "record_asset_usage" not in _source(
         "app.services.external_capabilities.activation", "try_external_extension_in_chat"
     )
 

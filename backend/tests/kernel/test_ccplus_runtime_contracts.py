@@ -125,6 +125,7 @@ def test_ccplus_v1_profiles_default_to_governed_safe_values():
         ToolExecutionFrameV1,
         ToolResultV1,
         ToolSpecV1,
+        ResolvedAssetRefV1,
         TurnStateV1,
         TurnStatus,
         TruthEvidencePackV1,
@@ -167,14 +168,25 @@ def test_ccplus_v1_profiles_default_to_governed_safe_values():
     assert tool_call.lifecycle_state == "validated"
     assert tool_call.governance_decisions[-1] == "l1_missing_policy_escalate_l3"
 
+    asset_ref = ResolvedAssetRefV1(
+        asset_id="asset-1",
+        asset_type="skill",
+        native_key="skill:agent:a:research",
+        revision_id="revision-3",
+        revision_version=3,
+        content_hash="sha256:skill-v3",
+        source_ref="agent:a/skills/research",
+    )
     execution = ToolExecutionFrameV1(
         tool_call_id="call-1",
         tool_name="send_email",
         executor="tool_runtime_service",
         sandbox_profile=SandboxProfile.EXTERNAL_SANDBOX,
         input_hash="sha256:input",
+        resolved_asset_refs=(asset_ref,),
     )
     assert execution.executor == "tool_runtime_service"
+    assert execution.resolved_asset_refs == (asset_ref,)
 
     pending = PendingToolFrameV1(
         permission_request_id="perm-1",

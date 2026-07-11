@@ -104,6 +104,47 @@ async def test_successful_skill_load_emits_instructions_loaded_boundary(monkeypa
     assert metadata["content_sha256"]
 
 
+@pytest.mark.asyncio
+async def test_failed_legacy_skill_result_emits_no_instruction_or_asset_usage(monkeypatch, tmp_path):
+    from app.runtime.ccplus_contracts import ResolvedAssetRefV1
+    from app.tools.runtime import ToolExecutionContext
+    from app.tools.service import ToolRuntimeService
+
+    context = ToolExecutionContext(
+        agent_id=uuid4(), user_id=uuid4(), tenant_id=str(uuid4()), workspace=tmp_path, session_id="session-1"
+    )
+    context.resolved_asset_refs = (
+        ResolvedAssetRefV1(
+            asset_id=str(uuid4()),
+            asset_type="skill",
+            native_key="skill:agent:a:missing",
+            revision_id=str(uuid4()),
+            revision_version=1,
+            content_hash="hash",
+        ),
+    )
+    hooks = []
+    usage = []
+
+    async def fake_emit(*args, **kwargs):
+        hooks.append((args, kwargs))
+
+    monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit)
+    service = object.__new__(ToolRuntimeService)
+    service.asset_usage_recorder = lambda **kwargs: usage.append(kwargs)
+    result = "❌ load_skill: not_found: Skill not found: missing"
+
+    await service._emit_loaded_instruction_hook(
+        tool_name="load_skill", arguments={"name": "missing"}, context=context, tool_call_id="call-1", result=result
+    )
+    await service._record_resolved_asset_usage_for_tool(
+        tool_name="load_skill", context=context, tool_call_id="call-1", result=result
+    )
+
+    assert hooks == []
+    assert usage == []
+
+
 def test_workspace_mutation_evidence_captures_hash_and_deletion_without_live_rehash(tmp_path):
     from app.tools.service import _capture_workspace_mutation_evidence
 
@@ -272,6 +313,130 @@ async def test_tool_runtime_service_executes_through_registry_and_logs(monkeypat
     assert trace_metadata["workspace_mutation_evidence_captured"] is True
     assert trace_metadata["workspace_mutation_states"]["workspace/notes.md"]["exists"] is False
     assert trace_metadata["workspace_mutation_lineage"][0]["path"] == "workspace/notes.md"
+
+
+@pytest.mark.asyncio
+async def test_tool_runtime_binds_resolved_asset_revision_to_frame_and_usage_event() -> None:
+    from app.runtime.ccplus_contracts import ResolvedAssetRefV1
+    from app.tools.governance import ToolGovernanceContext
+    from app.tools.runtime import ToolExecutionContext
+    from app.tools.service import ToolRuntimeService
+
+    context = ToolExecutionContext(
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        tenant_id=str(uuid4()),
+        workspace=Path("/tmp/ws"),
+        session_id="session-asset",
+    )
+    governance_context = ToolGovernanceContext(
+        agent_id=context.agent_id,
+        user_id=context.user_id,
+        tenant_id=context.tenant_id,
+        tool_name="load_skill",
+        arguments={"name": "Report Display Name"},
+    )
+    asset_ref = ResolvedAssetRefV1(
+        asset_id=str(uuid4()),
+        asset_type="skill",
+        native_key=f"skill:agent:{context.agent_id}:report-folder",
+        revision_id=str(uuid4()),
+        revision_version=7,
+        content_hash="hash-v7",
+        source_ref=f"agent:{context.agent_id}/skills/report-folder",
+    )
+    resolution_calls = []
+    usage_calls = []
+
+    async def resolve_refs(**kwargs):
+        resolution_calls.append(kwargs)
+        return (asset_ref,)
+
+    async def record_usage(**kwargs):
+        usage_calls.append(kwargs)
+        return True
+
+    service = ToolRuntimeService(
+        runtime_resolver=_FakeRuntimeResolver(context),
+        governance_resolver=_FakeGovernanceResolver(governance_context, SimpleNamespace()),
+        registry=_FakeRegistry("# Report\nResolved from report-folder."),
+        ensure_registry=lambda: None,
+        governance_runner=lambda *_args, **_kwargs: None,
+        fallback_executor=lambda *_args, **_kwargs: "fallback",
+        direct_fallback_executor=lambda *_args, **_kwargs: "direct-fallback",
+        asset_ref_resolver=resolve_refs,
+        asset_usage_recorder=record_usage,
+    )
+    trace_metadata = {}
+
+    result = await service.execute(
+        "load_skill",
+        {"name": "Report Display Name"},
+        agent_id=context.agent_id,
+        user_id=context.user_id,
+        tool_call_id="call-asset-1",
+        emit_runtime_hooks=False,
+        trace_metadata_sink=trace_metadata,
+    )
+
+    assert result.startswith("# Report")
+    assert resolution_calls[0]["arguments"] == {"name": "Report Display Name"}
+    completed_frame = context.tool_execution_frames[-1]
+    assert completed_frame["resolved_asset_refs"][0]["native_key"].endswith(":report-folder")
+    assert completed_frame["resolved_asset_refs"][0]["revision_version"] == 7
+    assert usage_calls[0]["asset_refs"] == (asset_ref,)
+    assert usage_calls[0]["tool_call_id"] == "call-asset-1"
+    assert trace_metadata["tool_execution_frame"]["resolved_asset_refs"][0]["revision_id"] == asset_ref.revision_id
+    assert trace_metadata["authority_capability_snapshot"]["resolved_asset_refs"][0]["content_hash"] == "hash-v7"
+
+
+@pytest.mark.asyncio
+async def test_approved_asset_tool_fails_closed_when_revision_changed() -> None:
+    from app.runtime.ccplus_contracts import ResolvedAssetRefV1
+    from app.tools.governance import ToolGovernanceContext
+    from app.tools.runtime import ToolExecutionContext
+    from app.tools.service import ToolRuntimeService
+
+    context = ToolExecutionContext(agent_id=uuid4(), user_id=uuid4(), tenant_id=str(uuid4()), workspace=Path("/tmp/ws"))
+    governance_context = ToolGovernanceContext(
+        agent_id=context.agent_id,
+        user_id=context.user_id,
+        tenant_id=context.tenant_id,
+        tool_name="load_skill",
+        arguments={"name": "Report"},
+    )
+    common = {
+        "asset_id": str(uuid4()),
+        "asset_type": "skill",
+        "native_key": f"skill:agent:{context.agent_id}:report",
+        "source_ref": f"agent:{context.agent_id}/skills/report",
+    }
+    approved = ResolvedAssetRefV1(**common, revision_id=str(uuid4()), revision_version=1, content_hash="hash-v1")
+    current = ResolvedAssetRefV1(**common, revision_id=str(uuid4()), revision_version=2, content_hash="hash-v2")
+    registry = _FakeRegistry("MUST_NOT_EXECUTE")
+    service = ToolRuntimeService(
+        runtime_resolver=_FakeRuntimeResolver(context),
+        governance_resolver=_FakeGovernanceResolver(governance_context, SimpleNamespace()),
+        registry=registry,
+        ensure_registry=lambda: None,
+        governance_runner=lambda *_args, **_kwargs: None,
+        fallback_executor=lambda *_args, **_kwargs: "fallback",
+        direct_fallback_executor=lambda *_args, **_kwargs: "direct-fallback",
+        asset_ref_resolver=lambda **_kwargs: (current,),
+        asset_usage_recorder=lambda **_kwargs: True,
+    )
+
+    result = await service.execute(
+        "load_skill",
+        {"name": "Report"},
+        agent_id=context.agent_id,
+        user_id=context.user_id,
+        emit_runtime_hooks=False,
+        _expected_asset_refs=(approved,),
+    )
+
+    assert "approval_asset_revision_drift" in str(result)
+    assert registry.calls == []
 
 
 @pytest.mark.asyncio

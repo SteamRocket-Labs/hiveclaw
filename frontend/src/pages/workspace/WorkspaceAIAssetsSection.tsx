@@ -41,7 +41,7 @@ export function AIAssetDetailPanel({
   onReconcile: () => void | Promise<void>;
 }) {
   const { t } = useTranslation();
-  const { asset, history } = detail;
+  const { asset, history, usage_events: usageEvents } = detail;
   return (
     <aside className="ai-asset-inspector" aria-label={t('enterprise.extensions.aiAssetsInspector', 'AI asset inspector')}>
       <div className="ai-asset-inspector-heading">
@@ -78,7 +78,21 @@ export function AIAssetDetailPanel({
 
       <section className="ai-asset-inspector-section">
         <h5>{t('enterprise.extensions.aiAssetsUsage', 'Usage evidence')} · {asset.usage.count}</h5>
-        {asset.usage.evidence.length ? <pre>{pretty(asset.usage.evidence)}</pre> : <span className="ai-asset-muted">No usage evidence yet</span>}
+        {usageEvents.length ? (
+          <div className="ai-asset-history">
+            {usageEvents.map((event) => (
+              <article key={event.id} className="ai-asset-revision">
+                <div className="ai-asset-revision-line">
+                  <strong>{event.usage_kind}</strong>
+                  <span>v{event.revision_version}</span>
+                  <code>{event.runtime_task_id ?? event.tool_call_id ?? event.span_id ?? event.idempotency_key}</code>
+                </div>
+                <small>{event.session_id ? `session ${event.session_id}` : 'no session'} · {event.usage_units} use</small>
+              </article>
+            ))}
+          </div>
+        ) : <span className="ai-asset-muted">No durable usage events yet</span>}
+        {asset.usage.evidence.length > 0 && <details><summary>Compatibility evidence</summary><pre>{pretty(asset.usage.evidence)}</pre></details>}
       </section>
 
       <section className="ai-asset-inspector-section">

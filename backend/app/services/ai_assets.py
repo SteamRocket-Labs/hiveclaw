@@ -13,7 +13,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.ai_asset import AIAssetRecord
+from app.models.ai_asset import AIAssetRecord, AIAssetUsageEvent
 from app.models.audit import AuditLog
 from app.models.config_revision import ConfigRevision
 from app.services import config_versioning
@@ -386,20 +386,15 @@ async def record_asset_usage(
     native_key: str,
     evidence: dict[str, Any],
 ) -> bool:
-    record = (
-        await db.execute(
-            select(AIAssetRecord)
-            .where(
-                AIAssetRecord.tenant_id == tenant_id,
-                AIAssetRecord.asset_type == asset_type,
-                AIAssetRecord.native_key == native_key,
-            )
-            .with_for_update()
-        )
-    ).scalar_one_or_none()
-    if record is None:
+    asset_ref = await resolve_asset_ref(
+        db,
+        tenant_id=tenant_id,
+        asset_type=asset_type,
+        native_key=native_key,
+    )
+    if asset_ref is None:
         return False
-    return await _append_usage_evidence(record, evidence=evidence, db=db)
+    return await record_resolved_asset_usage(db, tenant_id=tenant_id, asset_ref=asset_ref, evidence=evidence)
 
 
 async def record_asset_usage_by_source_ref(
@@ -410,35 +405,241 @@ async def record_asset_usage_by_source_ref(
     source_ref: str,
     evidence: dict[str, Any],
 ) -> bool:
-    record = (
+    asset_ref = await resolve_asset_ref(
+        db,
+        tenant_id=tenant_id,
+        asset_type=asset_type,
+        source_ref=source_ref,
+    )
+    if asset_ref is None:
+        return False
+    return await record_resolved_asset_usage(db, tenant_id=tenant_id, asset_ref=asset_ref, evidence=evidence)
+
+
+async def resolve_asset_ref(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    asset_type: str,
+    native_key: str | None = None,
+    source_ref: str | None = None,
+) -> Any | None:
+    """Resolve a native identity to its exact active ConfigRevision."""
+
+    if bool(native_key) == bool(source_ref):
+        raise ValueError("exactly one of native_key or source_ref is required")
+    query = select(AIAssetRecord).where(
+        AIAssetRecord.tenant_id == tenant_id,
+        AIAssetRecord.asset_type == asset_type,
+    )
+    query = (
+        query.where(AIAssetRecord.native_key == native_key)
+        if native_key
+        else query.where(AIAssetRecord.source_ref == source_ref)
+    )
+    record = (await db.execute(query)).scalar_one_or_none()
+    if record is None or record.active_revision_id is None:
+        return None
+    revision = (
         await db.execute(
-            select(AIAssetRecord)
-            .where(
-                AIAssetRecord.tenant_id == tenant_id,
-                AIAssetRecord.asset_type == asset_type,
-                AIAssetRecord.source_ref == source_ref,
+            select(ConfigRevision).where(
+                ConfigRevision.id == record.active_revision_id,
+                ConfigRevision.tenant_id == tenant_id,
+                ConfigRevision.entity_type == "ai_asset",
+                ConfigRevision.entity_id == record.id,
+                ConfigRevision.is_active == True,  # noqa: E712
             )
-            .with_for_update()
         )
     ).scalar_one_or_none()
+    if revision is None or revision.content_hash != record.content_hash:
+        return None
+    from app.runtime.ccplus_contracts import ResolvedAssetRefV1
+
+    return ResolvedAssetRefV1(
+        asset_id=str(record.id),
+        asset_type=record.asset_type,
+        native_key=record.native_key,
+        revision_id=str(revision.id),
+        revision_version=int(revision.version),
+        content_hash=record.content_hash,
+        source_ref=record.source_ref,
+    )
+
+
+async def _get_usage_event_by_key(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    asset_id: uuid.UUID,
+    idempotency_key: str,
+) -> AIAssetUsageEvent | None:
+    return (
+        await db.execute(
+            select(AIAssetUsageEvent).where(
+                AIAssetUsageEvent.tenant_id == tenant_id,
+                AIAssetUsageEvent.asset_id == asset_id,
+                AIAssetUsageEvent.idempotency_key == idempotency_key,
+            )
+        )
+    ).scalar_one_or_none()
+
+
+async def _get_bound_asset_revision(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    asset_id: uuid.UUID,
+    revision_id: uuid.UUID,
+) -> ConfigRevision | None:
+    return (
+        await db.execute(
+            select(ConfigRevision).where(
+                ConfigRevision.id == revision_id,
+                ConfigRevision.tenant_id == tenant_id,
+                ConfigRevision.entity_type == "ai_asset",
+                ConfigRevision.entity_id == asset_id,
+                ConfigRevision.is_active == True,  # noqa: E712
+            )
+        )
+    ).scalar_one_or_none()
+
+
+async def record_resolved_asset_usage(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    asset_ref: Any,
+    evidence: dict[str, Any],
+) -> bool:
+    """Atomically append one exactly-once usage event for an immutable ref."""
+
+    try:
+        asset_id = uuid.UUID(str(asset_ref.asset_id))
+        revision_id = uuid.UUID(str(asset_ref.revision_id))
+    except (TypeError, ValueError):
+        return False
+    record = await get_asset_record(db, tenant_id=tenant_id, asset_id=asset_id, for_update=True)
     if record is None:
         return False
-    return await _append_usage_evidence(record, evidence=evidence, db=db)
-
-
-async def _append_usage_evidence(record: AIAssetRecord | Any, *, evidence: dict[str, Any], db: AsyncSession) -> bool:
-    evidence_rows = list(record.usage_evidence_json or [])
-    evidence_id = str(evidence.get("idempotency_key") or evidence.get("span_id") or "")
-    if evidence_id and any(
-        str(item.get("idempotency_key") or item.get("span_id") or "") == evidence_id for item in evidence_rows
+    if (
+        str(record.tenant_id) != str(tenant_id)
+        or record.asset_type != asset_ref.asset_type
+        or record.native_key != asset_ref.native_key
+        or str(record.active_revision_id) != str(revision_id)
+        or record.content_hash != asset_ref.content_hash
+        or (record.source_ref or None) != (asset_ref.source_ref or None)
     ):
+        return False
+    revision = await _get_bound_asset_revision(
+        db,
+        tenant_id=tenant_id,
+        asset_id=asset_id,
+        revision_id=revision_id,
+    )
+    if (
+        revision is None
+        or int(revision.version) != int(asset_ref.revision_version)
+        or revision.content_hash != asset_ref.content_hash
+    ):
+        return False
+    idempotency_key = str(evidence.get("idempotency_key") or evidence.get("span_id") or "").strip()
+    if not idempotency_key:
+        return False
+    existing = await _get_usage_event_by_key(
+        db,
+        tenant_id=tenant_id,
+        asset_id=asset_id,
+        idempotency_key=idempotency_key,
+    )
+    if existing is not None:
         return True
-    evidence_rows.append(dict(evidence))
+    usage_units = max(1, int(evidence.get("usage_units") or 1))
+    safe_evidence = json.loads(json.dumps(evidence, ensure_ascii=False, default=str))
+    event = AIAssetUsageEvent(
+        id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        asset_id=asset_id,
+        asset_revision_id=revision_id,
+        revision_version=int(asset_ref.revision_version),
+        content_hash=str(asset_ref.content_hash),
+        native_key=str(asset_ref.native_key),
+        source_ref=asset_ref.source_ref,
+        usage_kind=str(evidence.get("kind") or "runtime_consumption")[:80],
+        usage_units=usage_units,
+        idempotency_key=idempotency_key[:500],
+        runtime_task_id=_optional_usage_text(evidence.get("runtime_task_id"), 100),
+        session_id=_optional_usage_text(evidence.get("session_id"), 100),
+        trace_id=_optional_usage_text(evidence.get("trace_id"), 128),
+        span_id=_optional_usage_text(evidence.get("span_id"), 128),
+        tool_call_id=_optional_usage_text(evidence.get("tool_call_id"), 200),
+        evidence_json=safe_evidence,
+    )
+    db.add(event)
+    evidence_rows = list(record.usage_evidence_json or [])
+    evidence_rows.append(
+        {
+            **safe_evidence,
+            "resolved_asset_ref": {
+                "asset_id": str(asset_ref.asset_id),
+                "revision_id": str(asset_ref.revision_id),
+                "revision_version": int(asset_ref.revision_version),
+                "content_hash": str(asset_ref.content_hash),
+            },
+        }
+    )
     record.usage_evidence_json = evidence_rows[-50:]
-    record.usage_count = int(record.usage_count or 0) + 1
+    record.usage_count = int(record.usage_count or 0) + usage_units
     record.last_used_at = datetime.now(UTC)
     await db.flush()
     return True
+
+
+def _optional_usage_text(value: Any, limit: int) -> str | None:
+    text = str(value or "").strip()
+    return text[:limit] if text else None
+
+
+def usage_event_payload(event: AIAssetUsageEvent | Any) -> dict[str, Any]:
+    return {
+        "id": str(event.id),
+        "asset_id": str(event.asset_id),
+        "asset_revision_id": str(event.asset_revision_id),
+        "revision_version": int(event.revision_version),
+        "content_hash": event.content_hash,
+        "native_key": event.native_key,
+        "source_ref": event.source_ref,
+        "usage_kind": event.usage_kind,
+        "usage_units": int(event.usage_units),
+        "idempotency_key": event.idempotency_key,
+        "runtime_task_id": event.runtime_task_id,
+        "session_id": event.session_id,
+        "trace_id": event.trace_id,
+        "span_id": event.span_id,
+        "tool_call_id": event.tool_call_id,
+        "created_at": _iso(event.created_at),
+    }
+
+
+async def list_asset_usage_events(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    asset_id: uuid.UUID,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    rows = (
+        (
+            await db.execute(
+                select(AIAssetUsageEvent)
+                .where(AIAssetUsageEvent.tenant_id == tenant_id, AIAssetUsageEvent.asset_id == asset_id)
+                .order_by(AIAssetUsageEvent.created_at.desc(), AIAssetUsageEvent.id.desc())
+                .limit(max(1, min(int(limit), 200)))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [usage_event_payload(row) for row in rows]
 
 
 async def record_runtime_asset_usage(
@@ -559,7 +760,7 @@ async def backfill_file_native_assets(
 
     from app.agents.subagent_definition import definition_store_for_agent, definition_store_for_tenant
     from app.models.agent import Agent
-    from app.services.ai_asset_adapters import project_subagent, project_workspace_skill
+    from app.services.ai_asset_adapters import project_subagent, project_workspace_flat_skill, project_workspace_skill
 
     root = Path(data_root)
     agent_ids = list(
@@ -578,6 +779,18 @@ async def backfill_file_native_assets(
                         project_workspace_skill(
                             workspace=workspace,
                             folder_name=skill_file.parent.name,
+                            tenant_id=tenant_id,
+                            agent_id=agent_id,
+                        )
+                    )
+                except Exception as exc:  # noqa: BLE001 - one corrupt package enters the report
+                    errors.append({"path": str(skill_file), "error": f"{type(exc).__name__}: {exc}"})
+            for skill_file in sorted(skills_dir.glob("*.md")):
+                try:
+                    projections.append(
+                        project_workspace_flat_skill(
+                            workspace=workspace,
+                            file_name=skill_file.name,
                             tenant_id=tenant_id,
                             agent_id=agent_id,
                         )
@@ -624,7 +837,7 @@ async def backfill_file_native_assets(
             await db.execute(
                 select(AIAssetRecord).where(
                     AIAssetRecord.tenant_id == tenant_id,
-                    AIAssetRecord.source_type.in_(("agent_workspace", "subagent_definition")),
+                    AIAssetRecord.source_type.in_(("agent_workspace", "agent_workspace_flat", "subagent_definition")),
                 )
             )
         ).scalars()

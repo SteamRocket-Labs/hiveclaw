@@ -284,6 +284,87 @@ def project_workspace_skill(
     )
 
 
+def project_workspace_flat_skill(
+    *,
+    workspace: Path,
+    file_name: str,
+    tenant_id: uuid.UUID,
+    agent_id: uuid.UUID,
+    lifecycle_status: str = "active",
+) -> AIAssetProjection:
+    """Project the legacy ``skills/<name>.md`` layout without losing identity."""
+
+    from app.skills.parser import SkillParser
+
+    name = Path(str(file_name)).name
+    if name != str(file_name) or Path(name).suffix.lower() != ".md":
+        raise ValueError("flat workspace Skill must be one Markdown file under skills/")
+    skills_root = (Path(workspace) / "skills").resolve()
+    skill_file = (skills_root / name).resolve()
+    if not skill_file.is_relative_to(skills_root) or not skill_file.is_file():
+        raise ValueError(f"workspace Skill is missing skills/{name}")
+    parsed = SkillParser().parse_file(
+        skill_file,
+        relative_path=f"skills/{name}",
+        default_name=Path(name).stem,
+    )
+    content_text = skill_file.read_text(encoding="utf-8", errors="replace")
+    slug = Path(name).stem
+    return AIAssetProjection(
+        tenant_id=tenant_id,
+        asset_type="skill",
+        native_entity_id=uuid.uuid5(uuid.NAMESPACE_URL, f"hive://{tenant_id}/agent/{agent_id}/flat-skill/{name}"),
+        native_key=f"skill:agent:{agent_id}:flat:{slug}",
+        native_locator={"kind": "agent_workspace_flat", "agent_id": str(agent_id), "file_name": name},
+        display_name=parsed.metadata.name,
+        owner_type="agent",
+        owner_id=agent_id,
+        visibility_scope="agent",
+        lifecycle_status=lifecycle_status,
+        content={
+            "schema": "hive.ai_asset.workspace_flat_skill.v1",
+            "asset_type": "skill",
+            "config": {
+                "kind": "agent_workspace_flat",
+                "file_name": name,
+                "name": parsed.metadata.name,
+                "description": parsed.metadata.description,
+            },
+            "files": [{"path": name, "content": content_text}],
+            "control": {
+                "lifecycle_status": lifecycle_status,
+                "trust_state": "trusted",
+                "admission_state": "admitted",
+            },
+        },
+        source_type="agent_workspace_flat",
+        source_ref=f"agent:{agent_id}/skills/{name}",
+        trust_state="trusted",
+        dependencies=list(parsed.metadata.requires_skills),
+        compatibility={"runtime": "agent_workspace_flat"},
+        admission_state="admitted",
+        created_by_agent_id=agent_id,
+    )
+
+
+def apply_workspace_flat_skill_content(content: dict[str, Any], *, workspace: Path, file_name: str) -> None:
+    _require_content_type(content, "skill")
+    config = dict(content.get("config") or {})
+    if config.get("kind") != "agent_workspace_flat" or str(config.get("file_name")) != file_name:
+        raise ValueError("flat workspace Skill revision does not match native locator")
+    files = list(content.get("files") or [])
+    if len(files) != 1 or str(files[0].get("path")) != file_name:
+        raise ValueError("flat workspace Skill revision must contain its single source file")
+    skills_root = (Path(workspace) / "skills").resolve()
+    target = (skills_root / file_name).resolve()
+    if not target.is_relative_to(skills_root):
+        raise ValueError("flat workspace Skill rollback target escapes skills/")
+    skills_root.mkdir(parents=True, exist_ok=True)
+    temporary = skills_root / f".{file_name}.{uuid.uuid4().hex}.tmp"
+    temporary.write_text(str(files[0].get("content") or ""), encoding="utf-8")
+    temporary.replace(target)
+
+
 def apply_workspace_skill_content(
     content: dict[str, Any],
     *,
@@ -339,7 +420,7 @@ def project_workflow(record: Any) -> AIAssetProjection:
         tenant_id=tenant_id,
         asset_type="workflow",
         native_entity_id=_uuid(record.id),
-        native_key=f"workflow:{record.name}",
+        native_key=f"workflow:{record.name}@{record.definition_version}",
         native_locator={"name": record.name, "version": record.definition_version},
         display_name=str(record.name),
         owner_type=str(record.owner_type or "tenant"),
@@ -495,16 +576,23 @@ def capture_file_native_state(record: Any) -> FileNativeSnapshot | None:
     """Capture the exact file authority needed to compensate a failed saga."""
 
     locator = dict(record.native_locator_json or {})
-    if record.asset_type == "skill" and locator.get("kind") == "agent_workspace":
-        target = (_workspace_from_locator(locator) / "skills" / str(locator.get("folder_name") or "")).resolve()
+    if record.asset_type == "skill" and locator.get("kind") in {"agent_workspace", "agent_workspace_flat"}:
+        target = (
+            _workspace_from_locator(locator)
+            / "skills"
+            / str(locator.get("folder_name") or locator.get("file_name") or "")
+        ).resolve()
         files: dict[str, bytes] = {}
-        if target.exists():
+        is_directory = locator.get("kind") == "agent_workspace"
+        if target.exists() and is_directory:
             for path in sorted(target.rglob("*")):
                 if path.is_symlink():
                     raise ValueError("workspace Skill snapshot rejects symbolic links")
                 if path.is_file():
                     files[path.relative_to(target).as_posix()] = path.read_bytes()
-        return FileNativeSnapshot(target=target, is_directory=True, existed=target.exists(), files=files)
+        elif target.is_file():
+            files[target.name] = target.read_bytes()
+        return FileNativeSnapshot(target=target, is_directory=is_directory, existed=target.exists(), files=files)
     if record.asset_type == "subagent":
         from app.agents.subagent_definition import validate_subagent_name
 
@@ -565,6 +653,14 @@ async def load_native_projection(db: AsyncSession, record: Any) -> AIAssetProjec
                 agent_id=_uuid(locator.get("agent_id")),
                 lifecycle_status=record.lifecycle_status,
                 evolution_state=(record.compatibility_json or {}).get("evolution_state"),
+            )
+        if locator.get("kind") == "agent_workspace_flat":
+            return project_workspace_flat_skill(
+                workspace=_workspace_from_locator(locator),
+                file_name=str(locator.get("file_name") or ""),
+                tenant_id=record.tenant_id,
+                agent_id=_uuid(locator.get("agent_id")),
+                lifecycle_status=record.lifecycle_status,
             )
         from app.models.skill import Skill
 
@@ -662,6 +758,17 @@ async def apply_native_revision(db: AsyncSession, record: Any, content: dict[str
                 agent_id=_uuid(locator.get("agent_id")),
                 lifecycle_status=lifecycle,
                 evolution_state=control.get("evolution_state"),
+            )
+        if locator.get("kind") == "agent_workspace_flat":
+            workspace = _workspace_from_locator(locator)
+            file_name = str(locator.get("file_name") or "")
+            apply_workspace_flat_skill_content(content, workspace=workspace, file_name=file_name)
+            return project_workspace_flat_skill(
+                workspace=workspace,
+                file_name=file_name,
+                tenant_id=record.tenant_id,
+                agent_id=_uuid(locator.get("agent_id")),
+                lifecycle_status=lifecycle,
             )
         native = (
             await db.execute(

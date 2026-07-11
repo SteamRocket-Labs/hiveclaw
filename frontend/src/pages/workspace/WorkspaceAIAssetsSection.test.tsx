@@ -29,6 +29,15 @@ describe('AIAssetDetailPanel', () => {
             { version: 3, id: 'rev-3', content_hash: 'abc', diff_from_prev: { set: { control: { status: 'active' } }, removed: [] }, change_source: 'publish', changed_by_user_id: 'user-1', changed_by_agent_id: null, change_message: 'published', is_active: true, parent_revision_id: 'rev-2', rollback_of_revision_id: null, created_at: null },
             { version: 2, id: 'rev-2', content_hash: 'def', diff_from_prev: { set: {}, removed: ['legacy'] }, change_source: 'update', changed_by_user_id: 'user-1', changed_by_agent_id: null, change_message: 'updated', is_active: false, parent_revision_id: 'rev-1', rollback_of_revision_id: null, created_at: null },
           ],
+          usage_events: [
+            {
+              id: 'usage-1', asset_id: 'asset-1', asset_revision_id: 'rev-3', revision_version: 3,
+              content_hash: 'abc', native_key: 'workflow:deploy@3', source_ref: 'workflow:deploy@3',
+              usage_kind: 'workflow_run', usage_units: 1, idempotency_key: 'workflow-run:run-1',
+              runtime_task_id: 'run-1', session_id: 'session-1', trace_id: null, span_id: null,
+              tool_call_id: null, created_at: '2026-07-11T01:00:00Z',
+            },
+          ],
         }}
         busy={false}
         onRollback={() => undefined}
@@ -40,6 +49,9 @@ describe('AIAssetDetailPanel', () => {
     expect(html).toContain('trusted');
     expect(html).toContain('skill:review');
     expect(html).toContain('span-1');
+    expect(html).toContain('workflow_run');
+    expect(html).toContain('v3');
+    expect(html).toContain('run-1');
     expect(html).toContain('legacy');
     expect(html).toContain('Rollback to v2');
     expect(html).toContain('Reconcile');

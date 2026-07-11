@@ -17,11 +17,13 @@ from app.agents.subagent import SubagentSpec
 from app.agents.subagent_definition import (
     SCOPE_AGENT,
     SCOPE_BUILTIN,
+    SCOPE_SESSION,
     SCOPE_TENANT,
     definition_store_for_agent,
     definition_store_for_tenant,
     list_subagent_definitions,
     resolve_subagent_definition,
+    resolve_runtime_subagent_definition,
 )
 from app.agents.subagent_memory import memory_store_for_agent, memory_store_for_tenant
 
@@ -65,6 +67,39 @@ def test_resolve_falls_back_to_tenant(tmp_path):
 
 def test_resolve_none_when_absent(tmp_path):
     assert resolve_subagent_definition("ghost", agent_id=AGENT_ID, tenant_id=TENANT_ID, agent_data_dir=tmp_path) is None
+
+
+def test_runtime_resolution_consumes_only_the_current_session_overlay(tmp_path):
+    session_id = "00000000-0000-0000-0000-00000000c001"
+    other_session_id = "00000000-0000-0000-0000-00000000c002"
+    from app.agents.subagent_definition import SubagentDefinitionStore
+
+    SubagentDefinitionStore(tmp_path / "session_extensions" / session_id / "subagents").save(
+        _spec("trial-scout", "current session")
+    )
+    SubagentDefinitionStore(tmp_path / "session_extensions" / other_session_id / "subagents").save(
+        _spec("other-scout", "other session")
+    )
+
+    resolved = resolve_runtime_subagent_definition(
+        "trial-scout",
+        agent_id=AGENT_ID,
+        tenant_id=TENANT_ID,
+        workspace=tmp_path,
+        session_id=session_id,
+    )
+    hidden = resolve_runtime_subagent_definition(
+        "other-scout",
+        agent_id=AGENT_ID,
+        tenant_id=TENANT_ID,
+        workspace=tmp_path,
+        session_id=session_id,
+    )
+
+    assert resolved is not None
+    assert resolved.scope == SCOPE_SESSION
+    assert resolved.spec.system_prompt == "current session"
+    assert hidden is None
 
 
 def test_delete_agent_definition_falls_back(tmp_path):

@@ -17,6 +17,7 @@ from sqlalchemy import select
 from app.database import tenant_scoped_session
 from app.models.chat_session import ChatSession
 from app.models.chat_transcript_event import ChatTranscriptEvent
+from app.models.ai_asset import AIAssetRecord, AIAssetUsageEvent
 from app.models.runtime_task import RuntimeTask
 from app.runtime.workflow_engine import WorkflowRunOutcome
 from app.services.workflow_definitions import WorkflowDefinitionService
@@ -148,11 +149,28 @@ async def test_every_trigger_type_starts_workflow_with_args(
             .scalars()
             .all()
         )
+        asset = (
+            await session.execute(
+                select(AIAssetRecord).where(
+                    AIAssetRecord.native_key == f"workflow:{record.name}@{record.definition_version}"
+                )
+            )
+        ).scalar_one()
+        usage_event = (
+            await session.execute(
+                select(AIAssetUsageEvent).where(
+                    AIAssetUsageEvent.asset_id == asset.id,
+                    AIAssetUsageEvent.idempotency_key == f"workflow-run:{result.run_id}",
+                )
+            )
+        ).scalar_one_or_none()
 
     assert chat_session.session_kind == "trigger_run"
     assert chat_session.runtime_source == "workflow_trigger"
     assert chat_session.listed_surface == "task_updates"
     assert any(event.event_type == "schedule_fire" for event in events)
+    assert usage_event is not None
+    assert usage_event.usage_kind == "workflow_run"
 
 
 async def test_hash_mismatch_never_runs_new_version(

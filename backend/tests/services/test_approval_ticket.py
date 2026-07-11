@@ -182,6 +182,76 @@ async def test_approval_ticket_keeps_requester_authority_distinct_from_approver(
 
 
 @pytest.mark.asyncio
+async def test_consume_approval_ticket_rejects_needs_reapproval_execution_state(
+    owner_sessionmaker,
+    monkeypatch,
+) -> None:
+    import app.database as database
+    from app.models.audit import ApprovalRequest
+    from app.services.approval_ticket import ApprovalTicketError, consume_approval_ticket
+
+    _, user_id, agent_id, approval_id, _ = await _seed_approved_ticket(owner_sessionmaker)
+    async with owner_sessionmaker() as db:
+        approval = await db.get(ApprovalRequest, approval_id)
+        assert approval is not None
+        approval.execution_status = "needs_reapproval"
+        await db.commit()
+    monkeypatch.setattr(database, "async_session", owner_sessionmaker)
+
+    with pytest.raises(ApprovalTicketError, match="execution state requires reapproval"):
+        await consume_approval_ticket(
+            approval_id=approval_id,
+            expected_agent_id=agent_id,
+            expected_user_id=user_id,
+        )
+
+
+@pytest.mark.asyncio
+async def test_consume_asset_approval_rejects_legacy_v1_envelope(owner_sessionmaker, monkeypatch) -> None:
+    import app.database as database
+    from app.models.audit import ApprovalRequest
+    from app.services.approval_ticket import (
+        ApprovalTicketError,
+        build_live_approval_policy_snapshot,
+        consume_approval_ticket,
+        hash_approval_execution_envelope,
+        hash_policy_snapshot,
+        hash_tool_input,
+    )
+
+    tenant_id, user_id, agent_id, approval_id, _ = await _seed_approved_ticket(owner_sessionmaker)
+    arguments = {"name": "Report"}
+    async with owner_sessionmaker() as db:
+        approval = await db.get(ApprovalRequest, approval_id)
+        assert approval is not None
+        approval.tool_name = "load_skill"
+        approval.normalized_arguments = arguments
+        approval.input_hash = hash_tool_input("load_skill", arguments)
+        policy = await build_live_approval_policy_snapshot(
+            db=db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            tool_name="load_skill",
+        )
+        approval.policy_snapshot = policy
+        approval.policy_snapshot_hash = hash_policy_snapshot(policy)
+        envelope = dict(approval.execution_envelope or {})
+        envelope["schema"] = "hive.approval_execution_envelope.v1"
+        envelope.pop("resolved_asset_refs", None)
+        approval.execution_envelope = envelope
+        approval.execution_envelope_hash = hash_approval_execution_envelope(envelope)
+        await db.commit()
+    monkeypatch.setattr(database, "async_session", owner_sessionmaker)
+
+    with pytest.raises(ApprovalTicketError, match="asset revision binding requires reapproval"):
+        await consume_approval_ticket(
+            approval_id=approval_id,
+            expected_agent_id=agent_id,
+            expected_user_id=user_id,
+        )
+
+
+@pytest.mark.asyncio
 async def test_consume_approval_ticket_rejects_expired_and_mutated_requests(owner_sessionmaker, monkeypatch) -> None:
     import app.database as database
     from app.models.audit import ApprovalRequest

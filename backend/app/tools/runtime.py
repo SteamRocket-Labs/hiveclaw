@@ -12,7 +12,7 @@ from app.core.execution_context import ExecutionIdentity
 from app.tools.result_envelope import ToolContentEnvelope
 
 if TYPE_CHECKING:
-    from app.runtime.ccplus_contracts import PermissionProfileV1
+    from app.runtime.ccplus_contracts import PermissionProfileV1, ResolvedAssetRefV1
 
 ToolExecutor = Callable[["ToolExecutionRequest"], Awaitable[str | ToolContentEnvelope] | str | ToolContentEnvelope]
 
@@ -39,6 +39,7 @@ class ToolExecutionContext:
     plan_mode_unattended_available: bool = False
     tool_lifecycle_records: list[dict[str, Any]] = field(default_factory=list)
     tool_execution_frames: list[dict[str, Any]] = field(default_factory=list)
+    resolved_asset_refs: tuple["ResolvedAssetRefV1", ...] = ()
 
 
 @dataclass(slots=True)

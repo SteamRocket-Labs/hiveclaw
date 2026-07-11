@@ -83,3 +83,39 @@ class AIAssetRecord(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )
+
+
+class AIAssetUsageEvent(Base):
+    """Exactly-once, revision-bound evidence of a real asset consumption."""
+
+    __tablename__ = "ai_asset_usage_events"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "asset_id", "idempotency_key", name="uq_ai_asset_usage_event_idempotency"),
+        Index("ix_ai_asset_usage_events_asset_created", "asset_id", "created_at"),
+        Index("ix_ai_asset_usage_events_tenant_kind", "tenant_id", "usage_kind"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    asset_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("ai_asset_records.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    asset_revision_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("config_revisions.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    revision_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    native_key: Mapped[str] = mapped_column(String(500), nullable=False)
+    source_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
+    usage_kind: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    usage_units: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    idempotency_key: Mapped[str] = mapped_column(String(500), nullable=False)
+    runtime_task_id: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
+    session_id: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
+    trace_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    span_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    tool_call_id: Mapped[str | None] = mapped_column(String(200), nullable=True, index=True)
+    evidence_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)

@@ -24,7 +24,7 @@
 - **P1：13 个**。会造成恢复能力、CC parity、自进化、资产统计、实时 UI 或验收可信度不足，不能作为“上线后再补”的债务。
 - **P2：1 个**。是确定的 KISS/维护性残留，应与本轮一起清理。
 
-当前修复进度：**18 / 28**（单 Agent SA-01 至 SA-12、Hive Native HN-01 至 HN-06 已按七原子闭环并分别提交）；其余断点未全部关闭前，结论继续保持 NO-GO。
+当前修复进度：**19 / 28**（单 Agent SA-01 至 SA-12、Hive Native HN-01 至 HN-07 已按七原子闭环并分别提交）；其余断点未全部关闭前，结论继续保持 NO-GO。
 
 这里的“95% 以上信心”指的是：**对当前 checkout 根断点清单完整度的置信度为 95.3%**，不代表系统有 95.3% 的上线成熟度。只要任一 P0 尚存，上线结论就是 NO-GO。
 
@@ -102,7 +102,7 @@ Codex 的 PermissionProfile、thread identity、sandbox policy 和 approval even
 | HN-04 | Subagent/async 查询取消只按 parent Agent | P0 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | HN-05 | HR provisioning 恢复会假完成 | P0 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | HN-06 | Skill provisional 只有负向回滚，无正向转正 | P1 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| HN-07 | AI 资产用量投影只覆盖部分实际消费 | P1 | 局部闭环 | ✓ | △ | △ | △ | △ | ✗ | △ |
+| HN-07 | AI 资产用量投影只覆盖部分实际消费 | P1 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | GOV-01 | Agent use 与 Session/Resource ownership 混用 | P0 | 断点 | ✓ | ✗ | △ | ✗ | ✗ | ✗ | △ |
 | GOV-02 | 企业知识库“语义缺失、产品已上线” | P0 | 断点 | ✓ | △ | ✗ | ✗ | ✗ | ✗ | ✗ |
 | GOV-03 | Workflow promotion 需要 manager 又要求原会话 owner | P1 | 断点 | ✓ | ✗ | △ | △ | △ | ✗ | △ |
@@ -311,9 +311,11 @@ Task logs 在 `backend/app/api/tasks.py:181-207` 只按 task_id 查写，没有�
 
 ### HN-07：企业 AI 资产“有注册表”，但用量不是全执行面事实 — P1
 
-正向证据：Agent invocation span、Workflow definition resolution、external capability activation 已能投影 usage。缺口：`backend/app/tools/service.py:608-659` 的通用工具消费只识别 load_skill 和 spawn_subagent；Skill native key 还从模型原始参数重构，不一定等于实际解析版本；external capability 只在 activation 记账，不代表每次 runtime use。
+**修复状态（2026-07-11）**：**闭环**。`ResolvedAssetRefV1` 现在绑定 asset id/type、native key、active revision id/version、content hash 与 source ref；Tool Runtime 在 hook改写和schema校验之后、治理与审批之前解析真实资产，并把引用写入 capability decision、approval execution envelope、execution frame 与 invocation span metadata。审批恢复重新解析当前资产；revision、hash、native identity或ref集合任一漂移都返回 `approval_asset_revision_drift`，旧v1资产审批统一转 `needs_reapproval`，而非资产v1审批仍可安全读取。
 
-关闭方式：资产解析器返回不可变 `ResolvedAssetRef(asset_id, revision, native_key, source_ref)`，ExecutionEnvelope 直接携带它；每次真实消费由 runtime span 投影，不能从字符串猜资产身份。
+Skill身份来自 `WorkspaceSkillLoader` 真正选择的文件，不再由模型display name猜key；folder、legacy flat file和current-session overlay均有明确身份。agent-scoped外部Skill/Subagent/MCP只有真实运行才同时给native asset与external source asset记账；session trial只消费本session overlay和对应external asset，不能串到另一个session。外部activation不再冒充usage；Workflow resolution只返回version-bound ref，只有launch成功才写 `workflow_run`。
+
+新增FORCE-RLS `ai_asset_usage_events`作为exactly-once机械事实源，唯一键为tenant + asset + idempotency key；每条事件固化revision快照、runtime/session/trace/span/tool-call引用。迁移把bounded JSON evidence逐条回填，并用`legacy_residual`保存被历史50条窗口截掉的聚合量；所有Workflow历史版本均回填为 `workflow:<name>@<version>` 独立资产。管理端详情消费durable events，按使用类型、revision与run/tool/span呈现，不再把原始JSON当主要UI。
 
 ## 6. 第三块：公司治理
 
@@ -1825,3 +1827,79 @@ pytest tests -q
 ```
 
 结果：Ruff lint/format全绿；最终全量backend `6376 passed, 1 skipped, 5 warnings in 150.10s`，零失败。
+
+### HN-07 — Version-bound AI Asset Usage Ledger
+
+状态：**闭环**。提交主题：`fix(HN-07): bind AI asset usage to runtime revisions`。
+
+七原子证据：
+
+1. **输入**：`resolve_tool_asset_refs()`只接收Tool Runtime完成hook改写与schema校验后的effective arguments和受信`ToolExecutionContext`；Workflow从已授权的immutable definition record生成ref。模型selector只是查询输入，不能成为资产身份。
+2. **权威**：`ResolvedAssetRefV1`绑定tenant内asset/revision/native/source/hash；`record_resolved_asset_usage()`对asset row加锁并再次校验active revision id、version与hash。Skill按native loader实际文件解析；session overlay只在当前session生效。Approval envelope v2包含同一ref集合，恢复时重新解析并fail closed检测漂移。
+3. **执行**：Tool真实成功后唯一调用`record_tool_asset_usage()`；plain legacy error、structured error和blocked结果不记usage且进入failed lifecycle/hook。Workflow definition resolution不记使用，Trigger launch成功后才记`workflow_run`。external capability activation的两条假usage路径已删除。
+4. **证据**：`ai_asset_usage_events`保存revision-bound、exactly-once事件；Tool execution frame、capability decision和invocation span metadata保留相同refs作为恢复证据。旧bounded JSON只保留compatibility view，不再承担幂等事实源。
+5. **恢复**：tenant + asset + idempotency唯一约束和asset row lock阻止并发/重放重复计数；迁移逐条回填旧evidence，并以`legacy_residual.usage_units`机械保全丢失明细的历史aggregate。旧资产审批被reject + needs_reapproval，downgrade精确恢复原status/execution_status/resolved_at；json/jsonb两种历史schema均通过真实downgrade测试。
+6. **消费**：Agent invocation、folder/flat/session Skill、`run_skill_tool`、persistent/session Subagent、agent MCP、external source capability与registered Workflow共享同一usage ledger。企业AI资产详情API返回最近100条durable events，前端显示kind、vN和run/tool/span安全标识；不再把activation或resolution显示成真实使用。
+7. **验收**：覆盖真实folder identity、flat Skill、session overlay隔离、external materialization、revision drift、伪造version、审批v1/v2兼容、Tool frame/span传播、legacy plain error、Workflow六类Trigger、FORCE RLS、历史回填、Workflow版本回填、migration upgrade/downgrade、API/UI消费、Ruff、Frontend全量/build与Backend全量。
+
+KISS/奥卡姆证据：新增的唯一持久结构是一个append-only usage event表；aggregate仍保留在既有`AIAssetRecord`作快速read model。解析集中在一个`ai_asset_resolution.py`，Tool/Workflow不再各自拼native key；审批复用既有ExecutionEnvelope，UI复用既有AI asset inspector。删除的是activation假记账、bounded JSON幂等和参数猜key三套重叠语义。
+
+RED证据：
+
+```text
+HN-07初始契约：13 failed, 22 passed
+- ResolvedAssetRefV1、resolver与durable usage event缺失
+- Tool frame/approval envelope不绑定revision
+- Skill由模型display name猜native key
+- Workflow resolution错误计数且不同definition version共用一个asset key
+- external activation冒充runtime consumption
+- API/UI没有version-bound usage事件
+- Alembic head与FORCE-RLS迁移缺失
+
+补充恢复契约：
+- invocation span metadata未消费execution frame
+- session external Subagent已materialize但runtime不可解析
+- legacy plain Skill error被当成成功并可能写usage
+- needs_reapproval仍可因status=approved被consume
+- migration downgrade在历史json列上使用jsonb-only操作符
+```
+
+GREEN证据：
+
+```bash
+cd backend
+source .venv/bin/activate
+pytest -q \
+  tests/services/test_ai_asset_resolution.py \
+  tests/services/test_ai_assets.py \
+  tests/services/test_ai_asset_adapters.py \
+  tests/services/test_workflow_definitions.py \
+  tests/services/test_trigger_daemon_workflow.py \
+  tests/services/test_approval_execution_envelope.py \
+  tests/services/test_approval_ticket.py \
+  tests/agents/test_subagent_scope_resolution.py \
+  tests/tools/test_service.py \
+  tests/api/test_ai_assets_api.py \
+  tests/architecture/test_ai_asset_mutation_wiring.py \
+  tests/migrations/test_ai_asset_usage_events_migration.py
+```
+
+相关面结果：`179 passed, 5 warnings in 19.31s`；后续补充契约均独立转绿。真实migration upgrade、head→parent downgrade与re-upgrade均通过；Alembic单head为`ai_asset_usage_events_0711`。
+
+```bash
+cd frontend
+npm test -- --run
+npm run build
+```
+
+结果：`100 test files / 585 tests passed`；TypeScript + Vite production build exit 0，`7071 modules transformed`。
+
+```bash
+cd backend
+source .venv/bin/activate
+ruff check <HN-07当前变更Python文件>
+ruff format --check <HN-07当前变更Python文件>
+pytest tests -q
+```
+
+结果：Ruff lint/format全绿；最终全量backend `6396 passed, 1 skipped, 5 warnings in 149.81s`，零失败。

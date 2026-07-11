@@ -264,3 +264,28 @@ def test_external_projection_never_treats_revoked_snapshot_as_trusted() -> None:
         "trust_state": "revoked",
         "admission_state": "revoked",
     }
+
+
+def test_workflow_asset_identity_is_bound_to_immutable_definition_version() -> None:
+    from app.services.ai_asset_adapters import project_workflow
+
+    record = SimpleNamespace(
+        id=uuid4(),
+        tenant_id=uuid4(),
+        name="deploy",
+        definition_version=4,
+        definition_json={"name": "deploy", "steps": []},
+        status="active",
+        owner_id=uuid4(),
+        owner_type="agent",
+        visibility_scope="tenant",
+        call_policy={},
+        created_by_user_id=uuid4(),
+        created_by_agent_id=None,
+    )
+
+    projection = project_workflow(record)
+
+    assert projection.native_key == "workflow:deploy@4"
+    assert projection.source_ref == "workflow:deploy@4"
+    assert projection.native_locator == {"name": "deploy", "version": 4}

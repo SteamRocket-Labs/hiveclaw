@@ -2,6 +2,7 @@
 node_modules/
 dist/
 frontend/test-results/
+frontend/playwright-report/
 *.zip
 build/
 __pycache__/

@@ -1615,24 +1615,21 @@ function ArtifactCards({
         return (
           <div
             key={`${artifact.id || artifact.path}`}
-            role="button"
-            tabIndex={0}
-            data-testid="chat-artifact-row-open"
-            aria-label={t('agent.chat.artifacts.openNamed', 'Open {{name}}', { name: artifact.name })}
-            onClick={openArtifact}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' || event.key === ' ') {
-                event.preventDefault();
-                openArtifact();
-              }
-            }}
             className="chat-artifact-row"
           >
-            <IconFileText size={14} className="chat-artifact-icon" />
-            <span className="chat-artifact-name">{artifact.name}</span>
-            <span className="chat-artifact-meta">
-              {[artifact.previewKind, size].filter(Boolean).join(' · ') || artifact.path}
-            </span>
+            <button
+              type="button"
+              data-testid="chat-artifact-row-open"
+              aria-label={t('agent.chat.artifacts.openNamed', 'Open {{name}}', { name: artifact.name })}
+              className="chat-artifact-main"
+              onClick={openArtifact}
+            >
+              <IconFileText size={14} className="chat-artifact-icon" />
+              <span className="chat-artifact-name">{artifact.name}</span>
+              <span className="chat-artifact-meta">
+                {[artifact.previewKind, size].filter(Boolean).join(' · ') || artifact.path}
+              </span>
+            </button>
             <span className="chat-artifact-actions">
               <button
                 type="button"

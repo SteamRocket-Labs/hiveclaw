@@ -14,10 +14,33 @@ export default defineConfig({
   testDir: './e2e',
   timeout: 30_000,
   fullyParallel: true,
-  reporter: process.env.CI ? 'github' : 'list',
+  forbidOnly: Boolean(process.env.CI),
+  retries: process.env.CI ? 1 : 0,
+  workers: process.env.CI ? 2 : undefined,
+  reporter: process.env.CI
+    ? [
+        ['github'],
+        ['html', { open: 'never', outputFolder: 'playwright-report' }],
+      ]
+    : 'list',
+  expect: {
+    timeout: 10_000,
+    toHaveScreenshot: {
+      animations: 'disabled',
+      caret: 'hide',
+      maxDiffPixelRatio: 0.01,
+      threshold: 0.2,
+    },
+  },
   use: {
     baseURL: 'http://localhost:3008',
     trace: 'retain-on-failure',
+    screenshot: 'only-on-failure',
+    video: 'retain-on-failure',
+    colorScheme: 'light',
+    locale: 'en-US',
+    timezoneId: 'UTC',
+    reducedMotion: 'reduce',
   },
   projects: [
     {
@@ -26,7 +49,7 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: 'npm run dev',
+    command: 'npm run dev -- --host 0.0.0.0',
     url: 'http://localhost:3008',
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,

@@ -2422,15 +2422,32 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 5px 10px;
   min-width: 0;
-  cursor: pointer;
   transition: background var(--transition-fast);
 }
 
 .chat-artifact-row:hover,
-.chat-artifact-row:focus-visible {
+.chat-artifact-row:focus-within {
   background: var(--bg-hover);
+}
+
+.chat-artifact-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  padding: 5px 0 5px 10px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.chat-artifact-main:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
 }
 
 .chat-artifact-icon {
@@ -2463,6 +2480,7 @@
   gap: 10px;
   flex-shrink: 0;
   opacity: 0;
+  padding-right: 10px;
   transition: opacity var(--transition-fast);
 }
 

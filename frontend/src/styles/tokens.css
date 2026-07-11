@@ -20,7 +20,8 @@
 
   --text-primary: #e1e1e8;
   --text-secondary: #8b8b9e;
-  --text-tertiary: #5c5c70;
+  /* Metadata is smaller than body copy and therefore keeps AA contrast. */
+  --text-tertiary: #8b8b9e;
   --text-inverse: #0a0a0f;
 
   --accent-primary: #e1e1e8;
@@ -75,7 +76,8 @@
 
   --text-primary: #1c1c1a;
   --text-secondary: #65655e;
-  --text-tertiary: #95948d;
+  /* Small metadata must retain at least WCAG AA contrast on every light surface. */
+  --text-tertiary: #65655e;
   --text-inverse: #fafaf9;
 
   /* Warm teal accent — 链接与主操作点缀，不做大面积 */

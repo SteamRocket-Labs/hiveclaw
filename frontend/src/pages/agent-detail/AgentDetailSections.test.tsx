@@ -2646,7 +2646,8 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('market-report.md');
     expect(markup).toContain('Open');
     expect(markup).toContain('Download');
-    expect(markup).toContain('data-testid="chat-artifact-row-open"');
+    expect(markup).toContain('<button type="button" data-testid="chat-artifact-row-open"');
+    expect(markup).not.toContain('role="button"');
     expect(markup).toContain('/api/agents/agent-1/files/artifacts/artifact-1/download');
   });
 

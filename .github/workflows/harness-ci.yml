@@ -8,6 +8,54 @@ on:
   workflow_dispatch:
 
 jobs:
+  frontend-visual:
+    name: Frontend unit, visual, and accessibility gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: frontend
+    env:
+      CI: "true"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Production dependency audit
+        run: npm audit --omit=dev
+
+      - name: Frontend unit and contract tests
+        run: npm test -- --run
+
+      - name: Frontend production build
+        run: npm run build
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Playwright browser, visual, and accessibility gates
+        run: npm run test:e2e
+
+      - name: Upload Playwright failure evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-failure-evidence
+          path: |
+            frontend/playwright-report
+            frontend/test-results
+          if-no-files-found: ignore
+
   backend-harness:
     name: Backend harness gates
     runs-on: ubuntu-latest

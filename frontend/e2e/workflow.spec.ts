@@ -4,8 +4,8 @@
  * full-stack E2E belongs to P15's deployment validation).
  *
  * Flow 1 (low risk):  paste definition → preview (low) → confirm → run completes.
- * Flow 2 (high risk): preview surfaces HIGH risk → start stays disabled and the
- *                     Plan-Mode-required notice is shown (fail-closed UX).
+ * Flow 2 (confirmation required): preview surfaces reasons → the explicit
+ *                                Confirm and run action starts that immutable preview.
  */
 
 import { expect, test, type Page } from '@playwright/test';
@@ -20,6 +20,7 @@ const LOW_RISK_DEFINITION = JSON.stringify({
 });
 
 async function bootstrapApp(page: Page, options: { risk: 'low' | 'high' }) {
+  const startBodies: Array<Record<string, unknown>> = [];
   // Authenticated session without a backend.
   await page.addInitScript(() => {
     localStorage.setItem('token', 'e2e-token');
@@ -68,20 +69,25 @@ async function bootstrapApp(page: Page, options: { risk: 'low' | 'high' }) {
       });
     }
     if (path.endsWith('/workflows/preview') && method === 'POST') {
+      const confirmationRequired = options.risk === 'high';
       return route.fulfill({
-        json:
-          options.risk === 'low'
-            ? { definition_hash: 'hash-low', risk: 'low', risk_reasons: [], planned_leaf_calls: 1, budget_tokens: 50000 }
-            : {
-                definition_hash: 'hash-high',
-                risk: 'high',
-                risk_reasons: ["step 'send' has external effects"],
-                planned_leaf_calls: 4,
-                budget_tokens: 900000,
-              },
+        json: {
+          preview_id: confirmationRequired ? 'preview-high' : 'preview-low',
+          session_id: 'session-workflow-e2e',
+          preview_status: 'ready',
+          artifact_version: 1,
+          artifact_hash: confirmationRequired ? 'artifact-high' : 'artifact-low',
+          definition_hash: confirmationRequired ? 'hash-high' : 'hash-low',
+          args_hash: 'args-empty',
+          confirmation_required: confirmationRequired,
+          confirmation_reasons: confirmationRequired ? ["step 'send' has external effects"] : [],
+          planned_leaf_calls: confirmationRequired ? 4 : 1,
+          budget_tokens: confirmationRequired ? 900000 : 50000,
+        },
       });
     }
     if (path.endsWith('/workflows/runs') && method === 'POST') {
+      startBodies.push(JSON.parse(route.request().postData() || '{}') as Record<string, unknown>);
       return route.fulfill({
         json: { run_id: RUN_ID, status: 'completed', reason: null, definition_hash: 'hash-low', risk: 'low' },
       });
@@ -106,10 +112,11 @@ async function bootstrapApp(page: Page, options: { risk: 'low' | 'high' }) {
   });
 
   await page.goto(`/agents/${AGENT_ID}#workflows`);
+  return { startBodies };
 }
 
 test('low-risk ephemeral: preview → confirm → run completes', async ({ page }) => {
-  await bootstrapApp(page, { risk: 'low' });
+  const { startBodies } = await bootstrapApp(page, { risk: 'low' });
 
   // The manual JSON flow now lives behind the advanced toggle (asset-view IA).
   await page.getByTestId('workflow-advanced-toggle').click();
@@ -118,7 +125,8 @@ test('low-risk ephemeral: preview → confirm → run completes', async ({ page 
 
   const previewCard = page.getByTestId('workflow-preview-card');
   await expect(previewCard).toBeVisible();
-  await expect(previewCard).toContainText('hash-low'.slice(0, 8));
+  await expect(previewCard).toContainText('No extra confirmation');
+  await expect(previewCard).toContainText('1 planned worker call');
 
   const startButton = page.getByTestId('workflow-start-button');
   await expect(startButton).toBeEnabled();
@@ -128,10 +136,17 @@ test('low-risk ephemeral: preview → confirm → run completes', async ({ page 
   await expect(runPanel).toBeVisible();
   await expect(runPanel).toContainText('completed');
   await expect(page.getByTestId('workflow-step-scan')).toContainText('done');
+  expect(startBodies).toEqual([{
+    preview_id: 'preview-low',
+    confirmed_plan_id: null,
+    ledger_todo_id: null,
+    plan_version: null,
+    plan_hash: null,
+  }]);
 });
 
-test('high-risk ephemeral: start requires confirmed Plan Mode handoff', async ({ page }) => {
-  await bootstrapApp(page, { risk: 'high' });
+test('confirmation-required ephemeral: explicit action starts the immutable preview', async ({ page }) => {
+  const { startBodies } = await bootstrapApp(page, { risk: 'high' });
 
   await page.getByTestId('workflow-advanced-toggle').click();
   await page.getByTestId('workflow-definition-input').fill(LOW_RISK_DEFINITION);
@@ -140,10 +155,15 @@ test('high-risk ephemeral: start requires confirmed Plan Mode handoff', async ({
   await expect(page.getByTestId('workflow-preview-card')).toBeVisible();
   await expect(page.getByTestId('workflow-plan-required')).toBeVisible();
   await expect(page.getByTestId('workflow-plan-required')).toContainText('external effects');
-  await expect(page.getByTestId('workflow-start-button')).toBeDisabled();
-
-  await page.getByTestId('workflow-confirmed-plan-id').fill('plan-1');
-  await page.getByTestId('workflow-plan-version').fill('1');
-  await page.getByTestId('workflow-plan-hash').fill('plan-hash');
-  await expect(page.getByTestId('workflow-start-button')).toBeEnabled();
+  const confirmButton = page.getByTestId('workflow-start-button');
+  await expect(confirmButton).toBeEnabled();
+  await confirmButton.click();
+  await expect(page.getByTestId('workflow-run-panel')).toContainText('completed');
+  expect(startBodies).toEqual([{
+    preview_id: 'preview-high',
+    confirmed_plan_id: null,
+    ledger_todo_id: null,
+    plan_version: null,
+    plan_hash: null,
+  }]);
 });

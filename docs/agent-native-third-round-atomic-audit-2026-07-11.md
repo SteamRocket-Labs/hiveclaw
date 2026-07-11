@@ -24,9 +24,9 @@
 - **P1：13 个**。会造成恢复能力、CC parity、自进化、资产统计、实时 UI 或验收可信度不足，不能作为“上线后再补”的债务。
 - **P2：1 个**。是确定的 KISS/维护性残留，应与本轮一起清理。
 
-当前修复进度：**25 / 28**（单 Agent SA-01 至 SA-12、Hive Native HN-01 至 HN-07、公司治理 GOV-01 至 GOV-04、用户体验 UX-01 至 UX-02 已按七原子闭环并分别提交）；其余断点未全部关闭前，结论继续保持 NO-GO。
+当前修复进度：**26 / 28**（单 Agent SA-01 至 SA-12、Hive Native HN-01 至 HN-07、公司治理 GOV-01 至 GOV-04、用户体验 UX-01 至 UX-03 已按七原子闭环并分别提交）；其余断点未全部关闭前，结论继续保持 NO-GO。
 
-这里的“95% 以上信心”指的是：**对当前 checkout 根断点清单完整度的置信度为 95.3%**，不代表系统有 95.3% 的上线成熟度。只要任一 P0 尚存，上线结论就是 NO-GO。
+这里的“95% 以上信心”指的是：**对当前 checkout 根断点清单完整度的置信度为 96.6%**，不代表系统有 96.6% 的上线成熟度。任一断点尚存，上线结论仍是 NO-GO。
 
 置信度计算口径：
 
@@ -35,10 +35,10 @@
 | 当前源码、调用链、数据库/文件/事件消费路径 | 60% | 97% | 58.2% |
 | 后端、前端、Bridge 自动化验证 | 25% | 96% | 24.0% |
 | FreeCode / Codex / Hermes 本地源码对照 | 10% | 96% | 9.6% |
-| 当前 UI 像素与真实浏览器运行态 | 5% | 70% | 3.5% |
-| **合计** | **100%** |  | **95.3%** |
+| 当前 UI 像素与真实浏览器运行态 | 5% | 96% | 4.8% |
+| **合计** | **100%** |  | **96.6%** |
 
-UI 像素证据被主动降权：当前浏览器受用户浏览器策略保护，无法接管生产标签页；本地 Vite 监听端口也被当前沙箱拒绝。现有 Playwright 截图早于最近 9 个前端提交，不能冒充当前视觉验收。这项限制已作为 UX 验收断点记录，而不是被隐藏。
+UI 像素证据已经刷新：当前 checkout 在真实 Vite dev server、agent-browser、macOS Chromium 与 Playwright 官方 Linux Chromium 镜像中完成运行；普通用户/Operator、浅色/深色、desktop/narrow、idle/active/approval/error/branch/subagent/workflow/artifact 均有当前截图与 WCAG 门禁。该证据仍保留 4% 不确定性，覆盖生产浏览器扩展、真实网络和用户数据差异。
 
 ## 1. 原子化标准
 
@@ -109,7 +109,7 @@ Codex 的 PermissionProfile、thread identity、sandbox policy 和 approval even
 | GOV-04 | Budget 状态通知声称有 outbox，实际不存在 | P1 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | UX-01 | 普通用户直接看到运行时/治理原始字段 | P1 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | UX-02 | WebSocket 20 次后永久放弃且无恢复入口 | P1 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| UX-03 | 当前 UI 无新鲜像素基线与 CI gate | P1 | 断点 | △ | ✓ | ✓ | △ | ✗ | △ | ✗ |
+| UX-03 | 当前 UI 无新鲜像素基线与 CI gate | P1 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | UX-04 | 核心运行时/前端巨型模块维持多责任 | P1 | 局部闭环 | ✓ | △ | △ | △ | ✗ | △ | △ |
 | UX-05 | Sidebar pin/search 状态已无消费方 | P2 | 断点 | ✓ | ✓ | ✗ | ✗ | ✓ | ✗ | ✗ |
 
@@ -410,14 +410,16 @@ RLS 基础设施本身不是本轮主断点：`backend/app/database.py` 已有 t
 
 ### UX-03：视觉验收基线已经过期 — P1
 
-现有 desktop snapshot 最后更新于 commit `96c261fe755a18bcb7a7235e7737b755693a703a`。此后前端有 9 个提交、59 个文件变化、2758 行增加/2236 行删除。`frontend/package.json` 有 `test:e2e`，但 `.github` 未发现 Playwright CI 调用。
+**修复状态（2026-07-11）**：**闭环**。旧的两张过期截图已退出事实面，当前测试固定覆盖普通用户与Operator、浅色与深色、desktop与narrow、idle与active，以及approval/error/branch/subagent/workflow/artifact组合状态；macOS与Linux各保存7张平台基线。Axe WCAG 2 A/AA门禁同时发现并修复浅色/深色小字号对比度不足、Artifact行内嵌套button/link，以及窄屏Runtime面板遮挡Inspector操作。Workflow旧E2E已改为完整durable preview响应，并证明Confirm and run只提交`preview_id`而不复述definition/hash。`frontend-visual` CI现在执行npm clean install、production依赖审计、全量unit、production build、Chromium安装、全部Playwright截图/无障碍/交互测试，并在失败时上传trace/video/screenshot。
 
-当前 snapshot SHA256：
+修复前的 desktop snapshot 最后更新于 commit `96c261fe755a18bcb7a7235e7737b755693a703a`。此后前端有 9 个提交、59 个文件变化、2758 行增加/2236 行删除；当时`frontend/package.json`虽有`test:e2e`，但`.github`没有Playwright CI调用。
+
+修复前旧 snapshot SHA256（现已删除）：
 
 - desktop：`62ad8eec495122b7d4c320c37cc998b19de4c9cc2272e0c505fd11f2b0eec064`
 - narrow：`7e2f9f1790462b1c816c49f27e27e0611a73f245af772eabd57fa0c85119d28e`
 
-关闭方式：以当前代码重拍 desktop/narrow、普通用户/admin、idle/running/approval/error/branch/subagent/workflow/artifact 关键状态；CI 做 screenshot diff 和可访问性 gate。
+原关闭方式已全部落地：当前代码重拍desktop/narrow、普通用户/Operator、idle/running/approval/error/branch/subagent/workflow/artifact关键状态；CI执行screenshot diff、Axe无障碍、unit、build和production dependency audit。视觉事实同时在Darwin和Linux复跑，避免平台像素差异制造假绿或假红。
 
 ### UX-04：代码层还没有达到 KISS/奥卡姆目标 — P1
 
@@ -2348,3 +2350,78 @@ npm run build
 ```
 
 结果：`104 test files / 607 tests passed`；TypeScript + Vite production build exit 0，`7075 modules transformed`。
+
+### UX-03 — 当前视觉、无障碍与浏览器 CI 事实面
+
+状态：**闭环**。提交主题：`fix(UX-03): gate current UI visuals and accessibility`。
+
+七原子证据：
+
+1. **输入**：Playwright fixture从真实Vite应用进入，使用typed API/WebSocket mocks装配普通用户或Operator、idle/active、desktop/narrow、light/dark状态；approval、error、branch、subagent、workflow与artifact都进入同一Session Workbench。
+2. **权威**：普通用户fixture只返回user projection且断言Inspector/runtime机械卡不存在；Operator必须走`manage=true`、只读session与operator projection，技术证据只在显式Inspector出现。截图不使用前端伪造的提权状态。
+3. **执行**：`.github/workflows/harness-ci.yml`的`frontend-visual`是唯一浏览器验收job：clean install后依次执行production audit、unit、build、安装Chromium与全部Playwright。截图名称由场景确定，不在CI动态批准差异。
+4. **证据**：14张Darwin/Linux PNG是平台像素事实；Playwright失败保留trace、video、screenshot并由CI上传。Axe报告是语义事实；Workflow E2E同时记录真正POST body，证明start只消费durable`preview_id`。timeline模型以workflow identity优先，消除同一workflow被runtime task id重复计数。
+5. **恢复**：视觉diff允许1%像素比例与0.2阈值但不自动更新；CI失败可由trace精确重放。窄屏先收起遮挡面板、选择证据再重开Inspector，覆盖真实可恢复操作。Linux基线由Playwright官方`v1.60.0-noble`镜像生成并在同镜像无更新复跑。
+6. **消费**：普通用户截图证明中间区只消费对话、计划、审批与可恢复错误；Deliverables在右上，Run status在右下。Operator截图证明原始typed data/evidence只由Inspector消费。Artifact主点击区改为真实button，Open与Download为并列动作，不再嵌套交互。
+7. **验收**：浅色与深色小字号均通过WCAG 2 A/AA serious/critical零违规；Darwin/Linux各11条浏览器测试全绿；全量frontend unit、production build、npm audit和真实agent-browser dev-server smoke全绿。
+
+KISS/奥卡姆证据：复用既有Playwright/Vite应用与同一typed fixture，没有引入第二套storybook/mock app。视觉、Axe、交互和Workflow契约在一个浏览器门禁中消费同一生产组件；旧两张无消费者snapshot被删除。`@axe-core/playwright`是成熟依赖，React Router与Vite升级到无已知production vulnerability的兼容版本；`npm audit`为0。
+
+RED证据：
+
+```text
+VisualAcceptanceContract首次运行：1 failed
+- CI没有frontend-visual job，当前截图无法成为合并门禁
+
+Axe首次运行：user/operator均失败
+- light theme有33个color-contrast目标
+- Artifact row以role=button包住button/link，产生nested-interactive
+
+窄屏Operator首次运行：1 failed
+- 展开的Runtime面板拦截技术证据点击；调整真实折叠→选择→重开路径后通过
+
+timeline身份回归：1 failed
+- workflow transcript使用workflow_run_id，workbench fallback优先runtime_task_id，同一workflow计数为2
+
+旧Workflow E2E：2 failed
+- fixture仍返回废弃risk形状并期待raw hash/强制Plan输入，没有覆盖当前durable preview契约
+
+dark theme新增门禁：1 failed
+- 30个小字号metadata目标低于AA，对比度债务此前完全不可见
+```
+
+GREEN证据：
+
+```bash
+cd frontend
+npm run test:e2e
+```
+
+Darwin结果：`11 passed`，覆盖7张截图、3条Axe/视觉组合与2条Workflow浏览器链路；无snapshot更新运行零失败。
+
+```bash
+cd frontend
+DOCKER_CONFIG=/tmp/hive-docker-public docker run --rm --ipc=host \
+  -e CI=1 -v "$PWD":/work -v /work/node_modules -w /work \
+  mcr.microsoft.com/playwright:v1.60.0-noble \
+  bash -lc 'npm ci && npx playwright test'
+```
+
+Linux结果：`11 passed in 9.9s`；安装过程`found 0 vulnerabilities`。Darwin/Linux各7张当前基线均已提交，`shasum -a 256 frontend/e2e/thread-workbench.spec.ts-snapshots/*.png`可机械复验。
+
+```bash
+cd frontend
+npm test -- --run
+npm run build
+npm audit --omit=dev
+```
+
+结果：`105 test files / 610 tests passed`；TypeScript + Vite production build exit 0，`7075 modules transformed`；production dependency vulnerabilities `0`。
+
+```bash
+AGENT_BROWSER_SESSION=hive-ux03 agent-browser open http://localhost:3009
+AGENT_BROWSER_SESSION=hive-ux03 agent-browser wait --load networkidle
+AGENT_BROWSER_SESSION=hive-ux03 agent-browser snapshot -i
+```
+
+结果：真实dev server打开`HiveClaw`，登录入口、语言/登录/注册控件可访问，`.vite-error-overlay=false`；browser session随后正常关闭。

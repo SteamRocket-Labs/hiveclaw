@@ -801,9 +801,14 @@ function runtimeSectionFallbackFromMessage(
   }
 
   const record = message as unknown as Record<string, unknown>;
-  const id =
-    readString(record, ['eventRuntimeTaskId', 'eventWorkflowRunId', 'eventWorkflowStepId', 'eventChildSessionId', 'id']) ||
-    `session-runtime-${index}`;
+  const identityKeys = section === 'workflows'
+    ? ['eventWorkflowRunId', 'eventRuntimeTaskId', 'eventWorkflowStepId', 'id']
+    : section === 'subagents'
+      ? ['eventRuntimeTaskId', 'eventChildSessionId', 'id']
+      : section === 'agent_teams'
+        ? ['eventRuntimeTaskId', 'eventChildSessionId', 'id']
+        : ['eventRuntimeTaskId', 'eventWorkflowRunId', 'eventChildSessionId', 'id'];
+  const id = readString(record, identityKeys) || `session-runtime-${index}`;
   const label =
     readString(record, ['eventTitle', 'eventNotificationSource', 'eventType']) ||
     readString(record, ['content'], id);

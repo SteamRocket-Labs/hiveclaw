@@ -802,6 +802,32 @@ describe('session workbench timeline model', () => {
     ]);
   });
 
+  it('deduplicates one workflow projected by both transcript and workbench using the workflow run id', () => {
+    const rightPanel = buildSessionRightPanelModel({
+      messages: [{
+        role: 'event',
+        content: 'Workflow running',
+        eventType: 'workflow_started',
+        eventStatus: 'running',
+        eventWorkflowRunId: 'workflow-1',
+        eventRuntimeTaskId: 'runtime-task-1',
+      }],
+      sessionWorkbench: {
+        runtime_sections: {
+          workflows: [{
+            id: 'workflow-1',
+            runtime_kind: 'workflow',
+            label: 'Release verification',
+            status: 'running',
+          }],
+        },
+      } as unknown as SessionWorkbench,
+    });
+
+    expect(rightPanel.runtimeConsole.workflow.count).toBe(1);
+    expect(rightPanel.runtimeConsole.workflow.items[0].id).toBe('workflow-1');
+  });
+
   it('projects a budget approval blocker as user-readable waiting state', () => {
     const rightPanel = buildSessionRightPanelModel({
       messages: [],

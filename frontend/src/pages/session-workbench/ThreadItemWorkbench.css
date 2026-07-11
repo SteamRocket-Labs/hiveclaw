@@ -27,6 +27,12 @@
 .thread-item-card[data-thread-item-status='waiting_user'] { --thread-item-tone: var(--warning); }
 .thread-item-card[data-thread-item-status='cancelled'] { --thread-item-tone: var(--text-tertiary); }
 
+/* The decorative tone may be lighter than a text color; keep state labels AA-readable. */
+[data-theme='light'] .thread-item-card { --thread-item-readable-tone: var(--accent-hover); }
+[data-theme='light'] .thread-item-card[data-thread-item-status='failed'] { --thread-item-readable-tone: #b91c1c; }
+[data-theme='light'] .thread-item-card[data-thread-item-status='waiting_user'] { --thread-item-readable-tone: #8a5100; }
+[data-theme='light'] .thread-item-card[data-thread-item-status='cancelled'] { --thread-item-readable-tone: var(--text-secondary); }
+
 .thread-item-header {
   display: flex;
   align-items: center;
@@ -49,7 +55,7 @@
 
 .thread-item-status-text {
   margin-inline-start: auto;
-  color: var(--thread-item-tone);
+  color: var(--thread-item-readable-tone, var(--thread-item-tone));
   font-size: var(--text-meta);
   font-weight: 600;
 }

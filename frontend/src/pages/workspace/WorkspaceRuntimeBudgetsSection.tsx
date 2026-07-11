@@ -180,6 +180,16 @@ export default function WorkspaceRuntimeBudgetsSection({ agentId }: Props) {
     queryKey: ['runtime-budget-runs', agentId || 'tenant'],
     queryFn: () => runtimeBudgetApi.listRuns({ agentId, limit: agentId ? 10 : 50 }),
   });
+  const deliveryIssuesQuery = useQuery({
+    queryKey: ['runtime-budget-transition-deliveries'],
+    queryFn: async () => {
+      const [ambiguous, deadLetters] = await Promise.all([
+        runtimeBudgetApi.listTransitionDeliveries({ status: 'needs_reconciliation', limit: 50 }),
+        runtimeBudgetApi.listTransitionDeliveries({ status: 'dead_letter', limit: 50 }),
+      ]);
+      return [...ambiguous, ...deadLetters];
+    },
+  });
 
   const policies = policiesQuery.data || [];
   const runs = runsQuery.data || [];
@@ -210,10 +220,12 @@ export default function WorkspaceRuntimeBudgetsSection({ agentId }: Props) {
       run.status,
     ),
   );
+  const deliveryIssues = deliveryIssuesQuery.data || [];
 
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ['runtime-budget-policies'] });
     qc.invalidateQueries({ queryKey: ['runtime-budget-runs'] });
+    qc.invalidateQueries({ queryKey: ['runtime-budget-transition-deliveries'] });
   };
 
   const createPolicy = useMutation({
@@ -279,6 +291,17 @@ export default function WorkspaceRuntimeBudgetsSection({ agentId }: Props) {
   const rejectRun = useMutation({
     mutationFn: (run: RuntimeBudgetRun) =>
       runtimeBudgetApi.rejectOverrun(run.id, 'operator rejected continued run after review'),
+    onSuccess: invalidate,
+  });
+  const resolveDelivery = useMutation({
+    mutationFn: ({ id, action }: { id: string; action: 'retry' | 'mark_delivered' }) =>
+      runtimeBudgetApi.resolveTransitionDelivery(id, {
+        action,
+        reason:
+          action === 'mark_delivered'
+            ? 'operator verified delivery in the provider console'
+            : 'operator accepted duplicate risk and requested an explicit retry',
+      }),
     onSuccess: invalidate,
   });
 
@@ -463,6 +486,61 @@ export default function WorkspaceRuntimeBudgetsSection({ agentId }: Props) {
           </div>
         </div>
       </div>
+      {deliveryIssues.length > 0 && (
+        <section className="card workspace-runtime-card workspace-runtime-delivery-issues">
+          <div className="workspace-runtime-card-header">
+            <div>
+              <h3>{t('runtimeBudgets.deliveryIssues', 'Delivery needs review')}</h3>
+              <p>
+                {t(
+                  'runtimeBudgets.deliveryIssuesDesc',
+                  'The run decision is safe and recorded. Confirm the external message or explicitly retry it.',
+                )}
+              </p>
+            </div>
+            <span className="badge badge-warning">{deliveryIssues.length}</span>
+          </div>
+          <div className="workspace-runtime-run-list">
+            {deliveryIssues.map((delivery) => (
+              <div key={delivery.id} className="workspace-runtime-run-row">
+                <div>
+                  <div className="workspace-runtime-run-title">
+                    <IconAlertTriangle size={15} stroke={1.7} />
+                    {delivery.channel}
+                  </div>
+                  <div className="workspace-runtime-run-reason">
+                    {t(
+                      'runtimeBudgets.deliveryDecisionRecorded',
+                      'The user-facing status is recorded; external delivery needs an operator decision.',
+                    )}
+                  </div>
+                  <div className="workspace-runtime-run-meta">{formatDate(delivery.created_at)}</div>
+                </div>
+                <div className="workspace-runtime-run-actions">
+                  {delivery.status === 'needs_reconciliation' && (
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      disabled={resolveDelivery.isPending}
+                      onClick={() => resolveDelivery.mutate({ id: delivery.id, action: 'mark_delivered' })}
+                    >
+                      {t('runtimeBudgets.confirmDelivered', 'Confirm delivered')}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    disabled={resolveDelivery.isPending}
+                    onClick={() => resolveDelivery.mutate({ id: delivery.id, action: 'retry' })}
+                  >
+                    {t('runtimeBudgets.retryDelivery', 'Retry delivery')}
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
     </div>
   );
 }

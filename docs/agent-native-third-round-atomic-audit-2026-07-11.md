@@ -24,7 +24,7 @@
 - **P1：13 个**。会造成恢复能力、CC parity、自进化、资产统计、实时 UI 或验收可信度不足，不能作为“上线后再补”的债务。
 - **P2：1 个**。是确定的 KISS/维护性残留，应与本轮一起清理。
 
-当前修复进度：**22 / 28**（单 Agent SA-01 至 SA-12、Hive Native HN-01 至 HN-07、公司治理 GOV-01 至 GOV-03 已按七原子闭环并分别提交）；其余断点未全部关闭前，结论继续保持 NO-GO。
+当前修复进度：**23 / 28**（单 Agent SA-01 至 SA-12、Hive Native HN-01 至 HN-07、公司治理 GOV-01 至 GOV-04 已按七原子闭环并分别提交）；其余断点未全部关闭前，结论继续保持 NO-GO。
 
 这里的“95% 以上信心”指的是：**对当前 checkout 根断点清单完整度的置信度为 95.3%**，不代表系统有 95.3% 的上线成熟度。只要任一 P0 尚存，上线结论就是 NO-GO。
 
@@ -106,7 +106,7 @@ Codex 的 PermissionProfile、thread identity、sandbox policy 和 approval even
 | GOV-01 | Agent use 与 Session/Resource ownership 混用 | P0 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | GOV-02 | 企业知识库“语义缺失、产品已上线” | P0 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | GOV-03 | Workflow promotion 需要 manager 又要求原会话 owner | P1 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| GOV-04 | Budget 状态通知声称有 outbox，实际不存在 | P1 | 断点 | ✓ | ✓ | △ | ✓ | ✗ | ✗ | △ |
+| GOV-04 | Budget 状态通知声称有 outbox，实际不存在 | P1 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | UX-01 | 普通用户直接看到运行时/治理原始字段 | P1 | 局部闭环 | ✓ | △ | ✓ | ✓ | ✓ | ✗ | △ |
 | UX-02 | WebSocket 20 次后永久放弃且无恢复入口 | P1 | 断点 | ✓ | ✓ | △ | △ | ✗ | ✗ | △ |
 | UX-03 | 当前 UI 无新鲜像素基线与 CI gate | P1 | 断点 | △ | ✓ | ✓ | △ | ✗ | △ | ✗ |
@@ -370,9 +370,15 @@ Upload 在 `files.py:696-726` 用 fire-and-forget `asyncio.create_task` 写 Open
 
 ### GOV-04：Budget 通知注释声称 outbox 可补偿，但没有消费者 — P1
 
+**修复状态（2026-07-11）**：**闭环**。`RuntimeBudgetEvent` 继续作为预算决策的唯一机械事实源；所有真正改变用户运行状态的 denial、circuit break、expired、cancelled、approved、rejected 现在与 immutable `BudgetTransitionOutbox` 在同一个预算事务中提交。outbox 以 `budget_event_id` 唯一，不再要求预算 service 同事务直写 transcript，也不复用只允许单一 terminal result 的 ChannelDeliveryOutbox。
+
+worker 先把安全文案精确一次投影为 `runtime_budget_transition` transcript；`session_id + causation_id + event_type` 部分唯一索引和已提交 receipt 共同防止 lease recovery 重复。WebSocket 只是 commit 后的 best-effort 加速，断线由 transcript sequence replay 补齐。外部会话还消费不可变 target snapshot：provider call 前持久化 `sending`，明确 retryable 才重试；未知结果立即进入 `needs_reconciliation`，禁止盲发。公司控制面只向管理员显示 delivery issue，可带理由“确认已送达”或明确接受重复风险后 retry，二者写 AuditLog；普通用户只看到发生了什么和下一步，不看到 provider error。
+
+reconciler 会从历史 RuntimeBudgetEvent 回填缺失 intent；worker snapshot 暴露 claimed/reconciled/delivered/retried/dead-letter/reconciliation 计数。新表 FORCE RLS，snapshot trigger 禁止改变 budget fact、收件 session/principal、channel target 或 content；迁移、fresh bootstrap、RLS bypass manifest 和单 Alembic head 同步验收。
+
 `backend/app/services/runtime_budget_service.py:1256-1294` 写 session status event 失败后吞异常，注释称 outbox 可 reconcile；当前没有对应 producer/reconciler。RuntimeBudgetEvent 是预算事实，但用户可能永远不知道批准/拒绝结果。
 
-关闭方式：BudgetTransitionOutbox，以 budget_run_id+transition 唯一，投影到 transcript/UI/channel；原始预算状态仍是事实源，outbox 只负责消费。
+关闭方式：BudgetTransitionOutbox；落地时采用比原建议 `budget_run_id+transition` 更精确的 `budget_event_id` 唯一键，以允许同一 run 合法经历多次不同事实迁移且每个事实只投影一次。原始预算状态仍是事实源，outbox 只负责 transcript/UI/channel 消费。
 
 ### RLS 正向结论
 
@@ -2121,3 +2127,71 @@ pytest tests -q
 ```
 
 结果：Alembic单head `workflow_promotion_proposals_0711 (head)`；最终backend全量 `6432 passed, 1 skipped, 5 warnings in 153.39s`，零失败。Ruff lint/format与diff check全绿。
+
+### GOV-04 — BudgetTransitionOutbox 状态交付闭环
+
+状态：**闭环**。提交主题：`fix(GOV-04): make budget transitions durably deliverable`。
+
+七原子证据：
+
+1. **输入**：只有导致用户运行状态迁移的 RuntimeBudgetEvent 进入投递：waiting approval、summary-only、exhausted、hard-stopped、approved、rejected、expired、cancelled。输入绑定已落库 budget event、run、root ChatSession、Agent及User/ExternalPrincipal；重复reservation denial不会重复通知。
+2. **权威**：producer重新读取同tenant、同Agent的root session，只对真实User或ExternalPrincipal寻址；外部channel消费snapshotted ChannelConfig与principal installation，并在provider call前重新校验当前active authority。管理员恢复API使用`get_current_admin`和tenant RLS，不能跨租户处理。
+3. **执行**：RuntimeBudgetService与`_apply_breaker`统一在预算状态事务中调用`enqueue_budget_transition()`；原吞异常的`_append_session_status_event`已删除。RuntimeTask worker是唯一异步consumer，先投影transcript/UI，再按需投影external channel；web不经过第二消息投递入口。
+4. **证据**：RuntimeBudgetEvent保持决策真相；FORCE-RLS `budget_transition_outbox`保存budget_event causation、不可变收件地址/content/target和逐面receipt。transcript写`runtime_budget_transition`及budget event/outbox refs；人工resolution写AuditLog。outbox不改变预算事实。
+5. **恢复**：budget_event唯一键、deterministic outbox id、SKIP LOCKED lease与transcript causation唯一索引实现精确一次。历史event reconciler补齐旧缺口；明确retryable使用有界退避，未知provider结果保留sending receipt并进入needs_reconciliation，绝不盲重发；管理员只能显式confirm或retry。
+6. **消费**：Session transcript与live broker消费安全文案；断线客户端从sequence replay恢复。外部通道消费同一文案。公司Runtime Budgets面板消费dead-letter/reconciliation并提供显式恢复；普通用户不消费provider错误、outbox id或内部reason。
+7. **验收**：真实PostgreSQL覆盖决策+intent同事务、transcript精确一次、lease崩溃恢复、legacy回填、RLS、外部provider未知结果、人工确认审计；API覆盖admin tenant/action contract；migration覆盖upgrade、FORCE RLS、唯一索引和single head；整仓前后端与生产build通过。
+
+KISS/奥卡姆证据：预算事实仍只有RuntimeBudgetEvent；新表仅承担消费桥，不创建第二预算状态机。没有把多次transition硬塞入terminal delivery唯一键，也没有让WebSocket成为恢复事实源。旧direct transcript helper被物理删除。
+
+RED证据：
+
+```text
+首次service测试收集失败：
+- ModuleNotFoundError: app.models.budget_transition_outbox
+
+外部channel故障注入首次失败：
+- provider response lost后result.needs_reconciliation为0，证明未知结果仍可能进入自动retry
+
+API契约首次失败：6 failed
+- runtime_budgets API不存在get_budget_transition_outbox_service与管理恢复入口
+
+首次backend全量：6440 passed, 1 failed, 1 skipped
+- 新worker BYPASS callsite未登记RLS_BYPASS_ALLOWLIST
+```
+
+GREEN证据：
+
+```bash
+cd backend
+source .venv/bin/activate
+pytest \
+  tests/services/test_budget_transition_outbox.py \
+  tests/migrations/test_budget_transition_outbox_migration.py \
+  tests/api/test_runtime_budgets_api.py \
+  tests/services/test_runtime_budget_service.py \
+  tests/services/test_runtime_budget_breaker.py \
+  tests/services/test_runtime_task_worker.py \
+  tests/services/test_audit_rls_coverage.py \
+  tests/migrations/test_workflow_migration.py -q
+```
+
+结果：`103 passed, 4 warnings in 19.90s`；独立API契约 `7 passed`；RLS BYPASS allowlist `6 passed`。
+
+```bash
+cd backend
+source .venv/bin/activate
+alembic heads
+ruff check <GOV-04当前变更Python文件>
+pytest tests -q
+```
+
+结果：Alembic单head `budget_transition_outbox_0711 (head)`；Ruff `All checks passed!`；最终backend全量 `6441 passed, 1 skipped, 5 warnings in 153.69s`，零失败。
+
+```bash
+cd frontend
+npm test -- --run
+npm run build
+```
+
+结果：`102 test files / 593 tests passed`；TypeScript + Vite production build exit 0，`7073 modules transformed`。

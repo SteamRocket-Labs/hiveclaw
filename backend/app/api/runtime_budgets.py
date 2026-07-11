@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from app.core.security import get_current_admin
 from app.models.user import User
+from app.services.budget_transition_outbox import BudgetTransitionOutboxService
 from app.services.runtime_budget_service import RuntimeBudgetService
 
 router = APIRouter(prefix="/runtime-budgets", tags=["runtime-budgets"])
@@ -168,8 +169,33 @@ class RuntimeBudgetTenantModeOut(BaseModel):
     updated_policies: int
 
 
+class BudgetTransitionDeliveryOut(BaseModel):
+    id: uuid.UUID
+    tenant_id: uuid.UUID
+    budget_run_id: uuid.UUID
+    budget_event_id: uuid.UUID
+    transition: str
+    channel: str
+    status: str
+    attempt_count: int
+    last_error: str | None = None
+    created_at: datetime
+    delivered_at: datetime | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class BudgetTransitionDeliveryResolveRequest(BaseModel):
+    action: str = Field(pattern="^(retry|mark_delivered)$")
+    reason: str = Field(min_length=1, max_length=1000)
+
+
 async def get_runtime_budget_service() -> RuntimeBudgetService:
     return RuntimeBudgetService()
+
+
+async def get_budget_transition_outbox_service() -> BudgetTransitionOutboxService:
+    return BudgetTransitionOutboxService()
 
 
 def _require_tenant(user: User) -> uuid.UUID:
@@ -337,6 +363,50 @@ async def list_runtime_budget_events(
     tenant_id = _require_tenant(current_user)
     events = await service.list_events(tenant_id=tenant_id, budget_run_id=budget_run_id, limit=limit)
     return [_event_out(event) for event in events]
+
+
+@router.get("/transition-deliveries", response_model=list[BudgetTransitionDeliveryOut])
+async def list_budget_transition_deliveries(
+    budget_run_id: uuid.UUID | None = Query(default=None),
+    status_filter: str | None = Query(default=None, alias="status"),
+    limit: int = Query(default=100, ge=1, le=500),
+    current_user: User = Depends(get_current_admin),
+    service: BudgetTransitionOutboxService = Depends(get_budget_transition_outbox_service),
+):
+    tenant_id = _require_tenant(current_user)
+    rows = await service.list_deliveries(
+        tenant_id=tenant_id,
+        budget_run_id=budget_run_id,
+        status=status_filter,
+        limit=limit,
+    )
+    return [BudgetTransitionDeliveryOut.model_validate(row) for row in rows]
+
+
+@router.post(
+    "/transition-deliveries/{outbox_id}/resolve",
+    response_model=BudgetTransitionDeliveryOut,
+)
+async def resolve_budget_transition_delivery(
+    outbox_id: uuid.UUID,
+    body: BudgetTransitionDeliveryResolveRequest,
+    current_user: User = Depends(get_current_admin),
+    service: BudgetTransitionOutboxService = Depends(get_budget_transition_outbox_service),
+):
+    tenant_id = _require_tenant(current_user)
+    try:
+        row = await service.resolve_delivery(
+            tenant_id=tenant_id,
+            outbox_id=outbox_id,
+            actor_user_id=current_user.id,
+            action=body.action,
+            reason=body.reason,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    return BudgetTransitionDeliveryOut.model_validate(row)
 
 
 @router.post("/runs/{budget_run_id}/cancel", response_model=RuntimeBudgetCancelOut)

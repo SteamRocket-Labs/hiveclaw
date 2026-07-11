@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.database import async_session, enter_rls_bypass
 from app.models.runtime_budget import RuntimeBudgetEvent, RuntimeBudgetPolicy, RuntimeBudgetRun
 from app.models.runtime_task import RuntimeTask
+from app.services.budget_transition_outbox import budget_transition_copy, enqueue_budget_transition
 
 logger = logging.getLogger(__name__)
 
@@ -626,6 +627,7 @@ class RuntimeBudgetService:
             would_deny = bool(denied_dimensions)
             allowed = run.enforcement_mode == "observe" or not would_deny
             if not allowed:
+                transitioned = run.status == "active"
                 if run.status == "active":
                     if run.fail_mode == "summary_only":
                         run.status = "summary_only"
@@ -665,19 +667,30 @@ class RuntimeBudgetService:
                             terminal_reason="runtime_budget_exhausted",
                             result_summary="Runtime budget exhausted before this work was claimed.",
                         )
-                db.add(
-                    self._event(
-                        run,
-                        event_type="denial",
-                        reservation_key=reservation.reservation_key,
-                        allowed=False,
-                        would_deny=True,
-                        reason=reservation.reason or "runtime budget exhausted",
-                        amounts=amounts,
-                        runtime_task_id=reservation.runtime_task_id,
-                        metadata={"denied_dimensions": denied_dimensions, **(reservation.metadata or {})},
-                    )
+                event = self._event(
+                    run,
+                    event_type="denial",
+                    reservation_key=reservation.reservation_key,
+                    allowed=False,
+                    would_deny=True,
+                    reason=reservation.reason or "runtime budget exhausted",
+                    amounts=amounts,
+                    runtime_task_id=reservation.runtime_task_id,
+                    metadata={
+                        "denied_dimensions": denied_dimensions,
+                        **(reservation.metadata or {}),
+                        "target_status": run.status,
+                    },
                 )
+                db.add(event)
+                if transitioned:
+                    await enqueue_budget_transition(
+                        db,
+                        run=run,
+                        event=event,
+                        transition=run.status,
+                        content=budget_transition_copy(run.status),
+                    )
                 await db.commit()
                 if run.status == "waiting_budget_approval":
                     raise RuntimeBudgetApprovalRequired(
@@ -770,16 +783,23 @@ class RuntimeBudgetService:
                 run.terminal_reason = "budget_run_expired"
                 run.completed_at = current
                 self._clear_reserved(run)
-                db.add(
-                    self._event(
-                        run,
-                        event_type="expired",
-                        reservation_key=None,
-                        allowed=None,
-                        would_deny=False,
-                        reason="budget_run_expired",
-                        amounts={},
-                    )
+                event = self._event(
+                    run,
+                    event_type="expired",
+                    reservation_key=None,
+                    allowed=None,
+                    would_deny=False,
+                    reason="budget_run_expired",
+                    amounts={},
+                    metadata={"target_status": "expired"},
+                )
+                db.add(event)
+                await enqueue_budget_transition(
+                    db,
+                    run=run,
+                    event=event,
+                    transition="expired",
+                    content=budget_transition_copy("expired"),
                 )
                 await db.execute(
                     update(RuntimeTask)
@@ -1142,29 +1162,29 @@ class RuntimeBudgetService:
             run.enforcement_mode = enforcement_mode
             run.terminal_reason = None
             run.completed_at = None
-            db.add(
-                self._event(
-                    run,
-                    event_type="overrun_approved",
-                    reservation_key=None,
-                    allowed=True,
-                    would_deny=False,
-                    reason=reason,
-                    amounts={},
-                    metadata={
-                        "actor_user_id": str(actor_user_id) if actor_user_id else None,
-                        "enforcement_mode": enforcement_mode,
-                        "transition": ["waiting_budget_approval", "approved", "resuming", "active"],
-                        "resumed_runtime_task_ids": [str(task_id) for task_id in resumed_task_ids],
-                    },
-                )
-            )
-            await self._append_session_status_event(
-                db,
+            event = self._event(
                 run,
-                event_type="runtime_budget_approved",
+                event_type="overrun_approved",
+                reservation_key=None,
+                allowed=True,
+                would_deny=False,
+                reason=reason,
+                amounts={},
+                metadata={
+                    "actor_user_id": str(actor_user_id) if actor_user_id else None,
+                    "enforcement_mode": enforcement_mode,
+                    "transition": ["waiting_budget_approval", "approved", "resuming", "active"],
+                    "target_status": "approved",
+                    "resumed_runtime_task_ids": [str(task_id) for task_id in resumed_task_ids],
+                },
+            )
+            db.add(event)
+            await enqueue_budget_transition(
+                db,
+                run=run,
+                event=event,
+                transition="approved",
                 content="运行额度已获批准，等待中的工作将自动继续。",
-                actor_user_id=actor_user_id,
                 metadata={
                     "reason": reason,
                     "resumed_runtime_task_ids": [str(task_id) for task_id in resumed_task_ids],
@@ -1231,69 +1251,31 @@ class RuntimeBudgetService:
                     result_summary="Runtime budget approval was rejected before this work was claimed.",
                 )
             )
-            db.add(
-                self._event(
-                    run,
-                    event_type="overrun_rejected",
-                    reservation_key=None,
-                    allowed=False,
-                    would_deny=True,
-                    reason=reason,
-                    amounts={},
-                    metadata={"actor_user_id": str(actor_user_id) if actor_user_id else None},
-                )
-            )
-            await self._append_session_status_event(
-                db,
+            event = self._event(
                 run,
-                event_type="runtime_budget_rejected",
+                event_type="overrun_rejected",
+                reservation_key=None,
+                allowed=False,
+                would_deny=True,
+                reason=reason,
+                amounts={},
+                metadata={
+                    "actor_user_id": str(actor_user_id) if actor_user_id else None,
+                    "target_status": "rejected",
+                },
+            )
+            db.add(event)
+            await enqueue_budget_transition(
+                db,
+                run=run,
+                event=event,
+                transition="rejected",
                 content="运行额度申请未获批准，等待中的工作已停止；已完成结果仍可查看。",
-                actor_user_id=actor_user_id,
                 metadata={"reason": reason},
             )
             await db.commit()
             await db.refresh(run)
             return run
-
-    async def _append_session_status_event(
-        self,
-        db: AsyncSession,
-        run: RuntimeBudgetRun,
-        *,
-        event_type: str,
-        content: str,
-        actor_user_id: uuid.UUID | None,
-        metadata: dict[str, Any],
-    ) -> None:
-        if run.root_agent_id is None or not str(run.root_session_id or "").strip():
-            return
-        try:
-            from app.services.chat_transcript import append_session_event
-
-            await append_session_event(
-                db=db,
-                agent_id=run.root_agent_id,
-                tenant_id=run.tenant_id,
-                session_id=str(run.root_session_id),
-                actor_type="system",
-                event_type=event_type,
-                content=content,
-                role="system",
-                user_id=run.root_user_id or actor_user_id,
-                run_id=run.root_runtime_task_id,
-                runtime_task_id=run.root_runtime_task_id,
-                root_session_id=str(run.root_session_id),
-                metadata={"budget_run_id": str(run.id), **metadata},
-                visibility_scope="direct_user",
-                listed_surface="chat",
-                source="runtime_budget",
-                bridge_to_t0=False,
-            )
-        except Exception:
-            # A missing legacy session must not corrupt the budget decision;
-            # RuntimeBudgetEvent remains the mechanical truth and the outbox
-            # projection can reconcile the user notification later.
-            return
 
     async def mark_summary_turn_state(
         self,
@@ -1522,17 +1504,26 @@ class RuntimeBudgetService:
             run.terminal_reason = reason
             run.completed_at = current
             self._clear_reserved(run)
-            db.add(
-                self._event(
-                    run,
-                    event_type="cancelled",
-                    reservation_key=None,
-                    allowed=None,
-                    would_deny=False,
-                    reason=reason,
-                    amounts={},
-                    metadata={"actor_user_id": str(actor_user_id) if actor_user_id else None},
-                )
+            event = self._event(
+                run,
+                event_type="cancelled",
+                reservation_key=None,
+                allowed=None,
+                would_deny=False,
+                reason=reason,
+                amounts={},
+                metadata={
+                    "actor_user_id": str(actor_user_id) if actor_user_id else None,
+                    "target_status": "cancelled",
+                },
+            )
+            db.add(event)
+            await enqueue_budget_transition(
+                db,
+                run=run,
+                event=event,
+                transition="cancelled",
+                content=budget_transition_copy("cancelled"),
             )
             await db.execute(
                 update(RuntimeTask)
@@ -1667,23 +1658,29 @@ class RuntimeBudgetService:
                     else "Runtime budget circuit breaker stopped this work before it was claimed."
                 ),
             )
-        db.add(
-            self._event(
-                run,
-                event_type="circuit_break",
-                reservation_key=None,
-                allowed=False,
-                would_deny=True,
-                reason=reason,
-                amounts={},
-                metadata={
-                    "actor": actor,
-                    "source": source,
-                    "fail_mode": run.fail_mode,
-                    "target_status": target,
-                    "tripped_dimensions": tripped,
-                },
-            )
+        event = self._event(
+            run,
+            event_type="circuit_break",
+            reservation_key=None,
+            allowed=False,
+            would_deny=True,
+            reason=reason,
+            amounts={},
+            metadata={
+                "actor": actor,
+                "source": source,
+                "fail_mode": run.fail_mode,
+                "target_status": target,
+                "tripped_dimensions": tripped,
+            },
+        )
+        db.add(event)
+        await enqueue_budget_transition(
+            db,
+            run=run,
+            event=event,
+            transition=target,
+            content=budget_transition_copy(target),
         )
         return target
 

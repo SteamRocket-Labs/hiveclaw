@@ -37,6 +37,18 @@ class ChatTranscriptEvent(Base):
             ),
             sqlite_where=text("causation_id IS NOT NULL AND event_type = 'agent_task_notification'"),
         ),
+        Index(
+            "uq_chat_transcript_budget_transition_causation",
+            "session_id",
+            "causation_id",
+            "event_type",
+            unique=True,
+            postgresql_where=text(
+                "causation_id IS NOT NULL AND event_type = 'runtime_budget_transition' "
+                "AND metadata_json ? 'budget_transition_outbox_id'"
+            ),
+            sqlite_where=text("causation_id IS NOT NULL AND event_type = 'runtime_budget_transition'"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

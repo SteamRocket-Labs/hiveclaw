@@ -13,6 +13,7 @@ from loguru import logger
 from app.config import get_settings
 from app.database import async_session, enter_rls_bypass
 from app.models.runtime_task import RuntimeTask
+from app.services.budget_transition_outbox import BudgetTransitionOutboxService
 from app.services.channel_delivery_outbox import ChannelDeliveryOutboxService
 from app.services.runtime_notification_outbox import RuntimeNotificationOutboxService
 from app.services.runtime_task_claim_service import RuntimeTaskClaimService
@@ -53,6 +54,12 @@ _STATE: dict[str, Any] = {
     "channel_outbox_retried": 0,
     "channel_outbox_dead_lettered": 0,
     "channel_outbox_needs_reconciliation": 0,
+    "budget_outbox_claimed": 0,
+    "budget_outbox_reconciled": 0,
+    "budget_outbox_delivered": 0,
+    "budget_outbox_retried": 0,
+    "budget_outbox_dead_lettered": 0,
+    "budget_outbox_needs_reconciliation": 0,
 }
 
 
@@ -233,6 +240,18 @@ async def drain_channel_delivery_outbox_once(*, worker_id: str) -> dict[str, int
     return counts
 
 
+async def drain_budget_transition_outbox_once(*, worker_id: str) -> dict[str, int]:
+    service = BudgetTransitionOutboxService()
+    reconciled = await service.reconcile_budget_events_once(limit=100)
+    counts = await service.drain_once(worker_id=worker_id, limit=20)
+    counts["reconciled"] = reconciled
+    _STATE["budget_outbox_reconciled"] = int(_STATE.get("budget_outbox_reconciled") or 0) + reconciled
+    for key in ("claimed", "delivered", "retried", "dead_lettered", "needs_reconciliation"):
+        state_key = f"budget_outbox_{key}"
+        _STATE[state_key] = int(_STATE.get(state_key) or 0) + int(counts.get(key) or 0)
+    return counts
+
+
 def _dispatch_claimed_task(task: RuntimeTask) -> bool:
     if is_executable_chat_task_type(getattr(task, "task_type", None)):
         return dispatch_web_chat_run(
@@ -380,6 +399,11 @@ async def start_runtime_task_worker_loop() -> None:
     logger.info("[RuntimeTaskWorker] started worker_id={}", worker_id)
     try:
         while True:
+            try:
+                await drain_budget_transition_outbox_once(worker_id=worker_id)
+            except Exception as exc:  # noqa: BLE001 - task claiming must continue after one delivery failure.
+                _STATE["last_error"] = f"budget_outbox:{type(exc).__name__}: {str(exc)[:500]}"
+                logger.exception("[RuntimeTaskWorker] budget transition outbox tick failed")
             try:
                 await drain_channel_delivery_outbox_once(worker_id=worker_id)
             except Exception as exc:  # noqa: BLE001 - task claiming must continue after one delivery failure.

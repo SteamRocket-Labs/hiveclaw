@@ -195,6 +195,40 @@ class _FakeRuntimeBudgetService:
         return 3
 
 
+class _FakeBudgetTransitionOutboxService:
+    def __init__(self, fake_service: _FakeRuntimeBudgetService):
+        self.fake_service = fake_service
+        self.outbox_id = uuid4()
+        self.resolution: dict | None = None
+
+    async def list_deliveries(self, *, tenant_id, budget_run_id=None, status=None, limit=100):
+        return [
+            SimpleNamespace(
+                id=self.outbox_id,
+                tenant_id=tenant_id,
+                budget_run_id=budget_run_id or self.fake_service.run_id,
+                budget_event_id=uuid4(),
+                transition="cancelled",
+                channel="telegram",
+                status=status or "needs_reconciliation",
+                attempt_count=1,
+                last_error="provider result unknown",
+                created_at=datetime.now(UTC),
+                delivered_at=None,
+            )
+        ]
+
+    async def resolve_delivery(self, *, tenant_id, outbox_id, actor_user_id, action, reason):
+        self.resolution = {
+            "tenant_id": tenant_id,
+            "outbox_id": outbox_id,
+            "actor_user_id": actor_user_id,
+            "action": action,
+            "reason": reason,
+        }
+        return (await self.list_deliveries(tenant_id=tenant_id, status="delivered"))[0]
+
+
 def _client(fake_service: _FakeRuntimeBudgetService):
     import app.api.runtime_budgets as runtime_budgets_api
 
@@ -208,14 +242,20 @@ def _client(fake_service: _FakeRuntimeBudgetService):
     async def override_service():
         return fake_service
 
+    fake_outbox = _FakeBudgetTransitionOutboxService(fake_service)
+
+    async def override_outbox():
+        return fake_outbox
+
     app.dependency_overrides[get_current_admin] = override_admin
     app.dependency_overrides[runtime_budgets_api.get_runtime_budget_service] = override_service
-    return TestClient(app), user
+    app.dependency_overrides[runtime_budgets_api.get_budget_transition_outbox_service] = override_outbox
+    return TestClient(app), user, fake_outbox
 
 
 def test_runtime_budget_api_lists_policies_and_user_facing_runs():
     fake_service = _FakeRuntimeBudgetService()
-    client, _user = _client(fake_service)
+    client, _user, _outbox = _client(fake_service)
 
     policies = client.get("/runtime-budgets/policies")
     runs = client.get("/runtime-budgets/runs")
@@ -230,7 +270,7 @@ def test_runtime_budget_api_lists_policies_and_user_facing_runs():
 
 def test_runtime_budget_api_cancel_scopes_to_current_tenant():
     fake_service = _FakeRuntimeBudgetService()
-    client, user = _client(fake_service)
+    client, user, _outbox = _client(fake_service)
 
     response = client.post(
         f"/runtime-budgets/runs/{fake_service.run_id}/cancel",
@@ -249,7 +289,7 @@ def test_runtime_budget_api_cancel_scopes_to_current_tenant():
 
 def test_runtime_budget_api_creates_and_updates_policy_in_current_tenant():
     fake_service = _FakeRuntimeBudgetService()
-    client, _user = _client(fake_service)
+    client, _user, _outbox = _client(fake_service)
 
     created = client.post(
         "/runtime-budgets/policies",
@@ -283,7 +323,7 @@ def test_runtime_budget_api_creates_and_updates_policy_in_current_tenant():
 
 def test_runtime_budget_api_approves_overrun_and_switches_tenant_mode():
     fake_service = _FakeRuntimeBudgetService()
-    client, user = _client(fake_service)
+    client, user, _outbox = _client(fake_service)
 
     approved = client.post(
         f"/runtime-budgets/runs/{fake_service.run_id}/approve-overrun",
@@ -317,7 +357,7 @@ def test_runtime_budget_api_approves_overrun_and_switches_tenant_mode():
 
 def test_runtime_budget_api_rejects_waiting_work_with_actor_and_reason():
     fake_service = _FakeRuntimeBudgetService()
-    client, user = _client(fake_service)
+    client, user, _outbox = _client(fake_service)
 
     response = client.post(
         f"/runtime-budgets/runs/{fake_service.run_id}/reject-overrun",
@@ -344,3 +384,32 @@ def test_runtime_budget_waiting_status_has_user_semantics():
         == "运行额度已达上限，正在等待管理员批准"
     )
     assert _user_next_action("waiting_budget_approval") == "你可以继续其他工作；管理员批准后本任务会自动恢复"
+
+
+def test_runtime_budget_delivery_reconciliation_is_admin_scoped_and_explicit():
+    fake_service = _FakeRuntimeBudgetService()
+    client, user, fake_outbox = _client(fake_service)
+
+    listed = client.get(
+        f"/runtime-budgets/transition-deliveries?budget_run_id={fake_service.run_id}&status=needs_reconciliation"
+    )
+    resolved = client.post(
+        f"/runtime-budgets/transition-deliveries/{fake_outbox.outbox_id}/resolve",
+        json={
+            "action": "mark_delivered",
+            "reason": "provider console confirms delivery",
+        },
+    )
+
+    assert listed.status_code == 200
+    assert listed.json()[0]["status"] == "needs_reconciliation"
+    assert listed.json()[0]["channel"] == "telegram"
+    assert resolved.status_code == 200
+    assert resolved.json()["status"] == "delivered"
+    assert fake_outbox.resolution == {
+        "tenant_id": fake_service.tenant_id,
+        "outbox_id": fake_outbox.outbox_id,
+        "actor_user_id": user.id,
+        "action": "mark_delivered",
+        "reason": "provider console confirms delivery",
+    }

@@ -86,6 +86,20 @@ export interface RuntimeBudgetTenantModeResult {
   updated_policies: number;
 }
 
+export interface BudgetTransitionDelivery {
+  id: string;
+  tenant_id: string;
+  budget_run_id: string;
+  budget_event_id: string;
+  transition: string;
+  channel: string;
+  status: 'pending' | 'processing' | 'delivered' | 'dead_letter' | 'needs_reconciliation' | string;
+  attempt_count: number;
+  last_error: string | null;
+  created_at: string;
+  delivered_at: string | null;
+}
+
 export const runtimeBudgetApi = {
   listPolicies: () => get<RuntimeBudgetPolicy[]>('/runtime-budgets/policies'),
   createPolicy: (payload: RuntimeBudgetPolicyWrite) =>
@@ -117,6 +131,18 @@ export const runtimeBudgetApi = {
   ) => post<RuntimeBudgetRun>(`/runtime-budgets/runs/${runId}/approve-overrun`, payload),
   rejectOverrun: (runId: string, reason: string) =>
     post<RuntimeBudgetRun>(`/runtime-budgets/runs/${runId}/reject-overrun`, { reason }),
+  listTransitionDeliveries: (params: { runId?: string; status?: string; limit?: number } = {}) => {
+    const query = new URLSearchParams();
+    if (params.runId) query.set('budget_run_id', params.runId);
+    if (params.status) query.set('status', params.status);
+    if (params.limit) query.set('limit', String(params.limit));
+    const suffix = query.toString() ? `?${query.toString()}` : '';
+    return get<BudgetTransitionDelivery[]>(`/runtime-budgets/transition-deliveries${suffix}`);
+  },
+  resolveTransitionDelivery: (
+    deliveryId: string,
+    payload: { action: 'retry' | 'mark_delivered'; reason: string },
+  ) => post<BudgetTransitionDelivery>(`/runtime-budgets/transition-deliveries/${deliveryId}/resolve`, payload),
   setTenantEnforcementMode: (payload: { enforcement_mode: 'observe' | 'enforce' | string; reason: string }) =>
     post<RuntimeBudgetTenantModeResult>('/runtime-budgets/tenant/enforcement-mode', payload),
 };

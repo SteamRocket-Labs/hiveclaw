@@ -60,6 +60,7 @@ const exhaustedRun = {
 };
 
 let runData: unknown[] = [exhaustedRun];
+let deliveryData: unknown[] = [];
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -76,6 +77,9 @@ vi.mock('@tanstack/react-query', () => ({
     if (key === 'runtime-budget-runs') {
       return { data: runData };
     }
+    if (key === 'runtime-budget-transition-deliveries') {
+      return { data: deliveryData };
+    }
     return { data: [] };
   },
   useMutation: () => ({
@@ -91,6 +95,7 @@ describe('WorkspaceRuntimeBudgetsSection', () => {
   beforeEach(() => {
     policyData = [scheduledPolicy];
     runData = [exhaustedRun];
+    deliveryData = [];
   });
 
   it('renders tenant guardrails and user-facing protected run status', () => {
@@ -153,5 +158,31 @@ describe('WorkspaceRuntimeBudgetsSection', () => {
     expect(html).toContain('Approve to resume the exact queued task');
     expect(html).toContain('Approve');
     expect(html).toContain('Reject');
+  });
+
+  it('keeps ambiguous delivery recovery in the company control plane', () => {
+    deliveryData = [
+      {
+        id: 'delivery-1',
+        tenant_id: 'tenant-1',
+        budget_run_id: 'run-1',
+        budget_event_id: 'event-1',
+        transition: 'cancelled',
+        channel: 'telegram',
+        status: 'needs_reconciliation',
+        attempt_count: 1,
+        last_error: 'provider result unknown',
+        created_at: '2026-07-11T10:00:00Z',
+        delivered_at: null,
+      },
+    ];
+
+    const html = renderToStaticMarkup(<WorkspaceRuntimeBudgetsSection />);
+
+    expect(html).toContain('Delivery needs review');
+    expect(html).toContain('telegram');
+    expect(html).toContain('Confirm delivered');
+    expect(html).toContain('Retry delivery');
+    expect(html).not.toContain('provider result unknown');
   });
 });

@@ -72,9 +72,42 @@
 }
 
 .hr-blueprint-list,
-.hr-blueprint-boundaries {
+.hr-blueprint-boundaries,
+.hr-blueprint-provisioning {
   display: grid;
   gap: 4px;
+}
+
+.hr-blueprint-provisioning ol {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.hr-blueprint-provisioning li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  font-size: var(--text-tiny);
+}
+
+.hr-blueprint-provisioning li strong,
+.hr-blueprint-provisioning li em {
+  font-size: var(--text-tiny);
+  font-style: normal;
+  font-weight: 600;
+}
+
+.hr-blueprint-provisioning li small {
+  grid-column: 1 / -1;
+  color: var(--error);
 }
 
 .hr-blueprint-list ul {

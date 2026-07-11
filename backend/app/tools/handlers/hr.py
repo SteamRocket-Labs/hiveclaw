@@ -1332,16 +1332,21 @@ def _build_create_employee_result(
 ) -> str:
     warnings = warnings or []
     manual_steps = manual_steps or []
-    message = (
-        f"Successfully created digital employee '{agent_name}' (ID: {agent_id}). "
-        f"Config: {', '.join(features)}. "
-        f"{_default_skill_count()} default platform skill capsules are auto-installed. "
-        f"Skills directory: {skills_dir}. "
-        "The employee is now being initialized and will be ready shortly."
-    )
+    if creation_state in {"provisioning", "provisioning_failed"}:
+        message = (
+            f"Digital employee '{agent_name}' (ID: {agent_id}) exists, but required provisioning is not complete. "
+            "Resume the canonical blueprint after resolving the reported step; do not treat this employee as ready."
+        )
+    else:
+        message = (
+            f"Successfully created digital employee '{agent_name}' (ID: {agent_id}). "
+            f"Config: {', '.join(features)}. "
+            f"{_default_skill_count()} default platform skill capsules are auto-installed. "
+            f"Skills directory: {skills_dir}."
+        )
     return json.dumps(
         {
-            "status": "success",
+            "status": ("success" if creation_state in {"ready", "ready_with_warnings"} else "incomplete"),
             "creation_state": creation_state,
             "agent_id": agent_id,
             "agent_name": agent_name,
@@ -1367,6 +1372,7 @@ def _append_hr_creation_t0_event(
     preview_payload: dict[str, Any],
     installed_skill_names: list[str],
     trigger_count: int,
+    creation_draft_id: uuid.UUID | str | None = None,
     data_root: Path | str | None = None,
 ):
     """Append raw HR creation evidence to the HR agent's T0 session ledger."""
@@ -1393,13 +1399,33 @@ def _append_hr_creation_t0_event(
         "installed_skill_names": _dedupe_strings(installed_skill_names),
         "manual_setup_debt": [str(item) for item in (manual_steps or [])],
         "source_attributions": source_attributions if isinstance(source_attributions, list) else [],
+        "creation_draft_id": str(creation_draft_id) if creation_draft_id else None,
     }
+    if creation_draft_id:
+        from app.memory.t0.ledger import T0AppendResult, replay_t0_session_events
+
+        for event in replay_t0_session_events(
+            agent_id=hr_agent_id,
+            session_id=session_id,
+            data_root=data_root,
+        ):
+            if event.event_type == "hr_agent_created" and str(event.metadata.get("creation_draft_id") or "") == str(
+                creation_draft_id
+            ):
+                return T0AppendResult(
+                    path=event.path,
+                    jsonl_path=event.truth_path or event.path,
+                    segment_id=event.segment_id,
+                    event_id=event.event_id,
+                    sequence=event.sequence,
+                )
     return append_t0_session_event(
         agent_id=hr_agent_id,
         session_id=session_id,
         event_type="hr_agent_created",
         role="tool",
         content="Created digital employee from confirmed HR blueprint.",
+        message_id=creation_draft_id,
         actor_id=user_id,
         tenant_id=tenant_id,
         source="web",
@@ -1410,10 +1436,14 @@ def _append_hr_creation_t0_event(
 
 async def _claim_canonical_hr_blueprint(
     request: ToolExecutionRequest,
-) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID, dict[str, Any]]:
+) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID, dict[str, Any], Any]:
     """Bind a retry-safe create call to one authenticated, session-scoped draft."""
     from app.database import tenant_scoped_session
-    from app.services.hr_creation_service import claim_hr_creation_draft_record, load_hr_creation_draft
+    from app.services.hr_creation_service import (
+        claim_hr_creation_draft_record,
+        load_hr_creation_draft,
+        validate_hr_creation_blueprint,
+    )
     from app.services.tenant_resolver import resolve_tenant_for_agent
 
     raw_blueprint_id = str(request.arguments.get("blueprint_id") or "").strip()
@@ -1446,17 +1476,21 @@ async def _claim_canonical_hr_blueprint(
             session_id=session_id,
             for_update=True,
         )
-        claim_hr_creation_draft_record(draft)
         canonical_blueprint = dict(draft.blueprint_json or {})
+        # Semantic validation must not acquire a lease. A malformed canonical
+        # draft remains confirmed and immediately repairable instead of
+        # blocking every retry for the lease duration.
+        validate_hr_creation_blueprint(canonical_blueprint)
+        claim = claim_hr_creation_draft_record(draft, lease_seconds=600)
         await db.commit()
 
-    return draft_id, tenant_id, user_id, session_id, canonical_blueprint
+    return draft_id, tenant_id, user_id, session_id, canonical_blueprint, claim
 
 
 @tool(
     ToolMeta(
         name="create_digital_employee",
-        timeout_seconds=120.0,
+        timeout_seconds=900.0,
         risk_class="enterprise_asset_mutation",
         description=(
             "Create a digital employee from a server-side canonical HR blueprint. "
@@ -1486,7 +1520,7 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
     from app.services.hr_creation_service import HrCreationConflict
 
     try:
-        draft_id, scope_tenant_id, user_id, session_id, args = await _claim_canonical_hr_blueprint(request)
+        draft_id, scope_tenant_id, user_id, session_id, args, claim = await _claim_canonical_hr_blueprint(request)
     except (HrCreationConflict, ValueError) as exc:
         code = getattr(exc, "code", "invalid_request")
         message = getattr(exc, "message", str(exc))
@@ -1546,6 +1580,7 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
     from app.services.agent_manager import agent_manager
     from app.services.capability_install_service import (
         build_capability_install_plan,
+        list_capability_installs,
         record_capability_install,
         record_capability_install_plan,
     )
@@ -1554,9 +1589,21 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
         reuse_existing_skill_for_agent,
     )
     from app.services.hr_creation_service import (
+        derive_hr_provisioning_readiness,
+        ensure_hr_provisioning_steps,
         load_hr_creation_draft,
         mark_hr_creation_completed_record,
         mark_hr_creation_failed_record,
+        release_hr_creation_claim_record,
+        renew_hr_creation_claim_record,
+        transition_hr_provisioning_step_record,
+    )
+
+    install_plan = build_capability_install_plan(
+        skill_names=skill_names,
+        mcp_server_ids=mcp_server_ids,
+        clawhub_slugs=clawhub_slugs,
+        external_skill_refs=external_skill_refs,
     )
 
     try:
@@ -1571,7 +1618,7 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
             user_result = await db.execute(select(User).where(User.id == user_id))
             user = user_result.scalar_one_or_none()
             if not user:
-                return "Error: could not identify the requesting user."
+                raise HrCreationConflict("requester_missing", "Could not identify the requesting user.")
 
             effective_tenant_id = scope_tenant_id
             draft = await load_hr_creation_draft(
@@ -1583,30 +1630,68 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
                 session_id=session_id,
                 for_update=True,
             )
-            existing_agent_result = await db.execute(select(Agent).where(Agent.id == draft.created_agent_id))
-            existing_agent = existing_agent_result.scalar_one_or_none()
-            if existing_agent is not None:
-                mark_hr_creation_completed_record(
-                    draft,
-                    agent_id=existing_agent.id,
-                    provisioning=dict(draft.provisioning_json or {"core": "completed", "recovered": True}),
-                )
-                await db.commit()
+            if claim.state == "completed":
+                completed_agent_result = await db.execute(select(Agent).where(Agent.id == draft.created_agent_id))
+                completed_agent = completed_agent_result.scalar_one_or_none()
+                if completed_agent is None:
+                    return json.dumps(
+                        {
+                            "status": "error",
+                            "error": "completed_asset_missing",
+                            "message": "The completed HR draft no longer references an existing agent.",
+                        },
+                        ensure_ascii=False,
+                    )
                 return _build_create_employee_result(
-                    agent_id=str(existing_agent.id),
-                    agent_name=existing_agent.name,
+                    agent_id=str(completed_agent.id),
+                    agent_name=completed_agent.name,
                     features=["idempotent_replay=true"],
-                    skills_dir=str(agent_manager._agent_dir(existing_agent.id) / "skills"),
+                    skills_dir=str(agent_manager._agent_dir(completed_agent.id) / "skills"),
                     creation_state="ready",
                 )
 
-            # Resolve default model through the shared tenant-aware model resolver. The
-            # tenant setting may point at a deleted/cross-tenant/disabled model; never
-            # write that raw UUID into agents.primary_model_id.
+            steps = await ensure_hr_provisioning_steps(
+                db,
+                draft=draft,
+                claim=claim,
+                install_plan=install_plan,
+            )
+            steps_by_key = {step.step_key: step for step in steps}
+            capability_steps = {
+                (step.step_kind, step.source_key): step for step in steps if step.source_key is not None
+            }
+            validate_step = steps_by_key["validate"]
+            if validate_step.status != "completed":
+                transition_hr_provisioning_step_record(
+                    validate_step,
+                    draft=draft,
+                    claim=claim,
+                    status="completed",
+                    receipt={"blueprint_hash": draft.blueprint_hash, "validated_before_claim": True},
+                )
+                renew_hr_creation_claim_record(draft, claim=claim, lease_seconds=600)
+                await db.commit()
+
+            existing_agent_result = await db.execute(select(Agent).where(Agent.id == draft.created_agent_id))
+            existing_agent = existing_agent_result.scalar_one_or_none()
+
+            # Resolve a model only while creating the core row or producing the
+            # one canonical refinement receipt. Recovery reuses that receipt;
+            # it never asks the model to regenerate a previously committed soul.
             creation_model = await _resolve_employee_creation_model(db, effective_tenant_id)
-            if not creation_model:
+            if not creation_model and existing_agent is None:
+                model_step = steps_by_key["model"]
+                transition_hr_provisioning_step_record(
+                    model_step,
+                    draft=draft,
+                    claim=claim,
+                    status="failed",
+                    error_code="missing_creation_model",
+                    error_message="No enabled LLM model is configured for this tenant.",
+                )
                 mark_hr_creation_failed_record(
                     draft,
+                    claim=claim,
                     code="missing_creation_model",
                     message="No enabled LLM model is configured for this tenant.",
                 )
@@ -1615,56 +1700,104 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
                     f"❌ Cannot create agent '{name}': no LLM model configured for this tenant. "
                     "Please add at least one enabled LLM model in Enterprise Settings → LLM Pool."
                 )
-            primary_model_id = creation_model.id
+            primary_model_id = existing_agent.primary_model_id if existing_agent is not None else creation_model.id
 
-            # LLM soul refinement — use the HR agent's own model (proven capable,
-            # it just ran the entire hiring conversation). Falls back to new agent's
-            # default model if HR agent model is unavailable.
-            _hr_agent_r = await db.execute(select(Agent).where(Agent.id == request.context.agent_id))
-            _hr_agent = _hr_agent_r.scalar_one_or_none()
-            _llm_obj, _refine_model_source = await _resolve_employee_refinement_model(
-                db,
-                effective_tenant_id,
-                preferred_model_id=_hr_agent.primary_model_id if _hr_agent else None,
-                creation_model=creation_model,
-            )
-            _model_cfg = (
-                {
-                    "provider": _llm_obj.provider,
-                    "model": _llm_obj.model,
-                    "api_key": _llm_obj.api_key,
-                    "base_url": _llm_obj.base_url,
+            model_step = steps_by_key["model"]
+            saved_refinement = dict((draft.provisioning_json or {}).get("refined_inputs") or {})
+            if model_step.status == "completed" and saved_refinement:
+                _refined = saved_refinement
+            elif existing_agent is not None:
+                # Legacy in-flight drafts predate the refinement receipt. The
+                # persisted Agent row and confirmed blueprint are stronger
+                # evidence than a fresh, potentially drifting model rewrite.
+                _refined = {
+                    "role_description": existing_agent.role_description or role_description,
+                    "personality": personality,
+                    "boundaries": boundaries,
+                    "primary_users": list(preview_payload["blueprint"].get("primary_users", [])),
+                    "core_outputs": list(preview_payload["blueprint"].get("core_outputs", [])),
+                    "quality_standards": [],
+                    "first_tasks": [],
                 }
-                if _llm_obj
-                else {}
-            )
-            logger.info(
-                "[HR] Soul refinement using model: %s/%s (from %s)",
-                _model_cfg.get("provider", "?"),
-                _model_cfg.get("model", "?"),
-                _refine_model_source,
-            )
-            _refined = await _refine_soul_inputs(
-                name=name,
-                role_description=role_description,
-                personality=personality,
-                boundaries=boundaries,
-                primary_users=_parse_list(args.get("primary_users")),
-                core_outputs=_parse_list(args.get("core_outputs")),
-                model_config=_model_cfg,
-                usage_agent_id=_hr_agent.id if _hr_agent else None,
-                usage_tenant_id=tenant_id,
-            )
-            role_description = _refined["role_description"]
-            personality = _refined.get("personality", personality)
-            boundaries = _refined.get("boundaries", boundaries)
+                transition_hr_provisioning_step_record(
+                    model_step,
+                    draft=draft,
+                    claim=claim,
+                    status="completed",
+                    receipt={"source": "legacy_agent_row", "primary_model_id": str(primary_model_id)},
+                )
+                draft.provisioning_json = {
+                    **dict(draft.provisioning_json or {}),
+                    "refined_inputs": _refined,
+                }
+                renew_hr_creation_claim_record(draft, claim=claim, lease_seconds=600)
+                await db.commit()
+            else:
+                transition_hr_provisioning_step_record(
+                    model_step,
+                    draft=draft,
+                    claim=claim,
+                    status="running",
+                    receipt={"primary_model_id": str(primary_model_id)},
+                )
+                renew_hr_creation_claim_record(draft, claim=claim, lease_seconds=600)
+                await db.commit()
 
-            install_plan = build_capability_install_plan(
-                skill_names=skill_names,
-                mcp_server_ids=mcp_server_ids,
-                clawhub_slugs=clawhub_slugs,
-                external_skill_refs=external_skill_refs,
-            )
+                _hr_agent_r = await db.execute(select(Agent).where(Agent.id == request.context.agent_id))
+                _hr_agent = _hr_agent_r.scalar_one_or_none()
+                _llm_obj, _refine_model_source = await _resolve_employee_refinement_model(
+                    db,
+                    effective_tenant_id,
+                    preferred_model_id=_hr_agent.primary_model_id if _hr_agent else None,
+                    creation_model=creation_model,
+                )
+                _model_cfg = (
+                    {
+                        "provider": _llm_obj.provider,
+                        "model": _llm_obj.model,
+                        "api_key": _llm_obj.api_key,
+                        "base_url": _llm_obj.base_url,
+                    }
+                    if _llm_obj
+                    else {}
+                )
+                logger.info(
+                    "[HR] Soul refinement using model: %s/%s (from %s)",
+                    _model_cfg.get("provider", "?"),
+                    _model_cfg.get("model", "?"),
+                    _refine_model_source,
+                )
+                _refined = await _refine_soul_inputs(
+                    name=name,
+                    role_description=role_description,
+                    personality=personality,
+                    boundaries=boundaries,
+                    primary_users=_parse_list(args.get("primary_users")),
+                    core_outputs=_parse_list(args.get("core_outputs")),
+                    model_config=_model_cfg,
+                    usage_agent_id=_hr_agent.id if _hr_agent else None,
+                    usage_tenant_id=tenant_id,
+                )
+                renew_hr_creation_claim_record(draft, claim=claim, lease_seconds=600)
+                transition_hr_provisioning_step_record(
+                    model_step,
+                    draft=draft,
+                    claim=claim,
+                    status="completed",
+                    receipt={
+                        "primary_model_id": str(primary_model_id),
+                        "refinement_model_source": _refine_model_source,
+                    },
+                )
+                draft.provisioning_json = {
+                    **dict(draft.provisioning_json or {}),
+                    "refined_inputs": _refined,
+                }
+                await db.commit()
+
+            role_description = str(_refined.get("role_description") or role_description)
+            personality = str(_refined.get("personality") or personality)
+            boundaries = str(_refined.get("boundaries") or boundaries)
 
             resolved_extra_skills: list[Skill] = []
             if skill_names:
@@ -1716,64 +1849,99 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
             # heartbeat fires after a full interval, giving MCP/workspace init time.
             from datetime import datetime as _dt, timezone as _tz
 
-            agent = Agent(
-                name=name,
-                role_description=role_description,
-                welcome_message=welcome_message or None,
-                creator_id=user.id,
-                owner_user_id=user.id,
-                sponsor_user_id=user.id,
-                tenant_id=effective_tenant_id,
-                agent_type="native",
-                agent_class="internal_tenant",
-                security_zone="standard",
-                primary_model_id=primary_model_id,
-                status="creating",
-                max_triggers=default_max_triggers,
-                min_poll_interval_min=default_min_poll,
-                webhook_rate_limit=default_webhook_rate,
-                heartbeat_enabled=heartbeat_enabled,
-                heartbeat_interval_minutes=heartbeat_interval,
-                heartbeat_active_hours=heartbeat_active_hours,
-                last_heartbeat_at=_dt.now(_tz.utc),
-            )
-            db.add(agent)
-            await ensure_agent_identity(
-                db,
-                agent,
-                display_name=agent.name,
-                avatar_url=None,
-                rls_bypass_reason=f"HR digital employee identity bootstrap for tenant {effective_tenant_id}",
-                rls_bypass_actor_id=str(user.id),
-            )
-
-            # Permissions
-            if permission_scope == "self":
-                db.add(
-                    AgentPermission(
-                        agent_id=agent.id,
-                        tenant_id=agent.tenant_id,
-                        scope_type="user",
-                        scope_id=user.id,
-                        access_level="manage",
-                    )
+            core_step = steps_by_key["core"]
+            if existing_agent is None:
+                transition_hr_provisioning_step_record(
+                    core_step,
+                    draft=draft,
+                    claim=claim,
+                    status="running",
+                    receipt={"deterministic_agent_id": True},
                 )
+                deterministic_agent_id = uuid.uuid5(uuid.NAMESPACE_URL, f"hive://hr-creation/{draft.id}")
+                agent = Agent(
+                    id=deterministic_agent_id,
+                    name=name,
+                    role_description=role_description,
+                    welcome_message=welcome_message or None,
+                    creator_id=user.id,
+                    owner_user_id=user.id,
+                    sponsor_user_id=user.id,
+                    tenant_id=effective_tenant_id,
+                    agent_type="native",
+                    agent_class="internal_tenant",
+                    security_zone="standard",
+                    primary_model_id=primary_model_id,
+                    status="creating",
+                    max_triggers=default_max_triggers,
+                    min_poll_interval_min=default_min_poll,
+                    webhook_rate_limit=default_webhook_rate,
+                    heartbeat_enabled=heartbeat_enabled,
+                    heartbeat_interval_minutes=heartbeat_interval,
+                    heartbeat_active_hours=heartbeat_active_hours,
+                    last_heartbeat_at=_dt.now(_tz.utc),
+                )
+                db.add(agent)
+                await ensure_agent_identity(
+                    db,
+                    agent,
+                    display_name=agent.name,
+                    avatar_url=None,
+                    rls_bypass_reason=f"HR digital employee identity bootstrap for tenant {effective_tenant_id}",
+                    rls_bypass_actor_id=str(user.id),
+                )
+
+                if permission_scope == "self":
+                    db.add(
+                        AgentPermission(
+                            agent_id=agent.id,
+                            tenant_id=agent.tenant_id,
+                            scope_type="user",
+                            scope_id=user.id,
+                            access_level="manage",
+                        )
+                    )
+                else:
+                    db.add(
+                        AgentPermission(
+                            agent_id=agent.id,
+                            tenant_id=agent.tenant_id,
+                            scope_type="company",
+                            access_level="use",
+                        )
+                    )
+                await db.flush()
+
+                from app.services.tool_seeder import assign_default_tools_to_agent
+
+                await assign_default_tools_to_agent(db, agent.id)
+                await db.flush()
             else:
-                db.add(
-                    AgentPermission(
-                        agent_id=agent.id,
-                        tenant_id=agent.tenant_id,
-                        scope_type="company",
-                        access_level="use",
-                    )
+                agent = existing_agent
+
+            if core_step.status != "completed":
+                transition_hr_provisioning_step_record(
+                    core_step,
+                    draft=draft,
+                    claim=claim,
+                    status="completed",
+                    receipt={
+                        "agent_id": str(agent.id),
+                        "primary_model_id": str(agent.primary_model_id) if agent.primary_model_id else None,
+                        "recovered_existing_row": existing_agent is not None,
+                    },
                 )
-            await db.flush()
-
-            # Assign default platform tools
-            from app.services.tool_seeder import assign_default_tools_to_agent
-
-            await assign_default_tools_to_agent(db, agent.id)
-            await db.flush()
+            draft.status = "provisioning"
+            draft.created_agent_id = agent.id
+            draft.provisioning_json = {
+                **dict(draft.provisioning_json or {}),
+                "core": "completed",
+                "workspace": "completed" if steps_by_key["workspace"].status == "completed" else "pending",
+                "default_skills": "completed" if steps_by_key["defaults"].status == "completed" else "pending",
+                "t0_evidence": "completed" if steps_by_key["t0_evidence"].status == "completed" else "pending",
+            }
+            renew_hr_creation_claim_record(draft, claim=claim, lease_seconds=600)
+            await db.commit()
 
             # Initialize agent file system (standard template)
             # Override blueprint with LLM-refined values for soul rendering and first-work setup.
@@ -1793,18 +1961,55 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
                 "company_charter": preview_payload["blueprint"].get("company_charter", {}),
                 "owner_agency_charter": preview_payload["blueprint"].get("owner_agency_charter", {}),
             }
-            await agent_manager.initialize_agent_files(
-                db,
-                agent,
-                personality=personality,
-                boundaries=boundaries,
-                blueprint=_bp,
-            )
-
             agent_dir = agent_manager._agent_dir(agent.id)
+            workspace_step = steps_by_key["workspace"]
+            if workspace_step.status != "completed":
+                transition_hr_provisioning_step_record(
+                    workspace_step,
+                    draft=draft,
+                    claim=claim,
+                    status="running",
+                    receipt={"workspace": str(agent_dir)},
+                )
+                renew_hr_creation_claim_record(draft, claim=claim, lease_seconds=600)
+                await db.commit()
+                await agent_manager.initialize_agent_files(
+                    db,
+                    agent,
+                    personality=personality,
+                    boundaries=boundaries,
+                    blueprint=_bp,
+                    repair_existing=True,
+                )
+                renew_hr_creation_claim_record(draft, claim=claim, lease_seconds=600)
+                transition_hr_provisioning_step_record(
+                    workspace_step,
+                    draft=draft,
+                    claim=claim,
+                    status="completed",
+                    receipt={
+                        "workspace": str(agent_dir),
+                        "soul_path": str(agent_dir / "soul.md"),
+                        "repairable": True,
+                    },
+                )
+                await db.commit()
+
+            defaults_step = steps_by_key["defaults"]
+            defaults_already_completed = defaults_step.status == "completed"
+            if not defaults_already_completed:
+                transition_hr_provisioning_step_record(
+                    defaults_step,
+                    draft=draft,
+                    claim=claim,
+                    status="running",
+                    receipt={"agent_id": str(agent.id)},
+                )
+                renew_hr_creation_claim_record(draft, claim=claim, lease_seconds=600)
+                await db.commit()
 
             # Create triggers (scheduled tasks)
-            if triggers:
+            if triggers and not defaults_already_completed:
                 from app.models.trigger import AgentTrigger
 
                 for trig in triggers:
@@ -1849,6 +2054,15 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
                         "event_wait" if trig_type in {"poll", "on_message", "webhook"} else "scheduled_job",
                     )
                     raw_config = _stamp_hr_blueprint_trigger_exemption(raw_config)
+                    existing_trigger = await db.scalar(
+                        select(AgentTrigger.id).where(
+                            AgentTrigger.agent_id == agent.id,
+                            AgentTrigger.name == _trigger_name,
+                            AgentTrigger.type == trig_type,
+                        )
+                    )
+                    if existing_trigger is not None:
+                        continue
                     db.add(
                         AgentTrigger(
                             agent_id=agent.id,
@@ -1867,27 +2081,35 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
             _boot_task = next((str(t).strip() for t in _first_tasks if str(t).strip()), "")
             if not _boot_task:
                 _boot_task = str(args.get("focus_content", "")).strip()
-            if _boot_task:
+            if _boot_task and not defaults_already_completed:
                 from app.models.trigger import AgentTrigger
 
                 _fire_at = (_dt.now(_tz.utc) + __import__("datetime").timedelta(seconds=30)).isoformat()
-                db.add(
-                    AgentTrigger(
-                        agent_id=agent.id,
-                        tenant_id=agent.tenant_id,
-                        name="first_task_boot",
-                        type="once",
-                        config=_stamp_hr_blueprint_trigger_exemption(
-                            {"at": _fire_at, "trigger_class": "scheduled_job"}
-                        ),
-                        reason=(
-                            f"Read soul.md for your full mission. Start with this first task: {_boot_task}\n\n"
-                            "Record progress and evidence in your work ledger as you go."
-                        ),
+                existing_boot = await db.scalar(
+                    select(AgentTrigger.id).where(
+                        AgentTrigger.agent_id == agent.id,
+                        AgentTrigger.name == "first_task_boot",
+                        AgentTrigger.type == "once",
                     )
                 )
-                await db.flush()
-                logger.info("[HR] Created boot trigger for agent %s: %s", agent.id, _boot_task[:80])
+                if existing_boot is None:
+                    db.add(
+                        AgentTrigger(
+                            agent_id=agent.id,
+                            tenant_id=agent.tenant_id,
+                            name="first_task_boot",
+                            type="once",
+                            config=_stamp_hr_blueprint_trigger_exemption(
+                                {"at": _fire_at, "trigger_class": "scheduled_job"}
+                            ),
+                            reason=(
+                                f"Read soul.md for your full mission. Start with this first task: {_boot_task}\n\n"
+                                "Record progress and evidence in your work ledger as you go."
+                            ),
+                        )
+                    )
+                    await db.flush()
+                    logger.info("[HR] Created boot trigger for agent %s: %s", agent.id, _boot_task[:80])
 
             # Copy default skills + requested skills
             from sqlalchemy.orm import selectinload
@@ -1903,70 +2125,83 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
 
             from app.services.skill_installation import install_active_skill_package
 
-            for skill in all_skills_to_copy:
-                install_active_skill_package(
-                    workspace=agent_dir,
-                    folder_name=skill.folder_name,
-                    files=[{"path": sf.path, "content": sf.content} for sf in skill.files],
-                    source=f"hr_registry_skill:{skill.id}",
-                    overwrite=True,
-                )
+            if not defaults_already_completed:
+                for skill in all_skills_to_copy:
+                    install_active_skill_package(
+                        workspace=agent_dir,
+                        folder_name=skill.folder_name,
+                        files=[{"path": sf.path, "content": sf.content} for sf in skill.files],
+                        source=f"hr_registry_skill:{skill.id}",
+                        overwrite=True,
+                    )
 
-            # Start container
-            try:
-                await agent_manager.start_container(db, agent)
-            except Exception as _container_exc:
-                logger.warning("[HR] Container start failed (non-fatal): %s", _container_exc)
-            await db.flush()
+            # Audit the asset creation once; replaying an already-completed
+            # defaults step must not fabricate another creation event.
+            if not defaults_already_completed:
+                try:
+                    from app.core.policy import write_audit_event
 
-            # Transition from "creating" → "idle" so heartbeat can pick up this agent
-            if agent.status == "creating":
-                agent.status = "idle"
-                await db.flush()
+                    await write_audit_event(
+                        db,
+                        event_type="agent.created",
+                        severity="info",
+                        actor_type="user",
+                        actor_id=user.id,
+                        tenant_id=effective_tenant_id or user.tenant_id or uuid.UUID(int=0),
+                        action="create_agent",
+                        resource_type="agent",
+                        resource_id=agent.id,
+                        details={"name": agent.name, "created_via": "hr_agent"},
+                    )
+                except Exception as _audit_exc:
+                    logger.warning("Audit write failed for hr agent.created: %s", _audit_exc)
 
-            # Audit
-            try:
-                from app.core.policy import write_audit_event
+            if not defaults_already_completed:
+                from app.services.ai_assets import register_agent_asset
 
-                await write_audit_event(
+                await register_agent_asset(
                     db,
-                    event_type="agent.created",
-                    severity="info",
-                    actor_type="user",
-                    actor_id=user.id,
-                    tenant_id=effective_tenant_id or user.tenant_id or uuid.UUID(int=0),
-                    action="create_agent",
-                    resource_type="agent",
-                    resource_id=agent.id,
-                    details={"name": agent.name, "created_via": "hr_agent"},
+                    agent,
+                    change_source="create",
+                    actor_user_id=user.id,
+                    change_message="Digital employee created by HR Agent",
                 )
-            except Exception as _audit_exc:
-                logger.warning("Audit write failed for hr agent.created: %s", _audit_exc)
-
-            from app.services.ai_assets import register_agent_asset
-
-            await register_agent_asset(
-                db,
-                agent,
-                change_source="create",
-                actor_user_id=user.id,
-                change_message="Digital employee created by HR Agent",
-            )
+            renew_hr_creation_claim_record(draft, claim=claim, lease_seconds=600)
+            if defaults_step.status != "completed":
+                transition_hr_provisioning_step_record(
+                    defaults_step,
+                    draft=draft,
+                    claim=claim,
+                    status="completed",
+                    receipt={
+                        "trigger_count": len(triggers),
+                        "default_skill_count": len(all_skills_to_copy),
+                    },
+                )
             draft.status = "provisioning"
-            draft.created_agent_id = agent.id
             draft.provisioning_json = {
+                **dict(draft.provisioning_json or {}),
                 "core": "completed",
                 "workspace": "completed",
                 "default_skills": "completed",
                 "optional_capabilities": "running",
-                "t0_evidence": "pending",
+                "t0_evidence": "completed" if steps_by_key["t0_evidence"].status == "completed" else "pending",
             }
             await db.commit()
 
-            session_id = getattr(request.context, "session_id", None)
-            if session_id:
+            t0_step = steps_by_key["t0_evidence"]
+            if session_id and t0_step.status != "completed":
+                transition_hr_provisioning_step_record(
+                    t0_step,
+                    draft=draft,
+                    claim=claim,
+                    status="running",
+                    receipt={"session_id": str(session_id)},
+                )
+                renew_hr_creation_claim_record(draft, claim=claim, lease_seconds=600)
+                await db.commit()
                 try:
-                    _append_hr_creation_t0_event(
+                    t0_result = _append_hr_creation_t0_event(
                         hr_agent_id=request.context.agent_id,
                         created_agent_id=agent.id,
                         created_agent_name=agent.name,
@@ -1977,10 +2212,20 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
                         preview_payload=preview_payload,
                         installed_skill_names=skill_names,
                         trigger_count=len(triggers),
+                        creation_draft_id=draft.id,
                     )
                 except Exception as t0_exc:
                     warnings.append(
                         "HR creation evidence projection failed; the agent exists and the draft remains auditable."
+                    )
+                    renew_hr_creation_claim_record(draft, claim=claim, lease_seconds=600)
+                    transition_hr_provisioning_step_record(
+                        t0_step,
+                        draft=draft,
+                        claim=claim,
+                        status="failed",
+                        error_code="t0_projection_failed",
+                        error_message=str(t0_exc),
                     )
                     draft.provisioning_json = {**dict(draft.provisioning_json or {}), "t0_evidence": "failed"}
                     logger.warning(
@@ -1989,13 +2234,41 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
                         t0_exc,
                     )
                 else:
+                    renew_hr_creation_claim_record(draft, claim=claim, lease_seconds=600)
+                    transition_hr_provisioning_step_record(
+                        t0_step,
+                        draft=draft,
+                        claim=claim,
+                        status="completed",
+                        receipt={
+                            "event_id": t0_result.event_id,
+                            "segment_id": t0_result.segment_id,
+                            "sequence": t0_result.sequence,
+                        },
+                    )
                     draft.provisioning_json = {**dict(draft.provisioning_json or {}), "t0_evidence": "completed"}
+                await db.commit()
 
-            if install_plan:
+            pending_install_plan = []
+            for item in install_plan:
+                step = capability_steps[(str(item["kind"]), str(item["source_key"]))]
+                if step.status in {"completed", "waiting_review"}:
+                    continue
+                transition_hr_provisioning_step_record(
+                    step,
+                    draft=draft,
+                    claim=claim,
+                    status="running",
+                    receipt={"source_key": str(item["source_key"])},
+                )
+                pending_install_plan.append(item)
+            if pending_install_plan:
+                renew_hr_creation_claim_record(draft, claim=claim, lease_seconds=600)
+                await db.commit()
                 try:
                     await record_capability_install_plan(
                         agent_id=agent.id,
-                        plan=install_plan,
+                        plan=pending_install_plan,
                         installed_via="hr_agent",
                     )
                 except Exception as install_plan_err:
@@ -2015,15 +2288,31 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
                 except Exception as skill_record_err:
                     logger.warning("[HR] Failed to record installed skill %s: %s", skill.folder_name, skill_record_err)
 
+            pending_mcp_server_ids = [
+                str(item["source_key"]) for item in pending_install_plan if item["kind"] == "mcp_server"
+            ]
+            pending_clawhub_slugs = [
+                str(item["source_key"]) for item in pending_install_plan if item["kind"] == "clawhub_skill"
+            ]
+            pending_external_skill_refs = [
+                str(item["source_key"]) for item in pending_install_plan if item["kind"] == "external_skill_url"
+            ]
+
             # Install MCP servers (after commit, so agent exists in DB)
-            logger.info(f"[HR] Post-commit install phase: mcp={mcp_server_ids}, clawhub={clawhub_slugs}")
+            logger.info(
+                "[HR] Post-commit install phase: mcp=%s, clawhub=%s",
+                pending_mcp_server_ids,
+                pending_clawhub_slugs,
+            )
             mcp_results = []
-            if mcp_server_ids:
+            if pending_mcp_server_ids:
                 from app.services.resource_discovery import import_mcp_from_smithery, _get_smithery_api_key
 
                 # Pre-fetch API key from global config (not from the new agent which has empty config)
                 _smithery_key = await _get_smithery_api_key(None)
-                for server_id in mcp_server_ids:
+                for server_id in pending_mcp_server_ids:
+                    renew_hr_creation_claim_record(draft, claim=claim, lease_seconds=600)
+                    await db.commit()
                     try:
                         reused = await reuse_existing_mcp_server_for_agent(
                             agent_id=agent.id,
@@ -2105,15 +2394,21 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
                         logger.warning(f"[HR] MCP install failed for {server_id}: {mcp_err}")
 
             # Install ClawHub skills (after commit, so agent exists on disk)
-            logger.info(f"[HR] ClawHub install phase: {len(clawhub_slugs)} slugs to install: {clawhub_slugs}")
+            logger.info(
+                "[HR] ClawHub install phase: %d slugs to install: %s",
+                len(pending_clawhub_slugs),
+                pending_clawhub_slugs,
+            )
             clawhub_results = []
-            if clawhub_slugs:
+            if pending_clawhub_slugs:
                 import httpx
                 from app.api.skills import CLAWHUB_BASE, _fetch_github_directory, _get_github_token
 
                 ch_tenant = str(effective_tenant_id) if effective_tenant_id else None
                 ch_token = await _get_github_token(ch_tenant)
-                for slug in clawhub_slugs:
+                for slug in pending_clawhub_slugs:
+                    renew_hr_creation_claim_record(draft, claim=claim, lease_seconds=600)
+                    await db.commit()
                     try:
                         reused_skill = await reuse_existing_skill_for_agent(
                             agent_id=agent.id,
@@ -2226,8 +2521,10 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
                         logger.warning(f"[HR] ClawHub install failed for {slug}: {ch_err}")
 
             external_skill_results = []
-            if external_skill_refs:
-                for ref in external_skill_refs:
+            if pending_external_skill_refs:
+                for ref in pending_external_skill_refs:
+                    renew_hr_creation_claim_record(draft, claim=claim, lease_seconds=600)
+                    await db.commit()
                     try:
                         result = await _install_external_skill_ref(
                             agent_id=agent.id,
@@ -2264,6 +2561,51 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
                         except Exception as record_err:
                             logger.warning("[HR] Failed to record external skill failure for %s: %s", ref, record_err)
 
+            # Reconcile the per-capability journal from the canonical install
+            # registry. The worker never guesses completion from display text.
+            install_records = await list_capability_installs(agent_id=agent.id)
+            install_records_by_key = {
+                (str(record.get("kind")), str(record.get("source_key"))): record for record in install_records
+            }
+            renew_hr_creation_claim_record(draft, claim=claim, lease_seconds=600)
+            for item in install_plan:
+                key = (str(item["kind"]), str(item["source_key"]))
+                step = capability_steps[key]
+                if step.status == "completed":
+                    continue
+                record = install_records_by_key.get(key)
+                record_status = str((record or {}).get("status") or "missing")
+                if record_status in {"installed", "active", "enabled"}:
+                    transition_hr_provisioning_step_record(
+                        step,
+                        draft=draft,
+                        claim=claim,
+                        status="completed",
+                        receipt={"install_record": record},
+                    )
+                elif record_status in {"review_required", "pending_review", "quarantined"}:
+                    transition_hr_provisioning_step_record(
+                        step,
+                        draft=draft,
+                        claim=claim,
+                        status="waiting_review",
+                        receipt={"install_record": record},
+                    )
+                    warnings.append(f"Capability awaits Trust Gate review: {item['source_key']}")
+                else:
+                    error_message = str((record or {}).get("error_message") or f"install status: {record_status}")
+                    transition_hr_provisioning_step_record(
+                        step,
+                        draft=draft,
+                        claim=claim,
+                        status="failed",
+                        receipt={"install_record": record or {}},
+                        error_code=str((record or {}).get("error_code") or "install_incomplete"),
+                        error_message=error_message,
+                    )
+                    warnings.append(f"Capability provisioning failed: {item['source_key']} ({error_message})")
+            await db.commit()
+
             # Build response
             features = [f"name='{agent.name}'"]
             if triggers:
@@ -2278,21 +2620,52 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
             if external_skill_results:
                 features.append(f"external_skills={external_skill_results}")
 
+            readiness = derive_hr_provisioning_readiness(steps, ignore_finalize=True)
+            if not readiness.ready:
+                warnings.append("Required provisioning incomplete: " + ", ".join(readiness.blocking_step_keys))
+                release_hr_creation_claim_record(
+                    draft,
+                    claim=claim,
+                    status="failed" if readiness.creation_state == "provisioning_failed" else "provisioning",
+                )
+                draft.provisioning_json = {
+                    **dict(draft.provisioning_json or {}),
+                    "required_blockers": list(readiness.blocking_step_keys),
+                    "optional_capabilities": "completed_with_warnings" if warnings else "completed",
+                }
+                await db.commit()
+                return _build_create_employee_result(
+                    agent_id=str(agent.id),
+                    agent_name=agent.name,
+                    features=features,
+                    skills_dir=str(agent_dir / "skills"),
+                    creation_state=readiness.creation_state,
+                    warnings=_dedupe_strings(warnings),
+                    manual_steps=manual_steps,
+                )
+
+            await agent_manager.start_container(db, agent)
             mark_hr_creation_completed_record(
                 draft,
+                claim=claim,
+                steps=steps,
                 agent_id=agent.id,
                 provisioning={
                     **dict(draft.provisioning_json or {}),
+                    "required_blockers": [],
                     "optional_capabilities": "completed_with_warnings" if warnings else "completed",
                 },
             )
             await db.commit()
+            final_readiness = derive_hr_provisioning_readiness(steps)
             return _build_create_employee_result(
                 agent_id=str(agent.id),
                 agent_name=agent.name,
                 features=features,
                 skills_dir=str(agent_dir / "skills"),
-                creation_state="ready_with_warnings" if warnings or manual_steps else "ready",
+                creation_state=(
+                    "ready_with_warnings" if warnings or manual_steps or final_readiness.warning_step_keys else "ready"
+                ),
                 warnings=_dedupe_strings(warnings),
                 manual_steps=manual_steps,
             )
@@ -2313,6 +2686,7 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
                 if failed_draft.status != "completed":
                     mark_hr_creation_failed_record(
                         failed_draft,
+                        claim=claim,
                         code="provisioning_failed",
                         message=str(e),
                     )

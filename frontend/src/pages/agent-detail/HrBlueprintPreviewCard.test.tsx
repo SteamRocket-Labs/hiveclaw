@@ -58,4 +58,48 @@ describe('HrBlueprintPreviewCard', () => {
     expect(instruction).not.toContain(preview.blueprintId || '');
     expect(instruction).not.toContain(preview.mission || '');
   });
+
+  it('shows persisted provisioning evidence and exposes a recovery action', () => {
+    const client = new QueryClient();
+    client.setQueryData(
+      ['hr-creation-draft', 'hr-agent', preview.blueprintId],
+      {
+        blueprint_id: preview.blueprintId,
+        blueprint_version: preview.blueprintVersion,
+        blueprint_hash: preview.blueprintHash,
+        draft_status: 'failed',
+        blueprint: {},
+        provisioning_steps: [
+          {
+            step_key: 'workspace',
+            step_kind: 'workspace',
+            required: true,
+            status: 'completed',
+            attempt_count: 1,
+          },
+          {
+            step_key: 'capability:mcp:github',
+            step_kind: 'mcp_server',
+            required: true,
+            status: 'failed',
+            attempt_count: 2,
+            error_message: 'Provider timed out',
+          },
+        ],
+      },
+    );
+
+    const markup = renderToStaticMarkup(
+      <QueryClientProvider client={client}>
+        <HrBlueprintPreviewCard agentId="hr-agent" preview={preview} onSendMessage={vi.fn()} />
+      </QueryClientProvider>,
+    );
+
+    expect(markup).toContain('Provisioning progress');
+    expect(markup).toContain('workspace');
+    expect(markup).toContain('completed');
+    expect(markup).toContain('Provider timed out');
+    expect(markup).toContain('Resume provisioning');
+    expect(markup).not.toContain('claim_token');
+  });
 });

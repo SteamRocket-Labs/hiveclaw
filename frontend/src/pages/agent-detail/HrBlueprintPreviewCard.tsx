@@ -71,6 +71,7 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
     },
   });
   const status = draft?.draft_status || preview.status;
+  const provisioningSteps = draft?.provisioning_steps || [];
   const canonicalReady = Boolean(agentId && preview.blueprintId && preview.blueprintHash);
 
   const confirmMutation = useMutation({
@@ -117,7 +118,7 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
   const busy = confirmMutation.isPending || rejectMutation.isPending;
   const canStartCreation = canonicalReady
     && preview.missingGates.length === 0
-    && ['awaiting_confirmation', 'confirmed'].includes(status);
+    && ['awaiting_confirmation', 'confirmed', 'provisioning', 'failed'].includes(status);
   const canReviseOrReject = canonicalReady && ['awaiting_confirmation', 'confirmed'].includes(status);
 
   return (
@@ -151,6 +152,22 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
       <PreviewList label={t('agent.chat.toolResults.warnings', 'Warnings')} items={preview.warnings} />
       <PreviewList label={t('agent.chat.toolResults.manualSteps', 'Manual steps')} items={preview.manualSteps} />
 
+      {provisioningSteps.length > 0 && (
+        <section className="hr-blueprint-provisioning" aria-label={t('agent.chat.toolResults.provisioningProgress', 'Provisioning progress')}>
+          <h4>{t('agent.chat.toolResults.provisioningProgress', 'Provisioning progress')}</h4>
+          <ol>
+            {provisioningSteps.map((step) => (
+              <li key={step.step_key} data-status={step.status}>
+                <span>{step.source_key || step.step_kind}</span>
+                <strong>{step.status.replace(/_/g, ' ')}</strong>
+                {step.required && <em>{t('common.required', 'Required')}</em>}
+                {step.error_message && <small>{step.error_message}</small>}
+              </li>
+            ))}
+          </ol>
+        </section>
+      )}
+
       {!canonicalReady && (
         <p className="hr-blueprint-error">
           {t('agent.chat.toolResults.legacyBlueprint', 'This legacy preview cannot be confirmed. Ask HR to generate a fresh preview.')}
@@ -161,7 +178,9 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
         <button type="button" className="btn btn-primary" disabled={!canStartCreation || busy || !onSendMessage} onClick={confirmAndCreate}>
           {confirmMutation.isPending
             ? t('common.confirming', 'Confirming…')
-            : status === 'confirmed'
+            : ['provisioning', 'failed'].includes(status)
+              ? t('agent.chat.toolResults.resumeProvisioning', 'Resume provisioning')
+              : status === 'confirmed'
               ? t('agent.chat.toolResults.continueCreation', 'Continue creation')
               : t('agent.chat.toolResults.confirmAndCreate', 'Confirm & create')}
         </button>

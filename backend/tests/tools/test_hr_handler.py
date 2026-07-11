@@ -545,6 +545,41 @@ def test_append_hr_creation_t0_event_records_source_attributed_creation_case(tmp
     assert events[0].metadata["manual_setup_debt"] == ["配置飞书授权"]
 
 
+def test_hr_creation_t0_projection_is_idempotent_by_canonical_draft(tmp_path) -> None:
+    from app.memory.t0.ledger import replay_t0_session_events
+    from app.tools.handlers.hr import _append_hr_creation_t0_event
+
+    hr_agent_id = uuid4()
+    created_agent_id = uuid4()
+    session_id = uuid4()
+    tenant_id = uuid4()
+    user_id = uuid4()
+    draft_id = uuid4()
+    kwargs = {
+        "hr_agent_id": hr_agent_id,
+        "created_agent_id": created_agent_id,
+        "created_agent_name": "Research Bot",
+        "session_id": session_id,
+        "tenant_id": tenant_id,
+        "user_id": user_id,
+        "blueprint_hash": "bp_idempotent",
+        "preview_payload": {"blueprint": {"name": "Research Bot"}, "manual_steps": []},
+        "installed_skill_names": [],
+        "trigger_count": 0,
+        "creation_draft_id": draft_id,
+        "data_root": tmp_path,
+    }
+
+    first = _append_hr_creation_t0_event(**kwargs)
+    second = _append_hr_creation_t0_event(**kwargs)
+    events = replay_t0_session_events(agent_id=hr_agent_id, session_id=session_id, data_root=tmp_path)
+
+    assert first.event_id == second.event_id
+    assert len(events) == 1
+    assert events[0].message_id == draft_id.hex
+    assert events[0].metadata["creation_draft_id"] == str(draft_id)
+
+
 @pytest.mark.asyncio
 async def test_install_external_skill_from_url_stages_review_without_active_install(tmp_path, monkeypatch) -> None:
     import app.tools.handlers.hr as hr_mod
@@ -792,3 +827,36 @@ def test_create_digital_employee_uses_audited_identity_bootstrap_bypass() -> Non
     assert "rls_bypass_reason=" in src
     assert "HR digital employee identity bootstrap" in src
     assert "rls_bypass_actor_id=str(user.id)" in src
+
+
+def test_create_digital_employee_has_no_agent_row_equals_ready_recovery_bypass() -> None:
+    from app.tools.handlers import hr
+
+    src = inspect.getsource(hr.create_digital_employee)
+
+    assert "ensure_hr_provisioning_steps" in src
+    assert "derive_hr_provisioning_readiness" in src
+    assert "required_blockers" in src
+    assert src.index("derive_hr_provisioning_readiness") < src.index("mark_hr_creation_completed_record")
+    assert "provisioning=dict(draft.provisioning_json or" not in src
+
+
+def test_incomplete_hr_creation_result_is_not_reported_as_success() -> None:
+    import json
+
+    from app.tools.handlers.hr import _build_create_employee_result
+
+    payload = json.loads(
+        _build_create_employee_result(
+            agent_id=str(uuid4()),
+            agent_name="Research Bot",
+            features=["workspace=complete"],
+            skills_dir="/tmp/agent/skills",
+            creation_state="provisioning_failed",
+            warnings=["Required provisioning incomplete: capability:mcp:github"],
+        )
+    )
+
+    assert payload["status"] == "incomplete"
+    assert payload["creation_state"] == "provisioning_failed"
+    assert "do not treat this employee as ready" in payload["message"]

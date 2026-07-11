@@ -78,9 +78,11 @@ def test_claim_is_idempotent_and_lease_bounded():
     now = datetime.now(UTC)
     draft.status = "confirmed"
 
-    outcome = claim_hr_creation_draft_record(draft, now=now, lease_seconds=120)
+    claim = claim_hr_creation_draft_record(draft, now=now, lease_seconds=120)
 
-    assert outcome == "claimed"
+    assert claim.state == "claimed"
+    assert claim.token == draft.claim_token
+    assert claim.version == 1
     assert draft.status == "creating"
     assert draft.creation_idempotency_key == f"hr-draft:{draft.id}"
     assert draft.claim_expires_at == now + timedelta(seconds=120)
@@ -92,14 +94,14 @@ def test_claim_is_idempotent_and_lease_bounded():
             lease_seconds=120,
         )
 
-    assert (
-        claim_hr_creation_draft_record(
-            draft,
-            now=now + timedelta(seconds=121),
-            lease_seconds=120,
-        )
-        == "claimed"
+    reclaimed = claim_hr_creation_draft_record(
+        draft,
+        now=now + timedelta(seconds=121),
+        lease_seconds=120,
     )
+    assert reclaimed.state == "claimed"
+    assert reclaimed.version == 2
+    assert reclaimed.token != claim.token
 
 
 def test_completed_draft_returns_existing_asset_without_reexecution():
@@ -110,13 +112,185 @@ def test_completed_draft_returns_existing_asset_without_reexecution():
     draft.created_agent_id = uuid4()
     draft.creation_idempotency_key = f"hr-draft:{draft.id}"
 
-    assert (
-        claim_hr_creation_draft_record(
-            draft,
-            now=datetime.now(UTC),
-        )
-        == "completed"
+    claim = claim_hr_creation_draft_record(draft, now=datetime.now(UTC))
+    assert claim.state == "completed"
+    assert claim.token is None
+
+
+def test_claim_renewal_is_fenced_against_stale_workers():
+    from app.services.hr_creation_service import (
+        HrCreationConflict,
+        claim_hr_creation_draft_record,
+        renew_hr_creation_claim_record,
     )
+
+    draft = _draft()
+    draft.status = "confirmed"
+    now = datetime.now(UTC)
+    first = claim_hr_creation_draft_record(draft, now=now, lease_seconds=60)
+
+    renewed_until = renew_hr_creation_claim_record(
+        draft,
+        claim=first,
+        now=now + timedelta(seconds=30),
+        lease_seconds=90,
+    )
+    assert renewed_until == now + timedelta(seconds=120)
+    assert draft.claim_heartbeat_at == now + timedelta(seconds=30)
+
+    second = claim_hr_creation_draft_record(
+        draft,
+        now=now + timedelta(seconds=121),
+        lease_seconds=60,
+    )
+    with pytest.raises(HrCreationConflict, match="stale") as exc:
+        renew_hr_creation_claim_record(
+            draft,
+            claim=first,
+            now=now + timedelta(seconds=122),
+            lease_seconds=60,
+        )
+    assert exc.value.code == "stale_claim"
+    assert second.version == first.version + 1
+
+
+def test_blueprint_validation_happens_without_mutating_the_claim():
+    from app.services.hr_creation_service import HrCreationConflict, validate_hr_creation_blueprint
+
+    draft = _draft()
+    draft.status = "confirmed"
+    draft.blueprint_json = {"name": " ", "role_description": "Research markets."}
+
+    with pytest.raises(HrCreationConflict, match="name") as exc:
+        validate_hr_creation_blueprint(draft.blueprint_json)
+
+    assert exc.value.code == "invalid_blueprint"
+    assert draft.status == "confirmed"
+    assert draft.claim_expires_at is None
+
+
+def test_ready_is_derived_only_from_required_step_receipts():
+    from app.models.hr_creation import HrProvisioningStep
+    from app.services.hr_creation_service import derive_hr_provisioning_readiness
+
+    draft = _draft()
+    required = HrProvisioningStep(
+        tenant_id=draft.tenant_id,
+        draft_id=draft.id,
+        step_key="workspace",
+        step_kind="workspace",
+        required=True,
+        status="failed",
+        input_hash="sha256:workspace",
+    )
+    optional = HrProvisioningStep(
+        tenant_id=draft.tenant_id,
+        draft_id=draft.id,
+        step_key="optional:telemetry",
+        step_kind="optional",
+        required=False,
+        status="failed",
+        input_hash="sha256:optional",
+        error_message="telemetry unavailable",
+    )
+
+    blocked = derive_hr_provisioning_readiness([required, optional])
+    assert blocked.ready is False
+    assert blocked.creation_state == "provisioning_failed"
+    assert blocked.blocking_step_keys == ("workspace",)
+
+    required.status = "completed"
+    ready = derive_hr_provisioning_readiness([required, optional])
+    assert ready.ready is True
+    assert ready.creation_state == "ready_with_warnings"
+    assert ready.warning_step_keys == ("optional:telemetry",)
+
+
+def test_completed_transition_refuses_missing_required_steps_and_fences_claim():
+    from app.models.hr_creation import HrProvisioningStep
+    from app.services.hr_creation_service import (
+        HrCreationConflict,
+        claim_hr_creation_draft_record,
+        mark_hr_creation_completed_record,
+    )
+
+    draft = _draft()
+    draft.status = "confirmed"
+    claim = claim_hr_creation_draft_record(draft)
+    agent_id = uuid4()
+    steps = [
+        HrProvisioningStep(
+            tenant_id=draft.tenant_id,
+            draft_id=draft.id,
+            step_key="workspace",
+            step_kind="workspace",
+            required=True,
+            status="pending",
+            input_hash="sha256:workspace",
+        ),
+        HrProvisioningStep(
+            tenant_id=draft.tenant_id,
+            draft_id=draft.id,
+            step_key="finalize",
+            step_kind="finalize",
+            required=True,
+            status="pending",
+            input_hash="sha256:finalize",
+        ),
+    ]
+
+    with pytest.raises(HrCreationConflict, match="required provisioning") as exc:
+        mark_hr_creation_completed_record(
+            draft,
+            claim=claim,
+            steps=steps,
+            agent_id=agent_id,
+            provisioning={},
+        )
+    assert exc.value.code == "required_steps_incomplete"
+    assert draft.status == "creating"
+
+    steps[0].status = "completed"
+    mark_hr_creation_completed_record(
+        draft,
+        claim=claim,
+        steps=steps,
+        agent_id=agent_id,
+        provisioning={"workspace": "completed"},
+    )
+    assert draft.status == "completed"
+    assert steps[1].status == "completed"
+    assert draft.claim_token is None
+
+
+def test_public_step_payload_keeps_operator_receipts_and_raw_errors_private():
+    import json
+
+    from app.models.hr_creation import HrProvisioningStep
+    from app.services.hr_creation_service import hr_provisioning_step_payload
+
+    draft = _draft()
+    step = HrProvisioningStep(
+        tenant_id=draft.tenant_id,
+        draft_id=draft.id,
+        step_key="capability:mcp:github",
+        step_kind="mcp_server",
+        required=True,
+        status="failed",
+        input_hash="sha256:mcp",
+        receipt_json={"provider_payload": {"api_key": "sk-secret", "request_id": "internal-1"}},
+        error_code="exception",
+        error_message="request failed with api_key=sk-secret at internal.service.local",
+    )
+
+    payload = hr_provisioning_step_payload(step)
+    serialized = json.dumps(payload)
+
+    assert "receipt" not in payload
+    assert payload["evidence_available"] is True
+    assert payload["error_message"] == "This required capability is not ready. Resolve it, then resume provisioning."
+    assert "sk-secret" not in serialized
+    assert "internal.service.local" not in serialized
 
 
 @pytest.mark.usefixtures("migrated_pg_url")

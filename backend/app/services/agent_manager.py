@@ -258,16 +258,20 @@ class AgentManager:
         personality: str = "",
         boundaries: str = "",
         blueprint: dict | None = None,
+        repair_existing: bool = False,
     ) -> None:
         """Copy template files and customize for this agent."""
         agent_dir = self._agent_dir(agent.id)
         template_dir = self._template_dir()
 
         if agent_dir.exists():
-            logger.warning(f"Agent dir already exists: {agent_dir}")
-            return
-
-        if template_dir.exists():
+            if not repair_existing:
+                logger.warning(f"Agent dir already exists: {agent_dir}")
+                return
+            logger.info("Repairing existing agent workspace at %s", agent_dir)
+            for d in ["memory", "skills", "evolution", "workspace", "runtime_artifacts"]:
+                (agent_dir / d).mkdir(parents=True, exist_ok=True)
+        elif template_dir.exists():
             # Copy template — skip dotfiles (AI tool configs like .claude, .vibe, etc.)
             shutil.copytree(
                 str(template_dir),

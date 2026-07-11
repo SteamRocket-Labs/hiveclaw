@@ -50,6 +50,7 @@ def test_build_capability_install_plan_dedupes_requested_capabilities() -> None:
             "normalized_key": "feishu-integration",
             "status": "pending",
             "display_name": "feishu-integration",
+            "required": True,
         },
         {
             "kind": "mcp_server",
@@ -57,6 +58,7 @@ def test_build_capability_install_plan_dedupes_requested_capabilities() -> None:
             "normalized_key": "smithery/github",
             "status": "pending",
             "display_name": "smithery/github",
+            "required": True,
         },
         {
             "kind": "clawhub_skill",
@@ -64,6 +66,7 @@ def test_build_capability_install_plan_dedupes_requested_capabilities() -> None:
             "normalized_key": "market-research-agent",
             "status": "pending",
             "display_name": "market-research-agent",
+            "required": False,
         },
         {
             "kind": "external_skill_url",
@@ -71,6 +74,7 @@ def test_build_capability_install_plan_dedupes_requested_capabilities() -> None:
             "normalized_key": "https://github.com/acme/design-skills/tree/main/frontend-design-pro",
             "status": "pending",
             "display_name": "https://github.com/acme/design-skills/tree/main/frontend-design-pro",
+            "required": False,
         },
     ]
 

@@ -44,6 +44,8 @@ class HrCreationDraftOut(BaseModel):
     confirmed_at: str | None = None
     created_agent_id: str | None = None
     provisioning: dict[str, Any] = Field(default_factory=dict)
+    provisioning_steps: list[dict[str, Any]] = Field(default_factory=list)
+    creation_state: str | None = None
     failure: dict[str, Any] | None = None
 
 

@@ -49,6 +49,7 @@ def build_capability_install_plan(
                 "normalized_key": normalize_capability_install_key("platform_skill", skill_name),
                 "status": "pending",
                 "display_name": skill_name,
+                "required": True,
             }
         )
     for server_id in _dedupe_strings(mcp_server_ids or []):
@@ -59,6 +60,7 @@ def build_capability_install_plan(
                 "normalized_key": normalize_capability_install_key("mcp_server", server_id),
                 "status": "pending",
                 "display_name": server_id,
+                "required": True,
             }
         )
     for slug in _dedupe_strings(clawhub_slugs or []):
@@ -69,6 +71,7 @@ def build_capability_install_plan(
                 "normalized_key": normalize_capability_install_key("clawhub_skill", slug),
                 "status": "pending",
                 "display_name": slug,
+                "required": False,
             }
         )
     for ref in _dedupe_strings((external_skill_urls or []) + (external_skill_refs or [])):
@@ -79,6 +82,7 @@ def build_capability_install_plan(
                 "normalized_key": normalize_capability_install_key("external_skill_url", ref),
                 "status": "pending",
                 "display_name": ref,
+                "required": False,
             }
         )
     return plan

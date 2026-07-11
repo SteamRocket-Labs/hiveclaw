@@ -24,7 +24,7 @@
 - **P1：13 个**。会造成恢复能力、CC parity、自进化、资产统计、实时 UI 或验收可信度不足，不能作为“上线后再补”的债务。
 - **P2：1 个**。是确定的 KISS/维护性残留，应与本轮一起清理。
 
-当前修复进度：**14 / 28**（单 Agent SA-01 至 SA-12、Hive Native HN-01 至 HN-02 已按七原子闭环并分别提交）；其余断点未全部关闭前，结论继续保持 NO-GO。
+当前修复进度：**17 / 28**（单 Agent SA-01 至 SA-12、Hive Native HN-01 至 HN-05 已按七原子闭环并分别提交）；其余断点未全部关闭前，结论继续保持 NO-GO。
 
 这里的“95% 以上信心”指的是：**对当前 checkout 根断点清单完整度的置信度为 95.3%**，不代表系统有 95.3% 的上线成熟度。只要任一 P0 尚存，上线结论就是 NO-GO。
 
@@ -100,7 +100,7 @@ Codex 的 PermissionProfile、thread identity、sandbox policy 和 approval even
 | HN-02 | Memory/Skill 原生资产缺统一事务锁 | P0 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | HN-03 | A2A REST 丢 requester 且 consult 假成功 | P0 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | HN-04 | Subagent/async 查询取消只按 parent Agent | P0 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| HN-05 | HR provisioning 恢复会假完成 | P0 | 断点 | ✓ | ✓ | △ | △ | ✗ | ✗ | △ |
+| HN-05 | HR provisioning 恢复会假完成 | P0 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | HN-06 | Skill provisional 只有负向回滚，无正向转正 | P1 | 断点 | ✓ | ✓ | △ | △ | ✗ | ✗ | △ |
 | HN-07 | AI 资产用量投影只覆盖部分实际消费 | P1 | 局部闭环 | ✓ | △ | △ | △ | △ | ✗ | △ |
 | GOV-01 | Agent use 与 Session/Resource ownership 混用 | P0 | 断点 | ✓ | ✗ | △ | ✗ | ✗ | ✗ | △ |
@@ -299,11 +299,9 @@ Task logs 在 `backend/app/api/tasks.py:181-207` 只按 task_id 查写，没有�
 
 ### HN-05：HR 主契约已修，但 provisioning 状态机仍会假完成 — P0
 
-已关闭的部分：`backend/app/tools/handlers/hr.py:1411-1453` 把 blueprint 绑定 tenant/HR agent/user/session；create tool 在 `1456-1485` 只接受 blueprint_id，不再要求模型复述整份蓝图。
+**修复状态（2026-07-11）**：**闭环**。创建前先验证 server-side canonical blueprint，再签发带 `claim_token + claim_version + heartbeat + expiry` 的 fencing lease；旧 worker、过期 worker和并发 worker不能写 step或终态。`HrProvisioningStep` 按 validate、model、core、workspace、defaults、T0、每个 day-one capability、finalize保存独立 attempt、receipt、error与 required标记。Agent row存在只证明 core step，恢复会继续未完成 journal；required step未全部 completed时 Agent保持 `creating`，tool返回 `incomplete`，绝不触发 web-chat create-success终态。外部未受信 Skill进入 optional Trust Gate warning，不冒充已安装能力。
 
-仍断开的部分：claim 在 `1449-1451` 先把 draft 标 creating 并 commit，随后 `1497-1501` 才做 name 校验；坏 blueprint 会占用 300 秒 lease。`backend/app/services/hr_creation_service.py:74-98` lease 固定 300 秒且无续租。核心 Agent commit 后 draft 进入 provisioning（`hr.py:1946-1964`），optional installs 才开始；重试只要发现 `created_agent_id` 对应 Agent 存在，就在 `1586-1601` 直接标 completed/ready，不会继续未完成 install plan。
-
-**一次性关闭**：创建 `HrProvisioningStep` journal：validate、model、core row、workspace、defaults、T0、每个 MCP/Skill、finalize；每步幂等、可重入、可续租。ready 只能由 required-step invariant 推导，optional warning 单独呈现，不能把“Agent row 存在”当完成。
+确定性 Agent ID把“workspace已写、DB未提交”的 crash window变成同路径 repair；`initialize_agent_files(repair_existing=True)`补齐目录与 canonical soul，而不是创建第二个员工。T0用 creation draft作为幂等 identity，重复恢复只保留一个 `hr_agent_created` event。前端 HR card直接消费 persisted steps，展示 required/error/progress，并在 failed/provisioning提供 Resume provisioning入口。
 
 ### HN-06：Skill provisional trial 没有正向转正路径 — P1
 
@@ -1679,3 +1677,68 @@ pytest tests -q
 ```
 
 结果：Ruff lint/format全绿；Alembic 单 head `runtime_task_root_authority_0711 (head)`；全量 backend `6355 passed, 1 skipped, 5 warnings in 148.99s`，零失败。
+
+### HN-05 — Fenced HR ProvisioningStep 状态机
+
+状态：**闭环**。提交主题：`fix(HN-05): make HR provisioning replay safe`。
+
+七原子证据：
+
+1. **输入**：create仍只接受 authenticated session中的 canonical `blueprint_id`；完整 blueprint从 server draft读取。`validate_hr_creation_blueprint()`在 claim前执行，坏 name/shape不再占用租约。preview确认后的 capability plan由 canonical字段重建，模型不能在 retry时删字段或改写 required属性。
+2. **权威**：每次 worker持有不可转让的 `HrCreationClaim(token, version, expires_at)`；step transition、续租、失败、release和finalize全部校验当前 draft token/version/expiry。迁移清除无法验证的旧 lease但保留 draft/provisioning状态，使新 worker可安全 reclaim；tenant RLS对 draft与step均 ENABLE + FORCE。
+3. **执行**：`create_digital_employee`是唯一 orchestration入口，执行 validate→model receipt→core row→workspace→defaults→T0→per-capability→finalize。Agent ID由 draft确定性生成；恢复遇到既有 Agent只把 core记为完成，继续消费剩余step，不存在 `created_agent_id -> completed`快捷路径。Agent直到required invariant成立才从 `creating`转`idle`。
+4. **证据**：`hr_provisioning_steps`逐项保存 step key/kind/order、required、input hash、attempt、claim version、receipt、error与时间；capability终态从 `AgentCapabilityInstall`机械记录对账，不解析emoji或展示字符串。T0 receipt保存 event/segment/sequence，creation draft ID同时进入 message identity与metadata；API输出 audience-safe step状态，不暴露claim token/hash。
+5. **恢复**：worker每个外部循环续租；旧/过期 worker fail closed。required failure释放lease并保留Agent为creating，下一次 Resume只重放 failed/running/pending step；completed与waiting-review step不回退。确定性Agent ID + repairable workspace关闭FS-before-DB orphan；T0重复调用返回同一event；trigger、default asset与AI asset注册在已完成defaults重放时不重复。
+6. **消费**：backend ready只由 `derive_hr_provisioning_readiness()`计算；web chat只把 `status=success`且有agent id的ready结果当create成功，provisioning failure返回`status=incomplete`。HR preview card轮询creating/provisioning，展示step、required、错误，并对failed/provisioning提供Resume provisioning。optional Trust Gate review单独显示warning，不阻塞core ready也不伪装active。
+7. **验收**：覆盖claim并发/过期/reclaim/stale fencing、续租、claim前校验、required/optional readiness、finalize拒绝、T0 exactly-once、无Agent-row旁路、incomplete response、capability required分类、真实Alembic upgrade、legacy base/capability backfill、fresh bootstrap RLS、frontend恢复消费、Ruff、format、单head、前端全量/build与后端全量。
+
+KISS/奥卡姆证据：只新增一张step journal和draft上三个fencing字段；没有引入第二队列、工作流引擎或HR专属scheduler。状态推导集中在一个pure readiness函数，既有 AgentCapabilityInstall、T0、Agent workspace和HR draft继续作为各自机械事实源；`provisioning_json`只保留兼容摘要，不再决定ready。
+
+RED 证据：
+
+```text
+Backend HN-05契约：9 failed, 3 passed
+- claim仍返回字符串，无token/version/续租
+- blueprint validation、HrProvisioningStep、required readiness不存在
+- Alembic无新表且single head仍为旧revision
+
+Frontend恢复消费：1 failed, 2 passed
+- failed draft不显示Provisioning progress，也没有Resume provisioning动作
+```
+
+GREEN 证据：
+
+```bash
+cd backend
+source .venv/bin/activate
+pytest \
+  tests/services/test_hr_creation_service.py \
+  tests/services/test_capability_install_service.py \
+  tests/tools/test_hr_handler.py \
+  tests/api/test_agent_heartbeat_contract.py \
+  tests/services/test_web_chat_runtime.py \
+  tests/migrations/test_hr_provisioning_steps_migration.py \
+  tests/migrations/test_workflow_migration.py::test_alembic_single_head_is_current_closure_head \
+  tests/services/test_audit_rls_coverage.py -q
+```
+
+结果：`162 passed, 4 warnings in 11.09s`。
+
+```bash
+cd frontend
+npm test -- --run
+npm run build
+```
+
+结果：`100 test files / 585 tests passed`；TypeScript + Vite production build exit 0，`7071 modules transformed`。
+
+```bash
+cd backend
+source .venv/bin/activate
+ruff check <HN-05当前变更Python文件>
+ruff format --check <HN-05当前变更Python文件>
+alembic heads
+pytest tests -q
+```
+
+结果：Ruff lint/format全绿；Alembic单head `hr_provisioning_steps_0711 (head)`；全量backend `6365 passed, 1 skipped, 5 warnings in 148.49s`，零失败。

@@ -10,6 +10,17 @@ export interface HrCreationDraft {
   confirmed_at?: string | null;
   created_agent_id?: string | null;
   provisioning?: Record<string, unknown>;
+  provisioning_steps?: Array<{
+    step_key: string;
+    step_kind: string;
+    required: boolean;
+    status: string;
+    attempt_count: number;
+    source_key?: string | null;
+    error_code?: string | null;
+    error_message?: string | null;
+  }>;
+  creation_state?: string | null;
   failure?: Record<string, unknown> | null;
 }
 

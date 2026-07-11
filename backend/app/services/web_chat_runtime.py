@@ -546,6 +546,52 @@ def _terminal_file_change_paths_for_turn(runtime_session_context: Any) -> list[s
     return _unique_paths([str(path) for path in (getattr(runtime_session_context, "current_turn_writes", []) or [])])
 
 
+def _terminal_file_change_states_for_turn(runtime_session_context: Any) -> dict[str, dict[str, Any]]:
+    """Return lock-captured post-write states for the active turn only."""
+    paths = set(_terminal_file_change_paths_for_turn(runtime_session_context))
+    snapshots = getattr(runtime_session_context, "current_turn_write_snapshots", None)
+    if not isinstance(snapshots, dict):
+        return {}
+    return {
+        str(path): dict(state) for path, state in snapshots.items() if str(path) in paths and isinstance(state, dict)
+    }
+
+
+def _terminal_file_change_lineage_for_turn(runtime_session_context: Any) -> list[dict[str, Any]]:
+    paths = set(_terminal_file_change_paths_for_turn(runtime_session_context))
+    lineage = getattr(runtime_session_context, "current_turn_write_lineage", None)
+    if not isinstance(lineage, list):
+        return []
+    return [dict(record) for record in lineage if isinstance(record, dict) and str(record.get("path") or "") in paths]
+
+
+def _validated_exact_file_change_states(
+    paths: list[str],
+    exact_states: dict[str, dict[str, Any]],
+) -> tuple[dict[str, dict[str, Any]], dict[str, str]]:
+    states: dict[str, dict[str, Any]] = {}
+    errors: dict[str, str] = {}
+    for changed_path in paths:
+        state = exact_states.get(changed_path)
+        verifiable = (
+            isinstance(state, dict)
+            and state.get("path") == changed_path
+            and (
+                state.get("exists") is False
+                or (
+                    state.get("exists") is True
+                    and isinstance(state.get("sha256"), str)
+                    and len(str(state.get("sha256"))) == 64
+                )
+            )
+        )
+        if verifiable:
+            states[changed_path] = dict(state)
+        else:
+            errors[changed_path] = "missing_exact_post_write_state"
+    return states, errors
+
+
 def _normalize_terminal_artifact_path(path: str) -> str:
     return str(path or "").strip().strip("`'\"").rstrip(_TERMINAL_ARTIFACT_TRAILING_PUNCTUATION)
 
@@ -1550,14 +1596,20 @@ def _is_final_assistant_marker_unique_violation(exc: IntegrityError) -> bool:
     return _FINAL_ASSISTANT_MARKER_UNIQUE_INDEX_NAME in str(exc)
 
 
-def _capture_user_checkpoint_workspace_snapshot(*, agent_id: uuid.UUID, session: ChatSession, user_event: Any) -> None:
+async def _capture_user_checkpoint_workspace_snapshot(
+    *,
+    agent_id: uuid.UUID,
+    session: ChatSession,
+    user_event: Any,
+) -> None:
     checkpoint_event_id = getattr(user_event, "event_id", None) or getattr(user_event, "id", None)
     if not checkpoint_event_id:
         return
     try:
         from app.services.session_workspace_snapshot import capture_session_workspace_snapshot
 
-        capture_session_workspace_snapshot(
+        await asyncio.to_thread(
+            capture_session_workspace_snapshot,
             agent_id=agent_id,
             session=session,
             checkpoint_event_id=checkpoint_event_id,
@@ -2285,9 +2337,12 @@ async def _append_file_changes_event(
     run_uuid: uuid.UUID,
     message_id: uuid.UUID | None,
     file_change_paths: list[str],
+    file_change_states: dict[str, dict[str, Any]],
+    file_change_lineage: list[dict[str, Any]],
     attached_artifact_paths: list[str],
     declared_artifact_paths: list[str],
     rejected_artifact_paths: list[str],
+    file_change_state_errors: dict[str, str] | None = None,
     source: str = "web_chat_runtime",
 ) -> None:
     if not file_change_paths and not rejected_artifact_paths:
@@ -2309,6 +2364,9 @@ async def _append_file_changes_event(
             "source": source,
             "file_change_count": len(file_change_paths),
             "file_change_paths": file_change_paths,
+            "file_change_states": file_change_states,
+            "file_change_lineage": file_change_lineage,
+            "file_change_state_errors": dict(file_change_state_errors or {}),
             "attached_artifact_paths": attached_artifact_paths,
             "declared_artifact_paths": declared_artifact_paths,
             "rejected_artifact_paths": rejected_artifact_paths,
@@ -2359,6 +2417,8 @@ async def _finalize_web_chat_run_with_assistant(
     metadata_json: dict[str, Any] | None = None,
     artifact_paths: list[str] | None = None,
     file_change_paths: list[str] | None = None,
+    file_change_states: dict[str, dict[str, Any]] | None = None,
+    file_change_lineage: list[dict[str, Any]] | None = None,
     declared_artifact_paths: list[str] | None = None,
     rejected_artifact_paths: list[str] | None = None,
 ) -> bool:
@@ -2420,6 +2480,31 @@ async def _finalize_web_chat_run_with_assistant(
         workspace_root = Path(get_settings().AGENT_DATA_DIR) / str(agent_id)
         artifact_paths = _unique_paths(artifact_paths)
         file_change_paths = _unique_paths(file_change_paths)
+        exact_file_change_states = file_change_states
+        file_change_lineage = [dict(item) for item in (file_change_lineage or []) if isinstance(item, dict)]
+        file_change_states = {}
+        file_change_state_errors: dict[str, str] = {}
+        if file_change_paths:
+            if exact_file_change_states is not None:
+                file_change_states, file_change_state_errors = _validated_exact_file_change_states(
+                    file_change_paths,
+                    exact_file_change_states,
+                )
+            else:
+                # Compatibility for legacy/recovery callers. The live path does
+                # not use this branch: it supplies lock-captured exact states.
+                from app.services.session_workspace_snapshot import workspace_file_state
+
+                for changed_path in file_change_paths:
+                    try:
+                        state = workspace_file_state(
+                            agent_id=agent_id,
+                            path=changed_path,
+                            data_root=get_settings().AGENT_DATA_DIR,
+                        )
+                        file_change_states[state["path"]] = state
+                    except Exception as exc:  # noqa: BLE001 - retain explicit unverifiable evidence.
+                        file_change_state_errors[changed_path] = f"{type(exc).__name__}: {exc}"
         rejected_artifact_paths = _unique_paths(rejected_artifact_paths)
         declared_artifact_paths = _unique_paths(
             declared_artifact_paths
@@ -2430,6 +2515,9 @@ async def _finalize_web_chat_run_with_assistant(
             if metadata_json is None:
                 metadata_json = {}
             metadata_json["file_change_paths"] = file_change_paths
+            metadata_json["file_change_states"] = file_change_states
+            metadata_json["file_change_lineage"] = file_change_lineage
+            metadata_json["file_change_state_errors"] = file_change_state_errors
             metadata_json["declared_artifact_paths"] = declared_artifact_paths
             metadata_json["rejected_artifact_paths"] = rejected_artifact_paths
             metadata_json["artifact_attachment_policy"] = "model_declared_current_turn_writes_only"
@@ -2531,9 +2619,12 @@ async def _finalize_web_chat_run_with_assistant(
                 run_uuid=run_uuid,
                 message_id=getattr(kernel_persisted_message, "id", None),
                 file_change_paths=file_change_paths,
+                file_change_states=file_change_states,
+                file_change_lineage=file_change_lineage,
                 attached_artifact_paths=attached_artifact_paths,
                 declared_artifact_paths=declared_artifact_paths,
                 rejected_artifact_paths=rejected_artifact_paths,
+                file_change_state_errors=file_change_state_errors,
             )
             await _maybe_continue_goal_after_terminal_turn(
                 db=db,
@@ -2632,9 +2723,12 @@ async def _finalize_web_chat_run_with_assistant(
             run_uuid=run_uuid,
             message_id=assistant_message_id,
             file_change_paths=file_change_paths,
+            file_change_states=file_change_states,
+            file_change_lineage=file_change_lineage,
             attached_artifact_paths=attached_artifact_paths,
             declared_artifact_paths=declared_artifact_paths,
             rejected_artifact_paths=rejected_artifact_paths,
+            file_change_state_errors=file_change_state_errors,
         )
         await _maybe_continue_goal_after_terminal_turn(
             db=db,
@@ -2655,6 +2749,9 @@ async def _finalize_web_chat_run_without_assistant(
     status: str,
     result_summary: str | None,
     metadata_json: dict[str, Any] | None = None,
+    file_change_paths: list[str] | None = None,
+    file_change_states: dict[str, dict[str, Any]] | None = None,
+    file_change_lineage: list[dict[str, Any]] | None = None,
 ) -> bool:
     """Mark a web-chat run terminal when the visible terminal output is a tool card."""
     from app.services.tenant_resolver import resolve_tenant_for_agent
@@ -2680,6 +2777,19 @@ async def _finalize_web_chat_run_without_assistant(
                 task.status,
             )
             return False
+        normalized_change_paths = _unique_paths(file_change_paths)
+        exact_states, state_errors = _validated_exact_file_change_states(
+            normalized_change_paths,
+            file_change_states or {},
+        )
+        if normalized_change_paths:
+            metadata_json = dict(metadata_json or {})
+            metadata_json["file_change_paths"] = normalized_change_paths
+            metadata_json["file_change_states"] = exact_states
+            metadata_json["file_change_state_errors"] = state_errors
+            metadata_json["file_change_lineage"] = [
+                dict(item) for item in (file_change_lineage or []) if isinstance(item, dict)
+            ]
         _apply_terminal_task_update(
             task,
             status=status,
@@ -2693,6 +2803,22 @@ async def _finalize_web_chat_run_without_assistant(
             status=status,
             result_summary=result_summary,
             metadata_json=merged_metadata,
+        )
+        await _append_file_changes_event(
+            db=db,
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            session_id=str(getattr(task, "parent_session_id", "") or merged_metadata.get("session_id") or ""),
+            run_uuid=run_uuid,
+            message_id=None,
+            file_change_paths=normalized_change_paths,
+            file_change_states=exact_states,
+            file_change_lineage=[dict(item) for item in (file_change_lineage or []) if isinstance(item, dict)],
+            attached_artifact_paths=[],
+            declared_artifact_paths=[],
+            rejected_artifact_paths=[],
+            file_change_state_errors=state_errors,
+            source="web_chat_runtime_tool_card",
         )
         await _maybe_continue_goal_after_terminal_turn(
             db=db,
@@ -3339,7 +3465,11 @@ async def _materialize_initial_user_turn_for_worker(
         },
     )
     if session is not None:
-        _capture_user_checkpoint_workspace_snapshot(agent_id=agent.id, session=session, user_event=user_event)
+        await _capture_user_checkpoint_workspace_snapshot(
+            agent_id=agent.id,
+            session=session,
+            user_event=user_event,
+        )
     if getattr(user_event, "event_id", None):
         await mark_latest_pending_clarification_answered(
             db=db,
@@ -3660,6 +3790,7 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
     terminal_runtime_metadata: dict[str, Any] | None = None
     phase_emitter: RunPhaseEmitter | None = None
     terminal_phase_hint: RuntimePhase | None = None
+    runtime_session_context: Any | None = None
 
     try:
         loaded_context = await _load_runtime_context(run_uuid)
@@ -3987,6 +4118,9 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
                 status="killed" if cancel_event.is_set() else "completed",
                 result_summary=summary,
                 metadata_json=metadata_update,
+                file_change_paths=_terminal_file_change_paths_for_turn(runtime_session_context),
+                file_change_states=_terminal_file_change_states_for_turn(runtime_session_context),
+                file_change_lineage=_terminal_file_change_lineage_for_turn(runtime_session_context),
             )
             terminal_tool_card_finalized = finalized or terminal_tool_card_finalized
             if finalized:
@@ -4187,6 +4321,9 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
                 status="killed" if cancel_event.is_set() else "completed",
                 result_summary=interactive_pause_summary,
                 metadata_json=metadata_update,
+                file_change_paths=_terminal_file_change_paths_for_turn(runtime_session_context),
+                file_change_states=_terminal_file_change_states_for_turn(runtime_session_context),
+                file_change_lineage=_terminal_file_change_lineage_for_turn(runtime_session_context),
             )
             if not finalized:
                 return
@@ -4243,6 +4380,9 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
                 status=status,
                 result_summary=interactive_pause_summary,
                 metadata_json=metadata_update,
+                file_change_paths=_terminal_file_change_paths_for_turn(runtime_session_context),
+                file_change_states=_terminal_file_change_states_for_turn(runtime_session_context),
+                file_change_lineage=_terminal_file_change_lineage_for_turn(runtime_session_context),
             )
             if not finalized:
                 return
@@ -4259,6 +4399,8 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
             await broadcast_web_chat_event(agent.id, session_id, build_done_event(""))
             return
         file_change_paths = _terminal_file_change_paths_for_turn(runtime_session_context)
+        file_change_states = _terminal_file_change_states_for_turn(runtime_session_context)
+        file_change_lineage = _terminal_file_change_lineage_for_turn(runtime_session_context)
         declared_artifact_paths = _declared_terminal_artifact_paths(assistant_response)
         artifact_paths = _terminal_artifact_paths_for_turn(runtime_session_context, assistant_response)
         rejected_artifact_paths = _rejected_terminal_artifact_paths_for_turn(
@@ -4278,6 +4420,8 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
                 metadata_json=metadata_update,
                 artifact_paths=artifact_paths,
                 file_change_paths=file_change_paths,
+                file_change_states=file_change_states,
+                file_change_lineage=file_change_lineage,
                 declared_artifact_paths=declared_artifact_paths,
                 rejected_artifact_paths=rejected_artifact_paths,
             )
@@ -4340,6 +4484,20 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
                 await stream_batcher.flush()
             runtime_task, agent, user, *_rest = await _load_runtime_context(run_uuid)
             session_id = str(runtime_task.parent_session_id)
+            failed_turn_change_paths = (
+                _terminal_file_change_paths_for_turn(runtime_session_context)
+                if runtime_session_context is not None
+                else []
+            )
+            failed_turn_change_kwargs = (
+                {
+                    "file_change_paths": failed_turn_change_paths,
+                    "file_change_states": _terminal_file_change_states_for_turn(runtime_session_context),
+                    "file_change_lineage": _terminal_file_change_lineage_for_turn(runtime_session_context),
+                }
+                if failed_turn_change_paths
+                else {}
+            )
             finalized = await _finalize_web_chat_run_with_assistant(
                 run_uuid=run_uuid,
                 agent_id=agent.id,
@@ -4351,6 +4509,7 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
                 status="failed",
                 result_summary=result_summary,
                 metadata_json=metadata_update,
+                **failed_turn_change_kwargs,
             )
             if not finalized:
                 await _update_runtime_task(

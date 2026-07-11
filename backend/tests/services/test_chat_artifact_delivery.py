@@ -679,6 +679,7 @@ def test_platform_runtime_source_must_not_create_agent_session():
     [
         ("write_file", {"path": "workspace/a.md"}, ["workspace/a.md"]),
         ("edit_file", {"path": "workspace/b.md"}, ["workspace/b.md"]),
+        ("delete_file", {"path": "workspace/deleted.md"}, ["workspace/deleted.md"]),
         ("fs_write", {"path": "workspace/c.md"}, ["workspace/c.md"]),
         ("office_document_create", {"path": "workspace/d.docx"}, ["workspace/d.docx"]),
         (

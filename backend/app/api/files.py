@@ -444,11 +444,13 @@ async def write_file(
     """Write content to a file (create or overwrite)."""
     await check_agent_access(db, current_user, agent_id)
     _raise_managed_path_write_guard(path)
-    target = _safe_path(agent_id, path)
+    from app.services.session_workspace_snapshot import async_agent_workspace_lock
 
-    target.parent.mkdir(parents=True, exist_ok=True)
-    async with aiofiles.open(target, "w", encoding="utf-8") as f:
-        await f.write(data.content)
+    async with async_agent_workspace_lock(agent_id):
+        target = _safe_path(agent_id, path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        async with aiofiles.open(target, "w", encoding="utf-8") as f:
+            await f.write(data.content)
 
     return {"status": "ok", "path": path}
 
@@ -463,17 +465,19 @@ async def delete_file(
     """Delete a file."""
     await check_agent_access(db, current_user, agent_id)
     _raise_managed_path_write_guard(path)
-    target = _safe_path(agent_id, path)
+    from app.services.session_workspace_snapshot import async_agent_workspace_lock
 
-    if not target.exists():
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
+    async with async_agent_workspace_lock(agent_id):
+        target = _safe_path(agent_id, path)
+        if not target.exists():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
 
-    if target.is_dir():
-        import shutil
+        if target.is_dir():
+            import shutil
 
-        shutil.rmtree(target)
-    else:
-        target.unlink()
+            shutil.rmtree(target)
+        else:
+            target.unlink()
 
     return {"status": "ok", "path": path}
 
@@ -559,7 +563,6 @@ async def upload_file_to_workspace(
     except ValueError:
         raise HTTPException(status_code=403, detail="Path traversal not allowed")
 
-    target_dir.mkdir(parents=True, exist_ok=True)
     filename = file.filename or "unnamed"
     # Sanitize filename
     filename = filename.replace("/", "_").replace("\\", "_")
@@ -567,17 +570,21 @@ async def upload_file_to_workspace(
     save_path = target_dir / filename
 
     content = await file.read()
-    save_path.write_bytes(content)
+    from app.services.session_workspace_snapshot import async_agent_workspace_lock
 
-    # Auto-extract text from non-text files
-    extracted_path = None
-    from app.services.text_extractor import needs_extraction, save_extracted_text
+    async with async_agent_workspace_lock(agent_id):
+        target_dir.mkdir(parents=True, exist_ok=True)
+        save_path.write_bytes(content)
 
-    if needs_extraction(filename):
-        txt_file = save_extracted_text(save_path, content, filename)
-        if txt_file:
-            base_abs = base.resolve()
-            extracted_path = str(txt_file.resolve().relative_to(base_abs))
+        # Auto-extract text from non-text files
+        extracted_path = None
+        from app.services.text_extractor import needs_extraction, save_extracted_text
+
+        if needs_extraction(filename):
+            txt_file = save_extracted_text(save_path, content, filename)
+            if txt_file:
+                base_abs = base.resolve()
+                extracted_path = str(txt_file.resolve().relative_to(base_abs))
 
     return {
         "status": "ok",

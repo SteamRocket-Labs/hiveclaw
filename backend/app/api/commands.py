@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import uuid
@@ -28,6 +29,7 @@ from app.runtime.schedule_decision_ledger import build_schedule_decision_entry, 
 from app.services.agent_team_contract import teammate_creation_discovery
 from app.services.agent_tools import execute_tool
 from app.services.chat_message_parts import build_session_native_event
+from app.services.session_workspace_snapshot import finalize_workspace_restore
 from app.services.chat_transcript import append_session_event
 from app.services.coding_pack_manifest import CODING_PACK_COMMAND_NAMES, coding_pack_command_manifest
 from app.services.command_registry import build_default_command_registry
@@ -1424,7 +1426,39 @@ async def execute_agent_command(
             session_id=body.session_id,
             arguments=body.arguments,
         )
-        await db.commit()
+        workspace_restore = result.get("workspace_restore") if isinstance(result, dict) else None
+        workspace_restore_transaction_id = (
+            str(workspace_restore.get("transaction_id") or "")
+            if isinstance(workspace_restore, dict) and workspace_restore.get("requires_finalize")
+            else ""
+        )
+        try:
+            await db.commit()
+        except BaseException:
+            if workspace_restore_transaction_id:
+                await asyncio.to_thread(
+                    finalize_workspace_restore,
+                    agent_id=agent_id,
+                    transaction_id=workspace_restore_transaction_id,
+                    commit=False,
+                )
+            raise
+        if workspace_restore_transaction_id:
+            finalized = await asyncio.to_thread(
+                finalize_workspace_restore,
+                agent_id=agent_id,
+                transaction_id=workspace_restore_transaction_id,
+                commit=True,
+            )
+            if not finalized:
+                raise HTTPException(
+                    status_code=500,
+                    detail={
+                        "code": "workspace_restore_needs_reconciliation",
+                        "transaction_id": workspace_restore_transaction_id,
+                    },
+                )
+            workspace_restore["requires_finalize"] = False
         return {"ok": True, "command": command.name, "result": result}
     if command.name in DIAGNOSTIC_COMMAND_NAMES:
         result = await execute_diagnostic_command(

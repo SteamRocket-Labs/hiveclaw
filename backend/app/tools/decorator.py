@@ -41,6 +41,10 @@ class ToolMeta:
     is_default: bool = True
     read_only: bool = False
     parallel_safe: bool = False
+    # Physical side effect inside AGENT_DATA_DIR/<agent>/workspace. This is
+    # independent from read_only: document conversion is semantically a read,
+    # but its deterministic cache must still serialize with workspace rewind.
+    workspace_mutating: bool = False
     # CC isDestructive parity: an irreversible / data-destroying op (delete or
     # overwrite). A destructive tool never runs concurrently even if it were
     # mis-flagged parallel_safe (observability + concurrency defense).

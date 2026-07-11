@@ -69,11 +69,22 @@ def test_file_tracking_records_version_snapshots() -> None:
     s = SessionContext()
 
     s.track_file_read("workspace/report.md", snapshot={"exists": True, "size": 12, "mtime_ns": 100})
-    s.track_file_write("workspace/report.md", snapshot={"exists": True, "size": 20, "mtime_ns": 200})
+    lineage = {
+        "path": "workspace/report.md",
+        "before_state": {"path": "workspace/report.md", "exists": False, "sha256": None, "size": 0},
+        "after_state": {"path": "workspace/report.md", "exists": True, "sha256": "a" * 64, "size": 20},
+    }
+    s.track_file_write(
+        "workspace/report.md",
+        snapshot={"exists": True, "size": 20, "mtime_ns": 200},
+        lineage=lineage,
+    )
 
     assert s.recent_files == ["workspace/report.md"]
     assert s.recent_writes == ["workspace/report.md"]
     assert s.current_turn_writes == ["workspace/report.md"]
+    assert s.current_turn_write_snapshots["workspace/report.md"]["size"] == 20
+    assert s.current_turn_write_lineage == [lineage]
     assert s.file_snapshots["workspace/report.md"]["size"] == 20
     assert s.file_snapshots["workspace/report.md"]["mtime_ns"] == 200
 
@@ -86,6 +97,8 @@ def test_turn_write_tracking_scopes_delivery_without_losing_recent_writes() -> N
 
     assert s.recent_writes == ["workspace/old.md"]
     assert s.current_turn_writes == []
+    assert s.current_turn_write_snapshots == {}
+    assert s.current_turn_write_lineage == []
     assert not hasattr(s, "consume_turn_writes")
 
     s.track_file_write("workspace/new.md")
@@ -97,6 +110,7 @@ def test_turn_write_tracking_scopes_delivery_without_losing_recent_writes() -> N
 
     assert s.recent_writes == ["workspace/old.md", "workspace/new.md"]
     assert s.current_turn_writes == []
+    assert s.current_turn_write_snapshots == {}
 
 
 # ── Unload ────────────────────────────────────────────────────

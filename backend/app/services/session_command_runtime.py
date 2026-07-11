@@ -28,7 +28,10 @@ from app.runtime.hooks import HookEvent, emit_hook
 from app.services.chat_transcript import append_session_event, read_transcript_revision
 from app.services.conversation_branch_service import create_conversation_branch
 from app.services.memory_service import _generate_session_summary, _wrap_compressed_summary
-from app.services.session_workspace_snapshot import restore_session_workspace_snapshot
+from app.services.session_workspace_snapshot import (
+    finalize_workspace_restore,
+    restore_session_workspace_snapshot,
+)
 from app.services.web_chat_runtime import cancel_web_chat_run, get_active_web_chat_run, steer_active_web_chat_turn
 
 SESSION_COMMAND_NAMES = frozenset(
@@ -300,6 +303,88 @@ def _checkpoint_payloads(events: list[ChatTranscriptEvent | T0SessionEvent]) -> 
     return [
         _checkpoint_payload(event, turn_index=index) for index, event in enumerate(_user_checkpoint_events(events), 1)
     ]
+
+
+def _workspace_restore_scope_after_checkpoint(
+    events: list[ChatTranscriptEvent | T0SessionEvent],
+    *,
+    checkpoint: ChatTranscriptEvent | T0SessionEvent,
+) -> tuple[
+    list[str],
+    dict[str, dict[str, Any]],
+    dict[str, list[dict[str, Any]]],
+    list[str],
+]:
+    """Return latest session-owned file states after the selected checkpoint."""
+
+    checkpoint_sequence = int(getattr(checkpoint, "sequence", 0) or 0)
+    states: dict[str, dict[str, Any]] = {}
+    lineage: dict[str, list[dict[str, Any]]] = {}
+    unverifiable: set[str] = set()
+    for event in events:
+        if int(getattr(event, "sequence", 0) or 0) <= checkpoint_sequence:
+            continue
+        if getattr(event, "event_type", None) != "file_changes":
+            continue
+        metadata = _event_metadata(event)
+        raw_states = metadata.get("file_change_states")
+        event_states = raw_states if isinstance(raw_states, dict) else {}
+        raw_lineage = metadata.get("file_change_lineage")
+        event_lineage = (
+            [dict(item) for item in raw_lineage if isinstance(item, dict)] if isinstance(raw_lineage, list) else []
+        )
+        paths = metadata.get("file_change_paths")
+        for raw_path in paths if isinstance(paths, list) else []:
+            path = str(raw_path or "").strip()
+            if not path:
+                continue
+            state = event_states.get(path)
+            state_is_verifiable = (
+                isinstance(state, dict)
+                and "exists" in state
+                and (
+                    not state.get("exists")
+                    or (isinstance(state.get("sha256"), str) and len(str(state.get("sha256"))) == 64)
+                )
+            )
+            if not state_is_verifiable:
+                states.pop(path, None)
+                unverifiable.add(path)
+                continue
+            states[path] = dict(state)
+            path_lineage = [record for record in event_lineage if str(record.get("path") or "") == path]
+            if not path_lineage:
+                unverifiable.add(path)
+                continue
+            lineage.setdefault(path, []).extend(path_lineage)
+        errors = metadata.get("file_change_state_errors")
+        if isinstance(errors, dict):
+            for raw_path in errors:
+                path = str(raw_path or "").strip()
+                if path:
+                    states.pop(path, None)
+                    unverifiable.add(path)
+    paths = sorted(set(states) | unverifiable)
+    return paths, states, lineage, sorted(unverifiable)
+
+
+async def _rollback_deferred_workspace_restore(
+    *,
+    agent_id: uuid.UUID,
+    workspace_restore_payload: dict[str, Any] | None,
+) -> None:
+    if not isinstance(workspace_restore_payload, dict):
+        return
+    transaction_id = str(workspace_restore_payload.get("transaction_id") or "")
+    if not transaction_id or not workspace_restore_payload.get("requires_finalize"):
+        return
+    await asyncio.to_thread(
+        finalize_workspace_restore,
+        agent_id=agent_id,
+        transaction_id=transaction_id,
+        commit=False,
+    )
+    workspace_restore_payload["requires_finalize"] = False
 
 
 def _has_explicit_rewind_target(arguments: dict[str, Any]) -> bool:
@@ -989,6 +1074,9 @@ async def execute_session_command(
         target_checkpoint, turn_index = _select_user_checkpoint(events, arguments=arguments)
         checkpoint = _checkpoint_payload(target_checkpoint, turn_index=turn_index)
         workspace_restore_payload: dict[str, Any] | None = None
+        workspace_restore_paths: list[str] = []
+        workspace_restore_states: dict[str, dict[str, Any]] = {}
+        workspace_restore_lineage: dict[str, list[dict[str, Any]]] = {}
         if rewind_mode in {"workspace", "both"}:
             session_metadata = getattr(session, "transcript_metadata_json", None)
             snapshot_index = session_metadata.get("workspace_snapshots") if isinstance(session_metadata, dict) else None
@@ -1023,7 +1111,11 @@ async def execute_session_command(
                     ui_action={
                         "type": "confirm_workspace_restore",
                         "level": "warning",
-                        "message": "Workspace rewind will restore files from the selected checkpoint. Confirm before applying.",
+                        "message": (
+                            "Workspace rewind will restore only files changed by this session since the selected "
+                            "checkpoint. Any later or interleaved write to the same file stops the restore instead "
+                            "of overwriting it. Confirm before applying."
+                        ),
                         "checkpoint_event_id": checkpoint["checkpoint_event_id"],
                         "requested_mode": rewind_mode,
                     },
@@ -1036,6 +1128,38 @@ async def execute_session_command(
                     rewind_guard={"last_sequence": observed_last_sequence},
                 )
 
+            (
+                workspace_restore_paths,
+                workspace_restore_states,
+                workspace_restore_lineage,
+                unverifiable_paths,
+            ) = _workspace_restore_scope_after_checkpoint(
+                events,
+                checkpoint=target_checkpoint,
+            )
+            if unverifiable_paths:
+                return _typed_result(
+                    command=command_name,
+                    action="workspace_restore_conflict",
+                    session_id=session.id,
+                    ok=False,
+                    ui_action={
+                        "type": "toast",
+                        "level": "error",
+                        "message": (
+                            "Workspace rewind cannot safely verify one or more paths. "
+                            "Keep the current files or create a new checkpoint before retrying."
+                        ),
+                    },
+                    debug_payload={
+                        "requested_mode": rewind_mode,
+                        "checkpoint_event_id": checkpoint["checkpoint_event_id"],
+                        "unverifiable_paths": unverifiable_paths,
+                    },
+                    truth_source=truth_source,
+                    checkpoint=checkpoint,
+                )
+
         rewind_guard = await _prepare_rewind_mutation(
             db=db,
             agent=agent,
@@ -1046,10 +1170,15 @@ async def execute_session_command(
         )
 
         if rewind_mode in {"workspace", "both"}:
-            restore = restore_session_workspace_snapshot(
+            restore = await asyncio.to_thread(
+                restore_session_workspace_snapshot,
                 agent_id=agent.id,
                 session=session,
                 checkpoint_event_id=checkpoint["checkpoint_event_id"],
+                restore_paths=workspace_restore_paths,
+                expected_current_states=workspace_restore_states,
+                expected_lineage=workspace_restore_lineage,
+                defer_finalize=True,
             )
             if not restore.ok:
                 return _typed_result(
@@ -1069,16 +1198,27 @@ async def execute_session_command(
             workspace_restore_payload = restore.to_payload()
 
         if rewind_mode == "workspace":
-            control_event = await _append_control_event(
-                db=db,
-                agent=agent,
-                session=session,
-                user=user,
-                event_type="session_workspace_rewind",
-                content=f"Restored workspace snapshot at checkpoint {checkpoint['checkpoint_event_id']}",
-                metadata={"command": command_name, "mode": rewind_mode, "workspace_restore": workspace_restore_payload},
-            )
-            await db.flush()
+            try:
+                control_event = await _append_control_event(
+                    db=db,
+                    agent=agent,
+                    session=session,
+                    user=user,
+                    event_type="session_workspace_rewind",
+                    content=f"Restored workspace snapshot at checkpoint {checkpoint['checkpoint_event_id']}",
+                    metadata={
+                        "command": command_name,
+                        "mode": rewind_mode,
+                        "workspace_restore": workspace_restore_payload,
+                    },
+                )
+                await db.flush()
+            except BaseException:
+                await _rollback_deferred_workspace_restore(
+                    agent_id=agent.id,
+                    workspace_restore_payload=workspace_restore_payload,
+                )
+                raise
             return _typed_result(
                 command=command_name,
                 action="workspace_rewind_applied",
@@ -1109,16 +1249,23 @@ async def execute_session_command(
         metadata = dict(session.transcript_metadata_json or {})
         metadata["active_projection"] = projection
         session.transcript_metadata_json = metadata
-        control_event = await _append_control_event(
-            db=db,
-            agent=agent,
-            session=session,
-            user=user,
-            event_type="session_rewind" if workspace_restore_payload is None else "session_rewind_with_workspace",
-            content=f"Rewound active projection to checkpoint {checkpoint['checkpoint_event_id']}",
-            metadata={"command": command_name, **projection, "workspace_restore": workspace_restore_payload},
-        )
-        await db.flush()
+        try:
+            control_event = await _append_control_event(
+                db=db,
+                agent=agent,
+                session=session,
+                user=user,
+                event_type="session_rewind" if workspace_restore_payload is None else "session_rewind_with_workspace",
+                content=f"Rewound active projection to checkpoint {checkpoint['checkpoint_event_id']}",
+                metadata={"command": command_name, **projection, "workspace_restore": workspace_restore_payload},
+            )
+            await db.flush()
+        except BaseException:
+            await _rollback_deferred_workspace_restore(
+                agent_id=agent.id,
+                workspace_restore_payload=workspace_restore_payload,
+            )
+            raise
         return _typed_result(
             command=command_name,
             action="rewind_applied",

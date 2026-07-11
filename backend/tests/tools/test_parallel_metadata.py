@@ -44,6 +44,26 @@ def test_write_file_is_not_read_only():
     assert tool.read_only is False
 
 
+def test_workspace_mutation_metadata_is_precise():
+    from app.tools.registry import is_workspace_mutating_tool
+
+    for name in (
+        "write_file",
+        "edit_file",
+        "delete_file",
+        "execute_code",
+        "run_command",
+        "read_document",
+        "fs_read",
+        "fs_write",
+        "office_document_create",
+        "office_document_apply",
+    ):
+        assert is_workspace_mutating_tool(name) is True
+    for name in ("read_file", "send_email", "send_channel_message", "save_memory"):
+        assert is_workspace_mutating_tool(name) is False
+
+
 def test_is_parallel_safe_method():
     registry = _build_registry("read_file", "write_file")
     assert registry.is_parallel_safe("read_file") is True

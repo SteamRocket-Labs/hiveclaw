@@ -43,7 +43,7 @@ def tool_session_write_paths(
     artifacts: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
 ) -> list[str]:
     """Return user-facing workspace artifact paths written by a tool call."""
-    if tool_name in ("write_file", "edit_file", "fs_write"):
+    if tool_name in ("write_file", "edit_file", "delete_file", "fs_write"):
         path = args.get("path")
         return [str(path)] if path else []
     if tool_name == "office_document_create":

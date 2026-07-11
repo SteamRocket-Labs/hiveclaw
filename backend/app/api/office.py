@@ -323,12 +323,15 @@ async def onlyoffice_callback(
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.get(download_url)
             response.raise_for_status()
-        service.atomic_save_bytes(
-            path,
-            response.content,
-            reason=f"onlyoffice-status-{payload.status}",
-            require_no_active_editor=False,
-        )
+        from app.services.session_workspace_snapshot import async_agent_workspace_lock
+
+        async with async_agent_workspace_lock(agent_id):
+            service.atomic_save_bytes(
+                path,
+                response.content,
+                reason=f"onlyoffice-status-{payload.status}",
+                require_no_active_editor=False,
+            )
     elif payload.status == 4:
         service.clear_active_editor_session(path, session_id=payload.key)
     elif payload.status in (3, 7):

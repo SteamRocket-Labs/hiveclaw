@@ -24,7 +24,7 @@
 - **P1：13 个**。会造成恢复能力、CC parity、自进化、资产统计、实时 UI 或验收可信度不足，不能作为“上线后再补”的债务。
 - **P2：1 个**。是确定的 KISS/维护性残留，应与本轮一起清理。
 
-当前修复进度：**3 / 28**（SA-01、SA-02、SA-03 已按七原子闭环并分别提交）；其余断点未全部关闭前，结论继续保持 NO-GO。
+当前修复进度：**4 / 28**（SA-01、SA-02、SA-03、SA-04 已按七原子闭环并分别提交）；其余断点未全部关闭前，结论继续保持 NO-GO。
 
 这里的“95% 以上信心”指的是：**对当前 checkout 根断点清单完整度的置信度为 95.3%**，不代表系统有 95.3% 的上线成熟度。只要任一 P0 尚存，上线结论就是 NO-GO。
 
@@ -87,7 +87,7 @@ Codex 的 PermissionProfile、thread identity、sandbox policy 和 approval even
 | SA-01 | Plan 授权未绑定具体动作 | P0 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | SA-02 | Approval 后存在第二工具执行入口 | P0 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | SA-03 | Business Task 双状态机与错误终态 | P0 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| SA-04 | Workspace Rewind 操作 Agent 共享目录 | P0 | 断点 | ✓ | ✗ | ✗ | △ | ✗ | △ | △ |
+| SA-04 | Workspace Rewind 操作 Agent 共享目录 | P0 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | SA-05 | Channel ingress 无 durable inbox | P0 | 断点 | △ | △ | △ | ✗ | ✗ | △ | △ |
 | SA-06 | 外部通道身份被建成全局 User | P0 | 断点 | △ | ✗ | △ | ✗ | ✗ | ✗ | △ |
 | SA-07 | 最终通道交付无 durable outbox | P0 | 断点 | ✓ | ✓ | △ | ✗ | ✗ | ✗ | △ |
@@ -158,6 +158,8 @@ Task logs 在 `backend/app/api/tasks.py:181-207` 只按 task_id 查写，没有�
 **验收**：在 Task insert、RuntimeTask insert、claim、Plan block、模型缺失、tool error、terminal persist 各点故障注入；断言两个状态机永不矛盾且重试不复制任务。
 
 ### SA-04：Workspace Rewind 恢复的是 Agent 全局目录 — P0
+
+**修复状态（2026-07-11）**：**闭环**。Workspace rewind 现在只恢复“当前 session 在 checkpoint 之后、且 lineage 可连续证明”的路径；其他 session 的文件保持不变。所有生产 workspace 写入口和 restore 共用跨进程 Agent workspace lock；restore 在锁内完成 manifest/checksum/lineage/CAS 校验、stage、fsync、原子目录 swap，并以 durable transaction journal 协调文件系统与 transcript/数据库提交。失败、取消和进程崩溃均可回滚或在启动时按已提交 control event 收敛；branch 会克隆独立快照而不共享 retention 生命周期。
 
 **机械事实**：`backend/app/services/session_workspace_snapshot.py:102-168` 同步复制 Agent workspace，限制 1000 文件/50MB，但无共享锁；capture 会直接 `rmtree` 已有 snapshot。restore 在 `183-295` 校验后对当前 workspace 原地 unlink/copy，没有 stage、fsync、atomic swap 或 rollback。`backend/app/services/session_command_runtime.py:367-433` 只锁当前 ChatSession、取消当前 session active run；`1039-1121` 先修改文件系统，再写 transcript/DB 事件。
 
@@ -537,7 +539,27 @@ ruff check app
 
 结果：`All checks passed!`
 
-Alembic：`runtime_notification_outbox_0710 (head)`，单 head。
+审计基线 Alembic：`runtime_notification_outbox_0710 (head)`，单 head。
+
+SA-04 修复后的当前全量门禁：
+
+```bash
+cd backend
+source .venv/bin/activate
+pytest tests -q
+```
+
+结果：`6226 passed, 1 skipped, 5 warnings in 130.71s`，零失败。
+
+```bash
+cd backend
+source .venv/bin/activate
+ruff check <当前未提交 Python 文件>
+ruff format --check <当前未提交 Python 文件>
+alembic heads
+```
+
+结果：当前变更 Ruff lint/format 全绿；Alembic 单 head：`business_task_atomic_state_0711 (head)`。
 
 ### Frontend
 
@@ -783,3 +805,66 @@ alembic heads
 ```
 
 结果：Ruff `All checks passed!`，15 个文件格式通过；Alembic 单 head：`business_task_atomic_state_0711 (head)`。
+
+### SA-04 — Session-scoped Workspace Rewind 原子事务
+
+状态：**闭环**。提交主题：`fix(SA-04): make workspace rewind session-safe and atomic`。
+
+七原子证据：
+
+1. **输入**：checkpoint snapshot 使用 `hive.session_workspace_snapshot.v2` manifest，记录不可变的相对路径、size、mtime 与 SHA-256；每个成功的 workspace mutation 在工具仍持有锁时捕获 exact before/after state。rewind 只接受显式 checkpoint、mode、client revision 与二次确认，并从 committed transcript terminal metadata 计算当前 session 的恢复范围和连续 lineage。
+2. **权威**：restore scope 只包含当前 session 在 checkpoint 后拥有完整写入证据的路径；未被本 session 修改的文件永不进入删除/覆盖集合。Agent workspace 使用按 Agent ID 的跨进程 `flock`，工具写入、代码执行、Files/Upload API、Office callback、snapshot 和 restore 共用同一锁；tenant/session/Agent 的原有 command access 与 revision row lock 继续生效。
+3. **执行**：`restore_session_workspace_snapshot()` 是唯一 restore kernel；它先在锁内校验整个 snapshot、当前 CAS 与逐次 lineage，克隆当前 workspace 到 stage，只对 scoped paths 应用目标状态，fsync 后通过目录 rename 原子安装。`ToolRuntimeService` 只按 registry 的 exact `workspace_mutating` metadata 加锁，读工具不会被误串行；失败工具和 `{ok:false}` 结果不能登记伪写入证据。
+4. **证据**：snapshot manifest、`workspace_mutation_states`、`workspace_mutation_lineage`、terminal transcript 的 `file_change_states`、restore transaction journal、`session_workspace_rewind` control event 与 command payload 形成一条机械事实链。代码执行 artifact 同样携带 created/updated/deleted 的 before/after hash；证据扫描有 1000 文件、5MB/文件、50MB 总量上限，超限不是静默截断而是 fail closed。
+5. **恢复**：durable journal 覆盖 prepared/swapped/committed/rolled_back；stage、backup 与两次 rename 的任意崩溃窗口可在启动时按已提交 transcript control event finalize，否则回滚。DB flush/commit 失败和 `CancelledError` 会回滚 deferred swap；启动恢复早于任何 workspace migration。相同 checkpoint 重放在目标已成立时幂等成功；later/interleaved writer、checksum、磁盘/journal 写入失败均保持或恢复原 workspace。快照按 session 限制 50 个；branch 克隆独立快照和 retention，不引用源 session 目录。
+6. **消费**：Kernel、Web Chat terminal event、artifact delivery、Session Command、Branch/Fork、Files/Office/Upload API 和启动 recovery 均消费同一 exact evidence/lock/transaction contract。用户确认文案明确说明只恢复当前 session 文件，任何 later 或 interleaved 同路径写入都会停止 restore；Workspace/Deliverables 不会显示一次未提交的 rewind 结果。
+7. **验收**：覆盖两个 session/同路径交错写、foreign file 保留、同 checkpoint 双 rewind、checksum/缺失/超限、stage/rename/journal/DB failure、取消、启动恢复、event-loop 非阻塞、锁序列化、retention、branch 独立性、代码执行 artifact lineage、直接 API 写入口和 AST 单入口约束。
+
+RED 证据（修复前由新增回归测试稳定复现）：
+
+- `test_scoped_workspace_restore_preserves_foreign_session_files`：旧 restore 会把不在 checkpoint 的另一个 session 文件删除。
+- `test_scoped_workspace_restore_fails_closed_on_interleaved_foreign_writer`：旧实现没有逐写入 lineage，无法识别“本 session 写入之后又被外部写入”的同路径冲突。
+- `test_atomic_workspace_swap_rolls_back_when_install_fails`、`test_workspace_restore_startup_recovery_resolves_swapped_journal`：旧实现原地 unlink/copy，无 rollback package 或 durable recovery journal。
+- `test_every_governed_mutating_tool_observes_the_agent_workspace_lock`、`test_non_tool_workspace_write_entrypoints_share_the_rewind_lock`：旧工具和 Files/Upload/Office 入口没有共享 workspace transaction boundary。
+
+GREEN 证据：
+
+```bash
+cd backend
+source .venv/bin/activate
+pytest \
+  tests/services/test_session_workspace_snapshot.py \
+  tests/services/test_session_command_runtime.py \
+  tests/services/test_conversation_branch_service.py \
+  tests/services/test_web_chat_runtime.py \
+  tests/services/test_chat_artifact_delivery.py \
+  tests/services/test_command_tooling.py \
+  tests/services/test_vercel_code_execution.py \
+  tests/tools/test_service.py \
+  tests/tools/test_decorator.py \
+  tests/tools/test_parallel_metadata.py \
+  tests/kernel/test_engine.py \
+  tests/runtime/test_session_skill_lifecycle.py \
+  tests/api/test_cc_codex_parity_api.py \
+  tests/architecture/test_workspace_rewind_atomicity.py -q
+```
+
+结果：`403 passed, 4 warnings in 5.93s`。
+
+```bash
+cd backend
+source .venv/bin/activate
+pytest tests -q
+```
+
+结果：`6226 passed, 1 skipped, 5 warnings in 130.71s`，零失败。
+
+```bash
+cd backend
+source .venv/bin/activate
+ruff check <SA-04 当前变更 Python 文件>
+ruff format --check <SA-04 当前变更 Python 文件>
+alembic heads
+```
+
+结果：Ruff lint/format 全绿；Alembic 单 head：`business_task_atomic_state_0711 (head)`。SA-04 不新增 schema migration，复用 transcript control event 与 workspace journal 作为 FS/DB 协调证据。

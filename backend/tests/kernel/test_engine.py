@@ -1192,6 +1192,124 @@ async def test_execute_tool_with_hooks_tracks_structured_code_execution_artifact
 
 
 @pytest.mark.asyncio
+async def test_execute_tool_with_hooks_consumes_lock_captured_write_state(monkeypatch):
+    from app.kernel.contracts import InvocationRequest
+    from app.kernel.engine import _execute_tool_with_hooks
+    from app.runtime.session import SessionContext
+
+    async def fake_emit_hook(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit_hook)
+    session = SessionContext(session_id="session-exact-write-state")
+    request = InvocationRequest(
+        model=SimpleNamespace(provider="openai", model="gpt-4.1"),
+        messages=[{"role": "user", "content": "write report"}],
+        agent_name="Agent",
+        role_description="role",
+        session_context=session,
+        memory_session_id="session-exact-write-state",
+        agent_id=uuid4(),
+    )
+    exact_state = {
+        "path": "workspace/report.md",
+        "exists": True,
+        "sha256": "e" * 64,
+        "size": 11,
+    }
+
+    async def fake_execute_tool(
+        _tool_name,
+        _tool_args,
+        _request,
+        _emit_event,
+        *,
+        trace_metadata_sink=None,
+    ):
+        trace_metadata_sink["workspace_mutation_evidence_captured"] = True
+        trace_metadata_sink["workspace_mutation_states"] = {"workspace/report.md": exact_state}
+        trace_metadata_sink["workspace_mutation_state_errors"] = {}
+        trace_metadata_sink["workspace_mutation_lineage"] = [
+            {
+                "path": "workspace/report.md",
+                "before_state": {
+                    "path": "workspace/report.md",
+                    "exists": False,
+                    "sha256": None,
+                    "size": 0,
+                },
+                "after_state": exact_state,
+            }
+        ]
+        return "OK"
+
+    async def emit_event(_event):
+        return None
+
+    await _execute_tool_with_hooks(
+        execute_tool=fake_execute_tool,
+        request=request,
+        tool_name="write_file",
+        tool_args={"path": "workspace/report.md", "content": "owned state"},
+        emit_event=emit_event,
+    )
+
+    assert session.current_turn_writes == ["workspace/report.md"]
+    assert session.current_turn_write_snapshots["workspace/report.md"] == exact_state
+    assert session.current_turn_write_lineage[0]["after_state"] == exact_state
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_with_hooks_does_not_claim_failed_workspace_write(monkeypatch):
+    from app.kernel.contracts import InvocationRequest
+    from app.kernel.engine import _execute_tool_with_hooks
+    from app.runtime.session import SessionContext
+
+    async def fake_emit_hook(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit_hook)
+    session = SessionContext(session_id="session-failed-write")
+    request = InvocationRequest(
+        model=SimpleNamespace(provider="openai", model="gpt-4.1"),
+        messages=[{"role": "user", "content": "write report"}],
+        agent_name="Agent",
+        role_description="role",
+        session_context=session,
+        memory_session_id="session-failed-write",
+        agent_id=uuid4(),
+    )
+
+    async def fake_execute_tool(
+        _tool_name,
+        _tool_args,
+        _request,
+        _emit_event,
+        *,
+        trace_metadata_sink=None,
+    ):
+        trace_metadata_sink["workspace_mutation_evidence_captured"] = True
+        trace_metadata_sink["workspace_mutation_states"] = {}
+        trace_metadata_sink["workspace_mutation_state_errors"] = {}
+        trace_metadata_sink["workspace_mutation_lineage"] = []
+        return '❌ denied\n<tool_error>{"error_class":"denied"}</tool_error>'
+
+    async def emit_event(_event):
+        return None
+
+    await _execute_tool_with_hooks(
+        execute_tool=fake_execute_tool,
+        request=request,
+        tool_name="write_file",
+        tool_args={"path": "workspace/report.md", "content": "not written"},
+        emit_event=emit_event,
+    )
+
+    assert session.current_turn_writes == []
+    assert session.current_turn_write_snapshots == {}
+
+
+@pytest.mark.asyncio
 async def test_hook_emitter_consumes_post_tool_output_rewrite(monkeypatch):
     from app.kernel.contracts import InvocationRequest
     from app.kernel.engine import _execute_tool_with_hooks

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+import threading
+import time
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -780,6 +783,57 @@ async def test_rewind_workspace_mode_restores_snapshot_when_confirmed(monkeypatc
     user = SimpleNamespace(id=uuid4(), role="member")
     session = _session(agent.id, user.id)
     first = _event(session, "user_message", sequence=1, content="first", role="user")
+    file_changes = _event(session, "file_changes", sequence=2, content="file_changes", role="system")
+    file_changes.metadata_json = {
+        "role": "system",
+        "file_change_paths": ["workspace/report.md", "workspace/draft.md"],
+        "file_change_states": {
+            "workspace/report.md": {
+                "path": "workspace/report.md",
+                "exists": True,
+                "sha256": "a" * 64,
+                "size": 10,
+            },
+            "workspace/draft.md": {
+                "path": "workspace/draft.md",
+                "exists": False,
+                "sha256": None,
+                "size": 0,
+            },
+        },
+        "file_change_lineage": [
+            {
+                "path": "workspace/report.md",
+                "before_state": {
+                    "path": "workspace/report.md",
+                    "exists": False,
+                    "sha256": None,
+                    "size": 0,
+                },
+                "after_state": {
+                    "path": "workspace/report.md",
+                    "exists": True,
+                    "sha256": "a" * 64,
+                    "size": 10,
+                },
+            },
+            {
+                "path": "workspace/draft.md",
+                "before_state": {
+                    "path": "workspace/draft.md",
+                    "exists": True,
+                    "sha256": "d" * 64,
+                    "size": 5,
+                },
+                "after_state": {
+                    "path": "workspace/draft.md",
+                    "exists": False,
+                    "sha256": None,
+                    "size": 0,
+                },
+            },
+        ],
+    }
     session.transcript_metadata_json = {
         "workspace_snapshots": {
             str(first.id): {
@@ -788,11 +842,15 @@ async def test_rewind_workspace_mode_restores_snapshot_when_confirmed(monkeypatc
             }
         }
     }
-    db = _DB(session, [first])
+    db = _DB(session, _db_rows(first, file_changes))
     appended = []
 
     def fake_restore_session_workspace_snapshot(**kwargs):
         assert kwargs["checkpoint_event_id"] == str(first.id)
+        assert kwargs["restore_paths"] == ["workspace/draft.md", "workspace/report.md"]
+        assert kwargs["expected_current_states"]["workspace/report.md"]["sha256"] == "a" * 64
+        assert len(kwargs["expected_lineage"]["workspace/report.md"]) == 1
+        assert kwargs["defer_finalize"] is True
         return WorkspaceRestoreResult(
             ok=True,
             checkpoint_event_id=str(first.id),
@@ -801,6 +859,8 @@ async def test_rewind_workspace_mode_restores_snapshot_when_confirmed(monkeypatc
             deleted_files=["draft.md"],
             unchanged_files=[],
             error=None,
+            transaction_id="restore-tx-1",
+            requires_finalize=True,
         )
 
     async def fake_append_session_event(**kwargs):
@@ -825,8 +885,260 @@ async def test_rewind_workspace_mode_restores_snapshot_when_confirmed(monkeypatc
     assert result["ui_action"]["type"] == "install_workspace_snapshot"
     assert result["workspace_restore"]["restored_files"] == ["report.md"]
     assert result["workspace_restore"]["deleted_files"] == ["draft.md"]
+    assert result["workspace_restore"]["transaction_id"] == "restore-tx-1"
     assert appended[0]["event_type"] == "session_workspace_rewind"
     assert db.flushes == 1
+
+
+@pytest.mark.asyncio
+async def test_workspace_rewind_lock_wait_does_not_block_the_event_loop(monkeypatch):
+    import app.services.session_command_runtime as runtime
+    from app.services.session_workspace_snapshot import WorkspaceRestoreResult
+
+    agent = SimpleNamespace(id=uuid4(), tenant_id=uuid4(), creator_id=uuid4())
+    user = SimpleNamespace(id=uuid4(), role="member")
+    session = _session(agent.id, user.id)
+    checkpoint = _event(session, "user_message", sequence=1, content="first", role="user")
+    change = _event(session, "file_changes", sequence=2, content="file_changes", role="system")
+    change.metadata_json = {
+        "file_change_paths": ["workspace/report.md"],
+        "file_change_states": {
+            "workspace/report.md": {
+                "path": "workspace/report.md",
+                "exists": True,
+                "sha256": "b" * 64,
+                "size": 1,
+            }
+        },
+        "file_change_lineage": [
+            {
+                "path": "workspace/report.md",
+                "before_state": {
+                    "path": "workspace/report.md",
+                    "exists": False,
+                    "sha256": None,
+                    "size": 0,
+                },
+                "after_state": {
+                    "path": "workspace/report.md",
+                    "exists": True,
+                    "sha256": "b" * 64,
+                    "size": 1,
+                },
+            }
+        ],
+    }
+    session.transcript_metadata_json = {
+        "workspace_snapshots": {
+            str(checkpoint.id): {
+                "checkpoint_event_id": str(checkpoint.id),
+                "manifest_path": "runtime_artifacts/snap/manifest.json",
+            }
+        }
+    }
+    db = _DB(session, _db_rows(checkpoint, change))
+    restore_entered = threading.Event()
+    release_restore = threading.Event()
+
+    def slow_restore(**_kwargs):
+        restore_entered.set()
+        release_restore.wait(timeout=1)
+        return WorkspaceRestoreResult(
+            ok=True,
+            checkpoint_event_id=str(checkpoint.id),
+            workspace_rel_path="workspace",
+            restored_files=["report.md"],
+            deleted_files=[],
+            unchanged_files=[],
+            transaction_id="restore-nonblocking",
+            requires_finalize=True,
+        )
+
+    async def fake_append_session_event(**_kwargs):
+        return SimpleNamespace(event_id=uuid4(), sequence=9)
+
+    monkeypatch.setattr(runtime, "restore_session_workspace_snapshot", slow_restore)
+    monkeypatch.setattr(runtime, "append_session_event", fake_append_session_event)
+    timer = threading.Timer(0.25, release_restore.set)
+    timer.start()
+    started = time.perf_counter()
+    command_task = asyncio.create_task(
+        runtime.execute_session_command(
+            db=db,
+            agent=agent,
+            user=user,
+            access_level="use",
+            command_name="rewind",
+            session_id=session.id,
+            arguments={
+                "checkpoint_event_id": str(checkpoint.id),
+                "mode": "workspace",
+                "confirm_workspace_restore": True,
+            },
+        )
+    )
+    try:
+        await asyncio.sleep(0.03)
+        assert restore_entered.is_set() is True
+        assert time.perf_counter() - started < 0.15
+    finally:
+        release_restore.set()
+        timer.cancel()
+    await command_task
+
+
+@pytest.mark.asyncio
+async def test_workspace_rewind_fails_closed_when_file_change_hash_evidence_is_missing(monkeypatch):
+    import app.services.session_command_runtime as runtime
+
+    agent = SimpleNamespace(id=uuid4(), tenant_id=uuid4(), creator_id=uuid4())
+    user = SimpleNamespace(id=uuid4(), role="member")
+    session = _session(agent.id, user.id)
+    first = _event(session, "user_message", sequence=1, content="first", role="user")
+    legacy_change = _event(session, "file_changes", sequence=2, content="file_changes", role="system")
+    legacy_change.metadata_json = {
+        "role": "system",
+        "file_change_paths": ["workspace/report.md"],
+    }
+    session.transcript_metadata_json = {
+        "workspace_snapshots": {
+            str(first.id): {
+                "checkpoint_event_id": str(first.id),
+                "manifest_path": "runtime_artifacts/snap/manifest.json",
+            }
+        }
+    }
+    db = _DB(session, _db_rows(first, legacy_change))
+
+    def fail_restore(**_kwargs):
+        raise AssertionError("unverifiable workspace writes must fail before restore")
+
+    monkeypatch.setattr(runtime, "restore_session_workspace_snapshot", fail_restore)
+
+    result = await runtime.execute_session_command(
+        db=db,
+        agent=agent,
+        user=user,
+        access_level="use",
+        command_name="rewind",
+        session_id=session.id,
+        arguments={
+            "checkpoint_event_id": str(first.id),
+            "mode": "workspace",
+            "confirm_workspace_restore": True,
+        },
+    )
+
+    assert result["ok"] is False
+    assert result["action"] == "workspace_restore_conflict"
+    assert result["debug_payload"]["unverifiable_paths"] == ["workspace/report.md"]
+
+
+def test_workspace_restore_scope_requires_contiguous_write_lineage():
+    import app.services.session_command_runtime as runtime
+
+    session = _session(uuid4(), uuid4())
+    checkpoint = _event(session, "user_message", sequence=1, content="first", role="user")
+    change = _event(session, "file_changes", sequence=2, content="file_changes", role="system")
+    change.metadata_json = {
+        "file_change_paths": ["workspace/report.md"],
+        "file_change_states": {
+            "workspace/report.md": {
+                "path": "workspace/report.md",
+                "exists": True,
+                "sha256": "a" * 64,
+                "size": 1,
+            }
+        },
+    }
+
+    paths, states, lineage, unverifiable = runtime._workspace_restore_scope_after_checkpoint(
+        [checkpoint, change],
+        checkpoint=checkpoint,
+    )
+
+    assert paths == ["workspace/report.md"]
+    assert states["workspace/report.md"]["sha256"] == "a" * 64
+    assert lineage == {}
+    assert unverifiable == ["workspace/report.md"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("failure", "expected_type"),
+    [
+        (RuntimeError("control event insert failed"), RuntimeError),
+        (asyncio.CancelledError(), asyncio.CancelledError),
+    ],
+)
+async def test_workspace_rewind_rolls_back_deferred_swap_when_control_event_fails(
+    monkeypatch,
+    failure,
+    expected_type,
+):
+    import app.services.session_command_runtime as runtime
+    from app.services.session_workspace_snapshot import WorkspaceRestoreResult
+
+    agent = SimpleNamespace(id=uuid4(), tenant_id=uuid4(), creator_id=uuid4())
+    user = SimpleNamespace(id=uuid4(), role="member")
+    session = _session(agent.id, user.id)
+    first = _event(session, "user_message", sequence=1, content="first", role="user")
+    session.transcript_metadata_json = {
+        "workspace_snapshots": {
+            str(first.id): {
+                "checkpoint_event_id": str(first.id),
+                "manifest_path": "runtime_artifacts/snap/manifest.json",
+            }
+        }
+    }
+    db = _DB(session, [first])
+    finalized = []
+
+    def fake_restore(**_kwargs):
+        return WorkspaceRestoreResult(
+            ok=True,
+            checkpoint_event_id=str(first.id),
+            workspace_rel_path="workspace",
+            restored_files=[],
+            deleted_files=[],
+            unchanged_files=[],
+            transaction_id="restore-tx-failed-event",
+            requires_finalize=True,
+        )
+
+    async def fail_append(**_kwargs):
+        raise failure
+
+    def fake_finalize(**kwargs):
+        finalized.append(kwargs)
+        return True
+
+    monkeypatch.setattr(runtime, "restore_session_workspace_snapshot", fake_restore)
+    monkeypatch.setattr(runtime, "append_session_event", fail_append)
+    monkeypatch.setattr(runtime, "finalize_workspace_restore", fake_finalize)
+
+    with pytest.raises(expected_type):
+        await runtime.execute_session_command(
+            db=db,
+            agent=agent,
+            user=user,
+            access_level="use",
+            command_name="rewind",
+            session_id=session.id,
+            arguments={
+                "checkpoint_event_id": str(first.id),
+                "mode": "workspace",
+                "confirm_workspace_restore": True,
+            },
+        )
+
+    assert finalized == [
+        {
+            "agent_id": agent.id,
+            "transaction_id": "restore-tx-failed-event",
+            "commit": False,
+        }
+    ]
 
 
 @pytest.mark.asyncio

@@ -538,7 +538,30 @@ async def test_execute_web_chat_run_resets_turn_writes_and_scopes_deliverables(m
         assert runtime_context.recent_writes == ["workspace/old.md"]
         assert runtime_context.metadata["runtime_task_id"] == run_id.hex
         assert runtime_context.metadata["turn_id"] == "turn-current"
-        runtime_context.track_file_write("workspace/new.md")
+        runtime_context.track_file_write(
+            "workspace/new.md",
+            snapshot={
+                "path": "workspace/new.md",
+                "exists": True,
+                "sha256": "f" * 64,
+                "size": 3,
+            },
+            lineage={
+                "path": "workspace/new.md",
+                "before_state": {
+                    "path": "workspace/new.md",
+                    "exists": False,
+                    "sha256": None,
+                    "size": 0,
+                },
+                "after_state": {
+                    "path": "workspace/new.md",
+                    "exists": True,
+                    "sha256": "f" * 64,
+                    "size": 3,
+                },
+            },
+        )
         return SimpleNamespace(
             content="\n".join(
                 [
@@ -573,6 +596,8 @@ async def test_execute_web_chat_run_resets_turn_writes_and_scopes_deliverables(m
 
     assert captured["artifact_paths"] == ["workspace/new.md"]
     assert captured["file_change_paths"] == ["workspace/new.md"]
+    assert captured["file_change_states"]["workspace/new.md"]["sha256"] == "f" * 64
+    assert captured["file_change_lineage"][0]["path"] == "workspace/new.md"
     assert captured["declared_artifact_paths"] == ["workspace/new.md", "workspace/old.md"]
     assert captured["rejected_artifact_paths"] == ["workspace/old.md"]
     assert runtime_context.current_turn_writes == ["workspace/new.md"]
@@ -2114,6 +2139,32 @@ async def test_finalize_web_chat_run_records_file_changes_side_channel(monkeypat
             self.commits += 1
 
     session = _Session()
+    workspace = tmp_path / str(agent_id) / "workspace"
+    workspace.mkdir(parents=True)
+    (workspace / "report.md").write_text("report", encoding="utf-8")
+    (workspace / "scratch.md").write_text("scratch", encoding="utf-8")
+    exact_write_states = {
+        "workspace/report.md": {
+            "path": "workspace/report.md",
+            "exists": True,
+            "sha256": "c" * 64,
+            "size": 6,
+        },
+        "workspace/scratch.md": {
+            "path": "workspace/scratch.md",
+            "exists": True,
+            "sha256": "d" * 64,
+            "size": 7,
+        },
+    }
+    exact_lineage = [
+        {
+            "path": path,
+            "before_state": {"path": path, "exists": False, "sha256": None, "size": 0},
+            "after_state": state,
+        }
+        for path, state in exact_write_states.items()
+    ]
 
     async def fake_resolve_tenant_for_agent(_agent_id):
         return tenant_id
@@ -2133,6 +2184,7 @@ async def test_finalize_web_chat_run_records_file_changes_side_channel(monkeypat
     monkeypatch.setattr(tenant_resolver, "resolve_tenant_for_agent", fake_resolve_tenant_for_agent)
     monkeypatch.setattr(runtime, "tenant_scoped_session", lambda _tenant_id: session)
     monkeypatch.setattr(runtime, "create_chat_artifacts_for_message", fake_create_chat_artifacts_for_message)
+    monkeypatch.setattr(runtime, "get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
     monkeypatch.setattr("app.memory.t0.ledger.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
 
     finalized = await runtime._finalize_web_chat_run_with_assistant(
@@ -2147,6 +2199,8 @@ async def test_finalize_web_chat_run_records_file_changes_side_channel(monkeypat
         metadata_json={"cancelled_by_user": False},
         artifact_paths=["workspace/report.md"],
         file_change_paths=["workspace/report.md", "workspace/scratch.md"],
+        file_change_states=exact_write_states,
+        file_change_lineage=exact_lineage,
         rejected_artifact_paths=["workspace/stale.md"],
     )
 
@@ -2161,12 +2215,100 @@ async def test_finalize_web_chat_run_records_file_changes_side_channel(monkeypat
     file_change_event = transcript_events[-1]
     assert file_change_event.content == "file_changes"
     assert file_change_event.metadata_json["file_change_paths"] == ["workspace/report.md", "workspace/scratch.md"]
+    assert file_change_event.metadata_json["file_change_states"]["workspace/report.md"]["exists"] is True
+    assert file_change_event.metadata_json["file_change_states"] == exact_write_states
+    assert file_change_event.metadata_json["file_change_lineage"] == exact_lineage
     assert file_change_event.metadata_json["attached_artifact_paths"] == ["workspace/report.md"]
     assert file_change_event.metadata_json["rejected_artifact_paths"] == ["workspace/stale.md"]
     assert task.metadata_json["file_change_paths"] == ["workspace/report.md", "workspace/scratch.md"]
     assert task.metadata_json["rejected_artifact_paths"] == ["workspace/stale.md"]
 
     assert all(event.projection_status == "pending" for event in transcript_events)
+
+
+@pytest.mark.asyncio
+async def test_tool_card_finalization_preserves_exact_file_change_evidence(monkeypatch):
+    import app.services.tenant_resolver as tenant_resolver
+    import app.services.web_chat_runtime as runtime
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    run_id = uuid4()
+    session_id = uuid4().hex
+    task = SimpleNamespace(
+        id=run_id,
+        task_type="web_chat_turn",
+        parent_session_id=session_id,
+        status="running",
+        metadata_json={},
+        result_summary=None,
+        completed_at=None,
+    )
+    appended: list[dict] = []
+
+    class _Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def execute(self, _stmt):
+            return _ScalarResult(task)
+
+        async def commit(self):
+            return None
+
+    async def fake_resolve_tenant_for_agent(_agent_id):
+        return tenant_id
+
+    async def capture_file_changes(**kwargs):
+        appended.append(kwargs)
+
+    async def noop_async(**_kwargs):
+        return None
+
+    exact = {
+        "workspace/report.md": {
+            "path": "workspace/report.md",
+            "exists": True,
+            "sha256": "1" * 64,
+            "size": 8,
+        }
+    }
+    exact_lineage = [
+        {
+            "path": "workspace/report.md",
+            "before_state": {
+                "path": "workspace/report.md",
+                "exists": False,
+                "sha256": None,
+                "size": 0,
+            },
+            "after_state": exact["workspace/report.md"],
+        }
+    ]
+    monkeypatch.setattr(tenant_resolver, "resolve_tenant_for_agent", fake_resolve_tenant_for_agent)
+    monkeypatch.setattr(runtime, "tenant_scoped_session", lambda _tenant_id: _Session())
+    monkeypatch.setattr(runtime, "_append_file_changes_event", capture_file_changes)
+    monkeypatch.setattr(runtime, "_project_agent_team_terminal_state", noop_async)
+    monkeypatch.setattr(runtime, "_maybe_continue_goal_after_terminal_turn", noop_async)
+
+    finalized = await runtime._finalize_web_chat_run_without_assistant(
+        run_uuid=run_id,
+        agent_id=agent_id,
+        status="completed",
+        result_summary="awaiting_user_clarification",
+        file_change_paths=["workspace/report.md"],
+        file_change_states=exact,
+        file_change_lineage=exact_lineage,
+    )
+
+    assert finalized is True
+    assert task.metadata_json["file_change_states"] == exact
+    assert appended[0]["file_change_states"] == exact
+    assert appended[0]["file_change_lineage"] == exact_lineage
+    assert appended[0]["session_id"] == session_id
 
 
 @pytest.mark.asyncio
@@ -3390,7 +3532,7 @@ async def test_worker_materializes_initial_user_turn_to_transcript_without_dupli
     snapshots = []
     answered = []
 
-    def fake_capture(**kwargs):
+    async def fake_capture(**kwargs):
         snapshots.append(kwargs)
 
     async def fake_mark(**kwargs):

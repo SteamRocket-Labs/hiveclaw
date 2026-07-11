@@ -1,5 +1,6 @@
 """Code execution domain — sandboxed Python/Bash/Node execution."""
 
+import hashlib
 import logging
 import os
 import shutil
@@ -15,6 +16,10 @@ from app.services.subprocess_env import build_agent_subprocess_env
 from app.tools.result_envelope import ToolContentEnvelope
 
 logger = logging.getLogger(__name__)
+
+MAX_WORKSPACE_LINEAGE_FILES = 1000
+MAX_WORKSPACE_LINEAGE_FILE_BYTES = 5 * 1024 * 1024
+MAX_WORKSPACE_LINEAGE_TOTAL_BYTES = 50 * 1024 * 1024
 
 # Dangerous patterns to block
 _DANGEROUS_BASH = [
@@ -189,10 +194,12 @@ def _promote_nested_workspace_artifacts(work_dir: Path) -> list[str]:
     return moved
 
 
-def _workspace_file_state(work_dir: Path) -> dict[str, tuple[int, int]]:
-    """Return a cheap, bounded-to-workspace fingerprint for produced-file detection."""
-    state: dict[str, tuple[int, int]] = {}
-    for path in work_dir.rglob("*"):
+def _workspace_file_state(work_dir: Path) -> dict[str, dict[str, Any]]:
+    """Return exact file states for produced-file detection and rewind lineage."""
+    state: dict[str, dict[str, Any]] = {}
+    hashed_files = 0
+    hashed_bytes = 0
+    for path in sorted(work_dir.rglob("*")):
         if not path.is_file() or path.is_symlink():
             continue
         rel = path.relative_to(work_dir).as_posix()
@@ -202,26 +209,76 @@ def _workspace_file_state(work_dir: Path) -> dict[str, tuple[int, int]]:
             stat = path.stat()
         except OSError:
             continue
-        state[rel] = (stat.st_size, stat.st_mtime_ns)
+        digest: str | None = None
+        unverifiable_reason: str | None = None
+        if hashed_files >= MAX_WORKSPACE_LINEAGE_FILES:
+            unverifiable_reason = "file_count_limit"
+        elif stat.st_size > MAX_WORKSPACE_LINEAGE_FILE_BYTES:
+            unverifiable_reason = "file_size_limit"
+        elif hashed_bytes + stat.st_size > MAX_WORKSPACE_LINEAGE_TOTAL_BYTES:
+            unverifiable_reason = "total_size_limit"
+        else:
+            hasher = hashlib.sha256()
+            try:
+                with path.open("rb") as handle:
+                    for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                        hasher.update(chunk)
+            except OSError:
+                unverifiable_reason = "read_failed"
+            else:
+                digest = hasher.hexdigest()
+                hashed_files += 1
+                hashed_bytes += stat.st_size
+        state[rel] = {
+            "path": f"workspace/{rel}",
+            "exists": True,
+            "size": stat.st_size,
+            "mtime_ns": stat.st_mtime_ns,
+            "sha256": digest,
+            **({"unverifiable_reason": unverifiable_reason} if unverifiable_reason else {}),
+        }
     return state
 
 
 def _workspace_artifact_manifest(
     work_dir: Path,
-    before: dict[str, tuple[int, int]],
+    before: dict[str, dict[str, Any]],
     *,
     source: str,
 ) -> tuple[dict[str, Any], ...]:
     after = _workspace_file_state(work_dir)
-    return tuple(
+    records = [
         {
             "path": f"workspace/{rel}",
             "source": source,
             "action": "created" if rel not in before else "updated",
         }
+        | {
+            "before_state": before.get(
+                rel,
+                {"path": f"workspace/{rel}", "exists": False, "sha256": None, "size": 0},
+            ),
+            "after_state": fingerprint,
+        }
         for rel, fingerprint in sorted(after.items())
-        if before.get(rel) != fingerprint
+        if any(before.get(rel, {}).get(key) != fingerprint.get(key) for key in ("size", "mtime_ns", "sha256"))
+    ]
+    records.extend(
+        {
+            "path": f"workspace/{rel}",
+            "source": source,
+            "action": "deleted",
+            "before_state": before[rel],
+            "after_state": {
+                "path": f"workspace/{rel}",
+                "exists": False,
+                "sha256": None,
+                "size": 0,
+            },
+        }
+        for rel in sorted(set(before) - set(after))
     )
+    return tuple(records)
 
 
 def _with_code_execution_evidence(

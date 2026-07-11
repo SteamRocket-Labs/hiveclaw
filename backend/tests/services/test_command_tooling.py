@@ -8,6 +8,28 @@ from uuid import uuid4
 import pytest
 
 
+def test_workspace_artifact_manifest_records_deleted_paths(tmp_path):
+    from app.services.agent_tool_domains.code_exec import _workspace_artifact_manifest, _workspace_file_state
+
+    (tmp_path / "keep.txt").write_text("keep", encoding="utf-8")
+    (tmp_path / "deleted.txt").write_text("deleted", encoding="utf-8")
+    before = _workspace_file_state(tmp_path)
+    (tmp_path / "deleted.txt").unlink()
+
+    artifacts = _workspace_artifact_manifest(tmp_path, before, source="run_command")
+
+    deleted = next(item for item in artifacts if item["path"] == "workspace/deleted.txt")
+    assert deleted["source"] == "run_command"
+    assert deleted["action"] == "deleted"
+    assert len(deleted["before_state"]["sha256"]) == 64
+    assert deleted["after_state"] == {
+        "path": "workspace/deleted.txt",
+        "exists": False,
+        "sha256": None,
+        "size": 0,
+    }
+
+
 @pytest.mark.asyncio
 async def test_run_command_executes_inside_workspace(tmp_path: Path):
     from app.services.agent_tool_domains.code_exec import _run_command

@@ -153,6 +153,11 @@ class SessionContext:
     _skill_metadata: dict[str, dict[str, float]] = field(default_factory=dict)
     recent_writes: list[str] = field(default_factory=list)  # file paths written by agent
     current_turn_writes: list[str] = field(default_factory=list)  # file paths written during the active turn
+    # Exact post-write states captured while the workspace mutation lock is
+    # still held. This is separate from file_snapshots so a later read cannot
+    # replace write provenance with another session's version.
+    current_turn_write_snapshots: dict[str, dict[str, Any]] = field(default_factory=dict)
+    current_turn_write_lineage: list[dict[str, Any]] = field(default_factory=list)
     recent_tool_outcomes: list[dict[str, str]] = field(default_factory=list)  # [{tool, summary}]
     recent_external_refs: list[str] = field(default_factory=list)  # URLs/resources fetched
     pending_items: list[str] = field(default_factory=list)  # unfinished work items
@@ -245,7 +250,13 @@ class SessionContext:
         self.metadata["discovered_tools"] = list(self.discovered_tools)
         return added
 
-    def track_file_write(self, path: str, *, snapshot: dict[str, Any] | None = None) -> None:
+    def track_file_write(
+        self,
+        path: str,
+        *,
+        snapshot: dict[str, Any] | None = None,
+        lineage: dict[str, Any] | None = None,
+    ) -> None:
         """Record a file write for post-compact restoration. Keeps last 5."""
         if path in self.recent_writes:
             self.recent_writes.remove(path)
@@ -255,6 +266,9 @@ class SessionContext:
         self.current_turn_writes.append(path)
         if snapshot is not None:
             self.file_snapshots[path] = dict(snapshot)
+            self.current_turn_write_snapshots[path] = dict(snapshot)
+        if isinstance(lineage, dict):
+            self.current_turn_write_lineage.append(dict(lineage))
         if len(self.recent_writes) > 10:
             self.recent_writes.pop(0)
         # Keep the complete active-turn manifest. It is cleared by begin_turn;
@@ -263,6 +277,8 @@ class SessionContext:
     def begin_turn(self) -> None:
         """Start a new model turn while keeping cross-turn restoration state."""
         self.current_turn_writes.clear()
+        self.current_turn_write_snapshots.clear()
+        self.current_turn_write_lineage.clear()
 
     def track_tool_outcome(self, tool_name: str, summary: str) -> None:
         """Record a high-value tool outcome for post-compact restoration. Keeps last 5."""

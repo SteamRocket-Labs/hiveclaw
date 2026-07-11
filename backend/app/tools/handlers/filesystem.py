@@ -127,6 +127,7 @@ def read_file(workspace: Path, arguments: dict, tenant_id: str | None = None) ->
         category="filesystem",
         display_name="Write File",
         icon="\u270f\ufe0f",
+        workspace_mutating=True,
         governance="sensitive",
         adapter="workspace_args",
     )
@@ -179,6 +180,7 @@ def write_file(workspace: Path, arguments: dict, tenant_id: str | None = None) -
         category="filesystem",
         display_name="Edit File",
         icon="\u270f\ufe0f",
+        workspace_mutating=True,
         adapter="workspace_args",
     )
 )
@@ -300,6 +302,7 @@ def grep_search(workspace: Path, arguments: dict, tenant_id: str | None = None) 
         category="filesystem",
         display_name="Delete File",
         icon="\U0001f5d1",
+        workspace_mutating=True,
         governance="sensitive",
         adapter="workspace_args",
     )
@@ -352,6 +355,7 @@ def delete_file(workspace: Path, arguments: dict, tenant_id: str | None = None) 
         icon="\U0001f4d1",
         read_only=True,
         parallel_safe=True,
+        workspace_mutating=True,
         governance="safe",
         adapter="workspace_args",
     )
@@ -419,6 +423,7 @@ async def read_document(workspace: Path, arguments: dict, tenant_id: str | None 
         category="filesystem",
         display_name="Execute Code",
         icon="\u25b6\ufe0f",
+        workspace_mutating=True,
         adapter="workspace_args",
     )
 )
@@ -462,6 +467,7 @@ async def execute_code(workspace: Path, arguments: dict, tenant_id: str | None =
         category="filesystem",
         display_name="Run Command",
         icon="\U0001f4bb",
+        workspace_mutating=True,
         governance="sensitive",
         adapter="workspace_args",
     )
@@ -516,6 +522,7 @@ async def run_command(workspace: Path, arguments: dict, tenant_id: str | None = 
         icon="\U0001f4d6",
         read_only=True,
         parallel_safe=True,
+        workspace_mutating=True,
         governance="safe",
         adapter="workspace_args",
     )
@@ -576,6 +583,7 @@ def fs_read(workspace: Path, arguments: dict, tenant_id: str | None = None) -> s
         category="filesystem",
         display_name="Write (unified)",
         icon="\U0001f4dd",
+        workspace_mutating=True,
         governance="sensitive",
         adapter="workspace_args",
     )

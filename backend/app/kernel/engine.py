@@ -2164,14 +2164,33 @@ async def _execute_tool_with_hooks(
             _session.track_tool_outcome(tool_name, "Listed " + (_path or "workspace root"))
         elif tool_name == "load_skill":
             pass
-        elif _write_paths := tool_session_write_paths(
-            tool_name,
-            _args_dict,
-            artifacts=tool_result_side_effects.get("artifacts"),
+        elif _write_paths := (
+            list((trace_metadata_sink.get("workspace_mutation_states") or {}).keys())
+            if trace_metadata_sink.get("workspace_mutation_evidence_captured")
+            else tool_session_write_paths(
+                tool_name,
+                _args_dict,
+                artifacts=tool_result_side_effects.get("artifacts"),
+            )
         ):
+            trusted_write_states = trace_metadata_sink.get("workspace_mutation_states") or {}
+            trusted_lineage = trace_metadata_sink.get("workspace_mutation_lineage") or []
             for _path in _write_paths:
-                _snapshot = _snapshot_session_file(request.agent_id, _path) if request.agent_id else None
-                _session.track_file_write(_path, snapshot=_snapshot)
+                trusted_snapshot = trusted_write_states.get(_path)
+                _snapshot = (
+                    dict(trusted_snapshot)
+                    if isinstance(trusted_snapshot, dict)
+                    else (_snapshot_session_file(request.agent_id, _path) if request.agent_id else None)
+                )
+                lineage_record = next(
+                    (
+                        dict(record)
+                        for record in trusted_lineage
+                        if isinstance(record, dict) and record.get("path") == _path
+                    ),
+                    None,
+                )
+                _session.track_file_write(_path, snapshot=_snapshot, lineage=lineage_record)
                 _activate_conditional_skills_for_paths(request, [_path])
                 _session.track_tool_outcome(tool_name, "Wrote " + _path)
                 if _is_frozen_prompt_workspace_path(_path):

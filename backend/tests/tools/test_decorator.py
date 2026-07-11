@@ -102,6 +102,7 @@ def test_tool_meta_defaults():
     assert meta.is_default is True
     assert meta.read_only is False
     assert meta.parallel_safe is False
+    assert meta.workspace_mutating is False
     assert meta.governance == ""
     assert meta.pack == ""
     assert meta.aliases == ()

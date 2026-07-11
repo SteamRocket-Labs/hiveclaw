@@ -121,6 +121,7 @@ async def test_edit_branch_creates_new_session_without_mutating_source(monkeypat
 
 @pytest.mark.asyncio
 async def test_fork_branch_copies_prefix_through_anchor(monkeypatch):
+    from app.models.chat_session import ChatSession
     from app.services.conversation_branch_service import create_conversation_branch
 
     agent_id = uuid4()
@@ -139,14 +140,40 @@ async def test_fork_branch_copies_prefix_through_anchor(monkeypatch):
     )
     db = _FakeDB(anchor=assistant_event, prefix=[user_event, assistant_event])
     copied = []
+    copied_event_ids = [uuid4(), uuid4()]
+    clone_calls = []
+    inherited_snapshot = {
+        "checkpoint_event_id": str(user_event.id),
+        "manifest_path": "runtime_artifacts/session_workspace_snapshots/source/checkpoint/manifest.json",
+    }
+    excluded_event_id = uuid4()
 
     async def fake_append_session_event(**kwargs):
         copied.append(kwargs)
         return SimpleNamespace(
-            event_id=uuid4(), sequence=kwargs.get("sequence", 1), message_id=kwargs.get("message_id")
+            event_id=copied_event_ids[len(copied) - 1],
+            sequence=kwargs.get("sequence", 1),
+            message_id=kwargs.get("message_id"),
         )
 
     monkeypatch.setattr("app.services.conversation_branch_service.append_session_event", fake_append_session_event)
+
+    def fake_clone_workspace_snapshot_for_session(**kwargs):
+        clone_calls.append(kwargs)
+        return {
+            "checkpoint_event_id": str(kwargs["target_checkpoint_event_id"]),
+            "source_checkpoint_event_id": str(user_event.id),
+            "manifest_path": (
+                f"runtime_artifacts/session_workspace_snapshots/{kwargs['target_session_id']}/"
+                f"{kwargs['target_checkpoint_event_id']}/manifest.json"
+            ),
+            "complete": True,
+        }
+
+    monkeypatch.setattr(
+        "app.services.conversation_branch_service.clone_workspace_snapshot_for_session",
+        fake_clone_workspace_snapshot_for_session,
+    )
 
     result = await create_conversation_branch(
         db=db,
@@ -166,6 +193,15 @@ async def test_fork_branch_copies_prefix_through_anchor(monkeypatch):
             runtime_source="web_chat",
             visibility_scope="direct_user",
             listed_surface="chat",
+            transcript_metadata_json={
+                "workspace_snapshots": {
+                    str(user_event.id): inherited_snapshot,
+                    str(excluded_event_id): {
+                        "checkpoint_event_id": str(excluded_event_id),
+                        "manifest_path": "runtime_artifacts/session_workspace_snapshots/source/later/manifest.json",
+                    },
+                }
+            },
         ),
         mode="fork",
         anchor_event_id=assistant_event.id,
@@ -184,6 +220,13 @@ async def test_fork_branch_copies_prefix_through_anchor(monkeypatch):
         "conversation_branch_prefix",
     ]
     assert result.run_request is None
+    branch_session = next(item for item in db.added if isinstance(item, ChatSession))
+    inherited = branch_session.transcript_metadata_json["workspace_snapshots"]
+    assert list(inherited) == [str(copied_event_ids[0])]
+    assert inherited[str(copied_event_ids[0])]["checkpoint_event_id"] == str(copied_event_ids[0])
+    assert inherited[str(copied_event_ids[0])]["source_checkpoint_event_id"] == str(user_event.id)
+    assert inherited[str(copied_event_ids[0])]["manifest_path"] != inherited_snapshot["manifest_path"]
+    assert clone_calls[0]["source_snapshot"] == inherited_snapshot
 
 
 @pytest.mark.asyncio

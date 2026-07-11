@@ -270,6 +270,108 @@ def _extract_tool_error_payload(result: str) -> dict[str, Any] | None:
         return None
 
 
+def _capture_workspace_mutation_evidence(
+    *,
+    tool_name: str,
+    arguments: dict[str, Any],
+    result: str | ToolContentEnvelope,
+    workspace: Path,
+    before_states: dict[str, dict[str, Any]] | None = None,
+) -> tuple[dict[str, dict[str, Any]], dict[str, str], list[dict[str, Any]]]:
+    """Capture exact post-tool file states while the workspace lock is held."""
+    from app.services.chat_artifact_delivery import tool_session_write_paths
+    from app.services.session_workspace_snapshot import workspace_path_state
+
+    artifacts = getattr(result, "artifacts", ()) if isinstance(result, ToolContentEnvelope) else ()
+    # A rejected path-bearing write did not establish ownership. Structured
+    # execution artifacts remain valid even when a command exits non-zero.
+    rendered_result = str(result)
+    failed = _extract_tool_error_payload(rendered_result) is not None
+    if not failed:
+        try:
+            parsed_result = _json.loads(rendered_result)
+        except (TypeError, ValueError):
+            parsed_result = None
+        failed = isinstance(parsed_result, dict) and (
+            parsed_result.get("ok") is False
+            or str(parsed_result.get("status") or "").lower() in {"error", "failed", "rejected"}
+        )
+    paths = tool_session_write_paths(
+        "" if failed else tool_name,
+        {} if failed else arguments,
+        artifacts=list(artifacts or ()),
+    )
+    states: dict[str, dict[str, Any]] = {}
+    errors: dict[str, str] = {}
+    lineage: list[dict[str, Any]] = []
+    before_states = dict(before_states or {})
+    artifact_by_path = {
+        str(item.get("path") or ""): item for item in artifacts or () if isinstance(item, dict) and item.get("path")
+    }
+    for path in paths:
+        normalized_path = str(path or "").replace("\\", "/").strip()
+        if not normalized_path.startswith("workspace/"):
+            errors[normalized_path] = "outside_rewind_workspace"
+            continue
+        try:
+            state = workspace_path_state(workspace=Path(workspace).resolve() / "workspace", path=normalized_path)
+            states[str(state["path"])] = state
+            artifact = artifact_by_path.get(normalized_path)
+            before_state = artifact.get("before_state") if isinstance(artifact, dict) else None
+            if not isinstance(before_state, dict):
+                before_state = before_states.get(str(state["path"]))
+            before_verifiable = (
+                isinstance(before_state, dict)
+                and before_state.get("path") == state["path"]
+                and (
+                    before_state.get("exists") is False
+                    or (
+                        before_state.get("exists") is True
+                        and isinstance(before_state.get("sha256"), str)
+                        and len(str(before_state.get("sha256"))) == 64
+                    )
+                )
+            )
+            if before_verifiable:
+                lineage.append(
+                    {
+                        "path": state["path"],
+                        "before_state": dict(before_state),
+                        "after_state": dict(state),
+                    }
+                )
+            else:
+                errors[str(state["path"])] = "missing_exact_pre_write_state"
+        except Exception as exc:  # noqa: BLE001 - evidence failure must be explicit and fail closed at rewind.
+            errors[str(path)] = f"{type(exc).__name__}: {exc}"
+    return states, errors, lineage
+
+
+def _capture_workspace_pre_mutation_states(
+    *,
+    tool_name: str,
+    arguments: dict[str, Any],
+    workspace: Path,
+) -> tuple[dict[str, dict[str, Any]], dict[str, str]]:
+    """Capture argument-addressable pre-write states under the same lock."""
+    from app.services.chat_artifact_delivery import tool_session_write_paths
+    from app.services.session_workspace_snapshot import workspace_path_state
+
+    states: dict[str, dict[str, Any]] = {}
+    errors: dict[str, str] = {}
+    for raw_path in tool_session_write_paths(tool_name, arguments):
+        path = str(raw_path or "").replace("\\", "/").strip()
+        if not path.startswith("workspace/"):
+            errors[path] = "outside_rewind_workspace"
+            continue
+        try:
+            state = workspace_path_state(workspace=Path(workspace).resolve() / "workspace", path=path)
+            states[str(state["path"])] = state
+        except Exception as exc:  # noqa: BLE001 - evidence failure is retained for fail-closed rewind.
+            errors[path] = f"{type(exc).__name__}: {exc}"
+    return states, errors
+
+
 def _validate_tool_arguments_block(tool_name: str, arguments: Any) -> str | None:
     errors = validate_tool_arguments(tool_name, arguments)
     if not errors:
@@ -754,9 +856,8 @@ class ToolRuntimeService:
     ) -> str | ToolContentEnvelope:
         effective_tool_call_id = tool_call_id or _new_runtime_tool_call_id()
         if _approval_decision is not None:
-            if (
-                _approval_decision.tool_name != tool_name
-                or _approval_decision.input_hash != hash_tool_input(tool_name, dict(arguments or {}))
+            if _approval_decision.tool_name != tool_name or _approval_decision.input_hash != hash_tool_input(
+                tool_name, dict(arguments or {})
             ):
                 return render_tool_error(
                     tool_name=tool_name,
@@ -799,9 +900,7 @@ class ToolRuntimeService:
                 _approval_decision.plan_authorization if _approval_decision is not None else None
             ),
             approval_tenant_id=(
-                str(getattr(_approval_decision, "tenant_id", ""))
-                if _approval_decision is not None
-                else None
+                str(getattr(_approval_decision, "tenant_id", "")) if _approval_decision is not None else None
             ),
         )
         if plan_block:
@@ -1102,7 +1201,12 @@ class ToolRuntimeService:
                 effective_arguments=dict(arguments or {}),
             )
             result = await asyncio.wait_for(
-                self.execute_with_context(tool_name, arguments, runtime_context),
+                self.execute_with_context(
+                    tool_name,
+                    arguments,
+                    runtime_context,
+                    trace_metadata_sink=trace_metadata_sink,
+                ),
                 timeout=timeout_seconds,
             )
             # result may be a ToolContentEnvelope — use its text rendering for
@@ -1482,6 +1586,8 @@ class ToolRuntimeService:
         tool_name: str,
         arguments: dict,
         context: ToolExecutionContext,
+        *,
+        trace_metadata_sink: dict[str, Any] | None = None,
     ) -> str | ToolContentEnvelope:
         latest_lifecycle = _latest_context_record(context, "tool_lifecycle_records")
         terminal_states = {"completed", "failed", "blocked"}
@@ -1579,7 +1685,40 @@ class ToolRuntimeService:
             status="executing",
         )
         try:
-            result = await self.backend.execute(request, _execute_request)
+            from app.services.session_workspace_snapshot import async_agent_workspace_lock
+            from app.tools.registry import is_workspace_mutating_tool
+
+            workspace_mutating = context.agent_id is not None and is_workspace_mutating_tool(tool_name)
+
+            async def _execute_backend() -> str | ToolContentEnvelope:
+                before_states: dict[str, dict[str, Any]] = {}
+                before_errors: dict[str, str] = {}
+                if workspace_mutating and trace_metadata_sink is not None:
+                    before_states, before_errors = _capture_workspace_pre_mutation_states(
+                        tool_name=tool_name,
+                        arguments=arguments,
+                        workspace=context.workspace,
+                    )
+                value = await self.backend.execute(request, _execute_request)
+                if workspace_mutating and trace_metadata_sink is not None:
+                    states, errors, lineage = _capture_workspace_mutation_evidence(
+                        tool_name=tool_name,
+                        arguments=arguments,
+                        result=value,
+                        workspace=context.workspace,
+                        before_states=before_states,
+                    )
+                    trace_metadata_sink["workspace_mutation_evidence_captured"] = True
+                    trace_metadata_sink["workspace_mutation_states"] = states
+                    trace_metadata_sink["workspace_mutation_state_errors"] = {**before_errors, **errors}
+                    trace_metadata_sink["workspace_mutation_lineage"] = lineage
+                return value
+
+            if workspace_mutating:
+                async with async_agent_workspace_lock(context.agent_id):
+                    result = await _execute_backend()
+            else:
+                result = await _execute_backend()
         except Exception as exc:
             _record_tool_execution_frame(
                 context,
@@ -1710,7 +1849,9 @@ class ToolRuntimeService:
                 verify_consumed_plan_authorization_lease,
             )
 
-            expected_runtime_task_id = str(runtime_task_id) if runtime_task_id is not None and session_id is None else None
+            expected_runtime_task_id = (
+                str(runtime_task_id) if runtime_task_id is not None and session_id is None else None
+            )
             live_bindings = {
                 "target_ref": f"tool:{tool_name}",
                 "requester_user_id": str(user_id),
@@ -1722,7 +1863,11 @@ class ToolRuntimeService:
                 (
                     key
                     for key, expected in live_bindings.items()
-                    if (str(consumed_plan_authorization.get(key)) if consumed_plan_authorization.get(key) is not None else None)
+                    if (
+                        str(consumed_plan_authorization.get(key))
+                        if consumed_plan_authorization.get(key) is not None
+                        else None
+                    )
                     != (str(expected) if expected is not None else None)
                 ),
                 None,
@@ -1801,9 +1946,7 @@ class ToolRuntimeService:
                         "requester_user_id": str(user_id),
                         "session_id": str(session_id) if session_id is not None else None,
                         "runtime_task_id": (
-                            str(runtime_task_id)
-                            if runtime_task_id is not None and session_id is None
-                            else None
+                            str(runtime_task_id) if runtime_task_id is not None and session_id is None else None
                         ),
                         "evidence_id": str(evidence_id),
                     }

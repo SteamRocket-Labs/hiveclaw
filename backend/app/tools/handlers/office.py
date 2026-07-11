@@ -91,6 +91,7 @@ def _handle_office_error(exc: Exception) -> str:
         category="office",
         display_name="Create Office Document",
         icon="DOC",
+        workspace_mutating=True,
         governance="sensitive",
         adapter="workspace_args",
     )
@@ -219,6 +220,7 @@ async def office_document_query(workspace: Path, arguments: dict, tenant_id: str
         category="office",
         display_name="Apply Office Document Operations",
         icon="DOC",
+        workspace_mutating=True,
         governance="sensitive",
         adapter="workspace_args",
     )

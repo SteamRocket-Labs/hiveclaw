@@ -106,13 +106,23 @@ async def test_run_command_uses_vercel_sandbox_provider_and_syncs_workspace(tmp_
 
     assert "Output:\nhi" in result
     assert isinstance(result, ToolContentEnvelope)
-    assert result.artifacts == (
-        {
-            "path": "workspace/out.txt",
-            "source": "run_command",
-            "action": "created",
-        },
-    )
+    assert len(result.artifacts) == 1
+    artifact = result.artifacts[0]
+    assert {key: artifact[key] for key in ("path", "source", "action")} == {
+        "path": "workspace/out.txt",
+        "source": "run_command",
+        "action": "created",
+    }
+    assert artifact["before_state"] == {
+        "path": "workspace/out.txt",
+        "exists": False,
+        "sha256": None,
+        "size": 0,
+    }
+    assert artifact["after_state"]["path"] == "workspace/out.txt"
+    assert artifact["after_state"]["exists"] is True
+    assert artifact["after_state"]["size"] == 2
+    assert artifact["after_state"]["sha256"] == "8f434346648f6b96df89dda901c5176b10a6d83961dd3c1ac88b59b2dc327aa4"
     assert (workspace_root / "workspace" / "out.txt").read_text(encoding="utf-8") == "hi"
     assert fake_vercel.created[0]["team_id"] == "team_test"
     assert fake_vercel.created[0]["network_policy"] == "deny-all"
@@ -142,13 +152,23 @@ async def test_execute_code_uses_vercel_sandbox(tmp_path, monkeypatch, fake_verc
 
     assert "❌" not in result
     assert isinstance(result, ToolContentEnvelope)
-    assert result.artifacts == (
-        {
-            "path": "workspace/out.txt",
-            "source": "execute_code",
-            "action": "created",
-        },
-    )
+    assert len(result.artifacts) == 1
+    artifact = result.artifacts[0]
+    assert {key: artifact[key] for key in ("path", "source", "action")} == {
+        "path": "workspace/out.txt",
+        "source": "execute_code",
+        "action": "created",
+    }
+    assert artifact["before_state"] == {
+        "path": "workspace/out.txt",
+        "exists": False,
+        "sha256": None,
+        "size": 0,
+    }
+    assert artifact["after_state"]["path"] == "workspace/out.txt"
+    assert artifact["after_state"]["exists"] is True
+    assert artifact["after_state"]["size"] == 2
+    assert artifact["after_state"]["sha256"] == "8f434346648f6b96df89dda901c5176b10a6d83961dd3c1ac88b59b2dc327aa4"
     assert fake_vercel.created[0]["runtime"] == "python3.13"
     assert fake_vercel.instances[0].stopped is True
 

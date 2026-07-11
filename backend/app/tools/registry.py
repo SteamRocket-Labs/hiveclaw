@@ -207,6 +207,15 @@ def is_read_only_tool(name: str) -> bool:
     return name in READ_ONLY_TOOL_NAMES
 
 
+def is_workspace_mutating_tool(name: str) -> bool:
+    """Return the handler-declared physical Agent workspace mutation flag."""
+    entry = _ensure_tools_registered(name).get(name)
+    if entry is None:
+        return False
+    meta, _fn = entry
+    return bool(meta.workspace_mutating)
+
+
 def is_parallel_safe_tool(name: str) -> bool:
     return name in PARALLEL_SAFE_TOOL_NAMES
 

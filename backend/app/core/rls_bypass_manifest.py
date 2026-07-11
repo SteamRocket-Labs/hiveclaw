@@ -313,6 +313,22 @@ RLS_BYPASS_ALLOWLIST = (
     ),
     _grant(
         *(
+            "app/services/business_task_runtime.py",
+            "finalize_business_task_execution",
+            "'business task finalization locator'",
+            ("select:RuntimeTask.tenant_id",),
+        )
+    ),
+    _grant(
+        *(
+            "app/services/business_task_runtime.py",
+            "mark_business_task_execution_started",
+            "'business task runtime locator'",
+            ("select:RuntimeTask.tenant_id",),
+        )
+    ),
+    _grant(
+        *(
             "app/services/code_execution/probe.py",
             "store_latest_sandbox_probe_evidence",
             "'code execution sandbox probe latest evidence write'",
@@ -497,6 +513,14 @@ RLS_BYPASS_ALLOWLIST = (
             "claim_and_dispatch_once",
             "'runtime task worker claim pending executable tasks'",
             ("session-state-only",),
+        )
+    ),
+    _grant(
+        *(
+            "app/services/session_workspace_snapshot.py",
+            "recover_workspace_restores_from_transcript",
+            "'workspace restore crash recovery'",
+            ("select:ChatTranscriptEvent.id",),
         )
     ),
     _grant(

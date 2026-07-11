@@ -1113,6 +1113,10 @@ async def test_preflight_group_allows_autonomous_trigger_with_confirmed_plan(mon
             "plan_id": str(plan.id),
             "plan_version": 1,
             "plan_hash": "sha256:abc",
+            "plan_authorization": {
+                "schema": "hive.plan_authorization_evidence.v1",
+                "lease_id": str(uuid4()),
+            },
         },
         max_fires=None,
         expires_at=None,
@@ -1122,6 +1126,14 @@ async def test_preflight_group_allows_autonomous_trigger_with_confirmed_plan(mon
     session = _SequenceSession([_ScalarResult(agent), _ScalarResult(model), _ScalarResult(plan)])
     monkeypatch.setattr(trigger_daemon, "async_session", lambda: session)
     _route_scoped_session(monkeypatch, trigger_daemon, session, tenant_id=agent.tenant_id)
+
+    async def fake_verify_consumed_lease(**_kwargs):
+        return SimpleNamespace()
+
+    monkeypatch.setattr(
+        "app.services.plan_authorization_lease.verify_consumed_plan_authorization_lease",
+        fake_verify_consumed_lease,
+    )
 
     ok, skip_reason, _summary, _metadata = await trigger_daemon._preflight_trigger_group(
         agent_id, [trigger], datetime.now(timezone.utc)

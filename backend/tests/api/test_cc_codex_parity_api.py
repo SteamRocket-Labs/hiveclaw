@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -615,6 +616,132 @@ async def test_commands_api_executes_session_command_without_tool_runtime(monkey
     assert captured["command_name"] == "rename"
     assert captured["session_id"] == str(session_id)
     assert captured["arguments"] == {"title": "Renamed"}
+
+
+@pytest.mark.asyncio
+async def test_commands_api_finalizes_workspace_restore_after_database_commit(monkeypatch):
+    import app.api.commands as commands_api
+
+    agent_id = uuid4()
+    session_id = uuid4()
+    current_user = SimpleNamespace(id=uuid4(), role="member")
+    agent = SimpleNamespace(id=agent_id, tenant_id=uuid4())
+    db = _FakeDB()
+    finalized = []
+
+    async def fake_access(_db, _user, _agent_id):
+        return agent, "manage"
+
+    async def fake_execute_session_command(**_kwargs):
+        return {
+            "ok": True,
+            "workspace_restore": {
+                "transaction_id": "restore-tx-1",
+                "requires_finalize": True,
+            },
+        }
+
+    def fake_finalize(**kwargs):
+        finalized.append((db.commits, kwargs))
+        return True
+
+    monkeypatch.setattr(commands_api, "check_agent_access", fake_access)
+    monkeypatch.setattr(commands_api, "execute_session_command", fake_execute_session_command)
+    monkeypatch.setattr(commands_api, "finalize_workspace_restore", fake_finalize)
+
+    result = await commands_api.execute_agent_command(
+        agent_id=agent_id,
+        command_name="rewind",
+        body=commands_api.ExecuteCommandIn(
+            arguments={"mode": "workspace"},
+            session_id=str(session_id),
+            origin="agent",
+        ),
+        current_user=current_user,
+        db=db,
+    )
+
+    assert db.commits == 1
+    assert finalized == [
+        (
+            1,
+            {
+                "agent_id": agent_id,
+                "transaction_id": "restore-tx-1",
+                "commit": True,
+            },
+        )
+    ]
+    assert result["result"]["workspace_restore"]["requires_finalize"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("failure", "expected_type"),
+    [
+        (RuntimeError("database commit failed"), RuntimeError),
+        (asyncio.CancelledError(), asyncio.CancelledError),
+    ],
+)
+async def test_commands_api_rolls_back_workspace_restore_when_database_commit_fails(
+    monkeypatch,
+    failure,
+    expected_type,
+):
+    import app.api.commands as commands_api
+
+    class _FailingCommitDB(_FakeDB):
+        async def commit(self):
+            self.commits += 1
+            raise failure
+
+    agent_id = uuid4()
+    session_id = uuid4()
+    current_user = SimpleNamespace(id=uuid4(), role="member")
+    agent = SimpleNamespace(id=agent_id, tenant_id=uuid4())
+    db = _FailingCommitDB()
+    finalized = []
+
+    async def fake_access(_db, _user, _agent_id):
+        return agent, "manage"
+
+    async def fake_execute_session_command(**_kwargs):
+        return {
+            "ok": True,
+            "workspace_restore": {
+                "transaction_id": "restore-tx-2",
+                "requires_finalize": True,
+            },
+        }
+
+    def fake_finalize(**kwargs):
+        finalized.append(kwargs)
+        return True
+
+    monkeypatch.setattr(commands_api, "check_agent_access", fake_access)
+    monkeypatch.setattr(commands_api, "execute_session_command", fake_execute_session_command)
+    monkeypatch.setattr(commands_api, "finalize_workspace_restore", fake_finalize)
+
+    with pytest.raises(expected_type):
+        await commands_api.execute_agent_command(
+            agent_id=agent_id,
+            command_name="rewind",
+            body=commands_api.ExecuteCommandIn(
+                arguments={"mode": "workspace"},
+                session_id=str(session_id),
+                origin="agent",
+            ),
+            current_user=current_user,
+            db=db,
+        )
+
+    assert finalized == [
+        {
+            "agent_id": agent_id,
+            "transaction_id": "restore-tx-2",
+            "commit": False,
+        }
+    ]
 
 
 @pytest.mark.asyncio

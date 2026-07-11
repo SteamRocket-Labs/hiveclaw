@@ -69,6 +69,68 @@ class _FakeRegistry:
         return self.result
 
 
+def test_workspace_mutation_evidence_captures_hash_and_deletion_without_live_rehash(tmp_path):
+    from app.tools.service import _capture_workspace_mutation_evidence
+
+    agent_root = tmp_path / "agent"
+    workspace = agent_root / "workspace"
+    workspace.mkdir(parents=True)
+    report = workspace / "report.md"
+    report.write_text("owned version", encoding="utf-8")
+
+    states, errors, lineage = _capture_workspace_mutation_evidence(
+        tool_name="write_file",
+        arguments={"path": "workspace/report.md"},
+        result="OK",
+        workspace=agent_root,
+        before_states={
+            "workspace/report.md": {
+                "path": "workspace/report.md",
+                "exists": False,
+                "sha256": None,
+                "size": 0,
+            }
+        },
+    )
+
+    assert errors == {}
+    assert states["workspace/report.md"]["exists"] is True
+    assert len(states["workspace/report.md"]["sha256"]) == 64
+    assert lineage[0]["before_state"]["exists"] is False
+
+    report.unlink()
+    states, errors, lineage = _capture_workspace_mutation_evidence(
+        tool_name="delete_file",
+        arguments={"path": "workspace/report.md"},
+        result="Deleted",
+        workspace=agent_root,
+        before_states={"workspace/report.md": states["workspace/report.md"]},
+    )
+    assert errors == {}
+    assert states["workspace/report.md"]["exists"] is False
+    assert lineage[0]["after_state"]["exists"] is False
+
+    states, errors, lineage = _capture_workspace_mutation_evidence(
+        tool_name="write_file",
+        arguments={"path": "workspace/report.md"},
+        result='❌ denied\n<tool_error>{"error_class":"denied"}</tool_error>',
+        workspace=agent_root,
+    )
+    assert states == {}
+    assert errors == {}
+    assert lineage == []
+
+    states, errors, lineage = _capture_workspace_mutation_evidence(
+        tool_name="office_document_create",
+        arguments={"path": "workspace/report.docx"},
+        result='{"ok": false, "error": "operation_failed"}',
+        workspace=agent_root,
+    )
+    assert states == {}
+    assert errors == {}
+    assert lineage == []
+
+
 @pytest.mark.asyncio
 async def test_tool_runtime_service_executes_through_registry_and_logs(monkeypatch):
     from app.tools.governance import ToolGovernanceContext
@@ -172,6 +234,9 @@ async def test_tool_runtime_service_executes_through_registry_and_logs(monkeypat
     assert trace_metadata["authority_policy_snapshot"]["guard_policy"]["version"] == 11
     assert trace_metadata["authority_policy_snapshot"]["guard_policy_verdict"]["decision"] == "allow"
     assert trace_metadata["authority_capability_snapshot"]["live_policy"]["name"] == "workspace.file.write"
+    assert trace_metadata["workspace_mutation_evidence_captured"] is True
+    assert trace_metadata["workspace_mutation_states"]["workspace/notes.md"]["exists"] is False
+    assert trace_metadata["workspace_mutation_lineage"][0]["path"] == "workspace/notes.md"
 
 
 @pytest.mark.asyncio

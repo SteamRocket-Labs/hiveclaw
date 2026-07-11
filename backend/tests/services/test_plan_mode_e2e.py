@@ -40,6 +40,7 @@ from uuid import uuid4
 import pytest
 
 from app.models.agent import Agent
+from app.models.audit import ApprovalRequest
 from app.models.plan_request import AgentPlanRequest
 from app.models.trigger import AgentTrigger
 
@@ -125,10 +126,11 @@ class _E2ESession:
     state the preflight later reads.
     """
 
-    def __init__(self, *, plans=None, triggers=None, agents=None):
+    def __init__(self, *, plans=None, triggers=None, agents=None, approvals=None):
         self.plans = list(plans or [])
         self.triggers = list(triggers or [])
         self.agents = list(agents or [])
+        self.approvals = list(approvals or [])
         self.added: list[object] = []
         self.commit_calls = 0
         self.rollback_calls = 0
@@ -153,6 +155,8 @@ class _E2ESession:
             self.triggers.append(value)
         elif isinstance(value, Agent):
             self.agents.append(value)
+        elif isinstance(value, ApprovalRequest):
+            self.approvals.append(value)
 
     async def flush(self):
         self.flush_calls += 1
@@ -164,6 +168,30 @@ class _E2ESession:
         self.rollback_calls += 1
 
     async def execute(self, stmt):
+        # 0) The single-use Plan authorization ledger is part of the same
+        # confirmation/handoff transaction. Preserve issued rows so the handoff
+        # can consume them and preflight can verify the consumed receipt.
+        lease_key = getattr(stmt, "_plan_lease_lookup_key", None)
+        if lease_key is not None:
+            match = next(
+                (row for row in self.approvals if row.execution_idempotency_key == lease_key),
+                None,
+            )
+            return _Result([match] if match else [])
+        lease_id = getattr(stmt, "_plan_lease_lookup_id", None)
+        if lease_id is not None:
+            match = next((row for row in self.approvals if str(row.id) == str(lease_id)), None)
+            return _Result([match] if match else [])
+        lease_plan_id = getattr(stmt, "_plan_lease_candidates_plan_id", None)
+        if lease_plan_id is not None:
+            return _Result(
+                [
+                    row
+                    for row in self.approvals
+                    if str((row.details or {}).get("plan_id")) == str(lease_plan_id)
+                ]
+            )
+
         # 1) PlanModeService / PlanModeGate by-id + by-agent hints take priority.
         plan_id = getattr(stmt, "_plan_lookup_id", None)
         if plan_id is not None:
@@ -303,7 +331,7 @@ async def test_full_loop_confirmed_plan_yields_passing_trigger(e2e):
     # -- handoff to the real scheduled_trigger handler ----------------------
     handed = await service.handoff_confirmed_plan(plan_id=plan.id)
     assert handed.status == "confirmed"  # status never mutated by handoff (§13)
-    assert handed.handoff_status == "completed"
+    assert handed.handoff_status == "completed", handed.handoff_payload
     trigger_id = handed.handoff_payload["created_trigger_id"]
     assert trigger_id
     assert "created_objective_id" not in handed.handoff_payload  # no objective layer

@@ -388,6 +388,15 @@ async def lifespan(app: FastAPI):
 
     await check_runtime_rls_role(enforcement=settings.RLS_RUNTIME_ROLE_ENFORCEMENT)
 
+    # Resolve any filesystem swap left between workspace restore and its DB
+    # control-event commit before another startup task can mutate workspaces.
+    if _volume_bound_startup_enabled():
+        from app.services.session_workspace_snapshot import recover_workspace_restores_from_transcript
+
+        workspace_recovery = await recover_workspace_restores_from_transcript()
+        if any(workspace_recovery.values()):
+            logger.warning("[startup] Workspace restore recovery: {}", workspace_recovery)
+
     # One-time workspace migration: update HEARTBEAT.md + remove deprecated skills
     if _volume_bound_startup_enabled():
         try:

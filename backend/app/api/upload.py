@@ -224,20 +224,23 @@ async def save_upload_for_agent(
     # Determine save directory
     workspace_path = ""
     if agent_id:
-        # Save to agent's workspace/uploads/
-        uploads_dir = WORKSPACE_ROOT / str(agent_id) / "workspace" / "uploads"
-        uploads_dir.mkdir(parents=True, exist_ok=True)
-        save_path = uploads_dir / safe_filename
-        # Avoid overwriting: add suffix if file exists
-        if save_path.exists():
-            stem = save_path.stem
-            suffix = save_path.suffix
-            counter = 1
-            while save_path.exists():
-                save_path = uploads_dir / f"{stem}_{counter}{suffix}"
-                counter += 1
-        save_path.write_bytes(content)
-        workspace_path = f"workspace/uploads/{save_path.name}"
+        from app.services.session_workspace_snapshot import async_agent_workspace_lock
+
+        async with async_agent_workspace_lock(agent_id):
+            # Save to agent's workspace/uploads/ under the same lock used by Rewind.
+            uploads_dir = WORKSPACE_ROOT / str(agent_id) / "workspace" / "uploads"
+            uploads_dir.mkdir(parents=True, exist_ok=True)
+            save_path = uploads_dir / safe_filename
+            # Avoid overwriting: add suffix if file exists
+            if save_path.exists():
+                stem = save_path.stem
+                suffix = save_path.suffix
+                counter = 1
+                while save_path.exists():
+                    save_path = uploads_dir / f"{stem}_{counter}{suffix}"
+                    counter += 1
+            save_path.write_bytes(content)
+            workspace_path = f"workspace/uploads/{save_path.name}"
     else:
         tenant_segment = str(tenant_id) if tenant_id else "no_tenant"
         user_segment = str(user_id) if user_id else "anonymous"

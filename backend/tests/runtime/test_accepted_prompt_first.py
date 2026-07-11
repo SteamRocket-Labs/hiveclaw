@@ -233,7 +233,7 @@ async def test_web_chat_worker_materializes_queued_prompt_before_kernel_accepted
         order.append("append")
         return await real_append(**kwargs)
 
-    def fake_capture(**_kwargs):
+    async def fake_capture(**_kwargs):
         return None
 
     async def fake_mark(**_kwargs):
@@ -624,6 +624,18 @@ async def test_plan_mode_session_handoff_dispatches_through_web_chat_gate_accept
         plan_hash="hash-1",
         original_request="ship the report",
         plan_json={"plan_markdown": "## Plan\n- step one"},
+        metadata_json={
+            "active_plan_authorization": {
+                "schema": "hive.plan_authorization_evidence.v1",
+                "lease_id": str(uuid4()),
+                "canonical_args_hash": "args-hash",
+                "target_ref": "plan:handoff:continue_current_session",
+                "requester_user_id": str(user.id),
+                "session_id": str(session.id),
+                "runtime_task_id": None,
+                "evidence_id": "plan-handoff:accepted-prompt-first",
+            }
+        },
     )
 
     result = await handoff.continue_current_session_handoff(db=object(), plan=plan)

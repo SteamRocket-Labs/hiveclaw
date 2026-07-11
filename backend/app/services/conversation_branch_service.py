@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import copy
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -14,6 +16,10 @@ from app.models.chat_session import ChatSession
 from app.models.chat_transcript_event import ChatTranscriptEvent
 from app.models.user import User
 from app.services.chat_transcript import append_session_event
+from app.services.session_workspace_snapshot import (
+    clone_workspace_snapshot_for_session,
+    delete_workspace_snapshot,
+)
 
 ConversationBranchMode = Literal[
     "fork",
@@ -126,6 +132,7 @@ def _branch_metadata(
     root_session_id: uuid.UUID,
     anchor: ChatTranscriptEvent,
     user: User,
+    prefix_events: list[ChatTranscriptEvent],
 ) -> dict[str, Any]:
     metadata: dict[str, Any] = {
         "branch_mode": mode,
@@ -144,6 +151,17 @@ def _branch_metadata(
                 "max_turns": 1,
             }
         )
+    source_metadata = getattr(source_session, "transcript_metadata_json", None)
+    source_snapshots = source_metadata.get("workspace_snapshots") if isinstance(source_metadata, dict) else None
+    if isinstance(source_snapshots, dict):
+        prefix_event_ids = {str(getattr(event, "id", "")) for event in prefix_events}
+        inherited_snapshots = {
+            event_id: copy.deepcopy(snapshot)
+            for event_id, snapshot in source_snapshots.items()
+            if str(event_id) in prefix_event_ids and isinstance(snapshot, dict)
+        }
+        if inherited_snapshots:
+            metadata["workspace_snapshots"] = inherited_snapshots
     return metadata
 
 
@@ -200,8 +218,9 @@ async def _copy_prefix_events(
     source_session: ChatSession,
     mode: str,
     events: list[ChatTranscriptEvent],
-) -> list[str]:
+) -> tuple[list[str], dict[str, str]]:
     copied_event_ids: list[str] = []
+    copied_event_map: dict[str, str] = {}
     previous_new_event_id: uuid.UUID | None = None
     for event in events:
         role = _event_role(event)
@@ -238,8 +257,49 @@ async def _copy_prefix_events(
             bridge_to_t0=False,
         )
         previous_new_event_id = result.event_id
-        copied_event_ids.append(str(event.id))
-    return copied_event_ids
+        source_event_id = str(event.id)
+        copied_event_ids.append(source_event_id)
+        copied_event_map[source_event_id] = str(result.event_id)
+    return copied_event_ids, copied_event_map
+
+
+async def _remap_branch_workspace_snapshots(
+    branch_session: ChatSession,
+    *,
+    agent_id: uuid.UUID,
+    copied_event_map: dict[str, str],
+) -> None:
+    metadata = dict(getattr(branch_session, "transcript_metadata_json", None) or {})
+    source_snapshots = metadata.get("workspace_snapshots")
+    if not isinstance(source_snapshots, dict):
+        return
+    remapped: dict[str, dict[str, Any]] = {}
+    try:
+        for source_event_id, snapshot in source_snapshots.items():
+            new_event_id = copied_event_map.get(str(source_event_id))
+            if not new_event_id or not isinstance(snapshot, dict):
+                continue
+            cloned = await asyncio.to_thread(
+                clone_workspace_snapshot_for_session,
+                agent_id=agent_id,
+                source_snapshot=snapshot,
+                target_session_id=branch_session.id,
+                target_checkpoint_event_id=new_event_id,
+            )
+            remapped[new_event_id] = cloned
+    except BaseException:
+        for cloned in remapped.values():
+            await asyncio.to_thread(
+                delete_workspace_snapshot,
+                agent_id=agent_id,
+                snapshot=cloned,
+            )
+        raise
+    if remapped:
+        metadata["workspace_snapshots"] = remapped
+    else:
+        metadata.pop("workspace_snapshots", None)
+    branch_session.transcript_metadata_json = metadata
 
 
 def _last_user_event(events: list[ChatTranscriptEvent]) -> ChatTranscriptEvent | None:
@@ -320,6 +380,7 @@ async def create_conversation_branch(
             root_session_id=root_session_id,
             anchor=anchor,
             user=user,
+            prefix_events=prefix_events,
         ),
         created_at=now,
         last_message_at=now
@@ -330,7 +391,7 @@ async def create_conversation_branch(
     if hasattr(db, "flush"):
         await db.flush()
 
-    copied_event_ids = await _copy_prefix_events(
+    copied_event_ids, copied_event_map = await _copy_prefix_events(
         db=db,
         agent=agent,
         user=user,
@@ -338,6 +399,11 @@ async def create_conversation_branch(
         source_session=source_session,
         mode=mode_text,
         events=prefix_events,
+    )
+    await _remap_branch_workspace_snapshots(
+        branch_session,
+        agent_id=agent.id,
+        copied_event_map=copied_event_map,
     )
 
     run_request: BranchRunRequest | None = None

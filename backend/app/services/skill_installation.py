@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from app.services.skill_guard import scan_skill_files
+from app.services.agent_asset_transaction import AgentAssetTransaction
 from app.services.skill_lifecycle import record_skill_lifecycle_event
 
 
@@ -62,6 +63,7 @@ def install_active_skill_package(
     files: list[dict[str, Any]] | tuple[dict[str, Any], ...],
     source: str,
     overwrite: bool = False,
+    transaction: AgentAssetTransaction | None = None,
 ) -> dict[str, Any]:
     """Install an active skill package after static guard verification."""
 
@@ -81,6 +83,23 @@ def install_active_skill_package(
     if skill_dir.exists() and not overwrite:
         raise ValueError(f"Skill already exists at skills/{safe_folder}/SKILL.md")
 
+    if transaction is None:
+        with AgentAssetTransaction(
+            workspace,
+            operation="active_skill_package_install",
+            evidence_refs=(f"skill-source:{source}",),
+        ) as own_transaction:
+            result = install_active_skill_package(
+                workspace=workspace,
+                folder_name=folder_name,
+                files=files,
+                source=source,
+                overwrite=overwrite,
+                transaction=own_transaction,
+            )
+            own_transaction.commit()
+            return result
+
     written: list[str] = []
     for item in normalized_files:
         file_path = (skill_dir / item["path"]).resolve()
@@ -88,8 +107,7 @@ def install_active_skill_package(
             file_path.relative_to(skill_dir)
         except ValueError as exc:
             raise ValueError(f"Skill file escapes package boundary: {item['path']}") from exc
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-        file_path.write_text(item["content"], encoding="utf-8")
+        transaction.stage_text(file_path.relative_to(workspace).as_posix(), item["content"])
         written.append(item["path"])
 
     try:
@@ -98,6 +116,7 @@ def install_active_skill_package(
             skill_name=safe_folder,
             status="installed",
             note=f"Installed active skill package from {source}; files={len(written)}",
+            transaction=transaction,
         )
     except Exception:
         # Lifecycle telemetry must not break a verified explicit install.

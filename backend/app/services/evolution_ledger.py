@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from app.services.agent_asset_transaction import AgentAssetTransaction
 from app.services.evolution_manifest import EVOLUTION_MANIFEST_SCHEMA, build_evolution_manifest
 
 
@@ -27,11 +28,23 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _append(workspace: Path, payload: dict[str, Any]) -> dict[str, Any]:
+def _append(
+    workspace: Path,
+    payload: dict[str, Any],
+    *,
+    transaction: AgentAssetTransaction | None = None,
+) -> dict[str, Any]:
+    if transaction is None:
+        with AgentAssetTransaction(workspace, operation="evolution_ledger_append") as own_transaction:
+            result = _append(workspace, payload, transaction=own_transaction)
+            own_transaction.commit()
+            return result
     payload = dict(payload)
     payload.setdefault("created_at", _now_iso())
-    with _ledger_path(workspace).open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+    transaction.append_text(
+        "evolution/evolution_ledger.jsonl",
+        json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n",
+    )
     return payload
 
 
@@ -60,6 +73,7 @@ def record_evolution_candidate(
     candidate_id: str | None = None,
     manifest: dict[str, Any] | None = None,
     metadata: dict[str, Any] | None = None,
+    transaction: AgentAssetTransaction | None = None,
 ) -> dict[str, Any]:
     candidate_id = candidate_id or _candidate_id(target_type, target_id, diff, source_attempt_ids)
     refs = [str(item).strip() for item in source_attempt_ids if str(item).strip()]
@@ -90,6 +104,7 @@ def record_evolution_candidate(
             "manifest": candidate_manifest,
             "metadata": metadata or {},
         },
+        transaction=transaction,
     )
 
 
@@ -257,6 +272,7 @@ def record_rollback_event(
     reason: str,
     operator: str = "system",
     metadata: dict[str, Any] | None = None,
+    transaction: AgentAssetTransaction | None = None,
 ) -> dict[str, Any]:
     return _append(
         workspace,
@@ -269,6 +285,7 @@ def record_rollback_event(
             "operator": operator,
             "metadata": metadata or {},
         },
+        transaction=transaction,
     )
 
 

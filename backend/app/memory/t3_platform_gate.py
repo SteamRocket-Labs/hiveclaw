@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import re
 import uuid
 import xml.etree.ElementTree as ET
@@ -18,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from app.memory.md_store import ensure_t3_layout, rebuild_index
+from app.services.agent_asset_transaction import AgentAssetTransaction, AssetTransactionCorruptionError
 
 # Legacy flat-T3 corpus files. NOT accepted write targets since the C7
 # cutover — kept only so migration/archive tooling can name them.
@@ -113,7 +113,52 @@ def apply_t3_consolidation_patch(
     """Apply a reviewed LLM-authored T3 patch exactly, or hold/rebase it."""
 
     root = Path(data_root)
-    mem_dir = ensure_t3_layout(root, uuid.UUID(str(agent_id)) if not isinstance(agent_id, uuid.UUID) else agent_id)
+    resolved_agent_id = uuid.UUID(str(agent_id)) if not isinstance(agent_id, uuid.UUID) else agent_id
+    agent_root = root / str(resolved_agent_id)
+    with AgentAssetTransaction(
+        agent_root,
+        operation="t3_platform_gate_commit",
+        idempotency_key=f"t3-job:{job_id}",
+        evidence_refs=(f"t3-job:{job_id}",),
+    ) as transaction:
+        if transaction.is_replay:
+            result = _load_committed_job_result(
+                agent_root=agent_root,
+                job_id=job_id,
+                revised_patch_md=revised_patch_md,
+                review_md=review_md,
+            )
+            # Derived navigation/search projections are deliberately
+            # rebuildable. Replaying a recovered canonical commit repairs any
+            # crash gap between the transaction commit point and projection.
+            rebuild_index(root, resolved_agent_id)
+            from app.memory.reference_index import rebuild_reference_index
+
+            rebuild_reference_index(agent_id=resolved_agent_id, data_root=root)
+            return result
+        return _apply_t3_consolidation_patch_transactional(
+            agent_id=resolved_agent_id,
+            data_root=root,
+            job_id=job_id,
+            revised_patch_md=revised_patch_md,
+            review_md=review_md,
+            transaction=transaction,
+        )
+
+
+def _apply_t3_consolidation_patch_transactional(
+    *,
+    agent_id: uuid.UUID,
+    data_root: Path,
+    job_id: str,
+    revised_patch_md: str,
+    review_md: str,
+    transaction: AgentAssetTransaction,
+) -> T3PlatformGateResult:
+    """Validate, stage, and commit one T3 job under the shared Agent transaction."""
+
+    root = Path(data_root)
+    mem_dir = ensure_t3_layout(root, agent_id)
     job_dir = mem_dir / ".staging" / "t3_jobs" / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
     (job_dir / "revised_patch.md").write_text(revised_patch_md, encoding="utf-8")
@@ -180,8 +225,8 @@ def apply_t3_consolidation_patch(
     pending_tombstones: list[tuple[str, str]] = []
     for change in patch.findall("./proposed_changes/rewrite_file"):
         # Convergence loop (工序 4, spec §4.3): full-file rewrite of a
-        # profile-plane file. The old version is archived by
-        # _atomic_write_targets' rollback staging; a convergence note is
+        # profile-plane file. The old version is archived by the shared
+        # AgentAssetTransaction rollback journal; a convergence note is
         # mandatory so every rewrite is auditable; emptying a populated file
         # is refused — convergence converges, it never wipes.
         target = _normalize_target(change.attrib.get("target") or "")
@@ -276,24 +321,28 @@ def apply_t3_consolidation_patch(
     if issues:
         return _write_manifest_result(job_dir, status="held", job_id=job_id, issues=issues)
 
-    resolved_agent_id = uuid.UUID(str(agent_id)) if not isinstance(agent_id, uuid.UUID) else agent_id
-    _atomic_write_targets(mem_dir, updated_contents)
+    for target, content in updated_contents.items():
+        transaction.stage_text(target, content.rstrip() + "\n")
     if pending_tombstones:
         from app.memory.reference_index import record_entry_tombstones
 
         record_entry_tombstones(
-            agent_id=resolved_agent_id, data_root=root, tombstones=pending_tombstones, job_id=job_id
+            agent_id=agent_id,
+            data_root=root,
+            tombstones=pending_tombstones,
+            job_id=job_id,
+            transaction=transaction,
         )
     source_updates = _apply_source_lifecycle_updates(
         root=root,
-        agent_id=resolved_agent_id,
+        agent_id=agent_id,
         job_id=job_id,
         patch=patch,
         review=review,
         committed_blocks=tuple(committed_blocks),
+        transaction=transaction,
     )
-    rebuild_index(root, resolved_agent_id)
-    return _write_manifest_result(
+    result = _write_manifest_result(
         job_dir,
         status="committed",
         job_id=job_id,
@@ -301,7 +350,14 @@ def apply_t3_consolidation_patch(
         committed_blocks=tuple(committed_blocks),
         source_updates=source_updates,
         issues=[],
+        transaction=transaction,
     )
+    transaction.commit()
+    rebuild_index(root, agent_id)
+    from app.memory.reference_index import rebuild_reference_index
+
+    rebuild_reference_index(agent_id=agent_id, data_root=root)
+    return result
 
 
 def _normalize_target(path: str) -> str:
@@ -501,6 +557,7 @@ def _apply_source_lifecycle_updates(
     patch: ET.Element,
     review: ET.Element,
     committed_blocks: tuple[str, ...],
+    transaction: AgentAssetTransaction,
 ) -> dict[str, Any]:
     refs = _source_refs_from_patch(patch)
     decision = _review_rubric_decision(review)
@@ -514,6 +571,8 @@ def _apply_source_lifecycle_updates(
                 job_id=job_id,
                 status=source_status,
                 committed_blocks=committed_blocks,
+                transaction=transaction,
+                agent_root=root / str(agent_id),
             ):
                 updates["t2_packages"].append(_relative_agent_path(root, agent_id, package_path.parent))
             continue
@@ -528,6 +587,7 @@ def _apply_source_lifecycle_updates(
                 status=source_status,
                 reason=f"t3_commit:{job_id}",
                 accepted_blocks=list(committed_blocks),
+                transaction=transaction,
             ):
                 updates["explicit_overlay_entries"].append(explicit_id)
     return updates
@@ -564,9 +624,16 @@ def _update_t2_package_manifest(
     job_id: str,
     status: str,
     committed_blocks: tuple[str, ...],
+    transaction: AgentAssetTransaction,
+    agent_root: Path,
 ) -> bool:
     try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        relative_path = manifest_path.relative_to(agent_root).as_posix()
+    except ValueError:
+        return False
+    try:
+        manifest_text = transaction.read_text(relative_path)
+        manifest = json.loads(manifest_text or "")
     except (OSError, ValueError, TypeError):
         return False
     previous_status = str(manifest.get("package_status") or manifest.get("status") or "")
@@ -580,8 +647,9 @@ def _update_t2_package_manifest(
     manifest["t3_lifecycle_updated_at"] = now
     if status == "absorbed":
         manifest["absorbed_at"] = now
-    manifest_path.write_text(
-        json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    transaction.stage_text(
+        relative_path,
+        json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
     )
     return True
 
@@ -696,36 +764,6 @@ def _retire_md_entry(existing: str, *, entry_id: str, job_id: str, reason: str) 
     return existing + "\n" + marker
 
 
-def _atomic_write_targets(mem_dir: Path, contents: dict[str, str]) -> None:
-    if not contents:
-        return
-    rollback_dir = mem_dir / ".staging" / "rollback" / f"t3-{uuid.uuid4().hex}"
-    rollback_dir.mkdir(parents=True, exist_ok=True)
-    written: list[Path] = []
-    try:
-        for target, content in contents.items():
-            path = _target_path(mem_dir, target)
-            if path.exists():
-                backup = rollback_dir / target.replace("/", "__")
-                backup.parent.mkdir(parents=True, exist_ok=True)
-                backup.write_text(path.read_text(encoding="utf-8", errors="replace"), encoding="utf-8")
-            path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = path.with_name(f".{path.name}.tmp-{uuid.uuid4().hex}")
-            tmp.write_text(content.rstrip() + "\n", encoding="utf-8")
-            os.replace(tmp, path)
-            written.append(path)
-    except Exception:
-        for path in written:
-            backup = rollback_dir / _target_rel_from_path(mem_dir, path).replace("/", "__")
-            if backup.exists():
-                path.write_text(backup.read_text(encoding="utf-8", errors="replace"), encoding="utf-8")
-        raise
-
-
-def _target_rel_from_path(mem_dir: Path, path: Path) -> str:
-    return f"memory/{path.relative_to(mem_dir).as_posix()}"
-
-
 def _write_conflict_bundle(
     *,
     job_dir: Path,
@@ -759,6 +797,7 @@ def _write_manifest_result(
     committed_blocks: tuple[str, ...] = (),
     source_updates: dict[str, Any] | None = None,
     conflict_bundle_path: Path | None = None,
+    transaction: AgentAssetTransaction | None = None,
 ) -> T3PlatformGateResult:
     manifest_path = job_dir / "manifest.json"
     payload: dict[str, Any] = {
@@ -778,7 +817,11 @@ def _write_manifest_result(
     }
     if conflict_bundle_path:
         payload["conflict_bundle"] = conflict_bundle_path.name
-    manifest_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    rendered = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    if transaction is not None:
+        transaction.stage_text(manifest_path.relative_to(transaction.agent_root).as_posix(), rendered)
+    else:
+        manifest_path.write_text(rendered, encoding="utf-8")
     return T3PlatformGateResult(
         status=status,
         job_id=job_id,
@@ -787,6 +830,39 @@ def _write_manifest_result(
         issues=tuple(issues),
         manifest_path=manifest_path,
         conflict_bundle_path=conflict_bundle_path,
+    )
+
+
+def _load_committed_job_result(
+    *,
+    agent_root: Path,
+    job_id: str,
+    revised_patch_md: str,
+    review_md: str,
+) -> T3PlatformGateResult:
+    job_dir = agent_root / "memory" / ".staging" / "t3_jobs" / job_id
+    patch_path = job_dir / "revised_patch.md"
+    review_path = job_dir / "review.md"
+    manifest_path = job_dir / "manifest.json"
+    if not patch_path.is_file() or not review_path.is_file() or not manifest_path.is_file():
+        raise AssetTransactionCorruptionError(f"committed T3 transaction is missing job evidence: {job_id}")
+    if (
+        patch_path.read_text(encoding="utf-8") != revised_patch_md
+        or review_path.read_text(encoding="utf-8") != review_md
+    ):
+        raise AssetTransactionCorruptionError(f"T3 job idempotency key reused with different input: {job_id}")
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if payload.get("status") != "committed":
+        raise AssetTransactionCorruptionError(f"committed T3 transaction has non-committed manifest: {job_id}")
+    conflict_name = str(payload.get("conflict_bundle") or "").strip()
+    return T3PlatformGateResult(
+        status="committed",
+        job_id=job_id,
+        committed_paths=tuple(str(path) for path in payload.get("committed_paths") or []),
+        committed_blocks=tuple(str(block) for block in payload.get("committed_blocks") or []),
+        issues=tuple(str(issue) for issue in payload.get("issues") or []),
+        manifest_path=manifest_path,
+        conflict_bundle_path=job_dir / conflict_name if conflict_name else None,
     )
 
 

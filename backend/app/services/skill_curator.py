@@ -35,6 +35,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from app.services.agent_asset_transaction import AgentAssetTransaction
+
 logger = logging.getLogger(__name__)
 
 STATE_ACTIVE = "active"
@@ -126,11 +128,27 @@ def _read_usage_file(path: Path) -> dict[str, dict[str, Any]]:
     return {str(slug): rec for slug, rec in data.items() if isinstance(rec, dict)}
 
 
-def load_skill_usage(workspace: Path) -> dict[str, dict[str, Any]]:
+def load_skill_usage(
+    workspace: Path,
+    *,
+    transaction: AgentAssetTransaction | None = None,
+) -> dict[str, dict[str, Any]]:
     """Read the entire skill usage map. Returns ``{}`` on missing/corrupt."""
     path = _usage_path(workspace)
-    if path.exists():
-        usage = _read_usage_file(path)
+    rendered = transaction.read_text("evolution/skill_usage.json") if transaction is not None else None
+    if rendered is not None or path.exists():
+        if rendered is not None:
+            try:
+                parsed = json.loads(rendered)
+            except json.JSONDecodeError:
+                parsed = {}
+            usage = (
+                {str(slug): rec for slug, rec in parsed.items() if isinstance(rec, dict)}
+                if isinstance(parsed, dict)
+                else {}
+            )
+        else:
+            usage = _read_usage_file(path)
         legacy = _legacy_usage_path(workspace)
         if legacy.exists():
             try:
@@ -144,41 +162,63 @@ def load_skill_usage(workspace: Path) -> dict[str, dict[str, Any]]:
         return {}
     usage = _read_usage_file(legacy)
     if usage:
-        save_skill_usage(workspace, usage)
-        try:
-            legacy.unlink()
-        except OSError:
-            pass
+        save_skill_usage(workspace, usage, transaction=transaction)
+        if transaction is None:
+            try:
+                legacy.unlink()
+            except OSError:
+                pass
     return usage
 
 
-def save_skill_usage(workspace: Path, data: dict[str, dict[str, Any]]) -> None:
+def save_skill_usage(
+    workspace: Path,
+    data: dict[str, dict[str, Any]],
+    *,
+    transaction: AgentAssetTransaction | None = None,
+) -> None:
     """Write the usage map atomically (tempfile + replace)."""
+    if transaction is None:
+        with AgentAssetTransaction(workspace, operation="skill_curator_usage_save") as own_transaction:
+            save_skill_usage(workspace, data, transaction=own_transaction)
+            own_transaction.commit()
+        return
     path = _usage_path(workspace)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(data, indent=2, sort_keys=True, ensure_ascii=False), encoding="utf-8")
-    tmp.replace(path)
-    try:
-        _legacy_usage_path(workspace).unlink(missing_ok=True)
-    except OSError:
-        pass
+    transaction.stage_text(
+        path.relative_to(workspace).as_posix(),
+        json.dumps(data, indent=2, sort_keys=True, ensure_ascii=False),
+    )
+    legacy = _legacy_usage_path(workspace).relative_to(workspace).as_posix()
+    if transaction.read_bytes(legacy) is not None:
+        transaction.stage_delete(legacy)
 
 
-def _mutate(workspace: Path, slug: str, mutator, *, now: datetime | None = None) -> None:
+def _mutate(
+    workspace: Path,
+    slug: str,
+    mutator,
+    *,
+    now: datetime | None = None,
+    transaction: AgentAssetTransaction | None = None,
+) -> None:
     """Load → ``mutator(record)`` in place → save. Creates a fresh record if absent.
 
     A freshly created record is seeded with ``now`` so callers that set the
     creation clock (e.g. ``mark_skill_created``) see their timestamp instead of
     wall-clock-at-default.
     """
-    data = load_skill_usage(workspace)
+    if transaction is None:
+        with AgentAssetTransaction(workspace, operation="skill_curator_usage_mutation") as own_transaction:
+            _mutate(workspace, slug, mutator, now=now, transaction=own_transaction)
+            own_transaction.commit()
+        return
+    data = load_skill_usage(workspace, transaction=transaction)
     rec = data.get(slug)
     if not isinstance(rec, dict):
         rec = _empty_record(now=now)
     mutator(rec)
     data[slug] = rec
-    save_skill_usage(workspace, data)
+    save_skill_usage(workspace, data, transaction=transaction)
 
 
 # ---------------------------------------------------------------------------
@@ -192,6 +232,7 @@ def mark_skill_created(
     *,
     created_by: str = _AGENT_PROVENANCE,
     now: datetime | None = None,
+    transaction: AgentAssetTransaction | None = None,
 ) -> None:
     """Initialize a usage record on skill creation.
 
@@ -214,7 +255,7 @@ def mark_skill_created(
         rec.setdefault("pinned", False)
         rec.setdefault("archived_at", None)
 
-    _mutate(workspace, slug, _apply, now=now)
+    _mutate(workspace, slug, _apply, now=now, transaction=transaction)
 
 
 def bump_skill_use(

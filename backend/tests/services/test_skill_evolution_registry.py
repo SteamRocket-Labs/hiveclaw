@@ -1,7 +1,19 @@
 from __future__ import annotations
 
 import json
+import multiprocessing
 from pathlib import Path
+
+
+def _registry_writer(workspace: str, index: int) -> None:
+    from app.services.skill_evolution_registry import upsert_skill_evolution_entry
+
+    upsert_skill_evolution_entry(
+        Path(workspace),
+        skill_name=f"concurrent-skill-{index}",
+        target_path=f"skills/concurrent-skill-{index}/SKILL.md",
+        skill_origin="user_skill_creator",
+    )
 
 
 def test_skill_registry_normalizes_sources_and_evolvable_boundary(tmp_path: Path) -> None:
@@ -105,3 +117,20 @@ def test_skill_candidate_package_records_origin_and_agent_authoring_contract(tmp
     assert manifest["evolvable"] is True
     assert persisted["authoring_contract"]["final_skill_body"] == "agent_llm_authored"
     assert persisted["authoring_contract"]["platform_role"] == "scaffold_validate_govern_commit_exact"
+
+
+def test_skill_registry_serializes_multi_process_upserts(tmp_path: Path) -> None:
+    from app.services.agent_asset_transaction import read_agent_asset_revision
+    from app.services.skill_evolution_registry import load_skill_evolution_registry
+
+    context = multiprocessing.get_context("spawn")
+    processes = [context.Process(target=_registry_writer, args=(str(tmp_path), index)) for index in range(12)]
+    for process in processes:
+        process.start()
+    for process in processes:
+        process.join(timeout=15)
+        assert process.exitcode == 0
+
+    registry = load_skill_evolution_registry(tmp_path)
+    assert set(registry["skills"]) == {f"concurrent-skill-{index}" for index in range(12)}
+    assert read_agent_asset_revision(tmp_path) == 12

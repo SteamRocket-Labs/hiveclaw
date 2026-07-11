@@ -10,7 +10,7 @@ import hashlib
 import json
 import re
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -19,6 +19,7 @@ from xml.sax.saxutils import escape
 from app.memory.md_store import MEMORY_DEDUP_THRESHOLD, jaccard_similarity
 from app.memory.types import MEMORY_CATEGORIES
 from app.memory.write_gate import prepare_memory_write_with_llm
+from app.services.agent_asset_transaction import AgentAssetTransaction
 
 _MAX_CONTENT_CHARS = 2000
 _SEARCH_PREVIEW_CHARS = 180
@@ -86,46 +87,48 @@ async def write_explicit_memory_overlay(
         )
 
     root = Path(data_root)
-    overlay_dir = explicit_overlay_dir(root, agent_id)
-    entries_dir = overlay_dir / "entries"
-    entries_dir.mkdir(parents=True, exist_ok=True)
-    created_at = _now()
+    agent_root = root / str(agent_id)
     resolved_target_hint = target_hint if target_hint in _TARGET_HINTS else _target_hint_for_category(decision.category)
-    duplicate = _find_similar_active_overlay(
-        data_root=root,
-        agent_id=agent_id,
-        category=decision.category,
-        target_hint=resolved_target_hint,
-        content=decision.content,
-    )
-    if duplicate is not None:
-        return ExplicitMemoryOverlayResult(
-            status="duplicate",
+    with AgentAssetTransaction(
+        agent_root,
+        operation="explicit_memory_overlay_write",
+        evidence_refs=refs,
+    ) as transaction:
+        duplicate = _find_similar_active_overlay(
+            data_root=root,
+            agent_id=agent_id,
             category=decision.category,
-            entry_id=duplicate.entry_id,
-            path=f"memory/explicit/entries/{duplicate.entry_id}.md",
-            reason="similar explicit memory already exists",
-            sensitivity=decision.sensitivity,
-            target_hint=duplicate.target_hint,
-            content=duplicate.content,
+            target_hint=resolved_target_hint,
+            content=decision.content,
         )
+        if duplicate is not None:
+            return ExplicitMemoryOverlayResult(
+                status="duplicate",
+                category=decision.category,
+                entry_id=duplicate.entry_id,
+                path=f"memory/explicit/entries/{duplicate.entry_id}.md",
+                reason="similar explicit memory already exists",
+                sensitivity=decision.sensitivity,
+                target_hint=duplicate.target_hint,
+                content=duplicate.content,
+            )
 
-    entry_id = _explicit_entry_id(created_at=created_at, category=decision.category, content=decision.content)
-    path = entries_dir / f"{entry_id}.md"
-    metadata = {
-        **decision.metadata,
-        **{str(key): str(value) for key, value in (extra_metadata or {}).items() if value is not None},
-        "id": entry_id,
-        "origin": origin,
-        "category": decision.category,
-        "target_hint": resolved_target_hint,
-        "status": "active",
-        "sensitivity": decision.sensitivity,
-        "created_at": created_at,
-        "source_refs": ",".join(refs),
-    }
-    path.write_text(
-        _render_entry_md(
+        created_at = _now()
+        entry_id = _explicit_entry_id(created_at=created_at, category=decision.category, content=decision.content)
+        relative_path = f"memory/explicit/entries/{entry_id}.md"
+        metadata = {
+            **decision.metadata,
+            **{str(key): str(value) for key, value in (extra_metadata or {}).items() if value is not None},
+            "id": entry_id,
+            "origin": origin,
+            "category": decision.category,
+            "target_hint": resolved_target_hint,
+            "status": "active",
+            "sensitivity": decision.sensitivity,
+            "created_at": created_at,
+            "source_refs": ",".join(refs),
+        }
+        rendered_entry = _render_entry_md(
             entry_id=entry_id,
             origin=origin,
             category=decision.category,
@@ -138,11 +141,29 @@ async def write_explicit_memory_overlay(
             normalized_memory=decision.content,
             why_it_matters="User explicitly asked this to be remembered across sessions.",
             extra_metadata={str(key): str(value) for key, value in (extra_metadata or {}).items() if value is not None},
-        ),
-        encoding="utf-8",
-    )
-    _append_manifest(overlay_dir / "manifest.jsonl", metadata)
-    _rebuild_memory_index(root, agent_id)
+        )
+        transaction.stage_text(relative_path, rendered_entry)
+        transaction.append_text(
+            "memory/explicit/manifest.jsonl",
+            json.dumps(metadata, ensure_ascii=False, sort_keys=True) + "\n",
+        )
+        entries = load_explicit_overlay_entries(root, agent_id)
+        entries.append(
+            ExplicitMemoryOverlayEntry(
+                entry_id=entry_id,
+                status="active",
+                category=decision.category,
+                target_hint=resolved_target_hint,
+                content=_extract_tag(rendered_entry, "normalized_memory"),
+                source_refs=tuple(refs),
+                sensitivity=decision.sensitivity,
+                path=agent_root / relative_path,
+                created_at=created_at,
+                metadata=metadata,
+            )
+        )
+        transaction.stage_text("memory/explicit/MEMORY.md", _render_memory_index(entries))
+        transaction.commit()
     return ExplicitMemoryOverlayResult(
         status="active",
         category=decision.category,
@@ -158,13 +179,25 @@ def explicit_overlay_dir(data_root: Path, agent_id: uuid.UUID | str) -> Path:
     return Path(data_root) / str(agent_id) / "memory" / "explicit"
 
 
-def load_explicit_overlay_entries(data_root: Path, agent_id: uuid.UUID | str) -> list[ExplicitMemoryOverlayEntry]:
+def load_explicit_overlay_entries(
+    data_root: Path,
+    agent_id: uuid.UUID | str,
+    *,
+    transaction: AgentAssetTransaction | None = None,
+) -> list[ExplicitMemoryOverlayEntry]:
     overlay_dir = explicit_overlay_dir(Path(data_root), agent_id)
     manifest_path = overlay_dir / "manifest.jsonl"
-    if not manifest_path.exists():
+    manifest_text = (
+        transaction.read_text("memory/explicit/manifest.jsonl")
+        if transaction is not None
+        else manifest_path.read_text(encoding="utf-8", errors="replace")
+        if manifest_path.exists()
+        else None
+    )
+    if manifest_text is None:
         return []
     latest: dict[str, dict[str, str]] = {}
-    for line in manifest_path.read_text(encoding="utf-8", errors="replace").splitlines():
+    for line in manifest_text.splitlines():
         if not line.strip():
             continue
         try:
@@ -291,8 +324,11 @@ def update_explicit_overlay_status(
     status: str,
     reason: str = "",
     accepted_blocks: list[str] | None = None,
+    transaction: AgentAssetTransaction | None = None,
 ) -> bool:
-    entries = {entry.entry_id: entry for entry in load_explicit_overlay_entries(data_root, agent_id)}
+    entries = {
+        entry.entry_id: entry for entry in load_explicit_overlay_entries(data_root, agent_id, transaction=transaction)
+    }
     entry = entries.get(entry_id)
     if entry is None:
         return False
@@ -304,9 +340,58 @@ def update_explicit_overlay_status(
         "accepted_blocks": ",".join(accepted_blocks or []),
         "updated_at": _now(),
     }
-    _append_manifest(explicit_overlay_dir(Path(data_root), agent_id) / "manifest.jsonl", record)
-    _rebuild_memory_index(Path(data_root), agent_id)
+    root = Path(data_root)
+    if transaction is not None:
+        _stage_explicit_overlay_status(transaction, entries=list(entries.values()), entry=entry, record=record)
+        return True
+
+    agent_root = root / str(agent_id)
+    idempotency_payload = json.dumps(
+        {
+            "entry_id": entry_id,
+            "status": status,
+            "reason": reason,
+            "accepted_blocks": accepted_blocks or [],
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    idempotency_key = "explicit-status:" + hashlib.sha256(idempotency_payload.encode("utf-8")).hexdigest()
+    with AgentAssetTransaction(
+        agent_root,
+        operation="explicit_memory_overlay_status",
+        idempotency_key=idempotency_key,
+        evidence_refs=(f"explicit://memory/{entry_id}",),
+    ) as own_transaction:
+        if not own_transaction.is_replay:
+            _stage_explicit_overlay_status(
+                own_transaction,
+                entries=list(entries.values()),
+                entry=entry,
+                record=record,
+            )
+        own_transaction.commit()
     return True
+
+
+def _stage_explicit_overlay_status(
+    transaction: AgentAssetTransaction,
+    *,
+    entries: list[ExplicitMemoryOverlayEntry],
+    entry: ExplicitMemoryOverlayEntry,
+    record: dict[str, str],
+) -> None:
+    transaction.append_text(
+        "memory/explicit/manifest.jsonl",
+        json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n",
+    )
+    updated_entries = [
+        replace(candidate, status=record["status"], metadata=record)
+        if candidate.entry_id == entry.entry_id
+        else candidate
+        for candidate in entries
+    ]
+    transaction.stage_text("memory/explicit/MEMORY.md", _render_memory_index(updated_entries))
 
 
 _TARGET_HINTS = frozenset({"user", "worker", "capabilities", "episodes", "unknown"})
@@ -390,16 +475,7 @@ source_refs:
 """
 
 
-def _append_manifest(path: Path, record: dict[str, str]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
-
-
-def _rebuild_memory_index(data_root: Path, agent_id: uuid.UUID | str) -> None:
-    overlay_dir = explicit_overlay_dir(data_root, agent_id)
-    overlay_dir.mkdir(parents=True, exist_ok=True)
-    entries = load_explicit_overlay_entries(data_root, agent_id)
+def _render_memory_index(entries: list[ExplicitMemoryOverlayEntry]) -> str:
     lines = [
         "# Explicit Memory Overlay",
         "",
@@ -413,7 +489,7 @@ def _rebuild_memory_index(data_root: Path, agent_id: uuid.UUID | str) -> None:
             f"| {entry.entry_id} | {entry.status} | {entry.target_hint} | {entry.category} | "
             f"{entry.created_at[:10] or '-'} | {_escape_table(_preview(entry.content, 90))} |"
         )
-    (overlay_dir / "MEMORY.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return "\n".join(lines) + "\n"
 
 
 def _normalize_refs(raw: list[str] | tuple[str, ...] | str | None) -> list[str]:

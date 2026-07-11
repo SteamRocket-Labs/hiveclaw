@@ -14,6 +14,7 @@ from app.services.skill_evolution_registry import (
     default_origin_for_candidate,
     normalize_skill_origin,
 )
+from app.services.agent_asset_transaction import AgentAssetTransaction, AssetTransactionCorruptionError
 
 
 def _now_iso() -> str:
@@ -94,8 +95,50 @@ def write_skill_candidate_package(
     draft_filename: str = "SKILL.md.draft",
     skill_origin: str | None = None,
     evolvable: bool | None = None,
+    transaction: AgentAssetTransaction | None = None,
 ) -> dict[str, Any]:
     """Stage an inactive candidate package. Active skills are never written here."""
+
+    if transaction is None:
+        with AgentAssetTransaction(
+            workspace,
+            operation="skill_candidate_package_write",
+            idempotency_key=f"skill-candidate:{candidate_id}",
+            evidence_refs=tuple(source_refs),
+        ) as own_transaction:
+            if own_transaction.is_replay:
+                manifest_path = workspace / "evolution" / "skill_candidates" / candidate_id / "manifest.json"
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                expected_sha = hashlib.sha256(rendered_markdown.encode("utf-8")).hexdigest()
+                if (
+                    manifest.get("draft_sha256") != expected_sha
+                    or manifest.get("target_path") != target_path
+                    or manifest.get("skill_name") != skill_name
+                ):
+                    raise AssetTransactionCorruptionError(
+                        f"Skill candidate idempotency key reused with different input: {candidate_id}"
+                    )
+                return manifest
+            manifest = write_skill_candidate_package(
+                workspace=workspace,
+                candidate_id=candidate_id,
+                rendered_markdown=rendered_markdown,
+                skill_name=skill_name,
+                package_type=package_type,
+                target_path=target_path,
+                source_refs=source_refs,
+                reason=reason,
+                declared_tools=declared_tools,
+                declared_packs=declared_packs,
+                status=status,
+                extra_metadata=extra_metadata,
+                draft_filename=draft_filename,
+                skill_origin=skill_origin,
+                evolvable=evolvable,
+                transaction=own_transaction,
+            )
+            own_transaction.commit()
+            return manifest
 
     if draft_filename not in {"SKILL.md.draft", "candidate_signal.md"}:
         raise ValueError("draft_filename must be SKILL.md.draft or candidate_signal.md")
@@ -105,7 +148,6 @@ def write_skill_candidate_package(
     origin_evolvable = default_evolvable_for_origin(resolved_origin)
     resolved_evolvable = origin_evolvable if evolvable is None else bool(evolvable) and origin_evolvable
     package_dir = workspace / "evolution" / "skill_candidates" / candidate_id
-    package_dir.mkdir(parents=True, exist_ok=True)
     skill_pitch = render_skill_pitch(
         skill_name=skill_name,
         reason=reason,
@@ -120,10 +162,10 @@ def write_skill_candidate_package(
     )
     failure_cases = render_failure_cases(package_type=package_type, declared_tools=declared_tools)
 
-    (package_dir / "skill_pitch.md").write_text(skill_pitch, encoding="utf-8")
-    (package_dir / draft_filename).write_text(rendered_markdown, encoding="utf-8")
-    (package_dir / "eval_plan.md").write_text(eval_plan, encoding="utf-8")
-    (package_dir / "failure_cases.md").write_text(failure_cases, encoding="utf-8")
+    _stage_candidate_text(transaction, workspace, package_dir / "skill_pitch.md", skill_pitch)
+    _stage_candidate_text(transaction, workspace, package_dir / draft_filename, rendered_markdown)
+    _stage_candidate_text(transaction, workspace, package_dir / "eval_plan.md", eval_plan)
+    _stage_candidate_text(transaction, workspace, package_dir / "failure_cases.md", failure_cases)
 
     draft_path = f"evolution/skill_candidates/{candidate_id}/{draft_filename}"
     manifest = {
@@ -149,9 +191,11 @@ def write_skill_candidate_package(
         "draft_sha256": hashlib.sha256(rendered_markdown.encode("utf-8")).hexdigest(),
         "metadata": extra_metadata or {},
     }
-    (package_dir / "manifest.json").write_text(
+    _stage_candidate_text(
+        transaction,
+        workspace,
+        package_dir / "manifest.json",
         json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
     )
     return manifest
 
@@ -162,30 +206,46 @@ def write_skill_referee_review(
     candidate_id: str,
     review_markdown: str,
     review_payload: dict[str, Any],
+    transaction: AgentAssetTransaction | None = None,
 ) -> dict[str, Any] | None:
     """Attach the independent Skill Referee review to an inactive package."""
 
     package_dir = workspace / "evolution" / "skill_candidates" / candidate_id
     manifest_path = package_dir / "manifest.json"
-    if not manifest_path.exists():
+    if transaction is None:
+        with AgentAssetTransaction(workspace, operation="skill_candidate_referee_review") as own_transaction:
+            result = write_skill_referee_review(
+                workspace=workspace,
+                candidate_id=candidate_id,
+                review_markdown=review_markdown,
+                review_payload=review_payload,
+                transaction=own_transaction,
+            )
+            if own_transaction.has_changes:
+                own_transaction.commit()
+            return result
+    manifest_text = transaction.read_text(manifest_path.relative_to(workspace).as_posix())
+    if manifest_text is None:
         return None
     try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest = json.loads(manifest_text)
     except json.JSONDecodeError:
         return None
 
     rendered = review_markdown.rstrip() + "\n"
     review_path = package_dir / "referee_review.md"
-    review_path.write_text(rendered, encoding="utf-8")
+    _stage_candidate_text(transaction, workspace, review_path, rendered)
 
     relative_review_path = f"evolution/skill_candidates/{candidate_id}/referee_review.md"
     manifest["referee_review_path"] = relative_review_path
     manifest["referee_review_sha256"] = hashlib.sha256(rendered.encode("utf-8")).hexdigest()
     manifest["updated_at"] = _now_iso()
     manifest.setdefault("metadata", {})["referee_review"] = review_payload
-    manifest_path.write_text(
+    _stage_candidate_text(
+        transaction,
+        workspace,
+        manifest_path,
         json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
     )
     return manifest
 
@@ -197,12 +257,27 @@ def update_skill_candidate_package_status(
     status: str,
     reason: str | None = None,
     extra_metadata: dict[str, Any] | None = None,
+    transaction: AgentAssetTransaction | None = None,
 ) -> dict[str, Any] | None:
     manifest_path = workspace / "evolution" / "skill_candidates" / candidate_id / "manifest.json"
-    if not manifest_path.exists():
+    if transaction is None:
+        with AgentAssetTransaction(workspace, operation="skill_candidate_status_update") as own_transaction:
+            result = update_skill_candidate_package_status(
+                workspace=workspace,
+                candidate_id=candidate_id,
+                status=status,
+                reason=reason,
+                extra_metadata=extra_metadata,
+                transaction=own_transaction,
+            )
+            if own_transaction.has_changes:
+                own_transaction.commit()
+            return result
+    manifest_text = transaction.read_text(manifest_path.relative_to(workspace).as_posix())
+    if manifest_text is None:
         return None
     try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest = json.loads(manifest_text)
     except json.JSONDecodeError:
         return None
     manifest["status"] = status
@@ -211,7 +286,19 @@ def update_skill_candidate_package_status(
         manifest["status_reason"] = reason
     if extra_metadata:
         manifest.setdefault("metadata", {}).update(extra_metadata)
-    manifest_path.write_text(
-        json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    _stage_candidate_text(
+        transaction,
+        workspace,
+        manifest_path,
+        json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
     )
     return manifest
+
+
+def _stage_candidate_text(
+    transaction: AgentAssetTransaction,
+    workspace: Path,
+    path: Path,
+    content: str,
+) -> None:
+    transaction.stage_text(path.relative_to(workspace).as_posix(), content)

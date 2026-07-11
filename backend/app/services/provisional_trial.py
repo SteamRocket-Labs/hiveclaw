@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from app.services.agent_asset_transaction import AgentAssetTransaction
 from app.services.evolution_ledger import record_rollback_event
 
 
@@ -19,6 +20,7 @@ def evaluate_provisional_trial_signal(
     signal: dict[str, Any],
     negative_signal_count: int,
     negative_signal_threshold: int = DEFAULT_NEGATIVE_SIGNAL_THRESHOLD,
+    transaction: AgentAssetTransaction | None = None,
 ) -> dict[str, Any]:
     """Evaluate a provisional-trial signal and roll back once the threshold is met."""
 
@@ -45,6 +47,7 @@ def evaluate_provisional_trial_signal(
             "negative_signal_count": count,
             "negative_signal_threshold": threshold,
         },
+        transaction=transaction,
     )
     return {
         "decision": "rolled_back",

@@ -13,11 +13,9 @@ with the md-first architecture.
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import hashlib
 import logging
 import json
-import os
 import re as _re
 import shutil
 import uuid
@@ -26,13 +24,14 @@ from pathlib import Path
 from typing import Callable, Iterator
 
 from app.config import get_settings
+from app.services.agent_asset_transaction import AgentAssetTransaction
 
 logger = logging.getLogger(__name__)
 
 
 @contextlib.contextmanager
-def _dream_writeback_lock(agent_id: uuid.UUID) -> Iterator[None]:
-    """P1-W2-10: serialize soul.md / T3 / preservation_flags writes.
+def _dream_writeback_lock(agent_id: uuid.UUID) -> Iterator[AgentAssetTransaction | None]:
+    """Serialize Dream writes through the shared native-asset transaction.
 
     Two dream invocations can race when the heartbeat scheduler and a
     trigger end both decide to fire dream within the same window. Both
@@ -49,16 +48,10 @@ def _dream_writeback_lock(agent_id: uuid.UUID) -> Iterator[None]:
         yield
         return
 
-    lock_path = agent_root / ".dream_writeback.lock"
-    lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR)
-    try:
-        fcntl.flock(lock_fd, fcntl.LOCK_EX)
-        yield
-    finally:
-        try:
-            fcntl.flock(lock_fd, fcntl.LOCK_UN)
-        finally:
-            os.close(lock_fd)
+    with AgentAssetTransaction(agent_root, operation="auto_dream_writeback") as transaction:
+        yield transaction
+        if transaction.has_changes:
+            transaction.commit()
 
 
 # Consolidation gates — tuned for active agents that run heartbeats/triggers.
@@ -1107,6 +1100,19 @@ def _write_atomic_text(path: Path, content: str) -> None:
     tmp_path.replace(path)
 
 
+def _write_asset_text(
+    workspace: Path,
+    path: Path,
+    content: str,
+    *,
+    transaction: AgentAssetTransaction | None,
+) -> None:
+    if transaction is not None:
+        transaction.stage_text(path.relative_to(workspace).as_posix(), content)
+        return
+    _write_atomic_text(path, content)
+
+
 def _stage_soul_candidate_package(
     *,
     workspace: Path,
@@ -1114,25 +1120,27 @@ def _stage_soul_candidate_package(
     status: str,
     reason: str,
     current_soul: str,
+    transaction: AgentAssetTransaction | None = None,
 ) -> tuple[str, Path]:
     candidate_id = _soul_candidate_id(candidate)
     package_dir = workspace / "memory" / ".staging" / "soul_candidates" / candidate_id
-    package_dir.mkdir(parents=True, exist_ok=True)
 
     soul_pitch = str(candidate.get("soul_pitch_md") or "")
     soul_patch = str(candidate.get("soul_patch_md") or "")
     soul_next = str(candidate.get("soul_md_next") or "")
-    (package_dir / "soul_pitch.md").write_text(soul_pitch, encoding="utf-8")
-    (package_dir / "soul_patch.md").write_text(soul_patch, encoding="utf-8")
-    (package_dir / "soul.md.next").write_text(soul_next, encoding="utf-8")
-    (package_dir / "review.md").write_text(
+    _write_asset_text(workspace, package_dir / "soul_pitch.md", soul_pitch, transaction=transaction)
+    _write_asset_text(workspace, package_dir / "soul_patch.md", soul_patch, transaction=transaction)
+    _write_asset_text(workspace, package_dir / "soul.md.next", soul_next, transaction=transaction)
+    _write_asset_text(
+        workspace,
+        package_dir / "review.md",
         "# Soul Memory Gate Review\n\n"
         f"- status: {status}\n"
         f"- reason: {reason}\n\n"
         "```json\n"
         + json.dumps(candidate.get("memory_gate_review") or {}, ensure_ascii=False, indent=2, sort_keys=True)
         + "\n```\n",
-        encoding="utf-8",
+        transaction=transaction,
     )
 
     manifest = {
@@ -1151,9 +1159,11 @@ def _stage_soul_candidate_package(
         "next_path": f"memory/.staging/soul_candidates/{candidate_id}/soul.md.next",
         "memory_gate_review": candidate.get("memory_gate_review") or {},
     }
-    (package_dir / "manifest.json").write_text(
+    _write_asset_text(
+        workspace,
+        package_dir / "manifest.json",
         json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
+        transaction=transaction,
     )
     return candidate_id, package_dir
 
@@ -1169,6 +1179,7 @@ def _record_soul_candidate_audit(
     reason: str,
     rollback_ref: str | None,
     error: str | None = None,
+    transaction: AgentAssetTransaction | None = None,
 ) -> None:
     from app.memory.distillation_audit import write_distillation_audit
 
@@ -1192,6 +1203,7 @@ def _record_soul_candidate_audit(
         outcome=outcome,
         reason=reason,
         detail=detail,
+        transaction=transaction,
     )
 
 
@@ -1214,15 +1226,24 @@ def _read_preservation_flags(agent_id: uuid.UUID) -> list[dict]:
         return []
 
 
-def _write_preservation_flags(agent_id: uuid.UUID, flags: list[dict]) -> None:
+def _write_preservation_flags(
+    agent_id: uuid.UUID,
+    flags: list[dict],
+    *,
+    transaction: AgentAssetTransaction | None = None,
+) -> None:
     import json
 
     path = _preservation_sidecar_path(agent_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
     # Cap to 50 most recent to prevent unbounded growth.
     capped = flags[-50:]
     payload = {"protected": capped, "updated_at": datetime.now(timezone.utc).isoformat()}
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    rendered = json.dumps(payload, ensure_ascii=False, indent=2)
+    if transaction is not None:
+        transaction.stage_text("memory/.preservation.json", rendered)
+    else:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(rendered, encoding="utf-8")
 
 
 # D6 (docs/agent-memory-purity-spec.md): soul's frozen identity sections.
@@ -1373,8 +1394,13 @@ def _apply_dream_decisions(
     Mission/charter; when None, production wires the LLM judge and unit tests
     inject a stub.
     """
-    with _dream_writeback_lock(agent_id):
-        return _apply_dream_decisions_unlocked(agent_id, decision, contradiction_judge=contradiction_judge)
+    with _dream_writeback_lock(agent_id) as transaction:
+        return _apply_dream_decisions_unlocked(
+            agent_id,
+            decision,
+            contradiction_judge=contradiction_judge,
+            transaction=transaction,
+        )
 
 
 def _apply_dream_decisions_unlocked(
@@ -1382,6 +1408,7 @@ def _apply_dream_decisions_unlocked(
     decision: dict,
     *,
     contradiction_judge: Callable[[str, str], dict | None] | None = None,
+    transaction: AgentAssetTransaction | None = None,
 ) -> dict:
     """Inner body — kept lock-free so unit tests can drive it directly."""
     report = {
@@ -1426,15 +1453,19 @@ def _apply_dream_decisions_unlocked(
                 status=status,
                 reason=reason,
                 current_soul=current_soul,
+                transaction=transaction,
             )
             report["memory_candidates_recorded"] += 1
             if ok:
-                rollback_dir = workspace / "memory" / ".rollback" / "soul"
-                rollback_dir.mkdir(parents=True, exist_ok=True)
-                rollback_ref = rollback_dir / f"{candidate_id}.soul.md.before"
-                rollback_ref.write_text(current_soul, encoding="utf-8")
+                rollback_ref = workspace / "memory" / ".rollback" / "soul" / f"{candidate_id}.soul.md.before"
+                _write_asset_text(workspace, rollback_ref, current_soul, transaction=transaction)
                 rollback_ref_rel = str(rollback_ref.relative_to(workspace))
-                _write_atomic_text(soul_path, str(soul_candidate.get("soul_md_next") or "").rstrip() + "\n")
+                _write_asset_text(
+                    workspace,
+                    soul_path,
+                    str(soul_candidate.get("soul_md_next") or "").rstrip() + "\n",
+                    transaction=transaction,
+                )
                 _record_soul_candidate_audit(
                     workspace=workspace,
                     agent_id=agent_id,
@@ -1444,6 +1475,7 @@ def _apply_dream_decisions_unlocked(
                     outcome="committed",
                     reason=reason,
                     rollback_ref=rollback_ref_rel,
+                    transaction=transaction,
                 )
                 report["soul_candidate_committed"] += 1
                 report["soul_added"] += 1
@@ -1461,6 +1493,7 @@ def _apply_dream_decisions_unlocked(
                     outcome="held",
                     reason=reason,
                     rollback_ref=None,
+                    transaction=transaction,
                 )
         except Exception as exc:  # noqa: BLE001 — hold on any package/gate failure
             logger.warning("[Dream] Soul candidate package failed; holding for %s: %s", agent_id, exc)
@@ -1477,6 +1510,7 @@ def _apply_dream_decisions_unlocked(
                     reason="soul candidate package/gate failure",
                     rollback_ref=None,
                     error=str(exc),
+                    transaction=transaction,
                 )
             except Exception as audit_exc:  # noqa: BLE001
                 logger.debug("[Dream] Soul candidate failure audit failed for %s: %s", agent_id, audit_exc)
@@ -1529,7 +1563,7 @@ def _apply_dream_decisions_unlocked(
             existing_keys.add(key)
             added += 1
         if added:
-            _write_preservation_flags(agent_id, existing)
+            _write_preservation_flags(agent_id, existing, transaction=transaction)
             report["preservation_flags_added"] = added
 
     return report

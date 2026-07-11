@@ -405,6 +405,26 @@ class TestApplyDreamDecisions:
         assert audit["detail"]["semantic_writer"] == "Dream / Soul Writer Agent"
         assert audit["detail"]["reviewer"] == "Soul Memory Gate Agent"
         assert audit["detail"]["physical_committer"] == "Platform Soul Gate"
+        revision_payload = json.loads(
+            (tmp_path / str(agent_id) / "runtime_artifacts/asset_transactions/revision.json").read_text()
+        )
+        assert revision_payload["revision"] == 1
+        journal = json.loads(
+            (
+                tmp_path
+                / str(agent_id)
+                / "runtime_artifacts/asset_transactions/transactions"
+                / revision_payload["last_transaction_id"]
+                / "journal.json"
+            ).read_text()
+        )
+        assert journal["status"] == "committed"
+        assert {operation["path"] for operation in journal["operations"]} >= {
+            "soul.md",
+            "memory/distillation_audit.jsonl",
+            f"memory/.staging/soul_candidates/{manifest['candidate_id']}/manifest.json",
+            f"memory/.rollback/soul/{manifest['candidate_id']}.soul.md.before",
+        }
 
     def test_self_reviewed_soul_candidate_is_held(self, tmp_path: Path) -> None:
         agent_id = self._scaffold(tmp_path)

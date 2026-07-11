@@ -23,8 +23,12 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from app.memory.explicit_overlay import load_explicit_overlay_entries
+
+if TYPE_CHECKING:
+    from app.services.agent_asset_transaction import AgentAssetTransaction
 
 logger = logging.getLogger(__name__)
 
@@ -198,6 +202,7 @@ def record_entry_tombstones(
     data_root: Path | str,
     tombstones: list[tuple[str, str]],
     job_id: str,
+    transaction: AgentAssetTransaction | None = None,
 ) -> None:
     """Record live-ref merges (old entry id → surviving id, spec §4.1).
 
@@ -211,19 +216,24 @@ def record_entry_tombstones(
     ]
     if not cleaned:
         return
+    now = datetime.now(UTC).isoformat()
+    rendered = "".join(
+        json.dumps(
+            {"old_id": old_id, "new_id": new_id, "job_id": job_id, "created_at": now},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        + "\n"
+        for old_id, new_id in cleaned
+    )
+    if transaction is not None:
+        transaction.append_text((Path("memory") / TOMBSTONE_LOG_RELATIVE).as_posix(), rendered)
+        return
+
     log_path = Path(data_root) / str(agent_id) / "memory" / TOMBSTONE_LOG_RELATIVE
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    now = datetime.now(UTC).isoformat()
     with log_path.open("a", encoding="utf-8") as handle:
-        for old_id, new_id in cleaned:
-            handle.write(
-                json.dumps(
-                    {"old_id": old_id, "new_id": new_id, "job_id": job_id, "created_at": now},
-                    ensure_ascii=False,
-                    sort_keys=True,
-                )
-                + "\n"
-            )
+        handle.write(rendered)
     db_path = _ensure_index(agent_id=agent_id, data_root=data_root)
     with sqlite3.connect(db_path) as conn:
         conn.execute(

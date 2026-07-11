@@ -545,6 +545,66 @@ def test_platform_gate_marks_t2_and_explicit_overlay_absorbed_after_commit(tmp_p
     manifest = json.loads((package_dir / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["package_status"] == "absorbed"
     assert manifest["t3_absorbed_by"] == "job-explicit-commit"
+    revision_payload = json.loads(
+        (tmp_path / str(agent_id) / "runtime_artifacts/asset_transactions/revision.json").read_text()
+    )
+    assert revision_payload["revision"] == 1
+    transaction_id = revision_payload["last_transaction_id"]
+    journal = json.loads(
+        (
+            tmp_path
+            / str(agent_id)
+            / "runtime_artifacts/asset_transactions/transactions"
+            / transaction_id
+            / "journal.json"
+        ).read_text()
+    )
+    assert journal["status"] == "committed"
+    assert {operation["path"] for operation in journal["operations"]} >= {
+        target,
+        package_dir.relative_to(tmp_path / str(agent_id)).joinpath("manifest.json").as_posix(),
+        "memory/explicit/manifest.jsonl",
+        "memory/explicit/MEMORY.md",
+        "memory/.staging/t3_jobs/job-explicit-commit/manifest.json",
+    }
+
+
+def test_platform_gate_replays_same_job_without_second_asset_revision(tmp_path: Path) -> None:
+    from app.memory.t3_platform_gate import apply_t3_consolidation_patch, file_sha256
+
+    agent_id = uuid.uuid4()
+    _write_reviewed_t2_package(tmp_path, agent_id)
+    target = "memory/profiles/owner.md"
+    sha = file_sha256(tmp_path / str(agent_id) / target)
+    entry = "### 幂等提交\n<!-- id: idempotent-t3 -->\n同一 job 只提交一次。\n- 证据: t2-a1b2"
+    patch = _entry_patch(target, sha, "idempotent-t3", entry, refs=["t2://session/s1/segment/seg-1"])
+    review = _accepted_review()
+
+    first = apply_t3_consolidation_patch(
+        agent_id=agent_id,
+        data_root=tmp_path,
+        job_id="job-t3-idempotent",
+        revised_patch_md=patch,
+        review_md=review,
+    )
+    wiki_map = tmp_path / str(agent_id) / "memory/indexes/wiki_map.md"
+    reference_index = tmp_path / str(agent_id) / "memory/indexes/index.sqlite"
+    wiki_map.unlink(missing_ok=True)
+    reference_index.unlink(missing_ok=True)
+    replay = apply_t3_consolidation_patch(
+        agent_id=agent_id,
+        data_root=tmp_path,
+        job_id="job-t3-idempotent",
+        revised_patch_md=patch,
+        review_md=review,
+    )
+
+    assert first.status == replay.status == "committed"
+    assert replay.committed_paths == first.committed_paths
+    assert wiki_map.is_file()
+    assert reference_index.is_file()
+    revision = json.loads((tmp_path / str(agent_id) / "runtime_artifacts/asset_transactions/revision.json").read_text())
+    assert revision["revision"] == 1
 
 
 def test_platform_gate_reinforce_mode_marks_sources_reinforced(tmp_path: Path) -> None:

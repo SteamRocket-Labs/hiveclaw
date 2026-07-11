@@ -43,7 +43,7 @@ def agent_workspace(tmp_path, monkeypatch):
 
 def test_lock_creates_dotfile(agent_workspace) -> None:
     agent_id, agent_root = agent_workspace
-    lock_path = agent_root / ".dream_writeback.lock"
+    lock_path = agent_root / "runtime_artifacts" / "asset_transactions" / ".asset.lock"
     assert not lock_path.exists()
 
     with auto_dream._dream_writeback_lock(agent_id):
@@ -54,7 +54,7 @@ def test_lock_releases_after_block(agent_workspace) -> None:
     """A second acquire on the same lock file must succeed once the first
     block exits — proves the unlock path actually fires."""
     agent_id, agent_root = agent_workspace
-    lock_path = agent_root / ".dream_writeback.lock"
+    lock_path = agent_root / "runtime_artifacts" / "asset_transactions" / ".asset.lock"
 
     with auto_dream._dream_writeback_lock(agent_id):
         pass
@@ -141,3 +141,47 @@ async def test_concurrent_apply_calls_serialize(agent_workspace, monkeypatch) ->
     # see start, start, end, end. Locked execution gives us strict pairing.
     pairs = list(zip(order[::2], order[1::2]))
     assert all(p == ("start", "end") for p in pairs), order
+
+
+@pytest.mark.asyncio
+async def test_dream_and_explicit_memory_tool_share_the_same_asset_revision_lane(
+    agent_workspace,
+    monkeypatch,
+) -> None:
+    from app.memory import explicit_overlay
+    from app.memory.write_gate import MemoryWriteDecision
+    from app.services.agent_asset_transaction import read_agent_asset_revision
+
+    agent_id, agent_root = agent_workspace
+
+    async def accept_memory(content, *, category, **_kwargs):
+        return MemoryWriteDecision(
+            original_content=content,
+            content=content,
+            category=category,
+            sensitivity="PL1_public",
+        )
+
+    monkeypatch.setattr(explicit_overlay, "prepare_memory_write_with_llm", accept_memory)
+    dream_decision = {
+        "preservation_flags": [
+            {"file": "memory/profiles/owner.md", "content": "保留原子化验收规则", "reason": "owner rule"}
+        ]
+    }
+
+    dream_report, overlay_result = await asyncio.gather(
+        asyncio.to_thread(auto_dream._apply_dream_decisions, agent_id, dream_decision),
+        explicit_overlay.write_explicit_memory_overlay(
+            agent_id,
+            category="constraint",
+            content="所有生产修改必须附带机械证据",
+            source_refs=["session:dream-tool-race"],
+            data_root=agent_root.parent,
+        ),
+    )
+
+    assert dream_report["preservation_flags_added"] == 1
+    assert overlay_result.status == "active"
+    assert (agent_root / "memory/.preservation.json").is_file()
+    assert (agent_root / "memory/explicit/manifest.jsonl").is_file()
+    assert read_agent_asset_revision(agent_root) == 2

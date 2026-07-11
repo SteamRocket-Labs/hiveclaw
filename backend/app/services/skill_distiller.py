@@ -609,8 +609,32 @@ def _commit_skill_markdown_exact(
     status: str,
     candidate_id: str | None = None,
     skill_origin: str | None = None,
+    transaction: Any | None = None,
 ) -> str:
     """Commit the LLM-authored SKILL.md draft exactly after all gates pass."""
+
+    if transaction is None:
+        from app.services.agent_asset_transaction import AgentAssetTransaction
+
+        with AgentAssetTransaction(
+            workspace,
+            operation="skill_distiller_commit",
+            evidence_refs=(f"skill-candidate:{candidate_id}",) if candidate_id else (),
+        ) as own_transaction:
+            result = _commit_skill_markdown_exact(
+                workspace=workspace,
+                target_relative_path=target_relative_path,
+                rendered_markdown=rendered_markdown,
+                skill_name=skill_name,
+                overwrite=overwrite,
+                status=status,
+                candidate_id=candidate_id,
+                skill_origin=skill_origin,
+                transaction=own_transaction,
+            )
+            if "✅" in result:
+                own_transaction.commit()
+            return result
 
     target = (workspace / target_relative_path).resolve()
     skills_dir = (workspace / "skills").resolve()
@@ -632,6 +656,7 @@ def _commit_skill_markdown_exact(
             files=[{"path": "SKILL.md", "content": rendered_markdown.rstrip() + "\n"}],
             source="skill_distiller",
             overwrite=overwrite,
+            transaction=transaction,
         )
     except ValueError as exc:
         return f"❌ skill commit failed: {exc}"
@@ -642,17 +667,18 @@ def _commit_skill_markdown_exact(
             skill_name=skill_name,
             status=status,
             note=f"Committed exact LLM-authored SKILL.md draft to {target_relative_path}",
+            transaction=transaction,
         )
-    except Exception as exc:  # pragma: no cover - telemetry must not break commit
-        logger.warning("[SkillDistiller] Failed to record skill lifecycle for %s: %s", skill_name, exc)
+    except Exception as exc:
+        return f"❌ skill lifecycle transaction failed: {type(exc).__name__}: {exc}"
     try:
         from app.services.skill_curator import mark_skill_created
 
         slug = Path(target_relative_path).parts[1] if len(Path(target_relative_path).parts) >= 2 else ""
         if slug:
-            mark_skill_created(workspace, slug, created_by="skill_distiller")
-    except Exception as exc:  # pragma: no cover - telemetry must not break commit
-        logger.debug("[SkillDistiller] curator created mark failed for %s: %s", skill_name, exc)
+            mark_skill_created(workspace, slug, created_by="skill_distiller", transaction=transaction)
+    except Exception as exc:
+        return f"❌ skill curator transaction failed: {type(exc).__name__}: {exc}"
     try:
         from app.services.skill_evolution_registry import (
             ORIGIN_T3_AUTO_CREATED,
@@ -680,9 +706,10 @@ def _commit_skill_markdown_exact(
             last_candidate_id=candidate_id,
             state="provisional" if status == "provisional" else "active",
             metadata={"committed_by": "skill_distiller", "commit_status": status},
+            transaction=transaction,
         )
-    except Exception as exc:  # pragma: no cover - registry telemetry must not break commit
-        logger.debug("[SkillDistiller] skill evolution registry update failed for %s: %s", skill_name, exc)
+    except Exception as exc:
+        return f"❌ skill registry transaction failed: {type(exc).__name__}: {exc}"
     return f"✅ committed exact skill draft at {target_relative_path}"
 
 
@@ -699,20 +726,32 @@ async def _commit_skill_with_asset_revision(
     agent_id: uuid.UUID,
     tenant_id: uuid.UUID | None,
 ) -> str:
-    """Commit the native Skill and its control revision, compensating file failure."""
+    """Commit native Skill sidecars together and compensate the full revision on DB failure."""
 
-    target = workspace / target_relative_path
-    previous = target.read_bytes() if target.is_file() else None
-    result = _commit_skill_markdown_exact(
-        workspace=workspace,
-        target_relative_path=target_relative_path,
-        rendered_markdown=rendered_markdown,
-        skill_name=skill_name,
-        overwrite=overwrite,
-        status=status,
-        candidate_id=candidate_id,
-        skill_origin=skill_origin,
+    from app.services.agent_asset_transaction import (
+        AgentAssetTransaction,
+        compensate_agent_asset_transaction,
     )
+
+    with AgentAssetTransaction(
+        workspace,
+        operation="skill_distiller_native_commit",
+        evidence_refs=(f"skill-candidate:{candidate_id}",) if candidate_id else (),
+    ) as transaction:
+        result = _commit_skill_markdown_exact(
+            workspace=workspace,
+            target_relative_path=target_relative_path,
+            rendered_markdown=rendered_markdown,
+            skill_name=skill_name,
+            overwrite=overwrite,
+            status=status,
+            candidate_id=candidate_id,
+            skill_origin=skill_origin,
+            transaction=transaction,
+        )
+        if "✅" not in result:
+            return result
+        receipt = transaction.commit()
     if "✅" not in result or tenant_id is None:
         return result
 
@@ -727,17 +766,13 @@ async def _commit_skill_with_asset_revision(
             evolution_state=status,
         )
     except Exception as exc:  # noqa: BLE001 - native file is compensated before surfacing failure
-        if previous is None:
-            if target.exists():
-                target.unlink()
-            parent = target.parent
-            if parent.exists() and not any(parent.iterdir()):
-                parent.rmdir()
-        else:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(previous)
-        logger.exception("[SkillDistiller] asset revision failed; restored %s", target_relative_path)
-        return f"❌ skill asset revision failed; native file restored: {type(exc).__name__}: {exc}"
+        compensate_agent_asset_transaction(
+            workspace,
+            receipt,
+            reason=f"AI asset projection failed: {type(exc).__name__}: {exc}",
+        )
+        logger.exception("[SkillDistiller] asset revision failed; compensated %s", target_relative_path)
+        return f"❌ skill asset revision failed; native transaction compensated: {type(exc).__name__}: {exc}"
     return result
 
 

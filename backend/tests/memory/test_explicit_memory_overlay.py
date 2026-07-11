@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import json
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
@@ -40,6 +42,78 @@ async def test_save_memory_writes_explicit_overlay_not_accepted_t3(tmp_path: Pat
 
     accepted_t3 = mem_dir / "t3" / "user.md"
     assert not accepted_t3.exists() or "用户要求架构改造前先讨论并落文档" not in accepted_t3.read_text(encoding="utf-8")
+    revision = json.loads((tmp_path / str(agent_id) / "runtime_artifacts/asset_transactions/revision.json").read_text())
+    assert revision["revision"] == 1
+
+
+@pytest.mark.asyncio
+async def test_concurrent_explicit_overlay_writes_share_one_asset_revision_lane(tmp_path: Path) -> None:
+    from app.memory.explicit_overlay import write_explicit_memory_overlay
+
+    agent_id = uuid.uuid4()
+    contents = [
+        "财务审批必须附发票原件",
+        "招聘面试必须保存候选人同意",
+        "生产发布必须先完成回滚演练",
+        "客户数据导出必须双人复核",
+        "供应商付款必须核验银行账户",
+        "安全事件必须十五分钟内升级",
+        "合同签署必须经过法务审阅",
+        "董事会材料必须提前三天发送",
+    ]
+    results = await asyncio.gather(
+        *[
+            write_explicit_memory_overlay(
+                agent_id,
+                category="constraint",
+                content=content,
+                source_refs=[f"session:concurrent-{index}"],
+                data_root=tmp_path,
+            )
+            for index, content in enumerate(contents)
+        ]
+    )
+
+    assert all(result.status == "active" for result in results)
+    manifest_lines = (
+        (tmp_path / str(agent_id) / "memory/explicit/manifest.jsonl").read_text(encoding="utf-8").splitlines()
+    )
+    assert len(manifest_lines) == len(contents)
+    assert {json.loads(line)["source_refs"] for line in manifest_lines} == {
+        f"session:concurrent-{index}" for index in range(8)
+    }
+    index_text = (tmp_path / str(agent_id) / "memory/explicit/MEMORY.md").read_text(encoding="utf-8")
+    assert all(result.entry_id in index_text for result in results)
+    revision = json.loads((tmp_path / str(agent_id) / "runtime_artifacts/asset_transactions/revision.json").read_text())
+    assert revision["revision"] == len(contents)
+
+
+@pytest.mark.asyncio
+async def test_concurrent_duplicate_explicit_candidates_commit_once(tmp_path: Path) -> None:
+    from app.memory.explicit_overlay import write_explicit_memory_overlay
+
+    agent_id = uuid.uuid4()
+    results = await asyncio.gather(
+        *[
+            write_explicit_memory_overlay(
+                agent_id,
+                category="constraint",
+                content="上线前必须完成原子化全量验收",
+                source_refs=["session:duplicate-candidate"],
+                data_root=tmp_path,
+            )
+            for _index in range(10)
+        ]
+    )
+
+    assert [result.status for result in results].count("active") == 1
+    assert [result.status for result in results].count("duplicate") == 9
+    manifest_lines = (
+        (tmp_path / str(agent_id) / "memory/explicit/manifest.jsonl").read_text(encoding="utf-8").splitlines()
+    )
+    assert len(manifest_lines) == 1
+    revision = json.loads((tmp_path / str(agent_id) / "runtime_artifacts/asset_transactions/revision.json").read_text())
+    assert revision["revision"] == 1
 
 
 @pytest.mark.asyncio

@@ -630,76 +630,91 @@ def _submit_skill_activation_candidate(
         )
 
     candidate_id = f"save-skill-{uuid.uuid4()}"
+    from app.services.agent_asset_transaction import AgentAssetTransaction
     from app.services.skill_candidate_package import write_skill_candidate_package
     from app.services.skill_evolution_registry import ORIGIN_USER_SKILL_CREATOR, upsert_skill_evolution_entry
-
-    manifest = write_skill_candidate_package(
-        workspace=ws,
-        candidate_id=candidate_id,
-        rendered_markdown=rendered,
-        skill_name=skill_name,
-        package_type="save_skill",
-        target_path=target_rel,
-        skill_origin=ORIGIN_USER_SKILL_CREATOR,
-        evolvable=True,
-        source_refs=["tool:save_skill"],
-        reason="Agent submitted a reusable capability capsule for external behavior verification.",
-        declared_tools=tuple(dict.fromkeys(tool.strip() for tool in declared_tools if tool.strip())),
-        declared_packs=tuple(dict.fromkeys(pack.strip() for pack in declared_packs if pack.strip())),
-        status="pending_behavior_verification",
-        extra_metadata={
-            "agent_id": str(agent_id) if agent_id else None,
-            "overwrite_requested": bool(overwrite),
-            "source_tool": tool_name,
-        },
-    )
-    upsert_skill_evolution_entry(
-        ws,
-        skill_name=skill_name,
-        target_path=target_rel,
-        skill_origin=ORIGIN_USER_SKILL_CREATOR,
-        evolvable=True,
-        last_candidate_id=candidate_id,
-        state="candidate",
-        source_refs=["tool:save_skill"],
-        metadata={"draft_path": manifest["draft_path"], "source_tool": tool_name},
-    )
     from app.services.evolution_ledger import record_evolution_candidate
-
-    record_evolution_candidate(
-        ws,
-        target_type="skill",
-        target_id=target_rel,
-        diff=rendered,
-        source_attempt_ids=["tool:save_skill"],
-        baseline_version=target_rel if overwrite else "none",
-        candidate_id=candidate_id,
-        metadata={
-            "lane": "save_skill",
-            "package_type": "save_skill",
-            "package_manifest_path": manifest["manifest_path"],
-            "draft_path": manifest["draft_path"],
-            "target_path": target_rel,
-            "overwrite_requested": bool(overwrite),
-            "agent_id": str(agent_id) if agent_id else None,
-            "source_tool": tool_name,
-        },
-    )
+    from app.services.skill_lifecycle import record_skill_lifecycle_event
 
     try:
-        from app.services.skill_lifecycle import record_skill_lifecycle_event
-
-        record_skill_lifecycle_event(
+        with AgentAssetTransaction(
             ws,
-            skill_name=skill_name,
-            status="candidate",
-            note=(
-                f"Submitted via save_skill for external behavior verification at {manifest['draft_path']}; "
-                f"target={target_rel}"
-            ),
-        )
+            operation="save_skill_candidate_submission",
+            idempotency_key=f"save-skill:{candidate_id}",
+            evidence_refs=("tool:save_skill",),
+        ) as transaction:
+            manifest = write_skill_candidate_package(
+                workspace=ws,
+                candidate_id=candidate_id,
+                rendered_markdown=rendered,
+                skill_name=skill_name,
+                package_type="save_skill",
+                target_path=target_rel,
+                skill_origin=ORIGIN_USER_SKILL_CREATOR,
+                evolvable=True,
+                source_refs=["tool:save_skill"],
+                reason="Agent submitted a reusable capability capsule for external behavior verification.",
+                declared_tools=tuple(dict.fromkeys(tool.strip() for tool in declared_tools if tool.strip())),
+                declared_packs=tuple(dict.fromkeys(pack.strip() for pack in declared_packs if pack.strip())),
+                status="pending_behavior_verification",
+                extra_metadata={
+                    "agent_id": str(agent_id) if agent_id else None,
+                    "overwrite_requested": bool(overwrite),
+                    "source_tool": tool_name,
+                },
+                transaction=transaction,
+            )
+            upsert_skill_evolution_entry(
+                ws,
+                skill_name=skill_name,
+                target_path=target_rel,
+                skill_origin=ORIGIN_USER_SKILL_CREATOR,
+                evolvable=True,
+                last_candidate_id=candidate_id,
+                state="candidate",
+                source_refs=["tool:save_skill"],
+                metadata={"draft_path": manifest["draft_path"], "source_tool": tool_name},
+                transaction=transaction,
+            )
+            record_evolution_candidate(
+                ws,
+                target_type="skill",
+                target_id=target_rel,
+                diff=rendered,
+                source_attempt_ids=["tool:save_skill"],
+                baseline_version=target_rel if overwrite else "none",
+                candidate_id=candidate_id,
+                metadata={
+                    "lane": "save_skill",
+                    "package_type": "save_skill",
+                    "package_manifest_path": manifest["manifest_path"],
+                    "draft_path": manifest["draft_path"],
+                    "target_path": target_rel,
+                    "overwrite_requested": bool(overwrite),
+                    "agent_id": str(agent_id) if agent_id else None,
+                    "source_tool": tool_name,
+                },
+                transaction=transaction,
+            )
+            record_skill_lifecycle_event(
+                ws,
+                skill_name=skill_name,
+                status="candidate",
+                note=(
+                    f"Submitted via save_skill for external behavior verification at {manifest['draft_path']}; "
+                    f"target={target_rel}"
+                ),
+                transaction=transaction,
+            )
+            transaction.commit()
     except Exception as exc:
-        logger.warning("[workspace] Failed to record skill activation candidate for %s: %s", skill_name, exc)
+        logger.exception("[workspace] Failed atomic skill candidate submission for %s", skill_name)
+        return _workspace_error(
+            tool_name,
+            "skill_candidate_commit_failed",
+            f"Skill candidate transaction failed: {type(exc).__name__}: {exc}",
+            actionable_hint="Retry the same save_skill request; no partial candidate or registry entry was activated.",
+        )
 
     return (
         f"🟡 save_skill submitted for review at evolution/skill_candidates/{candidate_id}/\n"

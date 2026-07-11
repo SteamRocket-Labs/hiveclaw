@@ -24,7 +24,7 @@
 - **P1：13 个**。会造成恢复能力、CC parity、自进化、资产统计、实时 UI 或验收可信度不足，不能作为“上线后再补”的债务。
 - **P2：1 个**。是确定的 KISS/维护性残留，应与本轮一起清理。
 
-当前修复进度：**13 / 28**（单 Agent SA-01 至 SA-12、Hive Native HN-01 已按七原子闭环并分别提交）；其余断点未全部关闭前，结论继续保持 NO-GO。
+当前修复进度：**14 / 28**（单 Agent SA-01 至 SA-12、Hive Native HN-01 至 HN-02 已按七原子闭环并分别提交）；其余断点未全部关闭前，结论继续保持 NO-GO。
 
 这里的“95% 以上信心”指的是：**对当前 checkout 根断点清单完整度的置信度为 95.3%**，不代表系统有 95.3% 的上线成熟度。只要任一 P0 尚存，上线结论就是 NO-GO。
 
@@ -97,7 +97,7 @@ Codex 的 PermissionProfile、thread identity、sandbox policy 和 approval even
 | SA-11 | Local Bridge receipt 文件并发丢写 | P1 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | SA-12 | 全量测试入口不 hermetic | P1 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | HN-01 | Personal KB 浏览器继承 Agent owner 权威 | P0 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| HN-02 | Memory/Skill 原生资产缺统一事务锁 | P0 | 断点 | ✓ | ✓ | ✗ | △ | ✗ | △ | △ |
+| HN-02 | Memory/Skill 原生资产缺统一事务锁 | P0 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | HN-03 | A2A REST 丢 requester 且 consult 假成功 | P0 | 断点 | △ | ✗ | △ | ✗ | △ | ✗ | △ |
 | HN-04 | Subagent/async 查询取消只按 parent Agent | P0 | 断点 | ✓ | ✗ | △ | △ | ✗ | ✗ | △ |
 | HN-05 | HR provisioning 恢复会假完成 | P0 | 断点 | ✓ | ✓ | △ | △ | ✗ | ✗ | △ |
@@ -268,6 +268,8 @@ Task logs 在 `backend/app/api/tasks.py:181-207` 只按 task_id 查写，没有�
 **验收**：owner、shared use user、manager、explicit user grant、agent grant、过期 grant、delegated run 的矩阵测试。
 
 ### HN-02：Memory、Soul、Skill Registry 没有一个共享资产事务 — P0
+
+**修复状态（2026-07-11）**：**闭环**。新增每 Agent 唯一 `AgentAssetTransaction`：Memory explicit overlay、T3 Platform Gate/source lifecycle、Soul Dream/candidate/audit、Skill candidate/usage/lifecycle/registry/install/curator/evolution ledger 共用同一跨进程 lock、单调 revision、prepared/applying/committed journal、stage/backup 与 idempotency receipt。固定 temp 文件和 Dream 私有锁已退出生产路径；canonical commit 后的 wiki/reference index 可由同 job replay 确定性重建。
 
 `backend/app/memory/explicit_overlay.py:53-154,286-309` 是 check→write file→append manifest→rebuild index，多文件间无共享锁。T3 Platform Gate 有单次 patch 的 staged rollback，但 tool submission 与 Auto Dream 没有共用同一 Agent write lock。`backend/app/services/skill_lifecycle.py:462-580` 与 `skill_evolution_registry.py:104-169` 仍是 read-modify-write/append，固定 temp 文件也没有并发锁。
 
@@ -1476,3 +1478,79 @@ pytest tests -q
 ```
 
 结果：Ruff `All checks passed!`；全量 backend `6328 passed, 1 skipped, 5 warnings in 147.35s`，零失败。HN-01 不新增 schema migration。
+
+### HN-02 — Agent Native AssetTransaction 统一事务
+
+状态：**闭环**。提交主题：`fix(HN-02): unify native asset transactions`。
+
+七原子证据：
+
+1. **输入**：每次原生资产变更显式声明 `operation`，可选绑定 `expected_revision`、`idempotency_key` 与 `evidence_refs`；目标只能是 Agent root 下的安全相对路径，transaction control 目录禁止成为业务 target。
+2. **权威**：每个 Agent 只有 `runtime_artifacts/asset_transactions/.asset.lock` 一把跨进程排他锁和一个单调 revision。不同 Agent互不阻塞；Memory/Soul/Skill writer不能自建第二把领域锁绕过。path resolve与 symlink escape检查阻止跨 Agent root写入。
+3. **执行**：`AgentAssetTransaction` 统一 stage、backup、prepare、apply、revision commit和receipt；explicit overlay、T3及 source lifecycle、Dream Soul/candidate/audit/preservation、Skill candidate/usage/review/registry/install/curator/evolution ledger都进入该入口。旧 `.dream_writeback.lock`、T3 `_atomic_write_targets` 与 Skill registry固定 `.tmp` production path已物理移除。
+4. **证据**：每个 transaction保存 versioned `journal.json`、base/next revision、ordered operations、before/desired hash、backup、applied paths、status和时间；revision file是 commit point，idempotency receipt固定第一次结果。T3 job manifest、T2/explicit lifecycle和正文在同一 revision；Skill文件、registry、usage/review/candidate/ledger也在同一 revision。
+5. **恢复**：prepared/applying transaction在下一次 acquire前自动 roll-forward；revision已落盘但 receipt未落盘时绝不错误回滚。真实 `SIGKILL`、磁盘满、stale revision、out-of-band target drift、重复 key均 fail closed。数据库 AI asset projection失败使用一个新 compensation revision恢复该 Skill transaction的所有文件，而不是只恢复 `SKILL.md`。
+6. **消费**：Memory loader继续以 canonical Markdown/JSONL为事实；Skill loader/registry读取同一 committed revision。`wiki_map.md`与 `index.sqlite`明确是可删可重建 projection；T3 idempotent replay会重建两者，关闭“canonical已提交、index未刷新”的 crash gap。
+7. **验收**：覆盖 12 进程通用写、12 进程 registry upsert、10 进程 Skill usage/review/candidate、8 路不同 explicit write、10 路重复 candidate单次提交、Dream与 memory tool同时写、真实 SIGKILL、prepared恢复、commit-point恢复、ENOSPC全量回滚、旧 revision、幂等重放、T3 source lifecycle同事务、索引删除重建、Skill DB失败全事务补偿、architecture wiring、Ruff、Alembic与全量 backend。
+
+KISS/奥卡姆证据：只使用 Python 标准库 `fcntl`、`os.replace`、`fsync`、SHA-256与 JSON journal；没有引入分布式锁、外部事务协调器或第二数据库。一个 transaction primitive替代 Dream/T3/overlay/Skill各自的锁、固定 temp和补偿写法；derived index不进入第二事实源。
+
+RED 证据：
+
+```text
+AgentAssetTransaction 初始契约：6 failed
+- 模块不存在；无 revision、journal、stale gate、idempotency、rollback、recovery、多进程串行
+
+explicit overlay 接线：2 failed
+- save_memory 没有 asset revision
+- 并发写没有统一 revision lane
+
+Skill 并发：2 failed
+- registry 固定 skill_registry.json.tmp 发生 FileNotFoundError/丢更新
+- usage/review/candidate 虽可能写出文件，但 revision 始终为 0
+
+第一次全量回归：6342 passed, 2 failed
+- T3 convergence旧回滚断言尚指向已退役私有目录
+- explicit PII placeholder索引渲染少一层 XML entity preservation
+```
+
+最后两个失败分别迁移到共享 journal backup机械事实，并恢复 entry/index同源渲染；未放宽安全或回滚断言。
+
+GREEN 证据：
+
+```bash
+cd backend
+source .venv/bin/activate
+pytest \
+  tests/services/test_agent_asset_transaction.py \
+  tests/architecture/test_agent_asset_transaction_wiring.py \
+  tests/memory/test_explicit_memory_overlay.py \
+  tests/memory/test_t3_consolidation_platform_gate.py \
+  tests/memory/test_growth_mechanisms.py \
+  tests/tools/test_memory_control_plane_integration.py \
+  tests/services/test_auto_dream.py \
+  tests/services/test_auto_dream_writeback_lock.py \
+  tests/services/test_skill_evolution_registry.py \
+  tests/services/test_skill_lifecycle.py \
+  tests/services/test_skill_installation.py \
+  tests/services/test_skill_curator.py \
+  tests/services/test_skill_loading.py \
+  tests/services/test_skill_distiller.py \
+  tests/services/test_skill_distiller_asset_revision.py \
+  tests/services/test_skill_distiller_audit.py \
+  tests/services/test_evolution_ledger.py \
+  tests/services/test_provisional_trial.py -q
+```
+
+结果：`222 passed, 4 warnings in 4.55s`。
+
+```bash
+cd backend
+source .venv/bin/activate
+ruff check <HN-02 当前变更 Python 文件>
+ruff format --check <HN-02 当前变更 Python 文件>
+alembic heads
+pytest tests -q
+```
+
+结果：Ruff lint/format 全绿；Alembic 单 head `channel_delivery_outbox_0711 (head)`；全量 backend `6344 passed, 1 skipped, 5 warnings in 149.40s`，零失败。HN-02 不新增数据库 schema migration。

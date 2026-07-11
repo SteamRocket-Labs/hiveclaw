@@ -15,6 +15,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from app.services.agent_asset_transaction import AgentAssetTransaction
+
 SCHEMA = "skill_registry.v1"
 
 ORIGIN_SYSTEM_BUILTIN = "system_builtin"
@@ -74,12 +76,23 @@ def default_origin_for_candidate(*, package_type: str, draft_filename: str) -> s
     return ORIGIN_T3_AUTO_CREATED
 
 
-def load_skill_evolution_registry(workspace: Path) -> dict[str, Any]:
+def load_skill_evolution_registry(
+    workspace: Path,
+    *,
+    transaction: AgentAssetTransaction | None = None,
+) -> dict[str, Any]:
     path = workspace / _REGISTRY_REL_PATH
-    if not path.exists():
+    rendered = (
+        transaction.read_text(_REGISTRY_REL_PATH.as_posix())
+        if transaction is not None
+        else path.read_text(encoding="utf-8")
+        if path.exists()
+        else None
+    )
+    if rendered is None:
         return {"schema": SCHEMA, "skills": {}}
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(rendered)
     except (OSError, json.JSONDecodeError):
         return {"schema": SCHEMA, "skills": {}}
     if not isinstance(data, dict):
@@ -101,17 +114,27 @@ def load_skill_evolution_registry(workspace: Path) -> dict[str, Any]:
     return {"schema": SCHEMA, "skills": normalized_skills}
 
 
-def save_skill_evolution_registry(workspace: Path, registry: dict[str, Any]) -> None:
+def save_skill_evolution_registry(
+    workspace: Path,
+    registry: dict[str, Any],
+    *,
+    transaction: AgentAssetTransaction | None = None,
+) -> None:
+    if transaction is None:
+        with AgentAssetTransaction(workspace, operation="skill_registry_save") as own_transaction:
+            save_skill_evolution_registry(workspace, registry, transaction=own_transaction)
+            own_transaction.commit()
+        return
     path = workspace / _REGISTRY_REL_PATH
-    path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "schema": SCHEMA,
         "skills": registry.get("skills") if isinstance(registry.get("skills"), dict) else {},
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    tmp.replace(path)
+    transaction.stage_text(
+        path.relative_to(workspace).as_posix(),
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+    )
 
 
 def file_sha256(path: Path) -> str | None:
@@ -135,14 +158,42 @@ def upsert_skill_evolution_entry(
     state: str = "active",
     source_refs: list[str] | tuple[str, ...] | None = None,
     metadata: dict[str, Any] | None = None,
+    transaction: AgentAssetTransaction | None = None,
 ) -> dict[str, Any]:
-    registry = load_skill_evolution_registry(workspace)
+    if transaction is None:
+        with AgentAssetTransaction(
+            workspace,
+            operation="skill_registry_upsert",
+            evidence_refs=tuple(str(ref) for ref in (source_refs or ())),
+        ) as own_transaction:
+            entry = upsert_skill_evolution_entry(
+                workspace,
+                skill_name=skill_name,
+                target_path=target_path,
+                skill_origin=skill_origin,
+                evolvable=evolvable,
+                active_version_hash=active_version_hash,
+                last_candidate_id=last_candidate_id,
+                state=state,
+                source_refs=source_refs,
+                metadata=metadata,
+                transaction=own_transaction,
+            )
+            own_transaction.commit()
+            return entry
+
+    registry = load_skill_evolution_registry(workspace, transaction=transaction)
     skills = registry.setdefault("skills", {})
     key = normalize_skill_name(skill_name)
     origin = normalize_skill_origin(skill_origin)
     allowed = default_evolvable_for_origin(origin)
     entry_evolvable = allowed if evolvable is None else bool(evolvable) and allowed
-    version_hash = active_version_hash or file_sha256(workspace / target_path)
+    staged_target = transaction.read_bytes(target_path)
+    version_hash = active_version_hash or (
+        "sha256:" + hashlib.sha256(staged_target).hexdigest()
+        if staged_target is not None
+        else file_sha256(workspace / target_path)
+    )
 
     existing = skills.get(key) if isinstance(skills.get(key), dict) else {}
     entry: dict[str, Any] = {
@@ -165,7 +216,7 @@ def upsert_skill_evolution_entry(
     entry.setdefault("authoring_contract", AUTHORING_CONTRACT)
 
     skills[key] = entry
-    save_skill_evolution_registry(workspace, registry)
+    save_skill_evolution_registry(workspace, registry, transaction=transaction)
     return entry
 
 

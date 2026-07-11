@@ -11,6 +11,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
+from app.services.agent_asset_transaction import AgentAssetTransaction
 from app.services.skill_candidate_package import write_skill_candidate_package
 from app.services.skill_evolution_registry import can_self_evolve_skill
 from app.services.skill_evolution_registry import get_skill_evolution_entry
@@ -22,15 +23,25 @@ def record_skill_lifecycle_event(
     skill_name: str,
     status: str,
     note: str,
+    transaction: AgentAssetTransaction | None = None,
 ) -> None:
-    evolution_dir = workspace / "evolution"
-    evolution_dir.mkdir(parents=True, exist_ok=True)
-    review_path = evolution_dir / "skill_review.md"
-    if not review_path.exists():
-        review_path.write_text("# Skill Review\n\n", encoding="utf-8")
+    if transaction is None:
+        with AgentAssetTransaction(workspace, operation="skill_lifecycle_event") as own_transaction:
+            record_skill_lifecycle_event(
+                workspace,
+                skill_name=skill_name,
+                status=status,
+                note=note,
+                transaction=own_transaction,
+            )
+            own_transaction.commit()
+        return
     stamp = datetime.now(timezone.utc).isoformat()
-    with review_path.open("a", encoding="utf-8") as handle:
-        handle.write(f"- {stamp} [{status}] {skill_name}: {note.strip()}\n")
+    review = transaction.read_text("evolution/skill_review.md") or "# Skill Review\n\n"
+    transaction.stage_text(
+        "evolution/skill_review.md",
+        review + f"- {stamp} [{status}] {skill_name}: {note.strip()}\n",
+    )
 
 
 @dataclass(slots=True)
@@ -149,6 +160,7 @@ def _append_promotion_evidence(
     decision: str,
     usage_event: dict[str, Any],
     candidate_result: dict[str, Any],
+    transaction: AgentAssetTransaction,
 ) -> str:
     path = _promotion_evidence_path(workspace)
     event = {
@@ -174,8 +186,10 @@ def _append_promotion_evidence(
         "note": usage_event["note"],
         "blocker": usage_event["blocker"],
     }
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n")
+    transaction.append_text(
+        path.relative_to(workspace).as_posix(),
+        json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n",
+    )
     return "evolution/skill_promotion_evidence.jsonl"
 
 
@@ -303,7 +317,13 @@ def _render_lifecycle_skill_draft(record: SkillCandidateRecord, *, status: str) 
     )
 
 
-def _write_candidate_package(workspace: Path, record: SkillCandidateRecord, *, status: str) -> dict[str, Any]:
+def _write_candidate_package(
+    workspace: Path,
+    record: SkillCandidateRecord,
+    *,
+    status: str,
+    transaction: AgentAssetTransaction,
+) -> dict[str, Any]:
     candidate_id = _candidate_id_for_workflow(record.workflow_signature)
     metadata = {
         "workflow_signature": record.workflow_signature,
@@ -334,6 +354,7 @@ def _write_candidate_package(workspace: Path, record: SkillCandidateRecord, *, s
         status=status,
         extra_metadata=metadata,
         draft_filename="candidate_signal.md",
+        transaction=transaction,
     )
 
 
@@ -346,8 +367,23 @@ def update_skill_candidate_record(
     last_status: str | None = None,
     last_note: str | None = None,
     last_updated_at: str | None = None,
+    transaction: AgentAssetTransaction | None = None,
 ) -> SkillCandidateRecord:
-    path = _candidate_path(workspace)
+    if transaction is None:
+        with AgentAssetTransaction(workspace, operation="skill_candidate_record_update") as own_transaction:
+            record = update_skill_candidate_record(
+                workspace,
+                workflow_signature=workflow_signature,
+                skill_name=skill_name,
+                blocker=blocker,
+                last_status=last_status,
+                last_note=last_note,
+                last_updated_at=last_updated_at,
+                transaction=own_transaction,
+            )
+            own_transaction.commit()
+            return record
+    path = workspace / "evolution" / "skill_candidates.md"
     records = load_skill_candidates(workspace)
     record = records.get(
         workflow_signature,
@@ -373,9 +409,14 @@ def update_skill_candidate_record(
     if last_updated_at is not None:
         record.last_updated_at = last_updated_at
     records[workflow_signature] = record
-    _write_candidate_package(workspace, record, status=record.last_status or "candidate")
-    if path.exists():
-        path.unlink()
+    _write_candidate_package(
+        workspace,
+        record,
+        status=record.last_status or "candidate",
+        transaction=transaction,
+    )
+    if transaction.read_bytes(path.relative_to(workspace).as_posix()) is not None:
+        transaction.stage_delete(path.relative_to(workspace).as_posix())
     return record
 
 
@@ -389,10 +430,23 @@ def record_skill_execution(
     note: str,
     blocker: str | None = None,
     occurred_at: str | None = None,
+    transaction: AgentAssetTransaction | None = None,
 ) -> dict[str, Any]:
-    review_path = _review_path(workspace)
-    if not review_path.exists():
-        review_path.write_text("# Skill Review\n\n", encoding="utf-8")
+    if transaction is None:
+        with AgentAssetTransaction(workspace, operation="skill_execution_record") as own_transaction:
+            result = record_skill_execution(
+                workspace,
+                skill_name=skill_name,
+                workflow_signature=workflow_signature,
+                status=status,
+                used_skill=used_skill,
+                note=note,
+                blocker=blocker,
+                occurred_at=occurred_at,
+                transaction=own_transaction,
+            )
+            own_transaction.commit()
+            return result
 
     records = load_skill_candidates(workspace)
     record = records.get(
@@ -429,6 +483,7 @@ def record_skill_execution(
             skill_name=skill_name,
             status="patch",
             note=note,
+            transaction=transaction,
         )
     elif normalized_status == "success" and not record.blocker and len(record.promote_candidates) >= _PROMOTE_THRESHOLD:
         decision = "promote"
@@ -437,6 +492,7 @@ def record_skill_execution(
             skill_name=skill_name,
             status="promote",
             note=note,
+            transaction=transaction,
         )
     else:
         record_skill_lifecycle_event(
@@ -444,11 +500,12 @@ def record_skill_execution(
             skill_name=skill_name,
             status="candidate",
             note=note,
+            transaction=transaction,
         )
-    _write_candidate_package(workspace, record, status=decision)
-    legacy_path = _candidate_path(workspace)
-    if legacy_path.exists():
-        legacy_path.unlink()
+    _write_candidate_package(workspace, record, status=decision, transaction=transaction)
+    legacy_path = "evolution/skill_candidates.md"
+    if transaction.read_bytes(legacy_path) is not None:
+        transaction.stage_delete(legacy_path)
 
     return {
         "decision": decision,
@@ -473,6 +530,7 @@ def record_skill_runtime_usage(
     trace_id: str | None = None,
     blocker: str | None = None,
     occurred_at: str | None = None,
+    transaction: AgentAssetTransaction | None = None,
 ) -> dict[str, Any]:
     """Record organic runtime skill usage before distillation.
 
@@ -481,6 +539,35 @@ def record_skill_runtime_usage(
     without depending on the distiller daemon. Non-actionable/noop sessions are
     still logged for observability, but they do not pollute candidate counters.
     """
+
+    if transaction is None:
+        evidence_refs = _evidence_refs(
+            session_id=session_id,
+            runtime_task_id=runtime_task_id,
+            trace_id=trace_id,
+        )
+        with AgentAssetTransaction(
+            workspace,
+            operation="skill_runtime_usage",
+            evidence_refs=evidence_refs,
+        ) as own_transaction:
+            result = record_skill_runtime_usage(
+                workspace,
+                skill_name=skill_name,
+                loaded_skill_names=loaded_skill_names,
+                tool_names=tool_names,
+                status=status,
+                note=note,
+                source=source,
+                session_id=session_id,
+                runtime_task_id=runtime_task_id,
+                trace_id=trace_id,
+                blocker=blocker,
+                occurred_at=occurred_at,
+                transaction=own_transaction,
+            )
+            own_transaction.commit()
+            return result
 
     stamp = _ensure_iso(occurred_at)
     normalized_loaded = [str(item).strip() for item in loaded_skill_names if str(item or "").strip()]
@@ -506,8 +593,10 @@ def record_skill_runtime_usage(
         "note": note.strip(),
         "blocker": (blocker or "").strip(),
     }
-    with _usage_path(workspace).open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(usage_event, ensure_ascii=False, sort_keys=True) + "\n")
+    transaction.append_text(
+        "evolution/skill_usage.jsonl",
+        json.dumps(usage_event, ensure_ascii=False, sort_keys=True) + "\n",
+    )
 
     if normalized_status in {"noop", "unknown", ""}:
         return {
@@ -540,6 +629,7 @@ def record_skill_runtime_usage(
         note=note,
         blocker=blocker,
         occurred_at=stamp,
+        transaction=transaction,
     )
     if result.get("decision") in {"promote", "patch"}:
         result["evidence_ref"] = _append_promotion_evidence(
@@ -547,6 +637,7 @@ def record_skill_runtime_usage(
             decision=str(result["decision"]),
             usage_event=usage_event,
             candidate_result=result,
+            transaction=transaction,
         )
     if used_skill and normalized_status in {"failed", "workaround"}:
         registry_entry = get_skill_evolution_entry(workspace, primary_skill)
@@ -573,6 +664,7 @@ def record_skill_runtime_usage(
                     "usage_event": usage_event,
                 },
                 negative_signal_count=int(result.get("patch_candidate_count") or 0),
+                transaction=transaction,
             )
             if trial_result["decision"] == "rolled_back":
                 result["trial_decision"] = trial_result["decision"]

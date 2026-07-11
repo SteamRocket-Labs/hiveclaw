@@ -176,11 +176,17 @@ def test_rewrite_file_converges_profile_file_with_archive(tmp_path: Path) -> Non
     content = self_path.read_text(encoding="utf-8")
     assert "cap-merged" in content
     assert "retired:" not in content  # retired entries physically removed by convergence
-    # old version archived for rollback
-    rollback_root = _mem_dir(tmp_path, agent_id) / ".staging" / "rollback"
-    backups = list(rollback_root.glob("t3-*/memory__self__self.md"))
-    assert backups, "convergence rewrite must archive the previous version"
-    assert "cap-0" in backups[0].read_text(encoding="utf-8")
+    # The shared AgentAssetTransaction journal is the single rollback
+    # authority for T3/Soul/Skill writes; the prior file lives in its backup.
+    revision = json.loads((tmp_path / str(agent_id) / "runtime_artifacts/asset_transactions/revision.json").read_text())
+    journal_dir = (
+        tmp_path / str(agent_id) / "runtime_artifacts/asset_transactions/transactions" / revision["last_transaction_id"]
+    )
+    journal = json.loads((journal_dir / "journal.json").read_text())
+    operation = next(item for item in journal["operations"] if item["path"] == target)
+    backup = journal_dir / operation["backup_file"]
+    assert backup.is_file(), "convergence rewrite must archive the previous version"
+    assert "cap-0" in backup.read_text(encoding="utf-8")
 
 
 def test_rewrite_file_without_convergence_note_is_held(tmp_path: Path) -> None:

@@ -1,7 +1,24 @@
 from __future__ import annotations
 
 import json
+import multiprocessing
 from pathlib import Path
+
+
+def _skill_usage_writer(workspace: str, index: int) -> None:
+    from app.services.skill_lifecycle import record_skill_runtime_usage
+
+    record_skill_runtime_usage(
+        Path(workspace),
+        skill_name=f"skill-{index}",
+        loaded_skill_names=[f"skill-{index}"],
+        tool_names=["load_skill", f"tool_{index}"],
+        status="success",
+        note=f"concurrent usage {index}",
+        source="concurrency_test",
+        occurred_at=f"2026-07-11T10:00:{index:02d}Z",
+        session_id=f"session-{index}",
+    )
 
 
 def _skill_candidate_packages(workspace: Path) -> list[Path]:
@@ -247,3 +264,27 @@ def test_record_skill_runtime_usage_ignores_noop_without_polluting_candidates(tm
     assert result["decision"] == "ignored"
     assert not (tmp_path / "evolution" / "skill_candidates.md").exists()
     assert (tmp_path / "evolution" / "skill_usage.jsonl").exists()
+
+
+def test_skill_runtime_usage_serializes_usage_review_and_candidates_across_processes(tmp_path: Path) -> None:
+    from app.services.agent_asset_transaction import read_agent_asset_revision
+
+    context = multiprocessing.get_context("spawn")
+    processes = [context.Process(target=_skill_usage_writer, args=(str(tmp_path), index)) for index in range(10)]
+    for process in processes:
+        process.start()
+    for process in processes:
+        process.join(timeout=15)
+        assert process.exitcode == 0
+
+    usage_rows = (tmp_path / "evolution/skill_usage.jsonl").read_text(encoding="utf-8").splitlines()
+    review_rows = [
+        line
+        for line in (tmp_path / "evolution/skill_review.md").read_text(encoding="utf-8").splitlines()
+        if line.startswith("- ")
+    ]
+    manifests = list((tmp_path / "evolution/skill_candidates").glob("*/manifest.json"))
+    assert len(usage_rows) == 10
+    assert len(review_rows) == 10
+    assert len(manifests) == 10
+    assert read_agent_asset_revision(tmp_path) == 10

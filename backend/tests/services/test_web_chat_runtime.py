@@ -2229,6 +2229,60 @@ async def test_finalize_web_chat_run_records_file_changes_side_channel(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_file_change_side_channel_emits_file_and_artifact_hooks(monkeypatch):
+    import app.services.web_chat_runtime as runtime
+    from app.runtime.hooks import HookResult
+
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    run_id = uuid4()
+    session_id = uuid4()
+    captured_hooks = []
+    persisted = []
+
+    async def fake_emit(event, **kwargs):
+        captured_hooks.append((event.value, kwargs))
+        if event.value == "file_changed":
+            return HookResult(watch_paths=["workspace/**/*.md"])
+        return None
+
+    async def fake_append(**kwargs):
+        persisted.append(kwargs)
+        return SimpleNamespace(event_id=uuid4(), sequence=1, message_id=None)
+
+    monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit)
+    monkeypatch.setattr(runtime, "append_session_event", fake_append)
+    await runtime._append_file_changes_event(
+        db=SimpleNamespace(),
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        session_id=str(session_id),
+        run_uuid=run_id,
+        message_id=None,
+        file_change_paths=["workspace/report.md"],
+        file_change_states={
+            "workspace/report.md": {"path": "workspace/report.md", "exists": True, "sha256": "a" * 64, "size": 6}
+        },
+        file_change_lineage=[
+            {
+                "path": "workspace/report.md",
+                "before_state": {"exists": False, "sha256": None, "size": 0},
+                "after_state": {"exists": True, "sha256": "a" * 64, "size": 6},
+            }
+        ],
+        attached_artifact_paths=["workspace/report.md"],
+        declared_artifact_paths=["workspace/report.md", "workspace/missing.md"],
+        rejected_artifact_paths=["workspace/missing.md"],
+    )
+
+    assert [name for name, _kwargs in captured_hooks] == ["file_changed", "artifact_changed"]
+    assert captured_hooks[0][1]["metadata"]["change_kind"] == "add"
+    assert captured_hooks[0][1]["metadata"]["file_path"] == "workspace/report.md"
+    assert captured_hooks[1][1]["metadata"]["attached_artifact_paths"] == ["workspace/report.md"]
+    assert persisted[0]["metadata"]["hook_watch_paths"] == ["workspace/**/*.md"]
+
+
+@pytest.mark.asyncio
 async def test_tool_card_finalization_preserves_exact_file_change_evidence(monkeypatch):
     import app.services.tenant_resolver as tenant_resolver
     import app.services.web_chat_runtime as runtime
@@ -3597,6 +3651,10 @@ async def test_worker_materializes_initial_user_turn_to_transcript_without_dupli
 
     async def fake_mark(**kwargs):
         answered.append(kwargs)
+        answer_event = kwargs["answer_event"]
+        answer_metadata = dict(answer_event.transcript_event.metadata_json or {})
+        answer_metadata["elicitation_effective_answer"] = "请规划整个公司的长任务"
+        answer_event.transcript_event.metadata_json = answer_metadata
 
     monkeypatch.setattr(runtime, "_capture_user_checkpoint_workspace_snapshot", fake_capture)
     monkeypatch.setattr(runtime, "mark_latest_pending_clarification_answered", fake_mark)
@@ -3612,6 +3670,9 @@ async def test_worker_materializes_initial_user_turn_to_transcript_without_dupli
 
     assert runtime_task.metadata_json["initial_user_message_t0_materialized"] is True
     assert runtime_task.metadata_json["initial_user_message_t0_event_id"]
+    assert runtime_task.prompt == "请规划整个公司的长任务"
+    assert runtime_task.metadata_json["elicitation_original_prompt"] == "请规划一个长任务"
+    assert runtime_task.metadata_json["elicitation_effective_prompt"] == "请规划整个公司的长任务"
     assert snapshots
     assert answered
     assert not any(isinstance(item, ChatMessage) for item in db.added)

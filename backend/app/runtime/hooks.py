@@ -10,6 +10,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import time
 import uuid
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
@@ -197,24 +198,6 @@ _HOOK_EVENT_CATEGORIES: dict[HookEvent, str] = {
     HookEvent.TEAMMATE_IDLE: "team",
 }
 
-_DISABLED_NOOP_HOOK_EVENTS: set[HookEvent] = {
-    HookEvent.SETUP,
-    HookEvent.ELICITATION_RESULT,
-    HookEvent.WORKTREE_CREATE,
-    HookEvent.WORKTREE_REMOVE,
-    HookEvent.CWD_CHANGED,
-    HookEvent.FILE_CHANGED,
-}
-
-_PLANNED_OBSERVE_HOOK_EVENTS: set[HookEvent] = {
-    HookEvent.NOTIFICATION,
-    HookEvent.ELICITATION,
-    HookEvent.CONFIG_CHANGE,
-    HookEvent.INSTRUCTIONS_LOADED,
-    HookEvent.WORKSPACE_CONTEXT_CHANGED,
-    HookEvent.ARTIFACT_CHANGED,
-}
-
 _ACTIVE_OBSERVE_ONLY_HOOK_EVENTS: set[HookEvent] = {
     HookEvent.POST_TOOL_USE,
     HookEvent.POST_TOOL_FAILURE,
@@ -227,6 +210,13 @@ _ACTIVE_OBSERVE_ONLY_HOOK_EVENTS: set[HookEvent] = {
     HookEvent.TEAMMATE_IDLE,
     HookEvent.PRE_COMPACTION,
     HookEvent.POST_COMPACTION,
+    HookEvent.NOTIFICATION,
+    HookEvent.ELICITATION_RESULT,
+    HookEvent.INSTRUCTIONS_LOADED,
+    HookEvent.WORKSPACE_CONTEXT_CHANGED,
+    HookEvent.ARTIFACT_CHANGED,
+    HookEvent.CWD_CHANGED,
+    HookEvent.FILE_CHANGED,
 }
 
 _HOOK_RUNTIME_CONSUMERS: dict[HookEvent, str] = {
@@ -244,16 +234,22 @@ _HOOK_RUNTIME_CONSUMERS: dict[HookEvent, str] = {
     HookEvent.POST_TOOL_FAILURE: "kernel_post_tool_failure_observer",
     HookEvent.PRE_COMPACTION: "memory_compaction_observer",
     HookEvent.POST_COMPACTION: "memory_compaction_observer",
-    HookEvent.NOTIFICATION: "notification_observer",
+    HookEvent.NOTIFICATION: "notification_service_emitter",
     HookEvent.PERMISSION_REQUEST: "approval_service_equivalent_observer",
     HookEvent.PERMISSION_DENIED: "permission_denied_audit_observer",
     HookEvent.TASK_CREATED: "command_task_event_observer",
     HookEvent.TASK_COMPLETED: "command_task_event_observer",
-    HookEvent.ELICITATION: "plan_mode_elicitation_observer",
-    HookEvent.CONFIG_CHANGE: "runtime_config_refresh_observer",
-    HookEvent.INSTRUCTIONS_LOADED: "context_refresh_observer",
-    HookEvent.WORKSPACE_CONTEXT_CHANGED: "workspace_context_observer",
-    HookEvent.ARTIFACT_CHANGED: "workspace_artifact_observer",
+    HookEvent.ELICITATION: "plan_mode_elicitation_gate",
+    HookEvent.ELICITATION_RESULT: "accepted_prompt_elicitation_result_gate",
+    HookEvent.SETUP: "invoker_setup_gate",
+    HookEvent.CONFIG_CHANGE: "agent_config_change_gate",
+    HookEvent.INSTRUCTIONS_LOADED: "prompt_context_instruction_emitter",
+    HookEvent.WORKSPACE_CONTEXT_CHANGED: "cloud_branch_workspace_context_emitter",
+    HookEvent.ARTIFACT_CHANGED: "terminal_artifact_change_emitter",
+    HookEvent.WORKTREE_CREATE: "cloud_branch_workspace_create",
+    HookEvent.WORKTREE_REMOVE: "cloud_branch_workspace_remove",
+    HookEvent.CWD_CHANGED: "cloud_branch_virtual_cwd_emitter",
+    HookEvent.FILE_CHANGED: "terminal_file_change_emitter",
     HookEvent.TEAM_CREATED: "agent_team_event_observer",
     HookEvent.TEAM_CLOSED: "agent_team_event_observer",
     HookEvent.TEAMMATE_IDLE: "agent_team_event_observer",
@@ -297,36 +293,20 @@ _HOOK_TRIGGER_POINTS: dict[HookEvent, str] = {
 
 
 def _hook_lifecycle_state(event: HookEvent) -> str:
-    if event in _DISABLED_NOOP_HOOK_EVENTS:
-        return "disabled_noop"
-    if event in _PLANNED_OBSERVE_HOOK_EVENTS:
-        return "planned_observe"
     if event in _ACTIVE_OBSERVE_ONLY_HOOK_EVENTS:
         return "active_observe"
     return "active"
 
 
 def _hook_runtime_consumer(event: HookEvent) -> str:
-    if event in _DISABLED_NOOP_HOOK_EVENTS:
-        return "disabled_noop_audit"
-    if event in _PLANNED_OBSERVE_HOOK_EVENTS:
-        return "planned_runtime_emitter"
     return _HOOK_RUNTIME_CONSUMERS.get(event, "hook_registry_observer")
 
 
 def _hook_catalog_trust_level(event: HookEvent) -> str:
-    if event in _DISABLED_NOOP_HOOK_EVENTS:
-        return "disabled_noop"
-    if event in _PLANNED_OBSERVE_HOOK_EVENTS:
-        return "planned"
     return "platform_trusted"
 
 
 def _hook_catalog_failure_policy(event: HookEvent) -> str:
-    if event in _DISABLED_NOOP_HOOK_EVENTS:
-        return "disabled_noop"
-    if event in _PLANNED_OBSERVE_HOOK_EVENTS:
-        return "planned_observe"
     if event in _ACTIVE_OBSERVE_ONLY_HOOK_EVENTS:
         return "observe_continue"
     return "fail_closed_if_blocking"
@@ -421,9 +401,9 @@ def _hook_output_schema(event: HookEvent) -> dict[str, Any]:
     if event in {HookEvent.ELICITATION, HookEvent.ELICITATION_RESULT}:
         props["elicitation_action"] = {"type": "string", "enum": ["accept", "decline", "cancel", "noop"]}
         props["elicitation_content"] = {"type": ["string", "object", "null"]}
-    if event in {HookEvent.WORKTREE_CREATE, HookEvent.WORKTREE_REMOVE}:
+    if event == HookEvent.WORKTREE_CREATE:
         props["worktree_path"] = {"type": ["string", "null"]}
-    if event in {HookEvent.SESSION_START, HookEvent.SETUP, HookEvent.CWD_CHANGED, HookEvent.FILE_CHANGED}:
+    if event in {HookEvent.SESSION_START, HookEvent.CWD_CHANGED, HookEvent.FILE_CHANGED}:
         props["watch_paths"] = {"type": "array", "items": {"type": "string"}}
     if event == HookEvent.STOP:
         props["prevent_continuation"] = {"type": "boolean"}
@@ -470,6 +450,9 @@ class HookResult:
     retry: bool | None = None
     updated_mcp_tool_output: Any | None = None
     initial_user_message: str | None = None
+    elicitation_action: str | None = None
+    elicitation_content: str | dict[str, Any] | None = None
+    worktree_path: str | None = None
     watch_paths: list[str] = field(default_factory=list)
     async_hook: bool = False
     async_timeout: float | None = None
@@ -623,6 +606,11 @@ def _hook_output_to_result(
         hook_specific.get("permissionDecision") or raw.get("permissionDecision") or raw.get("permission_decision")
     )
     permission_request_result = _as_dict(hook_specific.get("decision"))
+    elicitation_action = hook_specific.get("action") or raw.get("elicitation_action")
+    if elicitation_action not in {"accept", "decline", "cancel", None}:
+        elicitation_action = None
+    elicitation_content = hook_specific.get("content", raw.get("elicitation_content"))
+    worktree_path = hook_specific.get("worktreePath") or raw.get("worktreePath") or raw.get("worktree_path")
     retry = hook_specific.get("retry")
     watch_paths = hook_specific.get("watchPaths") or raw.get("watchPaths") or raw.get("watch_paths")
 
@@ -644,6 +632,9 @@ def _hook_output_to_result(
             permission_request_result is not None,
             retry is not None,
             hook_specific.get("initialUserMessage") is not None,
+            elicitation_action is not None,
+            elicitation_content is not None,
+            worktree_path is not None,
             watch_paths,
             raw.get("suppressOutput") is not None,
         )
@@ -666,6 +657,9 @@ def _hook_output_to_result(
         retry=bool(retry) if retry is not None else None,
         updated_mcp_tool_output=updated_mcp_output,
         initial_user_message=hook_specific.get("initialUserMessage"),
+        elicitation_action=str(elicitation_action) if elicitation_action is not None else None,
+        elicitation_content=elicitation_content,
+        worktree_path=str(worktree_path) if worktree_path is not None else None,
         watch_paths=[str(item) for item in watch_paths] if isinstance(watch_paths, list) else [],
     )
 
@@ -894,6 +888,10 @@ def _hook_decision(event: HookEvent, result: HookResult | None, exc: Exception |
         return "add_context"
     if result.permission_behavior or result.permission_request_result:
         return "permission_decision"
+    if result.elicitation_action or result.elicitation_content is not None:
+        return "elicitation_decision"
+    if result.worktree_path:
+        return "workspace_path"
     if result.async_hook:
         return "async"
     return "observed"
@@ -1181,6 +1179,11 @@ class HookRegistry:
             HookEvent.STOP,
             HookEvent.SUBAGENT_START,
             HookEvent.SUBAGENT_STOP,
+            HookEvent.SETUP,
+            HookEvent.ELICITATION,
+            HookEvent.CONFIG_CHANGE,
+            HookEvent.WORKTREE_CREATE,
+            HookEvent.WORKTREE_REMOVE,
         }
 
     async def _emit_stop_failure(self, ctx: HookContext, exc: Exception) -> None:
@@ -1405,13 +1408,7 @@ class HookRegistry:
                             additional_contexts=list(result.additional_contexts or []),
                         )
                     elif result.additional_contexts:
-                        final_result = HookResult(
-                            block=False,
-                            reason=result.reason,
-                            modified_args=ctx.tool_args if ctx.event == HookEvent.PRE_TOOL_USE else None,
-                            additional_contexts=list(result.additional_contexts),
-                            output_rewrite=result.output_rewrite,
-                        )
+                        final_result = result
                     elif ctx.event == HookEvent.POST_TOOL_USE and result.output_rewrite is not None:
                         final_result = HookResult(
                             block=False,
@@ -1425,6 +1422,9 @@ class HookRegistry:
                             result.retry is not None,
                             result.updated_mcp_tool_output is not None,
                             result.initial_user_message is not None,
+                            result.elicitation_action is not None,
+                            result.elicitation_content is not None,
+                            result.worktree_path is not None,
                             bool(result.watch_paths),
                             result.async_hook,
                         )
@@ -1507,6 +1507,81 @@ hook_registry = HookRegistry()
 
 
 async def emit_hook(event: HookEvent, **kwargs: Any) -> HookResult | None:
-    """Convenience function to emit a hook event."""
+    """Emit one hook boundary and persist its operator evidence as a span."""
     ctx = HookContext(event=event, **kwargs)
-    return await hook_registry.emit(ctx)
+    started = time.perf_counter()
+    result = await hook_registry.emit(ctx)
+    try:
+        await _persist_hook_boundary_evidence(
+            ctx,
+            result=result,
+            duration_ms=(time.perf_counter() - started) * 1000,
+        )
+    except Exception as exc:  # evidence projection cannot become a runtime availability dependency
+        logger.warning("[Hooks] Failed to persist boundary evidence for %s: %s", event.value, exc)
+    return result
+
+
+async def _persist_hook_boundary_evidence(
+    ctx: HookContext,
+    *,
+    result: HookResult | None,
+    duration_ms: float,
+) -> None:
+    metadata = dict(ctx.metadata or {})
+    try:
+        tenant_id = uuid.UUID(str(metadata.get("tenant_id")))
+    except (TypeError, ValueError):
+        return
+    try:
+        agent_id = uuid.UUID(str(ctx.agent_id)) if ctx.agent_id else None
+    except (TypeError, ValueError):
+        agent_id = None
+    trace_id = str(
+        metadata.get("trace_id")
+        or metadata.get("runtime_task_id")
+        or metadata.get("request_id")
+        or f"hook:{ctx.event.value}:{uuid.uuid4().hex}"
+    )
+    hook_run_id = uuid.uuid4().hex
+    decision = _hook_decision(ctx.event, result)
+    safe_input = {
+        "event": ctx.event.value,
+        "agent_id": str(agent_id) if agent_id else None,
+        "session_id": ctx.session_id,
+        "source": ctx.source,
+        "matcher_fields": _ctx_matcher_fields(ctx),
+        "prompt_present": bool(ctx.prompt),
+        "tool_name": ctx.tool_name,
+        "metadata_keys": sorted(str(key) for key in metadata if key != "hook_lifecycle_records"),
+    }
+    safe_result = asdict(result) if result is not None else {}
+    from app.services.invocation_trace import persist_invocation_span
+
+    await persist_invocation_span(
+        tenant_id=tenant_id,
+        trace_id=trace_id,
+        span_id=f"hook-{ctx.event.value}-{hook_run_id[:12]}",
+        parent_span_id=None,
+        parent_trace_id=str(metadata.get("parent_trace_id") or "") or None,
+        span_type="hook",
+        name=f"hook.{ctx.event.value}",
+        status="blocked" if result and result.block else "ok",
+        duration_ms=duration_ms,
+        agent_id=agent_id,
+        user_id=metadata.get("user_id"),
+        runtime_task_id=metadata.get("runtime_task_id") or metadata.get("task_id"),
+        session_id=ctx.session_id,
+        request_id=metadata.get("request_id"),
+        metadata={
+            "hook_event": ctx.event.value,
+            "decision": decision,
+            "lifecycle_state": _hook_lifecycle_state(ctx.event),
+            "failure_policy": _hook_catalog_failure_policy(ctx.event),
+            "input_hash": _stable_hash(safe_input),
+            "result_hash": _stable_hash(safe_result) if safe_result else None,
+            "hook_lifecycle_records": list(metadata.get("hook_lifecycle_records") or []),
+            "source": ctx.source,
+        },
+        error=None,
+    )

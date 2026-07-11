@@ -139,6 +139,42 @@ def test_permission_request_hook_output_resolves_in_session_permission() -> None
     }
 
 
+def test_elicitation_result_hook_output_can_override_action_and_content() -> None:
+    from app.runtime.hooks import parse_hook_json_output
+
+    result = parse_hook_json_output(
+        HookEvent.ELICITATION_RESULT,
+        {
+            "hookSpecificOutput": {
+                "hookEventName": "ElicitationResult",
+                "action": "accept",
+                "content": {"answer": "approved scope"},
+            }
+        },
+    )
+
+    assert result.hook_result is not None
+    assert result.hook_result.elicitation_action == "accept"
+    assert result.hook_result.elicitation_content == {"answer": "approved scope"}
+
+
+def test_worktree_create_hook_output_returns_governed_workspace_path() -> None:
+    from app.runtime.hooks import parse_hook_json_output
+
+    result = parse_hook_json_output(
+        HookEvent.WORKTREE_CREATE,
+        {
+            "hookSpecificOutput": {
+                "hookEventName": "WorktreeCreate",
+                "worktreePath": "session://branch-1/workspace",
+            }
+        },
+    )
+
+    assert result.hook_result is not None
+    assert result.hook_result.worktree_path == "session://branch-1/workspace"
+
+
 @pytest.mark.asyncio
 async def test_command_hook_exit_code_one_is_non_blocking_error(tmp_path: Path) -> None:
     from app.runtime.hook_runner import GovernedHookRunner, HookRunnerPolicy, HookSpec

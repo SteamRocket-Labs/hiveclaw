@@ -535,6 +535,58 @@ async def ask_user_question(request: ToolExecutionRequest) -> str:
             ensure_ascii=False,
         )
 
+    from app.runtime.hooks import HookEvent, emit_hook
+
+    hook_metadata = {
+        "tenant_id": request.context.tenant_id,
+        "user_id": str(request.context.user_id),
+        "runtime_task_id": request.context.runtime_task_id,
+        "turn_id": request.context.turn_id,
+        "questions": normalized,
+        "blocking": bool(args.get("blocking", True)),
+        "tool_name": "ask_user_question",
+    }
+    hook_result = await emit_hook(
+        HookEvent.ELICITATION,
+        agent_id=request.context.agent_id,
+        session_id=request.context.session_id,
+        prompt=normalized[0]["question"],
+        source=request.context.origin_channel or "plan_mode",
+        metadata=hook_metadata,
+    )
+    if hook_result and hook_result.block:
+        return json.dumps(
+            {
+                "status": "elicitation_blocked",
+                "action": "cancel",
+                "reason": hook_result.reason or "Blocked by elicitation hook",
+                "blocking": False,
+            },
+            ensure_ascii=False,
+        )
+    if hook_result and hook_result.elicitation_action in {"decline", "cancel"}:
+        return json.dumps(
+            {
+                "status": f"elicitation_{hook_result.elicitation_action}d"
+                if hook_result.elicitation_action == "decline"
+                else "elicitation_cancelled",
+                "action": hook_result.elicitation_action,
+                "reason": hook_result.reason,
+                "blocking": False,
+            },
+            ensure_ascii=False,
+        )
+    if hook_result and hook_result.elicitation_action == "accept" and hook_result.elicitation_content is not None:
+        return json.dumps(
+            {
+                "status": "elicitation_auto_resolved",
+                "action": "accept",
+                "content": hook_result.elicitation_content,
+                "blocking": False,
+            },
+            ensure_ascii=False,
+        )
+
     payload = {
         "status": "awaiting_user_clarification",
         "questions": normalized,

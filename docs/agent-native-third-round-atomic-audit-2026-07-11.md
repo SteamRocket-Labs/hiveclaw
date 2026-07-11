@@ -24,7 +24,7 @@
 - **P1：13 个**。会造成恢复能力、CC parity、自进化、资产统计、实时 UI 或验收可信度不足，不能作为“上线后再补”的债务。
 - **P2：1 个**。是确定的 KISS/维护性残留，应与本轮一起清理。
 
-当前修复进度：**7 / 28**（SA-01 至 SA-07 已按七原子闭环并分别提交）；其余断点未全部关闭前，结论继续保持 NO-GO。
+当前修复进度：**8 / 28**（SA-01 至 SA-08 已按七原子闭环并分别提交）；其余断点未全部关闭前，结论继续保持 NO-GO。
 
 这里的“95% 以上信心”指的是：**对当前 checkout 根断点清单完整度的置信度为 95.3%**，不代表系统有 95.3% 的上线成熟度。只要任一 P0 尚存，上线结论就是 NO-GO。
 
@@ -91,7 +91,7 @@ Codex 的 PermissionProfile、thread identity、sandbox policy 和 approval even
 | SA-05 | Channel ingress 无 durable inbox | P0 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | SA-06 | 外部通道身份被建成全局 User | P0 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | SA-07 | 最终通道交付无 durable outbox | P0 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| SA-08 | CC Hook surface 有 no-op/planned 壳 | P1 | 缺失/局部闭环 | ✓ | ✓ | ✗ | △ | △ | ✗ | △ |
+| SA-08 | CC Hook surface 有 no-op/planned 壳 | P1 | **闭环** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | SA-09 | Frozen prompt cache 依赖签名不完整 | P1 | 局部闭环 | ✓ | △ | △ | △ | △ | △ | △ |
 | SA-10 | 智能上下文机械截断无恢复指针 | P1 | 局部闭环 | △ | ✓ | △ | △ | ✗ | △ | △ |
 | SA-11 | Local Bridge receipt 文件并发丢写 | P1 | 断点 | ✓ | ✓ | △ | △ | ✗ | △ | ✗ |
@@ -206,6 +206,8 @@ Task logs 在 `backend/app/api/tasks.py:181-207` 只按 task_id 查写，没有�
 **验收**：terminal commit 后 kill、provider 5xx/429、同 delivery 重放、部分附件成功、目标撤销、DLQ 重送。
 
 ### SA-08：Hook 仅有枚举，不等于 CC parity — P1
+
+**修复状态（2026-07-11）**：**闭环**。Hook catalog 已删除 `disabled_noop` / `planned_observe` 假状态，FreeCode 27 个 wire event 只呈现真实 `supported_active` 或 `supported_observe_only`。Setup 在模型前可阻断并注入上下文；SessionStart 消费 initial message/context/watch paths；Elicitation/ElicitationResult 可治理结构化问题与模型有效答案，同时保留用户原始 T0；ConfigChange 在 ORM mutation 前阻断 user settings，company policy 只观察不可被低信任 hook 否决；InstructionsLoaded 覆盖 frozen prompt 与 `load_skill`；Worktree 映射到受治理的 cloud conversation branch transaction；Cwd/File/Artifact/Notification 都由真实生产路径触发。每次边界无论是否配置 handler 都写 canonical `InvocationSpan(span_type='hook')`，handler lifecycle 记录 matcher、输入/结果 hash、decision、failure policy 与 timeout；证据投影失败不会反向打断业务运行。
 
 `backend/app/runtime/hooks.py:200-215` 明确把 Setup、ElicitationResult、WorktreeCreate/Remove、CwdChanged、FileChanged 标成 disabled no-op；Notification、Elicitation、ConfigChange、InstructionsLoaded、WorkspaceContextChanged、ArtifactChanged 只是 planned observe。FreeCode 已在 Setup、UserPromptSubmit、Notification、InstructionsLoaded、Worktree 和 Stop/TeammateIdle 等真实路径消费这些 hook。
 
@@ -1086,3 +1088,65 @@ cd backend && alembic heads
 ```
 
 结果：Ruff `All checks passed!`，20 个变更 Python 文件格式通过；Alembic 单 head：`channel_delivery_outbox_0711 (head)`。
+
+### SA-08 — CC Hook 全生命周期真实接线
+
+状态：**闭环**。提交主题：`fix(SA-08): wire hook lifecycle boundaries end to end`。
+
+七原子证据：
+
+1. **输入**：Hook wire standard 继续与 FreeCode 的 27 个事件一一对应；每个边界携带 Agent、tenant、session、run/turn、source 与事件专属 metadata。Setup/SessionStart、structured Elicitation、Agent config diff hash、instruction URI、cloud branch URI、file lineage、artifact receipt 和 notification identity 都来自当前生产对象，不由模型伪造。
+2. **权威**：Hook matcher 可绑定 Agent、tenant、session、source 和 tool；ConfigChange 在任何 ORM mutation 前执行，`user_settings` 可阻断，`policy_settings` 明确不可被下层 hook 否决。WorktreeCreate 只允许返回当前 branch 的 canonical `session://.../workspace`，不能把受治理云 workspace 重定向到任意路径。Elicitation 的模型有效答案与原始用户 T0 分离，防止 hook 篡改机械输入证据。
+3. **执行**：`invoke_agent()` 真实消费 Setup、UserPromptSubmit、SessionStart 与 InstructionsLoaded；`ask_user_question`/clarification answer 消费 Elicitation 双边界；Agent PATCH 消费 ConfigChange；branch create/delete 消费 WorktreeCreate/Remove、CwdChanged、WorkspaceContextChanged；terminal file side-channel 消费 FileChanged/ArtifactChanged；notification service 消费 Notification；成功的 `load_skill` 消费 InstructionsLoaded。catalog 不再存在 no-op/planned 壳。
+4. **证据**：全局 `emit_hook()` 为每次边界写 `InvocationSpan(span_type='hook')`，保存 input/result hash、decision、source、lifecycle state 与 handler lifecycle records，不记录 prompt、文件内容或配置明文。Elicitation、file/artifact 与 branch 路径还把有效投影和引用写回现有 transcript/session metadata；用户原始 T0 不被改写。
+5. **恢复**：Hook runtime 原有 stable key、enable/disable、per-Agent policy、timeout 与 failure policy 保持生效；blockable 边界 fail closed，observe-only 边界继续业务主路径。span 投影失败被隔离为 warning，不会把已完成通知、文件或模型调用变成假失败。branch 创建在 DB mutation 前阻断，删除在清理 transcript/files 前阻断，重试仍指向同一 canonical session/workspace identity。
+6. **消费**：Setup/SessionStart 的 additional context、initial user message 与 watch paths 进入真实 kernel request/session metadata；Elicitation override 进入 RuntimeTask model prompt；Worktree path 被 cloud branch authority 校验；FileChanged watch paths 进入 durable file-change event；InstructionsLoaded 同时覆盖 frozen prefix 与按需 Skill progressive disclosure。Turn envelope 只向 UI/控制面报告真实 active/observe 状态。
+7. **验收**：覆盖 catalog 状态、wire parser、global span、Setup ordering/block、SessionStart input changes、InstructionsLoaded frozen/skill、Elicitation accept/decline/result projection、ConfigChange policy、Notification、branch create/remove、Cwd/Workspace、File/Artifact、TurnEnvelope contract、完整受影响测试文件、Ruff lint/format、Alembic single head 与后端全量。
+
+RED 证据（修复前由新增回归测试稳定复现）：
+
+- 首轮生产边界测试：`13 failed, 16 passed`。失败逐一证明 Setup 未触发/不可阻断、InstructionsLoaded 未触发、Elicitation 不消费 action/content、answer hook 无入口、Notification/branch/delete/file/artifact 无 emitter、ConfigChange helper 缺失。
+- 补强 FreeCode 输出语义：WorktreeCreate `worktreePath` parser 与 SessionStart initial message/context/watch paths 两条测试为 `2 failed`，证明 wire schema 虽声明输出但 runtime 未消费。
+- 首轮后端全量：`1 failed, 6304 passed, 1 skipped`。唯一失败是 TurnEnvelope 仍把已接线 Setup 断言为 `unsupported_with_reason`，随后同步机械事实源并重跑全量。
+
+GREEN 证据：
+
+```bash
+cd backend
+source .venv/bin/activate
+pytest -q \
+  tests/runtime/test_hooks.py \
+  tests/runtime/test_hooks_cc_parity.py \
+  tests/runtime/test_hook_wire_standard.py \
+  tests/runtime/test_invoker_cc_hooks.py \
+  tests/runtime/test_turn_envelope_prompt_manifest.py \
+  tests/tools/test_service.py \
+  tests/tools/test_ask_user_question.py \
+  tests/services/test_conversation_interaction_service.py \
+  tests/services/test_notification_service_hooks.py \
+  tests/services/test_conversation_branch_service.py \
+  tests/api/test_chat_sessions_permissions.py \
+  tests/services/test_web_chat_runtime.py \
+  tests/api/test_agent_config_change_hook.py \
+  tests/runtime/test_accepted_prompt_first.py
+```
+
+结果：`263 passed, 4 warnings in 2.43s`。
+
+```bash
+cd backend
+source .venv/bin/activate
+pytest tests -q
+```
+
+结果：`6308 passed, 1 skipped, 5 warnings in 144.93s`，零失败。
+
+```bash
+cd backend
+source .venv/bin/activate
+ruff check <SA-08 当前变更 Python 文件>
+ruff format --check <SA-08 当前变更 Python 文件>
+alembic heads
+```
+
+结果：Ruff lint `All checks passed!`，22 个变更 Python 文件格式通过；Alembic 单 head：`channel_delivery_outbox_0711 (head)`。SA-08 不新增 schema migration，复用 canonical `InvocationSpan` 与现有 transcript/session facts。

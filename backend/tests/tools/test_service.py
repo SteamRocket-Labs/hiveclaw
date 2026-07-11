@@ -69,6 +69,41 @@ class _FakeRegistry:
         return self.result
 
 
+@pytest.mark.asyncio
+async def test_successful_skill_load_emits_instructions_loaded_boundary(monkeypatch, tmp_path):
+    from app.tools.runtime import ToolExecutionContext
+    from app.tools.service import ToolRuntimeService
+
+    context = ToolExecutionContext(
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        tenant_id=str(uuid4()),
+        workspace=tmp_path,
+        session_id="session-1",
+        runtime_task_id=str(uuid4()),
+    )
+    captured = []
+
+    async def fake_emit(event, **kwargs):
+        captured.append((event.value, kwargs))
+        return None
+
+    monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit)
+    await ToolRuntimeService._emit_loaded_instruction_hook(
+        tool_name="load_skill",
+        arguments={"name": "market-research"},
+        context=context,
+        tool_call_id="call-1",
+        result="# Market Research\nFollow the evidence protocol.",
+    )
+
+    assert captured[0][0] == "instructions_loaded"
+    metadata = captured[0][1]["metadata"]
+    assert metadata["instruction_uri"] == f"agent://{context.agent_id}/skills/market-research"
+    assert metadata["load_reason"] == "load_skill"
+    assert metadata["content_sha256"]
+
+
 def test_workspace_mutation_evidence_captures_hash_and_deletion_without_live_rehash(tmp_path):
     from app.tools.service import _capture_workspace_mutation_evidence
 

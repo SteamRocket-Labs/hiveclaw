@@ -125,3 +125,56 @@ async def test_ask_user_question_rejects_empty(tmp_path: Path):
         payload = json.loads(result)
         assert payload["status"] == "error"
         assert payload["error_code"] == "missing_question"
+
+
+@pytest.mark.asyncio
+async def test_ask_user_question_emits_elicitation_and_honors_auto_resolution(tmp_path: Path, monkeypatch):
+    from app.runtime.hooks import HookResult
+    from app.tools.handlers import plan_mode
+
+    captured = []
+
+    async def fake_emit(event, **kwargs):
+        captured.append((event.value, kwargs))
+        return HookResult(elicitation_action="accept", elicitation_content={"answer": "Weekly"})
+
+    monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit)
+    result = await plan_mode.ask_user_question(
+        _request(
+            tmp_path,
+            {
+                "question": "Confirm the report cadence?",
+                "options": [{"label": "Weekly", "description": "Every Monday"}],
+            },
+        )
+    )
+
+    payload = json.loads(result)
+    assert payload == {
+        "status": "elicitation_auto_resolved",
+        "action": "accept",
+        "content": {"answer": "Weekly"},
+        "blocking": False,
+    }
+    assert captured[0][0] == "elicitation"
+    assert captured[0][1]["metadata"]["questions"][0]["question"] == "Confirm the report cadence?"
+
+
+@pytest.mark.asyncio
+async def test_ask_user_question_honors_elicitation_decline(tmp_path: Path, monkeypatch):
+    from app.runtime.hooks import HookResult
+    from app.tools.handlers import plan_mode
+
+    async def fake_emit(_event, **_kwargs):
+        return HookResult(elicitation_action="decline", reason="operator declined")
+
+    monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit)
+    result = await plan_mode.ask_user_question(
+        _request(tmp_path, {"question": "Proceed?", "options": [{"label": "Yes"}]})
+    )
+
+    payload = json.loads(result)
+    assert payload["status"] == "elicitation_declined"
+    assert payload["action"] == "decline"
+    assert payload["blocking"] is False
+    assert payload["reason"] == "operator declined"

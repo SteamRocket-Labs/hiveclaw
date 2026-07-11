@@ -2505,6 +2505,31 @@ async def delete_session(
     if str(session.user_id) != str(current_user.id) and not _can_manage_sessions(current_user, agent, access_level):
         raise HTTPException(status_code=403, detail="Not authorized")
 
+    parent_session_id = getattr(session, "parent_session_id", None)
+    if parent_session_id is not None:
+        from app.runtime.hooks import HookEvent, emit_hook
+
+        remove_hook = await emit_hook(
+            HookEvent.WORKTREE_REMOVE,
+            agent_id=agent_id,
+            session_id=str(session_id),
+            source="chat_session_delete",
+            metadata={
+                "tenant_id": str(getattr(session, "tenant_id", None) or getattr(agent, "tenant_id", None) or "")
+                or None,
+                "user_id": str(current_user.id),
+                "cloud_workspace_kind": "conversation_branch",
+                "source_session_id": str(parent_session_id),
+                "target_session_id": str(session_id),
+                "worktree_uri": f"session://{session_id}/workspace",
+            },
+        )
+        if remove_hook and remove_hook.block:
+            raise HTTPException(
+                status_code=409,
+                detail=remove_hook.reason or "Conversation branch removal blocked by hook",
+            )
+
     # Delete associated messages first
     from sqlalchemy import delete as sql_delete
 

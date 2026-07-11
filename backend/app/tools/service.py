@@ -713,6 +713,41 @@ class ToolRuntimeService:
             self.approval_ticket_consumer = self.approval_ticket_consumer or consume_approval_ticket
             self.approval_ticket_completer = self.approval_ticket_completer or complete_approval_ticket
 
+    @staticmethod
+    async def _emit_loaded_instruction_hook(
+        *,
+        tool_name: str,
+        arguments: dict,
+        context: ToolExecutionContext,
+        tool_call_id: str,
+        result: str | ToolContentEnvelope,
+    ) -> None:
+        if tool_name != "load_skill" or _extract_tool_error_payload(str(result)):
+            return
+        skill_name = str(arguments.get("name") or "").strip()
+        if not skill_name:
+            return
+        from app.runtime.hooks import HookEvent, emit_hook
+
+        result_text = str(result)
+        await emit_hook(
+            HookEvent.INSTRUCTIONS_LOADED,
+            agent_id=context.agent_id,
+            session_id=context.session_id,
+            source="load_skill",
+            metadata={
+                "tenant_id": context.tenant_id,
+                "user_id": str(context.user_id),
+                "runtime_task_id": context.runtime_task_id,
+                "tool_call_id": tool_call_id,
+                "instruction_uri": f"agent://{context.agent_id}/skills/{skill_name}",
+                "instruction_scope": "skill",
+                "load_reason": "load_skill",
+                "content_sha256": hashlib.sha256(result_text.encode("utf-8")).hexdigest(),
+                "content_chars": len(result_text),
+            },
+        )
+
     async def _record_ai_asset_usage_for_tool(
         self,
         *,
@@ -1764,6 +1799,13 @@ class ToolRuntimeService:
                 original_arguments=original_arguments,
                 effective_arguments=dict(arguments or {}),
             )
+        await self._emit_loaded_instruction_hook(
+            tool_name=tool_name,
+            arguments=arguments,
+            context=context,
+            tool_call_id=tool_call_id,
+            result=result,
+        )
         await self._record_ai_asset_usage_for_tool(
             tool_name=tool_name,
             arguments=arguments,

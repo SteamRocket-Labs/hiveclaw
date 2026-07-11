@@ -357,10 +357,41 @@ async def create_conversation_branch(
     root_session_id = getattr(source_session, "root_session_id", None) or source_session.id
     now = datetime.now(timezone.utc)
     contract_overrides = _session_contract_overrides(source_session, mode_text)
-    branch_session = ChatSession(
-        id=uuid.uuid4(),
+    branch_session_id = uuid.uuid4()
+    tenant_id = getattr(agent, "tenant_id", getattr(source_session, "tenant_id", None))
+    target_workspace_uri = f"session://{branch_session_id}/workspace"
+    from app.runtime.hooks import HookEvent, emit_hook
+
+    create_hook = await emit_hook(
+        HookEvent.WORKTREE_CREATE,
         agent_id=agent.id,
-        tenant_id=getattr(agent, "tenant_id", getattr(source_session, "tenant_id", None)),
+        session_id=str(source_session.id),
+        source="conversation_branch_service",
+        metadata={
+            "tenant_id": str(tenant_id) if tenant_id else None,
+            "user_id": str(getattr(user, "id", "") or "") or None,
+            "cloud_workspace_kind": "conversation_branch",
+            "branch_mode": mode_text,
+            "source_session_id": str(source_session.id),
+            "target_session_id": str(branch_session_id),
+            "anchor_event_id": str(anchor.id),
+            "source_workspace_uri": f"session://{source_session.id}/workspace",
+            "target_workspace_uri": target_workspace_uri,
+        },
+    )
+    if create_hook and create_hook.block:
+        raise HTTPException(
+            status_code=409, detail=create_hook.reason or "Conversation branch creation blocked by hook"
+        )
+    if create_hook and create_hook.worktree_path and create_hook.worktree_path != target_workspace_uri:
+        raise HTTPException(
+            status_code=409,
+            detail="WorktreeCreate hook cannot redirect a governed cloud conversation workspace",
+        )
+    branch_session = ChatSession(
+        id=branch_session_id,
+        agent_id=agent.id,
+        tenant_id=tenant_id,
         user_id=getattr(user, "id", getattr(source_session, "user_id", None)),
         title=_branch_title(source_session, mode_text, title),
         source_channel=getattr(source_session, "source_channel", None) or "web",
@@ -404,6 +435,36 @@ async def create_conversation_branch(
         branch_session,
         agent_id=agent.id,
         copied_event_map=copied_event_map,
+    )
+    workspace_change_metadata = {
+        "tenant_id": str(tenant_id) if tenant_id else None,
+        "user_id": str(getattr(user, "id", "") or "") or None,
+        "cloud_workspace_kind": "conversation_branch",
+        "branch_mode": mode_text,
+        "source_session_id": str(source_session.id),
+        "target_session_id": str(branch_session.id),
+        "old_cwd": f"session://{source_session.id}/workspace",
+        "new_cwd": f"session://{branch_session.id}/workspace",
+    }
+    await emit_hook(
+        HookEvent.CWD_CHANGED,
+        agent_id=agent.id,
+        session_id=str(branch_session.id),
+        source="conversation_branch_service",
+        metadata=dict(workspace_change_metadata),
+    )
+    await emit_hook(
+        HookEvent.WORKSPACE_CONTEXT_CHANGED,
+        agent_id=agent.id,
+        session_id=str(branch_session.id),
+        source="conversation_branch_service",
+        metadata={
+            **workspace_change_metadata,
+            "copied_event_count": len(copied_event_ids),
+            "workspace_snapshot_count": len(
+                (getattr(branch_session, "transcript_metadata_json", None) or {}).get("workspace_snapshots") or {}
+            ),
+        },
     )
 
     run_request: BranchRunRequest | None = None

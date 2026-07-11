@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -32,6 +33,7 @@ async def mark_latest_pending_clarification_answered(
     answer_event_id: uuid.UUID | str,
     answer_text: str,
     answered_at: datetime | None = None,
+    answer_event: Any | None = None,
 ) -> bool:
     """Durably mark the latest pending user clarification card as answered.
 
@@ -57,11 +59,54 @@ async def mark_latest_pending_clarification_answered(
     metadata = dict(getattr(event, "metadata_json", None) or {})
     if metadata.get("answered") is True:
         return False
+    from app.runtime.hooks import HookEvent, emit_hook
+
+    hook_metadata = {
+        "tenant_id": str(getattr(event, "tenant_id", "") or "") or None,
+        "answer_event_id": str(answer_event_id),
+        "clarification_event_id": str(getattr(event, "id", "") or "") or None,
+        "questions": metadata.get("questions") or [],
+        "original_answer_present": bool(answer_text),
+    }
+    hook_result = await emit_hook(
+        HookEvent.ELICITATION_RESULT,
+        agent_id=agent_id,
+        session_id=str(session_id),
+        prompt=answer_text,
+        source="conversation_interaction",
+        metadata=hook_metadata,
+    )
+    effective_answer = answer_text
+    if hook_result and hook_result.elicitation_action == "accept" and hook_result.elicitation_content is not None:
+        content = hook_result.elicitation_content
+        if isinstance(content, str):
+            effective_answer = content
+        elif isinstance(content, dict) and isinstance(content.get("answer"), str):
+            effective_answer = str(content["answer"])
+        else:
+            effective_answer = json.dumps(content, ensure_ascii=False, sort_keys=True)
+    if answer_event is not None:
+        transcript_event = getattr(answer_event, "transcript_event", None)
+        if transcript_event is not None:
+            answer_metadata = dict(getattr(transcript_event, "metadata_json", None) or {})
+            answer_metadata.update(
+                {
+                    "elicitation_original_answer": answer_text,
+                    "elicitation_effective_answer": effective_answer,
+                    "elicitation_action": getattr(hook_result, "elicitation_action", None) or "noop",
+                }
+            )
+            transcript_event.metadata_json = answer_metadata
+        # ChatMessage/T0 retain the user's mechanical input. The transformed
+        # answer is a governed model-input projection carried in metadata and
+        # RuntimeTask.prompt, never a rewrite of raw user evidence.
     metadata.update(
         {
             "answered": True,
             "answered_by_event_id": str(answer_event_id),
-            "answer_text": answer_text,
+            "answer_text": effective_answer,
+            "original_answer_text": answer_text,
+            "elicitation_action": getattr(hook_result, "elicitation_action", None) or "noop",
             "answered_at": (answered_at or datetime.now(timezone.utc)).isoformat(),
         }
     )

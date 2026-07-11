@@ -881,6 +881,49 @@ async def test_delete_session_removes_transcript_before_messages(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_delete_branch_session_runs_blockable_worktree_remove_hook(monkeypatch):
+    import app.api.chat_sessions as chat_sessions_api
+
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    owner_id = uuid4()
+    source_session_id = uuid4()
+    session_id = uuid4()
+    agent = SimpleNamespace(id=agent_id, creator_id=owner_id, tenant_id=tenant_id)
+    session = SimpleNamespace(
+        id=session_id,
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        user_id=owner_id,
+        parent_session_id=source_session_id,
+    )
+    current_user = SimpleNamespace(id=owner_id, role="member", tenant_id=tenant_id)
+    db = _QueryAwareDB(agent=agent, sessions=[session])
+    captured = []
+
+    async def fake_check_agent_access(_db, _user, _agent_id):
+        return agent, "use"
+
+    async def fake_emit(event, **kwargs):
+        captured.append((event.value, kwargs))
+        return None
+
+    monkeypatch.setattr(chat_sessions_api, "check_agent_access", fake_check_agent_access, raising=False)
+    monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit)
+
+    await chat_sessions_api.delete_session(
+        agent_id=agent_id,
+        session_id=session_id,
+        current_user=current_user,
+        db=db,
+    )
+
+    assert captured[0][0] == "worktree_remove"
+    assert captured[0][1]["metadata"]["source_session_id"] == str(source_session_id)
+    assert captured[0][1]["metadata"]["target_session_id"] == str(session_id)
+
+
+@pytest.mark.asyncio
 async def test_get_session_transcript_returns_replayable_events(monkeypatch):
     import app.api.chat_sessions as chat_sessions_api
 

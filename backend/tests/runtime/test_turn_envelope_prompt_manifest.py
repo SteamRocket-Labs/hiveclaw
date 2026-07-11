@@ -18,12 +18,13 @@ def test_turn_envelope_projects_default_hook_catalog_statuses():
     assert hook_state["UserPromptSubmit"] == "supported_active"
     assert hook_state["Stop"] == "supported_active"
     assert hook_state["PostToolUse"] == "supported_observe_only"
-    assert hook_state["Setup"] == "unsupported_with_reason"
+    assert hook_state["Setup"] == "supported_active"
+    assert hook_state["Elicitation"] == "supported_active"
+    assert hook_state["ConfigChange"] == "supported_active"
+    assert hook_state["InstructionsLoaded"] == "supported_observe_only"
     assert set(hook_state.values()) <= {
         "supported_active",
         "supported_observe_only",
-        "declared_not_wired",
-        "unsupported_with_reason",
     }
 
 

@@ -4,9 +4,11 @@ import uuid
 from typing import Optional
 
 from loguru import logger
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.notification import Notification
+from app.models.user import User
 
 
 async def send_notification(
@@ -39,5 +41,21 @@ async def send_notification(
     )
     db.add(notif)
     await db.flush()
+    tenant_result = await db.execute(select(User.tenant_id).where(User.id == user_id))
+    tenant_id = tenant_result.scalar_one_or_none()
+    from app.runtime.hooks import HookEvent, emit_hook
+
+    await emit_hook(
+        HookEvent.NOTIFICATION,
+        source="notification_service",
+        metadata={
+            "tenant_id": str(tenant_id) if tenant_id else None,
+            "user_id": str(user_id),
+            "notification_id": str(notif.id),
+            "notification_type": type,
+            "title": title,
+            "link": link,
+        },
+    )
     logger.info(f"Notification [{type}] sent to user {user_id}: {title}")
     return notif

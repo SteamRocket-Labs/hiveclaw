@@ -2457,6 +2457,65 @@ async def _append_file_changes_event(
 ) -> None:
     if not file_change_paths and not rejected_artifact_paths:
         return
+    from app.runtime.hooks import HookEvent, emit_hook
+
+    lineage_by_path = {
+        str(item.get("path") or ""): item for item in file_change_lineage if isinstance(item, dict) and item.get("path")
+    }
+    hook_watch_paths: list[str] = []
+    hook_lifecycle_records: list[dict[str, Any]] = []
+    for path in file_change_paths:
+        lineage = lineage_by_path.get(path) or {}
+        before_state = lineage.get("before_state") if isinstance(lineage.get("before_state"), dict) else {}
+        after_state = lineage.get("after_state") if isinstance(lineage.get("after_state"), dict) else {}
+        if not after_state:
+            after_state = file_change_states.get(path) or {}
+        before_exists = bool(before_state.get("exists"))
+        after_exists = bool(after_state.get("exists"))
+        change_kind = (
+            "add"
+            if not before_exists and after_exists
+            else "unlink"
+            if before_exists and not after_exists
+            else "change"
+        )
+        hook_metadata = {
+            "tenant_id": str(tenant_id) if tenant_id else None,
+            "runtime_task_id": str(run_uuid),
+            "message_id": str(message_id) if message_id else None,
+            "file_path": path,
+            "change_kind": change_kind,
+            "before_state": before_state,
+            "after_state": after_state,
+            "hook_lifecycle_records": hook_lifecycle_records,
+        }
+        hook_result = await emit_hook(
+            HookEvent.FILE_CHANGED,
+            agent_id=agent_id,
+            session_id=session_id,
+            source=source,
+            metadata=hook_metadata,
+        )
+        if hook_result and hook_result.watch_paths:
+            hook_watch_paths.extend(str(item) for item in hook_result.watch_paths if str(item).strip())
+
+    if attached_artifact_paths or declared_artifact_paths or rejected_artifact_paths:
+        await emit_hook(
+            HookEvent.ARTIFACT_CHANGED,
+            agent_id=agent_id,
+            session_id=session_id,
+            source=source,
+            metadata={
+                "tenant_id": str(tenant_id) if tenant_id else None,
+                "runtime_task_id": str(run_uuid),
+                "message_id": str(message_id) if message_id else None,
+                "attached_artifact_paths": attached_artifact_paths,
+                "declared_artifact_paths": declared_artifact_paths,
+                "rejected_artifact_paths": rejected_artifact_paths,
+                "hook_lifecycle_records": hook_lifecycle_records,
+            },
+        )
+    hook_watch_paths = list(dict.fromkeys(hook_watch_paths))
     await append_session_event(
         db=db,
         agent_id=agent_id,
@@ -2481,6 +2540,8 @@ async def _append_file_changes_event(
             "declared_artifact_paths": declared_artifact_paths,
             "rejected_artifact_paths": rejected_artifact_paths,
             "artifact_attachment_policy": "model_declared_current_turn_writes_only",
+            "hook_watch_paths": hook_watch_paths,
+            "hook_lifecycle_records": hook_lifecycle_records,
         },
     )
 
@@ -3743,7 +3804,16 @@ async def _materialize_initial_user_turn_for_worker(
             session_id=session_id,
             answer_event_id=user_event.event_id,
             answer_text=content,
+            answer_event=user_event,
         )
+        answer_event_metadata = dict(getattr(user_event.transcript_event, "metadata_json", None) or {})
+        effective_answer = str(answer_event_metadata.get("elicitation_effective_answer") or "").strip()
+        if effective_answer and effective_answer != content:
+            runtime_task.prompt = effective_answer
+            payload["llm_content"] = effective_answer
+            metadata["elicitation_original_prompt"] = content
+            metadata["elicitation_effective_prompt"] = effective_answer
+            metadata["latest_user_prompt_overrides_history"] = True
         metadata["initial_user_message_t0_event_id"] = str(user_event.event_id)
     metadata["initial_user_message_t0_materialized"] = True
     metadata["initial_user_message_t0_materialized_at"] = datetime.now(timezone.utc).isoformat()

@@ -1,6 +1,8 @@
 """Agent (Digital Employee) API routes."""
 
 from collections.abc import Mapping
+import hashlib
+import json
 import logging
 import shutil
 import uuid
@@ -37,6 +39,50 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/agents", tags=["agents"])
 
 AGENT_LIST_ROLE_DESCRIPTION_CHARS = 320
+
+
+def _config_snapshot_hash(value: Mapping[str, object]) -> str:
+    payload = json.dumps(dict(value), ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+async def _emit_agent_config_change_hook(
+    *,
+    agent: Agent,
+    current_user: User,
+    update_data: Mapping[str, object],
+    source: str,
+):
+    """Run the blockable structured config boundary before any ORM mutation.
+
+    Hook evidence exposes field names and content hashes, never configuration
+    values. Company policy updates remain observable but cannot be vetoed by a
+    lower-trust hook, matching CC's policy-settings rule.
+    """
+    if not update_data:
+        return None
+    from app.runtime.hooks import HookEvent, emit_hook
+
+    changed_fields = sorted(str(field) for field in update_data)
+    before = {field: getattr(agent, field, None) for field in changed_fields}
+    after = {field: update_data[field] for field in changed_fields}
+    result = await emit_hook(
+        HookEvent.CONFIG_CHANGE,
+        agent_id=agent.id,
+        source="agent_settings_api",
+        metadata={
+            "tenant_id": str(getattr(agent, "tenant_id", None) or getattr(current_user, "tenant_id", None) or "")
+            or None,
+            "user_id": str(current_user.id),
+            "config_source": source,
+            "changed_fields": changed_fields,
+            "before_hash": _config_snapshot_hash(before),
+            "after_hash": _config_snapshot_hash(after),
+        },
+    )
+    if result and result.block and source != "policy_settings":
+        raise HTTPException(status_code=409, detail=result.reason or "Agent configuration change blocked by hook")
+    return result
 
 
 async def _lazy_reset_token_counters(agent: Agent, db: AsyncSession) -> bool:
@@ -1075,6 +1121,13 @@ async def update_agent(
             primary_model_id=update_data.get("primary_model_id"),
             fallback_model_id=update_data.get("fallback_model_id"),
         )
+
+    await _emit_agent_config_change_hook(
+        agent=agent,
+        current_user=current_user,
+        update_data=update_data,
+        source="user_settings",
+    )
 
     for field, value in update_data.items():
         setattr(agent, field, value)

@@ -7,6 +7,7 @@ heartbeat, scheduler, and agent-to-agent flows can share the same runtime.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import inspect
 import json
 import logging
@@ -1061,12 +1062,38 @@ def get_agent_kernel(request: AgentInvocationRequest | None = None) -> AgentKern
         resolved_memory_context: str,
         current_user_name: str | None,
     ) -> str:
-        return await _build_system_prompt(
+        prompt = await _build_system_prompt(
             request,  # type: ignore[arg-type]
             tenant_id,
             resolved_memory_context,
             current_user_name=current_user_name,
         )
+        try:
+            from app.runtime.hooks import HookEvent, emit_hook
+
+            metadata = _session_metadata(request.session_context)
+            await emit_hook(
+                HookEvent.INSTRUCTIONS_LOADED,
+                agent_id=request.agent_id,
+                session_id=request.memory_session_id
+                or (request.session_context.session_id if request.session_context else None),
+                source=request.session_context.source if request.session_context else "runtime",
+                metadata={
+                    "tenant_id": str(tenant_id) if tenant_id else metadata.get("tenant_id"),
+                    "user_id": str(request.user_id) if request.user_id else None,
+                    "runtime_task_id": metadata.get("runtime_task_id") or metadata.get("task_id"),
+                    "request_id": metadata.get("request_id"),
+                    "trace_id": metadata.get("trace_id"),
+                    "instruction_uri": f"agent://{request.agent_id}/context/frozen-prefix",
+                    "instruction_scope": "managed",
+                    "load_reason": "session_start",
+                    "content_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+                    "content_chars": len(prompt),
+                },
+            )
+        except Exception as exc:  # observe-only evidence must not starve the model
+            logger.warning("[Invoker] INSTRUCTIONS_LOADED hook failed: %s", exc)
+        return prompt
 
     async def _kernel_resolve_memory_context(
         request: InvocationRequest,
@@ -1462,6 +1489,55 @@ async def invoke_agent(request: AgentInvocationRequest) -> AgentInvocationResult
         delegation_token=request.delegation_token,
     )
 
+    # ── SETUP hook ──
+    # Cloud runtimes do not create a local checkout per turn, but they still
+    # have a real, blockable setup boundary: tenant/session identity is pinned,
+    # the virtual workspace is selected, and model context can be extended
+    # before the accepted prompt enters the loop.
+    try:
+        from app.runtime.hooks import HookEvent, emit_hook
+
+        _session_source = request.session_context.source if request.session_context else "runtime"
+        setup_metadata = _ensure_turn_metadata(request)
+        setup_result = await emit_hook(
+            HookEvent.SETUP,
+            agent_id=request.agent_id,
+            session_id=request.memory_session_id
+            or (request.session_context.session_id if request.session_context else None),
+            source=_session_source,
+            metadata={
+                "tenant_id": setup_metadata.get("tenant_id"),
+                "user_id": str(request.user_id) if request.user_id else None,
+                "runtime_task_id": setup_metadata.get("runtime_task_id") or setup_metadata.get("task_id"),
+                "request_id": setup_metadata.get("request_id"),
+                "trace_id": setup_metadata.get("trace_id"),
+                "turn_id": setup_metadata.get("turn_id"),
+                "intent_id": setup_metadata.get("intent_id"),
+                "setup_trigger": "invocation",
+                "cloud_workspace_uri": (
+                    f"agent://{request.agent_id}/sessions/"
+                    f"{request.memory_session_id or (request.session_context.session_id if request.session_context else 'runtime')}"
+                    "/workspace"
+                ),
+            },
+        )
+        if setup_result and setup_result.block:
+            return AgentInvocationResult(
+                content=f"Blocked by setup hook: {setup_result.reason or 'policy'}",
+                tokens_used=0,
+                final_tools=[],
+                parts=[],
+                terminal_reason=TerminalReason.HOOK_STOPPED,
+            )
+        if setup_result and setup_result.additional_contexts:
+            hook_context = _format_hook_additional_contexts(setup_result.additional_contexts)
+            if hook_context:
+                kernel_request.system_prompt_suffix = "\n\n".join(
+                    part for part in (kernel_request.system_prompt_suffix, hook_context) if part
+                )
+    except Exception as setup_error:
+        logger.warning("[Invoker] SETUP hook failed (continuing): %s", setup_error)
+
     # ── USER_PROMPT_SUBMIT hook ──
     # Entry points are responsible for durable DB/T0 append before invoking the
     # runtime. This hook is the shared post-append, pre-model lifecycle boundary.
@@ -1512,7 +1588,7 @@ async def invoke_agent(request: AgentInvocationRequest) -> AgentInvocationResult
 
         _session_source = request.session_context.source if request.session_context else "runtime"
         session_metadata = _ensure_turn_metadata(request)
-        await emit_hook(
+        session_start_result = await emit_hook(
             HookEvent.SESSION_START,
             agent_id=request.agent_id,
             session_id=request.memory_session_id,
@@ -1532,6 +1608,25 @@ async def invoke_agent(request: AgentInvocationRequest) -> AgentInvocationResult
                 "intent_id": session_metadata.get("intent_id"),
             },
         )
+        if session_start_result:
+            if session_start_result.initial_user_message:
+                initial_message = str(session_start_result.initial_user_message).strip()
+                if initial_message:
+                    kernel_request.messages = [
+                        {"role": "user", "content": initial_message, "source": "session_start_hook"},
+                        *kernel_request.messages,
+                    ]
+            if session_start_result.additional_contexts:
+                hook_context = _format_hook_additional_contexts(session_start_result.additional_contexts)
+                if hook_context:
+                    kernel_request.system_prompt_suffix = "\n\n".join(
+                        part for part in (kernel_request.system_prompt_suffix, hook_context) if part
+                    )
+            if session_start_result.watch_paths and request.session_context is not None:
+                existing_watch_paths = list(session_metadata.get("hook_watch_paths") or [])
+                session_metadata["hook_watch_paths"] = list(
+                    dict.fromkeys((*existing_watch_paths, *session_start_result.watch_paths))
+                )
     except Exception as _start_err:
         logging.getLogger(__name__).debug("[Invoker] SESSION_START hook failed (non-fatal): %s", _start_err)
 

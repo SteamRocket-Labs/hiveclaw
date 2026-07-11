@@ -85,3 +85,55 @@ async def test_skips_already_answered_clarification_event():
 
     assert updated is False
     assert clarification_event.metadata_json == {"answered": True}
+
+
+@pytest.mark.asyncio
+async def test_elicitation_result_hook_can_replace_answer_before_model_consumes_it(monkeypatch):
+    from app.runtime.hooks import HookResult
+    from app.services.conversation_interaction_service import mark_latest_pending_clarification_answered
+
+    agent_id = uuid4()
+    session_id = uuid4()
+    tenant_id = uuid4()
+    answer_event_id = uuid4()
+    clarification_event = ChatTranscriptEvent(
+        id=uuid4(),
+        sequence=10,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        session_id=session_id,
+        actor_type="tool",
+        event_type="tool_result",
+        visibility_scope="direct_user",
+        listed_surface="chat",
+        content='{"status":"awaiting_user_clarification","questions":[{"question":"Scope?"}]}',
+        metadata_json={"tool_name": "ask_user_question", "questions": [{"question": "Scope?"}]},
+    )
+    answer_event = SimpleNamespace(
+        transcript_event=SimpleNamespace(content="Mine", metadata_json={"role": "user"}),
+        chat_message=SimpleNamespace(content="Mine"),
+    )
+    captured = []
+
+    async def fake_emit(event, **kwargs):
+        captured.append((event.value, kwargs))
+        return HookResult(elicitation_action="accept", elicitation_content={"answer": "Company"})
+
+    monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit)
+    updated = await mark_latest_pending_clarification_answered(
+        db=_FakeDB(clarification_event),
+        agent_id=agent_id,
+        session_id=session_id,
+        answer_event_id=answer_event_id,
+        answer_text="Mine",
+        answer_event=answer_event,
+    )
+
+    assert updated is True
+    assert answer_event.transcript_event.content == "Mine"
+    assert answer_event.chat_message.content == "Mine"
+    assert answer_event.transcript_event.metadata_json["elicitation_effective_answer"] == "Company"
+    assert clarification_event.metadata_json["answer_text"] == "Company"
+    assert clarification_event.metadata_json["original_answer_text"] == "Mine"
+    assert captured[0][0] == "elicitation_result"
+    assert captured[0][1]["metadata"]["answer_event_id"] == str(answer_event_id)

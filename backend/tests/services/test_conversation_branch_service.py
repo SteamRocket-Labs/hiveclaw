@@ -517,3 +517,110 @@ async def test_side_question_branch_is_durable_unlisted_one_turn_session(monkeyp
     assert result.run_request.extra_metadata["side_session"] is True
     assert result.run_request.extra_metadata["tool_policy"] == "disabled_by_default"
     assert result.run_request.extra_metadata["max_turns"] == 1
+
+
+@pytest.mark.asyncio
+async def test_branch_maps_cloud_session_to_worktree_and_workspace_context_hooks(monkeypatch):
+    from app.services.conversation_branch_service import create_conversation_branch
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    user_id = uuid4()
+    source_session_id = uuid4()
+    anchor = _event(
+        session_id=source_session_id,
+        sequence=10,
+        event_type="user_message",
+        role="user",
+        content="fork here",
+    )
+    db = _FakeDB(anchor=anchor, prefix=[])
+    captured = []
+
+    async def fake_emit(event, **kwargs):
+        captured.append((event.value, kwargs))
+        return None
+
+    monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit)
+    result = await create_conversation_branch(
+        db=db,
+        agent=SimpleNamespace(id=agent_id, tenant_id=tenant_id),
+        user=SimpleNamespace(id=user_id),
+        source_session=SimpleNamespace(
+            id=source_session_id,
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            title="Original",
+            parent_session_id=None,
+            root_session_id=None,
+            source_channel="web",
+            session_kind="human_chat",
+            actor_type="user",
+            runtime_source="web_chat",
+            visibility_scope="direct_user",
+            listed_surface="chat",
+        ),
+        mode="fork",
+        anchor_event_id=anchor.id,
+    )
+
+    branch_id = str(result.session.id)
+    assert [event for event, _kwargs in captured] == [
+        "worktree_create",
+        "cwd_changed",
+        "workspace_context_changed",
+    ]
+    assert captured[0][1]["metadata"]["cloud_workspace_kind"] == "conversation_branch"
+    assert captured[0][1]["metadata"]["target_session_id"] == branch_id
+    assert captured[1][1]["metadata"]["old_cwd"] == f"session://{source_session_id}/workspace"
+    assert captured[1][1]["metadata"]["new_cwd"] == f"session://{branch_id}/workspace"
+
+
+@pytest.mark.asyncio
+async def test_worktree_create_hook_can_block_branch_before_mutation(monkeypatch):
+    from app.runtime.hooks import HookResult
+    from app.services.conversation_branch_service import create_conversation_branch
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    source_session_id = uuid4()
+    anchor = _event(
+        session_id=source_session_id,
+        sequence=10,
+        event_type="user_message",
+        role="user",
+        content="fork here",
+    )
+    db = _FakeDB(anchor=anchor, prefix=[])
+
+    async def fake_emit(_event, **_kwargs):
+        return HookResult(block=True, reason="branch denied")
+
+    monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit)
+    with pytest.raises(Exception) as exc_info:
+        await create_conversation_branch(
+            db=db,
+            agent=SimpleNamespace(id=agent_id, tenant_id=tenant_id),
+            user=SimpleNamespace(id=uuid4()),
+            source_session=SimpleNamespace(
+                id=source_session_id,
+                agent_id=agent_id,
+                tenant_id=tenant_id,
+                user_id=uuid4(),
+                title="Original",
+                parent_session_id=None,
+                root_session_id=None,
+                source_channel="web",
+                session_kind="human_chat",
+                actor_type="user",
+                runtime_source="web_chat",
+                visibility_scope="direct_user",
+                listed_surface="chat",
+            ),
+            mode="fork",
+            anchor_event_id=anchor.id,
+        )
+
+    assert getattr(exc_info.value, "status_code", None) == 409
+    assert db.added == []

@@ -21,7 +21,7 @@ def test_cc_core_lifecycle_hook_events_are_exposed() -> None:
     }.issubset(values)
 
 
-def test_ccplus_broader_hook_catalog_declares_contracts_and_noop_capability() -> None:
+def test_ccplus_broader_hook_catalog_declares_only_live_contracts() -> None:
     registry = HookRegistry()
     catalog = {item["event"]: item for item in registry.describe_event_catalog()}
 
@@ -59,7 +59,7 @@ def test_ccplus_broader_hook_catalog_declares_contracts_and_noop_capability() ->
     for event_name in required:
         entry = catalog[event_name]
         assert entry["standard"] is True
-        assert entry["lifecycle_state"] in {"active", "active_observe", "planned_observe", "disabled_noop"}
+        assert entry["lifecycle_state"] in {"active", "active_observe"}
         assert entry["trigger_point"]
         assert isinstance(entry["matcher_fields"], list)
         assert entry["input_schema"]["type"] == "object"
@@ -69,43 +69,44 @@ def test_ccplus_broader_hook_catalog_declares_contracts_and_noop_capability() ->
             "platform_trusted",
             "tenant_approved",
             "agent_scoped",
-            "planned",
-            "disabled_noop",
         }
         assert entry["failure_policy"] in {
             "fail_closed_if_blocking",
             "observe_continue",
-            "planned_observe",
-            "disabled_noop",
         }
 
-    assert catalog["worktree_create"]["lifecycle_state"] == "disabled_noop"
-    assert catalog["worktree_create"]["runtime_consumer"] == "disabled_noop_audit"
+    assert catalog["worktree_create"]["lifecycle_state"] == "active"
+    assert catalog["worktree_create"]["runtime_consumer"] == "cloud_branch_workspace_create"
     assert "worktree_path" in catalog["worktree_create"]["output_schema"]["properties"]
     assert "permission_decision" in catalog["permission_request"]["output_schema"]["properties"]
     assert catalog["pre_tool_use"]["runtime_consumer"] == "kernel_pre_tool_use"
 
 
-def test_declared_but_unemitted_hook_contracts_report_planned_not_active() -> None:
-    """Catalog entries must not imply active runtime wiring when the current app has
-    only a declared CC-compatible surface and no live emitter."""
+def test_previously_planned_hook_contracts_have_live_runtime_consumers() -> None:
     registry = HookRegistry()
     catalog = {item["event"]: item for item in registry.describe_event_catalog()}
 
-    planned_events = {
+    observe_events = {
         "notification",
-        "elicitation",
-        "config_change",
         "instructions_loaded",
         "workspace_context_changed",
         "artifact_changed",
+        "elicitation_result",
+        "cwd_changed",
+        "file_changed",
     }
-    for event_name in planned_events:
+    for event_name in observe_events:
         entry = catalog[event_name]
-        assert entry["lifecycle_state"] == "planned_observe"
-        assert entry["runtime_consumer"] == "planned_runtime_emitter"
-        assert entry["trust_level"] == "planned"
-        assert entry["failure_policy"] == "planned_observe"
+        assert entry["lifecycle_state"] == "active_observe"
+        assert entry["runtime_consumer"] != "planned_runtime_emitter"
+        assert entry["trust_level"] == "platform_trusted"
+        assert entry["failure_policy"] == "observe_continue"
+
+    for event_name in {"setup", "elicitation", "config_change", "worktree_create", "worktree_remove"}:
+        entry = catalog[event_name]
+        assert entry["lifecycle_state"] == "active"
+        assert entry["blocking_supported"] is True
+        assert entry["failure_policy"] == "fail_closed_if_blocking"
 
     # Subagent lifecycle hooks are live-emitted by app/agents/subagent.py and must
     # remain active despite having no default memory handler in hooks_setup.py.
@@ -113,6 +114,40 @@ def test_declared_but_unemitted_hook_contracts_report_planned_not_active() -> No
     assert catalog["subagent_start"]["runtime_consumer"] == "subagent_lifecycle_start"
     assert catalog["subagent_stop"]["lifecycle_state"] == "active"
     assert catalog["subagent_stop"]["runtime_consumer"] == "subagent_lifecycle_stop"
+
+
+@pytest.mark.asyncio
+async def test_global_hook_boundary_persists_invocation_span_evidence_even_without_handlers(monkeypatch) -> None:
+    import uuid
+
+    from app.runtime import hooks
+
+    captured: list[dict] = []
+
+    async def fake_persist(**kwargs):
+        captured.append(kwargs)
+
+    monkeypatch.setattr("app.services.invocation_trace.persist_invocation_span", fake_persist)
+    hooks.hook_registry.clear()
+    await hooks.emit_hook(
+        HookEvent.SETUP,
+        agent_id=uuid.uuid4(),
+        session_id=str(uuid.uuid4()),
+        source="web",
+        metadata={
+            "tenant_id": str(uuid.uuid4()),
+            "runtime_task_id": str(uuid.uuid4()),
+            "trace_id": "trace-setup-1",
+            "trigger": "init",
+        },
+    )
+
+    assert len(captured) == 1
+    assert captured[0]["span_type"] == "hook"
+    assert captured[0]["name"] == "hook.setup"
+    assert captured[0]["trace_id"] == "trace-setup-1"
+    assert captured[0]["metadata"]["hook_event"] == "setup"
+    assert captured[0]["metadata"]["decision"] == "observed"
 
 
 def test_permission_denied_reports_live_not_disabled_noop() -> None:

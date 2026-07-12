@@ -67,6 +67,7 @@ _STATE: dict[str, Any] = {
     "approval_execution_dispatched": 0,
     "hr_provisioning_dispatched": 0,
     "hr_drafts_reconciled": 0,
+    "business_tasks_reconciled": 0,
     "dream_dispatched": 0,
 }
 
@@ -278,6 +279,16 @@ async def reconcile_hr_creation_drafts_once() -> dict[str, int]:
     return summary
 
 
+async def reconcile_stale_business_tasks_once() -> dict[str, int]:
+    from app.services.business_task_reconciliation import reconcile_stale_business_tasks_once as reconcile
+
+    summary = await reconcile()
+    _STATE["business_tasks_reconciled"] = int(_STATE.get("business_tasks_reconciled") or 0) + int(
+        summary.get("quarantined") or 0
+    )
+    return summary
+
+
 def _dispatch_claimed_task(task: RuntimeTask) -> bool:
     if is_executable_chat_task_type(getattr(task, "task_type", None)):
         return dispatch_web_chat_run(
@@ -441,31 +452,45 @@ async def _execute_claimed_approval_execution_task(task_id: UUID) -> None:
 async def _execute_claimed_business_task(runtime_task_id: UUID) -> None:
     try:
         from app.services.business_task_runtime import (
+            BusinessTaskExecutionSuperseded,
             TaskExecutionOutcome,
             TaskExecutionStatus,
             finalize_business_task_execution,
             mark_business_task_execution_started,
         )
-        from app.services.task_executor import execute_task
-
-        business_task_id, agent_id, requester_user_id = await mark_business_task_execution_started(
-            runtime_task_id=runtime_task_id
+        from app.services.task_executor import (
+            business_task_cancel_event,
+            execute_task,
+            release_business_task_cancel_event,
         )
+
+        cancel_event = business_task_cancel_event(runtime_task_id)
         try:
-            outcome = await execute_task(
-                business_task_id,
-                agent_id,
-                requester_user_id=requester_user_id,
-            )
-        except Exception as exc:  # convert operational executor failure into the typed terminal contract.
-            outcome = TaskExecutionOutcome(
-                status=TaskExecutionStatus.FAILED,
-                summary=f"Business task executor failed: {type(exc).__name__}: {str(exc)[:500]}",
-                error_code=type(exc).__name__,
-                retryable=True,
-            )
-        if not await finalize_business_task_execution(runtime_task_id=runtime_task_id, outcome=outcome):
-            raise RuntimeError("business task finalization could not locate the claimed runtime task")
+            try:
+                business_task_id, agent_id, requester_user_id = await mark_business_task_execution_started(
+                    runtime_task_id=runtime_task_id
+                )
+            except BusinessTaskExecutionSuperseded:
+                logger.info("[RuntimeTaskWorker] business task {} was cancelled before invocation", runtime_task_id)
+                return
+            try:
+                outcome = await execute_task(
+                    business_task_id,
+                    agent_id,
+                    requester_user_id=requester_user_id,
+                    cancel_event=cancel_event,
+                )
+            except Exception as exc:  # convert operational executor failure into the typed terminal contract.
+                outcome = TaskExecutionOutcome(
+                    status=TaskExecutionStatus.FAILED,
+                    summary=f"Business task executor failed: {type(exc).__name__}: {str(exc)[:500]}",
+                    error_code=type(exc).__name__,
+                    retryable=True,
+                )
+            if not await finalize_business_task_execution(runtime_task_id=runtime_task_id, outcome=outcome):
+                raise RuntimeError("business task finalization could not locate the claimed runtime task")
+        finally:
+            release_business_task_cancel_event(runtime_task_id, cancel_event)
     except Exception as exc:  # noqa: BLE001
         _STATE["last_error"] = f"business_task:{type(exc).__name__}:{str(exc)[:300]}"
         logger.exception("[RuntimeTaskWorker] business task {} failed", runtime_task_id)
@@ -504,6 +529,11 @@ async def start_runtime_task_worker_loop() -> None:
             except Exception as exc:  # noqa: BLE001 - normal task claiming must continue.
                 _STATE["last_error"] = f"hr_reconcile:{type(exc).__name__}: {str(exc)[:500]}"
                 logger.exception("[RuntimeTaskWorker] HR draft reconciliation tick failed")
+            try:
+                await reconcile_stale_business_tasks_once()
+            except Exception as exc:  # noqa: BLE001 - normal task claiming must continue.
+                _STATE["last_error"] = f"business_task_reconcile:{type(exc).__name__}: {str(exc)[:500]}"
+                logger.exception("[RuntimeTaskWorker] BusinessTask reconciliation tick failed")
             try:
                 await drain_budget_transition_outbox_once(worker_id=worker_id)
             except Exception as exc:  # noqa: BLE001 - task claiming must continue after one delivery failure.

@@ -26,6 +26,10 @@ class BusinessTaskInvariantError(RuntimeError):
     """Raised when Task and RuntimeTask no longer describe the same run."""
 
 
+class BusinessTaskExecutionSuperseded(BusinessTaskInvariantError):
+    """Raised when a terminal control decision wins before model invocation."""
+
+
 class TaskExecutionStatus(str, Enum):
     SUCCEEDED = "succeeded"
     BLOCKED = "blocked"
@@ -48,6 +52,8 @@ _RUNTIME_STATUS_BY_OUTCOME = {
     TaskExecutionStatus.CANCELLED: "killed",
     TaskExecutionStatus.NEEDS_RECONCILIATION: "needs_reconciliation",
 }
+_ACTIVE_RUNTIME_STATUSES = frozenset({"pending", "running", "resumable", "suspended"})
+_TASK_TERMINAL_STATUSES = frozenset({"done", "blocked", "failed", "cancelled", "needs_reconciliation"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -243,6 +249,261 @@ def apply_business_task_outcome(
     )
 
 
+def _runtime_binding_matches(task: Task, runtime_task: RuntimeTask) -> bool:
+    metadata = dict(getattr(runtime_task, "metadata_json", None) or {})
+    return (
+        getattr(task, "active_runtime_task_id", None) == getattr(runtime_task, "id", None)
+        and str(metadata.get("business_task_id") or "") == str(getattr(task, "id", ""))
+        and getattr(runtime_task, "task_type", "business_task") == "business_task"
+        and getattr(runtime_task, "tenant_id", None) == getattr(task, "tenant_id", None)
+        and getattr(runtime_task, "parent_agent_id", getattr(task, "agent_id", None)) == getattr(task, "agent_id", None)
+    )
+
+
+def _assert_business_task_execution_startable(*, task: Task, runtime_task: RuntimeTask) -> None:
+    metadata = dict(getattr(runtime_task, "metadata_json", None) or {})
+    if (
+        str(getattr(runtime_task, "status", "") or "") != "running"
+        or str(metadata.get("phase") or "queued") == "terminal"
+        or str(getattr(task, "status", "") or "") in _TASK_TERMINAL_STATUSES
+    ):
+        raise BusinessTaskExecutionSuperseded("business task reached a terminal control state before invocation")
+
+
+def _business_task_stages(
+    *, task_status: str, runtime_status: str | None, phase: str, authorized: bool
+) -> list[dict[str, str]]:
+    terminal = task_status in _TASK_TERMINAL_STATUSES
+    executing_started = phase in {"invoking", "terminal"} or runtime_status == "running"
+    terminal_stage_status = {
+        "done": "complete",
+        "failed": "failed",
+        "blocked": "blocked",
+        "cancelled": "cancelled",
+        "needs_reconciliation": "warning",
+    }.get(task_status, "pending")
+    return [
+        {"id": "accepted", "label": "Assignment accepted", "status": "complete"},
+        {
+            "id": "authorized",
+            "label": "Execution authorized",
+            "status": "complete" if authorized else "blocked",
+        },
+        {
+            "id": "queued",
+            "label": "Durable run queued",
+            "status": "complete" if runtime_status else "pending",
+        },
+        {
+            "id": "executing",
+            "label": "Agent execution",
+            "status": "complete" if terminal and executing_started else "current" if executing_started else "pending",
+        },
+        {"id": "terminal", "label": "Final outcome", "status": terminal_stage_status},
+    ]
+
+
+def project_business_task(*, task: Task, runtime_task: RuntimeTask | None) -> dict[str, Any]:
+    """Build the canonical user-facing state and action projection."""
+
+    task_status = str(getattr(task, "status", "pending") or "pending")
+    metadata = dict(getattr(runtime_task, "metadata_json", None) or {}) if runtime_task is not None else {}
+    outcome = metadata.get("outcome") if isinstance(metadata.get("outcome"), dict) else {}
+    reconciliation = metadata.get("reconciliation") if isinstance(metadata.get("reconciliation"), dict) else {}
+    runtime_status = str(getattr(runtime_task, "status", "") or "") or None
+    phase = str(metadata.get("phase") or ("terminal" if task_status in _TASK_TERMINAL_STATUSES else "queued"))
+    binding_matches = runtime_task is not None and _runtime_binding_matches(task, runtime_task)
+    resolved_retry_safe = reconciliation.get("decision") == "retry_safe"
+    retryable = bool(outcome.get("retryable")) or resolved_retry_safe
+    can_cancel = bool(
+        binding_matches and runtime_status in _ACTIVE_RUNTIME_STATUSES and task_status not in _TASK_TERMINAL_STATUSES
+    )
+    can_retry = bool(
+        binding_matches
+        and task_status in {"failed", "blocked", "cancelled"}
+        and runtime_status not in _ACTIVE_RUNTIME_STATUSES
+        and retryable
+    )
+    can_reconcile = bool(
+        binding_matches and task_status == "needs_reconciliation" and not reconciliation.get("resolved_at")
+    )
+    if can_reconcile:
+        recovery_state = "needs_review"
+    elif can_retry:
+        recovery_state = "retry_available"
+    elif task_status == "done":
+        recovery_state = "complete"
+    elif task_status == "cancelled":
+        recovery_state = "cancelled"
+    elif runtime_task is None and getattr(task, "active_runtime_task_id", None) is not None:
+        recovery_state = "runtime_evidence_missing"
+    else:
+        recovery_state = "none"
+    authorized = isinstance(getattr(task, "plan_authorization", None), dict)
+    return {
+        "runtime_task_id": str(runtime_task.id) if runtime_task is not None else None,
+        "runtime_status": runtime_status,
+        "runtime_phase": phase,
+        "runtime_summary": getattr(runtime_task, "result_summary", None) if runtime_task is not None else None,
+        "runtime_request_id": str(metadata.get("request_id") or "") or None,
+        "reflection_session_id": outcome.get("reflection_session_id"),
+        "recovery_state": recovery_state,
+        "recovery_message": str(outcome.get("summary") or getattr(task, "last_error", None) or "") or None,
+        "actions": {
+            "can_cancel": can_cancel,
+            "can_retry": can_retry,
+            "can_reconcile": can_reconcile,
+        },
+        "dependencies": [
+            {
+                "id": "confirmed_plan",
+                "label": "Confirmed execution plan",
+                "status": "satisfied" if authorized else "missing",
+            },
+            {
+                "id": "runtime_intent",
+                "label": "Durable runtime intent",
+                "status": "satisfied" if binding_matches else "missing",
+            },
+        ],
+        "stages": _business_task_stages(
+            task_status=task_status,
+            runtime_status=runtime_status,
+            phase=phase,
+            authorized=authorized,
+        ),
+    }
+
+
+def _invalidate_runtime_claim(runtime_task: RuntimeTask) -> None:
+    runtime_task.claim_version = int(getattr(runtime_task, "claim_version", 0) or 0) + 1
+    runtime_task.claimed_by = None
+    runtime_task.claim_expires_at = None
+
+
+def apply_business_task_cancellation(
+    *,
+    db: AsyncSession,
+    task: Task,
+    runtime_task: RuntimeTask,
+    cancelled_by_user_id: uuid.UUID,
+    reason: str,
+    completed_at: datetime | None = None,
+) -> TaskExecutionOutcome:
+    """Cancel a queued run, or quarantine an interrupted run with unknown effects."""
+
+    if not _runtime_binding_matches(task, runtime_task):
+        raise BusinessTaskInvariantError("business task cancellation runtime binding is invalid")
+    if str(getattr(runtime_task, "status", "") or "") not in _ACTIVE_RUNTIME_STATUSES:
+        raise BusinessTaskInvariantError("business task has no active run to cancel")
+    metadata = dict(runtime_task.metadata_json or {})
+    phase = str(metadata.get("phase") or "queued")
+    not_started = runtime_task.status in {"pending", "resumable", "suspended"} and phase == "queued"
+    clean_reason = str(reason or "").strip() or "Cancelled by the requester."
+    outcome = TaskExecutionOutcome(
+        status=TaskExecutionStatus.CANCELLED if not_started else TaskExecutionStatus.NEEDS_RECONCILIATION,
+        summary=(
+            f"Business task cancelled before execution: {clean_reason}"
+            if not_started
+            else f"Business task interrupted during execution; review possible side effects before retry: {clean_reason}"
+        ),
+        error_code="cancelled_before_execution" if not_started else "cancelled_during_execution",
+        retryable=not_started,
+    )
+    metadata.update(
+        {
+            "cancelled_by_user_id": str(cancelled_by_user_id),
+            "cancel_reason": clean_reason,
+            "cancellation_safety": "not_started" if not_started else "side_effects_unknown",
+        }
+    )
+    runtime_task.metadata_json = metadata
+    _invalidate_runtime_claim(runtime_task)
+    apply_business_task_outcome(
+        db=db,
+        task=task,
+        runtime_task=runtime_task,
+        outcome=outcome,
+        completed_at=completed_at,
+    )
+    return outcome
+
+
+def reconcile_business_task(
+    *,
+    db: AsyncSession,
+    task: Task,
+    runtime_task: RuntimeTask,
+    resolved_by_user_id: uuid.UUID,
+    decision: str,
+    reason: str,
+    resolved_at: datetime | None = None,
+) -> None:
+    """Record the user's explicit decision after an unknown-side-effect stop."""
+
+    clean_reason = str(reason or "").strip()
+    if not clean_reason:
+        raise ValueError("business task reconciliation reason is required")
+    if decision not in {"retry_safe", "close_without_retry"}:
+        raise ValueError("business task reconciliation decision is invalid")
+    if not _runtime_binding_matches(task, runtime_task):
+        raise BusinessTaskInvariantError("business task reconciliation runtime binding is invalid")
+    if task.status != "needs_reconciliation" or runtime_task.status != "needs_reconciliation":
+        raise BusinessTaskInvariantError("business task is not waiting for reconciliation")
+    when = resolved_at or datetime.now(timezone.utc)
+    metadata = dict(runtime_task.metadata_json or {})
+    metadata["reconciliation"] = {
+        "decision": decision,
+        "reason": clean_reason,
+        "resolved_by_user_id": str(resolved_by_user_id),
+        "resolved_at": when.isoformat(),
+    }
+    metadata["recovery_state"] = "resolved_retry_safe" if decision == "retry_safe" else "resolved_closed"
+    runtime_task.metadata_json = metadata
+    task.status = "failed" if decision == "retry_safe" else "cancelled"
+    task.last_execution_status = "reconciled_retry_safe" if decision == "retry_safe" else "reconciled_closed"
+    task.last_error = clean_reason
+    task.completed_at = when
+    db.add(
+        TaskLog(
+            tenant_id=task.tenant_id,
+            task_id=task.id,
+            content=(
+                "✅ Reconciliation confirmed; retry is now allowed. "
+                if decision == "retry_safe"
+                else "⛔ Reconciliation closed without retry. "
+            )
+            + clean_reason,
+        )
+    )
+
+
+def quarantine_stale_business_task(
+    *,
+    db: AsyncSession,
+    task: Task,
+    runtime_task: RuntimeTask,
+    detected_at: datetime | None = None,
+) -> None:
+    """Fail closed when a running worker lease expires; never replay side effects."""
+
+    if not _runtime_binding_matches(task, runtime_task):
+        raise BusinessTaskInvariantError("stale business task runtime binding is invalid")
+    _invalidate_runtime_claim(runtime_task)
+    apply_business_task_outcome(
+        db=db,
+        task=task,
+        runtime_task=runtime_task,
+        outcome=TaskExecutionOutcome(
+            status=TaskExecutionStatus.NEEDS_RECONCILIATION,
+            summary="Business task worker lease expired during execution; side effects require review before retry.",
+            error_code="worker_lease_expired",
+            retryable=False,
+        ),
+        completed_at=detected_at,
+    )
+
+
 async def _enqueue_business_task_channel_delivery(
     *,
     db: AsyncSession,
@@ -335,6 +596,7 @@ async def mark_business_task_execution_started(*, runtime_task_id: uuid.UUID) ->
             raise BusinessTaskInvariantError("business Task runtime link is invalid")
         if runtime_task.parent_agent_id is None:
             raise BusinessTaskInvariantError("business RuntimeTask has no Agent authority")
+        _assert_business_task_execution_startable(task=task, runtime_task=runtime_task)
         task.status = "doing"
         task.last_execution_status = "running"
         metadata["phase"] = "invoking"
@@ -389,13 +651,18 @@ async def finalize_business_task_execution(
 
 
 __all__ = [
+    "BusinessTaskExecutionSuperseded",
     "BusinessTaskInvariantError",
     "TaskExecutionOutcome",
     "TaskExecutionStatus",
+    "apply_business_task_cancellation",
     "apply_business_task_outcome",
     "business_task_request_key",
     "business_task_runtime_root_key",
     "finalize_business_task_execution",
     "mark_business_task_execution_started",
+    "project_business_task",
+    "quarantine_stale_business_task",
+    "reconcile_business_task",
     "stage_business_task_runtime",
 ]

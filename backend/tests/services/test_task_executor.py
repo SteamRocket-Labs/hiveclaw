@@ -59,6 +59,27 @@ async def _verified_plan_authorization(task, **_kwargs):
     return SimpleNamespace(lease_id=task.plan_authorization["lease_id"])
 
 
+def test_business_task_cancel_event_only_latches_for_a_registered_runtime_run() -> None:
+    from app.services import task_executor
+
+    runtime_task_id = uuid4()
+
+    assert task_executor.apply_remote_business_task_cancel(runtime_task_id) is False
+    event = task_executor.business_task_cancel_event(runtime_task_id)
+    assert event.is_set() is False
+
+    assert task_executor.apply_remote_business_task_cancel(runtime_task_id) is True
+    assert event.is_set() is True
+    task_executor.release_business_task_cancel_event(runtime_task_id, event)
+
+    replacement = task_executor.business_task_cancel_event(runtime_task_id)
+    try:
+        assert replacement is not event
+        assert replacement.is_set() is False
+    finally:
+        task_executor.release_business_task_cancel_event(runtime_task_id, replacement)
+
+
 @pytest.mark.asyncio
 async def test_execute_task_delegates_to_runtime_invoker(monkeypatch):
     from app.services.task_executor import execute_task

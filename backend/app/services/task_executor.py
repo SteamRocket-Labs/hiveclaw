@@ -1,5 +1,6 @@
 """Background task executor — runs agent tasks through the unified runtime."""
 
+import asyncio
 import json
 import uuid
 
@@ -25,6 +26,40 @@ from app.services.plan_authorization_lease import (
 )
 from app.services.tenant_resolver import resolve_tenant_for_agent
 from app.services.business_task_runtime import TaskExecutionOutcome, TaskExecutionStatus
+
+
+_BUSINESS_TASK_CANCEL_EVENTS: dict[str, asyncio.Event] = {}
+
+
+def _business_task_key(runtime_task_id: uuid.UUID | str) -> str:
+    return str(runtime_task_id).replace("-", "")
+
+
+def business_task_cancel_event(runtime_task_id: uuid.UUID | str) -> asyncio.Event:
+    """Register the process-local cancellation latch for one runtime attempt."""
+
+    key = _business_task_key(runtime_task_id)
+    event = _BUSINESS_TASK_CANCEL_EVENTS.get(key)
+    if event is None:
+        event = asyncio.Event()
+        _BUSINESS_TASK_CANCEL_EVENTS[key] = event
+    return event
+
+
+def apply_remote_business_task_cancel(runtime_task_id: uuid.UUID | str) -> bool:
+    """Interrupt a local attempt without leaving a latch for a future retry."""
+
+    event = _BUSINESS_TASK_CANCEL_EVENTS.get(_business_task_key(runtime_task_id))
+    if event is None:
+        return False
+    event.set()
+    return True
+
+
+def release_business_task_cancel_event(runtime_task_id: uuid.UUID | str, event: asyncio.Event) -> None:
+    key = _business_task_key(runtime_task_id)
+    if _BUSINESS_TASK_CANCEL_EVENTS.get(key) is event:
+        _BUSINESS_TASK_CANCEL_EVENTS.pop(key, None)
 
 
 TASK_EXECUTION_ADDENDUM = """<role>
@@ -308,6 +343,7 @@ async def execute_task(
     agent_id: uuid.UUID,
     *,
     requester_user_id: uuid.UUID | None = None,
+    cancel_event: asyncio.Event | None = None,
 ) -> TaskExecutionOutcome:
     """Execute a task using the agent's configured LLM with full context.
 
@@ -386,6 +422,13 @@ async def execute_task(
         task_title,
         task_description,
     )
+    if cancel_event is not None and cancel_event.is_set():
+        return TaskExecutionOutcome(
+            status=TaskExecutionStatus.CANCELLED,
+            summary="Business task was cancelled before model execution.",
+            error_code="cancelled_before_model",
+            retryable=False,
+        )
     runtime_messages = [{"role": "user", "content": user_prompt}]
 
     # Step 2: Load agent + model
@@ -562,8 +605,17 @@ async def execute_task(
                 on_tool_call=_on_tool_call,
                 core_tools_only=True,
                 max_tool_rounds=getattr(agent, "max_tool_rounds", None),
+                cancel_event=cancel_event,
             )
         )
+        if cancel_event is not None and cancel_event.is_set():
+            return TaskExecutionOutcome(
+                status=TaskExecutionStatus.CANCELLED,
+                summary="Business task execution was cancelled by the requester.",
+                error_code="cancelled_by_requester",
+                retryable=False,
+                reflection_session_id=str(reflection_session_id),
+            )
         reply = str(result.content or "").strip()
         if not reply:
             await _log_error(task_id, "模型返回空内容，任务未完成", tenant_id=tenant_id)

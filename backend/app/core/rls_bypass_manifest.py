@@ -541,6 +541,14 @@ RLS_BYPASS_ALLOWLIST = (
     ),
     _grant(
         *(
+            "app/services/business_task_reconciliation.py",
+            "reconcile_stale_business_tasks_once",
+            "'BusinessTask expired worker lease reconciliation'",
+            ("session-state-only",),
+        )
+    ),
+    _grant(
+        *(
             "app/services/runtime_task_worker.py",
             "claim_and_dispatch_once",
             "'runtime task worker claim pending executable tasks'",

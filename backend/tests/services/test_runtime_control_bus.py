@@ -50,6 +50,27 @@ async def test_publish_web_chat_cancel_uses_runtime_control_channel(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_publish_business_task_cancel_uses_runtime_control_channel(monkeypatch):
+    import app.services.runtime_control_bus as bus
+
+    redis = _FakeRedis()
+
+    async def fake_get_redis():
+        return redis
+
+    monkeypatch.setattr(bus, "get_redis", fake_get_redis)
+    task_id = uuid4()
+    runtime_task_id = uuid4()
+
+    await bus.publish_business_task_cancel(task_id=task_id, runtime_task_id=runtime_task_id)
+
+    payload = json.loads(redis.published[0][1])
+    assert payload["type"] == "business_task_cancel"
+    assert payload["task_id"] == str(task_id)
+    assert payload["runtime_task_id"] == str(runtime_task_id)
+
+
+@pytest.mark.asyncio
 async def test_publish_subagent_cancel_uses_runtime_control_channel(monkeypatch):
     import app.services.runtime_control_bus as bus
 
@@ -164,6 +185,29 @@ async def test_runtime_control_web_chat_cancel_sets_local_cancel_event():
         assert cancel_event.is_set() is True
     finally:
         unregister_web_chat_run_for_test(run_id)
+
+
+@pytest.mark.asyncio
+async def test_runtime_control_business_task_cancel_latches_for_the_kernel() -> None:
+    import app.services.runtime_control_bus as bus
+    from app.services import task_executor
+
+    task_id = uuid4()
+    runtime_task_id = uuid4()
+    cancel_event = task_executor.business_task_cancel_event(runtime_task_id)
+    try:
+        handled = await bus.handle_runtime_control_message(
+            {
+                "schema": bus.RUNTIME_CONTROL_SCHEMA,
+                "type": "business_task_cancel",
+                "task_id": str(task_id),
+                "runtime_task_id": str(runtime_task_id),
+            }
+        )
+        assert handled is True
+        assert cancel_event.is_set() is True
+    finally:
+        task_executor.release_business_task_cancel_event(runtime_task_id, cancel_event)
 
 
 @pytest.mark.asyncio

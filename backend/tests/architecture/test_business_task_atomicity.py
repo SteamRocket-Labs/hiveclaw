@@ -21,11 +21,17 @@ def test_tasks_api_stages_task_and_runtime_task_before_the_only_commit() -> None
     commit_calls = [call for call in calls if isinstance(call.func, ast.Attribute) and call.func.attr == "commit"]
     assert len(commit_calls) == 1
 
-    trigger_task = next(
-        node for node in ast.walk(tree) if isinstance(node, ast.AsyncFunctionDef) and node.name == "trigger_task"
+    trigger_run = next(
+        node for node in ast.walk(tree) if isinstance(node, ast.AsyncFunctionDef) and node.name == "_trigger_task_run"
     )
-    trigger_source = ast.get_source_segment(source, trigger_task) or ""
+    trigger_source = ast.get_source_segment(source, trigger_run) or ""
     assert ".with_for_update()" in trigger_source
+    for route_name in ("trigger_task", "retry_business_task"):
+        route = next(
+            node for node in ast.walk(tree) if isinstance(node, ast.AsyncFunctionDef) and node.name == route_name
+        )
+        route_source = ast.get_source_segment(source, route) or ""
+        assert "_trigger_task_run" in route_source
 
 
 def test_business_task_worker_never_unconditionally_marks_completed() -> None:

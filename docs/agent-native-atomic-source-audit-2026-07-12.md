@@ -169,7 +169,7 @@ flowchart LR
 | A14 | Plan Mode | user/model plan | exact plan lease | plan tools/API | plan event/hash | resume | tool gate/UI | e2e+unit | 闭环 | `tools/handlers/plan_mode.py`; `services/plan_authorization_lease.py` |
 | A15 | Goal Mode | objective/budget | owner/agent | goal service+runtime | goal/task records | durable tasks | Workbench | tests | 局部闭环 | `services/objective_service.py`; `api/objectives.py` |
 | A16 | Todo/Work Ledger | agent-authored item | session/agent | ledger tools | ledger rows/events | reload | model/UI | tests | 闭环 | `tools/handlers/work_ledger.py` |
-| A17 | BusinessTask | API/trigger input；普通用户 UI 缺入口 | tenant/agent | RuntimeTask binding | Task+RuntimeTask | claim/quarantine | backend worker；无页面 consumer | backend tests；缺浏览器验收 | 断点 | `services/business_task_runtime.py`; `runtime_task_claim_service.py`; R-027 |
+| A17 | BusinessTask | 用户在业务交办 UI 创建/重试；API/trigger 兼容入口 | tenant/agent + exact Plan lease | `_trigger_task_run`→RuntimeTask worker | Task+RuntimeTask+TaskLog+audit | request 幂等、claim fence、取消、人工核查、过期 lease quarantine | backend worker + `AgentBusinessTasksSection` | backend 115 定向/6690 全量；frontend 655；Playwright 3 | 闭环 | `api/tasks.py`; `services/business_task_runtime.py`; `business_task_reconciliation.py`; `AgentBusinessTasksSection.tsx`; R-027 |
 | A18 | Schedule/Trigger | schedule/event | tenant/agent policy | trigger daemon | RuntimeTask+journal | claim/reconcile | notification/UI | tests | 闭环 | `services/trigger_daemon.py`; `api/triggers.py` |
 | A19 | Web Chat durable run | user turn | session access | RuntimeTask worker | transcript+task | normal claim/fence | UI | full suite | 断点 | `services/web_chat_runtime.py`; R-001 |
 | A20 | WebSocket transport | subscription | session access | broker | no canonical truth | REST backfill | UI | tests | 闭环 | `api/websocket.py`; `services/web_chat_broker.py` |
@@ -237,7 +237,7 @@ flowchart LR
 | Rewind/rollback | 回到历史边界 | append-only rollback marker | transcript projection+snapshot restore | ResourceAuthority | 闭环 |
 | Compact | summary+session-start rehydrate | compact task/window state | Kernel proactive/reactive compact | session memory/T0 | 局部闭环 |
 | Plan Mode | agent-authored plan+确认 | structured plan state | exact plan authorization lease | enterprise policy | 闭环 |
-| Task/Todo | cognitive task board/background tasks | progress surfaces | Work Ledger 已闭环；BusinessTask 无普通用户 UI consumer | durable worker | 局部闭环（R-027） |
+| Task/Todo | cognitive task board/background tasks | progress surfaces | Work Ledger 与 BusinessTask 分面呈现；前者只做对话内认知记账，后者走 exact Plan 后进入 durable worker | durable worker + canonical projection | 闭环（R-027） |
 | AgentTool/Subagent | isolated delegated session | agent control/resume | `spawn_subagent` | budget/delegation/audit | 闭环 |
 | Agent Team | 显式协作容器 | multi-agent control | Team runtime | company agent relationships | 局部闭环 |
 | Workflow | deterministic orchestration | typed progress | Workflow runtime | governed steps/journals | 闭环 |
@@ -853,11 +853,13 @@ flowchart LR
 ### [R-027] DB Task/BusinessTask 消费原子断裂（headless）
 
 - 严重级别：P1
-- 状态：断点
+- 原始状态：断点
 - 用户/生产症状：完整的 DB Task 后端（create + stage + notify worker）与前端 client 齐备，但零页面 import taskApi——UI 永远建不出 DB Task；屏上任务板是独立的 Work Ledger。
 - 根因：[主审复核] `api/tasks.py:278/306/334` 后端完整，`frontend/src/api/domains/tasks.ts:43` client 存在，但 `pages/`/`components/` 零消费。断 input↔consumption。
-- 精确代码位置：`backend/app/api/tasks.py:278`；`frontend/src/api/domains/tasks.ts:43`（无页面引用）。
+- 精确代码位置（修复后）：`backend/app/api/tasks.py:_trigger_task_run,get_task_detail,cancel_business_task,reconcile_business_task_state`；`backend/app/services/business_task_runtime.py:project_business_task,apply_business_task_cancellation,reconcile_business_task,quarantine_stale_business_task`；`backend/app/services/business_task_reconciliation.py`；`backend/app/services/runtime_task_worker.py:_execute_claimed_business_task`；`frontend/src/pages/agent-detail/AgentBusinessTasksSection.tsx`。
 - 一次性完整关闭方案：明确保留两个不同概念——Work Ledger 是 Agent 的认知 todo，不触发执行；BusinessTask 是用户/公司下发的可执行 durable task。把现有 `taskApi` 接入唯一 BusinessTask UI，提供 create/list/detail/cancel/retry、依赖/阶段、RuntimeTask 映射、失败原因与恢复状态；UI 只消费后端 canonical projection，不复制状态机；清理任何与 Work Ledger 混名或重复的死 client/state；补 UI→API→claim→terminal、断线恢复、重复提交、取消竞态和权限拒绝的浏览器验收。不得以“API-only”继续保留当前 headless 产品断点。
+- 修复状态（2026-07-12）：**R-027 七原子闭环**。输入由 Agent Detail「业务交办」专属页发起 create/retry/cancel/reconcile，且页面逐字区分“持久业务交办”与“对话内 Work Ledger”；权威复用 agent/task ResourceAuthority，执行启动必须消费 exact Plan lease，最小 payload 将可选字段规范化为 `null`，避免 Preview→Confirm 的 `undefined/null` hash 漂移；执行统一进入 `_trigger_task_run` 与 `RuntimeTask(task_type="business_task")` worker，UI 只消费 `project_business_task` 返回的 action/dependency/stage/recovery projection；证据由 Task、RuntimeTask、TaskLog、plan authorization、request id/hash 与 tamper-evident audit 组成；恢复覆盖浏览器刷新后的 confirmed Plan 续启、create/retry 幂等、claim fence、排队安全取消、运行中取消转 `needs_reconciliation`、人工判定、过期 worker lease 隔离且禁止自动 replay。跨进程取消按 **RuntimeTask attempt** 注册 process-local event，未注册 run 不留 latch，终态控制先赢时 worker 在 model invocation 前 benign 退出，绝不污染同一 Task 的下一次 retry。消费同时落到 worker、业务交办列表/详情/阶段/恢复操作，内部 request/hash/claim 等 plumbing 不进入普通用户主视图。
+- 验收证据：BusinessTask 状态/恢复首轮 Red **6 failed**，stale reconciler Red **3 failed**，cancel/control/worker Red **4 failed**，API/schema Red **2 failed**，Plan retry 证据同步与 runtime request projection 分别 Red；最小 payload canonicalization Red **1 failed**；最终取消竞态补充 Red **4 failed**，新增 benign terminal-race 契约后 Green **5 passed**。Green 合并定向 **115 passed**；RLS allowlist 首轮全量暴露 **1 failed, 6687 passed, 1 skipped**，登记精确 bypass callsite 后最终 backend 全量 **6690 passed, 1 skipped**。Frontend 定向 **7 passed**、全量 **114 files / 655 tests**，production build 与 AgentDetail/vendor bundle budget 通过；Playwright `business-tasks.spec.ts` **3 passed**，覆盖刷新恢复+exact-once start、运行中 cancel→reconcile、403 显式拒绝；`ruff check app tests`、`ruff format --check app tests`（1549 files）与 diff check 全绿。独立提交主题：`fix(R-027): close BusinessTask product loop`。
 
 ### [R-028] 个人 KB 权限拒绝静默化为空库
 
@@ -1017,7 +1019,7 @@ Codebase graph 校正时状态为 ready（43,281 nodes / 166,753 edges）；`det
 | Staging fault-injection门 | NO-GO | 多副本startup（R-001）、claim lease（R-004/R-023）、approval crash、Dream kill、outbox前后crash、lifecycle.json 崩溃写、15 journeys |
 | Railway生产门 | 未验证/NO-GO | backend/backend-api/frontend同一候选均SUCCESS；health、schema、worker日志、持久盘证据 |
 | 权限矩阵门 | 本地候选通过 | cross-tenant、delegate grant、break-glass expiry、operator read/write、组合 waiting E2E；R-020 Local Bridge per-action policy/approval；R-022 全 tenant 表 RLS；R-023 NULL/global/shared/operator/quarantine 注入矩阵；生产只读核验仍归 Railway 门 |
-| 功能与用户体验门 | NO-GO | R-019/R-025 已有本地闭环证据；仍须关闭 R-027 BusinessTask 真实 UI consumer 与 R-028 Personal KB 403/empty 分流，并在 staging 重跑 15 条 journey |
+| 功能与用户体验门 | NO-GO | R-019/R-025/R-027 已有本地闭环证据；仍须关闭 R-028 Personal KB 403/empty 分流，并在 staging 重跑 15 条 journey |
 | External Channel门 | 未验证 | R-018 加密迁移后真实 secret 读取/轮换；真实 identity binding、token expiry、duplicate webhook、outbox retry/dead-letter；R-020 Local Bridge per-action 审批与离线恢复 |
 | Artifact交付门 | 本地候选通过 | staging sandbox→artifact→chat→Deliverables→download、crash/retry exact-once |
 | Company KB 范围门 | 已知缺失/不阻塞当前第一部分 | R-008 文案只描述 legacy read-only files；不出现正式 Company KB 已可用的 route/UI shell。Company KB 正式能力进入明确的第二部分完整建设 |
@@ -1047,7 +1049,7 @@ Codebase graph 校正时状态为 ready（43,281 nodes / 166,753 edges）；`det
 
 ## 16. 28 项原子缺口修复执行账本
 
-本节记录原始审计全部 28 项的实际落地状态：17 个断点、10 个局部闭环、1 个已知缺失。原始严重级别与原子状态保留为审计快照；只有同时具备实现、回归测试、报告证据和独立提交，才把修复状态改为闭环。Company Knowledge Base 本体按 owner 边界不在本轮开发，但 R-008 的诚实隔离、文案与防伪装验收仍必须关闭。当前进度：**26/28**。
+本节记录原始审计全部 28 项的实际落地状态：17 个断点、10 个局部闭环、1 个已知缺失。原始严重级别与原子状态保留为审计快照；只有同时具备实现、回归测试、报告证据和独立提交，才把修复状态改为闭环。Company Knowledge Base 本体按 owner 边界不在本轮开发，但 R-008 的诚实隔离、文案与防伪装验收仍必须关闭。当前进度：**27/28**。
 
 | ID | 修复状态 | 独立提交主题 | 机械证据摘要 |
 |---|---|---|---|
@@ -1077,5 +1079,5 @@ Codebase graph 校正时状态为 ready（43,281 nodes / 166,753 edges）；`det
 | R-024 | 闭环 | `fix(R-024): close provisional skill trials` | 校正原报告：web chat 已有 terminal consumer；Red 5 failed；全 loaded provisional 扇出 + durable replay exact-once + heartbeat 超窗/孤儿 ledger fail-closed；扩展 252；backend 6653；ruff/format 绿 |
 | R-025 | 闭环 | `fix(R-025): reconcile unfinished HR creations` | 校正 R-003 后真实剩余 seam；7d TTL+legacy backfill、worker SKIP LOCKED reconciler、confirmation fail-closed、missing-job/terminal/orphan Agent 收敛、目录 Resume/Retry/Remove；Red 9+2；扩展 105；backend 6663；frontend 650+build；真实 PG/head/ruff/format 绿 |
 | R-026 | 闭环 | `fix(R-026): make lifecycle telemetry crash-safe` | Red 5 failed + 语义单提交 Red 1 failed；temp/fsync/replace + last-good + corrupt quarantine/receipt + strict whole-snapshot validation + flock stale-reload；扩展 93；backend 6669；ruff/format/diff 绿 |
-| R-027 | 待修复 | — | — |
+| R-027 | 闭环 | `fix(R-027): close BusinessTask product loop` | Work Ledger/BusinessTask 分面；exact Plan lease + canonical null payload；唯一 RuntimeTask 执行入口与 canonical projection；create/retry 幂等；cancel attempt latch、terminal race fence、人工 reconcile、stale lease quarantine；backend 115/全量 6690；frontend 655+build；Playwright 3；RLS/ruff/format/diff 绿 |
 | R-028 | 待修复 | — | — |

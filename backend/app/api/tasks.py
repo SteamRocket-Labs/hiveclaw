@@ -4,7 +4,7 @@ import uuid
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,11 +18,14 @@ from app.models.task import Task, TaskLog
 from app.models.runtime_task import RuntimeTask
 from app.models.chat_session import ChatSession
 from app.models.user import User
-from app.schemas.schemas import TaskCreate, TaskLogCreate, TaskLogOut, TaskOut, TaskUpdate
+from app.schemas.schemas import BusinessTaskDetailOut, TaskCreate, TaskLogCreate, TaskLogOut, TaskOut, TaskUpdate
 from app.services.business_task_runtime import (
     BusinessTaskInvariantError,
+    apply_business_task_cancellation,
     business_task_request_key,
     business_task_runtime_root_key,
+    project_business_task,
+    reconcile_business_task,
     stage_business_task_runtime,
 )
 from app.services.runtime_task_worker import notify_runtime_task_worker
@@ -35,6 +38,15 @@ class TaskTriggerIn(BaseModel):
     confirmed_plan_version: int | None = None
     confirmed_plan_hash: str | None = None
     confirmed_plan_session_id: str | None = None
+
+
+class TaskCancelIn(BaseModel):
+    reason: str = Field(default="", max_length=2_000)
+
+
+class TaskReconcileIn(BaseModel):
+    decision: str
+    reason: str = Field(min_length=1, max_length=4_000)
 
 
 router = APIRouter(prefix="/agents/{agent_id}/tasks", tags=["tasks"])
@@ -137,7 +149,43 @@ async def _enrich_task_out(task: Task, db: AsyncSession) -> TaskOut:
         user = user_result.scalar_one_or_none()
         if user:
             out.creator_username = user.username
+    runtime_task = (
+        await db.get(RuntimeTask, task.active_runtime_task_id) if task.active_runtime_task_id is not None else None
+    )
+    _stamp_task_runtime_projection(out, task=task, runtime_task=runtime_task)
     return out
+
+
+def _stamp_task_runtime_projection(
+    out: TaskOut,
+    *,
+    task: Task,
+    runtime_task: RuntimeTask | None,
+) -> TaskOut:
+    projection = project_business_task(task=task, runtime_task=runtime_task)
+    out.runtime_status = projection["runtime_status"]
+    out.runtime_phase = projection["runtime_phase"]
+    out.runtime_summary = projection["runtime_summary"]
+    out.runtime_request_id = projection["runtime_request_id"]
+    out.reflection_session_id = projection["reflection_session_id"]
+    out.recovery_state = projection["recovery_state"]
+    out.recovery_message = projection["recovery_message"]
+    out.actions = projection["actions"]
+    out.dependencies = projection["dependencies"]
+    out.stages = projection["stages"]
+    return out
+
+
+async def _business_task_detail(task: Task, db: AsyncSession) -> BusinessTaskDetailOut:
+    logs = list(
+        (await db.execute(select(TaskLog).where(TaskLog.task_id == task.id).order_by(TaskLog.created_at.asc())))
+        .scalars()
+        .all()
+    )
+    return BusinessTaskDetailOut(
+        task=await _enrich_task_out(task, db),
+        logs=[TaskLogOut.model_validate(item) for item in logs],
+    )
 
 
 def _stamp_task_authority(out: TaskOut, decision) -> TaskOut:
@@ -171,6 +219,37 @@ async def _authorize_task(
         manager_override_reason=operator_reason,
         agent_access=agent_access,
     )
+
+
+async def _load_authorized_task(
+    db: AsyncSession,
+    current_user: User,
+    *,
+    agent_id: uuid.UUID,
+    task_id: uuid.UUID,
+    action: str,
+    operator_view: bool,
+    operator_reason: str | None,
+    for_update: bool = False,
+) -> tuple[Task, object]:
+    agent_access = await check_agent_access(db, current_user, agent_id)
+    statement = select(Task).where(Task.id == task_id, Task.agent_id == agent_id)
+    if for_update:
+        statement = statement.with_for_update()
+    task = (await db.execute(statement)).scalar_one_or_none()
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    decision = await _authorize_task(
+        db,
+        current_user,
+        agent_id=agent_id,
+        task=task,
+        action=action,
+        agent_access=agent_access,
+        operator_view=operator_view,
+        operator_reason=operator_reason,
+    )
+    return task, decision
 
 
 @router.get("/", response_model=list[TaskOut])
@@ -211,11 +290,17 @@ async def list_tasks(
     if creator_ids:
         users_result = await db.execute(select(User).where(User.id.in_(creator_ids)))
         creator_map = {u.id: u.username for u in users_result.scalars().all()}
+    runtime_ids = {task.active_runtime_task_id for task, _decision in authorized if task.active_runtime_task_id}
+    runtime_map: dict[uuid.UUID, RuntimeTask] = {}
+    if runtime_ids:
+        runtime_result = await db.execute(select(RuntimeTask).where(RuntimeTask.id.in_(runtime_ids)))
+        runtime_map = {runtime.id: runtime for runtime in runtime_result.scalars().all()}
     out_list = []
     for t, decision in authorized:
         t_out = TaskOut.model_validate(t)
         t_out.creator_username = creator_map.get(t.created_by)
         _stamp_task_authority(t_out, decision)
+        _stamp_task_runtime_projection(t_out, task=t, runtime_task=runtime_map.get(t.active_runtime_task_id))
         out_list.append(t_out)
     return out_list
 
@@ -338,6 +423,163 @@ async def create_task(
     return task_out
 
 
+@router.get("/{task_id}", response_model=BusinessTaskDetailOut)
+async def get_task_detail(
+    agent_id: uuid.UUID,
+    task_id: uuid.UUID,
+    operator_view: bool = False,
+    operator_reason: str | None = None,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    task, decision = await _load_authorized_task(
+        db,
+        current_user,
+        agent_id=agent_id,
+        task_id=task_id,
+        action="read",
+        operator_view=operator_view,
+        operator_reason=operator_reason,
+    )
+    detail = await _business_task_detail(task, db)
+    _stamp_task_authority(detail.task, decision)
+    return detail
+
+
+@router.post("/{task_id}/cancel", response_model=BusinessTaskDetailOut)
+async def cancel_business_task(
+    agent_id: uuid.UUID,
+    task_id: uuid.UUID,
+    data: TaskCancelIn,
+    operator_view: bool = False,
+    operator_reason: str | None = None,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    task, decision = await _load_authorized_task(
+        db,
+        current_user,
+        agent_id=agent_id,
+        task_id=task_id,
+        action="execute",
+        operator_view=operator_view,
+        operator_reason=operator_reason,
+        for_update=True,
+    )
+    runtime_task = (
+        await db.get(RuntimeTask, task.active_runtime_task_id, with_for_update=True)
+        if task.active_runtime_task_id is not None
+        else None
+    )
+    if runtime_task is None:
+        raise HTTPException(status_code=409, detail="Business task has no active runtime intent to cancel")
+    runtime_metadata = dict(runtime_task.metadata_json or {})
+    if task.status in {"cancelled", "needs_reconciliation"} and runtime_metadata.get("cancelled_by_user_id"):
+        detail = await _business_task_detail(task, db)
+        _stamp_task_authority(detail.task, decision)
+        return detail
+    try:
+        outcome = apply_business_task_cancellation(
+            db=db,
+            task=task,
+            runtime_task=runtime_task,
+            cancelled_by_user_id=current_user.id,
+            reason=data.reason,
+        )
+    except BusinessTaskInvariantError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    from app.core.policy import write_audit_event
+
+    await write_audit_event(
+        db,
+        event_type="business_task.cancelled",
+        severity="warning" if outcome.status.value == "needs_reconciliation" else "info",
+        actor_type="user",
+        actor_id=current_user.id,
+        tenant_id=task.tenant_id,
+        action="cancel_business_task",
+        resource_type="task",
+        resource_id=task.id,
+        details={
+            "runtime_task_id": str(runtime_task.id),
+            "outcome": outcome.status.value,
+            "retryable": outcome.retryable,
+        },
+    )
+    await db.commit()
+    try:
+        from app.services.runtime_control_bus import publish_business_task_cancel
+
+        await publish_business_task_cancel(task_id=task.id, runtime_task_id=runtime_task.id)
+    except Exception as exc:  # noqa: BLE001 - DB status and claim fence remain authoritative.
+        logger.warning("business task cancel wakeup failed for %s: %s", runtime_task.id, exc)
+    detail = await _business_task_detail(task, db)
+    _stamp_task_authority(detail.task, decision)
+    return detail
+
+
+@router.post("/{task_id}/reconcile", response_model=BusinessTaskDetailOut)
+async def reconcile_business_task_state(
+    agent_id: uuid.UUID,
+    task_id: uuid.UUID,
+    data: TaskReconcileIn,
+    operator_view: bool = False,
+    operator_reason: str | None = None,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    task, decision = await _load_authorized_task(
+        db,
+        current_user,
+        agent_id=agent_id,
+        task_id=task_id,
+        action="execute",
+        operator_view=operator_view,
+        operator_reason=operator_reason,
+        for_update=True,
+    )
+    runtime_task = (
+        await db.get(RuntimeTask, task.active_runtime_task_id, with_for_update=True)
+        if task.active_runtime_task_id is not None
+        else None
+    )
+    if runtime_task is None:
+        raise HTTPException(status_code=409, detail="Business task runtime evidence is missing")
+    try:
+        reconcile_business_task(
+            db=db,
+            task=task,
+            runtime_task=runtime_task,
+            resolved_by_user_id=current_user.id,
+            decision=data.decision,
+            reason=data.reason,
+        )
+    except (BusinessTaskInvariantError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    from app.core.policy import write_audit_event
+
+    await write_audit_event(
+        db,
+        event_type="business_task.reconciled",
+        severity="warning",
+        actor_type="user",
+        actor_id=current_user.id,
+        tenant_id=task.tenant_id,
+        action="reconcile_business_task",
+        resource_type="task",
+        resource_id=task.id,
+        details={
+            "runtime_task_id": str(runtime_task.id),
+            "decision": data.decision,
+            "automatic_retry_allowed": data.decision == "retry_safe",
+        },
+    )
+    await db.commit()
+    detail = await _business_task_detail(task, db)
+    _stamp_task_authority(detail.task, decision)
+    return detail
+
+
 @router.patch("/{task_id}", response_model=TaskOut)
 async def update_task(
     agent_id: uuid.UUID,
@@ -430,15 +672,16 @@ async def add_task_log(
     return TaskLogOut.model_validate(log)
 
 
-@router.post("/{task_id}/trigger")
-async def trigger_task(
+async def _trigger_task_run(
     agent_id: uuid.UUID,
     task_id: uuid.UUID,
     data: TaskTriggerIn,
-    operator_view: bool = False,
-    operator_reason: str | None = None,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    operator_view: bool,
+    operator_reason: str | None,
+    current_user: User,
+    db: AsyncSession,
+    *,
+    retry_only: bool,
 ):
     """Manually trigger a task execution (for testing)."""
     from app.core.permissions import is_agent_expired
@@ -493,6 +736,16 @@ async def trigger_task(
     )
     if existing_run is not None:
         return {"status": "triggered", "task_id": str(task_id), "runtime_task_id": existing_run.id.hex}
+    if retry_only:
+        active_runtime = (
+            await db.get(RuntimeTask, task.active_runtime_task_id) if task.active_runtime_task_id is not None else None
+        )
+        projection = project_business_task(task=task, runtime_task=active_runtime)
+        if not projection["actions"]["can_retry"]:
+            raise HTTPException(
+                status_code=409,
+                detail=projection["recovery_message"] or "Business task is not safe to retry",
+            )
     evidence_id = f"task-run:{task.id}:{uuid.uuid4()}"
     plan_decision = await enforce_plan_gate(
         db,
@@ -518,6 +771,9 @@ async def trigger_task(
         session_id=trigger_in.confirmed_plan_session_id,
         evidence_id=evidence_id,
     ).get("plan_authorization")
+    task.plan_id = uuid.UUID(trigger_in.confirmed_plan_id) if trigger_in.confirmed_plan_id else None
+    task.plan_version = trigger_in.confirmed_plan_version
+    task.plan_hash = trigger_in.confirmed_plan_hash
 
     root_session_id, delivery_target = await _task_delivery_context(
         db,
@@ -566,3 +822,47 @@ async def trigger_task(
         logger.warning("business task trigger wakeup failed for %s: %s", runtime_task.id, exc)
 
     return {"status": "triggered", "task_id": str(task_id), "runtime_task_id": runtime_task.id.hex}
+
+
+@router.post("/{task_id}/trigger")
+async def trigger_task(
+    agent_id: uuid.UUID,
+    task_id: uuid.UUID,
+    data: TaskTriggerIn,
+    operator_view: bool = False,
+    operator_reason: str | None = None,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    return await _trigger_task_run(
+        agent_id,
+        task_id,
+        data,
+        operator_view,
+        operator_reason,
+        current_user,
+        db,
+        retry_only=False,
+    )
+
+
+@router.post("/{task_id}/retry")
+async def retry_business_task(
+    agent_id: uuid.UUID,
+    task_id: uuid.UUID,
+    data: TaskTriggerIn,
+    operator_view: bool = False,
+    operator_reason: str | None = None,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    return await _trigger_task_run(
+        agent_id,
+        task_id,
+        data,
+        operator_view,
+        operator_reason,
+        current_user,
+        db,
+        retry_only=True,
+    )

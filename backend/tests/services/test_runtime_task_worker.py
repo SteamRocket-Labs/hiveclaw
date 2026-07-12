@@ -234,8 +234,9 @@ async def test_execute_claimed_business_task_marks_failed_on_executor_error(monk
         finalized.append((runtime_task_id, outcome))
         return True
 
-    async def fake_execute_task(_business_task_id, _agent_id, *, requester_user_id):
+    async def fake_execute_task(_business_task_id, _agent_id, *, requester_user_id, cancel_event):
         assert requester_user_id == requester_id
+        assert cancel_event is not None
         raise RuntimeError("executor exploded")
 
     expected_runtime_task_id = runtime_task_id
@@ -257,6 +258,103 @@ async def test_execute_claimed_business_task_marks_failed_on_executor_error(monk
     assert outcome.status is TaskExecutionStatus.FAILED
     assert outcome.retryable is True
     assert "executor exploded" in outcome.summary
+
+
+@pytest.mark.asyncio
+async def test_execute_claimed_business_task_passes_cross_process_cancel_to_kernel(monkeypatch):
+    import asyncio
+
+    import app.services.runtime_task_worker as worker
+    from app.services.business_task_runtime import TaskExecutionOutcome, TaskExecutionStatus
+
+    runtime_task_id = uuid4()
+    business_task_id = uuid4()
+    agent_id = uuid4()
+    requester_id = uuid4()
+    cancel_event = asyncio.Event()
+    released = []
+    finalized = []
+    registered = False
+
+    async def fake_mark_started(*, runtime_task_id):
+        assert registered is True
+        cancel_event.set()
+        return business_task_id, agent_id, requester_id
+
+    async def fake_execute_task(_task_id, _agent_id, *, requester_user_id, cancel_event: asyncio.Event):
+        assert requester_user_id == requester_id
+        assert cancel_event is expected_cancel_event
+        return TaskExecutionOutcome(status=TaskExecutionStatus.CANCELLED, summary="cancelled")
+
+    async def fake_finalize(*, runtime_task_id, outcome):
+        finalized.append(outcome)
+        return True
+
+    def fake_release(task_id, event):
+        released.append((task_id, event))
+
+    def fake_cancel_event(task_id):
+        nonlocal registered
+        assert task_id == expected_runtime_task_id
+        registered = True
+        return cancel_event
+
+    expected_cancel_event = cancel_event
+    expected_runtime_task_id = runtime_task_id
+    monkeypatch.setattr(
+        "app.services.business_task_runtime.mark_business_task_execution_started",
+        fake_mark_started,
+    )
+    monkeypatch.setattr(
+        "app.services.business_task_runtime.finalize_business_task_execution",
+        fake_finalize,
+    )
+    monkeypatch.setattr("app.services.task_executor.business_task_cancel_event", fake_cancel_event)
+    monkeypatch.setattr("app.services.task_executor.release_business_task_cancel_event", fake_release)
+    monkeypatch.setattr("app.services.task_executor.execute_task", fake_execute_task)
+
+    await worker._execute_claimed_business_task(runtime_task_id)
+
+    assert finalized[0].status is TaskExecutionStatus.CANCELLED
+    assert released == [(runtime_task_id, cancel_event)]
+
+
+@pytest.mark.asyncio
+async def test_execute_claimed_business_task_treats_terminal_cancel_race_as_benign(monkeypatch):
+    import asyncio
+
+    import app.services.runtime_task_worker as worker
+    from app.services.business_task_runtime import BusinessTaskExecutionSuperseded
+
+    runtime_task_id = uuid4()
+    cancel_event = asyncio.Event()
+    released = []
+    reconciliation_updates = []
+
+    async def fake_mark_started(*, runtime_task_id):
+        raise BusinessTaskExecutionSuperseded("run was cancelled before invocation")
+
+    async def fake_update_runtime_task_record(*args, **kwargs):
+        reconciliation_updates.append((args, kwargs))
+
+    monkeypatch.setattr(
+        "app.services.business_task_runtime.mark_business_task_execution_started",
+        fake_mark_started,
+    )
+    monkeypatch.setattr("app.services.task_executor.business_task_cancel_event", lambda _run_id: cancel_event)
+    monkeypatch.setattr(
+        "app.services.task_executor.release_business_task_cancel_event",
+        lambda run_id, event: released.append((run_id, event)),
+    )
+    monkeypatch.setattr(
+        "app.services.runtime_task_service.update_runtime_task_record",
+        fake_update_runtime_task_record,
+    )
+
+    await worker._execute_claimed_business_task(runtime_task_id)
+
+    assert released == [(runtime_task_id, cancel_event)]
+    assert reconciliation_updates == []
 
 
 @pytest.mark.asyncio

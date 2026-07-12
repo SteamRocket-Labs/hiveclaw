@@ -21,7 +21,7 @@ let fetchMock: ReturnType<typeof vi.fn<typeof fetch>>;
 beforeEach(() => {
   vi.stubGlobal('localStorage', localStorageStub);
   localStorageStub.setItem('token', 'test-token');
-  fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+  fetchMock = vi.fn<typeof fetch>().mockImplementation(async () =>
     new Response(JSON.stringify({ status: 'triggered' }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
@@ -66,5 +66,27 @@ describe('taskApi durable request identity', () => {
       confirmed_plan_version: 2,
       confirmed_plan_hash: 'sha256:plan',
     });
+  });
+
+  it('exposes detail, cancel, retry, and reconciliation product actions', async () => {
+    await taskApi.get('agent-1', 'task-1');
+    await taskApi.cancel('agent-1', 'task-1', { reason: 'No longer needed' });
+    await taskApi.retry('agent-1', 'task-1', {
+      request_id: 'retry-request-1',
+      confirmed_plan_id: 'plan-2',
+      confirmed_plan_version: 3,
+      confirmed_plan_hash: 'sha256:retry',
+    });
+    await taskApi.reconcile('agent-1', 'task-1', {
+      decision: 'retry_safe',
+      reason: 'Verified that no external side effect was committed.',
+    });
+
+    expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual([
+      '/api/agents/agent-1/tasks/task-1',
+      '/api/agents/agent-1/tasks/task-1/cancel',
+      '/api/agents/agent-1/tasks/task-1/retry',
+      '/api/agents/agent-1/tasks/task-1/reconcile',
+    ]);
   });
 });

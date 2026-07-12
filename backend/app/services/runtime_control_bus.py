@@ -76,6 +76,20 @@ async def publish_web_chat_cancel(
     )
 
 
+async def publish_business_task_cancel(
+    *,
+    task_id: str | Any,
+    runtime_task_id: str | Any,
+) -> None:
+    await publish_runtime_control_event(
+        {
+            "type": "business_task_cancel",
+            "task_id": str(task_id),
+            "runtime_task_id": str(runtime_task_id),
+        }
+    )
+
+
 async def publish_delegation_cancel(
     *,
     task_id: str,
@@ -428,6 +442,11 @@ async def handle_runtime_control_message(message: dict[str, Any]) -> bool:
         from app.services.web_chat_runtime import apply_remote_web_chat_cancel
 
         return bool(await _maybe_await(apply_remote_web_chat_cancel(str(message.get("run_id") or ""))))
+
+    if event_type == "business_task_cancel":
+        from app.services.task_executor import apply_remote_business_task_cancel
+
+        return bool(apply_remote_business_task_cancel(str(message.get("runtime_task_id") or "")))
 
     if event_type == "delegation_cancel":
         from app.agents.orchestrator import apply_remote_async_delegation_cancel

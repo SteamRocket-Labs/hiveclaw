@@ -66,6 +66,7 @@ class _QueuedDB:
         self.rollbacks = 0
         self.flushed = False
         self.deleted = []
+        self.records = {}
 
     async def execute(self, _stmt):
         if not self.results:
@@ -92,6 +93,9 @@ class _QueuedDB:
 
     async def refresh(self, _obj):
         return None
+
+    async def get(self, _model, record_id, **_kwargs):
+        return self.records.get(record_id)
 
     async def delete(self, obj):
         self.deleted.append(obj)
@@ -1062,6 +1066,299 @@ def test_trigger_task_with_confirmed_plan_enqueues_runtime_task(monkeypatch):
     assert staged["task"] is task
     assert staged["request_id"] == "trigger-confirmed-1"
     assert gate.calls[0]["confirmed_plan_id"] == plan_id
+    assert str(task.plan_id) == plan_id
+    assert task.plan_version == 1
+    assert task.plan_hash == "sha256:abc"
+
+
+def test_retry_business_task_requires_backend_retryable_projection(monkeypatch):
+    import app.api.tasks as mod
+
+    task_id = uuid4()
+    runtime_id = uuid4()
+    agent_id = uuid4()
+    task = SimpleNamespace(
+        id=task_id,
+        agent_id=agent_id,
+        tenant_id=None,
+        title="Retry report",
+        description="go",
+        type="todo",
+        priority="medium",
+        due_date=None,
+        status="needs_reconciliation",
+        active_runtime_task_id=runtime_id,
+        created_by=None,
+        root_session_id=None,
+        authority_state="owned",
+        plan_authorization={"lease_id": "old"},
+        last_error="side effects unknown",
+    )
+    runtime = SimpleNamespace(
+        id=runtime_id,
+        task_type="business_task",
+        tenant_id=None,
+        parent_agent_id=agent_id,
+        status="needs_reconciliation",
+        result_summary="side effects unknown",
+        metadata_json={
+            "business_task_id": str(task_id),
+            "phase": "terminal",
+            "outcome": {"status": "needs_reconciliation", "retryable": False, "summary": "review first"},
+        },
+    )
+    db = _QueuedDB([_ScalarResult(task), _ScalarResult(None)])
+    db.records[runtime_id] = runtime
+    app, user, allow_access = _make_client(mod, db=db)
+    task.tenant_id = user.tenant_id
+    task.created_by = user.id
+    runtime.tenant_id = user.tenant_id
+    monkeypatch.setattr(mod, "check_agent_access", allow_access)
+    monkeypatch.setattr("app.core.permissions.is_agent_expired", lambda _a: False)
+    monkeypatch.setattr(mod, "get_plan_mode_gate", lambda: (_ for _ in ()).throw(AssertionError("not gated")))
+
+    response = TestClient(app).post(
+        f"/agents/{agent_id}/tasks/{task_id}/retry",
+        json={
+            "request_id": "retry-needs-review-1",
+            "confirmed_plan_id": str(uuid4()),
+            "confirmed_plan_version": 1,
+            "confirmed_plan_hash": "sha256:retry",
+        },
+    )
+
+    assert response.status_code == 409
+    assert "review" in response.json()["detail"]
+
+
+def test_retry_business_task_queues_a_new_fenced_attempt_after_confirmation(monkeypatch):
+    import app.api.tasks as mod
+
+    task_id = uuid4()
+    runtime_id = uuid4()
+    agent_id = uuid4()
+    task = SimpleNamespace(
+        id=task_id,
+        agent_id=agent_id,
+        tenant_id=None,
+        title="Retry report",
+        description="go",
+        type="todo",
+        priority="medium",
+        due_date=None,
+        status="failed",
+        active_runtime_task_id=runtime_id,
+        created_by=None,
+        root_session_id=None,
+        authority_state="owned",
+        plan_authorization={"lease_id": "old"},
+        last_error="provider timeout",
+    )
+    runtime = SimpleNamespace(
+        id=runtime_id,
+        task_type="business_task",
+        tenant_id=None,
+        parent_agent_id=agent_id,
+        status="failed",
+        result_summary="provider timeout",
+        metadata_json={
+            "business_task_id": str(task_id),
+            "phase": "terminal",
+            "outcome": {"status": "failed", "retryable": True, "summary": "provider timeout"},
+        },
+    )
+    db = _QueuedDB([_ScalarResult(task), _ScalarResult(None)])
+    db.records[runtime_id] = runtime
+    app, user, allow_access = _make_client(mod, db=db)
+    task.tenant_id = user.tenant_id
+    task.created_by = user.id
+    runtime.tenant_id = user.tenant_id
+    monkeypatch.setattr(mod, "check_agent_access", allow_access)
+    monkeypatch.setattr("app.core.permissions.is_agent_expired", lambda _a: False)
+    gate = _StubGate(_allow_decision())
+    monkeypatch.setattr(mod, "get_plan_mode_gate", lambda: gate)
+    staged = {}
+
+    async def fake_stage(**kwargs):
+        staged.update(kwargs)
+        return SimpleNamespace(id=uuid4())
+
+    async def fake_notify(**_kwargs):
+        return None
+
+    monkeypatch.setattr(mod, "stage_business_task_runtime", fake_stage)
+    monkeypatch.setattr(mod, "notify_runtime_task_worker", fake_notify)
+    plan_id = str(uuid4())
+
+    response = TestClient(app).post(
+        f"/agents/{agent_id}/tasks/{task_id}/retry",
+        json={
+            "request_id": "retry-confirmed-1",
+            "confirmed_plan_id": plan_id,
+            "confirmed_plan_version": 2,
+            "confirmed_plan_hash": "sha256:retry",
+        },
+    )
+
+    assert response.status_code == 200
+    assert staged["request_id"] == "retry-confirmed-1"
+    assert str(task.plan_id) == plan_id
+    assert task.plan_version == 2
+    assert task.plan_hash == "sha256:retry"
+
+
+def test_cancel_business_task_updates_both_projections_and_publishes_interrupt(monkeypatch):
+    import app.api.tasks as mod
+    from app.schemas.schemas import BusinessTaskDetailOut
+
+    task_id = uuid4()
+    runtime_id = uuid4()
+    agent_id = uuid4()
+    task = SimpleNamespace(
+        id=task_id,
+        agent_id=agent_id,
+        tenant_id=None,
+        title="Cancel me",
+        description="",
+        type="todo",
+        priority="medium",
+        due_date=None,
+        status="pending",
+        active_runtime_task_id=runtime_id,
+        created_by=None,
+        root_session_id=None,
+        authority_state="owned",
+        request_id="cancel-request-1",
+        request_hash="c" * 64,
+        plan_authorization={"lease_id": "lease"},
+        execution_attempt=1,
+        last_execution_status="queued",
+        last_error=None,
+        last_result=None,
+        completed_at=None,
+    )
+    runtime = SimpleNamespace(
+        id=runtime_id,
+        task_type="business_task",
+        tenant_id=None,
+        parent_agent_id=agent_id,
+        status="pending",
+        result_summary=None,
+        completed_at=None,
+        claim_version=0,
+        claimed_by=None,
+        claim_expires_at=None,
+        metadata_json={"business_task_id": str(task_id), "phase": "queued"},
+    )
+    db = _QueuedDB([_ScalarResult(task)])
+    db.records[runtime_id] = runtime
+    app, user, allow_access = _make_client(mod, db=db)
+    task.tenant_id = user.tenant_id
+    task.created_by = user.id
+    runtime.tenant_id = user.tenant_id
+    monkeypatch.setattr(mod, "check_agent_access", allow_access)
+    published = []
+
+    async def fake_audit(*_args, **_kwargs):
+        return None
+
+    async def fake_publish(**kwargs):
+        published.append(kwargs)
+
+    async def fake_detail(_task, _db):
+        return BusinessTaskDetailOut(task=await _fake_enrich_task_out(_task, _db), logs=[])
+
+    monkeypatch.setattr("app.services.runtime_control_bus.publish_business_task_cancel", fake_publish)
+    monkeypatch.setattr("app.core.policy.write_audit_event", fake_audit)
+    monkeypatch.setattr(mod, "_business_task_detail", fake_detail)
+
+    response = TestClient(app).post(
+        f"/agents/{agent_id}/tasks/{task_id}/cancel",
+        json={"reason": "No longer needed"},
+    )
+
+    assert response.status_code == 200
+    assert task.status == "cancelled"
+    assert runtime.status == "killed"
+    assert published == [{"task_id": task_id, "runtime_task_id": runtime_id}]
+
+
+def test_reconcile_business_task_requires_explicit_retry_safe_decision(monkeypatch):
+    import app.api.tasks as mod
+    from app.schemas.schemas import BusinessTaskDetailOut
+
+    task_id = uuid4()
+    runtime_id = uuid4()
+    agent_id = uuid4()
+    task = SimpleNamespace(
+        id=task_id,
+        agent_id=agent_id,
+        tenant_id=None,
+        title="Review me",
+        description="",
+        type="todo",
+        priority="medium",
+        due_date=None,
+        status="needs_reconciliation",
+        active_runtime_task_id=runtime_id,
+        created_by=None,
+        root_session_id=None,
+        authority_state="owned",
+        request_id="reconcile-request-1",
+        request_hash="r" * 64,
+        plan_authorization={"lease_id": "lease"},
+        execution_attempt=1,
+        last_execution_status="needs_reconciliation",
+        last_error="unknown side effects",
+        last_result=None,
+        completed_at=None,
+    )
+    runtime = SimpleNamespace(
+        id=runtime_id,
+        task_type="business_task",
+        tenant_id=None,
+        parent_agent_id=agent_id,
+        status="needs_reconciliation",
+        result_summary="unknown side effects",
+        completed_at=None,
+        claim_version=2,
+        claimed_by=None,
+        claim_expires_at=None,
+        metadata_json={
+            "business_task_id": str(task_id),
+            "phase": "terminal",
+            "outcome": {"status": "needs_reconciliation", "retryable": False},
+        },
+    )
+    db = _QueuedDB([_ScalarResult(task)])
+    db.records[runtime_id] = runtime
+    app, user, allow_access = _make_client(mod, db=db)
+    task.tenant_id = user.tenant_id
+    task.created_by = user.id
+    runtime.tenant_id = user.tenant_id
+    monkeypatch.setattr(mod, "check_agent_access", allow_access)
+
+    async def fake_audit(*_args, **_kwargs):
+        return None
+
+    async def fake_detail(_task, _db):
+        return BusinessTaskDetailOut(task=await _fake_enrich_task_out(_task, _db), logs=[])
+
+    monkeypatch.setattr("app.core.policy.write_audit_event", fake_audit)
+    monkeypatch.setattr(mod, "_business_task_detail", fake_detail)
+
+    response = TestClient(app).post(
+        f"/agents/{agent_id}/tasks/{task_id}/reconcile",
+        json={
+            "decision": "retry_safe",
+            "reason": "Verified no external action was committed.",
+        },
+    )
+
+    assert response.status_code == 200
+    assert task.status == "failed"
+    assert task.last_execution_status == "reconciled_retry_safe"
+    assert runtime.metadata_json["reconciliation"]["decision"] == "retry_safe"
 
 
 def test_create_task_recovers_concurrent_same_request(monkeypatch):

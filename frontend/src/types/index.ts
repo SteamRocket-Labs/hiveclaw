@@ -77,6 +77,28 @@ export interface Task {
     created_at: string;
     updated_at: string;
     completed_at?: string;
+    runtime_status?: string;
+    runtime_phase?: string;
+    runtime_summary?: string;
+    runtime_request_id?: string;
+    reflection_session_id?: string;
+    recovery_state: 'none' | 'retry_available' | 'needs_review' | 'complete' | 'cancelled' | 'runtime_evidence_missing' | string;
+    recovery_message?: string;
+    actions: {
+        can_cancel: boolean;
+        can_retry: boolean;
+        can_reconcile: boolean;
+    };
+    dependencies: Array<{
+        id: string;
+        label: string;
+        status: 'satisfied' | 'missing' | string;
+    }>;
+    stages: Array<{
+        id: string;
+        label: string;
+        status: 'pending' | 'current' | 'complete' | 'failed' | 'blocked' | 'cancelled' | 'warning' | string;
+    }>;
 }
 
 export interface ChatMessage {

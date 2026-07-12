@@ -262,3 +262,217 @@ def test_business_task_request_key_is_canonical_and_principal_bound() -> None:
         action="create",
         payload=payload_a,
     )
+
+
+def _business_task_pair(*, task_status: str, runtime_status: str, phase: str, retryable: bool = False):
+    runtime_id = uuid.uuid4()
+    task_id = uuid.uuid4()
+    tenant_id = uuid.uuid4()
+    task = SimpleNamespace(
+        id=task_id,
+        tenant_id=tenant_id,
+        agent_id=uuid.uuid4(),
+        title="Prepare board report",
+        description="Use verified figures",
+        type="todo",
+        priority="high",
+        due_date=None,
+        status=task_status,
+        active_runtime_task_id=runtime_id,
+        execution_attempt=1,
+        last_execution_status=runtime_status,
+        last_error=None,
+        last_result=None,
+        completed_at=None,
+        plan_authorization={"lease_id": "lease-1"},
+    )
+    runtime = SimpleNamespace(
+        id=runtime_id,
+        task_type="business_task",
+        tenant_id=tenant_id,
+        parent_agent_id=task.agent_id,
+        status=runtime_status,
+        result_summary=None,
+        completed_at=None,
+        claim_version=1,
+        claim_expires_at=None,
+        metadata_json={
+            "business_task_id": str(task_id),
+            "request_id": "runtime-request-1",
+            "phase": phase,
+            "outcome": {
+                "status": runtime_status,
+                "summary": "current outcome",
+                "retryable": retryable,
+            },
+        },
+    )
+    return task, runtime
+
+
+def test_business_task_projection_is_the_only_ui_state_machine() -> None:
+    from app.services.business_task_runtime import project_business_task
+
+    task, runtime = _business_task_pair(task_status="doing", runtime_status="running", phase="invoking")
+
+    projection = project_business_task(task=task, runtime_task=runtime)
+
+    assert projection["runtime_task_id"] == str(runtime.id)
+    assert projection["runtime_status"] == "running"
+    assert projection["runtime_phase"] == "invoking"
+    assert projection["runtime_request_id"] == "runtime-request-1"
+    assert projection["actions"] == {"can_cancel": True, "can_retry": False, "can_reconcile": False}
+    assert projection["dependencies"] == [
+        {"id": "confirmed_plan", "label": "Confirmed execution plan", "status": "satisfied"},
+        {"id": "runtime_intent", "label": "Durable runtime intent", "status": "satisfied"},
+    ]
+    assert [(stage["id"], stage["status"]) for stage in projection["stages"]] == [
+        ("accepted", "complete"),
+        ("authorized", "complete"),
+        ("queued", "complete"),
+        ("executing", "current"),
+        ("terminal", "pending"),
+    ]
+
+
+def test_business_task_projection_opens_retry_only_for_retryable_terminal_outcome() -> None:
+    from app.services.business_task_runtime import project_business_task
+
+    task, runtime = _business_task_pair(
+        task_status="failed",
+        runtime_status="failed",
+        phase="terminal",
+        retryable=True,
+    )
+
+    projection = project_business_task(task=task, runtime_task=runtime)
+
+    assert projection["recovery_state"] == "retry_available"
+    assert projection["actions"] == {"can_cancel": False, "can_retry": True, "can_reconcile": False}
+    assert projection["stages"][-1]["status"] == "failed"
+
+
+def test_business_task_cancel_is_safe_before_execution_and_retryable() -> None:
+    from app.services.business_task_runtime import apply_business_task_cancellation
+
+    db = _FakeDb()
+    task, runtime = _business_task_pair(task_status="pending", runtime_status="pending", phase="queued")
+    user_id = uuid.uuid4()
+
+    outcome = apply_business_task_cancellation(
+        db=db,  # type: ignore[arg-type]
+        task=task,
+        runtime_task=runtime,
+        cancelled_by_user_id=user_id,
+        reason="Priority changed",
+        completed_at=datetime(2026, 7, 12, tzinfo=timezone.utc),
+    )
+
+    assert outcome.status.value == "cancelled"
+    assert outcome.retryable is True
+    assert task.status == "cancelled"
+    assert runtime.status == "killed"
+    assert runtime.claim_version == 2
+    assert runtime.metadata_json["cancelled_by_user_id"] == str(user_id)
+    assert runtime.metadata_json["cancellation_safety"] == "not_started"
+    assert any(getattr(item, "task_id", None) == task.id for item in db.added)
+
+
+def test_business_task_cancel_while_running_requires_side_effect_reconciliation() -> None:
+    from app.services.business_task_runtime import apply_business_task_cancellation, project_business_task
+
+    db = _FakeDb()
+    task, runtime = _business_task_pair(task_status="doing", runtime_status="running", phase="invoking")
+
+    outcome = apply_business_task_cancellation(
+        db=db,  # type: ignore[arg-type]
+        task=task,
+        runtime_task=runtime,
+        cancelled_by_user_id=uuid.uuid4(),
+        reason="Stop now",
+        completed_at=datetime(2026, 7, 12, tzinfo=timezone.utc),
+    )
+
+    assert outcome.status.value == "needs_reconciliation"
+    assert outcome.retryable is False
+    assert task.status == "needs_reconciliation"
+    assert runtime.status == "needs_reconciliation"
+    projection = project_business_task(task=task, runtime_task=runtime)
+    assert projection["recovery_state"] == "needs_review"
+    assert projection["actions"] == {"can_cancel": False, "can_retry": False, "can_reconcile": True}
+
+
+def test_terminal_business_task_cannot_reenter_model_execution() -> None:
+    import pytest
+
+    from app.services.business_task_runtime import (
+        BusinessTaskExecutionSuperseded,
+        _assert_business_task_execution_startable,
+    )
+
+    task, runtime = _business_task_pair(
+        task_status="needs_reconciliation",
+        runtime_status="needs_reconciliation",
+        phase="terminal",
+    )
+
+    with pytest.raises(BusinessTaskExecutionSuperseded):
+        _assert_business_task_execution_startable(task=task, runtime_task=runtime)
+
+
+def test_business_task_reconciliation_requires_reason_before_retry() -> None:
+    import pytest
+
+    from app.services.business_task_runtime import reconcile_business_task, project_business_task
+
+    db = _FakeDb()
+    task, runtime = _business_task_pair(
+        task_status="needs_reconciliation",
+        runtime_status="needs_reconciliation",
+        phase="terminal",
+    )
+
+    with pytest.raises(ValueError, match="reason"):
+        reconcile_business_task(
+            db=db,  # type: ignore[arg-type]
+            task=task,
+            runtime_task=runtime,
+            resolved_by_user_id=uuid.uuid4(),
+            decision="retry_safe",
+            reason="",
+        )
+
+    user_id = uuid.uuid4()
+    reconcile_business_task(
+        db=db,  # type: ignore[arg-type]
+        task=task,
+        runtime_task=runtime,
+        resolved_by_user_id=user_id,
+        decision="retry_safe",
+        reason="Reviewed the external system; no action was committed.",
+        resolved_at=datetime(2026, 7, 12, tzinfo=timezone.utc),
+    )
+
+    assert task.status == "failed"
+    assert task.last_execution_status == "reconciled_retry_safe"
+    assert runtime.metadata_json["reconciliation"]["resolved_by_user_id"] == str(user_id)
+    assert project_business_task(task=task, runtime_task=runtime)["actions"]["can_retry"] is True
+
+
+def test_expired_running_business_task_is_never_automatically_replayed() -> None:
+    from app.services.business_task_runtime import quarantine_stale_business_task
+
+    db = _FakeDb()
+    task, runtime = _business_task_pair(task_status="doing", runtime_status="running", phase="invoking")
+
+    quarantine_stale_business_task(
+        db=db,  # type: ignore[arg-type]
+        task=task,
+        runtime_task=runtime,
+        detected_at=datetime(2026, 7, 12, tzinfo=timezone.utc),
+    )
+
+    assert task.status == "needs_reconciliation"
+    assert runtime.status == "needs_reconciliation"
+    assert runtime.metadata_json["outcome"]["error_code"] == "worker_lease_expired"
+    assert runtime.metadata_json["outcome"]["retryable"] is False

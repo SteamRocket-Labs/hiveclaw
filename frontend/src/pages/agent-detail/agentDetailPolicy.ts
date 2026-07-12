@@ -5,7 +5,7 @@ import type { SessionPermissionMode } from './AgentChatSection';
 // primary memory view. External capability governance is exposed through a
 // single agent-level Extensions tab, while MCP/tools, Skills, and Sub-agents
 // keep their existing runtime modules behind that entry.
-export const AGENT_DETAIL_TABS = ['status', 'aware', 'knowledge', 'evolution', 'extensions', 'a2a', 'workspace', 'workflows', 'office', 'chat', 'activityLog', 'approvals', 'settings'] as const;
+export const AGENT_DETAIL_TABS = ['status', 'aware', 'knowledge', 'evolution', 'extensions', 'a2a', 'workspace', 'workflows', 'office', 'chat', 'tasks', 'activityLog', 'approvals', 'settings'] as const;
 
 export type AgentDetailTab = typeof AGENT_DETAIL_TABS[number];
 
@@ -206,7 +206,7 @@ export function buildSessionWorkbenchNavigation(
 
 /** Visual grouping of tabs for the tab bar — groups are separated by thin dividers */
 export const AGENT_DETAIL_TAB_GROUPS: { tabs: AgentDetailTab[]; }[] = [
-    { tabs: ['status', 'chat'] },
+    { tabs: ['status', 'chat', 'tasks'] },
     { tabs: ['aware', 'knowledge', 'evolution', 'extensions'] },
     { tabs: ['workspace', 'workflows', 'office', 'a2a', 'activityLog', 'approvals'] },
     { tabs: ['settings'] },
@@ -223,6 +223,7 @@ export const AGENT_TAB_LABELS: Record<AgentDetailTab, string> = {
     workflows: 'Workflows',
     office: 'Office',
     chat: 'Chat',
+    tasks: 'Assignments',
     activityLog: 'Activity',
     approvals: 'Approvals',
     settings: 'Settings',
@@ -247,7 +248,7 @@ export const AGENT_WORKBENCH_AREAS: Array<{
         labelKey: 'agent.workbench.conversation',
         fallback: 'Conversation & Tasks',
         primaryTab: 'chat',
-        tabs: ['chat', 'aware'],
+        tabs: ['chat', 'tasks', 'aware'],
     },
     {
         id: 'capabilities',

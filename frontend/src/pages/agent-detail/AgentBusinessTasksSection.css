@@ -1,0 +1,356 @@
+.business-tasks {
+  display: grid;
+  gap: 18px;
+  color: var(--text-primary);
+}
+
+.business-tasks-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.business-tasks-header h2,
+.business-tasks-header p,
+.business-task-list h3,
+.business-task-sidebar h3,
+.business-task-plans h3,
+.business-task-plan h4 {
+  margin: 0;
+}
+
+.business-tasks-header p,
+.business-task-create p {
+  margin-top: 6px;
+  color: var(--text-secondary);
+}
+
+.business-tasks-eyebrow {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.business-tasks-count {
+  min-width: 38px;
+  padding: 7px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  text-align: center;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.business-tasks-boundary {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px 16px;
+  padding: 13px 15px;
+  border: 1px solid color-mix(in srgb, var(--accent-primary) 22%, var(--border-color));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--accent-primary) 5%, var(--bg-primary));
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.business-tasks-boundary strong {
+  color: var(--text-primary);
+}
+
+.business-tasks-error,
+.business-task-empty {
+  padding: 16px;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+}
+
+.business-tasks-error,
+.business-task-empty.is-error {
+  border-color: color-mix(in srgb, var(--error) 30%, var(--border-color));
+  color: var(--error);
+}
+
+.business-task-plans {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid color-mix(in srgb, var(--warning) 35%, var(--border-color));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--warning) 5%, var(--bg-primary));
+}
+
+.business-task-plan {
+  padding: 14px;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: var(--bg-primary);
+}
+
+.business-task-plan-meta,
+.business-task-plan-actions,
+.business-task-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.business-task-plan-meta {
+  justify-content: space-between;
+  margin-bottom: 7px;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  text-transform: capitalize;
+}
+
+.business-task-plan-actions {
+  margin-top: 12px;
+}
+
+.business-tasks-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
+  gap: 18px;
+  align-items: start;
+}
+
+.business-task-list,
+.business-task-sidebar {
+  display: grid;
+  gap: 12px;
+}
+
+.business-task-row,
+.business-task-create,
+.business-task-detail {
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  background: var(--bg-primary);
+}
+
+.business-task-row {
+  overflow: hidden;
+}
+
+.business-task-row-main {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 5px 10px;
+  width: 100%;
+  padding: 14px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.business-task-row-main strong {
+  align-self: center;
+}
+
+.business-task-row-main > span:not(.business-task-status),
+.business-task-row-main small {
+  grid-column: 2;
+  color: var(--text-secondary);
+}
+
+.business-task-row-main small {
+  color: var(--text-tertiary);
+}
+
+.business-task-status {
+  align-self: start;
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.business-task-status.is-doing,
+.business-task-status.is-pending {
+  color: var(--accent-primary);
+}
+
+.business-task-status.is-done {
+  color: var(--success);
+}
+
+.business-task-status.is-failed,
+.business-task-status.is-needs_reconciliation {
+  color: var(--error);
+}
+
+.business-task-stages {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 3px;
+  margin: 0;
+  padding: 0 14px 12px;
+  list-style: none;
+}
+
+.business-task-stages li {
+  overflow: hidden;
+  color: var(--text-tertiary);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.business-task-stages li span {
+  display: block;
+  height: 3px;
+  margin-bottom: 5px;
+  border-radius: 999px;
+  background: var(--border-color);
+}
+
+.business-task-stages li.is-complete span {
+  background: var(--success);
+}
+
+.business-task-stages li.is-current span {
+  background: var(--accent-primary);
+}
+
+.business-task-stages li.is-failed span,
+.business-task-stages li.is-warning span {
+  background: var(--error);
+}
+
+.business-task-recovery {
+  margin: 0 14px 12px;
+  padding: 9px 10px;
+  border-radius: 8px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.business-task-actions {
+  padding: 0 14px 14px;
+}
+
+.business-task-actions details {
+  width: 100%;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.business-task-actions summary {
+  cursor: pointer;
+}
+
+.business-task-actions form,
+.business-task-create {
+  display: grid;
+  gap: 10px;
+}
+
+.business-task-actions form {
+  margin-top: 9px;
+}
+
+.business-task-create,
+.business-task-detail {
+  padding: 15px;
+}
+
+.business-task-create label {
+  display: grid;
+  gap: 5px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.business-task-create input,
+.business-task-create textarea,
+.business-task-create select,
+.business-task-actions textarea,
+.business-task-actions select {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font: inherit;
+  padding: 9px 10px;
+}
+
+.business-task-create-grid {
+  display: grid;
+  grid-template-columns: 1fr 1.25fr;
+  gap: 9px;
+}
+
+.business-task-detail dl {
+  display: grid;
+  gap: 7px;
+  margin: 12px 0;
+}
+
+.business-task-detail dl div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.business-task-detail dt {
+  color: var(--text-tertiary);
+}
+
+.business-task-detail dd {
+  margin: 0;
+  color: var(--text-secondary);
+  text-align: right;
+}
+
+.business-task-detail pre {
+  overflow: auto;
+  max-height: 260px;
+  padding: 10px;
+  border-radius: 8px;
+  background: var(--bg-secondary);
+  white-space: pre-wrap;
+}
+
+.business-task-detail ol {
+  display: grid;
+  gap: 7px;
+  padding-left: 20px;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+@media (max-width: 960px) {
+  .business-tasks-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .business-tasks-boundary,
+  .business-task-create-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .business-task-stages li {
+    font-size: 0;
+  }
+}

@@ -204,6 +204,24 @@ class TaskCreate(BaseModel):
     confirmed_plan_session_id: str | None = None
 
 
+class BusinessTaskActionsOut(BaseModel):
+    can_cancel: bool = False
+    can_retry: bool = False
+    can_reconcile: bool = False
+
+
+class BusinessTaskDependencyOut(BaseModel):
+    id: str
+    label: str
+    status: str
+
+
+class BusinessTaskStageOut(BaseModel):
+    id: str
+    label: str
+    status: str
+
+
 class TaskOut(BaseModel):
     id: uuid.UUID
     agent_id: uuid.UUID
@@ -235,6 +253,16 @@ class TaskOut(BaseModel):
     created_at: datetime
     updated_at: datetime
     completed_at: datetime | None = None
+    runtime_status: str | None = None
+    runtime_phase: str | None = None
+    runtime_summary: str | None = None
+    runtime_request_id: str | None = None
+    reflection_session_id: str | None = None
+    recovery_state: str = "none"
+    recovery_message: str | None = None
+    actions: BusinessTaskActionsOut = Field(default_factory=BusinessTaskActionsOut)
+    dependencies: list[BusinessTaskDependencyOut] = Field(default_factory=list)
+    stages: list[BusinessTaskStageOut] = Field(default_factory=list)
 
     model_config = {"from_attributes": True}
 
@@ -259,6 +287,11 @@ class TaskLogOut(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class BusinessTaskDetailOut(BaseModel):
+    task: TaskOut
+    logs: list[TaskLogOut] = Field(default_factory=list)
 
 
 # ─── Department ─────────────────────────────────────────

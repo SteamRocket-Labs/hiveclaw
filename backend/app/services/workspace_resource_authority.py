@@ -96,7 +96,20 @@ def authorize_workspace_tool_path(
     """Enforce an already-resolved runtime scope at the final filesystem boundary."""
 
     root = workspace.resolve()
-    target = (root / str(path or "")).resolve()
+    raw_path = str(path or "").replace("\\", "/").strip()
+    if raw_path.startswith("/") or any(part == ".." for part in raw_path.split("/")):
+        raise WorkspaceAuthorityError(
+            "workspace_resource_path_escape",
+            "Access denied: the requested path contains an absolute or parent-traversal segment.",
+        )
+    try:
+        requested_path = normalize_workspace_resource_path(raw_path)
+    except ValueError as exc:
+        raise WorkspaceAuthorityError(
+            "workspace_resource_path_escape",
+            "The requested path is outside the Agent workspace.",
+        ) from exc
+    target = (root / requested_path).resolve()
     try:
         normalized = target.relative_to(root).as_posix()
     except ValueError as exc:

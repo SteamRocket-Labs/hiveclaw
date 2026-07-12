@@ -157,6 +157,43 @@ def test_workspace_tool_paths_reject_sibling_prefix_escape(tmp_path):
     assert (sibling / "secret.txt").read_text(encoding="utf-8") == "secret token\n"
 
 
+def test_workspace_mutations_reject_parent_traversal_into_governed_memory(tmp_path):
+    from app.services.agent_tool_domains.workspace import _delete_file, _edit_file, _write_file
+
+    workspace = tmp_path / "agent"
+    existing = workspace / "memory" / "knowledge" / "existing.md"
+    existing.parent.mkdir(parents=True)
+    existing.write_text("trusted memory\n", encoding="utf-8")
+
+    write_result = _write_file(
+        workspace,
+        "workspace/../memory/knowledge/injected.md",
+        "unreviewed memory",
+    )
+    edit_result = _edit_file(
+        workspace,
+        "workspace/../memory/knowledge/existing.md",
+        "trusted",
+        "poisoned",
+    )
+    delete_result = _delete_file(
+        workspace,
+        "workspace/../memory/knowledge/existing.md",
+    )
+    backslash_result = _write_file(
+        workspace,
+        r"workspace\..\memory\knowledge\backslash.md",
+        "unreviewed memory",
+    )
+
+    for result in (write_result, edit_result, delete_result, backslash_result):
+        assert "auth_or_permission" in result
+
+    assert not (workspace / "memory" / "knowledge" / "injected.md").exists()
+    assert not (workspace / r"workspace\..\memory\knowledge\backslash.md").exists()
+    assert existing.read_text(encoding="utf-8") == "trusted memory\n"
+
+
 def test_list_files_and_read_file_results_carry_provenance_hint(tmp_path):
     from app.services.agent_tool_domains.workspace import _list_files, _read_file
     from app.services.chat_artifact_delivery import build_session_artifact_parts

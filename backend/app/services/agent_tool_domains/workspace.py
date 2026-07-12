@@ -12,6 +12,10 @@ from pathlib import Path
 from app.config import get_settings
 from app.services.legacy_company_files import COMPANY_CONTEXT_FILENAMES, company_context_path_allowed
 from app.services.managed_capability_guard import sanitize_managed_credential_guidance
+from app.services.workspace_resource_authority import (
+    WorkspaceAuthorityError,
+    authorize_workspace_tool_path,
+)
 from app.skills import SkillRegistry, WorkspaceSkillLoader
 from app.tools.result_envelope import ToolContentEnvelope, render_tool_error
 
@@ -82,6 +86,31 @@ def _authority_allows_path(authority_scope, rel_path: str, *, directory: bool = 
     if directory:
         return authority_scope.can_read(normalized)
     return normalized in authority_scope.allowed_paths or authority_scope.operator_view
+
+
+def _authorize_workspace_mutation_path(
+    ws: Path,
+    rel_path: str,
+    *,
+    authority_scope,
+    action: str,
+    tool_name: str,
+) -> tuple[str | None, str | None]:
+    try:
+        normalized = authorize_workspace_tool_path(
+            ws,
+            authority_scope,
+            rel_path,
+            action=action,
+        )
+    except WorkspaceAuthorityError as exc:
+        return None, _workspace_error(
+            tool_name,
+            "auth_or_permission",
+            exc.message,
+            actionable_hint="Use a canonical workspace-relative path and do not use `..` segments.",
+        )
+    return normalized, None
 
 
 def _list_files(
@@ -996,6 +1025,18 @@ def _write_file(
             actionable_hint="Pass a workspace-relative file path such as workspace/report.md.",
         )
 
+    normalized_path, authority_error = _authorize_workspace_mutation_path(
+        ws,
+        rel_path,
+        authority_scope=authority_scope,
+        action="write",
+        tool_name=tool_name,
+    )
+    if authority_error:
+        return authority_error
+    assert normalized_path is not None
+    rel_path = normalized_path
+
     _blocked = _WRITE_PROTECTED.get(rel_path.strip("/"))
     if _blocked:
         return _workspace_error(tool_name, "auth_or_permission", _blocked)
@@ -1055,6 +1096,18 @@ def _edit_file(
     tool_name: str = "edit_file",
     authority_scope=None,
 ) -> str:
+    normalized_path, authority_error = _authorize_workspace_mutation_path(
+        ws,
+        rel_path,
+        authority_scope=authority_scope,
+        action="write",
+        tool_name=tool_name,
+    )
+    if authority_error:
+        return authority_error
+    assert normalized_path is not None
+    rel_path = normalized_path
+
     managed_message = _managed_system_path_message(rel_path)
     if managed_message:
         return _workspace_error(
@@ -1307,6 +1360,18 @@ async def _tool_search(ws: Path, query: str = "", agent_id: uuid.UUID | str | No
 
 
 def _delete_file(ws: Path, rel_path: str, tool_name: str = "delete_file", authority_scope=None) -> str:
+    normalized_path, authority_error = _authorize_workspace_mutation_path(
+        ws,
+        rel_path,
+        authority_scope=authority_scope,
+        action="delete",
+        tool_name=tool_name,
+    )
+    if authority_error:
+        return authority_error
+    assert normalized_path is not None
+    rel_path = normalized_path
+
     protected = {"tasks.json", "soul.md"}
     if rel_path.strip("/") in protected:
         return _workspace_error(tool_name, "auth_or_permission", f"{rel_path} cannot be deleted (protected)")

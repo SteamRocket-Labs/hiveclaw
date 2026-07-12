@@ -45,6 +45,7 @@ def test_workspace_read_tools_hide_foreign_session_files(tmp_path):
 
 
 def test_workspace_write_rejects_foreign_manifest_even_when_file_is_absent(tmp_path):
+    from app.services.agent_tool_domains.workspace import _write_file
     from app.services.workspace_resource_authority import (
         WorkspaceAuthorityError,
         WorkspaceAuthorityScope,
@@ -66,7 +67,34 @@ def test_workspace_write_rejects_foreign_manifest_even_when_file_is_absent(tmp_p
         authorize_workspace_tool_path(tmp_path, scope, reserved, action="write")
 
     assert exc.value.code == "workspace_resource_forbidden"
+    tool_result = _write_file(tmp_path, reserved, "must not overwrite ownership", authority_scope=scope)
+    assert "auth_or_permission" in tool_result
     assert not (tmp_path / reserved).exists()
+
+
+def test_workspace_write_allows_new_unclaimed_resource_for_current_scope(tmp_path):
+    from app.services.agent_tool_domains.workspace import _write_file
+    from app.services.workspace_resource_authority import WorkspaceAuthorityScope
+
+    scope = WorkspaceAuthorityScope(
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        root_session_id=uuid4(),
+        allowed_paths=frozenset(),
+        operator_view=False,
+        authority_source="resource_scope",
+        known_paths=frozenset(),
+    )
+
+    result = _write_file(
+        tmp_path,
+        "workspace/current-session/new-report.md",
+        "new owned output",
+        authority_scope=scope,
+    )
+
+    assert "Written" in result
+    assert (tmp_path / "workspace" / "current-session" / "new-report.md").read_text() == "new owned output"
 
 
 def test_authorized_code_workspace_merges_new_outputs_without_exposing_or_overwriting_foreign_files(tmp_path):

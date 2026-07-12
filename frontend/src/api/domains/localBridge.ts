@@ -200,6 +200,11 @@ export const localBridgeApi = {
     get<LocalAgentWorkspaceContent>(`/local-agents/workspace/content?path=${encodeURIComponent(path)}`),
   downloadWorkspaceFile: (path: string) =>
     getBlob(`/local-agents/workspace/download?path=${encodeURIComponent(path)}`),
+  downloadAgentSessionWorkspaceFile: (agentId: string, sessionId: string, path: string) =>
+    getBlob(
+      `/agents/${encodeURIComponent(agentId)}/local-agent/sessions/${encodeURIComponent(sessionId)}`
+      + `/workspace/download?path=${encodeURIComponent(path)}`,
+    ),
   uploadWorkspaceFile: (file: File) =>
     upload<LocalAgentWorkspaceUpload>('/local-agents/workspace/upload', file),
 

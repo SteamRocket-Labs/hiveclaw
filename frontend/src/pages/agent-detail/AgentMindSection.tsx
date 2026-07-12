@@ -17,7 +17,7 @@ export default function AgentMindSection({ agentId }: AgentMindSectionProps) {
     read: (path) => fileApi.read(agentId, path),
     write: (path, content) => fileApi.write(agentId, path, content),
     delete: (path) => fileApi.delete(agentId, path),
-    downloadUrl: (path) => fileApi.downloadUrl(agentId, path),
+    download: (path) => fileApi.download(agentId, path),
   };
 
   return (

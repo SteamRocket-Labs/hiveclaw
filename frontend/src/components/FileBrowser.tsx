@@ -7,6 +7,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import MarkdownRenderer from './MarkdownRenderer';
+import { saveBlob } from '../utils/authenticatedResource';
 import './FileBrowser.css';
 
 // ─── Types ─────────────────────────────────────────────
@@ -24,7 +25,7 @@ export interface FileBrowserApi {
     write: (path: string, content: string) => Promise<any>;
     delete: (path: string) => Promise<any>;
     upload?: (file: File, path: string, onProgress?: (pct: number) => void) => Promise<any>;
-    downloadUrl?: (path: string) => string;
+    download?: (path: string) => Promise<Blob>;
 }
 
 export interface FileBrowserProps {
@@ -122,6 +123,7 @@ export default function FileBrowser({
     const [promptModal, setPromptModal] = useState<{ title: string; placeholder: string; action: string } | null>(null);
     const [promptValue, setPromptValue] = useState('');
     const [uploadProgress, setUploadProgress] = useState<{ fileName: string; percent: number } | null>(null);
+    const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null);
     const textareaRef = useRef<HTMLTextAreaElement>(null);
 
     // Auto-resize textarea to match content height
@@ -177,6 +179,36 @@ export default function FileBrowser({
             setContent(data.content || '');
         }).catch(() => setContent(''));
     }, [viewing, api, singleFile]);
+
+    useEffect(() => {
+        if (!viewing || !isImage(viewing) || !api.download) {
+            setImagePreviewUrl(null);
+            return undefined;
+        }
+        let active = true;
+        let objectUrl: string | null = null;
+        void api.download(viewing).then((blob) => {
+            if (!active) return;
+            objectUrl = URL.createObjectURL(blob);
+            setImagePreviewUrl(objectUrl);
+        }).catch(() => {
+            if (active) setImagePreviewUrl(null);
+        });
+        return () => {
+            active = false;
+            if (objectUrl) URL.revokeObjectURL(objectUrl);
+        };
+    }, [api, viewing]);
+
+    const handleDownload = useCallback(async (path: string) => {
+        if (!api.download) return;
+        try {
+            const blob = await api.download(path);
+            saveBlob(blob, path.split('/').pop() || 'download');
+        } catch (error) {
+            showToast(error instanceof Error ? error.message : String(error), 'error');
+        }
+    }, [api, showToast]);
 
     // ─── Actions ──────────────────────────────────────
 
@@ -426,10 +458,10 @@ export default function FileBrowser({
                             </div>
                         )
                     )}
-                    {api.downloadUrl && (
-                        <a href={api.downloadUrl(viewing)} download className="file-browser-link-plain">
-                            <button className="btn btn-secondary">⬇ {t('common.download', 'Download')}</button>
-                        </a>
+                    {api.download && (
+                        <button className="btn btn-secondary" onClick={() => void handleDownload(viewing)}>
+                            ⬇ {t('common.download', 'Download')}
+                        </button>
                     )}
                     {canDelete && (
                         <button className="btn btn-danger"
@@ -449,14 +481,16 @@ export default function FileBrowser({
                         )
                     ) : isImage(viewing) ? (
                         <div className="file-browser-image-wrap">
-                            {api.downloadUrl ? (
+                            {imagePreviewUrl ? (
                                 <img
-                                    src={api.downloadUrl(viewing)}
+                                    src={imagePreviewUrl}
                                     alt={viewing.split('/').pop()}
                                     className="file-browser-image"
                                 />
                             ) : (
-                                <div className="file-browser-image-fallback">Cannot preview image without download URL</div>
+                                <div className="file-browser-image-fallback">
+                                    {api.download ? t('common.loading', 'Loading') : 'Cannot preview image without download access'}
+                                </div>
                             )}
                         </div>
                     ) : (
@@ -464,10 +498,10 @@ export default function FileBrowser({
                             <div className="file-browser-binary-glyph">⌇</div>
                             <div className="file-browser-binary-name">{viewing.split('/').pop()}</div>
                             <div className="file-browser-binary-hint">Binary file — cannot preview</div>
-                            {api.downloadUrl && (
-                                <a href={api.downloadUrl(viewing)} download className="file-browser-link-plain">
-                                    <button className="btn btn-primary">⬇ {t('common.download', 'Download')}</button>
-                                </a>
+                            {api.download && (
+                                <button className="btn btn-primary" onClick={() => void handleDownload(viewing)}>
+                                    ⬇ {t('common.download', 'Download')}
+                                </button>
                             )}
                         </div>
                     )}
@@ -569,13 +603,16 @@ export default function FileBrowser({
                             </div>
                             <div className="file-browser-row-main">
                                 {f.size != null && <span className="u-meta u-tertiary">{(f.size / 1024).toFixed(1)} KB</span>}
-                                {!f.is_dir && api.downloadUrl && (
-                                    <a href={api.downloadUrl(f.path || `${currentPath}/${f.name}`)} download
-                                        onClick={(e) => e.stopPropagation()}
+                                {!f.is_dir && api.download && (
+                                    <button type="button"
+                                        onClick={(e) => {
+                                            e.stopPropagation();
+                                            void handleDownload(f.path || `${currentPath}/${f.name}`);
+                                        }}
                                         title={t('common.download', 'Download')}
                                         className="file-browser-row-download">
                                         ⬇
-                                    </a>
+                                    </button>
                                 )}
                                 {canDelete && (
                                     <button className="file-browser-row-delete"

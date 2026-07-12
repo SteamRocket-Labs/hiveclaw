@@ -2,7 +2,7 @@
  * Files domain adapter — agent workspace file management.
  */
 
-import { get, post, put, del, upload } from '../core';
+import { del, get, getBlob, post, put, upload } from '../core';
 import { uploadFileWithProgress } from '../core/upload-progress';
 
 export interface FileInfo {
@@ -66,17 +66,13 @@ export const fileApi = {
     del(withAuthority(`/agents/${agentId}/files/content?path=${encodeURIComponent(path)}`, authority)),
   delete: (agentId: string, path: string, authority?: ResourceAuthorityOptions) =>
     del(withAuthority(`/agents/${agentId}/files/content?path=${encodeURIComponent(path)}`, authority)),
-  downloadUrl: (agentId: string, path: string, authority?: ResourceAuthorityOptions) => {
-    const token = localStorage.getItem('token');
-    return withAuthority(`/api/agents/${agentId}/files/download?path=${encodeURIComponent(path)}&token=${token}`, authority);
-  },
-  artifactDownloadUrl: (agentId: string, artifactId: string, authority?: ResourceAuthorityOptions) => {
-    const token = localStorage.getItem('token');
-    return withAuthority(
-      `/api/agents/${agentId}/files/artifacts/${encodeURIComponent(artifactId)}/download?token=${token}`,
+  download: (agentId: string, path: string, authority?: ResourceAuthorityOptions) =>
+    getBlob(withAuthority(`/agents/${agentId}/files/download?path=${encodeURIComponent(path)}`, authority)),
+  downloadArtifact: (agentId: string, artifactId: string, authority?: ResourceAuthorityOptions) =>
+    getBlob(withAuthority(
+      `/agents/${agentId}/files/artifacts/${encodeURIComponent(artifactId)}/download`,
       authority,
-    );
-  },
+    )),
   upload: (agentId: string, file: File, path?: string, onProgress?: (pct: number) => void, authority?: ResourceAuthorityOptions) => {
     const params = authorityParams(authority);
     if (path) params.set('path', path);
@@ -86,8 +82,6 @@ export const fileApi = {
     }
     return upload<any>(withAuthority(`/agents/${agentId}/files/upload`, authority), file, path ? { path } : undefined);
   },
-  download: (agentId: string, path: string) =>
-    get<Blob>(`/agents/${agentId}/files/download?path=${encodeURIComponent(path)}`),
   importSkill: (agentId: string, skillId: string) =>
     post<any>(`/agents/${agentId}/files/import-skill`, { skill_id: skillId }),
   importFromClawHub: (agentId: string, slug: string) =>

@@ -2648,7 +2648,8 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('Download');
     expect(markup).toContain('<button type="button" data-testid="chat-artifact-row-open"');
     expect(markup).not.toContain('role="button"');
-    expect(markup).toContain('/api/agents/agent-1/files/artifacts/artifact-1/download');
+    expect(markup).not.toContain('token=');
+    expect(markup).toContain('<button type="button" class="chat-artifact-action"');
   });
 
   it('folds completed ordinary tool-call steps while keeping raw results hidden by default', () => {

@@ -655,6 +655,8 @@ flowchart LR
 - 精确代码位置：`frontend/src/components/MarkdownRenderer.tsx:18-56,90,111,129,149,152,164,173,179,185,203`；`frontend/src/api/domains/files.ts:69-79`；`frontend/src/pages/agent-detail/LocalAgentChatSection.tsx:188-196`；`frontend/nginx.conf` security headers。
 - 缺失测试：`<img onerror>`/`<script>`/`javascript:`/恶意 image URL 渲染断言；全部消费面的 sanitization 契约；认证资源不把长期 bearer token 放入 DOM/URL；staging 实际 `Content-Security-Policy` 响应头和浏览器执行测试。
 - 一次性完整关闭方案：做前端包级安全迁移——使用 `react-markdown` + `rehype-sanitize` 或同等级成熟 sanitizer，默认禁用 raw HTML，统一 URL scheme allowlist、图片来源/大小策略和外链属性；更新 `package.json`/lockfile；删除 Renderer 中的 token 拼接，并把相关 query-token 下载路径迁到 authenticated fetch→Blob、受控同源代理或短期单用途签名 URL；核对 Nginx/location 层最终 CSP header 的继承与实际响应，CSP 作为纵深防御而非主修复；用组件测试和 Playwright 覆盖聊天、Plan、Artifact、Knowledge、FileBrowser、Local Agent 全部消费面。迁移完成后删除旧不安全渲染器，回滚依靠 Git/deployment artifact，不保留 live compatibility 旁路。
+- 修复状态（2026-07-12）：**闭环**。全站唯一 Markdown owner 已替换为 `react-markdown + remark-gfm + rehype-sanitize`，`skipHtml` 禁用 raw HTML，URL policy 拒绝 executable/data/credential-bearing URL，图片只接受 app-owned source；仓内不再存在 `dangerouslySetInnerHTML`。Workspace、Artifact、Local Agent、历史消息图片全部改为带 Authorization/tenant header 的 `fetch → Blob`，不再把长期 bearer 放入文件 URL/DOM；Nginx 的 `/` 与 `/assets/` 在覆盖 `add_header` 时显式重复 CSP/security headers。
+- 修复证据：Red `npm test -- --run src/components/MarkdownRenderer.test.tsx src/api/domains/files.test.ts src/pages/agent-detail/LocalAgentChatSection.test.tsx` → `5 failed, 8 passed`；Nginx header Red → `expected 3, received 1`；Green 定向 6 文件 → `121 passed`；全量 `npm test -- --run` → `109 files / 622 tests passed`；`npm run build` → `7341 modules transformed`、exit 0；`npm run test:e2e` → `11 passed`；`npm audit --omit=dev` → `0 vulnerabilities`；源码检索确认生产代码无 `dangerouslySetInnerHTML`、无文件下载 `token=`/`downloadUrl` 旁路。提交主题：`fix(R-015): sanitize rich text and authenticated downloads`。
 
 ### [R-016] write_file/edit_file 路径穿越，绕过全部记忆治理直写持久记忆平面
 
@@ -979,12 +981,12 @@ Codebase graph 校正时状态为 ready（43,281 nodes / 166,753 edges）；`det
 
 ## 16. 17 个断点修复执行账本
 
-本节记录原始审计中 17 个“断点”的实际落地状态。原始严重级别与原子状态保留为审计快照；只有同时具备实现、回归测试、报告证据和独立提交，才把“修复状态”改为闭环。当前进度：**1/17**。
+本节记录原始审计中 17 个“断点”的实际落地状态。原始严重级别与原子状态保留为审计快照；只有同时具备实现、回归测试、报告证据和独立提交，才把“修复状态”改为闭环。当前进度：**2/17**。
 
 | ID | 修复状态 | 独立提交主题 | 机械证据摘要 |
 |---|---|---|---|
 | R-016 | 闭环 | `fix(R-016): close governed memory path traversal` | Red 2 failed/1 passed；Green 3 passed；扩展 39 passed；ruff check/format 绿 |
-| R-015 | 待修复 | — | — |
+| R-015 | 闭环 | `fix(R-015): sanitize rich text and authenticated downloads` | Red 5 failed + CSP inheritance 1 failed；Green 121 passed；全量 622 passed；build/E2E/audit 绿 |
 | R-017 | 待修复 | — | — |
 | R-001 | 待修复 | — | — |
 | R-019 | 待修复 | — | — |

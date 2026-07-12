@@ -3,6 +3,8 @@ import { IconDownload, IconExternalLink, IconFileText, IconX } from '@tabler/ico
 
 import MarkdownRenderer from '../../components/MarkdownRenderer';
 import { fileApi } from '../../api/domains/files';
+import { saveBlob } from '../../utils/authenticatedResource';
+import { showAppToast } from '../../components/AppDialogs';
 import type { ChatArtifactPart } from './chatRuntime';
 
 type Translate = ReturnType<typeof useTranslation>['t'];
@@ -301,13 +303,21 @@ export function ArtifactCards({
         const authority = operatorView
           ? { operatorView: true, reason: 'Agent session administration' }
           : undefined;
-        const href = downloadAgentId
-          ? (artifact.id
-              ? fileApi.artifactDownloadUrl(downloadAgentId, artifact.id, authority)
-              : fileApi.downloadUrl(downloadAgentId, artifact.path, authority))
-          : '#';
         const size = formatArtifactSize(artifact.size);
         const openArtifact = () => onOpenArtifact?.(artifact);
+        const downloadArtifact = async () => {
+          if (!downloadAgentId) return;
+          try {
+            const blob = artifact.id
+              ? await fileApi.downloadArtifact(downloadAgentId, artifact.id, authority)
+              : await fileApi.download(downloadAgentId, artifact.path, authority);
+            saveBlob(blob, artifact.name);
+          } catch (error) {
+            showAppToast(t('agent.chat.artifacts.downloadFailed', 'Download failed: {{message}}', {
+              message: error instanceof Error ? error.message : String(error),
+            }), 'error');
+          }
+        };
         return (
           <div
             key={`${artifact.id || artifact.path}`}
@@ -339,15 +349,17 @@ export function ArtifactCards({
                 <IconExternalLink size={12} />
                 {t('agent.chat.artifacts.open', 'Open')}
               </button>
-              <a
-                href={href}
-                download={artifact.name}
+              <button
+                type="button"
                 className="chat-artifact-action"
-                onClick={(event) => event.stopPropagation()}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  void downloadArtifact();
+                }}
               >
                 <IconDownload size={12} />
                 {t('agent.chat.artifacts.download', 'Download')}
-              </a>
+              </button>
             </span>
           </div>
         );

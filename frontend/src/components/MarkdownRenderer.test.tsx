@@ -42,4 +42,30 @@ describe('MarkdownRenderer', () => {
     expect(html).toContain('class="md-link"');
     expect(html).toContain('rel="noopener noreferrer"');
   });
+
+  it('never renders raw HTML or executable event attributes', () => {
+    const html = renderToStaticMarkup(
+      <MarkdownRenderer
+        content={'before <img src=x onerror="globalThis.pwned=true"><script>globalThis.pwned=true</script> after'}
+      />,
+    );
+
+    expect(html).not.toContain('<img src="x"');
+    expect(html).not.toContain('<script>');
+    expect(html).not.toContain('onerror=');
+    expect(html).toContain('before');
+    expect(html).toContain('after');
+  });
+
+  it('rejects executable and credential-bearing markdown URLs', () => {
+    const html = renderToStaticMarkup(
+      <MarkdownRenderer
+        content={'[unsafe](javascript:alert(1)) ![bad](data:text/html;base64,PHNjcmlwdD4=) [token](/api/agents/a/files/download?token=secret)'}
+      />,
+    );
+
+    expect(html).not.toContain('javascript:');
+    expect(html).not.toContain('data:text/html');
+    expect(html).not.toContain('token=secret');
+  });
 });

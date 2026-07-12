@@ -21,6 +21,7 @@ import { SessionWorkbenchHeader } from '../session-workbench/SessionWorkbenchChr
 import type { AgentChatMessage, ChatArtifactPart } from './chatRuntime';
 import type { SessionWorkbenchHeaderModel } from '../session-workbench/timelineModel';
 import { composerShortcutText } from './sessionComposerShortcuts';
+import { saveBlob } from '../../utils/authenticatedResource';
 
 type AttachedLocalFile = LocalAgentWorkspaceUpload & {
   attachmentPath: string;
@@ -187,8 +188,6 @@ type LocalArtifactDownloadContext = {
 
 export function localAgentArtifactDownloadUrl(path: string, context: LocalArtifactDownloadContext = {}): string {
   const params = new URLSearchParams({ path });
-  const token = typeof localStorage !== 'undefined' ? localStorage.getItem('token') : '';
-  if (token) params.set('token', token);
   if (context.agentId && context.sessionId) {
     return `/api/agents/${encodeURIComponent(context.agentId)}/local-agent/sessions/${encodeURIComponent(context.sessionId)}/workspace/download?${params.toString()}`;
   }
@@ -217,15 +216,31 @@ function LocalArtifactCards({
   downloadContext?: LocalArtifactDownloadContext;
 }) {
   const { t } = useTranslation();
+  const [downloadError, setDownloadError] = useState<string | null>(null);
   if (!artifacts?.length) return null;
+  const downloadArtifact = async (artifact: ChatArtifactPart) => {
+    try {
+      setDownloadError(null);
+      const blob = downloadContext?.agentId && downloadContext.sessionId
+        ? await localBridgeApi.downloadAgentSessionWorkspaceFile(
+            downloadContext.agentId,
+            downloadContext.sessionId,
+            artifact.path,
+          )
+        : await localBridgeApi.downloadWorkspaceFile(artifact.path);
+      saveBlob(blob, artifact.name);
+    } catch (error) {
+      setDownloadError(error instanceof Error ? error.message : String(error));
+    }
+  };
   return (
     <div className="local-chat-artifacts">
       {artifacts.map((artifact) => (
-        <a
+        <button
+          type="button"
           key={`${artifact.id || ''}:${artifact.path}`}
-          href={localAgentArtifactDownloadUrl(artifact.path, downloadContext)}
-          download={artifact.name}
           className="local-chat-artifact"
+          onClick={() => void downloadArtifact(artifact)}
         >
           <IconFileText size={16} color="var(--text-tertiary)" className="local-chat-artifact-icon" />
           <span className="local-chat-artifact-body">
@@ -239,8 +254,9 @@ function LocalArtifactCards({
           <span className="local-chat-artifact-action">
             {t('localAgents.download', 'Download')}
           </span>
-        </a>
+        </button>
       ))}
+      {downloadError ? <span role="alert" className="local-chat-artifact-error">{downloadError}</span> : null}
     </div>
   );
 }

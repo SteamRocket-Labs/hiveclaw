@@ -17,6 +17,7 @@ import {
 import { useMutation, useQuery } from '@tanstack/react-query';
 
 import MarkdownRenderer from '../../components/MarkdownRenderer';
+import AuthenticatedImage from '../../components/AuthenticatedImage';
 import StreamingMarkdown from '../../components/StreamingMarkdown';
 import ThinkingDisclosure from './ThinkingDisclosure';
 import type { AgentPermissions } from '../../api/domains/agents';
@@ -73,6 +74,7 @@ import {
   submitWorkflowPromotionProposal,
 } from '../../api/domains/workflows';
 import { showAppToast } from '../../components/AppDialogs';
+import { saveBlob } from '../../utils/authenticatedResource';
 import { composerShortcutText } from './sessionComposerShortcuts';
 import type { ToolCallMeta, WorkflowPreviewToolMeta } from './toolResultEnvelope';
 import {
@@ -1015,11 +1017,12 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
         )}
         {isImage ? (
           <div style={{ marginBottom: '4px' }}>
-            <img
+            <AuthenticatedImage
               src={msg.imageUrl}
               alt={msg.fileName}
               style={{ maxWidth: '200px', maxHeight: '150px', borderRadius: '8px', border: '1px solid var(--border-subtle)' }}
               loading="lazy"
+              pendingClassName="session-tui-image-pending"
             />
           </div>
         ) : (
@@ -1181,6 +1184,12 @@ function AgentChatSection({
   } = useThreadItemRuntimeController(activeSessionId, visibleTimeline);
 
   const [artifactPreview, setArtifactPreview] = React.useState<ArtifactPreviewState | null>(null);
+  React.useEffect(() => {
+    const url = artifactPreview?.url;
+    return () => {
+      if (url?.startsWith('blob:')) URL.revokeObjectURL(url);
+    };
+  }, [artifactPreview?.url]);
   const [runtimePanelCollapsed, setRuntimePanelCollapsed] = useResponsiveRuntimePanel();
   const [focusedWorkflow, setFocusedWorkflow] = React.useState<RuntimeSectionItemModel | null>(null);
   const [focusedGitCheckpointId, setFocusedGitCheckpointId] = React.useState<string | null>(null);
@@ -1288,11 +1297,17 @@ function AgentChatSection({
   const openArtifact = React.useCallback(async (artifact: ChatArtifactPart) => {
     const artifactAgentId = artifactWorkspaceAgentId(artifact, effectiveAgentId);
     if (!artifactAgentId) return;
-    const href = artifact.id
-      ? fileApi.artifactDownloadUrl(artifactAgentId, artifact.id, resourceOperatorOptions)
-      : fileApi.downloadUrl(artifactAgentId, artifact.path, resourceOperatorOptions);
+    const fetchArtifactBlob = () => artifact.id
+      ? fileApi.downloadArtifact(artifactAgentId, artifact.id, resourceOperatorOptions)
+      : fileApi.download(artifactAgentId, artifact.path, resourceOperatorOptions);
     if (getArtifactOpenMode(artifact) === 'download') {
-      window.open(href, '_blank', 'noopener,noreferrer');
+      try {
+        saveBlob(await fetchArtifactBlob(), artifact.name);
+      } catch (error) {
+        showAppToast(t('agent.chat.artifacts.downloadFailed', 'Download failed: {{message}}', {
+          message: error instanceof Error ? error.message : String(error),
+        }), 'error');
+      }
       return;
     }
 
@@ -1306,7 +1321,6 @@ function AgentChatSection({
         setArtifactPreview({
           artifact,
           content: response.content || '',
-          url: href,
           usingSnapshot: Boolean(response.uses_snapshot || artifact.snapshotHash),
           workspaceChanged: Boolean(response.workspace_changed),
           legacyCurrentFileFallback: Boolean(response.legacy_current_file_fallback),
@@ -1316,14 +1330,12 @@ function AgentChatSection({
           setArtifactPreview({
             artifact,
             content: artifact.previewSnapshotContent,
-            url: href,
             usingSnapshot: true,
           });
           return;
         }
         setArtifactPreview({
           artifact,
-          url: href,
           error: error instanceof Error && !String(error.message || '').includes('File not found')
             ? error.message
             : t('agent.chat.artifacts.missingNoSnapshot', 'This file is no longer available in the workspace.'),
@@ -1332,7 +1344,15 @@ function AgentChatSection({
       return;
     }
 
-    setArtifactPreview({ artifact, url: href });
+    try {
+      const blob = await fetchArtifactBlob();
+      setArtifactPreview({ artifact, url: URL.createObjectURL(blob) });
+    } catch (error) {
+      setArtifactPreview({
+        artifact,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }, [effectiveAgentId, resourceOperatorOptions, t]);
 
   const requestSubagentRetry = React.useCallback(

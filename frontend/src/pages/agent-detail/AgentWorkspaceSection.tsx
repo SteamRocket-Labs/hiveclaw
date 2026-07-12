@@ -21,7 +21,7 @@ export default function AgentWorkspaceSection({ agentId, canUseOperatorView = fa
     write: (path, content) => fileApi.write(agentId, path, content, authority),
     delete: (path) => fileApi.delete(agentId, path, authority),
     upload: (file, path, onProgress) => fileApi.upload(agentId, file, `${path}/`, onProgress, authority),
-    downloadUrl: (path) => fileApi.downloadUrl(agentId, path, authority),
+    download: (path) => fileApi.download(agentId, path, authority),
   };
 
   return (

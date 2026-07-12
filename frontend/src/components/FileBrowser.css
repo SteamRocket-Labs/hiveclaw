@@ -259,6 +259,9 @@
   color: var(--accent-primary);
   text-decoration: none;
   border-radius: var(--radius-sm);
+  border: 0;
+  background: transparent;
+  cursor: pointer;
   transition: background var(--transition-fast);
 }
 .file-browser-row-download:hover { background: var(--bg-hover); }

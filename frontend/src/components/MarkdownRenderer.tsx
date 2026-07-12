@@ -1,208 +1,162 @@
+import React, { useMemo, useState } from 'react';
+import ReactMarkdown, { defaultUrlTransform, type Components, type UrlTransform } from 'react-markdown';
+import rehypeSanitize from 'rehype-sanitize';
+import remarkGfm from 'remark-gfm';
+
+import {
+  apiPathFromBrowserUrl,
+  downloadAuthenticatedBrowserResource,
+} from '../utils/authenticatedResource';
+import AuthenticatedImage from './AuthenticatedImage';
+
+const CREDENTIAL_QUERY_KEYS = new Set([
+  'access_token',
+  'api_key',
+  'apikey',
+  'auth',
+  'authorization',
+  'bearer',
+  'token',
+]);
+
+function containsCredentialQuery(value: string): boolean {
+  try {
+    const url = new URL(value, 'http://localhost');
+    return [...url.searchParams.keys()].some((key) => CREDENTIAL_QUERY_KEYS.has(key.toLowerCase()));
+  } catch {
+    return true;
+  }
+}
+
 /**
- * Lightweight Markdown renderer — no external dependencies.
- * Renders: headings, bold, italic, inline code, code blocks,
- * unordered/ordered lists, blockquotes, horizontal rules, links, tables.
- * All visual styling lives in index.css under `.md-content` — this module
- * emits semantic classes only (design authority: frontend-design-refinement).
+ * Markdown URL policy: links may use http(s), mailto, or same-origin relative
+ * paths. Images are restricted to app-owned resources; raw data URLs and
+ * remote tracking pixels are not rendered.
  */
-import React, { useMemo } from 'react';
+export const safeMarkdownUrl: UrlTransform = (value, _key, node) => {
+  const candidate = value.trim();
+  if (!candidate || /[\u0000-\u001f\u007f]/.test(candidate) || containsCredentialQuery(candidate)) {
+    return null;
+  }
 
-function escapeHtml(str: string): string {
-    return str
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;');
+  const isImage = node.tagName === 'img';
+  if (candidate.startsWith('/')) {
+    if (candidate.startsWith('//')) return null;
+    if (isImage && !candidate.startsWith('/api/') && !candidate.startsWith('/assets/')) return null;
+    return candidate;
+  }
+
+  let protocol = '';
+  try {
+    protocol = new URL(candidate).protocol.toLowerCase();
+  } catch {
+    // Plain relative paths are valid links, but not valid image sources.
+    return isImage ? null : defaultUrlTransform(candidate);
+  }
+
+  if (isImage) return null;
+  if (!['http:', 'https:', 'mailto:'].includes(protocol)) return null;
+  return defaultUrlTransform(candidate);
+};
+
+function filenameFromUrl(value: string): string {
+  try {
+    const url = new URL(value, 'http://localhost');
+    return decodeURIComponent(url.pathname.split('/').filter(Boolean).pop() || 'download');
+  } catch {
+    return 'download';
+  }
 }
 
-function renderInline(text: string): string {
-    return text
-        // Bold + italic
-        .replace(/\*\*\*(.*?)\*\*\*/g, '<strong><em>$1</em></strong>')
-        // Bold
-        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-        .replace(/__(.*?)__/g, '<strong>$1</strong>')
-        // Italic
-        .replace(/\*(.*?)\*/g, '<em>$1</em>')
-        .replace(/_(.*?)_/g, '<em>$1</em>')
-        // Inline code
-        .replace(/`([^`]+)`/g, '<code class="md-code">$1</code>')
-        // Images
-        .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, alt, url) => {
-            let finalUrl = url;
-            if (finalUrl.startsWith('/api/agents/')) {
-                const token = localStorage.getItem('token');
-                if (token && !finalUrl.includes('token=')) {
-                    finalUrl += (finalUrl.includes('?') ? '&' : '?') + `token=${token}`;
-                }
-            }
-            return `<a href="${finalUrl}" target="_blank" class="md-img-link"><img src="${finalUrl}" alt="${alt}" class="md-img" /></a>`;
-        })
-        // Links
-        .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, text, url) => {
-            // Avoid matching images that snuck through or weird nested stuff
-            if (match.startsWith('!')) return match;
-            let finalUrl = url;
-            if (finalUrl.startsWith('/api/agents/')) {
-                const token = localStorage.getItem('token');
-                if (token && !finalUrl.includes('token=')) {
-                    finalUrl += (finalUrl.includes('?') ? '&' : '?') + `token=${token}`;
-                }
-            }
-            return `<a href="${finalUrl}" target="_blank" rel="noopener noreferrer" class="md-link">${text}</a>`;
-        })
-        // Strikethrough
-        .replace(/~~(.*?)~~/g, '<del>$1</del>');
+function MarkdownImage({ src, alt }: { src?: string; alt?: string }) {
+  if (!src) return null;
+  return (
+    <AuthenticatedImage
+      src={src}
+      alt={alt || ''}
+      className="md-img"
+      pendingClassName="md-img-pending"
+      loading="lazy"
+      decoding="async"
+    />
+  );
 }
 
-function markdownToHtml(md: string): string {
-    const lines = md.split('\n');
-    let html = '';
-    let inCodeBlock = false;
-    let codeLang = '';
-    let codeLines: string[] = [];
-    let inList: 'ul' | 'ol' | null = null;
-    let inBlockquote = false;
-    let inTable = false;
-    let tableHeader = false;
-
-    const flushList = () => {
-        if (inList) { html += inList === 'ul' ? '</ul>' : '</ol>'; inList = null; }
-    };
-    const flushBlockquote = () => {
-        if (inBlockquote) { html += '</blockquote>'; inBlockquote = false; }
-    };
-    const flushTable = () => {
-        if (inTable) { html += '</tbody></table>'; inTable = false; tableHeader = false; }
-    };
-
-    for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
-
-        // Code block
-        if (line.startsWith('```')) {
-            if (!inCodeBlock) {
-                flushList(); flushBlockquote(); flushTable();
-                inCodeBlock = true;
-                codeLang = line.slice(3).trim();
-                codeLines = [];
-            } else {
-                const codeContent = escapeHtml(codeLines.join('\n'));
-                html += `<pre class="md-pre"><code${codeLang ? ` class="language-${codeLang}"` : ''}>${codeContent}</code></pre>`;
-                inCodeBlock = false;
-                codeLang = '';
-                codeLines = [];
-            }
-            continue;
-        }
-        if (inCodeBlock) { codeLines.push(line); continue; }
-
-        // Blank line — block separator only; paragraph margins carry the gap.
-        if (line.trim() === '') {
-            flushList(); flushBlockquote(); flushTable();
-            continue;
-        }
-
-        // Headings
-        const hMatch = line.match(/^(#{1,6})\s+(.*)/);
-        if (hMatch) {
-            flushList(); flushBlockquote(); flushTable();
-            const level = hMatch[1].length;
-            html += `<h${level} class="md-h md-h${level}">${renderInline(hMatch[2])}</h${level}>`;
-            continue;
-        }
-
-        // Horizontal rule
-        if (/^[-*_]{3,}$/.test(line.trim())) {
-            flushList(); flushBlockquote(); flushTable();
-            html += '<hr class="md-hr">';
-            continue;
-        }
-
-        // Blockquote
-        if (line.startsWith('> ')) {
-            flushList(); flushTable();
-            if (!inBlockquote) {
-                html += '<blockquote class="md-quote">';
-                inBlockquote = true;
-            }
-            html += `<div>${renderInline(line.slice(2))}</div>`;
-            continue;
-        } else if (inBlockquote) {
-            flushBlockquote();
-        }
-
-        // Tables
-        if (line.includes('|')) {
-            flushList(); flushBlockquote();
-            const cols = line.split('|').map(c => c.trim()).filter((_, i, a) => i > 0 && i < a.length - 1);
-            // Separator row
-            if (cols.every(c => /^[-:]+$/.test(c))) {
-                tableHeader = true;
-                continue;
-            }
-            if (!inTable) {
-                html += '<table class="md-table"><thead>';
-                inTable = true;
-                tableHeader = false;
-                // This is the header row
-                html += '<tr>' + cols.map(c => `<th>${renderInline(c)}</th>`).join('') + '</tr>';
-                html += '</thead><tbody>';
-            } else {
-                html += '<tr>' + cols.map(c => `<td>${renderInline(c)}</td>`).join('') + '</tr>';
-            }
-            continue;
-        } else if (inTable) {
-            flushTable();
-        }
-
-        // Unordered list
-        const ulMatch = line.match(/^(\s*)[*\-+]\s+(.*)/);
-        if (ulMatch) {
-            flushBlockquote(); flushTable();
-            if (inList !== 'ul') { if (inList) flushList(); html += '<ul class="md-list">'; inList = 'ul'; }
-            html += `<li>${renderInline(ulMatch[2])}</li>`;
-            continue;
-        }
-
-        // Ordered list
-        const olMatch = line.match(/^(\s*)\d+\.\s+(.*)/);
-        if (olMatch) {
-            flushBlockquote(); flushTable();
-            if (inList !== 'ol') { if (inList) flushList(); html += '<ol class="md-list">'; inList = 'ol'; }
-            html += `<li>${renderInline(olMatch[2])}</li>`;
-            continue;
-        }
-
-        // Regular paragraph
-        flushList(); flushBlockquote(); flushTable();
-        html += `<p>${renderInline(line)}</p>`;
-    }
-
-    // Close any open structures
-    flushList(); flushBlockquote(); flushTable();
-    if (inCodeBlock) {
-        html += `<pre class="md-pre"><code>${escapeHtml(codeLines.join('\n'))}</code></pre>`;
-    }
-
-    return html;
+function MarkdownLink({
+  href,
+  children,
+  ...props
+}: React.AnchorHTMLAttributes<HTMLAnchorElement>) {
+  const [error, setError] = useState<string | null>(null);
+  const authenticated = Boolean(href && apiPathFromBrowserUrl(href));
+  return (
+    <>
+      <a
+        {...props}
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="md-link"
+        onClick={authenticated && href ? (event) => {
+          event.preventDefault();
+          setError(null);
+          void downloadAuthenticatedBrowserResource(href, filenameFromUrl(href)).catch((reason) => {
+            setError(reason instanceof Error ? reason.message : String(reason));
+          });
+        } : undefined}
+      >
+        {children}
+      </a>
+      {error ? <span className="md-link-error" role="alert">{error}</span> : null}
+    </>
+  );
 }
+
+const markdownComponents: Components = {
+  h1: (props) => <h1 {...props} className="md-h md-h1" />,
+  h2: (props) => <h2 {...props} className="md-h md-h2" />,
+  h3: (props) => <h3 {...props} className="md-h md-h3" />,
+  h4: (props) => <h4 {...props} className="md-h md-h4" />,
+  h5: (props) => <h5 {...props} className="md-h md-h5" />,
+  h6: (props) => <h6 {...props} className="md-h md-h6" />,
+  blockquote: (props) => <blockquote {...props} className="md-quote" />,
+  table: (props) => <table {...props} className="md-table" />,
+  ul: (props) => <ul {...props} className="md-list" />,
+  ol: (props) => <ol {...props} className="md-list" />,
+  hr: (props) => <hr {...props} className="md-hr" />,
+  pre: (props) => <pre {...props} className="md-pre" />,
+  code: ({ className, ...props }) => (
+    <code {...props} className={[className, 'md-code'].filter(Boolean).join(' ')} />
+  ),
+  a: ({ href, children, ...props }) => <MarkdownLink {...props} href={href}>{children}</MarkdownLink>,
+  img: ({ src, alt }) => <MarkdownImage src={typeof src === 'string' ? src : undefined} alt={alt} />,
+};
 
 interface MarkdownRendererProps {
-    content: string;
-    style?: React.CSSProperties;
-    className?: string;
+  content: string;
+  style?: React.CSSProperties;
+  className?: string;
 }
 
-export const MarkdownRenderer = React.memo(function MarkdownRenderer({ content, style, className }: MarkdownRendererProps) {
-    const html = useMemo(() => markdownToHtml(content), [content]);
-    return (
-        <div
-            className={className ? `md-content ${className}` : 'md-content'}
-            style={style}
-            dangerouslySetInnerHTML={{ __html: html }}
-        />
-    );
+export const MarkdownRenderer = React.memo(function MarkdownRenderer({
+  content,
+  style,
+  className,
+}: MarkdownRendererProps) {
+  const classes = useMemo(() => (className ? `md-content ${className}` : 'md-content'), [className]);
+  return (
+    <div className={classes} style={style}>
+      <ReactMarkdown
+        skipHtml
+        remarkPlugins={[remarkGfm]}
+        rehypePlugins={[rehypeSanitize]}
+        urlTransform={safeMarkdownUrl}
+        components={markdownComponents}
+      >
+        {content}
+      </ReactMarkdown>
+    </div>
+  );
 });
 
 export default MarkdownRenderer;

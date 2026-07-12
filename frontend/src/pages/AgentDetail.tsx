@@ -1415,7 +1415,7 @@ function AgentDetailInner() {
         if (parsed.fileName && !parsed.imageUrl && id) {
             const ext = parsed.fileName.split('.').pop()?.toLowerCase() || '';
             if (IMAGE_EXTS.includes(ext)) {
-                parsed.imageUrl = `/api/agents/${id}/files/download?path=workspace/uploads/${encodeURIComponent(parsed.fileName)}&token=${token}`;
+                parsed.imageUrl = `/api/agents/${id}/files/download?path=workspace/uploads/${encodeURIComponent(parsed.fileName)}`;
             }
         }
         return parsed;

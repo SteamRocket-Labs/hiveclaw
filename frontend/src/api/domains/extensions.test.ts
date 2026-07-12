@@ -48,6 +48,39 @@ describe('extensions API adapter', () => {
     });
   });
 
+  it('routes administrator MCP metadata evidence and fingerprint review separately from agent policy', async () => {
+    vi.doMock('../core', async () => {
+      const actual = await vi.importActual<typeof import('../core')>('../core');
+      return {
+        ...actual,
+        get: vi.fn(),
+        put: vi.fn(),
+      };
+    });
+
+    const { extensionsApi } = await import('./extensions');
+    const { get, put } = await import('../core');
+    vi.mocked(get).mockResolvedValue([]);
+    vi.mocked(put).mockResolvedValue({ runtime_approved: true });
+
+    await extensionsApi.listEnterpriseMcpServerTools('server-1');
+    await extensionsApi.reviewEnterpriseMcpServerToolMetadata('server-1', 'unsafe tool/name', {
+      decision: 'approve',
+      expected_fingerprint: 'a'.repeat(64),
+      canonical_description: 'Reviewed canonical description.',
+    });
+
+    expect(get).toHaveBeenCalledWith('/enterprise/mcp-servers/server-1/tools');
+    expect(put).toHaveBeenCalledWith(
+      '/enterprise/mcp-servers/server-1/tools/unsafe%20tool%2Fname/metadata-review',
+      {
+        decision: 'approve',
+        expected_fingerprint: 'a'.repeat(64),
+        canonical_description: 'Reviewed canonical description.',
+      },
+    );
+  });
+
   it('routes legacy plugin assignment through agent-scoped compatibility endpoint', async () => {
     vi.doMock('../core', async () => {
       const actual = await vi.importActual<typeof import('../core')>('../core');

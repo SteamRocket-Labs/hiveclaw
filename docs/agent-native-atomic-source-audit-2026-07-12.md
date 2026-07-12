@@ -784,6 +784,10 @@ flowchart LR
 - 根因：[主审复核] `mcp_prompt_trust` 只 fence prompt 块（且仅中和 `</mcp_prompt>` 单标签）；tool description 仅做 500 字符截断（`resource_discovery.py:599,774`）。更根本的问题是平台没有把远端 description 视为不可信元数据；单纯 XML/HTML 转义或加 fence 不能消除自然语言提示注入。
 - 精确代码位置：`backend/app/services/resource_discovery.py:599,774`。
 - 一次性完整关闭方案：建立 MCP metadata trust contract：远端原始 description 只进入隔离的审计/管理员预览面，模型侧使用平台生成或管理员批准的 canonical neutral description，并携带 server/tool provenance 与 trust tier；名称、schema、长度和危险措辞做机械校验，但不把“转义”误当语义净化；未知/变更后的工具默认不可自动启用，需重新审核；每次调用仍走 ToolRuntime 的 capability、approval、budget 与 audit；补自然语言注入、描述变更、恶意 schema、同名工具和权限升级回归测试。
+- 修复状态（2026-07-12）：**R-021 七原子闭环**。Smithery 与 direct URL 的 individual/generic 四类 import/re-import 现在统一进入 `mcp_metadata_trust` functional core：远端 description/schema 原文只写 `mcp_raw_*` 管理员证据列；模型侧只消费平台生成或管理员确认的 canonical neutral description 与剥离 `description/title/$comment/examples/default` 等自然语言 annotation 后的 bounded JSON Schema。tool/property 名、schema root/depth/property count/`$ref`、enum、长度和危险措辞均机械校验；非法 metadata 进入 `invalid_metadata/external_invalid` 隔离而不是靠 XML/HTML 转义伪装净化。fingerprint 是绑定 server name/url、remote tool name、原始 prose/schema 的 SHA-256；同 fingerprint 幂等保留审核，任一 provenance/description/schema 变化立即清空 reviewer、禁用 Tool 并要求重新审核。
+- 权威、执行与消费闭环：新增 company-admin-only `GET /enterprise/mcp-servers/{server_id}/tools` 原始证据面和 fingerprint-bound approve/reject API；普通 Agent MCP 列表只显示 safe trust status/tier，绝不返回 raw metadata。管理员批准前，`get_agent_tools_for_llm`、generic `call_mcp_tool`、dynamic MCP dispatcher、protocol prompt/resource server resolution 与 `resolve_agent_mcp_tool_mode` 五层均 fail-closed；per-agent policy 不能把 pending/invalid tool 从 deny 提升为 auto/approval。批准只恢复每条 `AgentTool.mcp_trust_requested_enabled` 保存的原始意图，不会把治理上显式 disabled 的 assignment 误开；拒绝保持隔离。review 与 fingerprint/risk/tier 写入 tenant-scoped `AuditLog`，实际调用仍只能经既有 ToolRuntime capability/approval/budget/span/audit owner。
+- 恢复、迁移与 UI 闭环：`mcp_metadata_trust_0712` 对 legacy MCP 行原地保存 raw evidence、生成真正 SHA-256、中性化模型 surface、禁用 Tool/AgentTool 并保存 assignment 原启用意图；非 MCP 行不动。secure downgrade 不把 hostile raw prose/schema 回灌模型、不重启工具、不删除审核证据；downgrade→re-upgrade 对已审核 fingerprint 幂等。企业 MCP server 卡片新增 metadata review 面，明确显示 runtime blocked/approved、risk flags、canonical edit、raw evidence 与 approve/reject；React 文本节点机械转义恶意 `<script>/<img>`，Agent ToolsManager 只显示 trust badge，pending 时 mode selector 禁用。
+- 验收证据：首轮 metadata core/migration/architecture Red → **`12 failed, 1 passed`**；非法 metadata 旧批准撤销 Red → **`1 failed, 8 passed`**；模型 surface + generic/dynamic runtime Red → **`4 failed, 1 passed`**；assignment intent/migration Red → **`4 failed, 2 passed`**；service/API Red → **`6 failed`** 与 **`3 failed`**；frontend admin/API/Agent badge Red 均先失败。Green：metadata/service 定向 **`40 passed`**；MCP import/authz/gating/call/prompt/server 全链 **`201 passed`**；真实 PostgreSQL migration **`3 passed`**，覆盖 legacy 注入隔离、非 MCP 不变、assignment intent、secure downgrade/replay 与已审核状态保留。Backend 全量 → **`6632 passed, 1 skipped`**；Frontend 全量 → **`113 files / 650 tests`**；生产 build、AgentDetail/shared-vendor bundle budgets 通过；`ruff check app tests`、`ruff format --check`（1535 files）、单 Alembic head `mcp_metadata_trust_0712` 与 `git diff --check` 全绿。独立提交主题：`fix(R-021): quarantine untrusted MCP metadata`。
 
 ### [R-022] 12 张带 tenant_id 的表无 RLS 策略（纵深断点）
 
@@ -1030,7 +1034,7 @@ Codebase graph 校正时状态为 ready（43,281 nodes / 166,753 edges）；`det
 
 ## 16. 28 项原子缺口修复执行账本
 
-本节记录原始审计全部 28 项的实际落地状态：17 个断点、10 个局部闭环、1 个已知缺失。原始严重级别与原子状态保留为审计快照；只有同时具备实现、回归测试、报告证据和独立提交，才把修复状态改为闭环。Company Knowledge Base 本体按 owner 边界不在本轮开发，但 R-008 的诚实隔离、文案与防伪装验收仍必须关闭。当前进度：**20/28**。
+本节记录原始审计全部 28 项的实际落地状态：17 个断点、10 个局部闭环、1 个已知缺失。原始严重级别与原子状态保留为审计快照；只有同时具备实现、回归测试、报告证据和独立提交，才把修复状态改为闭环。Company Knowledge Base 本体按 owner 边界不在本轮开发，但 R-008 的诚实隔离、文案与防伪装验收仍必须关闭。当前进度：**21/28**。
 
 | ID | 修复状态 | 独立提交主题 | 机械证据摘要 |
 |---|---|---|---|
@@ -1054,7 +1058,7 @@ Codebase graph 校正时状态为 ready（43,281 nodes / 166,753 edges）；`det
 | R-018 | 闭环 | `fix(R-018): encrypt channel credentials at rest` | Red 6+1+1+1+2+2 failed；7 channel + tenant 三字段/JSON versioned encryption；PG backfill/rotation/secure downgrade 2 passed；组合 126；backend 6582 passed；ruff/format/log redaction/dry-run 绿 |
 | R-019 | 闭环 | `fix(R-019): normalize Anthropic vision payloads` | Red 8 failed/1 passed；主消息/tool-result 单一 pure converter；PNG/JPEG/multi/replay/invalid/vision=false/payload snapshot 17 passed；合并 80；backend 6591 passed；ruff/format/diff 绿 |
 | R-020 | 闭环 | `fix(R-020): govern Local Bridge actions per request` | Red backend 8+2 failed + frontend 1+1 failed；真 ApprovalRequest→单消息 release/reject + approval-time live policy；typed lease reconciler；bearer TTL；真实 PG backfill/downgrade；backend 6605；frontend 646 + build；ruff/format/head/diff 绿 |
-| R-021 | 待修复 | — | — |
+| R-021 | 闭环 | `fix(R-021): quarantine untrusted MCP metadata` | 多轮 Red：12+1+4+4+6+3 failed + frontend Red；raw/canonical 双面隔离、SHA-256 fingerprint 重审、五层 runtime deny、assignment intent 恢复、admin audit/UI；真实 PG 3；MCP 全链 201；backend 6632；frontend 650 + build；ruff/format/head/diff 绿 |
 | R-022 | 待修复 | — | — |
 | R-023 | 待修复 | — | — |
 | R-024 | 待修复 | — | — |

@@ -89,3 +89,50 @@ async def test_ensure_agent_tool_assignment_merges_existing_config():
         "smithery_connection_id": "conn-1",
     }
     assert db.added == []
+
+
+@pytest.mark.asyncio
+async def test_mcp_trust_quarantine_preserves_existing_assignment_intent() -> None:
+    from app.services.agent_tool_assignment_service import ensure_agent_tool_assignment
+
+    existing = SimpleNamespace(
+        agent_id=uuid4(),
+        tool_id=uuid4(),
+        tenant_id=uuid4(),
+        enabled=True,
+        mcp_trust_requested_enabled=None,
+        source="user_installed",
+        installed_by_agent_id=None,
+        config={},
+    )
+    db = _FakeDB(existing=existing)
+
+    assignment, created = await ensure_agent_tool_assignment(
+        db,
+        agent_id=existing.agent_id,
+        tool_id=existing.tool_id,
+        enabled=False,
+        quarantine_for_mcp_trust=True,
+    )
+
+    assert created is False
+    assert assignment.enabled is False
+    assert assignment.mcp_trust_requested_enabled is True
+
+
+@pytest.mark.asyncio
+async def test_new_mcp_trust_quarantine_records_requested_enabled_intent() -> None:
+    from app.services.agent_tool_assignment_service import ensure_agent_tool_assignment
+
+    db = _FakeDB()
+    assignment, created = await ensure_agent_tool_assignment(
+        db,
+        agent_id=uuid4(),
+        tool_id=uuid4(),
+        enabled=False,
+        quarantine_for_mcp_trust=True,
+    )
+
+    assert created is True
+    assert assignment.enabled is False
+    assert assignment.mcp_trust_requested_enabled is True

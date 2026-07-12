@@ -53,6 +53,7 @@ class _FakeSession:
 
 
 def _mcp_tool(*, name, tool_id, is_default=False):
+    fingerprint = "a" * 64
     return SimpleNamespace(
         id=tool_id,
         name=name,
@@ -68,6 +69,9 @@ def _mcp_tool(*, name, tool_id, is_default=False):
         mcp_server_name="GitHub",
         mcp_server_url="https://gh",
         mcp_tool_name=name,
+        mcp_trust_status="approved",
+        mcp_metadata_fingerprint=fingerprint,
+        mcp_reviewed_fingerprint=fingerprint,
     )
 
 

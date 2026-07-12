@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { extensionsApi, type McpServerRecord } from '../../api/domains/extensions';
+import {
+  extensionsApi,
+  type EnterpriseMcpMetadataTool,
+  type McpServerRecord,
+} from '../../api/domains/extensions';
+import { McpMetadataReviewPanel } from './WorkspaceMcpMetadataReview';
 import type { WorkspaceToolsViewProps } from './workspaceToolsModel';
 
 const MCP_STATUS_COLORS: Record<string, string> = {
@@ -17,7 +22,13 @@ export default function WorkspaceMcpServersView({ selectedTenantId }: WorkspaceT
   const { t } = useTranslation();
   const [servers, setServers] = useState<McpServerRecord[]>([]);
   const [loaded, setLoaded] = useState(false);
+  const [openServerId, setOpenServerId] = useState<string | null>(null);
+  const [metadataTools, setMetadataTools] = useState<EnterpriseMcpMetadataTool[]>([]);
+  const [metadataLoading, setMetadataLoading] = useState(false);
+  const [metadataError, setMetadataError] = useState<string | null>(null);
+  const [busyTool, setBusyTool] = useState<string | null>(null);
   const requestVersion = useRef(0);
+  const metadataVersion = useRef(0);
 
   const load = useCallback(async () => {
     const version = ++requestVersion.current;
@@ -34,8 +45,56 @@ export default function WorkspaceMcpServersView({ selectedTenantId }: WorkspaceT
 
   useEffect(() => {
     void load();
-    return () => { requestVersion.current += 1; };
+    return () => {
+      requestVersion.current += 1;
+      metadataVersion.current += 1;
+    };
   }, [load]);
+
+  const toggleMetadata = useCallback(async (serverId: string) => {
+    if (openServerId === serverId) {
+      metadataVersion.current += 1;
+      setOpenServerId(null);
+      return;
+    }
+    const version = ++metadataVersion.current;
+    setOpenServerId(serverId);
+    setMetadataTools([]);
+    setMetadataError(null);
+    setMetadataLoading(true);
+    try {
+      const tools = await extensionsApi.listEnterpriseMcpServerTools(serverId);
+      if (version === metadataVersion.current) setMetadataTools(tools);
+    } catch (error) {
+      if (version === metadataVersion.current) {
+        setMetadataError(error instanceof Error ? error.message : 'Failed to load MCP metadata.');
+      }
+    } finally {
+      if (version === metadataVersion.current) setMetadataLoading(false);
+    }
+  }, [openServerId]);
+
+  const reviewMetadata = useCallback(async (
+    tool: EnterpriseMcpMetadataTool,
+    decision: 'approve' | 'reject',
+    canonicalDescription: string,
+  ) => {
+    if (!openServerId) return;
+    setBusyTool(tool.tool_id);
+    setMetadataError(null);
+    try {
+      await extensionsApi.reviewEnterpriseMcpServerToolMetadata(openServerId, tool.tool_name, {
+        decision,
+        expected_fingerprint: tool.metadata_fingerprint,
+        ...(decision === 'approve' ? { canonical_description: canonicalDescription.trim() } : {}),
+      });
+      setMetadataTools(await extensionsApi.listEnterpriseMcpServerTools(openServerId));
+    } catch (error) {
+      setMetadataError(error instanceof Error ? error.message : 'Failed to review MCP metadata.');
+    } finally {
+      setBusyTool(null);
+    }
+  }, [openServerId]);
 
   return (
     <div>
@@ -79,6 +138,28 @@ export default function WorkspaceMcpServersView({ selectedTenantId }: WorkspaceT
                     <span key={agent.id} className={`ws-tools-agent-chip ${agent.enabled ? 'enabled' : 'disabled'}`}>{agent.name}</span>
                   ))}
                 </div>
+              ) : null}
+              <div className="ws-mcp-server-actions">
+                <button type="button" className="btn btn-secondary btn-sm" onClick={() => void toggleMetadata(server.id)}>
+                  {openServerId === server.id
+                    ? t('common.close', 'Close')
+                    : t('enterprise.tools.reviewMcpMetadata', 'Review metadata')}
+                </button>
+              </div>
+              {openServerId === server.id ? (
+                metadataLoading ? (
+                  <div className="ws-tools-empty">{t('common.loading', 'Loading...')}</div>
+                ) : (
+                  <>
+                    {metadataError ? <div className="ws-mcp-review-error" role="alert">{metadataError}</div> : null}
+                    <McpMetadataReviewPanel
+                      serverName={server.name}
+                      tools={metadataTools}
+                      busyTool={busyTool}
+                      onReview={(tool, decision, canonical) => void reviewMetadata(tool, decision, canonical)}
+                    />
+                  </>
+                )
               ) : null}
             </div>
           ))}

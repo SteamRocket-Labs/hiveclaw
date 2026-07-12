@@ -22,6 +22,7 @@ async def ensure_agent_tool_assignment(
     tenant_id: uuid.UUID | None = None,
     config: dict | None = None,
     merge_config: bool = True,
+    quarantine_for_mcp_trust: bool = False,
 ) -> tuple[AgentTool, bool]:
     """Create or update a single AgentTool row without duplicating assignments."""
     if tenant_id is None:
@@ -44,6 +45,7 @@ async def ensure_agent_tool_assignment(
             tenant_id=tenant_id,
             tool_id=tool_id,
             enabled=enabled,
+            mcp_trust_requested_enabled=True if quarantine_for_mcp_trust else None,
             source=source,
             installed_by_agent_id=installed_by_agent_id,
             config=config or {},
@@ -53,6 +55,8 @@ async def ensure_agent_tool_assignment(
 
     if tenant_id is not None and getattr(assignment, "tenant_id", None) is None:
         assignment.tenant_id = tenant_id
+    if quarantine_for_mcp_trust and getattr(assignment, "mcp_trust_requested_enabled", None) is None:
+        assignment.mcp_trust_requested_enabled = bool(assignment.enabled)
     assignment.enabled = enabled
     if source and (assignment.source == "system" or source != "system"):
         assignment.source = source

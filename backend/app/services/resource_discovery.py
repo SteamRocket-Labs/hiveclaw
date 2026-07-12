@@ -10,6 +10,13 @@ from sqlalchemy.exc import IntegrityError
 from app.database import async_session, enter_rls_bypass, tenant_scoped_session
 from app.models.tool import Tool, AgentTool
 from app.services.agent_tool_assignment_service import ensure_agent_tool_assignment
+from app.services.mcp_metadata_trust import (
+    MCPMetadataValidationError,
+    apply_mcp_metadata_candidate,
+    is_mcp_metadata_runtime_approved,
+    prepare_mcp_metadata_candidate,
+    quarantine_invalid_mcp_metadata,
+)
 from app.services.mcp_naming import build_mcp_tool_name
 from app.services.tenant_resolver import resolve_tenant_for_agent
 
@@ -17,6 +24,46 @@ from app.services.tenant_resolver import resolve_tenant_for_agent
 _PROVIDER_CONFIG_CACHE_TTL_SECONDS = 15.0
 _provider_config_cache: dict[tuple[str, str | None], tuple[float, str]] = {}
 _provider_config_locks: dict[tuple[str, str | None], asyncio.Lock] = {}
+
+
+def _apply_discovered_mcp_metadata(
+    tool: Tool,
+    *,
+    server_name: str,
+    server_url: str,
+    remote_tool_name: str,
+    raw_description,
+    raw_schema,
+) -> bool:
+    """Apply one remote metadata snapshot and return runtime eligibility."""
+
+    try:
+        candidate = prepare_mcp_metadata_candidate(
+            server_name=server_name,
+            server_url=server_url,
+            tool_name=remote_tool_name,
+            raw_description=raw_description,
+            raw_schema=raw_schema,
+        )
+    except MCPMetadataValidationError as exc:
+        quarantine_invalid_mcp_metadata(
+            tool,
+            server_name=server_name,
+            server_url=server_url,
+            tool_name=remote_tool_name,
+            raw_description=raw_description,
+            raw_schema=raw_schema,
+            validation_error=str(exc),
+        )
+        logger.warning(
+            "[ResourceDiscovery] Quarantined invalid MCP metadata for {} / {}: {}",
+            server_name,
+            remote_tool_name,
+            exc,
+        )
+        return False
+    apply_mcp_metadata_candidate(tool, candidate)
+    return is_mcp_metadata_runtime_approved(tool)
 
 
 def clear_provider_config_cache() -> None:
@@ -406,7 +453,9 @@ async def import_mcp_from_smithery(
                     )
                 )
                 agent_assignments = agent_assignments_r.scalars().all()
-                if len(agent_assignments) >= len(existing_server_tools):
+                if len(agent_assignments) >= len(existing_server_tools) and all(
+                    is_mcp_metadata_runtime_approved(tool) for tool in existing_server_tools
+                ):
                     tool_names = [t.display_name for t in existing_server_tools[:5]]
                     more = f" ... and {len(existing_server_tools) - 5} more" if len(existing_server_tools) > 5 else ""
                     return (
@@ -516,15 +565,16 @@ async def import_mcp_from_smithery(
         imported_tools = []
 
         # Helper: ensure AgentTool link exists and save config
-        async def _ensure_agent_tool(tool_id: uuid.UUID):
+        async def _ensure_agent_tool(tool_id: uuid.UUID, *, enabled: bool):
             await ensure_agent_tool_assignment(
                 db,
                 agent_id=agent_id,
                 tool_id=tool_id,
-                enabled=True,
+                enabled=enabled,
                 source="user_installed",
                 installed_by_agent_id=agent_id,
                 config=agent_tool_config,
+                quarantine_for_mcp_trust=not enabled,
             )
 
         # On re-import/reauthorize: update ALL existing tools for this server
@@ -534,7 +584,7 @@ async def import_mcp_from_smithery(
             )
             for et in existing_server_tools_r.scalars().all():
                 et.mcp_server_url = base_mcp_url
-                await _ensure_agent_tool(et.id)
+                await _ensure_agent_tool(et.id, enabled=is_mcp_metadata_runtime_approved(et))
 
         # Tenant-scoped dedup filter for all tool lookups
         _tenant_filter = Tool.tenant_id == agent_tenant_id if agent_tenant_id else Tool.tenant_id.is_(None)
@@ -584,8 +634,18 @@ async def import_mcp_from_smithery(
                     existing_tool = dup_r.scalars().first()
                 if existing_tool:
                     existing_tool.mcp_server_url = base_mcp_url
-                    await _ensure_agent_tool(existing_tool.id)
-                    if reauthorize:
+                    runtime_enabled = _apply_discovered_mcp_metadata(
+                        existing_tool,
+                        server_name=display_name,
+                        server_url=base_mcp_url,
+                        remote_tool_name=mcp_tool["name"],
+                        raw_description=mcp_tool.get("description", description),
+                        raw_schema=mcp_tool.get("inputSchema", {"type": "object", "properties": {}}),
+                    )
+                    await _ensure_agent_tool(existing_tool.id, enabled=runtime_enabled)
+                    if not runtime_enabled:
+                        imported_tools.append(f"⏸️ {tool_display} (pending metadata review)")
+                    elif reauthorize:
                         imported_tools.append(f"🔄 {tool_display} (reauthorized)")
                     elif config:
                         imported_tools.append(f"🔄 {tool_display} (config updated)")
@@ -596,17 +656,25 @@ async def import_mcp_from_smithery(
                 tool = Tool(
                     name=tool_name,
                     display_name=tool_display,
-                    description=mcp_tool.get("description", description)[:500],
+                    description="External MCP operation pending metadata review.",
                     type="mcp",
                     category="mcp",
                     icon="🔌",
-                    parameters_schema=mcp_tool.get("inputSchema", {"type": "object", "properties": {}}),
+                    parameters_schema={"type": "object", "properties": {}},
                     mcp_server_url=base_mcp_url,
                     mcp_server_name=display_name,
                     mcp_tool_name=mcp_tool["name"],
-                    enabled=True,
+                    enabled=False,
                     is_default=False,
                     tenant_id=agent_tenant_id,
+                )
+                runtime_enabled = _apply_discovered_mcp_metadata(
+                    tool,
+                    server_name=display_name,
+                    server_url=base_mcp_url,
+                    remote_tool_name=mcp_tool["name"],
+                    raw_description=mcp_tool.get("description", description),
+                    raw_schema=mcp_tool.get("inputSchema", {"type": "object", "properties": {}}),
                 )
                 db.add(tool)
                 try:
@@ -616,11 +684,25 @@ async def import_mcp_from_smithery(
                     re_r = await db.execute(select(Tool).where(Tool.name == tool_name, _tenant_filter))
                     existing_tool = re_r.scalar_one_or_none()
                     if existing_tool:
-                        await _ensure_agent_tool(existing_tool.id)
-                        imported_tools.append(f"⏭️ {tool_display} (already imported)")
+                        runtime_enabled = _apply_discovered_mcp_metadata(
+                            existing_tool,
+                            server_name=display_name,
+                            server_url=base_mcp_url,
+                            remote_tool_name=mcp_tool["name"],
+                            raw_description=mcp_tool.get("description", description),
+                            raw_schema=mcp_tool.get("inputSchema", {"type": "object", "properties": {}}),
+                        )
+                        await _ensure_agent_tool(existing_tool.id, enabled=runtime_enabled)
+                        imported_tools.append(
+                            f"⏭️ {tool_display} (already imported)"
+                            if runtime_enabled
+                            else f"⏸️ {tool_display} (pending metadata review)"
+                        )
                     continue
-                await _ensure_agent_tool(tool.id)
-                imported_tools.append(f"✅ {tool_display}")
+                await _ensure_agent_tool(tool.id, enabled=runtime_enabled)
+                imported_tools.append(
+                    f"✅ {tool_display}" if runtime_enabled else f"⏸️ {tool_display} (pending metadata review)"
+                )
         else:
             # Fallback: create a single generic tool entry (server-level passthrough).
             tool_name = build_mcp_tool_name(display_name, None)
@@ -630,26 +712,48 @@ async def import_mcp_from_smithery(
             existing_tool = existing_r.scalar_one_or_none()
             if existing_tool:
                 existing_tool.mcp_server_url = base_mcp_url
-                await _ensure_agent_tool(existing_tool.id)
+                runtime_enabled = _apply_discovered_mcp_metadata(
+                    existing_tool,
+                    server_name=display_name,
+                    server_url=base_mcp_url,
+                    remote_tool_name=tool_name,
+                    raw_description=description,
+                    raw_schema={"type": "object", "properties": {}},
+                )
+                await _ensure_agent_tool(existing_tool.id, enabled=runtime_enabled)
                 if config:
                     await db.commit()
-                    return f"🔄 {tool_display} config updated. The tool is now ready to use."
+                    return f"🔄 {tool_display} config updated." + (
+                        " The tool is ready to use." if runtime_enabled else " Metadata review is required before use."
+                    )
                 else:
-                    return f"⏭️ {tool_display} is already imported."
+                    return (
+                        f"⏭️ {tool_display} is already imported."
+                        if runtime_enabled
+                        else f"⏸️ {tool_display} is imported and pending metadata review."
+                    )
 
             tool = Tool(
                 name=tool_name,
                 display_name=tool_display,
-                description=description[:500] or f"MCP Server: {server_id}",
+                description="External MCP operation pending metadata review.",
                 type="mcp",
                 category="mcp",
                 icon="🔌",
                 parameters_schema={"type": "object", "properties": {}},
                 mcp_server_url=base_mcp_url,
                 mcp_server_name=display_name,
-                enabled=True,
+                enabled=False,
                 is_default=False,
                 tenant_id=agent_tenant_id,
+            )
+            runtime_enabled = _apply_discovered_mcp_metadata(
+                tool,
+                server_name=display_name,
+                server_url=base_mcp_url,
+                remote_tool_name=tool_name,
+                raw_description=description,
+                raw_schema={"type": "object", "properties": {}},
             )
             db.add(tool)
             try:
@@ -659,11 +763,23 @@ async def import_mcp_from_smithery(
                 re_r = await db.execute(select(Tool).where(Tool.name == tool_name, _tenant_filter))
                 existing_tool = re_r.scalar_one_or_none()
                 if existing_tool:
-                    await _ensure_agent_tool(existing_tool.id)
-                    imported_tools.append(f"⏭️ {tool_display} (already imported)")
+                    runtime_enabled = _apply_discovered_mcp_metadata(
+                        existing_tool,
+                        server_name=display_name,
+                        server_url=base_mcp_url,
+                        remote_tool_name=tool_name,
+                        raw_description=description,
+                        raw_schema={"type": "object", "properties": {}},
+                    )
+                    await _ensure_agent_tool(existing_tool.id, enabled=runtime_enabled)
+                    imported_tools.append(
+                        f"⏭️ {tool_display} (already imported)"
+                        if runtime_enabled
+                        else f"⏸️ {tool_display} (pending metadata review)"
+                    )
                 return "\n".join(imported_tools) if imported_tools else f"⏭️ {tool_display} (already imported)"
-            await _ensure_agent_tool(tool.id)
-            imported_tools.append(f"✅ {tool_display} (tool list not available from registry — may need configuration)")
+            await _ensure_agent_tool(tool.id, enabled=runtime_enabled)
+            imported_tools.append(f"⏸️ {tool_display} (pending metadata review; remote tool list unavailable)")
 
         await db.commit()
 
@@ -673,7 +789,9 @@ async def import_mcp_from_smithery(
     if auth_message:
         result += auth_message
     else:
-        result += "\n\n💡 The imported tools are now available for use."
+        result += (
+            "\n\n🔒 Newly discovered or changed MCP metadata must be approved by a company administrator before use."
+        )
     return result
 
 
@@ -724,15 +842,16 @@ async def import_mcp_direct(
     async with tenant_scoped_session(agent_tenant_id) as db:
         imported_tools = []
 
-        async def _ensure_agent_tool(tool_id: uuid.UUID):
+        async def _ensure_agent_tool(tool_id: uuid.UUID, *, enabled: bool):
             await ensure_agent_tool_assignment(
                 db,
                 agent_id=agent_id,
                 tool_id=tool_id,
-                enabled=True,
+                enabled=enabled,
                 source="user_installed",
                 installed_by_agent_id=agent_id,
                 config=agent_tool_config,
+                quarantine_for_mcp_trust=not enabled,
             )
 
         # Tenant-scoped dedup filter
@@ -764,24 +883,44 @@ async def import_mcp_direct(
                     existing_tool = dup_r.scalars().first()
                 if existing_tool:
                     existing_tool.mcp_server_url = mcp_url
-                    await _ensure_agent_tool(existing_tool.id)
-                    imported_tools.append(f"⏭️ {tool_display} (already imported)")
+                    runtime_enabled = _apply_discovered_mcp_metadata(
+                        existing_tool,
+                        server_name=display_name,
+                        server_url=mcp_url,
+                        remote_tool_name=mcp_tool["name"],
+                        raw_description=mcp_tool.get("description", ""),
+                        raw_schema=mcp_tool.get("inputSchema", {"type": "object", "properties": {}}),
+                    )
+                    await _ensure_agent_tool(existing_tool.id, enabled=runtime_enabled)
+                    imported_tools.append(
+                        f"⏭️ {tool_display} (already imported)"
+                        if runtime_enabled
+                        else f"⏸️ {tool_display} (pending metadata review)"
+                    )
                     continue
 
                 tool = Tool(
                     name=tool_name,
                     display_name=tool_display,
-                    description=mcp_tool.get("description", "")[:500],
+                    description="External MCP operation pending metadata review.",
                     type="mcp",
                     category="mcp",
                     icon="🔌",
-                    parameters_schema=mcp_tool.get("inputSchema", {"type": "object", "properties": {}}),
+                    parameters_schema={"type": "object", "properties": {}},
                     mcp_server_url=mcp_url,
                     mcp_server_name=display_name,
                     mcp_tool_name=mcp_tool["name"],
-                    enabled=True,
+                    enabled=False,
                     is_default=False,
                     tenant_id=agent_tenant_id,
+                )
+                runtime_enabled = _apply_discovered_mcp_metadata(
+                    tool,
+                    server_name=display_name,
+                    server_url=mcp_url,
+                    remote_tool_name=mcp_tool["name"],
+                    raw_description=mcp_tool.get("description", ""),
+                    raw_schema=mcp_tool.get("inputSchema", {"type": "object", "properties": {}}),
                 )
                 db.add(tool)
                 try:
@@ -791,33 +930,67 @@ async def import_mcp_direct(
                     re_r = await db.execute(select(Tool).where(Tool.name == tool_name, _tenant_filter))
                     existing_tool = re_r.scalar_one_or_none()
                     if existing_tool:
-                        await _ensure_agent_tool(existing_tool.id)
-                        imported_tools.append(f"⏭️ {tool_display} (already imported)")
+                        runtime_enabled = _apply_discovered_mcp_metadata(
+                            existing_tool,
+                            server_name=display_name,
+                            server_url=mcp_url,
+                            remote_tool_name=mcp_tool["name"],
+                            raw_description=mcp_tool.get("description", ""),
+                            raw_schema=mcp_tool.get("inputSchema", {"type": "object", "properties": {}}),
+                        )
+                        await _ensure_agent_tool(existing_tool.id, enabled=runtime_enabled)
+                        imported_tools.append(
+                            f"⏭️ {tool_display} (already imported)"
+                            if runtime_enabled
+                            else f"⏸️ {tool_display} (pending metadata review)"
+                        )
                     continue
-                await _ensure_agent_tool(tool.id)
-                imported_tools.append(f"✅ {tool_display}")
+                await _ensure_agent_tool(tool.id, enabled=runtime_enabled)
+                imported_tools.append(
+                    f"✅ {tool_display}" if runtime_enabled else f"⏸️ {tool_display} (pending metadata review)"
+                )
         else:
             tool_name = build_mcp_tool_name(display_name, None)
             existing_r = await db.execute(select(Tool).where(Tool.name == tool_name, _tenant_filter))
             existing_tool = existing_r.scalar_one_or_none()
             if existing_tool:
                 existing_tool.mcp_server_url = mcp_url
-                await _ensure_agent_tool(existing_tool.id)
-                return f"⏭️ {display_name} is already imported."
+                runtime_enabled = _apply_discovered_mcp_metadata(
+                    existing_tool,
+                    server_name=display_name,
+                    server_url=mcp_url,
+                    remote_tool_name=tool_name,
+                    raw_description="",
+                    raw_schema={"type": "object", "properties": {}},
+                )
+                await _ensure_agent_tool(existing_tool.id, enabled=runtime_enabled)
+                return (
+                    f"⏭️ {display_name} is already imported."
+                    if runtime_enabled
+                    else f"⏸️ {display_name} is imported and pending metadata review."
+                )
 
             tool = Tool(
                 name=tool_name,
                 display_name=display_name,
-                description=f"MCP Server: {mcp_url}",
+                description="External MCP operation pending metadata review.",
                 type="mcp",
                 category="mcp",
                 icon="🔌",
                 parameters_schema={"type": "object", "properties": {}},
                 mcp_server_url=mcp_url,
                 mcp_server_name=display_name,
-                enabled=True,
+                enabled=False,
                 is_default=False,
                 tenant_id=agent_tenant_id,
+            )
+            runtime_enabled = _apply_discovered_mcp_metadata(
+                tool,
+                server_name=display_name,
+                server_url=mcp_url,
+                remote_tool_name=tool_name,
+                raw_description="",
+                raw_schema={"type": "object", "properties": {}},
             )
             db.add(tool)
             try:
@@ -827,16 +1000,28 @@ async def import_mcp_direct(
                 re_r = await db.execute(select(Tool).where(Tool.name == tool_name, _tenant_filter))
                 existing_tool = re_r.scalar_one_or_none()
                 if existing_tool:
-                    await _ensure_agent_tool(existing_tool.id)
-                    imported_tools.append(f"⏭️ {display_name} (already imported)")
+                    runtime_enabled = _apply_discovered_mcp_metadata(
+                        existing_tool,
+                        server_name=display_name,
+                        server_url=mcp_url,
+                        remote_tool_name=tool_name,
+                        raw_description="",
+                        raw_schema={"type": "object", "properties": {}},
+                    )
+                    await _ensure_agent_tool(existing_tool.id, enabled=runtime_enabled)
+                    imported_tools.append(
+                        f"⏭️ {display_name} (already imported)"
+                        if runtime_enabled
+                        else f"⏸️ {display_name} (pending metadata review)"
+                    )
                 return "\n".join(imported_tools) if imported_tools else f"⏭️ {display_name} (already imported)"
-            await _ensure_agent_tool(tool.id)
-            imported_tools.append(f"✅ {display_name} (tools couldn't be listed — server may need configuration)")
+            await _ensure_agent_tool(tool.id, enabled=runtime_enabled)
+            imported_tools.append(f"⏸️ {display_name} (pending metadata review; remote tool list unavailable)")
 
         await db.commit()
 
     result = f"🔌 Imported MCP server: **{display_name}**\n\n"
     result += "\n".join(imported_tools)
     result += f"\n\n📡 MCP Server URL: `{mcp_url}`"
-    result += "\n\n💡 The imported tools are now available for use."
+    result += "\n\n🔒 Newly discovered or changed MCP metadata must be approved by a company administrator before use."
     return result

@@ -355,6 +355,109 @@
   color: var(--text-tertiary);
 }
 
+/* ── MCP metadata trust review ─────────────────────── */
+
+.ws-mcp-server-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: var(--space-3);
+}
+
+.ws-mcp-review {
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.ws-mcp-review-heading,
+.ws-mcp-review-meta,
+.ws-mcp-review-actions,
+.ws-mcp-risk-flags {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.ws-mcp-review-heading {
+  justify-content: space-between;
+  margin-bottom: var(--space-3);
+}
+
+.ws-mcp-review-heading span,
+.ws-mcp-review-meta {
+  color: var(--text-tertiary);
+  font-size: var(--text-meta);
+}
+
+.ws-mcp-review-list {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.ws-mcp-review-card {
+  padding: var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+}
+
+.ws-mcp-trust-badge,
+.ws-mcp-risk-flags span {
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-full);
+  font-size: var(--text-meta);
+}
+
+.ws-mcp-trust-badge.approved {
+  color: var(--success);
+  background: var(--success-subtle);
+}
+
+.ws-mcp-trust-badge.blocked,
+.ws-mcp-risk-flags span {
+  color: var(--warning);
+  background: var(--warning-subtle);
+}
+
+.ws-mcp-review-meta,
+.ws-mcp-risk-flags,
+.ws-mcp-canonical-field,
+.ws-mcp-raw-evidence,
+.ws-mcp-review-actions {
+  margin-top: var(--space-2);
+}
+
+.ws-mcp-canonical-field {
+  display: grid;
+  gap: 6px;
+  color: var(--text-secondary);
+  font-size: var(--text-meta);
+}
+
+.ws-mcp-canonical-field textarea {
+  width: 100%;
+  resize: vertical;
+}
+
+.ws-mcp-raw-evidence pre {
+  max-height: 180px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: var(--space-2);
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+}
+
+.ws-mcp-review-error {
+  margin: var(--space-2) 0;
+  padding: var(--space-2);
+  color: var(--error);
+  background: var(--error-subtle);
+  border-radius: var(--radius-sm);
+}
+
 /* ── Cards（.card 伴随类，覆写 padding/形态） ──────── */
 
 .ws-tools-installed-card {

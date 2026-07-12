@@ -16,6 +16,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent import Agent
+from app.models.audit import AuditLog
 from app.models.capability_install import AgentCapabilityInstall
 from app.models.external_capability import ExternalCapabilitySnapshot, ExternalExtensionActivation
 from app.models.mcp_server import (
@@ -35,6 +36,12 @@ from app.services.mcp_backfill import (
 from app.services.mcp_backfill_service import backfill_tenant_mcp_servers
 from app.services import mcp_oauth
 from app.services.mcp_authz import assert_mcp_cloud_transport_allowed
+from app.services.mcp_metadata_trust import (
+    MCPMetadataValidationError,
+    is_mcp_metadata_runtime_approved,
+    prepare_mcp_metadata_candidate,
+    review_mcp_metadata,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -417,11 +424,12 @@ async def list_agent_mcp_server_tools(
         raise ValueError("MCP server assignment not found")
 
     tools_result = await db.execute(
-        select(MCPServerTool)
+        select(MCPServerTool, Tool)
+        .outerjoin(Tool, Tool.id == MCPServerTool.tool_id)
         .where(MCPServerTool.tenant_id == tenant_id, MCPServerTool.mcp_server_id == server_id)
         .order_by(MCPServerTool.display_name.asc(), MCPServerTool.mcp_tool_name.asc())
     )
-    server_tools = list(tools_result.scalars().all())
+    server_tools = list(tools_result.all())
 
     overrides_result = await db.execute(
         select(AgentMCPToolOverride).where(
@@ -433,18 +441,169 @@ async def list_agent_mcp_server_tools(
     overrides = {override.tool_name: override.mode for override in overrides_result.scalars().all()}
 
     default_mode = _effective_tool_mode(assignment=assignment)
+    result: list[dict] = []
+    for server_tool, runtime_tool in server_tools:
+        mode = overrides.get(server_tool.mcp_tool_name, default_mode)
+        runtime_approved = bool(runtime_tool is not None and is_mcp_metadata_runtime_approved(runtime_tool))
+        result.append(
+            {
+                "tool_id": str(server_tool.tool_id) if server_tool.tool_id else None,
+                "tool_name": server_tool.mcp_tool_name,
+                "display_name": server_tool.display_name or server_tool.mcp_tool_name,
+                "mode": mode,
+                "effective_mode": (
+                    _effective_tool_mode(assignment=assignment, override_mode=overrides.get(server_tool.mcp_tool_name))
+                    if runtime_approved
+                    else "deny"
+                ),
+                "trust_status": getattr(runtime_tool, "mcp_trust_status", None) or "missing",
+                "trust_tier": getattr(runtime_tool, "mcp_trust_tier", None) or "untrusted",
+                "runtime_approved": runtime_approved,
+            }
+        )
+    return result
+
+
+async def list_tenant_mcp_server_tools(
+    db: AsyncSession,
+    tenant_id: uuid.UUID,
+    server_id: uuid.UUID,
+) -> list[dict]:
+    """Return the administrator-only MCP metadata review surface."""
+
+    await _require_tenant_server(db, tenant_id, server_id)
+    rows = (
+        await db.execute(
+            select(MCPServerTool, Tool)
+            .join(Tool, Tool.id == MCPServerTool.tool_id)
+            .where(
+                MCPServerTool.tenant_id == tenant_id,
+                MCPServerTool.mcp_server_id == server_id,
+                Tool.tenant_id == tenant_id,
+                Tool.type == "mcp",
+            )
+            .order_by(MCPServerTool.display_name.asc(), MCPServerTool.mcp_tool_name.asc())
+        )
+    ).all()
     return [
         {
-            "tool_id": str(tool.tool_id) if tool.tool_id else None,
-            "tool_name": tool.mcp_tool_name,
-            "display_name": tool.display_name or tool.mcp_tool_name,
-            "mode": overrides.get(tool.mcp_tool_name, default_mode),
-            "effective_mode": _effective_tool_mode(
-                assignment=assignment, override_mode=overrides.get(tool.mcp_tool_name)
-            ),
+            "tool_id": str(runtime_tool.id),
+            "tool_name": server_tool.mcp_tool_name,
+            "display_name": server_tool.display_name or server_tool.mcp_tool_name,
+            "canonical_description": runtime_tool.description,
+            "canonical_schema": runtime_tool.parameters_schema or {},
+            "raw_description": runtime_tool.mcp_raw_description or "",
+            "raw_schema": runtime_tool.mcp_raw_schema or {},
+            "metadata_fingerprint": runtime_tool.mcp_metadata_fingerprint,
+            "risk_flags": list(runtime_tool.mcp_metadata_risk_flags or []),
+            "trust_status": runtime_tool.mcp_trust_status or "missing",
+            "trust_tier": runtime_tool.mcp_trust_tier or "untrusted",
+            "reviewed_by": str(runtime_tool.mcp_reviewed_by) if runtime_tool.mcp_reviewed_by else None,
+            "reviewed_at": _isoformat_or_none(runtime_tool.mcp_reviewed_at),
+            "runtime_approved": is_mcp_metadata_runtime_approved(runtime_tool),
         }
-        for tool in server_tools
+        for server_tool, runtime_tool in rows
     ]
+
+
+async def review_mcp_server_tool_metadata(
+    db: AsyncSession,
+    tenant_id: uuid.UUID,
+    server_id: uuid.UUID,
+    tool_name: str,
+    *,
+    reviewer_id: uuid.UUID,
+    decision: str,
+    expected_fingerprint: str,
+    canonical_description: str | None = None,
+) -> dict:
+    """Review one exact metadata fingerprint and restore preserved assignments."""
+
+    await _require_tenant_server(db, tenant_id, server_id)
+    rows = (
+        await db.execute(
+            select(MCPServerTool, Tool)
+            .join(Tool, Tool.id == MCPServerTool.tool_id)
+            .where(
+                MCPServerTool.tenant_id == tenant_id,
+                MCPServerTool.mcp_server_id == server_id,
+                MCPServerTool.mcp_tool_name == tool_name,
+                Tool.tenant_id == tenant_id,
+                Tool.type == "mcp",
+            )
+        )
+    ).all()
+    if len(rows) != 1:
+        raise ValueError("MCP server tool not found")
+    server_tool, runtime_tool = rows[0]
+    current_fingerprint = str(runtime_tool.mcp_metadata_fingerprint or "")
+    if not current_fingerprint or current_fingerprint != str(expected_fingerprint or ""):
+        raise ValueError("MCP metadata fingerprint changed; reload before reviewing")
+    validated_schema = None
+    try:
+        if decision == "approve":
+            validated = prepare_mcp_metadata_candidate(
+                server_name=runtime_tool.mcp_server_name or "MCP Server",
+                server_url=runtime_tool.mcp_server_url or "",
+                tool_name=runtime_tool.mcp_tool_name or server_tool.mcp_tool_name,
+                raw_description=runtime_tool.mcp_raw_description or "",
+                raw_schema=runtime_tool.mcp_raw_schema or {},
+            )
+            validated_schema = validated.canonical_schema
+        review_mcp_metadata(
+            runtime_tool,
+            decision=decision,
+            reviewer_id=reviewer_id,
+            expected_fingerprint=expected_fingerprint,
+            canonical_description=canonical_description,
+        )
+    except MCPMetadataValidationError as exc:
+        raise ValueError(str(exc)) from exc
+    if validated_schema is not None:
+        runtime_tool.parameters_schema = validated_schema
+
+    assignments = (await db.execute(select(AgentTool).where(AgentTool.tool_id == runtime_tool.id))).scalars().all()
+    if decision == "approve":
+        for assignment in assignments:
+            requested = assignment.mcp_trust_requested_enabled
+            if requested is not None:
+                assignment.enabled = bool(requested)
+                assignment.mcp_trust_requested_enabled = None
+        server_tool.schema_hash = runtime_tool.mcp_metadata_fingerprint
+    else:
+        for assignment in assignments:
+            if assignment.mcp_trust_requested_enabled is None:
+                assignment.mcp_trust_requested_enabled = bool(assignment.enabled)
+            assignment.enabled = False
+
+    db.add(
+        AuditLog(
+            tenant_id=tenant_id,
+            user_id=reviewer_id,
+            action="mcp.metadata.reviewed",
+            details={
+                "server_id": str(server_id),
+                "tool_id": str(runtime_tool.id),
+                "tool_name": tool_name,
+                "decision": decision,
+                "fingerprint": expected_fingerprint,
+                "trust_tier": runtime_tool.mcp_trust_tier,
+                "risk_flags": list(runtime_tool.mcp_metadata_risk_flags or []),
+            },
+        )
+    )
+    await db.commit()
+    return {
+        "tool_id": str(runtime_tool.id),
+        "tool_name": tool_name,
+        "display_name": server_tool.display_name or tool_name,
+        "canonical_description": runtime_tool.description,
+        "metadata_fingerprint": runtime_tool.mcp_metadata_fingerprint,
+        "risk_flags": list(runtime_tool.mcp_metadata_risk_flags or []),
+        "trust_status": runtime_tool.mcp_trust_status,
+        "trust_tier": runtime_tool.mcp_trust_tier,
+        "runtime_approved": is_mcp_metadata_runtime_approved(runtime_tool),
+    }
 
 
 async def set_agent_mcp_tool_policy(
@@ -481,6 +640,20 @@ async def set_agent_mcp_tool_policy(
     if server_tool is None:
         raise ValueError("MCP server tool not found")
 
+    runtime_tool = None
+    if server_tool.tool_id is not None:
+        runtime_tool = (
+            await db.execute(
+                select(Tool).where(
+                    Tool.id == server_tool.tool_id,
+                    Tool.tenant_id == tenant_id,
+                    Tool.type == "mcp",
+                )
+            )
+        ).scalar_one_or_none()
+    if mode != "deny" and not (runtime_tool and is_mcp_metadata_runtime_approved(runtime_tool)):
+        raise ValueError("MCP metadata approval required before enabling this tool")
+
     override_result = await db.execute(
         select(AgentMCPToolOverride).where(
             AgentMCPToolOverride.tenant_id == tenant_id,
@@ -507,7 +680,14 @@ async def set_agent_mcp_tool_policy(
         "tool_name": server_tool.mcp_tool_name,
         "display_name": server_tool.display_name or server_tool.mcp_tool_name,
         "mode": mode,
-        "effective_mode": _effective_tool_mode(assignment=assignment, override_mode=mode),
+        "effective_mode": (
+            _effective_tool_mode(assignment=assignment, override_mode=mode)
+            if runtime_tool and is_mcp_metadata_runtime_approved(runtime_tool)
+            else "deny"
+        ),
+        "trust_status": getattr(runtime_tool, "mcp_trust_status", None) or "missing",
+        "trust_tier": getattr(runtime_tool, "mcp_trust_tier", None) or "untrusted",
+        "runtime_approved": bool(runtime_tool and is_mcp_metadata_runtime_approved(runtime_tool)),
     }
 
 
@@ -521,6 +701,8 @@ async def resolve_agent_mcp_tool_mode(db: AsyncSession, agent_id: uuid.UUID, too
     tool_id = getattr(tool, "id", None)
     if tool_id is None or getattr(tool, "type", None) != "mcp":
         return None
+    if not is_mcp_metadata_runtime_approved(tool):
+        return "deny"
 
     server_tools_result = await db.execute(select(MCPServerTool).where(MCPServerTool.tool_id == tool_id))
     server_tools = list(server_tools_result.scalars().all())
@@ -854,8 +1036,16 @@ async def import_and_register(
             tool.tenant_id = tenant_id
             server_name_for_records = tool.mcp_server_name or "MCP Server"
             server_url_for_records = tool.mcp_server_url or ""
+        runtime_enabled = bool(tool is not None and is_mcp_metadata_runtime_approved(tool))
         for agent_id in agent_ids:
-            await ensure_agent_tool_assignment(db, agent_id=agent_id, tool_id=tool_id, enabled=True, source="system")
+            await ensure_agent_tool_assignment(
+                db,
+                agent_id=agent_id,
+                tool_id=tool_id,
+                enabled=runtime_enabled,
+                source="system",
+                quarantine_for_mcp_trust=not runtime_enabled,
+            )
     await db.commit()
 
     server_record = None

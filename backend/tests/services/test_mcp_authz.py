@@ -150,6 +150,7 @@ async def test_execute_mcp_tool_rejects_token_passthrough_config(monkeypatch) ->
 
     agent_id = uuid4()
     tenant_id = uuid4()
+    fingerprint = "a" * 64
     tool = SimpleNamespace(
         id=uuid4(),
         name="mcp_sensitive_search",
@@ -161,6 +162,9 @@ async def test_execute_mcp_tool_rejects_token_passthrough_config(monkeypatch) ->
         mcp_server_url="https://mcp.example/mcp",
         mcp_server_name="Sensitive MCP",
         mcp_tool_name="search",
+        mcp_trust_status="approved",
+        mcp_metadata_fingerprint=fingerprint,
+        mcp_reviewed_fingerprint=fingerprint,
     )
 
     async def _resolve(*_a, **_k):
@@ -193,6 +197,7 @@ async def test_execute_mcp_tool_rejects_local_only_transport_before_client(monke
 
     agent_id = uuid4()
     tenant_id = uuid4()
+    fingerprint = "a" * 64
     tool = SimpleNamespace(
         id=uuid4(),
         name="mcp_local_shell",
@@ -204,6 +209,9 @@ async def test_execute_mcp_tool_rejects_local_only_transport_before_client(monke
         mcp_server_url="https://mcp.example/mcp",
         mcp_server_name="Local Shell",
         mcp_tool_name="shell",
+        mcp_trust_status="approved",
+        mcp_metadata_fingerprint=fingerprint,
+        mcp_reviewed_fingerprint=fingerprint,
     )
 
     async def _resolve(*_a, **_k):

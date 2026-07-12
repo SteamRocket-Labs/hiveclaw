@@ -2232,6 +2232,7 @@ async def _execute_mcp_tool(tool_name: str, arguments: dict, agent_id: "uuid.UUI
             assert_no_mcp_token_passthrough,
         )
         from app.services.mcp_client import MCPClient
+        from app.services.mcp_metadata_trust import is_mcp_metadata_runtime_approved
         from app.services.mcp_naming import build_mcp_tool_name, is_mcp_tool_name
         from app.services.mcp_server_service import resolve_agent_mcp_tool_mode, resolve_mcp_oauth_bearer
 
@@ -2276,6 +2277,15 @@ async def _execute_mcp_tool(tool_name: str, arguments: dict, agent_id: "uuid.UUI
                     tool = next((t for t in visible if getattr(t, "tenant_id", None) is None), None)
             else:
                 tool = next((t for t in visible if getattr(t, "tenant_id", None) is None), None)
+            if tool is not None and not is_mcp_metadata_runtime_approved(tool):
+                return render_tool_error(
+                    tool_name=tool_name,
+                    error_class="forbidden",
+                    message=f"MCP tool '{tool_name}' metadata is not approved for runtime use.",
+                    provider="mcp",
+                    retryable=False,
+                    actionable_hint="Ask a company administrator to review the current MCP metadata fingerprint.",
+                )
             agent_config = {}
             if tool and agent_id:
                 at_r = await db.execute(

@@ -12,6 +12,7 @@ import { toolsApi, type AgentTool } from '../../api/domains/tools';
 import { showAppToast } from '../../components/AppDialogs';
 import ToolIcon from '../../components/ToolIcon';
 import { useAuthStore } from '../../stores';
+import { McpToolTrustBadge } from './McpToolTrustBadge';
 import './ToolsManager.css';
 
 type ToolsManagerProps = {
@@ -418,6 +419,11 @@ export default function ToolsManager({ agentId, canManage = false }: ToolsManage
                                         <div className="tools-manager-tool-desc">
                                           {configTool?.description || serverTool.tool_name}
                                         </div>
+                                        <McpToolTrustBadge
+                                          trustStatus={serverTool.trust_status}
+                                          trustTier={serverTool.trust_tier}
+                                          runtimeApproved={serverTool.runtime_approved}
+                                        />
                                       </div>
                                     </div>
                                     <div className="tools-manager-tool-actions">
@@ -434,7 +440,11 @@ export default function ToolsManager({ agentId, canManage = false }: ToolsManage
                                         <select
                                           className="form-input tools-manager-mode-select"
                                           value={serverTool.mode}
-                                          disabled={!server.enabled || savingToolKey === savingKey}
+                                          disabled={
+                                            !server.enabled
+                                            || serverTool.runtime_approved !== true
+                                            || savingToolKey === savingKey
+                                          }
                                           onChange={(event) => void setToolMode(server, serverTool, event.target.value as McpToolMode)}
                                           title={t('agent.extensions.toolPolicyTitle', 'Tool policy')}
                                         >

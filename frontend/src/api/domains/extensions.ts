@@ -36,6 +36,44 @@ export interface AgentMcpServerTool {
   display_name: string;
   mode: McpToolMode;
   effective_mode: McpToolMode;
+  trust_status?: string;
+  trust_tier?: string;
+  runtime_approved?: boolean;
+}
+
+export interface EnterpriseMcpMetadataTool {
+  tool_id: string;
+  tool_name: string;
+  display_name: string;
+  canonical_description: string;
+  canonical_schema: Record<string, unknown>;
+  raw_description: string;
+  raw_schema: Record<string, unknown>;
+  metadata_fingerprint: string;
+  risk_flags: string[];
+  trust_status: string;
+  trust_tier: string;
+  reviewed_by: string | null;
+  reviewed_at: string | null;
+  runtime_approved: boolean;
+}
+
+export interface EnterpriseMcpMetadataReviewRequest {
+  decision: 'approve' | 'reject';
+  expected_fingerprint: string;
+  canonical_description?: string;
+}
+
+export interface EnterpriseMcpMetadataReviewResult {
+  tool_id?: string;
+  tool_name: string;
+  display_name?: string;
+  canonical_description?: string;
+  metadata_fingerprint?: string;
+  risk_flags?: string[];
+  trust_status: string;
+  trust_tier?: string;
+  runtime_approved: boolean;
 }
 
 export interface AgentExtensions {
@@ -338,6 +376,21 @@ export const extensionsApi = {
 
   /** Company admin: tenant MCP server records, server-first with stable identity. */
   listEnterpriseMcpServers: () => get<McpServerRecord[]>('/enterprise/mcp-servers'),
+
+  /** Company admin: raw evidence plus canonical metadata review state for one MCP server. */
+  listEnterpriseMcpServerTools: (serverId: string) =>
+    get<EnterpriseMcpMetadataTool[]>(`/enterprise/mcp-servers/${serverId}/tools`),
+
+  /** Company admin: approve or reject one immutable MCP metadata fingerprint. */
+  reviewEnterpriseMcpServerToolMetadata: (
+    serverId: string,
+    toolName: string,
+    body: EnterpriseMcpMetadataReviewRequest,
+  ) =>
+    put<EnterpriseMcpMetadataReviewResult>(
+      `/enterprise/mcp-servers/${serverId}/tools/${encodeURIComponent(toolName)}/metadata-review`,
+      body,
+    ),
 
   /** Company admin: stage an external MCP server through Trust Gate review. */
   importEnterpriseMcpServer: (body: McpImportRequest) =>

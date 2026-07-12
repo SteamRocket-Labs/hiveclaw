@@ -92,6 +92,20 @@ def _compiled_sql(stmt) -> str:
     return str(stmt.compile(compile_kwargs={"literal_binds": False})).lower()
 
 
+def _approved_mcp_row(**values):
+    tool_type = values.pop("type", "mcp")
+    fingerprint = values.pop("mcp_metadata_fingerprint", "a" * 64)
+    reviewed_fingerprint = values.pop("mcp_reviewed_fingerprint", fingerprint)
+    trust_status = values.pop("mcp_trust_status", "approved")
+    return SimpleNamespace(
+        type=tool_type,
+        mcp_trust_status=trust_status,
+        mcp_metadata_fingerprint=fingerprint,
+        mcp_reviewed_fingerprint=reviewed_fingerprint,
+        **values,
+    )
+
+
 @pytest.fixture
 def install_fake_session(monkeypatch):
     """Install an async_session() factory that yields a fake DB pre-loaded
@@ -209,7 +223,7 @@ async def test_unknown_tool_returns_not_found(install_fake_session):
 
 @pytest.mark.asyncio
 async def test_disabled_tool_returns_forbidden(install_fake_session):
-    row = SimpleNamespace(
+    row = _approved_mcp_row(
         name="weather",
         enabled=False,
         mcp_server_url="https://mcp.example.com",
@@ -223,7 +237,7 @@ async def test_disabled_tool_returns_forbidden(install_fake_session):
 
 @pytest.mark.asyncio
 async def test_missing_server_url_returns_bad_state(install_fake_session):
-    row = SimpleNamespace(
+    row = _approved_mcp_row(
         name="weather",
         enabled=True,
         mcp_server_url=None,
@@ -237,7 +251,7 @@ async def test_missing_server_url_returns_bad_state(install_fake_session):
 
 @pytest.mark.asyncio
 async def test_call_mcp_tool_lookup_is_scoped_to_enabled_agent_assignment(install_fake_session, patch_mcp_client):
-    row = SimpleNamespace(
+    row = _approved_mcp_row(
         name="weather",
         enabled=True,
         mcp_server_url="https://mcp.example.com",
@@ -260,7 +274,7 @@ async def test_call_mcp_tool_refuses_disabled_server_assignment(install_fake_ses
     agent_id = uuid.uuid4()
     server_id = uuid.uuid4()
     tool_id = uuid.uuid4()
-    row = SimpleNamespace(
+    row = _approved_mcp_row(
         id=tool_id,
         type="mcp",
         name="weather",
@@ -285,7 +299,7 @@ async def test_call_mcp_tool_refuses_disabled_server_assignment(install_fake_ses
 
 @pytest.mark.asyncio
 async def test_read_mcp_resource_lookup_is_scoped_to_enabled_agent_assignment(install_fake_session):
-    row = SimpleNamespace(
+    row = _approved_mcp_row(
         name="weather",
         display_name="Weather",
         description="Weather lookup",
@@ -312,7 +326,7 @@ async def test_execute_mcp_tool_fallback_refuses_deny_override(install_fake_sess
     agent_id = uuid.uuid4()
     server_id = uuid.uuid4()
     tool_id = uuid.uuid4()
-    row = SimpleNamespace(
+    row = _approved_mcp_row(
         id=tool_id,
         type="mcp",
         name="weather",
@@ -343,7 +357,7 @@ async def test_execute_mcp_tool_fallback_refuses_deny_override(install_fake_sess
 
 @pytest.mark.asyncio
 async def test_happy_path_forwards_to_mcp_client(install_fake_session, patch_mcp_client):
-    row = SimpleNamespace(
+    row = _approved_mcp_row(
         name="weather",
         enabled=True,
         mcp_server_url="https://mcp.example.com",
@@ -363,8 +377,51 @@ async def test_happy_path_forwards_to_mcp_client(install_fake_session, patch_mcp
 
 
 @pytest.mark.asyncio
+async def test_call_mcp_tool_rejects_unreviewed_metadata_before_network(install_fake_session, patch_mcp_client):
+    row = _approved_mcp_row(
+        name="weather",
+        enabled=True,
+        mcp_trust_status="pending_review",
+        mcp_reviewed_fingerprint=None,
+        mcp_server_url="https://mcp.example.com",
+        mcp_tool_name="get_weather",
+        config={},
+    )
+    install_fake_session(row)
+
+    out = await call_mcp_tool(uuid.uuid4(), {"tool_name": "weather", "arguments": {}})
+
+    assert "metadata" in out.lower()
+    assert "review" in out.lower()
+    assert _SpyClient.instances == []
+
+
+@pytest.mark.asyncio
+async def test_dynamic_mcp_execution_rejects_unreviewed_metadata_before_network(install_fake_session, patch_mcp_client):
+    row = _approved_mcp_row(
+        name="weather",
+        enabled=True,
+        mcp_trust_status="pending_review",
+        mcp_reviewed_fingerprint=None,
+        mcp_server_url="https://mcp.example.com",
+        mcp_server_name="weather-server",
+        mcp_tool_name="get_weather",
+        config={},
+        tenant_id=None,
+        is_default=True,
+    )
+    install_fake_session(row)
+
+    out = await _execute_mcp_tool("weather", {}, agent_id=None)
+
+    assert "metadata" in out.lower()
+    assert "review" in out.lower()
+    assert _SpyClient.instances == []
+
+
+@pytest.mark.asyncio
 async def test_call_mcp_tool_rejects_local_only_transport_before_client(install_fake_session, patch_mcp_client):
-    row = SimpleNamespace(
+    row = _approved_mcp_row(
         name="local_shell",
         enabled=True,
         mcp_server_url="https://mcp.example/mcp",
@@ -383,7 +440,7 @@ async def test_call_mcp_tool_rejects_local_only_transport_before_client(install_
 async def test_falls_back_to_hive_name_when_mcp_tool_name_unset(install_fake_session, patch_mcp_client):
     """Some imports populate `name` but leave `mcp_tool_name` unset; the
     Hive-side name doubles as the remote name in that case."""
-    row = SimpleNamespace(
+    row = _approved_mcp_row(
         name="get_data",
         enabled=True,
         mcp_server_url="https://mcp.example.com",
@@ -399,7 +456,7 @@ async def test_falls_back_to_hive_name_when_mcp_tool_name_unset(install_fake_ses
 
 @pytest.mark.asyncio
 async def test_mcp_list_prompts_uses_live_prompts_list(install_fake_session, patch_mcp_client, monkeypatch):
-    row = SimpleNamespace(
+    row = _approved_mcp_row(
         name="weather",
         enabled=True,
         mcp_server_url="https://mcp.example.com",
@@ -424,7 +481,7 @@ async def test_mcp_list_prompts_uses_live_prompts_list(install_fake_session, pat
 
 @pytest.mark.asyncio
 async def test_mcp_get_prompt_uses_live_prompts_get(install_fake_session, patch_mcp_client, monkeypatch):
-    row = SimpleNamespace(
+    row = _approved_mcp_row(
         name="weather",
         enabled=True,
         mcp_server_url="https://mcp.example.com",
@@ -450,7 +507,7 @@ async def test_mcp_get_prompt_uses_live_prompts_get(install_fake_session, patch_
 async def test_mcp_get_prompt_import_as_skill_stages_blocked_skill_guard_review(
     install_fake_session, patch_mcp_client, monkeypatch, tmp_path
 ):
-    row = SimpleNamespace(
+    row = _approved_mcp_row(
         name="weather",
         enabled=True,
         mcp_server_url="https://mcp.example.com",
@@ -484,7 +541,7 @@ async def test_mcp_get_prompt_import_as_skill_stages_blocked_skill_guard_review(
 
 @pytest.mark.asyncio
 async def test_mcp_auth_status_reports_server_side_auth_without_token_leak(install_fake_session, monkeypatch):
-    row = SimpleNamespace(
+    row = _approved_mcp_row(
         name="weather",
         enabled=True,
         mcp_server_url="https://mcp.example.com",
@@ -509,7 +566,7 @@ async def test_mcp_auth_status_reports_server_side_auth_without_token_leak(insta
 
 @pytest.mark.asyncio
 async def test_client_failure_surfaces_as_operation_failed(install_fake_session, patch_mcp_client):
-    row = SimpleNamespace(
+    row = _approved_mcp_row(
         name="weather",
         enabled=True,
         mcp_server_url="https://mcp.example.com",
@@ -555,7 +612,7 @@ def test_call_mcp_tool_is_in_capability_map() -> None:
 async def test_read_mcp_resource_approval_mode_annotates_not_blocks(install_fake_session, monkeypatch):
     """Metadata semantics: the schema stays readable under approval mode but
     carries an explicit notice — visibility is not executability."""
-    row = SimpleNamespace(
+    row = _approved_mcp_row(
         name="weather",
         display_name="Weather",
         description="Weather lookup",
@@ -583,7 +640,7 @@ async def test_list_mcp_resources_marks_approval_tools(install_fake_session, mon
     from app.tools.handlers.mcp import list_mcp_tools
 
     rows = [
-        SimpleNamespace(
+        _approved_mcp_row(
             name="weather",
             display_name="Weather",
             description="Weather lookup",

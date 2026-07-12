@@ -15,7 +15,7 @@ import uuid
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.permissions import check_agent_access
@@ -28,7 +28,9 @@ from app.services.mcp_server_service import (
     get_agent_extensions,
     get_agent_mcp_servers,
     list_agent_mcp_server_tools,
+    list_tenant_mcp_server_tools,
     list_tenant_servers,
+    review_mcp_server_tool_metadata,
     set_agent_mcp_assignment,
     set_agent_mcp_tool_policy,
     trigger_tenant_backfill,
@@ -52,6 +54,12 @@ class TenantMcpImportIn(BaseModel):
     mcp_url: str | None = None
     server_name: str | None = None
     config: dict | None = None
+
+
+class TenantMcpMetadataReviewIn(BaseModel):
+    decision: Literal["approve", "reject"]
+    expected_fingerprint: str = Field(min_length=64, max_length=64)
+    canonical_description: str | None = Field(default=None, max_length=500)
 
 
 @router.get("/agents/{agent_id}/extensions")
@@ -112,6 +120,54 @@ async def delete_enterprise_mcp_server(
         return await delete_tenant_server(db, current_user.tenant_id, server_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+
+
+@router.get("/enterprise/mcp-servers/{server_id}/tools")
+async def list_enterprise_mcp_server_metadata(
+    server_id: uuid.UUID,
+    current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Administrator-only raw evidence and canonical MCP metadata review state."""
+
+    if not current_user.tenant_id:
+        raise HTTPException(status_code=400, detail="No tenant assigned")
+    try:
+        return await list_tenant_mcp_server_tools(db, current_user.tenant_id, server_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@router.put("/enterprise/mcp-servers/{server_id}/tools/{tool_name}/metadata-review")
+async def review_enterprise_mcp_server_metadata(
+    server_id: uuid.UUID,
+    tool_name: str,
+    data: TenantMcpMetadataReviewIn,
+    current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Approve or reject one immutable MCP metadata fingerprint."""
+
+    if not current_user.tenant_id:
+        raise HTTPException(status_code=400, detail="No tenant assigned")
+    try:
+        return await review_mcp_server_tool_metadata(
+            db,
+            current_user.tenant_id,
+            server_id,
+            tool_name,
+            reviewer_id=current_user.id,
+            decision=data.decision,
+            expected_fingerprint=data.expected_fingerprint,
+            canonical_description=data.canonical_description,
+        )
+    except ValueError as exc:
+        detail = str(exc)
+        if "fingerprint changed" in detail:
+            raise HTTPException(status_code=409, detail=detail)
+        if "not found" in detail:
+            raise HTTPException(status_code=404, detail=detail)
+        raise HTTPException(status_code=400, detail=detail)
 
 
 @router.get("/agents/{agent_id}/mcp-servers")

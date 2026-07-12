@@ -49,7 +49,8 @@ class _FakeSession:
         return self._results.pop(0)
 
 
-def _make_mcp_tool(*, name: str, tool_id, is_default: bool = False):
+def _make_mcp_tool(*, name: str, tool_id, is_default: bool = False, metadata_approved: bool = True):
+    fingerprint = "a" * 64
     return SimpleNamespace(
         id=tool_id,
         name=name,
@@ -64,6 +65,9 @@ def _make_mcp_tool(*, name: str, tool_id, is_default: bool = False):
         tenant_id=None,
         mcp_server_name="GitHub",
         mcp_server_url="https://gh",
+        mcp_trust_status="approved" if metadata_approved else "pending_review",
+        mcp_metadata_fingerprint=fingerprint,
+        mcp_reviewed_fingerprint=fingerprint if metadata_approved else None,
     )
 
 
@@ -197,6 +201,38 @@ async def test_fallback_when_no_new_table_data_keeps_legacy_agent_tool_enabled(m
     names = {tool["function"]["name"] for tool in tools}
 
     assert "issue_search" in names
+
+
+@pytest.mark.asyncio
+async def test_unreviewed_mcp_metadata_never_enters_model_tool_surface(monkeypatch):
+    from app.services import agent_tools as module
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    t_mcp = _make_mcp_tool(
+        name="issue_search",
+        tool_id=uuid4(),
+        is_default=True,
+        metadata_approved=False,
+    )
+
+    def session_factory():
+        return _FakeSession(
+            [
+                _ScalarResult(SimpleNamespace(id=agent_id, tenant_id=tenant_id, agent_class="standard")),
+                _ScalarResult(None),
+                _ListResult([t_mcp]),
+                _ListResult([_make_agent_tool(tool_id=t_mcp.id, enabled=True)]),
+                _ListResult([]),
+            ]
+        )
+
+    _patch_environment(monkeypatch, module, session_factory)
+
+    tools = await module.get_agent_tools_for_llm(agent_id)
+    names = {tool["function"]["name"] for tool in tools}
+
+    assert "issue_search" not in names
 
 
 @pytest.mark.asyncio

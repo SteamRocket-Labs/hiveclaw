@@ -215,6 +215,30 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.tools-manager-mcp-trust {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  font-size: 10px;
+}
+.tools-manager-mcp-trust span,
+.tools-manager-mcp-trust code {
+  padding: 1px 5px;
+  border-radius: var(--radius-full);
+}
+.tools-manager-mcp-trust.approved span {
+  color: var(--success);
+  background: var(--success-subtle);
+}
+.tools-manager-mcp-trust.blocked span {
+  color: var(--warning);
+  background: var(--warning-subtle);
+}
+.tools-manager-mcp-trust code {
+  color: var(--text-tertiary);
+  background: var(--bg-tertiary);
+}
 .tools-manager-tool-actions {
   display: flex;
   align-items: center;

@@ -885,6 +885,7 @@ async def get_agent_tools_for_llm(
 
     try:
         from app.models.tool import Tool, AgentTool
+        from app.services.mcp_metadata_trust import is_mcp_metadata_runtime_approved
 
         # RLS 阶段1: `tools`/`agents` are policy-bearing — resolve the agent's
         # tenant first (audited single-row bypass), then scope the whole read.
@@ -925,6 +926,8 @@ async def get_agent_tools_for_llm(
             result = []
             db_tool_names = set()
             for t in all_tools:
+                if t.type == "mcp" and not is_mcp_metadata_runtime_approved(t):
+                    continue
                 if not _tool_visible_to_agent_tenant(t, agent):
                     continue
                 if not is_tool_allowed_for_agent(t, agent):

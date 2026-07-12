@@ -319,6 +319,7 @@ async def call_mcp_tool(agent_id: uuid.UUID, arguments: dict) -> str:
     from app.models.tool import AgentTool, Tool
     from app.services.mcp_authz import MCPAuthzError, assert_mcp_cloud_transport_allowed
     from app.services.mcp_client import MCPClient
+    from app.services.mcp_metadata_trust import is_mcp_metadata_runtime_approved
     from app.services.tenant_resolver import resolve_tenant_for_agent
 
     tool_name = arguments.get("tool_name", "")
@@ -366,6 +367,15 @@ async def call_mcp_tool(agent_id: uuid.UUID, arguments: dict) -> str:
                 provider="mcp",
                 retryable=False,
                 actionable_hint="Use list_mcp_tools to see what's available.",
+            )
+        if not is_mcp_metadata_runtime_approved(row):
+            return render_tool_error(
+                tool_name="call_mcp_tool",
+                error_class="forbidden",
+                message=f"MCP tool '{tool_name}' metadata is not approved for runtime use.",
+                provider="mcp",
+                retryable=False,
+                actionable_hint="Ask a company administrator to review the current MCP metadata fingerprint.",
             )
         if not row.enabled:
             return render_tool_error(
@@ -444,6 +454,7 @@ async def _resolve_agent_mcp_server(
     from app.database import tenant_scoped_session
     from app.models.tool import AgentTool, Tool
     from app.services.mcp_authz import MCPAuthzError, assert_mcp_cloud_transport_allowed
+    from app.services.mcp_metadata_trust import is_mcp_metadata_runtime_approved
     from app.services.mcp_server_service import resolve_agent_mcp_tool_mode
     from app.services.tenant_resolver import resolve_tenant_for_agent
 
@@ -467,6 +478,8 @@ async def _resolve_agent_mcp_server(
         )
         by_server: dict[str, tuple[str, Tool, str]] = {}
         for row in rows:
+            if not is_mcp_metadata_runtime_approved(row):
+                continue
             url = row.mcp_server_url
             if not url:
                 continue

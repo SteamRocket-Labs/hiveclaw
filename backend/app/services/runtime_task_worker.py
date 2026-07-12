@@ -43,6 +43,7 @@ _STATE: dict[str, Any] = {
     "wakeup_sent": 0,
     "wakeup_received": 0,
     "dispatched": 0,
+    "expired_claims_reclaimed": 0,
     "outbox_claimed": 0,
     "outbox_reconciled": 0,
     "outbox_delivered": 0,
@@ -209,6 +210,16 @@ async def claim_and_dispatch_once(*, worker_id: str | None = None) -> list[str]:
             lease_seconds=settings.RUNTIME_TASK_CLAIM_LEASE_SECONDS,
         )
         claimed = await service.claim_available(batch_size=batch_size)
+
+    reclaimed_count = sum(
+        1 for task in claimed if bool((getattr(task, "metadata_json", None) or {}).get("reclaimed_expired_claim"))
+    )
+    if reclaimed_count:
+        _STATE["expired_claims_reclaimed"] = int(_STATE.get("expired_claims_reclaimed") or 0) + reclaimed_count
+        logger.warning(
+            "[RuntimeTaskWorker] reclaimed {} expired web-chat claim(s) with new fences",
+            reclaimed_count,
+        )
 
     for task in claimed:
         if _dispatch_claimed_task(task):

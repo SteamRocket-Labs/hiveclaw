@@ -128,7 +128,17 @@ async def run_web_chat_task(
             if isinstance(runtime_task.metadata_json, dict)
             else False
         )
-        await phase_emitter.transition(RuntimePhase.SUMMARIZING if summary_turn_mode else RuntimePhase.STARTING)
+        reclaimed_claim = bool(
+            (runtime_task.metadata_json or {}).get("reclaimed_expired_claim")
+            if isinstance(runtime_task.metadata_json, dict)
+            else False
+        )
+        initial_phase = (
+            RuntimePhase.SUMMARIZING
+            if summary_turn_mode
+            else (RuntimePhase.RESUMING if reclaimed_claim else RuntimePhase.STARTING)
+        )
+        await phase_emitter.transition(initial_phase)
         conversation = conversation_from_history_messages(history_messages)
         prompt = runtime_task.prompt or ""
         metadata = _merge_runtime_permission_metadata(

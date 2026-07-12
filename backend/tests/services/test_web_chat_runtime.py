@@ -775,6 +775,34 @@ async def test_execute_web_chat_run_emits_first_class_phase_signal(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_execute_web_chat_run_exposes_reclaimed_claim_as_resuming(monkeypatch):
+    import app.services.web_chat_runtime as runtime
+
+    run_id, agent, user, llm_model, runtime_task = _phase_run_fixtures()
+    runtime_task.metadata_json["reclaimed_expired_claim"] = True
+    events: list[dict] = []
+
+    async def fake_invoke(_request):
+        return SimpleNamespace(content="recovered", reasoning_signature=None, tokens_used=1)
+
+    _patch_phase_run(
+        monkeypatch,
+        runtime,
+        runtime_task=runtime_task,
+        agent=agent,
+        user=user,
+        llm_model=llm_model,
+        fake_invoke=fake_invoke,
+        events=events,
+    )
+
+    await runtime.execute_web_chat_run(run_id)
+
+    phase_events = [event for event in events if event.get("type") == "phase"]
+    assert phase_events[0]["phase"] == "resuming"
+
+
+@pytest.mark.asyncio
 async def test_execute_web_chat_run_persists_stream_steps_for_replay(monkeypatch):
     import app.services.web_chat_runtime as runtime
 
@@ -4786,8 +4814,9 @@ async def test_execute_web_chat_run_resumes_queued_plan_handoffs_on_terminal_exi
 
 
 @pytest.mark.asyncio
-async def test_resume_persisted_web_chat_runs_schedules_running_turns_with_resume_context(monkeypatch):
+async def test_resume_persisted_web_chat_runs_only_wakes_the_fenced_worker(monkeypatch):
     import app.services.web_chat_runtime as runtime
+    from app.services import runtime_task_worker
 
     run_id = uuid4()
     agent_id = uuid4()
@@ -4823,12 +4852,13 @@ async def test_resume_persisted_web_chat_runs_schedules_running_turns_with_resum
         async def commit(self):
             self.commits += 1
 
-    scheduled: list[str] = []
+    wakeups: list[dict] = []
 
-    def fake_create_task(coro, *args, **kwargs):
-        scheduled.append(coro.cr_frame.f_locals["run_id"].hex)
-        coro.close()
-        return SimpleNamespace(add_done_callback=lambda _cb: None)
+    async def fake_notify(**kwargs):
+        wakeups.append(kwargs)
+
+    def fail_direct_dispatch(*_args, **_kwargs):
+        raise AssertionError("startup recovery must not dispatch a RuntimeTask outside the claim worker")
 
     db = _DB()
 
@@ -4837,15 +4867,36 @@ async def test_resume_persisted_web_chat_runs_schedules_running_turns_with_resum
 
     monkeypatch.setattr(runtime, "list_active_runtime_task_records", fake_list_active)
     monkeypatch.setattr(runtime, "tenant_scoped_session", lambda *a, **k: db)
-    monkeypatch.setattr(runtime, "build_long_task_resume_context", lambda **_kwargs: {"resume_prompt": "resume now"})
-    monkeypatch.setattr(runtime.asyncio, "create_task", fake_create_task)
+    monkeypatch.setattr(runtime, "dispatch_web_chat_run", fail_direct_dispatch)
+    monkeypatch.setattr(runtime_task_worker, "notify_runtime_task_worker", fake_notify)
 
     resumed = await runtime.resume_persisted_web_chat_runs(limit=10)
 
     assert resumed == [run_id.hex]
-    assert scheduled == [run_id.hex]
-    assert task.metadata_json["resumed_after_restart"] is True
-    assert task.metadata_json["restart_resume_context"]["resume_prompt"] == "resume now"
+    assert wakeups == [{"reason": "startup_web_chat_recovery"}]
+
+
+def test_reclaimed_web_chat_claim_builds_durable_resume_context(monkeypatch):
+    import app.services.web_chat_runtime as runtime
+
+    run_id = uuid4()
+    agent_id = uuid4()
+    task = SimpleNamespace(
+        id=run_id,
+        parent_agent_id=agent_id,
+        metadata_json={"reclaimed_expired_claim": True},
+    )
+    monkeypatch.setattr(
+        runtime,
+        "build_long_task_resume_context",
+        lambda **kwargs: {"resume_prompt": "resume once", "task": kwargs["runtime_task_id"].hex},
+    )
+
+    metadata = runtime._with_reclaimed_web_chat_resume_context(task)
+
+    assert metadata["resumed_after_restart"] is True
+    assert metadata["recovery_state"] == "recovering"
+    assert metadata["restart_resume_context"] == {"resume_prompt": "resume once", "task": run_id.hex}
 
 
 @pytest.mark.asyncio
@@ -4899,7 +4950,7 @@ async def test_get_active_web_chat_run_reconciles_terminal_transcript_ghost():
 
 
 @pytest.mark.asyncio
-async def test_resume_persisted_web_chat_runs_skips_terminal_transcript_ghost(monkeypatch):
+async def test_claimed_web_chat_run_skips_terminal_transcript_ghost_before_owner(monkeypatch):
     import app.services.web_chat_runtime as runtime
 
     run_id = uuid4()
@@ -4925,10 +4976,6 @@ async def test_resume_persisted_web_chat_runs_skips_terminal_transcript_ghost(mo
         metadata_json={"status": "completed"},
     )
 
-    class _Rows:
-        def scalars(self):
-            return SimpleNamespace(all=lambda: [task])
-
     class _DB:
         def __init__(self):
             self.calls = 0
@@ -4942,31 +4989,22 @@ async def test_resume_persisted_web_chat_runs_skips_terminal_transcript_ghost(mo
 
         async def execute(self, _stmt):
             self.calls += 1
-            return _Rows() if self.calls == 1 else _ScalarResult(terminal_event)
+            return _ScalarResult(task if self.calls == 1 else terminal_event)
 
         async def commit(self):
             self.commits += 1
 
-    scheduled: list[str] = []
-
-    def fake_create_task(coro, *args, **kwargs):
-        scheduled.append(coro.cr_frame.f_locals["run_id"].hex)
-        coro.close()
-        return SimpleNamespace(add_done_callback=lambda _cb: None)
-
     db = _DB()
 
-    async def fake_list_active(**_kwargs):
-        return [{"task_id": run_id.hex, "tenant_id": str(tenant_id)}]
+    async def fake_resolve(*_args, **_kwargs):
+        return tenant_id
 
-    monkeypatch.setattr(runtime, "list_active_runtime_task_records", fake_list_active)
+    monkeypatch.setattr(runtime, "resolve_tenant_for_runtime_task", fake_resolve)
     monkeypatch.setattr(runtime, "tenant_scoped_session", lambda *a, **k: db)
-    monkeypatch.setattr(runtime.asyncio, "create_task", fake_create_task)
 
-    resumed = await runtime.resume_persisted_web_chat_runs(limit=10)
+    reconciled = await runtime._reconcile_claimed_web_chat_terminal_ghost(run_id)
 
-    assert resumed == []
-    assert scheduled == []
+    assert reconciled is True
     assert task.status == "completed"
     assert task.result_summary == "final answer"
     assert task.completed_at is not None

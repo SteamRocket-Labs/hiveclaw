@@ -415,6 +415,8 @@ flowchart LR
 - 精确代码位置：`backend/app/services/web_chat_runtime.py:dispatch_web_chat_run`、`:resume_persisted_web_chat_runs`；`backend/app/services/runtime_task_claim_service.py:claim_available`；`backend/app/main.py:_resume_runtime_tasks_after_startup`。
 - 缺失测试：两独立 session/worker 同时 startup scan；stale running reclaim；副作用计数恰为一次。
 - 一次性完整关闭方案：让 startup 只唤醒统一 worker；在 `RuntimeTaskClaimService` 增加带 `SKIP LOCKED` 的 expired-active reclaim contract，原子递增 `claim_version` 并写 fence；删除 direct dispatch；迁移/回填旧 running rows 的 lease/fence；对旧无 fence 行安全标记 resumable 或 needs_reconciliation；为 claim/reclaim/dispatch/span 加指标；UI显示“恢复中/需核对”；加入多连接 PostgreSQL fault test、commit 前后 crash、stale worker、外部副作用 exact-once gate；提供回滚为禁用 startup direct resume 且不取消 durable rows。
+- 修复状态（2026-07-12）：**闭环**。Startup recovery 已删除 direct dispatch，只枚举 durable active rows 并唤醒统一 RuntimeTask worker。统一 claim SQL 同时处理 queued/resumable 与 lease 已过期或缺失的 Web Chat active rows，使用 `FOR UPDATE SKIP LOCKED`、原子递增 `claim_version`、替换 worker/lease/fence，并为旧无 fence 行写 `legacy_claim_backfilled`。被重领的 run 在模型/工具前先以当前 fence 核对 terminal transcript ghost；存在终态事实则直接收敛，避免重放。恢复 run 注入 durable resume context、前端现有 phase reducer真实收到 `resuming`，worker snapshot 累计 `expired_claims_reclaimed`。
+- 修复证据：Red claim/startup 集 `pytest tests/services/test_runtime_task_claim_service.py tests/services/test_web_chat_runtime.py::test_resume_persisted_web_chat_runs_only_wakes_the_fenced_worker -q` → `3 failed, 5 passed`；resume context Red → helper 缺失；UI phase Red → `starting != resuming`。Green 扩展 `pytest tests/services/test_runtime_task_claim_service.py tests/services/test_runtime_task_worker.py tests/services/test_runtime_task_fence.py tests/services/test_web_chat_runtime.py tests/integration/test_runtime_task_claim_fencing_postgres.py -q` → `128 passed, 3 warnings`；其中真实 PostgreSQL 两独立 worker 对同一 expired row 竞争 → `1 passed` 且只产生一个 claim/version 8；变更文件 `ruff check` 与 `ruff format --check` 绿。提交主题：`fix(R-001): fence multi-replica web chat recovery`。
 
 ### [R-002] Approval commit 与获批动作之间没有 durable handoff
 
@@ -981,26 +983,37 @@ Codebase graph 校正时状态为 ready（43,281 nodes / 166,753 edges）；`det
 
 原始审计没有修改生产代码、测试、migration、配置、生产数据或部署状态，也没有 commit。本次校正只修改这份被 `docs/` ignore 的报告；没有修改实现，也没有清理 `.ultra/debug/subagent-log.jsonl` 当前已有的 3 条追加记录。因此当前事实是“报告内容已变更 + tracked worktree 仍有该 debug 日志修改”，不能再写成“除报告外 clean”。若后续需要提交本报告，必须显式 force-add，并在提交前再次记录当时 HEAD/worktree。
 
-## 16. 17 个断点修复执行账本
+## 16. 28 项原子缺口修复执行账本
 
-本节记录原始审计中 17 个“断点”的实际落地状态。原始严重级别与原子状态保留为审计快照；只有同时具备实现、回归测试、报告证据和独立提交，才把“修复状态”改为闭环。当前进度：**3/17**。
+本节记录原始审计全部 28 项的实际落地状态：17 个断点、10 个局部闭环、1 个已知缺失。原始严重级别与原子状态保留为审计快照；只有同时具备实现、回归测试、报告证据和独立提交，才把修复状态改为闭环。Company Knowledge Base 本体按 owner 边界不在本轮开发，但 R-008 的诚实隔离、文案与防伪装验收仍必须关闭。当前进度：**4/28**。
 
 | ID | 修复状态 | 独立提交主题 | 机械证据摘要 |
 |---|---|---|---|
-| R-016 | 闭环 | `fix(R-016): close governed memory path traversal` | Red 2 failed/1 passed；Green 3 passed；扩展 39 passed；ruff check/format 绿 |
-| R-015 | 闭环 | `fix(R-015): sanitize rich text and authenticated downloads` | Red 5 failed + CSP inheritance 1 failed；Green 121 passed；全量 622 passed；build/E2E/audit 绿 |
-| R-017 | 闭环 | `fix(R-017): align heartbeat with the real T3 gate` | Red 2 failed；Green 5 passed；真 Gate 扩展 24 passed；ruff 绿 |
-| R-001 | 待修复 | — | — |
-| R-019 | 待修复 | — | — |
-| R-026 | 待修复 | — | — |
-| R-005 | 待修复 | — | — |
-| R-021 | 待修复 | — | — |
-| R-018 | 待修复 | — | — |
-| R-022 | 待修复 | — | — |
+| R-001 | 闭环 | `fix(R-001): fence multi-replica web chat recovery` | Red 3 failed + 两个独立 Red；Green 128 passed；真实 PostgreSQL 双 worker exact-one claim；ruff 绿 |
 | R-002 | 待修复 | — | — |
-| R-009 | 待修复 | — | — |
 | R-003 | 待修复 | — | — |
-| R-025 | 待修复 | — | — |
-| R-028 | 待修复 | — | — |
-| R-027 | 待修复 | — | — |
+| R-004 | 待修复 | — | — |
+| R-005 | 待修复 | — | — |
+| R-006 | 待修复 | — | — |
+| R-007 | 待修复 | — | — |
+| R-008 | 待边界闭环（Company KB 本体已知缺失） | — | — |
+| R-009 | 待修复 | — | — |
+| R-010 | 待修复 | — | — |
+| R-011 | 待修复 | — | — |
 | R-012 | 待修复 | — | — |
+| R-013 | 待修复 | — | — |
+| R-014 | 待修复 | — | — |
+| R-015 | 闭环 | `fix(R-015): sanitize rich text and authenticated downloads` | Red 5 failed + CSP inheritance 1 failed；Green 121 passed；全量 622 passed；build/E2E/audit 绿 |
+| R-016 | 闭环 | `fix(R-016): close governed memory path traversal` | Red 2 failed/1 passed；Green 3 passed；扩展 39 passed；ruff check/format 绿 |
+| R-017 | 闭环 | `fix(R-017): align heartbeat with the real T3 gate` | Red 2 failed；Green 5 passed；真 Gate 扩展 24 passed；ruff 绿 |
+| R-018 | 待修复 | — | — |
+| R-019 | 待修复 | — | — |
+| R-020 | 待修复 | — | — |
+| R-021 | 待修复 | — | — |
+| R-022 | 待修复 | — | — |
+| R-023 | 待修复 | — | — |
+| R-024 | 待修复 | — | — |
+| R-025 | 待修复 | — | — |
+| R-026 | 待修复 | — | — |
+| R-027 | 待修复 | — | — |
+| R-028 | 待修复 | — | — |

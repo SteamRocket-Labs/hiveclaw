@@ -2306,70 +2306,51 @@ async def cancel_web_chat_run(
 
 
 async def resume_persisted_web_chat_runs(*, limit: int = 50) -> list[str]:
-    """Restart durable web-chat runs left active by a worker restart."""
-    capacity = web_chat_run_capacity_remaining()
-    if capacity <= 0:
-        logger.info("[WebChatRun] Startup resume deferred because runtime worker capacity is full")
-        return []
+    """Wake the unified claim worker for durable web-chat recovery.
+
+    Startup must never dispatch an active row directly. Expired/missing leases
+    are reclaimed by ``RuntimeTaskClaimService`` under ``SKIP LOCKED`` and get
+    a new claim fence before model or tool execution resumes.
+    """
     records = await list_active_runtime_task_records(
         statuses=_ACTIVE_STATUSES,
         task_types=_EXECUTABLE_CHAT_TASK_TYPES,
         oldest_started_first=True,
-        limit=min(limit, capacity),
+        limit=limit,
     )
-    ordered_ids: list[uuid.UUID] = []
-    ids_by_tenant: dict[uuid.UUID, list[uuid.UUID]] = {}
+    ordered_ids: list[str] = []
     for record in records:
         try:
             task_id = uuid.UUID(str(record["task_id"]))
-            tenant_id = uuid.UUID(str(record["tenant_id"]))
+            uuid.UUID(str(record["tenant_id"]))
         except (KeyError, TypeError, ValueError):
             logger.error("[WebChatRun] Skipping malformed active-run locator {}", record)
             continue
-        ordered_ids.append(task_id)
-        ids_by_tenant.setdefault(tenant_id, []).append(task_id)
+        ordered_ids.append(task_id.hex)
 
-    resumable_ids: set[uuid.UUID] = set()
-    for tenant_id, task_ids in ids_by_tenant.items():
-        async with tenant_scoped_session(
-            tenant_id,
-            session_factory=_async_session,
-            require_tenant=True,
-            source="startup_resume_persisted_web_chat_runs",
-        ) as db:
-            result = await db.execute(
-                select(RuntimeTask).where(
-                    RuntimeTask.id.in_(task_ids),
-                    RuntimeTask.tenant_id == tenant_id,
-                    RuntimeTask.task_type.in_(_EXECUTABLE_CHAT_TASK_TYPES),
-                    RuntimeTask.status.in_(_ACTIVE_STATUSES),
-                )
+    if ordered_ids:
+        from app.services.runtime_task_worker import notify_runtime_task_worker
+
+        await notify_runtime_task_worker(reason="startup_web_chat_recovery")
+    return ordered_ids
+
+
+def _with_reclaimed_web_chat_resume_context(task: RuntimeTask) -> dict[str, Any]:
+    metadata = dict(getattr(task, "metadata_json", None) or {})
+    if not metadata.get("reclaimed_expired_claim"):
+        return metadata
+    if getattr(task, "parent_agent_id", None) and not metadata.get("restart_resume_context"):
+        try:
+            metadata["restart_resume_context"] = build_long_task_resume_context(
+                agent_id=task.parent_agent_id,
+                runtime_task_id=task.id,
             )
-            for task in result.scalars().all():
-                if await _reconcile_terminal_transcript_ghost(db, task):
-                    continue
-                run_key = task.id.hex
-                if run_key in _TASKS:
-                    continue
-                metadata = dict(task.metadata_json or {})
-                if task.parent_agent_id:
-                    try:
-                        metadata["restart_resume_context"] = build_long_task_resume_context(
-                            agent_id=task.parent_agent_id,
-                            runtime_task_id=task.id,
-                        )
-                    except Exception as exc:
-                        metadata["restart_resume_context_error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
-                metadata["resumed_after_restart"] = True
-                metadata["resumed_at"] = datetime.now(timezone.utc).isoformat()
-                task.metadata_json = metadata
-                resumable_ids.add(task.id)
-
-    resumed_ids: list[str] = []
-    for task_id in ordered_ids[:capacity]:
-        if task_id in resumable_ids and dispatch_web_chat_run(task_id):
-            resumed_ids.append(task_id.hex)
-    return resumed_ids
+        except Exception as exc:
+            metadata["restart_resume_context_error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
+    metadata["resumed_after_restart"] = True
+    metadata["resumed_at"] = datetime.now(timezone.utc).isoformat()
+    metadata["recovery_state"] = "recovering"
+    return metadata
 
 
 async def _claim_pending_reply_suffix_for_session(
@@ -3952,7 +3933,9 @@ async def _load_runtime_context(
         if is_agent_expired(agent):
             raise RuntimeError(f"Agent {runtime_task.parent_agent_id} is not active")
 
-        metadata = dict(runtime_task.metadata_json or {})
+        metadata = _with_reclaimed_web_chat_resume_context(runtime_task)
+        if metadata != dict(runtime_task.metadata_json or {}):
+            runtime_task.metadata_json = metadata
         user_id = _uuid_or_none(metadata.get("user_id"))
         external_principal_id = _uuid_or_none(metadata.get("external_principal_id"))
         if external_principal_id is not None:
@@ -4133,12 +4116,45 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
     """Delegate to the single run_web_chat_task lifecycle owner."""
     import sys
     from app.services.web_chat_run_orchestrator import run_web_chat_task
+    from app.services.runtime_task_fence import current_runtime_task_fence
 
+    run_uuid = _run_id(run_id)
+    if current_runtime_task_fence() is not None and await _reconcile_claimed_web_chat_terminal_ghost(run_uuid):
+        return
     return await run_web_chat_task(
-        run_id=run_id,
+        run_id=run_uuid,
         cancel_event=cancel_event,
         support=sys.modules[__name__],
     )
+
+
+async def _reconcile_claimed_web_chat_terminal_ghost(run_uuid: uuid.UUID) -> bool:
+    """Stop a reclaimed run when its transcript already proves terminal.
+
+    The check executes inside the claimed/fenced worker before the lifecycle
+    owner can call the model or a tool. This closes the crash window where the
+    transcript commit succeeded but the RuntimeTask terminal projection did
+    not.
+    """
+    tenant_id = await resolve_tenant_for_runtime_task(
+        run_uuid,
+        session_factory=_async_session,
+    )
+    if tenant_id is None:
+        return True
+    async with tenant_scoped_session(
+        tenant_id,
+        session_factory=_async_session,
+        require_tenant=True,
+        source="claimed_web_chat_terminal_preflight",
+    ) as db:
+        task = await _load_web_chat_run_by_id(db, run_uuid)
+        if task is None or getattr(task, "status", None) not in _ACTIVE_STATUSES:
+            return True
+        from app.services.runtime_task_fence import assert_runtime_task_fence
+
+        assert_runtime_task_fence(task)
+        return await _reconcile_terminal_transcript_ghost(db, task)
 
 
 # Kept as an overridable module global for tests and for parity with other services.

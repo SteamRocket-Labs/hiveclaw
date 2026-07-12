@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -70,6 +70,30 @@ def test_runtime_task_claim_statement_uses_skip_locked_and_queue_order():
     assert "runtime_tasks.created_at ASC" in compiled
 
 
+def test_runtime_task_claim_statement_reclaims_only_expired_active_rows():
+    from app.services.runtime_task_claim_service import build_runtime_task_claim_statement, runtime_task_claim_snapshot
+
+    stmt = build_runtime_task_claim_statement(
+        task_types=("web_chat_turn",),
+        now=datetime(2026, 7, 12, tzinfo=timezone.utc),
+        batch_size=10,
+    )
+
+    compiled = str(stmt.compile(dialect=postgresql.dialect()))
+    assert "runtime_tasks.status = " in compiled
+    assert "runtime_tasks.claim_expires_at IS NULL" in compiled
+    assert "runtime_tasks.claim_expires_at <=" in compiled
+    assert "FOR UPDATE SKIP LOCKED" in compiled
+    snapshot = runtime_task_claim_snapshot()
+    assert snapshot["lease_reclaimable_task_types"] == [
+        "web_chat_turn",
+        "goal_continuation",
+        "team_member",
+        "advanced_plan",
+    ]
+    assert snapshot["fence_contract"] == "claim_version+worker_id+lease"
+
+
 def test_runtime_task_claim_statement_excludes_stopped_budget_runs():
     from app.services.runtime_task_claim_service import build_runtime_task_claim_statement
 
@@ -121,6 +145,75 @@ async def test_claim_available_marks_tasks_running_with_lease():
     assert task.metadata_json["claim_fence"] == f"{task.id.hex}:1"
     assert db.commits == 1
     assert db.rollbacks == 0
+
+
+@pytest.mark.asyncio
+async def test_claim_available_reclaims_expired_running_task_with_new_fence():
+    from app.models.runtime_task import RuntimeTask
+    from app.services.runtime_task_claim_service import RuntimeTaskClaimService
+
+    old_expiry = datetime.now(timezone.utc) - timedelta(seconds=5)
+    task = RuntimeTask(
+        id=uuid4(),
+        task_type="web_chat_turn",
+        status="running",
+        parent_agent_id=uuid4(),
+        tenant_id=uuid4(),
+        parent_session_id=str(uuid4()),
+        attempt_count=2,
+        claim_version=4,
+        claimed_by="dead-worker",
+        claim_expires_at=old_expiry,
+        metadata_json={"claim_version": 4, "claim_fence": "old:4"},
+    )
+    db = _FakeDB([task])
+
+    claimed = await RuntimeTaskClaimService(
+        db=db,
+        worker_id="recovery-worker",
+        task_types=("web_chat_turn",),
+        lease_seconds=60,
+    ).claim_available(batch_size=1)
+
+    assert claimed == [task]
+    assert task.status == "running"
+    assert task.claimed_by == "recovery-worker"
+    assert task.claim_version == 5
+    assert task.attempt_count == 3
+    assert task.metadata_json["reclaimed_expired_claim"] is True
+    assert task.metadata_json["previous_claim"]["worker_id"] == "dead-worker"
+    assert task.metadata_json["previous_claim"]["claim_version"] == 4
+    assert task.metadata_json["claim_fence"] == f"{task.id.hex}:5"
+
+
+@pytest.mark.asyncio
+async def test_claim_available_backfills_legacy_running_task_without_lease():
+    from app.models.runtime_task import RuntimeTask
+    from app.services.runtime_task_claim_service import RuntimeTaskClaimService
+
+    task = RuntimeTask(
+        id=uuid4(),
+        task_type="web_chat_turn",
+        status="running",
+        parent_agent_id=uuid4(),
+        tenant_id=uuid4(),
+        parent_session_id=str(uuid4()),
+        attempt_count=0,
+        claim_version=0,
+        claimed_by=None,
+        claim_expires_at=None,
+    )
+    claimed = await RuntimeTaskClaimService(
+        db=_FakeDB([task]),
+        worker_id="migration-recovery-worker",
+        task_types=("web_chat_turn",),
+        lease_seconds=60,
+    ).claim_available(batch_size=1)
+
+    assert claimed == [task]
+    assert task.claim_version == 1
+    assert task.metadata_json["legacy_claim_backfilled"] is True
+    assert task.metadata_json["claim_fence"] == f"{task.id.hex}:1"
 
 
 @pytest.mark.asyncio

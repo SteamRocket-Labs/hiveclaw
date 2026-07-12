@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import desc, exists, or_, select
+from sqlalchemy import and_, desc, exists, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.runtime_budget import RuntimeBudgetRun
@@ -13,6 +13,12 @@ from app.models.task import Task
 
 
 CLAIMABLE_RUNTIME_TASK_STATUSES = ("pending", "resumable")
+LEASE_RECLAIMABLE_RUNTIME_TASK_TYPES = (
+    "web_chat_turn",
+    "goal_continuation",
+    "team_member",
+    "advanced_plan",
+)
 
 
 def _utcnow() -> datetime:
@@ -30,7 +36,14 @@ def build_runtime_task_claim_statement(
     stmt = (
         select(RuntimeTask)
         .where(
-            RuntimeTask.status.in_(CLAIMABLE_RUNTIME_TASK_STATUSES),
+            or_(
+                RuntimeTask.status.in_(CLAIMABLE_RUNTIME_TASK_STATUSES),
+                and_(
+                    RuntimeTask.status == "running",
+                    RuntimeTask.task_type.in_(LEASE_RECLAIMABLE_RUNTIME_TASK_TYPES),
+                    or_(RuntimeTask.claim_expires_at.is_(None), RuntimeTask.claim_expires_at <= claim_now),
+                ),
+            ),
             or_(RuntimeTask.scheduled_at.is_(None), RuntimeTask.scheduled_at <= claim_now),
             or_(
                 RuntimeTask.budget_run_id.is_(None),
@@ -156,6 +169,14 @@ class RuntimeTaskClaimService:
         claim_expires_at = now + timedelta(seconds=self.lease_seconds)
         claimed_tasks: list[RuntimeTask] = []
         for task in tasks:
+            reclaimed_expired_claim = str(getattr(task, "status", "") or "") == "running"
+            previous_claim = {
+                "worker_id": str(getattr(task, "claimed_by", None) or ""),
+                "claim_version": int(getattr(task, "claim_version", 0) or 0),
+                "claim_expires_at": (
+                    task.claim_expires_at.isoformat() if getattr(task, "claim_expires_at", None) else None
+                ),
+            }
             if task.task_type == "business_task" and not await _bind_business_task_claim(
                 self.db,
                 runtime_task=task,
@@ -170,6 +191,13 @@ class RuntimeTaskClaimService:
             if getattr(task, "started_at", None) is None:
                 task.started_at = now
             metadata = dict(getattr(task, "metadata_json", None) or {})
+            if reclaimed_expired_claim:
+                metadata["reclaimed_expired_claim"] = True
+                metadata["reclaimed_at"] = now.isoformat()
+                metadata["recovery_state"] = "recovering"
+                metadata["previous_claim"] = previous_claim
+                if previous_claim["claim_version"] == 0:
+                    metadata["legacy_claim_backfilled"] = True
             metadata["claimed_by"] = self.worker_id
             metadata["claimed_at"] = now.isoformat()
             metadata["claim_expires_at"] = claim_expires_at.isoformat()
@@ -184,4 +212,6 @@ class RuntimeTaskClaimService:
 def runtime_task_claim_snapshot() -> dict[str, Any]:
     return {
         "claimable_statuses": list(CLAIMABLE_RUNTIME_TASK_STATUSES),
+        "lease_reclaimable_task_types": list(LEASE_RECLAIMABLE_RUNTIME_TASK_TYPES),
+        "fence_contract": "claim_version+worker_id+lease",
     }

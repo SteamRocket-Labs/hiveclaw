@@ -26,6 +26,7 @@ from app.services.llm_client import LLMMessage, create_llm_client_from_config, w
 
 
 _T3_CONSOLIDATOR_TEMPLATE = Path(__file__).parent.parent / "templates" / "T3_CONSOLIDATOR.md"
+_T3_MEMORY_GATE_TEMPLATE = Path(__file__).parent.parent / "templates" / "T3_MEMORY_GATE.md"
 _MAX_INPUT_CHARS = 120_000
 _CONSOLIDATOR_OUTPUT_TOKENS = 16_384
 _REVIEW_OUTPUT_TOKENS = 8_192
@@ -232,11 +233,16 @@ async def _call_memory_gate_review(
     consolidation_pitch_md: str,
     revised_patch_md: str,
 ) -> dict[str, Any]:
-    system_prompt = (
-        "You are the Memory Gate reviewer for a T3 consolidation job. "
-        "Review the exact revised_patch.md against source_bundle.json and t3_neighborhood.md. "
-        'Return JSON only with key "review_md". The review_md must contain '
-        '<memory_gate_review schema_version="t3.memory_gate_review.v1"> and a decision.'
+    system_prompt = "\n\n".join(
+        [
+            _T3_MEMORY_GATE_TEMPLATE.read_text(encoding="utf-8").strip(),
+            (
+                "Heartbeat response envelope: review the exact revised_patch.md against "
+                "source_bundle.json and t3_neighborhood.md, then return JSON only with key "
+                '"review_md". Put the complete Markdown review required above in that value. '
+                "Do not put Markdown fences around the outer JSON."
+            ),
+        ]
     )
     user_prompt = _truncate(
         "\n\n".join(

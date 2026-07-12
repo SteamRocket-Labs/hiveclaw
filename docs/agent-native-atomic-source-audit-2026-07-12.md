@@ -697,6 +697,8 @@ flowchart LR
 - 精确代码位置：`backend/app/services/heartbeat_t3_core.py:119,128,134,137,235-240`；`backend/app/memory/t3_platform_gate.py:173,478-532`；`backend/tests/services/test_heartbeat_deagentified.py:88,100-110`。
 - 缺失测试：用与 Gate 对齐的详规格 prompt 跑**真** `apply_t3_consolidation_patch` 的端到端 held→committed 用例；断言评审产出 schema=`t3.review.v1` + 五项 rubric。
 - 一次性完整关闭方案：把 heartbeat 评审 prompt 改用与 Platform Gate 对齐的详规格模板（schema=`t3.review.v1` + memory_gate_rubric 五项 + 阈值说明，复用 `memory/t2/prompts.py` 的合规范式）；删除测试中对 `apply_t3_consolidation_patch` 的 monkeypatch，改跑真 Gate；补 accepted-T3 从自动臂真实增长的集成断言；无数据迁移（prompt + 测试修复），但应审计生产是否已积压大量 held 作业待重跑。
+- 修复状态（2026-07-12）：**闭环**。Heartbeat Memory Gate 不再维护分叉的简化 prompt，而是直接加载唯一 canonical `T3_MEMORY_GATE.md`，再只附加 JSON envelope；review schema、五维 rubric、16/20 阈值和 Platform Gate 完全同源。`HEARTBEAT.md` 的旧 schema 也已同步删除。真实集成测试删除了 `apply_t3_consolidation_patch` fake：LLM fixture 产出的 patch/review 现在经过真 Gate，实际创建 `memory/profiles/owner.md`、写入 entry，并把源 T2 manifest 转为 `absorbed`。
+- 修复证据：Red `pytest tests/services/test_heartbeat_deagentified.py -q` → `2 failed, 3 passed`（旧 schema 文档与旧 review prompt）；Green 同文件 → `5 passed`；扩展回归 `pytest tests/services/test_heartbeat_deagentified.py tests/memory/test_t3_consolidation_platform_gate.py tests/runtime/test_t3_prompt_contracts.py -q` → `24 passed, 4 warnings`；变更 Python 文件 `ruff check` 与 `ruff format --check` 绿；源码检索确认旧 `t3.memory_gate_review.v1` 只保留在“必须不存在”的回归断言中。提交主题：`fix(R-017): align heartbeat with the real T3 gate`。
 
 ### [R-018] channel 机器人密钥明文落库（7 渠道）
 
@@ -981,13 +983,13 @@ Codebase graph 校正时状态为 ready（43,281 nodes / 166,753 edges）；`det
 
 ## 16. 17 个断点修复执行账本
 
-本节记录原始审计中 17 个“断点”的实际落地状态。原始严重级别与原子状态保留为审计快照；只有同时具备实现、回归测试、报告证据和独立提交，才把“修复状态”改为闭环。当前进度：**2/17**。
+本节记录原始审计中 17 个“断点”的实际落地状态。原始严重级别与原子状态保留为审计快照；只有同时具备实现、回归测试、报告证据和独立提交，才把“修复状态”改为闭环。当前进度：**3/17**。
 
 | ID | 修复状态 | 独立提交主题 | 机械证据摘要 |
 |---|---|---|---|
 | R-016 | 闭环 | `fix(R-016): close governed memory path traversal` | Red 2 failed/1 passed；Green 3 passed；扩展 39 passed；ruff check/format 绿 |
 | R-015 | 闭环 | `fix(R-015): sanitize rich text and authenticated downloads` | Red 5 failed + CSP inheritance 1 failed；Green 121 passed；全量 622 passed；build/E2E/audit 绿 |
-| R-017 | 待修复 | — | — |
+| R-017 | 闭环 | `fix(R-017): align heartbeat with the real T3 gate` | Red 2 failed；Green 5 passed；真 Gate 扩展 24 passed；ruff 绿 |
 | R-001 | 待修复 | — | — |
 | R-019 | 待修复 | — | — |
 | R-026 | 待修复 | — | — |

@@ -90,9 +90,13 @@ The consolidator returns JSON with:
 
 The Memory Gate reviewer returns JSON with:
 
+The embedded XML contract is exactly `<memory_gate_review schema_version="t3.review.v1">`
+with a child `<memory_gate_rubric schema_version="memory_gate_rubric.v1">`; it is the
+same contract enforced by the Platform Gate, not a heartbeat-specific schema.
+
 ```json
 {
-  "review_md": "# T3 Memory Gate Review\n<memory_gate_review schema_version=\"t3.memory_gate_review.v1\">...</memory_gate_review>"
+  "review_md": "# T3 Memory Gate Review\n<memory_gate_review schema_version=\"t3.review.v1\"><decision>accept|revise|hold|reject</decision><memory_gate_rubric schema_version=\"memory_gate_rubric.v1\">five scored dimensions + rubric decision</memory_gate_rubric></memory_gate_review>"
 }
 ```
 

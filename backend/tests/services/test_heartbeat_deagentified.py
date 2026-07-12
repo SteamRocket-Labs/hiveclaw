@@ -32,9 +32,21 @@ def test_t3_consolidator_template_is_direct_llm_core_contract() -> None:
     assert '"revised_patch_md"' in template
 
 
+def test_heartbeat_t3_review_contract_matches_platform_gate() -> None:
+    heartbeat_template = (APP_ROOT / "templates" / "HEARTBEAT.md").read_text(encoding="utf-8")
+    memory_gate_template = (APP_ROOT / "templates" / "T3_MEMORY_GATE.md").read_text(encoding="utf-8")
+
+    assert 'schema_version="t3.memory_gate_review.v1"' not in heartbeat_template
+    assert 'schema_version="t3.review.v1"' in heartbeat_template
+    assert 'schema_version="memory_gate_rubric.v1"' in heartbeat_template
+    assert 'schema_version="t3.review.v1"' in memory_gate_template
+
+
 @pytest.mark.asyncio
 async def test_heartbeat_t3_core_writes_artifacts_without_tools(tmp_path, monkeypatch) -> None:
     from app.memory.t3_consolidation import build_t3_consolidation_batch
+    from app.memory.md_store import ensure_t3_layout
+    from app.memory.t3_platform_gate import file_sha256
     from app.services import heartbeat_t3_core
 
     agent_id = uuid4()
@@ -66,6 +78,11 @@ async def test_heartbeat_t3_core_writes_artifacts_without_tools(tmp_path, monkey
         encoding="utf-8",
     )
     staged = build_t3_consolidation_batch(agent_id=agent_id, data_root=tmp_path, package_dirs=[package_dir])
+    memory_root = ensure_t3_layout(tmp_path, agent_id)
+    target_path = memory_root / "profiles" / "owner.md"
+    target = "memory/profiles/owner.md"
+    source_ref = "t2://session/s1/segment/seg-1"
+    entry_id = "owner-concise-updates"
 
     calls: list[dict] = []
 
@@ -78,15 +95,43 @@ async def test_heartbeat_t3_core_writes_artifacts_without_tools(tmp_path, monkey
                     "consolidation_pitch_md": "# T3 Consolidation Pitch\n\n- t2://session/s1/segment/seg-1",
                     "revised_patch_md": (
                         "# T3 Revised Patch\n\n"
-                        '<t3_consolidation_patch schema_version="t3.consolidation_patch.v1"></t3_consolidation_patch>'
+                        '<t3_consolidation_patch schema_version="t3.consolidation_patch.v1">'
+                        f'<base_revisions><base_revision path="{target}" sha256="{file_sha256(target_path)}"/>'
+                        "</base_revisions>"
+                        f'<source_packages><source_package ref="{source_ref}" status="reviewed"/></source_packages>'
+                        f'<target_files><target_file path="{target}"/></target_files>'
+                        "<target_view_labels><target_view>profiles</target_view><consolidation_mode>create</consolidation_mode>"
+                        "<source_coverage>single_session</source_coverage><stability>stable</stability>"
+                        "<behavior_impact>response_style</behavior_impact><prompt_priority>p1_dynamic</prompt_priority>"
+                        "</target_view_labels>"
+                        f'<proposed_changes><upsert_entry target="{target}" entry_id="{entry_id}" section="Preferences">'
+                        f"<entry_content><![CDATA[### Concise updates\n<!-- id: {entry_id} -->\n"
+                        f"Owner prefers concise updates.\n\nSource: `{source_ref}#summary`]]></entry_content>"
+                        "</upsert_entry></proposed_changes>"
+                        f"<evidence><source_ref>{source_ref}#summary</source_ref></evidence>"
+                        "</t3_consolidation_patch>"
                     ),
                 }
             else:
                 payload = {
                     "review_md": (
                         "# T3 Memory Gate Review\n\n"
-                        '<memory_gate_review schema_version="t3.memory_gate_review.v1">'
+                        '<memory_gate_review schema_version="t3.review.v1">'
                         "<decision>accept</decision>"
+                        '<memory_gate_rubric schema_version="memory_gate_rubric.v1">'
+                        + "".join(
+                            f'<score name="{name}" value="4"><rationale>Verified against the staged source.</rationale>'
+                            f"<source_refs><source_ref>{source_ref}#summary</source_ref></source_refs></score>"
+                            for name in (
+                                "evidence_strength",
+                                "scope_clarity",
+                                "stability",
+                                "future_utility",
+                                "conflict_safety",
+                            )
+                        )
+                        + "<decision>accept_new</decision><decision_rationale>All hard gates pass.</decision_rationale>"
+                        "<required_followup>commit</required_followup></memory_gate_rubric>"
                         "</memory_gate_review>"
                     )
                 }
@@ -95,19 +140,7 @@ async def test_heartbeat_t3_core_writes_artifacts_without_tools(tmp_path, monkey
         async def close(self):
             return None
 
-    gate_calls: list[dict] = []
-
-    def fake_apply_gate(**kwargs):
-        gate_calls.append(kwargs)
-        return SimpleNamespace(
-            status="committed",
-            issues=(),
-            committed_paths=("memory/profiles/owner.md",),
-            committed_blocks=("pref-concise-updates",),
-        )
-
     monkeypatch.setattr(heartbeat_t3_core, "create_llm_client_from_config", lambda _config: FakeClient())
-    monkeypatch.setattr(heartbeat_t3_core, "apply_t3_consolidation_patch", fake_apply_gate)
 
     result = await heartbeat_t3_core.run_heartbeat_t3_core(
         agent_id=agent_id,
@@ -127,7 +160,14 @@ async def test_heartbeat_t3_core_writes_artifacts_without_tools(tmp_path, monkey
     assert len(calls) == 2
     assert calls[0]["tools"] is None
     assert calls[1]["tools"] is None
-    assert gate_calls
+    review_system_prompt = calls[1]["messages"][0].content
+    assert 'schema_version="t3.review.v1"' in review_system_prompt
+    assert 'schema_version="memory_gate_rubric.v1"' in review_system_prompt
+    assert "16/20" in review_system_prompt
+    assert target_path.exists()
+    assert entry_id in target_path.read_text(encoding="utf-8")
+    package_manifest = json.loads((package_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert package_manifest["package_status"] == "absorbed"
 
     job_dir = tmp_path / str(agent_id) / "memory" / ".staging" / "t3_jobs" / staged.job_id
     assert "curated owner update preference" in (job_dir / "manifest.json").read_text(encoding="utf-8")

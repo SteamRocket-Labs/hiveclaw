@@ -86,11 +86,17 @@ async def test_self_create_company_pins_new_tenant_before_assigning_creator(monk
     )
     db = _FakeDB([_ScalarResult(None)])
     bypass_calls: list[dict] = []
+    bypass_exit_flushed: list[bool] = []
+    bypass_exit_user_tenant: list[object] = []
 
     @contextlib.asynccontextmanager
     async def fake_enter_rls_bypass(session, *, reason: str, actor_id: str | None = None):
         bypass_calls.append({"session": session, "reason": reason, "actor_id": actor_id})
-        yield session
+        try:
+            yield session
+        finally:
+            bypass_exit_flushed.append(session.flushed)
+            bypass_exit_user_tenant.append(current_user.tenant_id)
 
     monkeypatch.setattr(tenants_api, "_slugify", lambda _name: "acme")
     monkeypatch.setattr(tenants_api, "enter_rls_bypass", fake_enter_rls_bypass, raising=False)
@@ -106,6 +112,8 @@ async def test_self_create_company_pins_new_tenant_before_assigning_creator(monk
     assert current_user.role == "org_admin"
     assert any(f"SET LOCAL app.current_tenant_id = '{current_user.tenant_id}'" in stmt for stmt in db.statements)
     assert db.flushed is True
+    assert bypass_exit_flushed == [True]
+    assert bypass_exit_user_tenant == [current_user.tenant_id]
     assert bypass_calls == [
         {
             "session": db,
@@ -131,12 +139,16 @@ async def test_join_company_uses_audited_bypass_for_invite_lookup_then_scopes_ta
     )
     db = _FakeDB([_ScalarResult(code), _ScalarResult(tenant), _ScalarResult(1)])
     bypass_calls: list[dict] = []
+    bypass_exit_flushed: list[bool] = []
     token_calls: list[dict] = []
 
     @contextlib.asynccontextmanager
     async def fake_enter_rls_bypass(session, *, reason: str, actor_id: str | None = None):
         bypass_calls.append({"session": session, "reason": reason, "actor_id": actor_id})
-        yield session
+        try:
+            yield session
+        finally:
+            bypass_exit_flushed.append(session.flushed)
 
     monkeypatch.setattr(tenants_api, "enter_rls_bypass", fake_enter_rls_bypass, raising=False)
 
@@ -164,6 +176,7 @@ async def test_join_company_uses_audited_bypass_for_invite_lookup_then_scopes_ta
     assert current_user.quota_tokens_per_day == 100
     assert current_user.quota_tokens_per_month == 1000
     assert code.used_count == 1
+    assert bypass_exit_flushed == [True]
     assert result.role == "member"
     assert result.access_token == "new-tenant-token"
     assert token_calls == [{"user_id": str(current_user.id), "role": "member", "tenant_id": str(tenant_id)}]

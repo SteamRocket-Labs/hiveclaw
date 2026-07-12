@@ -130,15 +130,17 @@ async def self_create_company(
         tenant = Tenant(name=data.name, slug=slug, im_provider="web_only")
         bypass_db.add(tenant)
         await bypass_db.flush()
-    await _scope_session_to_tenant(db, tenant.id)
 
-    # Assign creator as org_admin
-    current_user.tenant_id = tenant.id
-    current_user.role = "org_admin" if current_user.role == "member" else current_user.role
-    # Inherit token quota defaults from new tenant
-    current_user.quota_tokens_per_day = tenant.default_tokens_per_day
-    current_user.quota_tokens_per_month = tenant.default_tokens_per_month
-    await db.flush()
+        # The old User row is tenantless, so a tenant-scoped UPDATE cannot see
+        # it through RLS USING.  Perform the validated NULL→tenant transition
+        # before leaving the bootstrap authority scope.
+        current_user.tenant_id = tenant.id
+        current_user.role = "org_admin" if current_user.role == "member" else current_user.role
+        current_user.quota_tokens_per_day = tenant.default_tokens_per_day
+        current_user.quota_tokens_per_month = tenant.default_tokens_per_month
+        await bypass_db.flush()
+
+    await _scope_session_to_tenant(db, tenant.id)
 
     return TenantOut.model_validate(tenant)
 
@@ -198,33 +200,36 @@ async def join_company(
         if not tenant or not tenant.is_active:
             raise HTTPException(status_code=400, detail="Company not found or is disabled")
 
-    target_tenant_id = await _scope_session_to_tenant(db, code_obj.tenant_id)
-
-    # Check if this company has an org_admin already
-    admin_check = await db.execute(
-        select(sqla_func.count())
-        .select_from(User)
-        .where(
-            User.tenant_id == tenant.id,
-            User.role.in_(["org_admin", "platform_admin"]),
+        # The old User row is tenantless and therefore invisible to a target-
+        # tenant UPDATE policy.  Complete the validated NULL→tenant transition
+        # and invitation receipt while this narrow, row-bound authority scope
+        # is still active; only then pin normal route consumption to the tenant.
+        admin_check = await bypass_db.execute(
+            select(sqla_func.count())
+            .select_from(User)
+            .where(
+                User.tenant_id == tenant.id,
+                User.role.in_(["org_admin", "platform_admin"]),
+            )
         )
-    )
-    has_admin = admin_check.scalar() > 0
+        has_admin = admin_check.scalar() > 0
 
-    # First joiner of an empty company becomes org_admin
-    assigned_role = "member" if has_admin else "org_admin"
+        # First joiner of an empty company becomes org_admin
+        assigned_role = "member" if has_admin else "org_admin"
 
-    # Assign user to company
-    current_user.tenant_id = tenant.id
-    if current_user.role == "member":
-        current_user.role = assigned_role
-    # Inherit token quota defaults from tenant
-    current_user.quota_tokens_per_day = tenant.default_tokens_per_day
-    current_user.quota_tokens_per_month = tenant.default_tokens_per_month
+        # Assign user to company
+        current_user.tenant_id = tenant.id
+        if current_user.role == "member":
+            current_user.role = assigned_role
+        # Inherit token quota defaults from tenant
+        current_user.quota_tokens_per_day = tenant.default_tokens_per_day
+        current_user.quota_tokens_per_month = tenant.default_tokens_per_month
 
-    # Increment invitation code usage
-    code_obj.used_count += 1
-    await db.flush()
+        # Increment invitation code usage in the same transaction as membership.
+        code_obj.used_count += 1
+        await bypass_db.flush()
+
+    target_tenant_id = await _scope_session_to_tenant(db, code_obj.tenant_id)
     await db.commit()
 
     return JoinResponse(

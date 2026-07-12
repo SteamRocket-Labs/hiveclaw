@@ -8,7 +8,33 @@ from loguru import logger
 
 from sqlalchemy import text
 
-from app.database import async_session, tenant_scoped_session
+from app.database import async_session, enter_rls_bypass, tenant_scoped_session
+
+
+async def _insert_audit_row(
+    db,
+    *,
+    action: str,
+    details: dict | None,
+    agent_id: uuid.UUID | None,
+    user_id: uuid.UUID | None,
+    tenant_id: uuid.UUID | None,
+) -> None:
+    await db.execute(
+        text(
+            "INSERT INTO audit_logs (id, action, details, agent_id, user_id, tenant_id, created_at) "
+            "VALUES (:id, :action, :details, :agent_id, :user_id, :tenant_id, :created_at)"
+        ),
+        {
+            "id": uuid.uuid4(),
+            "action": action,
+            "details": json.dumps(details or {}, ensure_ascii=False, default=str),
+            "agent_id": agent_id,
+            "user_id": user_id,
+            "tenant_id": tenant_id,
+            "created_at": datetime.now(timezone.utc),
+        },
+    )
 
 
 async def write_audit_log(
@@ -37,23 +63,35 @@ async def write_audit_log(
             from app.services.tenant_resolver import resolve_tenant_for_agent
 
             tenant_id = await resolve_tenant_for_agent(agent_id)
-        async with tenant_scoped_session(tenant_id, session_factory=async_session) as db:
-            await db.execute(
-                text(
-                    "INSERT INTO audit_logs (id, action, details, agent_id, user_id, tenant_id, created_at) "
-                    "VALUES (:id, :action, :details, :agent_id, :user_id, :tenant_id, :created_at)"
-                ),
-                {
-                    "id": uuid.uuid4(),
-                    "action": action,
-                    "details": json.dumps(details or {}, ensure_ascii=False, default=str),
-                    "agent_id": agent_id,
-                    "user_id": user_id,
-                    "tenant_id": tenant_id,
-                    "created_at": datetime.now(timezone.utc),
-                },
-            )
-            await db.commit()
+        if tenant_id is None:
+            # Operator/system events intentionally have no tenant.  Their only
+            # legal writer is this parameterized audit sink under an explicit
+            # BYPASS; a fail-closed request scope cannot and must not create
+            # them directly.
+            async with (
+                async_session() as db,
+                enter_rls_bypass(db, reason="operator system audit log insert") as bypass_db,
+            ):
+                await _insert_audit_row(
+                    bypass_db,
+                    action=action,
+                    details=details,
+                    agent_id=agent_id,
+                    user_id=user_id,
+                    tenant_id=tenant_id,
+                )
+                await bypass_db.commit()
+        else:
+            async with tenant_scoped_session(tenant_id, session_factory=async_session) as db:
+                await _insert_audit_row(
+                    db,
+                    action=action,
+                    details=details,
+                    agent_id=agent_id,
+                    user_id=user_id,
+                    tenant_id=tenant_id,
+                )
+                await db.commit()
     except Exception as e:
         # Never let audit logging break the caller
         logger.error(f"[audit_logger] WARNING: failed to write audit log: {e}")

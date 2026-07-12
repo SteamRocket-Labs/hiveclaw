@@ -106,6 +106,7 @@ async def get_current_user(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
     user_uuid = uuid.UUID(user_id)
     token_role = payload.get("role", "")
+    token_tenant = payload.get("tid")
     requested_tenant = request.headers.get("x-tenant-id")
 
     # Single query: load user + tenant is_active via LEFT JOIN (no extra round-trip).
@@ -117,6 +118,17 @@ async def get_current_user(
         async with enter_rls_bypass(
             db,
             reason="platform-admin identity lookup before selected-tenant override",
+            actor_id=user_id,
+        ) as bypass_db:
+            row = await _load_user_with_tenant_status(bypass_db, user_uuid)
+    elif not token_tenant:
+        # A newly registered identity has no tenant to pin until it completes
+        # self-create/join.  Resolve exactly the signed token subject under an
+        # audited scope; downstream route queries remain fail-closed unless
+        # this lookup proves that the user now owns a tenant.
+        async with enter_rls_bypass(
+            db,
+            reason="tenantless authenticated identity lookup before company bootstrap",
             actor_id=user_id,
         ) as bypass_db:
             row = await _load_user_with_tenant_status(bypass_db, user_uuid)
@@ -160,6 +172,10 @@ async def get_current_user(
         # downgraded. Ignore the selected tenant and restore the user's own
         # tenant scope so downstream route queries do not run under a foreign
         # tenant chosen from an old localStorage value.
+        await _set_session_tenant(db, user.tenant_id)
+    elif not token_tenant and user.tenant_id:
+        # A stale pre-company token can safely recover after join/create once
+        # the canonical User row proves the current tenant.
         await _set_session_tenant(db, user.tenant_id)
 
     return user

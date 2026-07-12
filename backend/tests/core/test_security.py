@@ -153,6 +153,29 @@ async def test_platform_admin_selected_tenant_override_rejects_missing_target_te
     assert exc_info.value.status_code == 404
 
 
+@pytest.mark.asyncio
+async def test_tenantless_signed_identity_uses_audited_lookup_before_company_bootstrap():
+    user_id = uuid4()
+    user = SimpleNamespace(
+        id=user_id,
+        role="member",
+        tenant_id=None,
+        is_active=True,
+    )
+    db = _TenantOverrideDB(user)
+    request = SimpleNamespace(headers={})
+    credentials = SimpleNamespace(credentials="jwt")
+
+    with patch(
+        "app.core.security.decode_access_token",
+        return_value={"sub": str(user_id), "role": "member"},
+    ):
+        current_user = await get_current_user(request=request, credentials=credentials, db=db)
+
+    assert current_user is user
+    assert any("app.current_tenant_id = 'BYPASS'" in statement for statement in db.statements)
+
+
 class _RefreshResult:
     def __init__(self, value=None):
         self._value = value

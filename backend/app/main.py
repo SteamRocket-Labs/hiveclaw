@@ -430,15 +430,13 @@ async def lifespan(app: FastAPI):
 
         # Seed default company (Tenant) — required before users can register
         try:
-            from app.models.tenant import Tenant
             from app.database import async_session as _session
-            from sqlalchemy import select as _select
+            from app.services.startup_bootstrap import ensure_default_tenant
 
             async with _session() as _db:
-                _existing = await _db.execute(_select(Tenant).where(Tenant.slug == "default"))
-                if not _existing.scalar_one_or_none():
-                    _db.add(Tenant(name="Default", slug="default", im_provider="web_only"))
-                    await _db.commit()
+                _created = await ensure_default_tenant(_db)
+                await _db.commit()
+                if _created:
                     logger.info("[startup] Default company created")
         except Exception as e:
             logger.warning(f"[startup] Default company seed failed: {e}")

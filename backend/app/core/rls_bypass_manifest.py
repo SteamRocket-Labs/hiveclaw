@@ -160,6 +160,14 @@ RLS_BYPASS_ALLOWLIST = (
             ("select:User", "select:func.count()", "select:Tenant"),
         )
     ),
+    _grant(
+        *(
+            "app/services/startup_bootstrap.py",
+            "ensure_default_tenant",
+            "'startup default tenant bootstrap'",
+            ("insert:Tenant",),
+        )
+    ),
     _grant(*("app/api/auth.py", "login", "'public login identifier lookup'", ("select:User", "select:Tenant"))),
     _grant(
         *(
@@ -191,7 +199,7 @@ RLS_BYPASS_ALLOWLIST = (
             "app/api/tenants.py",
             "join_company",
             "'tenant join invitation lookup'",
-            ("select:Tenant", "select:InvitationCode"),
+            ("select:Tenant", "select:InvitationCode", "select:sqla_func.count()"),
         )
     ),
     _grant(*("app/api/tenants.py", "list_tenants", "'platform-admin list tenants'", ("select:Tenant",))),
@@ -249,6 +257,14 @@ RLS_BYPASS_ALLOWLIST = (
             "app/core/security.py",
             "get_current_user",
             "'platform-admin identity lookup before selected-tenant override'",
+            ("session-state-only",),
+        )
+    ),
+    _grant(
+        *(
+            "app/core/security.py",
+            "get_current_user",
+            "'tenantless authenticated identity lookup before company bootstrap'",
             ("session-state-only",),
         )
     ),
@@ -561,6 +577,22 @@ RLS_BYPASS_ALLOWLIST = (
             "recover_workspace_restores_from_transcript",
             "'workspace restore crash recovery'",
             ("select:ChatTranscriptEvent.id",),
+        )
+    ),
+    _grant(
+        *(
+            "app/services/audit_logger.py",
+            "write_audit_log",
+            "'operator system audit log insert'",
+            ("session-state-only",),
+        )
+    ),
+    _grant(
+        *(
+            "app/services/skill_seeder.py",
+            "seed_skills",
+            "'startup builtin skill registry seed'",
+            ("select:Skill",),
         )
     ),
     _grant(

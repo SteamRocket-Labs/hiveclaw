@@ -287,7 +287,11 @@ async def seed_skills():
     pack_skill_dicts = _load_pack_skill_dicts()
     all_skill_dicts = BUILTIN_SKILLS + pack_skill_dicts
 
-    async with async_session() as db:
+    async with (
+        async_session() as db,
+        enter_rls_bypass(db, reason="startup builtin skill registry seed") as bypass_db,
+    ):
+        db = bypass_db
         for skill_data in all_skill_dicts:
             result = await db.execute(
                 select(Skill).where(

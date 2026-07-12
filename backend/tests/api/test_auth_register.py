@@ -53,6 +53,7 @@ class _FakeDB:
         self.sync_session = SimpleNamespace(info={})
         self.executed_statements: list[str] = []
         self.added = []
+        self.flush_rls_scopes: list[object] = []
 
     async def execute(self, stmt):
         statement = str(stmt)
@@ -65,6 +66,7 @@ class _FakeDB:
         self.added.append(obj)
 
     async def flush(self):
+        self.flush_rls_scopes.append(self.sync_session.info.get("hive_rls_tenant_id"))
         if self._flush_side_effect:
             raise self._flush_side_effect
         for obj in self.added:
@@ -147,6 +149,26 @@ def test_register_first_user_pins_bootstrap_tenant_before_user_insert(monkeypatc
     assert any(
         f"SET LOCAL app.current_tenant_id = '{user.tenant_id}'" in statement for statement in db.executed_statements
     )
+
+
+def test_register_tenantless_user_and_participant_stay_inside_audited_rls_bypass(monkeypatch):
+    """A public user has no tenant authority until the later join/create flow.
+
+    Under the production ``app_rls`` role, both the tenantless ``users`` row
+    and its derived ``participants`` identity must therefore be created inside
+    the same audited registration bootstrap scope as the uniqueness checks.
+    """
+    import app.api.auth as auth_api
+
+    monkeypatch.setattr(auth_api, "hash_password", lambda _password: "hash")
+    monkeypatch.setattr(auth_api, "create_access_token", lambda *_args, **_kwargs: "jwt-stub")
+    db = _FakeDB([None, None, 1])
+    client = _make_client(db)
+
+    resp = client.post("/api/auth/register", json=_PAYLOAD)
+
+    assert resp.status_code == 201
+    assert db.flush_rls_scopes == ["BYPASS", "BYPASS"]
 
 
 def test_register_409_on_username_clash_does_not_suggest_login():

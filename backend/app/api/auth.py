@@ -95,6 +95,10 @@ async def register(data: UserRegister, db: AsyncSession = Depends(get_db)):
     # Check existing — report which field clashed so the UI can guide the user.
     # Priority: email clash surfaces first because it points the user to "go
     # log in / reset password" rather than just picking a new username.
+    # Registration is the authority owner for identities that do not have a
+    # tenant yet.  Keep the uniqueness reads and both identity writes inside
+    # one audited scope; exiting after the reads makes a subsequent tenantless
+    # User/Participant flush fail closed under the production ``app_rls`` role.
     async with enter_rls_bypass(db, reason="public registration uniqueness and bootstrap checks"):
         email_hit = await db.execute(select(User).where(User.email == data.email))
         existing_email_user = email_hit.scalar_one_or_none()
@@ -134,42 +138,45 @@ async def register(data: UserRegister, db: AsyncSession = Depends(get_db)):
                 "quota_tokens_per_month": tenant.default_tokens_per_month,
             }
 
-    # Note: invitation code validation has been moved to the company-join flow
-    # (POST /tenants/join). Registration itself is now open.
-    if tenant_uuid is not None:
-        await pin_rls_tenant_context(db, tenant_uuid)
+        # Note: invitation code validation has been moved to the company-join
+        # flow.  A first user already has tenant authority; later public users
+        # intentionally remain in this audited bootstrap scope until both their
+        # User and Participant rows exist.
+        if tenant_uuid is not None:
+            await pin_rls_tenant_context(db, tenant_uuid)
 
-    user = User(
-        username=data.username,
-        email=data.email,
-        password_hash=hash_password(data.password),
-        display_name=data.display_name or data.username,
-        role=role,
-        tenant_id=tenant_uuid,
-        **quota_defaults,
-    )
-    db.add(user)
-    try:
-        await db.flush()
-    except IntegrityError as exc:
-        await db.rollback()
-        detail = _register_integrity_conflict_detail(exc)
-        if detail:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail) from exc
-        raise
-
-    # Auto-create Participant identity for the new user
-    from app.models.participant import Participant
-
-    db.add(
-        Participant(
-            type="user",
-            ref_id=user.id,
-            display_name=user.display_name,
-            avatar_url=user.avatar_url,
+        user = User(
+            username=data.username,
+            email=data.email,
+            password_hash=hash_password(data.password),
+            display_name=data.display_name or data.username,
+            role=role,
+            tenant_id=tenant_uuid,
+            **quota_defaults,
         )
-    )
-    await db.flush()
+        db.add(user)
+        try:
+            await db.flush()
+        except IntegrityError as exc:
+            await db.rollback()
+            detail = _register_integrity_conflict_detail(exc)
+            if detail:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail) from exc
+            raise
+
+        # Auto-create Participant identity for the new user in the same
+        # authority scope as its parent User row.
+        from app.models.participant import Participant
+
+        db.add(
+            Participant(
+                type="user",
+                ref_id=user.id,
+                display_name=user.display_name,
+                avatar_url=user.avatar_url,
+            )
+        )
+        await db.flush()
 
     # Seed default agents after first user (platform admin) registration
     if is_first_user:

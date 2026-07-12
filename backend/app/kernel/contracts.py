@@ -32,6 +32,25 @@ class TerminalReason(str, Enum):
     CLARIFICATION_REQUIRED = "clarification_required"
     QUOTA_DENIED = "quota_denied"
     TENANT_RESOLUTION_ERROR = "tenant_resolution_error"
+    MEMORY_UNAVAILABLE = "memory_unavailable"
+
+
+class ContextDependencyUnavailable(RuntimeError):
+    """A required prompt dependency failed before model execution."""
+
+    def __init__(
+        self,
+        *,
+        dependency: str,
+        code: str,
+        user_message: str,
+        retryable: bool = True,
+    ) -> None:
+        super().__init__(user_message)
+        self.dependency = dependency
+        self.code = code
+        self.user_message = user_message
+        self.retryable = retryable
 
 
 @dataclass(slots=True)

@@ -42,7 +42,9 @@ export type RuntimeEventType =
   | 'runtime_action_progress'
   | 'runtime_action_completed'
   | 'runtime_action_blocked'
-  | 'runtime_action_failed';
+  | 'runtime_action_failed'
+  | 'memory_context_degraded'
+  | 'memory_context_unavailable';
 
 export interface AgentChatMessage {
   role: 'user' | 'assistant' | 'tool_call' | 'event';
@@ -1269,6 +1271,8 @@ const RUNTIME_EVENT_TYPES = new Set<RuntimeEventType>([
   'runtime_action_completed',
   'runtime_action_blocked',
   'runtime_action_failed',
+  'memory_context_degraded',
+  'memory_context_unavailable',
 ]);
 const RAW_COMPACTION_SECTION_LABELS = [
   'Task Ledger',

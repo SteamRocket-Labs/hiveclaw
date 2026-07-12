@@ -5655,3 +5655,20 @@ async def test_web_chat_stream_micro_batcher_flushes_before_reset_and_preserves_
         ("chunk", "b", False),
         ("chunk", "", True),
     ]
+
+
+def test_memory_context_degradation_events_are_durable_session_context_events() -> None:
+    import inspect
+
+    from app.services import web_chat_run_orchestrator
+    from app.services.web_chat_runtime import _should_persist_runtime_event
+
+    assert _should_persist_runtime_event(
+        {"type": "session_context", "event_type": "memory_context_degraded", "retryable": True}
+    )
+    assert _should_persist_runtime_event(
+        {"type": "session_context", "event_type": "memory_context_unavailable", "retryable": True}
+    )
+    source = inspect.getsource(web_chat_run_orchestrator.run_web_chat_task)
+    boundary = source.split("async def runtime_event_to_ws", 1)[1].split("pending_reply_suffix", 1)[0]
+    assert boundary.index("await _persist_runtime_event") < boundary.index("await broadcast_web_chat_event")

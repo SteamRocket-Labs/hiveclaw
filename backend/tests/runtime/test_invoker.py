@@ -38,6 +38,13 @@ def _allow_invocation_quota(monkeypatch):
 
     monkeypatch.setattr("app.runtime.invoker.check_user_token_quota", allow, raising=False)
 
+    async def no_native_memory(*_args, **_kwargs):
+        return ""
+
+    # These unit tests isolate the kernel/transport behavior with synthetic
+    # agent UUIDs. Memory-specific tests override this fixture explicitly.
+    monkeypatch.setattr("app.runtime.invoker.build_memory_context", no_native_memory)
+
 
 @pytest.mark.asyncio
 async def test_invoke_agent_enforces_user_token_quota_before_kernel(monkeypatch):
@@ -2526,6 +2533,61 @@ async def test_invoke_agent_uses_request_max_output_tokens(monkeypatch):
     )
 
     assert fake_client.calls[0]["max_tokens"] == 32768
+
+
+@pytest.mark.asyncio
+async def test_invoke_agent_stops_before_model_when_required_memory_is_unavailable(monkeypatch):
+    from app.kernel.contracts import TerminalReason
+    from app.runtime.invoker import AgentInvocationRequest, invoke_agent
+    from app.services.memory_service import MemoryContextResult
+
+    tenant_id = uuid4()
+    fake_client = _FakeClient([])
+
+    async def runtime_config(_agent_id):
+        return SimpleNamespace(
+            tenant_id=tenant_id,
+            tenant_resolution_error=None,
+            quota_message=None,
+            max_tool_rounds=50,
+            execution_mode=None,
+            primary_model=None,
+            skill_candidate_loop_enabled=True,
+        )
+
+    async def unavailable(*_args, **_kwargs):
+        return MemoryContextResult(
+            content="",
+            status="unavailable",
+            code="resident_profile_unavailable",
+            user_message="Required agent memory is temporarily unavailable.",
+            retryable=True,
+            block_model=True,
+        )
+
+    async def ignore_span(**_kwargs):
+        return None
+
+    monkeypatch.setattr("app.runtime.invoker._resolve_runtime_config", runtime_config)
+    monkeypatch.setattr("app.runtime.invoker.build_memory_context", unavailable)
+    monkeypatch.setattr("app.runtime.invoker.create_llm_client", lambda **_kwargs: fake_client)
+    monkeypatch.setattr("app.runtime.invoker.persist_invocation_span", ignore_span)
+
+    result = await invoke_agent(
+        AgentInvocationRequest(
+            model=SimpleNamespace(provider="openai", model="gpt-4.1", api_key="key", base_url=None),
+            messages=[{"role": "user", "content": "hello"}],
+            agent_name="Agent",
+            role_description="desc",
+            agent_id=uuid4(),
+            user_id=uuid4(),
+            session_context=SessionContext(session_id=str(uuid4()), metadata={"tenant_id": str(tenant_id)}),
+        )
+    )
+
+    assert result.terminal_reason == TerminalReason.MEMORY_UNAVAILABLE
+    assert result.content == "Required agent memory is temporarily unavailable."
+    assert fake_client.calls == []
 
 
 # ── 切口② Work Ledger enable decision on the general path ─────────────────────

@@ -40,6 +40,7 @@ WORKING_SET_SEED_TOP_N = 8
 class SessionWorkingSet:
     turn_index: int = 0
     items: list[dict] = field(default_factory=list)
+    load_error: str | None = None
 
     def as_pairs(self) -> tuple[tuple[str, float], ...]:
         return tuple((str(item["ref"]), float(item["strength"])) for item in self.items)
@@ -166,7 +167,7 @@ def load_working_set(data_root: Path, agent_id: uuid.UUID | str, session_id: str
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         logger.warning("[working_set] unreadable state for session %s: %s", session_id, exc)
-        return SessionWorkingSet()
+        return SessionWorkingSet(load_error=type(exc).__name__)
     items = []
     for item in payload.get("items") or []:
         if not str(item.get("ref") or "").strip():

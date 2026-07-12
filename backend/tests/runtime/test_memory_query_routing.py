@@ -202,3 +202,99 @@ async def test_resolve_memory_context_injects_skill_evolution_digest(monkeypatch
     assert "## Your Skill Assets" in result
     assert "deploy-checklist (7×)" in result
     assert '<context_block kind="skill_evolution_digest" source="skill_curator:digest">' in result
+
+
+@pytest.mark.asyncio
+async def test_resolve_memory_context_emits_durable_degraded_fact_and_model_marker(monkeypatch) -> None:
+    from app.memory.metrics import reset_all, snapshot
+    from app.runtime import invoker
+    from app.runtime.invoker import AgentInvocationRequest
+    from app.services.memory_service import MemoryContextResult
+
+    events: list[dict] = []
+    spans: list[dict] = []
+    reset_all()
+
+    async def degraded(*_args, **_kwargs):
+        return MemoryContextResult(
+            content="RESIDENT_IDENTITY",
+            status="degraded",
+            code="semantic_retrieval_unavailable",
+            user_message="Some long-term memory is temporarily unavailable.",
+            retryable=True,
+            attempts=2,
+        )
+
+    async def capture_span(**kwargs):
+        spans.append(kwargs)
+
+    monkeypatch.setattr(invoker, "build_memory_context", degraded)
+    monkeypatch.setattr(invoker, "persist_invocation_span", capture_span)
+    request = AgentInvocationRequest(
+        model=SimpleNamespace(provider="openai", model="gpt-4.1"),
+        messages=[{"role": "user", "content": "latest question"}],
+        agent_name="Agent",
+        role_description="desc",
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        on_event=events.append,
+        session_context=SessionContext(
+            session_id=str(uuid4()),
+            metadata={"tenant_id": str(uuid4()), "runtime_task_id": str(uuid4()), "trace_id": "trace-memory"},
+        ),
+    )
+
+    context = await invoker._resolve_memory_context(request, uuid4())
+
+    assert "RESIDENT_IDENTITY" in context
+    assert "do not assume complete recall" in context
+    assert events[0]["event_type"] == "memory_context_degraded"
+    assert events[0]["retryable"] is True
+    assert spans[0]["span_type"] == "memory"
+    assert spans[0]["status"] == "degraded"
+    assert request.session_context.metadata["memory_context_status"]["code"] == "semantic_retrieval_unavailable"
+    assert snapshot()["memory_context_status_total"]["degraded:semantic_retrieval_unavailable"] == 1
+
+
+@pytest.mark.asyncio
+async def test_resolve_memory_context_blocks_model_when_resident_context_is_unavailable(monkeypatch) -> None:
+    from app.kernel.contracts import ContextDependencyUnavailable
+    from app.runtime import invoker
+    from app.runtime.invoker import AgentInvocationRequest
+    from app.services.memory_service import MemoryContextResult
+
+    events: list[dict] = []
+
+    async def unavailable(*_args, **_kwargs):
+        return MemoryContextResult(
+            content="",
+            status="unavailable",
+            code="resident_profile_unavailable",
+            user_message="Required agent memory is temporarily unavailable.",
+            retryable=True,
+            block_model=True,
+        )
+
+    async def ignore_span(**_kwargs):
+        return None
+
+    monkeypatch.setattr(invoker, "build_memory_context", unavailable)
+    monkeypatch.setattr(invoker, "persist_invocation_span", ignore_span)
+    request = AgentInvocationRequest(
+        model=SimpleNamespace(provider="openai", model="gpt-4.1"),
+        messages=[{"role": "user", "content": "latest question"}],
+        agent_name="Agent",
+        role_description="desc",
+        agent_id=uuid4(),
+        on_event=events.append,
+        session_context=SessionContext(
+            session_id=str(uuid4()),
+            metadata={"tenant_id": str(uuid4()), "trace_id": "trace-memory"},
+        ),
+    )
+
+    with pytest.raises(ContextDependencyUnavailable) as exc:
+        await invoker._resolve_memory_context(request, uuid4())
+
+    assert exc.value.dependency == "memory"
+    assert events[0]["event_type"] == "memory_context_unavailable"

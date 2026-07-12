@@ -338,7 +338,6 @@ async def run_web_chat_task(
             else:
                 event_payload = data
             await stream_batcher.flush()
-            await broadcast_web_chat_event(agent.id, session_id, event_payload)
             if _should_persist_runtime_event(data):
                 await _persist_runtime_event(
                     agent_id=agent.id,
@@ -347,6 +346,7 @@ async def run_web_chat_task(
                     session_id=session_id,
                     data=data,
                 )
+            await broadcast_web_chat_event(agent.id, session_id, event_payload)
 
         pending_reply_suffix = ""
         try:

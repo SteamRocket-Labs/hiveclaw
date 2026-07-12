@@ -264,3 +264,38 @@ async def test_frozen_context_uses_pinned_tenant_session_for_channel_and_company
 
     assert tenant_calls == [tenant_id, tenant_id]
     assert "You have slack channel(s) configured" in prompt
+
+
+@pytest.mark.asyncio
+async def test_unreadable_existing_soul_is_a_required_context_failure(tmp_path, monkeypatch) -> None:
+    from pathlib import Path
+
+    from app.kernel.contracts import ContextDependencyUnavailable
+    from app.services import agent_context
+
+    agent_id = uuid4()
+    tool_root = tmp_path / "tool"
+    data_root = tmp_path / "data"
+    soul_path = tool_root / str(agent_id) / "soul.md"
+    soul_path.parent.mkdir(parents=True)
+    soul_path.write_text("# Soul", encoding="utf-8")
+    original_read_text = Path.read_text
+
+    def guarded_read_text(path: Path, *args, **kwargs):
+        if path == soul_path:
+            raise OSError("permission denied")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(agent_context, "TOOL_WORKSPACE", tool_root)
+    monkeypatch.setattr(agent_context, "PERSISTENT_DATA", data_root)
+    monkeypatch.setattr(Path, "read_text", guarded_read_text)
+
+    with pytest.raises(ContextDependencyUnavailable) as exc:
+        await agent_context.load_agent_context_resource(
+            agent_id=agent_id,
+            tenant_id=uuid4(),
+            resource_ref="soul",
+        )
+
+    assert exc.value.dependency == "soul"
+    assert exc.value.code == "soul_context_unavailable"

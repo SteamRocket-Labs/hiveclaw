@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from app.kernel.contracts import ContextDependencyUnavailable
+
 if TYPE_CHECKING:
     from app.kernel.engine import (
         ContextPolicyV1,
@@ -184,9 +186,20 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
             except Exception as exc:
                 logger.debug("[Kernel] early recovery manifest hydrate unavailable: %s", exc)
 
-        resolved_memory_context = await _maybe_await(
-            self._deps.resolve_memory_context(request, runtime_config.tenant_id)
-        )
+        try:
+            resolved_memory_context = await _maybe_await(
+                self._deps.resolve_memory_context(request, runtime_config.tenant_id)
+            )
+        except ContextDependencyUnavailable as exc:
+            logger.error(
+                "[Kernel] Required %s context unavailable: %s",
+                exc.dependency,
+                exc.code,
+            )
+            return _build_error_result(
+                exc.user_message,
+                terminal_reason=TerminalReason.MEMORY_UNAVAILABLE,
+            )
         resolved_retrieval_context = ""
         if self._deps.resolve_retrieval_context:
             resolved_retrieval_context = await _maybe_await(
@@ -238,6 +251,12 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                     resolved_memory_context,
                     current_user_name,
                 )
+            )
+        except ContextDependencyUnavailable as exc:
+            _invalidate_prompt_prefix_cache(session_ctx, reason=f"{exc.dependency}_context_unavailable")
+            return _build_error_result(
+                exc.user_message,
+                terminal_reason=TerminalReason.MEMORY_UNAVAILABLE,
             )
         except Exception:
             _invalidate_prompt_prefix_cache(session_ctx, reason="frozen_context_rebuild_failed")

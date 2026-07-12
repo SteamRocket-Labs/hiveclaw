@@ -96,6 +96,8 @@ EVENT_THREAD_ITEM_TYPES: dict[str, str] = {
     "quota_exceeded": "error",
     "runtime_action_failed": "error",
     "runtime_action_blocked": "error",
+    "memory_context_degraded": "error",
+    "memory_context_unavailable": "error",
 }
 
 _FAILED_STATUSES = {"failed", "error", "blocked", "denied", "capability_denied"}
@@ -782,9 +784,7 @@ def _project_for_audience(
     raw["operator_details"] = None
     preservable_content_types = {"user_message", "agent_message", "tool_call", "tool_result", "plan", "artifact"}
     raw["content"] = (
-        str(raw["content"])
-        if preserve_user_content and str(raw["item_type"]) in preservable_content_types
-        else summary
+        str(raw["content"]) if preserve_user_content and str(raw["item_type"]) in preservable_content_types else summary
     )
     raw["parts"] = _user_parts(list(raw["parts"]))
     raw["metadata"] = {"status": str(raw["item_status"])}

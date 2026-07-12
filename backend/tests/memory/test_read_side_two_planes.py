@@ -110,6 +110,28 @@ def test_resident_memory_empty_for_new_agent(tmp_path: Path) -> None:
     assert resident.over_budget is False
 
 
+def test_resident_reader_reports_unreadable_identity_section(monkeypatch, tmp_path: Path) -> None:
+    from app.memory.profile_plane import load_resident_memory
+
+    agent_id = uuid4()
+    owner_path = _mem_dir(tmp_path, agent_id) / "profiles" / "owner.md"
+    owner_path.parent.mkdir(parents=True)
+    owner_path.write_text("owner", encoding="utf-8")
+    original_read_text = Path.read_text
+
+    def guarded_read_text(path: Path, *args, **kwargs):
+        if path == owner_path:
+            raise OSError("permission denied")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", guarded_read_text)
+
+    resident = load_resident_memory(agent_id=agent_id, data_root=tmp_path)
+
+    assert resident.text == ""
+    assert resident.read_errors == ("profiles/owner",)
+
+
 def test_resident_memory_skips_inactive_overlay_entries(tmp_path: Path) -> None:
     from app.memory.profile_plane import load_resident_memory
 

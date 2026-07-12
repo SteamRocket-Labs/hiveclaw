@@ -272,6 +272,8 @@ export const LEGACY_THREAD_ITEM_TYPE_MAP: Readonly<Record<string, ThreadItemType
   "member_message_rejected": "subagent_activity",
   "member_run_started": "subagent_activity",
   "member_spawned": "subagent_activity",
+  "memory_context_degraded": "error",
+  "memory_context_unavailable": "error",
   "permission": "approval_request",
   "permission_profile_updated": "approval_decision",
   "permission_request": "approval_request",

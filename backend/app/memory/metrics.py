@@ -120,6 +120,7 @@ _llm_output_cap_hit_total: dict[tuple[str, str, str, str, str], int] = defaultdi
 # Hook failures are intentionally non-fatal, but they must be visible because
 # RESPONSE_COMPLETE / PRE_COMPACTION / POST_COMPACTION drive memory durability.
 _hook_failure_total: dict[tuple[str, str, str], int] = defaultdict(int)
+_memory_context_status_total: dict[tuple[str, str], int] = defaultdict(int)
 
 # ── Prompt cache metrics (P1 cache observability) ──────────────
 # Provider usage payloads already expose cache read/write tokens; keep these
@@ -211,6 +212,7 @@ def snapshot() -> dict[str, Any]:
             f"{k[0]}:{k[1]}:{k[2]}:{k[3]}:{k[4]}": v for k, v in _llm_output_cap_hit_total.items()
         },
         "hook_failure_total": {f"{k[0]}:{k[1]}:{k[2]}": v for k, v in _hook_failure_total.items()},
+        "memory_context_status_total": {f"{k[0]}:{k[1]}": v for k, v in _memory_context_status_total.items()},
         "prompt_cache_observations_total": {f"{k[0]}:{k[1]}": v for k, v in _prompt_cache_observations_total.items()},
         "prompt_cache_read_tokens_total": dict(_prompt_cache_read_tokens_total),
         "prompt_cache_write_tokens_total": dict(_prompt_cache_write_tokens_total),
@@ -571,6 +573,15 @@ def render_prometheus() -> str:
     )
     _append_prometheus_metric(
         lines,
+        name="hive_memory_context_status_total",
+        metric_type="counter",
+        help_text="Total typed memory context outcomes by status and code.",
+        samples=[
+            ({"status": status, "code": code}, count) for (status, code), count in _memory_context_status_total.items()
+        ],
+    )
+    _append_prometheus_metric(
+        lines,
         name="hive_prompt_cache_observations_total",
         metric_type="counter",
         help_text="Total prompt cache observations by provider and cache hit outcome.",
@@ -687,6 +698,7 @@ def reset_all() -> None:
     _autonomous_llm_calls_total.clear()
     _llm_output_cap_hit_total.clear()
     _hook_failure_total.clear()
+    _memory_context_status_total.clear()
     _prompt_cache_observations_total.clear()
     _prompt_cache_read_tokens_total.clear()
     _prompt_cache_write_tokens_total.clear()
@@ -767,6 +779,10 @@ def record_llm_output_cap_hit(*, provider: str, model: str, finish_reason: str, 
 def record_hook_failure(*, event: str, source: str, reason: str) -> None:
     """Bump a non-fatal runtime hook failure counter."""
     _hook_failure_total[(event or "unknown", source or "unknown", reason or "unknown")] += 1
+
+
+def record_memory_context_status(*, status: str, code: str) -> None:
+    _memory_context_status_total[(status or "unknown", code or "unknown")] += 1
 
 
 def record_invocation_span_metric(

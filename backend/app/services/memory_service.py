@@ -10,11 +10,13 @@ This service must not bypass that pipeline by writing long-term memory directly.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, Literal
 
 from sqlalchemy import select
 
@@ -36,6 +38,20 @@ logger = logging.getLogger(__name__)
 
 
 CompactionCallback = Callable[[dict], Awaitable[None] | None]
+MemoryContextStatus = Literal["ready", "degraded", "unavailable", "blocked_authority"]
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryContextResult:
+    content: str
+    status: MemoryContextStatus
+    code: str
+    user_message: str
+    retryable: bool = False
+    block_model: bool = False
+    attempts: int = 1
+    degraded_components: tuple[str, ...] = ()
+    error_class: str | None = None
 
 
 # ============================================================================
@@ -86,28 +102,62 @@ async def build_memory_context(
     current_user_id: uuid.UUID | str | None = None,
     current_user_name: str | None = None,
     legacy_compatibility: bool = False,
-) -> str:
+    return_result: bool = False,
+) -> str | MemoryContextResult:
     """Build a self-consistent memory context for any runtime entrypoint.
 
     Uses the four-layer retrieval pipeline (working, episodic, semantic, external)
-    followed by the assembler. Returns empty string on failure (caller decides).
+    followed by the assembler. The string API remains backward compatible;
+    runtime callers request the typed result so failure cannot collapse to an
+    indistinguishable empty context.
     """
+    result = await _build_memory_context_result(
+        agent_id,
+        tenant_id,
+        session_id=session_id,
+        query=query,
+        context_window_tokens=context_window_tokens,
+        budget_profile=budget_profile,
+        current_user_id=current_user_id,
+        current_user_name=current_user_name,
+        legacy_compatibility=legacy_compatibility,
+    )
+    return result if return_result else result.content
+
+
+async def _build_memory_context_result(
+    agent_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    *,
+    session_id: str | None,
+    query: str,
+    context_window_tokens: int | None,
+    budget_profile: ContextBudget | None,
+    current_user_id: uuid.UUID | str | None,
+    current_user_name: str | None,
+    legacy_compatibility: bool,
+) -> MemoryContextResult:
     retrieval_profile = budget_profile or compute_context_budget(
         context_window_tokens=context_window_tokens,
         query=query,
         active_pack_count=0,
     )
     try:
-        data_root_settings = Path(get_settings().AGENT_DATA_DIR)
-        retriever = MemoryRetriever(data_root=data_root_settings)
-        retrieve_kwargs = {
-            "limit": max(50, retrieval_profile.semantic_limit * 2),
-        }
-        retrieve_params = inspect.signature(retriever.retrieve).parameters
-        if "retrieval_profile" in retrieve_params:
-            retrieve_kwargs["retrieval_profile"] = retrieval_profile
-        activation_context = None
-        if "activation_context" in retrieve_params and not legacy_compatibility:
+        settings = get_settings()
+        data_root_settings = Path(settings.AGENT_DATA_DIR)
+    except Exception as exc:
+        return MemoryContextResult(
+            content="",
+            status="unavailable",
+            code="memory_storage_unavailable",
+            user_message="Agent memory storage is temporarily unavailable. This turn was stopped safely.",
+            retryable=True,
+            block_model=True,
+            error_class=type(exc).__name__,
+        )
+    activation_context = None
+    try:
+        if not legacy_compatibility:
             activation_context = await _resolve_activation_context(
                 agent_id=agent_id,
                 tenant_id=tenant_id,
@@ -115,75 +165,157 @@ async def build_memory_context(
                 current_user_id=current_user_id,
                 current_user_name=current_user_name,
             )
-        elif not legacy_compatibility:
-            activation_context = await _resolve_activation_context(
-                agent_id=agent_id,
-                tenant_id=tenant_id,
-                query=query,
-                current_user_id=current_user_id,
-                current_user_name=current_user_name,
-            )
-        # TaskModulation deterministic tier (design §4.4, M6): the active
-        # goal's objective joins recall as a second term channel.
-        if session_id and activation_context is not None:
-            activation_context = await _attach_goal_terms(
-                activation_context, agent_id=agent_id, tenant_id=tenant_id, session_id=str(session_id)
-            )
-        # Session working set W_t (design §4.2): load the evolving activation
-        # state for this session so ContextBoost sees what the conversation is
-        # already about; advanced + persisted after retrieval below.
-        working_set_state = None
-        if session_id and activation_context is not None:
+    except Exception as exc:
+        logger.warning("Memory authority resolution failed for agent %s: %s", agent_id, type(exc).__name__)
+        return MemoryContextResult(
+            content="",
+            status="unavailable",
+            code="memory_authority_unavailable",
+            user_message="Memory authority could not be verified. This turn was stopped safely.",
+            retryable=True,
+            block_model=True,
+            error_class=type(exc).__name__,
+        )
+
+    if not legacy_compatibility and activation_context is None:
+        logger.warning(
+            "Memory activation principal unresolved; blocking prompt memory for agent %s",
+            agent_id,
+            extra={
+                "metric": "memory_activation_fail_closed",
+                "agent_id": str(agent_id),
+                "tenant_id": str(tenant_id),
+            },
+        )
+        return MemoryContextResult(
+            content="",
+            status="blocked_authority",
+            code="memory_authority_unresolved",
+            user_message="Memory access authority could not be verified. This turn was stopped safely.",
+            retryable=True,
+            block_model=True,
+        )
+
+    # TaskModulation is additive. Its own lookup already degrades without
+    # suppressing the principal-bound activation context.
+    if session_id and activation_context is not None:
+        activation_context = await _attach_goal_terms(
+            activation_context, agent_id=agent_id, tenant_id=tenant_id, session_id=str(session_id)
+        )
+
+    degraded_components: list[str] = []
+    working_set_state = None
+    if session_id and activation_context is not None:
+        try:
             from dataclasses import replace as _dc_replace
 
             from app.memory.session_working_set import load_working_set
 
             working_set_state = load_working_set(data_root_settings, agent_id, str(session_id))
+            if working_set_state.load_error:
+                degraded_components.append("working_set")
             if working_set_state.items:
                 activation_context = _dc_replace(activation_context, working_set=working_set_state.as_pairs())
-        if not legacy_compatibility and activation_context is None:
-            logger.warning(
-                "Memory activation principal unresolved; suppressing prompt memory for agent %s",
-                agent_id,
-                extra={
-                    "metric": "memory_activation_fail_closed",
-                    "agent_id": str(agent_id),
-                    "tenant_id": str(tenant_id),
-                },
-            )
-            return ""
-        if "activation_context" in retrieve_params and activation_context:
-            retrieve_kwargs["activation_context"] = activation_context
+        except Exception as exc:
+            logger.warning("Memory working set unavailable for agent %s: %s", agent_id, type(exc).__name__)
+            degraded_components.append("working_set")
 
-        # Resident profile plane (spec §4.2): self + profiles + explicit
-        # overlay load WHOLE ahead of retrieval — never trimmed per-entry.
-        # Over-budget raises a one-shot write-side convergence alert.
-        from app.memory.profile_plane import (
-            DEFAULT_RESIDENT_BUDGET_CHARS,
-            check_resident_budget,
-            load_resident_memory,
-        )
+    from app.memory.profile_plane import (
+        DEFAULT_RESIDENT_BUDGET_CHARS,
+        check_resident_budget,
+        load_resident_memory,
+    )
 
-        settings = get_settings()
-        data_root = Path(settings.AGENT_DATA_DIR)
+    data_root = Path(settings.AGENT_DATA_DIR)
+    try:
         resident = load_resident_memory(
             agent_id=agent_id,
             data_root=data_root,
             budget_chars=float(getattr(settings, "MEMORY_RESIDENT_BUDGET_CHARS", DEFAULT_RESIDENT_BUDGET_CHARS)),
         )
-        try:
-            await check_resident_budget(agent_id=agent_id, data_root=data_root, resident=resident)
-        except Exception as budget_exc:  # noqa: BLE001 - budget telemetry must not block prompt assembly
-            logger.warning("Resident budget check failed for %s: %s", agent_id, budget_exc)
-
-        items = await retriever.retrieve(
-            agent_id,
-            query,
-            session_id,
-            str(tenant_id) if tenant_id else None,
-            **retrieve_kwargs,
+    except Exception as exc:
+        logger.error("Resident profile unavailable for agent %s: %s", agent_id, type(exc).__name__)
+        return MemoryContextResult(
+            content="",
+            status="unavailable",
+            code="resident_profile_unavailable",
+            user_message="Required agent memory is temporarily unavailable. This turn was stopped safely.",
+            retryable=True,
+            block_model=True,
+            error_class=type(exc).__name__,
         )
-        if working_set_state is not None:
+
+    critical_read_errors = {"self", "profiles/owner"}.intersection(resident.read_errors)
+    if critical_read_errors:
+        logger.error(
+            "Resident identity sections unavailable for agent %s: %s",
+            agent_id,
+            sorted(critical_read_errors),
+        )
+        return MemoryContextResult(
+            content="",
+            status="unavailable",
+            code="resident_identity_unavailable",
+            user_message="Required agent identity memory is temporarily unavailable. This turn was stopped safely.",
+            retryable=True,
+            block_model=True,
+            degraded_components=tuple(sorted(critical_read_errors)),
+            error_class="ResidentReadError",
+        )
+    degraded_components.extend(resident.read_errors)
+
+    try:
+        await check_resident_budget(agent_id=agent_id, data_root=data_root, resident=resident)
+    except Exception as budget_exc:  # noqa: BLE001 - budget telemetry must not block prompt assembly
+        logger.warning("Resident budget check failed for %s: %s", agent_id, budget_exc)
+        degraded_components.append("resident_budget_telemetry")
+
+    items = None
+    retrieval_error: Exception | None = None
+    attempts = 0
+    for attempts in range(1, 3):
+        try:
+            retriever = MemoryRetriever(data_root=data_root_settings)
+            retrieve_kwargs = {"limit": max(50, retrieval_profile.semantic_limit * 2)}
+            retrieve_params = inspect.signature(retriever.retrieve).parameters
+            if "retrieval_profile" in retrieve_params:
+                retrieve_kwargs["retrieval_profile"] = retrieval_profile
+            if "activation_context" in retrieve_params and activation_context:
+                retrieve_kwargs["activation_context"] = activation_context
+            items = await retriever.retrieve(
+                agent_id,
+                query,
+                session_id,
+                str(tenant_id) if tenant_id else None,
+                **retrieve_kwargs,
+            )
+            retrieval_error = None
+            break
+        except Exception as exc:  # retriever/index/backend share one retry boundary
+            retrieval_error = exc
+            logger.warning(
+                "Memory semantic retrieval attempt %d failed for agent %s: %s",
+                attempts,
+                agent_id,
+                type(exc).__name__,
+            )
+            if attempts < 2:
+                await asyncio.sleep(0)
+
+    if retrieval_error is not None or items is None:
+        return MemoryContextResult(
+            content=resident.text,
+            status="degraded",
+            code="semantic_retrieval_unavailable",
+            user_message="Some long-term memory is temporarily unavailable. Resident identity and owner constraints remain active.",
+            retryable=True,
+            attempts=attempts,
+            degraded_components=tuple(dict.fromkeys((*degraded_components, "semantic_retrieval"))),
+            error_class=type(retrieval_error).__name__ if retrieval_error else None,
+        )
+
+    if working_set_state is not None:
+        try:
             from app.memory.session_working_set import advance_working_set, save_working_set
 
             activated_refs: list[str] = []
@@ -200,23 +332,51 @@ async def build_memory_context(
                 str(session_id),
                 advance_working_set(working_set_state, activated_refs),
             )
-        if resident.text:
-            # Overlay entries already sit in the resident block — drop the
-            # retriever's duplicate explicit-overlay items for this assembly.
-            items = [item for item in items if item.metadata.get("source_type") != "explicit_overlay"]
+        except Exception as exc:
+            logger.warning("Memory working set checkpoint failed for agent %s: %s", agent_id, type(exc).__name__)
+            degraded_components.append("working_set_checkpoint")
+
+    if resident.text:
+        items = [item for item in items if getattr(item, "metadata", {}).get("source_type") != "explicit_overlay"]
+
+    try:
         assembler = MemoryAssembler()
         assemble_kwargs = {}
         if "budget_chars" in inspect.signature(assembler.assemble).parameters:
-            # Profile plane holds a fixed allowance; retrieval fills the rest.
             retrieval_budget = max(2_000, retrieval_profile.memory_budget_chars - resident.chars)
             assemble_kwargs["budget_chars"] = retrieval_budget
         assembled = assembler.assemble(items, **assemble_kwargs) or ""
-        if resident.text and assembled:
-            return f"{resident.text}\n\n{assembled}"
-        return resident.text or assembled
     except Exception as exc:
-        logger.warning("Retrieval pipeline failed, returning empty memory context: %s", exc)
-        return ""
+        logger.warning("Memory assembly failed for agent %s: %s", agent_id, type(exc).__name__)
+        return MemoryContextResult(
+            content=resident.text,
+            status="degraded",
+            code="semantic_assembly_unavailable",
+            user_message="Some recalled memory could not be assembled. Resident identity and owner constraints remain active.",
+            retryable=True,
+            attempts=attempts,
+            degraded_components=tuple(dict.fromkeys((*degraded_components, "semantic_assembly"))),
+            error_class=type(exc).__name__,
+        )
+
+    content = f"{resident.text}\n\n{assembled}" if resident.text and assembled else (resident.text or assembled)
+    if degraded_components:
+        return MemoryContextResult(
+            content=content,
+            status="degraded",
+            code="memory_auxiliary_degraded",
+            user_message="Core memory is available, but an auxiliary memory component is temporarily degraded.",
+            retryable=True,
+            attempts=attempts,
+            degraded_components=tuple(dict.fromkeys(degraded_components)),
+        )
+    return MemoryContextResult(
+        content=content,
+        status="ready",
+        code="memory_context_ready",
+        user_message="Memory context is ready.",
+        attempts=attempts,
+    )
 
 
 async def _maybe_await(value):
@@ -338,6 +498,9 @@ async def _resolve_accountability_context(
             tenant_result = await db.execute(select(Tenant).where(Tenant.id == tenant_id))
             tenant = tenant_result.scalar_one_or_none()
 
+            if agent is None or tenant is None:
+                return None
+
             current_user_uuid = _coerce_uuid(current_user_id)
             owner_uuid = (
                 getattr(agent, "owner_user_id", None) or getattr(agent, "creator_id", None) or current_user_uuid
@@ -366,8 +529,8 @@ async def _resolve_accountability_context(
                 creator_name=creator_name,
             )
     except Exception as exc:
-        logger.debug("Failed to resolve activation accountability context for agent %s: %s", agent_id, exc)
-        return None
+        logger.warning("Failed to resolve activation accountability context for agent %s: %s", agent_id, exc)
+        raise
 
 
 async def _fetch_user(db, user_id: uuid.UUID | None) -> User | None:

@@ -1803,6 +1803,34 @@ describe('chatRuntime helpers', () => {
   });
 });
 
+describe('memory runtime degradation', () => {
+  it('projects a persisted degraded-memory event as a retryable user-facing error', () => {
+    const message = normalizeStoredChatMessage({
+      id: 'memory-event-1',
+      sequence: 12,
+      role: 'system',
+      event_type: 'memory_context_degraded',
+      content: JSON.stringify({
+        type: 'session_context',
+        event_type: 'memory_context_degraded',
+        status: 'failed',
+        code: 'semantic_retrieval_unavailable',
+        retryable: true,
+        retry_reason: 'Retry the original turn after memory recovery.',
+        user_summary: 'Some long-term memory is temporarily unavailable.',
+      }),
+    });
+
+    expect(message.role).toBe('event');
+    expect(message.threadItem?.item_type).toBe('error');
+    expect(message.threadItem?.item_data).toMatchObject({
+      code: 'semantic_retrieval_unavailable',
+      retryable: true,
+    });
+    expect(message.threadItem?.user_summary).toBe('Some long-term memory is temporarily unavailable.');
+  });
+});
+
 describe('RuntimePhase state machine (§3 seam 1)', () => {
   it('adopts backend first-class phase events and ignores unknown phases', () => {
     expect(reduceRuntimePhase('idle', { type: 'phase', phase: 'tool_running' })).toBe('tool_running');

@@ -523,6 +523,9 @@ flowchart LR
 - 缺失测试：retriever/index/profile corruption、timeout、UI degraded、retry。
 - 一次性完整关闭方案：拆分 profile resident、working set、semantic retrieval 错误域；关键 owner/soul/profile 不可用时阻断或明确 degraded，非关键 semantic search 可重试/降级；写 durable runtime event与span；UI提示“记忆暂不可用”并提供 retry；保护敏感失败不泄漏；迁移不需要 schema 时也要回填 observability baseline；加入 corrupt index、missing file、timeout、cross-tenant fail-closed tests；禁止 catch-all 无状态返回。
 - **最终裁决依据：P2 / 局部闭环。** `memory_service.py:144-154` 的 principal-unresolved 分支 fail-closed 返回空是正确的安全设计；本项指向 `memory_service.py:217-219` 的 `except Exception → warning → return ""`，即 retrieval pipeline 异常被静默降级。正常检索主路径成立，问题集中在失败证据、恢复与 UI 消费，因此是局部闭环，而不是把整个 Memory read path 判成断点。
+- 修复状态（2026-07-12）：**R-006 七原子闭环**。`build_memory_context()` 现在返回运行时可消费的 `MemoryContextResult`，将 authority、resident identity/profile、session working set、semantic retrieval、assembler 五个错误域分开：tenant/principal 无法验证、`self`/`profiles/owner` 已存在但不可读时，在任何 provider/model call 之前以 `memory_unavailable` 终态阻断；semantic index timeout/corruption 会在同一 turn 内有界重试两次，失败后只保留完整 resident identity/owner constraints，并把“回忆不完整、不得假定已完整召回”的约束注入模型，而不是返回无法区分的空字符串；working-set/checkpoint/telemetry 等辅助面失败则显式 degraded，不影响仍然可信的核心上下文。异常详情只进入受控日志，用户事件、span 与模型提示只携带稳定 code/error class，不泄露路径、查询或底层凭据。
+- 证据、恢复与消费闭环：Invoker 将每次非 ready 结果写入 session metadata、`InvocationSpan(span_type=memory)` 和 `hive_memory_context_status_total{status,code}`，再发送 `memory_context_degraded|memory_context_unavailable` session event；Web Chat 先持久化该 event 再广播，重连后由 typed thread-item projection 恢复为可重试错误卡，原 turn 可通过既有 Retry action 重放。已有损坏的 working-set JSON 和 resident file 会在下一次读取时产生新基线事件；历史仅日志失败无法可靠反推 tenant/session，因此本项明确不伪造数据回填，也不需要 schema migration。`soul.md` 缺失仍按可选初始状态处理，但文件存在却不可读会生成 typed required-context failure，防止身份约束静默消失。
+- 修复证据：初始 Red backend → `7 failed`（semantic timeout/corrupt index、resident/profile、authority、unreadable soul、durable Web event）且 Red frontend → `1 failed`（memory degraded event 被误投影为普通 user item）。Green backend 扩展集 `pytest tests/services/test_memory_service.py tests/memory/test_read_side_two_planes.py tests/runtime/test_memory_query_routing.py tests/runtime/test_invoker.py tests/kernel/test_contracts.py tests/kernel/test_engine.py tests/services/test_agent_context.py tests/services/test_web_chat_runtime.py tests/services/test_thread_items.py tests/scripts/test_export_thread_items.py tests/migrations/test_typed_thread_items_migration.py tests/memory/test_metrics.py -q` → `346 passed, 4 warnings`；覆盖 retry-two、tail resident retention、critical fail-before-model、corrupt working set、持久化先于 broadcast、span/metric 和敏感错误不外泄。Frontend typed event/reducer/renderer 回归 → `200 passed`，`npm run build` exit 0；18 个变更 Python 文件 `py_compile`、`ruff check` 与 `ruff format --check` 全绿。提交主题：`fix(R-006): make memory degradation explicit`。
 
 ### [R-007] Dream 机械截断语义输入并在 LLM 失败后继续机械整理
 
@@ -994,7 +997,7 @@ Codebase graph 校正时状态为 ready（43,281 nodes / 166,753 edges）；`det
 
 ## 16. 28 项原子缺口修复执行账本
 
-本节记录原始审计全部 28 项的实际落地状态：17 个断点、10 个局部闭环、1 个已知缺失。原始严重级别与原子状态保留为审计快照；只有同时具备实现、回归测试、报告证据和独立提交，才把修复状态改为闭环。Company Knowledge Base 本体按 owner 边界不在本轮开发，但 R-008 的诚实隔离、文案与防伪装验收仍必须关闭。当前进度：**8/28**。
+本节记录原始审计全部 28 项的实际落地状态：17 个断点、10 个局部闭环、1 个已知缺失。原始严重级别与原子状态保留为审计快照；只有同时具备实现、回归测试、报告证据和独立提交，才把修复状态改为闭环。Company Knowledge Base 本体按 owner 边界不在本轮开发，但 R-008 的诚实隔离、文案与防伪装验收仍必须关闭。当前进度：**9/28**。
 
 | ID | 修复状态 | 独立提交主题 | 机械证据摘要 |
 |---|---|---|---|
@@ -1003,7 +1006,7 @@ Codebase graph 校正时状态为 ready（43,281 nodes / 166,753 edges）；`det
 | R-003 | 闭环 | `fix(R-003): make HR provisioning durable` | Red backend 7 failed + frontend 3 failed；Green backend 57 passed；真实 PostgreSQL legacy backfill/downgrade；frontend 4 passed；build/ruff 绿 |
 | R-004 | 闭环 | `fix(R-004): make Dream execution durable` | Red backend 9 failed + read-model collection Red + frontend 1 failed；Green backend 224 passed；真实 PG 并发去重/state recovery/legacy backfill + migration 7 passed；frontend 10 passed；build/ruff 绿 |
 | R-005 | 闭环 | `fix(R-005): fail closed required lifecycle hooks` | Red 22 failed；Green backend 105 passed；真实 PostgreSQL migration/rollback 链 9 passed；frontend 120 passed + build；ruff/format 绿 |
-| R-006 | 待修复 | — | — |
+| R-006 | 闭环 | `fix(R-006): make memory degradation explicit` | Red backend 7 failed + frontend 1 failed；Green backend 346 passed；semantic retry/resident retention/critical fail-before-model/event-span-metric；frontend 200 passed + build；ruff/format 绿 |
 | R-007 | 待修复 | — | — |
 | R-008 | 待边界闭环（Company KB 本体已知缺失） | — | — |
 | R-009 | 待修复 | — | — |

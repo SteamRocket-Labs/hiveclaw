@@ -817,3 +817,162 @@ async def test_activation_context_carries_active_goal_terms(monkeypatch, tmp_pat
     assert "railway" in context.goal_terms
     assert "deployment" in context.goal_terms
     assert "the" not in context.goal_terms, "stopword-ish single-letter/article noise should be filtered"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure",
+    [TimeoutError("vector backend timed out with secret details"), ValueError("corrupt index with secret details")],
+)
+async def test_semantic_retrieval_failure_retries_then_keeps_resident_identity(
+    monkeypatch, tmp_path, failure: Exception
+) -> None:
+    from app.memory.activation import ActivationContext
+    from app.services import memory_service
+    from app.services.principal_context import PrincipalStack
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    owner_path = tmp_path / str(agent_id) / "memory" / "profiles" / "owner.md"
+    owner_path.parent.mkdir(parents=True)
+    owner_path.write_text("Owner requires evidence-first delivery.", encoding="utf-8")
+    calls = 0
+
+    class _BrokenRetriever:
+        async def retrieve(self, *_args, **_kwargs):
+            nonlocal calls
+            calls += 1
+            raise failure
+
+    async def activation(**kwargs):
+        return ActivationContext(query=kwargs["query"], principal_stack=PrincipalStack())
+
+    monkeypatch.setattr(
+        memory_service,
+        "get_settings",
+        lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path), MEMORY_RESIDENT_BUDGET_CHARS=12_000),
+    )
+    monkeypatch.setattr(memory_service, "MemoryRetriever", lambda **_kwargs: _BrokenRetriever())
+    monkeypatch.setattr(memory_service, "_resolve_activation_context", activation)
+
+    result = await memory_service.build_memory_context(
+        agent_id,
+        tenant_id,
+        session_id=str(uuid4()),
+        query="latest decision",
+        return_result=True,
+    )
+
+    assert result.status == "degraded"
+    assert result.code == "semantic_retrieval_unavailable"
+    assert result.retryable is True
+    assert result.attempts == 2
+    assert calls == 2
+    assert "evidence-first" in result.content
+    assert "secret details" not in result.user_message
+
+
+@pytest.mark.asyncio
+async def test_corrupt_working_set_is_explicit_auxiliary_degradation(monkeypatch, tmp_path) -> None:
+    from app.memory.activation import ActivationContext
+    from app.services import memory_service
+    from app.services.principal_context import PrincipalStack
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    session_id = str(uuid4())
+    state_path = tmp_path / str(agent_id) / "memory" / "control" / "working_sets" / f"{session_id}.json"
+    state_path.parent.mkdir(parents=True)
+    state_path.write_text("{broken", encoding="utf-8")
+
+    class _Retriever:
+        async def retrieve(self, *_args, **_kwargs):
+            return []
+
+    class _Assembler:
+        def assemble(self, _items, **_kwargs):
+            return "SEMANTIC_MEMORY"
+
+    async def activation(**kwargs):
+        return ActivationContext(query=kwargs["query"], principal_stack=PrincipalStack())
+
+    monkeypatch.setattr(
+        memory_service,
+        "get_settings",
+        lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path), MEMORY_RESIDENT_BUDGET_CHARS=12_000),
+    )
+    monkeypatch.setattr(memory_service, "MemoryRetriever", lambda **_kwargs: _Retriever())
+    monkeypatch.setattr(memory_service, "MemoryAssembler", lambda: _Assembler())
+    monkeypatch.setattr(memory_service, "_resolve_activation_context", activation)
+
+    result = await memory_service.build_memory_context(
+        agent_id,
+        tenant_id,
+        session_id=session_id,
+        query="hello",
+        return_result=True,
+    )
+
+    assert result.status == "degraded"
+    assert result.code == "memory_auxiliary_degraded"
+    assert "working_set" in result.degraded_components
+    assert result.content == "SEMANTIC_MEMORY"
+
+
+@pytest.mark.asyncio
+async def test_resident_profile_failure_is_critical_not_empty_context(monkeypatch, tmp_path) -> None:
+    from app.memory.activation import ActivationContext
+    from app.services import memory_service
+    from app.services.principal_context import PrincipalStack
+
+    async def activation(**kwargs):
+        return ActivationContext(query=kwargs["query"], principal_stack=PrincipalStack())
+
+    def broken_resident(**_kwargs):
+        raise OSError("owner profile cannot be read")
+
+    monkeypatch.setattr(
+        memory_service,
+        "get_settings",
+        lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path), MEMORY_RESIDENT_BUDGET_CHARS=12_000),
+    )
+    monkeypatch.setattr(memory_service, "_resolve_activation_context", activation)
+    monkeypatch.setattr("app.memory.profile_plane.load_resident_memory", broken_resident)
+
+    result = await memory_service.build_memory_context(
+        uuid4(),
+        uuid4(),
+        query="hello",
+        return_result=True,
+    )
+
+    assert result.status == "unavailable"
+    assert result.code == "resident_profile_unavailable"
+    assert result.block_model is True
+    assert result.content == ""
+
+
+@pytest.mark.asyncio
+async def test_unresolved_memory_authority_is_typed_fail_closed(monkeypatch, tmp_path) -> None:
+    from app.services import memory_service
+
+    async def unresolved(**_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        memory_service,
+        "get_settings",
+        lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path), MEMORY_RESIDENT_BUDGET_CHARS=12_000),
+    )
+    monkeypatch.setattr(memory_service, "_resolve_activation_context", unresolved)
+
+    result = await memory_service.build_memory_context(
+        uuid4(),
+        uuid4(),
+        query="hello",
+        return_result=True,
+    )
+
+    assert result.status == "blocked_authority"
+    assert result.code == "memory_authority_unresolved"
+    assert result.block_model is True

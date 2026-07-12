@@ -31,7 +31,7 @@ from app.kernel import (
     RuntimeConfig,
     ToolExpansionResult,
 )
-from app.kernel.contracts import MidRunMessageDrain, TerminalReason
+from app.kernel.contracts import ContextDependencyUnavailable, MidRunMessageDrain, TerminalReason
 from app.models.agent import Agent
 from app.models.feature_flag import FeatureFlag
 from app.models.user import User
@@ -66,6 +66,7 @@ from app.services.runtime_budget_llm import RuntimeBudgetedLLMClient
 from app.services.invocation_trace import persist_invocation_span
 from app.services.governance_capability_taxonomy import capability_descriptor_for_name, iter_runtime_l2_capabilities
 from app.services.memory_service import (
+    MemoryContextResult,
     build_memory_context,
     maybe_compress_messages,
     persist_runtime_memory,
@@ -645,7 +646,28 @@ async def _resolve_memory_context(
             _memory_kwargs["current_user_id"] = request.user_id
         if "current_user_name" in _memory_sig:
             _memory_kwargs["current_user_name"] = current_user_name
-        runtime_memory_context = await build_memory_context(request.agent_id, tenant_id, **_memory_kwargs)
+        if "return_result" in _memory_sig:
+            _memory_kwargs["return_result"] = True
+        memory_value = await build_memory_context(request.agent_id, tenant_id, **_memory_kwargs)
+        runtime_memory_result = (
+            memory_value
+            if isinstance(memory_value, MemoryContextResult)
+            else MemoryContextResult(
+                content=str(memory_value or ""),
+                status="ready",
+                code="memory_context_ready",
+                user_message="Memory context is ready.",
+            )
+        )
+        await _consume_memory_context_status(request, tenant_id, runtime_memory_result)
+        if runtime_memory_result.block_model:
+            raise ContextDependencyUnavailable(
+                dependency="memory",
+                code=runtime_memory_result.code,
+                user_message=runtime_memory_result.user_message,
+                retryable=runtime_memory_result.retryable,
+            )
+        runtime_memory_context = runtime_memory_result.content
         if runtime_memory_context:
             parts.append(
                 _context_engine().inject(
@@ -653,6 +675,19 @@ async def _resolve_memory_context(
                     kind="memory_context",
                     source="memory_provider:context",
                     content=runtime_memory_context,
+                )
+            )
+        if runtime_memory_result.status == "degraded":
+            parts.append(
+                _context_engine().inject(
+                    request.session_context,
+                    kind="memory_runtime_status",
+                    source="memory_provider:degraded",
+                    content=(
+                        "[Memory runtime degraded] Some semantic recall is temporarily unavailable. "
+                        "Resident identity and owner constraints remain active; do not assume complete recall. "
+                        "State uncertainty and ask for missing facts when they matter."
+                    ),
                 )
             )
 
@@ -709,6 +744,73 @@ async def _resolve_memory_context(
             logger.debug("[SkillEvolution] digest skipped for %s: %s", request.agent_id, exc)
 
     return "\n\n".join(parts)
+
+
+async def _consume_memory_context_status(
+    request: AgentInvocationRequest,
+    tenant_id: uuid.UUID,
+    result: MemoryContextResult,
+) -> None:
+    from app.memory.metrics import record_memory_context_status
+
+    record_memory_context_status(status=result.status, code=result.code)
+    metadata = _session_metadata(request.session_context)
+    status_fact = {
+        "status": result.status,
+        "code": result.code,
+        "retryable": result.retryable,
+        "attempts": result.attempts,
+        "degraded_components": list(result.degraded_components),
+        "block_model": result.block_model,
+    }
+    metadata["memory_context_status"] = status_fact
+    if result.status == "ready":
+        return
+
+    event_type = "memory_context_unavailable" if result.block_model else "memory_context_degraded"
+    event = {
+        "type": "session_context",
+        "event_type": event_type,
+        "status": "failed",
+        "code": result.code,
+        "retryable": result.retryable,
+        "retry_reason": "Retry the original turn after memory recovery.",
+        "user_summary": result.user_message,
+        "message": result.user_message,
+        "runtime_task_id": metadata.get("runtime_task_id") or metadata.get("task_id"),
+        "run_id": metadata.get("runtime_task_id") or metadata.get("task_id"),
+    }
+    trace_id = str(
+        metadata.get("trace_id")
+        or metadata.get("runtime_task_id")
+        or metadata.get("request_id")
+        or f"memory:{request.agent_id}:{request.memory_session_id or 'runtime'}"
+    )
+    await persist_invocation_span(
+        tenant_id=tenant_id,
+        trace_id=trace_id,
+        span_id=f"memory-{result.code[:40]}-{uuid.uuid4().hex[:8]}",
+        parent_span_id=None,
+        parent_trace_id=None,
+        span_type="memory",
+        name="memory.context.resolve",
+        status=result.status,
+        duration_ms=0.0,
+        agent_id=request.agent_id,
+        user_id=request.user_id,
+        runtime_task_id=metadata.get("runtime_task_id") or metadata.get("task_id"),
+        session_id=request.memory_session_id
+        or (request.session_context.session_id if request.session_context is not None else None),
+        request_id=metadata.get("request_id"),
+        metadata={
+            "memory_context_status": status_fact,
+            "error_class": result.error_class,
+            "source": request.session_context.source if request.session_context else "runtime",
+        },
+        error=result.error_class,
+    )
+    if request.on_event:
+        await _maybe_await(request.on_event(event))
 
 
 async def _resolve_runtime_metadata_context(
@@ -996,12 +1098,30 @@ def get_agent_kernel(request: AgentInvocationRequest | None = None) -> AgentKern
         resolved_memory_context: str,
         current_user_name: str | None,
     ) -> str:
-        prompt = await _build_system_prompt(
-            request,  # type: ignore[arg-type]
-            tenant_id,
-            resolved_memory_context,
-            current_user_name=current_user_name,
-        )
+        try:
+            prompt = await _build_system_prompt(
+                request,  # type: ignore[arg-type]
+                tenant_id,
+                resolved_memory_context,
+                current_user_name=current_user_name,
+            )
+        except ContextDependencyUnavailable as exc:
+            if request.agent_id is not None and tenant_id is not None:
+                await _consume_memory_context_status(
+                    request,  # type: ignore[arg-type]
+                    tenant_id,
+                    MemoryContextResult(
+                        content="",
+                        status="unavailable",
+                        code=exc.code,
+                        user_message=exc.user_message,
+                        retryable=exc.retryable,
+                        block_model=True,
+                        degraded_components=(exc.dependency,),
+                        error_class=type(exc.__cause__).__name__ if exc.__cause__ else type(exc).__name__,
+                    ),
+                )
+            raise
         try:
             from app.runtime.hooks import HookEvent, emit_hook
 

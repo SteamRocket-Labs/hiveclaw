@@ -51,6 +51,7 @@ class ResidentMemory:
     over_budget: bool
     sections: tuple[str, ...]
     active_failure_modes: str
+    read_errors: tuple[str, ...] = ()
 
 
 def load_resident_memory(
@@ -66,6 +67,7 @@ def load_resident_memory(
     sections: list[str] = []
     blocks: list[str] = []
     active_failures = ""
+    read_errors: list[str] = []
 
     for section_name, rel_path in RESIDENT_SECTION_FILES:
         path = mem_dir / rel_path
@@ -75,6 +77,7 @@ def load_resident_memory(
             content = path.read_text(encoding="utf-8", errors="replace").strip()
         except OSError as exc:
             logger.warning("Resident memory skipped unreadable %s: %s", path, exc)
+            read_errors.append(section_name)
             continue
         if not content:
             continue
@@ -85,16 +88,20 @@ def load_resident_memory(
 
     if include_overlay:
         overlay_lines: list[str] = []
-        for entry in load_explicit_overlay_entries(Path(data_root), agent_id):
-            if entry.status != "active":
-                continue
-            # Sensitive entries never ride the always-on resident block; they
-            # remain reachable through retrieval + activation gating (§4.5).
-            if str(entry.sensitivity or "").startswith(("PL3", "PL4")):
-                continue
-            content = entry.content.strip()
-            if content:
-                overlay_lines.append(f"- [{entry.category}] {content} ({entry.entry_id})")
+        try:
+            for entry in load_explicit_overlay_entries(Path(data_root), agent_id):
+                if entry.status != "active":
+                    continue
+                # Sensitive entries never ride the always-on resident block; they
+                # remain reachable through retrieval + activation gating (§4.5).
+                if str(entry.sensitivity or "").startswith(("PL3", "PL4")):
+                    continue
+                content = entry.content.strip()
+                if content:
+                    overlay_lines.append(f"- [{entry.category}] {content} ({entry.entry_id})")
+        except Exception as exc:  # explicit overlay is governed but not identity-critical
+            logger.warning("Resident explicit overlay unavailable for %s: %s", agent_id, exc)
+            read_errors.append("explicit_overlay")
         if overlay_lines:
             sections.append("explicit_overlay")
             blocks.append("### Explicit Overlay (active)\n" + "\n".join(overlay_lines))
@@ -107,6 +114,7 @@ def load_resident_memory(
             over_budget=False,
             sections=(),
             active_failure_modes="",
+            read_errors=tuple(read_errors),
         )
 
     parts = ["[Profile Plane — Resident Memory]"]
@@ -121,6 +129,7 @@ def load_resident_memory(
         over_budget=len(text) > float(budget_chars),
         sections=tuple(sections),
         active_failure_modes=active_failures,
+        read_errors=tuple(read_errors),
     )
 
 

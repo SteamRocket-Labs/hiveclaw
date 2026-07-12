@@ -114,6 +114,32 @@ def _read_file_safe(path: Path, max_chars: int | None = 3000) -> str:
         return ""
 
 
+def _read_identity_file(paths: tuple[Path, ...], *, source_name: str) -> str:
+    """Read an optional identity file, distinguishing missing from unreadable."""
+    failures: list[Exception] = []
+    for path in paths:
+        try:
+            if not path.exists():
+                continue
+            content = path.read_text(encoding="utf-8", errors="replace").strip()
+        except Exception as exc:
+            failures.append(exc)
+            continue
+        if content:
+            return content
+    if failures:
+        from app.kernel.contracts import ContextDependencyUnavailable
+
+        logger.error("Required identity source {} is unreadable", source_name)
+        raise ContextDependencyUnavailable(
+            dependency="soul",
+            code="soul_context_unavailable",
+            user_message="Required agent identity is temporarily unavailable. This turn was stopped safely.",
+            retryable=True,
+        ) from failures[-1]
+    return ""
+
+
 def _sanitize_prompt_context(content: str, *, source_name: str) -> str:
     text = (content or "").strip()
     if not text:
@@ -477,8 +503,9 @@ async def load_agent_context_resource(
     data_ws = PERSISTENT_DATA / str(agent_id)
 
     if resource_ref == "soul":
-        content = _read_file_safe(tool_ws / "soul.md", max_chars=None) or _read_file_safe(
-            data_ws / "soul.md", max_chars=None
+        content = _read_identity_file(
+            (tool_ws / "soul.md", data_ws / "soul.md"),
+            source_name="soul.md",
         )
         content = _sanitize_prompt_context(_strip_primary_heading(content), source_name="soul.md")
         return AgentContextResource(ref=resource_ref, source_ref=source_ref, content=content)

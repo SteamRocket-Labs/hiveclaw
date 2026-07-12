@@ -89,6 +89,8 @@ const SESSION_NATIVE_DISCLOSURE_EVENTS = new Set([
   'runtime_action_completed',
   'runtime_action_blocked',
   'runtime_action_failed',
+  'memory_context_degraded',
+  'memory_context_unavailable',
 ]);
 
 function compactText(text: string, limit = 160): string {

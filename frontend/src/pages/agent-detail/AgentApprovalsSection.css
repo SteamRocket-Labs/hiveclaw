@@ -88,6 +88,23 @@
   color: var(--text-tertiary);
 }
 
+.agent-approvals-continuation {
+  margin-top: var(--space-2);
+  font-size: var(--text-meta);
+}
+
+.agent-approvals-continuation.is-warning {
+  color: var(--warning);
+}
+
+.agent-approvals-continuation.is-success {
+  color: var(--success);
+}
+
+.agent-approvals-continuation.is-error {
+  color: var(--error);
+}
+
 .agent-approvals-details {
   font-size: var(--text-row);
   color: var(--text-secondary);

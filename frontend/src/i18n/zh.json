@@ -506,6 +506,13 @@
     "needs_reapproval": "需要重新审批",
     "unknown": "状态不可用"
   },
+  "approvalContinuation": {
+    "queued": "正在继续原会话",
+    "continuing": "正在继续原会话",
+    "delivered": "原会话已恢复",
+    "retrying": "原会话续跑正在重试",
+    "needs_reconciliation": "原会话续跑需要处理"
+  },
   "controlPlane": {
     "eyebrow": "企业运行控制台",
     "title": "控制中台",

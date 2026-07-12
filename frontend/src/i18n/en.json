@@ -531,6 +531,13 @@
     "needs_reapproval": "Needs reapproval",
     "unknown": "Status unavailable"
   },
+  "approvalContinuation": {
+    "queued": "Continuing original session",
+    "continuing": "Continuing original session",
+    "delivered": "Original session resumed",
+    "retrying": "Continuation retrying",
+    "needs_reconciliation": "Continuation needs attention"
+  },
   "controlPlane": {
     "eyebrow": "Enterprise operating console",
     "title": "Control Plane",

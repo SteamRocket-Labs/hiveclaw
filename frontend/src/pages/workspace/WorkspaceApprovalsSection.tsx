@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 
 import { enterpriseApi } from '../../api/domains/enterprise';
-import { approvalExecutionPresentation } from '../../utils/approvalExecution';
+import { approvalContinuationPresentation, approvalExecutionPresentation } from '../../utils/approvalExecution';
 
 interface WorkspaceApprovalsSectionProps {
   selectedTenantId: string;
@@ -17,6 +17,7 @@ interface WorkspaceApproval {
   status: 'pending' | 'approved' | 'rejected';
   tool_name?: string | null;
   execution_status?: string | null;
+  execution_receipt?: { continuation_status?: string | null } | null;
 }
 
 export default function WorkspaceApprovalsSection({
@@ -42,6 +43,7 @@ export default function WorkspaceApprovalsSection({
     <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
       {(approvals as WorkspaceApproval[]).map((approval) => {
         const presentation = approvalExecutionPresentation(approval);
+        const continuation = approvalContinuationPresentation(approval);
         const label = t(`approvalExecution.${presentation.key}`, presentation.label);
         return <div
           key={approval.id}
@@ -53,6 +55,11 @@ export default function WorkspaceApprovalsSection({
             <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
               {approval.agent_name || `Agent ${approval.agent_id.slice(0, 8)}`} · {new Date(approval.created_at).toLocaleString()}
             </div>
+            {continuation ? (
+              <div className={`badge badge-${continuation.tone}`} style={{ marginTop: '4px' }}>
+                {t(`approvalContinuation.${continuation.status}`, continuation.label)}
+              </div>
+            ) : null}
           </div>
           {approval.status === 'pending' ? (
             <div style={{ display: 'flex', gap: '8px' }}>

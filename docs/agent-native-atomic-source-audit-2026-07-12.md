@@ -590,6 +590,9 @@ flowchart LR
 - 精确代码位置：`backend/app/services/approval_service.py:_publish_approval_result_to_origin`。
 - 缺失测试：late approval、DB error、task completed、duplicate result。
 - 一次性完整关闭方案：与 R-002 同一 durable approval result outbox；唯一 `(approval_id, session_id)`；consumer 原子写 transcript event并创建/唤醒 continuation RuntimeTask；ack/retry/dead-letter/needs_reconciliation；回填已有 success 无 continuation rows；UI显示“动作完成，正在继续/需重试”；测试 duplicate/late/out-of-order/crash。
+- 修复状态（2026-07-12）：**R-009 七原子闭环**。Approval execution 的终态事务现在直接复用唯一 `RuntimeNotificationOutbox`，以唯一 approval execution RuntimeTask + origin session 形成 exactly-once continuation intent；旧 `_publish_approval_result_to_origin`、`_publish_result_best_effort`、直接 `ChatMessage` 和只给 running task 塞 `pending_user_messages` 的旁路已全部删除。生产路径是：approved ToolRuntime 写 terminal ticket → 同事务把 RuntimeTask terminal、outbox intent 和 `execution_receipt.continuation_status=queued` 一起提交 → outbox worker claim → canonical `ChatTranscriptEvent(causation_id=outbox_id)` → active run mid-run drain 或 inactive open session 新建 durable continuation turn → ack delivered。重复 worker/重复 finalize 由 outbox唯一约束与 transcript causation 唯一索引收敛，不会二次唤醒。
+- 恢复、失败和消费闭环：outbox 具备 lease、restart reclaim、指数退避和 dead letter；每次 claim/retry/deliver 都同步更新 Approval `execution_receipt` 为 continuing/retrying/delivered，耗尽为 needs_reconciliation，且敏感底层错误不进入对话内容。终态 `approval_execution` 已加入通用 reconciler，修复 terminal commit 后 intent 缺失的历史/崩溃窗口；`approval_continuation_outbox_0712` 扩展 source-kind 约束，并用 ApprovalRequest + ChatSession authority 对旧 terminal jobs 做真实 backfill，无法绑定 owner/session 的记录不伪造投递。Agent 与公司 Approval Center 将“动作执行状态”和“原会话续跑状态”分开展示：正在继续、已恢复、重试中、需要处理，避免把 tool succeeded 误呈现为整条任务已闭环。
+- 修复证据：初始 Red backend → `2 failed`（成功执行无 outbox、reconciler 忽略 approval execution），Red frontend → `7 failed`（5 个 continuation 状态无映射，Agent/公司两处 UI 不消费）。Green backend 扩展集 `pytest tests/services/test_approval_execution_runtime.py tests/services/test_approval_service.py tests/services/test_runtime_notification_outbox.py tests/services/test_agent_session_continuation.py tests/services/test_web_chat_runtime.py tests/migrations/test_approval_continuation_outbox_migration.py tests/migrations/test_hook_failure_mode_migration.py tests/migrations/test_dream_runtime_task_migration.py -q` → `143 passed, 4 warnings`；真实 PostgreSQL 覆盖原子 terminal+enqueue、重复 finalize exact-one、retry→delivered receipt、restart reconciler、legacy backfill 和新 check constraint，Alembic head=`approval_continuation_outbox_0712`。Frontend approval utility/Agent/Company/Thread/Chat 回归 → `192 passed`，`npm run build` exit 0；9 个 Python 文件 `ruff check` 与 `ruff format --check` 全绿。提交主题：`fix(R-009): resume sessions through approval outbox`。
 
 ### [R-010] 核心 owner 仍是高复杂度 monolith，动态 support 削弱可证明性
 
@@ -1003,7 +1006,7 @@ Codebase graph 校正时状态为 ready（43,281 nodes / 166,753 edges）；`det
 
 ## 16. 28 项原子缺口修复执行账本
 
-本节记录原始审计全部 28 项的实际落地状态：17 个断点、10 个局部闭环、1 个已知缺失。原始严重级别与原子状态保留为审计快照；只有同时具备实现、回归测试、报告证据和独立提交，才把修复状态改为闭环。Company Knowledge Base 本体按 owner 边界不在本轮开发，但 R-008 的诚实隔离、文案与防伪装验收仍必须关闭。当前进度：**11/28**。
+本节记录原始审计全部 28 项的实际落地状态：17 个断点、10 个局部闭环、1 个已知缺失。原始严重级别与原子状态保留为审计快照；只有同时具备实现、回归测试、报告证据和独立提交，才把修复状态改为闭环。Company Knowledge Base 本体按 owner 边界不在本轮开发，但 R-008 的诚实隔离、文案与防伪装验收仍必须关闭。当前进度：**12/28**。
 
 | ID | 修复状态 | 独立提交主题 | 机械证据摘要 |
 |---|---|---|---|
@@ -1015,7 +1018,7 @@ Codebase graph 校正时状态为 ready（43,281 nodes / 166,753 edges）；`det
 | R-006 | 闭环 | `fix(R-006): make memory degradation explicit` | Red backend 7 failed + frontend 1 failed；Green backend 346 passed；semantic retry/resident retention/critical fail-before-model/event-span-metric；frontend 200 passed + build；ruff/format 绿 |
 | R-007 | 闭环 | `fix(R-007): require complete Dream semantic coverage` | Red backend 5 failed + frontend 1 failed；Green backend 157 passed；全量输入/hash receipt/no-semantic-fallback/durable retry；frontend 115 passed + build；ruff/format 绿 |
 | R-008 | 边界闭环（Company KB 本体已知缺失） | `fix(R-008): isolate the missing Company KB boundary` | Red backend 1 failed + frontend 2 failed；Green backend 3 passed；无假 route/consumer + typed legacy quarantine；frontend 31 passed + build；ruff/format 绿 |
-| R-009 | 待修复 | — | — |
+| R-009 | 闭环 | `fix(R-009): resume sessions through approval outbox` | Red backend 2 failed + frontend 7 failed；Green backend 143 passed；PG exact-one/retry/reconcile/backfill/migration；frontend 192 passed + build；ruff/format 绿 |
 | R-010 | 待修复 | — | — |
 | R-011 | 待修复 | — | — |
 | R-012 | 待修复 | — | — |

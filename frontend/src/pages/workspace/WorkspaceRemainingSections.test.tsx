@@ -47,7 +47,8 @@ vi.mock('@tanstack/react-query', () => ({
             created_at: '2026-03-27T09:05:00Z',
             status: 'approved',
             tool_name: 'write_file',
-            execution_status: 'executing',
+            execution_status: 'succeeded',
+            execution_receipt: { continuation_status: 'needs_reconciliation' },
           },
         ],
       };
@@ -131,7 +132,8 @@ describe('Workspace remaining sections', () => {
     );
 
     expect(approvalsMarkup).toContain('deploy_run');
-    expect(approvalsMarkup).toContain('Executing');
+    expect(approvalsMarkup).toContain('Succeeded');
+    expect(approvalsMarkup).toContain('Continuation needs attention');
     expect(auditMarkup).toContain('schedule_tick');
     expect(auditMarkup).toContain('records:1');
   });

@@ -141,14 +141,6 @@ async def test_approval_execution_job_consumes_once_and_recovers_terminal_withou
 
     monkeypatch.setattr("app.services.agent_tools.execute_approved_tool", fake_execute_approved_tool)
 
-    async def skip_projection(**_kwargs):
-        return None
-
-    monkeypatch.setattr(
-        "app.services.approval_execution_runtime._publish_result_best_effort",
-        skip_projection,
-    )
-
     assert await execute_claimed_approval_execution(task_id) == "succeeded"
     assert await execute_claimed_approval_execution(task_id) == "succeeded"
     assert calls == [f"approval:{approval_id}"]
@@ -164,6 +156,103 @@ async def test_approval_execution_job_consumes_once_and_recovers_terminal_withou
         assert task.tenant_id == tenant_id
         assert task.parent_agent_id == agent_id
         assert task.root_user_id == user_id
+
+
+@pytest.mark.asyncio
+async def test_terminal_approval_atomically_enqueues_one_origin_continuation(
+    owner_sessionmaker,
+    monkeypatch,
+) -> None:
+    from sqlalchemy import func, select
+
+    import app.database as database
+    from app.models.audit import ApprovalRequest
+    from app.models.chat_session import ChatSession
+    from app.models.runtime_notification_outbox import RuntimeNotificationOutbox
+    from app.models.runtime_task import RuntimeTask
+    from app.services.approval_execution_runtime import execute_claimed_approval_execution
+    from app.services.approval_ticket import complete_approval_ticket, consume_approval_ticket
+
+    tenant_id, user_id, agent_id, approval_id, task_id = await _seed_execution_job(owner_sessionmaker)
+    session_id = uuid4()
+    async with owner_sessionmaker() as db:
+        approval = await db.get(ApprovalRequest, approval_id)
+        task = await db.get(RuntimeTask, task_id)
+        assert approval is not None and task is not None
+        approval.details = {**dict(approval.details or {}), "session_id": str(session_id)}
+        task.parent_session_id = str(session_id)
+        task.root_session_id = str(session_id)
+        db.add(
+            ChatSession(
+                id=session_id,
+                tenant_id=tenant_id,
+                agent_id=agent_id,
+                user_id=user_id,
+                title="Approval origin",
+                source_channel="web",
+                session_kind="human_chat",
+                actor_type="user",
+                runtime_source="web_chat",
+                visibility_scope="direct_user",
+                listed_surface="chat",
+            )
+        )
+        await db.commit()
+    monkeypatch.setattr(database, "async_session", owner_sessionmaker)
+
+    async def fake_execute_approved_tool(*, approval_id, expected_agent_id, approved_by_user_id):
+        ticket = await consume_approval_ticket(
+            approval_id=approval_id,
+            expected_agent_id=expected_agent_id,
+            expected_user_id=approved_by_user_id,
+        )
+        await complete_approval_ticket(
+            approval_id=approval_id,
+            tenant_id=ticket.tenant_id,
+            status="succeeded",
+            result="wrote workspace/report.md",
+            receipt={"status": "succeeded", "side_effect_state": "confirmed"},
+        )
+        return "wrote workspace/report.md"
+
+    monkeypatch.setattr("app.services.agent_tools.execute_approved_tool", fake_execute_approved_tool)
+
+    assert await execute_claimed_approval_execution(task_id) == "succeeded"
+    assert await execute_claimed_approval_execution(task_id) == "succeeded"
+
+    async with owner_sessionmaker() as db:
+        approval = await db.get(ApprovalRequest, approval_id)
+        rows = list(
+            (
+                await db.execute(
+                    select(RuntimeNotificationOutbox).where(
+                        RuntimeNotificationOutbox.source_kind == "approval",
+                        RuntimeNotificationOutbox.source_run_id == str(task_id),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        count = (
+            await db.execute(
+                select(func.count())
+                .select_from(RuntimeNotificationOutbox)
+                .where(
+                    RuntimeNotificationOutbox.source_kind == "approval",
+                    RuntimeNotificationOutbox.source_run_id == str(task_id),
+                )
+            )
+        ).scalar_one()
+    assert count == 1
+    assert len(rows) == 1
+    assert rows[0].parent_session_id == session_id
+    assert rows[0].delivery_mode == "parent_continuation"
+    assert rows[0].metadata_json["approval_id"] == str(approval_id)
+    assert "wrote workspace/report.md" in rows[0].metadata_json["model_context"]
+    assert approval is not None
+    assert approval.execution_receipt["continuation_status"] == "queued"
+    assert approval.execution_receipt["continuation_outbox_id"] == str(rows[0].id)
 
 
 @pytest.mark.asyncio

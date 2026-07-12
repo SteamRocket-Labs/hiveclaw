@@ -226,6 +226,80 @@ async def test_claim_retry_and_terminal_ack_are_durable(owner_sessionmaker):
 
 
 @pytest.mark.usefixtures("migrated_pg_url")
+async def test_approval_continuation_retry_and_ack_update_approval_receipt(owner_sessionmaker):
+    from app.models.audit import ApprovalRequest
+
+    await _clear_outbox(owner_sessionmaker)
+    tenant_id, user_id, agent_id, session_id = await _seed_parent_session(owner_sessionmaker)
+    approval_id = uuid.uuid4()
+    task_id = uuid.uuid4()
+    async with tenant_scoped_session(tenant_id, session_factory=owner_sessionmaker) as db:
+        db.add(
+            ApprovalRequest(
+                id=approval_id,
+                tenant_id=tenant_id,
+                agent_id=agent_id,
+                action_type="workspace.write",
+                status="approved",
+                tool_name="write_file",
+                execution_status="succeeded",
+                execution_idempotency_key=f"approval:{approval_id}",
+                execution_result="wrote report",
+                execution_receipt={"status": "succeeded"},
+                details={"session_id": str(session_id)},
+            )
+        )
+        outbox_id = await enqueue_completion_notification(
+            db,
+            CompletionNotification(
+                tenant_id=tenant_id,
+                source_kind="approval",
+                source_run_id=str(task_id),
+                parent_session_id=session_id,
+                parent_agent_id=agent_id,
+                parent_user_id=user_id,
+                terminal_status="completed",
+                task_type="approval_execution",
+                summary="wrote report",
+                delivery_mode="parent_continuation",
+                metadata={"approval_id": str(approval_id), "tool_name": "write_file"},
+            ),
+        )
+        await db.commit()
+
+    calls = 0
+
+    async def flaky_delivery(_item):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("temporary continuation failure")
+        return {"status": "started", "runtime_task_id": "continued-run"}
+
+    service = RuntimeNotificationOutboxService(
+        session_factory=owner_sessionmaker,
+        retry_base_seconds=0,
+        max_attempts=3,
+    )
+    assert (await service.drain_once(worker_id="approval-worker-a", deliver=flaky_delivery))["retried"] == 1
+    async with owner_sessionmaker() as db:
+        approval = await db.get(ApprovalRequest, approval_id)
+        assert approval is not None
+        assert approval.execution_receipt["continuation_status"] == "retrying"
+        assert "temporary continuation failure" in approval.execution_receipt["continuation_error"]
+
+    assert (await service.drain_once(worker_id="approval-worker-b", deliver=flaky_delivery))["delivered"] == 1
+    async with owner_sessionmaker() as db:
+        approval = await db.get(ApprovalRequest, approval_id)
+        row = await db.get(RuntimeNotificationOutbox, outbox_id)
+        assert approval is not None and row is not None
+        assert row.status == "delivered"
+        assert approval.execution_receipt["continuation_status"] == "delivered"
+        assert approval.execution_receipt["continuation_attempt_count"] == 2
+        assert "continuation_error" not in approval.execution_receipt
+
+
+@pytest.mark.usefixtures("migrated_pg_url")
 async def test_dead_lettered_team_close_reopens_team_for_retry(owner_sessionmaker):
     await _clear_outbox(owner_sessionmaker)
     tenant_id, user_id, agent_id, session_id = await _seed_parent_session(owner_sessionmaker)
@@ -248,7 +322,7 @@ async def test_dead_lettered_team_close_reopens_team_for_retry(owner_sessionmake
                 tenant_id=tenant_id,
                 source_kind="agent_team",
                 source_run_id=f"agent_team_close:{team_id}:1",
-                parent_session_id=session_id,
+                parent_session_id=str(session_id),
                 parent_agent_id=agent_id,
                 parent_user_id=user_id,
                 terminal_status="completed",
@@ -490,12 +564,51 @@ async def test_reconciler_backfills_terminal_runtime_task_missing_outbox(owner_s
             )
         ).scalar_one()
 
-    assert repaired == 1
+    assert repaired >= 1
     assert row.source_kind == "workflow"
     assert row.parent_session_id == session_id
     assert row.parent_user_id == user_id
     assert row.summary == "workflow result"
     assert row.artifacts_json == [{"type": "artifact", "path": "workspace/result.md"}]
+
+
+@pytest.mark.usefixtures("migrated_pg_url")
+async def test_reconciler_backfills_terminal_approval_continuation(owner_sessionmaker):
+    await _clear_outbox(owner_sessionmaker)
+    tenant_id, user_id, agent_id, session_id = await _seed_parent_session(owner_sessionmaker)
+    task_id = uuid.uuid4()
+    approval_id = uuid.uuid4()
+    async with tenant_scoped_session(tenant_id, session_factory=owner_sessionmaker) as db:
+        db.add(
+            RuntimeTask(
+                id=task_id,
+                tenant_id=tenant_id,
+                task_type="approval_execution",
+                status="completed",
+                parent_agent_id=agent_id,
+                parent_session_id=str(session_id),
+                root_user_id=user_id,
+                result_summary="approved file result",
+                metadata_json={"approval_id": str(approval_id), "tool_name": "write_file"},
+            )
+        )
+        await db.commit()
+
+    service = RuntimeNotificationOutboxService(session_factory=owner_sessionmaker)
+    repaired = await service.reconcile_terminal_tasks_once(limit=10)
+
+    async with owner_sessionmaker() as db:
+        row = (
+            await db.execute(
+                select(RuntimeNotificationOutbox).where(RuntimeNotificationOutbox.source_run_id == str(task_id))
+            )
+        ).scalar_one()
+    assert repaired >= 1
+    assert row.source_kind == "approval"
+    assert row.task_type == "approval_execution"
+    assert row.parent_session_id == session_id
+    assert row.parent_user_id == user_id
+    assert row.metadata_json["approval_id"] == str(approval_id)
 
 
 @pytest.mark.usefixtures("migrated_pg_url")

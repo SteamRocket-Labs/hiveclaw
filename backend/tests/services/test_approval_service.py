@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
-
-from app.models.audit import ChatMessage
 
 
 class _FakeScalarRows:
@@ -316,10 +313,6 @@ async def test_resolve_approval_atomically_enqueues_durable_execution_job(monkey
         async def _execute_approved_action(self, *args, **kwargs):
             raise AssertionError("approved actions must not execute in the resolving HTTP request")
 
-        async def _publish_approval_result_to_origin(self, *args, **kwargs):
-            events.append("publish")
-            return {"type": "approval_tool_result"}
-
     monkeypatch.setattr("app.core.policy.write_audit_event", fake_write_audit_event)
     monkeypatch.setattr("app.services.notification_service.send_notification", fake_send_notification)
     monkeypatch.setattr("app.services.runtime_task_worker.notify_runtime_task_worker", fake_notify_worker)
@@ -339,56 +332,6 @@ async def test_resolve_approval_atomically_enqueues_durable_execution_job(monkey
     assert events.index("commit") < events.index("wake")
     assert "execute" not in events
     assert "FOR UPDATE" in str(db.queries[0]).upper()
-
-
-@pytest.mark.asyncio
-async def test_approval_result_is_published_to_origin_session_and_active_run() -> None:
-    from app.services.approval_service import ApprovalService
-
-    agent_id = uuid4()
-    tenant_id = uuid4()
-    approver_id = uuid4()
-    approval_id = uuid4()
-    active_run = SimpleNamespace(
-        id=uuid4(),
-        task_type="web_chat_turn",
-        status="running",
-        metadata_json={"session_id": "session-approval", "pending_user_messages": []},
-    )
-    db = _FakeDb([active_run])
-    agent = SimpleNamespace(id=agent_id, tenant_id=tenant_id, creator_id=uuid4())
-    approval = SimpleNamespace(
-        id=approval_id,
-        agent_id=agent_id,
-        action_type="workspace.write",
-        status="approved",
-        details={
-            "tool": "write_file",
-            "args": {"path": "workspace/notes.md"},
-            "session_id": "session-approval",
-        },
-    )
-
-    payload = await ApprovalService()._publish_approval_result_to_origin(
-        db,
-        approval,
-        agent=agent,
-        approved_by_user_id=approver_id,
-        execution_result="wrote workspace/notes.md",
-    )
-
-    assert payload["type"] == "approval_tool_result"
-    chat_rows = [item for item in db.added if isinstance(item, ChatMessage)]
-    assert len(chat_rows) == 1
-    assert chat_rows[0].role == "tool_call"
-    assert chat_rows[0].conversation_id == "session-approval"
-    stored = json.loads(chat_rows[0].content)
-    assert stored["approval_id"] == str(approval_id)
-    assert stored["result"] == "wrote workspace/notes.md"
-    pending = active_run.metadata_json["pending_user_messages"]
-    assert len(pending) == 1
-    assert pending[0]["approval_id"] == str(approval_id)
-    assert "wrote workspace/notes.md" in pending[0]["content"]
 
 
 def test_org_admin_can_resolve_same_tenant_agent_approval() -> None:

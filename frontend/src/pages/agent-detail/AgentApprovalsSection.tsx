@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 
 import { agentApi } from '../../api/domains/agents';
-import { approvalExecutionPresentation } from '../../utils/approvalExecution';
+import { approvalContinuationPresentation, approvalExecutionPresentation } from '../../utils/approvalExecution';
 import './AgentApprovalsSection.css';
 
 type AgentApprovalsSectionProps = {
@@ -96,6 +96,7 @@ export default function AgentApprovalsSection({ agentId }: AgentApprovalsSection
       )}
       {resolved.map((approval: any) => {
         const presentation = renderStatus(approval);
+        const continuation = approvalContinuationPresentation(approval);
         return <div key={approval.id} className="card card-pad-sm agent-approvals-item-resolved">
           <div className="agent-approvals-row">
             <span className={`agent-approvals-status ${presentation.agentClassName}`}>{presentation.text}</span>
@@ -105,6 +106,11 @@ export default function AgentApprovalsSection({ agentId }: AgentApprovalsSection
               {approval.resolved_at ? new Date(approval.resolved_at).toLocaleString() : ''}
             </span>
           </div>
+          {continuation && (
+            <div className={`agent-approvals-continuation is-${continuation.tone}`}>
+              {t(`approvalContinuation.${continuation.status}`, continuation.label)}
+            </div>
+          )}
         </div>;
       })}
     </div>

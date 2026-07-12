@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { approvalExecutionPresentation } from './approvalExecution';
+import { approvalContinuationPresentation, approvalExecutionPresentation } from './approvalExecution';
 
 
 describe('approvalExecutionPresentation', () => {
@@ -20,6 +20,18 @@ describe('approvalExecutionPresentation', () => {
         execution_status: executionStatus,
       }),
     ).toMatchObject({ key, label });
+  });
+
+  it.each([
+    ['queued', 'Continuing original session'],
+    ['continuing', 'Continuing original session'],
+    ['delivered', 'Original session resumed'],
+    ['retrying', 'Continuation retrying'],
+    ['needs_reconciliation', 'Continuation needs attention'],
+  ])('maps continuation %s to a separate user-facing state', (status, label) => {
+    expect(
+      approvalContinuationPresentation({ execution_receipt: { continuation_status: status } }),
+    ).toMatchObject({ status, label });
   });
 
   it('keeps non-tool decisions as approved or rejected', () => {

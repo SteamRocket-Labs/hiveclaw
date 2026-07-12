@@ -2,6 +2,9 @@ export type ApprovalExecutionLike = {
   status?: string | null;
   tool_name?: string | null;
   execution_status?: string | null;
+  execution_receipt?: {
+    continuation_status?: string | null;
+  } | null;
 };
 
 export type ApprovalExecutionPresentation = {
@@ -9,6 +12,24 @@ export type ApprovalExecutionPresentation = {
   label: string;
   tone: 'warning' | 'success' | 'error' | 'neutral';
   agentClassName: 'is-pending' | 'is-approved' | 'is-rejected';
+};
+
+export type ApprovalContinuationPresentation = {
+  status: string;
+  label: string;
+  tone: 'warning' | 'success' | 'error';
+};
+
+const CONTINUATION_PRESENTATIONS: Record<string, ApprovalContinuationPresentation> = {
+  queued: { status: 'queued', label: 'Continuing original session', tone: 'warning' },
+  continuing: { status: 'continuing', label: 'Continuing original session', tone: 'warning' },
+  delivered: { status: 'delivered', label: 'Original session resumed', tone: 'success' },
+  retrying: { status: 'retrying', label: 'Continuation retrying', tone: 'warning' },
+  needs_reconciliation: {
+    status: 'needs_reconciliation',
+    label: 'Continuation needs attention',
+    tone: 'error',
+  },
 };
 
 const EXECUTION_PRESENTATIONS: Record<string, ApprovalExecutionPresentation> = {
@@ -50,4 +71,11 @@ export function approvalExecutionPresentation(
     tone: 'neutral',
     agentClassName: 'is-pending',
   };
+}
+
+export function approvalContinuationPresentation(
+  approval: ApprovalExecutionLike,
+): ApprovalContinuationPresentation | null {
+  const status = String(approval.execution_receipt?.continuation_status || '').trim().toLowerCase();
+  return CONTINUATION_PRESENTATIONS[status] || null;
 }

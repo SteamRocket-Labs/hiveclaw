@@ -11,10 +11,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent import Agent
-from app.models.audit import ApprovalRequest, AuditLog, ChatMessage
+from app.models.audit import ApprovalRequest, AuditLog
 from app.models.channel_config import ChannelConfig
 from app.models.external_principal import ExternalPrincipal
-from app.models.runtime_task import RuntimeTask
 from app.models.user import User
 from app.services.channel_user_service import channel_user_service
 from app.services.enterprise_approval_visibility import is_session_tool_approval
@@ -309,83 +308,6 @@ class ApprovalService:
 
         await db.flush()
         return approval
-
-    async def _publish_approval_result_to_origin(
-        self,
-        db: AsyncSession,
-        approval: ApprovalRequest,
-        *,
-        agent: Agent | None,
-        approved_by_user_id: uuid.UUID,
-        execution_result: str | None,
-    ) -> dict | None:
-        """Publish a post-approval tool result back to the originating session."""
-        details = dict(approval.details or {})
-        session_id = str(details.get("session_id") or details.get("conversation_id") or "").strip()
-        if not session_id:
-            return None
-
-        tool_name = str(details.get("tool") or approval.action_type or "").strip() or "approved_action"
-        result_text = "" if execution_result is None else str(execution_result)
-        payload = {
-            "type": "approval_tool_result",
-            "approval_id": str(approval.id),
-            "status": approval.status,
-            "action_type": approval.action_type,
-            "tool_name": tool_name,
-            "approved_by_user_id": str(approved_by_user_id),
-            "result": result_text,
-            "session_id": session_id,
-        }
-
-        user_id = approved_by_user_id or (agent.creator_id if agent else None)
-        if user_id is not None:
-            db.add(
-                ChatMessage(
-                    agent_id=approval.agent_id,
-                    tenant_id=getattr(agent, "tenant_id", None),
-                    user_id=user_id,
-                    role="tool_call",
-                    content=json.dumps(payload, ensure_ascii=False),
-                    conversation_id=session_id,
-                )
-            )
-
-        pending_content = (
-            "[Approval result]\n"
-            f"Approval {approval.id} was {approval.status}.\n"
-            f"Tool: {tool_name}\n"
-            f"Result: {result_text[:4000]}\n"
-            "Use this as the result of the previously approval-gated tool call and continue the original task."
-        )
-        try:
-            result = await db.execute(
-                select(RuntimeTask).where(
-                    RuntimeTask.parent_agent_id == approval.agent_id,
-                    RuntimeTask.task_type == "web_chat_turn",
-                    RuntimeTask.status == "running",
-                )
-            )
-            for task in result.scalars().all():
-                metadata = dict(getattr(task, "metadata_json", None) or {})
-                if str(metadata.get("session_id") or "") != session_id:
-                    continue
-                pending = [item for item in metadata.get("pending_user_messages") or [] if isinstance(item, dict)]
-                pending.append(
-                    {
-                        "id": f"approval-{approval.id}",
-                        "approval_id": str(approval.id),
-                        "content": pending_content,
-                        "created_at": datetime.now(timezone.utc).isoformat(),
-                    }
-                )
-                metadata["pending_user_messages"] = pending
-                metadata["pending_user_message_count"] = len(pending)
-                task.metadata_json = metadata
-                break
-        except Exception:
-            logger.warning("Failed to queue approval result for origin session %s", session_id, exc_info=True)
-        return payload
 
     async def _notify_pending_approval(self, db: AsyncSession, agent: Agent, approval: ApprovalRequest) -> None:
         """Send pending approval notification via web and Feishu when available."""

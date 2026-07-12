@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.database import async_session, enter_rls_bypass, tenant_scoped_session
 from app.models.agent import Agent
+from app.models.audit import ApprovalRequest
 from app.models.chat_session import ChatSession
 from app.models.chat_transcript_event import ChatTranscriptEvent
 from app.models.runtime_notification_outbox import RuntimeNotificationOutbox
@@ -179,6 +180,44 @@ def _claimed(row: RuntimeNotificationOutbox) -> ClaimedCompletionNotification:
     )
 
 
+async def _set_approval_continuation_status(
+    db: AsyncSession,
+    row: RuntimeNotificationOutbox,
+    *,
+    status: str,
+    error: str | None = None,
+) -> None:
+    if row.source_kind != "approval":
+        return
+    try:
+        approval_id = _uuid((row.metadata_json or {}).get("approval_id"), field="approval_id")
+    except ValueError:
+        return
+    approval = (
+        await db.execute(
+            select(ApprovalRequest).where(
+                ApprovalRequest.id == approval_id,
+                ApprovalRequest.tenant_id == row.tenant_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if approval is None:
+        return
+    receipt = dict(approval.execution_receipt or {})
+    receipt.update(
+        {
+            "continuation_status": status,
+            "continuation_outbox_id": str(row.id),
+            "continuation_attempt_count": int(row.attempt_count or 0),
+        }
+    )
+    if error:
+        receipt["continuation_error"] = error[:1_000]
+    else:
+        receipt.pop("continuation_error", None)
+    approval.execution_receipt = receipt
+
+
 class RuntimeNotificationOutboxService:
     """Claim, deliver, retry, and acknowledge completion notifications."""
 
@@ -242,6 +281,7 @@ class RuntimeNotificationOutboxService:
                 row.locked_by = str(worker_id)
                 row.locked_at = current
                 row.attempt_count = int(row.attempt_count or 0) + 1
+                await _set_approval_continuation_status(db, row, status="continuing")
             await db.commit()
             return [_claimed(row) for row in rows]
 
@@ -254,7 +294,15 @@ class RuntimeNotificationOutboxService:
         """
 
         terminal_statuses = ("completed", "failed", "killed", "skipped", "needs_reconciliation")
-        supported_types = ("subagent", "team_member", "workflow", "delegation", "a2a_delegation", "trigger")
+        supported_types = (
+            "subagent",
+            "team_member",
+            "workflow",
+            "delegation",
+            "a2a_delegation",
+            "trigger",
+            "approval_execution",
+        )
         async with self._worker_session("reconcile_terminal_tasks") as db:
             already_enqueued = exists(
                 select(RuntimeNotificationOutbox.id).where(
@@ -288,6 +336,7 @@ class RuntimeNotificationOutboxService:
                     "team_member": "agent_team",
                     "delegation": "a2a_delegation",
                     "a2a_delegation": "a2a_delegation",
+                    "approval_execution": "approval",
                 }.get(task.task_type, task.task_type)
                 target_value = (
                     task.child_session_id
@@ -338,6 +387,19 @@ class RuntimeNotificationOutboxService:
                         artifacts=list(metadata.get("artifacts") or []),
                         metadata={
                             **metadata,
+                            **(
+                                {
+                                    "model_context": (
+                                        "[Approval tool result]\n"
+                                        f"Approval: {metadata.get('approval_id') or 'unknown'}\n"
+                                        f"Tool: {metadata.get('tool_name') or 'approved_action'}\n"
+                                        f"Result: {str(task.result_summary or '')[:20_000]}\n"
+                                        "Continue the original task from this approved tool result."
+                                    )
+                                }
+                                if task.task_type == "approval_execution"
+                                else {}
+                            ),
                             "reconciled_from_terminal_runtime_task": True,
                         },
                         payload_rank=10,
@@ -369,6 +431,7 @@ class RuntimeNotificationOutboxService:
             row.last_error = None
             row.locked_by = None
             row.locked_at = None
+            await _set_approval_continuation_status(db, row, status="delivered")
             await db.commit()
             return True
 
@@ -410,6 +473,12 @@ class RuntimeNotificationOutboxService:
                 row.status = "pending"
                 row.available_at = now + timedelta(seconds=delay)
                 outcome = "retry"
+            await _set_approval_continuation_status(
+                db,
+                row,
+                status="needs_reconciliation" if outcome == "dead_letter" else "retrying",
+                error=row.last_error,
+            )
             await db.commit()
             return outcome
 
@@ -434,6 +503,7 @@ class RuntimeNotificationOutboxService:
             row.attempt_count = max(0, int(row.attempt_count or 0) - 1)
             row.locked_by = None
             row.locked_at = None
+            await _set_approval_continuation_status(db, row, status="queued", error=reason)
             await db.commit()
             return True
 

@@ -16,9 +16,10 @@ import uuid
 
 from loguru import logger
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.agent import Agent
 from app.models.audit import ApprovalRequest
+from app.models.chat_session import ChatSession
 from app.models.runtime_task import RuntimeTask
 from app.services.approval_ticket import ApprovalTicketError
 from app.services.runtime_task_fence import assert_runtime_task_fence, renew_current_runtime_task_lease
@@ -56,6 +57,8 @@ def build_approval_execution_task(
         "schema": APPROVAL_EXECUTION_JOB_SCHEMA,
         "approval_id": str(approval.id),
         "approved_by_user_id": str(approved_by_user_id),
+        "tool_name": str(approval.tool_name or approval.action_type or "approved_action"),
+        "origin_session_key": session_id,
         "phase": "queued",
         "side_effect_risk": "not_started",
         "reconciliation_retry_allowed": True,
@@ -134,6 +137,130 @@ def _set_task_terminal(
         )
     task.metadata_json = metadata
     return approval_status
+
+
+def _uuid_or_none(value: object) -> uuid.UUID | None:
+    try:
+        return uuid.UUID(str(value)) if value else None
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
+async def _resolve_origin_session(
+    db: AsyncSession,
+    *,
+    approval: ApprovalRequest,
+    task: RuntimeTask,
+) -> tuple[ChatSession | None, str | None]:
+    details = dict(approval.details or {})
+    session_key = str(
+        details.get("session_id") or details.get("conversation_id") or task.parent_session_id or ""
+    ).strip()
+    if not session_key:
+        return None, None
+    session_id = _uuid_or_none(session_key)
+    query = select(ChatSession).where(
+        ChatSession.tenant_id == approval.tenant_id,
+        ChatSession.agent_id == approval.agent_id,
+    )
+    if session_id is not None:
+        query = query.where(ChatSession.id == session_id)
+    else:
+        query = query.where(ChatSession.external_conv_id == session_key)
+    return (await db.execute(query)).scalar_one_or_none(), session_key
+
+
+async def _enqueue_origin_continuation(
+    db: AsyncSession,
+    *,
+    approval: ApprovalRequest,
+    task: RuntimeTask,
+    approval_status: str,
+    execution_result: str | None,
+) -> uuid.UUID | None:
+    """Atomically bridge a terminal approved action back to its source session."""
+    session, session_key = await _resolve_origin_session(db, approval=approval, task=task)
+    receipt = dict(approval.execution_receipt or {})
+    if session_key is None:
+        receipt["continuation_status"] = "not_requested"
+        approval.execution_receipt = receipt
+        return None
+    if session is None or session.user_id is None or approval.tenant_id is None:
+        receipt.update(
+            {
+                "continuation_status": "needs_reconciliation",
+                "continuation_reason": "origin_session_authority_unresolved",
+                "origin_session_key": session_key,
+            }
+        )
+        approval.execution_receipt = receipt
+        metadata = dict(task.metadata_json or {})
+        metadata["continuation_status"] = "needs_reconciliation"
+        metadata["continuation_reason"] = "origin_session_authority_unresolved"
+        task.metadata_json = metadata
+        return None
+
+    from app.services.runtime_notification_outbox import CompletionNotification, enqueue_completion_notification
+
+    tool_name = str(approval.tool_name or approval.action_type or "approved_action")
+    result_text = str(execution_result or task.result_summary or "")[:20_000]
+    model_context = (
+        "[Approval tool result]\n"
+        f"Approval: {approval.id}\n"
+        f"Status: {approval_status}\n"
+        f"Tool: {tool_name}\n"
+        f"Result: {result_text}\n"
+        "Treat this as the result of the previously approval-gated tool call and continue the original task."
+    )
+    terminal_status = {
+        "succeeded": "completed",
+        "failed": "failed",
+        "needs_reapproval": "blocked",
+        "needs_reconciliation": "needs_reconciliation",
+    }.get(approval_status, approval_status)
+    outbox_id = await enqueue_completion_notification(
+        db,
+        CompletionNotification(
+            tenant_id=approval.tenant_id,
+            source_kind="approval",
+            source_run_id=str(task.id),
+            parent_session_id=session.id,
+            parent_agent_id=approval.agent_id,
+            parent_user_id=session.user_id,
+            terminal_status=terminal_status,
+            task_type="approval_execution",
+            summary=result_text or f"Approval execution {approval_status}.",
+            delivery_mode="parent_continuation",
+            metadata={
+                "approval_id": str(approval.id),
+                "approval_status": approval_status,
+                "tool_name": tool_name,
+                "model_context": model_context,
+                "origin_session_id": str(session.id),
+            },
+            payload_rank=100,
+        ),
+    )
+    receipt.update(
+        {
+            "continuation_status": "queued",
+            "continuation_outbox_id": str(outbox_id),
+            "origin_session_id": str(session.id),
+        }
+    )
+    approval.execution_receipt = receipt
+    metadata = dict(task.metadata_json or {})
+    metadata.update(
+        {
+            "completion_outbox_id": str(outbox_id),
+            "continuation_status": "queued",
+            "origin_session_id": str(session.id),
+            "approval_id": str(approval.id),
+            "tool_name": tool_name,
+        }
+    )
+    task.metadata_json = metadata
+    return outbox_id
 
 
 def _quarantine_unknown_execution(task: RuntimeTask, approval: ApprovalRequest) -> str:
@@ -298,9 +425,15 @@ async def _finalize_from_ticket(task_id: uuid.UUID, tenant_id: uuid.UUID) -> tup
                 "side_effect_state": "unknown",
                 "automatic_replay": False,
             }
-        return _set_task_terminal(
-            task, approval_status=status, result=approval.execution_result
-        ), approval.execution_result
+        terminal_status = _set_task_terminal(task, approval_status=status, result=approval.execution_result)
+        await _enqueue_origin_continuation(
+            db,
+            approval=approval,
+            task=task,
+            approval_status=status,
+            execution_result=approval.execution_result,
+        )
+        return terminal_status, approval.execution_result
 
 
 async def _mark_preflight_reapproval(
@@ -407,47 +540,6 @@ async def _handle_operational_failure(
         return _set_task_terminal(task, approval_status="failed", result=error)
 
 
-async def _publish_result_best_effort(
-    *,
-    task_id: uuid.UUID,
-    tenant_id: uuid.UUID,
-    approved_by_user_id: uuid.UUID,
-    execution_result: str | None,
-) -> None:
-    """Preserve the legacy result projection until R-009 replaces it with an outbox."""
-
-    import app.database as database
-    from app.services.approval_service import ApprovalService
-
-    try:
-        async with database.tenant_scoped_session(
-            tenant_id,
-            session_factory=database.async_session,
-            require_tenant=True,
-            source="approval_execution_result_projection",
-        ) as db:
-            approval = (
-                await db.execute(
-                    select(ApprovalRequest).where(
-                        ApprovalRequest.execution_task_id == task_id,
-                        ApprovalRequest.tenant_id == tenant_id,
-                    )
-                )
-            ).scalar_one_or_none()
-            if approval is None:
-                return
-            agent = await db.get(Agent, approval.agent_id)
-            await ApprovalService()._publish_approval_result_to_origin(
-                db,
-                approval,
-                agent=agent,
-                approved_by_user_id=approved_by_user_id,
-                execution_result=execution_result,
-            )
-    except Exception as exc:  # R-009 owns durable continuation; do not corrupt execution truth here.
-        logger.warning("[ApprovalExecution] best-effort origin projection failed for {}: {}", task_id, exc)
-
-
 async def execute_claimed_approval_execution(task_id: uuid.UUID) -> str:
     """Consume one claimed approval job, or safely converge its persisted state."""
 
@@ -472,7 +564,7 @@ async def execute_claimed_approval_execution(task_id: uuid.UUID) -> str:
     try:
         from app.services.agent_tools import execute_approved_tool
 
-        result = await execute_approved_tool(
+        await execute_approved_tool(
             approval_id=approval_id,
             expected_agent_id=expected_agent_id,
             approved_by_user_id=approved_by_user_id,
@@ -490,12 +582,5 @@ async def execute_claimed_approval_execution(task_id: uuid.UUID) -> str:
             error=f"{type(exc).__name__}: {exc}",
         )
 
-    status, persisted_result = await _finalize_from_ticket(task_id, tenant_id)
-    if status in {"succeeded", "failed"}:
-        await _publish_result_best_effort(
-            task_id=task_id,
-            tenant_id=tenant_id,
-            approved_by_user_id=approved_by_user_id,
-            execution_result=persisted_result if persisted_result is not None else str(result),
-        )
+    status, _persisted_result = await _finalize_from_ticket(task_id, tenant_id)
     return status

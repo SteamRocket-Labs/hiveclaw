@@ -64,6 +64,9 @@ export interface LegacyCompanyFilesStatus {
   excluded_symlink_count: number;
   read_only: true;
   retired: true;
+  surface_kind: 'legacy_company_files_quarantine';
+  company_kb_available: false;
+  agent_consumable: false;
 }
 
 export interface PaginatedResponse<T> {
@@ -223,7 +226,7 @@ export const enterpriseApi = {
   updateSetting: (key: string, value: Record<string, unknown>, tenantId?: string) =>
     put<SystemSetting>(`/enterprise/system-settings/${key}${tenantId ? `?tenant_id=${tenantId}` : ''}`, { value }),
 
-  /** Read-only recovery surface for files left by the retired fake Company KB. */
+  /** Read-only recovery surface for files left by the retired shared-folder feature. */
   getLegacyCompanyFilesStatus: (tenantId?: string) =>
     get<LegacyCompanyFilesStatus>(`/enterprise/legacy-company-files/status${tenantId ? `?tenant_id=${tenantId}` : ''}`),
   exportLegacyCompanyFiles: (tenantId?: string) =>

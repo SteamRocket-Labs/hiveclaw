@@ -568,6 +568,9 @@ flowchart LR
 - 缺失测试：全部正式 Company KB journeys。
 - 当前范围关闭条件：把 `ControlPlane.tsx` 文案明确限定为“legacy company files 只读管理/迁移准备”，不得出现正式企业知识检索、权限治理或 Agent consumer 已可用的暗示；保持后端诚实隔离，不新增假 route/UI shell。Company KB 正式能力属于明确的第二部分建设，届时必须一次定义 `CompanyKnowledgeAsset/Revision/Grant/IndexJob/Citation/Proposal`、tenant/department/role authority、ingest/index/search/read/cite、version/rollback/retire、legacy import dry-run/backfill、Memory 引用边界和跨租户/故障注入验收，不能用当前 Personal KB 或 legacy files 冒充。
 - **最终裁决边界：已知缺失 + P3 文案 gap。** 后端在 `hr.py:73` 显式声明 Company knowledge 未实现，并把归因主动降级（`company_kb_attribution_available=False`）；`scope_type` 只是 schema 预留，没有 org/team 消费路径。这是诚实隔离，不计当前回归债务。前端 description 指向的 legacy files 确实存在，但“enterprise knowledge”措辞对非技术管理员边界不够清楚。
+- 修复状态（2026-07-12）：**R-008 当前范围七原子边界闭环；Company KB 本体继续标记已知缺失。** Control Plane 已删除“enterprise knowledge controls/files”两处超前措辞：Memory Governance 只声明 Agent Memory retention/hygiene/governed writes，并明确“Company Knowledge Base is not implemented in this release”；Company Info 只声明 company profile、通知/集成，以及“retired shared files 的只读导出”。旧 `enterprise.tabs.kb` 翻译残留已删除，路由/section 列表本来就没有 KB 页面，因而不存在可点入的假产品壳。
+- 权威、执行与消费边界：`GET /legacy-company-files/status` 现在机械返回 `surface_kind=legacy_company_files_quarantine`、`company_kb_available=false`、`agent_consumable=false`、`read_only=true`、`retired=true`；导出卡逐字说明“这不是 Company Knowledge Base，Agent 无法访问”，且只在真实遗留文件存在时显示，只提供 immutable export，不提供 upload/edit/search/grant。Personal KB 仍走 owner-scope tool/API，company profile 仍只是 governed prompt context；三者没有共享 consumer 或伪造的 Company KB route。纯 contract/UI 边界调整无需 schema migration，也不新增 Company KB 表、索引或假数据回填。
+- 修复证据：初始 Red backend → `1 failed, 2 passed`（legacy status 缺三项诚实 capability fields），Red frontend → `2 failed, 3 passed`（Control Plane 超前措辞、legacy card 未直说非 Company KB）。Green backend `pytest tests/api/test_legacy_company_files_api.py tests/architecture/test_company_knowledge_retirement.py -q` → `3 passed, 3 warnings`，同时验证无 Company KB product/provider/runtime surface；Frontend ControlPlane/Legacy export/Workspace info/API adapter 回归 → `31 passed`，`npm run build` exit 0；backend 变更 `ruff check` 与 `ruff format --check` 全绿。提交主题：`fix(R-008): isolate the missing Company KB boundary`。
 
 ### [R-009] Approval 结果回原 session 是 best-effort metadata 写
 
@@ -1000,7 +1003,7 @@ Codebase graph 校正时状态为 ready（43,281 nodes / 166,753 edges）；`det
 
 ## 16. 28 项原子缺口修复执行账本
 
-本节记录原始审计全部 28 项的实际落地状态：17 个断点、10 个局部闭环、1 个已知缺失。原始严重级别与原子状态保留为审计快照；只有同时具备实现、回归测试、报告证据和独立提交，才把修复状态改为闭环。Company Knowledge Base 本体按 owner 边界不在本轮开发，但 R-008 的诚实隔离、文案与防伪装验收仍必须关闭。当前进度：**10/28**。
+本节记录原始审计全部 28 项的实际落地状态：17 个断点、10 个局部闭环、1 个已知缺失。原始严重级别与原子状态保留为审计快照；只有同时具备实现、回归测试、报告证据和独立提交，才把修复状态改为闭环。Company Knowledge Base 本体按 owner 边界不在本轮开发，但 R-008 的诚实隔离、文案与防伪装验收仍必须关闭。当前进度：**11/28**。
 
 | ID | 修复状态 | 独立提交主题 | 机械证据摘要 |
 |---|---|---|---|
@@ -1011,7 +1014,7 @@ Codebase graph 校正时状态为 ready（43,281 nodes / 166,753 edges）；`det
 | R-005 | 闭环 | `fix(R-005): fail closed required lifecycle hooks` | Red 22 failed；Green backend 105 passed；真实 PostgreSQL migration/rollback 链 9 passed；frontend 120 passed + build；ruff/format 绿 |
 | R-006 | 闭环 | `fix(R-006): make memory degradation explicit` | Red backend 7 failed + frontend 1 failed；Green backend 346 passed；semantic retry/resident retention/critical fail-before-model/event-span-metric；frontend 200 passed + build；ruff/format 绿 |
 | R-007 | 闭环 | `fix(R-007): require complete Dream semantic coverage` | Red backend 5 failed + frontend 1 failed；Green backend 157 passed；全量输入/hash receipt/no-semantic-fallback/durable retry；frontend 115 passed + build；ruff/format 绿 |
-| R-008 | 待边界闭环（Company KB 本体已知缺失） | — | — |
+| R-008 | 边界闭环（Company KB 本体已知缺失） | `fix(R-008): isolate the missing Company KB boundary` | Red backend 1 failed + frontend 2 failed；Green backend 3 passed；无假 route/consumer + typed legacy quarantine；frontend 31 passed + build；ruff/format 绿 |
 | R-009 | 待修复 | — | — |
 | R-010 | 待修复 | — | — |
 | R-011 | 待修复 | — | — |

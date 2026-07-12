@@ -2311,7 +2311,6 @@
       "info": "公司信息",
       "audit": "审计日志",
       "config": "平台配置",
-      "kb": "知识库",
       "approvals": "审批",
       "skills": "技能库",
       "subagents": "子代理",
@@ -2670,7 +2669,7 @@
     },
     "legacyCompanyFiles": {
       "title": "已退役的共享文件",
-      "description": "这些文件来自已退役的共享目录功能，Agent 无法访问。清理旧数据前，请先导出只读归档。",
+      "description": "这些文件来自已退役的共享目录功能，并不是企业知识库，Agent 也无法访问。清理旧数据前，请先导出只读归档。",
       "summary": "{{count}} 个文件 · {{size}}",
       "export": "导出只读归档",
       "exporting": "正在准备归档…",

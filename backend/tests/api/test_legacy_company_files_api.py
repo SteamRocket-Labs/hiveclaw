@@ -59,6 +59,9 @@ async def test_legacy_company_files_status_and_export_are_admin_only_and_audited
         "excluded_symlink_count": 0,
         "read_only": True,
         "retired": True,
+        "surface_kind": "legacy_company_files_quarantine",
+        "company_kb_available": False,
+        "agent_consumable": False,
     }
 
     response = await enterprise.export_legacy_company_files(

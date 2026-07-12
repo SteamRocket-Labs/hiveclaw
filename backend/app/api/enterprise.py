@@ -1151,6 +1151,9 @@ async def get_legacy_company_files_status(
         "excluded_symlink_count": snapshot.excluded_symlink_count,
         "read_only": True,
         "retired": True,
+        "surface_kind": "legacy_company_files_quarantine",
+        "company_kb_available": False,
+        "agent_consumable": False,
     }
 
 

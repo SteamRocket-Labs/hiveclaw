@@ -31,7 +31,7 @@ export default function LegacyCompanyFilesExportCard({
         <p className="ws-info-desc">
           {t(
             'enterprise.legacyCompanyFiles.description',
-            'These files came from the retired shared-folder feature. Agents cannot access them. Export the read-only archive before removing the legacy data.',
+            'These files came from the retired shared-folder feature. This is not a Company Knowledge Base, and Agents cannot access it. Export the read-only archive before removing the legacy data.',
           )}
         </p>
         <span className="ws-info-legacy-meta">

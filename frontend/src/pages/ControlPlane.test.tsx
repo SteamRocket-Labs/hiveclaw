@@ -58,6 +58,10 @@ describe('ControlPlane', () => {
     expect(markup).toContain('href="/enterprise/hr"');
     expect(markup).toContain('href="/enterprise/digital-employees"');
     expect(markup).toContain('href="/local-agents"');
+    expect(markup).toContain('Company Knowledge Base is not implemented in this release');
+    expect(markup).toContain('read-only export of retired shared files');
+    expect(markup).not.toContain('enterprise knowledge controls');
+    expect(markup).not.toContain('enterprise knowledge files');
   });
 
   it('embeds legacy workspace sections inside the new control-plane shell', () => {

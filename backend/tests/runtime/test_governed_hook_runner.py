@@ -62,9 +62,65 @@ def test_plugin_hook_row_builds_governed_spec_and_keeps_matcher_separate() -> No
     assert spec.command == "python guard.py"
     assert spec.timeout_seconds == 9
     assert spec.status_message == "checking write"
+    assert spec.failure_mode == "required"
     assert matcher["tool_names"] == ["write_file"]
     assert matcher["agent_ids"] == ["agent-1"]
     assert "spec" not in matcher
+
+
+def test_observe_plugin_hook_builds_advisory_spec() -> None:
+    from app.services import plugin_hook_service as plugin_hooks
+
+    row = SimpleNamespace(
+        id=uuid4(),
+        tenant_id=uuid4(),
+        installed_plugin_id=uuid4(),
+        event="user_prompt_submit",
+        handler="hook.prompt",
+        mode="observe",
+        matcher_json={"spec": {"type": "prompt", "prompt": "observe"}},
+    )
+
+    spec = plugin_hooks._governed_hook_spec_from_row(row, SimpleNamespace(plugin_key="observer"))
+
+    assert spec.failure_mode == "advisory"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_mode,blocks", [("required", True), ("advisory", False)])
+async def test_governed_runner_converts_executor_failure_by_typed_mode(
+    tmp_path: Path,
+    failure_mode: str,
+    blocks: bool,
+) -> None:
+    from app.runtime.hook_runner import GovernedHookRunner, HookRunnerPolicy, HookSpec
+
+    async def broken_prompt(_prompt: str, **_kwargs) -> dict:
+        raise TimeoutError("provider timed out")
+
+    runner = GovernedHookRunner(
+        policy=HookRunnerPolicy(enabled=True, work_dir=tmp_path, allowed_hook_types={"prompt"}),
+        prompt_executor=broken_prompt,
+    )
+    handler = runner.build_handler(
+        HookSpec(
+            key=f"{failure_mode}-prompt",
+            event=HookEvent.USER_PROMPT_SUBMIT,
+            type="prompt",
+            prompt="check",
+            failure_mode=failure_mode,
+        )
+    )
+
+    result = await handler(HookContext(event=HookEvent.USER_PROMPT_SUBMIT, prompt="hello"))
+
+    if blocks:
+        assert result is not None
+        assert result.block is True
+        assert result.failure is True
+        assert result.retryable is True
+    else:
+        assert result is None
 
 
 @pytest.mark.asyncio

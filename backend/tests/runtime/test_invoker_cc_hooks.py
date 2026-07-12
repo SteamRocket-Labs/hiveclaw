@@ -154,6 +154,48 @@ async def test_invoker_setup_can_block_before_model_execution(monkeypatch) -> No
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("event", ["setup", "user_prompt_submit", "session_start"])
+async def test_invoker_fails_closed_when_required_entry_hook_crashes(monkeypatch, event: str) -> None:
+    from app.runtime.hooks import HookEvent, hook_registry
+    from app.runtime.invoker import AgentInvocationRequest, invoke_agent
+    from app.runtime.session import SessionContext
+
+    kernel_calls = 0
+
+    class _FakeKernel:
+        async def handle(self, _request):
+            nonlocal kernel_calls
+            kernel_calls += 1
+            return SimpleNamespace(content="unexpected", tokens_used=0, final_tools=None, parts=[])
+
+    async def broken(_ctx):
+        raise RuntimeError("policy dependency unavailable")
+
+    hook_registry.clear()
+    hook_registry.register(HookEvent(event), broken, key=f"required:{event}")
+    monkeypatch.setattr("app.runtime.invoker.get_agent_kernel", lambda: _FakeKernel())
+    try:
+        result = await invoke_agent(
+            AgentInvocationRequest(
+                model=SimpleNamespace(provider="openai", model="gpt-4.1", api_key="k", base_url=None),
+                messages=[{"role": "user", "content": "hello"}],
+                agent_name="Agent",
+                role_description="desc",
+                agent_id=uuid4(),
+                user_id=uuid4(),
+                memory_session_id="session-1",
+                session_context=SessionContext(source="web", channel="chat", session_id="session-1"),
+            )
+        )
+    finally:
+        hook_registry.clear()
+
+    assert kernel_calls == 0
+    assert result.terminal_reason.value == "hook_stopped"
+    assert "required" in result.content.lower() or "failed" in result.content.lower()
+
+
+@pytest.mark.asyncio
 async def test_system_prompt_emits_instructions_loaded_with_context_evidence(monkeypatch) -> None:
     import app.runtime.invoker as invoker
     from app.kernel.contracts import InvocationRequest

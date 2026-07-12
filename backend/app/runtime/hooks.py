@@ -20,6 +20,8 @@ from app.runtime.ccplus_contracts import HookLifecycleV1
 
 logger = logging.getLogger(__name__)
 
+HookFailureMode = Literal["required", "advisory"]
+
 
 class HookEvent(StrEnum):
     """Runtime lifecycle events for memory system, tool governance, and CC parity.
@@ -312,6 +314,43 @@ def _hook_catalog_failure_policy(event: HookEvent) -> str:
     return "fail_closed_if_blocking"
 
 
+_BLOCKING_HOOK_EVENTS: frozenset[HookEvent] = frozenset(
+    {
+        HookEvent.PRE_TOOL_USE,
+        HookEvent.USER_PROMPT_SUBMIT,
+        HookEvent.SESSION_START,
+        HookEvent.STOP,
+        HookEvent.SUBAGENT_START,
+        HookEvent.SUBAGENT_STOP,
+        HookEvent.SETUP,
+        HookEvent.ELICITATION,
+        HookEvent.CONFIG_CHANGE,
+        HookEvent.WORKTREE_CREATE,
+        HookEvent.WORKTREE_REMOVE,
+    }
+)
+
+
+def hook_event_supports_blocking(event: HookEvent) -> bool:
+    return event in _BLOCKING_HOOK_EVENTS
+
+
+def default_hook_failure_mode(event: HookEvent) -> HookFailureMode:
+    """Return the executable default, not a descriptive catalog string."""
+    return "required" if hook_event_supports_blocking(event) else "advisory"
+
+
+def _normalize_failure_mode(value: str | None, *, event: HookEvent | None = None) -> HookFailureMode:
+    if value is None or not str(value).strip():
+        return default_hook_failure_mode(event) if event is not None else "advisory"
+    clean = str(value).strip().lower()
+    aliases = {"block": "required", "continue": "advisory"}
+    clean = aliases.get(clean, clean)
+    if clean not in {"required", "advisory"}:
+        raise ValueError("failure_mode must be 'required' or 'advisory'")
+    return clean  # type: ignore[return-value]
+
+
 def _hook_matcher_fields(event: HookEvent) -> list[str]:
     category = _HOOK_EVENT_CATEGORIES.get(event, "runtime")
     fields = ["agent_id", "tenant_id", "session_id", "source", "metadata"]
@@ -456,6 +495,11 @@ class HookResult:
     watch_paths: list[str] = field(default_factory=list)
     async_hook: bool = False
     async_timeout: float | None = None
+    failure: bool = False
+    retryable: bool = False
+    failure_mode: HookFailureMode | None = None
+    failure_code: str | None = None
+    hook_key: str | None = None
 
 
 HOOK_WIRE_EVENTS: tuple[str, ...] = (
@@ -740,6 +784,7 @@ class HookRegistrationSpec:
     profile_name: str | None = None
     matcher: HookMatcher | None = None
     matcher_spec: HookMatcherSpec | dict[str, Any] | None = None
+    failure_mode: HookFailureMode | None = None
 
 
 def _normalize_matcher_spec(spec: HookMatcherSpec | dict[str, Any]) -> HookMatcherSpec:
@@ -876,6 +921,8 @@ def _hook_decision(event: HookEvent, result: HookResult | None, exc: Exception |
         return "failure"
     if result is None:
         return "observed"
+    if result.failure:
+        return "failure"
     if result.block:
         return "block"
     if result.prevent_continuation:
@@ -904,6 +951,7 @@ def _append_hook_lifecycle_record(
     original_tool_args: dict[str, Any] | None,
     result: HookResult | None = None,
     exc: Exception | None = None,
+    failure_mode: HookFailureMode,
 ) -> None:
     metadata = ctx.metadata if isinstance(ctx.metadata, dict) else {}
     source = _binding_source(binding)
@@ -938,6 +986,7 @@ def _append_hook_lifecycle_record(
         additional_context_refs=tuple(result.additional_contexts if result else ()),
         output_rewrite_ref="hook_output_rewrite" if result and result.output_rewrite is not None else None,
         failure_policy=_hook_catalog_failure_policy(ctx.event),
+        failure_mode=failure_mode,
     )
     metadata.setdefault("hook_lifecycle_records", []).append(_json_ready(asdict(lifecycle)))
 
@@ -972,6 +1021,7 @@ def describe_registration_specs(registrations: list[HookRegistrationSpec]) -> li
                 "profile_name": registration.profile_name,
                 "has_matcher": registration.matcher is not None or normalized is not None,
                 "matcher_spec": _matcher_spec_to_dict(normalized),
+                "failure_mode": registration.failure_mode or default_hook_failure_mode(registration.event),
             }
         )
     return exported
@@ -1067,6 +1117,7 @@ class _HookBinding:
     profile_name: str | None = None
     matcher_spec: HookMatcherSpec | None = None
     handler_name: str | None = None
+    failure_mode: HookFailureMode = "advisory"
 
 
 _disabled_hook_keys: set[str] = set()
@@ -1092,6 +1143,7 @@ def configure_hook_runtime(
     enabled: bool | None = None,
     timeout_seconds: float | None = None,
     failure_policy: str | None = None,
+    migration_preview: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Configure one hook registration key at runtime.
 
@@ -1117,10 +1169,21 @@ def configure_hook_runtime(
         else:
             policy["timeout_seconds"] = float(timeout_seconds)
     if failure_policy is not None:
-        clean_policy = str(failure_policy).strip() or "continue"
-        if clean_policy not in {"continue", "block"}:
-            raise ValueError("failure_policy must be 'continue' or 'block'")
-        policy["failure_policy"] = clean_policy
+        clean_policy = str(failure_policy).strip().lower() or "inherit"
+        if clean_policy == "continue":
+            policy["failure_policy"] = "inherit"
+            policy["migration_preview"] = {
+                "legacy_failure_policy": "continue",
+                "effective_change": "registration_default",
+            }
+        else:
+            clean_policy = {"block": "required"}.get(clean_policy, clean_policy)
+            if clean_policy not in {"inherit", "required", "advisory"}:
+                raise ValueError("failure_policy must be 'inherit', 'required', or 'advisory'")
+            policy["failure_policy"] = clean_policy
+            policy.pop("migration_preview", None)
+    if migration_preview is not None and policy.get("failure_policy") == "inherit":
+        policy["migration_preview"] = _json_ready(migration_preview)
     if policy:
         policies[policy_key] = policy
     else:
@@ -1140,7 +1203,8 @@ def describe_hook_runtime_config(key: str | None = None, *, agent_id: Any | None
             "agent_id": str(agent_id) if agent_id is not None else None,
             "enabled": not (scoped_disabled or (scoped_policy is None and global_disabled)),
             "timeout_seconds": policy.get("timeout_seconds"),
-            "failure_policy": policy.get("failure_policy", "continue"),
+            "failure_policy": policy.get("failure_policy", "inherit"),
+            "migration_preview": policy.get("migration_preview"),
         }
 
     if key is not None:
@@ -1173,18 +1237,7 @@ class HookRegistry:
 
     @staticmethod
     def _blocking_supported(event: HookEvent) -> bool:
-        return event in {
-            HookEvent.PRE_TOOL_USE,
-            HookEvent.USER_PROMPT_SUBMIT,
-            HookEvent.STOP,
-            HookEvent.SUBAGENT_START,
-            HookEvent.SUBAGENT_STOP,
-            HookEvent.SETUP,
-            HookEvent.ELICITATION,
-            HookEvent.CONFIG_CHANGE,
-            HookEvent.WORKTREE_CREATE,
-            HookEvent.WORKTREE_REMOVE,
-        }
+        return hook_event_supports_blocking(event)
 
     async def _emit_stop_failure(self, ctx: HookContext, exc: Exception) -> None:
         if ctx.event == HookEvent.STOP_FAILURE:
@@ -1219,10 +1272,14 @@ class HookRegistry:
         key: str | None = None,
         handler_name: str | None = None,
         profile_name: str | None = None,
+        failure_mode: HookFailureMode | None = None,
     ) -> None:
         """Register a handler for a specific event, optionally guarded by a matcher."""
         if key and any(binding.key == key for binding in self._handlers[event]):
             return
+        normalized_failure_mode = _normalize_failure_mode(failure_mode, event=event)
+        if normalized_failure_mode == "required" and not self._blocking_supported(event):
+            raise ValueError(f"event {event.value!r} cannot register a required hook because it is not blockable")
         self._handlers[event].append(
             _HookBinding(
                 handler=handler,
@@ -1231,6 +1288,7 @@ class HookRegistry:
                 profile_name=profile_name,
                 matcher_spec=None,
                 handler_name=handler_name,
+                failure_mode=normalized_failure_mode,
             )
         )
 
@@ -1243,11 +1301,15 @@ class HookRegistry:
         key: str | None = None,
         handler_name: str | None = None,
         profile_name: str | None = None,
+        failure_mode: HookFailureMode | None = None,
     ) -> None:
         """Register a handler using a declarative matcher specification."""
         normalized = _normalize_matcher_spec(spec)
         if key and any(binding.key == key for binding in self._handlers[event]):
             return
+        normalized_failure_mode = _normalize_failure_mode(failure_mode, event=event)
+        if normalized_failure_mode == "required" and not self._blocking_supported(event):
+            raise ValueError(f"event {event.value!r} cannot register a required hook because it is not blockable")
         self._handlers[event].append(
             _HookBinding(
                 handler=handler,
@@ -1256,6 +1318,7 @@ class HookRegistry:
                 profile_name=profile_name,
                 matcher_spec=normalized,
                 handler_name=handler_name,
+                failure_mode=normalized_failure_mode,
             )
         )
 
@@ -1270,6 +1333,7 @@ class HookRegistry:
                     key=registration.key,
                     handler_name=registration.handler_name,
                     profile_name=registration.profile_name,
+                    failure_mode=registration.failure_mode,
                 )
             else:
                 self.register(
@@ -1279,6 +1343,7 @@ class HookRegistry:
                     key=registration.key,
                     handler_name=registration.handler_name,
                     profile_name=registration.profile_name,
+                    failure_mode=registration.failure_mode,
                 )
 
     def describe_registrations(self) -> list[dict[str, Any]]:
@@ -1294,6 +1359,7 @@ class HookRegistry:
                         "profile_name": binding.profile_name,
                         "has_matcher": binding.matcher is not None,
                         "matcher_spec": _matcher_spec_to_dict(binding.matcher_spec),
+                        "failure_mode": binding.failure_mode,
                     }
                 )
         return exported
@@ -1326,6 +1392,7 @@ class HookRegistry:
                 "runtime_consumer": self._runtime_consumer_for_event(event),
                 "trust_level": _hook_catalog_trust_level(event),
                 "failure_policy": _hook_catalog_failure_policy(event),
+                "default_failure_mode": default_hook_failure_mode(event),
             }
             for event in HookEvent
         ]
@@ -1367,6 +1434,8 @@ class HookRegistry:
 
         final_result: HookResult | None = None
         for binding in handlers:
+            scoped = None
+            effective_failure_mode = binding.failure_mode
             try:
                 scoped = _agent_scope(ctx.agent_id, binding.key) if binding.key else None
                 if binding.key and (
@@ -1376,6 +1445,17 @@ class HookRegistry:
                     continue
                 if binding.matcher and not binding.matcher(ctx):
                     continue
+
+                runtime_policy = {}
+                if binding.key:
+                    runtime_policy = dict(
+                        (_hook_runtime_agent_policies.get(scoped) if scoped else None)
+                        or _hook_runtime_policies.get(binding.key)
+                        or {}
+                    )
+                configured_mode = runtime_policy.get("failure_policy")
+                if configured_mode in {"required", "advisory"}:
+                    effective_failure_mode = configured_mode
 
                 original_tool_args = dict(ctx.tool_args or {}) if isinstance(ctx.tool_args, dict) else None
                 result = binding.handler(ctx)
@@ -1398,6 +1478,7 @@ class HookRegistry:
                         binding,
                         original_tool_args=original_tool_args,
                         result=result,
+                        failure_mode=effective_failure_mode,
                     )
                     if ctx.event == HookEvent.PRE_TOOL_USE and result.modified_args is not None:
                         ctx.tool_args = result.modified_args
@@ -1406,6 +1487,11 @@ class HookRegistry:
                             reason=result.reason,
                             modified_args=result.modified_args,
                             additional_contexts=list(result.additional_contexts or []),
+                            failure=result.failure,
+                            retryable=result.retryable,
+                            failure_mode=result.failure_mode,
+                            failure_code=result.failure_code,
+                            hook_key=result.hook_key,
                         )
                     elif result.additional_contexts:
                         final_result = result
@@ -1436,6 +1522,7 @@ class HookRegistry:
                         binding,
                         original_tool_args=original_tool_args,
                         result=None,
+                        failure_mode=effective_failure_mode,
                     )
                     continue
                 if result.block and self._blocking_supported(ctx.event):
@@ -1447,6 +1534,11 @@ class HookRegistry:
                         prevent_continuation=result.prevent_continuation,
                         stop_reason=result.stop_reason,
                         output_rewrite=result.output_rewrite,
+                        failure=result.failure,
+                        retryable=result.retryable,
+                        failure_mode=result.failure_mode or effective_failure_mode,
+                        failure_code=result.failure_code,
+                        hook_key=result.hook_key or binding.key,
                     )
                     logger.info(
                         "[Hooks] %s blocked by handler: %s",
@@ -1462,6 +1554,11 @@ class HookRegistry:
                         additional_contexts=list(result.additional_contexts or []),
                         prevent_continuation=True,
                         stop_reason=result.stop_reason,
+                        failure=result.failure,
+                        retryable=result.retryable,
+                        failure_mode=result.failure_mode or effective_failure_mode,
+                        failure_code=result.failure_code,
+                        hook_key=result.hook_key or binding.key,
                     )
             except Exception as exc:
                 original_tool_args = dict(ctx.tool_args or {}) if isinstance(ctx.tool_args, dict) else None
@@ -1470,6 +1567,7 @@ class HookRegistry:
                     binding,
                     original_tool_args=original_tool_args,
                     exc=exc,
+                    failure_mode=effective_failure_mode,
                 )
                 from app.memory.metrics import record_hook_failure
 
@@ -1481,16 +1579,16 @@ class HookRegistry:
                 )
                 if ctx.event == HookEvent.STOP:
                     await self._emit_stop_failure(ctx, exc)
-                if (
-                    binding.key
-                    and (
-                        ((_hook_runtime_agent_policies.get(scoped) or {}).get("failure_policy") if scoped else None)
-                        or (_hook_runtime_policies.get(binding.key) or {}).get("failure_policy")
+                if effective_failure_mode == "required" and self._blocking_supported(ctx.event):
+                    return HookResult(
+                        block=True,
+                        reason=f"Required hook {binding.key or '<anonymous>'} failed: {type(exc).__name__}",
+                        failure=True,
+                        retryable=True,
+                        failure_mode="required",
+                        failure_code="hook_runtime_failure",
+                        hook_key=binding.key,
                     )
-                    == "block"
-                    and self._blocking_supported(ctx.event)
-                ):
-                    return HookResult(block=True, reason=f"Hook {binding.key} failed: {type(exc).__name__}")
         return final_result
 
     def handler_count(self, event: HookEvent) -> int:
@@ -1566,7 +1664,7 @@ async def _persist_hook_boundary_evidence(
         parent_trace_id=str(metadata.get("parent_trace_id") or "") or None,
         span_type="hook",
         name=f"hook.{ctx.event.value}",
-        status="blocked" if result and result.block else "ok",
+        status="error" if result and result.failure else ("blocked" if result and result.block else "ok"),
         duration_ms=duration_ms,
         agent_id=agent_id,
         user_id=metadata.get("user_id"),
@@ -1578,10 +1676,13 @@ async def _persist_hook_boundary_evidence(
             "decision": decision,
             "lifecycle_state": _hook_lifecycle_state(ctx.event),
             "failure_policy": _hook_catalog_failure_policy(ctx.event),
+            "failure_mode": result.failure_mode
+            if result and result.failure_mode
+            else default_hook_failure_mode(ctx.event),
             "input_hash": _stable_hash(safe_input),
             "result_hash": _stable_hash(safe_result) if safe_result else None,
             "hook_lifecycle_records": list(metadata.get("hook_lifecycle_records") or []),
             "source": ctx.source,
         },
-        error=None,
+        error=result.reason if result and result.failure else None,
     )

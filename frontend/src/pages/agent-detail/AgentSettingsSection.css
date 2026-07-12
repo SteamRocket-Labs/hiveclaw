@@ -418,3 +418,26 @@
 .agent-settings-channel {
   margin-bottom: var(--space-3);
 }
+
+.agent-settings-hook-list,
+.agent-settings-hook-receipts {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.agent-settings-hook-receipts {
+  border-top: 1px solid var(--border-color);
+  padding-top: 14px;
+}
+
+.agent-settings-hook-receipt {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  color: var(--text-secondary);
+}
+
+.agent-settings-hook-receipt small {
+  color: var(--color-warning, #a16207);
+}

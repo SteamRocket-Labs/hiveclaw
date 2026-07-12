@@ -23,7 +23,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-from app.runtime.hooks import HookContext, HookEvent, HookRegistry, HookResult, parse_hook_json_output
+from app.runtime.hooks import (
+    HookContext,
+    HookEvent,
+    HookFailureMode,
+    HookRegistry,
+    HookResult,
+    default_hook_failure_mode,
+    hook_event_supports_blocking,
+    parse_hook_json_output,
+)
 from app.services.code_execution.contracts import CodeExecutionResult
 from app.services.code_execution.service import execute_agent_command
 
@@ -55,6 +64,7 @@ class HookSpec:
     env: dict[str, str] = field(default_factory=dict)
     headers: dict[str, str] = field(default_factory=dict)
     network_policy: str = "deny"
+    failure_mode: HookFailureMode | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -214,6 +224,25 @@ class GovernedHookRunner:
     def build_handler(self, spec: HookSpec) -> Callable[[HookContext], Awaitable[HookResult | None]]:
         async def _handler(ctx: HookContext) -> HookResult | None:
             record = await self.run(spec, ctx)
+            failure_mode = spec.failure_mode or default_hook_failure_mode(spec.event)
+            if record.status in {"failed", "non_blocking_error", "disabled"}:
+                from app.memory.metrics import record_hook_failure
+
+                reason = record.error or record.stderr or record.stdout or record.status
+                record_hook_failure(event=spec.event.value, source="governed_runner", reason=record.status)
+                if failure_mode == "required" and hook_event_supports_blocking(spec.event):
+                    return HookResult(
+                        block=True,
+                        reason=f"Required hook {spec.key} failed: {reason}",
+                        failure=True,
+                        retryable=True,
+                        failure_mode="required",
+                        failure_code=f"hook_{record.status}",
+                        hook_key=spec.key,
+                    )
+                return None
+            if failure_mode == "advisory" and record.hook_result and record.hook_result.block:
+                return None
             return record.hook_result
 
         return _handler
@@ -261,6 +290,8 @@ class GovernedHookRunner:
                 "hook_type": spec.type,
                 "status": "disabled",
                 "error": reason,
+                "failure_mode": spec.failure_mode or default_hook_failure_mode(spec.event),
+                "retryable": True,
             }
         )
         return record
@@ -321,6 +352,8 @@ class GovernedHookRunner:
                 "status": record.status,
                 "exit_code": record.exit_code,
                 "error": record.error,
+                "failure_mode": spec.failure_mode or default_hook_failure_mode(spec.event),
+                "retryable": record.status in {"failed", "non_blocking_error", "disabled"},
                 "agent_id": str(ctx.agent_id) if ctx.agent_id is not None else None,
                 "session_id": ctx.session_id,
                 "tenant_id": ctx.metadata.get("tenant_id"),
@@ -406,6 +439,7 @@ class GovernedHookRunner:
             stderr=result.stderr,
             exit_code=result.exit_code,
             output_text=output_text,
+            error="hook command timed out" if result.timed_out else None,
             hook_result=hook_result,
         )
 
@@ -480,6 +514,7 @@ def register_governed_hook_specs(
             key=f"{key_prefix}{spec.key}",
             handler_name="governed_hook_runner",
             profile_name="governed_hook_runner",
+            failure_mode=spec.failure_mode,
         )
         registered += 1
     return registered

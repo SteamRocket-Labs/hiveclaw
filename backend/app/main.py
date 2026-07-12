@@ -600,19 +600,14 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"[startup] Memory hooks registration failed: {e}")
 
-    try:
-        from app.services.plugin_hook_service import register_installed_plugin_hooks
+    # Required hooks are authority boundaries. If their durable registrations
+    # cannot be reconstructed, startup must fail rather than serve ungoverned
+    # agent turns; the process supervisor provides the restart/retry boundary.
+    from app.services.hook_runtime_config import apply_all_persisted_hook_runtime_configs
+    from app.services.plugin_hook_service import register_installed_plugin_hooks
 
-        await register_installed_plugin_hooks()
-    except Exception as e:
-        logger.warning(f"[startup] Plugin hooks registration failed: {e}")
-
-    try:
-        from app.services.hook_runtime_config import apply_all_persisted_hook_runtime_configs
-
-        await apply_all_persisted_hook_runtime_configs()
-    except Exception as e:
-        logger.warning(f"[startup] Hook runtime config load failed: {e}")
+    await register_installed_plugin_hooks()
+    await apply_all_persisted_hook_runtime_configs()
 
     # Backfill reply_context for triggers created before the unified-delivery
     # refactor — those triggers have reply_context=NULL and cannot deliver

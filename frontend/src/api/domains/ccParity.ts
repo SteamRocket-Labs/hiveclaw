@@ -281,13 +281,37 @@ export interface HookControlPlane {
     standard: boolean;
   }>;
   registered_events: string[];
-  registrations: Array<Record<string, unknown>>;
+  registrations: Array<{
+    event: string;
+    handler_name: string;
+    key?: string | null;
+    failure_mode?: 'required' | 'advisory';
+    runtime_config?: {
+      key?: string | null;
+      enabled?: boolean;
+      timeout_seconds?: number | null;
+      failure_policy?: 'inherit' | 'required' | 'advisory' | 'block' | 'continue';
+      effective_failure_mode?: 'required' | 'advisory';
+      migration_preview?: Record<string, unknown> | null;
+    };
+  }>;
+  recent_receipts?: Array<{
+    id: string;
+    hook_key: string;
+    event: string;
+    status: string;
+    failure_mode: 'required' | 'advisory';
+    retryable: boolean;
+    error?: string | null;
+    created_at?: string | null;
+  }>;
+  failure_mode_contract?: Record<string, string>;
 }
 
 export interface UpdateHookRuntimeConfigInput {
   enabled?: boolean;
   timeout_seconds?: number | null;
-  failure_policy?: 'continue' | 'block' | null;
+  failure_policy?: 'inherit' | 'required' | 'advisory' | 'continue' | 'block' | null;
 }
 
 export interface UpdateHookRuntimeConfigResult {

@@ -320,6 +320,7 @@ class HookLifecycleV1:
     additional_context_refs: tuple[str, ...] = ()
     output_rewrite_ref: str | None = None
     failure_policy: str = "fail_closed_if_blocking"
+    failure_mode: str = "advisory"
     span_ref: str | None = None
     t0_refs: tuple[str, ...] = ()
 

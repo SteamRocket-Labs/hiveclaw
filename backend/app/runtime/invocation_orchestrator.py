@@ -215,7 +215,14 @@ async def run_agent_invocation(request: AgentInvocationRequest, *, support: Any)
                     part for part in (kernel_request.system_prompt_suffix, hook_context) if part
                 )
     except Exception as setup_error:
-        logger.warning("[Invoker] SETUP hook failed (continuing): %s", setup_error)
+        logger.error("[Invoker] required SETUP hook runtime failed closed: %s", setup_error)
+        return AgentInvocationResult(
+            content=f"Blocked by required setup hook failure: {type(setup_error).__name__}",
+            tokens_used=0,
+            final_tools=[],
+            parts=[],
+            terminal_reason=TerminalReason.HOOK_STOPPED,
+        )
 
     # ── USER_PROMPT_SUBMIT hook ──
     # Entry points are responsible for durable DB/T0 append before invoking the
@@ -259,7 +266,16 @@ async def run_agent_invocation(request: AgentInvocationRequest, *, support: Any)
                     part for part in (kernel_request.system_prompt_suffix, hook_context) if part
                 )
     except Exception as _prompt_err:
-        logging.getLogger(__name__).debug("[Invoker] USER_PROMPT_SUBMIT hook failed (non-fatal): %s", _prompt_err)
+        logging.getLogger(__name__).error(
+            "[Invoker] required USER_PROMPT_SUBMIT hook runtime failed closed: %s", _prompt_err
+        )
+        return AgentInvocationResult(
+            content=f"Blocked by required prompt hook failure: {type(_prompt_err).__name__}",
+            tokens_used=0,
+            final_tools=[],
+            parts=[],
+            terminal_reason=TerminalReason.HOOK_STOPPED,
+        )
 
     # ── SESSION_START hook ──
     try:
@@ -287,6 +303,14 @@ async def run_agent_invocation(request: AgentInvocationRequest, *, support: Any)
                 "intent_id": session_metadata.get("intent_id"),
             },
         )
+        if session_start_result and session_start_result.block:
+            return AgentInvocationResult(
+                content=f"Blocked by session start hook: {session_start_result.reason or 'policy'}",
+                tokens_used=0,
+                final_tools=[],
+                parts=[],
+                terminal_reason=TerminalReason.HOOK_STOPPED,
+            )
         if session_start_result:
             if session_start_result.initial_user_message:
                 initial_message = str(session_start_result.initial_user_message).strip()
@@ -307,7 +331,14 @@ async def run_agent_invocation(request: AgentInvocationRequest, *, support: Any)
                     dict.fromkeys((*existing_watch_paths, *session_start_result.watch_paths))
                 )
     except Exception as _start_err:
-        logging.getLogger(__name__).debug("[Invoker] SESSION_START hook failed (non-fatal): %s", _start_err)
+        logging.getLogger(__name__).error("[Invoker] required SESSION_START hook runtime failed closed: %s", _start_err)
+        return AgentInvocationResult(
+            content=f"Blocked by required session start hook failure: {type(_start_err).__name__}",
+            tokens_used=0,
+            final_tools=[],
+            parts=[],
+            terminal_reason=TerminalReason.HOOK_STOPPED,
+        )
 
     try:
         result = await _resolve_kernel_for_request(request).handle(kernel_request)

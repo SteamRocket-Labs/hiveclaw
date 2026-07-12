@@ -71,6 +71,7 @@ def apply_agent_hook_runtime_configs(agent_id: uuid.UUID, configs: dict[str, dic
             enabled=config.get("enabled"),
             timeout_seconds=config.get("timeout_seconds"),
             failure_policy=config.get("failure_policy"),
+            migration_preview=config.get("migration_preview"),
         )
         applied += 1
     return applied

@@ -127,6 +127,7 @@ def _governed_hook_spec_from_row(row: PluginHookRegistration, plugin: TenantInst
         env=_string_map(spec.get("env")),
         headers=_string_map(spec.get("headers")),
         network_policy=str(spec.get("network_policy") or "deny"),
+        failure_mode="required" if str(row.mode or "observe").lower() == "enforce" else "advisory",
     )
 
 
@@ -219,7 +220,7 @@ def _make_handler(handler: PluginHookHandler, meta: dict[str, Any]):
             return result
         except asyncio.TimeoutError:
             logger.warning("[plugin-hooks] hook %s timed out", meta["hook_id"])
-            return None
+            raise
         finally:
             if previous is None:
                 ctx.metadata.pop(guard_key, None)
@@ -317,6 +318,7 @@ async def refresh_plugin_hooks_for_tenant(tenant_id: uuid.UUID, *, registry: Hoo
                 key=f"{_PLUGIN_KEY_PREFIX}{tenant_id}:{plugin.plugin_key}:{row.id}",
                 handler_name="governed_hook_runner",
                 profile_name=f"plugin:{plugin.plugin_key}:{row.handler}",
+                failure_mode=spec.failure_mode,
             )
         else:
             meta = _row_meta(row, plugin)
@@ -327,6 +329,7 @@ async def refresh_plugin_hooks_for_tenant(tenant_id: uuid.UUID, *, registry: Hoo
                 key=f"{_PLUGIN_KEY_PREFIX}{tenant_id}:{plugin.plugin_key}:{row.id}",
                 handler_name=row.handler,
                 profile_name=f"plugin:{plugin.plugin_key}",
+                failure_mode="required" if meta["mode"] == "enforce" else "advisory",
             )
         registered += 1
     return registered

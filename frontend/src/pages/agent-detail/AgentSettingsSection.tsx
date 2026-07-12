@@ -6,6 +6,7 @@ import ChannelConfig from '../../components/ChannelConfig';
 import { agentApi, type AgentPermissions } from '../../api/domains/agents';
 import { planApi, type PlanRecommendationCreateInput } from '../../api/domains/plans';
 import { triggerApi } from '../../api/domains/triggers';
+import HookRuntimeControlCard from './HookRuntimeControlCard';
 import './AgentSettingsSection.css';
 
 type AgentSettingsForm = {
@@ -419,6 +420,8 @@ export default function AgentSettingsSection({
           </button>
         </div>
       </div>
+
+      <HookRuntimeControlCard agentId={agentId} canManage={canManage} />
 
       <div className="card agent-settings-card">
         <div className="agent-settings-card-head">

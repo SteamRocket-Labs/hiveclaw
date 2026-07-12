@@ -242,6 +242,7 @@ class TestHookRegistry:
                 "profile_name": None,
                 "has_matcher": False,
                 "matcher_spec": None,
+                "failure_mode": "advisory",
             },
             {
                 "event": "post_tool_use",
@@ -249,6 +250,7 @@ class TestHookRegistry:
                 "key": "filtered.post_tool",
                 "profile_name": None,
                 "has_matcher": True,
+                "failure_mode": "advisory",
                 "matcher_spec": {
                     "tool_names": ["write_file"],
                     "agent_ids": [],
@@ -650,6 +652,84 @@ class TestHookEvents:
         assert result is not None
         assert result.block is True
         assert "test.timeout" in result.reason
+        reset_hook_runtime_config()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "event",
+        [
+            HookEvent.PRE_TOOL_USE,
+            HookEvent.USER_PROMPT_SUBMIT,
+            HookEvent.SESSION_START,
+            HookEvent.STOP,
+            HookEvent.SUBAGENT_START,
+            HookEvent.SUBAGENT_STOP,
+            HookEvent.SETUP,
+            HookEvent.ELICITATION,
+            HookEvent.CONFIG_CHANGE,
+            HookEvent.WORKTREE_CREATE,
+            HookEvent.WORKTREE_REMOVE,
+        ],
+    )
+    async def test_required_hook_failures_fail_closed_for_every_blocking_event(self, event: HookEvent) -> None:
+        reg = HookRegistry()
+
+        async def broken(_ctx):
+            raise RuntimeError("required boundary unavailable")
+
+        reg.register(event, broken, key=f"required:{event.value}")
+
+        result = await reg.emit(HookContext(event=event))
+
+        assert result is not None
+        assert result.block is True
+        assert result.failure is True
+        assert result.retryable is True
+        assert result.failure_mode == "required"
+        assert result.hook_key == f"required:{event.value}"
+
+    @pytest.mark.asyncio
+    async def test_advisory_hook_failure_is_observable_and_does_not_block(self) -> None:
+        reg = HookRegistry()
+
+        async def broken(_ctx):
+            raise RuntimeError("observer unavailable")
+
+        metadata: dict = {}
+        reg.register(
+            HookEvent.USER_PROMPT_SUBMIT,
+            broken,
+            key="advisory:prompt",
+            failure_mode="advisory",
+        )
+
+        result = await reg.emit(HookContext(event=HookEvent.USER_PROMPT_SUBMIT, metadata=metadata))
+
+        assert result is None
+        assert metadata["hook_lifecycle_records"][0]["failure_mode"] == "advisory"
+        assert metadata["hook_lifecycle_records"][0]["decision"] == "failure"
+
+    def test_every_hook_event_has_a_typed_default_failure_mode(self) -> None:
+        from app.runtime.hooks import default_hook_failure_mode
+
+        reg = HookRegistry()
+        blocking = {item["event"] for item in reg.describe_event_catalog() if item["blocking_supported"]}
+
+        for event in HookEvent:
+            expected = "required" if event.value in blocking else "advisory"
+            assert default_hook_failure_mode(event) == expected
+
+    def test_legacy_continue_runtime_policy_is_safely_migrated_to_inherit(self) -> None:
+        from app.runtime.hooks import configure_hook_runtime, reset_hook_runtime_config
+
+        reset_hook_runtime_config()
+        config = configure_hook_runtime(key="legacy:stop", failure_policy="continue")
+
+        assert config["failure_policy"] == "inherit"
+        assert config["migration_preview"] == {
+            "legacy_failure_policy": "continue",
+            "effective_change": "registration_default",
+        }
         reset_hook_runtime_config()
 
     @pytest.mark.asyncio

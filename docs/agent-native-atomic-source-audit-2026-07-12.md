@@ -500,6 +500,9 @@ flowchart LR
 - 精确代码位置：`backend/app/runtime/hooks.py:HookRegistry.emit`、`:_hook_catalog_failure_policy`；`backend/app/services/plugin_hook_service.py`；`backend/app/api/hooks.py`；`runtime/invocation_orchestrator.py`。
 - 缺失测试：blocking event exception/timeout/loader failure；default policy；restart。
 - 一次性完整关闭方案：用 typed failure mode 持久化每 event 的 required/advisory 语义；blocking event 默认 fail-closed，advisory 才 continue；runner failure 返回明确 blocked HookResult；移除 invoker blanket swallow；迁移旧 `continue` 配置并给管理员差异预览/回滚；UI显示 blocker/retry/disable authority；hook run durable receipt、timeout metric；覆盖所有 lifecycle events 与 tool hooks 的 failure matrix。
+- 修复状态（2026-07-12）：**R-005 七原子闭环**。Hook 注册契约现在显式携带 `failure_mode=required|advisory`；全部可阻断事件（含此前遗漏的 `SESSION_START`）默认 `required`，其 handler exception、runtime timeout、governed command/prompt/http/agent runner failure 或 runner disabled 都生成带 `failure/retryable/failure_code/hook_key` 的 `HookResult` 并 fail-closed，只有明确的 advisory observer 才记录失败后继续。Plugin `mode=enforce|observe` 被机械映射为 required/advisory，不再由 runner 把错误包装成 `None`；Invoker 的 SETUP、USER_PROMPT_SUBMIT、SESSION_START 三个模型前边界均删除 fail-open 语义，即使 Hook bus 自身异常也以 `HOOK_STOPPED` 结束而不进入模型。启动时 plugin registration 或 durable runtime-config 重建失败不再被 `main.lifespan` 吞掉，进程由 supervisor 重启，避免“服务健康但治理消失”。
+- 配置、恢复与消费闭环：运行时策略改为 `inherit|required|advisory`，兼容输入 `block` 归一为 required；旧 `continue` 不再原样恢复为旁路，而由 `hook_failure_modes_0712` 在 JSONB 中升级为 `inherit`，保留 `legacy_failure_policy` 与 `migration_preview`，downgrade 可机械还原。每次 Hook 边界继续写 canonical `InvocationSpan(span_type=hook)`，failure span 使用 `status=error` 并携带 lifecycle record、effective failure mode 与 error；governed runner 同时写 timeout/failure metric。Agent Settings 新增 Runtime hooks 管理卡，真实消费 registrations 与最近 durable receipts，向 owner/admin 显示 Required blocker、失败原因、原 turn 重试提示，并只向 manage/admin 暴露 enable/disable；API 的配置读取/写入错误不再静默丢弃。
+- 修复证据：初始 backend failure matrix → `22 failed, 54 passed`（11 类 blocking event、governed runner、Invoker、migration 均稳定复现旧 fail-open）；Green 扩展集 `pytest tests/runtime/test_hooks.py tests/runtime/test_hooks_cc_parity.py tests/runtime/test_hook_wire_standard.py tests/runtime/test_governed_hook_runner.py tests/runtime/test_invoker_cc_hooks.py tests/kernel/test_engine_stop_hooks.py tests/api/test_hooks_api.py tests/services/test_hook_runtime_config_service.py tests/migrations/test_hook_failure_mode_migration.py -q` → `105 passed, 5 warnings`。真实 PostgreSQL migration/回退链（Hook + Dream + HR + Approval）→ `9 passed, 1 warning`，旧 continue 实际变为 inherit+preview 后可还原，Alembic head=`hook_failure_modes_0712`。Frontend Hook/Settings/API 回归 → `120 passed`，`npm run build` exit 0；15 个变更 Python 文件 `ruff check` 与 `ruff format --check` 全绿。提交主题：`fix(R-005): fail closed required lifecycle hooks`。
 
 ### [R-006] Memory retrieval 异常静默清空 Agent 记忆
 
@@ -991,7 +994,7 @@ Codebase graph 校正时状态为 ready（43,281 nodes / 166,753 edges）；`det
 
 ## 16. 28 项原子缺口修复执行账本
 
-本节记录原始审计全部 28 项的实际落地状态：17 个断点、10 个局部闭环、1 个已知缺失。原始严重级别与原子状态保留为审计快照；只有同时具备实现、回归测试、报告证据和独立提交，才把修复状态改为闭环。Company Knowledge Base 本体按 owner 边界不在本轮开发，但 R-008 的诚实隔离、文案与防伪装验收仍必须关闭。当前进度：**7/28**。
+本节记录原始审计全部 28 项的实际落地状态：17 个断点、10 个局部闭环、1 个已知缺失。原始严重级别与原子状态保留为审计快照；只有同时具备实现、回归测试、报告证据和独立提交，才把修复状态改为闭环。Company Knowledge Base 本体按 owner 边界不在本轮开发，但 R-008 的诚实隔离、文案与防伪装验收仍必须关闭。当前进度：**8/28**。
 
 | ID | 修复状态 | 独立提交主题 | 机械证据摘要 |
 |---|---|---|---|
@@ -999,7 +1002,7 @@ Codebase graph 校正时状态为 ready（43,281 nodes / 166,753 edges）；`det
 | R-002 | 闭环 | `fix(R-002): make approval execution durable` | Red backend 5 failed + frontend 3 failed suites；Green backend 59 passed；真实 PostgreSQL transaction/crash/dedupe + legacy backfill/downgrade；frontend 116 passed；build/ruff 绿 |
 | R-003 | 闭环 | `fix(R-003): make HR provisioning durable` | Red backend 7 failed + frontend 3 failed；Green backend 57 passed；真实 PostgreSQL legacy backfill/downgrade；frontend 4 passed；build/ruff 绿 |
 | R-004 | 闭环 | `fix(R-004): make Dream execution durable` | Red backend 9 failed + read-model collection Red + frontend 1 failed；Green backend 224 passed；真实 PG 并发去重/state recovery/legacy backfill + migration 7 passed；frontend 10 passed；build/ruff 绿 |
-| R-005 | 待修复 | — | — |
+| R-005 | 闭环 | `fix(R-005): fail closed required lifecycle hooks` | Red 22 failed；Green backend 105 passed；真实 PostgreSQL migration/rollback 链 9 passed；frontend 120 passed + build；ruff/format 绿 |
 | R-006 | 待修复 | — | — |
 | R-007 | 待修复 | — | — |
 | R-008 | 待边界闭环（Company KB 本体已知缺失） | — | — |

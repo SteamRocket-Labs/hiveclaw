@@ -144,6 +144,19 @@ function OverviewCards({
                     {' · '}{t(`agent.knowledge.dreamRuntime.${status.runtime_status}`, runtime.label)}
                   </span>
                 )}
+                {status.name === 'dream' && Number(status.coverage_total || 0) > 0 && (
+                  <span
+                    className={status.coverage_complete ? 'agent-knowledge-distiller-active' : 'agent-knowledge-distiller-stale'}
+                    title={t('agent.knowledge.dreamCoverageHint', 'Every accepted semantic file must be reviewed before Dream can commit.')}
+                  >
+                    {' · '}{t('agent.knowledge.dreamCoverage', 'Coverage')} {status.coverage_reviewed || 0}/{status.coverage_total}
+                  </span>
+                )}
+                {status.name === 'dream' && status.runtime_task_id && status.coverage_state === 'legacy_unknown' && (
+                  <span className="agent-knowledge-distiller-stale">
+                    {' · '}{t('agent.knowledge.dreamCoverageLegacy', 'Coverage unknown (legacy run)')}
+                  </span>
+                )}
               </div>
             );
           })}

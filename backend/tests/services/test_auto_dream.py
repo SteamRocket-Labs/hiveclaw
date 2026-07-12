@@ -888,9 +888,9 @@ class TestConsolidateRespectsPreservation:
 
 @pytest.mark.asyncio
 class TestRunDreamIntegration:
-    async def test_run_dream_falls_back_when_llm_unavailable(self, tmp_path: Path) -> None:
-        """If LLM consolidator returns None, run_dream still completes via pure-Python path."""
-        from app.services.auto_dream import run_dream
+    async def test_run_dream_holds_semantic_work_when_llm_unavailable(self, tmp_path: Path) -> None:
+        """Provider failure may rebuild indexes, but must not mutate or cap semantic T3."""
+        from app.services.auto_dream import dream_state_snapshot, run_dream
 
         agent_id = uuid.uuid4()
         tenant_id = uuid.uuid4()
@@ -899,6 +899,7 @@ class TestRunDreamIntegration:
         (tmp_path / str(agent_id) / "soul.md").write_text("# Soul\n\n## Identity\n", encoding="utf-8")
         (mem_dir / "t3" / "user.md").write_text("# T3 User\n\n- [2026-04-10] prefer concise\n", encoding="utf-8")
 
+        original_t3 = (mem_dir / "t3" / "user.md").read_text(encoding="utf-8")
         with (
             patch("app.services.auto_dream.get_settings") as mock_settings,
             patch("app.services.auto_dream._dream_llm_consolidate", return_value=None) as mock_llm,
@@ -906,13 +907,20 @@ class TestRunDreamIntegration:
                 "app.services.auto_dream._read_all_t3",
                 return_value={"memory/profiles/owner.md": "# Owner Profile\n\n- [2026-04-10] prefer concise\n"},
             ),
+            patch("app.services.auto_dream._consolidate_t3_files") as semantic_cleanup,
         ):
             mock_settings.return_value.AGENT_DATA_DIR = str(tmp_path)
             result = await run_dream(agent_id, tenant_id)
 
         mock_llm.assert_called_once()
-        assert "consolidated" in result
-        # Fell back successfully; strategy marker reflects md_only path.
+        semantic_cleanup.assert_not_called()
+        assert result["status"] == "degraded"
+        assert result["retryable"] is True
+        assert result["reason"] == "semantic_consolidator_unavailable"
+        assert result["coverage"]["reviewed"] == 0
+        assert result["coverage"]["total"] == 2
+        assert (mem_dir / "t3" / "user.md").read_text(encoding="utf-8") == original_t3
+        assert dream_state_snapshot(agent_id)["version"] == 0
 
     async def test_run_dream_applies_llm_decision_when_available(self, tmp_path: Path) -> None:
         """If LLM returns a decision, run_dream applies it before pure-Python cleanup."""
@@ -1180,18 +1188,83 @@ class TestDreamUserPromptBuilder:
         assert "S" * 5_000 in out  # soul intact
         assert "F" * 6_000 in out  # T3 file intact
 
-    def test_builder_caps_only_over_total_budget(self) -> None:
+    def test_builder_preserves_tail_evidence_and_emits_hash_manifest_over_old_budget(self) -> None:
         from app.services.auto_dream import _DREAM_INPUT_TOTAL_BUDGET_CHARS
 
-        big = "X" * (_DREAM_INPUT_TOTAL_BUDGET_CHARS + 10_000)
+        tail_contradiction = "TAIL-CONTRADICTION-MUST-BE-REVIEWED"
+        big = "X" * (_DREAM_INPUT_TOTAL_BUDGET_CHARS + 10_000) + tail_contradiction
         out = _build_dream_consolidation_user_prompt("A", "soul", {"memory/profiles/owner.md": big})
 
-        assert "truncated" in out  # observable marker
-        assert len(out) < len(big)  # actually bounded
+        assert "truncated" not in out
+        assert tail_contradiction in out
+        assert '<dream_input_manifest schema_version="dream.coverage.v1">' in out
+        assert 'path="memory/profiles/owner.md"' in out
+        assert 'sha256="' in out
+
+    def test_coverage_receipt_must_match_every_offered_file_hash(self) -> None:
+        from app.services.auto_dream import _build_dream_input_manifest, _validate_dream_coverage_receipt
+
+        manifest = _build_dream_input_manifest("# Soul", {"memory/t3/user.md": "tail truth"})
+        complete = {
+            "coverage_receipt": [
+                {"path": item["path"], "sha256": item["sha256"], "status": "reviewed"} for item in manifest
+            ]
+        }
+        missing_tail = {"coverage_receipt": complete["coverage_receipt"][:-1]}
+
+        assert _validate_dream_coverage_receipt(complete, manifest) == []
+        assert "missing:memory/t3/user.md" in _validate_dream_coverage_receipt(missing_tail, manifest)
 
     def test_builder_handles_no_t3_files(self) -> None:
         out = _build_dream_consolidation_user_prompt("A", "soul", {})
         assert "(no T3 files)" in out
+
+
+@pytest.mark.asyncio
+async def test_live_dream_consolidator_holds_decision_without_complete_coverage(tmp_path: Path) -> None:
+    from unittest.mock import AsyncMock
+
+    from app.services import auto_dream, llm_client, memory_service
+
+    agent_id = uuid.uuid4()
+    tenant_id = uuid.uuid4()
+    agent_root = tmp_path / str(agent_id)
+    agent_root.mkdir(parents=True)
+    (agent_root / "soul.md").write_text("# Soul", encoding="utf-8")
+
+    class FakeClient:
+        async def stream(self, **_kwargs):
+            return SimpleNamespace(
+                content=json.dumps(
+                    {
+                        "reasoning": "I reviewed only one section.",
+                        "soul_candidate": None,
+                        "t3_patch_concerns": [],
+                        "preservation_flags": [],
+                    }
+                )
+            )
+
+        async def close(self):
+            return None
+
+    model_config = {"provider": "openai", "model": "test", "api_key": "test"}
+    with (
+        patch.object(auto_dream, "get_settings", return_value=SimpleNamespace(AGENT_DATA_DIR=str(tmp_path))),
+        patch.object(memory_service, "_get_summary_model_config", AsyncMock(return_value=model_config)),
+        patch.object(llm_client, "create_llm_client_from_config", return_value=FakeClient()),
+        patch.object(auto_dream, "_write_dream_audit_event", AsyncMock()) as audit,
+    ):
+        decision = await auto_dream._dream_llm_consolidate(
+            agent_id,
+            tenant_id,
+            {"memory/profiles/owner.md": "tail truth"},
+            "Agent",
+        )
+
+    assert decision is None
+    assert audit.await_args.kwargs["outcome"] == "held"
+    assert audit.await_args.kwargs["reason"].startswith("incomplete_coverage:")
 
 
 def test_dream_consolidator_template_is_loaded_into_prompt() -> None:

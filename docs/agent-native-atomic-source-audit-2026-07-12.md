@@ -545,6 +545,9 @@ flowchart LR
 - 精确代码位置：`backend/app/services/auto_dream.py:_build_dream_consolidation_user_prompt`、`:run_dream`。
 - 缺失测试：tail contradiction、超预算分层读取、LLM failure no semantic mutation。
 - 一次性完整关闭方案：改为模型可迭代读取完整 vault 的 governed Dream workspace/tool protocol，不在平台层静默截断；建立 manifest/hash/coverage receipt，证明每页已读或明确 held；LLM失败时只允许不改变语义的 index rebuild，并记录 degraded，不做 semantic cap deletion；大 vault 用 map/reduce 也必须保留 source refs 与最终反查；回填现有 Dream audit coverage；UI/operator 暴露 coverage；测试尾部冲突、预算耗尽、rollback、provider failure。
+- 修复状态（2026-07-12）：**R-007 七原子闭环**。Dream 的平台输入层已删除 Soul/T3 字符截断：旧 48K 常量只保留为“超过旧阈值”的回归夹具，无论 vault 大小，当前 accepted `soul.md` 与全部 two-plane T3 内容都按完整字节进入同一模型请求，尾部矛盾不会被静默丢弃。请求同时携带 `dream.coverage.v1` manifest（path、chars、SHA-256）；模型输出必须逐项回传 exact hash + `reviewed`，缺项、重复、hash 改变、未知项或未评阅项都会使整个 semantic decision held，无法进入 Soul/Memory write gate。20K output budget 保持不变；若完整输入超过 provider 能力，正确行为是可观察地 hold/retry，而不是由平台替模型裁剪语义。
+- 失败、恢复和消费闭环：provider/model/config/JSON/coverage/apply 任一失败时，`run_dream()` 不再调用 semantic dedup/cap，也不推进 dream cadence/version；唯一允许的机械动作是可重建 `wiki_map`/index，结果为 `status=degraded, retryable=true, semantic_mutation=false`。Dream Runtime 把该结果转换为 bounded resumable retry，保留 `last_attempt_outcome.coverage`；耗尽后沿 R-004 的 `needs_reconciliation` 进入 operator retry。成功结果也持久化完整 manifest/coverage。Knowledge read model 与 Agent Knowledge 管线卡真实显示 `Coverage reviewed/total`；旧 RuntimeTask 无法从历史日志证明模型实际读过哪些文件，因此不伪造完成度，而是机械回填为 `legacy_unknown` 并明确展示“历史运行覆盖度未知”，下一次 Dream 自动建立新基线，无 schema migration。
+- 修复证据：初始 Red backend → `5 failed`（尾部证据被截、coverage helper/真实校验缺失、LLM unavailable 仍机械整理、degraded RuntimeTask 被误判 completed、operator 无 coverage），Red frontend → `1 failed`（Knowledge 不显示 coverage）。Green backend 扩展集 `pytest tests/services/test_auto_dream.py tests/services/test_dream_runtime.py tests/services/test_knowledge_read_model.py tests/services/test_memory_dream.py tests/services/test_runtime_task_worker.py tests/services/test_runtime_task_claim_service.py tests/memory/test_metrics.py -q` → `157 passed, 3 warnings`，包含超过旧阈值的尾部矛盾、真实 consolidator 缺 receipt held、no semantic mutation、cadence 不推进、durable retry/reconciliation 和 read-model baseline；Frontend Knowledge/API/AgentDetail 回归 → `115 passed`，`npm run build` exit 0；6 个 Python 文件 `ruff check` 与 `ruff format --check` 全绿。提交主题：`fix(R-007): require complete Dream semantic coverage`。
 
 ### [R-008] Company Knowledge Base 已知缺失；UI 文案边界不清
 
@@ -997,7 +1000,7 @@ Codebase graph 校正时状态为 ready（43,281 nodes / 166,753 edges）；`det
 
 ## 16. 28 项原子缺口修复执行账本
 
-本节记录原始审计全部 28 项的实际落地状态：17 个断点、10 个局部闭环、1 个已知缺失。原始严重级别与原子状态保留为审计快照；只有同时具备实现、回归测试、报告证据和独立提交，才把修复状态改为闭环。Company Knowledge Base 本体按 owner 边界不在本轮开发，但 R-008 的诚实隔离、文案与防伪装验收仍必须关闭。当前进度：**9/28**。
+本节记录原始审计全部 28 项的实际落地状态：17 个断点、10 个局部闭环、1 个已知缺失。原始严重级别与原子状态保留为审计快照；只有同时具备实现、回归测试、报告证据和独立提交，才把修复状态改为闭环。Company Knowledge Base 本体按 owner 边界不在本轮开发，但 R-008 的诚实隔离、文案与防伪装验收仍必须关闭。当前进度：**10/28**。
 
 | ID | 修复状态 | 独立提交主题 | 机械证据摘要 |
 |---|---|---|---|
@@ -1007,7 +1010,7 @@ Codebase graph 校正时状态为 ready（43,281 nodes / 166,753 edges）；`det
 | R-004 | 闭环 | `fix(R-004): make Dream execution durable` | Red backend 9 failed + read-model collection Red + frontend 1 failed；Green backend 224 passed；真实 PG 并发去重/state recovery/legacy backfill + migration 7 passed；frontend 10 passed；build/ruff 绿 |
 | R-005 | 闭环 | `fix(R-005): fail closed required lifecycle hooks` | Red 22 failed；Green backend 105 passed；真实 PostgreSQL migration/rollback 链 9 passed；frontend 120 passed + build；ruff/format 绿 |
 | R-006 | 闭环 | `fix(R-006): make memory degradation explicit` | Red backend 7 failed + frontend 1 failed；Green backend 346 passed；semantic retry/resident retention/critical fail-before-model/event-span-metric；frontend 200 passed + build；ruff/format 绿 |
-| R-007 | 待修复 | — | — |
+| R-007 | 闭环 | `fix(R-007): require complete Dream semantic coverage` | Red backend 5 failed + frontend 1 failed；Green backend 157 passed；全量输入/hash receipt/no-semantic-fallback/durable retry；frontend 115 passed + build；ruff/format 绿 |
 | R-008 | 待边界闭环（Company KB 本体已知缺失） | — | — |
 | R-009 | 待修复 | — | — |
 | R-010 | 待修复 | — | — |

@@ -35,6 +35,9 @@ const overviewData = {
       last_run_at: '',
       runtime_status: 'pending',
       runtime_task_id: 'dream-task-1',
+      coverage_total: 4,
+      coverage_reviewed: 0,
+      coverage_complete: false,
     },
     skillDistiller: { name: 'skill_distiller', state: 'never_ran', last_run_at: '' },
   },
@@ -134,6 +137,7 @@ describe('AgentKnowledgeSection', () => {
     expect(html).toContain('agent-knowledge-distiller-stale');
     expect(html).toContain('Queued');
     expect(html).toContain('agent-knowledge-distiller-queued');
+    expect(html).toContain('Coverage 0/4');
     // Default view is Overview, not a file browser.
     expect(html).not.toContain('raw markdown browser');
   });

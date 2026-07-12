@@ -5,9 +5,9 @@ Dream works on canonical markdown layers:
   - accepted two-plane T3 memory (`memory/self`, `memory/profiles`, `memory/knowledge`, `memory/milestones`)
   - soul.md for high-signal identity promotion
 
-The runtime now uses a programmatic md-only consolidation path. Legacy semantic
-memory code has been removed from the primary service so dream stays aligned
-with the md-first architecture.
+The runtime gives the LLM complete accepted semantic input, verifies a
+hash-bound coverage receipt, and commits only through the existing Memory/Soul
+gates. Mechanical work is restricted to rebuildable indexes.
 """
 
 from __future__ import annotations
@@ -60,7 +60,7 @@ MIN_HOURS_BETWEEN_DREAMS = 24  # 2026-06-05 owner decision: soul is the identity
 # it consolidates once a day, not six times. Soft dreams relieve T3 pressure in between.
 MIN_SESSIONS_SINCE_DREAM = 3
 
-# Soft dream: lightweight maintenance (dedup + index/shadow refresh, no LLM)
+# Soft dream: lightweight derived-index refresh, no LLM or semantic mutation.
 # Triggers when facts approach the 150 cap but full dream gate isn't met yet.
 _SOFT_DREAM_FACT_THRESHOLD = 100
 _MIN_HOURS_BETWEEN_SOFT_DREAMS = 6  # 1/4 of the full-dream cadence
@@ -146,6 +146,15 @@ Agent: {agent_name}
 Task: inspect accepted two-plane T3 memory and produce a Soul Candidate Package when identity-grade evidence exists.
 </agent_context>
 
+{input_manifest}
+
+<coverage_contract>
+Every manifest item is present in full below. Before deciding, inspect every item and
+echo one `coverage_receipt` row per item with the exact path, sha256, and
+`status="reviewed"`. Missing, duplicate, changed, or unreviewed rows make the
+entire semantic decision invalid and held for retry.
+</coverage_contract>
+
 <current_soul>
 {soul_excerpt}
 </current_soul>
@@ -182,6 +191,11 @@ If a T3 line does not clearly fit one of these four block types, do not submit a
 <output_decision>
 {{
   "reasoning": "Accepted T3 evidence converges on no emoji as a durable user model. The ripgrep evidence is useful but belongs in T3 capabilities, not always-on identity. I propose one compact soul_user_model block and preserve exact refs.",
+  "coverage_receipt": [
+    {{"path": "soul.md", "sha256": "<exact manifest hash>", "status": "reviewed"}},
+    {{"path": "memory/profiles/owner.md", "sha256": "<exact manifest hash>", "status": "reviewed"}},
+    {{"path": "memory/knowledge/rg-workflow.md", "sha256": "<exact manifest hash>", "status": "reviewed"}}
+  ],
   "soul_candidate": {{
     "target": "soul.md",
     "soul_pitch_md": "# Soul Pitch\\n\\nAccepted T3 shows repeated user correction against emoji. This should become a narrow user-model rule, not a broad personality rewrite. Ripgrep remains T3 capability evidence only.",
@@ -212,6 +226,10 @@ If a T3 line does not clearly fit one of these four block types, do not submit a
 <output_decision>
 {{
   "reasoning": "Direct language preference contradiction. The newer entry (2026-04-14) is authoritative — user explicitly said 'going forward'. Drop the old Japanese preference. Do NOT promote Chinese to soul yet — the reversal is too recent; wait for stability across more sessions.",
+  "coverage_receipt": [
+    {{"path": "soul.md", "sha256": "<exact manifest hash>", "status": "reviewed"}},
+    {{"path": "memory/profiles/owner.md", "sha256": "<exact manifest hash>", "status": "reviewed"}}
+  ],
   "soul_candidate": null,
   "t3_patch_concerns": [
     {{
@@ -261,6 +279,10 @@ fine; empty-array form is also fine. Any other shape is a parse failure.
 
 {{
   "reasoning": "<one paragraph, first-person, explain what you decided>",
+  "coverage_receipt": [
+    {{"path": "soul.md", "sha256": "<exact hash from manifest>", "status": "reviewed"}},
+    {{"path": "<every T3 path>", "sha256": "<exact hash from manifest>", "status": "reviewed"}}
+  ],
   "soul_candidate": {{
     "target": "soul.md",
     "soul_pitch_md": "<full Markdown pitch explaining why this is identity-grade>",
@@ -309,6 +331,8 @@ fine; empty-array form is also fine. Any other shape is a parse failure.
 7. Do not review, approve, or score your own soul_candidate. Soul Memory Gate is
    a separate LLM reviewer with independent context. Your job is only to author
    the candidate package.
+8. `coverage_receipt` is mandatory and must contain every manifest path exactly
+   once with its exact sha256 and status `reviewed`; never guess or omit a row.
 </hard_rules>
 
 <your_task>
@@ -317,12 +341,68 @@ Produce the JSON object for this agent's current T3 state now.
 """
 
 
-# 蒸馏器核查 (docs/agent-lifecycle-cc-alignment.md §3.6): the dream consolidator
-# decides soul promotions — full fidelity first. Per-section caps are an
-# over-budget fallback only, never routine pruning (compaction-P0 philosophy).
-_DREAM_INPUT_TOTAL_BUDGET_CHARS = 48_000  # ≈14K tokens of T3+soul substrate
-_DREAM_SOUL_CAP_CHARS = 3_000  # fallback per-section caps (over-budget only)
-_DREAM_T3_FILE_CAP_CHARS = 4_000
+# Historical threshold retained only as a regression fixture. It is not an
+# input cap: Dream either gives the model every accepted semantic byte, or
+# holds the run without semantic mutation.
+_DREAM_INPUT_TOTAL_BUDGET_CHARS = 48_000
+
+
+def _build_dream_input_manifest(soul: str, t3_files: dict[str, str]) -> list[dict[str, str | int]]:
+    offered = [("soul.md", soul.strip())]
+    offered.extend((str(path), body.strip()) for path, body in sorted(t3_files.items()))
+    return [
+        {
+            "path": path,
+            "sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
+            "chars": len(body),
+        }
+        for path, body in offered
+    ]
+
+
+def _format_dream_input_manifest(manifest: list[dict[str, str | int]]) -> str:
+    from html import escape
+
+    rows = "\n".join(
+        (f'<item path="{escape(str(item["path"]), quote=True)}" sha256="{item["sha256"]}" chars="{item["chars"]}" />')
+        for item in manifest
+    )
+    return f'<dream_input_manifest schema_version="dream.coverage.v1">\n{rows}\n</dream_input_manifest>'
+
+
+def _validate_dream_coverage_receipt(
+    decision: dict,
+    manifest: list[dict[str, str | int]],
+) -> list[str]:
+    expected = {str(item["path"]): str(item["sha256"]) for item in manifest}
+    receipt = decision.get("coverage_receipt")
+    if not isinstance(receipt, list):
+        return ["missing:coverage_receipt"]
+    seen: dict[str, tuple[str, str]] = {}
+    issues: list[str] = []
+    for row in receipt:
+        if not isinstance(row, dict):
+            issues.append("invalid:coverage_row")
+            continue
+        path = str(row.get("path") or "").strip()
+        if not path:
+            issues.append("invalid:coverage_path")
+            continue
+        if path in seen:
+            issues.append(f"duplicate:{path}")
+            continue
+        seen[path] = (str(row.get("sha256") or "").strip(), str(row.get("status") or "").strip())
+    for path, digest in expected.items():
+        if path not in seen:
+            issues.append(f"missing:{path}")
+            continue
+        received_digest, status = seen[path]
+        if received_digest != digest:
+            issues.append(f"hash_mismatch:{path}")
+        if status != "reviewed":
+            issues.append(f"unreviewed:{path}")
+    issues.extend(f"unexpected:{path}" for path in seen if path not in expected)
+    return issues
 
 
 def _build_dream_consolidation_user_prompt(
@@ -332,32 +412,24 @@ def _build_dream_consolidation_user_prompt(
     retirement_candidates: list[dict] | None = None,
     candidate_evidence: list[dict] | None = None,
 ) -> str:
-    """Format the dream LLM user prompt with soul.md + all T3 files.
+    """Format the dream LLM user prompt with complete soul.md + all T3 files.
 
-    Full fidelity when soul + T3 fit `_DREAM_INPUT_TOTAL_BUDGET_CHARS`;
-    over budget, per-section caps engage with observable truncation markers.
+    The platform never prunes semantic input. The manifest/receipt contract
+    makes coverage mechanically checkable before any Dream decision can write.
     `retirement_candidates` (P6: lowest-heat entries from the access
     telemetry) are surfaced so the Reconsolidator can consider decay-lane
     retirement — the LLM decides, the heat ranking is only evidence.
     """
     soul = soul_excerpt.strip()
     bodies = {fname: body.strip() for fname, body in t3_files.items()}
-    total_chars = len(soul) + sum(len(body) for body in bodies.values())
-    over_budget = total_chars > _DREAM_INPUT_TOTAL_BUDGET_CHARS
-
     t3_chunks: list[str] = []
-    for fname, excerpt in bodies.items():
-        if over_budget and len(excerpt) > _DREAM_T3_FILE_CAP_CHARS:
-            excerpt = (
-                excerpt[:_DREAM_T3_FILE_CAP_CHARS]
-                + f"\n…(truncated to fit dream input budget — full file at memory/{fname})"
-            )
+    for fname, excerpt in sorted(bodies.items()):
         t3_chunks.append(f"### {fname}\n{excerpt}")
     t3_block = "\n\n".join(t3_chunks) if t3_chunks else "(no T3 files)"
-    if over_budget and len(soul) > _DREAM_SOUL_CAP_CHARS:
-        soul = soul[:_DREAM_SOUL_CAP_CHARS] + "\n…(truncated to fit dream input budget — full file at soul.md)"
+    manifest = _build_dream_input_manifest(soul, bodies)
     base_prompt = _DREAM_CONSOLIDATION_USER_PROMPT_TEMPLATE.format(
         agent_name=agent_name or "Agent",
+        input_manifest=_format_dream_input_manifest(manifest),
         soul_excerpt=soul or "(empty)",
         t3_block=t3_block,
     )
@@ -502,7 +574,8 @@ async def _dream_llm_consolidate(
 ) -> dict | None:
     """Ask the tenant's summary-model to produce a dream consolidation decision.
 
-    Returns None on any failure (caller falls back to pure Python path).
+    Returns None on any failure or incomplete coverage receipt. The caller must
+    hold semantic work; there is deliberately no mechanical semantic fallback.
     """
     if not tenant_id:
         return None
@@ -620,6 +693,25 @@ async def _dream_llm_consolidate(
             reason="unparseable_decision",
         )
     else:
+        manifest = _build_dream_input_manifest(soul_excerpt, t3_files)
+        coverage_issues = _validate_dream_coverage_receipt(decision, manifest)
+        if coverage_issues:
+            logger.info("[Dream] coverage receipt incomplete for %s: %s", agent_id, coverage_issues)
+            record_autonomous_llm_call(source="dream", outcome="failure")
+            await _write_dream_audit_event(
+                agent_id=agent_id,
+                tenant_id=tenant_id,
+                outcome="held",
+                reason="incomplete_coverage:" + ",".join(coverage_issues),
+            )
+            return None
+        decision["_dream_coverage"] = {
+            "schema_version": "dream.coverage.v1",
+            "total": len(manifest),
+            "reviewed": len(manifest),
+            "complete": True,
+            "manifest": manifest,
+        }
         record_autonomous_llm_call(source="dream", outcome="success")
         await _write_dream_audit_event(
             agent_id=agent_id,
@@ -1978,9 +2070,9 @@ def should_soft_dream(agent_id: uuid.UUID) -> bool:
 
 
 async def run_soft_dream(agent_id: uuid.UUID) -> dict:
-    """Lightweight maintenance: dedup + index/shadow refresh without LLM calls.
+    """Lightweight maintenance: derived-index refresh without LLM calls.
 
-    Runs between full dreams to prevent fact accumulation and keep T3 fresh.
+    Runs between full dreams to keep the rebuildable navigation surface fresh.
     """
     before_count = _count_t3_entries(agent_id)
     if before_count == 0:
@@ -2001,6 +2093,51 @@ async def run_soft_dream(agent_id: uuid.UUID) -> dict:
     return {"soft_dream": True, "consolidated": after_count, "removed": removed}
 
 
+async def _finish_degraded_dream(
+    *,
+    agent_id: uuid.UUID,
+    before_count: int,
+    reason: str,
+    coverage: dict,
+    memory_dream_report: dict,
+) -> dict:
+    """Finish a held semantic attempt without advancing cadence or T3 state."""
+    _update_index_md(agent_id)
+    result = {
+        "status": "degraded",
+        "retryable": True,
+        "reason": reason,
+        "coverage": coverage,
+        "consolidated": before_count,
+        "removed": 0,
+        "added": 0,
+        "t3_deduped": 0,
+        "repeated_feedback_held": 0,
+        "soul_contradicted_frozen": 0,
+        "memory_dream": memory_dream_report,
+    }
+    try:
+        from app.runtime.hooks import HookEvent, emit_hook
+
+        await emit_hook(
+            HookEvent.DREAM_END,
+            agent_id=agent_id,
+            source="dream",
+            metadata={
+                "status": "degraded",
+                "retryable": True,
+                "reason": reason,
+                "coverage": coverage,
+                "semantic_mutation": False,
+                "cleanup_summary": "derived index refreshed only",
+                "memory_dream": memory_dream_report,
+            },
+        )
+    except Exception as hook_error:  # RuntimeTask remains the durable recovery owner.
+        logger.debug("[AutoDream] degraded DREAM_END hook failed: %s", hook_error)
+    return result
+
+
 async def run_dream(agent_id: uuid.UUID, tenant_id: uuid.UUID) -> dict:
     """Execute memory consolidation for an agent.
 
@@ -2010,13 +2147,11 @@ async def run_dream(agent_id: uuid.UUID, tenant_id: uuid.UUID) -> dict:
 
     Returns a summary dict with keys: consolidated, removed, added.
 
-    PR-10 flow:
-      1. Try LLM consolidation (semantic merges / contradiction resolution / multi-section
-         soul promotion / preservation flags). Returns None on any failure.
-      2. If LLM succeeded, apply its decision before running any pure-Python steps.
-      3. Always run the pattern-based feedback→soul promotion and the cap-based
-         T3 cleanup afterwards as last-mile safety net. The cleanup respects the
-         preservation sidecar written in step 2.
+    Semantic flow:
+      1. Offer complete soul + T3 input and require a hash-bound coverage receipt.
+      2. Apply only a fully covered LLM decision through existing gates.
+      3. On model/coverage/apply failure, refresh only the derived index and leave
+         the durable RuntimeTask retry/reconciliation owner to resume the attempt.
     """
     key = agent_id.hex
     memory_dream_report: dict = {"status": "not_run"}
@@ -2059,36 +2194,72 @@ async def run_dream(agent_id: uuid.UUID, tenant_id: uuid.UUID) -> dict:
         logger.debug("[Dream] Could not resolve agent name for %s: %s", agent_id, exc)
 
     before_count = _count_t3_entries(agent_id)
+    soul_path = Path(get_settings().AGENT_DATA_DIR) / str(agent_id) / "soul.md"
+    soul_text = soul_path.read_text(encoding="utf-8", errors="replace") if soul_path.exists() else ""
+    input_manifest = _build_dream_input_manifest(soul_text, t3_files)
+    incomplete_coverage = {
+        "schema_version": "dream.coverage.v1",
+        "total": len(input_manifest),
+        "reviewed": 0,
+        "complete": False,
+        "manifest": input_manifest,
+    }
 
-    # Step 1: LLM consolidation (graceful fallback to None on any error).
+    # Step 1: LLM consolidation. None is a held semantic attempt, never a
+    # signal to replace model judgment with mechanical mutation.
     llm_decision: dict | None = await _dream_llm_consolidate(agent_id, tenant_id, t3_files, agent_name)
+    if llm_decision is None:
+        return await _finish_degraded_dream(
+            agent_id=agent_id,
+            before_count=before_count,
+            reason="semantic_consolidator_unavailable",
+            coverage=incomplete_coverage,
+            memory_dream_report=memory_dream_report,
+        )
+
     llm_apply_report: dict = {}
     dream_reasoning = ""
-    if llm_decision is not None:
-        dream_reasoning = str(llm_decision.get("reasoning", "")).strip()
-        llm_decision = await _attach_independent_soul_review(
-            agent_id=agent_id,
-            tenant_id=tenant_id,
-            decision=llm_decision,
-            t3_files=t3_files,
+    dream_reasoning = str(llm_decision.get("reasoning", "")).strip()
+    coverage = dict(llm_decision.get("_dream_coverage") or {})
+    if not coverage:
+        # Tests/adapters may supply an already validated decision directly;
+        # the production consolidator sets this only after exact validation.
+        coverage = {
+            "schema_version": "dream.coverage.v1",
+            "total": len(input_manifest),
+            "reviewed": len(input_manifest),
+            "complete": True,
+            "manifest": input_manifest,
+        }
+    llm_decision = await _attach_independent_soul_review(
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        decision=llm_decision,
+        t3_files=t3_files,
+    )
+    # D6: LLM-first frozen-Mission contradiction gate. Pre-judge every soul
+    # promotion here (async) so the synchronous writeback applies the
+    # verdicts; mechanical overlap stays a per-item fallback only.
+    frozen_mission_judge = await _build_frozen_mission_judge(agent_id, tenant_id, llm_decision)
+    try:
+        llm_apply_report = _apply_dream_decisions(agent_id, llm_decision, contradiction_judge=frozen_mission_judge)
+        logger.info(
+            "[Dream] LLM consolidation for %s applied: %s",
+            agent_id,
+            llm_apply_report,
         )
-        # D6: LLM-first frozen-Mission contradiction gate. Pre-judge every soul
-        # promotion here (async) so the synchronous writeback applies the
-        # verdicts; mechanical overlap stays a per-item fallback only.
-        frozen_mission_judge = await _build_frozen_mission_judge(agent_id, tenant_id, llm_decision)
-        try:
-            llm_apply_report = _apply_dream_decisions(agent_id, llm_decision, contradiction_judge=frozen_mission_judge)
-            logger.info(
-                "[Dream] LLM consolidation for %s applied: %s",
-                agent_id,
-                llm_apply_report,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[Dream] Failed to apply LLM decisions for %s: %s", agent_id, exc)
-            llm_apply_report = {"apply_error": str(exc)}
-        promoted_to_soul = int(llm_apply_report.get("soul_candidate_committed", 0) or 0)
-        # Re-read T3 so subsequent steps see any accepted lifecycle side effects.
-        t3_files = _read_all_t3(agent_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[Dream] Failed to apply LLM decisions for %s: %s", agent_id, type(exc).__name__)
+        return await _finish_degraded_dream(
+            agent_id=agent_id,
+            before_count=before_count,
+            reason="semantic_apply_failed",
+            coverage=coverage,
+            memory_dream_report=memory_dream_report,
+        )
+    promoted_to_soul = int(llm_apply_report.get("soul_candidate_committed", 0) or 0)
+    # Re-read T3 so subsequent derived-index work sees accepted lifecycle side effects.
+    t3_files = _read_all_t3(agent_id)
 
     # Step 2: no mechanical repeated-feedback promotion.
     # Soul writes must come from LLM-authored Dream decisions plus the existing
@@ -2143,6 +2314,8 @@ async def run_dream(agent_id: uuid.UUID, tenant_id: uuid.UUID) -> dict:
     _heartbeat_ticks_since_dream.pop(key, None)
 
     result = {
+        "status": "completed",
+        "coverage": coverage,
         "consolidated": after_count,
         "removed": max(0, before_count - after_count),
         "added": promoted_to_soul,
@@ -2167,7 +2340,8 @@ async def run_dream(agent_id: uuid.UUID, tenant_id: uuid.UUID) -> dict:
                 "t3_processed": after_count,
                 "deduped": t3_removed,
                 "promoted_to_soul": promoted_to_soul,
-                "strategy": "llm+md" if llm_decision is not None else "md_only",
+                "strategy": "llm+derived-index",
+                "coverage": coverage,
                 "dedup_decisions": dedup_decisions,
                 "soul_candidate": llm_decision.get("soul_candidate") if isinstance(llm_decision, dict) else None,
                 "promotion_decisions": promotion_decisions,
@@ -2189,7 +2363,7 @@ async def run_dream(agent_id: uuid.UUID, tenant_id: uuid.UUID) -> dict:
         after_count,
         result["removed"],
         result["added"],
-        "md_only",
+        "llm+derived-index",
         0,
         t3_removed,
     )

@@ -40,15 +40,23 @@ def test_dream_runtime_status_overrides_file_freshness_with_live_execution_truth
         started_at=datetime.now(UTC),
         completed_at=None,
         result_summary=None,
-        metadata_json={"phase": "executing", "dream_mode": "full"},
+        metadata_json={
+            "phase": "retry_wait",
+            "dream_mode": "full",
+            "last_attempt_outcome": {"coverage": {"total": 4, "reviewed": 0, "complete": False}},
+        },
     )
 
     enriched = attach_dream_runtime_status(overview, task)
 
     assert enriched["distillers"]["dream"]["runtime_status"] == "running"
     assert enriched["distillers"]["dream"]["runtime_task_id"] == str(task.id)
-    assert enriched["distillers"]["dream"]["runtime_phase"] == "executing"
+    assert enriched["distillers"]["dream"]["runtime_phase"] == "retry_wait"
     assert enriched["distillers"]["dream"]["runtime_mode"] == "full"
+    assert enriched["distillers"]["dream"]["coverage_total"] == 4
+    assert enriched["distillers"]["dream"]["coverage_reviewed"] == 0
+    assert enriched["distillers"]["dream"]["coverage_complete"] is False
+    assert enriched["distillers"]["dream"]["coverage_state"] == "incomplete"
 
 
 def _seed_workspace(tmp_path: Path) -> Path:

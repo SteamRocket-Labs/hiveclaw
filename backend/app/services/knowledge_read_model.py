@@ -400,6 +400,8 @@ def attach_dream_runtime_status(overview: dict, task) -> dict:
     result = {**overview, "distillers": dict(overview.get("distillers") or {})}
     dream = dict(result["distillers"].get("dream") or {})
     metadata = dict(getattr(task, "metadata_json", None) or {})
+    runtime_outcome = dict(metadata.get("last_attempt_outcome") or metadata.get("outcome") or {})
+    coverage = dict(runtime_outcome.get("coverage") or {})
     dream.update(
         {
             "runtime_status": str(getattr(task, "status", "") or ""),
@@ -408,6 +410,12 @@ def attach_dream_runtime_status(overview: dict, task) -> dict:
             "runtime_mode": str(metadata.get("dream_mode") or ""),
             "runtime_result": str(getattr(task, "result_summary", None) or ""),
             "runtime_created_at": (task.created_at.isoformat() if getattr(task, "created_at", None) else None),
+            "coverage_total": int(coverage.get("total") or 0),
+            "coverage_reviewed": int(coverage.get("reviewed") or 0),
+            "coverage_complete": bool(coverage.get("complete")),
+            "coverage_state": (
+                "complete" if coverage.get("complete") else "incomplete" if coverage else "legacy_unknown"
+            ),
         }
     )
     result["distillers"]["dream"] = dream

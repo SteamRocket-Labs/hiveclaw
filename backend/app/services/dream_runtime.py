@@ -406,6 +406,7 @@ async def _finalize_dream(
                     "phase": "retry_wait",
                     "retry_reason": error[:2_000],
                     "automatic_retry_allowed": True,
+                    "last_attempt_outcome": dict(result or {}),
                 }
             )
             task.metadata_json = metadata
@@ -423,6 +424,7 @@ async def _finalize_dream(
                 "reconciliation_reason": "dream_retry_exhausted",
                 "reconciliation_retry_allowed": True,
                 "outcome": {"status": "needs_reconciliation", "error": error[:2_000]},
+                "last_attempt_outcome": dict(result or {}),
             }
         )
         task.metadata_json = metadata
@@ -446,6 +448,8 @@ async def execute_claimed_dream(task_id: uuid.UUID) -> str:
     error: str | None = None
     try:
         result = await _run_domain_dream(agent_id=agent_id, tenant_id=tenant_id, mode=mode)
+        if str(result.get("status") or "") == "degraded":
+            error = str(result.get("reason") or "dream_semantic_degraded")
     except Exception as exc:  # The next claim re-enters only idempotent internal writes.
         error = f"{type(exc).__name__}: {exc}"
         logger.exception("[DreamRuntime] task {} failed before terminal commit", task_id)

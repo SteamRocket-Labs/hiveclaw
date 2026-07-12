@@ -16,6 +16,10 @@ export interface DistillerStatus {
   runtime_mode?: string;
   runtime_result?: string;
   runtime_created_at?: string | null;
+  coverage_total?: number;
+  coverage_reviewed?: number;
+  coverage_complete?: boolean;
+  coverage_state?: 'complete' | 'incomplete' | 'legacy_unknown' | string;
 }
 
 export interface KnowledgeOverview {

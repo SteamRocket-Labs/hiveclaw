@@ -296,6 +296,58 @@ async def test_dream_worker_failure_schedules_bounded_idempotent_retry(
 
 
 @pytest.mark.asyncio
+async def test_degraded_semantic_result_is_retried_and_preserves_coverage_evidence(
+    owner_sessionmaker,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    import app.database as database
+    from app.models.runtime_task import RuntimeTask
+    from app.services.dream_runtime import enqueue_dream_runtime_task, execute_claimed_dream
+
+    tenant_id, _, agent_id = await _seed_agent(owner_sessionmaker)
+    _isolate_dream_state(monkeypatch, tmp_path)
+    monkeypatch.setattr(database, "async_session", owner_sessionmaker)
+
+    async def no_wakeup(**_kwargs):
+        return None
+
+    monkeypatch.setattr("app.services.runtime_task_worker.notify_runtime_task_worker", no_wakeup)
+    queued = await enqueue_dream_runtime_task(
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        mode="full",
+        source="heartbeat",
+    )
+    async with owner_sessionmaker() as db:
+        task = await db.get(RuntimeTask, queued.task_id)
+        assert task is not None
+        task.status = "running"
+        task.claimed_by = "dream-worker"
+        task.claim_version = 1
+        task.attempt_count = 1
+        await db.commit()
+
+    async def degraded_run(**_kwargs):
+        return {
+            "status": "degraded",
+            "retryable": True,
+            "reason": "semantic_consolidator_unavailable",
+            "coverage": {"total": 3, "reviewed": 0, "complete": False},
+        }
+
+    monkeypatch.setattr("app.services.dream_runtime._run_domain_dream", degraded_run)
+
+    assert await execute_claimed_dream(queued.task_id) == "retry_scheduled"
+    async with owner_sessionmaker() as db:
+        task = await db.get(RuntimeTask, queued.task_id)
+        assert task is not None
+        assert task.status == "resumable"
+        assert task.metadata_json["last_attempt_outcome"]["coverage"]["total"] == 3
+        assert task.metadata_json["last_attempt_outcome"]["coverage"]["complete"] is False
+
+
+@pytest.mark.asyncio
 async def test_exhausted_dream_retry_enters_operator_retryable_reconciliation(
     owner_sessionmaker,
     monkeypatch,

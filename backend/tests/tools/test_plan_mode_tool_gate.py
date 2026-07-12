@@ -372,9 +372,7 @@ async def test_execute_approved_verifies_consumed_plan_evidence_without_second_p
     action_kind = hard_gated_action_kind("set_trigger", action_arguments)
     assert action_kind is not None
     artifact = _plan_gate_action_artifact("set_trigger", action_arguments, action_kind)
-    args_hash = hashlib.sha256(
-        canonical_json(canonical_action_artifact(artifact)).encode("utf-8")
-    ).hexdigest()
+    args_hash = hashlib.sha256(canonical_json(canonical_action_artifact(artifact)).encode("utf-8")).hexdigest()
     evidence = {
         "schema": "hive.plan_authorization_evidence.v1",
         "lease_id": str(uuid4()),

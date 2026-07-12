@@ -185,11 +185,7 @@ class _E2ESession:
         lease_plan_id = getattr(stmt, "_plan_lease_candidates_plan_id", None)
         if lease_plan_id is not None:
             return _Result(
-                [
-                    row
-                    for row in self.approvals
-                    if str((row.details or {}).get("plan_id")) == str(lease_plan_id)
-                ]
+                [row for row in self.approvals if str((row.details or {}).get("plan_id")) == str(lease_plan_id)]
             )
 
         # 1) PlanModeService / PlanModeGate by-id + by-agent hints take priority.

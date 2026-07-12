@@ -106,11 +106,7 @@ class _PlanSession:
         lease_key = getattr(stmt, "_plan_lease_lookup_key", None)
         if lease_key is not None:
             match = next(
-                (
-                    row
-                    for row in self.rows
-                    if getattr(row, "execution_idempotency_key", None) == lease_key
-                ),
+                (row for row in self.rows if getattr(row, "execution_idempotency_key", None) == lease_key),
                 None,
             )
             return _ScalarOneResult(match)

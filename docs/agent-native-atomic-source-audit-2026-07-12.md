@@ -20,7 +20,7 @@
 
 **NO-GO。**
 
-- **代码/架构候选门：NO-GO。** 主测试套件通过（backend 6451 passed、frontend 617 passed + 11 e2e、local_bridge 30+14），但合并后存在 **4 个 P0**——其中两个是安全类（R-015 前端存储型 XSS 账号接管、R-016 后端记忆治理路径穿越），一个击穿 Goal-1 自进化基石（R-017 heartbeat 自动 T2→T3 恒 held 且被假门测试掩盖），一个与云端多副本目标冲突（R-001 resume 泵条件性双执行）；另有多项关键恢复/治理/parity/UX P1，且 `ruff format --check app tests` 失败（11 文件）。四个 P0 都有明确 owner、根因与关闭路径，但 R-001/R-015 涉及跨层契约，不能描述为“单文件收口”；整体仍不是不可修复的架构性崩塌。
+- **审计快照中的代码/架构候选门：NO-GO。** 当时主测试套件通过（backend 6451 passed、frontend 617 passed + 11 e2e、local_bridge 30+14），但合并后存在 **4 个 P0**——其中两个是安全类（R-015 前端存储型 XSS 账号接管、R-016 后端记忆治理路径穿越），一个击穿 Goal-1 自进化基石（R-017 heartbeat 自动 T2→T3 恒 held 且被假门测试掩盖），一个与云端多副本目标冲突（R-001 resume 泵条件性双执行）；另有多项关键恢复/治理/parity/UX P1，且 `ruff format --check app tests` 失败（审计时 11 文件）。这是原始基线，不是当前 checkout 结论；R-012 已在修复账本中关闭 formatter gate。
 - **生产切换门：NO-GO / 未验证。** 本次按限制没有读取 Railway、生产数据库、生产日志、生产变量或部署状态；因此不能把本地绿测外推为生产可用。
 - **已编号审计项 R-001~R-028 共 28 项：P0=4、P1=13、P2=9、P3=2。** 严重级别与原子状态是两个维度：按最终裁决，28 项中有 **17 个断点、10 个局部闭环、1 个已知缺失**。R-008 的 Company KB 本体是已知缺失、不是当前第一部分回归债务；其 P3 仅对应 UI 文案边界。三项 P0 是确定性源码断裂（R-015/R-016/R-017），R-001 是需要多副本/部署重叠才触发的条件性并发 P0。另有 §9 内未编号的 KISS/代码卫生发现与 §12 文档漂移，它们不得混入 28 项断点统计。
 - **已知缺失：Company Knowledge Base 正式能力。** 当前只有 legacy company files 的隔离/导出边界，后端在唯一可能引用处（HR 蓝图归因 `hr.py:73`）**显式声明未实装并主动降级**，属诚实隔离；前端 `ControlPlane.tsx` description 文案措辞略超前（R-008，P3），非误导性功能入口。没有可验证的公司知识 ingest→治理→检索→引用→版本/退役闭环。
@@ -389,7 +389,7 @@ flowchart LR
 
 ### 9.3 其他机械发现
 
-- `ruff check` 通过，但 `ruff format --check` 有 11 个文件不符合格式门（R-012）。
+- 审计时 `ruff check` 通过，但 `ruff format --check` 有 11 个文件不符合格式门；在 R-011 合并后按当前 checkout 重测为 12 个，现已由 R-012 全部机械格式化并把全库 formatter gate 转绿。
 - 全前端 build 成功，但 AgentDetail、vendor 等 chunk 较大；AgentDetail 约 473.23 kB（gzip 126.99 kB），vendor 约 428 kB。
 - 广泛存在 `except Exception`；只将追踪到生产 seam 的 Memory、Hook、Approval queue 定为问题，不把关键词计数当问题。
 - 未发现生产 tool handler raw subprocess 旁路；本地可信 host 与 Railway external sandbox 有显式 provider contract。
@@ -637,6 +637,8 @@ flowchart LR
 - 精确代码位置：验证摘要列出的 11 文件。
 - 缺失测试：无；现有 gate 已正确失败。
 - 一次性完整关闭方案：独立格式化这11文件，确认仅机械 diff；重跑 ruff check/format、backend full suite、frontend unaffected；本审计按限制不执行 `--fix`。
+- 修复状态（2026-07-12）：**R-012 七原子闭环**。以当前 checkout 重跑 `ruff format --check app tests`，Red 为 `12 files would be reformatted, 1509 files already formatted`；与原审计 11 项的差异来自前序修复已改变集合，当前事实中还包含 R-011 新增的两个受控 provider 测试文件，因此不沿用旧数字假装只修 11 项。对 formatter 明确列出的 12 个文件执行一次官方 `ruff format`，没有手写逻辑重构、依赖变更、schema/migration 或前端变更；机械 diff 为 22 insertions/50 deletions，均为括号、换行和表达式布局。
+- 验收证据：Green `ruff check app tests` → `All checks passed!`；`ruff format --check app tests` → **`1521 files already formatted`**；`git diff --check` 通过。格式化与 R-011 旧安全夹具补正后的 backend 全量 `pytest tests -q` → **`6562 passed, 1 skipped, 5 warnings`**，证明 formatter 未改变行为；5 warnings 仍由 R-014 独立处理。`git diff --name-only` 无任何 frontend 文件，因此 frontend 行为面未被 R-012 触及。提交主题：`style(R-012): close backend format gate`。
 
 ### [R-013] Frontend Workbench/AgentDetail 组件与 chunk 偏大
 
@@ -1012,7 +1014,7 @@ Codebase graph 校正时状态为 ready（43,281 nodes / 166,753 edges）；`det
 
 ## 16. 28 项原子缺口修复执行账本
 
-本节记录原始审计全部 28 项的实际落地状态：17 个断点、10 个局部闭环、1 个已知缺失。原始严重级别与原子状态保留为审计快照；只有同时具备实现、回归测试、报告证据和独立提交，才把修复状态改为闭环。Company Knowledge Base 本体按 owner 边界不在本轮开发，但 R-008 的诚实隔离、文案与防伪装验收仍必须关闭。当前进度：**14/28**。
+本节记录原始审计全部 28 项的实际落地状态：17 个断点、10 个局部闭环、1 个已知缺失。原始严重级别与原子状态保留为审计快照；只有同时具备实现、回归测试、报告证据和独立提交，才把修复状态改为闭环。Company Knowledge Base 本体按 owner 边界不在本轮开发，但 R-008 的诚实隔离、文案与防伪装验收仍必须关闭。当前进度：**15/28**。
 
 | ID | 修复状态 | 独立提交主题 | 机械证据摘要 |
 |---|---|---|---|
@@ -1027,7 +1029,7 @@ Codebase graph 校正时状态为 ready（43,281 nodes / 166,753 edges）；`det
 | R-009 | 闭环 | `fix(R-009): resume sessions through approval outbox` | Red backend 2 failed + frontend 7 failed；Green backend 143 passed；PG exact-one/retry/reconcile/backfill/migration；frontend 192 passed + build；ruff/format 绿 |
 | R-010 | 闭环 | `fix(R-010): make lifecycle owners statically provable` | Red 3 failed；五 owner 16~24 行/≤3 参数/support=0；架构 10 passed；合并 349 passed；backend 全量 6536 passed, 1 skipped；ruff/format 绿 |
 | R-011 | 闭环 | `fix(R-011): gate fifteen real user journeys` + acceptance 补正 | Red architecture 2 failed；真实全链 15 passed；backend 全量 6562 passed；frontend 639 passed + build；strict RLS/Redis/HR/Slack/Team/recovery seam 回归；CI 永久证据上传；ruff/format/diff 绿 |
-| R-012 | 待修复 | — | — |
+| R-012 | 闭环 | `style(R-012): close backend format gate` | Red 12 files；Green ruff check 全绿 + 1521 files formatted；backend 全量 6562 passed, 1 skipped；无 frontend 变更；diff 绿 |
 | R-013 | 待修复 | — | — |
 | R-014 | 待修复 | — | — |
 | R-015 | 闭环 | `fix(R-015): sanitize rich text and authenticated downloads` | Red 5 failed + CSP inheritance 1 failed；Green 121 passed；全量 622 passed；build/E2E/audit 绿 |

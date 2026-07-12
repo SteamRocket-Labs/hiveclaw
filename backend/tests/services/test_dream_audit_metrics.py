@@ -87,8 +87,7 @@ async def test_successful_call_records_success_metric_and_audit(
                     {
                         "reasoning": "ok",
                         "coverage_receipt": [
-                            {"path": path, "sha256": digest, "status": "reviewed"}
-                            for path, digest in manifest
+                            {"path": path, "sha256": digest, "status": "reviewed"} for path, digest in manifest
                         ],
                         "soul_candidate": None,
                         "t3_patch_concerns": [],

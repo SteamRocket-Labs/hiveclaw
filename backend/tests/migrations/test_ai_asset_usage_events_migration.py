@@ -16,11 +16,10 @@ async def test_ai_asset_usage_event_upgrade_contract(chain_migrated_pg_url: str)
                     "columns": {
                         column["name"] for column in inspect(sync_connection).get_columns("ai_asset_usage_events")
                     },
-                    "indexes": {
-                        item["name"] for item in inspect(sync_connection).get_indexes("ai_asset_usage_events")
-                    },
+                    "indexes": {item["name"] for item in inspect(sync_connection).get_indexes("ai_asset_usage_events")},
                     "uniques": {
-                        item["name"] for item in inspect(sync_connection).get_unique_constraints("ai_asset_usage_events")
+                        item["name"]
+                        for item in inspect(sync_connection).get_unique_constraints("ai_asset_usage_events")
                     },
                 }
             )

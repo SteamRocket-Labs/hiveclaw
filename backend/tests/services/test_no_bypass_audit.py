@@ -184,9 +184,7 @@ def test_no_bypass_governed_execute_runs_governance_before_any_executor() -> Non
         filename=str(TOOL_EXECUTION_OWNER_PATH),
     )
     functions = {
-        node.name: node
-        for node in ast.walk(tree)
-        if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef))
+        node.name: node for node in ast.walk(tree) if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef))
     }
     execute_fn = functions["run_tool_execution"]
     governance_fn = functions["_apply_governance"]

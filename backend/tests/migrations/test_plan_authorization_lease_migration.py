@@ -10,9 +10,7 @@ async def test_plan_authorization_upgrade_adds_task_evidence_column(chain_migrat
     try:
         async with engine.connect() as connection:
             columns = await connection.run_sync(
-                lambda sync_connection: {
-                    column["name"] for column in inspect(sync_connection).get_columns("tasks")
-                }
+                lambda sync_connection: {column["name"] for column in inspect(sync_connection).get_columns("tasks")}
             )
         assert "plan_authorization" in columns
     finally:

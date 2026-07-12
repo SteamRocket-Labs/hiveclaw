@@ -1842,11 +1842,9 @@ def _user_timeline_event(event: dict[str, Any]) -> dict[str, Any]:
         "run_completed": "任务已完成。",
         "run_cancelled": "任务已取消。",
     }.get(event_type, "运行状态已更新。")
-    return {
-        key: event[key]
-        for key in ("id", "sequence", "event_type", "created_at")
-        if event.get(key) is not None
-    } | {"user_summary": summary}
+    return {key: event[key] for key in ("id", "sequence", "event_type", "created_at") if event.get(key) is not None} | {
+        "user_summary": summary
+    }
 
 
 def _user_runtime_task(task: dict[str, Any]) -> dict[str, Any]:

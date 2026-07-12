@@ -54,9 +54,7 @@ def personal_knowledge_access_predicate(
 ):
     """Return the owner/grant predicate without mixing human and Agent authority."""
 
-    current_user_id = (
-        principal.user_id if isinstance(principal, HumanBrowserPrincipal) else principal.requester_user_id
-    )
+    current_user_id = principal.user_id if isinstance(principal, HumanBrowserPrincipal) else principal.requester_user_id
     if current_user_id == owner_user_id:
         return true()
 

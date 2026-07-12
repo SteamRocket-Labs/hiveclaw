@@ -91,17 +91,13 @@ def test_plan_journey_writes_runtime_plan_file_then_submits_then_finishes() -> N
         "tool_calls": [{"function": {"name": "exit_plan_mode", "arguments": "{}"}}],
     }
     exit_result = {"role": "tool", "tool_call_id": "exit-1", "content": "ok"}
-    content, call = _response_payload(
-        _payload([user, write_assistant, write_result, exit_assistant, exit_result])
-    )
+    content, call = _response_payload(_payload([user, write_assistant, write_result, exit_assistant, exit_result]))
     assert call is None
     assert content == "J-03 terminal receipt from the controlled provider."
 
 
 def test_receipt_only_probe_does_not_invoke_domain_tool() -> None:
-    content, call = _response_payload(
-        _payload([{"role": "user", "content": "J-03 receipt-only acceptance probe"}])
-    )
+    content, call = _response_payload(_payload([{"role": "user", "content": "J-03 receipt-only acceptance probe"}]))
 
     assert call is None
     assert content == "J-03 terminal receipt from the controlled provider."

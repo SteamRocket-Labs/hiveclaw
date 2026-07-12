@@ -17,9 +17,7 @@ app = FastAPI(title="Hive controlled journey external provider")
 _CALLS: Counter[str] = Counter()
 _LAST_TOOLS: dict[str, list[str]] = {}
 _JOURNEY_MARKER = re.compile(r"\bJ-(?:0[1-9]|1[0-5])\b")
-_EXPLICIT_JOURNEY_REQUEST = re.compile(
-    r"(?m)^\s*(J-(?:0[1-9]|1[0-5]))\s+exercise the production journey contract\b"
-)
+_EXPLICIT_JOURNEY_REQUEST = re.compile(r"(?m)^\s*(J-(?:0[1-9]|1[0-5]))\s+exercise the production journey contract\b")
 
 
 def _content_text(content: Any) -> str:
@@ -27,9 +25,7 @@ def _content_text(content: Any) -> str:
         return content
     if isinstance(content, list):
         return "\n".join(
-            str(part.get("text") or part.get("content") or "")
-            for part in content
-            if isinstance(part, dict)
+            str(part.get("text") or part.get("content") or "") for part in content if isinstance(part, dict)
         )
     return str(content or "")
 
@@ -120,8 +116,7 @@ def _next_tool_for_journey(
                 {
                     "path": _plan_file_path(messages),
                     "content": (
-                        "# Atomic journey plan\n\n"
-                        "Verify the governed plan confirmation and continuation contract."
+                        "# Atomic journey plan\n\nVerify the governed plan confirmation and continuation contract."
                     ),
                 },
             )

@@ -1,0 +1,24 @@
+.personal-knowledge-query-state {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--bg-secondary);
+}
+
+.personal-knowledge-query-state .ui-empty-desc {
+  overflow-wrap: anywhere;
+}
+
+.personal-knowledge-query-state.is-forbidden {
+  border-color: color-mix(in srgb, var(--warning) 32%, var(--border-subtle));
+  background: var(--warning-subtle);
+}
+
+.personal-knowledge-query-state.is-forbidden .ui-empty-icon {
+  color: var(--warning);
+}
+
+.personal-knowledge-query-state.is-unavailable .ui-empty-icon {
+  color: var(--error);
+}

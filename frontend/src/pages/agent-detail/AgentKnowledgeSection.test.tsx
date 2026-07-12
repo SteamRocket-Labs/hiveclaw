@@ -2,6 +2,8 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 
+import { ApiError } from '../../api/core';
+
 // 记忆 tab IA tests (two-plane world, memory spec v1.2):
 // - overview renders per-plane counts + failure-mode lifecycle + pipeline health
 // - the retired flat-T3 counters (Active/Superseded/Archived) never resurface
@@ -221,8 +223,10 @@ describe('AgentKnowledgeSection', () => {
             metadata: {},
           },
         ]}
+        isLoading={false}
         selectedDocumentId="doc-1"
         searchQuery="source refs"
+        onRetry={vi.fn()}
         onSearchQueryChange={() => {}}
         onRunSearch={() => {}}
         onSelectDocument={() => {}}
@@ -237,5 +241,26 @@ describe('AgentKnowledgeSection', () => {
     expect(html).toContain('source refs');
     expect(html).not.toContain('Add to Personal KB');
     expect(html).not.toContain('Paste Markdown or notes here');
+  });
+
+  it('never turns an Agent Personal KB 403 into an empty owner-scope library', () => {
+    const html = renderToStaticMarkup(
+      <PersonalKnowledgeView
+        documents={[]}
+        searchResults={[]}
+        selectedDocumentId={null}
+        searchQuery=""
+        error={new ApiError(403, 'Forbidden')}
+        isLoading={false}
+        onRetry={vi.fn()}
+        onSearchQueryChange={() => {}}
+        onRunSearch={() => {}}
+        onSelectDocument={() => {}}
+      />,
+    );
+
+    expect(html).toContain('data-personal-knowledge-state="forbidden"');
+    expect(html).toContain('This is not an empty knowledge base');
+    expect(html).not.toContain('Personal KB is empty for this owner scope.');
   });
 });

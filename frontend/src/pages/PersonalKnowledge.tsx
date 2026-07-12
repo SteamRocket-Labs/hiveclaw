@@ -26,6 +26,7 @@ import {
   type PersonalKnowledgeRevision,
   type PersonalKnowledgeSearchResult,
 } from '../api/domains/knowledge';
+import PersonalKnowledgeQueryState from '../components/PersonalKnowledgeQueryState';
 import './PersonalKnowledge.css';
 
 type PersonalKnowledgeLane = 'inbox' | 'proposals' | 'library' | 'graph' | 'profile' | 'grants';
@@ -157,6 +158,8 @@ function InboxPanel({
   url,
   selectedFile,
   jobs,
+  jobsLoading,
+  jobsError,
   busyJobId,
   onTitleChange,
   onMarkdownChange,
@@ -166,6 +169,7 @@ function InboxPanel({
   onFileSubmit,
   onUrlSubmit,
   onRetryJob,
+  onRetryJobsQuery,
   pastePending,
   filePending,
   urlPending,
@@ -175,6 +179,8 @@ function InboxPanel({
   url: string;
   selectedFile: File | null;
   jobs: PersonalKnowledgeJobSummary[];
+  jobsLoading: boolean;
+  jobsError?: unknown;
   busyJobId?: string | null;
   onTitleChange: (value: string) => void;
   onMarkdownChange: (value: string) => void;
@@ -184,6 +190,7 @@ function InboxPanel({
   onFileSubmit: (event: FormEvent) => void;
   onUrlSubmit: (event: FormEvent) => void;
   onRetryJob: (jobId: string) => void;
+  onRetryJobsQuery: () => void;
   pastePending: boolean;
   filePending: boolean;
   urlPending: boolean;
@@ -265,7 +272,13 @@ function InboxPanel({
 
       <div className="personal-kb-subsection">
         <h3>{t('personalKnowledge.importJobs', '导入任务')}</h3>
-        <ImportJobs jobs={jobs} onRetry={onRetryJob} busyJobId={busyJobId} />
+        {jobsError ? (
+          <PersonalKnowledgeQueryState error={jobsError} onRetry={onRetryJobsQuery} />
+        ) : jobsLoading ? (
+          <EmptyBlock>{t('common.loading', 'Loading...')}</EmptyBlock>
+        ) : (
+          <ImportJobs jobs={jobs} onRetry={onRetryJob} busyJobId={busyJobId} />
+        )}
       </div>
     </section>
   );
@@ -555,8 +568,11 @@ function DocumentDetail({
   rebuildPending,
   patchPending,
   revisions,
+  revisionsLoading,
+  revisionsError,
   rollbackPendingVersion,
   onRollback,
+  onRetryRevisions,
 }: {
   document?: PersonalKnowledgeDocumentDetail;
   onRebuild: (documentId: string) => void;
@@ -565,8 +581,11 @@ function DocumentDetail({
   rebuildPending: boolean;
   patchPending: boolean;
   revisions: PersonalKnowledgeRevision[];
+  revisionsLoading: boolean;
+  revisionsError?: unknown;
   rollbackPendingVersion: number | null;
   onRollback: (version: number) => void;
+  onRetryRevisions: () => void;
 }) {
   const { t } = useTranslation();
   const imagePreview = sourceImagePreview(document);
@@ -611,11 +630,14 @@ function DocumentDetail({
           <div className="personal-kb-preview-title">{t('personalKnowledge.sourceImagePreview', '源图片预览')}</div>
           {imagePreviewUrl ? (
             <img src={imagePreviewUrl} alt={imagePreview.filename} />
+          ) : imagePreviewQuery.isError ? (
+            <PersonalKnowledgeQueryState
+              error={imagePreviewQuery.error}
+              onRetry={() => void imagePreviewQuery.refetch()}
+            />
           ) : (
             <div className="personal-kb-source-preview-placeholder">
-              {imagePreviewQuery.isError
-                ? t('personalKnowledge.sourceImagePreviewUnavailable', '源图片暂不可预览')
-                : t('personalKnowledge.sourceImagePreviewLoading', '正在加载源图片...')}
+              {t('personalKnowledge.sourceImagePreviewLoading', '正在加载源图片...')}
             </div>
           )}
           <small>{imagePreview.filename}</small>
@@ -637,11 +659,17 @@ function DocumentDetail({
         <code>{document.source_ref}</code>
         <small>{document.canonical_md_path}</small>
       </div>
-      <RevisionHistory
-        revisions={revisions}
-        busyVersion={rollbackPendingVersion}
-        onRollback={onRollback}
-      />
+      {revisionsError ? (
+        <PersonalKnowledgeQueryState error={revisionsError} onRetry={onRetryRevisions} />
+      ) : revisionsLoading ? (
+        <EmptyBlock>{t('common.loading', 'Loading...')}</EmptyBlock>
+      ) : (
+        <RevisionHistory
+          revisions={revisions}
+          busyVersion={rollbackPendingVersion}
+          onRollback={onRollback}
+        />
+      )}
       <div className="personal-kb-detail-actions">
         <button
           type="button"
@@ -701,18 +729,22 @@ export default function PersonalKnowledge() {
   const jobsQuery = useQuery({
     queryKey: ['personal-knowledge-import-jobs'],
     queryFn: () => knowledgeApi.myPersonalImportJobs(),
+    enabled: activeLane === 'inbox',
   });
   const graphQuery = useQuery({
     queryKey: ['personal-knowledge-graph'],
     queryFn: () => knowledgeApi.myPersonalGraph(),
+    enabled: activeLane === 'graph',
   });
   const grantsQuery = useQuery({
     queryKey: ['personal-knowledge-grants'],
     queryFn: () => knowledgeApi.myPersonalGrants(),
+    enabled: activeLane === 'grants',
   });
   const proposalsQuery = useQuery({
     queryKey: ['personal-knowledge-proposals'],
     queryFn: () => knowledgeApi.myPersonalProposals(),
+    enabled: activeLane === 'proposals',
   });
   const documents = documentsQuery.data?.documents ?? [];
   const activeDocumentId = selectedDocumentId || documents[0]?.document_id || null;
@@ -863,8 +895,8 @@ export default function PersonalKnowledge() {
     { key: 'grants', label: t('personalKnowledge.grants', '授权'), helper: t('personalKnowledge.grantsHelper', 'Agent 检索边界') },
   ];
 
-  return (
-    <div className="personal-kb-page">
+  const pageChrome = (
+    <>
       <header className="personal-kb-header">
         <div>
           <span className="personal-kb-eyebrow">HIVE · Personal Knowledge</span>
@@ -891,7 +923,34 @@ export default function PersonalKnowledge() {
           </button>
         ))}
       </nav>
+    </>
+  );
 
+  if (documentsQuery.isError) {
+    return (
+      <div className="personal-kb-page">
+        {pageChrome}
+        <PersonalKnowledgeQueryState
+          error={documentsQuery.error}
+          onRetry={() => void documentsQuery.refetch()}
+        />
+      </div>
+    );
+  }
+  if (documentsQuery.isLoading) {
+    return (
+      <div className="personal-kb-page">
+        {pageChrome}
+        <div data-testid="personal-knowledge-loading">
+          <EmptyBlock>{t('common.loading', 'Loading...')}</EmptyBlock>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="personal-kb-page">
+      {pageChrome}
       <section className="personal-kb-command-row">
         <form className="personal-kb-search" onSubmit={onSearch}>
           <IconSearch size={16} stroke={1.7} />
@@ -921,6 +980,8 @@ export default function PersonalKnowledge() {
               url={url}
               selectedFile={selectedFile}
               jobs={jobsQuery.data?.jobs ?? []}
+              jobsLoading={jobsQuery.isLoading}
+              jobsError={jobsQuery.isError ? jobsQuery.error : undefined}
               busyJobId={busyJobId}
               onTitleChange={setTitle}
               onMarkdownChange={setMarkdown}
@@ -942,6 +1003,7 @@ export default function PersonalKnowledge() {
                 setBusyJobId(jobId);
                 retryMutation.mutate(jobId);
               }}
+              onRetryJobsQuery={() => void jobsQuery.refetch()}
               pastePending={ingestMutation.isPending}
               filePending={importFileMutation.isPending}
               urlPending={importUrlMutation.isPending}
@@ -958,17 +1020,34 @@ export default function PersonalKnowledge() {
           )}
 
           {activeLane === 'proposals' && (
-            <ProposalReviewPanel
-              proposals={proposalsQuery.data?.proposals ?? []}
-              busyProposalId={busyProposalId}
-              onDecision={(proposalId, decision) => {
-                setBusyProposalId(proposalId);
-                decideProposalMutation.mutate({ proposalId, decision });
-              }}
-            />
+            proposalsQuery.isError ? (
+              <PersonalKnowledgeQueryState
+                error={proposalsQuery.error}
+                onRetry={() => void proposalsQuery.refetch()}
+              />
+            ) : proposalsQuery.isLoading ? (
+              <EmptyBlock>{t('common.loading', 'Loading...')}</EmptyBlock>
+            ) : (
+              <ProposalReviewPanel
+                proposals={proposalsQuery.data?.proposals ?? []}
+                busyProposalId={busyProposalId}
+                onDecision={(proposalId, decision) => {
+                  setBusyProposalId(proposalId);
+                  decideProposalMutation.mutate({ proposalId, decision });
+                }}
+              />
+            )
           )}
 
-          {activeLane === 'graph' && <GraphPanel graph={graphQuery.data} />}
+          {activeLane === 'graph' && (
+            graphQuery.isError ? (
+              <PersonalKnowledgeQueryState error={graphQuery.error} onRetry={() => void graphQuery.refetch()} />
+            ) : graphQuery.isLoading ? (
+              <EmptyBlock>{t('common.loading', 'Loading...')}</EmptyBlock>
+            ) : (
+              <GraphPanel graph={graphQuery.data} />
+            )
+          )}
 
           {activeLane === 'profile' && (
             <section className="personal-kb-panel">
@@ -984,50 +1063,75 @@ export default function PersonalKnowledge() {
           )}
 
           {activeLane === 'grants' && (
-            <GrantsPanel
-              grants={grantsQuery.data?.grants ?? []}
-              granteeType={granteeType}
-              granteeId={granteeId}
-              permission={grantPermission}
-              onGranteeTypeChange={setGranteeType}
-              onGranteeIdChange={setGranteeId}
-              onPermissionChange={setGrantPermission}
-              onCreate={(event) => {
-                event.preventDefault();
-                if (granteeId.trim()) createGrantMutation.mutate();
-              }}
-              onDelete={(grantId) => {
-                setDeletingGrantId(grantId);
-                deleteGrantMutation.mutate(grantId);
-              }}
-              createPending={createGrantMutation.isPending}
-              deletingGrantId={deletingGrantId}
-            />
+            grantsQuery.isError ? (
+              <PersonalKnowledgeQueryState error={grantsQuery.error} onRetry={() => void grantsQuery.refetch()} />
+            ) : grantsQuery.isLoading ? (
+              <EmptyBlock>{t('common.loading', 'Loading...')}</EmptyBlock>
+            ) : (
+              <GrantsPanel
+                grants={grantsQuery.data?.grants ?? []}
+                granteeType={granteeType}
+                granteeId={granteeId}
+                permission={grantPermission}
+                onGranteeTypeChange={setGranteeType}
+                onGranteeIdChange={setGranteeId}
+                onPermissionChange={setGrantPermission}
+                onCreate={(event) => {
+                  event.preventDefault();
+                  if (granteeId.trim()) createGrantMutation.mutate();
+                }}
+                onDelete={(grantId) => {
+                  setDeletingGrantId(grantId);
+                  deleteGrantMutation.mutate(grantId);
+                }}
+                createPending={createGrantMutation.isPending}
+                deletingGrantId={deletingGrantId}
+              />
+            )
           )}
 
-          <SearchResults results={searchQuery.data?.results ?? []} />
+          {searchQuery.isError ? (
+            <PersonalKnowledgeQueryState error={searchQuery.error} onRetry={() => void searchQuery.refetch()} />
+          ) : searchQuery.isLoading ? (
+            <EmptyBlock>{t('common.loading', 'Loading...')}</EmptyBlock>
+          ) : (
+            <SearchResults results={searchQuery.data?.results ?? []} />
+          )}
         </main>
 
-        <DocumentDetail
-          document={detailQuery.data}
-          onRebuild={(documentId) => rebuildMutation.mutate(documentId)}
-          onToggleAgentSearchable={(document) =>
-            patchMutation.mutate({
-              documentId: document.document_id,
-              body: { agent_searchable: !document.agent_searchable },
-            })
-          }
-          onArchive={(documentId) => patchMutation.mutate({ documentId, body: { status: 'archived' } })}
-          rebuildPending={rebuildMutation.isPending}
-          patchPending={patchMutation.isPending}
-          revisions={revisionsQuery.data?.revisions ?? []}
-          rollbackPendingVersion={rollbackPendingVersion}
-          onRollback={(version) => {
-            if (!activeDocumentId) return;
-            setRollbackPendingVersion(version);
-            rollbackMutation.mutate({ documentId: activeDocumentId, version });
-          }}
-        />
+        {detailQuery.isError ? (
+          <aside className="personal-kb-detail">
+            <PersonalKnowledgeQueryState error={detailQuery.error} onRetry={() => void detailQuery.refetch()} />
+          </aside>
+        ) : detailQuery.isLoading ? (
+          <aside className="personal-kb-detail">
+            <EmptyBlock>{t('common.loading', 'Loading...')}</EmptyBlock>
+          </aside>
+        ) : (
+          <DocumentDetail
+            document={detailQuery.data}
+            onRebuild={(documentId) => rebuildMutation.mutate(documentId)}
+            onToggleAgentSearchable={(document) =>
+              patchMutation.mutate({
+                documentId: document.document_id,
+                body: { agent_searchable: !document.agent_searchable },
+              })
+            }
+            onArchive={(documentId) => patchMutation.mutate({ documentId, body: { status: 'archived' } })}
+            rebuildPending={rebuildMutation.isPending}
+            patchPending={patchMutation.isPending}
+            revisions={revisionsQuery.data?.revisions ?? []}
+            revisionsLoading={revisionsQuery.isLoading}
+            revisionsError={revisionsQuery.isError ? revisionsQuery.error : undefined}
+            rollbackPendingVersion={rollbackPendingVersion}
+            onRetryRevisions={() => void revisionsQuery.refetch()}
+            onRollback={(version) => {
+              if (!activeDocumentId) return;
+              setRollbackPendingVersion(version);
+              rollbackMutation.mutate({ documentId: activeDocumentId, version });
+            }}
+          />
+        )}
       </div>
     </div>
   );

@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 
 import AgentMindSection from './AgentMindSection';
 import MarkdownRenderer from '../../components/MarkdownRenderer';
+import PersonalKnowledgeQueryState from '../../components/PersonalKnowledgeQueryState';
 import {
   knowledgeApi,
   type KnowledgeEntry,
@@ -289,8 +290,13 @@ type PersonalKnowledgeViewProps = {
   documents: PersonalKnowledgeDocumentSummary[];
   selectedDocument?: PersonalKnowledgeDocumentDetail;
   searchResults: PersonalKnowledgeSearchResult[];
+  isLoading: boolean;
+  error?: unknown;
+  searchError?: unknown;
+  documentError?: unknown;
   selectedDocumentId: string | null;
   searchQuery: string;
+  onRetry: () => void;
   onSearchQueryChange: (value: string) => void;
   onRunSearch: () => void;
   onSelectDocument: (documentId: string) => void;
@@ -300,13 +306,32 @@ export function PersonalKnowledgeView({
   documents,
   selectedDocument,
   searchResults,
+  isLoading,
+  error,
+  searchError,
+  documentError,
   selectedDocumentId,
   searchQuery,
+  onRetry,
   onSearchQueryChange,
   onRunSearch,
   onSelectDocument,
 }: PersonalKnowledgeViewProps) {
   const { t } = useTranslation();
+  if (error) {
+    return (
+      <div className="agent-knowledge-personal">
+        <PersonalKnowledgeQueryState error={error} onRetry={onRetry} />
+      </div>
+    );
+  }
+  if (isLoading) {
+    return (
+      <div className="agent-knowledge-personal" data-testid="agent-personal-knowledge-loading">
+        <p className="agent-knowledge-loading">{t('common.loading', 'Loading…')}</p>
+      </div>
+    );
+  }
   return (
     <div className="agent-knowledge-personal">
       <div className="agent-knowledge-personal-toolbar">
@@ -369,7 +394,9 @@ export function PersonalKnowledgeView({
         </div>
 
         <div className="agent-knowledge-personal-detail">
-          {searchResults.length > 0 && (
+          {searchError ? (
+            <PersonalKnowledgeQueryState error={searchError} onRetry={onRetry} />
+          ) : searchResults.length > 0 && (
             <div className="agent-knowledge-card">
               <h4 className="agent-knowledge-card-title">{t('agent.knowledge.personalSearchResults', 'Search results')}</h4>
               {searchResults.map((result) => (
@@ -383,7 +410,9 @@ export function PersonalKnowledgeView({
             </div>
           )}
 
-          {selectedDocument ? (
+          {documentError ? (
+            <PersonalKnowledgeQueryState error={documentError} onRetry={onRetry} />
+          ) : selectedDocument ? (
             <div className="agent-knowledge-card">
               <div className="agent-knowledge-entry-head">
                 <strong className="agent-knowledge-entry-title">{selectedDocument.title}</strong>
@@ -526,8 +555,17 @@ export default function AgentKnowledgeSection({ agentId, canEdit, onNavigateTab 
           documents={personalDocuments}
           selectedDocument={personalDocumentQuery.data}
           searchResults={personalSearchResults}
+          isLoading={personalDocumentsQuery.isLoading}
+          error={personalDocumentsQuery.isError ? personalDocumentsQuery.error : undefined}
+          searchError={personalSearchQueryResult.isError ? personalSearchQueryResult.error : undefined}
+          documentError={personalDocumentQuery.isError ? personalDocumentQuery.error : undefined}
           selectedDocumentId={selectedPersonalDocumentId}
           searchQuery={personalSearchInput}
+          onRetry={() => {
+            void personalDocumentsQuery.refetch();
+            if (personalSearchQuery.trim()) void personalSearchQueryResult.refetch();
+            if (selectedPersonalDocumentId) void personalDocumentQuery.refetch();
+          }}
           onSearchQueryChange={setPersonalSearchInput}
           onRunSearch={() => setPersonalSearchQuery(personalSearchInput.trim())}
           onSelectDocument={setSelectedPersonalDocumentId}

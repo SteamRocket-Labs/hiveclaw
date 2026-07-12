@@ -1,5 +1,9 @@
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { ApiError } from '../api/core';
+
+const queryState = vi.hoisted(() => ({ errors: {} as Record<string, unknown> }));
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -20,6 +24,15 @@ vi.mock('@tanstack/react-query', () => ({
   useMutation: () => ({ mutate: vi.fn(), isPending: false }),
   useQuery: ({ queryKey }: { queryKey: unknown[] }) => {
     const key = String(queryKey[0]);
+    if (queryState.errors[key]) {
+      return {
+        data: undefined,
+        isLoading: false,
+        isError: true,
+        error: queryState.errors[key],
+        refetch: vi.fn(),
+      };
+    }
     if (key === 'personal-knowledge-documents') {
       return {
         data: {
@@ -247,6 +260,10 @@ vi.mock('../api/domains/knowledge', () => ({
 import PersonalKnowledge, { ProposalReviewPanel, RevisionHistory } from './PersonalKnowledge';
 
 describe('PersonalKnowledge', () => {
+  beforeEach(() => {
+    queryState.errors = {};
+  });
+
   it('renders the owner-level Personal KB workbench with horizontal sections instead of a nested rail', () => {
     const html = renderToStaticMarkup(<PersonalKnowledge />);
 
@@ -353,5 +370,16 @@ describe('PersonalKnowledge', () => {
     expect(revisionHtml).toContain('版本 1');
     expect(revisionHtml).toContain('Owner approved proposal');
     expect(revisionHtml).toContain('回滚到此版本');
+  });
+
+  it('renders a 403 as access denied and never as zero assets or an empty Personal KB', () => {
+    queryState.errors['personal-knowledge-documents'] = new ApiError(403, 'Forbidden');
+
+    const html = renderToStaticMarkup(<PersonalKnowledge />);
+
+    expect(html).toContain('data-personal-knowledge-state="forbidden"');
+    expect(html).toContain('This is not an empty knowledge base');
+    expect(html).not.toContain('0 文档');
+    expect(html).not.toContain('个人知识库为空');
   });
 });

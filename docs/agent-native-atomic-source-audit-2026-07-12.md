@@ -38,7 +38,7 @@
 
 ### 0.3 最终置信度
 
-- **代码审计置信度：88%。** 当前源码/调用图、全量本地测试、构建、静态迁移头、对照源码均已取证；12 域逐能力七原子覆盖，4 个 P0 由主审计者亲自 Read 源码钉死；没有依赖历史“完成”结论。合并后 P0 数量上升不降低取证质量——它反映领域深审线覆盖了主线未触达的前端渲染、记忆写路径穿越、heartbeat 评审 schema 三处 seam。
+- **原始代码审计置信度为 88%；28 项修复后的本地代码候选置信度为 95%。** 当前源码、全量测试、构建、迁移/RLS 门、浏览器错误/恢复旅程和 28 项独立提交均已取证；生产运行置信度仍与本地代码置信度分开计算，不能用本地绿灯冒充 Railway 多副本、持久盘、真实 Connector 或生产数据分布已经验证。
 - **生产运行置信度：42%。** 没有生产/Railway 事实、真实多副本故障注入、真实外部 Channel/Connector、真实生产持久盘与 Vercel Sandbox 回传证据。多个断点（R-001 双执行、R-004 dream 丢失、R-020 Local Bridge、tenant=None×RLS）的**真实触发率取决于运维配置（副本策略、Redis 健康、生产 DB seed、NULL-tenant 行是否存在），本环境不可源码验证**——这是生产置信度显著低于代码置信度的根本原因。
 
 ## 1. 当前事实基线
@@ -190,7 +190,7 @@ flowchart LR
 | H06 | Dream/soul evolution | cadence+T3 | Memory/Platform gates | auto dream | audit+state files | 周期重触发；无 durable owner | soul/retrieval | unit tests；缺 crash/完整输入验收 | 局部闭环 | `services/auto_dream.py`; R-004/R-007 |
 | H07 | Feedback/reflection | user/session result | tenant/agent | feedback service | feedback event | durable DB | memory candidates | tests | 闭环 | `services/session_feedback.py` |
 | H08 | Personal KB ingest | user/document | owner/grants/RLS | index jobs | document/segment/job | SKIP LOCKED sweeper | tools/UI | tests | 闭环 | `services/personal_knowledge_service.py`; `models/knowledge.py` |
-| H09 | Personal KB search/read/citation | tool call/UI query | compiled grants | knowledge handler | result+citation | tool retry；UI 403 被折叠为空集 | model/UI | tool/API tests；缺 UI denial 验收 | 局部闭环 | `tools/handlers/knowledge.py`; `api/agent_knowledge.py`; R-028 |
+| H09 | Personal KB search/read/citation | tool call/UI query | compiled grants；HTTP 403 保留为 authority denial | knowledge handler + query-state consumer | result+citation+HTTP status | tool retry；UI scoped Retry/重新验权 | model + Owner workbench + Agent Detail | tool/API tests；frontend 659；Playwright 14 | 闭环 | `tools/handlers/knowledge.py`; `api/agent_knowledge.py`; `PersonalKnowledgeQueryState.tsx`; R-028 |
 | H10 | Company KB | 无正式输入面 | 无完整 ACL | 无正式 runtime | legacy export only | 无 | 无 | 无 | 缺失 | `services/legacy_company_files.py`; R-008 |
 | H11 | Skill candidate/eval/promotion | memory evidence | tenant/owner | distiller/curator | candidate/eval/revision | rollback | load/runtime | tests | 局部闭环 | `services/skill_distiller.py`; `memory/capability_candidates.py` |
 | H12 | AI asset revisions/usage | asset selection | tenant/owner | resolution service | immutable usage event | backfill/reconcile | runtime/admin | migration+tests | 闭环 | `services/ai_asset_resolution.py`; `models/ai_asset.py` |
@@ -276,7 +276,7 @@ flowchart LR
 - Personal KB 没有静态注入最原始 context assembly；测试显式锁定 `invoke_agent` 不预取 Personal KB。
 - Agent 通过 `search_personal_kb`/`read_personal_kb` 工具访问；owner Agent 不自动把 owner 权限传播给其他 Agent，访问由 grants/tenant/agent principal 编译。
 - ingest 使用 durable `KnowledgeIndexJob`，claim 使用 `SKIP LOCKED`，daemon 可扫 stuck jobs；文档、segments、assertions、links、grants、proposals、revisions 有 DB truth 与 UI consumer。
-- ingest/job 与 Agent 工具调用主干闭环；Personal KB 整体因 UI 将 403 折叠为空集（R-028）判为局部闭环。生产级大文件、真实跨租户和真实向量后端未实测，故生产置信度不随之升高。
+- ingest/job 与 Agent 工具调用主干闭环；R-028 已把 Owner 工作台 9 个读取面（documents/jobs/graph/grants/proposals/detail/search/revisions/source preview）及 Agent Detail 3 个读取面的 403、普通故障、loading 与真空集合分流。单个子查询失败只替换对应区域，不封锁摄取表单、导航、统计或已成功加载的证据；根 documents 权限失败才关闭整个 Owner-scope 消费面。生产级大文件、真实跨租户和真实向量后端仍未实测，故生产置信度不随本地闭环自动升高。
 
 ### 6.3 Company Knowledge Base
 
@@ -346,7 +346,7 @@ flowchart LR
 | 4 | Goal 长任务→run API→owner+budget→RuntimeTask worker→task/transcript→断线不停、REST backfill→Run Status→terminal | 局部闭环（R-001；真实多副本未验） |
 | 5 | Schedule/Trigger→trigger API/daemon→tenant policy→RuntimeTask→task+journal+outbox→reconcile/retry→notification→terminal | 闭环 |
 | 6 | Branch/Fork/Rewind→command API→session/resource auth→session command runtime→lineage+snapshot→revision/rollback→GitLine→成功/需核对 | 闭环 |
-| 7 | Personal KB ingest/search/read→knowledge API/tools→grants/RLS→index worker/handler→document/job/citation→stuck-job sweep→Personal KB UI/model→结果/denial | 局部闭环（工具链成立；UI 403 被展示为空库，R-028） |
+| 7 | Personal KB ingest/search/read→knowledge API/tools→grants/RLS→index worker/handler→document/job/citation→stuck-job sweep→Personal KB UI/model→结果/denial | 闭环（403/故障/loading/真空集合分流；局部失败隔离；Retry 重新验权，R-028） |
 | 8 | Skill discover/load/evolve→skill tools/admin→asset authority→distiller/curator/ToolRuntime→revision/eval/usage→rollback→skill UI/model→loaded/promoted | 局部闭环（Dream R-004/R-007） |
 | 9 | Spawn Subagent→tool→parent/delegation/budget→subagent service→run/journal→cancel/reconcile/late state→subagent panel→typed result/failure | 闭环 |
 | 10 | Agent Team→team UI/tool→team authority→team runtime→member/team events→partial state→team panel→aggregate terminal | 局部闭环（真实 worker crash 未注入） |
@@ -361,7 +361,7 @@ flowchart LR
 - ordinary user 与 operator 技术证据有 audience 分层；未发现普通用户必须理解 UUID/hash/span 才能继续主任务。
 - reconnect/offline/auth_failed/degraded 有文案与 REST backfill；WS 不是权威。
 - branch/rewind/workspace restore 有确认与版本检查；artifact 注册与双消费链成立，但富文本渲染、query-token 和最终 CSP 仍受 R-015 约束，不能把“看得到附件”外推为安全闭环。
-- 当前最严重的 UI 断点是 R-015 富文本 XSS；R-028 会把 Personal KB 403 误呈现为空库。Company KB 只是 P3 文案边界，后端保持诚实隔离，不应与前两项混为同级产品断链。
+- 原始 UI 深审发现的 R-015 富文本 XSS 与 R-028 Personal KB 403→空库均已关闭；Company KB 仍是明确第二部分的已知缺失，当前只保留诚实隔离边界，不以 Personal KB 或 legacy files 冒充正式企业知识库。
 - 修复后新增独立的 15 条原子用户旅程 release gate：真实 Vite UI、FastAPI 产品路由、严格 `app_rls` PostgreSQL、Redis RuntimeTask/worker 与受控外部 provider fake 同时运行；每条旅程都从 durable session 输入进入，消费真实 domain projection，并最终由 Agent Detail 浏览器界面读取终态。R-011 的完整证据见对应修复段落。
 
 ## 9. KISS 与代码债
@@ -864,11 +864,13 @@ flowchart LR
 ### [R-028] 个人 KB 权限拒绝静默化为空库
 
 - 严重级别：P1
-- 状态：断点
+- 原始状态：断点
 - 用户/生产症状：无权访问某 KB 时前端显示"个人知识库为空"，403 与真空库不可分，用户无法区分"无权限"与"无数据"。
 - 根因：[主审复核] 7 个读查询无 isError，走 `?? []`（`PersonalKnowledge.tsx:697-729`→:297；`AgentKnowledgeSection.tsx:452-453`）；错误模型 `request.ts` 仅 401 有全局处理，403 落成空集。
-- 精确代码位置：`frontend/src/pages/PersonalKnowledge.tsx:697-729,297`；`frontend/src/api/core/request.ts:84,111,142`。
+- 精确代码位置（修复后）：`frontend/src/components/PersonalKnowledgeQueryState.tsx`；`frontend/src/pages/PersonalKnowledge.tsx:PersonalKnowledge,InboxPanel,DocumentDetail`；`frontend/src/pages/agent-detail/AgentKnowledgeSection.tsx:PersonalKnowledgeView`；`frontend/e2e/personal-knowledge-errors.spec.ts`。
 - 一次性完整关闭方案：7 个查询加 isError 分支，区分 403（无权限提示）vs 空集（引导 ingest）。
+- 口径校正与修复状态（2026-07-12）：原报告少算了当前消费面；实际是 Owner 工作台 **9 个**读取查询（documents、jobs、graph、grants、proposals、detail、search、revisions、source preview）和 Agent Detail **3 个**读取查询（documents、search、detail）。**R-028 七原子闭环**：输入仍来自 `/knowledge` Owner 工作台或 Agent Detail Personal KB 只读页；权威保留统一 request layer 抛出的 `ApiError.status=403`，不再通过 `?? []` 擦除；执行不新增第二 API/第二授权器，所有查询继续走既有 knowledge adapters；证据是 HTTP status、React Query error/data/loading state 与后端 citation/source refs；恢复由每个 scoped error card 的 Retry 重新请求并重新验权，授权变化后可从 403 恢复到真实 data/empty；消费将 documents 根权限失败与 jobs/graph/grants/proposals/detail/revisions/search/preview 局部失败分开，局部错误不会封锁摄取表单、导航、统计或已加载证据；只有 `data` 成功且数组长度为零时才展示空库/空列表引导。401 仍由全局登录恢复处理，403 不跳登录、不泄漏内部错误文本，503 等普通故障与 permission denial 也分开呈现。
+- 验收证据：首轮 Red 为组件缺失 + Owner/Agent 两个 403 行为失败（**3 files failed / 2 behavioral assertions failed**）；Green 定向 **3 files / 10 tests**。按 `harden` 规则补“局部错误不得封锁整个界面”后 Playwright Red **7 failed, 2 passed**，局部隔离后最终 `personal-knowledge-errors.spec.ts` **14 passed**：逐一覆盖 Owner 9 个读取面、Agent 3 个读取面、真实授权空集合、403→授权变化→Retry 恢复，并对 denial card 跑 axe 零 violation；完整前端 Playwright（BusinessTask、Personal KB、Thread Workbench、Workflow）**30 passed**。Frontend 全量 **115 files / 659 tests**，production build、AgentDetail **287168/380000 bytes**、gzip **81176/115000**、vendor budgets 与 diff check 全绿。独立提交主题：`fix(R-028): preserve Personal KB authority errors`。
 
 ## 11. 已验证闭环
 
@@ -1013,13 +1015,13 @@ Codebase graph 校正时状态为 ready（43,281 nodes / 166,753 edges）；`det
 | Gate | 结论 | 必须满足的证据 |
 |---|---|---|
 | **安全门（最高优先）** | **NO-GO** | **R-015 完成成熟 sanitizer/raw HTML 禁用、URL/image policy、长期 bearer token 退出 DOM/query URL、全部消费面 XSS 回归及 staging 最终 CSP header 验证；R-016 统一规范化后守卫、authority 覆盖新建与残留扫描；R-018 channel secret 加密回填/scrub；R-021 完成 MCP metadata trust contract，而不是只做字符转义** |
-| 代码/架构候选门 | NO-GO | R-001~R-007、R-009~R-028 的当前范围缺口全部关闭；R-008 仅按“已知缺失 + 文案诚实”处理，不把 Company KB 正式建设伪装成当前债；不存在被默认豁免的 P2/P3；ruff format、全量测试、build 与架构门全部绿 |
+| 代码/架构候选门 | **本地候选通过；生产仍 NO-GO** | R-001~R-007、R-009~R-028 当前范围缺口已全部关闭；R-008 按“边界闭环 + Company KB 本体已知缺失”诚实处理；不存在默认豁免的 P2/P3；ruff/format、全量测试、build、浏览器与架构门全绿 |
 | 自进化基石门 | 本地代码候选通过；生产仍 NO-GO | R-004/R-007/R-017/R-024/R-026 已有本地闭环证据；仍须完成 staging lifecycle kill/corruption 故障注入与持久盘恢复核验 |
 | Migration/backfill门 | 当前代码候选通过；生产仍 NO-GO | Approval/HR/Dream durable job、HR preview TTL、channel encryption、RLS complete coverage 与 R-023 strict/shared/operator-nullable 分类、payload-free dry-run、回填/冲突 quarantine、secure downgrade 均已有本地/真实 PG 证据；当前单 head=`hr_draft_recovery_0712`，仍需 staging dry-run 与生产只读分布核验 |
 | Staging fault-injection门 | NO-GO | 多副本startup（R-001）、claim lease（R-004/R-023）、approval crash、Dream kill、outbox前后crash、lifecycle.json 崩溃写、15 journeys |
 | Railway生产门 | 未验证/NO-GO | backend/backend-api/frontend同一候选均SUCCESS；health、schema、worker日志、持久盘证据 |
 | 权限矩阵门 | 本地候选通过 | cross-tenant、delegate grant、break-glass expiry、operator read/write、组合 waiting E2E；R-020 Local Bridge per-action policy/approval；R-022 全 tenant 表 RLS；R-023 NULL/global/shared/operator/quarantine 注入矩阵；生产只读核验仍归 Railway 门 |
-| 功能与用户体验门 | NO-GO | R-019/R-025/R-027 已有本地闭环证据；仍须关闭 R-028 Personal KB 403/empty 分流，并在 staging 重跑 15 条 journey |
+| 功能与用户体验门 | **本地候选通过；生产仍 NO-GO** | R-019/R-025/R-027/R-028 均有本地闭环证据；Personal KB 12 个读取面、真实空态、局部降级与 Retry 浏览器验收已绿；生产切流前仍须在 staging 重跑 15 条全链 journey |
 | External Channel门 | 未验证 | R-018 加密迁移后真实 secret 读取/轮换；真实 identity binding、token expiry、duplicate webhook、outbox retry/dead-letter；R-020 Local Bridge per-action 审批与离线恢复 |
 | Artifact交付门 | 本地候选通过 | staging sandbox→artifact→chat→Deliverables→download、crash/retry exact-once |
 | Company KB 范围门 | 已知缺失/不阻塞当前第一部分 | R-008 文案只描述 legacy read-only files；不出现正式 Company KB 已可用的 route/UI shell。Company KB 正式能力进入明确的第二部分完整建设 |
@@ -1028,28 +1030,28 @@ Codebase graph 校正时状态为 ready（43,281 nodes / 166,753 edges）；`det
 
 ## 15. 最终置信度
 
-### 15.1 代码审计置信度：88%
+### 15.1 修复后本地代码候选置信度：95%
 
 | 权重 | 覆盖判断 | 得分贡献 |
 |---|---|---|
-| current source/call graph 45% | 高覆盖，关键入口/consumer/recovery逐段复核 | 42/45 |
-| executable tests 25% | 全命令完成；format红被保留 | 23/25 |
+| current source/call graph 45% | 高覆盖，关键入口/consumer/recovery逐段复核；28 项均回到当前 checkout 验证 | 44/45 |
+| executable tests 25% | backend 6690、frontend 659、build/ruff/format/架构门与断点专属浏览器套件均绿 | 25/25 |
 | CC/Codex/Hermes source comparison 10% | 代表性生命周期源码已对照，非穷举每个分支 | 8/10 |
-| migration/recovery/fault injection 10% | migration头/测试充分，真实多进程注入不足 | 7/10 |
+| migration/recovery/fault injection 10% | migration/回填/恢复测试充分，真实 staging 多副本与外部系统注入仍待执行 | 8/10 |
 | browser/user journey 10% | 15 条真实 API/runtime/worker/browser 原子旅程全部通过，并已成为 release gate | 10/10 |
-| **合计** |  | **90/100** |
+| **合计** |  | **95/100** |
 
 ### 15.2 生产运行置信度：42%
 
-本地实现与测试证据不能证明生产多副本、Railway持久盘、Vercel Sandbox、真实 Channel/Connector、生产 RLS 数据分布和部署一致性。生产置信度必须在 R-001~R-007、R-009~R-028 的当前范围缺口关闭（R-008 维持已知缺失且文案诚实），并完成 staging fault matrix、三服务部署与只读生产核验后重算。
+本地实现与测试证据不能证明生产多副本、Railway持久盘、Vercel Sandbox、真实 Channel/Connector、生产 RLS 数据分布和部署一致性。R-001~R-007、R-009~R-028 当前范围缺口已关闭，R-008 维持“边界闭环 + Company KB 本体已知缺失”；生产置信度只有在 staging fault matrix、三服务同候选部署与只读生产核验完成后才能重算。
 
 ### 15.3 最终声明
 
-原始审计没有修改生产代码、测试、migration、配置、生产数据或部署状态，也没有 commit。本次校正只修改这份被 `docs/` ignore 的报告；没有修改实现，也没有清理 `.ultra/debug/subagent-log.jsonl` 当前已有的 3 条追加记录。因此当前事实是“报告内容已变更 + tracked worktree 仍有该 debug 日志修改”，不能再写成“除报告外 clean”。若后续需要提交本报告，必须显式 force-add，并在提交前再次记录当时 HEAD/worktree。
+原始审计阶段只产出报告；随后 R-001~R-028 已按执行账本逐项完成实现、回归、证据更新与独立提交。当前结论是 **28/28 当前范围闭环**，其中 R-008 只代表 Company KB 缺失边界已经诚实隔离，不代表 Company KB 本体已开发。没有执行 Railway 部署、生产 migration 或生产数据写入，因此只能称“本地代码候选完成”，不能称“已上线”。用户原有 `.ultra/debug/subagent-log.jsonl` 追加记录始终未纳入任何修复提交。
 
 ## 16. 28 项原子缺口修复执行账本
 
-本节记录原始审计全部 28 项的实际落地状态：17 个断点、10 个局部闭环、1 个已知缺失。原始严重级别与原子状态保留为审计快照；只有同时具备实现、回归测试、报告证据和独立提交，才把修复状态改为闭环。Company Knowledge Base 本体按 owner 边界不在本轮开发，但 R-008 的诚实隔离、文案与防伪装验收仍必须关闭。当前进度：**27/28**。
+本节记录原始审计全部 28 项的实际落地状态：17 个断点、10 个局部闭环、1 个已知缺失。原始严重级别与原子状态保留为审计快照；只有同时具备实现、回归测试、报告证据和独立提交，才把修复状态改为闭环。Company Knowledge Base 本体按 owner 边界不在本轮开发，R-008 完成的是诚实隔离、文案与防伪装验收。当前进度：**28/28**。
 
 | ID | 修复状态 | 独立提交主题 | 机械证据摘要 |
 |---|---|---|---|
@@ -1080,4 +1082,4 @@ Codebase graph 校正时状态为 ready（43,281 nodes / 166,753 edges）；`det
 | R-025 | 闭环 | `fix(R-025): reconcile unfinished HR creations` | 校正 R-003 后真实剩余 seam；7d TTL+legacy backfill、worker SKIP LOCKED reconciler、confirmation fail-closed、missing-job/terminal/orphan Agent 收敛、目录 Resume/Retry/Remove；Red 9+2；扩展 105；backend 6663；frontend 650+build；真实 PG/head/ruff/format 绿 |
 | R-026 | 闭环 | `fix(R-026): make lifecycle telemetry crash-safe` | Red 5 failed + 语义单提交 Red 1 failed；temp/fsync/replace + last-good + corrupt quarantine/receipt + strict whole-snapshot validation + flock stale-reload；扩展 93；backend 6669；ruff/format/diff 绿 |
 | R-027 | 闭环 | `fix(R-027): close BusinessTask product loop` | Work Ledger/BusinessTask 分面；exact Plan lease + canonical null payload；唯一 RuntimeTask 执行入口与 canonical projection；create/retry 幂等；cancel attempt latch、terminal race fence、人工 reconcile、stale lease quarantine；backend 115/全量 6690；frontend 655+build；Playwright 3；RLS/ruff/format/diff 绿 |
-| R-028 | 待修复 | — | — |
+| R-028 | 闭环 | `fix(R-028): preserve Personal KB authority errors` | 校正为 Owner 9 + Agent 3 个读取面；403/503/loading/真空集合分流；根权限与局部错误隔离；Retry 重新验权；Red 3 files + harden Red 7 browser；frontend 659+build；Playwright 14+axe；diff 绿 |

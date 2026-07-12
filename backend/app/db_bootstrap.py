@@ -150,6 +150,22 @@ _ADDITIONAL_FORCED_TENANT_TABLES: tuple[str, ...] = (
     "channel_delivery_outbox",
     "workflow_promotion_proposals",
     "budget_transition_outbox",
+    # R-022 complete-coverage guard: these late table families already had
+    # upgrade migrations, but were absent from create_all bootstrap. Fresh
+    # databases therefore skipped their policies when Alembic stamped head.
+    "agent_teams",
+    "agent_team_members",
+    "agent_team_events",
+    "agent_collaboration_groups",
+    "agent_collaboration_group_members",
+    "agent_session_goals",
+    "ai_asset_usage_events",
+    "local_agent_channels",
+    "local_agent_channel_events",
+    "local_agent_channel_messages",
+    "local_agent_channel_sessions",
+    "local_agent_channel_ws_tickets",
+    "workspace_resource_manifests",
 )
 
 # Non-null tenant-owned tables must never inherit the legacy nullable-tenant
@@ -189,6 +205,12 @@ STRICT_TENANT_RLS_TABLES: tuple[str, ...] = (
     "channel_delivery_outbox",
     "workflow_promotion_proposals",
     "budget_transition_outbox",
+    "agent_collaboration_groups",
+    "agent_collaboration_group_members",
+    "ai_asset_usage_events",
+    "local_agent_channels",
+    "local_agent_channel_ws_tickets",
+    "workspace_resource_manifests",
 )
 
 REMAINING_GLOBAL_AND_DERIVED_RLS_TABLES: tuple[str, ...] = (
@@ -348,6 +370,21 @@ def _participant_predicate() -> str:
     """
 
 
+def _agent_team_child_predicate(table: str) -> str:
+    return f"""
+        {_bypass_predicate()}
+        OR EXISTS (
+            SELECT 1
+            FROM agent_teams
+            WHERE agent_teams.id = {table}.team_id
+              AND (
+                  agent_teams.tenant_id::text = current_setting('app.current_tenant_id', true)
+                  OR agent_teams.tenant_id IS NULL
+              )
+        )
+    """
+
+
 def _system_settings_predicate() -> str:
     quoted_keys = ", ".join(f"'{key}'" for key in _SECRET_SYSTEM_SETTING_KEYS)
     return f"""
@@ -369,6 +406,8 @@ def _policy_predicates_for_table(table: str) -> tuple[str, str]:
         predicate = _external_identity_predicate()
     elif table == "participants":
         predicate = _participant_predicate()
+    elif table in {"agent_team_members", "agent_team_events"}:
+        predicate = _agent_team_child_predicate(table)
     elif table == "feature_flags":
         predicate = "true"
     elif table == "system_settings":

@@ -797,6 +797,9 @@ flowchart LR
 - 根因：[主审复核] 核验 `db_bootstrap.py` RLS 清单与 CREATE POLICY 迁移，这 12 表均缺；模型 125 表，有策略 113。
 - 精确代码位置：`backend/app/db_bootstrap.py`（清单缺这 12 表）；对应 models。
 - 一次性完整关闭方案：为 12 表补 CREATE POLICY（team 族 + local-channel 族优先）+ ENABLE/FORCE + 迁移；补 RLS 覆盖架构测试断言全 tenant 表有策略。
+- 口径校正（2026-07-12）：当前 checkout 机械枚举是 **11 张直接携带 `tenant_id` 的遗漏表 + 2 张以 `agent_teams.team_id` 派生租户权威的 child 表，共 13 张**，不是原报告按领域合并书写的“12 张”。其中历史 upgrade migrations 已分别保护过这些表，但 fresh database 走 `metadata.create_all + stamp head`，会跳过历史 migration；由于 13 张表未进入 `RLS_FORCED_TENANT_TABLES`，新部署仍没有 policy。故真实断点是 **bootstrap 与 upgrade 双入口漂移**，不是所有已有升级数据库都必然无 RLS。
+- 修复状态（2026-07-12）：**R-022 七原子闭环**。`db_bootstrap` 现在用永久架构 Gate 强制“ORM metadata 中每一张含 `tenant_id` 的表都必须属于 ENABLE+FORCE 清单”，未来新增 tenant table 未登记会立即红灯；13 张本轮表全部进入 forced coverage。`agent_team_members/events` 不复制 nullable `tenant_id`，继续以 parent `agent_teams` 为唯一权威，USING/WITH CHECK 均通过 `team_id` EXISTS；6 张 `tenant_id NOT NULL` 表使用 strict tenant predicate，5 张 legacy nullable 表暂保兼容 predicate，其 NULL 收敛归 R-023，不在本项偷改数据语义。
+- 迁移、恢复与验收：`rls_complete_coverage_0712` 对 13 张现存表幂等 DROP/CREATE canonical `tenant_isolation_*` policy 并 ENABLE+FORCE，修复曾经 fresh-bootstrap 或异常部署留下的裸表；secure downgrade 保留 policy/ENABLE/FORCE，避免代码回滚变成跨租泄漏，后续 upgrade 可幂等重建。Red：架构覆盖、migration/head 共 **`4 failed`**，机械列出 11+2 漏项。Green：静态/迁移契约 **`12 passed`**；真实 PostgreSQL migration **`2 passed`**，覆盖 13/13 repair 与 secure downgrade；fresh bootstrap + `agent_teams→members/events` 跨租读隔离、跨租写拒绝、BYPASS recovery **`2 passed`**；RLS/Agent Team/Local Channel/Resource Authority 组合 **`64 passed`**。Backend 全量 → **`6638 passed, 1 skipped`**；本项无 frontend 变更；`ruff check app tests`、`ruff format --check`（1538 files）、单 Alembic head `rls_complete_coverage_0712` 与 `git diff --check` 全绿。独立提交主题：`fix(R-022): enforce complete tenant RLS coverage`。
 
 ### [R-023] tenant_id 可空 × RLS NULL 逃逸 × 跨租守卫跳过（跨租泄漏向量）
 
@@ -1034,7 +1037,7 @@ Codebase graph 校正时状态为 ready（43,281 nodes / 166,753 edges）；`det
 
 ## 16. 28 项原子缺口修复执行账本
 
-本节记录原始审计全部 28 项的实际落地状态：17 个断点、10 个局部闭环、1 个已知缺失。原始严重级别与原子状态保留为审计快照；只有同时具备实现、回归测试、报告证据和独立提交，才把修复状态改为闭环。Company Knowledge Base 本体按 owner 边界不在本轮开发，但 R-008 的诚实隔离、文案与防伪装验收仍必须关闭。当前进度：**21/28**。
+本节记录原始审计全部 28 项的实际落地状态：17 个断点、10 个局部闭环、1 个已知缺失。原始严重级别与原子状态保留为审计快照；只有同时具备实现、回归测试、报告证据和独立提交，才把修复状态改为闭环。Company Knowledge Base 本体按 owner 边界不在本轮开发，但 R-008 的诚实隔离、文案与防伪装验收仍必须关闭。当前进度：**22/28**。
 
 | ID | 修复状态 | 独立提交主题 | 机械证据摘要 |
 |---|---|---|---|
@@ -1059,7 +1062,7 @@ Codebase graph 校正时状态为 ready（43,281 nodes / 166,753 edges）；`det
 | R-019 | 闭环 | `fix(R-019): normalize Anthropic vision payloads` | Red 8 failed/1 passed；主消息/tool-result 单一 pure converter；PNG/JPEG/multi/replay/invalid/vision=false/payload snapshot 17 passed；合并 80；backend 6591 passed；ruff/format/diff 绿 |
 | R-020 | 闭环 | `fix(R-020): govern Local Bridge actions per request` | Red backend 8+2 failed + frontend 1+1 failed；真 ApprovalRequest→单消息 release/reject + approval-time live policy；typed lease reconciler；bearer TTL；真实 PG backfill/downgrade；backend 6605；frontend 646 + build；ruff/format/head/diff 绿 |
 | R-021 | 闭环 | `fix(R-021): quarantine untrusted MCP metadata` | 多轮 Red：12+1+4+4+6+3 failed + frontend Red；raw/canonical 双面隔离、SHA-256 fingerprint 重审、五层 runtime deny、assignment intent 恢复、admin audit/UI；真实 PG 3；MCP 全链 201；backend 6632；frontend 650 + build；ruff/format/head/diff 绿 |
-| R-022 | 待修复 | — | — |
+| R-022 | 闭环 | `fix(R-022): enforce complete tenant RLS coverage` | 校正为 11 direct + 2 parent-derived；Red 4 failed；bootstrap 永久全 metadata Gate + upgrade repair + secure downgrade；真实 PG migration 2、跨租读写/BYPASS 2、组合 64；backend 6638；ruff/format/head/diff 绿 |
 | R-023 | 待修复 | — | — |
 | R-024 | 待修复 | — | — |
 | R-025 | 待修复 | — | — |

@@ -99,6 +99,12 @@ class Settings(BaseSettings):
     JWT_SECRET_KEY: str = "change-me-jwt-secret"
     JWT_ALGORITHM: str = "HS256"
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24  # 24 hours
+    # Hive Connect bearer credentials are device credentials, not permanent
+    # API keys. Re-pairing rotates them after this bounded lifetime.
+    LOCAL_BRIDGE_TOKEN_TTL_DAYS: int = 30
+    LOCAL_AGENT_DELIVERY_LEASE_SECONDS: int = 60
+    LOCAL_AGENT_DELIVERY_ACTIVITY_LEASE_SECONDS: int = 300
+    LOCAL_AGENT_DELIVERY_MAX_ATTEMPTS: int = 5
 
     # File Storage
     AGENT_DATA_DIR: str = _default_agent_data_dir()

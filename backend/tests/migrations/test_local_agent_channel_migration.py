@@ -28,6 +28,7 @@ EXPECTED_LOCAL_AGENT_CHANNEL_INDEXES = {
         "ix_local_agent_channel_messages_request_hash",
         "ix_local_agent_channel_messages_capability_snapshot_hash",
         "ix_local_agent_channel_messages_replay_key",
+        "ix_local_agent_channel_messages_approval_id",
     },
     LocalAgentChannelEvent: {
         "ix_local_agent_channel_events_session_created",
@@ -53,3 +54,10 @@ def test_local_agent_channel_model_indexes_match_migration_contract() -> None:
     for model, expected_names in EXPECTED_LOCAL_AGENT_CHANNEL_INDEXES.items():
         names = {idx.name for idx in model.__table__.indexes}
         assert names == expected_names, f"{model.__tablename__} metadata indexes drifted from migration contract"
+
+
+def test_local_agent_message_has_typed_approval_and_delivery_recovery_columns() -> None:
+    columns = LocalAgentChannelMessage.__table__.columns
+    assert "approval_id" in columns
+    assert "delivery_attempt_count" in columns
+    assert "delivery_lease_expires_at" in columns

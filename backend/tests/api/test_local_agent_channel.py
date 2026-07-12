@@ -123,17 +123,38 @@ def test_local_agent_channel_ping_refreshes_presence(monkeypatch) -> None:
     async def fake_mark_channel_seen(db_arg, *, context):
         captured["seen"] = {"db": db_arg, "context": context}
 
+    async def fake_poll_pending_channel_messages(db_arg, *, context):
+        captured["poll"] = {"db": db_arg, "context": context}
+        return [{"id": "approved-message", "status": "delivered"}]
+
     monkeypatch.setattr(local_agent_channel_api.channel_service, "resolve_ws_ticket", fake_resolve_ws_ticket)
     monkeypatch.setattr(local_agent_channel_api.channel_service, "mark_channel_seen", fake_mark_channel_seen)
+    monkeypatch.setattr(
+        local_agent_channel_api.channel_service,
+        "poll_pending_channel_messages",
+        fake_poll_pending_channel_messages,
+    )
     client = _client(monkeypatch, db=db, context=context)
 
     with client.websocket_connect("/local-bridge/channel/ws?ticket=hbt_test") as websocket:
         assert websocket.receive_json()["type"] == "hello"
         websocket.send_json({"type": "ping"})
+        assert websocket.receive_json() == {
+            "type": "message",
+            "message": {"id": "approved-message", "status": "delivered"},
+        }
         assert websocket.receive_json() == {"type": "pong"}
 
     assert captured["resolve"]["ticket"] == "hbt_test"
     assert captured["seen"] == {"db": db, "context": context}
+    assert captured["poll"] == {"db": db, "context": context}
+
+
+def test_local_agent_waiting_approval_is_not_fanned_out_to_runner() -> None:
+    assert local_agent_channel_api._runner_dispatch_allowed({"status": "pending"}) is True
+    assert local_agent_channel_api._runner_dispatch_allowed({"status": "delivered"}) is True
+    assert local_agent_channel_api._runner_dispatch_allowed({"status": "waiting_approval"}) is False
+    assert local_agent_channel_api._runner_dispatch_allowed({"status": "rejected"}) is False
 
 
 def test_web_user_creates_local_agent_channel_session_and_message(monkeypatch) -> None:

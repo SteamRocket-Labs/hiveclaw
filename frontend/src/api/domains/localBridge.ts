@@ -15,6 +15,7 @@ export interface LocalBridgeConnection {
   last_seen_at?: string | null;
   created_at?: string | null;
   revoked_at?: string | null;
+  expires_at?: string | null;
 }
 
 export interface LocalBridgeInstallGuide {
@@ -57,7 +58,10 @@ export interface LocalAgentChannelMessage {
   request_hash?: string | null;
   capability_snapshot_hash?: string | null;
   replay_key: string;
+  approval_id?: string | null;
   receipt?: LocalAgentExecutionReceipt | null;
+  delivery_attempt_count?: number;
+  delivery_lease_expires_at?: string | null;
   created_at?: string | null;
 }
 

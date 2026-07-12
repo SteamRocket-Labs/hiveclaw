@@ -771,6 +771,10 @@ flowchart LR
 - 精确代码位置：`backend/app/services/*channel_service*.py`（local_agent capability 解析）；`backend/app/services/local_agent_bridge_service.py`。
 - 与其他模块冲突：部分属 CCPlus"owner 自机受信本地代理"设计，须**显式记为已知边界**而非纯缺陷。
 - 一次性完整关闭方案：本地 execute 走 owner-per-action 审批；`requires_approval` 触发真审批流；播种 `local_agent.*` deny-by-default；bearer 令牌加 TTL + delivered reconciler；把"受信本地代理"的信任边界写入契约文档。
+- 修复状态（2026-07-12）：**R-020 七原子闭环**。缺少 `local_agent.*` policy 现在 fail-closed；配对新建/复用 Local Agent 与 legacy migration 均只补缺失的 per-agent policy，不覆盖 owner/admin 已有选择。默认 `local_agent.execute`、`file_download`、`file_upload` 为 allowed + requires_approval，即动作层 deny-by-default；`event_stream`/`result_report` 仅承载已批准执行的证据与回执。signed capability snapshot 仍表达 runner 支持面，enqueue 与 owner 批准释放两个时间点都重新读取 live policy，并执行 source/content/attachment conditions；等待期间若管理员撤权，批准会留下 `execution_status=failed`、rejected message 和 error span，绝不派发。`requires_approval` 不再从能力快照静默消失：enqueue 先写不可变 message/request hash/replay key/span，再创建标准 `ApprovalRequest` 并进入 `waiting_approval`；creator/owner/sponsor 或同租户 org admin 可批准，且批准只释放绑定 `approval_id` 的单条消息，拒绝进入终态且永不 fanout。Local Agents UI/API 明确显示“Waiting for owner approval”，刷新后的 approval event 也使用人类可读状态，不再谎报 queued 或暴露协议名；标准 Approvals/notification 是 owner 决策消费面，WS ping/poll 是批准后的耐久恢复面。
+- 恢复与迁移：`local_agent_action_gov_0712` 增加 typed `approval_id`、`delivery_attempt_count`、`delivery_lease_expires_at`，legacy delivered 行回填为立即可 reconcile；poll 使用 PostgreSQL row lock + lease，断线沿相同 `replay_key` 有界重放，ack/event 延长 activity lease，完成清 lease，达到 5 次转 `needs_reconciliation` 而非无限重复本机副作用。Hive Connect bearer token 新签发默认 30 天、配置上限 90 天；legacy active token 获得 7 天以上迁移宽限，null/expired token 与其 WS ticket 都 fail-closed，重新配对是明确恢复路径。真实 downgrade 只移除本 migration 自己播种的 policy，owner override 保留。
+- 受信本地代理边界（强制安全契约）：逐动作审批约束“允许派发什么”，操作系统沙箱约束“本机实际能做什么”。Hive 对审批、消息/附件引用、delivery lease、`replay_key`、receipt、结果、event/span/audit 负责；runner 必须在操作系统沙箱、受限工作目录与本机 credential boundary 内执行并按 replay key 去重。命令进入 owner 机器后，**Hive 无法机械证明**本机进程没有访问其他目录、网络、凭据或产生未回报副作用；这部分是显式受信端边界，不得在 UI/合规文案中伪装成云端完全控制。bearer token 只证明已配对 device identity，不替代本机 sandbox；delivered reconciler 只恢复云端交付，不证明本机 side effect exactly-once。
+- 验收证据：Backend Red → **`8 failed, 1 passed`**，追加 approval-release/live-policy Red → **`2 failed`**；Local Agent PostgreSQL 协议 Green 覆盖 no-policy deny、requires-approval approve/reject、批准前再次撤权、snapshot/live policy、lease replay/上限与 receipt；关联 API/service/migration/approval/trust contract 最终定向 **`44 passed`**。真实 PostgreSQL migration 覆盖 typed columns/FK、legacy delivered/token backfill、已有 owner deny 不覆盖、四项缺省 policy 播种与 secure downgrade。首次 backend 全量暴露 5 个兼容测试缺口，修正后定向 **`18 passed`**，最终 backend 全量 **`6605 passed, 1 skipped`**。Frontend 两轮 Red 各 **`1 failed`**；Green 单文件 **`11 passed`**、全量 **`111 files / 646 tests`**，生产 build 与 AgentDetail/shared-vendor bundle budgets 通过。ruff、format、单 Alembic head 与 diff-check 全绿。
 
 ### [R-021] MCP 远端工具描述被当作可信提示上下文
 
@@ -1026,7 +1030,7 @@ Codebase graph 校正时状态为 ready（43,281 nodes / 166,753 edges）；`det
 
 ## 16. 28 项原子缺口修复执行账本
 
-本节记录原始审计全部 28 项的实际落地状态：17 个断点、10 个局部闭环、1 个已知缺失。原始严重级别与原子状态保留为审计快照；只有同时具备实现、回归测试、报告证据和独立提交，才把修复状态改为闭环。Company Knowledge Base 本体按 owner 边界不在本轮开发，但 R-008 的诚实隔离、文案与防伪装验收仍必须关闭。当前进度：**19/28**。
+本节记录原始审计全部 28 项的实际落地状态：17 个断点、10 个局部闭环、1 个已知缺失。原始严重级别与原子状态保留为审计快照；只有同时具备实现、回归测试、报告证据和独立提交，才把修复状态改为闭环。Company Knowledge Base 本体按 owner 边界不在本轮开发，但 R-008 的诚实隔离、文案与防伪装验收仍必须关闭。当前进度：**20/28**。
 
 | ID | 修复状态 | 独立提交主题 | 机械证据摘要 |
 |---|---|---|---|
@@ -1049,7 +1053,7 @@ Codebase graph 校正时状态为 ready（43,281 nodes / 166,753 edges）；`det
 | R-017 | 闭环 | `fix(R-017): align heartbeat with the real T3 gate` | Red 2 failed；Green 5 passed；真 Gate 扩展 24 passed；ruff 绿 |
 | R-018 | 闭环 | `fix(R-018): encrypt channel credentials at rest` | Red 6+1+1+1+2+2 failed；7 channel + tenant 三字段/JSON versioned encryption；PG backfill/rotation/secure downgrade 2 passed；组合 126；backend 6582 passed；ruff/format/log redaction/dry-run 绿 |
 | R-019 | 闭环 | `fix(R-019): normalize Anthropic vision payloads` | Red 8 failed/1 passed；主消息/tool-result 单一 pure converter；PNG/JPEG/multi/replay/invalid/vision=false/payload snapshot 17 passed；合并 80；backend 6591 passed；ruff/format/diff 绿 |
-| R-020 | 待修复 | — | — |
+| R-020 | 闭环 | `fix(R-020): govern Local Bridge actions per request` | Red backend 8+2 failed + frontend 1+1 failed；真 ApprovalRequest→单消息 release/reject + approval-time live policy；typed lease reconciler；bearer TTL；真实 PG backfill/downgrade；backend 6605；frontend 646 + build；ruff/format/head/diff 绿 |
 | R-021 | 待修复 | — | — |
 | R-022 | 待修复 | — | — |
 | R-023 | 待修复 | — | — |

@@ -13,14 +13,17 @@ from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.database import enter_rls_bypass, pin_rls_tenant_context
 from app.models.agent import Agent
+from app.models.capability_policy import CapabilityPolicy
 from app.models.local_agent_channel import LocalAgentChannel
 from app.models.local_bridge import LocalAgentBridgeConnection, LocalAgentBridgePairingSession
 
 BRIDGE_TOKEN_PREFIX = "hb_"
 DEFAULT_PAIRING_EXPIRES_SECONDS = 15 * 60
 DEFAULT_PAIRING_POLL_INTERVAL_SECONDS = 3
+DEFAULT_BRIDGE_TOKEN_TTL_DAYS = 30
 DEFAULT_SCOPES = (
     "local_agent:connect",
     "local_agent:receive",
@@ -36,6 +39,56 @@ HIVE_CONNECT_NPM_PACKAGE = "@hiveclaw243/hive-connect"
 HIVE_CONNECT_BINARY_NAME = "hive-connect"
 HIVE_CONNECT_CLIENT_KIND = "hive-connect"
 LOCAL_AGENT_PRESENCE_ONLINE_TTL_SECONDS = 90
+LOCAL_AGENT_POLICY_SEED = "local_agent_action_gov_0712"
+LOCAL_AGENT_POLICY_DEFAULTS: tuple[tuple[str, tuple[bool, bool]], ...] = (
+    ("local_agent.execute", (True, True)),
+    ("local_agent.file_download", (True, True)),
+    ("local_agent.file_upload", (True, True)),
+    ("local_agent.event_stream", (True, False)),
+    ("local_agent.result_report", (True, False)),
+)
+
+
+async def _ensure_local_agent_capability_policies(db: AsyncSession, *, agent: Agent) -> None:
+    """Seed only missing per-agent policies; never overwrite owner/admin choices."""
+
+    capabilities = tuple(capability for capability, _decision in LOCAL_AGENT_POLICY_DEFAULTS)
+    existing = (
+        (
+            await db.execute(
+                select(CapabilityPolicy).where(
+                    CapabilityPolicy.tenant_id == agent.tenant_id,
+                    CapabilityPolicy.agent_id == agent.id,
+                    CapabilityPolicy.capability.in_(capabilities),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    existing_names = {policy.capability for policy in existing}
+    for capability, (allowed, requires_approval) in LOCAL_AGENT_POLICY_DEFAULTS:
+        if capability in existing_names:
+            continue
+        db.add(
+            CapabilityPolicy(
+                tenant_id=agent.tenant_id,
+                agent_id=agent.id,
+                capability=capability,
+                allowed=allowed,
+                requires_approval=requires_approval,
+                conditions={
+                    "seeded_by": LOCAL_AGENT_POLICY_SEED,
+                    "action_default": "require_owner_approval" if requires_approval else "protocol_receipt",
+                },
+            )
+        )
+    await db.flush()
+
+
+async def _return_seeded_local_agent(db: AsyncSession, agent: Agent) -> Agent:
+    await _ensure_local_agent_capability_policies(db, agent=agent)
+    return agent
 
 
 def hive_connect_install_guide(*, base_url: str | None = None) -> dict[str, Any]:
@@ -222,7 +275,7 @@ async def ensure_default_local_agent_for_pairing(
     if pairing.agent_id:
         existing = await db.get(Agent, pairing.agent_id)
         if existing is not None:
-            return existing
+            return await _return_seeded_local_agent(db, existing)
 
     if pairing.device_fingerprint and pairing.device_fingerprint != "unknown":
         result = await db.execute(
@@ -241,7 +294,7 @@ async def ensure_default_local_agent_for_pairing(
         if connection and connection.agent_id:
             existing = await db.get(Agent, connection.agent_id)
             if existing is not None and getattr(existing, "deleted_at", None) is None:
-                return existing
+                return await _return_seeded_local_agent(db, existing)
 
     agent_name = _local_agent_name_from_pairing(pairing)
     result = await db.execute(
@@ -258,7 +311,7 @@ async def ensure_default_local_agent_for_pairing(
     )
     existing_agent = result.scalar_one_or_none()
     if existing_agent is not None:
-        return existing_agent
+        return await _return_seeded_local_agent(db, existing_agent)
 
     local_agent = Agent(
         name=agent_name,
@@ -284,7 +337,7 @@ async def ensure_default_local_agent_for_pairing(
         actor_user_id=user_id,
         change_message="Hive Connect local Agent created",
     )
-    return local_agent
+    return await _return_seeded_local_agent(db, local_agent)
 
 
 async def approve_pairing_session(
@@ -351,6 +404,14 @@ async def exchange_pairing_session(db: AsyncSession, *, device_code: str) -> dic
 
     await pin_rls_tenant_context(db, pairing.tenant_id)
     raw_token = generate_bridge_token()
+    token_ttl_days = min(
+        90,
+        max(
+            1,
+            int(getattr(get_settings(), "LOCAL_BRIDGE_TOKEN_TTL_DAYS", DEFAULT_BRIDGE_TOKEN_TTL_DAYS)),
+        ),
+    )
+    expires_at = utcnow() + timedelta(days=token_ttl_days)
     connection = LocalAgentBridgeConnection(
         tenant_id=pairing.tenant_id,
         agent_id=pairing.agent_id,
@@ -361,6 +422,7 @@ async def exchange_pairing_session(db: AsyncSession, *, device_code: str) -> dic
         token_hash=hash_secret(raw_token),
         scopes=normalize_scopes(pairing.scopes),
         status="active",
+        expires_at=expires_at,
         metadata_json={"pairing_id": str(pairing.id)},
     )
     db.add(connection)
@@ -379,6 +441,8 @@ async def exchange_pairing_session(db: AsyncSession, *, device_code: str) -> dic
         "agent_id": str(connection.agent_id) if connection.agent_id else None,
         "user_id": str(connection.user_id),
         "scopes": list(connection.scopes or []),
+        "expires_at": connection.expires_at.isoformat(),
+        "expires_in": max(0, int((connection.expires_at - utcnow()).total_seconds())),
     }
 
 
@@ -410,8 +474,9 @@ async def resolve_bridge_auth_context(
     if connection is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid bridge token")
     await pin_rls_tenant_context(db, connection.tenant_id)
-    if connection.expires_at and connection.expires_at <= utcnow():
+    if connection.expires_at is None or connection.expires_at <= utcnow():
         connection.status = "expired"
+        await db.commit()
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Bridge token expired")
 
     connection.last_seen_at = utcnow()
@@ -465,6 +530,9 @@ def serialize_connection_for_list(
         "last_seen_at": connection.last_seen_at.isoformat() if connection.last_seen_at else None,
         "created_at": connection.created_at.isoformat() if connection.created_at else None,
         "revoked_at": connection.revoked_at.isoformat() if connection.revoked_at else None,
+        "expires_at": (
+            connection.expires_at.isoformat() if getattr(connection, "expires_at", None) is not None else None
+        ),
     }
 
 

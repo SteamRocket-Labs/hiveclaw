@@ -5,6 +5,7 @@ import { useLocation } from 'react-router-dom';
 import {
   localBridgeApi,
   type LocalAgentChannelEvent,
+  type LocalAgentChannelMessage,
   type LocalAgentChannelSession,
   type LocalAgentChannelTimeline,
   type LocalAgentWorkspaceFile,
@@ -47,8 +48,28 @@ export const canSendLocalAgentMessage = ({
   content: string;
 }) => localAgentBound && !messageBusy && Boolean(content.trim());
 
-const channelEventText = (event: LocalAgentChannelEvent) => {
+export const localAgentMessageDeliveryState = (
+  message: Pick<LocalAgentChannelMessage, 'id' | 'status' | 'approval_id'>,
+) => {
+  if (message.status === 'waiting_approval') {
+    return {
+      kind: 'warning' as const,
+      state: 'waiting_approval' as const,
+      reference: message.approval_id || message.id,
+    };
+  }
+  return { kind: 'success' as const, state: 'queued' as const, reference: message.id };
+};
+
+export const channelEventText = (event: LocalAgentChannelEvent) => {
   const payload = event.payload || {};
+  if (event.type === 'approval_required') return 'Waiting for owner approval';
+  if (event.type === 'approval_resolved') {
+    if (payload.execution_status === 'failed') {
+      return String(payload.reason || 'Action blocked because its policy changed');
+    }
+    return payload.status === 'approved' ? 'Owner approved this action' : 'Owner rejected this action';
+  }
   return String(payload.text || payload.content || payload.output || payload.error || event.type);
 };
 
@@ -186,7 +207,10 @@ export default function LocalAgents({ agentId, agentName, embedded = false, init
     ),
   );
   const [messageBusy, setMessageBusy] = useState(false);
-  const [messageStatus, setMessageStatus] = useState<{ kind: 'success' | 'error'; message: string } | null>(null);
+  const [messageStatus, setMessageStatus] = useState<{
+    kind: 'success' | 'warning' | 'error';
+    message: string;
+  } | null>(null);
   const [pendingAttachments, setPendingAttachments] = useState<LocalAgentWorkspaceUpload[]>([]);
   const [attachmentBusy, setAttachmentBusy] = useState(false);
   const [workspacePath, setWorkspacePath] = useState('workspace');
@@ -431,9 +455,17 @@ export default function LocalAgents({ agentId, agentName, embedded = false, init
         : await localBridgeApi.sendChannelMessage(sessionId, messageInput);
       setPendingAttachments([]);
       sendIdempotencyKeyRef.current = null;
+      const deliveryState = localAgentMessageDeliveryState(result);
       setMessageStatus({
-        kind: 'success',
-        message: t('localAgents.messageQueued', 'Message queued: {{messageId}}', { messageId: result.id }),
+        kind: deliveryState.kind,
+        message:
+          deliveryState.state === 'waiting_approval'
+            ? t(
+                'localAgents.messageWaitingApproval',
+                'Waiting for owner approval: {{approvalId}}',
+                { approvalId: deliveryState.reference },
+              )
+            : t('localAgents.messageQueued', 'Message queued: {{messageId}}', { messageId: result.id }),
       });
       await refetchConnections();
       await refetchChannelTimeline();
@@ -718,7 +750,7 @@ export default function LocalAgents({ agentId, agentName, embedded = false, init
               </span>
             </div>
             {messageStatus && (
-              <div className={`local-agents-status-msg ${messageStatus.kind === 'success' ? 'local-agents-fb-success' : 'local-agents-fb-error'}`}>
+              <div className={`local-agents-status-msg local-agents-fb-${messageStatus.kind}`}>
                 {messageStatus.message}
               </div>
             )}

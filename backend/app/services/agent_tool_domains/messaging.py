@@ -1666,23 +1666,30 @@ async def _delegate_to_local_agent_channel(
                 },
                 idempotency_key=idempotency_key,
             )
-            try:
-                from app.api.local_agent_channel import channel_ws_manager
+            message_status = str(message.get("status") or "pending")
+            if message_status in {"pending", "delivered"}:
+                try:
+                    from app.api.local_agent_channel import channel_ws_manager
 
-                await channel_ws_manager.send_to_user(target_owner_id, {"type": "message", "message": message})
-            except Exception as exc:
-                logger.debug("Suppressed local-agent channel WS fanout failure: %s", exc)
+                    await channel_ws_manager.send_to_user(target_owner_id, {"type": "message", "message": message})
+                except Exception as exc:
+                    logger.debug("Suppressed local-agent channel WS fanout failure: %s", exc)
             result = {
-                "status": "queued",
+                "status": "waiting_approval" if message_status == "waiting_approval" else "queued",
                 "execution_target": "local_agent",
                 "target_agent": getattr(target_agent, "name", str(target_agent.id)),
                 "channel_session_id": str(session["id"]),
                 "chat_session_id": str(session["chat_session_id"]) if session.get("chat_session_id") else None,
                 "message_id": str(message["id"]),
                 "receipt": message.get("receipt"),
+                "approval_id": message.get("approval_id"),
                 "next_action": (
-                    "The bound Hive Connect background service receives this when it is online; "
-                    "if the computer is offline, the message remains queued until the service reconnects."
+                    "The owner must approve this exact action before Hive Connect can receive it."
+                    if message_status == "waiting_approval"
+                    else (
+                        "The bound Hive Connect background service receives this when it is online; "
+                        "if the computer is offline, the message remains queued until the service reconnects."
+                    )
                 ),
             }
             if budget_admission is not None and budget_decision is not None:

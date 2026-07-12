@@ -8,9 +8,11 @@ import LocalAgents, {
   buildSetupInstruction,
   browserChannelWsUrl,
   canSendLocalAgentMessage,
+  channelEventText,
   channelSessionIdFromSearch,
   connectionPresenceStatus,
   isOnlineConnection,
+  localAgentMessageDeliveryState,
   mergeChannelEvents,
   resolveActiveLocalChannelSessionId,
 } from './LocalAgents';
@@ -112,6 +114,29 @@ describe('LocalAgents page', () => {
     expect(canSendLocalAgentMessage({ localAgentBound: true, messageBusy: true, content: 'hello' })).toBe(false);
     expect(canSendLocalAgentMessage({ localAgentBound: true, messageBusy: false, content: '   ' })).toBe(false);
     expect(canSendLocalAgentMessage({ localAgentBound: true, messageBusy: false, content: 'hello' })).toBe(true);
+  });
+
+  it('distinguishes approval wait from a dispatched local message', () => {
+    expect(
+      localAgentMessageDeliveryState({
+        id: 'message-1',
+        status: 'waiting_approval',
+        approval_id: 'approval-1',
+      } as any),
+    ).toEqual({ kind: 'warning', state: 'waiting_approval', reference: 'approval-1' });
+    expect(
+      localAgentMessageDeliveryState({ id: 'message-2', status: 'pending' } as any),
+    ).toEqual({ kind: 'success', state: 'queued', reference: 'message-2' });
+  });
+
+  it('renders approval lifecycle events as user-facing state, not protocol names', () => {
+    expect(channelEventText({ type: 'approval_required', payload: {} } as any)).toBe('Waiting for owner approval');
+    expect(
+      channelEventText({ type: 'approval_resolved', payload: { status: 'approved' } } as any),
+    ).toBe('Owner approved this action');
+    expect(
+      channelEventText({ type: 'approval_resolved', payload: { status: 'rejected' } } as any),
+    ).toBe('Owner rejected this action');
   });
 
   it('normalizes activation codes from Hive Connect login links', () => {

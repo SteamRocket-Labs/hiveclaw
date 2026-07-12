@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import timedelta
 
 import pytest
 from fastapi import HTTPException
@@ -10,6 +11,7 @@ from sqlalchemy import func, select
 
 from app.database import tenant_scoped_session
 from app.models.agent import Agent
+from app.models.audit import ApprovalRequest
 from app.models.capability_policy import CapabilityPolicy
 from app.models.invocation_span import InvocationSpan
 from app.models.local_agent_channel import (
@@ -24,6 +26,33 @@ from app.models.user import User
 from app.services import local_agent_channel_service as channel_service
 from app.services.local_agent_protocol import verify_capability_snapshot
 from app.services.local_bridge_service import BridgeAuthContext
+
+
+async def _grant_local_capabilities(
+    db,
+    *,
+    tenant_id: uuid.UUID,
+    agent_id: uuid.UUID,
+    execute_requires_approval: bool = False,
+) -> None:
+    for capability, requires_approval in (
+        ("execute", execute_requires_approval),
+        ("event_stream", False),
+        ("result_report", False),
+        ("file_download", True),
+        ("file_upload", True),
+    ):
+        db.add(
+            CapabilityPolicy(
+                tenant_id=tenant_id,
+                agent_id=agent_id,
+                capability=f"local_agent.{capability}",
+                allowed=True,
+                requires_approval=requires_approval,
+                conditions={"test": True},
+            )
+        )
+    await db.flush()
 
 
 async def _seed(owner_sessionmaker):
@@ -77,6 +106,7 @@ async def _seed(owner_sessionmaker):
                     "local_agent:report",
                 ],
                 status="active",
+                expires_at=channel_service.utcnow() + timedelta(days=30),
             )
         )
     context = BridgeAuthContext(
@@ -102,6 +132,7 @@ async def test_local_agent_protocol_is_signed_monotonic_idempotent_and_receipted
     tenant_id, owner_id, agent_id, context = await _seed(owner_sessionmaker)
 
     async with tenant_scoped_session(tenant_id, session_factory=owner_sessionmaker) as db:
+        await _grant_local_capabilities(db, tenant_id=tenant_id, agent_id=agent_id)
         ready = await channel_service.mark_channel_ready(
             db,
             context=context,
@@ -188,7 +219,17 @@ async def test_local_agent_protocol_is_signed_monotonic_idempotent_and_receipted
         assert reconnected["snapshot_hash"] != ready["snapshot_hash"]
         replay_poll = await channel_service.poll_pending_channel_messages(db, context=context)
         assert [row["id"] for row in first_poll] == [str(message_id)]
-        assert [row["id"] for row in replay_poll] == [str(message_id)]
+        assert replay_poll == []
+
+        persisted_message = await db.get(LocalAgentChannelMessage, message_id)
+        assert persisted_message is not None
+        assert persisted_message.delivery_attempt_count == 1
+        assert persisted_message.delivery_lease_expires_at is not None
+        persisted_message.delivery_lease_expires_at = channel_service.utcnow() - timedelta(seconds=1)
+        await db.commit()
+        reconciled_poll = await channel_service.poll_pending_channel_messages(db, context=context)
+        assert [row["id"] for row in reconciled_poll] == [str(message_id)]
+        assert reconciled_poll[0]["delivery_attempt_count"] == 2
 
         progress = await channel_service.record_channel_event(
             db,
@@ -204,8 +245,9 @@ async def test_local_agent_protocol_is_signed_monotonic_idempotent_and_receipted
             owner_user_id=owner_id,
             after_sequence=1,
         )
-        assert progress["sequence"] == 2
-        assert [event["sequence"] for event in after_first] == [2]
+        assert progress["sequence"] == 3
+        assert [event["sequence"] for event in after_first] == [2, 3]
+        assert after_first[0]["type"] == "delivery_requeued"
 
         completed = await channel_service.record_channel_result(
             db,
@@ -259,6 +301,263 @@ async def test_local_agent_protocol_is_signed_monotonic_idempotent_and_receipted
         assert span.input_hash == completed["receipt"]["request_hash"]
         assert span.idempotency_key == "a2a:task-1"
         assert span.side_effect_refs == ["workspace/results/evidence.md"]
+
+
+async def test_local_agent_missing_policy_is_denied_by_default(
+    owner_sessionmaker,
+) -> None:
+    tenant_id, owner_id, agent_id, context = await _seed(owner_sessionmaker)
+    async with tenant_scoped_session(tenant_id, session_factory=owner_sessionmaker) as db:
+        ready = await channel_service.mark_channel_ready(
+            db,
+            context=context,
+            runtime_kind="codex",
+            capabilities={"execute": True, "event_stream": True, "result_report": True},
+        )
+        session = LocalAgentChannelSession(
+            tenant_id=tenant_id,
+            owner_user_id=owner_id,
+            source_agent_id=agent_id,
+            source="a2a",
+            status="active",
+        )
+        db.add(session)
+        await db.flush()
+
+        assert ready["effective_capabilities"] == []
+        with pytest.raises(HTTPException) as exc_info:
+            await channel_service.enqueue_channel_message(
+                db,
+                session_id=session.id,
+                owner_user_id=owner_id,
+                sender_user_id=owner_id,
+                sender_agent_id=agent_id,
+                content="No policy must not mean allow.",
+                idempotency_key="a2a:missing-policy",
+            )
+        assert exc_info.value.status_code == 403
+
+
+async def test_local_agent_requires_approval_releases_exact_message_after_owner_decision(
+    owner_sessionmaker,
+) -> None:
+    from app.services.approval_service import ApprovalService
+
+    tenant_id, owner_id, agent_id, context = await _seed(owner_sessionmaker)
+    async with tenant_scoped_session(tenant_id, session_factory=owner_sessionmaker) as db:
+        await _grant_local_capabilities(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            execute_requires_approval=True,
+        )
+        ready = await channel_service.mark_channel_ready(
+            db,
+            context=context,
+            runtime_kind="codex",
+            capabilities={"execute": True, "event_stream": True, "result_report": True},
+        )
+        assert "execute" in ready["effective_capabilities"]
+        session = LocalAgentChannelSession(
+            tenant_id=tenant_id,
+            owner_user_id=owner_id,
+            source_agent_id=agent_id,
+            source="a2a",
+            status="active",
+        )
+        db.add(session)
+        await db.flush()
+
+        waiting = await channel_service.enqueue_channel_message(
+            db,
+            session_id=session.id,
+            owner_user_id=owner_id,
+            sender_user_id=owner_id,
+            sender_agent_id=agent_id,
+            content="Inspect only this repository.",
+            idempotency_key="a2a:approval-required",
+        )
+        assert waiting["status"] == "waiting_approval"
+        assert waiting["approval_id"]
+        assert await channel_service.poll_pending_channel_messages(db, context=context) == []
+
+        approval = await db.get(ApprovalRequest, uuid.UUID(waiting["approval_id"]))
+        owner = await db.get(User, owner_id)
+        assert approval is not None
+        assert approval.action_type == "local_agent.execute"
+        assert approval.details["local_agent_message_id"] == waiting["id"]
+        assert "Inspect only this repository" not in str(approval.details)
+        assert owner is not None
+
+        resolved = await ApprovalService().resolve_approval(db, approval.id, owner, "approve")
+        assert resolved.status == "approved"
+        released = await db.get(LocalAgentChannelMessage, uuid.UUID(waiting["id"]))
+        assert released is not None
+        assert released.status == "pending"
+        delivered = await channel_service.poll_pending_channel_messages(db, context=context)
+        assert [row["id"] for row in delivered] == [waiting["id"]]
+
+
+async def test_local_agent_rejected_approval_never_dispatches(
+    owner_sessionmaker,
+) -> None:
+    from app.services.approval_service import ApprovalService
+
+    tenant_id, owner_id, agent_id, context = await _seed(owner_sessionmaker)
+    async with tenant_scoped_session(tenant_id, session_factory=owner_sessionmaker) as db:
+        await _grant_local_capabilities(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            execute_requires_approval=True,
+        )
+        await channel_service.mark_channel_ready(
+            db,
+            context=context,
+            runtime_kind="codex",
+            capabilities={"execute": True, "event_stream": True, "result_report": True},
+        )
+        session = LocalAgentChannelSession(
+            tenant_id=tenant_id,
+            owner_user_id=owner_id,
+            source_agent_id=agent_id,
+            source="web",
+            status="active",
+        )
+        db.add(session)
+        await db.flush()
+        waiting = await channel_service.enqueue_channel_message(
+            db,
+            session_id=session.id,
+            owner_user_id=owner_id,
+            sender_user_id=owner_id,
+            content="Do not run after rejection.",
+            idempotency_key="web:approval-rejected",
+        )
+        approval = await db.get(ApprovalRequest, uuid.UUID(waiting["approval_id"]))
+        owner = await db.get(User, owner_id)
+        assert approval is not None and owner is not None
+
+        await ApprovalService().resolve_approval(db, approval.id, owner, "reject")
+        rejected = await db.get(LocalAgentChannelMessage, uuid.UUID(waiting["id"]))
+        assert rejected is not None
+        assert rejected.status == "rejected"
+        span = (
+            await db.execute(
+                select(InvocationSpan).where(
+                    InvocationSpan.tenant_id == tenant_id,
+                    InvocationSpan.trace_id == waiting["receipt"]["trace_id"],
+                    InvocationSpan.span_id == waiting["receipt"]["span_id"],
+                )
+            )
+        ).scalar_one()
+        assert span.status == "error"
+        assert span.error == "Owner rejected this Local Agent action."
+        assert await channel_service.poll_pending_channel_messages(db, context=context) == []
+
+
+async def test_local_agent_approval_rechecks_live_policy_before_release(
+    owner_sessionmaker,
+) -> None:
+    from app.services.approval_service import ApprovalService
+
+    tenant_id, owner_id, agent_id, context = await _seed(owner_sessionmaker)
+    async with tenant_scoped_session(tenant_id, session_factory=owner_sessionmaker) as db:
+        await _grant_local_capabilities(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            execute_requires_approval=True,
+        )
+        await channel_service.mark_channel_ready(
+            db,
+            context=context,
+            runtime_kind="codex",
+            capabilities={"execute": True, "event_stream": True, "result_report": True},
+        )
+        session = LocalAgentChannelSession(
+            tenant_id=tenant_id,
+            owner_user_id=owner_id,
+            source_agent_id=agent_id,
+            source="a2a",
+            status="active",
+        )
+        db.add(session)
+        await db.flush()
+        waiting = await channel_service.enqueue_channel_message(
+            db,
+            session_id=session.id,
+            owner_user_id=owner_id,
+            sender_user_id=owner_id,
+            sender_agent_id=agent_id,
+            content="Policy may change while this waits.",
+            idempotency_key="a2a:policy-revoked-after-request",
+        )
+        policy = (
+            await db.execute(
+                select(CapabilityPolicy).where(
+                    CapabilityPolicy.tenant_id == tenant_id,
+                    CapabilityPolicy.agent_id == agent_id,
+                    CapabilityPolicy.capability == "local_agent.execute",
+                )
+            )
+        ).scalar_one()
+        policy.allowed = False
+        await db.commit()
+        approval = await db.get(ApprovalRequest, uuid.UUID(waiting["approval_id"]))
+        owner = await db.get(User, owner_id)
+        assert approval is not None and owner is not None
+
+        resolved = await ApprovalService().resolve_approval(db, approval.id, owner, "approve")
+        message = await db.get(LocalAgentChannelMessage, uuid.UUID(waiting["id"]))
+        assert resolved.status == "approved"
+        assert resolved.execution_status == "failed"
+        assert message is not None
+        assert message.status == "rejected"
+        assert message.result == "Local Agent policy changed before approval release."
+        assert await channel_service.poll_pending_channel_messages(db, context=context) == []
+
+
+async def test_local_agent_delivery_reconciler_stops_automatic_replay_at_attempt_limit(
+    owner_sessionmaker,
+) -> None:
+    tenant_id, owner_id, agent_id, context = await _seed(owner_sessionmaker)
+    async with tenant_scoped_session(tenant_id, session_factory=owner_sessionmaker) as db:
+        await _grant_local_capabilities(db, tenant_id=tenant_id, agent_id=agent_id)
+        await channel_service.mark_channel_ready(
+            db,
+            context=context,
+            runtime_kind="codex",
+            capabilities={"execute": True, "event_stream": True, "result_report": True},
+        )
+        session = LocalAgentChannelSession(
+            tenant_id=tenant_id,
+            owner_user_id=owner_id,
+            source_agent_id=agent_id,
+            source="a2a",
+            status="active",
+        )
+        db.add(session)
+        await db.flush()
+        queued = await channel_service.enqueue_channel_message(
+            db,
+            session_id=session.id,
+            owner_user_id=owner_id,
+            sender_user_id=owner_id,
+            sender_agent_id=agent_id,
+            content="Reconcile this delivery.",
+            idempotency_key="a2a:reconcile-limit",
+        )
+        assert len(await channel_service.poll_pending_channel_messages(db, context=context)) == 1
+        message = await db.get(LocalAgentChannelMessage, uuid.UUID(queued["id"]))
+        assert message is not None
+        message.delivery_attempt_count = channel_service.MAX_DELIVERY_ATTEMPTS
+        message.delivery_lease_expires_at = channel_service.utcnow() - timedelta(seconds=1)
+        await db.commit()
+
+        assert await channel_service.poll_pending_channel_messages(db, context=context) == []
+        await db.refresh(message)
+        assert message.status == "needs_reconciliation"
 
 
 async def test_local_agent_explicit_agent_deny_removes_execute_from_new_snapshot(

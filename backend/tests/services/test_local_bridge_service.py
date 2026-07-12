@@ -1,12 +1,22 @@
 from __future__ import annotations
 
 import contextlib
+from datetime import timedelta
 from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
 
 from app.services import local_bridge_service as service
+
+
+def test_local_agent_default_policies_are_action_deny_by_default() -> None:
+    defaults = dict(service.LOCAL_AGENT_POLICY_DEFAULTS)
+    assert defaults["local_agent.execute"] == (True, True)
+    assert defaults["local_agent.file_download"] == (True, True)
+    assert defaults["local_agent.file_upload"] == (True, True)
+    assert defaults["local_agent.event_stream"] == (True, False)
+    assert defaults["local_agent.result_report"] == (True, False)
 
 
 class _ScalarResult:
@@ -95,3 +105,50 @@ async def test_exchange_pairing_reads_approved_pairing_with_audited_bypass_then_
     assert db.added[0].tenant_id == tenant_id
     assert db.added[0].agent_id == agent_id
     assert db.added[0].user_id == user_id
+    assert db.added[0].expires_at is not None
+    lifetime = db.added[0].expires_at - service.utcnow()
+    assert timedelta(days=29) < lifetime <= timedelta(days=service.DEFAULT_BRIDGE_TOKEN_TTL_DAYS)
+    assert result["expires_at"] == db.added[0].expires_at.isoformat()
+    assert result["expires_in"] > 0
+
+
+@pytest.mark.asyncio
+async def test_bridge_auth_rejects_legacy_permanent_token_without_expiry(monkeypatch) -> None:
+    tenant_id = uuid4()
+    connection = SimpleNamespace(
+        id=uuid4(),
+        tenant_id=tenant_id,
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        scopes=["local_agent:connect"],
+        client_kind="hive-connect",
+        device_name="Legacy Mac",
+        status="active",
+        expires_at=None,
+        last_seen_at=None,
+        last_seen_ip=None,
+        last_seen_user_agent=None,
+    )
+    db = _FakeDB(connection)
+
+    @contextlib.asynccontextmanager
+    async def fake_enter_rls_bypass(session, *, reason: str, actor_id: str | None = None):
+        assert reason == "local bridge bearer token lookup"
+        db.in_bypass = True
+        try:
+            yield session
+        finally:
+            db.in_bypass = False
+
+    async def fake_pin_rls_tenant_context(_session, pinned_tenant_id):
+        assert pinned_tenant_id == tenant_id
+
+    monkeypatch.setattr(service, "enter_rls_bypass", fake_enter_rls_bypass)
+    monkeypatch.setattr(service, "pin_rls_tenant_context", fake_pin_rls_tenant_context)
+
+    with pytest.raises(service.HTTPException) as exc_info:
+        await service.resolve_bridge_auth_context(db, authorization="Bearer hb_legacy")
+
+    assert exc_info.value.status_code == 401
+    assert connection.status == "expired"
+    assert db.committed is True

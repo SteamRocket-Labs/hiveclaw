@@ -36,7 +36,10 @@ def _same_uuid(left: object, right: object) -> bool:
 
 def _can_resolve_agent_approval(agent: Agent, user: User) -> bool:
     """Return whether user can resolve approvals for this agent."""
-    if _same_uuid(getattr(agent, "creator_id", None), getattr(user, "id", None)):
+    user_id = getattr(user, "id", None)
+    if any(
+        _same_uuid(getattr(agent, field, None), user_id) for field in ("creator_id", "owner_user_id", "sponsor_user_id")
+    ):
         return True
     if getattr(user, "role", None) == "platform_admin":
         return True
@@ -167,14 +170,25 @@ class ApprovalService:
         if agent and not _can_resolve_agent_approval(agent, user):
             raise ValueError("Only the agent creator, tenant org admin, or platform admin can resolve approvals")
 
+        local_agent_resolution = None
+
         # M-17: Auto-reject approvals older than 7 days (AFTER authorization check)
         from datetime import timedelta
 
         if approval.created_at and (datetime.now(timezone.utc) - approval.created_at) > timedelta(days=7):
             approval.status = "rejected"
+            approval.execution_status = "rejected"
             approval.resolved_at = datetime.now(timezone.utc)
             logger.info("Approval %s auto-rejected (older than 7 days)", approval.id)
+            from app.services.local_agent_channel_service import (
+                apply_local_agent_action_approval,
+                notify_local_agent_action_resolution,
+            )
+
+            local_agent_resolution = await apply_local_agent_action_approval(db, approval=approval)
             await db.flush()
+            await db.commit()
+            await notify_local_agent_action_resolution(local_agent_resolution)
             return approval
 
         approval.status = "approved" if action == "approve" else "rejected"
@@ -219,6 +233,10 @@ class ApprovalService:
                     "queued_at": datetime.now(timezone.utc).isoformat(),
                 }
 
+        from app.services.local_agent_channel_service import apply_local_agent_action_approval
+
+        local_agent_resolution = await apply_local_agent_action_approval(db, approval=approval)
+
         db.add(
             AuditLog(
                 user_id=user.id,
@@ -262,6 +280,11 @@ class ApprovalService:
         await db.flush()
         await db.commit()
 
+        if local_agent_resolution is not None:
+            from app.services.local_agent_channel_service import notify_local_agent_action_resolution
+
+            await notify_local_agent_action_resolution(local_agent_resolution)
+
         if execution_task is not None:
             from app.services.runtime_task_worker import notify_runtime_task_worker
 
@@ -273,12 +296,18 @@ class ApprovalService:
         if agent:
             from app.services.notification_service import send_notification
 
-            status_label = "approved" if approval.status == "approved" else "rejected"
+            status_label = (
+                "blocked"
+                if approval.execution_status == "failed"
+                else ("approved" if approval.status == "approved" else "rejected")
+            )
             body_text = json.dumps(approval.details, ensure_ascii=False)[:200]
             if execution_task is not None:
                 body_text = "Approved action queued for durable execution."
             elif approval.execution_status == "needs_reapproval":
                 body_text = "Approval expired; submit a new request before execution."
+            elif approval.execution_status == "failed" and approval.execution_result:
+                body_text = approval.execution_result[:200]
             await send_notification(
                 db,
                 user_id=agent.creator_id,

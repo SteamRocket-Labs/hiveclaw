@@ -59,10 +59,11 @@
   margin-bottom: var(--space-2);
 }
 
-/* Feedback line coloring (success / error), no inline color */
+/* Feedback line coloring (success / warning / error), no inline color */
 .local-agents-status-msg { margin-top: var(--space-2); font-size: var(--text-row); }
 .local-agents-workspace-msg { margin-bottom: 10px; font-size: var(--text-row); }
 .local-agents-fb-success { color: var(--success); }
+.local-agents-fb-warning { color: var(--warning); }
 .local-agents-fb-error { color: var(--error); }
 
 /* ── Status card ────────────────────────────────────── */

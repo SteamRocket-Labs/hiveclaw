@@ -82,7 +82,10 @@ class LocalAgentChannelMessageOut(BaseModel):
     request_hash: str | None = None
     capability_snapshot_hash: str | None = None
     replay_key: str = ""
+    approval_id: uuid.UUID | None = None
     receipt: dict[str, Any] | None = None
+    delivery_attempt_count: int = 0
+    delivery_lease_expires_at: Any | None = None
     created_at: Any | None = None
 
 
@@ -394,6 +397,10 @@ def _runner_message_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in payload.items() if key != "event"}
 
 
+def _runner_dispatch_allowed(payload: dict[str, Any]) -> bool:
+    return str(payload.get("status") or "") in {"pending", "delivered"}
+
+
 async def _broadcast_browser_channel_event(
     *, owner_user_id: uuid.UUID, session_id: uuid.UUID, event: dict[str, Any] | None
 ) -> None:
@@ -481,9 +488,10 @@ async def create_current_user_local_agent_channel_message(
         metadata={**body.metadata, "source": "local_agents_page"},
         idempotency_key=body.idempotency_key,
     )
-    await channel_ws_manager.send_to_user(
-        current_user.id, {"type": "message", "message": _runner_message_payload(payload)}
-    )
+    if _runner_dispatch_allowed(payload):
+        await channel_ws_manager.send_to_user(
+            current_user.id, {"type": "message", "message": _runner_message_payload(payload)}
+        )
     await _broadcast_browser_channel_event(
         owner_user_id=current_user.id,
         session_id=session_id,
@@ -817,9 +825,10 @@ async def create_local_agent_channel_message(
         metadata={**body.metadata, "source_agent_id": str(agent.id)},
         idempotency_key=body.idempotency_key,
     )
-    await channel_ws_manager.send_to_user(
-        host_owner_user_id, {"type": "message", "message": _runner_message_payload(payload)}
-    )
+    if _runner_dispatch_allowed(payload):
+        await channel_ws_manager.send_to_user(
+            host_owner_user_id, {"type": "message", "message": _runner_message_payload(payload)}
+        )
     await _broadcast_browser_channel_event(
         owner_user_id=host_owner_user_id,
         session_id=session_id,
@@ -1029,6 +1038,8 @@ async def local_agent_channel_ws(
             message_type = data.get("type")
             if message_type == "ping":
                 await channel_service.mark_channel_seen(db, context=context)
+                for message in await channel_service.poll_pending_channel_messages(db, context=context):
+                    await websocket.send_json(jsonable_encoder({"type": "message", "message": message}))
                 await websocket.send_json({"type": "pong"})
                 continue
             if message_type == "ready":

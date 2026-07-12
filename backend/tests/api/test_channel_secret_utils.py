@@ -28,6 +28,7 @@ def test_channel_config_safe_masks_nested_wecom_bot_secret_and_verification_toke
         extra_config={
             "bot_id": "aibot-id",
             "bot_secret": "wecom-bot-secret-9999",
+            "nested": {"client_secret": "nested-client-secret-4567"},
         },
         created_at=datetime.now(timezone.utc),
     )
@@ -38,3 +39,4 @@ def test_channel_config_safe_masks_nested_wecom_bot_secret_and_verification_toke
     assert safe.encrypt_key == "****5678"
     assert safe.verification_token == "****9012"
     assert safe.extra_config["bot_secret"] == "****9999"
+    assert safe.extra_config["nested"]["client_secret"] == "****4567"

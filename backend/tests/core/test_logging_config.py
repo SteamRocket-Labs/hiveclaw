@@ -84,3 +84,36 @@ def test_sanitize_standard_log_message_redacts_lark_ws_sensitive_query_params() 
     assert "ticket=<redacted>" in sanitized
     assert "device_id=device-1" in sanitized
     assert "service_id=33554678" in sanitized
+
+
+def test_channel_credentials_are_redacted_from_paths_queries_and_envelopes() -> None:
+    from app.core.logging_config import sanitize_standard_log_message
+
+    raw = (
+        "POST https://api.telegram.org/bot123456:telegram-secret/deleteWebhook?"
+        "client_secret=oauth-secret&verification_token=verify-secret "
+        "stored=hive:channel-secret:v1:key-id:gAAAAA-ciphertext"
+    )
+
+    sanitized = sanitize_standard_log_message(raw)
+
+    assert "telegram-secret" not in sanitized
+    assert "oauth-secret" not in sanitized
+    assert "verify-secret" not in sanitized
+    assert "gAAAAA-ciphertext" not in sanitized
+    assert "/bot<redacted>/deleteWebhook" in sanitized
+
+
+def test_loguru_filter_redacts_channel_credentials_before_serialization(monkeypatch) -> None:
+    from loguru import logger
+
+    from app.core.logging_config import configure_logging
+
+    monkeypatch.delenv("HIVE_LOG_FORMAT", raising=False)
+    sink = StringIO()
+    configure_logging(sink=sink, enqueue=False)
+
+    logger.error("request failed at https://api.telegram.org/bot123456:telegram-secret/sendMessage")
+
+    payload = json.loads(sink.getvalue().strip())
+    assert payload["record"]["message"] == ("request failed at https://api.telegram.org/bot<redacted>/sendMessage")

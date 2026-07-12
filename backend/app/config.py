@@ -152,6 +152,8 @@ class Settings(BaseSettings):
 
     # Secrets encryption (set a strong random string in production)
     SECRETS_MASTER_KEY: str = ""
+    # Comma-separated former master keys accepted only for decrypt/rotation.
+    SECRETS_MASTER_KEY_PREVIOUS: str = ""
 
     # Self-evolution cadence (P1-W2-5)
     # Tick frequency for the evolution daemon (heartbeat dispatcher).

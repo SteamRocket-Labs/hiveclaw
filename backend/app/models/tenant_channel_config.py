@@ -9,10 +9,11 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, String, UniqueConstraint, func
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
+from app.services.channel_secret_storage import EncryptedChannelJSON, EncryptedChannelSecret
 
 
 class TenantChannelConfig(Base):
@@ -33,12 +34,14 @@ class TenantChannelConfig(Base):
 
     # Bot credentials (same field names as ChannelConfig for consistency)
     app_id: Mapped[str | None] = mapped_column(String(255))
-    app_secret: Mapped[str | None] = mapped_column(String(255))
-    encrypt_key: Mapped[str | None] = mapped_column(String(255))
-    verification_token: Mapped[str | None] = mapped_column(String(255))
+    app_secret: Mapped[str | None] = mapped_column(EncryptedChannelSecret())
+    encrypt_key: Mapped[str | None] = mapped_column(EncryptedChannelSecret())
+    verification_token: Mapped[str | None] = mapped_column(EncryptedChannelSecret())
 
     # Extensible config (connection_mode, bot_secret for WeCom, etc.)
-    extra_config: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default="{}")
+    extra_config: Mapped[dict] = mapped_column(
+        EncryptedChannelJSON(postgres_jsonb=True), nullable=False, server_default="{}"
+    )
 
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, server_default="true")
 

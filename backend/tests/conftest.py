@@ -25,6 +25,7 @@ _HERMETIC_ENV_KEYS = (
     "XDG_CONFIG_HOME",
     "XDG_DATA_HOME",
     "DOCKER_HOST",
+    "SECRETS_MASTER_KEY",
 )
 
 
@@ -62,6 +63,7 @@ def pytest_configure(config):
             "XDG_CACHE_HOME": str(root / "xdg-cache"),
             "XDG_CONFIG_HOME": str(root / "xdg-config"),
             "XDG_DATA_HOME": str(root / "xdg-data"),
+            "SECRETS_MASTER_KEY": "hive-pytest-secrets-master-key-0001",
         }
     )
     config._hive_hermetic_root = root
@@ -110,6 +112,13 @@ def _reset_global_engine_pools():
     database.engine.sync_engine.dispose(close=False)
     if database.schema_engine is not database.engine:
         database.schema_engine.sync_engine.dispose(close=False)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _initialize_test_secrets_provider():
+    from app.services.secrets_provider import init_secrets_provider
+
+    init_secrets_provider(os.environ["SECRETS_MASTER_KEY"])
 
 
 @pytest.fixture

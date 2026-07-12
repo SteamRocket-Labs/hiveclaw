@@ -419,19 +419,9 @@ class ChannelConfigOut(BaseModel):
         data["encrypt_key"] = _mask_secret(self.encrypt_key)
         data["verification_token"] = _mask_secret(self.verification_token)
         if data.get("extra_config"):
-            safe_extra = dict(data["extra_config"])
-            for key in (
-                "app_secret",
-                "bot_token",
-                "signing_secret",
-                "client_secret",
-                "api_key",
-                "bot_secret",
-                "ilink_bot_token",
-            ):
-                if key in safe_extra:
-                    safe_extra[key] = _mask_secret(safe_extra[key])
-            data["extra_config"] = safe_extra
+            from app.services.channel_secret_storage import redact_channel_extra_config
+
+            data["extra_config"] = redact_channel_extra_config(data["extra_config"], reveal_suffix=True)
         return ChannelConfigOut(**data)
 
 

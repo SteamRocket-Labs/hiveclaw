@@ -15,7 +15,12 @@ trace_id_var: ContextVar[str] = ContextVar("trace_id", default=None)
 _PROCESS_TRACE_ID = "process-" + uuid4().hex[:12]
 NOISY_SUCCESS_LOGGER_PREFIXES = ("httpx", "httpcore", "uvicorn.access", "websockets.server", "websockets.legacy.server")
 _WEBSOCKET_QUERY_RE = re.compile(r'("WebSocket [^"?]+)\?[^"]+(")')
-_SENSITIVE_QUERY_PARAM_RE = re.compile(r"([?&](?:access_key|ticket|token|session_id|app_secret)=)[^&\s\"']+")
+_SENSITIVE_QUERY_PARAM_RE = re.compile(
+    r"([?&](?:access_key|api_key|app_secret|bot_secret|bot_token|client_secret|encrypt_key|"
+    r"session_id|signing_secret|ticket|token|verification_token)=)[^&\s\"']+"
+)
+_TELEGRAM_BOT_TOKEN_RE = re.compile(r"(https://api\.telegram\.org/bot)[^/\s?]+(/)", re.IGNORECASE)
+_CHANNEL_SECRET_ENVELOPE_RE = re.compile(r"hive:channel-secret:v1:[^\s\"'&]+")
 
 
 def get_trace_id() -> str:
@@ -40,6 +45,7 @@ def _fallback_trace_id() -> str:
 def enrich_log_record(record: dict[str, Any]) -> bool:
     """Attach a stable trace_id to every loguru record."""
     record["extra"].setdefault("trace_id", _fallback_trace_id())
+    record["message"] = sanitize_standard_log_message(record.get("message", ""))
     return True
 
 
@@ -78,7 +84,9 @@ def configure_logging(*, sink: Any = sys.stdout, enqueue: bool = True):
 def sanitize_standard_log_message(message: str) -> str:
     """Strip sensitive query strings from standard-library log messages."""
     sanitized = _WEBSOCKET_QUERY_RE.sub(r"\1\2", str(message))
-    return _SENSITIVE_QUERY_PARAM_RE.sub(r"\1<redacted>", sanitized)
+    sanitized = _SENSITIVE_QUERY_PARAM_RE.sub(r"\1<redacted>", sanitized)
+    sanitized = _TELEGRAM_BOT_TOKEN_RE.sub(r"\1<redacted>\2", sanitized)
+    return _CHANNEL_SECRET_ENVELOPE_RE.sub("<redacted-channel-secret>", sanitized)
 
 
 def intercept_standard_logging():

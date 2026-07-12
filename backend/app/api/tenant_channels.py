@@ -10,7 +10,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from loguru import logger
-from pydantic import BaseModel
+from pydantic import BaseModel, field_serializer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,6 +20,7 @@ from app.models.agent import Agent
 from app.models.tenant_channel_config import TenantChannelConfig
 from app.models.user import User
 from app.services.channel_user_service import channel_user_service
+from app.services.channel_secret_storage import redact_channel_extra_config
 
 router = APIRouter(tags=["tenant-channels"])
 
@@ -36,6 +37,10 @@ class TenantChannelConfigOut(BaseModel):
     extra_config: dict = {}
 
     model_config = {"from_attributes": True}
+
+    @field_serializer("extra_config")
+    def serialize_extra_config(self, value: dict) -> dict:
+        return redact_channel_extra_config(value)
 
 
 class TenantChannelConfigUpsert(BaseModel):

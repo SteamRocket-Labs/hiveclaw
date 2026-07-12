@@ -77,6 +77,8 @@ async def test_org_admin_delete_own_tenant_detaches_users_and_requires_setup():
             _ListResult([running_agent]),
             _ListResult([current_user, member]),
             _ListResult([]),  # scrub_tenant_tool_secrets: no tool-config overrides
+            _ListResult([]),  # scrub_tenant_channel_secrets: no agent channels
+            _ListResult([]),  # scrub_tenant_channel_secrets: no tenant channels
         ]
     )
 
@@ -133,6 +135,8 @@ async def test_platform_admin_delete_tenant_returns_fallback_and_rehomes_platfor
             _ListResult([running_agent]),
             _ListResult([current_user, another_platform_admin, member]),
             _ListResult([]),  # scrub_tenant_tool_secrets: no tool-config overrides
+            _ListResult([]),  # scrub_tenant_channel_secrets: no agent channels
+            _ListResult([]),  # scrub_tenant_channel_secrets: no tenant channels
         ]
     )
     bypass_calls: list[dict] = []

@@ -72,6 +72,17 @@ if [ ! -f "$ROOT/.env" ]; then
 else
     echo -e "  ${GREEN}✓${NC} .env already exists"
 fi
+if ! grep -Eq '^SECRETS_MASTER_KEY=.{16,}$' "$ROOT/.env"; then
+    SECRETS_MASTER_KEY=$("$PYTHON_BIN" -c 'import secrets; print(secrets.token_hex(32))')
+    if grep -q '^SECRETS_MASTER_KEY=' "$ROOT/.env"; then
+        sed -i "s|^SECRETS_MASTER_KEY=.*|SECRETS_MASTER_KEY=${SECRETS_MASTER_KEY}|" "$ROOT/.env" 2>/dev/null || \
+        sed -i '' "s|^SECRETS_MASTER_KEY=.*|SECRETS_MASTER_KEY=${SECRETS_MASTER_KEY}|" "$ROOT/.env"
+    else
+        printf '\nSECRETS_MASTER_KEY=%s\n' "$SECRETS_MASTER_KEY" >> "$ROOT/.env"
+    fi
+    unset SECRETS_MASTER_KEY
+    echo -e "  ${GREEN}✓${NC} Generated SECRETS_MASTER_KEY for encrypted credential storage"
+fi
 
 # ── 2. PostgreSQL setup ──────────────────────────
 echo ""

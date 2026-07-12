@@ -747,6 +747,9 @@ flowchart LR
 - 权威：[主审复核] 租户软删除仅 scrub `TenantToolConfig`（`tool_config_service.py:347`），不清 channel 明文。
 - 精确代码位置：`backend/app/models/channel_config.py:40-43`；各渠道写入点 `feishu.py:575`/`telegram.py:299` 等。
 - 一次性完整关闭方案：复用统一 secrets provider 增加 versioned encrypted columns/accessor，所有 channel 读写点改走同一接口；迁移先做无明文输出的 dry-run 计数与可解密校验，再以 dual-read/single-encrypted-write 完成回填和密钥轮换验证，最后清零/删除旧明文列；租户删除、channel 删除、日志/审计脱敏和备份恢复都必须覆盖；提供迁移回滚到旧 schema 但不重新写明文的路径；补 7 渠道 round-trip、错误 key、rotation、legacy row、scrub 与生产 smoke 测试。
+- 修复状态（2026-07-12）：**R-018 七原子闭环**。Agent 级 `channel_configs` 与企业级 `tenant_channel_configs` 现在共享唯一 `EncryptedChannelSecret`/`EncryptedChannelJSON` DB bind/result owner：`app_secret`、`encrypt_key`、`verification_token` 及 `extra_config` 内 `bot_secret/client_secret/bot_token/...` 写入前统一封装为 `hive:channel-secret:v1:<key-id>:<fernet>`，读取时透明解密；Feishu/Telegram/Discord/DingTalk/Teams/Slack/WeCom 业务调用保持原字段接口，不产生第二套 provider 状态机。错误 key 不再把 ciphertext 当 plaintext 返回；`SECRETS_MASTER_KEY_PREVIOUS` 构成只读旧 keyring，rotation 只用当前 key重写；Debug/本地 Channel 写也拒绝 Noop provider，`setup.sh` 静默生成 32-byte master key且不打印。
+- 迁移、恢复与删除闭环：`channel_secret_encryption_0712` 将两表三列由 255 扩到 1024，已有明文时要求 master key、同事务原地回填并验证 `plaintext=0`；默认 dry-run CLI 只输出 table/row/value/encrypted/plaintext/non_current 计数，`--apply --confirm` 才回填或轮换。secure downgrade 只回退 revision，不把密文解回明文，也不把列缩窄造成 envelope 截断。Tenant offboarding 在原有 tool-secret scrub 后同步清空 agent/tenant channel 三字段和嵌套 secret；单 channel 删除仍硬删除密文行。Agent/tenant 输出递归脱敏嵌套 JSON；standard logging 与 Loguru serialization 前统一清除 Telegram path token、敏感 query 参数与 channel envelope，异常路径不再成为旁路。
+- 验收证据：核心 storage Red → `6 failed`；migration/CLI contract Red → `1 failed`；tenant nested projection Red → `1 failed`；agent nested projection Red → `1 failed`；logging Red → `2 failed`；Noop/setup Red → `2 failed`。Green：storage 单元 `8 passed`；真实 PostgreSQL migration `2 passed`，覆盖 7 类 Agent channel + tenant channel legacy 明文、三字段+嵌套 JSON、透明读回、错误 key、旧→新 key rotation 8 行、secure downgrade 密文保留及 1024 列；渠道/交付/删除/迁移组合回归 `126 passed`，最终核心合并 `33 passed`。`python -m app.scripts.migrate_channel_secrets` dry-run 输出 0 行/0 明文且无 secret 值；单一 Alembic head 为 `channel_secret_encryption_0712`。Backend 全量 → **`6582 passed, 1 skipped`**，日志无 warning summary；`ruff check app tests ...` 全绿，`ruff format --check` → `1527 files already formatted`，`bash -n setup.sh` 与 `git diff --check` 通过。提交主题：`fix(R-018): encrypt channel credentials at rest`。
 
 ### [R-019] Anthropic 主消息通道视觉入参不转换致 400（违 L3 模型平等）
 
@@ -1021,7 +1024,7 @@ Codebase graph 校正时状态为 ready（43,281 nodes / 166,753 edges）；`det
 
 ## 16. 28 项原子缺口修复执行账本
 
-本节记录原始审计全部 28 项的实际落地状态：17 个断点、10 个局部闭环、1 个已知缺失。原始严重级别与原子状态保留为审计快照；只有同时具备实现、回归测试、报告证据和独立提交，才把修复状态改为闭环。Company Knowledge Base 本体按 owner 边界不在本轮开发，但 R-008 的诚实隔离、文案与防伪装验收仍必须关闭。当前进度：**17/28**。
+本节记录原始审计全部 28 项的实际落地状态：17 个断点、10 个局部闭环、1 个已知缺失。原始严重级别与原子状态保留为审计快照；只有同时具备实现、回归测试、报告证据和独立提交，才把修复状态改为闭环。Company Knowledge Base 本体按 owner 边界不在本轮开发，但 R-008 的诚实隔离、文案与防伪装验收仍必须关闭。当前进度：**18/28**。
 
 | ID | 修复状态 | 独立提交主题 | 机械证据摘要 |
 |---|---|---|---|
@@ -1042,7 +1045,7 @@ Codebase graph 校正时状态为 ready（43,281 nodes / 166,753 edges）；`det
 | R-015 | 闭环 | `fix(R-015): sanitize rich text and authenticated downloads` | Red 5 failed + CSP inheritance 1 failed；Green 121 passed；全量 622 passed；build/E2E/audit 绿 |
 | R-016 | 闭环 | `fix(R-016): close governed memory path traversal` | Red 2 failed/1 passed；Green 3 passed；扩展 39 passed；ruff check/format 绿 |
 | R-017 | 闭环 | `fix(R-017): align heartbeat with the real T3 gate` | Red 2 failed；Green 5 passed；真 Gate 扩展 24 passed；ruff 绿 |
-| R-018 | 待修复 | — | — |
+| R-018 | 闭环 | `fix(R-018): encrypt channel credentials at rest` | Red 6+1+1+1+2+2 failed；7 channel + tenant 三字段/JSON versioned encryption；PG backfill/rotation/secure downgrade 2 passed；组合 126；backend 6582 passed；ruff/format/log redaction/dry-run 绿 |
 | R-019 | 待修复 | — | — |
 | R-020 | 待修复 | — | — |
 | R-021 | 待修复 | — | — |

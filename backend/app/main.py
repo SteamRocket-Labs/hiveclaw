@@ -352,7 +352,8 @@ async def lifespan(app: FastAPI):
     from app.services.secrets_provider import init_secrets_provider, validate_secrets_provider_config
 
     validate_secrets_provider_config(settings.SECRETS_MASTER_KEY or None, debug=settings.DEBUG)
-    init_secrets_provider(settings.SECRETS_MASTER_KEY or None)
+    previous_master_keys = tuple(key.strip() for key in settings.SECRETS_MASTER_KEY_PREVIOUS.split(",") if key.strip())
+    init_secrets_provider(settings.SECRETS_MASTER_KEY or None, previous_master_keys=previous_master_keys)
 
     # ── Step 0c: Ensure all DB tables exist (idempotent, safe to run on runtime startup) ──
     if _schema_bootstrap_startup_enabled():

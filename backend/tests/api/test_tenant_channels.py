@@ -135,6 +135,26 @@ def test_list_tenant_channels():
     assert "app_secret" not in data[0]
 
 
+def test_list_tenant_channels_never_returns_extra_config_secrets():
+    config = SimpleNamespace(
+        **{
+            **vars(_EXISTING_CONFIG),
+            "extra_config": {
+                "region": "cn",
+                "client_secret": "tenant-client-secret",
+                "nested": {"bot_token": "tenant-bot-token"},
+            },
+        }
+    )
+    client, _ = _build_client(configs=[config])
+
+    response = client.get("/tenant-channels")
+
+    assert response.status_code == 200
+    extra = response.json()[0]["extra_config"]
+    assert extra == {"region": "cn", "client_secret": "****", "nested": {"bot_token": "****"}}
+
+
 # ─── PUT /tenant-channels/{type} ────────────────────────
 
 

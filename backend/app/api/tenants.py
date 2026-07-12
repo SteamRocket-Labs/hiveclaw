@@ -401,8 +401,10 @@ async def delete_tenant(
 
         # Offboarding scrub: never leave a deactivated tenant's API keys in the DB.
         from app.services.tool_config_service import scrub_tenant_tool_secrets
+        from app.services.channel_secret_storage import scrub_tenant_channel_secrets
 
         await scrub_tenant_tool_secrets(scoped_db, tenant_id)
+        await scrub_tenant_channel_secrets(scoped_db, tenant_id)
 
         tenant.is_active = False
         await scoped_db.flush()

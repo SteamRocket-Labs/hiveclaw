@@ -19,6 +19,7 @@ from typing import Any, Callable, Coroutine, Literal
 import httpx
 from loguru import logger
 
+from app.services.anthropic_content import to_anthropic_content_blocks
 from app.services.token_tracker import record_autonomous_llm_token_usage
 
 STREAM_RETRY_TOMBSTONE = "[[HIVE_STREAM_RETRY_TOMBSTONE]]"
@@ -40,24 +41,7 @@ def _anthropic_tool_result_content(content: "str | list | None") -> "str | list[
         return ""
     if isinstance(content, str):
         return content
-    out: list[dict[str, Any]] = []
-    for block in content:
-        if not isinstance(block, dict):
-            continue
-        btype = block.get("type")
-        if btype == "text":
-            out.append({"type": "text", "text": block.get("text", "")})
-        elif btype in ("image", "document"):
-            out.append(
-                {
-                    "type": btype,
-                    "source": {
-                        "type": "base64",
-                        "media_type": block.get("media_type", ""),
-                        "data": block.get("data", ""),
-                    },
-                }
-            )
+    out = to_anthropic_content_blocks(content)
     return out or ""
 
 
@@ -153,7 +137,7 @@ class LLMMessage:
 
         if self.content:
             if isinstance(self.content, list):
-                content_blocks.extend(dict(block) if isinstance(block, dict) else block for block in self.content)
+                content_blocks.extend(to_anthropic_content_blocks(self.content))
             else:
                 content_blocks.append({"type": "text", "text": self.content})
 

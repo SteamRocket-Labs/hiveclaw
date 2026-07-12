@@ -759,6 +759,8 @@ flowchart LR
 - 根因：[主审复核] `_apply_vision_transform`（`invoker.py:523`）统一产 `{"type":"image_url",...}`；`to_anthropic_format`（`llm_client.py:154-158`）对 list content 仅 `dict(block)` 原样透传，**未转 `{"type":"image","source":{...}}`**；仅 OpenAI-Responses/Gemini 有转换。Anthropic 的 tool-result 图像另有映射（`_anthropic_tool_result_content:50-60`），两通道中立形态不一致。
 - 精确代码位置：`backend/app/runtime/invoker.py:523`；`backend/app/services/llm_client.py:154-158`。
 - 一次性完整关闭方案：在 Anthropic adapter 把当前 `data:image/<media>;base64,<data>` 中立块精确转换为 `{"type":"image","source":{"type":"base64","media_type":"image/<media>","data":"<data>"}}`，并与 tool-result 图像转换复用同一个 pure converter；远程 URL 只有在当前 provider contract 明确支持且通过 scheme/size 校验时才单独映射，不把 OpenAI `image_url` 原样透传；补 PNG/JPEG、多图+文本、非法 media/base64、vision=false、resume/replay 和真实 payload snapshot 测试。
+- 修复状态（2026-07-12）：**R-019 七原子闭环**。新增独立 pure `anthropic_content` adapter，主消息 `LLMMessage.to_anthropic_format` 与 `_anthropic_tool_result_content` 不再维护两套图像逻辑，统一把 provider-neutral `image_url(data:...)` 或 `{type:image|document, media_type, data}` 转为 Anthropic `source={type:base64,...}`。仅允许 JPEG/PNG/GIF/WebP（document 为 PDF/text），base64 必须可严格解码且受 5 MiB image/32 MiB document 上限；当前契约未显式启用 remote image URL，因此 HTTP(S)/非 data URL fail-fast，不以文本占位或 OpenAI block 静默透传。原生 Anthropic base64 block 可幂等 replay，cache-control 保留，signed thinking/tool calls 边界不变。
+- 验收证据：Red `pytest tests/services/test_anthropic_vision_payload.py -q` → **`8 failed, 1 passed`**，直接证明主消息仍携带 `image_url` 且四类非法 block 无拒绝。Green 新契约 + 既有 tool envelope → `17 passed`；LLM streaming/retry + Invoker + tool content 合并 → **`80 passed`**。覆盖 PNG/JPEG、多图+文本、主消息/tool-result 同源、非法 SVG/base64/remote URL、native resume/replay 幂等、vision=false 明确降级及 `AnthropicClient._build_payload` snapshot（payload 中不再出现 `image_url`）。Backend 全量 → **`6591 passed, 1 skipped`**，日志无 warning summary；变更文件 ruff/format 与 `git diff --check` 全绿。提交主题：`fix(R-019): normalize Anthropic vision payloads`。
 
 ### [R-020] Local Bridge 绕过 per-tool 治理，默认放行 + requires_approval 静默拒
 
@@ -1024,7 +1026,7 @@ Codebase graph 校正时状态为 ready（43,281 nodes / 166,753 edges）；`det
 
 ## 16. 28 项原子缺口修复执行账本
 
-本节记录原始审计全部 28 项的实际落地状态：17 个断点、10 个局部闭环、1 个已知缺失。原始严重级别与原子状态保留为审计快照；只有同时具备实现、回归测试、报告证据和独立提交，才把修复状态改为闭环。Company Knowledge Base 本体按 owner 边界不在本轮开发，但 R-008 的诚实隔离、文案与防伪装验收仍必须关闭。当前进度：**18/28**。
+本节记录原始审计全部 28 项的实际落地状态：17 个断点、10 个局部闭环、1 个已知缺失。原始严重级别与原子状态保留为审计快照；只有同时具备实现、回归测试、报告证据和独立提交，才把修复状态改为闭环。Company Knowledge Base 本体按 owner 边界不在本轮开发，但 R-008 的诚实隔离、文案与防伪装验收仍必须关闭。当前进度：**19/28**。
 
 | ID | 修复状态 | 独立提交主题 | 机械证据摘要 |
 |---|---|---|---|
@@ -1046,7 +1048,7 @@ Codebase graph 校正时状态为 ready（43,281 nodes / 166,753 edges）；`det
 | R-016 | 闭环 | `fix(R-016): close governed memory path traversal` | Red 2 failed/1 passed；Green 3 passed；扩展 39 passed；ruff check/format 绿 |
 | R-017 | 闭环 | `fix(R-017): align heartbeat with the real T3 gate` | Red 2 failed；Green 5 passed；真 Gate 扩展 24 passed；ruff 绿 |
 | R-018 | 闭环 | `fix(R-018): encrypt channel credentials at rest` | Red 6+1+1+1+2+2 failed；7 channel + tenant 三字段/JSON versioned encryption；PG backfill/rotation/secure downgrade 2 passed；组合 126；backend 6582 passed；ruff/format/log redaction/dry-run 绿 |
-| R-019 | 待修复 | — | — |
+| R-019 | 闭环 | `fix(R-019): normalize Anthropic vision payloads` | Red 8 failed/1 passed；主消息/tool-result 单一 pure converter；PNG/JPEG/multi/replay/invalid/vision=false/payload snapshot 17 passed；合并 80；backend 6591 passed；ruff/format/diff 绿 |
 | R-020 | 待修复 | — | — |
 | R-021 | 待修复 | — | — |
 | R-022 | 待修复 | — | — |

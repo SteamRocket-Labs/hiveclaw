@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[3]
 MANIFEST = ROOT / "acceptance" / "atomic_user_journeys.v1.json"
 SPEC = ROOT / "frontend" / "e2e" / "atomic-user-journeys.spec.ts"
 CONFIG = ROOT / "frontend" / "playwright.journeys.config.ts"
+DEFAULT_CONFIG = ROOT / "frontend" / "playwright.config.ts"
 PACKAGE = ROOT / "frontend" / "package.json"
 CI = ROOT / ".github" / "workflows" / "harness-ci.yml"
 
@@ -73,6 +74,11 @@ def test_full_stack_config_starts_real_backend_and_controlled_external_fakes() -
     assert "workers: 1" in source
     assert "trace: 'retain-on-failure'" in source
     assert "video: 'retain-on-failure'" in source
+
+
+def test_default_visual_suite_does_not_collect_the_full_stack_atomic_spec() -> None:
+    source = DEFAULT_CONFIG.read_text(encoding="utf-8")
+    assert "testIgnore: 'atomic-user-journeys.spec.ts'" in source
 
 
 def test_atomic_journeys_are_a_required_ci_release_gate() -> None:

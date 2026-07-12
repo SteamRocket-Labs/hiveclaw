@@ -97,8 +97,10 @@ class RuntimeTask(Base):
         index=True,
     )
     child_agent_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
-    # Tenant scope (RLS): backfilled from parent_agent_id → agents.tenant_id (nullable).
-    tenant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id"), index=True)
+    # Tenant scope (RLS): derived from the durable run authority and never global.
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False, index=True
+    )
 
     # Lifecycle
     status: Mapped[str] = mapped_column(

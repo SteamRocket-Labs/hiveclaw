@@ -10,6 +10,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import pin_rls_tenant_context
 
 
+TENANT_SCOPE_QUARANTINE_ID = uuid.UUID("00000000-0000-4000-8000-000000000023")
+TENANT_SCOPE_QUARANTINE_SLUG = "__hive_scope_quarantine__"
+
+
 def resolve_tenant_scope(current_user, requested_tenant_id: uuid.UUID | str | None = None) -> uuid.UUID:
     """Resolve the effective tenant for a request.
 

@@ -113,10 +113,18 @@ RLS_BYPASS_ALLOWLIST = (
             "list_companies",
             "'platform admin company list and cross-tenant stats'",
             (
-                "select:Tenant",
                 "select:sqla_func.coalesce(sqla_func.sum(Agent.tokens_used_total), 0)",
+                "select:Tenant",
                 "select:sqla_func.count()",
             ),
+        )
+    ),
+    _grant(
+        *(
+            "app/scripts/audit_tenant_null_semantics.py",
+            "audit_tenant_null_semantics",
+            "'tenant NULL semantics read-only audit'",
+            ("session-state-only",),
         )
     ),
     _grant(
@@ -250,14 +258,6 @@ RLS_BYPASS_ALLOWLIST = (
             "_run",
             "'Step 6 MCP canonical name backfill'",
             ("select:Tool", "update:Tool"),
-        )
-    ),
-    _grant(
-        *(
-            "app/scripts/backfill_stage2b_tenant_id.py",
-            "run_backfill",
-            "'stage-2b tenant_id backfill'",
-            ("session-state-only",),
         )
     ),
     _grant(

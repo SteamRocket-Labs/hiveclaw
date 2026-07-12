@@ -16,6 +16,7 @@ from sqlalchemy import func as sqla_func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import create_access_token, get_current_user, require_role
+from app.core.tenant_scope import TENANT_SCOPE_QUARANTINE_ID
 from app.database import enter_rls_bypass, get_db, pin_rls_tenant_context
 from app.models.agent import Agent
 from app.models.tenant import Tenant
@@ -265,7 +266,9 @@ async def list_tenants(
         reason="platform-admin list tenants",
         actor_id=str(current_user.id),
     ) as bypass_db:
-        result = await bypass_db.execute(select(Tenant).order_by(Tenant.created_at.desc()))
+        result = await bypass_db.execute(
+            select(Tenant).where(Tenant.id != TENANT_SCOPE_QUARANTINE_ID).order_by(Tenant.created_at.desc())
+        )
     return [TenantOut.model_validate(t) for t in result.scalars().all()]
 
 

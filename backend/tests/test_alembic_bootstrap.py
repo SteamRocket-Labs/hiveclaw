@@ -172,8 +172,9 @@ def test_bootstrap_policy_sql_covers_remaining_global_and_derived_tables() -> No
     assert "plaza_posts.id = plaza_comments.post_id" in plaza_using
 
     skill_using, skill_check = _policy_predicates_for_table("skill_files")
-    assert skill_using == skill_check
     assert "skills.id = skill_files.skill_id" in skill_using
+    assert "skills.tenant_id IS NULL" in skill_using
+    assert "skills.tenant_id IS NULL" not in skill_check
 
     participant_using, participant_check = _policy_predicates_for_table("participants")
     assert participant_using == participant_check

@@ -202,7 +202,7 @@ flowchart LR
 | H18 | A2A/interoperability | agent card/request | authz/profile | interoperability service | audit/result | protocol error | peer | tests | 局部闭环 | `services/interoperability.py`; `api/interoperability.py` |
 | H19 | MCP connector | import/call | MCP authz；remote metadata trust 未闭合 | ToolRuntime | audit/span | timeout/retry | model | execution tests；缺 description injection 验收 | 局部闭环 | `services/mcp_authz.py`; `tools/handlers/mcp.py`; R-021 |
 | H20 | HR blueprint/provision | Q&A/draft/confirm | HR/tenant | provisioning runner | draft+steps | claim exists after call | UI/Agent | tests | 断点 | `services/hr_provisioning_runner.py`; R-003 |
-| G01 | Tenant pin/RLS | request principal | DB policy；12 张 tenant 表缺策略，NULL 语义过宽 | scoped session | DB/audit | transaction rollback | all services | migration/tests；缺全表覆盖与 NULL 注入 | 局部闭环 | `database.py`; RLS migrations; R-022/R-023 |
+| G01 | Tenant pin/RLS | request principal | 显式 strict/shared/operator-nullable 分类；session pin | scoped session + ORM persist gate | DB policy/quarantine receipt/audit | fixed-point backfill + quarantine + secure downgrade | all services | metadata gate + NULL/shared/cross-tenant/真实 PG 注入 | 闭环 | `database.py`; `db_bootstrap.py`; `tenant_null_semantics_0712.py`; R-022/R-023 |
 | G02 | Audited bypass | daemon/operator | manifest+reason | bypass context | audit | fail closed | fleet jobs | architecture tests | 闭环 | `core/rls_bypass_manifest.py` |
 | G03 | ResourceAuthority | resource/action | owner/grant/operator | authority service | decision/audit | denial/retry | file/artifact/session | tests | 闭环 | `services/resource_authority.py` |
 | G04 | Principal/delegation/external identity | envelope | server binding | resolver | principal metadata | reject unbound | governance | tests | 闭环 | `services/principal_context.py`; `models/external_principal.py` |
@@ -809,6 +809,10 @@ flowchart LR
 - 根因：[主审复核] 核心表 `tenant_id` nullable；`db_bootstrap.py:234` 标准谓词 `OR tenant_id IS NULL`；`permissions.py:61` 跨租 404 守卫要双侧真值，任一 None 即跳过。需 NULL-tenant 行实际存在才触发（是向量非活跃利用）。治理侧已有缓解：非 safe 工具在 tenant 缺失时 fail-closed（`governance.py:971`）+ 写 `capability.tenant_missing` 审计。
 - 精确代码位置：`backend/app/db_bootstrap.py:234`；`backend/app/core/permissions.py:61`；`backend/app/models/*`（核心表 tenant nullable）。
 - 一次性完整关闭方案：先生成逐表/逐调用点的 NULL 语义清单和生产 dry-run 统计，把合法 platform-global/shared row 与 tenant-owned row 分开；仅对 tenant-owned 表回填 `tenant_id`、加 `NOT NULL` 并改为 strict RLS，合法 global row 必须进入显式 allowlist/独立 scope，而不是依赖通用 `OR tenant_id IS NULL`；`check_agent_access` 只在“该资源契约要求 tenant”时对任一缺失 tenant fail-closed，不能无差别破坏合法全局资产；迁移提供冲突报告、回滚与 quarantine；补 NULL-tenant、global-shared、cross-tenant、RLS bypass 和旧数据回填测试。
+- 修复状态（2026-07-12）：**R-023 七原子闭环**。当前 ORM 机械分类为 **114 张直接携带 `tenant_id` 的表 = 105 张 tenant-owned strict（含 1 张 quarantine receipt 表）+ 7 张显式 platform-shared + 2 张 operator-nullable**；三类互斥且穷尽。原 53 张 nullable 表中，仅 `users/audit_logs` 保留 operator-only NULL，7 张共享表用逐表业务谓词开放只读；其余 **44 张 legacy tenant-owned 表全部改为 `NOT NULL`**。通用 RLS 与全部 parent-derived policy 已删除 `NULL` 逃逸；共享表拆成“USING 可读、WITH CHECK 仅 tenant match”，tenant session 无法新建/篡改 global row。
+- 输入/权威/执行：`tenant_scoped_session` pin 的 UUID 是新 tenant-owned ORM row 的唯一缺省权威，`before_flush` 只为 strict 表补 tenant；空 scope 与 `BYPASS` 绝不自动发明 tenant。`check_agent_access` 对 tenantless Agent（含 platform admin 查询）和 tenantless non-platform user 均 404 fail-closed；parentless `create_runtime_task_record` 改为 `tenant_required` blocked precondition。旧 `backfill_stage2b_tenant_id --apply` 已正式退役，避免再次产生“更新一部分、遗留全局 NULL orphan”的旁路；只读兼容入口转到 canonical audit，唯一写入口是 Alembic migration。
+- 证据/恢复/消费：`tenant_null_semantics_0712` 按显式父权威做 fixed-point 回填；单一 tenant 候选自动绑定，多权威冲突与无权威残留统一隔离到 inactive quarantine tenant，并为每行写 `tenant_scope_quarantine_records`（只存 table/id/reason，不复制敏感 payload）。迁移随后原子加 `NOT NULL`、重建 direct/derived RLS；secure downgrade 保留约束、receipt 与策略，避免代码回滚恢复泄漏。普通公司列表/排行榜不消费 quarantine tenant，平台可通过 BYPASS + receipt 审计；`audit_tenant_null_semantics --fail-on-legacy-null` 提供 payload-free dry-run、可推导/冲突/孤儿/已隔离计数。
+- 验收证据：首轮分类/migration/权限 Red → **`6 failed, 9 passed`**；dry-run Red → **`3 failed`**；quarantine UI 隔离 Red → **`1 failed`**；持久化 Gate Red → **`3 failed`**。首次 backend 全量机械暴露旧旁路与遗漏 tenant 绑定 → **`12 failed, 6632 passed, 1 skipped, 4 errors`**；全部逐项收敛后，真实 PostgreSQL migration **`2 passed`**，覆盖唯一权威回填、冲突/孤儿 quarantine、共享读/写分离、operator NULL 隐藏、BYPASS recovery 与 secure downgrade；RLS/迁移/权限定向 **`36 passed`**；最终 backend 全量 → **`6648 passed, 1 skipped`**。`ruff check app tests`、`ruff format --check`（1544 files）、单 Alembic head `tenant_null_semantics_0712` 与 `git diff --check` 全绿。独立提交主题：`fix(R-023): eliminate implicit tenant NULL scope`。
 
 > **R-024~R-028：领域深审线报告的 P1 级发现，此前在 §5/§6/§8 详述、未单列 R 编号，现补编号以纳入统计。均 [主审复核]。**
 
@@ -1003,10 +1007,10 @@ Codebase graph 校正时状态为 ready（43,281 nodes / 166,753 edges）；`det
 | **安全门（最高优先）** | **NO-GO** | **R-015 完成成熟 sanitizer/raw HTML 禁用、URL/image policy、长期 bearer token 退出 DOM/query URL、全部消费面 XSS 回归及 staging 最终 CSP header 验证；R-016 统一规范化后守卫、authority 覆盖新建与残留扫描；R-018 channel secret 加密回填/scrub；R-021 完成 MCP metadata trust contract，而不是只做字符转义** |
 | 代码/架构候选门 | NO-GO | R-001~R-007、R-009~R-028 的当前范围缺口全部关闭；R-008 仅按“已知缺失 + 文案诚实”处理，不把 Company KB 正式建设伪装成当前债；不存在被默认豁免的 P2/P3；ruff format、全量测试、build 与架构门全部绿 |
 | 自进化基石门 | NO-GO | R-004 Dream durable owner；R-007 完整输入/可观测 fallback；R-017 heartbeat schema 对齐、删除假 Gate 测试并证明 accepted-T3 真实增长；R-024 provisional trial 信号与超窗清扫；R-026 lifecycle 原子写/损坏隔离 |
-| Migration/backfill门 | NO-GO | Approval/HR/Dream durable job schema与legacy rows回填、dry-run、rollback证据；channel 明文加密回填；12 表 RLS 策略补齐；R-023 先区分 global/shared 与 tenant-owned NULL 语义，再只对 tenant-owned 数据回填和加 strict constraint |
+| Migration/backfill门 | 当前代码候选通过；生产仍 NO-GO | Approval/HR/Dream durable job、channel encryption、RLS complete coverage 与 R-023 strict/shared/operator-nullable 分类、payload-free dry-run、回填/冲突 quarantine、secure downgrade 均已有本地/真实 PG 证据；仍需 staging dry-run 与生产只读分布核验 |
 | Staging fault-injection门 | NO-GO | 多副本startup（R-001）、claim lease（R-004/R-023）、approval crash、Dream kill、outbox前后crash、lifecycle.json 崩溃写、15 journeys |
 | Railway生产门 | 未验证/NO-GO | backend/backend-api/frontend同一候选均SUCCESS；health、schema、worker日志、持久盘证据 |
-| 权限矩阵门 | 局部通过 | cross-tenant、delegate grant、break-glass expiry、operator read/write、组合 waiting E2E；R-020 Local Bridge per-action policy/approval；R-022 全 tenant 表 RLS；R-023 NULL/global/shared 注入矩阵 |
+| 权限矩阵门 | 本地候选通过 | cross-tenant、delegate grant、break-glass expiry、operator read/write、组合 waiting E2E；R-020 Local Bridge per-action policy/approval；R-022 全 tenant 表 RLS；R-023 NULL/global/shared/operator/quarantine 注入矩阵；生产只读核验仍归 Railway 门 |
 | 功能与用户体验门 | NO-GO | R-019 Anthropic vision provider contract；R-025 HR orphan reconcile；R-027 BusinessTask 明确真实 UI consumer 或正式退役死 client；R-028 Personal KB 403/empty 分流；15 条 journey 的 API/worker/browser 全链验收 |
 | External Channel门 | 未验证 | R-018 加密迁移后真实 secret 读取/轮换；真实 identity binding、token expiry、duplicate webhook、outbox retry/dead-letter；R-020 Local Bridge per-action 审批与离线恢复 |
 | Artifact交付门 | 本地候选通过 | staging sandbox→artifact→chat→Deliverables→download、crash/retry exact-once |
@@ -1037,7 +1041,7 @@ Codebase graph 校正时状态为 ready（43,281 nodes / 166,753 edges）；`det
 
 ## 16. 28 项原子缺口修复执行账本
 
-本节记录原始审计全部 28 项的实际落地状态：17 个断点、10 个局部闭环、1 个已知缺失。原始严重级别与原子状态保留为审计快照；只有同时具备实现、回归测试、报告证据和独立提交，才把修复状态改为闭环。Company Knowledge Base 本体按 owner 边界不在本轮开发，但 R-008 的诚实隔离、文案与防伪装验收仍必须关闭。当前进度：**22/28**。
+本节记录原始审计全部 28 项的实际落地状态：17 个断点、10 个局部闭环、1 个已知缺失。原始严重级别与原子状态保留为审计快照；只有同时具备实现、回归测试、报告证据和独立提交，才把修复状态改为闭环。Company Knowledge Base 本体按 owner 边界不在本轮开发，但 R-008 的诚实隔离、文案与防伪装验收仍必须关闭。当前进度：**23/28**。
 
 | ID | 修复状态 | 独立提交主题 | 机械证据摘要 |
 |---|---|---|---|
@@ -1063,7 +1067,7 @@ Codebase graph 校正时状态为 ready（43,281 nodes / 166,753 edges）；`det
 | R-020 | 闭环 | `fix(R-020): govern Local Bridge actions per request` | Red backend 8+2 failed + frontend 1+1 failed；真 ApprovalRequest→单消息 release/reject + approval-time live policy；typed lease reconciler；bearer TTL；真实 PG backfill/downgrade；backend 6605；frontend 646 + build；ruff/format/head/diff 绿 |
 | R-021 | 闭环 | `fix(R-021): quarantine untrusted MCP metadata` | 多轮 Red：12+1+4+4+6+3 failed + frontend Red；raw/canonical 双面隔离、SHA-256 fingerprint 重审、五层 runtime deny、assignment intent 恢复、admin audit/UI；真实 PG 3；MCP 全链 201；backend 6632；frontend 650 + build；ruff/format/head/diff 绿 |
 | R-022 | 闭环 | `fix(R-022): enforce complete tenant RLS coverage` | 校正为 11 direct + 2 parent-derived；Red 4 failed；bootstrap 永久全 metadata Gate + upgrade repair + secure downgrade；真实 PG migration 2、跨租读写/BYPASS 2、组合 64；backend 6638；ruff/format/head/diff 绿 |
-| R-023 | 待修复 | — | — |
+| R-023 | 闭环 | `fix(R-023): eliminate implicit tenant NULL scope` | 114 direct tenant 表=105 strict+7 shared+2 operator-nullable；44 legacy tenant-owned 全部 NOT NULL；session persist Gate + Agent/RuntimeTask fail-closed；fixed-point backfill、冲突/孤儿 quarantine receipt、secure downgrade；真实 PG 2、定向 36；backend 6648；ruff/format/head/diff 绿 |
 | R-024 | 待修复 | — | — |
 | R-025 | 待修复 | — | — |
 | R-026 | 待修复 | — | — |

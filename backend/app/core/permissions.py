@@ -52,13 +52,20 @@ async def check_agent_access(db: AsyncSession, user: User, agent_id: uuid.UUID) 
             detail=f"Agent is not active: {lifecycle_reason}",
         )
 
+    # Agents are tenant-owned resources. A legacy/corrupt tenant-less Agent
+    # must never become globally reachable through either a platform role or a
+    # missing-tenant equality shortcut; the R-023 migration quarantines such
+    # rows and this guard remains the application-layer fail-closed boundary.
+    if agent.tenant_id is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
+
     # Platform admins can access everything with manage
     if user.role == "platform_admin":
         await pin_rls_tenant_context(db, agent.tenant_id)
         return agent, "manage"
 
     # Tenant boundary: non-platform users can only access agents in their own tenant
-    if user.tenant_id and agent.tenant_id and user.tenant_id != agent.tenant_id:
+    if user.tenant_id is None or user.tenant_id != agent.tenant_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
 
     # Organization admins can audit and manage every agent in their own tenant,

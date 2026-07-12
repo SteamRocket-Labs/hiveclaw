@@ -25,7 +25,9 @@ class AgentCapabilityInstall(Base):
     agent_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("agents.id", ondelete="CASCADE"), index=True
     )
-    tenant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id"), index=True)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False, index=True
+    )
     kind: Mapped[str] = mapped_column(
         String(30), nullable=False, index=True
     )  # platform_skill | mcp_server | clawhub_skill

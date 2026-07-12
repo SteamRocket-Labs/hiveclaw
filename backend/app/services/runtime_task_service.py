@@ -12,7 +12,7 @@ from sqlalchemy import or_, select
 from app.database import async_session, enter_rls_bypass, tenant_scoped_session
 from app.models.runtime_task import RuntimeTask
 from app.models.task import Task
-from app.runtime.tenant_admission import raise_runtime_tenant_precondition
+from app.runtime.tenant_admission import RuntimeTenantPreconditionError, raise_runtime_tenant_precondition
 from app.services.runtime_tenant_admission import admit_agent_runtime_tenant
 from app.services.runtime_notification_outbox import CompletionNotification, enqueue_completion_notification
 from app.services.tenant_resolver import resolve_tenant_for_agent, resolve_tenant_for_runtime_task
@@ -404,10 +404,8 @@ async def create_runtime_task_record(
 
     started_at = datetime.now(timezone.utc) if status == "running" else None
     # Stage-2b: runtime_tasks now carries a tenant_id (RLS). Derive it from the
-    # parent agent so the INSERT lands inside the agent's tenant. A declared
-    # parent agent whose tenant cannot be resolved is a blocked precondition,
-    # not a valid NULL-tenant runtime task. No parent_agent still means an
-    # orphan/backfill record and keeps the historical fail-closed None scope.
+    # parent agent so the INSERT lands inside the agent's tenant. A missing or
+    # unresolved parent is a blocked precondition, never a global orphan row.
     if parent_agent_id is not None:
         admission = await admit_agent_runtime_tenant(
             parent_agent_id,
@@ -418,10 +416,14 @@ async def create_runtime_task_record(
             raise_runtime_tenant_precondition(admission)
         tenant_id = admission.tenant_id
     else:
-        tenant_id = None
+        raise RuntimeTenantPreconditionError(
+            reason_code="tenant_required",
+            message=f"runtime_task:{task_type} requires parent_agent_id to resolve tenant authority.",
+            source=f"runtime_task:{task_type}",
+        )
     async with tenant_scoped_session(
         tenant_id,
-        require_tenant=parent_agent_id is not None,
+        require_tenant=True,
         source=f"runtime_task:{task_type}",
     ) as db:
         try:

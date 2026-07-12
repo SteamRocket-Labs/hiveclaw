@@ -26,8 +26,12 @@ class _FakeDB:
     def __init__(self, tenant):
         self.tenant = tenant
         self.flushed = False
+        self.statements = []
+        self.statement_params = []
 
-    async def execute(self, _stmt):
+    async def execute(self, stmt):
+        self.statements.append(str(stmt))
+        self.statement_params.append(stmt.compile().params)
         return _ScalarResult(self.tenant)
 
     async def flush(self):
@@ -145,6 +149,8 @@ def test_platform_admin_list_tenants_uses_audited_bypass(monkeypatch):
     tenants = __import__("asyncio").run(result)
 
     assert [tenant.id for tenant in tenants] == [tenant_id]
+    assert "WHERE tenants.id !=" in fake_db.statements[0]
+    assert str(next(iter(fake_db.statement_params[0].values()))) == "00000000-0000-4000-8000-000000000023"
     assert bypass_calls == [
         {
             "session": fake_db,

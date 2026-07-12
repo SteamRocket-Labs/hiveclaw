@@ -220,10 +220,11 @@ async def test_growth_db_metrics_feedback_polarity_and_task_volume(tmp_path: Pat
         )
 
     agent_id = uuid4()
+    tenant_id = uuid4()
     async with AsyncSession(engine) as db:
         db.add(
             SessionFeedbackEvent(
-                tenant_id=None,
+                tenant_id=tenant_id,
                 agent_id=agent_id,
                 session_id=uuid4(),
                 user_id=uuid4(),
@@ -234,7 +235,7 @@ async def test_growth_db_metrics_feedback_polarity_and_task_volume(tmp_path: Pat
         )
         db.add(
             SessionFeedbackEvent(
-                tenant_id=None,
+                tenant_id=tenant_id,
                 agent_id=agent_id,
                 session_id=uuid4(),
                 user_id=uuid4(),
@@ -245,7 +246,7 @@ async def test_growth_db_metrics_feedback_polarity_and_task_volume(tmp_path: Pat
         )
         db.add(
             InvocationSpan(
-                tenant_id=uuid4(),
+                tenant_id=tenant_id,
                 agent_id=agent_id,
                 trace_id=str(uuid4()),
                 span_id=str(uuid4()),

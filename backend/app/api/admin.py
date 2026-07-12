@@ -14,6 +14,7 @@ from sqlalchemy import func as sqla_func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import require_role
+from app.core.tenant_scope import TENANT_SCOPE_QUARANTINE_ID
 from app.database import enter_rls_bypass, get_db, pin_rls_tenant_context
 from app.models.agent import Agent
 from app.models.invitation_code import InvitationCode
@@ -144,7 +145,9 @@ async def list_companies(
         reason="platform admin company list and cross-tenant stats",
         actor_id=str(current_user.id),
     ) as bypass_db:
-        tenants = await bypass_db.execute(select(Tenant).order_by(Tenant.created_at.desc()))
+        tenants = await bypass_db.execute(
+            select(Tenant).where(Tenant.id != TENANT_SCOPE_QUARANTINE_ID).order_by(Tenant.created_at.desc())
+        )
         result = []
 
         for tenant in tenants.scalars().all():
@@ -762,6 +765,7 @@ async def get_metrics_leaderboards(
                 sqla_func.coalesce(sqla_func.sum(Agent.tokens_used_total), 0).label("tokens"),
             )
             .join(Agent, Agent.tenant_id == Tenant.id, isouter=True)
+            .where(Tenant.id != TENANT_SCOPE_QUARANTINE_ID)
             .group_by(Tenant.id, Tenant.name)
             .order_by(sqla_func.coalesce(sqla_func.sum(Agent.tokens_used_total), 0).desc())
             .limit(20)

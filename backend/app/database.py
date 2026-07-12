@@ -86,6 +86,35 @@ _RLS_TENANT_INFO_KEY = "hive_rls_tenant_id"
 _RLS_BYPASS_VALUE = "BYPASS"
 
 
+def stamp_new_tenant_owned_rows(session: SyncSession) -> None:
+    """Bind new tenant-owned ORM rows to the already pinned session scope.
+
+    The session GUC is the trusted persistence authority. This hook removes a
+    class of call-site omissions without inventing scope for bare/BYPASS
+    sessions or for intentionally platform-shared/operator-nullable rows.
+    """
+
+    scope = session.info.get(_RLS_TENANT_INFO_KEY)
+    if not scope or scope == _RLS_BYPASS_VALUE:
+        return
+    tenant_id = uuid.UUID(str(scope))
+    from app.db_bootstrap import STRICT_TENANT_RLS_TABLES
+
+    strict_tables = set(STRICT_TENANT_RLS_TABLES)
+    for row in session.new:
+        mapper = getattr(row, "__mapper__", None) or getattr(type(row), "__mapper__", None)
+        table = getattr(mapper, "local_table", None)
+        if getattr(table, "name", None) not in strict_tables:
+            continue
+        if hasattr(row, "tenant_id") and getattr(row, "tenant_id", None) is None:
+            setattr(row, "tenant_id", tenant_id)
+
+
+@event.listens_for(SyncSession, "before_flush")
+def _stamp_new_tenant_owned_rows(session: SyncSession, _flush_context, _instances) -> None:
+    stamp_new_tenant_owned_rows(session)
+
+
 def _normalize_rls_tenant_value(tenant_id: str | uuid.UUID | None) -> str:
     """Return a validated tenant id string, or empty string for fail-closed scope."""
     if tenant_id:

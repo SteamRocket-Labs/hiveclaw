@@ -350,10 +350,10 @@ async def test_create_runtime_task_record_rolls_back_on_commit_error(monkeypatch
     from app.services.runtime_task_service import create_runtime_task_record
 
     fake_session = _FailingSession(fail_on="commit")
-    _route_runtime_accessors(monkeypatch, fake_session)
+    _route_runtime_accessors(monkeypatch, fake_session, tenant_id=uuid4())
 
     with pytest.raises(RuntimeError, match="db commit failed"):
-        await create_runtime_task_record(task_id=uuid4().hex)
+        await create_runtime_task_record(task_id=uuid4().hex, parent_agent_id=uuid4())
 
     assert fake_session.rollback_calls == 1
 

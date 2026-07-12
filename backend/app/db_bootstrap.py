@@ -166,13 +166,58 @@ _ADDITIONAL_FORCED_TENANT_TABLES: tuple[str, ...] = (
     "local_agent_channel_sessions",
     "local_agent_channel_ws_tickets",
     "workspace_resource_manifests",
+    "tenant_scope_quarantine_records",
 )
 
-# Non-null tenant-owned tables must never inherit the legacy nullable-tenant
-# compatibility branch. Fresh create_all bootstrap stamps Alembic head and
-# skips migrations, so this list keeps bootstrap RLS aligned with strict
-# migration-installed policies for new table families.
+# Every table carrying ``tenant_id`` belongs to exactly one semantic class.
+# Tenant-owned rows are always non-null and strict. Platform-shared rows use a
+# table-specific read predicate and a strict write predicate. The two
+# operator-nullable tables retain NULL only for pre-tenant/system records and
+# ordinary tenant sessions never see those rows.
 STRICT_TENANT_RLS_TABLES: tuple[str, ...] = (
+    "agent_activity_logs",
+    "agent_agent_relationships",
+    "agent_capability_installs",
+    "agent_collaboration_group_members",
+    "agent_collaboration_groups",
+    "agent_mcp_server_assignments",
+    "agent_mcp_tool_overrides",
+    "agent_permissions",
+    "agent_plan_recommendations",
+    "agent_plan_requests",
+    "agent_plugin_assignments",
+    "agent_relationships",
+    "agent_schedules",
+    "agent_session_goals",
+    "agent_teams",
+    "agent_tools",
+    "agent_triggers",
+    "agent_work_ledgers",
+    "agents",
+    "ai_asset_records",
+    "ai_asset_usage_events",
+    "approval_requests",
+    "budget_transition_outbox",
+    "capability_factor_reviews",
+    "capability_factors",
+    "capability_policies",
+    "capability_promotion_proposals",
+    "channel_configs",
+    "channel_delivery_outbox",
+    "channel_ingress_events",
+    "charter_proposals",
+    "chat_artifacts",
+    "chat_messages",
+    "chat_sessions",
+    "chat_transcript_events",
+    "config_revisions",
+    "coordination_checkpoints",
+    "coordination_leases",
+    "coordination_signals",
+    "decision_trace_feedback",
+    "decision_traces",
+    "departments",
+    "enterprise_info",
     "external_capability_reviews",
     "external_capability_snapshots",
     "external_extension_catalog_entries",
@@ -181,9 +226,9 @@ STRICT_TENANT_RLS_TABLES: tuple[str, ...] = (
     "external_extension_activations",
     "external_marketplace_sources",
     "external_marketplace_entries",
-    "capability_factors",
-    "capability_factor_reviews",
-    "capability_promotion_proposals",
+    "external_principal_binding_events",
+    "external_principals",
+    "guard_policies",
     "knowledge_documents",
     "knowledge_segments",
     "knowledge_entities",
@@ -193,25 +238,67 @@ STRICT_TENANT_RLS_TABLES: tuple[str, ...] = (
     "knowledge_grants",
     "personal_knowledge_proposals",
     "local_agent_capability_snapshots",
-    "ai_asset_records",
     "hr_creation_drafts",
     "hr_provisioning_steps",
     "workflow_proposal_artifacts",
     "workflow_preview_artifacts",
     "runtime_notification_outbox",
-    "channel_ingress_events",
-    "external_principals",
-    "external_principal_binding_events",
-    "channel_delivery_outbox",
     "workflow_promotion_proposals",
-    "budget_transition_outbox",
-    "agent_collaboration_groups",
-    "agent_collaboration_group_members",
-    "ai_asset_usage_events",
+    "invitation_codes",
+    "invocation_spans",
     "local_agent_channels",
     "local_agent_channel_ws_tickets",
     "workspace_resource_manifests",
+    "local_agent_bridge_connections",
+    "local_agent_bridge_pairing_sessions",
+    "local_agent_channel_events",
+    "local_agent_channel_messages",
+    "local_agent_channel_sessions",
+    "mcp_server_tools",
+    "mcp_servers",
+    "org_departments",
+    "org_members",
+    "pending_reply_contexts",
+    "plaza_posts",
+    "plugin_dependency_edges",
+    "plugin_hook_registrations",
+    "resource_permissions",
+    "runtime_budget_events",
+    "runtime_budget_runs",
+    "runtime_tasks",
+    "security_audit_events",
+    "session_feedback_events",
+    "sso_scan_sessions",
+    "task_logs",
+    "tasks",
+    "tenant_channel_configs",
+    "tenant_installed_plugins",
+    "tenant_scope_quarantine_records",
+    "tenant_settings",
+    "tenant_tool_configs",
+    "token_usage_events",
+    "workflow_leaf_calls",
+    "workflow_quotas",
+    "workflow_steps",
 )
+
+OPERATOR_NULLABLE_TENANT_TABLES: tuple[str, ...] = ("audit_logs", "users")
+
+PLATFORM_SHARED_TENANT_PREDICATES: dict[str, str] = {
+    "agent_templates": "agent_templates.tenant_id IS NULL AND agent_templates.is_builtin IS TRUE",
+    "identity_providers": "identity_providers.tenant_id IS NULL",
+    "llm_models": "llm_models.tenant_id IS NULL",
+    "runtime_budget_policies": (
+        "runtime_budget_policies.tenant_id IS NULL AND runtime_budget_policies.scope_type = 'platform_default'"
+    ),
+    "skills": "skills.tenant_id IS NULL AND skills.is_builtin IS TRUE",
+    "tools": "tools.tenant_id IS NULL AND tools.type = 'builtin'",
+    "workflow_definitions": (
+        "workflow_definitions.tenant_id IS NULL "
+        "AND workflow_definitions.visibility_scope = 'platform' "
+        "AND workflow_definitions.owner_type = 'platform'"
+    ),
+}
 
 REMAINING_GLOBAL_AND_DERIVED_RLS_TABLES: tuple[str, ...] = (
     "tenants",
@@ -250,11 +337,9 @@ def _bypass_predicate() -> str:
 
 
 def _standard_tenant_predicate(table: str) -> str:
-    return f"""
-        {_bypass_predicate()}
-        OR {table}.tenant_id::text = current_setting('app.current_tenant_id', true)
-        OR {table}.tenant_id IS NULL
-    """
+    """Return the fail-closed tenant predicate retained for migration parity."""
+
+    return _strict_tenant_predicate(table)
 
 
 def _strict_tenant_predicate(table: str) -> str:
@@ -278,10 +363,7 @@ def _user_owned_predicate(table: str) -> str:
             SELECT 1
             FROM users
             WHERE users.id = {table}.user_id
-              AND (
-                  users.tenant_id::text = current_setting('app.current_tenant_id', true)
-                  OR users.tenant_id IS NULL
-              )
+              AND users.tenant_id::text = current_setting('app.current_tenant_id', true)
         )
     """
 
@@ -293,16 +375,13 @@ def _plaza_child_predicate(table: str) -> str:
             SELECT 1
             FROM plaza_posts
             WHERE plaza_posts.id = {table}.post_id
-              AND (
-                  plaza_posts.tenant_id::text = current_setting('app.current_tenant_id', true)
-                  OR plaza_posts.tenant_id IS NULL
-              )
+              AND plaza_posts.tenant_id::text = current_setting('app.current_tenant_id', true)
         )
     """
 
 
-def _skill_file_predicate() -> str:
-    return f"""
+def _skill_file_predicates() -> tuple[str, str]:
+    using = f"""
         {_bypass_predicate()}
         OR EXISTS (
             SELECT 1
@@ -310,10 +389,20 @@ def _skill_file_predicate() -> str:
             WHERE skills.id = skill_files.skill_id
               AND (
                   skills.tenant_id::text = current_setting('app.current_tenant_id', true)
-                  OR skills.tenant_id IS NULL
+                  OR (skills.tenant_id IS NULL AND skills.is_builtin IS TRUE)
               )
         )
     """
+    check = f"""
+        {_bypass_predicate()}
+        OR EXISTS (
+            SELECT 1
+            FROM skills
+            WHERE skills.id = skill_files.skill_id
+              AND skills.tenant_id::text = current_setting('app.current_tenant_id', true)
+        )
+    """
+    return using, check
 
 
 def _external_identity_predicate() -> str:
@@ -321,21 +410,9 @@ def _external_identity_predicate() -> str:
         {_bypass_predicate()}
         OR EXISTS (
             SELECT 1
-            FROM identity_providers
-            WHERE identity_providers.id = external_identities.provider_id
-              AND (
-                  identity_providers.tenant_id::text = current_setting('app.current_tenant_id', true)
-                  OR identity_providers.tenant_id IS NULL
-              )
-        )
-        OR EXISTS (
-            SELECT 1
             FROM users
             WHERE users.id = external_identities.user_id
-              AND (
-                  users.tenant_id::text = current_setting('app.current_tenant_id', true)
-                  OR users.tenant_id IS NULL
-              )
+              AND users.tenant_id::text = current_setting('app.current_tenant_id', true)
         )
     """
 
@@ -349,10 +426,7 @@ def _participant_predicate() -> str:
                 SELECT 1
                 FROM users
                 WHERE users.id = participants.ref_id
-                  AND (
-                      users.tenant_id::text = current_setting('app.current_tenant_id', true)
-                      OR users.tenant_id IS NULL
-                  )
+                  AND users.tenant_id::text = current_setting('app.current_tenant_id', true)
             )
         )
         OR (
@@ -361,10 +435,7 @@ def _participant_predicate() -> str:
                 SELECT 1
                 FROM agents
                 WHERE agents.id = participants.ref_id
-                  AND (
-                      agents.tenant_id::text = current_setting('app.current_tenant_id', true)
-                      OR agents.tenant_id IS NULL
-                  )
+                  AND agents.tenant_id::text = current_setting('app.current_tenant_id', true)
             )
         )
     """
@@ -377,10 +448,7 @@ def _agent_team_child_predicate(table: str) -> str:
             SELECT 1
             FROM agent_teams
             WHERE agent_teams.id = {table}.team_id
-              AND (
-                  agent_teams.tenant_id::text = current_setting('app.current_tenant_id', true)
-                  OR agent_teams.tenant_id IS NULL
-              )
+              AND agent_teams.tenant_id::text = current_setting('app.current_tenant_id', true)
         )
     """
 
@@ -401,7 +469,7 @@ def _policy_predicates_for_table(table: str) -> tuple[str, str]:
     elif table in {"plaza_comments", "plaza_likes"}:
         predicate = _plaza_child_predicate(table)
     elif table == "skill_files":
-        predicate = _skill_file_predicate()
+        return _skill_file_predicates()
     elif table == "external_identities":
         predicate = _external_identity_predicate()
     elif table == "participants":
@@ -414,10 +482,14 @@ def _policy_predicates_for_table(table: str) -> tuple[str, str]:
         predicate = _system_settings_predicate()
     elif table == "identities":
         predicate = _bypass_predicate()
-    elif table in STRICT_TENANT_RLS_TABLES:
-        predicate = _strict_tenant_predicate(table)
+    elif table in PLATFORM_SHARED_TENANT_PREDICATES:
+        using = f"""
+            {_strict_tenant_predicate(table)}
+            OR ({PLATFORM_SHARED_TENANT_PREDICATES[table]})
+        """
+        return using, _strict_tenant_predicate(table)
     else:
-        predicate = _standard_tenant_predicate(table)
+        predicate = _strict_tenant_predicate(table)
     return predicate, predicate
 
 

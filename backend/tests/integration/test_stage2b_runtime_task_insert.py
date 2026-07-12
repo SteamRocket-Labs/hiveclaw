@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import uuid
 
+import pytest
+
 from app.database import tenant_scoped_session as real_tenant_scoped_session
 from app.models.agent import Agent
 from app.models.runtime_task import RuntimeTask
@@ -91,17 +93,19 @@ async def test_create_runtime_task_sets_tenant_from_parent_agent(owner_sessionma
         assert row.tenant_id == tid
 
 
-async def test_create_runtime_task_without_parent_leaves_tenant_null(owner_sessionmaker, monkeypatch):
+async def test_create_runtime_task_without_parent_fails_closed(owner_sessionmaker, monkeypatch):
+    from app.runtime.tenant_admission import RuntimeTenantPreconditionError
+
     _bind_accessors_to(monkeypatch, owner_sessionmaker)
 
-    # No parent_agent_id → no tenant to derive → row stays NULL (orphan surfaced).
-    task_id = await runtime_task_service.create_runtime_task_record(
-        task_id=uuid.uuid4().hex,
-        task_type="delegation",
-        status="pending",
-    )
+    task_uuid = uuid.uuid4()
+    with pytest.raises(RuntimeTenantPreconditionError) as exc:
+        await runtime_task_service.create_runtime_task_record(
+            task_id=task_uuid.hex,
+            task_type="delegation",
+            status="pending",
+        )
 
+    assert exc.value.reason_code == "tenant_required"
     async with owner_sessionmaker() as db:
-        row = await db.get(RuntimeTask, uuid.UUID(task_id))
-        assert row is not None
-        assert row.tenant_id is None
+        assert await db.get(RuntimeTask, task_uuid) is None

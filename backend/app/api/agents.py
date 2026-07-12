@@ -460,7 +460,14 @@ async def get_or_create_hr_agent(
         status="creating",
     )
     db.add(hr_agent)
-    await ensure_agent_identity(db, hr_agent, display_name="HR Onboarding Agent", avatar_url=None)
+    await ensure_agent_identity(
+        db,
+        hr_agent,
+        display_name="HR Onboarding Agent",
+        avatar_url=None,
+        rls_bypass_reason="system HR agent identity bootstrap",
+        rls_bypass_actor_id=str(current_user.id),
+    )
 
     # No public permissions — HR agent is only accessible via this endpoint
     db.add(
@@ -607,7 +614,12 @@ async def create_agent(
     )
     apply_managed_heartbeat_fields(agent)
     db.add(agent)
-    await ensure_agent_identity(db, agent)
+    await ensure_agent_identity(
+        db,
+        agent,
+        rls_bypass_reason="admin agent identity bootstrap",
+        rls_bypass_actor_id=str(current_user.id),
+    )
 
     # Lifecycle: draft → creating (validated by state machine)
     try:

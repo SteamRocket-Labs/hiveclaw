@@ -96,6 +96,7 @@ def _patch_resolve(monkeypatch, session):
 
     monkeypatch.setattr(mod, "resolve_tenant_for_agent", _fake_resolve_tenant)
     monkeypatch.setattr(mod, "tenant_scoped_session", lambda *a, **k: session)
+    monkeypatch.setattr(mod, "provision_agent_plan_file_slot", lambda *_args, **_kwargs: None)
 
 
 @pytest.mark.asyncio
@@ -122,6 +123,8 @@ async def test_launch_arms_plan_mode_with_draft_id_then_resets(monkeypatch):
         captured["source"] = request.session_context.source
         captured["plan_mode_active"] = request.session_context.plan_mode.active
         captured["state_plan_id"] = request.session_context.plan_mode.plan_id
+        captured["state_plan_file_path"] = request.session_context.plan_mode.plan_file_path
+        captured["mirror_plan_file_path"] = request.session_context.metadata["plan_mode"].get("plan_file_path")
         captured["max_tool_rounds"] = request.max_tool_rounds
         captured["agent_id"] = request.agent_id
         return SimpleNamespace(content="planned", tokens_used=0)
@@ -136,6 +139,9 @@ async def test_launch_arms_plan_mode_with_draft_id_then_resets(monkeypatch):
     assert captured["source"] == mod.SYSTEM_PLAN_RUN_SOURCE
     assert captured["plan_mode_active"] is True
     assert captured["state_plan_id"] == str(plan.id)
+    expected_plan_file = f"workspace/plans/{plan.id}.plan.md"
+    assert captured["state_plan_file_path"] == expected_plan_file
+    assert captured["mirror_plan_file_path"] == expected_plan_file
     assert mod.SYSTEM_PLAN_RUN_MAX_ROUNDS == 200
     assert captured["max_tool_rounds"] == mod.SYSTEM_PLAN_RUN_MAX_ROUNDS
     assert captured["agent_id"] == plan.agent_id

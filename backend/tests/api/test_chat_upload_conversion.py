@@ -28,6 +28,14 @@ async def test_chat_upload_routes_documents_through_conversion_service(monkeypat
     monkeypatch.setattr(upload_api, "WORKSPACE_ROOT", tmp_path)
     monkeypatch.setattr(upload_api, "check_agent_access", fake_check_agent_access)
 
+    async def fake_register_workspace_path(_db, **kwargs):
+        return SimpleNamespace(**kwargs)
+
+    monkeypatch.setattr(
+        "app.services.workspace_resource_authority.register_workspace_path",
+        fake_register_workspace_path,
+    )
+
     agent_id = uuid.uuid4()
     file = UploadFile(io.BytesIO(b"<h1>raw</h1>"), filename="report.html")
 
@@ -92,6 +100,14 @@ async def test_chat_upload_default_registers_personal_kb_candidate(monkeypatch, 
     monkeypatch.setattr(upload_api, "check_agent_access", fake_check_agent_access)
     monkeypatch.setattr(upload_api, "PersonalKnowledgeService", lambda: _FakePersonalKnowledgeService(), raising=False)
 
+    async def fake_register_workspace_path(_db, **kwargs):
+        return SimpleNamespace(**kwargs)
+
+    monkeypatch.setattr(
+        "app.services.workspace_resource_authority.register_workspace_path",
+        fake_register_workspace_path,
+    )
+
     db = _FakeDB()
     file = UploadFile(io.BytesIO(b"# notes"), filename="notes.md")
     result = await upload_api.upload_file(
@@ -140,17 +156,41 @@ async def test_chat_upload_skip_personal_kb_does_not_ingest(monkeypatch, tmp_pat
     )
 
     agent_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    tenant_id = uuid.uuid4()
+    registered: list[dict] = []
+
+    async def fake_register_workspace_path(_db, **kwargs):
+        registered.append(kwargs)
+        return SimpleNamespace(**kwargs)
+
+    monkeypatch.setattr(
+        "app.services.workspace_resource_authority.register_workspace_path",
+        fake_register_workspace_path,
+    )
     file = UploadFile(io.BytesIO(b"# notes"), filename="notes.md")
     result = await upload_api.upload_file(
         background_tasks=None,
         file=file,
         agent_id=agent_id,
         skip_personal_kb=True,
-        current_user=SimpleNamespace(id=uuid.uuid4(), tenant_id=uuid.uuid4()),
+        current_user=SimpleNamespace(id=user_id, tenant_id=tenant_id),
         db=object(),
     )
 
     assert result["personal_kb_candidate"] == {"skipped": True, "reason": "user_skip"}
+    assert registered == [
+        {
+            "tenant_id": tenant_id,
+            "agent_id": agent_id,
+            "path": "workspace/uploads/notes.md",
+            "owner_user_id": user_id,
+            "root_session_id": None,
+            "source": "chat_upload",
+            "content_hash": __import__("hashlib").sha256(b"# notes").hexdigest(),
+            "allow_owner_rebind": False,
+        }
+    ]
 
 
 @pytest.mark.asyncio

@@ -386,7 +386,7 @@ async def test_close_team_enqueues_lead_synthesis_without_platform_authored_assi
     assert len(enqueued) == 1
     actual_db, notification = enqueued[0]
     assert actual_db is db
-    assert notification.source_kind == "agent_team_close"
+    assert notification.source_kind == "agent_team"
     assert notification.task_type == "agent_team_close"
     assert notification.parent_session_id == parent_session_id
     assert notification.parent_agent_id == agent_id

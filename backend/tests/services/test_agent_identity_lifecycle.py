@@ -1,9 +1,36 @@
 from __future__ import annotations
 
+import ast
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    [
+        "app/api/agents.py",
+        "app/api/desktop_agents.py",
+        "app/services/auto_provision.py",
+        "app/services/agent_seeder.py",
+        "app/services/hr_provisioning_runner.py",
+    ],
+)
+def test_new_agent_identity_bootstraps_are_explicit_audited_rls_boundaries(relative_path: str) -> None:
+    source = (Path(__file__).resolve().parents[2] / relative_path).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "ensure_agent_identity"
+    ]
+    assert calls, f"{relative_path} must create an agent identity through the lifecycle owner"
+    for call in calls:
+        keywords = {keyword.arg for keyword in call.keywords}
+        assert "rls_bypass_reason" in keywords, f"{relative_path}:{call.lineno} lacks an audited bootstrap reason"
+        assert "rls_bypass_actor_id" in keywords, f"{relative_path}:{call.lineno} lacks the creating actor"
 
 
 class _ScalarResult:

@@ -761,7 +761,7 @@ async def close_agent_team(
         db,
         CompletionNotification(
             tenant_id=team.tenant_id,
-            source_kind="agent_team_close",
+            source_kind="agent_team",
             source_run_id=close_summary_ref,
             parent_session_id=team.parent_session_id,
             parent_agent_id=team.lead_agent_id,

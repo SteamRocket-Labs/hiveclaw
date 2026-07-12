@@ -470,10 +470,16 @@ def _file_snapshot_changed(before: dict[str, Any], current: dict[str, Any]) -> b
 def _load_and_hydrate_recovery_manifest(agent_id: Any, session_context: Any | None):
     if agent_id is None or session_context is None:
         return None
-    from app.runtime.recovery_manifest import hydrate_session_context_from_recovery_manifest, load_recovery_manifest
+    from app.runtime.recovery_manifest import (
+        hydrate_session_context_from_recovery_manifest,
+        load_recovery_manifest,
+        recovery_manifest_matches_session,
+    )
 
     workspace = _agent_workspace_root(agent_id)
     manifest = load_recovery_manifest(agent_id, data_root=workspace.parent)
+    if manifest is not None and not recovery_manifest_matches_session(session_context, manifest):
+        return None
     if manifest is not None:
         hydrate_session_context_from_recovery_manifest(session_context, manifest)
     return manifest

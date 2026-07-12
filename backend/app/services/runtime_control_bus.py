@@ -18,6 +18,7 @@ from app.runtime.hooks import HookEvent, emit_hook
 RUNTIME_CONTROL_SCHEMA = "hive.runtime.control.v1"
 RUNTIME_CONTROL_CHANNEL = "hive:runtime:control"
 RUNTIME_CONTROL_RECONNECT_SECONDS = 2.0
+RUNTIME_CONTROL_PUBLISH_TIMEOUT_SECONDS = 2.0
 TRANSCRIPT_PROJECTION_SWEEP_SECONDS = 5.0
 SESSION_LIFECYCLE_MESSAGE_LIMIT = 100
 _STATE: dict[str, Any] = {
@@ -47,7 +48,14 @@ async def publish_runtime_control_event(payload: dict[str, Any]) -> None:
         **payload,
     }
     redis = await get_redis()
-    await redis.publish(RUNTIME_CONTROL_CHANNEL, json.dumps(envelope, ensure_ascii=False, default=str))
+    # Publishing is an advisory wake-up, never the transactional truth. A
+    # stalled Redis socket must not keep a DB transaction (and its transcript /
+    # RuntimeTask row locks) open indefinitely; the projection sweeper recovers
+    # committed pending rows when this bounded publish fails.
+    await asyncio.wait_for(
+        redis.publish(RUNTIME_CONTROL_CHANNEL, json.dumps(envelope, ensure_ascii=False, default=str)),
+        timeout=RUNTIME_CONTROL_PUBLISH_TIMEOUT_SECONDS,
+    )
 
 
 async def publish_web_chat_cancel(

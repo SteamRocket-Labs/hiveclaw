@@ -51,6 +51,7 @@ from app.services.conversation_interaction_service import mark_latest_pending_cl
 from app.services.llm_error_policy import is_llm_error_message
 from app.services.llm_utils import STREAM_RETRY_TOMBSTONE
 from app.services import plan_mode_core
+from app.services.plan_mode_file import provision_agent_plan_file_slot
 from app.services.long_task_runtime import build_long_task_resume_context
 from app.services.runtime_budget_service import RuntimeBudgetPolicyLookup, RuntimeBudgetRunCreate, RuntimeBudgetService
 from app.services.web_chat_broker import web_chat_broker
@@ -3514,21 +3515,13 @@ def _plan_mode_unsubmitted_terminal_error(session_context: Any | None) -> str | 
 def _provision_interactive_plan_file(agent_id: uuid.UUID, plan_file_path: str | None) -> None:
     if not plan_file_path:
         return
-    rel_path = Path(plan_file_path)
-    if rel_path.is_absolute() or any(part == ".." for part in rel_path.parts):
-        logger.warning("[WebChatRun] Refusing unsafe Plan Mode plan file path: {}", plan_file_path)
-        return
-    workspace_root = Path(get_settings().AGENT_DATA_DIR) / str(agent_id)
-    absolute_path = (workspace_root / rel_path).resolve()
     try:
-        absolute_path.relative_to(workspace_root.resolve())
-    except ValueError:
-        logger.warning("[WebChatRun] Refusing escaping Plan Mode plan file path: {}", plan_file_path)
-        return
-    try:
-        absolute_path.parent.mkdir(parents=True, exist_ok=True)
-        absolute_path.touch(exist_ok=True)
-    except OSError as exc:
+        provision_agent_plan_file_slot(
+            agent_id,
+            plan_file_path,
+            agent_data_dir=get_settings().AGENT_DATA_DIR,
+        )
+    except (OSError, ValueError) as exc:
         logger.warning("[WebChatRun] Failed to provision Plan Mode plan file {}: {}", plan_file_path, exc)
 
 

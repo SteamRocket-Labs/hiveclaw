@@ -10,6 +10,7 @@ from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.models.hr_creation import HrCreationDraft, HrProvisioningStep
 
@@ -395,6 +396,7 @@ async def upsert_hr_creation_draft(
     if blueprint_id is not None:
         result = await db.execute(
             select(HrCreationDraft)
+            .options(selectinload(HrCreationDraft.provisioning_steps))
             .where(
                 HrCreationDraft.id == blueprint_id,
                 HrCreationDraft.tenant_id == tenant_id,
@@ -417,6 +419,7 @@ async def upsert_hr_creation_draft(
             session_id=session_id,
             requested_by_user_id=requested_by_user_id,
             blueprint_version=1,
+            provisioning_steps=[],
         )
         db.add(draft)
 
@@ -449,11 +452,15 @@ async def load_hr_creation_draft(
     session_id: uuid.UUID | None = None,
     for_update: bool = False,
 ) -> HrCreationDraft:
-    statement = select(HrCreationDraft).where(
-        HrCreationDraft.id == draft_id,
-        HrCreationDraft.tenant_id == tenant_id,
-        HrCreationDraft.hr_agent_id == hr_agent_id,
-        HrCreationDraft.requested_by_user_id == requested_by_user_id,
+    statement = (
+        select(HrCreationDraft)
+        .options(selectinload(HrCreationDraft.provisioning_steps))
+        .where(
+            HrCreationDraft.id == draft_id,
+            HrCreationDraft.tenant_id == tenant_id,
+            HrCreationDraft.hr_agent_id == hr_agent_id,
+            HrCreationDraft.requested_by_user_id == requested_by_user_id,
+        )
     )
     if session_id is not None:
         statement = statement.where(HrCreationDraft.session_id == session_id)

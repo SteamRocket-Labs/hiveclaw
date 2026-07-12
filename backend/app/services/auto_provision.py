@@ -73,7 +73,12 @@ async def ensure_main_agent(db: AsyncSession, user: User) -> Agent | None:
         config_version=1,
     )
     db.add(agent)
-    await ensure_agent_identity(db, agent)
+    await ensure_agent_identity(
+        db,
+        agent,
+        rls_bypass_reason="automatic root agent identity bootstrap",
+        rls_bypass_actor_id=str(user.id),
+    )
 
     from app.services.ai_assets import register_agent_asset
 

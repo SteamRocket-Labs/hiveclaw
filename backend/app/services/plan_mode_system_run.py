@@ -34,6 +34,7 @@ from app.models.agent import Agent
 from app.models.llm import LLMModel
 from app.models.plan_request import AgentPlanRequest
 from app.runtime.session import PlanModeState, SessionContext
+from app.services.plan_mode_file import provision_agent_plan_file_slot
 
 logger = logging.getLogger(__name__)
 
@@ -137,12 +138,23 @@ async def launch_system_plan_run(
 
     user_id = plan.requested_by_user_id or getattr(agent, "owner_user_id", None) or agent.creator_id
 
+    plan_file_path = f"workspace/plans/{plan.id}.plan.md"
+    try:
+        provision_agent_plan_file_slot(plan.agent_id, plan_file_path)
+    except (OSError, ValueError) as exc:
+        logger.warning(
+            "system_plan_run_plan_file_provision_failed",
+            extra={"plan_id": str(plan.id), "agent_id": str(plan.agent_id), "error": str(exc)},
+        )
+        return plan
+
     seeded_scopes = (seed_context or {}).get("authorization_scopes")
     state = PlanModeState(
         active=True,
         plan_id=str(plan.id),
         intent_type=plan.intent_type,
         original_request=plan.original_request,
+        plan_file_path=plan_file_path,
         source=SYSTEM_PLAN_RUN_SOURCE,
         reason="system_plan_run",
         authorization_scopes=[dict(scope) for scope in seeded_scopes if isinstance(scope, dict)]

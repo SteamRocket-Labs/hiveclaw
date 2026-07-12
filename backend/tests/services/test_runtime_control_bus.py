@@ -18,6 +18,12 @@ class _FakeRedis:
         return 1
 
 
+class _HangingRedis:
+    async def publish(self, _channel: str, _payload: str):
+        await asyncio.sleep(0.05)
+        return 1
+
+
 @pytest.mark.asyncio
 async def test_publish_web_chat_cancel_uses_runtime_control_channel(monkeypatch):
     import app.services.runtime_control_bus as bus
@@ -96,6 +102,20 @@ async def test_publish_transcript_t0_bridge_uses_runtime_control_channel(monkeyp
     assert payload["agent_id"] == str(agent_id)
     assert payload["session_id"] == str(session_id)
     assert payload["tenant_id"] == str(tenant_id)
+
+
+@pytest.mark.asyncio
+async def test_runtime_control_publish_is_bounded_so_db_transactions_can_recover(monkeypatch):
+    import app.services.runtime_control_bus as bus
+
+    async def fake_get_redis():
+        return _HangingRedis()
+
+    monkeypatch.setattr(bus, "get_redis", fake_get_redis)
+    monkeypatch.setattr(bus, "RUNTIME_CONTROL_PUBLISH_TIMEOUT_SECONDS", 0.01)
+
+    with pytest.raises(asyncio.TimeoutError):
+        await bus.publish_runtime_control_event({"type": "transcript_t0_bridge"})
 
 
 @pytest.mark.asyncio

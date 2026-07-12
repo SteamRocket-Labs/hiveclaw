@@ -133,7 +133,12 @@ async def create_sub_agent(
         config_version=1,
     )
     db.add(agent)
-    await ensure_agent_identity(db, agent)
+    await ensure_agent_identity(
+        db,
+        agent,
+        rls_bypass_reason="desktop agent identity bootstrap",
+        rls_bypass_actor_id=str(current_user.id),
+    )
 
     from app.services.ai_assets import register_agent_asset
 

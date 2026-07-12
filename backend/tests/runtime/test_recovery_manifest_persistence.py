@@ -205,6 +205,28 @@ def test_recovery_manifest_hydrates_session_context_runtime_state(tmp_path) -> N
     assert session.metadata["recovered_from_manifest"] is True
 
 
+def test_recovery_manifest_never_leaks_runtime_state_into_another_session() -> None:
+    from app.runtime.recovery_manifest import RecoveryManifest
+
+    manifest = RecoveryManifest(
+        session_id="session-a",
+        recent_writes=["workspace/plan-a.md"],
+        current_turn_writes=["workspace/plan-a.md"],
+        discovered_tools=["private_session_tool"],
+        permission_profile={"mode": "full_access"},
+    )
+    session = SessionContext(session_id="session-b")
+
+    hydrated = hydrate_session_context_from_recovery_manifest(session, manifest)
+
+    assert hydrated is False
+    assert session.recent_writes == []
+    assert session.current_turn_writes == []
+    assert session.discovered_tools == []
+    assert "permission_profile" not in session.metadata
+    assert "recovered_from_manifest" not in session.metadata
+
+
 def test_persist_recovery_manifest_deletes_stale_empty_checkpoint(tmp_path) -> None:
     agent_id = "agent-1"
     sc = SessionContext(

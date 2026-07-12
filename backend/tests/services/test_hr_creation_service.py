@@ -6,6 +6,17 @@ from uuid import uuid4
 import pytest
 
 
+class _CreateDraftDB:
+    def __init__(self) -> None:
+        self.added = []
+
+    def add(self, value) -> None:
+        self.added.append(value)
+
+    async def flush(self) -> None:
+        return None
+
+
 def _draft():
     from app.models.hr_creation import HrCreationDraft
 
@@ -78,6 +89,30 @@ def test_confirmation_rejects_blueprints_with_unresolved_creation_gates():
         )
 
     assert exc.value.code == "missing_gates"
+
+
+@pytest.mark.asyncio
+async def test_new_hr_preview_initializes_steps_for_async_safe_serialization() -> None:
+    from sqlalchemy import inspect
+    from sqlalchemy.orm.attributes import NO_VALUE
+
+    from app.services.hr_creation_service import upsert_hr_creation_draft
+
+    db = _CreateDraftDB()
+    draft = await upsert_hr_creation_draft(
+        db,
+        tenant_id=uuid4(),
+        hr_agent_id=uuid4(),
+        session_id=uuid4(),
+        requested_by_user_id=uuid4(),
+        preview_payload={
+            "blueprint_hash": "sha256:preview",
+            "blueprint": {"name": "Researcher"},
+        },
+    )
+
+    assert inspect(draft).attrs.provisioning_steps.loaded_value is not NO_VALUE
+    assert draft.provisioning_steps == []
     assert draft.status == "awaiting_confirmation"
 
 

@@ -362,7 +362,7 @@ flowchart LR
 - reconnect/offline/auth_failed/degraded 有文案与 REST backfill；WS 不是权威。
 - branch/rewind/workspace restore 有确认与版本检查；artifact 注册与双消费链成立，但富文本渲染、query-token 和最终 CSP 仍受 R-015 约束，不能把“看得到附件”外推为安全闭环。
 - 当前最严重的 UI 断点是 R-015 富文本 XSS；R-028 会把 Personal KB 403 误呈现为空库。Company KB 只是 P3 文案边界，后端保持诚实隔离，不应与前两项混为同级产品断链。
-- E2E 只有 11 项，主要覆盖 Workbench visual/a11y 与两条 Dynamic Workflow；没有把 15 条真实后端 journey 全部跑成浏览器验收（R-011）。
+- 修复后新增独立的 15 条原子用户旅程 release gate：真实 Vite UI、FastAPI 产品路由、严格 `app_rls` PostgreSQL、Redis RuntimeTask/worker 与受控外部 provider fake 同时运行；每条旅程都从 durable session 输入进入，消费真实 domain projection，并最终由 Agent Detail 浏览器界面读取终态。R-011 的完整证据见对应修复段落。
 
 ## 9. KISS 与代码债
 
@@ -623,6 +623,9 @@ flowchart LR
 - 精确代码位置：`frontend/e2e/thread-workbench.spec.ts`、dynamic workflow e2e；Backend对应 services。
 - 缺失测试：本报告第8节15条 journey 的真实 API/worker/browser矩阵。
 - 一次性完整关闭方案：在隔离 PostgreSQL/Redis/object storage/sandbox fake 环境建立15条 journey；每条断线/重启/重复/out-of-order/permission denial；普通与operator投影；artifact/Channel/Local Bridge可用受控 fake；CI分片但作为一个 release gate；失败保留 traces/screenshots/DB evidence；禁止用纯 fixture 截断生产 owner。
+- 修复状态（2026-07-12）：**R-011 七原子闭环**。新增 `acceptance/atomic_user_journeys.v1.json` 作为 15 条旅程的机械清单，逐条声明输入、权威、执行 owner、证据、恢复、消费、验收、真实产品路由和故障面；`frontend/e2e/atomic-user-journeys.spec.ts` 逐条执行 J-01 消息、J-02 上传/Deliverable、J-03 Plan、J-04 Goal、J-05 Schedule、J-06 Branch、J-07 Personal KB、J-08 Skill、J-09 Subagent、J-10 Agent Team、J-11 Workflow、J-12 HR、J-13 Channel、J-14 Local Bridge、J-15 ordinary/operator audience split。测试禁止 `page.route()`/`route.fulfill()` 和 test-only product router，启动真实 `app.main:app`、Vite、PostgreSQL/RLS、Redis；只有 LLM、Slack、sandbox、Local Bridge peer 等系统外边界使用 `fake_external_provider.py`。每条 run 都检查 terminal transcript、active run drain、两次 replay 的顺序/去重/前缀稳定、跨租户 denial、typed Workbench，并把 transcript/workbench/domain facts 作为 Playwright attachment；浏览器在 run 完成后新连接真实 Agent Detail，从 REST/WS read model 渲染终态，因此浏览器断开不成为运行 owner。
+- 全链扫描真实发现并修复了八个此前单测未暴露的 seam：① strict RLS 下 Agent/Participant 初始创建循环，所有系统创建调用改为带 actor 的显式审计 bypass；② `/api/chat/upload` 写入 workspace 后漏登记 `WorkspaceResourceManifest`，导致 Deliverables consumer 看不到文件；③ system Plan 与 Web Chat 未共享 canonical plan-file slot，且会预建无 owner 空文件；④ agent 级 recovery manifest 未校验 `session_id`，使 Plan 的 write/permission/tool state 污染下一 session；⑤ Redis control publish 无超时会把已提交 transcript 卡在通知阶段，现改为有界 advisory publish 并由 durable sweeper 恢复；⑥ Agent Team close 写入不受约束的 `source_kind=agent_team_close`，现统一为 `agent_team` source + `agent_team_close` task type；⑦ HR draft relation lazy load 在 async serialization 触发 `MissingGreenlet`，现创建时初始化并在读取/upsert 时 `selectinload`；⑧ Slack provider URL 不可受控验证，现支持经过 scheme/userinfo 校验的 `SLACK_API_BASE_URL`，生产默认仍为官方 endpoint。另将 plan file slot、Agent Team/HR/Slack/recovery/Redis 各自补成独立 regression tests，不把 Playwright 当唯一证据。
+- 验收证据：Architecture gate 初始 Red → `2 failed, 3 passed`（manifest 仍指向旧路由，CI 只在 failure 上传证据），修复后 `pytest tests/architecture/test_atomic_user_journey_gate.py -q` → `5 passed`。后端 RLS/upload/Plan/recovery/control bus/team/HR/Channel 合并回归 → `344 passed, 4 warnings`；warning 是 R-014 的既有独立项。Frontend 全量 → `111 files / 639 passed`；`npm run build` exit 0。最终以全新 `hive_r011_final` PostgreSQL database、独立 Redis DB 3、严格 `app_rls` 账号执行 `npm run test:e2e:journeys` → **`15 passed (42.5s)`**；CI `atomic-user-journeys` job 使用 `pgvector/pgvector:pg15` + Redis 7，并以 `if: always()` 上传 `playwright-journey-report` 与 `test-results`，成功和失败都有机械证据。所有改动 Python 文件 `ruff check`、`ruff format --check` 通过，`git diff --check` 通过。提交主题：`fix(R-011): gate fifteen real user journeys`。
 
 ### [R-012] Backend format release gate 为红
 
@@ -996,8 +999,8 @@ Codebase graph 校正时状态为 ready（43,281 nodes / 166,753 edges）；`det
 | executable tests 25% | 全命令完成；format红被保留 | 23/25 |
 | CC/Codex/Hermes source comparison 10% | 代表性生命周期源码已对照，非穷举每个分支 | 8/10 |
 | migration/recovery/fault injection 10% | migration头/测试充分，真实多进程注入不足 | 7/10 |
-| browser/user journey 10% | 11 E2E通过，但未覆盖15条全链 | 8/10 |
-| **合计** |  | **88/100** |
+| browser/user journey 10% | 15 条真实 API/runtime/worker/browser 原子旅程全部通过，并已成为 release gate | 10/10 |
+| **合计** |  | **90/100** |
 
 ### 15.2 生产运行置信度：42%
 
@@ -1009,7 +1012,7 @@ Codebase graph 校正时状态为 ready（43,281 nodes / 166,753 edges）；`det
 
 ## 16. 28 项原子缺口修复执行账本
 
-本节记录原始审计全部 28 项的实际落地状态：17 个断点、10 个局部闭环、1 个已知缺失。原始严重级别与原子状态保留为审计快照；只有同时具备实现、回归测试、报告证据和独立提交，才把修复状态改为闭环。Company Knowledge Base 本体按 owner 边界不在本轮开发，但 R-008 的诚实隔离、文案与防伪装验收仍必须关闭。当前进度：**13/28**。
+本节记录原始审计全部 28 项的实际落地状态：17 个断点、10 个局部闭环、1 个已知缺失。原始严重级别与原子状态保留为审计快照；只有同时具备实现、回归测试、报告证据和独立提交，才把修复状态改为闭环。Company Knowledge Base 本体按 owner 边界不在本轮开发，但 R-008 的诚实隔离、文案与防伪装验收仍必须关闭。当前进度：**14/28**。
 
 | ID | 修复状态 | 独立提交主题 | 机械证据摘要 |
 |---|---|---|---|
@@ -1023,7 +1026,7 @@ Codebase graph 校正时状态为 ready（43,281 nodes / 166,753 edges）；`det
 | R-008 | 边界闭环（Company KB 本体已知缺失） | `fix(R-008): isolate the missing Company KB boundary` | Red backend 1 failed + frontend 2 failed；Green backend 3 passed；无假 route/consumer + typed legacy quarantine；frontend 31 passed + build；ruff/format 绿 |
 | R-009 | 闭环 | `fix(R-009): resume sessions through approval outbox` | Red backend 2 failed + frontend 7 failed；Green backend 143 passed；PG exact-one/retry/reconcile/backfill/migration；frontend 192 passed + build；ruff/format 绿 |
 | R-010 | 闭环 | `fix(R-010): make lifecycle owners statically provable` | Red 3 failed；五 owner 16~24 行/≤3 参数/support=0；架构 10 passed；合并 349 passed；backend 全量 6536 passed, 1 skipped；ruff/format 绿 |
-| R-011 | 待修复 | — | — |
+| R-011 | 闭环 | `fix(R-011): gate fifteen real user journeys` | Red architecture 2 failed；真实全链 15 passed；backend 344 passed；frontend 639 passed + build；strict RLS/Redis/HR/Slack/Team/recovery seam 回归；CI 永久证据上传；ruff/format/diff 绿 |
 | R-012 | 待修复 | — | — |
 | R-013 | 待修复 | — | — |
 | R-014 | 待修复 | — | — |

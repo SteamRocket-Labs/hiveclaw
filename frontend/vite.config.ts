@@ -16,6 +16,8 @@ for (const candidate of ['./VERSION', '../VERSION']) {
 const now = new Date()
 const buildTimestamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}.${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`
 const version = `${majorVersion}+${buildTimestamp}`
+const devBackendUrl = process.env.HIVE_DEV_BACKEND_URL || 'http://localhost:8008'
+const devBackendWsUrl = devBackendUrl.replace(/^http/, 'ws')
 
 export default defineConfig({
     plugins: [react()],
@@ -32,11 +34,11 @@ export default defineConfig({
         host: '0.0.0.0',
         proxy: {
             '/api': {
-                target: 'http://localhost:8008',
+                target: devBackendUrl,
                 changeOrigin: true,
             },
             '/ws': {
-                target: 'ws://localhost:8008',
+                target: devBackendWsUrl,
                 ws: true,
             },
         },

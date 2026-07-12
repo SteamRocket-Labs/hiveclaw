@@ -2,8 +2,10 @@
 
 import hashlib
 import hmac
+import os
 import time
 import uuid
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from loguru import logger
@@ -22,6 +24,17 @@ from app.schemas.schemas import ChannelConfigOut
 router = APIRouter(tags=["slack"])
 
 SLACK_MSG_LIMIT = 4000  # Slack text message char limit
+
+
+def _slack_api_url(method: str) -> str:
+    """Resolve Slack or an explicitly configured Slack-compatible gateway."""
+    base = os.getenv("SLACK_API_BASE_URL", "https://slack.com/api").strip().rstrip("/")
+    parsed = urlparse(base)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise RuntimeError("SLACK_API_BASE_URL must be an absolute http(s) URL")
+    if parsed.username or parsed.password:
+        raise RuntimeError("SLACK_API_BASE_URL must not contain userinfo credentials")
+    return f"{base}/{method.lstrip('/')}"
 
 
 # ─── Config CRUD ────────────────────────────────────────
@@ -158,7 +171,7 @@ async def _send_slack_messages(bot_token: str, channel: str, text: str) -> None:
     async with httpx.AsyncClient(timeout=10) as client:
         for chunk in chunks:
             await client.post(
-                "https://slack.com/api/chat.postMessage",
+                _slack_api_url("chat.postMessage"),
                 headers={"Authorization": f"Bearer {bot_token}", "Content-Type": "application/json"},
                 json={"channel": channel, "text": chunk},
             )
@@ -261,7 +274,7 @@ async def slack_event_webhook(
 
             async with _httpx_info.AsyncClient(timeout=5) as _info_client:
                 _info_resp = await _info_client.get(
-                    "https://slack.com/api/users.info",
+                    _slack_api_url("users.info"),
                     headers={"Authorization": f"Bearer {_bot_token_for_info}"},
                     params={"user": sender_id},
                 )
@@ -446,7 +459,7 @@ async def slack_event_webhook(
             return
         async with _httpx.AsyncClient(timeout=60) as _hc:
             _upload_url_resp = await _hc.post(
-                "https://slack.com/api/files.getUploadURLExternal",
+                _slack_api_url("files.getUploadURLExternal"),
                 headers={"Authorization": f"Bearer {_bot_token}"},
                 data={"filename": _fp.name, "length": str(_fp.stat().st_size)},
             )
@@ -457,7 +470,7 @@ async def slack_event_webhook(
             _file_id = _ud["file_id"]
             await _hc.post(_upload_url, content=_fp.read_bytes(), headers={"Content-Type": "application/octet-stream"})
             _complete = await _hc.post(
-                "https://slack.com/api/files.completeUploadExternal",
+                _slack_api_url("files.completeUploadExternal"),
                 headers={"Authorization": f"Bearer {_bot_token}"},
                 json={"files": [{"id": _file_id}], "channel_id": channel_id, "initial_comment": msg or ""},
             )

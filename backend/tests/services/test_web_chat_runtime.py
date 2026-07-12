@@ -5251,9 +5251,11 @@ async def test_activate_interactive_plan_mode_writes_typed_state_and_keeps_dict_
 
 @pytest.mark.asyncio
 async def test_activate_interactive_plan_mode_provisions_markdown_plan_file(tmp_path, monkeypatch):
-    """MD-first Plan Mode should create the session plan file up front so the
-    agent can write the plan body there instead of discovering a missing
-    workspace/plans directory and falling back to long JSON arguments."""
+    """MD-first Plan Mode reserves the exact path without an unowned file.
+
+    The first governed write creates both the file and its resource manifest;
+    an empty pre-created file would be rejected by workspace ownership checks.
+    """
     import app.services.web_chat_runtime as runtime
     from app.runtime.session import SessionContext
 
@@ -5272,8 +5274,8 @@ async def test_activate_interactive_plan_mode_provisions_markdown_plan_file(tmp_
 
     assert result is None
     plan_path = tmp_path / str(agent_id) / "workspace" / "plans" / "session-1.plan.md"
-    assert plan_path.is_file()
-    assert plan_path.read_text(encoding="utf-8") == ""
+    assert plan_path.parent.is_dir()
+    assert not plan_path.exists()
 
 
 @pytest.mark.asyncio

@@ -155,8 +155,18 @@ async def seed_default_agents():
 
         db.add(morty)
         db.add(meeseeks)
-        await ensure_agent_identity(db, morty)
-        await ensure_agent_identity(db, meeseeks)
+        await ensure_agent_identity(
+            db,
+            morty,
+            rls_bypass_reason="default agent identity bootstrap",
+            rls_bypass_actor_id=str(admin.id),
+        )
+        await ensure_agent_identity(
+            db,
+            meeseeks,
+            rls_bypass_reason="default agent identity bootstrap",
+            rls_bypass_actor_id=str(admin.id),
+        )
 
         # ── Permissions (company-wide, manage) ──
         db.add(

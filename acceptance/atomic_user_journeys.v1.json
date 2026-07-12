@@ -1,0 +1,128 @@
+{
+  "schema": "hive.atomic_user_journeys.v1",
+  "version": 1,
+  "gate": "release",
+  "external_fakes": ["llm_provider", "channel_provider", "sandbox_provider", "local_bridge_peer"],
+  "journeys": [
+    {
+      "id": "J-01",
+      "name": "message_to_terminal_answer",
+      "atoms": {"input": "composer", "authority": "session owner", "execution": "WebChat RuntimeTask", "evidence": "transcript task span", "recovery": "claim retry reconnect", "consumption": "thread reducer", "acceptance": "terminal answer"},
+      "product_endpoints": ["POST /api/agents/{agent_id}/sessions/runs", "GET /api/agents/{agent_id}/sessions/{session_id}/transcript", "GET /api/agents/{agent_id}/sessions/{session_id}/runs/active"],
+      "browser_assertions": ["durable terminal answer is rendered after the browser attaches", "REST replay is ordered and stable", "cross-tenant transcript access is denied"],
+      "faults": ["permission_denial", "duplicate_or_out_of_order", "disconnect", "worker_restart"]
+    },
+    {
+      "id": "J-02",
+      "name": "upload_to_deliverable",
+      "atoms": {"input": "file picker", "authority": "ResourceAuthority", "execution": "workspace artifact service", "evidence": "hash artifact row", "recovery": "idempotent registration", "consumption": "deliverables panel", "acceptance": "preview and download"},
+      "product_endpoints": ["POST /api/chat/upload", "GET /api/agents/{agent_id}/files/?path=workspace/uploads"],
+      "browser_assertions": ["registered workspace artifact is returned by the authenticated file projection", "terminal receipt is rendered by the real Agent Detail UI", "cross-tenant session evidence is denied"],
+      "faults": ["permission_denial", "duplicate_or_out_of_order", "upload_retry"]
+    },
+    {
+      "id": "J-03",
+      "name": "plan_confirm_to_observation",
+      "atoms": {"input": "plan card confirmation", "authority": "plan lease and approver", "execution": "ToolRuntime approval worker", "evidence": "plan hash ticket receipt", "recovery": "reapproval continuation", "consumption": "waiting and result cards", "acceptance": "tool observation"},
+      "product_endpoints": ["POST /api/agents/{agent_id}/plans", "GET /api/agents/{agent_id}/plans/{plan_id}", "POST /api/agents/{agent_id}/plans/{plan_id}/confirm"],
+      "browser_assertions": ["canonical plan reaches awaiting_confirmation", "version and hash confirmation reaches confirmed", "terminal receipt is rendered by the real Agent Detail UI"],
+      "faults": ["permission_denial", "duplicate_or_out_of_order", "late_approval"]
+    },
+    {
+      "id": "J-04",
+      "name": "goal_long_task",
+      "atoms": {"input": "goal action", "authority": "owner and budget", "execution": "RuntimeTask worker", "evidence": "goal task transcript", "recovery": "disconnect backfill", "consumption": "run status", "acceptance": "terminal goal"},
+      "product_endpoints": ["POST /api/agents/{agent_id}/sessions/{session_id}/goals"],
+      "browser_assertions": ["same request_id returns the same durable goal", "goal budget is persisted", "terminal receipt is rendered by the real Agent Detail UI"],
+      "faults": ["permission_denial", "duplicate_or_out_of_order", "disconnect", "budget_exhaustion"]
+    },
+    {
+      "id": "J-05",
+      "name": "schedule_trigger_delivery",
+      "atoms": {"input": "schedule form", "authority": "tenant trigger policy", "execution": "trigger RuntimeTask", "evidence": "task journal outbox", "recovery": "reconcile retry", "consumption": "notification", "acceptance": "terminal delivery"},
+      "product_endpoints": ["POST /api/agents/{agent_id}/schedules/", "GET /api/agents/{agent_id}/schedules/"],
+      "browser_assertions": ["governed schedule is returned by the tenant-scoped projection", "disabled schedule does not execute unexpectedly", "terminal receipt is rendered by the real Agent Detail UI"],
+      "faults": ["permission_denial", "duplicate_or_out_of_order", "provider_retry"]
+    },
+    {
+      "id": "J-06",
+      "name": "branch_fork_rewind",
+      "atoms": {"input": "GitLine command", "authority": "session resource auth", "execution": "SessionCommand runtime", "evidence": "lineage snapshot", "recovery": "revision rollback", "consumption": "GitLine", "acceptance": "branch or conflict"},
+      "product_endpoints": ["POST /api/agents/{agent_id}/sessions/{session_id}/branches", "GET /api/agents/{agent_id}/sessions/{branch_session_id}/lineage"],
+      "browser_assertions": ["branch is anchored to a durable user event", "lineage contains parent and child", "terminal parent receipt remains rendered"],
+      "faults": ["permission_denial", "duplicate_or_out_of_order", "stale_revision"]
+    },
+    {
+      "id": "J-07",
+      "name": "personal_knowledge_ingest_search",
+      "atoms": {"input": "knowledge document", "authority": "owner grants and RLS", "execution": "knowledge index worker", "evidence": "document job citation", "recovery": "stuck job sweep", "consumption": "Personal KB and tool", "acceptance": "result or denial"},
+      "product_endpoints": ["POST /api/agents/{agent_id}/knowledge/personal/documents", "GET /api/agents/{agent_id}/knowledge/personal/documents"],
+      "browser_assertions": ["owner document is returned by the Personal KB projection", "source and sensitivity metadata survive ingestion", "cross-tenant session evidence is denied"],
+      "faults": ["permission_denial", "duplicate_or_out_of_order", "index_retry"]
+    },
+    {
+      "id": "J-08",
+      "name": "skill_discover_load_evolve",
+      "atoms": {"input": "skill action", "authority": "asset authority", "execution": "distiller curator ToolRuntime", "evidence": "revision eval usage", "recovery": "rollback", "consumption": "skill UI and model", "acceptance": "loaded or promoted"},
+      "product_endpoints": ["GET /api/skills/", "GET /api/agents/{agent_id}/extensions", "GET /api/agents/{agent_id}/sessions/{session_id}/transcript"],
+      "browser_assertions": ["load_skill is recorded in the canonical transcript", "skill and extension projections are tenant scoped", "terminal receipt is rendered by the real Agent Detail UI"],
+      "faults": ["permission_denial", "duplicate_or_out_of_order", "eval_failure"]
+    },
+    {
+      "id": "J-09",
+      "name": "spawn_subagent",
+      "atoms": {"input": "spawn action", "authority": "parent delegation budget", "execution": "subagent service", "evidence": "run journal", "recovery": "cancel reconcile late state", "consumption": "subagent panel", "acceptance": "typed result or failure"},
+      "product_endpoints": ["GET /api/agents/{agent_id}/sessions/{session_id}/transcript", "GET /api/agents/{agent_id}/sessions/{session_id}/workbench"],
+      "browser_assertions": ["spawn_subagent is recorded in the canonical transcript", "subagent evidence is consumed by the workbench projection", "terminal receipt is rendered by the real Agent Detail UI"],
+      "faults": ["permission_denial", "duplicate_or_out_of_order", "child_timeout"]
+    },
+    {
+      "id": "J-10",
+      "name": "agent_team_aggregate",
+      "atoms": {"input": "team action", "authority": "team authority", "execution": "team runtime", "evidence": "member and team events", "recovery": "partial state", "consumption": "team panel", "acceptance": "aggregate terminal"},
+      "product_endpoints": ["POST /api/agents/{agent_id}/agent-teams", "POST /api/agents/{agent_id}/agent-teams/{team_id}/events", "POST /api/agents/{agent_id}/agent-teams/{team_id}/close", "GET /api/agents/{agent_id}/agent-teams/{team_id}/workbench"],
+      "browser_assertions": ["team checkpoint is persisted", "team close creates the lead synthesis lifecycle", "typed team workbench and parent terminal receipt are rendered from durable facts"],
+      "faults": ["permission_denial", "duplicate_or_out_of_order", "worker_crash"]
+    },
+    {
+      "id": "J-11",
+      "name": "dynamic_workflow",
+      "atoms": {"input": "workflow preview", "authority": "workflow confirmation", "execution": "workflow RuntimeTask", "evidence": "packet step journal", "recovery": "wait resume", "consumption": "workflow panel", "acceptance": "verify integrate"},
+      "product_endpoints": ["POST /api/agents/{agent_id}/workflows/preview", "POST /api/agents/{agent_id}/workflows/runs"],
+      "browser_assertions": ["preview_id is required to start", "step journal reaches completed", "terminal receipt is rendered by the real Agent Detail UI"],
+      "faults": ["permission_denial", "duplicate_or_out_of_order", "step_retry"]
+    },
+    {
+      "id": "J-12",
+      "name": "hr_confirm_provision",
+      "atoms": {"input": "canonical HR blueprint", "authority": "HR owner", "execution": "HR RuntimeTask", "evidence": "draft steps receipt", "recovery": "lease retry reconcile", "consumption": "HR card", "acceptance": "ready incomplete or failed"},
+      "product_endpoints": ["GET /api/agents/system/hr", "GET /api/agents/{hr_agent_id}/hr-creation-drafts/{blueprint_id}", "POST /api/agents/{hr_agent_id}/hr-creation-drafts/{blueprint_id}/confirm"],
+      "browser_assertions": ["model-created blueprint_id resolves to the canonical draft", "hash-confirmed provisioning reaches a durable terminal state", "new employee is rendered in the real HR Agent UI"],
+      "faults": ["permission_denial", "duplicate_or_out_of_order", "worker_restart"]
+    },
+    {
+      "id": "J-13",
+      "name": "channel_ingress_delivery",
+      "atoms": {"input": "signed channel ingress", "authority": "external principal", "execution": "durable channel runtime", "evidence": "transcript outbox", "recovery": "retry dead letter", "consumption": "activity", "acceptance": "final delivery"},
+      "product_endpoints": ["POST /api/agents/{agent_id}/slack-channel", "POST /api/channel/slack/{agent_id}/webhook"],
+      "browser_assertions": ["signed Slack ingress is accepted", "delivery reaches the controlled external provider", "terminal receipt is rendered by the real Agent Detail UI"],
+      "faults": ["permission_denial", "duplicate_or_out_of_order", "provider_retry"]
+    },
+    {
+      "id": "J-14",
+      "name": "local_agent_bridge",
+      "atoms": {"input": "bridge session", "authority": "bridge bearer and policy", "execution": "local runner", "evidence": "receipt ledger", "recovery": "replay offline reconnect", "consumption": "local status", "acceptance": "result"},
+      "product_endpoints": ["POST /api/local-bridge/pairing/init", "POST /api/agents/{agent_id}/local-bridge/pairings/{user_code}/approve", "POST /api/local-bridge/pairing/exchange", "GET /api/local-bridge/status"],
+      "browser_assertions": ["owner approval is required before token exchange", "bridge bearer reports connected", "terminal receipt is rendered by the real Agent Detail UI"],
+      "faults": ["permission_denial", "duplicate_or_out_of_order", "offline_reconnect"]
+    },
+    {
+      "id": "J-15",
+      "name": "operator_inspector_audience",
+      "atoms": {"input": "open inspector", "authority": "operator read scope", "execution": "session read models", "evidence": "span event", "recovery": "refresh backfill", "consumption": "operator inspector and user phase", "acceptance": "audience-safe terminal"},
+      "product_endpoints": ["GET /api/agents/{agent_id}/sessions/{session_id}/workbench", "GET /api/agents/{agent_id}/sessions/{session_id}/transcript", "GET /api/agents/{agent_id}/sessions/{session_id}/transcript?operator_view=true&operator_reason={reason}"],
+      "browser_assertions": ["operator projection contains operator_details", "ordinary member projection omits operator_details", "ordinary member sees the terminal answer in the real Agent Detail UI"],
+      "faults": ["permission_denial", "duplicate_or_out_of_order", "refresh"]
+    }
+  ]
+}

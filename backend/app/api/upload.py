@@ -1,6 +1,7 @@
 """File upload API for chat — saves files to agent workspace and extracts text."""
 
 import base64
+import hashlib
 import os
 import subprocess
 import uuid
@@ -258,6 +259,25 @@ async def save_upload_for_agent(
                 counter += 1
         save_path.write_bytes(content)
         workspace_path = f"workspace/uploads/{save_path.name}"
+
+    if agent_id is not None and db is not None and tenant_id is not None and user_id is not None:
+        from app.services.workspace_resource_authority import register_workspace_path
+
+        try:
+            await register_workspace_path(
+                db,
+                tenant_id=uuid.UUID(str(tenant_id)),
+                agent_id=uuid.UUID(str(agent_id)),
+                path=workspace_path,
+                owner_user_id=uuid.UUID(str(user_id)),
+                root_session_id=None,
+                source="chat_upload",
+                content_hash=hashlib.sha256(content).hexdigest(),
+                allow_owner_rebind=False,
+            )
+        except Exception:
+            save_path.unlink(missing_ok=True)
+            raise
 
     # Convert text/documents to canonical Markdown artifacts. Keep image handling
     # separate because vision-capable chat models still consume typed image parts.

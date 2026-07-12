@@ -373,6 +373,24 @@ def _mcp_server_refs_from_assignments(assignments: list[dict[str, Any]]) -> list
     return list(dict.fromkeys(refs))
 
 
+def recovery_manifest_matches_session(session_context: Any, manifest: RecoveryManifest | None) -> bool:
+    """Return whether session-scoped recovery state belongs to this session.
+
+    Legacy manifests without a ``session_id`` retain their compatibility path.
+    Once a manifest declares an owner session, an absent or different runtime
+    session must not consume its writes, tool frames, permissions, or prompt
+    restoration text.
+    """
+
+    if manifest is None:
+        return False
+    manifest_session_id = str(manifest.session_id or "").strip()
+    if not manifest_session_id:
+        return True
+    runtime_session_id = str(getattr(session_context, "session_id", None) or "").strip()
+    return bool(runtime_session_id and runtime_session_id == manifest_session_id)
+
+
 def hydrate_session_context_from_recovery_manifest(session_context: Any, manifest: RecoveryManifest | None) -> bool:
     """Restore machine-readable runtime state from a persisted RecoveryManifest.
 
@@ -382,7 +400,12 @@ def hydrate_session_context_from_recovery_manifest(session_context: Any, manifes
     evidence, and skill handoffs. It is intentionally idempotent so a resumed
     session can call it on every prompt assembly without duplicating state.
     """
-    if session_context is None or manifest is None or manifest.is_empty():
+    if (
+        session_context is None
+        or manifest is None
+        or manifest.is_empty()
+        or not recovery_manifest_matches_session(session_context, manifest)
+    ):
         return False
 
     _append_unique_strings(getattr(session_context, "recent_files", []), manifest.recent_reads, limit=10)

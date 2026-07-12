@@ -154,6 +154,7 @@ async def run_heartbeat_evolution_maintenance(
     report: dict[str, object] = {
         "skill_distillation": None,
         "skill_curator": None,
+        "provisional_trial_sweep": None,
         "dream_triggered": False,
         "t3_normalization": None,
         "enhancement_sync": None,
@@ -163,6 +164,10 @@ async def run_heartbeat_evolution_maintenance(
         from app.runtime.invoker import _resolve_runtime_config
         from app.tools.workspace import ensure_workspace
 
+        workspace = await ensure_workspace(agent_id, tenant_id=str(tenant_id) if tenant_id else None)
+        from app.services.provisional_trial import sweep_expired_provisional_trials
+
+        report["provisional_trial_sweep"] = sweep_expired_provisional_trials(workspace)
         runtime_config = await _resolve_runtime_config(agent_id)
         if runtime_config.tenant_resolution_error:
             logger.warning(
@@ -171,7 +176,6 @@ async def run_heartbeat_evolution_maintenance(
                 runtime_config.tenant_resolution_error,
             )
         else:
-            workspace = await ensure_workspace(agent_id, tenant_id=str(tenant_id) if tenant_id else None)
             model = await _resolve_agent_model(agent_id, tenant_id)
             if model is not None:
                 report["skill_distillation"] = await _maybe_run_skill_distillation(

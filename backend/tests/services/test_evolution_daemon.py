@@ -41,6 +41,56 @@ def test_module_exports_post_heartbeat_maintenance() -> None:
     assert inspect.iscoroutinefunction(evolution_daemon.run_heartbeat_evolution_maintenance)
 
 
+@pytest.mark.asyncio
+async def test_heartbeat_maintenance_sweeps_expired_provisional_trials(monkeypatch, tmp_path) -> None:
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    workspace = tmp_path / "agent"
+    sweep_calls = []
+
+    async def fake_runtime_config(_agent_id):
+        return SimpleNamespace(tenant_resolution_error=None, skill_candidate_loop_enabled=False)
+
+    async def fake_ensure_workspace(_agent_id, *, tenant_id):
+        assert tenant_id == str(tenant_id_value)
+        return workspace
+
+    async def fake_model(_agent_id, _tenant_id):
+        return None
+
+    def fake_sweep(path):
+        sweep_calls.append(path)
+        return {"checked": 2, "expired": 1, "needs_review": 1, "results": []}
+
+    async def fake_sync(_agent_id, _tenant_id):
+        return SimpleNamespace(synced=0, skipped=0, reason="test")
+
+    tenant_id_value = tenant_id
+    monkeypatch.setattr("app.runtime.invoker._resolve_runtime_config", fake_runtime_config)
+    monkeypatch.setattr("app.tools.workspace.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr(evolution_daemon, "_resolve_agent_model", fake_model)
+    monkeypatch.setattr("app.services.provisional_trial.sweep_expired_provisional_trials", fake_sweep)
+    monkeypatch.setattr("app.memory.enhancement.sync_t3_to_memory_enhancement", fake_sync)
+
+    report = await evolution_daemon.run_heartbeat_evolution_maintenance(
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        outcome_type="noop",
+        current_session_id="heartbeat-session",
+    )
+
+    assert sweep_calls == [workspace]
+    assert report["provisional_trial_sweep"] == {
+        "checked": 2,
+        "expired": 1,
+        "needs_review": 1,
+        "results": [],
+    }
+
+
 def test_default_interval_matches_legacy_value() -> None:
     """60s preserves the historical cadence so this refactor is observably
     behaviour-preserving for existing deployments."""

@@ -570,7 +570,7 @@ def record_skill_runtime_usage(
             return result
 
     stamp = _ensure_iso(occurred_at)
-    normalized_loaded = [str(item).strip() for item in loaded_skill_names if str(item or "").strip()]
+    normalized_loaded = list(dict.fromkeys(str(item).strip() for item in loaded_skill_names if str(item or "").strip()))
     normalized_tools = _normalize_tool_names(tool_names)
     primary_skill = (skill_name or (normalized_loaded[0] if normalized_loaded else "")).strip() or "unknown_skill"
     workflow_signature = _workflow_signature_from_tools(normalized_tools, fallback=primary_skill)
@@ -607,12 +607,6 @@ def record_skill_runtime_usage(
             "last_status": normalized_status or "unknown",
         }
 
-    registry_entry = get_skill_evolution_entry(workspace, primary_skill, transaction=transaction)
-    is_provisional = (
-        used_skill
-        and isinstance(registry_entry, dict)
-        and str(registry_entry.get("state") or "").strip().lower() == "provisional"
-    )
     trial_kind = (
         "positive"
         if normalized_status == "success" and not (blocker or "").strip()
@@ -620,31 +614,44 @@ def record_skill_runtime_usage(
         if normalized_status in {"failed", "workaround"}
         else None
     )
-    if is_provisional and trial_kind is not None:
+    provisional_trials: dict[str, dict[str, Any]] = {}
+    trial_skill_names = normalized_loaded or [primary_skill]
+    if trial_kind is not None:
         from app.services.provisional_trial import record_provisional_trial_signal
 
-        trial_result = record_provisional_trial_signal(
-            workspace,
-            skill_name=primary_skill,
-            kind=trial_kind,
-            signal={
-                "source": usage_event["source"],
-                "status": normalized_status,
-                "reason": note.strip(),
-                "session_id": usage_event["session_id"],
-                "runtime_task_id": usage_event["runtime_task_id"],
-                "trace_id": usage_event["trace_id"],
-            },
-            occurred_at=stamp,
-            transaction=transaction,
-        )
+        for loaded_skill_name in trial_skill_names:
+            registry_entry = get_skill_evolution_entry(workspace, loaded_skill_name, transaction=transaction)
+            if not (
+                isinstance(registry_entry, dict)
+                and str(registry_entry.get("state") or "").strip().lower() == "provisional"
+            ):
+                continue
+            provisional_trials[loaded_skill_name] = record_provisional_trial_signal(
+                workspace,
+                skill_name=loaded_skill_name,
+                kind=trial_kind,
+                signal={
+                    "source": usage_event["source"],
+                    "status": normalized_status,
+                    "reason": note.strip(),
+                    "session_id": usage_event["session_id"],
+                    "runtime_task_id": usage_event["runtime_task_id"],
+                    "trace_id": usage_event["trace_id"],
+                },
+                occurred_at=stamp,
+                transaction=transaction,
+            )
+
+    if primary_skill in provisional_trials:
+        primary_trial = provisional_trials[primary_skill]
         return {
-            "decision": str(trial_result.get("trial_decision") or "provisional_trial"),
+            "decision": str(primary_trial.get("trial_decision") or "provisional_trial"),
             "workflow_signature": workflow_signature,
             "promote_candidate_count": 0,
             "patch_candidate_count": 0,
             "last_status": normalized_status,
-            **trial_result,
+            **primary_trial,
+            "provisional_trials": provisional_trials,
         }
 
     if (
@@ -679,4 +686,6 @@ def record_skill_runtime_usage(
             candidate_result=result,
             transaction=transaction,
         )
+    if provisional_trials:
+        result["provisional_trials"] = provisional_trials
     return result

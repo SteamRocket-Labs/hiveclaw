@@ -731,7 +731,7 @@ flowchart LR
 - 消费：accepted T3（`memory/t3` 读面）不从自动臂增长；仅 agent 主动 `submit_t3_*` 链 + 显式 overlay→T3 吸收仍有效，故非 T3 全死，是**主自动路径断裂**。
 - 验收：[主审复核] 唯一覆盖测试 `tests/services/test_heartbeat_deagentified.py:110` `monkeypatch.setattr(heartbeat_t3_core, "apply_t3_consolidation_patch", fake_apply_gate)`，fake 硬编码返回 `status="committed"`（:102-107），FakeClient 还回错 schema——真 Gate 校验从未执行。经典"绿测钉住生产不走路径 + fake 掩盖 wiring"。
 - CC/Codex/Hermes 对照：hermes 自进化 `/learn` 活体即刻生效无治理门；Hive 治理/审计/回滚维度更强，但此缺陷使 Hive 在"技能/记忆真的自动积累"这一末端可靠性上反而不达 hermes——须补此项才能确证自进化 ≥ hermes。
-- 与其他模块冲突：与 R-016 叠加，攻击者可绕过恒 held 的门直写 T3；与 A7 报的 provisional→active 晋升臂 web chat 不喂信号（P1）共同构成自进化末端多处断裂。
+- 与其他模块冲突：原始审计时与 R-016 的穿越写和 R-024 的 provisional trial 消费/恢复缺口共同构成自进化末端断裂；R-016、R-017、R-024 均已在本账本中独立关闭。
 - 精确代码位置：`backend/app/services/heartbeat_t3_core.py:119,128,134,137,235-240`；`backend/app/memory/t3_platform_gate.py:173,478-532`；`backend/tests/services/test_heartbeat_deagentified.py:88,100-110`。
 - 缺失测试：用与 Gate 对齐的详规格 prompt 跑**真** `apply_t3_consolidation_patch` 的端到端 held→committed 用例；断言评审产出 schema=`t3.review.v1` + 五项 rubric。
 - 一次性完整关闭方案：把 heartbeat 评审 prompt 改用与 Platform Gate 对齐的详规格模板（schema=`t3.review.v1` + memory_gate_rubric 五项 + 阈值说明，复用 `memory/t2/prompts.py` 的合规范式）；删除测试中对 `apply_t3_consolidation_patch` 的 monkeypatch，改跑真 Gate；补 accepted-T3 从自动臂真实增长的集成断言；无数据迁移（prompt + 测试修复），但应审计生产是否已积压大量 held 作业待重跑。
@@ -816,15 +816,17 @@ flowchart LR
 
 > **R-024~R-028：领域深审线报告的 P1 级发现，此前在 §5/§6/§8 详述、未单列 R 编号，现补编号以纳入统计。均 [主审复核]。**
 
-### [R-024] provisional→active 技能晋升臂在 web chat 主消费面不喂 trial 信号
+### [R-024] provisional Skill trial 的多技能消费、重放去重与到期收敛不完整
 
 - 严重级别：P1
 - 状态：局部闭环
-- 用户/生产症状：主要经 web chat 使用的 provisional 技能永远拿不到正/负 trial 信号 → 永不晋升 STATE_ACTIVE、也不自动回滚，无限停在 provisional。
-- 根因：[主审复核] `record_skill_execution` 的生产调用点仅 `evals/run.py` + `skill_distillation_runner.py:136`（distiller 回放 `{heartbeat,trigger,task}` 内部会话）；web chat `RESPONSE_COMPLETE` 只走 fast_reflection 建新候选，不喂 trial 信号。且 trial 窗口过期为懒检查（`provisional_trial.py:406-415` 仅在下次 signal 到来时判 `window_days`），无清扫 daemon → 无信号则永不过期。
-- 消费/缓解：provisional ∈ `LOADABLE_STATES`，技能**仍可用**——是"晋升/自动回滚保证不可达"而非"能力不可用"，故 P1 局部闭环。
-- 精确代码位置：`backend/app/services/skill_lifecycle.py:623`；`backend/app/services/provisional_trial.py:339,406-415`。
-- 一次性完整关闭方案：在 web chat `RESPONSE_COMPLETE`/session close 对"本次真的 load 了 provisional 技能且成功/失败"补调 `record_skill_execution`（带 session/trace ref）；或加 heartbeat 级 trial-window 清扫把超窗 provisional 收敛到 needs_review。
+- 用户/生产症状：一个 turn 同时加载多个 provisional Skill 时只有第一个得到正/负信号；同一 RuntimeTask 的终态在 worker 恢复后若 wall-clock 变化会被重复计数；完全无后续信号的 provisional 永不过期，因而可能永久停在 provisional。
+- 口径校正（2026-07-12）：原报告“web chat 完全不喂 trial 信号”已被当前 checkout 反证。真实链是 `run_agent_invocation._record_skill_usage` → `record_skill_runtime_usage_for_invocation`，只收集成功的 `load_skill`，并把 web-chat `session_id/runtime_task_id/trace_id` 交给 `record_skill_runtime_usage`。缺口实际位于后半段：`skill_lifecycle.py` 只检查 `loaded_skill_names[0]`；signal id 把非因果的 `occurred_at` 纳入 durable run identity；`provisional_trial.py` 只在下一次 signal 到来时懒判 `window_days`，无主动清扫。
+- 消费/缓解：provisional ∈ `LOADABLE_STATES`，技能始终可用；断的是多技能试用证据、exact-once 恢复与无信号终态，而不是 Skill 加载能力。
+- 精确代码位置：`backend/app/runtime/invocation_orchestrator.py:_record_skill_usage`；`backend/app/services/skill_runtime_telemetry.py:record_skill_runtime_usage_for_invocation`；`backend/app/services/skill_lifecycle.py:record_skill_runtime_usage`；`backend/app/services/provisional_trial.py:record_provisional_trial_signal,sweep_expired_provisional_trials`；`backend/app/services/evolution_daemon.py:run_heartbeat_evolution_maintenance`。
+- 一次性完整关闭方案：保留现有真实 web-chat terminal consumer；对本轮全部成功加载的 provisional Skills 扇出同一份 session/run/trace 因果证据；RuntimeTask/trace 存在时以它们作为稳定去重键，不再让恢复时间戳制造新 signal；在 heartbeat evolution maintenance 中执行事务化到期清扫，把超窗或无有效 trial ledger 的 provisional 原子收敛到 `needs_review`，并同步 registry、trial、candidate manifest 与 lifecycle evidence。
+- 修复状态（2026-07-12）：**R-024 七原子闭环**。输入只来自真实成功 `load_skill` 的 terminal invocation；权威与执行仍收口在 version-bound trial + `AgentAssetTransaction`；每个实际加载的 provisional Skill 都获得带 session/run/trace 的证据；同一 durable terminal replay exact-once；无信号到期与损坏/缺失 trial ledger 由每 Agent heartbeat 主动 fail-closed；终态从 registry 中退出 provisional，后续 sweep 幂等为零操作。
+- 验收证据：Red `pytest tests/services/test_provisional_trial.py tests/services/test_evolution_daemon.py -q` → **`5 failed, 22 passed`**，分别钉住跨时间重放重复计数、多 loaded Skill 漏记、无 sweep API、无 heartbeat consumer；Green 核心 → **`81 passed`**，Skill/Web Chat/Invoker/Hook 扩展 → **`252 passed`**；backend 全量 → **`6653 passed, 1 skipped`**；`ruff check app tests` 与 `ruff format --check app tests`（1543 files）全绿。独立提交主题：`fix(R-024): close provisional skill trials`。
 
 ### [R-025] HR 孤儿 agent 无后台 reconciler，draft TTL 为死码
 
@@ -1006,7 +1008,7 @@ Codebase graph 校正时状态为 ready（43,281 nodes / 166,753 edges）；`det
 |---|---|---|
 | **安全门（最高优先）** | **NO-GO** | **R-015 完成成熟 sanitizer/raw HTML 禁用、URL/image policy、长期 bearer token 退出 DOM/query URL、全部消费面 XSS 回归及 staging 最终 CSP header 验证；R-016 统一规范化后守卫、authority 覆盖新建与残留扫描；R-018 channel secret 加密回填/scrub；R-021 完成 MCP metadata trust contract，而不是只做字符转义** |
 | 代码/架构候选门 | NO-GO | R-001~R-007、R-009~R-028 的当前范围缺口全部关闭；R-008 仅按“已知缺失 + 文案诚实”处理，不把 Company KB 正式建设伪装成当前债；不存在被默认豁免的 P2/P3；ruff format、全量测试、build 与架构门全部绿 |
-| 自进化基石门 | NO-GO | R-004 Dream durable owner；R-007 完整输入/可观测 fallback；R-017 heartbeat schema 对齐、删除假 Gate 测试并证明 accepted-T3 真实增长；R-024 provisional trial 信号与超窗清扫；R-026 lifecycle 原子写/损坏隔离 |
+| 自进化基石门 | NO-GO | R-004/R-007/R-017/R-024 已有本地闭环证据；仍须关闭 R-026 lifecycle 原子写/损坏隔离，并完成 staging 故障注入 |
 | Migration/backfill门 | 当前代码候选通过；生产仍 NO-GO | Approval/HR/Dream durable job、channel encryption、RLS complete coverage 与 R-023 strict/shared/operator-nullable 分类、payload-free dry-run、回填/冲突 quarantine、secure downgrade 均已有本地/真实 PG 证据；仍需 staging dry-run 与生产只读分布核验 |
 | Staging fault-injection门 | NO-GO | 多副本startup（R-001）、claim lease（R-004/R-023）、approval crash、Dream kill、outbox前后crash、lifecycle.json 崩溃写、15 journeys |
 | Railway生产门 | 未验证/NO-GO | backend/backend-api/frontend同一候选均SUCCESS；health、schema、worker日志、持久盘证据 |
@@ -1041,7 +1043,7 @@ Codebase graph 校正时状态为 ready（43,281 nodes / 166,753 edges）；`det
 
 ## 16. 28 项原子缺口修复执行账本
 
-本节记录原始审计全部 28 项的实际落地状态：17 个断点、10 个局部闭环、1 个已知缺失。原始严重级别与原子状态保留为审计快照；只有同时具备实现、回归测试、报告证据和独立提交，才把修复状态改为闭环。Company Knowledge Base 本体按 owner 边界不在本轮开发，但 R-008 的诚实隔离、文案与防伪装验收仍必须关闭。当前进度：**23/28**。
+本节记录原始审计全部 28 项的实际落地状态：17 个断点、10 个局部闭环、1 个已知缺失。原始严重级别与原子状态保留为审计快照；只有同时具备实现、回归测试、报告证据和独立提交，才把修复状态改为闭环。Company Knowledge Base 本体按 owner 边界不在本轮开发，但 R-008 的诚实隔离、文案与防伪装验收仍必须关闭。当前进度：**24/28**。
 
 | ID | 修复状态 | 独立提交主题 | 机械证据摘要 |
 |---|---|---|---|
@@ -1068,7 +1070,7 @@ Codebase graph 校正时状态为 ready（43,281 nodes / 166,753 edges）；`det
 | R-021 | 闭环 | `fix(R-021): quarantine untrusted MCP metadata` | 多轮 Red：12+1+4+4+6+3 failed + frontend Red；raw/canonical 双面隔离、SHA-256 fingerprint 重审、五层 runtime deny、assignment intent 恢复、admin audit/UI；真实 PG 3；MCP 全链 201；backend 6632；frontend 650 + build；ruff/format/head/diff 绿 |
 | R-022 | 闭环 | `fix(R-022): enforce complete tenant RLS coverage` | 校正为 11 direct + 2 parent-derived；Red 4 failed；bootstrap 永久全 metadata Gate + upgrade repair + secure downgrade；真实 PG migration 2、跨租读写/BYPASS 2、组合 64；backend 6638；ruff/format/head/diff 绿 |
 | R-023 | 闭环 | `fix(R-023): eliminate implicit tenant NULL scope` | 114 direct tenant 表=105 strict+7 shared+2 operator-nullable；44 legacy tenant-owned 全部 NOT NULL；session persist Gate + Agent/RuntimeTask fail-closed；fixed-point backfill、冲突/孤儿 quarantine receipt、secure downgrade；真实 PG 2、定向 36；backend 6648；ruff/format/head/diff 绿 |
-| R-024 | 待修复 | — | — |
+| R-024 | 闭环 | `fix(R-024): close provisional skill trials` | 校正原报告：web chat 已有 terminal consumer；Red 5 failed；全 loaded provisional 扇出 + durable replay exact-once + heartbeat 超窗/孤儿 ledger fail-closed；扩展 252；backend 6653；ruff/format 绿 |
 | R-025 | 待修复 | — | — |
 | R-026 | 待修复 | — | — |
 | R-027 | 待修复 | — | — |

@@ -36,6 +36,7 @@ def _install_provisional(
     *,
     candidate_id: str = "cand-trial",
     skill_name: str = "Demo Skill",
+    target_path: str = "skills/demo-skill/SKILL.md",
     baseline: bytes | None = b"# Demo\nold\n",
     candidate: bytes = b"# Demo\nnew\n",
 ) -> tuple[str, str]:
@@ -43,7 +44,6 @@ def _install_provisional(
     from app.services.provisional_trial import initialize_provisional_trial
     from app.services.skill_evolution_registry import ORIGIN_T3_AUTO_CREATED, upsert_skill_evolution_entry
 
-    target_path = "skills/demo-skill/SKILL.md"
     target = workspace / target_path
     if baseline is not None:
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -150,6 +150,57 @@ def test_provisional_trial_deduplicates_runtime_evidence(tmp_path: Path) -> None
     assert first["positive_signal_count"] == 1
     assert duplicate["trial_decision"] == "duplicate_signal"
     assert trial is not None and len(trial["signals"]["positive"]) == 1
+
+
+def test_provisional_trial_deduplicates_replayed_terminal_evidence_with_new_timestamp(tmp_path: Path) -> None:
+    from app.services.provisional_trial import load_provisional_trial
+
+    workspace = tmp_path / "agent"
+    _install_provisional(workspace)
+
+    first = _runtime_signal(workspace, status="success", minute=1, trace_id="same-terminal-trace")
+    duplicate = _runtime_signal(workspace, status="success", minute=2, trace_id="same-terminal-trace")
+
+    trial = load_provisional_trial(workspace, "cand-trial")
+    assert first["positive_signal_count"] == 1
+    assert duplicate["trial_decision"] == "duplicate_signal"
+    assert trial is not None and len(trial["signals"]["positive"]) == 1
+
+
+def test_runtime_usage_signals_every_loaded_provisional_skill(tmp_path: Path) -> None:
+    from app.services.provisional_trial import load_provisional_trial
+    from app.services.skill_lifecycle import record_skill_runtime_usage
+
+    workspace = tmp_path / "agent"
+    _install_provisional(workspace)
+    _install_provisional(
+        workspace,
+        candidate_id="cand-second",
+        skill_name="Second Skill",
+        target_path="skills/second-skill/SKILL.md",
+        baseline=b"# Second\nold\n",
+        candidate=b"# Second\nnew\n",
+    )
+
+    result = record_skill_runtime_usage(
+        workspace,
+        skill_name="Demo Skill",
+        loaded_skill_names=["Demo Skill", "Second Skill"],
+        tool_names=["load_skill", "load_skill", "read_file"],
+        status="success",
+        note="both provisional skills contributed",
+        source="web_chat",
+        session_id="session-1",
+        runtime_task_id="task-1",
+        trace_id="trace-both",
+        occurred_at="2026-07-11T00:01:00+00:00",
+    )
+
+    first = load_provisional_trial(workspace, "cand-trial")
+    second = load_provisional_trial(workspace, "cand-second")
+    assert result["provisional_trials"].keys() == {"Demo Skill", "Second Skill"}
+    assert first is not None and len(first["signals"]["positive"]) == 1
+    assert second is not None and len(second["signals"]["positive"]) == 1
 
 
 def test_provisional_patch_rolls_back_real_content_and_registry(tmp_path: Path) -> None:
@@ -278,3 +329,39 @@ def test_provisional_trial_expiry_requires_review_instead_of_late_promotion(tmp_
     assert result["trial_decision"] == "needs_review"
     assert trial is not None and trial["state"] == "needs_review"
     assert entry is not None and entry["state"] == "needs_review"
+
+
+def test_provisional_trial_sweep_expires_no_signal_trial_and_is_idempotent(tmp_path: Path) -> None:
+    from app.services.provisional_trial import load_provisional_trial, sweep_expired_provisional_trials
+    from app.services.skill_evolution_registry import get_skill_evolution_entry
+
+    workspace = tmp_path / "agent"
+    _install_provisional(workspace)
+
+    first = sweep_expired_provisional_trials(workspace, now="2026-07-26T00:00:00+00:00")
+    second = sweep_expired_provisional_trials(workspace, now="2026-07-26T00:01:00+00:00")
+
+    trial = load_provisional_trial(workspace, "cand-trial")
+    entry = get_skill_evolution_entry(workspace, "Demo Skill")
+    assert first == {
+        "checked": 1,
+        "expired": 1,
+        "needs_review": 1,
+        "results": [{"skill_name": "Demo Skill", "candidate_id": "cand-trial", "decision": "needs_review"}],
+    }
+    assert second == {"checked": 0, "expired": 0, "needs_review": 0, "results": []}
+    assert trial is not None and trial["state"] == "needs_review"
+    assert entry is not None and entry["state"] == "needs_review"
+
+
+def test_provisional_trial_sweep_preserves_unexpired_trial(tmp_path: Path) -> None:
+    from app.services.provisional_trial import load_provisional_trial, sweep_expired_provisional_trials
+
+    workspace = tmp_path / "agent"
+    _install_provisional(workspace)
+
+    result = sweep_expired_provisional_trials(workspace, now="2026-07-20T00:00:00+00:00")
+
+    trial = load_provisional_trial(workspace, "cand-trial")
+    assert result == {"checked": 1, "expired": 0, "needs_review": 0, "results": []}
+    assert trial is not None and trial["state"] == "provisional"

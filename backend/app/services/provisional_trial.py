@@ -25,6 +25,7 @@ from app.services.skill_evolution_registry import (
     STATE_PROVISIONAL,
     STATE_ROLLED_BACK,
     get_skill_evolution_entry,
+    load_skill_evolution_registry,
     restore_skill_evolution_entry,
     upsert_skill_evolution_entry,
 )
@@ -286,8 +287,14 @@ def _signal_id(candidate_id: str, kind: str, signal: dict[str, Any], occurred_at
         "runtime_task_id": signal.get("runtime_task_id"),
         "trace_id": signal.get("trace_id"),
         "status": signal.get("status"),
-        "occurred_at": occurred_at,
     }
+    # RuntimeTask/trace identities are durable replay keys.  Their terminal
+    # callback may be reconstructed after a worker restart with a different
+    # wall-clock timestamp, but it is still the same causal trial signal.
+    # Session-only/manual signals have no per-turn identity, so they retain the
+    # timestamp to avoid collapsing distinct turns in one long session.
+    if not (identity["runtime_task_id"] or identity["trace_id"]):
+        identity["occurred_at"] = occurred_at
     return hashlib.sha256(json.dumps(identity, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:24]
 
 
@@ -297,9 +304,10 @@ def _mark_needs_review(
     trial: dict[str, Any],
     entry: dict[str, Any],
     reason: str,
+    occurred_at: str | None = None,
     transaction: AgentAssetTransaction,
 ) -> dict[str, Any]:
-    stamp = _now_iso()
+    stamp = occurred_at or _now_iso()
     trial["state"] = STATE_NEEDS_REVIEW
     trial["updated_at"] = stamp
     trial["decision_reason"] = reason
@@ -334,6 +342,169 @@ def _mark_needs_review(
         transaction=transaction,
     )
     return _public_progress(trial, decision=STATE_NEEDS_REVIEW)
+
+
+def _mark_orphan_provisional_needs_review(
+    workspace: Path,
+    *,
+    entry: dict[str, Any],
+    reason: str,
+    occurred_at: str,
+    transaction: AgentAssetTransaction,
+) -> dict[str, Any]:
+    """Fail closed when a provisional registry entry has no valid trial ledger."""
+
+    skill_name = str(entry.get("skill_name") or "unknown")
+    candidate_id = str(entry.get("last_candidate_id") or "").strip()
+    upsert_skill_evolution_entry(
+        workspace,
+        skill_name=skill_name,
+        target_path=str(entry.get("target_path") or ""),
+        skill_origin=str(entry.get("skill_origin") or "unknown"),
+        evolvable=bool(entry.get("evolvable", True)),
+        active_version_hash=str(entry.get("active_version_hash") or "") or None,
+        last_candidate_id=candidate_id or None,
+        state=STATE_NEEDS_REVIEW,
+        metadata={
+            "commit_status": STATE_NEEDS_REVIEW,
+            "trial_state": STATE_NEEDS_REVIEW,
+            "trial_integrity_error": reason,
+            "trial_reviewed_at": occurred_at,
+        },
+        transaction=transaction,
+    )
+    if candidate_id:
+        update_skill_candidate_package_status(
+            workspace=workspace,
+            candidate_id=candidate_id,
+            status=STATE_NEEDS_REVIEW,
+            reason=reason,
+            extra_metadata={"trial_state": STATE_NEEDS_REVIEW, "trial_integrity_error": reason},
+            transaction=transaction,
+        )
+    from app.services.skill_lifecycle import record_skill_lifecycle_event
+
+    record_skill_lifecycle_event(
+        workspace,
+        skill_name=skill_name,
+        status=STATE_NEEDS_REVIEW,
+        note=reason,
+        transaction=transaction,
+    )
+    return {
+        "skill_name": skill_name,
+        "candidate_id": candidate_id or None,
+        "decision": STATE_NEEDS_REVIEW,
+    }
+
+
+def _provisional_entries(
+    workspace: Path,
+    *,
+    transaction: AgentAssetTransaction | None = None,
+) -> list[dict[str, Any]]:
+    registry = load_skill_evolution_registry(workspace, transaction=transaction)
+    skills = registry.get("skills") if isinstance(registry.get("skills"), dict) else {}
+    return [
+        entry
+        for entry in skills.values()
+        if isinstance(entry, dict) and str(entry.get("state") or "").strip().lower() == STATE_PROVISIONAL
+    ]
+
+
+def sweep_expired_provisional_trials(
+    workspace: Path,
+    *,
+    now: str | None = None,
+    transaction: AgentAssetTransaction | None = None,
+) -> dict[str, Any]:
+    """Move expired or mechanically unverifiable provisional Skills to review.
+
+    A no-signal trial must still terminate.  The sweep is transactionally
+    coupled to the registry, candidate manifest, lifecycle evidence, and trial
+    ledger.  It is safe to run on every heartbeat: terminal entries disappear
+    from the next sweep and therefore cannot emit duplicate decisions.
+    """
+
+    stamp = now or _now_iso()
+    stamp_dt = _parse_iso(stamp) or datetime.now(timezone.utc)
+    if transaction is None:
+        entries = _provisional_entries(workspace)
+        due = False
+        for entry in entries:
+            candidate_id = str(entry.get("last_candidate_id") or "").strip()
+            trial = load_provisional_trial(workspace, candidate_id) if candidate_id else None
+            if trial is None:
+                due = True
+                break
+            started = _parse_iso(str(trial.get("started_at") or ""))
+            window_days = max(1, int(trial.get("window_days") or DEFAULT_TRIAL_WINDOW_DAYS))
+            if started is None or stamp_dt > started + timedelta(days=window_days):
+                due = True
+                break
+        if not due:
+            return {"checked": len(entries), "expired": 0, "needs_review": 0, "results": []}
+
+        with AgentAssetTransaction(
+            workspace,
+            operation="skill_provisional_trial_expiry_sweep",
+            evidence_refs=("evolution/skill_registry.json", "evolution/skill_trials"),
+        ) as own_transaction:
+            result = sweep_expired_provisional_trials(
+                workspace,
+                now=stamp,
+                transaction=own_transaction,
+            )
+            if own_transaction.has_changes:
+                own_transaction.commit()
+            return result
+
+    entries = _provisional_entries(workspace, transaction=transaction)
+    expired = 0
+    results: list[dict[str, Any]] = []
+    for entry in entries:
+        skill_name = str(entry.get("skill_name") or "unknown")
+        candidate_id = str(entry.get("last_candidate_id") or "").strip()
+        trial = load_provisional_trial(workspace, candidate_id, transaction=transaction) if candidate_id else None
+        if trial is None:
+            results.append(
+                _mark_orphan_provisional_needs_review(
+                    workspace,
+                    entry=entry,
+                    reason="Provisional Skill has no valid version-bound trial ledger.",
+                    occurred_at=stamp,
+                    transaction=transaction,
+                )
+            )
+            continue
+
+        started = _parse_iso(str(trial.get("started_at") or ""))
+        window_days = max(1, int(trial.get("window_days") or DEFAULT_TRIAL_WINDOW_DAYS))
+        if started is not None and stamp_dt <= started + timedelta(days=window_days):
+            continue
+        expired += 1
+        _mark_needs_review(
+            workspace,
+            trial=trial,
+            entry=entry,
+            reason="Provisional Skill trial window expired before a terminal threshold was reached.",
+            occurred_at=stamp,
+            transaction=transaction,
+        )
+        results.append(
+            {
+                "skill_name": skill_name,
+                "candidate_id": candidate_id,
+                "decision": STATE_NEEDS_REVIEW,
+            }
+        )
+
+    return {
+        "checked": len(entries),
+        "expired": expired,
+        "needs_review": len(results),
+        "results": results,
+    }
 
 
 def record_provisional_trial_signal(
@@ -400,6 +571,7 @@ def record_provisional_trial_signal(
             trial=trial,
             entry=entry,
             reason="Provisional Skill content drifted from the version bound to this trial.",
+            occurred_at=stamp,
             transaction=transaction,
         )
 
@@ -411,6 +583,7 @@ def record_provisional_trial_signal(
             trial=trial,
             entry=entry,
             reason="Provisional Skill trial window expired before a terminal threshold was reached.",
+            occurred_at=stamp,
             transaction=transaction,
         )
 

@@ -2,13 +2,25 @@
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
+import hashlib
 import json
+import logging
+import os
 import uuid
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
+from functools import wraps
 from pathlib import Path
 from typing import Any
+
+
+logger = logging.getLogger(__name__)
+
+LIFECYCLE_RECOVERY_SCHEMA = "hive.memory.lifecycle-recovery.v1"
 
 
 class LifecycleStatus(StrEnum):
@@ -22,6 +34,72 @@ class LifecycleStatus(StrEnum):
 # BaseLevel ring size (dynamic-memory-activation design §4.3): the K most
 # recent access timestamps feed the power-law frequency term.
 RECENT_ACCESS_RING_SIZE = 8
+
+
+class LifecycleSnapshotCorruptionError(ValueError):
+    """The lifecycle sidecar is syntactically or structurally incomplete."""
+
+
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _atomic_write_bytes(path: Path, content: bytes) -> None:
+    """Durably replace one file without exposing a partial snapshot."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with temporary.open("wb") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        _fsync_directory(path.parent)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _last_good_path(path: Path) -> Path:
+    return path.with_name(f"{path.name}.last-good")
+
+
+def _refresh_last_good(path: Path, content: bytes) -> None:
+    backup = _last_good_path(path)
+    if backup.exists() and backup.read_bytes() == content:
+        return
+    _atomic_write_bytes(backup, content)
+
+
+def _recovery_root(path: Path) -> Path:
+    return path.parent / f"{path.stem}-recovery"
+
+
+@contextlib.contextmanager
+def _exclusive_lifecycle_lock(path: Path) -> Iterator[None]:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = path.with_name(f".{path.name}.lock").open("a+b")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        handle.close()
+
+
+def _serialized_mutation(method: Callable[..., Any]) -> Callable[..., Any]:
+    """Reload and mutate one lifecycle snapshot under its cross-process lock."""
+
+    @wraps(method)
+    def wrapped(self: MemoryLifecycleStore, *args: Any, **kwargs: Any) -> Any:
+        with self._serialized_write():
+            return method(self, *args, **kwargs)
+
+    return wrapped
 
 
 @dataclass(slots=True)
@@ -47,8 +125,10 @@ class MemoryLifecycleStore:
     def __init__(self, path: Path | None = None) -> None:
         self._path = Path(path) if path is not None else None
         self._entries: dict[str, MemoryLifecycleEntry] = {}
+        self._mutation_depth = 0
         self._load()
 
+    @_serialized_mutation
     def create_sketch(
         self,
         content: str,
@@ -57,14 +137,17 @@ class MemoryLifecycleStore:
         entry_id: str | None = None,
         metadata: dict[str, str] | None = None,
     ) -> MemoryLifecycleEntry:
-        return self._create(
+        entry = self._create(
             content,
             LifecycleStatus.SKETCH,
             entry_id=entry_id,
             expires_at=expires_at,
             metadata=metadata,
         )
+        self._flush()
+        return entry
 
+    @_serialized_mutation
     def create_active(
         self,
         content: str,
@@ -88,9 +171,10 @@ class MemoryLifecycleStore:
         if superseded_by:
             entry.superseded_by = superseded_by
             entry.updated_at = datetime.now(UTC)
-            self._flush()
+        self._flush()
         return entry
 
+    @_serialized_mutation
     def promote(self, entry_id: str, *, approved_by: str) -> MemoryLifecycleEntry:
         entry = self.get(entry_id)
         entry.status = LifecycleStatus.ACTIVE
@@ -100,6 +184,7 @@ class MemoryLifecycleStore:
         self._flush()
         return entry
 
+    @_serialized_mutation
     def supersede(self, entry_id: str, new_content: str) -> MemoryLifecycleEntry:
         old = self.get(entry_id)
         replacement = self._create(
@@ -115,6 +200,7 @@ class MemoryLifecycleStore:
         self._flush()
         return replacement
 
+    @_serialized_mutation
     def mark_retired(
         self,
         entry_id: str,
@@ -146,6 +232,7 @@ class MemoryLifecycleStore:
         self._flush()
         return entry
 
+    @_serialized_mutation
     def record_conflict(
         self,
         entry_id: str,
@@ -174,6 +261,7 @@ class MemoryLifecycleStore:
         self._flush()
         return entry
 
+    @_serialized_mutation
     def mark_reference_revalidation_required(
         self,
         entry_id: str,
@@ -201,6 +289,7 @@ class MemoryLifecycleStore:
         self._flush()
         return entry
 
+    @_serialized_mutation
     def discard_expired(self, *, now: datetime | None = None) -> list[str]:
         current = now or datetime.now(UTC)
         discarded: list[str] = []
@@ -213,6 +302,7 @@ class MemoryLifecycleStore:
             self._flush()
         return discarded
 
+    @_serialized_mutation
     def bump_access(self, entry_id: str, *, now: datetime | None = None, create_if_missing: bool = False) -> bool:
         """Increment access telemetry for one entry (D1: telemetry lives here).
 
@@ -242,6 +332,7 @@ class MemoryLifecycleStore:
         self._flush()
         return True
 
+    @_serialized_mutation
     def apply_feedback_credit(self, entry_id: str, *, delta: float, now: datetime | None = None) -> bool:
         """Accumulate owner-feedback credit on one entry (M3 FeedbackCredit).
 
@@ -282,6 +373,7 @@ class MemoryLifecycleStore:
             }
         return out
 
+    @_serialized_mutation
     def upsert_active(self, entry_id: str, *, content: str, metadata: dict[str, str]) -> MemoryLifecycleEntry:
         """Ensure an ACTIVE record for `entry_id` carries the given metadata (D2).
 
@@ -338,31 +430,125 @@ class MemoryLifecycleStore:
         if last_accessed is not None:
             entry.last_accessed = last_accessed
         self._entries[entry.id] = entry
-        self._flush()
         return entry
+
+    @contextlib.contextmanager
+    def _serialized_write(self) -> Iterator[None]:
+        if self._mutation_depth:
+            yield
+            return
+        self._mutation_depth = 1
+        try:
+            if self._path is None:
+                yield
+                return
+            with _exclusive_lifecycle_lock(self._path):
+                self._load_unlocked()
+                yield
+        finally:
+            self._mutation_depth = 0
 
     def _flush(self) -> None:
         if self._path is None:
             return
-        self._path.parent.mkdir(parents=True, exist_ok=True)
+        if self._mutation_depth == 0:
+            raise RuntimeError("lifecycle writes must run inside the serialized mutation boundary")
         records = [_serialize_entry(entry) for entry in self._entries.values()]
-        self._path.write_text(json.dumps(records, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+        payload = (json.dumps(records, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8")
+        _atomic_write_bytes(self._path, payload)
+        try:
+            _refresh_last_good(self._path, payload)
+        except OSError:
+            # Canonical commit already succeeded. Keep serving it and emit a
+            # visible operational error; the next load refreshes last-good.
+            logger.exception("failed to refresh lifecycle last-good snapshot: %s", self._path)
 
     def _load(self) -> None:
+        if self._path is None:
+            return
+        with _exclusive_lifecycle_lock(self._path):
+            self._load_unlocked()
+
+    def _load_unlocked(self) -> None:
+        self._entries.clear()
         if self._path is None or not self._path.exists():
             return
+        raw = self._path.read_bytes()
         try:
-            records = json.loads(self._path.read_text(encoding="utf-8"))
-        except (OSError, ValueError, TypeError):
+            entries = _parse_lifecycle_snapshot(raw)
+        except LifecycleSnapshotCorruptionError as exc:
+            self._recover_corrupt_snapshot(raw=raw, error=exc)
             return
-        if not isinstance(records, list):
+        self._entries.update(entries)
+        try:
+            _refresh_last_good(self._path, raw)
+        except OSError:
+            logger.exception("failed to protect lifecycle last-good snapshot: %s", self._path)
+
+    def _recover_corrupt_snapshot(self, *, raw: bytes, error: LifecycleSnapshotCorruptionError) -> None:
+        if self._path is None:  # pragma: no cover - guarded by _load_unlocked
             return
-        for record in records:
+        event_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ") + f"-{uuid.uuid4().hex}"
+        recovery_root = _recovery_root(self._path)
+        quarantine_root = recovery_root / "quarantine"
+        quarantine_root.mkdir(parents=True, exist_ok=True)
+        primary_quarantine = quarantine_root / f"{event_id}.primary.corrupt"
+        os.replace(self._path, primary_quarantine)
+        _fsync_directory(self._path.parent)
+        _fsync_directory(quarantine_root)
+
+        backup = _last_good_path(self._path)
+        backup_quarantine: Path | None = None
+        recovered_from_backup = False
+        restore_failure: OSError | None = None
+        if backup.exists():
+            backup_raw = backup.read_bytes()
             try:
-                entry = _deserialize_entry(record)
-            except (KeyError, TypeError, ValueError):
-                continue
-            self._entries[entry.id] = entry
+                backup_entries = _parse_lifecycle_snapshot(backup_raw)
+            except LifecycleSnapshotCorruptionError:
+                backup_quarantine = quarantine_root / f"{event_id}.backup.corrupt"
+                os.replace(backup, backup_quarantine)
+                _fsync_directory(backup.parent)
+                _fsync_directory(quarantine_root)
+            else:
+                try:
+                    _atomic_write_bytes(self._path, backup_raw)
+                except OSError as exc:
+                    restore_failure = exc
+                else:
+                    self._entries.update(backup_entries)
+                    recovered_from_backup = True
+
+        receipt = {
+            "schema_version": LIFECYCLE_RECOVERY_SCHEMA,
+            "event_id": event_id,
+            "detected_at": datetime.now(UTC).isoformat(),
+            "source_file": self._path.name,
+            "corrupt_sha256": hashlib.sha256(raw).hexdigest(),
+            "corruption": str(error),
+            "quarantine_path": primary_quarantine.relative_to(self._path.parent).as_posix(),
+            "backup_quarantine_path": (
+                backup_quarantine.relative_to(self._path.parent).as_posix() if backup_quarantine else None
+            ),
+            "recovered_from_backup": recovered_from_backup,
+            "restore_error": str(restore_failure) if restore_failure else None,
+        }
+        receipt_path = recovery_root / f"{event_id}.receipt.json"
+        try:
+            _atomic_write_bytes(
+                receipt_path,
+                (json.dumps(receipt, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8"),
+            )
+        except OSError:
+            logger.exception("failed to persist lifecycle corruption receipt: %s", receipt_path)
+        logger.error(
+            "quarantined corrupt lifecycle snapshot path=%s quarantine=%s recovered_from_backup=%s",
+            self._path,
+            primary_quarantine,
+            recovered_from_backup,
+        )
+        if restore_failure is not None:
+            raise restore_failure
 
 
 def lifecycle_path(data_root: Path, agent_id: uuid.UUID | str) -> Path:
@@ -393,8 +579,9 @@ def _migrate_legacy_lifecycle_if_needed(data_root: Path, agent_id: uuid.UUID | s
         return canonical
     legacy = legacy_lifecycle_path(data_root, agent_id)
     if legacy.exists():
-        canonical.parent.mkdir(parents=True, exist_ok=True)
-        canonical.write_text(legacy.read_text(encoding="utf-8"), encoding="utf-8")
+        with _exclusive_lifecycle_lock(canonical):
+            if not canonical.exists():
+                _atomic_write_bytes(canonical, legacy.read_bytes())
     return canonical
 
 
@@ -546,6 +733,39 @@ def _deserialize_entry(record: dict[str, Any]) -> MemoryLifecycleEntry:
         created_at=_parse_dt(record.get("created_at")) or datetime.now(UTC),
         updated_at=_parse_dt(record.get("updated_at")) or datetime.now(UTC),
     )
+
+
+def _parse_lifecycle_snapshot(raw: bytes) -> dict[str, MemoryLifecycleEntry]:
+    try:
+        records = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise LifecycleSnapshotCorruptionError("lifecycle snapshot is not valid UTF-8 JSON") from exc
+    if not isinstance(records, list):
+        raise LifecycleSnapshotCorruptionError("lifecycle snapshot root must be a list")
+
+    entries: dict[str, MemoryLifecycleEntry] = {}
+    for index, record in enumerate(records):
+        if not isinstance(record, dict):
+            raise LifecycleSnapshotCorruptionError(f"lifecycle record {index} must be an object")
+        raw_id = record.get("id")
+        if not isinstance(raw_id, str) or not raw_id.strip():
+            raise LifecycleSnapshotCorruptionError(f"lifecycle record {index} has no valid id")
+        if "status" not in record:
+            raise LifecycleSnapshotCorruptionError(f"lifecycle record {index} has no status")
+        if not isinstance(record.get("metadata", {}), dict):
+            raise LifecycleSnapshotCorruptionError(f"lifecycle record {index} metadata must be an object")
+        if not isinstance(record.get("supersedes", []), list):
+            raise LifecycleSnapshotCorruptionError(f"lifecycle record {index} supersedes must be a list")
+        if not isinstance(record.get("recent_accesses", []), list):
+            raise LifecycleSnapshotCorruptionError(f"lifecycle record {index} recent_accesses must be a list")
+        try:
+            entry = _deserialize_entry(record)
+        except (AttributeError, KeyError, OverflowError, TypeError, ValueError) as exc:
+            raise LifecycleSnapshotCorruptionError(f"lifecycle record {index} is invalid") from exc
+        if entry.id in entries:
+            raise LifecycleSnapshotCorruptionError(f"duplicate lifecycle record id: {entry.id}")
+        entries[entry.id] = entry
+    return entries
 
 
 def _dt(value: datetime | None) -> str | None:

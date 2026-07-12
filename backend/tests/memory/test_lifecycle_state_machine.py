@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
+from app.memory import lifecycle_store as lifecycle_store_module
 from app.memory.lifecycle_store import (
     LifecycleStatus,
     MemoryLifecycleStore,
@@ -153,3 +157,126 @@ def test_lifecycle_store_records_conflict_and_reference_revalidation(tmp_path: P
     assert entry.metadata["conflict_source_refs"] == "workspace/new.md"
     assert entry.metadata["reference_status"] == "revalidation_required"
     assert entry.metadata["revalidation_reason"] == "source file moved"
+
+
+def test_lifecycle_atomic_replace_failure_preserves_last_good_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "lifecycle.json"
+    store = MemoryLifecycleStore(path)
+    store.create_active("durable", entry_id="mem-1")
+    before = path.read_bytes()
+    real_replace = lifecycle_store_module.os.replace
+
+    def crash_before_primary_replace(source: str | Path, target: str | Path) -> None:
+        if Path(target) == path:
+            raise OSError("simulated process crash before primary replace")
+        real_replace(source, target)
+
+    monkeypatch.setattr(lifecycle_store_module.os, "replace", crash_before_primary_replace)
+
+    with pytest.raises(OSError, match="simulated process crash"):
+        store.bump_access("mem-1", now=datetime(2026, 7, 12, tzinfo=UTC))
+
+    assert path.read_bytes() == before
+    assert json.loads(path.read_text(encoding="utf-8"))[0]["access_count"] == 0
+    assert list(tmp_path.glob(f".{path.name}.*.tmp")) == []
+
+
+def test_lifecycle_corruption_recovers_last_good_and_persists_evidence(tmp_path: Path) -> None:
+    path = tmp_path / "lifecycle.json"
+    store = MemoryLifecycleStore(path)
+    store.create_active("durable", entry_id="mem-1")
+    store.bump_access("mem-1", now=datetime(2026, 7, 12, tzinfo=UTC))
+    corrupt_bytes = b'{"partial"'
+    path.write_bytes(corrupt_bytes)
+
+    recovered = MemoryLifecycleStore(path)
+
+    assert recovered.get("mem-1").access_count == 1
+    assert json.loads(path.read_text(encoding="utf-8"))[0]["id"] == "mem-1"
+    recovery_root = tmp_path / "lifecycle-recovery"
+    quarantined = list((recovery_root / "quarantine").glob("*.primary.corrupt"))
+    receipts = list(recovery_root.glob("*.receipt.json"))
+    assert len(quarantined) == 1
+    assert quarantined[0].read_bytes() == corrupt_bytes
+    assert len(receipts) == 1
+    receipt = json.loads(receipts[0].read_text(encoding="utf-8"))
+    assert receipt["schema_version"] == "hive.memory.lifecycle-recovery.v1"
+    assert receipt["recovered_from_backup"] is True
+
+
+def test_lifecycle_corruption_without_backup_is_quarantined_before_reinitialization(tmp_path: Path) -> None:
+    path = tmp_path / "lifecycle.json"
+    corrupt_bytes = b"not-json-and-must-survive"
+    path.write_bytes(corrupt_bytes)
+
+    store = MemoryLifecycleStore(path)
+
+    assert store.entries() == []
+    quarantined = list((tmp_path / "lifecycle-recovery" / "quarantine").glob("*.primary.corrupt"))
+    assert len(quarantined) == 1
+    assert quarantined[0].read_bytes() == corrupt_bytes
+    assert not path.exists()
+
+    store.create_active("new generation", entry_id="mem-new")
+
+    assert MemoryLifecycleStore(path).get("mem-new").content == "new generation"
+    assert quarantined[0].read_bytes() == corrupt_bytes
+
+
+def test_lifecycle_invalid_record_quarantines_the_whole_snapshot(tmp_path: Path) -> None:
+    path = tmp_path / "lifecycle.json"
+    store = MemoryLifecycleStore(path)
+    store.create_active("must not partially load", entry_id="mem-valid")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload.append({"id": "missing-status"})
+    path.with_name(f"{path.name}.last-good").unlink(missing_ok=True)
+    malformed_snapshot = json.dumps(payload).encode("utf-8")
+    path.write_bytes(malformed_snapshot)
+
+    reloaded = MemoryLifecycleStore(path)
+
+    assert reloaded.entries() == []
+    quarantined = list((tmp_path / "lifecycle-recovery" / "quarantine").glob("*.primary.corrupt"))
+    assert len(quarantined) == 1
+    assert quarantined[0].read_bytes() == malformed_snapshot
+
+
+def test_lifecycle_mutation_reloads_latest_snapshot_before_write(tmp_path: Path) -> None:
+    path = tmp_path / "lifecycle.json"
+    seed = MemoryLifecycleStore(path)
+    seed.create_active("shared", entry_id="mem-1")
+    first = MemoryLifecycleStore(path)
+    second = MemoryLifecycleStore(path)
+
+    assert first.bump_access("mem-1", now=datetime(2026, 7, 12, 1, tzinfo=UTC))
+    assert second.bump_access("mem-1", now=datetime(2026, 7, 12, 2, tzinfo=UTC))
+
+    final = MemoryLifecycleStore(path).get("mem-1")
+    assert final.access_count == 2
+    assert final.last_accessed == datetime(2026, 7, 12, 2, tzinfo=UTC)
+
+
+def test_lifecycle_supersede_commits_one_canonical_snapshot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "lifecycle.json"
+    store = MemoryLifecycleStore(path)
+    store.create_active("old", entry_id="mem-old")
+    real_replace = lifecycle_store_module.os.replace
+    primary_replaces = 0
+
+    def count_primary_replaces(source: str | Path, target: str | Path) -> None:
+        nonlocal primary_replaces
+        if Path(target) == path:
+            primary_replaces += 1
+        real_replace(source, target)
+
+    monkeypatch.setattr(lifecycle_store_module.os, "replace", count_primary_replaces)
+
+    replacement = store.supersede("mem-old", "new")
+
+    assert primary_replaces == 1
+    reloaded = MemoryLifecycleStore(path)
+    assert reloaded.get("mem-old").status == LifecycleStatus.SUPERSEDED
+    assert reloaded.get("mem-old").superseded_by == replacement.id
+    assert reloaded.get(replacement.id).parent_id == "mem-old"

@@ -842,11 +842,13 @@ flowchart LR
 ### [R-026] lifecycle.json 非原子写 + 读损静默吞 → 记忆遥测整体丢失
 
 - 严重级别：P1
-- 状态：断点
+- 原始状态：断点
 - 用户/生产症状：写入中崩溃损坏 `lifecycle.json` → 下次读播种空 → `_flush` 覆盖损坏 → 永久丢失全部 access/credit/lifecycle 遥测（激活方程 BaseLevel 依赖它）。本域唯一真数据丢失 bug。
 - 根因：[主审复核] `lifecycle_store.py:344-349` 整文件 `write_text` 无 tmp+replace；`_load` 遇 JSONDecodeError 静默返回（:354-357）。对照 `session_feedback.prune` 已用原子写（:253-257）。
-- 精确代码位置：`backend/app/memory/lifecycle_store.py:344-349,354-357`。
+- 精确代码位置（修复后）：`backend/app/memory/lifecycle_store.py:_atomic_write_bytes,_exclusive_lifecycle_lock,MemoryLifecycleStore._serialized_write,_flush,_load_unlocked,_recover_corrupt_snapshot,_parse_lifecycle_snapshot`。
 - 一次性完整关闭方案：改 tmp + `os.replace` 原子写；读损隔离（备份损坏文件、不覆盖）；补崩溃中途写的恢复测试。
+- 修复状态（2026-07-12）：**R-026 七原子闭环**。输入覆盖 create/promote/supersede/retire/access/feedback/maintenance 的所有 mutation；权威仍是单 Agent `memory/control/lifecycle.json`，并由同路径 `flock` 串行化跨进程读改写；执行统一进入 `_serialized_write`，每次先在锁内重读最新 snapshot，再以同目录 temp→file fsync→`os.replace`→directory fsync 原子提交，legacy sidecar 迁移也复用同一原子入口；证据是 canonical snapshot、`lifecycle.json.last-good`、`lifecycle-recovery/quarantine/*.corrupt` 与 hash-bound recovery receipt；恢复对整份快照严格校验，任一坏记录都隔离整份文件，有有效 last-good 时自动恢复，无备份时先保全坏字节再允许建立新 generation，绝不原地覆盖；消费链由 BaseLevel、access log、owner feedback、heartbeat/lifecycle maintenance 与 knowledge read model 真实回归；验收覆盖 replace 前崩溃、损坏主文件、无备份、坏单条记录、陈旧实例丢更新，以及 supersede 单 canonical commit。
+- 验收证据：首轮 Red `5 failed, 7 passed`；补充“同一领域动作只允许一个 canonical commit”Red `1 failed`（旧 `supersede` 实际替换主文件 2 次）；Green lifecycle `13 passed`，BaseLevel/access/maintenance/feedback/heartbeat/read-model 扩展 `93 passed`；backend 全量 `6669 passed, 1 skipped`；`ruff check app tests`、`ruff format --check app tests`（1546 files）与 `git diff --check` 全绿。独立提交主题：`fix(R-026): make lifecycle telemetry crash-safe`。
 
 ### [R-027] DB Task/BusinessTask 消费原子断裂（headless）
 
@@ -1010,7 +1012,7 @@ Codebase graph 校正时状态为 ready（43,281 nodes / 166,753 edges）；`det
 |---|---|---|
 | **安全门（最高优先）** | **NO-GO** | **R-015 完成成熟 sanitizer/raw HTML 禁用、URL/image policy、长期 bearer token 退出 DOM/query URL、全部消费面 XSS 回归及 staging 最终 CSP header 验证；R-016 统一规范化后守卫、authority 覆盖新建与残留扫描；R-018 channel secret 加密回填/scrub；R-021 完成 MCP metadata trust contract，而不是只做字符转义** |
 | 代码/架构候选门 | NO-GO | R-001~R-007、R-009~R-028 的当前范围缺口全部关闭；R-008 仅按“已知缺失 + 文案诚实”处理，不把 Company KB 正式建设伪装成当前债；不存在被默认豁免的 P2/P3；ruff format、全量测试、build 与架构门全部绿 |
-| 自进化基石门 | NO-GO | R-004/R-007/R-017/R-024 已有本地闭环证据；仍须关闭 R-026 lifecycle 原子写/损坏隔离，并完成 staging 故障注入 |
+| 自进化基石门 | 本地代码候选通过；生产仍 NO-GO | R-004/R-007/R-017/R-024/R-026 已有本地闭环证据；仍须完成 staging lifecycle kill/corruption 故障注入与持久盘恢复核验 |
 | Migration/backfill门 | 当前代码候选通过；生产仍 NO-GO | Approval/HR/Dream durable job、HR preview TTL、channel encryption、RLS complete coverage 与 R-023 strict/shared/operator-nullable 分类、payload-free dry-run、回填/冲突 quarantine、secure downgrade 均已有本地/真实 PG 证据；当前单 head=`hr_draft_recovery_0712`，仍需 staging dry-run 与生产只读分布核验 |
 | Staging fault-injection门 | NO-GO | 多副本startup（R-001）、claim lease（R-004/R-023）、approval crash、Dream kill、outbox前后crash、lifecycle.json 崩溃写、15 journeys |
 | Railway生产门 | 未验证/NO-GO | backend/backend-api/frontend同一候选均SUCCESS；health、schema、worker日志、持久盘证据 |
@@ -1045,7 +1047,7 @@ Codebase graph 校正时状态为 ready（43,281 nodes / 166,753 edges）；`det
 
 ## 16. 28 项原子缺口修复执行账本
 
-本节记录原始审计全部 28 项的实际落地状态：17 个断点、10 个局部闭环、1 个已知缺失。原始严重级别与原子状态保留为审计快照；只有同时具备实现、回归测试、报告证据和独立提交，才把修复状态改为闭环。Company Knowledge Base 本体按 owner 边界不在本轮开发，但 R-008 的诚实隔离、文案与防伪装验收仍必须关闭。当前进度：**25/28**。
+本节记录原始审计全部 28 项的实际落地状态：17 个断点、10 个局部闭环、1 个已知缺失。原始严重级别与原子状态保留为审计快照；只有同时具备实现、回归测试、报告证据和独立提交，才把修复状态改为闭环。Company Knowledge Base 本体按 owner 边界不在本轮开发，但 R-008 的诚实隔离、文案与防伪装验收仍必须关闭。当前进度：**26/28**。
 
 | ID | 修复状态 | 独立提交主题 | 机械证据摘要 |
 |---|---|---|---|
@@ -1074,6 +1076,6 @@ Codebase graph 校正时状态为 ready（43,281 nodes / 166,753 edges）；`det
 | R-023 | 闭环 | `fix(R-023): eliminate implicit tenant NULL scope` | 114 direct tenant 表=105 strict+7 shared+2 operator-nullable；44 legacy tenant-owned 全部 NOT NULL；session persist Gate + Agent/RuntimeTask fail-closed；fixed-point backfill、冲突/孤儿 quarantine receipt、secure downgrade；真实 PG 2、定向 36；backend 6648；ruff/format/head/diff 绿 |
 | R-024 | 闭环 | `fix(R-024): close provisional skill trials` | 校正原报告：web chat 已有 terminal consumer；Red 5 failed；全 loaded provisional 扇出 + durable replay exact-once + heartbeat 超窗/孤儿 ledger fail-closed；扩展 252；backend 6653；ruff/format 绿 |
 | R-025 | 闭环 | `fix(R-025): reconcile unfinished HR creations` | 校正 R-003 后真实剩余 seam；7d TTL+legacy backfill、worker SKIP LOCKED reconciler、confirmation fail-closed、missing-job/terminal/orphan Agent 收敛、目录 Resume/Retry/Remove；Red 9+2；扩展 105；backend 6663；frontend 650+build；真实 PG/head/ruff/format 绿 |
-| R-026 | 待修复 | — | — |
+| R-026 | 闭环 | `fix(R-026): make lifecycle telemetry crash-safe` | Red 5 failed + 语义单提交 Red 1 failed；temp/fsync/replace + last-good + corrupt quarantine/receipt + strict whole-snapshot validation + flock stale-reload；扩展 93；backend 6669；ruff/format/diff 绿 |
 | R-027 | 待修复 | — | — |
 | R-028 | 待修复 | — | — |

@@ -1,9 +1,11 @@
 """Enterprise management API routes: LLM pool, enterprise info, approvals, audit logs."""
 
+from functools import partial
 import logging
 from pathlib import Path
 import uuid
 
+import anyio
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
@@ -1139,11 +1141,29 @@ async def get_legacy_company_files_status(
 ):
     """Report isolated files left by the retired Company KB file tree."""
 
-    from app.services.legacy_company_files import scan_legacy_company_files
+    from app.services.legacy_company_files import (
+        LegacyCompanyFilesChangedError,
+        LegacyCompanyFilesUnavailableError,
+        scan_legacy_company_files,
+    )
 
     _require_tenant_admin(current_user)
     target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
-    snapshot = scan_legacy_company_files(_legacy_company_files_dir(target_tenant_id))
+    try:
+        snapshot = await anyio.to_thread.run_sync(
+            scan_legacy_company_files,
+            _legacy_company_files_dir(target_tenant_id),
+        )
+    except LegacyCompanyFilesChangedError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="Retired shared files changed while they were being checked; retry the check",
+        ) from exc
+    except LegacyCompanyFilesUnavailableError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Retired shared files are temporarily unavailable; retry later",
+        ) from exc
     return {
         "available": snapshot.file_count > 0,
         "file_count": snapshot.file_count,
@@ -1167,45 +1187,54 @@ async def export_legacy_company_files(
 
     from app.services.legacy_company_files import (
         LegacyCompanyFilesChangedError,
+        LegacyCompanyFilesUnavailableError,
         build_legacy_company_files_export,
     )
 
     _require_tenant_admin(current_user)
     target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
     try:
-        archive = build_legacy_company_files_export(
-            _legacy_company_files_dir(target_tenant_id),
-            tenant_id=str(target_tenant_id),
+        archive = await anyio.to_thread.run_sync(
+            partial(
+                build_legacy_company_files_export,
+                _legacy_company_files_dir(target_tenant_id),
+                tenant_id=str(target_tenant_id),
+            )
         )
     except LegacyCompanyFilesChangedError as exc:
         raise HTTPException(status_code=409, detail="Legacy files changed during export; retry the export") from exc
+    except LegacyCompanyFilesUnavailableError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Retired shared files are temporarily unavailable; retry the export later",
+        ) from exc
     if archive.snapshot.file_count == 0:
         archive.stream.close()
         raise HTTPException(status_code=404, detail="No retired company files are available for export")
 
-    db.add(
-        AuditLog(
-            tenant_id=target_tenant_id,
-            user_id=current_user.id,
-            action="legacy_company_files_exported",
-            details={
-                "schema": "hive.legacy_company_files_export.v1",
-                "file_count": archive.snapshot.file_count,
-                "total_bytes": archive.snapshot.total_bytes,
-                "excluded_symlink_count": archive.snapshot.excluded_symlink_count,
-                "read_only": True,
-            },
-        )
-    )
     try:
+        db.add(
+            AuditLog(
+                tenant_id=target_tenant_id,
+                user_id=current_user.id,
+                action="legacy_company_files_exported",
+                details={
+                    "schema": "hive.legacy_company_files_export.v1",
+                    "file_count": archive.snapshot.file_count,
+                    "total_bytes": archive.snapshot.total_bytes,
+                    "excluded_symlink_count": archive.snapshot.excluded_symlink_count,
+                    "read_only": True,
+                },
+            )
+        )
         await db.commit()
-    except Exception:
+    except BaseException:
         archive.stream.close()
         raise
 
-    def stream_archive():
+    async def stream_archive():
         try:
-            while chunk := archive.stream.read(1024 * 1024):
+            while chunk := await anyio.to_thread.run_sync(archive.stream.read, 1024 * 1024):
                 yield chunk
         finally:
             archive.stream.close()

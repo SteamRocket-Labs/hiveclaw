@@ -2771,7 +2771,16 @@
       "summary": "{{count}} 个文件 · {{size}}",
       "export": "导出只读归档",
       "exporting": "正在准备归档…",
-      "exportFailed": "导出失败"
+      "exportFailed": "导出失败",
+      "loadingTitle": "正在检查已退役的共享文件…",
+      "loadingBody": "正在读取该公司的权威隔离区状态。",
+      "forbiddenTitle": "无权访问已退役的共享文件",
+      "forbiddenBody": "这不是空结果。只有公司管理员才能检查或导出已退役文件隔离区。",
+      "unavailableTitle": "暂时无法读取已退役的共享文件",
+      "unavailableBody": "目前无法验证隔离区状态，因此不会把它判定为空；请重试以恢复权威结果。",
+      "retry": "重试",
+      "emptyTitle": "没有已退役的共享文件",
+      "emptyBody": "这是已退役共享文件隔离区的已验证空结果，并不表示企业知识库状态。"
     },
     "audit": {
       "title": "审计日志",

@@ -2744,7 +2744,16 @@
       "summary": "{{count}} files · {{size}}",
       "export": "Export read-only archive",
       "exporting": "Preparing archive…",
-      "exportFailed": "Export failed"
+      "exportFailed": "Export failed",
+      "loadingTitle": "Checking retired shared files…",
+      "loadingBody": "Reading the authoritative quarantine status for this company.",
+      "forbiddenTitle": "Retired shared files access denied",
+      "forbiddenBody": "This is not an empty result. Company administrator access is required to inspect or export the retired-file quarantine.",
+      "unavailableTitle": "Retired shared files are temporarily unavailable",
+      "unavailableBody": "The quarantine status could not be verified. No empty-state conclusion was made; retry to restore the authoritative result.",
+      "retry": "Retry",
+      "emptyTitle": "No retired shared files",
+      "emptyBody": "This is a verified empty result for the retired shared-file quarantine, not a Company Knowledge Base status."
     },
     "audit": {
       "title": "Audit Log",

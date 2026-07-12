@@ -380,7 +380,12 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false, chrome
         } catch (e: unknown) { console.error('[EnterpriseSettings] company intro save failed:', e); }
         setCompanyIntroSaving(false);
     };
-    const { data: legacyCompanyFilesStatus } = useQuery({
+    const {
+        data: legacyCompanyFilesStatus,
+        error: legacyCompanyFilesError,
+        isLoading: legacyCompanyFilesLoading,
+        refetch: retryLegacyCompanyFilesStatus,
+    } = useQuery({
         queryKey: ['legacy-company-files', selectedTenantId],
         queryFn: () => enterpriseApi.getLegacyCompanyFilesStatus(selectedTenantId || undefined),
         enabled: activeTab === 'info' && Boolean(selectedTenantId),
@@ -737,8 +742,11 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false, chrome
                         legacyCompanyFilesCard={(
                             <LegacyCompanyFilesExportCard
                                 status={legacyCompanyFilesStatus}
+                                loading={legacyCompanyFilesLoading}
+                                error={legacyCompanyFilesError}
                                 exporting={legacyCompanyFilesExporting}
                                 onExport={exportLegacyCompanyFiles}
+                                onRetry={() => { void retryLegacyCompanyFilesStatus(); }}
                             />
                         )}
                         themeColorPicker={<ThemeColorPicker />}

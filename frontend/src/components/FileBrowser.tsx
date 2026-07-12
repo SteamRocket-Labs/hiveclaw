@@ -2,7 +2,6 @@
  * Unified FileBrowser component
  * Replaces duplicated file browsing/editing logic across:
  * - Agent Workspace, Skills, Soul, Memory tabs
- * - Enterprise Knowledge Base
  */
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useTranslation } from 'react-i18next';

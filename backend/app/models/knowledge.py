@@ -1,9 +1,10 @@
-"""Personal and organization knowledge-base records.
+"""Personal Knowledge records with compatibility-reserved scope columns.
 
-The first implementation is PostgreSQL-native: canonical Markdown stays on
-disk, while these tables provide searchable slices, relationship metadata, and
-permission grants. Vector indexes are intentionally not required for Personal
-KB so local and production Postgres deployments do not need pgvector to boot.
+The current runtime accepts only ``person`` scope. Team/organization values are
+reserved for the future Company KB and do not imply an implemented consumer.
+Canonical Markdown stays on disk while these tables provide searchable slices,
+relationship metadata, and permission grants. Vector indexes are intentionally
+not required, so local and production Postgres do not need pgvector to boot.
 """
 
 from __future__ import annotations
@@ -31,7 +32,7 @@ from app.database import Base
 
 
 class KnowledgeDocument(Base):
-    """One canonical Markdown artifact inside a person/team/org scope."""
+    """One canonical Markdown artifact; the current runtime uses person scope."""
 
     __tablename__ = "knowledge_documents"
     __table_args__ = (
@@ -236,7 +237,7 @@ class KnowledgeIndexJob(Base):
 
 
 class KnowledgeGrant(Base):
-    """Permission edge for owner, agent, user, team, or org access to knowledge."""
+    """Personal Knowledge permission edge; broader grantee fields are compatibility-reserved."""
 
     __tablename__ = "knowledge_grants"
     __table_args__ = (

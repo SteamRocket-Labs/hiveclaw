@@ -126,9 +126,9 @@ _ADDITIONAL_FORCED_TENANT_TABLES: tuple[str, ...] = (
     "capability_factors",
     "capability_factor_reviews",
     "capability_promotion_proposals",
-    # Personal / company knowledge-base core records. These are tenant-scoped
-    # and scope-scoped; keep forced on fresh create_all bootstrap so owner-role
-    # app connections cannot bypass KB ACL decisions.
+    # Personal Knowledge core records. Scope columns remain schema-compatible
+    # with future organization knowledge, but no Company KB runtime exists yet.
+    # Keep RLS forced so owner-role connections cannot bypass Personal KB ACLs.
     "knowledge_documents",
     "knowledge_segments",
     "knowledge_entities",

@@ -63,6 +63,21 @@
   font-size: var(--text-meta);
 }
 
+.ws-info-legacy-export.is-loading {
+  border-color: var(--border-subtle);
+}
+
+.ws-info-legacy-export.is-forbidden,
+.ws-info-legacy-export.is-unavailable {
+  border-color: var(--status-error);
+  background: var(--error-subtle);
+}
+
+.ws-info-legacy-export.is-empty {
+  border-color: var(--border-subtle);
+  background: var(--bg-secondary);
+}
+
 @media (max-width: 720px) {
   .ws-info-legacy-export {
     align-items: stretch;

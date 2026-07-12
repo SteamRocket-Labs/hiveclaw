@@ -29,6 +29,7 @@ class HrCreationDraft(Base):
     __tablename__ = "hr_creation_drafts"
     __table_args__ = (
         UniqueConstraint("tenant_id", "creation_idempotency_key", name="uq_hr_creation_draft_idempotency"),
+        UniqueConstraint("provisioning_task_id", name="uq_hr_creation_drafts_provisioning_task_id"),
         CheckConstraint(
             "status IN ('awaiting_confirmation','confirmed','creating','provisioning','completed','failed','rejected','superseded','expired')",
             name="ck_hr_creation_draft_status",
@@ -68,6 +69,15 @@ class HrCreationDraft(Base):
     rejected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     creation_idempotency_key: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    provisioning_task_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "runtime_tasks.id",
+            name="fk_hr_creation_drafts_provisioning_task_id_runtime_tasks",
+            ondelete="SET NULL",
+        ),
+        nullable=True,
+    )
     claim_token: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     claim_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     claim_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

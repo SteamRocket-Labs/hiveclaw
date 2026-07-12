@@ -89,12 +89,20 @@ def confirm_hr_creation_draft_record(
 ) -> None:
     if draft.requested_by_user_id != confirming_user_id:
         raise HrCreationConflict("requester_mismatch", "Only the requesting user can confirm this blueprint.")
-    if draft.status != "awaiting_confirmation":
-        raise HrCreationConflict("invalid_status", f"Blueprint cannot be confirmed from status {draft.status}.")
     if draft.blueprint_version != blueprint_version:
         raise HrCreationConflict("version_mismatch", "Blueprint version changed; review the latest preview.")
     if draft.blueprint_hash != blueprint_hash:
         raise HrCreationConflict("hash_mismatch", "Blueprint hash changed; review the latest preview.")
+    if draft.status != "awaiting_confirmation":
+        if (
+            draft.status in {"confirmed", "creating", "provisioning", "completed", "failed"}
+            and draft.confirmed_by_user_id == confirming_user_id
+            and draft.confirmed_at is not None
+        ):
+            # Exact network retries are idempotent. The API-level row lock and
+            # provisioning_task_id decide whether the durable job already exists.
+            return
+        raise HrCreationConflict("invalid_status", f"Blueprint cannot be confirmed from status {draft.status}.")
     missing_gates = [
         str(gate)
         for gate in (draft.preview_json or {}).get("missing_gates", [])
@@ -120,6 +128,11 @@ def reject_hr_creation_draft_record(
 ) -> None:
     if draft.requested_by_user_id != rejecting_user_id:
         raise HrCreationConflict("requester_mismatch", "Only the requesting user can reject this blueprint.")
+    if draft.status == "confirmed" and draft.provisioning_task_id is not None:
+        raise HrCreationConflict(
+            "use_cancel",
+            "Confirmed provisioning has a durable job; cancel it through the provisioning cancellation endpoint.",
+        )
     if draft.status not in {"awaiting_confirmation", "confirmed"}:
         raise HrCreationConflict("invalid_status", f"Blueprint cannot be rejected from status {draft.status}.")
     draft.status = "rejected"
@@ -394,8 +407,8 @@ async def upsert_hr_creation_draft(
         draft = result.scalar_one_or_none()
         if draft is None:
             raise HrCreationConflict("not_found", "HR creation draft was not found in this session.")
-        if draft.status in {"creating", "provisioning", "completed"}:
-            raise HrCreationConflict("immutable", "A started or completed blueprint cannot be revised.")
+        if draft.status in {"confirmed", "creating", "provisioning", "completed"}:
+            raise HrCreationConflict("immutable", "A confirmed, started, or completed blueprint cannot be revised.")
         draft.blueprint_version += 1
     else:
         draft = HrCreationDraft(
@@ -456,8 +469,10 @@ async def load_hr_creation_draft(
 def hr_creation_draft_payload(draft: HrCreationDraft) -> dict[str, Any]:
     steps = list(getattr(draft, "provisioning_steps", ()) or ())
     readiness = derive_hr_provisioning_readiness(steps) if steps else None
+    preview = dict(draft.preview_json or {})
+    preview.setdefault("blueprint", dict(draft.blueprint_json or {}))
     return {
-        **dict(draft.preview_json or {}),
+        **preview,
         "blueprint_id": str(draft.id),
         "blueprint_version": draft.blueprint_version,
         "blueprint_hash": draft.blueprint_hash,
@@ -465,6 +480,7 @@ def hr_creation_draft_payload(draft: HrCreationDraft) -> dict[str, Any]:
         "confirmed_by_user_id": str(draft.confirmed_by_user_id) if draft.confirmed_by_user_id else None,
         "confirmed_at": draft.confirmed_at.isoformat() if draft.confirmed_at else None,
         "created_agent_id": str(draft.created_agent_id) if draft.created_agent_id else None,
+        "provisioning_task_id": str(draft.provisioning_task_id) if draft.provisioning_task_id else None,
         "provisioning": dict(draft.provisioning_json or {}),
         "provisioning_steps": [hr_provisioning_step_payload(step) for step in steps],
         "creation_state": readiness.creation_state if readiness else draft.status,

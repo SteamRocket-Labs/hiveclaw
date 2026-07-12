@@ -7,12 +7,14 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.permissions import check_agent_access
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.user import User
+from app.models.runtime_task import RuntimeTask
 from app.services.hr_creation_service import (
     HrCreationConflict,
     confirm_hr_creation_draft_record,
@@ -43,6 +45,7 @@ class HrCreationDraftOut(BaseModel):
     confirmed_by_user_id: str | None = None
     confirmed_at: str | None = None
     created_agent_id: str | None = None
+    provisioning_task_id: str | None = None
     provisioning: dict[str, Any] = Field(default_factory=dict)
     provisioning_steps: list[dict[str, Any]] = Field(default_factory=list)
     creation_state: str | None = None
@@ -102,6 +105,7 @@ async def confirm_hr_creation_draft(
     draft = await _load_for_user(
         db=db, current_user=current_user, agent_id=agent_id, draft_id=draft_id, for_update=True
     )
+    was_awaiting_confirmation = draft.status == "awaiting_confirmation"
     try:
         confirm_hr_creation_draft_record(
             draft,
@@ -112,19 +116,224 @@ async def confirm_hr_creation_draft(
     except HrCreationConflict as exc:
         raise HTTPException(status_code=409, detail={"error": exc.code, "message": exc.message}) from exc
 
+    created_task: RuntimeTask | None = None
+    if draft.status != "completed" and draft.provisioning_task_id is None:
+        from app.services.hr_provisioning_runtime import build_hr_provisioning_runtime_task
+
+        created_task = build_hr_provisioning_runtime_task(draft)
+        db.add(created_task)
+        await db.flush()
+        draft.provisioning_task_id = created_task.id
+        draft.provisioning_json = {
+            **dict(draft.provisioning_json or {}),
+            "runtime_task_id": str(created_task.id),
+            "runtime_status": created_task.status,
+            "runtime_phase": "queued",
+        }
+
+    from app.core.policy import write_audit_event
+
+    if was_awaiting_confirmation:
+        await write_audit_event(
+            db,
+            event_type="hr.creation_blueprint_confirmed",
+            severity="info",
+            actor_type="user",
+            actor_id=current_user.id,
+            tenant_id=draft.tenant_id,
+            action="confirm_hr_creation_blueprint",
+            resource_type="hr_creation_draft",
+            resource_id=draft.id,
+            details={
+                "blueprint_version": draft.blueprint_version,
+                "blueprint_hash": draft.blueprint_hash,
+                "provisioning_task_id": str(created_task.id) if created_task else None,
+            },
+        )
+    await db.commit()
+    if created_task is not None:
+        from app.services.runtime_task_worker import notify_runtime_task_worker
+
+        await notify_runtime_task_worker(
+            reason="hr_provisioning_queued",
+            runtime_task_id=created_task.id,
+        )
+    return _out(hr_creation_draft_payload(draft))
+
+
+async def _linked_provisioning_task(
+    db: AsyncSession,
+    *,
+    draft,
+) -> RuntimeTask:
+    if draft.provisioning_task_id is None:
+        raise HrCreationConflict("provisioning_task_missing", "Confirmed HR draft has no durable provisioning task.")
+    task = (
+        await db.execute(
+            select(RuntimeTask)
+            .where(
+                RuntimeTask.id == draft.provisioning_task_id,
+                RuntimeTask.tenant_id == draft.tenant_id,
+                RuntimeTask.task_type == "hr_provisioning",
+            )
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    if task is None:
+        raise HrCreationConflict("provisioning_task_missing", "HR provisioning task link is invalid.")
+    return task
+
+
+@router.post("/{agent_id}/hr-creation-drafts/{draft_id}/retry", response_model=HrCreationDraftOut)
+async def retry_hr_creation_draft(
+    agent_id: uuid.UUID,
+    draft_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    draft = await _load_for_user(
+        db=db, current_user=current_user, agent_id=agent_id, draft_id=draft_id, for_update=True
+    )
+    try:
+        task = await _linked_provisioning_task(db, draft=draft)
+        if draft.status not in {"failed", "provisioning"}:
+            raise HrCreationConflict("invalid_status", f"HR provisioning cannot be retried from {draft.status}.")
+        if task.status == "needs_reconciliation":
+            raise HrCreationConflict(
+                "reconciliation_required",
+                "HR provisioning has unknown side effects and requires operator reconciliation before retry.",
+            )
+        if task.status not in {"failed", "killed", "resumable"}:
+            raise HrCreationConflict("invalid_task_status", f"HR provisioning task cannot retry from {task.status}.")
+    except HrCreationConflict as exc:
+        raise HTTPException(status_code=409, detail={"error": exc.code, "message": exc.message}) from exc
+
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+    draft.status = "confirmed" if draft.status == "failed" else "provisioning"
+    draft.failure_code = None
+    draft.failure_message = None
+    draft.claim_token = None
+    draft.claim_heartbeat_at = None
+    draft.claim_expires_at = None
+    task.status = "resumable"
+    task.scheduled_at = now
+    task.started_at = None
+    task.completed_at = None
+    task.result_summary = None
+    task.claimed_by = None
+    task.claim_expires_at = None
+    task.metadata_json = {
+        **dict(task.metadata_json or {}),
+        "phase": "retry_queued",
+        "retry_queued_at": now.isoformat(),
+        "side_effect_risk": "journaled",
+        "automatic_retry_allowed": True,
+        "outcome": None,
+    }
+    draft.provisioning_json = {
+        **dict(draft.provisioning_json or {}),
+        "runtime_task_id": str(task.id),
+        "runtime_status": task.status,
+        "runtime_phase": "retry_queued",
+    }
     from app.core.policy import write_audit_event
 
     await write_audit_event(
         db,
-        event_type="hr.creation_blueprint_confirmed",
+        event_type="hr.creation_provisioning_retried",
         severity="info",
         actor_type="user",
         actor_id=current_user.id,
         tenant_id=draft.tenant_id,
-        action="confirm_hr_creation_blueprint",
+        action="retry_hr_provisioning",
         resource_type="hr_creation_draft",
         resource_id=draft.id,
-        details={"blueprint_version": draft.blueprint_version, "blueprint_hash": draft.blueprint_hash},
+        details={"provisioning_task_id": str(task.id), "task_status": task.status},
+    )
+    await db.commit()
+    from app.services.runtime_task_worker import notify_runtime_task_worker
+
+    await notify_runtime_task_worker(reason="hr_provisioning_retry", runtime_task_id=task.id)
+    return _out(hr_creation_draft_payload(draft))
+
+
+@router.post("/{agent_id}/hr-creation-drafts/{draft_id}/cancel", response_model=HrCreationDraftOut)
+async def cancel_hr_creation_draft(
+    agent_id: uuid.UUID,
+    draft_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    draft = await _load_for_user(
+        db=db, current_user=current_user, agent_id=agent_id, draft_id=draft_id, for_update=True
+    )
+    try:
+        task = await _linked_provisioning_task(db, draft=draft)
+        if draft.status not in {"confirmed", "creating", "provisioning", "failed"}:
+            raise HrCreationConflict("invalid_status", f"HR provisioning cannot be cancelled from {draft.status}.")
+    except HrCreationConflict as exc:
+        raise HTTPException(status_code=409, detail={"error": exc.code, "message": exc.message}) from exc
+
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+    active_or_uncertain = task.status == "running" or bool(draft.claim_token)
+    task.claim_version = int(task.claim_version or 0) + (1 if active_or_uncertain else 0)
+    task.claimed_by = None
+    task.claim_expires_at = None
+    task.completed_at = now
+    if active_or_uncertain:
+        task.status = "needs_reconciliation"
+        task.result_summary = "HR provisioning was cancelled after side effects may have started."
+        draft.status = "failed"
+        draft.failure_code = "cancellation_reconciliation_required"
+        draft.failure_message = "Provisioning cancellation requires operator reconciliation."
+        outcome_status = "needs_reconciliation"
+    else:
+        task.status = "killed"
+        task.result_summary = "HR provisioning was cancelled before execution."
+        draft.status = "rejected"
+        draft.rejected_by_user_id = current_user.id
+        draft.rejected_at = now
+        draft.failure_code = None
+        draft.failure_message = None
+        outcome_status = "cancelled"
+    draft.claim_token = None
+    draft.claim_heartbeat_at = None
+    draft.claim_expires_at = None
+    task.metadata_json = {
+        **dict(task.metadata_json or {}),
+        "phase": "terminal",
+        "terminal_at": now.isoformat(),
+        "automatic_retry_allowed": False,
+        "needs_reconciliation": active_or_uncertain,
+        "outcome": {"status": outcome_status},
+    }
+    draft.provisioning_json = {
+        **dict(draft.provisioning_json or {}),
+        "runtime_task_id": str(task.id),
+        "runtime_status": task.status,
+        "runtime_phase": "terminal",
+    }
+    from app.core.policy import write_audit_event
+
+    await write_audit_event(
+        db,
+        event_type="hr.creation_provisioning_cancelled",
+        severity="warning" if active_or_uncertain else "info",
+        actor_type="user",
+        actor_id=current_user.id,
+        tenant_id=draft.tenant_id,
+        action="cancel_hr_provisioning",
+        resource_type="hr_creation_draft",
+        resource_id=draft.id,
+        details={
+            "provisioning_task_id": str(task.id),
+            "task_status": task.status,
+            "needs_reconciliation": active_or_uncertain,
+        },
     )
     await db.commit()
     return _out(hr_creation_draft_payload(draft))

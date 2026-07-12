@@ -33,6 +33,7 @@ SUPPORTED_RUNTIME_TASK_TYPES = (
     "subagent",
     "trigger",
     "approval_execution",
+    "hr_provisioning",
 )
 _DISPATCHED_TASKS: dict[str, tuple[str, asyncio.Task]] = {}
 _STATE: dict[str, Any] = {
@@ -63,6 +64,7 @@ _STATE: dict[str, Any] = {
     "budget_outbox_dead_lettered": 0,
     "budget_outbox_needs_reconciliation": 0,
     "approval_execution_dispatched": 0,
+    "hr_provisioning_dispatched": 0,
 }
 
 
@@ -291,6 +293,15 @@ def _dispatch_claimed_task(task: RuntimeTask) -> bool:
         if dispatched:
             _STATE["approval_execution_dispatched"] = int(_STATE.get("approval_execution_dispatched") or 0) + 1
         return dispatched
+    if task.task_type == "hr_provisioning":
+        dispatched = _dispatch_async_runtime_task(
+            task,
+            _execute_claimed_hr_provisioning_task(task.id),
+            task_type="hr_provisioning",
+        )
+        if dispatched:
+            _STATE["hr_provisioning_dispatched"] = int(_STATE.get("hr_provisioning_dispatched") or 0) + 1
+        return dispatched
     logger.warning("[RuntimeTaskWorker] Claimed unsupported task type {}; leaving task {}", task.task_type, task.id)
     return False
 
@@ -322,6 +333,16 @@ async def _execute_claimed_workflow_task(run_id: UUID) -> None:
     except Exception as exc:  # noqa: BLE001 - worker loop must keep running.
         _STATE["last_error"] = f"workflow:{type(exc).__name__}:{str(exc)[:300]}"
         logger.exception("[RuntimeTaskWorker] workflow task {} failed", run_id)
+
+
+async def _execute_claimed_hr_provisioning_task(task_id: UUID) -> None:
+    try:
+        from app.services.hr_provisioning_runtime import execute_claimed_hr_provisioning
+
+        await execute_claimed_hr_provisioning(task_id)
+    except Exception as exc:  # noqa: BLE001 - worker loop must keep running.
+        _STATE["last_error"] = f"hr_provisioning:{type(exc).__name__}:{str(exc)[:300]}"
+        logger.exception("[RuntimeTaskWorker] HR provisioning task {} failed", task_id)
 
 
 async def _execute_claimed_delegation_task(task_id: UUID) -> None:

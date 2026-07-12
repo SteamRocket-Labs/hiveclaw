@@ -42,6 +42,16 @@ def test_confirmation_binds_authenticated_user_to_exact_version_and_hash():
     assert draft.confirmed_by_user_id == confirmer
     assert draft.confirmed_at == now
 
+    # Network retries of the exact same authenticated decision are idempotent.
+    confirm_hr_creation_draft_record(
+        draft,
+        confirming_user_id=confirmer,
+        blueprint_version=2,
+        blueprint_hash="sha256:canonical",
+        now=now + timedelta(seconds=1),
+    )
+    assert draft.confirmed_at == now
+
     stale = _draft()
     with pytest.raises(HrCreationConflict, match="version"):
         confirm_hr_creation_draft_record(

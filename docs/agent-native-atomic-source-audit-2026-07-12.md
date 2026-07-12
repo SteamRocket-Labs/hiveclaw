@@ -457,6 +457,8 @@ flowchart LR
 - 精确代码位置：`frontend/src/pages/agent-detail/HrBlueprintPreviewCard.tsx:confirmAndCreate`；`backend/app/api/hr_creation.py`；`backend/app/services/hr_provisioning_runner.py:run_hr_provisioning`。
 - 缺失测试：empty model、disconnect、duplicate confirm、stale confirmed sweeper。
 - 一次性完整关闭方案：confirm 原子写 blueprint confirmed + HR RuntimeTask/outbox，唯一键 draft/version；worker 调 runner，保留 claim/version；回填 existing confirmed drafts；required step 失败保持 incomplete/failed，不伪装 ready；UI直接订阅 task terminal；记录 provisioning span/step receipts；支持 cancel/retry/needs_reconciliation；删除自然语言执行桥接；全链 fault tests 和 duplicate create gate。
+- 修复状态（2026-07-12）：**R-003 七原子闭环**。`confirm_hr_creation_draft` 现在对 canonical draft `FOR UPDATE`，校验 authenticated requester + exact version/hash，并在同一事务内写入唯一 `hr_provisioning` RuntimeTask、`provisioning_task_id` 反向链接与 UI runtime projection；相同确认的网络重试幂等返回同一 job，只在首次提交后 wake worker。统一 RuntimeTask worker 通过 `SKIP LOCKED`、lease、claim-version fence 和独立容量消费该 job，直接调用既有 `run_hr_provisioning` domain lifecycle owner；前端已删除 `buildHrCreationInstruction` 和 confirm 后给模型发自然语言的执行桥接。worker 重领时若旧 HR domain claim 尚未过期，会把 task 排到 `claim_expires_at` 后而非双跑；completed draft 只收敛 terminal、不重复创建；required step 不完整或失败保持可见 failed/provisioning，不伪装 ready。失败 job 由专用 retry API 重置原 job（不新建 task、不经模型）；执行前取消安全落 `killed/rejected`，执行中取消同时提升 RuntimeTask fence、失效 draft claim，并进入 `needs_reconciliation`，禁止自动重放未知副作用；retry/cancel 决策及其 task 状态都在同一事务写审计事件。`hr_provisioning_jobs_0712` 为历史 confirmed/creating/provisioning/failed draft 回填确定性 job 与链接，迁移跨租户 backfill 显式处理 FORCE RLS，downgrade 先断 FK 再清 job。HR 卡片轮询持久 draft/steps，直接执行 confirm/retry/cancel API，只把“修改蓝图”保留为确认前的会话交互。
+- 修复证据：Red backend 定向契约 → `7 failed`（重复确认非幂等、worker 类型/dispatch 缺失、confirm 无 task、runtime module/迁移缺失）；Red frontend → `3 failed`（confirm 按钮依赖 `onSendMessage`、status action helper 缺失、失败态没有直接 retry）。Green backend 首轮 → `10 passed`；扩展回归 `pytest tests/services/test_hr_creation_service.py tests/services/test_hr_provisioning_runtime.py tests/services/test_runtime_task_worker.py tests/services/test_runtime_task_claim_service.py tests/services/test_runtime_task_service.py tests/migrations/test_hr_provisioning_job_migration.py tests/migrations/test_hr_creation_drafts_migration.py tests/migrations/test_hr_provisioning_steps_migration.py -q` → `57 passed, 4 warnings`。真实 PostgreSQL 迁移验收执行 `head → downgrade approval_execution_jobs_0712 → 写入 legacy confirmed draft → upgrade head`，证明生成并绑定唯一 pending `hr_provisioning:{draft_id}-v3` task；Alembic head=`hr_provisioning_jobs_0712`。Frontend `hrCreation + HrBlueprintPreviewCard` → `4 passed`，`npm run build` exit 0；所有变更 Python 文件 `ruff check` 绿并完成 format。提交主题：`fix(R-003): make HR provisioning durable`。
 
 ### [R-004] Auto Dream fire-and-forget，无 durable recovery owner
 
@@ -987,13 +989,13 @@ Codebase graph 校正时状态为 ready（43,281 nodes / 166,753 edges）；`det
 
 ## 16. 28 项原子缺口修复执行账本
 
-本节记录原始审计全部 28 项的实际落地状态：17 个断点、10 个局部闭环、1 个已知缺失。原始严重级别与原子状态保留为审计快照；只有同时具备实现、回归测试、报告证据和独立提交，才把修复状态改为闭环。Company Knowledge Base 本体按 owner 边界不在本轮开发，但 R-008 的诚实隔离、文案与防伪装验收仍必须关闭。当前进度：**5/28**。
+本节记录原始审计全部 28 项的实际落地状态：17 个断点、10 个局部闭环、1 个已知缺失。原始严重级别与原子状态保留为审计快照；只有同时具备实现、回归测试、报告证据和独立提交，才把修复状态改为闭环。Company Knowledge Base 本体按 owner 边界不在本轮开发，但 R-008 的诚实隔离、文案与防伪装验收仍必须关闭。当前进度：**6/28**。
 
 | ID | 修复状态 | 独立提交主题 | 机械证据摘要 |
 |---|---|---|---|
 | R-001 | 闭环 | `fix(R-001): fence multi-replica web chat recovery` | Red 3 failed + 两个独立 Red；Green 128 passed；真实 PostgreSQL 双 worker exact-one claim；ruff 绿 |
 | R-002 | 闭环 | `fix(R-002): make approval execution durable` | Red backend 5 failed + frontend 3 failed suites；Green backend 59 passed；真实 PostgreSQL transaction/crash/dedupe + legacy backfill/downgrade；frontend 116 passed；build/ruff 绿 |
-| R-003 | 待修复 | — | — |
+| R-003 | 闭环 | `fix(R-003): make HR provisioning durable` | Red backend 7 failed + frontend 3 failed；Green backend 57 passed；真实 PostgreSQL legacy backfill/downgrade；frontend 4 passed；build/ruff 绿 |
 | R-004 | 待修复 | — | — |
 | R-005 | 待修复 | — | — |
 | R-006 | 待修复 | — | — |

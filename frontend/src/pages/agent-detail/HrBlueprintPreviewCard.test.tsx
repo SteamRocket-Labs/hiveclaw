@@ -6,7 +6,7 @@ vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (_key: string, fallback?: string) => fallback || _key }),
 }));
 
-import { buildHrCreationInstruction, HrBlueprintPreviewCard } from './HrBlueprintPreviewCard';
+import { hrCreationActionForStatus, HrBlueprintPreviewCard } from './HrBlueprintPreviewCard';
 
 const preview = {
   kind: 'hr_preview' as const,
@@ -37,7 +37,7 @@ describe('HrBlueprintPreviewCard', () => {
   it('renders the user decision surface without raw hashes or JSON', () => {
     const markup = renderToStaticMarkup(
       <QueryClientProvider client={new QueryClient()}>
-        <HrBlueprintPreviewCard agentId="hr-agent" preview={preview} onSendMessage={vi.fn()} />
+        <HrBlueprintPreviewCard agentId="hr-agent" preview={preview} />
       </QueryClientProvider>,
     );
 
@@ -49,14 +49,15 @@ describe('HrBlueprintPreviewCard', () => {
     expect(markup).toContain('Reject');
     expect(markup).not.toContain('sha256:canonical');
     expect(markup).not.toContain('78b5d739-2c18-4a4a-aa65-42b858b8c188');
+    const primaryButton = markup.match(/<button[^>]*>Confirm &amp; create<\/button>/)?.[0] || '';
+    expect(primaryButton).not.toContain('disabled');
   });
 
-  it('builds a stable reference-only creation instruction', () => {
-    const instruction = buildHrCreationInstruction(preview);
-    expect(instruction).toContain('blueprint_id');
-    expect(instruction).not.toContain('idempotency_key');
-    expect(instruction).not.toContain(preview.blueprintId || '');
-    expect(instruction).not.toContain(preview.mission || '');
+  it('maps UI actions directly to durable APIs without a model-message handoff', () => {
+    expect(hrCreationActionForStatus('awaiting_confirmation')).toBe('confirm');
+    expect(hrCreationActionForStatus('failed')).toBe('retry');
+    expect(hrCreationActionForStatus('provisioning')).toBe('retry');
+    expect(hrCreationActionForStatus('completed')).toBe('none');
   });
 
   it('shows persisted provisioning evidence and exposes a recovery action', () => {
@@ -91,7 +92,7 @@ describe('HrBlueprintPreviewCard', () => {
 
     const markup = renderToStaticMarkup(
       <QueryClientProvider client={client}>
-        <HrBlueprintPreviewCard agentId="hr-agent" preview={preview} onSendMessage={vi.fn()} />
+        <HrBlueprintPreviewCard agentId="hr-agent" preview={preview} />
       </QueryClientProvider>,
     );
 
@@ -99,7 +100,7 @@ describe('HrBlueprintPreviewCard', () => {
     expect(markup).toContain('workspace');
     expect(markup).toContain('completed');
     expect(markup).toContain('Provider timed out');
-    expect(markup).toContain('Resume provisioning');
+    expect(markup).toContain('Retry provisioning');
     expect(markup).not.toContain('claim_token');
   });
 });

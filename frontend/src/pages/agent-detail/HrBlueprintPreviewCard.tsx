@@ -30,12 +30,12 @@ function initialDraft(preview: HrPreviewToolResult): HrCreationDraft | undefined
   };
 }
 
-export function buildHrCreationInstruction(_preview: HrPreviewToolResult): string {
-  return (
-    'I confirm the exact canonical HR blueprint shown above. Create it now by calling '
-    + 'create_digital_employee with only the blueprint_id from that preview. '
-    + 'Do not regenerate or restate any blueprint field.'
-  );
+export type HrCreationAction = 'confirm' | 'retry' | 'none';
+
+export function hrCreationActionForStatus(status: string): HrCreationAction {
+  if (status === 'awaiting_confirmation') return 'confirm';
+  if (status === 'failed' || status === 'provisioning') return 'retry';
+  return 'none';
 }
 
 function PreviewList({ label, items }: { label: string; items: unknown[] }) {
@@ -73,6 +73,7 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
   const status = draft?.draft_status || preview.status;
   const provisioningSteps = draft?.provisioning_steps || [];
   const canonicalReady = Boolean(agentId && preview.blueprintId && preview.blueprintHash);
+  const durableAction = hrCreationActionForStatus(status);
 
   const confirmMutation = useMutation({
     mutationFn: () => hrCreationApi.confirm(agentId!, preview.blueprintId!, {
@@ -85,14 +86,23 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
     mutationFn: () => hrCreationApi.reject(agentId!, preview.blueprintId!),
     onSuccess: (nextDraft) => queryClient.setQueryData(queryKey, nextDraft),
   });
+  const retryMutation = useMutation({
+    mutationFn: () => hrCreationApi.retry(agentId!, preview.blueprintId!),
+    onSuccess: (nextDraft) => queryClient.setQueryData(queryKey, nextDraft),
+  });
+  const cancelMutation = useMutation({
+    mutationFn: () => hrCreationApi.cancel(agentId!, preview.blueprintId!),
+    onSuccess: (nextDraft) => queryClient.setQueryData(queryKey, nextDraft),
+  });
 
-  const confirmAndCreate = async () => {
+  const runDurableAction = async () => {
     setActionError(null);
     try {
-      if (status === 'awaiting_confirmation') {
+      if (durableAction === 'confirm') {
         await confirmMutation.mutateAsync();
+      } else if (durableAction === 'retry') {
+        await retryMutation.mutateAsync();
       }
-      await onSendMessage?.(buildHrCreationInstruction(preview));
     } catch (error) {
       setActionError(error instanceof Error ? error.message : String(error));
     }
@@ -115,11 +125,23 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
       setActionError(error instanceof Error ? error.message : String(error));
     }
   };
-  const busy = confirmMutation.isPending || rejectMutation.isPending;
+  const cancel = async () => {
+    setActionError(null);
+    try {
+      await cancelMutation.mutateAsync();
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
+    }
+  };
+  const busy = confirmMutation.isPending
+    || rejectMutation.isPending
+    || retryMutation.isPending
+    || cancelMutation.isPending;
   const canStartCreation = canonicalReady
     && preview.missingGates.length === 0
-    && ['awaiting_confirmation', 'confirmed', 'provisioning', 'failed'].includes(status);
-  const canReviseOrReject = canonicalReady && ['awaiting_confirmation', 'confirmed'].includes(status);
+    && durableAction !== 'none';
+  const canReviseOrReject = canonicalReady && status === 'awaiting_confirmation';
+  const canCancel = canonicalReady && ['confirmed', 'creating', 'provisioning'].includes(status);
 
   return (
     <article className="hr-blueprint-card" data-status={status}>
@@ -175,14 +197,18 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
       )}
       {actionError && <p className="hr-blueprint-error" role="alert">{actionError}</p>}
       <footer>
-        <button type="button" className="btn btn-primary" disabled={!canStartCreation || busy || !onSendMessage} onClick={confirmAndCreate}>
+        <button type="button" className="btn btn-primary" disabled={!canStartCreation || busy} onClick={runDurableAction}>
           {confirmMutation.isPending
             ? t('common.confirming', 'Confirming…')
-            : ['provisioning', 'failed'].includes(status)
-              ? t('agent.chat.toolResults.resumeProvisioning', 'Resume provisioning')
-              : status === 'confirmed'
-              ? t('agent.chat.toolResults.continueCreation', 'Continue creation')
-              : t('agent.chat.toolResults.confirmAndCreate', 'Confirm & create')}
+            : retryMutation.isPending
+              ? t('agent.chat.toolResults.retryingProvisioning', 'Retrying…')
+              : durableAction === 'retry'
+                ? t('agent.chat.toolResults.retryProvisioning', 'Retry provisioning')
+                : durableAction === 'confirm'
+                  ? t('agent.chat.toolResults.confirmAndCreate', 'Confirm & create')
+                  : ['confirmed', 'creating'].includes(status)
+                    ? t('agent.chat.toolResults.provisioning', 'Provisioning…')
+                    : t('agent.chat.toolResults.provisioned', 'Provisioned')}
         </button>
         <button type="button" className="btn btn-secondary" disabled={!canReviseOrReject || busy || !onSendMessage} onClick={requestChanges}>
           {t('agent.chat.toolResults.requestChanges', 'Request changes')}
@@ -190,6 +216,13 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
         <button type="button" className="btn btn-ghost" disabled={!canReviseOrReject || busy} onClick={reject}>
           {t('common.reject', 'Reject')}
         </button>
+        {canCancel && (
+          <button type="button" className="btn btn-ghost" disabled={busy} onClick={cancel}>
+            {cancelMutation.isPending
+              ? t('common.cancelling', 'Cancelling…')
+              : t('agent.chat.toolResults.cancelProvisioning', 'Cancel provisioning')}
+          </button>
+        )}
       </footer>
     </article>
   );

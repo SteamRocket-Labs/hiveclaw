@@ -20,6 +20,8 @@ describe('HR creation draft API adapter', () => {
       blueprint_hash: 'sha256:canonical',
     });
     await hrCreationApi.reject('hr-1', 'draft-1');
+    await hrCreationApi.retry('hr-1', 'draft-1');
+    await hrCreationApi.cancel('hr-1', 'draft-1');
 
     expect(get).toHaveBeenCalledWith('/agents/hr-1/hr-creation-drafts/draft-1');
     expect(post).toHaveBeenNthCalledWith(1, '/agents/hr-1/hr-creation-drafts/draft-1/confirm', {
@@ -27,5 +29,7 @@ describe('HR creation draft API adapter', () => {
       blueprint_hash: 'sha256:canonical',
     });
     expect(post).toHaveBeenNthCalledWith(2, '/agents/hr-1/hr-creation-drafts/draft-1/reject', {});
+    expect(post).toHaveBeenNthCalledWith(3, '/agents/hr-1/hr-creation-drafts/draft-1/retry', {});
+    expect(post).toHaveBeenNthCalledWith(4, '/agents/hr-1/hr-creation-drafts/draft-1/cancel', {});
   });
 });

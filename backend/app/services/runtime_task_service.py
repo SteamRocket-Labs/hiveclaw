@@ -29,6 +29,7 @@ _RESTART_RESUMABLE_TASK_TYPES = (
     "advanced_plan",
     "approval_execution",
     "hr_provisioning",
+    "dream",
 )
 _TERMINAL_STATUSES = {"completed", "failed", "killed", "skipped", "needs_reconciliation"}
 RUNTIME_RESTART_REPLAY_CONTRACT_SCHEMA = "runtime_restart_replay_contract.v1"

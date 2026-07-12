@@ -721,6 +721,19 @@ async def _evolution_maintenance_on_heartbeat(ctx: HookContext) -> None:
         except ValueError:
             logger.debug("[Hooks] Invalid heartbeat tenant_id for evolution maintenance: %s", tenant_raw)
 
+    # Dream cadence evidence and admission are durable before slow peripheral
+    # maintenance detaches from the hook boundary.
+    try:
+        from app.services.evolution_daemon import record_and_enqueue_heartbeat_dream
+
+        await record_and_enqueue_heartbeat_dream(
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            outcome_type=str(ctx.metadata.get("outcome") or ""),
+        )
+    except Exception as exc:
+        logger.debug("[Hooks] Durable Dream admission failed for %s: %s", agent_id, exc)
+
     async def _run() -> None:
         try:
             from app.services.evolution_daemon import run_heartbeat_evolution_maintenance

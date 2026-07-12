@@ -1918,6 +1918,43 @@ def should_dream(agent_id: uuid.UUID) -> bool:
     return sessions >= MIN_SESSIONS_SINCE_DREAM or ticks >= MIN_HEARTBEAT_TICKS_SINCE_DREAM
 
 
+def dream_state_snapshot(agent_id: uuid.UUID) -> dict:
+    """Return the durable cadence evidence used by the RuntimeTask owner."""
+
+    state_path = _migrate_legacy_dream_state_if_needed(agent_id)
+    last, sessions = _load_dream_state(agent_id)
+    key = agent_id.hex
+    return {
+        "state_exists": state_path.exists(),
+        "last_dream_time": last.isoformat() if last else None,
+        "sessions_since_dream": int(sessions or 0),
+        "heartbeat_ticks_since_dream": int(_heartbeat_ticks_since_dream.get(key, 0) or 0),
+        "version": int(_dream_version.get(key, 0) or 0),
+    }
+
+
+def list_dream_state_agent_ids() -> list[uuid.UUID]:
+    """Discover only workspaces carrying current or legacy cadence state."""
+
+    data_root = Path(get_settings().AGENT_DATA_DIR)
+    if not data_root.exists():
+        return []
+    candidates: list[uuid.UUID] = []
+    for child in data_root.iterdir():
+        if not child.is_dir():
+            continue
+        try:
+            agent_id = uuid.UUID(child.name)
+        except ValueError:
+            continue
+        if (
+            child.joinpath("memory", "control", "auto_dream_state.json").exists()
+            or child.joinpath("memory", "auto_dream_state.json").exists()
+        ):
+            candidates.append(agent_id)
+    return sorted(candidates, key=str)
+
+
 def should_soft_dream(agent_id: uuid.UUID) -> bool:
     """Check if a lightweight soft dream should run.
 

@@ -3,9 +3,8 @@
 Decoupled from `trigger_daemon` so a slow heartbeat tick or workspace
 volume I/O can't introduce schedule jitter into the trigger tick. Each
 loop runs as an independent asyncio task; failures in one do not block
-the others. Dream is fired opportunistically by the surfaces that own a
-session boundary (trigger end, response complete) rather than being
-polled here.
+the others. Dream admission is persisted at session boundaries and this
+loop reconciles legacy due-state files that have no RuntimeTask owner.
 
 Lifespan wiring lives in `app/main.py` — the daemon is spawned alongside
 `start_trigger_daemon` so both come up at server boot.
@@ -23,10 +22,26 @@ from sqlalchemy import select
 # Heartbeat tick cadence — read from typed settings so production (60s)
 # and dev (lower) configs are explicit. P1-W2-5: configurable via the
 # HEARTBEAT_TICK_SECONDS env var bound to `Settings`.
-from app.services.daemon_concurrency import run_bounded
 from app.config import get_settings
 
 _HEARTBEAT_INTERVAL_SECONDS = get_settings().HEARTBEAT_TICK_SECONDS
+
+
+async def record_and_enqueue_heartbeat_dream(
+    *,
+    agent_id: uuid.UUID,
+    tenant_id: uuid.UUID | None,
+    outcome_type: str | None,
+):
+    """Persist the cadence input before peripheral heartbeat work detaches."""
+
+    from app.services.auto_dream import record_dream_activity
+    from app.services.dream_runtime import enqueue_due_dream
+
+    record_dream_activity(agent_id, outcome_type or "")
+    if tenant_id is None:
+        return None
+    return await enqueue_due_dream(agent_id=agent_id, tenant_id=tenant_id, source="heartbeat")
 
 
 async def _maybe_run_skill_distillation(
@@ -171,17 +186,6 @@ async def run_heartbeat_evolution_maintenance(
     except Exception as exc:
         logger.warning("[EvolutionDaemon] Skill maintenance setup failed for {}: {}", agent_id, exc)
 
-    try:
-        from app.services.auto_dream import record_dream_activity, run_dream, should_dream
-
-        record_dream_activity(agent_id, outcome_type or "")
-        if should_dream(agent_id) and tenant_id:
-            asyncio.create_task(run_bounded("dream", run_dream(agent_id, tenant_id)), name=f"auto_dream:{agent_id}")
-            report["dream_triggered"] = True
-            logger.info("[EvolutionDaemon] Auto-dream triggered for agent {}", agent_id)
-    except Exception as exc:
-        logger.debug("[EvolutionDaemon] Auto-dream check failed for {}: {}", agent_id, exc)
-
     # Legacy flat-T3 shape normalization retired at the C7 cutover; two-plane
     # shape discipline is enforced by the Platform Gate operations themselves.
 
@@ -239,6 +243,13 @@ async def _heartbeat_loop() -> None:
             await _drain_personal_kb_jobs()
         except Exception as e:
             logger.debug(f"[EvolutionDaemon] Personal KB import drain error (non-fatal): {e}")
+
+        try:
+            from app.services.dream_runtime import reconcile_due_dream_runtime_tasks
+
+            await reconcile_due_dream_runtime_tasks(limit=200)
+        except Exception as e:
+            logger.debug(f"[EvolutionDaemon] Dream due-state reconciliation error (non-fatal): {e}")
 
         if heartbeat_ok:
             mark_daemon_tick("evolution_daemon")

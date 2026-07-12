@@ -392,6 +392,28 @@ def build_knowledge_overview(data_root: Path, agent_id: uuid.UUID) -> dict:
     }
 
 
+def attach_dream_runtime_status(overview: dict, task) -> dict:
+    """Overlay DB execution truth without replacing file-backed Dream output truth."""
+
+    if task is None:
+        return overview
+    result = {**overview, "distillers": dict(overview.get("distillers") or {})}
+    dream = dict(result["distillers"].get("dream") or {})
+    metadata = dict(getattr(task, "metadata_json", None) or {})
+    dream.update(
+        {
+            "runtime_status": str(getattr(task, "status", "") or ""),
+            "runtime_task_id": str(getattr(task, "id", "") or ""),
+            "runtime_phase": str(metadata.get("phase") or ""),
+            "runtime_mode": str(metadata.get("dream_mode") or ""),
+            "runtime_result": str(getattr(task, "result_summary", None) or ""),
+            "runtime_created_at": (task.created_at.isoformat() if getattr(task, "created_at", None) else None),
+        }
+    )
+    result["distillers"]["dream"] = dream
+    return result
+
+
 # ── Pages (wiki + scenes) ──
 
 

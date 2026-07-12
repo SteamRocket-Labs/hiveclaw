@@ -2108,12 +2108,18 @@ async def _invoke_agent_for_triggers(
 
         # Count trigger execution as a session for auto-dream gate
         try:
-            from app.services.auto_dream import record_session_end, should_dream, run_dream
+            from app.services.auto_dream import record_session_end
+            from app.services.dream_runtime import enqueue_due_dream
 
             record_session_end(agent_id)
-            if should_dream(agent_id) and agent.tenant_id:
-                asyncio.create_task(run_bounded("dream", run_dream(agent_id, agent.tenant_id)))
-                logger.info("[TriggerDaemon] Auto-dream triggered for agent {}", agent_id)
+            if agent.tenant_id:
+                queued = await enqueue_due_dream(
+                    agent_id=agent_id,
+                    tenant_id=agent.tenant_id,
+                    source="trigger_end",
+                )
+                if queued is not None:
+                    logger.info("[TriggerDaemon] Durable {} Dream queued for agent {}", queued.mode, agent_id)
         except Exception as _dream_err:
             logger.debug("[TriggerDaemon] Auto-dream check failed: {}", _dream_err)
 

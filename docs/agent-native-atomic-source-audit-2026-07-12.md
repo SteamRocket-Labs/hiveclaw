@@ -479,6 +479,8 @@ flowchart LR
 - 缺失测试：触发后立即 kill；双 worker cadence；writeback 前后 crash。
 - 一次性完整关闭方案：创建 dream RuntimeTask 类型和唯一 cadence key；heartbeat 只 enqueue；统一 worker claim/fence；写前记录 source snapshot/version，提交后原子 terminal；回填 control state 中 due-but-no-terminal 的 agent；未知副作用进入 needs_reconciliation；UI/operator 暴露 last run/debt；指标覆盖 queue age/failure/promotion；测试多副本、kill、rollback、重复触发；删除 fire-and-forget。
 - **最终裁决依据：P2 / 局部闭环。** `evolution_daemon.py:179` 是裸 `asyncio.create_task(run_bounded("dream", run_dream(...)), name="auto_dream:...")`，返回值未存入持有集合，故 durable owner 缺口成立；但 daemon 会在 `should_dream` 门控（24h+3sessions/2ticks）下周期重触发，且 Dream 是 soul 的幂等重固化、不做 T3 增量写，因此主要影响自进化及时性和可恢复性，不构成永久证据损坏。
+- 修复状态（2026-07-12）：**R-004 七原子闭环**。Heartbeat、conversation end、Trigger end 三条 full-dream 入口以及 soft-dream relief lane 已全部删除直接 `run_dream/run_soft_dream` 的 fire-and-forget 调用，统一通过 `enqueue_due_dream` 创建 `dream` RuntimeTask。Heartbeat hook 会先同步落 cadence state 并完成 durable admission，再把 Skill/curator 等外围 maintenance 脱离；因此慢维护仍不阻塞 heartbeat，而触发 Dream 的唯一边界不会随进程退出丢失。full Dream 使用 `dream:{agent_id}:v{next_version}`，soft Dream 使用 `soft-dream:{agent_id}:v{version}:w{6h_window}`；并发边界先锁 tenant-scoped Agent 行，再检查唯一 idempotency key，只有一个事务写 job + `memory.dream_queued` audit，首次 commit 后才 wake worker。统一 worker 提供容量、`SKIP LOCKED` claim、lease、claim-version fence 与 restart resume；执行仍复用唯一 `run_dream` domain owner。若进程在 Dream 已推进 control state、但 RuntimeTask terminal commit 前退出，重领根据 `expected_dream_version` 直接收敛 completed，不重跑；未推进时仅重入 AgentAssetTransaction/幂等内部 lane。短暂故障进入有界 resumable/backoff；重试耗尽进入 `needs_reconciliation`，标记 `reconciliation_retry_allowed=true`，由既有公司后台 Runtime Reconciliation 明确 retry/archive/resolve，不形成永久 failed cadence 锁。由于旧 cadence truth 在 `memory/control/auto_dream_state.json` 而非数据库，`reconcile_due_dream_runtime_tasks` 每个 daemon tick 只发现真实 state workspace、逐 Agent 审计解析 tenant，并把 due-but-no-job 文件幂等回填为 RuntimeTask；这是真正可执行的 legacy backfill，SQL migration 只扩展 task-type/RLS 约束。Agent Knowledge Overview 将文件产物 freshness 与最新 DB RuntimeTask truth 合并，用户看到 Queued/Running/Failed/Needs review；公司后台消费 reconciliation，T0 DREAM_END、state history 与 RuntimeTask outcome 共同构成证据链。
+- 修复证据：初始 Red backend → `9 failed`（dream runtime module/worker/type/migration 缺失，三入口仍 fire-and-forget）且 Knowledge read model collection 因 runtime overlay 缺失报错；Red frontend → `1 failed`（无 Queued 状态消费）。后续审计与 exhausted-retry 契约分别先 Red，再补同事务 audit 与 operator-retryable reconciliation。Green 扩展集 `pytest tests/services/test_dream_runtime.py tests/services/test_auto_dream.py tests/services/test_evolution_daemon.py tests/services/test_runtime_task_worker.py tests/services/test_runtime_task_claim_service.py tests/services/test_runtime_task_service.py tests/services/test_knowledge_read_model.py tests/migrations/test_dream_runtime_task_migration.py tests/runtime/test_hooks.py tests/runtime/test_t0_non_chat_hooks.py tests/services/test_memory_dream.py tests/test_memory_integration.py -q` → `224 passed, 5 warnings`；其中真实 PostgreSQL 双并发边界 exact-one job、advanced-state 零重放、bounded retry/reconciliation、legacy file due-state backfill、hook admission-before-detach 均有机械断言。最新三层 migration 回归（Dream + HR + Approval）→ `7 passed, 1 warning`，真实 Postgres 约束包含 `dream`，Alembic head=`dream_runtime_task_0712`。Frontend Knowledge 定向回归 → `10 passed`，`npm run build` exit 0；20 个变更 Python 文件 `ruff check` 与 `ruff format --check` 全绿。提交主题：`fix(R-004): make Dream execution durable`。
 
 ### [R-005] Blocking lifecycle/plugin Hook 默认可 fail-open
 
@@ -989,14 +991,14 @@ Codebase graph 校正时状态为 ready（43,281 nodes / 166,753 edges）；`det
 
 ## 16. 28 项原子缺口修复执行账本
 
-本节记录原始审计全部 28 项的实际落地状态：17 个断点、10 个局部闭环、1 个已知缺失。原始严重级别与原子状态保留为审计快照；只有同时具备实现、回归测试、报告证据和独立提交，才把修复状态改为闭环。Company Knowledge Base 本体按 owner 边界不在本轮开发，但 R-008 的诚实隔离、文案与防伪装验收仍必须关闭。当前进度：**6/28**。
+本节记录原始审计全部 28 项的实际落地状态：17 个断点、10 个局部闭环、1 个已知缺失。原始严重级别与原子状态保留为审计快照；只有同时具备实现、回归测试、报告证据和独立提交，才把修复状态改为闭环。Company Knowledge Base 本体按 owner 边界不在本轮开发，但 R-008 的诚实隔离、文案与防伪装验收仍必须关闭。当前进度：**7/28**。
 
 | ID | 修复状态 | 独立提交主题 | 机械证据摘要 |
 |---|---|---|---|
 | R-001 | 闭环 | `fix(R-001): fence multi-replica web chat recovery` | Red 3 failed + 两个独立 Red；Green 128 passed；真实 PostgreSQL 双 worker exact-one claim；ruff 绿 |
 | R-002 | 闭环 | `fix(R-002): make approval execution durable` | Red backend 5 failed + frontend 3 failed suites；Green backend 59 passed；真实 PostgreSQL transaction/crash/dedupe + legacy backfill/downgrade；frontend 116 passed；build/ruff 绿 |
 | R-003 | 闭环 | `fix(R-003): make HR provisioning durable` | Red backend 7 failed + frontend 3 failed；Green backend 57 passed；真实 PostgreSQL legacy backfill/downgrade；frontend 4 passed；build/ruff 绿 |
-| R-004 | 待修复 | — | — |
+| R-004 | 闭环 | `fix(R-004): make Dream execution durable` | Red backend 9 failed + read-model collection Red + frontend 1 failed；Green backend 224 passed；真实 PG 并发去重/state recovery/legacy backfill + migration 7 passed；frontend 10 passed；build/ruff 绿 |
 | R-005 | 待修复 | — | — |
 | R-006 | 待修复 | — | — |
 | R-007 | 待修复 | — | — |

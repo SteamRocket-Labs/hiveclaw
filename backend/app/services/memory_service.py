@@ -664,24 +664,19 @@ async def on_conversation_end(
         messages=messages,
     )
 
-    # P3.1: Auto-dream gate check — fire-and-forget if conditions met
+    # Persist cadence input and hand due work to the durable RuntimeTask owner.
     try:
-        from app.services.auto_dream import (
-            record_session_end,
-            should_dream,
-            run_dream,
-            should_soft_dream,
-            run_soft_dream,
-        )
-        import asyncio
+        from app.services.auto_dream import record_session_end
+        from app.services.dream_runtime import enqueue_due_dream
 
         record_session_end(agent_id)
-        if should_dream(agent_id):
-            asyncio.create_task(run_dream(agent_id, tenant_id))
-            logger.info("[Memory] Auto-dream triggered for agent %s", agent_id)
-        elif should_soft_dream(agent_id):
-            asyncio.create_task(run_soft_dream(agent_id))
-            logger.info("[Memory] Soft dream triggered for agent %s", agent_id)
+        queued = await enqueue_due_dream(
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            source="conversation_end",
+        )
+        if queued is not None:
+            logger.info("[Memory] Durable %s Dream queued for agent %s", queued.mode, agent_id)
     except Exception as _dream_err:
         logger.debug("[Memory] Auto-dream check failed: %s", _dream_err)
 

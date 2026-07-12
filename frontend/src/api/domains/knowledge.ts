@@ -10,6 +10,12 @@ export interface DistillerStatus {
   // keeping up (closure plan A1: exists ≠ fresh).
   state: 'active' | 'stale' | 'never_ran' | string;
   last_run_at: string;
+  runtime_status?: string;
+  runtime_task_id?: string;
+  runtime_phase?: string;
+  runtime_mode?: string;
+  runtime_result?: string;
+  runtime_created_at?: string | null;
 }
 
 export interface KnowledgeOverview {

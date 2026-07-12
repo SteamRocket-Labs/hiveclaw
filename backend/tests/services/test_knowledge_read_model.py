@@ -16,6 +16,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from app.services.knowledge_read_model import (
+    attach_dream_runtime_status,
     build_knowledge_overview,
     get_knowledge_page,
     list_knowledge_candidates,
@@ -25,6 +26,29 @@ from app.services.knowledge_read_model import (
 )
 
 AGENT = uuid.uuid4()
+
+
+def test_dream_runtime_status_overrides_file_freshness_with_live_execution_truth(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    _seed_workspace(tmp_path)
+    overview = build_knowledge_overview(tmp_path, AGENT)
+    task = SimpleNamespace(
+        id=uuid.uuid4(),
+        status="running",
+        created_at=datetime.now(UTC),
+        started_at=datetime.now(UTC),
+        completed_at=None,
+        result_summary=None,
+        metadata_json={"phase": "executing", "dream_mode": "full"},
+    )
+
+    enriched = attach_dream_runtime_status(overview, task)
+
+    assert enriched["distillers"]["dream"]["runtime_status"] == "running"
+    assert enriched["distillers"]["dream"]["runtime_task_id"] == str(task.id)
+    assert enriched["distillers"]["dream"]["runtime_phase"] == "executing"
+    assert enriched["distillers"]["dream"]["runtime_mode"] == "full"
 
 
 def _seed_workspace(tmp_path: Path) -> Path:

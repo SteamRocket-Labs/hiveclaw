@@ -20,6 +20,7 @@ LEASE_RECLAIMABLE_RUNTIME_TASK_TYPES = (
     "advanced_plan",
     "approval_execution",
     "hr_provisioning",
+    "dream",
 )
 
 

@@ -37,6 +37,14 @@ const DISTILLER_STATE_FALLBACK: Record<string, string> = {
   never_ran: 'Never run',
 };
 
+const DREAM_RUNTIME_FALLBACK: Record<string, { label: string; cls: string }> = {
+  pending: { label: 'Queued', cls: 'agent-knowledge-distiller-queued' },
+  resumable: { label: 'Queued', cls: 'agent-knowledge-distiller-queued' },
+  running: { label: 'Running', cls: 'agent-knowledge-distiller-active' },
+  failed: { label: 'Failed', cls: 'agent-knowledge-distiller-stale' },
+  needs_reconciliation: { label: 'Needs review', cls: 'agent-knowledge-distiller-stale' },
+};
+
 const FAILURE_STATUS_STYLE: Record<string, { cls: string; fallback: string }> = {
   active: { cls: 'agent-knowledge-fm-active', fallback: 'active' },
   规避中: { cls: 'agent-knowledge-fm-mitigating', fallback: 'mitigating' },
@@ -113,22 +121,32 @@ function OverviewCards({
       <div className="agent-knowledge-card">
         <h4 className="agent-knowledge-card-title">🩺 {t('agent.knowledge.pipelineCard', '记忆管线')}</h4>
         <div className="agent-knowledge-card-body">
-          {distillers.map((status) => (
-            <div key={status.name}>
-              {t(`agent.knowledge.distiller.${status.name}`, status.name)}:{' '}
-              <span
-                className={
-                  status.state === 'active'
-                    ? 'agent-knowledge-distiller-active'
-                    : status.state === 'stale'
-                      ? 'agent-knowledge-distiller-stale'
-                      : 'agent-knowledge-distiller-never'
-                }
-              >
-                {t(`agent.knowledge.distillerState.${status.state}`, DISTILLER_STATE_FALLBACK[status.state] ?? status.state)}
-              </span>
-            </div>
-          ))}
+          {distillers.map((status) => {
+            const runtime = status.name === 'dream' && status.runtime_status
+              ? DREAM_RUNTIME_FALLBACK[status.runtime_status]
+              : undefined;
+            return (
+              <div key={status.name}>
+                {t(`agent.knowledge.distiller.${status.name}`, status.name)}:{' '}
+                <span
+                  className={
+                    status.state === 'active'
+                      ? 'agent-knowledge-distiller-active'
+                      : status.state === 'stale'
+                        ? 'agent-knowledge-distiller-stale'
+                        : 'agent-knowledge-distiller-never'
+                  }
+                >
+                  {t(`agent.knowledge.distillerState.${status.state}`, DISTILLER_STATE_FALLBACK[status.state] ?? status.state)}
+                </span>
+                {runtime && (
+                  <span className={runtime.cls} title={status.runtime_task_id || undefined}>
+                    {' · '}{t(`agent.knowledge.dreamRuntime.${status.runtime_status}`, runtime.label)}
+                  </span>
+                )}
+              </div>
+            );
+          })}
           {overview.pipeline?.stalled && (
             <div className="agent-knowledge-pipeline-stalled">
               ⚠ {t('agent.knowledge.pipelineStalled', '消化停滞')} · {t('agent.knowledge.pendingPackages', '积压')}:{' '}

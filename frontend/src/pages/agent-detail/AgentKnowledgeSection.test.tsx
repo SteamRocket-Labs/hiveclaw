@@ -29,7 +29,13 @@ const overviewData = {
   distillers: {
     t2_pipeline: { name: 't2_pipeline', state: 'active', last_run_at: '' },
     heartbeat: { name: 'heartbeat', state: 'stale', last_run_at: '' },
-    dream: { name: 'dream', state: 'never_ran', last_run_at: '' },
+    dream: {
+      name: 'dream',
+      state: 'never_ran',
+      last_run_at: '',
+      runtime_status: 'pending',
+      runtime_task_id: 'dream-task-1',
+    },
     skillDistiller: { name: 'skill_distiller', state: 'never_ran', last_run_at: '' },
   },
   linkedCapabilities: { skillsReferenced: 1, workflowsReferenced: 1, mcpToolsReferenced: 0, skillCandidates: 1 },
@@ -126,6 +132,8 @@ describe('AgentKnowledgeSection', () => {
     expect(html).not.toContain('extractor');
     // A1 (exists ≠ fresh): stale renders in warning color (class-driven → var(--warning))
     expect(html).toContain('agent-knowledge-distiller-stale');
+    expect(html).toContain('Queued');
+    expect(html).toContain('agent-knowledge-distiller-queued');
     // Default view is Overview, not a file browser.
     expect(html).not.toContain('raw markdown browser');
   });

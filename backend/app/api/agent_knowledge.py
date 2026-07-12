@@ -16,6 +16,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, Response, UploadFile
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -737,9 +738,18 @@ async def get_overview(
     current_user: User = Depends(get_current_user),
 ):
     await check_agent_access(db, current_user, agent_id)
-    from app.services.knowledge_read_model import build_knowledge_overview
+    from app.models.runtime_task import RuntimeTask
+    from app.services.knowledge_read_model import attach_dream_runtime_status, build_knowledge_overview
 
-    return build_knowledge_overview(_data_root(), agent_id)
+    latest_dream = (
+        await db.execute(
+            select(RuntimeTask)
+            .where(RuntimeTask.parent_agent_id == agent_id, RuntimeTask.task_type == "dream")
+            .order_by(RuntimeTask.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    return attach_dream_runtime_status(build_knowledge_overview(_data_root(), agent_id), latest_dream)
 
 
 @router.get("/observability")

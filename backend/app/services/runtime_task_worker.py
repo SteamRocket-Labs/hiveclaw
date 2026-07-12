@@ -34,6 +34,7 @@ SUPPORTED_RUNTIME_TASK_TYPES = (
     "trigger",
     "approval_execution",
     "hr_provisioning",
+    "dream",
 )
 _DISPATCHED_TASKS: dict[str, tuple[str, asyncio.Task]] = {}
 _STATE: dict[str, Any] = {
@@ -65,6 +66,7 @@ _STATE: dict[str, Any] = {
     "budget_outbox_needs_reconciliation": 0,
     "approval_execution_dispatched": 0,
     "hr_provisioning_dispatched": 0,
+    "dream_dispatched": 0,
 }
 
 
@@ -302,6 +304,15 @@ def _dispatch_claimed_task(task: RuntimeTask) -> bool:
         if dispatched:
             _STATE["hr_provisioning_dispatched"] = int(_STATE.get("hr_provisioning_dispatched") or 0) + 1
         return dispatched
+    if task.task_type == "dream":
+        dispatched = _dispatch_async_runtime_task(
+            task,
+            _execute_claimed_dream_task(task.id),
+            task_type="dream",
+        )
+        if dispatched:
+            _STATE["dream_dispatched"] = int(_STATE.get("dream_dispatched") or 0) + 1
+        return dispatched
     logger.warning("[RuntimeTaskWorker] Claimed unsupported task type {}; leaving task {}", task.task_type, task.id)
     return False
 
@@ -343,6 +354,16 @@ async def _execute_claimed_hr_provisioning_task(task_id: UUID) -> None:
     except Exception as exc:  # noqa: BLE001 - worker loop must keep running.
         _STATE["last_error"] = f"hr_provisioning:{type(exc).__name__}:{str(exc)[:300]}"
         logger.exception("[RuntimeTaskWorker] HR provisioning task {} failed", task_id)
+
+
+async def _execute_claimed_dream_task(task_id: UUID) -> None:
+    try:
+        from app.services.dream_runtime import execute_claimed_dream
+
+        await execute_claimed_dream(task_id)
+    except Exception as exc:  # noqa: BLE001 - worker loop must keep running.
+        _STATE["last_error"] = f"dream:{type(exc).__name__}:{str(exc)[:300]}"
+        logger.exception("[RuntimeTaskWorker] Dream task {} failed", task_id)
 
 
 async def _execute_claimed_delegation_task(task_id: UUID) -> None:

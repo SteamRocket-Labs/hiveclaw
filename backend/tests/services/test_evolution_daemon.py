@@ -271,3 +271,43 @@ def test_hook_setup_schedules_evolution_maintenance_after_heartbeat() -> None:
 
     assert any(spec["handler"] == "t0_heartbeat_tick_end" for spec in specs)
     assert any(spec["handler"] == "evolution_maintenance_on_heartbeat" for spec in specs)
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_hook_persists_dream_admission_before_detaching_maintenance(monkeypatch) -> None:
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from app.runtime.hooks import HookContext, HookEvent
+    from app.runtime.hooks_setup import _evolution_maintenance_on_heartbeat
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    sequence: list[str] = []
+
+    async def durable_admission(**kwargs):
+        assert kwargs == {
+            "agent_id": agent_id,
+            "tenant_id": tenant_id,
+            "outcome_type": "action_taken",
+        }
+        sequence.append("durable_admission")
+
+    def capture_task(coro, *, name):
+        assert name == f"heartbeat_evolution_maintenance:{agent_id}"
+        sequence.append("maintenance_detached")
+        coro.close()
+        return SimpleNamespace()
+
+    monkeypatch.setattr(evolution_daemon, "record_and_enqueue_heartbeat_dream", durable_admission)
+    monkeypatch.setattr("app.runtime.hooks_setup.asyncio.create_task", capture_task)
+
+    await _evolution_maintenance_on_heartbeat(
+        HookContext(
+            event=HookEvent.HEARTBEAT_TICK_END,
+            agent_id=str(agent_id),
+            metadata={"tenant_id": str(tenant_id), "outcome": "action_taken"},
+        )
+    )
+
+    assert sequence == ["durable_admission", "maintenance_detached"]

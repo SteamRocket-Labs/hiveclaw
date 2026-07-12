@@ -17,6 +17,7 @@ def test_worker_claimable_task_types_cover_v3_runtime_planes():
     assert "trigger" in worker.SUPPORTED_RUNTIME_TASK_TYPES
     assert "approval_execution" in worker.SUPPORTED_RUNTIME_TASK_TYPES
     assert "hr_provisioning" in worker.SUPPORTED_RUNTIME_TASK_TYPES
+    assert "dream" in worker.SUPPORTED_RUNTIME_TASK_TYPES
 
 
 def test_worker_claim_batch_is_capped_by_active_web_chat_runs(monkeypatch):
@@ -96,6 +97,7 @@ def test_default_worker_capacity_is_not_cc_hostile():
     assert limits["trigger"] >= 8
     assert limits["approval_execution"] >= 8
     assert limits["hr_provisioning"] >= 4
+    assert limits["dream"] >= 2
 
 
 def test_worker_dispatches_claimed_subagent_to_runtime_task_executor(monkeypatch):
@@ -187,6 +189,29 @@ def test_worker_dispatches_claimed_hr_provisioning_to_durable_executor(monkeypat
         "task": task,
         "task_type": "hr_provisioning",
         "coro_name": "_execute_claimed_hr_provisioning_task",
+    }
+
+
+def test_worker_dispatches_claimed_dream_to_durable_executor(monkeypatch):
+    import app.services.runtime_task_worker as worker
+
+    captured = {}
+
+    def fake_dispatch(task, coro, *, task_type):
+        captured["task"] = task
+        captured["task_type"] = task_type
+        captured["coro_name"] = coro.cr_code.co_name
+        coro.close()
+        return True
+
+    task = SimpleNamespace(id=uuid4(), task_type="dream")
+    monkeypatch.setattr(worker, "_dispatch_async_runtime_task", fake_dispatch)
+
+    assert worker._dispatch_claimed_task(task) is True
+    assert captured == {
+        "task": task,
+        "task_type": "dream",
+        "coro_name": "_execute_claimed_dream_task",
     }
 
 

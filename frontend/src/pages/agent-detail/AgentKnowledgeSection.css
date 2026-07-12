@@ -93,6 +93,11 @@
   color: var(--success);
 }
 
+.agent-knowledge-distiller-queued {
+  color: var(--primary);
+  font-weight: 600;
+}
+
 .agent-knowledge-distiller-stale {
   color: var(--warning);
 }

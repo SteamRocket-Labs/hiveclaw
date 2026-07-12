@@ -8,6 +8,7 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml ./
+COPY scripts/patch_lark_oapi.py ./scripts/patch_lark_oapi.py
 ARG CLAWITH_PIP_INDEX_URL
 ARG CLAWITH_PIP_TRUSTED_HOST
 RUN if [ -n "$CLAWITH_PIP_INDEX_URL" ] && [ -n "$CLAWITH_PIP_TRUSTED_HOST" ]; then \
@@ -17,6 +18,7 @@ RUN if [ -n "$CLAWITH_PIP_INDEX_URL" ] && [ -n "$CLAWITH_PIP_TRUSTED_HOST" ]; th
     else \
         pip install --no-cache-dir .; \
     fi
+RUN python scripts/patch_lark_oapi.py
 
 # ─── Production ─────────────────────────────────────────
 FROM python:3.12-slim AS production

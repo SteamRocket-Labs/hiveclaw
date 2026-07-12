@@ -667,6 +667,9 @@ flowchart LR
 - 精确代码位置：pytest warning 来源于 `lark_oapi`/`websockets`/Alembic 配置；前端 `--localstorage-file` 与 FORCE_COLOR/NO_COLOR warning。
 - 缺失测试：warnings-as-errors 兼容试跑。
 - 一次性完整关闭方案：锁定升级范围；替换 deprecated APIs/配置；修正测试启动参数；加入受控 warnings budget；全套测试与真实 Channel compatibility 验证；保留依赖回滚 lockfile。
+- 修复状态（2026-07-12）：**R-014 七原子闭环**。Python 兼容门现在把 `DeprecationWarning`、`PendingDeprecationWarning`、`FutureWarning` 精确升级为 error，不把 GC 时序相关、默认不可见的 `ResourceWarning` 错归因到下一测试。Alembic 显式使用 `path_separator=os`；FastAPI 从已弃用的第三方 response class 回到原生 `JSONResponse`。官方最新 `lark-oapi` 仍为 1.7.1 且内嵌旧 protobuf/import-time event loop/deprecated websocket annotation，因此依赖精确锁为 `lark-oapi==1.7.1`、`websockets>=13,<16`，并由 fail-closed、幂等安装补丁替换三个确定源码路径；补丁同时重算 wheel `RECORD` 的 SHA-256/size，未知版本或锚点漂移直接终止安装。root/backend Docker、`setup.sh` 和两个 CI 安装入口全部执行同一补丁，不存在“本地绿、镜像仍旧”的分叉。
+- 前端零告警与预算证据：Vitest 通过 `NODE_OPTIONS=--no-experimental-webstorage` 禁用 Node 实验性 Web Storage，而不是伪造空 `--localstorage-file`；Playwright 两条入口显式清除环境遗留 `NO_COLOR`；Vite advisory threshold 与机械 vendor 硬 Gate 同步，shared vendor 同时受 `620,000 bytes / 200,000 gzip bytes` 限制并生成统一 evidence JSON。FastAPI、SDK direct import 都在 `-W error::DeprecationWarning` 子进程验证，避免 import cache 掩盖。
+- 验收证据：初始 architecture Red → `4 failed, 1 passed`；SDK `RECORD` 真实性 Red → `1 failed`。补丁首次改 3 个文件、再次执行改 0 个文件；architecture/CI/JSON 合并 → `13 passed`；Feishu WS/CardKit/auth compatibility → `19 passed`；backend 全量 → **`6569 passed, 1 skipped`**，完整日志无 warning summary/Deprecation/Future warning。Frontend 全量 → **`111 files / 644 passed`**；build exit 0，AgentDetail `286,964/380,000` bytes、vendor `591,449/620,000` bytes（gzip `81,125/115,000`、`186,472/200,000`）；默认 Playwright → **`13 passed`** 且日志无 `NO_COLOR/FORCE_COLOR/localstorage` warning。变更文件 `ruff check`、`ruff format --check`、`git diff --check` 全绿。提交主题：`fix(R-014): make release gates warning-free`。
 
 ---
 
@@ -1018,7 +1021,7 @@ Codebase graph 校正时状态为 ready（43,281 nodes / 166,753 edges）；`det
 
 ## 16. 28 项原子缺口修复执行账本
 
-本节记录原始审计全部 28 项的实际落地状态：17 个断点、10 个局部闭环、1 个已知缺失。原始严重级别与原子状态保留为审计快照；只有同时具备实现、回归测试、报告证据和独立提交，才把修复状态改为闭环。Company Knowledge Base 本体按 owner 边界不在本轮开发，但 R-008 的诚实隔离、文案与防伪装验收仍必须关闭。当前进度：**16/28**。
+本节记录原始审计全部 28 项的实际落地状态：17 个断点、10 个局部闭环、1 个已知缺失。原始严重级别与原子状态保留为审计快照；只有同时具备实现、回归测试、报告证据和独立提交，才把修复状态改为闭环。Company Knowledge Base 本体按 owner 边界不在本轮开发，但 R-008 的诚实隔离、文案与防伪装验收仍必须关闭。当前进度：**17/28**。
 
 | ID | 修复状态 | 独立提交主题 | 机械证据摘要 |
 |---|---|---|---|
@@ -1035,7 +1038,7 @@ Codebase graph 校正时状态为 ready（43,281 nodes / 166,753 edges）；`det
 | R-011 | 闭环 | `fix(R-011): gate fifteen real user journeys` + 2 个 acceptance 补正 | Red architecture 2 failed + CI collection Red 1 failed；真实全链 15 passed；backend 全量 6562 passed；frontend 639 passed + build；strict RLS/Redis/HR/Slack/Team/recovery seam 回归；CI 独立收集与永久证据上传；ruff/format/diff 绿 |
 | R-012 | 闭环 | `style(R-012): close backend format gate` | Red 12 files；Green ruff check 全绿 + 1521 files formatted；backend 全量 6562 passed, 1 skipped；无 frontend 变更；diff 绿 |
 | R-013 | 闭环 | `perf(R-013): split workbench domains and bound large lists` | Red unit/arch 3 failed + manifest 1 failed + monolith 1 failed + browser 2 failed；AgentDetail 478.96→286.96 kB；Tools orchestrator 1356→51 行；frontend 644 passed + build/budget；Playwright 13 + atomic 15；diff 绿 |
-| R-014 | 待修复 | — | — |
+| R-014 | 闭环 | `fix(R-014): make release gates warning-free` | Red architecture 4 failed + RECORD 1 failed；SDK patch 幂等且 RECORD hash/size 一致；backend 6569 passed；frontend 644 passed + build/bundle budgets；Playwright 13；全日志零可见 warning；ruff/format/diff 绿 |
 | R-015 | 闭环 | `fix(R-015): sanitize rich text and authenticated downloads` | Red 5 failed + CSP inheritance 1 failed；Green 121 passed；全量 622 passed；build/E2E/audit 绿 |
 | R-016 | 闭环 | `fix(R-016): close governed memory path traversal` | Red 2 failed/1 passed；Green 3 passed；扩展 39 passed；ruff check/format 绿 |
 | R-017 | 闭环 | `fix(R-017): align heartbeat with the real T3 gate` | Red 2 failed；Green 5 passed；真 Gate 扩展 24 passed；ruff 绿 |

@@ -45,6 +45,10 @@ export default defineConfig({
     },
     build: {
         manifest: true,
+        // The intentionally shared vendor chunk has its own stricter hard gate
+        // in check-agent-detail-bundle.mjs. Keep Vite's advisory threshold in
+        // sync so builds are quiet without weakening enforcement.
+        chunkSizeWarningLimit: 620,
         rollupOptions: {
             output: {
                 manualChunks(id) {

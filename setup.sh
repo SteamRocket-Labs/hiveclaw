@@ -384,6 +384,7 @@ else
     echo "  Try manually: cd backend && .venv/bin/pip install -e '$PIP_TARGET'"
     exit 1
 fi
+.venv/bin/python scripts/patch_lark_oapi.py
 
 # ── 4. Frontend setup ────────────────────────────
 echo ""

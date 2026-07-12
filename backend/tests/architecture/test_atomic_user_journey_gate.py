@@ -83,7 +83,9 @@ def test_default_visual_suite_does_not_collect_the_full_stack_atomic_spec() -> N
 
 def test_atomic_journeys_are_a_required_ci_release_gate() -> None:
     package = json.loads(PACKAGE.read_text(encoding="utf-8"))
-    assert package["scripts"]["test:e2e:journeys"] == "playwright test --config playwright.journeys.config.ts"
+    assert package["scripts"]["test:e2e:journeys"] == (
+        "env -u NO_COLOR playwright test --config playwright.journeys.config.ts"
+    )
     ci = CI.read_text(encoding="utf-8")
     assert "atomic-user-journeys:" in ci
     assert "postgres:15" in ci

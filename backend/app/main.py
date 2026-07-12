@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 import re
 
 from fastapi import FastAPI, Request
-from fastapi.responses import ORJSONResponse
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 
@@ -762,9 +762,9 @@ app = FastAPI(
     title=settings.APP_NAME,
     version=settings.APP_VERSION,
     lifespan=lifespan,
-    # MB-scale payloads (workbench/transcript/export) serialize on the event
-    # loop; orjson keeps that burst an order of magnitude shorter (plan A2).
-    default_response_class=ORJSONResponse,
+    # FastAPI's native response-model serializer writes JSON bytes directly;
+    # A custom third-party response class is deprecated and bypasses that optimized path.
+    default_response_class=JSONResponse,
 )
 
 # Add TraceIdMiddleware first so it's executed for all requests
@@ -795,7 +795,7 @@ app.add_middleware(TenantMiddleware)
 @app.middleware("http")
 async def api_role_runtime_boundary(request: Request, call_next):
     if _process_role() == "api" and not _api_role_allows_path(request.url.path):
-        return ORJSONResponse(
+        return JSONResponse(
             status_code=404,
             content={
                 "detail": "Route is not served by the no-volume API role. Use the runtime/read-model backend route.",

@@ -5,7 +5,6 @@ description = "Hive - Enterprise Digital Employee Platform Backend"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi[standard]>=0.115.0",
-    "orjson>=3.10.0",
     "uvicorn[standard]>=0.30.0",
     "sqlalchemy[asyncio]>=2.0.0",
     "asyncpg>=0.30.0",
@@ -18,7 +17,7 @@ dependencies = [
     "python-multipart>=0.0.9",
     "httpx[socks]>=0.27.0",
     "docker>=7.0.0",
-    "websockets>=13.0",
+    "websockets>=13.0,<16",
     "aiofiles>=24.0.0",
     "croniter>=2.0.0",
     "pyyaml>=6.0.0",
@@ -31,7 +30,7 @@ dependencies = [
     "python-docx>=1.1.0",
     "openpyxl>=3.1.0",
     "python-pptx>=1.0.0",
-    "lark-oapi>=1.2.9",
+    "lark-oapi==1.7.1",
     "dingtalk-stream>=0.17.0",
     "wecom-aibot-sdk-python>=0.1.4",
     "pycryptodome>=3.20.0",
@@ -64,6 +63,11 @@ line-length = 120
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 addopts = "--import-mode=importlib"
+filterwarnings = [
+    "error::DeprecationWarning",
+    "error::PendingDeprecationWarning",
+    "error::FutureWarning",
+]
 markers = [
     "real_runtime_config: opt out of the runtime/conftest autouse fixture that stubs invoker._resolve_runtime_config (P0-1b)",
 ]

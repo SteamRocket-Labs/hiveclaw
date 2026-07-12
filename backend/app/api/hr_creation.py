@@ -9,12 +9,14 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.core.permissions import check_agent_access
 from app.core.security import get_current_user
 from app.database import get_db
-from app.models.user import User
+from app.models.hr_creation import HrCreationDraft
 from app.models.runtime_task import RuntimeTask
+from app.models.user import User
 from app.services.hr_creation_service import (
     HrCreationConflict,
     confirm_hr_creation_draft_record,
@@ -50,6 +52,13 @@ class HrCreationDraftOut(BaseModel):
     provisioning_steps: list[dict[str, Any]] = Field(default_factory=list)
     creation_state: str | None = None
     failure: dict[str, Any] | None = None
+    hr_agent_id: str | None = None
+    session_id: str | None = None
+    requested_by_user_id: str | None = None
+    expires_at: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+    recovery: dict[str, Any] = Field(default_factory=dict)
 
 
 def _out(payload: dict[str, Any]) -> HrCreationDraftOut:
@@ -64,9 +73,7 @@ async def _load_for_user(
     draft_id: uuid.UUID,
     for_update: bool,
 ):
-    agent, _access = await check_agent_access(db, current_user, agent_id)
-    if agent.agent_class != "internal_system" or agent.name != "__system_hr__":
-        raise HTTPException(status_code=404, detail="HR creation draft not found")
+    agent = await _load_hr_agent_for_user(db=db, current_user=current_user, agent_id=agent_id)
     try:
         return await load_hr_creation_draft(
             db,
@@ -81,6 +88,73 @@ async def _load_for_user(
         raise HTTPException(status_code=status_code, detail={"error": exc.code, "message": exc.message}) from exc
 
 
+async def _load_hr_agent_for_user(*, db: AsyncSession, current_user: User, agent_id: uuid.UUID):
+    agent, _access = await check_agent_access(db, current_user, agent_id)
+    if agent.agent_class != "internal_system" or agent.name != "__system_hr__":
+        raise HTTPException(status_code=404, detail="HR creation draft not found")
+    return agent
+
+
+async def _linked_provisioning_task_or_none(
+    db: AsyncSession,
+    *,
+    draft: HrCreationDraft,
+    for_update: bool = False,
+):
+    if draft.provisioning_task_id is None:
+        return None
+    statement = select(RuntimeTask).where(
+        RuntimeTask.id == draft.provisioning_task_id,
+        RuntimeTask.tenant_id == draft.tenant_id,
+        RuntimeTask.task_type == "hr_provisioning",
+    )
+    if for_update:
+        statement = statement.with_for_update()
+    return (await db.execute(statement)).scalar_one_or_none()
+
+
+@router.get("/{agent_id}/hr-creation-drafts", response_model=list[HrCreationDraftOut])
+async def list_hr_creation_drafts(
+    agent_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    limit: int = 50,
+):
+    agent = await _load_hr_agent_for_user(db=db, current_user=current_user, agent_id=agent_id)
+    drafts = list(
+        (
+            await db.execute(
+                select(HrCreationDraft)
+                .options(selectinload(HrCreationDraft.provisioning_steps))
+                .where(
+                    HrCreationDraft.tenant_id == agent.tenant_id,
+                    HrCreationDraft.hr_agent_id == agent_id,
+                    HrCreationDraft.requested_by_user_id == current_user.id,
+                    HrCreationDraft.status.in_(
+                        ("awaiting_confirmation", "confirmed", "creating", "provisioning", "failed")
+                    ),
+                )
+                .order_by(
+                    HrCreationDraft.updated_at.desc(),
+                    HrCreationDraft.created_at.desc(),
+                )
+                .limit(max(1, min(int(limit), 100)))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    task_ids = [draft.provisioning_task_id for draft in drafts if draft.provisioning_task_id is not None]
+    tasks_by_id = {}
+    if task_ids:
+        tasks = list((await db.execute(select(RuntimeTask).where(RuntimeTask.id.in_(task_ids)))).scalars().all())
+        tasks_by_id = {task.id: task for task in tasks}
+    return [
+        _out(hr_creation_draft_payload(draft, runtime_task=tasks_by_id.get(draft.provisioning_task_id)))
+        for draft in drafts
+    ]
+
+
 @router.get("/{agent_id}/hr-creation-drafts/{draft_id}", response_model=HrCreationDraftOut)
 async def get_hr_creation_draft(
     agent_id: uuid.UUID,
@@ -91,7 +165,8 @@ async def get_hr_creation_draft(
     draft = await _load_for_user(
         db=db, current_user=current_user, agent_id=agent_id, draft_id=draft_id, for_update=False
     )
-    return _out(hr_creation_draft_payload(draft))
+    task = await _linked_provisioning_task_or_none(db, draft=draft)
+    return _out(hr_creation_draft_payload(draft, runtime_task=task))
 
 
 @router.post("/{agent_id}/hr-creation-drafts/{draft_id}/confirm", response_model=HrCreationDraftOut)
@@ -158,7 +233,8 @@ async def confirm_hr_creation_draft(
             reason="hr_provisioning_queued",
             runtime_task_id=created_task.id,
         )
-    return _out(hr_creation_draft_payload(draft))
+    task = created_task or await _linked_provisioning_task_or_none(db, draft=draft)
+    return _out(hr_creation_draft_payload(draft, runtime_task=task))
 
 
 async def _linked_provisioning_task(
@@ -198,6 +274,11 @@ async def retry_hr_creation_draft(
         task = await _linked_provisioning_task(db, draft=draft)
         if draft.status not in {"failed", "provisioning"}:
             raise HrCreationConflict("invalid_status", f"HR provisioning cannot be retried from {draft.status}.")
+        if draft.confirmed_by_user_id is None or draft.confirmed_at is None:
+            raise HrCreationConflict(
+                "confirmation_missing",
+                "HR provisioning cannot retry without authenticated blueprint confirmation.",
+            )
         if task.status == "needs_reconciliation":
             raise HrCreationConflict(
                 "reconciliation_required",
@@ -256,7 +337,7 @@ async def retry_hr_creation_draft(
     from app.services.runtime_task_worker import notify_runtime_task_worker
 
     await notify_runtime_task_worker(reason="hr_provisioning_retry", runtime_task_id=task.id)
-    return _out(hr_creation_draft_payload(draft))
+    return _out(hr_creation_draft_payload(draft, runtime_task=task))
 
 
 @router.post("/{agent_id}/hr-creation-drafts/{draft_id}/cancel", response_model=HrCreationDraftOut)
@@ -336,7 +417,28 @@ async def cancel_hr_creation_draft(
         },
     )
     await db.commit()
-    return _out(hr_creation_draft_payload(draft))
+    return _out(hr_creation_draft_payload(draft, runtime_task=task))
+
+
+@router.delete("/{agent_id}/hr-creation-drafts/{draft_id}", response_model=HrCreationDraftOut)
+async def abandon_hr_creation_draft(
+    agent_id: uuid.UUID,
+    draft_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.services.hr_creation_recovery import abandon_hr_creation
+
+    draft = await _load_for_user(
+        db=db, current_user=current_user, agent_id=agent_id, draft_id=draft_id, for_update=True
+    )
+    task = await _linked_provisioning_task_or_none(db, draft=draft, for_update=True)
+    try:
+        await abandon_hr_creation(db, draft, actor_id=current_user.id, task=task)
+    except HrCreationConflict as exc:
+        raise HTTPException(status_code=409, detail={"error": exc.code, "message": exc.message}) from exc
+    await db.commit()
+    return _out(hr_creation_draft_payload(draft, runtime_task=task))
 
 
 @router.post("/{agent_id}/hr-creation-drafts/{draft_id}/reject", response_model=HrCreationDraftOut)

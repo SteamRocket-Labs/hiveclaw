@@ -1,4 +1,13 @@
-import { get, post } from '../core';
+import { del, get, post } from '../core';
+
+export interface HrCreationRecovery {
+  task_status?: string | null;
+  can_resume: boolean;
+  can_retry: boolean;
+  can_abandon: boolean;
+  requires_operator: boolean;
+  reason?: string | null;
+}
 
 export interface HrCreationDraft {
   blueprint_id: string;
@@ -23,6 +32,13 @@ export interface HrCreationDraft {
   }>;
   creation_state?: string | null;
   failure?: Record<string, unknown> | null;
+  hr_agent_id?: string | null;
+  session_id?: string | null;
+  requested_by_user_id?: string | null;
+  expires_at?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  recovery?: HrCreationRecovery;
 }
 
 export interface HrCreationConfirmInput {
@@ -47,5 +63,11 @@ export const hrCreationApi = {
   ),
   cancel: (agentId: string, draftId: string) => (
     post<HrCreationDraft>(`${draftPath(agentId, draftId)}/cancel`, {})
+  ),
+  listRecoverable: (agentId: string) => (
+    get<HrCreationDraft[]>(`/agents/${encodeURIComponent(agentId)}/hr-creation-drafts`)
+  ),
+  abandon: (agentId: string, draftId: string) => (
+    del<HrCreationDraft>(draftPath(agentId, draftId))
   ),
 };

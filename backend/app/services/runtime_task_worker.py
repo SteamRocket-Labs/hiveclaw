@@ -66,6 +66,7 @@ _STATE: dict[str, Any] = {
     "budget_outbox_needs_reconciliation": 0,
     "approval_execution_dispatched": 0,
     "hr_provisioning_dispatched": 0,
+    "hr_drafts_reconciled": 0,
     "dream_dispatched": 0,
 }
 
@@ -267,6 +268,14 @@ async def drain_budget_transition_outbox_once(*, worker_id: str) -> dict[str, in
         state_key = f"budget_outbox_{key}"
         _STATE[state_key] = int(_STATE.get(state_key) or 0) + int(counts.get(key) or 0)
     return counts
+
+
+async def reconcile_hr_creation_drafts_once() -> dict[str, int]:
+    from app.services.hr_creation_reconciliation import reconcile_hr_creation_drafts_once as reconcile
+
+    summary = await reconcile()
+    _STATE["hr_drafts_reconciled"] = int(_STATE.get("hr_drafts_reconciled") or 0) + int(summary.get("checked") or 0)
+    return summary
 
 
 def _dispatch_claimed_task(task: RuntimeTask) -> bool:
@@ -490,6 +499,11 @@ async def start_runtime_task_worker_loop() -> None:
     logger.info("[RuntimeTaskWorker] started worker_id={}", worker_id)
     try:
         while True:
+            try:
+                await reconcile_hr_creation_drafts_once()
+            except Exception as exc:  # noqa: BLE001 - normal task claiming must continue.
+                _STATE["last_error"] = f"hr_reconcile:{type(exc).__name__}: {str(exc)[:500]}"
+                logger.exception("[RuntimeTaskWorker] HR draft reconciliation tick failed")
             try:
                 await drain_budget_transition_outbox_once(worker_id=worker_id)
             except Exception as exc:  # noqa: BLE001 - task claiming must continue after one delivery failure.

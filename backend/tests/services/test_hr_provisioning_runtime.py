@@ -339,3 +339,213 @@ async def test_cancelling_running_hr_job_fences_both_task_and_draft_for_reconcil
         assert task.metadata_json["automatic_retry_allowed"] is False
         assert draft.claim_token is None
         assert draft.failure_code == "cancellation_reconciliation_required"
+
+
+@pytest.mark.asyncio
+async def test_hr_reconciler_expires_stale_preview_once(owner_sessionmaker, monkeypatch) -> None:
+    import app.database as database
+    from app.models.hr_creation import HrCreationDraft
+    from app.services.hr_creation_reconciliation import reconcile_hr_creation_drafts_once
+
+    tenant_id, _, _, _, draft_id = await _seed_hr_draft(owner_sessionmaker)
+    async with owner_sessionmaker() as db:
+        draft = await db.get(HrCreationDraft, draft_id)
+        assert draft is not None
+        draft.expires_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+        await db.commit()
+
+    monkeypatch.setattr(database, "async_session", owner_sessionmaker)
+    first = await reconcile_hr_creation_drafts_once(tenant_id=tenant_id)
+    second = await reconcile_hr_creation_drafts_once(tenant_id=tenant_id)
+
+    assert first["expired"] == 1
+    assert second["expired"] == 0
+    async with owner_sessionmaker() as db:
+        draft = await db.get(HrCreationDraft, draft_id)
+        assert draft is not None and draft.status == "expired"
+
+
+@pytest.mark.asyncio
+async def test_hr_reconciler_recreates_missing_job_for_stale_provisioning_draft(
+    owner_sessionmaker,
+    monkeypatch,
+) -> None:
+    import app.database as database
+    from app.models.hr_creation import HrCreationDraft
+    from app.models.runtime_task import RuntimeTask
+    from app.services.hr_creation_reconciliation import reconcile_hr_creation_drafts_once
+
+    tenant_id, user_id, _, _, draft_id = await _seed_hr_draft(owner_sessionmaker, draft_status="provisioning")
+    async with owner_sessionmaker() as db:
+        draft = await db.get(HrCreationDraft, draft_id)
+        assert draft is not None
+        draft.confirmed_by_user_id = user_id
+        draft.confirmed_at = datetime.now(timezone.utc) - timedelta(hours=1)
+        draft.claim_token = uuid4()
+        draft.claim_version = 3
+        draft.claim_expires_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+        await db.commit()
+
+    monkeypatch.setattr(database, "async_session", owner_sessionmaker)
+    first = await reconcile_hr_creation_drafts_once(tenant_id=tenant_id)
+    second = await reconcile_hr_creation_drafts_once(tenant_id=tenant_id)
+
+    assert first["jobs_created"] == 1
+    assert second["jobs_created"] == 0
+    async with owner_sessionmaker() as db:
+        draft = await db.get(HrCreationDraft, draft_id)
+        assert draft is not None and draft.provisioning_task_id is not None
+        task = await db.get(RuntimeTask, draft.provisioning_task_id)
+        assert task is not None and task.status == "pending"
+        assert draft.claim_token is None
+        assert draft.claim_version == 4
+
+
+@pytest.mark.asyncio
+async def test_hr_reconciler_never_replays_orphan_without_confirmation_evidence(
+    owner_sessionmaker,
+    monkeypatch,
+) -> None:
+    import app.database as database
+    from app.models.hr_creation import HrCreationDraft
+    from app.services.hr_creation_reconciliation import reconcile_hr_creation_drafts_once
+
+    tenant_id, _, _, _, draft_id = await _seed_hr_draft(owner_sessionmaker, draft_status="provisioning")
+    monkeypatch.setattr(database, "async_session", owner_sessionmaker)
+
+    result = await reconcile_hr_creation_drafts_once(tenant_id=tenant_id)
+
+    assert result["authority_blocked"] == 1
+    assert result["jobs_created"] == 0
+    async with owner_sessionmaker() as db:
+        draft = await db.get(HrCreationDraft, draft_id)
+        assert draft is not None
+        assert draft.status == "failed"
+        assert draft.failure_code == "missing_confirmation_evidence"
+        assert draft.provisioning_task_id is None
+
+
+@pytest.mark.asyncio
+async def test_hr_reconciler_converges_failed_task_and_orphan_agent(owner_sessionmaker, monkeypatch) -> None:
+    import app.database as database
+    from app.models.agent import Agent
+    from app.models.hr_creation import HrCreationDraft
+    from app.services.hr_creation_reconciliation import reconcile_hr_creation_drafts_once
+    from app.services.hr_provisioning_runtime import build_hr_provisioning_runtime_task
+
+    tenant_id, user_id, _, _, draft_id = await _seed_hr_draft(owner_sessionmaker, draft_status="provisioning")
+    employee_id = uuid4()
+    async with owner_sessionmaker() as db:
+        draft = await db.get(HrCreationDraft, draft_id)
+        assert draft is not None
+        draft.confirmed_by_user_id = user_id
+        draft.confirmed_at = datetime.now(timezone.utc) - timedelta(hours=1)
+        draft.claim_expires_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+        employee = Agent(
+            id=employee_id,
+            tenant_id=tenant_id,
+            name="Interrupted Employee",
+            role_description="Needs recovery",
+            creator_id=user_id,
+            sponsor_user_id=user_id,
+            owner_user_id=user_id,
+            status="creating",
+        )
+        db.add(employee)
+        await db.flush()
+        draft.created_agent_id = employee_id
+        task = build_hr_provisioning_runtime_task(draft)
+        task.status = "failed"
+        task.completed_at = datetime.now(timezone.utc)
+        task.result_summary = "capability install failed"
+        db.add(task)
+        await db.flush()
+        draft.provisioning_task_id = task.id
+        await db.commit()
+
+    monkeypatch.setattr(database, "async_session", owner_sessionmaker)
+    result = await reconcile_hr_creation_drafts_once(tenant_id=tenant_id)
+
+    assert result["failed_converged"] == 1
+    async with owner_sessionmaker() as db:
+        draft = await db.get(HrCreationDraft, draft_id)
+        employee = await db.get(Agent, employee_id)
+        assert draft is not None and draft.status == "failed"
+        assert draft.failure_code == "runtime_task_failed"
+        assert employee is not None and employee.status == "error"
+
+
+@pytest.mark.asyncio
+async def test_recoverable_draft_list_and_abandon_are_direct_user_surfaces(
+    owner_sessionmaker,
+    monkeypatch,
+) -> None:
+    import app.database as database
+    from app.api.hr_creation import abandon_hr_creation_draft, list_hr_creation_drafts
+    from app.models.agent import Agent
+    from app.models.hr_creation import HrCreationDraft
+    from app.models.user import User
+    from app.services.hr_provisioning_runtime import build_hr_provisioning_runtime_task
+
+    tenant_id, user_id, hr_agent_id, session_id, draft_id = await _seed_hr_draft(
+        owner_sessionmaker,
+        draft_status="failed",
+    )
+    employee_id = uuid4()
+    async with owner_sessionmaker() as db:
+        draft = await db.get(HrCreationDraft, draft_id)
+        assert draft is not None
+        draft.confirmed_by_user_id = user_id
+        draft.confirmed_at = datetime.now(timezone.utc)
+        employee = Agent(
+            id=employee_id,
+            tenant_id=tenant_id,
+            name="Recoverable Employee",
+            role_description="Interrupted provisioning",
+            creator_id=user_id,
+            sponsor_user_id=user_id,
+            owner_user_id=user_id,
+            status="creating",
+        )
+        db.add(employee)
+        await db.flush()
+        draft.created_agent_id = employee_id
+        task = build_hr_provisioning_runtime_task(draft)
+        task.status = "failed"
+        task.completed_at = datetime.now(timezone.utc)
+        db.add(task)
+        await db.flush()
+        draft.provisioning_task_id = task.id
+        await db.commit()
+
+    monkeypatch.setattr(database, "async_session", owner_sessionmaker)
+
+    async def noop(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr("app.services.agent_manager.agent_manager.remove_container", noop)
+    monkeypatch.setattr("app.services.agent_manager.agent_manager.archive_agent_files", noop)
+    monkeypatch.setattr("app.services.ai_assets.register_projection", noop)
+    monkeypatch.setattr("app.core.policy.write_audit_event", noop)
+
+    async with owner_sessionmaker() as db:
+        user = await db.get(User, user_id)
+        assert user is not None
+        listed = await list_hr_creation_drafts(hr_agent_id, user, db)
+        assert len(listed) == 1
+        assert listed[0].session_id == str(session_id)
+        assert listed[0].recovery["can_retry"] is True
+        assert listed[0].recovery["can_resume"] is True
+        assert listed[0].recovery["can_abandon"] is True
+
+    async with owner_sessionmaker() as db:
+        user = await db.get(User, user_id)
+        assert user is not None
+        abandoned = await abandon_hr_creation_draft(hr_agent_id, draft_id, user, db)
+        assert abandoned.draft_status == "superseded"
+
+    async with owner_sessionmaker() as db:
+        draft = await db.get(HrCreationDraft, draft_id)
+        employee = await db.get(Agent, employee_id)
+        assert draft is not None and draft.status == "superseded"
+        assert employee is not None and employee.deleted_at is not None

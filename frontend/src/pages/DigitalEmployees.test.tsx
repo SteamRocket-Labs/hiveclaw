@@ -8,8 +8,25 @@ vi.mock('react-i18next', () => ({
 }));
 
 vi.mock('@tanstack/react-query', () => ({
-  useQuery: () => ({
-    data: [
+  useQueryClient: () => ({ invalidateQueries: vi.fn() }),
+  useMutation: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useQuery: ({ queryKey }: { queryKey: unknown[] }) => {
+    if (queryKey[0] === 'hr-agent') return { data: { id: 'hr-agent-1' }, isLoading: false };
+    if (queryKey[0] === 'hr-recoverable-drafts') return {
+      data: [{
+        blueprint_id: 'draft-1',
+        blueprint_version: 1,
+        blueprint_hash: 'sha256:draft',
+        draft_status: 'failed',
+        blueprint: { name: 'Interrupted Analyst' },
+        session_id: 'hr-session-1',
+        failure: { message: 'Required capability install failed.' },
+        recovery: { can_resume: true, can_retry: true, can_abandon: true, requires_operator: false },
+      }],
+      isLoading: false,
+    };
+    return {
+      data: [
       {
         id: 'agent-1',
         name: 'Research Lead',
@@ -54,9 +71,10 @@ vi.mock('@tanstack/react-query', () => ({
         execution_mode: 'standard',
         agent_type: 'local_agent',
       },
-    ],
-    isLoading: false,
-  }),
+      ],
+      isLoading: false,
+    };
+  },
 }));
 
 vi.mock('react-router-dom', () => ({
@@ -100,5 +118,10 @@ describe('DigitalEmployees page', () => {
     expect(markup).toContain('href="/agents/agent-1#a2a"');
     expect(markup).toContain('href="/agents/agent-2#workspace"');
     expect(markup).not.toContain('href="/local-agents"');
+    expect(markup).toContain('Interrupted creations');
+    expect(markup).toContain('Interrupted Analyst');
+    expect(markup).toContain('href="/agents/hr-agent-1?session_id=hr-session-1#chat"');
+    expect(markup).toContain('Retry provisioning');
+    expect(markup).toContain('Remove unfinished employee');
   });
 });

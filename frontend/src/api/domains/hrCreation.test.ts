@@ -7,10 +7,11 @@ describe('HR creation draft API adapter', () => {
   it('binds authenticated decisions to the agent, draft, version, and hash', async () => {
     vi.doMock('../core', async () => {
       const actual = await vi.importActual<typeof import('../core')>('../core');
-      return { ...actual, get: vi.fn(), post: vi.fn() };
+      return { ...actual, del: vi.fn(), get: vi.fn(), post: vi.fn() };
     });
     const { hrCreationApi } = await import('./hrCreation');
-    const { get, post } = await import('../core');
+    const { del, get, post } = await import('../core');
+    vi.mocked(del).mockResolvedValue({} as never);
     vi.mocked(get).mockResolvedValue({} as never);
     vi.mocked(post).mockResolvedValue({} as never);
 
@@ -22,6 +23,8 @@ describe('HR creation draft API adapter', () => {
     await hrCreationApi.reject('hr-1', 'draft-1');
     await hrCreationApi.retry('hr-1', 'draft-1');
     await hrCreationApi.cancel('hr-1', 'draft-1');
+    await hrCreationApi.listRecoverable('hr-1');
+    await hrCreationApi.abandon('hr-1', 'draft-1');
 
     expect(get).toHaveBeenCalledWith('/agents/hr-1/hr-creation-drafts/draft-1');
     expect(post).toHaveBeenNthCalledWith(1, '/agents/hr-1/hr-creation-drafts/draft-1/confirm', {
@@ -31,5 +34,7 @@ describe('HR creation draft API adapter', () => {
     expect(post).toHaveBeenNthCalledWith(2, '/agents/hr-1/hr-creation-drafts/draft-1/reject', {});
     expect(post).toHaveBeenNthCalledWith(3, '/agents/hr-1/hr-creation-drafts/draft-1/retry', {});
     expect(post).toHaveBeenNthCalledWith(4, '/agents/hr-1/hr-creation-drafts/draft-1/cancel', {});
+    expect(get).toHaveBeenNthCalledWith(2, '/agents/hr-1/hr-creation-drafts');
+    expect(del).toHaveBeenCalledWith('/agents/hr-1/hr-creation-drafts/draft-1');
   });
 });

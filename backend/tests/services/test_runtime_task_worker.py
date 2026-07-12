@@ -307,3 +307,56 @@ async def test_runtime_worker_drains_completion_outbox_and_records_counts(monkey
     assert result["reconciled"] == 4
     assert worker._STATE["outbox_delivered"] == before_delivered + 2
     assert worker._STATE["outbox_retried"] == before_retried + 1
+
+
+@pytest.mark.asyncio
+async def test_runtime_worker_consumes_hr_draft_reconciler(monkeypatch):
+    import app.services.runtime_task_worker as worker
+
+    calls = []
+
+    async def fake_reconcile():
+        calls.append(None)
+        return {"checked": 3, "expired": 1, "jobs_created": 1, "failed_converged": 1}
+
+    monkeypatch.setattr("app.services.hr_creation_reconciliation.reconcile_hr_creation_drafts_once", fake_reconcile)
+    before = int(worker._STATE.get("hr_drafts_reconciled") or 0)
+
+    result = await worker.reconcile_hr_creation_drafts_once()
+
+    assert calls == [None]
+    assert result["checked"] == 3
+    assert worker._STATE["hr_drafts_reconciled"] == before + 3
+
+
+@pytest.mark.asyncio
+async def test_runtime_worker_loop_calls_hr_reconciler_before_claiming(monkeypatch):
+    import asyncio
+
+    import app.services.runtime_task_worker as worker
+
+    calls = []
+
+    async def stop_after_reconcile():
+        calls.append("reconcile")
+        raise asyncio.CancelledError
+
+    async def listener():
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(
+        worker,
+        "_settings",
+        lambda: SimpleNamespace(
+            HIVE_PROCESS_ROLE="runtime",
+            RUNTIME_TASK_WORKER_ENABLED=True,
+            RUNTIME_TASK_WORKER_ID="test-worker",
+        ),
+    )
+    monkeypatch.setattr(worker, "_redis_wakeup_listener", listener)
+    monkeypatch.setattr(worker, "reconcile_hr_creation_drafts_once", stop_after_reconcile)
+
+    with pytest.raises(asyncio.CancelledError):
+        await worker.start_runtime_task_worker_loop()
+
+    assert calls == ["reconcile"]

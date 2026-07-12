@@ -832,10 +832,12 @@ flowchart LR
 
 - 严重级别：P1
 - 状态：断点
-- 用户/生产症状：required provisioning 步永久失败（MCP 装不上/T0 投影失败/幻觉 skill_name）→ Agent 行永远 `status=creating`、draft `failed`/`provisioning`，无守护进程回收/重试/过期；用户唯一恢复路径是回到原 HR 聊天会话点 Resume（LLM 中介，非直连 API）。
-- 根因：[主审复核] `HrCreationDraft.expires_at`（`hr_creation.py:83`）全仓零读写、status 枚举 `expired`/`superseded` 无写入点；`HrCreationDraft` 引用仅 5 个 HR 自身文件，9 个 daemon 无一引用 HR 创建。
-- 精确代码位置：`backend/app/models/hr_creation.py:33,83`；`backend/app/services/hr_provisioning_runner.py`；唯一调用者 `create_digital_employee` 工具。
-- 一次性完整关闭方案：加 stale-draft 扫描守护（claim_expires_at 过期且 required 未完 → 自动重试或标 expired 并归档 agent 行）；启用 expires_at TTL；DigitalEmployees 列表对孤儿暴露 Resume/Retry/Delete。（与 R-003 同源，可合并关闭。）
+- 用户/生产症状：required provisioning 步失败或 worker 在 draft/task/Agent 三者之间崩溃后，`status=creating` 的 Agent 可能长期无终态；`awaiting_confirmation` 预览不会过期；虽然原 HR 会话已有 Retry/Cancel，员工目录没有脱离原会话的恢复入口。
+- 口径校正（2026-07-12）：R-003 已先行把确认后的创建变成唯一 durable `RuntimeTask(task_type="hr_provisioning")`，并已存在会话内 direct Retry/Cancel；原报告“唯一调用者仍是模型工具、完全无直连 API”已过时。剩余真实断点是：`expires_at` 未赋值/校验/回填，worker loop 不收敛 expired preview、missing task、terminal task 与 orphan creating Agent，`DigitalEmployees` 不消费 canonical draft recovery projection。
+- 精确代码位置：`backend/app/services/hr_creation_service.py`（TTL、recovery projection）；`backend/app/services/hr_creation_reconciliation.py`（后台收敛唯一 owner）；`backend/app/services/hr_creation_recovery.py`（用户放弃/软删除 owner）；`backend/app/services/runtime_task_worker.py`（真实周期 consumer）；`backend/app/api/hr_creation.py`（list/retry/abandon）；`frontend/src/pages/employee-directory/HrCreationRecoveryPanel.tsx`；`backend/alembic/versions/hr_draft_recovery_0712.py`。
+- 一次性完整关闭方案：7 天 confirmation TTL 在创建时赋值、确认时同步拒绝过期、legacy preview migration 回填；RuntimeTask worker 每轮用 `FOR UPDATE SKIP LOCKED` 收敛 expired/missing-job/stale-claim/terminal-divergence，并以 confirmation evidence fail-closed；员工目录只消费服务端 `recovery` projection，提供原会话 Resume、可证明安全时 Retry、以及 fenced Remove；Remove 同事务终止/隔离 HR task、软删除 partial Agent、禁用其 trigger/schedule/runtime 并保留 audit/asset history。
+- 修复状态（2026-07-12）：**R-025 七原子闭环**。输入是用户确认/目录动作或 worker tick；权威绑定 requester+System HR+tenant，缺 `confirmed_by/confirmed_at` 的 orphan 永不自动重放；执行继续复用 R-003 唯一 HR RuntimeTask 与幂等 step journal；证据覆盖 draft/task/Agent/audit/projection；恢复覆盖 missing job、双 lease、terminal divergence、重复 sweep、用户 retry/abandon；消费同时存在原会话与 DigitalEmployees；migration、真实 PostgreSQL、全量 backend/frontend/build 均验收。
+- 验收证据：首轮 backend Red → **`9 failed, 28 passed`**（其中 8 项对应 TTL/reconciler/API/worker/migration 缺口，另 1 项促使真实 PG fixture 按 fresh-bootstrap→rewind→release-upgrade 正确执行）；authority/真实 loop 补充 Red → **`2 failed`**。Green HR+runtime+migration+RLS 扩展 → **`105 passed`**，真实 PG 验证只回填 awaiting preview、confirmed 不变、secure downgrade 不复活过期；frontend 定向 → **`5 passed`**，全量 → **`113 files / 650 tests`**，生产 build 与 AgentDetail/vendor budgets 通过。Backend 首轮全量仅旧 head 常量 **`1 failed, 6662 passed, 1 skipped`**，同步 head 后最终 → **`6663 passed, 1 skipped`**；`ruff check app tests`、`ruff format --check`（1547 files）、Alembic 单 head `hr_draft_recovery_0712` 与 diff check 全绿。独立提交主题：`fix(R-025): reconcile unfinished HR creations`。
 
 ### [R-026] lifecycle.json 非原子写 + 读损静默吞 → 记忆遥测整体丢失
 
@@ -1009,11 +1011,11 @@ Codebase graph 校正时状态为 ready（43,281 nodes / 166,753 edges）；`det
 | **安全门（最高优先）** | **NO-GO** | **R-015 完成成熟 sanitizer/raw HTML 禁用、URL/image policy、长期 bearer token 退出 DOM/query URL、全部消费面 XSS 回归及 staging 最终 CSP header 验证；R-016 统一规范化后守卫、authority 覆盖新建与残留扫描；R-018 channel secret 加密回填/scrub；R-021 完成 MCP metadata trust contract，而不是只做字符转义** |
 | 代码/架构候选门 | NO-GO | R-001~R-007、R-009~R-028 的当前范围缺口全部关闭；R-008 仅按“已知缺失 + 文案诚实”处理，不把 Company KB 正式建设伪装成当前债；不存在被默认豁免的 P2/P3；ruff format、全量测试、build 与架构门全部绿 |
 | 自进化基石门 | NO-GO | R-004/R-007/R-017/R-024 已有本地闭环证据；仍须关闭 R-026 lifecycle 原子写/损坏隔离，并完成 staging 故障注入 |
-| Migration/backfill门 | 当前代码候选通过；生产仍 NO-GO | Approval/HR/Dream durable job、channel encryption、RLS complete coverage 与 R-023 strict/shared/operator-nullable 分类、payload-free dry-run、回填/冲突 quarantine、secure downgrade 均已有本地/真实 PG 证据；仍需 staging dry-run 与生产只读分布核验 |
+| Migration/backfill门 | 当前代码候选通过；生产仍 NO-GO | Approval/HR/Dream durable job、HR preview TTL、channel encryption、RLS complete coverage 与 R-023 strict/shared/operator-nullable 分类、payload-free dry-run、回填/冲突 quarantine、secure downgrade 均已有本地/真实 PG 证据；当前单 head=`hr_draft_recovery_0712`，仍需 staging dry-run 与生产只读分布核验 |
 | Staging fault-injection门 | NO-GO | 多副本startup（R-001）、claim lease（R-004/R-023）、approval crash、Dream kill、outbox前后crash、lifecycle.json 崩溃写、15 journeys |
 | Railway生产门 | 未验证/NO-GO | backend/backend-api/frontend同一候选均SUCCESS；health、schema、worker日志、持久盘证据 |
 | 权限矩阵门 | 本地候选通过 | cross-tenant、delegate grant、break-glass expiry、operator read/write、组合 waiting E2E；R-020 Local Bridge per-action policy/approval；R-022 全 tenant 表 RLS；R-023 NULL/global/shared/operator/quarantine 注入矩阵；生产只读核验仍归 Railway 门 |
-| 功能与用户体验门 | NO-GO | R-019 Anthropic vision provider contract；R-025 HR orphan reconcile；R-027 BusinessTask 明确真实 UI consumer 或正式退役死 client；R-028 Personal KB 403/empty 分流；15 条 journey 的 API/worker/browser 全链验收 |
+| 功能与用户体验门 | NO-GO | R-019/R-025 已有本地闭环证据；仍须关闭 R-027 BusinessTask 真实 UI consumer 与 R-028 Personal KB 403/empty 分流，并在 staging 重跑 15 条 journey |
 | External Channel门 | 未验证 | R-018 加密迁移后真实 secret 读取/轮换；真实 identity binding、token expiry、duplicate webhook、outbox retry/dead-letter；R-020 Local Bridge per-action 审批与离线恢复 |
 | Artifact交付门 | 本地候选通过 | staging sandbox→artifact→chat→Deliverables→download、crash/retry exact-once |
 | Company KB 范围门 | 已知缺失/不阻塞当前第一部分 | R-008 文案只描述 legacy read-only files；不出现正式 Company KB 已可用的 route/UI shell。Company KB 正式能力进入明确的第二部分完整建设 |
@@ -1043,7 +1045,7 @@ Codebase graph 校正时状态为 ready（43,281 nodes / 166,753 edges）；`det
 
 ## 16. 28 项原子缺口修复执行账本
 
-本节记录原始审计全部 28 项的实际落地状态：17 个断点、10 个局部闭环、1 个已知缺失。原始严重级别与原子状态保留为审计快照；只有同时具备实现、回归测试、报告证据和独立提交，才把修复状态改为闭环。Company Knowledge Base 本体按 owner 边界不在本轮开发，但 R-008 的诚实隔离、文案与防伪装验收仍必须关闭。当前进度：**24/28**。
+本节记录原始审计全部 28 项的实际落地状态：17 个断点、10 个局部闭环、1 个已知缺失。原始严重级别与原子状态保留为审计快照；只有同时具备实现、回归测试、报告证据和独立提交，才把修复状态改为闭环。Company Knowledge Base 本体按 owner 边界不在本轮开发，但 R-008 的诚实隔离、文案与防伪装验收仍必须关闭。当前进度：**25/28**。
 
 | ID | 修复状态 | 独立提交主题 | 机械证据摘要 |
 |---|---|---|---|
@@ -1071,7 +1073,7 @@ Codebase graph 校正时状态为 ready（43,281 nodes / 166,753 edges）；`det
 | R-022 | 闭环 | `fix(R-022): enforce complete tenant RLS coverage` | 校正为 11 direct + 2 parent-derived；Red 4 failed；bootstrap 永久全 metadata Gate + upgrade repair + secure downgrade；真实 PG migration 2、跨租读写/BYPASS 2、组合 64；backend 6638；ruff/format/head/diff 绿 |
 | R-023 | 闭环 | `fix(R-023): eliminate implicit tenant NULL scope` | 114 direct tenant 表=105 strict+7 shared+2 operator-nullable；44 legacy tenant-owned 全部 NOT NULL；session persist Gate + Agent/RuntimeTask fail-closed；fixed-point backfill、冲突/孤儿 quarantine receipt、secure downgrade；真实 PG 2、定向 36；backend 6648；ruff/format/head/diff 绿 |
 | R-024 | 闭环 | `fix(R-024): close provisional skill trials` | 校正原报告：web chat 已有 terminal consumer；Red 5 failed；全 loaded provisional 扇出 + durable replay exact-once + heartbeat 超窗/孤儿 ledger fail-closed；扩展 252；backend 6653；ruff/format 绿 |
-| R-025 | 待修复 | — | — |
+| R-025 | 闭环 | `fix(R-025): reconcile unfinished HR creations` | 校正 R-003 后真实剩余 seam；7d TTL+legacy backfill、worker SKIP LOCKED reconciler、confirmation fail-closed、missing-job/terminal/orphan Agent 收敛、目录 Resume/Retry/Remove；Red 9+2；扩展 105；backend 6663；frontend 650+build；真实 PG/head/ruff/format 绿 |
 | R-026 | 待修复 | — | — |
 | R-027 | 待修复 | — | — |
 | R-028 | 待修复 | — | — |

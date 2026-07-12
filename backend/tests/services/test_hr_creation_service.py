@@ -91,6 +91,25 @@ def test_confirmation_rejects_blueprints_with_unresolved_creation_gates():
     assert exc.value.code == "missing_gates"
 
 
+def test_confirmation_rejects_expired_blueprint_even_before_background_sweep():
+    from app.services.hr_creation_service import HrCreationConflict, confirm_hr_creation_draft_record
+
+    draft = _draft()
+    now = datetime.now(UTC)
+    draft.expires_at = now - timedelta(seconds=1)
+
+    with pytest.raises(HrCreationConflict, match="expired") as exc:
+        confirm_hr_creation_draft_record(
+            draft,
+            confirming_user_id=draft.requested_by_user_id,
+            blueprint_version=draft.blueprint_version,
+            blueprint_hash=draft.blueprint_hash,
+            now=now,
+        )
+
+    assert exc.value.code == "expired"
+
+
 @pytest.mark.asyncio
 async def test_new_hr_preview_initializes_steps_for_async_safe_serialization() -> None:
     from sqlalchemy import inspect
@@ -114,6 +133,8 @@ async def test_new_hr_preview_initializes_steps_for_async_safe_serialization() -
     assert inspect(draft).attrs.provisioning_steps.loaded_value is not NO_VALUE
     assert draft.provisioning_steps == []
     assert draft.status == "awaiting_confirmation"
+    assert draft.expires_at is not None
+    assert timedelta(days=6, hours=23) < draft.expires_at - datetime.now(UTC) <= timedelta(days=7)
 
 
 def test_claim_is_idempotent_and_lease_bounded():

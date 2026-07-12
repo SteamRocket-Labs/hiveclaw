@@ -15,6 +15,10 @@ from sqlalchemy.orm import selectinload
 from app.models.hr_creation import HrCreationDraft, HrProvisioningStep
 
 
+HR_CREATION_PREVIEW_TTL = timedelta(days=7)
+RECOVERABLE_HR_DRAFT_STATUSES = frozenset({"awaiting_confirmation", "confirmed", "creating", "provisioning", "failed"})
+
+
 class HrCreationConflict(ValueError):
     def __init__(self, code: str, message: str):
         super().__init__(message)
@@ -88,12 +92,15 @@ def confirm_hr_creation_draft_record(
     blueprint_hash: str,
     now: datetime | None = None,
 ) -> None:
+    current = now or _now()
     if draft.requested_by_user_id != confirming_user_id:
         raise HrCreationConflict("requester_mismatch", "Only the requesting user can confirm this blueprint.")
     if draft.blueprint_version != blueprint_version:
         raise HrCreationConflict("version_mismatch", "Blueprint version changed; review the latest preview.")
     if draft.blueprint_hash != blueprint_hash:
         raise HrCreationConflict("hash_mismatch", "Blueprint hash changed; review the latest preview.")
+    if draft.status == "awaiting_confirmation" and draft.expires_at is not None and draft.expires_at <= current:
+        raise HrCreationConflict("expired", "This HR blueprint preview expired. Ask HR to generate a fresh preview.")
     if draft.status != "awaiting_confirmation":
         if (
             draft.status in {"confirmed", "creating", "provisioning", "completed", "failed"}
@@ -116,7 +123,7 @@ def confirm_hr_creation_draft_record(
         )
     draft.status = "confirmed"
     draft.confirmed_by_user_id = confirming_user_id
-    draft.confirmed_at = now or _now()
+    draft.confirmed_at = current
     draft.rejected_by_user_id = None
     draft.rejected_at = None
 
@@ -438,6 +445,7 @@ async def upsert_hr_creation_draft(
     draft.claim_expires_at = None
     draft.failure_code = None
     draft.failure_message = None
+    draft.expires_at = _now() + HR_CREATION_PREVIEW_TTL
     await db.flush()
     return draft
 
@@ -473,7 +481,36 @@ async def load_hr_creation_draft(
     return draft
 
 
-def hr_creation_draft_payload(draft: HrCreationDraft) -> dict[str, Any]:
+def hr_creation_recovery_payload(
+    draft: HrCreationDraft,
+    runtime_task: Any | None = None,
+) -> dict[str, Any]:
+    task_status = str(getattr(runtime_task, "status", None) or "") or None
+    requires_operator = task_status == "needs_reconciliation" or draft.failure_code in {
+        "cancellation_reconciliation_required",
+        "runtime_task_needs_reconciliation",
+        "runtime_task_draft_divergence",
+    }
+    can_retry = (
+        not requires_operator
+        and draft.status in {"failed", "provisioning"}
+        and task_status in {"failed", "killed", "resumable"}
+    )
+    return {
+        "task_status": task_status,
+        "can_resume": draft.status in RECOVERABLE_HR_DRAFT_STATUSES and draft.session_id is not None,
+        "can_retry": can_retry,
+        "can_abandon": draft.status in RECOVERABLE_HR_DRAFT_STATUSES,
+        "requires_operator": requires_operator,
+        "reason": draft.failure_message or getattr(runtime_task, "result_summary", None),
+    }
+
+
+def hr_creation_draft_payload(
+    draft: HrCreationDraft,
+    *,
+    runtime_task: Any | None = None,
+) -> dict[str, Any]:
     steps = list(getattr(draft, "provisioning_steps", ()) or ())
     readiness = derive_hr_provisioning_readiness(steps) if steps else None
     preview = dict(draft.preview_json or {})
@@ -484,6 +521,16 @@ def hr_creation_draft_payload(draft: HrCreationDraft) -> dict[str, Any]:
         "blueprint_version": draft.blueprint_version,
         "blueprint_hash": draft.blueprint_hash,
         "draft_status": draft.status,
+        "hr_agent_id": str(draft.hr_agent_id),
+        "session_id": str(draft.session_id),
+        "requested_by_user_id": str(draft.requested_by_user_id),
+        "expires_at": draft.expires_at.isoformat() if draft.expires_at else None,
+        "created_at": (
+            draft.__dict__["created_at"].isoformat() if draft.__dict__.get("created_at") is not None else None
+        ),
+        "updated_at": (
+            draft.__dict__["updated_at"].isoformat() if draft.__dict__.get("updated_at") is not None else None
+        ),
         "confirmed_by_user_id": str(draft.confirmed_by_user_id) if draft.confirmed_by_user_id else None,
         "confirmed_at": draft.confirmed_at.isoformat() if draft.confirmed_at else None,
         "created_agent_id": str(draft.created_agent_id) if draft.created_agent_id else None,
@@ -496,6 +543,7 @@ def hr_creation_draft_payload(draft: HrCreationDraft) -> dict[str, Any]:
             if draft.failure_code or draft.failure_message
             else None
         ),
+        "recovery": hr_creation_recovery_payload(draft, runtime_task),
     }
 
 

@@ -15,6 +15,7 @@ import {
 } from '@tabler/icons-react';
 import { agentApi } from '../api/domains/agents';
 import type { Agent } from '../types';
+import HrCreationRecoveryPanel from './employee-directory/HrCreationRecoveryPanel';
 
 function formatAgentStatus(status: Agent['status'] | string | undefined) {
   if (!status) return 'idle';
@@ -105,6 +106,8 @@ export default function DigitalEmployees() {
           <strong>{localCount}</strong>
         </div>
       </div>
+
+      <HrCreationRecoveryPanel />
 
       <section className="workbench-panel">
         <div className="workbench-toolbar">

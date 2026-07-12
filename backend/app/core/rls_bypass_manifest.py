@@ -533,6 +533,14 @@ RLS_BYPASS_ALLOWLIST = (
     ),
     _grant(
         *(
+            "app/services/hr_creation_reconciliation.py",
+            "reconcile_hr_creation_drafts_once",
+            "'HR draft expiry and orphaned provisioning reconciliation'",
+            ("select:HrCreationDraft",),
+        )
+    ),
+    _grant(
+        *(
             "app/services/runtime_task_worker.py",
             "claim_and_dispatch_once",
             "'runtime task worker claim pending executable tasks'",

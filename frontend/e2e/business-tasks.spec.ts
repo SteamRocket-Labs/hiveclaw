@@ -245,7 +245,7 @@ test('running cancellation becomes an explicit reconciliation instead of a blind
   await page.getByPlaceholder('Reason (optional)').fill('Stop before publishing');
   await page.getByRole('button', { name: 'Stop safely' }).click();
 
-  await expect(page.getByText('Review required', { exact: true })).toBeVisible();
+  await expect(page.locator('.business-task-status').getByText('Review required', { exact: true })).toBeVisible();
   await expect(page.getByText('Review possible side effects', { exact: true })).toBeVisible();
   await page.getByPlaceholder('What did you verify?').fill('No external message or file was published.');
   await page.getByRole('button', { name: 'Record decision' }).click();

@@ -16,4 +16,16 @@ describe('session rendering performance source contracts', () => {
     expect(css).toContain('content-visibility: auto');
     expect(css).toContain('contain-intrinsic-size');
   });
+
+  it('bounds large workspace DOM and display-locks offscreen file rows', async () => {
+    const source = await readSource('../../components/FileBrowser.tsx');
+    const css = await readSource('../../components/FileBrowser.css');
+
+    expect(source).toContain('visibleFileWindow(files, visibleLimit)');
+    expect(source).toContain('setVisibleLimit(FILE_LIST_PAGE_SIZE)');
+    expect(source).toContain('file-browser-list-more');
+    expect(css).toContain('.file-browser-row');
+    expect(css).toContain('content-visibility: auto');
+    expect(css).toContain('contain-intrinsic-size: 44px');
+  });
 });

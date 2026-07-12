@@ -238,6 +238,8 @@
   cursor: pointer;
   border-radius: var(--radius-md);
   transition: background var(--transition-fast);
+  content-visibility: auto;
+  contain-intrinsic-size: 44px;
 }
 .file-browser-row:hover { background: var(--bg-hover); }
 .file-browser-row-back {
@@ -276,3 +278,13 @@
   transition: background var(--transition-fast);
 }
 .file-browser-row-delete:hover { background: var(--error-subtle); }
+.file-browser-list-more {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  color: var(--text-tertiary);
+  font-size: var(--text-row);
+  border-top: 1px solid var(--border-subtle);
+}

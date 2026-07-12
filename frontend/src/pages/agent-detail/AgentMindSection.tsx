@@ -12,13 +12,13 @@ type AgentMindSectionProps = {
 export default function AgentMindSection({ agentId }: AgentMindSectionProps) {
   const { t } = useTranslation();
 
-  const adapter: FileBrowserApi = {
+  const adapter = React.useMemo<FileBrowserApi>(() => ({
     list: (path) => fileApi.list(agentId, path),
     read: (path) => fileApi.read(agentId, path),
     write: (path, content) => fileApi.write(agentId, path, content),
     delete: (path) => fileApi.delete(agentId, path),
     download: (path) => fileApi.download(agentId, path),
-  };
+  }), [agentId]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>

@@ -1,28 +1,16 @@
-import React, { useState, useEffect, useRef, Component, ErrorInfo } from 'react';
+import React, { useState, useEffect, useRef, Component, ErrorInfo, lazy, Suspense } from 'react';
 import { useParams, useLocation, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 
 import ConfirmModal from '../components/ConfirmModal';
-import FileBrowser, { buildNewSkillFilePath, type FileBrowserApi } from '../components/FileBrowser';
-import PromptModal from '../components/PromptModal';
-import AgentApprovalsSection from './agent-detail/AgentApprovalsSection';
-import AgentWorkflowsSection from './agent-detail/AgentWorkflowsSection';
-import AgentActivityLogSection from './agent-detail/AgentActivityLogSection';
-import AgentAwareSection from './agent-detail/AgentAwareSection';
 import AgentChatSection, {
     type SessionCommandCheckpoint,
     type SessionCommandControlState,
     type SessionPermissionMode,
 } from './agent-detail/AgentChatSection';
 import type { BranchLineageItem } from './agent-detail/SessionLineageSurface';
-import AgentEvolutionSection from './agent-detail/AgentEvolutionSection';
-import AgentExtensionsSection from './agent-detail/AgentExtensionsSection';
-import AgentKnowledgeSection from './agent-detail/AgentKnowledgeSection';
-import OfficeWorkbenchSection from './agent-detail/OfficeWorkbenchSection';
-import AgentSettingsSection from './agent-detail/AgentSettingsSection';
 import AgentStatusSection from './agent-detail/AgentStatusSection';
-import AgentWorkspaceSection from './agent-detail/AgentWorkspaceSection';
 import {
     ACTIVE_RUN_ABSENCE_GRACE_MS,
     applySessionActiveRunObservedState,
@@ -67,12 +55,10 @@ import {
     useSessionMessages,
     type ChatMessagesUpdater,
 } from './agent-detail/sessionMessageStore';
-import AgentA2ASection from './agent-detail/AgentA2ASection';
 import { normalizeToolCallResult } from './agent-detail/toolResultEnvelope';
 import { agentApi, type AgentCapabilityInstall, type AgentChannelCapability } from '../api/domains/agents';
 import { activityApi } from '../api/domains/activity';
 import { enterpriseApi } from '../api/domains/enterprise';
-import { fileApi } from '../api/domains/files';
 import { triggerApi } from '../api/domains/triggers';
 import { autonomyApi } from '../api/domains/autonomy';
 import { chatApi, type ChatSession, type ConversationBranchMode, type SessionRun, type StartSessionRunInput } from '../api/domains/chat';
@@ -90,8 +76,6 @@ import {
     type SessionTransportCallbacks,
 } from './agent-detail/useSessionTransportController';
 import { projectSessionSocketEvent } from './agent-detail/sessionSocketEventProjector';
-import LocalAgents from './LocalAgents';
-import LocalAgentChatSection from './agent-detail/LocalAgentChatSection';
 import {
     buildAssignmentHandoff,
     buildAssignmentSessionTitle,
@@ -125,6 +109,20 @@ import {
 } from './agent-detail/agentDetailPolicy';
 import './AgentDetail.css';
 
+const AgentApprovalsSection = lazy(() => import('./agent-detail/AgentApprovalsSection'));
+const AgentWorkflowsSection = lazy(() => import('./agent-detail/AgentWorkflowsSection'));
+const AgentActivityLogSection = lazy(() => import('./agent-detail/AgentActivityLogSection'));
+const AgentAwareSection = lazy(() => import('./agent-detail/AgentAwareSection'));
+const AgentEvolutionSection = lazy(() => import('./agent-detail/AgentEvolutionSection'));
+const AgentExtensionsSection = lazy(() => import('./agent-detail/AgentExtensionsSection'));
+const AgentKnowledgeSection = lazy(() => import('./agent-detail/AgentKnowledgeSection'));
+const OfficeWorkbenchSection = lazy(() => import('./agent-detail/OfficeWorkbenchSection'));
+const AgentSettingsSection = lazy(() => import('./agent-detail/AgentSettingsSection'));
+const AgentWorkspaceSection = lazy(() => import('./agent-detail/AgentWorkspaceSection'));
+const AgentA2ASection = lazy(() => import('./agent-detail/AgentA2ASection'));
+const LocalAgents = lazy(() => import('./LocalAgents'));
+const LocalAgentChatSection = lazy(() => import('./agent-detail/LocalAgentChatSection'));
+
 export {
     AGENT_DETAIL_TABS,
     applySessionActiveProjection,
@@ -137,6 +135,15 @@ export {
     sessionPermissionModeFromSession,
     trimMessagesBeforeTranscriptEvent,
 } from './agent-detail/agentDetailPolicy';
+
+function AgentDetailSectionFallback() {
+    return (
+        <div className="agent-detail-section-fallback" role="status" aria-live="polite">
+            <span className="agent-detail-section-fallback-dot" aria-hidden="true" />
+            Loading workspace…
+        </div>
+    );
+}
 
 function AgentDetailInner() {
     const { t, i18n } = useTranslation();
@@ -218,7 +225,6 @@ function AgentDetailInner() {
     const [showAllTriggers, setShowAllTriggers] = useState(false);
     const [reflectionPage, setReflectionPage] = useState(0);
 
-    const workspacePath = 'workspace';
     const [activityOperatorView, setActivityOperatorView] = useState(false);
     useEffect(() => setActivityOperatorView(false), [id]);
 
@@ -2197,12 +2203,6 @@ function AgentDetailInner() {
         }
     }, [activeSession?.id, id]);
 
-    // ─── File viewer ─────────────────────────────────────
-    const [viewingFile, setViewingFile] = useState<string | null>(null);
-    const [fileEditing, setFileEditing] = useState(false);
-    const [fileDraft, setFileDraft] = useState('');
-    const [promptModal, setPromptModal] = useState<{ title: string; placeholder: string; action: string } | null>(null);
-    const [deleteConfirm, setDeleteConfirm] = useState<{ path: string; name: string; isDir: boolean } | null>(null);
     const [deleteSessionConfirm, setDeleteSessionConfirm] = useState<{ sessionId: string; title: string } | null>(null);
     const [uploadToast, setUploadToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
     const [editingRole, setEditingRole] = useState(false);
@@ -2213,12 +2213,6 @@ function AgentDetailInner() {
         setUploadToast({ message, type });
         setTimeout(() => setUploadToast(null), 3000);
     };
-    const { data: fileContent } = useQuery({
-        queryKey: ['file-content', id, viewingFile],
-        queryFn: () => fileApi.read(id!, viewingFile!),
-        enabled: canLoadAgentScopedData && !!viewingFile,
-    });
-
     // Redirect to /agents/new when tenant switches while viewing HR system agent
     useEffect(() => {
         if ((agent as any)?.agent_class !== 'internal_system') return;
@@ -2419,6 +2413,7 @@ function AgentDetailInner() {
                     </div>
                 )}
 
+                <Suspense fallback={<AgentDetailSectionFallback />}>
                 {/* ── Enhanced Status Tab ── */}
                 {activeTab === 'status' && (
                     <AgentStatusSection
@@ -2669,60 +2664,8 @@ function AgentDetailInner() {
                         />
                     )
                 }
+                </Suspense>
             </div >
-
-            <PromptModal
-                open={!!promptModal}
-                title={promptModal?.title || ''}
-                placeholder={promptModal?.placeholder || ''}
-                onCancel={() => setPromptModal(null)}
-                onConfirm={async (value) => {
-                    const action = promptModal?.action;
-                    setPromptModal(null);
-                    if (action === 'newFolder') {
-                        await fileApi.write(id!, `${workspacePath}/${value}/.gitkeep`, '');
-                        queryClient.invalidateQueries({ queryKey: ['files', id, workspacePath] });
-                    } else if (action === 'newFile') {
-                        await fileApi.write(id!, `${workspacePath}/${value}`, '');
-                        queryClient.invalidateQueries({ queryKey: ['files', id, workspacePath] });
-                        setViewingFile(`${workspacePath}/${value}`);
-                        setFileEditing(true);
-                        setFileDraft('');
-                    } else if (action === 'newSkill') {
-                        const template = `---\nname: ${value}\ndescription: Describe what this skill does\n---\n\n# ${value}\n\n## Overview\nDescribe the purpose and when to use this skill.\n\n## Process\n1. Step one\n2. Step two\n\n## Output Format\nDescribe the expected output format.\n`;
-                        const skillPath = buildNewSkillFilePath('skills', value);
-                        await fileApi.write(id!, skillPath, template);
-                        queryClient.invalidateQueries({ queryKey: ['files', id, 'skills'] });
-                        setViewingFile(skillPath);
-                        setFileEditing(true);
-                        setFileDraft(template);
-                    }
-                }}
-            />
-
-            <ConfirmModal
-                open={!!deleteConfirm}
-                title={t('common.delete')}
-                message={`${t('common.delete')}: ${deleteConfirm?.name}?`}
-                confirmLabel={t('common.delete')}
-                danger
-                onCancel={() => setDeleteConfirm(null)}
-                onConfirm={async () => {
-                    const path = deleteConfirm?.path;
-                    setDeleteConfirm(null);
-                    if (path) {
-                        try {
-                            await fileApi.delete(id!, path);
-                            setViewingFile(null);
-                            setFileEditing(false);
-                            queryClient.invalidateQueries({ queryKey: ['files', id, workspacePath] });
-                            showToast(t('common.delete'));
-                        } catch (err: any) {
-                            showToast(t('agent.upload.failed'), 'error');
-                        }
-                    }
-                }}
-            />
 
             <ConfirmModal
                 open={!!deleteSessionConfirm}

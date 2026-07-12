@@ -366,3 +366,29 @@
 .agent-detail-error-action {
   margin-top: var(--space-2);
 }
+.agent-detail-section-fallback {
+  min-height: 180px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--text-tertiary);
+  font-size: var(--text-body);
+}
+
+.agent-detail-section-fallback-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent-primary);
+  animation: agent-detail-section-pulse 900ms ease-in-out infinite alternate;
+}
+
+@keyframes agent-detail-section-pulse {
+  from { opacity: 0.35; transform: scale(0.8); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-detail-section-fallback-dot { animation: none; }
+}

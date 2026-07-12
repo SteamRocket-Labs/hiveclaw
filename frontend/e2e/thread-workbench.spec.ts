@@ -269,8 +269,13 @@ function workbenchFor(session: Record<string, unknown>, audience: Audience, scen
   };
 }
 
-async function bootstrap(page: Page, options: { audience: Audience; scenario: Scenario; theme?: Theme }) {
-  const { audience, scenario, theme = 'light' } = options;
+async function bootstrap(page: Page, options: {
+  audience: Audience;
+  scenario: Scenario;
+  theme?: Theme;
+  transcriptDelayMs?: number;
+}) {
+  const { audience, scenario, theme = 'light', transcriptDelayMs = 0 } = options;
   const session = sessionFor(audience);
   const transcript = transcriptFor(audience, scenario);
   const lineage = lineageFor(session, scenario);
@@ -324,7 +329,10 @@ async function bootstrap(page: Page, options: { audience: Audience; scenario: Sc
       });
     }
     if (path.endsWith(`/agents/${AGENT_ID}/sessions`) && method === 'GET') return route.fulfill({ json: [session] });
-    if (path.includes(`/sessions/${SESSION_ID}/transcript`)) return route.fulfill({ json: transcript });
+    if (path.includes(`/sessions/${SESSION_ID}/transcript`)) {
+      if (transcriptDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, transcriptDelayMs));
+      return route.fulfill({ json: transcript });
+    }
     if (path.endsWith(`/sessions/${SESSION_ID}/messages`)) return route.fulfill({ json: [] });
     if (path.endsWith(`/sessions/${SESSION_ID}/lineage`)) return route.fulfill({ json: lineage });
     if (path.endsWith(`/sessions/${SESSION_ID}/branches`)) return route.fulfill({ json: lineage.slice(1) });
@@ -505,4 +513,80 @@ test('ordinary user active dark desktop visual and accessibility contract', asyn
   await expectVisual(page, 'workbench-user-active-dark-desktop.png');
   await expectNoSeriousAccessibilityViolations(page);
   expect(consoleErrors).toEqual([]);
+});
+
+test('slow transcript and offline reconnect preserve the durable session projection', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 980 });
+  const startedAt = Date.now();
+  await bootstrap(page, {
+    audience: 'user',
+    scenario: 'active',
+    transcriptDelayMs: 500,
+  });
+  expect(Date.now() - startedAt).toBeGreaterThanOrEqual(450);
+  await expect(page.getByText('I verified the evidence and prepared a reviewable release report.')).toBeVisible();
+
+  await page.context().setOffline(true);
+  await expect(page.getByTestId('session-transport-status')).toHaveAttribute('data-transport-phase', 'offline');
+  await expect(page.getByText('I verified the evidence and prepared a reviewable release report.')).toBeVisible();
+
+  await page.context().setOffline(false);
+  await expect(page.getByTestId('session-transport-status')).toHaveCount(0);
+  await expect(page.getByText('I verified the evidence and prepared a reviewable release report.')).toBeVisible();
+});
+
+test('workspace renders a bounded DOM window for one thousand artifacts', async ({ page }) => {
+  const files = Array.from({ length: 1000 }, (_, index) => ({
+    name: `artifact-${String(index).padStart(4, '0')}.md`,
+    path: `workspace/artifact-${String(index).padStart(4, '0')}.md`,
+    type: 'file',
+    is_dir: false,
+    size: 1024,
+  }));
+  await page.addInitScript(() => {
+    localStorage.setItem('token', 'e2e-token');
+    localStorage.setItem('i18nextLng', 'en');
+    localStorage.setItem(
+      'auth-storage',
+      JSON.stringify({
+        state: {
+          token: 'e2e-token',
+          user: { id: 'u-1', username: 'e2e', display_name: 'E2E', role: 'admin', tenant_id: 't-1' },
+        },
+        version: 0,
+      }),
+    );
+  });
+  await page.route('**/api/**', async (route) => {
+    const url = new URL(route.request().url());
+    const path = url.pathname;
+    if (!path.startsWith('/api/')) return route.fallback();
+    if (path.endsWith('/auth/me')) {
+      return route.fulfill({ json: { id: 'u-1', username: 'e2e', role: 'admin', tenant_id: 't-1' } });
+    }
+    if (path.endsWith(`/agents/${AGENT_ID}`)) {
+      return route.fulfill({
+        json: {
+          id: AGENT_ID,
+          name: 'Artifact Steward',
+          status: 'idle',
+          agent_type: 'native',
+          access_level: 'manage',
+          role_description: 'Large workspace acceptance',
+        },
+      });
+    }
+    if (path.endsWith(`/agents/${AGENT_ID}/files/`) && url.searchParams.get('path') === 'workspace') {
+      return route.fulfill({ json: files });
+    }
+    if (route.request().method() === 'GET') return route.fulfill({ json: [] });
+    return route.fulfill({ json: {} });
+  });
+
+  await page.goto(`/agents/${AGENT_ID}#workspace`);
+  await expect(page.locator('.file-browser-row')).toHaveCount(200);
+  await expect(page.locator('.file-browser-list-more')).toContainText('Showing 200 of 1000 files');
+  await page.locator('.file-browser-list-more button').click();
+  await expect(page.locator('.file-browser-row')).toHaveCount(400);
+  await expect(page.locator('.file-browser-list-more')).toContainText('Showing 400 of 1000 files');
 });

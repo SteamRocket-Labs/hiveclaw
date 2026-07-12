@@ -382,8 +382,8 @@ flowchart LR
 | `tools/governance.py:_run_governance_inner` | 约 644 行，cognitive complexity 约 152 |
 | `runtime/invocation_orchestrator.py:run_agent_invocation` | 约 361 行，26+依赖通过 support 传递 |
 | `runtime/hooks.py:HookRegistry.emit` | 约 139 行，多个 event-specific 分支 |
-| `frontend/.../WorkspaceToolsSection.tsx` | 约 1,056 行 |
-| `frontend/.../FileBrowser.tsx` | 约 510 行 |
+| `frontend/.../WorkspaceToolsSection.tsx` | 审计后曾增长到 1,356 行；R-013 已拆为 51 行 lazy orchestrator + 4 个 domain owner（68~693 行）+ 256 行纯模型 |
+| `frontend/.../FileBrowser.tsx` | 修复后增加渐进窗口逻辑，但一次只渲染 200 行并对 offscreen row 使用 display lock；不再由 AgentDetail helper 依赖拉入首屏 |
 
 这些 owner 确实有真实消费者，不是 dead code；问题是边界按“一个大函数”组织，领域状态转换、IO 和 UI projection 混合，修改恢复语义时风险高（R-010/R-013）。
 
@@ -652,6 +652,10 @@ flowchart LR
 - 精确代码位置：`frontend/src/pages/agent-detail/WorkspaceToolsSection.tsx`、`FileBrowser.tsx`、`AgentDetail.tsx`。
 - 缺失测试：route-level bundle budget、slow-network/stale query、large artifact list。
 - 一次性完整关闭方案：按真实 domain query/state owner 分割 lazy modules；集中 session event reducer，不复制状态；保留同一 API truth；加 bundle budget、性能 trace、offline/reconnect/large-list browser tests；清理 dead state/i18n/CSS仅在引用证明后；视觉与a11y回归全部通过。
+- 修复状态（2026-07-12）：**R-013 七原子闭环**。先按 `optimize` 性能方法测量再修改：修复前生产构建的 `AgentDetail` route entry 为 **478.96 kB / gzip 128.44 kB**。保留默认 Status 与核心 Chat 作为首屏 eager surface，只将非当前 tab 的 Approvals、Workflow、Activity、Aware、Evolution、Extensions、Knowledge、Office、Settings、Workspace、A2A、Local Agent workspace/chat 共 13 个 domain section 改为 `React.lazy`；统一 `Suspense` fallback 有 reduced-motion 处理，不在加载时制造空白屏。AgentDetail 中不可达的旧 `promptModal/deleteConfirm/viewingFile/fileContent/fileApi` 链经引用证明后删除，避免死 query 和 FileBrowser 渲染依赖进入 route chunk。生产构建最终为 **286.96 kB / gzip 81.13 kB**，相对下降约 40.1% / 36.8%；`scripts/check-agent-detail-bundle.mjs` 从 Vite manifest 按 `chunk.name=AgentDetail` 找真实 dynamic entry，以 380,000/115,000 bytes 双预算硬 Gate，每次 build 写 `dist/evidence/agent-detail-bundle.json`，不能靠 hash 文件名或人工观察绕过。
+- 大列表与恢复闭环：`FileBrowser` 将 skill path 纯函数移出组件模块，默认只消费 `visibleFileWindow(..., 200)`，用户可按 200 递增展开，1,000 个 artifact 不再一次创建 1,000 行 DOM；每行同时使用 `content-visibility:auto` + `contain-intrinsic-size:44px`，目录切换/重新加载会重置窗口。Agent Workspace/Mind 的 API adapter 改为按 `agentId/operatorView` memoized，避免父级重渲染触发重复 list/read。慢网/offline 浏览器 Red 还发现真实恢复 Bug：浏览器可能发出 offline→online 但保留 open WebSocket，旧 `wake()` 先写 reconnecting、`ensureSessionSocket()` 因 socket 已 open 返回，UI 永久卡住；现在 online backfill 后显式 `syncActiveSocketState()`，既有 open socket 立即恢复 connected，历史投影始终保留。
+- 公司后台同一热点也完整拆分：`WorkspaceToolsSection.tsx` 从 **1,356 行**变为 **51 行**的 tab/Suspense orchestrator，不再直接 import `toolsApi/enterpriseApi/extensionsApi/customApiConnectorsApi`。Global Tools、MCP Servers、Custom API、Agent-installed 分别成为 693/89/171/68 行的 lazy domain owner，256 行纯 model/component module 承载治理映射、排序、provider-auth 和 secret-list；三个远端列表 owner 均用 request version fence 丢弃 tenant 切换后的 stale response。构建产生四个独立 chunk（约 19.68/2.69/7.54/1.76 kB），ControlPlane entry 从约 166.27 kB 降到 136.27 kB；不再在打开 Global tab 时预取未消费的 MCP、Custom API 与 Agent-installed 数据。
+- 验收证据：最初 unit/architecture Red → `3 failed, 4 passed` + FileBrowser helper module 缺失；bundle manifest 识别规则 Red → `1 failed, 4 passed`；workspace monolith Gate Red → `1 failed, 5 passed`（1,357 > 180）。浏览器 fault Red → `2 failed`，分别稳定复现 online 后永久 reconnecting 与测试路由误拦 Vite `/src/api/**` module；修复后新增慢网/offline 与 1,000 artifact 两条 browser case → `2 passed`。最终 Architecture/Workspace 定向 → `16 passed`；frontend 全量 → **`111 files / 644 passed`**；`npm run build` exit 0 且 bundle Gate 输出 `286964/380000 bytes, 81125/115000 gzip bytes`；默认 visual/a11y/workflow/performance Playwright → **`13 passed`**；严格 PostgreSQL `app_rls` + Redis + real FastAPI/Vite 的 15 条 atomic journeys 再跑 → **`15 passed (42.6s)`**。`git diff --check` 通过，临时 PostgreSQL/Redis 容器已删除。提交主题：`perf(R-013): split workbench domains and bound large lists`。
 
 ### [R-014] 依赖与测试运行存在非阻塞 warning
 
@@ -1014,7 +1018,7 @@ Codebase graph 校正时状态为 ready（43,281 nodes / 166,753 edges）；`det
 
 ## 16. 28 项原子缺口修复执行账本
 
-本节记录原始审计全部 28 项的实际落地状态：17 个断点、10 个局部闭环、1 个已知缺失。原始严重级别与原子状态保留为审计快照；只有同时具备实现、回归测试、报告证据和独立提交，才把修复状态改为闭环。Company Knowledge Base 本体按 owner 边界不在本轮开发，但 R-008 的诚实隔离、文案与防伪装验收仍必须关闭。当前进度：**15/28**。
+本节记录原始审计全部 28 项的实际落地状态：17 个断点、10 个局部闭环、1 个已知缺失。原始严重级别与原子状态保留为审计快照；只有同时具备实现、回归测试、报告证据和独立提交，才把修复状态改为闭环。Company Knowledge Base 本体按 owner 边界不在本轮开发，但 R-008 的诚实隔离、文案与防伪装验收仍必须关闭。当前进度：**16/28**。
 
 | ID | 修复状态 | 独立提交主题 | 机械证据摘要 |
 |---|---|---|---|
@@ -1030,7 +1034,7 @@ Codebase graph 校正时状态为 ready（43,281 nodes / 166,753 edges）；`det
 | R-010 | 闭环 | `fix(R-010): make lifecycle owners statically provable` | Red 3 failed；五 owner 16~24 行/≤3 参数/support=0；架构 10 passed；合并 349 passed；backend 全量 6536 passed, 1 skipped；ruff/format 绿 |
 | R-011 | 闭环 | `fix(R-011): gate fifteen real user journeys` + 2 个 acceptance 补正 | Red architecture 2 failed + CI collection Red 1 failed；真实全链 15 passed；backend 全量 6562 passed；frontend 639 passed + build；strict RLS/Redis/HR/Slack/Team/recovery seam 回归；CI 独立收集与永久证据上传；ruff/format/diff 绿 |
 | R-012 | 闭环 | `style(R-012): close backend format gate` | Red 12 files；Green ruff check 全绿 + 1521 files formatted；backend 全量 6562 passed, 1 skipped；无 frontend 变更；diff 绿 |
-| R-013 | 待修复 | — | — |
+| R-013 | 闭环 | `perf(R-013): split workbench domains and bound large lists` | Red unit/arch 3 failed + manifest 1 failed + monolith 1 failed + browser 2 failed；AgentDetail 478.96→286.96 kB；Tools orchestrator 1356→51 行；frontend 644 passed + build/budget；Playwright 13 + atomic 15；diff 绿 |
 | R-014 | 待修复 | — | — |
 | R-015 | 闭环 | `fix(R-015): sanitize rich text and authenticated downloads` | Red 5 failed + CSP inheritance 1 failed；Green 121 passed；全量 622 passed；build/E2E/audit 绿 |
 | R-016 | 闭环 | `fix(R-016): close governed memory path traversal` | Red 2 failed/1 passed；Green 3 passed；扩展 39 passed；ruff check/format 绿 |

@@ -12,17 +12,19 @@ type AgentWorkspaceSectionProps = {
 export default function AgentWorkspaceSection({ agentId, canUseOperatorView = false }: AgentWorkspaceSectionProps) {
   const [operatorView, setOperatorView] = React.useState(false);
   React.useEffect(() => setOperatorView(false), [agentId]);
-  const authority = operatorView
-    ? { operatorView: true, reason: 'Agent workspace administration' }
-    : undefined;
-  const adapter: FileBrowserApi = {
-    list: (path) => fileApi.list(agentId, path, authority),
-    read: (path) => fileApi.read(agentId, path, authority),
-    write: (path, content) => fileApi.write(agentId, path, content, authority),
-    delete: (path) => fileApi.delete(agentId, path, authority),
-    upload: (file, path, onProgress) => fileApi.upload(agentId, file, `${path}/`, onProgress, authority),
-    download: (path) => fileApi.download(agentId, path, authority),
-  };
+  const adapter = React.useMemo<FileBrowserApi>(() => {
+    const authority = operatorView
+      ? { operatorView: true, reason: 'Agent workspace administration' }
+      : undefined;
+    return {
+      list: (path) => fileApi.list(agentId, path, authority),
+      read: (path) => fileApi.read(agentId, path, authority),
+      write: (path, content) => fileApi.write(agentId, path, content, authority),
+      delete: (path) => fileApi.delete(agentId, path, authority),
+      upload: (file, path, onProgress) => fileApi.upload(agentId, file, `${path}/`, onProgress, authority),
+      download: (path) => fileApi.download(agentId, path, authority),
+    };
+  }, [agentId, operatorView]);
 
   return (
     <div style={{ padding: '20px 24px' }}>

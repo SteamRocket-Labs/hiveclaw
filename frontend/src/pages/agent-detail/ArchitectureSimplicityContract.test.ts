@@ -14,6 +14,46 @@ describe('UX-04 orchestration and composition boundaries', () => {
     expect(source).not.toContain('reconnectTimersRef');
   });
 
+  it('loads inactive workbench domains on demand and keeps FileBrowser out of the route entry', () => {
+    const source = read('../AgentDetail.tsx');
+
+    for (const section of [
+      'AgentApprovalsSection',
+      'AgentWorkflowsSection',
+      'AgentActivityLogSection',
+      'AgentAwareSection',
+      'AgentEvolutionSection',
+      'AgentExtensionsSection',
+      'AgentKnowledgeSection',
+      'OfficeWorkbenchSection',
+      'AgentSettingsSection',
+      'AgentWorkspaceSection',
+      'AgentA2ASection',
+      'LocalAgents',
+      'LocalAgentChatSection',
+    ]) {
+      expect(source, section).toContain(`const ${section} = lazy(() => import(`);
+    }
+    expect(source).toContain('<Suspense fallback={<AgentDetailSectionFallback />}');
+    expect(source).not.toContain("from '../components/FileBrowser'");
+    expect(source).not.toContain('buildNewSkillFilePath');
+    expect(source).not.toContain('promptModal');
+    expect(source).not.toContain('viewingFile');
+  });
+
+  it('enforces the measured AgentDetail route-entry bundle budget in every production build', () => {
+    const vite = read('../../../vite.config.ts');
+    const packageJson = read('../../../package.json');
+    const budget = read('../../../scripts/check-agent-detail-bundle.mjs');
+
+    expect(vite).toContain('manifest: true');
+    expect(packageJson).toContain('node scripts/check-agent-detail-bundle.mjs');
+    expect(budget).toContain('MAX_AGENT_DETAIL_BYTES = 380_000');
+    expect(budget).toContain('MAX_AGENT_DETAIL_GZIP_BYTES = 115_000');
+    expect(budget).toContain("dist/.vite/manifest.json");
+    expect(budget).toContain("chunk.name === 'AgentDetail'");
+  });
+
   it('composes the chat surface from explicit lineage, artifact, runtime, and tool-result modules', () => {
     const source = read('./AgentChatSection.tsx');
 
@@ -35,6 +75,34 @@ describe('UX-04 orchestration and composition boundaries', () => {
     ];
 
     for (const [path, maximum] of limits) {
+      expect(read(path).split('\n').length, path).toBeLessThanOrEqual(maximum);
+    }
+  });
+
+  it('keeps workspace extension tabs as lazy domain owners instead of one admin monolith', () => {
+    const orchestrator = read('../workspace/WorkspaceToolsSection.tsx');
+    expect(orchestrator.split('\n').length).toBeLessThanOrEqual(180);
+    expect(orchestrator).not.toContain('customApiConnectorsApi');
+    expect(orchestrator).not.toContain('extensionsApi');
+    expect(orchestrator).not.toContain('enterpriseApi');
+    expect(orchestrator).not.toContain('toolsApi');
+    for (const view of [
+      'WorkspaceGlobalToolsView',
+      'WorkspaceMcpServersView',
+      'WorkspaceCustomApiView',
+      'WorkspaceAgentInstalledToolsView',
+    ]) {
+      expect(orchestrator, view).toContain(`const ${view} = lazy(() => import(`);
+    }
+
+    const budgets: Array<[string, number]> = [
+      ['../workspace/WorkspaceGlobalToolsView.tsx', 900],
+      ['../workspace/WorkspaceCustomApiView.tsx', 320],
+      ['../workspace/WorkspaceMcpServersView.tsx', 180],
+      ['../workspace/WorkspaceAgentInstalledToolsView.tsx', 150],
+      ['../workspace/workspaceToolsModel.tsx', 300],
+    ];
+    for (const [path, maximum] of budgets) {
       expect(read(path).split('\n').length, path).toBeLessThanOrEqual(maximum);
     }
   });

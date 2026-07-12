@@ -8,6 +8,8 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import MarkdownRenderer from './MarkdownRenderer';
 import { saveBlob } from '../utils/authenticatedResource';
+import { buildNewSkillFilePath } from './fileBrowserPaths';
+import { FILE_LIST_PAGE_SIZE, visibleFileWindow } from './fileBrowserWindow';
 import './FileBrowser.css';
 
 // ─── Types ─────────────────────────────────────────────
@@ -66,24 +68,6 @@ function isImage(name: string): boolean {
     return IMAGE_EXTS.some(ext => n.endsWith(ext));
 }
 
-function normalizeSkillFolderName(value: string): string {
-    const cleaned = value.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
-    const withoutSkillFile = cleaned.replace(/\/SKILL\.md$/i, '');
-    const withoutFlatMd = withoutSkillFile.replace(/\.md$/i, '');
-    return withoutFlatMd
-        .split('/')
-        .filter(Boolean)
-        .map(part => part.trim().replace(/\s+/g, '-'))
-        .filter(Boolean)
-        .join('/');
-}
-
-export function buildNewSkillFilePath(currentPath: string, value: string): string {
-    const folderName = normalizeSkillFolderName(value);
-    const base = currentPath.trim().replace(/\/+$/g, '');
-    return base ? `${base}/${folderName}/SKILL.md` : `${folderName}/SKILL.md`;
-}
-
 // ─── Component ─────────────────────────────────────────
 
 export default function FileBrowser({
@@ -111,6 +95,7 @@ export default function FileBrowser({
     // ─── State ─────────────────────────────────────────
     const [currentPath, setCurrentPath] = useState(rootPath);
     const [files, setFiles] = useState<FileItem[]>([]);
+    const [visibleLimit, setVisibleLimit] = useState(FILE_LIST_PAGE_SIZE);
     const [loading, setLoading] = useState(false);
     const [contentLoaded, setContentLoaded] = useState(false);
     const [viewing, setViewing] = useState<string | null>(singleFile || null);
@@ -163,6 +148,7 @@ export default function FileBrowser({
                 data = data.filter(f => f.is_dir || fileFilter.some(ext => f.name.toLowerCase().endsWith(ext)));
             }
             setFiles(data);
+            setVisibleLimit(FILE_LIST_PAGE_SIZE);
         } catch {
             setFiles([]);
         }
@@ -306,6 +292,7 @@ export default function FileBrowser({
     // ─── Breadcrumbs ──────────────────────────────────
 
     const pathParts = currentPath ? currentPath.split('/').filter(Boolean) : [];
+    const visibleFiles = visibleFileWindow(files, visibleLimit);
 
     const renderBreadcrumbs = () => {
         if (!directoryNavigation || singleFile) return null;
@@ -585,7 +572,7 @@ export default function FileBrowser({
                             <span className="u-body">↩ ..</span>
                         </div>
                     )}
-                    {files.map((f) => (
+                    {visibleFiles.map((f) => (
                         <div key={f.name} className="file-browser-row"
                             onClick={() => {
                                 if (f.is_dir && directoryNavigation) {
@@ -623,6 +610,23 @@ export default function FileBrowser({
                             </div>
                         </div>
                     ))}
+                    {visibleFiles.length < files.length && (
+                        <div className="file-browser-list-more" role="status">
+                            <span>
+                                {t('agent.workspace.showingFiles', 'Showing {{visible}} of {{total}} files', {
+                                    visible: visibleFiles.length,
+                                    total: files.length,
+                                })}
+                            </span>
+                            <button
+                                type="button"
+                                className="btn btn-secondary"
+                                onClick={() => setVisibleLimit((current) => current + FILE_LIST_PAGE_SIZE)}
+                            >
+                                {t('agent.workspace.showMoreFiles', 'Show more')}
+                            </button>
+                        </div>
+                    )}
                 </div>
             )}
 

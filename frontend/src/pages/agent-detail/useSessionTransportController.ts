@@ -307,6 +307,11 @@ export function useSessionTransportController(options: SessionTransportControlle
       setTransportReconnectAttempt(reconnectAttemptsRef.current[key] || 0);
       void optionsRef.current.callbacks.onBackfill(activeSession, agentId);
       ensureSessionSocket(activeSession, agentId, token);
+      // Browsers may emit an offline/online pair without closing an already
+      // open WebSocket. In that case ensureSessionSocket is intentionally a
+      // no-op, so resync the existing socket instead of leaving the UI stuck
+      // in "reconnecting" forever.
+      syncActiveSocketState(activeSession, agentId);
     };
     const handleOffline = () => {
       clearReconnectTimer(key);

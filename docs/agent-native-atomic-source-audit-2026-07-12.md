@@ -770,13 +770,14 @@ flowchart LR
 - 状态：局部闭环
 - 用户/生产症状：owner 本地机器上通过 Hive Connect 执行的命令，Hive 端不做 per-tool 治理/审批/preflight，也无 `local_agent.*` deny-by-default 策略种子；`requires_approval` 的能力被静默降级为拒（而非触发真审批）。
 - 根因：[主审复核] `local_agent` 能力解析 `policy is None → 放行`（默认放行）；`policy is not None and (not policy.allowed or policy.requires_approval) → continue`（跳过，即 requires_approval 静默拒不批准）。机器外执行内容 Hive 不可见。
-- 精确代码位置：`backend/app/services/*channel_service*.py`（local_agent capability 解析）；`backend/app/services/local_agent_bridge_service.py`。
+- 精确代码位置：云端 authority/dispatch/receipt 在 `backend/app/services/local_bridge_service.py`、`backend/app/services/local_agent_channel_service.py` 与 `backend/app/api/local_agent_channel.py`；实际安装给 owner 的本机消费者在 `/Users/rocky243/vc-saas/hive-connect/platform/hive/hive.go`、`execution_receipts.go`。原报告写成 `local_agent_bridge_service.py` 是不存在的路径，现已校正，不能只验证云端 producer 就宣称本机 consumer 闭环。
 - 与其他模块冲突：部分属 CCPlus"owner 自机受信本地代理"设计，须**显式记为已知边界**而非纯缺陷。
 - 一次性完整关闭方案：本地 execute 走 owner-per-action 审批；`requires_approval` 触发真审批流；播种 `local_agent.*` deny-by-default；bearer 令牌加 TTL + delivered reconciler；把"受信本地代理"的信任边界写入契约文档。
 - 修复状态（2026-07-12）：**R-020 七原子闭环**。缺少 `local_agent.*` policy 现在 fail-closed；配对新建/复用 Local Agent 与 legacy migration 均只补缺失的 per-agent policy，不覆盖 owner/admin 已有选择。默认 `local_agent.execute`、`file_download`、`file_upload` 为 allowed + requires_approval，即动作层 deny-by-default；`event_stream`/`result_report` 仅承载已批准执行的证据与回执。signed capability snapshot 仍表达 runner 支持面，enqueue 与 owner 批准释放两个时间点都重新读取 live policy，并执行 source/content/attachment conditions；等待期间若管理员撤权，批准会留下 `execution_status=failed`、rejected message 和 error span，绝不派发。`requires_approval` 不再从能力快照静默消失：enqueue 先写不可变 message/request hash/replay key/span，再创建标准 `ApprovalRequest` 并进入 `waiting_approval`；creator/owner/sponsor 或同租户 org admin 可批准，且批准只释放绑定 `approval_id` 的单条消息，拒绝进入终态且永不 fanout。Local Agents UI/API 明确显示“Waiting for owner approval”，刷新后的 approval event 也使用人类可读状态，不再谎报 queued 或暴露协议名；标准 Approvals/notification 是 owner 决策消费面，WS ping/poll 是批准后的耐久恢复面。
 - 恢复与迁移：`local_agent_action_gov_0712` 增加 typed `approval_id`、`delivery_attempt_count`、`delivery_lease_expires_at`，legacy delivered 行回填为立即可 reconcile；poll 使用 PostgreSQL row lock + lease，断线沿相同 `replay_key` 有界重放，ack/event 延长 activity lease，完成清 lease，达到 5 次转 `needs_reconciliation` 而非无限重复本机副作用。Hive Connect bearer token 新签发默认 30 天、配置上限 90 天；legacy active token 获得 7 天以上迁移宽限，null/expired token 与其 WS ticket 都 fail-closed，重新配对是明确恢复路径。真实 downgrade 只移除本 migration 自己播种的 policy，owner override 保留。
+- 实际 Hive Connect consumer（终局补正）：云端 producer 之外，owner 安装的 `/Users/rocky243/vc-saas/hive-connect/platform/hive` 已把 `replay_key + message_id + request_hash` 在 ACK/执行前原子写入 0600 receipt；同进程重复投递只 join active owner，terminal result 在发送前落盘，断线/重启只重放结果而不重跑本机动作，重启时只有 claim 没有 terminal 的不确定结果 fail-closed 为 `local_execution_outcome_unknown`。`result_ack` 必须三元绑定匹配才可标记/淘汰；corrupt ledger、binding 冲突与缺字段全部拒绝执行。文件/图片也不再只是瞬时 `event`：成功 upload 后的 bounded canonical artifact metadata 先绑定 receipt，再同时进入前端可消费的 `payload.artifacts[]` 与 terminal/recovered result；action-bound upload 失败显式失败，成功路径不再把 base64 文件正文重复写入 event。backend upload 在返回前已经提交 workspace file、ChatMessage 与 ChatArtifact；远端 commit→本地 receipt 的窄窗口不伪装成分布式事务，但文件仍有后端 Workspace/ChatArtifact 事实面，且 durable claim 阻止动作自动重跑。
 - 受信本地代理边界（强制安全契约）：逐动作审批约束“允许派发什么”，操作系统沙箱约束“本机实际能做什么”。Hive 对审批、消息/附件引用、delivery lease、`replay_key`、receipt、结果、event/span/audit 负责；runner 必须在操作系统沙箱、受限工作目录与本机 credential boundary 内执行并按 replay key 去重。命令进入 owner 机器后，**Hive 无法机械证明**本机进程没有访问其他目录、网络、凭据或产生未回报副作用；这部分是显式受信端边界，不得在 UI/合规文案中伪装成云端完全控制。bearer token 只证明已配对 device identity，不替代本机 sandbox；delivered reconciler 只恢复云端交付，不证明本机 side effect exactly-once。
-- 验收证据：Backend Red → **`8 failed, 1 passed`**，追加 approval-release/live-policy Red → **`2 failed`**；Local Agent PostgreSQL 协议 Green 覆盖 no-policy deny、requires-approval approve/reject、批准前再次撤权、snapshot/live policy、lease replay/上限与 receipt；关联 API/service/migration/approval/trust contract 最终定向 **`44 passed`**。真实 PostgreSQL migration 覆盖 typed columns/FK、legacy delivered/token backfill、已有 owner deny 不覆盖、四项缺省 policy 播种与 secure downgrade。首次 backend 全量暴露 5 个兼容测试缺口，修正后定向 **`18 passed`**，最终 backend 全量 **`6605 passed, 1 skipped`**。Frontend 两轮 Red 各 **`1 failed`**；Green 单文件 **`11 passed`**、全量 **`111 files / 646 tests`**，生产 build 与 AgentDetail/shared-vendor bundle budgets 通过。ruff、format、单 Alembic head 与 diff-check 全绿。
+- 验收证据：Backend Red → **`8 failed, 1 passed`**，追加 approval-release/live-policy Red → **`2 failed`**；Local Agent PostgreSQL 协议 Green 覆盖 no-policy deny、requires-approval approve/reject、批准前再次撤权、snapshot/live policy、lease replay/上限与 receipt；关联 API/service/migration/approval/trust contract 最终定向 **`44 passed`**。真实 PostgreSQL migration 覆盖 typed columns/FK、legacy delivered/token backfill、已有 owner deny 不覆盖、四项缺省 policy 播种与 secure downgrade。首次 backend 全量暴露 5 个兼容测试缺口，修正后定向 **`18 passed`**，最终 backend 全量 **`6605 passed, 1 skipped`**。Frontend 两轮 Red 各 **`1 failed`**；Green 单文件 **`11 passed`**、全量 **`111 files / 646 tests`**，生产 build 与 AgentDetail/shared-vendor bundle budgets 通过。实际 consumer Red 证明 replay metadata 未消费及 attachment 只走瞬时 event；Hive Connect `08a948e`、`ede29cd`、`134d534` 分别关闭 action replay、artifact terminal handoff 与 event 数据最小化，artifact 定向 count=50、race count=20、vet 绿；终局全仓证据见 13.6。ruff、format、单 Alembic head 与 diff-check 全绿。
 
 ### [R-021] MCP 远端工具描述被当作可信提示上下文
 
@@ -920,6 +921,8 @@ flowchart LR
 
 ## 13. 验证证据
 
+13.1~13.5 保留原始审计快照与其后逐项修复时的机械证据，便于追溯 Red→Green；**当前 checkout 的终局判断只以 13.6 为准**，不得把历史测试数量、历史 formatter Red 或旧 HEAD 冒充当前状态。
+
 ### 13.1 Backend
 
 ```text
@@ -983,9 +986,9 @@ cd local_bridge && npm test
 14 passed, 0 failed, duration 1263ms (exit 0)
 ```
 
-### 13.4 失败定性
+### 13.4 原始审计失败定性
 
-唯一明确 release command failure 是 formatter gate，属于当前 checkout 的格式/验收漂移，不是环境外部依赖。所有其他请求命令已完成；targeted green 未用于覆盖该失败。
+原始审计快照中唯一明确的 release command failure 是 formatter gate，属于当时 checkout 的格式/验收漂移，不是环境外部依赖。该失败已由 R-012 关闭；终局 current-checkout 验证必须以 13.6 的重新执行结果为准，不能继续把历史 Red 写成当前失败，也不能用 targeted green 覆盖任何新的全量失败。
 
 ### 13.5 文档校正一致性证据
 
@@ -997,7 +1000,7 @@ severity: P0=4, P1=13, P2=9, P3=2, total=28
 atomic state: breakpoint=17, partial=10, missing=1, total=28
 ```
 
-当前 checkout 与忽略规则：
+原始审计 checkout 与忽略规则（历史证据，不代表终局 HEAD）：
 
 ```text
 git rev-parse HEAD
@@ -1010,22 +1013,110 @@ git check-ignore -v docs/agent-native-atomic-source-audit-2026-07-12.md
 .gitignore:36:docs/  docs/agent-native-atomic-source-audit-2026-07-12.md
 ```
 
-Codebase graph 校正时状态为 ready（43,281 nodes / 166,753 edges）；`detect_changes(since=HEAD)` 只返回上述 debug 日志，`impacted_symbols=[]`。这证明本次报告校正没有改变被审计的生产源码事实。
+原始报告校正时 Codebase graph 状态为 ready（43,281 nodes / 166,753 edges）；`detect_changes(since=HEAD)` 只返回上述 debug 日志，`impacted_symbols=[]`。终局复核时 graph transport 已不可用，因此没有伪造新的 graph 结论，而是回退到精确源码检索、真实调用路径、Git diff、迁移、测试与浏览器 journey；对应终局事实单列在 13.6。
+
+### 13.6 终局 current-checkout 闭环证据（2026-07-12）
+
+终局验证固定两个代码基线：Hive 主仓 code-bearing HEAD=`c7eb9d67aae1ebadeb89cb695eee4e54b85a550a`；owner 本机实际 consumer Hive Connect HEAD=`34ebe21c0f12c7ba32b8ce0959333fe4c7e3e44e`。本节记录的是这两个 checkout 的真实执行结果；随后只允许提交本文档，不改变上述生产代码基线。
+
+主仓最终门禁：
+
+```text
+cd backend && source .venv/bin/activate && pytest tests -q
+6706 passed, 1 skipped in 211.64s (exit 0)
+
+cd backend && source .venv/bin/activate && ruff check app tests
+All checks passed! (exit 0)
+
+cd backend && source .venv/bin/activate && ruff format --check app tests
+1551 files already formatted (exit 0)
+
+cd backend && source .venv/bin/activate && alembic heads
+hr_draft_recovery_0712 (head) (exit 0; single head)
+
+cd frontend && npm test -- --run
+115 test files passed; 663 tests passed (exit 0)
+
+cd frontend && npm run build
+exit 0; AgentDetail 287168/380000 bytes, gzip 81176/115000;
+vendor 591449/620000 bytes, gzip 186474/200000
+
+cd frontend && npm run test:e2e
+30 passed (exit 0)
+
+cd frontend && npm run test:e2e:journeys
+15 passed in 43.7s on a fresh PostgreSQL schema with app_rls runtime role (exit 0)
+
+cd local_bridge && ../backend/.venv/bin/python -m pytest tests -q
+30 passed (exit 0)
+
+cd local_bridge && npm test
+14 passed, 0 failed (exit 0)
+```
+
+fresh strict-RLS journey 同时机械核对：tenant=1、global skills=9、startup audit=1、users/participants=3/3；public registration、tenantless identity、Join/Self-create、default tenant、global Skill 与 operator audit 均没有借测试 bootstrap 绕过应用角色权威。
+
+Hive Connect 最终门禁（固定同一 HEAD，任何一轮失败都从零计数）：
+
+```text
+go test ./... -count=1
+Run 1: exit 0, real 45.13s, failure summary empty
+Run 2: exit 0, real 45.09s, failure summary empty
+Run 3: exit 0, real 42.56s, failure summary empty
+
+go test -race ./core -count=1
+exit 0, real 21.05s
+
+go test -race ./agent/opencode -count=1
+exit 0, real 20.57s
+
+go test -race ./platform/hive -count=1
+exit 0, real 3.12s
+
+go vet ./...
+exit 0, real 0.77s
+
+go build ./...
+exit 0, real 1.34s
+
+npm test
+exit 0, real 0.21s
+```
+
+终局并发 Gate 没有掩盖新红灯。第一次全仓复核暴露 Codex fake CLI 可能让断言读取只写完前缀的 argv 文件；`6e5be2d` 改成临时文件完整写入后 POSIX `mv` / PowerShell `Move-Item` 原子发布，targeted count=100、8 并发×count=20、race count=20、Codex 整包 count=10 与 Windows cross-compile 全绿。第二次复核暴露 OpenCode 的 7 个异步 model-refresh 测试依赖 shell `sleep/cat` 进程风暴与 2 秒轮询，同时生产 `Agent.Stop()` 不 cancel/join refresh；`34ebe21` 把 refresh 纳入 Stop owner、Stop 后拒绝新 refresh，并以真实 Go helper 子进程 + deterministic join 替换脆弱证据，Stop 真进程 count=50、原 7-test family count=100、16 并发进程×family count=50、整包 count=30、race 与 Windows cross-compile 全绿。修复后才重新开始上述三连全仓计数。
+
+本轮最后补齐、且已独立提交的 terminal closure 如下；它们不是用“测试变宽松”换绿灯，而是关闭实际 consumer、进程/会话 owner 与证据发布原子：
+
+| 仓库/提交 | 关闭的真实断点 | 机械证据 |
+|---|---|---|
+| Hive `a47c7263c` | strict-RLS bootstrap journey authority seam | fresh PostgreSQL app role 15/15 + backend full green |
+| Hive `c7eb9d67a` | R-008 legacy quarantine 大文件、竞态、取消、权限与 UI recovery | backend Red 5→Green 18/76；frontend Red 4→Green 35 + build |
+| Connect `08a948e` | 本机 action claim/ACK/terminal/restart replay | replay/binding/corruption/restart pressure + race |
+| Connect `f0449ce` | media journey 异步测试状态外泄 | isolated package/full-repo repetition |
+| Connect `32df1be`、`356b2b5` | Codex runtime config 查询与 shell RPC fixture bottleneck | targeted/count/race/cross-compile |
+| Connect `722b4a4` | iFlow timeout 只杀父 PTY、不杀进程树 | Unix process-group + Windows tree kill；count/race/cross-compile |
+| Connect `9f9a993` | Engine/Session/Workspace shutdown 不 join lifecycle | exact-once Stop、tempdir/no-late-write、core race/full repo |
+| Connect `ede29cd`、`134d534` | artifact receipt→terminal/event/Workspace 消费与 base64 泄漏 | artifact count=50、race count=20、vet |
+| Connect `a0bfabf` | Cron/Timer/custom shell 逃逸 shutdown owner | process-tree cancel、scheduler join、post-Stop fail-closed、core race |
+| Connect `6e5be2d` | Codex argv 证据半写可见 | atomic publish；100/160/race/full/cross-compile |
+| Connect `34ebe21` | OpenCode background refresh 逃逸 Stop 与全仓 flake | cancel+join、Stop 后 fail-closed、100/16-way/race/full/cross-compile |
+
+测试生成的 `core/test_ws_*.json` 已清理；Hive Connect 仅保留未跟踪 `.codebase-memory/`，主仓 `.ultra/**` 状态记录与未跟踪 `task.md` 均未 stage。没有执行 Railway 部署、生产 migration 或生产数据写入，因此这些证据只支持“本地代码候选闭环”，不支持伪称“生产已上线”。
 
 ## 14. 上线门
 
 | Gate | 结论 | 必须满足的证据 |
 |---|---|---|
-| **安全门（最高优先）** | **NO-GO** | **R-015 完成成熟 sanitizer/raw HTML 禁用、URL/image policy、长期 bearer token 退出 DOM/query URL、全部消费面 XSS 回归及 staging 最终 CSP header 验证；R-016 统一规范化后守卫、authority 覆盖新建与残留扫描；R-018 channel secret 加密回填/scrub；R-021 完成 MCP metadata trust contract，而不是只做字符转义** |
+| **安全门（最高优先）** | **本地代码候选通过；生产仍 NO-GO** | **R-015 的 sanitizer/raw HTML、URL/image policy 与 bearer token 消费面，R-016 的统一路径守卫，R-018 的 channel secret 加密/回填/scrub，R-021 的 MCP metadata trust contract 均已有当前源码与本地回归证据。剩余门是 staging/production 的真实 CSP header、旧密钥轮换、secret backfill dry-run、生产 RLS 分布与外部 connector smoke，不再把已关闭代码项列为“尚待开发”。** |
 | 代码/架构候选门 | **本地候选通过；生产仍 NO-GO** | R-001~R-007、R-009~R-028 当前范围缺口已全部关闭；R-008 按“边界闭环 + Company KB 本体已知缺失”诚实处理；不存在默认豁免的 P2/P3；ruff/format、全量测试、build、浏览器与架构门全绿 |
 | 自进化基石门 | 本地代码候选通过；生产仍 NO-GO | R-004/R-007/R-017/R-024/R-026 已有本地闭环证据；仍须完成 staging lifecycle kill/corruption 故障注入与持久盘恢复核验 |
 | Migration/backfill门 | 当前代码候选通过；生产仍 NO-GO | Approval/HR/Dream durable job、HR preview TTL、channel encryption、RLS complete coverage 与 R-023 strict/shared/operator-nullable 分类、payload-free dry-run、回填/冲突 quarantine、secure downgrade 均已有本地/真实 PG 证据；当前单 head=`hr_draft_recovery_0712`，仍需 staging dry-run 与生产只读分布核验 |
-| Staging fault-injection门 | NO-GO | 多副本startup（R-001）、claim lease（R-004/R-023）、approval crash、Dream kill、outbox前后crash、lifecycle.json 崩溃写、15 journeys |
+| Staging fault-injection门 | 本地故障矩阵通过；真实 staging NO-GO | 多副本 startup、claim lease、approval crash、Dream kill、outbox 前后 crash、lifecycle.json 崩溃写与 15 条 journey 均有本地 deterministic/真实 PostgreSQL 证据；仍须在与生产同构的多副本、Redis、持久盘、Vercel Sandbox 环境重跑，不能把本机故障注入冒充 staging 事实 |
 | Railway生产门 | 未验证/NO-GO | backend/backend-api/frontend同一候选均SUCCESS；health、schema、worker日志、持久盘证据 |
 | 权限矩阵门 | 本地候选通过 | cross-tenant、delegate grant、break-glass expiry、operator read/write、组合 waiting E2E；R-020 Local Bridge per-action policy/approval；R-022 全 tenant 表 RLS；R-023 NULL/global/shared/operator/quarantine 注入矩阵；生产只读核验仍归 Railway 门 |
 | 功能与用户体验门 | **本地候选通过；生产仍 NO-GO** | R-019/R-025/R-027/R-028 均有本地闭环证据；Personal KB 12 个读取面、真实空态、局部降级与 Retry 浏览器验收已绿；生产切流前仍须在 staging 重跑 15 条全链 journey |
-| External Channel门 | 未验证 | R-018 加密迁移后真实 secret 读取/轮换；真实 identity binding、token expiry、duplicate webhook、outbox retry/dead-letter；R-020 Local Bridge per-action 审批与离线恢复 |
-| Artifact交付门 | 本地候选通过 | staging sandbox→artifact→chat→Deliverables→download、crash/retry exact-once |
+| External Channel门 | 本地代码候选通过；真实外部系统未验证 | R-018/R-020 的存储、审批、token expiry、duplicate/replay、outbox/receipt 恢复已有本地证据；真实 connector identity、供应商 token、duplicate webhook、轮换和 dead-letter smoke 仍属 staging/production 验收 |
+| Artifact交付门 | 本地候选通过；真实 Sandbox 未验证 | 本地 artifact→chat→Deliverables/Workspace→download 与 crash/retry 路径已有回归；仍须在 staging 执行 Vercel Sandbox→持久 workspace→artifact evidence→聊天/侧栏→下载的全链 smoke |
 | Company KB 范围门 | 已知缺失/不阻塞当前第一部分 | R-008 文案只描述 legacy read-only files；不出现正式 Company KB 已可用的 route/UI shell。Company KB 正式能力进入明确的第二部分完整建设 |
 
 生产切换顺序不是阶段性交付，而是同一完整候选的安全验收顺序：schema/backfill dry-run→staging fault matrix→三服务同版本部署→只读事实核对→受控 smoke；任何门红都不切流量。
@@ -1036,8 +1127,8 @@ Codebase graph 校正时状态为 ready（43,281 nodes / 166,753 edges）；`det
 
 | 权重 | 覆盖判断 | 得分贡献 |
 |---|---|---|
-| current source/call graph 45% | 高覆盖，关键入口/consumer/recovery逐段复核；28 项均回到当前 checkout 验证 | 44/45 |
-| executable tests 25% | backend 6690、frontend 659、build/ruff/format/架构门与断点专属浏览器套件均绿 | 25/25 |
+| current source/call path 45% | 高覆盖，关键入口/consumer/recovery 逐段复核；28 项均回到当前 checkout 验证。终局 graph transport 不可用已诚实降级为精确源码/Git/迁移/运行路径复核，不沿用旧图谱冒充当前证据 | 44/45 |
+| executable tests 25% | backend 6706、frontend 663、build/ruff/format/架构门、30 条标准 Playwright、15 条 fresh strict-RLS journey、Hive Connect 三连全仓与三包 race 均绿 | 25/25 |
 | CC/Codex/Hermes source comparison 10% | 代表性生命周期源码已对照，非穷举每个分支 | 8/10 |
 | migration/recovery/fault injection 10% | migration/回填/恢复测试充分，真实 staging 多副本与外部系统注入仍待执行 | 8/10 |
 | browser/user journey 10% | 15 条真实 API/runtime/worker/browser 原子旅程全部通过，并已成为 release gate | 10/10 |
@@ -1049,7 +1140,7 @@ Codebase graph 校正时状态为 ready（43,281 nodes / 166,753 edges）；`det
 
 ### 15.3 最终声明
 
-原始审计阶段只产出报告；随后 R-001~R-028 已按执行账本逐项完成实现、回归、证据更新与独立提交。当前结论是 **28/28 当前范围闭环**，其中 R-008 只代表 Company KB 缺失边界已经诚实隔离，不代表 Company KB 本体已开发。没有执行 Railway 部署、生产 migration 或生产数据写入，因此只能称“本地代码候选完成”，不能称“已上线”。用户原有 `.ultra/debug/subagent-log.jsonl` 追加记录始终未纳入任何修复提交。
+原始审计阶段只产出报告；随后 R-001~R-028 已按执行账本逐项完成实现、回归、证据更新与独立提交。当前结论是 **28/28 当前范围闭环**，其中 R-008 只代表 Company KB 缺失边界已经诚实隔离，不代表 Company KB 本体已开发。R-017 的 heartbeat T2→T3 已由 `75801b113` 接入真实 T3 Gate 契约并以 24 项真 Gate 扩展回归，不是 fake gate。没有执行 Railway 部署、生产 migration 或生产数据写入，因此只能称“本地代码候选完成”，不能称“已上线”。主仓 `.ultra/**` 状态记录、未跟踪 `task.md` 与 Hive Connect `.codebase-memory/` 均未纳入任何修复提交。
 
 ## 16. 28 项原子缺口修复执行账本
 
@@ -1073,10 +1164,10 @@ Codebase graph 校正时状态为 ready（43,281 nodes / 166,753 edges）；`det
 | R-014 | 闭环 | `fix(R-014): make release gates warning-free` | Red architecture 4 failed + RECORD 1 failed；SDK patch 幂等且 RECORD hash/size 一致；backend 6569 passed；frontend 644 passed + build/bundle budgets；Playwright 13；全日志零可见 warning；ruff/format/diff 绿 |
 | R-015 | 闭环 | `fix(R-015): sanitize rich text and authenticated downloads` | Red 5 failed + CSP inheritance 1 failed；Green 121 passed；全量 622 passed；build/E2E/audit 绿 |
 | R-016 | 闭环 | `fix(R-016): close governed memory path traversal` | Red 2 failed/1 passed；Green 3 passed；扩展 39 passed；ruff check/format 绿 |
-| R-017 | 闭环 | `fix(R-017): align heartbeat with the real T3 gate` | Red 2 failed；Green 5 passed；真 Gate 扩展 24 passed；ruff 绿 |
+| R-017 | 闭环 | `75801b113 fix(R-017): align heartbeat with the real T3 gate` | Red 2 failed；Green 5 passed；真 Gate 扩展 24 passed；ruff 绿 |
 | R-018 | 闭环 | `fix(R-018): encrypt channel credentials at rest` | Red 6+1+1+1+2+2 failed；7 channel + tenant 三字段/JSON versioned encryption；PG backfill/rotation/secure downgrade 2 passed；组合 126；backend 6582 passed；ruff/format/log redaction/dry-run 绿 |
 | R-019 | 闭环 | `fix(R-019): normalize Anthropic vision payloads` | Red 8 failed/1 passed；主消息/tool-result 单一 pure converter；PNG/JPEG/multi/replay/invalid/vision=false/payload snapshot 17 passed；合并 80；backend 6591 passed；ruff/format/diff 绿 |
-| R-020 | 闭环 | `fix(R-020): govern Local Bridge actions per request` | Red backend 8+2 failed + frontend 1+1 failed；真 ApprovalRequest→单消息 release/reject + approval-time live policy；typed lease reconciler；bearer TTL；真实 PG backfill/downgrade；backend 6605；frontend 646 + build；ruff/format/head/diff 绿 |
+| R-020 | 闭环 | `903d7f3a4 fix(R-020): govern Local Bridge actions per request` + Hive Connect `08a948e`/`ede29cd`/`134d534` | Red backend 8+2 failed + frontend 1+1 failed；真 ApprovalRequest→单消息 release/reject + approval-time live policy；typed lease reconciler；bearer TTL；真实 PG backfill/downgrade；实际 runner claim-before-ACK、terminal-before-send、restart fail-closed、三元 ACK、artifact receipt→event/result/Workspace 消费与 base64 最小化；backend 6605；frontend 646 + build；consumer count/race/vet；终局全仓见 13.6 |
 | R-021 | 闭环 | `fix(R-021): quarantine untrusted MCP metadata` | 多轮 Red：12+1+4+4+6+3 failed + frontend Red；raw/canonical 双面隔离、SHA-256 fingerprint 重审、五层 runtime deny、assignment intent 恢复、admin audit/UI；真实 PG 3；MCP 全链 201；backend 6632；frontend 650 + build；ruff/format/head/diff 绿 |
 | R-022 | 闭环 | `fix(R-022): enforce complete tenant RLS coverage` | 校正为 11 direct + 2 parent-derived；Red 4 failed；bootstrap 永久全 metadata Gate + upgrade repair + secure downgrade；真实 PG migration 2、跨租读写/BYPASS 2、组合 64；backend 6638；ruff/format/head/diff 绿 |
 | R-023 | 闭环 | `fix(R-023): eliminate implicit tenant NULL scope` | 114 direct tenant 表=105 strict+7 shared+2 operator-nullable；44 legacy tenant-owned 全部 NOT NULL；session persist Gate + Agent/RuntimeTask fail-closed；fixed-point backfill、冲突/孤儿 quarantine receipt、secure downgrade；真实 PG 2、定向 36；backend 6648；ruff/format/head/diff 绿 |

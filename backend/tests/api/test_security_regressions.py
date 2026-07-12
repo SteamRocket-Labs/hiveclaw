@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import io
 import sys
 import types
@@ -178,29 +179,53 @@ async def test_upload_requires_agent_access(monkeypatch, tmp_path):
 @pytest.mark.asyncio
 async def test_upload_sanitizes_workspace_filename(monkeypatch, tmp_path):
     import app.api.upload as upload_api
+    import app.services.workspace_resource_authority as workspace_authority
+
+    registered: list[dict[str, object]] = []
 
     async def fake_check_agent_access(db, current_user, agent_id):
+        return None
+
+    async def fake_register_workspace_path(db, **kwargs):
+        registered.append({"db": db, **kwargs})
         return None
 
     monkeypatch.setattr(upload_api, "WORKSPACE_ROOT", tmp_path)
     monkeypatch.setattr(upload_api, "check_agent_access", fake_check_agent_access)
     monkeypatch.setattr(upload_api, "extract_text", lambda path, extension: "safe")
+    monkeypatch.setattr(workspace_authority, "register_workspace_path", fake_register_workspace_path)
 
     agent_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    tenant_id = uuid.uuid4()
+    db = object()
     file = UploadFile(io.BytesIO(b"hello"), filename="../evil.txt")
 
     result = await upload_api.upload_file(
         background_tasks=BackgroundTasks(),
         file=file,
         agent_id=agent_id,
-        current_user=SimpleNamespace(id=uuid.uuid4(), tenant_id=uuid.uuid4()),
-        db=object(),
+        current_user=SimpleNamespace(id=user_id, tenant_id=tenant_id),
+        db=db,
     )
 
     uploads_dir = tmp_path / str(agent_id) / "workspace" / "uploads"
     assert (uploads_dir / "evil.txt").read_bytes() == b"hello"
     assert not (tmp_path / str(agent_id) / "workspace" / "evil.txt").exists()
     assert result["workspace_path"] == "workspace/uploads/evil.txt"
+    assert registered == [
+        {
+            "db": db,
+            "tenant_id": tenant_id,
+            "agent_id": agent_id,
+            "path": "workspace/uploads/evil.txt",
+            "owner_user_id": user_id,
+            "root_session_id": None,
+            "source": "chat_upload",
+            "content_hash": hashlib.sha256(b"hello").hexdigest(),
+            "allow_owner_rebind": False,
+        }
+    ]
 
 
 def test_extract_text_docx_does_not_shell_out(monkeypatch, tmp_path):

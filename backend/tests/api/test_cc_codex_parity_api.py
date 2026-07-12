@@ -458,8 +458,8 @@ async def test_chat_sessions_api_exposes_unified_workbench_and_json_export(monke
                     "agent": agent,
                     "session": session,
                     "timeline_limit": timeline_limit,
-                        "include": include,
-                        "audience": audience,
+                    "include": include,
+                    "audience": audience,
                 },
             )
         )
@@ -621,12 +621,13 @@ async def test_commands_api_executes_session_command_without_tool_runtime(monkey
 
     assert result == {"ok": True, "command": "rename", "result": {"ok": True, "title": "Renamed"}}
     assert db.commits == 1
-    assert captured["agent"] is agent
-    assert captured["user"] is current_user
-    assert captured["access_level"] == "manage"
+    context = captured["context"]
+    assert context.agent is agent
+    assert context.user is current_user
+    assert context.access_level == "manage"
     assert captured["command_name"] == "rename"
-    assert captured["session_id"] == str(session_id)
-    assert captured["arguments"] == {"title": "Renamed"}
+    assert context.session_id == str(session_id)
+    assert context.arguments == {"title": "Renamed"}
 
 
 @pytest.mark.asyncio

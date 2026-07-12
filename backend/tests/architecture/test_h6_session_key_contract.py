@@ -22,4 +22,5 @@ def test_invoker_normalizes_session_key_for_all_entrypoints() -> None:
 
     assert "run_agent_invocation" in facade
     assert "ensure_session_key" in facade
-    assert "_normalize_invocation_session_context(request)" in source
+    assert "ports.normalize_session_context(request)" in source
+    assert "normalize_session_context=_normalize_invocation_session_context" in facade

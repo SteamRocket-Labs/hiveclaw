@@ -469,6 +469,7 @@ def test_t0_to_t2_hook_plan_uses_projection_not_legacy_extract() -> None:
             "profile_name": None,
             "has_matcher": False,
             "matcher_spec": None,
+            "failure_mode": "advisory",
         }
     ]
     assert pre_compaction == [
@@ -479,6 +480,7 @@ def test_t0_to_t2_hook_plan_uses_projection_not_legacy_extract() -> None:
             "profile_name": None,
             "has_matcher": False,
             "matcher_spec": None,
+            "failure_mode": "advisory",
         }
     ]
     assert turn_stop == [
@@ -489,6 +491,7 @@ def test_t0_to_t2_hook_plan_uses_projection_not_legacy_extract() -> None:
             "profile_name": None,
             "has_matcher": False,
             "matcher_spec": None,
+            "failure_mode": "advisory",
         },
         {
             "event": HookEvent.TURN_STOP.value,
@@ -497,6 +500,7 @@ def test_t0_to_t2_hook_plan_uses_projection_not_legacy_extract() -> None:
             "profile_name": None,
             "has_matcher": False,
             "matcher_spec": None,
+            "failure_mode": "advisory",
         },
     ]
     assert turn_abort == [
@@ -507,6 +511,7 @@ def test_t0_to_t2_hook_plan_uses_projection_not_legacy_extract() -> None:
             "profile_name": None,
             "has_matcher": False,
             "matcher_spec": None,
+            "failure_mode": "advisory",
         }
     ]
 

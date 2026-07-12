@@ -115,11 +115,14 @@ def test_no_bypass_kernel_handle_called_only_from_invocation_owner() -> None:
     ]
     assert len(handle_calls) == 1, "invocation owner must contain exactly one kernel.handle() call"
     funnel_call = handle_calls[0]
+    assert isinstance(funnel_call.func.value, ast.Call)
+    resolver = funnel_call.func.value.func
     assert (
-        isinstance(funnel_call.func.value, ast.Call)
-        and isinstance(funnel_call.func.value.func, ast.Name)
-        and funnel_call.func.value.func.id == "_resolve_kernel_for_request"
-    ), "the single handle() call must be on the kernel returned by _resolve_kernel_for_request(request)"
+        isinstance(resolver, ast.Attribute)
+        and resolver.attr == "resolve_kernel"
+        and isinstance(resolver.value, ast.Attribute)
+        and resolver.value.attr == "ports"
+    ), "the single handle() call must use the typed InvocationPorts kernel resolver"
 
 
 def test_no_bypass_api_routes_never_reference_agent_kernel() -> None:
@@ -180,26 +183,33 @@ def test_no_bypass_governed_execute_runs_governance_before_any_executor() -> Non
         TOOL_EXECUTION_OWNER_PATH.read_text(encoding="utf-8"),
         filename=str(TOOL_EXECUTION_OWNER_PATH),
     )
-    execute_fn = next(
-        node for node in ast.walk(tree) if isinstance(node, ast.AsyncFunctionDef) and node.name == "run_tool_execution"
-    )
+    functions = {
+        node.name: node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef))
+    }
+    execute_fn = functions["run_tool_execution"]
+    governance_fn = functions["_apply_governance"]
+    executor_fn = functions["_execute_tool"]
 
     governance_line: int | None = None
     execute_with_context_line: int | None = None
-    for node in ast.walk(execute_fn):
+    for node in ast.walk(governance_fn):
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
             owner = node.func.value
-            if isinstance(owner, ast.Name) and owner.id == "self" and node.func.attr == "governance_runner":
+            if isinstance(owner, ast.Name) and owner.id == "service" and node.func.attr == "governance_runner":
                 governance_line = node.lineno
-            if isinstance(owner, ast.Name) and owner.id == "self" and node.func.attr == "execute_with_context":
+    for node in ast.walk(executor_fn):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            owner = node.func.value
+            if isinstance(owner, ast.Name) and owner.id == "service" and node.func.attr == "execute_with_context":
                 execute_with_context_line = node.lineno
 
     assert governance_line is not None, "execute() must call self.governance_runner(...)"
     assert execute_with_context_line is not None, "execute() must call self.execute_with_context(...)"
-    assert governance_line < execute_with_context_line, (
-        "Governance must run before tool execution in the live path; "
-        f"governance_runner at line {governance_line}, "
-        f"execute_with_context at line {execute_with_context_line}"
+    owner_source = ast.unparse(execute_fn)
+    assert owner_source.index("_apply_governance") < owner_source.index("_execute_tool"), (
+        "The public owner must order the governance stage before the executor stage"
     )
 
 

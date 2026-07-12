@@ -49,7 +49,7 @@ def test_kernel_layer_stays_free_of_persistence_and_api_imports() -> None:
 
 
 def test_approval_execution_uses_public_approved_tool_boundary() -> None:
-    source = (APP_ROOT / "services/approval_service.py").read_text(encoding="utf-8")
+    source = (APP_ROOT / "services/approval_execution_runtime.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
 
     imported_agent_tool_symbols: set[str] = set()
@@ -60,6 +60,7 @@ def test_approval_execution_uses_public_approved_tool_boundary() -> None:
     assert "_execute_tool_direct" not in imported_agent_tool_symbols
     assert "_execute_tool_direct(" not in source
     assert "execute_approved_tool" in imported_agent_tool_symbols or "execute_approved_tool(" in source
+    assert "execute_claimed_approval_execution" in source
 
 
 def test_only_tool_runtime_service_owns_direct_tool_execution() -> None:

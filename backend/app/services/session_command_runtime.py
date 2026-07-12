@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 import re
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
@@ -713,694 +714,765 @@ async def _export_session(db: AsyncSession, *, agent: Agent, session: ChatSessio
     }
 
 
+@dataclass(frozen=True, slots=True)
+class SessionCommandContext:
+    db: AsyncSession
+    agent: Agent
+    user: User
+    access_level: str
+    session_id: uuid.UUID | str | None
+    arguments: dict[str, Any]
+
+
 async def execute_session_command(
-    *,
-    db: AsyncSession,
-    agent: Agent,
-    user: User,
-    access_level: str,
+    context: SessionCommandContext,
     command_name: str,
-    session_id: uuid.UUID | str | None,
-    arguments: dict[str, Any],
 ) -> dict[str, Any]:
-    if command_name not in SESSION_COMMAND_NAMES:
+    """Dispatch one session command through its single typed owner."""
+    handler = _SESSION_COMMAND_HANDLERS.get(command_name)
+    if handler is None:
         raise HTTPException(status_code=501, detail=f"Unsupported session command {command_name!r}")
-    session = await _load_session(db, agent=agent, user=user, session_id=session_id, access_level=access_level)
+    session = await _load_session(
+        context.db,
+        agent=context.agent,
+        user=context.user,
+        session_id=context.session_id,
+        access_level=context.access_level,
+    )
+    return await handler(context, session, command_name)
+
+
+async def _handle_resume(context: SessionCommandContext, session: ChatSession, _command: str) -> dict[str, Any]:
+    events, truth_source = await _load_events(context.db, agent=context.agent, session=session)
+    last_turn_event = _last_replayable_turn_event(events)
+    checkpoints = _user_checkpoint_events(events)
+    interrupted = bool(last_turn_event and last_turn_event.event_type in _INTERRUPTED_TAIL_EVENT_TYPES)
+    resume_checkpoint = checkpoints[-1] if interrupted and checkpoints else None
+    return _typed_result(
+        command="resume",
+        action="resume_status",
+        session_id=session.id,
+        ui_action={"type": "open_resume_picker", "session_id": str(session.id), "interrupted": interrupted},
+        truth_source=truth_source,
+        event_count=len(events),
+        checkpoint_count=len(checkpoints),
+        interrupted=interrupted,
+        repair_strategy="transcript_replay_chain_repair",
+        raw_last_event_type=events[-1].event_type if events else None,
+        last_replayable_event=_event_payload(last_turn_event) if last_turn_event else None,
+        resume_from_checkpoint_event_id=_event_anchor_id(resume_checkpoint) if resume_checkpoint else None,
+        repair_actions=[
+            "ignore_non_turn_tail_events",
+            "ignore_empty_assistant_messages",
+            "continue_if_tail_is_user_or_tool_turn",
+        ],
+        next_query="Continue from where you left off." if interrupted else None,
+    )
+
+
+async def _handle_checkpoints(context: SessionCommandContext, session: ChatSession, _command: str) -> dict[str, Any]:
+    events, truth_source = await _load_events(
+        context.db,
+        agent=context.agent,
+        session=session,
+        limit=_positive_int(context.arguments.get("limit"), default=500, field="limit"),
+    )
+    checkpoints = _checkpoint_payloads(events)
+    return _typed_result(
+        command="checkpoints",
+        action="checkpoints_listed",
+        session_id=session.id,
+        ui_action={"type": "open_checkpoint_selector", "session_id": str(session.id), "checkpoints": checkpoints},
+        truth_source=truth_source,
+        event_count=len(events),
+        checkpoint_count=len(checkpoints),
+        checkpoints=checkpoints,
+        checkpoint_strategy="user_message_turn_boundary",
+    )
+
+
+async def _handle_copy(context: SessionCommandContext, session: ChatSession, _command: str) -> dict[str, Any]:
+    arguments = context.arguments
+    events, truth_source = await _load_events(
+        context.db,
+        agent=context.agent,
+        session=session,
+        limit=_positive_int(arguments.get("limit"), default=500, field="limit"),
+    )
+    candidates = _assistant_copy_candidates(events)
+    if not candidates:
+        raise HTTPException(status_code=404, detail="No assistant message to copy")
+    n = _positive_int(arguments["n"] if "n" in arguments else arguments.get("index"), default=1, field="n")
+    if n > len(candidates):
+        noun = "message" if len(candidates) == 1 else "messages"
+        raise HTTPException(status_code=400, detail=f"Only {len(candidates)} assistant {noun} available to copy")
+    event = candidates[n - 1]
+    content = event.content or ""
+    return _typed_result(
+        command="copy",
+        action="copy_ready",
+        session_id=session.id,
+        ui_action={
+            "type": "copy_to_clipboard",
+            "session_id": str(session.id),
+            "content": content,
+            "source_event_id": _event_anchor_id(event),
+        },
+        truth_source=truth_source,
+        source_event_id=_event_anchor_id(event),
+        ledger_event_id=_event_ledger_id(event),
+        source_sequence=event.sequence,
+        message_age=n - 1,
+        available_assistant_messages=len(candidates),
+        content=content,
+        char_count=len(content),
+        line_count=content.count("\n") + 1 if content else 0,
+        code_blocks=_extract_code_blocks(content),
+        copy_strategy="client_clipboard_or_file",
+    )
+
+
+async def _handle_rename(context: SessionCommandContext, session: ChatSession, _command: str) -> dict[str, Any]:
+    title = str(context.arguments.get("title") or context.arguments.get("name") or "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="title is required")
+    session.title = title[:200]
+    await context.db.flush()
+    return _typed_result(
+        command="rename",
+        action="session_renamed",
+        session_id=session.id,
+        ui_action={"type": "toast", "level": "success", "message": "Session renamed."},
+        title=session.title,
+    )
+
+
+async def _handle_tag(context: SessionCommandContext, session: ChatSession, _command: str) -> dict[str, Any]:
+    tags = context.arguments.get("tags")
+    if isinstance(tags, str):
+        tags = [tags]
+    clean_tags = [str(tag).strip() for tag in (tags or []) if str(tag).strip()]
     metadata = dict(session.transcript_metadata_json or {})
+    metadata["tags"] = sorted(set([*(metadata.get("tags") or []), *clean_tags]))
+    session.transcript_metadata_json = metadata
+    await context.db.flush()
+    return _typed_result(
+        command="tag",
+        action="session_tagged",
+        session_id=session.id,
+        ui_action={"type": "toast", "level": "success", "message": "Session tags updated."},
+        tags=metadata["tags"],
+    )
 
-    if command_name == "resume":
-        events, truth_source = await _load_events(db, agent=agent, session=session)
-        raw_last_event_type = events[-1].event_type if events else None
-        last_turn_event = _last_replayable_turn_event(events)
-        last_turn_event_type = last_turn_event.event_type if last_turn_event else None
-        checkpoints = _user_checkpoint_events(events)
-        interrupted = last_turn_event_type in _INTERRUPTED_TAIL_EVENT_TYPES
-        resume_checkpoint = checkpoints[-1] if interrupted and checkpoints else None
+
+async def _handle_export(context: SessionCommandContext, session: ChatSession, _command: str) -> dict[str, Any]:
+    exported = await _export_session(context.db, agent=context.agent, session=session)
+    return _typed_result(
+        command="export",
+        action="export_ready",
+        session_id=session.id,
+        ui_action={"type": "open_export_panel", "session_id": str(session.id)},
+        **exported,
+    )
+
+
+async def _handle_clear(context: SessionCommandContext, session: ChatSession, _command: str) -> dict[str, Any]:
+    agent, user, db = context.agent, context.user, context.db
+    new_session = ChatSession(
+        agent_id=agent.id,
+        tenant_id=getattr(agent, "tenant_id", getattr(user, "tenant_id", None)),
+        user_id=user.id,
+        title=str(context.arguments.get("title") or f"{session.title} (clear)")[:200],
+        source_channel=session.source_channel,
+        session_kind=session.session_kind,
+        actor_type=session.actor_type,
+        runtime_source=session.runtime_source,
+        visibility_scope=session.visibility_scope,
+        listed_surface=session.listed_surface,
+        parent_session_id=session.id,
+        root_session_id=session.root_session_id or session.id,
+        transcript_metadata_json={"command": "clear", "source_session_id": str(session.id), "keeps_evidence": True},
+    )
+    db.add(new_session)
+    await db.flush()
+    control_event = await _append_control_event(
+        db=db,
+        agent=agent,
+        session=session,
+        user=user,
+        event_type="session_clear",
+        content=f"Started fresh context session {new_session.id}",
+        metadata={
+            "command": "clear",
+            "source_session_id": str(session.id),
+            "new_session_id": str(new_session.id),
+            "keeps_evidence": True,
+        },
+    )
+    return _typed_result(
+        command="clear",
+        action="session_created",
+        session_id=new_session.id,
+        ui_action={"type": "switch_session", "session_id": str(new_session.id), "reason": "clear"},
+        control_event=control_event,
+        source_session_id=str(session.id),
+        session=_session_payload(new_session),
+    )
+
+
+async def _handle_branch(context: SessionCommandContext, session: ChatSession, command: str) -> dict[str, Any]:
+    agent, user, db, arguments = context.agent, context.user, context.db, context.arguments
+    anchor = await _resolve_anchor_event_id(db, agent=agent, session=session, arguments=arguments)
+    result = await create_conversation_branch(
+        db=db,
+        agent=agent,
+        user=user,
+        source_session=session,
+        mode="branch",
+        anchor_event_id=anchor,
+        title=str(arguments.get("title") or f"{session.title} ({command})"),
+    )
+    branch = {**dict(result.branch), "command": command}
+    control_event = await _append_control_event(
+        db=db,
+        agent=agent,
+        session=session,
+        user=user,
+        event_type="session_branch",
+        content=f"Created branch session {result.session.id}",
+        metadata={
+            "command": "branch",
+            "source_session_id": str(session.id),
+            "branch_session_id": str(result.session.id),
+            "anchor_event_id": str(anchor),
+            "branch_mode": "branch",
+        },
+    )
+    return _typed_result(
+        command=command,
+        action="branch_created",
+        session_id=result.session.id,
+        ui_action={"type": "switch_session", "session_id": str(result.session.id), "reason": "branch"},
+        control_event=control_event,
+        source_session_id=str(session.id),
+        session=_session_payload(result.session),
+        branch=branch,
+    )
+
+
+async def _handle_btw(context: SessionCommandContext, session: ChatSession, _command: str) -> dict[str, Any]:
+    agent, user, db, arguments = context.agent, context.user, context.db, context.arguments
+    question = str(
+        arguments.get("question")
+        or arguments.get("content")
+        or arguments.get("message")
+        or arguments.get("prompt")
+        or ""
+    ).strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="question or content is required")
+    anchor = await _resolve_anchor_event_id(db, agent=agent, session=session, arguments=arguments)
+    result = await create_conversation_branch(
+        db=db,
+        agent=agent,
+        user=user,
+        source_session=session,
+        mode="side_question",
+        anchor_event_id=anchor,
+        content=question,
+        display_content=str(arguments.get("display_content") or f"btw: {question}"),
+        title=str(arguments.get("title") or f"{session.title} (btw)"),
+    )
+    return _typed_result(
+        command="btw",
+        action="side_question_opened",
+        session_id=session.id,
+        ui_action={
+            "type": "open_side_question",
+            "session_id": str(session.id),
+            "side_session_id": str(result.session.id),
+        },
+        source_session_id=str(session.id),
+        session=_session_payload(result.session),
+        branch={**dict(result.branch), "command": "btw"},
+        run_request=_run_request_payload(result.run_request),
+    )
+
+
+async def _handle_steer(context: SessionCommandContext, session: ChatSession, command: str) -> dict[str, Any]:
+    arguments = context.arguments
+    content = str(arguments.get("content") or arguments.get("message") or arguments.get("input") or "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="content is required")
+    result = await steer_active_web_chat_turn(
+        db=context.db,
+        agent=context.agent,
+        user=context.user,
+        session=session,
+        content=content,
+        display_content=str(arguments.get("display_content") or ""),
+        file_name=str(arguments.get("file_name") or ""),
+        expected_turn_id=str(arguments.get("expected_turn_id") or "") or None,
+        attachments=arguments.get("attachments") if isinstance(arguments.get("attachments"), list) else None,
+        parts=arguments.get("parts") if isinstance(arguments.get("parts"), list) else None,
+    )
+    return _typed_result(
+        command=command,
+        action="turn_steer_queued",
+        session_id=session.id,
+        ui_action={"type": "toast", "level": "success", "message": "Update queued for the active turn."},
+        **result,
+    )
+
+
+async def _handle_interrupt(context: SessionCommandContext, session: ChatSession, _command: str) -> dict[str, Any]:
+    active = await get_active_web_chat_run(db=context.db, agent_id=context.agent.id, session_id=session.id)
+    run_id = context.arguments.get("run_id") or (active or {}).get("run_id")
+    if not run_id:
+        raise HTTPException(status_code=404, detail="No active turn to interrupt")
+    result = await cancel_web_chat_run(
+        db=context.db,
+        agent_id=context.agent.id,
+        session_id=session.id,
+        run_id=_parse_uuid_argument(run_id, field="run_id"),
+        user_id=context.user.id,
+    )
+    return _typed_result(
+        command="interrupt",
+        action="active_turn_interrupted",
+        session_id=session.id,
+        ui_action={"type": "toast", "level": "success", "message": "Active turn interrupted."},
+        interrupt_strategy="cancel_active_web_chat_run",
+        **result,
+    )
+
+
+@dataclass(slots=True)
+class _RewindPlan:
+    mode: str
+    truth_source: str
+    events: list[Any]
+    checkpoints: list[dict[str, Any]]
+    target: Any
+    checkpoint: dict[str, Any]
+    turn_index: int
+    observed_revision: int
+    paths: list[str]
+    states: dict[str, dict[str, Any]]
+    lineage: dict[str, list[dict[str, Any]]]
+
+
+async def _handle_rewind(context: SessionCommandContext, session: ChatSession, command: str) -> dict[str, Any]:
+    arguments = context.arguments
+    events, truth_source = await _load_events(
+        context.db,
+        agent=context.agent,
+        session=session,
+        limit=_positive_int(arguments.get("limit"), default=1000, field="limit"),
+    )
+    checkpoints = _checkpoint_payloads(events)
+    revision = _session_event_revision(events)
+    if command == "rewind" and not _has_explicit_rewind_target(arguments):
+        return _rewind_selector(session, events, checkpoints, truth_source, revision)
+    mode = str(arguments.get("mode") or "conversation").strip().lower()
+    if mode not in {"conversation", "workspace", "both"}:
+        raise HTTPException(status_code=400, detail="mode must be conversation, workspace, or both")
+    target, turn_index = _select_user_checkpoint(events, arguments=arguments)
+    plan = _RewindPlan(
+        mode=mode,
+        truth_source=truth_source,
+        events=events,
+        checkpoints=checkpoints,
+        target=target,
+        checkpoint=_checkpoint_payload(target, turn_index=turn_index),
+        turn_index=turn_index,
+        observed_revision=revision,
+        paths=[],
+        states={},
+        lineage={},
+    )
+    if mode in {"workspace", "both"}:
+        blocked = _prepare_workspace_rewind(context, session, command, plan)
+        if blocked is not None:
+            return blocked
+    guard = await _prepare_rewind_mutation(
+        db=context.db,
+        agent=context.agent,
+        user=context.user,
+        session=session,
+        arguments=arguments,
+        observed_last_sequence=revision,
+    )
+    restore = await _restore_workspace_rewind(context, session, command, plan)
+    if isinstance(restore, dict) and restore.get("_rewind_blocked"):
+        return {key: value for key, value in restore.items() if key != "_rewind_blocked"}
+    if mode == "workspace":
+        return await _apply_workspace_rewind(context, session, command, plan, guard, restore)
+    return await _apply_projection_rewind(context, session, command, plan, guard, restore)
+
+
+def _rewind_selector(
+    session: ChatSession,
+    events: list[Any],
+    checkpoints: list[dict[str, Any]],
+    truth_source: str,
+    revision: int,
+) -> dict[str, Any]:
+    return _typed_result(
+        command="rewind",
+        action="open_checkpoint_selector",
+        session_id=session.id,
+        ui_action={"type": "open_checkpoint_selector", "session_id": str(session.id), "checkpoints": checkpoints},
+        truth_source=truth_source,
+        event_count=len(events),
+        checkpoint_count=len(checkpoints),
+        checkpoints=checkpoints,
+        checkpoint_strategy="user_message_turn_boundary",
+        rewind_guard={"last_sequence": revision},
+    )
+
+
+def _prepare_workspace_rewind(
+    context: SessionCommandContext,
+    session: ChatSession,
+    command: str,
+    plan: _RewindPlan,
+) -> dict[str, Any] | None:
+    metadata = getattr(session, "transcript_metadata_json", None)
+    snapshots = metadata.get("workspace_snapshots") if isinstance(metadata, dict) else None
+    if not isinstance(snapshots, dict) or plan.checkpoint["checkpoint_event_id"] not in snapshots:
         return _typed_result(
-            command="resume",
-            action="resume_status",
+            command=command,
+            action="not_supported",
             session_id=session.id,
+            ok=False,
             ui_action={
-                "type": "open_resume_picker",
-                "session_id": str(session.id),
-                "interrupted": interrupted,
+                "type": "toast",
+                "level": "warning",
+                "message": "Workspace rewind is not available because this session has no workspace snapshot.",
             },
-            **{
-                "truth_source": truth_source,
-                "event_count": len(events),
-                "checkpoint_count": len(checkpoints),
-                "interrupted": interrupted,
-                "repair_strategy": "transcript_replay_chain_repair",
-                "raw_last_event_type": raw_last_event_type,
-                "last_replayable_event": _event_payload(last_turn_event) if last_turn_event else None,
-                "resume_from_checkpoint_event_id": _event_anchor_id(resume_checkpoint) if resume_checkpoint else None,
-                "repair_actions": [
-                    "ignore_non_turn_tail_events",
-                    "ignore_empty_assistant_messages",
-                    "continue_if_tail_is_user_or_tool_turn",
-                ],
-                "next_query": "Continue from where you left off." if interrupted else None,
-            },
+            debug_payload={"missing": "workspace_snapshot", "requested_mode": plan.mode},
+            truth_source=plan.truth_source,
+            checkpoint_count=len(plan.checkpoints),
         )
-
-    if command_name == "checkpoints":
-        events, truth_source = await _load_events(
-            db,
-            agent=agent,
-            session=session,
-            limit=_positive_int(arguments.get("limit"), default=500, field="limit"),
-        )
-        checkpoints = _checkpoint_payloads(events)
+    if not context.arguments.get("confirm_workspace_restore"):
+        expected = _expected_rewind_revision(context.arguments)
+        if expected is not None and expected != plan.observed_revision:
+            raise _rewind_revision_conflict(
+                expected=expected,
+                actual=plan.observed_revision,
+                reason="stale_workspace_confirmation",
+            )
+        return _workspace_confirmation(session, command, plan)
+    plan.paths, plan.states, plan.lineage, unverifiable = _workspace_restore_scope_after_checkpoint(
+        plan.events,
+        checkpoint=plan.target,
+    )
+    if unverifiable:
         return _typed_result(
-            command="checkpoints",
-            action="checkpoints_listed",
+            command=command,
+            action="workspace_restore_conflict",
             session_id=session.id,
+            ok=False,
             ui_action={
-                "type": "open_checkpoint_selector",
-                "session_id": str(session.id),
-                "checkpoints": checkpoints,
-            },
-            **{
-                "truth_source": truth_source,
-                "event_count": len(events),
-                "checkpoint_count": len(checkpoints),
-                "checkpoints": checkpoints,
-                "checkpoint_strategy": "user_message_turn_boundary",
-            },
-        )
-
-    if command_name == "copy":
-        events, truth_source = await _load_events(
-            db,
-            agent=agent,
-            session=session,
-            limit=_positive_int(arguments.get("limit"), default=500, field="limit"),
-        )
-        candidates = _assistant_copy_candidates(events)
-        if not candidates:
-            raise HTTPException(status_code=404, detail="No assistant message to copy")
-        copy_index = arguments["n"] if "n" in arguments else arguments.get("index")
-        n = _positive_int(copy_index, default=1, field="n")
-        if n > len(candidates):
-            noun = "message" if len(candidates) == 1 else "messages"
-            raise HTTPException(status_code=400, detail=f"Only {len(candidates)} assistant {noun} available to copy")
-        event = candidates[n - 1]
-        content = event.content or ""
-        line_count = content.count("\n") + 1 if content else 0
-        return _typed_result(
-            command="copy",
-            action="copy_ready",
-            session_id=session.id,
-            ui_action={
-                "type": "copy_to_clipboard",
-                "session_id": str(session.id),
-                "content": content,
-                "source_event_id": _event_anchor_id(event),
-            },
-            **{
-                "truth_source": truth_source,
-                "source_event_id": _event_anchor_id(event),
-                "ledger_event_id": _event_ledger_id(event),
-                "source_sequence": event.sequence,
-                "message_age": n - 1,
-                "available_assistant_messages": len(candidates),
-                "content": content,
-                "char_count": len(content),
-                "line_count": line_count,
-                "code_blocks": _extract_code_blocks(content),
-                "copy_strategy": "client_clipboard_or_file",
-            },
-        )
-
-    if command_name == "rename":
-        title = str(arguments.get("title") or arguments.get("name") or "").strip()
-        if not title:
-            raise HTTPException(status_code=400, detail="title is required")
-        session.title = title[:200]
-        await db.flush()
-        return _typed_result(
-            command="rename",
-            action="session_renamed",
-            session_id=session.id,
-            ui_action={"type": "toast", "level": "success", "message": "Session renamed."},
-            title=session.title,
-        )
-
-    if command_name == "tag":
-        tags = arguments.get("tags")
-        if isinstance(tags, str):
-            tags = [tags]
-        clean_tags = [str(tag).strip() for tag in (tags or []) if str(tag).strip()]
-        metadata["tags"] = sorted(set([*(metadata.get("tags") or []), *clean_tags]))
-        session.transcript_metadata_json = metadata
-        await db.flush()
-        return _typed_result(
-            command="tag",
-            action="session_tagged",
-            session_id=session.id,
-            ui_action={"type": "toast", "level": "success", "message": "Session tags updated."},
-            tags=metadata["tags"],
-        )
-
-    if command_name == "export":
-        exported = await _export_session(db, agent=agent, session=session)
-        return _typed_result(
-            command="export",
-            action="export_ready",
-            session_id=session.id,
-            ui_action={"type": "open_export_panel", "session_id": str(session.id)},
-            **exported,
-        )
-
-    if command_name == "clear":
-        new_session = ChatSession(
-            agent_id=agent.id,
-            tenant_id=getattr(agent, "tenant_id", getattr(user, "tenant_id", None)),
-            user_id=user.id,
-            title=str(arguments.get("title") or f"{session.title} (clear)")[:200],
-            source_channel=session.source_channel,
-            session_kind=session.session_kind,
-            actor_type=session.actor_type,
-            runtime_source=session.runtime_source,
-            visibility_scope=session.visibility_scope,
-            listed_surface=session.listed_surface,
-            parent_session_id=session.id,
-            root_session_id=session.root_session_id or session.id,
-            transcript_metadata_json={
-                "command": "clear",
-                "source_session_id": str(session.id),
-                "keeps_evidence": True,
-            },
-        )
-        db.add(new_session)
-        await db.flush()
-        control_event = await _append_control_event(
-            db=db,
-            agent=agent,
-            session=session,
-            user=user,
-            event_type="session_clear",
-            content=f"Started fresh context session {new_session.id}",
-            metadata={
-                "command": "clear",
-                "source_session_id": str(session.id),
-                "new_session_id": str(new_session.id),
-                "keeps_evidence": True,
-            },
-        )
-        return _typed_result(
-            command="clear",
-            action="session_created",
-            session_id=new_session.id,
-            ui_action={"type": "switch_session", "session_id": str(new_session.id), "reason": "clear"},
-            control_event=control_event,
-            source_session_id=str(session.id),
-            session=_session_payload(new_session),
-        )
-
-    if command_name == "branch":
-        anchor_event_id = await _resolve_anchor_event_id(db, agent=agent, session=session, arguments=arguments)
-        branch_result = await create_conversation_branch(
-            db=db,
-            agent=agent,
-            user=user,
-            source_session=session,
-            mode="branch",
-            anchor_event_id=anchor_event_id,
-            title=str(arguments.get("title") or f"{session.title} ({command_name})"),
-        )
-        branch_metadata = dict(branch_result.branch)
-        branch_metadata["command"] = command_name
-        control_event = await _append_control_event(
-            db=db,
-            agent=agent,
-            session=session,
-            user=user,
-            event_type="session_branch",
-            content=f"Created branch session {branch_result.session.id}",
-            metadata={
-                "command": "branch",
-                "source_session_id": str(session.id),
-                "branch_session_id": str(branch_result.session.id),
-                "anchor_event_id": str(anchor_event_id),
-                "branch_mode": "branch",
-            },
-        )
-        return _typed_result(
-            command=command_name,
-            action="branch_created",
-            session_id=branch_result.session.id,
-            ui_action={"type": "switch_session", "session_id": str(branch_result.session.id), "reason": "branch"},
-            control_event=control_event,
-            source_session_id=str(session.id),
-            session=_session_payload(branch_result.session),
-            branch=branch_metadata,
-        )
-
-    if command_name == "btw":
-        question = str(
-            arguments.get("question")
-            or arguments.get("content")
-            or arguments.get("message")
-            or arguments.get("prompt")
-            or ""
-        ).strip()
-        if not question:
-            raise HTTPException(status_code=400, detail="question or content is required")
-        anchor_event_id = await _resolve_anchor_event_id(db, agent=agent, session=session, arguments=arguments)
-        branch_result = await create_conversation_branch(
-            db=db,
-            agent=agent,
-            user=user,
-            source_session=session,
-            mode="side_question",
-            anchor_event_id=anchor_event_id,
-            content=question,
-            display_content=str(arguments.get("display_content") or f"btw: {question}"),
-            title=str(arguments.get("title") or f"{session.title} (btw)"),
-        )
-        branch_metadata = dict(branch_result.branch)
-        branch_metadata["command"] = "btw"
-        return _typed_result(
-            command="btw",
-            action="side_question_opened",
-            session_id=session.id,
-            ui_action={
-                "type": "open_side_question",
-                "session_id": str(session.id),
-                "side_session_id": str(branch_result.session.id),
-            },
-            source_session_id=str(session.id),
-            session=_session_payload(branch_result.session),
-            branch=branch_metadata,
-            run_request=_run_request_payload(branch_result.run_request),
-        )
-
-    if command_name in {"turn_steer", "steer"}:
-        content = str(arguments.get("content") or arguments.get("message") or arguments.get("input") or "").strip()
-        if not content:
-            raise HTTPException(status_code=400, detail="content is required")
-        result = await steer_active_web_chat_turn(
-            db=db,
-            agent=agent,
-            user=user,
-            session=session,
-            content=content,
-            display_content=str(arguments.get("display_content") or ""),
-            file_name=str(arguments.get("file_name") or ""),
-            expected_turn_id=str(arguments.get("expected_turn_id") or "") or None,
-            attachments=arguments.get("attachments") if isinstance(arguments.get("attachments"), list) else None,
-            parts=arguments.get("parts") if isinstance(arguments.get("parts"), list) else None,
-        )
-        return _typed_result(
-            command=command_name,
-            action="turn_steer_queued",
-            session_id=session.id,
-            ui_action={"type": "toast", "level": "success", "message": "Update queued for the active turn."},
-            **result,
-        )
-
-    if command_name == "interrupt":
-        active_run = await get_active_web_chat_run(db=db, agent_id=agent.id, session_id=session.id)
-        run_id = arguments.get("run_id") or (active_run or {}).get("run_id")
-        if not run_id:
-            raise HTTPException(status_code=404, detail="No active turn to interrupt")
-        result = await cancel_web_chat_run(
-            db=db,
-            agent_id=agent.id,
-            session_id=session.id,
-            run_id=_parse_uuid_argument(run_id, field="run_id"),
-            user_id=user.id,
-        )
-        return _typed_result(
-            command="interrupt",
-            action="active_turn_interrupted",
-            session_id=session.id,
-            ui_action={"type": "toast", "level": "success", "message": "Active turn interrupted."},
-            interrupt_strategy="cancel_active_web_chat_run",
-            **result,
-        )
-
-    if command_name in {"rewind", "rollback"}:
-        events, truth_source = await _load_events(
-            db,
-            agent=agent,
-            session=session,
-            limit=_positive_int(arguments.get("limit"), default=1000, field="limit"),
-        )
-        checkpoints = _checkpoint_payloads(events)
-        observed_last_sequence = _session_event_revision(events)
-        if command_name == "rewind" and not _has_explicit_rewind_target(arguments):
-            return _typed_result(
-                command="rewind",
-                action="open_checkpoint_selector",
-                session_id=session.id,
-                ui_action={
-                    "type": "open_checkpoint_selector",
-                    "session_id": str(session.id),
-                    "checkpoints": checkpoints,
-                },
-                truth_source=truth_source,
-                event_count=len(events),
-                checkpoint_count=len(checkpoints),
-                checkpoints=checkpoints,
-                checkpoint_strategy="user_message_turn_boundary",
-                rewind_guard={"last_sequence": observed_last_sequence},
-            )
-
-        rewind_mode = str(arguments.get("mode") or "conversation").strip().lower()
-        if rewind_mode not in {"conversation", "workspace", "both"}:
-            raise HTTPException(status_code=400, detail="mode must be conversation, workspace, or both")
-        target_checkpoint, turn_index = _select_user_checkpoint(events, arguments=arguments)
-        checkpoint = _checkpoint_payload(target_checkpoint, turn_index=turn_index)
-        workspace_restore_payload: dict[str, Any] | None = None
-        workspace_restore_paths: list[str] = []
-        workspace_restore_states: dict[str, dict[str, Any]] = {}
-        workspace_restore_lineage: dict[str, list[dict[str, Any]]] = {}
-        if rewind_mode in {"workspace", "both"}:
-            session_metadata = getattr(session, "transcript_metadata_json", None)
-            snapshot_index = session_metadata.get("workspace_snapshots") if isinstance(session_metadata, dict) else None
-            if not isinstance(snapshot_index, dict) or checkpoint["checkpoint_event_id"] not in snapshot_index:
-                return _typed_result(
-                    command=command_name,
-                    action="not_supported",
-                    session_id=session.id,
-                    ok=False,
-                    ui_action={
-                        "type": "toast",
-                        "level": "warning",
-                        "message": "Workspace rewind is not available because this session has no workspace snapshot.",
-                    },
-                    debug_payload={"missing": "workspace_snapshot", "requested_mode": rewind_mode},
-                    truth_source=truth_source,
-                    checkpoint_count=len(checkpoints),
-                )
-            if not arguments.get("confirm_workspace_restore"):
-                expected_revision = _expected_rewind_revision(arguments)
-                if expected_revision is not None and expected_revision != observed_last_sequence:
-                    raise _rewind_revision_conflict(
-                        expected=expected_revision,
-                        actual=observed_last_sequence,
-                        reason="stale_workspace_confirmation",
-                    )
-                return _typed_result(
-                    command=command_name,
-                    action="workspace_restore_requires_confirmation",
-                    session_id=session.id,
-                    ok=False,
-                    ui_action={
-                        "type": "confirm_workspace_restore",
-                        "level": "warning",
-                        "message": (
-                            "Workspace rewind will restore only files changed by this session since the selected "
-                            "checkpoint. Any later or interleaved write to the same file stops the restore instead "
-                            "of overwriting it. Confirm before applying."
-                        ),
-                        "checkpoint_event_id": checkpoint["checkpoint_event_id"],
-                        "requested_mode": rewind_mode,
-                    },
-                    debug_payload={
-                        "requested_mode": rewind_mode,
-                        "checkpoint_event_id": checkpoint["checkpoint_event_id"],
-                    },
-                    truth_source=truth_source,
-                    checkpoint=checkpoint,
-                    rewind_guard={"last_sequence": observed_last_sequence},
-                )
-
-            (
-                workspace_restore_paths,
-                workspace_restore_states,
-                workspace_restore_lineage,
-                unverifiable_paths,
-            ) = _workspace_restore_scope_after_checkpoint(
-                events,
-                checkpoint=target_checkpoint,
-            )
-            if unverifiable_paths:
-                return _typed_result(
-                    command=command_name,
-                    action="workspace_restore_conflict",
-                    session_id=session.id,
-                    ok=False,
-                    ui_action={
-                        "type": "toast",
-                        "level": "error",
-                        "message": (
-                            "Workspace rewind cannot safely verify one or more paths. "
-                            "Keep the current files or create a new checkpoint before retrying."
-                        ),
-                    },
-                    debug_payload={
-                        "requested_mode": rewind_mode,
-                        "checkpoint_event_id": checkpoint["checkpoint_event_id"],
-                        "unverifiable_paths": unverifiable_paths,
-                    },
-                    truth_source=truth_source,
-                    checkpoint=checkpoint,
-                )
-
-        rewind_guard = await _prepare_rewind_mutation(
-            db=db,
-            agent=agent,
-            user=user,
-            session=session,
-            arguments=arguments,
-            observed_last_sequence=observed_last_sequence,
-        )
-
-        if rewind_mode in {"workspace", "both"}:
-            restore = await asyncio.to_thread(
-                restore_session_workspace_snapshot,
-                agent_id=agent.id,
-                session=session,
-                checkpoint_event_id=checkpoint["checkpoint_event_id"],
-                restore_paths=workspace_restore_paths,
-                expected_current_states=workspace_restore_states,
-                expected_lineage=workspace_restore_lineage,
-                defer_finalize=True,
-            )
-            if not restore.ok:
-                return _typed_result(
-                    command=command_name,
-                    action="workspace_restore_failed",
-                    session_id=session.id,
-                    ok=False,
-                    ui_action={
-                        "type": "toast",
-                        "level": "error",
-                        "message": restore.error or "Workspace rewind failed.",
-                    },
-                    debug_payload={"requested_mode": rewind_mode, **restore.to_payload()},
-                    truth_source=truth_source,
-                    checkpoint=checkpoint,
-                )
-            workspace_restore_payload = restore.to_payload()
-
-        if rewind_mode == "workspace":
-            try:
-                control_event = await _append_control_event(
-                    db=db,
-                    agent=agent,
-                    session=session,
-                    user=user,
-                    event_type="session_workspace_rewind",
-                    content=f"Restored workspace snapshot at checkpoint {checkpoint['checkpoint_event_id']}",
-                    metadata={
-                        "command": command_name,
-                        "mode": rewind_mode,
-                        "workspace_restore": workspace_restore_payload,
-                    },
-                )
-                await db.flush()
-            except BaseException:
-                await _rollback_deferred_workspace_restore(
-                    agent_id=agent.id,
-                    workspace_restore_payload=workspace_restore_payload,
-                )
-                raise
-            return _typed_result(
-                command=command_name,
-                action="workspace_rewind_applied",
-                session_id=session.id,
-                ui_action={
-                    "type": "install_workspace_snapshot",
-                    "session_id": str(session.id),
-                    "message": "Workspace snapshot restored for this session.",
-                },
-                control_event=control_event,
-                truth_source=truth_source,
-                checkpoint=checkpoint,
-                workspace_restore=workspace_restore_payload,
-                rewind_guard=rewind_guard,
-            )
-
-        projection = {
-            "projection_reason": "rewind",
-            "checkpoint_event_id": checkpoint["checkpoint_event_id"],
-            "ledger_event_id": checkpoint.get("ledger_event_id"),
-            "draft_content": checkpoint.get("content") or "",
-            "turn_index": turn_index,
-            "applied_at": datetime.now(timezone.utc).isoformat(),
-            "truth_source": truth_source,
-            "mode": rewind_mode,
-            "rewind_guard": rewind_guard,
-        }
-        metadata = dict(session.transcript_metadata_json or {})
-        metadata["active_projection"] = projection
-        session.transcript_metadata_json = metadata
-        try:
-            control_event = await _append_control_event(
-                db=db,
-                agent=agent,
-                session=session,
-                user=user,
-                event_type="session_rewind" if workspace_restore_payload is None else "session_rewind_with_workspace",
-                content=f"Rewound active projection to checkpoint {checkpoint['checkpoint_event_id']}",
-                metadata={"command": command_name, **projection, "workspace_restore": workspace_restore_payload},
-            )
-            await db.flush()
-        except BaseException:
-            await _rollback_deferred_workspace_restore(
-                agent_id=agent.id,
-                workspace_restore_payload=workspace_restore_payload,
-            )
-            raise
-        return _typed_result(
-            command=command_name,
-            action="rewind_applied",
-            session_id=session.id,
-            ui_action={
-                "type": "install_active_projection"
-                if workspace_restore_payload is None
-                else "install_active_projection_with_workspace",
-                "session_id": str(session.id),
-                "projection_reason": "rewind",
-                "checkpoint_event_id": checkpoint["checkpoint_event_id"],
-                "draft_content": checkpoint.get("content") or "",
-                **(
-                    {"message": "Session projection and workspace snapshot restored."}
-                    if workspace_restore_payload is not None
-                    else {}
+                "type": "toast",
+                "level": "error",
+                "message": (
+                    "Workspace rewind cannot safely verify one or more paths. "
+                    "Keep the current files or create a new checkpoint before retrying."
                 ),
             },
-            control_event=control_event,
-            truth_source=truth_source,
-            checkpoint=checkpoint,
-            workspace_restore=workspace_restore_payload,
-            rewind_guard=rewind_guard,
-            rollback={
-                "strategy": "active_projection_rewind",
-                "num_turns": _positive_int(arguments.get("num_turns"), default=1, field="num_turns")
-                if command_name == "rollback"
-                else 1,
+            debug_payload={
+                "requested_mode": plan.mode,
+                "checkpoint_event_id": plan.checkpoint["checkpoint_event_id"],
+                "unverifiable_paths": unverifiable,
             },
+            truth_source=plan.truth_source,
+            checkpoint=plan.checkpoint,
         )
+    return None
 
-    if command_name == "compact":
-        reason = str(arguments.get("reason") or "manual compact command").strip()
-        events, truth_source = await _load_events(
-            db,
-            agent=agent,
+
+def _workspace_confirmation(session: ChatSession, command: str, plan: _RewindPlan) -> dict[str, Any]:
+    return _typed_result(
+        command=command,
+        action="workspace_restore_requires_confirmation",
+        session_id=session.id,
+        ok=False,
+        ui_action={
+            "type": "confirm_workspace_restore",
+            "level": "warning",
+            "message": (
+                "Workspace rewind will restore only files changed by this session since the selected checkpoint. "
+                "Any later or interleaved write to the same file stops the restore instead of overwriting it. "
+                "Confirm before applying."
+            ),
+            "checkpoint_event_id": plan.checkpoint["checkpoint_event_id"],
+            "requested_mode": plan.mode,
+        },
+        debug_payload={
+            "requested_mode": plan.mode,
+            "checkpoint_event_id": plan.checkpoint["checkpoint_event_id"],
+        },
+        truth_source=plan.truth_source,
+        checkpoint=plan.checkpoint,
+        rewind_guard={"last_sequence": plan.observed_revision},
+    )
+
+
+async def _restore_workspace_rewind(
+    context: SessionCommandContext,
+    session: ChatSession,
+    command: str,
+    plan: _RewindPlan,
+) -> dict[str, Any] | None:
+    if plan.mode not in {"workspace", "both"}:
+        return None
+    restore = await asyncio.to_thread(
+        restore_session_workspace_snapshot,
+        agent_id=context.agent.id,
+        session=session,
+        checkpoint_event_id=plan.checkpoint["checkpoint_event_id"],
+        restore_paths=plan.paths,
+        expected_current_states=plan.states,
+        expected_lineage=plan.lineage,
+        defer_finalize=True,
+    )
+    if restore.ok:
+        return restore.to_payload()
+    return {
+        "_rewind_blocked": True,
+        **_typed_result(
+            command=command,
+            action="workspace_restore_failed",
+            session_id=session.id,
+            ok=False,
+            ui_action={"type": "toast", "level": "error", "message": restore.error or "Workspace rewind failed."},
+            debug_payload={"requested_mode": plan.mode, **restore.to_payload()},
+            truth_source=plan.truth_source,
+            checkpoint=plan.checkpoint,
+        ),
+    }
+
+
+async def _apply_workspace_rewind(
+    context: SessionCommandContext,
+    session: ChatSession,
+    command: str,
+    plan: _RewindPlan,
+    guard: dict[str, Any],
+    restore: dict[str, Any] | None,
+) -> dict[str, Any]:
+    try:
+        event = await _append_control_event(
+            db=context.db,
+            agent=context.agent,
             session=session,
-            limit=_positive_int(arguments.get("limit"), default=1000, field="limit"),
+            user=context.user,
+            event_type="session_workspace_rewind",
+            content=f"Restored workspace snapshot at checkpoint {plan.checkpoint['checkpoint_event_id']}",
+            metadata={"command": command, "mode": plan.mode, "workspace_restore": restore},
         )
-        messages = _events_to_summary_messages(events)
-        if not messages:
-            return _typed_result(
-                command="compact",
-                action="not_supported",
-                session_id=session.id,
-                ok=False,
-                ui_action={
-                    "type": "toast",
-                    "level": "warning",
-                    "message": "No session messages are available to compact.",
-                },
-                debug_payload={"missing": "session_messages", "truth_source": truth_source},
-            )
-        await emit_hook(
-            HookEvent.PRE_COMPACTION,
-            agent_id=agent.id,
-            session_id=str(session.id),
-            source="command",
-            messages=messages,
-            metadata={"tenant_id": str(getattr(agent, "tenant_id", "") or ""), "reason": reason},
-        )
-        tenant_id = getattr(agent, "tenant_id", getattr(session, "tenant_id", None))
-        summary = await _generate_session_summary(
-            messages,
-            tenant_id,
-            agent_id=agent.id,
-            user_id=getattr(user, "id", None),
-        )
-        if not summary:
-            return _typed_result(
-                command="compact",
-                action="not_supported",
-                session_id=session.id,
-                ok=False,
-                ui_action={
-                    "type": "toast",
-                    "level": "warning",
-                    "message": "Compaction summary model is unavailable; context was not changed.",
-                },
-                debug_payload={"missing": "summary_model_or_summary", "truth_source": truth_source},
-            )
-        keep_recent = _positive_int(arguments.get("keep_recent"), default=10, field="keep_recent")
-        recent_messages = messages[-keep_recent:] if len(messages) > keep_recent else []
-        replacement_messages = [_wrap_compressed_summary(summary), *recent_messages]
-        projection = {
-            "projection_reason": "compact",
-            "applied_at": datetime.now(timezone.utc).isoformat(),
-            "truth_source": truth_source,
-            "reason": reason,
-            "summary": summary,
-            "original_message_count": len(messages),
-            "kept_message_count": len(replacement_messages),
-            "replacement_messages": replacement_messages,
-        }
-        metadata = dict(session.transcript_metadata_json or {})
-        metadata["active_projection"] = projection
-        session.transcript_metadata_json = metadata
-        control_event = await _append_control_event(
-            db=db,
-            agent=agent,
+        await context.db.flush()
+    except BaseException:
+        await _rollback_deferred_workspace_restore(agent_id=context.agent.id, workspace_restore_payload=restore)
+        raise
+    return _typed_result(
+        command=command,
+        action="workspace_rewind_applied",
+        session_id=session.id,
+        ui_action={
+            "type": "install_workspace_snapshot",
+            "session_id": str(session.id),
+            "message": "Workspace snapshot restored for this session.",
+        },
+        control_event=event,
+        truth_source=plan.truth_source,
+        checkpoint=plan.checkpoint,
+        workspace_restore=restore,
+        rewind_guard=guard,
+    )
+
+
+async def _apply_projection_rewind(
+    context: SessionCommandContext,
+    session: ChatSession,
+    command: str,
+    plan: _RewindPlan,
+    guard: dict[str, Any],
+    restore: dict[str, Any] | None,
+) -> dict[str, Any]:
+    projection = {
+        "projection_reason": "rewind",
+        "checkpoint_event_id": plan.checkpoint["checkpoint_event_id"],
+        "ledger_event_id": plan.checkpoint.get("ledger_event_id"),
+        "draft_content": plan.checkpoint.get("content") or "",
+        "turn_index": plan.turn_index,
+        "applied_at": datetime.now(timezone.utc).isoformat(),
+        "truth_source": plan.truth_source,
+        "mode": plan.mode,
+        "rewind_guard": guard,
+    }
+    metadata = dict(session.transcript_metadata_json or {})
+    metadata["active_projection"] = projection
+    session.transcript_metadata_json = metadata
+    try:
+        event = await _append_control_event(
+            db=context.db,
+            agent=context.agent,
             session=session,
-            user=user,
-            event_type="session_compact",
-            content=summary,
-            metadata={"command": "compact", "manual": True, **projection},
+            user=context.user,
+            event_type="session_rewind" if restore is None else "session_rewind_with_workspace",
+            content=f"Rewound active projection to checkpoint {plan.checkpoint['checkpoint_event_id']}",
+            metadata={"command": command, **projection, "workspace_restore": restore},
         )
-        await db.flush()
-        await emit_hook(
-            HookEvent.POST_COMPACTION,
-            agent_id=agent.id,
-            session_id=str(session.id),
-            source="command",
-            metadata={
-                "tenant_id": str(getattr(agent, "tenant_id", "") or ""),
-                "reason": reason,
-                "summary": summary,
-                "control_event_id": control_event.get("event_id"),
-            },
-        )
+        await context.db.flush()
+    except BaseException:
+        await _rollback_deferred_workspace_restore(agent_id=context.agent.id, workspace_restore_payload=restore)
+        raise
+    return _typed_result(
+        command=command,
+        action="rewind_applied",
+        session_id=session.id,
+        ui_action={
+            "type": "install_active_projection" if restore is None else "install_active_projection_with_workspace",
+            "session_id": str(session.id),
+            "projection_reason": "rewind",
+            "checkpoint_event_id": plan.checkpoint["checkpoint_event_id"],
+            "draft_content": plan.checkpoint.get("content") or "",
+            **({"message": "Session projection and workspace snapshot restored."} if restore is not None else {}),
+        },
+        control_event=event,
+        truth_source=plan.truth_source,
+        checkpoint=plan.checkpoint,
+        workspace_restore=restore,
+        rewind_guard=guard,
+        rollback={
+            "strategy": "active_projection_rewind",
+            "num_turns": _positive_int(context.arguments.get("num_turns"), default=1, field="num_turns")
+            if command == "rollback"
+            else 1,
+        },
+    )
+
+
+async def _handle_compact(context: SessionCommandContext, session: ChatSession, _command: str) -> dict[str, Any]:
+    agent, user, arguments = context.agent, context.user, context.arguments
+    reason = str(arguments.get("reason") or "manual compact command").strip()
+    events, truth_source = await _load_events(
+        context.db,
+        agent=agent,
+        session=session,
+        limit=_positive_int(arguments.get("limit"), default=1000, field="limit"),
+    )
+    messages = _events_to_summary_messages(events)
+    if not messages:
         return _typed_result(
             command="compact",
-            action="compacted_context_installed",
+            action="not_supported",
             session_id=session.id,
-            ui_action={
-                "type": "install_compacted_context",
-                "session_id": str(session.id),
-                "message": "Compacted current context.",
-            },
-            control_event=control_event,
-            debug_payload={"replacement_messages": replacement_messages, "truth_source": truth_source},
-            transcript_event_id=control_event.get("event_id"),
-            hook_events=[HookEvent.PRE_COMPACTION.value, HookEvent.POST_COMPACTION.value],
-            summary=summary,
-            original_message_count=len(messages),
-            kept_message_count=len(replacement_messages),
+            ok=False,
+            ui_action={"type": "toast", "level": "warning", "message": "No session messages are available to compact."},
+            debug_payload={"missing": "session_messages", "truth_source": truth_source},
         )
+    await emit_hook(
+        HookEvent.PRE_COMPACTION,
+        agent_id=agent.id,
+        session_id=str(session.id),
+        source="command",
+        messages=messages,
+        metadata={"tenant_id": str(getattr(agent, "tenant_id", "") or ""), "reason": reason},
+    )
+    summary = await _generate_session_summary(
+        messages,
+        getattr(agent, "tenant_id", getattr(session, "tenant_id", None)),
+        agent_id=agent.id,
+        user_id=getattr(user, "id", None),
+    )
+    if not summary:
+        return _typed_result(
+            command="compact",
+            action="not_supported",
+            session_id=session.id,
+            ok=False,
+            ui_action={
+                "type": "toast",
+                "level": "warning",
+                "message": "Compaction summary model is unavailable; context was not changed.",
+            },
+            debug_payload={"missing": "summary_model_or_summary", "truth_source": truth_source},
+        )
+    keep_recent = _positive_int(arguments.get("keep_recent"), default=10, field="keep_recent")
+    recent = messages[-keep_recent:] if len(messages) > keep_recent else []
+    replacement = [_wrap_compressed_summary(summary), *recent]
+    projection = {
+        "projection_reason": "compact",
+        "applied_at": datetime.now(timezone.utc).isoformat(),
+        "truth_source": truth_source,
+        "reason": reason,
+        "summary": summary,
+        "original_message_count": len(messages),
+        "kept_message_count": len(replacement),
+        "replacement_messages": replacement,
+    }
+    metadata = dict(session.transcript_metadata_json or {})
+    metadata["active_projection"] = projection
+    session.transcript_metadata_json = metadata
+    event = await _append_control_event(
+        db=context.db,
+        agent=agent,
+        session=session,
+        user=user,
+        event_type="session_compact",
+        content=summary,
+        metadata={"command": "compact", "manual": True, **projection},
+    )
+    await context.db.flush()
+    await emit_hook(
+        HookEvent.POST_COMPACTION,
+        agent_id=agent.id,
+        session_id=str(session.id),
+        source="command",
+        metadata={
+            "tenant_id": str(getattr(agent, "tenant_id", "") or ""),
+            "reason": reason,
+            "summary": summary,
+            "control_event_id": event.get("event_id"),
+        },
+    )
+    return _typed_result(
+        command="compact",
+        action="compacted_context_installed",
+        session_id=session.id,
+        ui_action={
+            "type": "install_compacted_context",
+            "session_id": str(session.id),
+            "message": "Compacted current context.",
+        },
+        control_event=event,
+        debug_payload={"replacement_messages": replacement, "truth_source": truth_source},
+        transcript_event_id=event.get("event_id"),
+        hook_events=[HookEvent.PRE_COMPACTION.value, HookEvent.POST_COMPACTION.value],
+        summary=summary,
+        original_message_count=len(messages),
+        kept_message_count=len(replacement),
+    )
 
-    raise HTTPException(status_code=501, detail=f"Unsupported session command {command_name!r}")
+
+_SESSION_COMMAND_HANDLERS = {
+    "resume": _handle_resume,
+    "checkpoints": _handle_checkpoints,
+    "copy": _handle_copy,
+    "rename": _handle_rename,
+    "tag": _handle_tag,
+    "export": _handle_export,
+    "clear": _handle_clear,
+    "branch": _handle_branch,
+    "btw": _handle_btw,
+    "turn_steer": _handle_steer,
+    "steer": _handle_steer,
+    "interrupt": _handle_interrupt,
+    "rewind": _handle_rewind,
+    "rollback": _handle_rewind,
+    "compact": _handle_compact,
+}

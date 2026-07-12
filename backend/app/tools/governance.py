@@ -911,43 +911,62 @@ async def run_tool_governance(
         return f"🔒 Tool '{context.tool_name}' blocked — governance check timed out. Please retry."
 
 
+@dataclass(slots=True)
+class _GovernanceState:
+    tenant_uuid: uuid.UUID | None = None
+    escalated_capability: str | None = None
+    approval_reason: str | None = None
+    dangerous_reason: str | None = None
+    terminal_allow: bool = False
+
+
 async def _run_governance_inner(
     context: ToolGovernanceContext,
     deps: GovernanceDependencies,
     *,
     event_callback: EventCallback | None = None,
 ) -> str | None:
-    """Inner governance logic, wrapped by timeout in run_tool_governance."""
-    try:
-        zone = await _maybe_await(deps.resolve_security_zone(context.agent_id))
-        zone = zone or "restricted"
-        if zone == "public" and context.tool_name not in SAFE_TOOLS:
-            message = _teaching_block_message(
-                context.tool_name,
-                reason="this agent runs in the 'public' security zone, which only allows safe read-only tools",
-                security_zone="public",
-                next_steps=[
-                    "use read-only tools (read_file, list_files, search) to gather what you need",
-                    "tell the user this action needs an operator to move the agent to a restricted zone",
-                    "complete the task another way that avoids this tool",
-                ],
-            )
-            await _emit_event(
-                event_callback,
-                {
-                    "type": "permission",
-                    "tool_name": context.tool_name,
-                    "status": "blocked",
-                    "message": message,
-                    "security_zone": zone,
-                },
-            )
+    """Evaluate ordered shrink-only gates with explicit stage state."""
+    state = _GovernanceState()
+    stages = (
+        _check_security_zone,
+        _check_tenant_presence,
+        _check_guard_policy,
+        _check_mcp_policy,
+        _check_capability_policy,
+        _check_dangerous_policy,
+        _check_final_hooks,
+    )
+    for stage in stages:
+        message = await stage(context, deps, state, event_callback)
+        if message is not None:
             return message
-        # Restricted zones are no longer an enterprise approval trigger in
-        # CCPlus. Tool calls still go through session-local permission mode and
-        # explicit hard-deny policies below.
+        if state.terminal_allow:
+            return None
+    return None
+
+
+async def _check_security_zone(
+    context: ToolGovernanceContext,
+    deps: GovernanceDependencies,
+    _state: _GovernanceState,
+    event_callback: EventCallback | None,
+) -> str | None:
+    try:
+        zone = await _maybe_await(deps.resolve_security_zone(context.agent_id)) or "restricted"
+        if zone != "public" or context.tool_name in SAFE_TOOLS:
+            return None
+        message = _teaching_block_message(
+            context.tool_name,
+            reason="this agent runs in the 'public' security zone, which only allows safe read-only tools",
+            security_zone="public",
+            next_steps=[
+                "use read-only tools (read_file, list_files, search) to gather what you need",
+                "tell the user this action needs an operator to move the agent to a restricted zone",
+                "complete the task another way that avoids this tool",
+            ],
+        )
     except Exception as exc:
-        # Fail-closed: block ALL tools when security zone check fails, not just sensitive ones
         logger.warning(
             "Security zone check failed for agent %s — blocking tool %s (fail-closed): %s",
             context.agent_id,
@@ -957,6 +976,365 @@ async def _run_governance_inner(
         message = (
             f"🔒 Tool '{context.tool_name}' blocked — security zone check unavailable. Please retry or contact admin."
         )
+        zone = None
+    payload = {"type": "permission", "tool_name": context.tool_name, "status": "blocked", "message": message}
+    if zone is not None:
+        payload["security_zone"] = zone
+    await _emit_event(event_callback, payload)
+    return message
+
+
+async def _check_tenant_presence(
+    context: ToolGovernanceContext,
+    deps: GovernanceDependencies,
+    _state: _GovernanceState,
+    event_callback: EventCallback | None,
+) -> str | None:
+    if context.tenant_id:
+        return None
+    if context.tool_name in SAFE_TOOLS:
+        logger.info("[Governance] No tenant_id for safe tool %s — allowed (read-only)", context.tool_name)
+        return None
+    logger.warning("[Governance] No tenant_id for non-safe tool %s — fail-closed", context.tool_name)
+    message = (
+        f"🔒 Tool '{context.tool_name}' blocked — no tenant context available. "
+        "Agent resolution may have failed; please retry."
+    )
+    await _maybe_await(
+        deps.write_audit_event(
+            event_type="capability.tenant_missing",
+            severity="warn",
+            actor_type="agent",
+            actor_id=context.agent_id,
+            tenant_id=None,
+            action="tenant_missing_blocked",
+            resource_type="tool",
+            resource_id=None,
+            details={"tool": context.tool_name},
+        )
+    )
+    await _emit_event(
+        event_callback,
+        {"type": "permission", "tool_name": context.tool_name, "status": "blocked", "message": message},
+    )
+    return message
+
+
+async def _check_guard_policy(
+    context: ToolGovernanceContext,
+    deps: GovernanceDependencies,
+    _state: _GovernanceState,
+    event_callback: EventCallback | None,
+) -> str | None:
+    loader = getattr(deps, "load_guard_policy", None)
+    if loader is None or not context.tenant_id:
+        return None
+    from dataclasses import asdict
+
+    from app.tools.guard_policy import evaluate_guard_policy
+    from app.tools.registry import tool_execution_policy
+
+    try:
+        tenant_uuid = uuid.UUID(context.tenant_id)
+        snapshot = await _maybe_await(loader(tenant_uuid, context.agent_id, context.tool_name))
+        context.guard_policy_snapshot = dict(snapshot or {})
+        verdict = evaluate_guard_policy(
+            tool_name=context.tool_name,
+            arguments=context.arguments,
+            external_visible=tool_execution_policy(context.tool_name).external_visible,
+            snapshot=context.guard_policy_snapshot,
+        )
+        context.guard_policy_verdict = asdict(verdict)
+    except Exception as exc:
+        logger.warning("[Governance] GuardPolicy resolution failed — blocking: %s", exc)
+        return f"🔒 Tool '{context.tool_name}' blocked — GuardPolicy check unavailable. Please retry."
+    if verdict.decision == "deny":
+        return _teaching_block_message(
+            context.tool_name,
+            reason=verdict.reason or "tenant GuardPolicy denied this tool",
+            next_steps=[
+                "continue with a tool allowed by the tenant GuardPolicy",
+                "ask a workspace admin to review the GuardPolicy rule",
+            ],
+        )
+    if verdict.decision != "require_approval":
+        return None
+    return await _emit_enterprise_approval_result(
+        context,
+        deps,
+        capability=f"guard_policy:{context.tool_name}",
+        reason=verdict.reason,
+        event_callback=event_callback,
+        approval_origin_type="guard_policy",
+    )
+
+
+async def _check_mcp_policy(
+    context: ToolGovernanceContext,
+    deps: GovernanceDependencies,
+    _state: _GovernanceState,
+    event_callback: EventCallback | None,
+) -> str | None:
+    if deps.resolve_mcp_tool_mode is None:
+        return None
+    try:
+        mode = await _maybe_await(deps.resolve_mcp_tool_mode(context.agent_id, context.tool_name, context.arguments))
+    except Exception as exc:
+        logger.warning(
+            "[Governance] MCP mode resolve failed for tool %s — blocking (fail-closed): %s",
+            context.tool_name,
+            exc,
+        )
+        message = f"🔒 Tool '{context.tool_name}' blocked — MCP policy check unavailable. Please retry."
+        await _emit_event(
+            event_callback,
+            {"type": "permission", "tool_name": context.tool_name, "status": "blocked", "message": message},
+        )
+        return message
+    if mode == "deny":
+        message = _teaching_block_message(
+            context.tool_name,
+            reason="this MCP tool is denied by the agent's MCP server policy",
+            next_steps=[
+                "use a different tool that is allowed for this agent",
+                "tell the user this MCP tool needs an operator to change its policy in advanced MCP controls",
+            ],
+        )
+        await _emit_event(
+            event_callback,
+            {"type": "permission", "tool_name": context.tool_name, "status": "blocked", "message": message},
+        )
+        return message
+    if mode != "approval":
+        return None
+    return await _emit_session_no_policy_result(
+        context,
+        capability="mcp_tool_call",
+        reason="MCP server policy requires approval for this tool",
+        action=_session_explicit_policy_action(context),
+        event_callback=event_callback,
+    )
+
+
+async def _check_capability_policy(
+    context: ToolGovernanceContext,
+    deps: GovernanceDependencies,
+    state: _GovernanceState,
+    event_callback: EventCallback | None,
+) -> str | None:
+    if not context.tenant_id:
+        return None
+    try:
+        state.tenant_uuid = uuid.UUID(context.tenant_id)
+        result = await _maybe_await(deps.check_capability(state.tenant_uuid, context.agent_id, context.tool_name))
+        if result is not None:
+            context.capability_snapshot = _capability_snapshot(result)
+        if result is not None and not hasattr(result, "denied"):
+            logger.warning("[Governance] Unexpected capability result type: %s — blocking (fail-closed)", type(result))
+            return f"🔒 Tool '{context.tool_name}' blocked — capability check returned unexpected format."
+        if getattr(result, "denied", False):
+            return await _capability_denied(context, deps, state.tenant_uuid, result, event_callback)
+        escalation = await _resolve_capability_escalation(context, deps, result, event_callback)
+        if escalation is not None:
+            return escalation
+        return await _check_delegation_token(context, deps, state.tenant_uuid, result, event_callback)
+    except Exception as exc:
+        logger.warning("Capability gate check failed for tool %s (fail-closed): %s", context.tool_name, exc)
+        message = f"🔒 Tool '{context.tool_name}' blocked — capability check unavailable. Please retry."
+        await _emit_event(
+            event_callback,
+            {"type": "permission", "tool_name": context.tool_name, "status": "blocked", "message": message},
+        )
+        return message
+
+
+def _capability_snapshot(result: Any) -> dict[str, Any]:
+    return {
+        "allowed": bool(getattr(result, "allowed", False)),
+        "denied": bool(getattr(result, "denied", False)),
+        "escalate_to_l3": bool(getattr(result, "escalate_to_l3", False)),
+        "name": str(getattr(result, "capability", "") or ""),
+        "reason": str(getattr(result, "reason", "") or ""),
+        "policy_found": bool(getattr(result, "policy_found", False)),
+    }
+
+
+async def _capability_denied(
+    context: ToolGovernanceContext,
+    deps: GovernanceDependencies,
+    tenant_uuid: uuid.UUID,
+    result: Any,
+    event_callback: EventCallback | None,
+) -> str:
+    message = _teaching_block_message(
+        context.tool_name,
+        reason=f"capability policy denied it ({result.reason})",
+        capability=getattr(result, "capability", None),
+        next_steps=[
+            "continue with tools you already have",
+            "ask the user to grant this capability via admin capability settings",
+            "choose an approach that does not need this tool",
+        ],
+    )
+    await _write_capability_audit(
+        context,
+        deps,
+        tenant_uuid,
+        action="capability_denied",
+        capability=getattr(result, "capability", None),
+    )
+    await _emit_event(
+        event_callback,
+        {
+            "type": "permission",
+            "tool_name": context.tool_name,
+            "status": "capability_denied",
+            "message": message,
+            "capability": getattr(result, "capability", None),
+        },
+    )
+    return message
+
+
+async def _resolve_capability_escalation(
+    context: ToolGovernanceContext,
+    deps: GovernanceDependencies,
+    result: Any,
+    event_callback: EventCallback | None,
+) -> str | None:
+    if not getattr(result, "escalate_to_l3", False):
+        return None
+    if getattr(result, "policy_found", True) is False:
+        return await _emit_session_no_policy_result(
+            context,
+            capability=getattr(result, "capability", None),
+            reason=getattr(result, "reason", None),
+            action=_session_no_policy_action(context),
+            event_callback=event_callback,
+        )
+    return await _emit_enterprise_approval_result(
+        context,
+        deps,
+        capability=getattr(result, "capability", None),
+        reason=getattr(result, "reason", None) or "explicit enterprise approval policy",
+        event_callback=event_callback,
+    )
+
+
+async def _check_delegation_token(
+    context: ToolGovernanceContext,
+    deps: GovernanceDependencies,
+    tenant_uuid: uuid.UUID,
+    result: Any,
+    event_callback: EventCallback | None,
+) -> str | None:
+    if context.delegation_token is None:
+        return None
+    from app.agents.delegation_token import validate_delegation_token
+
+    capability = getattr(result, "capability", "") or ""
+    check = validate_delegation_token(
+        context.delegation_token,
+        capability=capability or None,
+        child_agent_id=context.agent_id,
+    )
+    if check.valid:
+        return None
+    message = _teaching_block_message(
+        context.tool_name,
+        reason=f"your delegation token does not cover it ({check.reason})",
+        capability=capability or None,
+        next_steps=[
+            "finish the delegated task with the capabilities you were granted",
+            "report back to the delegating agent that this step needs a broader grant",
+        ],
+    )
+    await _maybe_await(
+        deps.write_audit_event(
+            event_type="delegation.token_denied",
+            severity="warn",
+            actor_type="agent",
+            actor_id=context.agent_id,
+            tenant_id=tenant_uuid,
+            action="delegation_token_denied",
+            resource_type="tool",
+            resource_id=None,
+            details={"tool": context.tool_name, "capability": capability, "reason": check.reason},
+        )
+    )
+    await _emit_event(
+        event_callback,
+        {
+            "type": "permission",
+            "tool_name": context.tool_name,
+            "status": "delegation_token_denied",
+            "message": message,
+            "reason": check.reason,
+        },
+    )
+    return message
+
+
+async def _check_dangerous_policy(
+    context: ToolGovernanceContext,
+    deps: GovernanceDependencies,
+    state: _GovernanceState,
+    event_callback: EventCallback | None,
+) -> str | None:
+    dangerous = _detect_dangerous_command(context.tool_name, context.arguments)
+    if not dangerous:
+        return None
+    capability, state.dangerous_reason = dangerous
+    syntax_or_secret = await _check_path_and_secret_risks(
+        context, deps, state.tenant_uuid, capability, state.dangerous_reason, event_callback
+    )
+    if syntax_or_secret is not None:
+        return syntax_or_secret
+    if capability == _DESTRUCTIVE_DELETE_CAPABILITY:
+        message = await _check_destructive_delete(
+            context, deps, state.tenant_uuid, state.dangerous_reason, event_callback
+        )
+        if message is None:
+            state.terminal_allow = True
+        return message
+    allowed, message = await _check_general_dangerous_capability(
+        context,
+        deps,
+        state.tenant_uuid,
+        capability,
+        state.dangerous_reason,
+        event_callback,
+    )
+    if message is not None:
+        return message
+    if not allowed and state.escalated_capability is None:
+        state.escalated_capability = capability
+        state.approval_reason = state.dangerous_reason
+    return None
+
+
+async def _check_path_and_secret_risks(
+    context: ToolGovernanceContext,
+    deps: GovernanceDependencies,
+    tenant_uuid: uuid.UUID | None,
+    capability: str,
+    reason: str | None,
+    event_callback: EventCallback | None,
+) -> str | None:
+    if capability == _RUN_COMMAND_PATH_SYNTAX_CAPABILITY:
+        message = _teaching_block_message(
+            context.tool_name,
+            reason=f"this command uses high-risk path syntax ({reason})",
+            capability=capability,
+            next_steps=[
+                "rewrite the command with literal workspace-relative paths",
+                "avoid shell expansion, environment-variable paths, UNC paths, ~user, and glob syntax",
+                "ask the user to provide the exact path when needed",
+            ],
+        )
+        await _write_capability_audit(
+            context, deps, tenant_uuid, action="command_path_syntax_blocked", capability=capability, reason=reason
+        )
         await _emit_event(
             event_callback,
             {
@@ -964,197 +1342,78 @@ async def _run_governance_inner(
                 "tool_name": context.tool_name,
                 "status": "blocked",
                 "message": message,
+                "capability": capability,
             },
         )
         return message
+    if capability != "workspace.command.secret_exfiltration":
+        return None
+    from app.services.managed_capability_guard import (
+        detect_managed_credential_command,
+        managed_credential_block_message,
+    )
 
-    if not context.tenant_id:
-        # P0-1a fail-closed: tenant_id=None means agent/DB resolution failed
-        # (see invoker._resolve_runtime_config fallbacks). Capability gate cannot
-        # determine policy without a tenant, so block non-safe tools rather than
-        # silently allow them. Read-only SAFE_TOOLS remain permitted to support
-        # bootstrap paths (e.g. discovery before registry init).
-        if context.tool_name in SAFE_TOOLS:
-            logger.info(
-                "[Governance] No tenant_id for safe tool %s — allowed (read-only)",
-                context.tool_name,
-            )
-        else:
-            logger.warning(
-                "[Governance] No tenant_id for non-safe tool %s — fail-closed",
-                context.tool_name,
-            )
-            message = (
-                f"🔒 Tool '{context.tool_name}' blocked — no tenant context available. "
-                "Agent resolution may have failed; please retry."
-            )
-            await _maybe_await(
-                deps.write_audit_event(
-                    event_type="capability.tenant_missing",
-                    severity="warn",
-                    actor_type="agent",
-                    actor_id=context.agent_id,
-                    tenant_id=None,
-                    action="tenant_missing_blocked",
-                    resource_type="tool",
-                    resource_id=None,
-                    details={"tool": context.tool_name},
-                )
-            )
-            await _emit_event(
-                event_callback,
-                {
-                    "type": "permission",
-                    "tool_name": context.tool_name,
-                    "status": "blocked",
-                    "message": message,
-                },
-            )
-            return message
+    finding = detect_managed_credential_command(str(context.arguments.get("command", "")))
+    if not finding:
+        return None
+    message = managed_credential_block_message(finding)
+    await _write_capability_audit(
+        context,
+        deps,
+        tenant_uuid,
+        action="managed_credential_env_blocked",
+        capability=capability,
+        credential_family=finding.family,
+    )
+    await _emit_event(
+        event_callback,
+        {
+            "type": "permission",
+            "tool_name": context.tool_name,
+            "status": "blocked",
+            "message": message,
+            "capability": capability,
+            "credential_family": finding.family,
+        },
+    )
+    return message
 
-    # GuardPolicy is a shrink-only enterprise input to the same final tool
-    # decision.  It cannot grant a capability or bypass resource/session rules.
-    guard_policy_loader = getattr(deps, "load_guard_policy", None)
-    if guard_policy_loader is not None and context.tenant_id:
-        from dataclasses import asdict
 
-        from app.tools.guard_policy import evaluate_guard_policy
-        from app.tools.registry import tool_execution_policy
-
+async def _check_destructive_delete(
+    context: ToolGovernanceContext,
+    deps: GovernanceDependencies,
+    tenant_uuid: uuid.UUID | None,
+    reason: str | None,
+    event_callback: EventCallback | None,
+) -> str | None:
+    capability = _DESTRUCTIVE_DELETE_CAPABILITY
+    if tenant_uuid is not None:
         try:
-            tenant_uuid = uuid.UUID(context.tenant_id)
-            guard_snapshot = await _maybe_await(guard_policy_loader(tenant_uuid, context.agent_id, context.tool_name))
-            context.guard_policy_snapshot = dict(guard_snapshot or {})
-            guard_verdict = evaluate_guard_policy(
-                tool_name=context.tool_name,
-                arguments=context.arguments,
-                external_visible=tool_execution_policy(context.tool_name).external_visible,
-                snapshot=context.guard_policy_snapshot,
-            )
-            context.guard_policy_verdict = asdict(guard_verdict)
-        except Exception as exc:
-            logger.warning("[Governance] GuardPolicy resolution failed — blocking: %s", exc)
-            return f"🔒 Tool '{context.tool_name}' blocked — GuardPolicy check unavailable. Please retry."
-        if guard_verdict.decision == "deny":
-            return _teaching_block_message(
-                context.tool_name,
-                reason=guard_verdict.reason or "tenant GuardPolicy denied this tool",
-                next_steps=[
-                    "continue with a tool allowed by the tenant GuardPolicy",
-                    "ask a workspace admin to review the GuardPolicy rule",
-                ],
-            )
-        if guard_verdict.decision == "require_approval":
-            message = await _emit_enterprise_approval_result(
-                context,
-                deps,
-                capability=f"guard_policy:{context.tool_name}",
-                reason=guard_verdict.reason,
-                event_callback=event_callback,
-                approval_origin_type="guard_policy",
-            )
-            if message is not None:
-                return message
-
-    # ── MCP server-policy gate (closure A2) ────────────────────────────
-    # approval gates EXECUTION (the remote call), not discovery: metadata
-    # tools annotate instead (handlers/mcp.py). deny blocks hard here and
-    # stays enforced handler-side as defence in depth. auto/None fall
-    # through to the capability gate below.
-    if deps.resolve_mcp_tool_mode is not None:
-        try:
-            mcp_mode = await _maybe_await(
-                deps.resolve_mcp_tool_mode(context.agent_id, context.tool_name, context.arguments)
-            )
-        except Exception as exc:
-            logger.warning(
-                "[Governance] MCP mode resolve failed for tool %s — blocking (fail-closed): %s",
-                context.tool_name,
-                exc,
-            )
-            message = f"🔒 Tool '{context.tool_name}' blocked — MCP policy check unavailable. Please retry."
-            await _emit_event(
-                event_callback,
-                {
-                    "type": "permission",
-                    "tool_name": context.tool_name,
-                    "status": "blocked",
-                    "message": message,
-                },
-            )
-            return message
-        if mcp_mode == "deny":
-            message = _teaching_block_message(
-                context.tool_name,
-                reason="this MCP tool is denied by the agent's MCP server policy",
-                next_steps=[
-                    "use a different tool that is allowed for this agent",
-                    "tell the user this MCP tool needs an operator to change its policy in advanced MCP controls",
-                ],
-            )
-            await _emit_event(
-                event_callback,
-                {
-                    "type": "permission",
-                    "tool_name": context.tool_name,
-                    "status": "blocked",
-                    "message": message,
-                },
-            )
-            return message
-        if mcp_mode == "approval":
-            message = await _emit_session_no_policy_result(
-                context,
-                capability="mcp_tool_call",
-                reason="MCP server policy requires approval for this tool",
-                action=_session_explicit_policy_action(context),
-                event_callback=event_callback,
-            )
-            if message is not None:
-                return message
-
-    tenant_uuid: uuid.UUID | None = None
-    if context.tenant_id:
-        try:
-            tenant_uuid = uuid.UUID(context.tenant_id)
-            cap_result = await _maybe_await(deps.check_capability(tenant_uuid, context.agent_id, context.tool_name))
-            if cap_result is not None:
-                context.capability_snapshot = {
-                    "allowed": bool(getattr(cap_result, "allowed", False)),
-                    "denied": bool(getattr(cap_result, "denied", False)),
-                    "escalate_to_l3": bool(getattr(cap_result, "escalate_to_l3", False)),
-                    "name": str(getattr(cap_result, "capability", "") or ""),
-                    "reason": str(getattr(cap_result, "reason", "") or ""),
-                    "policy_found": bool(getattr(cap_result, "policy_found", False)),
-                }
-            if cap_result is not None and not hasattr(cap_result, "denied"):
+            result = await _maybe_await(deps.check_capability(tenant_uuid, context.agent_id, capability))
+            if result is not None and not hasattr(result, "denied"):
                 logger.warning(
-                    "[Governance] Unexpected capability result type: %s — blocking (fail-closed)", type(cap_result)
+                    "[Governance] Unexpected destructive capability result type: %s — blocking", type(result)
                 )
                 return f"🔒 Tool '{context.tool_name}' blocked — capability check returned unexpected format."
-            if getattr(cap_result, "denied", False):
+            if getattr(result, "denied", False):
                 message = _teaching_block_message(
                     context.tool_name,
-                    reason=f"capability policy denied it ({cap_result.reason})",
-                    capability=getattr(cap_result, "capability", None),
+                    reason=(
+                        "this delete operation matched a destructive pattern and capability policy denied it "
+                        f"({result.reason})"
+                    ),
+                    capability=getattr(result, "capability", None) or capability,
                     next_steps=[
-                        "continue with tools you already have",
-                        "ask the user to grant this capability via admin capability settings",
-                        "choose an approach that does not need this tool",
+                        "avoid deleting files from the session",
+                        "ask an operator to perform this deletion outside the agent session if it is required",
                     ],
                 )
-                await _maybe_await(
-                    deps.write_audit_event(
-                        event_type="capability.denied",
-                        severity="warn",
-                        actor_type="agent",
-                        actor_id=context.agent_id,
-                        tenant_id=tenant_uuid,
-                        action="capability_denied",
-                        resource_type="tool",
-                        resource_id=None,
-                        details={"tool": context.tool_name, "capability": cap_result.capability},
-                    )
+                await _write_capability_audit(
+                    context,
+                    deps,
+                    tenant_uuid,
+                    action="capability_denied",
+                    capability=getattr(result, "capability", None) or capability,
                 )
                 await _emit_event(
                     event_callback,
@@ -1163,92 +1422,12 @@ async def _run_governance_inner(
                         "tool_name": context.tool_name,
                         "status": "capability_denied",
                         "message": message,
-                        "capability": cap_result.capability,
+                        "capability": getattr(result, "capability", None) or capability,
                     },
                 )
                 return message
-            cap_escalate = getattr(cap_result, "escalate_to_l3", False)
-            if cap_escalate and getattr(cap_result, "policy_found", True) is False:
-                session_action = _session_no_policy_action(context)
-                message = await _emit_session_no_policy_result(
-                    context,
-                    capability=getattr(cap_result, "capability", None),
-                    reason=getattr(cap_result, "reason", None),
-                    action=session_action,
-                    event_callback=event_callback,
-                )
-                if message is not None:
-                    return message
-                cap_escalate = False
-            if cap_escalate:
-                message = await _emit_enterprise_approval_result(
-                    context,
-                    deps,
-                    capability=getattr(cap_result, "capability", None),
-                    reason=getattr(cap_result, "reason", None) or "explicit enterprise approval policy",
-                    event_callback=event_callback,
-                )
-                if message is not None:
-                    return message
-                cap_escalate = False
-            _escalated_capability = None
-            _approval_reason = None
-
-            # P1-W3-3 — delegation token enforcement.
-            # When this invocation came in through delegate_to_agent, the
-            # parent's token narrows the child's capability set and carries
-            # an expiry. Expired or out-of-scope calls are denied here so a
-            # runaway child cannot keep spending parent capacity past TTL.
-            if context.delegation_token is not None:
-                from app.agents.delegation_token import validate_delegation_token
-
-                _cap_name = getattr(cap_result, "capability", "") or ""
-                token_check = validate_delegation_token(
-                    context.delegation_token,
-                    capability=_cap_name or None,
-                    child_agent_id=context.agent_id,
-                )
-                if not token_check.valid:
-                    message = _teaching_block_message(
-                        context.tool_name,
-                        reason=f"your delegation token does not cover it ({token_check.reason})",
-                        capability=_cap_name or None,
-                        next_steps=[
-                            "finish the delegated task with the capabilities you were granted",
-                            "report back to the delegating agent that this step needs a broader grant",
-                        ],
-                    )
-                    await _maybe_await(
-                        deps.write_audit_event(
-                            event_type="delegation.token_denied",
-                            severity="warn",
-                            actor_type="agent",
-                            actor_id=context.agent_id,
-                            tenant_id=tenant_uuid,
-                            action="delegation_token_denied",
-                            resource_type="tool",
-                            resource_id=None,
-                            details={
-                                "tool": context.tool_name,
-                                "capability": _cap_name,
-                                "reason": token_check.reason,
-                            },
-                        )
-                    )
-                    await _emit_event(
-                        event_callback,
-                        {
-                            "type": "permission",
-                            "tool_name": context.tool_name,
-                            "status": "delegation_token_denied",
-                            "message": message,
-                            "reason": token_check.reason,
-                        },
-                    )
-                    return message
         except Exception as exc:
-            # Fail-closed: block tool when capability gate is unavailable
-            logger.warning("Capability gate check failed for tool %s (fail-closed): %s", context.tool_name, exc)
+            logger.warning("Destructive delete capability check failed for tool %s: %s", context.tool_name, exc)
             message = f"🔒 Tool '{context.tool_name}' blocked — capability check unavailable. Please retry."
             await _emit_event(
                 event_callback,
@@ -1257,304 +1436,176 @@ async def _run_governance_inner(
                     "tool_name": context.tool_name,
                     "status": "blocked",
                     "message": message,
+                    "capability": capability,
                 },
             )
             return message
-    else:
-        _escalated_capability = None
-        _approval_reason = None
+    return await _emit_session_no_policy_result(
+        context,
+        capability=capability,
+        reason=reason,
+        action=_session_explicit_policy_action(context),
+        event_callback=event_callback,
+    )
 
-    dangerous_command = _detect_dangerous_command(context.tool_name, context.arguments)
-    dangerous_reason = None
-    if dangerous_command:
-        dangerous_capability, dangerous_reason = dangerous_command
-        if dangerous_capability == _RUN_COMMAND_PATH_SYNTAX_CAPABILITY:
-            message = _teaching_block_message(
-                context.tool_name,
-                reason=f"this command uses high-risk path syntax ({dangerous_reason})",
-                capability=dangerous_capability,
-                next_steps=[
-                    "rewrite the command with literal workspace-relative paths",
-                    "avoid shell expansion, environment-variable paths, UNC paths, ~user, and glob syntax",
-                    "ask the user to provide the exact path when needed",
-                ],
-            )
-            await _maybe_await(
-                deps.write_audit_event(
-                    event_type="capability.denied",
-                    severity="warn",
-                    actor_type="agent",
-                    actor_id=context.agent_id,
-                    tenant_id=tenant_uuid,
-                    action="command_path_syntax_blocked",
-                    resource_type="tool",
-                    resource_id=None,
-                    details={
-                        "tool": context.tool_name,
-                        "capability": dangerous_capability,
-                        "reason": dangerous_reason,
-                    },
-                )
-            )
-            await _emit_event(
-                event_callback,
-                {
-                    "type": "permission",
-                    "tool_name": context.tool_name,
-                    "status": "blocked",
-                    "message": message,
-                    "capability": dangerous_capability,
-                },
-            )
-            return message
-        if dangerous_capability == "workspace.command.secret_exfiltration":
-            from app.services.managed_capability_guard import (
-                detect_managed_credential_command,
-                managed_credential_block_message,
-            )
 
-            managed_finding = detect_managed_credential_command(str(context.arguments.get("command", "")))
-            if managed_finding:
-                message = managed_credential_block_message(managed_finding)
-                await _maybe_await(
-                    deps.write_audit_event(
-                        event_type="capability.denied",
-                        severity="warn",
-                        actor_type="agent",
-                        actor_id=context.agent_id,
-                        tenant_id=tenant_uuid,
-                        action="managed_credential_env_blocked",
-                        resource_type="tool",
-                        resource_id=None,
-                        details={
-                            "tool": context.tool_name,
-                            "capability": dangerous_capability,
-                            "credential_family": managed_finding.family,
-                        },
-                    )
-                )
-                await _emit_event(
-                    event_callback,
-                    {
-                        "type": "permission",
-                        "tool_name": context.tool_name,
-                        "status": "blocked",
-                        "message": message,
-                        "capability": dangerous_capability,
-                        "credential_family": managed_finding.family,
-                    },
-                )
-                return message
-        if dangerous_capability == _DESTRUCTIVE_DELETE_CAPABILITY:
-            if tenant_uuid is not None:
-                try:
-                    dangerous_result = await _maybe_await(
-                        deps.check_capability(tenant_uuid, context.agent_id, dangerous_capability)
-                    )
-                    if dangerous_result is not None and not hasattr(dangerous_result, "denied"):
-                        logger.warning(
-                            "[Governance] Unexpected destructive capability result type: %s — blocking (fail-closed)",
-                            type(dangerous_result),
-                        )
-                        return f"🔒 Tool '{context.tool_name}' blocked — capability check returned unexpected format."
-                    if getattr(dangerous_result, "denied", False):
-                        message = _teaching_block_message(
-                            context.tool_name,
-                            reason=(
-                                "this delete operation matched a destructive pattern and capability policy denied it "
-                                f"({dangerous_result.reason})"
-                            ),
-                            capability=getattr(dangerous_result, "capability", None) or dangerous_capability,
-                            next_steps=[
-                                "avoid deleting files from the session",
-                                "ask an operator to perform this deletion outside the agent session if it is required",
-                            ],
-                        )
-                        await _maybe_await(
-                            deps.write_audit_event(
-                                event_type="capability.denied",
-                                severity="warn",
-                                actor_type="agent",
-                                actor_id=context.agent_id,
-                                tenant_id=tenant_uuid,
-                                action="capability_denied",
-                                resource_type="tool",
-                                resource_id=None,
-                                details={
-                                    "tool": context.tool_name,
-                                    "capability": getattr(dangerous_result, "capability", None) or dangerous_capability,
-                                },
-                            )
-                        )
-                        await _emit_event(
-                            event_callback,
-                            {
-                                "type": "permission",
-                                "tool_name": context.tool_name,
-                                "status": "capability_denied",
-                                "message": message,
-                                "capability": getattr(dangerous_result, "capability", None) or dangerous_capability,
-                            },
-                        )
-                        return message
-                except Exception as exc:
-                    logger.warning(
-                        "Destructive delete capability check failed for tool %s (fail-closed): %s",
-                        context.tool_name,
-                        exc,
-                    )
-                    message = f"🔒 Tool '{context.tool_name}' blocked — capability check unavailable. Please retry."
-                    await _emit_event(
-                        event_callback,
-                        {
-                            "type": "permission",
-                            "tool_name": context.tool_name,
-                            "status": "blocked",
-                            "message": message,
-                            "capability": dangerous_capability,
-                        },
-                    )
-                    return message
-            message = await _emit_session_no_policy_result(
-                context,
-                capability=dangerous_capability,
-                reason=dangerous_reason,
-                action=_session_explicit_policy_action(context),
-                event_callback=event_callback,
-            )
-            if message is not None:
-                return message
-            return None
-        dangerous_allowed_by_specific_policy = False
-        if tenant_uuid is not None:
-            try:
-                dangerous_result = await _maybe_await(
-                    deps.check_capability(tenant_uuid, context.agent_id, dangerous_capability)
-                )
-                if dangerous_result is not None and not hasattr(dangerous_result, "denied"):
-                    logger.warning(
-                        "[Governance] Unexpected dangerous capability result type: %s — blocking (fail-closed)",
-                        type(dangerous_result),
-                    )
-                    return f"🔒 Tool '{context.tool_name}' blocked — capability check returned unexpected format."
-                if getattr(dangerous_result, "denied", False):
-                    message = _teaching_block_message(
-                        context.tool_name,
-                        reason=f"this command matched a dangerous pattern and capability policy denied it ({dangerous_result.reason})",
-                        capability=getattr(dangerous_result, "capability", None),
-                        next_steps=[
-                            "use a narrower, safer command that avoids the dangerous pattern",
-                            "ask the user to approve or run this operation themselves",
-                        ],
-                    )
-                    await _maybe_await(
-                        deps.write_audit_event(
-                            event_type="capability.denied",
-                            severity="warn",
-                            actor_type="agent",
-                            actor_id=context.agent_id,
-                            tenant_id=tenant_uuid,
-                            action="capability_denied",
-                            resource_type="tool",
-                            resource_id=None,
-                            details={"tool": context.tool_name, "capability": dangerous_result.capability},
-                        )
-                    )
-                    await _emit_event(
-                        event_callback,
-                        {
-                            "type": "permission",
-                            "tool_name": context.tool_name,
-                            "status": "capability_denied",
-                            "message": message,
-                            "capability": dangerous_result.capability,
-                        },
-                    )
-                    return message
-                if getattr(dangerous_result, "escalate_to_l3", False):
-                    if getattr(dangerous_result, "policy_found", True) is False:
-                        session_action = _session_no_policy_action(context)
-                        message = await _emit_session_no_policy_result(
-                            context,
-                            capability=getattr(dangerous_result, "capability", None) or dangerous_capability,
-                            reason=getattr(dangerous_result, "reason", None) or dangerous_reason,
-                            action=session_action,
-                            event_callback=event_callback,
-                        )
-                        if message is not None:
-                            return message
-                        dangerous_allowed_by_specific_policy = True
-                    else:
-                        message = await _emit_enterprise_approval_result(
-                            context,
-                            deps,
-                            capability=getattr(dangerous_result, "capability", None) or dangerous_capability,
-                            reason=getattr(dangerous_result, "reason", None) or dangerous_reason,
-                            event_callback=event_callback,
-                        )
-                        if message is not None:
-                            return message
-                        dangerous_allowed_by_specific_policy = True
-                else:
-                    dangerous_allowed_by_specific_policy = getattr(
-                        dangerous_result, "capability", None
-                    ) == dangerous_capability and (
-                        not hasattr(dangerous_result, "policy_found")
-                        or getattr(dangerous_result, "policy_found", False)
-                    )
-            except Exception as exc:
-                logger.warning(
-                    "Dangerous command capability check failed for tool %s (fail-closed): %s",
-                    context.tool_name,
-                    exc,
-                )
-                message = f"🔒 Tool '{context.tool_name}' blocked — capability check unavailable. Please retry."
-                await _emit_event(
-                    event_callback,
-                    {
-                        "type": "permission",
-                        "tool_name": context.tool_name,
-                        "status": "blocked",
-                        "message": message,
-                        "capability": dangerous_capability,
-                    },
-                )
-                return message
-        else:
-            session_action = _session_no_policy_action(context)
-            message = await _emit_session_no_policy_result(
-                context,
-                capability=dangerous_capability,
-                reason=dangerous_reason,
-                action=session_action,
-                event_callback=event_callback,
-            )
-            if message is not None:
-                return message
-            dangerous_allowed_by_specific_policy = True
-        if not dangerous_allowed_by_specific_policy and _escalated_capability is None:
-            _escalated_capability = dangerous_capability
-            _approval_reason = dangerous_reason
-
-    if _escalated_capability:
+async def _check_general_dangerous_capability(
+    context: ToolGovernanceContext,
+    deps: GovernanceDependencies,
+    tenant_uuid: uuid.UUID | None,
+    capability: str,
+    reason: str | None,
+    event_callback: EventCallback | None,
+) -> tuple[bool, str | None]:
+    if tenant_uuid is None:
         message = await _emit_session_no_policy_result(
             context,
-            capability=_escalated_capability,
-            reason=dangerous_reason or _approval_reason,
+            capability=capability,
+            reason=reason,
+            action=_session_no_policy_action(context),
+            event_callback=event_callback,
+        )
+        return True, message
+    try:
+        result = await _maybe_await(deps.check_capability(tenant_uuid, context.agent_id, capability))
+        if result is not None and not hasattr(result, "denied"):
+            logger.warning("[Governance] Unexpected dangerous capability result type: %s — blocking", type(result))
+            return False, f"🔒 Tool '{context.tool_name}' blocked — capability check returned unexpected format."
+        if getattr(result, "denied", False):
+            return False, await _dangerous_capability_denied(context, deps, tenant_uuid, result, event_callback)
+        if getattr(result, "escalate_to_l3", False):
+            message = await _resolve_dangerous_escalation(context, deps, result, capability, reason, event_callback)
+            return True, message
+        allowed = getattr(result, "capability", None) == capability and (
+            not hasattr(result, "policy_found") or getattr(result, "policy_found", False)
+        )
+        return allowed, None
+    except Exception as exc:
+        logger.warning("Dangerous command capability check failed for tool %s: %s", context.tool_name, exc)
+        message = f"🔒 Tool '{context.tool_name}' blocked — capability check unavailable. Please retry."
+        await _emit_event(
+            event_callback,
+            {
+                "type": "permission",
+                "tool_name": context.tool_name,
+                "status": "blocked",
+                "message": message,
+                "capability": capability,
+            },
+        )
+        return False, message
+
+
+async def _dangerous_capability_denied(
+    context: ToolGovernanceContext,
+    deps: GovernanceDependencies,
+    tenant_uuid: uuid.UUID,
+    result: Any,
+    event_callback: EventCallback | None,
+) -> str:
+    message = _teaching_block_message(
+        context.tool_name,
+        reason=f"this command matched a dangerous pattern and capability policy denied it ({result.reason})",
+        capability=getattr(result, "capability", None),
+        next_steps=[
+            "use a narrower, safer command that avoids the dangerous pattern",
+            "ask the user to approve or run this operation themselves",
+        ],
+    )
+    await _write_capability_audit(
+        context,
+        deps,
+        tenant_uuid,
+        action="capability_denied",
+        capability=getattr(result, "capability", None),
+    )
+    await _emit_event(
+        event_callback,
+        {
+            "type": "permission",
+            "tool_name": context.tool_name,
+            "status": "capability_denied",
+            "message": message,
+            "capability": getattr(result, "capability", None),
+        },
+    )
+    return message
+
+
+async def _resolve_dangerous_escalation(
+    context: ToolGovernanceContext,
+    deps: GovernanceDependencies,
+    result: Any,
+    capability: str,
+    reason: str | None,
+    event_callback: EventCallback | None,
+) -> str | None:
+    resolved_capability = getattr(result, "capability", None) or capability
+    resolved_reason = getattr(result, "reason", None) or reason
+    if getattr(result, "policy_found", True) is False:
+        return await _emit_session_no_policy_result(
+            context,
+            capability=resolved_capability,
+            reason=resolved_reason,
+            action=_session_no_policy_action(context),
+            event_callback=event_callback,
+        )
+    return await _emit_enterprise_approval_result(
+        context,
+        deps,
+        capability=resolved_capability,
+        reason=resolved_reason,
+        event_callback=event_callback,
+    )
+
+
+async def _write_capability_audit(
+    context: ToolGovernanceContext,
+    deps: GovernanceDependencies,
+    tenant_uuid: uuid.UUID | None,
+    *,
+    action: str,
+    capability: str | None,
+    reason: str | None = None,
+    credential_family: str | None = None,
+) -> None:
+    details = {"tool": context.tool_name, "capability": capability}
+    if reason is not None:
+        details["reason"] = reason
+    if credential_family is not None:
+        details["credential_family"] = credential_family
+    await _maybe_await(
+        deps.write_audit_event(
+            event_type="capability.denied",
+            severity="warn",
+            actor_type="agent",
+            actor_id=context.agent_id,
+            tenant_id=tenant_uuid,
+            action=action,
+            resource_type="tool",
+            resource_id=None,
+            details=details,
+        )
+    )
+
+
+async def _check_final_hooks(
+    context: ToolGovernanceContext,
+    deps: GovernanceDependencies,
+    state: _GovernanceState,
+    event_callback: EventCallback | None,
+) -> str | None:
+    if state.escalated_capability:
+        message = await _emit_session_no_policy_result(
+            context,
+            capability=state.escalated_capability,
+            reason=state.dangerous_reason or state.approval_reason,
             action=_session_explicit_policy_action(context),
             event_callback=event_callback,
         )
         if message is not None:
             return message
-
-    # §1 tenant governance hooks: the last layer, after every platform gate has
-    # allowed the call. Shrink-only — hooks may deny or escalate to ask, never
-    # widen what the gates above decided (design 2026-07-09, decisions 1.7-a..d).
-    hook_message = await _run_tenant_governance_hooks(context, deps, event_callback=event_callback)
-    if hook_message is not None:
-        return hook_message
-
-    return None
+    return await _run_tenant_governance_hooks(context, deps, event_callback=event_callback)
 
 
 def _governance_hook_payload(context: ToolGovernanceContext, spec: Any) -> dict[str, Any]:

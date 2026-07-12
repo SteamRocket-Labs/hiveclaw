@@ -46,7 +46,11 @@ from app.services.plan_mode_recommendation_service import (
     PlanRecommendationError,
     require_declined_plan_recommendation,
 )
-from app.services.session_command_runtime import SESSION_COMMAND_NAMES, execute_session_command
+from app.services.session_command_runtime import (
+    SESSION_COMMAND_NAMES,
+    SessionCommandContext,
+    execute_session_command,
+)
 from app.services.task_command_adapter import TaskCommandKind, adapt_task_command
 from app.services.agent_team_runtime_service import create_agent_team_runtime
 from app.services.team_runtime import TeamIndex, TeamMemberIndex, plan_team_close_consolidation
@@ -1418,13 +1422,15 @@ async def execute_agent_command(
 
     if command.name in SESSION_COMMAND_NAMES:
         result = await execute_session_command(
-            db=db,
-            agent=agent,
-            user=current_user,
-            access_level=access_level,
+            context=SessionCommandContext(
+                db=db,
+                agent=agent,
+                user=current_user,
+                access_level=access_level,
+                session_id=body.session_id,
+                arguments=body.arguments,
+            ),
             command_name=command.name,
-            session_id=body.session_id,
-            arguments=body.arguments,
         )
         workspace_restore = result.get("workspace_restore") if isinstance(result, dict) else None
         workspace_restore_transaction_id = (

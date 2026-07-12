@@ -12,6 +12,8 @@ success rate alongside volume.
 
 from __future__ import annotations
 
+import json
+import re
 import uuid
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -76,8 +78,23 @@ async def test_successful_call_records_success_metric_and_audit(
 
     class _StubClient:
         async def stream(self, **_kw):
-            # Match the format _parse_dream_decision expects.
-            return SimpleNamespace(content='{"reasoning": "ok", "soul_candidate": null, "t3_patch_concerns": []}')
+            manifest = re.findall(
+                r'<item path="([^"]+)" sha256="([^"]+)"',
+                _kw["messages"][1].content,
+            )
+            return SimpleNamespace(
+                content=json.dumps(
+                    {
+                        "reasoning": "ok",
+                        "coverage_receipt": [
+                            {"path": path, "sha256": digest, "status": "reviewed"}
+                            for path, digest in manifest
+                        ],
+                        "soul_candidate": None,
+                        "t3_patch_concerns": [],
+                    }
+                )
+            )
 
         async def close(self):
             pass

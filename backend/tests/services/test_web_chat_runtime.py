@@ -5669,6 +5669,5 @@ def test_memory_context_degradation_events_are_durable_session_context_events() 
     assert _should_persist_runtime_event(
         {"type": "session_context", "event_type": "memory_context_unavailable", "retryable": True}
     )
-    source = inspect.getsource(web_chat_run_orchestrator.run_web_chat_task)
-    boundary = source.split("async def runtime_event_to_ws", 1)[1].split("pending_reply_suffix", 1)[0]
-    assert boundary.index("await _persist_runtime_event") < boundary.index("await broadcast_web_chat_event")
+    source = inspect.getsource(web_chat_run_orchestrator._WebChatCallbacks.runtime_event)
+    assert source.index("await events.persist_runtime_event") < source.index("await events.broadcast")

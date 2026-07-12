@@ -18,9 +18,9 @@ def test_workspace_rewind_uses_scoped_evidence_and_deferred_atomic_finalize() ->
     snapshot_source = (ROOT / "app" / "services" / "session_workspace_snapshot.py").read_text(encoding="utf-8")
 
     assert "_workspace_restore_scope_after_checkpoint" in command_source
-    assert "expected_current_states=workspace_restore_states" in command_source
+    assert "expected_current_states=plan.states" in command_source
     assert "defer_finalize=True" in command_source
-    assert "await asyncio.to_thread(\n                restore_session_workspace_snapshot" in command_source
+    assert "await asyncio.to_thread(\n        restore_session_workspace_snapshot" in command_source
     assert "finalize_workspace_restore" in api_source
     assert "os.replace(stage, workspace)" in snapshot_source
     assert "hive.workspace_restore_transaction.v1" in snapshot_source

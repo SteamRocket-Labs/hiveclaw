@@ -239,7 +239,7 @@ async def _governance_denies(command: str) -> str | None:
 
 @pytest.mark.asyncio
 async def test_full_escalation_loop_reject_approve_runonce_then_rerequest(monkeypatch):
-    from app.services.approval_service import approval_service
+    from app.services import agent_tools
 
     # 1. REJECT — the gate blocks the dangerous command.
     denial = await _governance_denies(_BLOCKED_COMMAND)
@@ -256,17 +256,18 @@ async def test_full_escalation_loop_reject_approve_runonce_then_rerequest(monkey
     #    because the human approval IS the governance decision).
     calls: list[dict] = []
 
-    async def fake_execute_approved_tool(**kwargs):
-        calls.append(kwargs)
-        return "executed"
+    class _Runtime:
+        async def execute_approved(self, **kwargs):
+            calls.append(kwargs)
+            return "executed"
 
-    monkeypatch.setattr("app.services.agent_tools.execute_approved_tool", fake_execute_approved_tool)
+    monkeypatch.setattr(agent_tools, "_get_tool_runtime_service", lambda: _Runtime())
 
     approver = uuid4()
     agent_id = uuid4()
     approval_id = uuid4()
-    result = await approval_service._execute_approved_action(
-        agent_id,
+    result = await agent_tools.execute_approved_tool(
+        expected_agent_id=agent_id,
         approved_by_user_id=approver,
         approval_id=approval_id,
     )

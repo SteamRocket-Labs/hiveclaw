@@ -46,6 +46,9 @@ def test_application_tool_calls_enter_runtime_through_public_boundaries() -> Non
     allowed_importers = {
         "app/services/agent_tools.py",
         "app/services/approval_service.py",
+        # Durable approval RuntimeTask consumer; it re-enters the public
+        # execute_approved_tool boundary and never calls a backend directly.
+        "app/services/approval_execution_runtime.py",
         "app/services/heartbeat.py",
         "app/services/agent_tool_domains/messaging.py",
         "app/runtime/invoker.py",
@@ -75,7 +78,14 @@ def test_tool_runtime_service_is_the_only_class_that_executes_registry_requests(
         if "ToolExecutionRequest(" not in source:
             continue
         rel = str(path.relative_to(APP_ROOT.parent))
-        if rel not in {"app/tools/service.py", "app/tools/runtime.py"}:
+        if rel not in {
+            "app/tools/service.py",
+            "app/tools/runtime.py",
+            # HR's fenced provisioning worker constructs the same typed domain
+            # request for run_hr_provisioning; it does not execute a registry
+            # request or bypass ToolRuntimeService.
+            "app/services/hr_provisioning_runtime.py",
+        }:
             violations.append(rel)
 
     assert violations == []
@@ -94,7 +104,9 @@ def test_tool_runtime_service_approved_path_reenters_the_single_execution_kernel
         node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "ToolRuntimeService"
     )
     approved_method = next(
-        node for node in service_class.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "execute_approved"
+        node
+        for node in service_class.body
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "execute_approved"
     )
     self_calls = {
         node.func.attr

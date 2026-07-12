@@ -643,6 +643,34 @@ def _record_precontext_tool_decision(
     )
 
 
+def _tool_execution_ports() -> Any:
+    from app.tools.execution_pipeline import ToolExecutionPorts
+
+    return ToolExecutionPorts(
+        decision_outcome_type=ToolDecisionOutcome,
+        extract_error_payload=_extract_tool_error_payload,
+        inject_runtime_arguments=_inject_runtime_context_arguments,
+        json=_json,
+        latest_context_record=_latest_context_record,
+        maybe_await=_maybe_await,
+        new_tool_call_id=_new_runtime_tool_call_id,
+        record_final_decision=_record_final_tool_decision,
+        record_precontext_decision=_record_precontext_tool_decision,
+        record_execution_frame=_record_tool_execution_frame,
+        record_lifecycle=_record_tool_lifecycle,
+        renew_runtime_lease=_renew_runtime_task_lease_before_execution,
+        resolve_runtime_context=_resolve_runtime_context,
+        tool_result_failed=_tool_result_failed,
+        validate_arguments=_validate_tool_arguments_block,
+        hash_tool_input=hash_tool_input,
+        render_tool_error=render_tool_error,
+        asyncio=asyncio,
+        inspect=inspect,
+        traceback=traceback,
+        path_type=Path,
+    )
+
+
 @dataclass(slots=True)
 class ToolRuntimeService:
     runtime_resolver: Any
@@ -848,35 +876,37 @@ class ToolRuntimeService:
         _expected_asset_refs: tuple[Any, ...] | None = None,
     ) -> str | ToolContentEnvelope:
         """Delegate to the single run_tool_execution lifecycle owner."""
-        import sys
+        from app.tools.execution_pipeline import ToolExecutionRequest as PipelineRequest
         from app.tools.execution_pipeline import run_tool_execution
 
         return await run_tool_execution(
             self,
-            tool_name=tool_name,
-            arguments=arguments,
-            agent_id=agent_id,
-            user_id=user_id,
-            execution_identity=execution_identity,
-            tool_call_id=tool_call_id,
-            event_callback=event_callback,
-            delegation_token=delegation_token,
-            session_id=session_id,
-            permission_profile=permission_profile,
-            turn_id=turn_id,
-            runtime_task_id=runtime_task_id,
-            budget_run_id=budget_run_id,
-            origin_channel=origin_channel,
-            round_state=round_state,
-            t0_refs=t0_refs,
-            plan_mode_interactive_available=plan_mode_interactive_available,
-            plan_mode_unattended_available=plan_mode_unattended_available,
-            emit_runtime_hooks=emit_runtime_hooks,
-            trace_metadata_sink=trace_metadata_sink,
-            workspace_override=workspace_override,
-            _approval_decision=_approval_decision,
-            _expected_asset_refs=_expected_asset_refs,
-            support=sys.modules[__name__],
+            PipelineRequest(
+                tool_name=tool_name,
+                arguments=arguments,
+                agent_id=agent_id,
+                user_id=user_id,
+                execution_identity=execution_identity,
+                tool_call_id=tool_call_id,
+                event_callback=event_callback,
+                delegation_token=delegation_token,
+                session_id=session_id,
+                permission_profile=permission_profile,
+                turn_id=turn_id,
+                runtime_task_id=runtime_task_id,
+                budget_run_id=budget_run_id,
+                origin_channel=origin_channel,
+                round_state=round_state,
+                t0_refs=t0_refs,
+                plan_mode_interactive_available=plan_mode_interactive_available,
+                plan_mode_unattended_available=plan_mode_unattended_available,
+                emit_runtime_hooks=emit_runtime_hooks,
+                trace_metadata_sink=trace_metadata_sink,
+                workspace_override=workspace_override,
+                approval_decision=_approval_decision,
+                expected_asset_refs=_expected_asset_refs,
+            ),
+            _tool_execution_ports(),
         )
 
     async def _emit_pre_tool_hook(

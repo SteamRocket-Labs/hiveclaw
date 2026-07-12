@@ -1412,10 +1412,30 @@ def _resolve_effective_turn_route(
 
 async def invoke_agent(request: AgentInvocationRequest) -> AgentInvocationResult:
     """Delegate to the single run_agent_invocation lifecycle owner."""
-    import sys
-    from app.runtime.invocation_orchestrator import run_agent_invocation
+    from app.runtime.invocation_orchestrator import InvocationPorts, run_agent_invocation
 
     return await run_agent_invocation(
         request=request,
-        support=sys.modules[__name__],
+        ports=InvocationPorts(
+            result_type=AgentInvocationResult,
+            execution_identity_type=ExecutionIdentityRef,
+            kernel_request_type=InvocationRequest,
+            terminal_reason_type=TerminalReason,
+            enforce_quota=_enforce_invocation_quota,
+            ensure_turn_metadata=_ensure_turn_metadata,
+            format_hook_contexts=_format_hook_additional_contexts,
+            latest_user_prompt=_latest_user_prompt,
+            maybe_await=_maybe_await,
+            normalize_session_context=_normalize_invocation_session_context,
+            resolve_smart_routing=_resolve_agent_smart_model_routing,
+            resolve_context_budget=_resolve_context_budget,
+            resolve_turn_route=_resolve_effective_turn_route,
+            resolve_eviction_dir=_resolve_eviction_dir,
+            resolve_kernel=_resolve_kernel_for_request,
+            skill_ranking_inputs=_skill_catalog_ranking_inputs,
+            build_skill_catalog=build_skill_catalog_section_for_agent,
+            combined_tools=get_combined_openai_tools,
+            record_skill_usage=record_skill_runtime_usage_for_invocation,
+            logger=logger,
+        ),
     )

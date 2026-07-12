@@ -89,7 +89,9 @@ def test_native_runtime_consumers_record_ai_asset_usage_evidence() -> None:
     tool_usage_source = inspect.getsource(ToolRuntimeService._record_resolved_asset_usage_for_tool)
     assert "record_tool_asset_usage" in tool_usage_source
     assert "arguments.get" not in tool_usage_source
-    assert "resolve_tool_asset_refs" in _source("app.tools.execution_pipeline", "run_tool_execution")
+    assert "_apply_hooks_and_assets" in _source("app.tools.execution_pipeline", "run_tool_execution")
+    assert "_resolve_assets" in _source("app.tools.execution_pipeline", "_apply_hooks_and_assets")
+    assert "resolve_tool_asset_refs" in _source("app.tools.execution_pipeline", "_resolve_assets")
     assert "record_asset_usage" not in inspect.getsource(WorkflowDefinitionService.resolve_for_execution)
     assert "asset_ref" in inspect.getsource(WorkflowDefinitionService.resolve_for_execution)
     assert "record_asset_usage" not in _source(

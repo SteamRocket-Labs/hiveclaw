@@ -607,6 +607,9 @@ flowchart LR
 - 精确代码位置：`web_chat_run_orchestrator.py:run_web_chat_task`、`session_command_runtime.py:execute_session_command`、`execution_pipeline.py:run_tool_execution`、`tools/governance.py:_run_governance_inner`、`invocation_orchestrator.py:run_agent_invocation`。
 - 缺失测试：状态转换 contract tests 与 import-cycle/owner graph gate。
 - 一次性完整关闭方案：先冻结事件/状态 contract；抽取纯状态 reducer、typed dependency bundles、IO ports 和 projection writers；每个 lifecycle 保留一个 public owner；删除动态 support 属性查找和重复状态 enum；保留兼容 adapter 一次迁移并随后清理；全套回归、complexity/parameter budget、graph owner gate；不以文件行数为验收。
+- 修复状态（2026-07-12）：**R-010 七原子闭环**。五条高风险 lifecycle 均保留一个可搜索的 public owner，并以 frozen typed boundary 取代 `support: Any`/`sys.modules` namespace 注入：Web Chat 使用 `WebChatRunPorts` 及 context/event/terminal/artifact/runtime 子端口；Invocation 使用 `InvocationPorts`；Tool Runtime 使用 `ToolExecutionRequest + ToolExecutionPorts`；Session Command 使用 `SessionCommandContext + handler registry`；Governance 使用显式 `_GovernanceState + ordered stages`。facade 在每次调用时从当前依赖构造不可变快照，既保留测试/DI override，又不再运行时复制模块属性。旧 compatibility call shape、重复 branch dispatch 和三个 `support.*` 路径均已迁移并删除。
+- 状态、IO 与投影分层证据：Web Chat 已拆为 context load、runtime-session bind、pre-invocation terminal、stream/tool callbacks、prompt suffix、model invoke、terminal projection、failure persistence、cleanup；Session 的 resume/checkpoint/copy/branch/steer/rewind/compact 各自成为 handler，Rewind 的 evidence scope、confirmation、deferred restore 与 projection commit 分开；Tool 的 prepare/hooks+asset/governance/execute 四段保持治理先于 executor；Invocation 的 route/skill/kernel request、三类 required hooks、kernel call 与 close hooks 分开；Governance 的 security zone、tenant、GuardPolicy、MCP、capability/delegation、dangerous command、tenant hook 维持原顺序且仍 fail-closed。机械 AST 结果：五个 owner 分别为 `22/16/18/24/16` 行，参数为 `3/2/3/3/2`，目标模块最大函数分别为 `56/101/69/149/49` 行，`support` attribute 数全部为 0。
+- 验收与恢复证据：新增架构 Gate 同时约束 owner 行数、参数预算、任意函数 180 行上限、frozen typed bundle、无 `support` 动态属性、owner module import-cycle；原先仅检查 `import * / exec` 且允许 392~915 行 owner 的伪 Gate 已替换。初始 Red：`test_ux04_orchestration_boundaries.py` → `3 failed, 3 passed`；拆分后 architecture owner/single-tool-entry → `10 passed`。五条 owner 合并行为回归 → `349 passed`；全 backend 首轮暴露 11 个仍绑定旧大函数/旧 migration head/旧 Dream coverage 的验收断言，逐一迁移到真实 stage/typed port/durable runtime 契约后，`cd backend && source .venv/bin/activate && pytest tests -q` → `6536 passed, 1 skipped, 5 warnings`；目标文件 `ruff check` 全绿，`ruff format --check` → `10 files already formatted`。5 个 warning 属 R-014 的既有独立缺口，不混入 R-010 完成声明。提交主题：`fix(R-010): make lifecycle owners statically provable`。
 
 ### [R-011] 15 条真实用户旅程没有浏览器级全链验收
 
@@ -1006,7 +1009,7 @@ Codebase graph 校正时状态为 ready（43,281 nodes / 166,753 edges）；`det
 
 ## 16. 28 项原子缺口修复执行账本
 
-本节记录原始审计全部 28 项的实际落地状态：17 个断点、10 个局部闭环、1 个已知缺失。原始严重级别与原子状态保留为审计快照；只有同时具备实现、回归测试、报告证据和独立提交，才把修复状态改为闭环。Company Knowledge Base 本体按 owner 边界不在本轮开发，但 R-008 的诚实隔离、文案与防伪装验收仍必须关闭。当前进度：**12/28**。
+本节记录原始审计全部 28 项的实际落地状态：17 个断点、10 个局部闭环、1 个已知缺失。原始严重级别与原子状态保留为审计快照；只有同时具备实现、回归测试、报告证据和独立提交，才把修复状态改为闭环。Company Knowledge Base 本体按 owner 边界不在本轮开发，但 R-008 的诚实隔离、文案与防伪装验收仍必须关闭。当前进度：**13/28**。
 
 | ID | 修复状态 | 独立提交主题 | 机械证据摘要 |
 |---|---|---|---|
@@ -1019,7 +1022,7 @@ Codebase graph 校正时状态为 ready（43,281 nodes / 166,753 edges）；`det
 | R-007 | 闭环 | `fix(R-007): require complete Dream semantic coverage` | Red backend 5 failed + frontend 1 failed；Green backend 157 passed；全量输入/hash receipt/no-semantic-fallback/durable retry；frontend 115 passed + build；ruff/format 绿 |
 | R-008 | 边界闭环（Company KB 本体已知缺失） | `fix(R-008): isolate the missing Company KB boundary` | Red backend 1 failed + frontend 2 failed；Green backend 3 passed；无假 route/consumer + typed legacy quarantine；frontend 31 passed + build；ruff/format 绿 |
 | R-009 | 闭环 | `fix(R-009): resume sessions through approval outbox` | Red backend 2 failed + frontend 7 failed；Green backend 143 passed；PG exact-one/retry/reconcile/backfill/migration；frontend 192 passed + build；ruff/format 绿 |
-| R-010 | 待修复 | — | — |
+| R-010 | 闭环 | `fix(R-010): make lifecycle owners statically provable` | Red 3 failed；五 owner 16~24 行/≤3 参数/support=0；架构 10 passed；合并 349 passed；backend 全量 6536 passed, 1 skipped；ruff/format 绿 |
 | R-011 | 待修复 | — | — |
 | R-012 | 待修复 | — | — |
 | R-013 | 待修复 | — | — |

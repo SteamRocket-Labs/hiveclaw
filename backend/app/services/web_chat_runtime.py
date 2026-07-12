@@ -1,6 +1,6 @@
 from __future__ import annotations
-# ruff: noqa: F401 -- this facade explicitly supplies runner dependencies per call.
 
+# ruff: noqa: F401 -- this facade explicitly supplies runner dependencies per call.
 import asyncio
 import hashlib
 import json
@@ -4114,9 +4114,95 @@ def _phase_for_interactive_pause(summary: str | None, *, cancelled: bool) -> Run
     return RuntimePhase.DONE
 
 
+def _web_chat_run_ports() -> Any:
+    from app.services.web_chat_run_orchestrator import (
+        WebChatArtifactPorts,
+        WebChatContextPorts,
+        WebChatEventPorts,
+        WebChatRunPorts,
+        WebChatRuntimePorts,
+        WebChatTerminalPorts,
+    )
+
+    return WebChatRunPorts(
+        context=WebChatContextPorts(
+            run_id=_run_id,
+            load_runtime_context=_load_runtime_context,
+            conversation_from_history=conversation_from_history_messages,
+            merge_permission_metadata=_merge_runtime_permission_metadata,
+            actor_user_id=_runtime_actor_user_id,
+            actor_external_principal_id=_runtime_actor_external_principal_id,
+            actor_authority_bound=_runtime_actor_authority_bound,
+            broker=web_chat_broker,
+            sync_permission_metadata=_sync_runtime_session_permission_metadata,
+            channel_delivery_suffix=_channel_delivery_prompt_suffix_for_turn,
+            clear_stale_plan_mode=_clear_stale_plan_mode_for_new_turn,
+            maybe_enter_plan_mode=_maybe_handle_plan_mode_entry,
+            claim_pending_reply_suffix=_claim_pending_reply_suffix_for_session,
+            runtime_excluded_tools=_runtime_turn_excluded_tool_names,
+            claim_mid_run_messages=_claim_pending_mid_run_user_messages,
+            active_channel_delivery_target=_active_channel_delivery_target_for_turn,
+            is_web_origin_turn=_is_web_origin_turn,
+            channel_permission_prompt=_channel_session_permission_prompt_for_tool_call,
+        ),
+        events=WebChatEventPorts(
+            broadcast=broadcast_web_chat_event,
+            persist_stream_step=_persist_stream_step_event,
+            persist_runtime_event=_persist_runtime_event,
+            persist_tool_call=_persist_tool_call,
+            should_persist_runtime_event=_should_persist_runtime_event,
+            runtime_action_from_tool_result=_runtime_action_event_from_tool_result,
+            tool_step_contract=_tool_step_contract,
+            build_chunk=build_chunk_event,
+            build_done=build_done_event,
+            build_session_native=build_session_native_event,
+            build_thinking=build_thinking_event,
+            build_tool_call=build_tool_call_event,
+            session_native_types=SESSION_NATIVE_EVENT_TYPES,
+            stream_retry_tombstone=STREAM_RETRY_TOMBSTONE,
+            stream_batcher_type=_WebChatStreamMicroBatcher,
+            terminal_signal_type=_TerminalToolCardSignal,
+        ),
+        terminal=WebChatTerminalPorts(
+            finalize_with_assistant=_finalize_web_chat_run_with_assistant,
+            finalize_without_assistant=_finalize_web_chat_run_without_assistant,
+            emit_terminal_hook=_emit_terminal_turn_hook,
+            update_runtime_task=_update_runtime_task,
+            phase_for_pause=_phase_for_interactive_pause,
+            phase_for_status=_phase_for_terminal_status,
+            terminal_reason=_terminal_reason_value_for_web_run,
+            resume_queued_handoffs=_resume_queued_plan_handoffs,
+            clear_interactive_plan_mode=_clear_interactive_plan_mode,
+            plan_mode_terminal_error=_plan_mode_unsubmitted_terminal_error,
+            final_marker_conflict=_is_final_assistant_marker_unique_violation,
+        ),
+        artifacts=WebChatArtifactPorts(
+            declared_paths=_declared_terminal_artifact_paths,
+            artifact_paths=_terminal_artifact_paths_for_turn,
+            rejected_paths=_rejected_terminal_artifact_paths_for_turn,
+            file_change_paths=_terminal_file_change_paths_for_turn,
+            file_change_states=_terminal_file_change_states_for_turn,
+            file_change_lineage=_terminal_file_change_lineage_for_turn,
+            prompt_suffix=_terminal_artifact_prompt_suffix_for_turn,
+            prompt_metadata=_runtime_prompt_metadata_update,
+            result_title=_simulation_title,
+        ),
+        runtime=WebChatRuntimePorts(
+            invoke_agent=invoke_agent,
+            tenant_scoped_session=tenant_scoped_session,
+            plan_mode_core=plan_mode_core,
+            is_llm_error_message=is_llm_error_message,
+            interactive_pause_summary=_interactive_pause_summary_for_tool_call,
+            cancel_events=_CANCEL_EVENTS,
+            broadcast_run_context=_CURRENT_BROADCAST_RUN_ID,
+            user_visible_error=_USER_VISIBLE_WEB_CHAT_ERROR,
+            logger=logger,
+        ),
+    )
+
+
 async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio.Event | None = None) -> None:
     """Delegate to the single run_web_chat_task lifecycle owner."""
-    import sys
     from app.services.web_chat_run_orchestrator import run_web_chat_task
     from app.services.runtime_task_fence import current_runtime_task_fence
 
@@ -4126,7 +4212,7 @@ async def execute_web_chat_run(run_id: str | uuid.UUID, *, cancel_event: asyncio
     return await run_web_chat_task(
         run_id=run_uuid,
         cancel_event=cancel_event,
-        support=sys.modules[__name__],
+        ports=_web_chat_run_ports(),
     )
 
 

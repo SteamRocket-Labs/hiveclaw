@@ -69,14 +69,17 @@ def test_daemon_fanout_dispatch_sites_are_bounded() -> None:
     heartbeat_source = (root / "app" / "services" / "heartbeat.py").read_text(encoding="utf-8")
     trigger_source = (root / "app" / "services" / "trigger_daemon.py").read_text(encoding="utf-8")
     evolution_source = (root / "app" / "services" / "evolution_daemon.py").read_text(encoding="utf-8")
+    runtime_worker_source = (root / "app" / "services" / "runtime_task_worker.py").read_text(encoding="utf-8")
 
     def bounded_count(source: str, family: str) -> int:
         return len(re.findall(rf'run_bounded\(\s*"{family}"', source))
 
     assert bounded_count(heartbeat_source, "heartbeat") >= 2, "heartbeat resume + tick dispatch must be bounded"
     assert bounded_count(trigger_source, "trigger") >= 2, "trigger resume + tick dispatch must be bounded"
-    assert bounded_count(trigger_source, "dream") >= 1, "trigger-side auto_dream dispatch must be bounded"
-    assert bounded_count(evolution_source, "dream") >= 1, "evolution-side auto_dream dispatch must be bounded"
+    assert "enqueue_due_dream" in trigger_source, "trigger-side Dream must enqueue a durable RuntimeTask"
+    assert "reconcile_due_dream_runtime_tasks" in evolution_source
+    assert 'task.task_type == "dream"' in runtime_worker_source
+    assert "_dispatch_async_runtime_task(" in runtime_worker_source
     assert "asyncio.create_task(_execute_heartbeat(" not in heartbeat_source
     assert "asyncio.create_task(_invoke_agent_for_triggers(" not in trigger_source
     assert "asyncio.create_task(run_dream(" not in trigger_source

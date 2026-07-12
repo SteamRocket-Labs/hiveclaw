@@ -13,6 +13,13 @@ from app.models.chat_transcript_event import ChatTranscriptEvent
 from app.memory.t0.ledger import T0SessionEvent
 
 
+async def _run_session_command(owner, **kwargs):
+    from app.services.session_command_runtime import SessionCommandContext
+
+    command_name = kwargs.pop("command_name")
+    return await owner(SessionCommandContext(**kwargs), command_name)
+
+
 class _ScalarResult:
     def __init__(self, value):
         self._value = value
@@ -143,7 +150,8 @@ async def test_session_commands_resume_detects_interrupted_transcript():
     session = _session(agent.id, user.id)
     db = _DB(session, [_event(session, "tool_call")])
 
-    result = await execute_session_command(
+    result = await _run_session_command(
+        execute_session_command,
         db=db,
         agent=agent,
         user=user,
@@ -171,7 +179,8 @@ async def test_session_commands_resume_prefers_committed_db_event_over_t0_projec
 
     monkeypatch.setattr(runtime, "replay_t0_session_events_tail", lambda **_kwargs: t0_events, raising=False)
 
-    result = await runtime.execute_session_command(
+    result = await _run_session_command(
+        runtime.execute_session_command,
         db=db,
         agent=agent,
         user=user,
@@ -204,7 +213,8 @@ async def test_session_commands_resume_ignores_non_turn_tail_and_detects_user_pr
     ]
     db = _DB(session, events, session, interrupted_events)
 
-    complete = await execute_session_command(
+    complete = await _run_session_command(
+        execute_session_command,
         db=db,
         agent=agent,
         user=user,
@@ -213,7 +223,8 @@ async def test_session_commands_resume_ignores_non_turn_tail_and_detects_user_pr
         session_id=session.id,
         arguments={},
     )
-    interrupted = await execute_session_command(
+    interrupted = await _run_session_command(
+        execute_session_command,
         db=db,
         agent=agent,
         user=user,
@@ -239,7 +250,8 @@ async def test_session_commands_rename_and_tag_update_control_index_only():
     session = _session(agent.id, user.id)
     db = _DB(session, session)
 
-    renamed = await execute_session_command(
+    renamed = await _run_session_command(
+        execute_session_command,
         db=db,
         agent=agent,
         user=user,
@@ -248,7 +260,8 @@ async def test_session_commands_rename_and_tag_update_control_index_only():
         session_id=session.id,
         arguments={"title": "New title"},
     )
-    tagged = await execute_session_command(
+    tagged = await _run_session_command(
+        execute_session_command,
         db=db,
         agent=agent,
         user=user,
@@ -285,7 +298,8 @@ async def test_session_export_returns_transcript_messages_and_artifact_refs():
     )
     db = _DB(session, [_event(session)], [message], [artifact])
 
-    result = await execute_session_command(
+    result = await _run_session_command(
+        execute_session_command,
         db=db,
         agent=agent,
         user=user,
@@ -317,7 +331,8 @@ async def test_session_export_uses_t0_jsonl_as_memory_evidence_fallback(monkeypa
 
     monkeypatch.setattr(runtime, "replay_t0_session_events_tail", lambda **_kwargs: t0_events, raising=False)
 
-    result = await runtime.execute_session_command(
+    result = await _run_session_command(
+        runtime.execute_session_command,
         db=db,
         agent=agent,
         user=user,
@@ -349,7 +364,8 @@ async def test_clear_command_returns_typed_switch_session_control_result(monkeyp
 
     monkeypatch.setattr(runtime, "append_session_event", fake_append_session_event)
 
-    result = await runtime.execute_session_command(
+    result = await _run_session_command(
+        runtime.execute_session_command,
         db=db,
         agent=agent,
         user=user,
@@ -402,7 +418,8 @@ async def test_branch_command_is_non_destructive_session_fork(monkeypatch):
     monkeypatch.setattr(runtime, "create_conversation_branch", fake_create_conversation_branch)
     monkeypatch.setattr(runtime, "append_session_event", fake_append_session_event)
 
-    result = await runtime.execute_session_command(
+    result = await _run_session_command(
+        runtime.execute_session_command,
         db=db,
         agent=agent,
         user=user,
@@ -438,7 +455,8 @@ async def test_rewind_without_checkpoint_opens_selector_and_does_not_create_sess
 
     monkeypatch.setattr(runtime, "create_conversation_branch", fail_create_conversation_branch)
 
-    result = await runtime.execute_session_command(
+    result = await _run_session_command(
+        runtime.execute_session_command,
         db=db,
         agent=agent,
         user=user,
@@ -483,7 +501,8 @@ async def test_rewind_with_checkpoint_updates_active_projection_without_new_sess
     monkeypatch.setattr(runtime, "create_conversation_branch", fail_create_conversation_branch)
     monkeypatch.setattr(runtime, "append_session_event", fake_append_session_event)
 
-    result = await runtime.execute_session_command(
+    result = await _run_session_command(
+        runtime.execute_session_command,
         db=db,
         agent=agent,
         user=user,
@@ -558,7 +577,8 @@ async def test_rewind_interrupts_active_run_then_applies_under_stable_revision(m
     monkeypatch.setattr(runtime, "_lock_rewind_session_row", fake_session_lock, raising=False)
     monkeypatch.setattr(runtime, "append_session_event", fake_append)
 
-    result = await runtime.execute_session_command(
+    result = await _run_session_command(
+        runtime.execute_session_command,
         db=db,
         agent=agent,
         user=user,
@@ -616,7 +636,8 @@ async def test_rewind_rejects_when_revision_changes_while_interrupting(monkeypat
     monkeypatch.setattr(runtime, "append_session_event", fake_append)
 
     with pytest.raises(HTTPException) as exc:
-        await runtime.execute_session_command(
+        await _run_session_command(
+            runtime.execute_session_command,
             db=db,
             agent=agent,
             user=user,
@@ -654,7 +675,8 @@ async def test_rewind_rejects_stale_client_revision_before_interrupt(monkeypatch
     monkeypatch.setattr(runtime, "get_active_web_chat_run", fail_active)
 
     with pytest.raises(HTTPException) as exc:
-        await runtime.execute_session_command(
+        await _run_session_command(
+            runtime.execute_session_command,
             db=db,
             agent=agent,
             user=user,
@@ -678,7 +700,8 @@ async def test_rewind_workspace_mode_is_explicitly_not_supported_without_snapsho
     first = _event(session, "user_message", sequence=1, content="first", role="user")
     db = _DB(session, [first])
 
-    result = await execute_session_command(
+    result = await _run_session_command(
+        execute_session_command,
         db=db,
         agent=agent,
         user=user,
@@ -717,7 +740,8 @@ async def test_rewind_workspace_mode_requires_explicit_restore_confirmation(monk
 
     monkeypatch.setattr(runtime, "restore_session_workspace_snapshot", fail_restore)
 
-    result = await runtime.execute_session_command(
+    result = await _run_session_command(
+        runtime.execute_session_command,
         db=db,
         agent=agent,
         user=user,
@@ -756,7 +780,8 @@ async def test_workspace_rewind_does_not_refresh_a_stale_revision_during_confirm
     db = _DB(session, _db_rows(first, latest))
 
     with pytest.raises(HTTPException) as exc:
-        await execute_session_command(
+        await _run_session_command(
+            execute_session_command,
             db=db,
             agent=agent,
             user=user,
@@ -870,7 +895,8 @@ async def test_rewind_workspace_mode_restores_snapshot_when_confirmed(monkeypatc
     monkeypatch.setattr(runtime, "restore_session_workspace_snapshot", fake_restore_session_workspace_snapshot)
     monkeypatch.setattr(runtime, "append_session_event", fake_append_session_event)
 
-    result = await runtime.execute_session_command(
+    result = await _run_session_command(
+        runtime.execute_session_command,
         db=db,
         agent=agent,
         user=user,
@@ -963,7 +989,8 @@ async def test_workspace_rewind_lock_wait_does_not_block_the_event_loop(monkeypa
     timer.start()
     started = time.perf_counter()
     command_task = asyncio.create_task(
-        runtime.execute_session_command(
+        _run_session_command(
+            runtime.execute_session_command,
             db=db,
             agent=agent,
             user=user,
@@ -1015,7 +1042,8 @@ async def test_workspace_rewind_fails_closed_when_file_change_hash_evidence_is_m
 
     monkeypatch.setattr(runtime, "restore_session_workspace_snapshot", fail_restore)
 
-    result = await runtime.execute_session_command(
+    result = await _run_session_command(
+        runtime.execute_session_command,
         db=db,
         agent=agent,
         user=user,
@@ -1118,7 +1146,8 @@ async def test_workspace_rewind_rolls_back_deferred_swap_when_control_event_fail
     monkeypatch.setattr(runtime, "finalize_workspace_restore", fake_finalize)
 
     with pytest.raises(expected_type):
-        await runtime.execute_session_command(
+        await _run_session_command(
+            runtime.execute_session_command,
             db=db,
             agent=agent,
             user=user,
@@ -1178,7 +1207,8 @@ async def test_compact_command_installs_compacted_projection_and_session_compact
     monkeypatch.setattr(runtime, "append_session_event", fake_append_session_event)
     monkeypatch.setattr(runtime, "emit_hook", fake_emit_hook)
 
-    result = await runtime.execute_session_command(
+    result = await _run_session_command(
+        runtime.execute_session_command,
         db=db,
         agent=agent,
         user=user,
@@ -1245,7 +1275,8 @@ async def test_btw_command_creates_side_question_session(monkeypatch):
 
     monkeypatch.setattr(runtime, "create_conversation_branch", fake_create_conversation_branch)
 
-    result = await runtime.execute_session_command(
+    result = await _run_session_command(
+        runtime.execute_session_command,
         db=db,
         agent=agent,
         user=user,
@@ -1286,7 +1317,8 @@ async def test_turn_steer_command_queues_message_to_active_turn(monkeypatch):
 
     monkeypatch.setattr(runtime, "steer_active_web_chat_turn", fake_steer_active_web_chat_turn)
 
-    result = await runtime.execute_session_command(
+    result = await _run_session_command(
+        runtime.execute_session_command,
         db=db,
         agent=agent,
         user=user,
@@ -1324,7 +1356,8 @@ async def test_interrupt_command_cancels_current_active_turn(monkeypatch):
     monkeypatch.setattr(runtime, "get_active_web_chat_run", fake_get_active_web_chat_run)
     monkeypatch.setattr(runtime, "cancel_web_chat_run", fake_cancel_web_chat_run)
 
-    result = await runtime.execute_session_command(
+    result = await _run_session_command(
+        runtime.execute_session_command,
         db=db,
         agent=agent,
         user=user,
@@ -1359,7 +1392,8 @@ async def test_interrupt_command_rejects_invalid_run_id(monkeypatch):
     monkeypatch.setattr(runtime, "get_active_web_chat_run", fake_get_active_web_chat_run)
 
     with pytest.raises(HTTPException) as exc:
-        await runtime.execute_session_command(
+        await _run_session_command(
+            runtime.execute_session_command,
             db=db,
             agent=agent,
             user=user,
@@ -1385,7 +1419,8 @@ async def test_checkpoints_lists_user_turn_boundaries():
     second_user = _event(session, "user_message", sequence=3, content="second", role="user")
     db = _DB(session, _db_rows(first_user, assistant, second_user))
 
-    result = await execute_session_command(
+    result = await _run_session_command(
+        execute_session_command,
         db=db,
         agent=agent,
         user=user,
@@ -1424,7 +1459,8 @@ async def test_copy_returns_nth_latest_assistant_response_and_code_blocks():
     )
     db = _DB(session, _db_rows(first, second))
 
-    result = await execute_session_command(
+    result = await _run_session_command(
+        execute_session_command,
         db=db,
         agent=agent,
         user=user,
@@ -1455,7 +1491,8 @@ async def test_copy_rejects_out_of_range_assistant_index():
     db = _DB(session, [only])
 
     with pytest.raises(HTTPException) as exc:
-        await execute_session_command(
+        await _run_session_command(
+            execute_session_command,
             db=db,
             agent=agent,
             user=user,
@@ -1482,7 +1519,8 @@ async def test_copy_rejects_zero_index():
     db = _DB(session, [only])
 
     with pytest.raises(HTTPException) as exc:
-        await execute_session_command(
+        await _run_session_command(
+            execute_session_command,
             db=db,
             agent=agent,
             user=user,
@@ -1513,7 +1551,8 @@ async def test_rewind_defaults_to_last_user_checkpoint_and_drops_that_turn(monke
 
     monkeypatch.setattr(runtime, "create_conversation_branch", fail_create_conversation_branch)
 
-    result = await runtime.execute_session_command(
+    result = await _run_session_command(
+        runtime.execute_session_command,
         db=db,
         agent=agent,
         user=user,
@@ -1552,7 +1591,8 @@ async def test_rollback_num_turns_selects_nth_latest_user_checkpoint(monkeypatch
     monkeypatch.setattr(runtime, "create_conversation_branch", fail_create_conversation_branch)
     monkeypatch.setattr(runtime, "append_session_event", fake_append_session_event)
 
-    result = await runtime.execute_session_command(
+    result = await _run_session_command(
+        runtime.execute_session_command,
         db=db,
         agent=agent,
         user=user,
@@ -1579,7 +1619,8 @@ async def test_clear_creates_new_context_boundary_without_deleting_source():
     source = _session(agent.id, user.id)
     db = _DB(source)
 
-    result = await execute_session_command(
+    result = await _run_session_command(
+        execute_session_command,
         db=db,
         agent=agent,
         user=user,
@@ -1614,7 +1655,8 @@ async def test_compact_command_refuses_to_fake_success_without_messages(monkeypa
     monkeypatch.setattr(runtime, "emit_hook", fake_emit_hook)
     monkeypatch.setattr(runtime, "append_session_event", fake_append_session_event)
 
-    result = await runtime.execute_session_command(
+    result = await _run_session_command(
+        runtime.execute_session_command,
         db=db,
         agent=agent,
         user=user,

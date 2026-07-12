@@ -494,6 +494,18 @@
       "subtitle": "会话内 Team、Subagent 定义、Peer 关系和本地运行时 Agent 都可见，但不会混淆各自归属边界。"
     }
   },
+  "approvalExecution": {
+    "pending": "待审批",
+    "approved": "已批准",
+    "rejected": "已拒绝",
+    "queued": "已进入执行队列",
+    "executing": "执行中",
+    "succeeded": "执行成功",
+    "failed": "执行失败",
+    "needs_reconciliation": "需要管理员核对",
+    "needs_reapproval": "需要重新审批",
+    "unknown": "状态不可用"
+  },
   "controlPlane": {
     "eyebrow": "企业运行控制台",
     "title": "控制中台",

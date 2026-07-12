@@ -27,6 +27,7 @@ _RESTART_RESUMABLE_TASK_TYPES = (
     "team_member",
     "goal_continuation",
     "advanced_plan",
+    "approval_execution",
 )
 _TERMINAL_STATUSES = {"completed", "failed", "killed", "skipped", "needs_reconciliation"}
 RUNTIME_RESTART_REPLAY_CONTRACT_SCHEMA = "runtime_restart_replay_contract.v1"

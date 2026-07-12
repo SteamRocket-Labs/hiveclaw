@@ -90,6 +90,7 @@ def test_runtime_task_claim_statement_reclaims_only_expired_active_rows():
         "goal_continuation",
         "team_member",
         "advanced_plan",
+        "approval_execution",
     ]
     assert snapshot["fence_contract"] == "claim_version+worker_id+lease"
 

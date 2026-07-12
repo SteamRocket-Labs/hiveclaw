@@ -32,6 +32,7 @@ SUPPORTED_RUNTIME_TASK_TYPES = (
     "business_task",
     "subagent",
     "trigger",
+    "approval_execution",
 )
 _DISPATCHED_TASKS: dict[str, tuple[str, asyncio.Task]] = {}
 _STATE: dict[str, Any] = {
@@ -61,6 +62,7 @@ _STATE: dict[str, Any] = {
     "budget_outbox_retried": 0,
     "budget_outbox_dead_lettered": 0,
     "budget_outbox_needs_reconciliation": 0,
+    "approval_execution_dispatched": 0,
 }
 
 
@@ -280,6 +282,15 @@ def _dispatch_claimed_task(task: RuntimeTask) -> bool:
         return _dispatch_async_runtime_task(task, _execute_claimed_subagent_task(task.id), task_type="subagent")
     if task.task_type == "trigger":
         return _dispatch_async_runtime_task(task, _execute_claimed_trigger_task(task.id), task_type="trigger")
+    if task.task_type == "approval_execution":
+        dispatched = _dispatch_async_runtime_task(
+            task,
+            _execute_claimed_approval_execution_task(task.id),
+            task_type="approval_execution",
+        )
+        if dispatched:
+            _STATE["approval_execution_dispatched"] = int(_STATE.get("approval_execution_dispatched") or 0) + 1
+        return dispatched
     logger.warning("[RuntimeTaskWorker] Claimed unsupported task type {}; leaving task {}", task.task_type, task.id)
     return False
 
@@ -347,6 +358,33 @@ async def _execute_claimed_trigger_task(task_id: UUID) -> None:
     except Exception as exc:  # noqa: BLE001
         _STATE["last_error"] = f"trigger:{type(exc).__name__}:{str(exc)[:300]}"
         logger.exception("[RuntimeTaskWorker] trigger task {} failed", task_id)
+
+
+async def _execute_claimed_approval_execution_task(task_id: UUID) -> None:
+    try:
+        from app.services.approval_execution_runtime import execute_claimed_approval_execution
+
+        await execute_claimed_approval_execution(task_id)
+    except Exception as exc:  # noqa: BLE001 - preserve uncertainty rather than replaying a side effect.
+        _STATE["last_error"] = f"approval_execution:{type(exc).__name__}:{str(exc)[:300]}"
+        logger.exception("[RuntimeTaskWorker] approval execution task {} failed", task_id)
+        try:
+            from app.services.runtime_task_service import update_runtime_task_record
+
+            await update_runtime_task_record(
+                task_id.hex,
+                status="needs_reconciliation",
+                result_summary=(
+                    "Approval worker failed outside its persisted state machine; side effects require review: "
+                    f"{type(exc).__name__}: {str(exc)[:500]}"
+                ),
+            )
+        except Exception as persist_exc:  # noqa: BLE001
+            logger.warning(
+                "[RuntimeTaskWorker] failed to quarantine approval execution task {}: {}",
+                task_id,
+                persist_exc,
+            )
 
 
 async def _execute_claimed_business_task(runtime_task_id: UUID) -> None:

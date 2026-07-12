@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 
 import { enterpriseApi } from '../../api/domains/enterprise';
+import { approvalExecutionPresentation } from '../../utils/approvalExecution';
 
 interface WorkspaceApprovalsSectionProps {
   selectedTenantId: string;
@@ -14,6 +15,8 @@ interface WorkspaceApproval {
   agent_name?: string | null;
   created_at: string;
   status: 'pending' | 'approved' | 'rejected';
+  tool_name?: string | null;
+  execution_status?: string | null;
 }
 
 export default function WorkspaceApprovalsSection({
@@ -24,6 +27,7 @@ export default function WorkspaceApprovalsSection({
   const { data: approvals = [] } = useQuery({
     queryKey: ['approvals', selectedTenantId],
     queryFn: () => enterpriseApi.listApprovals(selectedTenantId || undefined),
+    refetchInterval: 5000,
   });
 
   const resolveApproval = useMutation({
@@ -36,8 +40,10 @@ export default function WorkspaceApprovalsSection({
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-      {(approvals as WorkspaceApproval[]).map((approval) => (
-        <div
+      {(approvals as WorkspaceApproval[]).map((approval) => {
+        const presentation = approvalExecutionPresentation(approval);
+        const label = t(`approvalExecution.${presentation.key}`, presentation.label);
+        return <div
           key={approval.id}
           className="card"
           style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}
@@ -64,12 +70,12 @@ export default function WorkspaceApprovalsSection({
               </button>
             </div>
           ) : (
-            <span className={`badge ${approval.status === 'approved' ? 'badge-success' : 'badge-error'}`}>
-              {approval.status === 'approved' ? t('common.approved', 'Approved') : t('common.rejected', 'Rejected')}
+            <span className={`badge badge-${presentation.tone}`}>
+              {label}
             </span>
           )}
-        </div>
-      ))}
+        </div>;
+      })}
       {approvals.length === 0 ? (
         <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-tertiary)' }}>
           {t('common.noData', 'No data')}

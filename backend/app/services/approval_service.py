@@ -151,7 +151,7 @@ class ApprovalService:
         self, db: AsyncSession, approval_id: uuid.UUID, user: User, action: str
     ) -> ApprovalRequest:
         """Approve or reject a pending approval request."""
-        result = await db.execute(select(ApprovalRequest).where(ApprovalRequest.id == approval_id))
+        result = await db.execute(select(ApprovalRequest).where(ApprovalRequest.id == approval_id).with_for_update())
         approval = result.scalar_one_or_none()
         if not approval:
             raise ValueError("Approval not found")
@@ -182,6 +182,43 @@ class ApprovalService:
         approval.execution_status = approval.status
         approval.resolved_at = datetime.now(timezone.utc)
         approval.resolved_by = user.id
+
+        execution_task = None
+        if approval.status == "approved" and getattr(approval, "tool_name", None):
+            if agent is None:
+                raise ValueError("Approved tool execution requires an existing Agent")
+            if approval.expires_at is not None and approval.expires_at <= datetime.now(timezone.utc):
+                approval.execution_status = "needs_reapproval"
+                approval.execution_result = "Approval expired before its decision could be executed."
+                approval.execution_receipt = {
+                    **dict(getattr(approval, "execution_receipt", None) or {}),
+                    "status": "needs_reapproval",
+                    "side_effect_state": "not_started",
+                    "automatic_replay": False,
+                    "reason": "approval_expired_before_decision",
+                }
+            else:
+                from app.services.approval_execution_runtime import build_approval_execution_task
+
+                execution_task = build_approval_execution_task(
+                    approval,
+                    approved_by_user_id=user.id,
+                )
+                db.add(execution_task)
+                # The scalar FK is intentionally used instead of an ORM
+                # relationship; insert the durable job first so PostgreSQL can
+                # validate the link within this same transaction.
+                await db.flush()
+                approval.execution_task_id = execution_task.id
+                approval.execution_status = "queued"
+                approval.execution_receipt = {
+                    **dict(getattr(approval, "execution_receipt", None) or {}),
+                    "status": "queued",
+                    "side_effect_state": "not_started",
+                    "automatic_replay": True,
+                    "execution_task_id": str(execution_task.id),
+                    "queued_at": datetime.now(timezone.utc).isoformat(),
+                }
 
         db.add(
             AuditLog(
@@ -226,28 +263,12 @@ class ApprovalService:
         await db.flush()
         await db.commit()
 
-        execution_result = None
-        if approval.status == "approved" and getattr(approval, "tool_name", None):
-            execution_result = await self._execute_approved_action(
-                approval.agent_id,
-                approved_by_user_id=user.id,
-                approval_id=approval.id,
-            )
-            execution_status = (
-                "success" if execution_result and "failed" not in str(execution_result).lower() else "failed"
-            )
-            logger.info(
-                "Post-approval execution for %s: status=%s result=%s",
-                approval.action_type,
-                execution_status,
-                str(execution_result)[:200],
-            )
-            await self._publish_approval_result_to_origin(
-                db,
-                approval,
-                agent=agent,
-                approved_by_user_id=user.id,
-                execution_result=execution_result,
+        if execution_task is not None:
+            from app.services.runtime_task_worker import notify_runtime_task_worker
+
+            await notify_runtime_task_worker(
+                reason="approval_execution_queued",
+                runtime_task_id=execution_task.id,
             )
 
         if agent:
@@ -255,8 +276,10 @@ class ApprovalService:
 
             status_label = "approved" if approval.status == "approved" else "rejected"
             body_text = json.dumps(approval.details, ensure_ascii=False)[:200]
-            if execution_result:
-                body_text = f"Result: {execution_result}"
+            if execution_task is not None:
+                body_text = "Approved action queued for durable execution."
+            elif approval.execution_status == "needs_reapproval":
+                body_text = "Approval expired; submit a new request before execution."
             await send_notification(
                 db,
                 user_id=agent.creator_id,
@@ -286,26 +309,6 @@ class ApprovalService:
 
         await db.flush()
         return approval
-
-    async def _execute_approved_action(
-        self,
-        agent_id: uuid.UUID,
-        *,
-        approved_by_user_id: uuid.UUID | None = None,
-        approval_id: uuid.UUID,
-    ) -> str | None:
-        """Execute the tool action that was approved."""
-        try:
-            from app.services.agent_tools import execute_approved_tool
-
-            return await execute_approved_tool(
-                approval_id=approval_id,
-                expected_agent_id=agent_id,
-                approved_by_user_id=approved_by_user_id,
-            )
-        except Exception as exc:
-            logger.error("Failed to execute approved action %s: %s", approval_id, exc)
-            return f"Execution failed: {exc}"
 
     async def _publish_approval_result_to_origin(
         self,

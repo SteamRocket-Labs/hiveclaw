@@ -519,6 +519,18 @@
       "subtitle": "Session-local team work, subagent definitions, peer relationships, and local-runtime agents stay visible without mixing their ownership boundaries."
     }
   },
+  "approvalExecution": {
+    "pending": "Pending",
+    "approved": "Approved",
+    "rejected": "Rejected",
+    "queued": "Queued",
+    "executing": "Executing",
+    "succeeded": "Succeeded",
+    "failed": "Failed",
+    "needs_reconciliation": "Needs reconciliation",
+    "needs_reapproval": "Needs reapproval",
+    "unknown": "Status unavailable"
+  },
   "controlPlane": {
     "eyebrow": "Enterprise operating console",
     "title": "Control Plane",

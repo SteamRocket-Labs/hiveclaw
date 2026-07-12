@@ -524,7 +524,7 @@ async def consume_approval_ticket(
             raise ApprovalTicketError("approval ticket expired")
         if approval.consumed_at is not None:
             raise ApprovalTicketError("approval ticket already consumed")
-        if approval.execution_status != "approved":
+        if approval.execution_status not in {"approved", "queued"}:
             raise ApprovalTicketError(
                 f"approval ticket execution state requires reapproval: {approval.execution_status}"
             )
@@ -608,6 +608,8 @@ async def complete_approval_ticket(
         row = await db.get(ApprovalRequest, approval_id, with_for_update=True)
         if row is None or row.consumed_at is None:
             raise ApprovalTicketError("approval ticket completion has no consumed ticket")
+        if row.execution_status != "executing":
+            raise ApprovalTicketError(f"approval ticket completion lost execution ownership: {row.execution_status}")
         row.execution_status = str(status)
         row.execution_result = str(result)[:20_000]
         row.execution_receipt = dict(receipt)

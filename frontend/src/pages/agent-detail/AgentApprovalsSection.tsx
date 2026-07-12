@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 
 import { agentApi } from '../../api/domains/agents';
+import { approvalExecutionPresentation } from '../../utils/approvalExecution';
 import './AgentApprovalsSection.css';
 
 type AgentApprovalsSectionProps = {
@@ -32,8 +33,13 @@ export default function AgentApprovalsSection({ agentId }: AgentApprovalsSection
   const pending = (approvals as any[]).filter((approval: any) => approval.status === 'pending');
   const resolved = (approvals as any[]).filter((approval: any) => approval.status !== 'pending');
 
-  const statusClass = (status: string) =>
-    status === 'approved' ? 'is-approved' : status === 'rejected' ? 'is-rejected' : 'is-pending';
+  const renderStatus = (approval: any) => {
+    const presentation = approvalExecutionPresentation(approval);
+    return {
+      ...presentation,
+      text: t(`approvalExecution.${presentation.key}`, presentation.label),
+    };
+  };
 
   return (
     <div className="agent-approvals">
@@ -42,10 +48,11 @@ export default function AgentApprovalsSection({ agentId }: AgentApprovalsSection
           <h4 className="agent-approvals-heading is-alert">
             {t('agent.approvals.pendingCount', { count: pending.length })}
           </h4>
-          {pending.map((approval: any) => (
-            <div key={approval.id} className="card agent-approvals-item">
+          {pending.map((approval: any) => {
+            const presentation = renderStatus(approval);
+            return <div key={approval.id} className="card agent-approvals-item">
               <div className="agent-approvals-row agent-approvals-row-head">
-                <span className={`agent-approvals-status ${statusClass(approval.status)}`}>{approval.status}</span>
+                <span className={`agent-approvals-status ${presentation.agentClassName}`}>{presentation.text}</span>
                 <span className="agent-approvals-action">{approval.action_type}</span>
                 <span className="agent-approvals-spacer" />
                 <span className="agent-approvals-time">
@@ -73,8 +80,8 @@ export default function AgentApprovalsSection({ agentId }: AgentApprovalsSection
                   {t('agent.approvals.reject')}
                 </button>
               </div>
-            </div>
-          ))}
+            </div>;
+          })}
           <div className="agent-approvals-divider" />
         </>
       )}
@@ -87,18 +94,19 @@ export default function AgentApprovalsSection({ agentId }: AgentApprovalsSection
           {t('agent.approvals.noRecords')}
         </div>
       )}
-      {resolved.map((approval: any) => (
-        <div key={approval.id} className="card card-pad-sm agent-approvals-item-resolved">
+      {resolved.map((approval: any) => {
+        const presentation = renderStatus(approval);
+        return <div key={approval.id} className="card card-pad-sm agent-approvals-item-resolved">
           <div className="agent-approvals-row">
-            <span className={`agent-approvals-status ${statusClass(approval.status)}`}>{approval.status}</span>
+            <span className={`agent-approvals-status ${presentation.agentClassName}`}>{presentation.text}</span>
             <span className="agent-approvals-action-sm">{approval.action_type}</span>
             <span className="agent-approvals-spacer" />
             <span className="agent-approvals-time-sm">
               {approval.resolved_at ? new Date(approval.resolved_at).toLocaleString() : ''}
             </span>
           </div>
-        </div>
-      ))}
+        </div>;
+      })}
     </div>
   );
 }

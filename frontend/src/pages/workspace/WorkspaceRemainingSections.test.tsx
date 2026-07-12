@@ -39,6 +39,16 @@ vi.mock('@tanstack/react-query', () => ({
             created_at: '2026-03-27T09:00:00Z',
             status: 'pending',
           },
+          {
+            id: 'approval-2',
+            action_type: 'publish_report',
+            agent_id: 'agent-12345678',
+            agent_name: 'Deploy Bot',
+            created_at: '2026-03-27T09:05:00Z',
+            status: 'approved',
+            tool_name: 'write_file',
+            execution_status: 'executing',
+          },
         ],
       };
     }
@@ -121,6 +131,7 @@ describe('Workspace remaining sections', () => {
     );
 
     expect(approvalsMarkup).toContain('deploy_run');
+    expect(approvalsMarkup).toContain('Executing');
     expect(auditMarkup).toContain('schedule_tick');
     expect(auditMarkup).toContain('records:1');
   });

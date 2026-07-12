@@ -222,8 +222,10 @@ class _ResolveApprovalDb:
         self.events = []
         self._events = events
         self.added = []
+        self.queries = []
 
-    async def execute(self, _query):
+    async def execute(self, query):
+        self.queries.append(query)
         return _FakeOneResult(self._values.pop(0))
 
     def add(self, item):
@@ -270,7 +272,8 @@ async def test_session_tool_approval_cannot_be_resolved_through_enterprise_servi
 
 
 @pytest.mark.asyncio
-async def test_resolve_approval_commits_before_approved_external_action(monkeypatch) -> None:
+async def test_resolve_approval_atomically_enqueues_durable_execution_job(monkeypatch) -> None:
+    from app.models.runtime_task import RuntimeTask
     from app.services.approval_service import ApprovalService
 
     events: list[str] = []
@@ -278,9 +281,16 @@ async def test_resolve_approval_commits_before_approved_external_action(monkeypa
     approval = SimpleNamespace(
         id=uuid4(),
         agent_id=uuid4(),
+        tenant_id=tenant_id,
         action_type="write_file",
         tool_name="write_file",
         execution_status="pending",
+        execution_task_id=None,
+        execution_receipt=None,
+        execution_envelope_hash="envelope-hash",
+        policy_snapshot_hash="policy-hash",
+        requested_by=uuid4(),
+        expires_at=None,
         status="pending",
         created_at=None,
         resolved_at=None,
@@ -297,11 +307,14 @@ async def test_resolve_approval_commits_before_approved_external_action(monkeypa
     async def fake_send_notification(*_args, **_kwargs):
         events.append("notify")
 
+    async def fake_notify_worker(*, reason, runtime_task_id):
+        assert reason == "approval_execution_queued"
+        assert runtime_task_id == approval.execution_task_id
+        events.append("wake")
+
     class _Service(ApprovalService):
         async def _execute_approved_action(self, *args, **kwargs):
-            events.append("execute")
-            assert "commit" in db.events
-            return "ok"
+            raise AssertionError("approved actions must not execute in the resolving HTTP request")
 
         async def _publish_approval_result_to_origin(self, *args, **kwargs):
             events.append("publish")
@@ -309,11 +322,23 @@ async def test_resolve_approval_commits_before_approved_external_action(monkeypa
 
     monkeypatch.setattr("app.core.policy.write_audit_event", fake_write_audit_event)
     monkeypatch.setattr("app.services.notification_service.send_notification", fake_send_notification)
+    monkeypatch.setattr("app.services.runtime_task_worker.notify_runtime_task_worker", fake_notify_worker)
 
     resolved = await _Service().resolve_approval(db, approval.id, user, "approve")  # type: ignore[arg-type]
 
     assert resolved.status == "approved"
-    assert events.index("commit") < events.index("execute")
+    assert resolved.execution_status == "queued"
+    execution_jobs = [item for item in db.added if isinstance(item, RuntimeTask)]
+    assert len(execution_jobs) == 1
+    execution_job = execution_jobs[0]
+    assert execution_job.task_type == "approval_execution"
+    assert execution_job.status == "pending"
+    assert execution_job.root_idempotency_key == f"approval-execution:{approval.id}"
+    assert execution_job.metadata_json["approval_id"] == str(approval.id)
+    assert approval.execution_task_id == execution_job.id
+    assert events.index("commit") < events.index("wake")
+    assert "execute" not in events
+    assert "FOR UPDATE" in str(db.queries[0]).upper()
 
 
 @pytest.mark.asyncio

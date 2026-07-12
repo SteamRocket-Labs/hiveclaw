@@ -264,6 +264,8 @@ vi.mock('@tanstack/react-query', () => ({
             id: 'approval-2',
             action_type: 'publish_post',
             status: 'approved',
+            tool_name: 'publish_post',
+            execution_status: 'queued',
             resolved_at: '2026-03-27T09:30:00Z',
           },
         ],
@@ -1651,6 +1653,7 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('deploy_run');
     expect(markup).toContain('publish_post');
     expect(markup).toContain('prod');
+    expect(markup).toContain('Queued');
   });
 
   it('renders AgentSkillsSection as a standalone skills module', () => {

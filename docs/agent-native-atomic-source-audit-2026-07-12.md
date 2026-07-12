@@ -436,6 +436,8 @@ flowchart LR
 - 精确代码位置：`backend/app/services/approval_service.py:resolve_approval`、`:_execute_approved_action`；`backend/app/services/approval_ticket.py:consume_approval_ticket`、`:reconcile_stuck_approval_tickets`。
 - 缺失测试：commit 后/consume 前 crash；consume 后/side effect 前后 crash；restart worker。
 - 一次性完整关闭方案：在 approval decision transaction 原子写 `ApprovalExecutionJob`/outbox（唯一 `approval_id`）；worker claim/lease/fence 后消费 immutable envelope；保留 live policy/budget/asset revision recheck；迁移并回填 approved+unconsumed ticket，过期者 needs_reapproval；executing 继续 quarantine unknown side effects；结果与 continuation 使用 durable outbox；UI显示 queued/executing/success/failed/needs_reconciliation；补 fault injection、dedupe、rollback、metrics 和 operator reconciliation；移除 HTTP inline executor。
+- 修复状态（2026-07-12）：**R-002 执行交接闭环**。`resolve_approval()` 现在对审批行 `FOR UPDATE`，在同一数据库事务内写入唯一 `approval_execution` RuntimeTask、反向 `execution_task_id`、`queued` receipt 和审批决定，然后才 commit；HTTP 栈已完全删除 `_execute_approved_action()`。统一 RuntimeTask worker 负责 `SKIP LOCKED` claim、lease、claim-version fence、限额和跨进程 wake/poll；consume 之前继续执行 immutable envelope、实时 policy/budget/task/asset revision 校验。若进程在 consume 前退出，pending/resumable job 可安全重领；若 `consumed_at`/`executing` 已出现但终态 receipt 未落下，job 与 approval 一起进入 `needs_reconciliation`，标记 `automatic_replay=false`，不会猜测重放外部副作用；若 ticket 已落 `succeeded/failed` 而 job 尚未 terminal，则重领只收敛 RuntimeTask，不再次执行。`approval_execution_jobs_0712` 为旧 approved+unconsumed 数据创建确定性 job，过期、tenantless 或 immutable binding 不完整的记录转 `needs_reapproval`。Agent 与企业审批页、聚合页真实显示 queued/executing/succeeded/failed/needs_reapproval/needs_reconciliation；平台管理员可从既有 Runtime Reconciliation 面核对未知副作用。审批结果回原 session 的 durable continuation 仍由独立 R-009 关闭，不再与本项执行交接混淆。
+- 修复证据：Red backend 契约集 → `5 failed`（HTTP 仍内联、worker 不识别类型、durable executor 缺失）；Red frontend → `3 failed suites`（状态 helper 缺失、两个页面仍只显示 approved）。Green backend 扩展集 `pytest tests/services/test_approval_service.py tests/services/test_approval_ticket.py tests/services/test_approval_execution_runtime.py tests/services/test_runtime_task_worker.py tests/services/test_runtime_task_claim_service.py tests/services/test_runtime_task_service.py tests/migrations/test_approval_execution_job_migration.py -q` → `59 passed, 3 warnings`，其中真实 PostgreSQL resolve transaction 用例证明 decision/job/link 一次 commit，terminal recovery 两次调用只产生一次 idempotency key，executing crash 用例证明零重放；迁移验收真实执行 `bootstrap head → downgrade 到 parent → 写入 fresh/expired legacy rows → upgrade head`，验证 fresh 行生成并链接 pending job、expired 行转 needs_reapproval，同时锁定 migration 跨租户 RLS backfill 与 downgrade。Alembic head=`approval_execution_jobs_0712`。Frontend 定向回归 → `116 passed`，`npm run build` exit 0；变更 Python 文件 `ruff check` 绿并格式化。提交主题：`fix(R-002): make approval execution durable`。
 
 ### [R-003] HR confirm 到 provisioning 由模型自然语言桥接
 
@@ -985,12 +987,12 @@ Codebase graph 校正时状态为 ready（43,281 nodes / 166,753 edges）；`det
 
 ## 16. 28 项原子缺口修复执行账本
 
-本节记录原始审计全部 28 项的实际落地状态：17 个断点、10 个局部闭环、1 个已知缺失。原始严重级别与原子状态保留为审计快照；只有同时具备实现、回归测试、报告证据和独立提交，才把修复状态改为闭环。Company Knowledge Base 本体按 owner 边界不在本轮开发，但 R-008 的诚实隔离、文案与防伪装验收仍必须关闭。当前进度：**4/28**。
+本节记录原始审计全部 28 项的实际落地状态：17 个断点、10 个局部闭环、1 个已知缺失。原始严重级别与原子状态保留为审计快照；只有同时具备实现、回归测试、报告证据和独立提交，才把修复状态改为闭环。Company Knowledge Base 本体按 owner 边界不在本轮开发，但 R-008 的诚实隔离、文案与防伪装验收仍必须关闭。当前进度：**5/28**。
 
 | ID | 修复状态 | 独立提交主题 | 机械证据摘要 |
 |---|---|---|---|
 | R-001 | 闭环 | `fix(R-001): fence multi-replica web chat recovery` | Red 3 failed + 两个独立 Red；Green 128 passed；真实 PostgreSQL 双 worker exact-one claim；ruff 绿 |
-| R-002 | 待修复 | — | — |
+| R-002 | 闭环 | `fix(R-002): make approval execution durable` | Red backend 5 failed + frontend 3 failed suites；Green backend 59 passed；真实 PostgreSQL transaction/crash/dedupe + legacy backfill/downgrade；frontend 116 passed；build/ruff 绿 |
 | R-003 | 待修复 | — | — |
 | R-004 | 待修复 | — | — |
 | R-005 | 待修复 | — | — |

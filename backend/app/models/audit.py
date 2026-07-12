@@ -67,9 +67,13 @@ class ApprovalRequest(Base):
             name="uq_approval_requests_execution_idempotency_key",
         ),
         CheckConstraint(
-            "execution_status IN ('pending','approved','rejected','executing','succeeded','failed',"
+            "execution_status IN ('pending','approved','rejected','queued','executing','succeeded','failed',"
             "'needs_reconciliation','needs_reapproval')",
             name="ck_approval_requests_execution_status",
+        ),
+        UniqueConstraint(
+            "execution_task_id",
+            name="uq_approval_requests_execution_task_id",
         ),
     )
 
@@ -101,6 +105,15 @@ class ApprovalRequest(Base):
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     execution_status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    execution_task_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "runtime_tasks.id",
+            name="fk_approval_requests_execution_task_id_runtime_tasks",
+            ondelete="SET NULL",
+        ),
+        nullable=True,
+    )
     execution_idempotency_key: Mapped[str | None] = mapped_column(String(200), nullable=True)
     execution_result: Mapped[str | None] = mapped_column(Text, nullable=True)
     execution_receipt: Mapped[dict | None] = mapped_column(JSON, nullable=True)

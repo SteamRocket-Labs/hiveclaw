@@ -14,6 +14,7 @@ import {
 } from '@tabler/icons-react';
 import { agentApi } from '../api/domains/agents';
 import { enterpriseApi } from '../api/domains/enterprise';
+import { approvalExecutionPresentation } from '../utils/approvalExecution';
 import { fileApi } from '../api/domains/files';
 import { knowledgeApi } from '../api/domains/knowledge';
 import { planApi, type PlanRequest } from '../api/domains/plans';
@@ -369,13 +370,20 @@ async function collectDocumentRows(agents: Agent[]): Promise<DocumentHubRow[]> {
 
 async function collectApprovalRows(): Promise<ApprovalHubRow[]> {
   const approvals = await enterpriseApi.listApprovals();
-  return (approvals as Array<Record<string, unknown>>).slice(0, 16).map((approval) => ({
-    id: String(approval.id || ''),
-    actionType: String(approval.action_type || approval.action || 'approval'),
-    agentName: String(approval.agent_name || approval.agent_id || 'Agent'),
-    status: String(approval.status || 'pending'),
-    createdAt: typeof approval.created_at === 'string' ? approval.created_at : null,
-  }));
+  return (approvals as Array<Record<string, unknown>>).slice(0, 16).map((approval) => {
+    const presentation = approvalExecutionPresentation({
+      status: String(approval.status || 'pending'),
+      tool_name: typeof approval.tool_name === 'string' ? approval.tool_name : null,
+      execution_status: typeof approval.execution_status === 'string' ? approval.execution_status : null,
+    });
+    return {
+      id: String(approval.id || ''),
+      actionType: String(approval.action_type || approval.action || 'approval'),
+      agentName: String(approval.agent_name || approval.agent_id || 'Agent'),
+      status: presentation.key,
+      createdAt: typeof approval.created_at === 'string' ? approval.created_at : null,
+    };
+  });
 }
 
 function formatDate(value: string | null | undefined): string {

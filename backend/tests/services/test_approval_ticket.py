@@ -21,7 +21,12 @@ def test_approval_ticket_hash_is_canonical_and_binds_tool_name() -> None:
     )
 
 
-async def _seed_approved_ticket(owner_sessionmaker, *, expires_at: datetime | None = None):
+async def _seed_approved_ticket(
+    owner_sessionmaker,
+    *,
+    expires_at: datetime | None = None,
+    execution_status: str = "approved",
+):
     from app.models.agent import Agent
     from app.models.audit import ApprovalRequest
     from app.models.tenant import Tenant
@@ -91,7 +96,7 @@ async def _seed_approved_ticket(owner_sessionmaker, *, expires_at: datetime | No
                 execution_envelope_hash=hash_approval_execution_envelope(execution_envelope),
                 requested_by=user_id,
                 expires_at=expires_at or datetime.now(timezone.utc) + timedelta(minutes=30),
-                execution_status="approved",
+                execution_status=execution_status,
                 execution_idempotency_key=f"approval:{approval_id}",
                 decision_id=f"decision:{approval_id}",
                 details={"tool": "write_file", "args": arguments},
@@ -99,6 +104,26 @@ async def _seed_approved_ticket(owner_sessionmaker, *, expires_at: datetime | No
         )
         await db.commit()
     return tenant_id, user_id, agent_id, approval_id, arguments
+
+
+@pytest.mark.asyncio
+async def test_consume_approval_ticket_accepts_durable_queued_state(owner_sessionmaker, monkeypatch) -> None:
+    import app.database as database
+    from app.services.approval_ticket import consume_approval_ticket
+
+    _, user_id, agent_id, approval_id, _ = await _seed_approved_ticket(
+        owner_sessionmaker,
+        execution_status="queued",
+    )
+    monkeypatch.setattr(database, "async_session", owner_sessionmaker)
+
+    ticket = await consume_approval_ticket(
+        approval_id=approval_id,
+        expected_agent_id=agent_id,
+        expected_user_id=user_id,
+    )
+
+    assert ticket.approval_id == approval_id
 
 
 @pytest.mark.asyncio

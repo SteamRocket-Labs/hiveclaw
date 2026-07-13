@@ -7,9 +7,6 @@ Create Date: 2026-07-10
 
 from __future__ import annotations
 
-import hashlib
-import json
-
 from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
@@ -117,54 +114,54 @@ def upgrade() -> None:
     op.add_column("runtime_tasks", sa.Column("root_idempotency_key", sa.String(length=200), nullable=True))
     op.add_column("runtime_tasks", sa.Column("config_snapshot_hash", sa.String(length=64), nullable=True))
     op.add_column("runtime_tasks", sa.Column("policy_snapshot_hash", sa.String(length=64), nullable=True))
+    # Production can contain hundreds of thousands of historical RuntimeTasks.
+    # Compute both immutable receipts inside PostgreSQL in one set-based update;
+    # a Python row loop turns this migration into one network round trip per row
+    # and blocks the volume-mounted service from starting for hours.
     op.execute(
-        "UPDATE runtime_tasks SET root_idempotency_key = task_type || ':' || id::text "
-        "WHERE root_idempotency_key IS NULL"
-    )
-    bind = op.get_bind()
-    rows = bind.execute(
         sa.text(
-            "SELECT id, task_type, parent_agent_id, child_agent_id, parent_session_id, child_session_id, "
-            "depth, prompt, tenant_id, budget_run_id, budget_snapshot_json, metadata_json FROM runtime_tasks"
+            """
+            UPDATE runtime_tasks
+            SET root_idempotency_key = task_type || ':' || id::text,
+                config_snapshot_hash = encode(
+                    sha256(
+                        convert_to(
+                            jsonb_build_object(
+                                'task_type', task_type,
+                                'parent_agent_id', parent_agent_id::text,
+                                'child_agent_id', child_agent_id::text,
+                                'parent_session_id', parent_session_id,
+                                'child_session_id', child_session_id,
+                                'depth', depth,
+                                'prompt', prompt,
+                                'source', metadata_json::jsonb -> 'source',
+                                'definition_hash', metadata_json::jsonb -> 'definition_hash',
+                                'model_id', metadata_json::jsonb -> 'model_id'
+                            )::text,
+                            'UTF8'
+                        )
+                    ),
+                    'hex'
+                ),
+                policy_snapshot_hash = encode(
+                    sha256(
+                        convert_to(
+                            jsonb_build_object(
+                                'tenant_id', tenant_id::text,
+                                'permission_mode', metadata_json::jsonb -> 'permission_mode',
+                                'permission_profile', metadata_json::jsonb -> 'permission_profile',
+                                'budget_run_id', budget_run_id::text,
+                                'budget_snapshot', budget_snapshot_json::jsonb,
+                                'guard_policy', metadata_json::jsonb -> 'guard_policy'
+                            )::text,
+                            'UTF8'
+                        )
+                    ),
+                    'hex'
+                )
+            """
         )
-    ).mappings()
-    for row in rows:
-        metadata = dict(row["metadata_json"] or {})
-        config_snapshot = {
-            "task_type": row["task_type"],
-            "parent_agent_id": str(row["parent_agent_id"]) if row["parent_agent_id"] else None,
-            "child_agent_id": str(row["child_agent_id"]) if row["child_agent_id"] else None,
-            "parent_session_id": row["parent_session_id"],
-            "child_session_id": row["child_session_id"],
-            "depth": row["depth"],
-            "prompt": row["prompt"],
-            "source": metadata.get("source"),
-            "definition_hash": metadata.get("definition_hash"),
-            "model_id": metadata.get("model_id"),
-        }
-        policy_snapshot = {
-            "tenant_id": str(row["tenant_id"]) if row["tenant_id"] else None,
-            "permission_mode": metadata.get("permission_mode"),
-            "permission_profile": metadata.get("permission_profile"),
-            "budget_run_id": str(row["budget_run_id"]) if row["budget_run_id"] else None,
-            "budget_snapshot": row["budget_snapshot_json"],
-            "guard_policy": metadata.get("guard_policy"),
-        }
-        bind.execute(
-            sa.text(
-                "UPDATE runtime_tasks SET config_snapshot_hash = :config_hash, "
-                "policy_snapshot_hash = :policy_hash WHERE id = :task_id"
-            ),
-            {
-                "task_id": row["id"],
-                "config_hash": hashlib.sha256(
-                    json.dumps(config_snapshot, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
-                ).hexdigest(),
-                "policy_hash": hashlib.sha256(
-                    json.dumps(policy_snapshot, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
-                ).hexdigest(),
-            },
-        )
+    )
     op.alter_column("runtime_tasks", "config_snapshot_hash", nullable=False)
     op.alter_column("runtime_tasks", "policy_snapshot_hash", nullable=False)
     op.alter_column("runtime_tasks", "root_idempotency_key", nullable=False)

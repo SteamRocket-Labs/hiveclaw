@@ -1,12 +1,28 @@
 from __future__ import annotations
 
+import ast
 import json
+from pathlib import Path
 import uuid
 
 from sqlalchemy import inspect, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
+
+
+MIGRATION_PATH = Path(__file__).resolve().parents[2] / "alembic" / "versions" / "runtime_event_fencing_0710.py"
+
+
+def test_runtime_event_fencing_snapshot_backfill_is_set_based() -> None:
+    source = MIGRATION_PATH.read_text(encoding="utf-8")
+    module = ast.parse(source)
+    upgrade = next(node for node in module.body if isinstance(node, ast.FunctionDef) and node.name == "upgrade")
+
+    assert not any(isinstance(node, (ast.For, ast.AsyncFor)) for node in ast.walk(upgrade))
+    assert "sha256(" in source
+    assert "convert_to(" in source
+    assert "jsonb_build_object(" in source
 
 
 async def test_runtime_event_fencing_upgrade_contract(chain_migrated_pg_url: str) -> None:
@@ -176,7 +192,8 @@ async def test_runtime_event_fencing_migrates_terminal_legacy_deep_research_task
                     await connection.execute(
                         text(
                             """
-                        SELECT id, task_type, status, result_summary, metadata_json
+                        SELECT id, task_type, status, result_summary, metadata_json,
+                               root_idempotency_key, config_snapshot_hash, policy_snapshot_hash
                         FROM runtime_tasks
                         WHERE id IN (:completed_id, :failed_id)
                         ORDER BY status
@@ -196,6 +213,12 @@ async def test_runtime_event_fencing_migrates_terminal_legacy_deep_research_task
         assert {row["task_type"] for row in rows} == {"workflow"}
         assert {row["status"] for row in rows} == {"completed", "failed"}
         for row in rows:
+            assert row["root_idempotency_key"] == f"workflow:{row['id']}"
+            assert len(row["config_snapshot_hash"]) == 64
+            assert len(row["policy_snapshot_hash"]) == 64
+            int(row["config_snapshot_hash"], 16)
+            int(row["policy_snapshot_hash"], 16)
+            assert row["config_snapshot_hash"] != row["policy_snapshot_hash"]
             assert row["result_summary"] == f"legacy {row['status']} result"
             assert row["metadata_json"]["deep_research"]["question"] == (f"legacy {row['status']} question")
             assert row["metadata_json"]["artifact_refs"] == [f"reports/{row['status']}.md"]

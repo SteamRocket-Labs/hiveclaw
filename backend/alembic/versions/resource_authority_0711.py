@@ -11,6 +11,13 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
+from app.migration_compat import (
+    add_column_if_missing,
+    create_foreign_key_if_missing,
+    create_index_if_missing,
+    create_table_if_missing,
+)
+
 
 revision = "resource_authority_0711"
 down_revision = "ai_asset_usage_events_0711"
@@ -37,7 +44,8 @@ def _tenant_rls(table: str) -> None:
 
 
 def upgrade() -> None:
-    op.create_table(
+    create_table_if_missing(
+        op,
         "workspace_resource_manifests",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True, nullable=False),
         sa.Column(
@@ -78,20 +86,29 @@ def upgrade() -> None:
         sa.UniqueConstraint("agent_id", "path", name="uq_workspace_resource_manifest_agent_path"),
     )
     for column in ("tenant_id", "agent_id", "owner_user_id", "root_session_id", "authority_state"):
-        op.create_index(f"ix_workspace_resource_manifests_{column}", "workspace_resource_manifests", [column])
-    op.create_index(
+        create_index_if_missing(
+            op, f"ix_workspace_resource_manifests_{column}", "workspace_resource_manifests", [column]
+        )
+    create_index_if_missing(
+        op,
         "ix_workspace_resource_manifests_agent_path_prefix",
         "workspace_resource_manifests",
         ["agent_id", "path"],
     )
 
-    op.add_column("chat_artifacts", sa.Column("owner_user_id", postgresql.UUID(as_uuid=True), nullable=True))
-    op.add_column("chat_artifacts", sa.Column("root_session_id", postgresql.UUID(as_uuid=True), nullable=True))
-    op.add_column(
+    add_column_if_missing(
+        op, "chat_artifacts", sa.Column("owner_user_id", postgresql.UUID(as_uuid=True), nullable=True)
+    )
+    add_column_if_missing(
+        op, "chat_artifacts", sa.Column("root_session_id", postgresql.UUID(as_uuid=True), nullable=True)
+    )
+    add_column_if_missing(
+        op,
         "chat_artifacts",
         sa.Column("authority_state", sa.String(length=24), server_default="quarantined", nullable=False),
     )
-    op.create_foreign_key(
+    create_foreign_key_if_missing(
+        op,
         "fk_chat_artifacts_owner_user_id_users",
         "chat_artifacts",
         "users",
@@ -99,7 +116,8 @@ def upgrade() -> None:
         ["id"],
         ondelete="SET NULL",
     )
-    op.create_foreign_key(
+    create_foreign_key_if_missing(
+        op,
         "fk_chat_artifacts_root_session_id_chat_sessions",
         "chat_artifacts",
         "chat_sessions",
@@ -108,11 +126,14 @@ def upgrade() -> None:
         ondelete="SET NULL",
     )
     for column in ("owner_user_id", "root_session_id", "authority_state"):
-        op.create_index(f"ix_chat_artifacts_{column}", "chat_artifacts", [column])
+        create_index_if_missing(op, f"ix_chat_artifacts_{column}", "chat_artifacts", [column])
 
-    op.add_column("tasks", sa.Column("root_session_id", postgresql.UUID(as_uuid=True), nullable=True))
-    op.add_column("tasks", sa.Column("authority_state", sa.String(length=24), server_default="owned", nullable=False))
-    op.create_foreign_key(
+    add_column_if_missing(op, "tasks", sa.Column("root_session_id", postgresql.UUID(as_uuid=True), nullable=True))
+    add_column_if_missing(
+        op, "tasks", sa.Column("authority_state", sa.String(length=24), server_default="owned", nullable=False)
+    )
+    create_foreign_key_if_missing(
+        op,
         "fk_tasks_root_session_id_chat_sessions",
         "tasks",
         "chat_sessions",
@@ -120,16 +141,22 @@ def upgrade() -> None:
         ["id"],
         ondelete="SET NULL",
     )
-    op.create_index("ix_tasks_root_session_id", "tasks", ["root_session_id"])
-    op.create_index("ix_tasks_authority_state", "tasks", ["authority_state"])
+    create_index_if_missing(op, "ix_tasks_root_session_id", "tasks", ["root_session_id"])
+    create_index_if_missing(op, "ix_tasks_authority_state", "tasks", ["authority_state"])
 
-    op.add_column("agent_activity_logs", sa.Column("owner_user_id", postgresql.UUID(as_uuid=True), nullable=True))
-    op.add_column("agent_activity_logs", sa.Column("root_session_id", postgresql.UUID(as_uuid=True), nullable=True))
-    op.add_column(
+    add_column_if_missing(
+        op, "agent_activity_logs", sa.Column("owner_user_id", postgresql.UUID(as_uuid=True), nullable=True)
+    )
+    add_column_if_missing(
+        op, "agent_activity_logs", sa.Column("root_session_id", postgresql.UUID(as_uuid=True), nullable=True)
+    )
+    add_column_if_missing(
+        op,
         "agent_activity_logs",
         sa.Column("authority_state", sa.String(length=24), server_default="quarantined", nullable=False),
     )
-    op.create_foreign_key(
+    create_foreign_key_if_missing(
+        op,
         "fk_agent_activity_logs_owner_user_id_users",
         "agent_activity_logs",
         "users",
@@ -137,7 +164,8 @@ def upgrade() -> None:
         ["id"],
         ondelete="SET NULL",
     )
-    op.create_foreign_key(
+    create_foreign_key_if_missing(
+        op,
         "fk_agent_activity_logs_root_session_id_chat_sessions",
         "agent_activity_logs",
         "chat_sessions",
@@ -146,7 +174,7 @@ def upgrade() -> None:
         ondelete="SET NULL",
     )
     for column in ("owner_user_id", "root_session_id", "authority_state"):
-        op.create_index(f"ix_agent_activity_logs_{column}", "agent_activity_logs", [column])
+        create_index_if_missing(op, f"ix_agent_activity_logs_{column}", "agent_activity_logs", [column])
 
     # Chat session ownership is the only trustworthy legacy artifact authority.
     op.execute(

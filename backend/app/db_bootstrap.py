@@ -669,6 +669,23 @@ def should_bootstrap_database(connection: Connection) -> bool:
     return bool(tables & _CORE_APP_TABLES)
 
 
+def prepare_runtime_schema(connection: Connection, metadata: MetaData) -> bool:
+    """Create current metadata only for an unversioned runtime database.
+
+    A versioned database belongs exclusively to Alembic.  Calling create_all on
+    it can materialize tables from migrations that have not run yet, leaving
+    table existence ahead of the mechanical version/evidence source.
+    """
+
+    if not should_bootstrap_database(connection):
+        return False
+    metadata.create_all(bind=connection)
+    apply_rls_policies(connection)
+    apply_config_revision_immutability(connection)
+    apply_workflow_promotion_immutability(connection)
+    return True
+
+
 def ensure_alembic_version_table_width(connection: Connection) -> None:
     """Ensure Alembic can stamp long, descriptive revision identifiers.
 

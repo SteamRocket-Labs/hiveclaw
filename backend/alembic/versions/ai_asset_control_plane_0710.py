@@ -16,6 +16,8 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
+from app.migration_compat import add_column_if_missing, create_index_if_missing, create_table_if_missing
+
 
 revision = "ai_asset_control_plane_0710"
 down_revision = "runtime_assembly_nested_0710"
@@ -350,7 +352,8 @@ def _backfill_external_capabilities(bind) -> None:
 
 
 def upgrade() -> None:
-    op.add_column(
+    add_column_if_missing(
+        op,
         "config_revisions",
         sa.Column(
             "parent_revision_id",
@@ -359,7 +362,8 @@ def upgrade() -> None:
             nullable=True,
         ),
     )
-    op.add_column(
+    add_column_if_missing(
+        op,
         "config_revisions",
         sa.Column(
             "rollback_of_revision_id",
@@ -368,8 +372,10 @@ def upgrade() -> None:
             nullable=True,
         ),
     )
-    op.create_index("ix_config_revisions_parent_revision_id", "config_revisions", ["parent_revision_id"])
-    op.create_index("ix_config_revisions_rollback_of_revision_id", "config_revisions", ["rollback_of_revision_id"])
+    create_index_if_missing(op, "ix_config_revisions_parent_revision_id", "config_revisions", ["parent_revision_id"])
+    create_index_if_missing(
+        op, "ix_config_revisions_rollback_of_revision_id", "config_revisions", ["rollback_of_revision_id"]
+    )
     op.execute(
         """
         CREATE OR REPLACE FUNCTION enforce_config_revision_immutability()
@@ -404,7 +410,8 @@ def upgrade() -> None:
         """
     )
 
-    op.create_table(
+    create_table_if_missing(
+        op,
         "ai_asset_records",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True, nullable=False),
         sa.Column(
@@ -488,7 +495,7 @@ def upgrade() -> None:
         ("ix_ai_asset_tenant_type_status", ["tenant_id", "asset_type", "lifecycle_status"]),
         ("ix_ai_asset_content_hash", ["content_hash"]),
     ):
-        op.create_index(name, "ai_asset_records", columns)
+        create_index_if_missing(op, name, "ai_asset_records", columns)
 
     if op.get_bind().dialect.name == "postgresql":
         op.execute("ALTER TABLE ai_asset_records ENABLE ROW LEVEL SECURITY")

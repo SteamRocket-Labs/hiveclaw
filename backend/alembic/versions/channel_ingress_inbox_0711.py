@@ -11,6 +11,8 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
+from app.migration_compat import add_column_if_missing, create_index_if_missing, create_table_if_missing
+
 
 revision = "channel_ingress_inbox_0711"
 down_revision = "business_task_atomic_state_0711"
@@ -21,7 +23,8 @@ _CHANNEL_INGRESS_TABLES = ("channel_ingress_events",)
 
 
 def upgrade() -> None:
-    op.create_table(
+    create_table_if_missing(
+        op,
         "channel_ingress_events",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True, nullable=False),
         sa.Column(
@@ -88,7 +91,7 @@ def upgrade() -> None:
         ("ix_channel_ingress_events_result_session_id", ["result_session_id"]),
         ("ix_channel_ingress_claim", ["status", "available_at", "locked_at"]),
     ):
-        op.create_index(name, "channel_ingress_events", columns)
+        create_index_if_missing(op, name, "channel_ingress_events", columns)
 
     op.execute("ALTER TABLE channel_ingress_events ENABLE ROW LEVEL SECURITY")
     op.execute("ALTER TABLE channel_ingress_events FORCE ROW LEVEL SECURITY")
@@ -107,7 +110,8 @@ def upgrade() -> None:
         """
     )
 
-    op.add_column(
+    add_column_if_missing(
+        op,
         "chat_messages",
         sa.Column(
             "source_ingress_event_id",
@@ -116,12 +120,14 @@ def upgrade() -> None:
             nullable=True,
         ),
     )
-    op.create_index(
+    create_index_if_missing(
+        op,
         "ix_chat_messages_source_ingress_event_id",
         "chat_messages",
         ["source_ingress_event_id"],
     )
-    op.create_index(
+    create_index_if_missing(
+        op,
         "uq_chat_messages_ingress_user",
         "chat_messages",
         ["source_ingress_event_id"],

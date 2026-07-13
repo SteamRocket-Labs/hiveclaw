@@ -367,10 +367,9 @@ async def lifespan(app: FastAPI):
             # stage-3 role flip the app engine is the non-owner app_rls role, which
             # cannot create_all / apply policies. Pre-cutover schema_engine IS engine.
             async with schema_engine.begin() as conn:
-                await conn.run_sync(Base.metadata.create_all)
-                from app.db_bootstrap import apply_rls_policies
+                from app.db_bootstrap import prepare_runtime_schema
 
-                await conn.run_sync(apply_rls_policies)
+                schema_created = await conn.run_sync(lambda sync_conn: prepare_runtime_schema(sync_conn, Base.metadata))
                 # Add enum values to channel_type_enum if they don't exist yet (idempotent)
                 for _ch_val in ("telegram",):
                     await conn.execute(
@@ -378,9 +377,12 @@ async def lifespan(app: FastAPI):
                             f"ALTER TYPE channel_type_enum ADD VALUE IF NOT EXISTS '{_ch_val}'"
                         )
                     )
-            logger.info("[startup] Database tables ready")
+            if schema_created:
+                logger.info("[startup] Unversioned database schema created")
+            else:
+                logger.info("[startup] Versioned database schema left to Alembic")
         except Exception as e:
-            logger.warning(f"[startup] create_all failed: {e}")
+            logger.warning(f"[startup] schema preparation failed: {e}")
     else:
         logger.info("[startup] schema bootstrap skipped for no-volume API role")
 

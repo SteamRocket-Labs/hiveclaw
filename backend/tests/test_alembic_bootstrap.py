@@ -67,6 +67,34 @@ def test_should_not_bootstrap_when_alembic_version_exists() -> None:
         assert should_bootstrap_database(conn) is False
 
 
+def test_runtime_schema_prepare_skips_create_all_for_versioned_database() -> None:
+    from app.db_bootstrap import prepare_runtime_schema
+
+    existing = MetaData()
+    Table("alembic_version", existing, Column("version_num", String(255), primary_key=True))
+    current = MetaData()
+    Table("alembic_version", current, Column("version_num", String(255), primary_key=True))
+    Table("future_release_table", current, Column("id", Integer, primary_key=True))
+
+    engine = create_engine("sqlite:///:memory:")
+    with engine.begin() as conn:
+        existing.create_all(conn)
+        assert prepare_runtime_schema(conn, current) is False
+        assert "future_release_table" not in set(inspect(conn).get_table_names())
+
+
+def test_runtime_schema_prepare_creates_schema_for_unversioned_database() -> None:
+    from app.db_bootstrap import prepare_runtime_schema
+
+    current = MetaData()
+    Table("users", current, Column("id", Integer, primary_key=True))
+
+    engine = create_engine("sqlite:///:memory:")
+    with engine.begin() as conn:
+        assert prepare_runtime_schema(conn, current) is True
+        assert "users" in set(inspect(conn).get_table_names())
+
+
 def test_bootstrap_schema_creates_tables_and_stamps_heads() -> None:
     from app.db_bootstrap import bootstrap_database_to_head
 

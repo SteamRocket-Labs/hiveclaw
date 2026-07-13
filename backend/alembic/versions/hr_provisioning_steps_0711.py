@@ -11,6 +11,8 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
+from app.migration_compat import add_column_if_missing, create_index_if_missing, create_table_if_missing
+
 
 revision = "hr_provisioning_steps_0711"
 down_revision = "runtime_task_root_authority_0711"
@@ -21,12 +23,16 @@ _HR_PROVISIONING_TABLES = ("hr_provisioning_steps",)
 
 
 def upgrade() -> None:
-    op.add_column("hr_creation_drafts", sa.Column("claim_token", postgresql.UUID(as_uuid=True), nullable=True))
-    op.add_column(
+    add_column_if_missing(
+        op, "hr_creation_drafts", sa.Column("claim_token", postgresql.UUID(as_uuid=True), nullable=True)
+    )
+    add_column_if_missing(
+        op,
         "hr_creation_drafts",
         sa.Column("claim_version", sa.Integer(), server_default="0", nullable=False),
     )
-    op.add_column(
+    add_column_if_missing(
+        op,
         "hr_creation_drafts",
         sa.Column("claim_heartbeat_at", sa.DateTime(timezone=True), nullable=True),
     )
@@ -35,7 +41,8 @@ def upgrade() -> None:
     # the next worker can safely reclaim and resume it.
     op.execute("UPDATE hr_creation_drafts SET claim_expires_at = NULL WHERE claim_expires_at IS NOT NULL")
 
-    op.create_table(
+    create_table_if_missing(
+        op,
         "hr_provisioning_steps",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True, nullable=False),
         sa.Column(
@@ -73,12 +80,14 @@ def upgrade() -> None:
             name="ck_hr_provisioning_step_status",
         ),
     )
-    op.create_index(
+    create_index_if_missing(
+        op,
         "ix_hr_provisioning_steps_draft_order",
         "hr_provisioning_steps",
         ["draft_id", "order_index"],
     )
-    op.create_index(
+    create_index_if_missing(
+        op,
         "ix_hr_provisioning_steps_tenant_status",
         "hr_provisioning_steps",
         ["tenant_id", "status"],

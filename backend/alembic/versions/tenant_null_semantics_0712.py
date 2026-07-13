@@ -14,6 +14,8 @@ from alembic import op
 from sqlalchemy import inspect
 from sqlalchemy.dialects import postgresql
 
+from app.migration_compat import create_index_if_missing, create_table_if_missing
+
 
 revision = "tenant_null_semantics_0712"
 down_revision = "rls_complete_coverage_0712"
@@ -402,7 +404,8 @@ def _derived_policy(table: str) -> tuple[str, str] | None:
 def _create_quarantine_table(existing: set[str]) -> None:
     if "tenant_scope_quarantine_records" in existing:
         return
-    op.create_table(
+    create_table_if_missing(
+        op,
         "tenant_scope_quarantine_records",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True, nullable=False),
         sa.Column(
@@ -417,7 +420,8 @@ def _create_quarantine_table(existing: set[str]) -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.UniqueConstraint("source_table", "source_row_id", name="uq_tenant_scope_quarantine_source"),
     )
-    op.create_index(
+    create_index_if_missing(
+        op,
         "ix_tenant_scope_quarantine_records_tenant_id",
         "tenant_scope_quarantine_records",
         ["tenant_id"],

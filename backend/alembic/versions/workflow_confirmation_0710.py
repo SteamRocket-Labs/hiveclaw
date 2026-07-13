@@ -11,6 +11,8 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
+from app.migration_compat import create_index_if_missing, create_table_if_missing
+
 
 revision = "workflow_confirmation_0710"
 down_revision = "agent_authority_0710"
@@ -40,13 +42,28 @@ def _enable_rls(table: str) -> None:
 
 
 def upgrade() -> None:
-    op.create_table(
+    create_table_if_missing(
+        op,
         "workflow_proposal_artifacts",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True, nullable=False),
-        sa.Column("tenant_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False),
-        sa.Column("agent_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("agents.id", ondelete="CASCADE"), nullable=False),
-        sa.Column("session_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=False),
-        sa.Column("requested_by_user_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "tenant_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+        ),
+        sa.Column(
+            "agent_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("agents.id", ondelete="CASCADE"), nullable=False
+        ),
+        sa.Column(
+            "session_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("chat_sessions.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
+        sa.Column(
+            "requested_by_user_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("users.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("status", sa.String(length=24), server_default="open", nullable=False),
         sa.Column("artifact_version", sa.Integer(), server_default="1", nullable=False),
         sa.Column("artifact_hash", sa.String(length=80), nullable=False),
@@ -64,16 +81,36 @@ def upgrade() -> None:
         ("ix_workflow_proposal_artifacts_expires_at", ["expires_at"]),
         ("ix_workflow_proposal_identity", ["tenant_id", "agent_id", "session_id", "requested_by_user_id"]),
     ):
-        op.create_index(name, "workflow_proposal_artifacts", columns)
+        create_index_if_missing(op, name, "workflow_proposal_artifacts", columns)
 
-    op.create_table(
+    create_table_if_missing(
+        op,
         "workflow_preview_artifacts",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True, nullable=False),
-        sa.Column("tenant_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False),
-        sa.Column("agent_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("agents.id", ondelete="CASCADE"), nullable=False),
-        sa.Column("session_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=False),
-        sa.Column("requested_by_user_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
-        sa.Column("proposal_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("workflow_proposal_artifacts.id", ondelete="SET NULL"), nullable=True),
+        sa.Column(
+            "tenant_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+        ),
+        sa.Column(
+            "agent_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("agents.id", ondelete="CASCADE"), nullable=False
+        ),
+        sa.Column(
+            "session_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("chat_sessions.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
+        sa.Column(
+            "requested_by_user_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("users.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
+        sa.Column(
+            "proposal_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("workflow_proposal_artifacts.id", ondelete="SET NULL"),
+            nullable=True,
+        ),
         sa.Column("candidate_id", sa.String(length=160), nullable=True),
         sa.Column("status", sa.String(length=24), server_default="ready", nullable=False),
         sa.Column("artifact_version", sa.Integer(), server_default="1", nullable=False),
@@ -83,7 +120,12 @@ def upgrade() -> None:
         sa.Column("definition_json", postgresql.JSONB(), server_default=sa.text("'{}'::jsonb"), nullable=False),
         sa.Column("args_json", postgresql.JSONB(), server_default=sa.text("'{}'::jsonb"), nullable=False),
         sa.Column("preview_json", postgresql.JSONB(), server_default=sa.text("'{}'::jsonb"), nullable=False),
-        sa.Column("confirmed_by_user_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("users.id", ondelete="SET NULL"), nullable=True),
+        sa.Column(
+            "confirmed_by_user_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("users.id", ondelete="SET NULL"),
+            nullable=True,
+        ),
         sa.Column("confirmation_source", sa.String(length=64), nullable=True),
         sa.Column("confirmation_evidence_id", sa.String(length=200), nullable=True),
         sa.Column("confirmed_at", sa.DateTime(timezone=True), nullable=True),
@@ -113,7 +155,7 @@ def upgrade() -> None:
         ("ix_workflow_preview_identity", ["tenant_id", "agent_id", "session_id", "requested_by_user_id"]),
         ("ix_workflow_preview_start_claim", ["status", "claim_expires_at"]),
     ):
-        op.create_index(name, "workflow_preview_artifacts", columns)
+        create_index_if_missing(op, name, "workflow_preview_artifacts", columns)
 
     for table in _TABLES:
         _enable_rls(table)

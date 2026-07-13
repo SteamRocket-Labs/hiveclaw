@@ -11,6 +11,13 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
+from app.migration_compat import (
+    add_column_if_missing,
+    create_index_if_missing,
+    create_table_if_missing,
+    create_unique_constraint_if_missing,
+)
+
 
 revision = "personal_kb_local_receipts_0710"
 down_revision = "ai_asset_control_plane_0710"
@@ -44,7 +51,8 @@ def _enable_strict_tenant_rls(table: str) -> None:
 
 
 def upgrade() -> None:
-    op.create_table(
+    create_table_if_missing(
+        op,
         "personal_knowledge_proposals",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True, nullable=False),
         sa.Column(
@@ -156,9 +164,10 @@ def upgrade() -> None:
         ("ix_personal_kb_proposals_owner_status", ["owner_user_id", "status"]),
         ("ix_personal_kb_proposals_agent_created", ["proposed_by_agent_id", "created_at"]),
     ):
-        op.create_index(name, "personal_knowledge_proposals", columns)
+        create_index_if_missing(op, name, "personal_knowledge_proposals", columns)
 
-    op.create_table(
+    create_table_if_missing(
+        op,
         "local_agent_capability_snapshots",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True, nullable=False),
         sa.Column(
@@ -208,9 +217,9 @@ def upgrade() -> None:
         ("ix_local_agent_capability_snapshots_expires_at", ["expires_at"]),
         ("ix_local_agent_capability_snapshot_active", ["channel_id", "expires_at", "revoked_at"]),
     ):
-        op.create_index(name, "local_agent_capability_snapshots", columns)
+        create_index_if_missing(op, name, "local_agent_capability_snapshots", columns)
 
-    op.add_column("local_agent_channel_events", sa.Column("sequence", sa.BigInteger(), nullable=True))
+    add_column_if_missing(op, "local_agent_channel_events", sa.Column("sequence", sa.BigInteger(), nullable=True))
     op.execute(
         """
         WITH numbered AS (
@@ -225,12 +234,14 @@ def upgrade() -> None:
         """
     )
     op.alter_column("local_agent_channel_events", "sequence", nullable=False)
-    op.create_unique_constraint(
+    create_unique_constraint_if_missing(
+        op,
         "uq_local_agent_channel_events_session_sequence",
         "local_agent_channel_events",
         ["session_id", "sequence"],
     )
-    op.create_index(
+    create_index_if_missing(
+        op,
         "ix_local_agent_channel_events_session_sequence",
         "local_agent_channel_events",
         ["session_id", "sequence"],
@@ -244,7 +255,7 @@ def upgrade() -> None:
         sa.Column("receipt_trace_id", sa.String(length=255), nullable=True),
         sa.Column("receipt_span_id", sa.String(length=80), nullable=True),
     ):
-        op.add_column("local_agent_channel_messages", column)
+        add_column_if_missing(op, "local_agent_channel_messages", column)
     op.execute(
         """
         UPDATE local_agent_channel_messages
@@ -258,18 +269,24 @@ def upgrade() -> None:
     )
     op.alter_column("local_agent_channel_messages", "idempotency_key", nullable=False)
     op.alter_column("local_agent_channel_messages", "replay_key", nullable=False)
-    op.create_unique_constraint(
+    create_unique_constraint_if_missing(
+        op,
         "uq_local_agent_channel_messages_tenant_idempotency",
         "local_agent_channel_messages",
         ["tenant_id", "idempotency_key"],
     )
-    op.create_index("ix_local_agent_channel_messages_request_hash", "local_agent_channel_messages", ["request_hash"])
-    op.create_index(
+    create_index_if_missing(
+        op, "ix_local_agent_channel_messages_request_hash", "local_agent_channel_messages", ["request_hash"]
+    )
+    create_index_if_missing(
+        op,
         "ix_local_agent_channel_messages_capability_snapshot_hash",
         "local_agent_channel_messages",
         ["capability_snapshot_hash"],
     )
-    op.create_index("ix_local_agent_channel_messages_replay_key", "local_agent_channel_messages", ["replay_key"])
+    create_index_if_missing(
+        op, "ix_local_agent_channel_messages_replay_key", "local_agent_channel_messages", ["replay_key"]
+    )
 
     # Unsigned legacy self-reports are retained only as diagnostic input. A
     # reconnect must mint a new signed snapshot before work is delivered.

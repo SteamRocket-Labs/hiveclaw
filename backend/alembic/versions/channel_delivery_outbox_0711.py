@@ -11,6 +11,8 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
+from app.migration_compat import create_index_if_missing, create_table_if_missing
+
 
 revision = "channel_delivery_outbox_0711"
 down_revision = "external_principals_0711"
@@ -21,7 +23,8 @@ _CHANNEL_DELIVERY_OUTBOX_TABLES = ("channel_delivery_outbox",)
 
 
 def upgrade() -> None:
-    op.create_table(
+    create_table_if_missing(
+        op,
         "channel_delivery_outbox",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True, nullable=False),
         sa.Column(
@@ -109,7 +112,7 @@ def upgrade() -> None:
         ("ix_channel_delivery_outbox_locked_by", ["locked_by"]),
         ("ix_channel_delivery_outbox_claim", ["status", "available_at", "locked_at"]),
     ):
-        op.create_index(name, "channel_delivery_outbox", columns)
+        create_index_if_missing(op, name, "channel_delivery_outbox", columns)
 
     op.execute("ALTER TABLE channel_delivery_outbox ENABLE ROW LEVEL SECURITY")
     op.execute("ALTER TABLE channel_delivery_outbox FORCE ROW LEVEL SECURITY")

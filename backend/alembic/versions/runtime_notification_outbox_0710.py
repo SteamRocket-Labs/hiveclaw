@@ -11,6 +11,8 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
+from app.migration_compat import create_index_if_missing, create_table_if_missing
+
 
 revision = "runtime_notification_outbox_0710"
 down_revision = "workflow_confirmation_0710"
@@ -21,7 +23,8 @@ _RUNTIME_NOTIFICATION_OUTBOX_TABLES = ("runtime_notification_outbox",)
 
 
 def upgrade() -> None:
-    op.create_table(
+    create_table_if_missing(
+        op,
         "runtime_notification_outbox",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True, nullable=False),
         sa.Column(
@@ -105,7 +108,7 @@ def upgrade() -> None:
         ("ix_runtime_notification_outbox_locked_by", ["locked_by"]),
         ("ix_runtime_notification_outbox_claim", ["status", "available_at", "locked_at"]),
     ):
-        op.create_index(name, "runtime_notification_outbox", columns)
+        create_index_if_missing(op, name, "runtime_notification_outbox", columns)
 
     op.execute("ALTER TABLE runtime_notification_outbox ENABLE ROW LEVEL SECURITY")
     op.execute("ALTER TABLE runtime_notification_outbox FORCE ROW LEVEL SECURITY")
@@ -124,7 +127,8 @@ def upgrade() -> None:
         """
     )
 
-    op.create_index(
+    create_index_if_missing(
+        op,
         "uq_chat_transcript_completion_causation",
         "chat_transcript_events",
         ["session_id", "causation_id", "event_type"],

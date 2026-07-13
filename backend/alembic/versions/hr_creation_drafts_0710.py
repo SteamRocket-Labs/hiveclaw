@@ -11,6 +11,8 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
+from app.migration_compat import create_index_if_missing, create_table_if_missing
+
 
 revision = "hr_creation_drafts_0710"
 down_revision = "typed_thread_items_0710"
@@ -21,26 +23,56 @@ _HR_CREATION_TABLES = ("hr_creation_drafts",)
 
 
 def upgrade() -> None:
-    op.create_table(
+    create_table_if_missing(
+        op,
         "hr_creation_drafts",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True, nullable=False),
-        sa.Column("tenant_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False),
-        sa.Column("hr_agent_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("agents.id", ondelete="CASCADE"), nullable=False),
-        sa.Column("session_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=False),
-        sa.Column("requested_by_user_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "tenant_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+        ),
+        sa.Column(
+            "hr_agent_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("agents.id", ondelete="CASCADE"), nullable=False
+        ),
+        sa.Column(
+            "session_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("chat_sessions.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
+        sa.Column(
+            "requested_by_user_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("users.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("status", sa.String(length=32), server_default="awaiting_confirmation", nullable=False),
         sa.Column("blueprint_version", sa.Integer(), server_default="1", nullable=False),
         sa.Column("blueprint_hash", sa.String(length=80), nullable=False),
         sa.Column("blueprint_json", postgresql.JSONB(), server_default=sa.text("'{}'::jsonb"), nullable=False),
         sa.Column("preview_json", postgresql.JSONB(), server_default=sa.text("'{}'::jsonb"), nullable=False),
-        sa.Column("confirmed_by_user_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("users.id", ondelete="SET NULL"), nullable=True),
+        sa.Column(
+            "confirmed_by_user_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("users.id", ondelete="SET NULL"),
+            nullable=True,
+        ),
         sa.Column("confirmed_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("rejected_by_user_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("users.id", ondelete="SET NULL"), nullable=True),
+        sa.Column(
+            "rejected_by_user_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("users.id", ondelete="SET NULL"),
+            nullable=True,
+        ),
         sa.Column("rejected_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("creation_idempotency_key", sa.String(length=200), nullable=True),
         sa.Column("claim_expires_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("attempt_count", sa.Integer(), server_default="0", nullable=False),
-        sa.Column("created_agent_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("agents.id", ondelete="SET NULL"), nullable=True),
+        sa.Column(
+            "created_agent_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("agents.id", ondelete="SET NULL"),
+            nullable=True,
+        ),
         sa.Column("provisioning_json", postgresql.JSONB(), server_default=sa.text("'{}'::jsonb"), nullable=False),
         sa.Column("failure_code", sa.String(length=100), nullable=True),
         sa.Column("failure_message", sa.Text(), nullable=True),
@@ -63,7 +95,7 @@ def upgrade() -> None:
         ("ix_hr_creation_drafts_requester_status", ["requested_by_user_id", "status"]),
         ("ix_hr_creation_drafts_hr_status", ["hr_agent_id", "status"]),
     ):
-        op.create_index(name, "hr_creation_drafts", columns)
+        create_index_if_missing(op, name, "hr_creation_drafts", columns)
 
     op.execute("ALTER TABLE hr_creation_drafts ENABLE ROW LEVEL SECURITY")
     op.execute("ALTER TABLE hr_creation_drafts FORCE ROW LEVEL SECURITY")
@@ -81,6 +113,7 @@ def upgrade() -> None:
         )
         """
     )
+
 
 def downgrade() -> None:
     for name in (

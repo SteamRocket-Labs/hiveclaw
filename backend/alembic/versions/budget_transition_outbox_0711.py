@@ -11,6 +11,8 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
+from app.migration_compat import create_index_if_missing, create_table_if_missing
+
 
 revision = "budget_transition_outbox_0711"
 down_revision = "workflow_promotion_proposals_0711"
@@ -21,7 +23,8 @@ _BUDGET_TRANSITION_TABLES = ("budget_transition_outbox",)
 
 
 def upgrade() -> None:
-    op.create_table(
+    create_table_if_missing(
+        op,
         "budget_transition_outbox",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True, nullable=False),
         sa.Column(
@@ -123,13 +126,15 @@ def upgrade() -> None:
         "available_at",
         "locked_by",
     ):
-        op.create_index(f"ix_budget_transition_outbox_{column}", "budget_transition_outbox", [column])
-    op.create_index(
+        create_index_if_missing(op, f"ix_budget_transition_outbox_{column}", "budget_transition_outbox", [column])
+    create_index_if_missing(
+        op,
         "ix_budget_transition_outbox_claim",
         "budget_transition_outbox",
         ["status", "available_at", "locked_at"],
     )
-    op.create_index(
+    create_index_if_missing(
+        op,
         "uq_chat_transcript_budget_transition_causation",
         "chat_transcript_events",
         ["session_id", "causation_id", "event_type"],
@@ -191,9 +196,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.execute(
-        "DROP TRIGGER IF EXISTS trg_budget_transition_outbox_snapshot_immutable ON budget_transition_outbox"
-    )
+    op.execute("DROP TRIGGER IF EXISTS trg_budget_transition_outbox_snapshot_immutable ON budget_transition_outbox")
     op.execute("DROP FUNCTION IF EXISTS budget_transition_outbox_snapshot_immutable()")
     op.drop_index(
         "uq_chat_transcript_budget_transition_causation",

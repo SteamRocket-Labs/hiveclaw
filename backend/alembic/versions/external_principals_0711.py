@@ -11,6 +11,13 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
+from app.migration_compat import (
+    add_column_if_missing,
+    create_foreign_key_if_missing,
+    create_index_if_missing,
+    create_table_if_missing,
+)
+
 
 revision = "external_principals_0711"
 down_revision = "channel_ingress_inbox_0711"
@@ -28,7 +35,8 @@ def _uuid_column(name: str, *, nullable: bool = True) -> sa.Column:
 
 
 def upgrade() -> None:
-    op.create_table(
+    create_table_if_missing(
+        op,
         "external_principals",
         _uuid_column("id", nullable=False),
         sa.Column(
@@ -79,9 +87,10 @@ def upgrade() -> None:
         ("ix_external_principals_status", ["status"]),
         ("ix_external_principals_tenant_provider_status", ["tenant_id", "provider", "status"]),
     ):
-        op.create_index(name, "external_principals", columns)
+        create_index_if_missing(op, name, "external_principals", columns)
 
-    op.create_table(
+    create_table_if_missing(
+        op,
         "external_principal_binding_events",
         _uuid_column("id", nullable=False),
         sa.Column(
@@ -133,7 +142,7 @@ def upgrade() -> None:
             ["external_principal_id", "created_at"],
         ),
     ):
-        op.create_index(name, "external_principal_binding_events", columns)
+        create_index_if_missing(op, name, "external_principal_binding_events", columns)
 
     for table, column in (
         ("chat_sessions", "external_principal_id"),
@@ -143,8 +152,9 @@ def upgrade() -> None:
         ("runtime_budget_runs", "root_external_principal_id"),
         ("channel_ingress_events", "external_principal_id"),
     ):
-        op.add_column(table, _uuid_column(column))
-        op.create_foreign_key(
+        add_column_if_missing(op, table, _uuid_column(column))
+        create_foreign_key_if_missing(
+            op,
             f"fk_{table}_{column}",
             table,
             "external_principals",
@@ -152,7 +162,7 @@ def upgrade() -> None:
             ["id"],
             ondelete="SET NULL",
         )
-        op.create_index(f"ix_{table}_{column}", table, [column])
+        create_index_if_missing(op, f"ix_{table}_{column}", table, [column])
 
     op.alter_column(
         "chat_sessions",

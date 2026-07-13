@@ -11,6 +11,14 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
+from app.migration_compat import (
+    add_column_if_missing,
+    create_foreign_key_if_missing,
+    create_index_if_missing,
+    create_table_if_missing,
+    create_unique_constraint_if_missing,
+)
+
 
 revision = "workflow_promotion_proposals_0711"
 down_revision = "resource_authority_0711"
@@ -21,7 +29,8 @@ _WORKFLOW_PROMOTION_TABLES = ("workflow_promotion_proposals",)
 
 
 def upgrade() -> None:
-    op.create_table(
+    create_table_if_missing(
+        op,
         "workflow_promotion_proposals",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True, nullable=False),
         sa.Column(
@@ -88,17 +97,20 @@ def upgrade() -> None:
         "reviewer_user_id",
         "status",
     ):
-        op.create_index(
+        create_index_if_missing(
+            op,
             f"ix_workflow_promotion_proposals_{column}",
             "workflow_promotion_proposals",
             [column],
         )
 
-    op.add_column(
+    add_column_if_missing(
+        op,
         "workflow_definitions",
         sa.Column("promotion_proposal_id", postgresql.UUID(as_uuid=True), nullable=True),
     )
-    op.create_foreign_key(
+    create_foreign_key_if_missing(
+        op,
         "fk_workflow_definitions_promotion_proposal_id",
         "workflow_definitions",
         "workflow_promotion_proposals",
@@ -106,12 +118,14 @@ def upgrade() -> None:
         ["id"],
         ondelete="RESTRICT",
     )
-    op.create_unique_constraint(
+    create_unique_constraint_if_missing(
+        op,
         "uq_workflow_definition_promotion_proposal",
         "workflow_definitions",
         ["promotion_proposal_id"],
     )
-    op.create_index(
+    create_index_if_missing(
+        op,
         "ix_workflow_definitions_promotion_proposal_id",
         "workflow_definitions",
         ["promotion_proposal_id"],

@@ -16,6 +16,8 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
+from app.migration_compat import create_index_if_missing, create_table_if_missing
+
 
 revision = "ai_asset_usage_events_0711"
 down_revision = "hr_provisioning_steps_0711"
@@ -163,7 +165,8 @@ def _backfill_version_bound_workflows() -> None:
 
 
 def upgrade() -> None:
-    op.create_table(
+    create_table_if_missing(
+        op,
         "ai_asset_usage_events",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True, nullable=False),
         sa.Column(
@@ -200,8 +203,12 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.UniqueConstraint("tenant_id", "asset_id", "idempotency_key", name="uq_ai_asset_usage_event_idempotency"),
     )
-    op.create_index("ix_ai_asset_usage_events_asset_created", "ai_asset_usage_events", ["asset_id", "created_at"])
-    op.create_index("ix_ai_asset_usage_events_tenant_kind", "ai_asset_usage_events", ["tenant_id", "usage_kind"])
+    create_index_if_missing(
+        op, "ix_ai_asset_usage_events_asset_created", "ai_asset_usage_events", ["asset_id", "created_at"]
+    )
+    create_index_if_missing(
+        op, "ix_ai_asset_usage_events_tenant_kind", "ai_asset_usage_events", ["tenant_id", "usage_kind"]
+    )
     for column in (
         "tenant_id",
         "asset_id",
@@ -213,7 +220,7 @@ def upgrade() -> None:
         "span_id",
         "tool_call_id",
     ):
-        op.create_index(f"ix_ai_asset_usage_events_{column}", "ai_asset_usage_events", [column])
+        create_index_if_missing(op, f"ix_ai_asset_usage_events_{column}", "ai_asset_usage_events", [column])
 
     _backfill_version_bound_workflows()
 

@@ -205,20 +205,39 @@ def upgrade() -> None:
     # columns.  Only a tenant/Agent/session match is admitted; every other row
     # remains admin-only quarantine.
     op.execute(
-        """
+        r"""
+        WITH normalized_activity AS MATERIALIZED (
+            SELECT activity.id,
+                   activity.agent_id,
+                   activity.tenant_id,
+                   replace(activity.detail_json::text, '\u0000', '\uFFFD')::jsonb AS detail_json
+            FROM agent_activity_logs AS activity
+            WHERE activity.detail_json IS NOT NULL
+        ),
+        matched_activity AS (
+            SELECT normalized.id,
+                   session.user_id AS owner_user_id,
+                   COALESCE(session.root_session_id, session.id) AS root_session_id
+            FROM normalized_activity AS normalized
+            JOIN chat_sessions AS session
+              ON session.id = CASE
+                  WHEN COALESCE(normalized.detail_json->>'root_session_id', normalized.detail_json->>'session_id', '')
+                       ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+                  THEN COALESCE(
+                      normalized.detail_json->>'root_session_id',
+                      normalized.detail_json->>'session_id'
+                  )::uuid
+                  ELSE NULL
+              END
+             AND session.agent_id = normalized.agent_id
+             AND session.tenant_id = normalized.tenant_id
+        )
         UPDATE agent_activity_logs AS activity
-        SET owner_user_id = session.user_id,
-            root_session_id = COALESCE(session.root_session_id, session.id),
-            authority_state = CASE WHEN session.user_id IS NULL THEN 'quarantined' ELSE 'owned' END
-        FROM chat_sessions AS session
-        WHERE session.id = CASE
-            WHEN COALESCE(activity.detail_json->>'root_session_id', activity.detail_json->>'session_id', '')
-                 ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
-            THEN COALESCE(activity.detail_json->>'root_session_id', activity.detail_json->>'session_id')::uuid
-            ELSE NULL
-        END
-          AND session.agent_id = activity.agent_id
-          AND session.tenant_id = activity.tenant_id
+        SET owner_user_id = matched.owner_user_id,
+            root_session_id = matched.root_session_id,
+            authority_state = CASE WHEN matched.owner_user_id IS NULL THEN 'quarantined' ELSE 'owned' END
+        FROM matched_activity AS matched
+        WHERE activity.id = matched.id
         """
     )
     # Delivered artifacts are sufficient evidence to seed the mutable path

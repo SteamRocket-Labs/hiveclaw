@@ -26,7 +26,7 @@ _BATCH_SIZE = 10_000
 def _backfill_root_authority() -> None:
     bind = op.get_bind()
     while True:
-        rows = bind.execute(
+        updated_count = bind.execute(
             sa.text(
                 r"""
                 WITH batch AS (
@@ -36,7 +36,8 @@ def _backfill_root_authority() -> None:
                     ORDER BY id
                     LIMIT :batch_size
                     FOR UPDATE SKIP LOCKED
-                )
+                ),
+                updated AS (
                 UPDATE runtime_tasks AS rt
                 SET root_user_id = COALESCE(
                         CASE
@@ -86,12 +87,14 @@ def _backfill_root_authority() -> None:
                     END
                 FROM batch
                 WHERE rt.id = batch.id
-                RETURNING rt.id
+                RETURNING 1
+                )
+                SELECT count(*) FROM updated
                 """
             ),
             {"batch_size": _BATCH_SIZE},
-        ).fetchall()
-        if not rows:
+        ).scalar_one()
+        if int(updated_count or 0) == 0:
             return
 
 

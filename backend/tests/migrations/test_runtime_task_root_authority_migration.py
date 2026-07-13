@@ -43,9 +43,13 @@ def test_runtime_task_root_authority_migration_backfills_all_available_truth_sou
     assert "FOR UPDATE SKIP LOCKED" in migration
     assert migration.count("CREATE INDEX CONCURRENTLY") == 3
     assert "server_default=sa.text(\"'[]'::jsonb\")" in migration
-    assert "SELECT count(*) FROM updated" in migration
-    assert ".scalar_one()" in migration
+    assert "count(*) AS updated_count" in migration
+    assert ".mappings().one()" in migration
     assert ".fetchall()" not in migration
+    assert "last_id" in migration
+    assert "LEFT JOIN runtime_budget_runs" in migration
+    assert "LEFT JOIN chat_sessions" in migration
+    assert "session.id = CASE" in migration
 
 
 async def test_runtime_task_root_authority_batch_upgrade_uses_metadata_truth(pg_container) -> None:

@@ -25,14 +25,20 @@ _BATCH_SIZE = 10_000
 
 def _backfill_root_authority() -> None:
     bind = op.get_bind()
+    last_id = None
+    wrapped = False
     while True:
-        updated_count = bind.execute(
+        result = bind.execute(
             sa.text(
                 r"""
                 WITH batch AS (
-                    SELECT id
+                    SELECT id, budget_run_id, parent_session_id
                     FROM runtime_tasks
                     WHERE delegation_chain_json IS NULL
+                      AND (
+                          CAST(:after_id AS uuid) IS NULL
+                          OR id > CAST(:after_id AS uuid)
+                      )
                     ORDER BY id
                     LIMIT :batch_size
                     FOR UPDATE SKIP LOCKED
@@ -50,24 +56,14 @@ def _backfill_root_authority() -> None:
                                  ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
                             THEN (rt.metadata_json ->> 'root_user_id')::uuid
                         END,
-                        (SELECT budget.root_user_id FROM runtime_budget_runs AS budget WHERE budget.id = rt.budget_run_id),
-                        (
-                            SELECT session.user_id
-                            FROM chat_sessions AS session
-                            WHERE session.id::text = rt.parent_session_id
-                            LIMIT 1
-                        )
+                        budget.root_user_id,
+                        session.user_id
                     ),
                     root_session_id = COALESCE(
                         NULLIF(rt.metadata_json #>> '{execution_principal,root_session_id}', ''),
                         NULLIF(rt.metadata_json ->> 'root_session_id', ''),
-                        (SELECT budget.root_session_id FROM runtime_budget_runs AS budget WHERE budget.id = rt.budget_run_id),
-                        (
-                            SELECT COALESCE(session.root_session_id::text, session.parent_session_id::text, session.id::text)
-                            FROM chat_sessions AS session
-                            WHERE session.id::text = rt.parent_session_id
-                            LIMIT 1
-                        ),
+                        budget.root_session_id,
+                        COALESCE(session.root_session_id::text, session.parent_session_id::text, session.id::text),
                         NULLIF(rt.parent_session_id, '')
                     ),
                     delegation_chain_json = CASE
@@ -86,16 +82,34 @@ def _backfill_root_authority() -> None:
                         ELSE jsonb_build_array('agent:' || rt.parent_agent_id::text)
                     END
                 FROM batch
+                LEFT JOIN runtime_budget_runs AS budget ON budget.id = batch.budget_run_id
+                LEFT JOIN chat_sessions AS session ON session.id = CASE
+                    WHEN COALESCE(batch.parent_session_id, '')
+                         ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+                    THEN batch.parent_session_id::uuid
+                END
                 WHERE rt.id = batch.id
-                RETURNING 1
+                RETURNING rt.id
                 )
-                SELECT count(*) FROM updated
+                SELECT
+                    count(*) AS updated_count,
+                    (SELECT id FROM updated ORDER BY id DESC LIMIT 1) AS last_id
+                FROM updated
                 """
             ),
-            {"batch_size": _BATCH_SIZE},
-        ).scalar_one()
+            {"after_id": last_id, "batch_size": _BATCH_SIZE},
+        ).mappings().one()
+        updated_count = int(result["updated_count"] or 0)
+        batch_last_id = result["last_id"]
         if int(updated_count or 0) == 0:
+            # SKIP LOCKED can leave rows behind the monotonic cursor.  Make one
+            # cleanup pass from the beginning before constraint validation.
+            if last_id is not None and not wrapped:
+                last_id = None
+                wrapped = True
+                continue
             return
+        last_id = batch_last_id
 
 
 def upgrade() -> None:

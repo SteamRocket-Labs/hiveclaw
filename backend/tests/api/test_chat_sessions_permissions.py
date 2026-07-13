@@ -320,7 +320,11 @@ async def test_create_session_uses_check_agent_access(monkeypatch):
 
     agent_id = uuid4()
     current_user = SimpleNamespace(id=uuid4(), role="member")
-    agent = SimpleNamespace(id=agent_id, creator_id=uuid4())
+    agent = SimpleNamespace(
+        id=agent_id,
+        creator_id=uuid4(),
+        default_session_permission_mode="auto",
+    )
     db = _QueryAwareDB(agent=agent)
     called = {}
 
@@ -341,6 +345,7 @@ async def test_create_session_uses_check_agent_access(monkeypatch):
     assert called["args"] == (db, current_user, agent_id)
     assert result.is_current_user_session is True
     assert result.read_only is False
+    assert result.permission_mode == "auto"
 
 
 @pytest.mark.asyncio

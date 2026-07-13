@@ -25,6 +25,7 @@ export interface AgentUpdateParams {
   context_window_size?: number;
   timezone?: string;
   security_zone?: string;
+  default_session_permission_mode?: 'default' | 'auto' | 'bypassPermissions';
 }
 
 export interface AgentPermissions {

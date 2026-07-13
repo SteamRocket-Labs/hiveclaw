@@ -1101,20 +1101,20 @@ exit 0, real 0.21s
 | Connect `6e5be2d` | Codex argv 证据半写可见 | atomic publish；100/160/race/full/cross-compile |
 | Connect `34ebe21` | OpenCode background refresh 逃逸 Stop 与全仓 flake | cancel+join、Stop 后 fail-closed、100/16-way/race/full/cross-compile |
 
-测试生成的 `core/test_ws_*.json` 已清理；Hive Connect 仅保留未跟踪 `.codebase-memory/`，主仓 `.ultra/**` 状态记录与未跟踪 `task.md` 均未 stage。没有执行 Railway 部署、生产 migration 或生产数据写入，因此这些证据只支持“本地代码候选闭环”，不支持伪称“生产已上线”。
+测试生成的 `core/test_ws_*.json` 已清理；Hive Connect 仅保留未跟踪 `.codebase-memory/`，主仓 `.ultra/**` 状态记录与未跟踪 `task.md` 均未 stage。本段是部署前的终局本地证据快照；其后发生的 Railway migration、生产部署、生产验收与新发现断点以 §17 为准，不再沿用“尚未上线”的历史状态。
 
 ## 14. 上线门
 
 | Gate | 结论 | 必须满足的证据 |
 |---|---|---|
-| **安全门（最高优先）** | **本地代码候选通过；生产仍 NO-GO** | **R-015 的 sanitizer/raw HTML、URL/image policy 与 bearer token 消费面，R-016 的统一路径守卫，R-018 的 channel secret 加密/回填/scrub，R-021 的 MCP metadata trust contract 均已有当前源码与本地回归证据。剩余门是 staging/production 的真实 CSP header、旧密钥轮换、secret backfill dry-run、生产 RLS 分布与外部 connector smoke，不再把已关闭代码项列为“尚待开发”。** |
-| 代码/架构候选门 | **本地候选通过；生产仍 NO-GO** | R-001~R-007、R-009~R-028 当前范围缺口已全部关闭；R-008 按“边界闭环 + Company KB 本体已知缺失”诚实处理；不存在默认豁免的 P2/P3；ruff/format、全量测试、build、浏览器与架构门全绿 |
-| 自进化基石门 | 本地代码候选通过；生产仍 NO-GO | R-004/R-007/R-017/R-024/R-026 已有本地闭环证据；仍须完成 staging lifecycle kill/corruption 故障注入与持久盘恢复核验 |
-| Migration/backfill门 | 当前代码候选通过；生产仍 NO-GO | Approval/HR/Dream durable job、HR preview TTL、channel encryption、RLS complete coverage 与 R-023 strict/shared/operator-nullable 分类、payload-free dry-run、回填/冲突 quarantine、secure downgrade 均已有本地/真实 PG 证据；当前单 head=`hr_draft_recovery_0712`，仍需 staging dry-run 与生产只读分布核验 |
+| **安全门（最高优先）** | **核心生产门通过；外部系统 smoke 待补** | **生产 runtime role=`app_rls`、`superuser=false`、`bypassrls=false`、strict enforcement 且 violations=0；RLS fleet audit 为 unprotected=0/inert=0/enforced=115；Vercel Sandbox deny-all/文件 round-trip probe 30/30。真实 connector token 轮换、duplicate webhook 与供应商侧 dead-letter 仍不能由本次基础部署冒充已验。** |
+| 代码/架构候选门 | **已部署；当前源码与测试通过** | R-001~R-007、R-009~R-028 当前范围缺口已关闭；R-008 按“边界闭环 + Company KB 本体已知缺失”处理；最终 backend 全量 6725 passed/1 skipped，frontend 115 files/663 tests 与 production build 通过 |
+| 自进化基石门 | 生产基础健康；故障注入待补 | evolution/trigger/workflow daemons 生产 health 均 healthy、error_count=0；R-004/R-007/R-017/R-024/R-026 本地故障矩阵已绿，但真实多副本 kill/corruption 仍需独立演练 |
+| Migration/backfill门 | **既有生产通过；本次候选待部署** | 当前生产仍为 Alembic head=`hr_draft_recovery_0712`；本次 Agent 默认会话模式候选新增唯一 head=`agent_session_permission_default_0713`，本地真实历史 revision 升降级矩阵已通过，只有三服务部署和生产 head 核对后才能把新列称为生产闭环。既有 RLS coverage 与 tenant-null 生产事实不变。 |
 | Staging fault-injection门 | 本地故障矩阵通过；真实 staging NO-GO | 多副本 startup、claim lease、approval crash、Dream kill、outbox 前后 crash、lifecycle.json 崩溃写与 15 条 journey 均有本地 deterministic/真实 PostgreSQL 证据；仍须在与生产同构的多副本、Redis、持久盘、Vercel Sandbox 环境重跑，不能把本机故障注入冒充 staging 事实 |
-| Railway生产门 | 未验证/NO-GO | backend/backend-api/frontend同一候选均SUCCESS；health、schema、worker日志、持久盘证据 |
-| 权限矩阵门 | 本地候选通过 | cross-tenant、delegate grant、break-glass expiry、operator read/write、组合 waiting E2E；R-020 Local Bridge per-action policy/approval；R-022 全 tenant 表 RLS；R-023 NULL/global/shared/operator/quarantine 注入矩阵；生产只读核验仍归 Railway 门 |
-| 功能与用户体验门 | **本地候选通过；生产仍 NO-GO** | R-019/R-025/R-027/R-028 均有本地闭环证据；Personal KB 12 个读取面、真实空态、局部降级与 Retry 浏览器验收已绿；生产切流前仍须在 staging 重跑 15 条全链 journey |
+| Railway生产门 | **上一候选三服务通过；本次候选待部署** | `ac19ee17b` 的 backend `58c30df0…`、backend-api `674b7c7f…`、frontend `084058da…` 均 `SUCCESS`；P-002/P-003 的 Sidebar 与权限默认模式修复尚未部署，不能沿用上一候选的部署证据冒充当前 checkout 已上线。 |
+| 权限矩阵门 | 生产结构核验通过；外部动作 smoke 待补 | cross-tenant、delegate grant、break-glass expiry、operator read/write 与 Local Bridge approval 本地矩阵已绿；生产 runtime role、RLS coverage、tenant-null 分布已只读核验，真实 connector/action 仍归 External Channel 门 |
+| 功能与用户体验门 | **本地候选闭环；生产待部署** | R-019/R-025/R-027/R-028 本地闭环；P-002 已恢复 Agent 圈/自动化/知识库/本地连接四个常驻入口；P-003 已恢复请求批准/替我批准/完全访问三模式，并把 Agent Settings 默认值接入所有新会话入口。完全访问仍是管理员、逐会话、带原因、60 分钟的 break-glass，不是 cloud 全局 bypass。生产页面仍需部署后验收。 |
 | External Channel门 | 本地代码候选通过；真实外部系统未验证 | R-018/R-020 的存储、审批、token expiry、duplicate/replay、outbox/receipt 恢复已有本地证据；真实 connector identity、供应商 token、duplicate webhook、轮换和 dead-letter smoke 仍属 staging/production 验收 |
 | Artifact交付门 | 本地候选通过；真实 Sandbox 未验证 | 本地 artifact→chat→Deliverables/Workspace→download 与 crash/retry 路径已有回归；仍须在 staging 执行 Vercel Sandbox→持久 workspace→artifact evidence→聊天/侧栏→下载的全链 smoke |
 | Company KB 范围门 | 已知缺失/不阻塞当前第一部分 | R-008 文案只描述 legacy read-only files；不出现正式 Company KB 已可用的 route/UI shell。Company KB 正式能力进入明确的第二部分完整建设 |
@@ -1134,13 +1134,13 @@ exit 0, real 0.21s
 | browser/user journey 10% | 15 条真实 API/runtime/worker/browser 原子旅程全部通过，并已成为 release gate | 10/10 |
 | **合计** |  | **95/100** |
 
-### 15.2 生产运行置信度：42%
+### 15.2 生产运行置信度：82%
 
-本地实现与测试证据不能证明生产多副本、Railway持久盘、Vercel Sandbox、真实 Channel/Connector、生产 RLS 数据分布和部署一致性。R-001~R-007、R-009~R-028 当前范围缺口已关闭，R-008 维持“边界闭环 + Company KB 本体已知缺失”；生产置信度只有在 staging fault matrix、三服务同候选部署与只读生产核验完成后才能重算。
+上一生产候选的三服务部署、migration head、RLS/tenant-null 事实分布、daemon/worker、Vercel Sandbox probe、基础健康和 final error scan 已把部署前的 42% 提升到 82%。没有计入的 18% 是明确边界：真实 External Channel/connector、生产多副本 fault injection、完整 artifact 用户旅程、P-001 已登录 consumer 复测，以及本次 P-002/P-003 候选尚未部署。未完成这些项目之前不把“本地闭环”伪称为 95% production confidence。
 
 ### 15.3 最终声明
 
-原始审计阶段只产出报告；随后 R-001~R-028 已按执行账本逐项完成实现、回归、证据更新与独立提交。当前结论是 **28/28 当前范围闭环**，其中 R-008 只代表 Company KB 缺失边界已经诚实隔离，不代表 Company KB 本体已开发。R-017 的 heartbeat T2→T3 已由 `75801b113` 接入真实 T3 Gate 契约并以 24 项真 Gate 扩展回归，不是 fake gate。没有执行 Railway 部署、生产 migration 或生产数据写入，因此只能称“本地代码候选完成”，不能称“已上线”。主仓 `.ultra/**` 状态记录、未跟踪 `task.md` 与 Hive Connect `.codebase-memory/` 均未纳入任何修复提交。
+原始审计阶段只产出报告；随后 R-001~R-028 已按执行账本逐项完成实现、回归、证据更新与独立提交。当前结论是 **28/28 原审计范围闭环并已部署生产**，其中 R-008 只代表 Company KB 缺失边界已经诚实隔离，不代表 Company KB 本体已开发。R-017 的 heartbeat T2→T3 已由 `75801b113` 接入真实 T3 Gate 契约并以 24 项真 Gate 扩展回归，不是 fake gate。生产 smoke 新发现的 P-001 已完成代码修复与三服务重部署；其后 owner 新确认的 P-002 Sidebar 产品入口和 P-003 会话权限默认模式已形成本地闭环候选，尚待部署与生产 UI 验收。主仓 `.ultra/**` 状态记录、未跟踪 `task.md` 与 Hive Connect `.codebase-memory/` 均未纳入任何修复提交。
 
 ## 16. 28 项原子缺口修复执行账本
 
@@ -1185,4 +1185,44 @@ exit 0, real 0.21s
 - 根因与原子断点：`PersonalKnowledgeService.list_import_jobs()` 对 `select(KnowledgeIndexJob)` 调用 `Result.all()`，再用 `isinstance(row, tuple)` 判断是否解包。PostgreSQL/SQLAlchemy 返回的是 `Row` 包装而非原生 `tuple`，旧分支把 `Row` 当 ORM entity 读取 `job.id`，在 **执行 → 消费** 之间触发 `AttributeError: id`。API、权限和数据库查询均已进入生产路径，但结果没有被正确消费。
 - TDD Red：`pytest tests/services/test_personal_knowledge_service.py::test_list_import_jobs_consumes_scalar_entities_from_sqlalchemy_result -q` → `1 failed`，稳定复现 `_PostgresRowLike` 无 `id`。
 - Green：查询结果改为唯一、类型正确的 ORM 消费方式 `result.scalars().all()`，删除 tuple/Row 猜测分支；定向 API + regression → `14 passed`，完整 `tests/services/test_personal_knowledge_service.py` → `44 passed`。
-- 当前状态：**本地代码闭环，等待本提交完成后重新部署 backend/backend-api，并以生产同一 endpoint、部署状态和错误日志复核后关闭生产 Gate。**
+- 修复与部署：`ac19ee17b fix(knowledge): consume import jobs as scalars` 已包含测试、实现和本节证据；同一提交 archive-root 重部署 backend `58c30df0…`、backend-api `674b7c7f…`、frontend `084058da…`，三项均 `SUCCESS`。部署后 backend 全量 → `6725 passed, 1 skipped`；health=`ok`，三 daemon healthy，RLS runtime role strict，Sandbox probe passed，final backend/backend-api error scan无 ERROR/Traceback/500。
+- 当前状态：**生产代码与基础运行闭环；已登录 UI consumer 验收待用户手动刷新。** 自动化浏览器对该生产域存在用户级禁用策略，已按安全边界停止且未读取或绕过 cookie/token，因此不能伪称生产 endpoint 已复测为 200。用户手动刷新 `/knowledge` 后，以同一 endpoint 的 200 与页面 Import Jobs 正常消费作为本项最后验收证据。
+
+## 18. Owner 复核后的 UI 与权限模式闭环（2026-07-13）
+
+### [P-002] 左栏四个产品入口被错误收进 Home
+
+此前“左栏只保留 Home 与 Agent/session 对象树”的收口把内部信息降噪和产品入口隐藏混为一谈。Owner 最终契约是：**Agent 圈、自动化、知识库、本地连接必须常驻左栏**；UUID、raw runtime、debug inspector 和公司治理配置继续留在 disclosure/Agent Detail/公司后台。
+
+| 原子 | 当前候选事实与消费路径 |
+|---|---|
+| 输入 | 已登录用户从全局 `AppSidebar` 直接点选四个固定产品目的地。 |
+| 权威 | Sidebar 只提供导航；`/plaza`、`/automations`、`/knowledge`、`/local-agents` 继续由各自 route/API 的既有 workspace、tenant 和 owner 权威判定，不把客户端菜单当授权。 |
+| 执行 | `workspaceNavItems` 是唯一常驻产品导航定义，分别进入现有生产 route；没有复制第二套路由或 Home 中转状态机。 |
+| 证据 | React Router URL 与各页面 API/read model 仍是机械事实；Sidebar 只消费并呈现目的地，不生成业务状态。 |
+| 恢复 | 入口无本地业务状态，刷新、深链和浏览器回退均由稳定 URL 恢复；Agent/session 树的展开状态不影响四入口可达性。 |
+| 消费 | 用户可直接看到并点击 `Agent Circle / Automation / Knowledge / Local connection`；`Tasks / Automation` 和 `Bridge` 的旧含混命名已收敛。 |
+| 验收 | `LayoutSections.test.tsx` 同时钉住四个 label、href 与 compact/expanded Sidebar，不再以“链接不存在”作为旧 IA 的错误绿灯。 |
+
+- TDD Red：旧组件契约仍断言四入口不存在；恢复入口后该旧契约稳定失败。
+- Green：Sidebar + Agent Detail 权限组合回归 **135 passed**；全量 frontend 为 **115 files / 668 tests passed**；production build 与 bundle budget 通过。
+- 当前状态：**七原子本地闭环；生产待部署与手工点击验收。**
+
+### [P-003] 三种会话权限模式与 Agent 默认值的输入/消费断开
+
+后端一直保留受治理的 session break-glass API，但前端删除了“完全访问”，Agent 也没有持久默认会话模式，导致 Settings、Composer、新会话创建和 runtime metadata 之间断链。本次恢复的“完全访问”**不是** cloud 全局 `bypassPermissions`：它只能由公司管理员逐会话填写原因后激活，scope 固定为 session，TTL 固定为 60 分钟，仍服从企业硬规则、RLS、Capability Gate 和 destructive confirmation。
+
+| 原子 | 当前候选事实与消费路径 |
+|---|---|
+| 输入 | Agent Detail → Settings 下拉菜单可保存“请求批准 / 替我批准 / 完全访问”；会话 Composer 仍可覆盖当前 session。完全访问会弹出原因输入，不接受空理由或少于 8 个字符。 |
+| 权威 | `PATCH /agents/{agent_id}` 继续要求 manage access；只有 `org_admin/platform_admin` 能把默认值改为 `bypassPermissions`。逐会话完全访问再次在服务端检查管理员、reason、`scope=session` 和 TTL 1–60，客户端无法自授。 |
+| 执行 | Agent 默认值唯一落在 `agents.default_session_permission_mode`；普通 `POST /sessions` 与原子 `POST /sessions/runs` 都消费它。当前 session 的唯一切换入口仍是 `/permissions/profile`，active RuntimeTask metadata 同步更新。 |
+| 证据 | Agent 配置变更继续写 `agent.updated` audit/AI asset projection；session 切换写 canonical `permission_profile_updated` transcript event，break-glass 保存 operator、reason、issued/expires 时间；数据库 check constraint 拒绝第四种字符串。 |
+| 恢复 | 新 draft 先携带 Agent 默认值；普通首条消息原子创建 session+run，slash/Goal 先创建 bare session 时也由后端继承。Full access 每个新 session 重新确认，过期后 UI 本地降级且服务端下一次解析同样 fail-safe 降级；同步失败显式提示，不静默吞错。新 draft 的授权 API 失败或用户取消时强制回到 `default`，不会把未获 grant 的 `bypassPermissions` 留在 Composer。 |
+| 消费 | Settings 保存后更新 Agent query cache；后续新对话、Composer、session read model、runtime extra metadata 和 active run 都消费同一值。非管理员既看不到 Composer 的完全访问选项，也不会继承不可激活的 bypass draft。 |
+| 验收 | Schema/model/API/authority/session-create/expiry/UI/migration 均有回归；真实 PostgreSQL 历史 revision 升降级使用反射后的实际 schema 造数据，不靠保留影子列换绿灯。 |
+
+- TDD Red：初始 backend 权限/继承/migration 契约 **7 failed**，frontend Sidebar/Settings/三模式/Break-glass 契约 **5 failed**；随后 bare-session 继承、非管理员默认降级、到期同步错误分别以独立 Red 固定。全量首次复核又真实捕获 `AgentDetail` 2931 行越过 2900 架构门，以及 5 条历史 migration fixture 引用新列导致的 **6 failed**。
+- Green：backend 定向权限矩阵 **71 passed**，Agent list + AI asset version/rollback consumer **19 passed**，真实 PostgreSQL 六项 migration/head 复核 **6 passed**，backend 全量 **6733 passed, 1 skipped**；frontend 定向 **135 passed**、全量 **668 passed**；`AgentDetail.tsx` 收回至 **2899 行**，权限到期与弹窗进入单一 `SessionPermissionLifecycle` owner；Alembic 单 head=`agent_session_permission_default_0713`；ruff check/format、TypeScript、Vite production build、bundle budget 与 `git diff --check` 全绿。
+- 极简性：只新增一个 Agent 标量字段、一个可逆 migration、一个前端 lifecycle owner；没有第二套 permission store、全局 bypass、前端自判授权或新状态机。Migration 测试只增加一个按历史真实表反射的通用 seed helper，避免以后每加 Agent 列就复制五份兼容补丁。
+- 当前状态：**七原子本地闭环；生产 migration、三服务部署与真实管理员/普通成员 UI 验收待执行。**

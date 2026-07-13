@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Index, Integer, String, Text, event, func
+from sqlalchemy import Boolean, CheckConstraint, DateTime, Enum, ForeignKey, Index, Integer, String, Text, event, func
 from sqlalchemy.dialects.postgresql import JSON, UUID
 from sqlalchemy.orm import Mapped, Session, mapped_column, relationship
 
@@ -18,6 +18,10 @@ class Agent(Base):
 
     __tablename__ = "agents"
     __table_args__ = (
+        CheckConstraint(
+            "default_session_permission_mode IN ('default', 'auto', 'bypassPermissions')",
+            name="ck_agents_default_session_permission_mode",
+        ),
         Index(
             "ix_agents_tenant_active_created_at",
             "tenant_id",
@@ -90,6 +94,9 @@ class Agent(Base):
     max_tool_rounds: Mapped[int] = mapped_column(Integer, default=200, server_default="200")
     execution_mode: Mapped[str] = mapped_column(
         String(30), default="standard", nullable=False, server_default="standard"
+    )
+    default_session_permission_mode: Mapped[str] = mapped_column(
+        String(32), default="default", nullable=False, server_default="default"
     )
     smart_model_routing: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 

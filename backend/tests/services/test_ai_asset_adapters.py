@@ -11,19 +11,25 @@ def test_agent_revision_applier_restores_config_and_lifecycle() -> None:
         deleted_at=object(),
         deactivated_at=object(),
         deactivation_reason="deleted",
+        default_session_permission_mode="default",
     )
 
     apply_agent_content(
         agent,
         {
             "asset_type": "agent",
-            "config": {"name": "Restored", "role_description": "Restored role"},
+            "config": {
+                "name": "Restored",
+                "role_description": "Restored role",
+                "default_session_permission_mode": "auto",
+            },
             "control": {"lifecycle_status": "active"},
         },
     )
 
     assert agent.name == "Restored"
     assert agent.role_description == "Restored role"
+    assert agent.default_session_permission_mode == "auto"
     assert agent.deleted_at is None
     assert agent.deactivated_at is None
     assert agent.deactivation_reason is None
@@ -51,6 +57,7 @@ def test_agent_projection_contains_config_not_runtime_usage() -> None:
         agent_class="internal_tenant",
         security_zone="standard",
         execution_mode="standard",
+        default_session_permission_mode="auto",
         smart_model_routing=None,
         context_window_size=100,
         max_tool_rounds=200,
@@ -70,6 +77,7 @@ def test_agent_projection_contains_config_not_runtime_usage() -> None:
     assert projection.owner_id == owner_id
     assert projection.dependencies == [str(model_id)]
     assert projection.content["config"]["max_tool_rounds"] == 200
+    assert projection.content["config"]["default_session_permission_mode"] == "auto"
     assert projection.content["control"] == {"lifecycle_status": "active"}
     assert "tokens_used_total" not in projection.content["config"]
 

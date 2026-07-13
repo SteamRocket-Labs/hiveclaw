@@ -15,6 +15,7 @@ type AgentSettingsForm = {
   max_triggers: number;
   min_poll_interval_min: number;
   webhook_rate_limit: number;
+  default_session_permission_mode: 'default' | 'auto' | 'bypassPermissions';
   smart_model_routing_enabled: boolean;
   security_zone: string;
 };
@@ -128,6 +129,7 @@ interface AgentSettingsSectionProps {
   agent: any;
   llmModels: any[];
   canManage: boolean;
+  isAdmin: boolean;
   settingsForm: AgentSettingsForm;
   onSettingsFormChange: React.Dispatch<React.SetStateAction<AgentSettingsForm>>;
   settingsSaving: boolean;
@@ -156,6 +158,7 @@ export default function AgentSettingsSection({
   agent,
   llmModels,
   canManage,
+  isAdmin,
   settingsForm,
   onSettingsFormChange,
   settingsSaving,
@@ -207,6 +210,7 @@ export default function AgentSettingsSection({
     settingsForm.max_triggers !== ((agent as any)?.max_triggers ?? 20) ||
     settingsForm.min_poll_interval_min !== ((agent as any)?.min_poll_interval_min ?? 5) ||
     settingsForm.webhook_rate_limit !== ((agent as any)?.webhook_rate_limit ?? 5) ||
+    settingsForm.default_session_permission_mode !== ((agent as any)?.default_session_permission_mode || 'default') ||
     settingsForm.smart_model_routing_enabled !== !!((agent as any)?.smart_model_routing?.enabled) ||
     settingsForm.security_zone !== ((agent as any)?.security_zone || 'standard');
   const patrolHasChanges =
@@ -225,11 +229,13 @@ export default function AgentSettingsSection({
         max_triggers: settingsForm.max_triggers,
         min_poll_interval_min: settingsForm.min_poll_interval_min,
         webhook_rate_limit: settingsForm.webhook_rate_limit,
+        default_session_permission_mode: settingsForm.default_session_permission_mode,
         security_zone: settingsForm.security_zone,
         smart_model_routing: settingsForm.smart_model_routing_enabled
           ? { enabled: true, max_simple_chars: 160, max_simple_words: 28 }
           : null,
       } as any);
+      queryClient.setQueryData(['agent', agentId], (current: any) => ({ ...(current || {}), ...(result || {}) }));
       queryClient.invalidateQueries({ queryKey: ['agent', agentId] });
       onResetSettingsInit();
 
@@ -412,7 +418,7 @@ export default function AgentSettingsSection({
           )}
           <button
             className="btn btn-primary agent-settings-save-btn"
-            disabled={!hasChanges || settingsSaving}
+            disabled={!canManage || !hasChanges || settingsSaving}
             onClick={handleSaveSettings}
             style={{ opacity: hasChanges ? 1 : 0.5, cursor: hasChanges ? 'pointer' : 'default' }}
           >
@@ -483,6 +489,49 @@ export default function AgentSettingsSection({
             : t('agent.settings.access.privateAccessLevel', 'owner manage')}
         </div>
         {permissionError && <div className="agent-settings-hint agent-settings-hint-error">{permissionError}</div>}
+      </div>
+
+      <div className="card agent-settings-card">
+        <h4 className="agent-settings-card-title">
+          {t('agent.settings.sessionPermissionDefault.title', 'New conversation default')}
+        </h4>
+        <p className="agent-settings-card-desc">
+          {t(
+            'agent.settings.sessionPermissionDefault.description',
+            'Choose the permission mode used when this employee starts a new conversation.',
+          )}
+        </p>
+        <label className="agent-settings-label" htmlFor="default-session-permission-mode">
+          {t('agent.settings.sessionPermissionDefault.label', 'Default permission mode')}
+        </label>
+        <select
+          id="default-session-permission-mode"
+          name="default_session_permission_mode"
+          className="input agent-settings-input-full"
+          value={settingsForm.default_session_permission_mode}
+          disabled={!canManage}
+          onChange={(event) => onSettingsFormChange((form) => ({
+            ...form,
+            default_session_permission_mode: event.target.value as AgentSettingsForm['default_session_permission_mode'],
+          }))}
+        >
+          <option value="default">{t('agent.chat.composer.permissionMode.default', 'Ask first')}</option>
+          <option value="auto">{t('agent.chat.composer.permissionMode.auto', 'Approve for me')}</option>
+          <option value="bypassPermissions" disabled={!isAdmin}>
+            {t('agent.chat.composer.permissionMode.bypassPermissions', 'Full access')}
+          </option>
+        </select>
+        <div className="agent-settings-hint">
+          {settingsForm.default_session_permission_mode === 'bypassPermissions'
+            ? t(
+                'agent.settings.sessionPermissionDefault.fullAccessHint',
+                'Each new conversation still requires an administrator to activate a 60-minute session-scoped grant.',
+              )
+            : t(
+                'agent.settings.sessionPermissionDefault.hint',
+                'The mode can still be changed from the conversation composer.',
+              )}
+        </div>
       </div>
 
       <div className="card agent-settings-card">

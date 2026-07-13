@@ -46,13 +46,13 @@
 
 其中已经明确锁定：
 
-- 全局左栏不应该把每个功能模块都变成一级入口。
+- 全局左栏的产品级常驻入口固定为 Home、Agent 圈、自动化、知识库、本地连接；runtime、debug、治理细节不得继续扩张为一级入口。
 - 左栏的核心对象是 Digital Employee 及其 session；新建员工放在员工树底部。
 - 右栏只有两个默认任务：上方 Session Deliverables，下方 Runtime Console。
 - raw debug data 只进入显式 inspector / disclosure，不和用户主信息同级。
 - Team、Sub-agent、Workflow 必须是三种不同交互模型。
 
-当前代码只完成了“右栏上下两区”的大结构，左栏与信息降噪发生了回退。
+2026-07-13 owner 复核后纠正了本文早期“将四个产品入口全部收进 Home”的判断：信息降噪仍成立，但不能以隐藏高频产品入口为代价。
 
 ## 2. 用户面、公司后台与双面信息的最终分界
 
@@ -75,6 +75,10 @@
 Global left rail
   Workspace identity
   Real user Home
+  Agent Circle
+  Automation
+  Knowledge
+  Local connection
   Digital Employees
     Agent
       Session family / Branch
@@ -175,21 +179,19 @@ Session right rail
 
 默认只显示名称、角色、语义状态、耗时、简短结果和可执行动作。所有 id 只保留在显式 Inspector。
 
-### UX-03：全局左栏没有遵守已锁定的 IA
+### UX-03：全局左栏 IA 的 owner 校正
 
-**当前事实**
+**历史事实与校正**
 
-- `AppSidebar.tsx:49-55` 把 Home、Agent Circle、Tasks / Automation、Knowledge、Bridge 全部放成一级导航。
-- Home 指向 `/enterprise/dashboard`。
-- `WorkspaceGuard` 对普通 member 把 `/enterprise/dashboard` 重定向到 `/dashboard`，而 `/dashboard` 又重定向 `/agents`。
-- 因此普通用户没有真实 Home，只经历一次路由弹回。
-- 公司管理员在左栏 Home 和底部 Company Admin 看到同一个入口，职责重复。
-- `Dashboard.tsx` 的 Home shell 当前没有生产 route consumer；其中 Assign task 与 Automation 都指向 `/automations`，属于死代码中的旧 IA。
+- 2026-07-10 的扫描正确发现了 Home 路由弹回、Company Admin 职责重复和技术信息泄漏，但错误地把 Agent Circle、Automation、Knowledge、Local connection 四个产品目的地也归入“应隐藏模块”。
+- 2026-07-13 owner 明确确认：这四个入口必须和 Home 一样常驻；需要隐藏的是 session/run UUID、raw schema、debug inspector、企业治理配置等内部面，不是用户高频目的地。
+- `Bridge` 的产品名统一为“本地连接”；`Tasks / Automation` 统一为“自动化”，避免把 Work Ledger、BusinessTask 和 Trigger/Schedule 再次混为一谈。
 
 **最终契约**
 
 - `/home` 必须成为真实用户 Home。
-- Agent Circle、Automation、Knowledge、Bridge 从固定一级导航收进 Home、quick-open 或对象上下文。
+- `/plaza`、`/automations`、`/knowledge`、`/local-agents` 作为四个固定产品入口常驻左栏。
+- 其他 runtime、debug、raw evidence 和治理模块不得借此继续扩张一级导航；它们仍进入 session disclosure、Agent Detail 或公司后台。
 - `/enterprise/*` 只从底部 Company Admin 进入。
 - `/admin/*` 只从 Platform Admin 进入。
 - Digital Employees 树和 `+ 新建数字员工` 保留在左栏核心位置。
@@ -710,7 +712,7 @@ Outbox 必须在 parent notification 成功后 ack；失败可重试；消费者
 **必须完成**
 
 - 真正的 user Home；
-- 左栏只保留对象层级与底部角色入口；
+- 左栏保留 Home、四个固定产品入口、Digital Employee/session 对象层级与底部角色入口；
 - 技术 header 降级为 semantic header；
 - 所有 UUID/hash/schema/raw JSON 移入 Inspector；
 - Goal first-class status/control；
@@ -970,7 +972,7 @@ alembic heads -> runtime_notification_outbox_0710 (head)
 
 | 原子 | 当前事实源与消费路径 |
 | --- | --- |
-| 输入 | 用户从真实 `/home` 进入个人工作面；左栏输入只保留 Home、Digital Employee、session family / branch 与新建员工。Automation、Knowledge、Local Agent 等能力由 Home quick actions 进入，不再抢占一级导航。 |
+| 输入 | 用户从真实 `/home` 进入个人工作面；左栏固定消费 Home、Agent 圈、自动化、知识库、本地连接，随后是 Digital Employee、session family / branch 与新建员工。技术和治理模块不进入这一常驻产品层。 |
 | 权威 | `/enterprise/*` 只从底部 Company Admin 角色入口出现；`/admin/*` 只从 Platform Settings 出现。普通 session Header 不再重复 Composer 的 permission 表达。 |
 | 执行 | `/home` 直接挂载 `Dashboard`，不再 redirect 到 `/agents`；Plan `failed/skipped` 直接调用既有 canonical `planApi.handoff()` 重试同一 confirmed plan。 |
 | 证据 | runtime/session UUID、provider、resume、projection、checkpoint、branch depth、compaction、context 与 run 状态仍保留在 workbench/index/read model，并由显式 Technical Inspector 消费；普通 Header 和右栏语义 projection 不复制这些值。 |
@@ -989,7 +991,7 @@ alembic heads -> runtime_notification_outbox_0710 (head)
 **机械验收**
 
 ```text
-Red evidence -> header leaked session/provider/resume/governance/projection/checkpoint/compaction/context/run; right rail leaked run/session UUID; /home redirected; sidebar exposed five unrelated first-level modules; confirmed Plan failure had no retry; dead controls and duplicate composer/client remained
+Red evidence -> header leaked session/provider/resume/governance/projection/checkpoint/compaction/context/run; right rail leaked run/session UUID; /home redirected; sidebar product destinations and internal information were not separated; confirmed Plan failure had no retry; dead controls and duplicate composer/client remained
 targeted semantic/IA/recovery/hygiene suites -> 126 passed, 0 failed
 npm test -- --reporter=dot -> 94 files, 564 passed, 0 failed
 npm run build -- --emptyOutDir=false -> TypeScript + Vite exit 0
@@ -1000,7 +1002,7 @@ AgentDetail bundle -> 446.64 kB to 441.43 kB after Local Agent composer/CSS conv
 
 - `UX-01 Session Header`：`断点 -> 闭环`。
 - `UX-02 默认右栏内部 id`：`断点 -> 闭环`；显式 Inspector 保留完整机械事实。
-- `UX-03 User Home / 左栏 IA`：`断点 -> 闭环`。
+- `UX-03 User Home / 左栏 IA`：`断点 -> 闭环`；2026-07-13 owner 校正后，闭环契约明确包含四个常驻产品入口。
 - `UX-04` 的死控制面与重复 client：`断点 -> 闭环`；Team 真实动作由后续 Team 闭环节验收。
 - `MODE-01` 的 failed/skipped handoff recovery 与 raw RuntimeTask id：`局部闭环 -> 闭环`。
 - `LocalAgentChatSection` 重复 Composer：`局部闭环 -> 闭环`。

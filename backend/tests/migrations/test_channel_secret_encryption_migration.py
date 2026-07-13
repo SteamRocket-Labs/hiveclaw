@@ -76,9 +76,9 @@ async def test_real_migration_encrypts_all_channel_rows_and_secure_downgrade_kee
     agent_id = uuid.uuid4()
     engine = create_async_engine(database_url, poolclass=NullPool)
     try:
-        from app.models.agent import Agent
         from app.models.tenant import Tenant
         from app.models.user import User
+        from tests.migrations.conftest import insert_agent_at_schema_revision
 
         session_factory = async_sessionmaker(engine, expire_on_commit=False)
         async with session_factory.begin() as session:
@@ -101,14 +101,13 @@ async def test_real_migration_encrypts_all_channel_rows_and_secure_downgrade_kee
                 )
             )
             await session.flush()
-            session.add(
-                Agent(
-                    id=agent_id,
-                    tenant_id=tenant_id,
-                    name="Channel Agent",
-                    creator_id=user_id,
-                    status="idle",
-                )
+            await insert_agent_at_schema_revision(
+                session,
+                agent_id=agent_id,
+                tenant_id=tenant_id,
+                name="Channel Agent",
+                creator_id=user_id,
+                status="idle",
             )
         async with engine.begin() as connection:
             for channel_type in CHANNEL_TYPES:

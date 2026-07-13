@@ -57,6 +57,7 @@ _AGENT_CONFIG_FIELDS = (
     "agent_class",
     "security_zone",
     "execution_mode",
+    "default_session_permission_mode",
     "smart_model_routing",
     "context_window_size",
     "max_tool_rounds",

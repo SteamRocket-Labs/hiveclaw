@@ -170,7 +170,18 @@ const SESSION_PERMISSION_MODE_OPTIONS: Array<{
     label: 'Approve for me',
     description: 'Approve low-risk actions and ask for risky ones',
   },
+  {
+    value: 'bypassPermissions',
+    label: 'Full access',
+    description: 'Bypass session prompts, still obey enterprise rules',
+  },
 ];
+
+export const sessionPermissionModeOptions = (isAdmin: boolean) => (
+  isAdmin
+    ? SESSION_PERMISSION_MODE_OPTIONS
+    : SESSION_PERMISSION_MODE_OPTIONS.filter((option) => option.value !== 'bypassPermissions')
+);
 
 function formatCompactTokenCount(value: number | null | undefined): string {
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return '-';
@@ -2317,7 +2328,7 @@ function AgentChatSection({
                 attachments={attachedFiles}
                 permissionMode={sessionPermissionMode}
                 permissionModeLabel={permissionModeLabel}
-                permissionOptions={SESSION_PERMISSION_MODE_OPTIONS}
+                permissionOptions={sessionPermissionModeOptions(isAdmin)}
                 modelLabel={modelBadgeLabel}
                 modelTitle={modelBadgeTitle}
                 runtimeUsageLabel={runtimeUsageLabel}

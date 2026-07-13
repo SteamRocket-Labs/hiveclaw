@@ -62,10 +62,10 @@ def test_mcp_metadata_trust_migration_quarantines_legacy_rows_and_has_secure_dow
 
 @pytest.mark.asyncio
 async def test_real_upgrade_quarantines_legacy_metadata_and_preserves_review_on_replay(pg_container) -> None:
-    from app.models.agent import Agent
     from app.models.tenant import Tenant
     from app.models.user import User
     from tests.integration.conftest import _async_url
+    from tests.migrations.conftest import insert_agent_at_schema_revision
 
     database_name = f"mcp_trust_{uuid.uuid4().hex[:10]}"
     code, output = pg_container.exec(["psql", "-U", "test", "-d", "postgres", "-c", f"CREATE DATABASE {database_name}"])
@@ -119,19 +119,17 @@ async def test_real_upgrade_quarantines_legacy_metadata_and_preserves_review_on_
                 )
             )
             await db.flush()
-            db.add(
-                Agent(
-                    id=agent_id,
-                    tenant_id=tenant_id,
-                    creator_id=user_id,
-                    owner_user_id=user_id,
-                    sponsor_user_id=user_id,
-                    name="MCP Agent",
-                    agent_type="standard",
-                    status="running",
-                )
+            await insert_agent_at_schema_revision(
+                db,
+                agent_id=agent_id,
+                tenant_id=tenant_id,
+                creator_id=user_id,
+                owner_user_id=user_id,
+                sponsor_user_id=user_id,
+                name="MCP Agent",
+                agent_type="standard",
+                status="running",
             )
-            await db.flush()
             await db.execute(
                 text(
                     """

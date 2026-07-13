@@ -1092,7 +1092,7 @@ git diff --check
 1. 新增 pure typed `ToolDecision`，统一投影 tenant/agent/actor/delegator、input/policy/capability hashes、outcome/reason、approval、run/session/trace 与 idempotency join keys；最终结果进入 `InvocationSpan` 元数据，不再由 UI 猜测治理状态。
 2. `execute_direct()` 已删除；`execute_approved()` 只接受 approval id 与 expected principals，通过一次性票据恢复 exact tool/arguments。ticket 同时绑定 requester 与 approver，执行沿用原请求人的权限，不能借审批人权限扩权。
 3. approval ticket 增加 TTL、input hash、live policy drift 校验、single consume、execution receipt 与 stuck-execution reconciliation。票据消费后的 hook 只能阻断，不能改写已批准参数；阻断/变更均形成失败 receipt，不误记成功，也不自动重放未知副作用。
-4. 默认 permission mode 改为 `default`；tenant 默认只允许 `default/auto`。`bypassPermissions` 变为 admin-only、reason + session scope + TTL 的 break-glass，并同步到 session、active run、runtime context、typed event 与前端状态；普通 composer 不再提供常规 full-access 选项。
+4. 初始 permission mode 改为 `default`；tenant 默认只允许 `default/auto`。Agent 可持久保存未来新会话的默认偏好；`bypassPermissions` 只向 admin 暴露，并且每个 session 仍必须以 reason + session scope + TTL 激活 break-glass，再同步到 session、active run、runtime context、typed event 与前端状态。普通成员 composer 不提供 full-access 选项。
 5. `ToolMeta` 成为 timeout、risk、retry、idempotency、external visibility、delegated-user authorization 的执行描述源；删除 Tool service 内 timeout/egress 静态表，并补齐外部可见 Feishu/channel side effect 与典型只读工具标注。
 6. GuardPolicy 以 pure shrink-only evaluator 接入同一治理路径；malformed policy fail-closed，allow 不能覆盖 CapabilityPolicy/ResourcePermission/session/hook/preflight deny，approval 复用同一个 durable company ticket，并回写 `ToolDecision.approval_id`。
 7. 新增 exact AST RLS bypass manifest：每个调用绑定 file/function/reason/query shape/owner/expiry，新调用或 query widening 直接使 CI 失败。核心业务路径迁为窄 tenant locator → tenant-scoped execution；调用数由约 90/54 文件降至 67/40 文件。

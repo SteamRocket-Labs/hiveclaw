@@ -44,12 +44,11 @@ def test_hr_provisioning_job_migration_has_durable_backfill_and_rollback_contrac
 
 
 async def test_hr_provisioning_job_migration_really_backfills_confirmed_draft(pg_container) -> None:
-    from app.models.agent import Agent
     from app.models.chat_session import ChatSession
     from app.models.tenant import Tenant
     from app.models.user import User
     from tests.integration.conftest import _async_url
-    from tests.migrations.conftest import _alembic_upgrade
+    from tests.migrations.conftest import _alembic_upgrade, insert_agent_at_schema_revision
 
     database_name = f"hrjob_{uuid.uuid4().hex[:10]}"
     code, output = pg_container.exec(["psql", "-U", "test", "-d", "postgres", "-c", f"CREATE DATABASE {database_name}"])
@@ -79,17 +78,15 @@ async def test_hr_provisioning_job_migration_really_backfills_confirmed_draft(pg
                 )
             )
             await db.flush()
-            db.add(
-                Agent(
-                    id=agent_id,
-                    tenant_id=tenant_id,
-                    name="__system_hr__",
-                    creator_id=user_id,
-                    agent_class="internal_system",
-                    status="running",
-                )
+            await insert_agent_at_schema_revision(
+                db,
+                agent_id=agent_id,
+                tenant_id=tenant_id,
+                name="__system_hr__",
+                creator_id=user_id,
+                agent_class="internal_system",
+                status="running",
             )
-            await db.flush()
             db.add(ChatSession(id=session_id, agent_id=agent_id, tenant_id=tenant_id, user_id=user_id))
             await db.flush()
             await db.execute(

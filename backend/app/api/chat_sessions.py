@@ -1543,6 +1543,10 @@ async def create_session(
         visibility_scope="direct_user",
         listed_surface="chat",
     )
+    session.transcript_metadata_json = _session_permission_metadata(
+        str(getattr(agent, "default_session_permission_mode", "") or DEFAULT_CCPLUS_PERMISSION_MODE.value),
+        session,
+    )
     db.add(session)
     await db.commit()
     await db.refresh(session)
@@ -1748,7 +1752,11 @@ async def create_session_run(
     )
     db.add(session)
     await db.flush()
-    permission_mode = body.permission_mode or await _resolve_tenant_permission_default(db, session.tenant_id)
+    permission_mode = (
+        body.permission_mode
+        or str(getattr(agent, "default_session_permission_mode", "") or "").strip()
+        or await _resolve_tenant_permission_default(db, session.tenant_id)
+    )
     try:
         run = await start_web_chat_run(
             db=db,

@@ -5,11 +5,13 @@ import {
   IconArrowUpRight,
   IconBell,
   IconBuilding,
+  IconCheckbox,
   IconChevronUp,
   IconChevronsLeft,
   IconChevronsRight,
   IconChevronDown,
   IconChevronRight,
+  IconDatabase,
   IconDeviceDesktop,
   IconFolder,
   IconGitBranch,
@@ -18,6 +20,7 @@ import {
   IconMoon,
   IconPlus,
   IconSettings,
+  IconSitemap,
   IconSun,
   IconTrash,
   IconUser,
@@ -45,6 +48,10 @@ type SidebarNavItem = {
 
 const workspaceNavItems: SidebarNavItem[] = [
   { to: '/home', labelKey: 'nav.home', fallback: 'Home', icon: <IconHome size={15} stroke={1.6} />, end: true },
+  { to: '/plaza', labelKey: 'nav.plaza', fallback: 'Agent Circle', icon: <IconSitemap size={15} stroke={1.6} /> },
+  { to: '/automations', labelKey: 'nav.tasksAutomation', fallback: 'Automation', icon: <IconCheckbox size={15} stroke={1.6} /> },
+  { to: '/knowledge', labelKey: 'nav.knowledge', fallback: 'Knowledge', icon: <IconDatabase size={15} stroke={1.6} /> },
+  { to: '/local-agents', labelKey: 'nav.bridge', fallback: 'Local connection', icon: <IconDeviceDesktop size={15} stroke={1.6} /> },
 ];
 
 const isLocalAgentRuntimeType = (agent: any): boolean => agent?.agent_type === 'local_agent';

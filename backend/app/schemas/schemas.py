@@ -146,6 +146,7 @@ class AgentOut(BaseModel):
     agent_class: AgentClass = "internal_tenant"
     security_zone: str = "standard"
     execution_mode: AgentExecutionMode = "standard"
+    default_session_permission_mode: Literal["default", "auto", "bypassPermissions"] = "default"
     smart_model_routing: SmartModelRoutingConfig | None = None
     created_at: datetime
     last_active_at: datetime | None = None
@@ -172,6 +173,7 @@ class AgentUpdate(BaseModel):
     agent_class: AgentClass | None = None
     security_zone: str | None = None
     execution_mode: AgentExecutionMode | None = None
+    default_session_permission_mode: Literal["default", "auto", "bypassPermissions"] | None = None
     smart_model_routing: SmartModelRoutingConfig | None = None
 
 

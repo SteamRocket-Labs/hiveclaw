@@ -76,6 +76,7 @@ import {
     type SessionTransportCallbacks,
 } from './agent-detail/useSessionTransportController';
 import { projectSessionSocketEvent } from './agent-detail/sessionSocketEventProjector';
+import { SessionFullAccessPrompt, useSessionPermissionExpiry } from './agent-detail/SessionPermissionLifecycle';
 import {
     buildAssignmentHandoff,
     buildAssignmentSessionTitle,
@@ -93,6 +94,7 @@ import {
     buildAgentDetailTabNavigation,
     buildSessionWorkbenchNavigation,
     checkpointEventIdFromPayload,
+    defaultSessionPermissionModeFromAgent,
     draftContentFromCheckpointPayload,
     getAgentDetailHashTab,
     getVisibleAgentDetailTabs,
@@ -101,6 +103,7 @@ import {
     isSessionWorkbenchRoute,
     objectValue,
     rewindMarkerMessage,
+    sessionBreakGlassExpiryDelay,
     sessionPermissionModeFromSession,
     stringValueFromUnknown,
     trimMessagesBeforeTranscriptEvent,
@@ -129,10 +132,12 @@ export {
     applySessionActiveProjection,
     buildAgentDetailTabNavigation,
     buildSessionWorkbenchNavigation,
+    defaultSessionPermissionModeFromAgent,
     getAgentDetailHashTab,
     getVisibleAgentDetailTabs,
     isLocalAgentRuntimeType,
     isSessionWorkbenchRoute,
+    sessionBreakGlassExpiryDelay,
     sessionPermissionModeFromSession,
     trimMessagesBeforeTranscriptEvent,
 } from './agent-detail/agentDetailPolicy';
@@ -1062,6 +1067,7 @@ function AgentDetailInner() {
                 ? globalThis.crypto.randomUUID()
                 : `${now.getTime()}-${Math.random().toString(36).slice(2)}`;
         const draftId = `draft:${randomId}`;
+        const defaultPermissionMode = defaultSessionPermissionModeFromAgent(agent, isAdmin);
         return {
             id: draftId,
             draft_client_id: draftId,
@@ -1080,6 +1086,7 @@ function AgentDetailInner() {
             is_current_user_session: true,
             read_only: false,
             message_count: 0,
+            permission_mode: defaultPermissionMode,
         };
     };
 
@@ -1101,6 +1108,10 @@ function AgentDetailInner() {
         setIsStreaming(false);
         setIsWaiting(false);
         await selectSession(draft);
+        if (draft.permission_mode === 'bypassPermissions' && isAdmin) {
+            setFullAccessPromptRevertsDraft(true);
+            setFullAccessPromptOpen(true);
+        }
     };
 
     const replaceDraftActiveSession = (draftId: string, created: ChatSession) => {
@@ -1223,35 +1234,115 @@ function AgentDetailInner() {
     const [goalModeRequested, setGoalModeRequested] = useState(false);
     const goalStartRequestRef = useRef<{ fingerprint: string; requestId: string } | null>(null);
     const [sessionPermissionMode, setSessionPermissionMode] = useState<SessionPermissionMode>(DEFAULT_SESSION_PERMISSION_MODE);
+    const [fullAccessPromptOpen, setFullAccessPromptOpen] = useState(false);
+    const [fullAccessPromptRevertsDraft, setFullAccessPromptRevertsDraft] = useState(false);
     const [sessionCommandControl, setSessionCommandControl] = useState<SessionCommandControlState | null>(null);
     const [projectionTailScrollNonce, setProjectionTailScrollNonce] = useState(0);
-    const handleSetSessionPermissionMode = async (mode: SessionPermissionMode) => {
-        const previous = sessionPermissionMode;
+
+    const applySessionPermissionUpdate = (
+        sessionId: string,
+        mode: SessionPermissionMode,
+        breakGlass?: unknown,
+    ) => {
         setSessionPermissionMode(mode);
+        setActiveSession((current: any | null) =>
+            current && String(current.id) === sessionId
+                ? withSessionPermissionMode(current, mode, breakGlass)
+                : current,
+        );
+        setSessions((current) =>
+            current.map((session) =>
+                String(session.id) === sessionId
+                    ? withSessionPermissionMode(session, mode, breakGlass)
+                    : session,
+            ),
+        );
+        setAllSessions((current) =>
+            current.map((session) =>
+                String(session.id) === sessionId
+                    ? withSessionPermissionMode(session, mode, breakGlass)
+                    : session,
+            ),
+        );
+    };
+
+    const handleSetSessionPermissionMode = async (mode: SessionPermissionMode) => {
+        if (mode === 'bypassPermissions') {
+            if (!isAdmin) {
+                showToast(
+                    t('agent.chat.permission.fullAccessAdminOnly', 'Full access requires a company administrator.'),
+                    'error',
+                );
+                return;
+            }
+            setFullAccessPromptRevertsDraft(false);
+            setFullAccessPromptOpen(true);
+            return;
+        }
+        const previous = sessionPermissionMode;
         if (!id || !activeSession?.id) return;
         const sessionId = String(activeSession.id);
+        applySessionPermissionUpdate(sessionId, mode);
+        if (isDraftHumanChatSession(activeSession)) return;
         try {
-            await chatApi.updateSessionPermissionProfile(id, sessionId, { permission_mode: mode });
-            setActiveSession((current: any | null) =>
-                current && String(current.id) === sessionId ? withSessionPermissionMode(current, mode) : current,
-            );
-            setSessions((current) =>
-                current.map((session) =>
-                    String(session.id) === sessionId ? withSessionPermissionMode(session, mode) : session,
-                ),
-            );
-            setAllSessions((current) =>
-                current.map((session) =>
-                    String(session.id) === sessionId ? withSessionPermissionMode(session, mode) : session,
-                ),
+            const result: any = await chatApi.updateSessionPermissionProfile(id, sessionId, { permission_mode: mode });
+            applySessionPermissionUpdate(
+                sessionId,
+                sessionPermissionModeFromSession(result),
+                result?.break_glass,
             );
             invalidateSessionRuntimeQueries(id, sessionId);
         } catch (err: any) {
-            setSessionPermissionMode(previous);
+            applySessionPermissionUpdate(sessionId, previous, (activeSession as any)?.break_glass);
             const msg = err?.message || t('agent.chat.permission.updateFailed', 'Failed to update session permission mode');
             showToast(msg, 'error');
         }
     };
+
+    const handleConfirmFullAccess = async (reason: string) => {
+        const trimmedReason = reason.trim();
+        if (trimmedReason.length < 8) {
+            showToast(
+                t('agent.chat.permission.fullAccessReasonTooShort', 'Enter a reason of at least 8 characters.'),
+                'error',
+            );
+            return;
+        }
+        if (!id || !activeSession?.id) return;
+        const previous = sessionPermissionMode;
+        try {
+            const durableSession = await ensureDurableActiveSession();
+            if (!durableSession?.id) return;
+            const sessionId = String(durableSession.id);
+            const result: any = await chatApi.updateSessionPermissionProfile(id, sessionId, {
+                permission_mode: 'bypassPermissions',
+                break_glass_reason: reason,
+                break_glass_scope: 'session',
+                break_glass_ttl_minutes: 60,
+            });
+            applySessionPermissionUpdate(sessionId, 'bypassPermissions', result?.break_glass);
+            setFullAccessPromptOpen(false);
+            setFullAccessPromptRevertsDraft(false);
+            invalidateSessionRuntimeQueries(id, sessionId);
+        } catch (err: any) {
+            applySessionPermissionUpdate(String(activeSession.id), isDraftHumanChatSession(activeSession) ? DEFAULT_SESSION_PERMISSION_MODE : previous);
+            const msg = err?.message || t('agent.chat.permission.updateFailed', 'Failed to update session permission mode');
+            showToast(msg, 'error');
+        }
+    };
+
+    const handleCancelFullAccess = () => {
+        setFullAccessPromptOpen(false);
+        if (fullAccessPromptRevertsDraft && activeSession?.id && isDraftHumanChatSession(activeSession)) {
+            applySessionPermissionUpdate(String(activeSession.id), DEFAULT_SESSION_PERMISSION_MODE);
+        }
+        setFullAccessPromptRevertsDraft(false);
+    };
+
+    useSessionPermissionExpiry({
+        agentId: id, activeSession, onExpire: applySessionPermissionUpdate,
+        onSyncError: (message) => showToast(message, 'error'), onInvalidate: invalidateSessionRuntimeQueries,
+    });
     const planModeScopeKey = buildPlanModeScopeKey(id, activeSession?.id);
     const planModeScopeKeyRef = useRef(planModeScopeKey);
     useEffect(() => {
@@ -1331,6 +1422,7 @@ function AgentDetailInner() {
         max_triggers: 20,
         min_poll_interval_min: 5,
         webhook_rate_limit: 5,
+        default_session_permission_mode: 'default' as SessionPermissionMode,
         smart_model_routing_enabled: false,
         security_zone: 'standard',
     });
@@ -1348,6 +1440,7 @@ function AgentDetailInner() {
                 max_triggers: (agent as any).max_triggers ?? 20,
                 min_poll_interval_min: (agent as any).min_poll_interval_min ?? 5,
                 webhook_rate_limit: (agent as any).webhook_rate_limit ?? 5,
+                default_session_permission_mode: defaultSessionPermissionModeFromAgent(agent, true),
                 smart_model_routing_enabled: !!(agent as any).smart_model_routing?.enabled,
                 security_zone: (agent as any).security_zone || 'standard',
             });
@@ -2644,6 +2737,7 @@ function AgentDetailInner() {
                             agent={agent}
                             llmModels={llmModels}
                             canManage={canManage}
+                            isAdmin={isAdmin}
                             onReviewPatrolPlan={async (request) => {
                                 const handoff = buildAssignmentHandoff(request, 'plan');
                                 const session = await chatApi.createSession(id!, buildAssignmentSessionTitle(handoff.content));
@@ -2685,6 +2779,8 @@ function AgentDetailInner() {
                 onCancel={() => setDeleteSessionConfirm(null)}
                 onConfirm={confirmDeleteSession}
             />
+
+            <SessionFullAccessPrompt open={fullAccessPromptOpen} onCancel={handleCancelFullAccess} onConfirm={handleConfirmFullAccess} />
 
             {
                 uploadToast && (

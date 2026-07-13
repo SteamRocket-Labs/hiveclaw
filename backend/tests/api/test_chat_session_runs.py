@@ -179,7 +179,12 @@ def test_create_session_run_atomically_creates_human_session_and_starts_runtime(
     agent_id = uuid4()
     tenant_id = uuid4()
     user_id = uuid4()
-    agent = SimpleNamespace(id=agent_id, creator_id=uuid4(), tenant_id=tenant_id)
+    agent = SimpleNamespace(
+        id=agent_id,
+        creator_id=uuid4(),
+        tenant_id=tenant_id,
+        default_session_permission_mode="auto",
+    )
     user = SimpleNamespace(id=user_id, role="member", tenant_id=tenant_id)
     db = _CreateAndRunDB()
     captured = {}
@@ -199,7 +204,6 @@ def test_create_session_run_atomically_creates_human_session_and_starts_runtime(
             "content": "hello",
             "display_content": "hello",
             "file_name": "",
-            "permission_mode": "bypassPermissions",
         },
     )
 
@@ -229,9 +233,9 @@ def test_create_session_run_atomically_creates_human_session_and_starts_runtime(
     assert captured["display_content"] == "hello"
     assert captured["file_name"] == ""
     assert captured["extra_metadata"] == {
-        "permission_mode": "default",
+        "permission_mode": "auto",
         "writable_roots": ["workspace/"],
-        "permission_profile": {"mode": "default", "allowed_tools": [], "writable_roots": ["workspace/"]},
+        "permission_profile": {"mode": "auto", "allowed_tools": [], "writable_roots": ["workspace/"]},
         "break_glass": None,
     }
 

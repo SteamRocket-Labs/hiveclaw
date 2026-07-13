@@ -44,13 +44,12 @@ def test_hr_draft_recovery_migration_backfills_only_unconfirmed_preview_ttl() ->
 
 
 async def test_hr_draft_recovery_migration_really_backfills_and_preserves_secure_downgrade(pg_container) -> None:
-    from app.models.agent import Agent
     from app.models.chat_session import ChatSession
     from app.models.hr_creation import HrCreationDraft
     from app.models.tenant import Tenant
     from app.models.user import User
     from tests.integration.conftest import _async_url
-    from tests.migrations.conftest import _alembic_upgrade
+    from tests.migrations.conftest import _alembic_upgrade, insert_agent_at_schema_revision
 
     database_name = f"hrdraft_{uuid.uuid4().hex[:10]}"
     code, output = pg_container.exec(["psql", "-U", "test", "-d", "postgres", "-c", f"CREATE DATABASE {database_name}"])
@@ -90,19 +89,17 @@ async def test_hr_draft_recovery_migration_really_backfills_and_preserves_secure
                 )
             )
             await db.flush()
-            db.add(
-                Agent(
-                    id=hr_agent_id,
-                    tenant_id=tenant_id,
-                    name="__system_hr__",
-                    creator_id=user_id,
-                    sponsor_user_id=user_id,
-                    owner_user_id=user_id,
-                    agent_class="internal_system",
-                    status="running",
-                )
+            await insert_agent_at_schema_revision(
+                db,
+                agent_id=hr_agent_id,
+                tenant_id=tenant_id,
+                name="__system_hr__",
+                creator_id=user_id,
+                sponsor_user_id=user_id,
+                owner_user_id=user_id,
+                agent_class="internal_system",
+                status="running",
             )
-            await db.flush()
             for session_id in session_ids:
                 db.add(
                     ChatSession(

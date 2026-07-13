@@ -75,12 +75,11 @@ def test_approval_execution_job_migration_backfills_only_safe_unconsumed_tickets
 
 
 async def test_approval_execution_job_migration_really_backfills_and_expires_legacy_rows(pg_container) -> None:
-    from app.models.agent import Agent
     from app.models.audit import ApprovalRequest
     from app.models.tenant import Tenant
     from app.models.user import User
     from tests.integration.conftest import _async_url
-    from tests.migrations.conftest import _alembic_upgrade
+    from tests.migrations.conftest import _alembic_upgrade, insert_agent_at_schema_revision
 
     database_name = f"approvaljob_{uuid.uuid4().hex[:10]}"
     code, output = pg_container.exec(["psql", "-U", "test", "-d", "postgres", "-c", f"CREATE DATABASE {database_name}"])
@@ -112,8 +111,13 @@ async def test_approval_execution_job_migration_really_backfills_and_expires_leg
                 )
             )
             await db.flush()
-            db.add(Agent(id=agent_id, tenant_id=tenant_id, name="Approval Agent", creator_id=user_id))
-            await db.flush()
+            await insert_agent_at_schema_revision(
+                db,
+                agent_id=agent_id,
+                tenant_id=tenant_id,
+                creator_id=user_id,
+                name="Approval Agent",
+            )
             for approval_id, expires_at in (
                 (valid_id, datetime.now(timezone.utc) + timedelta(minutes=30)),
                 (expired_id, datetime.now(timezone.utc) - timedelta(minutes=1)),

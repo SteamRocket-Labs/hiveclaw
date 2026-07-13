@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from app.api.agents import _agent_list_out_from_mapping
+from app.api.agents import _agent_list_summary_stmt
 
 
 def test_agent_list_summary_omits_detail_heavy_fields_and_truncates_description():
@@ -60,3 +61,9 @@ def test_agent_list_route_uses_summary_projection_not_full_agent_rows():
 
     assert "_agent_list_summary_stmt" in list_source
     assert "select(Agent)" not in list_source
+
+
+def test_agent_list_summary_includes_the_persisted_session_permission_default():
+    selected_names = {column["name"] for column in _agent_list_summary_stmt().column_descriptions}
+
+    assert "default_session_permission_mode" in selected_names

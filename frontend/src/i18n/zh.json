@@ -291,9 +291,9 @@
     "myWorkspace": "我的工作台",
     "topActions": "我的工作台",
     "digitalEmployees": "数字员工",
-    "tasksAutomation": "任务 / 自动化",
+    "tasksAutomation": "自动化",
     "knowledge": "知识库",
-    "bridge": "Bridge",
+    "bridge": "本地连接",
     "conversationsTasks": "对话与任务",
     "planReview": "计划确认",
     "automations": "自动化",
@@ -1558,7 +1558,12 @@
         "deny": "拒绝",
         "onceOnly": "该操作只能单次授权。",
         "deleteOnceOnly": "删除类操作只能本次允许。",
-        "updateFailed": "更新会话权限模式失败"
+        "updateFailed": "更新会话权限模式失败",
+        "fullAccessAdminOnly": "完全访问需要公司管理员授权。",
+        "fullAccessTitle": "启用 60 分钟完全访问",
+        "fullAccessReasonPlaceholder": "填写本会话授权原因（至少 8 个字符）",
+        "fullAccessReasonTooShort": "授权原因至少需要 8 个字符。",
+        "expirySyncFailed": "完全访问已到期，但会话状态同步失败。继续前请刷新页面。"
       },
       "actions": {
         "like": "喜欢",
@@ -1762,6 +1767,13 @@
       "save": "保存",
       "saving": "保存中...",
       "saved": "已保存",
+      "sessionPermissionDefault": {
+        "title": "新对话默认模式",
+        "description": "选择这个员工开启新对话时默认使用的权限模式。",
+        "label": "默认权限模式",
+        "hint": "进入对话后仍可在输入框下方随时切换。",
+        "fullAccessHint": "每个新对话仍需由管理员激活一次 60 分钟、仅限本会话的完全访问授权。"
+      },
       "access": {
         "title": "访问权限",
         "description": "控制此员工仅自己可见，还是对整个公司可见。",

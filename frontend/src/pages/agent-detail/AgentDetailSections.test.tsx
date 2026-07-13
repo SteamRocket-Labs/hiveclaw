@@ -26,6 +26,7 @@ import AgentChatSection, {
   isClarificationCardAnsweredByLaterUserMessage,
   pickFocusedCheckpointIdForScroll,
   permissionOnceOnlyMessageKey,
+  sessionPermissionModeOptions,
   sessionCheckpointPreview,
   subagentWorkerRecoveryModel,
   userFacingRuntimeStatus,
@@ -2113,6 +2114,7 @@ describe('AgentDetail extracted sections', () => {
           max_triggers: 10,
           min_poll_interval_min: 5,
           webhook_rate_limit: 5,
+          default_session_permission_mode: 'auto',
           tokens_used_today: 1234,
           tokens_used_month: 5678,
           welcome_message: 'Hello there',
@@ -2127,6 +2129,7 @@ describe('AgentDetail extracted sections', () => {
           { id: 'model-1', label: 'GPT-5.4', provider: 'openai', model: 'gpt-5.4', enabled: true },
         ]}
         canManage
+        isAdmin
         settingsForm={{
           primary_model_id: 'model-1',
           fallback_model_id: '',
@@ -2135,6 +2138,7 @@ describe('AgentDetail extracted sections', () => {
           max_triggers: 10,
           min_poll_interval_min: 5,
           webhook_rate_limit: 5,
+          default_session_permission_mode: 'auto',
           smart_model_routing_enabled: false,
           security_zone: 'restricted',
         }}
@@ -2189,10 +2193,27 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).not.toContain('value="deny" selected=""');
     expect(markup).not.toContain('value="L2"');
     expect(markup).toContain('Access Permissions');
+    expect(markup).toContain('New conversation default');
+    expect(markup).toContain('name="default_session_permission_mode"');
+    expect(markup).toContain('value="default"');
+    expect(markup).toContain('value="auto" selected=""');
+    expect(markup).toContain('value="bypassPermissions"');
     expect(markup).toContain('Private to me');
     expect(markup).toContain('Company shared');
     expect(markup).toContain('Channel Config Mock');
     expect(markup).not.toContain('deleteAgent');
+  });
+
+  it('exposes all three session permission modes to admins and keeps full access out of member controls', () => {
+    expect(sessionPermissionModeOptions(true).map((option) => option.value)).toEqual([
+      'default',
+      'auto',
+      'bypassPermissions',
+    ]);
+    expect(sessionPermissionModeOptions(false).map((option) => option.value)).toEqual([
+      'default',
+      'auto',
+    ]);
   });
 
   it('keeps company capability policy management out of Agent Detail', async () => {
@@ -2278,12 +2299,14 @@ describe('AgentDetail extracted sections', () => {
           { id: 'model-1', label: 'GPT-5.4', provider: 'openai', model: 'gpt-5.4', enabled: true },
         ]}
         canManage
+        isAdmin
         settingsForm={{
           primary_model_id: 'model-1',
           fallback_model_id: '',
           max_triggers: 10,
           min_poll_interval_min: 5,
           webhook_rate_limit: 5,
+          default_session_permission_mode: 'default',
           smart_model_routing_enabled: false,
           security_zone: 'standard',
         }}

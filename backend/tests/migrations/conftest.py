@@ -26,8 +26,11 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+from typing import Any
+import uuid
 
 import pytest
+from sqlalchemy import MetaData, Table
 from sqlalchemy.engine import make_url
 
 from tests.integration.conftest import (  # noqa: F401  (re-exported fixtures)
@@ -75,6 +78,59 @@ def _alembic_upgrade(database_url: str, target: str) -> None:
             f"alembic upgrade {target} failed:\n"
             f"stdout tail: {result.stdout[-2000:]}\nstderr tail: {result.stderr[-2000:]}"
         )
+
+
+async def insert_agent_at_schema_revision(
+    db: Any,
+    *,
+    agent_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    creator_id: uuid.UUID,
+    name: str,
+    **overrides: Any,
+) -> None:
+    """Seed an Agent against a historical schema without current-head columns.
+
+    Migration tests intentionally downgrade the database while importing the
+    current ORM. Reflecting the live table keeps those fixtures honest as new
+    Agent columns are added at later revisions.
+    """
+    from app.models.agent import Agent
+    from app.models.participant import Participant
+
+    participant_id = overrides.pop("participant_id", uuid.uuid4())
+    sponsor_user_id = overrides.pop("sponsor_user_id", creator_id)
+    db.add(
+        Participant(
+            id=participant_id,
+            type="agent",
+            ref_id=agent_id,
+            display_name=name[:100],
+        )
+    )
+    await db.flush()
+
+    connection = await db.connection()
+
+    def reflect_agents(sync_connection):
+        return Table("agents", MetaData(), autoload_with=sync_connection)
+
+    historical_agents = await connection.run_sync(reflect_agents)
+    values: dict[str, Any] = {
+        "id": agent_id,
+        "tenant_id": tenant_id,
+        "creator_id": creator_id,
+        "sponsor_user_id": sponsor_user_id,
+        "participant_id": participant_id,
+        "name": name,
+        **overrides,
+    }
+    for column in Agent.__table__.columns:
+        if column.name in values or column.name not in historical_agents.c:
+            continue
+        if column.default is not None and column.default.is_scalar:
+            values[column.name] = column.default.arg
+    await db.execute(historical_agents.insert().values(**values))
 
 
 @pytest.fixture(scope="session")

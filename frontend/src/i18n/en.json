@@ -316,9 +316,9 @@
     "myWorkspace": "My Workspace",
     "topActions": "My Workspace",
     "digitalEmployees": "Digital Employees",
-    "tasksAutomation": "Tasks / Automation",
+    "tasksAutomation": "Automation",
     "knowledge": "Knowledge",
-    "bridge": "Bridge",
+    "bridge": "Local connection",
     "conversationsTasks": "Conversations & Tasks",
     "planReview": "Plan Review",
     "automations": "Automations",
@@ -1558,7 +1558,12 @@
         "deny": "Deny",
         "onceOnly": "This action can only be allowed once.",
         "deleteOnceOnly": "Delete actions can only be allowed once.",
-        "updateFailed": "Failed to update session permission mode"
+        "updateFailed": "Failed to update session permission mode",
+        "fullAccessAdminOnly": "Full access requires a company administrator.",
+        "fullAccessTitle": "Enable full access for 60 minutes",
+        "fullAccessReasonPlaceholder": "Reason for this session (at least 8 characters)",
+        "fullAccessReasonTooShort": "Enter a reason of at least 8 characters.",
+        "expirySyncFailed": "Full access expired, but the session status could not be refreshed. Reload before continuing."
       },
       "actions": {
         "like": "Like",
@@ -1759,6 +1764,13 @@
       "save": "Save",
       "saving": "Saving...",
       "saved": "Saved",
+      "sessionPermissionDefault": {
+        "title": "New conversation default",
+        "description": "Choose the permission mode used when this employee starts a new conversation.",
+        "label": "Default permission mode",
+        "hint": "The mode can still be changed from the conversation composer.",
+        "fullAccessHint": "Each new conversation still requires an administrator to activate a 60-minute session-scoped grant."
+      },
       "access": {
         "title": "Access Permissions",
         "description": "Control whether this employee is private to you or visible to the whole company.",

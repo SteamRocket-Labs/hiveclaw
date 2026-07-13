@@ -1,6 +1,8 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 from pydantic import ValidationError
 
 
@@ -82,6 +84,52 @@ def test_agent_schemas_expose_smart_model_routing_config():
     assert payload.smart_model_routing.enabled is True
     assert payload.smart_model_routing.max_simple_chars == 120
     assert payload.smart_model_routing.max_simple_words == 18
+
+
+@pytest.mark.parametrize("mode", ["default", "auto", "bypassPermissions"])
+def test_agent_update_accepts_all_session_permission_defaults(mode: str):
+    from app.schemas.schemas import AgentUpdate
+
+    payload = AgentUpdate(default_session_permission_mode=mode)
+
+    assert payload.default_session_permission_mode == mode
+
+
+def test_agent_update_rejects_unknown_session_permission_default():
+    from app.schemas.schemas import AgentUpdate
+
+    with pytest.raises(ValidationError):
+        AgentUpdate(default_session_permission_mode="unrestricted")
+
+
+def test_agent_model_persists_session_permission_default():
+    from app.models.agent import Agent
+
+    column = Agent.__table__.c.default_session_permission_mode
+    assert column.nullable is False
+    assert str(column.server_default.arg) == "default"
+
+
+def test_agent_full_access_default_requires_company_admin():
+    from app.api.agents import _validate_default_session_permission_mode_update
+
+    with pytest.raises(HTTPException) as exc_info:
+        _validate_default_session_permission_mode_update(
+            {"default_session_permission_mode": "bypassPermissions"},
+            SimpleNamespace(role="member"),
+        )
+    assert exc_info.value.status_code == 403
+
+    _validate_default_session_permission_mode_update(
+        {"default_session_permission_mode": "bypassPermissions"},
+        SimpleNamespace(role="org_admin"),
+    )
+
+    _validate_default_session_permission_mode_update(
+        {"default_session_permission_mode": "bypassPermissions"},
+        SimpleNamespace(role="member"),
+        current_mode="bypassPermissions",
+    )
 
 
 def test_agent_runtime_surface_removes_legacy_role_and_message_cleanup_paths():

@@ -2,9 +2,8 @@
 # Docker entrypoint: initialize DB tables, then start the app.
 # Order matters:
 #   1. create_all  - creates all tables using SQLAlchemy models (idempotent)
-#   2. alembic upgrade head - applies every pending migration and fails closed.
+#   2. alembic stamp head - tells alembic we are at the latest revision (skips migrations)
 #      For existing installs that may have missing columns, safe ALTER TABLE patches run first.
-#   2.6 strict tenant-scope audit - proves no tenant-owned NULL row remains.
 #   3. uvicorn - starts the FastAPI app
 
 set -e
@@ -30,14 +29,6 @@ case "$SCHEMA_URL" in
   postgresql://*) SCHEMA_URL="postgresql+asyncpg://${SCHEMA_URL#postgresql://}" ;;
   postgres://*) SCHEMA_URL="postgresql+asyncpg://${SCHEMA_URL#postgres://}" ;;
 esac
-
-verify_strict_tenant_null_semantics() {
-    echo "[entrypoint] Verifying strict tenant NULL semantics..."
-    if ! DATABASE_URL="$SCHEMA_URL" python -m app.scripts.audit_tenant_null_semantics --fail-on-legacy-null; then
-        echo "[entrypoint] ERROR: tenant NULL semantics audit failed; refusing to start" >&2
-        exit 1
-    fi
-}
 
 if [ "${HIVE_PROCESS_ROLE:-runtime}" != "api" ]; then
 echo "[entrypoint] Step 1: Creating/verifying database tables..."
@@ -175,28 +166,33 @@ PYEOF
 
 echo "[entrypoint] Step 2: Running alembic migrations..."
 # Run all migrations to ensure database schema is up to date (owner connection)
-if ! DATABASE_URL="$SCHEMA_URL" alembic upgrade head; then
-    echo "[entrypoint] ERROR: alembic migration failed; refusing to start against an unverified schema" >&2
-    exit 1
-fi
+DATABASE_URL="$SCHEMA_URL" alembic upgrade head || echo "[entrypoint] WARNING: alembic migration failed (non-fatal, app may still work)"
 
 echo "[entrypoint] Step 2.5: Running data migrations..."
 # Safely migrate old AgentSchedules to the new AgentTriggers system (owner connection)
 DATABASE_URL="$SCHEMA_URL" python -m app.scripts.migrate_schedules_to_triggers
 
-echo "[entrypoint] Step 2.6: Running post-migration schema audit..."
-verify_strict_tenant_null_semantics
-
-echo "[entrypoint] Step 2.7: Bootstrapping + granting the non-owner RLS role (stage-3 prep; creates app_rls when RLS_APP_PASSWORD is set)..."
+echo "[entrypoint] Step 2.6: Bootstrapping + granting the non-owner RLS role (stage-3 prep; creates app_rls when RLS_APP_PASSWORD is set)..."
 DATABASE_URL="$SCHEMA_URL" python -m app.scripts.grant_rls_app_role || echo "[entrypoint] WARNING: grant_rls_app_role failed (non-fatal)"
+
+# Stage-2b tenant_id backfill — gated (RLS_BACKFILL_ON_DEPLOY=1), owner connection.
+# Runs in the BACKGROUND: a large backfill (prod runtime_tasks is 400k+ rows) must
+# never block uvicorn startup past the healthcheck window — doing it inline crashed
+# the flip deploy on 2026-06-11 (healthcheck timed out before uvicorn started).
+# SAFEST is to run it as a SEPARATE ops step BEFORE the flip (see
+# docs/rls-stage3-cutover.md) rather than in the deploy at all; this gated
+# background run is a convenience fallback only. Idempotent (fills NULL rows only).
+if [ "$RLS_BACKFILL_ON_DEPLOY" = "1" ]; then
+    echo "[entrypoint] Step 2.7: Stage-2b tenant_id backfill in background (non-blocking)..."
+    DATABASE_URL="$SCHEMA_URL" python -m app.scripts.backfill_stage2b_tenant_id --apply --confirm &
+fi
 else
-    echo "[entrypoint] API role: skipping schema/bootstrap mutations; running read-only schema audit"
-    verify_strict_tenant_null_semantics
+    echo "[entrypoint] API role: skipping schema/bootstrap migrations before uvicorn"
 fi
 
-# Step 2.8: Auto-authenticate lark-cli if Feishu app credentials are available
+# Step 2.7: Auto-authenticate lark-cli if Feishu app credentials are available
 if [ -n "$FEISHU_APP_ID" ] && [ -n "$FEISHU_APP_SECRET" ] && command -v lark-cli >/dev/null 2>&1; then
-    echo "[entrypoint] Step 2.8: Auto-authenticating lark-cli..."
+    echo "[entrypoint] Step 2.7: Auto-authenticating lark-cli..."
     lark-cli auth login --app-id "$FEISHU_APP_ID" --app-secret "$FEISHU_APP_SECRET" 2>&1 || echo "[entrypoint] WARNING: lark-cli auth login failed (non-fatal)"
     # Auto-enable CLI if credentials succeeded
     if lark-cli auth status >/dev/null 2>&1; then

@@ -14,7 +14,6 @@ from __future__ import annotations
 
 from alembic import op
 import sqlalchemy as sa
-from sqlalchemy.dialects import postgresql
 
 
 revision = "approval_execution_envelope_0711"
@@ -28,7 +27,7 @@ LEGACY_INVALIDATION_MARKER = revision
 def upgrade() -> None:
     op.add_column(
         "approval_requests",
-        sa.Column("execution_envelope", postgresql.JSONB(), nullable=True),
+        sa.Column("execution_envelope", sa.JSON(), nullable=True),
     )
     op.add_column(
         "approval_requests",
@@ -38,14 +37,14 @@ def upgrade() -> None:
         sa.text(
             """
             UPDATE approval_requests
-            SET details = COALESCE(details, '{}'::jsonb)
+            SET details = (COALESCE(details::jsonb, '{}'::jsonb)
                     || jsonb_build_object(
                         'legacy_approval_invalidated_by', :marker,
                         'legacy_approval_invalidated_at', now(),
                         'legacy_approval_previous_status', status::text,
                         'legacy_approval_previous_execution_status', execution_status,
                         'legacy_approval_previous_resolved_at', resolved_at
-                    ),
+                    ))::json,
                 status = 'rejected',
                 execution_status = 'needs_reapproval',
                 resolved_at = COALESCE(resolved_at, now())
@@ -62,21 +61,21 @@ def downgrade() -> None:
         sa.text(
             """
             UPDATE approval_requests
-            SET status = (details->>'legacy_approval_previous_status')::approval_status_enum,
-                execution_status = details->>'legacy_approval_previous_execution_status',
+            SET status = (details::jsonb->>'legacy_approval_previous_status')::approval_status_enum,
+                execution_status = details::jsonb->>'legacy_approval_previous_execution_status',
                 resolved_at = CASE
-                    WHEN details->'legacy_approval_previous_resolved_at' IS NULL
-                      OR details->'legacy_approval_previous_resolved_at' = 'null'::jsonb
+                    WHEN details::jsonb->'legacy_approval_previous_resolved_at' IS NULL
+                      OR details::jsonb->'legacy_approval_previous_resolved_at' = 'null'::jsonb
                     THEN NULL
-                    ELSE (details->>'legacy_approval_previous_resolved_at')::timestamptz
+                    ELSE (details::jsonb->>'legacy_approval_previous_resolved_at')::timestamptz
                 END,
-                details = COALESCE(details, '{}'::jsonb)
+                details = (COALESCE(details::jsonb, '{}'::jsonb)
                     - 'legacy_approval_invalidated_by'
                     - 'legacy_approval_invalidated_at'
                     - 'legacy_approval_previous_status'
                     - 'legacy_approval_previous_execution_status'
-                    - 'legacy_approval_previous_resolved_at'
-            WHERE details->>'legacy_approval_invalidated_by' = :marker
+                    - 'legacy_approval_previous_resolved_at')::json
+            WHERE details::jsonb->>'legacy_approval_invalidated_by' = :marker
             """
         ).bindparams(marker=LEGACY_INVALIDATION_MARKER)
     )

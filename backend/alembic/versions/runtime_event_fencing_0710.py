@@ -47,6 +47,12 @@ _TASK_STATUSES = (
     "resumable",
     "suspended",
 )
+_LEGACY_DEEP_RESEARCH_TERMINAL_STATUSES = (
+    "completed",
+    "failed",
+    "killed",
+    "skipped",
+)
 
 
 def _quoted(values: tuple[str, ...]) -> str:
@@ -65,7 +71,42 @@ def _assert_runtime_task_domain(column: str, allowed: tuple[str, ...]) -> None:
         raise RuntimeError(f"runtime_tasks.{column} has unsupported values before typed constraint: {sorted(invalid)}")
 
 
+def _migrate_terminal_legacy_deep_research_tasks() -> None:
+    """Preserve retired Deep Research evidence under its workflow-native type.
+
+    Only terminal rows are safe to normalize. A non-terminal legacy row remains
+    visible to the domain assertion below so the release fails closed instead
+    of replaying an obsolete executor through the workflow worker.
+    """
+
+    op.execute(
+        sa.text(
+            f"""
+            UPDATE runtime_tasks
+            SET task_type = 'workflow',
+                metadata_json = jsonb_set(
+                    COALESCE(metadata_json::jsonb, '{{}}'::jsonb),
+                    '{{runtime_type_migration}}',
+                    COALESCE(
+                        metadata_json::jsonb -> 'runtime_type_migration',
+                        '{{}}'::jsonb
+                    ) || jsonb_build_object(
+                        'source_type', 'deep_research',
+                        'target_type', 'workflow',
+                        'migration_revision', 'runtime_event_fencing_0710',
+                        'execution_replayed', false
+                    ),
+                    true
+                )::json
+            WHERE task_type = 'deep_research'
+              AND status IN ({_quoted(_LEGACY_DEEP_RESEARCH_TERMINAL_STATUSES)})
+            """
+        )
+    )
+
+
 def upgrade() -> None:
+    _migrate_terminal_legacy_deep_research_tasks()
     _assert_runtime_task_domain("task_type", _TASK_TYPES)
     _assert_runtime_task_domain("status", _TASK_STATUSES)
 
@@ -249,6 +290,18 @@ def downgrade() -> None:
 
     op.drop_constraint("ck_runtime_tasks_status", "runtime_tasks", type_="check")
     op.drop_constraint("ck_runtime_tasks_task_type", "runtime_tasks", type_="check")
+    op.execute(
+        sa.text(
+            """
+            UPDATE runtime_tasks
+            SET task_type = 'deep_research'
+            WHERE task_type = 'workflow'
+              AND metadata_json::jsonb -> 'runtime_type_migration' ->> 'source_type' = 'deep_research'
+              AND metadata_json::jsonb -> 'runtime_type_migration' ->> 'migration_revision'
+                    = 'runtime_event_fencing_0710'
+            """
+        )
+    )
     op.drop_constraint("uq_runtime_tasks_root_idempotency_key", "runtime_tasks", type_="unique")
     op.drop_column("runtime_tasks", "policy_snapshot_hash")
     op.drop_column("runtime_tasks", "config_snapshot_hash")

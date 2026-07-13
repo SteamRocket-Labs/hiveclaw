@@ -1656,22 +1656,20 @@ class PersonalKnowledgeService:
         owner_user_id: uuid.UUID,
         limit: int = 50,
     ) -> list[PersonalKnowledgeJobSummary]:
-        rows = (
-            await session.execute(
-                select(KnowledgeIndexJob)
-                .where(
-                    KnowledgeIndexJob.tenant_id == tenant_id,
-                    KnowledgeIndexJob.scope_type == "person",
-                    KnowledgeIndexJob.scope_id == owner_user_id,
-                )
-                .order_by(KnowledgeIndexJob.updated_at.desc(), KnowledgeIndexJob.created_at.desc())
-                .limit(max(1, int(limit or 50)))
+        result = await session.execute(
+            select(KnowledgeIndexJob)
+            .where(
+                KnowledgeIndexJob.tenant_id == tenant_id,
+                KnowledgeIndexJob.scope_type == "person",
+                KnowledgeIndexJob.scope_id == owner_user_id,
             )
-        ).all()
-        jobs: list[PersonalKnowledgeJobSummary] = []
-        for row in rows:
-            job = row[0] if isinstance(row, tuple) else row
-            jobs.append(
+            .order_by(KnowledgeIndexJob.updated_at.desc(), KnowledgeIndexJob.created_at.desc())
+            .limit(max(1, int(limit or 50)))
+        )
+        jobs = result.scalars().all()
+        summaries: list[PersonalKnowledgeJobSummary] = []
+        for job in jobs:
+            summaries.append(
                 PersonalKnowledgeJobSummary(
                     job_id=job.id,
                     document_id=job.document_id,
@@ -1685,7 +1683,7 @@ class PersonalKnowledgeService:
                     updated_at=job.updated_at,
                 )
             )
-        return jobs
+        return summaries
 
     def _grant_summary(self, grant: Any) -> PersonalKnowledgeGrantSummary:
         return PersonalKnowledgeGrantSummary(

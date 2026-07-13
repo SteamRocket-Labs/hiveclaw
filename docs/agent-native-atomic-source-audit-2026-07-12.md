@@ -1176,3 +1176,13 @@ exit 0, real 0.21s
 | R-026 | 闭环 | `fix(R-026): make lifecycle telemetry crash-safe` | Red 5 failed + 语义单提交 Red 1 failed；temp/fsync/replace + last-good + corrupt quarantine/receipt + strict whole-snapshot validation + flock stale-reload；扩展 93；backend 6669；ruff/format/diff 绿 |
 | R-027 | 闭环 | `fix(R-027): close BusinessTask product loop` | Work Ledger/BusinessTask 分面；exact Plan lease + canonical null payload；唯一 RuntimeTask 执行入口与 canonical projection；create/retry 幂等；cancel attempt latch、terminal race fence、人工 reconcile、stale lease quarantine；backend 115/全量 6690；frontend 655+build；Playwright 3；RLS/ruff/format/diff 绿 |
 | R-028 | 闭环 | `fix(R-028): preserve Personal KB authority errors` | 校正为 Owner 9 + Agent 3 个读取面；403/503/loading/真空集合分流；根权限与局部错误隔离；Retry 重新验权；Red 3 files + harden Red 7 browser；frontend 659+build；Playwright 14+axe；diff 绿 |
+
+## 17. 生产部署闭环记录（2026-07-13）
+
+### [P-001] Personal KB import job 列表在 PostgreSQL 生产结果上返回 500
+
+- 生产输入与症状：三服务首次 archive-root 部署均进入 `SUCCESS` 后，已登录 Personal Knowledge 页面真实请求 `GET /api/knowledge/personal/import-jobs` 连续返回 `500`；同页 documents、revision、source-preview 等接口返回 `200`，因此不是前端静态资源或整个 Knowledge router 故障。
+- 根因与原子断点：`PersonalKnowledgeService.list_import_jobs()` 对 `select(KnowledgeIndexJob)` 调用 `Result.all()`，再用 `isinstance(row, tuple)` 判断是否解包。PostgreSQL/SQLAlchemy 返回的是 `Row` 包装而非原生 `tuple`，旧分支把 `Row` 当 ORM entity 读取 `job.id`，在 **执行 → 消费** 之间触发 `AttributeError: id`。API、权限和数据库查询均已进入生产路径，但结果没有被正确消费。
+- TDD Red：`pytest tests/services/test_personal_knowledge_service.py::test_list_import_jobs_consumes_scalar_entities_from_sqlalchemy_result -q` → `1 failed`，稳定复现 `_PostgresRowLike` 无 `id`。
+- Green：查询结果改为唯一、类型正确的 ORM 消费方式 `result.scalars().all()`，删除 tuple/Row 猜测分支；定向 API + regression → `14 passed`，完整 `tests/services/test_personal_knowledge_service.py` → `44 passed`。
+- 当前状态：**本地代码闭环，等待本提交完成后重新部署 backend/backend-api，并以生产同一 endpoint、部署状态和错误日志复核后关闭生产 Gate。**

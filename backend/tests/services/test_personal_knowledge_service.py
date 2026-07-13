@@ -294,6 +294,56 @@ def test_personal_knowledge_artifact_path_is_person_scope_stable(tmp_path: Path)
 
 
 @pytest.mark.asyncio
+async def test_list_import_jobs_consumes_scalar_entities_from_sqlalchemy_result(tmp_path: Path) -> None:
+    """PostgreSQL returns Row wrappers from Result.all(), not tuple instances."""
+    from app.services.personal_knowledge_service import PersonalKnowledgeService
+
+    tenant_id = uuid.uuid4()
+    owner_id = uuid.uuid4()
+    now = datetime.now(timezone.utc)
+    job = SimpleNamespace(
+        id=uuid.uuid4(),
+        document_id=uuid.uuid4(),
+        stage="indexed",
+        status="ready",
+        artifact_hash="a" * 64,
+        error_message=None,
+        attempt_count=1,
+        job_metadata_json={"source_kind": "upload"},
+        created_at=now,
+        updated_at=now,
+    )
+
+    class _PostgresRowLike:
+        def __getitem__(self, index: int):
+            if index != 0:
+                raise IndexError(index)
+            return job
+
+    class _EntityResult:
+        def all(self):
+            return [_PostgresRowLike()]
+
+        def scalars(self):
+            return _RowsResult([job])
+
+    class _Session:
+        async def execute(self, statement):
+            return _EntityResult()
+
+    summaries = await PersonalKnowledgeService(data_root=tmp_path).list_import_jobs(
+        _Session(),
+        tenant_id=tenant_id,
+        owner_user_id=owner_id,
+    )
+
+    assert len(summaries) == 1
+    assert summaries[0].job_id == job.id
+    assert summaries[0].status == "ready"
+    assert summaries[0].metadata == {"source_kind": "upload"}
+
+
+@pytest.mark.asyncio
 async def test_get_personal_document_source_preview_reads_queued_image(tmp_path: Path) -> None:
     from app.services.personal_knowledge_service import PersonalKnowledgeService
 

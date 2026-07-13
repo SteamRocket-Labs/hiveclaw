@@ -733,7 +733,21 @@ def run_migrations_with_bootstrap(
         return
 
     ensure_alembic_version_table_width(connection)
-    alembic_context.configure(connection=connection, target_metadata=metadata)
+    # The version-table probe/ALTER autobegins a SQLAlchemy transaction.  End
+    # that bootstrap transaction before handing control to Alembic; otherwise
+    # Alembic treats it as an externally owned transaction and cannot open the
+    # autocommit blocks required by rolling-safe data migrations.
+    if connection.in_transaction() and not had_transaction:
+        connection.commit()
+    # Release trains can contain several data-heavy revisions.  Commit each
+    # revision independently so an index/backfill in a later revision cannot
+    # retain an earlier revision's ACCESS EXCLUSIVE DDL lock for the whole
+    # upgrade-to-head transaction.
+    alembic_context.configure(
+        connection=connection,
+        target_metadata=metadata,
+        transaction_per_migration=True,
+    )
     with alembic_context.begin_transaction():
         alembic_context.run_migrations()
     if connection.in_transaction() and not had_transaction:

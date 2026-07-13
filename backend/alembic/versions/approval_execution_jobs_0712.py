@@ -33,8 +33,10 @@ _RUNTIME_TASK_TYPES = (
     "harness_canary",
     "a2a_delegation",
     "approval_execution",
+    "hr_provisioning",
+    "dream",
 )
-_LEGACY_RUNTIME_TASK_TYPES = _RUNTIME_TASK_TYPES[:-1]
+_LEGACY_RUNTIME_TASK_TYPES = tuple(task_type for task_type in _RUNTIME_TASK_TYPES if task_type != "approval_execution")
 _APPROVAL_EXECUTION_STATUSES = (
     "pending",
     "approved",
@@ -53,6 +55,29 @@ def _quoted(values: tuple[str, ...]) -> str:
     return ", ".join(f"'{value}'" for value in values)
 
 
+def _ensure_runtime_task_type_constraint() -> None:
+    bind = op.get_bind()
+    definition = bind.scalar(
+        sa.text(
+            """
+            SELECT pg_get_constraintdef(oid)
+            FROM pg_constraint
+            WHERE conrelid = 'runtime_tasks'::regclass
+              AND conname = 'ck_runtime_tasks_task_type'
+            """
+        )
+    )
+    if definition and all(task_type in str(definition) for task_type in _RUNTIME_TASK_TYPES):
+        return
+    if definition:
+        op.drop_constraint("ck_runtime_tasks_task_type", "runtime_tasks", type_="check")
+    op.create_check_constraint(
+        "ck_runtime_tasks_task_type",
+        "runtime_tasks",
+        f"task_type IN ({_quoted(_RUNTIME_TASK_TYPES)})",
+    )
+
+
 def upgrade() -> None:
     # Production tables FORCE RLS.  Release backfill is cross-tenant by
     # definition, so pin both historical and current audited bypass GUCs for
@@ -60,13 +85,7 @@ def upgrade() -> None:
     op.execute("SELECT set_config('app.current_tenant_id', 'BYPASS', true)")
     op.execute("SELECT set_config('app.rls_bypass', 'on', true)")
     op.execute("ALTER TABLE approval_requests DISABLE ROW LEVEL SECURITY")
-    op.execute("ALTER TABLE runtime_tasks DISABLE ROW LEVEL SECURITY")
-    op.drop_constraint("ck_runtime_tasks_task_type", "runtime_tasks", type_="check")
-    op.create_check_constraint(
-        "ck_runtime_tasks_task_type",
-        "runtime_tasks",
-        f"task_type IN ({_quoted(_RUNTIME_TASK_TYPES)})",
-    )
+    _ensure_runtime_task_type_constraint()
     op.drop_constraint("ck_approval_requests_execution_status", "approval_requests", type_="check")
     op.create_check_constraint(
         "ck_approval_requests_execution_status",
@@ -265,8 +284,6 @@ def upgrade() -> None:
         raise RuntimeError("approval_execution_jobs_0712 left safe approved tickets without durable execution jobs")
     op.execute("ALTER TABLE approval_requests ENABLE ROW LEVEL SECURITY")
     op.execute("ALTER TABLE approval_requests FORCE ROW LEVEL SECURITY")
-    op.execute("ALTER TABLE runtime_tasks ENABLE ROW LEVEL SECURITY")
-    op.execute("ALTER TABLE runtime_tasks FORCE ROW LEVEL SECURITY")
 
 
 def downgrade() -> None:

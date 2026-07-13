@@ -316,6 +316,37 @@ def _install_policy(table: str, using: str, check: str) -> None:
     op.execute(f"CREATE POLICY {_quote(policy)} ON {_quote(table)} USING ({using}) WITH CHECK ({check})")
 
 
+def _set_tenant_not_null_online(table: str) -> None:
+    """Validate tenant ownership without holding ACCESS EXCLUSIVE for the scan."""
+
+    bind = op.get_bind()
+    is_not_null = bool(
+        bind.scalar(
+            sa.text(
+                """
+                SELECT attribute.attnotnull
+                FROM pg_attribute AS attribute
+                WHERE attribute.attrelid = CAST(:table_name AS regclass)
+                  AND attribute.attname = 'tenant_id'
+                  AND NOT attribute.attisdropped
+                """
+            ),
+            {"table_name": table},
+        )
+    )
+    if is_not_null:
+        return
+    quoted_table = _quote(table)
+    constraint = _quote(f"ck_{table}_tenant_not_null_0712")
+    op.execute(f"ALTER TABLE {quoted_table} DROP CONSTRAINT IF EXISTS {constraint}")
+    op.execute(f"ALTER TABLE {quoted_table} ADD CONSTRAINT {constraint} CHECK (tenant_id IS NOT NULL) NOT VALID")
+    op.execute(f"ALTER TABLE {quoted_table} VALIDATE CONSTRAINT {constraint}")
+    # PostgreSQL reuses the validated CHECK proof, so this final catalog flip
+    # is short and does not rescan the table under ACCESS EXCLUSIVE.
+    op.execute(f"ALTER TABLE {quoted_table} ALTER COLUMN tenant_id SET NOT NULL")
+    op.execute(f"ALTER TABLE {quoted_table} DROP CONSTRAINT {constraint}")
+
+
 def _derived_policy(table: str) -> tuple[str, str] | None:
     if table in {"notifications", "refresh_tokens"}:
         predicate = (
@@ -467,36 +498,40 @@ def upgrade() -> None:
             break
     _quarantine_residuals(existing)
 
-    for table in TENANT_OWNED_TABLES:
-        if table in existing:
-            op.execute(f"ALTER TABLE {_quote(table)} ALTER COLUMN tenant_id SET NOT NULL")
+    # Each statement commits independently: validation scans use the weaker
+    # SHARE UPDATE EXCLUSIVE lock, and policy DDL never retains a lock while
+    # the next tenant table is processed.
+    with op.get_context().autocommit_block():
+        for table in TENANT_OWNED_TABLES:
+            if table in existing:
+                _set_tenant_not_null_online(table)
 
-    for table in TENANT_OWNED_TABLES:
-        if table in existing:
-            predicate = _strict(table)
-            _install_policy(table, predicate, predicate)
-    for table, shared_predicate in PLATFORM_SHARED.items():
-        if table in existing:
-            _install_policy(table, f"{_strict(table)} OR ({shared_predicate})", _strict(table))
-    for table in OPERATOR_NULLABLE:
-        if table in existing:
-            predicate = _strict(table)
-            _install_policy(table, predicate, predicate)
-    for table in (
-        "notifications",
-        "refresh_tokens",
-        "plaza_comments",
-        "plaza_likes",
-        "skill_files",
-        "external_identities",
-        "participants",
-        "agent_team_members",
-        "agent_team_events",
-    ):
-        if table in existing:
-            predicates = _derived_policy(table)
-            if predicates:
-                _install_policy(table, *predicates)
+        for table in TENANT_OWNED_TABLES:
+            if table in existing:
+                predicate = _strict(table)
+                _install_policy(table, predicate, predicate)
+        for table, shared_predicate in PLATFORM_SHARED.items():
+            if table in existing:
+                _install_policy(table, f"{_strict(table)} OR ({shared_predicate})", _strict(table))
+        for table in OPERATOR_NULLABLE:
+            if table in existing:
+                predicate = _strict(table)
+                _install_policy(table, predicate, predicate)
+        for table in (
+            "notifications",
+            "refresh_tokens",
+            "plaza_comments",
+            "plaza_likes",
+            "skill_files",
+            "external_identities",
+            "participants",
+            "agent_team_members",
+            "agent_team_events",
+        ):
+            if table in existing:
+                predicates = _derived_policy(table)
+                if predicates:
+                    _install_policy(table, *predicates)
 
 
 def downgrade() -> None:

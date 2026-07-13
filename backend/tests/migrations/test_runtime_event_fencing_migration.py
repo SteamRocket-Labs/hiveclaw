@@ -25,6 +25,25 @@ def test_runtime_event_fencing_snapshot_backfill_is_set_based() -> None:
     assert "jsonb_build_object(" in source
 
 
+def test_runtime_event_fencing_large_tables_use_rolling_safe_operations() -> None:
+    source = MIGRATION_PATH.read_text(encoding="utf-8")
+
+    assert "autocommit_block" in source
+    assert "_RUNTIME_TASK_BATCH_SIZE" in source
+    assert "LIMIT :batch_size" in source
+    assert "FOR UPDATE SKIP LOCKED" in source
+    assert "INDEX CONCURRENTLY IF NOT EXISTS" in source
+    assert "unique=True" in source
+    assert source.count("_create_index_concurrently(") >= 8
+    assert "fill_runtime_task_fencing_receipts" in source
+    assert "BEFORE INSERT" in source
+    assert "NOT VALID" in source
+    assert "VALIDATE CONSTRAINT" in source
+    assert "approval_execution" in source
+    assert "hr_provisioning" in source
+    assert "dream" in source
+
+
 async def test_runtime_event_fencing_upgrade_contract(chain_migrated_pg_url: str) -> None:
     engine = create_async_engine(chain_migrated_pg_url, poolclass=NullPool)
     try:
@@ -181,8 +200,21 @@ async def test_runtime_event_fencing_migrates_terminal_legacy_deep_research_task
 
     _alembic_upgrade(database_url, "runtime_event_fencing_0710")
 
+    rolling_task_id = uuid.uuid4()
     engine = create_async_engine(database_url, poolclass=NullPool)
     try:
+        async with engine.begin() as connection:
+            # Simulate the previous application version writing during a
+            # rolling migration: it knows none of the three receipt columns.
+            await connection.execute(
+                text(
+                    """
+                    INSERT INTO runtime_tasks (id, tenant_id, task_type, status, depth, metadata_json)
+                    VALUES (:task_id, :tenant_id, 'workflow', 'completed', 1, '{}'::json)
+                    """
+                ),
+                {"task_id": rolling_task_id, "tenant_id": tenant_id},
+            )
         async with engine.connect() as connection:
             assert (
                 await connection.scalar(text("SELECT version_num FROM alembic_version"))
@@ -208,6 +240,22 @@ async def test_runtime_event_fencing_migrates_terminal_legacy_deep_research_task
                 .mappings()
                 .all()
             )
+            rolling_row = (
+                (
+                    await connection.execute(
+                        text(
+                            """
+                        SELECT root_idempotency_key, config_snapshot_hash, policy_snapshot_hash
+                        FROM runtime_tasks
+                        WHERE id = :task_id
+                        """
+                        ),
+                        {"task_id": rolling_task_id},
+                    )
+                )
+                .mappings()
+                .one()
+            )
 
         assert len(rows) == 2
         assert {row["task_type"] for row in rows} == {"workflow"}
@@ -228,5 +276,8 @@ async def test_runtime_event_fencing_migrates_terminal_legacy_deep_research_task
                 "source_type": "deep_research",
                 "target_type": "workflow",
             }
+        assert rolling_row["root_idempotency_key"] == f"workflow:{rolling_task_id}"
+        assert len(rolling_row["config_snapshot_hash"]) == 64
+        assert len(rolling_row["policy_snapshot_hash"]) == 64
     finally:
         await engine.dispose()

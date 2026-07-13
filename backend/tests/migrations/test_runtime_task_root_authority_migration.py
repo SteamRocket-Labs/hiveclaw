@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+import uuid
 
-from sqlalchemy import inspect
+from sqlalchemy import inspect, text
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -36,3 +38,120 @@ def test_runtime_task_root_authority_migration_backfills_all_available_truth_sou
     assert "chat_sessions" in migration
     assert "parent_session_id" in migration
     assert "delegation_chain_json" in migration
+    assert "autocommit_block" in migration
+    assert "LIMIT :batch_size" in migration
+    assert "FOR UPDATE SKIP LOCKED" in migration
+    assert migration.count("CREATE INDEX CONCURRENTLY") == 3
+    assert "server_default=sa.text(\"'[]'::jsonb\")" in migration
+
+
+async def test_runtime_task_root_authority_batch_upgrade_uses_metadata_truth(pg_container) -> None:
+    from tests.integration.conftest import _async_url
+    from tests.migrations.conftest import _alembic_upgrade
+
+    database_name = f"runtime_authority_{uuid.uuid4().hex[:10]}"
+    code, output = pg_container.exec(["psql", "-U", "test", "-d", "postgres", "-c", f"CREATE DATABASE {database_name}"])
+    assert code == 0, output
+    database_url = make_url(_async_url(pg_container)).set(database=database_name).render_as_string(hide_password=False)
+    task_id = uuid.uuid4()
+    tenant_id = uuid.uuid4()
+    agent_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    engine = create_async_engine(database_url, poolclass=NullPool)
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(255) PRIMARY KEY)"))
+            await connection.execute(text("INSERT INTO alembic_version VALUES ('channel_delivery_outbox_0711')"))
+            await connection.execute(
+                text(
+                    """
+                    CREATE TABLE runtime_budget_runs (
+                        id UUID PRIMARY KEY,
+                        root_user_id UUID,
+                        root_session_id TEXT
+                    )
+                    """
+                )
+            )
+            await connection.execute(
+                text(
+                    """
+                    CREATE TABLE chat_sessions (
+                        id UUID PRIMARY KEY,
+                        user_id UUID,
+                        root_session_id UUID,
+                        parent_session_id UUID
+                    )
+                    """
+                )
+            )
+            await connection.execute(
+                text(
+                    """
+                    CREATE TABLE runtime_tasks (
+                        id UUID PRIMARY KEY,
+                        tenant_id UUID,
+                        parent_agent_id UUID,
+                        child_agent_id UUID,
+                        child_agent_name TEXT,
+                        task_type TEXT NOT NULL,
+                        parent_session_id TEXT,
+                        budget_run_id UUID,
+                        metadata_json JSON
+                    )
+                    """
+                )
+            )
+            await connection.execute(
+                text(
+                    """
+                    INSERT INTO runtime_tasks (
+                        id, tenant_id, parent_agent_id, task_type,
+                        parent_session_id, metadata_json
+                    ) VALUES (
+                        :id, :tenant_id, :agent_id, 'workflow', :session_id,
+                        json_build_object(
+                            'root_user_id', CAST(:user_id AS text),
+                            'root_session_id', CAST(:session_id AS text),
+                            'delegation_chain', json_build_array('agent:' || CAST(:agent_id_text AS text))
+                        )
+                    )
+                    """
+                ),
+                {
+                    "id": task_id,
+                    "tenant_id": tenant_id,
+                    "agent_id": agent_id,
+                    "agent_id_text": str(agent_id),
+                    "user_id": str(user_id),
+                    "session_id": str(uuid.uuid4()),
+                },
+            )
+    finally:
+        await engine.dispose()
+
+    _alembic_upgrade(database_url, "runtime_task_root_authority_0711")
+
+    engine = create_async_engine(database_url, poolclass=NullPool)
+    try:
+        async with engine.connect() as connection:
+            row = (
+                (
+                    await connection.execute(
+                        text(
+                            """
+                        SELECT root_user_id, root_session_id, delegation_chain_json
+                        FROM runtime_tasks WHERE id = :id
+                        """
+                        ),
+                        {"id": task_id},
+                    )
+                )
+                .mappings()
+                .one()
+            )
+        assert row["root_user_id"] == user_id
+        assert row["root_session_id"]
+        assert row["delegation_chain_json"] == [f"agent:{agent_id}"]
+    finally:
+        await engine.dispose()

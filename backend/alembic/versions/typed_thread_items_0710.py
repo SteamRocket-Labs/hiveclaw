@@ -147,7 +147,12 @@ def _backfill_sql() -> str:
 
 
 def upgrade() -> None:
-    op.execute(_backfill_sql())
+    # This revision follows several schema revisions.  Run the 800MB
+    # transcript normalization as its own autocommitted statement so it never
+    # extends an earlier ACCESS EXCLUSIVE lock, while normal reads/inserts keep
+    # flowing under PostgreSQL MVCC.
+    with op.get_context().autocommit_block():
+        op.execute(_backfill_sql())
 
 
 def downgrade() -> None:

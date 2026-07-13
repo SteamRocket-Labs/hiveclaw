@@ -76,6 +76,10 @@ def test_tenant_null_semantics_migration_contract() -> None:
     assert "tenant_scope_quarantine_records" in source
     assert "__hive_scope_quarantine__" in source
     assert "SET NOT NULL" in source
+    assert "autocommit_block" in source
+    assert "_set_tenant_not_null_online" in source
+    assert "NOT VALID" in source
+    assert "VALIDATE CONSTRAINT" in source
     assert "PLATFORM_SHARED" in source
     assert "WITH CHECK" in source
     assert "secure downgrade" in source.lower()

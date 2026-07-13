@@ -268,6 +268,7 @@ def test_run_migrations_with_bootstrap_runs_alembic_path_when_bootstrap_not_need
 
     assert context.configured_with is not None
     assert context.configured_with["target_metadata"] is metadata
+    assert context.configured_with["transaction_per_migration"] is True
     assert context.events == ["configure", "begin_transaction", "tx_enter", "run_migrations", "tx_exit"]
 
 

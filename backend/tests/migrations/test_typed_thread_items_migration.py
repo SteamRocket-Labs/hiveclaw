@@ -31,3 +31,5 @@ def test_typed_thread_item_backfill_keeps_its_historical_map_as_runtime_subset()
     assert "metadata_json ->> 'role'" in sql
     assert "actor_type IN ('agent', 'assistant')" in sql
     assert "COALESCE(NULLIF(item_type, ''), 'event')" not in sql
+    source = Path(migration.__file__).read_text(encoding="utf-8")
+    assert "autocommit_block" in source

@@ -32,6 +32,12 @@ _TASK_TYPES = (
     "coordinator_worker",
     "harness_canary",
     "a2a_delegation",
+    # These durable job types are introduced by later revisions in the same
+    # release train.  Admitting the final domain once avoids three full-table
+    # CHECK rebuilds on multi-million-byte production tables.
+    "approval_execution",
+    "hr_provisioning",
+    "dream",
 )
 _TASK_STATUSES = (
     "pending",
@@ -50,6 +56,7 @@ _LEGACY_DEEP_RESEARCH_TERMINAL_STATUSES = (
     "killed",
     "skipped",
 )
+_RUNTIME_TASK_BATCH_SIZE = 10_000
 
 
 def _quoted(values: tuple[str, ...]) -> str:
@@ -102,6 +109,168 @@ def _migrate_terminal_legacy_deep_research_tasks() -> None:
     )
 
 
+def _install_runtime_task_receipt_trigger() -> None:
+    """Keep old application instances write-compatible during a rolling upgrade."""
+
+    op.execute(
+        """
+        CREATE OR REPLACE FUNCTION fill_runtime_task_fencing_receipts()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        AS $$
+        DECLARE
+            task_metadata jsonb := COALESCE(NEW.metadata_json::jsonb, '{}'::jsonb);
+        BEGIN
+            IF NULLIF(btrim(NEW.root_idempotency_key), '') IS NULL THEN
+                NEW.root_idempotency_key := NEW.task_type || ':' || NEW.id::text;
+            END IF;
+            IF NULLIF(btrim(NEW.config_snapshot_hash), '') IS NULL THEN
+                NEW.config_snapshot_hash := encode(
+                    sha256(
+                        convert_to(
+                            jsonb_build_object(
+                                'task_type', NEW.task_type,
+                                'parent_agent_id', NEW.parent_agent_id::text,
+                                'child_agent_id', NEW.child_agent_id::text,
+                                'parent_session_id', NEW.parent_session_id,
+                                'child_session_id', NEW.child_session_id,
+                                'depth', NEW.depth,
+                                'prompt', NEW.prompt,
+                                'source', task_metadata -> 'source',
+                                'definition_hash', task_metadata -> 'definition_hash',
+                                'model_id', task_metadata -> 'model_id'
+                            )::text,
+                            'UTF8'
+                        )
+                    ),
+                    'hex'
+                );
+            END IF;
+            IF NULLIF(btrim(NEW.policy_snapshot_hash), '') IS NULL THEN
+                NEW.policy_snapshot_hash := encode(
+                    sha256(
+                        convert_to(
+                            jsonb_build_object(
+                                'tenant_id', NEW.tenant_id::text,
+                                'permission_mode', task_metadata -> 'permission_mode',
+                                'permission_profile', task_metadata -> 'permission_profile',
+                                'budget_run_id', NEW.budget_run_id::text,
+                                'budget_snapshot', NEW.budget_snapshot_json::jsonb,
+                                'guard_policy', task_metadata -> 'guard_policy'
+                            )::text,
+                            'UTF8'
+                        )
+                    ),
+                    'hex'
+                );
+            END IF;
+            RETURN NEW;
+        END;
+        $$
+        """
+    )
+    op.execute("DROP TRIGGER IF EXISTS trg_runtime_tasks_fill_fencing_receipts ON runtime_tasks")
+    op.execute(
+        """
+        CREATE TRIGGER trg_runtime_tasks_fill_fencing_receipts
+        BEFORE INSERT ON runtime_tasks
+        FOR EACH ROW EXECUTE FUNCTION fill_runtime_task_fencing_receipts()
+        """
+    )
+
+
+def _backfill_runtime_task_receipts() -> None:
+    """Backfill in bounded commits so live workers never wait on 900k row locks."""
+
+    bind = op.get_bind()
+    while True:
+        rows = bind.execute(
+            sa.text(
+                """
+                WITH batch AS (
+                    SELECT id
+                    FROM runtime_tasks
+                    WHERE root_idempotency_key IS NULL
+                       OR config_snapshot_hash IS NULL
+                       OR policy_snapshot_hash IS NULL
+                    ORDER BY id
+                    LIMIT :batch_size
+                    FOR UPDATE SKIP LOCKED
+                )
+                UPDATE runtime_tasks AS task
+                SET root_idempotency_key = COALESCE(
+                        task.root_idempotency_key,
+                        task.task_type || ':' || task.id::text
+                    ),
+                    config_snapshot_hash = COALESCE(
+                        task.config_snapshot_hash,
+                        encode(
+                            sha256(
+                                convert_to(
+                                    jsonb_build_object(
+                                        'task_type', task.task_type,
+                                        'parent_agent_id', task.parent_agent_id::text,
+                                        'child_agent_id', task.child_agent_id::text,
+                                        'parent_session_id', task.parent_session_id,
+                                        'child_session_id', task.child_session_id,
+                                        'depth', task.depth,
+                                        'prompt', task.prompt,
+                                        'source', task.metadata_json::jsonb -> 'source',
+                                        'definition_hash', task.metadata_json::jsonb -> 'definition_hash',
+                                        'model_id', task.metadata_json::jsonb -> 'model_id'
+                                    )::text,
+                                    'UTF8'
+                                )
+                            ),
+                            'hex'
+                        )
+                    ),
+                    policy_snapshot_hash = COALESCE(
+                        task.policy_snapshot_hash,
+                        encode(
+                            sha256(
+                                convert_to(
+                                    jsonb_build_object(
+                                        'tenant_id', task.tenant_id::text,
+                                        'permission_mode', task.metadata_json::jsonb -> 'permission_mode',
+                                        'permission_profile', task.metadata_json::jsonb -> 'permission_profile',
+                                        'budget_run_id', task.budget_run_id::text,
+                                        'budget_snapshot', task.budget_snapshot_json::jsonb,
+                                        'guard_policy', task.metadata_json::jsonb -> 'guard_policy'
+                                    )::text,
+                                    'UTF8'
+                                )
+                            ),
+                            'hex'
+                        )
+                    )
+                FROM batch
+                WHERE task.id = batch.id
+                RETURNING task.id
+                """
+            ),
+            {"batch_size": _RUNTIME_TASK_BATCH_SIZE},
+        ).fetchall()
+        if not rows:
+            return
+
+
+def _create_index_concurrently(
+    name: str,
+    table: str,
+    columns: tuple[str, ...],
+    *,
+    unique: bool = False,
+) -> None:
+    qualifier = "UNIQUE " if unique else ""
+    op.execute(f"CREATE {qualifier}INDEX CONCURRENTLY IF NOT EXISTS {name} ON {table} ({', '.join(columns)})")
+
+
+def _add_validated_check(name: str, expression: str) -> None:
+    op.execute(f"ALTER TABLE runtime_tasks ADD CONSTRAINT {name} CHECK ({expression}) NOT VALID")
+    op.execute(f"ALTER TABLE runtime_tasks VALIDATE CONSTRAINT {name}")
+
+
 def upgrade() -> None:
     _migrate_terminal_legacy_deep_research_tasks()
     _assert_runtime_task_domain("task_type", _TASK_TYPES)
@@ -114,71 +283,36 @@ def upgrade() -> None:
     op.add_column("runtime_tasks", sa.Column("root_idempotency_key", sa.String(length=200), nullable=True))
     op.add_column("runtime_tasks", sa.Column("config_snapshot_hash", sa.String(length=64), nullable=True))
     op.add_column("runtime_tasks", sa.Column("policy_snapshot_hash", sa.String(length=64), nullable=True))
-    # Production can contain hundreds of thousands of historical RuntimeTasks.
-    # Compute both immutable receipts inside PostgreSQL in one set-based update;
-    # a Python row loop turns this migration into one network round trip per row
-    # and blocks the volume-mounted service from starting for hours.
-    op.execute(
-        sa.text(
-            """
-            UPDATE runtime_tasks
-            SET root_idempotency_key = task_type || ':' || id::text,
-                config_snapshot_hash = encode(
-                    sha256(
-                        convert_to(
-                            jsonb_build_object(
-                                'task_type', task_type,
-                                'parent_agent_id', parent_agent_id::text,
-                                'child_agent_id', child_agent_id::text,
-                                'parent_session_id', parent_session_id,
-                                'child_session_id', child_session_id,
-                                'depth', depth,
-                                'prompt', prompt,
-                                'source', metadata_json::jsonb -> 'source',
-                                'definition_hash', metadata_json::jsonb -> 'definition_hash',
-                                'model_id', metadata_json::jsonb -> 'model_id'
-                            )::text,
-                            'UTF8'
-                        )
-                    ),
-                    'hex'
-                ),
-                policy_snapshot_hash = encode(
-                    sha256(
-                        convert_to(
-                            jsonb_build_object(
-                                'tenant_id', tenant_id::text,
-                                'permission_mode', metadata_json::jsonb -> 'permission_mode',
-                                'permission_profile', metadata_json::jsonb -> 'permission_profile',
-                                'budget_run_id', budget_run_id::text,
-                                'budget_snapshot', budget_snapshot_json::jsonb,
-                                'guard_policy', metadata_json::jsonb -> 'guard_policy'
-                            )::text,
-                            'UTF8'
-                        )
-                    ),
-                    'hex'
-                )
-            """
+    _install_runtime_task_receipt_trigger()
+    # Enter AUTOCOMMIT to release the three ADD COLUMN locks before touching
+    # historical rows.  Every batch is its own transaction; constraints are
+    # installed NOT VALID, then validated under PostgreSQL's weaker lock.
+    with op.get_context().autocommit_block():
+        _backfill_runtime_task_receipts()
+        _add_validated_check(
+            "ck_runtime_tasks_receipts_not_null",
+            "root_idempotency_key IS NOT NULL "
+            "AND config_snapshot_hash IS NOT NULL "
+            "AND policy_snapshot_hash IS NOT NULL",
         )
-    )
+        _add_validated_check("ck_runtime_tasks_task_type", f"task_type IN ({_quoted(_TASK_TYPES)})")
+        _add_validated_check("ck_runtime_tasks_status", f"status IN ({_quoted(_TASK_STATUSES)})")
+        _create_index_concurrently(
+            "uq_runtime_tasks_root_idempotency_key",
+            "runtime_tasks",
+            ("root_idempotency_key",),
+            unique=True,
+        )
     op.alter_column("runtime_tasks", "config_snapshot_hash", nullable=False)
     op.alter_column("runtime_tasks", "policy_snapshot_hash", nullable=False)
     op.alter_column("runtime_tasks", "root_idempotency_key", nullable=False)
-    op.create_unique_constraint(
-        "uq_runtime_tasks_root_idempotency_key",
-        "runtime_tasks",
-        ["root_idempotency_key"],
-    )
-    op.create_check_constraint(
-        "ck_runtime_tasks_task_type",
-        "runtime_tasks",
-        f"task_type IN ({_quoted(_TASK_TYPES)})",
-    )
-    op.create_check_constraint(
-        "ck_runtime_tasks_status",
-        "runtime_tasks",
-        f"status IN ({_quoted(_TASK_STATUSES)})",
+    op.drop_constraint("ck_runtime_tasks_receipts_not_null", "runtime_tasks", type_="check")
+    op.execute(
+        """
+        ALTER TABLE runtime_tasks
+        ADD CONSTRAINT uq_runtime_tasks_root_idempotency_key
+        UNIQUE USING INDEX uq_runtime_tasks_root_idempotency_key
+        """
     )
 
     op.add_column(
@@ -206,43 +340,60 @@ def upgrade() -> None:
     )
     op.add_column("chat_transcript_events", sa.Column("projection_error", sa.Text(), nullable=True))
     op.add_column("chat_transcript_events", sa.Column("projected_at", sa.DateTime(timezone=True), nullable=True))
-    op.execute(
-        """
-        UPDATE chat_transcript_events
-        SET item_type = CASE
-            WHEN event_type = 'user_message' OR actor_type = 'user' THEN 'user_message'
-            WHEN event_type = 'assistant_message' OR actor_type = 'assistant' THEN 'agent_message'
-            WHEN event_type LIKE '%permission_request%' OR event_type LIKE '%approval_request%' THEN 'approval_request'
-            WHEN event_type LIKE 'tool_%result%' THEN 'tool_result'
-            WHEN event_type LIKE 'tool_%' THEN 'tool_call'
-            WHEN event_type LIKE '%workflow%' THEN 'workflow_activity'
-            WHEN event_type LIKE '%subagent%' OR event_type LIKE '%delegation%' THEN 'subagent_activity'
-            WHEN event_type LIKE '%plan%' THEN 'plan'
-            WHEN event_type LIKE '%compact%' THEN 'context_compaction'
-            WHEN event_type LIKE 'run_%' THEN 'boundary'
-            ELSE 'event'
-        END,
-        item_status = CASE
-            WHEN event_type LIKE '%failed%' THEN 'failed'
-            WHEN event_type LIKE '%cancelled%' OR event_type LIKE '%killed%' THEN 'cancelled'
-            WHEN event_type LIKE '%started%' THEN 'running'
-            WHEN event_type LIKE '%permission_request%' OR event_type LIKE '%approval_request%' THEN 'waiting_user'
-            ELSE 'succeeded'
-        END,
-        projection_status = CASE
-            WHEN COALESCE((metadata_json ->> 't0_bridge_pending')::boolean, false) THEN 'pending'
-            ELSE 'projected'
-        END,
-        projected_at = CASE
-            WHEN COALESCE((metadata_json ->> 't0_bridge_pending')::boolean, false) THEN NULL
-            ELSE created_at
-        END
-        """
-    )
-    op.create_index("ix_chat_transcript_events_turn_id", "chat_transcript_events", ["turn_id"])
-    op.create_index("ix_chat_transcript_events_causation_id", "chat_transcript_events", ["causation_id"])
-    op.create_index("ix_chat_transcript_events_correlation_id", "chat_transcript_events", ["correlation_id"])
-    op.create_index("ix_chat_transcript_events_projection_status", "chat_transcript_events", ["projection_status"])
+    with op.get_context().autocommit_block():
+        op.execute(
+            """
+            UPDATE chat_transcript_events
+            SET item_type = CASE
+                WHEN event_type = 'user_message' OR actor_type = 'user' THEN 'user_message'
+                WHEN event_type = 'assistant_message' OR actor_type = 'assistant' THEN 'agent_message'
+                WHEN event_type LIKE '%permission_request%' OR event_type LIKE '%approval_request%' THEN 'approval_request'
+                WHEN event_type LIKE 'tool_%result%' THEN 'tool_result'
+                WHEN event_type LIKE 'tool_%' THEN 'tool_call'
+                WHEN event_type LIKE '%workflow%' THEN 'workflow_activity'
+                WHEN event_type LIKE '%subagent%' OR event_type LIKE '%delegation%' THEN 'subagent_activity'
+                WHEN event_type LIKE '%plan%' THEN 'plan'
+                WHEN event_type LIKE '%compact%' THEN 'context_compaction'
+                WHEN event_type LIKE 'run_%' THEN 'boundary'
+                ELSE 'event'
+            END,
+            item_status = CASE
+                WHEN event_type LIKE '%failed%' THEN 'failed'
+                WHEN event_type LIKE '%cancelled%' OR event_type LIKE '%killed%' THEN 'cancelled'
+                WHEN event_type LIKE '%started%' THEN 'running'
+                WHEN event_type LIKE '%permission_request%' OR event_type LIKE '%approval_request%' THEN 'waiting_user'
+                ELSE 'succeeded'
+            END,
+            projection_status = CASE
+                WHEN COALESCE((metadata_json ->> 't0_bridge_pending')::boolean, false) THEN 'pending'
+                ELSE 'projected'
+            END,
+            projected_at = CASE
+                WHEN COALESCE((metadata_json ->> 't0_bridge_pending')::boolean, false) THEN NULL
+                ELSE created_at
+            END
+            """
+        )
+        _create_index_concurrently(
+            "ix_chat_transcript_events_turn_id",
+            "chat_transcript_events",
+            ("turn_id",),
+        )
+        _create_index_concurrently(
+            "ix_chat_transcript_events_causation_id",
+            "chat_transcript_events",
+            ("causation_id",),
+        )
+        _create_index_concurrently(
+            "ix_chat_transcript_events_correlation_id",
+            "chat_transcript_events",
+            ("correlation_id",),
+        )
+        _create_index_concurrently(
+            "ix_chat_transcript_events_projection_status",
+            "chat_transcript_events",
+            ("projection_status",),
+        )
 
     op.add_column("invocation_spans", sa.Column("decision_id", sa.String(length=128), nullable=True))
     op.add_column("invocation_spans", sa.Column("input_hash", sa.String(length=64), nullable=True))
@@ -257,8 +408,17 @@ def upgrade() -> None:
             server_default=sa.text("'[]'::jsonb"),
         ),
     )
-    op.create_index("ix_invocation_spans_decision_id", "invocation_spans", ["decision_id"])
-    op.create_index("ix_invocation_spans_idempotency_key", "invocation_spans", ["idempotency_key"])
+    with op.get_context().autocommit_block():
+        _create_index_concurrently(
+            "ix_invocation_spans_decision_id",
+            "invocation_spans",
+            ("decision_id",),
+        )
+        _create_index_concurrently(
+            "ix_invocation_spans_idempotency_key",
+            "invocation_spans",
+            ("idempotency_key",),
+        )
 
 
 def downgrade() -> None:
@@ -287,6 +447,8 @@ def downgrade() -> None:
 
     op.drop_constraint("ck_runtime_tasks_status", "runtime_tasks", type_="check")
     op.drop_constraint("ck_runtime_tasks_task_type", "runtime_tasks", type_="check")
+    op.execute("DROP TRIGGER IF EXISTS trg_runtime_tasks_fill_fencing_receipts ON runtime_tasks")
+    op.execute("DROP FUNCTION IF EXISTS fill_runtime_task_fencing_receipts()")
     op.execute(
         sa.text(
             """

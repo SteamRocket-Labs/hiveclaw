@@ -7,7 +7,6 @@ Create Date: 2026-07-10
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from alembic import op
@@ -68,24 +67,83 @@ def _restore_legacy_mirrors(value: Any) -> tuple[dict[str, Any], bool]:
 
 
 def _rewrite_rows(table: str, column: str, *, promote: bool, json_type: str) -> None:
+    """Rewrite only matching rows inside PostgreSQL, never one row per round trip."""
+
+    if json_type not in {"json", "jsonb"}:  # pragma: no cover - migration invariant
+        raise ValueError(f"unsupported JSON type: {json_type}")
     bind = op.get_bind()
-    rows = bind.execute(sa.text(f"SELECT id, {column} AS metadata FROM {table} WHERE {column} IS NOT NULL"))
-    transform = _promote_runtime_assembly if promote else _restore_legacy_mirrors
-    for row in rows.mappings():
-        metadata, changed = transform(row["metadata"])
-        if not changed:
-            continue
-        bind.execute(
-            sa.text(f"UPDATE {table} SET {column} = CAST(:metadata AS {json_type}) WHERE id = :row_id"),
-            {"row_id": row["id"], "metadata": json.dumps(metadata, ensure_ascii=False, default=str)},
+    params = {
+        "assembly_keys": list(_ASSEMBLY_KEYS),
+        "schema": _SCHEMA,
+        "state_key": _STATE_KEY,
+    }
+    if promote:
+        statement = sa.text(
+            f"""
+            UPDATE {table} AS target
+               SET {column} = CAST(
+                    (
+                        target.{column}::jsonb - CAST(:assembly_keys AS text[])
+                    ) || jsonb_build_object(
+                        :state_key,
+                        jsonb_build_object('schema', :schema)
+                        || COALESCE(
+                            (
+                                SELECT jsonb_object_agg(entry.key, entry.value)
+                                FROM jsonb_each(target.{column}::jsonb) AS entry
+                                WHERE entry.key = ANY(CAST(:assembly_keys AS text[]))
+                            ),
+                            '{{}}'::jsonb
+                        )
+                        || CASE
+                            WHEN jsonb_typeof(target.{column}::jsonb -> :state_key) = 'object'
+                            THEN target.{column}::jsonb -> :state_key
+                            ELSE '{{}}'::jsonb
+                        END
+                        || jsonb_build_object('schema', :schema)
+                    )
+                    AS {json_type}
+               )
+             WHERE target.{column} IS NOT NULL
+               AND (
+                    target.{column}::jsonb ?| CAST(:assembly_keys AS text[])
+                    OR (
+                        jsonb_typeof(target.{column}::jsonb -> :state_key) = 'object'
+                        AND target.{column}::jsonb -> :state_key ->> 'schema' IS DISTINCT FROM :schema
+                    )
+               )
+            """
         )
+    else:
+        statement = sa.text(
+            f"""
+            UPDATE {table} AS target
+               SET {column} = CAST(
+                    (target.{column}::jsonb - :state_key)
+                    || COALESCE(
+                        (
+                            SELECT jsonb_object_agg(entry.key, entry.value)
+                            FROM jsonb_each(target.{column}::jsonb -> :state_key) AS entry
+                            WHERE entry.key = ANY(CAST(:assembly_keys AS text[]))
+                        ),
+                        '{{}}'::jsonb
+                    )
+                    AS {json_type}
+               )
+             WHERE target.{column} IS NOT NULL
+               AND jsonb_typeof(target.{column}::jsonb -> :state_key) = 'object'
+            """
+        )
+    bind.execute(statement, params)
 
 
 def upgrade() -> None:
-    _rewrite_rows("runtime_tasks", "metadata_json", promote=True, json_type="json")
-    _rewrite_rows("chat_sessions", "transcript_metadata_json", promote=True, json_type="jsonb")
+    with op.get_context().autocommit_block():
+        _rewrite_rows("runtime_tasks", "metadata_json", promote=True, json_type="json")
+        _rewrite_rows("chat_sessions", "transcript_metadata_json", promote=True, json_type="jsonb")
 
 
 def downgrade() -> None:
-    _rewrite_rows("chat_sessions", "transcript_metadata_json", promote=False, json_type="jsonb")
-    _rewrite_rows("runtime_tasks", "metadata_json", promote=False, json_type="json")
+    with op.get_context().autocommit_block():
+        _rewrite_rows("chat_sessions", "transcript_metadata_json", promote=False, json_type="jsonb")
+        _rewrite_rows("runtime_tasks", "metadata_json", promote=False, json_type="json")

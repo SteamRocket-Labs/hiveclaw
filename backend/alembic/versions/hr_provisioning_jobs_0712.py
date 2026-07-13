@@ -34,26 +34,43 @@ _RUNTIME_TASK_TYPES = (
     "a2a_delegation",
     "approval_execution",
     "hr_provisioning",
+    "dream",
 )
-_LEGACY_RUNTIME_TASK_TYPES = _RUNTIME_TASK_TYPES[:-1]
+_LEGACY_RUNTIME_TASK_TYPES = tuple(task_type for task_type in _RUNTIME_TASK_TYPES if task_type != "hr_provisioning")
 
 
 def _quoted(values: tuple[str, ...]) -> str:
     return ", ".join(f"'{value}'" for value in values)
 
 
-def upgrade() -> None:
-    op.execute("SELECT set_config('app.current_tenant_id', 'BYPASS', true)")
-    op.execute("SELECT set_config('app.rls_bypass', 'on', true)")
-    op.execute("ALTER TABLE hr_creation_drafts DISABLE ROW LEVEL SECURITY")
-    op.execute("ALTER TABLE runtime_tasks DISABLE ROW LEVEL SECURITY")
-
-    op.drop_constraint("ck_runtime_tasks_task_type", "runtime_tasks", type_="check")
+def _ensure_runtime_task_type_constraint() -> None:
+    bind = op.get_bind()
+    definition = bind.scalar(
+        sa.text(
+            """
+            SELECT pg_get_constraintdef(oid)
+            FROM pg_constraint
+            WHERE conrelid = 'runtime_tasks'::regclass
+              AND conname = 'ck_runtime_tasks_task_type'
+            """
+        )
+    )
+    if definition and all(task_type in str(definition) for task_type in _RUNTIME_TASK_TYPES):
+        return
+    if definition:
+        op.drop_constraint("ck_runtime_tasks_task_type", "runtime_tasks", type_="check")
     op.create_check_constraint(
         "ck_runtime_tasks_task_type",
         "runtime_tasks",
         f"task_type IN ({_quoted(_RUNTIME_TASK_TYPES)})",
     )
+
+
+def upgrade() -> None:
+    op.execute("SELECT set_config('app.current_tenant_id', 'BYPASS', true)")
+    op.execute("SELECT set_config('app.rls_bypass', 'on', true)")
+    op.execute("ALTER TABLE hr_creation_drafts DISABLE ROW LEVEL SECURITY")
+    _ensure_runtime_task_type_constraint()
     op.add_column(
         "hr_creation_drafts",
         sa.Column("provisioning_task_id", postgresql.UUID(as_uuid=True), nullable=True),
@@ -195,8 +212,6 @@ def upgrade() -> None:
 
     op.execute("ALTER TABLE hr_creation_drafts ENABLE ROW LEVEL SECURITY")
     op.execute("ALTER TABLE hr_creation_drafts FORCE ROW LEVEL SECURITY")
-    op.execute("ALTER TABLE runtime_tasks ENABLE ROW LEVEL SECURITY")
-    op.execute("ALTER TABLE runtime_tasks FORCE ROW LEVEL SECURITY")
 
 
 def downgrade() -> None:

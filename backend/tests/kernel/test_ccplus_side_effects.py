@@ -93,7 +93,7 @@ def _final_response(content: str) -> SimpleNamespace:
 
 
 @pytest.mark.asyncio
-async def test_tool_new_messages_are_injected_into_next_round_conversation() -> None:
+async def test_tool_new_messages_are_injected_into_next_round_conversation(durable_recovery_checkpoint) -> None:
     """D-08: a tool result whose envelope carries ``new_messages`` injects those
     messages into the conversation the NEXT model round sees.
 
@@ -139,7 +139,7 @@ async def test_tool_new_messages_are_injected_into_next_round_conversation() -> 
 
 
 @pytest.mark.asyncio
-async def test_tool_new_messages_injected_on_parallel_path() -> None:
+async def test_tool_new_messages_injected_on_parallel_path(durable_recovery_checkpoint) -> None:
     """D-08: the parallel/segmented execution path also consumes ``new_messages``.
 
     Two parallel-safe ``read_file`` calls force the segmented-parallel branch.
@@ -190,7 +190,9 @@ async def test_tool_new_messages_injected_on_parallel_path() -> None:
 
 
 @pytest.mark.asyncio
-async def test_tool_new_messages_wait_until_all_same_round_tool_results_are_appended() -> None:
+async def test_tool_new_messages_wait_until_all_same_round_tool_results_are_appended(
+    durable_recovery_checkpoint,
+) -> None:
     """D-08: injected messages must not split the provider's tool-result block.
 
     When one assistant message contains multiple tool calls, every corresponding
@@ -248,7 +250,7 @@ async def test_tool_new_messages_wait_until_all_same_round_tool_results_are_appe
 
 
 @pytest.mark.asyncio
-async def test_tool_terminal_signal_ends_the_turn() -> None:
+async def test_tool_terminal_signal_ends_the_turn(durable_recovery_checkpoint) -> None:
     """D-08: a non-empty ``terminal_signal`` ends the turn after the current round.
 
     Only ONE model response is prepared (the tool-calling round). If the kernel

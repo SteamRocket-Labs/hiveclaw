@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -164,21 +165,36 @@ def _safe_session_id(session_id: str | None) -> str:
     return re.sub(r"[^A-Za-z0-9_.:-]+", "_", text)
 
 
+def session_state_storage_key(session_id: str | None) -> str:
+    raw = str(session_id or "").strip()
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest() if raw else ""
+
+
 def get_session_memory_path(
     agent_id: UUID,
     *,
     session_id: str | None = None,
     data_root: str | Path | None = None,
 ) -> Path:
-    safe_session_id = _safe_session_id(session_id)
-    if safe_session_id:
-        path = _session_state_dir(agent_id, data_root=data_root) / safe_session_id / "session_memory.md"
+    storage_key = session_state_storage_key(session_id)
+    if storage_key:
+        path = _session_state_dir(agent_id, data_root=data_root) / storage_key / "session_memory.md"
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
     return _runtime_artifacts_dir(agent_id, data_root=data_root) / "session_memory.md"
 
 
-def get_compaction_summary_path(agent_id: UUID, *, data_root: str | Path | None = None) -> Path:
+def get_compaction_summary_path(
+    agent_id: UUID,
+    *,
+    session_id: str | None = None,
+    data_root: str | Path | None = None,
+) -> Path:
+    storage_key = session_state_storage_key(session_id)
+    if storage_key:
+        path = _session_state_dir(agent_id, data_root=data_root) / storage_key / "compaction_summary.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
     return _runtime_artifacts_dir(agent_id, data_root=data_root) / "compaction_summary.md"
 
 
@@ -458,10 +474,10 @@ def update_session_memory(
     *,
     data_root: str | Path | None = None,
 ) -> Path:
-    safe_session_id = _safe_session_id(payload.session_id)
-    path = get_session_memory_path(agent_id, session_id=safe_session_id, data_root=data_root)
+    raw_session_id = str(payload.session_id or "").strip()
+    path = get_session_memory_path(agent_id, session_id=raw_session_id, data_root=data_root)
     normalized = SessionMemoryPayload(
-        session_id=safe_session_id,
+        session_id=raw_session_id,
         source=payload.source.strip(),
         session_title=(
             payload.session_title or _derive_session_title(payload.task_spec, payload.current_state)
@@ -484,12 +500,6 @@ def update_session_memory(
         last_compaction_at=(payload.last_compaction_at or "").strip() or None,
     )
     path.write_text(render_session_memory(normalized), encoding="utf-8")
-    if safe_session_id:
-        _remove_legacy_runtime_file(_legacy_runtime_session_memory_path(agent_id, data_root=data_root))
-        legacy_hot_path = _legacy_memory_sessions_hot_path(agent_id, session_id=safe_session_id, data_root=data_root)
-        if legacy_hot_path is not None:
-            _remove_legacy_runtime_file(legacy_hot_path)
-    _remove_legacy_runtime_file(_legacy_session_memory_path(agent_id, data_root=data_root))
     return path
 
 
@@ -497,13 +507,15 @@ def write_compaction_summary(
     agent_id: UUID,
     summary: str,
     *,
+    session_id: str | None = None,
     original_message_count: int | None = None,
     kept_message_count: int | None = None,
     data_root: str | Path | None = None,
 ) -> Path:
-    path = get_compaction_summary_path(agent_id, data_root=data_root)
+    path = get_compaction_summary_path(agent_id, session_id=session_id, data_root=data_root)
     lines = [
         "# Session Compaction Summary",
+        f"Session ID: {str(session_id or '').strip()}",
         f"Updated At: {datetime.now(timezone.utc).isoformat()}",
         "",
     ]
@@ -513,7 +525,6 @@ def write_compaction_summary(
         lines.append("")
     lines.append(summary.strip() or "(empty)")
     path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
-    _remove_legacy_runtime_file(_legacy_compaction_summary_path(agent_id, data_root=data_root))
     return path
 
 
@@ -586,19 +597,25 @@ def load_session_memory(
     session_id: str | None = None,
     data_root: str | Path | None = None,
 ) -> SessionMemoryPayload | None:
-    safe_session_id = _safe_session_id(session_id)
-    path = get_session_memory_path(agent_id, session_id=safe_session_id, data_root=data_root)
-    if not safe_session_id:
+    requested_session_id = str(session_id or "").strip()
+    path = get_session_memory_path(agent_id, session_id=requested_session_id, data_root=data_root)
+    if requested_session_id and not path.exists():
+        return None
+    if not requested_session_id:
         latest_path = _latest_session_memory_path(agent_id, data_root=data_root)
         if latest_path is not None:
             path = latest_path
+        else:
+            runtime_path = _legacy_runtime_session_memory_path(agent_id, data_root=data_root)
+            legacy_path = _legacy_session_memory_path(agent_id, data_root=data_root)
+            if runtime_path.exists():
+                path = runtime_path
+            elif legacy_path.exists():
+                path = legacy_path
     if not path.exists():
-        legacy_hot_path = _legacy_memory_sessions_hot_path(agent_id, session_id=safe_session_id, data_root=data_root)
         runtime_path = _legacy_runtime_session_memory_path(agent_id, data_root=data_root)
         legacy_path = _legacy_session_memory_path(agent_id, data_root=data_root)
-        if legacy_hot_path is not None and legacy_hot_path.exists():
-            path = legacy_hot_path
-        elif runtime_path.exists():
+        if runtime_path.exists():
             path = runtime_path
         elif legacy_path.exists():
             path = legacy_path
@@ -608,7 +625,7 @@ def load_session_memory(
     metadata, body = _parse_frontmatter(content)
     sections = _parse_section_map(body if metadata else content)
     updated_at = metadata.get("updated_at") or _legacy_updated_at(content.splitlines())
-    return SessionMemoryPayload(
+    payload = SessionMemoryPayload(
         session_id=metadata.get("session_id", "").strip(),
         source=metadata.get("source", "").strip(),
         session_title=sections.get("Session Title", "").replace("- (none)", "").strip(),
@@ -634,6 +651,9 @@ def load_session_memory(
         compaction_count=int(metadata.get("compaction_count") or 0),
         last_compaction_at=metadata.get("last_compaction_at") or None,
     )
+    if requested_session_id and payload.session_id != requested_session_id:
+        return None
+    return payload
 
 
 def load_session_memory_text(

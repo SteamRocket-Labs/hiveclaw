@@ -193,7 +193,7 @@ async def test_persisted_messages_contain_no_ledger_or_pressure_reminder_text():
 
 
 @pytest.mark.asyncio
-async def test_persisted_messages_keep_real_conversation():
+async def test_persisted_messages_keep_real_conversation(durable_recovery_checkpoint):
     """The inverse pin: filtering must not eat genuine conversation —
     user message, tool results, and the final assistant answer all persist."""
     from app.kernel.contracts import InvocationRequest

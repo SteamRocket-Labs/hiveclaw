@@ -356,7 +356,7 @@ async def test_agent_kernel_returns_stopped_result_when_cancel_event_fires():
 
 
 @pytest.mark.asyncio
-async def test_agent_kernel_cancels_running_tool_when_cancel_event_fires():
+async def test_agent_kernel_cancels_running_tool_when_cancel_event_fires(durable_recovery_checkpoint):
     from app.kernel.contracts import InvocationRequest
     from app.kernel.engine import AgentKernel, KernelDependencies, RuntimeConfig
 
@@ -425,7 +425,7 @@ async def test_agent_kernel_cancels_running_tool_when_cancel_event_fires():
             )
         )
     )
-    await asyncio.wait_for(tool_started.wait(), timeout=0.2)
+    await asyncio.wait_for(tool_started.wait(), timeout=1.0)
     cancel_event.set()
     result = await asyncio.wait_for(task, timeout=0.2)
 

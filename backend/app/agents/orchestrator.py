@@ -8,7 +8,7 @@ import json
 import logging
 import uuid
 from dataclasses import asdict, dataclass, field, is_dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -33,8 +33,13 @@ from app.services.runtime_task_service import (
     get_runtime_task_record,
     list_active_runtime_task_records,
     merge_restart_replay_journal,
+    reconcile_runtime_task_for_replay_policy,
+    requeue_runtime_task_for_worker,
+    record_startup_resumed_task,
+    StartupResumeCollector,
     update_runtime_task_record,
 )
+from app.services.runtime_replay_policy import runtime_replay_disposition, runtime_replay_snapshot_from_record
 from app.services.runtime_budget_service import (
     RuntimeBudgetReservation,
     RuntimeBudgetService,
@@ -42,6 +47,7 @@ from app.services.runtime_budget_service import (
     estimate_reservation_tokens,
 )
 from app.services.runtime_notification_outbox import CompletionNotification, enqueue_completion_notification
+from app.services.runtime_task_fence import run_claimed_runtime_task
 
 logger = logging.getLogger(__name__)
 
@@ -595,6 +601,8 @@ class AgentDelegationRequest:
     # Travels as structured metadata, never prefixed into the instruction text.
     parent_agent_name: str | None = None
     runtime_task_id: str | None = None
+    claim_version: int | None = None
+    claim_worker_id: str | None = None
     restart_replay_contract: dict[str, Any] | None = None
     permission_profile: Any | None = None
     target_artifact_path: str | None = None
@@ -989,10 +997,14 @@ def _delegation_user_message(conversation_messages: list[dict[str, Any]]) -> str
 
 def _build_runtime_task_metadata(request: AgentDelegationRequest, *, task_id: str) -> dict[str, Any]:
     metadata: dict[str, Any] = {
+        "interaction_type": request.interaction_type,
         "message_count": len(request.conversation_messages),
         "system_prompt_suffix": request.system_prompt_suffix,
         "tool_profile": request.policy.tool_profile,
+        "trace_id": request.trace_id,
     }
+    if request.tenant_id is not None:
+        metadata["tenant_id"] = str(request.tenant_id)
     if request.confirmed_plan_id is not None:
         metadata.update(
             {
@@ -1025,6 +1037,10 @@ def _build_runtime_task_metadata(request: AgentDelegationRequest, *, task_id: st
     metadata["delegation_chain"] = _delegation_chain(request)
     if request.root_runtime_task_id:
         metadata["root_runtime_task_id"] = request.root_runtime_task_id
+    if request.claim_version is not None:
+        metadata["claim_version"] = request.claim_version
+    if request.claim_worker_id:
+        metadata["claim_worker_id"] = request.claim_worker_id
     replay_safe = _delegation_profile_restart_replay_safe(request.policy.tool_profile)
     resumable = request.tool_executor is None
     blocker = ""
@@ -1250,8 +1266,178 @@ async def delegate_to_agent(
         ],
         edit_mode=_normalize_delegation_edit_mode(edit_mode),
     )
-    result = await _delegate(request)
+    result = await _run_inline_delegation_with_runtime_authority(request)
     return result.content
+
+
+async def _persist_inline_delegation_terminal(
+    *,
+    request: AgentDelegationRequest,
+    task_id: str,
+    trace_id: str,
+    status: str,
+    summary: str,
+    started_at: datetime,
+    timed_out: bool = False,
+    depth_limited: bool = False,
+    error: str | None = None,
+) -> None:
+    receipt = await _persist_delegation_terminal_evidence(
+        request=request,
+        task_id=task_id,
+        trace_id=trace_id,
+        status=status,
+        started_at=started_at,
+        error=error,
+    )
+    updated = await update_runtime_task_record(
+        task_id,
+        expected_status="running",
+        expected_claim_version=request.claim_version,
+        expected_claim_worker_id=request.claim_worker_id,
+        status=status,
+        result_summary=summary,
+        trace_id=trace_id,
+        child_session_id=request.session_id,
+        claim_expires_at=None,
+        metadata_json={
+            "execution_backend": "foreground_inline",
+            "timed_out": timed_out,
+            "depth_limited": depth_limited,
+            "execution_receipt": receipt,
+        },
+    )
+    if not updated:
+        raise RuntimeError(f"inline delegation runtime task {task_id} disappeared before terminal commit")
+
+
+async def _run_inline_delegation_with_runtime_authority(
+    request: AgentDelegationRequest,
+) -> AgentDelegationResult:
+    """Commit a child authority before a synchronous A2A invocation starts."""
+
+    task_id = uuid.uuid4().hex
+    trace_id = request.trace_id or uuid.uuid4().hex
+    started_at = datetime.now(timezone.utc)
+    lease_seconds = max(120.0, float(request.policy.timeout_seconds) + 60.0)
+    claim_worker_id = f"a2a-inline:{uuid.uuid4().hex}"
+    claim_expires_at = started_at + timedelta(seconds=lease_seconds)
+    request.runtime_task_id = task_id
+    request.trace_id = trace_id
+    request.claim_version = 1
+    request.claim_worker_id = claim_worker_id
+    request.execution_receipt = _build_delegation_execution_receipt(
+        request,
+        task_id=task_id,
+        trace_id=trace_id,
+        status="pending",
+    )
+    metadata = _build_runtime_task_metadata(request, task_id=task_id)
+    metadata.update(
+        {
+            "execution_backend": "foreground_inline",
+            "recovery_agent_id": str(getattr(request.target, "id", "")),
+            "recovery_session_id": request.session_id,
+            "recovery_runtime_task_id": task_id,
+            "claim_version": request.claim_version,
+            "claim_worker_id": claim_worker_id,
+            "claim_expires_at": claim_expires_at.isoformat(),
+            "recovery_resolution_targets": [
+                {
+                    "agent_id": str(getattr(request.target, "id", "")),
+                    "session_id": request.session_id,
+                    "runtime_task_id": task_id,
+                    "source": "current_run",
+                    "expected_manifest_state": "missing",
+                    "expected_manifest_ref": None,
+                    "expected_sha256": None,
+                    "expected_claim_version": request.claim_version,
+                    "expected_claim_worker_id": claim_worker_id,
+                }
+            ],
+        }
+    )
+    parent_agent_id = _maybe_uuid(request.parent_agent_id) or _maybe_uuid(request.owner_id)
+    await create_runtime_task_record(
+        task_id=task_id,
+        task_type="delegation",
+        status="running",
+        parent_agent_id=parent_agent_id,
+        child_agent_id=_maybe_uuid(getattr(request.target, "id", None)),
+        child_agent_name=getattr(request.target, "name", None),
+        prompt=request.conversation_messages[-1].get("content", "") if request.conversation_messages else None,
+        trace_id=trace_id,
+        parent_session_id=request.parent_session_id,
+        child_session_id=request.session_id,
+        depth=request.depth,
+        metadata_json=metadata,
+        root_user_id=request.owner_id,
+        root_session_id=str(metadata.get("root_session_id") or "").strip() or None,
+        root_runtime_task_id=request.root_runtime_task_id,
+        delegation_chain=_delegation_chain(request),
+        claimed_by=claim_worker_id,
+        claim_expires_at=claim_expires_at,
+        claim_version=request.claim_version,
+        attempt_count=1,
+    )
+    # The fence must validate against the same RuntimeTask authority used by
+    # create/update_runtime_task_record.  Production uses the shared app
+    # sessionmaker; tests and embedded runtimes may inject a different factory
+    # into that service, and consulting the global database here would falsely
+    # reject a valid claim (or, worse, validate a row from another authority).
+    from app.services import runtime_task_service as runtime_task_authority
+
+    try:
+        result = await run_claimed_runtime_task(
+            _delegate(request),
+            task_id=task_id,
+            claim_version=request.claim_version,
+            worker_id=claim_worker_id,
+            lease_seconds=lease_seconds,
+            session_factory=runtime_task_authority.async_session,
+        )
+    except asyncio.CancelledError:
+        try:
+            await _persist_inline_delegation_terminal(
+                request=request,
+                task_id=task_id,
+                trace_id=trace_id,
+                status="killed",
+                summary="Inline delegation cancelled",
+                started_at=started_at,
+                error="Inline delegation cancelled",
+            )
+        except Exception:
+            logger.exception("[Orchestrator] Failed to persist inline delegation cancellation %s", task_id)
+        raise
+    except Exception as exc:
+        try:
+            await _persist_inline_delegation_terminal(
+                request=request,
+                task_id=task_id,
+                trace_id=trace_id,
+                status="failed",
+                summary=f"Inline delegation failed: {type(exc).__name__}: {str(exc)[:500]}",
+                started_at=started_at,
+                error=str(exc),
+            )
+        except Exception:
+            logger.exception("[Orchestrator] Failed to persist inline delegation failure %s", task_id)
+        raise
+
+    terminal_status = "failed" if result.failed else "completed"
+    await _persist_inline_delegation_terminal(
+        request=request,
+        task_id=task_id,
+        trace_id=result.trace_id or trace_id,
+        status=terminal_status,
+        summary=result.content,
+        started_at=started_at,
+        timed_out=result.timed_out,
+        depth_limited=result.depth_limited,
+        error=result.content if result.failed else None,
+    )
+    return result
 
 
 def _delegation_ledger_owner(request: AgentDelegationRequest) -> str:
@@ -1483,6 +1669,18 @@ async def _delegate_after_cycle_check(
     session_metadata: dict[str, Any] = {
         "interaction_type": request.interaction_type,
     }
+    if request.tenant_id is not None:
+        session_metadata["tenant_id"] = str(request.tenant_id)
+    session_metadata["trace_id"] = trace_id
+    root_session_id = str(
+        (request.execution_principal or {}).get("root_session_id") or request.parent_session_id or ""
+    ).strip()
+    if root_session_id:
+        session_metadata["root_session_id"] = root_session_id
+    if request.root_runtime_task_id:
+        session_metadata["root_runtime_task_id"] = request.root_runtime_task_id
+    if request.execution_principal:
+        session_metadata["execution_principal"] = dict(request.execution_principal)
     permission_profile = _permission_profile_metadata(request.permission_profile)
     if permission_profile:
         session_metadata["permission_profile"] = permission_profile
@@ -1491,6 +1689,10 @@ async def _delegate_after_cycle_check(
             session_metadata["permission_mode"] = permission_mode
     if request.runtime_task_id:
         session_metadata["runtime_task_id"] = request.runtime_task_id
+    if request.claim_version is not None:
+        session_metadata["claim_version"] = request.claim_version
+    if request.claim_worker_id:
+        session_metadata["claim_worker_id"] = request.claim_worker_id
     if request.budget_run_id:
         session_metadata["budget_run_id"] = str(request.budget_run_id)
     session_metadata.update(artifact_contract)
@@ -2200,7 +2402,7 @@ async def _wake_parent_session_from_delegation_completion(
             child_session_id=child_session_uuid,
             child_agent_name=getattr(request.target, "name", None),
             terminal_status=status,
-            task_type="a2a_delegation",
+            task_type="delegation",
             summary=summary,
             delivery_mode="parent_continuation",
             artifacts=artifacts or [],
@@ -2222,7 +2424,7 @@ def _spawn_async_delegation_task(
     task_id: str,
     request: AgentDelegationRequest,
     trace_id: str,
-) -> None:
+) -> asyncio.Task[AgentDelegationResult]:
     started_at = datetime.now(timezone.utc)
     pending_receipt = _build_delegation_execution_receipt(
         request,
@@ -2392,6 +2594,7 @@ def _spawn_async_delegation_task(
         trace_id=trace_id,
         receipt=pending_receipt,
     )
+    return task
 
 
 async def _build_delegation_request_from_runtime_record(record: dict[str, Any]) -> AgentDelegationRequest | None:
@@ -2476,7 +2679,6 @@ async def dispatch_persisted_async_delegation(task_id: str) -> bool:
     request = await _build_delegation_request_from_runtime_record(record)
     if request is None:
         return False
-    _spawn_async_delegation_task(task_id=task_id, request=request, trace_id=request.trace_id or uuid.uuid4().hex)
     await update_runtime_task_record(
         task_id,
         status="running",
@@ -2484,6 +2686,12 @@ async def dispatch_persisted_async_delegation(task_id: str) -> bool:
         child_session_id=request.session_id,
         metadata_json={"worker_dispatched_at": datetime.now(timezone.utc).isoformat()},
     )
+    task = _spawn_async_delegation_task(
+        task_id=task_id,
+        request=request,
+        trace_id=request.trace_id or uuid.uuid4().hex,
+    )
+    await task
     return True
 
 
@@ -2715,7 +2923,50 @@ async def delegate_async(
                 logger.debug(
                     "[Orchestrator] Failed to release delegation budget reservation %s", task_id, exc_info=True
                 )
-        logger.warning("[Orchestrator] Failed to create runtime task record %s: %s", task_id, exc)
+        failure_summary = f"Delegation enqueue failed because the runtime ledger is unavailable: {exc}"
+        lease_id = lease_result.lease.id if lease_result.lease else None
+        try:
+            async with gateway_scope(coordination_gateway, tenant_id=tenant_id) as failure_gateway:
+                await failure_gateway.send_signal(
+                    signal_id=str(uuid.uuid5(uuid.NAMESPACE_URL, f"hive:delegation:{task_id}:enqueue-failed")),
+                    from_agent_id=str(parent_agent_id or owner_id),
+                    to_agent_id=str(getattr(target, "id", "")),
+                    content=failure_summary,
+                    signal_type="delegation_failed",
+                    thread_id=signal.thread_id,
+                    metadata={"task_id": task_id, "reason": "runtime_ledger_insert_failed"},
+                )
+                if lease_id:
+                    await failure_gateway.release_lease(task_key=coordination_key, lease_id=lease_id)
+        except Exception:
+            logger.exception("[Orchestrator] Failed to release delegation coordination authority %s", task_id)
+        _remember_async_task_parent(
+            task_id,
+            parent_agent_id,
+            status="failed",
+            child_agent_name=getattr(target, "name", None),
+            child_session_id=session_id,
+            trace_id=real_trace_id,
+            receipt=request.execution_receipt,
+        )
+        await _persist_delegation_event(
+            task_id=task_id,
+            parent_agent_id=parent_agent_id,
+            child_agent_name=target.name,
+            trace_id=real_trace_id,
+            status="failed",
+            result_preview=failure_summary,
+        )
+        logger.error("[Orchestrator] Failed closed creating runtime task record %s: %s", task_id, exc)
+        return AsyncDelegationHandle(
+            task_id=task_id,
+            trace_id=real_trace_id,
+            target_name=target.name,
+            status="failed",
+            coordination_lease_id=lease_id,
+            signal_thread_id=signal.thread_id,
+            receipt=request.execution_receipt,
+        )
     if budget_admission_status != "waiting_budget_approval":
         try:
             from app.services.runtime_task_worker import notify_runtime_task_worker
@@ -3052,11 +3303,19 @@ def list_async_delegations(
     return results
 
 
-async def resume_persisted_async_delegations(*, limit: int = 50) -> list[str]:
+async def resume_persisted_async_delegations(
+    *,
+    limit: int = 50,
+    on_resumed: StartupResumeCollector | None = None,
+) -> list[str]:
     """Resume restart-safe async delegations from persisted runtime task records."""
     resumed: list[str] = []
     try:
-        records = await list_active_runtime_task_records(limit=limit, statuses=("pending", "running"))
+        records = await list_active_runtime_task_records(
+            limit=limit,
+            statuses=("pending", "running"),
+            task_types=("delegation",),
+        )
     except Exception as exc:
         logger.warning("[Orchestrator] Failed to load active runtime tasks for resume: %s", exc)
         return resumed
@@ -3069,11 +3328,38 @@ async def resume_persisted_async_delegations(*, limit: int = 50) -> list[str]:
         metadata = record.get("metadata") or {}
         if not metadata.get("resumable_delegation") or not metadata.get("resume_after_restart"):
             continue
+        disposition = runtime_replay_disposition(runtime_replay_snapshot_from_record(record))
+        if disposition.action == "ignore_live_claim":
+            continue
+        if disposition.action == "needs_reconciliation":
+            await reconcile_runtime_task_for_replay_policy(
+                task_id,
+                task_type="delegation",
+                expected_status=str(record.get("status") or ""),
+                expected_claim_version=int(record.get("claim_version") or 0),
+                expected_claim_worker_id=record.get("claimed_by"),
+                reason=disposition.reason,
+            )
+            continue
         replay_safe = _delegation_profile_restart_replay_safe(metadata.get("tool_profile"))
         if not replay_safe:
             try:
+
+                def still_requires_reconciliation(task: Any) -> bool:
+                    current_metadata = dict(task.metadata_json or {})
+                    return bool(
+                        current_metadata.get("resume_after_restart")
+                        and current_metadata.get("resumable_delegation")
+                        and not _delegation_profile_restart_replay_safe(current_metadata.get("tool_profile"))
+                    )
+
                 await update_runtime_task_record(
                     task_id,
+                    expected_status=str(record.get("status") or ""),
+                    expected_claim_version=int(record.get("claim_version") or 0),
+                    expected_claim_worker_id=record.get("claimed_by"),
+                    locked_precondition=still_requires_reconciliation,
+                    startup_reconciliation_reason="non_idempotent_tool_profile",
                     status="needs_reconciliation",
                     result_summary=(
                         "Task was not resumed after restart because its delegation tool profile is not "
@@ -3105,65 +3391,9 @@ async def resume_persisted_async_delegations(*, limit: int = 50) -> list[str]:
             logger.warning("[Orchestrator] Runtime task %s missing resumable metadata; cannot resume", task_id)
             continue
 
-        resolved = await _resolve_resumable_target_runtime(target_agent_id)
-        if resolved is None:
-            try:
-                await update_runtime_task_record(
-                    task_id,
-                    status="failed",
-                    result_summary="Task could not be resumed after restart because the target agent runtime is unavailable.",
-                    metadata_json={"resume_failed": True},
-                )
-            except Exception as exc:
-                logger.warning("[Orchestrator] Failed to persist resume failure for %s: %s", task_id, exc)
-            continue
-
-        target, target_model = resolved
-        request = AgentDelegationRequest(
-            target=target,
-            target_model=target_model,
-            conversation_messages=conversation_messages,
-            owner_id=owner_id,
-            session_id=str(record.get("child_session_id") or uuid.uuid4().hex),
-            tool_executor=None,
-            system_prompt_suffix=str(metadata.get("system_prompt_suffix") or ""),
-            max_tool_rounds=metadata.get("max_tool_rounds"),
-            parent_agent_id=record.get("parent_agent_id"),
-            parent_session_id=record.get("parent_session_id"),
-            trace_id=str(record.get("trace_id") or uuid.uuid4().hex),
-            depth=int(record.get("depth") or 1),
-            policy=OrchestrationPolicy(
-                timeout_seconds=float(metadata.get("timeout_seconds") or 120.0),
-                tool_profile=str(metadata.get("tool_profile") or "worker_safe"),
-            ),
-            execution_identity=_execution_identity_from_metadata(metadata.get("execution_identity")),
-            confirmed_plan_id=metadata.get("plan_id"),
-            confirmed_plan_version=metadata.get("plan_version"),
-            confirmed_plan_hash=metadata.get("plan_hash"),
-            confirmed_plan_session_id=metadata.get("plan_session_id"),
-            plan_authorization=metadata.get("plan_authorization")
-            if isinstance(metadata.get("plan_authorization"), dict)
-            else None,
-            plan_exempt_reason=metadata.get("plan_exempt_reason"),
-            runtime_task_id=task_id,
-            restart_replay_contract=metadata.get("restart_replay_contract")
-            if isinstance(metadata.get("restart_replay_contract"), dict)
-            else None,
-            permission_profile=metadata.get("permission_profile"),
-            target_artifact_path=metadata.get("target_artifact_path"),
-            target_artifacts=metadata.get("target_artifacts")
-            if isinstance(metadata.get("target_artifacts"), list)
-            else [],
-            edit_mode=metadata.get("edit_mode"),
-            tenant_id=metadata.get("tenant_id") or record.get("tenant_id"),
-            ledger_todo_id=metadata.get("ledger_todo_id"),
-            execution_receipt=metadata.get("execution_receipt")
-            if isinstance(metadata.get("execution_receipt"), dict)
-            else None,
-        )
-
-        _spawn_async_delegation_task(task_id=task_id, request=request, trace_id=request.trace_id or uuid.uuid4().hex)
         try:
+            trace_id = str(record.get("trace_id") or uuid.uuid4().hex)
+            session_id = str(record.get("child_session_id") or uuid.uuid4().hex)
             resume_metadata = merge_restart_replay_journal(
                 metadata,
                 build_restart_replay_journal_entry(
@@ -3171,23 +3401,29 @@ async def resume_persisted_async_delegations(*, limit: int = 50) -> list[str]:
                     task_id=task_id,
                     side_effect_risk=str(metadata.get("side_effect_risk") or "read_only"),
                     phase="resume_intent_recorded",
-                    trace_id=request.trace_id,
-                    session_id=request.session_id,
+                    trace_id=trace_id,
+                    session_id=session_id,
                 ),
             )
-            await update_runtime_task_record(
+            requeued = await requeue_runtime_task_for_worker(
                 task_id,
-                status="running",
-                trace_id=request.trace_id,
-                child_session_id=request.session_id,
+                task_type="delegation",
+                expected_status=str(record.get("status") or ""),
+                expected_claim_version=int(record.get("claim_version") or 0),
+                expected_claim_worker_id=record.get("claimed_by"),
                 metadata_json={
-                    "resumed_after_restart": True,
-                    "resumed_at": datetime.now(timezone.utc).isoformat(),
+                    "requeued_after_restart": True,
                     "restart_replay_journal": resume_metadata.get("restart_replay_journal"),
                 },
             )
+            if not requeued:
+                continue
+            from app.services.runtime_task_worker import notify_runtime_task_worker
+
+            await notify_runtime_task_worker(reason="delegation_startup_requeued", runtime_task_id=task_id)
         except Exception as exc:
-            logger.warning("[Orchestrator] Failed to mark resumed runtime task %s as running: %s", task_id, exc)
-        resumed.append(task_id)
+            logger.warning("[Orchestrator] Failed to requeue runtime task %s for shared worker: %s", task_id, exc)
+            continue
+        record_startup_resumed_task(resumed, task_id, on_resumed)
 
     return resumed

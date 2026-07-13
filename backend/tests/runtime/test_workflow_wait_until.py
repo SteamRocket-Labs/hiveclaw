@@ -42,10 +42,14 @@ def _wait_definition(delay_seconds: int = 300) -> dict:
 
 class _Recorder:
     def __init__(self):
-        self.scheduled: list[tuple[str, datetime]] = []
+        self.scheduled: list[tuple[str, str, datetime]] = []
+        self.cleared: list[tuple[str, str]] = []
 
-    async def schedule_resume(self, run_id: str, *, resume_at: datetime) -> None:
-        self.scheduled.append((run_id, resume_at))
+    async def schedule_resume(self, run_id: str, *, step_id: str, resume_at: datetime) -> None:
+        self.scheduled.append((run_id, step_id, resume_at))
+
+    async def clear_resume(self, run_id: str, *, step_id: str) -> None:
+        self.cleared.append((run_id, step_id))
 
 
 def _leaf():
@@ -78,7 +82,8 @@ async def test_undue_wait_suspends_and_schedules_resume():
     assert outcome.status == "suspended"
     assert [c.step_id for c in calls] == ["prep"], "finish must not run before the wait elapses"
     assert len(scheduler.scheduled) == 1
-    _, resume_at = scheduler.scheduled[0]
+    _, step_id, resume_at = scheduler.scheduled[0]
+    assert step_id == "wait"
     assert resume_at == frozen_now + timedelta(seconds=300)
     assert journal.statuses("r")["wait"] == "suspended"
 
@@ -116,6 +121,7 @@ async def test_due_wait_resumes_and_completes():
     assert second.status == "completed"
     assert [c.step_id for c in calls2] == ["finish"], "prep replays; only finish runs after the wait"
     assert journal.statuses("r")["wait"] == "done"
+    assert scheduler.cleared == [("r", "wait")]
 
 
 async def test_until_literal_already_past_runs_through():

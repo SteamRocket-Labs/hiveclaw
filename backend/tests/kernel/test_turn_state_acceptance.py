@@ -185,7 +185,7 @@ async def test_turn_state_tool_budget_terminal_reason_on_real_handle():
 
 
 @pytest.mark.asyncio
-async def test_turn_state_clarification_required_terminal_reason_on_real_handle():
+async def test_turn_state_clarification_required_terminal_reason_on_real_handle(durable_recovery_checkpoint):
     """Real ``handle`` pauses with CLARIFICATION_REQUIRED on a blocking ask card.
 
     A tool result whose JSON status is ``awaiting_user_clarification`` makes the

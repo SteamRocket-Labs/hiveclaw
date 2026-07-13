@@ -16,7 +16,7 @@ from types import SimpleNamespace
 
 from app.agents.subagent import SubagentBudget, SubagentHandle, SubagentResult, SubagentSpawnContext
 from app.runtime.workflow_compiler import compile_workflow
-from app.runtime.workflow_engine import LeafRequest
+from app.runtime.workflow_engine import LeafRequest, workflow_leaf_recovery_identity
 from app.services.workflow_launch import (
     build_subagent_leaf_executor,
     inspect_workflow_confirmation_needs,
@@ -155,8 +155,8 @@ def test_wait_until_args_reference_is_confirmation_note_when_far_in_future():
 
 async def test_leaf_executor_calls_real_spawn_subagent_entry():
     """The double stands in for axis-1 spawn_subagent; the assertion is the
-    CONTRACT: spec/task/budget/ctx all flow through the real entry, which is
-    what inherits governance + tenant + SubagentBudget (§6.3)."""
+    CONTRACT: governance fields are preserved while each leaf receives a
+    restart-stable recovery lane before entering the real spawn (§6.3)."""
     ctx = _ctx()
     seen: dict = {}
 
@@ -185,7 +185,14 @@ async def test_leaf_executor_calls_real_spawn_subagent_entry():
     assert outcome.ok is True
     assert outcome.output["text"] == "done"
     assert outcome.tokens_used == 5
-    assert seen["ctx"] is ctx, "spawn ctx (tenant/governance/token) must pass through unchanged"
+    identity = workflow_leaf_recovery_identity(request.run_id, request.step_id, request.leaf_id)
+    assert seen["ctx"] is not ctx, "fanout leaves must never mutate/share one recovery context"
+    assert seen["ctx"].parent_agent_id == ctx.parent_agent_id
+    assert seen["ctx"].parent_user_id == ctx.parent_user_id
+    assert seen["ctx"].tenant_id == ctx.tenant_id
+    assert seen["ctx"].model is ctx.model
+    assert seen["ctx"].child_session_id == identity.session_id
+    assert seen["ctx"].recovery_metadata["runtime_task_id"] == identity.runtime_task_id
     assert seen["spec"].name == "scanner"
     assert seen["spec"].type == "explorer"
     assert seen["task"] == "Scan everything"

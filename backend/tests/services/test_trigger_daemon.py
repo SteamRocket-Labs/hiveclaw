@@ -8,6 +8,139 @@ from uuid import uuid4
 import pytest
 
 
+def test_trigger_fire_event_key_derives_stable_durable_intent_id():
+    from app.services.trigger_daemon import _trigger_runtime_task_id_for_event
+
+    agent_id = uuid4()
+    trigger_a = uuid4()
+    trigger_b = uuid4()
+    first = _trigger_runtime_task_id_for_event(
+        agent_id,
+        {str(trigger_a): "cron:2026-07-13T10:00", str(trigger_b): "webhook:event-7"},
+    )
+    second = _trigger_runtime_task_id_for_event(
+        agent_id,
+        {str(trigger_b): "webhook:event-7", str(trigger_a): "cron:2026-07-13T10:00"},
+    )
+
+    assert first == second
+    assert first != _trigger_runtime_task_id_for_event(
+        agent_id,
+        {str(trigger_a): "cron:2026-07-13T10:01", str(trigger_b): "webhook:event-7"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_duplicate_trigger_producers_persist_one_durable_event_intent(monkeypatch):
+    import app.services.trigger_daemon as trigger_daemon
+
+    agent_id = uuid4()
+    trigger = SimpleNamespace(id=uuid4(), name="same-event", type="cron", config={})
+    event_keys = {str(trigger.id): "cron:2026-07-13T10:00"}
+    persisted: set[str] = set()
+    attempts: list[dict] = []
+
+    async def fake_resolve_tenant(*_args, **_kwargs):
+        return None
+
+    async def fake_create(**fields):
+        attempts.append(fields)
+        if fields["task_id"] in persisted:
+            raise RuntimeError("duplicate durable intent")
+        persisted.add(fields["task_id"])
+        return fields["task_id"]
+
+    monkeypatch.setattr(trigger_daemon, "resolve_tenant_for_agent", fake_resolve_tenant)
+    monkeypatch.setattr(trigger_daemon, "create_runtime_task_record", fake_create)
+
+    first = await trigger_daemon._create_trigger_runtime_task(
+        agent_id,
+        [trigger],
+        metadata_json={"preflight_allowed": True, "fire_event_keys": event_keys},
+    )
+    second = await trigger_daemon._create_trigger_runtime_task(
+        agent_id,
+        [trigger],
+        metadata_json={"preflight_allowed": True, "fire_event_keys": event_keys},
+    )
+
+    assert str(first) == trigger_daemon._trigger_runtime_task_id_for_event(agent_id, event_keys).hex
+    assert second is None
+    assert [attempt["task_id"] for attempt in attempts] == [str(first), str(first)]
+    assert all(attempt["status"] == "pending" for attempt in attempts)
+
+
+@pytest.mark.asyncio
+async def test_claimed_once_trigger_marks_invokes_terminals_and_disables(monkeypatch):
+    import app.services.trigger_daemon as trigger_daemon
+
+    run_id = uuid4()
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    trigger = SimpleNamespace(
+        id=uuid4(),
+        agent_id=agent_id,
+        name="one-shot",
+        type="once",
+        config={},
+        is_enabled=True,
+        fire_count=0,
+        max_fires=None,
+        last_fired_at=None,
+    )
+    sessions = [
+        _SequenceSession([_RowsResult([trigger])]),
+        _SequenceSession([_ScalarResult(trigger)]),
+        _SequenceSession([_ScalarResult(trigger)]),
+    ]
+    terminal_updates: list[dict] = []
+
+    async def fake_get_record(_task_id):
+        return {
+            "task_id": run_id.hex,
+            "task_type": "trigger",
+            "status": "running",
+            "tenant_id": str(tenant_id),
+            "parent_agent_id": str(agent_id),
+            "metadata": {
+                "agent_id": str(agent_id),
+                "trigger_ids": [str(trigger.id)],
+                "fire_event_keys": {str(trigger.id): "once:event"},
+            },
+        }
+
+    async def fake_resolve_tenant(*_args, **_kwargs):
+        return tenant_id
+
+    async def fake_update(_task_id, **fields):
+        terminal_updates.append(fields)
+        return True
+
+    async def fake_invoke(invoked_agent_id, triggers, *, runtime_task_id=None):
+        assert invoked_agent_id == agent_id
+        assert triggers == [trigger]
+        assert trigger.config["_fire_inflight"]["runtime_task_id"] == run_id.hex
+        await trigger_daemon._record_trigger_success_state(agent_id, [trigger.id])
+        await trigger_daemon._update_trigger_runtime_task(
+            runtime_task_id,
+            status="completed",
+            result_summary="completed once trigger",
+        )
+
+    monkeypatch.setattr(trigger_daemon, "get_runtime_task_record", fake_get_record)
+    monkeypatch.setattr(trigger_daemon, "resolve_tenant_for_agent", fake_resolve_tenant)
+    monkeypatch.setattr(trigger_daemon, "tenant_scoped_session", lambda *a, **k: sessions.pop(0))
+    monkeypatch.setattr(trigger_daemon, "update_runtime_task_record", fake_update)
+    monkeypatch.setattr(trigger_daemon, "_invoke_agent_for_triggers", fake_invoke)
+
+    assert await trigger_daemon.execute_claimed_trigger_runtime_task(run_id) is True
+    assert trigger.fire_count == 1
+    assert trigger.is_enabled is False
+    assert trigger.last_fired_at is not None
+    assert "_fire_inflight" not in trigger.config
+    assert terminal_updates[-1]["status"] == "completed"
+
+
 @pytest.mark.asyncio
 async def test_terminal_trigger_update_forwards_completion_outbox_atomically(monkeypatch):
     import app.services.trigger_daemon as daemon
@@ -495,14 +628,9 @@ async def test_tick_does_not_apply_agent_level_dedup_window(monkeypatch):
         expires_at=None,
         cooldown_seconds=0,
     )
-    trigger_one_db = SimpleNamespace(**trigger_one.__dict__)
-    trigger_two_db = SimpleNamespace(**trigger_two.__dict__)
-
     sessions = [
         _SequenceSession([_RowsResult([trigger_one])]),
-        _SequenceSession([_ScalarResult(trigger_one_db)]),
         _SequenceSession([_RowsResult([trigger_two])]),
-        _SequenceSession([_ScalarResult(trigger_two_db)]),
     ]
 
     def fake_async_session():
@@ -510,7 +638,7 @@ async def test_tick_does_not_apply_agent_level_dedup_window(monkeypatch):
             raise AssertionError("Unexpected async_session() call")
         return sessions.pop(0)
 
-    scheduled: list[str] = []
+    notified: list[str] = []
 
     async def fake_evaluate_trigger(trigger, _now):
         return {"event_key": str(trigger.id)}
@@ -521,13 +649,8 @@ async def test_tick_does_not_apply_agent_level_dedup_window(monkeypatch):
     async def fake_acquire_trigger_fire_lease(_trigger_id, _event_key):
         return True
 
-    def fake_create_task(coro, *args, **kwargs):
-        inner = coro.cr_frame.f_locals.get("awaitable", coro)
-        scheduled.append(inner.cr_code.co_name)
-        inner.close()
-        if inner is not coro:
-            coro.close()
-        return SimpleNamespace()
+    async def fake_notify(*, reason, runtime_task_id=None):
+        notified.append(str(runtime_task_id))
 
     monkeypatch.setattr(trigger_daemon, "async_session", fake_async_session)
     # Stage-2b: the per-agent fire-state update is now tenant-scoped — route it
@@ -541,7 +664,7 @@ async def test_tick_does_not_apply_agent_level_dedup_window(monkeypatch):
     monkeypatch.setattr(trigger_daemon, "_evaluate_trigger", fake_evaluate_trigger)
     monkeypatch.setattr(trigger_daemon, "_acquire_trigger_fire_lease", fake_acquire_trigger_fire_lease)
     monkeypatch.setattr(trigger_daemon, "create_runtime_task_record", fake_create_runtime_task_record)
-    monkeypatch.setattr(trigger_daemon.asyncio, "create_task", fake_create_task)
+    monkeypatch.setattr("app.services.runtime_task_worker.notify_runtime_task_worker", fake_notify)
     _disable_completed_focus_reconciler(monkeypatch, trigger_daemon)
     trigger_daemon._last_invoke.clear()
     trigger_daemon._fire_history.clear()
@@ -549,7 +672,7 @@ async def test_tick_does_not_apply_agent_level_dedup_window(monkeypatch):
     await trigger_daemon._tick()
     await trigger_daemon._tick()
 
-    assert scheduled == ["_invoke_agent_for_triggers", "_invoke_agent_for_triggers"]
+    assert notified == ["runtime-task", "runtime-task"]
 
 
 @pytest.mark.asyncio
@@ -572,7 +695,7 @@ async def test_tick_creates_trigger_runtime_task_before_invocation(monkeypatch):
         cooldown_seconds=0,
         reason="Run daily brief",
     )
-    trigger_db = SimpleNamespace(**trigger.__dict__)
+    trigger_db = SimpleNamespace(**trigger.__dict__, creator_id=uuid4())
     sessions = [
         _SequenceSession([_RowsResult([trigger])]),
         _SequenceSession([_ScalarResult(trigger_db)]),
@@ -625,15 +748,10 @@ async def test_tick_creates_trigger_runtime_task_before_invocation(monkeypatch):
     async def fake_acquire_trigger_fire_lease(_trigger_id, _event_key):
         return True
 
-    scheduled_runtime_ids = []
+    notified_runtime_ids = []
 
-    def fake_create_task(coro, *args, **kwargs):
-        inner = coro.cr_frame.f_locals.get("awaitable", coro)
-        scheduled_runtime_ids.append(inner.cr_frame.f_locals.get("runtime_task_id"))
-        inner.close()
-        if inner is not coro:
-            coro.close()
-        return SimpleNamespace()
+    async def fake_notify(*, reason, runtime_task_id=None):
+        notified_runtime_ids.append(str(runtime_task_id))
 
     monkeypatch.setattr(trigger_daemon, "async_session", fake_async_session)
     # Stage-2b: the per-agent fire-state update is now tenant-scoped — route it
@@ -648,7 +766,7 @@ async def test_tick_creates_trigger_runtime_task_before_invocation(monkeypatch):
     monkeypatch.setattr(trigger_daemon, "_evaluate_trigger", fake_evaluate_trigger)
     monkeypatch.setattr(trigger_daemon, "_acquire_trigger_fire_lease", fake_acquire_trigger_fire_lease)
     monkeypatch.setattr(trigger_daemon, "create_runtime_task_record", fake_create_runtime_task_record)
-    monkeypatch.setattr(trigger_daemon.asyncio, "create_task", fake_create_task)
+    monkeypatch.setattr("app.services.runtime_task_worker.notify_runtime_task_worker", fake_notify)
     _disable_completed_focus_reconciler(monkeypatch, trigger_daemon)
     trigger_daemon._last_invoke.clear()
     trigger_daemon._fire_history.clear()
@@ -656,7 +774,7 @@ async def test_tick_creates_trigger_runtime_task_before_invocation(monkeypatch):
     await trigger_daemon._tick()
 
     assert created[0]["task_type"] == "trigger"
-    assert created[0]["status"] == "running"
+    assert created[0]["status"] == "pending"
     assert created[0]["parent_agent_id"] == agent_id
     assert created[0]["metadata_json"]["trigger_ids"] == [str(trigger.id)]
     assert created[0]["metadata_json"]["resume_after_restart"] is True
@@ -675,9 +793,9 @@ async def test_tick_creates_trigger_runtime_task_before_invocation(monkeypatch):
     assert budget_payloads[0].tenant_id == tenant_id
     assert budget_payloads[0].root_run_kind == "trigger_fire"
     assert budget_payloads[0].root_runtime_task_id.hex == created[0]["task_id"]
+    assert notified_runtime_ids == ["runtime-task-1"]
     assert budget_payloads[0].root_agent_id == agent_id
     assert budget_payloads[1].background_tasks == 1
-    assert scheduled_runtime_ids == ["runtime-task-1"]
 
 
 @pytest.mark.asyncio
@@ -773,10 +891,8 @@ async def test_tick_marks_once_trigger_inflight_without_disabling_before_ack(mon
         cooldown_seconds=0,
         reason="Run once",
     )
-    trigger_db = SimpleNamespace(**trigger.__dict__)
     sessions = [
         _SequenceSession([_RowsResult([trigger])]),
-        _SequenceSession([_ScalarResult(trigger_db)]),
     ]
 
     def fake_async_session():
@@ -793,12 +909,10 @@ async def test_tick_marks_once_trigger_inflight_without_disabling_before_ack(mon
     async def fake_acquire_trigger_fire_lease(_trigger_id, _event_key):
         return True
 
-    def fake_create_task(coro, *args, **kwargs):
-        inner = coro.cr_frame.f_locals.get("awaitable", coro)
-        inner.close()
-        if inner is not coro:
-            coro.close()
-        return SimpleNamespace()
+    notified: list[str] = []
+
+    async def fake_notify(*, reason, runtime_task_id=None):
+        notified.append(str(runtime_task_id))
 
     monkeypatch.setattr(trigger_daemon, "async_session", fake_async_session)
     monkeypatch.setattr(trigger_daemon, "tenant_scoped_session", lambda *a, **k: fake_async_session())
@@ -810,17 +924,18 @@ async def test_tick_marks_once_trigger_inflight_without_disabling_before_ack(mon
     monkeypatch.setattr(trigger_daemon, "_evaluate_trigger", fake_evaluate_trigger)
     monkeypatch.setattr(trigger_daemon, "_acquire_trigger_fire_lease", fake_acquire_trigger_fire_lease)
     monkeypatch.setattr(trigger_daemon, "create_runtime_task_record", fake_create_runtime_task_record)
-    monkeypatch.setattr(trigger_daemon.asyncio, "create_task", fake_create_task)
+    monkeypatch.setattr("app.services.runtime_task_worker.notify_runtime_task_worker", fake_notify)
     _disable_completed_focus_reconciler(monkeypatch, trigger_daemon)
     trigger_daemon._last_invoke.clear()
     trigger_daemon._fire_history.clear()
 
     await trigger_daemon._tick()
 
-    assert trigger_db.is_enabled is True
-    assert trigger_db.fire_count == 0
-    assert trigger_db.last_fired_at is None
-    assert trigger_db.config["_fire_inflight"]["runtime_task_id"] == "runtime-task-1"
+    assert trigger.is_enabled is True
+    assert trigger.fire_count == 0
+    assert trigger.last_fired_at is None
+    assert "_fire_inflight" not in trigger.config
+    assert notified == ["runtime-task-1"]
 
 
 @pytest.mark.asyncio
@@ -851,6 +966,126 @@ async def test_record_trigger_success_ack_disables_once_trigger(monkeypatch):
     assert trigger.last_fired_at is not None
     assert "_fire_inflight" not in trigger.config
     assert session.commits == 1
+
+
+@pytest.mark.asyncio
+async def test_workflow_ref_success_acks_once_trigger_through_normal_success_protocol(monkeypatch):
+    import app.services.trigger_daemon as trigger_daemon
+
+    trigger = SimpleNamespace(
+        id=uuid4(),
+        agent_id=uuid4(),
+        type="once",
+        name="once-workflow",
+        config={"workflow_ref": {"definition_name": "wf"}},
+        reply_context={},
+    )
+    calls: list[object] = []
+    updates: list[dict] = []
+
+    async def get_record(task_id):
+        return {"task_id": task_id}
+
+    async def update(*_args, **_kwargs):
+        updates.append(_kwargs)
+        return True
+
+    async def reply_target(*_args, **_kwargs):
+        return {"channel": "web"}
+
+    async def fire(**_kwargs):
+        return SimpleNamespace(status="launched", run_id=uuid4())
+
+    async def ack(agent_id, trigger_ids):
+        calls.append((agent_id, trigger_ids))
+
+    async def skip(*_args, **_kwargs):
+        calls.append("parent_skipped")
+
+    async def settle(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(trigger_daemon, "get_runtime_task_record", get_record)
+    monkeypatch.setattr(trigger_daemon, "update_runtime_task_record", update)
+    monkeypatch.setattr(trigger_daemon, "_resolve_trigger_reply_target", reply_target)
+    monkeypatch.setattr("app.services.workflow_trigger.fire_workflow_for_trigger", fire)
+    monkeypatch.setattr(trigger_daemon, "_record_trigger_success_state", ack)
+    monkeypatch.setattr(trigger_daemon, "_skip_trigger_runtime_task", skip)
+    monkeypatch.setattr(trigger_daemon, "_settle_trigger_runtime_budget", settle)
+
+    await trigger_daemon._invoke_agent_for_triggers(trigger.agent_id, [trigger], runtime_task_id=uuid4().hex)
+
+    assert (trigger.agent_id, [trigger.id]) in calls
+    assert "parent_skipped" not in calls
+    assert updates[-1]["status"] == "completed"
+    assert updates[-1]["metadata_json"]["workflow_trigger_outcomes"][str(trigger.id)]["state"] == "launched"
+
+
+@pytest.mark.asyncio
+async def test_workflow_ref_failure_does_not_ack_trigger(monkeypatch):
+    import app.services.trigger_daemon as trigger_daemon
+
+    trigger = SimpleNamespace(
+        id=uuid4(),
+        agent_id=uuid4(),
+        type="once",
+        name="failed-once-workflow",
+        config={"workflow_ref": {"definition_name": "wf"}},
+        reply_context={},
+    )
+    acked: list[object] = []
+
+    async def get_record(task_id):
+        return {"task_id": task_id}
+
+    async def fire(**_kwargs):
+        raise RuntimeError("workflow launch failed")
+
+    async def no_op(*_args, **_kwargs):
+        return None
+
+    async def ack(*args, **kwargs):
+        acked.append((args, kwargs))
+
+    monkeypatch.setattr(trigger_daemon, "get_runtime_task_record", get_record)
+    monkeypatch.setattr(trigger_daemon, "update_runtime_task_record", no_op)
+    monkeypatch.setattr(trigger_daemon, "_resolve_trigger_reply_target", no_op)
+    monkeypatch.setattr("app.services.workflow_trigger.fire_workflow_for_trigger", fire)
+    monkeypatch.setattr(trigger_daemon, "_record_trigger_success_state", ack)
+    monkeypatch.setattr(trigger_daemon, "_skip_trigger_runtime_task", no_op)
+    monkeypatch.setattr(trigger_daemon, "_settle_trigger_runtime_budget", no_op)
+
+    await trigger_daemon._invoke_agent_for_triggers(trigger.agent_id, [trigger], runtime_task_id=uuid4().hex)
+
+    assert acked == []
+
+
+@pytest.mark.asyncio
+async def test_startup_recovery_does_not_mutate_live_trigger_claim(monkeypatch):
+    import app.services.trigger_daemon as trigger_daemon
+
+    record = {
+        "task_id": uuid4().hex,
+        "task_type": "trigger",
+        "status": "running",
+        "claim_version": 2,
+        "claimed_by": "worker-a",
+        "claim_expires_at": datetime.now(timezone.utc) + timedelta(minutes=5),
+        "child_session_id": str(uuid4()),
+        "metadata": {"resume_after_restart": True, "resumable_trigger": True, "side_effect_risk": "mutating"},
+    }
+
+    async def list_records(**_kwargs):
+        return [record]
+
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("startup must not mutate a live trigger claim")
+
+    monkeypatch.setattr(trigger_daemon, "list_active_runtime_task_records", list_records)
+    monkeypatch.setattr(trigger_daemon, "requeue_runtime_task_for_worker", forbidden)
+    monkeypatch.setattr(trigger_daemon, "_mark_trigger_runtime_task_needs_reconciliation", forbidden)
+
+    assert await trigger_daemon.resume_persisted_trigger_runs() == []
 
 
 @pytest.mark.asyncio
@@ -936,15 +1171,22 @@ async def test_resume_persisted_trigger_runs_requeues_unstarted_run(monkeypatch)
     run_id = uuid4().hex
     agent_id = uuid4()
     trigger_id = uuid4()
-    trigger = SimpleNamespace(id=trigger_id, agent_id=agent_id, name="daily", type="cron")
-    updates: list[tuple[str, dict]] = []
-    scheduled: list[tuple[object, list[object], str | None]] = []
+    requeues: list[tuple[str, dict]] = []
+    notifications: list[str] = []
 
-    async def fake_list_active_runtime_task_records(limit=50, statuses=("pending", "running")):
+    async def fake_list_active_runtime_task_records(
+        limit=50,
+        statuses=("pending", "running"),
+        task_types=None,
+    ):
+        assert task_types == ("trigger",)
         return [
             {
                 "task_id": run_id,
                 "task_type": "trigger",
+                "status": "pending",
+                "claim_version": 0,
+                "claimed_by": None,
                 "parent_agent_id": str(agent_id),
                 "prompt": "Trigger wake: daily",
                 "trace_id": f"trigger:{run_id}",
@@ -964,43 +1206,26 @@ async def test_resume_persisted_trigger_runs_requeues_unstarted_run(monkeypatch)
             }
         ]
 
-    async def fake_load_triggers_for_resume(_agent_id, trigger_ids):
-        assert _agent_id == agent_id
-        assert trigger_ids == [str(trigger_id)]
-        return [trigger]
-
-    async def fake_update_runtime_task_record(task_id, **fields):
-        updates.append((task_id, fields))
+    async def fake_requeue(task_id, **fields):
+        requeues.append((task_id, fields))
         return True
 
-    def fake_create_task(coro, *args, **kwargs):
-        inner = coro.cr_frame.f_locals.get("awaitable", coro)
-        frame = inner.cr_frame
-        scheduled.append(
-            (
-                frame.f_locals["agent_id"],
-                frame.f_locals["triggers"],
-                frame.f_locals["runtime_task_id"],
-            )
-        )
-        inner.close()
-        if inner is not coro:
-            coro.close()
-        return SimpleNamespace()
+    async def fake_notify(*, reason, runtime_task_id=None):
+        notifications.append(str(runtime_task_id))
 
     monkeypatch.setattr(trigger_daemon, "list_active_runtime_task_records", fake_list_active_runtime_task_records)
-    monkeypatch.setattr(trigger_daemon, "_load_triggers_for_resume", fake_load_triggers_for_resume)
-    monkeypatch.setattr(trigger_daemon, "update_runtime_task_record", fake_update_runtime_task_record)
-    monkeypatch.setattr(trigger_daemon.asyncio, "create_task", fake_create_task)
+    monkeypatch.setattr(trigger_daemon, "requeue_runtime_task_for_worker", fake_requeue)
+    monkeypatch.setattr("app.services.runtime_task_worker.notify_runtime_task_worker", fake_notify)
 
     resumed = await trigger_daemon.resume_persisted_trigger_runs()
 
     assert resumed == [run_id]
-    assert scheduled == [(agent_id, [trigger], run_id)]
-    assert updates[-1][0] == run_id
-    assert updates[-1][1]["status"] == "running"
-    assert updates[-1][1]["metadata_json"]["resumed_after_restart"] is True
-    assert updates[-1][1]["metadata_json"]["restart_replay_journal"][-1]["phase"] == "resume_intent_recorded"
+    assert notifications == [run_id]
+    assert requeues[-1][0] == run_id
+    assert requeues[-1][1]["task_type"] == "trigger"
+    assert requeues[-1][1]["expected_status"] == "pending"
+    assert requeues[-1][1]["metadata_json"]["requeued_after_restart"] is True
+    assert requeues[-1][1]["metadata_json"]["restart_replay_journal"][-1]["phase"] == "resume_intent_recorded"
 
 
 @pytest.mark.asyncio
@@ -1010,11 +1235,20 @@ async def test_resume_persisted_trigger_runs_requires_reconciliation_after_sessi
     run_id = uuid4().hex
     updates: list[tuple[str, dict]] = []
 
-    async def fake_list_active_runtime_task_records(limit=50, statuses=("pending", "running")):
+    async def fake_list_active_runtime_task_records(
+        limit=50,
+        statuses=("pending", "running"),
+        task_types=None,
+    ):
+        assert task_types == ("trigger",)
         return [
             {
                 "task_id": run_id,
                 "task_type": "trigger",
+                "status": "running",
+                "claim_version": 5,
+                "claimed_by": "expired-trigger-worker",
+                "claim_expires_at": datetime.now(timezone.utc) - timedelta(seconds=1),
                 "parent_agent_id": str(uuid4()),
                 "prompt": "Trigger wake: daily",
                 "trace_id": f"trigger:{run_id}",
@@ -1036,16 +1270,92 @@ async def test_resume_persisted_trigger_runs_requires_reconciliation_after_sessi
         raise AssertionError("session-bound mutating trigger must not be replayed blindly")
 
     monkeypatch.setattr(trigger_daemon, "list_active_runtime_task_records", fake_list_active_runtime_task_records)
-    monkeypatch.setattr(trigger_daemon, "update_runtime_task_record", fake_update_runtime_task_record)
+    monkeypatch.setattr(
+        trigger_daemon,
+        "reconcile_runtime_task_for_replay_policy",
+        fake_update_runtime_task_record,
+    )
     monkeypatch.setattr(trigger_daemon.asyncio, "create_task", fake_create_task)
 
     resumed = await trigger_daemon.resume_persisted_trigger_runs()
 
     assert resumed == []
     assert updates[-1][0] == run_id
-    assert updates[-1][1]["status"] == "needs_reconciliation"
-    assert updates[-1][1]["metadata_json"]["needs_reconciliation"] is True
-    assert updates[-1][1]["metadata_json"]["restart_resume_blocker"] == "session_bound_mutating_trigger"
+    assert updates[-1][1]["expected_status"] == "running"
+    assert updates[-1][1]["expected_claim_version"] == 5
+    assert updates[-1][1]["expected_claim_worker_id"] == "expired-trigger-worker"
+    assert updates[-1][1]["reason"] == "expired_session_bound_or_mutating_runtime"
+
+
+@pytest.mark.asyncio
+async def test_resume_persisted_trigger_runs_allows_session_bound_deterministic_workflow_batch(monkeypatch):
+    """A mid-batch crash replays stable child identities, never Workflow leaves."""
+
+    import app.services.trigger_daemon as trigger_daemon
+
+    run_id = uuid4().hex
+    agent_id = uuid4()
+    first_trigger_id, second_trigger_id = uuid4(), uuid4()
+    requeues: list[tuple[str, dict]] = []
+    notifications: list[str] = []
+
+    async def fake_list_active_runtime_task_records(
+        limit=50,
+        statuses=("pending", "running"),
+        task_types=None,
+    ):
+        assert task_types == ("trigger",)
+        return [
+            {
+                "task_id": run_id,
+                "task_type": "trigger",
+                "status": "running",
+                "claim_version": 3,
+                "claimed_by": "expired-trigger-worker",
+                "claim_expires_at": datetime.now(timezone.utc) - timedelta(seconds=1),
+                "parent_agent_id": str(agent_id),
+                "trace_id": f"trigger:{run_id}",
+                "child_session_id": str(uuid4()),
+                "metadata": {
+                    "resume_after_restart": True,
+                    "resumable_trigger": True,
+                    "trigger_ids": [str(first_trigger_id), str(second_trigger_id)],
+                    "workflow_batch_protocol": {
+                        "mode": "deterministic_workflow_ref",
+                        "trigger_ids": [str(first_trigger_id), str(second_trigger_id)],
+                    },
+                    "workflow_children": {str(first_trigger_id): {"run_id": str(uuid4()), "session_id": str(uuid4())}},
+                    "side_effect_risk": "mutating",
+                    "restart_replay_contract": {
+                        "schema": "runtime_restart_replay_contract.v1",
+                        "idempotency_key": f"trigger:{run_id}:restart",
+                        "task_type": "trigger",
+                        "task_id": run_id,
+                        "mode": "durable_restart_replay",
+                        "requires_completion_journal": True,
+                    },
+                },
+            }
+        ]
+
+    async def fake_requeue(task_id, **fields):
+        requeues.append((task_id, fields))
+        return True
+
+    async def fake_notify(*, reason, runtime_task_id=None):
+        notifications.append(str(runtime_task_id))
+
+    monkeypatch.setattr(trigger_daemon, "list_active_runtime_task_records", fake_list_active_runtime_task_records)
+    monkeypatch.setattr(trigger_daemon, "requeue_runtime_task_for_worker", fake_requeue)
+    monkeypatch.setattr("app.services.runtime_task_worker.notify_runtime_task_worker", fake_notify)
+
+    resumed = await trigger_daemon.resume_persisted_trigger_runs()
+
+    assert resumed == [run_id]
+    assert notifications == [run_id]
+    assert requeues[-1][1]["expected_status"] == "running"
+    assert requeues[-1][1]["expected_claim_version"] == 3
+    assert requeues[-1][1]["expected_claim_worker_id"] == "expired-trigger-worker"
 
 
 @pytest.mark.asyncio

@@ -35,6 +35,49 @@ class WorkspaceAuthorityError(RuntimeError):
         self.message = message
 
 
+_PLATFORM_PRIVATE_RUNTIME_PREFIXES = (
+    "runtime_artifacts/recovery_manifests",
+    "memory/session_state",
+)
+_PLATFORM_PRIVATE_RUNTIME_FILES = (
+    "runtime_artifacts/recovery_manifest.json",
+    "workspace/recovery_manifest.json",
+    "runtime_artifacts/session_memory.md",
+    "runtime_artifacts/compaction_summary.md",
+    "workspace/session_memory.md",
+    "workspace/compaction_summary.md",
+)
+
+
+def is_platform_private_runtime_path(path: str) -> bool:
+    """Return whether a path is platform-owned recovery/session state.
+
+    Reserved file descendants are blocked too: otherwise an Agent can create a
+    directory named ``recovery_manifest.json`` and squat the specialized
+    importer's file path.
+    """
+
+    try:
+        normalized = normalize_workspace_resource_path(path)
+    except ValueError:
+        return False
+    if any(
+        normalized == prefix or normalized.startswith(prefix + "/")
+        for prefix in (*_PLATFORM_PRIVATE_RUNTIME_PREFIXES, *_PLATFORM_PRIVATE_RUNTIME_FILES)
+    ):
+        return True
+    parts = normalized.split("/")
+    return len(parts) >= 4 and parts[0] == "memory" and parts[1] == "sessions" and parts[3] == "session_memory.md"
+
+
+def _raise_platform_private_runtime_path(path: str) -> None:
+    if is_platform_private_runtime_path(path):
+        raise WorkspaceAuthorityError(
+            "platform_private_runtime_state",
+            "Session recovery artifacts are platform-private state and cannot be read, written, or projected as user resources.",
+        )
+
+
 def _is_workspace_path(path: str) -> bool:
     return path == "workspace" or path.startswith("workspace/")
 
@@ -50,6 +93,8 @@ class WorkspaceAuthorityScope:
     known_paths: frozenset[str] = frozenset()
 
     def can_read(self, path: str) -> bool:
+        if is_platform_private_runtime_path(path):
+            return False
         if self.operator_view:
             return True
         normalized = normalize_workspace_resource_path(path)
@@ -62,6 +107,9 @@ class WorkspaceAuthorityScope:
         )
 
     def visible_child(self, parent: str, child_name: str, *, is_dir: bool) -> bool:
+        combined = f"{parent.rstrip('/')}/{child_name}" if parent else child_name
+        if is_platform_private_runtime_path(combined):
+            return False
         if self.operator_view:
             return True
         parent_path = normalize_workspace_resource_path(parent)
@@ -117,6 +165,7 @@ def authorize_workspace_tool_path(
             "workspace_resource_path_escape",
             "The requested path is outside the Agent workspace.",
         ) from exc
+    _raise_platform_private_runtime_path(normalized)
     if require_user_workspace and not normalized.startswith("workspace/"):
         raise WorkspaceAuthorityError(
             "workspace_resource_path_required",
@@ -191,6 +240,7 @@ async def authorize_workspace_path(
     agent_access: tuple[object, str] | None = None,
 ) -> WorkspacePathDecision:
     normalized = normalize_workspace_resource_path(path)
+    _raise_platform_private_runtime_path(normalized)
     if not normalized.startswith("workspace/"):
         raise WorkspaceAuthorityError(
             "workspace_resource_path_required",
@@ -286,6 +336,7 @@ def build_workspace_manifest_upsert(
     allow_owner_rebind: bool = False,
 ):
     normalized = normalize_workspace_resource_path(path)
+    _raise_platform_private_runtime_path(normalized)
     state = authority_state or (OWNED_AUTHORITY_STATE if owner_user_id else QUARANTINED_AUTHORITY_STATE)
     values = {
         "id": uuid.uuid4(),
@@ -336,6 +387,7 @@ async def register_workspace_path(
     allow_owner_rebind: bool = False,
 ) -> WorkspaceResourceManifest:
     normalized = normalize_workspace_resource_path(path)
+    _raise_platform_private_runtime_path(normalized)
     await db.execute(
         build_workspace_manifest_upsert(
             tenant_id=tenant_id,
@@ -360,6 +412,7 @@ async def mark_workspace_path_deleted(
     agent_id: uuid.UUID,
     path: str,
 ) -> None:
+    _raise_platform_private_runtime_path(path)
     manifest = await _load_manifest(
         db,
         agent_id=agent_id,
@@ -387,17 +440,21 @@ async def load_workspace_authority_scope(
         user_id=user.id,
         session_id=session_id,
     )
-    manifests = (
-        (
-            await db.execute(
-                select(WorkspaceResourceManifest).where(
-                    WorkspaceResourceManifest.agent_id == agent_id,
+    manifests = [
+        manifest
+        for manifest in (
+            (
+                await db.execute(
+                    select(WorkspaceResourceManifest).where(
+                        WorkspaceResourceManifest.agent_id == agent_id,
+                    )
                 )
             )
+            .scalars()
+            .all()
         )
-        .scalars()
-        .all()
-    )
+        if not is_platform_private_runtime_path(manifest.path)
+    ]
 
     if operator_view:
         collection_id = uuid.uuid5(agent_id, "workspace-resource-collection")
@@ -486,7 +543,7 @@ def workspace_mutations_from_tool(tool_name: str, arguments: dict, result) -> li
         if name == "office_document_apply":
             raw_path = arguments.get("output_path") or raw_path
         path = normalize_workspace_resource_path(str(raw_path or ""))
-        if path.startswith("workspace/"):
+        if path.startswith("workspace/") and not is_platform_private_runtime_path(path):
             content_hash = None
             if direct_action == "written" and isinstance(arguments.get("content"), str):
                 content_hash = hashlib.sha256(arguments["content"].encode("utf-8")).hexdigest()
@@ -496,7 +553,7 @@ def workspace_mutations_from_tool(tool_name: str, arguments: dict, result) -> li
         if not isinstance(artifact, dict):
             continue
         path = normalize_workspace_resource_path(str(artifact.get("path") or ""))
-        if not path.startswith("workspace/"):
+        if not path.startswith("workspace/") or is_platform_private_runtime_path(path):
             continue
         action = str(artifact.get("action") or "updated").strip().lower()
         after_state = artifact.get("after_state") if isinstance(artifact.get("after_state"), dict) else {}

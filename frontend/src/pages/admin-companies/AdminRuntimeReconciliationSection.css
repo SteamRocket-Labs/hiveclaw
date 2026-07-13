@@ -48,6 +48,12 @@
   font-size: var(--text-row);
 }
 
+.admin-reconcile-warning {
+  padding: var(--space-3) var(--space-5);
+  color: var(--warning);
+  font-size: var(--text-row);
+}
+
 .admin-reconcile-empty {
   padding: var(--space-5);
   color: var(--text-tertiary);
@@ -61,7 +67,7 @@
 
 .admin-reconcile-row {
   display: grid;
-  grid-template-columns: minmax(180px, 1.2fr) minmax(180px, 1.4fr) 120px 180px;
+  grid-template-columns: minmax(160px, 0.9fr) minmax(280px, 1.6fr) 140px minmax(280px, 1.2fr);
   gap: var(--space-3);
   align-items: center;
   padding: var(--space-4) var(--space-5);
@@ -95,6 +101,68 @@
 }
 
 .admin-reconcile-actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.admin-reconcile-evidence {
+  margin-top: var(--space-2);
+  padding: var(--space-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle);
+}
+
+.admin-reconcile-evidence-title {
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.admin-reconcile-evidence-line {
+  margin-top: var(--space-1);
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
+.admin-reconcile-evidence-warning {
+  margin-top: var(--space-2);
+  color: var(--status-error);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.admin-reconcile-operation {
+  margin-top: var(--space-2);
+  padding: var(--space-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  background: var(--bg-subtle);
+  overflow-wrap: anywhere;
+}
+
+.admin-reconcile-operation-error {
+  margin-top: var(--space-1);
+  color: var(--status-error);
+}
+
+.admin-reconcile-notes {
+  width: 100%;
+  min-height: 72px;
+  resize: vertical;
+  font-size: var(--text-row);
+}
+
+.admin-reconcile-confirm {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  color: var(--text-secondary);
+}
+
+.admin-reconcile-action-buttons {
   display: flex;
   justify-content: flex-end;
   gap: var(--space-2);

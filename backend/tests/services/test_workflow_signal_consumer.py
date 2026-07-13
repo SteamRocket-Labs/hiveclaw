@@ -48,6 +48,7 @@ async def _seed_waiting_run(owner_sessionmaker, tenant_id: uuid.UUID) -> tuple[u
                 step_id="wait",
                 step_type="wait_signal",
                 status="suspended",
+                error="waiting for signal approval_ready",
             )
         )
         session.add(
@@ -68,17 +69,26 @@ async def test_signal_resume_enumerates_waiting_runs_under_nonowner_rls(
     owner_sessionmaker,
     app_user_sessionmaker,
     tenant_id,
+    monkeypatch,
 ):
     from app.runtime.workflow_engine import WorkflowRunOutcome
     from app.services.workflow_signal_consumer import drain_signal_resumes
 
     run_id, _agent_id, signal_id = await _seed_waiting_run(owner_sessionmaker, tenant_id)
     resumed: list[tuple[uuid.UUID, uuid.UUID]] = []
+    wakeups: list[tuple[str, uuid.UUID]] = []
 
     class _FakeWorkflowRuntimeService:
         async def resume_run(self, run_id_arg, *, tenant_id, leaf_executor):
             resumed.append((run_id_arg, tenant_id))
             return WorkflowRunOutcome(status="completed")
+
+    async def record_wakeup(*, reason, runtime_task_id=None):
+        wakeups.append((reason, runtime_task_id))
+
+    # Test double rationale: Redis wakeup is an external notification; the DB
+    # status transition remains the mechanically verified execution authority.
+    monkeypatch.setattr("app.services.runtime_task_worker.notify_runtime_task_worker", record_wakeup)
 
     async def leaf_executor(_request):
         raise AssertionError("signal consumer should delegate resume to the runtime service")
@@ -90,7 +100,7 @@ async def test_signal_resume_enumerates_waiting_runs_under_nonowner_rls(
     )
 
     assert [(item.run_id, item.signal_id) for item in result] == [(run_id, signal_id)]
-    assert resumed == [(run_id, tenant_id)]
+    assert resumed == [], "signal consumer must never execute the workflow inline"
     async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
         step = (await session.execute(select(WorkflowStep).where(WorkflowStep.run_id == run_id))).scalar_one()
         task = (await session.execute(select(RuntimeTask).where(RuntimeTask.id == run_id))).scalar_one()
@@ -100,5 +110,45 @@ async def test_signal_resume_enumerates_waiting_runs_under_nonowner_rls(
 
     assert step.status == "done"
     assert "approved" in (step.result_ref or "")
+    assert step.error is None
+    assert step.finished_at is not None
     assert "waiting_for_signal" not in (task.metadata_json or {})
+    assert task.status == "resumable"
+    assert task.metadata_json["workflow_requeue_reason"] == "workflow_signal_consumed"
     assert signal is None
+    assert wakeups == [("workflow_signal_consumed", run_id)]
+
+
+async def test_signal_consume_rolls_back_delete_when_step_or_task_transition_fails(
+    owner_sessionmaker,
+    tenant_id,
+    monkeypatch,
+):
+    from app.services import workflow_signal_consumer
+
+    run_id, _agent_id, signal_id = await _seed_waiting_run(owner_sessionmaker, tenant_id)
+
+    def fail_result_encoding(*_args, **_kwargs):
+        raise RuntimeError("crash between signal delete and workflow state transition")
+
+    monkeypatch.setattr(workflow_signal_consumer.json, "dumps", fail_result_encoding)
+
+    async def leaf_executor(_request):
+        raise AssertionError("signal consumer must not execute leaves")
+
+    result = await workflow_signal_consumer.drain_signal_resumes(
+        leaf_executor=leaf_executor,
+        session_factory=owner_sessionmaker,
+    )
+
+    assert result == []
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
+        signal = (
+            await session.execute(select(CoordinationSignal).where(CoordinationSignal.id == signal_id))
+        ).scalar_one_or_none()
+        step = (await session.execute(select(WorkflowStep).where(WorkflowStep.run_id == run_id))).scalar_one()
+        task = (await session.execute(select(RuntimeTask).where(RuntimeTask.id == run_id))).scalar_one()
+    assert signal is not None, "signal DELETE must roll back with the failed state transition"
+    assert step.status == "suspended"
+    assert task.status == "suspended"
+    assert task.metadata_json["waiting_for_signal"]["step_id"] == "wait"

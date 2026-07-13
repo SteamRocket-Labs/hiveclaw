@@ -25,11 +25,11 @@ from loguru import logger
 from sqlalchemy import select
 
 from app.runtime.context_candidates import build_context_candidate_ref
-from app.services.daemon_concurrency import run_bounded
 from app.core.events import get_redis
 from app.database import async_session, enter_rls_bypass, tenant_scoped_session
 from app.models.trigger import AgentTrigger
 from app.models.agent import Agent
+from app.models.runtime_task import RuntimeTask
 from app.services.agent_identity_lifecycle import agent_lifecycle_active_clause
 from app.services.plan_mode_core import build_plan_execution_instruction
 from app.services.tenant_resolver import resolve_tenant_for_agent
@@ -38,12 +38,19 @@ from app.services.runtime_task_service import (
     build_restart_reconciliation_metadata,
     build_restart_replay_contract,
     build_restart_replay_journal_entry,
+    build_completion_journal_entry,
     create_runtime_task_record,
     get_runtime_task_record,
     list_active_runtime_task_records,
     merge_restart_replay_journal,
+    merge_completion_journal,
+    reconcile_runtime_task_for_replay_policy,
+    requeue_runtime_task_for_worker,
+    record_startup_resumed_task,
+    StartupResumeCollector,
     update_runtime_task_record,
 )
+from app.services.runtime_replay_policy import runtime_replay_disposition, runtime_replay_snapshot_from_record
 from app.services.execution_admission import ExecutionAdmission, ExecutionAdmissionDecision
 from app.services.runtime_budget_service import (
     RuntimeBudgetPolicyLookup,
@@ -72,6 +79,15 @@ _last_invoke: dict[uuid.UUID, datetime] = {}
 
 # Track fire timestamps per agent for hourly rate limiting
 _fire_history: dict[uuid.UUID, list[datetime]] = {}
+
+
+def _trigger_runtime_task_id_for_event(agent_id: uuid.UUID, fire_event_keys: dict[str, str]) -> uuid.UUID:
+    canonical_events = _json.dumps(
+        sorted((str(trigger_id), str(event_key)) for trigger_id, event_key in fire_event_keys.items()),
+        ensure_ascii=True,
+        separators=(",", ":"),
+    )
+    return uuid.uuid5(uuid.NAMESPACE_URL, f"hive:trigger:{agent_id}:{canonical_events}")
 
 
 class TriggerRuntimeTaskRef(str):
@@ -208,10 +224,58 @@ async def _create_trigger_runtime_task(
     admission_decision: ExecutionAdmissionDecision | None = None
     budget_reservation_key: str | None = None
     try:
-        task_id = uuid.uuid4().hex
+        fire_event_keys = {
+            str(key): str(value)
+            for key, value in dict(metadata.get("fire_event_keys") or {}).items()
+            if str(key).strip() and str(value).strip()
+        }
+        task_id = (
+            _trigger_runtime_task_id_for_event(agent_id, fire_event_keys).hex if fire_event_keys else uuid.uuid4().hex
+        )
         trace_id = f"trigger:{task_id}"
         side_effect_risk = str(metadata.get("side_effect_risk") or "mutating")
         tenant_id = await resolve_tenant_for_agent(agent_id)
+        root_user_id: uuid.UUID | None = None
+        root_session_id: str | None = None
+        if tenant_id is not None:
+            from app.models.chat_session import ChatSession
+
+            source_session_value = next(
+                (
+                    str((getattr(trigger, "reply_context", None) or {}).get("session_id") or "").strip()
+                    for trigger in triggers
+                    if str((getattr(trigger, "reply_context", None) or {}).get("session_id") or "").strip()
+                ),
+                "",
+            )
+            async with tenant_scoped_session(
+                tenant_id,
+                require_tenant=True,
+                source="trigger_root_authority",
+            ) as authority_db:
+                agent = (
+                    await authority_db.execute(select(Agent).where(Agent.id == agent_id, Agent.tenant_id == tenant_id))
+                ).scalar_one_or_none()
+                if source_session_value:
+                    try:
+                        source_session_uuid = uuid.UUID(source_session_value)
+                    except ValueError:
+                        source_session_uuid = None
+                    if source_session_uuid is not None:
+                        source_session = (
+                            await authority_db.execute(
+                                select(ChatSession).where(
+                                    ChatSession.id == source_session_uuid,
+                                    ChatSession.agent_id == agent_id,
+                                    ChatSession.tenant_id == tenant_id,
+                                )
+                            )
+                        ).scalar_one_or_none()
+                        if source_session is not None:
+                            root_session_id = str(source_session.id)
+                            root_user_id = source_session.user_id
+                if root_user_id is None and agent is not None:
+                    root_user_id = agent.creator_id
         budget_run = None
         trigger_id_values = [getattr(trigger, "id", None) for trigger in triggers if getattr(trigger, "id", None)]
         trigger_profile = str(
@@ -297,6 +361,9 @@ async def _create_trigger_runtime_task(
                 "runtime_task_id": task_id,
                 "request_id": str(uuid.UUID(task_id)),
                 "trace_id": trace_id,
+                "root_user_id": str(root_user_id) if root_user_id else None,
+                "root_session_id": root_session_id,
+                "root_runtime_task_id": task_id,
                 "resumable_trigger": True,
                 "resume_after_restart": True,
                 "side_effect_risk": side_effect_risk,
@@ -338,7 +405,7 @@ async def _create_trigger_runtime_task(
         persisted_task_id = await create_runtime_task_record(
             task_id=task_id,
             task_type="trigger",
-            status="pending" if admission_status == "waiting_budget_approval" else "running",
+            status="pending",
             parent_agent_id=agent_id,
             prompt=f"Trigger wake: {', '.join(name for name in trigger_names if name) or 'unknown'}",
             trace_id=trace_id,
@@ -355,6 +422,10 @@ async def _create_trigger_runtime_task(
             budget_terminal_reason=(
                 "runtime_budget_approval_required" if admission_status == "waiting_budget_approval" else None
             ),
+            root_user_id=root_user_id,
+            root_session_id=root_session_id,
+            root_runtime_task_id=uuid.UUID(task_id),
+            delegation_chain=[f"agent:{agent_id}", f"trigger:{task_id}"],
         )
         return TriggerRuntimeTaskRef(persisted_task_id, admission_status=admission_status)
     except Exception as exc:
@@ -422,9 +493,33 @@ async def _mark_trigger_runtime_task_needs_reconciliation(
     summary: str,
     trace_id: str | None = None,
     session_id: str | None = None,
-) -> None:
-    await update_runtime_task_record(
+    expected_status: str,
+    expected_claim_version: int,
+    expected_claim_worker_id: str | None,
+) -> bool:
+    def still_requires_reconciliation(task: Any) -> bool:
+        current_metadata = dict(task.metadata_json or {})
+        current_trigger_ids = [str(item) for item in current_metadata.get("trigger_ids", []) if str(item).strip()]
+        protocol = dict(current_metadata.get("workflow_batch_protocol") or {})
+        deterministic_workflow_batch = bool(
+            protocol.get("mode") == "deterministic_workflow_ref"
+            and set(str(item) for item in protocol.get("trigger_ids") or ()) == set(current_trigger_ids)
+        )
+        current_session_id = str(task.child_session_id or current_metadata.get("session_id") or "").strip()
+        return bool(
+            current_metadata.get("resume_after_restart")
+            and current_metadata.get("resumable_trigger")
+            and current_session_id
+            and not deterministic_workflow_batch
+        )
+
+    return await update_runtime_task_record(
         runtime_task_id,
+        expected_status=expected_status,
+        expected_claim_version=expected_claim_version,
+        expected_claim_worker_id=expected_claim_worker_id,
+        locked_precondition=still_requires_reconciliation,
+        startup_reconciliation_reason=blocker,
         status="needs_reconciliation",
         result_summary=summary,
         metadata_json=build_restart_reconciliation_metadata(
@@ -459,7 +554,11 @@ async def _load_triggers_for_resume(agent_id: uuid.UUID, trigger_ids: list[str])
     return [by_id[str(trigger_id)] for trigger_id in parsed_ids if str(trigger_id) in by_id]
 
 
-async def resume_persisted_trigger_runs(*, limit: int = 50) -> list[str]:
+async def resume_persisted_trigger_runs(
+    *,
+    limit: int = 50,
+    on_resumed: StartupResumeCollector | None = None,
+) -> list[str]:
     """Restart-safe recovery for trigger runs that never reached the execution session.
 
     Once a trigger run has a session id, the previous process may already have
@@ -469,7 +568,11 @@ async def resume_persisted_trigger_runs(*, limit: int = 50) -> list[str]:
     """
 
     resumed: list[str] = []
-    records = await list_active_runtime_task_records(limit=limit, statuses=("pending", "running"))
+    records = await list_active_runtime_task_records(
+        limit=limit,
+        statuses=("pending", "running"),
+        task_types=("trigger",),
+    )
     for record in records:
         if record.get("task_type") != "trigger":
             continue
@@ -479,9 +582,28 @@ async def resume_persisted_trigger_runs(*, limit: int = 50) -> list[str]:
         metadata = dict(record.get("metadata") or {})
         if not metadata.get("resume_after_restart") or not metadata.get("resumable_trigger"):
             continue
+        disposition = runtime_replay_disposition(runtime_replay_snapshot_from_record(record))
+        if disposition.action == "ignore_live_claim":
+            continue
+        if disposition.action == "needs_reconciliation":
+            await reconcile_runtime_task_for_replay_policy(
+                run_id,
+                task_type="trigger",
+                expected_status=str(record.get("status") or ""),
+                expected_claim_version=int(record.get("claim_version") or 0),
+                expected_claim_worker_id=record.get("claimed_by"),
+                reason=disposition.reason,
+            )
+            continue
         trace_id = str(record.get("trace_id") or metadata.get("trace_id") or "")
+        trigger_ids = [str(item) for item in metadata.get("trigger_ids", []) if str(item).strip()]
+        workflow_batch_protocol = dict(metadata.get("workflow_batch_protocol") or {})
+        deterministic_workflow_batch = bool(
+            workflow_batch_protocol.get("mode") == "deterministic_workflow_ref"
+            and set(str(item) for item in workflow_batch_protocol.get("trigger_ids") or ()) == set(trigger_ids)
+        )
         session_id = str(record.get("child_session_id") or metadata.get("session_id") or "").strip()
-        if session_id:
+        if session_id and not deterministic_workflow_batch:
             await _mark_trigger_runtime_task_needs_reconciliation(
                 run_id,
                 metadata=metadata,
@@ -492,28 +614,9 @@ async def resume_persisted_trigger_runs(*, limit: int = 50) -> list[str]:
                 ),
                 trace_id=trace_id,
                 session_id=session_id,
-            )
-            continue
-        try:
-            agent_id = uuid.UUID(str(record.get("parent_agent_id") or metadata.get("agent_id") or ""))
-        except (TypeError, ValueError, AttributeError):
-            await _mark_trigger_runtime_task_needs_reconciliation(
-                run_id,
-                metadata=metadata,
-                blocker="missing_trigger_parent_agent",
-                summary="Trigger run could not be resumed after restart because parent agent id is unavailable.",
-                trace_id=trace_id,
-            )
-            continue
-        trigger_ids = [str(item) for item in metadata.get("trigger_ids", []) if str(item).strip()]
-        triggers = await _load_triggers_for_resume(agent_id, trigger_ids)
-        if not triggers:
-            await _mark_trigger_runtime_task_needs_reconciliation(
-                run_id,
-                metadata=metadata,
-                blocker="missing_resume_triggers",
-                summary="Trigger run could not be resumed after restart because its trigger rows are unavailable.",
-                trace_id=trace_id,
+                expected_status=str(record.get("status") or ""),
+                expected_claim_version=int(record.get("claim_version") or 0),
+                expected_claim_worker_id=record.get("claimed_by"),
             )
             continue
         side_effect_risk = str(metadata.get("side_effect_risk") or "mutating")
@@ -527,19 +630,24 @@ async def resume_persisted_trigger_runs(*, limit: int = 50) -> list[str]:
                 trace_id=trace_id,
             ),
         )
-        await update_runtime_task_record(
+        requeued = await requeue_runtime_task_for_worker(
             run_id,
-            status="running",
+            task_type="trigger",
+            expected_status=str(record.get("status") or ""),
+            expected_claim_version=int(record.get("claim_version") or 0),
+            expected_claim_worker_id=record.get("claimed_by"),
             metadata_json={
-                "resumed_after_restart": True,
+                "requeued_after_restart": True,
                 "restart_replay_contract": metadata.get("restart_replay_contract"),
                 "restart_replay_journal": resume_metadata.get("restart_replay_journal"),
             },
         )
-        asyncio.create_task(
-            run_bounded("trigger", _invoke_agent_for_triggers(agent_id, triggers, runtime_task_id=run_id))
-        )
-        resumed.append(run_id)
+        if not requeued:
+            continue
+        from app.services.runtime_task_worker import notify_runtime_task_worker
+
+        await notify_runtime_task_worker(reason="trigger_startup_requeued", runtime_task_id=run_id)
+        record_startup_resumed_task(resumed, run_id, on_resumed)
     return resumed
 
 
@@ -652,6 +760,22 @@ async def _recover_reply_target_from_session(
     except Exception as exc:
         logger.debug("[TriggerDaemon] _recover_reply_target_from_session failed: {}", exc)
         return None
+
+
+async def _resolve_trigger_reply_target(agent_id: uuid.UUID, triggers: list) -> dict | None:
+    """Resolve the durable delivery authority before choosing an executor."""
+
+    direct = next(
+        (
+            dict(getattr(trigger, "reply_context", None) or {})
+            for trigger in triggers
+            if (getattr(trigger, "reply_context", None) or {}).get("channel")
+        ),
+        None,
+    )
+    if direct is not None:
+        return direct
+    return await _recover_reply_target_from_session(agent_id, triggers)
 
 
 async def backfill_null_reply_contexts() -> dict:
@@ -1304,6 +1428,152 @@ async def _record_trigger_success_state(agent_id: uuid.UUID, trigger_ids: list[u
             await db.commit()
 
 
+async def _finalize_workflow_trigger_batch(
+    *,
+    agent_id: uuid.UUID,
+    runtime_task_id: str,
+    expected_claim_version: int,
+    expected_claim_worker_id: str | None,
+    outcomes: dict[uuid.UUID, dict[str, Any]],
+    parent_status: str,
+    summary: str,
+) -> bool:
+    """Atomically persist per-trigger outcomes, trigger ACK/backoff, and parent state."""
+
+    from app.services.trigger_failure_policy import apply_trigger_failure_policy, reset_trigger_failure_policy
+
+    try:
+        parent_id = uuid.UUID(str(runtime_task_id))
+    except (TypeError, ValueError, AttributeError):
+        return False
+    tenant_id = await resolve_tenant_for_agent(agent_id)
+    if tenant_id is None:
+        return False
+    now = datetime.now(timezone.utc)
+    async with tenant_scoped_session(
+        tenant_id,
+        require_tenant=True,
+        source="workflow_trigger_batch_finalize",
+    ) as db:
+        parent = (
+            await db.execute(
+                select(RuntimeTask)
+                .where(
+                    RuntimeTask.id == parent_id,
+                    RuntimeTask.tenant_id == tenant_id,
+                    RuntimeTask.task_type == "trigger",
+                )
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
+        if parent is None:
+            return False
+        if (
+            parent.status != "running"
+            or int(parent.claim_version or 0) != int(expected_claim_version)
+            or str(parent.claimed_by or "") != str(expected_claim_worker_id or "")
+        ):
+            return False
+
+        trigger_ids = sorted(outcomes, key=str)
+        triggers = list(
+            (
+                await db.execute(
+                    select(AgentTrigger)
+                    .where(
+                        AgentTrigger.id.in_(trigger_ids),
+                        AgentTrigger.agent_id == agent_id,
+                        AgentTrigger.tenant_id == tenant_id,
+                    )
+                    .order_by(AgentTrigger.id.asc())
+                    .with_for_update()
+                )
+            )
+            .scalars()
+            .all()
+        )
+        by_id = {trigger.id: trigger for trigger in triggers}
+        if set(by_id) != set(trigger_ids):
+            return False
+
+        for trigger_id, outcome in outcomes.items():
+            trigger = by_id[trigger_id]
+            state = str(outcome.get("state") or "failed")
+            cfg = dict(trigger.config or {})
+            if state in {"launched", "handled"}:
+                cfg.pop("_fire_inflight", None)
+                trigger.config = cfg
+                trigger.last_fired_at = now
+                trigger.fire_count = int(trigger.fire_count or 0) + 1
+                if trigger.type == "once" or (
+                    trigger.max_fires is not None and trigger.fire_count >= trigger.max_fires
+                ):
+                    trigger.is_enabled = False
+                reset_trigger_failure_policy(trigger)
+                cfg = dict(trigger.config or {})
+                cfg.pop("_fire_inflight", None)
+                trigger.config = cfg
+            elif state == "failed":
+                apply_trigger_failure_policy(
+                    trigger,
+                    error=str(outcome.get("reason") or outcome.get("fire_status") or "workflow trigger failed"),
+                )
+                cfg = dict(trigger.config or {})
+                cfg.pop("_fire_inflight", None)
+                trigger.config = cfg
+            else:
+                inflight = dict(cfg.get("_fire_inflight") or {})
+                inflight.update(
+                    {
+                        "workflow_run_id": outcome.get("run_id"),
+                        "workflow_outcome_state": "ambiguous",
+                    }
+                )
+                cfg["_fire_inflight"] = inflight
+                trigger.config = cfg
+
+        metadata = dict(parent.metadata_json or {})
+        persisted_outcomes = dict(metadata.get("workflow_trigger_outcomes") or {})
+        for trigger_id, outcome in outcomes.items():
+            persisted_outcomes[str(trigger_id)] = dict(outcome)
+        metadata["workflow_trigger_outcomes"] = persisted_outcomes
+        metadata["workflow_batch_outcome"] = parent_status
+        parent.result_summary = summary
+        if parent_status == "running":
+            # Mixed batches still have prose-ReAct work to perform.  Preserve
+            # the current claim and lease while atomically ACKing the resolved
+            # deterministic children and recording their recovered outcomes.
+            parent.completed_at = None
+        elif parent_status == "resumable":
+            parent.status = "resumable"
+            parent.claimed_by = None
+            parent.claim_expires_at = None
+            parent.scheduled_at = None
+            parent.completed_at = None
+            metadata["recovery_state"] = "workflow_child_outcome_ambiguous"
+        else:
+            parent.status = parent_status
+            parent.claim_expires_at = None
+            parent.scheduled_at = None
+            parent.completed_at = now
+            metadata = merge_completion_journal(
+                metadata,
+                build_completion_journal_entry(
+                    task_type="trigger",
+                    task_id=parent.id.hex,
+                    status=parent_status,
+                    trace_id=parent.trace_id,
+                    session_id=parent.child_session_id or parent.parent_session_id,
+                    side_effect_risk=str(metadata.get("side_effect_risk") or "mutating"),
+                    summary=summary,
+                ),
+            )
+        parent.metadata_json = metadata
+        await db.commit()
+    return True
+
+
 async def _mark_trigger_fire_started(
     agent_id: uuid.UUID,
     triggers: list[AgentTrigger],
@@ -1697,35 +1967,212 @@ async def _invoke_agent_for_triggers(
 
     # §9 P8 (§6.2): triggers carrying a workflow_ref take the deterministic
     # engine branch; the rest continue down the existing prose-ReAct path.
-    from app.services.workflow_trigger import fire_workflow_for_trigger
+    from app.services.workflow_trigger import (
+        _stable_trigger_workflow_identity,
+        extract_workflow_ref,
+        fire_workflow_for_trigger,
+    )
+
+    parent_runtime_context = await get_runtime_task_record(runtime_task_id) if runtime_task_id else None
+
+    workflow_trigger_ids = [
+        str(trigger.id)
+        for trigger in triggers
+        if getattr(trigger, "id", None) is not None
+        and extract_workflow_ref(getattr(trigger, "config", None) or {}) is not None
+    ]
+    if runtime_task_id and len(workflow_trigger_ids) == len(triggers) and workflow_trigger_ids:
+        await update_runtime_task_record(
+            runtime_task_id,
+            metadata_json={
+                "workflow_batch_protocol": {
+                    "mode": "deterministic_workflow_ref",
+                    "trigger_ids": workflow_trigger_ids,
+                }
+            },
+        )
 
     react_triggers: list[AgentTrigger] = []
+    successful_workflow_trigger_ids: list[uuid.UUID] = []
+    workflow_outcomes: dict[uuid.UUID, dict[str, Any]] = {}
     for trigger in triggers:
+        trigger_config = getattr(trigger, "config", None) or {}
+        workflow_ref = extract_workflow_ref(trigger_config)
+        if workflow_ref is None:
+            react_triggers.append(trigger)
+            continue
+        reply_target = await _resolve_trigger_reply_target(agent_id, [trigger])
         try:
             fire_result = await fire_workflow_for_trigger(
                 agent_id=agent_id,
-                trigger_config=trigger.config or {},
+                trigger_id=trigger.id,
+                trigger_config=trigger_config,
                 trigger_name=trigger.name,
-                webhook_payload=(trigger.config or {}).get("_webhook_payload"),
+                webhook_payload=trigger_config.get("_webhook_payload"),
+                delivery_target=reply_target,
+                parent_runtime_context=parent_runtime_context,
             )
         except Exception as exc:
             logger.error("[TriggerDaemon] workflow_ref fire failed for {}: {}", trigger.name, exc)
+            if workflow_ref is not None:
+                # The fire boundary could have created a durable run before
+                # failing. Ambiguity must never execute the same intent again
+                # through prose-ReAct; operators inspect the Workflow ledger.
+                stable_run_id = None
+                try:
+                    parent_tenant_id = uuid.UUID(str((parent_runtime_context or {}).get("tenant_id")))
+                    stable_run_id, _, _ = _stable_trigger_workflow_identity(
+                        tenant_id=parent_tenant_id,
+                        parent_runtime_task_id=runtime_task_id,
+                        trigger_id=trigger.id,
+                    )
+                except (TypeError, ValueError, AttributeError):
+                    stable_run_id = None
+                workflow_outcomes[trigger.id] = {
+                    "state": "ambiguous",
+                    "fire_status": "exception",
+                    "run_id": str(stable_run_id) if stable_run_id else None,
+                    "reason": f"{type(exc).__name__}: {str(exc)[:500]}",
+                }
+                continue
             fire_result = None
-        if fire_result is None:
-            react_triggers.append(trigger)
-        else:
+        if fire_result is not None:
             logger.info(
                 "[TriggerDaemon] trigger {} → workflow branch: {} (run={})",
                 trigger.name,
                 fire_result.status,
                 fire_result.run_id,
             )
-    if not react_triggers:
-        await _skip_trigger_runtime_task(
-            runtime_task_id,
-            skip_reason="workflow_ref_handled",
-            result_summary="All fired triggers were handled by the workflow engine branch.",
+            outcome_state = (
+                "launched" if fire_result.status == "launched" else "handled" if fire_result.run_id else "failed"
+            )
+            workflow_outcomes[trigger.id] = {
+                "state": outcome_state,
+                "fire_status": fire_result.status,
+                "run_id": str(fire_result.run_id) if fire_result.run_id else None,
+                "session_id": (
+                    str(getattr(fire_result, "session_id", None)) if getattr(fire_result, "session_id", None) else None
+                ),
+                "run_status": getattr(fire_result, "run_status", None),
+                "reason": getattr(fire_result, "reason", None),
+                "run_created": bool(getattr(fire_result, "run_created", False)),
+            }
+            if outcome_state in {"launched", "handled"}:
+                successful_workflow_trigger_ids.append(trigger.id)
+    ambiguous = any(outcome.get("state") == "ambiguous" for outcome in workflow_outcomes.values())
+    if ambiguous and react_triggers:
+        # A deterministic child may already exist.  Do not let unrelated
+        # prose-ReAct work cross that unknown side-effect boundary in the same
+        # parent attempt.  Keep the normal triggers' existing inflight markers
+        # untouched; the reclaimed parent will first recover the stable child
+        # and then execute those triggers exactly once.
+        summary = (
+            "Workflow child outcome is ambiguous after the fire boundary; "
+            "the mixed trigger batch will resume before any ReAct execution."
         )
+        finalized = False
+        if runtime_task_id and parent_runtime_context is not None:
+            finalized = await _finalize_workflow_trigger_batch(
+                agent_id=agent_id,
+                runtime_task_id=runtime_task_id,
+                expected_claim_version=int(parent_runtime_context.get("claim_version") or 0),
+                expected_claim_worker_id=parent_runtime_context.get("claimed_by"),
+                outcomes=workflow_outcomes,
+                parent_status="resumable",
+                summary=summary,
+            )
+        if not finalized and runtime_task_id:
+            await _update_trigger_runtime_task(
+                runtime_task_id,
+                status="resumable",
+                result_summary=summary,
+                metadata_json={
+                    "workflow_trigger_outcomes": {
+                        str(trigger_id): outcome for trigger_id, outcome in workflow_outcomes.items()
+                    }
+                },
+            )
+        return
+    if workflow_outcomes and react_triggers:
+        finalized = False
+        if runtime_task_id and parent_runtime_context is not None:
+            finalized = await _finalize_workflow_trigger_batch(
+                agent_id=agent_id,
+                runtime_task_id=runtime_task_id,
+                expected_claim_version=int(parent_runtime_context.get("claim_version") or 0),
+                expected_claim_worker_id=parent_runtime_context.get("claimed_by"),
+                outcomes=workflow_outcomes,
+                parent_status="running",
+                summary="Deterministic workflow trigger outcomes resolved; continuing the mixed batch.",
+            )
+        if not finalized:
+            if successful_workflow_trigger_ids:
+                await _record_trigger_success_state(agent_id, successful_workflow_trigger_ids)
+            failed_triggers = [
+                trigger for trigger in triggers if workflow_outcomes.get(trigger.id, {}).get("state") == "failed"
+            ]
+            if failed_triggers:
+                await _record_trigger_failure_state(
+                    agent_id,
+                    failed_triggers,
+                    "A workflow_ref trigger failed before creating an authoritative child run.",
+                )
+            if runtime_task_id:
+                await update_runtime_task_record(
+                    runtime_task_id,
+                    metadata_json={
+                        "workflow_trigger_outcomes": {
+                            str(trigger_id): outcome for trigger_id, outcome in workflow_outcomes.items()
+                        }
+                    },
+                )
+    if not react_triggers:
+        failed = any(outcome.get("state") == "failed" for outcome in workflow_outcomes.values())
+        parent_status = "resumable" if ambiguous else "failed" if failed else "completed"
+        summary = (
+            "Workflow child outcome is ambiguous after the fire boundary; stable child identity will be recovered."
+            if ambiguous
+            else "One or more workflow_ref triggers failed before creating an authoritative child run."
+            if failed
+            else "All workflow_ref triggers were durably handed to the workflow engine."
+        )
+        finalized = False
+        if runtime_task_id and parent_runtime_context is not None:
+            finalized = await _finalize_workflow_trigger_batch(
+                agent_id=agent_id,
+                runtime_task_id=runtime_task_id,
+                expected_claim_version=int(parent_runtime_context.get("claim_version") or 0),
+                expected_claim_worker_id=parent_runtime_context.get("claimed_by"),
+                outcomes=workflow_outcomes,
+                parent_status=parent_status,
+                summary=summary,
+            )
+        if not finalized:
+            successful_ids = [
+                trigger_id
+                for trigger_id, outcome in workflow_outcomes.items()
+                if outcome.get("state") in {"launched", "handled"}
+            ]
+            failed_triggers = [
+                trigger for trigger in triggers if workflow_outcomes.get(trigger.id, {}).get("state") == "failed"
+            ]
+            if successful_ids:
+                await _record_trigger_success_state(agent_id, successful_ids)
+            if failed_triggers:
+                await _record_trigger_failure_state(agent_id, failed_triggers, summary)
+            if runtime_task_id:
+                await _update_trigger_runtime_task(
+                    runtime_task_id,
+                    status=parent_status,
+                    result_summary=summary,
+                    metadata_json={
+                        "workflow_trigger_outcomes": {
+                            str(trigger_id): outcome for trigger_id, outcome in workflow_outcomes.items()
+                        }
+                    },
+                )
+        if parent_status != "resumable":
+            await _settle_trigger_runtime_budget(runtime_task_id, status=parent_status)
         return
     triggers = react_triggers
 
@@ -1963,28 +2410,7 @@ async def _invoke_agent_for_triggers(
 
         from app.services.channel_delivery_service import channel_delivery_target
 
-        reply_target = next(
-            (
-                getattr(trigger, "reply_context", None)
-                for trigger in triggers
-                if getattr(trigger, "reply_context", None) and getattr(trigger, "reply_context", None).get("channel")
-            ),
-            None,
-        )
-
-        # Fallback: if reply_context is NULL (pre-unified-delivery triggers),
-        # try to recover from the agent's most recent non-web ChatSession.
-        if reply_target is None:
-            try:
-                reply_target = await _recover_reply_target_from_session(agent_id, triggers)
-                if reply_target:
-                    logger.info(
-                        "[TriggerDaemon] Recovered reply_target from session for agent {}: channel={}",
-                        agent_id,
-                        reply_target.get("channel"),
-                    )
-            except Exception as _recover_err:
-                logger.debug("[TriggerDaemon] reply_target recovery failed: {}", _recover_err)
+        reply_target = await _resolve_trigger_reply_target(agent_id, triggers)
 
         _delivery_token = None
         if reply_target:
@@ -2354,9 +2780,8 @@ async def fire_trigger_once_now(
     loop runs, skipping only the schedule-timing check (we *want* it now). It
     never bypasses preflight / governance / budget admission, so an immediate
     ``/loop`` run is subject to the same wake gate as a scheduled fire. The
-    heavy agent invocation is spawned as a background task; this returns as soon
-    as the fire is admitted and marked in-flight so callers get an observable
-    ``runtime_task_id``."""
+    shared worker is notified after durable admission; this returns as soon as
+    the queued ``runtime_task_id`` is observable."""
     now = datetime.now(timezone.utc)
     try:
         trigger_uuid = uuid.UUID(str(trigger_id))
@@ -2413,16 +2838,9 @@ async def fire_trigger_once_now(
             "runtime_task_id": runtime_task_id,
         }
 
-    await _mark_trigger_fire_started(
-        agent_id,
-        [trigger],
-        now=now,
-        runtime_task_id=runtime_task_id,
-        event_keys={trigger.id: event_key},
-    )
-    asyncio.create_task(
-        run_bounded("trigger", _invoke_agent_for_triggers(agent_id, [trigger], runtime_task_id=runtime_task_id))
-    )
+    from app.services.runtime_task_worker import notify_runtime_task_worker
+
+    await notify_runtime_task_worker(reason="trigger_created", runtime_task_id=runtime_task_id)
     return {"fired": True, "runtime_task_id": runtime_task_id}
 
 
@@ -2523,29 +2941,9 @@ async def _tick():
                 )
                 continue
 
-            try:
-                await _mark_trigger_fire_started(
-                    agent_id,
-                    agent_triggers,
-                    now=now,
-                    runtime_task_id=runtime_task_id,
-                    event_keys=fire_event_keys,
-                )
-            except Exception as e:
-                logger.warning(f"Failed to mark trigger fire in-flight: {e}")
-                await _update_trigger_runtime_task(
-                    runtime_task_id,
-                    status="failed",
-                    result_summary=f"Trigger fire could not be marked in-flight: {str(e)[:500]}",
-                    metadata_json={"error": str(e)[:1000], "stage": "mark_inflight"},
-                )
-                continue
+            from app.services.runtime_task_worker import notify_runtime_task_worker
 
-            asyncio.create_task(
-                run_bounded(
-                    "trigger", _invoke_agent_for_triggers(agent_id, agent_triggers, runtime_task_id=runtime_task_id)
-                )
-            )
+            await notify_runtime_task_worker(reason="trigger_created", runtime_task_id=runtime_task_id)
         except Exception as _agent_err:
             logger.warning("[TriggerDaemon] Failed to process agent {}: {}", agent_id, _agent_err)
 

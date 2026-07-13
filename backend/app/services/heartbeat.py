@@ -12,12 +12,12 @@ import re
 import uuid
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+from typing import Any
 
 from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.services.daemon_concurrency import run_bounded
 from app.core.events import get_redis
 from app.database import enter_rls_bypass, tenant_scoped_session
 from app.memory.t2.read_model import load_t2_package_snapshots, render_t2_package_snapshots
@@ -28,10 +28,16 @@ from app.services.runtime_task_service import (
     build_restart_replay_contract,
     build_restart_replay_journal_entry,
     create_runtime_task_record,
+    get_runtime_task_record,
     list_active_runtime_task_records,
     merge_restart_replay_journal,
+    reconcile_runtime_task_for_replay_policy,
+    requeue_runtime_task_for_worker,
+    record_startup_resumed_task,
+    StartupResumeCollector,
     update_runtime_task_record,
 )
+from app.services.runtime_replay_policy import runtime_replay_disposition, runtime_replay_snapshot_from_record
 from app.services.runtime_budget_service import RuntimeBudgetPolicyLookup, RuntimeBudgetRunCreate, RuntimeBudgetService
 from app.services.runtime_tenant_admission import admit_agent_runtime_tenant
 from app.services.tenant_resolver import resolve_tenant_for_agent
@@ -41,6 +47,13 @@ from app.services.tenant_resolver import resolve_tenant_for_agent
 _HEARTBEAT_TEMPLATE_PATH = Path(__file__).parent.parent / "templates" / "HEARTBEAT.md"
 _HEARTBEAT_LEASE_TTL_SECONDS = 600
 _heartbeat_leases: dict[uuid.UUID, datetime] = {}
+_heartbeat_lease_tokens: dict[uuid.UUID, str] = {}
+_HEARTBEAT_RELEASE_LEASE_SCRIPT = """
+if redis.call('get', KEYS[1]) == ARGV[1] then
+  return redis.call('del', KEYS[1])
+end
+return 0
+"""
 
 _HEARTBEAT_SCORE_RUBRIC_SUFFIX = """
 
@@ -66,6 +79,10 @@ _HEARTBEAT_T2_FULL_MAX_CHARS = 24_000
 _HEARTBEAT_T2_INCREMENTAL_MAX_CHARS = 16_000
 _HEARTBEAT_T3_MAX_CHARS = 8_000
 _HEARTBEAT_EVOLUTION_CONTEXT_MAX_CHARS = 16_000
+
+
+def _heartbeat_runtime_task_id_for_event(agent_id: uuid.UUID, event_key: str) -> uuid.UUID:
+    return uuid.uuid5(uuid.NAMESPACE_URL, f"hive:heartbeat:{agent_id}:{event_key}")
 
 
 def _format_heartbeat_exception(exc: BaseException) -> str:
@@ -94,9 +111,15 @@ def _truncate_heartbeat_text(text: str, max_chars: int, label: str) -> str:
     return text[:head_chars] + marker + text[-tail_chars:]
 
 
-async def _create_heartbeat_runtime_task(agent_id: uuid.UUID, *, tenant_id: uuid.UUID | None = None) -> str | None:
+async def _create_heartbeat_runtime_task(
+    agent_id: uuid.UUID,
+    *,
+    tenant_id: uuid.UUID | None = None,
+    event_key: str | None = None,
+) -> str | None:
     try:
-        task_id = uuid.uuid4().hex
+        durable_event_key = str(event_key or uuid.uuid4().hex)
+        task_id = _heartbeat_runtime_task_id_for_event(agent_id, durable_event_key).hex
         trace_id = f"heartbeat:{task_id}"
         side_effect_risk = "internal_governed"
         budget_run_id = None
@@ -155,6 +178,7 @@ async def _create_heartbeat_runtime_task(agent_id: uuid.UUID, *, tenant_id: uuid
             "source": "heartbeat",
             "agent_id": str(agent_id),
             "tenant_id": str(tenant_id) if tenant_id else None,
+            "heartbeat_event_key": durable_event_key,
             "runtime_task_id": task_id,
             "request_id": str(uuid.UUID(task_id)),
             "trace_id": trace_id,
@@ -182,13 +206,14 @@ async def _create_heartbeat_runtime_task(agent_id: uuid.UUID, *, tenant_id: uuid
         return await create_runtime_task_record(
             task_id=task_id,
             task_type="heartbeat",
-            status="running",
+            status="pending",
             parent_agent_id=agent_id,
             prompt="Heartbeat self-evolution tick",
             trace_id=trace_id,
             metadata_json=metadata,
             budget_run_id=budget_run_id,
             budget_admission_status="root" if budget_run_id else None,
+            root_idempotency_key=f"heartbeat:{agent_id}:{durable_event_key}",
         )
     except Exception as exc:
         logger.warning("[Heartbeat] Failed to create RuntimeTask for {}: {}", agent_id, exc)
@@ -243,9 +268,26 @@ async def _mark_heartbeat_runtime_task_needs_reconciliation(
     summary: str,
     trace_id: str | None = None,
     session_id: str | None = None,
-) -> None:
-    await update_runtime_task_record(
+    expected_status: str,
+    expected_claim_version: int,
+    expected_claim_worker_id: str | None,
+) -> bool:
+    def still_requires_reconciliation(task: Any) -> bool:
+        current_metadata = dict(task.metadata_json or {})
+        current_session_id = str(task.child_session_id or current_metadata.get("session_id") or "").strip()
+        return bool(
+            current_metadata.get("resume_after_restart")
+            and current_metadata.get("resumable_heartbeat")
+            and current_session_id
+        )
+
+    return await update_runtime_task_record(
         runtime_task_id,
+        expected_status=expected_status,
+        expected_claim_version=expected_claim_version,
+        expected_claim_worker_id=expected_claim_worker_id,
+        locked_precondition=still_requires_reconciliation,
+        startup_reconciliation_reason=blocker,
         status="needs_reconciliation",
         result_summary=summary,
         metadata_json=build_restart_reconciliation_metadata(
@@ -260,11 +302,19 @@ async def _mark_heartbeat_runtime_task_needs_reconciliation(
     )
 
 
-async def resume_persisted_heartbeat_runs(*, limit: int = 50) -> list[str]:
+async def resume_persisted_heartbeat_runs(
+    *,
+    limit: int = 50,
+    on_resumed: StartupResumeCollector | None = None,
+) -> list[str]:
     """Resume heartbeat runs that were still queued before session binding."""
 
     resumed: list[str] = []
-    records = await list_active_runtime_task_records(limit=limit, statuses=("pending", "running"))
+    records = await list_active_runtime_task_records(
+        limit=limit,
+        statuses=("pending", "running"),
+        task_types=("heartbeat",),
+    )
     for record in records:
         if record.get("task_type") != "heartbeat":
             continue
@@ -273,6 +323,19 @@ async def resume_persisted_heartbeat_runs(*, limit: int = 50) -> list[str]:
             continue
         metadata = dict(record.get("metadata") or {})
         if not metadata.get("resume_after_restart") or not metadata.get("resumable_heartbeat"):
+            continue
+        disposition = runtime_replay_disposition(runtime_replay_snapshot_from_record(record))
+        if disposition.action == "ignore_live_claim":
+            continue
+        if disposition.action == "needs_reconciliation":
+            await reconcile_runtime_task_for_replay_policy(
+                run_id,
+                task_type="heartbeat",
+                expected_status=str(record.get("status") or ""),
+                expected_claim_version=int(record.get("claim_version") or 0),
+                expected_claim_worker_id=record.get("claimed_by"),
+                reason=disposition.reason,
+            )
             continue
         trace_id = str(record.get("trace_id") or metadata.get("trace_id") or "")
         session_id = str(record.get("child_session_id") or metadata.get("session_id") or "").strip()
@@ -287,28 +350,11 @@ async def resume_persisted_heartbeat_runs(*, limit: int = 50) -> list[str]:
                 ),
                 trace_id=trace_id,
                 session_id=session_id,
+                expected_status=str(record.get("status") or ""),
+                expected_claim_version=int(record.get("claim_version") or 0),
+                expected_claim_worker_id=record.get("claimed_by"),
             )
             continue
-        try:
-            agent_id = uuid.UUID(str(record.get("parent_agent_id") or metadata.get("agent_id") or ""))
-        except (TypeError, ValueError, AttributeError):
-            await _mark_heartbeat_runtime_task_needs_reconciliation(
-                run_id,
-                metadata=metadata,
-                blocker="missing_heartbeat_parent_agent",
-                summary="Heartbeat could not be resumed after restart because parent agent id is unavailable.",
-                trace_id=trace_id,
-            )
-            continue
-        tenant_id = None
-        raw_tenant_id = str(metadata.get("tenant_id") or "").strip()
-        if raw_tenant_id:
-            try:
-                tenant_id = uuid.UUID(raw_tenant_id)
-            except ValueError:
-                tenant_id = None
-        if tenant_id is None:
-            tenant_id = await resolve_tenant_for_agent(agent_id)
         side_effect_risk = str(metadata.get("side_effect_risk") or "internal_governed")
         resume_metadata = merge_restart_replay_journal(
             metadata,
@@ -320,19 +366,24 @@ async def resume_persisted_heartbeat_runs(*, limit: int = 50) -> list[str]:
                 trace_id=trace_id,
             ),
         )
-        await update_runtime_task_record(
+        requeued = await requeue_runtime_task_for_worker(
             run_id,
-            status="running",
+            task_type="heartbeat",
+            expected_status=str(record.get("status") or ""),
+            expected_claim_version=int(record.get("claim_version") or 0),
+            expected_claim_worker_id=record.get("claimed_by"),
             metadata_json={
-                "resumed_after_restart": True,
+                "requeued_after_restart": True,
                 "restart_replay_contract": metadata.get("restart_replay_contract"),
                 "restart_replay_journal": resume_metadata.get("restart_replay_journal"),
             },
         )
-        asyncio.create_task(
-            run_bounded("heartbeat", _execute_heartbeat(agent_id, tenant_id=tenant_id, runtime_task_id=run_id))
-        )
-        resumed.append(run_id)
+        if not requeued:
+            continue
+        from app.services.runtime_task_worker import notify_runtime_task_worker
+
+        await notify_runtime_task_worker(reason="heartbeat_startup_requeued", runtime_task_id=run_id)
+        record_startup_resumed_task(resumed, run_id, on_resumed)
     return resumed
 
 
@@ -470,6 +521,7 @@ def _try_acquire_heartbeat_lease(
 
 def _release_heartbeat_lease(agent_id: uuid.UUID) -> None:
     _heartbeat_leases.pop(agent_id, None)
+    _heartbeat_lease_tokens.pop(agent_id, None)
 
 
 async def _try_acquire_heartbeat_lease_async(
@@ -477,28 +529,38 @@ async def _try_acquire_heartbeat_lease_async(
     *,
     now: datetime | None = None,
     ttl_seconds: int = _HEARTBEAT_LEASE_TTL_SECONDS,
-) -> bool:
+) -> str | bool:
     lease_key = f"heartbeat_lease:{agent_id}"
+    lease_token = uuid.uuid4().hex
     try:
         redis = await get_redis()
-        acquired = await redis.set(lease_key, (now or datetime.now(timezone.utc)).isoformat(), ex=ttl_seconds, nx=True)
+        acquired = await redis.set(lease_key, lease_token, ex=ttl_seconds, nx=True)
         if acquired:
             _heartbeat_leases[agent_id] = now or datetime.now(timezone.utc)
-        return bool(acquired)
+            _heartbeat_lease_tokens[agent_id] = lease_token
+            return lease_token
+        return False
     except Exception as exc:
         logger.warning("[Heartbeat] Redis lease unavailable; heartbeat lease fails closed for {}: {}", agent_id, exc)
         return False
 
 
-async def _release_heartbeat_lease_async(agent_id: uuid.UUID) -> None:
+async def _release_heartbeat_lease_async(agent_id: uuid.UUID, lease_token: str | None = None) -> bool:
     lease_key = f"heartbeat_lease:{agent_id}"
+    expected_token = lease_token or _heartbeat_lease_tokens.get(agent_id)
+    if not expected_token:
+        return False
+    released = False
     try:
         redis = await get_redis()
-        await redis.delete(lease_key)
+        released = bool(await redis.eval(_HEARTBEAT_RELEASE_LEASE_SCRIPT, 1, lease_key, expected_token))
     except Exception as exc:
         logger.debug("[Heartbeat] Redis lease release skipped: {}", exc)
     finally:
-        _release_heartbeat_lease(agent_id)
+        if _heartbeat_lease_tokens.get(agent_id) == expected_token:
+            _heartbeat_lease_tokens.pop(agent_id, None)
+            _release_heartbeat_lease(agent_id)
+    return released
 
 
 def _is_in_active_hours(active_hours: str, tz_name: str = "UTC") -> bool:
@@ -854,22 +916,10 @@ async def _build_evolution_context(
 
     parts: list[str] = []
 
-    # 1. Read non-semantic runtime context from canonical workspace.
+    # 1. Resolve the canonical workspace for governed, agent-level artifacts.
+    # Session compaction summaries are deliberately excluded: heartbeat has no
+    # active Session authority and must not consume another user's recovery state.
     ws_root = _get_canonical_workspace(agent_id)
-    if ws_root:
-        # Read compaction summary — context the agent lost during mid-loop compression
-        compaction_path = ws_root / "runtime_artifacts" / "compaction_summary.md"
-        if not compaction_path.exists():
-            compaction_path = ws_root / "workspace" / "compaction_summary.md"
-        if compaction_path.exists():
-            try:
-                compaction = compaction_path.read_text(encoding="utf-8", errors="replace").strip()
-                if compaction:
-                    parts.append(f"\n---\n## Last Session Compaction Summary\n{compaction[:2000]}")
-            except Exception as e:
-                logger.debug(f"Failed to read compaction summary: {e}")
-
-        # No fallback needed — _get_canonical_workspace already resolved the right path
 
     try:
         pending_t3_intake = _read_pending_t3_intake(agent_id)
@@ -1332,6 +1382,7 @@ async def _execute_heartbeat(
     *,
     tenant_id: uuid.UUID | None = None,
     lease_acquired: bool = False,
+    lease_token: str | None = None,
     runtime_task_id: str | None = None,
 ):
     """Execute a single heartbeat for an agent.
@@ -1358,7 +1409,7 @@ async def _execute_heartbeat(
             return
         tenant_id = admission.tenant_id
     heartbeat_session_id: str | None = None
-    lease_held = lease_acquired
+    lease_held: str | bool = lease_token or lease_acquired
     if not lease_held:
         lease_held = await _try_acquire_heartbeat_lease_async(agent_id)
         if not lease_held:
@@ -1644,7 +1695,50 @@ async def _execute_heartbeat(
         )
     finally:
         if lease_held:
-            await _release_heartbeat_lease_async(agent_id)
+            if isinstance(lease_held, str):
+                await _release_heartbeat_lease_async(agent_id, lease_held)
+            else:
+                await _release_heartbeat_lease_async(agent_id)
+
+
+async def execute_claimed_heartbeat_runtime_task(task_id: uuid.UUID | str) -> bool:
+    """Execute a heartbeat only after the shared worker owns its DB claim.
+
+    The Redis lease remains an auxiliary duplicate-execution guard. A busy
+    lease never grants authority to terminally alter the claimed row; the DB
+    lease may expire and be reclaimed after the current holder finishes.
+    """
+
+    task_uuid = uuid.UUID(str(task_id))
+    record = await get_runtime_task_record(task_uuid.hex)
+    if not record or record.get("task_type") != "heartbeat" or record.get("status") != "running":
+        return False
+    metadata = dict(record.get("metadata") or {})
+    try:
+        agent_id = uuid.UUID(str(record.get("parent_agent_id") or metadata.get("agent_id") or ""))
+        tenant_id = uuid.UUID(str(record.get("tenant_id") or metadata.get("tenant_id") or ""))
+    except (TypeError, ValueError, AttributeError):
+        await _update_heartbeat_runtime_task(
+            task_uuid.hex,
+            status="failed",
+            result_summary="Claimed heartbeat is missing tenant or agent authority.",
+        )
+        return False
+
+    lease_token = await _try_acquire_heartbeat_lease_async(agent_id)
+    if not lease_token:
+        logger.info(
+            "[Heartbeat] Auxiliary lease busy for claimed RuntimeTask {}; leaving DB claim non-terminal", task_uuid
+        )
+        return False
+    await _execute_heartbeat(
+        agent_id,
+        tenant_id=tenant_id,
+        lease_acquired=True,
+        lease_token=lease_token if isinstance(lease_token, str) else None,
+        runtime_task_id=task_uuid.hex,
+    )
+    return True
 
 
 async def _heartbeat_tick():
@@ -1685,17 +1779,24 @@ async def _heartbeat_tick():
                     skipped_interval += 1
                     continue
 
-                # Fire heartbeat
-                if not await _try_acquire_heartbeat_lease_async(agent.id, now=now):
-                    logger.info(f"[Heartbeat] Agent {agent.name} already has an in-flight heartbeat")
-                    continue
+                # Persist the cadence intent before any execution. The
+                # deterministic event key makes concurrent producer replicas
+                # converge on one durable RuntimeTask.
+                interval_seconds = max(1, int(interval.total_seconds()))
+                event_key = f"cadence:{int(now.timestamp()) // interval_seconds}"
                 logger.info(f"💓 Triggering heartbeat for {agent.name}")
                 await write_audit_log("heartbeat_fire", {"agent_name": agent.name}, agent_id=agent.id)
-                asyncio.create_task(
-                    run_bounded(
-                        "heartbeat", _execute_heartbeat(agent.id, tenant_id=agent.tenant_id, lease_acquired=True)
-                    )
+                runtime_task_id = await _create_heartbeat_runtime_task(
+                    agent.id,
+                    tenant_id=agent.tenant_id,
+                    event_key=event_key,
                 )
+                if runtime_task_id is None:
+                    logger.debug("[Heartbeat] Cadence intent already exists or could not be persisted for {}", agent.id)
+                    continue
+                from app.services.runtime_task_worker import notify_runtime_task_worker
+
+                await notify_runtime_task_worker(reason="heartbeat_created", runtime_task_id=runtime_task_id)
                 triggered += 1
 
             logger.info(

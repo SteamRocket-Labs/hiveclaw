@@ -16,7 +16,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any, Callable
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -98,9 +98,25 @@ class CoordinationRepository:
         existing_id = existing.scalar_one_or_none()
         return LeaseAcquireResult(acquired=False, existing_lease_id=str(existing_id) if existing_id else None)
 
+    async def release_lease(self, *, task_key: str, lease_id: str) -> bool:
+        try:
+            lease_uuid = uuid.UUID(str(lease_id))
+        except ValueError:
+            return False
+        result = await self._session.execute(
+            delete(CoordinationLease).where(
+                CoordinationLease.tenant_id == self._tenant_id,
+                CoordinationLease.task_key == task_key,
+                CoordinationLease.id == lease_uuid,
+            )
+        )
+        await self._session.flush()
+        return bool(result.rowcount)
+
     async def send_signal(
         self,
         *,
+        signal_id: str | None = None,
         from_agent_id: str,
         to_agent_id: str,
         content: str,
@@ -108,10 +124,29 @@ class CoordinationRepository:
         thread_id: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> Signal:
-        new_id = uuid.uuid4()
+        new_id = uuid.UUID(str(signal_id)) if signal_id else uuid.uuid4()
         created_at = self._now()
         thread = thread_id or str(uuid.uuid4())
         metadata_payload = dict(metadata or {})
+        existing = (
+            await self._session.execute(
+                select(CoordinationSignal).where(
+                    CoordinationSignal.id == new_id,
+                    CoordinationSignal.tenant_id == self._tenant_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            return Signal(
+                id=str(existing.id),
+                from_agent_id=existing.from_agent_id,
+                to_agent_id=existing.to_agent_id,
+                content=existing.content,
+                signal_type=existing.signal_type,
+                thread_id=existing.thread_id,
+                created_at=existing.created_at,
+                metadata=dict(existing.metadata_json or {}),
+            )
         row = CoordinationSignal(
             id=new_id,
             tenant_id=self._tenant_id,

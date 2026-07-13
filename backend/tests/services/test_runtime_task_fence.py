@@ -168,3 +168,107 @@ async def test_claimed_runtime_wrapper_keeps_fence_and_renews_until_completion(m
     assert result == "done"
     assert renewals
     assert all(item == (str(task_id), 3, "worker-a") for item in renewals)
+
+
+@pytest.mark.asyncio
+async def test_claimed_runtime_wrapper_preflights_claim_before_starting_work(monkeypatch) -> None:
+    from app.services import runtime_task_fence as fence_service
+
+    task_id = uuid4()
+    mutations: list[str] = []
+
+    async def stale_renew(*, lease_seconds):
+        raise fence_service.StaleRuntimeTaskFenceError("simulated reclaimed foreground claim")
+
+    async def work():
+        mutations.append("foreground-side-effect")
+        return "must-not-run"
+
+    work_coro = work()
+    monkeypatch.setattr(fence_service, "renew_current_runtime_task_lease", stale_renew)
+
+    with pytest.raises(fence_service.StaleRuntimeTaskFenceError, match="reclaimed foreground claim"):
+        await fence_service.run_claimed_runtime_task(
+            work_coro,
+            task_id=task_id,
+            claim_version=1,
+            worker_id="foreground-subagent:stale",
+            lease_seconds=180,
+        )
+
+    assert mutations == []
+    assert work_coro.cr_frame is None
+
+
+@pytest.mark.asyncio
+async def test_claimed_runtime_wrapper_validates_even_a_short_task_once(monkeypatch) -> None:
+    from app.services import runtime_task_fence as fence_service
+
+    task_id = uuid4()
+    renewals: list[float] = []
+
+    async def renew(*, lease_seconds):
+        renewals.append(float(lease_seconds))
+        return datetime.now(timezone.utc)
+
+    async def work():
+        return "short-result"
+
+    monkeypatch.setattr(fence_service, "renew_current_runtime_task_lease", renew)
+    result = await fence_service.run_claimed_runtime_task(
+        work(),
+        task_id=task_id,
+        claim_version=2,
+        worker_id="foreground-subagent:short",
+        lease_seconds=180,
+    )
+
+    assert result == "short-result"
+    assert renewals == [180.0]
+
+
+@pytest.mark.usefixtures("migrated_pg_url")
+@pytest.mark.asyncio
+async def test_claimed_runtime_wrapper_uses_injected_session_factory_for_preflight(owner_sessionmaker) -> None:
+    from app.models.runtime_task import RuntimeTask
+    from app.models.tenant import Tenant
+    from app.services.runtime_task_fence import renew_current_runtime_task_lease, run_claimed_runtime_task
+
+    tenant_id = uuid4()
+    task_id = uuid4()
+    async with owner_sessionmaker() as db:
+        db.add(Tenant(id=tenant_id, name="Injected Fence Tenant", slug=f"injected-fence-{tenant_id.hex[:8]}"))
+        await db.flush()
+        db.add(
+            RuntimeTask(
+                id=task_id,
+                tenant_id=tenant_id,
+                task_type="subagent",
+                status="running",
+                claim_version=7,
+                claimed_by="foreground-subagent:injected",
+            )
+        )
+        await db.commit()
+
+    async def nested_work():
+        nested_expiry = await renew_current_runtime_task_lease(lease_seconds=90)
+        assert nested_expiry is not None
+        return "injected-ok"
+
+    result = await run_claimed_runtime_task(
+        nested_work(),
+        task_id=task_id,
+        claim_version=7,
+        worker_id="foreground-subagent:injected",
+        lease_seconds=60,
+        session_factory=owner_sessionmaker,
+    )
+
+    async with owner_sessionmaker() as db:
+        task = await db.get(RuntimeTask, task_id)
+
+    assert result == "injected-ok"
+    assert task is not None
+    assert task.claim_expires_at is not None
+    assert task.claim_expires_at > datetime.now(timezone.utc)

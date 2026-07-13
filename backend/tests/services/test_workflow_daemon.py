@@ -8,19 +8,20 @@ only as manually-invoked helpers.
 from __future__ import annotations
 
 import asyncio
+import uuid
 
 import pytest
 
 
 class _FakeWorkflowService:
     def __init__(self) -> None:
-        self.resume_calls = 0
+        self.requeue_calls = 0
         self.drain_requested = False
         self.drain_cleared = False
 
-    async def resume_pending_runs(self, *, leaf_executor):
-        self.resume_calls += 1
-        return ["resumed"]
+    async def requeue_pending_runs(self):
+        self.requeue_calls += 1
+        return [uuid.uuid4()]
 
     def request_drain(self) -> None:
         self.drain_requested = True
@@ -34,14 +35,14 @@ async def _fake_leaf(_request):
 
 
 @pytest.mark.asyncio
-async def test_workflow_daemon_tick_resumes_pending_runs_and_pg_signals(monkeypatch):
+async def test_workflow_daemon_tick_only_requeues_pending_runs_and_pg_signals(monkeypatch):
     from app.services import workflow_daemon
 
     service = _FakeWorkflowService()
     signal_calls: list[object] = []
     subagent_calls: list[object] = []
 
-    async def fake_drain_signal_resumes(*, leaf_executor, service, session_factory=None):
+    async def fake_drain_signal_resumes(*, leaf_executor, session_factory=None, service=None):
         signal_calls.append((leaf_executor, service, session_factory))
         return ["signalled"]
 
@@ -59,8 +60,10 @@ async def test_workflow_daemon_tick_resumes_pending_runs_and_pg_signals(monkeypa
     result = await workflow_daemon.workflow_daemon_tick(service=service, leaf_executor=_fake_leaf)
 
     assert result == {"resumed_runs": 1, "signal_resumed_runs": 1, "subagent_woken_parents": 0}
-    assert service.resume_calls == 1
-    assert signal_calls == [(_fake_leaf, service, None)]
+    assert service.requeue_calls == 1
+    assert signal_calls[0][0] is _fake_leaf
+    assert signal_calls[0][1] is None, "signal consumer atomically requeues without an executable service"
+    assert signal_calls[0][2] is None
     # B2: tick defaults to the real production invoker — NOT None. The old
     # `(None, None, 50)` assertion pinned the dead-wired behavior as contract.
     assert subagent_calls == [(None, _sentinel_invoker, 50)]

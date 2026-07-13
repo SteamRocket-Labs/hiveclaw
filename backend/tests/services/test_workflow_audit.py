@@ -28,6 +28,42 @@ def _definition(name: str = "audited") -> dict:
     }
 
 
+async def test_runtime_audit_forwards_injected_session_authority(monkeypatch, owner_sessionmaker):
+    import app.services.audit_logger as audit_logger_module
+
+    tenant_id = uuid.uuid4()
+    run_id = uuid.uuid4()
+    agent_id = uuid.uuid4()
+    injected_factory = owner_sessionmaker
+    captured: dict[str, object] = {}
+
+    async def capturing_audit(action, details=None, agent_id=None, user_id=None, **kwargs):
+        captured.update(
+            {
+                "action": action,
+                "details": details,
+                "agent_id": agent_id,
+                "user_id": user_id,
+                **kwargs,
+            }
+        )
+
+    monkeypatch.setattr(audit_logger_module, "write_audit_log", capturing_audit)
+    service = WorkflowRuntimeService(session_factory=injected_factory)
+
+    await service._audit(
+        "workflow_run_completed",
+        tenant_id=tenant_id,
+        run_id=run_id,
+        agent_id=agent_id,
+        definition_hash="hash",
+    )
+
+    assert captured["action"] == "workflow_run_completed"
+    assert captured["agent_id"] == agent_id
+    assert captured["session_factory"] is injected_factory
+
+
 @pytest.fixture()
 async def tenant_id(owner_sessionmaker) -> uuid.UUID:
     from app.models.tenant import Tenant
@@ -45,7 +81,7 @@ async def test_run_lifecycle_writes_audit_with_required_fields(tenant_id, owner_
 
     captured: list[tuple[str, dict]] = []
 
-    async def capturing_audit(action, details=None, agent_id=None, user_id=None):
+    async def capturing_audit(action, details=None, agent_id=None, user_id=None, **_kwargs):
         captured.append((action, details or {}))
 
     monkeypatch.setattr(audit_logger_module, "write_audit_log", capturing_audit)

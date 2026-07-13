@@ -41,7 +41,7 @@ class RuntimeTask(Base):
             "task_type IN ('web_chat_turn', 'goal_continuation', 'team_member', 'advanced_plan', "
             "'workflow', 'delegation', 'business_task', 'subagent', 'trigger', 'heartbeat', "
             "'coordinator_worker', 'harness_canary', 'a2a_delegation', 'approval_execution', "
-            "'hr_provisioning', 'dream')",
+            "'hr_provisioning', 'dream', 'system_plan_run')",
             name="ck_runtime_tasks_task_type",
         ),
         CheckConstraint(
@@ -74,6 +74,30 @@ class RuntimeTask(Base):
                 "AND parent_agent_id IS NOT NULL "
                 "AND parent_session_id IS NOT NULL"
             ),
+        ),
+        Index(
+            "ix_runtime_tasks_claim_normal_lane",
+            "task_type",
+            text("priority DESC"),
+            "created_at",
+            "id",
+            postgresql_where=text("status IN ('pending', 'resumable')"),
+        ),
+        Index(
+            "ix_runtime_tasks_claim_aged_lane",
+            "task_type",
+            "created_at",
+            "id",
+            postgresql_where=text("status IN ('pending', 'resumable', 'running')"),
+        ),
+        Index(
+            "ix_runtime_tasks_claim_expired_lane",
+            "task_type",
+            "claim_expires_at",
+            text("priority DESC"),
+            "created_at",
+            "id",
+            postgresql_where=text("status = 'running'"),
         ),
     )
 

@@ -1324,14 +1324,25 @@ def test_reconcile_business_task_requires_explicit_retry_safe_decision(monkeypat
         claim_version=2,
         claimed_by=None,
         claim_expires_at=None,
+        child_session_id=f"business-task-run-{runtime_id.hex}",
         metadata_json={
             "business_task_id": str(task_id),
             "phase": "terminal",
             "outcome": {"status": "needs_reconciliation", "retryable": False},
+            "recovery_session_id": f"business-task-run-{runtime_id.hex}",
+            "recovery_resolution_targets": [
+                {
+                    "agent_id": str(agent_id),
+                    "session_id": f"business-task-run-{runtime_id.hex}",
+                    "runtime_task_id": str(runtime_id),
+                    "source": "business_task",
+                }
+            ],
         },
     )
     db = _QueuedDB([_ScalarResult(task)])
     db.records[runtime_id] = runtime
+    db.records[task_id] = task
     app, user, allow_access = _make_client(mod, db=db)
     task.tenant_id = user.tenant_id
     task.created_by = user.id
@@ -1346,6 +1357,16 @@ def test_reconcile_business_task_requires_explicit_retry_safe_decision(monkeypat
 
     monkeypatch.setattr("app.core.policy.write_audit_event", fake_audit)
     monkeypatch.setattr(mod, "_business_task_detail", fake_detail)
+    resolved: dict[str, object] = {}
+
+    def fake_resolve(**kwargs):
+        resolved.update(kwargs)
+        return []
+
+    monkeypatch.setattr(
+        "app.runtime.recovery_manifest.resolve_recovery_manifest_reconciliations",
+        fake_resolve,
+    )
 
     response = TestClient(app).post(
         f"/agents/{agent_id}/tasks/{task_id}/reconcile",
@@ -1359,6 +1380,7 @@ def test_reconcile_business_task_requires_explicit_retry_safe_decision(monkeypat
     assert task.status == "failed"
     assert task.last_execution_status == "reconciled_retry_safe"
     assert runtime.metadata_json["reconciliation"]["decision"] == "retry_safe"
+    assert resolved["targets"] == runtime.metadata_json["business_task_reconciliation_operation"]["targets"]
 
 
 def test_create_task_recovers_concurrent_same_request(monkeypatch):

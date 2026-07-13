@@ -51,3 +51,47 @@ def test_file_api_rejects_skill_upload_guard():
 
     assert exc_info.value.status_code == 403
     assert "Platform Skill Gate" in str(exc_info.value.detail)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "workspace/recovery_manifest.json",
+        "workspace/recovery_manifest.json/payload.json",
+        "workspace/session_memory.md",
+        "workspace/compaction_summary.md",
+    ],
+)
+def test_file_api_guard_rejects_platform_private_state(path):
+    import app.api.files as files_api
+
+    with pytest.raises(HTTPException) as exc_info:
+        files_api._raise_managed_path_write_guard(path)
+
+    assert exc_info.value.status_code == 403
+
+
+def test_file_upload_guard_rejects_legacy_recovery_manifest():
+    import app.api.files as files_api
+
+    with pytest.raises(HTTPException) as exc_info:
+        files_api._raise_upload_path_guard("workspace/", "recovery_manifest.json")
+
+    assert exc_info.value.status_code == 403
+
+
+def test_file_api_safe_path_rejects_symlink_to_private_state(tmp_path, monkeypatch):
+    import app.api.files as files_api
+
+    agent_id = uuid4()
+    monkeypatch.setattr(files_api, "settings", SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+    private = tmp_path / str(agent_id) / "workspace" / "recovery_manifest.json"
+    private.parent.mkdir(parents=True)
+    private.write_text("trusted", encoding="utf-8")
+    (private.parent / "alias.json").symlink_to(private.name)
+
+    with pytest.raises(HTTPException) as exc_info:
+        files_api._safe_path(agent_id, "workspace/alias.json")
+
+    assert exc_info.value.status_code == 403
+    assert private.read_text(encoding="utf-8") == "trusted"

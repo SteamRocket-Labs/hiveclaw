@@ -63,6 +63,7 @@ async def _log_post_compaction(ctx: HookContext) -> None:
         write_compaction_summary(
             agent_id,
             str(ctx.metadata.get("summary", "")),
+            session_id=ctx.session_id,
             original_message_count=ctx.metadata.get("before_msgs"),
             kept_message_count=ctx.metadata.get("after_msgs"),
         )

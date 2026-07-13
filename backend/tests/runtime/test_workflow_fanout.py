@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from app.runtime.workflow_compiler import compile_workflow
 from app.runtime.workflow_engine import (
     InMemoryWorkflowJournal,
@@ -142,3 +144,90 @@ async def test_fanout_resume_skips_done_leaves():
     assert second.status == "completed"
     fan_retries = [c for c in calls2 if c.step_id == "fan"]
     assert {c.leaf_id for c in fan_retries} == {"item-2"}, "done leaves must NOT re-execute on resume"
+
+
+async def test_fanout_quiesces_before_return_when_reconciliation_stops_run():
+    compiled = compile_workflow(_fan_definition())
+    journal = InMemoryWorkflowJournal()
+    running = True
+    second_started = asyncio.Event()
+    first_finished = asyncio.Event()
+    second_finished = asyncio.Event()
+    calls: list[str] = []
+
+    async def should_continue() -> bool:
+        return running
+
+    async def leaf(request: LeafRequest) -> LeafOutcome:
+        nonlocal running
+        calls.append(str(request.leaf_id))
+        if request.leaf_id == "item-0":
+            await second_started.wait()
+            running = False
+            first_finished.set()
+        else:
+            second_started.set()
+            await first_finished.wait()
+            second_finished.set()
+        return LeafOutcome(ok=True, output={"leaf": request.leaf_id})
+
+    outcome = await execute_workflow(
+        compiled,
+        run_id="r",
+        args={"targets": ["a", "b", "c"]},
+        journal=journal,
+        leaf_executor=leaf,
+        should_continue=should_continue,
+    )
+
+    assert outcome.status == "killed"
+    assert second_finished.is_set(), "fanout must await every already-started leaf before returning"
+    assert "item-2" not in calls, "no new leaf may start after reconciliation closes the run"
+    assert journal.statuses("r")["fan"] == "running"
+
+
+async def test_fanout_quiesces_started_siblings_before_infrastructure_error_escapes():
+    """A quota/journal failure must not release the run while a sibling is live."""
+
+    compiled = compile_workflow(_fan_definition())
+    journal = InMemoryWorkflowJournal()
+    second_started = asyncio.Event()
+    second_quiesced = asyncio.Event()
+
+    class _QuotaCommitFault:
+        # Test Double rationale: deterministic fault injection at the functional
+        # core's quota protocol boundary; real-PG quota behavior is covered by
+        # test_workflow_leaf_journal.py.
+        async def reserve(self, _run_id: str, *, reservation_key: str) -> bool:
+            del reservation_key
+            return True
+
+        async def settle(self, _run_id: str, _actual_tokens: int, *, reservation_key: str) -> None:
+            if ":item-0:" in reservation_key:
+                raise RuntimeError("quota commit failed")
+
+        async def mark_execution_unknown(self, _run_id: str, *, reservation_key: str, error: str) -> None:
+            del reservation_key, error
+
+    async def leaf(request: LeafRequest) -> LeafOutcome:
+        if request.leaf_id == "item-0":
+            await second_started.wait()
+            return LeafOutcome(ok=True, output="first", tokens_used=1)
+        second_started.set()
+        try:
+            await asyncio.sleep(0.05)
+            return LeafOutcome(ok=True, output="second", tokens_used=1)
+        finally:
+            second_quiesced.set()
+
+    with pytest.raises(RuntimeError, match="quota commit failed"):
+        await execute_workflow(
+            compiled,
+            run_id="00000000-0000-0000-0000-000000000001",
+            args={"targets": ["a", "b"]},
+            journal=journal,
+            leaf_executor=leaf,
+            quota=_QuotaCommitFault(),
+        )
+
+    assert second_quiesced.is_set(), "all started siblings must quiesce before the Workflow call returns"

@@ -15,6 +15,7 @@ owner seeing nothing on an empty GUC.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import subprocess
 import sys
@@ -26,7 +27,14 @@ from sqlalchemy.pool import NullPool
 
 from tests.integration.conftest import BACKEND_ROOT
 
-_WORKFLOW_TABLES = ("workflow_definitions", "workflow_steps", "workflow_leaf_calls", "workflow_quotas")
+_WORKFLOW_TABLES = (
+    "workflow_definitions",
+    "workflow_steps",
+    "workflow_leaf_calls",
+    "workflow_quotas",
+    "workflow_quota_reservations",
+    "workflow_completion_outbox",
+)
 _COORDINATION_TABLES = ("coordination_leases", "coordination_signals", "coordination_checkpoints")
 _FEEDBACK_TABLES = ("session_feedback_events",)
 _INVOCATION_TRACE_TABLES = ("invocation_spans",)
@@ -47,7 +55,19 @@ _AGENT_TOKEN_QUOTA_COLUMNS = (
     "quota_tokens_per_day",
     "quota_tokens_per_month",
 )
-_CURRENT_CLOSURE_HEAD = "hr_draft_recovery_0712"
+_CURRENT_CLOSURE_HEAD = "runtime_notification_source_kind_0713"
+_WORKFLOW_QUOTA_RESERVATION_STATE_COLUMNS = {
+    "state",
+    "step_id",
+    "leaf_id",
+    "input_hash",
+    "execution_started_at",
+    "reconciliation_required_at",
+    "reconciliation_reason",
+    "reconciliation_operation_id",
+    "settlement_reason",
+    "repair_deferred_at",
+}
 
 
 async def _seed_tenant(owner_engine, tenant_id: uuid.UUID, label: str) -> None:
@@ -263,6 +283,63 @@ async def _assert_token_quota_hard_cap_columns(database_url: str) -> None:
     assert {row.column_name for row in agent_rows} == set(_AGENT_TOKEN_QUOTA_COLUMNS)
 
 
+async def _assert_workflow_quota_reservation_state_machine(database_url: str) -> None:
+    engine = create_async_engine(database_url, poolclass=NullPool)
+    try:
+        async with engine.connect() as conn:
+            columns = (
+                await conn.execute(
+                    text(
+                        """
+                        SELECT column_name, column_default, is_nullable
+                        FROM information_schema.columns
+                        WHERE table_name = 'workflow_quota_reservations'
+                          AND column_name = ANY(:names)
+                        """
+                    ),
+                    {"names": sorted(_WORKFLOW_QUOTA_RESERVATION_STATE_COLUMNS)},
+                )
+            ).all()
+            constraints = (
+                await conn.execute(
+                    text(
+                        """
+                        SELECT conname, pg_get_constraintdef(oid) AS definition
+                        FROM pg_constraint
+                        WHERE conrelid = 'workflow_quota_reservations'::regclass
+                        """
+                    )
+                )
+            ).all()
+            indexes = (
+                await conn.execute(
+                    text(
+                        """
+                        SELECT indexname
+                        FROM pg_indexes
+                        WHERE tablename = 'workflow_quota_reservations'
+                        """
+                    )
+                )
+            ).all()
+    finally:
+        await engine.dispose()
+
+    by_name = {row.column_name: row for row in columns}
+    assert set(by_name) == _WORKFLOW_QUOTA_RESERVATION_STATE_COLUMNS
+    assert by_name["state"].is_nullable == "NO"
+    assert "reserved" in str(by_name["state"].column_default)
+    assert any(
+        row.conname == "ck_workflow_quota_reservation_state"
+        and all(state in row.definition for state in ("reserved", "executing", "needs_reconciliation", "settled"))
+        for row in constraints
+    )
+    index_names = {row.indexname for row in indexes}
+    assert "ix_workflow_quota_reservations_run_state" in index_names
+    assert "ix_workflow_quota_reservations_state_created" in index_names
+    assert "ix_workflow_quota_reservations_repair_scan" in index_names
+
+
 async def test_upgrade_path_creates_workflow_tables_with_forced_rls(chain_migrated_pg_url):
     """The migration's own DDL (executed, not stamped) must produce the contract."""
     await _assert_workflow_tables_forced_rls(chain_migrated_pg_url)
@@ -312,6 +389,14 @@ async def test_upgrade_path_adds_token_quota_hard_cap_columns(chain_migrated_pg_
 
 async def test_bootstrap_path_adds_token_quota_hard_cap_columns(migrated_pg_url):
     await _assert_token_quota_hard_cap_columns(migrated_pg_url)
+
+
+async def test_upgrade_path_adds_workflow_quota_reservation_state_machine(chain_migrated_pg_url):
+    await _assert_workflow_quota_reservation_state_machine(chain_migrated_pg_url)
+
+
+async def test_bootstrap_path_adds_workflow_quota_reservation_state_machine(migrated_pg_url):
+    await _assert_workflow_quota_reservation_state_machine(migrated_pg_url)
 
 
 async def test_upgrade_path_adds_chat_message_thinking_signature(chain_migrated_pg_url):
@@ -455,3 +540,74 @@ async def test_superuser_bypasses_even_forced_rls_documented_gap(migrated_pg_url
         await conn.execute(text("SET LOCAL app.current_tenant_id = ''"))
         count = (await conn.execute(text("SELECT count(*) FROM workflow_definitions WHERE name='wf-s'"))).scalar()
     assert count == 1, "superuser sees everything despite FORCE — the gap P15 closes by switching roles"
+
+
+async def _read_workflow_closure_schema_contract(database_url: str) -> dict[str, dict[str, set[str]]]:
+    tables = ("workflow_quota_reservations", "workflow_completion_outbox")
+    engine = create_async_engine(database_url, poolclass=NullPool)
+    try:
+        async with engine.connect() as conn:
+            contracts: dict[str, dict[str, set[str]]] = {}
+            for table in tables:
+                index_rows = (
+                    await conn.execute(
+                        text(
+                            """
+                            SELECT indexname
+                            FROM pg_indexes
+                            WHERE schemaname = current_schema()
+                              AND tablename = :table
+                            """
+                        ),
+                        {"table": table},
+                    )
+                ).all()
+                constraint_rows = (
+                    await conn.execute(
+                        text(
+                            """
+                            SELECT conname, pg_get_constraintdef(oid) AS definition
+                            FROM pg_constraint
+                            WHERE conrelid = to_regclass(:table)
+                            """
+                        ),
+                        {"table": table},
+                    )
+                ).all()
+                contracts[table] = {
+                    "indexes": {row.indexname for row in index_rows},
+                    "constraints": {f"{row.conname}:{row.definition}" for row in constraint_rows},
+                }
+            return contracts
+    finally:
+        await engine.dispose()
+
+
+async def test_workflow_closure_migration_matches_create_all_schema(
+    chain_migrated_pg_url: str,
+    migrated_pg_url: str,
+) -> None:
+    def run_alembic(*arguments: str) -> None:
+        result = subprocess.run(
+            [sys.executable, "-m", "alembic", *arguments],
+            cwd=BACKEND_ROOT,
+            env={**os.environ, "DATABASE_URL": chain_migrated_pg_url},
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+        assert result.returncode == 0, result.stderr[-2000:]
+
+    await asyncio.to_thread(run_alembic, "downgrade", "system_plan_runtime_task_0713")
+    try:
+        await asyncio.to_thread(run_alembic, "upgrade", "head")
+        migration_contract = await _read_workflow_closure_schema_contract(chain_migrated_pg_url)
+        bootstrap_contract = await _read_workflow_closure_schema_contract(migrated_pg_url)
+    finally:
+        await asyncio.to_thread(run_alembic, "upgrade", "head")
+
+    assert migration_contract == bootstrap_contract
+    assert any(
+        constraint.startswith("ck_workflow_completion_outbox_terminal_status:CHECK")
+        for constraint in migration_contract["workflow_completion_outbox"]["constraints"]
+    )

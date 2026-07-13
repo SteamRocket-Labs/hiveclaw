@@ -74,6 +74,11 @@ def _safe_path(agent_id: uuid.UUID, rel_path: str) -> Path:
     full = (base / rel_path).resolve()
     if not _is_within_path(full, base):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Path traversal not allowed")
+    from app.services.workspace_resource_authority import is_platform_private_runtime_path
+
+    resolved_rel = full.relative_to(base.resolve()).as_posix()
+    if is_platform_private_runtime_path(resolved_rel):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Platform-private runtime state")
     return full
 
 
@@ -184,6 +189,13 @@ def _skill_package_path_guard_message(path: str, *, operation: str) -> str | Non
 
 
 def _raise_managed_path_write_guard(path: str) -> None:
+    from app.services.workspace_resource_authority import is_platform_private_runtime_path
+
+    if is_platform_private_runtime_path(path):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Session recovery artifacts are platform-private state.",
+        )
     message = _managed_system_path_message(path)
     if message:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=message)

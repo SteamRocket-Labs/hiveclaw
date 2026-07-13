@@ -98,6 +98,8 @@ _ADDITIONAL_FORCED_TENANT_TABLES: tuple[str, ...] = (
     "workflow_steps",
     "workflow_leaf_calls",
     "workflow_quotas",
+    "workflow_quota_reservations",
+    "workflow_completion_outbox",
     "runtime_budget_policies",
     "runtime_budget_runs",
     "runtime_budget_events",
@@ -279,6 +281,8 @@ STRICT_TENANT_RLS_TABLES: tuple[str, ...] = (
     "token_usage_events",
     "workflow_leaf_calls",
     "workflow_quotas",
+    "workflow_quota_reservations",
+    "workflow_completion_outbox",
     "workflow_steps",
 )
 

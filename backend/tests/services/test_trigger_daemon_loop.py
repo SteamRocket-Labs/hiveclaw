@@ -302,24 +302,12 @@ async def test_fire_trigger_once_now_runs_full_fire_path(monkeypatch):
 
     monkeypatch.setattr(trigger_daemon, "_create_trigger_runtime_task", fake_create_rt)
 
-    marked = []
+    notified: list[str] = []
 
-    async def fake_mark(agent_arg, triggers, *, now, runtime_task_id, event_keys):
-        marked.append(runtime_task_id)
+    async def fake_notify(*, reason, runtime_task_id=None):
+        notified.append(str(runtime_task_id))
 
-    monkeypatch.setattr(trigger_daemon, "_mark_trigger_fire_started", fake_mark)
-
-    scheduled: list[str] = []
-
-    def fake_create_task(coro, *args, **kwargs):
-        inner = coro.cr_frame.f_locals.get("awaitable", coro)
-        scheduled.append(inner.cr_code.co_name)
-        inner.close()
-        if inner is not coro:
-            coro.close()
-        return SimpleNamespace()
-
-    monkeypatch.setattr(trigger_daemon.asyncio, "create_task", fake_create_task)
+    monkeypatch.setattr("app.services.runtime_task_worker.notify_runtime_task_worker", fake_notify)
 
     result = await trigger_daemon.fire_trigger_once_now(agent_id, trigger.id)
 
@@ -327,8 +315,7 @@ async def test_fire_trigger_once_now_runs_full_fire_path(monkeypatch):
     assert result["runtime_task_id"] == "immediate-rt-1"
     assert preflight_seen and preflight_seen[0][1] == [trigger]
     assert created and created[0]["metadata"]["immediate_fire"] is True
-    assert marked == ["immediate-rt-1"]
-    assert scheduled == ["_invoke_agent_for_triggers"]
+    assert notified == ["immediate-rt-1"]
 
 
 @pytest.mark.asyncio

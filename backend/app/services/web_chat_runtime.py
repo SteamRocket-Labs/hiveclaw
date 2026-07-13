@@ -555,6 +555,81 @@ def _runtime_prompt_metadata_update(runtime_session_context: Any) -> dict[str, A
     return {key: metadata[key] for key in keys if key in metadata}
 
 
+async def _resolved_recovery_runtime_task_ids(
+    *,
+    tenant_id: uuid.UUID,
+    agent_id: uuid.UUID,
+    session_id: str,
+    metadata: dict[str, Any],
+) -> set[str]:
+    """Consume durable operator decisions before reusing a process-local session."""
+
+    candidate_ids: set[uuid.UUID] = set()
+    current_id = _uuid_or_none(metadata.get("runtime_task_id"))
+    if current_id is not None:
+        candidate_ids.add(current_id)
+    for item in metadata.get("prior_run_recovery_reconciliations", []):
+        if not isinstance(item, dict):
+            continue
+        candidate_id = _uuid_or_none(item.get("source_runtime_task_id"))
+        if candidate_id is not None:
+            candidate_ids.add(candidate_id)
+    if not candidate_ids:
+        return set()
+    try:
+        async with tenant_scoped_session(
+            tenant_id,
+            session_factory=_async_session,
+            require_tenant=True,
+            source="web_chat_recovery_resolution_consumption",
+        ) as db:
+            result = await db.execute(
+                select(RuntimeTask).where(
+                    RuntimeTask.tenant_id == tenant_id,
+                    RuntimeTask.id.in_(candidate_ids),
+                )
+            )
+            rows = list(result.scalars().all())
+    except Exception as exc:  # recovery remains blocked when durable truth is unavailable
+        logger.warning(
+            "[WebChatRun] resolved recovery task lookup failed agent={} session={}: {}",
+            agent_id,
+            session_id,
+            exc,
+        )
+        return set()
+
+    resolved: set[str] = set()
+    for row in rows:
+        row_agents = {value for value in (row.parent_agent_id, row.child_agent_id) if value is not None}
+        row_sessions = {str(value) for value in (row.parent_session_id, row.child_session_id) if value}
+        if agent_id not in row_agents or session_id not in row_sessions:
+            continue
+        row_metadata = dict(row.metadata_json or {})
+        reconciliation_status = str(row_metadata.get("reconciliation_status") or "")
+        operation = row_metadata.get("reconciliation_operation")
+        operation_completed = isinstance(operation, dict) and operation.get("status") == "completed"
+        if (
+            not bool(row_metadata.get("needs_reconciliation"))
+            and reconciliation_status in {"resolved", "archived", "retry_requested"}
+            and operation_completed
+        ):
+            resolved.add(row.id.hex)
+            for target in operation.get("targets", []):
+                if not isinstance(target, dict):
+                    continue
+                target_agent_id = _uuid_or_none(target.get("agent_id"))
+                target_runtime_task_id = _uuid_or_none(target.get("runtime_task_id"))
+                target_session_id = str(target.get("session_id") or "")
+                if (
+                    target_agent_id == agent_id
+                    and target_session_id == session_id
+                    and target_runtime_task_id in candidate_ids
+                ):
+                    resolved.add(target_runtime_task_id.hex)
+    return resolved
+
+
 def _unique_paths(paths: list[str] | tuple[str, ...] | set[str] | None) -> list[str]:
     seen: set[str] = set()
     result: list[str] = []
@@ -2308,7 +2383,11 @@ async def cancel_web_chat_run(
     return payload
 
 
-async def resume_persisted_web_chat_runs(*, limit: int = 50) -> list[str]:
+async def resume_persisted_web_chat_runs(
+    *,
+    limit: int = 50,
+    on_resumed: StartupResumeCollector | None = None,
+) -> list[str]:
     """Wake the unified claim worker for durable web-chat recovery.
 
     Startup must never dispatch an active row directly. Expired/missing leases
@@ -2321,7 +2400,7 @@ async def resume_persisted_web_chat_runs(*, limit: int = 50) -> list[str]:
         oldest_started_first=True,
         limit=limit,
     )
-    ordered_ids: list[str] = []
+    resume_candidate_ids: list[str] = []
     for record in records:
         try:
             task_id = uuid.UUID(str(record["task_id"]))
@@ -2329,13 +2408,16 @@ async def resume_persisted_web_chat_runs(*, limit: int = 50) -> list[str]:
         except (KeyError, TypeError, ValueError):
             logger.error("[WebChatRun] Skipping malformed active-run locator {}", record)
             continue
-        ordered_ids.append(task_id.hex)
+        record_startup_resumed_task(resume_candidate_ids, task_id.hex)
 
-    if ordered_ids:
+    resumed_ids: list[str] = []
+    if resume_candidate_ids:
         from app.services.runtime_task_worker import notify_runtime_task_worker
 
         await notify_runtime_task_worker(reason="startup_web_chat_recovery")
-    return ordered_ids
+        for task_id in resume_candidate_ids:
+            record_startup_resumed_task(resumed_ids, task_id, on_resumed)
+    return resumed_ids
 
 
 def _with_reclaimed_web_chat_resume_context(task: RuntimeTask) -> dict[str, Any]:
@@ -4137,6 +4219,7 @@ def _web_chat_run_ports() -> Any:
             active_channel_delivery_target=_active_channel_delivery_target_for_turn,
             is_web_origin_turn=_is_web_origin_turn,
             channel_permission_prompt=_channel_session_permission_prompt_for_tool_call,
+            resolved_recovery_task_ids=_resolved_recovery_runtime_task_ids,
         ),
         events=WebChatEventPorts(
             broadcast=broadcast_web_chat_event,
@@ -4240,5 +4323,9 @@ async def _reconcile_claimed_web_chat_terminal_ghost(run_uuid: uuid.UUID) -> boo
 
 # Kept as an overridable module global for tests and for parity with other services.
 from app.database import async_session as _async_session, tenant_scoped_session  # noqa: E402
-from app.services.runtime_task_service import list_active_runtime_task_records  # noqa: E402
+from app.services.runtime_task_service import (  # noqa: E402
+    StartupResumeCollector,
+    list_active_runtime_task_records,
+    record_startup_resumed_task,
+)
 from app.services.tenant_resolver import resolve_tenant_for_runtime_task  # noqa: E402

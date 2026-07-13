@@ -584,7 +584,33 @@ async def call_agent_llm(
             },
         )
         plan = await plan_service.get_plan(draft.id) or draft
-        return f"已进入计划模式，并生成一份待确认计划（plan_id={plan.id}）。请确认、修改或拒绝；确认后我再开始执行。"
+        plan_status = str(getattr(plan, "status", "draft") or "draft")
+        plan_metadata = getattr(plan, "metadata_json", None)
+        runtime_projection = (
+            plan_metadata.get("system_plan_runtime")
+            if isinstance(plan_metadata, dict) and isinstance(plan_metadata.get("system_plan_runtime"), dict)
+            else {}
+        )
+        runtime_status = str(runtime_projection.get("status") or "")
+        if runtime_status == "needs_reconciliation":
+            return f"已进入计划模式，但计划生成已阻塞（plan_id={plan.id}），需要先完成恢复协调；当前不可确认。"
+        if runtime_status == "killed":
+            return f"计划生成已取消（plan_id={plan.id}），不会进入执行。"
+        if runtime_status == "failed":
+            return f"已进入计划模式，但计划生成失败（plan_id={plan.id}）。请修改后重新生成；当前不可确认。"
+        if runtime_status == "resumable":
+            return f"已进入计划模式，计划生成暂时中断（plan_id={plan.id}），后台会自动重试。当前尚不可确认。"
+        if plan_status == "awaiting_confirmation":
+            return (
+                f"已进入计划模式，并生成一份待确认计划（plan_id={plan.id}）。请确认、修改或拒绝；确认后我再开始执行。"
+            )
+        if plan_status == "planning_failed":
+            return f"已进入计划模式，但计划生成失败（plan_id={plan.id}）。请修改后重新生成；当前不可确认。"
+        if plan_status in {"draft", "planning"}:
+            return f"已进入计划模式，计划正在生成（plan_id={plan.id}）。生成完成后才能确认或修改。"
+        if plan_status in {"rejected", "superseded", "expired"}:
+            return f"计划生成已停止（plan_id={plan.id}，status={plan_status}），不会进入执行。"
+        return f"计划状态已更新（plan_id={plan.id}，status={plan_status}），当前不可确认。"
 
     model = None
     if agent.primary_model_id:

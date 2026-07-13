@@ -1,9 +1,8 @@
-"""Production workflow resume daemon.
+"""Production workflow requeue daemon.
 
-This is intentionally a thin shell: the service owns run semantics, the signal
-consumer owns PG Signal matching, and the leaf executor still resolves to the
-normal ``spawn_subagent`` path. The daemon just makes those durable mechanisms
-run continuously in production instead of existing only as test helpers.
+The daemon owns no leaf execution. It consumes durable wake conditions and
+requeues the corresponding RuntimeTask; the shared claimed-task worker is the
+only production path that may enter the real ``spawn_subagent`` leaf executor.
 """
 
 from __future__ import annotations
@@ -43,10 +42,9 @@ async def workflow_daemon_tick(
     session_factory: Any = None,
     subagent_wake_invoker: ParentWakeInvoker | None = None,
 ) -> dict[str, int]:
-    resumed = await service.resume_pending_runs(leaf_executor=leaf_executor)
+    resumed = await service.requeue_pending_runs()
     signal_resumed = await drain_signal_resumes(
         leaf_executor=leaf_executor,
-        service=service,
         session_factory=session_factory,
     )
     # B2: default to the real production invoker so the parent-wake path is live

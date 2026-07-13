@@ -7,6 +7,7 @@ terminal outcome, so they cannot independently invent status transitions.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from enum import Enum
@@ -153,6 +154,16 @@ async def stage_business_task_runtime(
             raise BusinessTaskInvariantError("business task already has an active run")
     attempt = int(getattr(task, "execution_attempt", 0) or 0) + 1
     runtime_task_id = uuid.uuid4()
+    recovery_session_id = f"business-task-run-{runtime_task_id.hex}"
+    recovery_target = {
+        "agent_id": str(task.agent_id),
+        "session_id": recovery_session_id,
+        "runtime_task_id": str(runtime_task_id),
+        "source": "business_task",
+        "expected_manifest_state": "missing",
+        "expected_manifest_ref": None,
+        "expected_sha256": None,
+    }
     runtime_task = RuntimeTask(
         id=runtime_task_id,
         task_type="business_task",
@@ -164,6 +175,7 @@ async def stage_business_task_runtime(
         prompt=task.description,
         trace_id=f"business_task:{runtime_task_id.hex}",
         parent_session_id=str(root_session_id) if root_session_id else None,
+        child_session_id=recovery_session_id,
         root_user_id=requester_user_id,
         root_session_id=str(root_session_id) if root_session_id else None,
         root_runtime_task_id=runtime_task_id,
@@ -180,6 +192,10 @@ async def stage_business_task_runtime(
             "phase": "queued",
             "source": "tasks_api",
             "root_session_id": str(root_session_id) if root_session_id else None,
+            "recovery_agent_id": str(task.agent_id),
+            "recovery_session_id": recovery_session_id,
+            "recovery_runtime_task_id": str(runtime_task_id),
+            "recovery_resolution_targets": [recovery_target],
             "delivery_target": dict(delivery_target or {}) or None,
         },
     )
@@ -381,6 +397,85 @@ def _invalidate_runtime_claim(runtime_task: RuntimeTask) -> None:
     runtime_task.claim_expires_at = None
 
 
+def _inspect_business_task_recovery(runtime_task: RuntimeTask) -> dict[str, Any] | None:
+    from app.runtime.recovery_manifest import inspect_recovery_manifest_checkpoint
+
+    metadata = dict(getattr(runtime_task, "metadata_json", None) or {})
+    agent_id = metadata.get("recovery_agent_id") or getattr(runtime_task, "parent_agent_id", None)
+    session_id = (
+        metadata.get("recovery_session_id")
+        or getattr(runtime_task, "child_session_id", None)
+        or f"business-task-run-{getattr(runtime_task, 'id').hex}"
+    )
+    runtime_task_id = metadata.get("recovery_runtime_task_id") or getattr(runtime_task, "id", None)
+    tenant_id = getattr(runtime_task, "tenant_id", None)
+    if not all((agent_id, session_id, runtime_task_id, tenant_id)):
+        return None
+    return inspect_recovery_manifest_checkpoint(
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        session_id=session_id,
+        runtime_task_id=runtime_task_id,
+    )
+
+
+def _project_business_task_recovery_evidence(runtime_task: RuntimeTask) -> None:
+    from app.runtime.recovery_manifest import reviewed_recovery_manifest_evidence
+
+    metadata = dict(getattr(runtime_task, "metadata_json", None) or {})
+    agent_id = str(metadata.get("recovery_agent_id") or getattr(runtime_task, "parent_agent_id", "") or "")
+    fallback_session_id = f"business-task-run-{getattr(runtime_task, 'id').hex}"
+    session_id = str(
+        metadata.get("recovery_session_id") or getattr(runtime_task, "child_session_id", None) or fallback_session_id
+    )
+    runtime_task_id = str(metadata.get("recovery_runtime_task_id") or getattr(runtime_task, "id", "") or "")
+    if not agent_id or not session_id or not runtime_task_id:
+        raise BusinessTaskInvariantError("business task recovery authority is incomplete")
+    target: dict[str, Any] = {
+        "agent_id": agent_id,
+        "session_id": session_id,
+        "runtime_task_id": runtime_task_id,
+        "source": "business_task",
+        **reviewed_recovery_manifest_evidence(None),
+    }
+    snapshot = _inspect_business_task_recovery(runtime_task)
+    frames: list[dict[str, Any]] = []
+    if isinstance(snapshot, dict):
+        metadata["recovery_manifest_state"] = str(snapshot.get("state") or "unknown")
+        target.update(reviewed_recovery_manifest_evidence(snapshot))
+        receipt = snapshot.get("receipt")
+        if isinstance(receipt, dict):
+            if receipt.get("ref") is not None:
+                target["expected_manifest_ref"] = receipt["ref"]
+            if receipt.get("sha256") is not None:
+                target["expected_sha256"] = receipt["sha256"]
+        for key in (
+            "expected_checkpoint_seq",
+            "expected_claim_version",
+            "expected_claim_worker_id",
+        ):
+            if snapshot.get(key) is not None:
+                target[key] = snapshot[key]
+        frames = [dict(item) for item in snapshot.get("pending_tool_frames", []) if isinstance(item, dict)]
+    else:
+        metadata["recovery_manifest_state"] = "missing"
+    metadata.update(
+        {
+            "needs_reconciliation": True,
+            "reconciliation_status": "open",
+            "reconciliation_reason": "business_task_side_effect_outcome_unknown",
+            "side_effect_risk": "unknown",
+            "reconciliation_retry_allowed": False,
+            "recovery_agent_id": agent_id,
+            "recovery_session_id": session_id,
+            "recovery_runtime_task_id": runtime_task_id,
+            "recovery_resolution_targets": [target],
+            "recovery_tool_frames": frames,
+        }
+    )
+    runtime_task.metadata_json = metadata
+
+
 def apply_business_task_cancellation(
     *,
     db: AsyncSession,
@@ -418,6 +513,8 @@ def apply_business_task_cancellation(
         }
     )
     runtime_task.metadata_json = metadata
+    if outcome.status is TaskExecutionStatus.NEEDS_RECONCILIATION:
+        _project_business_task_recovery_evidence(runtime_task)
     _invalidate_runtime_claim(runtime_task)
     apply_business_task_outcome(
         db=db,
@@ -459,7 +556,11 @@ def reconcile_business_task(
         "resolved_at": when.isoformat(),
     }
     metadata["recovery_state"] = "resolved_retry_safe" if decision == "retry_safe" else "resolved_closed"
+    metadata["needs_reconciliation"] = False
+    metadata["reconciliation_status"] = "retry_requested" if decision == "retry_safe" else "archived"
     runtime_task.metadata_json = metadata
+    runtime_task.status = "failed" if decision == "retry_safe" else "killed"
+    runtime_task.completed_at = when
     task.status = "failed" if decision == "retry_safe" else "cancelled"
     task.last_execution_status = "reconciled_retry_safe" if decision == "retry_safe" else "reconciled_closed"
     task.last_error = clean_reason
@@ -478,6 +579,146 @@ def reconcile_business_task(
     )
 
 
+async def reconcile_business_task_recovery(
+    *,
+    db: AsyncSession,
+    task: Task,
+    runtime_task: RuntimeTask,
+    resolved_by_user_id: uuid.UUID,
+    decision: str,
+    reason: str,
+    operation_id: str | None = None,
+) -> None:
+    """Resolve the durable manifest before closing the business-task ledger.
+
+    The prepared intent is committed first.  If the process dies after the
+    filesystem SAGA but before the caller's final DB/audit commit, the same
+    operation is idempotently resumable and keeps its original decision actor.
+    """
+
+    clean_reason = str(reason or "").strip()
+    if decision not in {"retry_safe", "close_without_retry"} or not clean_reason:
+        raise ValueError("business task reconciliation decision and reason are required")
+    if not _runtime_binding_matches(task, runtime_task):
+        raise BusinessTaskInvariantError("business task reconciliation runtime binding is invalid")
+    if task.status != "needs_reconciliation" or runtime_task.status != "needs_reconciliation":
+        raise BusinessTaskInvariantError("business task is not waiting for reconciliation")
+
+    metadata = dict(runtime_task.metadata_json or {})
+    existing = metadata.get("business_task_reconciliation_operation")
+    if isinstance(existing, dict) and existing.get("status") in {"prepared", "failed"}:
+        if existing.get("decision") != decision or existing.get("reason") != clean_reason:
+            raise BusinessTaskInvariantError("a different business task reconciliation is already prepared")
+        existing_id = str(existing.get("operation_id") or "").strip()
+        if operation_id is not None and str(operation_id).strip() != existing_id:
+            raise BusinessTaskInvariantError("business task reconciliation operation id does not match")
+        if not existing_id:
+            raise BusinessTaskInvariantError("business task reconciliation operation identity is missing")
+        durable_operation_id = existing_id
+        decision_actor_id = uuid.UUID(str(existing.get("actor_user_id")))
+        targets = [dict(item) for item in existing.get("targets", []) if isinstance(item, dict)]
+    else:
+        durable_operation_id = uuid.uuid4().hex
+        decision_actor_id = resolved_by_user_id
+        targets = [dict(item) for item in metadata.get("recovery_resolution_targets", []) if isinstance(item, dict)]
+    if not targets:
+        raise BusinessTaskInvariantError("business task recovery resolution targets are missing")
+    expected_agent_id = str(runtime_task.parent_agent_id or "")
+    expected_session_id = str(
+        metadata.get("recovery_session_id") or getattr(runtime_task, "child_session_id", None) or ""
+    )
+    for target in targets:
+        if (
+            str(target.get("agent_id") or "") != expected_agent_id
+            or str(target.get("session_id") or "") != expected_session_id
+            or str(target.get("runtime_task_id") or "") != str(runtime_task.id)
+        ):
+            raise BusinessTaskInvariantError("business task recovery target is outside runtime authority")
+
+    operation = {
+        "schema": "hive.business_task_reconciliation_operation.v1",
+        "operation_id": durable_operation_id,
+        "status": "prepared",
+        "decision": decision,
+        "reason": clean_reason,
+        "actor_user_id": str(decision_actor_id),
+        "targets": targets,
+        "prepared_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if resolved_by_user_id != decision_actor_id:
+        operation["resumed_by_user_id"] = str(resolved_by_user_id)
+    metadata["business_task_reconciliation_operation"] = operation
+    runtime_task.metadata_json = metadata
+    await db.flush()
+    await db.commit()
+
+    from app.runtime.recovery_manifest import (
+        RecoveryManifestReconciliationError,
+        resolve_recovery_manifest_reconciliations,
+    )
+
+    try:
+        receipts = await asyncio.to_thread(
+            resolve_recovery_manifest_reconciliations,
+            targets=targets,
+            tenant_id=runtime_task.tenant_id,
+            action="retry" if decision == "retry_safe" else "archive",
+            reason=clean_reason,
+            actor_user_id=decision_actor_id,
+            operation_id=durable_operation_id,
+        )
+    except (RecoveryManifestReconciliationError, OSError, ValueError) as exc:
+        failed_runtime = await db.get(RuntimeTask, runtime_task.id, with_for_update=True)
+        if failed_runtime is not None and failed_runtime.status == "needs_reconciliation":
+            failed_metadata = dict(failed_runtime.metadata_json or {})
+            failed_operation = dict(failed_metadata.get("business_task_reconciliation_operation") or operation)
+            failed_operation.update(
+                {
+                    "status": "failed",
+                    "error": str(exc),
+                    "failed_at": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+            failed_metadata["business_task_reconciliation_operation"] = failed_operation
+            failed_runtime.metadata_json = failed_metadata
+            await db.flush()
+            await db.commit()
+        raise BusinessTaskInvariantError(
+            f"business task durable recovery state could not be reconciled: {exc}"
+        ) from exc
+
+    locked_runtime = await db.get(RuntimeTask, runtime_task.id, with_for_update=True)
+    locked_task = await db.get(Task, task.id, with_for_update=True)
+    if locked_runtime is None or locked_task is None:
+        raise BusinessTaskInvariantError("business task reconciliation authority disappeared")
+    locked_metadata = dict(locked_runtime.metadata_json or {})
+    durable_operation = dict(locked_metadata.get("business_task_reconciliation_operation") or {})
+    if durable_operation.get("operation_id") != durable_operation_id:
+        raise BusinessTaskInvariantError("business task reconciliation operation changed concurrently")
+    reconcile_business_task(
+        db=db,
+        task=locked_task,
+        runtime_task=locked_runtime,
+        resolved_by_user_id=resolved_by_user_id,
+        decision=decision,
+        reason=clean_reason,
+    )
+    locked_metadata = dict(locked_runtime.metadata_json or {})
+    durable_operation.update(
+        {
+            "status": "completed",
+            "receipts": receipts,
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+    if resolved_by_user_id != decision_actor_id:
+        durable_operation["resumed_by_user_id"] = str(resolved_by_user_id)
+    locked_metadata["business_task_reconciliation_operation"] = durable_operation
+    locked_metadata["recovery_resolution_receipts"] = receipts
+    locked_runtime.metadata_json = locked_metadata
+    await db.flush()
+
+
 def quarantine_stale_business_task(
     *,
     db: AsyncSession,
@@ -489,6 +730,7 @@ def quarantine_stale_business_task(
 
     if not _runtime_binding_matches(task, runtime_task):
         raise BusinessTaskInvariantError("stale business task runtime binding is invalid")
+    _project_business_task_recovery_evidence(runtime_task)
     _invalidate_runtime_claim(runtime_task)
     apply_business_task_outcome(
         db=db,
@@ -664,5 +906,6 @@ __all__ = [
     "project_business_task",
     "quarantine_stale_business_task",
     "reconcile_business_task",
+    "reconcile_business_task_recovery",
     "stage_business_task_runtime",
 ]

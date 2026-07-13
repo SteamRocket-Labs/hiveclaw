@@ -14,7 +14,7 @@ import json
 import logging
 import re
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -109,10 +109,57 @@ def _derive_turn_token_budget(max_tool_rounds: int | None) -> int:
     )
 
 
+async def _kernel_renew_runtime_task_lease() -> None:
+    """Validate the active RuntimeTask fence before Kernel writes pending-tool evidence."""
+
+    from app.tools.service import _renew_runtime_task_lease_before_execution
+
+    await _renew_runtime_task_lease_before_execution()
+
+
+def _canonical_runtime_task_id(value: Any) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return uuid.UUID(text).hex
+    except (TypeError, ValueError):
+        return text
+
+
 def _normalize_invocation_session_context(request: AgentInvocationRequest) -> None:
     if request.session_context is None:
         return
     metadata = _session_metadata(request.session_context)
+    memory_session_id = str(request.memory_session_id or "").strip() or None
+    context_session_id = str(request.session_context.session_id or "").strip() or None
+    if memory_session_id and context_session_id and memory_session_id != context_session_id:
+        raise ValueError("session identity mismatch: memory_session_id and SessionContext.session_id must be identical")
+    bound_session_id = memory_session_id or context_session_id or f"runtime-{request.recovery_run_id}"
+    request.memory_session_id = bound_session_id
+    request.session_context.session_id = bound_session_id
+
+    from app.services.runtime_task_fence import current_runtime_task_fence
+
+    fence = current_runtime_task_fence()
+    declared_task_id = _canonical_runtime_task_id(metadata.get("runtime_task_id") or metadata.get("task_id"))
+    previous_generated_id = _canonical_runtime_task_id(metadata.get("_generated_recovery_run_id"))
+    if declared_task_id and declared_task_id == previous_generated_id:
+        declared_task_id = None
+    if fence is not None:
+        fenced_task_id = fence.task_id.hex
+        if declared_task_id and declared_task_id != fenced_task_id:
+            raise ValueError("runtime task fence mismatch: declared runtime_task_id does not match the active claim")
+        metadata["runtime_task_id"] = fenced_task_id
+        metadata["claim_version"] = fence.claim_version
+        metadata["claim_worker_id"] = fence.worker_id
+        metadata.pop("_generated_recovery_run_id", None)
+    elif declared_task_id:
+        metadata["runtime_task_id"] = declared_task_id
+        metadata.pop("_generated_recovery_run_id", None)
+    else:
+        metadata["runtime_task_id"] = request.recovery_run_id
+        metadata["_generated_recovery_run_id"] = request.recovery_run_id
     key = build_session_key(
         agent_id=request.agent_id,
         tenant_id=metadata.get("tenant_id"),
@@ -173,6 +220,11 @@ class AgentInvocationRequest:
     # Durable chat runtimes append their terminal assistant transcript after the
     # kernel returns; they emit TURN_STOP themselves once that write has committed.
     emit_turn_stop: bool = True
+    # Every invocation without an authoritative RuntimeTask still receives a
+    # distinct recovery lane. The value is stable if normalization is retried
+    # for this request, but a reused SessionContext cannot leak it into a later
+    # invocation.
+    recovery_run_id: str = field(default_factory=lambda: uuid.uuid4().hex, repr=False)
 
 
 @dataclass(slots=True)
@@ -189,6 +241,61 @@ async def _maybe_await(value: Any) -> Any:
     if inspect.isawaitable(value):
         return await value
     return value
+
+
+async def _project_runtime_reconciliation_event(
+    request: AgentInvocationRequest,
+    event: dict[str, Any],
+) -> None:
+    if not isinstance(event, dict):
+        return
+    policy = event.get("runtime_failure_policy") if isinstance(event.get("runtime_failure_policy"), dict) else {}
+    if event.get("status") != "needs_reconciliation" and not policy.get("requires_reconciliation"):
+        return
+    metadata = _session_metadata(request.session_context)
+    try:
+        task_id = uuid.UUID(str(metadata.get("runtime_task_id") or ""))
+        tenant_id = uuid.UUID(str(metadata.get("tenant_id") or ""))
+    except (TypeError, ValueError):
+        logger.warning(
+            "[Invoker] Recovery reconciliation event has no authoritative RuntimeTask/tenant projection: %s",
+            event.get("event_type"),
+        )
+        return
+    try:
+        from app.services.runtime_reconciliation import mark_runtime_task_recovery_reconciliation
+
+        receipt = metadata.get("recovery_manifest_checkpoint_receipt")
+        recovery_authority = None
+        if str(metadata.get("recovery_authority_type") or "") == "workflow_leaf":
+            recovery_authority = {
+                "type": "workflow_leaf",
+                "workflow_run_id": metadata.get("workflow_run_id") or metadata.get("runtime_task_id"),
+                "workflow_step_id": metadata.get("workflow_step_id"),
+                "workflow_leaf_id": metadata.get("workflow_leaf_id"),
+            }
+        async with tenant_scoped_session(
+            tenant_id,
+            session_factory=async_session,
+            require_tenant=True,
+            source="runtime_recovery_reconciliation_projection",
+        ) as db:
+            await mark_runtime_task_recovery_reconciliation(
+                db,
+                task_id=task_id,
+                tenant_id=tenant_id,
+                agent_id=request.agent_id,
+                session_id=request.memory_session_id
+                or (request.session_context.session_id if request.session_context else None),
+                event=event,
+                recovery_manifest_receipt=receipt if isinstance(receipt, dict) else None,
+                recovery_authority=recovery_authority,
+                expected_status="running" if metadata.get("claim_version") is not None else None,
+                expected_claim_version=metadata.get("claim_version"),
+                expected_claim_worker_id=metadata.get("claim_worker_id"),
+            )
+    except Exception as exc:  # noqa: BLE001 - manifest remains fail-closed if projection is unavailable
+        logger.error("[Invoker] Runtime reconciliation projection failed: %s", exc)
 
 
 def _session_metadata(session_context: SessionContext | None) -> dict[str, Any]:
@@ -450,7 +557,12 @@ async def _resolve_runtime_config(agent_id: uuid.UUID | None) -> RuntimeConfig:
 
             # Token quota enforcement is now at User level (quota_guard.check_user_llm_quota)
             quota_message = None
-            local_default = bool(get_settings().DEBUG)
+            # Resolve dynamically so a test or embedding host that temporarily
+            # replaces app.config.get_settings cannot leave a stale imported
+            # callable captured in this long-lived facade module.
+            from app.config import get_settings as load_current_settings
+
+            local_default = bool(getattr(load_current_settings(), "DEBUG", False))
 
             async def _resolve_flag(flag_key: str) -> bool:
                 flag_result = await db.execute(select(FeatureFlag).where(FeatureFlag.key == flag_key))
@@ -1260,6 +1372,7 @@ def get_agent_kernel(request: AgentInvocationRequest | None = None) -> AgentKern
             estimate_tokens_from_chars=estimate_tokens_from_chars,
             apply_vision_transform=_apply_vision_transform,
             apply_cache_hints=_apply_cache_hints,
+            renew_runtime_lease=_kernel_renew_runtime_task_lease,
         )
     )
 
@@ -1436,6 +1549,7 @@ async def invoke_agent(request: AgentInvocationRequest) -> AgentInvocationResult
             build_skill_catalog=build_skill_catalog_section_for_agent,
             combined_tools=get_combined_openai_tools,
             record_skill_usage=record_skill_runtime_usage_for_invocation,
+            project_reconciliation_event=_project_runtime_reconciliation_event,
             logger=logger,
         ),
     )

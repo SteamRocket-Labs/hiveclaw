@@ -194,6 +194,118 @@ def test_workspace_mutations_reject_parent_traversal_into_governed_memory(tmp_pa
     assert existing.read_text(encoding="utf-8") == "trusted memory\n"
 
 
+def test_workspace_read_tools_cannot_consume_private_recovery_manifests(tmp_path):
+    from app.services.agent_tool_domains.workspace import (
+        _glob_search,
+        _grep_search,
+        _list_files,
+        _read_file,
+    )
+
+    workspace = tmp_path / "agent"
+    manifest = workspace / "runtime_artifacts" / "recovery_manifests" / "session-hash" / "run.json"
+    manifest.parent.mkdir(parents=True)
+    secret = "SESSION_A_FULL_ACCESS_PRIVATE_TOOL_ARGUMENTS"
+    manifest.write_text(json.dumps({"permission_profile": secret}), encoding="utf-8")
+    legacy_runtime = workspace / "runtime_artifacts" / "recovery_manifest.json"
+    legacy_workspace = workspace / "workspace" / "recovery_manifest.json"
+    legacy_workspace.parent.mkdir(parents=True)
+    legacy_runtime.write_text(json.dumps({"permission_profile": secret}), encoding="utf-8")
+    legacy_workspace.write_text(json.dumps({"permission_profile": secret}), encoding="utf-8")
+    session_state = workspace / "memory" / "session_state" / "session-a" / "compaction_summary.md"
+    session_state.parent.mkdir(parents=True)
+    session_state.write_text(secret, encoding="utf-8")
+
+    direct_results = (
+        _read_file(workspace, "runtime_artifacts/recovery_manifests/session-hash/run.json"),
+        _list_files(workspace, "runtime_artifacts/recovery_manifests/session-hash"),
+        _glob_search(workspace, "*.json", root="runtime_artifacts/recovery_manifests/session-hash"),
+        _grep_search(workspace, "FULL_ACCESS", root="runtime_artifacts/recovery_manifests"),
+        _read_file(workspace, "runtime_artifacts/recovery_manifest.json"),
+        _read_file(workspace, "workspace/recovery_manifest.json"),
+        _read_file(workspace, "memory/session_state/session-a/compaction_summary.md"),
+        _list_files(workspace, "memory/session_state/session-a"),
+        _glob_search(workspace, "*.md", root="memory/session_state/session-a"),
+        _grep_search(workspace, "FULL_ACCESS", root="memory/session_state"),
+    )
+    for result in direct_results:
+        assert "auth_or_permission" in result
+        assert secret not in result
+
+    assert "recovery_manifests" not in _glob_search(workspace, "**/*.json")
+    assert secret not in _grep_search(workspace, "FULL_ACCESS")
+
+
+def test_workspace_mutation_tools_cannot_forge_private_recovery_state(tmp_path):
+    from app.services.agent_tool_domains.workspace import _delete_file, _edit_file, _write_file
+
+    workspace = tmp_path / "agent"
+    legacy = workspace / "workspace" / "recovery_manifest.json"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text("trusted-old", encoding="utf-8")
+
+    write_result = _write_file(
+        workspace,
+        "workspace/recovery_manifest.json",
+        '{"claim_version":999}',
+    )
+    edit_result = _edit_file(
+        workspace,
+        "workspace/recovery_manifest.json",
+        "trusted-old",
+        "forged",
+    )
+    delete_result = _delete_file(workspace, "workspace/recovery_manifest.json")
+
+    assert "auth_or_permission" in write_result
+    assert "auth_or_permission" in edit_result
+    assert "auth_or_permission" in delete_result
+    assert legacy.read_text(encoding="utf-8") == "trusted-old"
+
+
+def test_workspace_mutation_rejects_private_descendants_and_symlink_aliases(tmp_path):
+    from app.services.agent_tool_domains.workspace import _delete_file, _write_file
+
+    workspace = tmp_path / "agent"
+    private = workspace / "workspace" / "recovery_manifest.json"
+    private.parent.mkdir(parents=True)
+    private.write_text("trusted", encoding="utf-8")
+    alias = workspace / "workspace" / "report.json"
+    alias.symlink_to(private.name)
+
+    descendant_result = _write_file(
+        workspace,
+        "workspace/recovery_manifest.json/payload.json",
+        "forged",
+    )
+    alias_write_result = _write_file(workspace, "workspace/report.json", "forged")
+    alias_delete_result = _delete_file(workspace, "workspace/report.json")
+
+    assert "auth_or_permission" in descendant_result
+    assert "auth_or_permission" in alias_write_result
+    assert "auth_or_permission" in alias_delete_result
+    assert private.read_text(encoding="utf-8") == "trusted"
+    assert private.is_file()
+
+
+@pytest.mark.asyncio
+async def test_read_document_cannot_bypass_private_session_artifact_boundary(tmp_path):
+    from app.services.agent_tool_domains.workspace import _read_document
+
+    workspace = tmp_path / "agent"
+    private_summary = workspace / "memory" / "session_state" / "session-a" / "compaction_summary.md"
+    private_summary.parent.mkdir(parents=True)
+    private_summary.write_text("SESSION_A_PRIVATE_COMPACTION", encoding="utf-8")
+
+    result = await _read_document(
+        workspace,
+        "memory/session_state/session-a/compaction_summary.md",
+    )
+
+    assert "auth_or_permission" in result
+    assert "SESSION_A_PRIVATE_COMPACTION" not in result
+
+
 def test_list_files_and_read_file_results_carry_provenance_hint(tmp_path):
     from app.services.agent_tool_domains.workspace import _list_files, _read_file
     from app.services.chat_artifact_delivery import build_session_artifact_parts
@@ -597,6 +709,32 @@ def test_migrate_all_workspaces_rehomes_legacy_runtime_and_root_files(monkeypatc
     assert (workspace / "workspace" / "archived" / "legacy-root-files" / "legacy_report.md").read_text(
         encoding="utf-8"
     ) == "# Legacy Report\n"
+
+
+def test_generic_workspace_migration_leaves_recovery_manifests_to_specialized_importer(tmp_path):
+    from app.tools.workspace import _migrate_workspace_runtime_artifacts
+
+    workspace = tmp_path / "agent-1"
+    runtime_manifest = workspace / "runtime_artifacts" / "recovery_manifest.json"
+    workspace_manifest = workspace / "workspace" / "recovery_manifest.json"
+    runtime_manifest.parent.mkdir(parents=True)
+    workspace_manifest.parent.mkdir(parents=True)
+    runtime_payload = '{"session_id":"session-a","runtime_task_id":"run-a"}'
+    workspace_payload = '{"session_id":"session-b","runtime_task_id":"run-b"}'
+    runtime_manifest.write_text(runtime_payload, encoding="utf-8")
+    workspace_manifest.write_text(workspace_payload, encoding="utf-8")
+    runtime_session_memory = workspace / "runtime_artifacts" / "session_memory.md"
+    workspace_session_memory = workspace / "workspace" / "session_memory.md"
+    runtime_session_memory.write_text("SESSION_A_MEMORY", encoding="utf-8")
+    workspace_session_memory.write_text("SESSION_B_MEMORY", encoding="utf-8")
+
+    moved = _migrate_workspace_runtime_artifacts(workspace)
+
+    assert not any("recovery_manifest.json" in item for item in moved)
+    assert runtime_manifest.read_text(encoding="utf-8") == runtime_payload
+    assert workspace_manifest.read_text(encoding="utf-8") == workspace_payload
+    assert runtime_session_memory.read_text(encoding="utf-8") == "SESSION_A_MEMORY"
+    assert workspace_session_memory.read_text(encoding="utf-8") == "SESSION_B_MEMORY"
 
 
 @pytest.mark.asyncio

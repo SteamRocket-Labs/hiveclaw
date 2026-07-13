@@ -16,10 +16,29 @@ from app.database import tenant_scoped_session
 from app.models.coordination import CoordinationSignal
 from app.models.runtime_task import RuntimeTask
 from app.runtime.workflow_engine import LeafOutcome, LeafRequest
+from app.services.runtime_task_claim_service import RuntimeTaskClaimService
+from app.services.runtime_task_fence import run_claimed_runtime_task
 from app.services.workflow_runtime_service import WorkflowRuntimeService
 from app.services.workflow_signal_consumer import drain_signal_resumes
 
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
+
+
+@pytest.fixture(autouse=True)
+def _isolate_workflow_runtime_dependencies(monkeypatch, owner_sessionmaker):
+    """Keep Testcontainers workflow runs from writing into the app database.
+
+    Workflow audit behavior has dedicated integration coverage.  This module
+    creates its Agent in the Testcontainers database, so the default audit
+    writer (which owns a session against the app database) cannot satisfy the
+    Agent foreign key and would add unrelated transaction failures here.
+    """
+
+    async def noop_audit(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr("app.database.async_session", owner_sessionmaker)
+    monkeypatch.setattr("app.services.audit_logger.write_audit_log", noop_audit)
 
 
 def _definition() -> dict:
@@ -109,7 +128,12 @@ async def test_wait_signal_step_suspends_and_registers(tenant_id, agent_id, owne
     assert registration == {"step_id": "hold", "signal_type": "vendor_reply"}
 
 
-async def test_pg_signal_resumes_suspended_run(tenant_id, agent_id, owner_sessionmaker):
+async def test_pg_signal_resumes_suspended_run(
+    tenant_id,
+    agent_id,
+    owner_sessionmaker,
+    app_user_sessionmaker,
+):
     service = WorkflowRuntimeService(session_factory=owner_sessionmaker)
     leaf, _ = _leaf()
     handle = await service.start_run(
@@ -131,7 +155,30 @@ async def test_pg_signal_resumes_suspended_run(tenant_id, agent_id, owner_sessio
     resumed = await drain_signal_resumes(leaf_executor=resume_leaf, session_factory=owner_sessionmaker)
 
     outcomes = {r.run_id: r.outcome.status for r in resumed}
-    assert outcomes.get(handle.run_id) == "completed"
+    assert outcomes.get(handle.run_id) == "suspended"
+    assert resume_calls == [], "the signal consumer queues work but never executes a workflow leaf"
+
+    # Claim through the RLS-enforced application role.  The owner role is a
+    # PostgreSQL superuser and therefore sees pending tasks from every test
+    # tenant in the session-scoped Testcontainers database.
+    async with tenant_scoped_session(str(tenant_id), session_factory=app_user_sessionmaker) as session:
+        claimed = await RuntimeTaskClaimService(
+            db=session,
+            worker_id="signal-workflow-worker",
+            task_types=("workflow",),
+            lease_seconds=60,
+        ).claim_available(batch_size=1)
+    assert [task.id for task in claimed] == [handle.run_id]
+    claim = claimed[0]
+    outcome = await run_claimed_runtime_task(
+        service.resume_run(handle.run_id, tenant_id=tenant_id, leaf_executor=resume_leaf),
+        task_id=handle.run_id,
+        claim_version=claim.claim_version,
+        worker_id=claim.claimed_by or "signal-workflow-worker",
+        lease_seconds=60,
+    )
+
+    assert outcome.status == "completed"
     assert resume_calls == ["after"], "prep replays from journal; only the post-wait step executes"
 
 

@@ -1,15 +1,4 @@
-"""Contract tests for the explicit system_plan_run launcher.
-
-``launch_system_plan_run`` pre-arms Plan Mode before the loop with the draft's
-``plan_id`` already set, then runs the agent main loop so the agent authors the
-plan via ``exit_plan_mode``. These tests assert the launcher's pre-arm +
-invocation contract and its fail-closed guarantee; the actual fill is covered by
-the exit_plan_mode dual-state tests.
-
-The DB-touching surface (``_resolve_agent_models``) is exercised with the
-project's hand-rolled async-session fake; ``invoke_agent`` is patched on the
-runtime invoker module (it is lazily imported inside the launcher).
-"""
+"""Behavior contracts for the durable explicit System Plan launcher."""
 
 from __future__ import annotations
 
@@ -18,174 +7,85 @@ from uuid import uuid4
 
 import pytest
 
-
-class _ScalarOneResult:
-    def __init__(self, value):
-        self._value = value
-
-    def scalar_one_or_none(self):
-        return self._value
+from app.database import tenant_scoped_session
+from app.models.runtime_task import RuntimeTask
+from tests.services.test_plan_mode_system_run_recovery import _seed_plan
 
 
-class _ResolveSession:
-    """Answers the launcher's (agent, model, fallback) lookups in order."""
-
-    def __init__(self, *, agent, model=None, fallback=None):
-        self._agent = agent
-        self._model = model
-        self._fallback = fallback
-        self._calls = 0
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, exc_type, exc, tb):
-        return False
-
-    async def execute(self, _stmt):
-        # tenant_scoped_session emits a `SET LOCAL app.current_tenant_id` before
-        # the business queries — it must not advance the agent/model call counter.
-        if "app.current_tenant_id" in str(_stmt):
-            return _ScalarOneResult(None)
-        self._calls += 1
-        if self._calls == 1:
-            return _ScalarOneResult(self._agent)
-        if self._calls == 2:
-            return _ScalarOneResult(self._model)
-        return _ScalarOneResult(self._fallback)
+pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 
 
-def _agent(**over):
-    data = {
-        "id": uuid4(),
-        "name": "Planner Agent",
-        "role_description": "Assistant",
-        "tenant_id": None,
-        "primary_model_id": uuid4(),
-        "fallback_model_id": None,
-        "owner_user_id": None,
-        "creator_id": uuid4(),
-    }
-    data.update(over)
-    return SimpleNamespace(**data)
-
-
-def _draft_plan(agent, **over):
-    data = {
-        "id": uuid4(),
-        "agent_id": agent.id,
-        "tenant_id": agent.tenant_id,
-        "session_id": "sess-1",
-        "runtime_task_id": None,
-        "requested_by_user_id": uuid4(),
-        "intent_type": "in_session_execution",
-        "original_request": "每天 9 点给我发 RWA 日报",
-        "status": "draft",
-    }
-    data.update(over)
-    return SimpleNamespace(**data)
-
-
-def _patch_resolve(monkeypatch, session):
-    from app.services import plan_mode_system_run as mod
-
-    # _resolve_agent_models now resolves the tenant via an audited bypass read,
-    # then pins a tenant_scoped_session for the agent/model lookups.
-    async def _fake_resolve_tenant(_agent_id, **_kwargs):
-        return None
-
-    monkeypatch.setattr(mod, "resolve_tenant_for_agent", _fake_resolve_tenant)
-    monkeypatch.setattr(mod, "tenant_scoped_session", lambda *a, **k: session)
-    monkeypatch.setattr(mod, "provision_agent_plan_file_slot", lambda *_args, **_kwargs: None)
+def _stub_plan_file(monkeypatch, module) -> None:
+    # Test Double rationale: filesystem slot allocation is outside the launcher
+    # behavior under test; RuntimeTask and Plan authority remain real PostgreSQL.
+    monkeypatch.setattr(module, "provision_agent_plan_file_slot", lambda *_args, **_kwargs: None)
 
 
 @pytest.mark.asyncio
-async def test_launch_arms_plan_mode_with_draft_id_then_resets(monkeypatch):
-    """The run must see Plan Mode armed (ContextVar) carrying the draft plan_id,
-    source=system_plan_run; after the run the ContextVar is reset (no leak)."""
-    from app.services import plan_mode_system_run as mod
+async def test_launch_arms_plan_mode_with_draft_id_then_resets(
+    owner_sessionmaker,
+    monkeypatch,
+) -> None:
+    from app.services import plan_mode_system_run as system_run
     from app.services.plan_mode_runtime_context import (
         interactive_plan_mode_active,
         interactive_plan_mode_metadata,
     )
 
-    agent = _agent()
-    model = SimpleNamespace(id=agent.primary_model_id, provider="openai", model="x")
-    plan = _draft_plan(agent)
-    _patch_resolve(monkeypatch, _ResolveSession(agent=agent, model=model))
+    seeded = await _seed_plan(owner_sessionmaker)
+    _stub_plan_file(monkeypatch, system_run)
+    captured: dict[str, object] = {}
 
-    captured = {}
-
-    async def fake_invoke_agent(request):
-        # The agent loop sees Plan Mode armed with THIS draft's id.
-        captured["armed_active"] = interactive_plan_mode_active()
-        captured["armed_plan_id"] = interactive_plan_mode_metadata().get("plan_id")
-        captured["source"] = request.session_context.source
-        captured["plan_mode_active"] = request.session_context.plan_mode.active
-        captured["state_plan_id"] = request.session_context.plan_mode.plan_id
-        captured["state_plan_file_path"] = request.session_context.plan_mode.plan_file_path
-        captured["mirror_plan_file_path"] = request.session_context.metadata["plan_mode"].get("plan_file_path")
-        captured["max_tool_rounds"] = request.max_tool_rounds
-        captured["agent_id"] = request.agent_id
+    # Test Double rationale: isolate the external LLM provider while exercising
+    # real Plan and durable RuntimeTask authority.
+    async def invoke_without_network(request):
+        captured.update(
+            {
+                "armed_active": interactive_plan_mode_active(),
+                "armed_plan_id": interactive_plan_mode_metadata().get("plan_id"),
+                "source": request.session_context.source,
+                "plan_mode_active": request.session_context.plan_mode.active,
+                "state_plan_id": request.session_context.plan_mode.plan_id,
+                "state_plan_file_path": request.session_context.plan_mode.plan_file_path,
+                "mirror_plan_file_path": request.session_context.metadata["plan_mode"].get("plan_file_path"),
+                "max_tool_rounds": request.max_tool_rounds,
+                "agent_id": request.agent_id,
+            }
+        )
         return SimpleNamespace(content="planned", tokens_used=0)
 
-    monkeypatch.setattr("app.runtime.invoker.invoke_agent", fake_invoke_agent)
+    monkeypatch.setattr("app.runtime.invoker.invoke_agent", invoke_without_network)
 
-    returned = await mod.launch_system_plan_run(plan)
+    returned = await system_run.launch_system_plan_run(
+        seeded.plan,
+        session_factory=owner_sessionmaker,
+    )
 
-    assert returned is plan
-    assert captured["armed_active"] is True
-    assert captured["armed_plan_id"] == str(plan.id)
-    assert captured["source"] == mod.SYSTEM_PLAN_RUN_SOURCE
-    assert captured["plan_mode_active"] is True
-    assert captured["state_plan_id"] == str(plan.id)
-    expected_plan_file = f"workspace/plans/{plan.id}.plan.md"
-    assert captured["state_plan_file_path"] == expected_plan_file
-    assert captured["mirror_plan_file_path"] == expected_plan_file
-    assert mod.SYSTEM_PLAN_RUN_MAX_ROUNDS == 200
-    assert captured["max_tool_rounds"] == mod.SYSTEM_PLAN_RUN_MAX_ROUNDS
-    assert captured["agent_id"] == plan.agent_id
-    # ContextVar reset after the run — must not leak into a later invocation.
+    assert returned is seeded.plan
+    assert captured == {
+        "armed_active": True,
+        "armed_plan_id": str(seeded.plan_id),
+        "source": system_run.SYSTEM_PLAN_RUN_SOURCE,
+        "plan_mode_active": True,
+        "state_plan_id": str(seeded.plan_id),
+        "state_plan_file_path": f"workspace/plans/{seeded.plan_id}.plan.md",
+        "mirror_plan_file_path": f"workspace/plans/{seeded.plan_id}.plan.md",
+        "max_tool_rounds": system_run.SYSTEM_PLAN_RUN_MAX_ROUNDS,
+        "agent_id": seeded.agent_id,
+    }
+    assert system_run.SYSTEM_PLAN_RUN_MAX_ROUNDS == 200
     assert interactive_plan_mode_active() is False
 
 
 @pytest.mark.asyncio
-async def test_launch_passes_seed_context_into_prompt(monkeypatch):
-    from app.services import plan_mode_system_run as mod
+async def test_launch_passes_seed_context_and_trusted_scopes(
+    owner_sessionmaker,
+    monkeypatch,
+) -> None:
+    from app.services import plan_mode_system_run as system_run
 
-    agent = _agent()
-    model = SimpleNamespace(id=agent.primary_model_id, provider="openai", model="x")
-    plan = _draft_plan(agent)
-    _patch_resolve(monkeypatch, _ResolveSession(agent=agent, model=model))
-
-    captured = {}
-
-    async def fake_invoke_agent(request):
-        captured["prompt"] = request.messages[0]["content"]
-        return SimpleNamespace(content="planned", tokens_used=0)
-
-    monkeypatch.setattr("app.runtime.invoker.invoke_agent", fake_invoke_agent)
-
-    await mod.launch_system_plan_run(
-        plan,
-        seed_context={"tool_name": "set_trigger", "action_kind": "create_enabled_trigger"},
-    )
-
-    prompt = captured["prompt"]
-    assert "Plan Mode" in prompt
-    assert "exit_plan_mode" in prompt
-    assert plan.original_request in prompt
-    assert "set_trigger" in prompt  # seed context surfaced
-
-
-@pytest.mark.asyncio
-async def test_launch_prearms_trusted_authorization_scopes_from_seed_context(monkeypatch):
-    from app.services import plan_mode_system_run as mod
-
-    agent = _agent()
-    model = SimpleNamespace(id=agent.primary_model_id, provider="openai", model="x")
-    plan = _draft_plan(agent)
-    _patch_resolve(monkeypatch, _ResolveSession(agent=agent, model=model))
+    seeded = await _seed_plan(owner_sessionmaker)
+    _stub_plan_file(monkeypatch, system_run)
     scopes = [
         {
             "action_kind": "create_enabled_trigger",
@@ -193,80 +93,162 @@ async def test_launch_prearms_trusted_authorization_scopes_from_seed_context(mon
             "arguments": {"type": "cron", "config": {"expr": "0 9 * * *"}},
         }
     ]
-    captured = {}
+    captured: dict[str, object] = {}
 
-    async def fake_invoke_agent(request):
-        captured["typed"] = request.session_context.plan_mode.authorization_scopes
-        captured["mirror"] = request.session_context.metadata["plan_mode"]["authorization_scopes"]
+    async def invoke_without_network(request):
+        captured["prompt"] = request.messages[0]["content"]
+        captured["typed_scopes"] = request.session_context.plan_mode.authorization_scopes
+        captured["mirrored_scopes"] = request.session_context.metadata["plan_mode"]["authorization_scopes"]
         return SimpleNamespace(content="planned", tokens_used=0)
 
-    monkeypatch.setattr("app.runtime.invoker.invoke_agent", fake_invoke_agent)
-    await mod.launch_system_plan_run(plan, seed_context={"authorization_scopes": scopes})
+    monkeypatch.setattr("app.runtime.invoker.invoke_agent", invoke_without_network)
 
-    assert captured["typed"] == scopes
-    assert captured["mirror"] == scopes
+    await system_run.launch_system_plan_run(
+        seeded.plan,
+        seed_context={
+            "tool_name": "set_trigger",
+            "action_kind": "create_enabled_trigger",
+            "authorization_scopes": scopes,
+        },
+        session_factory=owner_sessionmaker,
+    )
+
+    prompt = str(captured["prompt"])
+    assert "Plan Mode" in prompt
+    assert "exit_plan_mode" in prompt
+    assert seeded.plan.original_request in prompt
+    assert "set_trigger" in prompt
+    assert captured["typed_scopes"] == scopes
+    assert captured["mirrored_scopes"] == scopes
 
 
 @pytest.mark.asyncio
-async def test_launch_is_fail_closed_when_invoke_raises(monkeypatch):
-    """A failed agent run must NOT propagate and must reset the ContextVar — the
-    plan is simply left non-confirmable; the launcher never executes the work."""
-    from app.services import plan_mode_system_run as mod
+async def test_launch_uses_restart_stable_session_and_distinct_runtime_identity(
+    owner_sessionmaker,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from app.services import plan_mode_system_run as system_run
+
+    seeded = await _seed_plan(
+        owner_sessionmaker,
+        with_root_runtime_task=False,
+        with_session=False,
+    )
+    _stub_plan_file(monkeypatch, system_run)
+    captured: list[tuple[str | None, str | None]] = []
+    restored_pending_items: list[str] = []
+
+    async def invoke_with_manifest(request):
+        from app.runtime.recovery_manifest import load_recovery_manifest, persist_recovery_manifest
+
+        captured.append(
+            (
+                request.session_context.session_id,
+                request.session_context.metadata.get("runtime_task_id"),
+            )
+        )
+        if len(captured) == 1:
+            request.session_context.track_pending_item("resume plan authoring")
+            assert persist_recovery_manifest(
+                seeded.agent_id,
+                request.session_context,
+                data_root=tmp_path,
+            )
+        else:
+            restored = load_recovery_manifest(
+                seeded.agent_id,
+                session_context=request.session_context,
+                data_root=tmp_path,
+            )
+            assert restored is not None
+            restored_pending_items.extend(restored.pending_items)
+        return SimpleNamespace(content="planned", tokens_used=0)
+
+    monkeypatch.setattr("app.runtime.invoker.invoke_agent", invoke_with_manifest)
+
+    await system_run.launch_system_plan_run(seeded.plan, session_factory=owner_sessionmaker)
+    await system_run.launch_system_plan_run(seeded.plan, session_factory=owner_sessionmaker)
+
+    expected_session_id = f"plan-{seeded.plan_id.hex}"
+    expected_task_id = system_run.system_plan_runtime_task_id(seeded.plan_id)
+    assert captured == [
+        (expected_session_id, expected_task_id.hex),
+        (expected_session_id, expected_task_id.hex),
+    ]
+    assert expected_task_id != seeded.plan_id
+    assert restored_pending_items == ["resume plan authoring"]
+
+
+@pytest.mark.asyncio
+async def test_launch_is_fail_closed_when_invoke_raises(
+    owner_sessionmaker,
+    monkeypatch,
+) -> None:
+    from app.services import plan_mode_system_run as system_run
     from app.services.plan_mode_runtime_context import interactive_plan_mode_active
 
-    agent = _agent()
-    model = SimpleNamespace(id=agent.primary_model_id, provider="openai", model="x")
-    plan = _draft_plan(agent)
-    _patch_resolve(monkeypatch, _ResolveSession(agent=agent, model=model))
+    seeded = await _seed_plan(owner_sessionmaker)
+    _stub_plan_file(monkeypatch, system_run)
 
-    async def boom_invoke_agent(_request):
+    async def disconnected_provider(_request):
         raise RuntimeError("LLM exploded mid-plan")
 
-    monkeypatch.setattr("app.runtime.invoker.invoke_agent", boom_invoke_agent)
+    monkeypatch.setattr("app.runtime.invoker.invoke_agent", disconnected_provider)
 
-    returned = await mod.launch_system_plan_run(plan)
+    returned = await system_run.launch_system_plan_run(
+        seeded.plan,
+        session_factory=owner_sessionmaker,
+    )
 
-    assert returned is plan  # swallowed, returned the (still non-confirmable) plan
-    assert interactive_plan_mode_active() is False  # ContextVar reset in finally
-
-
-@pytest.mark.asyncio
-async def test_launch_noop_when_agent_missing(monkeypatch):
-    from app.services import plan_mode_system_run as mod
-
-    plan = _draft_plan(_agent())
-    _patch_resolve(monkeypatch, _ResolveSession(agent=None))
-
-    invoked = {"n": 0}
-
-    async def fake_invoke_agent(_request):
-        invoked["n"] += 1
-        return SimpleNamespace(content="x", tokens_used=0)
-
-    monkeypatch.setattr("app.runtime.invoker.invoke_agent", fake_invoke_agent)
-
-    returned = await mod.launch_system_plan_run(plan)
-    assert returned is plan
-    assert invoked["n"] == 0  # no run without an agent
+    assert returned is seeded.plan
+    assert interactive_plan_mode_active() is False
+    async with tenant_scoped_session(seeded.tenant_id, session_factory=owner_sessionmaker) as db:
+        row = await db.get(RuntimeTask, system_run.system_plan_runtime_task_id(seeded.plan_id))
+        assert row is not None
+        assert row.status == "resumable"
 
 
 @pytest.mark.asyncio
-async def test_launch_noop_when_model_missing(monkeypatch):
-    from app.services import plan_mode_system_run as mod
+async def test_launch_noops_without_agent_or_model(
+    owner_sessionmaker,
+    monkeypatch,
+) -> None:
+    from app.services import plan_mode_system_run as system_run
 
-    agent = _agent()
-    plan = _draft_plan(agent)
-    # agent resolves but its model row does not.
-    _patch_resolve(monkeypatch, _ResolveSession(agent=agent, model=None))
+    missing_agent_plan = SimpleNamespace(
+        id=uuid4(),
+        agent_id=uuid4(),
+        tenant_id=uuid4(),
+        requested_by_user_id=uuid4(),
+        session_id="missing-agent-session",
+        runtime_task_id=None,
+        intent_type="in_session_execution",
+        original_request="plan only",
+        status="draft",
+    )
+    missing_model = await _seed_plan(owner_sessionmaker, with_model=False)
+    invoked = 0
 
-    invoked = {"n": 0}
+    async def must_not_invoke(_request):
+        nonlocal invoked
+        invoked += 1
+        return SimpleNamespace(content="unexpected", tokens_used=0)
 
-    async def fake_invoke_agent(_request):
-        invoked["n"] += 1
-        return SimpleNamespace(content="x", tokens_used=0)
+    monkeypatch.setattr("app.runtime.invoker.invoke_agent", must_not_invoke)
 
-    monkeypatch.setattr("app.runtime.invoker.invoke_agent", fake_invoke_agent)
-
-    returned = await mod.launch_system_plan_run(plan)
-    assert returned is plan
-    assert invoked["n"] == 0  # no run without a usable model
+    assert (
+        await system_run.launch_system_plan_run(
+            missing_agent_plan,
+            session_factory=owner_sessionmaker,
+        )
+        is missing_agent_plan
+    )
+    assert (
+        await system_run.launch_system_plan_run(
+            missing_model.plan,
+            session_factory=owner_sessionmaker,
+        )
+        is missing_model.plan
+    )
+    assert invoked == 0

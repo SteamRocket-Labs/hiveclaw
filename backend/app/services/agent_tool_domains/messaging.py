@@ -890,6 +890,9 @@ async def _persist_agent_tool_call(
     tool_name: str,
     tool_args: dict,
     tool_result: str,
+    tool_call_id: str | None = None,
+    runtime_task_id: str | None = None,
+    turn_id: str | None = None,
 ) -> None:
     """Persist A2A tool execution so it remains visible in the shared chat session."""
     from app.services.chat_transcript import append_session_event
@@ -918,6 +921,9 @@ async def _persist_agent_tool_call(
                         "args": tool_args,
                         "status": "done",
                         "result": str(tool_result),
+                        "tool_call_id": tool_call_id,
+                        "runtime_task_id": runtime_task_id,
+                        "turn_id": turn_id,
                     },
                     ensure_ascii=False,
                     sort_keys=True,
@@ -930,6 +936,9 @@ async def _persist_agent_tool_call(
                     "source": "agent_message",
                     "interaction_type": "agent_message",
                     "tool_name": tool_name,
+                    "tool_call_id": tool_call_id,
+                    "runtime_task_id": runtime_task_id,
+                    "turn_id": turn_id,
                     "status": "done",
                     "semantic_memory_eligible": True,
                 },
@@ -948,15 +957,39 @@ def _build_agent_message_tool_executor(
 ):
     """Wrap A2A tool execution with chat-history persistence."""
 
-    async def _executor(tool_name: str, tool_args: dict, *, emit_runtime_hooks: bool = True) -> str:
+    forwardable_runtime_kwargs = {
+        "budget_run_id",
+        "delegation_token",
+        "event_callback",
+        "origin_channel",
+        "permission_profile",
+        "plan_mode_interactive_available",
+        "round_state",
+        "t0_refs",
+        "tool_call_id",
+        "trace_metadata_sink",
+        "turn_id",
+        "runtime_task_id",
+    }
+
+    async def _executor(
+        tool_name: str,
+        tool_args: dict,
+        *,
+        emit_runtime_hooks: bool = True,
+        **runtime_kwargs: Any,
+    ) -> str:
         from app.services.agent_tools import execute_tool
 
+        forwarded = {key: value for key, value in runtime_kwargs.items() if key in forwardable_runtime_kwargs}
+        forwarded["session_id"] = session_id
+        forwarded["emit_runtime_hooks"] = emit_runtime_hooks
         tool_result = await execute_tool(
             tool_name,
             tool_args,
             target_agent_id,
             owner_id,
-            emit_runtime_hooks=emit_runtime_hooks,
+            **forwarded,
         )
         await _persist_agent_tool_call(
             session_agent_id=session_agent_id,
@@ -966,6 +999,9 @@ def _build_agent_message_tool_executor(
             tool_name=tool_name,
             tool_args=tool_args,
             tool_result=tool_result,
+            tool_call_id=str(runtime_kwargs.get("tool_call_id") or "").strip() or None,
+            runtime_task_id=str(runtime_kwargs.get("runtime_task_id") or "").strip() or None,
+            turn_id=str(runtime_kwargs.get("turn_id") or "").strip() or None,
         )
         return tool_result
 
@@ -982,6 +1018,7 @@ async def _invoke_agent_message_runtime(
     session_id: str,
     session_agent_id: uuid.UUID,
     participant_id: uuid.UUID | None,
+    tenant_id: uuid.UUID | None = None,
     permission_profile: Any | None = None,
     parent_session_id: str | None = None,
     execution_principal: dict[str, Any] | None = None,
@@ -1016,6 +1053,7 @@ async def _invoke_agent_message_runtime(
         permission_profile=permission_profile,
         execution_principal=execution_principal,
         root_runtime_task_id=root_runtime_task_id,
+        tenant_id=tenant_id,
     )
 
 
@@ -1245,6 +1283,7 @@ async def _send_message_to_agent_outcome(
                 session_id=session_id,
                 session_agent_id=session_agent_id,
                 participant_id=tgt_participant_id,
+                tenant_id=tid,
                 permission_profile=args.get("_permission_profile"),
                 parent_session_id=principal.root_session_id if principal else None,
                 execution_principal=principal.to_evidence() if principal else None,

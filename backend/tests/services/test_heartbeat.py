@@ -7,6 +7,216 @@ from uuid import uuid4
 import pytest
 
 
+def test_heartbeat_cadence_event_key_derives_stable_durable_intent_id():
+    from app.services.heartbeat import _heartbeat_runtime_task_id_for_event
+
+    agent_id = uuid4()
+    first = _heartbeat_runtime_task_id_for_event(agent_id, "cadence:2026-07-13T10:00")
+    second = _heartbeat_runtime_task_id_for_event(agent_id, "cadence:2026-07-13T10:00")
+
+    assert first == second
+    assert first != _heartbeat_runtime_task_id_for_event(agent_id, "cadence:2026-07-13T12:00")
+
+
+@pytest.mark.asyncio
+async def test_duplicate_heartbeat_producers_persist_one_durable_cadence_intent(monkeypatch):
+    from app.services import heartbeat
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    event_key = "cadence:247890"
+    persisted: set[str] = set()
+    attempts: list[dict] = []
+
+    class UnavailableBudgetService:
+        async def resolve_policy(self, _lookup):
+            raise RuntimeError("budget unavailable in focused producer test")
+
+    async def fake_create(**fields):
+        attempts.append(fields)
+        if fields["task_id"] in persisted:
+            raise RuntimeError("duplicate durable intent")
+        persisted.add(fields["task_id"])
+        return fields["task_id"]
+
+    monkeypatch.setattr(heartbeat, "RuntimeBudgetService", UnavailableBudgetService)
+    monkeypatch.setattr(heartbeat, "create_runtime_task_record", fake_create)
+
+    first = await heartbeat._create_heartbeat_runtime_task(
+        agent_id,
+        tenant_id=tenant_id,
+        event_key=event_key,
+    )
+    second = await heartbeat._create_heartbeat_runtime_task(
+        agent_id,
+        tenant_id=tenant_id,
+        event_key=event_key,
+    )
+
+    assert first == heartbeat._heartbeat_runtime_task_id_for_event(agent_id, event_key).hex
+    assert second is None
+    assert [attempt["task_id"] for attempt in attempts] == [first, first]
+    assert all(attempt["status"] == "pending" for attempt in attempts)
+
+
+@pytest.mark.asyncio
+async def test_claimed_heartbeat_terminals_and_releases_auxiliary_lease(monkeypatch):
+    from app.services import heartbeat
+
+    run_id = uuid4()
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    agent = SimpleNamespace(
+        id=agent_id,
+        name="Claimed no-model heartbeat",
+        primary_model_id=None,
+        fallback_model_id=None,
+        creator_id=uuid4(),
+        tenant_id=tenant_id,
+    )
+    fake_session = _FakeSession([agent])
+    updates: list[dict] = []
+    released: list[object] = []
+
+    async def fake_get_record(_task_id):
+        return {
+            "task_id": run_id.hex,
+            "task_type": "heartbeat",
+            "status": "running",
+            "tenant_id": str(tenant_id),
+            "parent_agent_id": str(agent_id),
+            "metadata": {"agent_id": str(agent_id), "tenant_id": str(tenant_id)},
+        }
+
+    async def fake_acquire(_agent_id, *, now=None):
+        return True
+
+    async def fake_update(_task_id, **fields):
+        updates.append(fields)
+        return True
+
+    async def fake_release(_agent_id):
+        released.append(_agent_id)
+
+    monkeypatch.setattr(heartbeat, "get_runtime_task_record", fake_get_record)
+    monkeypatch.setattr(heartbeat, "_try_acquire_heartbeat_lease_async", fake_acquire)
+    monkeypatch.setattr(heartbeat, "tenant_scoped_session", lambda *a, **k: fake_session)
+    monkeypatch.setattr(heartbeat, "update_runtime_task_record", fake_update)
+    monkeypatch.setattr(heartbeat, "_release_heartbeat_lease_async", fake_release)
+    monkeypatch.setattr("app.core.execution_context.set_agent_bot_identity", lambda *a, **kw: None)
+
+    assert await heartbeat.execute_claimed_heartbeat_runtime_task(run_id) is True
+    assert updates[-1]["status"] == "skipped"
+    assert updates[-1]["metadata_json"]["skip_reason"] == "no_model"
+    assert released == [agent_id]
+
+
+@pytest.mark.asyncio
+async def test_claimed_heartbeat_does_not_terminal_foreign_auxiliary_lease(monkeypatch):
+    from app.services import heartbeat
+
+    run_id = uuid4()
+    agent_id = uuid4()
+    tenant_id = uuid4()
+
+    async def fake_get_record(_task_id):
+        return {
+            "task_id": run_id.hex,
+            "task_type": "heartbeat",
+            "status": "running",
+            "tenant_id": str(tenant_id),
+            "parent_agent_id": str(agent_id),
+            "metadata": {},
+        }
+
+    async def fake_acquire(_agent_id, *, now=None):
+        return False
+
+    async def forbidden_update(*_args, **_kwargs):
+        raise AssertionError("losing heartbeat worker must not alter the winner's RuntimeTask")
+
+    monkeypatch.setattr(heartbeat, "get_runtime_task_record", fake_get_record)
+    monkeypatch.setattr(heartbeat, "_try_acquire_heartbeat_lease_async", fake_acquire)
+    monkeypatch.setattr(heartbeat, "update_runtime_task_record", forbidden_update)
+
+    assert await heartbeat.execute_claimed_heartbeat_runtime_task(run_id) is False
+
+
+@pytest.mark.asyncio
+async def test_expired_heartbeat_owner_cannot_delete_successor_redis_lease(monkeypatch):
+    from app.services import heartbeat
+
+    agent_id = uuid4()
+
+    class Redis:
+        def __init__(self):
+            self.value = None
+
+        async def set(self, _key, value, *, ex, nx):
+            if nx and self.value is not None:
+                return False
+            self.value = value
+            return True
+
+        async def eval(self, _script, _keys, key, expected):
+            assert key == f"heartbeat_lease:{agent_id}"
+            if self.value != expected:
+                return 0
+            self.value = None
+            return 1
+
+    redis = Redis()
+
+    async def get_test_redis():
+        return redis
+
+    monkeypatch.setattr(heartbeat, "get_redis", get_test_redis)
+
+    token_a = await heartbeat._try_acquire_heartbeat_lease_async(agent_id)
+    assert token_a
+    redis.value = None  # A expired in Redis.
+    token_b = await heartbeat._try_acquire_heartbeat_lease_async(agent_id)
+    assert token_b and token_b != token_a
+
+    assert await heartbeat._release_heartbeat_lease_async(agent_id, token_a) is False
+    assert redis.value == token_b
+    assert await heartbeat._release_heartbeat_lease_async(agent_id, token_b) is True
+    assert redis.value is None
+
+
+@pytest.mark.asyncio
+async def test_startup_recovery_does_not_mutate_live_heartbeat_claim(monkeypatch):
+    from app.services import heartbeat
+
+    run_id = uuid4()
+    record = {
+        "task_id": run_id.hex,
+        "task_type": "heartbeat",
+        "status": "running",
+        "claim_version": 3,
+        "claimed_by": "worker-a",
+        "claim_expires_at": datetime.now(timezone.utc) + timedelta(minutes=5),
+        "child_session_id": str(uuid4()),
+        "metadata": {
+            "resume_after_restart": True,
+            "resumable_heartbeat": True,
+            "side_effect_risk": "internal_governed",
+        },
+    }
+
+    async def list_records(**_kwargs):
+        return [record]
+
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("startup must not mutate a live heartbeat claim")
+
+    monkeypatch.setattr(heartbeat, "list_active_runtime_task_records", list_records)
+    monkeypatch.setattr(heartbeat, "requeue_runtime_task_for_worker", forbidden)
+    monkeypatch.setattr(heartbeat, "_mark_heartbeat_runtime_task_needs_reconciliation", forbidden)
+
+    assert await heartbeat.resume_persisted_heartbeat_runs() == []
+
+
 class _FakeScalarResult:
     def __init__(self, value):
         self._value = value
@@ -316,8 +526,8 @@ async def test_heartbeat_distributed_lease_uses_redis(monkeypatch):
             calls.append(("set", key, value, ex, nx))
             return True
 
-        async def delete(self, key):
-            calls.append(("delete", key))
+        async def eval(self, _script, _keys, key, expected):
+            calls.append(("eval", key, expected))
             return 1
 
     async def fake_get_redis():
@@ -328,10 +538,10 @@ async def test_heartbeat_distributed_lease_uses_redis(monkeypatch):
     acquired = await heartbeat._try_acquire_heartbeat_lease_async(agent_id)
     await heartbeat._release_heartbeat_lease_async(agent_id)
 
-    assert acquired is True
+    assert isinstance(acquired, str) and acquired
     assert calls[0][0] == "set"
     assert calls[0][1] == f"heartbeat_lease:{agent_id}"
-    assert calls[1] == ("delete", f"heartbeat_lease:{agent_id}")
+    assert calls[1] == ("eval", f"heartbeat_lease:{agent_id}", acquired)
 
 
 @pytest.mark.asyncio
@@ -371,6 +581,27 @@ async def test_build_evolution_context_cold_start_bootstrap():
     assert "Read soul.md" not in result
     assert "Write to evolution/" not in result
     assert "direct T3 consolidation" in result
+
+
+@pytest.mark.asyncio
+async def test_build_evolution_context_does_not_consume_agent_global_compaction_summary(tmp_path, monkeypatch):
+    from app.services import heartbeat
+
+    agent_id = uuid4()
+    workspace = tmp_path / str(agent_id)
+    summary = workspace / "runtime_artifacts" / "compaction_summary.md"
+    summary.parent.mkdir(parents=True)
+    summary.write_text("SESSION_A_PRIVATE_COMPACTION", encoding="utf-8")
+    monkeypatch.setattr(heartbeat, "_get_canonical_workspace", lambda _agent_id: workspace)
+    monkeypatch.setattr(heartbeat, "_read_pending_t3_intake", lambda _agent_id: "")
+
+    result = await heartbeat._build_evolution_context(
+        agent_id,
+        [SimpleNamespace(action_type="heartbeat", summary="Heartbeat: OK", detail_json={})],
+    )
+
+    assert "SESSION_A_PRIVATE_COMPACTION" not in result
+    assert "Last Session Compaction Summary" not in result
 
 
 @pytest.mark.asyncio
@@ -559,32 +790,25 @@ async def test_heartbeat_tick_uses_platform_managed_cadence(monkeypatch):
     )
     tenant = SimpleNamespace(id=tenant_id, timezone="UTC")
     fake_session = _FakeSession([[agent], [tenant]])
-    triggered: list[uuid4] = []
+    triggered: list[object] = []
 
     async def fake_write_audit_log(*_args, **_kwargs):
         return None
 
-    async def fake_try_acquire(_agent_id, *, now=None):
-        return True
+    async def fake_create_heartbeat_runtime_task(_agent_id, *, tenant_id=None, event_key=None):
+        assert tenant_id == agent.tenant_id
+        assert str(event_key).startswith("cadence:")
+        return "heartbeat-runtime-task"
 
-    async def fake_execute_heartbeat(_agent_id, *, tenant_id=None, lease_acquired=False):
-        return None
-
-    def fake_create_task(coro, *args, **kwargs):
+    async def fake_notify(*, reason, runtime_task_id=None):
         triggered.append(agent_id)
-        inner = coro.cr_frame.f_locals.get("awaitable") if coro.cr_frame else None
-        if inner is not None:
-            inner.close()
-        coro.close()
-        return SimpleNamespace()
 
     monkeypatch.setattr("app.database.async_session", lambda: fake_session)
     monkeypatch.setattr("app.services.audit_logger.write_audit_log", fake_write_audit_log)
     monkeypatch.setattr("app.services.timezone_utils.get_agent_timezone_sync", lambda *_args, **_kwargs: "UTC")
     monkeypatch.setattr(heartbeat, "_is_in_active_hours", lambda *_args, **_kwargs: False)
-    monkeypatch.setattr(heartbeat, "_try_acquire_heartbeat_lease_async", fake_try_acquire)
-    monkeypatch.setattr(heartbeat, "_execute_heartbeat", fake_execute_heartbeat)
-    monkeypatch.setattr(heartbeat.asyncio, "create_task", fake_create_task)
+    monkeypatch.setattr(heartbeat, "_create_heartbeat_runtime_task", fake_create_heartbeat_runtime_task)
+    monkeypatch.setattr("app.services.runtime_task_worker.notify_runtime_task_worker", fake_notify)
 
     await heartbeat._heartbeat_tick()
 
@@ -799,7 +1023,7 @@ async def test_execute_heartbeat_marks_runtime_task_skipped_when_no_model(monkey
     await heartbeat._execute_heartbeat(agent_id, tenant_id=agent.tenant_id, lease_acquired=True)
 
     assert created[0]["task_type"] == "heartbeat"
-    assert created[0]["status"] == "running"
+    assert created[0]["status"] == "pending"
     assert created[0]["parent_agent_id"] == agent_id
     assert created[0]["metadata_json"]["resume_after_restart"] is True
     assert created[0]["metadata_json"]["resumable_heartbeat"] is True
@@ -869,14 +1093,22 @@ async def test_resume_persisted_heartbeat_runs_requeues_unstarted_run(monkeypatc
     run_id = uuid4().hex
     agent_id = uuid4()
     tenant_id = uuid4()
-    updates: list[tuple[str, dict]] = []
-    scheduled: list[tuple[object, object, object]] = []
+    requeues: list[tuple[str, dict]] = []
+    notifications: list[str] = []
 
-    async def fake_list_active_runtime_task_records(limit=50, statuses=("pending", "running")):
+    async def fake_list_active_runtime_task_records(
+        limit=50,
+        statuses=("pending", "running"),
+        task_types=None,
+    ):
+        assert task_types == ("heartbeat",)
         return [
             {
                 "task_id": run_id,
                 "task_type": "heartbeat",
+                "status": "pending",
+                "claim_version": 0,
+                "claimed_by": None,
                 "parent_agent_id": str(agent_id),
                 "trace_id": f"heartbeat:{run_id}",
                 "child_session_id": None,
@@ -896,37 +1128,26 @@ async def test_resume_persisted_heartbeat_runs_requeues_unstarted_run(monkeypatc
             }
         ]
 
-    async def fake_update_runtime_task_record(task_id, **fields):
-        updates.append((task_id, fields))
+    async def fake_requeue(task_id, **fields):
+        requeues.append((task_id, fields))
         return True
 
-    def fake_create_task(coro, *args, **kwargs):
-        inner = coro.cr_frame.f_locals.get("awaitable", coro)
-        frame = inner.cr_frame
-        scheduled.append(
-            (
-                frame.f_locals["agent_id"],
-                frame.f_locals["tenant_id"],
-                frame.f_locals["runtime_task_id"],
-            )
-        )
-        inner.close()
-        if inner is not coro:
-            coro.close()
-        return SimpleNamespace()
+    async def fake_notify(*, reason, runtime_task_id=None):
+        notifications.append(str(runtime_task_id))
 
     monkeypatch.setattr(heartbeat, "list_active_runtime_task_records", fake_list_active_runtime_task_records)
-    monkeypatch.setattr(heartbeat, "update_runtime_task_record", fake_update_runtime_task_record)
-    monkeypatch.setattr(heartbeat.asyncio, "create_task", fake_create_task)
+    monkeypatch.setattr(heartbeat, "requeue_runtime_task_for_worker", fake_requeue)
+    monkeypatch.setattr("app.services.runtime_task_worker.notify_runtime_task_worker", fake_notify)
 
     resumed = await heartbeat.resume_persisted_heartbeat_runs()
 
     assert resumed == [run_id]
-    assert scheduled == [(agent_id, tenant_id, run_id)]
-    assert updates[-1][0] == run_id
-    assert updates[-1][1]["status"] == "running"
-    assert updates[-1][1]["metadata_json"]["resumed_after_restart"] is True
-    assert updates[-1][1]["metadata_json"]["restart_replay_journal"][-1]["phase"] == "resume_intent_recorded"
+    assert notifications == [run_id]
+    assert requeues[-1][0] == run_id
+    assert requeues[-1][1]["task_type"] == "heartbeat"
+    assert requeues[-1][1]["expected_status"] == "pending"
+    assert requeues[-1][1]["metadata_json"]["requeued_after_restart"] is True
+    assert requeues[-1][1]["metadata_json"]["restart_replay_journal"][-1]["phase"] == "resume_intent_recorded"
 
 
 @pytest.mark.asyncio
@@ -936,11 +1157,20 @@ async def test_resume_persisted_heartbeat_runs_requires_reconciliation_after_ses
     run_id = uuid4().hex
     updates: list[tuple[str, dict]] = []
 
-    async def fake_list_active_runtime_task_records(limit=50, statuses=("pending", "running")):
+    async def fake_list_active_runtime_task_records(
+        limit=50,
+        statuses=("pending", "running"),
+        task_types=None,
+    ):
+        assert task_types == ("heartbeat",)
         return [
             {
                 "task_id": run_id,
                 "task_type": "heartbeat",
+                "status": "running",
+                "claim_version": 4,
+                "claimed_by": "expired-heartbeat-worker",
+                "claim_expires_at": datetime.now(timezone.utc) - timedelta(seconds=1),
                 "parent_agent_id": str(uuid4()),
                 "trace_id": f"heartbeat:{run_id}",
                 "child_session_id": str(uuid4()),
@@ -960,13 +1190,18 @@ async def test_resume_persisted_heartbeat_runs_requires_reconciliation_after_ses
         raise AssertionError("session-bound heartbeat must not be replayed blindly")
 
     monkeypatch.setattr(heartbeat, "list_active_runtime_task_records", fake_list_active_runtime_task_records)
-    monkeypatch.setattr(heartbeat, "update_runtime_task_record", fake_update_runtime_task_record)
+    monkeypatch.setattr(
+        heartbeat,
+        "reconcile_runtime_task_for_replay_policy",
+        fake_update_runtime_task_record,
+    )
     monkeypatch.setattr(heartbeat.asyncio, "create_task", fake_create_task)
 
     resumed = await heartbeat.resume_persisted_heartbeat_runs()
 
     assert resumed == []
     assert updates[-1][0] == run_id
-    assert updates[-1][1]["status"] == "needs_reconciliation"
-    assert updates[-1][1]["metadata_json"]["needs_reconciliation"] is True
-    assert updates[-1][1]["metadata_json"]["restart_resume_blocker"] == "direct_core_audit_session_bound"
+    assert updates[-1][1]["expected_status"] == "running"
+    assert updates[-1][1]["expected_claim_version"] == 4
+    assert updates[-1][1]["expected_claim_worker_id"] == "expired-heartbeat-worker"
+    assert updates[-1][1]["reason"] == "expired_session_bound_or_mutating_runtime"

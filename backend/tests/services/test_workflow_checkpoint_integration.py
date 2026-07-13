@@ -64,6 +64,17 @@ def _wait_definition(delay_seconds: int) -> dict:
     }
 
 
+def _wait_then_signal_definition(delay_seconds: int) -> dict:
+    return {
+        "name": "timed-then-signalled-flow",
+        "args_schema": {},
+        "steps": [
+            {"id": "wait", "type": "wait_until_step", "delay_seconds": delay_seconds},
+            {"id": "signal", "type": "wait_signal_step", "signal_type": "approval_ready"},
+        ],
+    }
+
+
 @pytest.fixture()
 async def tenant_id(owner_sessionmaker) -> uuid.UUID:
     from app.models.tenant import Tenant
@@ -183,6 +194,7 @@ async def test_wait_records_resume_at_and_startup_scan_honours_due_time(service,
         task = (await session.execute(select(RuntimeTask).where(RuntimeTask.id == handle.run_id))).scalar_one()
     resume_at_raw = (task.metadata_json or {}).get("resume_at")
     assert resume_at_raw, "the wait must leave an equivalent scheduling record (resume_at)"
+    assert task.metadata_json["resume_step_id"] == "wait"
 
     # Not due yet → the scan skips it.
     resumed = await service.resume_pending_runs(leaf_executor=_leaf()[0])
@@ -212,3 +224,49 @@ async def test_wait_records_resume_at_and_startup_scan_honours_due_time(service,
     statuses = {r.run_id: r.outcome.status for r in resumed}
     assert statuses.get(handle.run_id) == "completed", "the due run must be resumed and land"
     assert calls3 == ["after"], "only the post-wait step executes"
+
+
+async def test_completed_wait_schedule_cannot_requeue_later_signal_suspension(
+    service,
+    tenant_id,
+    owner_sessionmaker,
+    monkeypatch,
+):
+    handle = await service.start_run(
+        tenant_id=tenant_id,
+        definition_data=_wait_then_signal_definition(delay_seconds=600),
+        args={},
+        leaf_executor=_leaf()[0],
+    )
+    assert handle.outcome.status == "suspended"
+
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
+        task = (await session.execute(select(RuntimeTask).where(RuntimeTask.id == handle.run_id))).scalar_one()
+        metadata = dict(task.metadata_json or {})
+        metadata["resume_at"] = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
+        task.metadata_json = metadata
+
+        from app.models.workflow import WorkflowStep
+
+        wait_step = (
+            await session.execute(
+                select(WorkflowStep).where(WorkflowStep.run_id == handle.run_id, WorkflowStep.step_id == "wait")
+            )
+        ).scalar_one()
+        wait_step.input_hash = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
+
+    outcome = await service.resume_run(handle.run_id, tenant_id=tenant_id, leaf_executor=_leaf()[0])
+    assert outcome.status == "suspended"
+
+    wakeups: list[object] = []
+
+    async def record_wakeup(**kwargs):
+        wakeups.append(kwargs)
+
+    monkeypatch.setattr("app.services.runtime_task_worker.notify_runtime_task_worker", record_wakeup)
+    assert await service.requeue_pending_runs() == []
+    assert wakeups == []
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
+        task = (await session.execute(select(RuntimeTask).where(RuntimeTask.id == handle.run_id))).scalar_one()
+    assert task.status == "suspended"
+    assert "waiting_for_signal" in (task.metadata_json or {})

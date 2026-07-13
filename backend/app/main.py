@@ -251,47 +251,91 @@ async def _resume_runtime_tasks_after_startup(done_event=None) -> None:
         from app.database import async_session as _session_permission_scan
         from app.services.heartbeat import resume_persisted_heartbeat_runs
         from app.services.approval_ticket import reconcile_stuck_approval_tickets
-        from app.services.runtime_task_service import reconcile_orphaned_runtime_tasks
+        from app.services.runtime_task_service import (
+            reconcile_orphaned_runtime_tasks,
+            record_startup_resumed_task,
+        )
         from app.services.subagent_run_service import resume_persisted_subagent_runs
         from app.services.trigger_daemon import resume_persisted_trigger_runs
         from app.services.web_chat_runtime import resume_persisted_web_chat_runs
 
-        async with _session_permission_scan() as _db_permission_scan:
-            expired_permissions = await expire_stale_session_permission_requests(db=_db_permission_scan)
-            if expired_permissions:
-                logger.info("[startup] Marked {} stale session permission request(s) expired", expired_permissions)
+        try:
+            async with _session_permission_scan() as _db_permission_scan:
+                expired_permissions = await expire_stale_session_permission_requests(db=_db_permission_scan)
+                if expired_permissions:
+                    logger.info("[startup] Marked {} stale session permission request(s) expired", expired_permissions)
+        except Exception as exc:
+            logger.warning(
+                "[startup] session_permission_expiry recovery lane failed; continuing remaining lanes: {}: {}",
+                type(exc).__name__,
+                str(exc)[:500],
+            )
         if not _runtime_execution_startup_enabled():
             logger.info("[startup] runtime resume/reconcile disabled for process role {}", _process_role())
             return
 
         from datetime import datetime, timedelta, timezone
 
-        reconciled_approvals = await reconcile_stuck_approval_tickets(
-            older_than=datetime.now(timezone.utc) - timedelta(minutes=5),
-        )
-        if reconciled_approvals:
-            logger.warning(
-                "[startup] Marked {} interrupted approval execution(s) for reconciliation",
-                reconciled_approvals,
-            )
+        resumed_task_ids: list[str] = []
 
-        resumed_task_ids = await resume_persisted_async_delegations(limit=50)
-        resumed_subagent_ids = await resume_persisted_subagent_runs(limit=50)
-        resumed_web_chat_ids = await resume_persisted_web_chat_runs(limit=50)
-        resumed_trigger_ids = await resume_persisted_trigger_runs(limit=50)
-        resumed_heartbeat_ids = await resume_persisted_heartbeat_runs(limit=50)
-        resumed_task_ids = [
-            *resumed_task_ids,
-            *resumed_subagent_ids,
-            *resumed_web_chat_ids,
-            *resumed_trigger_ids,
-            *resumed_heartbeat_ids,
-        ]
-        if resumed_task_ids:
-            logger.info("[startup] Resumed {} persisted async runtime task(s)", len(resumed_task_ids))
-        reconciled = await reconcile_orphaned_runtime_tasks(exclude_task_ids=set(resumed_task_ids))
-        if reconciled:
-            logger.warning("[startup] Reconciled {} orphaned runtime task(s) after restart", reconciled)
+        async def run_resume_lane(name, resume):
+            lane_task_ids: list[str] = []
+
+            def collect_resumed_task(task_id: str) -> None:
+                record_startup_resumed_task(lane_task_ids, task_id)
+
+            try:
+                returned_task_ids = await resume(limit=50, on_resumed=collect_resumed_task)
+                for task_id in returned_task_ids:
+                    record_startup_resumed_task(lane_task_ids, task_id)
+            except Exception as exc:
+                logger.warning(
+                    "[startup] {} recovery lane failed; continuing remaining lanes: {}: {}",
+                    name,
+                    type(exc).__name__,
+                    str(exc)[:500],
+                )
+                return lane_task_ids
+            if lane_task_ids:
+                logger.info("[startup] {} resumed {} persisted runtime task(s)", name, len(lane_task_ids))
+            return lane_task_ids
+
+        try:
+            try:
+                reconciled_approvals = await reconcile_stuck_approval_tickets(
+                    older_than=datetime.now(timezone.utc) - timedelta(minutes=5),
+                )
+                if reconciled_approvals:
+                    logger.warning(
+                        "[startup] Marked {} interrupted approval execution(s) for reconciliation",
+                        reconciled_approvals,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "[startup] approval_execution recovery lane failed; continuing remaining lanes: {}: {}",
+                    type(exc).__name__,
+                    str(exc)[:500],
+                )
+
+            for lane_name, resume_lane in (
+                ("delegation", resume_persisted_async_delegations),
+                ("subagent", resume_persisted_subagent_runs),
+                ("web_chat", resume_persisted_web_chat_runs),
+                ("trigger", resume_persisted_trigger_runs),
+                ("heartbeat", resume_persisted_heartbeat_runs),
+            ):
+                resumed_task_ids.extend(await run_resume_lane(lane_name, resume_lane))
+        finally:
+            try:
+                reconciled = await reconcile_orphaned_runtime_tasks(exclude_task_ids=set(resumed_task_ids))
+                if reconciled:
+                    logger.warning("[startup] Reconciled {} orphaned runtime task(s) after restart", reconciled)
+            except Exception as exc:
+                logger.warning(
+                    "[startup] orphan_runtime_task recovery lane failed: {}: {}",
+                    type(exc).__name__,
+                    str(exc)[:500],
+                )
     except Exception as e:
         logger.warning(f"[startup] Runtime task reconciliation failed: {e}")
     finally:

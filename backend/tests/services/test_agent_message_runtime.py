@@ -56,6 +56,7 @@ async def test_invoke_agent_message_runtime_delegates_to_runtime(monkeypatch):
     owner_id = uuid4()
     session_agent_id = uuid4()
     participant_id = uuid4()
+    tenant_id = uuid4()
     target = SimpleNamespace(
         id=target_id,
         name="Target Agent",
@@ -93,6 +94,7 @@ async def test_invoke_agent_message_runtime_delegates_to_runtime(monkeypatch):
         session_id="session-1",
         session_agent_id=session_agent_id,
         participant_id=participant_id,
+        tenant_id=tenant_id,
         permission_profile={
             "mode": "bypassPermissions",
             "allowed_tools": ["web_search", "feishu_doc_read"],
@@ -116,6 +118,7 @@ async def test_invoke_agent_message_runtime_delegates_to_runtime(monkeypatch):
         "mode": "bypassPermissions",
         "allowed_tools": ["web_search", "feishu_doc_read"],
     }
+    assert captured["kwargs"]["tenant_id"] == tenant_id
     # PR-19 rewrote A2A_SYSTEM_PROMPT_SUFFIX with XML structure; the A2A
     # identity signal is now carried by "agent-to-agent\ncommunication, 'A2A'"
     # and "peer agent" inside <role>.
@@ -133,8 +136,8 @@ async def test_build_agent_message_tool_executor_persists_tool_calls(monkeypatch
     participant_id = uuid4()
     calls = {}
 
-    async def fake_execute_tool(tool_name, args, agent_id, user_id, *, emit_runtime_hooks=True):
-        calls["execute"] = (tool_name, args, agent_id, user_id, emit_runtime_hooks)
+    async def fake_execute_tool(tool_name, args, agent_id, user_id, **kwargs):
+        calls["execute"] = (tool_name, args, agent_id, user_id, kwargs)
         return "TOOL_RESULT"
 
     async def fake_persist(**kwargs):
@@ -151,20 +154,46 @@ async def test_build_agent_message_tool_executor_persists_tool_calls(monkeypatch
         participant_id=participant_id,
     )
 
-    result = await executor("read_file", {"path": "skills/test/SKILL.md"}, emit_runtime_hooks=False)
+    runtime_task_id = uuid4().hex
+    result = await executor(
+        "read_file",
+        {"path": "skills/test/SKILL.md"},
+        emit_runtime_hooks=False,
+        tool_call_id="call-a2a-1",
+        runtime_task_id=runtime_task_id,
+        turn_id="turn-a2a-1",
+        origin_channel="agent",
+        round_state={"round_index": 2},
+        t0_refs=("t0://event/1",),
+        permission_profile={"mode": "default"},
+        plan_mode_unattended_available=True,
+    )
 
     assert result == "TOOL_RESULT"
-    assert calls["execute"] == (
+    assert calls["execute"][:4] == (
         "read_file",
         {"path": "skills/test/SKILL.md"},
         target_id,
         owner_id,
-        False,
     )
+    assert calls["execute"][4] == {
+        "emit_runtime_hooks": False,
+        "origin_channel": "agent",
+        "permission_profile": {"mode": "default"},
+        "round_state": {"round_index": 2},
+        "runtime_task_id": runtime_task_id,
+        "session_id": "session-2",
+        "t0_refs": ("t0://event/1",),
+        "tool_call_id": "call-a2a-1",
+        "turn_id": "turn-a2a-1",
+    }
     assert calls["persist"]["tool_name"] == "read_file"
     assert calls["persist"]["tool_args"] == {"path": "skills/test/SKILL.md"}
     assert calls["persist"]["tool_result"] == "TOOL_RESULT"
     assert calls["persist"]["participant_id"] == participant_id
+    assert calls["persist"]["tool_call_id"] == "call-a2a-1"
+    assert calls["persist"]["runtime_task_id"] == runtime_task_id
+    assert calls["persist"]["turn_id"] == "turn-a2a-1"
 
 
 @pytest.mark.asyncio

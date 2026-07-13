@@ -88,6 +88,12 @@ def _authority_allows_path(authority_scope, rel_path: str, *, directory: bool = 
     return normalized in authority_scope.allowed_paths or authority_scope.operator_view
 
 
+def _is_platform_private_runtime_path(rel_path: str) -> bool:
+    from app.services.workspace_resource_authority import is_platform_private_runtime_path
+
+    return is_platform_private_runtime_path(rel_path)
+
+
 def _authorize_workspace_mutation_path(
     ws: Path,
     rel_path: str,
@@ -120,6 +126,10 @@ def _list_files(
     tool_name: str = "list_files",
     authority_scope=None,
 ) -> str:
+    if _is_platform_private_runtime_path(rel_path):
+        return _workspace_error(
+            tool_name, "auth_or_permission", "Session recovery artifacts are platform-private state."
+        )
     enterprise_context = bool(rel_path and rel_path.startswith("enterprise_info"))
     if enterprise_context:
         if not company_context_path_allowed(rel_path, directory=True):
@@ -160,6 +170,9 @@ def _list_files(
     for p in sorted(target.iterdir()):
         if p.name.startswith("."):
             continue
+        child_rel = f"{rel_path.rstrip('/')}/{p.name}" if rel_path else p.name
+        if _is_platform_private_runtime_path(child_rel):
+            continue
         if enterprise_context and p.name not in COMPANY_CONTEXT_FILENAMES:
             continue
         if authority_scope is not None and not authority_scope.visible_child(
@@ -197,6 +210,10 @@ def _read_file(
     tool_name: str = "read_file",
     authority_scope=None,
 ) -> "str | ToolContentEnvelope":
+    if _is_platform_private_runtime_path(rel_path):
+        return _workspace_error(
+            tool_name, "auth_or_permission", "Session recovery artifacts are platform-private state."
+        )
     if not _authority_allows_path(authority_scope, rel_path):
         return _workspace_error(tool_name, "auth_or_permission", "Access denied for this resource owner.")
     if rel_path and rel_path.startswith("enterprise_info"):
@@ -831,6 +848,10 @@ async def _read_document(
     return_format: str = "preview",
     authority_scope=None,
 ) -> str:
+    if _is_platform_private_runtime_path(rel_path):
+        return _workspace_error(
+            tool_name, "auth_or_permission", "Session recovery artifacts are platform-private state."
+        )
     if not _authority_allows_path(authority_scope, rel_path):
         return _workspace_error(tool_name, "auth_or_permission", "Access denied for this resource owner.")
     workspace_root = ws
@@ -1176,6 +1197,10 @@ def _glob_search(
     tool_name: str = "glob_search",
     authority_scope=None,
 ) -> str:
+    if _is_platform_private_runtime_path(root):
+        return _workspace_error(
+            tool_name, "auth_or_permission", "Session recovery artifacts are platform-private state."
+        )
     search_root = (ws / root).resolve() if root else ws.resolve()
     if not _is_within_path(search_root, ws):
         return _workspace_error(tool_name, "auth_or_permission", "Access denied for this path.")
@@ -1189,6 +1214,8 @@ def _glob_search(
             if not _is_within_path(resolved, ws):
                 continue
             rel = resolved.relative_to(ws).as_posix()
+            if _is_platform_private_runtime_path(rel):
+                continue
             if not _authority_allows_path(authority_scope, rel, directory=resolved.is_dir()):
                 continue
             matches.append(rel)
@@ -1212,6 +1239,10 @@ def _grep_search(
     tool_name: str = "grep_search",
     authority_scope=None,
 ) -> str:
+    if _is_platform_private_runtime_path(root):
+        return _workspace_error(
+            tool_name, "auth_or_permission", "Session recovery artifacts are platform-private state."
+        )
     search_root = (ws / root).resolve() if root else ws.resolve()
     if not _is_within_path(search_root, ws):
         return _workspace_error(tool_name, "auth_or_permission", "Access denied for this path.")
@@ -1242,6 +1273,8 @@ def _grep_search(
                 for line in proc.stdout.splitlines():
                     normalized = line.replace(str(ws.resolve()) + os.sep, "")
                     result_path = normalized.split(":", 1)[0].replace("\\", "/")
+                    if _is_platform_private_runtime_path(result_path):
+                        continue
                     if not _authority_allows_path(authority_scope, result_path):
                         continue
                     matches.append(normalized)
@@ -1270,6 +1303,8 @@ def _grep_search(
                 if not path.is_file():
                     continue
                 rel_path = path.relative_to(ws).as_posix()
+                if _is_platform_private_runtime_path(rel_path):
+                    continue
                 if not _authority_allows_path(authority_scope, rel_path):
                     continue
                 try:

@@ -525,6 +525,14 @@ RLS_BYPASS_ALLOWLIST = (
     ),
     _grant(
         *(
+            "app/services/workflow_completion_outbox.py",
+            "_worker_session",
+            "f'workflow_completion_outbox.{operation}'",
+            ("session-state-only",),
+        )
+    ),
+    _grant(
+        *(
             "app/services/runtime_control_bus.py",
             "sweep_pending_transcript_t0_bridges",
             "'sweep pending transcript T0 projections'",
@@ -549,6 +557,14 @@ RLS_BYPASS_ALLOWLIST = (
     ),
     _grant(
         *(
+            "app/services/runtime_task_service.py",
+            "refresh_inline_a2a_reconciliation_evidence",
+            "'inline A2A reconciliation evidence locator scan'",
+            ("select:RuntimeTask.id,RuntimeTask.tenant_id",),
+        )
+    ),
+    _grant(
+        *(
             "app/services/hr_creation_reconciliation.py",
             "reconcile_hr_creation_drafts_once",
             "'HR draft expiry and orphaned provisioning reconciliation'",
@@ -566,7 +582,7 @@ RLS_BYPASS_ALLOWLIST = (
     _grant(
         *(
             "app/services/runtime_task_worker.py",
-            "claim_and_dispatch_once",
+            "_claim_runtime_tasks_with_capacities",
             "'runtime task worker claim pending executable tasks'",
             ("session-state-only",),
         )
@@ -697,6 +713,32 @@ RLS_BYPASS_ALLOWLIST = (
             "backfill_null_reply_contexts",
             '"trigger reply_context backfill — enumerate all tenants\' enabled triggers"',
             ("select:AgentTrigger", "select:ChatSession"),
+        )
+    ),
+    _grant(
+        *(
+            "app/services/workflow_runtime_service.py",
+            "repair_pending_activations_once",
+            "'workflow activation-pending recovery locator scan'",
+            ("select:RuntimeTask.id,RuntimeTask.tenant_id",),
+        )
+    ),
+    _grant(
+        *(
+            "app/services/workflow_runtime_service.py",
+            "repair_unsettled_quota_reservations_once",
+            "'workflow unsettled quota reservation repair locator scan'",
+            (
+                "select:WorkflowQuotaReservation.id,WorkflowQuotaReservation.run_id,WorkflowQuotaReservation.tenant_id,WorkflowQuotaReservation.state,WorkflowQuotaReservation.logical_key",
+            ),
+        )
+    ),
+    _grant(
+        *(
+            "app/services/workflow_runtime_service.py",
+            "repair_pending_live_reconciliation_evidence",
+            "'workflow fanout evidence aggregation repair locator scan'",
+            ("select:RuntimeTask.id,RuntimeTask.tenant_id",),
         )
     ),
     _grant(

@@ -99,7 +99,7 @@ class TestCanParallelizeBatch:
 
 
 @pytest.mark.asyncio
-async def test_parallel_batch_executes_read_only_tools():
+async def test_parallel_batch_executes_read_only_tools(durable_recovery_checkpoint):
     """Two read_file calls in same round should execute via gather."""
     from app.kernel.contracts import InvocationRequest
     from app.kernel.engine import AgentKernel
@@ -166,7 +166,7 @@ async def test_parallel_batch_executes_read_only_tools():
 
 
 @pytest.mark.asyncio
-async def test_parallel_batch_preserves_result_order():
+async def test_parallel_batch_preserves_result_order(durable_recovery_checkpoint):
     """Results should be in original tool_call order regardless of completion order."""
     from app.kernel.contracts import InvocationRequest
     from app.kernel.engine import AgentKernel
@@ -235,7 +235,7 @@ async def test_parallel_batch_preserves_result_order():
 
 
 @pytest.mark.asyncio
-async def test_mixed_batch_parallelizes_read_only_segment_before_write():
+async def test_mixed_batch_parallelizes_read_only_segment_before_write(durable_recovery_checkpoint):
     """Mixed batches should parallelize contiguous read-only segments, then serialize writes."""
     from app.kernel.contracts import InvocationRequest
     from app.kernel.engine import AgentKernel
@@ -312,7 +312,7 @@ async def test_mixed_batch_parallelizes_read_only_segment_before_write():
 
 
 @pytest.mark.asyncio
-async def test_mixed_batch_aborts_later_siblings_after_unsafe_tool_error():
+async def test_mixed_batch_aborts_later_siblings_after_unsafe_tool_error(durable_recovery_checkpoint):
     """A failing unsafe tool must prevent later siblings in the same model batch from running."""
     from app.kernel.contracts import InvocationRequest
     from app.kernel.engine import AgentKernel
@@ -378,7 +378,7 @@ async def test_mixed_batch_aborts_later_siblings_after_unsafe_tool_error():
 
 
 @pytest.mark.asyncio
-async def test_single_tool_call_stays_sequential():
+async def test_single_tool_call_stays_sequential(durable_recovery_checkpoint):
     """Single tool call doesn't trigger parallel path."""
     from app.kernel.contracts import InvocationRequest
     from app.kernel.engine import AgentKernel
@@ -582,7 +582,7 @@ async def test_parallel_batch_respects_semaphore_limit():
 
 
 @pytest.mark.asyncio
-async def test_parallel_batch_applies_pre_tool_hook_modifications():
+async def test_parallel_batch_applies_pre_tool_hook_modifications(durable_recovery_checkpoint):
     """Parallel batches must respect pre-tool arg rewrites just like sequential path."""
     from app.kernel.contracts import InvocationRequest
     from app.kernel.engine import AgentKernel

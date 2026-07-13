@@ -32,6 +32,7 @@ class InvocationPorts:
     build_skill_catalog: Callable[..., str]
     combined_tools: Callable[..., Any]
     record_skill_usage: Callable[..., Any]
+    project_reconciliation_event: Callable[..., Any]
     logger: Any
 
 
@@ -83,6 +84,11 @@ async def _assemble_invocation_state(
         if request.on_tool_call is not None:
             await ports.maybe_await(request.on_tool_call(data))
 
+    async def on_event(data: dict[str, Any]) -> None:
+        await ports.project_reconciliation_event(request, data)
+        if request.on_event is not None:
+            await ports.maybe_await(request.on_event(data))
+
     routing_config = request.smart_model_routing
     if routing_config is None and request.agent_id is not None and request.fallback_model is not None:
         routing_config = await ports.resolve_smart_routing(request.agent_id)
@@ -96,6 +102,7 @@ async def _assemble_invocation_state(
         execution_identity=execution_identity,
         skill_catalog=skill_catalog,
         on_tool_call=on_tool_call,
+        on_event=on_event,
     )
     return _InvocationState(
         request=request,
@@ -164,6 +171,7 @@ def _build_kernel_request(
     execution_identity: Any,
     skill_catalog: str,
     on_tool_call: Callable[..., Any],
+    on_event: Callable[..., Any],
 ) -> Any:
     return ports.kernel_request_type(
         model=route["model"],
@@ -177,7 +185,7 @@ def _build_kernel_request(
         on_chunk=request.on_chunk,
         on_tool_call=on_tool_call,
         on_thinking=request.on_thinking,
-        on_event=request.on_event,
+        on_event=on_event,
         supports_vision=route["supports_vision"],
         memory_context=request.memory_context,
         memory_session_id=request.memory_session_id,

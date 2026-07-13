@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from loguru import logger
 
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.database import async_session, enter_rls_bypass, tenant_scoped_session
 
@@ -42,6 +43,8 @@ async def write_audit_log(
     details: dict | None = None,
     agent_id: uuid.UUID | None = None,
     user_id: uuid.UUID | None = None,
+    *,
+    session_factory: async_sessionmaker[AsyncSession] | None = None,
 ) -> None:
     """Write a single audit log entry using raw SQL.
 
@@ -53,6 +56,9 @@ async def write_audit_log(
         details: JSON-serialisable dict with extra info.
         agent_id: Optional agent UUID.
         user_id: Optional user UUID.
+        session_factory: Optional injected database authority for both tenant
+            resolution and the audit insert. Production defaults to the app
+            session factory.
     """
     try:
         # RLS stage-2b: audit_logs is now policied (USING-only). Derive tenant_id
@@ -62,14 +68,17 @@ async def write_audit_log(
         if agent_id is not None:
             from app.services.tenant_resolver import resolve_tenant_for_agent
 
-            tenant_id = await resolve_tenant_for_agent(agent_id)
+            tenant_id = await resolve_tenant_for_agent(agent_id, session_factory=session_factory)
+            if tenant_id is None:
+                raise LookupError(f"cannot resolve tenant authority for audit agent {agent_id}")
+        factory = session_factory or async_session
         if tenant_id is None:
             # Operator/system events intentionally have no tenant.  Their only
             # legal writer is this parameterized audit sink under an explicit
             # BYPASS; a fail-closed request scope cannot and must not create
             # them directly.
             async with (
-                async_session() as db,
+                factory() as db,
                 enter_rls_bypass(db, reason="operator system audit log insert") as bypass_db,
             ):
                 await _insert_audit_row(
@@ -82,7 +91,7 @@ async def write_audit_log(
                 )
                 await bypass_db.commit()
         else:
-            async with tenant_scoped_session(tenant_id, session_factory=async_session) as db:
+            async with tenant_scoped_session(tenant_id, session_factory=factory) as db:
                 await _insert_audit_row(
                     db,
                     action=action,

@@ -156,6 +156,67 @@ async def test_channel_llm_accepts_latest_recommendation_instead_of_reclassifyin
     assert plan_service.create_kwargs["original_request"] == recommendation.original_request
 
 
+@pytest.mark.parametrize(
+    ("plan_status", "runtime_status", "expected_text", "forbidden_text"),
+    [
+        ("draft", None, "正在生成", "待确认计划"),
+        ("draft", "resumable", "自动重试", "待确认计划"),
+        ("draft", "needs_reconciliation", "恢复协调", "正在生成"),
+        ("draft", "killed", "已取消", "正在生成"),
+        ("draft", "failed", "生成失败", "正在生成"),
+        ("planning_failed", None, "生成失败", "待确认计划"),
+        ("awaiting_confirmation", "completed", "待确认计划", "自动重试"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_channel_reports_actual_system_plan_state_instead_of_always_claiming_confirmation(
+    monkeypatch,
+    plan_status: str,
+    runtime_status: str | None,
+    expected_text: str,
+    forbidden_text: str,
+) -> None:
+    from app.services.channel_agent_runtime import call_agent_llm
+
+    plan = SimpleNamespace(
+        id=uuid4(),
+        status=plan_status,
+        metadata_json=({"system_plan_runtime": {"status": runtime_status}} if runtime_status is not None else {}),
+    )
+
+    class _PlanServiceStub:
+        async def create_plan_request(self, **_kwargs):
+            return plan
+
+        async def get_plan(self, _plan_id):
+            return plan
+
+    # Test Double rationale: isolate channel copy selection from the durable
+    # Plan authoring provider; the state matrix is the contract under test.
+    monkeypatch.setattr(
+        "app.services.plan_mode_service.get_plan_mode_service",
+        lambda: _PlanServiceStub(),
+    )
+
+    async def preserve_plan_state(_plan, *, seed_context=None):
+        del seed_context
+        return _plan
+
+    monkeypatch.setattr("app.services.plan_mode_system_run.launch_system_plan_run", preserve_plan_state)
+    agent = _agent()
+    db = _QueuedDB([agent])
+
+    reply = await call_agent_llm(
+        db,
+        agent.id,
+        "开启计划模式并安排每天九点提醒",
+    )
+
+    assert expected_text in reply
+    assert forbidden_text not in reply
+    assert str(plan.id) in reply
+
+
 @pytest.mark.asyncio
 async def test_channel_llm_confirms_latest_awaiting_plan_from_text_and_handoffs(monkeypatch):
     from app.services.channel_agent_runtime import call_agent_llm

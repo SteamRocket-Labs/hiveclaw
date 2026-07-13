@@ -83,6 +83,21 @@ async def test_stage_business_task_runtime_uses_caller_transaction_and_links_exa
     assert runtime_task.metadata_json["business_task_id"] == str(task.id)
     assert runtime_task.metadata_json["requester_user_id"] == str(requester_id)
     assert runtime_task.parent_session_id == str(root_session_id)
+    assert runtime_task.child_session_id == f"business-task-run-{runtime_task.id.hex}"
+    assert runtime_task.metadata_json["recovery_session_id"] == runtime_task.child_session_id
+    assert runtime_task.metadata_json["recovery_agent_id"] == str(agent_id)
+    assert runtime_task.metadata_json["recovery_runtime_task_id"] == str(runtime_task.id)
+    assert runtime_task.metadata_json["recovery_resolution_targets"] == [
+        {
+            "agent_id": str(agent_id),
+            "session_id": runtime_task.child_session_id,
+            "runtime_task_id": str(runtime_task.id),
+            "source": "business_task",
+            "expected_manifest_state": "missing",
+            "expected_manifest_ref": None,
+            "expected_sha256": None,
+        }
+    ]
     assert runtime_task.metadata_json["root_session_id"] == str(root_session_id)
     assert runtime_task.metadata_json["delivery_target"] == delivery_target
     assert runtime_task.metadata_json["phase"] == "queued"
@@ -459,11 +474,167 @@ def test_business_task_reconciliation_requires_reason_before_retry() -> None:
     assert project_business_task(task=task, runtime_task=runtime)["actions"]["can_retry"] is True
 
 
-def test_expired_running_business_task_is_never_automatically_replayed() -> None:
+async def test_business_task_reconciliation_resolves_manifest_before_domain_close(monkeypatch) -> None:
+    from app.services.business_task_runtime import reconcile_business_task_recovery
+
+    db = _FakeDb()
+    task, runtime = _business_task_pair(
+        task_status="needs_reconciliation",
+        runtime_status="needs_reconciliation",
+        phase="terminal",
+    )
+    operator_id = uuid.uuid4()
+    runtime.child_session_id = f"business-task-run-{runtime.id.hex}"
+    target = {
+        "agent_id": str(runtime.parent_agent_id),
+        "session_id": runtime.child_session_id,
+        "runtime_task_id": str(runtime.id),
+        "source": "business_task",
+        "expected_sha256": "a" * 64,
+        "expected_checkpoint_seq": 5,
+        "expected_claim_version": 2,
+        "expected_claim_worker_id": "worker-2",
+    }
+    runtime.metadata_json.update(
+        {
+            "needs_reconciliation": True,
+            "reconciliation_status": "open",
+            "recovery_resolution_targets": [target],
+        }
+    )
+    db.records[task.id] = task
+    db.records[runtime.id] = runtime
+    captured: dict[str, object] = {}
+
+    def fake_resolve(**kwargs):
+        assert task.status == "needs_reconciliation"
+        assert runtime.metadata_json["business_task_reconciliation_operation"]["status"] == "prepared"
+        captured.update(kwargs)
+        return [
+            {
+                "ref": "runtime_artifacts/recovery.json",
+                "sha256": "b" * 64,
+                "runtime_task_id": str(runtime.id),
+                "source": "business_task",
+                "operation_id": kwargs["operation_id"],
+            }
+        ]
+
+    monkeypatch.setattr(
+        "app.runtime.recovery_manifest.resolve_recovery_manifest_reconciliations",
+        fake_resolve,
+    )
+
+    await reconcile_business_task_recovery(
+        db=db,  # type: ignore[arg-type]
+        task=task,
+        runtime_task=runtime,
+        resolved_by_user_id=operator_id,
+        decision="retry_safe",
+        reason="Verified no external action was committed.",
+    )
+
+    assert db.commits == 1, "prepared intent must commit before filesystem resolution"
+    assert captured["targets"] == [target]
+    assert captured["actor_user_id"] == operator_id
+    assert captured["action"] == "retry"
+    assert task.status == "failed"
+    assert runtime.status == "failed"
+    assert runtime.metadata_json["needs_reconciliation"] is False
+    assert runtime.metadata_json["reconciliation_status"] == "retry_requested"
+    assert runtime.metadata_json["business_task_reconciliation_operation"]["status"] == "completed"
+    assert runtime.metadata_json["business_task_reconciliation_operation"]["receipts"][0]["sha256"] == "b" * 64
+
+
+async def test_business_task_reconciliation_resume_preserves_original_decision_actor(monkeypatch) -> None:
+    from app.services.business_task_runtime import reconcile_business_task_recovery
+
+    db = _FakeDb()
+    task, runtime = _business_task_pair(
+        task_status="needs_reconciliation",
+        runtime_status="needs_reconciliation",
+        phase="terminal",
+    )
+    original_actor = uuid.uuid4()
+    resumer = uuid.uuid4()
+    operation_id = "business-reconcile-operation"
+    runtime.child_session_id = f"business-task-run-{runtime.id.hex}"
+    target = {
+        "agent_id": str(runtime.parent_agent_id),
+        "session_id": runtime.child_session_id,
+        "runtime_task_id": str(runtime.id),
+        "source": "business_task",
+    }
+    runtime.metadata_json.update(
+        {
+            "recovery_resolution_targets": [target],
+            "business_task_reconciliation_operation": {
+                "operation_id": operation_id,
+                "status": "failed",
+                "decision": "close_without_retry",
+                "reason": "Verified and archived the remote outcome.",
+                "actor_user_id": str(original_actor),
+                "targets": [target],
+            },
+        }
+    )
+    db.records[task.id] = task
+    db.records[runtime.id] = runtime
+    captured: dict[str, object] = {}
+
+    def fake_resolve(**kwargs):
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(
+        "app.runtime.recovery_manifest.resolve_recovery_manifest_reconciliations",
+        fake_resolve,
+    )
+
+    await reconcile_business_task_recovery(
+        db=db,  # type: ignore[arg-type]
+        task=task,
+        runtime_task=runtime,
+        resolved_by_user_id=resumer,
+        decision="close_without_retry",
+        reason="Verified and archived the remote outcome.",
+        operation_id=operation_id,
+    )
+
+    assert captured["actor_user_id"] == original_actor
+    operation = runtime.metadata_json["business_task_reconciliation_operation"]
+    assert operation["actor_user_id"] == str(original_actor)
+    assert operation["resumed_by_user_id"] == str(resumer)
+    assert runtime.status == "killed"
+    assert runtime.metadata_json["reconciliation_status"] == "archived"
+
+
+def test_expired_running_business_task_is_never_automatically_replayed(monkeypatch) -> None:
+    from app.services import business_task_runtime as module
     from app.services.business_task_runtime import quarantine_stale_business_task
 
     db = _FakeDb()
     task, runtime = _business_task_pair(task_status="doing", runtime_status="running", phase="invoking")
+    runtime.child_session_id = f"business-task-run-{runtime.id.hex}"
+    runtime.metadata_json.update(
+        {
+            "recovery_agent_id": str(runtime.parent_agent_id),
+            "recovery_session_id": runtime.child_session_id,
+            "recovery_runtime_task_id": str(runtime.id),
+        }
+    )
+    monkeypatch.setattr(
+        module,
+        "_inspect_business_task_recovery",
+        lambda _runtime_task: {
+            "state": "valid",
+            "receipt": {"ref": "runtime_artifacts/recovery.json", "sha256": "a" * 64},
+            "expected_checkpoint_seq": 8,
+            "expected_claim_version": 3,
+            "expected_claim_worker_id": "dead-worker",
+            "pending_tool_frames": [{"tool_call_id": "call-email", "tool_name": "send_email", "status": "running"}],
+        },
+    )
 
     quarantine_stale_business_task(
         db=db,  # type: ignore[arg-type]
@@ -476,3 +647,20 @@ def test_expired_running_business_task_is_never_automatically_replayed() -> None
     assert runtime.status == "needs_reconciliation"
     assert runtime.metadata_json["outcome"]["error_code"] == "worker_lease_expired"
     assert runtime.metadata_json["outcome"]["retryable"] is False
+    assert runtime.metadata_json["needs_reconciliation"] is True
+    assert runtime.metadata_json["reconciliation_status"] == "open"
+    assert runtime.metadata_json["recovery_tool_frames"][0]["tool_call_id"] == "call-email"
+    assert runtime.metadata_json["recovery_resolution_targets"] == [
+        {
+            "agent_id": str(runtime.parent_agent_id),
+            "session_id": runtime.child_session_id,
+            "runtime_task_id": str(runtime.id),
+            "source": "business_task",
+            "expected_manifest_state": "present",
+            "expected_manifest_ref": "runtime_artifacts/recovery.json",
+            "expected_sha256": "a" * 64,
+            "expected_checkpoint_seq": 8,
+            "expected_claim_version": 3,
+            "expected_claim_worker_id": "dead-worker",
+        }
+    ]

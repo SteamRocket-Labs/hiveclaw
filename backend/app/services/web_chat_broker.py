@@ -90,5 +90,58 @@ class WebChatBroker:
                 self._runtime_session_order.append(key)
             return session
 
+    async def resolve_runtime_recovery_state(
+        self,
+        agent_id: str,
+        session_id: str | None,
+        *,
+        runtime_task_ids: set[str],
+    ) -> bool:
+        """Remove only operator-resolved recovery blockers from a live session."""
+
+        key = self._runtime_session_key(agent_id, session_id)
+        if key is None:
+            return False
+        normalized_ids = {str(value).replace("-", "").strip() for value in runtime_task_ids if str(value).strip()}
+        async with self._lock:
+            session = self._runtime_sessions.get(key)
+            if session is None or not isinstance(session.metadata, dict):
+                return False
+            metadata = session.metadata
+            current_run_id = str(metadata.get("runtime_task_id") or "").replace("-", "").strip()
+            current_resolved = current_run_id in normalized_ids
+            prior = [
+                dict(item)
+                for item in metadata.get("prior_run_recovery_reconciliations", [])
+                if isinstance(item, dict)
+                and str(item.get("source_runtime_task_id") or "").replace("-", "").strip() not in normalized_ids
+            ]
+            if prior:
+                metadata["prior_run_recovery_reconciliations"] = prior
+            else:
+                metadata.pop("prior_run_recovery_reconciliations", None)
+            if current_resolved:
+                for metadata_key in (
+                    "pending_tool_frame",
+                    "pending_tool_frames",
+                    "recovered_pending_tool_frames",
+                    "recovered_tool_frame_reconciliation",
+                    "recovered_tool_frame_replay_results",
+                    "recovery_manifest_checkpoint_receipt",
+                ):
+                    metadata.pop(metadata_key, None)
+            has_current_frames = any(
+                metadata.get(metadata_key)
+                for metadata_key in (
+                    "pending_tool_frame",
+                    "pending_tool_frames",
+                    "recovered_pending_tool_frames",
+                    "recovered_tool_frame_reconciliation",
+                )
+            )
+            if not prior and not has_current_frames:
+                metadata.pop("recovery_reconciliation_blocked", None)
+            return True
+
 
 web_chat_broker = WebChatBroker()

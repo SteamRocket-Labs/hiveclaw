@@ -2,20 +2,133 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+from pathlib import Path
 import uuid
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import delete, func, select
 
 from app.agents.subagent import SUBAGENT_TYPE_WORKER, SubagentResult, SubagentSpawnContext, SubagentSpec
 from app.agents.subagent_memory import SubagentMemoryStore
-from app.database import tenant_scoped_session
+from app.database import enter_rls_bypass, tenant_scoped_session
 from app.models.chat_session import ChatSession
+from app.models.chat_transcript_event import ChatTranscriptEvent
+from app.models.runtime_notification_outbox import RuntimeNotificationOutbox
 from app.models.runtime_task import RuntimeTask
 from app.services import subagent_run_service as svc
+from app.services.runtime_notification_outbox import RuntimeNotificationOutboxService
 from app.services.runtime_budget_service import RuntimeBudgetApprovalRequired, RuntimeBudgetDenied
+
+
+async def _delete_subagent_test_outbox(
+    session,
+    *,
+    tenant_id: uuid.UUID,
+    source_run_id: str | uuid.UUID | None = None,
+) -> None:
+    statement = delete(RuntimeNotificationOutbox).where(RuntimeNotificationOutbox.tenant_id == tenant_id)
+    if source_run_id is not None:
+        statement = statement.where(RuntimeNotificationOutbox.source_run_id == str(source_run_id))
+    await session.execute(statement)
+
+
+def test_subagent_outbox_cleanup_never_uses_cross_tenant_delete() -> None:
+    source = Path(__file__).read_text(encoding="utf-8")
+    unscoped_delete = "await session.execute(delete(" + "RuntimeNotificationOutbox))"
+    assert unscoped_delete not in source
+
+
+@pytest.mark.usefixtures("migrated_pg_url")
+async def test_subagent_outbox_cleanup_preserves_foreign_tenant_and_run(owner_sessionmaker) -> None:
+    from app.models.agent import Agent
+    from app.models.tenant import Tenant
+    from app.models.user import User
+
+    owned_tenant_id, foreign_tenant_id = uuid.uuid4(), uuid.uuid4()
+    owned_run_id, foreign_run_id = uuid.uuid4(), uuid.uuid4()
+    authorities = []
+    async with owner_sessionmaker() as session, enter_rls_bypass(session, reason="seed scoped outbox cleanup") as db:
+        for label, tenant_id, run_id in (
+            ("owned", owned_tenant_id, owned_run_id),
+            ("foreign", foreign_tenant_id, foreign_run_id),
+        ):
+            user_id, agent_id, chat_session_id, outbox_id = (uuid.uuid4() for _ in range(4))
+            db.add(Tenant(id=tenant_id, name=f"{label} cleanup", slug=f"{label}-{tenant_id.hex[:8]}"))
+            db.add(
+                User(
+                    id=user_id,
+                    tenant_id=tenant_id,
+                    username=f"{label}-{user_id.hex[:8]}",
+                    email=f"{label}-{user_id.hex[:8]}@example.test",
+                    password_hash="x",
+                    display_name=f"{label} owner",
+                )
+            )
+            await db.flush()
+            db.add(
+                Agent(
+                    id=agent_id,
+                    tenant_id=tenant_id,
+                    name=f"{label} agent",
+                    creator_id=user_id,
+                    sponsor_user_id=user_id,
+                )
+            )
+            await db.flush()
+            db.add(ChatSession(id=chat_session_id, tenant_id=tenant_id, agent_id=agent_id, user_id=user_id))
+            await db.flush()
+            db.add(
+                RuntimeNotificationOutbox(
+                    id=outbox_id,
+                    tenant_id=tenant_id,
+                    source_kind="subagent",
+                    source_run_id=str(run_id),
+                    parent_session_id=chat_session_id,
+                    parent_agent_id=agent_id,
+                    parent_user_id=user_id,
+                    terminal_status="completed",
+                    task_type="subagent",
+                    summary=f"{label} result",
+                )
+            )
+            authorities.append((label, outbox_id))
+        await db.commit()
+
+    async with owner_sessionmaker() as session, enter_rls_bypass(session, reason="scoped outbox cleanup") as db:
+        await _delete_subagent_test_outbox(
+            db,
+            tenant_id=owned_tenant_id,
+            source_run_id=owned_run_id,
+        )
+        await db.commit()
+
+    async with owner_sessionmaker() as session, enter_rls_bypass(session, reason="verify scoped outbox cleanup") as db:
+        remaining = {
+            row.id
+            for row in (
+                await db.execute(
+                    select(RuntimeNotificationOutbox).where(
+                        RuntimeNotificationOutbox.id.in_([outbox_id for _, outbox_id in authorities])
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        }
+    assert authorities[0][1] not in remaining
+    assert authorities[1][1] in remaining
+    async with owner_sessionmaker() as session, enter_rls_bypass(session, reason="cleanup scoped outbox test") as db:
+        tenant_ids = (owned_tenant_id, foreign_tenant_id)
+        await db.execute(delete(RuntimeNotificationOutbox).where(RuntimeNotificationOutbox.tenant_id.in_(tenant_ids)))
+        await db.execute(delete(ChatSession).where(ChatSession.tenant_id.in_(tenant_ids)))
+        await db.execute(delete(Agent).where(Agent.tenant_id.in_(tenant_ids)))
+        await db.execute(delete(User).where(User.tenant_id.in_(tenant_ids)))
+        await db.execute(delete(Tenant).where(Tenant.id.in_((owned_tenant_id, foreign_tenant_id))))
+        await db.commit()
 
 
 @pytest.mark.asyncio
@@ -78,6 +191,83 @@ async def test_start_subagent_run_queues_subagent_task_and_wakes_worker(monkeypa
     )
     assert "restart_resume_blocker" not in captured["metadata_json"]
     assert captured["notify"] == {"reason": "subagent_created", "runtime_task_id": started.run_id}
+
+
+@pytest.mark.asyncio
+async def test_start_subagent_run_foreground_inline_persists_claimed_running_authority_without_waking_worker(
+    monkeypatch,
+):
+    captured: dict = {}
+
+    async def _fake_create(**kwargs):
+        captured["runtime_task"] = kwargs
+        return kwargs["task_id"]
+
+    async def _fake_child_session(**kwargs):
+        return "child-inline"
+
+    async def _unexpected_notify(**kwargs):
+        raise AssertionError(f"foreground inline authority must not wake a second worker: {kwargs}")
+
+    monkeypatch.setattr(svc, "create_runtime_task_record", _fake_create)
+    monkeypatch.setattr(svc, "create_subagent_child_session", _fake_child_session)
+    monkeypatch.setattr("app.services.runtime_task_worker.notify_runtime_task_worker", _unexpected_notify)
+
+    started = await svc.start_subagent_run(
+        parent_agent_id=uuid.uuid4(),
+        parent_user_id=uuid.uuid4(),
+        spec_name="writer",
+        spec_type=SUBAGENT_TYPE_WORKER,
+        task="edit the report",
+        parent_session_id=str(uuid.uuid4()),
+        dispatch_mode="foreground_inline",
+    )
+
+    assert started.child_session_id == "child-inline"
+    runtime_task = captured["runtime_task"]
+    metadata = runtime_task["metadata_json"]
+    assert runtime_task["status"] == "running"
+    assert runtime_task["claim_version"] == 1
+    assert runtime_task["attempt_count"] == 1
+    assert runtime_task["claimed_by"] == started.claim_worker_id
+    assert runtime_task["claim_expires_at"] == started.claim_expires_at
+    assert started.claim_version == 1
+    assert started.claim_worker_id.startswith("foreground-subagent:")
+    assert started.claim_expires_at > datetime.now(timezone.utc)
+    assert metadata["execution_backend"] == "foreground_inline"
+    assert metadata["worker_claim_required"] is True
+    assert metadata["worker_dispatched"] is True
+    assert metadata["claim_version"] == 1
+    assert metadata["claimed_by"] == started.claim_worker_id
+    assert metadata["claim_expires_at"] == started.claim_expires_at.isoformat()
+    assert metadata["claim_fence"] == f"{started.run_id}:1"
+
+
+def test_subagent_completion_intent_keeps_background_parent_continuation() -> None:
+    run_id = uuid.uuid4()
+    parent_session_id = uuid.uuid4()
+    notification = svc._subagent_completion_notification(
+        record={
+            "task_type": svc.SUBAGENT_RUN_TASK_TYPE,
+            "tenant_id": str(uuid.uuid4()),
+            "parent_agent_id": str(uuid.uuid4()),
+            "root_user_id": str(uuid.uuid4()),
+            "parent_session_id": str(parent_session_id),
+            "child_session_id": str(uuid.uuid4()),
+            "child_agent_name": "background-worker",
+            "metadata": {"execution_backend": "runtime_task_worker"},
+        },
+        run_id=run_id.hex,
+        status="completed",
+        summary="background result",
+        decision_entry={},
+    )
+
+    assert notification is not None
+    assert notification.source_run_id == str(run_id)
+    assert notification.parent_session_id == parent_session_id
+    assert notification.delivery_mode == "parent_continuation"
+    assert "local_projection_only" not in notification.metadata
 
 
 @pytest.mark.asyncio
@@ -385,6 +575,7 @@ async def test_start_subagent_run_real_pg_creates_child_session_and_runtime_task
 
     assert child_session.source_channel == "subagent"
     assert child_session.session_kind == "subagent"
+    assert child_session.runtime_task_id == uuid.UUID(started.run_id)
     assert child_session.parent_session_id == parent_session_id
     assert (
         child_session.transcript_metadata_json["session_contract"]["continuation_address"] == started.child_session_id
@@ -399,6 +590,751 @@ async def test_start_subagent_run_real_pg_creates_child_session_and_runtime_task
     assert runtime_task.child_session_id == started.child_session_id
     assert runtime_task.metadata_json["session_contract"]["continuation_address"] == started.child_session_id
     assert runtime_task.metadata_json["session_contract"]["run_id"] == started.run_id
+
+
+@pytest.mark.usefixtures("migrated_pg_url")
+@pytest.mark.asyncio
+async def test_foreground_subagent_real_pg_claim_is_fenced_and_stale_terminal_cannot_overwrite(
+    owner_sessionmaker,
+    monkeypatch,
+):
+    from app.models.agent import Agent
+    from app.models.tenant import Tenant
+    from app.models.user import User
+    import app.services.runtime_task_service as runtime_task_service
+
+    tenant_id = uuid.uuid4()
+    parent_agent_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    parent_session_id = uuid.uuid4()
+
+    async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
+        session.add(Tenant(id=tenant_id, name="subagent-fence", slug=f"saf-{tenant_id.hex[:10]}"))
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
+        session.add(
+            User(
+                id=user_id,
+                username=f"saf-u-{user_id.hex[:10]}",
+                email=f"{user_id.hex[:10]}@subagent-fence.test",
+                password_hash="x",
+                display_name="Subagent Fence Owner",
+                tenant_id=tenant_id,
+            )
+        )
+        await session.flush()
+        session.add(
+            Agent(
+                id=parent_agent_id,
+                tenant_id=tenant_id,
+                name="foreground-parent",
+                creator_id=user_id,
+                sponsor_user_id=user_id,
+            )
+        )
+        await session.flush()
+        session.add(
+            ChatSession(
+                id=parent_session_id,
+                agent_id=parent_agent_id,
+                tenant_id=tenant_id,
+                user_id=user_id,
+                title="Foreground Parent",
+                source_channel="web",
+            )
+        )
+
+    def scoped_session(tenant=None, **_kwargs):
+        return tenant_scoped_session(tenant, session_factory=owner_sessionmaker)
+
+    async def resolve_tenant(_agent_id, *_args, **_kwargs):
+        return tenant_id
+
+    monkeypatch.setattr(svc, "tenant_scoped_session", scoped_session)
+    monkeypatch.setattr(svc, "resolve_tenant_for_agent", resolve_tenant)
+    monkeypatch.setattr(runtime_task_service, "tenant_scoped_session", scoped_session)
+    monkeypatch.setattr(runtime_task_service, "resolve_tenant_for_agent", resolve_tenant)
+    monkeypatch.setattr(runtime_task_service, "async_session", owner_sessionmaker)
+
+    started = await svc.start_subagent_run(
+        parent_agent_id=parent_agent_id,
+        parent_user_id=user_id,
+        spec_name="writer",
+        spec_type="worker",
+        task="write once",
+        parent_session_id=str(parent_session_id),
+        dispatch_mode="foreground_inline",
+    )
+
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
+        row = await session.get(RuntimeTask, uuid.UUID(started.run_id))
+        assert row is not None
+        assert row.status == "running"
+        assert row.claim_version == started.claim_version == 1
+        assert row.claimed_by == started.claim_worker_id
+        assert row.attempt_count == 1
+        assert row.claim_expires_at == started.claim_expires_at
+        child_session = await session.get(ChatSession, uuid.UUID(started.child_session_id))
+        assert child_session is not None
+        assert child_session.runtime_task_id == uuid.UUID(started.run_id)
+        assert child_session.transcript_metadata_json["claim_version"] == 1
+        assert child_session.transcript_metadata_json["claim_worker_id"] == started.claim_worker_id
+        assert child_session.transcript_metadata_json["claim_fence"] == f"{started.run_id}:1"
+        row.status = "needs_reconciliation"
+        row.claim_version = 2
+        row.claimed_by = "runtime-task-worker:reconciler"
+        row.claim_expires_at = None
+        row.result_summary = "unknown old foreground outcome"
+
+    with pytest.raises(RuntimeError, match="stale.*terminal"):
+        await svc.make_run_completer(
+            started.run_id,
+            expected_claim_version=started.claim_version,
+            expected_claim_worker_id=started.claim_worker_id,
+        )(
+            SubagentResult(
+                name="writer",
+                type="worker",
+                status="completed",
+                content="late stale result",
+            )
+        )
+
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
+        row = await session.get(RuntimeTask, uuid.UUID(started.run_id))
+        assert row is not None
+        assert row.status == "needs_reconciliation"
+        assert row.claim_version == 2
+        assert row.claimed_by == "runtime-task-worker:reconciler"
+        assert row.result_summary == "unknown old foreground outcome"
+
+
+@pytest.mark.usefixtures("migrated_pg_url")
+@pytest.mark.asyncio
+async def test_foreground_subagent_terminal_intent_repairs_projection_after_crash_exactly_once(
+    owner_sessionmaker,
+    monkeypatch,
+):
+    """A terminal foreground result survives a crash before transcript projection.
+
+    The first outbox delivery attempt is also failed after the local projection to
+    prove that a duplicate pump does not duplicate child/parent transcript facts.
+    The delivery callback is a test double because parent continuation crosses the
+    external LLM boundary; the durable DB projection and outbox pump are real.
+    """
+
+    from app.models.agent import Agent
+    from app.models.tenant import Tenant
+    from app.models.user import User
+    import app.services.runtime_task_service as runtime_task_service
+
+    tenant_id = uuid.uuid4()
+    parent_agent_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    mismatched_user_id = uuid.uuid4()
+    parent_session_id = uuid.uuid4()
+
+    async with owner_sessionmaker() as session:
+        await _delete_subagent_test_outbox(session, tenant_id=tenant_id)
+        await session.commit()
+
+    async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
+        session.add(Tenant(id=tenant_id, name="subagent-projection", slug=f"sap-{tenant_id.hex[:10]}"))
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
+        session.add(
+            User(
+                id=user_id,
+                username=f"sap-u-{user_id.hex[:10]}",
+                email=f"{user_id.hex[:10]}@subagent-projection.test",
+                password_hash="x",
+                display_name="Subagent Projection Owner",
+                tenant_id=tenant_id,
+            )
+        )
+        session.add(
+            User(
+                id=mismatched_user_id,
+                username=f"sap-u-{mismatched_user_id.hex[:10]}",
+                email=f"{mismatched_user_id.hex[:10]}@subagent-projection.test",
+                password_hash="x",
+                display_name="Mismatched Projection Owner",
+                tenant_id=tenant_id,
+            )
+        )
+        await session.flush()
+        session.add(
+            Agent(
+                id=parent_agent_id,
+                tenant_id=tenant_id,
+                name="projection-parent",
+                creator_id=user_id,
+                sponsor_user_id=user_id,
+            )
+        )
+        await session.flush()
+        session.add(
+            ChatSession(
+                id=parent_session_id,
+                agent_id=parent_agent_id,
+                tenant_id=tenant_id,
+                user_id=user_id,
+                title="Projection Parent",
+                source_channel="web",
+            )
+        )
+
+    def scoped_session(tenant=None, **_kwargs):
+        return tenant_scoped_session(tenant, session_factory=owner_sessionmaker)
+
+    async def resolve_tenant(_agent_id, *_args, **_kwargs):
+        return tenant_id
+
+    monkeypatch.setattr(svc, "tenant_scoped_session", scoped_session)
+    monkeypatch.setattr(svc, "resolve_tenant_for_agent", resolve_tenant)
+    monkeypatch.setattr(runtime_task_service, "tenant_scoped_session", scoped_session)
+    monkeypatch.setattr(runtime_task_service, "resolve_tenant_for_agent", resolve_tenant)
+    monkeypatch.setattr(runtime_task_service, "async_session", owner_sessionmaker)
+
+    started = await svc.start_subagent_run(
+        parent_agent_id=parent_agent_id,
+        parent_user_id=user_id,
+        spec_name="writer",
+        spec_type="worker",
+        task="write one durable result",
+        parent_session_id=str(parent_session_id),
+        dispatch_mode="foreground_inline",
+    )
+    runtime_task_id = uuid.UUID(started.run_id)
+    child_session_id = uuid.UUID(started.child_session_id)
+
+    original_projector = svc.update_subagent_child_session_state_for_run
+
+    async def crash_before_projection(**_kwargs):
+        raise RuntimeError("simulated process crash after terminal commit")
+
+    monkeypatch.setattr(svc, "update_subagent_child_session_state_for_run", crash_before_projection)
+    with pytest.raises(RuntimeError, match="simulated process crash"):
+        await svc.make_run_completer(
+            started.run_id,
+            expected_claim_version=started.claim_version,
+            expected_claim_worker_id=started.claim_worker_id,
+        )(
+            SubagentResult(
+                name="writer",
+                type="worker",
+                status="completed",
+                content="durable foreground result",
+                tokens_used=17,
+            )
+        )
+    monkeypatch.setattr(svc, "update_subagent_child_session_state_for_run", original_projector)
+
+    async with owner_sessionmaker() as session:
+        task = await session.get(RuntimeTask, runtime_task_id)
+        intent = (
+            await session.execute(
+                select(RuntimeNotificationOutbox).where(
+                    RuntimeNotificationOutbox.tenant_id == tenant_id,
+                    RuntimeNotificationOutbox.source_kind == "subagent",
+                    RuntimeNotificationOutbox.source_run_id == str(runtime_task_id),
+                )
+            )
+        ).scalar_one()
+        projected_before_pump = list(
+            (
+                await session.execute(
+                    select(ChatTranscriptEvent).where(
+                        ChatTranscriptEvent.run_id == runtime_task_id,
+                        ChatTranscriptEvent.event_type.in_(("subagent_task_completed", "child_session")),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    assert task is not None and task.status == "completed"
+    assert task.metadata_json["completion_outbox_id"] == str(intent.id)
+    assert intent.status == "pending"
+    assert intent.delivery_mode == "session_projection"
+    assert intent.metadata_json["local_projection_only"] is True
+    assert intent.metadata_json["subagent_terminal_projection_required"] is True
+    assert projected_before_pump == []
+
+    repair_authority = {
+        "notification_id": intent.id,
+        "run_id": str(runtime_task_id),
+        "parent_agent_id": parent_agent_id,
+        "parent_user_id": user_id,
+        "parent_session_id": parent_session_id,
+        "child_session_id": child_session_id,
+        "status": "completed",
+        "summary": "durable foreground result",
+    }
+    with pytest.raises(RuntimeError, match="authority mismatch"):
+        await svc.repair_subagent_terminal_projection_from_notification(
+            tenant_id=uuid.uuid4(),
+            **repair_authority,
+        )
+    with pytest.raises(RuntimeError, match="authority mismatch"):
+        await svc.repair_subagent_terminal_projection_from_notification(
+            tenant_id=tenant_id,
+            **{**repair_authority, "parent_user_id": uuid.uuid4()},
+        )
+
+    outbox = RuntimeNotificationOutboxService(
+        session_factory=owner_sessionmaker,
+        retry_base_seconds=0,
+        max_attempts=3,
+    )
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
+        child_session = await session.get(ChatSession, child_session_id)
+        assert child_session is not None
+        # Lightweight Subagents have no child Agent row. Their child transcript
+        # is intentionally owned by the parent Agent, matching the reconciler's
+        # target authority predicate.
+        assert child_session.agent_id == parent_agent_id
+        child_session.user_id = mismatched_user_id
+
+    first = await outbox.drain_once(worker_id="projection-worker-a", item_ids={intent.id})
+
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
+        child_session = await session.get(ChatSession, child_session_id)
+        assert child_session is not None
+        child_session.user_id = user_id
+
+    second = await outbox.drain_once(worker_id="projection-worker-b", item_ids={intent.id})
+    duplicate = await outbox.drain_once(worker_id="projection-worker-c", item_ids={intent.id})
+
+    async with owner_sessionmaker() as session:
+        stored_intent = await session.get(RuntimeNotificationOutbox, intent.id)
+        child_session = await session.get(ChatSession, child_session_id)
+        child_events = list(
+            (
+                await session.execute(
+                    select(ChatTranscriptEvent).where(
+                        ChatTranscriptEvent.session_id == child_session_id,
+                        ChatTranscriptEvent.run_id == runtime_task_id,
+                        ChatTranscriptEvent.event_type == "subagent_task_completed",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        parent_events = list(
+            (
+                await session.execute(
+                    select(ChatTranscriptEvent).where(
+                        ChatTranscriptEvent.session_id == parent_session_id,
+                        ChatTranscriptEvent.run_id == runtime_task_id,
+                        ChatTranscriptEvent.event_type == "child_session",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        parent_notification_count = (
+            await session.execute(
+                select(func.count())
+                .select_from(ChatTranscriptEvent)
+                .where(
+                    ChatTranscriptEvent.session_id == parent_session_id,
+                    ChatTranscriptEvent.run_id == runtime_task_id,
+                    ChatTranscriptEvent.event_type == "agent_task_notification",
+                )
+            )
+        ).scalar_one()
+        intent_count = (
+            await session.execute(
+                select(func.count())
+                .select_from(RuntimeNotificationOutbox)
+                .where(
+                    RuntimeNotificationOutbox.tenant_id == tenant_id,
+                    RuntimeNotificationOutbox.source_kind == "subagent",
+                    RuntimeNotificationOutbox.source_run_id == str(runtime_task_id),
+                )
+            )
+        ).scalar_one()
+
+    assert first["retried"] == 1
+    assert second["delivered"] == 1
+    assert duplicate["claimed"] == 0
+    assert stored_intent is not None and stored_intent.status == "delivered"
+    assert stored_intent.delivery_receipt_json["status"] == "local_projection_repaired"
+    assert child_session is not None
+    assert child_session.transcript_metadata_json["session_state"] == "completed"
+    assert child_session.transcript_metadata_json["last_run_id"] == str(runtime_task_id)
+    assert len(child_events) == 1
+    assert len(parent_events) == 1
+    assert parent_notification_count == 0
+    assert intent_count == 1
+
+    async with owner_sessionmaker() as session:
+        await session.execute(delete(RuntimeNotificationOutbox).where(RuntimeNotificationOutbox.id == intent.id))
+        await session.commit()
+
+    repaired = await outbox.reconcile_terminal_tasks_once(limit=1, task_ids={runtime_task_id})
+    async with owner_sessionmaker() as session:
+        recovered_intent = await session.get(RuntimeNotificationOutbox, intent.id)
+
+    assert repaired == 1
+    assert recovered_intent is not None
+    assert recovered_intent.delivery_mode == "session_projection"
+    assert recovered_intent.metadata_json["local_projection_only"] is True
+
+    replayed = await outbox.drain_once(worker_id="projection-worker-backfill", item_ids={recovered_intent.id})
+    async with owner_sessionmaker() as session:
+        child_event_count_after_backfill = (
+            await session.execute(
+                select(func.count())
+                .select_from(ChatTranscriptEvent)
+                .where(
+                    ChatTranscriptEvent.session_id == child_session_id,
+                    ChatTranscriptEvent.run_id == runtime_task_id,
+                    ChatTranscriptEvent.event_type == "subagent_task_completed",
+                )
+            )
+        ).scalar_one()
+        parent_event_count_after_backfill = (
+            await session.execute(
+                select(func.count())
+                .select_from(ChatTranscriptEvent)
+                .where(
+                    ChatTranscriptEvent.session_id == parent_session_id,
+                    ChatTranscriptEvent.run_id == runtime_task_id,
+                    ChatTranscriptEvent.event_type == "child_session",
+                )
+            )
+        ).scalar_one()
+        parent_notification_count_after_backfill = (
+            await session.execute(
+                select(func.count())
+                .select_from(ChatTranscriptEvent)
+                .where(
+                    ChatTranscriptEvent.session_id == parent_session_id,
+                    ChatTranscriptEvent.run_id == runtime_task_id,
+                    ChatTranscriptEvent.event_type == "agent_task_notification",
+                )
+            )
+        ).scalar_one()
+
+    assert replayed["delivered"] == 1
+    assert child_event_count_after_backfill == 1
+    assert parent_event_count_after_backfill == 1
+    assert parent_notification_count_after_backfill == 0
+
+
+@pytest.mark.parametrize("terminal_status", ["killed", "needs_reconciliation"])
+@pytest.mark.usefixtures("migrated_pg_url")
+@pytest.mark.asyncio
+async def test_headless_foreground_terminal_paths_commit_local_intent_before_projection_retry(
+    owner_sessionmaker,
+    monkeypatch,
+    terminal_status,
+):
+    from app.models.agent import Agent
+    from app.models.tenant import Tenant
+    from app.models.user import User
+    import app.services.runtime_task_service as runtime_task_service
+
+    tenant_id = uuid.uuid4()
+    parent_agent_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    mismatched_user_id = uuid.uuid4()
+
+    async with owner_sessionmaker() as session:
+        await _delete_subagent_test_outbox(session, tenant_id=tenant_id)
+        session.add(Tenant(id=tenant_id, name="headless-terminal", slug=f"hlt-{tenant_id.hex[:10]}"))
+        session.add_all(
+            [
+                User(
+                    id=user_id,
+                    username=f"hlt-u-{user_id.hex[:10]}",
+                    email=f"{user_id.hex[:10]}@headless-terminal.test",
+                    password_hash="x",
+                    display_name="Headless Terminal Owner",
+                    tenant_id=tenant_id,
+                ),
+                User(
+                    id=mismatched_user_id,
+                    username=f"hlt-u-{mismatched_user_id.hex[:10]}",
+                    email=f"{mismatched_user_id.hex[:10]}@headless-terminal.test",
+                    password_hash="x",
+                    display_name="Mismatched Terminal Owner",
+                    tenant_id=tenant_id,
+                ),
+            ]
+        )
+        await session.flush()
+        session.add(
+            Agent(
+                id=parent_agent_id,
+                tenant_id=tenant_id,
+                name="headless-terminal-parent",
+                creator_id=user_id,
+                sponsor_user_id=user_id,
+            )
+        )
+        await session.commit()
+
+    def scoped_session(tenant=None, **_kwargs):
+        return tenant_scoped_session(tenant, session_factory=owner_sessionmaker)
+
+    async def resolve_tenant(_agent_id, *_args, **_kwargs):
+        return tenant_id
+
+    monkeypatch.setattr(svc, "tenant_scoped_session", scoped_session)
+    monkeypatch.setattr(svc, "resolve_tenant_for_agent", resolve_tenant)
+    monkeypatch.setattr(runtime_task_service, "tenant_scoped_session", scoped_session)
+    monkeypatch.setattr(runtime_task_service, "resolve_tenant_for_agent", resolve_tenant)
+    monkeypatch.setattr(runtime_task_service, "async_session", owner_sessionmaker)
+
+    started = await svc.start_subagent_run(
+        parent_agent_id=parent_agent_id,
+        parent_user_id=user_id,
+        spec_name="headless-worker",
+        spec_type="worker",
+        task="finish durably without a parent session",
+        parent_session_id=None,
+        dispatch_mode="foreground_inline",
+    )
+    runtime_task_id = uuid.UUID(started.run_id)
+    child_session_id = uuid.UUID(started.child_session_id)
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
+        child_session = await session.get(ChatSession, child_session_id)
+        assert child_session is not None
+        child_session.user_id = mismatched_user_id
+
+    with pytest.raises(RuntimeError, match="user authority mismatch"):
+        if terminal_status == "killed":
+            await svc._mark_subagent_run_killed(run_id=started.run_id, summary="cancelled after claim")
+        else:
+            record = await svc.get_runtime_task_record(started.run_id)
+            assert record is not None
+            await svc._mark_subagent_run_needs_reconciliation(
+                run_id=started.run_id,
+                metadata=dict(record["metadata"]),
+                blocker="unsafe_pending_tool",
+                summary="operator reconciliation required",
+                trace_id=None,
+                session_id=started.child_session_id,
+            )
+
+    async with owner_sessionmaker() as session:
+        task = await session.get(RuntimeTask, runtime_task_id)
+        intent = (
+            await session.execute(
+                select(RuntimeNotificationOutbox).where(
+                    RuntimeNotificationOutbox.tenant_id == tenant_id,
+                    RuntimeNotificationOutbox.source_kind == "subagent",
+                    RuntimeNotificationOutbox.source_run_id == str(runtime_task_id),
+                )
+            )
+        ).scalar_one()
+
+    assert task is not None and task.status == terminal_status
+    assert task.metadata_json["completion_outbox_id"] == str(intent.id)
+    assert intent.parent_session_id == child_session_id
+    assert intent.child_session_id == child_session_id
+    assert intent.delivery_mode == "session_projection"
+    assert intent.metadata_json["local_projection_only"] is True
+    assert intent.status == "pending"
+
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
+        child_session = await session.get(ChatSession, child_session_id)
+        assert child_session is not None
+        child_session.user_id = user_id
+
+    outbox = RuntimeNotificationOutboxService(session_factory=owner_sessionmaker, retry_base_seconds=0)
+    first = await outbox.drain_once(worker_id=f"headless-{terminal_status}-a", item_ids={intent.id})
+    duplicate = await outbox.drain_once(worker_id=f"headless-{terminal_status}-b", item_ids={intent.id})
+
+    async with owner_sessionmaker() as session:
+        stored_intent = await session.get(RuntimeNotificationOutbox, intent.id)
+        child_events = list(
+            (
+                await session.execute(
+                    select(ChatTranscriptEvent).where(
+                        ChatTranscriptEvent.session_id == child_session_id,
+                        ChatTranscriptEvent.run_id == runtime_task_id,
+                        ChatTranscriptEvent.event_type == "subagent_task_failed",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        parent_notifications = (
+            await session.execute(
+                select(func.count())
+                .select_from(ChatTranscriptEvent)
+                .where(
+                    ChatTranscriptEvent.session_id == child_session_id,
+                    ChatTranscriptEvent.run_id == runtime_task_id,
+                    ChatTranscriptEvent.event_type == "agent_task_notification",
+                )
+            )
+        ).scalar_one()
+
+    assert first["delivered"] == 1
+    assert duplicate["claimed"] == 0
+    assert stored_intent is not None and stored_intent.status == "delivered"
+    assert len(child_events) == 1
+    assert parent_notifications == 0
+
+    async with owner_sessionmaker() as session:
+        await session.execute(delete(RuntimeNotificationOutbox).where(RuntimeNotificationOutbox.id == intent.id))
+        await session.commit()
+
+    repaired = await outbox.reconcile_terminal_tasks_once(limit=1, task_ids={runtime_task_id})
+    async with owner_sessionmaker() as session:
+        recovered_intent = await session.get(RuntimeNotificationOutbox, intent.id)
+
+    assert repaired == 1
+    assert recovered_intent is not None
+    assert recovered_intent.parent_session_id == child_session_id
+    assert recovered_intent.delivery_mode == "session_projection"
+    assert recovered_intent.metadata_json["local_projection_only"] is True
+
+    replayed = await outbox.drain_once(
+        worker_id=f"headless-{terminal_status}-backfill",
+        item_ids={recovered_intent.id},
+    )
+    async with owner_sessionmaker() as session:
+        child_event_count_after_backfill = (
+            await session.execute(
+                select(func.count())
+                .select_from(ChatTranscriptEvent)
+                .where(
+                    ChatTranscriptEvent.session_id == child_session_id,
+                    ChatTranscriptEvent.run_id == runtime_task_id,
+                    ChatTranscriptEvent.event_type == "subagent_task_failed",
+                )
+            )
+        ).scalar_one()
+        notification_count_after_backfill = (
+            await session.execute(
+                select(func.count())
+                .select_from(ChatTranscriptEvent)
+                .where(
+                    ChatTranscriptEvent.session_id == child_session_id,
+                    ChatTranscriptEvent.run_id == runtime_task_id,
+                    ChatTranscriptEvent.event_type == "agent_task_notification",
+                )
+            )
+        ).scalar_one()
+
+    assert replayed["delivered"] == 1
+    assert child_event_count_after_backfill == 1
+    assert notification_count_after_backfill == 0
+
+
+@pytest.mark.usefixtures("migrated_pg_url")
+@pytest.mark.asyncio
+async def test_subagent_real_pg_two_workers_reclaim_only_expired_foreground_lease_once(
+    owner_sessionmaker,
+    monkeypatch,
+):
+    from app.models.agent import Agent
+    from app.models.tenant import Tenant
+    from app.models.user import User
+    from app.services.runtime_task_claim_service import RuntimeTaskClaimService
+    import app.services.runtime_task_service as runtime_task_service
+
+    tenant_id = uuid.uuid4()
+    parent_agent_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    live_id = uuid.uuid4()
+    expired_id = uuid.uuid4()
+    now = datetime.now(timezone.utc)
+
+    async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
+        session.add(Tenant(id=tenant_id, name="subagent-reclaim", slug=f"sar-{tenant_id.hex[:10]}"))
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
+        session.add(
+            User(
+                id=user_id,
+                username=f"sar-u-{user_id.hex[:10]}",
+                email=f"{user_id.hex[:10]}@subagent-reclaim.test",
+                password_hash="x",
+                display_name="Subagent Reclaim Owner",
+                tenant_id=tenant_id,
+            )
+        )
+        await session.flush()
+        session.add(Agent(id=parent_agent_id, tenant_id=tenant_id, name="parent", creator_id=user_id))
+
+    def scoped_session(tenant=None, **_kwargs):
+        return tenant_scoped_session(tenant, session_factory=owner_sessionmaker)
+
+    async def resolve_tenant(_agent_id, *_args, **_kwargs):
+        return tenant_id
+
+    monkeypatch.setattr(runtime_task_service, "tenant_scoped_session", scoped_session)
+    monkeypatch.setattr(runtime_task_service, "resolve_tenant_for_agent", resolve_tenant)
+
+    common = {
+        "task_type": svc.SUBAGENT_RUN_TASK_TYPE,
+        "status": "running",
+        "parent_agent_id": parent_agent_id,
+        "claimed_by": "foreground-subagent:old",
+        "claim_version": 1,
+        "attempt_count": 1,
+    }
+    await runtime_task_service.create_runtime_task_record(
+        task_id=live_id.hex,
+        claim_expires_at=now + timedelta(minutes=5),
+        metadata_json={
+            "execution_backend": "foreground_inline",
+            "resumable_subagent": True,
+            "resume_after_restart": True,
+        },
+        **common,
+    )
+    await runtime_task_service.create_runtime_task_record(
+        task_id=expired_id.hex,
+        claim_expires_at=now - timedelta(seconds=1),
+        metadata_json={
+            "execution_backend": "foreground_inline",
+            "resumable_subagent": True,
+            "resume_after_restart": True,
+            "side_effect_risk": "read_only",
+            "restart_replay_contract": {
+                "schema": "runtime_restart_replay_contract.v1",
+                "idempotency_key": f"subagent:{expired_id.hex}:restart",
+                "task_type": "subagent",
+                "task_id": expired_id.hex,
+                "mode": "durable_restart_replay",
+                "requires_completion_journal": True,
+            },
+        },
+        **common,
+    )
+
+    async def claim(worker_id: str):
+        async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
+            return await RuntimeTaskClaimService(
+                db=session,
+                worker_id=worker_id,
+                task_types=(svc.SUBAGENT_RUN_TASK_TYPE,),
+                lease_seconds=120,
+            ).claim_available(batch_size=10)
+
+    claim_batches = await asyncio.gather(claim("worker:a"), claim("worker:b"))
+    claimed_ids = [task.id for batch in claim_batches for task in batch]
+    assert claimed_ids.count(expired_id) == 1
+    assert live_id not in claimed_ids
+
+    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
+        live = await session.get(RuntimeTask, live_id)
+        expired = await session.get(RuntimeTask, expired_id)
+        assert live is not None and expired is not None
+        assert live.claim_version == 1
+        assert live.claimed_by == "foreground-subagent:old"
+        assert expired.claim_version == 2
+        assert expired.claimed_by in {"worker:a", "worker:b"}
+        assert expired.attempt_count == 2
 
 
 @pytest.mark.usefixtures("migrated_pg_url")
@@ -424,6 +1360,8 @@ async def test_kernel_skill_fork_handoff_calls_real_spawn_tool_and_records_child
     parent_agent_id = uuid.uuid4()
     user_id = uuid.uuid4()
     parent_session_id = uuid.uuid4()
+    parent_runtime_task_id = uuid.uuid4()
+    parent_claim_worker_id = "runtime-task-worker:kernel-skill-fork"
 
     async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
         session.add(Tenant(id=tenant_id, name="subagent-kernel", slug=f"sak-{tenant_id.hex[:10]}"))
@@ -460,6 +1398,24 @@ async def test_kernel_skill_fork_handoff_calls_real_spawn_tool_and_records_child
                 source_channel="web",
             )
         )
+        session.add(
+            RuntimeTask(
+                id=parent_runtime_task_id,
+                tenant_id=tenant_id,
+                task_type="web_chat_turn",
+                status="running",
+                parent_agent_id=parent_agent_id,
+                parent_session_id=str(parent_session_id),
+                root_user_id=user_id,
+                root_session_id=str(parent_session_id),
+                root_runtime_task_id=parent_runtime_task_id,
+                claimed_by=parent_claim_worker_id,
+                claim_version=1,
+                claim_expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+                attempt_count=1,
+                metadata_json={"test_fixture": "kernel_skill_fork_handoff"},
+            )
+        )
 
     def scoped_session(tenant=None, **_kwargs):
         return tenant_scoped_session(tenant, session_factory=owner_sessionmaker)
@@ -484,7 +1440,7 @@ async def test_kernel_skill_fork_handoff_calls_real_spawn_tool_and_records_child
 
     monkeypatch.setattr(subagent_handler, "active_agent_team_contract_from_tool_request", no_active_agent_team)
 
-    async def fake_resolve_parent_runtime(_agent_id):
+    async def fake_resolve_parent_runtime(_agent_id, **_authority):
         return (
             SimpleNamespace(provider="openai", model="gpt-4.1", api_key="test", base_url=None),
             None,
@@ -500,6 +1456,11 @@ async def test_kernel_skill_fork_handoff_calls_real_spawn_tool_and_records_child
     session_context = SessionContext(
         session_id=str(parent_session_id),
         metadata={
+            "tenant_id": str(tenant_id),
+            "agent_id": str(parent_agent_id),
+            "runtime_task_id": str(parent_runtime_task_id),
+            "claim_version": 1,
+            "claim_worker_id": parent_claim_worker_id,
             "pending_skill_handoffs": [
                 {
                     "skill": "Research",
@@ -515,7 +1476,7 @@ async def test_kernel_skill_fork_handoff_calls_real_spawn_tool_and_records_child
                     },
                     "permission_profile": {"mode": "auto", "allowed_tools": ["web_search", "read_file"]},
                 }
-            ]
+            ],
         },
     )
     request = InvocationRequest(
@@ -539,6 +1500,7 @@ async def test_kernel_skill_fork_handoff_calls_real_spawn_tool_and_records_child
                 tenant_id=str(tenant_id),
                 workspace=tmp_path,
                 session_id=str(parent_session_id),
+                runtime_task_id=str(parent_runtime_task_id),
             )
             return await subagent_handler.spawn_subagent_tool(
                 ToolExecutionRequest(tool_name=tool_name, arguments=dict(args), context=context)
@@ -662,6 +1624,12 @@ async def test_start_subagent_run_marks_readonly_types_restart_resumable(monkeyp
 @pytest.mark.asyncio
 async def test_run_completer_maps_ok_to_completed(monkeypatch):
     captured: dict = {}
+    run_id = uuid.uuid4().hex
+    tenant_id = uuid.uuid4()
+    parent_agent_id = uuid.uuid4()
+    parent_user_id = uuid.uuid4()
+    parent_session_id = uuid.uuid4()
+    child_session_id = uuid.uuid4()
 
     async def _fake_update(run_id, **fields):
         captured["run_id"] = run_id
@@ -671,17 +1639,32 @@ async def test_run_completer_maps_ok_to_completed(monkeypatch):
     async def _fake_session_state(**kwargs):
         captured["session_state_update"] = kwargs
 
+    async def _fake_get_runtime_task_record(_run_id):
+        assert _run_id == run_id
+        return {
+            "task_id": run_id,
+            "task_type": svc.SUBAGENT_RUN_TASK_TYPE,
+            "tenant_id": str(tenant_id),
+            "parent_agent_id": str(parent_agent_id),
+            "root_user_id": str(parent_user_id),
+            "parent_session_id": str(parent_session_id),
+            "child_session_id": str(child_session_id),
+            "child_agent_name": "scout",
+            "metadata": {"execution_backend": "runtime_task_worker"},
+        }
+
     monkeypatch.setattr(svc, "update_runtime_task_record", _fake_update)
     monkeypatch.setattr(svc, "update_subagent_child_session_state_for_run", _fake_session_state)
-    completer = svc.make_run_completer("run-1")
+    monkeypatch.setattr(svc, "get_runtime_task_record", _fake_get_runtime_task_record)
+    completer = svc.make_run_completer(run_id)
     await completer(SubagentResult(name="scout", type="worker", status="completed", content="done", tokens_used=42))
-    assert captured["run_id"] == "run-1"
+    assert captured["run_id"] == run_id
     assert captured["status"] == "completed"
     assert captured["result_summary"] == "done"
     assert captured["token_usage"] == {"total_tokens": 42}
     assert captured["metadata_json"]["completion_journal"][-1]["status"] == "completed"
-    assert captured["metadata_json"]["completion_journal"][-1]["idempotency_key"] == "subagent:run-1:completed"
-    assert captured["session_state_update"]["run_id"] == "run-1"
+    assert captured["metadata_json"]["completion_journal"][-1]["idempotency_key"] == f"subagent:{run_id}:completed"
+    assert captured["session_state_update"]["run_id"] == str(uuid.UUID(run_id))
     assert captured["session_state_update"]["status"] == "completed"
     assert captured["session_state_update"]["summary"] == "done"
 
@@ -704,6 +1687,48 @@ async def test_run_completer_maps_failure_to_failed(monkeypatch):
     assert captured["status"] == "failed"
     assert "boom" in captured["result_summary"]
     assert captured["metadata_json"]["completion_journal"][-1]["status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_run_completer_rejects_stale_foreground_terminal_claim(monkeypatch):
+    captured: dict = {}
+
+    async def _stale_update(run_id, **fields):
+        captured["run_id"] = run_id
+        captured.update(fields)
+        return False
+
+    async def _unexpected_session_state(**_kwargs):
+        raise AssertionError("stale terminal result must not project to the child session")
+
+    monkeypatch.setattr(svc, "update_runtime_task_record", _stale_update)
+    monkeypatch.setattr(svc, "update_subagent_child_session_state_for_run", _unexpected_session_state)
+
+    completer = svc.make_run_completer(
+        "a" * 32,
+        expected_claim_version=1,
+        expected_claim_worker_id="foreground-subagent:old",
+    )
+    with pytest.raises(RuntimeError, match="stale.*terminal"):
+        await completer(SubagentResult(name="writer", type="worker", status="completed", content="late"))
+
+    assert captured["expected_status"] == "running"
+    assert captured["expected_claim_version"] == 1
+    assert captured["expected_claim_worker_id"] == "foreground-subagent:old"
+
+
+@pytest.mark.asyncio
+async def test_run_completer_rejects_partial_terminal_claim_authority(monkeypatch):
+    async def _unexpected_update(*_args, **_kwargs):
+        raise AssertionError("partial claim authority must fail before persistence")
+
+    monkeypatch.setattr(svc, "update_runtime_task_record", _unexpected_update)
+
+    with pytest.raises(ValueError, match="claim_version.*claim_worker_id"):
+        await svc.make_run_completer(
+            "b" * 32,
+            expected_claim_version=1,
+        )(SubagentResult(name="writer", type="worker", status="completed", content="invalid authority"))
 
 
 @pytest.mark.asyncio
@@ -971,11 +1996,12 @@ async def test_resume_persisted_subagent_runs_rehydrates_readonly_worker(monkeyp
     parent = uuid.uuid4()
     calls: dict[str, object] = {}
 
-    async def fake_list_active_runtime_task_records(limit=50, statuses=("pending", "running")):
+    async def fake_list_active_runtime_task_records(limit=50, statuses=("pending", "running"), task_types=None):
         return [
             {
                 "task_id": run_id,
                 "task_type": svc.SUBAGENT_RUN_TASK_TYPE,
+                "status": "pending",
                 "parent_agent_id": str(parent),
                 "child_agent_name": "scout",
                 "prompt": "read x",
@@ -990,7 +2016,7 @@ async def test_resume_persisted_subagent_runs_rehydrates_readonly_worker(monkeyp
             }
         ]
 
-    async def fake_resolve_parent_runtime(_parent_agent_id):
+    async def fake_resolve_parent_runtime(_parent_agent_id, **_authority):
         raise AssertionError("startup resume must enqueue; worker dispatch resolves runtime")
 
     async def fake_spawn_subagent(*_args, **_kwargs):
@@ -1006,17 +2032,75 @@ async def test_resume_persisted_subagent_runs_rehydrates_readonly_worker(monkeyp
     monkeypatch.setattr(svc, "list_active_runtime_task_records", fake_list_active_runtime_task_records)
     monkeypatch.setattr(svc, "_resolve_parent_runtime", fake_resolve_parent_runtime, raising=False)
     monkeypatch.setattr(svc, "spawn_subagent", fake_spawn_subagent, raising=False)
-    monkeypatch.setattr(svc, "update_runtime_task_record", fake_update_runtime_task_record)
+    monkeypatch.setattr(svc, "requeue_runtime_task_for_worker", fake_update_runtime_task_record)
     monkeypatch.setattr("app.services.runtime_task_worker.notify_runtime_task_worker", fake_notify)
 
     resumed = await svc.resume_persisted_subagent_runs()
 
     assert resumed == [run_id]
     assert calls["updates"][-1][0] == run_id
-    assert calls["updates"][-1][1]["status"] == "resumable"
+    assert calls["updates"][-1][1]["task_type"] == svc.SUBAGENT_RUN_TASK_TYPE
     assert calls["updates"][-1][1]["metadata_json"]["resumed_after_restart"] is True
     assert calls["updates"][-1][1]["metadata_json"]["worker_dispatched"] is False
     assert calls["notify"] == {"reason": "subagent_resumed_after_restart", "runtime_task_id": run_id}
+
+
+@pytest.mark.asyncio
+async def test_resume_persisted_subagent_runs_skips_live_claim_and_routes_expired_claim_to_shared_worker(monkeypatch):
+    live_run_id = uuid.uuid4().hex
+    expired_run_id = uuid.uuid4().hex
+    parent = uuid.uuid4()
+    now = datetime.now(timezone.utc)
+    notifications: list[dict] = []
+
+    async def fake_list_active_runtime_task_records(**_kwargs):
+        def record(run_id, claim_expires_at):
+            return {
+                "task_type": svc.SUBAGENT_RUN_TASK_TYPE,
+                "status": "running",
+                "parent_agent_id": str(parent),
+                "prompt": "resume safely",
+                "claim_version": 1,
+                "claimed_by": "foreground-subagent:old",
+                "metadata": {
+                    "subagent_type": "explorer",
+                    "subagent_name": "scout",
+                    "execution_backend": "foreground_inline",
+                    "resume_after_restart": True,
+                    "resumable_subagent": True,
+                    "side_effect_risk": "read_only",
+                    "restart_replay_contract": {
+                        "schema": "runtime_restart_replay_contract.v1",
+                        "idempotency_key": f"subagent:{run_id}:restart",
+                        "task_type": "subagent",
+                        "task_id": run_id,
+                        "mode": "durable_restart_replay",
+                        "requires_completion_journal": True,
+                    },
+                },
+                "task_id": run_id,
+                "claim_expires_at": claim_expires_at,
+            }
+
+        return [
+            record(live_run_id, (now + timedelta(minutes=2)).isoformat()),
+            record(expired_run_id, (now - timedelta(seconds=1)).isoformat()),
+        ]
+
+    async def unexpected_update(*_args, **_kwargs):
+        raise AssertionError("startup must not rewrite a running lease into resumable")
+
+    async def fake_notify(**kwargs):
+        notifications.append(kwargs)
+
+    monkeypatch.setattr(svc, "list_active_runtime_task_records", fake_list_active_runtime_task_records)
+    monkeypatch.setattr(svc, "update_runtime_task_record", unexpected_update)
+    monkeypatch.setattr("app.services.runtime_task_worker.notify_runtime_task_worker", fake_notify)
+
+    resumed = await svc.resume_persisted_subagent_runs()
+
+    assert resumed == [expired_run_id]
+    assert notifications == [{"reason": "subagent_expired_claim_ready", "runtime_task_id": expired_run_id}]
 
 
 @pytest.mark.asyncio
@@ -1025,11 +2109,12 @@ async def test_resume_persisted_subagent_runs_uses_full_spec_snapshot(monkeypatc
     parent = uuid.uuid4()
     calls: dict[str, object] = {}
 
-    async def fake_list_active_runtime_task_records(limit=50, statuses=("pending", "running")):
+    async def fake_list_active_runtime_task_records(limit=50, statuses=("pending", "running"), task_types=None):
         return [
             {
                 "task_id": run_id,
                 "task_type": svc.SUBAGENT_RUN_TASK_TYPE,
+                "status": "pending",
                 "parent_agent_id": str(parent),
                 "child_agent_name": "code-reviewer",
                 "prompt": "review x",
@@ -1064,7 +2149,7 @@ async def test_resume_persisted_subagent_runs_uses_full_spec_snapshot(monkeypatc
             }
         ]
 
-    async def fake_resolve_parent_runtime(_parent_agent_id):
+    async def fake_resolve_parent_runtime(_parent_agent_id, **_authority):
         raise AssertionError("startup resume must enqueue; worker dispatch resolves runtime")
 
     async def fake_spawn_subagent(*_args, **_kwargs):
@@ -1080,13 +2165,13 @@ async def test_resume_persisted_subagent_runs_uses_full_spec_snapshot(monkeypatc
     monkeypatch.setattr(svc, "list_active_runtime_task_records", fake_list_active_runtime_task_records)
     monkeypatch.setattr(svc, "_resolve_parent_runtime", fake_resolve_parent_runtime, raising=False)
     monkeypatch.setattr(svc, "spawn_subagent", fake_spawn_subagent, raising=False)
-    monkeypatch.setattr(svc, "update_runtime_task_record", fake_update_runtime_task_record)
+    monkeypatch.setattr(svc, "requeue_runtime_task_for_worker", fake_update_runtime_task_record)
     monkeypatch.setattr("app.services.runtime_task_worker.notify_runtime_task_worker", fake_notify)
 
     resumed = await svc.resume_persisted_subagent_runs()
 
     assert resumed == [run_id]
-    assert calls["updates"][-1][1]["status"] == "resumable"
+    assert calls["updates"][-1][1]["task_type"] == svc.SUBAGENT_RUN_TASK_TYPE
     resumed_snapshot = calls["updates"][-1][1]["metadata_json"]["subagent_spec"]
     assert resumed_snapshot["name"] == "code-reviewer"
     assert resumed_snapshot["allowed_tools"] == ["read_file", "grep_search"]
@@ -1103,6 +2188,9 @@ async def test_resume_persisted_subagent_runs_uses_full_spec_snapshot(monkeypatc
 async def test_dispatch_persisted_subagent_run_uses_full_spec_snapshot(monkeypatch):
     run_id = uuid.uuid4().hex
     parent = uuid.uuid4()
+    tenant_id = uuid.uuid4()
+    parent_user_id = uuid.uuid4()
+    parent_session_id = uuid.uuid4()
     child_session_id = str(uuid.uuid4())
     calls: dict[str, object] = {}
 
@@ -1112,11 +2200,16 @@ async def test_dispatch_persisted_subagent_run_uses_full_spec_snapshot(monkeypat
             "task_id": run_id,
             "task_type": svc.SUBAGENT_RUN_TASK_TYPE,
             "status": "running",
+            "claim_version": 4,
+            "claimed_by": "runtime-task-worker:test",
+            "claim_expires_at": (datetime.now(timezone.utc) + timedelta(minutes=2)).isoformat(),
+            "tenant_id": str(tenant_id),
             "parent_agent_id": str(parent),
+            "root_user_id": str(parent_user_id),
             "child_agent_name": "code-reviewer",
             "prompt": "review x",
             "trace_id": "trace-subagent",
-            "parent_session_id": "parent-session",
+            "parent_session_id": str(parent_session_id),
             "child_session_id": child_session_id,
             "metadata": {
                 "subagent_type": "critic",
@@ -1146,15 +2239,15 @@ async def test_dispatch_persisted_subagent_run_uses_full_spec_snapshot(monkeypat
             },
         }
 
-    async def fake_resolve_parent_runtime(parent_agent_id):
+    async def fake_resolve_parent_runtime(parent_agent_id, **_authority):
         calls["resolved_parent"] = parent_agent_id
         return {
             "ctx_kwargs": {
                 "parent_agent_id": parent,
-                "parent_user_id": uuid.uuid4(),
+                "parent_user_id": parent_user_id,
                 "model": object(),
                 "parent_agent_name": "Parent",
-                "tenant_id": uuid.uuid4(),
+                "tenant_id": tenant_id,
             }
         }
 
@@ -1186,6 +2279,9 @@ async def test_dispatch_persisted_subagent_run_uses_full_spec_snapshot(monkeypat
     assert calls["resolved_parent"] == parent
     assert calls["ctx"].subagent_run_id == run_id
     assert calls["ctx"].child_session_id == child_session_id
+    assert calls["ctx"].recovery_metadata["runtime_task_id"] == run_id
+    assert calls["ctx"].recovery_metadata["claim_version"] == 4
+    assert calls["ctx"].recovery_metadata["claim_worker_id"] == "runtime-task-worker:test"
     spec = calls["spec"]
     assert spec.name == "code-reviewer"
     assert spec.description == "Use for code review."
@@ -1199,6 +2295,10 @@ async def test_dispatch_persisted_subagent_run_uses_full_spec_snapshot(monkeypat
     assert spec.hooks == {"Stop": []}
     assert calls["task"] == "review x"
     assert calls["kwargs"]["run_in_background"] is False
+    terminal_update = calls["updates"][-1][1]
+    assert terminal_update["expected_status"] == "running"
+    assert terminal_update["expected_claim_version"] == 4
+    assert terminal_update["expected_claim_worker_id"] == "runtime-task-worker:test"
     assert calls["kwargs"]["fork"] == "worktree"
     assert calls["updates"][0][1]["metadata_json"]["worker_dispatched"] is True
     assert calls["updates"][-1][1]["status"] == "completed"
@@ -1206,9 +2306,74 @@ async def test_dispatch_persisted_subagent_run_uses_full_spec_snapshot(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_dispatch_persisted_subagent_run_stops_before_spawn_when_claim_cas_is_stale(monkeypatch):
+    run_id = uuid.uuid4().hex
+    parent = uuid.uuid4()
+    tenant_id = uuid.uuid4()
+    parent_user_id = uuid.uuid4()
+    parent_session_id = uuid.uuid4()
+    child_session_id = uuid.uuid4()
+
+    async def fake_get_runtime_task_record(_task_id):
+        return {
+            "task_id": run_id,
+            "task_type": svc.SUBAGENT_RUN_TASK_TYPE,
+            "status": "running",
+            "claim_version": 3,
+            "claimed_by": "runtime-task-worker:old",
+            "claim_expires_at": (datetime.now(timezone.utc) + timedelta(minutes=2)).isoformat(),
+            "tenant_id": str(tenant_id),
+            "parent_agent_id": str(parent),
+            "root_user_id": str(parent_user_id),
+            "parent_session_id": str(parent_session_id),
+            "child_session_id": str(child_session_id),
+            "prompt": "read safely",
+            "metadata": {
+                "subagent_type": "explorer",
+                "subagent_name": "scout",
+                "resume_after_restart": True,
+                "resumable_subagent": True,
+            },
+        }
+
+    async def fake_load_resume_messages(**_kwargs):
+        return [{"role": "user", "content": "resume"}]
+
+    async def fake_resolve_parent_runtime(_parent_agent_id, **_authority):
+        return SubagentSpawnContext(
+            parent_agent_id=parent,
+            parent_user_id=parent_user_id,
+            model=object(),
+            tenant_id=tenant_id,
+        )
+
+    async def fake_hydrate(runtime, **_kwargs):
+        return runtime
+
+    async def stale_update(*_args, **_kwargs):
+        return False
+
+    async def unexpected_spawn(*_args, **_kwargs):
+        raise AssertionError("stale claimed worker must stop before subagent spawn")
+
+    monkeypatch.setattr(svc, "get_runtime_task_record", fake_get_runtime_task_record)
+    monkeypatch.setattr(svc, "_load_subagent_resume_messages", fake_load_resume_messages)
+    monkeypatch.setattr(svc, "_resolve_parent_runtime", fake_resolve_parent_runtime)
+    monkeypatch.setattr(svc, "_hydrate_worker_runtime_context", fake_hydrate)
+    monkeypatch.setattr(svc, "update_runtime_task_record", stale_update)
+    monkeypatch.setattr(svc, "spawn_subagent", unexpected_spawn)
+
+    with pytest.raises(RuntimeError, match="stale.*before dispatch"):
+        await svc.dispatch_persisted_subagent_run(run_id)
+
+
+@pytest.mark.asyncio
 async def test_dispatch_general_purpose_with_child_transcript_uses_resume_messages(monkeypatch):
     run_id = uuid.uuid4().hex
     parent = uuid.uuid4()
+    tenant_id = uuid.uuid4()
+    parent_user_id = uuid.uuid4()
+    parent_session_id = uuid.uuid4()
     child_session_id = str(uuid.uuid4())
     resume_messages = [
         {"role": "user", "content": "original task"},
@@ -1223,11 +2388,13 @@ async def test_dispatch_general_purpose_with_child_transcript_uses_resume_messag
             "task_id": run_id,
             "task_type": svc.SUBAGENT_RUN_TASK_TYPE,
             "status": "running",
+            "tenant_id": str(tenant_id),
             "parent_agent_id": str(parent),
+            "root_user_id": str(parent_user_id),
             "child_agent_name": "general-purpose",
             "prompt": "resume the interrupted task",
             "trace_id": "trace-subagent",
-            "parent_session_id": "parent-session",
+            "parent_session_id": str(parent_session_id),
             "child_session_id": child_session_id,
             "metadata": {
                 "subagent_type": "general-purpose",
@@ -1243,14 +2410,14 @@ async def test_dispatch_general_purpose_with_child_transcript_uses_resume_messag
         calls["resume_kwargs"] = kwargs
         return list(resume_messages)
 
-    async def fake_resolve_parent_runtime(parent_agent_id):
+    async def fake_resolve_parent_runtime(parent_agent_id, **_authority):
         return {
             "ctx_kwargs": {
                 "parent_agent_id": parent_agent_id,
-                "parent_user_id": uuid.uuid4(),
+                "parent_user_id": parent_user_id,
                 "model": object(),
                 "parent_agent_name": "Parent",
-                "tenant_id": uuid.uuid4(),
+                "tenant_id": tenant_id,
             }
         }
 
@@ -1377,6 +2544,10 @@ async def test_load_subagent_resume_messages_preserves_tool_metadata_without_exe
 async def test_dispatch_allows_audited_non_idempotent_reconciliation_retry(monkeypatch):
     run_id = uuid.uuid4().hex
     parent = uuid.uuid4()
+    tenant_id = uuid.uuid4()
+    parent_user_id = uuid.uuid4()
+    parent_session_id = uuid.uuid4()
+    child_session_id = uuid.uuid4()
     calls: dict[str, object] = {}
 
     async def fake_get_runtime_task_record(task_id):
@@ -1385,11 +2556,14 @@ async def test_dispatch_allows_audited_non_idempotent_reconciliation_retry(monke
             "task_id": run_id,
             "task_type": svc.SUBAGENT_RUN_TASK_TYPE,
             "status": "pending",
+            "tenant_id": str(tenant_id),
             "parent_agent_id": str(parent),
+            "root_user_id": str(parent_user_id),
             "child_agent_name": "general-purpose",
             "prompt": "retry approved work",
             "trace_id": "trace-subagent",
-            "parent_session_id": "parent-session",
+            "parent_session_id": str(parent_session_id),
+            "child_session_id": str(child_session_id),
             "metadata": {
                 "subagent_type": "general-purpose",
                 "subagent_name": "general-purpose",
@@ -1413,15 +2587,15 @@ async def test_dispatch_allows_audited_non_idempotent_reconciliation_retry(monke
     async def fake_load_subagent_resume_messages(**_kwargs):
         return []
 
-    async def fake_resolve_parent_runtime(parent_agent_id):
+    async def fake_resolve_parent_runtime(parent_agent_id, **_authority):
         calls["resolved_parent"] = parent_agent_id
         return {
             "ctx_kwargs": {
                 "parent_agent_id": parent_agent_id,
-                "parent_user_id": uuid.uuid4(),
+                "parent_user_id": parent_user_id,
                 "model": object(),
                 "parent_agent_name": "Parent",
-                "tenant_id": uuid.uuid4(),
+                "tenant_id": tenant_id,
             }
         }
 
@@ -1466,6 +2640,9 @@ async def test_dispatch_persisted_subagent_run_restores_model_resolver_for_real_
     run_id = uuid.uuid4().hex
     parent = uuid.uuid4()
     tenant_id = uuid.uuid4()
+    parent_user_id = uuid.uuid4()
+    parent_session_id = uuid.uuid4()
+    child_session_id = uuid.uuid4()
     parent_model = SimpleNamespace(provider="openai", model="parent", api_key="k", base_url=None)
     child_model = SimpleNamespace(provider="openai", model="child", api_key="k", base_url=None)
     calls: dict[str, object] = {}
@@ -1476,11 +2653,14 @@ async def test_dispatch_persisted_subagent_run_restores_model_resolver_for_real_
             "task_id": run_id,
             "task_type": svc.SUBAGENT_RUN_TASK_TYPE,
             "status": "running",
+            "tenant_id": str(tenant_id),
             "parent_agent_id": str(parent),
+            "root_user_id": str(parent_user_id),
             "child_agent_name": "code-reviewer",
             "prompt": "review x",
             "trace_id": "trace-subagent",
-            "parent_session_id": "parent-session",
+            "parent_session_id": str(parent_session_id),
+            "child_session_id": str(child_session_id),
             "metadata": {
                 "subagent_type": "critic",
                 "subagent_name": "code-reviewer",
@@ -1497,11 +2677,11 @@ async def test_dispatch_persisted_subagent_run_restores_model_resolver_for_real_
             },
         }
 
-    async def fake_resolve_parent_runtime(parent_agent_id):
+    async def fake_resolve_parent_runtime(parent_agent_id, **_authority):
         assert parent_agent_id == parent
         return SubagentSpawnContext(
             parent_agent_id=parent,
-            parent_user_id=uuid.uuid4(),
+            parent_user_id=parent_user_id,
             model=parent_model,
             parent_agent_name="Parent",
             tenant_id=tenant_id,
@@ -1553,6 +2733,9 @@ async def test_dispatch_persisted_subagent_run_restores_memory_and_fork_context(
     run_id = uuid.uuid4().hex
     parent = uuid.uuid4()
     tenant_id = uuid.uuid4()
+    parent_user_id = uuid.uuid4()
+    parent_session_id = uuid.uuid4()
+    child_session_id = uuid.uuid4()
     parent_model = SimpleNamespace(provider="openai", model="parent", api_key="k", base_url=None)
     memory_store = SubagentMemoryStore(tmp_path / "subagent-memory")
     memory_store.record_how("researcher", "Prefer primary filings.", category="source_calibration")
@@ -1572,11 +2755,14 @@ async def test_dispatch_persisted_subagent_run_restores_memory_and_fork_context(
             "task_id": run_id,
             "task_type": svc.SUBAGENT_RUN_TASK_TYPE,
             "status": "running",
+            "tenant_id": str(tenant_id),
             "parent_agent_id": str(parent),
+            "root_user_id": str(parent_user_id),
             "child_agent_name": "researcher",
             "prompt": "continue research",
             "trace_id": "trace-subagent",
-            "parent_session_id": "parent-session",
+            "parent_session_id": str(parent_session_id),
+            "child_session_id": str(child_session_id),
             "metadata": {
                 "subagent_type": "explorer",
                 "subagent_name": "researcher",
@@ -1594,11 +2780,11 @@ async def test_dispatch_persisted_subagent_run_restores_memory_and_fork_context(
             },
         }
 
-    async def fake_resolve_parent_runtime(parent_agent_id):
+    async def fake_resolve_parent_runtime(parent_agent_id, **_authority):
         assert parent_agent_id == parent
         return SubagentSpawnContext(
             parent_agent_id=parent,
-            parent_user_id=uuid.uuid4(),
+            parent_user_id=parent_user_id,
             model=parent_model,
             parent_agent_name="Parent",
             tenant_id=tenant_id,
@@ -1649,7 +2835,7 @@ async def test_dispatch_persisted_subagent_run_restores_memory_and_fork_context(
     assert "Subagent Memory" in calls["request"].standalone_system_prompt
     assert "Prefer primary filings." in calls["request"].standalone_system_prompt
     assert "Avoid stale restart assumptions." in memory_store.load("researcher")
-    assert calls["parent_message_loader"]["session_id"] == "parent-session"
+    assert calls["parent_message_loader"]["session_id"] == str(parent_session_id)
     assert calls["updates"][-1][1]["status"] == "completed"
 
 
@@ -1659,11 +2845,12 @@ async def test_resume_persisted_subagent_runs_reconciles_general_purpose_without
     parent = uuid.uuid4()
     calls: dict[str, object] = {}
 
-    async def fake_list_active_runtime_task_records(limit=50, statuses=("pending", "running")):
+    async def fake_list_active_runtime_task_records(limit=50, statuses=("pending", "running"), task_types=None):
         return [
             {
                 "task_id": run_id,
                 "task_type": svc.SUBAGENT_RUN_TASK_TYPE,
+                "status": "pending",
                 "parent_agent_id": str(parent),
                 "child_agent_name": "analyst",
                 "prompt": "summarize this report",
@@ -1691,7 +2878,7 @@ async def test_resume_persisted_subagent_runs_reconciles_general_purpose_without
             }
         ]
 
-    async def fake_resolve_parent_runtime(_parent_agent_id):
+    async def fake_resolve_parent_runtime(_parent_agent_id, **_authority):
         raise AssertionError("startup resume must enqueue; worker dispatch resolves runtime")
 
     async def fake_spawn_subagent(*_args, **_kwargs):
@@ -1746,7 +2933,7 @@ async def test_resume_persisted_subagent_runs_recovers_false_positive_reconcilia
     parent = uuid.uuid4()
     calls: dict[str, object] = {}
 
-    async def fake_list_active_runtime_task_records(limit=50, statuses=("pending", "running")):
+    async def fake_list_active_runtime_task_records(limit=50, statuses=("pending", "running"), task_types=None):
         assert statuses == ("pending", "running", "needs_reconciliation")
         return [
             {
@@ -1782,7 +2969,7 @@ async def test_resume_persisted_subagent_runs_recovers_false_positive_reconcilia
             }
         ]
 
-    async def fake_resolve_parent_runtime(_parent_agent_id):
+    async def fake_resolve_parent_runtime(_parent_agent_id, **_authority):
         raise AssertionError("startup resume must enqueue; worker dispatch resolves runtime")
 
     async def fake_spawn_subagent(*_args, **_kwargs):
@@ -1814,11 +3001,12 @@ async def test_resume_persisted_subagent_runs_reconciles_general_purpose_with_re
     parent = uuid.uuid4()
     updates: list[tuple[str, dict]] = []
 
-    async def fake_list_active_runtime_task_records(limit=50, statuses=("pending", "running")):
+    async def fake_list_active_runtime_task_records(limit=50, statuses=("pending", "running"), task_types=None):
         return [
             {
                 "task_id": run_id,
                 "task_type": svc.SUBAGENT_RUN_TASK_TYPE,
+                "status": "pending",
                 "parent_agent_id": str(parent),
                 "child_agent_name": "analyst",
                 "prompt": "write file then inspect it",
@@ -1857,7 +3045,9 @@ async def test_resume_persisted_subagent_runs_reconciles_general_purpose_with_re
     async def fake_spawn_subagent(*_args, **_kwargs):  # pragma: no cover - mutating worker must not replay
         raise AssertionError("general-purpose replay must fail closed without transcript continuation")
 
-    async def fake_resolve_parent_runtime(_parent_agent_id):  # pragma: no cover - must not resolve runtime
+    async def fake_resolve_parent_runtime(
+        _parent_agent_id, **_authority
+    ):  # pragma: no cover - must not resolve runtime
         raise AssertionError("general-purpose replay must fail closed before runtime resolution")
 
     async def fake_update_runtime_task_record(task_id, **kwargs):
@@ -1884,11 +3074,12 @@ async def test_resume_persisted_subagent_runs_restores_readonly_child_pending_fr
     child_session_id = str(uuid.uuid4())
     calls: dict[str, object] = {}
 
-    async def fake_list_active_runtime_task_records(limit=50, statuses=("pending", "running")):
+    async def fake_list_active_runtime_task_records(limit=50, statuses=("pending", "running"), task_types=None):
         return [
             {
                 "task_id": run_id,
                 "task_type": svc.SUBAGENT_RUN_TASK_TYPE,
+                "status": "pending",
                 "parent_agent_id": str(parent),
                 "child_agent_name": "scout",
                 "prompt": "read x",
@@ -1911,7 +3102,7 @@ async def test_resume_persisted_subagent_runs_restores_readonly_child_pending_fr
             }
         ]
 
-    async def fake_resolve_parent_runtime(_parent_agent_id):
+    async def fake_resolve_parent_runtime(_parent_agent_id, **_authority):
         raise AssertionError("startup resume must enqueue; worker dispatch resolves runtime")
 
     async def fake_spawn_subagent(*_args, **_kwargs):
@@ -1927,13 +3118,13 @@ async def test_resume_persisted_subagent_runs_restores_readonly_child_pending_fr
     monkeypatch.setattr(svc, "list_active_runtime_task_records", fake_list_active_runtime_task_records)
     monkeypatch.setattr(svc, "_resolve_parent_runtime", fake_resolve_parent_runtime, raising=False)
     monkeypatch.setattr(svc, "spawn_subagent", fake_spawn_subagent, raising=False)
-    monkeypatch.setattr(svc, "update_runtime_task_record", fake_update_runtime_task_record)
+    monkeypatch.setattr(svc, "requeue_runtime_task_for_worker", fake_update_runtime_task_record)
     monkeypatch.setattr("app.services.runtime_task_worker.notify_runtime_task_worker", fake_notify)
 
     resumed = await svc.resume_persisted_subagent_runs()
 
     assert resumed == [run_id]
-    assert calls["updates"][-1][1]["status"] == "resumable"
+    assert calls["updates"][-1][1]["task_type"] == svc.SUBAGENT_RUN_TASK_TYPE
     assert calls["updates"][-1][1]["metadata_json"]["child_frame_recovered_after_restart"] is True
     recovery = calls["updates"][-1][1]["metadata_json"]["recovery_metadata"]
     assert recovery["pending_tool_frame"]["tool_call_id"] == "call-read"
@@ -1948,20 +3139,28 @@ async def test_resume_persisted_subagent_runs_restores_readonly_child_pending_fr
 @pytest.mark.asyncio
 async def test_resume_persisted_subagent_runs_reconciles_mutating_child_pending_frame(monkeypatch):
     run_id = uuid.uuid4().hex
+    tenant_id = uuid.uuid4()
+    parent_agent_id = uuid.uuid4()
+    parent_user_id = uuid.uuid4()
+    parent_session_id = uuid.uuid4()
+    child_session_id = uuid.uuid4()
     updates: list[tuple[str, dict]] = []
     session_updates: list[dict] = []
 
-    async def fake_list_active_runtime_task_records(limit=50, statuses=("pending", "running")):
+    async def fake_list_active_runtime_task_records(limit=50, statuses=("pending", "running"), task_types=None):
         return [
             {
                 "task_id": run_id,
                 "task_type": svc.SUBAGENT_RUN_TASK_TYPE,
-                "parent_agent_id": str(uuid.uuid4()),
+                "status": "pending",
+                "tenant_id": str(tenant_id),
+                "parent_agent_id": str(parent_agent_id),
+                "root_user_id": str(parent_user_id),
                 "child_agent_name": "worker",
                 "prompt": "write x",
                 "trace_id": "trace-subagent",
-                "parent_session_id": "parent-session",
-                "child_session_id": "child-session",
+                "parent_session_id": str(parent_session_id),
+                "child_session_id": str(child_session_id),
                 "metadata": {
                     "subagent_type": "explorer",
                     "subagent_name": "worker",
@@ -1978,6 +3177,10 @@ async def test_resume_persisted_subagent_runs_reconciles_mutating_child_pending_
             }
         ]
 
+    async def fake_get_runtime_task_record(task_id):
+        assert task_id == run_id
+        return (await fake_list_active_runtime_task_records())[0]
+
     async def fake_spawn_subagent(*_args, **_kwargs):  # pragma: no cover - must not run
         raise AssertionError("mutating child pending frame must not replay")
 
@@ -1989,6 +3192,7 @@ async def test_resume_persisted_subagent_runs_reconciles_mutating_child_pending_
         session_updates.append(kwargs)
 
     monkeypatch.setattr(svc, "list_active_runtime_task_records", fake_list_active_runtime_task_records)
+    monkeypatch.setattr(svc, "get_runtime_task_record", fake_get_runtime_task_record)
     monkeypatch.setattr(svc, "spawn_subagent", fake_spawn_subagent, raising=False)
     monkeypatch.setattr(svc, "update_runtime_task_record", fake_update_runtime_task_record)
     monkeypatch.setattr(svc, "update_subagent_child_session_state_for_run", fake_update_child_session_state)
@@ -2009,8 +3213,10 @@ async def test_resume_persisted_subagent_runs_reconciles_mutating_child_pending_
     assert updates[-1][1]["metadata_json"].get("reconciliation_retry_allowed") is not True
     assert "reconciliation_retry_contract" not in updates[-1][1]["metadata_json"]
     assert updates[-1][1]["metadata_json"]["child_pending_tool_frame"]["tool_name"] == "write_file"
-    assert session_updates[-1]["run_id"] == run_id
-    assert session_updates[-1]["status"] == "needs_reconciliation"
+    # Startup terminalization has one durable projection owner: the completion
+    # outbox created in the same CAS transaction. Direct session projection
+    # here would race and duplicate the outbox pump after a process restart.
+    assert session_updates == []
 
 
 @pytest.mark.asyncio
@@ -2018,11 +3224,12 @@ async def test_resume_persisted_subagent_runs_marks_mutating_record_for_reconcil
     run_id = uuid.uuid4().hex
     updates: list[tuple[str, dict]] = []
 
-    async def fake_list_active_runtime_task_records(limit=50, statuses=("pending", "running")):
+    async def fake_list_active_runtime_task_records(limit=50, statuses=("pending", "running"), task_types=None):
         return [
             {
                 "task_id": run_id,
                 "task_type": svc.SUBAGENT_RUN_TASK_TYPE,
+                "status": "pending",
                 "parent_agent_id": str(uuid.uuid4()),
                 "child_agent_name": "worker",
                 "prompt": "write x",
@@ -2061,11 +3268,12 @@ async def test_resume_persisted_subagent_runs_reconciles_mutating_worker_even_wi
     parent = uuid.uuid4()
     updates: list[tuple[str, dict]] = []
 
-    async def fake_list_active_runtime_task_records(limit=50, statuses=("pending", "running")):
+    async def fake_list_active_runtime_task_records(limit=50, statuses=("pending", "running"), task_types=None):
         return [
             {
                 "task_id": run_id,
                 "task_type": svc.SUBAGENT_RUN_TASK_TYPE,
+                "status": "pending",
                 "parent_agent_id": str(parent),
                 "child_agent_name": "worker",
                 "prompt": "write x",
@@ -2104,7 +3312,7 @@ async def test_resume_persisted_subagent_runs_reconciles_mutating_worker_even_wi
             }
         ]
 
-    async def fake_resolve_parent_runtime(_parent_agent_id):  # pragma: no cover - must not run
+    async def fake_resolve_parent_runtime(_parent_agent_id, **_authority):  # pragma: no cover - must not run
         raise AssertionError("mutating subagent must not resolve runtime for replay")
 
     async def fake_spawn_subagent(*_args, **_kwargs):  # pragma: no cover - must not run
@@ -2133,11 +3341,12 @@ async def test_resume_persisted_subagent_runs_refuses_mutating_worker_without_re
     run_id = uuid.uuid4().hex
     updates: list[tuple[str, dict]] = []
 
-    async def fake_list_active_runtime_task_records(limit=50, statuses=("pending", "running")):
+    async def fake_list_active_runtime_task_records(limit=50, statuses=("pending", "running"), task_types=None):
         return [
             {
                 "task_id": run_id,
                 "task_type": svc.SUBAGENT_RUN_TASK_TYPE,
+                "status": "pending",
                 "parent_agent_id": str(uuid.uuid4()),
                 "child_agent_name": "worker",
                 "prompt": "write x",
@@ -2159,7 +3368,7 @@ async def test_resume_persisted_subagent_runs_refuses_mutating_worker_without_re
     async def fake_spawn_subagent(*_args, **_kwargs):  # pragma: no cover - must not run
         raise AssertionError("mutating subagent without replay journal must not be replayed")
 
-    async def fake_resolve_parent_runtime(_parent_agent_id):
+    async def fake_resolve_parent_runtime(_parent_agent_id, **_authority):
         return {
             "ctx_kwargs": {
                 "parent_agent_id": uuid.uuid4(),
@@ -2210,6 +3419,10 @@ async def test_subagent_cancel_received_before_dispatch_registration_is_applied(
 async def test_dispatch_persisted_subagent_run_honors_cancel_arriving_during_hydration(monkeypatch):
     run_id = uuid.uuid4().hex
     parent = uuid.uuid4()
+    tenant_id = uuid.uuid4()
+    parent_user_id = uuid.uuid4()
+    parent_session_id = uuid.uuid4()
+    child_session_id = uuid.uuid4()
     updates: list[tuple[str, dict]] = []
 
     async def fake_get_runtime_task_record(task_id):
@@ -2218,11 +3431,14 @@ async def test_dispatch_persisted_subagent_run_honors_cancel_arriving_during_hyd
             "task_id": run_id,
             "task_type": svc.SUBAGENT_RUN_TASK_TYPE,
             "status": "pending",
+            "tenant_id": str(tenant_id),
             "parent_agent_id": str(parent),
+            "root_user_id": str(parent_user_id),
             "child_agent_name": "scout",
             "prompt": "read x",
             "trace_id": "trace-subagent",
-            "parent_session_id": "parent-session",
+            "parent_session_id": str(parent_session_id),
+            "child_session_id": str(child_session_id),
             "metadata": {
                 "subagent_type": "explorer",
                 "subagent_name": "scout",
@@ -2234,15 +3450,15 @@ async def test_dispatch_persisted_subagent_run_honors_cancel_arriving_during_hyd
     async def fake_load_resume_messages(**_kwargs):
         return []
 
-    async def fake_resolve_parent_runtime(_parent_agent_id):
+    async def fake_resolve_parent_runtime(_parent_agent_id, **_authority):
         assert svc.apply_remote_subagent_cancel(run_id) is True
         return {
             "ctx_kwargs": {
                 "parent_agent_id": parent,
-                "parent_user_id": uuid.uuid4(),
+                "parent_user_id": parent_user_id,
                 "model": SimpleNamespace(provider="test", model="fake-model"),
                 "parent_agent_name": "Parent",
-                "tenant_id": uuid.uuid4(),
+                "tenant_id": tenant_id,
             }
         }
 

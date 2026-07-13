@@ -407,6 +407,7 @@ async def prepare_session_context_for_request(
     on_decision: Callable[[dict[str, Any]], Any] | None = None,
     compress_kwargs: dict[str, Any] | None = None,
     tool_result_exempt_names: set[str] | None = None,
+    before_destructive_change: Callable[[dict[str, Any]], Any] | None = None,
 ) -> PreparedSessionContext:
     decisions: list[dict[str, Any]] = []
     working = list(messages)
@@ -419,16 +420,48 @@ async def prepare_session_context_for_request(
         exempt_tool_names=tool_result_exempt_names,
     )
     if budget_pass.changed:
-        working = budget_pass.messages
-        changed = True
-        await _emit_decision(
-            on_decision,
-            decisions,
-            {
-                **budget_pass.to_event(),
-                "runtime_decision_entry": _tool_result_budget_runtime_decision(policy, budget_pass),
-            },
+        budget_event = {
+            **budget_pass.to_event(),
+            "runtime_decision_entry": _tool_result_budget_runtime_decision(policy, budget_pass),
+        }
+        authorization = (
+            await _maybe_await(before_destructive_change(dict(budget_event)))
+            if before_destructive_change is not None
+            else True
         )
+        if authorization:
+            working = budget_pass.messages
+            changed = True
+            if isinstance(authorization, dict):
+                budget_event.update(
+                    {
+                        "recovery_manifest_ref": authorization.get("ref"),
+                        "recovery_manifest_sha256": authorization.get("sha256"),
+                        "recovery_manifest_bytes": authorization.get("bytes"),
+                    }
+                )
+            await _emit_decision(on_decision, decisions, budget_event)
+        else:
+            await _emit_decision(
+                on_decision,
+                decisions,
+                {
+                    "event_type": "compaction_skipped",
+                    "trigger": "tool_result_budget",
+                    "reason": "recovery_checkpoint_unavailable",
+                    "before_chars": budget_pass.before_chars,
+                    "after_chars": budget_pass.before_chars,
+                    "trimmed_count": 0,
+                },
+            )
+            budget_pass = ToolResultBudgetPass(
+                messages=list(messages),
+                changed=False,
+                before_chars=budget_pass.before_chars,
+                after_chars=budget_pass.before_chars,
+                trimmed_count=0,
+                reason="recovery_checkpoint_unavailable",
+            )
 
     token_status = calculate_runtime_token_status(
         active_context_tokens=estimate_tokens(working),

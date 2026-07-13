@@ -12,7 +12,7 @@ from pathlib import Path
 import uuid
 from typing import Any, Literal
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import String, and_, cast, exists, func, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -274,6 +274,127 @@ class ChannelDeliveryOutboxService:
                 row.attempt_count = int(row.attempt_count or 0) + 1
             await db.commit()
             return [_claimed(row) for row in rows]
+
+    async def reconcile_workflow_terminal_runs_once(
+        self,
+        *,
+        limit: int = 100,
+        task_ids: set[uuid.UUID] | None = None,
+    ) -> int:
+        """Backfill immutable non-web Workflow deliveries after a crash gap."""
+
+        from app.models.channel_config import ChannelConfig
+        from app.models.chat_session import ChatSession
+        from app.models.runtime_task import RuntimeTask
+
+        repair_limit = max(1, int(limit))
+        if task_ids is not None and not task_ids:
+            return 0
+        target_channel = func.lower(RuntimeTask.metadata_json["delivery_target_json"]["channel"].astext)
+        delivery_session_exists = exists(
+            select(ChatSession.id).where(
+                cast(ChatSession.id, String) == RuntimeTask.parent_session_id,
+                ChatSession.tenant_id == RuntimeTask.tenant_id,
+                ChatSession.agent_id == RuntimeTask.parent_agent_id,
+            )
+        ).correlate(RuntimeTask)
+        already_enqueued = exists(
+            select(ChannelDeliveryOutbox.id).where(
+                ChannelDeliveryOutbox.tenant_id == RuntimeTask.tenant_id,
+                ChannelDeliveryOutbox.runtime_task_id == RuntimeTask.id,
+                ChannelDeliveryOutbox.delivery_kind == "terminal_result",
+            )
+        )
+        async with self._worker_session("reconcile_workflow_terminal_runs") as db:
+            stmt = select(RuntimeTask).where(
+                RuntimeTask.task_type == "workflow",
+                RuntimeTask.status.in_(("completed", "failed", "killed")),
+                RuntimeTask.parent_agent_id.is_not(None),
+                RuntimeTask.parent_session_id.is_not(None),
+                target_channel.notin_(("", "web")),
+                delivery_session_exists,
+                ~already_enqueued,
+            )
+            if task_ids is not None:
+                stmt = stmt.where(RuntimeTask.id.in_(task_ids))
+            tasks = list(
+                (
+                    await db.execute(
+                        stmt.order_by(
+                            func.coalesce(RuntimeTask.completed_at, RuntimeTask.created_at).asc(),
+                            RuntimeTask.id.asc(),
+                        )
+                        .limit(max(20, min(500, repair_limit * 5)))
+                        .with_for_update(skip_locked=True)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            repaired = 0
+            for task in tasks:
+                metadata = dict(task.metadata_json or {})
+                reply_target = metadata.get("delivery_target_json")
+                if not isinstance(reply_target, dict):
+                    continue
+                try:
+                    session_id = _uuid(task.parent_session_id, field="session_id")
+                except ValueError:
+                    continue
+                parent_session = (
+                    await db.execute(
+                        select(ChatSession).where(
+                            ChatSession.id == session_id,
+                            ChatSession.tenant_id == task.tenant_id,
+                            ChatSession.agent_id == task.parent_agent_id,
+                        )
+                    )
+                ).scalar_one_or_none()
+                if parent_session is None:
+                    continue
+                owner_id = parent_session.user_id
+                recorded_user_id = str(metadata.get("user_id") or "").strip() or None
+                recorded_parent_session_id = str(metadata.get("parent_session_id") or "").strip() or None
+                channel = str(reply_target.get("channel") or "").strip().lower()
+                config = (
+                    await db.execute(
+                        select(ChannelConfig).where(
+                            ChannelConfig.tenant_id == task.tenant_id,
+                            ChannelConfig.agent_id == task.parent_agent_id,
+                            ChannelConfig.channel_type == ("microsoft_teams" if channel == "teams" else channel),
+                        )
+                    )
+                ).scalar_one_or_none()
+                outbox_id = await enqueue_channel_delivery(
+                    db,
+                    ChannelDeliveryIntent(
+                        tenant_id=task.tenant_id,
+                        runtime_task_id=task.id,
+                        agent_id=task.parent_agent_id,
+                        session_id=session_id,
+                        user_id=owner_id,
+                        channel_config_id=getattr(config, "id", None),
+                        delivery_target=reply_target,
+                        text=str(task.result_summary or f"Workflow run {task.id} finished: {task.status}."),
+                        terminal_status=task.status,
+                        metadata={
+                            "source": "workflow_runtime_repair",
+                            "workflow_run_id": str(task.id),
+                            "reconciled_from_terminal_runtime_task": True,
+                            "owner_user_authority_source": "chat_session",
+                            "recorded_runtime_parent_session_id": recorded_parent_session_id,
+                            "recorded_runtime_user_id": recorded_user_id,
+                        },
+                    ),
+                )
+                task_metadata = dict(task.metadata_json or {})
+                task_metadata["channel_delivery_outbox_id"] = str(outbox_id)
+                task.metadata_json = task_metadata
+                repaired += 1
+                if repaired >= repair_limit:
+                    break
+            await db.commit()
+            return repaired
 
     @staticmethod
     def _has_ambiguous_part(item: ClaimedChannelDelivery) -> bool:

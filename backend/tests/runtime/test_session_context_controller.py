@@ -131,6 +131,47 @@ async def test_prepare_session_context_records_tool_result_budget_runtime_decisi
 
 
 @pytest.mark.asyncio
+async def test_tool_result_budget_preserves_history_when_recovery_checkpoint_fails() -> None:
+    from app.runtime.ccplus_contracts import ContextPolicyV1
+    from app.runtime.session_context_controller import prepare_session_context_for_request
+
+    original = "A" * 120
+    decisions: list[dict] = []
+
+    async def fake_compress(_messages, **_kwargs):
+        raise AssertionError("semantic compression should not run below threshold")
+
+    async def reject_destructive_change(_event):
+        return None
+
+    result = await prepare_session_context_for_request(
+        messages=[
+            _msg("user", "inspect"),
+            _msg("assistant", "", tool_calls=[{"id": "call-1", "function": {"name": "run_command"}}]),
+            _msg("tool", original, tool_call_id="call-1"),
+        ],
+        policy=ContextPolicyV1(
+            model_window=256_000,
+            round_tool_result_budget=60,
+            tool_result_inline_limit=50,
+        ),
+        estimate_tokens=lambda _msgs: 100,
+        compress_messages=fake_compress,
+        before_destructive_change=reject_destructive_change,
+        on_decision=decisions.append,
+    )
+
+    assert result.changed is False
+    assert result.messages[2].content == original
+    assert any(
+        decision.get("event_type") == "compaction_skipped"
+        and decision.get("reason") == "recovery_checkpoint_unavailable"
+        and decision.get("trigger") == "tool_result_budget"
+        for decision in decisions
+    )
+
+
+@pytest.mark.asyncio
 async def test_prepare_session_context_emits_skipped_reason_when_below_threshold() -> None:
     from app.runtime.ccplus_contracts import ContextPolicyV1
     from app.runtime.session_context_controller import prepare_session_context_for_request

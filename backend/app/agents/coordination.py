@@ -92,6 +92,13 @@ class CoordinationRuntime:
         self._leases[task_key] = lease
         return LeaseAcquireResult(acquired=True, lease=lease)
 
+    def release_lease(self, *, task_key: str, lease_id: str) -> bool:
+        lease = self._leases.get(task_key)
+        if lease is None or lease.id != lease_id:
+            return False
+        self._leases.pop(task_key, None)
+        return True
+
     def reset(self) -> None:
         self._leases.clear()
         self._signals.clear()
@@ -101,6 +108,7 @@ class CoordinationRuntime:
     def send_signal(
         self,
         *,
+        signal_id: str | None = None,
         from_agent_id: str,
         to_agent_id: str,
         content: str,
@@ -108,8 +116,12 @@ class CoordinationRuntime:
         thread_id: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> Signal:
+        stable_id = str(signal_id or uuid.uuid4())
+        existing = next((item for item in self._signals if item.id == stable_id), None)
+        if existing is not None:
+            return existing
         signal = Signal(
-            id=str(uuid.uuid4()),
+            id=stable_id,
             from_agent_id=from_agent_id,
             to_agent_id=to_agent_id,
             content=content,

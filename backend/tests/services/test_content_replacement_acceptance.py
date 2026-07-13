@@ -100,7 +100,7 @@ def _model() -> SimpleNamespace:
 
 
 @pytest.mark.asyncio
-async def test_content_replacement_record_freezes_model_seen_result(tmp_path):
+async def test_content_replacement_record_freezes_model_seen_result(tmp_path, durable_recovery_checkpoint):
     """done_payload writes content_replacement_record.v1 == the model-seen bytes."""
     tool_call_id = "toolu_streamed_77"
     # 60K chars > the 50K inline limit for an eviction-eligible tool → eviction →
@@ -168,7 +168,7 @@ async def test_content_replacement_record_freezes_model_seen_result(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_content_replacement_record_is_identity_for_small_results(tmp_path):
+async def test_content_replacement_record_is_identity_for_small_results(tmp_path, durable_recovery_checkpoint):
     """A small result needs no eviction: inline == original, no replacement applied."""
     tool_call_id = "toolu_small_3"
     small_result = "tiny output"

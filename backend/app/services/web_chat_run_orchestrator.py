@@ -35,6 +35,7 @@ class WebChatContextPorts:
     active_channel_delivery_target: Callable[..., Any]
     is_web_origin_turn: Callable[..., bool]
     channel_permission_prompt: Callable[..., Any]
+    resolved_recovery_task_ids: Callable[..., Any]
 
 
 @dataclass(frozen=True, slots=True)
@@ -251,15 +252,146 @@ def _replace_latest_user_prompt(conversation: list[dict[str, Any]], prompt: str)
     conversation.append({"role": "user", "content": prompt})
 
 
+def _isolate_reused_session_recovery_state(
+    context: Any,
+    *,
+    next_runtime_task_id: str,
+    agent_id: Any,
+    tenant_id: Any,
+    session_id: str,
+) -> None:
+    """Keep old-run uncertainty as evidence, never as executable new-run state."""
+
+    metadata = getattr(context, "metadata", None)
+    if not isinstance(metadata, dict):
+        return
+    previous_runtime_task_id = str(metadata.get("runtime_task_id") or "").strip()
+    if previous_runtime_task_id == next_runtime_task_id:
+        return
+
+    frames: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for key in (
+        "pending_tool_frame",
+        "pending_tool_frames",
+        "recovered_pending_tool_frames",
+        "recovered_tool_frame_reconciliation",
+    ):
+        raw = metadata.get(key)
+        items = [raw] if isinstance(raw, dict) else raw if isinstance(raw, list) else []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            normalized = dict(item)
+            signature = json.dumps(normalized, ensure_ascii=False, sort_keys=True, default=str)
+            if signature in seen:
+                continue
+            seen.add(signature)
+            frames.append(normalized)
+
+    was_blocked = metadata.get("recovery_reconciliation_blocked") is True
+    checkpoint_receipt = metadata.get("recovery_manifest_checkpoint_receipt")
+    if not isinstance(checkpoint_receipt, dict):
+        checkpoint_receipt = {}
+    from app.runtime.recovery_manifest import (
+        inspect_recovery_manifest_checkpoint,
+        reviewed_recovery_manifest_evidence,
+    )
+
+    if checkpoint_receipt:
+        inspection = {"state": "valid", "receipt": checkpoint_receipt}
+    elif previous_runtime_task_id:
+        inspection = inspect_recovery_manifest_checkpoint(
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            runtime_task_id=previous_runtime_task_id,
+        )
+    else:
+        inspection = None
+    reviewed_evidence = reviewed_recovery_manifest_evidence(inspection)
+    prior = [dict(item) for item in metadata.get("prior_run_recovery_reconciliations", []) if isinstance(item, dict)]
+    if frames or was_blocked:
+        record = {
+            "source_runtime_task_id": previous_runtime_task_id or "unknown",
+            "status": "needs_reconciliation",
+            "frames": frames,
+        }
+        evidence = {
+            **reviewed_evidence,
+            "expected_checkpoint_seq": metadata.get("recovery_checkpoint_seq"),
+            "expected_claim_version": metadata.get("claim_version"),
+            "expected_claim_worker_id": metadata.get("claim_worker_id"),
+        }
+        record.update(
+            {
+                key: value
+                for key, value in evidence.items()
+                if value is not None or key in {"expected_manifest_ref", "expected_sha256"}
+            }
+        )
+        prior = [
+            item for item in prior if str(item.get("source_runtime_task_id") or "") != record["source_runtime_task_id"]
+        ]
+        prior = [*prior, record][-50:]
+
+    for key in (
+        "pending_tool_frame",
+        "pending_tool_frames",
+        "recovered_pending_tool_frames",
+        "recovered_tool_frame_reconciliation",
+        "recovered_tool_frame_replay_results",
+        "recovery_manifest_checkpoint_receipt",
+        "recovery_checkpoint_seq",
+        "claim_version",
+        "claim_worker_id",
+    ):
+        metadata.pop(key, None)
+    if prior:
+        metadata["prior_run_recovery_reconciliations"] = prior
+        metadata["recovery_reconciliation_blocked"] = True
+    else:
+        metadata.pop("prior_run_recovery_reconciliations", None)
+        metadata.pop("recovery_reconciliation_blocked", None)
+
+
 async def _configure_runtime_session(state: _WebChatRunState) -> None:
     context = await state.ports.context.broker.get_or_create_runtime_session(str(state.agent.id), state.session_id)
     state.runtime_session_context = context
+    resolved_runtime_task_ids = await state.ports.context.resolved_recovery_task_ids(
+        tenant_id=state.agent.tenant_id,
+        agent_id=state.agent.id,
+        session_id=state.session_id,
+        metadata=context.metadata if isinstance(context.metadata, dict) else {},
+    )
+    if resolved_runtime_task_ids:
+        await state.ports.context.broker.resolve_runtime_recovery_state(
+            str(state.agent.id),
+            state.session_id,
+            runtime_task_ids=set(resolved_runtime_task_ids),
+        )
+    _isolate_reused_session_recovery_state(
+        context,
+        next_runtime_task_id=state.run_uuid.hex,
+        agent_id=state.agent.id,
+        tenant_id=state.agent.tenant_id,
+        session_id=state.session_id,
+    )
     if hasattr(context, "begin_turn"):
         context.begin_turn()
     context.source = str(state.metadata.get("source") or context.source or "web")
     context.channel = str(state.metadata.get("channel") or context.channel or "web")
     context.metadata["tenant_id"] = str(state.agent.tenant_id) if state.agent.tenant_id else None
     context.metadata["runtime_task_id"] = state.run_uuid.hex
+    claim_version = getattr(state.runtime_task, "claim_version", None)
+    if claim_version is not None:
+        context.metadata["claim_version"] = int(claim_version)
+        context.metadata["claim_worker_id"] = str(
+            getattr(state.runtime_task, "claimed_by", None) or state.metadata.get("claimed_by") or "unknown"
+        )
+    else:
+        context.metadata.pop("claim_version", None)
+        context.metadata.pop("claim_worker_id", None)
     budget_run_id = getattr(state.runtime_task, "budget_run_id", None) or state.metadata.get("budget_run_id")
     if budget_run_id:
         context.metadata["budget_run_id"] = str(budget_run_id)
@@ -764,7 +896,12 @@ async def _finalize_invocation_result(state: _WebChatRunState, result: Any) -> N
         state.ports.terminal.clear_interactive_plan_mode(state.runtime_session_context)
     thinking = "".join(state.thinking_content) if state.thinking_content else None
     failed = bool(plan_error) or state.ports.runtime.is_llm_error_message(response)
-    status = "killed" if state.cancel_event.is_set() else ("failed" if failed else "completed")
+    reconciliation_blocked = bool(state.runtime_session_context.metadata.get("recovery_reconciliation_blocked"))
+    status = (
+        "killed"
+        if state.cancel_event.is_set()
+        else ("needs_reconciliation" if reconciliation_blocked else ("failed" if failed else "completed"))
+    )
     state.terminal_phase_hint = state.ports.terminal.phase_for_status(status)
     metadata = {
         "cancelled_by_user": bool(state.cancel_event.is_set()),
@@ -778,6 +915,91 @@ async def _finalize_invocation_result(state: _WebChatRunState, result: Any) -> N
         "turn_tokens_used": int(getattr(result, "tokens_used", 0) or 0),
         **state.ports.artifacts.prompt_metadata(state.runtime_session_context),
     }
+    if reconciliation_blocked:
+        prior_reconciliations = [
+            dict(item)
+            for item in state.runtime_session_context.metadata.get("prior_run_recovery_reconciliations", [])
+            if isinstance(item, dict)
+        ]
+        resolution_targets: list[dict[str, Any]] = []
+        seen_run_ids: set[str] = set()
+        for item in prior_reconciliations:
+            source_run_id = str(item.get("source_runtime_task_id") or "").strip()
+            if not source_run_id or source_run_id == "unknown" or source_run_id in seen_run_ids:
+                continue
+            seen_run_ids.add(source_run_id)
+            resolution_targets.append(
+                {
+                    "agent_id": str(state.agent.id),
+                    "session_id": state.session_id,
+                    "runtime_task_id": source_run_id,
+                    "source": "prior_run",
+                    "expected_manifest_state": item.get("expected_manifest_state"),
+                    "expected_manifest_ref": item.get("expected_manifest_ref"),
+                    "expected_sha256": item.get("expected_sha256"),
+                    **{
+                        key: item[key]
+                        for key in (
+                            "expected_checkpoint_seq",
+                            "expected_claim_version",
+                            "expected_claim_worker_id",
+                        )
+                        if item.get(key) is not None
+                    },
+                }
+            )
+        carrier_run_id = state.run_uuid.hex
+        if carrier_run_id not in seen_run_ids:
+            carrier_target = {
+                "agent_id": str(state.agent.id),
+                "session_id": state.session_id,
+                "runtime_task_id": carrier_run_id,
+                "source": "carrier_run" if prior_reconciliations else "current_run",
+            }
+            carrier_receipt = state.runtime_session_context.metadata.get("recovery_manifest_checkpoint_receipt")
+            from app.runtime.recovery_manifest import (
+                inspect_recovery_manifest_checkpoint,
+                reviewed_recovery_manifest_evidence,
+            )
+
+            if isinstance(carrier_receipt, dict):
+                carrier_inspection = {"state": "valid", "receipt": carrier_receipt}
+            else:
+                carrier_inspection = await asyncio.to_thread(
+                    inspect_recovery_manifest_checkpoint,
+                    agent_id=state.agent.id,
+                    tenant_id=state.agent.tenant_id,
+                    session_id=state.session_id,
+                    runtime_task_id=carrier_run_id,
+                )
+            carrier_target.update(reviewed_recovery_manifest_evidence(carrier_inspection))
+            if isinstance(carrier_receipt, dict):
+                if carrier_receipt.get("ref") is not None:
+                    carrier_target["expected_manifest_ref"] = carrier_receipt["ref"]
+                if carrier_receipt.get("sha256") is not None:
+                    carrier_target["expected_sha256"] = carrier_receipt["sha256"]
+            for metadata_key, target_key in (
+                ("recovery_checkpoint_seq", "expected_checkpoint_seq"),
+                ("claim_version", "expected_claim_version"),
+                ("claim_worker_id", "expected_claim_worker_id"),
+            ):
+                value = state.runtime_session_context.metadata.get(metadata_key)
+                if value is not None:
+                    carrier_target[target_key] = value
+            resolution_targets.append(carrier_target)
+        metadata.update(
+            {
+                "needs_reconciliation": True,
+                "reconciliation_status": "open",
+                "reconciliation_reason": "recovery_tool_frame_requires_operator_action",
+                "reconciliation_retry_allowed": False,
+                "recovery_agent_id": str(state.agent.id),
+                "recovery_session_id": state.session_id,
+                "recovery_runtime_task_id": str(state.run_uuid),
+                "prior_run_recovery_reconciliations": prior_reconciliations,
+                "recovery_resolution_targets": resolution_targets,
+            }
+        )
     if plan_error:
         metadata["interactive_pause"] = "plan_mode_missing_terminal_tool"
     if state.interactive_pause_summary and not str(response or "").strip():

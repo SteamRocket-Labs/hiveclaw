@@ -7,10 +7,11 @@ import json
 import logging
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.agents.subagent import (
     SUBAGENT_TYPE_CRITIC,
@@ -24,6 +25,7 @@ from app.agents.subagent import (
     subagent_spec_to_snapshot,
 )
 from app.agents.subagent_definition import SCOPE_AGENT
+from app.config import get_settings
 from app.core.execution_context import ExecutionPrincipal
 from app.agents.subagent_memory import make_llm_how_distiller, memory_store_for_agent, memory_store_for_tenant
 from app.database import async_session, tenant_scoped_session
@@ -31,12 +33,17 @@ from app.models.agent import Agent
 from app.models.chat_session import ChatSession
 from app.models.llm import LLMModel
 from app.models.runtime_task import RuntimeTask
+from app.models.user import User
 from app.runtime.subagent_decision_entry import build_subagent_decision_entry, subagent_decision_entry_from_metadata
 from app.runtime.subagent_return_contract import build_subagent_return_contract, subagent_return_contract_from_metadata
 from app.services.chat_message_parts import build_session_native_event
 from app.services.chat_transcript import append_session_event
 from app.services.execution_admission import ExecutionAdmission
-from app.services.runtime_notification_outbox import CompletionNotification, enqueue_completion_notification
+from app.services.runtime_notification_outbox import (
+    CompletionNotification,
+    completion_notification_id,
+    enqueue_completion_notification,
+)
 from app.services.runtime_task_service import (
     build_completion_journal_entry,
     build_restart_reconciliation_metadata,
@@ -46,9 +53,15 @@ from app.services.runtime_task_service import (
     get_runtime_task_record,
     has_restart_reconciliation_retry_contract,
     list_active_runtime_task_records,
+    merge_completion_journal,
     merge_restart_replay_journal,
+    reconcile_runtime_task_for_replay_policy,
+    requeue_runtime_task_for_worker,
+    record_startup_resumed_task,
+    StartupResumeCollector,
     update_runtime_task_record,
 )
+from app.services.runtime_replay_policy import runtime_replay_disposition, runtime_replay_snapshot_from_record
 from app.services.runtime_budget_service import (
     RuntimeBudgetReservation,
     RuntimeBudgetService,
@@ -56,6 +69,7 @@ from app.services.runtime_budget_service import (
     estimate_reservation_tokens,
 )
 from app.services.runtime_task_authority import authorize_runtime_task_record
+from app.services.runtime_task_fence import current_runtime_task_fence
 from app.services.tenant_resolver import resolve_tenant_for_agent
 
 SUBAGENT_RUN_TASK_TYPE = "subagent"
@@ -64,8 +78,21 @@ _CHILD_TOOL_TERMINAL_STATUSES = frozenset({"done", "completed", "failed", "error
 _DEFAULT_SUBAGENT_RESUME_BUDGET_CHARS = 240_000
 _DEFAULT_SUBAGENT_START_TOKEN_RESERVATION = 50_000
 _SUBAGENT_CANCEL_EVENTS: dict[str, asyncio.Event] = {}
+_EXPECTED_CLAIM_WORKER_UNSET = object()
 _PENDING_SUBAGENT_CANCELS: set[str] = set()
 logger = logging.getLogger(__name__)
+
+
+class SubagentRuntimeAuthorityError(RuntimeError):
+    """The persisted Subagent execution principal no longer resolves exactly."""
+
+    def __init__(self, blocker: str, message: str) -> None:
+        self.blocker = str(blocker)
+        super().__init__(message)
+
+
+class SubagentTerminalClaimConflict(RuntimeError):
+    """A Subagent terminal write lost the RuntimeTask status/claim CAS race."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +100,9 @@ class SubagentRunStart:
     run_id: str
     child_session_id: str | None
     admission_status: str = "admitted"
+    claim_version: int = 0
+    claim_worker_id: str | None = None
+    claim_expires_at: datetime | None = None
 
 
 def _subagent_type_restart_replay_safe(spec_type: str | None) -> bool:
@@ -154,6 +184,106 @@ def _uuid_or_none(value: uuid.UUID | str | None) -> uuid.UUID | None:
         return uuid.UUID(text)
     except ValueError:
         return None
+
+
+def _canonical_run_id(value: str | uuid.UUID) -> str:
+    parsed = _uuid_or_none(value)
+    return str(parsed) if parsed is not None else str(value)
+
+
+def _subagent_completion_notification(
+    *,
+    record: dict[str, Any] | None,
+    run_id: str,
+    status: str,
+    summary: str,
+    decision_entry: dict[str, Any],
+) -> CompletionNotification | None:
+    """Build the durable consumer intent from persisted RuntimeTask authority."""
+
+    if record is None or str(record.get("task_type") or "") != SUBAGENT_RUN_TASK_TYPE:
+        return None
+    metadata = dict(record.get("metadata") or {})
+    tenant_id = _uuid_or_none(record.get("tenant_id"))
+    parent_agent_id = _uuid_or_none(record.get("parent_agent_id"))
+    parent_user_id = _uuid_or_none(record.get("root_user_id") or metadata.get("root_user_id"))
+    child_session_id = _uuid_or_none(record.get("child_session_id") or metadata.get("child_session_id"))
+    actual_parent_session_id = _uuid_or_none(record.get("parent_session_id") or metadata.get("parent_session_id"))
+    target_session_id = actual_parent_session_id or child_session_id
+    if tenant_id is None or parent_agent_id is None or parent_user_id is None or target_session_id is None:
+        return None
+    budget_run_id = _uuid_or_none(record.get("budget_run_id") or metadata.get("budget_run_id"))
+    local_projection_only = str(metadata.get("execution_backend") or "").strip() == "foreground_inline"
+    return CompletionNotification(
+        tenant_id=tenant_id,
+        source_kind="subagent",
+        source_run_id=_canonical_run_id(run_id),
+        parent_session_id=target_session_id,
+        parent_agent_id=parent_agent_id,
+        parent_user_id=parent_user_id,
+        child_session_id=child_session_id,
+        child_agent_name=str(record.get("child_agent_name") or metadata.get("subagent_name") or "Subagent"),
+        terminal_status=status,
+        task_type=SUBAGENT_RUN_TASK_TYPE,
+        summary=summary,
+        delivery_mode=(
+            "session_projection" if local_projection_only or actual_parent_session_id is None else "parent_continuation"
+        ),
+        metadata={
+            "subagent_terminal_projection_required": child_session_id is not None,
+            "subagent_session_state": status,
+            "parent_agent_id": str(parent_agent_id),
+            "subagent_decision_entry": decision_entry,
+            **({"local_projection_only": True} if local_projection_only else {}),
+            **(
+                {"actual_parent_session_id": str(actual_parent_session_id)}
+                if actual_parent_session_id is not None
+                else {}
+            ),
+            **({"budget_run_id": str(budget_run_id)} if budget_run_id is not None else {}),
+        },
+    )
+
+
+def _require_subagent_completion_notification(
+    *,
+    record: dict[str, Any] | None,
+    run_id: str,
+    status: str,
+    summary: str,
+    decision_entry: dict[str, Any],
+) -> CompletionNotification | None:
+    notification = _subagent_completion_notification(
+        record=record,
+        run_id=run_id,
+        status=status,
+        summary=summary,
+        decision_entry=decision_entry,
+    )
+    record_metadata = dict((record or {}).get("metadata") or {})
+    has_child_session = (
+        _uuid_or_none((record or {}).get("child_session_id") or record_metadata.get("child_session_id")) is not None
+    )
+    if record is not None and has_child_session and notification is None:
+        raise RuntimeError(f"subagent terminal completion authority is incomplete for {run_id}")
+    return notification
+
+
+async def _project_subagent_completion_notification(notification: CompletionNotification | None) -> None:
+    if notification is None or notification.child_session_id is None:
+        return
+    raw_parent_session_id = notification.metadata.get("actual_parent_session_id")
+    await repair_subagent_terminal_projection_from_notification(
+        notification_id=completion_notification_id(notification),
+        tenant_id=_uuid_or_none(notification.tenant_id) or notification.tenant_id,
+        run_id=_canonical_run_id(notification.source_run_id),
+        parent_agent_id=_uuid_or_none(notification.parent_agent_id) or notification.parent_agent_id,
+        parent_user_id=_uuid_or_none(notification.parent_user_id) or notification.parent_user_id,
+        parent_session_id=_uuid_or_none(raw_parent_session_id),
+        child_session_id=_uuid_or_none(notification.child_session_id) or notification.child_session_id,
+        status=notification.terminal_status,
+        summary=notification.summary,
+    )
 
 
 def _estimate_prompt_tokens_from_text(value: str | None) -> int:
@@ -281,10 +411,16 @@ async def start_subagent_run(
     root_runtime_task_id: uuid.UUID | str | None = None,
     budget_run_id: uuid.UUID | str | None = None,
     budget_service: RuntimeBudgetService | None = None,
+    dispatch_mode: str = "runtime_task_worker",
+    run_id: uuid.UUID | str | None = None,
 ) -> SubagentRunStart:
     """Create the durable queued record for a background subagent. Returns
     the run id and child session id the parent can use for continuation."""
-    run_id = uuid.uuid4().hex
+    normalized_dispatch_mode = str(dispatch_mode or "runtime_task_worker").strip()
+    if normalized_dispatch_mode not in {"runtime_task_worker", "foreground_inline"}:
+        raise ValueError(f"unsupported subagent dispatch mode: {dispatch_mode!r}")
+    foreground_inline = normalized_dispatch_mode == "foreground_inline"
+    run_id = (_uuid_or_none(run_id) or uuid.uuid4()).hex
     budget_uuid = _uuid_or_none(budget_run_id)
     budget_reservation_key: str | None = None
     reservation_service = budget_service or (RuntimeBudgetService() if budget_uuid is not None else None)
@@ -302,7 +438,7 @@ async def start_subagent_run(
                 tokens=estimated_tokens,
                 cache_miss_tokens=estimated_tokens,
                 subagents=1,
-                background_tasks=1,
+                background_tasks=0 if foreground_inline else 1,
                 reason="subagent_start",
                 runtime_task_id=uuid.UUID(run_id),
                 metadata={
@@ -318,6 +454,10 @@ async def start_subagent_run(
         )
         admission_status = admission.status
 
+    foreground_claimed = foreground_inline and admission_status != "waiting_budget_approval"
+    claim_version = 1 if foreground_claimed else 0
+    claim_worker_id = f"foreground-subagent:{uuid.uuid4().hex}" if foreground_claimed else None
+
     child_session_id = None
     if parent_user_id is not None:
         child_session_id = await create_subagent_child_session(
@@ -332,6 +472,12 @@ async def start_subagent_run(
             context_mode=context_mode,
             session_state=("waiting_budget_approval" if admission_status == "waiting_budget_approval" else "running"),
         )
+    claim_started_at = datetime.now(timezone.utc) if foreground_claimed else None
+    claim_expires_at = (
+        claim_started_at + timedelta(seconds=max(1, int(get_settings().RUNTIME_TASK_CLAIM_LEASE_SECONDS)))
+        if claim_started_at is not None
+        else None
+    )
     replay_safe = _subagent_type_restart_replay_safe(spec_type)
     side_effect_risk = "read_only" if replay_safe else "mutating"
     return_contract = build_subagent_return_contract(
@@ -362,9 +508,10 @@ async def start_subagent_run(
         ),
         "resumable_subagent": True,
         "resume_after_restart": True,
-        "execution_backend": "runtime_task_worker",
+        "execution_backend": normalized_dispatch_mode,
         "worker_claim_required": True,
-        "worker_dispatched": False,
+        "worker_dispatched": foreground_claimed,
+        "foreground_inline_started": foreground_claimed,
         "side_effect_risk": side_effect_risk,
         "restart_replay_contract": build_restart_replay_contract(
             task_type=SUBAGENT_RUN_TASK_TYPE,
@@ -374,6 +521,16 @@ async def start_subagent_run(
             session_id=parent_session_id,
         ),
     }
+    if foreground_claimed:
+        metadata.update(
+            {
+                "claimed_by": claim_worker_id,
+                "claimed_at": claim_started_at.isoformat(),
+                "claim_expires_at": claim_expires_at.isoformat(),
+                "claim_version": claim_version,
+                "claim_fence": f"{run_id}:{claim_version}",
+            }
+        )
     if budget_uuid is not None:
         metadata["budget_run_id"] = str(budget_uuid)
         metadata["budget_reservation_key"] = budget_reservation_key
@@ -412,7 +569,7 @@ async def start_subagent_run(
         persisted_run_id = await create_runtime_task_record(
             task_id=run_id,
             task_type=SUBAGENT_RUN_TASK_TYPE,
-            status="pending",
+            status="running" if foreground_claimed else "pending",
             parent_agent_id=parent_agent_id,
             child_agent_name=spec_name,
             prompt=task,
@@ -436,6 +593,10 @@ async def start_subagent_run(
             root_session_id=parent_session_id,
             root_runtime_task_id=root_runtime_task_id,
             delegation_chain=metadata["delegation_chain"],
+            claimed_by=claim_worker_id,
+            claim_expires_at=claim_expires_at,
+            claim_version=claim_version,
+            attempt_count=1 if foreground_claimed else 0,
         )
     except Exception:
         if (
@@ -453,7 +614,16 @@ async def start_subagent_run(
                 )
             )
         raise
-    if admission_status != "waiting_budget_approval":
+    if child_session_id:
+        await _bind_subagent_child_session_runtime_task(
+            child_session_id=child_session_id,
+            parent_agent_id=parent_agent_id,
+            run_id=persisted_run_id,
+            claim_version=claim_version,
+            claim_worker_id=claim_worker_id,
+            claim_expires_at=claim_expires_at,
+        )
+    if admission_status != "waiting_budget_approval" and not foreground_inline:
         try:
             from app.services.runtime_task_worker import notify_runtime_task_worker
 
@@ -464,11 +634,343 @@ async def start_subagent_run(
         run_id=persisted_run_id,
         child_session_id=child_session_id,
         admission_status=admission_status,
+        claim_version=claim_version,
+        claim_worker_id=claim_worker_id,
+        claim_expires_at=claim_expires_at,
     )
 
 
-def make_run_completer(run_id: str):
+async def _bind_subagent_child_session_runtime_task(
+    *,
+    child_session_id: str,
+    parent_agent_id: uuid.UUID,
+    run_id: str,
+    claim_version: int = 0,
+    claim_worker_id: str | None = None,
+    claim_expires_at: datetime | None = None,
+) -> None:
+    child_session_uuid = _uuid_or_none(child_session_id)
+    runtime_task_uuid = _uuid_or_none(run_id)
+    if child_session_uuid is None or runtime_task_uuid is None:
+        return
+    tenant_id = await resolve_tenant_for_agent(parent_agent_id)
+    async with tenant_scoped_session(tenant_id) as db:
+        session = (
+            await db.execute(
+                select(ChatSession).where(
+                    ChatSession.id == child_session_uuid,
+                    ChatSession.agent_id == parent_agent_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if session is None:
+            raise RuntimeError("subagent child session authority disappeared before RuntimeTask binding")
+        metadata = dict(session.transcript_metadata_json or {})
+        metadata["run_id"] = str(runtime_task_uuid)
+        metadata["runtime_task_id"] = str(runtime_task_uuid)
+        if claim_version > 0 and claim_worker_id:
+            metadata.update(
+                {
+                    "claim_version": int(claim_version),
+                    "claim_worker_id": str(claim_worker_id),
+                    "claim_expires_at": claim_expires_at.isoformat() if claim_expires_at else None,
+                    "claim_fence": f"{runtime_task_uuid.hex}:{int(claim_version)}",
+                }
+            )
+        session.runtime_task_id = runtime_task_uuid
+        session.transcript_metadata_json = metadata
+        await db.commit()
+
+
+def _build_subagent_budget_settlement_intent(
+    *,
+    run_id: str,
+    record: dict[str, Any] | None,
+    status: str,
+    tokens_used: int = 0,
+) -> dict[str, Any] | None:
+    """Build the recoverable receipt that binds terminal usage to its reservation."""
+
+    if record is None:
+        return None
+    metadata = dict(record.get("metadata") or {})
+    budget_run_id = _uuid_or_none(record.get("budget_run_id") or metadata.get("budget_run_id"))
+    reservation_key = str(record.get("budget_reservation_key") or metadata.get("budget_reservation_key") or "").strip()
+    runtime_task_id = _uuid_or_none(record.get("task_id") or run_id)
+    if budget_run_id is None or runtime_task_id is None or not reservation_key:
+        return None
+    tokens = max(0, int(tokens_used or 0))
+    foreground = str(metadata.get("execution_backend") or "").strip() == "foreground_inline"
+    actual_usage = {
+        "tokens": tokens,
+        "cache_miss_tokens": tokens,
+        "subagents": 1,
+    }
+    if not foreground:
+        actual_usage["background_tasks"] = 1
+    return {
+        "schema": "subagent_budget_settlement_intent.v1",
+        "status": "pending",
+        "budget_run_id": str(budget_run_id),
+        "reservation_key": reservation_key,
+        "runtime_task_id": str(runtime_task_id),
+        "terminal_status": str(status),
+        "reason": f"subagent_{status}",
+        "actual_usage": actual_usage,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+async def apply_locked_subagent_terminal_protocol(
+    db: AsyncSession,
+    task: RuntimeTask,
+    *,
+    status: str,
+    summary: str,
+    blocker: str | None = None,
+    tokens_used: int | None = None,
+    metadata_json: dict[str, Any] | None = None,
+) -> None:
+    """Apply Subagent terminal truth and all durable recovery intents to a locked ORM row."""
+
+    existing_metadata = dict(task.metadata_json or {})
+    terminal_metadata = {**existing_metadata, **dict(metadata_json or {})}
+    total_tokens = max(
+        0,
+        int(tokens_used if tokens_used is not None else dict(task.token_usage or {}).get("total_tokens") or 0),
+    )
+    decision_entry = build_subagent_decision_entry(
+        run_id=task.id.hex,
+        status=status,
+        subagent_name=terminal_metadata.get("subagent_name") or task.child_agent_name,
+        subagent_type=terminal_metadata.get("subagent_type"),
+        replay_mode="cancelled"
+        if status == "killed"
+        else "blocked"
+        if status == "needs_reconciliation"
+        else "terminal_failure",
+        blocker=blocker,
+        safe_to_retry=False,
+        retry_available=False,
+        required_user_action=(
+            "observe_cancellation"
+            if status == "killed"
+            else "manual_reconcile_or_abandon"
+            if status == "needs_reconciliation"
+            else "inspect_failure_and_decide_retry"
+        ),
+        child_session_id=task.child_session_id or terminal_metadata.get("child_session_id"),
+        parent_session_id=task.parent_session_id or terminal_metadata.get("parent_session_id"),
+        summary=summary,
+    )
+    record = {
+        "task_id": task.id.hex,
+        "task_type": task.task_type,
+        "tenant_id": str(task.tenant_id) if task.tenant_id else None,
+        "parent_agent_id": str(task.parent_agent_id) if task.parent_agent_id else None,
+        "root_user_id": str(task.root_user_id) if task.root_user_id else None,
+        "parent_session_id": task.parent_session_id,
+        "child_session_id": task.child_session_id,
+        "child_agent_name": task.child_agent_name,
+        "budget_run_id": str(task.budget_run_id) if task.budget_run_id else None,
+        "budget_reservation_key": task.budget_reservation_key,
+        "metadata": terminal_metadata,
+    }
+    notification = _subagent_completion_notification(
+        record=record,
+        run_id=task.id.hex,
+        status=status,
+        summary=summary,
+        decision_entry=decision_entry,
+    )
+    budget_intent = _build_subagent_budget_settlement_intent(
+        run_id=task.id.hex,
+        record=record,
+        status=status,
+        tokens_used=total_tokens,
+    )
+    terminal_metadata["subagent_decision_entry"] = decision_entry
+    if budget_intent is not None:
+        terminal_metadata["budget_settlement_intent"] = budget_intent
+    terminal_metadata = merge_completion_journal(
+        terminal_metadata,
+        build_completion_journal_entry(
+            task_type=SUBAGENT_RUN_TASK_TYPE,
+            task_id=task.id.hex,
+            status=status,
+            trace_id=task.trace_id,
+            session_id=task.child_session_id or task.parent_session_id,
+            side_effect_risk=str(terminal_metadata.get("side_effect_risk") or "unknown"),
+            summary=summary,
+        ),
+    )
+    task.status = status
+    task.result_summary = summary
+    task.token_usage = {"total_tokens": total_tokens}
+    task.claim_expires_at = None
+    task.completed_at = datetime.now(timezone.utc)
+    task.metadata_json = terminal_metadata
+    if notification is not None:
+        outbox_id = await enqueue_completion_notification(db, notification)
+        task.metadata_json = {**terminal_metadata, "completion_outbox_id": str(outbox_id)}
+
+
+async def _settle_subagent_budget_intent(intent: dict[str, Any] | None) -> None:
+    if not isinstance(intent, dict):
+        return
+    try:
+        budget_run_id = _uuid_or_none(intent.get("budget_run_id"))
+        runtime_task_id = _uuid_or_none(intent.get("runtime_task_id"))
+        reservation_key = str(intent.get("reservation_key") or "").strip()
+        actual = dict(intent.get("actual_usage") or {})
+        if budget_run_id is None or runtime_task_id is None or not reservation_key:
+            return
+        await RuntimeBudgetService().settle(
+            RuntimeBudgetSettlement(
+                budget_run_id=budget_run_id,
+                reservation_key=reservation_key,
+                actual_tokens=max(0, int(actual.get("tokens") or 0)),
+                actual_cache_miss_tokens=max(0, int(actual.get("cache_miss_tokens") or 0)),
+                actual_subagents=max(0, int(actual.get("subagents") or 0)),
+                actual_background_tasks=max(0, int(actual.get("background_tasks") or 0)),
+                reason=str(intent.get("reason") or "subagent_terminal"),
+                runtime_task_id=runtime_task_id,
+                metadata={
+                    "settlement_intent_schema": intent.get("schema"),
+                    "terminal_status": intent.get("terminal_status"),
+                },
+            )
+        )
+    except Exception:
+        # The RuntimeTask transaction already persisted this exact intent. The
+        # default budget reconciler will retry it idempotently by reservation key.
+        logger.warning("[Subagent] immediate budget settlement deferred to reconciler", exc_info=True)
+
+
+async def _commit_subagent_terminal(
+    *,
+    run_id: str,
+    status: str,
+    summary: str,
+    decision_entry: dict[str, Any],
+    tokens_used: int = 0,
+    metadata_json: dict[str, Any] | None = None,
+    expected_status: str | tuple[str, ...] | None = ("pending", "running", "resumable"),
+    expected_claim_version: int | None = None,
+    expected_claim_worker_id: str | None | object = _EXPECTED_CLAIM_WORKER_UNSET,
+    locked_precondition: Any | None = None,
+    startup_reconciliation_reason: str | None = None,
+    ignore_stale_claim: bool = False,
+    completion_notification_required: bool = True,
+) -> bool:
+    """Claim-CAS one Subagent terminal fact and all of its recovery intents."""
+
+    fence = current_runtime_task_fence()
+    fence_matches = fence is not None and fence.task_id == _uuid_or_none(run_id)
+    claim_version_provided = expected_claim_version is not None
+    claim_worker_provided = expected_claim_worker_id is not _EXPECTED_CLAIM_WORKER_UNSET
+    if claim_version_provided != claim_worker_provided:
+        raise ValueError("subagent terminal claim_version and claim_worker_id must be provided together")
+    explicit_claim_snapshot = claim_version_provided and claim_worker_provided
+    claim_snapshot_bound = explicit_claim_snapshot or fence_matches
+    claim_version = (
+        int(expected_claim_version)
+        if explicit_claim_snapshot and expected_claim_version is not None
+        else int(fence.claim_version)
+        if fence_matches
+        else None
+    )
+    claim_worker_id = (
+        str(
+            None if expected_claim_worker_id is _EXPECTED_CLAIM_WORKER_UNSET else expected_claim_worker_id or ""
+        ).strip()
+        or None
+        if explicit_claim_snapshot
+        else str(fence.worker_id)
+        if fence_matches
+        else None
+    )
+    record = await get_runtime_task_record(run_id)
+    notification_builder = (
+        _require_subagent_completion_notification
+        if completion_notification_required
+        else _subagent_completion_notification
+    )
+    completion_notification = notification_builder(
+        record=record,
+        run_id=run_id,
+        status=status,
+        summary=summary,
+        decision_entry=decision_entry,
+    )
+    budget_intent = _build_subagent_budget_settlement_intent(
+        run_id=run_id,
+        record=record,
+        status=status,
+        tokens_used=tokens_used,
+    )
+    terminal_metadata = {
+        **dict(metadata_json or {}),
+        "subagent_decision_entry": decision_entry,
+        **({"budget_settlement_intent": budget_intent} if budget_intent is not None else {}),
+    }
+    terminal_fields: dict[str, Any] = {
+        "status": status,
+        "claim_expires_at": None,
+        "result_summary": summary,
+        "token_usage": {"total_tokens": max(0, int(tokens_used or 0))},
+        "metadata_json": terminal_metadata,
+    }
+    if completion_notification is not None:
+        terminal_fields["completion_notification"] = completion_notification
+    claim_snapshot_kwargs = (
+        {
+            "expected_claim_version": claim_version,
+            "expected_claim_worker_id": claim_worker_id,
+        }
+        if claim_snapshot_bound
+        else {}
+    )
+    terminal_committed = await update_runtime_task_record(
+        run_id,
+        expected_status="running" if claim_worker_id else expected_status,
+        locked_precondition=locked_precondition,
+        startup_reconciliation_reason=startup_reconciliation_reason,
+        **claim_snapshot_kwargs,
+        **terminal_fields,
+    )
+    if not terminal_committed:
+        if ignore_stale_claim:
+            return False
+        raise SubagentTerminalClaimConflict(
+            f"stale subagent terminal claim rejected for {run_id}: "
+            f"claim_version={claim_version}, worker_id={claim_worker_id}"
+        )
+    if startup_reconciliation_reason is not None:
+        # The locked startup transition already committed the canonical outbox
+        # intent. Projection belongs to that retryable outbox, not this startup
+        # coroutine, so a process restart cannot turn projection into a second
+        # terminal mutation.
+        return True
+    # These are projections of the already-committed terminal truth. Either may
+    # crash independently; the outbox and budget reconciler replay them exactly once.
+    await _project_subagent_completion_notification(completion_notification)
+    await _settle_subagent_budget_intent(budget_intent)
+    return True
+
+
+def make_run_completer(
+    run_id: str,
+    *,
+    expected_claim_version: int | None = None,
+    expected_claim_worker_id: str | None | object = _EXPECTED_CLAIM_WORKER_UNSET,
+):
     """Return an ``on_complete(result)`` callback that writes the terminal status."""
+
+    claim_version_provided = expected_claim_version is not None
+    claim_worker_provided = expected_claim_worker_id is not _EXPECTED_CLAIM_WORKER_UNSET
+    if claim_version_provided != claim_worker_provided:
+        raise ValueError("subagent terminal claim_version and claim_worker_id must be provided together")
 
     async def _complete(result: SubagentResult) -> None:
         status = "completed" if result.ok else "failed"
@@ -484,68 +986,37 @@ def make_run_completer(run_id: str):
             required_user_action="observe_result" if status == "completed" else "inspect_failure_and_decide_retry",
             summary=summary,
         )
-        await update_runtime_task_record(
-            run_id,
+        claim_snapshot_kwargs = (
+            {
+                "expected_claim_version": expected_claim_version,
+                "expected_claim_worker_id": expected_claim_worker_id,
+            }
+            if claim_version_provided
+            else {}
+        )
+        await _commit_subagent_terminal(
+            run_id=run_id,
             status=status,
-            result_summary=summary,
-            token_usage={"total_tokens": result.tokens_used},
+            summary=summary,
+            decision_entry=decision_entry,
+            tokens_used=result.tokens_used,
             metadata_json={
-                "subagent_decision_entry": decision_entry,
                 "completion_journal": [
                     build_completion_journal_entry(
                         task_type=SUBAGENT_RUN_TASK_TYPE,
                         task_id=run_id,
                         status=status,
-                        side_effect_risk="read_only"
-                        if result.type in SUBAGENT_RESTART_REPLAY_SAFE_TYPES
-                        else "mutating",
+                        side_effect_risk=(
+                            "read_only" if result.type in SUBAGENT_RESTART_REPLAY_SAFE_TYPES else "mutating"
+                        ),
                         summary=summary,
                     )
-                ],
+                ]
             },
+            **claim_snapshot_kwargs,
         )
-        await update_subagent_child_session_state_for_run(
-            run_id=run_id,
-            status=status,
-            summary=summary,
-        )
-        await _settle_subagent_budget(run_id=run_id, result=result)
 
     return _complete
-
-
-async def _settle_subagent_budget(*, run_id: str, result: SubagentResult) -> None:
-    try:
-        record = await get_runtime_task_record(run_id)
-        if record is None:
-            return
-        metadata = dict(record.get("metadata") or {})
-        budget_run_id = _uuid_or_none(record.get("budget_run_id") or metadata.get("budget_run_id"))
-        reservation_key = str(
-            record.get("budget_reservation_key") or metadata.get("budget_reservation_key") or ""
-        ).strip()
-        if budget_run_id is None or not reservation_key:
-            return
-        tokens = max(0, int(getattr(result, "tokens_used", 0) or 0))
-        await RuntimeBudgetService().settle(
-            RuntimeBudgetSettlement(
-                budget_run_id=budget_run_id,
-                reservation_key=reservation_key,
-                actual_tokens=tokens,
-                actual_cache_miss_tokens=tokens,
-                actual_subagents=1,
-                actual_background_tasks=1,
-                reason="subagent_completed" if result.ok else "subagent_failed",
-                runtime_task_id=uuid.UUID(run_id),
-                metadata={
-                    "subagent_name": result.name,
-                    "subagent_type": result.type,
-                    "status": result.status,
-                },
-            )
-        )
-    except Exception:
-        logger.debug("[Subagent] budget settlement failed for run %s", run_id, exc_info=True)
 
 
 async def update_subagent_child_session_state_for_run(
@@ -553,9 +1024,18 @@ async def update_subagent_child_session_state_for_run(
     run_id: str,
     status: str,
     summary: str,
+    expected_tenant_id: uuid.UUID | None = None,
+    expected_parent_agent_id: uuid.UUID | None = None,
+    expected_parent_user_id: uuid.UUID | None = None,
+    expected_parent_session_id: uuid.UUID | None = None,
+    expected_child_session_id: uuid.UUID | None = None,
+    completion_outbox_id: uuid.UUID | None = None,
+    ensure_completion_intent: bool = True,
 ) -> None:
     record = await get_runtime_task_record(run_id)
     if record is None:
+        if expected_tenant_id is not None:
+            raise RuntimeError(f"subagent terminal projection RuntimeTask no longer resolves: {run_id}")
         return
     record_metadata = dict(record.get("metadata") or {})
     child_session_id = str(record.get("child_session_id") or record_metadata.get("child_session_id") or "").strip()
@@ -564,16 +1044,68 @@ async def update_subagent_child_session_state_for_run(
     if child_session_uuid is None or parent_agent_uuid is None:
         return
 
-    tenant_id = await resolve_tenant_for_agent(parent_agent_uuid)
+    record_tenant_id = _uuid_or_none(record.get("tenant_id"))
+    record_parent_user_id = _uuid_or_none(record.get("root_user_id") or record_metadata.get("root_user_id"))
+    record_parent_session_id = _uuid_or_none(
+        record.get("parent_session_id") or record_metadata.get("parent_session_id")
+    )
+    strict_authority = expected_tenant_id is not None
+    if strict_authority:
+        authority_matches = (
+            str(record.get("task_type") or "") == SUBAGENT_RUN_TASK_TYPE
+            and str(record.get("status") or "") == status
+            and record_tenant_id == expected_tenant_id
+            and parent_agent_uuid == expected_parent_agent_id
+            and record_parent_user_id == expected_parent_user_id
+            and record_parent_session_id == expected_parent_session_id
+            and child_session_uuid == expected_child_session_id
+        )
+        if not authority_matches:
+            raise RuntimeError(f"subagent terminal projection authority mismatch for RuntimeTask {run_id}")
+
+    tenant_id = expected_tenant_id or record_tenant_id or await resolve_tenant_for_agent(parent_agent_uuid)
+    if tenant_id is None:
+        raise RuntimeError(f"subagent terminal projection tenant no longer resolves: {run_id}")
     async with tenant_scoped_session(tenant_id) as db:
         result = await db.execute(
-            select(ChatSession).where(ChatSession.id == child_session_uuid, ChatSession.agent_id == parent_agent_uuid)
+            select(ChatSession)
+            .where(
+                ChatSession.id == child_session_uuid,
+                ChatSession.agent_id == parent_agent_uuid,
+                ChatSession.tenant_id == tenant_id,
+            )
+            .with_for_update()
         )
         session = result.scalar_one_or_none()
         if session is None:
-            return
+            raise RuntimeError(f"subagent child session no longer resolves for terminal projection: {run_id}")
+        if expected_parent_user_id is not None and session.user_id != expected_parent_user_id:
+            raise RuntimeError(f"subagent terminal projection user authority mismatch for RuntimeTask {run_id}")
+        if expected_parent_session_id is not None and session.parent_session_id != expected_parent_session_id:
+            raise RuntimeError(f"subagent terminal projection parent session mismatch for RuntimeTask {run_id}")
+        if session.parent_session_id:
+            parent_session = (
+                await db.execute(
+                    select(ChatSession).where(
+                        ChatSession.id == session.parent_session_id,
+                        ChatSession.agent_id == parent_agent_uuid,
+                        ChatSession.tenant_id == tenant_id,
+                        ChatSession.user_id == session.user_id,
+                    )
+                )
+            ).scalar_one_or_none()
+            if parent_session is None:
+                raise RuntimeError(f"subagent parent session authority no longer resolves: {run_id}")
         metadata = dict(session.transcript_metadata_json or {})
-        budget_run_id = _uuid_or_none(metadata.get("budget_run_id"))
+        existing_projection = dict(metadata.get("subagent_terminal_projection") or {})
+        if (
+            existing_projection.get("schema") == "subagent_terminal_projection.v1"
+            and _canonical_run_id(existing_projection.get("runtime_task_id") or "") == _canonical_run_id(run_id)
+            and str(existing_projection.get("status") or "") == status
+        ):
+            return
+        budget_run_id = _uuid_or_none(record.get("budget_run_id") or record_metadata.get("budget_run_id"))
+        durable_outbox_id = completion_outbox_id or _uuid_or_none(record_metadata.get("completion_outbox_id"))
         metadata["session_state"] = status
         metadata["last_run_id"] = run_id
         metadata["last_result_summary"] = summary
@@ -586,6 +1118,12 @@ async def update_subagent_child_session_state_for_run(
             summary=summary,
         )
         metadata["subagent_decision_entry"] = decision_entry
+        metadata["subagent_terminal_projection"] = {
+            "schema": "subagent_terminal_projection.v1",
+            "runtime_task_id": _canonical_run_id(run_id),
+            "status": status,
+            **({"completion_outbox_id": str(durable_outbox_id)} if durable_outbox_id is not None else {}),
+        }
         session.transcript_metadata_json = metadata
         await append_session_event(
             db=db,
@@ -648,22 +1186,51 @@ async def update_subagent_child_session_state_for_run(
                 listed_surface="chat",
                 source="subagent",
             )
-            wake_kwargs = {
-                "db": db,
-                "run_id": run_id,
-                "tenant_id": tenant_id,
-                "parent_agent_id": parent_agent_uuid,
-                "parent_user_id": session.user_id,
-                "parent_session_id": parent_session_id,
-                "child_session_id": child_session_uuid,
-                "status": status,
-                "summary": summary,
-                "subagent_decision_entry": decision_entry,
-            }
-            if budget_run_id is not None:
-                wake_kwargs["budget_run_id"] = budget_run_id
-            await _wake_parent_session_from_subagent_completion(**wake_kwargs)
+            if ensure_completion_intent:
+                wake_kwargs = {
+                    "db": db,
+                    "run_id": run_id,
+                    "tenant_id": tenant_id,
+                    "parent_agent_id": parent_agent_uuid,
+                    "parent_user_id": session.user_id,
+                    "parent_session_id": parent_session_id,
+                    "child_session_id": child_session_uuid,
+                    "status": status,
+                    "summary": summary,
+                    "subagent_decision_entry": decision_entry,
+                }
+                if budget_run_id is not None:
+                    wake_kwargs["budget_run_id"] = budget_run_id
+                await _wake_parent_session_from_subagent_completion(**wake_kwargs)
         await db.commit()
+
+
+async def repair_subagent_terminal_projection_from_notification(
+    *,
+    notification_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    run_id: str,
+    parent_agent_id: uuid.UUID,
+    parent_user_id: uuid.UUID,
+    parent_session_id: uuid.UUID | None,
+    child_session_id: uuid.UUID,
+    status: str,
+    summary: str,
+) -> None:
+    """Replay the local Subagent projection under the outbox's persisted authority."""
+
+    await update_subagent_child_session_state_for_run(
+        run_id=run_id,
+        status=status,
+        summary=summary,
+        expected_tenant_id=tenant_id,
+        expected_parent_agent_id=parent_agent_id,
+        expected_parent_user_id=parent_user_id,
+        expected_parent_session_id=parent_session_id,
+        expected_child_session_id=child_session_id,
+        completion_outbox_id=notification_id,
+        ensure_completion_intent=False,
+    )
 
 
 async def update_subagent_child_session_state(
@@ -675,11 +1242,10 @@ async def update_subagent_child_session_state(
     run_id: str | None = None,
     runtime_task_id: str | None = None,
 ) -> None:
-    """Update a subagent child session that is not necessarily backed by a RuntimeTask.
+    """Update a child-session projection by its durable RuntimeTask identity.
 
-    Foreground AgentTool-compatible subagents are synchronous, so they do not
-    have a durable RuntimeTask row, but they still need a child session address
-    for SendMessage-style continuation and transcript inspection.
+    Foreground and background subagents both own a RuntimeTask. This compatibility
+    entry point also tolerates historical child sessions whose task linkage is absent.
     """
 
     child_session_uuid = _uuid_or_none(child_session_id)
@@ -744,7 +1310,7 @@ async def _wake_parent_session_from_subagent_completion(
         CompletionNotification(
             tenant_id=tenant_id,
             source_kind="subagent",
-            source_run_id=run_id,
+            source_run_id=_canonical_run_id(run_id),
             parent_session_id=parent_session_id,
             parent_agent_id=parent_agent_id,
             parent_user_id=parent_user_id,
@@ -764,15 +1330,34 @@ async def _wake_parent_session_from_subagent_completion(
     )
 
 
-async def _resolve_parent_runtime(parent_agent_id: uuid.UUID) -> SubagentSpawnContext | None:
-    from app.services.model_resolution import choose_runtime_model_pair
+async def _resolve_parent_runtime(
+    parent_agent_id: uuid.UUID,
+    *,
+    tenant_id: uuid.UUID,
+    root_user_id: uuid.UUID,
+    parent_session_id: uuid.UUID,
+    child_session_id: uuid.UUID,
+    session_factory: async_sessionmaker[AsyncSession] | None = None,
+) -> SubagentSpawnContext:
+    """Restore one background child from persisted principal authority only.
 
-    tenant_id = await resolve_tenant_for_agent(parent_agent_id, session_factory=async_session)
-    if tenant_id is None:
-        return None
+    The Agent creator is definition provenance, not the user who initiated this
+    run. Every resumed LLM/tool call therefore inherits ``RuntimeTask.root_user_id``
+    after the tenant and both session projections agree on that same principal.
+    """
+
+    from app.services.model_resolution import choose_runtime_model_pair, primary_model_unavailable
+
+    factory = session_factory or async_session
+    resolved_tenant_id = await resolve_tenant_for_agent(parent_agent_id, session_factory=factory)
+    if resolved_tenant_id is None or resolved_tenant_id != tenant_id:
+        raise SubagentRuntimeAuthorityError(
+            "subagent_tenant_authority_mismatch",
+            "Subagent RuntimeTask tenant no longer matches its parent Agent.",
+        )
     async with tenant_scoped_session(
         tenant_id,
-        session_factory=async_session,
+        session_factory=factory,
         require_tenant=True,
         source="background_subagent_restart_bootstrap",
     ) as db:
@@ -785,7 +1370,45 @@ async def _resolve_parent_runtime(parent_agent_id: uuid.UUID) -> SubagentSpawnCo
             )
         ).scalar_one_or_none()
         if agent is None:
-            return None
+            raise SubagentRuntimeAuthorityError(
+                "subagent_parent_agent_authority_missing",
+                "Subagent parent Agent no longer resolves in the RuntimeTask tenant.",
+            )
+        root_user = (
+            await db.execute(
+                select(User).where(
+                    User.id == root_user_id,
+                    User.tenant_id == tenant_id,
+                    User.is_active.is_(True),
+                )
+            )
+        ).scalar_one_or_none()
+        parent_session = (
+            await db.execute(
+                select(ChatSession).where(
+                    ChatSession.id == parent_session_id,
+                    ChatSession.tenant_id == tenant_id,
+                    ChatSession.agent_id == parent_agent_id,
+                    ChatSession.user_id == root_user_id,
+                )
+            )
+        ).scalar_one_or_none()
+        child_session = (
+            await db.execute(
+                select(ChatSession).where(
+                    ChatSession.id == child_session_id,
+                    ChatSession.tenant_id == tenant_id,
+                    ChatSession.agent_id == parent_agent_id,
+                    ChatSession.user_id == root_user_id,
+                    ChatSession.parent_session_id == parent_session_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if root_user is None or parent_session is None or child_session is None:
+            raise SubagentRuntimeAuthorityError(
+                "subagent_execution_authority_mismatch",
+                "Subagent root user and parent/child session authority do not resolve to one tenant principal.",
+            )
         primary_model = None
         fallback_model = None
         if getattr(agent, "primary_model_id", None):
@@ -808,18 +1431,55 @@ async def _resolve_parent_runtime(parent_agent_id: uuid.UUID) -> SubagentSpawnCo
                     )
                 )
             ).scalar_one_or_none()
+        if primary_model_unavailable(agent, primary_model):
+            raise SubagentRuntimeAuthorityError(
+                "primary_model_unavailable",
+                "Configured Subagent parent primary model is missing, disabled, or cross-tenant.",
+            )
         model, fallback_model = choose_runtime_model_pair(primary_model, fallback_model, None)
         if model is None:
-            return None
+            raise SubagentRuntimeAuthorityError(
+                "subagent_model_unavailable",
+                "Subagent parent has no enabled runtime model.",
+            )
         return SubagentSpawnContext(
             parent_agent_id=parent_agent_id,
-            parent_user_id=agent.creator_id,
+            parent_user_id=root_user_id,
             model=model,
             fallback_model=fallback_model,
             parent_agent_name=getattr(agent, "name", None) or "Agent",
             role_description=getattr(agent, "role_description", None) or "",
             tenant_id=agent.tenant_id,
         )
+
+
+async def resolve_subagent_runtime_authority_from_record(run_id: str) -> SubagentSpawnContext:
+    """Resolve executable authority exclusively from one persisted Subagent RuntimeTask."""
+
+    record = await get_runtime_task_record(run_id)
+    metadata = dict((record or {}).get("metadata") or {})
+    if record is None or str(record.get("task_type") or "") != SUBAGENT_RUN_TASK_TYPE:
+        raise SubagentRuntimeAuthorityError(
+            "subagent_runtime_task_missing",
+            "Subagent RuntimeTask no longer resolves.",
+        )
+    parent_agent_id = _uuid_or_none(record.get("parent_agent_id"))
+    tenant_id = _uuid_or_none(record.get("tenant_id"))
+    root_user_id = _uuid_or_none(record.get("root_user_id") or metadata.get("root_user_id"))
+    parent_session_id = _uuid_or_none(record.get("parent_session_id") or metadata.get("parent_session_id"))
+    child_session_id = _uuid_or_none(record.get("child_session_id") or metadata.get("child_session_id"))
+    if None in (parent_agent_id, tenant_id, root_user_id, parent_session_id, child_session_id):
+        raise SubagentRuntimeAuthorityError(
+            "subagent_execution_authority_missing",
+            "Subagent RuntimeTask lacks complete tenant, root-user, parent-session, or child-session authority.",
+        )
+    return await _resolve_parent_runtime(
+        parent_agent_id,
+        tenant_id=tenant_id,
+        root_user_id=root_user_id,
+        parent_session_id=parent_session_id,
+        child_session_id=child_session_id,
+    )
 
 
 async def _resolve_model_override(model_name: str, tenant_id: uuid.UUID | None) -> Any | None:
@@ -1143,7 +1803,11 @@ async def _mark_subagent_run_needs_reconciliation(
     summary: str,
     trace_id: str | None,
     session_id: str | None,
-) -> None:
+    completion_notification_required: bool = True,
+    expected_status: str | None = None,
+    expected_claim_version: int | None = None,
+    expected_claim_worker_id: str | None = None,
+) -> bool:
     return_contract = build_subagent_return_contract(
         "needs_reconciliation",
         run_id=run_id,
@@ -1181,37 +1845,174 @@ async def _mark_subagent_run_needs_reconciliation(
         summary=summary,
     )
     reconciliation_metadata["subagent_decision_entry"] = decision_entry
-    await update_runtime_task_record(
-        run_id,
+
+    def still_requires_reconciliation(task: Any) -> bool:
+        current_metadata = dict(task.metadata_json or {})
+        if blocker == "child_pending_tool_frame_not_replay_safe":
+            frame = _pending_child_tool_frame(current_metadata)
+            return frame is not None and not _child_pending_tool_frame_replay_safe(frame)
+        current_spec = subagent_spec_from_snapshot(current_metadata.get("subagent_spec"))
+        current_type = str(
+            (current_spec.type if current_spec is not None else current_metadata.get("subagent_type")) or ""
+        )
+        return _subagent_restart_replay_blocker(current_type, current_metadata) == blocker
+
+    startup_transition = expected_status is not None
+    claim_snapshot_kwargs = (
+        {
+            "expected_claim_version": expected_claim_version,
+            "expected_claim_worker_id": expected_claim_worker_id,
+        }
+        if startup_transition or expected_claim_version is not None or expected_claim_worker_id is not None
+        else {}
+    )
+    return await _commit_subagent_terminal(
+        run_id=run_id,
         status="needs_reconciliation",
-        result_summary=summary,
+        summary=summary,
+        decision_entry=decision_entry,
         metadata_json=reconciliation_metadata,
+        completion_notification_required=completion_notification_required,
+        expected_status=expected_status or ("pending", "running", "resumable"),
+        locked_precondition=still_requires_reconciliation if startup_transition else None,
+        startup_reconciliation_reason=blocker if startup_transition else None,
+        ignore_stale_claim=startup_transition,
+        **claim_snapshot_kwargs,
     )
-    try:
-        await update_subagent_child_session_state_for_run(
-            run_id=run_id,
-            status="needs_reconciliation",
-            summary=summary,
-        )
-    except Exception:
-        logger.debug("[Subagent] child session reconciliation projection failed for run %s", run_id, exc_info=True)
 
 
-async def _mark_subagent_run_killed(*, run_id: str, summary: str) -> None:
-    await update_runtime_task_record(
-        run_id,
+async def _mark_subagent_run_killed(
+    *,
+    run_id: str,
+    summary: str,
+    tokens_used: int = 0,
+    expected_status: str | tuple[str, ...] | None = ("pending", "running", "resumable"),
+    expected_claim_version: int | None = None,
+    expected_claim_worker_id: str | None = None,
+) -> None:
+    record = await get_runtime_task_record(run_id)
+    metadata = dict((record or {}).get("metadata") or {})
+    decision_entry = build_subagent_decision_entry(
+        run_id=run_id,
         status="killed",
-        result_summary=summary,
-        metadata_json={"cancelled": True, "cancel_reason": summary},
+        subagent_name=metadata.get("subagent_name"),
+        subagent_type=metadata.get("subagent_type"),
+        replay_mode="cancelled",
+        safe_to_retry=False,
+        retry_available=False,
+        required_user_action="observe_cancellation",
+        child_session_id=(record or {}).get("child_session_id") or metadata.get("child_session_id"),
+        parent_session_id=(record or {}).get("parent_session_id") or metadata.get("parent_session_id"),
+        summary=summary,
     )
-    try:
-        await update_subagent_child_session_state_for_run(
-            run_id=run_id,
-            status="killed",
-            summary=summary,
-        )
-    except Exception:
-        logger.debug("[Subagent] child session killed projection failed for run %s", run_id, exc_info=True)
+    claim_snapshot_kwargs = (
+        {
+            "expected_claim_version": expected_claim_version,
+            "expected_claim_worker_id": expected_claim_worker_id,
+        }
+        if expected_claim_version is not None or expected_claim_worker_id is not None
+        else {}
+    )
+    await _commit_subagent_terminal(
+        run_id=run_id,
+        status="killed",
+        summary=summary,
+        decision_entry=decision_entry,
+        tokens_used=tokens_used,
+        metadata_json={
+            "cancelled": True,
+            "cancel_reason": summary,
+        },
+        expected_status=expected_status,
+        **claim_snapshot_kwargs,
+    )
+
+
+async def request_subagent_stop(*, run_id: str, reason: str) -> str:
+    """Stop an unclaimed Subagent or durably request cancellation from its claim owner."""
+
+    terminal_statuses = {"completed", "failed", "killed", "skipped", "needs_reconciliation"}
+    for _attempt in range(4):
+        record = await get_runtime_task_record(run_id)
+        if record is None or str(record.get("task_type") or "") != SUBAGENT_RUN_TASK_TYPE:
+            raise LookupError("Subagent RuntimeTask not found")
+        status = str(record.get("status") or "")
+        if status in terminal_statuses:
+            return status
+        claim_version = int(record.get("claim_version") or 0)
+        claim_worker_id = str(record.get("claimed_by") or "").strip() or None
+        if status == "running" and claim_worker_id is not None:
+            updated = await update_runtime_task_record(
+                run_id,
+                expected_status="running",
+                expected_claim_version=claim_version,
+                expected_claim_worker_id=claim_worker_id,
+                metadata_json={
+                    "cancel_requested": True,
+                    "cancel_reason": reason,
+                    "cancel_requested_at": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+            if updated:
+                return "cancellation_requested"
+            continue
+        try:
+            await _mark_subagent_run_killed(
+                run_id=run_id,
+                summary=reason,
+                expected_status=status,
+                expected_claim_version=claim_version,
+                expected_claim_worker_id=claim_worker_id or "",
+            )
+        except SubagentTerminalClaimConflict:
+            # A worker may claim the row after our read. Re-read its authority;
+            # an active claim owns terminalization and receives only a durable
+            # cancellation request on the next iteration.
+            continue
+        return "killed"
+
+    current = await get_runtime_task_record(run_id)
+    current_status = str((current or {}).get("status") or "")
+    if current_status in terminal_statuses:
+        return current_status
+    raise SubagentTerminalClaimConflict(f"Subagent stop could not acquire stable claim authority for {run_id}")
+
+
+async def _mark_subagent_run_failed(
+    *,
+    run_id: str,
+    summary: str,
+    blocker: str,
+    tokens_used: int = 0,
+) -> None:
+    record = await get_runtime_task_record(run_id)
+    metadata = dict((record or {}).get("metadata") or {})
+    decision_entry = build_subagent_decision_entry(
+        run_id=run_id,
+        status="failed",
+        subagent_name=metadata.get("subagent_name"),
+        subagent_type=metadata.get("subagent_type"),
+        replay_mode="terminal_failure",
+        blocker=blocker,
+        safe_to_retry=False,
+        retry_available=False,
+        required_user_action="inspect_failure_and_decide_retry",
+        child_session_id=(record or {}).get("child_session_id") or metadata.get("child_session_id"),
+        parent_session_id=(record or {}).get("parent_session_id") or metadata.get("parent_session_id"),
+        summary=summary,
+    )
+    await _commit_subagent_terminal(
+        run_id=run_id,
+        status="failed",
+        summary=summary,
+        decision_entry=decision_entry,
+        tokens_used=tokens_used,
+        metadata_json={
+            "resume_failed": True,
+            "worker_dispatch_failed": True,
+            "terminal_blocker": blocker,
+        },
+    )
 
 
 async def record_subagent_child_tool_frame(
@@ -1287,13 +2088,25 @@ async def dispatch_persisted_subagent_run(task_id: str) -> bool:
     status = str(record.get("status") or "").strip()
     if status not in {"pending", "running", "resumable"}:
         return False
+    claim_version = int(record.get("claim_version") or 0)
+    claim_worker_id = str(record.get("claimed_by") or "").strip() or None
+    claimed_execution = claim_version > 0 and claim_worker_id is not None
     metadata = dict(record.get("metadata") or {})
+    if metadata.get("cancel_requested") is True:
+        await _mark_subagent_run_killed(
+            run_id=run_id,
+            summary=str(metadata.get("cancel_reason") or "Subagent run cancelled by user."),
+            tokens_used=max(0, int(dict(record.get("token_usage") or {}).get("total_tokens") or 0)),
+            expected_status="running",
+            expected_claim_version=claim_version if claimed_execution else None,
+            expected_claim_worker_id=claim_worker_id if claimed_execution else None,
+        )
+        return True
     if not metadata.get("resume_after_restart") or not metadata.get("resumable_subagent"):
-        await update_runtime_task_record(
-            run_id,
-            status="failed",
-            result_summary="Subagent RuntimeTask is missing restart-resumable metadata.",
-            metadata_json={"resume_failed": True, "worker_dispatch_failed": True},
+        await _mark_subagent_run_failed(
+            run_id=run_id,
+            summary="Subagent RuntimeTask is missing restart-resumable metadata.",
+            blocker="restart_metadata_missing",
         )
         return True
 
@@ -1322,7 +2135,56 @@ async def dispatch_persisted_subagent_run(task_id: str) -> bool:
         )
         return True
 
-    parent_agent_id = uuid.UUID(str(record.get("parent_agent_id") or ""))
+    parent_agent_id = _uuid_or_none(record.get("parent_agent_id"))
+    tenant_id = _uuid_or_none(record.get("tenant_id"))
+    root_user_id = _uuid_or_none(record.get("root_user_id") or metadata.get("root_user_id"))
+    parent_session_uuid = _uuid_or_none(parent_session_id)
+    child_session_uuid = _uuid_or_none(child_session_id)
+    if None in (parent_agent_id, tenant_id, root_user_id, parent_session_uuid, child_session_uuid):
+        await _mark_subagent_run_needs_reconciliation(
+            run_id=run_id,
+            metadata=metadata,
+            blocker="subagent_execution_authority_missing",
+            summary=(
+                "Subagent was not dispatched because its RuntimeTask lacks complete tenant, root-user, "
+                "parent-session, or child-session authority. Human reconciliation is required."
+            ),
+            trace_id=trace_id,
+            session_id=child_session_id or parent_session_id,
+            completion_notification_required=False,
+        )
+        return True
+    try:
+        runtime = _coerce_runtime_context(
+            await _resolve_parent_runtime(
+                parent_agent_id,
+                tenant_id=tenant_id,
+                root_user_id=root_user_id,
+                parent_session_id=parent_session_uuid,
+                child_session_id=child_session_uuid,
+            )
+        )
+    except SubagentRuntimeAuthorityError as exc:
+        await _mark_subagent_run_needs_reconciliation(
+            run_id=run_id,
+            metadata=metadata,
+            blocker=exc.blocker,
+            summary=str(exc),
+            trace_id=trace_id,
+            session_id=child_session_id or parent_session_id,
+        )
+        return True
+    if runtime is None:
+        await _mark_subagent_run_needs_reconciliation(
+            run_id=run_id,
+            metadata=metadata,
+            blocker="subagent_parent_runtime_unavailable",
+            summary="Subagent parent runtime could not be restored from persisted authority.",
+            trace_id=trace_id,
+            session_id=child_session_id or parent_session_id,
+        )
+        return True
+
     resume_messages = await _load_subagent_resume_messages(
         parent_agent_id=parent_agent_id,
         child_session_id=child_session_id,
@@ -1353,15 +2215,6 @@ async def dispatch_persisted_subagent_run(task_id: str) -> bool:
         )
         return True
 
-    runtime = _coerce_runtime_context(await _resolve_parent_runtime(parent_agent_id))
-    if runtime is None:
-        await update_runtime_task_record(
-            run_id,
-            status="failed",
-            result_summary="Subagent could not be dispatched because parent runtime is unavailable.",
-            metadata_json={"resume_failed": True, "worker_dispatch_failed": True},
-        )
-        return True
     runtime.trace_id = trace_id or runtime.trace_id or ""
     runtime.parent_session_id = parent_session_id or runtime.parent_session_id or ""
     runtime.subagent_run_id = run_id
@@ -1377,6 +2230,21 @@ async def dispatch_persisted_subagent_run(task_id: str) -> bool:
             parent_session_id=runtime.parent_session_id,
             trace_id=runtime.trace_id,
         )
+    runtime.recovery_metadata.update(
+        {
+            "runtime_task_id": run_id,
+            "recovery_authority_type": "subagent_runtime_task",
+            "recovery_authority_id": run_id,
+            **({"claim_version": claim_version} if claimed_execution else {}),
+            **({"claim_worker_id": claim_worker_id} if claimed_execution else {}),
+            **(
+                {"claim_expires_at": str(record.get("claim_expires_at"))}
+                if claimed_execution and record.get("claim_expires_at")
+                else {}
+            ),
+            **({"claim_fence": f"{run_id}:{claim_version}"} if claimed_execution else {}),
+        }
+    )
 
     spec = snapshot_spec or SubagentSpec(
         name=str(metadata.get("subagent_name") or record.get("child_agent_name") or spec_type or "subagent"),
@@ -1414,11 +2282,19 @@ async def dispatch_persisted_subagent_run(task_id: str) -> bool:
                 "reconciliation_retry_consumed_at": datetime.now(timezone.utc).isoformat(),
             }
         )
-    await update_runtime_task_record(
+    dispatch_committed = await update_runtime_task_record(
         run_id,
+        expected_status="running" if claimed_execution else None,
+        expected_claim_version=claim_version if claimed_execution else None,
+        expected_claim_worker_id=claim_worker_id if claimed_execution else None,
         status="running",
         metadata_json=running_metadata,
     )
+    if claimed_execution and not dispatch_committed:
+        raise RuntimeError(
+            f"stale subagent claim rejected before dispatch for {run_id}: "
+            f"claim_version={claim_version}, worker_id={claim_worker_id}"
+        )
     cancel_event = _subagent_cancel_event_for_run(run_id)
     runtime.cancel_event = cancel_event
     try:
@@ -1440,7 +2316,11 @@ async def dispatch_persisted_subagent_run(task_id: str) -> bool:
                 error="Subagent dispatch completed without a result.",
             )
         if cancel_event.is_set():
-            await _mark_subagent_run_killed(run_id=run_id, summary="Subagent run cancelled by user.")
+            await _mark_subagent_run_killed(
+                run_id=run_id,
+                summary="Subagent run cancelled by user.",
+                tokens_used=result.tokens_used,
+            )
             return True
     except Exception as exc:  # noqa: BLE001 - persist terminal status; worker loop keeps going.
         logger.exception("[Subagent] persisted subagent run %s failed during worker dispatch", run_id)
@@ -1452,16 +2332,30 @@ async def dispatch_persisted_subagent_run(task_id: str) -> bool:
         )
     finally:
         _release_subagent_cancel_event(run_id, cancel_event)
-    await make_run_completer(run_id)(result)
+    completion_claim_kwargs = (
+        {
+            "expected_claim_version": claim_version,
+            "expected_claim_worker_id": claim_worker_id,
+        }
+        if claimed_execution
+        else {}
+    )
+    await make_run_completer(run_id, **completion_claim_kwargs)(result)
     return True
 
 
-async def resume_persisted_subagent_runs(*, limit: int = 50) -> list[str]:
+async def resume_persisted_subagent_runs(
+    *,
+    limit: int = 50,
+    on_resumed: StartupResumeCollector | None = None,
+) -> list[str]:
     """Requeue replay-safe background subagents after a process restart."""
 
     resumed: list[str] = []
     records = await list_active_runtime_task_records(
-        limit=limit, statuses=("pending", "running", "needs_reconciliation")
+        limit=limit,
+        statuses=("pending", "running", "needs_reconciliation"),
+        task_types=(SUBAGENT_RUN_TASK_TYPE,),
     )
     for record in records:
         if record.get("task_type") != SUBAGENT_RUN_TASK_TYPE:
@@ -1472,6 +2366,50 @@ async def resume_persisted_subagent_runs(*, limit: int = 50) -> list[str]:
         snapshot_spec = subagent_spec_from_snapshot(metadata.get("subagent_spec"))
         spec_type = str((snapshot_spec.type if snapshot_spec is not None else metadata.get("subagent_type")) or "")
         if not metadata.get("resume_after_restart") or not metadata.get("resumable_subagent"):
+            continue
+        if record_status in {"pending", "running", "resumable"}:
+            disposition = runtime_replay_disposition(runtime_replay_snapshot_from_record(record))
+            if disposition.action == "ignore_live_claim":
+                continue
+            if disposition.action == "needs_reconciliation":
+                await reconcile_runtime_task_for_replay_policy(
+                    run_id,
+                    task_type=SUBAGENT_RUN_TASK_TYPE,
+                    expected_status=record_status,
+                    expected_claim_version=int(record.get("claim_version") or 0),
+                    expected_claim_worker_id=record.get("claimed_by"),
+                    reason=disposition.reason,
+                )
+                continue
+        if record_status == "running":
+            claim_expires_at_raw = record.get("claim_expires_at")
+            claim_expires_at: datetime | None = None
+            if isinstance(claim_expires_at_raw, datetime):
+                claim_expires_at = claim_expires_at_raw
+            elif claim_expires_at_raw:
+                try:
+                    claim_expires_at = datetime.fromisoformat(str(claim_expires_at_raw).replace("Z", "+00:00"))
+                except ValueError:
+                    claim_expires_at = None
+            if claim_expires_at is not None:
+                if claim_expires_at.tzinfo is None:
+                    claim_expires_at = claim_expires_at.replace(tzinfo=timezone.utc)
+                if claim_expires_at > datetime.now(timezone.utc):
+                    continue
+            try:
+                from app.services.runtime_task_worker import notify_runtime_task_worker
+
+                await notify_runtime_task_worker(
+                    reason="subagent_expired_claim_ready",
+                    runtime_task_id=run_id,
+                )
+            except Exception:
+                logger.debug(
+                    "[Subagent] runtime task worker wakeup failed for expired run %s",
+                    run_id,
+                    exc_info=True,
+                )
+            record_startup_resumed_task(resumed, run_id, on_resumed)
             continue
         child_session_id = str(record.get("child_session_id") or metadata.get("child_session_id") or "").strip()
         parent_session_id = str(record.get("parent_session_id") or metadata.get("parent_session_id") or "").strip()
@@ -1493,6 +2431,9 @@ async def resume_persisted_subagent_runs(*, limit: int = 50) -> list[str]:
                 ),
                 trace_id=trace_id,
                 session_id=child_session_id or parent_session_id,
+                expected_status=record_status,
+                expected_claim_version=int(record.get("claim_version") or 0),
+                expected_claim_worker_id=record.get("claimed_by"),
             )
             continue
         resume_messages: list[dict[str, Any]] = []
@@ -1522,6 +2463,9 @@ async def resume_persisted_subagent_runs(*, limit: int = 50) -> list[str]:
                 summary=summary,
                 trace_id=trace_id,
                 session_id=child_session_id or parent_session_id,
+                expected_status=record_status,
+                expected_claim_version=int(record.get("claim_version") or 0),
+                expected_claim_worker_id=record.get("claimed_by"),
             )
             continue
         recovery_metadata = None
@@ -1559,18 +2503,23 @@ async def resume_persisted_subagent_runs(*, limit: int = 50) -> list[str]:
                 session_id=child_session_id or parent_session_id,
             ),
         )
-        await update_runtime_task_record(
+        requeued = await requeue_runtime_task_for_worker(
             run_id,
-            status="resumable",
+            task_type=SUBAGENT_RUN_TASK_TYPE,
+            expected_status=record_status,
+            expected_claim_version=int(record.get("claim_version") or 0),
+            expected_claim_worker_id=record.get("claimed_by"),
             metadata_json=resume_metadata,
         )
+        if not requeued:
+            continue
         try:
             from app.services.runtime_task_worker import notify_runtime_task_worker
 
             await notify_runtime_task_worker(reason="subagent_resumed_after_restart", runtime_task_id=run_id)
         except Exception:
             logger.debug("[Subagent] runtime task worker wakeup failed for resumed run %s", run_id, exc_info=True)
-        resumed.append(run_id)
+        record_startup_resumed_task(resumed, run_id, on_resumed)
     return resumed
 
 

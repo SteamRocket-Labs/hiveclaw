@@ -162,6 +162,44 @@ def test_authorized_code_workspace_rejects_absent_foreign_manifest_path(tmp_path
     assert not (tmp_path / reserved).exists()
 
 
+@pytest.mark.parametrize("authority_scope", [None, "operator", "scoped"])
+def test_code_execution_workspace_rejects_private_recovery_manifest_outputs(tmp_path, authority_scope):
+    from app.services.agent_tool_domains.code_exec import (
+        WorkspaceExecutionAuthorityError,
+        authorized_execution_workspace,
+    )
+    from app.services.workspace_resource_authority import WorkspaceAuthorityScope
+
+    scope = authority_scope
+    if authority_scope == "operator":
+        scope = WorkspaceAuthorityScope(
+            agent_id=uuid4(),
+            user_id=uuid4(),
+            root_session_id=uuid4(),
+            allowed_paths=frozenset(),
+            operator_view=True,
+            authority_source="operator",
+        )
+    elif authority_scope == "scoped":
+        scope = WorkspaceAuthorityScope(
+            agent_id=uuid4(),
+            user_id=uuid4(),
+            root_session_id=uuid4(),
+            allowed_paths=frozenset({"workspace/allowed.md"}),
+            operator_view=False,
+            authority_source="resource_scope",
+        )
+
+    with pytest.raises(WorkspaceExecutionAuthorityError) as exc:
+        with authorized_execution_workspace(tmp_path, scope) as isolated:
+            forged = isolated / "workspace" / "recovery_manifest.json"
+            forged.parent.mkdir(parents=True, exist_ok=True)
+            forged.write_text('{"claim_version":999}', encoding="utf-8")
+
+    assert exc.value.code == "platform_private_runtime_state"
+    assert not (tmp_path / "workspace" / "recovery_manifest.json").exists()
+
+
 def test_workspace_mutation_extraction_covers_unified_and_code_execution_artifacts():
     from app.services.workspace_resource_authority import workspace_mutations_from_tool
     from app.tools.result_envelope import ToolContentEnvelope
@@ -185,6 +223,69 @@ def test_workspace_mutation_extraction_covers_unified_and_code_execution_artifac
         {"path": "workspace/source.docx", "output_path": "workspace/result.docx"},
         json.dumps({"ok": True}),
     ) == [{"path": "workspace/result.docx", "action": "written", "content_hash": None}]
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "arguments"),
+    [
+        ("write_file", {"path": "workspace/recovery_manifest.json", "content": "x"}),
+        (
+            "office_document_apply",
+            {
+                "path": "workspace/source.docx",
+                "output_path": "workspace/recovery_manifest.json",
+            },
+        ),
+    ],
+)
+def test_private_runtime_state_never_enters_workspace_ownership_projection(tool_name, arguments):
+    from app.services.workspace_resource_authority import workspace_mutations_from_tool
+
+    assert workspace_mutations_from_tool(tool_name, arguments, "ok") == []
+
+
+@pytest.mark.asyncio
+async def test_office_tools_reject_private_recovery_paths_before_service(tmp_path):
+    from app.tools.handlers.office import office_document_apply, office_document_create
+
+    create_result = json.loads(
+        await office_document_create(
+            tmp_path,
+            {
+                "path": "workspace/recovery_manifest.json/payload.docx",
+                "kind": "docx",
+            },
+        )
+    )
+    apply_result = json.loads(
+        await office_document_apply(
+            tmp_path,
+            {
+                "path": "workspace/source.docx",
+                "operations": [],
+                "output_path": "workspace/recovery_manifest.json",
+            },
+        )
+    )
+    private = tmp_path / "workspace" / "recovery_manifest.json"
+    private.parent.mkdir(parents=True, exist_ok=True)
+    private.write_text("trusted", encoding="utf-8")
+    template_result = json.loads(
+        await office_document_create(
+            tmp_path,
+            {
+                "path": "workspace/copied.docx",
+                "kind": "docx",
+                "template_path": "workspace/recovery_manifest.json",
+            },
+        )
+    )
+
+    assert create_result["error"] == "platform_private_runtime_state"
+    assert apply_result["error"] == "platform_private_runtime_state"
+    assert template_result["error"] == "platform_private_runtime_state"
+    assert private.read_text(encoding="utf-8") == "trusted"
+    assert not (tmp_path / "workspace" / "copied.docx").exists()
 
 
 @pytest.mark.asyncio

@@ -8,7 +8,7 @@ import pytest
 
 
 def test_update_session_memory_writes_structured_markdown(tmp_path: Path) -> None:
-    from app.services.session_memory import SessionMemoryPayload, update_session_memory
+    from app.services.session_memory import SessionMemoryPayload, get_session_memory_path, update_session_memory
 
     agent_id = uuid4()
     session_id = "session-123"
@@ -35,7 +35,7 @@ def test_update_session_memory_writes_structured_markdown(tmp_path: Path) -> Non
 
     content = path.read_text(encoding="utf-8")
 
-    assert path == tmp_path / str(agent_id) / "memory" / "session_state" / session_id / "session_memory.md"
+    assert path == get_session_memory_path(agent_id, session_id=session_id, data_root=tmp_path)
     assert not (tmp_path / str(agent_id) / "memory" / "sessions" / session_id / "session_memory.md").exists()
     assert not (tmp_path / str(agent_id) / "runtime_artifacts" / "session_memory.md").exists()
     assert not (tmp_path / str(agent_id) / "workspace" / "session_memory.md").exists()
@@ -175,6 +175,32 @@ async def test_build_session_memory_payload_with_llm_falls_back_without_model(mo
     assert payload.pending_work == ["下一步我会验证 hook 接线。"]
 
 
+def test_write_compaction_summary_is_session_scoped_and_retires_agent_global(tmp_path: Path) -> None:
+    from app.services.session_memory import get_compaction_summary_path, write_compaction_summary
+
+    agent_id = uuid4()
+    global_summary = tmp_path / str(agent_id) / "runtime_artifacts" / "compaction_summary.md"
+    workspace_summary = tmp_path / str(agent_id) / "workspace" / "compaction_summary.md"
+    global_summary.parent.mkdir(parents=True)
+    workspace_summary.parent.mkdir(parents=True)
+    global_summary.write_text("SESSION_A_GLOBAL", encoding="utf-8")
+    workspace_summary.write_text("SESSION_A_WORKSPACE", encoding="utf-8")
+
+    path = write_compaction_summary(
+        agent_id,
+        "SESSION_B_SUMMARY",
+        session_id="session-b",
+        original_message_count=20,
+        kept_message_count=8,
+        data_root=tmp_path,
+    )
+
+    assert path == get_compaction_summary_path(agent_id, session_id="session-b", data_root=tmp_path)
+    assert "SESSION_B_SUMMARY" in path.read_text(encoding="utf-8")
+    assert global_summary.exists() is True
+    assert workspace_summary.exists() is True
+
+
 def test_merge_session_memory_into_recovery_manifest_restores_pending_work(tmp_path: Path) -> None:
     from app.runtime.recovery_manifest import RecoveryManifest, merge_session_memory_into_manifest
     from app.services.session_memory import SessionMemoryPayload, update_session_memory
@@ -183,6 +209,7 @@ def test_merge_session_memory_into_recovery_manifest_restores_pending_work(tmp_p
     update_session_memory(
         agent_id,
         SessionMemoryPayload(
+            session_id="session-1",
             current_state="Compaction completed and restore is in progress.",
             task_spec="Keep continuity across compaction boundaries.",
             pending_work=["Re-inject session memory", "Verify long-context benchmark"],
@@ -274,7 +301,9 @@ def test_load_session_memory_supports_legacy_schema_without_frontmatter(tmp_path
         encoding="utf-8",
     )
 
-    payload = load_session_memory(agent_id, session_id="legacy-session", data_root=tmp_path)
+    assert load_session_memory(agent_id, session_id="legacy-session", data_root=tmp_path) is None
+
+    payload = load_session_memory(agent_id, data_root=tmp_path)
 
     assert payload is not None
     assert payload.current_state == "Legacy state."
@@ -284,8 +313,60 @@ def test_load_session_memory_supports_legacy_schema_without_frontmatter(tmp_path
     assert payload.last_successful_step == "Recorded the previous summary."
 
 
+def test_load_session_memory_never_falls_back_to_another_sessions_global_file(tmp_path: Path) -> None:
+    from app.services.session_memory import (
+        SessionMemoryPayload,
+        load_session_memory,
+        render_session_memory,
+    )
+
+    agent_id = uuid4()
+    global_path = tmp_path / str(agent_id) / "runtime_artifacts" / "session_memory.md"
+    global_path.parent.mkdir(parents=True)
+    global_path.write_text(
+        render_session_memory(
+            SessionMemoryPayload(
+                session_id="session-a",
+                current_state="SESSION_A_PRIVATE_STATE",
+                pending_work=["SESSION_A_PRIVATE_PENDING"],
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    assert load_session_memory(agent_id, session_id="session-b", data_root=tmp_path) is None
+    from app.services.session_memory import get_session_memory_path
+
+    assert not get_session_memory_path(agent_id, session_id="session-b", data_root=tmp_path).exists()
+
+    assert load_session_memory(agent_id, session_id="session-a", data_root=tmp_path) is None
+    assert global_path.exists() is True
+
+
+def test_session_memory_storage_key_cannot_collide_after_path_sanitization(tmp_path: Path) -> None:
+    from app.services.session_memory import SessionMemoryPayload, load_session_memory, update_session_memory
+
+    agent_id = uuid4()
+    path_a = update_session_memory(
+        agent_id,
+        SessionMemoryPayload(session_id="session/a", current_state="A_PRIVATE"),
+        data_root=tmp_path,
+    )
+    path_b = update_session_memory(
+        agent_id,
+        SessionMemoryPayload(session_id="session_a", current_state="B_PRIVATE"),
+        data_root=tmp_path,
+    )
+
+    assert path_a != path_b
+    loaded_a = load_session_memory(agent_id, session_id="session/a", data_root=tmp_path)
+    loaded_b = load_session_memory(agent_id, session_id="session_a", data_root=tmp_path)
+    assert loaded_a is not None and loaded_a.session_id == "session/a" and loaded_a.current_state == "A_PRIVATE"
+    assert loaded_b is not None and loaded_b.session_id == "session_a" and loaded_b.current_state == "B_PRIVATE"
+
+
 def test_update_session_memory_migrates_legacy_workspace_file(tmp_path: Path) -> None:
-    from app.services.session_memory import SessionMemoryPayload, update_session_memory
+    from app.services.session_memory import SessionMemoryPayload, get_session_memory_path, update_session_memory
 
     agent_id = uuid4()
     legacy_path = tmp_path / str(agent_id) / "workspace" / "session_memory.md"
@@ -302,13 +383,13 @@ def test_update_session_memory_migrates_legacy_workspace_file(tmp_path: Path) ->
         data_root=tmp_path,
     )
 
-    assert new_path == tmp_path / str(agent_id) / "memory" / "session_state" / "session-new" / "session_memory.md"
+    assert new_path == get_session_memory_path(agent_id, session_id="session-new", data_root=tmp_path)
     assert new_path.exists()
-    assert not legacy_path.exists()
+    assert legacy_path.exists()
 
 
 def test_update_session_memory_retires_legacy_memory_sessions_hot_file(tmp_path: Path) -> None:
-    from app.services.session_memory import SessionMemoryPayload, update_session_memory
+    from app.services.session_memory import SessionMemoryPayload, get_session_memory_path, update_session_memory
 
     agent_id = uuid4()
     legacy_hot = tmp_path / str(agent_id) / "memory" / "sessions" / "session-new" / "session_memory.md"
@@ -325,9 +406,9 @@ def test_update_session_memory_retires_legacy_memory_sessions_hot_file(tmp_path:
         data_root=tmp_path,
     )
 
-    assert new_path == tmp_path / str(agent_id) / "memory" / "session_state" / "session-new" / "session_memory.md"
+    assert new_path == get_session_memory_path(agent_id, session_id="session-new", data_root=tmp_path)
     assert new_path.exists()
-    assert not legacy_hot.exists()
+    assert legacy_hot.exists()
 
 
 def test_update_session_memory_caps_lists_and_worklog(tmp_path: Path) -> None:

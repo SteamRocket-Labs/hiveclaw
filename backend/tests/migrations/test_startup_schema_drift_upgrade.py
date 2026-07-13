@@ -102,3 +102,58 @@ async def test_versioned_database_with_startup_create_all_can_apply_blocked_revi
 
     assert version == "ai_asset_control_plane_0710"
     assert trigger_count == 1
+
+
+@pytest.mark.asyncio
+async def test_release_policy_migrations_replay_against_startup_created_policies(pg_container) -> None:
+    database_name = f"startup_policy_drift_{uuid.uuid4().hex[:10]}"
+    code, output = pg_container.exec(["psql", "-U", "test", "-d", "postgres", "-c", f"CREATE DATABASE {database_name}"])
+    assert code == 0, output
+    database_url = make_url(_async_url(pg_container)).set(database=database_name).render_as_string(hide_password=False)
+
+    bootstrap = _run_alembic(database_url, "upgrade", "head")
+    assert bootstrap.returncode == 0, bootstrap.stderr[-4000:]
+
+    tables = (
+        "workspace_resource_manifests",
+        "workflow_promotion_proposals",
+        "budget_transition_outbox",
+    )
+    engine = create_async_engine(database_url, poolclass=NullPool)
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(text("DELETE FROM alembic_version"))
+            await connection.execute(
+                text("INSERT INTO alembic_version (version_num) VALUES ('ai_asset_usage_events_0711')")
+            )
+            policies_before = (
+                await connection.execute(
+                    text("SELECT count(*) FROM pg_policies WHERE tablename = ANY(:tables)"),
+                    {"tables": list(tables)},
+                )
+            ).scalar_one()
+    finally:
+        await engine.dispose()
+
+    assert policies_before == 3
+    upgrade = _run_alembic(database_url, "upgrade", "budget_transition_outbox_0711")
+    assert upgrade.returncode == 0, f"stdout tail: {upgrade.stdout[-4000:]}\nstderr tail: {upgrade.stderr[-4000:]}"
+
+    verify_engine = create_async_engine(database_url, poolclass=NullPool)
+    try:
+        async with verify_engine.connect() as connection:
+            version = (await connection.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
+            policy_rows = (
+                await connection.execute(
+                    text(
+                        "SELECT tablename, count(*) FROM pg_policies "
+                        "WHERE tablename = ANY(:tables) GROUP BY tablename ORDER BY tablename"
+                    ),
+                    {"tables": list(tables)},
+                )
+            ).all()
+    finally:
+        await verify_engine.dispose()
+
+    assert version == "budget_transition_outbox_0711"
+    assert policy_rows == sorted((table, 1) for table in tables)

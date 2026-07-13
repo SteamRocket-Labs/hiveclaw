@@ -134,6 +134,10 @@ def upgrade() -> None:
     op.execute("ALTER TABLE workflow_promotion_proposals ENABLE ROW LEVEL SECURITY")
     op.execute("ALTER TABLE workflow_promotion_proposals FORCE ROW LEVEL SECURITY")
     op.execute(
+        "DROP POLICY IF EXISTS tenant_isolation_workflow_promotion_proposals "
+        "ON workflow_promotion_proposals"
+    )
+    op.execute(
         """
         CREATE POLICY tenant_isolation_workflow_promotion_proposals
         ON workflow_promotion_proposals
@@ -187,6 +191,10 @@ def upgrade() -> None:
         END;
         $$ LANGUAGE plpgsql
         """
+    )
+    op.execute(
+        "DROP TRIGGER IF EXISTS trg_workflow_promotion_snapshot_immutable "
+        "ON workflow_promotion_proposals"
     )
     op.execute(
         """

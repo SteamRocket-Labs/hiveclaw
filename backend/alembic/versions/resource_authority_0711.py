@@ -28,6 +28,7 @@ depends_on = None
 def _tenant_rls(table: str) -> None:
     op.execute(f'ALTER TABLE "{table}" ENABLE ROW LEVEL SECURITY')
     op.execute(f'ALTER TABLE "{table}" FORCE ROW LEVEL SECURITY')
+    op.execute(f'DROP POLICY IF EXISTS "tenant_isolation_{table}" ON "{table}"')
     op.execute(
         f"""
         CREATE POLICY tenant_isolation_{table} ON {table}

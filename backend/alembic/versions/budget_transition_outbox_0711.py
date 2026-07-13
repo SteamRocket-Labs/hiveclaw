@@ -147,6 +147,10 @@ def upgrade() -> None:
     op.execute("ALTER TABLE budget_transition_outbox ENABLE ROW LEVEL SECURITY")
     op.execute("ALTER TABLE budget_transition_outbox FORCE ROW LEVEL SECURITY")
     op.execute(
+        "DROP POLICY IF EXISTS tenant_isolation_budget_transition_outbox "
+        "ON budget_transition_outbox"
+    )
+    op.execute(
         """
         CREATE POLICY tenant_isolation_budget_transition_outbox
         ON budget_transition_outbox
@@ -185,6 +189,10 @@ def upgrade() -> None:
         END;
         $$ LANGUAGE plpgsql
         """
+    )
+    op.execute(
+        "DROP TRIGGER IF EXISTS trg_budget_transition_outbox_snapshot_immutable "
+        "ON budget_transition_outbox"
     )
     op.execute(
         """

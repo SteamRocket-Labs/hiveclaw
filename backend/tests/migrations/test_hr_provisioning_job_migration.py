@@ -140,3 +140,35 @@ async def test_hr_provisioning_job_migration_really_backfills_confirmed_draft(pg
         assert row.provisioning_json["runtime_task_id"] == str(row.provisioning_task_id)
     finally:
         await engine.dispose()
+
+
+async def test_hr_provisioning_job_adopts_startup_created_draft_column(pg_container) -> None:
+    from tests.integration.conftest import _async_url
+    from tests.migrations.conftest import _alembic_upgrade
+
+    database_name = f"hrjob_startup_drift_{uuid.uuid4().hex[:10]}"
+    code, output = pg_container.exec(["psql", "-U", "test", "-d", "postgres", "-c", f"CREATE DATABASE {database_name}"])
+    assert code == 0, output
+    database_url = make_url(_async_url(pg_container)).set(database=database_name).render_as_string(hide_password=False)
+
+    # metadata.create_all created the latest empty HR table while the mechanical
+    # Alembic receipt was still on the preceding revision.
+    _alembic_upgrade(database_url, "head")
+    engine = create_async_engine(database_url, poolclass=NullPool)
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(text("DELETE FROM alembic_version"))
+            await connection.execute(text("INSERT INTO alembic_version VALUES ('approval_execution_jobs_0712')"))
+    finally:
+        await engine.dispose()
+
+    _alembic_upgrade(database_url, "hr_provisioning_jobs_0712")
+
+    verify_engine = create_async_engine(database_url, poolclass=NullPool)
+    try:
+        async with verify_engine.connect() as connection:
+            version = (await connection.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
+    finally:
+        await verify_engine.dispose()
+
+    assert version == "hr_provisioning_jobs_0712"

@@ -11,6 +11,12 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
+from app.migration_compat import (
+    add_column_if_missing,
+    create_foreign_key_if_missing,
+    create_unique_constraint_if_missing,
+)
+
 
 revision = "hr_provisioning_jobs_0712"
 down_revision = "approval_execution_jobs_0712"
@@ -71,11 +77,13 @@ def upgrade() -> None:
     op.execute("SELECT set_config('app.rls_bypass', 'on', true)")
     op.execute("ALTER TABLE hr_creation_drafts DISABLE ROW LEVEL SECURITY")
     _ensure_runtime_task_type_constraint()
-    op.add_column(
+    add_column_if_missing(
+        op,
         "hr_creation_drafts",
         sa.Column("provisioning_task_id", postgresql.UUID(as_uuid=True), nullable=True),
     )
-    op.create_foreign_key(
+    create_foreign_key_if_missing(
+        op,
         "fk_hr_creation_drafts_provisioning_task_id_runtime_tasks",
         "hr_creation_drafts",
         "runtime_tasks",
@@ -83,7 +91,8 @@ def upgrade() -> None:
         ["id"],
         ondelete="SET NULL",
     )
-    op.create_unique_constraint(
+    create_unique_constraint_if_missing(
+        op,
         "uq_hr_creation_drafts_provisioning_task_id",
         "hr_creation_drafts",
         ["provisioning_task_id"],

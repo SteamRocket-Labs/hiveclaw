@@ -43,29 +43,6 @@ async def _create_run(service, tenant_id: uuid.UUID, **overrides):
     return await service.create_run(RuntimeBudgetRunCreate(**payload))
 
 
-@pytest.fixture
-async def runtime_task_claim_queue_cleanup(owner_sessionmaker):
-    """Remove only claim and budget artifacts created by one queue test."""
-
-    tracked = {"task_ids": set(), "run_ids": set()}
-    try:
-        yield tracked
-    finally:
-        if tracked["task_ids"] or tracked["run_ids"]:
-            from app.models.runtime_budget import RuntimeBudgetEvent, RuntimeBudgetRun
-            from app.models.runtime_task import RuntimeTask
-
-            async with owner_sessionmaker() as db:
-                if tracked["task_ids"]:
-                    await db.execute(sa_delete(RuntimeTask).where(RuntimeTask.id.in_(tracked["task_ids"])))
-                if tracked["run_ids"]:
-                    await db.execute(
-                        sa_delete(RuntimeBudgetEvent).where(RuntimeBudgetEvent.budget_run_id.in_(tracked["run_ids"]))
-                    )
-                    await db.execute(sa_delete(RuntimeBudgetRun).where(RuntimeBudgetRun.id.in_(tracked["run_ids"])))
-                await db.commit()
-
-
 async def test_runtime_budget_service_wraps_database_sessions_in_audited_bypass(monkeypatch):
     from app.services import runtime_budget_service as module
 
@@ -1024,7 +1001,6 @@ async def test_policy_write_approve_overrun_and_tenant_mode_switch(owner_session
 async def test_require_confirmation_freezes_and_approval_resumes_exact_pending_task(
     owner_sessionmaker,
     monkeypatch,
-    runtime_task_claim_queue_cleanup,
 ):
     from app.models.runtime_budget import RuntimeBudgetEvent, RuntimeBudgetRun
     from app.models.runtime_task import RuntimeTask
@@ -1044,9 +1020,7 @@ async def test_require_confirmation_freezes_and_approval_resumes_exact_pending_t
         max_subagents=0,
         max_background_tasks=0,
     )
-    runtime_task_claim_queue_cleanup["run_ids"].add(run.id)
     task_id = uuid.uuid4()
-    runtime_task_claim_queue_cleanup["task_ids"].add(task_id)
     async with owner_sessionmaker() as db:
         db.add(
             RuntimeTask(

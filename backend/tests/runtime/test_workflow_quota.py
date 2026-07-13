@@ -9,8 +9,6 @@ state; actual usage is settled back after each leaf.
 
 from __future__ import annotations
 
-import pytest
-
 from app.runtime.workflow_compiler import compile_workflow
 from app.runtime.workflow_engine import (
     InMemoryQuotaReserver,
@@ -19,44 +17,6 @@ from app.runtime.workflow_engine import (
     LeafRequest,
     execute_workflow,
 )
-
-
-class TrackingQuotaBoundary:
-    """Test Double rationale: observe the pure engine quota protocol only."""
-
-    def __init__(self) -> None:
-        self.reserved = 0
-        self.settlements: list[int] = []
-        self.uncertain: list[tuple[str, str]] = []
-        self.allow_continue = True
-
-    async def reserve(self, _run_id: str, *, reservation_key: str) -> bool:
-        del reservation_key
-        self.reserved += 1
-        return True
-
-    async def settle(self, _run_id: str, actual_tokens: int, *, reservation_key: str) -> None:
-        del reservation_key
-        self.settlements.append(actual_tokens)
-
-    async def mark_execution_unknown(self, _run_id: str, *, reservation_key: str, error: str) -> None:
-        self.uncertain.append((reservation_key, error))
-
-
-class SingletonJournalStartFault(InMemoryWorkflowJournal):
-    """Test Double rationale: deterministic fault at the journal boundary."""
-
-    async def record_step_start(self, *args, **kwargs) -> None:
-        del args, kwargs
-        raise RuntimeError("step journal unavailable")
-
-
-class FanoutLeafJournalStartFault(InMemoryWorkflowJournal):
-    """Test Double rationale: fail only after the fanout reservation exists."""
-
-    async def record_leaf_start(self, *args, **kwargs) -> None:
-        del args, kwargs
-        raise RuntimeError("leaf journal unavailable")
 
 
 def _definition() -> dict:
@@ -140,101 +100,3 @@ async def test_quota_not_charged_for_replayed_leaves():
 
     assert calls2 == [], "all leaves were done; nothing re-executes"
     assert quota.consumed == consumed_after_first, "replayed leaves must not consume quota again"
-
-
-def _single_definition() -> dict:
-    return {
-        "name": "quota-single",
-        "args_schema": {},
-        "steps": [
-            {
-                "id": "work",
-                "type": "agent_step",
-                "leaf": {"name": "worker", "type": "worker"},
-                "task": "Do the work",
-            }
-        ],
-    }
-
-
-@pytest.mark.parametrize(
-    ("definition", "args"),
-    ((_definition(), {"targets": ["a"]}), (_single_definition(), {})),
-    ids=("fanout", "singleton"),
-)
-async def test_quota_pre_execution_stop_releases_reserved_estimate(definition, args):
-    quota = TrackingQuotaBoundary()
-
-    async def should_continue() -> bool:
-        return quota.reserved == 0
-
-    async def must_not_execute(_request: LeafRequest) -> LeafOutcome:
-        raise AssertionError("executor must not start after continuation authority closes")
-
-    outcome = await execute_workflow(
-        compile_workflow(definition),
-        run_id="00000000-0000-0000-0000-000000000001",
-        args=args,
-        journal=InMemoryWorkflowJournal(),
-        leaf_executor=must_not_execute,
-        should_continue=should_continue,
-        quota=quota,
-    )
-
-    assert outcome.status == "killed"
-    assert quota.reserved == 1
-    assert quota.settlements == [0], "pre-execution stop must release the estimate"
-    assert quota.uncertain == []
-
-
-@pytest.mark.parametrize(
-    ("definition", "args", "journal"),
-    (
-        (_definition(), {"targets": ["a"]}, FanoutLeafJournalStartFault()),
-        (_single_definition(), {}, SingletonJournalStartFault()),
-    ),
-    ids=("fanout", "singleton"),
-)
-async def test_quota_journal_start_failure_releases_before_executor(definition, args, journal):
-    quota = TrackingQuotaBoundary()
-
-    with pytest.raises(RuntimeError, match="journal unavailable"):
-        await execute_workflow(
-            compile_workflow(definition),
-            run_id="00000000-0000-0000-0000-000000000002",
-            args=args,
-            journal=journal,
-            leaf_executor=lambda _request: None,
-            quota=quota,
-        )
-
-    assert quota.reserved == 1
-    assert quota.settlements == [0], "journal failure occurs before execution and is safe to release"
-    assert quota.uncertain == []
-
-
-@pytest.mark.parametrize(
-    ("definition", "args"),
-    ((_definition(), {"targets": ["a"]}), (_single_definition(), {})),
-    ids=("fanout", "singleton"),
-)
-async def test_quota_executor_exception_is_marked_unknown_without_fake_settlement(definition, args):
-    quota = TrackingQuotaBoundary()
-
-    async def execution_outcome_unknown(_request: LeafRequest) -> LeafOutcome:
-        raise RuntimeError("executor connection lost")
-
-    with pytest.raises(RuntimeError, match="executor connection lost"):
-        await execute_workflow(
-            compile_workflow(definition),
-            run_id="00000000-0000-0000-0000-000000000003",
-            args=args,
-            journal=InMemoryWorkflowJournal(),
-            leaf_executor=execution_outcome_unknown,
-            quota=quota,
-        )
-
-    assert quota.reserved == 1
-    assert quota.settlements == [], "unknown executor outcome must not be reported as zero usage"
-    assert len(quota.uncertain) == 1
-    assert quota.uncertain[0][1] == "executor connection lost"

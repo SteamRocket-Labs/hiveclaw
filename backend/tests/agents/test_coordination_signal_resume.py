@@ -15,8 +15,6 @@ from sqlalchemy import select
 from app.database import tenant_scoped_session
 from app.models.coordination import CoordinationSignal
 from app.runtime.workflow_engine import LeafOutcome, LeafRequest
-from app.services.runtime_task_claim_service import RuntimeTaskClaimService
-from app.services.runtime_task_fence import run_claimed_runtime_task
 from app.services.workflow_runtime_service import WorkflowRuntimeService
 from app.services.workflow_signal_consumer import drain_signal_resumes
 
@@ -100,31 +98,12 @@ async def test_unconsumed_signal_survives_consumer_restarts(owner_sessionmaker):
         )
 
     # First consumer instance dies before draining (nothing happens). A brand
-    # new instance consumes the persisted row and atomically queues the run.
+    # new instance — the restart — finds the persisted row and resumes.
     leaf, calls = _leaf()
     resumed = await drain_signal_resumes(leaf_executor=leaf, session_factory=owner_sessionmaker)
     outcomes = {r.run_id: r.outcome.status for r in resumed}
 
-    assert outcomes.get(handle.run_id) == "suspended"
-    assert calls == []
-    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
-        claimed = await RuntimeTaskClaimService(
-            db=session,
-            worker_id="coordination-signal-worker",
-            task_types=("workflow",),
-            lease_seconds=60,
-        ).claim_available(batch_size=1)
-    assert [task.id for task in claimed] == [handle.run_id]
-    claim = claimed[0]
-    outcome = await run_claimed_runtime_task(
-        service.resume_run(handle.run_id, tenant_id=tenant_id, leaf_executor=leaf),
-        task_id=handle.run_id,
-        claim_version=claim.claim_version,
-        worker_id=claim.claimed_by or "coordination-signal-worker",
-        lease_seconds=60,
-        session_factory=owner_sessionmaker,
-    )
-    assert outcome.status == "completed"
+    assert outcomes.get(handle.run_id) == "completed"
     assert calls == ["after"]
 
 

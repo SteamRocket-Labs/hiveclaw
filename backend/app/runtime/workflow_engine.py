@@ -23,7 +23,6 @@ import hashlib
 import json
 import logging
 import re
-import uuid
 from datetime import UTC, datetime
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -50,45 +49,6 @@ RunStatus = Literal["completed", "failed", "suspended", "killed"]
 
 class WorkflowTemplateError(ValueError):
     """A template reference could not be resolved at runtime — fail loud."""
-
-
-_WORKFLOW_LEAF_RECOVERY_NAMESPACE = uuid.UUID("6f8d4e61-4f22-5d85-9d3e-bc7396fbe2ea")
-
-
-@dataclass(frozen=True, slots=True)
-class WorkflowLeafRecoveryIdentity:
-    """Canonical durable identity for one workflow leaf invocation."""
-
-    runtime_task_id: str
-    session_id: str
-    trace_id: str
-    step_id: str
-    leaf_id: str
-
-
-def workflow_leaf_recovery_identity(
-    run_id: str | uuid.UUID,
-    step_id: str,
-    leaf_id: str | None = None,
-) -> WorkflowLeafRecoveryIdentity:
-    """Derive a restart-stable, fanout-safe recovery lane from journal keys."""
-
-    run_uuid = run_id if isinstance(run_id, uuid.UUID) else uuid.UUID(str(run_id))
-    normalized_step_id = str(step_id or "").strip()
-    if not normalized_step_id:
-        raise ValueError("workflow recovery identity requires a step_id")
-    normalized_leaf_id = str(leaf_id or "singleton").strip() or "singleton"
-    lane_id = uuid.uuid5(
-        _WORKFLOW_LEAF_RECOVERY_NAMESPACE,
-        f"{run_uuid.hex}:{normalized_step_id}:{normalized_leaf_id}",
-    )
-    return WorkflowLeafRecoveryIdentity(
-        runtime_task_id=run_uuid.hex,
-        session_id=f"workflow-leaf-{lane_id.hex}",
-        trace_id=f"workflow:{run_uuid.hex}:{normalized_step_id}:{normalized_leaf_id}",
-        step_id=normalized_step_id,
-        leaf_id=normalized_leaf_id,
-    )
 
 
 @dataclass(slots=True)
@@ -185,45 +145,9 @@ class QuotaReserver(Protocol):
     settle with actual usage after. The PG implementation holds a Postgres
     advisory lock around the conditional deduction (P5)."""
 
-    async def reserve(self, run_id: str, *, reservation_key: str) -> bool: ...
+    async def reserve(self, run_id: str) -> bool: ...
 
-    async def mark_execution_started(
-        self,
-        run_id: str,
-        *,
-        reservation_key: str,
-        step_id: str,
-        leaf_id: str | None,
-        input_hash: str,
-    ) -> None: ...
-
-    async def mark_execution_unknown(self, run_id: str, *, reservation_key: str, error: str) -> None: ...
-
-    async def settle(self, run_id: str, actual_tokens: int, *, reservation_key: str) -> None: ...
-
-
-def workflow_quota_logical_key(
-    run_id: str,
-    step_id: str,
-    *,
-    leaf_id: str | None,
-    input_hash: str,
-) -> str:
-    """Stable identity for one logical leaf input across process restarts.
-
-    The persistent reserver appends a monotonically allocated attempt suffix.
-    An unresolved attempt is reused after a reserve->journal crash; once it is
-    settled, a subsequent actual retry receives the next attempt number.
-    """
-
-    return ":".join(
-        (
-            str(run_id),
-            str(step_id),
-            str(leaf_id or "singleton"),
-            str(input_hash),
-        )
-    )
+    async def settle(self, run_id: str, actual_tokens: int) -> None: ...
 
 
 class InMemoryQuotaReserver:
@@ -233,76 +157,15 @@ class InMemoryQuotaReserver:
         self.allocated = allocated
         self.leaf_estimate = leaf_estimate
         self.consumed = 0
-        self._attempts: dict[str, list[dict[str, int | bool]]] = {}
 
-    async def reserve(self, run_id: str, *, reservation_key: str) -> bool:
-        attempts = self._attempts.setdefault(reservation_key, [])
-        if attempts and not bool(attempts[-1]["settled"]):
-            return True
+    async def reserve(self, run_id: str) -> bool:
         if self.consumed + self.leaf_estimate > self.allocated:
             return False
         self.consumed += self.leaf_estimate
-        attempts.append({"estimated": self.leaf_estimate, "settled": False})
         return True
 
-    async def settle(self, run_id: str, actual_tokens: int, *, reservation_key: str) -> None:
-        attempts = self._attempts.get(reservation_key) or []
-        if not attempts or bool(attempts[-1]["settled"]):
-            return
-        estimate = int(attempts[-1]["estimated"])
-        self.consumed += actual_tokens - estimate
-        attempts[-1]["settled"] = True
-
-    async def mark_execution_started(
-        self,
-        run_id: str,
-        *,
-        reservation_key: str,
-        step_id: str,
-        leaf_id: str | None,
-        input_hash: str,
-    ) -> None:
-        del run_id, reservation_key, step_id, leaf_id, input_hash
-
-    async def mark_execution_unknown(self, run_id: str, *, reservation_key: str, error: str) -> None:
-        del run_id, reservation_key, error
-
-
-async def _quota_execution_started(
-    quota: QuotaReserver | None,
-    run_id: str,
-    *,
-    reservation_key: str,
-    step_id: str,
-    leaf_id: str | None,
-    input_hash: str,
-) -> None:
-    if quota is None:
-        return
-    marker = getattr(quota, "mark_execution_started", None)
-    if marker is not None:
-        await marker(
-            run_id,
-            reservation_key=reservation_key,
-            step_id=step_id,
-            leaf_id=leaf_id,
-            input_hash=input_hash,
-        )
-
-
-async def _quota_execution_unknown(
-    quota: QuotaReserver | None,
-    run_id: str,
-    *,
-    reservation_key: str,
-    error: BaseException,
-) -> None:
-    if quota is None:
-        return
-    marker = getattr(quota, "mark_execution_unknown", None)
-    if marker is None:
-        raise RuntimeError("quota boundary cannot persist an unknown execution outcome") from error
-    await marker(run_id, reservation_key=reservation_key, error=str(error)[:4000])
+    async def settle(self, run_id: str, actual_tokens: int) -> None:
+        self.consumed += actual_tokens - self.leaf_estimate
 
 
 @dataclass(slots=True)
@@ -335,9 +198,7 @@ class WaitScheduler(Protocol):
     P7 keeps an equivalent scheduling record (run metadata resume_at); the
     once-trigger binding lands with P8 (§6.2 — once is ONLY a time resume)."""
 
-    async def schedule_resume(self, run_id: str, *, step_id: str, resume_at: datetime) -> None: ...
-
-    async def clear_resume(self, run_id: str, *, step_id: str) -> None: ...
+    async def schedule_resume(self, run_id: str, *, resume_at: datetime) -> None: ...
 
 
 Clock = Callable[[], datetime]
@@ -577,7 +438,6 @@ async def _execute_fanout_step(
     outputs: dict[str, Any],
     journal: WorkflowJournal,
     leaf_executor: LeafExecutor,
-    should_continue: ShouldContinue,
     tenant_id: str | None,
     quota: QuotaReserver | None,
 ) -> WorkflowRunOutcome | None:
@@ -607,20 +467,14 @@ async def _execute_fanout_step(
     results: list[Any] = [None] * len(items)
     failures: list[str] = []
     budget_exhausted = asyncio.Event()
-    stop_requested = asyncio.Event()
-    leaf_errors: list[BaseException] = []
 
     async def run_leaf(index: int, item: Any) -> None:
         leaf_id = f"item-{index}"
         try:
             task_text = resolve_template(step.per_item_task, args=args, outputs=outputs, item=item)
         except WorkflowTemplateError as exc:
-            try:
-                await journal.record_leaf_failed(run_id, step.id, leaf_id, error=str(exc))
-                failures.append(f"{leaf_id}: {exc}")
-            except Exception as journal_exc:
-                stop_requested.set()
-                leaf_errors.append(journal_exc)
+            await journal.record_leaf_failed(run_id, step.id, leaf_id, error=str(exc))
+            failures.append(f"{leaf_id}: {exc}")
             return
         input_hash = _leaf_input_hash(task_text, step.leaf, compiled_hash, leaf_id)
         prior = existing.get(leaf_id)
@@ -633,101 +487,44 @@ async def _execute_fanout_step(
             results[index] = prior.output
             return  # replay: executor not called, quota not charged
 
-        quota_key: str | None = None
-        reservation_live = False
-        execution_started = False
-        try:
-            async with semaphore:
-                if budget_exhausted.is_set() or stop_requested.is_set() or not await should_continue():
-                    stop_requested.set()
-                    return
-                quota_key = workflow_quota_logical_key(
-                    run_id,
-                    step.id,
+        async with semaphore:
+            if budget_exhausted.is_set():
+                return
+            if quota is not None and not await quota.reserve(run_id):
+                budget_exhausted.set()
+                return
+            await journal.record_leaf_start(
+                run_id,
+                step.id,
+                leaf_id,
+                input_hash=input_hash,
+                definition_hash=compiled_hash,
+                idempotency_key=f"{step.id}:{leaf_id}:{input_hash[:16]}",
+            )
+            outcome = await leaf_executor(
+                LeafRequest(
+                    run_id=run_id,
+                    step_id=step.id,
+                    leaf=step.leaf,
+                    task=task_text,
+                    tenant_id=tenant_id,
                     leaf_id=leaf_id,
-                    input_hash=input_hash,
                 )
-                if quota is not None and not await quota.reserve(run_id, reservation_key=quota_key):
-                    budget_exhausted.set()
-                    return
-                reservation_live = quota is not None
-                try:
-                    await journal.record_leaf_start(
-                        run_id,
-                        step.id,
-                        leaf_id,
-                        input_hash=input_hash,
-                        definition_hash=compiled_hash,
-                        idempotency_key=f"{step.id}:{leaf_id}:{input_hash[:16]}",
-                    )
-                    if not await should_continue():
-                        stop_requested.set()
-                        if quota is not None:
-                            await quota.settle(run_id, 0, reservation_key=quota_key)
-                            reservation_live = False
-                        return
-                    await _quota_execution_started(
-                        quota,
-                        run_id,
-                        reservation_key=quota_key,
-                        step_id=step.id,
-                        leaf_id=leaf_id,
-                        input_hash=input_hash,
-                    )
-                    execution_started = True
-                except (Exception, asyncio.CancelledError):
-                    if quota is not None and reservation_live and not execution_started:
-                        await quota.settle(run_id, 0, reservation_key=quota_key)
-                        reservation_live = False
-                    raise
-                try:
-                    outcome = await leaf_executor(
-                        LeafRequest(
-                            run_id=run_id,
-                            step_id=step.id,
-                            leaf=step.leaf,
-                            task=task_text,
-                            tenant_id=tenant_id,
-                            leaf_id=leaf_id,
-                        )
-                    )
-                except (Exception, asyncio.CancelledError) as exc:
-                    await _quota_execution_unknown(quota, run_id, reservation_key=quota_key, error=exc)
-                    reservation_live = False
-                    raise
-                if quota is not None:
-                    try:
-                        await quota.settle(run_id, outcome.tokens_used, reservation_key=quota_key)
-                        reservation_live = False
-                    except (Exception, asyncio.CancelledError) as exc:
-                        await _quota_execution_unknown(quota, run_id, reservation_key=quota_key, error=exc)
-                        reservation_live = False
-                        raise
-                if outcome.ok:
-                    await journal.record_leaf_done(
-                        run_id, step.id, leaf_id, output=outcome.output, tokens_used=outcome.tokens_used
-                    )
-                    results[index] = outcome.output
-                else:
-                    error = outcome.error or "leaf execution failed"
-                    await journal.record_leaf_failed(run_id, step.id, leaf_id, error=error)
-                    failures.append(f"{leaf_id}: {error}")
-                if not await should_continue():
-                    stop_requested.set()
-        except (Exception, asyncio.CancelledError) as exc:
-            # Never let one infrastructure boundary unwind ``gather`` while
-            # sibling leaves are still live. Stop admission of new leaves,
-            # remember the failure, and let every already-started sibling
-            # quiesce before the caller aggregates evidence/releases its lease.
-            stop_requested.set()
-            leaf_errors.append(exc)
+            )
+            if quota is not None:
+                await quota.settle(run_id, outcome.tokens_used)
+            if outcome.ok:
+                await journal.record_leaf_done(
+                    run_id, step.id, leaf_id, output=outcome.output, tokens_used=outcome.tokens_used
+                )
+                results[index] = outcome.output
+            else:
+                error = outcome.error or "leaf execution failed"
+                await journal.record_leaf_failed(run_id, step.id, leaf_id, error=error)
+                failures.append(f"{leaf_id}: {error}")
 
     await asyncio.gather(*(run_leaf(index, item) for index, item in enumerate(items)))
 
-    if leaf_errors:
-        raise leaf_errors[0]
-    if stop_requested.is_set() or not await should_continue():
-        return WorkflowRunOutcome(status="killed", reason="kill requested", outputs=outputs)
     if budget_exhausted.is_set():
         reason = "budget exhausted: run quota cannot cover the next leaf"
         await journal.record_step_suspended(run_id, step.id, reason=reason)
@@ -799,67 +596,24 @@ async def execute_workflow(
             # always safe to re-run).
             attempts = 1 + (step.retry.max_attempts if step.retry is not None else 0)
             outcome: LeafOutcome | None = None
-            quota_key = workflow_quota_logical_key(
-                run_id,
-                step.id,
-                leaf_id=None,
-                input_hash=input_hash,
-            )
             for attempt in range(attempts):
-                if not await check():
-                    return WorkflowRunOutcome(status="killed", reason="kill requested", outputs=outputs)
-                if quota is not None and not await quota.reserve(run_id, reservation_key=quota_key):
+                if quota is not None and not await quota.reserve(run_id):
                     reason = "budget exhausted: run quota cannot cover the next leaf"
                     await journal.record_step_suspended(run_id, step.id, reason=reason)
                     return WorkflowRunOutcome(status="suspended", reason=reason, outputs=outputs)
 
-                reservation_live = quota is not None
-                execution_started = False
-                try:
-                    await journal.record_step_start(
-                        run_id,
-                        step.id,
-                        step_type=step.type,
-                        input_hash=input_hash,
-                        definition_hash=compiled.definition_hash,
-                    )
-                    if not await check():
-                        if quota is not None:
-                            await quota.settle(run_id, 0, reservation_key=quota_key)
-                            reservation_live = False
-                        return WorkflowRunOutcome(status="killed", reason="kill requested", outputs=outputs)
-                    await _quota_execution_started(
-                        quota,
-                        run_id,
-                        reservation_key=quota_key,
-                        step_id=step.id,
-                        leaf_id=None,
-                        input_hash=input_hash,
-                    )
-                    execution_started = True
-                except (Exception, asyncio.CancelledError):
-                    if quota is not None and reservation_live and not execution_started:
-                        await quota.settle(run_id, 0, reservation_key=quota_key)
-                    raise
-                try:
-                    outcome = await leaf_executor(
-                        LeafRequest(
-                            run_id=run_id,
-                            step_id=step.id,
-                            leaf=step.leaf,
-                            task=task_text,
-                            tenant_id=tenant_id,
-                        )
-                    )
-                except (Exception, asyncio.CancelledError) as exc:
-                    await _quota_execution_unknown(quota, run_id, reservation_key=quota_key, error=exc)
-                    raise
+                await journal.record_step_start(
+                    run_id,
+                    step.id,
+                    step_type=step.type,
+                    input_hash=input_hash,
+                    definition_hash=compiled.definition_hash,
+                )
+                outcome = await leaf_executor(
+                    LeafRequest(run_id=run_id, step_id=step.id, leaf=step.leaf, task=task_text, tenant_id=tenant_id)
+                )
                 if quota is not None:
-                    try:
-                        await quota.settle(run_id, outcome.tokens_used, reservation_key=quota_key)
-                    except (Exception, asyncio.CancelledError) as exc:
-                        await _quota_execution_unknown(quota, run_id, reservation_key=quota_key, error=exc)
-                        raise
+                    await quota.settle(run_id, outcome.tokens_used)
                 if outcome.ok:
                     break
                 logger.warning(
@@ -884,7 +638,6 @@ async def execute_workflow(
                 outputs=outputs,
                 journal=journal,
                 leaf_executor=leaf_executor,
-                should_continue=check,
                 tenant_id=tenant_id,
                 quota=quota,
             )
@@ -946,12 +699,10 @@ async def execute_workflow(
             if resume_at <= current:
                 output = {"waited_until": resume_at.isoformat()}
                 await journal.record_step_done(run_id, step.id, output=output, result_ref=None)
-                if wait_scheduler is not None:
-                    await wait_scheduler.clear_resume(run_id, step_id=step.id)
                 outputs[step.id] = output
                 continue
             if wait_scheduler is not None:
-                await wait_scheduler.schedule_resume(run_id, step_id=step.id, resume_at=resume_at)
+                await wait_scheduler.schedule_resume(run_id, resume_at=resume_at)
             reason = f"waiting until {resume_at.isoformat()}"
             await journal.record_step_suspended(run_id, step.id, reason=reason)
             return WorkflowRunOutcome(status="suspended", reason=reason, outputs=outputs)

@@ -28,26 +28,6 @@ import pytest
 INSTRUCTION = "Audit auth/*.py and list token bugs"
 
 
-@pytest.fixture()
-def inline_runtime_authority(monkeypatch):
-    """Keep prompt symmetry a pure unit while integration suites own DB/fence coverage."""
-
-    # Test Double rationale: these tests assert byte-level prompt composition;
-    # real RuntimeTask/fence integration is covered in test_stage2b_runtime_task_insert.py.
-    async def create_runtime_task_record(**_kwargs):
-        return None
-
-    async def update_runtime_task_record(_task_id, **_fields):
-        return True
-
-    async def run_claimed_runtime_task(work, **_kwargs):
-        return await work
-
-    monkeypatch.setattr("app.agents.orchestrator.create_runtime_task_record", create_runtime_task_record)
-    monkeypatch.setattr("app.agents.orchestrator.update_runtime_task_record", update_runtime_task_record)
-    monkeypatch.setattr("app.agents.orchestrator.run_claimed_runtime_task", run_claimed_runtime_task)
-
-
 def _target():
     return SimpleNamespace(
         id=uuid.uuid4(),
@@ -81,7 +61,7 @@ def _fake_invoke_capturing(store: dict, content: str = "result"):
 
 
 @pytest.mark.asyncio
-async def test_delegate_passes_instruction_verbatim(monkeypatch, inline_runtime_authority):
+async def test_delegate_passes_instruction_verbatim(monkeypatch):
     """The first user message in the child session must equal the raw instruction."""
     from app.agents.orchestrator import delegate_to_agent
 
@@ -119,7 +99,7 @@ async def test_delegate_passes_instruction_verbatim(monkeypatch, inline_runtime_
 
 
 @pytest.mark.asyncio
-async def test_delegate_no_three_section_envelope(monkeypatch, inline_runtime_authority):
+async def test_delegate_no_three_section_envelope(monkeypatch):
     """Child session must contain no mechanical 3-section template."""
     from app.agents.orchestrator import delegate_to_agent
 
@@ -162,7 +142,7 @@ async def test_delegate_no_three_section_envelope(monkeypatch, inline_runtime_au
 
 
 @pytest.mark.asyncio
-async def test_delegate_keeps_source_as_metadata(monkeypatch, inline_runtime_authority):
+async def test_delegate_keeps_source_as_metadata(monkeypatch):
     """Parent name reaches worker framing (suffix), NOT the instruction text."""
     from app.agents.orchestrator import delegate_to_agent
 
@@ -205,7 +185,7 @@ async def test_delegate_keeps_source_as_metadata(monkeypatch, inline_runtime_aut
 
 
 @pytest.mark.asyncio
-async def test_delegate_preserves_identity_semantics(monkeypatch, inline_runtime_authority):
+async def test_delegate_preserves_identity_semantics(monkeypatch):
     """delegate still issues delegation_token and uses the target agent's soul."""
     from app.agents.orchestrator import delegate_to_agent
 
@@ -246,7 +226,7 @@ async def test_delegate_preserves_identity_semantics(monkeypatch, inline_runtime
 
 
 @pytest.mark.asyncio
-async def test_spawn_and_delegate_same_user_message_for_same_instruction(monkeypatch, inline_runtime_authority):
+async def test_spawn_and_delegate_same_user_message_for_same_instruction(monkeypatch):
     """Same instruction string: spawn content and delegate child first-user-message
     are byte-identical after the fix."""
     from app.agents.orchestrator import delegate_to_agent

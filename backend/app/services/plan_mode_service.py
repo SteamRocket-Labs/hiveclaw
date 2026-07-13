@@ -599,17 +599,6 @@ class PlanModeService:
                 if plan is None:
                     raise LookupError(f"plan {plan_id} not found")
 
-                plan_metadata = dict(plan.metadata_json or {})
-                system_plan_runtime = plan_metadata.get("system_plan_runtime")
-                if (
-                    isinstance(system_plan_runtime, dict)
-                    and str(system_plan_runtime.get("reason") or "") == "newer_input_revision_queued"
-                ):
-                    raise PlanConflictError(
-                        "system_plan_revision_pending",
-                        "a newer System Plan input revision is pending authoring; the stale plan cannot be confirmed",
-                    )
-
                 check = core.validate_confirmation(
                     status=plan.status,
                     stored_version=plan.plan_version,

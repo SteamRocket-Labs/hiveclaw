@@ -39,12 +39,6 @@ def _is_within(path: Path, root: Path) -> bool:
     return True
 
 
-def _is_platform_private_execution_path(relative_to_work_dir: str) -> bool:
-    from app.services.workspace_resource_authority import is_platform_private_runtime_path
-
-    return is_platform_private_runtime_path(f"workspace/{str(relative_to_work_dir).lstrip('/')}")
-
-
 # Dangerous patterns to block
 _DANGEROUS_BASH = [
     "rm -rf /",
@@ -185,26 +179,21 @@ def authorized_execution_workspace(canonical_workspace: Path, authority_scope):
     """Materialize and merge a least-authority code-execution workspace."""
 
     canonical_workspace = canonical_workspace.resolve()
+    if authority_scope is None or authority_scope.operator_view:
+        yield canonical_workspace
+        return
+
     isolated = Path(tempfile.mkdtemp(prefix="hive-authority-workspace-"))
     isolated_work = isolated / "workspace"
     isolated_work.mkdir(parents=True, exist_ok=True)
     canonical_work = canonical_workspace / "workspace"
-    unrestricted = authority_scope is None or authority_scope.operator_view
     try:
-        if unrestricted:
-            source_paths = sorted(canonical_work.rglob("*")) if canonical_work.exists() else []
-        else:
-            source_paths = [
-                canonical_work / Path(allowed_path.removeprefix("workspace/"))
-                for allowed_path in sorted(authority_scope.allowed_paths)
-                if allowed_path.startswith("workspace/")
-            ]
-        for source_candidate in source_paths:
-            source = source_candidate.resolve()
-            if not _is_within(source, canonical_work) or not source.is_file() or source.is_symlink():
+        for allowed_path in sorted(authority_scope.allowed_paths):
+            if not allowed_path.startswith("workspace/"):
                 continue
-            rel = source.relative_to(canonical_work.resolve())
-            if _is_platform_private_execution_path(rel.as_posix()):
+            rel = Path(allowed_path.removeprefix("workspace/"))
+            source = (canonical_work / rel).resolve()
+            if not _is_within(source, canonical_work) or not source.is_file() or source.is_symlink():
                 continue
             target = isolated_work / rel
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -221,11 +210,6 @@ def authorized_execution_workspace(canonical_workspace: Path, authority_scope):
 
         # Validate the complete merge before mutating the canonical directory.
         for rel in changed:
-            if _is_platform_private_execution_path(rel):
-                raise WorkspaceExecutionAuthorityError(
-                    "platform_private_runtime_state",
-                    f"Code execution attempted to create or modify platform-private runtime state: workspace/{rel}",
-                )
             canonical_target = (canonical_work / rel).resolve()
             resource_path = f"workspace/{rel}"
             if not _is_within(canonical_target, canonical_work):
@@ -233,21 +217,15 @@ def authorized_execution_workspace(canonical_workspace: Path, authority_scope):
                     "workspace_resource_escape",
                     f"Code execution output escapes workspace/: {resource_path}",
                 )
-            if not unrestricted and (
-                (resource_path in authority_scope.known_paths and resource_path not in authority_scope.allowed_paths)
-                or (canonical_target.exists() and resource_path not in authority_scope.allowed_paths)
-            ):
+            if (
+                resource_path in authority_scope.known_paths and resource_path not in authority_scope.allowed_paths
+            ) or (canonical_target.exists() and resource_path not in authority_scope.allowed_paths):
                 raise WorkspaceExecutionAuthorityError(
                     "workspace_resource_collision",
                     f"Code execution attempted to overwrite another owner's resource: {resource_path}",
                 )
         for rel in deleted:
-            if _is_platform_private_execution_path(rel):
-                raise WorkspaceExecutionAuthorityError(
-                    "platform_private_runtime_state",
-                    f"Code execution attempted to delete platform-private runtime state: workspace/{rel}",
-                )
-            if not unrestricted and f"workspace/{rel}" not in authority_scope.allowed_paths:
+            if f"workspace/{rel}" not in authority_scope.allowed_paths:
                 raise WorkspaceExecutionAuthorityError(
                     "workspace_resource_delete_forbidden",
                     f"Code execution attempted to delete another owner's resource: workspace/{rel}",

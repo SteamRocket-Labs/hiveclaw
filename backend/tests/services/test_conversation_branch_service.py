@@ -230,10 +230,7 @@ async def test_fork_branch_copies_prefix_through_anchor(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_rewind_branch_copies_prefix_before_user_checkpoint(monkeypatch, tmp_path):
-    from app.models.chat_session import ChatSession
-    from app.runtime.recovery_manifest import load_recovery_manifest, persist_recovery_manifest
-    from app.runtime.session import SessionContext
+async def test_rewind_branch_copies_prefix_before_user_checkpoint(monkeypatch):
     from app.services.conversation_branch_service import create_conversation_branch
 
     agent_id = uuid4()
@@ -286,15 +283,6 @@ async def test_rewind_branch_copies_prefix_before_user_checkpoint(monkeypatch, t
             runtime_source="web_chat",
             visibility_scope="direct_user",
             listed_surface="chat",
-            transcript_metadata_json={
-                "runtime_task_id": "source-run",
-                "claim_version": 7,
-                "claim_worker_id": "worker-source",
-                "permission_profile": {"mode": "bypassPermissions", "allowed_tools": ["send_email"]},
-                "pending_tool_frames": [
-                    {"tool_call_id": "source-call", "tool_name": "send_email", "status": "running"}
-                ],
-            },
         ),
         mode="rewind",
         anchor_event_id=rewind_target.id,
@@ -304,34 +292,6 @@ async def test_rewind_branch_copies_prefix_before_user_checkpoint(monkeypatch, t
     assert result.run_request is None
     assert result.branch["mode"] == "rewind"
     assert result.branch["anchor_event_id"] == str(rewind_target.id)
-    branch_session = next(item for item in db.added if isinstance(item, ChatSession))
-    assert branch_session.id != source_session_id
-    for authority_key in ("runtime_task_id", "claim_version", "permission_profile", "pending_tool_frames"):
-        assert authority_key not in branch_session.transcript_metadata_json
-
-    source_recovery = SessionContext(
-        session_id=str(source_session_id),
-        metadata={
-            "agent_id": str(agent_id),
-            "tenant_id": str(tenant_id),
-            "runtime_task_id": "source-run",
-            "claim_version": 7,
-            "claim_worker_id": "worker-source",
-            "permission_profile": {"mode": "bypassPermissions", "allowed_tools": ["send_email"]},
-            "pending_tool_frames": [{"tool_call_id": "source-call", "tool_name": "send_email", "status": "running"}],
-        },
-    )
-    assert persist_recovery_manifest(agent_id, source_recovery, data_root=tmp_path)
-    branch_recovery = SessionContext(
-        session_id=str(branch_session.id),
-        metadata={
-            "agent_id": str(agent_id),
-            "tenant_id": str(tenant_id),
-            "runtime_task_id": "branch-run",
-            "claim_version": 1,
-        },
-    )
-    assert load_recovery_manifest(agent_id, session_context=branch_recovery, data_root=tmp_path) is None
 
 
 @pytest.mark.asyncio

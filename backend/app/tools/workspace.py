@@ -151,6 +151,9 @@ def _archive_legacy_memory_files(agent_dir: Path) -> list[str]:
 def _migrate_workspace_runtime_artifacts(agent_dir: Path) -> list[str]:
     moved: list[str] = []
     mappings = {
+        "workspace/session_memory.md": "runtime_artifacts/session_memory.md",
+        "workspace/compaction_summary.md": "runtime_artifacts/compaction_summary.md",
+        "workspace/recovery_manifest.json": "runtime_artifacts/recovery_manifest.json",
         "skills/.usage.json": "evolution/skill_usage.json",
         "state.json": "runtime_artifacts/agent_state.json",
     }

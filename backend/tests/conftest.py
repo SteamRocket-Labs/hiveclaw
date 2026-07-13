@@ -156,21 +156,3 @@ async def workflow_principals(owner_sessionmaker, tenant_id):
             )
         )
     return SimpleNamespace(user_id=user_id, agent_id=agent_id)
-
-
-@pytest.fixture
-def durable_recovery_checkpoint(monkeypatch):
-    """Give kernel behavior tests an explicit durable checkpoint authority."""
-
-    receipt = {
-        "path": "/isolated-test/recovery.json",
-        "ref": "runtime_artifacts/recovery_manifests/test.json",
-        "sha256": "d" * 64,
-        "bytes": 10,
-        "ephemeral": False,
-    }
-    monkeypatch.setattr(
-        "app.kernel.engine._persist_recovery_manifest_checkpoint",
-        lambda *_args, **_kwargs: dict(receipt),
-    )
-    return receipt

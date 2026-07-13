@@ -20,7 +20,7 @@ class _FakeClient:
 
 
 @pytest.mark.asyncio
-async def test_agent_kernel_sets_execution_identity_for_tool_resolution(durable_recovery_checkpoint):
+async def test_agent_kernel_sets_execution_identity_for_tool_resolution():
     from app.core.execution_context import clear_execution_identity
     from app.kernel.contracts import ExecutionIdentityRef, InvocationRequest
     from app.kernel.engine import AgentKernel, KernelDependencies, RuntimeConfig

@@ -127,7 +127,7 @@ async def test_kernel_blocks_forbidden_connector_source_before_streaming() -> No
 
 
 @pytest.mark.asyncio
-async def test_kernel_registers_tool_result_connector_sources_for_final_check(durable_recovery_checkpoint) -> None:
+async def test_kernel_registers_tool_result_connector_sources_for_final_check() -> None:
     from app.kernel.contracts import InvocationRequest
     from app.services.connector_acl import CONNECTOR_SOURCE_ITEMS_METADATA_KEY
 
@@ -190,9 +190,7 @@ async def test_kernel_registers_tool_result_connector_sources_for_final_check(du
 
 
 @pytest.mark.asyncio
-async def test_kernel_registers_governed_tool_argument_sources_even_without_result_metadata(
-    durable_recovery_checkpoint,
-) -> None:
+async def test_kernel_registers_governed_tool_argument_sources_even_without_result_metadata() -> None:
     from app.kernel.contracts import InvocationRequest
     from app.services.connector_acl import CONNECTOR_SOURCE_ITEMS_METADATA_KEY
 

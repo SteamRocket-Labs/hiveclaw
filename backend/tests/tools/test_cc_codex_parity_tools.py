@@ -249,7 +249,6 @@ async def test_task_stop_cancels_runtime_task_record(tmp_path, monkeypatch):
         (
             runtime_task_id,
             {
-                "expected_status": ("pending", "running", "resumable"),
                 "status": "killed",
                 "result_summary": "no longer needed",
                 "metadata_json": {"cancel_reason": "no longer needed"},
@@ -285,23 +284,21 @@ async def test_task_stop_publishes_subagent_cancel(tmp_path, monkeypatch):
             "delegation_chain": [f"agent:{parent_agent_id}", "subagent:scout"],
         }
 
-    async def fake_request_subagent_stop(*, run_id: str, reason: str):
-        assert run_id == runtime_task_id
-        assert reason == "stop subagent"
-        return "cancellation_requested"
+    async def fake_update_runtime_task_record(_task_id: str, **_fields):
+        return True
 
     async def fake_publish_subagent_cancel(**kwargs):
         published.append(kwargs)
 
     monkeypatch.setattr(command_parity, "get_runtime_task_record", fake_get_runtime_task_record)
-    monkeypatch.setattr("app.services.subagent_run_service.request_subagent_stop", fake_request_subagent_stop)
+    monkeypatch.setattr(command_parity, "update_runtime_task_record", fake_update_runtime_task_record)
     monkeypatch.setattr("app.services.runtime_control_bus.publish_subagent_cancel", fake_publish_subagent_cancel)
 
     result = await command_parity.task_stop(request)
 
     payload = json.loads(result)
     assert payload["ok"] is True
-    assert payload["status"] == "cancellation_requested"
+    assert payload["status"] == "killed"
     assert published == [{"run_id": runtime_task_id, "parent_agent_id": str(parent_agent_id)}]
 
 

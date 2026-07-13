@@ -11,14 +11,13 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Mapping
 import contextlib
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 import logging
 from typing import Any
 import uuid
 
-from sqlalchemy import Select, and_, exists, or_, select, update
+from sqlalchemy import Select, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-from sqlalchemy.orm import aliased
 
 from app.database import async_session, enter_rls_bypass
 from app.models.runtime_budget import RuntimeBudgetEvent, RuntimeBudgetPolicy, RuntimeBudgetRun
@@ -65,10 +64,6 @@ _BUILTIN_BREAKER_MAX_FAILURES = 5
 _BUILTIN_BREAKER_MAX_NEEDS_RECONCILIATION = 3
 _BUILTIN_BREAKER_MAX_CHILD_FAILURE_RATIO = 0.5
 _MIN_CHILDREN_FOR_FAILURE_RATIO = 8
-_RESERVATION_RECONCILIATION_FAILURE_SCHEMA = "runtime_budget_reservation_reconciliation_failure.v1"
-_RESERVATION_RECONCILIATION_BACKOFF_SECONDS = 60
-_RESERVATION_RECONCILIATION_MAX_BACKOFF_SECONDS = 3600
-_RESERVATION_RECONCILIATION_FAILURE_HISTORY_LIMIT = 20
 
 _BUILTIN_PROFILE_DEFAULTS: dict[str, dict[str, int | float | str]] = {
     "interactive": {
@@ -227,7 +222,6 @@ class RuntimeBudgetReservation:
     reason: str | None = None
     runtime_task_id: uuid.UUID | None = None
     metadata: dict | None = None
-    reopen_after_zero_settlement: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -254,7 +248,6 @@ class RuntimeBudgetReservationResult:
     idempotent: bool
     budget_run_id: uuid.UUID
     denied_dimensions: tuple[str, ...] = ()
-    reservation_key: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -552,51 +545,15 @@ class RuntimeBudgetService:
         amounts = _positive_amounts(reservation)
         async with self._budget_session("reserve") as db:
             run = await self._lock_run(db, reservation.budget_run_id)
-            logical_key = str(reservation.reservation_key)
-            existing = (
-                await db.execute(
-                    select(RuntimeBudgetEvent)
-                    .where(
-                        RuntimeBudgetEvent.budget_run_id == run.id,
-                        RuntimeBudgetEvent.event_type == "reservation",
-                        or_(
-                            RuntimeBudgetEvent.reservation_key == logical_key,
-                            RuntimeBudgetEvent.metadata_json["logical_reservation_key"].astext == logical_key,
-                        ),
-                    )
-                    .order_by(RuntimeBudgetEvent.created_at.desc(), RuntimeBudgetEvent.id.desc())
-                    .limit(1)
-                )
-            ).scalar_one_or_none()
-            attempt = int(((existing.metadata_json or {}).get("reservation_attempt") or 1)) if existing else 1
-            effective_key = str(existing.reservation_key) if existing is not None else logical_key
+            existing = await self._existing_event(db, run.id, reservation.reservation_key, "reservation")
             if existing is not None:
-                settlement = await self._existing_event(db, run.id, effective_key, "settlement")
-                settlement_metadata = dict(settlement.metadata_json or {}) if settlement is not None else {}
-                can_reopen = bool(
-                    reservation.reopen_after_zero_settlement
-                    and settlement is not None
-                    and not any(int(value or 0) > 0 for value in dict(settlement.amounts_json or {}).values())
-                    and settlement_metadata.get("retryable_reservation") is True
+                return RuntimeBudgetReservationResult(
+                    allowed=bool(existing.allowed),
+                    would_deny=bool(existing.would_deny),
+                    idempotent=True,
+                    budget_run_id=run.id,
                 )
-                if not can_reopen:
-                    return RuntimeBudgetReservationResult(
-                        allowed=bool(existing.allowed),
-                        would_deny=bool(existing.would_deny),
-                        idempotent=True,
-                        budget_run_id=run.id,
-                        reservation_key=effective_key,
-                    )
-                attempt += 1
-                effective_key = f"{logical_key}:attempt-{attempt}"
-                if len(effective_key) > 200:
-                    raise RuntimeBudgetDenied("retryable runtime budget reservation key exceeds 200 characters")
-            event_metadata = {
-                **(reservation.metadata or {}),
-                "logical_reservation_key": logical_key,
-                "reservation_attempt": attempt,
-            }
-            pending_denial = await self._existing_event(db, run.id, effective_key, "denial")
+            pending_denial = await self._existing_event(db, run.id, reservation.reservation_key, "denial")
             if pending_denial is not None and run.status == "waiting_budget_approval":
                 raise RuntimeBudgetApprovalRequired(
                     str(pending_denial.reason or "runtime budget approval required"),
@@ -607,13 +564,13 @@ class RuntimeBudgetService:
                 event = self._event(
                     run,
                     event_type="denial",
-                    reservation_key=effective_key,
+                    reservation_key=reservation.reservation_key,
                     allowed=False,
                     would_deny=True,
                     reason="summary_only_disallows_work_amplification",
                     amounts=amounts,
                     runtime_task_id=reservation.runtime_task_id,
-                    metadata=event_metadata,
+                    metadata=reservation.metadata,
                 )
                 db.add(event)
                 await db.commit()
@@ -622,13 +579,13 @@ class RuntimeBudgetService:
                 event = self._event(
                     run,
                     event_type="denial",
-                    reservation_key=effective_key,
+                    reservation_key=reservation.reservation_key,
                     allowed=False,
                     would_deny=True,
                     reason=run.terminal_reason or f"budget run is {run.status}",
                     amounts=amounts,
                     runtime_task_id=reservation.runtime_task_id,
-                    metadata=event_metadata,
+                    metadata=reservation.metadata,
                 )
                 db.add(event)
                 await db.commit()
@@ -649,13 +606,13 @@ class RuntimeBudgetService:
                     self._event(
                         run,
                         event_type="reservation",
-                        reservation_key=effective_key,
+                        reservation_key=reservation.reservation_key,
                         allowed=True,
                         would_deny=True,
                         reason="budget_summary_turn_lane",
                         amounts=amounts,
                         runtime_task_id=reservation.runtime_task_id,
-                        metadata=event_metadata,
+                        metadata=reservation.metadata,
                     )
                 )
                 await db.commit()
@@ -664,7 +621,6 @@ class RuntimeBudgetService:
                     would_deny=True,
                     idempotent=False,
                     budget_run_id=run.id,
-                    reservation_key=effective_key,
                 )
 
             denied_dimensions = self._denied_dimensions(run, amounts)
@@ -714,7 +670,7 @@ class RuntimeBudgetService:
                 event = self._event(
                     run,
                     event_type="denial",
-                    reservation_key=effective_key,
+                    reservation_key=reservation.reservation_key,
                     allowed=False,
                     would_deny=True,
                     reason=reservation.reason or "runtime budget exhausted",
@@ -722,7 +678,7 @@ class RuntimeBudgetService:
                     runtime_task_id=reservation.runtime_task_id,
                     metadata={
                         "denied_dimensions": denied_dimensions,
-                        **event_metadata,
+                        **(reservation.metadata or {}),
                         "target_status": run.status,
                     },
                 )
@@ -753,13 +709,13 @@ class RuntimeBudgetService:
                 self._event(
                     run,
                     event_type="reservation",
-                    reservation_key=effective_key,
+                    reservation_key=reservation.reservation_key,
                     allowed=True,
                     would_deny=would_deny,
                     reason=reservation.reason,
                     amounts=amounts,
                     runtime_task_id=reservation.runtime_task_id,
-                    metadata={"denied_dimensions": denied_dimensions, **event_metadata},
+                    metadata={"denied_dimensions": denied_dimensions, **(reservation.metadata or {})},
                 )
             )
             await db.commit()
@@ -769,7 +725,6 @@ class RuntimeBudgetService:
                 idempotent=False,
                 budget_run_id=run.id,
                 denied_dimensions=tuple(denied_dimensions),
-                reservation_key=effective_key,
             )
 
     async def settle(self, settlement: RuntimeBudgetSettlement) -> None:
@@ -864,292 +819,52 @@ class RuntimeBudgetService:
             await db.commit()
             return len(runs)
 
-    async def reconcile_orphaned_reservations(
-        self,
-        *,
-        limit: int = 100,
-        now: datetime | None = None,
-        missing_task_grace_seconds: int = 300,
-    ) -> int:
+    async def reconcile_orphaned_reservations(self, *, limit: int = 100) -> int:
         """Release reservations whose owning runtime task can no longer settle them."""
 
-        requested_limit = max(0, int(limit))
-        if requested_limit == 0:
-            return 0
         reconciled = 0
-        current = now or datetime.now(UTC)
-        missing_task_cutoff = current - timedelta(seconds=max(0, int(missing_task_grace_seconds)))
-        visited_run_ids: set[uuid.UUID] = set()
-        while reconciled < requested_limit:
-            locator_task = aliased(RuntimeTask)
-            locator_settlement = aliased(RuntimeBudgetEvent)
-            eligible_reservation_exists = exists(
-                select(RuntimeBudgetEvent.id)
-                .outerjoin(
-                    locator_task,
-                    and_(
-                        locator_task.id == RuntimeBudgetEvent.runtime_task_id,
-                        locator_task.tenant_id == RuntimeBudgetEvent.tenant_id,
-                    ),
-                )
+        async with self._budget_session("reconcile_orphaned_reservations") as db:
+            result = await db.execute(
+                select(RuntimeBudgetEvent)
                 .where(
-                    RuntimeBudgetEvent.budget_run_id == RuntimeBudgetRun.id,
-                    RuntimeBudgetEvent.tenant_id == RuntimeBudgetRun.tenant_id,
                     RuntimeBudgetEvent.event_type == "reservation",
                     RuntimeBudgetEvent.reservation_key.is_not(None),
                     RuntimeBudgetEvent.runtime_task_id.is_not(None),
-                    or_(
-                        and_(
-                            locator_task.id.is_(None),
-                            RuntimeBudgetEvent.created_at <= missing_task_cutoff,
-                        ),
-                        locator_task.status.in_(_TERMINAL_RUNTIME_TASK_STATUSES),
-                    ),
-                    ~exists(
-                        select(locator_settlement.id).where(
-                            and_(
-                                locator_settlement.budget_run_id == RuntimeBudgetEvent.budget_run_id,
-                                locator_settlement.reservation_key == RuntimeBudgetEvent.reservation_key,
-                                locator_settlement.event_type == "settlement",
-                            )
-                        )
-                    ).correlate(RuntimeBudgetEvent),
                 )
-            ).correlate(RuntimeBudgetRun)
-            failure_status = RuntimeBudgetRun.metadata_json["reservation_reconciliation_failure"]["status"].astext
-            failure_deferred_until = RuntimeBudgetRun.metadata_json["reservation_reconciliation_failure"][
-                "deferred_until"
-            ].astext
-            run_retry_eligible = or_(
-                failure_status.is_(None),
-                failure_status != "deferred",
-                failure_deferred_until.is_(None),
-                failure_deferred_until <= current.isoformat(),
+                .order_by(RuntimeBudgetEvent.created_at)
+                .limit(limit)
             )
-            budget_run_id: uuid.UUID | None = None
-            try:
-                async with self._budget_session("reconcile_orphaned_reservations_run") as db:
-                    run_stmt = (
-                        select(RuntimeBudgetRun.id)
-                        .where(eligible_reservation_exists, run_retry_eligible)
-                        .order_by(RuntimeBudgetRun.id)
-                        .limit(1)
-                        .with_for_update(of=RuntimeBudgetRun, skip_locked=True)
+            reservation_events = result.scalars().all()
+            for event in reservation_events:
+                settlement = await self._existing_event(db, event.budget_run_id, event.reservation_key, "settlement")
+                if settlement is not None:
+                    continue
+                task = (
+                    await db.execute(select(RuntimeTask).where(RuntimeTask.id == event.runtime_task_id))
+                ).scalar_one_or_none()
+                if task is None or str(task.status) not in _TERMINAL_RUNTIME_TASK_STATUSES:
+                    continue
+                run = await self._lock_run(db, event.budget_run_id)
+                self._release_reserved(run, dict(event.amounts_json or {}))
+                db.add(
+                    self._event(
+                        run,
+                        event_type="settlement",
+                        reservation_key=event.reservation_key,
+                        allowed=True,
+                        would_deny=False,
+                        reason="orphaned_reservation_reconciled",
+                        amounts={},
+                        runtime_task_id=event.runtime_task_id,
+                        metadata={
+                            "source_event_id": str(event.id),
+                            "runtime_task_status": str(task.status) if task is not None else "missing",
+                        },
                     )
-                    if visited_run_ids:
-                        run_stmt = run_stmt.where(RuntimeBudgetRun.id.notin_(visited_run_ids))
-                    budget_run_id = (await db.execute(run_stmt)).scalar_one_or_none()
-                    if budget_run_id is None:
-                        break
-                    visited_run_ids.add(budget_run_id)
-                    run = await self._lock_run(db, budget_run_id)
-                    event_task = aliased(RuntimeTask)
-                    event_settlement = aliased(RuntimeBudgetEvent)
-                    reservation_events = list(
-                        (
-                            await db.execute(
-                                select(RuntimeBudgetEvent)
-                                .outerjoin(
-                                    event_task,
-                                    and_(
-                                        event_task.id == RuntimeBudgetEvent.runtime_task_id,
-                                        event_task.tenant_id == RuntimeBudgetEvent.tenant_id,
-                                    ),
-                                )
-                                .where(
-                                    RuntimeBudgetEvent.budget_run_id == budget_run_id,
-                                    RuntimeBudgetEvent.tenant_id == run.tenant_id,
-                                    RuntimeBudgetEvent.event_type == "reservation",
-                                    RuntimeBudgetEvent.reservation_key.is_not(None),
-                                    RuntimeBudgetEvent.runtime_task_id.is_not(None),
-                                    or_(
-                                        and_(
-                                            event_task.id.is_(None),
-                                            RuntimeBudgetEvent.created_at <= missing_task_cutoff,
-                                        ),
-                                        event_task.status.in_(_TERMINAL_RUNTIME_TASK_STATUSES),
-                                    ),
-                                    ~exists(
-                                        select(event_settlement.id).where(
-                                            and_(
-                                                event_settlement.budget_run_id == RuntimeBudgetEvent.budget_run_id,
-                                                event_settlement.reservation_key == RuntimeBudgetEvent.reservation_key,
-                                                event_settlement.event_type == "settlement",
-                                            )
-                                        )
-                                    ).correlate(RuntimeBudgetEvent),
-                                )
-                                .order_by(RuntimeBudgetEvent.created_at, RuntimeBudgetEvent.id)
-                                .limit(requested_limit - reconciled)
-                                .with_for_update(of=RuntimeBudgetEvent, skip_locked=True)
-                            )
-                        )
-                        .scalars()
-                        .all()
-                    )
-                    run_reconciled = 0
-                    for event in reservation_events:
-                        # Normal settle() serializes on this same run row. This is the
-                        # exactly-once decision point for every event in the run group.
-                        settlement = await self._existing_event(
-                            db,
-                            event.budget_run_id,
-                            event.reservation_key,
-                            "settlement",
-                        )
-                        if settlement is not None:
-                            continue
-                        task = (
-                            await db.execute(
-                                select(RuntimeTask).where(
-                                    RuntimeTask.id == event.runtime_task_id,
-                                    RuntimeTask.tenant_id == event.tenant_id,
-                                )
-                            )
-                        ).scalar_one_or_none()
-                        if task is None:
-                            created_at = event.created_at
-                            if created_at is None or created_at > missing_task_cutoff:
-                                continue
-                            actual: dict[str, int] = {}
-                            settlement_reason = "runtime_task_missing_after_grace"
-                            settlement_metadata: dict[str, Any] = {
-                                "source_event_id": str(event.id),
-                                "missing_task_grace_seconds": max(0, int(missing_task_grace_seconds)),
-                            }
-                        else:
-                            if str(task.status) not in _TERMINAL_RUNTIME_TASK_STATUSES:
-                                continue
-                            metadata = dict(getattr(task, "metadata_json", None) or {})
-                            intent = metadata.get("budget_settlement_intent")
-                            actual = {}
-                            settlement_reason = "orphaned_reservation_reconciled"
-                            settlement_metadata = {
-                                "source_event_id": str(event.id),
-                                "runtime_task_status": str(task.status),
-                            }
-                            if (
-                                isinstance(intent, dict)
-                                and intent.get("schema") == "subagent_budget_settlement_intent.v1"
-                            ):
-                                intent_budget_run_id = str(intent.get("budget_run_id") or "")
-                                intent_reservation_key = str(intent.get("reservation_key") or "")
-                                intent_runtime_task_id = str(intent.get("runtime_task_id") or "")
-                                if (
-                                    intent_budget_run_id == str(event.budget_run_id)
-                                    and intent_reservation_key == str(event.reservation_key)
-                                    and intent_runtime_task_id == str(event.runtime_task_id)
-                                ):
-                                    actual = {
-                                        key: max(0, int(value or 0))
-                                        for key, value in dict(intent.get("actual_usage") or {}).items()
-                                        if key in _DIMENSIONS and max(0, int(value or 0)) > 0
-                                    }
-                                    settlement_reason = str(intent.get("reason") or settlement_reason)
-                                    settlement_metadata.update(
-                                        {
-                                            "settlement_intent_schema": intent.get("schema"),
-                                            "terminal_status": intent.get("terminal_status"),
-                                        }
-                                    )
-
-                        self._release_reserved(run, dict(event.amounts_json or {}))
-                        self._increment_used(run, actual)
-                        db.add(
-                            self._event(
-                                run,
-                                event_type="settlement",
-                                reservation_key=event.reservation_key,
-                                allowed=True,
-                                would_deny=False,
-                                reason=settlement_reason,
-                                amounts=actual,
-                                runtime_task_id=event.runtime_task_id,
-                                metadata=settlement_metadata,
-                            )
-                        )
-                        run_reconciled += 1
-                    failure = dict((run.metadata_json or {}).get("reservation_reconciliation_failure") or {})
-                    if failure.get("status") == "deferred" and run_reconciled:
-                        failure.update(
-                            {
-                                "status": "recovered",
-                                "deferred_until": None,
-                                "recovered_at": current.isoformat(),
-                            }
-                        )
-                        run.metadata_json = {
-                            **dict(run.metadata_json or {}),
-                            "reservation_reconciliation_failure": failure,
-                        }
-                    await db.commit()
-                    reconciled += run_reconciled
-            except Exception as exc:
-                if budget_run_id is None:
-                    raise
-                failure = await self._record_reservation_reconciliation_failure(
-                    budget_run_id=budget_run_id,
-                    error=exc,
-                    failed_at=current,
                 )
-                logger.error(
-                    "[RuntimeBudget] reservation reconciliation deferred run_id=%s attempt=%s",
-                    budget_run_id,
-                    failure["attempt_count"],
-                    exc_info=(type(exc), exc, exc.__traceback__),
-                )
-        return reconciled
-
-    async def _record_reservation_reconciliation_failure(
-        self,
-        *,
-        budget_run_id: uuid.UUID,
-        error: Exception,
-        failed_at: datetime,
-    ) -> dict[str, Any]:
-        """Persist one run-scoped failure after the poisoned run transaction rolls back."""
-
-        async with self._budget_session("record_reservation_reconciliation_failure") as db:
-            run = await self._lock_run(db, budget_run_id)
-            metadata = dict(run.metadata_json or {})
-            previous = dict(metadata.get("reservation_reconciliation_failure") or {})
-            attempt_count = max(0, int(previous.get("attempt_count") or 0)) + 1
-            delay_seconds = min(
-                _RESERVATION_RECONCILIATION_MAX_BACKOFF_SECONDS,
-                _RESERVATION_RECONCILIATION_BACKOFF_SECONDS * (2 ** min(attempt_count - 1, 6)),
-            )
-            deferred_until = failed_at + timedelta(seconds=delay_seconds)
-            error_type = type(error).__name__
-            error_message = str(error)[:2000]
-            history = [dict(item) for item in previous.get("history", []) if isinstance(item, dict)][
-                -_RESERVATION_RECONCILIATION_FAILURE_HISTORY_LIMIT + 1 :
-            ]
-            history.append(
-                {
-                    "attempt_count": attempt_count,
-                    "failed_at": failed_at.isoformat(),
-                    "deferred_until": deferred_until.isoformat(),
-                    "error_type": error_type,
-                    "error": error_message,
-                }
-            )
-            failure = {
-                "schema": _RESERVATION_RECONCILIATION_FAILURE_SCHEMA,
-                "status": "deferred",
-                "attempt_count": attempt_count,
-                "first_failed_at": previous.get("first_failed_at") or failed_at.isoformat(),
-                "first_error_type": previous.get("first_error_type") or error_type,
-                "first_error": previous.get("first_error") or error_message,
-                "last_failed_at": failed_at.isoformat(),
-                "deferred_until": deferred_until.isoformat(),
-                "last_error_type": error_type,
-                "last_error": error_message,
-                "history": history,
-            }
-            metadata["reservation_reconciliation_failure"] = failure
-            run.metadata_json = metadata
+                reconciled += 1
             await db.commit()
-            return failure
+        return reconciled
 
     async def list_policies(self, *, tenant_id: uuid.UUID | None) -> list[RuntimeBudgetPolicy]:
         async with self._budget_session("list_policies") as db:

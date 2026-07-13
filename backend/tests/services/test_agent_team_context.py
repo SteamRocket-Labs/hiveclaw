@@ -16,13 +16,6 @@ class _ScalarsResult:
     def all(self):
         return list(self._rows)
 
-    def scalar_one_or_none(self):
-        if not self._rows:
-            return None
-        if len(self._rows) != 1:
-            raise AssertionError(f"expected at most one row, got {len(self._rows)}")
-        return self._rows[0]
-
 
 class _SharedCoordinationSession:
     def __init__(self):
@@ -50,7 +43,7 @@ class _SharedCoordinationSession:
 
     async def execute(self, _stmt):
         self.execute_calls += 1
-        if self.execute_calls in {1, 2, 4}:
+        if self.execute_calls == 1:
             return _ScalarsResult([])
         return _ScalarsResult(self.added)
 

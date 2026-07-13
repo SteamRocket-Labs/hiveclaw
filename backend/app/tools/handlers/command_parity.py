@@ -271,36 +271,23 @@ async def task_stop(request: ToolExecutionRequest) -> str:
             }
         )
     reason = str(request.arguments.get("reason") or "RuntimeTask cancelled by task_stop.").strip()
-    result_status = "killed"
+    await update_runtime_task_record(
+        plan.runtime_task_id or "",
+        status="killed",
+        result_summary=reason,
+        metadata_json={"cancel_reason": reason},
+    )
     if str(record.get("task_type") or "") == "subagent":
-        from app.services.subagent_run_service import request_subagent_stop
-
-        result_status = await request_subagent_stop(
-            run_id=plan.runtime_task_id or "",
-            reason=reason,
-        )
         try:
             from app.services.runtime_control_bus import publish_subagent_cancel
 
-            if result_status == "cancellation_requested":
-                await publish_subagent_cancel(
-                    run_id=plan.runtime_task_id or "",
-                    parent_agent_id=record.get("parent_agent_id"),
-                )
+            await publish_subagent_cancel(
+                run_id=plan.runtime_task_id or "",
+                parent_agent_id=record.get("parent_agent_id"),
+            )
         except Exception as exc:  # noqa: BLE001 - persisted killed state remains the fallback contract.
             logger.debug("Failed to publish subagent cancellation {}: {}", plan.runtime_task_id, exc)
-    else:
-        updated = await update_runtime_task_record(
-            plan.runtime_task_id or "",
-            expected_status=("pending", "running", "resumable"),
-            status="killed",
-            result_summary=reason,
-            metadata_json={"cancel_reason": reason},
-        )
-        if not updated:
-            current = await get_runtime_task_record(plan.runtime_task_id or "")
-            result_status = str((current or {}).get("status") or "conflict")
-    return _json({"ok": True, "runtime_task_id": plan.runtime_task_id, "status": result_status})
+    return _json({"ok": True, "runtime_task_id": plan.runtime_task_id, "status": "killed"})
 
 
 @tool(

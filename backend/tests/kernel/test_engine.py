@@ -1,30 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 from pathlib import Path
-import shutil
 from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
-
-
-@pytest.fixture
-def durable_recovery_checkpoint(monkeypatch):
-    receipt = {
-        "path": "/isolated-test/recovery.json",
-        "ref": "runtime_artifacts/recovery_manifests/test.json",
-        "sha256": "d" * 64,
-        "bytes": 10,
-        "ephemeral": False,
-    }
-    monkeypatch.setattr(
-        "app.kernel.engine._persist_recovery_manifest_checkpoint",
-        lambda *_args, **_kwargs: dict(receipt),
-    )
-    return receipt
 
 
 class _FakeClient:
@@ -113,64 +95,6 @@ def test_permissions_context_exposes_plan_mode_plan_file_as_writable_root() -> N
 
     assert "writable_roots:" in prompt
     assert "- workspace/plans/session-1.plan.md" in prompt
-
-
-def test_recovery_tenant_binding_rejects_conflicting_session_authority() -> None:
-    from app.kernel import InvocationRequest, RuntimeConfig
-    from app.kernel.engine import _bind_authoritative_recovery_tenant
-    from app.runtime.session import SessionContext
-
-    request = InvocationRequest(
-        model=SimpleNamespace(),
-        messages=[],
-        agent_name="agent",
-        role_description="role",
-        agent_id=uuid4(),
-        session_context=SessionContext(
-            session_id="session-1",
-            metadata={"tenant_id": "tenant-forged"},
-        ),
-    )
-
-    with pytest.raises(ValueError, match="tenant identity mismatch"):
-        _bind_authoritative_recovery_tenant(
-            request,
-            RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=3),
-        )
-
-
-def test_recovery_tenant_binding_updates_session_and_session_key() -> None:
-    from app.kernel import InvocationRequest, RuntimeConfig
-    from app.kernel.engine import _bind_authoritative_recovery_tenant
-    from app.runtime.session import SessionContext
-
-    tenant_id = uuid4()
-    session = SessionContext(
-        session_id="session-1",
-        metadata={
-            "session_key": {
-                "stable_id": "web:web:runtime:run-1",
-                "tenant_id": None,
-                "runtime_task_id": "run-1",
-            }
-        },
-    )
-    request = InvocationRequest(
-        model=SimpleNamespace(),
-        messages=[],
-        agent_name="agent",
-        role_description="role",
-        agent_id=uuid4(),
-        session_context=session,
-    )
-
-    _bind_authoritative_recovery_tenant(
-        request,
-        RuntimeConfig(tenant_id=tenant_id, max_tool_rounds=3),
-    )
-
-    assert session.metadata["tenant_id"] == str(tenant_id)
-    assert session.metadata["session_key"]["tenant_id"] == str(tenant_id)
 
 
 def test_permissions_context_consumes_skill_execution_plans() -> None:
@@ -808,19 +732,12 @@ def test_build_restoration_context_injects_persisted_recovery_manifest(tmp_path,
     from app.runtime.session import SessionContext
 
     agent_id = uuid4()
-    tenant_id = uuid4()
-    runtime_task_id = "runtime-recover"
     manifest_path = tmp_path / str(agent_id) / "runtime_artifacts" / "recovery_manifest.json"
     manifest_path.parent.mkdir(parents=True)
     manifest_path.write_text(
         json.dumps(
             {
                 "session_id": "session-recover",
-                "agent_id": str(agent_id),
-                "tenant_id": str(tenant_id),
-                "runtime_task_id": runtime_task_id,
-                "claim_version": 1,
-                "claim_worker_id": "worker-1",
                 "recent_reads": ["workspace/source.md"],
                 "recent_writes": ["workspace/result.md"],
                 "pending_items": ["continue D8 recovery"],
@@ -832,16 +749,7 @@ def test_build_restoration_context_injects_persisted_recovery_manifest(tmp_path,
         encoding="utf-8",
     )
 
-    session = SessionContext(
-        session_id="session-recover",
-        metadata={
-            "agent_id": str(agent_id),
-            "tenant_id": str(tenant_id),
-            "runtime_task_id": runtime_task_id,
-            "claim_version": 1,
-            "claim_worker_id": "worker-1",
-        },
-    )
+    session = SessionContext(session_id="session-recover")
 
     monkeypatch.setattr(
         "app.config.get_settings",
@@ -853,102 +761,7 @@ def test_build_restoration_context_injects_persisted_recovery_manifest(tmp_path,
     assert "### Recovery Manifest" in restored
     assert "continue D8 recovery" in restored
     assert "Pending Tool Frames" in restored
-    assert "Permission Profile" not in restored
-    assert "allowed_tools" not in restored
-
-
-def test_build_restoration_context_ignores_other_session_legacy_artifacts(tmp_path, monkeypatch):
-    from app.kernel.engine import _build_restoration_context
-    from app.runtime.session import SessionContext
-    from app.services.session_memory import session_state_storage_key
-
-    agent_id = uuid4()
-    agent_root = tmp_path / str(agent_id)
-    (agent_root / "runtime_artifacts").mkdir(parents=True)
-    (agent_root / "workspace").mkdir(parents=True)
-    session_storage_key = session_state_storage_key("session-b")
-    (agent_root / "memory" / "session_state" / session_storage_key).mkdir(parents=True)
-    (agent_root / "soul.md").write_text("# Durable Soul\n", encoding="utf-8")
-    (agent_root / "runtime_artifacts" / "session_memory.md").write_text(
-        "SESSION_A_PRIVATE_MEMORY",
-        encoding="utf-8",
-    )
-    (agent_root / "runtime_artifacts" / "compaction_summary.md").write_text(
-        "SESSION_A_PRIVATE_COMPACTION",
-        encoding="utf-8",
-    )
-    (agent_root / "workspace" / "session_memory.md").write_text(
-        "SESSION_A_LEGACY_MEMORY",
-        encoding="utf-8",
-    )
-    session_dir = agent_root / "memory" / "session_state" / session_storage_key
-    (session_dir / "session_memory.md").write_text("SESSION_B_MEMORY", encoding="utf-8")
-    (session_dir / "compaction_summary.md").write_text("SESSION_B_COMPACTION", encoding="utf-8")
-    monkeypatch.setattr("app.config.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
-
-    restored = _build_restoration_context(agent_id, session_context=SessionContext(session_id="session-b"))
-
-    assert "SESSION_B_MEMORY" in restored
-    assert "SESSION_B_COMPACTION" in restored
-    assert "SESSION_A_PRIVATE_MEMORY" not in restored
-    assert "SESSION_A_PRIVATE_COMPACTION" not in restored
-    assert "SESSION_A_LEGACY_MEMORY" not in restored
-
-
-def test_build_restoration_context_uses_only_canonical_durable_root(tmp_path, monkeypatch):
-    from app.kernel.engine import _build_restoration_context
-    from app.runtime.session import SessionContext
-
-    agent_id = uuid4()
-    durable_root = tmp_path / str(agent_id)
-    transient_root = Path("/tmp/hive_workspaces") / str(agent_id)
-    durable_root.mkdir(parents=True)
-    transient_root.mkdir(parents=True)
-    (durable_root / "soul.md").write_text("CANONICAL_DURABLE_SOUL", encoding="utf-8")
-    (transient_root / "soul.md").write_text("STALE_TRANSIENT_SOUL", encoding="utf-8")
-    monkeypatch.setattr("app.config.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
-
-    try:
-        restored = _build_restoration_context(agent_id, session_context=SessionContext(session_id="session-b"))
-    finally:
-        shutil.rmtree(transient_root, ignore_errors=True)
-
-    assert "CANONICAL_DURABLE_SOUL" in restored
-    assert "STALE_TRANSIENT_SOUL" not in restored
-
-
-def test_build_restoration_context_rejects_another_sessions_legacy_manifest(tmp_path, monkeypatch):
-    from app.kernel.engine import _build_restoration_context
-    from app.runtime.session import SessionContext
-
-    agent_id = uuid4()
-    legacy_path = tmp_path / str(agent_id) / "runtime_artifacts" / "recovery_manifest.json"
-    legacy_path.parent.mkdir(parents=True)
-    legacy_path.write_text(
-        json.dumps(
-            {
-                "session_id": "session-a",
-                "current_turn_writes": ["workspace/private-session-a.md"],
-                "pending_tool_frames": [{"tool_name": "send_email", "status": "running"}],
-                "permission_profile": {"mode": "full_access"},
-            },
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(
-        "app.config.get_settings",
-        lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
-    )
-
-    restored = _build_restoration_context(
-        agent_id,
-        session_context=SessionContext(session_id="session-b"),
-    )
-
-    assert "private-session-a.md" not in restored
-    assert "send_email" not in restored
-    assert "full_access" not in restored
+    assert "Permission Profile" in restored
 
 
 def test_recovery_pending_tool_frame_without_call_id_is_cleared() -> None:
@@ -983,151 +796,17 @@ def test_recovery_pending_tool_frame_without_call_id_is_cleared() -> None:
     assert "pending_tool_frames" not in session.metadata
 
 
-def test_recovery_checkpoint_returns_durable_ref_and_digest(tmp_path, monkeypatch) -> None:
-    from app.kernel import InvocationRequest
-    from app.kernel.engine import _persist_recovery_manifest_checkpoint
-    from app.runtime.session import SessionContext
-
-    checkpoint = tmp_path / "runtime_artifacts" / "recovery_manifests" / "session" / "run.json"
-    checkpoint.parent.mkdir(parents=True)
-    raw = b'{"session_id":"session-1"}\n'
-    monkeypatch.setattr(
-        "app.runtime.recovery_manifest.persist_recovery_manifest_checkpoint",
-        lambda *_args, **_kwargs: [
-            {
-                "path": str(checkpoint),
-                "ref": "runtime_artifacts/recovery_manifests/session/run.json",
-                "sha256": hashlib.sha256(raw).hexdigest(),
-                "bytes": len(raw),
-                "ephemeral": False,
-            }
-        ],
-    )
-    request = InvocationRequest(
-        model=SimpleNamespace(),
-        messages=[],
-        agent_name="Agent",
-        role_description="Role",
-        agent_id=uuid4(),
-        session_context=SessionContext(session_id="session-1"),
-    )
-
-    receipt = _persist_recovery_manifest_checkpoint(request)
-
-    assert receipt is not None
-    assert receipt["path"] == str(checkpoint)
-    assert receipt["sha256"] == hashlib.sha256(raw).hexdigest()
-    assert receipt["bytes"] == len(raw)
-
-
-def test_failed_recovery_checkpoint_clears_stale_receipt(monkeypatch) -> None:
-    from app.kernel import InvocationRequest
-    from app.kernel.engine import _persist_recovery_manifest_checkpoint
-    from app.runtime.session import SessionContext
-
-    def fail_checkpoint(*_args, **_kwargs):
-        raise OSError("disk unavailable")
-
-    monkeypatch.setattr(
-        "app.runtime.recovery_manifest.persist_recovery_manifest_checkpoint",
-        fail_checkpoint,
-    )
-    session = SessionContext(
-        session_id="session-1",
-        metadata={"recovery_manifest_checkpoint_receipt": {"ref": "stale"}},
-    )
-    request = InvocationRequest(
-        model=SimpleNamespace(),
-        messages=[],
-        agent_name="Agent",
-        role_description="Role",
-        agent_id=uuid4(),
-        session_context=session,
-    )
-
-    assert _persist_recovery_manifest_checkpoint(request) is None
-    assert "recovery_manifest_checkpoint_receipt" not in session.metadata
-
-
-@pytest.mark.parametrize(
-    ("has_agent", "has_session"),
-    [
-        (False, True),
-        (True, False),
-    ],
-)
-def test_recovery_checkpoint_without_durable_authority_is_unavailable(has_agent, has_session) -> None:
-    from app.kernel import InvocationRequest
-    from app.kernel.engine import _persist_recovery_manifest_checkpoint
-    from app.runtime.session import SessionContext
-
-    request = InvocationRequest(
-        model=SimpleNamespace(),
-        messages=[],
-        agent_name="Agent",
-        role_description="Role",
-        agent_id=uuid4() if has_agent else None,
-        session_context=SessionContext(session_id="session-1") if has_session else None,
-    )
-
-    assert _persist_recovery_manifest_checkpoint(request) is None
-
-
-def test_real_recovery_checkpoint_receipt_is_bound_to_committed_bytes(tmp_path, monkeypatch) -> None:
-    from app.kernel import InvocationRequest
-    from app.kernel.engine import _persist_recovery_manifest_checkpoint
-    from app.runtime.session import SessionContext
-
-    monkeypatch.setattr("app.config.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
-    agent_id = uuid4()
-    session = SessionContext(
-        session_id="session-real-receipt",
-        metadata={
-            "tenant_id": str(uuid4()),
-            "runtime_task_id": str(uuid4()),
-            "claim_version": 1,
-            "claim_worker_id": "worker-a",
-            "pending_items": ["persist me"],
-        },
-    )
-    session.track_pending_item("persist me")
-    request = InvocationRequest(
-        model=SimpleNamespace(),
-        messages=[],
-        agent_name="Agent",
-        role_description="Role",
-        agent_id=agent_id,
-        session_context=session,
-    )
-
-    receipt = _persist_recovery_manifest_checkpoint(request)
-
-    assert receipt is not None
-    with open(receipt["path"], "rb") as handle:
-        raw = handle.read()
-    assert receipt["sha256"] == hashlib.sha256(raw).hexdigest()
-    assert receipt["bytes"] == len(raw)
-    assert receipt["ref"].startswith("runtime_artifacts/recovery_manifests/")
-
-
 def test_runtime_attachment_sections_include_persisted_recovery_manifest(tmp_path: Path, monkeypatch) -> None:
     from app.kernel.engine import _build_runtime_attachment_sections
     from app.runtime.session import SessionContext
 
     agent_id = uuid4()
-    tenant_id = uuid4()
-    runtime_task_id = "runtime-recover"
     manifest_path = tmp_path / str(agent_id) / "runtime_artifacts" / "recovery_manifest.json"
     manifest_path.parent.mkdir(parents=True)
     manifest_path.write_text(
         json.dumps(
             {
                 "session_id": "session-recover",
-                "agent_id": str(agent_id),
-                "tenant_id": str(tenant_id),
-                "runtime_task_id": runtime_task_id,
-                "claim_version": 1,
-                "claim_worker_id": "worker-1",
                 "pending_tool_frames": [
                     {
                         "tool_call_id": "call-running",
@@ -1142,19 +821,7 @@ def test_runtime_attachment_sections_include_persisted_recovery_manifest(tmp_pat
     )
     monkeypatch.setattr("app.config.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
 
-    sections = _build_runtime_attachment_sections(
-        agent_id,
-        SessionContext(
-            session_id="session-recover",
-            metadata={
-                "agent_id": str(agent_id),
-                "tenant_id": str(tenant_id),
-                "runtime_task_id": runtime_task_id,
-                "claim_version": 1,
-                "claim_worker_id": "worker-1",
-            },
-        ),
-    )
+    sections = _build_runtime_attachment_sections(agent_id, SessionContext(session_id="session-recover"))
 
     joined = "\n\n".join(sections)
     assert "### Recovery Manifest" in joined
@@ -1367,7 +1034,7 @@ def test_should_expand_tools_does_not_expand_fs_read_skill_file():
 
 
 @pytest.mark.asyncio
-async def test_execute_tool_with_hooks_tracks_filesystem_facade_events(monkeypatch, durable_recovery_checkpoint):
+async def test_execute_tool_with_hooks_tracks_filesystem_facade_events(monkeypatch):
     from app.kernel.contracts import InvocationRequest
     from app.kernel.engine import _execute_tool_with_hooks
     from app.runtime.session import SessionContext
@@ -1423,9 +1090,7 @@ async def test_execute_tool_with_hooks_tracks_filesystem_facade_events(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_execute_tool_with_hooks_tracks_office_created_document_as_session_artifact(
-    monkeypatch, durable_recovery_checkpoint
-):
+async def test_execute_tool_with_hooks_tracks_office_created_document_as_session_artifact(monkeypatch):
     from app.kernel.contracts import InvocationRequest
     from app.kernel.engine import _execute_tool_with_hooks
     from app.runtime.session import SessionContext
@@ -1467,9 +1132,7 @@ async def test_execute_tool_with_hooks_tracks_office_created_document_as_session
 
 
 @pytest.mark.asyncio
-async def test_execute_tool_with_hooks_tracks_office_apply_output_as_session_artifact(
-    monkeypatch, durable_recovery_checkpoint
-):
+async def test_execute_tool_with_hooks_tracks_office_apply_output_as_session_artifact(monkeypatch):
     from app.kernel.contracts import InvocationRequest
     from app.kernel.engine import _execute_tool_with_hooks
     from app.runtime.session import SessionContext
@@ -1515,9 +1178,7 @@ async def test_execute_tool_with_hooks_tracks_office_apply_output_as_session_art
 
 
 @pytest.mark.asyncio
-async def test_execute_tool_with_hooks_tracks_structured_code_execution_artifacts(
-    monkeypatch, durable_recovery_checkpoint
-):
+async def test_execute_tool_with_hooks_tracks_structured_code_execution_artifacts(monkeypatch):
     from app.kernel.contracts import InvocationRequest
     from app.kernel.engine import _execute_tool_with_hooks
     from app.runtime.session import SessionContext
@@ -1564,7 +1225,7 @@ async def test_execute_tool_with_hooks_tracks_structured_code_execution_artifact
 
 
 @pytest.mark.asyncio
-async def test_execute_tool_with_hooks_consumes_lock_captured_write_state(monkeypatch, durable_recovery_checkpoint):
+async def test_execute_tool_with_hooks_consumes_lock_captured_write_state(monkeypatch):
     from app.kernel.contracts import InvocationRequest
     from app.kernel.engine import _execute_tool_with_hooks
     from app.runtime.session import SessionContext
@@ -1682,7 +1343,7 @@ async def test_execute_tool_with_hooks_does_not_claim_failed_workspace_write(mon
 
 
 @pytest.mark.asyncio
-async def test_hook_emitter_consumes_post_tool_output_rewrite(monkeypatch, durable_recovery_checkpoint):
+async def test_hook_emitter_consumes_post_tool_output_rewrite(monkeypatch):
     from app.kernel.contracts import InvocationRequest
     from app.kernel.engine import _execute_tool_with_hooks
     from app.runtime.hooks import HookEvent, HookResult
@@ -1724,7 +1385,7 @@ async def test_hook_emitter_consumes_post_tool_output_rewrite(monkeypatch, durab
 
 
 @pytest.mark.asyncio
-async def test_execute_tool_with_hooks_records_lifecycle_records_in_tool_span(durable_recovery_checkpoint):
+async def test_execute_tool_with_hooks_records_lifecycle_records_in_tool_span():
     from app.kernel.contracts import InvocationRequest
     from app.kernel.engine import _execute_tool_with_hooks
     from app.runtime.hooks import HookEvent, HookResult, hook_registry
@@ -1780,7 +1441,7 @@ async def test_execute_tool_with_hooks_records_lifecycle_records_in_tool_span(du
 
 
 @pytest.mark.asyncio
-async def test_execute_tool_with_hooks_executes_pending_skill_fork_handoff(monkeypatch, durable_recovery_checkpoint):
+async def test_execute_tool_with_hooks_executes_pending_skill_fork_handoff(monkeypatch):
     from app.kernel.contracts import InvocationRequest, RuntimeConfig
     from app.kernel.engine import _execute_tool_with_hooks
     from app.runtime.session import SessionContext
@@ -1862,9 +1523,7 @@ async def test_execute_tool_with_hooks_executes_pending_skill_fork_handoff(monke
 
 
 @pytest.mark.asyncio
-async def test_load_skill_frontmatter_fork_executes_in_same_tool_call(
-    tmp_path: Path, monkeypatch, durable_recovery_checkpoint
-):
+async def test_load_skill_frontmatter_fork_executes_in_same_tool_call(tmp_path: Path, monkeypatch):
     from app.kernel.contracts import InvocationRequest, RuntimeConfig
     from app.kernel.engine import _execute_tool_with_hooks
     from app.runtime.session import SessionContext
@@ -1943,9 +1602,7 @@ async def test_load_skill_frontmatter_fork_executes_in_same_tool_call(
 
 
 @pytest.mark.asyncio
-async def test_recovered_pending_tool_frame_replays_read_only_tool_through_governed_runtime(
-    monkeypatch, durable_recovery_checkpoint
-):
+async def test_recovered_pending_tool_frame_replays_read_only_tool_through_governed_runtime(monkeypatch):
     from app.kernel.contracts import InvocationRequest, RuntimeConfig
     from app.kernel.engine import _execute_recovered_pending_tool_frames
     from app.runtime.session import SessionContext
@@ -2006,16 +1663,8 @@ async def test_recovered_pending_tool_frame_replays_read_only_tool_through_gover
     assert session.metadata["recovered_tool_frame_replay_results"][0]["status"] == "done"
 
 
-def test_workspace_mutating_read_tools_are_never_recovery_replay_safe() -> None:
-    from app.kernel.engine import _recovered_tool_frame_replay_safe
-
-    assert _recovered_tool_frame_replay_safe("read_file") is True
-    assert _recovered_tool_frame_replay_safe("read_document") is False
-    assert _recovered_tool_frame_replay_safe("fs_read") is False
-
-
 @pytest.mark.asyncio
-async def test_recovered_read_frame_survives_temporary_checkpoint_failure(monkeypatch) -> None:
+async def test_recovered_pending_tool_frame_fails_closed_for_mutating_tool(monkeypatch):
     from app.kernel.contracts import InvocationRequest, RuntimeConfig
     from app.kernel.engine import _execute_recovered_pending_tool_frames
     from app.runtime.session import SessionContext
@@ -2023,92 +1672,7 @@ async def test_recovered_read_frame_survives_temporary_checkpoint_failure(monkey
     async def fake_emit_hook(*_args, **_kwargs):
         return None
 
-    receipts = iter(
-        [
-            None,
-            {
-                "path": "/durable/recovery.json",
-                "ref": "runtime_artifacts/recovery_manifests/recovery.json",
-                "sha256": "a" * 64,
-                "bytes": 10,
-                "ephemeral": False,
-            },
-        ]
-    )
-
-    def persist_checkpoint(*_args, **_kwargs):
-        return next(receipts)
-
     monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit_hook)
-    monkeypatch.setattr("app.kernel.engine._persist_recovery_manifest_checkpoint", persist_checkpoint)
-    frame = {
-        "tool_call_id": "call-read",
-        "tool_name": "read_file",
-        "arguments": {"path": "workspace/report.md"},
-        "status": "running",
-    }
-    session = SessionContext(
-        session_id="session-recover",
-        metadata={"recovered_pending_tool_frames": [dict(frame)]},
-    )
-    request = InvocationRequest(
-        model=SimpleNamespace(provider="openai", model="gpt-4.1"),
-        messages=[{"role": "user", "content": "continue"}],
-        agent_name="Agent",
-        role_description="role",
-        agent_id=uuid4(),
-        session_context=session,
-        memory_session_id="session-recover",
-    )
-    tool_called = False
-
-    async def execute(*_args, **_kwargs):
-        nonlocal tool_called
-        tool_called = True
-        return "contents"
-
-    async def emit_event(_event):
-        return None
-
-    await _execute_recovered_pending_tool_frames(
-        execute_tool=execute,
-        request=request,
-        runtime_config=RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=3),
-        emit_event=emit_event,
-    )
-
-    assert tool_called is False
-    assert session.metadata["pending_tool_frames"] == [frame]
-    assert session.metadata["recovered_pending_tool_frames"] == [frame]
-
-
-@pytest.mark.asyncio
-async def test_recovered_pending_tool_frame_fails_closed_for_mutating_tool(monkeypatch):
-    from app.kernel.contracts import InvocationRequest, RuntimeConfig
-    from app.kernel.engine import _execute_recovered_pending_tool_frames, _execute_tool_with_hooks
-    from app.runtime.session import SessionContext
-
-    async def fake_emit_hook(*_args, **_kwargs):
-        return None
-
-    monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit_hook)
-    persisted_frames: list[list[dict[str, object]]] = []
-    ordering: list[str] = []
-
-    def persist_checkpoint(checkpoint_request, **_kwargs):
-        ordering.append("checkpoint")
-        persisted_frames.append(
-            [dict(item) for item in checkpoint_request.session_context.metadata.get("pending_tool_frames", [])]
-        )
-        return {
-            "path": "/durable/recovery.json",
-            "ref": "runtime_artifacts/recovery_manifests/recovery.json",
-            "sha256": "b" * 64,
-            "bytes": 10,
-            "ephemeral": False,
-        }
-
-    monkeypatch.setattr("app.kernel.engine._persist_recovery_manifest_checkpoint", persist_checkpoint)
 
     session = SessionContext(
         session_id="session-recover",
@@ -2136,127 +1700,22 @@ async def test_recovered_pending_tool_frame_fails_closed_for_mutating_tool(monke
     async def fail_if_called(*_args, **_kwargs):
         raise AssertionError("mutating recovered frame must not auto-replay")
 
-    async def emit_event(event):
-        if event.get("event_type") == "recovered_tool_frame_reconciliation":
-            ordering.append("operator_event")
-
-    async def renew_runtime_claim():
-        ordering.append("renew")
+    async def emit_event(_event):
+        return None
 
     text = await _execute_recovered_pending_tool_frames(
         execute_tool=fail_if_called,
         request=request,
         runtime_config=RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=3),
         emit_event=emit_event,
-        renew_runtime_lease=renew_runtime_claim,
     )
 
     assert "requires reconciliation" in text
-    assert session.metadata["recovery_reconciliation_blocked"] is True
-    assert session.metadata["pending_tool_frames"][0]["status"] == "needs_reconciliation"
-    assert session.metadata["recovered_pending_tool_frames"][0]["status"] == "needs_reconciliation"
-    assert persisted_frames[-1][0]["status"] == "needs_reconciliation"
+    assert session.metadata["recovered_pending_tool_frames"] == []
     reconciliation = session.metadata["recovered_tool_frame_reconciliation"][0]
     assert reconciliation["tool_name"] == "write_file"
     assert reconciliation["status"] == "needs_reconciliation"
     assert reconciliation["reason"] == "recovered_tool_frame_not_replay_safe"
-    assert ordering[:3] == ["renew", "checkpoint", "operator_event"]
-
-    second_restart_text = await _execute_recovered_pending_tool_frames(
-        execute_tool=fail_if_called,
-        request=request,
-        runtime_config=RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=3),
-        emit_event=emit_event,
-        renew_runtime_lease=renew_runtime_claim,
-    )
-    assert "requires reconciliation" in second_restart_text
-    assert session.metadata["pending_tool_frames"][0]["status"] == "needs_reconciliation"
-
-    blocked_result, _effective_args, executed = await _execute_tool_with_hooks(
-        execute_tool=fail_if_called,
-        request=request,
-        runtime_config=RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=3),
-        tool_name="read_file",
-        tool_args={"path": "workspace/other.md"},
-        tool_call_id="call-after-restart",
-        emit_event=emit_event,
-    )
-    assert executed is False
-    assert "reconciliation" in blocked_result.lower()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("failure_stage", ["renew", "persist"])
-async def test_mixed_recovered_batch_executes_nothing_when_tombstone_checkpoint_fails(
-    monkeypatch,
-    failure_stage: str,
-) -> None:
-    from app.kernel.contracts import InvocationRequest, RuntimeConfig
-    from app.kernel.engine import _execute_recovered_pending_tool_frames
-    from app.runtime.session import SessionContext
-
-    safe = {
-        "tool_call_id": "call-read",
-        "tool_name": "read_file",
-        "arguments": {"path": "workspace/report.md"},
-        "status": "running",
-    }
-    unsafe = {
-        "tool_call_id": "call-write",
-        "tool_name": "write_file",
-        "arguments": {"path": "workspace/report.md", "content": "changed"},
-        "status": "running",
-    }
-    session = SessionContext(
-        session_id="session-recover",
-        metadata={"recovered_pending_tool_frames": [safe, unsafe]},
-    )
-    request = InvocationRequest(
-        model=SimpleNamespace(provider="openai", model="gpt-4.1"),
-        messages=[{"role": "user", "content": "continue"}],
-        agent_name="Agent",
-        role_description="role",
-        agent_id=uuid4(),
-        session_context=session,
-        memory_session_id="session-recover",
-    )
-    executed: list[str] = []
-    persist_calls = 0
-
-    async def execute(tool_name, *_args, **_kwargs):
-        executed.append(tool_name)
-        return "EXECUTED"
-
-    async def renew():
-        if failure_stage == "renew":
-            raise RuntimeError("stale claim")
-
-    def persist(*_args, **_kwargs):
-        nonlocal persist_calls
-        persist_calls += 1
-        return None
-
-    async def emit(_event):
-        return None
-
-    monkeypatch.setattr("app.kernel.engine._persist_recovery_manifest_checkpoint", persist)
-
-    await _execute_recovered_pending_tool_frames(
-        execute_tool=execute,
-        request=request,
-        runtime_config=RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=3),
-        emit_event=emit,
-        renew_runtime_lease=renew,
-    )
-
-    assert executed == []
-    assert persist_calls == (0 if failure_stage == "renew" else 1)
-    assert session.metadata["recovery_reconciliation_blocked"] is True
-    durable = session.metadata["pending_tool_frames"]
-    assert [frame["tool_call_id"] for frame in durable] == ["call-read", "call-write"]
-    assert {frame["status"] for frame in durable} == {"needs_reconciliation"}
-    assert durable[0]["arguments"] == safe["arguments"]
-    assert durable[1]["arguments"] == unsafe["arguments"]
 
 
 @pytest.mark.asyncio
@@ -2266,8 +1725,6 @@ async def test_recovery_manifest_reloads_recovered_mcp_deferred_tool_schema(tmp_
     from app.runtime.session import SessionContext
 
     agent_id = uuid4()
-    tenant_id = uuid4()
-    runtime_task_id = uuid4()
     workspace = tmp_path / str(agent_id)
     manifest_path = workspace / "runtime_artifacts" / "recovery_manifest.json"
     manifest_path.parent.mkdir(parents=True)
@@ -2275,11 +1732,6 @@ async def test_recovery_manifest_reloads_recovered_mcp_deferred_tool_schema(tmp_
         json.dumps(
             {
                 "session_id": "session-mcp-recover",
-                "agent_id": str(agent_id),
-                "tenant_id": str(tenant_id),
-                "runtime_task_id": str(runtime_task_id),
-                "claim_version": 1,
-                "claim_worker_id": "worker-1",
                 "discovered_tools": ["mcp__docs__search"],
                 "mcp_assignments": [{"server": "docs", "tools": ["search"]}],
                 "active_tool_groups": ["mcp_runtime"],
@@ -2331,7 +1783,7 @@ async def test_recovery_manifest_reloads_recovered_mcp_deferred_tool_schema(tmp_
     kernel = AgentKernel(
         KernelDependencies(
             resolve_runtime_config=lambda *_args, **_kwargs: RuntimeConfig(
-                tenant_id=tenant_id,
+                tenant_id=uuid4(),
                 max_tool_rounds=3,
                 quota_message=None,
             ),
@@ -2350,16 +1802,7 @@ async def test_recovery_manifest_reloads_recovered_mcp_deferred_tool_schema(tmp_
             estimate_tokens_from_chars=lambda chars: chars // 4,
         )
     )
-    session = SessionContext(
-        session_id="session-mcp-recover",
-        metadata={
-            "agent_id": str(agent_id),
-            "tenant_id": str(tenant_id),
-            "runtime_task_id": str(runtime_task_id),
-            "claim_version": 1,
-            "claim_worker_id": "worker-1",
-        },
-    )
+    session = SessionContext(session_id="session-mcp-recover", metadata={})
 
     result = await kernel.handle(
         InvocationRequest(
@@ -2385,7 +1828,7 @@ async def test_recovery_manifest_reloads_recovered_mcp_deferred_tool_schema(tmp_
 
 
 @pytest.mark.asyncio
-async def test_execute_tool_with_hooks_writes_trace_metadata_sink_to_span(monkeypatch, durable_recovery_checkpoint):
+async def test_execute_tool_with_hooks_writes_trace_metadata_sink_to_span(monkeypatch):
     from app.kernel.contracts import InvocationRequest, RuntimeConfig
     from app.kernel.engine import _execute_tool_with_hooks
     from app.runtime.session import SessionContext
@@ -2444,7 +1887,7 @@ async def test_execute_tool_with_hooks_writes_trace_metadata_sink_to_span(monkey
 
 
 @pytest.mark.asyncio
-async def test_execute_tool_with_hooks_records_tool_result_ledger(monkeypatch, durable_recovery_checkpoint):
+async def test_execute_tool_with_hooks_records_tool_result_ledger(monkeypatch):
     from app.kernel.contracts import InvocationRequest
     from app.kernel.engine import _execute_tool_with_hooks
     from app.runtime.session import SessionContext
@@ -2522,21 +1965,6 @@ async def test_execute_tool_with_hooks_records_runtime_failure_policy_on_error(m
         return None
 
     monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit_hook)
-    persisted_frames: list[list[dict]] = []
-
-    def persist_checkpoint(checkpoint_request, **_kwargs):
-        persisted_frames.append(
-            [dict(item) for item in checkpoint_request.session_context.metadata.get("pending_tool_frames", [])]
-        )
-        return {
-            "path": "/durable/recovery.json",
-            "ref": "runtime_artifacts/recovery_manifests/recovery.json",
-            "sha256": "d" * 64,
-            "bytes": 10,
-            "ephemeral": False,
-        }
-
-    monkeypatch.setattr("app.kernel.engine._persist_recovery_manifest_checkpoint", persist_checkpoint)
     session = SessionContext(session_id="session-failure-policy")
     session.metadata["turn_id"] = "turn-tool-failure"
     session.metadata["intent_id"] = "intent-tool-failure"
@@ -2574,12 +2002,7 @@ async def test_execute_tool_with_hooks_records_runtime_failure_policy_on_error(m
     assert result.startswith("[Tool execution error] RuntimeError: network timeout")
     policy = spans[-1]["metadata"]["runtime_failure_policy"]
     assert policy["failure_kind"] == "tool_failure"
-    assert policy["safe_to_continue"] is False
-    assert policy["requires_reconciliation"] is True
-    assert session.metadata["recovery_reconciliation_blocked"] is True
-    assert session.metadata["pending_tool_frame"]["status"] == "needs_reconciliation"
-    assert session.metadata["pending_tool_frame"]["tool_name"] == "send_email"
-    assert persisted_frames[-1][0]["status"] == "needs_reconciliation"
+    assert policy["safe_to_continue"] is True
     ledger_policy = session.metadata["runtime_assembly_state"]["tool_result_ledger"][-1]["side_effects"][
         "runtime_failure_policy"
     ]
@@ -2595,464 +2018,6 @@ async def test_execute_tool_with_hooks_records_runtime_failure_policy_on_error(m
     assert session.metadata["runtime_assembly_state"]["activation_events"][-1] == activation_event
     assert "tool_result_ledger" not in session.metadata
     assert "activation_events" not in session.metadata
-
-
-@pytest.mark.asyncio
-async def test_unknown_tool_failure_fences_and_persists_final_manifest_before_operator_event(monkeypatch):
-    from app.kernel.contracts import InvocationRequest, RuntimeConfig
-    from app.kernel.engine import _execute_tool_with_hooks
-    from app.runtime.session import SessionContext
-
-    async def fake_emit_hook(*_args, **_kwargs):
-        return None
-
-    order: list[str] = []
-    renewal_count = 0
-
-    async def renew_runtime_claim():
-        nonlocal renewal_count
-        renewal_count += 1
-        order.append(f"renew:{renewal_count}")
-
-    def persist_checkpoint(checkpoint_request, **_kwargs):
-        pending = checkpoint_request.session_context.metadata.get("pending_tool_frame") or {}
-        order.append(f"manifest:{pending.get('status')}")
-        return {
-            "path": "/durable/recovery.json",
-            "ref": "runtime_artifacts/recovery_manifests/recovery.json",
-            "sha256": str(len(order)) * 64,
-            "bytes": 10,
-            "ephemeral": False,
-        }
-
-    async def fail_unknown(*_args, **_kwargs):
-        order.append("execute")
-        raise RuntimeError("network outcome unknown")
-
-    async def emit_event(_event):
-        order.append("operator_event")
-
-    monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit_hook)
-    monkeypatch.setattr("app.kernel.engine._persist_recovery_manifest_checkpoint", persist_checkpoint)
-    session = SessionContext(session_id="session-final-manifest-before-event")
-    request = InvocationRequest(
-        model=SimpleNamespace(provider="openai", model="gpt-4.1"),
-        messages=[{"role": "user", "content": "send"}],
-        agent_name="Agent",
-        role_description="role",
-        agent_id=uuid4(),
-        session_context=session,
-        memory_session_id=session.session_id,
-    )
-
-    _result, _effective_args, executed = await _execute_tool_with_hooks(
-        execute_tool=fail_unknown,
-        request=request,
-        runtime_config=RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=3),
-        tool_name="send_email",
-        tool_args={"to": "user@example.com"},
-        emit_event=emit_event,
-        renew_runtime_lease=renew_runtime_claim,
-    )
-
-    assert executed is False
-    assert order == [
-        "renew:1",
-        "manifest:running",
-        "execute",
-        "renew:2",
-        "manifest:needs_reconciliation",
-        "operator_event",
-    ]
-
-
-@pytest.mark.asyncio
-async def test_stale_claim_after_unknown_tool_failure_cannot_rewrite_manifest_or_publish_operator_event(monkeypatch):
-    from app.kernel.contracts import InvocationRequest, RuntimeConfig
-    from app.kernel.engine import _execute_tool_with_hooks
-    from app.runtime.session import SessionContext
-
-    async def fake_emit_hook(*_args, **_kwargs):
-        return None
-
-    renewals = 0
-    manifests = 0
-    events: list[dict] = []
-
-    async def renew_then_reject():
-        nonlocal renewals
-        renewals += 1
-        if renewals == 2:
-            raise RuntimeError("claim invalidated by reconciler")
-
-    def persist_checkpoint(*_args, **_kwargs):
-        nonlocal manifests
-        manifests += 1
-        return {
-            "path": "/durable/recovery.json",
-            "ref": "runtime_artifacts/recovery_manifests/recovery.json",
-            "sha256": "a" * 64,
-            "bytes": 10,
-            "ephemeral": False,
-        }
-
-    async def fail_unknown(*_args, **_kwargs):
-        raise RuntimeError("network outcome unknown")
-
-    async def emit_event(event):
-        events.append(event)
-
-    monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit_hook)
-    monkeypatch.setattr("app.kernel.engine._persist_recovery_manifest_checkpoint", persist_checkpoint)
-    session = SessionContext(session_id="session-stale-final-manifest")
-    request = InvocationRequest(
-        model=SimpleNamespace(provider="openai", model="gpt-4.1"),
-        messages=[{"role": "user", "content": "send"}],
-        agent_name="Agent",
-        role_description="role",
-        agent_id=uuid4(),
-        session_context=session,
-        memory_session_id=session.session_id,
-    )
-
-    _result, _effective_args, executed = await _execute_tool_with_hooks(
-        execute_tool=fail_unknown,
-        request=request,
-        runtime_config=RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=3),
-        tool_name="send_email",
-        tool_args={"to": "user@example.com"},
-        emit_event=emit_event,
-        renew_runtime_lease=renew_then_reject,
-    )
-
-    assert executed is False
-    assert renewals == 2
-    assert manifests == 1
-    assert events == []
-
-
-@pytest.mark.asyncio
-async def test_execute_tool_with_hooks_fails_closed_when_recovery_checkpoint_cannot_commit(monkeypatch):
-    from app.kernel.contracts import InvocationRequest, RuntimeConfig
-    from app.kernel.engine import _execute_tool_with_hooks
-    from app.runtime.session import SessionContext
-
-    async def fake_emit_hook(*_args, **_kwargs):
-        return None
-
-    def fail_checkpoint(*_args, **_kwargs):
-        raise OSError("disk unavailable")
-
-    monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit_hook)
-    monkeypatch.setattr("app.runtime.recovery_manifest.persist_recovery_manifest", fail_checkpoint)
-    session = SessionContext(session_id="session-checkpoint")
-    request = InvocationRequest(
-        model=SimpleNamespace(provider="openai", model="gpt-4.1"),
-        messages=[{"role": "user", "content": "send"}],
-        agent_name="Agent",
-        role_description="role",
-        agent_id=uuid4(),
-        session_context=session,
-        memory_session_id="session-checkpoint",
-    )
-    tool_called = False
-
-    async def fake_execute_tool(*_args, **_kwargs):
-        nonlocal tool_called
-        tool_called = True
-        return "sent"
-
-    async def emit_event(_event):
-        return None
-
-    result, _effective_args, executed = await _execute_tool_with_hooks(
-        execute_tool=fake_execute_tool,
-        request=request,
-        runtime_config=RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=3),
-        tool_name="send_email",
-        tool_args={"to": "user@example.com"},
-        emit_event=emit_event,
-    )
-
-    assert tool_called is False
-    assert executed is False
-    assert result.startswith("[Tool execution blocked] Recovery checkpoint unavailable")
-    assert "pending_tool_frame" not in session.metadata
-
-
-@pytest.mark.asyncio
-async def test_execute_tool_with_hooks_renews_runtime_claim_before_manifest_checkpoint(monkeypatch):
-    from app.kernel.contracts import InvocationRequest, RuntimeConfig
-    from app.kernel.engine import _execute_tool_with_hooks
-    from app.runtime.session import SessionContext
-
-    async def fake_emit_hook(*_args, **_kwargs):
-        return None
-
-    order: list[str] = []
-    renewal_count = 0
-
-    async def renew_runtime_claim():
-        nonlocal renewal_count
-        renewal_count += 1
-        order.append(f"renew_claim:{renewal_count}")
-
-    def persist_checkpoint(checkpoint_request, **_kwargs):
-        pending = checkpoint_request.session_context.metadata.get("pending_tool_frame") or {}
-        order.append(f"persist_manifest:{pending.get('status')}")
-        return {
-            "path": "/durable/recovery.json",
-            "ref": "runtime_artifacts/recovery_manifests/recovery.json",
-            "sha256": "e" * 64,
-            "bytes": 10,
-            "ephemeral": False,
-        }
-
-    async def fake_execute_tool(*_args, **_kwargs):
-        order.append("execute_tool")
-        return "sent"
-
-    monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit_hook)
-    monkeypatch.setattr("app.kernel.engine._persist_recovery_manifest_checkpoint", persist_checkpoint)
-    request = InvocationRequest(
-        model=SimpleNamespace(provider="openai", model="gpt-4.1"),
-        messages=[{"role": "user", "content": "send"}],
-        agent_name="Agent",
-        role_description="role",
-        agent_id=uuid4(),
-        session_context=SessionContext(session_id="session-claim-before-manifest"),
-        memory_session_id="session-claim-before-manifest",
-    )
-
-    result, _effective_args, executed = await _execute_tool_with_hooks(
-        execute_tool=fake_execute_tool,
-        request=request,
-        runtime_config=RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=3),
-        tool_name="send_email",
-        tool_args={"to": "user@example.com"},
-        emit_event=lambda _event: None,
-        renew_runtime_lease=renew_runtime_claim,
-    )
-
-    assert result == "sent"
-    assert executed is True
-    assert order == [
-        "renew_claim:1",
-        "persist_manifest:running",
-        "execute_tool",
-        "renew_claim:2",
-        "persist_manifest:None",
-    ]
-
-
-@pytest.mark.asyncio
-async def test_stale_claim_after_successful_side_effect_cannot_clear_pending_manifest(monkeypatch):
-    from app.kernel.contracts import InvocationRequest, RuntimeConfig
-    from app.kernel.engine import _execute_tool_with_hooks
-    from app.runtime.session import SessionContext
-
-    async def fake_emit_hook(*_args, **_kwargs):
-        return None
-
-    renewals = 0
-    persisted_statuses: list[str | None] = []
-
-    async def renew_then_reject_completion():
-        nonlocal renewals
-        renewals += 1
-        if renewals == 2:
-            raise RuntimeError("claim invalidated after side effect")
-
-    def persist_checkpoint(checkpoint_request, **_kwargs):
-        pending = checkpoint_request.session_context.metadata.get("pending_tool_frame") or {}
-        persisted_statuses.append(pending.get("status"))
-        return {
-            "path": "/durable/recovery.json",
-            "ref": "runtime_artifacts/recovery_manifests/recovery.json",
-            "sha256": "c" * 64,
-            "bytes": 10,
-            "ephemeral": False,
-        }
-
-    async def fake_execute_tool(*_args, **_kwargs):
-        return "sent"
-
-    monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit_hook)
-    monkeypatch.setattr("app.kernel.engine._persist_recovery_manifest_checkpoint", persist_checkpoint)
-    session = SessionContext(session_id="session-stale-after-success")
-    request = InvocationRequest(
-        model=SimpleNamespace(provider="openai", model="gpt-4.1"),
-        messages=[{"role": "user", "content": "send"}],
-        agent_name="Agent",
-        role_description="role",
-        agent_id=uuid4(),
-        session_context=session,
-        memory_session_id=session.session_id,
-    )
-
-    result, _effective_args, executed = await _execute_tool_with_hooks(
-        execute_tool=fake_execute_tool,
-        request=request,
-        runtime_config=RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=3),
-        tool_name="send_email",
-        tool_args={"to": "user@example.com"},
-        emit_event=lambda _event: None,
-        renew_runtime_lease=renew_then_reject_completion,
-    )
-
-    assert result == "sent"
-    assert executed is True
-    assert renewals == 2
-    assert persisted_statuses == ["running"]
-    assert session.metadata["pending_tool_frame"]["status"] == "running"
-
-
-@pytest.mark.asyncio
-async def test_execute_tool_with_hooks_blocks_before_manifest_when_runtime_claim_is_stale(monkeypatch):
-    from app.kernel.contracts import InvocationRequest, RuntimeConfig
-    from app.kernel.engine import _execute_tool_with_hooks
-    from app.runtime.session import SessionContext
-
-    async def fake_emit_hook(*_args, **_kwargs):
-        return None
-
-    manifest_written = False
-    tool_called = False
-    events: list[dict] = []
-
-    async def reject_stale_claim():
-        raise RuntimeError("stale RuntimeTask worker fence")
-
-    def persist_checkpoint(*_args, **_kwargs):
-        nonlocal manifest_written
-        manifest_written = True
-        return {"ref": "unexpected", "sha256": "f" * 64}
-
-    async def fake_execute_tool(*_args, **_kwargs):
-        nonlocal tool_called
-        tool_called = True
-        return "sent"
-
-    async def emit_event(event):
-        events.append(event)
-
-    monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit_hook)
-    monkeypatch.setattr("app.kernel.engine._persist_recovery_manifest_checkpoint", persist_checkpoint)
-    session = SessionContext(session_id="session-stale-claim")
-    request = InvocationRequest(
-        model=SimpleNamespace(provider="openai", model="gpt-4.1"),
-        messages=[{"role": "user", "content": "send"}],
-        agent_name="Agent",
-        role_description="role",
-        agent_id=uuid4(),
-        session_context=session,
-        memory_session_id="session-stale-claim",
-    )
-
-    result, _effective_args, executed = await _execute_tool_with_hooks(
-        execute_tool=fake_execute_tool,
-        request=request,
-        runtime_config=RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=3),
-        tool_name="send_email",
-        tool_args={"to": "user@example.com"},
-        emit_event=emit_event,
-        renew_runtime_lease=reject_stale_claim,
-    )
-
-    assert executed is False
-    assert result.startswith("[Tool execution blocked] RuntimeTask claim is no longer authoritative")
-    assert manifest_written is False
-    assert tool_called is False
-    assert "pending_tool_frame" not in session.metadata
-    assert events[-1]["event_type"] == "runtime_task_claim_stale"
-
-
-@pytest.mark.asyncio
-async def test_fenced_recovery_checkpoint_renews_before_write_and_stale_claim_skips_write(monkeypatch):
-    from app.kernel.contracts import InvocationRequest
-    from app.kernel.engine import _persist_recovery_manifest_checkpoint_with_fence
-    from app.runtime.session import SessionContext
-
-    order: list[str] = []
-    stale = False
-
-    async def renew_runtime_claim():
-        order.append("renew")
-        if stale:
-            raise RuntimeError("stale claim")
-
-    def persist_checkpoint(*_args, **_kwargs):
-        order.append("write")
-        return {"ref": "runtime_artifacts/recovery.json", "sha256": "a" * 64}
-
-    monkeypatch.setattr("app.kernel.engine._persist_recovery_manifest_checkpoint", persist_checkpoint)
-    request = InvocationRequest(
-        model=SimpleNamespace(provider="openai", model="gpt-4.1"),
-        messages=[],
-        agent_name="Agent",
-        role_description="role",
-        agent_id=uuid4(),
-        session_context=SessionContext(session_id="session-fenced-checkpoint"),
-    )
-
-    receipt = await _persist_recovery_manifest_checkpoint_with_fence(
-        request,
-        renew_runtime_lease=renew_runtime_claim,
-    )
-
-    assert receipt is not None
-    assert order == ["renew", "write"]
-
-    stale = True
-    order.clear()
-    receipt = await _persist_recovery_manifest_checkpoint_with_fence(
-        request,
-        renew_runtime_lease=renew_runtime_claim,
-    )
-
-    assert receipt is None
-    assert order == ["renew"]
-
-
-@pytest.mark.asyncio
-async def test_execute_tool_with_hooks_fails_closed_without_session_recovery_authority(monkeypatch):
-    from app.kernel.contracts import InvocationRequest, RuntimeConfig
-    from app.kernel.engine import _execute_tool_with_hooks
-
-    async def fake_emit_hook(*_args, **_kwargs):
-        return None
-
-    monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit_hook)
-    request = InvocationRequest(
-        model=SimpleNamespace(provider="openai", model="gpt-4.1"),
-        messages=[{"role": "user", "content": "read"}],
-        agent_name="Agent",
-        role_description="role",
-        agent_id=uuid4(),
-        session_context=None,
-    )
-    tool_called = False
-
-    async def fake_execute_tool(*_args, **_kwargs):
-        nonlocal tool_called
-        tool_called = True
-        return "contents"
-
-    async def emit_event(_event):
-        return None
-
-    result, _effective_args, executed = await _execute_tool_with_hooks(
-        execute_tool=fake_execute_tool,
-        request=request,
-        runtime_config=RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=3),
-        tool_name="read_file",
-        tool_args={"path": "workspace/report.md"},
-        emit_event=emit_event,
-    )
-
-    assert tool_called is False
-    assert executed is False
-    assert result.startswith("[Tool execution blocked] Recovery checkpoint unavailable")
 
 
 @pytest.mark.asyncio
@@ -3110,7 +2075,7 @@ async def test_execute_tool_with_hooks_records_runtime_failure_policy_on_hook_bl
 
 
 @pytest.mark.asyncio
-async def test_agent_kernel_handles_tool_round_and_collects_parts(durable_recovery_checkpoint):
+async def test_agent_kernel_handles_tool_round_and_collects_parts():
     from app.kernel.contracts import InvocationRequest
     from app.kernel.engine import AgentKernel, KernelDependencies, RuntimeConfig
 
@@ -3414,7 +2379,7 @@ async def test_plan_mode_tool_intercept_notice_follows_tool_result_message() -> 
 
 
 @pytest.mark.asyncio
-async def test_agent_kernel_stops_after_blocking_ask_user_question_result(durable_recovery_checkpoint):
+async def test_agent_kernel_stops_after_blocking_ask_user_question_result():
     from app.kernel.contracts import InvocationRequest
     from app.kernel.engine import AgentKernel, KernelDependencies, RuntimeConfig
 
@@ -3601,9 +2566,7 @@ async def test_agent_kernel_propagates_terminal_tool_card_signal_from_callback()
 
 
 @pytest.mark.asyncio
-async def test_agent_kernel_splits_concatenated_tool_arguments_into_separate_calls(
-    durable_recovery_checkpoint,
-):
+async def test_agent_kernel_splits_concatenated_tool_arguments_into_separate_calls():
     """Tier 1-4: concatenated DeepSeek-V4 style args `{"a":1}{"b":2}` must be split into
     two executable tool_calls (rather than dropped to `{}`). Both calls execute and the
     assistant history records each split call with a unique id and a valid arguments JSON.
@@ -3763,9 +2726,7 @@ async def test_runtime_invoker_delegates_to_agent_kernel(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_agent_kernel_emits_ptl_full_compress_before_round_group_retry_event(
-    durable_recovery_checkpoint,
-):
+async def test_agent_kernel_emits_ptl_full_compress_before_round_group_retry_event():
     from app.kernel.contracts import InvocationRequest
     from app.kernel.engine import AgentKernel, KernelDependencies, RuntimeConfig
     from app.services.llm_utils import LLMError
@@ -4260,12 +3221,11 @@ async def test_agent_kernel_does_not_auto_expand_without_skill_or_mcp_trigger():
 
 
 @pytest.mark.asyncio
-async def test_midloop_compaction_triggers_after_interval(monkeypatch):
+async def test_midloop_compaction_triggers_after_interval():
     """Mid-loop compaction fires every _MIDLOOP_COMPACT_CHECK_INTERVAL rounds
     and compresses when maybe_compress_messages returns fewer messages."""
     from app.kernel.contracts import InvocationRequest
     from app.kernel.engine import AgentKernel, KernelDependencies, RuntimeConfig
-    from app.runtime.session import SessionContext
 
     model = SimpleNamespace(
         provider="openai",
@@ -4323,17 +3283,6 @@ async def test_midloop_compaction_triggers_after_interval(monkeypatch):
     )
 
     fake_client = _FakeClient(responses)
-    checkpoint_receipt = {
-        "path": "/durable/checkpoint.json",
-        "ref": "runtime_artifacts/recovery_manifests/checkpoint.json",
-        "sha256": "c" * 64,
-        "bytes": 42,
-        "ephemeral": False,
-    }
-    monkeypatch.setattr(
-        "app.kernel.engine._persist_recovery_manifest_checkpoint",
-        lambda *_args, **_kwargs: checkpoint_receipt,
-    )
 
     kernel = AgentKernel(
         KernelDependencies(
@@ -4370,8 +3319,6 @@ async def test_midloop_compaction_triggers_after_interval(monkeypatch):
             role_description="test",
             agent_id=uuid4(),
             user_id=uuid4(),
-            memory_session_id="session-midloop-receipt",
-            session_context=SessionContext(session_id="session-midloop-receipt"),
             on_event=lambda ev: compaction_events.append(ev) if ev.get("type") == "session_compact" else None,
         )
     )
@@ -4390,220 +3337,6 @@ async def test_midloop_compaction_triggers_after_interval(monkeypatch):
     # Compaction event should have been emitted
     assert len(compaction_events) >= 1, "Expected at least one session_compact event"
     assert compaction_events[0]["type"] == "session_compact"
-    assert compaction_events[0]["recovery_manifest_ref"] == checkpoint_receipt["ref"]
-    assert compaction_events[0]["recovery_manifest_sha256"] == checkpoint_receipt["sha256"]
-    assert compaction_events[0]["recovery_manifest_bytes"] == checkpoint_receipt["bytes"]
-
-
-@pytest.mark.asyncio
-async def test_midloop_compaction_preserves_history_when_checkpoint_commit_fails(monkeypatch):
-    from app.kernel.contracts import InvocationRequest
-    from app.kernel.engine import AgentKernel, KernelDependencies, RuntimeConfig
-    from app.runtime.session import SessionContext
-
-    model = SimpleNamespace(
-        provider="openai",
-        model="gpt-4.1",
-        api_key="test-key",
-        base_url=None,
-        max_output_tokens=None,
-    )
-    compression_calls: list[int] = []
-    compaction_events: list[dict] = []
-
-    async def maybe_compress_messages(messages, **_kwargs):
-        compression_calls.append(len(messages))
-        if len(messages) > 4:
-            raise AssertionError("history compression ran without a durable recovery checkpoint")
-        return messages
-
-    responses = [
-        SimpleNamespace(
-            content="",
-            tool_calls=[
-                {
-                    "id": f"call_{index}",
-                    "function": {"name": "list_files", "arguments": f'{{"path":"dir{index}"}}'},
-                }
-            ],
-            reasoning_content=None,
-            usage={"total_tokens": 5},
-        )
-        for index in range(4)
-    ]
-    responses.append(
-        SimpleNamespace(
-            content="all done",
-            tool_calls=[],
-            reasoning_content=None,
-            usage={"total_tokens": 3},
-        )
-    )
-    fake_client = _FakeClient(responses)
-    receipt = {
-        "path": "/durable/checkpoint.json",
-        "ref": "runtime_artifacts/recovery_manifests/checkpoint.json",
-        "sha256": "a" * 64,
-        "bytes": 10,
-        "ephemeral": False,
-    }
-
-    def checkpoint(_request, *, delete_if_empty=False):
-        return None if delete_if_empty else receipt
-
-    monkeypatch.setattr("app.kernel.engine._persist_recovery_manifest_checkpoint", checkpoint)
-    kernel = AgentKernel(
-        KernelDependencies(
-            resolve_runtime_config=lambda *_a, **_kw: RuntimeConfig(
-                tenant_id=uuid4(),
-                max_tool_rounds=10,
-                quota_message=None,
-            ),
-            resolve_current_user_name=lambda *_a, **_kw: "Rocky",
-            build_system_prompt=lambda *_a, **_kw: "SYSTEM",
-            resolve_memory_context=lambda *_a, **_kw: "",
-            get_tools=lambda *_a, **_kw: [
-                {
-                    "type": "function",
-                    "function": {"name": "list_files", "description": "", "parameters": {"type": "object"}},
-                }
-            ],
-            maybe_compress_messages=maybe_compress_messages,
-            create_client=lambda _model: fake_client,
-            execute_tool=lambda *_a, **_kw: "files: a.txt, b.txt",
-            persist_memory=lambda **_kw: None,
-            record_token_usage=lambda *_a, **_kw: None,
-            get_max_tokens=lambda *_a, **_kw: 2048,
-            extract_usage_tokens=lambda usage: usage.get("total_tokens"),
-            estimate_tokens_from_chars=lambda chars: chars // 4,
-        )
-    )
-
-    result = await kernel.handle(
-        InvocationRequest(
-            model=model,
-            messages=[{"role": "user", "content": "list everything"}],
-            agent_name="Agent",
-            role_description="test",
-            agent_id=uuid4(),
-            user_id=uuid4(),
-            memory_session_id="session-checkpoint-failure",
-            session_context=SessionContext(session_id="session-checkpoint-failure"),
-            on_event=lambda event: compaction_events.append(event) if event.get("type") == "session_compact" else None,
-        )
-    )
-
-    assert result.content == "all done"
-    assert all(message_count <= 4 for message_count in compression_calls)
-    assert any(
-        event.get("event_type") == "compaction_skipped" and event.get("reason") == "recovery_checkpoint_unavailable"
-        for event in compaction_events
-    )
-
-
-@pytest.mark.asyncio
-async def test_microcompact_preserves_tool_results_when_checkpoint_commit_fails(monkeypatch):
-    from app.kernel.contracts import InvocationRequest
-    from app.kernel.engine import AgentKernel, KernelDependencies, RuntimeConfig
-    from app.runtime.session import SessionContext
-
-    model = SimpleNamespace(
-        provider="openai",
-        model="gpt-4.1",
-        api_key="test-key",
-        base_url=None,
-        max_output_tokens=None,
-        max_input_tokens=256_000,
-    )
-    responses = [
-        SimpleNamespace(
-            content="",
-            tool_calls=[
-                {
-                    "id": f"call_{index}",
-                    "function": {"name": "run_command", "arguments": '{"command":"true"}'},
-                }
-            ],
-            reasoning_content=None,
-            usage={"total_tokens": 5},
-        )
-        for index in range(6)
-    ]
-    responses.append(
-        SimpleNamespace(
-            content="all done",
-            tool_calls=[],
-            reasoning_content=None,
-            usage={"total_tokens": 3},
-        )
-    )
-    fake_client = _FakeClient(responses)
-    events: list[dict] = []
-    receipt = {
-        "path": "/durable/checkpoint.json",
-        "ref": "runtime_artifacts/recovery_manifests/checkpoint.json",
-        "sha256": "a" * 64,
-        "bytes": 10,
-        "ephemeral": False,
-    }
-
-    def checkpoint(_request, *, delete_if_empty=False):
-        return None if delete_if_empty else receipt
-
-    monkeypatch.setattr("app.kernel.engine._persist_recovery_manifest_checkpoint", checkpoint)
-    monkeypatch.setattr("app.kernel.engine._compute_microcompact_gap", lambda *_args: 0)
-    kernel = AgentKernel(
-        KernelDependencies(
-            resolve_runtime_config=lambda *_a, **_kw: RuntimeConfig(
-                tenant_id=uuid4(),
-                max_tool_rounds=10,
-                quota_message=None,
-            ),
-            resolve_current_user_name=lambda *_a, **_kw: "Rocky",
-            build_system_prompt=lambda *_a, **_kw: "SYSTEM",
-            resolve_memory_context=lambda *_a, **_kw: "",
-            get_tools=lambda *_a, **_kw: [
-                {
-                    "type": "function",
-                    "function": {"name": "run_command", "description": "", "parameters": {"type": "object"}},
-                }
-            ],
-            maybe_compress_messages=lambda messages, **_kw: messages,
-            create_client=lambda _model: fake_client,
-            execute_tool=lambda *_a, **_kw: "X" * 1000,
-            persist_memory=lambda **_kw: None,
-            record_token_usage=lambda *_a, **_kw: None,
-            get_max_tokens=lambda *_a, **_kw: 2048,
-            extract_usage_tokens=lambda usage: usage.get("total_tokens"),
-            estimate_tokens_from_chars=lambda chars: chars // 4,
-        )
-    )
-
-    result = await kernel.handle(
-        InvocationRequest(
-            model=model,
-            messages=[{"role": "user", "content": "run checks"}],
-            agent_name="Agent",
-            role_description="test",
-            agent_id=uuid4(),
-            user_id=uuid4(),
-            memory_session_id="session-microcompact-failure",
-            session_context=SessionContext(session_id="session-microcompact-failure"),
-            on_event=lambda event: events.append(event),
-        )
-    )
-
-    assert result.content == "all done"
-    final_messages = fake_client.calls[-1]["messages"]
-    tool_contents = [message.content for message in final_messages if message.role == "tool"]
-    assert tool_contents
-    assert all(content == "X" * 1000 for content in tool_contents)
-    assert any(
-        event.get("event_type") == "compaction_skipped"
-        and event.get("trigger") == "microcompact"
-        and event.get("reason") == "recovery_checkpoint_unavailable"
-        for event in events
-    )
 
 
 def test_maybe_evict_tool_result_truncates_large_output():
@@ -4672,7 +3405,7 @@ def test_force_evict_writes_exempt_tool_result_for_round_aggregate_overflow(tmp_
 
 
 @pytest.mark.asyncio
-async def test_large_tool_result_evicted_in_kernel_loop(durable_recovery_checkpoint):
+async def test_large_tool_result_evicted_in_kernel_loop():
     """Kernel evicts large tool results inline during the LLM loop."""
     from app.kernel.contracts import InvocationRequest
     from app.kernel.engine import AgentKernel, KernelDependencies, RuntimeConfig
@@ -4752,7 +3485,7 @@ async def test_large_tool_result_evicted_in_kernel_loop(durable_recovery_checkpo
 
 
 @pytest.mark.asyncio
-async def test_empty_tool_result_is_wrapped_with_actionable_message(durable_recovery_checkpoint):
+async def test_empty_tool_result_is_wrapped_with_actionable_message():
     from app.kernel.contracts import InvocationRequest
     from app.kernel.engine import AgentKernel, KernelDependencies, RuntimeConfig
 
@@ -4883,7 +3616,7 @@ async def test_persist_memory_called_on_max_rounds_exceeded():
 
 
 @pytest.mark.asyncio
-async def test_turn_token_budget_does_not_preempt_tool_followup(durable_recovery_checkpoint):
+async def test_turn_token_budget_does_not_preempt_tool_followup():
     from app.kernel.contracts import InvocationRequest
     from app.kernel.engine import AgentKernel, KernelDependencies, RuntimeConfig
 
@@ -4947,7 +3680,7 @@ async def test_turn_token_budget_does_not_preempt_tool_followup(durable_recovery
 
 
 @pytest.mark.asyncio
-async def test_turn_token_budget_ignores_cached_prompt_reads_before_tool_round(durable_recovery_checkpoint):
+async def test_turn_token_budget_ignores_cached_prompt_reads_before_tool_round():
     from app.kernel.contracts import InvocationRequest
     from app.kernel.engine import AgentKernel, KernelDependencies, RuntimeConfig
     from app.services.token_tracker import extract_usage_tokens

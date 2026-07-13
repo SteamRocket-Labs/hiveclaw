@@ -5,7 +5,6 @@ around the REAL spawn, while preset-less leaves spawn exactly as before."""
 from __future__ import annotations
 
 import uuid
-import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -50,7 +49,7 @@ def _request(leaf_name: str = "source_explorer") -> LeafRequest:
 
 def _fake_spawn(captured: list):
     async def spawn(ctx, spec, task, *, budget=None):
-        captured.append({"ctx": ctx, "spec": spec, "task": task})
+        captured.append({"spec": spec, "task": task})
         return SubagentHandle(
             name=spec.name,
             trace_id="tr-test",
@@ -59,19 +58,6 @@ def _fake_spawn(captured: list):
         )
 
     return spawn
-
-
-_WORKFLOW_LEAF_RECOVERY_NAMESPACE = uuid.UUID("6f8d4e61-4f22-5d85-9d3e-bc7396fbe2ea")
-
-
-def _expected_recovery_session_id(*, run_id: str, step_id: str, leaf_id: str | None) -> str:
-    run_uuid = uuid.UUID(str(run_id))
-    leaf_key = leaf_id or "singleton"
-    identity = uuid.uuid5(
-        _WORKFLOW_LEAF_RECOVERY_NAMESPACE,
-        f"{run_uuid.hex}:{step_id}:{leaf_key}",
-    )
-    return f"workflow-leaf-{identity.hex}"
 
 
 async def test_preset_overrides_reach_spawn():
@@ -143,69 +129,3 @@ async def test_pre_process_rewrites_task_and_post_process_transforms_outcome():
     assert captured[0]["task"] == "[briefed] Explore topic X"
     assert outcome.output["post"] == "ran"
     assert outcome.output["leaf_id"] == "item-0"
-
-
-async def test_leaf_executor_binds_restart_stable_workflow_recovery_identity_without_subagent_run_id():
-    parent_ctx = _ctx()
-    request = _request()
-    captured: list = []
-    executor = build_subagent_leaf_executor(parent_ctx, spawn=_fake_spawn(captured))
-
-    await executor(request)
-
-    child_ctx = captured[0]["ctx"]
-    expected_session_id = _expected_recovery_session_id(
-        run_id=request.run_id,
-        step_id=request.step_id,
-        leaf_id=request.leaf_id,
-    )
-    assert child_ctx is not parent_ctx
-    assert child_ctx.child_session_id == expected_session_id
-    assert child_ctx.trace_id == f"workflow:{uuid.UUID(request.run_id).hex}:{request.step_id}:{request.leaf_id}"
-    assert child_ctx.subagent_run_id is None
-    assert child_ctx.recovery_metadata == {
-        "runtime_task_id": uuid.UUID(request.run_id).hex,
-        "tenant_id": request.tenant_id,
-        "workflow_run_id": uuid.UUID(request.run_id).hex,
-        "workflow_step_id": request.step_id,
-        "workflow_leaf_id": request.leaf_id,
-        "recovery_authority_type": "workflow_leaf",
-    }
-    assert parent_ctx.child_session_id is None
-    assert parent_ctx.recovery_metadata == {}
-
-
-async def test_fanout_leaf_executor_uses_isolated_recovery_context_per_concurrent_leaf():
-    parent_ctx = _ctx()
-    run_id = str(uuid.uuid4())
-    captured: list = []
-
-    async def spawn(ctx, spec, task, *, budget=None):
-        await asyncio.sleep(0)
-        captured.append(ctx)
-        return SubagentHandle(
-            name=spec.name,
-            trace_id=ctx.trace_id or "",
-            depth=1,
-            result=SubagentResult(name=spec.name, type=spec.type, status="completed", content="ok"),
-        )
-
-    executor = build_subagent_leaf_executor(parent_ctx, spawn=spawn)
-    requests = [
-        LeafRequest(
-            run_id=run_id,
-            step_id="fanout",
-            leaf=SimpleNamespace(name="worker", type="worker", max_tool_rounds=3),
-            task=f"item {index}",
-            tenant_id=str(parent_ctx.tenant_id),
-            leaf_id=f"item-{index}",
-        )
-        for index in range(2)
-    ]
-
-    await asyncio.gather(*(executor(request) for request in requests))
-
-    assert len({ctx.child_session_id for ctx in captured}) == 2
-    assert {ctx.recovery_metadata["workflow_leaf_id"] for ctx in captured} == {"item-0", "item-1"}
-    assert all(ctx is not parent_ctx for ctx in captured)
-    assert parent_ctx.recovery_metadata == {}

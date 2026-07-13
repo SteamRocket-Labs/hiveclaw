@@ -31,201 +31,6 @@ class _FakeScalarResult:
         return self._value
 
 
-@pytest.fixture
-def durable_recovery_checkpoint(monkeypatch):
-    monkeypatch.setattr(
-        "app.kernel.engine._persist_recovery_manifest_checkpoint",
-        lambda *_args, **_kwargs: {
-            "path": "/isolated-test/recovery.json",
-            "ref": "runtime_artifacts/recovery_manifests/test.json",
-            "sha256": "d" * 64,
-            "bytes": 10,
-            "ephemeral": False,
-        },
-    )
-
-
-def test_normalize_invocation_session_context_binds_active_runtime_task_claim() -> None:
-    from app.runtime.invoker import AgentInvocationRequest, _normalize_invocation_session_context
-    from app.services.runtime_task_fence import reset_runtime_task_fence, set_runtime_task_fence
-
-    task_id = uuid4()
-    session = SessionContext(
-        session_id="session-claim",
-        metadata={"tenant_id": str(uuid4()), "runtime_task_id": task_id.hex},
-    )
-    request = AgentInvocationRequest(
-        model=SimpleNamespace(provider="openai", model="gpt-4.1"),
-        messages=[{"role": "user", "content": "continue"}],
-        agent_name="Agent",
-        role_description="role",
-        agent_id=uuid4(),
-        session_context=session,
-    )
-    token = set_runtime_task_fence(task_id=task_id, claim_version=9, worker_id="worker-a")
-    try:
-        _normalize_invocation_session_context(request)
-    finally:
-        reset_runtime_task_fence(token)
-
-    assert session.metadata["runtime_task_id"] == task_id.hex
-    assert session.metadata["claim_version"] == 9
-    assert session.metadata["claim_worker_id"] == "worker-a"
-    assert session.metadata["session_key"]["runtime_task_id"] == task_id.hex
-
-
-def test_normalize_invocation_session_context_rejects_memory_session_mismatch() -> None:
-    from app.runtime.invoker import AgentInvocationRequest, _normalize_invocation_session_context
-
-    request = AgentInvocationRequest(
-        model=SimpleNamespace(provider="openai", model="gpt-4.1"),
-        messages=[{"role": "user", "content": "continue"}],
-        agent_name="Agent",
-        role_description="role",
-        agent_id=uuid4(),
-        memory_session_id="memory-session",
-        session_context=SessionContext(session_id="runtime-session"),
-    )
-
-    with pytest.raises(ValueError, match="session identity mismatch"):
-        _normalize_invocation_session_context(request)
-
-
-def test_normalize_invocation_session_context_rejects_active_fence_run_mismatch() -> None:
-    from app.runtime.invoker import AgentInvocationRequest, _normalize_invocation_session_context
-    from app.services.runtime_task_fence import reset_runtime_task_fence, set_runtime_task_fence
-
-    declared_task_id = uuid4()
-    fenced_task_id = uuid4()
-    request = AgentInvocationRequest(
-        model=SimpleNamespace(provider="openai", model="gpt-4.1"),
-        messages=[{"role": "user", "content": "continue"}],
-        agent_name="Agent",
-        role_description="role",
-        agent_id=uuid4(),
-        memory_session_id="session-1",
-        session_context=SessionContext(
-            session_id="session-1",
-            metadata={"runtime_task_id": declared_task_id.hex},
-        ),
-    )
-    token = set_runtime_task_fence(task_id=fenced_task_id, claim_version=2, worker_id="worker-b")
-    try:
-        with pytest.raises(ValueError, match="runtime task fence mismatch"):
-            _normalize_invocation_session_context(request)
-    finally:
-        reset_runtime_task_fence(token)
-
-
-def test_normalize_invocation_session_context_generates_unique_run_per_invocation() -> None:
-    from app.runtime.invoker import AgentInvocationRequest, _normalize_invocation_session_context
-
-    shared_session = SessionContext(session_id="session-shared")
-
-    def build_request() -> AgentInvocationRequest:
-        return AgentInvocationRequest(
-            model=SimpleNamespace(provider="openai", model="gpt-4.1"),
-            messages=[{"role": "user", "content": "continue"}],
-            agent_name="Agent",
-            role_description="role",
-            agent_id=uuid4(),
-            session_context=shared_session,
-        )
-
-    first = build_request()
-    _normalize_invocation_session_context(first)
-    first_run_id = shared_session.metadata["runtime_task_id"]
-
-    second = build_request()
-    _normalize_invocation_session_context(second)
-    second_run_id = shared_session.metadata["runtime_task_id"]
-
-    assert first.memory_session_id == "session-shared"
-    assert second.memory_session_id == "session-shared"
-    assert first_run_id != second_run_id
-    assert shared_session.metadata["session_key"]["runtime_task_id"] == second_run_id
-
-
-@pytest.mark.asyncio
-async def test_reconciliation_event_projects_to_authoritative_runtime_task(monkeypatch) -> None:
-    import app.runtime.invoker as invoker
-
-    agent_id = uuid4()
-    tenant_id = uuid4()
-    task_id = uuid4()
-    receipt = {
-        "ref": "runtime_artifacts/recovery_manifests/checkpoint.json",
-        "sha256": "a" * 64,
-    }
-    request = invoker.AgentInvocationRequest(
-        model=SimpleNamespace(provider="openai", model="gpt-4.1"),
-        messages=[{"role": "user", "content": "send it"}],
-        agent_name="Agent",
-        role_description="role",
-        agent_id=agent_id,
-        memory_session_id="session-1",
-        session_context=SessionContext(
-            session_id="session-1",
-            metadata={
-                "tenant_id": str(tenant_id),
-                "runtime_task_id": str(task_id),
-                "recovery_manifest_checkpoint_receipt": receipt,
-                "recovery_authority_type": "workflow_leaf",
-                "workflow_run_id": str(task_id),
-                "workflow_step_id": "fanout",
-                "workflow_leaf_id": "leaf-3",
-            },
-        ),
-    )
-    projected: dict = {}
-
-    class FakeSessionContext:
-        async def __aenter__(self):
-            return object()
-
-        async def __aexit__(self, _exc_type, _exc, _traceback):
-            return False
-
-    def fake_tenant_session(*args, **kwargs):
-        projected["tenant_session_args"] = args
-        projected["tenant_session_kwargs"] = kwargs
-        return FakeSessionContext()
-
-    async def fake_mark(_db, **kwargs):
-        projected.update(kwargs)
-        return {"status": "needs_reconciliation"}
-
-    monkeypatch.setattr(invoker, "tenant_scoped_session", fake_tenant_session)
-    monkeypatch.setattr(
-        "app.services.runtime_reconciliation.mark_runtime_task_recovery_reconciliation",
-        fake_mark,
-    )
-
-    await invoker._project_runtime_reconciliation_event(
-        request,
-        {
-            "event_type": "tool_execution_reconciliation_required",
-            "status": "needs_reconciliation",
-            "runtime_failure_policy": {
-                "requires_reconciliation": True,
-                "side_effect_risk": "unknown",
-            },
-        },
-    )
-
-    assert projected["task_id"] == task_id
-    assert projected["tenant_id"] == tenant_id
-    assert projected["agent_id"] == agent_id
-    assert projected["session_id"] == "session-1"
-    assert projected["recovery_manifest_receipt"] == receipt
-    assert projected["recovery_authority"] == {
-        "type": "workflow_leaf",
-        "workflow_run_id": str(task_id),
-        "workflow_step_id": "fanout",
-        "workflow_leaf_id": "leaf-3",
-    }
-
-
 @pytest.fixture(autouse=True)
 def _allow_invocation_quota(monkeypatch):
     async def allow(_user_id, **_kwargs):
@@ -1930,7 +1735,7 @@ async def test_invoke_agent_without_agent_id_uses_collected_initial_tools(monkey
 
 
 @pytest.mark.asyncio
-async def test_invoke_agent_emits_compaction_events(monkeypatch, durable_recovery_checkpoint):
+async def test_invoke_agent_emits_compaction_events(monkeypatch):
     from app.runtime.invoker import AgentInvocationRequest, invoke_agent
 
     model = SimpleNamespace(
@@ -1999,15 +1804,12 @@ async def test_invoke_agent_emits_compaction_events(monkeypatch, durable_recover
             "summary": "older context compressed",
             "original_message_count": 3,
             "kept_message_count": 2,
-            "recovery_manifest_ref": "runtime_artifacts/recovery_manifests/test.json",
-            "recovery_manifest_sha256": "d" * 64,
-            "recovery_manifest_bytes": 10,
         }
     ]
 
 
 @pytest.mark.asyncio
-async def test_invoke_agent_forwards_permission_events(monkeypatch, durable_recovery_checkpoint):
+async def test_invoke_agent_forwards_permission_events(monkeypatch):
     from app.runtime.invoker import AgentInvocationRequest, invoke_agent
 
     agent_id = uuid4()

@@ -15,11 +15,9 @@ def test_worker_claimable_task_types_cover_v3_runtime_planes():
     assert "business_task" in worker.SUPPORTED_RUNTIME_TASK_TYPES
     assert "subagent" in worker.SUPPORTED_RUNTIME_TASK_TYPES
     assert "trigger" in worker.SUPPORTED_RUNTIME_TASK_TYPES
-    assert "heartbeat" in worker.SUPPORTED_RUNTIME_TASK_TYPES
     assert "approval_execution" in worker.SUPPORTED_RUNTIME_TASK_TYPES
     assert "hr_provisioning" in worker.SUPPORTED_RUNTIME_TASK_TYPES
     assert "dream" in worker.SUPPORTED_RUNTIME_TASK_TYPES
-    assert "system_plan_run" in worker.SUPPORTED_RUNTIME_TASK_TYPES
 
 
 def test_worker_claim_batch_is_capped_by_active_web_chat_runs(monkeypatch):
@@ -97,11 +95,9 @@ def test_default_worker_capacity_is_not_cc_hostile():
     assert limits["delegation"] >= 16
     assert limits["subagent"] >= 16
     assert limits["trigger"] >= 8
-    assert limits["heartbeat"] >= 4
     assert limits["approval_execution"] >= 8
     assert limits["hr_provisioning"] >= 4
     assert limits["dream"] >= 2
-    assert limits["system_plan_run"] >= 4
 
 
 def test_worker_dispatches_claimed_subagent_to_runtime_task_executor(monkeypatch):
@@ -147,29 +143,6 @@ def test_worker_dispatches_claimed_trigger_to_runtime_task_executor(monkeypatch)
         "task": task,
         "task_type": "trigger",
         "coro_name": "_execute_claimed_trigger_task",
-    }
-
-
-def test_worker_dispatches_claimed_heartbeat_to_runtime_task_executor(monkeypatch):
-    import app.services.runtime_task_worker as worker
-
-    captured = {}
-
-    def fake_dispatch(task, coro, *, task_type):
-        captured["task"] = task
-        captured["task_type"] = task_type
-        captured["coro_name"] = coro.cr_code.co_name
-        coro.close()
-        return True
-
-    task = SimpleNamespace(id=uuid4(), task_type="heartbeat")
-    monkeypatch.setattr(worker, "_dispatch_async_runtime_task", fake_dispatch)
-
-    assert worker._dispatch_claimed_task(task) is True
-    assert captured == {
-        "task": task,
-        "task_type": "heartbeat",
-        "coro_name": "_execute_claimed_heartbeat_task",
     }
 
 
@@ -242,31 +215,6 @@ def test_worker_dispatches_claimed_dream_to_durable_executor(monkeypatch):
     }
 
 
-def test_worker_dispatches_claimed_system_plan_with_worker_session_factory(monkeypatch):
-    import app.services.runtime_task_worker as worker
-
-    captured = {}
-
-    def fake_dispatch(task, coro, *, task_type, session_factory=None):
-        captured["task"] = task
-        captured["task_type"] = task_type
-        captured["coro_name"] = coro.cr_code.co_name
-        captured["session_factory"] = session_factory
-        coro.close()
-        return True
-
-    task = SimpleNamespace(id=uuid4(), task_type="system_plan_run")
-    monkeypatch.setattr(worker, "_dispatch_async_runtime_task", fake_dispatch)
-
-    assert worker._dispatch_claimed_task(task) is True
-    assert captured == {
-        "task": task,
-        "task_type": "system_plan_run",
-        "coro_name": "_execute_claimed_system_plan_task",
-        "session_factory": worker.async_session,
-    }
-
-
 @pytest.mark.asyncio
 async def test_execute_claimed_business_task_marks_failed_on_executor_error(monkeypatch):
     import app.services.runtime_task_worker as worker
@@ -286,17 +234,9 @@ async def test_execute_claimed_business_task_marks_failed_on_executor_error(monk
         finalized.append((runtime_task_id, outcome))
         return True
 
-    async def fake_execute_task(
-        _business_task_id,
-        _agent_id,
-        *,
-        requester_user_id,
-        cancel_event,
-        runtime_task_id,
-    ):
+    async def fake_execute_task(_business_task_id, _agent_id, *, requester_user_id, cancel_event):
         assert requester_user_id == requester_id
         assert cancel_event is not None
-        assert runtime_task_id == expected_runtime_task_id
         raise RuntimeError("executor exploded")
 
     expected_runtime_task_id = runtime_task_id
@@ -341,17 +281,9 @@ async def test_execute_claimed_business_task_passes_cross_process_cancel_to_kern
         cancel_event.set()
         return business_task_id, agent_id, requester_id
 
-    async def fake_execute_task(
-        _task_id,
-        _agent_id,
-        *,
-        requester_user_id,
-        cancel_event: asyncio.Event,
-        runtime_task_id,
-    ):
+    async def fake_execute_task(_task_id, _agent_id, *, requester_user_id, cancel_event: asyncio.Event):
         assert requester_user_id == requester_id
         assert cancel_event is expected_cancel_event
-        assert runtime_task_id == expected_runtime_task_id
         return TaskExecutionOutcome(status=TaskExecutionStatus.CANCELLED, summary="cancelled")
 
     async def fake_finalize(*, runtime_task_id, outcome):
@@ -448,92 +380,12 @@ async def test_execute_claimed_subagent_task_dispatches_persisted_run(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_worker_never_claims_more_than_each_task_type_remaining_capacity(monkeypatch):
-    """A type with one free slot may not consume the entire global batch."""
-
-    import app.services.runtime_task_worker as worker
-
-    monkeypatch.setattr(
-        worker,
-        "_settings",
-        lambda: SimpleNamespace(
-            RUNTIME_TASK_WORKER_TASK_TYPE_LIMITS="workflow=1,delegation=8",
-            RUNTIME_TASK_WORKER_MAX_CONCURRENT=8,
-            RUNTIME_TASK_WORKER_BATCH_SIZE=8,
-            RUNTIME_TASK_CLAIM_LEASE_SECONDS=180,
-        ),
-    )
-    monkeypatch.setattr(worker, "active_web_chat_run_count", lambda: 0)
-    monkeypatch.setattr(worker, "_active_dispatched_task_type_counts", lambda: {})
-    captured = {}
-
-    async def fake_claim_with_type_capacities(*, worker_id, task_type_capacities, lease_seconds):
-        captured.update(
-            worker_id=worker_id,
-            task_type_capacities=task_type_capacities,
-            lease_seconds=lease_seconds,
-        )
-        return []
-
-    monkeypatch.setattr(worker, "_claim_runtime_tasks_with_capacities", fake_claim_with_type_capacities)
-
-    assert await worker.claim_and_dispatch_once(worker_id="quota-worker") == []
-    assert captured["task_type_capacities"] == {"workflow": 1, "delegation": 8}
-
-
-@pytest.mark.asyncio
-async def test_concurrent_claim_ticks_are_serialized_and_recompute_capacity(monkeypatch):
-    import asyncio
-
-    import app.services.runtime_task_worker as worker
-
-    monkeypatch.setattr(
-        worker,
-        "_settings",
-        lambda: SimpleNamespace(
-            RUNTIME_TASK_WORKER_TASK_TYPE_LIMITS="workflow=1",
-            RUNTIME_TASK_WORKER_MAX_CONCURRENT=1,
-            RUNTIME_TASK_WORKER_BATCH_SIZE=1,
-            RUNTIME_TASK_CLAIM_LEASE_SECONDS=180,
-        ),
-    )
-    active = 0
-    entered = 0
-    release = asyncio.Event()
-
-    monkeypatch.setattr(worker, "active_web_chat_run_count", lambda: 0)
-    monkeypatch.setattr(worker, "_active_dispatched_task_type_counts", lambda: {"workflow": active})
-
-    async def fake_claim_with_type_capacities(**_kwargs):
-        nonlocal entered, active
-        entered += 1
-        if entered == 1:
-            await release.wait()
-            active = 1
-        return []
-
-    monkeypatch.setattr(worker, "_claim_runtime_tasks_with_capacities", fake_claim_with_type_capacities)
-    first = asyncio.create_task(worker.claim_and_dispatch_once(worker_id="worker"))
-    await asyncio.sleep(0)
-    second = asyncio.create_task(worker.claim_and_dispatch_once(worker_id="worker"))
-    await asyncio.sleep(0)
-    assert entered == 1
-    release.set()
-    await asyncio.gather(first, second)
-    assert entered == 1
-
-
-@pytest.mark.asyncio
 async def test_runtime_worker_drains_completion_outbox_and_records_counts(monkeypatch):
     import app.services.runtime_task_worker as worker
 
     captured = {}
 
     class FakeOutboxService:
-        async def retry_recoverable_dead_letters_once(self, *, limit):
-            captured["dead_letter_retry_limit"] = limit
-            return 2
-
         async def reconcile_terminal_tasks_once(self, *, limit):
             captured["reconcile_limit"] = limit
             return 4
@@ -548,66 +400,11 @@ async def test_runtime_worker_drains_completion_outbox_and_records_counts(monkey
 
     result = await worker.drain_runtime_notification_outbox_once(worker_id="runtime-worker")
 
-    assert captured == {
-        "dead_letter_retry_limit": 100,
-        "reconcile_limit": 100,
-        "worker_id": "runtime-worker",
-        "limit": 20,
-    }
+    assert captured == {"reconcile_limit": 100, "worker_id": "runtime-worker", "limit": 20}
     assert result["claimed"] == 3
     assert result["reconciled"] == 4
-    assert result["dead_letters_requeued"] == 2
     assert worker._STATE["outbox_delivered"] == before_delivered + 2
     assert worker._STATE["outbox_retried"] == before_retried + 1
-
-
-@pytest.mark.asyncio
-async def test_runtime_worker_reconciles_terminal_budget_reservations(monkeypatch):
-    import app.services.runtime_task_worker as worker
-
-    captured = {}
-
-    class BudgetBoundary:
-        async def reconcile_orphaned_reservations(self, *, limit):
-            captured["limit"] = limit
-            return 3
-
-    monkeypatch.setattr("app.services.runtime_budget_service.RuntimeBudgetService", BudgetBoundary)
-    before = int(worker._STATE.get("budget_reservations_reconciled") or 0)
-
-    reconciled = await worker.reconcile_runtime_budget_reservations_once(limit=25)
-
-    assert reconciled == 3
-    assert captured == {"limit": 25}
-    assert worker._STATE["budget_reservations_reconciled"] == before + 3
-
-
-@pytest.mark.asyncio
-async def test_runtime_worker_repairs_and_drains_workflow_completion_outbox(monkeypatch):
-    import app.services.runtime_task_worker as worker
-
-    captured = {}
-
-    class FakeWorkflowCompletionOutboxService:
-        async def reconcile_terminal_runs_once(self, *, limit):
-            captured["reconcile_limit"] = limit
-            return 2
-
-        async def drain_once(self, *, worker_id, limit):
-            captured.update({"worker_id": worker_id, "limit": limit})
-            return {"claimed": 2, "delivered": 1, "retried": 1, "dead_lettered": 0}
-
-    monkeypatch.setattr(
-        "app.services.workflow_completion_outbox.WorkflowCompletionOutboxService",
-        FakeWorkflowCompletionOutboxService,
-    )
-    before_delivered = int(worker._STATE.get("workflow_completion_outbox_delivered") or 0)
-
-    result = await worker.drain_workflow_completion_outbox_once(worker_id="runtime-worker")
-
-    assert captured == {"reconcile_limit": 100, "worker_id": "runtime-worker", "limit": 20}
-    assert result["reconciled"] == 2
-    assert worker._STATE["workflow_completion_outbox_delivered"] == before_delivered + 1
 
 
 @pytest.mark.asyncio
@@ -628,102 +425,6 @@ async def test_runtime_worker_consumes_hr_draft_reconciler(monkeypatch):
     assert calls == [None]
     assert result["checked"] == 3
     assert worker._STATE["hr_drafts_reconciled"] == before + 3
-
-
-@pytest.mark.asyncio
-async def test_runtime_worker_reconciles_only_expired_inline_a2a(monkeypatch):
-    import app.services.runtime_task_worker as worker
-
-    captured = {}
-    refresh_calls = []
-
-    async def fake_reconcile_orphans(**kwargs):
-        captured.update(kwargs)
-        return 2
-
-    async def fake_refresh_inline_a2a_evidence(**kwargs):
-        refresh_calls.append(kwargs)
-        return 3
-
-    monkeypatch.setattr(
-        "app.services.runtime_task_service.reconcile_orphaned_runtime_tasks",
-        fake_reconcile_orphans,
-    )
-    monkeypatch.setattr(
-        "app.services.runtime_task_service.refresh_inline_a2a_reconciliation_evidence",
-        fake_refresh_inline_a2a_evidence,
-    )
-    before = int(worker._STATE.get("expired_inline_a2a_reconciled") or 0)
-    before_refreshed = int(worker._STATE.get("inline_a2a_evidence_refreshed") or 0)
-
-    reconciled = await worker.reconcile_expired_inline_a2a_once()
-
-    assert reconciled == 2
-    assert captured == {
-        "task_types": {"delegation", "a2a_delegation"},
-        "inline_a2a_only": True,
-    }
-    assert refresh_calls == [{}]
-    assert worker._STATE["expired_inline_a2a_reconciled"] == before + 2
-    assert worker._STATE["inline_a2a_evidence_refreshed"] == before_refreshed + 3
-
-
-@pytest.mark.asyncio
-async def test_runtime_worker_owns_workflow_recovery_when_core_daemons_are_disabled(monkeypatch):
-    """The production default disables CORE daemons but enables this worker.
-
-    Due waits, PG signals, and expired Workflow claims must therefore have an
-    always-on consumer in the shared RuntimeTask worker rather than depending
-    on ``start_workflow_daemon``.
-    """
-
-    import app.services.runtime_task_worker as worker
-
-    calls: list[dict] = []
-
-    async def fake_tick(**kwargs):
-        calls.append(kwargs)
-        return {"resumed_runs": 2, "signal_resumed_runs": 1, "subagent_woken_parents": 0}
-
-    class FakeWorkflowService:
-        async def repair_pending_activations_once(self, *, limit):
-            assert limit == 100
-            return {"activated": 1, "failed": 1}
-
-        async def repair_unsettled_quota_reservations_once(self, *, limit):
-            assert limit == 100
-            return {"settled_reserved": 2, "quarantined_executing": 1}
-
-        async def repair_pending_live_reconciliation_evidence(self, *, limit):
-            assert limit == 100
-            return [uuid4(), uuid4()]
-
-    monkeypatch.setattr("app.services.workflow_daemon.workflow_daemon_tick", fake_tick)
-    monkeypatch.setattr(
-        worker,
-        "_settings",
-        lambda: SimpleNamespace(
-            CORE_DAEMON_STARTUP_ENABLED=False,
-            WORKFLOW_DAEMON_INTERVAL_SECONDS=15,
-        ),
-    )
-
-    before_repaired = int(worker._STATE.get("workflow_live_evidence_repaired") or 0)
-    result = await worker.reconcile_workflow_wakes_once(force=True, service=FakeWorkflowService())
-
-    assert len(calls) == 1
-    assert result == {
-        "resumed_runs": 2,
-        "signal_resumed_runs": 1,
-        "subagent_woken_parents": 0,
-        "live_evidence_repaired": 2,
-        "activation_repaired": 1,
-        "activation_failed": 1,
-        "quota_reserved_released": 2,
-        "quota_executing_quarantined": 1,
-    }
-    assert worker._STATE["workflow_recovery_resumed"] >= 3
-    assert worker._STATE["workflow_live_evidence_repaired"] == before_repaired + 2
 
 
 @pytest.mark.asyncio
@@ -757,96 +458,3 @@ async def test_runtime_worker_loop_calls_hr_reconciler_before_claiming(monkeypat
         await worker.start_runtime_task_worker_loop()
 
     assert calls == ["reconcile"]
-
-
-@pytest.mark.asyncio
-async def test_runtime_worker_loop_runs_inline_a2a_reconciliation_before_claim(monkeypatch):
-    import asyncio
-
-    import app.services.runtime_task_worker as worker
-
-    calls = []
-
-    async def reconcile_hr():
-        calls.append("hr")
-        return {}
-
-    async def reconcile_business():
-        calls.append("business")
-        return {}
-
-    async def stop_after_a2a():
-        calls.append("a2a")
-        raise asyncio.CancelledError
-
-    async def listener():
-        await asyncio.Event().wait()
-
-    monkeypatch.setattr(
-        worker,
-        "_settings",
-        lambda: SimpleNamespace(
-            HIVE_PROCESS_ROLE="runtime",
-            RUNTIME_TASK_WORKER_ENABLED=True,
-            RUNTIME_TASK_WORKER_ID="test-worker",
-        ),
-    )
-    monkeypatch.setattr(worker, "_redis_wakeup_listener", listener)
-    monkeypatch.setattr(worker, "reconcile_hr_creation_drafts_once", reconcile_hr)
-    monkeypatch.setattr(worker, "reconcile_stale_business_tasks_once", reconcile_business)
-    monkeypatch.setattr(worker, "reconcile_expired_inline_a2a_once", stop_after_a2a, raising=False)
-
-    with pytest.raises(asyncio.CancelledError):
-        await worker.start_runtime_task_worker_loop()
-
-    assert calls == ["hr", "business", "a2a"]
-
-
-@pytest.mark.asyncio
-async def test_runtime_worker_loop_runs_workflow_recovery_before_claim_under_default_config(monkeypatch):
-    import asyncio
-
-    import app.services.runtime_task_worker as worker
-
-    calls: list[str] = []
-
-    async def reconcile_hr():
-        calls.append("hr")
-        return {}
-
-    async def reconcile_business():
-        calls.append("business")
-        return {}
-
-    async def reconcile_a2a():
-        calls.append("a2a")
-        return 0
-
-    async def stop_after_workflow():
-        calls.append("workflow")
-        raise asyncio.CancelledError
-
-    async def listener():
-        await asyncio.Event().wait()
-
-    monkeypatch.setattr(
-        worker,
-        "_settings",
-        lambda: SimpleNamespace(
-            HIVE_PROCESS_ROLE="runtime",
-            RUNTIME_TASK_WORKER_ENABLED=True,
-            RUNTIME_TASK_WORKER_ID="test-worker",
-            CORE_DAEMON_STARTUP_ENABLED=False,
-            WORKFLOW_DAEMON_INTERVAL_SECONDS=15,
-        ),
-    )
-    monkeypatch.setattr(worker, "_redis_wakeup_listener", listener)
-    monkeypatch.setattr(worker, "reconcile_hr_creation_drafts_once", reconcile_hr)
-    monkeypatch.setattr(worker, "reconcile_stale_business_tasks_once", reconcile_business)
-    monkeypatch.setattr(worker, "reconcile_expired_inline_a2a_once", reconcile_a2a)
-    monkeypatch.setattr(worker, "reconcile_workflow_wakes_once", stop_after_workflow, raising=False)
-
-    with pytest.raises(asyncio.CancelledError):
-        await worker.start_runtime_task_worker_loop()
-
-    assert calls == ["hr", "business", "a2a", "workflow"]

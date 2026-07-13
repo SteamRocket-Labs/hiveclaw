@@ -24,7 +24,6 @@ from app.agents.subagent import (
     DEFAULT_SUBAGENT_TOOL_ROUNDS,
     PUBLIC_BUILTIN_SUBAGENT_TYPES,
     SUBAGENT_TYPE_GENERAL_PURPOSE,
-    SubagentResult,
     SubagentSpawnContext,
     SubagentSpec,
     canonical_subagent_type,
@@ -38,7 +37,6 @@ from app.agents.subagent_definition import (
     validate_subagent_name,
 )
 from app.agents.subagent_memory import make_llm_how_distiller, memory_store_for_agent, memory_store_for_tenant
-from app.config import get_settings
 from app.database import async_session, tenant_scoped_session
 from app.models.agent import Agent
 from app.models.chat_session import ChatSession
@@ -50,17 +48,21 @@ from app.services.runtime_budget_service import (
     RuntimeBudgetDenied,
     RuntimeBudgetReservation,
     RuntimeBudgetService,
+    estimate_reservation_tokens,
 )
 from app.services.runtime_task_authority import (
     authorize_runtime_task_record,
     execution_principal_from_tool_context,
 )
 from app.services.runtime_task_service import get_runtime_task_record
-from app.services.runtime_task_fence import run_claimed_runtime_task
 from app.services.agent_team_runtime_service import (
     active_agent_team_contract_from_tool_request,
     send_agent_team_message_from_tool_request,
     spawn_agent_team_member_from_tool_request,
+)
+from app.services.subagent_run_service import (
+    create_subagent_child_session,
+    update_subagent_child_session_state,
 )
 from app.services.tenant_resolver import resolve_tenant_for_agent
 from app.runtime.context_budget import build_tool_execution_shape_decision, execution_shape_from_round_state
@@ -181,7 +183,6 @@ async def _resolve_parent_runtime(
                     select(LLMModel).where(
                         LLMModel.id == agent.primary_model_id,
                         LLMModel.tenant_id == agent.tenant_id,
-                        LLMModel.enabled.is_(True),
                     )
                 )
             ).scalar_one_or_none()
@@ -191,20 +192,10 @@ async def _resolve_parent_runtime(
                     select(LLMModel).where(
                         LLMModel.id == agent.fallback_model_id,
                         LLMModel.tenant_id == agent.tenant_id,
-                        LLMModel.enabled.is_(True),
                     )
                 )
             ).scalar_one_or_none()
-        from app.services.model_resolution import choose_runtime_model_pair, primary_model_unavailable
-        from app.services.subagent_run_service import SubagentRuntimeAuthorityError
-
-        if primary_model_unavailable(agent, model):
-            raise SubagentRuntimeAuthorityError(
-                "primary_model_unavailable",
-                "Configured Subagent parent primary model is missing, disabled, or cross-tenant.",
-            )
-        model, fallback_model = choose_runtime_model_pair(model, fallback_model, None)
-        return model, fallback_model, agent
+        return model or fallback_model, fallback_model, agent
 
 
 async def _resolve_model_override(model_name: str, tenant_id: uuid.UUID | None) -> Any | None:
@@ -564,14 +555,7 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
             return _json({"ok": False, "error": f"teammate spawn failed: {exc}"})
 
     agent_id = request.context.agent_id
-    try:
-        model, fallback_model, agent = await _resolve_parent_runtime(agent_id)
-    except Exception as exc:
-        from app.services.subagent_run_service import SubagentRuntimeAuthorityError
-
-        if isinstance(exc, SubagentRuntimeAuthorityError):
-            return _json({"ok": False, "error": str(exc), "error_code": exc.blocker})
-        raise
+    model, fallback_model, agent = await _resolve_parent_runtime(agent_id)
     if model is None or agent is None:
         return _json({"ok": False, "error": "No model or agent available for spawning a subagent"})
 
@@ -809,121 +793,119 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
         )
 
     foreground_run_id = uuid.uuid4().hex
-    parent_session_id = str(request.context.session_id or "").strip()
-    from app.services import subagent_run_service as subagent_runs
-
-    try:
-        started = await subagent_runs.start_subagent_run(
-            parent_agent_id=agent_id,
-            parent_user_id=request.context.user_id,
-            spec_name=spec.name,
-            spec_type=spec.type,
-            task=task,
-            parent_session_id=parent_session_id or None,
-            trace_id=ctx.trace_id,
-            context_mode=spec.isolation,
-            spec_snapshot=spec,
-            definition_name=definition_name or spec.name if definition_scope else None,
-            definition_scope=definition_scope,
-            ledger_todo_id=ledger_todo_id,
-            context_window_tokens=getattr(model, "max_input_tokens", None),
-            root_runtime_task_id=request.context.runtime_task_id,
-            budget_run_id=request.context.budget_run_id,
-            dispatch_mode="foreground_inline",
-            run_id=foreground_run_id,
+    budget_uuid = _uuid_or_none(request.context.budget_run_id)
+    foreground_admission = None
+    foreground_admission_service = None
+    if budget_uuid is not None:
+        foreground_admission_service = ExecutionAdmission(RuntimeBudgetService())
+        estimated_tokens = estimate_reservation_tokens(
+            default_tokens=50_000,
+            prompt_tokens=max(1, (len(task) + 3) // 4),
         )
-        if started.admission_status == "waiting_budget_approval":
+        try:
+            foreground_admission = await foreground_admission_service.admit(
+                RuntimeBudgetReservation(
+                    budget_run_id=budget_uuid,
+                    reservation_key=f"subagent:{foreground_run_id}:foreground",
+                    tokens=estimated_tokens,
+                    cache_miss_tokens=estimated_tokens,
+                    subagents=1,
+                    reason="foreground_subagent_start",
+                    metadata={
+                        "work_type": "foreground_subagent",
+                        "subagent_name": spec.name,
+                        "subagent_type": spec.type,
+                        "parent_session_id": request.context.session_id,
+                    },
+                )
+            )
+        except RuntimeBudgetDenied as exc:
+            return _json(
+                {
+                    "ok": False,
+                    "status": "blocked",
+                    "error_code": "runtime_budget_denied",
+                    "error": str(exc),
+                    "message": "运行保护已阻止启动新的 Subagent；主 Agent 仍可继续处理其他工作。",
+                }
+            )
+        if foreground_admission.waiting:
             return _json(
                 {
                     "ok": False,
                     "mode": "foreground",
-                    "run_id": started.run_id,
-                    "child_session_id": started.child_session_id,
                     "status": "waiting_budget_approval",
                     "error_code": "runtime_budget_approval_required",
-                    "message": "运行额度已达上限，已请求管理员批准；该 Subagent 尚未执行。",
+                    "message": foreground_admission.user_message,
+                    "denied_dimensions": list(foreground_admission.denied_dimensions),
                 }
             )
-        if started.claim_version <= 0 or not started.claim_worker_id or started.claim_expires_at is None:
-            raise RuntimeError("foreground subagent RuntimeTask was created without executable claim authority")
-    except Exception:
-        raise
-    foreground_run_id = started.run_id
-    child_session_id = started.child_session_id
-    ctx.subagent_run_id = foreground_run_id
+    child_session_id: str | None = None
+    parent_session_id = str(request.context.session_id or "").strip()
+    can_create_child_session = _uuid_or_none(parent_session_id) is not None and request.context.user_id is not None
+    if can_create_child_session:
+        try:
+            child_session_id = await create_subagent_child_session(
+                parent_agent_id=agent_id,
+                parent_user_id=request.context.user_id,
+                spec_name=spec.name,
+                spec_type=spec.type,
+                task=task,
+                run_id=foreground_run_id,
+                parent_session_id=parent_session_id,
+                tenant_id=tenant_id,
+                trace_id=ctx.trace_id,
+                context_mode=spec.isolation,
+            )
+        except Exception as exc:  # noqa: BLE001 - foreground execution must not depend on session persistence.
+            logger.warning(
+                "Foreground subagent child session creation failed for agent %s session %s: %s",
+                agent_id,
+                parent_session_id,
+                exc,
+            )
     ctx.child_session_id = child_session_id
-    try:
-        persisted_runtime = await subagent_runs.resolve_subagent_runtime_authority_from_record(foreground_run_id)
-    except subagent_runs.SubagentRuntimeAuthorityError as exc:
-        record = await subagent_runs.get_runtime_task_record(foreground_run_id)
-        await subagent_runs._mark_subagent_run_needs_reconciliation(
-            run_id=foreground_run_id,
-            metadata=dict((record or {}).get("metadata") or {}),
-            blocker=exc.blocker,
-            summary=str(exc),
-            trace_id=ctx.trace_id,
-            session_id=child_session_id or parent_session_id,
-            expected_claim_version=started.claim_version,
-            expected_claim_worker_id=started.claim_worker_id,
-        )
-        return _json({"ok": False, "error": str(exc), "error_code": exc.blocker, "run_id": foreground_run_id})
-    ctx.parent_user_id = persisted_runtime.parent_user_id
-    ctx.model = persisted_runtime.model
-    ctx.fallback_model = persisted_runtime.fallback_model
-    ctx.parent_agent_name = persisted_runtime.parent_agent_name
-    ctx.role_description = persisted_runtime.role_description
-    ctx.tenant_id = persisted_runtime.tenant_id
-    ctx.recovery_metadata.update(
-        {
-            "tenant_id": str(tenant_id) if tenant_id else None,
-            "agent_id": str(agent_id),
-            "runtime_task_id": foreground_run_id,
-            "recovery_authority_type": "foreground_subagent",
-            "recovery_authority_id": foreground_run_id,
-            "claim_version": started.claim_version,
-            "claim_worker_id": started.claim_worker_id,
-            "claim_expires_at": started.claim_expires_at.isoformat(),
-            "claim_fence": f"{foreground_run_id}:{started.claim_version}",
-        }
-    )
 
     try:
-        handle = await run_claimed_runtime_task(
-            spawn_subagent(ctx, spec, task, fork=spec.isolation, ledger_todo_id=ledger_todo_id),
-            task_id=foreground_run_id,
-            claim_version=started.claim_version,
-            worker_id=started.claim_worker_id,
-            lease_seconds=float(get_settings().RUNTIME_TASK_CLAIM_LEASE_SECONDS),
-            session_factory=subagent_runs.async_session,
-        )
-    except Exception as exc:
-        await subagent_runs.make_run_completer(
-            foreground_run_id,
-            expected_claim_version=started.claim_version,
-            expected_claim_worker_id=started.claim_worker_id,
-        )(
-            SubagentResult(
-                name=spec.name,
-                type=spec.type,
-                status="failed",
-                error=f"{type(exc).__name__}: {str(exc)[:500]}",
+        handle = await spawn_subagent(ctx, spec, task, fork=spec.isolation, ledger_todo_id=ledger_todo_id)
+    except Exception:
+        if foreground_admission is not None and foreground_admission_service is not None:
+            await foreground_admission_service.settle(
+                foreground_admission,
+                actual_tokens=0,
+                actual_subagents=1,
+                reason="foreground_subagent_failed",
+                metadata={
+                    "work_type": "foreground_subagent",
+                    "subagent_name": spec.name,
+                    "status": "failed_before_result",
+                },
             )
-        )
         raise
     result = handle.result
-    if result is None:
-        result = SubagentResult(
-            name=spec.name,
-            type=spec.type,
-            status="failed",
-            error="Foreground subagent completed without a result.",
+    if foreground_admission is not None and foreground_admission_service is not None:
+        await foreground_admission_service.settle(
+            foreground_admission,
+            actual_tokens=max(0, int(result.tokens_used or 0)) if result is not None else 0,
+            actual_subagents=1,
+            reason="foreground_subagent_completed" if result and result.ok else "foreground_subagent_failed",
+            metadata={
+                "work_type": "foreground_subagent",
+                "subagent_name": spec.name,
+                "status": result.status if result else "failed",
+            },
         )
-    await subagent_runs.make_run_completer(
-        foreground_run_id,
-        expected_claim_version=started.claim_version,
-        expected_claim_worker_id=started.claim_worker_id,
-    )(result)
-    foreground_status = result.status
+    foreground_status = result.status if result else "failed"
+    if child_session_id:
+        await update_subagent_child_session_state(
+            child_session_id=child_session_id,
+            parent_agent_id=agent_id,
+            status=foreground_status,
+            summary=(result.content or result.error or "spawn produced no result")[:8000]
+            if result
+            else "spawn produced no result",
+            run_id=foreground_run_id,
+        )
     return_contract = build_subagent_return_contract(
         "inline_result",
         run_id=foreground_run_id,
@@ -935,7 +917,6 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
         {
             "ok": bool(result and result.ok),
             "mode": "foreground",
-            "run_id": foreground_run_id,
             "child_session_id": child_session_id,
             "return_contract": return_contract["return_contract"],
             "subagent_return_contract": return_contract,

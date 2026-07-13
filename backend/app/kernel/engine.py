@@ -61,13 +61,7 @@ from app.runtime.ccplus_contracts import ContextPolicyV1, build_context_policy
 from app.runtime.provider_prompt_ledger import build_provider_prompt_ledger
 from app.runtime.session_context_controller import prepare_session_context_for_request
 from app.runtime.tool_evidence_ledger import ToolEvidenceLedger
-from app.tools.registry import (
-    is_destructive_tool,
-    is_parallel_safe_tool,
-    is_read_only_tool,
-    is_workspace_mutating_tool,
-    result_char_limit_for_tool,
-)
+from app.tools.registry import is_destructive_tool, is_parallel_safe_tool, result_char_limit_for_tool
 from app.tools.result_envelope import ToolContentEnvelope
 
 # CCPlus ContextPolicyV1 is the canonical source of truth for the kernel's
@@ -284,7 +278,6 @@ ExtractUsageTokens = Callable[[dict | None], int | None]
 EstimateTokensFromChars = Callable[[int], int]
 ApplyVisionTransform = Callable[[list[LLMMessage], bool], list[LLMMessage]]
 ApplyCacheHints = Callable[[list[LLMMessage], str, str], list[LLMMessage]]  # (messages, provider, execution_mode)
-RenewRuntimeLease = Callable[[], Awaitable[Any] | Any]
 
 
 @dataclass(slots=True)
@@ -308,7 +301,6 @@ class KernelDependencies:
     resolve_retrieval_context: ResolveRetrievalContext | None = None
     apply_vision_transform: ApplyVisionTransform | None = None
     apply_cache_hints: ApplyCacheHints | None = None
-    renew_runtime_lease: RenewRuntimeLease | None = None
 
 
 @dataclass(slots=True)
@@ -475,54 +467,22 @@ def _file_snapshot_changed(before: dict[str, Any], current: dict[str, Any]) -> b
     return False
 
 
-def _load_and_hydrate_recovery_manifest(
-    agent_id: Any,
-    session_context: Any | None,
-    *,
-    data_root: Any | None = None,
-):
+def _load_and_hydrate_recovery_manifest(agent_id: Any, session_context: Any | None):
     if agent_id is None or session_context is None:
         return None
-    from app.runtime.recovery_manifest import load_and_hydrate_recovery_manifest
-
-    if data_root is None:
-        workspace = _agent_workspace_root(agent_id)
-        data_root = workspace.parent
-    return load_and_hydrate_recovery_manifest(
-        agent_id,
-        session_context,
-        data_root=data_root,
+    from app.runtime.recovery_manifest import (
+        hydrate_session_context_from_recovery_manifest,
+        load_recovery_manifest,
+        recovery_manifest_matches_session,
     )
 
-
-def _bind_authoritative_recovery_tenant(
-    request: InvocationRequest,
-    runtime_config: RuntimeConfig,
-) -> None:
-    """Bind DB-resolved tenant authority before any recovery state is read."""
-
-    session = request.session_context
-    if session is None:
-        return
-    authoritative_tenant = str(getattr(runtime_config, "tenant_id", None) or "").strip()
-    if request.agent_id is not None and not authoritative_tenant:
-        raise ValueError("tenant identity missing for an agent-bound recovery session")
-    if not authoritative_tenant:
-        return
-
-    metadata = session.metadata if isinstance(session.metadata, dict) else {}
-    declared_tenant = str(metadata.get("tenant_id") or "").strip()
-    if declared_tenant and declared_tenant != authoritative_tenant:
-        raise ValueError("tenant identity mismatch between SessionContext and authoritative runtime config")
-
-    session_key = metadata.get("session_key")
-    if isinstance(session_key, dict):
-        key_tenant = str(session_key.get("tenant_id") or "").strip()
-        if key_tenant and key_tenant != authoritative_tenant:
-            raise ValueError("tenant identity mismatch between SessionKey and authoritative runtime config")
-        session_key["tenant_id"] = authoritative_tenant
-    metadata["tenant_id"] = authoritative_tenant
-    session.metadata = metadata
+    workspace = _agent_workspace_root(agent_id)
+    manifest = load_recovery_manifest(agent_id, data_root=workspace.parent)
+    if manifest is not None and not recovery_manifest_matches_session(session_context, manifest):
+        return None
+    if manifest is not None:
+        hydrate_session_context_from_recovery_manifest(session_context, manifest)
+    return manifest
 
 
 def _build_runtime_attachment_sections(agent_id: Any, session_context: Any | None) -> list[str]:
@@ -1550,93 +1510,23 @@ def _clear_pending_tool_frame_for_recovery(
         metadata.pop("pending_tool_frame", None)
 
 
-def _mark_pending_tool_frame_for_reconciliation(
-    request: InvocationRequest,
-    *,
-    tool_name: str,
-    tool_call_id: str | None,
-    reason: str,
-    error_class: str | None = None,
-) -> None:
-    session = request.session_context
-    if session is None:
-        return
-    metadata = session.metadata if isinstance(session.metadata, dict) else {}
-    session.metadata = metadata
-    call_id = str(tool_call_id or "")
-    frames = [dict(item) for item in metadata.get("pending_tool_frames", []) if isinstance(item, dict)]
-    matched = False
-    for frame in frames:
-        frame_call_id = str(frame.get("tool_call_id") or "")
-        if (call_id and frame_call_id == call_id) or (
-            not call_id and not frame_call_id and str(frame.get("tool_name") or "") == tool_name
-        ):
-            frame["status"] = "needs_reconciliation"
-            frame["reason"] = reason
-            if error_class:
-                frame["error_class"] = error_class
-            matched = True
-    if not matched:
-        return
-    metadata["pending_tool_frames"] = frames
-    metadata["pending_tool_frame"] = next(
-        (
-            dict(frame)
-            for frame in reversed(frames)
-            if (call_id and str(frame.get("tool_call_id") or "") == call_id)
-            or (not call_id and str(frame.get("tool_name") or "") == tool_name)
-        ),
-        dict(frames[-1]),
-    )
-    metadata["recovered_pending_tool_frames"] = [dict(frame) for frame in frames]
-    metadata["recovered_tool_frame_reconciliation"] = [dict(frame) for frame in frames]
-    metadata["recovery_reconciliation_blocked"] = True
-
-
 def _persist_recovery_manifest_checkpoint(
     request: InvocationRequest,
     *,
     delete_if_empty: bool = False,
-) -> dict[str, Any] | None:
+) -> None:
     if not request.agent_id or request.session_context is None:
-        return None
-    request.session_context.metadata.pop("recovery_manifest_checkpoint_receipt", None)
+        return
     try:
-        from app.runtime.recovery_manifest import persist_recovery_manifest_checkpoint
+        from app.runtime.recovery_manifest import persist_recovery_manifest
 
-        receipts = persist_recovery_manifest_checkpoint(
+        persist_recovery_manifest(
             request.agent_id,
             request.session_context,
             delete_if_empty=delete_if_empty,
         )
-        if not receipts:
-            return None
-        receipt = dict(receipts[0])
-        request.session_context.metadata["recovery_manifest_checkpoint_receipt"] = dict(receipt)
-        return receipt
     except Exception as exc:  # noqa: BLE001 - recovery snapshots must not break tool execution
-        logger.error("[Kernel] Recovery manifest checkpoint failed: %s", exc)
-        return None
-
-
-async def _persist_recovery_manifest_checkpoint_with_fence(
-    request: InvocationRequest,
-    *,
-    renew_runtime_lease: RenewRuntimeLease | None = None,
-    delete_if_empty: bool = False,
-) -> dict[str, Any] | None:
-    """Validate the active claim immediately before any manifest mutation."""
-
-    if renew_runtime_lease is not None:
-        try:
-            await _maybe_await(renew_runtime_lease())
-        except Exception as exc:  # noqa: BLE001 - stale workers must never touch recovery bytes
-            logger.info(
-                "[Kernel] Skipped recovery manifest write for stale RuntimeTask claim: %s",
-                type(exc).__name__,
-            )
-            return None
-    return _persist_recovery_manifest_checkpoint(request, delete_if_empty=delete_if_empty)
+        logger.warning("[Kernel] Recovery manifest checkpoint failed (non-fatal): %s", exc)
 
 
 def _merge_trace_metadata_sink(span_metadata: dict[str, Any], trace_metadata_sink: dict[str, Any]) -> None:
@@ -1885,7 +1775,6 @@ async def _execute_tool_with_hooks(
     api_messages: list | None = None,
     record_span: Callable[..., Awaitable[dict[str, Any] | None]] | None = None,
     side_effect_sink: dict[str, Any] | None = None,
-    renew_runtime_lease: RenewRuntimeLease | None = None,
 ) -> tuple[str, dict[str, Any], bool]:
     """Execute a tool with consistent pre/post/failure hook semantics.
 
@@ -1900,62 +1789,6 @@ async def _execute_tool_with_hooks(
     from app.runtime.failure_policy import build_runtime_failure_policy
 
     effective_args = dict(tool_args)
-    session_metadata = (
-        request.session_context.metadata
-        if request.session_context is not None and isinstance(request.session_context.metadata, dict)
-        else {}
-    )
-    if session_metadata.get("recovery_reconciliation_blocked") is True:
-        blocker_checkpoint = await _persist_recovery_manifest_checkpoint_with_fence(
-            request,
-            renew_runtime_lease=renew_runtime_lease,
-            delete_if_empty=True,
-        )
-        blocked_result = (
-            "[Tool execution blocked] A recovered tool frame has unknown side effects and requires "
-            "operator reconciliation before any new tool can run."
-        )
-        runtime_failure_policy = build_runtime_failure_policy(
-            failure_kind="recovery_reconciliation_required",
-            message=blocked_result,
-            retryable=False,
-            side_effect_risk="unknown_prior_side_effect",
-            requires_user=False,
-            requires_reconciliation=True,
-            safe_to_continue=False,
-        )
-        event = {
-            "type": "tool_recovery",
-            "event_type": "recovery_reconciliation_blocked",
-            "tool_name": tool_name,
-            "tool_call_id": tool_call_id,
-            "status": "blocked",
-            "recovery_tombstone_persisted": blocker_checkpoint is not None,
-            "runtime_failure_policy": runtime_failure_policy,
-        }
-        await emit_event(event)
-        span_metadata = {
-            "status": "blocked_recovery_reconciliation",
-            "recovery_tombstone_persisted": blocker_checkpoint is not None,
-            "runtime_failure_policy": runtime_failure_policy,
-        }
-        if record_span is not None:
-            await record_span(
-                span_type="tool",
-                name=tool_name,
-                started_at_ms=monotonic_ms(),
-                metadata=span_metadata,
-            )
-        else:
-            append_invocation_span(
-                agent_id=request.agent_id,
-                span_type="tool",
-                name=tool_name,
-                started_at_ms=monotonic_ms(),
-                metadata=span_metadata,
-            )
-        return blocked_result, effective_args, False
-
     pre_hook_metadata = {
         "tenant_id": str(getattr(runtime_config, "tenant_id", "") or ""),
         "agent_name": getattr(request, "agent_name", None),
@@ -2033,105 +1866,13 @@ async def _execute_tool_with_hooks(
         return blocked_result, effective_args, False
 
     tool_started_ms = monotonic_ms()
-    if renew_runtime_lease is not None:
-        try:
-            await _maybe_await(renew_runtime_lease())
-        except Exception as exc:  # noqa: BLE001 - a stale claim must fail closed before filesystem evidence
-            blocked_result = (
-                "[Tool execution blocked] RuntimeTask claim is no longer authoritative; "
-                "no recovery checkpoint or side effect was started."
-            )
-            runtime_failure_policy = build_runtime_failure_policy(
-                failure_kind="runtime_task_claim_stale",
-                message=blocked_result,
-                retryable=False,
-                side_effect_risk="external_action_blocked",
-                requires_user=False,
-                requires_reconciliation=False,
-                safe_to_continue=False,
-            )
-            await emit_event(
-                {
-                    "type": "tool_recovery",
-                    "event_type": "runtime_task_claim_stale",
-                    "tool_name": tool_name,
-                    "tool_call_id": tool_call_id,
-                    "status": "blocked",
-                    "error_class": type(exc).__name__,
-                    "runtime_failure_policy": runtime_failure_policy,
-                }
-            )
-            span_metadata = {
-                "status": "blocked_stale_runtime_task_claim",
-                "error_class": type(exc).__name__,
-                "runtime_failure_policy": runtime_failure_policy,
-            }
-            if record_span is not None:
-                await record_span(
-                    span_type="tool",
-                    name=tool_name,
-                    started_at_ms=tool_started_ms,
-                    metadata=span_metadata,
-                )
-            else:
-                append_invocation_span(
-                    agent_id=request.agent_id,
-                    span_type="tool",
-                    name=tool_name,
-                    started_at_ms=tool_started_ms,
-                    metadata=span_metadata,
-                )
-            return blocked_result, effective_args, False
     _record_pending_tool_frame_for_recovery(
         request,
         tool_name=tool_name,
         tool_args=effective_args,
         tool_call_id=tool_call_id,
     )
-    if not _persist_recovery_manifest_checkpoint(request):
-        _clear_pending_tool_frame_for_recovery(request, tool_call_id=tool_call_id)
-        checkpoint_error = (
-            "[Tool execution blocked] Recovery checkpoint unavailable; "
-            "the tool was not started and may be retried after durable storage recovers."
-        )
-        runtime_failure_policy = build_runtime_failure_policy(
-            failure_kind="recovery_checkpoint_unavailable",
-            message=checkpoint_error,
-            retryable=True,
-            side_effect_risk="external_action_blocked",
-            requires_user=False,
-            requires_reconciliation=False,
-            safe_to_continue=False,
-        )
-        event = {
-            "type": "tool_recovery",
-            "event_type": "recovery_checkpoint_failed",
-            "tool_name": tool_name,
-            "tool_call_id": tool_call_id,
-            "status": "blocked",
-            "runtime_failure_policy": runtime_failure_policy,
-        }
-        await emit_event(event)
-        span_metadata = {
-            "status": "blocked_recovery_checkpoint",
-            "runtime_failure_policy": runtime_failure_policy,
-        }
-        if record_span is not None:
-            await record_span(
-                span_type="tool",
-                name=tool_name,
-                started_at_ms=tool_started_ms,
-                metadata=span_metadata,
-            )
-        else:
-            append_invocation_span(
-                agent_id=request.agent_id,
-                span_type="tool",
-                name=tool_name,
-                started_at_ms=tool_started_ms,
-                metadata=span_metadata,
-            )
-        return checkpoint_error, effective_args, False
+    _persist_recovery_manifest_checkpoint(request)
     trace_metadata_sink: dict[str, Any] = {}
     token = None
     try:
@@ -2207,14 +1948,10 @@ async def _execute_tool_with_hooks(
             raise
         except Exception as exc:
             err = f"[Tool execution error] {type(exc).__name__}: {str(exc)[:200]}"
-            replay_safe_failure = _recovered_tool_frame_replay_safe(tool_name)
             runtime_failure_policy = build_runtime_failure_policy(
                 failure_kind="tool_failure",
                 message=err,
                 side_effect_risk="unknown",
-                retryable=replay_safe_failure,
-                requires_reconciliation=not replay_safe_failure,
-                safe_to_continue=replay_safe_failure,
             )
             activation_event = _record_tool_activation_event(
                 request,
@@ -2284,42 +2021,8 @@ async def _execute_tool_with_hooks(
                 source=getattr(request.session_context, "source", None) if request.session_context else None,
                 metadata=failure_hook_metadata,
             )
-            if replay_safe_failure:
-                _clear_pending_tool_frame_for_recovery(request, tool_call_id=tool_call_id)
-            else:
-                _mark_pending_tool_frame_for_reconciliation(
-                    request,
-                    tool_name=tool_name,
-                    tool_call_id=tool_call_id,
-                    reason="tool_execution_outcome_unknown",
-                    error_class=type(exc).__name__,
-                )
-            manifest_update_authorized = True
-            if renew_runtime_lease is not None:
-                try:
-                    await _maybe_await(renew_runtime_lease())
-                except Exception as fence_exc:  # noqa: BLE001 - old workers must not rewrite recovery evidence
-                    manifest_update_authorized = False
-                    logger.info(
-                        "[Kernel] Skipped final recovery manifest write for stale RuntimeTask claim: %s",
-                        type(fence_exc).__name__,
-                    )
-            final_checkpoint = (
-                _persist_recovery_manifest_checkpoint(request, delete_if_empty=True)
-                if manifest_update_authorized
-                else None
-            )
-            if not replay_safe_failure and final_checkpoint is not None:
-                await emit_event(
-                    {
-                        "type": "tool_recovery",
-                        "event_type": "tool_execution_reconciliation_required",
-                        "tool_name": tool_name,
-                        "tool_call_id": tool_call_id,
-                        "status": "needs_reconciliation",
-                        "runtime_failure_policy": runtime_failure_policy,
-                    }
-                )
+            _clear_pending_tool_frame_for_recovery(request, tool_call_id=tool_call_id)
+            _persist_recovery_manifest_checkpoint(request, delete_if_empty=True)
             return err, effective_args, False
     finally:
         if token is not None:
@@ -2340,7 +2043,6 @@ async def _execute_tool_with_hooks(
             tools_for_llm=tools_for_llm,
             api_messages=api_messages,
             record_span=record_span,
-            renew_runtime_lease=renew_runtime_lease,
         )
     code_execution_evidence = None
     if isinstance(result, ToolContentEnvelope):
@@ -2532,15 +2234,6 @@ async def _execute_tool_with_hooks(
         _captured_side_effects = _extract_tool_side_effects(result)
         if _captured_side_effects:
             side_effect_sink.update(_captured_side_effects)
-    if renew_runtime_lease is not None:
-        try:
-            await _maybe_await(renew_runtime_lease())
-        except Exception as fence_exc:  # noqa: BLE001 - preserve pending evidence after claim loss
-            logger.info(
-                "[Kernel] Preserved pending recovery manifest after RuntimeTask claim loss: %s",
-                type(fence_exc).__name__,
-            )
-            return result_str, effective_args, True
     _clear_pending_tool_frame_for_recovery(request, tool_call_id=tool_call_id)
     _persist_recovery_manifest_checkpoint(request, delete_if_empty=True)
     return result_str, effective_args, True
@@ -2557,7 +2250,6 @@ async def _execute_pending_skill_fork_handoffs(
     tools_for_llm: list[dict] | None,
     api_messages: list | None,
     record_span: Callable[..., Awaitable[dict[str, Any] | None]] | None,
-    renew_runtime_lease: RenewRuntimeLease | None = None,
 ) -> str:
     """Execute Skill fork handoffs through the normal governed tool path."""
     session = request.session_context
@@ -2608,7 +2300,6 @@ async def _execute_pending_skill_fork_handoffs(
             api_messages=api_messages,
             record_span=record_span,
             side_effect_sink=None,
-            renew_runtime_lease=renew_runtime_lease,
         )
         record_skill_handoff_execution(
             session.metadata,
@@ -2624,9 +2315,7 @@ async def _execute_pending_skill_fork_handoffs(
     return result_str + "\n\n---\n" + "\n\n---\n".join(sections)
 
 
-_RECOVERABLE_TOOL_FRAME_STATUSES = frozenset(
-    {"", "pending", "running", "started", "in_progress", "needs_reconciliation"}
-)
+_RECOVERABLE_TOOL_FRAME_STATUSES = frozenset({"", "pending", "running", "started", "in_progress"})
 
 
 def _recovered_pending_tool_frames(session_context: Any | None) -> list[dict[str, Any]]:
@@ -2654,13 +2343,7 @@ def _recovered_pending_tool_frames(session_context: Any | None) -> list[dict[str
 
 
 def _recovered_tool_frame_replay_safe(tool_name: str) -> bool:
-    return bool(
-        tool_name
-        and is_read_only_tool(tool_name)
-        and is_parallel_safe_tool(tool_name)
-        and not is_workspace_mutating_tool(tool_name)
-        and not is_destructive_tool(tool_name)
-    )
+    return bool(tool_name) and is_parallel_safe_tool(tool_name) and not is_destructive_tool(tool_name)
 
 
 def _remove_recovered_tool_frames_from_metadata(metadata: dict[str, Any], frames: list[dict[str, Any]]) -> None:
@@ -2705,7 +2388,6 @@ async def _execute_recovered_pending_tool_frames(
     tools_for_llm: list[dict] | None = None,
     api_messages: list | None = None,
     record_span: Callable[..., Awaitable[dict[str, Any] | None]] | None = None,
-    renew_runtime_lease: RenewRuntimeLease | None = None,
 ) -> str:
     """Replay safe recovered main-session tool frames or fail closed.
 
@@ -2722,107 +2404,27 @@ async def _execute_recovered_pending_tool_frames(
     if not frames:
         return ""
 
-    def requires_reconciliation(frame: dict[str, Any]) -> bool:
-        tool_name = str(frame.get("tool_name") or "").strip()
-        status = str(frame.get("status") or "").strip().lower()
-        event_type = str(frame.get("event_type") or "").strip()
-        return (
-            status == "needs_reconciliation"
-            or event_type == "unknown_recovered_tool_frame"
-            or not _recovered_tool_frame_replay_safe(tool_name)
-        )
-
-    # A mixed batch is one crash boundary. If any frame has unknown side
-    # effects, replaying an earlier read before discovering the blocker would
-    # destroy the batch's all-or-nothing recovery semantics.
-    if any(requires_reconciliation(frame) for frame in frames):
-        durable_frames: list[dict[str, Any]] = []
-        sections: list[str] = []
-        for frame in frames:
-            tool_name = str(frame.get("tool_name") or "").strip()
-            original_status = str(frame.get("status") or "").strip().lower()
-            blocked_by_own_evidence = requires_reconciliation(frame)
-            reason = str(frame.get("reason") or "").strip()
-            if not reason:
-                reason = (
-                    "recovered_tool_frame_not_replay_safe"
-                    if blocked_by_own_evidence
-                    else "recovered_tool_frame_batch_contains_reconciliation_blocker"
-                )
-            record = {
-                **dict(frame),
-                "tool_name": tool_name,
-                "status": "needs_reconciliation",
-                "reason": reason,
-            }
-            if original_status and original_status != "needs_reconciliation":
-                record["recovered_status"] = original_status
-            durable_frames.append(record)
-            sections.append(
-                f"Recovered pending tool `{tool_name}` requires reconciliation; "
-                "the entire recovered tool batch was tombstoned before replay."
-            )
-
-        metadata["pending_tool_frames"] = [dict(frame) for frame in durable_frames]
-        # Manifest serialization merges the singular compatibility field first;
-        # point it at the first batch frame so restart order remains stable.
-        metadata["pending_tool_frame"] = dict(durable_frames[0])
-        metadata["recovered_pending_tool_frames"] = [dict(frame) for frame in durable_frames]
-        metadata["recovered_tool_frame_reconciliation"] = [dict(frame) for frame in durable_frames]
-        metadata["recovery_reconciliation_blocked"] = True
-        metadata["recovery_reconciliation_reason"] = "recovered_tool_frame_batch_requires_reconciliation"
-
-        checkpoint_receipt = await _persist_recovery_manifest_checkpoint_with_fence(
-            request,
-            renew_runtime_lease=renew_runtime_lease,
-            delete_if_empty=True,
-        )
-        if checkpoint_receipt is None:
-            logger.error("[Kernel] recovered tool-frame batch tombstone checkpoint failed")
-            return "\n\n".join(sections)
-
-        for frame in durable_frames:
-            await emit_event(
-                {
-                    "type": "tool_recovery",
-                    "event_type": "recovered_tool_frame_reconciliation",
-                    "tool_name": str(frame.get("tool_name") or ""),
-                    "tool_call_id": str(frame.get("tool_call_id") or "").strip() or None,
-                    "status": "needs_reconciliation",
-                    "reason": str(frame.get("reason") or ""),
-                    "batch_blocked": True,
-                    "recovery_tombstone_persisted": True,
-                    "recovery_manifest_checkpoint_receipt": dict(checkpoint_receipt),
-                }
-            )
-        return "\n\n".join(sections)
-
     sections: list[str] = []
     replay_results: list[dict[str, Any]] = []
     reconciliation: list[dict[str, Any]] = []
-    deferred_frames: list[dict[str, Any]] = []
-    replayed_frames: list[dict[str, Any]] = []
-    reconciliation_events: list[dict[str, Any]] = []
     for frame in frames:
         tool_name = str(frame.get("tool_name") or "").strip()
         tool_args = frame.get("arguments") if isinstance(frame.get("arguments"), dict) else frame.get("tool_args")
         if not isinstance(tool_args, dict):
             tool_args = {}
         tool_call_id = str(frame.get("tool_call_id") or "").strip() or None
-        if str(frame.get("status") or "").strip().lower() == "needs_reconciliation" or not (
-            _recovered_tool_frame_replay_safe(tool_name)
-        ):
+        if not _recovered_tool_frame_replay_safe(tool_name):
             record = {
                 **dict(frame),
                 "tool_name": tool_name,
                 "status": "needs_reconciliation",
-                "reason": str(frame.get("reason") or "recovered_tool_frame_not_replay_safe"),
+                "reason": "recovered_tool_frame_not_replay_safe",
             }
             reconciliation.append(record)
             sections.append(
                 f"Recovered pending tool `{tool_name}` requires reconciliation because it is not safe to replay."
             )
-            reconciliation_events.append(
+            await emit_event(
                 {
                     "type": "tool_recovery",
                     "event_type": "recovered_tool_frame_reconciliation",
@@ -2845,13 +2447,8 @@ async def _execute_recovered_pending_tool_frames(
             tools_for_llm=tools_for_llm,
             api_messages=api_messages,
             record_span=record_span,
-            renew_runtime_lease=renew_runtime_lease,
         )
-        status = "done" if executed else "deferred"
-        if executed:
-            replayed_frames.append(frame)
-        else:
-            deferred_frames.append(dict(frame))
+        status = "done" if executed else "failed"
         replay_results.append(
             {
                 "tool_name": tool_name,
@@ -2872,43 +2469,15 @@ async def _execute_recovered_pending_tool_frames(
             }
         )
 
-    _remove_recovered_tool_frames_from_metadata(metadata, replayed_frames)
+    _remove_recovered_tool_frames_from_metadata(metadata, frames)
     if replay_results:
         metadata["recovered_tool_frame_replay_results"] = replay_results
-    durable_candidates = [*reconciliation, *deferred_frames]
-    if durable_candidates:
-        deduped = {
-            (
-                str(item.get("tool_call_id") or ""),
-                str(item.get("tool_name") or ""),
-            ): dict(item)
-            for item in durable_candidates
-        }
-        durable_frames = list(deduped.values())
-        metadata["pending_tool_frames"] = durable_frames
-        metadata["pending_tool_frame"] = durable_frames[-1]
-        metadata["recovered_pending_tool_frames"] = durable_frames
     if reconciliation:
-        reconciliation_keys = {
-            (str(item.get("tool_call_id") or ""), str(item.get("tool_name") or "")) for item in reconciliation
-        }
-        reconciliation_frames = [
-            dict(item)
-            for item in durable_frames
-            if (str(item.get("tool_call_id") or ""), str(item.get("tool_name") or "")) in reconciliation_keys
-        ]
-        metadata["recovered_tool_frame_reconciliation"] = reconciliation_frames
-        metadata["recovery_reconciliation_blocked"] = True
-    checkpoint_receipt = await _persist_recovery_manifest_checkpoint_with_fence(
-        request,
-        renew_runtime_lease=renew_runtime_lease,
-        delete_if_empty=True,
-    )
-    if checkpoint_receipt is None:
-        logger.error("[Kernel] recovered tool-frame checkpoint update failed")
-    else:
-        for event in reconciliation_events:
-            await emit_event(event)
+        metadata["recovered_tool_frame_reconciliation"] = reconciliation
+    try:
+        _persist_recovery_manifest_checkpoint(request, delete_if_empty=True)
+    except Exception as exc:
+        logger.debug("[Kernel] recovered tool-frame checkpoint update failed: %s", exc)
     return "\n\n".join(sections)
 
 
@@ -3362,21 +2931,25 @@ def _build_restoration_context(
     _per_file_cap = getattr(_budget_profile, "restore_per_file_cap_chars", _POST_COMPACT_PER_FILE_CAP)
 
     # ── Resolve workspace root (used for all file reads below) ──
-    _durable_workspace = _Path(settings.AGENT_DATA_DIR) / str(agent_id)
-    _resolved_ws: _Path | None = _durable_workspace if _durable_workspace.exists() else None
+    _resolved_ws: _Path | None = None
+    for _candidate in [
+        _Path("/tmp/hive_workspaces") / str(agent_id),
+        _Path(settings.AGENT_DATA_DIR) / str(agent_id),
+    ]:
+        if _candidate.exists():
+            _resolved_ws = _candidate
+            break
 
     # ── 0: Structured RecoveryManifest ──
     # The manifest is the durable machine-readable state written during
     # compaction. It must be consumed before free-form summaries so pending
-    # tool frames and hook lifecycle records survive restart/compact boundaries.
-    # Permission data remains mechanical evidence and is never reactivated as
-    # model-visible authority.
+    # tool frames, permission checkpoints, and hook lifecycle records survive
+    # restart/fork/compact boundaries.
     if _resolved_ws:
         try:
-            _manifest = _load_and_hydrate_recovery_manifest(
-                agent_id,
-                session_context,
-            )
+            from app.runtime.recovery_manifest import load_recovery_manifest
+
+            _manifest = load_recovery_manifest(agent_id, data_root=_resolved_ws.parent)
             if _manifest is not None and not _manifest.is_empty():
                 _manifest_text = _manifest.to_restoration_text(budget_chars=max(_restore_budget - total, 0)).strip()
                 if _manifest_text:
@@ -3443,20 +3016,21 @@ def _build_restoration_context(
         if session_context is not None:
             _session_id = getattr(session_context, "session_id", None)
             if _session_id:
-                from app.services.session_memory import session_state_storage_key
-
-                _session_storage_key = session_state_storage_key(str(_session_id))
-                if _session_storage_key:
+                _safe_session_id = re.sub(r"[^A-Za-z0-9_.:-]+", "_", str(_session_id).strip())
+                if _safe_session_id:
                     _session_memory_rel_paths.append(
-                        (f"memory/session_state/{_session_storage_key}/session_memory.md", "Session Memory")
+                        (f"memory/session_state/{_safe_session_id}/session_memory.md", "Session Memory")
                     )
                     _session_memory_rel_paths.append(
-                        (
-                            f"memory/session_state/{_session_storage_key}/compaction_summary.md",
-                            "Session Compaction Summary",
-                        )
+                        (f"memory/sessions/{_safe_session_id}/session_memory.md", "Legacy Session Memory")
                     )
-        for rel_path, label in _session_memory_rel_paths:
+        for rel_path, label in [
+            *_session_memory_rel_paths,
+            ("runtime_artifacts/session_memory.md", "Session Memory"),
+            ("runtime_artifacts/compaction_summary.md", "Latest Compaction Summary"),
+            ("workspace/session_memory.md", "Legacy Session Memory"),
+            ("workspace/compaction_summary.md", "Legacy Compaction Summary"),
+        ]:
             fpath = _resolved_ws / rel_path
             if not fpath.exists():
                 continue

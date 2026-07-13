@@ -31,7 +31,6 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
-    Index,
     Integer,
     String,
     Text,
@@ -243,65 +242,3 @@ class WorkflowQuota(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )
-
-
-class WorkflowQuotaReservation(Base):
-    """Durable, leaf-scoped pre-deduction receipt.
-
-    ``logical_key`` binds run/step/leaf/input. ``attempt`` is allocated under
-    the same PG advisory lock as the quota update. An unresolved receipt is
-    reused after a reserve->journal crash; a settled receipt causes the next
-    real execution attempt to receive the next deterministic attempt number.
-    """
-
-    __tablename__ = "workflow_quota_reservations"
-    __table_args__ = (
-        UniqueConstraint(
-            "run_id",
-            "logical_key",
-            "attempt",
-            name="uq_workflow_quota_reservation_attempt",
-        ),
-        UniqueConstraint(
-            "run_id",
-            "reservation_key",
-            name="uq_workflow_quota_reservation_key",
-        ),
-        CheckConstraint(
-            "state IN ('reserved', 'executing', 'needs_reconciliation', 'settled')",
-            name="ck_workflow_quota_reservation_state",
-        ),
-        Index("ix_workflow_quota_reservations_run_state", "run_id", "state"),
-        Index("ix_workflow_quota_reservations_state_created", "state", "created_at"),
-        Index(
-            "ix_workflow_quota_reservations_repair_scan",
-            "state",
-            "repair_deferred_at",
-            "created_at",
-        ),
-    )
-
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False, index=True
-    )
-    run_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("runtime_tasks.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    logical_key: Mapped[str] = mapped_column(String(500), nullable=False)
-    reservation_key: Mapped[str] = mapped_column(String(540), nullable=False)
-    attempt: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    estimated_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    state: Mapped[str] = mapped_column(String(32), nullable=False, default="reserved", server_default="reserved")
-    step_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    leaf_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
-    input_hash: Mapped[str | None] = mapped_column(String(80), nullable=True)
-    actual_tokens: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
-    execution_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    reconciliation_required_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    reconciliation_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
-    reconciliation_operation_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    settlement_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
-    repair_deferred_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)

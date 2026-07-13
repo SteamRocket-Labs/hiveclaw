@@ -496,15 +496,9 @@ def test_terminal_artifact_paths_accept_final_summary_mentions_and_single_doc_fa
 
 
 @pytest.mark.asyncio
-async def test_execute_web_chat_run_resets_turn_writes_and_scopes_deliverables(
-    monkeypatch,
-    owner_sessionmaker,
-):
+async def test_execute_web_chat_run_resets_turn_writes_and_scopes_deliverables(monkeypatch):
     import app.services.web_chat_runtime as runtime
     from app.runtime.session import SessionContext
-
-    monkeypatch.setattr("app.database.async_session", owner_sessionmaker)
-    monkeypatch.setattr(runtime, "_async_session", owner_sessionmaker)
 
     run_id = uuid4()
     agent_id = uuid4()
@@ -516,7 +510,6 @@ async def test_execute_web_chat_run_resets_turn_writes_and_scopes_deliverables(
         parent_agent_id=agent_id,
         parent_session_id=session_id,
         prompt="write the new report",
-        claim_version=7,
         metadata_json={"user_id": str(user_id), "session_id": session_id, "source": "web", "turn_id": "turn-current"},
         trace_id=f"web_chat_turn:{run_id.hex}",
     )
@@ -533,28 +526,6 @@ async def test_execute_web_chat_run_resets_turn_writes_and_scopes_deliverables(
     llm_model = SimpleNamespace(provider="openai", model="gpt-4.1", supports_vision=False)
     runtime_context = SessionContext(session_id=session_id, source="web", channel="web")
     runtime_context.track_file_write("workspace/old.md")
-    previous_run_id = uuid4().hex
-    previous_frame = {
-        "tool_call_id": "call-previous",
-        "tool_name": "send_email",
-        "status": "needs_reconciliation",
-    }
-    runtime_context.metadata.update(
-        {
-            "runtime_task_id": previous_run_id,
-            "claim_version": 6,
-            "claim_worker_id": "worker-previous",
-            "recovery_checkpoint_seq": 3,
-            "pending_tool_frame": dict(previous_frame),
-            "pending_tool_frames": [dict(previous_frame)],
-            "recovered_pending_tool_frames": [dict(previous_frame)],
-            "recovery_reconciliation_blocked": True,
-            "recovery_manifest_checkpoint_receipt": {
-                "ref": "old-checkpoint",
-                "sha256": "a" * 64,
-            },
-        }
-    )
     captured: dict[str, object] = {}
 
     async def fake_load_context(_run_uuid):
@@ -568,26 +539,7 @@ async def test_execute_web_chat_run_resets_turn_writes_and_scopes_deliverables(
         assert runtime_context.current_turn_writes == []
         assert runtime_context.recent_writes == ["workspace/old.md"]
         assert runtime_context.metadata["runtime_task_id"] == run_id.hex
-        assert runtime_context.metadata["claim_version"] == 7
         assert runtime_context.metadata["turn_id"] == "turn-current"
-        assert "pending_tool_frame" not in runtime_context.metadata
-        assert "pending_tool_frames" not in runtime_context.metadata
-        assert "recovered_pending_tool_frames" not in runtime_context.metadata
-        assert "recovery_manifest_checkpoint_receipt" not in runtime_context.metadata
-        assert runtime_context.metadata["recovery_reconciliation_blocked"] is True
-        assert runtime_context.metadata["prior_run_recovery_reconciliations"] == [
-            {
-                "source_runtime_task_id": previous_run_id,
-                "status": "needs_reconciliation",
-                "frames": [previous_frame],
-                "expected_manifest_state": "present",
-                "expected_manifest_ref": "old-checkpoint",
-                "expected_sha256": "a" * 64,
-                "expected_checkpoint_seq": 3,
-                "expected_claim_version": 6,
-                "expected_claim_worker_id": "worker-previous",
-            }
-        ]
         runtime_context.track_file_write(
             "workspace/new.md",
             snapshot={
@@ -649,46 +601,6 @@ async def test_execute_web_chat_run_resets_turn_writes_and_scopes_deliverables(
     assert captured["file_change_lineage"][0]["path"] == "workspace/new.md"
     assert captured["declared_artifact_paths"] == ["workspace/new.md", "workspace/old.md"]
     assert captured["rejected_artifact_paths"] == ["workspace/old.md"]
-    assert captured["status"] == "needs_reconciliation"
-    assert captured["metadata_json"]["reconciliation_status"] == "open"
-    assert captured["metadata_json"]["prior_run_recovery_reconciliations"] == [
-        {
-            "source_runtime_task_id": previous_run_id,
-            "status": "needs_reconciliation",
-            "frames": [previous_frame],
-            "expected_manifest_state": "present",
-            "expected_manifest_ref": "old-checkpoint",
-            "expected_sha256": "a" * 64,
-            "expected_checkpoint_seq": 3,
-            "expected_claim_version": 6,
-            "expected_claim_worker_id": "worker-previous",
-        }
-    ]
-    assert captured["metadata_json"]["recovery_resolution_targets"] == [
-        {
-            "agent_id": str(agent_id),
-            "session_id": session_id,
-            "runtime_task_id": previous_run_id,
-            "source": "prior_run",
-            "expected_manifest_state": "present",
-            "expected_manifest_ref": "old-checkpoint",
-            "expected_sha256": "a" * 64,
-            "expected_checkpoint_seq": 3,
-            "expected_claim_version": 6,
-            "expected_claim_worker_id": "worker-previous",
-        },
-        {
-            "agent_id": str(agent_id),
-            "session_id": session_id,
-            "runtime_task_id": run_id.hex,
-            "source": "carrier_run",
-            "expected_manifest_state": "missing",
-            "expected_manifest_ref": None,
-            "expected_sha256": None,
-            "expected_claim_version": 7,
-            "expected_claim_worker_id": "unknown",
-        },
-    ]
     assert runtime_context.current_turn_writes == ["workspace/new.md"]
 
 
@@ -757,163 +669,6 @@ async def test_execute_web_chat_run_records_turn_tokens_for_goal_accounting(monk
     metadata_json = captured["metadata_json"]
     assert isinstance(metadata_json, dict)
     assert metadata_json["turn_tokens_used"] == 4242
-
-
-@pytest.mark.asyncio
-async def test_resolved_recovery_ids_are_loaded_from_durable_runtime_task_truth(monkeypatch):
-    import app.services.web_chat_runtime as runtime
-
-    resolved_id = uuid4()
-    archived_id = uuid4()
-    still_open_id = uuid4()
-    ordinary_completed_id = uuid4()
-    agent_id = uuid4()
-    session_id = "session-1"
-    authority = {
-        "parent_agent_id": agent_id,
-        "child_agent_id": agent_id,
-        "parent_session_id": session_id,
-        "child_session_id": session_id,
-    }
-    rows = [
-        SimpleNamespace(
-            id=resolved_id,
-            status="completed",
-            metadata_json={
-                "needs_reconciliation": False,
-                "reconciliation_status": "resolved",
-                "reconciliation_operation": {"status": "completed"},
-            },
-            **authority,
-        ),
-        SimpleNamespace(
-            id=archived_id,
-            status="killed",
-            metadata_json={
-                "needs_reconciliation": False,
-                "reconciliation_status": "archived",
-                "reconciliation_operation": {"status": "completed"},
-            },
-            **authority,
-        ),
-        SimpleNamespace(
-            id=still_open_id,
-            status="needs_reconciliation",
-            metadata_json={"needs_reconciliation": True, "reconciliation_status": "open"},
-            **authority,
-        ),
-        SimpleNamespace(id=ordinary_completed_id, status="completed", metadata_json={}, **authority),
-    ]
-
-    class Scalars:
-        def all(self):
-            return rows
-
-    class Result:
-        def scalars(self):
-            return Scalars()
-
-    class Session:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, _exc_type, _exc, _traceback):
-            return False
-
-        async def execute(self, _stmt):
-            return Result()
-
-    monkeypatch.setattr(runtime, "tenant_scoped_session", lambda *_args, **_kwargs: Session())
-    metadata = {
-        "runtime_task_id": str(resolved_id),
-        "prior_run_recovery_reconciliations": [
-            {"source_runtime_task_id": str(value)} for value in (archived_id, still_open_id, ordinary_completed_id)
-        ],
-    }
-
-    resolved = await runtime._resolved_recovery_runtime_task_ids(
-        tenant_id=uuid4(),
-        agent_id=agent_id,
-        session_id=session_id,
-        metadata=metadata,
-    )
-
-    assert resolved == {resolved_id.hex, archived_id.hex}
-
-
-@pytest.mark.asyncio
-async def test_completed_carrier_operation_resolves_every_prior_target_across_processes(monkeypatch):
-    import app.services.web_chat_runtime as runtime
-
-    carrier_id = uuid4()
-    prior_id = uuid4()
-    agent_id = uuid4()
-    tenant_id = uuid4()
-    session_id = "session-shared"
-    authority = {
-        "parent_agent_id": agent_id,
-        "child_agent_id": agent_id,
-        "parent_session_id": session_id,
-        "child_session_id": session_id,
-    }
-    rows = [
-        SimpleNamespace(
-            id=carrier_id,
-            status="completed",
-            metadata_json={
-                "needs_reconciliation": False,
-                "reconciliation_status": "resolved",
-                "reconciliation_operation": {
-                    "status": "completed",
-                    "targets": [
-                        {
-                            "agent_id": str(agent_id),
-                            "session_id": session_id,
-                            "runtime_task_id": str(prior_id),
-                        },
-                        {
-                            "agent_id": str(agent_id),
-                            "session_id": session_id,
-                            "runtime_task_id": str(carrier_id),
-                        },
-                    ],
-                },
-            },
-            **authority,
-        ),
-        SimpleNamespace(id=prior_id, status="completed", metadata_json={}, **authority),
-    ]
-
-    class Result:
-        def scalars(self):
-            return SimpleNamespace(all=lambda: rows)
-
-    class Session:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, _exc_type, _exc, _traceback):
-            return False
-
-        async def execute(self, _stmt):
-            return Result()
-
-    monkeypatch.setattr(runtime, "tenant_scoped_session", lambda *_args, **_kwargs: Session())
-    metadata = {
-        "runtime_task_id": str(carrier_id),
-        "prior_run_recovery_reconciliations": [
-            {"source_runtime_task_id": str(prior_id), "status": "needs_reconciliation"}
-        ],
-    }
-
-    resolved = await runtime._resolved_recovery_runtime_task_ids(
-        tenant_id=tenant_id,
-        agent_id=agent_id,
-        session_id=session_id,
-        metadata=metadata,
-    )
-
-    assert resolved == {carrier_id.hex, prior_id.hex}
 
 
 def _phase_run_fixtures():
@@ -5119,30 +4874,6 @@ async def test_resume_persisted_web_chat_runs_only_wakes_the_fenced_worker(monke
 
     assert resumed == [run_id.hex]
     assert wakeups == [{"reason": "startup_web_chat_recovery"}]
-
-
-@pytest.mark.asyncio
-async def test_resume_persisted_web_chat_runs_collects_only_after_worker_wakeup_succeeds(monkeypatch):
-    import app.services.web_chat_runtime as runtime
-    from app.services import runtime_task_worker
-
-    run_id = uuid4()
-    tenant_id = uuid4()
-    collected: list[str] = []
-
-    async def fake_list_active(**_kwargs):
-        return [{"task_id": run_id.hex, "tenant_id": str(tenant_id)}]
-
-    async def fail_notify(**_kwargs):
-        raise RuntimeError("worker wakeup failed")
-
-    monkeypatch.setattr(runtime, "list_active_runtime_task_records", fake_list_active)
-    monkeypatch.setattr(runtime_task_worker, "notify_runtime_task_worker", fail_notify)
-
-    with pytest.raises(RuntimeError, match="worker wakeup failed"):
-        await runtime.resume_persisted_web_chat_runs(limit=10, on_resumed=collected.append)
-
-    assert collected == []
 
 
 def test_reclaimed_web_chat_claim_builds_durable_resume_context(monkeypatch):

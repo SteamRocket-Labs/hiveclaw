@@ -89,7 +89,6 @@ async def test_execute_task_delegates_to_runtime_invoker(monkeypatch):
     model_id = uuid4()
     creator_id = uuid4()
     plan_id = uuid4()
-    runtime_task_id = uuid4()
 
     task = SimpleNamespace(
         id=task_id,
@@ -163,7 +162,7 @@ async def test_execute_task_delegates_to_runtime_invoker(monkeypatch):
     )
     monkeypatch.setattr("app.services.activity_logger.log_activity", fake_log_activity)
 
-    outcome = await execute_task(task_id, agent_id, runtime_task_id=runtime_task_id)
+    outcome = await execute_task(task_id, agent_id)
 
     request = captured["request"]
     assert request.model is model
@@ -186,9 +185,6 @@ async def test_execute_task_delegates_to_runtime_invoker(monkeypatch):
     assert request.session_context.channel == "task"
     assert request.session_context.metadata["task_id"] == str(task_id)
     assert request.session_context.metadata["task_type"] == "todo"
-    assert request.session_context.session_id == f"business-task-run-{runtime_task_id.hex}"
-    assert request.memory_session_id == request.session_context.session_id
-    assert request.session_context.metadata["runtime_task_id"] == runtime_task_id.hex
     assert request.execution_identity is not None
     assert request.execution_identity.identity_type == "agent_bot"
     assert request.execution_identity.identity_id == agent_id

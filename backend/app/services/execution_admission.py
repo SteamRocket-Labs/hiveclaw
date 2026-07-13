@@ -8,7 +8,7 @@ budget behavior.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Literal
 import uuid
 
@@ -64,15 +64,9 @@ class ExecutionAdmission:
                 denied_dimensions=tuple(exc.dimensions),
                 user_message="运行额度已达上限，已请求管理员批准；当前工作尚未执行。",
             )
-        effective_key = str(getattr(result, "reservation_key", None) or reservation.reservation_key)
-        effective_reservation = (
-            reservation
-            if effective_key == reservation.reservation_key
-            else replace(reservation, reservation_key=effective_key)
-        )
         return ExecutionAdmissionDecision(
             status="admitted",
-            reservation=effective_reservation,
+            reservation=reservation,
             result=result,
             budget_run_id=getattr(result, "budget_run_id", reservation.budget_run_id),
             denied_dimensions=tuple(getattr(result, "denied_dimensions", ()) or ()),

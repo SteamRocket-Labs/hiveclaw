@@ -16,7 +16,6 @@ import json
 import logging
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
 
 from sqlalchemy import select, text
 
@@ -42,18 +41,14 @@ async def drain_signal_resumes(
     session_factory=None,
     service: WorkflowRuntimeService | None = None,
 ) -> list[SignalResumedRun]:
-    """Atomically consume Signals and requeue matching workflow RuntimeTasks.
+    """Match waiting runs against persisted Signals and resume the hits.
 
     For every ``RuntimeTask(workflow, suspended)`` carrying a
     ``waiting_for_signal`` registration: find a PG Signal addressed to the
-    run's agent on the run's thread with the registered signal_type. Signal
-    deletion, step completion, and the ``resumable`` transition share one DB
-    transaction; leaf execution remains exclusively owned by the shared worker.
-
-    ``leaf_executor`` and ``service`` remain compatibility parameters for older
-    callers, but are deliberately never invoked here.
-    """
-    del leaf_executor, service
+    run's agent on the run's thread with the registered signal_type, consume
+    it atomically, mark the waiting step done (signal payload as output),
+    clear the registration, and resume under the run lease."""
+    runtime = service or WorkflowRuntimeService(session_factory=session_factory)
 
     records = await list_active_runtime_task_records(
         statuses=("suspended",),
@@ -81,116 +76,55 @@ async def drain_signal_resumes(
         if not signal_type or not step_id:
             continue
 
-        try:
-            tenant_uuid = uuid.UUID(str(tenant_value))
-            async with tenant_scoped_session(tenant_uuid, session_factory=session_factory) as session:
-                from app.models.workflow import WorkflowStep
+        # Atomic consume: DELETE ... RETURNING — exactly one drainer wins the
+        # row; tenant + recipient + thread(=run) + type all must match.
+        async with tenant_scoped_session(tenant_value, session_factory=session_factory) as session:
+            consumed = (
+                await session.execute(
+                    text(
+                        "DELETE FROM coordination_signals "
+                        "WHERE id = ("
+                        "  SELECT id FROM coordination_signals "
+                        "  WHERE tenant_id = :tenant AND to_agent_id = :agent "
+                        "    AND thread_id = :thread AND signal_type = :stype "
+                        "  ORDER BY created_at LIMIT 1"
+                        ") RETURNING id, content"
+                    ),
+                    {
+                        "tenant": uuid.UUID(tenant_value),
+                        "agent": agent_value,
+                        "thread": str(run_id),
+                        "stype": signal_type,
+                    },
+                )
+            ).first()
+        if consumed is None:
+            continue  # no matching signal yet — keep waiting
 
-                task = (
-                    await session.execute(
-                        select(RuntimeTask)
-                        .where(
-                            RuntimeTask.id == run_id,
-                            RuntimeTask.tenant_id == tenant_uuid,
-                            RuntimeTask.task_type == "workflow",
-                            RuntimeTask.status == "suspended",
-                        )
-                        .with_for_update()
-                    )
-                ).scalar_one_or_none()
-                if task is None or str(task.parent_agent_id or "") != str(agent_value):
-                    continue
-                metadata = dict(task.metadata_json or {})
-                current_registration = metadata.get("waiting_for_signal")
-                if not isinstance(current_registration, dict):
-                    continue
-                if str(current_registration.get("step_id") or "") != str(step_id) or str(
-                    current_registration.get("signal_type") or ""
-                ) != str(signal_type):
-                    continue
+        signal_id, signal_content = consumed
+        # Mark the waiting step done with the signal payload as its output,
+        # then clear the registration — the engine replays it on resume.
+        async with tenant_scoped_session(tenant_value, session_factory=session_factory) as session:
+            from app.models.workflow import WorkflowStep
 
-                step_row = (
-                    await session.execute(
-                        select(WorkflowStep)
-                        .where(
-                            WorkflowStep.run_id == run_id,
-                            WorkflowStep.step_id == step_id,
-                        )
-                        .with_for_update()
-                    )
-                ).scalar_one_or_none()
-                if step_row is None or step_row.status != "suspended":
-                    continue
-
-                consumed = (
-                    await session.execute(
-                        text(
-                            "DELETE FROM coordination_signals "
-                            "WHERE id = ("
-                            "  SELECT id FROM coordination_signals "
-                            "  WHERE tenant_id = :tenant AND to_agent_id = :agent "
-                            "    AND thread_id = :thread AND signal_type = :stype "
-                            "  ORDER BY created_at LIMIT 1"
-                            ") RETURNING id, content"
-                        ),
-                        {
-                            "tenant": tenant_uuid,
-                            "agent": str(agent_value),
-                            "thread": str(run_id),
-                            "stype": signal_type,
-                        },
-                    )
-                ).first()
-                if consumed is None:
-                    continue
-
-                signal_id, signal_content = consumed
-                transitioned_at = datetime.now(UTC)
+            step_row = (
+                await session.execute(
+                    select(WorkflowStep).where(WorkflowStep.run_id == run_id, WorkflowStep.step_id == step_id)
+                )
+            ).scalar_one_or_none()
+            if step_row is not None:
                 step_row.status = "done"
                 step_row.result_ref = json.dumps(
-                    {"signal": signal_content, "signal_type": signal_type},
-                    ensure_ascii=False,
+                    {"signal": signal_content, "signal_type": signal_type}, ensure_ascii=False
                 )
-                step_row.error = None
-                step_row.finished_at = transitioned_at
-                metadata.pop("waiting_for_signal", None)
-                metadata.pop("resume_at", None)
-                metadata.pop("resume_step_id", None)
-                metadata.update(
-                    {
-                        "recovery_state": "queued_for_claim",
-                        "workflow_requeue_reason": "workflow_signal_consumed",
-                        "workflow_requeued_at": transitioned_at.isoformat(),
-                        "consumed_signal_id": str(signal_id),
-                    }
-                )
-                task.status = "resumable"
-                task.claimed_by = None
-                task.claim_expires_at = None
-                task.metadata_json = metadata
-        except Exception as exc:
-            logger.error(
-                "[WorkflowSignal] atomic consume/requeue of run %s failed: %s",
-                run_id,
-                exc,
-                exc_info=True,
-            )
-            continue
+            task = (await session.execute(select(RuntimeTask).where(RuntimeTask.id == run_id))).scalar_one()
+            metadata = dict(task.metadata_json or {})
+            metadata.pop("waiting_for_signal", None)
+            task.metadata_json = metadata
 
         try:
-            from app.services.runtime_task_worker import notify_runtime_task_worker
-
-            await notify_runtime_task_worker(reason="workflow_signal_consumed", runtime_task_id=run_id)
+            outcome = await runtime.resume_run(run_id, tenant_id=uuid.UUID(tenant_value), leaf_executor=leaf_executor)
+            resumed.append(SignalResumedRun(run_id=run_id, signal_id=signal_id, outcome=outcome))
         except Exception as exc:
-            logger.warning("[WorkflowSignal] runtime worker wakeup failed for %s: %s", run_id, exc)
-        resumed.append(
-            SignalResumedRun(
-                run_id=run_id,
-                signal_id=signal_id,
-                outcome=WorkflowRunOutcome(
-                    status="suspended",
-                    reason="workflow signal consumed atomically; run queued for shared worker claim",
-                ),
-            )
-        )
+            logger.error("[WorkflowSignal] resume of run %s after signal failed: %s", run_id, exc, exc_info=True)
     return resumed

@@ -25,7 +25,7 @@ from app.services.business_task_runtime import (
     business_task_request_key,
     business_task_runtime_root_key,
     project_business_task,
-    reconcile_business_task_recovery,
+    reconcile_business_task,
     stage_business_task_runtime,
 )
 from app.services.runtime_task_worker import notify_runtime_task_worker
@@ -47,7 +47,6 @@ class TaskCancelIn(BaseModel):
 class TaskReconcileIn(BaseModel):
     decision: str
     reason: str = Field(min_length=1, max_length=4_000)
-    operation_id: str | None = Field(default=None, min_length=8, max_length=128)
 
 
 router = APIRouter(prefix="/agents/{agent_id}/tasks", tags=["tasks"])
@@ -547,14 +546,13 @@ async def reconcile_business_task_state(
     if runtime_task is None:
         raise HTTPException(status_code=409, detail="Business task runtime evidence is missing")
     try:
-        await reconcile_business_task_recovery(
+        reconcile_business_task(
             db=db,
             task=task,
             runtime_task=runtime_task,
             resolved_by_user_id=current_user.id,
             decision=data.decision,
             reason=data.reason,
-            operation_id=data.operation_id,
         )
     except (BusinessTaskInvariantError, ValueError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc

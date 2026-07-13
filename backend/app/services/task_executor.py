@@ -344,7 +344,6 @@ async def execute_task(
     *,
     requester_user_id: uuid.UUID | None = None,
     cancel_event: asyncio.Event | None = None,
-    runtime_task_id: uuid.UUID | None = None,
 ) -> TaskExecutionOutcome:
     """Execute a task using the agent's configured LLM with full context.
 
@@ -530,9 +529,6 @@ async def execute_task(
         )
         await db.commit()
 
-    recovery_runtime_task_id = runtime_task_id or task_id
-    recovery_session_id = f"business-task-run-{recovery_runtime_task_id.hex}"
-
     # Step 4: Call unified runtime
     try:
         logger.info(f"[TaskExec] Invoking unified runtime for task: {task_title}")
@@ -597,16 +593,13 @@ async def execute_task(
                     label=f"Agent: {agent_name} (task)",
                 ),
                 system_prompt_suffix=TASK_EXECUTION_ADDENDUM,
-                memory_session_id=recovery_session_id,
                 session_context=SessionContext(
                     source="task",
                     channel="task",
-                    session_id=recovery_session_id,
+                    session_id=str(reflection_session_id),
                     metadata={
                         "task_id": str(task_id),
                         "task_type": task_type,
-                        "runtime_task_id": recovery_runtime_task_id.hex,
-                        "reflection_session_id": str(reflection_session_id),
                     },
                 ),
                 on_tool_call=_on_tool_call,

@@ -7,10 +7,9 @@ and control platform-level settings.
 import secrets
 import uuid
 from datetime import datetime, timedelta
-from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 from sqlalchemy import func as sqla_func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -27,11 +26,6 @@ from app.services.autonomous_audit import build_autonomous_audit_report
 from app.services.harness_canary import run_harness_canary
 from app.services.harness_validation_report import build_harness_validation_report
 from app.services.plan_mode_cutover import mark_existing_triggers_plan_exempt
-from app.services.runtime_notification_outbox import (
-    CompletionDeliveryNotFound,
-    list_runtime_notification_delivery_reconciliations,
-    retry_runtime_notification_delivery,
-)
 from app.services.runtime_reconciliation import (
     RuntimeReconciliationConflict,
     RuntimeReconciliationNotFound,
@@ -40,7 +34,6 @@ from app.services.runtime_reconciliation import (
     list_runtime_reconciliation_tasks,
 )
 from app.services.workflow_ops import WorkflowOpsConflict, WorkflowOpsService
-from app.services.workflow_completion_outbox import WorkflowCompletionOutboxService
 from app.services.workflow_runtime_service import WorkflowRunNotFound
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -109,36 +102,9 @@ class WorkflowReplayFromStepRequest(BaseModel):
     reason: str = Field(default="operator requested", max_length=1000)
 
 
-class RuntimeReconciliationFrameDecision(BaseModel):
-    runtime_task_id: uuid.UUID
-    tool_call_id: str = Field(min_length=1, max_length=512)
-    tool_name: str = Field(min_length=1, max_length=200)
-    decision: Literal["mark_resolved", "archive", "retry"]
-
-
 class RuntimeReconciliationActionRequest(BaseModel):
-    action: Literal["mark_resolved", "archive", "retry"]
-    reason: str = Field(min_length=8, max_length=1000)
-    confirmed: Literal[True]
-    evidence_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-    frame_decisions: list[RuntimeReconciliationFrameDecision] = Field(
-        min_length=1,
-        max_length=200,
-    )
-    operation_id: str | None = Field(default=None, min_length=1, max_length=100)
-
-
-class RuntimeNotificationDeliveryRetryRequest(BaseModel):
-    reason: str = Field(min_length=8, max_length=1000)
-    confirmed: Literal[True]
-
-    @field_validator("reason")
-    @classmethod
-    def normalize_reason(cls, value: str) -> str:
-        normalized = value.strip()
-        if len(normalized) < 8:
-            raise ValueError("delivery retry reason must contain at least 8 non-whitespace characters")
-        return normalized
+    action: str = Field(pattern="^(mark_resolved|archive|retry)$")
+    reason: str = Field(min_length=1, max_length=1000)
 
 
 async def _pin_admin_tenant_scope(db: AsyncSession, tenant_id: uuid.UUID | None) -> None:
@@ -372,95 +338,6 @@ async def list_runtime_reconciliation(
     )
 
 
-@router.get("/runtime-notification-deliveries")
-async def list_runtime_notification_deliveries(
-    tenant_id: uuid.UUID = Query(...),
-    status: Literal["dead_letter"] = Query(default="dead_letter"),
-    limit: int = Query(default=50, ge=1, le=200),
-    current_user: User = Depends(require_role("platform_admin")),
-    db: AsyncSession = Depends(get_db),
-):
-    """List delivery-only failures; source RuntimeTasks remain terminal."""
-
-    del current_user
-    await _pin_admin_tenant_scope(db, tenant_id)
-    return await list_runtime_notification_delivery_reconciliations(
-        db,
-        tenant_id=tenant_id,
-        status=status,
-        limit=limit,
-    )
-
-
-@router.post("/runtime-notification-deliveries/{delivery_id}/retry")
-async def retry_runtime_notification_delivery_route(
-    delivery_id: uuid.UUID,
-    payload: RuntimeNotificationDeliveryRetryRequest,
-    tenant_id: uuid.UUID = Query(...),
-    current_user: User = Depends(require_role("platform_admin")),
-    db: AsyncSession = Depends(get_db),
-):
-    """Retry completion delivery only; never reopen or execute the source task."""
-
-    await _pin_admin_tenant_scope(db, tenant_id)
-    try:
-        return await retry_runtime_notification_delivery(
-            db,
-            tenant_id=tenant_id,
-            delivery_id=delivery_id,
-            reason=payload.reason,
-            actor_user_id=current_user.id,
-        )
-    except CompletionDeliveryNotFound as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-
-
-@router.get("/workflow-completion-deliveries")
-async def list_workflow_completion_deliveries(
-    tenant_id: uuid.UUID = Query(...),
-    status: Literal["dead_letter"] = Query(default="dead_letter"),
-    limit: int = Query(default=50, ge=1, le=200),
-    current_user: User = Depends(require_role("platform_admin")),
-    db: AsyncSession = Depends(get_db),
-):
-    """List Workflow coordination-signal failures without reopening execution."""
-
-    del current_user, status
-    await _pin_admin_tenant_scope(db, tenant_id)
-    return await WorkflowCompletionOutboxService().list_dead_letters(
-        tenant_id=tenant_id,
-        limit=limit,
-    )
-
-
-@router.post("/workflow-completion-deliveries/{delivery_id}/retry")
-async def retry_workflow_completion_delivery(
-    delivery_id: uuid.UUID,
-    payload: RuntimeNotificationDeliveryRetryRequest,
-    tenant_id: uuid.UUID = Query(...),
-    current_user: User = Depends(require_role("platform_admin")),
-    db: AsyncSession = Depends(get_db),
-):
-    """Retry only the stable Workflow completion signal delivery."""
-
-    await _pin_admin_tenant_scope(db, tenant_id)
-    try:
-        return await WorkflowCompletionOutboxService().retry_dead_letter(
-            tenant_id=tenant_id,
-            outbox_id=delivery_id,
-            actor_user_id=current_user.id,
-            reason=payload.reason,
-        )
-    except LookupError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except PermissionError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-
-
 @router.get("/runtime-reconciliation/{task_id}")
 async def get_runtime_reconciliation(
     task_id: uuid.UUID,
@@ -495,10 +372,6 @@ async def apply_runtime_reconciliation(
             action=payload.action,
             reason=payload.reason,
             actor_user_id=current_user.id,
-            confirmed=payload.confirmed,
-            evidence_digest=payload.evidence_digest,
-            frame_decisions=[decision.model_dump(mode="json") for decision in payload.frame_decisions],
-            operation_id=payload.operation_id,
         )
     except RuntimeReconciliationNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

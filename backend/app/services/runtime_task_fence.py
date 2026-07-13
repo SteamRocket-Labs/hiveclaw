@@ -9,7 +9,6 @@ worker has reclaimed the same run.
 from __future__ import annotations
 
 import asyncio
-import inspect
 import uuid
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
@@ -34,10 +33,6 @@ class StaleRuntimeTaskFenceError(RuntimeError):
 
 _CURRENT_RUNTIME_TASK_FENCE: ContextVar[RuntimeTaskFence | None] = ContextVar(
     "hive_runtime_task_fence",
-    default=None,
-)
-_CURRENT_RUNTIME_TASK_SESSION_FACTORY: ContextVar[Any | None] = ContextVar(
-    "hive_runtime_task_session_factory",
     default=None,
 )
 
@@ -80,11 +75,7 @@ def assert_runtime_task_fence(task: Any) -> None:
         )
 
 
-async def renew_current_runtime_task_lease(
-    *,
-    lease_seconds: float,
-    session_factory: Any | None = None,
-) -> datetime | None:
+async def renew_current_runtime_task_lease(*, lease_seconds: float) -> datetime | None:
     """Atomically renew the active worker lease or reject a stale worker.
 
     The update predicate binds task id, claim version, worker id, and running
@@ -99,19 +90,16 @@ async def renew_current_runtime_task_lease(
     from app.models.runtime_task import RuntimeTask
     from app.services.tenant_resolver import resolve_tenant_for_runtime_task
 
-    effective_session_factory = (
-        session_factory if session_factory is not None else _CURRENT_RUNTIME_TASK_SESSION_FACTORY.get() or async_session
-    )
     expires_at = datetime.now(timezone.utc) + timedelta(seconds=max(0.03, float(lease_seconds)))
     tenant_id = await resolve_tenant_for_runtime_task(
         fence.task_id,
-        session_factory=effective_session_factory,
+        session_factory=async_session,
     )
     if tenant_id is None:
         raise StaleRuntimeTaskFenceError(f"RuntimeTask {fence.task_id} no longer has an owning tenant")
     async with tenant_scoped_session(
         tenant_id,
-        session_factory=effective_session_factory,
+        session_factory=async_session,
         require_tenant=True,
         source="runtime_task_fenced_lease_renewal",
     ) as db:
@@ -140,7 +128,6 @@ async def run_claimed_runtime_task(
     claim_version: int,
     worker_id: str,
     lease_seconds: float,
-    session_factory: Any | None = None,
 ) -> _ResultT:
     """Run claimed work with a ContextVar fence and fail-closed lease renewer."""
     token = set_runtime_task_fence(
@@ -148,7 +135,6 @@ async def run_claimed_runtime_task(
         claim_version=claim_version,
         worker_id=worker_id,
     )
-    session_factory_token = _CURRENT_RUNTIME_TASK_SESSION_FACTORY.set(session_factory)
     work_task: asyncio.Task[_ResultT] | None = None
     renewer: asyncio.Task[None] | None = None
 
@@ -156,23 +142,9 @@ async def run_claimed_runtime_task(
         interval = max(0.01, float(lease_seconds) / 3.0)
         while True:
             await asyncio.sleep(interval)
-            renew_kwargs = {"lease_seconds": lease_seconds}
-            if session_factory is not None:
-                renew_kwargs["session_factory"] = session_factory
-            await renew_current_runtime_task_lease(**renew_kwargs)
+            await renew_current_runtime_task_lease(lease_seconds=lease_seconds)
 
     try:
-        try:
-            renew_kwargs = {"lease_seconds": lease_seconds}
-            if session_factory is not None:
-                renew_kwargs["session_factory"] = session_factory
-            await renew_current_runtime_task_lease(**renew_kwargs)
-        except BaseException:
-            if inspect.iscoroutine(work):
-                work.close()
-            elif asyncio.isfuture(work):
-                work.cancel()
-            raise
         work_task = asyncio.ensure_future(work)
         renewer = asyncio.create_task(renew_loop(), name=f"runtime-lease-renewer-{task_id}")
         done, _pending = await asyncio.wait({work_task, renewer}, return_when=asyncio.FIRST_COMPLETED)
@@ -200,5 +172,4 @@ async def run_claimed_runtime_task(
                 await work_task
             except asyncio.CancelledError:
                 pass
-        _CURRENT_RUNTIME_TASK_SESSION_FACTORY.reset(session_factory_token)
         reset_runtime_task_fence(token)

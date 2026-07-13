@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -24,67 +23,6 @@ from app.agents.subagent import (
     spawn_subagent,
 )
 from app.tools.runtime import ToolExecutionContext, ToolExecutionRequest
-
-
-@pytest.fixture(autouse=True)
-def _foreground_runtime_authority_test_double(monkeypatch):
-    """Keep handler unit tests explicit about the durable foreground owner."""
-
-    from app.services import subagent_run_service as run_svc
-    import app.tools.handlers.subagent as handler_mod
-
-    started_with: dict = {}
-
-    async def fake_start(**kwargs):
-        started_with.clear()
-        started_with.update(kwargs)
-        return run_svc.SubagentRunStart(
-            run_id=uuid.uuid4().hex,
-            child_session_id=None,
-            claim_version=1,
-            claim_worker_id=f"foreground-subagent:{uuid.uuid4().hex}",
-            claim_expires_at=datetime.now(timezone.utc) + timedelta(minutes=2),
-        )
-
-    async def fake_persisted_authority(_run_id):
-        """Mirror the persisted-authority boundary without a unit-test database.
-
-        Handler tests replace ``_resolve_parent_runtime`` with their scenario-specific
-        model/agent double.  Reusing that double here preserves those assertions while
-        making the new durable re-resolution boundary explicit.  PostgreSQL integration
-        coverage exercises the real RuntimeTask lookup separately.
-        """
-
-        parent_agent_id = started_with.get("parent_agent_id", uuid.uuid4())
-        parent_user_id = started_with.get("parent_user_id", uuid.uuid4())
-        model, fallback_model, agent = (await handler_mod._resolve_parent_runtime(parent_agent_id))[:3]
-        return SubagentSpawnContext(
-            parent_agent_id=parent_agent_id,
-            parent_user_id=parent_user_id,
-            model=model,
-            fallback_model=fallback_model,
-            parent_agent_name=getattr(agent, "name", "Agent"),
-            role_description=getattr(agent, "role_description", None),
-            tenant_id=getattr(agent, "tenant_id", None),
-        )
-
-    async def fake_update(*_args, **_kwargs):
-        return None
-
-    def fake_completer(_run_id, **_claim):
-        async def complete(_result):
-            return None
-
-        return complete
-
-    async def fake_run_claimed(work, **_claim):
-        return await work
-
-    monkeypatch.setattr(run_svc, "start_subagent_run", fake_start)
-    monkeypatch.setattr(run_svc, "resolve_subagent_runtime_authority_from_record", fake_persisted_authority)
-    monkeypatch.setattr(run_svc, "update_runtime_task_record", fake_update)
-    monkeypatch.setattr(run_svc, "make_run_completer", fake_completer)
-    monkeypatch.setattr(handler_mod, "run_claimed_runtime_task", fake_run_claimed)
 
 
 def _spawn_ctx(**overrides) -> SubagentSpawnContext:
@@ -254,7 +192,6 @@ async def test_spawn_tool_returns_execution_shape_recommendation(monkeypatch):
 @pytest.mark.asyncio
 async def test_spawn_tool_foreground_returns_child_session_continuation(monkeypatch):
     import app.tools.handlers.subagent as handler_mod
-    from app.services import subagent_run_service as run_svc
 
     captured: dict = {}
 
@@ -272,25 +209,6 @@ async def test_spawn_tool_foreground_returns_child_session_continuation(monkeypa
     async def fake_update_child_session_state(**kwargs):
         captured["update_child_session"] = kwargs
 
-    async def fake_start(**kwargs):
-        captured["start"] = kwargs
-        return run_svc.SubagentRunStart(
-            run_id="a" * 32,
-            child_session_id="child-session",
-            claim_version=1,
-            claim_worker_id="foreground-subagent:test",
-            claim_expires_at=datetime.now(timezone.utc) + timedelta(minutes=2),
-        )
-
-    def fake_completer(run_id, **claim):
-        captured["completer_run_id"] = run_id
-        captured["completer_claim"] = claim
-
-        async def complete(result):
-            captured["completed_result"] = result
-
-        return complete
-
     async def fake_spawn(ctx, spec, task, **kwargs):
         captured["ctx"] = ctx
         captured["spec"] = spec
@@ -302,10 +220,6 @@ async def test_spawn_tool_foreground_returns_child_session_continuation(monkeypa
             depth=2,
             result=SubagentResult(name=spec.name, type=spec.type, status="completed", content="digest", tokens_used=7),
         )
-
-    async def fake_run_claimed(work, **claim):
-        captured["runtime_claim"] = claim
-        return await work
 
     async def fake_active_agent_team_contract(_request):
         return None
@@ -320,9 +234,6 @@ async def test_spawn_tool_foreground_returns_child_session_continuation(monkeypa
         raising=False,
     )
     monkeypatch.setattr(handler_mod, "spawn_subagent", fake_spawn)
-    monkeypatch.setattr(handler_mod, "run_claimed_runtime_task", fake_run_claimed)
-    monkeypatch.setattr(run_svc, "start_subagent_run", fake_start)
-    monkeypatch.setattr(run_svc, "make_run_completer", fake_completer)
 
     parent_session_id = str(uuid.uuid4())
     out = await handler_mod.spawn_subagent_tool(
@@ -332,7 +243,6 @@ async def test_spawn_tool_foreground_returns_child_session_continuation(monkeypa
 
     assert data["ok"] is True
     assert data["mode"] == "foreground"
-    assert data["run_id"] == "a" * 32
     assert data["child_session_id"] == "child-session"
     assert data["return_contract"] == "inline_result"
     assert data["subagent_return_contract"]["schema"] == "hive.ccplus.subagent_return_contract.v1"
@@ -343,29 +253,14 @@ async def test_spawn_tool_foreground_returns_child_session_continuation(monkeypa
     assert data["continuation"]["tool"] == "send_agent_session_message"
     assert data["transcript_refs"]["session_id"] == "child-session"
     assert captured["ctx"].child_session_id == "child-session"
-    assert captured["ctx"].subagent_run_id == "a" * 32
-    assert captured["ctx"].recovery_metadata["runtime_task_id"] == "a" * 32
-    assert captured["ctx"].recovery_metadata["recovery_authority_type"] == "foreground_subagent"
-    assert captured["ctx"].recovery_metadata["claim_version"] == 1
-    assert captured["ctx"].recovery_metadata["claim_worker_id"] == "foreground-subagent:test"
-    assert captured["runtime_claim"]["task_id"] == "a" * 32
-    assert captured["runtime_claim"]["claim_version"] == 1
-    assert captured["runtime_claim"]["worker_id"] == "foreground-subagent:test"
-    assert captured["runtime_claim"]["session_factory"] is run_svc.async_session
-    assert captured["start"]["parent_session_id"] == parent_session_id
-    assert captured["start"]["dispatch_mode"] == "foreground_inline"
-    assert captured["completer_run_id"] == "a" * 32
-    assert captured["completer_claim"] == {
-        "expected_claim_version": 1,
-        "expected_claim_worker_id": "foreground-subagent:test",
-    }
-    assert captured["completed_result"].status == "completed"
+    assert captured["create_child_session"]["parent_session_id"] == parent_session_id
+    assert captured["update_child_session"]["status"] == "completed"
 
 
 @pytest.mark.asyncio
-async def test_spawn_tool_foreground_binds_budget_to_durable_runtime_task(monkeypatch):
+async def test_spawn_tool_foreground_uses_execution_admission_and_settles(monkeypatch):
     import app.tools.handlers.subagent as handler_mod
-    from app.services import subagent_run_service as run_svc
+    from app.services.runtime_budget_service import RuntimeBudgetReservationResult
 
     captured: dict = {}
     budget_run_id = uuid.uuid4()
@@ -388,36 +283,40 @@ async def test_spawn_tool_foreground_binds_budget_to_durable_runtime_task(monkey
     async def fake_active_agent_team_contract(_request):
         return None
 
-    async def fake_start(**kwargs):
-        captured["start"] = kwargs
-        return run_svc.SubagentRunStart(
-            run_id="b" * 32,
-            child_session_id=None,
-            claim_version=1,
-            claim_worker_id="foreground-subagent:budget",
-            claim_expires_at=datetime.now(timezone.utc) + timedelta(minutes=2),
-        )
+    class BudgetService:
+        async def reserve(self, reservation):
+            captured["reservation"] = reservation
+            return RuntimeBudgetReservationResult(
+                allowed=True,
+                would_deny=False,
+                idempotent=False,
+                budget_run_id=reservation.budget_run_id,
+            )
+
+        async def settle(self, settlement):
+            captured["settlement"] = settlement
 
     monkeypatch.setattr(handler_mod, "_resolve_parent_runtime", fake_resolve)
     monkeypatch.setattr(handler_mod, "active_agent_team_contract_from_tool_request", fake_active_agent_team_contract)
     monkeypatch.setattr(handler_mod, "spawn_subagent", fake_spawn)
-    monkeypatch.setattr(run_svc, "start_subagent_run", fake_start)
+    monkeypatch.setattr(handler_mod, "RuntimeBudgetService", BudgetService)
     request = _tool_request({"task": "investigate", "name": "scout"}, session_id=None)
     request.context.budget_run_id = str(budget_run_id)
 
     data = json.loads(await handler_mod.spawn_subagent_tool(request))
 
     assert data["ok"] is True
-    assert data["run_id"] == "b" * 32
-    assert len(captured["start"]["run_id"]) == 32
-    assert captured["start"]["dispatch_mode"] == "foreground_inline"
-    assert captured["start"]["budget_run_id"] == str(budget_run_id)
+    assert captured["reservation"].budget_run_id == budget_run_id
+    assert captured["reservation"].subagents == 1
+    assert captured["reservation"].background_tasks == 0
+    assert captured["settlement"].actual_subagents == 1
+    assert captured["settlement"].actual_tokens == 7
 
 
 @pytest.mark.asyncio
-async def test_spawn_tool_foreground_terminalizes_durable_run_when_spawn_raises(monkeypatch):
+async def test_spawn_tool_foreground_releases_admission_when_spawn_raises(monkeypatch):
     import app.tools.handlers.subagent as handler_mod
-    from app.services import subagent_run_service as run_svc
+    from app.services.runtime_budget_service import RuntimeBudgetReservationResult
 
     captured: dict = {}
     budget_run_id = uuid.uuid4()
@@ -435,43 +334,31 @@ async def test_spawn_tool_foreground_terminalizes_durable_run_when_spawn_raises(
     async def fake_active_agent_team_contract(_request):
         return None
 
-    async def fake_start(**kwargs):
-        captured["start"] = kwargs
-        return run_svc.SubagentRunStart(
-            run_id="c" * 32,
-            child_session_id=None,
-            claim_version=1,
-            claim_worker_id="foreground-subagent:failure",
-            claim_expires_at=datetime.now(timezone.utc) + timedelta(minutes=2),
-        )
+    class BudgetService:
+        async def reserve(self, reservation):
+            return RuntimeBudgetReservationResult(
+                allowed=True,
+                would_deny=False,
+                idempotent=False,
+                budget_run_id=reservation.budget_run_id,
+            )
 
-    def fake_completer(run_id, **claim):
-        captured["completer"] = {"run_id": run_id, **claim}
-
-        async def complete(result):
-            captured["result"] = result
-
-        return complete
+        async def settle(self, settlement):
+            captured["settlement"] = settlement
 
     monkeypatch.setattr(handler_mod, "_resolve_parent_runtime", fake_resolve)
     monkeypatch.setattr(handler_mod, "active_agent_team_contract_from_tool_request", fake_active_agent_team_contract)
     monkeypatch.setattr(handler_mod, "spawn_subagent", failing_spawn)
-    monkeypatch.setattr(run_svc, "start_subagent_run", fake_start)
-    monkeypatch.setattr(run_svc, "make_run_completer", fake_completer)
+    monkeypatch.setattr(handler_mod, "RuntimeBudgetService", BudgetService)
     request = _tool_request({"task": "investigate", "name": "scout"}, session_id=None)
     request.context.budget_run_id = str(budget_run_id)
 
     with pytest.raises(RuntimeError, match="spawn failed before result"):
         await handler_mod.spawn_subagent_tool(request)
 
-    assert captured["start"]["budget_run_id"] == str(budget_run_id)
-    assert captured["completer"] == {
-        "run_id": "c" * 32,
-        "expected_claim_version": 1,
-        "expected_claim_worker_id": "foreground-subagent:failure",
-    }
-    assert captured["result"].status == "failed"
-    assert captured["result"].tokens_used == 0
+    assert captured["settlement"].actual_subagents == 1
+    assert captured["settlement"].actual_tokens == 0
+    assert captured["settlement"].reason == "foreground_subagent_failed"
 
 
 @pytest.mark.asyncio

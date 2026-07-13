@@ -18,74 +18,9 @@ if TYPE_CHECKING:
     )
 
 
-def _build_recovery_checkpoint_compressor(
-    owner: Any,
-    request: InvocationRequest,
-    *,
-    support: Any,
-    emit_compaction_event: Any,
-    emit_context_decision_event: Any,
-):
-    """Bind the durable checkpoint boundary used by every compaction lane."""
-
-    maybe_await = support._maybe_await
-    persist_checkpoint = support._persist_recovery_manifest_checkpoint_with_fence
-    compress_with_hooks = support._compress_messages_with_lifecycle_hooks
-
-    async def _compress(
-        compressor: Any,
-        messages_for_compaction: list[dict[str, Any]],
-        *,
-        trigger: str,
-        metadata: dict[str, Any] | None = None,
-        **kwargs: Any,
-    ) -> list[dict[str, Any]]:
-        receipt = await persist_checkpoint(
-            request,
-            renew_runtime_lease=owner._deps.renew_runtime_lease,
-            delete_if_empty=True,
-        )
-        phase = str((metadata or {}).get("phase") or trigger)
-        if receipt is None:
-            skipped = {
-                "event_type": "compaction_skipped",
-                "reason": "recovery_checkpoint_unavailable",
-                "trigger": trigger,
-                "phase": phase,
-                "original_message_count": len(messages_for_compaction),
-                "kept_message_count": len(messages_for_compaction),
-            }
-            await emit_compaction_event(skipped)
-            await emit_context_decision_event(skipped)
-            return messages_for_compaction
-
-        receipt_fields = {
-            "recovery_manifest_ref": receipt.get("ref"),
-            "recovery_manifest_sha256": receipt.get("sha256"),
-            "recovery_manifest_bytes": receipt.get("bytes"),
-        }
-        hook_metadata = {**(metadata or {}), **receipt_fields}
-        existing_on_compaction = kwargs.pop("on_compaction", None)
-
-        async def _on_compaction(payload: dict[str, Any]) -> None:
-            enriched = {**payload, **receipt_fields}
-            if existing_on_compaction is not None:
-                await maybe_await(existing_on_compaction(enriched))
-
-        return await compress_with_hooks(
-            compressor,
-            messages_for_compaction,
-            trigger=trigger,
-            metadata=hook_metadata,
-            on_compaction=_on_compaction,
-            **kwargs,
-        )
-
-    return _compress
-
-
 async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> InvocationResult:
-    # Bind one dependency snapshot so tests, DI, and runtime overrides see the same facade values.
+    # Bind an explicit per-call dependency snapshot so tests, DI, and runtime
+    # overrides observe the same facade values without copying a module namespace.
     ExecutionIdentity = support.ExecutionIdentity
     InvocationResult = support.InvocationResult
     LLMError = support.LLMError
@@ -109,9 +44,9 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
     _TOOL_RESULTS_AGGREGATE_BUDGET = support._TOOL_RESULTS_AGGREGATE_BUDGET
     _TOOL_RESULT_PREVIEW_LENGTH = support._TOOL_RESULT_PREVIEW_LENGTH
     _WORK_LEDGER_ENABLED_METADATA_KEY = support._WORK_LEDGER_ENABLED_METADATA_KEY
+    _apply_mechanical_compaction_with_lifecycle_hooks = support._apply_mechanical_compaction_with_lifecycle_hooks
     _build_cancelled_result = support._build_cancelled_result
     _build_error_result = support._build_error_result
-    _bind_authoritative_recovery_tenant = support._bind_authoritative_recovery_tenant
     _build_frozen_prompt_cache_key = support._build_frozen_prompt_cache_key
     _build_permissions_context = support._build_permissions_context
     _build_persisted_memory_messages = support._build_persisted_memory_messages
@@ -143,7 +78,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
     _maybe_evict_tool_result = support._maybe_evict_tool_result
     _merge_active_tool_groups = support._merge_active_tool_groups
     _mid_run_items_to_user_messages = support._mid_run_items_to_user_messages
-    _persist_recovery_manifest_checkpoint_with_fence = support._persist_recovery_manifest_checkpoint_with_fence
+    _persist_recovery_manifest_checkpoint = support._persist_recovery_manifest_checkpoint
     _record_runtime_span = support._record_runtime_span
     _registered_connector_source_items = support._registered_connector_source_items
     _resolve_eviction_threshold = support._resolve_eviction_threshold
@@ -242,14 +177,6 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
         if runtime_config.quota_message:
             # Note: final_tools not included — not yet resolved at this point
             return _build_error_result(runtime_config.quota_message, terminal_reason=TerminalReason.QUOTA_DENIED)
-        try:
-            _bind_authoritative_recovery_tenant(request, runtime_config)
-        except ValueError as exc:
-            logger.error("[Kernel] Recovery tenant authority binding failed: %s", exc)
-            return _build_error_result(
-                f"[Error] Cannot invoke agent — {exc}.",
-                terminal_reason=TerminalReason.TENANT_RESOLUTION_ERROR,
-            )
         runtime_execution_mode = getattr(runtime_config, "execution_mode", None)
         if not request.invocation_scope and runtime_execution_mode:
             request.invocation_scope = runtime_execution_mode
@@ -766,6 +693,43 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
 
         async def _emit_compaction_event(data: dict[str, Any]) -> None:
             await _emit_event({"type": "session_compact", **data})
+            # System-level WAL: save compaction summary without touching user-authored workspace notes.
+            if request.agent_id and data.get("summary"):
+                try:
+                    from app.config import get_settings as _gs
+                    from pathlib import Path as _P
+
+                    _header = "# Session Compaction Summary (auto-saved)\n\n"
+                    _content = _header + data["summary"] + "\n"
+                    # Write to both workspace roots so heartbeat can find it
+                    for _root in [
+                        _P(_gs().AGENT_DATA_DIR) / str(request.agent_id),
+                        _P("/tmp/hive_workspaces") / str(request.agent_id),
+                    ]:
+                        if _root.exists():
+                            _cfile = _root / "runtime_artifacts" / "compaction_summary.md"
+                            _cfile.parent.mkdir(parents=True, exist_ok=True)
+                            _cfile.write_text(_content, encoding="utf-8")
+                            _legacy_cfile = _root / "workspace" / "compaction_summary.md"
+                            _legacy_cfile.unlink(missing_ok=True)
+                except Exception as _exc:
+                    logger.warning("[Kernel] Auto-save compaction summary failed: %s", _exc)
+
+            # P1-W3-9 — RecoveryManifest persistence.
+            # build_recovery_manifest captures the structured runtime
+            # state (recent reads/writes, active skills/packs, pending
+            # work) that natural-language summaries flatten away. Written
+            # to the agent workspace so the next invocation's
+            # prompt_builder (or operator inspection) can rehydrate the
+            # exact post-compaction state.
+            if request.agent_id and getattr(request, "session_context", None) is not None:
+                try:
+                    _persist_recovery_manifest_checkpoint(request, delete_if_empty=True)
+                except Exception as _rec_exc:
+                    logger.warning(
+                        "[Kernel] Recovery manifest persistence failed (non-fatal): %s",
+                        _rec_exc,
+                    )
 
         async def _emit_context_decision_event(data: dict[str, Any]) -> None:
             event_type = str(data.get("event_type") or "context_window_status")
@@ -780,14 +744,9 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                 and isinstance(getattr(request.session_context, "metadata", None), dict)
                 and isinstance(data.get("compaction_lifecycle"), dict)
             ):
-                lifecycle = dict(data["compaction_lifecycle"])
-                receipt = request.session_context.metadata.get("recovery_manifest_checkpoint_receipt")
-                if isinstance(receipt, dict):
-                    lifecycle["recovery_manifest_ref"] = receipt.get("ref")
-                    lifecycle["recovery_manifest_sha256"] = receipt.get("sha256")
-                    lifecycle["recovery_manifest_bytes"] = receipt.get("bytes")
-                data = {**data, "compaction_lifecycle": lifecycle}
-                request.session_context.metadata.setdefault("compaction_lifecycle_records", []).append(lifecycle)
+                request.session_context.metadata.setdefault("compaction_lifecycle_records", []).append(
+                    dict(data["compaction_lifecycle"])
+                )
             title_by_type = {
                 "context_window_status": "Context Window",
                 "tool_result_budget_pass": "Tool Result Budget",
@@ -811,14 +770,6 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                     },
                 }
             )
-
-        _compress_with_recovery_checkpoint = _build_recovery_checkpoint_compressor(
-            self,
-            request,
-            support=support,
-            emit_compaction_event=_emit_compaction_event,
-            emit_context_decision_event=_emit_context_decision_event,
-        )
 
         def _context_policy_for_active_model() -> ContextPolicyV1:
             raw_policy = {}
@@ -849,7 +800,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
             async def _compress_for_preflight(
                 messages_as_dicts: list[dict[str, Any]], **kwargs: Any
             ) -> list[dict[str, Any]]:
-                return await _compress_with_recovery_checkpoint(
+                return await _compress_messages_with_lifecycle_hooks(
                     self._deps.maybe_compress_messages,
                     messages_as_dicts,
                     trace_context=compaction_trace_context,
@@ -863,13 +814,6 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                         "agent_name": request.agent_name,
                     },
                     **kwargs,
-                )
-
-            async def _checkpoint_tool_result_budget(_event: dict[str, Any]) -> dict[str, Any] | None:
-                return await _persist_recovery_manifest_checkpoint_with_fence(
-                    request,
-                    renew_runtime_lease=self._deps.renew_runtime_lease,
-                    delete_if_empty=True,
                 )
 
             prepared = await prepare_session_context_for_request(
@@ -897,7 +841,6 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                     "on_compaction": _emit_compaction_event,
                 },
                 tool_result_exempt_names={"read_file", "list_files"},
-                before_destructive_change=_checkpoint_tool_result_budget,
             )
             if prepared.changed:
                 api_messages = [system_message] + prepared.messages
@@ -956,7 +899,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
             except (TypeError, ValueError):
                 context_usage_anchor_tokens = 0
 
-        messages = await _compress_with_recovery_checkpoint(
+        messages = await _compress_messages_with_lifecycle_hooks(
             self._deps.maybe_compress_messages,
             request.messages,
             trace_context=compaction_trace_context,
@@ -998,7 +941,6 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
             tools_for_llm=tools_for_llm,
             api_messages=api_messages,
             record_span=_record_span,
-            renew_runtime_lease=self._deps.renew_runtime_lease,
         )
         if recovered_tool_results:
             api_messages.append(
@@ -1287,7 +1229,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                 )
                                 conv_dicts = _llm_messages_to_dicts(api_messages[1:])
                                 _before_chars = sum(len(d.get("content", "") or "") for d in conv_dicts)
-                                compressed = await _compress_with_recovery_checkpoint(
+                                compressed = await _compress_messages_with_lifecycle_hooks(
                                     self._deps.maybe_compress_messages,
                                     conv_dicts,
                                     trace_context=compaction_trace_context,
@@ -1390,14 +1332,14 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                         _PTL_MAX_RETRIES,
                                     )
                                     _truncated = _dicts_to_llm_messages(
-                                        await _compress_with_recovery_checkpoint(
-                                            lambda items, **_kwargs: _llm_messages_to_dicts(
+                                        await _apply_mechanical_compaction_with_lifecycle_hooks(
+                                            _llm_messages_to_dicts(api_messages[1:]),
+                                            compact=lambda items: _llm_messages_to_dicts(
                                                 _truncate_head_for_ptl(
                                                     _dicts_to_llm_messages(items),
                                                     drop_ratio=0.2,
                                                 )
                                             ),
-                                            _llm_messages_to_dicts(api_messages[1:]),
                                             agent_id=request.agent_id,
                                             session_id=request.memory_session_id,
                                             trigger="prompt_too_long",
@@ -1469,7 +1411,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                     )
                                     conv_dicts = _llm_messages_to_dicts(api_messages[1:])
                                     _before_chars = sum(len(d.get("content", "") or "") for d in conv_dicts)
-                                    compressed = await _compress_with_recovery_checkpoint(
+                                    compressed = await _compress_messages_with_lifecycle_hooks(
                                         self._deps.maybe_compress_messages,
                                         conv_dicts,
                                         trace_context=compaction_trace_context,
@@ -1984,7 +1926,6 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                     api_messages=api_messages,
                                     record_span=_record_span,
                                     side_effect_sink=_call_side_effects,
-                                    renew_runtime_lease=self._deps.renew_runtime_lease,
                                 )
                             if not _is_concurrency_safe_tool(t_name) and _r_exec is False:
                                 abort_reason = f"earlier unsafe tool failed ({t_name})"
@@ -2166,7 +2107,6 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                 api_messages=api_messages,
                                 record_span=_record_span,
                                 side_effect_sink=_side_effects,
-                                renew_runtime_lease=self._deps.renew_runtime_lease,
                             )
                         except _KernelCancelledError:
                             if request.agent_id and accumulated_tokens > 0:
@@ -2436,7 +2376,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                         _used_tokens = self._deps.estimate_tokens_from_chars(_used_chars)
                         _gap_seconds = _compute_microcompact_gap(_used_tokens, _model_window)
 
-                        _microcompact_candidates: list[LLMMessage] = []
+                        _mc_cleared = 0
                         for _mi, _ts, _msg in _tool_entries:
                             if _mi in _keep_indices:
                                 continue
@@ -2454,71 +2394,8 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                 for prev in api_messages[max(0, _mi - 5) : _mi]
                             )
                             if not _is_exempt:
-                                _microcompact_candidates.append(_msg)
-                        _mc_cleared = 0
-                        if _microcompact_candidates:
-                            _receipt = await _persist_recovery_manifest_checkpoint_with_fence(
-                                request,
-                                renew_runtime_lease=self._deps.renew_runtime_lease,
-                                delete_if_empty=True,
-                            )
-                            if _receipt is None:
-                                _skipped = {
-                                    "event_type": "compaction_skipped",
-                                    "reason": "recovery_checkpoint_unavailable",
-                                    "trigger": "microcompact",
-                                    "phase": "midloop_microcompact",
-                                    "original_message_count": len(api_messages),
-                                    "kept_message_count": len(api_messages),
-                                }
-                                await _emit_compaction_event(_skipped)
-                                await _emit_context_decision_event(_skipped)
-                            else:
-                                _before_chars = sum(len(msg.content or "") for msg in api_messages)
-                                for _msg in _microcompact_candidates:
-                                    _msg.content = _MICROCOMPACT_CLEARED_MARKER
-                                _mc_cleared = len(_microcompact_candidates)
-                                _receipt_fields = {
-                                    "recovery_manifest_ref": _receipt.get("ref"),
-                                    "recovery_manifest_sha256": _receipt.get("sha256"),
-                                    "recovery_manifest_bytes": _receipt.get("bytes"),
-                                }
-                                _lifecycle = {
-                                    "compaction_id": f"microcompact-{new_invocation_id()}",
-                                    "session_id": request.memory_session_id or "unknown",
-                                    "trigger": "microcompact",
-                                    "turn_id": str(
-                                        getattr(request.session_context, "metadata", {}).get("turn_id") or ""
-                                    )
-                                    or None,
-                                    "runtime_task_id": str(
-                                        getattr(request.session_context, "metadata", {}).get("runtime_task_id") or ""
-                                    )
-                                    or None,
-                                    "before_message_count": len(api_messages),
-                                    "after_message_count": len(api_messages),
-                                    "before_token_estimate": self._deps.estimate_tokens_from_chars(_before_chars),
-                                    "after_token_estimate": self._deps.estimate_tokens_from_chars(
-                                        sum(len(msg.content or "") for msg in api_messages)
-                                    ),
-                                    "status": "completed",
-                                    **_receipt_fields,
-                                }
-                                await _emit_compaction_event(
-                                    {
-                                        "event_type": "compaction_completed",
-                                        "trigger": "microcompact",
-                                        "phase": "midloop_microcompact",
-                                        "cleared": _mc_cleared,
-                                        **_receipt_fields,
-                                    }
-                                )
-                                await _emit_context_decision_event(
-                                    {
-                                        "event_type": "compaction_lifecycle",
-                                        "compaction_lifecycle": _lifecycle,
-                                    }
-                                )
+                                _msg.content = _MICROCOMPACT_CLEARED_MARKER
+                                _mc_cleared += 1
                         if _mc_cleared:
                             logger.info(
                                 "[Kernel] Microcompact: cleared %d old tool results (round %d, gap=%ds, kept=%d recent)",
@@ -2552,7 +2429,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                     # already reserves space for the prompt via compute_history_limit.
                     conv_dicts = _llm_messages_to_dicts(api_messages[1:])
 
-                    compressed = await _compress_with_recovery_checkpoint(
+                    compressed = await _compress_messages_with_lifecycle_hooks(
                         self._deps.maybe_compress_messages,
                         conv_dicts,
                         trace_context=compaction_trace_context,

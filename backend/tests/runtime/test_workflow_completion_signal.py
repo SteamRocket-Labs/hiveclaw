@@ -7,17 +7,14 @@ PG run records.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 import uuid
 
 import pytest
-from sqlalchemy import delete, select
 
 from app.agents.coordination import coordination_runtime
 from app.database import tenant_scoped_session
 from app.runtime.workflow_engine import LeafOutcome, LeafRequest
 from app.services.workflow_runtime_service import WorkflowRuntimeService
-from app.services.workflow_completion_outbox import WorkflowCompletionOutboxService
 
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 
@@ -40,55 +37,14 @@ def _definition() -> dict:
     }
 
 
-async def _prioritize_target_completion(
-    owner_sessionmaker,
-    *,
-    tenant_id: uuid.UUID,
-    run_id: uuid.UUID,
-) -> None:
-    from app.models.workflow_completion_outbox import WorkflowCompletionOutbox
-
-    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
-        row = (
-            await session.execute(
-                select(WorkflowCompletionOutbox).where(
-                    WorkflowCompletionOutbox.tenant_id == tenant_id,
-                    WorkflowCompletionOutbox.run_id == run_id,
-                )
-            )
-        ).scalar_one()
-        row.available_at = datetime(1990, 1, 1, tzinfo=UTC)
-
-
 @pytest.fixture()
 async def tenant_id(owner_sessionmaker) -> uuid.UUID:
-    from app.models.agent import Agent
-    from app.models.audit import AuditLog, ChatMessage
-    from app.models.chat_session import ChatSession
-    from app.models.chat_transcript_event import ChatTranscriptEvent
-    from app.models.runtime_budget import RuntimeBudgetRun
-    from app.models.runtime_task import RuntimeTask
     from app.models.tenant import Tenant
-    from app.models.user import User
-    from app.models.workflow_completion_outbox import WorkflowCompletionOutbox
 
     tid = uuid.uuid4()
     async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
         session.add(Tenant(id=tid, name="wf-sig", slug=f"ws-{tid.hex[:10]}"))
-    yield tid
-
-    async with owner_sessionmaker() as session:
-        await session.execute(delete(AuditLog).where(AuditLog.tenant_id == tid))
-        await session.execute(delete(WorkflowCompletionOutbox).where(WorkflowCompletionOutbox.tenant_id == tid))
-        await session.execute(delete(ChatTranscriptEvent).where(ChatTranscriptEvent.tenant_id == tid))
-        await session.execute(delete(ChatMessage).where(ChatMessage.tenant_id == tid))
-        await session.execute(delete(ChatSession).where(ChatSession.tenant_id == tid))
-        await session.execute(delete(RuntimeTask).where(RuntimeTask.tenant_id == tid))
-        await session.execute(delete(RuntimeBudgetRun).where(RuntimeBudgetRun.tenant_id == tid))
-        await session.execute(delete(Agent).where(Agent.tenant_id == tid))
-        await session.execute(delete(User).where(User.tenant_id == tid))
-        await session.execute(delete(Tenant).where(Tenant.id == tid))
-        await session.commit()
+    return tid
 
 
 @pytest.fixture()
@@ -114,8 +70,6 @@ async def agent_id(owner_sessionmaker, tenant_id) -> uuid.UUID:
 
 
 async def test_completed_run_emits_consume_once_signal(tenant_id, agent_id, owner_sessionmaker):
-    from app.models.audit import AuditLog
-
     coordination_runtime.reset()
     service = WorkflowRuntimeService(session_factory=owner_sessionmaker)
 
@@ -126,24 +80,6 @@ async def test_completed_run_emits_consume_once_signal(tenant_id, agent_id, owne
         tenant_id=tenant_id, definition_data=_definition(), args={}, agent_id=agent_id, leaf_executor=leaf
     )
     assert handle.outcome.status == "completed"
-    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
-        audit_actions = set(
-            (
-                await session.execute(
-                    select(AuditLog.action).where(
-                        AuditLog.tenant_id == tenant_id,
-                        AuditLog.agent_id == agent_id,
-                        AuditLog.details["run_id"].astext == str(handle.run_id),
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        )
-    assert {"workflow_run_started", "workflow_run_completed"} <= audit_actions
-    await _prioritize_target_completion(owner_sessionmaker, tenant_id=tenant_id, run_id=handle.run_id)
-    pump = WorkflowCompletionOutboxService(session_factory=owner_sessionmaker)
-    assert (await pump.drain_once(worker_id="signal-worker", limit=1))["delivered"] == 1
 
     signals = coordination_runtime.consume_signals(
         str(agent_id), thread_id=str(handle.run_id), signal_type="workflow_completed"
@@ -159,14 +95,22 @@ async def test_completed_run_emits_consume_once_signal(tenant_id, agent_id, owne
 
 
 async def test_completed_run_replay_does_not_emit_completion_side_effects_twice(
-    tenant_id, agent_id, owner_sessionmaker
+    tenant_id, agent_id, owner_sessionmaker, monkeypatch
 ):
     from sqlalchemy import select
 
     from app.models.runtime_task import RuntimeTask
+    from app.services import workflow_runtime_service as module
 
     coordination_runtime.reset()
     service = WorkflowRuntimeService(session_factory=owner_sessionmaker)
+    delivered: list[dict] = []
+
+    async def fake_send_text(**kwargs):
+        delivered.append(kwargs)
+        return None
+
+    monkeypatch.setattr(module.ChannelDeliveryService, "send_text", fake_send_text)
 
     async def leaf(request: LeafRequest) -> LeafOutcome:
         return LeafOutcome(ok=True, output={}, tokens_used=1)
@@ -180,9 +124,7 @@ async def test_completed_run_replay_does_not_emit_completion_side_effects_twice(
         delivery_target={"channel": "web", "username": "owner"},
     )
     assert handle.outcome.status == "completed"
-    await _prioritize_target_completion(owner_sessionmaker, tenant_id=tenant_id, run_id=handle.run_id)
-    pump = WorkflowCompletionOutboxService(session_factory=owner_sessionmaker)
-    assert (await pump.drain_once(worker_id="signal-worker", limit=1))["delivered"] == 1
+    assert len(delivered) == 1
     assert (
         len(
             coordination_runtime.consume_signals(
@@ -202,24 +144,7 @@ async def test_completed_run_replay_does_not_emit_completion_side_effects_twice(
     replay = await service.resume_run(handle.run_id, tenant_id=tenant_id, leaf_executor=exploding_leaf)
 
     assert replay.status == "completed"
-    from app.models.workflow_completion_outbox import WorkflowCompletionOutbox
-
-    async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
-        target_rows = list(
-            (
-                await session.execute(
-                    select(WorkflowCompletionOutbox).where(
-                        WorkflowCompletionOutbox.tenant_id == tenant_id,
-                        WorkflowCompletionOutbox.run_id == handle.run_id,
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        )
-    assert len(target_rows) == 1
-    assert target_rows[0].status == "delivered"
-    assert target_rows[0].attempt_count == 1
+    assert len(delivered) == 1
     assert (
         coordination_runtime.consume_signals(
             str(agent_id), thread_id=str(handle.run_id), signal_type="workflow_completed"

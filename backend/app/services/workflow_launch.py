@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import Any
 
 from app.agents.subagent import (
@@ -32,13 +32,7 @@ from app.config import get_settings
 from app.runtime.workflow_admission import _resolve_args_path, estimate_wait_seconds
 from app.runtime.workflow_compiler import CompiledWorkflow
 from app.runtime.workflow_definition import FanoutStep, WaitUntilStep
-from app.runtime.workflow_engine import (
-    LeafExecutor,
-    LeafOutcome,
-    LeafRequest,
-    WorkflowRunOutcome,
-    workflow_leaf_recovery_identity,
-)
+from app.runtime.workflow_engine import LeafExecutor, LeafOutcome, LeafRequest, WorkflowRunOutcome
 from app.services.workflow_runtime_service import WorkflowRunHandle, WorkflowRuntimeService
 
 logger = logging.getLogger(__name__)
@@ -99,24 +93,6 @@ def build_subagent_leaf_executor(
     async def leaf(request: LeafRequest) -> LeafOutcome:
         from app.services.workflow_leaf_presets import resolve_leaf_preset
 
-        recovery_identity = workflow_leaf_recovery_identity(request.run_id, request.step_id, request.leaf_id)
-        recovery_metadata = dict(ctx.recovery_metadata or {})
-        recovery_metadata.update(
-            {
-                "runtime_task_id": recovery_identity.runtime_task_id,
-                "tenant_id": str(request.tenant_id or ctx.tenant_id) if request.tenant_id or ctx.tenant_id else None,
-                "workflow_run_id": recovery_identity.runtime_task_id,
-                "workflow_step_id": recovery_identity.step_id,
-                "workflow_leaf_id": recovery_identity.leaf_id,
-                "recovery_authority_type": "workflow_leaf",
-            }
-        )
-        leaf_ctx = replace(
-            ctx,
-            child_session_id=recovery_identity.session_id,
-            trace_id=recovery_identity.trace_id,
-            recovery_metadata=recovery_metadata,
-        )
         preset = resolve_leaf_preset(request.leaf.name)
         spec = SubagentSpec(
             name=request.leaf.name,
@@ -129,7 +105,7 @@ def build_subagent_leaf_executor(
         )
         task = request.task
         if preset is not None and preset.pre_process is not None:
-            rewritten = await preset.pre_process(request, leaf_ctx)
+            rewritten = await preset.pre_process(request, ctx)
             if rewritten is not None:
                 task = rewritten
         options = preset.options if preset is not None else {}
@@ -140,7 +116,7 @@ def build_subagent_leaf_executor(
             max_sources=options.get("max_sources"),
             max_source_chars=options.get("max_source_chars"),
         )
-        handle = await spawn(leaf_ctx, spec, task, budget=budget)
+        handle = await spawn(ctx, spec, task, budget=budget)
         result = handle.result
         if result is None:
             outcome = LeafOutcome(ok=False, error="spawn returned no result (background spawn not valid for leaves)")
@@ -159,7 +135,7 @@ def build_subagent_leaf_executor(
         if preset is not None and preset.post_process is not None:
             # Deterministic domain logic (ledger bookkeeping, citation gates,
             # artifact writes) — system side, never delegated to the LLM.
-            outcome = await preset.post_process(request, leaf_ctx, result, outcome)
+            outcome = await preset.post_process(request, ctx, result, outcome)
         return outcome
 
     return leaf
@@ -218,13 +194,9 @@ async def start_ephemeral_workflow_for_agent(
     run_id: uuid.UUID | None = None,
     parent_session_id: uuid.UUID | str | None = None,
     root_session_id: uuid.UUID | str | None = None,
-    root_runtime_task_id: uuid.UUID | str | None = None,
-    delegation_chain: list[str] | tuple[str, ...] | None = None,
     run_metadata: dict[str, Any] | None = None,
     enqueue_only: bool = False,
-    activation_pending: bool = False,
     budget_run_id: uuid.UUID | str | None = None,
-    delivery_target: dict[str, Any] | None = None,
 ) -> WorkflowRunHandle:
     """Resolve agent runtime → build governed leaf executor → start the run.
 
@@ -236,28 +208,24 @@ async def start_ephemeral_workflow_for_agent(
     if tenant_id is None:
         raise LookupError(f"agent {agent_id} has no tenant — refusing tenant-less workflow run")
 
-    effective_user_id = user_id or getattr(agent, "creator_id", None)
-    if effective_user_id is None:
-        raise LookupError(f"agent {agent_id} has no user authority for workflow run")
     ctx = SubagentSpawnContext(
         parent_agent_id=agent.id,
-        parent_user_id=effective_user_id,
+        parent_user_id=user_id or agent.id,
         model=model,
         parent_agent_name=getattr(agent, "name", "Agent"),
         role_description=getattr(agent, "role_description", "") or "",
         tenant_id=tenant_id,
-        parent_session_id=str(parent_session_id) if parent_session_id else None,
         budget_run_id=str(budget_run_id) if budget_run_id else None,
     )
     service = WorkflowRuntimeService(session_factory=session_factory)
     executor = build_subagent_leaf_executor(ctx, spawn=spawn)
-    if delivery_target is None:
-        try:
-            from app.services.channel_delivery_service import channel_delivery_target
+    delivery_target = None
+    try:
+        from app.services.channel_delivery_service import channel_delivery_target
 
-            delivery_target = channel_delivery_target.get(None)
-        except Exception:
-            delivery_target = None
+        delivery_target = channel_delivery_target.get(None)
+    except Exception:
+        delivery_target = None
 
     handle = await service.start_run(
         tenant_id=tenant_id,
@@ -266,20 +234,17 @@ async def start_ephemeral_workflow_for_agent(
         leaf_executor=executor,
         definition_source=definition_source,
         agent_id=agent.id,
-        user_id=effective_user_id,
+        user_id=user_id,
         confirmed_plan_id=confirmed_plan_id,
         run_id=run_id,
         delivery_target=delivery_target,
         parent_session_id=parent_session_id,
         root_session_id=root_session_id,
-        root_runtime_task_id=root_runtime_task_id,
-        delegation_chain=delegation_chain,
         run_metadata=run_metadata,
         enqueue_only=enqueue_only,
-        activation_pending=activation_pending,
         budget_run_id=budget_run_id,
     )
-    if enqueue_only and not activation_pending and handle.outcome.reason != "waiting_budget_approval":
+    if enqueue_only and handle.outcome.reason != "waiting_budget_approval":
         try:
             from app.services.runtime_task_worker import notify_runtime_task_worker
 
@@ -366,50 +331,18 @@ def build_resumable_workflow_leaf_executor(
         if agent_id is None:
             return LeafOutcome(ok=False, error=f"workflow run {run_id} has no parent agent for real leaf resume")
 
-        durable_tenant_id = loaded.task.tenant_id
-        if durable_tenant_id is None or uuid.UUID(str(durable_tenant_id)) != uuid.UUID(str(tenant_value)):
-            return LeafOutcome(ok=False, error=f"workflow run {run_id} tenant authority drifted before resume")
-        try:
-            authoritative_user_id = uuid.UUID(str(loaded.task.root_user_id))
-        except (TypeError, ValueError, AttributeError):
-            return LeafOutcome(ok=False, error=f"workflow run {run_id} has no durable root user for resume")
-
         agent, model = await resolve_agent_runtime(agent_id, tenant_id=tenant_value, session_factory=session_factory)
         tenant_id = agent.tenant_id
         if tenant_id is None:
             return LeafOutcome(ok=False, error=f"agent {agent_id} has no tenant for workflow resume")
-        if uuid.UUID(str(tenant_id)) != uuid.UUID(str(durable_tenant_id)):
-            return LeafOutcome(ok=False, error=f"agent {agent_id} tenant does not match workflow resume authority")
-
-        from sqlalchemy import select
-
-        from app.database import tenant_scoped_session
-        from app.models.user import User
-
-        async with tenant_scoped_session(str(durable_tenant_id), session_factory=session_factory) as db:
-            authorized_user = (
-                await db.execute(
-                    select(User).where(
-                        User.id == authoritative_user_id,
-                        User.tenant_id == uuid.UUID(str(durable_tenant_id)),
-                    )
-                )
-            ).scalar_one_or_none()
-        if authorized_user is None:
-            return LeafOutcome(
-                ok=False,
-                error=f"workflow run {run_id} durable root user is outside the tenant authority",
-            )
 
         ctx = SubagentSpawnContext(
             parent_agent_id=agent.id,
-            parent_user_id=authoritative_user_id,
+            parent_user_id=agent.id,
             model=model,
             parent_agent_name=getattr(agent, "name", "Agent"),
             role_description=getattr(agent, "role_description", "") or "",
             tenant_id=tenant_id,
-            parent_session_id=str(loaded.task.parent_session_id or "") or None,
-            budget_run_id=str(loaded.task.budget_run_id or "") or None,
         )
         executor = build_subagent_leaf_executor(ctx, spawn=spawn)
         return await executor(request)

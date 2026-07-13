@@ -442,7 +442,7 @@ stateDiagram-v2
 | ID | 级别 | 状态 | 根因摘要 |
 |---|---|---|---|
 | SEC-001 | P0 | 断点 | 生产旧 RLS 对 tenant NULL 放行，2301 条无法归属记录全局可见 |
-| SEC-002 | P0 | 闭环 | session/run-scoped Manifest、统一 hydrate、CAS evidence、恢复 worker 与 operator 消费链均已闭合（当前 checkout） |
+| SEC-002 | P0 | 断点 | 每 Agent 单 recovery 文件且 post-compact 未匹配 session |
 | SEC-003 | P0 | 断点 | 无统一最终 endpoint/redirect/DNS 出站策略 |
 | SEC-004 | P0 | 断点 | AgentTool config writer 绕过加密与保守 mask |
 | GOV-001 | P1 | 局部闭环 | BYPASS 无 durable audit，audit_logs 可被 app_rls 更新删除 |
@@ -511,33 +511,36 @@ stateDiagram-v2
 
 - 所属模块：Kernel compaction、RecoveryManifest、workspace runtime artifacts。
 - 严重级别：P0。
-- 当前状态：闭环（当前 checkout；本项未触发生产部署）。
+- 当前状态：断点。
 - 影响对象：共享同一 Agent 的不同用户/Session、权限档案、未决工具、私有路径。
-- 用户可见结果：Session A/B 的压缩、重启、fork、rewind 与并发工具恢复只读取各自 checkpoint；不完整或漂移证据进入 operator reconciliation，不再注入其他 Session 的路径、权限或工具帧。
-- 输入原子：`recovery_manifest_path()` 以 Agent + session hash + runtime-task hash 形成唯一 canonical path；`SessionContext.metadata` 携带 tenant/agent/runtime task/claim/checkpoint identity；foreground inline delegation producer 显式写入 reviewed state/ref/SHA 三键。
-- 权威原子：`load_recovery_manifest()` 同时校验 tenant、agent、session、runtime task、claim version、claim worker 与 checkpoint；缺失 authority、跨 Session、跨 run、stale claim、非 regular path、legacy 冲突均 fail closed。operator target 在归一化前强制要求 `expected_manifest_state`、`expected_manifest_ref`、`expected_sha256` 三键真实存在，缺键不能被 `null` 洗白。
-- 执行原子：初始 hydrate 与 post-compaction restoration 都只调用 `_load_and_hydrate_recovery_manifest()`；checkpoint 写入只走 platform-owned `persist_recovery_manifest_checkpoint()`；expired foreground A2A 只通过 `legacy a2a_delegation OR delegation + execution_backend=foreground_inline` 的共享 Python/SQL predicate 进入 fence/refresh；operator 只通过 `apply_runtime_reconciliation_action()` 执行 resolve/archive/retry。
-- 证据原子：canonical Manifest byte receipt 记录 ref + SHA-256，authority CAS 记录 checkpoint/claim/worker；`RuntimeTask` 保存 reviewed targets、unknown-side-effect frames、evidence digest、immutable operation 与 history；缺失 Manifest 也生成 synthetic unknown invocation frame，不能伪装成无副作用。
-- 恢复原子：session/run 文件使用进程锁 + OS 文件锁、regular-file/no-symlink 校验、atomic replace、claim/checkpoint CAS；legacy import 先写 canonical 再 quarantine/cutover，冲突保留可审计 marker；整批 unsafe frame 先预扫描并整体 tombstone，零工具重放；startup/periodic worker 对 expired claim fence 一次，live claim 不动，refresh 幂等，Manifest 漂移在 journal/archive 前中止。
-- 消费原子：Kernel mid-loop restoration 真实消费同一个安全 loader；RuntimeTask startup/worker、Workflow、Web Chat、Plan Mode、Business Task 与 Subagent 都消费同一恢复/重放政策；Admin API 与 `AdminRuntimeReconciliationSection` 展示 exact targets、frames、digest、operation，并要求 operator confirmation 后执行。
-- 验收原子：A/B 跨 Session、跨 tenant/run/claim、并发锁、kill-mid-write、半 JSON、symlink/nonregular、legacy import、mixed batch、fork/rewind、startup/periodic、foreground/async delegation 隔离、CAS drift、operator fail-closed、outbox/replay 与 UI 均有当前测试覆盖。
-- 断裂位置：原 `agent-level file / direct post-compact load` 双断点已删除；当前不存在绕过统一 loader 或 operator evidence gate 的生产入口。
-- 根因修复：canonical path 从 Agent 级改为 session/run 级；第二套直接读取收敛到统一 load+match+hydrate；恢复写入、RuntimeTask claim、证据投影、人工裁决形成单一治理链。
-- 是否存在双事实源：否。`ChatTranscriptEvent` 仍是 cloud run ordering authority，session/run Manifest 是 portable recovery evidence；二者是 authority/evidence 分工，不是竞争写源。
-- 是否存在治理冲突：否。模型只消费经过 identity gate 的恢复上下文；权限 profile 只作为机械证据，不会从其他 Session 重新激活。
-- 是否存在跨租户或安全风险：原风险已闭合；tenant/agent/session/run/claim 任一不匹配均拒绝 hydrate/resolve。
-- 是否可能导致 Agent 无法继续运行：已提供 fail-closed + operator recovery；不确定副作用不会自动重放，合法 live claim 与 replay-safe async delegation 不被 inline reaper 误伤。
-- 源码证据：`backend/app/runtime/recovery_manifest.py:832-940,2483-2820`；`backend/app/kernel/engine.py:478-500,3340-3395`；`backend/app/services/runtime_task_service.py:49-65,394-550,1337-1545`；`backend/app/services/runtime_reconciliation.py:130-230,443-575,1181-1465`；`backend/app/api/admin.py:354-505`；`frontend/src/pages/admin-companies/AdminRuntimeReconciliationSection.tsx:70-379`。
-- 数据库或迁移证据：`RuntimeTask` claim lane、completion outbox、workflow completion/quota 与 source-kind migrations 均在单一 Alembic head `runtime_notification_source_kind_0713`；独立 migration gate `156 passed`。
-- UI 消费证据：Admin UI 读取 canonical evidence，阻止 incomplete/changed digest，支持 immutable operation resume、resolve/archive/retry；前端全量 `116 files / 688 tests` 与 production build 通过。
-- 测试证据：SEC-002 高风险组合 `590 passed in 31.89s`；backend 全量最终 `7243 passed, 1 skipped in 374.30s`；migrations `156 passed in 71.51s`；frontend `688 passed`；`tsc + vite build + bundle budget` exit 0；Ruff 全过、`1568 files already formatted`、`git diff --check` exit 0。
-- 独立复核：required-key closure 与 foreground-inline delegation closure 分别由只读 reviewer 复核，均为 `APPROVE`，无 confirmed P0-P2 blocker。
-- 反证或不确定性：本轮证明的是当前 checkout 闭环，未执行 production deploy；本项没有数据库数据 cutover，生产 freshness 仍应由后续统一三服务部署门禁证明。
-- 修复方案：已完成，无延期债务。
-- 需要删除或合并的旧实现：Agent 级 legacy manifest 仅保留一次性受控 import/quarantine compatibility，不再是 canonical writer 或 runtime read authority。
-- 依赖项：无未完成实现依赖；整体发布仍受 SEC-001、SEC-003、SEC-004 等其他未关闭 P0 阻塞。
-- 验收标准：已满足当前 checkout 的七原子与故障注入门禁。
-- 预计风险：剩余为部署 freshness 风险，不是本地架构断点。
+- 用户可见现象：Session B 在压缩后可能提及 Session A 文件、工具或权限，并据此继续行动。
+- 触发条件：同 Agent 存在 manifest A，另一 Session B 发生 mid-loop compaction。
+- 输入原子：B 的当前上下文加 agent 级 recovery_manifest.json。
+- 权威原子：manifest 声明 session_id，但 post-compact reader 不调用 recovery_manifest_matches_session。
+- 执行原子：TurnOrchestrator 将 restoration text 直接插入 B 的 system message。
+- 证据原子：文件路径只含 agent_id；A/B last-writer-wins；写入非 atomic。
+- 恢复原子：恢复本身成为泄漏点，并发/崩溃还会覆盖或损坏清单。
+- 消费原子：B 的 LLM 真实消费权限 profile、pending tool frame 和路径。
+- 验收原子：现有 hydrate 跨会话拒绝测试未覆盖 _build_restoration_context。
+- 断裂位置：session-scoped checkpoint authority → post-compaction model consumption。
+- 根因：backend/app/kernel/engine.py 的第二读取入口绕过安全 loader；单文件路径设计不支持并行 Session。
+- 是否存在双事实源：是；安全初始 hydrate 与不安全 post-compact restore。
+- 是否存在治理冲突：是；A 的 permission profile 进入 B。
+- 是否存在跨租户或安全风险：是；共享 Agent 的跨用户越权，tenant 信息也未进入 manifest key。
+- 是否可能导致 Agent 无法继续运行：是；A/B 覆盖会丢失当前工具帧，损坏 JSON 返回 None。
+- 源码证据：backend/app/kernel/engine.py:2909-2961；backend/app/kernel/turn_orchestrator.py:2459-2476；backend/app/runtime/recovery_manifest.py:19-27,251-307,376-409,561-612。
+- 数据库或迁移证据：当前无 session recovery DB row、FK、CAS 或 claim fence。
+- UI 消费证据：UI 无法识别 restoration 来源错误；只看到后续模型行为。
+- 测试证据：临时目录复现 private_path_leaked=True、permission_leaked=True、tool_frame_leaked=True。
+- 反证或不确定性：初始 hydrate 已正确拒绝 session mismatch，说明修复原语存在；漏洞集中在 post-compact 分支。
+- 修复方案：唯一事实源改为 session-scoped checkpoint，键绑定 tenant/agent/session/run/claim_version；初始与 post-compact 共用一个 load+match+hydrate 入口；atomic write/CAS；legacy 无 session 文件不得恢复权限或工具帧。
+- 最小化方案：立即在 _build_restoration_context 调用 recovery_manifest_matches_session，mismatch 时完全跳过 manifest；随后完成 session 分区迁移。
+- 需要删除或合并的旧实现：删除第二套直接 load_recovery_manifest 分支和 agent 级可写 canonical path。
+- 依赖项：SessionContext tenant/run identity、legacy manifest migration、fork/rewind semantics。
+- 验收标准：A/B 并发、压缩、重启、fork、rewind 均只消费自己的清单；legacy 权限字段 fail closed。
+- 建议测试：两个用户共享 Agent、A/B 并发写、cross-session compaction、legacy manifest、claim_version mismatch。
+- 建议故障注入：kill-mid-write、半 JSON、并发 Worker、manifest 删除、旧版本 writer。
+- 预计风险：中高；迁移时不能丢失正在运行 Session 的恢复状态。
 
 ### [SEC-003] 出站 URL 缺少统一 SSRF 与响应边界
 
@@ -1456,7 +1459,7 @@ stateDiagram-v2
 | Gate | 关闭条件 | 当前证据 |
 |---|---|---|
 | SEC-001 production RLS | strict migration在 production成功；所有 strict tenant表 NULL=0；三服务同一 current commit；live cross-tenant matrix通过 | 未关闭 |
-| SEC-002 recovery isolation | session-scoped checkpoint；A/B压缩/重启/fork测试；legacy权限帧fail closed | 已关闭（当前 checkout）：backend 7243 passed / migration 156 passed / frontend 688 passed + build；未部署 |
+| SEC-002 recovery isolation | session-scoped checkpoint；A/B压缩/重启/fork测试；legacy权限帧fail closed | 未关闭 |
 | SEC-003 outbound SSRF | Personal KB/web/MCP/hooks共用 endpoint policy；private/redirect/DNS/max-bytes矩阵通过 | 未关闭 |
 | SEC-004 AgentTool secrets | writer统一加密；API全mask；legacy dry-run/backfill/rotation；DB无明文 | 未关闭 |
 

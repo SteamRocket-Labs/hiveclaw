@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -69,8 +68,7 @@ def test_recovery_manifest_preserves_tool_call_closure_state() -> None:
     restored = manifest.to_restoration_text()
     assert "Discovered Tools" in restored
     assert "Pending Tool Frames" in restored
-    assert "Permission Checkpoints" not in restored
-    assert "allow_once" not in restored
+    assert "Permission Checkpoints" in restored
     assert "Hook Lifecycle Records" in restored
     assert "Compaction Lifecycle Records" in restored
 
@@ -333,8 +331,6 @@ def test_killed_process_invoke_agent_persists_recoverable_tool_matrix(
                 channel="feishu",
                 metadata={{
                     "runtime_task_id": "runtime-kill",
-                    "claim_version": 1,
-                    "claim_worker_id": "killed-process-worker",
                     "turn_id": "turn-kill",
                     "origin_channel": "feishu",
                     "round_state": {{"round": 1}},
@@ -397,14 +393,7 @@ def test_killed_process_invoke_agent_persists_recoverable_tool_matrix(
     env["TOOL_STARTED_PATH"] = str(tool_started_path)
     env["PYTHONPATH"] = str(backend_root) + os.pathsep + env.get("PYTHONPATH", "")
     process = subprocess.Popen([sys.executable, str(child_script)], cwd=backend_root, env=env)
-    from app.runtime.recovery_manifest import recovery_manifest_path
-
-    manifest_path = recovery_manifest_path(
-        agent_id,
-        session_id=session_id,
-        runtime_task_id="runtime-kill",
-        data_root=tmp_path,
-    )
+    manifest_path = tmp_path / str(agent_id) / "runtime_artifacts" / "recovery_manifest.json"
     try:
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
@@ -443,18 +432,7 @@ def test_killed_process_invoke_agent_persists_recoverable_tool_matrix(
     from app.runtime.session import SessionContext
 
     monkeypatch.setattr("app.config.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
-    restored = _build_restoration_context(
-        agent_id,
-        session_context=SessionContext(
-            session_id=session_id,
-            metadata={
-                "tenant_id": "00000000-0000-0000-0000-000000000001",
-                "runtime_task_id": "runtime-kill",
-                "claim_version": 2,
-                "claim_worker_id": "recovery-reader",
-            },
-        ),
-    )
+    restored = _build_restoration_context(agent_id, session_context=SessionContext(session_id=session_id))
     assert tool_call_id in restored
     assert tool_name in restored
     assert "Pending Skill Handoffs" in restored
@@ -469,19 +447,12 @@ def test_persisted_recovery_manifest_restores_full_crash_matrix(tmp_path, monkey
     from app.runtime.session import SessionContext
 
     agent_id = uuid4()
-    tenant_id = uuid4()
-    runtime_task_id = "runtime-crash-matrix"
     manifest_path = tmp_path / str(agent_id) / "runtime_artifacts" / "recovery_manifest.json"
     manifest_path.parent.mkdir(parents=True)
     manifest_path.write_text(
         json.dumps(
             {
                 "session_id": "session-crash-matrix",
-                "agent_id": str(agent_id),
-                "tenant_id": str(tenant_id),
-                "runtime_task_id": runtime_task_id,
-                "claim_version": 1,
-                "claim_worker_id": "worker-1",
                 "discovered_tools": ["firecrawl_fetch"],
                 "pending_tool_frames": [
                     {
@@ -546,25 +517,12 @@ def test_persisted_recovery_manifest_restores_full_crash_matrix(tmp_path, monkey
         lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
     )
 
-    restored = _build_restoration_context(
-        agent_id,
-        session_context=SessionContext(
-            session_id="session-crash-matrix",
-            metadata={
-                "agent_id": str(agent_id),
-                "tenant_id": str(tenant_id),
-                "runtime_task_id": runtime_task_id,
-                "claim_version": 1,
-                "claim_worker_id": "worker-1",
-            },
-        ),
-    )
+    restored = _build_restoration_context(agent_id, session_context=SessionContext(session_id="session-crash-matrix"))
 
     assert "### Recovery Manifest" in restored
     assert "Pending Tool Frames" in restored
     assert "runtime-1" in restored
-    assert "Permission Checkpoints" not in restored
-    assert "allowed_tools" not in restored
+    assert "Permission Checkpoints" in restored
     assert "runtime-denial-continuation" in restored
     assert "Compaction Lifecycle Records" in restored
     assert "MCP Assignments" in restored
@@ -572,287 +530,3 @@ def test_persisted_recovery_manifest_restores_full_crash_matrix(tmp_path, monkey
     assert "Pending Skill Handoffs" in restored
     assert "Executed Skill Handoffs" in restored
     assert "Continuation Records" in restored
-
-
-@pytest.mark.asyncio
-async def test_mixed_recovered_batch_is_tombstoned_before_any_replay_after_restart(tmp_path, monkeypatch):
-    from app.kernel.contracts import InvocationRequest, RuntimeConfig
-    from app.kernel.engine import _execute_recovered_pending_tool_frames
-    from app.runtime.recovery_manifest import (
-        load_and_hydrate_recovery_manifest,
-        persist_recovery_manifest,
-        recovery_manifest_path,
-    )
-    from app.runtime.session import SessionContext
-
-    agent_id, tenant_id, runtime_task_id = uuid4(), uuid4(), uuid4()
-    session_id = "session-mixed-recovery"
-    identity = {
-        "agent_id": str(agent_id),
-        "tenant_id": str(tenant_id),
-        "runtime_task_id": str(runtime_task_id),
-        "claim_version": 3,
-        "claim_worker_id": "worker-3",
-    }
-    safe_frame = {
-        "tool_call_id": "call-read",
-        "tool_name": "read_file",
-        "arguments": {"path": "workspace/report.md"},
-        "status": "running",
-    }
-    unsafe_frame = {
-        "tool_call_id": "call-write",
-        "tool_name": "write_file",
-        "arguments": {"path": "workspace/report.md", "content": "changed"},
-        "status": "running",
-    }
-    monkeypatch.setattr("app.config.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
-    crashed = SessionContext(
-        session_id=session_id,
-        metadata={**identity, "pending_tool_frames": [safe_frame, unsafe_frame]},
-    )
-    assert persist_recovery_manifest(agent_id, crashed, data_root=tmp_path)
-    path = recovery_manifest_path(
-        agent_id,
-        session_id=session_id,
-        runtime_task_id=runtime_task_id,
-        data_root=tmp_path,
-    )
-    restarted = SessionContext(session_id=session_id, metadata=dict(identity))
-    assert load_and_hydrate_recovery_manifest(agent_id, restarted, data_root=tmp_path) is not None
-    request = InvocationRequest(
-        model=SimpleNamespace(provider="openai", model="gpt-4.1"),
-        messages=[{"role": "user", "content": "continue"}],
-        agent_name="Agent",
-        role_description="role",
-        agent_id=agent_id,
-        session_context=restarted,
-        memory_session_id=session_id,
-    )
-    executed: list[str] = []
-    ordering: list[str] = []
-    events: list[dict] = []
-
-    async def execute(tool_name, *_args, **_kwargs):
-        executed.append(tool_name)
-        return "EXECUTED"
-
-    async def renew():
-        assert executed == []
-        ordering.append("renew")
-
-    async def emit(event):
-        assert executed == []
-        assert restarted.metadata.get("recovery_manifest_checkpoint_receipt")
-        ordering.append("event")
-        events.append(dict(event))
-
-    text = await _execute_recovered_pending_tool_frames(
-        execute_tool=execute,
-        request=request,
-        runtime_config=RuntimeConfig(tenant_id=tenant_id, max_tool_rounds=3),
-        emit_event=emit,
-        renew_runtime_lease=renew,
-    )
-
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    receipt = restarted.metadata["recovery_manifest_checkpoint_receipt"]
-    assert executed == []
-    assert ordering[0] == "renew"
-    assert ordering[1:] == ["event", "event"]
-    assert restarted.metadata["recovery_reconciliation_blocked"] is True
-    assert [frame["tool_call_id"] for frame in payload["pending_tool_frames"]] == ["call-read", "call-write"]
-    assert {frame["status"] for frame in payload["pending_tool_frames"]} == {"needs_reconciliation"}
-    assert receipt["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
-    assert all(event["recovery_tombstone_persisted"] is True for event in events)
-    assert all(event["recovery_manifest_checkpoint_receipt"]["sha256"] == receipt["sha256"] for event in events)
-    assert "entire recovered tool batch" in text
-
-
-@pytest.mark.asyncio
-async def test_incomplete_authority_manifest_blocks_new_tool_without_hydrating_evidence(tmp_path, monkeypatch):
-    from app.kernel.contracts import InvocationRequest, RuntimeConfig
-    from app.kernel.engine import _execute_tool_with_hooks
-    from app.runtime.recovery_manifest import load_and_hydrate_recovery_manifest, recovery_manifest_path
-    from app.runtime.session import SessionContext
-
-    agent_id, tenant_id, runtime_task_id = uuid4(), uuid4(), uuid4()
-    session_id = "session-incomplete-authority"
-    path = recovery_manifest_path(
-        agent_id,
-        session_id=session_id,
-        runtime_task_id=runtime_task_id,
-        data_root=tmp_path,
-    )
-    path.parent.mkdir(parents=True)
-    payload = {
-        "agent_id": str(agent_id),
-        "tenant_id": str(tenant_id),
-        "session_id": session_id,
-        "runtime_task_id": runtime_task_id.hex,
-        "claim_version": 4,
-        "pending_tool_frames": [{"tool_call_id": "call-old", "tool_name": "read_file", "status": "running"}],
-    }
-    raw = json.dumps(payload, sort_keys=True).encode()
-    path.write_bytes(raw)
-    os.chmod(path, 0o600)
-    monkeypatch.setattr("app.config.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
-    restarted = SessionContext(
-        session_id=session_id,
-        metadata={
-            "agent_id": str(agent_id),
-            "tenant_id": str(tenant_id),
-            "runtime_task_id": runtime_task_id.hex,
-            "claim_version": 5,
-            "claim_worker_id": "worker-5",
-        },
-    )
-
-    assert load_and_hydrate_recovery_manifest(agent_id, restarted, data_root=tmp_path) is None
-    request = InvocationRequest(
-        model=SimpleNamespace(provider="openai", model="gpt-4.1"),
-        messages=[{"role": "user", "content": "continue"}],
-        agent_name="Agent",
-        role_description="role",
-        agent_id=agent_id,
-        session_context=restarted,
-        memory_session_id=session_id,
-    )
-    executed: list[str] = []
-    events: list[dict] = []
-
-    async def execute(tool_name, *_args, **_kwargs):
-        executed.append(tool_name)
-        return "EXECUTED"
-
-    async def emit(event):
-        events.append(dict(event))
-
-    result, _args, did_execute = await _execute_tool_with_hooks(
-        execute_tool=execute,
-        request=request,
-        runtime_config=RuntimeConfig(tenant_id=tenant_id, max_tool_rounds=3),
-        tool_name="read_file",
-        tool_args={"path": "workspace/new.md"},
-        tool_call_id="call-new",
-        emit_event=emit,
-    )
-
-    assert did_execute is False
-    assert executed == []
-    assert "reconciliation" in result.lower()
-    assert restarted.metadata.get("recovered_pending_tool_frames") in (None, [])
-    assert restarted.metadata["recovery_reconciliation_reason"] == "incomplete_recovery_manifest_authority"
-    assert events[-1]["event_type"] == "recovery_reconciliation_blocked"
-    assert path.read_bytes() == raw
-
-
-@pytest.mark.asyncio
-async def test_unknown_mutating_frame_survives_two_restarts_and_blocks_new_tools(tmp_path, monkeypatch):
-    from app.kernel.contracts import InvocationRequest, RuntimeConfig
-    from app.kernel.engine import _execute_recovered_pending_tool_frames, _execute_tool_with_hooks
-    from app.runtime.recovery_manifest import (
-        load_and_hydrate_recovery_manifest,
-        persist_recovery_manifest,
-        recovery_manifest_path,
-    )
-    from app.runtime.session import SessionContext
-
-    agent_id, tenant_id, runtime_task_id = uuid4(), uuid4(), uuid4()
-    session_id = "session-reconciliation"
-    identity = {
-        "agent_id": str(agent_id),
-        "tenant_id": str(tenant_id),
-        "runtime_task_id": str(runtime_task_id),
-        "claim_version": 1,
-        "claim_worker_id": "worker-1",
-    }
-    frame = {
-        "tool_call_id": "call-write",
-        "tool_name": "write_file",
-        "arguments": {"path": "workspace/a.md", "content": "x"},
-        "status": "running",
-    }
-    monkeypatch.setattr("app.config.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
-    crashed = SessionContext(
-        session_id=session_id,
-        metadata={**identity, "pending_tool_frame": dict(frame), "pending_tool_frames": [dict(frame)]},
-    )
-    assert persist_recovery_manifest(agent_id, crashed, data_root=tmp_path)
-    path = recovery_manifest_path(
-        agent_id,
-        session_id=session_id,
-        runtime_task_id=runtime_task_id,
-        data_root=tmp_path,
-    )
-    assert len(json.loads(path.read_text(encoding="utf-8"))["pending_tool_frames"]) == 1
-
-    calls: list[str] = []
-    events: list[dict] = []
-
-    async def execute(tool_name, *_args, **_kwargs):
-        calls.append(tool_name)
-        return "EXECUTED"
-
-    async def emit(event):
-        events.append(event)
-
-    runtime_config = RuntimeConfig(tenant_id=tenant_id, max_tool_rounds=3)
-
-    def make_request(session):
-        return InvocationRequest(
-            model=SimpleNamespace(provider="openai", model="gpt-4.1"),
-            messages=[{"role": "user", "content": "continue"}],
-            agent_name="Agent",
-            role_description="role",
-            agent_id=agent_id,
-            session_context=session,
-            memory_session_id=session_id,
-        )
-
-    restart_1 = SessionContext(session_id=session_id, metadata=dict(identity))
-    assert load_and_hydrate_recovery_manifest(agent_id, restart_1, data_root=tmp_path) is not None
-    assert len(restart_1.metadata["recovered_pending_tool_frames"]) == 1
-    await _execute_recovered_pending_tool_frames(
-        execute_tool=execute,
-        request=make_request(restart_1),
-        runtime_config=runtime_config,
-        emit_event=emit,
-    )
-    payload_1 = json.loads(path.read_text(encoding="utf-8"))
-    assert calls == []
-    assert len(payload_1["pending_tool_frames"]) == 1
-    assert payload_1["pending_tool_frames"][0]["tool_call_id"] == "call-write"
-    assert payload_1["pending_tool_frames"][0]["status"] == "needs_reconciliation"
-
-    restart_2 = SessionContext(session_id=session_id, metadata=dict(identity))
-    assert load_and_hydrate_recovery_manifest(agent_id, restart_2, data_root=tmp_path) is not None
-    assert len(restart_2.metadata["recovered_pending_tool_frames"]) == 1
-    await _execute_recovered_pending_tool_frames(
-        execute_tool=execute,
-        request=make_request(restart_2),
-        runtime_config=runtime_config,
-        emit_event=emit,
-    )
-    payload_2 = json.loads(path.read_text(encoding="utf-8"))
-    assert calls == []
-    assert len(payload_2["pending_tool_frames"]) == 1
-    assert payload_2["pending_tool_frames"][0]["status"] == "needs_reconciliation"
-
-    result, _args, executed = await _execute_tool_with_hooks(
-        execute_tool=execute,
-        request=make_request(restart_2),
-        runtime_config=runtime_config,
-        tool_name="send_email",
-        tool_args={"to": "user@example.com"},
-        tool_call_id="call-new",
-        emit_event=emit,
-    )
-    assert executed is False
-    assert calls == []
-    assert "requires operator reconciliation" in result
-    assert events[-1]["event_type"] == "recovery_reconciliation_blocked"
-    assert all(
-        item["tool_call_id"] != "call-new"
-        for item in json.loads(path.read_text(encoding="utf-8"))["pending_tool_frames"]
-    )

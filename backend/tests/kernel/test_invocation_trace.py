@@ -153,7 +153,7 @@ async def test_kernel_records_invocation_and_generation_spans(monkeypatch, tmp_p
 
 
 @pytest.mark.asyncio
-async def test_kernel_records_tool_span(monkeypatch, tmp_path, durable_recovery_checkpoint):
+async def test_kernel_records_tool_span(monkeypatch, tmp_path):
     from app.kernel.contracts import InvocationRequest, RuntimeConfig
     from app.kernel.engine import AgentKernel, KernelDependencies
     from app.services import invocation_trace
@@ -215,11 +215,7 @@ async def test_kernel_records_tool_span(monkeypatch, tmp_path, durable_recovery_
 
 
 @pytest.mark.asyncio
-async def test_kernel_records_code_execution_evidence_from_tool_envelope(
-    monkeypatch,
-    tmp_path,
-    durable_recovery_checkpoint,
-):
+async def test_kernel_records_code_execution_evidence_from_tool_envelope(monkeypatch, tmp_path):
     from app.kernel.contracts import InvocationRequest, RuntimeConfig
     from app.kernel.engine import AgentKernel, KernelDependencies
     from app.services import invocation_trace

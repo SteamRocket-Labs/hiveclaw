@@ -1559,11 +1559,9 @@
         "onceOnly": "该操作只能单次授权。",
         "deleteOnceOnly": "删除类操作只能本次允许。",
         "updateFailed": "更新会话权限模式失败",
-        "fullAccessAdminOnly": "完全访问需要公司管理员授权。",
-        "fullAccessTitle": "启用 60 分钟完全访问",
-        "fullAccessReasonPlaceholder": "填写本会话授权原因（至少 8 个字符）",
-        "fullAccessReasonTooShort": "授权原因至少需要 8 个字符。",
-        "expirySyncFailed": "完全访问已到期，但会话状态同步失败。继续前请刷新页面。"
+        "fullAccessTitle": "为当前会话使用完全访问？",
+        "fullAccessMessage": "完全访问会跳过常规会话审批提示；企业访问控制、安全规则和危险操作确认仍始终生效。",
+        "fullAccessConfirm": "使用完全访问"
       },
       "actions": {
         "like": "喜欢",
@@ -1772,7 +1770,10 @@
         "description": "选择这个员工开启新对话时默认使用的权限模式。",
         "label": "默认权限模式",
         "hint": "进入对话后仍可在输入框下方随时切换。",
-        "fullAccessHint": "每个新对话仍需由管理员激活一次 60 分钟、仅限本会话的完全访问授权。"
+        "fullAccessHint": "企业访问控制、安全规则和危险操作确认始终生效。",
+        "fullAccessConfirmTitle": "将完全访问设为默认模式？",
+        "fullAccessConfirmMessage": "后续新对话会跳过常规会话审批提示；企业访问控制、安全规则和危险操作确认仍始终生效。",
+        "fullAccessConfirm": "保存完全访问默认值"
       },
       "access": {
         "title": "访问权限",

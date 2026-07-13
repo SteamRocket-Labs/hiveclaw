@@ -4,7 +4,7 @@ import json
 import logging
 import uuid
 from dataclasses import asdict
-from datetime import datetime, timedelta, timezone as tz
+from datetime import datetime, timezone as tz
 from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -143,7 +143,6 @@ class SessionOut(BaseModel):
     permission_mode: str = DEFAULT_CCPLUS_PERMISSION_MODE.value
     permission_profile: dict[str, Any] = Field(default_factory=dict)
     writable_roots: list[str] = Field(default_factory=list)
-    break_glass: dict[str, Any] | None = None
     is_current_user_session: bool = False
     read_only: bool = False
     authority_source: str | None = None
@@ -185,37 +184,13 @@ def _session_contract_fields(session: ChatSession) -> dict[str, Any]:
     }
 
 
-def _active_break_glass(value: Any) -> dict[str, Any] | None:
-    if not isinstance(value, dict):
-        return None
-    required = ("operator_id", "reason", "scope", "expires_at")
-    if any(not str(value.get(key) or "").strip() for key in required):
-        return None
-    if value.get("scope") != "session":
-        return None
-    try:
-        expires_at = datetime.fromisoformat(str(value["expires_at"]).replace("Z", "+00:00"))
-        if expires_at.tzinfo is None:
-            expires_at = expires_at.replace(tzinfo=tz.utc)
-    except (TypeError, ValueError):
-        return None
-    if expires_at <= datetime.now(tz.utc):
-        return None
-    return {**value, "expires_at": expires_at.astimezone(tz.utc).isoformat()}
-
-
 def _session_permission_metadata(
     permission_mode: str | None,
     session: ChatSession | None = None,
-    *,
-    break_glass: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     session_metadata = dict(getattr(session, "transcript_metadata_json", None) or {}) if session is not None else {}
     requested_mode = permission_mode or session_metadata.get("permission_mode") or DEFAULT_CCPLUS_PERMISSION_MODE.value
     mode = normalize_permission_mode(requested_mode).value
-    active_break_glass = _active_break_glass(break_glass or session_metadata.get("break_glass"))
-    if mode == "bypassPermissions" and active_break_glass is None:
-        mode = DEFAULT_CCPLUS_PERMISSION_MODE.value
     allowed_tools = [
         str(item) for item in (session_metadata.get("session_permission_allowed_tools") or []) if str(item).strip()
     ]
@@ -224,7 +199,6 @@ def _session_permission_metadata(
         "permission_mode": mode,
         "writable_roots": writable_roots,
         "permission_profile": {"mode": mode, "allowed_tools": allowed_tools, "writable_roots": writable_roots},
-        "break_glass": active_break_glass if mode == "bypassPermissions" else None,
     }
 
 
@@ -918,10 +892,7 @@ class PatchSessionIn(BaseModel):
 
 
 class UpdateSessionPermissionProfileIn(BaseModel):
-    permission_mode: str = DEFAULT_CCPLUS_PERMISSION_MODE.value
-    break_glass_reason: str | None = None
-    break_glass_scope: Literal["session"] | None = None
-    break_glass_ttl_minutes: int | None = Field(default=None, ge=1, le=60)
+    permission_mode: Literal["default", "auto", "bypassPermissions"] = DEFAULT_CCPLUS_PERMISSION_MODE.value
 
 
 class StartSessionRunIn(BaseModel):
@@ -929,7 +900,7 @@ class StartSessionRunIn(BaseModel):
     display_content: str = ""
     file_name: str = ""
     plan_mode_requested: bool = False
-    permission_mode: str | None = None
+    permission_mode: Literal["default", "auto", "bypassPermissions"] | None = None
     attachments: list[dict[str, Any]] = []
     parts: list[dict[str, Any]] = []
 
@@ -956,7 +927,7 @@ class BranchSessionIn(BaseModel):
     file_name: str = ""
     title: Optional[str] = None
     start_run: bool = True
-    permission_mode: str = DEFAULT_CCPLUS_PERMISSION_MODE.value
+    permission_mode: Literal["default", "auto", "bypassPermissions"] = DEFAULT_CCPLUS_PERMISSION_MODE.value
     attachments: list[dict[str, Any]] = []
     parts: list[dict[str, Any]] = []
 
@@ -966,7 +937,7 @@ class SteerSessionTurnIn(BaseModel):
     display_content: str = ""
     file_name: str = ""
     expected_turn_id: Optional[str] = None
-    permission_mode: str = DEFAULT_CCPLUS_PERMISSION_MODE.value
+    permission_mode: Literal["default", "auto", "bypassPermissions"] = DEFAULT_CCPLUS_PERMISSION_MODE.value
     attachments: list[dict[str, Any]] = []
     parts: list[dict[str, Any]] = []
 
@@ -1596,25 +1567,9 @@ async def update_session_permission_profile(
         session_id=session_id,
         current_user=current_user,
     )
-    break_glass = None
-    if normalize_permission_mode(body.permission_mode).value == "bypassPermissions":
-        if getattr(current_user, "role", None) not in {"org_admin", "platform_admin"}:
-            raise HTTPException(status_code=403, detail="Break-glass full access requires an organization admin")
-        reason = str(body.break_glass_reason or "").strip()
-        if len(reason) < 8 or body.break_glass_scope != "session" or body.break_glass_ttl_minutes is None:
-            raise HTTPException(
-                status_code=422,
-                detail="Break-glass requires reason, scope=session, and a TTL of 1-60 minutes",
-            )
-        break_glass = {
-            "operator_id": str(current_user.id),
-            "reason": reason,
-            "scope": "session",
-            "issued_at": datetime.now(tz.utc).isoformat(),
-            "expires_at": (datetime.now(tz.utc) + timedelta(minutes=body.break_glass_ttl_minutes)).isoformat(),
-        }
-    permission_metadata = _session_permission_metadata(body.permission_mode, session, break_glass=break_glass)
+    permission_metadata = _session_permission_metadata(body.permission_mode, session)
     session_metadata = dict(session.transcript_metadata_json or {})
+    session_metadata.pop("break_glass", None)
     session_metadata.update(permission_metadata)
     session.transcript_metadata_json = session_metadata
 
@@ -1631,6 +1586,7 @@ async def update_session_permission_profile(
     active_run = active_result.scalar_one_or_none()
     if active_run is not None:
         active_metadata = dict(getattr(active_run, "metadata_json", None) or {})
+        active_metadata.pop("break_glass", None)
         active_metadata.update(permission_metadata)
         active_run.metadata_json = active_metadata
 
@@ -1655,6 +1611,7 @@ async def update_session_permission_profile(
     await db.commit()
 
     runtime_session_context = await web_chat_broker.get_or_create_runtime_session(str(agent_id), str(session_id))
+    runtime_session_context.metadata.pop("break_glass", None)
     runtime_session_context.metadata.update(permission_metadata)
     await broadcast_web_chat_event(
         agent_id,
@@ -2318,19 +2275,29 @@ async def resolve_session_permission(
         raise HTTPException(status_code=400, detail="Permission request is missing tool_name")
 
     from app.services.agent_tools import execute_session_permission_tool
+    from app.services.approval_ticket import hash_tool_input
 
     try:
+        permission_profile = {
+            "mode": "bypassPermissions",
+            "allowed_tools": [tool_name],
+            "writable_roots": list(DEFAULT_CCPLUS_WRITABLE_ROOTS),
+        }
+        if body.action == "allow_once":
+            permission_profile.update(
+                {
+                    "session_grant_scope": "once",
+                    "session_grant_tool_name": tool_name,
+                    "session_grant_input_hash": hash_tool_input(tool_name, arguments),
+                }
+            )
         tool_result = await execute_session_permission_tool(
             tool_name,
             arguments,
             agent_id=agent_id,
             user_id=current_user.id,
             session_id=str(session_id),
-            permission_profile={
-                "mode": "bypassPermissions",
-                "allowed_tools": [tool_name],
-                "writable_roots": list(DEFAULT_CCPLUS_WRITABLE_ROOTS),
-            },
+            permission_profile=permission_profile,
             tool_call_id=tool_call_id or None,
             turn_id=pending_frame.turn_id,
             runtime_task_id=pending_frame.runtime_task_id,

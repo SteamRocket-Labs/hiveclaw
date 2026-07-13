@@ -186,12 +186,12 @@ Company KB 是 Personal KB 之上的新租户权威平面，包含发布、权�
 
 **修复原则：**
 
-- 新会话默认取 tenant policy 的 `standard` / `askOnRisk`；
-- `bypassPermissions` 只允许 break-glass；
-- 必须有 operator、reason、scope、TTL、审批与审计；
+- 新 Agent 与没有显式设置的 Agent 以 `default` / 请求批准为初始值；
+- Agent manager 可把未来会话默认值设置为 `default`、`auto` 或 `bypassPermissions`；
+- `bypassPermissions` 是 session-local 审批模式，不是企业 break-glass，不要求 admin、reason 或 TTL；
 - 任何模式都不能绕过 tenant、RLS、secret、MCP token、irreversible hard deny。
 
-**落地状态（2026-07-10）：已关闭。** 新会话与无 profile 路径默认 `default`；tenant 只可配置 `default/auto`。`bypassPermissions` 仅允许 org/platform admin 以 session scope、reason、1–60 分钟 TTL 启用，状态同步写入 session、active RuntimeTask、runtime context、typed transcript event 与前端；过期或缺少任一绑定都会降级为标准模式。
+**落地状态（2026-07-13）：闭环。** 初始值保持 `default`；三个 session 模式对合法会话操作者平等可用；Agent manager 可保存三者任意一个；Web/IM 共用 canonical session mode 与 transcript evidence；企业/RLS/资源/沙箱/危险动作强规则作为不可关闭外层继续强制执行。旧 break-glass session/runtime metadata 由可逆 migration 安全归一为 `default`，不会在口径切换后升级成永久 Full access。
 
 #### SA-04：云端租约没有 fencing token
 
@@ -749,7 +749,7 @@ flowchart LR
 1. 先用 characterization tests 固定现有硬规则。
 2. 引入纯数据 `ToolDecision`，让各规则返回 verdict/reason，不各自执行审批。
 3. 删除 `execute_direct()`；`execute_approved()` 必须加载、验证、消费 approval ticket。
-4. 标准模式替代默认 bypass；break-glass 加 TTL/reason/scope/operator。
+4. 标准模式替代初始默认 bypass；Full access 保持 session-local，企业 exception/approval 使用独立 durable ticket，不复用 session mode。
 5. ToolMeta 成为 capability/risk/timeout/retry/idempotency 唯一描述源。
 6. 建 RLS bypass AST allowlist，并迁移到 locator -> tenant execution 模式。
 7. GuardPolicy 接入最终 decision composition；仍不替代 CapabilityPolicy 或 ResourcePermission。
@@ -1092,7 +1092,7 @@ git diff --check
 1. 新增 pure typed `ToolDecision`，统一投影 tenant/agent/actor/delegator、input/policy/capability hashes、outcome/reason、approval、run/session/trace 与 idempotency join keys；最终结果进入 `InvocationSpan` 元数据，不再由 UI 猜测治理状态。
 2. `execute_direct()` 已删除；`execute_approved()` 只接受 approval id 与 expected principals，通过一次性票据恢复 exact tool/arguments。ticket 同时绑定 requester 与 approver，执行沿用原请求人的权限，不能借审批人权限扩权。
 3. approval ticket 增加 TTL、input hash、live policy drift 校验、single consume、execution receipt 与 stuck-execution reconciliation。票据消费后的 hook 只能阻断，不能改写已批准参数；阻断/变更均形成失败 receipt，不误记成功，也不自动重放未知副作用。
-4. 初始 permission mode 改为 `default`；tenant 默认只允许 `default/auto`。Agent 可持久保存未来新会话的默认偏好；`bypassPermissions` 只向 admin 暴露，并且每个 session 仍必须以 reason + session scope + TTL 激活 break-glass，再同步到 session、active run、runtime context、typed event 与前端状态。普通成员 composer 不提供 full-access 选项。
+4. 初始 permission mode 改为 `default`；tenant 默认只允许 `default/auto`。Agent 可持久保存未来新会话的三值默认偏好；`bypassPermissions` 仅跳过 ordinary session prompt，合法会话操作者可直接选择，Agent manager 可保存为未来会话默认值，企业/RLS/资源/沙箱/危险动作强规则继续强制执行。
 5. `ToolMeta` 成为 timeout、risk、retry、idempotency、external visibility、delegated-user authorization 的执行描述源；删除 Tool service 内 timeout/egress 静态表，并补齐外部可见 Feishu/channel side effect 与典型只读工具标注。
 6. GuardPolicy 以 pure shrink-only evaluator 接入同一治理路径；malformed policy fail-closed，allow 不能覆盖 CapabilityPolicy/ResourcePermission/session/hook/preflight deny，approval 复用同一个 durable company ticket，并回写 `ToolDecision.approval_id`。
 7. 新增 exact AST RLS bypass manifest：每个调用绑定 file/function/reason/query shape/owner/expiry，新调用或 query widening 直接使 CI 失败。核心业务路径迁为窄 tenant locator → tenant-scoped execution；调用数由约 90/54 文件降至 67/40 文件。
@@ -1112,7 +1112,9 @@ git diff --check
 - ticket 消费后若 PRE_TOOL_USE 修改参数或新策略阻断，handler 不执行，receipt 为 failed；崩溃后长期 `executing` 转为 `needs_reconciliation`，明确 `side_effect_state=unknown` 与 `automatic_replay=false`。
 - GuardPolicy deny 高于 approval/allow，egress 规则只作用于 `ToolMeta.external_visible`，malformed policy deny；ToolDecision 可追到对应 approval id、delegator 与 span。
 - Web Chat、Workflow、Subagent、Team、MCP、Quota、Workspace、RuntimeTask 和 transcript projection 的业务读写均不再持有 RLS bypass；manifest exact-match 测试覆盖新增与扩大旁路。
-- break-glass 缺 operator/reason/session scope/TTL 或已过期时降为标准模式，tenant setting API 拒绝把它设成组织默认。
+- session Full access 不写 break-glass grant；tenant setting API 仍拒绝把 `bypassPermissions` 设成组织级默认，避免把个人/Agent 会话偏好升级成公司授权。
+- 2026-07-13 校正回归：删除 admin/reason/TTL/expiry 双状态和角色过滤；Agent manage 权威可保存三值默认；Web/IM 都写 `permission_profile_updated`。destructive 调用不再被同名 `allowed_tools` 扩权，一次性确认绑定 exact tool+input hash，确认后仍执行 final company hook。
+- 证据：TDD Red 为 backend 首轮 15 failed + 严格输入补充 1 failed、frontend 5 failed；Green 为 backend 聚焦 107 passed、真实 PostgreSQL migration 往返 2 passed、backend 全量 6738 passed/1 skipped，frontend 聚焦 114 passed、全量 115 files/667 tests，production build 与 bundle budget 通过。当前唯一 Alembic head 为 `session_permission_semantics_0713`。
 
 验证证据：
 

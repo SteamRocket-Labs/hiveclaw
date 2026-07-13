@@ -1,8 +1,5 @@
 from pathlib import Path
-from types import SimpleNamespace
-
 import pytest
-from fastapi import HTTPException
 from pydantic import ValidationError
 
 
@@ -110,26 +107,12 @@ def test_agent_model_persists_session_permission_default():
     assert str(column.server_default.arg) == "default"
 
 
-def test_agent_full_access_default_requires_company_admin():
-    from app.api.agents import _validate_default_session_permission_mode_update
+def test_agent_full_access_default_uses_existing_manage_authority_without_role_override():
+    project_root = Path(__file__).resolve().parents[3]
+    agents_api_source = (project_root / "backend/app/api/agents.py").read_text(encoding="utf-8")
 
-    with pytest.raises(HTTPException) as exc_info:
-        _validate_default_session_permission_mode_update(
-            {"default_session_permission_mode": "bypassPermissions"},
-            SimpleNamespace(role="member"),
-        )
-    assert exc_info.value.status_code == 403
-
-    _validate_default_session_permission_mode_update(
-        {"default_session_permission_mode": "bypassPermissions"},
-        SimpleNamespace(role="org_admin"),
-    )
-
-    _validate_default_session_permission_mode_update(
-        {"default_session_permission_mode": "bypassPermissions"},
-        SimpleNamespace(role="member"),
-        current_mode="bypassPermissions",
-    )
+    assert "_validate_default_session_permission_mode_update" not in agents_api_source
+    assert 'if access_level != "manage"' in agents_api_source
 
 
 def test_agent_runtime_surface_removes_legacy_role_and_message_cleanup_paths():

@@ -157,11 +157,11 @@ async def test_channel_permission_mode_command_reports_ask_first_for_missing_pro
     assert "本会话已授权工具：web_search, read_file" in reply
     assert "/permissions ask" in reply
     assert "/permissions auto" in reply
-    assert "/permissions full" not in reply
+    assert "/permissions full" in reply
 
 
 @pytest.mark.asyncio
-async def test_channel_permission_mode_command_rejects_unscoped_full_access() -> None:
+async def test_channel_permission_mode_command_allows_auditable_user_to_select_full_access(monkeypatch) -> None:
     from app.services.channel_agent_runtime import try_handle_channel_permission_mode_command
 
     agent_id = uuid4()
@@ -169,13 +169,24 @@ async def test_channel_permission_mode_command_rejects_unscoped_full_access() ->
     session = SimpleNamespace(
         id=uuid4(),
         agent_id=agent_id,
+        tenant_id=uuid4(),
         user_id=user.id,
         transcript_metadata_json={
             "permission_mode": "auto",
             "session_permission_allowed_tools": ["track_todo"],
         },
     )
-    active_run = SimpleNamespace(metadata_json={"permission_mode": "auto"})
+    active_run = SimpleNamespace(id=uuid4(), metadata_json={"permission_mode": "auto"})
+    events = []
+
+    async def fake_append_session_event(**kwargs):
+        events.append(kwargs)
+
+    async def fake_broadcast(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr("app.api.chat_sessions.append_session_event", fake_append_session_event)
+    monkeypatch.setattr("app.api.chat_sessions.broadcast_web_chat_event", fake_broadcast)
 
     class _Result:
         def __init__(self, value):
@@ -208,14 +219,17 @@ async def test_channel_permission_mode_command_rejects_unscoped_full_access() ->
         durable_session=session,
     )
 
-    assert "break-glass" in reply
-    assert session.transcript_metadata_json["permission_mode"] == "auto"
-    assert active_run.metadata_json["permission_mode"] == "auto"
-    assert db.commits == 0
+    assert "完全访问" in reply
+    assert session.transcript_metadata_json["permission_mode"] == "bypassPermissions"
+    assert active_run.metadata_json["permission_mode"] == "bypassPermissions"
+    assert db.commits == 1
+    assert events[0]["event_type"] == "permission_profile_updated"
+    assert events[0]["user_id"] == user.id
+    assert events[0]["metadata"]["permission_mode"] == "bypassPermissions"
 
 
 @pytest.mark.asyncio
-async def test_call_agent_llm_permission_mode_command_uses_channel_user_id_without_durable_user() -> None:
+async def test_call_agent_llm_permission_mode_command_uses_channel_user_id_without_durable_user(monkeypatch) -> None:
     from app.services.channel_agent_runtime import call_agent_llm
 
     agent_id = uuid4()
@@ -225,10 +239,20 @@ async def test_call_agent_llm_permission_mode_command_uses_channel_user_id_witho
     session = SimpleNamespace(
         id=session_id,
         agent_id=agent_id,
+        tenant_id=agent.tenant_id,
         user_id=user_id,
         transcript_metadata_json={"permission_mode": "auto"},
     )
-    active_run = SimpleNamespace(metadata_json={"permission_mode": "auto"})
+    active_run = SimpleNamespace(id=uuid4(), metadata_json={"permission_mode": "auto"})
+
+    async def fake_append_session_event(**_kwargs):
+        return None
+
+    async def fake_broadcast(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr("app.api.chat_sessions.append_session_event", fake_append_session_event)
+    monkeypatch.setattr("app.api.chat_sessions.broadcast_web_chat_event", fake_broadcast)
 
     class _Result:
         def __init__(self, value):
@@ -261,10 +285,10 @@ async def test_call_agent_llm_permission_mode_command_uses_channel_user_id_witho
         durable_user=None,
     )
 
-    assert "break-glass" in reply
-    assert session.transcript_metadata_json["permission_mode"] == "auto"
-    assert active_run.metadata_json["permission_mode"] == "auto"
-    assert db.commits == 0
+    assert "完全访问" in reply
+    assert session.transcript_metadata_json["permission_mode"] == "bypassPermissions"
+    assert active_run.metadata_json["permission_mode"] == "bypassPermissions"
+    assert db.commits == 1
 
 
 @pytest.mark.asyncio

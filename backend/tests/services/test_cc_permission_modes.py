@@ -81,7 +81,7 @@ def test_permission_profile_normalizes_cc_mode_names_and_legacy_aliases() -> Non
     assert build_permission_profile({"mode": "dontAsk"}).mode == PermissionMode.DONT_ASK
     assert build_permission_profile({"mode": "dont_ask_low_risk"}).mode == PermissionMode.DONT_ASK
     assert build_permission_profile({"mode": "auto_review"}).mode == PermissionMode.AUTO
-    assert build_permission_profile({"mode": "break_glass"}).mode == PermissionMode.BYPASS_PERMISSIONS
+    assert build_permission_profile({"mode": "break_glass"}).mode == PermissionMode.DEFAULT
     assert build_permission_profile({"mode": "bogus"}).mode == PermissionMode.DEFAULT
 
 
@@ -314,6 +314,34 @@ async def test_bypass_permissions_still_requires_one_time_confirmation_for_delet
     assert approval_calls == []
     assert events[-1]["status"] == "session_permission_required"
     assert events[-1]["permission_request"]["allow_session_allowed"] is False
+
+
+@pytest.mark.asyncio
+async def test_prior_session_tool_allow_cannot_authorize_a_destructive_command() -> None:
+    approval_calls: list[dict] = []
+    audit_calls: list[dict] = []
+    events: list[dict] = []
+    message = await run_tool_governance(
+        ToolGovernanceContext(
+            agent_id=uuid.uuid4(),
+            user_id=uuid.uuid4(),
+            tenant_id=str(uuid.uuid4()),
+            tool_name="run_command",
+            arguments={"command": "rm -rf workspace/tmp"},
+            permission_profile=PermissionProfileV1(
+                mode=PermissionMode.BYPASS_PERMISSIONS,
+                allowed_tools=("run_command",),
+            ),
+        ),
+        _deps(approval_calls=approval_calls, audit_calls=audit_calls),
+        event_callback=events.append,
+    )
+
+    assert message is not None
+    payload = json.loads(message)
+    assert payload["status"] == "session_permission_required"
+    assert payload["permission_request"]["confirmation_kind"] == "destructive_once"
+    assert payload["permission_request"]["allow_session_allowed"] is False
 
 
 @pytest.mark.asyncio

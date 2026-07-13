@@ -78,7 +78,6 @@ vi.mock('./agent-detail/AgentA2ASection', () => ({ default: () => null }));
 
 import AgentDetail, {
   defaultSessionPermissionModeFromAgent,
-  sessionBreakGlassExpiryDelay,
   sessionPermissionModeFromSession,
 } from './AgentDetail';
 
@@ -87,21 +86,8 @@ describe('AgentDetail session permission state', () => {
     expect(defaultSessionPermissionModeFromAgent({ default_session_permission_mode: 'auto' })).toBe('auto');
     expect(defaultSessionPermissionModeFromAgent(
       { default_session_permission_mode: 'bypassPermissions' },
-      true,
     )).toBe('bypassPermissions');
-    expect(defaultSessionPermissionModeFromAgent(
-      { default_session_permission_mode: 'bypassPermissions' },
-      false,
-    )).toBe('default');
     expect(defaultSessionPermissionModeFromAgent({ default_session_permission_mode: 'unknown' })).toBe('default');
-  });
-
-  it('computes the remaining full-access lifetime for UI downgrade scheduling', () => {
-    expect(sessionBreakGlassExpiryDelay({
-      permission_mode: 'bypassPermissions',
-      break_glass: { expires_at: '2026-07-13T12:01:00Z' },
-    }, Date.parse('2026-07-13T12:00:00Z'))).toBe(60_000);
-    expect(sessionBreakGlassExpiryDelay({ permission_mode: 'auto' }, 0)).toBeNull();
   });
 
   it('restores the composer permission mode from persisted session metadata', () => {
@@ -110,7 +96,7 @@ describe('AgentDetail session permission state', () => {
         id: 'session-1',
         permission_mode: 'bypassPermissions',
       }),
-    ).toBe('default');
+    ).toBe('bypassPermissions');
 
     expect(
       sessionPermissionModeFromSession({
@@ -134,19 +120,6 @@ describe('AgentDetail session permission state', () => {
 
     expect(
       sessionPermissionModeFromSession({
-        id: 'session-5',
-        permission_mode: 'bypassPermissions',
-        break_glass: {
-          operator_id: 'admin-1',
-          reason: 'incident response',
-          scope: 'session',
-          expires_at: '2999-01-01T00:00:00Z',
-        },
-      }),
-    ).toBe('bypassPermissions');
-
-    expect(
-      sessionPermissionModeFromSession({
         id: 'draft:session-6',
         is_draft: true,
         permission_mode: 'bypassPermissions',
@@ -154,24 +127,15 @@ describe('AgentDetail session permission state', () => {
     ).toBe('bypassPermissions');
   });
 
-  it('activates full access through a scoped, expiring break-glass update', async () => {
+  it('activates full access as a session mode with a simple risk acknowledgement', async () => {
     const source = await readSource('./AgentDetail.tsx');
 
-    expect(source).toContain("break_glass_scope: 'session'");
-    expect(source).toContain('break_glass_reason: reason');
-    expect(source).toContain('break_glass_ttl_minutes: 60');
+    expect(source).toContain("persistSessionPermissionMode('bypassPermissions')");
+    expect(source).toContain('Full access skips routine session approval prompts');
     expect(source).toContain('await ensureDurableActiveSession()');
-    expect(source).toContain(
-      'isDraftHumanChatSession(activeSession) ? DEFAULT_SESSION_PERMISSION_MODE : previous',
-    );
-    expect(source).not.toContain('setSessionPermissionMode(previous)');
-  });
-
-  it('surfaces a server-sync failure when a full-access grant expires', async () => {
-    const source = await readSource('./agent-detail/SessionPermissionLifecycle.tsx');
-
-    expect(source).not.toContain('.catch(() => undefined)');
-    expect(source).toContain("agent.chat.permission.expirySyncFailed");
+    expect(source).not.toContain('break_glass_');
+    expect(source).not.toContain('useSessionPermissionExpiry');
+    expect(source).not.toContain('SessionFullAccessPrompt');
   });
 });
 

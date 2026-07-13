@@ -121,23 +121,6 @@ def _agent_out_dict(agent: Agent) -> dict:
     return normalize_agent_heartbeat_output(_agent_out(agent).model_dump())
 
 
-def _validate_default_session_permission_mode_update(
-    update_data: dict,
-    current_user: User,
-    *,
-    current_mode: str | None = None,
-) -> None:
-    if update_data.get("default_session_permission_mode") != "bypassPermissions":
-        return
-    if current_mode == "bypassPermissions":
-        return
-    if getattr(current_user, "role", None) not in {"org_admin", "platform_admin"}:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Full access may only be configured as the default by an organization admin",
-        )
-
-
 def _agent_list_summary_stmt():
     return select(
         Agent.id.label("id"),
@@ -1108,11 +1091,6 @@ async def update_agent(
         )
 
     update_data = data.model_dump(exclude_unset=True)
-    _validate_default_session_permission_mode_update(
-        update_data,
-        current_user,
-        current_mode=getattr(agent, "default_session_permission_mode", None),
-    )
 
     clamped_fields = []  # track fields adjusted by tenant floor
 

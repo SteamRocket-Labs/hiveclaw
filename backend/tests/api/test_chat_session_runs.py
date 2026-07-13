@@ -171,7 +171,6 @@ def test_start_session_run_routes_to_runtime_service(monkeypatch):
         "permission_mode": "default",
         "writable_roots": ["workspace/"],
         "permission_profile": {"mode": "default", "allowed_tools": [], "writable_roots": ["workspace/"]},
-        "break_glass": None,
     }
 
 
@@ -236,7 +235,6 @@ def test_create_session_run_atomically_creates_human_session_and_starts_runtime(
         "permission_mode": "auto",
         "writable_roots": ["workspace/"],
         "permission_profile": {"mode": "auto", "allowed_tools": [], "writable_roots": ["workspace/"]},
-        "break_glass": None,
     }
 
 
@@ -272,7 +270,6 @@ def test_start_session_run_threads_ccplus_permission_profile(monkeypatch):
         "permission_mode": "default",
         "writable_roots": ["workspace/"],
         "permission_profile": {"mode": "default", "allowed_tools": ["send_email"], "writable_roots": ["workspace/"]},
-        "break_glass": None,
     }
 
 
@@ -282,7 +279,7 @@ def test_update_session_permission_mode_updates_session_active_run_and_runtime_c
     user_id = uuid4()
     session_id = uuid4()
     agent = SimpleNamespace(id=agent_id, creator_id=uuid4(), tenant_id=tenant_id)
-    user = SimpleNamespace(id=user_id, role="org_admin", tenant_id=tenant_id)
+    user = SimpleNamespace(id=user_id, role="member", tenant_id=tenant_id)
     session = SimpleNamespace(
         id=session_id,
         agent_id=agent_id,
@@ -316,9 +313,6 @@ def test_update_session_permission_mode_updates_session_active_run_and_runtime_c
         f"/agents/{agent_id}/sessions/{session_id}/permissions/profile",
         json={
             "permission_mode": "bypassPermissions",
-            "break_glass_reason": "incident containment",
-            "break_glass_scope": "session",
-            "break_glass_ttl_minutes": 15,
         },
     )
 
@@ -345,9 +339,7 @@ def test_update_session_permission_mode_updates_session_active_run_and_runtime_c
         "writable_roots": ["workspace/"],
     }
     assert runtime_context.metadata["writable_roots"] == ["workspace/"]
-    assert runtime_context.metadata["break_glass"]["operator_id"] == str(user_id)
-    assert runtime_context.metadata["break_glass"]["reason"] == "incident containment"
-    assert runtime_context.metadata["break_glass"]["scope"] == "session"
+    assert "break_glass" not in runtime_context.metadata
     assert db.commits == 1
 
 
@@ -1282,6 +1274,7 @@ def test_resolve_session_permission_allow_reuses_active_run_instead_of_starting_
     db = _FilteringPermissionDB([event])
     broadcasts = []
     persisted_calls = []
+    executed_calls = []
 
     async def fake_get_run_session_and_agent(**_kwargs):
         return session, agent, "use"
@@ -1292,7 +1285,8 @@ def test_resolve_session_permission_allow_reuses_active_run_instead_of_starting_
     async def fake_broadcast(*args):
         broadcasts.append(args)
 
-    async def fake_execute_session_permission_tool(*_args, **_kwargs):
+    async def fake_execute_session_permission_tool(*_args, **kwargs):
+        executed_calls.append(kwargs)
         return "write complete"
 
     async def fake_persist_tool_call(**kwargs):
@@ -1324,6 +1318,10 @@ def test_resolve_session_permission_allow_reuses_active_run_instead_of_starting_
     assert response.status_code == 200
     assert response.json()["status"] == "allowed"
     assert response.json()["run"] == {"run_id": run_id.hex, "status": "running"}
+    permission_profile = executed_calls[-1]["permission_profile"]
+    assert permission_profile["session_grant_scope"] == "once"
+    assert permission_profile["session_grant_tool_name"] == "write_file"
+    assert len(permission_profile["session_grant_input_hash"]) == 64
     assert persisted_calls[-1]["data"]["result"] == "write complete"
     assert broadcasts[-1][2]["status"] == "allowed"
 

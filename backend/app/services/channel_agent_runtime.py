@@ -266,24 +266,22 @@ async def try_handle_channel_permission_mode_command(
             f"本会话已授权工具：{allowed_text}\n"
             "可切换为：\n"
             "1. 请求批准：/permissions ask\n"
-            "2. 替我批准：/permissions auto"
+            "2. 替我批准：/permissions auto\n"
+            "3. 完全访问：/permissions full"
         )
 
     if user is None:
         return "权限模式切换需要可审计的用户身份。请先绑定账号，或到 Web 端会话内切换。"
 
     mode = normalize_permission_mode(requested_mode or DEFAULT_CCPLUS_PERMISSION_MODE.value).value
-    if mode == "bypassPermissions":
-        return (
-            "完全访问只能由组织管理员通过 Web 会话的 break-glass 流程开启，"
-            "并且必须填写原因、限定 session scope 和 1-60 分钟 TTL。"
-        )
     permission_metadata = chat_sessions_api._session_permission_metadata(mode, session)
     session_metadata = dict(getattr(session, "transcript_metadata_json", None) or {})
+    session_metadata.pop("break_glass", None)
     session_metadata.update(permission_metadata)
     session.transcript_metadata_json = session_metadata
 
     session_uuid = _uuid_or_none(session_id or getattr(session, "id", None))
+    active_run = None
     if session_uuid is not None:
         active_result = await db.execute(
             select(RuntimeTask)
@@ -298,10 +296,35 @@ async def try_handle_channel_permission_mode_command(
         active_run = active_result.scalar_one_or_none()
         if active_run is not None:
             active_metadata = dict(getattr(active_run, "metadata_json", None) or {})
+            active_metadata.pop("break_glass", None)
             active_metadata.update(permission_metadata)
             active_run.metadata_json = active_metadata
 
+        await chat_sessions_api.append_session_event(
+            db=db,
+            agent_id=agent_id,
+            tenant_id=getattr(session, "tenant_id", None),
+            session_id=session_uuid,
+            actor_type="user",
+            event_type="permission_profile_updated",
+            content=f"Session permission mode changed to {mode}",
+            user_id=getattr(user, "id", None),
+            runtime_task_id=getattr(active_run, "id", None),
+            metadata={**permission_metadata, "source_channel": session_source},
+            materialize_chat_message=False,
+            source=session_source,
+        )
     await db.commit()
+    if session_uuid is not None:
+        await chat_sessions_api.broadcast_web_chat_event(
+            agent_id,
+            session_uuid,
+            {
+                "type": "permission_profile_updated",
+                "event_type": "permission_profile_updated",
+                **permission_metadata,
+            },
+        )
     return f"已将当前会话权限模式切换为：{_channel_permission_mode_label(mode)}。"
 
 

@@ -1559,11 +1559,9 @@
         "onceOnly": "This action can only be allowed once.",
         "deleteOnceOnly": "Delete actions can only be allowed once.",
         "updateFailed": "Failed to update session permission mode",
-        "fullAccessAdminOnly": "Full access requires a company administrator.",
-        "fullAccessTitle": "Enable full access for 60 minutes",
-        "fullAccessReasonPlaceholder": "Reason for this session (at least 8 characters)",
-        "fullAccessReasonTooShort": "Enter a reason of at least 8 characters.",
-        "expirySyncFailed": "Full access expired, but the session status could not be refreshed. Reload before continuing."
+        "fullAccessTitle": "Use Full access for this session?",
+        "fullAccessMessage": "Full access skips routine session approval prompts. Enterprise access, safety, and destructive-action rules always apply.",
+        "fullAccessConfirm": "Use Full access"
       },
       "actions": {
         "like": "Like",
@@ -1769,7 +1767,10 @@
         "description": "Choose the permission mode used when this employee starts a new conversation.",
         "label": "Default permission mode",
         "hint": "The mode can still be changed from the conversation composer.",
-        "fullAccessHint": "Each new conversation still requires an administrator to activate a 60-minute session-scoped grant."
+        "fullAccessHint": "Enterprise access, safety, and destructive-action rules always apply.",
+        "fullAccessConfirmTitle": "Use Full access by default?",
+        "fullAccessConfirmMessage": "New conversations will skip routine session approval prompts. Enterprise access, safety, and destructive-action rules always apply.",
+        "fullAccessConfirm": "Save Full access default"
       },
       "access": {
         "title": "Access Permissions",

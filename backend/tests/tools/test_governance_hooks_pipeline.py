@@ -10,6 +10,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.runtime.ccplus_contracts import PermissionMode, PermissionProfileV1
+from app.services.approval_ticket import hash_tool_input
 from app.tools.governance import (
     GovernanceDependencies,
     ToolGovernanceContext,
@@ -120,6 +122,31 @@ async def test_declarative_deny_blocks_after_platform_gates():
     assert "company deny rule" in result
     hook_events = [e for e in events if e.get("status") == "governance_hook_denied"]
     assert hook_events and hook_events[0]["tool_name"] == "write_file"
+
+
+@pytest.mark.asyncio
+async def test_exact_destructive_session_grant_still_runs_final_company_hooks():
+    arguments = {"command": "rm -rf workspace/tmp"}
+    context = ToolGovernanceContext(
+        agent_id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        tenant_id=str(uuid.uuid4()),
+        tool_name="run_command",
+        arguments=arguments,
+        session_id="session-1",
+        permission_profile=PermissionProfileV1(
+            mode=PermissionMode.BYPASS_PERMISSIONS,
+            session_grant_scope="once",
+            session_grant_tool_name="run_command",
+            session_grant_input_hash=hash_tool_input("run_command", arguments),
+        ),
+    )
+    deps = _deps(load_governance_hooks=_loader([_declarative("deny", matcher="run_command")]))
+
+    result = await run_tool_governance(context, deps)
+
+    assert result is not None
+    assert "company deny rule" in result
 
 
 @pytest.mark.asyncio

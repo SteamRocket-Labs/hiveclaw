@@ -69,6 +69,9 @@ class PermissionProfileV1:
     sandbox: SandboxProfile = SandboxProfile.WORKSPACE_WRITE
     request_permission_enabled: bool = True
     allowed_tools: tuple[str, ...] = ()
+    session_grant_scope: str | None = None
+    session_grant_tool_name: str | None = None
+    session_grant_input_hash: str | None = None
     denied_actions: tuple[str, ...] = ()
     capability_policy_snapshot: dict[str, Any] = field(default_factory=dict)
     default_decision: str = "escalate"
@@ -86,7 +89,6 @@ _PERMISSION_MODE_ALIASES: dict[str, PermissionMode] = {
     "dont_ask_low_risk": PermissionMode.DONT_ASK,
     "dont_ask": PermissionMode.DONT_ASK,
     "auto_review": PermissionMode.AUTO,
-    "break_glass": PermissionMode.BYPASS_PERMISSIONS,
     "full_access": PermissionMode.BYPASS_PERMISSIONS,
     "bypass_permissions": PermissionMode.BYPASS_PERMISSIONS,
 }

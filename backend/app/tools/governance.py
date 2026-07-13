@@ -392,6 +392,21 @@ def _permission_mode_for_context(context: ToolGovernanceContext) -> PermissionMo
     )
 
 
+def _has_exact_session_grant(context: ToolGovernanceContext) -> bool:
+    """Match a single approved call without widening permission for the tool name."""
+    profile = context.permission_profile
+    if profile is None or getattr(profile, "session_grant_scope", None) != "once":
+        return False
+    if getattr(profile, "session_grant_tool_name", None) != context.tool_name:
+        return False
+    from app.services.approval_ticket import hash_tool_input
+
+    return getattr(profile, "session_grant_input_hash", None) == hash_tool_input(
+        context.tool_name,
+        context.arguments,
+    )
+
+
 def _session_no_policy_action(context: ToolGovernanceContext) -> str:
     """Resolve CC session permission for mapped tools with no enterprise policy.
 
@@ -404,11 +419,11 @@ def _session_no_policy_action(context: ToolGovernanceContext) -> str:
         return "allow"
 
     profile = context.permission_profile
+    if _detect_destructive_delete(context.tool_name, context.arguments):
+        return "allow" if _has_exact_session_grant(context) else "ask"
     allowed_tools = set(getattr(profile, "allowed_tools", ()) or ()) if profile is not None else set()
     if context.tool_name in allowed_tools:
         return "allow"
-    if _detect_destructive_delete(context.tool_name, context.arguments):
-        return "ask"
 
     mode = _permission_mode_for_context(context)
     if mode == PermissionMode.BYPASS_PERMISSIONS:
@@ -431,11 +446,11 @@ def _session_explicit_policy_action(context: ToolGovernanceContext) -> str:
     confirmations that are still resolved inside the current session.
     """
     profile = context.permission_profile
+    if _detect_destructive_delete(context.tool_name, context.arguments):
+        return "allow" if _has_exact_session_grant(context) else "ask"
     allowed_tools = set(getattr(profile, "allowed_tools", ()) or ()) if profile is not None else set()
     if context.tool_name in allowed_tools:
         return "allow"
-    if _detect_destructive_delete(context.tool_name, context.arguments):
-        return "ask"
 
     mode = _permission_mode_for_context(context)
     if mode in {PermissionMode.DONT_ASK, PermissionMode.PLAN}:
@@ -917,7 +932,6 @@ class _GovernanceState:
     escalated_capability: str | None = None
     approval_reason: str | None = None
     dangerous_reason: str | None = None
-    terminal_allow: bool = False
 
 
 async def _run_governance_inner(
@@ -941,8 +955,6 @@ async def _run_governance_inner(
         message = await stage(context, deps, state, event_callback)
         if message is not None:
             return message
-        if state.terminal_allow:
-            return None
     return None
 
 
@@ -1291,12 +1303,7 @@ async def _check_dangerous_policy(
     if syntax_or_secret is not None:
         return syntax_or_secret
     if capability == _DESTRUCTIVE_DELETE_CAPABILITY:
-        message = await _check_destructive_delete(
-            context, deps, state.tenant_uuid, state.dangerous_reason, event_callback
-        )
-        if message is None:
-            state.terminal_allow = True
-        return message
+        return await _check_destructive_delete(context, deps, state.tenant_uuid, state.dangerous_reason, event_callback)
     allowed, message = await _check_general_dangerous_capability(
         context,
         deps,

@@ -208,7 +208,7 @@ flowchart LR
 | G04 | Principal/delegation/external identity | envelope | server binding | resolver | principal metadata | reject unbound | governance | tests | 闭环 | `services/principal_context.py`; `models/external_principal.py` |
 | G05 | Guard/Capability/Tool policy | tool proposal | tenant/agent | governance pipeline | audit/decision | deny/approval | ToolRuntime/UI | tests | 闭环 | `tools/governance.py`; `services/capability_gate.py` |
 | G06 | Budget/quota/cost | run/tool/model | tenant policy | budget service | ledger/outbox | breaker/reconcile | UI/admin | tests | 闭环 | `services/runtime_budget_service.py` |
-| G07 | Break-glass | admin+reason+TTL | org/platform admin | session permission update | transcript/audit | expiry | session UI | tests | 闭环 | `api/chat_sessions.py` |
+| G07 | Session Full access | session/Agent default choice | session operator / Agent manager | session permission update | transcript/audit | resume + explicit mode change | session UI | governance matrix tests | 闭环 | `api/chat_sessions.py`; `api/agents.py`; `tools/governance.py`; `session_permission_semantics_0713.py` |
 | G08 | LLM/MCP credentials | tenant config | secrets provider | connector boundary | audit | revoke/fail | runtime | tests | 闭环 | `services/secrets_provider.py`; `mcp_authz.py` |
 | G09 | Channel bot secrets at rest | channel config | tenant/channel authority | channel services | plaintext DB columns | revoke only；tenant scrub 不完整 | channel runtime | 缺 encryption/backfill test | 断点 | `models/channel_config.py`; R-018 |
 | U01 | Ordinary user projection | session state | access check | React Query/WS reducer | durable backend facts | reconnect/backfill | user | unit/e2e | 闭环 | `frontend/src/pages/agent-detail/AgentChatSection.tsx` |
@@ -326,7 +326,7 @@ flowchart LR
 | Delegate allowed / grant missing | delegation→resource authority | denied | owner grant | delegation+authority audit | 低 |
 | Operator read / mutation authority missing | read projection→action auth | read-only | 用有权角色发起 | audit | 低 |
 | Channel identity valid / tenant binding missing | external principal→tenant resolver | denied/auth failed | 重新绑定 identity | principal audit | 低 |
-| Break-glass active / destructive approval missing | session profile→hard approval | waiting/需批准 | 显式批准 | TTL+reason+approval | 低；设计正确 |
+| Full access active / destructive approval missing | session profile→bypass-immune hard approval | waiting/需批准 | 显式批准 | typed approval/event | 低；Full access 不扩大 destructive authority |
 | Provider failure / UI waiting | provider→runtime phase | retry/degraded/terminal | fallback或用户 retry | span+phase | 中；需真实故障注入 |
 | 多层同时 waiting | plan/approval/worker分别有事实 | UI应显示最高优先 blocker | 满足对应 gate | ledger/events | 中；无组合 E2E |
 
@@ -890,7 +890,7 @@ flowchart LR
 | Branch/rewind/workspace restore | session command runtime | transcript lineage+snapshot | version guard/rollback | GitLine/UI | backend+frontend tests |
 | Local Bridge receipt | bridge runner | local receipt ledger | replay/offline reconnect | local channel | Python 30+Node 14 passed |
 | RLS/bypass | tenant-scoped session/bypass context | DB policy+audit | rollback/fail closed | all data services | migrations+architecture tests |
-| Break-glass | session permission API | TTL/reason/event | expiry | session governance | tests |
+| Session Full access | session permission API | canonical mode/event | resume + explicit mode change | session governance | tests |
 | Approval 信封 hash 绑定 [主审复核] | `execute_approved` 消费不可变票据 | ticket + 5 重 hash（input/policy/envelope/decision/idempotency） | crash 隔离不重放 | tool/model | `tools/service.py:949-1066`；approve-then-swap 结构性阻断 |
 | 跨进程 cancel [主审复核] | API DB killed + Redis 信号 | DB status=killed（权威）| preserve_killed 抑制迟到终态 | UI CANCELLED | `runtime_control_bus.py`；kernel 协作检查（Redis 依赖见 R-001 P3 兜底缺口）|
 | 统一记忆激活方程 [主审复核] | relevance×context_boost×base_level×task_modulation | bounded[0.8,1.6] | 访问遥测 join→BaseLevel | prompt dynamic suffix | `memory/activation.py:74-118`（确为统一方程非平行层）|
@@ -1108,13 +1108,13 @@ exit 0, real 0.21s
 | Gate | 结论 | 必须满足的证据 |
 |---|---|---|
 | **安全门（最高优先）** | **核心生产门通过；外部系统 smoke 待补** | **生产 runtime role=`app_rls`、`superuser=false`、`bypassrls=false`、strict enforcement 且 violations=0；RLS fleet audit 为 unprotected=0/inert=0/enforced=115；Vercel Sandbox deny-all/文件 round-trip probe 30/30。真实 connector token 轮换、duplicate webhook 与供应商侧 dead-letter 仍不能由本次基础部署冒充已验。** |
-| 代码/架构候选门 | **已部署；当前源码与测试通过** | R-001~R-007、R-009~R-028 当前范围缺口已关闭；R-008 按“边界闭环 + Company KB 本体已知缺失”处理；最终 backend 全量 6725 passed/1 skipped，frontend 115 files/663 tests 与 production build 通过 |
+| 代码/架构候选门 | **上一候选已部署；当前源码与测试通过、待部署** | R-001~R-007、R-009~R-028 当前范围缺口已关闭；R-008 按“边界闭环 + Company KB 本体已知缺失”处理；2026-07-13 当前候选 backend 全量 6738 passed/1 skipped，frontend 115 files/667 tests 与 production build/bundle budget 通过 |
 | 自进化基石门 | 生产基础健康；故障注入待补 | evolution/trigger/workflow daemons 生产 health 均 healthy、error_count=0；R-004/R-007/R-017/R-024/R-026 本地故障矩阵已绿，但真实多副本 kill/corruption 仍需独立演练 |
-| Migration/backfill门 | **既有生产通过；本次候选待部署** | 当前生产仍为 Alembic head=`hr_draft_recovery_0712`；本次 Agent 默认会话模式候选新增唯一 head=`agent_session_permission_default_0713`，本地真实历史 revision 升降级矩阵已通过，只有三服务部署和生产 head 核对后才能把新列称为生产闭环。既有 RLS coverage 与 tenant-null 生产事实不变。 |
+| Migration/backfill门 | **既有生产通过；本次候选待部署** | 当前候选唯一 Alembic head=`session_permission_semantics_0713`。真实 PostgreSQL 已完成 `head → parent → seed legacy grant → head → parent → head` 往返：旧 session/runtime break-glass 安全归一为 `default`、原字段可逆恢复、再次升级幂等，Agent 显式保存的 `bypassPermissions` 默认值保持不变。只有三服务部署和生产 head 核对后才能称为生产闭环。 |
 | Staging fault-injection门 | 本地故障矩阵通过；真实 staging NO-GO | 多副本 startup、claim lease、approval crash、Dream kill、outbox 前后 crash、lifecycle.json 崩溃写与 15 条 journey 均有本地 deterministic/真实 PostgreSQL 证据；仍须在与生产同构的多副本、Redis、持久盘、Vercel Sandbox 环境重跑，不能把本机故障注入冒充 staging 事实 |
 | Railway生产门 | **上一候选三服务通过；本次候选待部署** | `ac19ee17b` 的 backend `58c30df0…`、backend-api `674b7c7f…`、frontend `084058da…` 均 `SUCCESS`；P-002/P-003 的 Sidebar 与权限默认模式修复尚未部署，不能沿用上一候选的部署证据冒充当前 checkout 已上线。 |
-| 权限矩阵门 | 生产结构核验通过；外部动作 smoke 待补 | cross-tenant、delegate grant、break-glass expiry、operator read/write 与 Local Bridge approval 本地矩阵已绿；生产 runtime role、RLS coverage、tenant-null 分布已只读核验，真实 connector/action 仍归 External Channel 门 |
-| 功能与用户体验门 | **本地候选闭环；生产待部署** | R-019/R-025/R-027/R-028 本地闭环；P-002 已恢复 Agent 圈/自动化/知识库/本地连接四个常驻入口；P-003 已恢复请求批准/替我批准/完全访问三模式，并把 Agent Settings 默认值接入所有新会话入口。完全访问仍是管理员、逐会话、带原因、60 分钟的 break-glass，不是 cloud 全局 bypass。生产页面仍需部署后验收。 |
+| 权限矩阵门 | **本地闭环；生产 smoke 待部署** | Full access 只影响 ordinary session prompt；Capability/Guard/tenant/resource 等既有外层矩阵保持绿。本轮额外修复 `allowed_tools` 不能给 destructive 参数扩权，并以 exact tool+input hash 单次 grant 证明危险动作确认后仍继续执行 final company hook。 |
+| 功能与用户体验门 | **P-003 本地闭环；生产待部署** | P-002 四入口保持闭环；P-003 已删除 admin+reason+TTL、role filtering 与 expiry lifecycle。新 Agent 初始 `default`，Agent manager 可保存三值默认，合法 session operator 在 Web/IM 均可选三模式；Full access 有简洁风险确认，企业治理无普通用户开关。 |
 | External Channel门 | 本地代码候选通过；真实外部系统未验证 | R-018/R-020 的存储、审批、token expiry、duplicate/replay、outbox/receipt 恢复已有本地证据；真实 connector identity、供应商 token、duplicate webhook、轮换和 dead-letter smoke 仍属 staging/production 验收 |
 | Artifact交付门 | 本地候选通过；真实 Sandbox 未验证 | 本地 artifact→chat→Deliverables/Workspace→download 与 crash/retry 路径已有回归；仍须在 staging 执行 Vercel Sandbox→持久 workspace→artifact evidence→聊天/侧栏→下载的全链 smoke |
 | Company KB 范围门 | 已知缺失/不阻塞当前第一部分 | R-008 文案只描述 legacy read-only files；不出现正式 Company KB 已可用的 route/UI shell。Company KB 正式能力进入明确的第二部分完整建设 |
@@ -1128,7 +1128,7 @@ exit 0, real 0.21s
 | 权重 | 覆盖判断 | 得分贡献 |
 |---|---|---|
 | current source/call path 45% | 高覆盖，关键入口/consumer/recovery 逐段复核；28 项均回到当前 checkout 验证。终局 graph transport 不可用已诚实降级为精确源码/Git/迁移/运行路径复核，不沿用旧图谱冒充当前证据 | 44/45 |
-| executable tests 25% | backend 6706、frontend 663、build/ruff/format/架构门、30 条标准 Playwright、15 条 fresh strict-RLS journey、Hive Connect 三连全仓与三包 race 均绿 | 25/25 |
+| executable tests 25% | 当前候选 backend 6738 passed/1 skipped、frontend 115 files/667 tests、build、全仓 ruff、涉及文件 format 与架构门、真实 PostgreSQL permission migration 往返，以及既有 30 条标准 Playwright、15 条 fresh strict-RLS journey、Hive Connect 三连全仓与三包 race 均绿 | 25/25 |
 | CC/Codex/Hermes source comparison 10% | 代表性生命周期源码已对照，非穷举每个分支 | 8/10 |
 | migration/recovery/fault injection 10% | migration/回填/恢复测试充分，真实 staging 多副本与外部系统注入仍待执行 | 8/10 |
 | browser/user journey 10% | 15 条真实 API/runtime/worker/browser 原子旅程全部通过，并已成为 release gate | 10/10 |
@@ -1140,7 +1140,7 @@ exit 0, real 0.21s
 
 ### 15.3 最终声明
 
-原始审计阶段只产出报告；随后 R-001~R-028 已按执行账本逐项完成实现、回归、证据更新与独立提交。当前结论是 **28/28 原审计范围闭环并已部署生产**，其中 R-008 只代表 Company KB 缺失边界已经诚实隔离，不代表 Company KB 本体已开发。R-017 的 heartbeat T2→T3 已由 `75801b113` 接入真实 T3 Gate 契约并以 24 项真 Gate 扩展回归，不是 fake gate。生产 smoke 新发现的 P-001 已完成代码修复与三服务重部署；其后 owner 新确认的 P-002 Sidebar 产品入口和 P-003 会话权限默认模式已形成本地闭环候选，尚待部署与生产 UI 验收。主仓 `.ultra/**` 状态记录、未跟踪 `task.md` 与 Hive Connect `.codebase-memory/` 均未纳入任何修复提交。
+原始审计阶段只产出报告；随后 R-001~R-028 已按执行账本逐项完成实现、回归、证据更新与独立提交。当前结论是 **28/28 原审计范围闭环并已部署生产**，其中 R-008 只代表 Company KB 缺失边界已经诚实隔离，不代表 Company KB 本体已开发。R-017 的 heartbeat T2→T3 已由 `75801b113` 接入真实 T3 Gate 契约并以 24 项真 Gate 扩展回归，不是 fake gate。生产 smoke 新发现的 P-001 已完成代码修复与三服务重部署；owner 后续确认的 P-002 Sidebar 产品入口保持闭环，P-003 已在 2026-07-13 按 session-local Full access 契约完成本地重落地、全量回归与 migration 往返，尚待三服务部署和生产 UI/IM smoke。主仓 `.ultra/**` 状态记录、未跟踪 `task.md` 与 Hive Connect `.codebase-memory/` 均未纳入任何修复提交。
 
 ## 16. 28 项原子缺口修复执行账本
 
@@ -1210,19 +1210,20 @@ exit 0, real 0.21s
 
 ### [P-003] 三种会话权限模式与 Agent 默认值的输入/消费断开
 
-后端一直保留受治理的 session break-glass API，但前端删除了“完全访问”，Agent 也没有持久默认会话模式，导致 Settings、Composer、新会话创建和 runtime metadata 之间断链。本次恢复的“完全访问”**不是** cloud 全局 `bypassPermissions`：它只能由公司管理员逐会话填写原因后激活，scope 固定为 session，TTL 固定为 60 分钟，仍服从企业硬规则、RLS、Capability Gate 和 destructive confirmation。
+2026-07-13 口径校正：2026-07-12 的实现正确恢复了三模式、Agent 默认值和 session/runtime 消费链，但把 CC/Codex 式 `bypassPermissions` 错误地复用成了企业 break-glass。正确契约是：新 Agent 初始默认 `default`；Agent manager 可把未来新会话默认值保存为三者任意一个；合法会话操作者可覆盖当前 session；Full access 只跳过 ordinary session-local prompt，不要求 admin、reason 或 TTL，也不能扩大 tenant、RLS、resource、GuardPolicy、CapabilityPolicy、MCP、secret、quota、sandbox、destructive confirmation 或 final hook authority。
 
 | 原子 | 当前候选事实与消费路径 |
 |---|---|
-| 输入 | Agent Detail → Settings 下拉菜单可保存“请求批准 / 替我批准 / 完全访问”；会话 Composer 仍可覆盖当前 session。完全访问会弹出原因输入，不接受空理由或少于 8 个字符。 |
-| 权威 | `PATCH /agents/{agent_id}` 继续要求 manage access；只有 `org_admin/platform_admin` 能把默认值改为 `bypassPermissions`。逐会话完全访问再次在服务端检查管理员、reason、`scope=session` 和 TTL 1–60，客户端无法自授。 |
-| 执行 | Agent 默认值唯一落在 `agents.default_session_permission_mode`；普通 `POST /sessions` 与原子 `POST /sessions/runs` 都消费它。当前 session 的唯一切换入口仍是 `/permissions/profile`，active RuntimeTask metadata 同步更新。 |
-| 证据 | Agent 配置变更继续写 `agent.updated` audit/AI asset projection；session 切换写 canonical `permission_profile_updated` transcript event，break-glass 保存 operator、reason、issued/expires 时间；数据库 check constraint 拒绝第四种字符串。 |
-| 恢复 | 新 draft 先携带 Agent 默认值；普通首条消息原子创建 session+run，slash/Goal 先创建 bare session 时也由后端继承。Full access 每个新 session 重新确认，过期后 UI 本地降级且服务端下一次解析同样 fail-safe 降级；同步失败显式提示，不静默吞错。新 draft 的授权 API 失败或用户取消时强制回到 `default`，不会把未获 grant 的 `bypassPermissions` 留在 Composer。 |
-| 消费 | Settings 保存后更新 Agent query cache；后续新对话、Composer、session read model、runtime extra metadata 和 active run 都消费同一值。非管理员既看不到 Composer 的完全访问选项，也不会继承不可激活的 bypass draft。 |
-| 验收 | Schema/model/API/authority/session-create/expiry/UI/migration 均有回归；真实 PostgreSQL 历史 revision 升降级使用反射后的实际 schema 造数据，不靠保留影子列换绿灯。 |
+| 输入 | Agent Detail → Settings 下拉菜单可保存“请求批准 / 替我批准 / 完全访问”；会话 Composer 可覆盖当前 session。选择完全访问最多进行一次风险确认，不收集授权理由或期限。 |
+| 权威 | `PATCH /agents/{agent_id}` 继续要求 Agent `manage` access；`/permissions/profile` 继续要求当前用户对 Agent/session 的合法操作权。公司角色不额外决定 session mode；企业/RLS/资源权威独立且不可关闭。 |
+| 执行 | Agent 默认值唯一落在 `agents.default_session_permission_mode`；普通 `POST /sessions` 与原子 `POST /sessions/runs` 都消费它。Web 当前 session 走 `/permissions/profile`；绑定了可审计用户的 IM 命令使用同一 metadata contract，并同步 active RuntimeTask。 |
+| 证据 | Agent 配置变更继续写 `agent.updated` audit/AI asset projection；Web 与 IM session 切换均写 canonical `permission_profile_updated` transcript event；数据库 check constraint 拒绝第四种字符串。Session mode 事件不伪装成企业授权票据。 |
+| 恢复 | 新 draft、bare session、原子 create+run 和 resume 都消费同一 canonical mode；没有 TTL 到期本地/服务端双状态。`session_permission_semantics_0713` 把旧 session/runtime break-glass 可逆回填为 `default` 并删除运行态残键，避免部署后静默变成永久 Full access。 |
+| 消费 | Settings 保存后更新 Agent query cache；后续新对话、Composer、session read model、runtime extra metadata 和 active run 都消费同一值。所有合法会话操作者看到同一三模式，不按 company role 隐藏 Full access。 |
+| 验收 | Schema/model/API/authority/session inheritance/Web+IM evidence/legacy backfill/UI 均有回归；Full access 下 CapabilityPolicy/enterprise approval/destructive/final-hook 不变量与既有 tenant/RLS/resource/GuardPolicy 矩阵共同保持绿。 |
 
-- TDD Red：初始 backend 权限/继承/migration 契约 **7 failed**，frontend Sidebar/Settings/三模式/Break-glass 契约 **5 failed**；随后 bare-session 继承、非管理员默认降级、到期同步错误分别以独立 Red 固定。全量首次复核又真实捕获 `AgentDetail` 2931 行越过 2900 架构门，以及 5 条历史 migration fixture 引用新列导致的 **6 failed**。
-- Green：backend 定向权限矩阵 **71 passed**，Agent list + AI asset version/rollback consumer **19 passed**，真实 PostgreSQL 六项 migration/head 复核 **6 passed**，backend 全量 **6733 passed, 1 skipped**；frontend 定向 **135 passed**、全量 **668 passed**；`AgentDetail.tsx` 收回至 **2899 行**，权限到期与弹窗进入单一 `SessionPermissionLifecycle` owner；Alembic 单 head=`agent_session_permission_default_0713`；ruff check/format、TypeScript、Vite production build、bundle budget 与 `git diff --check` 全绿。
-- 极简性：只新增一个 Agent 标量字段、一个可逆 migration、一个前端 lifecycle owner；没有第二套 permission store、全局 bypass、前端自判授权或新状态机。Migration 测试只增加一个按历史真实表反射的通用 seed helper，避免以后每加 Agent 列就复制五份兼容补丁。
-- 当前状态：**七原子本地闭环；生产 migration、三服务部署与真实管理员/普通成员 UI 验收待执行。**
+- 既有证据：2026-07-12 的继承、持久化和三模式 UI 测试仍可复用，但 admin-only、reason/TTL、expiry lifecycle 断言已被产品契约废止，不能继续作为绿色证据。
+- TDD Red：backend 首轮聚焦集合 **15 failed / 82 passed**，分别命中旧 admin/TTL gate、旧 metadata、渠道拒绝、destructive `allowed_tools` 扩权、final-hook 早退和缺失 migration；最终输入复核另以 **1 failed** 钉住未知 mode 不得静默降级。Frontend **5 failed / 109 passed**，命中角色过滤、break-glass expiry lifecycle 与旧文案。
+- Green：backend 权限/治理/渠道/migration 聚焦 **107 passed**，真实 PostgreSQL migration 往返 **2 passed**，backend 全量 **6738 passed / 1 skipped**；frontend 聚焦 **114 passed**、全量 **115 files / 667 tests**；`tsc + Vite production build + AgentDetail/vendor bundle budget` 通过。
+- 极简性：删除 `SessionPermissionLifecycle.tsx`、reason/TTL API 字段、role filtering 和 break-glass alias；没有新增第二套 permission store。一次性危险动作只复用既有 `hash_tool_input`，以 exact tool+input grant 恢复执行，且不再早退 final hook；企业 exception/approval 继续使用独立 durable ticket。
+- 当前状态：**七原子本地闭环；三服务部署、生产 Alembic head 与 Web/IM smoke 待执行。**

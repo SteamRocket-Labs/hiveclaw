@@ -41,13 +41,6 @@ export interface ChatSession {
     [key: string]: unknown;
   } | null;
   writable_roots?: string[] | null;
-  break_glass?: {
-    operator_id: string;
-    reason: string;
-    scope: 'session';
-    issued_at?: string;
-    expires_at: string;
-  } | null;
   transcript_metadata_json?: Record<string, unknown> | null;
 }
 
@@ -166,9 +159,6 @@ export interface CreateSessionRunResponse {
 
 export interface UpdateSessionPermissionProfileInput {
   permission_mode: 'auto' | 'default' | 'bypassPermissions';
-  break_glass_reason?: string;
-  break_glass_scope?: 'session';
-  break_glass_ttl_minutes?: number;
 }
 
 export type ConversationBranchMode =

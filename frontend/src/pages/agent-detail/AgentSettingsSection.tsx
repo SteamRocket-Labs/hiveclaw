@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 
 import ChannelConfig from '../../components/ChannelConfig';
+import ConfirmModal from '../../components/ConfirmModal';
 import { agentApi, type AgentPermissions } from '../../api/domains/agents';
 import { planApi, type PlanRecommendationCreateInput } from '../../api/domains/plans';
 import { triggerApi } from '../../api/domains/triggers';
@@ -129,7 +130,6 @@ interface AgentSettingsSectionProps {
   agent: any;
   llmModels: any[];
   canManage: boolean;
-  isAdmin: boolean;
   settingsForm: AgentSettingsForm;
   onSettingsFormChange: React.Dispatch<React.SetStateAction<AgentSettingsForm>>;
   settingsSaving: boolean;
@@ -158,7 +158,6 @@ export default function AgentSettingsSection({
   agent,
   llmModels,
   canManage,
-  isAdmin,
   settingsForm,
   onSettingsFormChange,
   settingsSaving,
@@ -192,6 +191,7 @@ export default function AgentSettingsSection({
   const [permissionSaving, setPermissionSaving] = React.useState(false);
   const [permissionSaved, setPermissionSaved] = React.useState(false);
   const [permissionError, setPermissionError] = React.useState('');
+  const [fullAccessSavePending, setFullAccessSavePending] = React.useState(false);
   const { data: permissionData, isLoading: permissionsLoading } = useQuery({
     queryKey: ['agent-permissions', agentId],
     queryFn: () => agentApi.getPermissions(agentId),
@@ -219,7 +219,7 @@ export default function AgentSettingsSection({
     patrolForm.activeStart !== persistedPatrolForm.activeStart ||
     patrolForm.activeEnd !== persistedPatrolForm.activeEnd;
 
-  const handleSaveSettings = async () => {
+  const persistSettings = async () => {
     onSetSettingsSaving(true);
     onSetSettingsError('');
     try {
@@ -259,6 +259,17 @@ export default function AgentSettingsSection({
     } finally {
       onSetSettingsSaving(false);
     }
+  };
+
+  const handleSaveSettings = () => {
+    const enablesFullAccess =
+      settingsForm.default_session_permission_mode === 'bypassPermissions'
+      && (agent?.default_session_permission_mode || 'default') !== 'bypassPermissions';
+    if (enablesFullAccess) {
+      setFullAccessSavePending(true);
+      return;
+    }
+    void persistSettings();
   };
 
   const handleSaveAccessVisibility = async (visibility: AgentAccessVisibility) => {
@@ -517,7 +528,7 @@ export default function AgentSettingsSection({
         >
           <option value="default">{t('agent.chat.composer.permissionMode.default', 'Ask first')}</option>
           <option value="auto">{t('agent.chat.composer.permissionMode.auto', 'Approve for me')}</option>
-          <option value="bypassPermissions" disabled={!isAdmin}>
+          <option value="bypassPermissions">
             {t('agent.chat.composer.permissionMode.bypassPermissions', 'Full access')}
           </option>
         </select>
@@ -525,7 +536,7 @@ export default function AgentSettingsSection({
           {settingsForm.default_session_permission_mode === 'bypassPermissions'
             ? t(
                 'agent.settings.sessionPermissionDefault.fullAccessHint',
-                'Each new conversation still requires an administrator to activate a 60-minute session-scoped grant.',
+                'Enterprise access, safety, and destructive-action rules always apply.',
               )
             : t(
                 'agent.settings.sessionPermissionDefault.hint',
@@ -929,6 +940,20 @@ export default function AgentSettingsSection({
       <div className="agent-settings-channel">
         <ChannelConfig mode="edit" agentId={agentId} />
       </div>
+      <ConfirmModal
+        open={fullAccessSavePending}
+        title={t('agent.settings.sessionPermissionDefault.fullAccessConfirmTitle', 'Use Full access by default?')}
+        message={t(
+          'agent.settings.sessionPermissionDefault.fullAccessConfirmMessage',
+          'New conversations will skip routine session approval prompts. Enterprise access, safety, and destructive-action rules always apply.',
+        )}
+        confirmLabel={t('agent.settings.sessionPermissionDefault.fullAccessConfirm', 'Save Full access default')}
+        onCancel={() => setFullAccessSavePending(false)}
+        onConfirm={() => {
+          setFullAccessSavePending(false);
+          void persistSettings();
+        }}
+      />
     </div>
   );
 }

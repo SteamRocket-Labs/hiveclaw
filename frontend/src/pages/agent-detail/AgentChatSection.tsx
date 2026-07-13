@@ -177,11 +177,7 @@ const SESSION_PERMISSION_MODE_OPTIONS: Array<{
   },
 ];
 
-export const sessionPermissionModeOptions = (isAdmin: boolean) => (
-  isAdmin
-    ? SESSION_PERMISSION_MODE_OPTIONS
-    : SESSION_PERMISSION_MODE_OPTIONS.filter((option) => option.value !== 'bypassPermissions')
-);
+export const sessionPermissionModeOptions = () => SESSION_PERMISSION_MODE_OPTIONS;
 
 function formatCompactTokenCount(value: number | null | undefined): string {
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return '-';
@@ -2328,7 +2324,7 @@ function AgentChatSection({
                 attachments={attachedFiles}
                 permissionMode={sessionPermissionMode}
                 permissionModeLabel={permissionModeLabel}
-                permissionOptions={sessionPermissionModeOptions(isAdmin)}
+                permissionOptions={sessionPermissionModeOptions()}
                 modelLabel={modelBadgeLabel}
                 modelTitle={modelBadgeTitle}
                 runtimeUsageLabel={runtimeUsageLabel}

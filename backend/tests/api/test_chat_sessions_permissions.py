@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import json
 from types import SimpleNamespace
@@ -8,27 +8,27 @@ from uuid import uuid4
 
 import pytest
 from fastapi import HTTPException
+from pydantic import ValidationError
 
 
-def test_session_permission_metadata_requires_active_scoped_break_glass_for_bypass() -> None:
+def test_session_permission_inputs_reject_unknown_mode() -> None:
+    import app.api.chat_sessions as chat_sessions_api
+
+    with pytest.raises(ValidationError):
+        chat_sessions_api.UpdateSessionPermissionProfileIn(permission_mode="unrestricted")
+    with pytest.raises(ValidationError):
+        chat_sessions_api.StartSessionRunIn(content="hello", permission_mode="unrestricted")
+
+
+def test_session_permission_metadata_accepts_session_full_access_without_break_glass() -> None:
     import app.api.chat_sessions as chat_sessions_api
 
     session = SimpleNamespace(transcript_metadata_json={})
-    ordinary = chat_sessions_api._session_permission_metadata("bypassPermissions", session)
-    assert ordinary["permission_mode"] == "default"
+    metadata = chat_sessions_api._session_permission_metadata("bypassPermissions", session)
 
-    active = chat_sessions_api._session_permission_metadata(
-        "bypassPermissions",
-        session,
-        break_glass={
-            "operator_id": str(uuid4()),
-            "reason": "incident response",
-            "scope": "session",
-            "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat(),
-        },
-    )
-    assert active["permission_mode"] == "bypassPermissions"
-    assert active["break_glass"]["scope"] == "session"
+    assert metadata["permission_mode"] == "bypassPermissions"
+    assert metadata["permission_profile"]["mode"] == "bypassPermissions"
+    assert "break_glass" not in metadata
 
 
 def test_session_permission_metadata_preserves_existing_mode_when_request_omits_override() -> None:
@@ -58,7 +58,7 @@ def test_tenant_permission_default_is_safe_and_never_break_glass() -> None:
 
 
 @pytest.mark.asyncio
-async def test_break_glass_permission_update_writes_durable_transcript_evidence(monkeypatch) -> None:
+async def test_session_full_access_update_writes_durable_transcript_evidence_for_member(monkeypatch) -> None:
     import app.api.chat_sessions as chat_sessions_api
 
     agent_id = uuid4()
@@ -67,7 +67,7 @@ async def test_break_glass_permission_update_writes_durable_transcript_evidence(
     operator_id = uuid4()
     session = SimpleNamespace(id=session_id, tenant_id=tenant_id, transcript_metadata_json={})
     agent = SimpleNamespace(id=agent_id, tenant_id=tenant_id)
-    current_user = SimpleNamespace(id=operator_id, role="org_admin")
+    current_user = SimpleNamespace(id=operator_id, role="member")
     appended = []
 
     class DB:
@@ -99,9 +99,6 @@ async def test_break_glass_permission_update_writes_durable_transcript_evidence(
         session_id=session_id,
         body=chat_sessions_api.UpdateSessionPermissionProfileIn(
             permission_mode="bypassPermissions",
-            break_glass_reason="incident containment",
-            break_glass_scope="session",
-            break_glass_ttl_minutes=15,
         ),
         current_user=current_user,
         db=DB(),
@@ -111,7 +108,8 @@ async def test_break_glass_permission_update_writes_durable_transcript_evidence(
     assert appended[0]["event_type"] == "permission_profile_updated"
     assert appended[0]["actor_type"] == "user"
     assert appended[0]["user_id"] == operator_id
-    assert appended[0]["metadata"]["break_glass"]["reason"] == "incident containment"
+    assert appended[0]["metadata"]["permission_profile"]["mode"] == "bypassPermissions"
+    assert "break_glass" not in appended[0]["metadata"]
     assert appended[0]["materialize_chat_message"] is False
 
 
@@ -461,7 +459,7 @@ async def test_list_sessions_all_scope_requires_explicit_audited_operator_view(m
 
 
 @pytest.mark.asyncio
-async def test_list_sessions_downgrades_unscoped_legacy_bypass_permission_mode(monkeypatch):
+async def test_list_sessions_projects_session_full_access_without_auxiliary_grant(monkeypatch):
     import app.api.chat_sessions as chat_sessions_api
 
     agent_id = uuid4()
@@ -503,9 +501,9 @@ async def test_list_sessions_downgrades_unscoped_legacy_bypass_permission_mode(m
     )
 
     assert len(result) == 1
-    assert result[0].permission_mode == "default"
+    assert result[0].permission_mode == "bypassPermissions"
     assert result[0].permission_profile == {
-        "mode": "default",
+        "mode": "bypassPermissions",
         "allowed_tools": ["web_search"],
         "writable_roots": ["workspace/"],
     }

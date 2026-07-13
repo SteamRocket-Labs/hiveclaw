@@ -2129,7 +2129,6 @@ describe('AgentDetail extracted sections', () => {
           { id: 'model-1', label: 'GPT-5.4', provider: 'openai', model: 'gpt-5.4', enabled: true },
         ]}
         canManage
-        isAdmin
         settingsForm={{
           primary_model_id: 'model-1',
           fallback_model_id: '',
@@ -2204,16 +2203,24 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).not.toContain('deleteAgent');
   });
 
-  it('exposes all three session permission modes to admins and keeps full access out of member controls', () => {
-    expect(sessionPermissionModeOptions(true).map((option) => option.value)).toEqual([
+  it('exposes all three session permission modes to every authorized session operator', () => {
+    expect(sessionPermissionModeOptions().map((option) => option.value)).toEqual([
       'default',
       'auto',
       'bypassPermissions',
     ]);
-    expect(sessionPermissionModeOptions(false).map((option) => option.value)).toEqual([
-      'default',
-      'auto',
-    ]);
+  });
+
+  it('keeps full access session-local while enterprise governance remains mandatory', async () => {
+    const fsModuleId = 'node:fs';
+    const { readFileSync } = (await import(/* @vite-ignore */ fsModuleId)) as {
+      readFileSync: (path: URL, encoding: string) => string;
+    };
+    const settingsSource = readFileSync(new URL('./AgentSettingsSection.tsx', import.meta.url), 'utf8');
+
+    expect(settingsSource).not.toContain('disabled={!isAdmin}');
+    expect(settingsSource).not.toContain('60-minute session-scoped grant');
+    expect(settingsSource).toContain('Enterprise access, safety, and destructive-action rules always apply.');
   });
 
   it('keeps company capability policy management out of Agent Detail', async () => {
@@ -2299,7 +2306,6 @@ describe('AgentDetail extracted sections', () => {
           { id: 'model-1', label: 'GPT-5.4', provider: 'openai', model: 'gpt-5.4', enabled: true },
         ]}
         canManage
-        isAdmin
         settingsForm={{
           primary_model_id: 'model-1',
           fallback_model_id: '',
@@ -4881,10 +4887,10 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('aria-checked="false"');
     expect(markup).toContain('Approve for me');
     expect(markup).toContain('Ask first');
-    expect(markup).not.toContain('Full access');
+    expect(markup).toContain('Full access');
     expect(markup).toContain('data-testid="session-composer-permission-mode-auto"');
     expect(markup).toContain('data-testid="session-composer-permission-mode-default"');
-    expect(markup).not.toContain('data-testid="session-composer-permission-mode-bypassPermissions"');
+    expect(markup).toContain('data-testid="session-composer-permission-mode-bypassPermissions"');
     expect(markup).toContain('data-testid="session-composer-permission-mode-default"');
     expect(markup).not.toContain('Manage access');
     expect(markup).not.toContain('acceptEdits');

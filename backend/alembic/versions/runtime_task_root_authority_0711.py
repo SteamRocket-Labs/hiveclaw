@@ -11,6 +11,8 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
+from app.migration_compat import add_column_if_missing, create_check_constraint_if_missing
+
 
 revision = "runtime_task_root_authority_0711"
 down_revision = "channel_delivery_outbox_0711"
@@ -94,15 +96,18 @@ def _backfill_root_authority() -> None:
 
 
 def upgrade() -> None:
-    op.add_column(
+    add_column_if_missing(
+        op,
         "runtime_tasks",
         sa.Column("root_user_id", postgresql.UUID(as_uuid=True), nullable=True),
     )
-    op.add_column(
+    add_column_if_missing(
+        op,
         "runtime_tasks",
         sa.Column("root_session_id", sa.String(length=512), nullable=True),
     )
-    op.add_column(
+    add_column_if_missing(
+        op,
         "runtime_tasks",
         sa.Column("delegation_chain_json", postgresql.JSONB(), nullable=True),
     )
@@ -122,12 +127,12 @@ def upgrade() -> None:
     # actual requester.
     with op.get_context().autocommit_block():
         _backfill_root_authority()
-        op.execute(
-            """
-            ALTER TABLE runtime_tasks
-            ADD CONSTRAINT ck_runtime_tasks_delegation_chain_not_null
-            CHECK (delegation_chain_json IS NOT NULL) NOT VALID
-            """
+        create_check_constraint_if_missing(
+            op,
+            "ck_runtime_tasks_delegation_chain_not_null",
+            "runtime_tasks",
+            "delegation_chain_json IS NOT NULL",
+            postgresql_not_valid=True,
         )
         op.execute("ALTER TABLE runtime_tasks VALIDATE CONSTRAINT ck_runtime_tasks_delegation_chain_not_null")
     op.alter_column(

@@ -155,3 +155,45 @@ async def test_runtime_task_root_authority_batch_upgrade_uses_metadata_truth(pg_
         assert row["delegation_chain_json"] == [f"agent:{agent_id}"]
     finally:
         await engine.dispose()
+
+
+async def test_runtime_task_root_authority_revision_resumes_after_autocommit_checkpoint(pg_container) -> None:
+    from tests.integration.conftest import _async_url
+    from tests.migrations.conftest import _alembic_upgrade
+
+    database_name = f"runtime_authority_resume_{uuid.uuid4().hex[:10]}"
+    code, output = pg_container.exec(["psql", "-U", "test", "-d", "postgres", "-c", f"CREATE DATABASE {database_name}"])
+    assert code == 0, output
+    database_url = make_url(_async_url(pg_container)).set(database=database_name).render_as_string(hide_password=False)
+
+    # Current metadata represents a process killed after autocommit persisted
+    # the new columns/indexes but before Alembic advanced its version receipt.
+    _alembic_upgrade(database_url, "head")
+    engine = create_async_engine(database_url, poolclass=NullPool)
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(text("DELETE FROM alembic_version"))
+            await connection.execute(text("INSERT INTO alembic_version VALUES ('channel_delivery_outbox_0711')"))
+    finally:
+        await engine.dispose()
+
+    _alembic_upgrade(database_url, "runtime_task_root_authority_0711")
+
+    verify_engine = create_async_engine(database_url, poolclass=NullPool)
+    try:
+        async with verify_engine.connect() as connection:
+            version = (await connection.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
+            nullable = (
+                await connection.execute(
+                    text(
+                        "SELECT is_nullable FROM information_schema.columns "
+                        "WHERE table_schema='public' AND table_name='runtime_tasks' "
+                        "AND column_name='delegation_chain_json'"
+                    )
+                )
+            ).scalar_one()
+    finally:
+        await verify_engine.dispose()
+
+    assert version == "runtime_task_root_authority_0711"
+    assert nullable == "NO"

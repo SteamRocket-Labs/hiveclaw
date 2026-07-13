@@ -190,3 +190,27 @@ def create_unique_constraint_if_missing(
             f"{existing.get('column_names')!r}; expected {list(columns)!r}"
         )
     return False
+
+
+def create_check_constraint_if_missing(
+    operations: Operations,
+    constraint_name: str,
+    table_name: str,
+    condition: Any,
+    **kwargs: Any,
+) -> bool:
+    """Create a named check constraint unless an autocommit retry already did."""
+
+    inspector = _inspector(operations)
+    if inspector is None:
+        operations.create_check_constraint(constraint_name, table_name, condition, **kwargs)
+        return True
+    existing_names = {
+        item["name"]
+        for item in inspector.get_check_constraints(table_name, schema=kwargs.get("schema"))
+        if item.get("name")
+    }
+    if constraint_name in existing_names:
+        return False
+    operations.create_check_constraint(constraint_name, table_name, condition, **kwargs)
+    return True

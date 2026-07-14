@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import subprocess
 from types import SimpleNamespace
 
@@ -60,6 +61,29 @@ def test_officecli_adapter_forces_json_and_disables_auto_update(tmp_path):
     assert captured["capture_output"] is True
     assert captured["text"] is True
     assert captured["check"] is False
+
+
+def test_officecli_adapter_resolves_and_executes_the_path_verified_by_sha256(tmp_path, monkeypatch):
+    from app.services.officecli_adapter import OfficeCLIAdapter
+
+    binary = tmp_path / "officecli"
+    binary.write_bytes(b"release-officecli-binary")
+    binary.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    captured = {}
+
+    def fake_runner(args, **_kwargs):
+        captured["args"] = args
+        return SimpleNamespace(returncode=0, stdout='{"success": true}', stderr="")
+
+    adapter = OfficeCLIAdapter(
+        binary="officecli",
+        binary_sha256=hashlib.sha256(binary.read_bytes()).hexdigest(),
+        runner=fake_runner,
+    )
+
+    assert adapter.run_view(tmp_path / "demo.docx", mode="html") == {"success": True}
+    assert captured["args"][0] == str(binary)
 
 
 def test_officecli_adapter_rejects_unknown_view_mode_before_execution(tmp_path):

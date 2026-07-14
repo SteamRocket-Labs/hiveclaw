@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -132,9 +133,9 @@ class OfficeCLIAdapter:
                 cwd=cwd,
             )
 
-        self._verify_binary_sha256()
+        verified_binary = self._verify_binary_sha256()
 
-        args = [self.binary, command, str(path), "--json"]
+        args = [verified_binary, command, str(path), "--json"]
         args.extend(self._option_args(normalized_options))
         return self._run_json(command, args, cwd=cwd)
 
@@ -165,10 +166,10 @@ class OfficeCLIAdapter:
             names = ", ".join(sorted(conflicting_options))
             raise OfficeCLICommandError(f"OfficeCLI view options cannot override reserved fields: {names}")
 
-        self._verify_binary_sha256()
+        verified_binary = self._verify_binary_sha256()
         if page is not None:
             normalized_options["page"] = page
-        args = [self.binary, "view", str(path), normalized_mode, "--json"]
+        args = [verified_binary, "view", str(path), normalized_mode, "--json"]
         args.extend(self._option_args(normalized_options))
         return self._run_json("view", args, cwd=cwd)
 
@@ -177,8 +178,8 @@ class OfficeCLIAdapter:
 
         if self._version is not None:
             return self._version
-        self._verify_binary_sha256()
-        completed = self._run_process([self.binary, "--version"], command="version", cwd=None)
+        verified_binary = self._verify_binary_sha256()
+        completed = self._run_process([verified_binary, "--version"], command="version", cwd=None)
         if completed.returncode != 0:
             raise OfficeCLIExecutionError(
                 command="version",
@@ -254,11 +255,15 @@ class OfficeCLIAdapter:
                 stderr=f"OfficeCLI process could not start ({type(exc).__name__})",
             ) from exc
 
-    def _verify_binary_sha256(self) -> None:
+    def _verify_binary_sha256(self) -> str:
         expected = (self.binary_sha256 or "").strip().lower()
         if not expected:
-            return
-        binary_path = Path(self.binary)
+            return self.binary
+        binary_path = Path(self.binary).expanduser()
+        if not binary_path.is_file():
+            resolved = shutil.which(self.binary)
+            if resolved:
+                binary_path = Path(resolved)
         if not binary_path.is_file():
             raise OfficeCLIExecutionError(
                 command="verify",
@@ -273,6 +278,7 @@ class OfficeCLIAdapter:
                 stderr="OfficeCLI binary sha256 mismatch",
                 payload={"expected": expected, "actual": actual},
             )
+        return str(binary_path.resolve())
 
     @staticmethod
     def _option_args(options: dict[str, Any]) -> list[str]:

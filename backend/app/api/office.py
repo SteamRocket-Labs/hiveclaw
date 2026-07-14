@@ -336,6 +336,11 @@ async def create_office_document(
             content_hash=_content_hash(created_path),
             allow_owner_rebind=False,
         )
+        # A successful create response is also the read-after-write boundary
+        # for Current Workspace. FastAPI may finalize yielded dependencies
+        # after the response starts, so commit the authority row before the
+        # client can immediately request the preview.
+        await db.commit()
     return {
         "status": "ok",
         **result,

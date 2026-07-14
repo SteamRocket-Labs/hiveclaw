@@ -59,8 +59,15 @@ async def test_office_create_agent_update_preview_and_readback_loop(tmp_path, mo
             manifest=SimpleNamespace(),
         )
 
+    persistence_events = []
+
     async def fake_register(*_args, **_kwargs):
+        persistence_events.append("authority_registered")
         return None
+
+    class FakeDB:
+        async def commit(self):
+            persistence_events.append("committed")
 
     monkeypatch.setattr(office_api, "check_agent_access", fake_access)
     monkeypatch.setattr(office_api, "authorize_workspace_path", fake_authorize)
@@ -70,9 +77,10 @@ async def test_office_create_agent_update_preview_and_readback_loop(tmp_path, mo
         agent_id=agent_id,
         body=office_api.OfficeDocumentCreateIn(path="workspace/demo.docx", kind="docx"),
         current_user=user,
-        db=SimpleNamespace(),
+        db=FakeDB(),
     )
     assert created["status"] == "ok"
+    assert persistence_events == ["authority_registered", "committed"]
 
     workspace = tmp_path / str(agent_id)
     service = OfficeDocumentService(workspace, adapter=_PreviewAdapter(), preview_max_bytes=1024 * 1024)

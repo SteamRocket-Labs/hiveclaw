@@ -2,8 +2,9 @@
 # Docker entrypoint: initialize DB tables, then start the app.
 # Order matters:
 #   1. create_all  - creates all tables using SQLAlchemy models (idempotent)
-#   2. alembic stamp head - tells alembic we are at the latest revision (skips migrations)
+#   2. alembic upgrade head - applies every pending migration and fails closed.
 #      For existing installs that may have missing columns, safe ALTER TABLE patches run first.
+#   2.7 schema readiness - proves migration head, RLS catalog, and strict tenant columns.
 #   3. uvicorn - starts the FastAPI app
 
 set -e
@@ -29,6 +30,15 @@ case "$SCHEMA_URL" in
   postgresql://*) SCHEMA_URL="postgresql+asyncpg://${SCHEMA_URL#postgresql://}" ;;
   postgres://*) SCHEMA_URL="postgresql+asyncpg://${SCHEMA_URL#postgres://}" ;;
 esac
+
+verify_schema_readiness() {
+    echo "[entrypoint] Verifying post-migration schema readiness..."
+    if ! HIVE_RUNTIME_DATABASE_URL="$DATABASE_URL" DATABASE_URL="$SCHEMA_URL" \
+        python -m app.scripts.verify_schema_readiness; then
+        echo "[entrypoint] ERROR: schema readiness failed; refusing to accept traffic" >&2
+        exit 1
+    fi
+}
 
 if [ "${HIVE_PROCESS_ROLE:-runtime}" != "api" ]; then
 echo "[entrypoint] Step 1: Creating/verifying database tables..."
@@ -166,28 +176,26 @@ PYEOF
 
 echo "[entrypoint] Step 2: Running alembic migrations..."
 # Run all migrations to ensure database schema is up to date (owner connection)
-DATABASE_URL="$SCHEMA_URL" alembic upgrade head || echo "[entrypoint] WARNING: alembic migration failed (non-fatal, app may still work)"
+if ! DATABASE_URL="$SCHEMA_URL" alembic upgrade head; then
+    echo "[entrypoint] ERROR: alembic migration failed; refusing to start against an unverified schema" >&2
+    exit 1
+fi
 
 echo "[entrypoint] Step 2.5: Running data migrations..."
 # Safely migrate old AgentSchedules to the new AgentTriggers system (owner connection)
 DATABASE_URL="$SCHEMA_URL" python -m app.scripts.migrate_schedules_to_triggers
 
 echo "[entrypoint] Step 2.6: Bootstrapping + granting the non-owner RLS role (stage-3 prep; creates app_rls when RLS_APP_PASSWORD is set)..."
-DATABASE_URL="$SCHEMA_URL" python -m app.scripts.grant_rls_app_role || echo "[entrypoint] WARNING: grant_rls_app_role failed (non-fatal)"
-
-# Stage-2b tenant_id backfill — gated (RLS_BACKFILL_ON_DEPLOY=1), owner connection.
-# Runs in the BACKGROUND: a large backfill (prod runtime_tasks is 400k+ rows) must
-# never block uvicorn startup past the healthcheck window — doing it inline crashed
-# the flip deploy on 2026-06-11 (healthcheck timed out before uvicorn started).
-# SAFEST is to run it as a SEPARATE ops step BEFORE the flip (see
-# docs/rls-stage3-cutover.md) rather than in the deploy at all; this gated
-# background run is a convenience fallback only. Idempotent (fills NULL rows only).
-if [ "$RLS_BACKFILL_ON_DEPLOY" = "1" ]; then
-    echo "[entrypoint] Step 2.7: Stage-2b tenant_id backfill in background (non-blocking)..."
-    DATABASE_URL="$SCHEMA_URL" python -m app.scripts.backfill_stage2b_tenant_id --apply --confirm &
+if ! DATABASE_URL="$SCHEMA_URL" python -m app.scripts.grant_rls_app_role; then
+    echo "[entrypoint] ERROR: grant_rls_app_role failed; refusing to start with an unverified runtime role" >&2
+    exit 1
 fi
+
+echo "[entrypoint] Step 2.7: Running post-migration schema readiness gate..."
+verify_schema_readiness
 else
-    echo "[entrypoint] API role: skipping schema/bootstrap migrations before uvicorn"
+    echo "[entrypoint] API role: skipping schema/bootstrap mutations; running read-only schema readiness gate"
+    verify_schema_readiness
 fi
 
 # Step 2.7: Auto-authenticate lark-cli if Feishu app credentials are available

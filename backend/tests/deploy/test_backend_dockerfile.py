@@ -25,5 +25,9 @@ def test_backend_entrypoint_skips_schema_bootstrap_for_api_role() -> None:
     entrypoint = (backend_root / "entrypoint.sh").read_text(encoding="utf-8")
 
     assert 'if [ "${HIVE_PROCESS_ROLE:-runtime}" != "api" ]; then' in entrypoint
-    assert 'echo "[entrypoint] API role: skipping schema/bootstrap migrations before uvicorn"' in entrypoint
+    assert (
+        'echo "[entrypoint] API role: skipping schema/bootstrap mutations; '
+        'running read-only schema readiness gate"' in entrypoint
+    )
+    assert "verify_schema_readiness" in entrypoint
     assert 'echo "[entrypoint] Step 3: Starting uvicorn..."' in entrypoint

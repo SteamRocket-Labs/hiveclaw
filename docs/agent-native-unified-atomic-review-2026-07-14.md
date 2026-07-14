@@ -1052,7 +1052,7 @@ Group 0 是全局证据门，不拥有业务 leaf。下面 103 行必须与 cano
 
 <!-- canonical-ledger-start -->
 - P0 | P0-F1 | in_progress-local-green:EVID-G1-001 | agent-controlled `web_fetch` / URL-import / remote-fetch-forwarding SSRF family；production canary 待执行
-- P1 | P0-F2 | inherited-current-evidence | Alembic 增量迁移失败仍启动
+- P1 | P0-F2 | in_progress-local-green:EVID-G1-002 | migration/RLS readiness 已本地 fail-closed；独立 commit、deploy 与 production startup canary 待执行
 - P1 | E-1 | inherited-current-evidence | durable subagent requester 被 creator 顶替
 - P1 | P1-004 | inherited-current-evidence | A2A inner effect 丢 outer execution frame
 - P1 | P1-F4 | inherited-current-evidence | RecoveryManifest 缺恢复授权绑定
@@ -1164,7 +1164,7 @@ Group 0 是全局证据门，不拥有业务 leaf。下面 103 行必须与 cano
 | Group | 证据前缀 | Owner 范围 | 当前证据状态 | 下一次写入要求 |
 |---:|---|---|---|---|
 | 0 | `EVID-G0-*` | 0 leaf / 0 Missing | `closed`：`EVID-G0-001/002`；文档 Git truth、owner/path/decision/scenario CI、跨仓快照与现有 fake-provider/PG/Redis harness 基座成立 | 后续仅在 ledger/路径/场景变化时追加 delta；业务场景 Green 由 owner Group 负责 |
-| 1 | `EVID-G1-*` | 16 leaf / 0 Missing | `in_progress`：`EVID-G1-001` 已完成 P0-F1 本地 Red→Green 与仓级回归，production canary 尚未执行；其余 15 leaf open | 按 P0/P1 可独立发布家族继续写迁移、rollback、生产 canary 与 authority/credential/budget 闭环 |
+| 1 | `EVID-G1-*` | 16 leaf / 0 Missing | `in_progress`：`EVID-G1-001` 已完成 P0-F1 本地 Red→Green 与仓级回归；`EVID-G1-002` 已完成 P0-F2 本地 Red→Green、真实 PG rollback/re-upgrade 与 production read-only catalog preflight；两项 deploy/canary 均 open，其余 14 leaf open | 先形成 P0-F2 独立 commit；再按 P0/P1 可独立发布家族继续写 production canary 与 authority/credential/budget 闭环 |
 | 2 | `EVID-G2-*` | 14 leaf / 0 Missing | `open` | 写 Session event/item/reducer、persist-before-publish、projection/backfill 与 SESSION-G 结果 |
 | 3 | `EVID-G3-*` | 7 leaf / 0 Missing | `open` | 写 root admission、reserve/commit/release、terminal CAS、approval resume 与 fanout 曲线 |
 | 4 | `EVID-G4-*` | 6 leaf / 0 Missing | `open` | 写 result ref、mailbox lease/CAS、integration epoch、partial/late/duplicate 与 100-way return storm |
@@ -1275,6 +1275,31 @@ Group 0 是全局证据门，不拥有业务 leaf。下面 103 行必须与 cano
 - 七原子：Input=Agent/user URL；Authority=public-target L0 policy；Execution=pinned transport/remote target gate；Evidence=typed code + tool/job receipts；Recovery=retry/换源且无 partial semantic fallback；Consumption=Web/PKB/ImageKit live path；Acceptance=本地已绿、production 未验。因此 canonical 行保持 `in_progress`，不是 `closed`。
 - 残余边界：显式 Custom API、MCP、HTTP Hook 和企业内网连接器拥有不同的管理员配置/approval/network scope，不能被本 P0 public-fetch policy 粗暴删除；它们在 Group 1 的 authority/B-01 与后续 governance recheck 中必须证明 allowlist/pinning/credential/receipt，而不是默认继承“public fetch 已安全”。
 
+#### EVID-G1-002：P0-F2 migration 与 RLS catalog fail-closed
+
+- `leaf_ids`：`P0-F2`；只负责 deployment schema truth、migration owner/runtime separation 与启动前 catalog readiness，不把业务数据语义、一般 runtime availability 或模型判断扩张成 schema hard gate。
+- owner Group / 依赖 Group：Group 1 / Group 0；production 已执行但未入 Git 的 `memory_context_warning_0714` 及其 warning consumer 是本项不可跳过的部署前置，不改变 `SES-ITEM-001` 的 Group 2 owner 归属。
+- 当前状态：`in_progress`；本地 Red→Green、隔离 PostgreSQL fault/rollback/re-upgrade、production read-only preflight 和 deployed-source reconciliation 已完成；P0-F2 独立 commit、三服务部署和 production startup canary 尚未完成，故不得标 `closed`。
+- 证据 owner / 更新时间：主 Agent / 2026-07-15。
+- `@docs` 裁决：消费 `@docs/session-rls-preflight-review-2026-07-09.md`、`@docs/rls-enforcement-migration-plan.md`、`@docs/ccplus-governance-layer-architecture-2026-06-28.md` 与本文 §9/§12；hard invariant 是 Alembic head、table/column catalog、RLS ENABLE/FORCE、policy presence、schema-owner/runtime URL separation，事实源分别是 Git migration graph、`alembic_version`、`pg_class`、`pg_policy`、`pg_attribute` 和 server-side deployment env。
+- 历史 refute-first：`069ff5e88` 在 2026-07-13 15:54 +08:00 曾加入 fail-closed，`42f6b6081` 在 20 分钟后整体 revert。Railway 最近 40 条 backend deployment 中，首个相关部署是 08:25Z 的 `42f6b6081`，没有 `069ff5e88` 部署记录；因此“旧修复已经因 production legacy data 失败”没有证据，不能继续当事实。
+- 实际漂移根因：production `alembic_version=memory_context_warning_0714`，而开工时 `git ls-files --error-unmatch backend/alembic/versions/memory_context_warning_0714.py` exit `1`。Railway 最新源码消息绑定 tree `fcd7a0d55424`，其中 migration blob 为 `6287725dca6b7992e459af08195d2b24f81bfc92`；工作树文件 hash-object 完全一致。`f7902ab7b` 已把该 immutable revision、degraded-warning status、backend typed item、frontend renderer/retry 与回滚测试一起纳入 Git，禁止 clean deploy 再以 unknown revision 依赖 fail-open 存活。
+- Red（启动/事实源）：`pytest tests/deploy/test_schema_startup_gate.py tests/scripts/test_verify_schema_readiness.py -q` → `14 failed`：production head 未被 Git 跟踪；Alembic/grant/readiness 非零仍到 uvicorn；API role 无 read-only gate；readiness 模块不存在。
+- Red（真实 PG 对抗）：首轮 `pytest tests/integration/test_schema_readiness.py -q` → `1 failed`，暴露 `RLS_FORCED_TENANT_TABLES` 含已退役兼容表 `identities`。若把兼容表“必须存在”写成 hard gate，fresh DB 会永久拒绝启动；实现据此改为 live `Base.metadata` 表必须存在、兼容表 absent 可接受但 present 必须通过 RLS catalog。
+- 实现：新增 `app.scripts.verify_schema_readiness`。它以 Alembic `ScriptDirectory` 计算 expected heads，以 owner connection 一次读取 actual heads 与 catalog；live model table 必须存在，所有存在的 expected RLS table 必须 ENABLE+FORCE 且至少一条 policy，strict tenant table 必须有 `tenant_id NOT NULL`。输出仅含 typed issue code/object/retryable，不读取 row payload、不判断业务语义。
+- 启动顺序：runtime role 走 `create_all/safety patch → alembic upgrade head(owner) → data migration(owner) → grant app_rls(owner) → readiness(owner) → uvicorn(runtime URL)`；任一 migration/grant/readiness 非零均 exit，不接流量。API role 不做 DDL/grant，但必须通过同一只读 readiness。旧 `RLS_BACKFILL_ON_DEPLOY` 后台 convenience writer 已删除，避免 audit 通过后仍有锁外 schema/data mutation。
+- Green（启动/纯函数）：新 Red 集合 → `14 passed in 4.32s`；相关既有 startup/Alembic/tenant tests 与真实 PG 合并 → `44 passed in 9.33s`；`bash -n entrypoint.sh`、可用时 `shellcheck entrypoint.sh`、scoped `ruff check` 均 exit `0`。
+- Green（真实 PG）：隔离数据库先 `upgrade head` 并 readiness green；注入 `ALTER TABLE runtime_tasks NO FORCE ROW LEVEL SECURITY` 后得到 `rls_not_forced`；恢复 FORCE 后 green；`downgrade session_permission_semantics_0713` 得到 `alembic_head_mismatch`；再次 `upgrade head` 后 green。`pytest tests/integration/test_schema_readiness.py -q` → `1 passed in 5.36s`。
+- Green（仓级最终复跑）：`cd backend && source .venv/bin/activate && pytest tests -q` → `7002 passed, 2 skipped in 238.24s`，exit `0`；覆盖本项最终 entrypoint/readiness、已纳管 production revision 和共享脏工作树当前状态。
+- deployed warning prerequisite：backend warning/migration 定向 `33 passed`；frontend warning reducer/renderer/chat runtime `3 files / 82 tests passed`；`npm run build` exit `0`，AgentDetail `290185/380000` bytes、gzip `82018/115000`，vendor `591449/620000`、gzip `186474/200000`。
+- production read-only preflight：Railway tunnel/`psql` 显示 schema user `postgres`、PostgreSQL `18.3`、DB head `memory_context_warning_0714`；115 个带 `tenant_id` 表均 ENABLE+FORCE。按当前 `RLS_FORCED_TENANT_TABLES` 分 4 个 catalog chunk 检查 missing/disabled/unforced/no-policy 均 `0 rows`；按 `STRICT_TENANT_RLS_TABLES` 分 3 个 chunk 检查 missing tenant column/nullable 均 `0 rows`；strict NULL 动态查询 `0 rows`。
+- production NULL 解释：全 tenant-column 扫描只见 `users=6`、`audit_logs=1844`（明确 operator-nullable），`skills=9`、`tools=165`（明确 platform-shared），以及 retired compatibility table `retired_trigger_focus_refs_0613=1`；它们不是 strict tenant leak，不能用错误 hard gate 阻断启动。
+- 失败证据诚实性：一次本机 `railway run` owner URL 探针在 SQL 前因 TLS/connection lost 失败，只记录为 transport failure；后续 Railway DB tunnel 查询才是 production catalog 证据。没有把连接失败冒充 migration/data failure。
+- migration / backfill / rollback：本项不新增 schema revision；只恢复 production 已执行 revision 的 Git truth。隔离库 downgrade/re-upgrade 已验；production migration/deploy 属外部状态变更，尚未执行。代码 rollback 是回退 P0-F2 独立 commit，但不得删掉已执行的历史 revision 文件；如 readiness 拒绝，typed issue 保留且容器可重启重验。
+- Model Agency / 北极星：该 hard gate逐项命中 machine contracts、authority、execution isolation 与 evidence/recovery allowlist；不检查 Prompt、模型输出、任务意义或自然语言，不裁剪 context，也不把 catalog failure伪装成模型结论。API/runtime 只能在机械 schema 不可消费时 fail-closed，不能因此禁用无关模型能力。
+- commit / deploy / production canary：deployed-source prerequisite commit=`f7902ab7b`；包含本记录的 P0-F2 独立 commit 尚待创建并作为 Git 事实源，不在自身内容中嵌入自引用 hash。三服务未部署；production fail/allow startup、health、runtime `app_rls` 跨 tenant 行为与 rollback drill 均 open。
+- 七原子：Input=container env + migration graph；Authority=schema owner vs runtime role；Execution=single entrypoint gate；Evidence=typed JSON/exit/catalog/Git blob；Recovery=restart/rollback/re-upgrade；Consumption=runtime/API 只在 ready 后启动；Acceptance=本地与 production read-only 已绿、deploy/canary 未验，因此 canonical 仍为 `in_progress`。
+
 ## 13. Missing、Coverage Gap 与完成口径
 
 ### 13.1 已知缺失，不计入 103
@@ -1300,7 +1325,7 @@ Missing 开工后按 §12.4 写证据；只有实现、迁移/回填、真实 co
 - 400 个真实 Skill、200 个真实 MCP server、百万 Memory fixture；
 - 钉钉/飞书/Slack/Web credential、rate limit、auth revoke、duplicate/ack-loss fault injection；
 - current closed-source CC binary 与 Hive 的同模型 paired replay；
-- 当前 dirty worktree 的全量 backend/frontend suite 与三服务生产验收；
+- 当前 dirty worktree 的全量 frontend vitest 与三服务生产验收；backend 全量 suite 和 frontend production build 已有 `EVID-G1-001/002` 当前证据；
 - inherited P2/P3 的逐 leaf 当前源码重认证。
 
 ### 13.3 四层完成口径

@@ -1,7 +1,9 @@
 # Personal Knowledge Base 落地实施计划
 
 日期：2026-07-07
-状态：M1 owner-scoped Personal KB 入口已落地；upload / URL 摄取仍以统一后端摄取能力为后续入口，不做前端假功能
+状态：历史实施账本；当前产品与 runtime 契约已由后续规格重基线
+
+> **2026-07-14 覆盖说明：** 本文保留 Personal Knowledge 初次落地时的 schema、迁移、接口和测试背景，但不再是当前施工入口。文中 `M1/M2`、`Attention Control candidate lane`、`KnowledgeCandidateProvider`、`context injection`、KB Hint、自动 retrieval 等表述均为历史设计，不得用于新增实现或当前完成判断。当前实现以 `docs/personal-knowledge-base-spec.md` 为产品规格，以 `docs/personal-company-knowledge-tool-boundary-2026-07-10.md` 为 Tool-first runtime 契约，以 `docs/personal-knowledge-base-completion-contract-2026-07-08.md` 为逐原子证据账本。
 上游文档：
 
 - `docs/personal-knowledge-base-capability-rebaseline-2026-07-09.md`

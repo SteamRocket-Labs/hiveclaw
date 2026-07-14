@@ -1,173 +1,145 @@
-# Hive Native External Attention Runtime
+# Hive Native Read-side Attention 与 Capability Disclosure Runtime
 
-日期：2026-07-06  
-状态：当前机制说明 / engineering 入口文档  
-范围：描述 HiveNature / Hive Native 在单 Agent runtime 上的原生特色：Memory read side、context assembly、tool loop、feedback sidecar 之间的 external attention control layer。
+> 首版日期：2026-07-06
+> 重基线日期：2026-07-14
+> 当前代码基线：`09fcca1aa1e49ace9db335e1216845418b0ce27b`
+> 状态：当前 engineering 入口
+> 范围：Agent Memory read side、model-led semantic selection、prompt assembly、Skill / Tool / Subagent progressive disclosure、feedback sidecar。Personal / Company Knowledge 只通过 governed tools 读取。
 
-相关文档：
+## 0. 当前裁决
 
-- `docs/ccplus-transformer-style-memory-runtime-upgrade-plan-2026-07-05.md`：48 个原子项落地账本与 Q/K/V 施工证据。
-- `docs/ccplus-runtime-context-tooling-debt-ledger-2026-07-06.md`：Runtime / Context / Tooling 技术债闭环。
-- `docs/ccplus-runtime-activation-weight-design-2026-07-04.md`：权重、召回强度、activation dynamics 的前置讨论。
-- `docs/memory-system-spec.md`：Agent Memory T0/T2/T3/soul 基础规格。
-- `docs/knowledge-pyramid-agent-person-org-2026-07-03.md`：Agent / Personal / Company Knowledge 的三级晋升路径。
+Hive 当前没有一个统一的 `ActivationQuery -> ActivationRouter -> top-k V` 生产链路。旧 `activation_query.py`、`activation_router.py`、activation hints 与 `activation_qkv_trace` 已从当前 checkout 退役；旧 Q/K/V 文档只能作为历史施工证据，不能继续描述为现行 runtime。
 
----
+当前真实机制由四条相互衔接、但权威不同的路径组成：
 
-## 1. 核心判断
+1. **Agent Memory read side**：机械检索、graph/working-set/base-level 等信号只产生可观察的排序证据；最终语义选择由 LLM 完成。LLM selector 不可用或失败时返回全部已授权候选，不用机械 top-k 代替语义判断。
+2. **Capability disclosure**：Skill、deferred Tool、Subagent 分别产生结构化候选或目录，由各自的 progressive-disclosure 入口加载；候选本身不执行能力。
+3. **Prompt assembly**：frozen prefix、dynamic suffix、messages 和显式已治理 retrieval context 被装配并记账。section budget 是可观察的 advisory，不进行静默语义裁剪；最终超过 provider 容量时 fail closed。
+4. **Knowledge Tool-first**：Personal / Company Knowledge 正文不 prefetch、不成为自动 activation candidate、不静态注入原始上下文。模型通过知识 search/read tools 按需发现和读取。
 
-Hive 当前最有价值的 native 机制，不只是“有长期记忆”，也不只是“有工具调用”。真正的差异点是：
+这四条路径共同构成 Hive 的 read-side attention 与 capability disclosure，但不应再被包装成一个不存在的全局 Router。
 
-```text
-Hive 在模型外部做了一层可审计、可回放、可治理的 External Attention Control Layer。
-```
-
-这层不改模型权重，不声称控制模型内部 KV cache，也不要求主模型在 CoT 里自行决定“该召回什么”。它的职责是：
-
-```text
-Q：把当前用户输入、session、agent role、owner/company context、task profile 转成 ActivationQuery；
-K：把 memory、knowledge、skill、tool、subagent、KB 等候选统一成 ActivationCandidate；
-Router：先做 ACL / sensitivity / policy hard mask，再做 multi-head score 和 budget-aware top-k；
-V：只加载入选 value slice 或 capability hint，不把所有内容平铺塞进 prompt；
-Trace：把 Q/K/V、usage、selected/suppressed reasons 写进 manifest / ledger；
-Feedback：把 tool result、turn stop、user feedback 写回 control sidecar，影响后续 heat / decay / ranking。
-```
-
-换句话说，Hive 的 runtime 不是被动拼 prompt，而是在模型外面做一层“可治理的注意力控制器”。
-
----
-
-## 2. 这层到底控制什么
-
-External Attention Control Layer 控制三件事：
-
-| 控制面 | 解决的问题 | 当前实现形态 |
-| --- | --- | --- |
-| 更好的 memory 召回 | Wiki / Memory 越来越大后，不能平均平铺召回 | `ActivationQuery` + `ActivationCandidate` + `ActivationRouter` + selected memory values |
-| 更好的工具加载 | 工具 schema 不应该全部暴露；要先发现、再按任务加载 | deferred tool index、tool candidate refs、active tool groups、tool result ledger |
-| 更好的上下文组装 | frozen / dynamic、budget、manifest、selected/suppressed reasons 必须可解释 | dynamic suffix、`ContextUsageLedger`、`activation_qkv_trace`、prompt assembly manifest |
-
-这三件事本质上是同一个 runtime attention 问题：
-
-```text
-当前任务到底应该看什么？
-应该加载哪个能力？
-应该把什么放进 prompt？
-应该把什么留在 sidecar / manifest 里而不进入模型上下文？
-```
-
----
-
-## 3. 当前单 Agent 循环
+## 1. 当前运行链路
 
 ```mermaid
 flowchart TD
-  A["User Prompt / RuntimeTask"] --> B["runtime.invoker emits USER_PROMPT_SUBMIT"]
-  B --> C["Runtime builds ActivationQuery"]
-  C --> D["Gather candidates: Memory, KB, Skill, Tool, Subagent"]
-  D --> E["ActivationRouter hard masks by ACL, sensitivity, policy"]
-  E --> F["Multi-head score and budget-aware top-k"]
-  F --> G["Load selected V only"]
-  G --> H["Dynamic suffix renders Activation Hints"]
-  H --> I["Kernel provider call"]
-  I --> J["Tool loop through ToolRuntimeService"]
-  J --> K["Tool result ledger and ActivationEvents"]
-  I --> L["Prompt manifest: activation_qkv_trace and context usage"]
-  K --> M["TURN_STOP activation feedback summary"]
-  M --> N["Feedback sidecar: heat / decay"]
-  N --> D
+  A["User Prompt / RuntimeTask"] --> B["build_memory_context"]
+  B --> C["MemoryRetriever gathers complete authorized candidates"]
+  C --> D["Mechanical ranking evidence: relevance / graph / working set / base level"]
+  D --> E["LLM semantic selector"]
+  E -->|"selected"| F["Selected Agent Memory values"]
+  E -->|"selector unavailable or failed"| G["All authorized candidates + typed receipt"]
+  F --> H["Dynamic prompt assembly"]
+  G --> H
+  A --> I["Skill / Tool / Subagent progressive disclosure"]
+  I --> H
+  H --> J["Provider call"]
+  J --> K["Model may call governed tools"]
+  K --> L["ToolRuntimeService / policy / approval / execution"]
+  L --> M["Typed tool result + ledger + next provider round"]
+  M --> J
 ```
 
-这个循环有几个关键边界：
+Knowledge 不从 `B -> C` 自动进入。Personal 当前只能通过 `search_personal_kb` / `read_personal_kb`；Company 完成后使用 `search_company_kb` / `read_company_kb`。工具返回值经过授权后进入后续 provider round，并保留 source/revision refs。
 
-1. `T0/T2/T3` 仍然是 Memory truth surface。
-2. `activation_events`、heat/decay、router output 是 control sidecar / read model，不是新的 truth layer。
-3. 权限、敏感级别、policy hard mask 发生在排序之前。
-4. Tool 执行仍然经过 `ToolRuntimeService`、preflight、approval、hook，不允许 Router 绕过治理。
-5. Skill / Tool / Subagent 是 capability candidate，不是第 4 个产品。
+## 2. 代码事实
 
----
-
-## 4. 代码事实
-
-| 机制 | 代码触点 | 事实 |
+| 机制 | 当前代码触点 | 当前事实 |
 | --- | --- | --- |
-| Q 生成 | `backend/app/runtime/invoker.py::_build_activation_query_for_request` | 在 request 进入 kernel 前生成 `ActivationQuery`，包含 prompt、turn_id、intent_id、agent_id、role、owner context、task profile、entities、temporal hints、risk level、candidate lanes |
-| Runtime 状态账本 | `backend/app/runtime/context.py::RuntimeAssemblyState` | 统一承载 prompt manifest、context usage、tool result、cache/runtime decision、activation query/candidates/router output/events、skill/tool disclosure 状态 |
-| Router | `backend/app/runtime/activation_router.py::route_activation_candidates` | 先 `_policy_mask` / `_acl_mask` / `_sensitivity_mask`，再 `_multi_head_score`，最后 `_apply_budget` |
-| Dynamic injection | `backend/app/runtime/prompt_builder.py::build_dynamic_prompt_suffix` | dynamic suffix 统一渲染 memory、runtime metadata、permissions、tool groups、deferred tools、skill catalog、activation hints、knowledge、environment |
-| Q/K/V trace | `backend/app/runtime/turn_envelope.py::build_activation_qkv_trace` | 记录 query trace、top/suppressed candidate refs、loaded memory values、loaded skills、loaded tool schemas，不嵌入 value body |
-| `/context` 类账本 | `backend/app/runtime/turn_envelope.py::build_context_usage_ledger` | 记录 system prompt、system tools、custom agents、memory files、skills、deferred tool index、messages、MCP tools、free space，以及 selected memory value count / tokens |
-| Tool loop | `backend/app/kernel/engine.py::_execute_tool_with_hooks` | 工具执行仍在统一 hook / result / failure 语义内，activation feedback 是旁路记录，不替代工具治理 |
-| Feedback sidecar | `backend/app/services/session_feedback.py::_write_feedback_activation_sidecar` | 用户 feedback 产生 heat_delta、activation_event.feedback.credit、credited_entry_ids，写入 `hive.ccplus.activation_feedback_sidecar.v1` |
+| Memory 入口 | `backend/app/services/memory_service.py::build_memory_context` | 建立 principal/goal/session working-set context，调用 Memory retriever，并记录 degraded component |
+| 完整候选收集 | `backend/app/memory/retriever.py::MemoryRetriever.retrieve` | 收集已授权 explicit、Wiki、episodic、semantic/external memory 证据；`limit` 不作为语义裁剪器 |
+| 排序证据 | `backend/app/memory/retriever.py::_apply_activation`、`backend/app/memory/activation.py::ActivationScorer` | sensitivity/lifecycle 先做硬约束；relevance、working set、base level、task modulation 形成可观察 score trace，不能替代最终语义选择 |
+| 模型语义选择 | `backend/app/memory/retriever.py::_select_candidates` | LLM 选择 candidate ids；模型不可用或失败时返回全部已授权候选并写 selection receipt，不机械 top-k |
+| Session working set | `backend/app/memory/session_working_set.py` | 只持久化 refs、strength、turn 与时间等 control data，不持久化正文；用于 bounded context boost |
+| Prompt section ledger | `backend/app/runtime/prompt_builder.py::ContextSectionCandidate`、`_select_context_section_candidates` | 记录存在/为空、source hash、rendered chars/tokens 和 advisory budget；不按关键词决定语义取舍 |
+| Dynamic assembly | `backend/app/runtime/prompt_builder.py::build_dynamic_prompt_suffix` | 装配 Memory、runtime metadata、permissions、tool groups、deferred tools、Skill catalog、environment；只在调用方显式提供已治理 `retrieval_context` 时装配 knowledge section |
+| Provider 容量门 | `backend/app/runtime/prompt_builder.py::assemble_runtime_prompt` | frozen + dynamic 无法在 provider window 内完整装配时抛 `PromptBudgetExceededError`，拒绝 blind truncation |
+| Context 证据 | `backend/app/runtime/turn_envelope.py::build_context_selection_manifest`、`build_runtime_prompt_assembly_manifest` | 记录 context candidate refs、selected/suppressed-empty、source hashes、budget decisions、tool/skill/message usage |
+| Capability 候选 | `gather_skill_candidates_for_prompt`、`gather_deferred_tool_candidates_for_agent`、`gather_subagent_candidates` | Skill / Tool / Subagent 各自生产 progressive-disclosure 元数据；不存在统一语义 Router |
+| Knowledge 默认入口 | `backend/app/runtime/invoker.py::_resolve_retrieval_context` | 默认返回空，不 prefetch Personal / Company Knowledge；只保留专用 runtime 传入 governed evidence 的 seam |
+| Feedback sidecar | `backend/app/services/session_feedback.py::_write_feedback_activation_sidecar` | feedback 是 control/evidence sidecar，不是 T0/T2/T3 或 Knowledge truth |
 
----
+## 3. 权威边界
 
-## 5. 和 Harness Agent / CC / Codex 的对比
+### 3.1 LLM 拥有的语义
 
-这里的对比只看单 Agent 运行时，不展开公司控制面、A2A、企业知识库。
+- 哪些已授权 Memory 候选对当前任务真正有用；
+- 是否需要搜索 Personal / Company Knowledge；
+- 使用哪个 Skill / Tool / Subagent；
+- 如何解释工具结果并形成最终表达。
 
-| 对标对象 | 强项 | Hive 已吸收或对齐 | Hive Native 额外层 |
+### 3.2 平台拥有的机械事实
+
+- principal、tenant、owner、delegation、RLS、source ACL；
+- lifecycle/sensitivity 访问硬门；
+- tool policy、approval、sandbox、quota、idempotency；
+- provider context window 与显式资源上限；
+- candidate/source hashes、selection receipt、tool result、transcript、span、replay/recovery evidence。
+
+平台可以给 LLM 排序证据，但不得让 regex、关键词、固定阈值或 top-k 机械替代语义选择。无法调用 LLM selector 时，允许的 fallback 是完整暴露已授权候选、标记 typed degradation、保留 evidence 并等待恢复。
+
+## 4. Knowledge 的严格 Tool-first 边界
+
+| 项目 | Agent Memory | Personal Knowledge | Company Knowledge |
 | --- | --- | --- | --- |
-| Harness Agent | 强调 Model + Harness、长任务状态外置、append-only replay、budget / sandbox / eval / recovery | Hive 有 durable runtime、T0 append-only、RuntimeTask、tool result ledger、sandbox、health/eval 证据 | 在 harness 外再加 memory/skill/tool/KB 的 external attention router，让“召回什么、加载什么、注入什么”可排序、可压制、可反馈 |
-| CC | 强 prompt assembly、progressive disclosure、skills、hooks、subagent、context window / compaction 哲学 | Hive 对齐 CC 生命周期、dynamic suffix、Skill progressive disclosure、hooks、tool_search、context usage 分类账 | CC 更像“模型 + 上下文/工具披露规范”；Hive 把 Memory Wiki 与 capability disclosure 统一成 Q/K/V read-side 控制层 |
-| Codex | 强工程控制：sandbox/approval、AGENTS.md、worktree/session ergonomics、tracing、长任务执行纪律 | Hive 吸收 approval / sandbox / trace / runtime task / structured ledger / deterministic evidence 的工程优势 | Codex 的优势主要是执行工程；Hive 的差异是把个人/企业 Memory 与工具加载一起纳入 external attention dynamics |
+| 当前状态 | 已有真实 read-side 消费 | search/read/proposal 主路径已落地 | 当前 `Missing` |
+| 原始 context | 可经受治理的 Memory assembly 进入 | 不 prefetch、不静态注入 | 不 prefetch、不静态注入 |
+| 模型发现 | Memory selector + Memory tools | `search_personal_kb` | 目标 `search_company_kb` |
+| 读取正文 | selected Memory value / Memory tool | `read_personal_kb` | 目标 `read_company_kb` |
+| durable 写入 | Memory Gate + Platform Gate | Owner 决策 Personal proposal | Company proposal/review/publication authority |
+| replay | T0/source refs + selection receipt | tool pointer + citation refs | 目标 tool pointer + source/revision/publication refs |
 
-简化成一句话：
+`retrieval_context` 不是 Knowledge 自动召回的后门。只有已经在专用 runtime 边界完成 authority 与 provenance 检查的证据，才可以显式传入这个 seam；默认 Agent runtime 永远不从 Personal/Company store 预取它。
 
-```text
-Harness 给了“agent 应该有 harness”的尺度；
-CC 给了“上下文、工具、Skill、hook 应该怎样披露”的语义基底；
-Codex 给了“工程控制、sandbox、approval、trace、worktree discipline”的优势；
-Hive Native 把这些接到 Memory Wiki / Knowledge Wiki / Tool loop 上，形成外部 attention control layer。
+## 5. 七原子检查
+
+| 原子 | 当前 read-side 事实 | Knowledge 影响 |
+| --- | --- | --- |
+| 输入 | 用户 prompt、session/goal/principal context、显式 tool call | Knowledge 查询由模型发起，不由原始 context assembler 偷偷发起 |
+| 权威 | sensitivity/principal 约束，工具执行前再做 policy/approval | Personal 使用 owner/grant；Company 必须新增 tenant/source/policy authority |
+| 执行 | MemoryRetriever + model selector；ToolRuntimeService 是工具唯一执行面 | Knowledge search/read 必须注册为 governed tools |
+| 证据 | score trace、selection receipt、context manifest、tool ledger、transcript/span | Knowledge tool 返回 source/revision refs，replay 只保留可授权 pointer |
+| 恢复 | selector 失败返回完整已授权候选；prompt oversize typed fail；tool result 可重放 | denied/unavailable/empty/retryable 必须区分，不能伪装成空结果 |
+| 消费 | selected Memory 真进入 prompt；loaded capability 真进入 model/tool loop | Knowledge 只有 search -> read -> model 使用才算消费闭环 |
+| 验收 | Memory selector、working set、no-truncation、manifest 与 tool tests | Personal 已有 no-prefetch/replay tests；Company 尚无闭环测试，状态仍为 `Missing` |
+
+## 6. 已退役表述
+
+以下语句只属于 2026-07-05 至 2026-07-08 的历史施工语境：
+
+- “runtime 先构建 `ActivationQuery`”；
+- “统一 `ActivationRouter` 先 hard mask 再 multi-head top-k”；
+- “Personal / Company KB 是 `ActivationCandidate`”；
+- “dynamic suffix 注入 KB hint / Activation Hints”；
+- “manifest 保存 `activation_qkv_trace`”。
+
+当前测试反而明确断言 `activation_qkv_trace` 不存在，空 Activation Hints 不进入 suffix。任何后续设计若要重新引入这些概念，必须重新做 Model Agency Boundary 审查和 TDD，不能复活历史 dead path。
+
+## 7. 文档责任
+
+| 文档 | 责任 |
+| --- | --- |
+| `docs/memory-system-spec.md` | Agent Memory T0/T2/T3/soul truth 与生命周期 |
+| `docs/personal-knowledge-base-spec.md` | Personal Knowledge 产品与数据契约 |
+| `docs/personal-company-knowledge-tool-boundary-2026-07-10.md` | Personal / Company Knowledge Tool-first runtime |
+| `docs/company-knowledge-base-spec-2026-07-07.md` | Company Knowledge 单轮完整施工规格 |
+| `docs/knowledge-substrate-plugin-architecture-2026-07-09.md` | 三层 Knowledge substrate、Gateway 与 provider 边界 |
+| `docs/ccplus-transformer-style-memory-runtime-upgrade-plan-2026-07-05.md` | 历史 Q/K/V 施工和测试证据，不是当前 runtime contract |
+
+## 8. 当前验收入口
+
+```bash
+cd /Users/rocky243/vc-saas/hiveclaw-main/backend
+source .venv/bin/activate
+
+pytest -q \
+  tests/memory/test_activation_scoring.py \
+  tests/memory/test_base_level_activation.py \
+  tests/memory/test_context_boost_activation.py \
+  tests/services/test_memory_service.py \
+  tests/runtime/test_prompt_builder.py \
+  tests/runtime/test_turn_envelope_prompt_manifest.py \
+  tests/runtime/test_invoker.py::test_resolve_retrieval_context_does_not_prefetch_knowledge
 ```
 
----
-
-## 6. 为什么这是 HiveNature 原生特色
-
-普通 Agent runtime 往往有两种形态：
-
-1. **Prompt 拼接型**：把 memory summary、tool list、system instruction 拼成一个大 prompt。
-2. **RAG 检索型**：用 query 去搜一批文档，把 top-k 塞回 prompt。
-
-Hive 当前这层不是简单 RAG，也不是简单 prompt engineering。它的特点是：
-
-| 特点 | 含义 |
-| --- | --- |
-| 多源候选 | Memory、Personal / Company KB、Skill、Tool、Subagent 都能成为候选 |
-| 权限先于智能 | Router 排序前先做 ACL / sensitivity / policy hard mask |
-| Value 延迟加载 | 只加载入选 V；未入选候选保留在 trace / suppressed reasons |
-| prompt 预算可解释 | `ContextUsageLedger` 解释每类内容占用和 free space |
-| 反馈回路独立 | tool result / turn stop / user feedback 进入 sidecar，不污染 truth surface |
-| 可回放可审计 | prompt manifest、activation_qkv_trace、runtime assembly state 都是可检查对象 |
-
-这也是它和传统 RAG 的核心区别：RAG 主要解决“找文档”；Hive Native external attention 解决“在一个 agent cycle 中，哪些记忆、能力、工具、上下文应该获得注意力”。
-
----
-
-## 7. 文档边界
-
-这份文档只描述当前 runtime native 机制，不替代以下文档：
-
-| 文档 | 仍然负责 |
-| --- | --- |
-| `docs/ccplus-transformer-style-memory-runtime-upgrade-plan-2026-07-05.md` | 原子落地、测试、commit、验收证据 |
-| `docs/ccplus-runtime-context-tooling-debt-ledger-2026-07-06.md` | 技术债闭环与 CC parity 差距清理 |
-| `docs/memory-system-spec.md` | Agent Memory truth surface 与 T0/T2/T3/soul 规格 |
-| `docs/personal-knowledge-base-spec.md` | Personal Knowledge / Knowledge LM 产品规格 |
-| `docs/knowledge-pyramid-agent-person-org-2026-07-03.md` | Agent → Personal → Company Knowledge 的晋升路径 |
-
-本文件可以作为 engineering 叙事入口：当我们要解释 Hive 为什么不是“又一个 RAG Agent”时，先读这份。
-
----
-
-## 8. 后续写法建议
-
-如果后续要把这份文档继续加强，不应该追加新的产品规划，而应该补三类证据：
-
-1. **真实 turn 样例**：给出一次用户 prompt 进入 runtime 后的 `ActivationQuery`、candidate refs、selected/suppressed、dynamic suffix、manifest 片段。
-2. **对标样例**：同一个任务分别说明 Harness / CC / Codex / Hive 会把注意力放在哪里。
-3. **指标样例**：selected memory value tokens、loaded tool schema tokens、suppression reasons、feedback heat/decay 的变化。
-
-这样这份文档会从“机制说明”升级成“可演示的单 Agent native advantage 说明书”。
+这组测试用于证明当前 read-side 机制与 Knowledge no-prefetch 边界；它不证明 Company Knowledge 已落地。

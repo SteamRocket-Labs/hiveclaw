@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 
@@ -31,6 +32,88 @@ def test_agent_handbooks_share_one_exact_model_agency_contract() -> None:
         "treating a client-echoed server hash as semantic authority",
     ):
         assert required in agents_contract
+
+
+def test_agent_handbooks_share_one_exact_north_star_decision_order() -> None:
+    heading = "## North Star Decision Order — 北极星裁决顺序"
+    next_heading = "## Reference Baselines — 对照物顺序"
+    agents = (REPO_ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    claude = (REPO_ROOT / "CLAUDE.md").read_text(encoding="utf-8")
+
+    agents_contract = _handbook_section(agents, heading, next_heading)
+    claude_contract = _handbook_section(claude, heading, next_heading)
+
+    assert agents_contract == claude_contract
+    for required in (
+        "Goal 1 is built and judged first",
+        "AI-native and Model Agency Boundary",
+        "complete authorized evidence availability",
+        "Personal Knowledge Base is tool-only",
+        "Codex Desktop",
+        "seven-atom standard",
+        "not by making model behavior easier for the platform to predict",
+    ):
+        assert required in agents_contract
+
+
+def test_reusable_atomic_review_prompt_is_timeless_and_north_star_complete() -> None:
+    prompt_path = REPO_ROOT / "docs/reusable-agent-native-atomic-review-prompt.md"
+    source = prompt_path.read_text(encoding="utf-8")
+
+    for required in (
+        "可复用正文",
+        "最强数字员工",
+        "公司级控制中台",
+        "hermes-agent",
+        "先释放模型，再约束行动",
+        "Personal KB 必须保持 tool-only",
+        "Codex Desktop",
+        "输入（Input）",
+        "权威（Authority）",
+        "执行（Execution）",
+        "证据（Evidence）",
+        "恢复（Recovery）",
+        "消费（Consumption）",
+        "验收（Acceptance）",
+    ):
+        assert required in source
+
+    assert re.search(r"20\d{2}-\d{2}-\d{2}", source) is None
+    for historical_marker in ("第一轮", "第二轮", "第三轮", "28个断点", "28 个断点"):
+        assert historical_marker not in source
+
+    docs_index = (REPO_ROOT / "docs/README.md").read_text(encoding="utf-8")
+    assert prompt_path.name in docs_index
+
+
+def test_canonical_north_star_docs_preserve_agency_and_scope_boundaries() -> None:
+    master = (REPO_ROOT / "docs/hive-sota-master-goal.md").read_text(encoding="utf-8")
+    ccplus = (REPO_ROOT / "docs/ccplus-north-star-contract-2026-06-24.md").read_text(encoding="utf-8")
+    evolution = (REPO_ROOT / "docs/self-evolution-sota-plan.md").read_text(encoding="utf-8")
+
+    for required in (
+        "对齐的目标是保住并增强 Agent 能力，不是让模型行为更容易被平台预测",
+        "Personal KB 必须保持 tool-only",
+        "| G5 | Workflow durable orchestration |",
+        "| G16 | 用户消费与 UI/UX 闭环 |",
+    ):
+        assert required in master
+
+    for required in (
+        "semantic floor, not a line-by-line implementation template",
+        "capability-preserving determinism",
+        "Personal Knowledge Base: governed tool-only knowledge source",
+        "Codex Desktop is the UI/UX benchmark",
+    ):
+        assert required in ccplus
+
+    for required in (
+        "Current authority guard",
+        '"direct" memory means an immediately session-visible overlay or candidate',
+        "deterministic checks govern exact tests, schemas, states, receipts, permissions, and side effects",
+        "Personal KB remains a governed tool-only knowledge source",
+    ):
+        assert required in evolution
 
 
 def test_workflow_promotion_requires_model_or_human_review_not_mechanical_eligibility() -> None:

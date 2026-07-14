@@ -13,6 +13,28 @@ Hive exists to be **two things, and every line of code must serve one of them**:
 
 **Build order:** Goal 1 (the agent's own intelligence + self-evolution) is the **foundational cornerstone** — it is hardened and judged *first*; the control-plane and agent-to-agent layers build on top of it. When a trade-off is unclear, resolve it in favor of these two goals. Current SOTA target entry: `docs/hive-sota-master-goal.md`; CCPlus boundary contract: `docs/ccplus-north-star-contract-2026-06-24.md`; foundation roadmap: `docs/self-evolution-sota-plan.md`.
 
+## North Star Decision Order — 北极星裁决顺序
+
+When goals, baselines, governance, delivery rules, or historical documents appear to conflict, use this order. Lower layers may strengthen higher layers but may never override them:
+
+1. **Product purpose:** build the strongest controllable self-evolving digital employee and the company control plane that operates it. **Goal 1 is built and judged first**; a sophisticated control plane around a weaker agent is a product failure.
+2. **AI-native and Model Agency Boundary:** release the model's intelligence inside an authenticated frame before constraining actions. Semantic judgment, reasoning, synthesis, learning, prioritization, and final expression belong to the LLM. The platform owns authority, data ingress, side effects, explicit resources, machine contracts, evidence, recovery, audit, and durable commit.
+3. **CC / FreeCode semantic floor:** preserve the complete local agent lifecycle and capability semantics. FreeCode is a behavior and lifecycle baseline, not a line-by-line implementation template and not authority to copy a bug, vendor habit, prompt constant, or capability restriction.
+4. **Codex additive delta:** adopt typed state, approval routing, sandboxing, observability, recoverable workbench state, and desktop interaction improvements only when they preserve or expand the CC capability surface.
+5. **Hive-native advantage:** Memory, reflection, Skill evolution, Dynamic context, Local Agent, A2A, Workflow, Knowledge, and governed self-evolution must remain first-class product capabilities rather than being simplified away for parity.
+6. **Enterprise governance:** constrain unauthorized data and external effects at the narrowest authoritative boundary. A denial of one effect must not degrade unrelated reasoning or capabilities; denied, unavailable, approval-required, and retryable infrastructure states remain typed and recoverable.
+7. **Product consumption:** UI/UX is the operating and evidence-consumption surface of both product goals. Benchmark **Codex Desktop** for clarity and restraint: normal users see intent, progress, decisions, required actions, recovery, and deliverables; raw schemas, IDs, payloads, and forensic evidence remain progressively disclosed or operator-only. Current design authority: `docs/frontend-design-refinement-2026-07-03.md`.
+8. **Atomic proof:** architecture and completion claims use the **seven-atom standard**—Input, Authority, Execution, Evidence, Recovery, Consumption, and Acceptance. This proves the intended capability without redefining its semantics.
+9. **Delivery discipline:** complete the authorized scope in one pass with tests, migration/backfill when applicable, observability, cleanup, and evidence; KISS removes accidental complexity but never removes required model capability or product closure.
+
+The optimization objective is **capability-preserving determinism**: make external effects, state, evidence, and recovery predictable, **not by making model behavior easier for the platform to predict**. Any design that gains determinism by deleting tools, starving context/output, scanning natural language for hard outcomes, or replacing model-authored semantics is a North Star regression.
+
+### Context and knowledge disclosure
+
+"Complete input visibility" means **complete authorized evidence availability** for the intelligent step: every authorized source in scope is either present or represented by a truthful, discoverable, lossless, and recoverable reference with an explicit coverage ledger. It never means injecting every datastore into the raw prompt.
+
+The **Personal Knowledge Base is tool-only**. It must not be prefetched or statically injected into original context assembly; the agent discovers and reads it through governed `search_personal_kb` / `read_personal_kb`-style tools when relevant. Tool-only disclosure must still be genuinely usable: the capability is discoverable, authorization is explicit, citations are preserved, and denial/unavailability is distinguishable from an empty result. Enterprise Knowledge builds on the governed knowledge-tool plane with organization authority, ACL/RLS, provenance, retention, and audit; it is not simulated through Personal KB or legacy files.
+
 ## Reference Baselines — 对照物顺序
 
 Hive is a **claude code Python evolution**, so implementation comparisons must use the current local source baselines in this order:
@@ -82,7 +104,7 @@ Completion status must be supported by current-checkout code paths and verificat
 
 Hive is an **AI-native system**. Three layers, in strict priority order:
 
-1. **L1 — Unleash the model first.** Any step that requires intelligence (summarization, planning, extraction, synthesis, judgment) belongs to the LLM at full capability: complete input visibility (no mechanical pruning of what the model sees), sufficient output budget (no starved `max_tokens`), prompts engineered to benchmark (Claude Code) quality — structure, examples, anti-drift constraints. Mechanical/string-based handling of intelligent steps is allowed ONLY as an observable fallback on failure paths, never the primary path. *Case law: compaction once fed the LLM a `[-40:]` truncated slice with a 2500-token output cap and a silent regex fallback — the canonical violation (fixed in `docs/compaction-cc-alignment.md`).*
+1. **L1 — Unleash the model first.** Any step that requires intelligence (summarization, planning, extraction, synthesis, judgment) belongs to the LLM at full capability: complete authorized evidence availability (inline or through lossless, discoverable, recoverable references; no silent mechanical pruning), sufficient output budget (no starved `max_tokens`), prompts engineered to benchmark (Claude Code) quality — structure, examples, anti-drift constraints. This does not authorize raw-context injection of Personal KB or any other tool-only source. Mechanical/string-based handling of intelligent steps is allowed ONLY as an observable fallback on failure paths, never the primary path. *Case law: compaction once fed the LLM a `[-40:]` truncated slice with a 2500-token output cap and a silent regex fallback — the canonical violation (fixed in `docs/compaction-cc-alignment.md`).*
 2. **L2 — Harness constrains, never replaces.** Governance, safety, budgets, audit wrap *above* model capability: they bound what the agent may **do**, not how well it **thinks**. A constraint that degrades model intelligence (instead of scoping authority) is a design bug.
 3. **L3 — Hive's identity: a neutral, organization-facing control plane.** Hive is an independent third party with **model equality**: every feature, every constraint, every prompt works equally for every model — no privileged vendor, no model-specific feature gates, no prompt favoritism. On top of that equality Hive adds what no model vendor provides: the company-scoped controllable agent control plane.
 

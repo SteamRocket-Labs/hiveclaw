@@ -1,8 +1,10 @@
-# CCPlus 类 Transformer 记忆与运行时升级计划
+# CCPlus 类 Transformer 记忆与运行时升级历史施工账本
 
 日期：2026-07-05  
-状态：落地施工账本（4 个计划 / 48 个原子项），基于当前代码走查与 2026-07-06 Runtime / Context / Tooling 清债闭环  
+状态：历史施工与测试证据账本；不再作为 Knowledge runtime 当前契约
 范围：在不推翻现有 Agent Memory / Personal Knowledge / Company Knowledge 三层产品路径的前提下，把 Memory、Runtime、Tool/Skill disclosure 做成可解释的 runtime Attention / QKV 机制。
+
+> **2026-07-14 Knowledge 重基线（覆盖本文全部旧表述）：** 本文保留 48 个原子项的历史施工和测试证据；其中所有把 Personal / Company Knowledge 写成 `ActivationCandidate`、KB candidate lane、自动 retrieval、KB hint 或 prompt injection 的描述均已失效，不得继续实施或作为完成证据。当前契约以 `docs/personal-company-knowledge-tool-boundary-2026-07-10.md` 为准：默认 `_resolve_retrieval_context` 不预取知识库，模型通过 governed search/read tools 按需发现和读取；`retrieval_context` 只供专用 runtime 显式传入已经治理的证据。Agent Memory、Skill、Tool、Subagent 的 runtime attention 证据仍可从本文读取。
 
 相关文档：
 

@@ -4,6 +4,39 @@ _Auto-maintained by session_trail.py. Each line records a session that edited co
 
 ## Sessions
 
+- 2026-07-14T04:01Z [sid:09cfb5ac]; branch:main; 12 files (orphan-trail.md, AGENTS.md, CLAUDE.md, +9); last commit: 09fcca1aa Fix OfficeCLI structured text previews
+- 2026-07-14T03:50Z [sid:61677159]; branch:main; 12 files (orphan-trail.md, AGENTS.md, CLAUDE.md, +9); last commit: ab6c19c42 Replace Office Online with OfficeCLI previews
+- 2026-07-14T03:47Z [sid:09cfb5ac]; branch:main; 11 files (orphan-trail.md, AGENTS.md, CLAUDE.md, +8); last commit: ab6c19c42 Replace Office Online with OfficeCLI previews
+- 2026-07-14T03:47Z [sid:3f5831c6]; branch:main; 11 files (orphan-trail.md, AGENTS.md, CLAUDE.md, +8); last commit: ab6c19c42 Replace Office Online with OfficeCLI previews
+- 2026-07-14T03:47Z [sid:09cfb5ac]; branch:main; 11 files (orphan-trail.md, AGENTS.md, CLAUDE.md, +8); last commit: ab6c19c42 Replace Office Online with OfficeCLI previews
+- 2026-07-14T03:45Z [sid:3f5831c6]; branch:main; 11 files (orphan-trail.md, AGENTS.md, CLAUDE.md, +8); last commit: ab6c19c42 Replace Office Online with OfficeCLI previews
+- 2026-07-14T03:44Z [sid:09cfb5ac]; branch:main; 11 files (orphan-trail.md, AGENTS.md, CLAUDE.md, +8); last commit: ab6c19c42 Replace Office Online with OfficeCLI previews
+- 2026-07-14T03:43Z [sid:4bac56d6]; branch:main; 11 files (orphan-trail.md, AGENTS.md, CLAUDE.md, +8); last commit: ab6c19c42 Replace Office Online with OfficeCLI previews
+- 2026-07-14T03:43Z [sid:09cfb5ac]; branch:main; 11 files (orphan-trail.md, AGENTS.md, CLAUDE.md, +8); last commit: ab6c19c42 Replace Office Online with OfficeCLI previews
+- 2026-07-14T03:43Z [sid:3f5831c6]; branch:main; 11 files (orphan-trail.md, AGENTS.md, CLAUDE.md, +8); last commit: ab6c19c42 Replace Office Online with OfficeCLI previews
+- 2026-07-14T03:42Z [sid:09cfb5ac]; branch:main; 8 files (orphan-trail.md, AGENTS.md, CLAUDE.md, +5); last commit: ab6c19c42 Replace Office Online with OfficeCLI previews
+- 2026-07-14T03:42Z [sid:36df4595]; branch:main; 8 files (orphan-trail.md, AGENTS.md, CLAUDE.md, +5); last commit: ab6c19c42 Replace Office Online with OfficeCLI previews
+- 2026-07-14T03:42Z [sid:09cfb5ac]; branch:main; 8 files (orphan-trail.md, AGENTS.md, CLAUDE.md, +5); last commit: ab6c19c42 Replace Office Online with OfficeCLI previews
+- 2026-07-14T03:37Z [sid:6bfa4009]; branch:main; 41 files (orphan-trail.md, AGENTS.md, CLAUDE.md, +38); last commit: 4b9e96820 Refactor agent memory and governance workflows
+- 2026-07-14T03:37Z [sid:09cfb5ac]; branch:main; 41 files (orphan-trail.md, AGENTS.md, CLAUDE.md, +38); last commit: 4b9e96820 Refactor agent memory and governance workflows
+- 2026-07-14T03:34Z [sid:3ccb99b0]; branch:main; 41 files (orphan-trail.md, AGENTS.md, CLAUDE.md, +38); last commit: 4b9e96820 Refactor agent memory and governance workflows
+- 2026-07-14T03:32Z [sid:09cfb5ac]; branch:main; 40 files (orphan-trail.md, AGENTS.md, CLAUDE.md, +37); last commit: 4b9e96820 Refactor agent memory and governance workflows
+- 2026-07-14T03:28Z [sid:3ccb99b0]; branch:main; 38 files (orphan-trail.md, AGENTS.md, CLAUDE.md, +35); last commit: 4b9e96820 Refactor agent memory and governance workflows
+- 2026-07-14T03:28Z [sid:09cfb5ac]; branch:main; 38 files (orphan-trail.md, AGENTS.md, CLAUDE.md, +35); last commit: 4b9e96820 Refactor agent memory and governance workflows
+- 2026-07-14T03:28Z [sid:29ff82f0]; branch:main; 38 files (orphan-trail.md, AGENTS.md, CLAUDE.md, +35); last commit: 4b9e96820 Refactor agent memory and governance workflows
+- 2026-07-14T03:28Z [sid:09cfb5ac]; branch:main; 38 files (orphan-trail.md, AGENTS.md, CLAUDE.md, +35); last commit: 4b9e96820 Refactor agent memory and governance workflows
+- 2026-07-14T03:27Z [sid:1d6f249b]; branch:main; 37 files (orphan-trail.md, AGENTS.md, CLAUDE.md, +34); last commit: 4b9e96820 Refactor agent memory and governance workflows
+- 2026-07-14T03:27Z [sid:09cfb5ac]; branch:main; 37 files (orphan-trail.md, AGENTS.md, CLAUDE.md, +34); last commit: 4b9e96820 Refactor agent memory and governance workflows
+- 2026-07-14T03:27Z [sid:6bfa4009]; branch:main; 37 files (orphan-trail.md, AGENTS.md, CLAUDE.md, +34); last commit: 4b9e96820 Refactor agent memory and governance workflows
+- 2026-07-14T03:27Z [sid:09cfb5ac]; branch:main; 37 files (orphan-trail.md, AGENTS.md, CLAUDE.md, +34); last commit: 4b9e96820 Refactor agent memory and governance workflows
+- 2026-07-14T03:26Z [sid:c2ef6d0f]; branch:main; 37 files (orphan-trail.md, AGENTS.md, CLAUDE.md, +34); last commit: 4b9e96820 Refactor agent memory and governance workflows
+- 2026-07-14T03:26Z [sid:09cfb5ac]; branch:main; 37 files (orphan-trail.md, AGENTS.md, CLAUDE.md, +34); last commit: 4b9e96820 Refactor agent memory and governance workflows
+- 2026-07-14T03:26Z [sid:adf81ba9]; branch:main; 37 files (orphan-trail.md, AGENTS.md, CLAUDE.md, +34); last commit: 4b9e96820 Refactor agent memory and governance workflows
+- 2026-07-14T03:25Z [sid:09cfb5ac]; branch:main; 37 files (orphan-trail.md, AGENTS.md, CLAUDE.md, +34); last commit: 4b9e96820 Refactor agent memory and governance workflows
+- 2026-07-14T03:24Z [sid:ea2e629b]; branch:main; 37 files (orphan-trail.md, AGENTS.md, CLAUDE.md, +34); last commit: 4b9e96820 Refactor agent memory and governance workflows
+- 2026-07-14T03:24Z [sid:09cfb5ac]; branch:main; 37 files (orphan-trail.md, AGENTS.md, CLAUDE.md, +34); last commit: 4b9e96820 Refactor agent memory and governance workflows
+- 2026-07-14T03:23Z [sid:9411e3fe]; branch:main; 37 files (orphan-trail.md, AGENTS.md, CLAUDE.md, +34); last commit: 4b9e96820 Refactor agent memory and governance workflows
+- 2026-07-14T03:23Z [sid:09cfb5ac]; branch:main; 37 files (orphan-trail.md, AGENTS.md, CLAUDE.md, +34); last commit: 4b9e96820 Refactor agent memory and governance workflows
 - 2026-07-13T14:33Z [sid:b3cea956]; branch:main; 23 files (orphan-trail.md, agents.py, chat_sessions.py, +20); last commit: 0a0dec170 fix(ui): restore navigation and governed session d
 - 2026-07-13T14:33Z [sid:b3d8c4ab]; branch:main; 23 files (orphan-trail.md, agents.py, chat_sessions.py, +20); last commit: 0a0dec170 fix(ui): restore navigation and governed session d
 - 2026-07-13T14:32Z [sid:a991d50d]; branch:main; 23 files (orphan-trail.md, agents.py, chat_sessions.py, +20); last commit: 0a0dec170 fix(ui): restore navigation and governed session d
@@ -71,36 +104,3 @@ _Auto-maintained by session_trail.py. Each line records a session that edited co
 - 2026-07-09T01:04Z [sid:0a0c04a4]; branch:main; 4 files (orphan-trail.md, activation_cleanup.py, atomic-repo-review-2026-07-08.md, +1); last commit: 5e27d7f7d feat: add legacy pack migration dry run
 - 2026-07-09T01:00Z [sid:7228cd37]; branch:main; 3 files (orphan-trail.md, activation_cleanup.py, atomic-repo-review-2026-07-08.md); last commit: 5e27d7f7d feat: add legacy pack migration dry run
 - 2026-07-08T17:46Z [sid:be200f52]; branch:main; 8 files (orphan-trail.md, db_bootstrap.py, activation_cleanup.py, +5); last commit: 650e8adf4 feat: add external marketplace discovery sources
-- 2026-07-08T17:19Z [sid:7228cd37]; branch:main; 8 files (orphan-trail.md, external_capability.py, activation.py, +5); last commit: dd4279f76 feat: activate external extension components
-- 2026-07-08T17:11Z [sid:be200f52]; branch:main; 14 files (orphan-trail.md, external_capabilities.py, db_bootstrap.py, +11); last commit: 178e44906 feat: close external extension revoke flow
-- 2026-07-08T17:08Z [sid:7228cd37]; branch:main; 10 files (orphan-trail.md, db_bootstrap.py, external_capability.py, +7); last commit: 178e44906 feat: close external extension revoke flow
-- 2026-07-08T17:05Z [sid:be200f52]; branch:main; 5 files (orphan-trail.md, activation_cleanup.py, test_external_capability_activation.py, +2); last commit: 178e44906 feat: close external extension revoke flow
-- 2026-07-08T17:01Z [sid:7228cd37]; branch:main; 3 files (orphan-trail.md, activation_cleanup.py, atomic-repo-review-2026-07-08.md); last commit: 178e44906 feat: close external extension revoke flow
-- 2026-07-08T16:57Z [sid:fb93f5f7]; branch:main; 10 files (orphan-trail.md, external_capabilities.py, activation.py, +7); last commit: 4904f4a11 feat: materialize external capability bundles
-- 2026-07-08T16:55Z [sid:5edea2dc]; branch:main; 5 files (orphan-trail.md, external_capabilities.py, trust_gate.py, +2); last commit: 4904f4a11 feat: materialize external capability bundles
-- 2026-07-08T16:48Z [sid:7228cd37]; branch:main; 2 files (orphan-trail.md, atomic-repo-review-2026-07-08.md); last commit: fe1c6f776 complete personal kb sag scorecard
-- 2026-07-08T16:23Z [sid:20836182]; branch:main; 8 files (orphan-trail.md, agent_knowledge.py, upload.py, +5); last commit: a621b0d8c complete personal kb ppr retrieval
-- 2026-07-08T16:11Z [sid:7228cd37]; branch:main; 2 files (orphan-trail.md, atomic-repo-review-2026-07-08.md); last commit: a621b0d8c complete personal kb ppr retrieval
-- 2026-07-08T08:54Z [sid:7464aafd]; branch:main; 10 files (orphan-trail.md, agents.py, agent_identity_lifecycle.py, +7); last commit: 09e20e95c feat: align agent detail knowledge and skill surfa
-- 2026-07-08T08:52Z [sid:7228cd37]; branch:main; 10 files (orphan-trail.md, agents.py, agent_identity_lifecycle.py, +7); last commit: 09e20e95c feat: align agent detail knowledge and skill surfa
-- 2026-07-08T08:50Z [sid:7464aafd]; branch:main; 10 files (orphan-trail.md, agents.py, agent_identity_lifecycle.py, +7); last commit: 09e20e95c feat: align agent detail knowledge and skill surfa
-- 2026-07-08T08:41Z [sid:f561413e]; branch:main; 8 files (orphan-trail.md, agents.py, hr.py, +5); last commit: 09e20e95c feat: align agent detail knowledge and skill surfa
-- 2026-07-08T08:41Z [sid:7228cd37]; branch:main; 8 files (orphan-trail.md, agents.py, hr.py, +5); last commit: 09e20e95c feat: align agent detail knowledge and skill surfa
-- 2026-07-08T08:40Z [sid:65a94cf1]; branch:main; 8 files (orphan-trail.md, agents.py, hr.py, +5); last commit: 09e20e95c feat: align agent detail knowledge and skill surfa
-- 2026-07-08T08:38Z [sid:7228cd37]; branch:main; 8 files (orphan-trail.md, agents.py, hr.py, +5); last commit: 09e20e95c feat: align agent detail knowledge and skill surfa
-- 2026-07-08T08:38Z [sid:59eebbd7]; branch:main; 8 files (orphan-trail.md, agents.py, hr.py, +5); last commit: 09e20e95c feat: align agent detail knowledge and skill surfa
-- 2026-07-08T08:37Z [sid:7228cd37]; branch:main; 8 files (orphan-trail.md, agents.py, hr.py, +5); last commit: 09e20e95c feat: align agent detail knowledge and skill surfa
-- 2026-07-08T08:37Z [sid:c1eb4b43]; branch:main; 8 files (orphan-trail.md, agents.py, hr.py, +5); last commit: 09e20e95c feat: align agent detail knowledge and skill surfa
-- 2026-07-08T08:37Z [sid:7228cd37]; branch:main; 8 files (orphan-trail.md, agents.py, hr.py, +5); last commit: 09e20e95c feat: align agent detail knowledge and skill surfa
-- 2026-07-08T08:32Z [sid:8367d7bd]; branch:main; 8 files (orphan-trail.md, agents.py, hr.py, +5); last commit: 09e20e95c feat: align agent detail knowledge and skill surfa
-- 2026-07-08T08:32Z [sid:7464aafd]; branch:main; 8 files (orphan-trail.md, agents.py, hr.py, +5); last commit: 09e20e95c feat: align agent detail knowledge and skill surfa
-- 2026-07-08T08:30Z [sid:c1eb4b43]; branch:main; 8 files (orphan-trail.md, agents.py, hr.py, +5); last commit: 09e20e95c feat: align agent detail knowledge and skill surfa
-- 2026-07-08T08:19Z [sid:5edea2dc]; branch:main; 8 files (orphan-trail.md, agents.py, hr.py, +5); last commit: 09e20e95c feat: align agent detail knowledge and skill surfa
-- 2026-07-08T06:32Z [sid:73c71880]; branch:main; 12 files (orphan-trail.md, en.json, zh.json, +9); last commit: 089d2a61c Implement owner personal knowledge workspace
-- 2026-07-08T06:25Z [sid:5edea2dc]; branch:main; 11 files (en.json, zh.json, PersonalKnowledge.css, +8); last commit: 089d2a61c Implement owner personal knowledge workspace
-- 2026-07-03T17:18Z [sid:47c4a226]; branch:main; 56 files (project.yml, orphan-trail.md, subagent.py, +53); last commit: 84acd21c Normalize residual entropy and rebind dangling toke
-- 2026-07-03T16:34Z [sid:63e46018]; branch:main; 56 files (project.yml, orphan-trail.md, subagent.py, +53); last commit: 84acd21c Normalize residual entropy and rebind dangling toke
-- 2026-07-03T16:29Z [sid:47c4a226]; branch:main; 56 files (project.yml, orphan-trail.md, subagent.py, +53); last commit: 84acd21c Normalize residual entropy and rebind dangling toke
-- 2026-07-03T16:03Z [sid:63e46018]; branch:main; 56 files (project.yml, orphan-trail.md, subagent.py, +53); last commit: 84acd21c Normalize residual entropy and rebind dangling toke
-- 2026-07-03T15:59Z [sid:25309a6d]; branch:main; 56 files (project.yml, orphan-trail.md, subagent.py, +53); last commit: 84acd21c Normalize residual entropy and rebind dangling toke
-- 2026-07-03T15:51Z [sid:47c4a226]; branch:main; 56 files (project.yml, orphan-trail.md, subagent.py, +53); last commit: 84acd21c Normalize residual entropy and rebind dangling toke

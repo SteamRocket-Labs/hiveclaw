@@ -1,5 +1,7 @@
 # Hive 全仓原子化 Review 总报告 — 2026-07-08
 
+> **状态：历史审计与施工证据账本。** 本文记录 2026-07-08/09 当时的 code path 与 TDD 过程，不是当前 checkout 的实现状态。文中所有 Personal KB hint、`PersonalKnowledgeCandidateProvider`、KB activation rerank、Q/K/V Router、`activation_qkv_trace` 的“闭环”描述均已被后续退役，不得作为当前架构或完成证据。2026-07-14 当前契约见 `docs/runtime-model-agency-constraint-audit-2026-07-13.md`、`docs/hive-native-external-attention-runtime-2026-07-06.md` 和 `docs/personal-company-knowledge-tool-boundary-2026-07-10.md`。
+
 六路并行深审合成：①架构北极星（CCPlus）②Memory + QKV Attention Control ③Plugin 系统 × CC 插件市场 ④Personal KB ⑤HR Agent 兼容性 ⑥Loop / Target Mode 对标考证。全部对标 FreeCode 第一基线（/Users/rocky243/vc-saas/free-code-main）+ claude-code-org 交叉核对 + codex-rs delta。每项发现均有 file:line 证据，标注 Fact / Inference / Speculation。
 
 > Closure status: execution started on current checkout `09e20e95c13c2f64fa6a009649c9463517b32310`.

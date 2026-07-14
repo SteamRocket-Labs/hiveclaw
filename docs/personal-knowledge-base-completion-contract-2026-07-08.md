@@ -1,31 +1,26 @@
 # Personal Knowledge Base 完成契约（Open Notebook 对标闭环）
 
 日期：2026-07-08
+最近修订：2026-07-14（Tool-first runtime 重基线）
 
-状态：施工契约。本文不是新产品定义，也不是阶段路线图；它把 `personal-knowledge-base-spec.md` 中已经定义的目标逐项收敛成“必须全部完成”的实现清单。完成标准以当前代码、测试、前端可操作性和文档证据同时满足为准。
+状态：实现证据账本。本文保留 2026-07-08 每项施工和测试的历史证据；当前产品/Runtime 边界以 `personal-knowledge-base-spec.md` 和 `personal-company-knowledge-tool-boundary-2026-07-10.md` 为准。历史 evidence 中的 KB Hint/prefetch 记录已被 2026-07-10 后续修复覆盖，不再表示当前正确行为。
 
 能力重基线：`docs/personal-knowledge-base-capability-rebaseline-2026-07-09.md` 是当前解释口径。它明确 full-text / graph / vector / summary / multimodal 的依赖边界，并把 OpenKnowledge 修正为 AI-native Markdown vault / LLM Wiki 产品参考，把 Open Notebook 定位为 ingestion / RAG / transformations / provider config 机制参考。
 
 ## 0. 总判断
 
-当前 Personal KB 已经有薄壳：
+当前 checkout 已经有真实 Personal Knowledge substrate：`knowledge_*` 表族、canonical artifacts、多源 ingest/jobs、LLM extraction、graph projections、多通道检索、owner/grant access、search/read/propose tools、source preview/revisions/rollback、Personal UI 和 knowledge replay pointer。
 
-- `knowledge_documents`、`knowledge_segments`、`knowledge_entities`、`knowledge_assertions`、`knowledge_links`、`knowledge_index_jobs`、`knowledge_grants` 表已存在。
-- Owner scoped `/api/knowledge/personal/` 已支持 Markdown paste、documents list/get/search。
-- `search_personal_kb` 工具已注册为 read-only / parallel-safe。
-- 基础 owner-or-grant ACL 已进入查询语句。
+当前 runtime 边界已经从 2026-07-08 的 KB Hint 方案改为：
 
-但 Open Notebook / NotebookLM 级个人知识库还没有闭环。缺口不是 UI 样式，而是这些核心能力尚未实装：
+- Turn 前不 prefetch Personal/Company Knowledge；
+- 不向 system suffix 注入 Personal KB Hint；
+- Agent 通过 `search_personal_kb -> read_personal_kb` 按需读取；
+- current-turn 保留完整 bounded result；
+- durable evidence 保留完整 tool result；
+- next-turn 只回放 `knowledge_tool_replay.v1` pointer。
 
-- 多源导入：文件、URL、批量、EPUB、音频、视频。
-- 真实摄取管线：queued/running/failed/degraded/ready、重试、成本与进度。
-- LLM 抽取：实体、断言、关系、source refs。
-- 知识图谱 writer：写入 `knowledge_entities`、`knowledge_assertions`、`knowledge_links`。
-- 多通道检索：全文、实体、图扩散、热度/新鲜度、RRF、score trace。
-- Runtime 注入：KB 提示行进入模型可见动态后缀。
-- 聊天附件顺流：默认入库、单条排除、T0 与 KB refs。
-- 授权闭环：grant API、UI 创建/撤销、agent/user/session 过期授权。
-- 前端闭环：导入中心、任务状态、文库详情动作、知识网、授权、证据链。
+本文后续 A1-A14 与 evidence log 是历史施工账本。任何“已完成”主张仍必须重新运行 current checkout tests，并按 Input、Authority、Execution、Evidence、Recovery、Consumption、Acceptance 七原子复核，不能复制本文件中的历史测试数字。
 
 ## 1. 对标目标
 
@@ -41,7 +36,7 @@ flowchart LR
   F --> G["Alignment: aliases / merged_into tombstone"]
   G --> H["Indexes: tsvector + graph + score stats"]
   H --> I["Search: RRF fusion + ACL + score trace"]
-  I --> J["Consumers: /knowledge UI, search_personal_kb, runtime KB hint, future org proposal"]
+  I --> J["Consumers: Personal UI, search_personal_kb/read_personal_kb, Personal proposal, future Company proposal"]
 ```
 
 ## 2. 完成定义
@@ -172,23 +167,26 @@ flowchart LR
 - graph expansion 命中相邻知识。
 - ACL 过滤后 `score_trace` 不泄露被过滤对象。
 
-### A7. Runtime KB 提示行
+### A7. Runtime Tool-first disclosure（2026-07-14 替代原“KB 提示行”）
 
-目标：Personal KB 的轻召回结果进入模型可见上下文，而不是只写 observability。
+原 A7 的 prefetch + system suffix KB Hint 设计已经退役。当前目标是让模型自主发现并读取 Personal Knowledge，同时防止知识内容在模型决定前或跨 Turn 永久进入原始上下文。
 
-必须完成：
+必须保持：
 
-- 在 prompt cache anchor 之后的动态后缀区注入 top-3 KB hint。
-- 空结果不注入。
-- 注入内容小于 200 tokens，包含 title、document_id/source_ref、简短理由，不注入正文。
-- 注入发生在 kernel request 进入模型前。
-- 与 Hook Additional Context、Memory activation、Skill loading 不冲突。
+- `invoke_agent` 和 default retrieval context 不 prefetch Personal/Company Knowledge；
+- system/base context 不包含 KB title、preview、snippet、score、source ref 或 Hint；
+- `search_personal_kb` 负责发现，`read_personal_kb` 负责精确读取；
+- current-turn model 获得完整 authorized bounded result；
+- durable T0/tool evidence 保留原始 result；
+- next-turn replay 只保留 `knowledge_tool_replay.v1` pointer；
+- Agent Memory activation、Hook Additional Context、Skill loading 不被误伤。
 
-测试：
+当前回归入口：
 
-- 有 KB 命中时 system_prompt_suffix 包含 KB hint。
-- 无命中时 suffix 不变。
-- 注入位置不破坏固定 prompt cache anchor。
+- `tests/runtime/test_invoker.py::test_invoke_agent_does_not_prefetch_or_inject_personal_kb_before_kernel`；
+- `tests/runtime/test_invoker.py::test_resolve_retrieval_context_does_not_prefetch_knowledge`；
+- `tests/services/test_web_chat_runtime.py::test_personal_knowledge_replay_projection_keeps_references_not_content`；
+- `tests/services/test_web_chat_runtime.py::test_persist_personal_kb_tool_keeps_full_evidence_but_replays_pointer`。
 
 ### A8. `search_personal_kb` 工具升级
 
@@ -308,7 +306,7 @@ flowchart LR
 
 - 单元测试：service/API/tool/frontend。
 - 集成测试：真实或测试 PG 下 migration + RLS + Personal KB ingest/search。
-- E2E：上传、搜索、agent tool search、runtime KB hint、grant。
+- E2E：上传、搜索、Agent 显式调用 search/read tools、grant、source refs、replay pointer 与 no-prefetch。
 - 三轮复查：
   1. Spec checklist 逐项 grep/code review。
   2. API/UI route walkthrough。
@@ -442,6 +440,8 @@ commit：
 - A13 会补 media source 的真实 transcription/OCR provider；当前 A4/A5 只处理 canonical Markdown segment 的知识抽取。
 
 ### 2026-07-08 A6/A7/A8 融合检索、Runtime KB hint 与工具统一入口
+
+> 历史证据说明：本节准确记录 2026-07-08 当时曾实现的 KB Hint 路线；该路线随后被 Tool-first contract 退役。下面关于 `PersonalKnowledgeCandidateProvider`、`_record_knowledge_activation_for_request()` 和 `system_prompt_suffix` 的内容不得再作为当前验收要求。当前正确回归见 A7（2026-07-14）。
 
 改动文件：
 
@@ -697,6 +697,8 @@ commit：
 
 ### 2026-07-08 A14 效果验收与三轮复查
 
+> 历史证据说明：本节的命令和数字对应 2026-07-08 checkout，其中包含已退役的 provider/activation/KB Hint tests。它们只证明当时提交，不是当前可复制验收命令；当前 Tool-first 回归入口见文末 2026-07-14 重基线。
+
 改动文件：
 
 - `backend/tests/services/test_personal_knowledge_service.py`
@@ -780,3 +782,23 @@ commit：
 剩余风险：
 
 - 无。MCP/Plugins 的真实管理仍由既有 `AgentExtensionsSection` / MCP & Plugins tab 承担。
+
+### 2026-07-14 Tool-first 重基线
+
+文档修正：
+
+- `personal-knowledge-base-spec.md` 已重写为 Tool-first；
+- `personal-company-knowledge-tool-boundary-2026-07-10.md` 是 current-turn/durable/replay 的 canonical runtime contract；
+- 原 A7 KB Hint 和本账本中的 Hint evidence 保留为历史记录，不再是正确实现；
+- Personal -> Company 不再使用 scope 翻转，改为 owner consent + independent Company proposal/publication；
+- Personal profile 不自动进入 Agent initial context。
+
+当前代码证据入口：
+
+- `backend/tests/runtime/test_invoker.py::test_invoke_agent_does_not_prefetch_or_inject_personal_kb_before_kernel`；
+- `backend/tests/runtime/test_invoker.py::test_resolve_retrieval_context_does_not_prefetch_knowledge`；
+- `backend/tests/tools/test_personal_knowledge_tool.py`；
+- `backend/tests/services/test_web_chat_runtime.py::test_personal_knowledge_replay_projection_keeps_references_not_content`；
+- `backend/tests/services/test_web_chat_runtime.py::test_persist_personal_kb_tool_keeps_full_evidence_but_replays_pointer`。
+
+本节只修正文档解释口径；测试结果必须以当前 checkout 实际运行输出为准。

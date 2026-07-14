@@ -689,7 +689,9 @@ ruff check app tests
 # All checks passed!
 ```
 
-## 8. 施工包 F：现有 Personal KB 与 Dynamic 注入清债
+## 8. 历史施工包 F：Personal KB Dynamic 注入清债（已被 Tool-first 方案覆盖）
+
+> **2026-07-14 覆盖说明：** 当前 checkout 已不存在 `PersonalKnowledgeCandidateProvider`、KB hint 或 Personal/Company Knowledge 自动 activation 路径。默认 `_resolve_retrieval_context` 不 prefetch 知识库；Personal 通过 `search_personal_kb` / `read_personal_kb`，Company 目标通过 `search_company_kb` / `read_company_kb`。本节只保留旧施工上下文，当前执行以 `docs/personal-company-knowledge-tool-boundary-2026-07-10.md` 为准。
 
 第一部分只清现有 Personal KB 和 Dynamic 注入的债，不开发 Company KB。
 
@@ -698,8 +700,8 @@ ruff check app tests
 | 债务 | 动作 |
 |---|---|
 | Personal KB grant 和 runtime search 已存在 | 保证 owner/grant/agent 三种读路径测试齐全 |
-| `PersonalKnowledgeCandidateProvider` 只处理 personal scope | 保持现状，并明确 Company scope 是第二部分 |
-| KB hint / runtime activation 可见性 | `Context usage` 或 Workbench 中至少能看出 Personal KB 是否参与候选 |
+| 历史 `PersonalKnowledgeCandidateProvider` / KB hint | 已退役，不恢复；不得通过 scope flip 扩展到 Company |
+| Knowledge runtime 可见性 | `Context usage` / Workbench 展示知识工具 invocation、typed status、source/revision refs 与 replay pointer，不展示虚构的 prefetch candidate |
 | 上传/URL/import job 状态 | 失败原因要能在 UI/API 中解释，不静默失败 |
 
 ### 8.2 不在第一部分做
@@ -888,7 +890,7 @@ npm run build
 
 ## 10. 第二部分：冻结设计，但不立刻实现
 
-第二部分只有在第一部分验收通过后才开工。
+> 2026-07-14 Company Knowledge 重基线：本节只保留当时的债务边界记录，不再定义 Company KB 的分期或施工顺序。Company KB 开工后必须按 `docs/company-knowledge-base-spec-2026-07-07.md` 一次完成七原子；Knowledge 内容严格 Tool-first，不进入 `ContextAssemblyDecision` 或 dynamic injection。
 
 ### 10.0 第二部分上游设计索引
 
@@ -896,8 +898,8 @@ npm run build
 
 | 文档 | 负责问题 | 第二部分约束 |
 |---|---|---|
-| `docs/company-knowledge-base-spec-2026-07-07.md` | Company KB 总体规格：组织真相层、Knowledge Core 复用、ontology primitives、proposal/review/publish/retire、ACL/source refs/audit/rollback、飞书/企业文档权限兼容契约 | Company KB 不能做成 Personal KB 扩容版，也不能做成旧 `/enterprise/knowledge-base/*` 文件树；必须走 governed authority plane |
-| `docs/agent-permission-governance-spec-2026-07-07.md` | Agent 权限治理与知识授权：User/Owner、Agent delegation、resource ACL、sensitivity、session/task/A2A 目的、公司策略的交集；飞书式 Creator/Owner/Collaborator/分享/export/proposal 权限映射 | 不新增一套“飞书权限表”作为平行真相；Feishu connector 只能做 Permission Mapping Adapter，Runtime 最终只认 Hive 统一 `PermissionDecision` |
+| `docs/company-knowledge-base-spec-2026-07-07.md` | Company KB canonical 施工规格：Tool-first、Knowledge Core 复用、独立 Company proposal/publication、ontology、permission decision、source refs/events/recovery、Living Object、legacy migration 和七原子 | Company KB 不能做成 Personal 扩容、scope 翻转或旧文件树；必须一次完成 governed authority + real consumption |
+| `docs/agent-permission-governance-spec-2026-07-07.md` | 当前 Knowledge authority contract：Personal `KnowledgeGrant`、Company `ResourcePermission` 扩展 + typed resolver、connector source ACL、A2A/Workflow 边界 | 不新增飞书/Company 平行 ACL；每次 resource action 只认 authenticated Hive decision |
 
 这两份文档是第二部分的上游设计面，不改变第一部分清债边界：第一部分仍不创建 `PermissionDecision` / `ContextAssemblyDecision` envelope，不实现 Company KB runtime，也不接飞书权限同步。
 
@@ -918,10 +920,10 @@ Company KB = tenant/company authority plane
 1. Company knowledge object / link / assertion / proposal / version / retirement。
 2. Proposal -> review -> publish -> retire -> rollback。
 3. ACL：org、department、team、role、agent、user。
-4. `search_company_kb` 只读工具。
+4. `search_company_kb -> read_company_kb` 渐进读取工具。
 5. `propose_company_kb_update` 候选工具。
-6. Dynamic injection 只能注入 authorized company knowledge。
-7. Workbench 展示 source refs、review status、policy refs。
+6. Base/System Context 不 prefetch、不注入 Company Knowledge；完整 authorized result 只进入当前 tool turn，跨 Turn 回放 pointer。
+7. Workbench 展示 source refs、review/publication/permission/recovery evidence。
 
 第一部分可以做的唯一准备：`RuntimeTenantAdmission` 的结构化结果保留未来可被 `PermissionDecision` / `ContextAssemblyDecision` 吸收的字段语义；不设计、不创建、也不固定这两个 envelope。
 
@@ -949,42 +951,18 @@ Company KB = tenant/company authority plane
 5. Feishu/Lark region split 继续保留一个 `feishu` channel type，不新增 channel enum。
 6. 企业知识库可从 Feishu doc/wiki/import proposal 进入，但必须走 Company KB review。
 
-### 10.3 两个 envelope 的第二部分落点
+### 10.3 权限与 Runtime 的当前落点
 
-`PermissionDecision` 和 `ContextAssemblyDecision` 都属于第二部分，但它们不是第二部分末尾的补丁，而是第二部分开工后的第一个基础施工包。
+Company Knowledge 不再依赖 Knowledge `ContextAssemblyDecision`。当前正确边界是：
 
-第二部分内部顺序必须是：
+1. **CompanyKnowledgePermissionDecision**：在 API/tool/review/publish/export effect boundary 组合 tenant、actor/accountable principal、resource permission、source ACL、sensitivity 和 policy。
+2. **Company Knowledge vertical slice**：同一轮实现 input、proposal/review/publication、search/read tools、events/outbox/recovery、UI、legacy backfill 和 tests。
+3. **Feishu Permission Mapping Adapter**：只注册/更新 source ACL 与 Hive principal/resource mappings，不直接决定 Runtime 可见性。
+4. **Workbench/audit**：消费 permission、proposal、publication、source refs、denial、recovery 和 provider status。
 
-1. **Part 2-A：PermissionDecision。**
-   先定义统一权限判定返回值和最小服务入口。它吸收第一部分的 `RuntimeTenantAdmission` 结果，但不被 `RuntimeTenantAdmission` 反向决定。Company KB、Feishu adapter、Personal -> Company proposal、A2A 读取、tool 外发、Dynamic injection 都只能消费这个统一判定结果。
-2. **Part 2-B：ContextAssemblyDecision。**
-   在权限判定可用后，再定义上下文装配返回值：候选来源、ACL 过滤结果、sensitivity stripping、ranking/budget、source refs、why included/why excluded、prompt manifest。它不能绕过 `PermissionDecision`。
-3. **Part 2-C：Company KB runtime。**
-   复用 `docs/company-knowledge-base-spec-2026-07-07.md`，实现 company knowledge object/proposal/review/publish/retire/search/inject。所有 read/inject/export/propose 都必须先拿到 `PermissionDecision`，进入 prompt 前必须生成 `ContextAssemblyDecision`。
-4. **Part 2-D：Feishu 权限映射。**
-   Feishu/Lark connector 只做 Permission Mapping Adapter，把 user/department/group/chat/document/app/bot 权限映射到 Hive grants/bindings/source_acl_snapshot/org policy；runtime 不直接查询飞书权限。
-5. **Part 2-E：Workbench 与审计闭环。**
-   UI 展示 permission trace、context manifest、source refs、review status、policy refs、denial reason 和可申请权限入口。
+`ContextAssemblyDecision` 若在其他 runtime 领域存在，只能装配已授权的 non-Knowledge context；它不得重新引入 Personal/Company KB prefetch、ranking 或 prompt injection。
 
-因此：
-
-```text
-第一部分完成
-  -> Part 2-A PermissionDecision
-  -> Part 2-B ContextAssemblyDecision
-  -> Part 2-C Company KB runtime
-  -> Part 2-D Feishu Permission Mapping Adapter
-  -> Part 2-E Workbench/audit
-```
-
-禁止顺序：
-
-```text
-Company KB / Feishu adapter 先各自实现权限判断
-  -> 后补 PermissionDecision
-```
-
-这种顺序会重新制造平行权限和上下文注入断点。
+禁止：Company KB 与 Feishu adapter 各自实现权限；provider/connector 返回裸文本；先做 UI/索引再补 authority；通过 dynamic injection 恢复知识自动披露。
 
 ## 11. 第一部分与第二部分的接口边界
 

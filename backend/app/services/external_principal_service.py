@@ -278,7 +278,7 @@ async def link_external_principal(
                 previous_user_id=previous,
                 new_user_id=user.id,
                 actor_user_id=actor_uuid,
-                reason=str(reason or "explicit binding")[:1000],
+                reason=str(reason or "explicit binding"),
             )
         )
     return ExternalPrincipalResolution(principal=principal, actor=await _runtime_actor(db, principal))
@@ -319,7 +319,7 @@ async def unlink_external_principal(
                 previous_user_id=previous,
                 new_user_id=None,
                 actor_user_id=actor_uuid,
-                reason=str(reason or "explicit unlink")[:1000],
+                reason=str(reason or "explicit unlink"),
             )
         )
     return ExternalPrincipalResolution(principal=principal, actor=await _runtime_actor(db, principal))
@@ -372,7 +372,7 @@ async def revoke_external_principals_for_installation(
                 previous_user_id=previous,
                 new_user_id=None,
                 actor_user_id=actor_uuid,
-                reason=str(reason or "channel installation revoked")[:1000],
+                reason=str(reason or "channel installation revoked"),
                 metadata_json={"provider": provider_value, "installation_ref": installation_value},
             )
         )

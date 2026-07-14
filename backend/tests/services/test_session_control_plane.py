@@ -748,7 +748,7 @@ async def test_runtime_sections_separate_agent_team_subagent_background_workflow
             "definition_source": "dynamic_workflow",
             "dynamic_workflow": {"proposal_id": "proposal-1", "candidate_id": "candidate-1", "preview_id": "preview-1"},
             "repair_plan": {"repairable": False},
-            "promotion_eligibility": {"eligible": False, "reason": "needs another clean run"},
+            "model_promotion_review": {},
         },
     )
     team = {
@@ -855,7 +855,9 @@ async def test_runtime_sections_separate_agent_team_subagent_background_workflow
     assert workflow["workflow_controls"]["gate_status"] == "waiting"
     assert workflow["workflow_controls"]["wait_status"] == "waiting_for_gate"
     assert workflow["workflow_controls"]["repairable"] is False
-    assert workflow["workflow_controls"]["promotion_eligible"] is False
+    assert workflow["workflow_controls"]["model_promotion_review"] == {}
+    assert "promotion_eligible" not in workflow["workflow_controls"]
+    assert "promotion_eligibility" not in workflow
     assert {action["action"]: action["enabled"] for action in workflow["workflow_controls"]["actions"]} == {
         "approve_gate": True,
         "reject_gate": True,

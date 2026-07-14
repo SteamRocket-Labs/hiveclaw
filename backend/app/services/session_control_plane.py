@@ -863,16 +863,14 @@ def _workflow_controls_payload(
     state = _completion_state(status)
     waiting_for_signal = _mapping(metadata.get("waiting_for_signal"))
     repair_plan = _mapping(metadata.get("repair_plan") or dynamic_workflow.get("repair_plan"))
-    promotion_eligibility = _mapping(
-        metadata.get("promotion_eligibility") or dynamic_workflow.get("promotion_eligibility")
+    model_promotion_review = _mapping(
+        metadata.get("model_promotion_review") or dynamic_workflow.get("model_promotion_review")
     )
     repairable = bool(repair_plan.get("repairable"))
-    promotion_eligible = bool(
-        promotion_eligibility.get("eligible")
-        or promotion_eligibility.get("promotion_eligible")
-        or metadata.get("promotion_eligible")
-        or dynamic_workflow.get("promotion_eligible")
-    )
+    promotion_recommended = str(model_promotion_review.get("decision") or "").strip().lower() in {
+        "promote",
+        "recommend_promote",
+    }
     run_id = str(getattr(task, "id", ""))
     preview_id = dynamic_workflow.get("preview_id") or metadata.get("preview_id")
     proposal_id = dynamic_workflow.get("proposal_id") or metadata.get("proposal_id")
@@ -926,12 +924,12 @@ def _workflow_controls_payload(
         )
     if can_cancel:
         actions.append(action_payload("cancel", enabled=True, reason="run is active"))
-    if not pending_gate and promotion_eligible:
+    if not pending_gate and promotion_recommended:
         actions.append(
             action_payload(
                 "promote",
                 enabled=True,
-                reason=promotion_eligibility.get("reason") or "eligible",
+                reason=model_promotion_review.get("reason") or "model recommended promotion",
             )
         )
 
@@ -944,8 +942,7 @@ def _workflow_controls_payload(
         "waiting_for_signal": _compact_runtime_task_metadata(waiting_for_signal) if waiting_for_signal else None,
         "repairable": repairable,
         "repair_plan": _compact_runtime_task_metadata(repair_plan),
-        "promotion_eligible": promotion_eligible,
-        "promotion_eligibility": _compact_runtime_task_metadata(promotion_eligibility),
+        "model_promotion_review": _compact_runtime_task_metadata(model_promotion_review),
         "actions": actions,
     }
 
@@ -1014,7 +1011,6 @@ def _workflow_section_item(task: RuntimeTask, journal: dict[str, Any] | None) ->
     item["repair_plan"] = _compact_runtime_task_metadata(
         _mapping(metadata.get("repair_plan") or dynamic_workflow.get("repair_plan"))
     )
-    item["promotion_eligibility"] = _compact_runtime_task_metadata(_mapping(metadata.get("promotion_eligibility")))
     journal = _mapping(journal)
     item["steps"] = list(journal.get("steps") or [])
     item["leaf_calls"] = [

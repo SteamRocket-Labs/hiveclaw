@@ -289,7 +289,7 @@ async def execute_prepared_custom_api_request(
         return render_tool_error(
             tool_name=tool_name,
             error_class="custom_api_request_error",
-            message=f"{tool_name} request failed: {str(exc)[:200]}",
+            message=f"{tool_name} request failed: {str(exc)}",
             provider="custom_api",
             retryable=True,
             actionable_hint="Check the connector URL, allowlist, network route, and request template.",
@@ -300,7 +300,7 @@ async def execute_prepared_custom_api_request(
         return render_tool_error(
             tool_name=tool_name,
             error_class=error_class,
-            message=f"{tool_name} failed with HTTP {response.status_code}: {body[:500]}",
+            message=f"{tool_name} failed with HTTP {response.status_code}: {body}",
             provider="custom_api",
             http_status=response.status_code,
             retryable=retryable,
@@ -312,8 +312,6 @@ async def execute_prepared_custom_api_request(
             body = json.dumps(response.json(), ensure_ascii=False, indent=2)
         except Exception:
             body = response.text
-    if len(body) > 20000:
-        body = body[:20000] + "\n...[truncated]"
     return f"Custom API `{tool_name}` HTTP {response.status_code}\n\n{body}"
 
 

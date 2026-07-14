@@ -280,7 +280,7 @@ async def append_session_event(
                 tenant_id=tenant_uuid,
             )
         except Exception as exc:  # noqa: BLE001 - transcript stays durable; runtime sweep/ops can observe pending state.
-            projection_error = f"{type(exc).__name__}: {str(exc)[:300]}"
+            projection_error = f"{type(exc).__name__}: {exc}"
             event_metadata = {
                 **event_metadata,
                 "t0_bridge_publish_error": projection_error,

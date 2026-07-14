@@ -85,6 +85,7 @@ def build_runtime_reminder_candidate(
         "ttl": str(ttl or "current_round"),
         "priority": _priority(priority),
         "consumed_at": consumed_at,
+        "content": reminder_text,
         "content_preview": reminder_text[:500],
         "payload": dict(payload or {}),
     }

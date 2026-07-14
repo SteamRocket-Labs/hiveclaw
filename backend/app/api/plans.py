@@ -6,7 +6,7 @@ Endpoints (all agent-scoped, all gated by :func:`check_agent_access`)::
     GET    /agents/{agent_id}/plans                      list
     GET    /agents/{agent_id}/plans/{plan_id}            fetch one
     POST   /agents/{agent_id}/plans/{plan_id}/revise     supersede + regenerate
-    POST   /agents/{agent_id}/plans/{plan_id}/confirm    confirm (version+hash bound)
+    POST   /agents/{agent_id}/plans/{plan_id}/confirm    confirm server-current version
     POST   /agents/{agent_id}/plans/{plan_id}/reject     reject
     POST   /agents/{agent_id}/plans/{plan_id}/handoff    hand off to execution
 
@@ -14,12 +14,12 @@ The heavy lifting lives in :class:`PlanModeService`; this module is a thin HTTP
 shell that maps the service's typed errors onto status codes:
 
 * :class:`PermissionError`     -> 403 (missing authenticated confirmer, §8.5)
-* :class:`PlanConflictError`   -> 409 (wrong status / version / hash, §8.2)
+* :class:`PlanConflictError`   -> 409 (wrong status / version, §8.2)
 * :class:`ValueError`          -> 400 (bad intent_type)
 * plan not found / not this agent -> 404 (tenant + agent isolation)
 
-The confirm body binds to ``plan_version`` + ``plan_hash`` so the user confirms
-a specific immutable plan version, never a mutable chat blob (§8.2).
+The confirm body carries ``plan_version`` as a stale-view guard. The server
+binds the decision to its own canonical plan row and hash (§8.2).
 """
 
 from __future__ import annotations
@@ -107,7 +107,7 @@ class PlanReviseIn(BaseModel):
 
 class PlanConfirmIn(BaseModel):
     plan_version: int
-    plan_hash: str
+    plan_hash: str | None = None
     reason: str | None = None
 
 
@@ -628,9 +628,8 @@ async def confirm_plan(
 ):
     """Confirm a specific plan version (§8.1 + §8.2 + §8.5).
 
-    The body binds the confirmation to ``plan_version`` + ``plan_hash``; the
-    confirming user is the authenticated user (never the request body), so an
-    agent cannot confirm on a user's behalf.
+    The authenticated user confirms the current server-owned plan version.
+    A legacy ``plan_hash`` field is accepted but is not an authority claim.
     """
     await check_agent_access(db, current_user, agent_id)
     service = get_plan_mode_service()
@@ -655,7 +654,16 @@ async def confirm_plan(
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except PlanConflictError as exc:
-        raise HTTPException(status_code=409, detail={"error": exc.error_code, "message": exc.message}) from exc
+        error = "stale_confirmation" if exc.error_code == "version_mismatch" else exc.error_code
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": error,
+                "reason_code": exc.error_code,
+                "message": exc.message,
+                "current": _plan_out(_plan).model_dump(mode="json"),
+            },
+        ) from exc
     return PlanConfirmOut(ok=True, status=plan.status, plan_id=str(plan.id), handoff_status=plan.handoff_status)
 
 
@@ -696,7 +704,16 @@ async def confirm_and_handoff_plan(
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except PlanConflictError as exc:
-        raise HTTPException(status_code=409, detail={"error": exc.error_code, "message": exc.message}) from exc
+        error = "stale_confirmation" if exc.error_code == "version_mismatch" else exc.error_code
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": error,
+                "reason_code": exc.error_code,
+                "message": exc.message,
+                "current": _plan_out(_plan).model_dump(mode="json"),
+            },
+        ) from exc
     return PlanHandoffOut(
         ok=True,
         status=plan.status,

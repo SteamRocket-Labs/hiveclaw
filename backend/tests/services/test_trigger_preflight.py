@@ -30,6 +30,39 @@ class _ScalarOneResult:
         return self._value
 
 
+class _ContextResult:
+    def __init__(self, *, scalar=None, rows=None):
+        self._scalar = scalar
+        self._rows = list(rows or [])
+
+    def scalar_one_or_none(self):
+        return self._scalar
+
+    def scalars(self):
+        return self
+
+    def all(self):
+        return self._rows
+
+
+class _ContextSession:
+    def __init__(self, session_rows):
+        self._session_rows = list(session_rows)
+        self._call_index = 0
+
+    async def execute(self, stmt):
+        row_index = self._call_index // 2
+        is_session_query = self._call_index % 2 == 0
+        self._call_index += 1
+        session, messages_desc = self._session_rows[row_index]
+        if is_session_query:
+            return _ContextResult(scalar=session)
+        limit_clause = getattr(stmt, "_limit_clause", None)
+        limit = getattr(limit_clause, "value", None)
+        rows = messages_desc[:limit] if limit is not None else messages_desc
+        return _ContextResult(rows=rows)
+
+
 class _PlanLookupSession:
     """Answers the by-id AgentPlanRequest lookup the PlanModeGate performs.
 
@@ -247,3 +280,42 @@ async def test_system_maintenance_trigger_is_not_plan_gated():
     )
 
     assert result.ok is True
+
+
+@pytest.mark.asyncio
+async def test_load_context_preserves_all_explicit_refs_messages_and_content():
+    from app.services.trigger_preflight import load_context_from
+
+    session_rows = []
+    refs = []
+    decisive_content_tail = "CONTENT_DECISIVE_TAIL"
+    for ref_index in range(9):
+        session = SimpleNamespace(
+            id=uuid4(),
+            title=f"context-{ref_index}",
+            external_conv_id=f"context:{ref_index}",
+        )
+        messages = [
+            SimpleNamespace(
+                role="user" if message_index % 2 == 0 else "assistant",
+                content=(
+                    "x" * 900 + decisive_content_tail
+                    if ref_index == 0 and message_index == 0
+                    else f"ref-{ref_index}-message-{message_index}"
+                ),
+            )
+            for message_index in range(7)
+        ]
+        session_rows.append((session, list(reversed(messages))))
+        refs.append(f"session:{session.id}")
+
+    rendered = await load_context_from(
+        _ContextSession(session_rows),
+        agent_id=uuid4(),
+        context_refs=refs,
+    )
+
+    assert "context-8" in rendered
+    assert "ref-0-message-0" not in rendered  # the first message carries the long content instead
+    assert decisive_content_tail in rendered
+    assert "ref-0-message-1" in rendered

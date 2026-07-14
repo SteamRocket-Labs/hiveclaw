@@ -158,45 +158,12 @@ def build_default_accountability_context(
     )
 
 
-_CLAUSE_STOPWORDS = {
-    "a",
-    "an",
-    "and",
-    "before",
-    "company",
-    "must",
-    "need",
-    "needs",
-    "or",
-    "policy",
-    "require",
-    "requires",
-    "required",
-    "the",
-    "to",
-    "with",
-    "approval",
-}
-
-
 def _matches_clause(action: str, clause: str) -> bool:
+    """Match typed charter action identifiers, never natural-language similarity."""
     normalized_action = _normalize(action)
     normalized_clause = _normalize(clause)
-    if not normalized_action or not normalized_clause:
-        return False
-    if normalized_clause in normalized_action or normalized_action in normalized_clause:
-        return True
-    clause_terms = _significant_terms(normalized_clause)
-    action_terms = _significant_terms(normalized_action)
-    if not clause_terms:
-        return False
-    overlap = clause_terms & action_terms
-    return clause_terms <= action_terms or (len(overlap) >= 2 and len(overlap) / len(clause_terms) >= 0.6)
+    return bool(normalized_action and normalized_clause and normalized_action == normalized_clause)
 
 
 def _normalize(text: str) -> str:
     return " ".join(str(text).lower().replace("_", " ").replace("-", " ").split())
-
-
-def _significant_terms(text: str) -> set[str]:
-    return {token for token in _normalize(text).split() if len(token) > 2 and token not in _CLAUSE_STOPWORDS}

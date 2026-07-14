@@ -210,12 +210,26 @@ async def _feishu_wiki_list_via_openapi(agent_id: uuid.UUID, arguments: dict) ->
     target_kind = "同目录页面" if scope == "siblings" and node_token else "Wiki 页面" if node_token else "知识库空间"
     target_id = node_token or space_id
 
+    expanded_node_tokens: set[str] = set()
+
     async def _list_children(parent_token: str | None, depth: int) -> tuple[list[dict], dict | None]:
         """Return flat list of {title, node_token, obj_token, has_child, depth}."""
+        if parent_token:
+            if parent_token in expanded_node_tokens:
+                return [], None
+            expanded_node_tokens.add(parent_token)
         result = []
         page_token = ""
+        seen_page_tokens: set[str] = set()
         async with httpx.AsyncClient(timeout=15) as client:
-            for _ in range(20):
+            while True:
+                page_marker = page_token or "__first_page__"
+                if page_marker in seen_page_tokens:
+                    return result, {
+                        "code": "pagination_cycle",
+                        "msg": f"Feishu repeated Wiki page token {page_token!r}.",
+                    }
+                seen_page_tokens.add(page_marker)
                 params = {"page_size": 50}
                 if parent_token:
                     params["parent_node_token"] = parent_token
@@ -241,7 +255,7 @@ async def _feishu_wiki_list_via_openapi(agent_id: uuid.UUID, arguments: dict) ->
                         "depth": depth,
                     }
                     result.append(entry)
-                    if recursive and entry["has_child"] and depth < 2:
+                    if recursive and entry["has_child"]:
                         children, error = await _list_children(entry["node_token"], depth + 1)
                         if error:
                             return result, error
@@ -271,10 +285,24 @@ async def _feishu_wiki_list(agent_id: uuid.UUID, arguments: dict) -> str:
     if not node_token and not space_id:
         return "❌ Missing required argument 'node_token' or 'space_id'"
 
+    expanded_node_tokens: set[str] = set()
+
     async def _list_children_cli(space_id: str, parent_token: str | None, depth: int) -> tuple[list[dict], dict | None]:
+        if parent_token:
+            if parent_token in expanded_node_tokens:
+                return [], None
+            expanded_node_tokens.add(parent_token)
         result = []
         page_token = ""
-        for _ in range(20):
+        seen_page_tokens: set[str] = set()
+        while True:
+            page_marker = page_token or "__first_page__"
+            if page_marker in seen_page_tokens:
+                return result, {
+                    "code": "pagination_cycle",
+                    "msg": f"Feishu repeated Wiki page token {page_token!r}.",
+                }
+            seen_page_tokens.add(page_marker)
             params = {"page_size": 50}
             if parent_token:
                 params["parent_node_token"] = parent_token
@@ -299,7 +327,7 @@ async def _feishu_wiki_list(agent_id: uuid.UUID, arguments: dict) -> str:
                     "depth": depth,
                 }
                 result.append(entry)
-                if recursive and entry["has_child"] and depth < 2:
+                if recursive and entry["has_child"]:
                     children, error = await _list_children_cli(space_id, entry["node_token"], depth + 1)
                     if error:
                         return result, error

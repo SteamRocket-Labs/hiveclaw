@@ -300,8 +300,11 @@ def _extract_errors_section(messages: list[dict]) -> str:
             content = _extract_text_content(msg.get("content"))
             if not content:
                 continue
-            head = content[:60].lower()
-            if content.startswith("[Error]") or "error" in head[:20]:
+            structured_error = bool(msg.get("is_error")) or str(msg.get("status") or "").lower() in {
+                "error",
+                "failed",
+            }
+            if content.startswith("[Error]") or structured_error:
                 tcid = msg.get("tool_call_id", "?")
                 errors.append(f"- (call {tcid}) {_truncate(content, 500)}")
         elif role == "assistant":
@@ -479,7 +482,7 @@ def _format_heartbeat_log(messages: list[dict], metadata: dict[str, Any]) -> str
         if warnings:
             lines.append("")
             lines.append("### Warnings")
-            for w in warnings[:20]:
+            for w in warnings:
                 lines.append(f"- {_truncate(str(w), 200)}")
         sections.append("## T3 Normalization\n" + "\n".join(lines))
 
@@ -533,7 +536,7 @@ def _format_dream_log(messages: list[dict], metadata: dict[str, Any]) -> str:
     # Soul candidate section: prefer the reviewed candidate package, fall back to legacy audit list.
     if isinstance(soul_candidate, dict):
         target = str(soul_candidate.get("target") or "soul.md")
-        refs = ", ".join(str(ref) for ref in (soul_candidate.get("source_refs") or [])[:5])
+        refs = ", ".join(str(ref) for ref in (soul_candidate.get("source_refs") or []))
         review = (
             soul_candidate.get("memory_gate_review")
             if isinstance(soul_candidate.get("memory_gate_review"), dict)
@@ -573,10 +576,9 @@ def _format_dream_log(messages: list[dict], metadata: dict[str, Any]) -> str:
 
 
 def _truncate(text: str, max_len: int) -> str:
-    """Truncate text with ellipsis if too long."""
-    if len(text) <= max_len:
-        return text
-    return text[:max_len] + "…"
+    """Compatibility helper that preserves canonical T0 evidence in full."""
+    del max_len
+    return text
 
 
 # ── Public API ──
@@ -835,7 +837,7 @@ def _extract_existing_session_ids(files: Iterable[Path]) -> set[str]:
 async def backfill_recent_chat_logs(
     agent_id: uuid.UUID,
     recent_days: int = 30,
-    limit_sessions: int = 20,
+    limit_sessions: int | None = None,
     *,
     tenant_id: uuid.UUID | None = None,
     session_ids: Iterable[uuid.UUID] | None = None,
@@ -869,8 +871,9 @@ async def backfill_recent_chat_logs(
                 ChatSession.created_at >= cutoff,
             )
             .order_by(ChatSession.last_message_at.desc(), ChatSession.created_at.desc())
-            .limit(limit_sessions)
         )
+        if limit_sessions is not None:
+            session_stmt = session_stmt.limit(max(1, int(limit_sessions)))
 
     try:
         async with tenant_scoped_session(tenant_id) as db:

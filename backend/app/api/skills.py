@@ -156,8 +156,11 @@ def _review_materialized_files(result: dict) -> list[dict]:
 
 
 def _skill_guard_detail(report: SkillGuardReport) -> dict:
+    disposition = report.disposition
+    verb = "quarantined for semantic/admin review" if disposition == "quarantine" else "blocked"
+    findings = report.review_findings if disposition == "quarantine" else report.blocking_findings
     return {
-        "message": f"SkillGuard blocked skill package: {len(report.blocking_findings)} blocking finding(s).",
+        "message": f"SkillGuard {verb} skill package: {len(findings)} finding(s).",
         "skill_guard": report.to_dict(),
     }
 
@@ -166,6 +169,8 @@ def _guard_skill_files_or_raise(files: list[dict], *, source: str) -> SkillGuard
     report = scan_skill_files(files, source=source)
     if not report.allowed:
         raise HTTPException(400, _skill_guard_detail(report))
+    if report.requires_review:
+        raise HTTPException(409, _skill_guard_detail(report))
     return report
 
 

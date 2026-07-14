@@ -31,7 +31,6 @@ from app.services.wechat_ilink_client import (
     ILinkClient,
     ILinkSessionExpiredError,
     MAX_CONSECUTIVE_ERRORS,
-    TEXT_MESSAGE_MAX_LEN,
     InboundMessage,
 )
 from app.services.wechat_personal_service import (
@@ -410,7 +409,7 @@ class WeChatPersonalStreamManager:
                         bot_token=bot_token,
                         to_user_id=from_user,
                         context_token=ctx_token,
-                        text=accompany_msg[:TEXT_MESSAGE_MAX_LEN],
+                        text=accompany_msg,
                     )
                 except Exception as e:
                     logger.warning(f"[WeChatPersonal Stream] caption send failed: {e}")
@@ -460,26 +459,19 @@ class WeChatPersonalStreamManager:
             _cfs.reset(token_cfs)
             _cdt.reset(token_cdt)
 
-        # Send reply — split if over 4000 chars
+        # ILinkClient owns transport-safe chunking so every caller preserves the
+        # same complete model-authored message.
         context_token = await get_context_token(agent_id, from_user) or msg.context_token
         ilink = ILinkClient(base_url)
-
-        if len(reply_text) <= TEXT_MESSAGE_MAX_LEN:
-            chunks = [reply_text]
-        else:
-            chunks = [reply_text[i : i + TEXT_MESSAGE_MAX_LEN] for i in range(0, len(reply_text), TEXT_MESSAGE_MAX_LEN)]
-
-        for chunk in chunks:
-            try:
-                await ilink.send_message(
-                    bot_token=bot_token,
-                    to_user_id=from_user,
-                    context_token=context_token,
-                    text=chunk,
-                )
-            except Exception as e:
-                logger.error(f"[WeChatPersonal Stream] Failed to send reply: {e}")
-                break
+        try:
+            await ilink.send_message(
+                bot_token=bot_token,
+                to_user_id=from_user,
+                context_token=context_token,
+                text=reply_text,
+            )
+        except Exception as e:
+            logger.error(f"[WeChatPersonal Stream] Failed to send reply: {e}")
 
         # Cancel typing
         if ticket:

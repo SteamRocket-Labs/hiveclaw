@@ -52,17 +52,14 @@ class TestTemplateStructure:
         assert "soul.md" in template_text
 
 
-class TestDecisionMatrix:
-    def test_matrix_table_headers(self, template_text: str) -> None:
-        # A proper markdown table with the agreed columns.
-        assert "| w" in template_text
-        assert "| cat" in template_text
-        assert "| action" in template_text
-
-    def test_matrix_covers_all_weight_tiers(self, template_text: str) -> None:
-        assert ">= 0.85" in template_text or "≥ 0.85" in template_text
-        assert "0.50–0.85" in template_text or "0.50-0.85" in template_text
-        assert "< 0.50" in template_text
+class TestSemanticDecisionBoundary:
+    def test_model_owns_semantic_action_without_weight_bands(self, template_text: str) -> None:
+        assert "Scores are evidence explanations, never platform cutoffs" in template_text
+        assert "Counts, weights, recency, and rank are observations" in template_text
+        for action in ("merge", "accept-new", "hold", "reinforce", "revise", "noop", "reject"):
+            assert f"`{action}`" in template_text
+        for forbidden_cutoff in (">= 0.85", "≥ 0.85", "0.50–0.85", "0.50-0.85", "< 0.50"):
+            assert forbidden_cutoff not in template_text
 
     def test_matrix_maps_each_category_to_file(self, template_text: str) -> None:
         for target in [
@@ -73,9 +70,10 @@ class TestDecisionMatrix:
         ]:
             assert target in template_text
 
-    def test_matrix_has_tiebreaker_guidance(self, template_text: str) -> None:
-        assert "Tiebreakers" in template_text or "tiebreaker" in template_text.lower()
+    def test_ambiguity_is_left_to_model_judgment(self, template_text: str) -> None:
+        assert "genuinely ambiguous" in template_text
         assert "false negative" in template_text.lower()
+        assert "tiebreaker" not in template_text.lower()
 
     def test_template_does_not_tell_curator_to_write_platform_managed_evolution_files(
         self,
@@ -96,9 +94,9 @@ class TestDecisionMatrix:
 
 class TestCurationExamples:
     def test_template_keeps_profile_and_milestone_curation_rules(self, template_text: str) -> None:
-        assert "80%" in template_text
-        assert "15%" in template_text
-        assert "5%" in template_text
+        assert "no fixed percentage" in template_text
+        for forbidden_quota in ("80%", "15%", "5%"):
+            assert forbidden_quota not in template_text
         assert "counter-example" in template_text or "反例下调" in template_text
         assert "retroactive" in template_text or "追认" in template_text
         assert "ms-" in template_text

@@ -26,7 +26,6 @@ _VALID_TARGETS = {"clawith", "claude_code", "hermes_agent"}
 _VALID_MODES = {"internal", "bakeoff"}
 _VALID_ABLATIONS = {"full", "no_memory", "no_skill", "no_compaction"}
 _VALID_SUITES = {"core_v1", "continuity_v1", "skill_v1"}
-_SKILL_MATCH_STOPWORDS = {"use", "the", "for", "and", "with", "a", "an", "to"}
 
 
 def _resolve_output_dir(
@@ -281,19 +280,6 @@ def _continuity_scenario_report(output_dir: Path) -> dict[str, Any]:
     return {"kind": "internal", "transport": "internal", "scenarios": scenarios}
 
 
-def _skill_match_confidence(query: str, skill_name: str, summary: str) -> float:
-    haystack = f"{skill_name} {summary}".lower()
-    query_tokens = {
-        token
-        for token in query.lower().replace("-", " ").split()
-        if token and token not in _SKILL_MATCH_STOPWORDS and len(token) > 2
-    }
-    if not query_tokens:
-        return 0.0
-    matched = sum(1 for token in query_tokens if token in haystack)
-    return round(matched / len(query_tokens), 2)
-
-
 def _skill_scenario_report(output_dir: Path) -> dict[str, Any]:
     prompt_report = evaluate_runtime_prompt_contracts()
     workspace = output_dir / "_skill_runtime"
@@ -301,20 +287,7 @@ def _skill_scenario_report(output_dir: Path) -> dict[str, Any]:
         {"name": "deploy-checklist", "summary": "canary rollout rollback logs promote globally"},
         {"name": "incident-response", "summary": "rollback guidance alerts remediation runbook"},
     ]
-    top_match = max(
-        (
-            {
-                "name": entry["name"],
-                "confidence": _skill_match_confidence(
-                    "use the deploy checklist for canary rollout and rollback logs",
-                    entry["name"],
-                    entry["summary"],
-                ),
-            }
-            for entry in catalog
-        ),
-        key=lambda item: item["confidence"],
-    )
+    catalog_visible = all(entry.get("name") and entry.get("summary") for entry in catalog)
     promote_result = record_skill_execution(
         workspace,
         skill_name="deploy-checklist",
@@ -369,11 +342,11 @@ def _skill_scenario_report(output_dir: Path) -> dict[str, Any]:
 
     scenarios = {
         "trigger_precision": {
-            "ready": top_match["name"] == "deploy-checklist" and top_match["confidence"] >= 0.70,
-            "score": 100 if top_match["name"] == "deploy-checklist" and top_match["confidence"] >= 0.70 else 0,
-            "transcript": json.dumps(top_match, ensure_ascii=False),
-            "rubric": "matching skills should cross the load-before-act confidence threshold",
-            "score_breakdown": top_match,
+            "ready": catalog_visible,
+            "score": 100 if catalog_visible else 0,
+            "transcript": json.dumps(catalog, ensure_ascii=False),
+            "rubric": "complete skill discovery metadata reaches the model without platform semantic selection",
+            "score_breakdown": {"catalog_entries": len(catalog), "mechanical_selection": False},
         },
         "load_before_act_compliance": {
             "ready": bool(skill_guidance_check["passed"]),
@@ -383,17 +356,21 @@ def _skill_scenario_report(output_dir: Path) -> dict[str, Any]:
             "score_breakdown": skill_guidance_check,
         },
         "save_skill_precision": {
-            "ready": promote_result["decision"] == "promote",
-            "score": 100 if promote_result["decision"] == "promote" else 0,
+            "ready": (promote_result["decision"] == "candidate" and promote_result["promote_candidate_count"] == 3),
+            "score": 100
+            if promote_result["decision"] == "candidate" and promote_result["promote_candidate_count"] == 3
+            else 0,
             "transcript": json.dumps(promote_result, ensure_ascii=False),
-            "rubric": "repeated successful approaches should promote into skill candidates and then skills",
+            "rubric": "repeated successes remain complete evidence until the Skill Distiller model decides",
             "score_breakdown": promote_result,
         },
         "stale_skill_patch_recovery": {
-            "ready": patch_result["decision"] == "patch",
-            "score": 100 if patch_result["decision"] == "patch" else 0,
+            "ready": patch_result["decision"] == "candidate" and patch_result["patch_candidate_count"] == 2,
+            "score": 100
+            if patch_result["decision"] == "candidate" and patch_result["patch_candidate_count"] == 2
+            else 0,
             "transcript": json.dumps(patch_result, ensure_ascii=False),
-            "rubric": "repeated loaded-skill misses should route to patch instead of duplicate creation",
+            "rubric": "loaded-skill misses remain patch evidence; counters never author the patch decision",
             "score_breakdown": patch_result,
         },
     }

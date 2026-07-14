@@ -67,6 +67,7 @@ async def test_get_summary_model_config_falls_back_to_tenant_default_model(monke
         "api_key": "test-key",
         "base_url": None,
         "max_input_tokens": None,
+        "max_output_tokens": None,
     }
 
 
@@ -331,6 +332,7 @@ async def test_get_rerank_model_config_falls_back_to_tenant_default_model(monkey
         "api_key": "test-key",
         "base_url": None,
         "max_input_tokens": None,
+        "max_output_tokens": None,
     }
 
 
@@ -436,8 +438,8 @@ async def test_generate_session_summary_holds_without_llm_instead_of_mechanical_
 
 
 @pytest.mark.asyncio
-async def test_build_memory_context_never_requests_rerank_config(monkeypatch, tmp_path) -> None:
-    """spec §4.2: reads never run an LLM — the rerank side-query is retired."""
+async def test_build_memory_context_requests_model_owned_semantic_selector(monkeypatch, tmp_path) -> None:
+    """The live read path resolves a model; scores alone never select memory."""
     from app.services import memory_service
 
     called = {"rerank": False}
@@ -464,7 +466,7 @@ async def test_build_memory_context_never_requests_rerank_config(monkeypatch, tm
     monkeypatch.setattr(memory_service, "_resolve_activation_context", lambda **kw: fake_activation(**kw))
     await memory_service.build_memory_context(uuid.uuid4(), uuid.uuid4(), query="q")
 
-    assert called["rerank"] is False
+    assert called["rerank"] is True
 
 
 @pytest.mark.asyncio
@@ -948,7 +950,10 @@ async def test_resident_profile_failure_is_critical_not_empty_context(monkeypatc
 
     assert result.status == "unavailable"
     assert result.code == "resident_profile_unavailable"
-    assert result.block_model is True
+    assert result.conversation_available is True
+    assert result.authority_context_available is False
+    assert result.durable_write_available is False
+    assert result.external_effects_available is False
     assert result.content == ""
 
 
@@ -975,4 +980,7 @@ async def test_unresolved_memory_authority_is_typed_fail_closed(monkeypatch, tmp
 
     assert result.status == "blocked_authority"
     assert result.code == "memory_authority_unresolved"
-    assert result.block_model is True
+    assert result.conversation_available is True
+    assert result.authority_context_available is False
+    assert result.durable_write_available is False
+    assert result.external_effects_available is False

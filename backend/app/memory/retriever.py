@@ -6,8 +6,9 @@ returning a unified list of MemoryItem objects for the assembler.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
-import re as _re
 import uuid
 from pathlib import Path
 
@@ -17,42 +18,6 @@ from app.memory.types import MemoryItem, MemoryKind
 from app.runtime.context_budget import ContextBudget
 
 logger = logging.getLogger(__name__)
-
-_CJK_RE = _re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf\uF900-\uFAFF]")
-_PUNCTUATION_CHARS = frozenset("，。！？；：''（）【】、…—《》·,.!?;:\"'()[]{}/ \t\n\r")
-
-
-def _has_cjk(text: str) -> bool:
-    """Detect if text contains CJK characters."""
-    return bool(_CJK_RE.search(text))
-
-
-def _chars_set(text: str) -> set[str]:
-    """Extract meaningful characters for CJK overlap scoring, filtering punctuation/whitespace."""
-    return {c for c in text.lower() if c not in _PUNCTUATION_CHARS and not c.isspace()}
-
-
-def _content_similar(a: str, b: str, threshold: float = 0.7) -> bool:
-    """Check if two text blocks are similar using word overlap (English) or char overlap (CJK)."""
-    a_lower = a.lower()
-    b_lower = b.lower()
-
-    # Path 1: word overlap (English)
-    words_a = set(a_lower.split())
-    words_b = set(b_lower.split())
-    word_sim = 0.0
-    if words_a and words_b:
-        word_sim = len(words_a & words_b) / min(len(words_a), len(words_b))
-
-    # Path 2: character overlap (CJK)
-    char_sim = 0.0
-    if _has_cjk(a) or _has_cjk(b):
-        chars_a = _chars_set(a)
-        chars_b = _chars_set(b)
-        if chars_a and chars_b:
-            char_sim = len(chars_a & chars_b) / min(len(chars_a), len(chars_b))
-
-    return max(word_sim, char_sim) > threshold
 
 
 class MemoryRetriever:
@@ -65,6 +30,10 @@ class MemoryRetriever:
 
     def __init__(self, *, data_root: Path) -> None:
         self.data_root = Path(data_root)
+        self.last_selection_status = "not_run"
+        self.last_selection_error: str | None = None
+        self.last_selection_receipt: str | None = None
+        self.last_selection_coverage_path: str | None = None
 
     async def retrieve(
         self,
@@ -78,28 +47,23 @@ class MemoryRetriever:
         retrieval_profile: ContextBudget | None = None,
         activation_context: ActivationContext | None = None,
     ) -> list[MemoryItem]:
-        """Retrieve memory items: explicit overlay, knowledge plane, episodic, hooks.
+        """Gather complete authorized evidence, then let the model select semantics.
 
-        Reads never run an LLM (spec §4.2). ``rerank_model_config`` is accepted
-        for caller compatibility and intentionally ignored.
+        Mechanical scores, graph propagation, recency, and working-set heat are
+        observable ranking evidence only. They never cap, filter, deduplicate,
+        or make the final semantic selection. If the selector is unavailable,
+        every authorized candidate is returned instead of falling back to top-k.
         """
+        del limit, retrieval_profile  # compatibility-only; never semantic cutoffs
         items: list[MemoryItem] = []
         items.extend(self._retrieve_explicit_overlay(agent_id, query=query) or [])
-        episodic_limit = retrieval_profile.episodic_limit if retrieval_profile else 3
-        external_limit = retrieval_profile.external_limit if retrieval_profile else 5
-        semantic_limit = retrieval_profile.semantic_limit if retrieval_profile else 5
-        del limit, rerank_model_config  # reads never run an LLM (spec §4.2); PPR order is final
-        # Knowledge plane (spec §4.2): always-on top-k retrieval over the
-        # knowledge/milestones link network built at write time.
-        items.extend(self._retrieve_knowledge_pages(agent_id, query=query, limit=semantic_limit) or [])
-
-        items.extend(await self._retrieve_episodic(agent_id, session_id, previous_limit=episodic_limit) or [])
+        items.extend(self._retrieve_knowledge_pages(agent_id, query=query) or [])
+        items.extend(await self._retrieve_episodic(agent_id, session_id) or [])
         items.extend(
             await self._retrieve_semantic_backend(
                 agent_id,
                 query,
                 tenant_id,
-                limit=semantic_limit,
             )
             or []
         )
@@ -108,22 +72,26 @@ class MemoryRetriever:
                 agent_id,
                 query,
                 tenant_id,
-                limit=external_limit,
                 activation_context=activation_context,
             )
             or []
         )
 
         if activation_context:
-            return self._apply_activation(items, activation_context, agent_id=agent_id)
-        return items
+            items = self._apply_activation(items, activation_context, agent_id=agent_id)
+        return await self._select_candidates(
+            items,
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            query=query,
+            model_config=rerank_model_config,
+        )
 
-    def _retrieve_knowledge_pages(self, agent_id: uuid.UUID, *, query: str = "", limit: int = 5) -> list[MemoryItem]:
-        """Knowledge plane retrieval (spec §4.2): PPR top-k over knowledge/milestones.
-
-        Zero LLM by contract — the link network was authored at write time, so
-        graph order is final; these items are exempt from the LLM rerank pool.
-        """
+    def _retrieve_knowledge_pages(
+        self, agent_id: uuid.UUID, *, query: str = "", limit: int | None = None
+    ) -> list[MemoryItem]:
+        """Expose complete active knowledge pages with PPR/BM25 as evidence."""
+        del limit  # compatibility-only; the runtime selector must see every page
         if not query:
             return []
         try:
@@ -135,7 +103,7 @@ class MemoryRetriever:
                 agent_id,
                 query,
                 method=DEFAULT_WIKI_METHOD,
-                limit=limit,
+                limit=None,
                 page_dirs=KNOWLEDGE_PAGE_DIRS,
             )
         except Exception as exc:
@@ -143,19 +111,18 @@ class MemoryRetriever:
             return []
 
         items: list[MemoryItem] = []
-        for index, hit in enumerate(hits):
+        for hit in hits:
             page_id = str(hit.get("page_id") or "")
             title = str(hit.get("title") or page_id.rsplit("/", 1)[-1].replace("-", " ").title())
             page_kind = str(hit.get("kind") or "knowledge")
             source_ref = str(hit.get("source_ref") or f"memory/{page_id}.md")
-            preview = str(hit.get("preview") or "").strip()
+            content = str(hit.get("content") or "").strip()
             raw_score = float(hit.get("score") or 0.0)
-            score = round(max(0.5, min(0.9, 0.5 + raw_score - (index * 0.02))), 4)
             items.append(
                 MemoryItem(
                     kind=MemoryKind.SEMANTIC,
-                    content=f"[{page_kind}:{title}] {preview}".strip(),
-                    score=score,
+                    content=f"[{page_kind}:{title}]\n{content}".strip(),
+                    score=max(0.0, min(1.0, raw_score)),
                     source=source_ref,
                     metadata={
                         "page_id": page_id,
@@ -165,11 +132,284 @@ class MemoryRetriever:
                         "source_ref": source_ref,
                         "source_type": "knowledge_ppr",
                         "method": str(hit.get("method") or "ppr"),
+                        "retrieval_score": raw_score,
                         "sensitivity": "PL1_public",
                     },
                 )
             )
         return items
+
+    async def _select_candidates(
+        self,
+        items: list[MemoryItem],
+        *,
+        agent_id: uuid.UUID,
+        tenant_id: str | None,
+        query: str,
+        model_config: dict | None,
+    ) -> list[MemoryItem]:
+        """Apply model-owned semantic selection with a complete-input fallback."""
+
+        self.last_selection_error = None
+        self.last_selection_receipt = None
+        self.last_selection_coverage_path = None
+        if not items:
+            self.last_selection_status = "not_needed"
+            return []
+
+        prepared = self._attach_selection_candidate_ids(items)
+        selection_run_id = uuid.uuid4().hex
+        if not model_config:
+            self.last_selection_status = "model_unavailable"
+            fallback = self._annotate_selection(prepared, status="model_unavailable")
+            self._record_selection_receipt(
+                agent_id=agent_id,
+                run_id=selection_run_id,
+                candidates=prepared,
+                selected=fallback,
+                status="model_unavailable",
+            )
+            return fallback
+
+        try:
+            selected_ids, reason = await self._select_with_model(
+                items=prepared,
+                agent_id=agent_id,
+                tenant_id=tenant_id,
+                query=query,
+                model_config=model_config,
+                selection_run_id=selection_run_id,
+            )
+            if not isinstance(selected_ids, list) or any(not isinstance(value, str) for value in selected_ids):
+                raise ValueError("memory selector selected_ids must be a string list")
+            by_id = {str(item.metadata["selection_candidate_id"]): item for item in prepared}
+            unknown = [candidate_id for candidate_id in selected_ids if candidate_id not in by_id]
+            if unknown:
+                raise ValueError(f"memory selector returned unknown candidate ids: {unknown}")
+            chosen: list[MemoryItem] = []
+            seen: set[str] = set()
+            for candidate_id in selected_ids:
+                if candidate_id in seen:
+                    continue
+                seen.add(candidate_id)
+                chosen.append(by_id[candidate_id])
+            self.last_selection_status = "model_selected"
+            selected = self._annotate_selection(chosen, status="model_selected", reason=reason)
+            self._record_selection_receipt(
+                agent_id=agent_id,
+                run_id=selection_run_id,
+                candidates=prepared,
+                selected=selected,
+                status="model_selected",
+                reason=reason,
+            )
+            return selected
+        except Exception as exc:  # model failure must never trigger mechanical semantic selection
+            logger.warning("[Retriever] model semantic selection failed; exposing all candidates: %s", exc)
+            self.last_selection_status = "failed"
+            self.last_selection_error = type(exc).__name__
+            fallback = self._annotate_selection(prepared, status="failed", error=type(exc).__name__)
+            self._record_selection_receipt(
+                agent_id=agent_id,
+                run_id=selection_run_id,
+                candidates=prepared,
+                selected=fallback,
+                status="failed",
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return fallback
+
+    @staticmethod
+    def _attach_selection_candidate_ids(items: list[MemoryItem]) -> list[MemoryItem]:
+        prepared: list[MemoryItem] = []
+        for index, item in enumerate(items):
+            source_type = str(item.metadata.get("source_type") or item.kind.value)
+            locator = str(
+                item.metadata.get("entry_id")
+                or item.metadata.get("page_id")
+                or item.metadata.get("session_id")
+                or item.source
+                or index
+            )
+            digest = hashlib.sha256(
+                f"{item.kind.value}\0{source_type}\0{locator}\0{item.source}\0{item.content}".encode("utf-8")
+            ).hexdigest()[:20]
+            candidate_id = f"memory_candidate:{item.kind.value}:{index}:{digest}"
+            prepared.append(
+                MemoryItem(
+                    kind=item.kind,
+                    content=item.content,
+                    score=item.score,
+                    source=item.source,
+                    metadata={**item.metadata, "selection_candidate_id": candidate_id},
+                )
+            )
+        return prepared
+
+    @staticmethod
+    def _annotate_selection(
+        items: list[MemoryItem],
+        *,
+        status: str,
+        reason: str = "",
+        error: str = "",
+    ) -> list[MemoryItem]:
+        annotated: list[MemoryItem] = []
+        for item in items:
+            metadata = {**item.metadata, "semantic_selection_status": status}
+            if reason:
+                metadata["semantic_selection_reason"] = reason
+            if error:
+                metadata["semantic_selection_error"] = error
+            annotated.append(
+                MemoryItem(
+                    kind=item.kind,
+                    content=item.content,
+                    score=item.score,
+                    source=item.source,
+                    metadata=metadata,
+                )
+            )
+        return annotated
+
+    async def _select_with_model(
+        self,
+        *,
+        items: list[MemoryItem],
+        agent_id: uuid.UUID,
+        tenant_id: str | None,
+        query: str,
+        model_config: dict,
+        selection_run_id: str,
+    ) -> tuple[list[str], str]:
+        from app.services.llm_client import LLMMessage, create_llm_client_from_config, with_llm_usage_context
+        from app.services.semantic_input_coverage import prepare_covered_semantic_input
+
+        configured = with_llm_usage_context(
+            model_config,
+            source="memory_semantic_selection",
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+        )
+        client = create_llm_client_from_config(configured)
+        try:
+            try:
+                max_input_tokens = int(model_config.get("max_input_tokens") or 128_000)
+            except (TypeError, ValueError):
+                max_input_tokens = 128_000
+            max_chars = max(max_input_tokens - 16_000, 8_000) * 3
+            try:
+                output_tokens = int(model_config.get("max_output_tokens") or 32_768)
+            except (TypeError, ValueError):
+                output_tokens = 32_768
+
+            sections: list[tuple[str, str]] = []
+            for item in items:
+                candidate_id = str(item.metadata["selection_candidate_id"])
+                payload = {
+                    "candidate_id": candidate_id,
+                    "kind": item.kind.value,
+                    "content": item.content,
+                    "source": item.source,
+                    "score_observation": item.score,
+                    "metadata": item.metadata,
+                }
+                sections.append((candidate_id, json.dumps(payload, ensure_ascii=False, indent=2, default=str)))
+
+            async def review_chunk(_phase: str, prompt: str) -> str:
+                response = await client.complete(
+                    messages=[
+                        LLMMessage(
+                            role="system",
+                            content=(
+                                "Preserve every memory candidate ID, complete fact, exception, conflict, provenance, "
+                                "authority-relevant detail, and decisive tail for the final semantic selector. "
+                                "Scores, order, recency, and graph signals are observations only."
+                            ),
+                        ),
+                        LLMMessage(role="user", content=prompt),
+                    ],
+                    temperature=0.1,
+                    max_tokens=output_tokens,
+                )
+                return str(response.content or "").strip()
+
+            coverage_path = (
+                self.data_root
+                / str(agent_id)
+                / "memory"
+                / "control"
+                / "retrieval_reviews"
+                / f"{selection_run_id}.coverage.json"
+            )
+            self.last_selection_coverage_path = coverage_path.as_posix()
+            covered = await prepare_covered_semantic_input(
+                phase="memory_semantic_selection",
+                sections=sections,
+                max_chars=max_chars,
+                coverage_path=coverage_path,
+                review_chunk=review_chunk,
+            )
+            response = await client.complete(
+                messages=[
+                    LLMMessage(
+                        role="system",
+                        content=(
+                            "You are the semantic authority for prompt-memory selection. Review the complete "
+                            "authorized candidate evidence. Select every candidate needed to answer the current "
+                            "query faithfully, including constraints, exceptions, conflicts, and non-lexical "
+                            "connections; select none when none is useful. There is no item-count target or limit. "
+                            "Mechanical scores, order, recency, and graph signals are observations only. Return raw "
+                            'JSON only: {"selected_ids":["memory_candidate:..."],"reason":"complete rationale"}'
+                        ),
+                    ),
+                    LLMMessage(role="user", content=f"<current_query>\n{query}\n</current_query>\n\n{covered}"),
+                ],
+                temperature=0.1,
+                max_tokens=output_tokens,
+            )
+            parsed = json.loads(str(response.content or "").strip())
+            if not isinstance(parsed, dict):
+                raise ValueError("memory selector response must be a JSON object")
+            selected_ids = parsed.get("selected_ids")
+            if not isinstance(selected_ids, list):
+                raise ValueError("memory selector response requires selected_ids")
+            reason = str(parsed.get("reason") or "").strip()
+            return selected_ids, reason
+        finally:
+            await client.close()
+
+    def _record_selection_receipt(
+        self,
+        *,
+        agent_id: uuid.UUID,
+        run_id: str,
+        candidates: list[MemoryItem],
+        selected: list[MemoryItem],
+        status: str,
+        reason: str = "",
+        error: str = "",
+    ) -> None:
+        path = self.data_root / str(agent_id) / "memory" / "control" / "retrieval_reviews" / f"{run_id}.decision.json"
+        payload = {
+            "schema": "hive.memory.semantic-selection.v1",
+            "status": status,
+            "coverage_path": self.last_selection_coverage_path,
+            "candidate_ids": [str(item.metadata["selection_candidate_id"]) for item in candidates],
+            "candidate_sha256": {
+                str(item.metadata["selection_candidate_id"]): hashlib.sha256(item.content.encode("utf-8")).hexdigest()
+                for item in candidates
+            },
+            "selected_ids": [str(item.metadata["selection_candidate_id"]) for item in selected],
+            "reason": reason,
+            "error": error,
+        }
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            self.last_selection_receipt = path.as_posix()
+        except OSError as exc:
+            logger.warning("[Retriever] failed to persist semantic-selection receipt: %s", exc)
 
     def _apply_activation(
         self,
@@ -318,7 +558,7 @@ class MemoryRetriever:
 
     def _retrieve_explicit_overlay(self, agent_id: uuid.UUID, *, query: str = "") -> list[MemoryItem]:
         items: list[MemoryItem] = []
-        for fact in search_explicit_overlay_entries(self.data_root, agent_id, query, limit=8):
+        for fact in search_explicit_overlay_entries(self.data_root, agent_id, query, limit=None):
             metadata = {
                 **(fact.get("metadata") or {}),
                 "entry_id": fact.get("id", ""),
@@ -346,8 +586,9 @@ class MemoryRetriever:
         agent_id: uuid.UUID,
         session_id: str | None,
         *,
-        previous_limit: int = 3,
+        previous_limit: int | None = None,
     ) -> list[MemoryItem]:
+        del previous_limit  # compatibility-only; model selection owns relevance
         items: list[MemoryItem] = []
         try:
             from app.database import tenant_scoped_session
@@ -384,7 +625,7 @@ class MemoryRetriever:
                             )
                         )
 
-                # Previous session summaries — load a bounded continuity window
+                # Previous session summaries — complete authorized continuity evidence.
                 prev_query = (
                     select(ChatSession.summary, ChatSession.id, ChatSession.last_message_at)
                     .where(
@@ -392,7 +633,6 @@ class MemoryRetriever:
                         ChatSession.summary.isnot(None),
                     )
                     .order_by(ChatSession.last_message_at.desc(), ChatSession.created_at.desc())
-                    .limit(previous_limit)
                 )
                 if session_uuid:
                     prev_query = prev_query.where(ChatSession.id != session_uuid)
@@ -419,14 +659,6 @@ class MemoryRetriever:
         except Exception as exc:
             logger.warning("Episodic retrieval failed: %s", exc)
 
-        # Deduplicate episodic items with similar content
-        if len(items) > 1:
-            unique: list[MemoryItem] = [items[0]]
-            for item in items[1:]:
-                if not any(_content_similar(item.content, u.content) for u in unique):
-                    unique.append(item)
-            items = unique
-
         return items
 
     # -- Optional enhancement layer: currently no external memory program --
@@ -437,7 +669,7 @@ class MemoryRetriever:
         query: str,
         tenant_id: str | None,
         *,
-        limit: int = 5,
+        limit: int | None = None,
     ) -> list[MemoryItem]:
         """Compatibility hook for future optional memory enhancement adapters.
 
@@ -455,7 +687,7 @@ class MemoryRetriever:
         query: str,
         tenant_id: str | None,
         *,
-        limit: int = 5,
+        limit: int | None = None,
         activation_context: ActivationContext | None = None,
     ) -> list[MemoryItem]:
         del agent_id, query, tenant_id, limit, activation_context

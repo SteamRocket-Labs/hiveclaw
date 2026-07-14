@@ -11,8 +11,10 @@ from app.runtime.session import SessionContext
 class _StreamingClient:
     def __init__(self, responses):
         self.responses = list(responses)
+        self.calls = []
 
     async def stream(self, **kwargs):
+        self.calls.append(kwargs)
         if not self.responses:
             raise AssertionError("No fake response prepared")
         response = self.responses.pop(0)
@@ -111,7 +113,7 @@ async def test_kernel_blocks_forbidden_connector_source_before_streaming() -> No
     )
 
     assert hidden_source not in result.content
-    assert result.content.startswith("[Permission Check]")
+    assert result.content == "Leaked citation: [REDACTED_FORBIDDEN_SOURCE]"
     assert chunks == []
     assert session.metadata["generated_source_permission_checks"][-1]["allowed"] is False
     authz = session.metadata["generated_source_permission_checks"][-1]["authorization_decision_entry"]
@@ -186,7 +188,82 @@ async def test_kernel_registers_tool_result_connector_sources_for_final_check() 
 
     assert session.metadata[CONNECTOR_SOURCE_ITEMS_METADATA_KEY][0]["source"] == hidden_source
     assert hidden_source not in result.content
-    assert result.content.startswith("[Permission Check]")
+    assert result.content == "Answer cites [REDACTED_FORBIDDEN_SOURCE]"
+    second_round_messages = client.calls[1]["messages"]
+    tool_message = next(message for message in second_round_messages if message.role == "tool")
+    assert "hidden doc" not in str(tool_message.content)
+    assert "source_permission_denied" in str(tool_message.content)
+
+
+@pytest.mark.asyncio
+async def test_denied_historical_connector_source_does_not_hide_later_unrelated_tool_result() -> None:
+    from app.kernel.contracts import InvocationRequest
+
+    tenant_id = uuid4()
+    user_id = uuid4()
+    agent_id = uuid4()
+    session = SessionContext(session_id="tool-acl-scope-session", source="web")
+    client = _StreamingClient(
+        [
+            SimpleNamespace(
+                content="",
+                tool_calls=[
+                    {"id": "call_1", "function": {"name": "feishu_doc_read", "arguments": '{"doc_id":"hidden"}'}}
+                ],
+                reasoning_content=None,
+                usage={"total_tokens": 3},
+                finish_reason="tool_calls",
+            ),
+            SimpleNamespace(
+                content="",
+                tool_calls=[{"id": "call_2", "function": {"name": "read_file", "arguments": '{"path":"notes.txt"}'}}],
+                reasoning_content=None,
+                usage={"total_tokens": 3},
+                finish_reason="tool_calls",
+            ),
+            SimpleNamespace(
+                content="The unrelated workspace note is available.",
+                tool_calls=[],
+                reasoning_content=None,
+                usage={"total_tokens": 3},
+                finish_reason="stop",
+            ),
+        ]
+    )
+
+    async def execute_tool(name, *_args, **_kwargs):
+        if name == "feishu_doc_read":
+            return {
+                "source": "feishu://doc/hidden",
+                "content": "hidden connector content",
+                "acl": {"tenant_ids": [str(tenant_id)], "user_ids": [str(uuid4())]},
+            }
+        return "UNRELATED-WORKSPACE-RESULT"
+
+    result = await _kernel(
+        tenant_id=tenant_id,
+        client=client,
+        tools=[
+            {"type": "function", "function": {"name": "feishu_doc_read", "description": "", "parameters": {}}},
+            {"type": "function", "function": {"name": "read_file", "description": "", "parameters": {}}},
+        ],
+        execute_tool=execute_tool,
+    ).handle(
+        InvocationRequest(
+            model=_model(),
+            messages=[{"role": "user", "content": "read both"}],
+            agent_name="ACL Agent",
+            role_description="desc",
+            agent_id=agent_id,
+            user_id=user_id,
+            session_context=session,
+        )
+    )
+
+    third_round_messages = client.calls[2]["messages"]
+    second_tool_message = [message for message in third_round_messages if message.role == "tool"][-1]
+    assert "UNRELATED-WORKSPACE-RESULT" in str(second_tool_message.content)
+    assert result.content == "The unrelated workspace note is available."
 
 
 @pytest.mark.asyncio
@@ -246,4 +323,4 @@ async def test_kernel_registers_governed_tool_argument_sources_even_without_resu
     assert session.metadata[CONNECTOR_SOURCE_ITEMS_METADATA_KEY][0]["source"] == hidden_source
     assert session.metadata[CONNECTOR_SOURCE_ITEMS_METADATA_KEY][0]["acl"]["deny_by_default"] is True
     assert hidden_source not in result.content
-    assert result.content.startswith("[Permission Check]")
+    assert result.content == "Answer cites [REDACTED_FORBIDDEN_SOURCE]"

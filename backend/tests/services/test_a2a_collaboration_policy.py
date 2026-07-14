@@ -241,6 +241,30 @@ def test_a2a_collaborators_prompt_keeps_explicit_empty_state():
     assert "No governed A2A collaborators" in section
 
 
+def test_a2a_collaborators_prompt_preserves_every_governed_agent():
+    from app.runtime.prompt_sections.a2a_collaborators import build_a2a_collaborators_section
+
+    agents = [
+        {
+            "id": str(uuid4()),
+            "name": f"agent-{index}",
+            "role_description": ("role " * 100) + f"END_ROLE_{index}",
+            "status": "active",
+        }
+        for index in range(30)
+    ]
+
+    section = build_a2a_collaborators_section(
+        {"same_owner_agents": agents, "public_agents": [], "collaboration_groups": []},
+        max_chars=200,
+    )
+
+    assert "agent-0" in section
+    assert "agent-29" in section
+    assert "END_ROLE_29" in section
+    assert "truncated" not in section
+
+
 @pytest.mark.asyncio
 async def test_a2a_read_model_includes_public_agents(monkeypatch):
     from app.services import a2a_collaboration_policy as mod

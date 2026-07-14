@@ -48,7 +48,10 @@ class MemoryContextResult:
     code: str
     user_message: str
     retryable: bool = False
-    block_model: bool = False
+    conversation_available: bool = True
+    authority_context_available: bool = True
+    durable_write_available: bool = True
+    external_effects_available: bool = True
     attempts: int = 1
     degraded_components: tuple[str, ...] = ()
     error_class: str | None = None
@@ -150,9 +153,11 @@ async def _build_memory_context_result(
             content="",
             status="unavailable",
             code="memory_storage_unavailable",
-            user_message="Agent memory storage is temporarily unavailable. This turn was stopped safely.",
+            user_message="Agent memory storage is temporarily unavailable. Conversation can continue in degraded mode.",
             retryable=True,
-            block_model=True,
+            authority_context_available=False,
+            durable_write_available=False,
+            external_effects_available=False,
             error_class=type(exc).__name__,
         )
     activation_context = None
@@ -171,9 +176,11 @@ async def _build_memory_context_result(
             content="",
             status="unavailable",
             code="memory_authority_unavailable",
-            user_message="Memory authority could not be verified. This turn was stopped safely.",
+            user_message="Memory authority could not be verified. Conversation can continue, but governed effects are frozen.",
             retryable=True,
-            block_model=True,
+            authority_context_available=False,
+            durable_write_available=False,
+            external_effects_available=False,
             error_class=type(exc).__name__,
         )
 
@@ -191,9 +198,11 @@ async def _build_memory_context_result(
             content="",
             status="blocked_authority",
             code="memory_authority_unresolved",
-            user_message="Memory access authority could not be verified. This turn was stopped safely.",
+            user_message="Memory access authority could not be verified. Conversation can continue, but governed effects are frozen.",
             retryable=True,
-            block_model=True,
+            authority_context_available=False,
+            durable_write_available=False,
+            external_effects_available=False,
         )
 
     # TaskModulation is additive. Its own lookup already degrades without
@@ -239,9 +248,11 @@ async def _build_memory_context_result(
             content="",
             status="unavailable",
             code="resident_profile_unavailable",
-            user_message="Required agent memory is temporarily unavailable. This turn was stopped safely.",
+            user_message="Required agent memory is temporarily unavailable. Conversation can continue in degraded mode.",
             retryable=True,
-            block_model=True,
+            authority_context_available=False,
+            durable_write_available=False,
+            external_effects_available=False,
             error_class=type(exc).__name__,
         )
 
@@ -256,9 +267,11 @@ async def _build_memory_context_result(
             content="",
             status="unavailable",
             code="resident_identity_unavailable",
-            user_message="Required agent identity memory is temporarily unavailable. This turn was stopped safely.",
+            user_message="Required agent identity memory is temporarily unavailable. Conversation can continue, but governed effects are frozen.",
             retryable=True,
-            block_model=True,
+            authority_context_available=False,
+            durable_write_available=False,
+            external_effects_available=False,
             degraded_components=tuple(sorted(critical_read_errors)),
             error_class="ResidentReadError",
         )
@@ -272,12 +285,16 @@ async def _build_memory_context_result(
 
     items = None
     retrieval_error: Exception | None = None
+    retriever = None
+    rerank_model_config = await _maybe_await(_get_rerank_model_config(tenant_id))
     attempts = 0
     for attempts in range(1, 3):
         try:
             retriever = MemoryRetriever(data_root=data_root_settings)
-            retrieve_kwargs = {"limit": max(50, retrieval_profile.semantic_limit * 2)}
+            retrieve_kwargs = {}
             retrieve_params = inspect.signature(retriever.retrieve).parameters
+            if "rerank_model_config" in retrieve_params:
+                retrieve_kwargs["rerank_model_config"] = rerank_model_config
             if "retrieval_profile" in retrieve_params:
                 retrieve_kwargs["retrieval_profile"] = retrieval_profile
             if "activation_context" in retrieve_params and activation_context:
@@ -313,6 +330,10 @@ async def _build_memory_context_result(
             degraded_components=tuple(dict.fromkeys((*degraded_components, "semantic_retrieval"))),
             error_class=type(retrieval_error).__name__ if retrieval_error else None,
         )
+
+    selection_status = str(getattr(retriever, "last_selection_status", "not_reported"))
+    if selection_status in {"model_unavailable", "failed"}:
+        degraded_components.append("memory_semantic_selection")
 
     if working_set_state is not None:
         try:
@@ -947,6 +968,7 @@ def _model_config(model: LLMModel) -> dict:
         # Window threads through to _llm_summarize input budgeting; consumers
         # that expand this dict into create_llm_client() must pop it first.
         "max_input_tokens": getattr(model, "max_input_tokens", None),
+        "max_output_tokens": getattr(model, "max_output_tokens", None),
     }
 
 
@@ -1059,7 +1081,7 @@ async def _get_summary_model_config(
 
 
 async def _get_rerank_model_config(tenant_id: uuid.UUID) -> dict | None:
-    """Resolve the optional LLM model to use for semantic memory reranking."""
+    """Resolve the model that owns semantic prompt-memory selection."""
     config = await _get_memory_config(tenant_id)
     # Consumers create clients via create_llm_client_from_config, which filters
     # non-client hints (max_input_tokens) — no per-caller pop needed.

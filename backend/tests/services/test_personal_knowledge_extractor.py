@@ -81,6 +81,78 @@ def test_parse_extraction_payload_cleans_schema_and_drops_invalid_items() -> Non
     assert result.warnings == ("keep source refs",)
 
 
+def test_parse_extraction_payload_preserves_every_model_authored_fact() -> None:
+    payload = {
+        "entities": [{"canonical_name": f"Entity {index}", "type": "topic"} for index in range(45)],
+        "assertions": [
+            {"subject": f"Entity {index}", "predicate": "relates_to", "object": f"Fact {index}"} for index in range(45)
+        ],
+        "links": [
+            {"from": f"Entity {index % 45}", "to": f"Entity {(index + 1) % 45}", "relation": "links"}
+            for index in range(65)
+        ],
+        "warnings": [],
+    }
+
+    result = parse_extraction_payload(payload)
+
+    assert len(result.entities) == 45
+    assert len(result.assertions) == 45
+    assert len(result.links) == 65
+    assert result.entities[-1].canonical_name == "Entity 44"
+    assert result.assertions[-1].object_text == "Fact 44"
+    assert result.links[-1].from_name == "Entity 19"
+
+
+def test_parse_extraction_payload_preserves_unbounded_semantic_text_fields() -> None:
+    long_description = "description-tail-" + ("d" * 2_000)
+    long_object = "object-tail-" + ("o" * 4_000)
+    long_warning = "warning-tail-" + ("w" * 900)
+
+    result = parse_extraction_payload(
+        {
+            "entities": [
+                {
+                    "canonical_name": "Complete Entity",
+                    "type": "topic",
+                    "description": long_description,
+                }
+            ],
+            "assertions": [
+                {
+                    "subject": "Complete Entity",
+                    "predicate": "records",
+                    "object": long_object,
+                }
+            ],
+            "links": [],
+            "warnings": [long_warning],
+        }
+    )
+
+    assert result.entities[0].description == long_description
+    assert result.assertions[0].object_text == long_object
+    assert result.warnings == (long_warning,)
+
+
+@pytest.mark.parametrize(
+    ("payload", "field_name"),
+    [
+        ({"entities": [{"canonical_name": "n" * 301}]}, "canonical_name"),
+        (
+            {"assertions": [{"subject": "subject", "predicate": "p" * 121, "object": "object"}]},
+            "predicate",
+        ),
+    ],
+)
+def test_parse_extraction_payload_rejects_structural_overflow_instead_of_truncating(
+    payload: dict,
+    field_name: str,
+) -> None:
+    with pytest.raises(PersonalKnowledgeExtractionError, match=field_name):
+        parse_extraction_payload(payload)
+
+
 @pytest.mark.asyncio
 async def test_llm_extractor_parses_fenced_json_and_closes_client(monkeypatch) -> None:
     import app.services.llm_client as llm_client_module
@@ -104,7 +176,7 @@ async def test_llm_extractor_parses_fenced_json_and_closes_client(monkeypatch) -
 
     async def resolve_model_config(resolved_tenant_id):
         assert resolved_tenant_id == tenant_id
-        return {"provider": "fake", "model": "extractor-test"}
+        return {"provider": "fake", "model": "extractor-test", "max_output_tokens": 32768}
 
     def fake_with_usage(config, **kwargs):
         created_configs.append({"config": config, "usage": kwargs})
@@ -124,7 +196,7 @@ async def test_llm_extractor_parses_fenced_json_and_closes_client(monkeypatch) -
 
     assert fake_client.closed is True
     assert fake_client.complete_calls[0]["temperature"] == 0.0
-    assert fake_client.complete_calls[0]["max_tokens"] == 4096
+    assert fake_client.complete_calls[0]["max_tokens"] == 32768
     user_payload = json.loads(fake_client.complete_calls[0]["messages"][1].content)
     assert user_payload["heading_path"] == ["Knowledge", "Imports"]
     assert user_payload["content"] == "Open Notebook imports should preserve source references."

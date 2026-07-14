@@ -397,6 +397,9 @@ async def test_execute_approved_verifies_consumed_plan_evidence_without_second_p
         assert kwargs["evidence"] == evidence
         return SimpleNamespace(
             binding=SimpleNamespace(
+                plan_id=confirmed_plan_id,
+                plan_version=1,
+                plan_hash="sha256:server-plan",
                 action_kind=action_kind,
                 target_ref="tool:set_trigger",
                 canonical_args_hash=args_hash,

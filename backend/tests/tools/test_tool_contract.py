@@ -167,13 +167,15 @@ def test_eviction_replaces_legacy_exempt_set():
         assert _resolve_eviction_threshold(name) is None, name
 
 
-def test_read_file_result_not_evicted_but_default_tool_is():
+def test_tool_result_is_preserved_when_durable_eviction_is_unavailable():
     from app.kernel.engine import _TOOL_RESULT_EVICTION_THRESHOLD, _maybe_evict_tool_result
 
     big = "x" * (_TOOL_RESULT_EVICTION_THRESHOLD + 1000)
     # read_file is unlimited → kept inline
     assert _maybe_evict_tool_result("read_file", "tc1", big) == big
-    # a tool with no max_result_chars uses the default threshold → evicted
-    evicted = _maybe_evict_tool_result("send_feishu_message", "tc2", big)
-    assert evicted != big
-    assert "truncated" in evicted or "saved to" in evicted
+    # A default-limited tool requests paging, but a missing artifact directory
+    # must never turn complete model-visible evidence into a lossy preview.
+    preserved = _maybe_evict_tool_result("send_feishu_message", "tc2", big)
+    assert preserved.startswith(big)
+    assert "tool_result_persistence_failed" in preserved
+    assert '"retryable": true' in preserved

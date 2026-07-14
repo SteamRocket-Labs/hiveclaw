@@ -37,7 +37,7 @@ def test_load_skill_reads_nested_scoped_skill_by_name_and_explicit_path(tmp_path
     assert "# Python\nUse typed boundaries." in explicit
 
 
-def test_load_skill_sanitizes_managed_channel_env_guidance(tmp_path):
+def test_load_skill_preserves_managed_channel_guidance_for_model_judgment(tmp_path):
     from app.services.agent_tools import _load_skill
 
     workspace = tmp_path / "agent"
@@ -58,14 +58,12 @@ def test_load_skill_sanitizes_managed_channel_env_guidance(tmp_path):
 
     content = _load_skill(workspace, "feishu calendar event")
 
-    assert "Managed capability credential boundary" in content
-    assert "channel config" in content
-    assert "FEISHU_APP_ID" not in content
-    assert "FEISHU_APP_SECRET" not in content
-    assert "env | grep" not in content
+    assert "FEISHU_APP_ID" in content
+    assert "FEISHU_APP_SECRET" in content
+    assert "env | grep" in content
 
 
-def test_read_file_sanitizes_nested_scoped_skill_instruction_file(tmp_path):
+def test_read_file_preserves_nested_scoped_skill_instruction_file(tmp_path):
     from app.services.agent_tool_domains.workspace import _read_file
 
     workspace = tmp_path / "agent"
@@ -78,9 +76,8 @@ def test_read_file_sanitizes_nested_scoped_skill_instruction_file(tmp_path):
 
     content = _read_file(workspace, "projects/api/skills/slack/SKILL.md")
 
-    assert "Managed capability credential boundary" in content
-    assert "SLACK_BOT_TOKEN" not in content
-    assert "printenv" not in content
+    assert "SLACK_BOT_TOKEN" in content
+    assert "printenv" in content
 
 
 def test_load_skill_explicit_path_preserves_full_instruction_body(tmp_path):
@@ -99,7 +96,7 @@ def test_load_skill_explicit_path_preserves_full_instruction_body(tmp_path):
     assert "[truncated" not in content
 
 
-def test_read_file_sanitizes_skill_managed_channel_env_guidance(tmp_path):
+def test_read_file_preserves_skill_managed_channel_env_guidance(tmp_path):
     from app.services.agent_tool_domains.workspace import _read_file
 
     workspace = tmp_path / "agent"
@@ -112,9 +109,8 @@ def test_read_file_sanitizes_skill_managed_channel_env_guidance(tmp_path):
 
     content = _read_file(workspace, "skills/slack/SKILL.md")
 
-    assert "Managed capability credential boundary" in content
-    assert "SLACK_BOT_TOKEN" not in content
-    assert "printenv" not in content
+    assert "SLACK_BOT_TOKEN" in content
+    assert "printenv" in content
 
 
 def test_load_skills_index_instructs_load_skill(monkeypatch, tmp_path):
@@ -178,6 +174,38 @@ def test_save_skill_submits_candidate_package_without_active_skill(tmp_path):
     assert "not_found" in _load_skill(workspace, "deployment review")
     review_log = (workspace / "evolution" / "skill_review.md").read_text(encoding="utf-8")
     assert "Deployment Review" in review_log
+
+
+def test_save_skill_similarity_is_observation_not_candidate_rejection(tmp_path):
+    from app.services.agent_tool_domains.workspace import _submit_skill_activation_candidate
+
+    workspace = tmp_path / "agent"
+    existing_dir = workspace / "skills" / "deployment-review"
+    existing_dir.mkdir(parents=True)
+    (existing_dir / "SKILL.md").write_text(
+        "---\n"
+        'name: "Deployment Review"\n'
+        'description: "Review deployment diffs and verify rollback paths."\n'
+        "---\n"
+        "# Deployment Review\n\nCheck deployment evidence.\n",
+        encoding="utf-8",
+    )
+
+    result = _submit_skill_activation_candidate(
+        workspace,
+        agent_id=None,
+        name="Deployment Diff Review",
+        description="Review deployment diffs and verify rollback paths.",
+        instructions="Compare deployment evidence and rollback readiness.",
+    )
+
+    assert "submitted for review" in result
+    manifests = list((workspace / "evolution" / "skill_candidates").glob("*/manifest.json"))
+    assert len(manifests) == 1
+    manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
+    observations = manifest["metadata"]["semantic_observations"]
+    assert observations[0]["kind"] == "similar_existing_skill"
+    assert observations[0]["skill_name"] == "Deployment Review"
 
 
 def test_save_skill_requests_patch_package_without_overwriting_active_skill(tmp_path):

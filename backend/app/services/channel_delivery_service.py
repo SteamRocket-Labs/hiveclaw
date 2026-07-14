@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.channel_config import ChannelConfig
 from app.services.activity_logger import log_activity
 from app.services.outbound_privacy import redact_outbound
+from app.services.privacy_layer import SensitivityLevel
 from app.services.principal_context import PrincipalStack
 
 channel_delivery_target: ContextVar[dict[str, Any] | None] = ContextVar("channel_delivery_target", default=None)
@@ -288,13 +289,14 @@ class ChannelDeliveryService:
             "channel": result.channel,
             "delivery_mode": delivery_mode,
             "target_type": (reply_target or {}).get("channel"),
+            "message": result.message,
             "failure_reason": None if result.ok else result.message,
             "reply_target": reply_target,
             **result.detail,
         }
         if extra_detail:
             detail.update(extra_detail)
-        await log_activity(agent_id, action_type, result.message[:200], detail=detail)
+        await log_activity(agent_id, action_type, result.message, detail=detail)
 
     @staticmethod
     def _success(channel: str, message: str, **detail: Any) -> DeliveryResult:
@@ -329,7 +331,7 @@ class ChannelDeliveryService:
         delivery_error: Exception,
     ) -> DeliveryResult:
         from app.services.file_download_tokens import build_channel_file_download_url
-        from app.services.wechat_ilink_client import ILinkClient, TEXT_MESSAGE_MAX_LEN
+        from app.services.wechat_ilink_client import ILinkClient
         from app.services.wechat_personal_service import get_channel_credentials, get_context_token
 
         creds = get_channel_credentials(config) or {}
@@ -365,7 +367,7 @@ class ChannelDeliveryService:
             bot_token=bot_token,
             to_user_id=to_user_id,
             context_token=context_token,
-            text="\n".join(parts)[:TEXT_MESSAGE_MAX_LEN],
+            text="\n".join(parts),
         )
         return ChannelDeliveryService._success(
             "wechat_personal",
@@ -385,6 +387,7 @@ class ChannelDeliveryService:
         delivery_mode: str = "live",
         extra_detail: dict[str, Any] | None = None,
         principal_stack: PrincipalStack | None = None,
+        content_sensitivity: SensitivityLevel | str | None = None,
     ) -> DeliveryResult:
         target = ChannelDeliveryService.normalize_reply_target(reply_target)
         if not target:
@@ -398,7 +401,12 @@ class ChannelDeliveryService:
 
         channel = target["channel"]
 
-        redact_decision = redact_outbound(text, channel=channel, principal_stack=principal_stack)
+        redact_decision = redact_outbound(
+            text,
+            channel=channel,
+            principal_stack=principal_stack,
+            declared_sensitivity=content_sensitivity,
+        )
         redact_detail = {
             "outbound_sensitivity": redact_decision.sensitivity.value,
             "outbound_redact_reason": redact_decision.reason,

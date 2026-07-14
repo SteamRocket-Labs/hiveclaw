@@ -121,7 +121,7 @@ def _mark_task_completed(task: RuntimeTask, draft: HrCreationDraft) -> str:
 def _mark_task_failed(task: RuntimeTask, draft: HrCreationDraft, *, reason: str) -> str:
     now = _utcnow()
     metadata = dict(task.metadata_json or {})
-    summary = (draft.failure_message or reason or "HR provisioning did not complete.")[:20_000]
+    summary = draft.failure_message or reason or "HR provisioning did not complete."
     task.status = "failed"
     task.completed_at = now
     task.result_summary = summary
@@ -153,7 +153,7 @@ def _schedule_for_draft_claim(task: RuntimeTask, draft: HrCreationDraft, *, reas
     metadata.update(
         {
             "phase": "waiting_draft_claim_expiry",
-            "wait_reason": reason[:2_000],
+            "wait_reason": reason,
             "automatic_retry_allowed": True,
             "side_effect_risk": "journaled_or_in_progress",
         }
@@ -338,7 +338,7 @@ async def _converge_hr_provisioning(
         now = _utcnow()
         task.status = "needs_reconciliation"
         task.completed_at = now
-        task.result_summary = (runner_error or runner_result or f"Unexpected HR draft state: {draft.status}")[:20_000]
+        task.result_summary = runner_error or runner_result or f"Unexpected HR draft state: {draft.status}"
         _clear_runtime_claim(task)
         task.metadata_json = {
             **dict(task.metadata_json or {}),

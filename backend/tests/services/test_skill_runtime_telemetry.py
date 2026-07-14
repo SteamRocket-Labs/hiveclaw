@@ -90,6 +90,32 @@ def test_record_skill_runtime_usage_for_invocation_maps_outcome_failure(monkeypa
     assert calls[0][1]["blocker"] == "Could not send the email."
 
 
+def test_terminal_completion_is_not_rewritten_into_semantic_success(monkeypatch, tmp_path):
+    """A runtime state is mechanical evidence, not a Skill-quality verdict."""
+    from app.services import skill_runtime_telemetry
+
+    agent_id = uuid4()
+    calls = []
+    monkeypatch.setattr(skill_runtime_telemetry, "get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+    monkeypatch.setattr(
+        skill_runtime_telemetry,
+        "record_skill_runtime_usage",
+        lambda workspace, **kwargs: calls.append((workspace, kwargs)) or {"decision": "ignored"},
+    )
+
+    skill_runtime_telemetry.record_skill_runtime_usage_for_invocation(
+        agent_id=agent_id,
+        session_context=SessionContext(session_id="session-1", source="web_chat"),
+        tool_events=[{"name": "load_skill", "args": {"name": "Research"}, "status": "done"}],
+        terminal_status="completed",
+        assistant_text="I completed the turn, but made no claim about whether this Skill worked well.",
+        note="Turn completed.",
+    )
+
+    assert calls[0][1]["status"] == "unknown"
+    assert calls[0][1]["blocker"] is None
+
+
 def test_record_skill_runtime_usage_for_invocation_ignores_turn_without_loaded_skill(monkeypatch, tmp_path):
     from app.services import skill_runtime_telemetry
 

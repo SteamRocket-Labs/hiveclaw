@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import re
 import uuid
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import asdict, dataclass, field
@@ -22,6 +23,11 @@ from app.services.llm_client import LLMMessage
 CC_AUTOCOMPACT_BUFFER_TOKENS = 13_000
 TOOL_RESULT_COMPACTED_MARKER = "[Tool result compacted before next model request:"
 TOOL_RESULT_PREVIEW_CHARS = 240
+_FULL_OUTPUT_ARTIFACT_RE = re.compile(
+    r"\[Full output saved to (?P<path>workspace/tool_results/[^\s\]]+) — "
+    r"(?P<chars>\d+) chars; sha256=(?P<sha256>[0-9a-f]{64}); "
+    r"char_range=(?P<start>\d+)-(?P<end>\d+);"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,8 +155,34 @@ def _assistant_tool_metadata_by_call_id(messages: Iterable[LLMMessage]) -> dict[
     return metadata
 
 
-def _compact_tool_result_content(original: str, *, tool_call_id: str, reason: str) -> str:
-    return f"{TOOL_RESULT_COMPACTED_MARKER} {reason}; {tool_call_id}; {len(original)}]"
+def _recoverable_tool_result_pointer(original: str) -> dict[str, str] | None:
+    match = _FULL_OUTPUT_ARTIFACT_RE.search(str(original or ""))
+    if match is None:
+        return None
+    if match.group("start") != "0" or match.group("chars") != match.group("end"):
+        return None
+    return {
+        "kind": "workspace_artifact",
+        "path": match.group("path"),
+        "sha256": match.group("sha256"),
+        "char_range": f"0-{match.group('end')}",
+    }
+
+
+def _compact_tool_result_content(
+    original: str,
+    *,
+    tool_call_id: str,
+    reason: str,
+) -> str | None:
+    pointer = _recoverable_tool_result_pointer(original)
+    if pointer is None:
+        return None
+    return (
+        f"{TOOL_RESULT_COMPACTED_MARKER} {reason}; tool_call_id={tool_call_id}; "
+        f"artifact_ref={pointer['path']}; sha256={pointer['sha256']}; "
+        f"char_range={pointer['char_range']}; use read_file to recover exact evidence]"
+    )
 
 
 def _trimmed_context_effect(
@@ -161,7 +193,6 @@ def _trimmed_context_effect(
     original_content: str,
     compacted_content: str,
     reason: str,
-    message_index: int,
 ) -> dict[str, Any]:
     from app.runtime.tool_result_ledger import build_tool_result_ledger_entry
 
@@ -183,11 +214,7 @@ def _trimmed_context_effect(
         "source_refs": list(ledger_entry.get("source_refs") or []),
         "preview": original_content[:TOOL_RESULT_PREVIEW_CHARS],
         "preview_truncated": len(original_content) > TOOL_RESULT_PREVIEW_CHARS,
-        "reload_pointer": {
-            "kind": "conversation_tool_result",
-            "message_index": message_index,
-            "tool_call_id": tool_call_id,
-        },
+        "reload_pointer": _recoverable_tool_result_pointer(original_content),
     }
 
 
@@ -254,9 +281,10 @@ def apply_tool_result_budget(
 ) -> ToolResultBudgetPass:
     """Apply CC-style request-preflight tool-result budget.
 
-    This pass is deterministic and happens before semantic compaction.  It
-    compacts oversized non-exempt tool results into small placeholders so the
-    next model request is not dominated by raw stdout/web payloads.
+    This pass is deterministic and happens before semantic compaction. It may
+    page an oversized result only when the inline content contains a verified,
+    complete workspace artifact pointer. Unpersisted semantic evidence remains
+    visible and is left to the normal model-authored compaction/capacity path.
     """
 
     exempt = exempt_tool_names or set()
@@ -281,6 +309,8 @@ def apply_tool_result_budget(
                 tool_call_id=tool_call_id,
                 reason="inline_char_limit",
             )
+            if compacted is None:
+                continue
             msg.content = compacted
             trimmed_ids.append(tool_call_id)
             trimmed_effects.append(
@@ -293,7 +323,6 @@ def apply_tool_result_budget(
                     original_content=content,
                     compacted_content=compacted,
                     reason="inline_char_limit",
-                    message_index=index,
                 )
             )
 
@@ -317,6 +346,8 @@ def apply_tool_result_budget(
                 tool_call_id=tool_call_id,
                 reason="round_tool_result_budget",
             )
+            if compacted is None:
+                continue
             msg.content = compacted
             trimmed_ids.append(tool_call_id)
             trimmed_effects.append(
@@ -329,7 +360,6 @@ def apply_tool_result_budget(
                     original_content=content,
                     compacted_content=compacted,
                     reason="round_tool_result_budget",
-                    message_index=index,
                 )
             )
             after_chars = sum(len(m.content or "") for m in copied if m.role == "tool")

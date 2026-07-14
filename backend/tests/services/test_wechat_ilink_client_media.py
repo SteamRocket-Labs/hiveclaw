@@ -40,6 +40,41 @@ def test_auth_headers_match_ilink_uin_shape() -> None:
 
 
 @pytest.mark.asyncio
+async def test_send_message_chunks_transport_limit_without_losing_decisive_tail(monkeypatch) -> None:
+    import app.services.wechat_ilink_client as ilink
+
+    posted_texts: list[str] = []
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, _url, *, headers=None, json=None):
+            posted_texts.append(json["msg"]["item_list"][0]["text_item"]["text"])
+            return _Response({"ret": 0})
+
+    monkeypatch.setattr(ilink.httpx, "AsyncClient", lambda *args, **kwargs: _Client())
+
+    decisive_tail = "DECISIVE-WECHAT-TAIL"
+    full_text = "a" * ilink.TEXT_MESSAGE_MAX_LEN + decisive_tail
+    result = await ilink.ILinkClient("https://ilink.example").send_message(
+        bot_token="bot-token",
+        to_user_id="wxid_user",
+        context_token="ctx",
+        text=full_text,
+    )
+
+    assert len(posted_texts) == 2
+    assert all(len(chunk) <= ilink.TEXT_MESSAGE_MAX_LEN for chunk in posted_texts)
+    assert "".join(posted_texts) == full_text
+    assert posted_texts[-1].endswith(decisive_tail)
+    assert result["chunk_count"] == 2
+
+
+@pytest.mark.asyncio
 async def test_send_media_message_uses_base64_encoded_hex_aes_key(monkeypatch) -> None:
     import app.services.wechat_ilink_client as ilink
 

@@ -118,3 +118,15 @@ def test_read_file_text_returns_str(tmp_path):
     result = _read_file(tmp_path, "note.txt")
     assert isinstance(result, str)
     assert "hello world" in result
+
+
+def test_read_file_preserves_long_tail_for_kernel_managed_eviction(tmp_path):
+    from app.services.agent_tool_domains.workspace import _read_file
+
+    tail = "DECISIVE_FILE_TAIL_MUST_REACH_KERNEL"
+    (tmp_path / "long.txt").write_text(("evidence\n" * 4_000) + tail, encoding="utf-8")
+
+    result = _read_file(tmp_path, "long.txt")
+
+    assert tail in result
+    assert "...[truncated" not in result

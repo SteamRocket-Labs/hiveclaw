@@ -574,7 +574,7 @@ class PlanModeService:
         plan_id: UUID,
         confirming_user_id: UUID | None,
         plan_version: int,
-        plan_hash: str,
+        plan_hash: str | None = None,
         reason: str | None = None,
         authorization_source: str | None = None,
     ) -> AgentPlanRequest:
@@ -656,7 +656,7 @@ class PlanModeService:
         plan_id: UUID,
         confirming_user_id: UUID | None,
         plan_version: int,
-        plan_hash: str,
+        plan_hash: str | None = None,
         reason: str | None = None,
         authorization_source: str | None = None,
     ) -> AgentPlanRequest:

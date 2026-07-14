@@ -14,15 +14,15 @@ def test_loop_guard_detects_identical_tool_args() -> None:
     assert decision.trace_event["tool"] == "list_files"
 
 
-# ── A4: warn-before-abort (docs/agent-lifecycle-cc-alignment.md 主题 A) ──
-# CC philosophy (doc §12.2): soft constraints first — give the model a
-# diagnostic + self-correction chance before the hard stop.
+# Heuristic patterns are model-visible diagnostics, never mechanical terminal
+# verdicts.  A terminal decision requires explicit, tool-supplied proof that a
+# side-effect-free retry budget is exhausted without state progress.
 
 
-def test_loop_guard_warns_before_abort_on_identical_args() -> None:
+def test_loop_guard_warns_once_but_never_aborts_on_identical_args() -> None:
     from app.kernel.loop_guard import LoopGuard
 
-    guard = LoopGuard(identical_tool_threshold=3)  # warn at 3, abort at ceil(3*1.5)=5
+    guard = LoopGuard(identical_tool_threshold=3)
 
     assert guard.observe_tool_call("list_files", {"path": "."}) is None
     assert guard.observe_tool_call("list_files", {"path": "."}) is None
@@ -32,13 +32,8 @@ def test_loop_guard_warns_before_abort_on_identical_args() -> None:
     assert warn.severity == "warn"
     assert warn.trace_event["event"] == "loop_guard_warning"
 
-    # Between warn and abort thresholds: no duplicate warning for the same pattern
-    assert guard.observe_tool_call("list_files", {"path": "."}) is None
-
-    abort = guard.observe_tool_call("list_files", {"path": "."})
-    assert abort is not None
-    assert abort.severity == "abort"
-    assert abort.trace_event["event"] == "loop_guard_triggered"
+    for _ in range(20):
+        assert guard.observe_tool_call("list_files", {"path": "."}) is None
 
 
 def test_loop_guard_warn_message_teaches_self_correction() -> None:
@@ -58,7 +53,7 @@ def test_loop_guard_warn_message_teaches_self_correction() -> None:
     assert "do not mention this reminder to the user" in lowered
 
 
-def test_loop_guard_abort_decisions_keep_severity_abort() -> None:
+def test_loop_guard_failure_heuristic_does_not_abort_without_progress_proof() -> None:
     from app.kernel.loop_guard import LoopGuard
 
     guard = LoopGuard(repeated_failure_threshold=2)  # warn 2, abort ceil(3)=3
@@ -68,11 +63,11 @@ def test_loop_guard_abort_decisions_keep_severity_abort() -> None:
     warn = guard.observe_tool_result("web_search", args, err)
     assert warn is not None and warn.severity == "warn"
 
-    abort = guard.observe_tool_result("web_search", args, err)
-    assert abort is not None and abort.severity == "abort"
+    for _ in range(10):
+        assert guard.observe_tool_result("web_search", args, err) is None
 
 
-def test_loop_guard_total_tool_budget_abort_has_runtime_outcome() -> None:
+def test_loop_guard_total_tool_heuristic_never_substitutes_for_explicit_round_budget() -> None:
     from app.kernel.loop_guard import LoopGuard
 
     guard = LoopGuard(total_tool_threshold=1)
@@ -80,31 +75,87 @@ def test_loop_guard_total_tool_budget_abort_has_runtime_outcome() -> None:
     guard.observe_tool_call("list_files", {"path": "a"})
     warn = guard.observe_tool_call("list_files", {"path": "b"})
     assert warn is not None and warn.severity == "warn"
-    abort = guard.observe_tool_call("list_files", {"path": "c"})
-
-    assert abort is not None
-    assert abort.outcome.status == "budget_limited"
-    assert abort.outcome.terminal_reason == "tool_budget"
-    assert abort.outcome.next_action == "ask_user_to_continue"
-    assert abort.trace_event["runtime_outcome"]["status"] == "budget_limited"
+    for index in range(20):
+        assert guard.observe_tool_call("list_files", {"path": f"after-{index}"}) is None
 
 
-def test_loop_guard_non_progress_abort_has_blocked_runtime_outcome() -> None:
+def test_loop_guard_only_aborts_on_provable_side_effect_free_retry_exhaustion() -> None:
     from app.kernel.loop_guard import LoopGuard
 
     guard = LoopGuard(repeated_failure_threshold=2)
     args = {"q": "deploy"}
     err = "[Tool execution error] timeout"
 
-    guard.observe_tool_result("web_search", args, err)
-    guard.observe_tool_result("web_search", args, err)
-    abort = guard.observe_tool_result("web_search", args, err)
+    guard.observe_tool_result(
+        "web_search",
+        args,
+        err,
+        side_effect_free=True,
+        retry_exhausted=True,
+        progress_token="provider-state-v1",
+    )
+    guard.observe_tool_result(
+        "web_search",
+        args,
+        err,
+        side_effect_free=True,
+        retry_exhausted=True,
+        progress_token="provider-state-v1",
+    )
+    abort = guard.observe_tool_result(
+        "web_search",
+        args,
+        err,
+        side_effect_free=True,
+        retry_exhausted=True,
+        progress_token="provider-state-v1",
+    )
 
     assert abort is not None
     assert abort.outcome.status == "blocked"
     assert abort.outcome.terminal_reason == "loop_guard"
-    assert abort.outcome.next_action == "stop_and_report_non_progress"
+    assert abort.outcome.next_action == "model_summarize_and_stop"
     assert abort.trace_event["runtime_outcome"]["terminal_reason"] == "loop_guard"
+    assert abort.trace_event["proof"]["progress_token"] == "provider-state-v1"
+
+
+def test_loop_guard_compares_complete_failure_evidence_before_declaring_identical() -> None:
+    from app.kernel.loop_guard import LoopGuard
+
+    guard = LoopGuard(repeated_failure_threshold=2)
+    shared_prefix = "[Tool execution error] " + ("same-prefix-" * 100)
+    first = shared_prefix + "FIRST_DECISIVE_TAIL"
+    second = shared_prefix + "SECOND_DECISIVE_TAIL"
+
+    decisions = [
+        guard.observe_tool_result(
+            "web_search",
+            {"q": "full-evidence"},
+            result,
+            side_effect_free=True,
+            retry_exhausted=True,
+            progress_token="provider-state-v1",
+        )
+        for result in (first, second, first)
+    ]
+
+    assert all(decision is None or decision.severity != "abort" for decision in decisions)
+
+
+def test_loop_guard_never_hard_stops_a_side_effecting_tool() -> None:
+    from app.kernel.loop_guard import LoopGuard
+
+    guard = LoopGuard(repeated_failure_threshold=2)
+    for _ in range(8):
+        decision = guard.observe_tool_result(
+            "send_email",
+            {"to": "owner@example.com"},
+            "[Tool execution error] timeout",
+            side_effect_free=False,
+            retry_exhausted=True,
+            progress_token="same",
+        )
+        assert decision is None or decision.severity == "warn"
 
 
 def test_loop_guard_detects_repeated_tool_failures() -> None:

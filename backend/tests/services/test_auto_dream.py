@@ -24,8 +24,8 @@ from app.services.auto_dream import (
     _heartbeat_ticks_since_dream,
     _parse_dream_decision,
     _read_preservation_flags,
+    _write_preservation_flags,
     _sessions_since_dream,
-    _simple_dedup,
     record_session_end,
     record_heartbeat_tick,
     should_dream,
@@ -45,6 +45,118 @@ def test_soul_memory_gate_prompt_has_metric_specific_score_standards() -> None:
     assert "identity_fit: 0=ordinary task detail" in _SOUL_MEMORY_GATE_SYSTEM_PROMPT
     assert "conflict_safety: 0=conflicts with frozen charter" in _SOUL_MEMORY_GATE_SYSTEM_PROMPT
     assert "prompt_blast_radius: 0=broad always-on behavior change" in _SOUL_MEMORY_GATE_SYSTEM_PROMPT
+
+
+def test_soul_platform_gate_honors_independent_model_promotion_without_score_cutoff() -> None:
+    from app.services.auto_dream import _soul_review_passed
+
+    review = {
+        "reviewer": "soul_memory_gate_agent",
+        "source": "independent_llm",
+        "recommendation": "promote",
+        "evidence_strength": {"score": 0, "rationale": "model-calibrated"},
+        "stability": {"score": 1, "rationale": "model-calibrated"},
+        "identity_fit": {"score": 2, "rationale": "model-calibrated"},
+        "conflict_safety": {"score": 1, "rationale": "model-calibrated"},
+        "prompt_blast_radius": {"score": 0, "rationale": "model-calibrated"},
+    }
+
+    assert _soul_review_passed(review) == (True, "Soul Memory Gate review passed")
+
+
+@pytest.mark.asyncio
+async def test_independent_soul_review_uses_covered_model_passes_for_oversized_input(tmp_path, monkeypatch) -> None:
+    import app.services.llm_client as llm_client_mod
+    from app.services.auto_dream import _review_soul_candidate_with_llm
+
+    calls: list[str] = []
+    profile_tail = "DECISIVE_SOUL_REVIEW_PROFILE_TAIL"
+    candidate_tail = "DECISIVE_SOUL_REVIEW_CANDIDATE_TAIL"
+
+    class FakeClient:
+        async def stream(self, *, messages, max_tokens, temperature):
+            del max_tokens, temperature
+            prompt = messages[-1].content
+            calls.append(prompt)
+            if "<coverage_chunk" in prompt:
+                return SimpleNamespace(content="coverage-notes:" + prompt[-300:])
+            if "<coverage_note" in prompt:
+                return SimpleNamespace(content="reduced-coverage-notes")
+            if len(prompt) > 30_000:
+                raise RuntimeError("provider context window exceeded")
+            return SimpleNamespace(
+                content=json.dumps(
+                    {
+                        "candidate_id": "candidate-1",
+                        "recommendation": "hold",
+                        "evidence_strength": {"score": 2, "rationale": "reviewed"},
+                        "stability": {"score": 2, "rationale": "reviewed"},
+                        "identity_fit": {"score": 2, "rationale": "reviewed"},
+                        "conflict_safety": {"score": 3, "rationale": "reviewed"},
+                        "prompt_blast_radius": {"score": 3, "rationale": "reviewed"},
+                    }
+                )
+            )
+
+        async def close(self):
+            return None
+
+    monkeypatch.setattr(llm_client_mod, "create_llm_client_from_config", lambda _config: FakeClient())
+    review = await _review_soul_candidate_with_llm(
+        metered_model_config={"provider": "openai", "model": "gpt-4.1", "max_input_tokens": 10_000},
+        candidate_id="candidate-1",
+        candidate={"soul_md_next": ("candidate " * 4_000) + candidate_tail},
+        current_soul=("soul " * 4_000) + "SOUL-TAIL",
+        frozen_charter="frozen charter",
+        t3_files={"memory/profiles/owner.md": ("profile " * 4_000) + profile_tail},
+        coverage_path=tmp_path / "soul-review-coverage.json",
+    )
+
+    mapped = "\n".join(call for call in calls if "<coverage_chunk" in call)
+    assert review is not None
+    assert profile_tail in mapped
+    assert candidate_tail in mapped
+    coverage = json.loads((tmp_path / "soul-review-coverage.json").read_text(encoding="utf-8"))
+    assert coverage["complete"] is True
+
+
+@pytest.mark.asyncio
+async def test_frozen_charter_judge_uses_covered_model_passes_for_oversized_input(tmp_path, monkeypatch) -> None:
+    import app.services.llm_client as llm_client_mod
+    from app.services.auto_dream import _judge_frozen_mission_contradiction
+
+    calls: list[str] = []
+    candidate_tail = "DECISIVE_FROZEN_JUDGE_TAIL"
+
+    class FakeClient:
+        async def stream(self, *, messages, max_tokens, temperature):
+            del max_tokens, temperature
+            prompt = messages[-1].content
+            calls.append(prompt)
+            if "<coverage_chunk" in prompt:
+                return SimpleNamespace(content="coverage-notes:" + prompt[-300:])
+            if "<coverage_note" in prompt:
+                return SimpleNamespace(content="reduced-coverage-notes")
+            if len(prompt) > 30_000:
+                raise RuntimeError("provider context window exceeded")
+            return SimpleNamespace(content='{"contradicts": false, "reason": "compatible"}')
+
+        async def close(self):
+            return None
+
+    monkeypatch.setattr(llm_client_mod, "create_llm_client_from_config", lambda _config: FakeClient())
+    verdict = await _judge_frozen_mission_contradiction(
+        {"provider": "openai", "model": "gpt-4.1", "max_input_tokens": 10_000},
+        "frozen charter",
+        ("candidate evidence " * 4_000) + candidate_tail,
+        coverage_path=tmp_path / "frozen-judge-coverage.json",
+    )
+
+    assert verdict == {"contradicts": False, "reason": "compatible"}
+    mapped = "\n".join(call for call in calls if "<coverage_chunk" in call)
+    assert candidate_tail in mapped
+    coverage = json.loads((tmp_path / "frozen-judge-coverage.json").read_text(encoding="utf-8"))
+    assert coverage["complete"] is True
 
 
 class TestDreamGates:
@@ -214,47 +326,6 @@ class TestDreamGates:
         auto_dream._heartbeat_ticks_since_dream.clear()
 
         assert should_dream(agent_id) is True
-
-
-class TestSimpleDedup:
-    """Fallback deduplication logic."""
-
-    def test_removes_exact_duplicates(self) -> None:
-        facts = [
-            {"content": "fact A"},
-            {"content": "fact A"},
-            {"content": "fact B"},
-        ]
-        result = _simple_dedup(facts)
-        assert len(result) == 2
-
-    def test_case_insensitive(self) -> None:
-        facts = [
-            {"content": "User prefers Python"},
-            {"content": "user prefers python"},
-        ]
-        result = _simple_dedup(facts)
-        assert len(result) == 1
-
-    def test_preserves_order(self) -> None:
-        facts = [
-            {"content": "first"},
-            {"content": "second"},
-            {"content": "first"},
-        ]
-        result = _simple_dedup(facts)
-        assert result[0]["content"] == "first"
-        assert result[1]["content"] == "second"
-
-    def test_empty_content_skipped(self) -> None:
-        facts = [
-            {"content": ""},
-            {"content": "valid"},
-            {"content": "  "},
-        ]
-        result = _simple_dedup(facts)
-        assert len(result) == 1
-        assert result[0]["content"] == "valid"
 
 
 # ── PR-10: LLM consolidation + decision application ──
@@ -619,6 +690,24 @@ class TestApplyDreamDecisions:
         assert report2["preservation_flags_added"] == 0  # already present
         assert len(flags) == 1
 
+    def test_preservation_sidecar_never_discards_older_foundational_flags(self, tmp_path: Path) -> None:
+        agent_id = self._scaffold(tmp_path)
+        flags = [
+            {
+                "file": "t3/worker.md",
+                "content": f"foundational-principle-{index}",
+                "reason": "owner-governed identity evidence",
+            }
+            for index in range(75)
+        ]
+
+        with patch("app.services.auto_dream.get_settings") as mock_settings:
+            mock_settings.return_value.AGENT_DATA_DIR = str(tmp_path)
+            _write_preservation_flags(agent_id, flags)
+            persisted = _read_preservation_flags(agent_id)
+
+        assert persisted == flags
+
 
 class TestDreamFrozenMissionGate:
     """D6 (docs/agent-memory-purity-spec.md): the dream contradiction gate must
@@ -743,10 +832,10 @@ class TestDreamFrozenMissionGate:
         assert report["soul_contradicted_frozen"] == 0
         assert report["soul_candidate_committed"] == 1
 
-    def test_mechanical_fallback_blocks_negated_mission_when_judge_unavailable(self, tmp_path: Path) -> None:
-        # No judge injected → mechanical overlap backstop (observable fallback,
-        # never the primary path). A candidate that negates a frozen mission
-        # token ("disable ... three-times ... scan") must still be caught.
+    def test_mechanical_overlap_only_holds_for_semantic_review_when_judge_unavailable(self, tmp_path: Path) -> None:
+        # No judge injected: mechanical overlap is an observation only. The
+        # candidate is preserved in the held package for retry, never classified
+        # as a semantic contradiction by the platform.
         from app.services.auto_dream import _apply_dream_decisions_unlocked
 
         agent_id = self._scaffold(tmp_path)
@@ -758,7 +847,13 @@ class TestDreamFrozenMissionGate:
         soul = (tmp_path / str(agent_id) / "soul.md").read_text(encoding="utf-8")
         assert "once weekly on Friday" not in soul
         assert report["soul_added"] == 0
-        assert report["soul_contradicted_frozen"] == 1
+        assert report["soul_candidate_held"] == 1
+        assert report["soul_contradicted_frozen"] == 0
+        review_files = list((tmp_path / str(agent_id) / "memory/.staging/soul_candidates").glob("*/review.md"))
+        assert len(review_files) == 1
+        review = review_files[0].read_text(encoding="utf-8")
+        assert "semantic_review_unavailable" in review
+        assert "mechanical_overlap_signal" in review
 
     @pytest.mark.asyncio
     async def test_repeated_feedback_is_not_mechanically_promoted_to_soul(self, tmp_path: Path) -> None:
@@ -802,7 +897,8 @@ class TestDreamFrozenMissionGate:
         decision = self._candidate_decision("Switch the cadence to monthly reviews only.")
         judged: list[tuple[str, str]] = []
 
-        async def fake_judge(model_config, frozen_charter, content):
+        async def fake_judge(model_config, frozen_charter, content, *, coverage_path=None):
+            assert coverage_path is not None
             judged.append((frozen_charter, content))
             return {"contradicts": True, "reason": "monthly cadence conflicts with three-times-daily mission"}
 
@@ -1173,6 +1269,38 @@ class TestDreamUserPromptBuilder:
         assert "heartbeat_reflection" in out
         assert "chat_message:msg-1" in out
         assert "lineage.md" not in out
+
+    def test_dream_prompt_does_not_cap_retirement_or_candidate_evidence(self) -> None:
+        retirement = [
+            {"entry_id": f"retire-{index}", "heat": index, "filename": "owner.md", "content": f"entry-{index}"}
+            for index in range(15)
+        ]
+        candidates = [
+            {
+                "candidate_id": f"candidate-{index}",
+                "source": "learning_brain",
+                "container": "skill_candidate",
+                "lesson": ("lesson " * 100) + f"LESSON-TAIL-{index}",
+                "source_refs": [f"t0://source/{index}/{ref}" for ref in range(8)],
+                "decision": "held",
+                "reason": ("reason " * 60) + f"REASON-TAIL-{index}",
+            }
+            for index in range(16)
+        ]
+
+        out = _build_dream_consolidation_user_prompt(
+            "Alice",
+            "# Soul\n",
+            {"memory/profiles/owner.md": "owner evidence"},
+            retirement_candidates=retirement,
+            candidate_evidence=candidates,
+        )
+
+        assert "retire-14" in out
+        assert "candidate-15" in out
+        assert "LESSON-TAIL-15" in out
+        assert "REASON-TAIL-15" in out
+        assert "t0://source/15/7" in out
 
     def test_builder_full_fidelity_under_budget(self) -> None:
         """蒸馏器核查 (docs/agent-lifecycle-cc-alignment.md §3.6): the dream

@@ -16,18 +16,16 @@ from pathlib import Path
 from typing import Any
 from xml.sax.saxutils import escape
 
-from app.memory.md_store import MEMORY_DEDUP_THRESHOLD, jaccard_similarity
 from app.memory.types import MEMORY_CATEGORIES
 from app.memory.write_gate import prepare_memory_write_with_llm
 from app.services.agent_asset_transaction import AgentAssetTransaction
 
-_MAX_CONTENT_CHARS = 2000
 _SEARCH_PREVIEW_CHARS = 180
 
 
 @dataclass(frozen=True, slots=True)
 class ExplicitMemoryOverlayResult:
-    status: str  # active | duplicate | rejected
+    status: str  # active | duplicate | held | rejected
     category: str
     entry_id: str = ""
     path: str = ""
@@ -66,13 +64,13 @@ async def write_explicit_memory_overlay(
     normalized_category = (category or "general").strip().lower()
     if normalized_category not in MEMORY_CATEGORIES:
         normalized_category = "general"
-    trimmed = (content or "").strip()[:_MAX_CONTENT_CHARS]
-    if not trimmed:
+    normalized_content = (content or "").strip()
+    if not normalized_content:
         return ExplicitMemoryOverlayResult(status="rejected", category=normalized_category, reason="empty content")
 
     refs = _normalize_refs(source_refs)
     decision = await prepare_memory_write_with_llm(
-        trimmed,
+        normalized_content,
         category=normalized_category,
         evidence_refs=refs,
         tenant_id=tenant_id,
@@ -85,6 +83,14 @@ async def write_explicit_memory_overlay(
             reason=decision.reason,
             sensitivity=decision.sensitivity,
         )
+    if decision.held:
+        return ExplicitMemoryOverlayResult(
+            status="held",
+            category=decision.category,
+            reason=decision.reason,
+            sensitivity=decision.sensitivity,
+            content=decision.content,
+        )
 
     root = Path(data_root)
     agent_root = root / str(agent_id)
@@ -94,7 +100,7 @@ async def write_explicit_memory_overlay(
         operation="explicit_memory_overlay_write",
         evidence_refs=refs,
     ) as transaction:
-        duplicate = _find_similar_active_overlay(
+        duplicate = _find_exact_active_overlay_duplicate(
             data_root=root,
             agent_id=agent_id,
             category=decision.category,
@@ -107,7 +113,7 @@ async def write_explicit_memory_overlay(
                 category=decision.category,
                 entry_id=duplicate.entry_id,
                 path=f"memory/explicit/entries/{duplicate.entry_id}.md",
-                reason="similar explicit memory already exists",
+                reason="exact explicit memory already exists",
                 sensitivity=decision.sensitivity,
                 target_hint=duplicate.target_hint,
                 content=duplicate.content,
@@ -248,17 +254,19 @@ def search_explicit_overlay_entries(
     agent_id: uuid.UUID | str,
     query: str,
     *,
-    limit: int = 5,
+    limit: int | None = None,
 ) -> list[dict]:
     needle = (query or "").strip()
     entries = [entry for entry in load_explicit_overlay_entries(data_root, agent_id) if entry.status == "active"]
-    if needle:
-        scored = [
-            (_simple_score(needle, f"{entry.category} {entry.target_hint} {entry.content}"), entry) for entry in entries
-        ]
-        scored = [(score, entry) for score, entry in scored if score > 0]
-        scored.sort(key=lambda item: item[0], reverse=True)
-        entries = [entry for _score, entry in scored]
+    scored = [
+        (
+            _simple_score(needle, f"{entry.category} {entry.target_hint} {entry.content}") if needle else 0.0,
+            entry,
+        )
+        for entry in entries
+    ]
+    scored.sort(key=lambda item: item[0], reverse=True)
+    visible = scored if limit is None else scored[: max(0, limit)]
     return [
         {
             "id": entry.entry_id,
@@ -270,15 +278,16 @@ def search_explicit_overlay_entries(
             "source_type": "explicit_overlay",
             "timestamp": entry.created_at,
             "sensitivity": entry.sensitivity,
-            "metadata": _entry_metadata_with_activation_keys(entry),
+            "retrieval_score": score,
+            "metadata": {**_entry_metadata_with_activation_keys(entry), "retrieval_score": score},
         }
-        for entry in entries[:limit]
+        for score, entry in visible
     ]
 
 
 def build_explicit_overlay_activation_keys(entry: ExplicitMemoryOverlayEntry) -> dict[str, Any]:
     source = f"memory/explicit/entries/{entry.entry_id}.md"
-    concepts = sorted(_term_set(f"{entry.category} {entry.target_hint} {entry.content}"))[:64]
+    concepts = sorted(_term_set(f"{entry.category} {entry.target_hint} {entry.content}"))
     source_refs = list(entry.source_refs) or [source]
     return {
         "schema_version": "explicit_overlay.activation_keys.20260705",
@@ -410,7 +419,7 @@ def _target_hint_for_category(category: str) -> str:
     return "unknown"
 
 
-def _find_similar_active_overlay(
+def _find_exact_active_overlay_duplicate(
     *,
     data_root: Path,
     agent_id: uuid.UUID | str,
@@ -418,19 +427,22 @@ def _find_similar_active_overlay(
     target_hint: str,
     content: str,
 ) -> ExplicitMemoryOverlayEntry | None:
-    """Find an active overlay entry that would create duplicate T3 input noise."""
-    best_score = 0.0
-    best: ExplicitMemoryOverlayEntry | None = None
+    """Deduplicate only exact replay-equivalent writes.
+
+    Similarity is semantic judgment and belongs to the Memory Gate. The
+    platform only normalizes insignificant whitespace before checking whether
+    an active entry is the same write.
+    """
+
+    normalized_content = re.sub(r"\s+", " ", content).strip()
     for entry in load_explicit_overlay_entries(data_root, agent_id):
         if entry.status != "active":
             continue
         if entry.category != category or entry.target_hint != target_hint:
             continue
-        score = jaccard_similarity(content, entry.content)
-        if score >= MEMORY_DEDUP_THRESHOLD and score > best_score:
-            best_score = score
-            best = entry
-    return best
+        if re.sub(r"\s+", " ", entry.content).strip() == normalized_content:
+            return entry
+    return None
 
 
 def _render_entry_md(
@@ -540,24 +552,3 @@ def _escape_table(value: str) -> str:
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
-
-
-# Episodic-observation guard for save_memory (moved from the retired
-# t3_store): routine scan / no-change observations belong to the T0/session
-# ledger, never to explicit long-term memory. A reusable strategy is never a
-# false positive — mechanical checks back off rather than corrupt (L1).
-_EPISODIC_OBSERVATION_VERB = re.compile(r"(scan|poll|monitor|sweep|crawl|扫描|轮询|巡检|监控)", re.IGNORECASE)
-_EPISODIC_NULL_OR_COUNT = re.compile(
-    r"(no\s+change|unchanged|nothing\s+new|no\s+new\b|无变化|无更新|没有变化|没有更新|"
-    r"\d+\s*(?:个|项|条|家|expos?|items?|results?|sites?)\b[^。.\n]{0,16}(?:无|没有|unchanged|no\s+change))",
-    re.IGNORECASE,
-)
-
-
-def looks_episodic_observation(content: str) -> bool:
-    """High-confidence episodic scan log: a routine-observation verb AND a
-    null/count observation. Conservative by design — single signals pass."""
-    text = (content or "").strip()
-    if not text:
-        return False
-    return bool(_EPISODIC_OBSERVATION_VERB.search(text) and _EPISODIC_NULL_OR_COUNT.search(text))

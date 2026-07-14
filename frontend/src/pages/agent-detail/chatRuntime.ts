@@ -1160,6 +1160,40 @@ export function applyTranscriptEvent(
     };
   }
 
+  if (eventType === 'response_repair') {
+    const originalMessageId = String(event.metadata?.original_message_id || event.message_id || '').trim();
+    let replaced = false;
+    const messages = state.messages.map((message) => {
+      if (!originalMessageId || (message.messageId !== originalMessageId && message.id !== originalMessageId)) {
+        return message;
+      }
+      replaced = true;
+      return {
+        ...message,
+        role: 'assistant' as const,
+        content,
+        timestamp,
+        threadItem: threadItem || message.threadItem,
+        ...messageIdentityFromTranscriptEvent(event),
+      };
+    });
+    if (!replaced) {
+      messages.push({
+        role: 'assistant',
+        content,
+        timestamp,
+        threadItem: threadItem || undefined,
+        ...messageIdentityFromTranscriptEvent(event),
+      });
+    }
+    return {
+      messages,
+      seenEventIds,
+      ui: uiForPhase(nextPhase),
+      pendingSessionPermissions,
+    };
+  }
+
   if (eventType === 'assistant_message' || event.role === 'assistant') {
     const messages = applyRuntimeDoneEvent(state.messages, {
       type: 'done',
@@ -1502,6 +1536,10 @@ export function buildRuntimeSummary({
       label: backendModel.label || activeModel?.label || agentPrimaryModelId || 'Unknown model',
       provider: backendModel.provider || activeModel?.provider,
       name: backendModel.name || activeModel?.model,
+      fallback_name: backendModel.fallback_name ?? null,
+      route_reason: backendModel.route_reason ?? null,
+      routing_config_source: backendModel.routing_config_source ?? null,
+      routing_locked: backendModel.routing_locked ?? false,
       supports_vision: backendModel.supports_vision ?? activeModel?.supports_vision,
       context_window_tokens: contextWindowTokens,
     },

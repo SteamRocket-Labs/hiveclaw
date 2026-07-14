@@ -7,6 +7,7 @@ SessionContext runtime tracking fields.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from dataclasses import dataclass, field
@@ -117,22 +118,36 @@ class RecoveryManifest:
         }
 
     def to_restoration_text(self, *, budget_chars: int = 20000) -> str:
-        """Render manifest as structured text for prompt injection."""
-        sections: list[str] = []
-        total = 0
+        """Render recoverable prompt state plus a hash-pinned full-manifest pointer.
 
-        def _add(title: str, items: list[str]) -> None:
-            nonlocal total
-            if not items or total >= budget_chars:
-                return
-            block = f"### {title}\n" + "\n".join(f"- {item}" for item in items)
-            if total + len(block) < budget_chars:
-                sections.append(block)
-                total += len(block)
+        Prompt space is a real resource boundary, but it must never become a
+        semantic deletion authority. Any field that cannot be inlined remains
+        recoverable from the canonical persisted manifest and is named in the
+        pointer metadata.
+        """
+        if self.is_empty():
+            return ""
 
-        def _add_dicts(title: str, items: list[dict[str, Any]]) -> None:
-            rendered = [json.dumps(item, ensure_ascii=False, sort_keys=True) for item in items if item]
-            _add(title, rendered)
+        canonical_payload = json.dumps(
+            self.to_payload(),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        manifest_sha256 = hashlib.sha256(canonical_payload.encode("utf-8")).hexdigest()
+
+        field_blocks: list[tuple[str, str]] = []
+
+        def _block(field_name: str, title: str, items: list[str]) -> None:
+            if items:
+                field_blocks.append((field_name, f"### {title}\n" + "\n".join(f"- {item}" for item in items)))
+
+        def _dict_block(field_name: str, title: str, items: list[dict[str, Any]]) -> None:
+            _block(
+                field_name,
+                title,
+                [json.dumps(item, ensure_ascii=False, sort_keys=True) for item in items if item],
+            )
 
         def _format_file_item(path: str) -> str:
             snapshot = self.file_snapshots.get(path, {})
@@ -143,34 +158,86 @@ class RecoveryManifest:
                 version = " [missing at last snapshot]"
             return f'{path}{version} — reload with read_file("{path}")'
 
-        _add("Recent Reads", [_format_file_item(path) for path in self.recent_reads[-5:]])
-        _add("Recent Writes", [_format_file_item(path) for path in self.recent_writes[-5:]])
-        _add(
-            "Recent Tool Results",
-            [f"{o.get('tool', '?')}: {o.get('summary', '')}" for o in self.recent_tool_outcomes[-5:]],
+        _block("recent_reads", "Recent Reads", [_format_file_item(path) for path in self.recent_reads])
+        _block("recent_writes", "Recent Writes", [_format_file_item(path) for path in self.recent_writes])
+        _block(
+            "current_turn_writes",
+            "Current Turn Writes",
+            [_format_file_item(path) for path in self.current_turn_writes],
         )
-        _add("Active Skills", self.active_skills)
-        _add("Active Runtime Tool Groups", self.active_tool_groups)
-        _add("External References", self.recent_external_refs[-5:])
-        _add("Pending Work", self.pending_items[-5:])
-        _add("Blocked Patterns (DO NOT retry)", self.blocked_patterns[-5:])
-        _add("Discovered Tools", self.discovered_tools)
-        _add_dicts("Pending Tool Frames", self.pending_tool_frames[-5:])
-        _add_dicts("Permission Checkpoints", self.permission_checkpoints[-5:])
-        _add_dicts("Hook Lifecycle Records", self.hook_lifecycle_records[-10:])
-        _add_dicts("Compaction Lifecycle Records", self.compaction_lifecycle_records[-5:])
-        _add_dicts("MCP Assignments", self.mcp_assignments[-10:])
-        _add("Truth Evidence Refs", self.truth_evidence_refs[-20:])
-        _add_dicts("Truth Evidence", self.truth_evidence[-10:])
-        _add_dicts("Pending Skill Handoffs", self.pending_skill_handoffs[-10:])
-        _add_dicts("Executed Skill Handoffs", self.executed_skill_handoffs[-10:])
-        _add_dicts("Continuation Records", self.continuation_records[-10:])
+        _block(
+            "recent_tool_outcomes",
+            "Recent Tool Results",
+            [f"{o.get('tool', '?')}: {o.get('summary', '')}" for o in self.recent_tool_outcomes],
+        )
+        _block("active_skills", "Active Skills", self.active_skills)
+        _block("active_tool_groups", "Active Runtime Tool Groups", self.active_tool_groups)
+        _block("recent_external_refs", "External References", self.recent_external_refs)
+        _block("pending_items", "Pending Work", self.pending_items)
+        _block("blocked_patterns", "Blocked Patterns (DO NOT retry)", self.blocked_patterns)
+        _block("discovered_tools", "Discovered Tools", self.discovered_tools)
+        _dict_block("pending_tool_frames", "Pending Tool Frames", self.pending_tool_frames)
+        _dict_block("permission_checkpoints", "Permission Checkpoints", self.permission_checkpoints)
+        _dict_block("hook_lifecycle_records", "Hook Lifecycle Records", self.hook_lifecycle_records)
+        _dict_block("compaction_lifecycle_records", "Compaction Lifecycle Records", self.compaction_lifecycle_records)
+        _dict_block("mcp_assignments", "MCP Assignments", self.mcp_assignments)
+        _block("truth_evidence_refs", "Truth Evidence Refs", self.truth_evidence_refs)
+        _dict_block("truth_evidence", "Truth Evidence", self.truth_evidence)
+        _dict_block("pending_skill_handoffs", "Pending Skill Handoffs", self.pending_skill_handoffs)
+        _dict_block("executed_skill_handoffs", "Executed Skill Handoffs", self.executed_skill_handoffs)
+        _dict_block("continuation_records", "Continuation Records", self.continuation_records)
         if self.permission_profile:
-            _add("Permission Profile", [json.dumps(self.permission_profile, ensure_ascii=False, sort_keys=True)])
+            _block(
+                "permission_profile",
+                "Permission Profile",
+                [json.dumps(self.permission_profile, ensure_ascii=False, sort_keys=True)],
+            )
 
-        if not sections:
-            return ""
-        return "\n\n".join(sections)
+        def _pointer(omitted_fields: list[str]) -> str:
+            metadata = {
+                "manifest_ref": RECOVERY_MANIFEST_REL_PATH.as_posix(),
+                "manifest_sha256": manifest_sha256,
+                "manifest_chars": len(canonical_payload),
+                "omitted_fields": omitted_fields,
+                "session_id": self.session_id,
+            }
+            return "### Full Recovery Manifest Pointer\n" + json.dumps(
+                metadata,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+
+        selected: list[tuple[str, str]] = []
+        for field_name, block in field_blocks:
+            proposed = [*selected, (field_name, block)]
+            proposed_names = {name for name, _ in proposed}
+            omitted = [name for name, _ in field_blocks if name not in proposed_names]
+            rendered = "\n\n".join([*(text for _, text in proposed), _pointer(omitted)])
+            if len(rendered) <= budget_chars:
+                selected = proposed
+
+        selected_names = {name for name, _ in selected}
+        omitted_fields = [name for name, _ in field_blocks if name not in selected_names]
+        rendered = "\n\n".join([*(text for _, text in selected), _pointer(omitted_fields)])
+        if len(rendered) <= budget_chars:
+            return rendered
+
+        compact_pointer = "### Full Recovery Manifest Pointer\n" + json.dumps(
+            {
+                "manifest_ref": RECOVERY_MANIFEST_REL_PATH.as_posix(),
+                "manifest_sha256": manifest_sha256,
+                "manifest_chars": len(canonical_payload),
+                "omitted_fields": "all populated prompt sections; inspect the hash-pinned manifest",
+                "omitted_field_count": len(field_blocks),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        if len(compact_pointer) > budget_chars:
+            raise ValueError("recovery restoration budget is too small for a hash-pinned manifest pointer")
+        return compact_pointer
 
 
 def _metadata_dict_list(metadata: dict[str, Any], *keys: str) -> list[dict[str, Any]]:
@@ -408,12 +475,12 @@ def hydrate_session_context_from_recovery_manifest(session_context: Any, manifes
     ):
         return False
 
-    _append_unique_strings(getattr(session_context, "recent_files", []), manifest.recent_reads, limit=10)
-    _append_unique_strings(getattr(session_context, "recent_writes", []), manifest.recent_writes, limit=10)
-    _append_unique_strings(getattr(session_context, "current_turn_writes", []), manifest.current_turn_writes, limit=10)
-    _append_unique_dicts(getattr(session_context, "recent_tool_outcomes", []), manifest.recent_tool_outcomes, limit=10)
-    _append_unique_strings(getattr(session_context, "recent_external_refs", []), manifest.recent_external_refs, limit=5)
-    _append_unique_strings(getattr(session_context, "pending_items", []), manifest.pending_items, limit=10)
+    _append_unique_strings(getattr(session_context, "recent_files", []), manifest.recent_reads)
+    _append_unique_strings(getattr(session_context, "recent_writes", []), manifest.recent_writes)
+    _append_unique_strings(getattr(session_context, "current_turn_writes", []), manifest.current_turn_writes)
+    _append_unique_dicts(getattr(session_context, "recent_tool_outcomes", []), manifest.recent_tool_outcomes)
+    _append_unique_strings(getattr(session_context, "recent_external_refs", []), manifest.recent_external_refs)
+    _append_unique_strings(getattr(session_context, "pending_items", []), manifest.pending_items)
 
     file_snapshots = getattr(session_context, "file_snapshots", None)
     if isinstance(file_snapshots, dict):

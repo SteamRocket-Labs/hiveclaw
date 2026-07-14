@@ -384,7 +384,7 @@ async def _update_trigger_runtime_task(
         return
     fields = {
         "status": status,
-        "result_summary": result_summary[:2000],
+        "result_summary": result_summary,
         "metadata_json": metadata_json or {},
     }
     if session_id:
@@ -940,7 +940,7 @@ async def _poll_check(trigger: AgentTrigger) -> bool:
         if fire_on == "match":
             should_fire = current_str == str(cfg.get("match_value", ""))
             if should_fire:
-                cfg["_last_event"] = f"Polled {url} → value matched: {current_str[:500]}"
+                cfg["_last_event"] = f"Polled {url} → value matched: {current_str}"
         else:  # "change"
             last_value = cfg.get("_last_value")
             # First poll — don't fire, just record baseline
@@ -951,9 +951,7 @@ async def _poll_check(trigger: AgentTrigger) -> bool:
                 if should_fire:
                     # Record what changed so the agent digests the actual event
                     # (event-driven v1: emit the event, not just "a trigger fired").
-                    cfg["_last_event"] = (
-                        f"Polled {url} → value changed from '{str(last_value)[:200]}' to '{current_str[:200]}'"
-                    )
+                    cfg["_last_event"] = f"Polled {url} → value changed from '{last_value}' to '{current_str}'"
 
         # Persist _last_value to DB so it survives restarts
         cfg["_last_value"] = current_str
@@ -1032,7 +1030,7 @@ async def _check_new_agent_messages(trigger: AgentTrigger) -> bool:
             from app.models.user import User
 
             def _record_match(msg: ChatMessage, source_label: str) -> bool:
-                cfg["_matched_message"] = (msg.content or "")[:2000]
+                cfg["_matched_message"] = msg.content or ""
                 cfg["_matched_from"] = source_label
                 msg_id = getattr(msg, "id", None)
                 if msg_id:
@@ -1267,7 +1265,7 @@ async def _preflight_trigger_group(
             return preflight.ok, preflight.skip_reason, preflight.result_summary, metadata
     except Exception as exc:
         logger.warning("[TriggerDaemon] Trigger preflight failed for {}: {}", agent_id, exc)
-        return False, "preflight_failed", f"Trigger preflight failed: {str(exc)[:500]}", {"error": str(exc)[:1000]}
+        return False, "preflight_failed", f"Trigger preflight failed: {exc}", {"error": str(exc)}
 
 
 async def _record_trigger_success_state(agent_id: uuid.UUID, trigger_ids: list[uuid.UUID]) -> None:
@@ -1459,11 +1457,9 @@ def _format_trigger_event(trigger: AgentTrigger, cfg: dict) -> str:
     no captured event (e.g. a poll that fired with no recorded change)."""
     t = trigger.type
     if t == "on_message" and cfg.get("_matched_message"):
-        return f'Message from {cfg.get("_matched_from", "?")}:\n"{cfg["_matched_message"][:500]}"'
+        return f'Message from {cfg.get("_matched_from", "?")}:\n"{cfg["_matched_message"]}"'
     if t == "webhook" and cfg.get("_webhook_payload"):
         payload_str = str(cfg["_webhook_payload"])
-        if len(payload_str) > 2000:
-            payload_str = payload_str[:2000] + "... (truncated)"
         return f"Webhook payload:\n{payload_str}"
     if t == "poll":
         # The change description recorded by _poll_check (falls back to last value).
@@ -2160,7 +2156,7 @@ async def _invoke_agent_for_triggers(
         except Exception as _success_state_err:
             logger.debug("[TriggerDaemon] Trigger success state reset failed (non-fatal): {}", _success_state_err)
 
-        completion_summary = (final_reply or "Trigger completed.")[:2000]
+        completion_summary = final_reply or "Trigger completed."
         await _update_trigger_runtime_task(
             runtime_task_id,
             status="completed",
@@ -2219,8 +2215,8 @@ async def _invoke_agent_for_triggers(
 
     except Exception as e:
         logger.error(f"Failed to invoke agent {agent_id} for triggers: {e}", exc_info=True)
-        failure_summary = f"Trigger invocation failed: {str(e)[:500]}"
-        failure_metadata = {"error": str(e)[:1000]}
+        failure_summary = f"Trigger invocation failed: {str(e)}"
+        failure_metadata = {"error": str(e)}
         try:
             failure_metadata.update(await _record_trigger_failure_state(agent_id, triggers, str(e)))
         except Exception as _failure_state_err:
@@ -2536,8 +2532,8 @@ async def _tick():
                 await _update_trigger_runtime_task(
                     runtime_task_id,
                     status="failed",
-                    result_summary=f"Trigger fire could not be marked in-flight: {str(e)[:500]}",
-                    metadata_json={"error": str(e)[:1000], "stage": "mark_inflight"},
+                    result_summary=f"Trigger fire could not be marked in-flight: {str(e)}",
+                    metadata_json={"error": str(e), "stage": "mark_inflight"},
                 )
                 continue
 

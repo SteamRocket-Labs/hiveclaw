@@ -329,7 +329,7 @@ def _extract_body(msg) -> str:
                 payload = part.get_payload(decode=True)
                 if payload:
                     charset = part.get_content_charset() or "utf-8"
-                    return f"[HTML content]\n{payload.decode(charset, errors='replace')[:2000]}"
+                    return f"[HTML content]\n{payload.decode(charset, errors='replace')}"
     else:
         payload = msg.get_payload(decode=True)
         if payload:
@@ -433,7 +433,7 @@ async def send_email(
             message=(
                 "SMTP authentication failed. Please check your email address and authorization code."
                 if error_class == "auth_or_permission"
-                else f"Failed to send email: {str(e)[:200]}"
+                else f"Failed to send email: {e}"
             ),
             retryable=retryable,
             actionable_hint=hint,
@@ -442,7 +442,7 @@ async def send_email(
 
 async def read_emails(
     config: dict,
-    limit: int = 10,
+    limit: int | None = None,
     search: Optional[str] = None,
     folder: str = "INBOX",
 ) -> str:
@@ -450,7 +450,7 @@ async def read_emails(
 
     Args:
         config: Resolved email config
-        limit: Max number of emails to return
+        limit: Optional explicit maximum number of emails to return. Omit to return all matches.
         search: Optional IMAP search criteria (e.g. 'FROM "john"', 'SUBJECT "hello"')
         folder: Mailbox folder (default INBOX)
     """
@@ -466,7 +466,18 @@ async def read_emails(
     addr = cfg["email_address"]
     password = cfg["auth_code"]
 
-    limit = min(limit, 30)  # Cap at 30
+    if limit is not None:
+        try:
+            limit = max(1, int(limit))
+        except (TypeError, ValueError):
+            return _render_email_error(
+                tool_name="read_emails",
+                config=config,
+                error_class="bad_arguments",
+                message="Email read limit must be a positive integer when provided.",
+                retryable=False,
+                actionable_hint="Omit `limit` to read every matching email, or pass a positive integer.",
+            )
 
     try:
         with _force_ipv4():
@@ -485,8 +496,9 @@ async def read_emails(
                 if not msg_ids:
                     return "📭 No emails found."
 
-                # Get latest N emails
-                latest_ids = msg_ids[-limit:]
+                # Preserve the complete matching mailbox by default. An explicit
+                # caller-provided limit is a visible query boundary, not a platform default.
+                latest_ids = msg_ids if limit is None else msg_ids[-limit:]
                 latest_ids.reverse()  # Newest first
 
                 results = []
@@ -502,10 +514,6 @@ async def read_emails(
                     date_str = msg.get("Date", "")
                     message_id = msg.get("Message-ID", "")
                     body = _extract_body(msg)
-                    # Truncate body for readability
-                    if len(body) > 500:
-                        body = body[:500] + "..."
-
                     results.append(
                         f"---\n"
                         f"**From:** {from_addr}\n"
@@ -523,7 +531,7 @@ async def read_emails(
         message = (
             "IMAP authentication failed. Please check your email address and authorization code."
             if error_class == "auth_or_permission"
-            else f"Failed to read emails: {str(e)[:200]}"
+            else f"Failed to read emails: {e}"
         )
         return _render_email_error(
             tool_name="read_emails",
@@ -625,7 +633,7 @@ async def reply_email(
             tool_name="reply_email",
             config=config,
             error_class=error_class,
-            message=f"Failed to reply: {str(e)[:200]}",
+            message=f"Failed to reply: {str(e)}",
             retryable=retryable,
             actionable_hint=hint,
         )
@@ -686,7 +694,7 @@ async def test_connection(config: dict) -> dict:
     except imaplib.IMAP4.error as e:
         error_class, retryable, hint = _classify_email_exception(e)
         result["ok"] = False
-        result["imap"] = f"❌ IMAP failed: {str(e)[:150]}"
+        result["imap"] = f"❌ IMAP failed: {str(e)}"
         result["checks"]["imap"] = {
             "ok": False,
             "error_class": error_class,
@@ -697,7 +705,7 @@ async def test_connection(config: dict) -> dict:
     except Exception as e:
         error_class, retryable, hint = _classify_email_exception(e)
         result["ok"] = False
-        result["imap"] = f"❌ IMAP error: {str(e)[:150]}"
+        result["imap"] = f"❌ IMAP error: {str(e)}"
         result["checks"]["imap"] = {
             "ok": False,
             "error_class": error_class,
@@ -727,7 +735,7 @@ async def test_connection(config: dict) -> dict:
         error_class, retryable, hint = _classify_email_exception(e)
         result["ok"] = False
         result["smtp"] = (
-            "❌ SMTP authentication failed" if error_class == "auth_or_permission" else f"❌ SMTP error: {str(e)[:150]}"
+            "❌ SMTP authentication failed" if error_class == "auth_or_permission" else f"❌ SMTP error: {str(e)}"
         )
         result["checks"]["smtp"] = {
             "ok": False,

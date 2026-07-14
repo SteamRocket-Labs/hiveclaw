@@ -1,4 +1,4 @@
-"""§9 P13 red tests: repeated ephemeral runs → promote suggestion evidence."""
+"""Completed ephemeral run evidence stays neutral until agent/user review."""
 
 from __future__ import annotations
 
@@ -46,7 +46,7 @@ async def _run_contract_review(
     )
 
 
-async def test_three_repeats_produce_a_suggestion(tenant_id, owner_sessionmaker):
+async def test_completed_runs_surface_neutral_review_evidence_without_count_gate(tenant_id, owner_sessionmaker):
     service = WorkflowRuntimeService(session_factory=owner_sessionmaker)
     for _ in range(3):
         handle = await _run_contract_review(service, tenant_id)
@@ -58,7 +58,8 @@ async def test_three_repeats_produce_a_suggestion(tenant_id, owner_sessionmaker)
     assert len(matching) == 1, "the repeated flow must surface exactly one suggestion"
     assert matching[0].run_count >= 3
     assert len(matching[0].sample_run_ids) >= 3
-    assert matching[0].quality_evidence["promotion_eligible"] is True
+    assert "promotion_eligible" not in matching[0].quality_evidence
+    assert matching[0].quality_evidence["model_promotion_review"] == "not_requested"
 
 
 async def test_dynamic_workflow_repeats_produce_suggestion_with_quality_evidence(tenant_id, owner_sessionmaker):
@@ -84,18 +85,25 @@ async def test_dynamic_workflow_repeats_produce_suggestion_with_quality_evidence
     matching = [s for s in suggestions if s.name == "office-contract-review"]
     assert len(matching) == 1
     assert matching[0].run_count >= 3
-    assert matching[0].quality_evidence["promotion_eligible"] is True
+    assert "promotion_eligible" not in matching[0].quality_evidence
+    assert matching[0].quality_evidence["model_promotion_review"] == "not_requested"
     assert matching[0].quality_evidence["leaf_failed"] == 0
     assert matching[0].quality_evidence["success_criteria_count"] == 1
 
 
-async def test_below_threshold_stays_silent(tenant_id, owner_sessionmaker):
+async def test_threshold_argument_cannot_hide_completed_evidence(tenant_id, owner_sessionmaker):
     service = WorkflowRuntimeService(session_factory=owner_sessionmaker)
     for _ in range(2):
         await _run_contract_review(service, tenant_id)
 
-    suggestions = await collect_promote_suggestions(tenant_id=tenant_id, session_factory=owner_sessionmaker)
-    assert all(s.name != "office-contract-review" for s in suggestions)
+    suggestions = await collect_promote_suggestions(
+        tenant_id=tenant_id,
+        session_factory=owner_sessionmaker,
+        threshold=999,
+    )
+    matching = [s for s in suggestions if s.name == "office-contract-review"]
+    assert len(matching) == 1
+    assert matching[0].run_count == 2
 
 
 async def test_already_registered_name_is_not_suggested(tenant_id, owner_sessionmaker, workflow_principals):
@@ -133,7 +141,7 @@ async def test_agent_filter_scopes_suggestions(tenant_id, owner_sessionmaker):
     assert matching[0].run_count == 3, "B's runs must not inflate A's evidence"
 
     for_b = await collect_promote_suggestions(tenant_id=tenant_id, agent_id=agent_b, session_factory=owner_sessionmaker)
-    assert all(s.name != "office-contract-review" for s in for_b), "2 < threshold stays silent"
+    assert any(s.name == "office-contract-review" and s.run_count == 2 for s in for_b)
 
     tenant_wide = await collect_promote_suggestions(tenant_id=tenant_id, session_factory=owner_sessionmaker)
     assert any(s.run_count == 5 for s in tenant_wide if s.name == "office-contract-review")

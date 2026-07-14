@@ -11,6 +11,42 @@ if TYPE_CHECKING:
     )
 
 
+def _normalize_blueprint_trigger_config(trigger: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
+    """Normalize explicit trigger structure without inventing schedule semantics.
+
+    The HR blueprint model owns the schedule it proposes.  This adapter may
+    accept the legacy shorthand of a cron expression string, but it must never
+    infer a schedule from a human-readable trigger name or another unrelated
+    value.  Structurally incomplete triggers are retained in a disabled,
+    reviewable state by the caller.
+    """
+
+    trigger_type = str(trigger.get("type", "cron") or "cron").strip().lower()
+    raw_config = trigger.get("config", {})
+    if isinstance(raw_config, dict):
+        config = dict(raw_config)
+    elif trigger_type == "cron" and isinstance(raw_config, str) and raw_config.strip():
+        config = {"expr": raw_config.strip()}
+    else:
+        config = {}
+
+    required_fields = {
+        "cron": ("expr", "missing_cron_expr"),
+        "interval": ("minutes", "missing_interval_minutes"),
+        "once": ("at", "missing_once_at"),
+        "poll": ("url", "missing_poll_url"),
+    }
+    required = required_fields.get(trigger_type)
+    if required is None:
+        return config, None
+
+    field, hold_reason = required
+    value = config.get(field)
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return config, hold_reason
+    return config, None
+
+
 async def run_hr_provisioning(request: ToolExecutionRequest, *, support: Any) -> str:
     # Bind an explicit per-call dependency snapshot so tests, DI, and runtime
     # overrides observe the same facade values without copying a module namespace.
@@ -527,42 +563,20 @@ async def run_hr_provisioning(request: ToolExecutionRequest, *, support: Any) ->
                 from app.models.trigger import AgentTrigger
 
                 for trig in triggers:
-                    raw_config = trig.get("config", {})
-                    trig_type = trig.get("type", "cron")
-                    # LLM may pass config as cron string instead of {"expr": "..."}
-                    if isinstance(raw_config, str):
-                        raw_config = {"expr": raw_config}
-                    elif isinstance(raw_config, dict) and "expr" not in raw_config and "minutes" not in raw_config:
-                        # Try to find cron-like value in the dict
-                        for v in raw_config.values():
-                            if isinstance(v, str) and v.count(" ") >= 3:
-                                raw_config = {"expr": v}
-                                break
-                    # Infer cron expr from trigger name if LLM omitted it
-                    if trig_type == "cron" and not raw_config.get("expr"):
-                        trig_name = (trig.get("name") or "").lower()
-                        inferred = None
-                        if "every_2h" in trig_name or "2h" in trig_name:
-                            inferred = "0 */2 * * *"
-                        elif "every_4h" in trig_name or "4h" in trig_name:
-                            inferred = "0 */4 * * *"
-                        elif "hourly" in trig_name or "every_hour" in trig_name:
-                            inferred = "0 * * * *"
-                        elif "weekly" in trig_name:
-                            inferred = "0 9 * * 1"
-                        elif "daily" in trig_name:
-                            inferred = "0 9 * * *"
-                        if inferred:
-                            raw_config = {"expr": inferred}
-                            logger.info("Inferred cron expr '%s' for trigger '%s' from name", inferred, trig_name)
-                        else:
-                            logger.warning(
-                                "Skipping cron trigger '%s' — no expr in config and cannot infer", trig.get("name")
-                            )
-                            continue
+                    trig_type = str(trig.get("type", "cron") or "cron").strip().lower()
+                    raw_config, _config_hold_reason = _normalize_blueprint_trigger_config(trig)
                     _trigger_name = str(trig.get("name", "task") or "task").strip()
                     _trigger_reason = str(trig.get("reason", "") or "").strip()
                     raw_config = dict(raw_config)
+                    if _config_hold_reason:
+                        metadata = dict(raw_config.get("metadata") or {})
+                        metadata["configuration_hold_reason"] = _config_hold_reason
+                        raw_config["metadata"] = metadata
+                        logger.warning(
+                            "Holding structurally incomplete HR blueprint trigger '%s': %s",
+                            _trigger_name,
+                            _config_hold_reason,
+                        )
                     raw_config.setdefault(
                         "trigger_class",
                         "event_wait" if trig_type in {"poll", "on_message", "webhook"} else "scheduled_job",
@@ -585,6 +599,7 @@ async def run_hr_provisioning(request: ToolExecutionRequest, *, support: Any) ->
                             type=trig_type,
                             config=raw_config,
                             reason=_trigger_reason,
+                            is_enabled=not bool(_config_hold_reason),
                         )
                     )
                 await db.flush()
@@ -852,7 +867,7 @@ async def run_hr_provisioning(request: ToolExecutionRequest, *, support: Any) ->
                         _mcp_config = {"smithery_api_key": _smithery_key} if _smithery_key else None
                         result = await import_mcp_from_smithery(server_id, agent.id, config=_mcp_config)
                         if isinstance(result, str) and "❌" in result:
-                            mcp_results.append(f"⚠️ {server_id}: {result[:100]}")
+                            mcp_results.append(f"⚠️ {server_id}: {result}")
                             warnings.append(f"MCP install not ready: {server_id}")
                             await record_capability_install(
                                 agent_id=agent.id,
@@ -861,11 +876,11 @@ async def run_hr_provisioning(request: ToolExecutionRequest, *, support: Any) ->
                                 status="failed",
                                 installed_via="hr_agent",
                                 error_code="install_rejected",
-                                error_message=result[:300],
+                                error_message=result,
                             )
-                            logger.warning(f"[HR] MCP install rejected for {server_id}: {result[:100]}")
+                            logger.warning(f"[HR] MCP install rejected for {server_id}: {result}")
                         elif isinstance(result, dict) and result.get("error"):
-                            mcp_results.append(f"⚠️ {server_id}: {result['error'][:100]}")
+                            mcp_results.append(f"⚠️ {server_id}: {result['error']}")
                             warnings.append(f"MCP install not ready: {server_id}")
                             await record_capability_install(
                                 agent_id=agent.id,
@@ -874,9 +889,9 @@ async def run_hr_provisioning(request: ToolExecutionRequest, *, support: Any) ->
                                 status="failed",
                                 installed_via="hr_agent",
                                 error_code="install_error",
-                                error_message=str(result["error"])[:300],
+                                error_message=str(result["error"]),
                             )
-                            logger.warning(f"[HR] MCP install error for {server_id}: {result['error'][:100]}")
+                            logger.warning(f"[HR] MCP install error for {server_id}: {result['error']}")
                         else:
                             mcp_results.append(f"✅ {server_id}")
                             await record_capability_install(
@@ -899,7 +914,7 @@ async def run_hr_provisioning(request: ToolExecutionRequest, *, support: Any) ->
                                 status="failed",
                                 installed_via="hr_agent",
                                 error_code="exception",
-                                error_message=str(mcp_err)[:300],
+                                error_message=str(mcp_err),
                             )
                         except Exception as record_err:
                             logger.warning(
@@ -975,7 +990,7 @@ async def run_hr_provisioning(request: ToolExecutionRequest, *, support: Any) ->
                                     status="failed",
                                     installed_via="hr_agent",
                                     error_code="invalid_response",
-                                    error_message=str(_json_err)[:300],
+                                    error_message=str(_json_err),
                                 )
                                 continue
                         handle = meta.get("owner", {}).get("handle", "").lower()
@@ -1028,7 +1043,7 @@ async def run_hr_provisioning(request: ToolExecutionRequest, *, support: Any) ->
                                 status="failed",
                                 installed_via="hr_agent",
                                 error_code="exception",
-                                error_message=str(ch_err)[:300],
+                                error_message=str(ch_err),
                             )
                         except Exception as record_err:
                             logger.warning("[HR] Failed to record ClawHub install failure for %s: %s", slug, record_err)
@@ -1070,7 +1085,7 @@ async def run_hr_provisioning(request: ToolExecutionRequest, *, support: Any) ->
                                 status="failed",
                                 installed_via="hr_agent",
                                 error_code="exception",
-                                error_message=str(ext_err)[:300],
+                                error_message=str(ext_err),
                             )
                         except Exception as record_err:
                             logger.warning("[HR] Failed to record external skill failure for %s: %s", ref, record_err)

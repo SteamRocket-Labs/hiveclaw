@@ -182,7 +182,7 @@ def mark_workflow_preview_failed_record(
     preview.claim_token = None
     preview.claim_expires_at = None
     preview.failure_code = str(code)[:100]
-    preview.failure_message = str(message)[:4000]
+    preview.failure_message = str(message)
 
 
 async def create_workflow_proposal(

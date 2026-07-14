@@ -48,7 +48,15 @@ async def _plaza_get_new_posts(agent_id: uuid.UUID, arguments: dict) -> str:
     from app.models.agent import Agent as AgentModel
     from sqlalchemy import desc
 
-    limit = min(arguments.get("limit", 10), 20)
+    limit_value = arguments.get("limit")
+    try:
+        limit = max(1, int(limit_value)) if limit_value is not None else None
+    except (TypeError, ValueError):
+        return _plaza_error(
+            "plaza_get_new_posts",
+            "bad_arguments",
+            "limit must be a positive integer when provided.",
+        )
 
     try:
         # RLS 阶段1: `agents`/`plaza_posts` are policy-bearing — scope to the
@@ -60,9 +68,11 @@ async def _plaza_get_new_posts(agent_id: uuid.UUID, arguments: dict) -> str:
             agent = ar.scalar_one_or_none()
             tenant_id = agent.tenant_id if agent else None
 
-            q = select(PlazaPost).order_by(desc(PlazaPost.created_at)).limit(limit)
+            q = select(PlazaPost).order_by(desc(PlazaPost.created_at))
             if tenant_id:
                 q = q.where(PlazaPost.tenant_id == tenant_id)
+            if limit is not None:
+                q = q.limit(limit)
             result = await db.execute(q)
             posts = result.scalars().all()
 
@@ -73,7 +83,7 @@ async def _plaza_get_new_posts(agent_id: uuid.UUID, arguments: dict) -> str:
             for p in posts:
                 # Load comments
                 cr = await db.execute(
-                    select(PlazaComment).where(PlazaComment.post_id == p.id).order_by(PlazaComment.created_at).limit(5)
+                    select(PlazaComment).where(PlazaComment.post_id == p.id).order_by(PlazaComment.created_at)
                 )
                 comments = cr.scalars().all()
                 icon = "🤖" if p.author_type == "agent" else "👤"
@@ -89,7 +99,7 @@ async def _plaza_get_new_posts(agent_id: uuid.UUID, arguments: dict) -> str:
 
     except Exception as e:
         return _plaza_error(
-            "plaza_get_new_posts", "operation_failed", f"Failed to load plaza posts: {str(e)[:200]}", retryable=True
+            "plaza_get_new_posts", "operation_failed", f"Failed to load plaza posts: {e}", retryable=True
         )
 
 
@@ -105,9 +115,6 @@ async def _plaza_create_post(agent_id: uuid.UUID, arguments: dict) -> str:
     content = arguments.get("content", "").strip()
     if not content:
         return _plaza_error("plaza_create_post", "bad_arguments", "Post content cannot be empty.")
-    if len(content) > 500:
-        content = content[:500]
-
     try:
         # RLS 阶段1: `agents`/`plaza_posts` are policy-bearing — scope to the
         # agent's tenant (resolved via audited single-row bypass).
@@ -132,9 +139,7 @@ async def _plaza_create_post(agent_id: uuid.UUID, arguments: dict) -> str:
             return f"✅ Post published! (ID: {post.id})"
 
     except Exception as e:
-        return _plaza_error(
-            "plaza_create_post", "operation_failed", f"Failed to create post: {str(e)[:200]}", retryable=True
-        )
+        return _plaza_error("plaza_create_post", "operation_failed", f"Failed to create post: {e}", retryable=True)
 
 
 async def _plaza_add_comment(agent_id: uuid.UUID, arguments: dict) -> str:
@@ -146,9 +151,6 @@ async def _plaza_add_comment(agent_id: uuid.UUID, arguments: dict) -> str:
     content = arguments.get("content", "").strip()
     if not content:
         return _plaza_error("plaza_add_comment", "bad_arguments", "Comment content cannot be empty.")
-    if len(content) > 300:
-        content = content[:300]
-
     try:
         pid = uuid.UUID(str(post_id))
     except Exception:
@@ -197,6 +199,4 @@ async def _plaza_add_comment(agent_id: uuid.UUID, arguments: dict) -> str:
             return f"✅ Comment added to post by {post.author_name}."
 
     except Exception as e:
-        return _plaza_error(
-            "plaza_add_comment", "operation_failed", f"Failed to add comment: {str(e)[:200]}", retryable=True
-        )
+        return _plaza_error("plaza_add_comment", "operation_failed", f"Failed to add comment: {e}", retryable=True)

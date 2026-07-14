@@ -486,7 +486,7 @@ async def test_revoke_external_capability_snapshot_revokes_active_agent_activati
 
 
 @pytest.mark.asyncio
-async def test_stage_external_skill_package_review_maps_skill_guard_block_to_blocked_review():
+async def test_stage_external_skill_package_review_maps_skill_guard_warning_to_required_review():
     tenant_id = uuid4()
     user_id = uuid4()
     db = _TrustGateSession()
@@ -506,13 +506,15 @@ async def test_stage_external_skill_package_review_maps_skill_guard_block_to_blo
         source_format="external_skill_url",
     )
 
-    assert result["status"] == "blocked"
+    assert result["status"] == "review_required"
     assert result["files_written"] == 0
     assert result["review_id"]
-    assert result["skill_guard"]["allowed"] is False
+    assert result["skill_guard"]["allowed"] is True
+    assert result["skill_guard"]["requires_review"] is True
+    assert result["skill_guard"]["disposition"] == "quarantine"
     row = db.added[0]
-    assert row.admission_class == "blocked"
-    assert row.admission_report_json["notes"][0]["code"] == "skill_guard_blocked"
+    assert row.admission_class == "governed_runtime"
+    assert row.admission_report_json["notes"][0]["code"] == "skill_guard_review_required"
     component = row.normalized_manifest_json["components"][0]
     assert component["metadata"]["files"][0]["path"] == "SKILL.md"
 

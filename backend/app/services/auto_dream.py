@@ -25,8 +25,17 @@ from typing import Callable, Iterator
 
 from app.config import get_settings
 from app.services.agent_asset_transaction import AgentAssetTransaction
+from app.services.llm_client import get_max_tokens
 
 logger = logging.getLogger(__name__)
+
+
+def _dream_output_tokens(model_config: dict) -> int:
+    return get_max_tokens(
+        str(model_config.get("provider") or ""),
+        str(model_config.get("model") or ""),
+        model_config.get("max_output_tokens"),
+    )
 
 
 @contextlib.contextmanager
@@ -436,7 +445,7 @@ def _build_dream_consolidation_user_prompt(
     if retirement_candidates:
         rows = "\n".join(
             f"- [{c.get('entry_id', '?')}] heat={c.get('heat', 0)} ({c.get('filename', '?')}) {c.get('content', '')}"
-            for c in retirement_candidates[:10]
+            for c in retirement_candidates
         )
         base_prompt += (
             "\n\n<low_heat_retirement_candidates>\n"
@@ -454,19 +463,19 @@ def _build_dream_consolidation_user_prompt(
 
 def _format_candidate_evidence_digest(candidate_evidence: list[dict]) -> str:
     rows: list[str] = []
-    for item in candidate_evidence[:12]:
+    for item in candidate_evidence:
         if not isinstance(item, dict):
             continue
-        source_refs = ", ".join(str(ref) for ref in (item.get("source_refs") or [])[:5])
+        source_refs = ", ".join(str(ref) for ref in (item.get("source_refs") or []))
         rows.append(
             "- "
             f"id={item.get('candidate_id', '?')} "
             f"source={item.get('source', item.get('event', '?'))} "
             f"container={item.get('container', item.get('target_type', '?'))} "
             f"decision={item.get('decision', item.get('promotion_state', 'candidate'))} "
-            f"lesson={str(item.get('lesson') or item.get('diff_preview') or '')[:500]} "
+            f"lesson={str(item.get('lesson') or item.get('diff_preview') or '')} "
             f"refs={source_refs} "
-            f"reason={str(item.get('reason') or '')[:240]}"
+            f"reason={str(item.get('reason') or '')}"
         )
     if not rows:
         return ""
@@ -479,7 +488,7 @@ def _format_candidate_evidence_digest(candidate_evidence: list[dict]) -> str:
     )
 
 
-def _load_recent_candidate_evidence(agent_id: uuid.UUID, *, limit: int = 12) -> list[dict]:
+def _load_recent_candidate_evidence(agent_id: uuid.UUID) -> list[dict]:
     workspace = Path(get_settings().AGENT_DATA_DIR) / str(agent_id)
     audit_path = workspace / "memory" / "distillation_audit.jsonl"
     if not audit_path.exists():
@@ -519,8 +528,6 @@ def _load_recent_candidate_evidence(agent_id: uuid.UUID, *, limit: int = 12) -> 
                 "reason": entry.get("reason") or detail.get("reason") or "",
             }
         )
-        if len(digest) >= limit:
-            break
     return list(reversed(digest))
 
 
@@ -564,6 +571,17 @@ def _parse_dream_decision(raw_text: str) -> dict | None:
     if not isinstance(parsed, dict):
         return None
     return parsed
+
+
+def _dream_semantic_input_budget(model_config: dict) -> int:
+    """Reserve output/system headroom while using the provider's real window."""
+
+    try:
+        max_input_tokens = int(model_config.get("max_input_tokens") or 128_000)
+    except (TypeError, ValueError):
+        max_input_tokens = 128_000
+    available_tokens = max(max_input_tokens - 20_000 - 8_000, 8_000)
+    return available_tokens * 3
 
 
 async def _dream_llm_consolidate(
@@ -617,7 +635,7 @@ async def _dream_llm_consolidate(
         retirement_candidates = list_retirement_candidates(
             Path(get_settings().AGENT_DATA_DIR),
             agent_id,
-            limit=10,
+            limit=None,
             protected_markers=protected_markers,
         )
     except Exception as exc:  # noqa: BLE001 — telemetry evidence is optional, never blocks dream
@@ -649,19 +667,49 @@ async def _dream_llm_consolidate(
                 metadata={"phase": "consolidation"},
             )
         )
+        semantic_budget = _dream_semantic_input_budget(model_config)
+        if len(user_prompt) > semantic_budget:
+            from app.services.semantic_input_coverage import prepare_covered_semantic_input
+
+            async def _review_chunk(review_phase: str, prompt: str) -> str:
+                review = await client.stream(
+                    messages=[
+                        LLMMessage(
+                            role="system",
+                            content=(
+                                "You are a Dream coverage reader. Preserve every identity-relevant fact, "
+                                "contradiction, source reference, and uncertainty from the exact chunk. "
+                                "Return coverage notes only; do not issue the final Dream decision."
+                            ),
+                        ),
+                        LLMMessage(role="user", content=prompt),
+                    ],
+                    max_tokens=_dream_output_tokens(model_config),
+                    temperature=0.1,
+                )
+                return str(getattr(review, "content", None) or review).strip()
+
+            workspace = Path(get_settings().AGENT_DATA_DIR) / str(agent_id)
+            covered = await prepare_covered_semantic_input(
+                phase="dream_consolidation",
+                sections=[("dream_consolidation_prompt", user_prompt)],
+                max_chars=semantic_budget,
+                coverage_path=workspace / "memory" / "control" / "dream_input_coverage.json",
+                review_chunk=_review_chunk,
+            )
+            manifest = _build_dream_input_manifest(soul_excerpt, t3_files)
+            user_prompt = (
+                "The complete Dream input was reviewed by coverage-preserving model passes. "
+                "Use their notes as semantic evidence and issue the final JSON decision yourself.\n\n"
+                f"{_format_dream_input_manifest(manifest)}\n\n{covered}\n\n"
+                "The final coverage_receipt must list every path in dream_input_manifest with its exact hash."
+            )
         response = await client.stream(
             messages=[
                 LLMMessage(role="system", content=_AUTO_DREAM_SYSTEM_PROMPT),
                 LLMMessage(role="user", content=user_prompt),
             ],
-            # 蒸馏器核查: 3000 starved the decision JSON (promotions + rewrites +
-            # dedups + reasoning over up to 5 T3 files). 8000 matches the
-            # compaction-P0 output budget philosophy.
-            # Compaction-class budget (CC COMPACT_MAX_OUTPUT_TOKENS=20k): dream's
-            # output scales with the FULL T3 set (≤150 entries → merge decisions
-            # carrying kept text) — the fullest memory produces the largest dream,
-            # exactly when truncation would silently drop lifecycle decisions.
-            max_tokens=20_000,
+            max_tokens=_dream_output_tokens(model_config),
             temperature=0.2,
         )
     except Exception as exc:  # noqa: BLE001
@@ -741,11 +789,13 @@ async def _judge_frozen_mission_contradiction(
     metered_model_config: dict,
     frozen_charter: str,
     content: str,
+    *,
+    coverage_path: Path | None = None,
 ) -> dict | None:
     """One focused LLM call: does `content` contradict the frozen charter?
 
     AI-Native L1 primary path for the D6 gate. Returns the parsed verdict dict
-    or None on any failure (caller then leaves the safety blocker fallback to run).
+    or None on any failure (caller then preserves the candidate as held).
     """
     from app.services.llm_client import LLMMessage, create_llm_client_from_config
 
@@ -762,15 +812,52 @@ async def _judge_frozen_mission_contradiction(
     try:
         # Caller passes a usage-aware config via with_llm_usage_context().
         client = create_llm_client_from_config(metered_model_config)
+        semantic_budget = _dream_semantic_input_budget(metered_model_config)
+        if len(user_prompt) > semantic_budget:
+            if coverage_path is None:
+                logger.info("[Dream] Frozen-Mission input exceeds provider budget without coverage path")
+                return None
+            from app.services.semantic_input_coverage import prepare_covered_semantic_input
+
+            async def _review_chunk(review_phase: str, prompt: str) -> str:
+                review_response = await client.stream(
+                    messages=[
+                        LLMMessage(
+                            role="system",
+                            content=(
+                                "You are a frozen-charter coverage reader. Preserve every directive, exception, "
+                                "negation, scope boundary, source reference, and tail detail. Return coverage notes "
+                                "only; do not issue the final contradiction verdict."
+                            ),
+                        ),
+                        LLMMessage(role="user", content=prompt),
+                    ],
+                    max_tokens=_dream_output_tokens(metered_model_config),
+                    temperature=0.0,
+                )
+                return str(getattr(review_response, "content", None) or review_response).strip()
+
+            covered = await prepare_covered_semantic_input(
+                phase="frozen_mission_contradiction",
+                sections=[("frozen_mission_charter", frozen_charter), ("candidate_learned_behavior", content)],
+                max_chars=semantic_budget,
+                coverage_path=coverage_path,
+                review_chunk=_review_chunk,
+            )
+            user_prompt = (
+                "The complete charter and candidate were processed by coverage-preserving model passes. "
+                "Use the notes below and issue the final contradiction verdict yourself.\n\n"
+                f"{covered}\n\nAnswer using the required JSON contract."
+            )
         response = await client.stream(
             messages=[
                 LLMMessage(role="system", content=_FROZEN_MISSION_JUDGE_SYSTEM_PROMPT),
                 LLMMessage(role="user", content=user_prompt),
             ],
-            max_tokens=400,
+            max_tokens=_dream_output_tokens(metered_model_config),
             temperature=0.0,
         )
-    except Exception as exc:  # noqa: BLE001 — fall back to mechanical heuristic
+    except Exception as exc:  # noqa: BLE001 — caller preserves the candidate for retry
         logger.info("[Dream] Frozen-Mission judge LLM call failed: %s", exc)
         return None
     finally:
@@ -796,7 +883,7 @@ async def _build_frozen_mission_judge(
     Runs the async LLM judge in this async context, then hands the sync
     `_apply_dream_decisions` path a pure lookup closure — so the LLM-first
     decision happens here while the writeback stays synchronous. Returns None
-    when no summary model is available (apply then uses the safety blocker fallback).
+    when no summary model is available; apply then holds the candidate.
     """
     if not tenant_id:
         return None
@@ -846,17 +933,23 @@ async def _build_frozen_mission_judge(
             ),
             frozen_charter,
             content,
+            coverage_path=(
+                soul_path.parent
+                / "memory"
+                / "control"
+                / f"frozen_mission_input_coverage-{hashlib.sha256(content.encode('utf-8')).hexdigest()[:16]}.json"
+            ),
         )
         if verdict is not None:
             verdicts[content] = verdict
 
     if not verdicts:
-        return None  # judge produced nothing usable -> let safety blocker fallback run
+        return None  # judge produced nothing usable -> hold for a retryable semantic review
 
     def _judge(_charter: str, content: str) -> dict | None:
         # Pre-computed verdict; unseen content (judge's own LLM call failed for
-        # that item) returns None = abstain, so the per-item safety blocker fallback
-        # still fires instead of silently passing it through.
+        # that item) returns None = abstain, so the candidate stays held instead
+        # of being accepted or rejected by a mechanical substitute.
         return verdicts.get(content.strip())
 
     return _judge
@@ -926,22 +1019,46 @@ async def _review_soul_candidate_with_llm(
     current_soul: str,
     frozen_charter: str,
     t3_files: dict[str, str],
+    coverage_path: Path | None = None,
 ) -> dict | None:
     """Run the independent Soul Memory Gate LLM review for a Dream candidate."""
 
     from app.services.llm_client import LLMMessage, create_llm_client_from_config
 
-    t3_excerpt = "\n\n".join(f"## {name}\n{content[:6000]}" for name, content in sorted(t3_files.items()))
+    t3_excerpt = "\n\n".join(f"## {name}\n{content}" for name, content in sorted(t3_files.items()))
+    coverage_manifest = {
+        "current_soul": {
+            "chars": len(current_soul),
+            "sha256": hashlib.sha256(current_soul.encode("utf-8")).hexdigest(),
+        },
+        "frozen_charter": {
+            "chars": len(frozen_charter),
+            "sha256": hashlib.sha256(frozen_charter.encode("utf-8")).hexdigest(),
+        },
+        "t3_files": {
+            name: {"chars": len(content), "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest()}
+            for name, content in sorted(t3_files.items())
+        },
+        "candidate": {
+            "chars": len(json.dumps(candidate, ensure_ascii=False, sort_keys=True)),
+            "sha256": hashlib.sha256(
+                json.dumps(candidate, ensure_ascii=False, sort_keys=True).encode("utf-8")
+            ).hexdigest(),
+        },
+    }
     user_prompt = (
         f"<candidate_id>{candidate_id}</candidate_id>\n\n"
+        "<input_coverage_manifest>\n"
+        f"{json.dumps(coverage_manifest, ensure_ascii=False, indent=2, sort_keys=True)}\n"
+        "</input_coverage_manifest>\n\n"
         "<current_soul>\n"
-        f"{current_soul[:12000]}\n"
+        f"{current_soul}\n"
         "</current_soul>\n\n"
         "<frozen_charter>\n"
-        f"{frozen_charter[:6000]}\n"
+        f"{frozen_charter}\n"
         "</frozen_charter>\n\n"
         "<accepted_t3_evidence>\n"
-        f"{t3_excerpt[:20000]}\n"
+        f"{t3_excerpt}\n"
         "</accepted_t3_evidence>\n\n"
         "<soul_candidate>\n"
         f"{json.dumps(candidate, ensure_ascii=False, indent=2, sort_keys=True)}\n"
@@ -951,12 +1068,59 @@ async def _review_soul_candidate_with_llm(
     client = None
     try:
         client = create_llm_client_from_config(metered_model_config)
+        semantic_budget = _dream_semantic_input_budget(metered_model_config)
+        if len(user_prompt) > semantic_budget:
+            if coverage_path is None:
+                logger.info(
+                    "[Dream] Soul Memory Gate input exceeds provider budget without a coverage artifact path: %s",
+                    candidate_id,
+                )
+                return None
+            from app.services.semantic_input_coverage import prepare_covered_semantic_input
+
+            async def _review_chunk(review_phase: str, prompt: str) -> str:
+                review_response = await client.stream(
+                    messages=[
+                        LLMMessage(
+                            role="system",
+                            content=(
+                                "You are a Soul Memory Gate coverage reader. Preserve every identity-relevant "
+                                "fact, source reference, conflict, exception, uncertainty, and tail detail. "
+                                "Return coverage notes only; do not make the final promotion decision."
+                            ),
+                        ),
+                        LLMMessage(role="user", content=prompt),
+                    ],
+                    max_tokens=_dream_output_tokens(metered_model_config),
+                    temperature=0.0,
+                )
+                return str(getattr(review_response, "content", None) or review_response).strip()
+
+            covered = await prepare_covered_semantic_input(
+                phase="soul_memory_gate_review",
+                sections=[
+                    ("current_soul", current_soul),
+                    ("frozen_charter", frozen_charter),
+                    *[(f"accepted_t3:{name}", content) for name, content in sorted(t3_files.items())],
+                    ("soul_candidate", json.dumps(candidate, ensure_ascii=False, indent=2, sort_keys=True)),
+                ],
+                max_chars=semantic_budget,
+                coverage_path=coverage_path,
+                review_chunk=_review_chunk,
+            )
+            user_prompt = (
+                f"<candidate_id>{candidate_id}</candidate_id>\n\n"
+                "The complete Soul review input was processed by coverage-preserving model passes. "
+                "Use the notes as evidence and make the final independent review yourself.\n\n"
+                f"{covered}\n\n"
+                "Return only the required review JSON; do not rewrite the candidate."
+            )
         response = await client.stream(
             messages=[
                 LLMMessage(role="system", content=_SOUL_MEMORY_GATE_SYSTEM_PROMPT),
                 LLMMessage(role="user", content=user_prompt),
             ],
-            max_tokens=3000,
+            max_tokens=_dream_output_tokens(metered_model_config),
             temperature=0.0,
         )
     except Exception as exc:  # noqa: BLE001
@@ -1006,7 +1170,8 @@ async def _attach_independent_soul_review(
     if not model_config:
         return decision
 
-    soul_path = Path(get_settings().AGENT_DATA_DIR) / str(agent_id) / "soul.md"
+    workspace = Path(get_settings().AGENT_DATA_DIR) / str(agent_id)
+    soul_path = workspace / "soul.md"
     current_soul = ""
     try:
         if soul_path.exists():
@@ -1028,6 +1193,7 @@ async def _attach_independent_soul_review(
         current_soul=current_soul,
         frozen_charter=frozen_charter,
         t3_files=t3_files,
+        coverage_path=workspace / "memory" / "control" / f"soul_memory_gate_input_coverage-{candidate_id}.json",
     )
     if review:
         candidate["memory_gate_review"] = review
@@ -1081,6 +1247,13 @@ _SOUL_TRANSIENT_PATTERNS = (
 )
 
 
+def _soul_transient_term_observations(text: str) -> list[str]:
+    """Surface possible transient terms without making a semantic verdict."""
+
+    labels = ("runtime_task_id", "attempt_id", "trigger_id", "next_fire")
+    return [label for label, pattern in zip(labels, _SOUL_TRANSIENT_PATTERNS, strict=True) if pattern.search(text)]
+
+
 def _soul_candidate_text(candidate: dict) -> str:
     return "\n\n".join(
         str(candidate.get(key) or "")
@@ -1122,9 +1295,13 @@ def _soul_review_passed(review: dict) -> tuple[bool, str]:
         return False, "Soul Memory Gate review must be an independent LLM review"
     if str(review.get("recommendation") or "").strip().lower() not in {"promote", "commit", "approve"}:
         return False, "Soul Memory Gate review did not recommend promotion"
-    low = [metric for metric in _SOUL_REVIEW_METRICS if _score_from_review(review, metric) < 3]
-    if low:
-        return False, f"Soul Memory Gate score below threshold: {', '.join(low)}"
+    invalid = [
+        metric
+        for metric in _SOUL_REVIEW_METRICS
+        if metric not in review or not 0 <= _score_from_review(review, metric) <= 4
+    ]
+    if invalid:
+        return False, f"Soul Memory Gate review has missing or invalid metric scores: {', '.join(invalid)}"
     return True, "Soul Memory Gate review passed"
 
 
@@ -1168,19 +1345,38 @@ def _validate_soul_candidate(
     review_ok, review_reason = _soul_review_passed(review)
     if not review_ok:
         return False, review_reason
-    if bool(candidate.get("requires_owner_approval")):
-        return False, "candidate requires owner/company approval"
-
     candidate_text = _soul_candidate_text(candidate)
-    if any(pattern.search(candidate_text) for pattern in _SOUL_TRANSIENT_PATTERNS):
-        return False, "candidate contains transient runtime identifiers"
 
     if frozen_charter:
         contradicts, contra_reason = _promotion_contradicts_frozen(frozen_charter, candidate_text, contradiction_judge)
+        candidate["frozen_charter_review"] = {
+            "status": "unavailable" if contradicts is None else "reviewed",
+            "contradicts": contradicts,
+            "reason": contra_reason,
+            "reviewer": "frozen_mission_semantic_judge",
+            "source": "independent_llm",
+            "frozen_charter_sha256": hashlib.sha256(frozen_charter.encode("utf-8")).hexdigest(),
+            "candidate_sha256": hashlib.sha256(candidate_text.encode("utf-8")).hexdigest(),
+        }
+        if contradicts is None:
+            return False, contra_reason
         if contradicts:
             return False, f"contradicts frozen Mission/charter: {contra_reason}"
         if 'frozen="true"' not in soul_next:
             return False, "soul.md.next must preserve a frozen identity/charter block during migration"
+    else:
+        candidate["frozen_charter_review"] = {
+            "status": "not_applicable",
+            "contradicts": False,
+            "reason": "no frozen Mission/charter is present",
+            "reviewer": "platform_physics",
+            "source": "typed_absence",
+            "frozen_charter_sha256": hashlib.sha256(b"").hexdigest(),
+            "candidate_sha256": hashlib.sha256(candidate_text.encode("utf-8")).hexdigest(),
+        }
+
+    if bool(candidate.get("requires_owner_approval")):
+        return False, "candidate requires owner/company approval"
 
     return True, "candidate passed Platform Soul Gate"
 
@@ -1250,6 +1446,10 @@ def _stage_soul_candidate_package(
         "patch_path": f"memory/.staging/soul_candidates/{candidate_id}/soul_patch.md",
         "next_path": f"memory/.staging/soul_candidates/{candidate_id}/soul.md.next",
         "memory_gate_review": candidate.get("memory_gate_review") or {},
+        "frozen_charter_review": candidate.get("frozen_charter_review") or {},
+        "semantic_observations": {
+            "transient_runtime_terms": _soul_transient_term_observations(_soul_candidate_text(candidate))
+        },
     }
     _write_asset_text(
         workspace,
@@ -1327,9 +1527,7 @@ def _write_preservation_flags(
     import json
 
     path = _preservation_sidecar_path(agent_id)
-    # Cap to 50 most recent to prevent unbounded growth.
-    capped = flags[-50:]
-    payload = {"protected": capped, "updated_at": datetime.now(timezone.utc).isoformat()}
+    payload = {"protected": flags, "updated_at": datetime.now(timezone.utc).isoformat()}
     rendered = json.dumps(payload, ensure_ascii=False, indent=2)
     if transaction is not None:
         transaction.stage_text("memory/.preservation.json", rendered)
@@ -1442,33 +1640,31 @@ def _promotion_contradicts_frozen(
     frozen_charter: str,
     content: str,
     contradiction_judge: Callable[[str, str], dict | None] | None,
-) -> tuple[bool, str]:
+) -> tuple[bool | None, str]:
     """Decide whether a soul promotion contradicts the frozen Mission/charter.
 
-    AI-Native L1: the injected LLM `contradiction_judge` is the primary path —
-    it reads the full frozen charter + the candidate and returns a structured
-    verdict. The mechanical overlap heuristic runs ONLY as an observable
-    fallback when no judge is wired or the judge itself errors.
+    ``None`` means the semantic reviewer was unavailable or abstained. The
+    caller must preserve the candidate as held/retryable. Mechanical overlap
+    is recorded only as an observation and never becomes contradiction truth.
     """
     if not frozen_charter.strip():
         return False, ""
     if contradiction_judge is not None:
         try:
             verdict = contradiction_judge(frozen_charter, content)
-        except Exception as exc:  # noqa: BLE001 — judge failure falls back, never blocks
-            logger.info("[Dream] Frozen-Mission judge failed; using safety blocker fallback: %s", exc)
+        except Exception as exc:  # noqa: BLE001 — preserve candidate for retry
+            logger.info("[Dream] Frozen-Mission judge failed; holding semantic review: %s", exc)
             verdict = None
-        # A concrete verdict is authoritative; `None` means the judge abstained
-        # for this item (e.g. its own LLM call failed) → fall through to the
-        # mechanical backstop rather than silently treating it as "no conflict".
-        if verdict is not None:
+        if isinstance(verdict, dict) and "contradicts" in verdict:
             if verdict.get("contradicts"):
                 reason = str(verdict.get("reason") or "contradicts frozen Mission/charter").strip()
                 return True, reason
             return False, ""
-    if _mechanical_contradiction_fallback(frozen_charter, content):
-        return True, "safety blocker fallback: negation overlaps frozen charter token (judge unavailable)"
-    return False, ""
+    signal = _mechanical_contradiction_fallback(frozen_charter, content)
+    reason = "semantic_review_unavailable"
+    if signal:
+        reason += ": mechanical_overlap_signal=negation_overlaps_frozen_charter_token"
+    return None, reason
 
 
 def _apply_dream_decisions(
@@ -1694,27 +1890,6 @@ def _write_t3_file(agent_id: uuid.UUID, filename: str, content: str) -> None:
     raise RuntimeError(f"direct T3 write refused for {filename}; use T3 Consolidator -> Memory Gate -> Platform Gate")
 
 
-def _programmatic_dedup(lines: list[str], similarity_threshold: float = 0.7) -> list[str]:
-    """Remove near-duplicate lines using SequenceMatcher. Zero LLM dependency."""
-    from difflib import SequenceMatcher
-
-    if len(lines) <= 1:
-        return lines
-
-    kept: list[str] = []
-    for line in lines:
-        is_dup = False
-        line_lower = line.lower().strip()
-        for existing in kept:
-            ratio = SequenceMatcher(None, line_lower, existing.lower().strip()).ratio()
-            if ratio >= similarity_threshold:
-                is_dup = True
-                break
-        if not is_dup:
-            kept.append(line)
-    return kept
-
-
 _T3_ENTRY_ID_RE = _re.compile(r"\[entry_id=([^\]]+)\]")
 
 
@@ -1850,48 +2025,6 @@ def record_heartbeat_tick(agent_id: uuid.UUID) -> None:
     _load_dream_state(agent_id)
     _heartbeat_ticks_since_dream[key] = _heartbeat_ticks_since_dream.get(key, 0) + 1
     _persist_dream_state(agent_id)
-
-
-def _build_dream_consolidation_prompt(*, facts: list[dict], summaries: list[str]) -> str:
-    """Legacy prompt contract kept for validation tests and human inspection."""
-    facts_text = "\n".join(
-        str(i) + ". [" + f.get("category", "general") + "] " + f.get("content", "")[:200] for i, f in enumerate(facts)
-    )
-    summaries_text = "\n---\n".join(s[:500] for s in summaries[:5])
-    return (
-        "You are consolidating an agent's long-term memory.\n\n"
-        "## Current Facts\n" + facts_text + "\n\n"
-        "## Recent Session Summaries\n" + summaries_text + "\n\n"
-        "## Instructions\n"
-        "1. Remove duplicate or contradictory facts (keep the newer/more specific one)\n"
-        "2. Merge related facts into single comprehensive statements\n"
-        "3. Add new facts from sessions that aren't already captured\n"
-        "4. Assign each fact a category: user, feedback, project, reference, constraint, strategy, blocked_pattern, or general\n"
-        "5. When facts contradict each other, keep the one from a more recent session summary\n"
-        "6. Each fact should be concise (under 200 characters) — merge verbose entries into crisp statements\n"
-        "7. Promote durable successful approaches to strategy\n"
-        "8. Promote repeated failed approaches to blocked_pattern\n"
-        "9. evolution files remain the home for active policy iteration; keep only the durable outcome here\n\n"
-        "## What NOT to consolidate\n"
-        "- Ephemeral task details (in-progress work, temporary state) — active run state and evidence belong in workspace artifacts, not memory\n"
-        "- Code patterns or file paths that can be derived by reading the workspace\n"
-        "- Debugging solutions — the fix should be in the code, not in memory\n"
-        "- Exact tool call sequences — only outcomes and learnings matter\n\n"
-        "Return ONLY the JSON array, no other text."
-    )
-
-
-def _simple_dedup(facts: list[dict]) -> list[dict]:
-    """Deterministic content dedup helper kept for tests and maintenance tasks."""
-    seen: set[str] = set()
-    unique: list[dict] = []
-    for fact in facts:
-        content = str(fact.get("content", "")).strip().lower()
-        if not content or content in seen:
-            continue
-        seen.add(content)
-        unique.append(fact)
-    return unique
 
 
 def _dream_state_path(agent_id: uuid.UUID) -> Path:
@@ -2051,7 +2184,7 @@ def should_soft_dream(agent_id: uuid.UUID) -> bool:
     """Check if a lightweight soft dream should run.
 
     Triggers when T3 memory is approaching the 150-entry cap but the full
-    dream gate isn't met. Only does programmatic dedup + index/shadow refresh.
+    dream gate isn't met. Only refreshes rebuildable indexes and compatibility projections.
     """
     last, sessions = _load_dream_state(agent_id)
     if sessions < 1:
@@ -2307,7 +2440,7 @@ async def run_dream(agent_id: uuid.UUID, tenant_id: uuid.UUID) -> dict:
     t0_audit = audit_t0_logs(agent_id, recent_days=30)
     t0_backfill = {"sessions_scanned": 0, "written": 0, "skipped_existing": 0, "skipped_empty": 0}
     if t0_audit["recent_files"] == 0:
-        t0_backfill = await backfill_recent_chat_logs(agent_id, recent_days=30, limit_sessions=20, tenant_id=tenant_id)
+        t0_backfill = await backfill_recent_chat_logs(agent_id, recent_days=30, tenant_id=tenant_id)
         t0_audit = audit_t0_logs(agent_id, recent_days=30)
 
     # Reset heartbeat tick counter (dream completes the cycle)

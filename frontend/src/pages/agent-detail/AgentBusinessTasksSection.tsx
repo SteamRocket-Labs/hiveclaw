@@ -267,21 +267,19 @@ export default function AgentBusinessTasksSection({ agentId }: { agentId: string
 
   const confirmAndStart = async (plan: PlanRequest, action: BusinessTaskAction) => {
     const key = `start:${plan.id}`;
-    if (busyKey || !plan.plan_hash) return;
+    if (busyKey) return;
     setBusyKey(key);
     setError(null);
     try {
       if (plan.status === 'awaiting_confirmation') {
         await planApi.confirm(agentId, plan.id, {
           plan_version: plan.plan_version,
-          plan_hash: plan.plan_hash,
         });
       }
       const provenance: TaskTriggerParams = {
         request_id: action.request_id,
         confirmed_plan_id: plan.id,
         confirmed_plan_version: plan.plan_version,
-        confirmed_plan_hash: plan.plan_hash,
         confirmed_plan_session_id: plan.session_id || undefined,
       };
       if (action.action === 'create') {
@@ -405,7 +403,7 @@ export default function AgentBusinessTasksSection({ agentId }: { agentId: string
                   <button
                     type="button"
                     className="btn btn-primary"
-                    disabled={busyKey !== null || !plan.plan_hash}
+                    disabled={busyKey !== null}
                     onClick={() => confirmAndStart(plan, action)}
                   >
                     {plan.status === 'confirmed'

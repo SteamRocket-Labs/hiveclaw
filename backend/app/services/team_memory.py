@@ -32,6 +32,14 @@ class SecretScanError(TeamMemoryWriteRejectedError):
     """Raised when team memory content appears to contain a secret."""
 
 
+class TeamMemoryWriteHeldError(ValueError):
+    """Raised when semantic review is unavailable and the candidate is preserved for retry."""
+
+    def __init__(self, decision: MemoryWriteDecision) -> None:
+        super().__init__(f"{decision.sensitivity}: {decision.reason}")
+        self.decision = decision
+
+
 class InvalidTeamMemoryModeError(ValueError):
     """Raised when a team-memory write mode is not supported."""
 
@@ -198,6 +206,8 @@ class TeamMemoryStore:
             if decision.sensitivity == "PL4_credential":
                 raise SecretScanError(decision)
             raise TeamMemoryWriteRejectedError(decision)
+        if decision.held:
+            raise TeamMemoryWriteHeldError(decision)
         return decision.content
 
     async def _prepare_content_for_write_with_llm(
@@ -223,6 +233,8 @@ class TeamMemoryStore:
             if decision.sensitivity == "PL4_credential":
                 raise SecretScanError(decision)
             raise TeamMemoryWriteRejectedError(decision)
+        if decision.held:
+            raise TeamMemoryWriteHeldError(decision)
         return decision.content
 
     def upsert_entry(

@@ -7,6 +7,18 @@ from types import SimpleNamespace
 import pytest
 
 
+async def _safe_memory_threat_classifier(**_kwargs):
+    from app.memory.write_gate import MemoryThreatAssessment
+
+    return MemoryThreatAssessment(
+        rejected=False,
+        labels=[],
+        method="llm_classifier",
+        confidence=0.99,
+        rationale="No memory-write threat detected.",
+    )
+
+
 @pytest.mark.asyncio
 async def test_save_memory_rejects_pl4_credential(tmp_path: Path) -> None:
     from app.tools.handlers.memory import save_memory
@@ -36,6 +48,10 @@ async def test_save_memory_masks_pii_before_explicit_overlay_write(tmp_path: Pat
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr("app.config.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+        mp.setattr(
+            "app.memory.write_gate.classify_memory_write_threat_with_llm",
+            _safe_memory_threat_classifier,
+        )
         result = await save_memory(
             agent_id,
             {
@@ -59,13 +75,25 @@ async def test_save_memory_masks_pii_before_explicit_overlay_write(tmp_path: Pat
 
 
 @pytest.mark.asyncio
-async def test_save_memory_rejects_form_contract_violation(tmp_path: Path) -> None:
+async def test_save_memory_holds_form_signal_for_model_revision(tmp_path: Path) -> None:
+    from app.memory.write_gate import MemoryThreatAssessment
     from app.tools.handlers.memory import save_memory
 
     agent_id = uuid.uuid4()
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr("app.config.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+
+        async def safe_classifier(**_kwargs):
+            return MemoryThreatAssessment(
+                rejected=False,
+                labels=[],
+                method="llm_classifier",
+                confidence=0.98,
+                rationale="No threat content.",
+            )
+
+        mp.setattr("app.memory.write_gate.classify_memory_write_threat_with_llm", safe_classifier)
         result = await save_memory(
             agent_id,
             {
@@ -74,5 +102,5 @@ async def test_save_memory_rejects_form_contract_violation(tmp_path: Path) -> No
             },
         )
 
-    assert result.startswith("[Rejected]")
-    assert "Form Contract violation" in result
+    assert result.startswith("[Held]")
+    assert "form_review_required" in result

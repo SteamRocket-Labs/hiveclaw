@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from typing import Any
@@ -18,29 +19,14 @@ def _slug(value: str) -> str:
     return normalized[:80] or "skill-candidate"
 
 
-def _skill_name(metadata: dict[str, Any], lesson: str) -> str:
-    for key in ("loaded_skill_name", "umbrella_skill_name", "skill_name"):
-        value = str(metadata.get(key) or "").strip()
-        if value:
-            return value
-    workflow = str(metadata.get("repeated_workflow_signature") or "").strip()
-    if workflow:
-        return _slug(workflow.split("->")[0].strip() + "-workflow")
-    words = [word for word in re.split(r"[^a-zA-Z0-9]+", lesson) if word]
-    return _slug("-".join(words[:4]) or "fast-reflection-skill")
-
-
-def _route(metadata: dict[str, Any]) -> str:
-    if str(metadata.get("loaded_skill_name") or "").strip():
-        return "patch_existing_skill"
-    if str(metadata.get("umbrella_skill_name") or "").strip():
-        return "patch_umbrella_skill"
-    if str(metadata.get("support_file_path") or "").strip():
-        return "patch_support_file"
-    return "new_class_skill"
-
-
-def _render_candidate_skill(*, skill_name: str, route: str, lesson: str, signal_type: str) -> str:
+def _render_candidate_skill(
+    *,
+    skill_name: str,
+    route: str,
+    lesson: str,
+    signal_type: str,
+    skill_decision: dict[str, Any],
+) -> str:
     return "\n".join(
         [
             "---",
@@ -59,6 +45,11 @@ def _render_candidate_skill(*, skill_name: str, route: str, lesson: str, signal_
             f"- signal_type: {signal_type}",
             "- status: candidate only; do not activate until verification and human review pass.",
             "",
+            "## Model Decision Evidence",
+            "```json",
+            json.dumps(skill_decision, ensure_ascii=False, indent=2, sort_keys=True),
+            "```",
+            "",
         ]
     )
 
@@ -74,12 +65,33 @@ def propose_skill_candidate_from_fast_reflection(
 
     signal_type = str(metadata.get("signal_type") or "")
     lesson = str(metadata.get("lesson") or "").strip()
-    route = _route(metadata)
-    if route == "new_class_skill" and signal_type not in {"workflow_correction", "repeated_task_pattern"}:
-        return {"status": "skipped", "reason": "signal_not_skill_candidate"}
+    decision = metadata.get("learning_brain_decision")
+    if not isinstance(decision, dict) or str(decision.get("container") or "") != "skill_candidate":
+        return {"status": "skipped", "reason": "model_did_not_nominate_skill"}
+    if str(decision.get("promotion_intent") or "") != "candidate":
+        return {"status": "skipped", "reason": "model_did_not_nominate_skill"}
+    skill_decision = decision.get("skill_decision")
+    if not isinstance(skill_decision, dict):
+        return {"status": "held", "reason": "incomplete_model_skill_decision"}
+    action = str(skill_decision.get("action") or "").strip()
+    if action == "new":
+        skill_name = str(skill_decision.get("candidate_name") or "").strip()
+        route = "new_class_skill"
+    elif action == "patch":
+        skill_name = str(skill_decision.get("target_skill") or "").strip()
+        route = "patch_existing_skill"
+    else:
+        return {"status": "held", "reason": "incomplete_model_skill_decision"}
+    if not skill_name:
+        return {"status": "held", "reason": "incomplete_model_skill_decision"}
 
-    skill_name = _skill_name(metadata, lesson)
-    draft = _render_candidate_skill(skill_name=skill_name, route=route, lesson=lesson, signal_type=signal_type)
+    draft = _render_candidate_skill(
+        skill_name=skill_name,
+        route=route,
+        lesson=lesson,
+        signal_type=signal_type,
+        skill_decision=skill_decision,
+    )
     guard = scan_skill_files([{"path": "candidate_signal.md", "content": draft}], source="fast_reflection")
     if not guard.allowed:
         record_skill_lifecycle_event(
@@ -103,10 +115,11 @@ def propose_skill_candidate_from_fast_reflection(
             "fast_reflection_candidate_id": fast_candidate.get("candidate_id"),
             "route": route,
             "signal_type": signal_type,
+            "model_skill_decision": skill_decision,
             "guard": guard.to_dict(),
             "progressive_disclosure": {
                 "kind": "candidate_summary",
-                "summary": lesson[:240],
+                "summary": lesson,
                 "declared_tools": [],
                 "support_files": ["candidate_signal.md"],
             },
@@ -144,7 +157,7 @@ def propose_skill_candidate_from_fast_reflection(
     record_verification_eval(workspace, candidate=candidate, verification_report=verification_report)
     update_skill_candidate_record(
         workspace,
-        workflow_signature=str(metadata.get("repeated_workflow_signature") or skill_name),
+        workflow_signature=str(fast_candidate.get("candidate_id") or skill_name),
         skill_name=skill_name,
         last_status="candidate",
         last_note=f"Created via fast reflection route={route}",

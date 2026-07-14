@@ -19,7 +19,7 @@ import logging
 
 from app.agents.subagent import _TYPE_PRESETS, SUBAGENT_TYPE_EXPLORER, SubagentSpec
 from app.agents.subagent_definition import render_subagent_definition, validate_subagent_name
-from app.services.llm_client import chat_complete
+from app.services.llm_client import chat_complete, get_max_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -167,7 +167,11 @@ async def generate_subagent_definition(
             {"role": "user", "content": user_message},
         ],
         temperature=0.4,
-        max_tokens=8192,  # CC-standard auxiliary-call floor
+        max_tokens=get_max_tokens(
+            str(model_config.get("provider") or ""),
+            str(model_config.get("model") or ""),
+            model_config.get("max_output_tokens"),
+        ),
         timeout=90.0,
         usage_source="subagent_generator",
         usage_agent_id=agent_id,

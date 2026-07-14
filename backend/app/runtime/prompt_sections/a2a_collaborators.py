@@ -18,6 +18,8 @@ def _agent_line(agent: dict[str, Any], *, relation_label: str) -> str:
 def build_a2a_collaborators_section(read_model: dict[str, Any] | None, *, max_chars: int | None = 6000) -> str:
     """Build prompt-facing A2A collaborator context from the canonical read model."""
 
+    del max_chars  # Compatibility-only: prompt-facing collaborator context is never mechanically pruned.
+
     if not read_model:
         return (
             "## A2A Collaborators\n\n"
@@ -65,7 +67,4 @@ def build_a2a_collaborators_section(read_model: dict[str, Any] | None, *, max_ch
             "that passes A2A policy."
         )
 
-    rendered = "## A2A Collaborators\n\n" + "\n\n".join(parts)
-    if max_chars is not None and len(rendered) > max_chars:
-        return rendered[:max_chars] + "\n...(A2A collaborator context truncated)"
-    return rendered
+    return "## A2A Collaborators\n\n" + "\n\n".join(parts)

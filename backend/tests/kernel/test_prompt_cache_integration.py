@@ -428,7 +428,10 @@ async def test_tool_expansion_rebuild_preserves_dynamic_memory_and_effective_suf
     )
 
     assert result.content == "done"
-    assert fake_client.calls[1]["tools"] is None
+    assert [tool["function"]["name"] for tool in fake_client.calls[1]["tools"]] == [
+        "delegate_to_agent",
+        "web_search",
+    ]
 
     expanded_system = fake_client.calls[1]["messages"][0].content
     expanded_dynamic = fake_client.calls[1]["messages"][-1].content
@@ -449,7 +452,7 @@ async def test_coordinator_and_delegation_suffixes_have_independent_budgets(monk
     tenant_id = uuid4()
     delegation_suffix = "DELEGATION_SUFFIX_START\n" + ("delegation body\n" * 700)
     coordinator_suffix = "COORDINATOR_SUFFIX_START\n" + ("coordinator body\n" * 700)
-    monkeypatch.setattr(coordinator, "get_coordinator_prompt", lambda: coordinator_suffix)
+    monkeypatch.setattr(coordinator, "get_coordinator_prompt", lambda **_kwargs: coordinator_suffix)
 
     fake_client = _FakeClient(
         [SimpleNamespace(content="done", tool_calls=[], reasoning_content=None, usage={"total_tokens": 3})]
@@ -497,7 +500,7 @@ async def test_coordinator_and_delegation_suffixes_have_independent_budgets(monk
 
 
 @pytest.mark.asyncio
-async def test_prompt_too_long_retry_preserves_dynamic_context_blocks():
+async def test_prompt_too_long_retry_preserves_dynamic_context_blocks(tmp_path):
     from app.kernel.contracts import InvocationRequest, RuntimeConfig
     from app.kernel.engine import AgentKernel, KernelDependencies
     from app.services.llm_utils import LLMError
@@ -543,6 +546,7 @@ async def test_prompt_too_long_retry_preserves_dynamic_context_blocks():
             agent_id=uuid4(),
             user_id=uuid4(),
             session_context=SessionContext(session_id="s-ptl", source="chat", channel="web"),
+            eviction_dir=tmp_path,
         )
     )
 

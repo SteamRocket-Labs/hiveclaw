@@ -62,17 +62,13 @@ def _parse_datetime(value: Any) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
-def _truncate(text: str, limit: int) -> str:
-    return text if len(text) <= limit else text[:limit] + "...<truncated>"
-
-
 def _result_payload(result: CodeExecutionResult) -> dict[str, Any]:
     return {
         "exit_code": result.exit_code,
         "timed_out": result.timed_out,
         "error": result.error,
-        "stdout": _truncate(result.stdout, 2000),
-        "stderr": _truncate(result.stderr, 1000),
+        "stdout": result.stdout,
+        "stderr": result.stderr,
         "provider_evidence": dict(result.evidence or {}),
     }
 
@@ -372,7 +368,7 @@ def _failed_scheduled_probe_report(provider: str, exc: BaseException) -> dict[st
             "network_denied": False,
             "workspace_round_trip": False,
         },
-        "error": {"type": type(exc).__name__, "message": str(exc)[:500]},
+        "error": {"type": type(exc).__name__, "message": str(exc)},
     }
 
 

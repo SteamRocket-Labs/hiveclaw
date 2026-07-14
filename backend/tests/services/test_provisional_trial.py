@@ -110,7 +110,7 @@ def _runtime_signal(
     )
 
 
-def test_provisional_trial_promotes_after_three_distinct_successes(tmp_path: Path) -> None:
+def test_provisional_trial_signals_request_model_review_without_auto_promotion(tmp_path: Path) -> None:
     from app.services.provisional_trial import load_provisional_trial
     from app.services.skill_evolution_registry import get_skill_evolution_entry
 
@@ -126,15 +126,41 @@ def test_provisional_trial_promotes_after_three_distinct_successes(tmp_path: Pat
     manifest = json.loads(
         (workspace / "evolution/skill_candidates/cand-trial/manifest.json").read_text(encoding="utf-8")
     )
-    assert first["trial_decision"] == "continue_trial"
-    assert second["trial_decision"] == "continue_trial"
-    assert third["trial_decision"] == "promoted"
-    assert trial is not None and trial["state"] == "promoted"
+    assert first["trial_decision"] == "model_review_pending"
+    assert second["trial_decision"] == "model_review_pending"
+    assert third["trial_decision"] == "model_review_pending"
+    assert trial is not None and trial["state"] == "provisional"
+    assert trial["review_status"] == "pending_model_review"
     assert len(trial["signals"]["positive"]) == 3
-    assert entry is not None and entry["state"] == "active"
-    assert entry["metadata"]["commit_status"] == "active"
-    assert manifest["status"] == "promoted"
+    assert entry is not None and entry["state"] == "provisional"
+    assert entry["metadata"]["commit_status"] == "provisional"
+    assert manifest["status"] == "provisional"
     assert (workspace / target_path).read_bytes() == b"# Demo\nnew\n"
+
+
+@pytest.mark.asyncio
+async def test_model_review_can_promote_after_reading_complete_trial_evidence(tmp_path: Path) -> None:
+    from app.services.provisional_trial import load_provisional_trial, review_pending_provisional_trials
+    from app.services.skill_evolution_registry import get_skill_evolution_entry
+
+    workspace = tmp_path / "agent"
+    _install_provisional(workspace)
+    _runtime_signal(workspace, status="success", minute=1, trace_id="trace-1")
+
+    async def reviewer(payload):
+        assert payload["candidate_content"] == "# Demo\nnew\n"
+        assert payload["baseline_content"] == "# Demo\nold\n"
+        assert payload["signals"]["positive"][0]["trace_id"] == "trace-1"
+        return {"decision": "promote", "reason": "The complete trial supports durable activation."}
+
+    report = await review_pending_provisional_trials(workspace, reviewer=reviewer)
+
+    trial = load_provisional_trial(workspace, "cand-trial")
+    entry = get_skill_evolution_entry(workspace, "Demo Skill")
+    assert report["reviewed"] == 1
+    assert report["decisions"] == {"promote": 1}
+    assert trial is not None and trial["state"] == "promoted"
+    assert entry is not None and entry["state"] == "active"
 
 
 def test_provisional_trial_deduplicates_runtime_evidence(tmp_path: Path) -> None:
@@ -203,9 +229,10 @@ def test_runtime_usage_signals_every_loaded_provisional_skill(tmp_path: Path) ->
     assert second is not None and len(second["signals"]["positive"]) == 1
 
 
-def test_provisional_patch_rolls_back_real_content_and_registry(tmp_path: Path) -> None:
+@pytest.mark.asyncio
+async def test_model_review_can_rollback_real_content_and_registry(tmp_path: Path) -> None:
     from app.services.evolution_ledger import load_evolution_ledger
-    from app.services.provisional_trial import load_provisional_trial
+    from app.services.provisional_trial import load_provisional_trial, review_pending_provisional_trials
     from app.services.skill_evolution_registry import get_skill_evolution_entry
 
     workspace = tmp_path / "agent"
@@ -213,6 +240,12 @@ def test_provisional_patch_rolls_back_real_content_and_registry(tmp_path: Path) 
 
     first = _runtime_signal(workspace, status="failed", minute=1, trace_id="trace-fail-1")
     second = _runtime_signal(workspace, status="failed", minute=2, trace_id="trace-fail-2")
+
+    async def reviewer(payload):
+        assert len(payload["signals"]["negative"]) == 2
+        return {"decision": "rollback", "reason": "The complete evidence shows a reusable regression."}
+
+    report = await review_pending_provisional_trials(workspace, reviewer=reviewer)
 
     trial = load_provisional_trial(workspace, "cand-trial")
     entry = get_skill_evolution_entry(workspace, "Demo Skill")
@@ -222,8 +255,9 @@ def test_provisional_patch_rolls_back_real_content_and_registry(tmp_path: Path) 
     rollback_events = [
         item for item in load_evolution_ledger(workspace) if item.get("schema") == "evolution_rollback_event.v1"
     ]
-    assert first["trial_decision"] == "continue_trial"
-    assert second["trial_decision"] == "rolled_back"
+    assert first["trial_decision"] == "model_review_pending"
+    assert second["trial_decision"] == "model_review_pending"
+    assert report["reviewed"] == 1
     assert (workspace / target_path).read_bytes() == b"# Demo\nold\n"
     assert trial is not None and trial["state"] == "rolled_back"
     assert entry is not None and entry["state"] == "active"
@@ -232,8 +266,9 @@ def test_provisional_patch_rolls_back_real_content_and_registry(tmp_path: Path) 
     assert rollback_events[-1]["restored_ref"] == trial["rollback"]["ref"]
 
 
-def test_provisional_new_skill_rollback_deletes_candidate_version(tmp_path: Path) -> None:
-    from app.services.provisional_trial import load_provisional_trial
+@pytest.mark.asyncio
+async def test_model_review_can_rollback_new_skill_by_deleting_candidate_version(tmp_path: Path) -> None:
+    from app.services.provisional_trial import load_provisional_trial, review_pending_provisional_trials
     from app.services.skill_evolution_registry import get_skill_evolution_entry
 
     workspace = tmp_path / "agent"
@@ -242,9 +277,14 @@ def test_provisional_new_skill_rollback_deletes_candidate_version(tmp_path: Path
     _runtime_signal(workspace, status="failed", minute=1, trace_id="trace-fail-1")
     result = _runtime_signal(workspace, status="workaround", minute=2, trace_id="trace-fail-2")
 
+    async def reviewer(payload):
+        return {"decision": "rollback", "reason": "The candidate consistently failed."}
+
+    await review_pending_provisional_trials(workspace, reviewer=reviewer)
+
     trial = load_provisional_trial(workspace, "cand-trial")
     entry = get_skill_evolution_entry(workspace, "Demo Skill")
-    assert result["trial_decision"] == "rolled_back"
+    assert result["trial_decision"] == "model_review_pending"
     assert not (workspace / target_path).exists()
     assert trial is not None and trial["rollback"]["action"] == "delete"
     assert entry is not None and entry["state"] == "rolled_back"
@@ -269,8 +309,9 @@ def test_provisional_trial_version_drift_blocks_automatic_decision(tmp_path: Pat
     assert entry is not None and entry["state"] == "needs_review"
 
 
-def test_legacy_provisional_without_backup_never_claims_false_rollback(tmp_path: Path) -> None:
-    from app.services.provisional_trial import load_provisional_trial
+@pytest.mark.asyncio
+async def test_legacy_provisional_without_backup_never_claims_false_rollback(tmp_path: Path) -> None:
+    from app.services.provisional_trial import load_provisional_trial, review_pending_provisional_trials
     from app.services.skill_evolution_registry import (
         ORIGIN_T3_AUTO_CREATED,
         get_skill_evolution_entry,
@@ -295,9 +336,14 @@ def test_legacy_provisional_without_backup_never_claims_false_rollback(tmp_path:
     _runtime_signal(workspace, status="failed", minute=1, trace_id="trace-fail-1")
     result = _runtime_signal(workspace, status="failed", minute=2, trace_id="trace-fail-2")
 
+    async def reviewer(payload):
+        return {"decision": "rollback", "reason": "The model recommends rollback."}
+
+    await review_pending_provisional_trials(workspace, reviewer=reviewer)
+
     trial = load_provisional_trial(workspace, "legacy-candidate")
     entry = get_skill_evolution_entry(workspace, "Demo Skill")
-    assert result["trial_decision"] == "needs_review"
+    assert result["trial_decision"] == "model_review_pending"
     assert target.read_bytes() == b"# Demo\nlegacy provisional\n"
     assert trial is not None and trial["rollback"]["action"] == "manual_review"
     assert entry is not None and entry["state"] == "needs_review"

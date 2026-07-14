@@ -9,8 +9,8 @@ import type { RunTimelineSnapshot } from './chatDisclosureReducer';
 // - running: shimmering "Working" header + live elapsed seconds
 // - done: ALWAYS collapses by default to a single boundary row (process
 //   recedes; the answer is the star) — including runs that contain reasoning/a2a steps
-// - command details render head/tail-clipped output with exit-code badge,
-//   not a raw JSON blob
+// - command details render a concise preview plus a recoverable complete output,
+//   not a raw JSON blob or an irreversible middle-section deletion
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -103,7 +103,7 @@ describe('RunDisclosureBlock', () => {
     expect(markup).toMatch(/1[0-9]s/); // live elapsed derived from startedAt
   });
 
-  it('renders command details as head/tail-clipped output with an exit code badge', () => {
+  it('renders command details with a preview, complete recoverable output, and an exit code badge', () => {
     const longOutput = Array.from({ length: 20 }, (_, index) => `line-${index + 1}`).join('\n');
     const markup = renderToStaticMarkup(
       <RunDisclosureBlock
@@ -130,8 +130,9 @@ describe('RunDisclosureBlock', () => {
     expect(markup).toContain('session-tui-exec-output');
     expect(markup).toContain('line-1');
     expect(markup).toContain('line-20');
-    expect(markup).toContain('…'); // clipped middle
-    expect(markup).not.toContain('line-10<'); // middle lines dropped
+    expect(markup).toContain('…'); // concise preview
+    expect(markup).toContain('Show complete output');
+    expect(markup).toContain('line-10'); // full evidence remains recoverable
     expect(markup).toContain('exit 1');
   });
 });

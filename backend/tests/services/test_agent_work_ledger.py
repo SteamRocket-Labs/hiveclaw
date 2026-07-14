@@ -166,6 +166,37 @@ def test_agent_work_ledger_display_view_is_chat_safe_and_counted(tmp_path):
     assert view["path"].endswith(f"runtime_artifacts/long_tasks/{runtime_task_id.hex}/work_ledger.json")
 
 
+def test_agent_work_ledger_display_view_preserves_complete_cognitive_evidence() -> None:
+    from app.services.agent_work_ledger import build_agent_work_ledger_display_view
+
+    ledger = {
+        "schema": "agent_work_ledger.v1",
+        "todo_items": [],
+        "verification": [],
+        "progress": [
+            {"id": f"progress-{index}", "status": "running", "delta": f"progress evidence {index}"}
+            for index in range(25)
+        ],
+        "failures": [
+            {"id": f"failure-{index}", "attempt": "test", "error": f"failure evidence {index}"} for index in range(12)
+        ],
+        "replans": [{"id": f"replan-{index}", "summary": f"replan evidence {index}"} for index in range(12)],
+        "findings": [{"id": f"finding-{index}", "summary": f"finding evidence {index}"} for index in range(12)],
+    }
+
+    view = build_agent_work_ledger_display_view(ledger)
+
+    assert view is not None
+    assert len(view["progress"]) == 25
+    assert view["progress"][0]["delta"] == "progress evidence 0"
+    assert len(view["failures"]) == 12
+    assert view["failures"][0]["error"] == "failure evidence 0"
+    assert len(view["replans"]) == 12
+    assert view["replans"][0]["summary"] == "replan evidence 0"
+    assert len(view["findings"]) == 12
+    assert view["findings"][0]["summary"] == "finding evidence 0"
+
+
 def test_agent_work_ledger_view_rejects_path_traversal_task_ids(tmp_path):
     from app.services.agent_work_ledger import read_agent_work_ledger_view
 

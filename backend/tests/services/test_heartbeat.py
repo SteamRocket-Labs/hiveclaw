@@ -72,6 +72,30 @@ class _TrackedSession(_FakeSession):
         return False
 
 
+@pytest.mark.asyncio
+async def test_heartbeat_runtime_task_preserves_complete_result_summary(monkeypatch):
+    from app.services import heartbeat
+
+    captured: dict = {}
+
+    async def fake_update(runtime_task_id, **fields):
+        captured["runtime_task_id"] = runtime_task_id
+        captured.update(fields)
+
+    monkeypatch.setattr(heartbeat, "update_runtime_task_record", fake_update)
+    summary = ("complete-heartbeat-evidence\n" * 150) + "DECISIVE_HEARTBEAT_TAIL"
+
+    await heartbeat._update_heartbeat_runtime_task(
+        "runtime-task-1",
+        status="failed",
+        result_summary=summary,
+        metadata_json={"error": summary},
+    )
+
+    assert captured["result_summary"] == summary
+    assert captured["metadata_json"]["error"] == summary
+
+
 def test_read_t2_full_uses_canonical_segment_packages_not_legacy_learnings(tmp_path, monkeypatch):
     from app.services import heartbeat
 
@@ -213,21 +237,21 @@ def test_parse_heartbeat_outcome_failure():
 
 
 def test_parse_heartbeat_outcome_fallback_heartbeat_ok():
-    """When no structured tags, falls back to HEARTBEAT_OK detection."""
+    """The exact legacy machine contract remains a noop without inventing a score."""
     from app.services.heartbeat import _parse_heartbeat_outcome
 
     outcome, score = _parse_heartbeat_outcome("HEARTBEAT_OK")
     assert outcome == "noop"
-    assert score == 0
+    assert score is None
 
 
 def test_parse_heartbeat_outcome_fallback_action():
-    """When no tags and no HEARTBEAT_OK, assume action_taken."""
+    """Natural-language replies remain unstructured instead of keyword-classified."""
     from app.services.heartbeat import _parse_heartbeat_outcome
 
     outcome, score = _parse_heartbeat_outcome("I successfully fixed the error in ERRORS.md")
-    assert outcome == "action_taken"
-    assert score == 5
+    assert outcome == "unstructured"
+    assert score is None
 
 
 def test_parse_heartbeat_outcome_none_reply():
@@ -284,8 +308,7 @@ def test_parse_heartbeat_no_false_positive_on_error_word():
     from app.services.heartbeat import _parse_heartbeat_outcome
 
     outcome, _score = _parse_heartbeat_outcome("I successfully fixed the error in ERRORS.md")
-    # Should be action_taken (no structured tags, no HEARTBEAT_OK) — NOT failure
-    assert outcome == "action_taken"
+    assert outcome == "unstructured"
 
 
 def test_heartbeat_lease_is_mutually_exclusive():
@@ -356,8 +379,7 @@ async def test_heartbeat_distributed_lease_failure_fails_closed(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_build_evolution_context_cold_start_bootstrap():
-    """When agent has < 3 non-heartbeat activities, avoid agentic bootstrap actions."""
+async def test_build_evolution_context_does_not_assign_semantics_from_cold_start_count():
     from app.services.heartbeat import _build_evolution_context
 
     agent_id = uuid4()
@@ -366,16 +388,12 @@ async def test_build_evolution_context_cold_start_bootstrap():
         SimpleNamespace(action_type="heartbeat", summary="Heartbeat: OK", detail_json={}),
     ]
     result = await _build_evolution_context(agent_id, activities)
-    assert "Bootstrap Mode" in result
-    assert "does not perform bootstrap actions" in result
-    assert "Read soul.md" not in result
-    assert "Write to evolution/" not in result
-    assert "direct T3 consolidation" in result
+    assert "Bootstrap Context" not in result
+    assert "little non-heartbeat activity" not in result
 
 
 @pytest.mark.asyncio
-async def test_build_evolution_context_not_cold_after_enough_activities():
-    """When agent has >= 3 non-heartbeat activities, no bootstrap section."""
+async def test_build_evolution_context_never_uses_activity_count_as_bootstrap_lane():
     from app.services.heartbeat import _build_evolution_context
 
     agent_id = uuid4()
@@ -386,7 +404,7 @@ async def test_build_evolution_context_not_cold_after_enough_activities():
         SimpleNamespace(action_type="heartbeat", summary="OK", detail_json={}),
     ]
     result = await _build_evolution_context(agent_id, activities)
-    assert "Bootstrap Mode" not in result
+    assert "Bootstrap Context" not in result
 
 
 @pytest.mark.asyncio
@@ -411,7 +429,7 @@ async def test_build_evolution_context_includes_error_details():
 
 
 @pytest.mark.asyncio
-async def test_build_evolution_context_suggests_skill_candidate_for_repeated_workflow():
+async def test_build_evolution_context_exposes_repeated_workflow_without_platform_candidate_label():
     from app.services.heartbeat import _build_evolution_context
 
     agent_id = uuid4()
@@ -428,13 +446,11 @@ async def test_build_evolution_context_suggests_skill_candidate_for_repeated_wor
 
     result = await _build_evolution_context(agent_id, activities)
 
-    # P4 candidate lane: the nudge records evidence through T3 job artifacts;
-    # the skill distillation lane owns creation.
-    assert "Skill Candidate Opportunity" in result
-    assert "consolidation_pitch.md" in result
-    assert "skill_candidate" in result
-    assert "load_skill" not in result
-    assert "workflow" in result.lower()
+    assert "Complete Tool Usage Evidence" in result
+    assert "web_search (x3)" in result
+    assert "web_fetch (x3)" in result
+    assert "Skill Candidate Opportunity" not in result
+    assert "model decides" in result.lower()
 
 
 @pytest.mark.asyncio

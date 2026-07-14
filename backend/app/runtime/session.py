@@ -173,14 +173,12 @@ class SessionContext:
             self.metadata["discovered_tools"] = list(self.discovered_tools)
 
     def track_file_read(self, path: str, *, snapshot: dict[str, Any] | None = None) -> None:
-        """Record a file read for post-compact restoration. Keeps last 10 unique paths."""
+        """Record a file read for durable post-compact restoration."""
         if path in self.recent_files:
             self.recent_files.remove(path)
         self.recent_files.append(path)
         if snapshot is not None:
             self.file_snapshots[path] = dict(snapshot)
-        if len(self.recent_files) > 10:
-            self.recent_files.pop(0)
 
     def track_skill_loaded(self, skill_name: str, *, now: float | None = None) -> None:
         """Record a skill activation. Bumps refcount and refreshes last_used_at."""
@@ -257,7 +255,7 @@ class SessionContext:
         snapshot: dict[str, Any] | None = None,
         lineage: dict[str, Any] | None = None,
     ) -> None:
-        """Record a file write for post-compact restoration. Keeps last 5."""
+        """Record a file write for durable post-compact restoration."""
         if path in self.recent_writes:
             self.recent_writes.remove(path)
         self.recent_writes.append(path)
@@ -269,8 +267,6 @@ class SessionContext:
             self.current_turn_write_snapshots[path] = dict(snapshot)
         if isinstance(lineage, dict):
             self.current_turn_write_lineage.append(dict(lineage))
-        if len(self.recent_writes) > 10:
-            self.recent_writes.pop(0)
         # Keep the complete active-turn manifest. It is cleared by begin_turn;
         # truncating it made later files impossible to prove or deliver.
 
@@ -281,24 +277,18 @@ class SessionContext:
         self.current_turn_write_lineage.clear()
 
     def track_tool_outcome(self, tool_name: str, summary: str) -> None:
-        """Record a high-value tool outcome for post-compact restoration. Keeps last 5."""
-        self.recent_tool_outcomes.append({"tool": tool_name, "summary": summary[:300]})
-        if len(self.recent_tool_outcomes) > 10:
-            self.recent_tool_outcomes.pop(0)
+        """Record a high-value tool outcome without deleting semantic tails."""
+        self.recent_tool_outcomes.append({"tool": tool_name, "summary": summary})
 
     def track_external_ref(self, ref: str) -> None:
-        """Record an external resource reference. Keeps last 5."""
+        """Record an external resource reference for durable recovery."""
         if ref not in self.recent_external_refs:
             self.recent_external_refs.append(ref)
-        if len(self.recent_external_refs) > 5:
-            self.recent_external_refs.pop(0)
 
     def track_pending_item(self, item: str) -> None:
         """Record an unfinished work item for post-compact restoration."""
         if item not in self.pending_items:
             self.pending_items.append(item)
-        if len(self.pending_items) > 10:
-            self.pending_items.pop(0)
 
 
 # Live interactive user channels that may explicitly enter Plan Mode. Real

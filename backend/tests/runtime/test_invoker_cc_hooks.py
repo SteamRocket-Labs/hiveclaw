@@ -172,7 +172,7 @@ async def test_invoker_fails_closed_when_required_entry_hook_crashes(monkeypatch
         raise RuntimeError("policy dependency unavailable")
 
     hook_registry.clear()
-    hook_registry.register(HookEvent(event), broken, key=f"required:{event}")
+    hook_registry.register(HookEvent(event), broken, key=f"required:{event}", failure_mode="required")
     monkeypatch.setattr("app.runtime.invoker.get_agent_kernel", lambda: _FakeKernel())
     try:
         result = await invoke_agent(

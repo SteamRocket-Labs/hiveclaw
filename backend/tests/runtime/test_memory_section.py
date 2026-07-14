@@ -109,15 +109,12 @@ class TestMemorySectionRegressionAgainstOldWording:
 # ── C3: trims must signpost the retrieval path (docs/agent-lifecycle-cc-alignment.md 主题 C) ──
 
 
-def test_memory_context_trim_signposts_retrieval() -> None:
-    """A trimmed memory context must tell the model HOW to get the rest
-    (search_memory), not just that something was cut."""
+def test_memory_context_budget_is_advisory_and_preserves_decisive_tail() -> None:
     from app.runtime.prompt_sections.memory import build_memory_section
 
-    section = build_memory_section("fact line\n" * 500, budget_chars=300)
+    decisive_tail = "MEMORY_DECISIVE_TAIL"
+    snapshot = ("fact line\n" * 500) + decisive_tail
+    section = build_memory_section(snapshot, budget_chars=300)
 
-    assert "trimmed" in section
-    # the marker LINE itself must carry the retrieval path (template prose
-    # mentioning search_memory elsewhere doesn't count)
-    marker_line = next(line for line in section.splitlines() if "trimmed" in line)
-    assert "search_memory" in marker_line
+    assert snapshot in section
+    assert decisive_tail in section

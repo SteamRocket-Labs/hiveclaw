@@ -34,7 +34,7 @@ def _draft():
     )
 
 
-def test_confirmation_binds_authenticated_user_to_exact_version_and_hash():
+def test_confirmation_binds_authenticated_user_to_server_current_version():
     from app.services.hr_creation_service import HrCreationConflict, confirm_hr_creation_draft_record
 
     draft = _draft()
@@ -45,7 +45,6 @@ def test_confirmation_binds_authenticated_user_to_exact_version_and_hash():
         draft,
         confirming_user_id=confirmer,
         blueprint_version=2,
-        blueprint_hash="sha256:canonical",
         now=now,
     )
 
@@ -58,7 +57,6 @@ def test_confirmation_binds_authenticated_user_to_exact_version_and_hash():
         draft,
         confirming_user_id=confirmer,
         blueprint_version=2,
-        blueprint_hash="sha256:canonical",
         now=now + timedelta(seconds=1),
     )
     assert draft.confirmed_at == now
@@ -69,9 +67,22 @@ def test_confirmation_binds_authenticated_user_to_exact_version_and_hash():
             stale,
             confirming_user_id=stale.requested_by_user_id,
             blueprint_version=1,
-            blueprint_hash="sha256:canonical",
             now=now,
         )
+
+
+def test_legacy_client_hash_is_ignored_as_an_authority_claim():
+    from app.services.hr_creation_service import confirm_hr_creation_draft_record
+
+    draft = _draft()
+    confirm_hr_creation_draft_record(
+        draft,
+        confirming_user_id=draft.requested_by_user_id,
+        blueprint_version=draft.blueprint_version,
+        blueprint_hash="client-value-is-not-authority",
+    )
+
+    assert draft.status == "confirmed"
 
 
 def test_confirmation_rejects_blueprints_with_unresolved_creation_gates():

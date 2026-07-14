@@ -530,7 +530,7 @@ async def _execute_fanout_step(
         await journal.record_step_suspended(run_id, step.id, reason=reason)
         return WorkflowRunOutcome(status="suspended", reason=reason, outputs=outputs)
     if failures:
-        error = "; ".join(failures[:5])
+        error = "; ".join(failures)
         await journal.record_step_failed(run_id, step.id, error=error)
         return WorkflowRunOutcome(status="failed", reason=error, outputs=outputs)
 

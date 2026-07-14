@@ -171,7 +171,7 @@ async def test_check_requires_bound_requester_even_when_plan_version_hash_match(
 
 @pytest.mark.asyncio
 async def test_check_needs_plan_with_bare_confirmed_plan_id(patched_gate):
-    """A plan id alone is not enough; handoff must bind version + hash."""
+    """A plan id alone is not enough; the visible version guards staleness."""
     gate, session = patched_gate
     agent_id = uuid4()
     plan = _make_confirmed_plan(session, agent_id=agent_id)
@@ -184,7 +184,7 @@ async def test_check_needs_plan_with_bare_confirmed_plan_id(patched_gate):
     )
 
     assert decision.allowed is False
-    assert decision.reason == "missing_plan_version_hash"
+    assert decision.reason == "missing_plan_version"
 
 
 @pytest.mark.asyncio
@@ -314,22 +314,52 @@ async def test_check_needs_plan_on_version_mismatch(patched_gate):
 
 
 @pytest.mark.asyncio
-async def test_check_needs_plan_on_hash_mismatch(patched_gate):
+async def test_check_uses_server_plan_hash_even_when_legacy_client_hash_differs(patched_gate, monkeypatch):
+    from types import SimpleNamespace
+
+    from app.services import plan_mode_gate as gate_module
+
     gate, session = patched_gate
     agent_id = uuid4()
     plan = _make_confirmed_plan(session, agent_id=agent_id, version=1, plan_hash="sha256:abc")
+    plan.tenant_id = uuid4()
+    plan.confirmed_by_user_id = uuid4()
+    captured = {}
+
+    async def consume(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            lease_id=uuid4(),
+            binding=SimpleNamespace(
+                plan_id=plan.id,
+                plan_version=1,
+                plan_hash="sha256:abc",
+                canonical_args_hash="args-hash",
+                target_ref="trigger:new",
+            ),
+        )
+
+    monkeypatch.setattr(gate_module, "consume_plan_authorization_lease", consume)
 
     decision = await gate.check(
         session,
         agent_id=agent_id,
+        requester_user_id=uuid4(),
         action_kind="create_enabled_trigger",
+        target_ref="trigger:new",
         confirmed_plan_id=plan.id,
         plan_version=1,
         plan_hash="sha256:tampered",
+        action_artifact={"name": "daily"},
+        evidence_id="trigger-create:1",
     )
 
-    assert decision.allowed is False
-    assert decision.reason == "hash_mismatch"
+    assert decision.allowed is True
+    assert captured["plan_version"] == 1
+    assert captured["plan_hash"] == "sha256:abc"
+    assert decision.canonical_plan_id == str(plan.id)
+    assert decision.canonical_plan_version == 1
+    assert decision.canonical_plan_hash == "sha256:abc"
 
 
 # ---------------------------------------------------------------------------

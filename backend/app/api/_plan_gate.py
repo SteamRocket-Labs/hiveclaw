@@ -79,13 +79,21 @@ def stamp_plan_gate_decision(
     runtime_task_id: Any = None,
     evidence_id: Any = None,
 ) -> dict:
-    """Persist the consumed lease proof on the durable action artifact."""
+    """Persist the consumed lease proof and server-canonical plan binding."""
+
+    plan_id = getattr(decision, "canonical_plan_id", None) or confirmed_plan_id
+    plan_version = getattr(decision, "canonical_plan_version", None)
+    if plan_version is None:
+        plan_version = confirmed_plan_version
+    # Hash authority never falls back to a request-body echo. A successful
+    # confirmed-plan decision always carries the server-canonical hash.
+    plan_hash = getattr(decision, "canonical_plan_hash", None)
 
     return stamp_confirmed_plan_provenance(
         artifact,
-        plan_id=confirmed_plan_id,
-        plan_version=confirmed_plan_version,
-        plan_hash=confirmed_plan_hash,
+        plan_id=plan_id,
+        plan_version=plan_version,
+        plan_hash=plan_hash,
         authorization_lease_id=getattr(decision, "authorization_lease_id", None),
         canonical_args_hash=getattr(decision, "canonical_args_hash", None),
         target_ref=getattr(decision, "target_ref", None),

@@ -264,7 +264,8 @@ async def test_dynamic_workflow_run_updates_decision_entry_with_outcome_and_repa
     assert entry["repair_plan"]["repairable"] is True
     assert entry["repair_plan"]["strategy"] == "resume_from_failed_step"
     assert entry["repair_plan"]["failed_step_count"] == 1
-    assert entry["promotion_eligible"] is False
+    assert "promotion_eligible" not in entry
+    assert entry["model_promotion_review"] == "not_requested"
 
 
 async def test_start_run_projects_workflow_progress_into_parent_session(service, tenant_id, monkeypatch):

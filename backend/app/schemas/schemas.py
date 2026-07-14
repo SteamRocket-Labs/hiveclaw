@@ -71,7 +71,7 @@ class UserUpdate(BaseModel):
 # ─── Agent ──────────────────────────────────────────────
 
 AgentClass = Literal["internal_system", "internal_tenant", "external_gateway", "external_api"]
-AgentExecutionMode = Literal["standard", "coordinator"]
+AgentExecutionMode = Literal["standard", "coordinator", "coordinator_strict"]
 
 
 class SmartModelRoutingConfig(BaseModel):

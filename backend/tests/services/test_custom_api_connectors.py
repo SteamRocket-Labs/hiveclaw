@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -87,3 +88,76 @@ def test_build_custom_api_tool_payload_keeps_secret_out_of_tool_config() -> None
     assert "agb_123456" not in json.dumps(payload.tool_config, ensure_ascii=False)
     assert payload.secret_config == {"api_key": "agb_123456"}
     assert payload.config_schema["fields"][0]["type"] == "password"
+
+
+@pytest.mark.asyncio
+async def test_custom_api_success_preserves_complete_response_body() -> None:
+    from app.services.custom_api_connectors import (
+        execute_prepared_custom_api_request,
+        prepare_custom_api_request,
+    )
+
+    tail = "CUSTOM_API_DECISIVE_TAIL"
+    body = "b" * 21000 + tail
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def request(self, *_args, **_kwargs):
+            return SimpleNamespace(status_code=200, text=body, headers={})
+
+    prepared = prepare_custom_api_request(
+        tool_name="custom_api__example__read",
+        tool_config={"base_url": "https://api.example.com", "action": {"method": "GET", "path": "/v1/read"}},
+        secret_config={},
+        arguments={},
+    )
+
+    result = await execute_prepared_custom_api_request(
+        "custom_api__example__read",
+        prepared,
+        http_client_factory=lambda **_kwargs: _Client(),
+    )
+
+    assert tail in result
+    assert "...[truncated]" not in result
+
+
+@pytest.mark.asyncio
+async def test_custom_api_http_error_preserves_complete_error_evidence() -> None:
+    from app.services.custom_api_connectors import (
+        execute_prepared_custom_api_request,
+        prepare_custom_api_request,
+    )
+
+    tail = "CUSTOM_API_ERROR_DECISIVE_TAIL"
+    body = "e" * 900 + tail
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def request(self, *_args, **_kwargs):
+            return SimpleNamespace(status_code=422, text=body, headers={})
+
+    prepared = prepare_custom_api_request(
+        tool_name="custom_api__example__read",
+        tool_config={"base_url": "https://api.example.com", "action": {"method": "GET", "path": "/v1/read"}},
+        secret_config={},
+        arguments={},
+    )
+
+    result = await execute_prepared_custom_api_request(
+        "custom_api__example__read",
+        prepared,
+        http_client_factory=lambda **_kwargs: _Client(),
+    )
+
+    assert tail in result

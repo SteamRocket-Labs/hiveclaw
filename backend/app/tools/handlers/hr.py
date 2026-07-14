@@ -14,7 +14,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from app.services.archetype import apply_archetype_defaults
+from app.services.archetype import Archetype, apply_archetype_defaults
 
 from app.api.skills import _fetch_github_directory, _get_github_token, _parse_github_url
 from app.services.capability_reuse_service import reuse_existing_skill_for_agent
@@ -77,10 +77,12 @@ SOURCE_ATTRIBUTIONS_SCHEMA = {
 
 
 def _trim_role_description_for_prompt_guard(value: object) -> str:
-    role_description = str(value or "").strip()
-    if len(role_description) <= ROLE_DESCRIPTION_MAX_CHARS:
-        return role_description
-    return role_description[:ROLE_DESCRIPTION_MAX_CHARS].rstrip()
+    """Normalize without silently rewriting model-authored content.
+
+    The tool schema owns the explicit maxLength boundary. Internal callers and
+    tests that bypass schema validation retain the full value for evidence.
+    """
+    return str(value or "").strip()
 
 
 def _stamp_hr_blueprint_trigger_exemption(config: dict | None) -> dict:
@@ -102,87 +104,7 @@ def _default_ready_now() -> list[str]:
     ]
 
 
-_PLATFORM_SKILL_RULES = (
-    {
-        "skill_name": "feishu-integration",
-        "keywords": ("飞书", "lark", "feishu", "飞书通知", "飞书文档", "飞书表格", "base", "wiki"),
-    },
-    {
-        "skill_name": "dingtalk-integration",
-        "keywords": ("钉钉", "dingtalk"),
-    },
-)
-
-_OFFICE_DELIVERABLE_KEYWORDS = (
-    "pdf",
-    "ppt",
-    "pptx",
-    "slides",
-    "演示文稿",
-    "汇报材料",
-    "汇报",
-    "word",
-    "docx",
-    "文档",
-    "excel",
-    "xlsx",
-    "表格",
-)
-
-_RESEARCH_WORKFLOW_KEYWORDS = (
-    "日报",
-    "周报",
-    "研究",
-    "投研",
-    "研报",
-    "行业动态",
-    "融资动态",
-    "扫描",
-    "monitor",
-    "report",
-)
-
 _SKILLS_REF_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+$")
-
-_HIGH_RISK_KEYWORDS = (
-    "美股",
-    "股票",
-    "证券",
-    "金融",
-    "投资",
-    "投研",
-    "交易",
-    "财报",
-    "个股",
-    "荐股",
-    "喊单",
-    "medical",
-    "health",
-    "legal",
-    "finance",
-    "stock",
-    "trading",
-    "investment",
-    "securities",
-)
-
-_EXTERNAL_VISIBLE_KEYWORDS = (
-    "telegram",
-    "twitter",
-    " x ",
-    "推特",
-    "飞书群",
-    "微信群",
-    "社群",
-    "社区",
-    "发布",
-    "推送",
-    "对外",
-    "public",
-    "publish",
-    "post",
-    "send",
-)
 
 
 def _parse_list(value) -> list:
@@ -357,13 +279,13 @@ def _classify_creation_risk(
     focus_content: str,
     triggers: list[dict],
     welcome_message: str,
+    declared_risk_class: str = "standard",
 ) -> str:
-    blob = _text_blob(role_description, primary_users, core_outputs, focus_content, triggers, welcome_message)
-    high_domain = any(keyword.lower() in blob for keyword in _HIGH_RISK_KEYWORDS)
-    external_visible = any(keyword.lower() in blob for keyword in _EXTERNAL_VISIBLE_KEYWORDS)
-    if high_domain or external_visible:
-        return "high"
-    return "standard"
+    del role_description, primary_users, core_outputs, focus_content, triggers, welcome_message
+    risk_class = str(declared_risk_class or "standard").strip().lower()
+    if risk_class not in {"standard", "high"}:
+        raise ValueError(f"invalid risk_class: {declared_risk_class!r}")
+    return risk_class
 
 
 def _build_creation_flow_gates(
@@ -754,7 +676,7 @@ async def _refine_soul_inputs(
     )
 
     try:
-        from app.services.llm_client import chat_complete
+        from app.services.llm_client import chat_complete, get_max_tokens
 
         response = await chat_complete(
             provider=model_config["provider"],
@@ -763,7 +685,11 @@ async def _refine_soul_inputs(
             base_url=model_config.get("base_url"),
             messages=[{"role": "user", "content": prompt}],
             temperature=0.4,
-            max_tokens=8192,  # CC-standard auxiliary-call floor
+            max_tokens=get_max_tokens(
+                str(model_config.get("provider") or ""),
+                str(model_config.get("model") or ""),
+                model_config.get("max_output_tokens"),
+            ),
             timeout=45.0,
             usage_source="hr_soul_refine",
             usage_agent_id=usage_agent_id,
@@ -826,35 +752,6 @@ def _collect_trigger_reasons(triggers: list[dict]) -> str:
     return " ".join(str(trigger.get("reason", "")).strip() for trigger in triggers if trigger.get("reason"))
 
 
-def _build_capability_text_blob(
-    *,
-    role_description: str,
-    primary_users: list[str],
-    core_outputs: list[str],
-    focus_content: str,
-    heartbeat_topics: str,
-    welcome_message: str,
-    triggers: list[dict],
-) -> str:
-    trigger_names = " ".join(str(trigger.get("name", "")).strip() for trigger in triggers if trigger.get("name"))
-    return " ".join(
-        [
-            role_description,
-            " ".join(primary_users),
-            " ".join(core_outputs),
-            focus_content,
-            heartbeat_topics,
-            welcome_message,
-            _collect_trigger_reasons(triggers),
-            trigger_names,
-        ]
-    ).lower()
-
-
-def _contains_any(text: str, keywords: tuple[str, ...]) -> bool:
-    return any(keyword in text for keyword in keywords)
-
-
 def _derive_capability_routing(
     *,
     role_description: str,
@@ -868,43 +765,16 @@ def _derive_capability_routing(
     mcp_server_ids: list[str],
     clawhub_slugs: list[str],
 ) -> dict:
-    text_blob = _build_capability_text_blob(
-        role_description=role_description,
-        primary_users=primary_users,
-        core_outputs=core_outputs,
-        focus_content=focus_content,
-        heartbeat_topics=heartbeat_topics,
-        welcome_message=welcome_message,
-        triggers=triggers,
-    )
-
+    del role_description, primary_users, core_outputs, focus_content, heartbeat_topics, welcome_message, triggers
     recommended_skill_names: list[str] = []
-    for rule in _PLATFORM_SKILL_RULES:
-        if _contains_any(text_blob, rule["keywords"]):
-            recommended_skill_names.append(rule["skill_name"])
-
-    recommended_skill_names = _dedupe_strings(recommended_skill_names)
     install_now_skill_names = _dedupe_strings(list(requested_skill_names))
-    deferred_skill_names = [
-        skill_name for skill_name in recommended_skill_names if skill_name not in install_now_skill_names
+    deferred_skill_names: list[str] = []
+    builtin_paths = [
+        "builtin tools + default skills are available; the Agent chooses which governed capability to use."
     ]
-
-    builtin_paths: list[str] = []
-    if _contains_any(text_blob, _OFFICE_DELIVERABLE_KEYWORDS):
-        builtin_paths.append("default productivity skills already cover PDF/DOCX/XLSX/PPTX document workflows.")
-    if _contains_any(text_blob, _RESEARCH_WORKFLOW_KEYWORDS):
-        builtin_paths.append(
-            "builtin workspace + web research + trigger stack already cover recurring research/report workflows."
-        )
-    if not builtin_paths:
-        builtin_paths.append("builtin tools + default skills already cover the first version of this workflow.")
-
     warnings: list[str] = []
-    if (mcp_server_ids or clawhub_slugs) and _contains_any(text_blob, _OFFICE_DELIVERABLE_KEYWORDS):
-        warnings.append(
-            "Requested external installs for office deliverables that default productivity skills already cover. "
-            "Keep MCP/ClawHub only if a builtin dry run proves insufficient."
-        )
+    if mcp_server_ids or clawhub_slugs:
+        warnings.append("Requested external capabilities require source, permission, and first-task verification.")
 
     return {
         "recommended_skill_names": recommended_skill_names,
@@ -927,20 +797,10 @@ def _derive_manual_steps(
     heartbeat_topics: str,
     welcome_message: str,
 ) -> list[str]:
-    text_blob = " ".join(
-        [
-            role_description.lower(),
-            focus_content.lower(),
-            heartbeat_topics.lower(),
-            welcome_message.lower(),
-            _collect_trigger_reasons(triggers).lower(),
-        ]
-    )
+    del role_description, focus_content, heartbeat_topics, welcome_message
     steps: list[str] = []
-    if "feishu-integration" in skill_names or "飞书" in text_blob or "lark" in text_blob:
+    if "feishu-integration" in skill_names:
         steps.append("完成 Feishu 渠道绑定或 Feishu CLI 认证，验证消息与办公工具是否可用。")
-    if "email" in text_blob or "邮件" in text_blob:
-        steps.append("完成 Email SMTP/IMAP 配置，并先用 Test Connection 验证发送链路。")
     if mcp_server_ids:
         steps.append("准备并验证所选 MCP server 所需的 API key / OAuth 授权。")
     if clawhub_slugs:
@@ -1029,7 +889,7 @@ async def _install_external_skill_from_skills_ref(
             raise RuntimeError(result.error)
         if result.exit_code != 0:
             message = result.stderr or result.stdout
-            raise RuntimeError(message[:300] or "skills.sh install failed")
+            raise RuntimeError(message or "skills.sh install failed")
 
         sandbox_skills = exec_home / ".agents" / "skills"
         if not sandbox_skills.exists():
@@ -1119,6 +979,7 @@ def _build_blueprint_preview_payload(arguments: dict) -> dict:
     )
     archetype_filled = apply_archetype_defaults(
         {
+            "archetype": arguments.get("archetype") or "generalist",
             "role_description": role_description,
             "primary_users": primary_users,
             "core_outputs": core_outputs,
@@ -1215,6 +1076,7 @@ def _build_blueprint_preview_payload(arguments: dict) -> dict:
         focus_content=focus_content,
         triggers=triggers,
         welcome_message=welcome_message,
+        declared_risk_class=str(arguments.get("risk_class") or "standard"),
     )
     gates, missing_gates = _build_creation_flow_gates(
         name=name,
@@ -1545,6 +1407,16 @@ async def create_digital_employee(request: ToolExecutionRequest) -> str:
                     "description": "Existing draft ID when revising a preview; omit to create a new draft.",
                 },
                 "name": {"type": "string", "description": "Proposed agent name."},
+                "archetype": {
+                    "type": "string",
+                    "enum": [item.value for item in Archetype],
+                    "description": "Explicit Agent/user-authored archetype. Omit for neutral generalist defaults.",
+                },
+                "risk_class": {
+                    "type": "string",
+                    "enum": ["standard", "high"],
+                    "description": "Explicit review classification; prose is never keyword-classified.",
+                },
                 "role_description": {
                     "type": "string",
                     "maxLength": ROLE_DESCRIPTION_MAX_CHARS,

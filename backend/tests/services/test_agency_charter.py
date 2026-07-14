@@ -36,10 +36,23 @@ def test_owner_charter_classifies_full_authority_confirm_first_and_never_do() ->
         never_do=("share credentials",),
     )
 
-    assert charter.zone_for("prepare local research brief for Alice") == CharterZone.FULL_AUTHORITY
-    assert charter.zone_for("send external vendor reply about pricing") == CharterZone.CONFIRM_FIRST
-    assert charter.zone_for("share credentials with a vendor") == CharterZone.NEVER_DO
+    assert charter.zone_for("prepare local research brief") == CharterZone.FULL_AUTHORITY
+    assert charter.zone_for("send external vendor reply") == CharterZone.CONFIRM_FIRST
+    assert charter.zone_for("share credentials") == CharterZone.NEVER_DO
     assert charter.zone_for("do an uncategorized action") == CharterZone.CONFIRM_FIRST
+
+
+def test_owner_charter_does_not_fuzzily_classify_natural_language() -> None:
+    charter = OwnerAgencyCharter(
+        owner_id="owner-1",
+        owner_name="Alice",
+        full_authority=("prepare local research brief",),
+        confirm_first=(),
+        never_do=("share credentials",),
+    )
+
+    assert charter.zone_for("prepare local research brief for Alice") == CharterZone.CONFIRM_FIRST
+    assert charter.zone_for("write a training example about how not to share credentials") == CharterZone.CONFIRM_FIRST
 
 
 def test_company_boundary_conflict_is_exposed_above_owner_authority() -> None:
@@ -54,19 +67,19 @@ def test_company_boundary_conflict_is_exposed_above_owner_authority() -> None:
             company_id="tenant-1",
             company_name="Acme",
             goals=("Protect Acme reputation.",),
-            boundaries=("external refund commitment requires finance approval",),
+            boundaries=("external_refund_commitment",),
             escalation_targets=("company-admin",),
         ),
         owner_charter=OwnerAgencyCharter(
             owner_id="owner-1",
             owner_name="Alice",
-            full_authority=("external refund commitment",),
+            full_authority=("external_refund_commitment",),
             confirm_first=(),
             never_do=(),
         ),
     )
 
-    posture = context.action_posture("send external refund commitment to customer")
+    posture = context.action_posture("external_refund_commitment")
 
     assert posture.charter_zone == CharterZone.FULL_AUTHORITY
     assert posture.company_boundary_conflict is True

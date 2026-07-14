@@ -62,6 +62,20 @@ def test_extract_plan_confirmation_request_matches_explicit_plan_id_and_latest()
     assert extract_plan_confirmation_request("确认一下收件人是谁") is None
 
 
+def test_trusted_plan_decline_checks_complete_authorized_history() -> None:
+    from app.services.plan_mode_core import PLAN_MODE_RECOMMENDATION_MARKER, trusted_decline_metadata
+
+    messages = [
+        {"role": "assistant", "content": PLAN_MODE_RECOMMENDATION_MARKER},
+        *({"role": "user", "content": f"follow-up-{index}"} for index in range(9)),
+    ]
+
+    result = trusted_decline_metadata(content="不需要计划模式", messages=messages)
+
+    assert result is not None
+    assert result["reason"] == "user_declined_recommended_plan_mode"
+
+
 # ---------------------------------------------------------------------------
 # Canonical hashing
 # ---------------------------------------------------------------------------
@@ -239,7 +253,7 @@ def test_validate_plan_json_rejects_risk_level_out_of_enum():
     assert any("risk" in e for e in errors)
 
 
-# ── CC alignment §4.1: plan_markdown is the body + meta-steps rejected ──
+# ── CC alignment §4.1: plan_markdown is the Agent-authored body ──
 
 
 def test_build_plan_skeleton_includes_plan_markdown_field():
@@ -250,7 +264,7 @@ def test_build_plan_skeleton_includes_plan_markdown_field():
     assert skeleton["plan_markdown"] == ""
 
 
-def test_validate_plan_json_rejects_plan_mode_meta_steps():
+def test_validate_plan_json_does_not_keyword_reject_agent_authored_steps():
     from app.services.plan_mode_core import build_plan_skeleton, validate_plan_json
 
     plan = build_plan_skeleton(intent_type="in_session_execution", title="t", original_request="r")
@@ -262,8 +276,7 @@ def test_validate_plan_json_rejects_plan_mode_meta_steps():
         {"order": 2, "description": "等待用户确认"},
     ]
 
-    errors = validate_plan_json(plan)
-    assert any("meta-step" in e for e in errors), errors
+    assert validate_plan_json(plan) == []
 
 
 def test_validate_plan_json_accepts_real_execution_steps():
@@ -492,7 +505,7 @@ def test_validate_confirmation_version_mismatch_is_conflict():
     assert check.error_code == "version_mismatch"
 
 
-def test_validate_confirmation_hash_mismatch_is_conflict():
+def test_validate_confirmation_ignores_legacy_client_hash():
     from app.services.plan_mode_core import validate_confirmation
 
     user_id = uuid4()
@@ -505,8 +518,24 @@ def test_validate_confirmation_hash_mismatch_is_conflict():
         submitted_hash="sha256:DIFFERENT",
         confirming_user_id=user_id,
     )
-    assert check.ok is False
-    assert check.error_code == "hash_mismatch"
+    assert check.ok is True
+    assert check.error_code is None
+
+
+def test_validate_confirmation_does_not_require_client_hash():
+    from app.services.plan_mode_core import validate_confirmation
+
+    user_id = uuid4()
+    check = validate_confirmation(
+        status="awaiting_confirmation",
+        stored_version=1,
+        stored_hash="sha256:server-current",
+        requested_by_user_id=user_id,
+        submitted_version=1,
+        confirming_user_id=user_id,
+    )
+
+    assert check.ok is True
 
 
 def test_validate_confirmation_wrong_status_cannot_confirm():

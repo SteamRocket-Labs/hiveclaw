@@ -98,9 +98,18 @@ def _anysearch_auth_mode(config: dict) -> str:
     return _optional_enum(mode, _WEB_PROVIDER_AUTH_MODES, default="auto") or "auto"
 
 
-def _truncate_result_text(text: object, max_chars: int) -> str:
+def _requested_max_chars(arguments: dict) -> int | None:
+    """Return only a limit explicitly selected by the calling model."""
+
+    raw = arguments.get("max_chars")
+    if raw in (None, ""):
+        return None
+    return max(1, _safe_int(raw, 1))
+
+
+def _truncate_result_text(text: object, max_chars: int | None) -> str:
     result = str(text or "").strip()
-    if len(result) > max_chars:
+    if max_chars is not None and len(result) > max_chars:
         return result[:max_chars] + f"\n\n[... truncated at {max_chars} chars]"
     return result
 
@@ -231,7 +240,7 @@ def _http_error(tool_name: str, *, provider: str, status_code: int, detail: str,
     return render_tool_error(
         tool_name=tool_name,
         error_class=error_class,
-        message=f"{tool_name} failed with HTTP {status_code}: {detail[:200]}",
+        message=f"{tool_name} failed with HTTP {status_code}: {detail}",
         provider=provider,
         http_status=status_code,
         retryable=retryable,
@@ -430,7 +439,7 @@ async def _call_anysearch_mcp_tool(public_tool_name: str, mcp_tool_name: str, ar
                 data = {}
 
             if resp.status_code != 200:
-                last_error = f"AnySearch MCP {mcp_tool_name} failed with HTTP {resp.status_code}: {resp.text[:200]}"
+                last_error = f"AnySearch MCP {mcp_tool_name} failed with HTTP {resp.status_code}: {resp.text}"
                 if api_key and resp.status_code in retryable_statuses:
                     continue
                 return _http_error(
@@ -443,7 +452,7 @@ async def _call_anysearch_mcp_tool(public_tool_name: str, mcp_tool_name: str, ar
 
             rpc_error = _anysearch_json_rpc_error_message(data)
             if rpc_error:
-                last_error = f"AnySearch MCP {mcp_tool_name} failed: {rpc_error[:200]}"
+                last_error = f"AnySearch MCP {mcp_tool_name} failed: {rpc_error}"
                 if api_key and _anysearch_should_retry_json_rpc_error(rpc_error):
                     continue
                 return render_tool_error(
@@ -485,7 +494,7 @@ async def _anysearch_get_sub_domains(arguments: dict) -> str:
         )
     payload: dict[str, object] = {}
     if domains:
-        payload["domains"] = ",".join(domains[:5])
+        payload["domains"] = ",".join(domains)
     elif domain:
         payload["domain"] = domain
     return await _call_anysearch_mcp_tool("anysearch_get_sub_domains", "get_sub_domains", payload)
@@ -673,7 +682,7 @@ async def _web_search(arguments: dict) -> str:
             return render_tool_error(
                 tool_name="web_search",
                 error_class="provider_error",
-                message=f"web_search failed: {str(e)[:200]}",
+                message=f"web_search failed: {str(e)}",
                 provider=engine,
                 retryable=True,
                 actionable_hint="Retry with a more specific query or switch to another search provider.",
@@ -681,7 +690,7 @@ async def _web_search(arguments: dict) -> str:
         return render_tool_error(
             tool_name="web_search",
             error_class="provider_error",
-            message=f"web_search provider '{engine}' failed: {str(e)[:200]}",
+            message=f"web_search provider '{engine}' failed: {str(e)}",
             provider=engine,
             retryable=True,
             actionable_hint="Retry later or switch to a different search provider.",
@@ -712,9 +721,9 @@ async def _search_searxng(query: str, searxng_url: str, max_results: int, langua
     except Exception:
         data = {}
     if resp.status_code != 200:
-        return f"❌ SearXNG search failed: HTTP {resp.status_code}: {resp.text[:200]}"
+        return f"❌ SearXNG search failed: HTTP {resp.status_code}: {resp.text}"
     if not isinstance(data, dict):
-        return f"❌ SearXNG search failed: unexpected response {str(data)[:200]}"
+        return f"❌ SearXNG search failed: unexpected response {str(data)}"
 
     results = []
     for item in data.get("results", [])[:max_results]:
@@ -725,7 +734,7 @@ async def _search_searxng(query: str, searxng_url: str, max_results: int, langua
         snippet = item.get("content") or item.get("snippet") or ""
         if not (title or url or snippet):
             continue
-        results.append(f"**{title}**\n{url}\n{snippet[:300]}")
+        results.append(f"**{title}**\n{url}\n{snippet}")
 
     if not results:
         return f'🔍 No results found for "{query}"'
@@ -781,17 +790,17 @@ async def _search_anysearch(query: str, config: dict, max_results: int, language
                 data = {}
 
             if resp.status_code != 200:
-                last_error = f"AnySearch search failed: HTTP {resp.status_code}: {resp.text[:200]}"
+                last_error = f"AnySearch search failed: HTTP {resp.status_code}: {resp.text}"
                 if api_key and resp.status_code in retryable_statuses:
                     continue
                 return f"❌ {last_error}"
 
             result_data = data.get("data") if isinstance(data, dict) and isinstance(data.get("data"), dict) else data
             if not isinstance(result_data, dict):
-                return f"❌ AnySearch search failed: unexpected response {str(data)[:200]}"
+                return f"❌ AnySearch search failed: unexpected response {str(data)}"
             raw_results = result_data.get("results")
             if not isinstance(raw_results, list):
-                return f"❌ AnySearch search failed: unexpected response {str(data)[:200]}"
+                return f"❌ AnySearch search failed: unexpected response {str(data)}"
 
             results = []
             for item in raw_results[:max_results]:
@@ -802,7 +811,7 @@ async def _search_anysearch(query: str, config: dict, max_results: int, language
                 snippet = item.get("snippet") or item.get("content") or ""
                 if not (title or url or snippet):
                     continue
-                results.append(f"**{title}**\n{url}\n{str(snippet)[:300]}")
+                results.append(f"**{title}**\n{url}\n{str(snippet)}")
 
             if not results:
                 return f'🔍 No results found for "{query}"'
@@ -823,7 +832,7 @@ async def _search_duckduckgo(query: str, max_results: int) -> str:
         )
 
     if resp.status_code >= 300:
-        return f"❌ DuckDuckGo search failed: HTTP {resp.status_code}: {resp.text[:200]}"
+        return f"❌ DuckDuckGo search failed: HTTP {resp.status_code}: {resp.text}"
 
     results = []
     blocks = re.findall(
@@ -1063,15 +1072,13 @@ async def _advanced_web_fetch(arguments: dict) -> str:
         )
 
     provider = _optional_enum(arguments.get("provider"), _ADVANCED_WEB_FETCH_PROVIDERS, default="auto") or "auto"
-    max_chars = min(_safe_int(arguments.get("max_chars"), 12000), 30000)
+    max_chars = _requested_max_chars(arguments)
     prefer_rendered = _optional_bool(arguments.get("prefer_rendered"), False)
     skip_core = _optional_bool(arguments.get("skip_core"), False)
 
     async def _call_provider(name: str) -> str:
         if name == "web_fetch":
-            return await _web_fetch(
-                {"url": normalized_url, "max_chars": min(max_chars, 20000), _SKIP_CRAWLER_FALLBACK: True}
-            )
+            return await _web_fetch({"url": normalized_url, "max_chars": max_chars, _SKIP_CRAWLER_FALLBACK: True})
         if name == "firecrawl":
             return await _firecrawl_fetch(
                 {"url": normalized_url, "max_chars": max_chars, _SKIP_WEB_FETCH_FALLBACK: True}
@@ -1119,12 +1126,12 @@ async def _advanced_web_fetch(arguments: dict) -> str:
         result = await _call_provider(candidate)
         if not _provider_result_failed(result):
             return result
-        failures.append(f"{candidate}: {result.splitlines()[0][:160] if result else 'empty result'}")
+        failures.append(f"{candidate}: {result if result else 'empty result'}")
 
     return render_tool_error(
         tool_name="advanced_web_fetch",
         error_class="provider_error",
-        message=f"advanced_web_fetch could not read {normalized_url} with providers: {'; '.join(failures)[:500]}",
+        message=f"advanced_web_fetch could not read {normalized_url} with providers: {'; '.join(failures)}",
         provider="advanced_web_fetch",
         retryable=True,
         actionable_hint=(
@@ -1134,7 +1141,7 @@ async def _advanced_web_fetch(arguments: dict) -> str:
     )
 
 
-async def _try_crawler_fetch_fallback(normalized_url: str, max_chars: int) -> tuple[str, str] | None:
+async def _try_crawler_fetch_fallback(normalized_url: str, max_chars: int | None) -> tuple[str, str] | None:
     firecrawl_result = await _firecrawl_fetch(
         {
             "url": normalized_url,
@@ -1163,7 +1170,7 @@ async def _web_fetch_failure_result(
     arguments: dict,
     *,
     normalized_url: str,
-    max_chars: int,
+    max_chars: int | None,
     error_class: str,
     message: str,
     http_status: int | None = None,
@@ -1253,7 +1260,7 @@ def _convert_fetched_content(
     )
 
 
-def _render_web_fetch_conversion(normalized_url: str, result: DocumentConversionResult, max_chars: int) -> str:
+def _render_web_fetch_conversion(normalized_url: str, result: DocumentConversionResult, max_chars: int | None) -> str:
     return f"📄 **Fetched content from: {normalized_url}**\n\n{render_conversion_preview(result, max_chars=max_chars)}"
 
 
@@ -1289,7 +1296,7 @@ async def _web_fetch(arguments: dict) -> str:
             ),
         )
 
-    max_chars = min(_safe_int(arguments.get("max_chars", 8000), 8000), 20000)
+    max_chars = _requested_max_chars(arguments)
 
     try:
         async with httpx.AsyncClient(follow_redirects=True, timeout=20) as client:
@@ -1302,7 +1309,7 @@ async def _web_fetch(arguments: dict) -> str:
                 normalized_url=normalized_url,
                 max_chars=max_chars,
                 error_class=error_class,
-                message=f"web_fetch failed with HTTP {resp.status_code}: {resp.text[:200]}",
+                message=f"web_fetch failed with HTTP {resp.status_code}: {resp.text}",
                 http_status=resp.status_code,
                 retryable=retryable,
                 actionable_hint="Retry with another URL or fall back to search if the page is blocked.",
@@ -1339,22 +1346,6 @@ async def _web_fetch(arguments: dict) -> str:
                     message=f"web_fetch could not extract text from the PDF at {normalized_url}",
                     retryable=True,
                     actionable_hint="The PDF may be scanned or image-only; try a crawler-backed reader or another source.",
-                )
-            if len(text) > max_chars:
-                converted = DocumentConversionResult(
-                    markdown=text[:max_chars] + f"\n\n[... truncated at {max_chars} chars]",
-                    plain_text=converted.plain_text,
-                    source_path=converted.source_path,
-                    source_uri=converted.source_uri,
-                    source_sha256=converted.source_sha256,
-                    source_mime_type=converted.source_mime_type,
-                    engine=converted.engine,
-                    used_ocr=converted.used_ocr,
-                    used_vision=converted.used_vision,
-                    page_count=converted.page_count,
-                    artifact_markdown_path=converted.artifact_markdown_path,
-                    artifact_metadata_path=converted.artifact_metadata_path,
-                    warnings=converted.warnings,
                 )
             return _render_web_fetch_conversion(normalized_url, converted, max_chars)
         else:
@@ -1405,7 +1396,7 @@ async def _web_fetch(arguments: dict) -> str:
                 retryable=False,
                 actionable_hint="Try another URL or use search to find a cleaner source page.",
             )
-        if len(text) > max_chars:
+        if max_chars is not None and len(text) > max_chars:
             text = text[:max_chars] + f"\n\n[... truncated at {max_chars} chars]"
         return f"📄 **Fetched content from: {normalized_url}**\n\n{text}"
     except Exception as e:
@@ -1414,7 +1405,7 @@ async def _web_fetch(arguments: dict) -> str:
             normalized_url=normalized_url,
             max_chars=max_chars,
             error_class="provider_error",
-            message=f"web_fetch failed: {str(e)[:300]}",
+            message=f"web_fetch failed: {str(e)}",
             http_status=None,
             retryable=True,
             actionable_hint="Retry with another URL or use search to discover an alternate page.",
@@ -1512,7 +1503,7 @@ async def _firecrawl_search(arguments: dict) -> str:
             )
             if not (title or url or text):
                 continue
-            results.append(f"**{title}**\n{url}\n{str(text)[:500]}")
+            results.append(f"**{title}**\n{url}\n{str(text)}")
         if not results:
             return f'🔍 No Firecrawl search results found for "{query}"'
         return f'🔍 Firecrawl search for "{query}" ({len(results)} items):\n\n' + "\n\n---\n\n".join(results)
@@ -1520,7 +1511,7 @@ async def _firecrawl_search(arguments: dict) -> str:
         return render_tool_error(
             tool_name="firecrawl_search",
             error_class="provider_error",
-            message=f"firecrawl_search failed: {str(e)[:300]}",
+            message=f"firecrawl_search failed: {str(e)}",
             provider="firecrawl",
             retryable=True,
             actionable_hint="Retry later or use another advanced search provider.",
@@ -1558,7 +1549,7 @@ async def _tavily_extract(arguments: dict) -> str:
             actionable_hint="Set auth_mode=auto/keyless for no-key Tavily Extract, or configure a Tavily API key.",
         )
 
-    max_chars = min(_safe_int(arguments.get("max_chars"), 12000), 30000)
+    max_chars = _requested_max_chars(arguments)
     extract_depth = _optional_enum(arguments.get("extract_depth"), _TAVILY_EXTRACT_DEPTHS, default="basic") or "basic"
     output_format = _optional_enum(arguments.get("format"), {"markdown", "text"}, default="markdown") or "markdown"
     payload: dict[str, object] = {
@@ -1606,7 +1597,7 @@ async def _tavily_extract(arguments: dict) -> str:
         return render_tool_error(
             tool_name="tavily_extract",
             error_class="provider_error",
-            message=f"tavily_extract failed: {str(e)[:300]}",
+            message=f"tavily_extract failed: {str(e)}",
             provider="tavily",
             retryable=True,
             actionable_hint="Retry later or use another advanced_web_fetch provider.",
@@ -1653,13 +1644,13 @@ async def _exa_fetch(arguments: dict) -> str:
         result = await client.call_tool("web_fetch_exa", {"url": normalized_url})
         if _provider_result_failed(result):
             return result
-        max_chars = min(_safe_int(arguments.get("max_chars"), 12000), 30000)
+        max_chars = _requested_max_chars(arguments)
         return f"📄 **Exa MCP fetched content from: {normalized_url}**\n\n{_truncate_result_text(result, max_chars)}"
     except Exception as e:
         return render_tool_error(
             tool_name="exa_fetch",
             error_class="provider_error",
-            message=f"exa_fetch failed: {str(e)[:300]}",
+            message=f"exa_fetch failed: {str(e)}",
             provider="exa",
             retryable=True,
             actionable_hint="Retry later or use another advanced_web_fetch provider.",
@@ -1698,7 +1689,7 @@ async def _firecrawl_fetch(arguments: dict) -> str:
             actionable_hint="Set auth_mode=auto/keyless for no-key Firecrawl scrape, or configure a Firecrawl API key.",
         )
 
-    max_chars = min(_safe_int(arguments.get("max_chars", 12000), 12000), 30000)
+    max_chars = _requested_max_chars(arguments)
     request_payload: dict[str, object] = {
         "url": normalized_url,
         "formats": _enum_list(arguments.get("formats"), _FIRECRAWL_FORMATS, ["markdown"]),
@@ -1747,7 +1738,7 @@ async def _firecrawl_fetch(arguments: dict) -> str:
             return render_tool_fallback(
                 tool_name="firecrawl_fetch",
                 error_class=classify_http_status(resp.status_code)[0],
-                message=f"firecrawl_fetch failed with HTTP {resp.status_code}: {str(data)[:200] or resp.text[:200]}",
+                message=f"firecrawl_fetch failed with HTTP {resp.status_code}: {str(data) or resp.text}",
                 provider="firecrawl",
                 http_status=resp.status_code,
                 retryable=classify_http_status(resp.status_code)[1],
@@ -1789,7 +1780,7 @@ async def _firecrawl_fetch(arguments: dict) -> str:
                 fallback_tool="web_fetch",
                 fallback_result=fallback_result,
             )
-        if len(text) > max_chars:
+        if max_chars is not None and len(text) > max_chars:
             text = text[:max_chars] + f"\n\n[... truncated at {max_chars} chars]"
         return f"📄 **Firecrawl content from: {normalized_url}**\n\n{text}"
     except Exception as e:
@@ -1797,7 +1788,7 @@ async def _firecrawl_fetch(arguments: dict) -> str:
             return render_tool_error(
                 tool_name="firecrawl_fetch",
                 error_class="provider_error",
-                message=f"firecrawl_fetch failed: {str(e)[:300]}",
+                message=f"firecrawl_fetch failed: {str(e)}",
                 provider="firecrawl",
                 retryable=True,
                 actionable_hint="Retry later or use another crawler provider.",
@@ -1808,7 +1799,7 @@ async def _firecrawl_fetch(arguments: dict) -> str:
         return render_tool_fallback(
             tool_name="firecrawl_fetch",
             error_class="provider_error",
-            message=f"firecrawl_fetch failed: {str(e)[:300]}",
+            message=f"firecrawl_fetch failed: {str(e)}",
             provider="firecrawl",
             retryable=True,
             actionable_hint="Firecrawl failed unexpectedly, so the tool fell back to web_fetch.",
@@ -1847,7 +1838,7 @@ async def _xcrawl_scrape(arguments: dict) -> str:
             actionable_hint="Configure XCrawl before using this tool, or fall back to firecrawl_fetch/web_fetch.",
         )
 
-    max_chars = min(_safe_int(arguments.get("max_chars", 12000), 12000), 30000)
+    max_chars = _requested_max_chars(arguments)
     request_options: dict[str, object] = {
         "only_main_content": _optional_bool(arguments.get("only_main_content"), True),
         "block_ads": _optional_bool(arguments.get("block_ads"), True),
@@ -1912,7 +1903,7 @@ async def _xcrawl_scrape(arguments: dict) -> str:
             return render_tool_fallback(
                 tool_name="xcrawl_scrape",
                 error_class=classify_http_status(resp.status_code)[0],
-                message=f"xcrawl_scrape failed with HTTP {resp.status_code}: {str(data)[:200] or resp.text[:200]}",
+                message=f"xcrawl_scrape failed with HTTP {resp.status_code}: {str(data) or resp.text}",
                 provider="xcrawl",
                 http_status=resp.status_code,
                 retryable=classify_http_status(resp.status_code)[1],
@@ -1954,7 +1945,7 @@ async def _xcrawl_scrape(arguments: dict) -> str:
                 fallback_tool="firecrawl_fetch",
                 fallback_result=fallback_result,
             )
-        if len(text) > max_chars:
+        if max_chars is not None and len(text) > max_chars:
             text = text[:max_chars] + f"\n\n[... truncated at {max_chars} chars]"
         return f"📄 **XCrawl content from: {normalized_url}**\n\n{text}"
     except Exception as e:
@@ -1962,7 +1953,7 @@ async def _xcrawl_scrape(arguments: dict) -> str:
             return render_tool_error(
                 tool_name="xcrawl_scrape",
                 error_class="provider_error",
-                message=f"xcrawl_scrape failed: {str(e)[:300]}",
+                message=f"xcrawl_scrape failed: {str(e)}",
                 provider="xcrawl",
                 retryable=True,
                 actionable_hint="Retry later or use another source URL.",
@@ -1973,7 +1964,7 @@ async def _xcrawl_scrape(arguments: dict) -> str:
         return render_tool_fallback(
             tool_name="xcrawl_scrape",
             error_class="provider_error",
-            message=f"xcrawl_scrape failed: {str(e)[:300]}",
+            message=f"xcrawl_scrape failed: {str(e)}",
             provider="xcrawl",
             retryable=True,
             actionable_hint="XCrawl failed unexpectedly, so the tool fell back to firecrawl_fetch.",
@@ -2026,14 +2017,14 @@ async def _search_exa(
 
     if resp.status_code != 200:
         detail = data.get("error") if isinstance(data, dict) else None
-        return f"❌ Exa search failed: HTTP {resp.status_code}: {str(detail or data)[:200]}"
+        return f"❌ Exa search failed: HTTP {resp.status_code}: {str(detail or data)}"
     if "results" not in data:
-        return f"❌ Exa search failed: {data.get('error', str(data)[:200])}"
+        return f"❌ Exa search failed: {data.get('error', str(data))}"
 
     results = []
     for item in data["results"][:max_results]:
         summary = item.get("text") or item.get("summary") or ""
-        results.append(f"**{item.get('title', '')}**\n{item.get('url', '')}\n{summary[:200]}")
+        results.append(f"**{item.get('title', '')}**\n{item.get('url', '')}\n{summary}")
     if not results:
         return f'🔍 No results found for "{query}"'
     return f'🔍 Exa search for "{query}" ({len(results)} items):\n\n' + "\n\n---\n\n".join(results)
@@ -2143,17 +2134,16 @@ async def _search_tavily(
 
     if resp.status_code != 200:
         detail = data.get("error") if isinstance(data, dict) else None
-        return f"❌ Tavily search failed: HTTP {resp.status_code}: {str(detail or data)[:200]}"
+        return f"❌ Tavily search failed: HTTP {resp.status_code}: {str(detail or data)}"
     if "results" not in data:
-        return f"❌ Tavily search failed: {data.get('error', str(data)[:200])}"
+        return f"❌ Tavily search failed: {data.get('error', str(data))}"
 
     results = []
     answer = str(data.get("answer") or "").strip()
     if answer:
-        results.append(f"**Tavily answer:**\n{answer[:1000]}")
+        results.append(f"**Tavily answer:**\n{answer}")
     results.extend(
-        f"**{r.get('title', '')}**\n{r.get('url', '')}\n{r.get('content', '')[:400]}"
-        for r in data["results"][:max_results]
+        f"**{r.get('title', '')}**\n{r.get('url', '')}\n{r.get('content', '')}" for r in data["results"][:max_results]
     )
     if not results:
         return f'🔍 No results found for "{query}"'
@@ -2179,11 +2169,11 @@ async def _search_google(query: str, api_key: str, max_results: int, language: s
     if resp.status_code != 200:
         error = data.get("error") if isinstance(data, dict) else None
         detail = error.get("message") if isinstance(error, dict) else error
-        return f"❌ Google search failed: HTTP {resp.status_code}: {str(detail or data)[:200]}"
+        return f"❌ Google search failed: HTTP {resp.status_code}: {str(detail or data)}"
     if isinstance(data, dict) and data.get("error"):
         error = data["error"]
         detail = error.get("message") if isinstance(error, dict) else error
-        return f"❌ Google search failed: {str(detail)[:200]}"
+        return f"❌ Google search failed: {str(detail)}"
     results = [
         f"**{item.get('title', '')}**\n{item.get('link', '')}\n{item.get('snippet', '')}"
         for item in data.get("items", [])[:max_results]
@@ -2208,11 +2198,11 @@ async def _search_bing(query: str, api_key: str, max_results: int, language: str
     if resp.status_code != 200:
         error = data.get("error") if isinstance(data, dict) else None
         detail = error.get("message") if isinstance(error, dict) else error
-        return f"❌ Bing search failed: HTTP {resp.status_code}: {str(detail or data)[:200]}"
+        return f"❌ Bing search failed: HTTP {resp.status_code}: {str(detail or data)}"
     if isinstance(data, dict) and data.get("error"):
         error = data["error"]
         detail = error.get("message") if isinstance(error, dict) else error
-        return f"❌ Bing search failed: {str(detail)[:200]}"
+        return f"❌ Bing search failed: {str(detail)}"
     results = [
         f"**{item.get('name', '')}**\n{item.get('url', '')}\n{item.get('snippet', '')}"
         for item in data.get("webPages", {}).get("value", [])[:max_results]
@@ -2369,7 +2359,7 @@ async def _execute_mcp_tool(tool_name: str, arguments: dict, agent_id: "uuid.UUI
         client = MCPClient(mcp_url, api_key=direct_api_key)
         return await client.call_tool(mcp_name, arguments)
     except Exception as e:
-        return f"❌ MCP tool execution error: {str(e)[:200]}"
+        return f"❌ MCP tool execution error: {str(e)}"
 
 
 async def _execute_via_smithery_connect(
@@ -2458,7 +2448,7 @@ async def _execute_via_smithery_connect(
                     return render_tool_error(
                         tool_name=tool_name,
                         error_class="provider_bad_response",
-                        message=f"Smithery returned an unexpected response for {tool_name}: {raw[:300]}",
+                        message=f"Smithery returned an unexpected response for {tool_name}: {raw}",
                         provider="smithery",
                         retryable=False,
                         actionable_hint="Retry later or re-authorize the MCP server connection.",
@@ -2475,7 +2465,7 @@ async def _execute_via_smithery_connect(
                 return render_tool_error(
                     tool_name=tool_name,
                     error_class="provider_error",
-                    message=f"MCP tool error: {msg[:300]}",
+                    message=f"MCP tool error: {msg}",
                     provider="smithery",
                     retryable=False,
                     actionable_hint="Retry after checking MCP authorization and server health.",
@@ -2504,7 +2494,7 @@ async def _execute_via_smithery_connect(
         return render_tool_error(
             tool_name=tool_name,
             error_class="provider_error",
-            message=f"Smithery Connect failed for {tool_name}: {str(e)[:200]}",
+            message=f"Smithery Connect failed for {tool_name}: {str(e)}",
             provider="smithery",
             retryable=True,
             actionable_hint="Retry later or re-authorize the Smithery/MCP connection.",
@@ -2558,7 +2548,7 @@ async def _smithery_auto_recover(
             )
         return None
     except Exception as e:
-        return f"❌ Auto-recovery failed: {str(e)[:200]}"
+        return f"❌ Auto-recovery failed: {e}"
 
 
 async def _discover_resources(arguments: dict) -> str:

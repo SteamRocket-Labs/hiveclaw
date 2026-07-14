@@ -8,13 +8,13 @@
  *   GET    /agents/{agentId}/plans/{planId}         fetch one
  *   POST   /agents/{agentId}/plans/{planId}/revise  supersede + regenerate
  *   POST   /agents/{agentId}/plans/{planId}/regenerate retry same failed draft
- *   POST   /agents/{agentId}/plans/{planId}/confirm confirm (version + hash bound)
+ *   POST   /agents/{agentId}/plans/{planId}/confirm confirm server-current version
  *   POST   /agents/{agentId}/plans/{planId}/confirm-and-handoff confirm + start
  *   POST   /agents/{agentId}/plans/{planId}/reject  reject
  *   POST   /agents/{agentId}/plans/{planId}/handoff hand off to execution
  *
- * The confirm body binds to `plan_version` + `plan_hash` so the user confirms a
- * specific immutable plan version, never a mutable chat blob (§8.2).
+ * The confirm body carries `plan_version` as a stale-view guard. The server
+ * resolves the canonical plan/hash from its own durable row (§8.2).
  */
 
 import { get, post } from '../core';
@@ -169,10 +169,9 @@ export interface PlanReviseInput {
   fill?: Record<string, unknown>;
 }
 
-/** Confirm body — binds to the exact immutable version (§8.2). */
+/** Confirm body — the server resolves the canonical hash for this version. */
 export interface PlanConfirmInput {
   plan_version: number;
-  plan_hash: string;
   reason?: string;
 }
 

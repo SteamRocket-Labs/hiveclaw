@@ -69,8 +69,9 @@ def _skill_usage_status(*, terminal_status: str, assistant_text: str) -> str:
             return "noop"
 
     normalized = str(terminal_status or "").strip().lower()
-    if normalized in {"completed", "complete", "success", "succeeded", "done"}:
-        return "success"
+    # Terminal runtime state proves only that the invocation lifecycle ended.
+    # It cannot decide whether a loaded Skill was useful or worthy of change.
+    # Semantic status must come from the model-authored OUTCOME declaration.
     if normalized in {"failed", "failure", "error", "killed", "cancelled", "canceled", "timeout", "timed_out"}:
         return "failed"
     if normalized == "noop":

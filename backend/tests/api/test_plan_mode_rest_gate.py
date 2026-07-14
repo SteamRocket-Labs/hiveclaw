@@ -21,6 +21,7 @@ not the gate's internal decision logic (separately covered by
 
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -110,6 +111,13 @@ class _StubGate:
 
     async def check(self, db, **kwargs):
         self.calls.append(kwargs)
+        if self._decision.allowed and kwargs.get("confirmed_plan_id"):
+            return replace(
+                self._decision,
+                canonical_plan_id=str(kwargs["confirmed_plan_id"]),
+                canonical_plan_version=kwargs.get("plan_version"),
+                canonical_plan_hash="sha256:server-canonical",
+            )
         return self._decision
 
 
@@ -866,7 +874,7 @@ def test_delegate_with_confirmed_plan_passes(monkeypatch):
     assert gate.calls[0]["confirmed_plan_id"] == plan_id
     assert captured["confirmed_plan_id"] == plan_id
     assert captured["confirmed_plan_version"] == 1
-    assert captured["confirmed_plan_hash"] == "sha256:abc"
+    assert captured["confirmed_plan_hash"] == "sha256:server-canonical"
     assert captured["principal"].requester_user_id == _user.id
     assert captured["principal"].source_agent_id == agent_id
     assert captured["principal"].tenant_id == _user.tenant_id
@@ -1068,7 +1076,7 @@ def test_trigger_task_with_confirmed_plan_enqueues_runtime_task(monkeypatch):
     assert gate.calls[0]["confirmed_plan_id"] == plan_id
     assert str(task.plan_id) == plan_id
     assert task.plan_version == 1
-    assert task.plan_hash == "sha256:abc"
+    assert task.plan_hash == "sha256:server-canonical"
 
 
 def test_retry_business_task_requires_backend_retryable_projection(monkeypatch):
@@ -1204,7 +1212,7 @@ def test_retry_business_task_queues_a_new_fenced_attempt_after_confirmation(monk
     assert staged["request_id"] == "retry-confirmed-1"
     assert str(task.plan_id) == plan_id
     assert task.plan_version == 2
-    assert task.plan_hash == "sha256:retry"
+    assert task.plan_hash == "sha256:server-canonical"
 
 
 def test_cancel_business_task_updates_both_projections_and_publishes_interrupt(monkeypatch):

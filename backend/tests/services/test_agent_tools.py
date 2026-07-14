@@ -111,6 +111,22 @@ def test_deferred_tool_risk_is_sourced_from_tool_meta_not_name_tokens():
 
 
 @pytest.mark.asyncio
+async def test_available_deferred_tool_names_never_applies_platform_top_n(monkeypatch):
+    from app.services import agent_tools
+
+    names = [f"deferred_tool_{index:03d}" for index in range(125)]
+
+    async def fake_discoverable(_agent_id, _query):
+        return names
+
+    monkeypatch.setattr(agent_tools, "discoverable_tool_names_for_query", fake_discoverable)
+
+    # Compatibility callers may still pass ``limit``; it must not silently
+    # hide a tail the model never had a chance to inspect.
+    assert await agent_tools.available_deferred_tool_names_for_agent(uuid4(), limit=2) == names
+
+
+@pytest.mark.asyncio
 async def test_deferred_tool_candidates_project_activation_keys(monkeypatch):
     from app.services.agent_tools import available_deferred_tool_candidates_for_agent
 

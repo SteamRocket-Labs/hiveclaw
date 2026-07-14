@@ -13,7 +13,6 @@ from app.services.auto_dream import (
     _T3_FILES,
     _consolidate_t3_files,
     _heartbeat_ticks_since_dream,
-    _programmatic_dedup,
     _read_all_t3,
     _update_index_md,
     _write_t3_file,
@@ -39,16 +38,6 @@ def tmp_agent_dir(tmp_path: Path, agent_id: uuid.UUID) -> Path:
 def _clean_ticks(agent_id: uuid.UUID):
     yield
     _heartbeat_ticks_since_dream.pop(agent_id.hex, None)
-
-
-class TestProgrammaticDedup:
-    def test_removes_exact_duplicates(self) -> None:
-        lines = ["- [2026-04-06] User prefers concise", "- [2026-04-06] User prefers concise"]
-        assert len(_programmatic_dedup(lines)) == 1
-
-    def test_keeps_distinct(self) -> None:
-        lines = ["- [2026-04-06] User prefers snake_case", "- [2026-04-06] Project uses PostgreSQL 15"]
-        assert len(_programmatic_dedup(lines)) == 2
 
 
 class TestT3ReadWriteBoundary:

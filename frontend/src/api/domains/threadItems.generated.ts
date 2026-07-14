@@ -284,6 +284,7 @@ export const LEGACY_THREAD_ITEM_TYPE_MAP: Readonly<Record<string, ThreadItemType
   "plan_failed": "plan",
   "quota_exceeded": "error",
   "reasoning": "reasoning",
+  "response_repair": "agent_message",
   "run_cancelled": "boundary",
   "run_completed": "boundary",
   "run_queued": "boundary",

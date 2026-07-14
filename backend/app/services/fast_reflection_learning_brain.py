@@ -13,7 +13,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from app.services.llm_client import LLMMessage, create_llm_client_from_config, with_llm_usage_context
+from app.services.llm_client import LLMMessage, create_llm_client_from_config, get_max_tokens, with_llm_usage_context
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +33,7 @@ _CONTAINERS = {
     "workflow_candidate",
 }
 _PROMOTION_INTENTS = {"none", "project_only", "candidate", "defer", "reject"}
-_LEARNING_BRAIN_MAX_TOKENS = 8192
+_SKILL_ACTIONS = {"none", "new", "patch", "hold"}
 
 
 def _jsonable(value: Any) -> Any:
@@ -65,14 +65,14 @@ def _extract_json_object(raw_text: str) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
-def _string_list(value: Any, *, limit: int = 20) -> list[str]:
+def _string_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     items: list[str] = []
-    for item in value[:limit]:
+    for item in value:
         text = str(item).strip()
         if text:
-            items.append(text[:500])
+            items.append(text)
     return items
 
 
@@ -107,11 +107,8 @@ def build_learning_brain_messages(
         "- A soul_candidate requires repeated or explicit identity-level behavior evidence; it is never a direct write.\n"
         "- session_learning means next-turn projection only, not durable T2/T3 promotion.\n\n"
         "<confidence_scoring_rubric>\n"
-        "Use confidence as a calibrated 0.00-1.00 score with explicit evidence anchors:\n"
-        "- 0.00-0.39: low_signal or reject. Evidence is absent, one-off, contradicted, or mostly politeness/current-task context.\n"
-        "- 0.40-0.69: session_learning only. Useful for next turn, but not stable enough for durable candidate promotion.\n"
-        "- 0.70-0.84: candidate/defer. There is a plausible durable pattern, but evidence refs, repeat count, or boundary checks are incomplete.\n"
-        "- 0.85-1.00: candidate. Use only when evidence refs are concrete, boundary_checks pass, and the lesson is reusable outside the current turn.\n"
+        "Use confidence as a calibrated 0.00-1.00 explanation of your own complete-evidence judgment.\n"
+        "Choose signal_type, container, and promotion_intent directly from the evidence. No platform cutoff or score bin maps confidence to a semantic lane.\n"
         "</confidence_scoring_rubric>\n\n"
         "Return raw JSON only with exactly these keys:\n"
         "{"
@@ -120,6 +117,7 @@ def build_learning_brain_messages(
         '"confidence":0.0,'
         '"container":"none|session_learning|memory_candidate|soul_candidate|skill_candidate|workflow_candidate",'
         '"promotion_intent":"none|project_only|candidate|defer|reject",'
+        '"skill_decision":{"action":"none|new|patch|hold","candidate_name":"","target_skill":"","reason":""},'
         '"rationale":"",'
         '"evidence_refs":["message:<index>","metadata:<key>"],'
         '"boundary_checks":{"not_one_off":true,"no_credentials":true,"not_direct_memory_write":true}'
@@ -174,21 +172,36 @@ def parse_learning_brain_json(raw_text: str) -> dict[str, Any] | None:
         boundary_checks = {}
     boundary_checks = {str(key): _jsonable(value) for key, value in boundary_checks.items()}
 
+    raw_skill_decision = payload.get("skill_decision")
+    skill_decision: dict[str, str] | None = None
+    if isinstance(raw_skill_decision, dict):
+        action = str(raw_skill_decision.get("action") or "none").strip()
+        if action not in _SKILL_ACTIONS:
+            action = "hold"
+        skill_decision = {
+            "action": action,
+            "candidate_name": str(raw_skill_decision.get("candidate_name") or "").strip(),
+            "target_skill": str(raw_skill_decision.get("target_skill") or "").strip(),
+            "reason": str(raw_skill_decision.get("reason") or "").strip(),
+        }
+
     decision = {
         "schema": "fast_reflection_learning_brain_decision.v1",
         "signal_type": signal_type,
-        "lesson": lesson[:1000],
+        "lesson": lesson,
         "confidence": confidence,
         "container": container,
         "promotion_intent": promotion_intent,
-        "rationale": str(payload.get("rationale") or "").strip()[:1000],
+        "rationale": str(payload.get("rationale") or "").strip(),
         "evidence_refs": _string_list(payload.get("evidence_refs")),
         "boundary_checks": boundary_checks,
     }
+    if skill_decision is not None:
+        decision["skill_decision"] = skill_decision
     return {
         "method": "learning_brain_agent",
         "signal_type": signal_type,
-        "lesson": lesson[:1000],
+        "lesson": lesson,
         "confidence": confidence,
         "learning_brain_decision": decision,
     }
@@ -248,7 +261,11 @@ async def classify_fast_reflection_signal_with_learning_brain(
             response = await client.complete(
                 messages=prompt_messages,
                 temperature=0.0,
-                max_tokens=_LEARNING_BRAIN_MAX_TOKENS,
+                max_tokens=get_max_tokens(
+                    str(model_config.get("provider") or ""),
+                    str(model_config.get("model") or ""),
+                    model_config.get("max_output_tokens"),
+                ),
             )
         finally:
             await client.close()

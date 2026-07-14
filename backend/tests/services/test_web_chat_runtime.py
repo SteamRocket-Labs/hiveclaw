@@ -75,6 +75,34 @@ def test_cc_session_task_types_are_executable_chat_runs():
     assert not runtime.is_executable_chat_task_type("delegation")
 
 
+def test_history_replay_preserves_full_unfrozen_tool_result():
+    import app.services.web_chat_runtime as runtime
+
+    full_result = "tool evidence\n" + ("R" * 60000) + "\nEND_OF_TOOL_EVIDENCE"
+    history = [
+        SimpleNamespace(
+            id=uuid4(),
+            role="tool_call",
+            content=json.dumps(
+                {
+                    "name": "read_file",
+                    "args": {"path": "large.txt"},
+                    "result": full_result,
+                    "tool_call_id": "call-full-result",
+                }
+            ),
+        )
+    ]
+
+    conversation = runtime.conversation_from_history_messages(history)
+
+    assert conversation[-1] == {
+        "role": "tool",
+        "tool_call_id": "call-full-result",
+        "content": full_result,
+    }
+
+
 def test_terminal_task_update_persists_and_projects_terminal_reason():
     import app.services.web_chat_runtime as runtime
     from app.kernel.contracts import TerminalReason
@@ -176,7 +204,12 @@ async def test_execute_web_chat_run_keeps_channel_delivery_tools_visible_for_web
         parent_agent_id=agent_id,
         parent_session_id=session_id,
         prompt="web follow-up",
-        metadata_json={"user_id": str(user_id), "session_id": session_id, "source": "web"},
+        metadata_json={
+            "user_id": str(user_id),
+            "session_id": session_id,
+            "source": "web",
+            "allow_channel_delivery_tools": True,
+        },
     )
     agent = SimpleNamespace(
         id=agent_id,
@@ -231,7 +264,7 @@ async def test_execute_web_chat_run_keeps_channel_delivery_tools_visible_for_web
 
 
 @pytest.mark.asyncio
-async def test_execute_web_chat_run_allows_channel_delivery_tools_for_explicit_web_request(monkeypatch):
+async def test_execute_web_chat_run_allows_channel_delivery_tools_for_typed_web_authorization(monkeypatch):
     import app.services.web_chat_runtime as runtime
     from app.services.channel_delivery_service import channel_delivery_target
 
@@ -245,7 +278,12 @@ async def test_execute_web_chat_run_allows_channel_delivery_tools_for_explicit_w
         parent_agent_id=agent_id,
         parent_session_id=session_id,
         prompt="把这份报告发送到飞书",
-        metadata_json={"user_id": str(user_id), "session_id": session_id, "source": "web"},
+        metadata_json={
+            "user_id": str(user_id),
+            "session_id": session_id,
+            "source": "web",
+            "allow_channel_delivery_tools": True,
+        },
     )
     agent = SimpleNamespace(
         id=agent_id,
@@ -1759,7 +1797,7 @@ def test_record_skill_runtime_usage_for_invocation_collects_web_chat_loaded_skil
                 "skill_name": "Deployment Review",
                 "loaded_skill_names": ["Deployment Review"],
                 "tool_names": ["load_skill", "web_search"],
-                "status": "success",
+                "status": "unknown",
                 "note": "Finished production deployment review.",
                 "source": "web_chat",
                 "session_id": "session-1",
@@ -4313,11 +4351,12 @@ async def test_persist_tool_call_appends_typed_transcript_tool_result(monkeypatc
     monkeypatch.setattr(runtime, "tenant_scoped_session", lambda _tenant_id: _Session())
     monkeypatch.setattr("app.memory.t0.ledger.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
 
+    full_result = "file content\n" + ("R" * 60000) + "\nEND_OF_PERSISTED_TOOL_RESULT"
     await runtime._persist_tool_call(
         agent_id=agent_id,
         user_id=user_id,
         session_id=session_id,
-        data={"name": "read_file", "args": {"path": "workspace/a.md"}, "result": "file content"},
+        data={"name": "read_file", "args": {"path": "workspace/a.md"}, "result": full_result},
     )
 
     assert added[0].role == "tool_call"
@@ -4326,7 +4365,7 @@ async def test_persist_tool_call_appends_typed_transcript_tool_result(monkeypatc
     assert events[0].metadata_json["tool_name"] == "read_file"
     assert events[0].metadata_json["status"] == "done"
     assert events[0].projection_status == "pending"
-    assert '"result": "file content"' in events[0].content
+    assert json.loads(events[0].content)["result"] == full_result
 
 
 @pytest.mark.asyncio
@@ -4920,9 +4959,10 @@ async def test_get_active_web_chat_run_reconciles_terminal_transcript_ghost():
         result_summary=None,
         metadata_json={},
     )
+    full_answer = "final answer\n" + ("A" * 1000) + "\nEND_OF_FINAL_ANSWER"
     terminal_event = SimpleNamespace(
         event_type="assistant_message",
-        content="final answer",
+        content=full_answer,
         metadata_json={"status": "completed"},
     )
 
@@ -4944,7 +4984,7 @@ async def test_get_active_web_chat_run_reconciles_terminal_transcript_ghost():
 
     assert active is None
     assert task.status == "completed"
-    assert task.result_summary == "final answer"
+    assert task.result_summary == full_answer
     assert task.completed_at is not None
     assert db.commits == 1
 
@@ -5456,6 +5496,33 @@ async def test_execute_web_chat_run_does_not_deliver_web_turn_to_historical_im_t
     await runtime.execute_web_chat_run(run_id)
 
     assert finalized["n"] == 1
+
+
+def test_active_channel_delivery_target_requires_typed_turn_authorization():
+    import app.services.web_chat_runtime as runtime
+
+    target = {"channel": "feishu", "chat_id": "oc_x"}
+    session = SimpleNamespace(delivery_target_json=target)
+    context = SimpleNamespace(source="web")
+
+    assert (
+        runtime._active_channel_delivery_target_for_turn(
+            metadata={"source": "web"},
+            runtime_session_context=context,
+            session=session,
+            prompt="请把这条消息发送到飞书",
+        )
+        is None
+    )
+    assert (
+        runtime._active_channel_delivery_target_for_turn(
+            metadata={"source": "web", "allow_channel_delivery_tools": True},
+            runtime_session_context=context,
+            session=session,
+            prompt="ordinary prose without channel keywords",
+        )
+        == target
+    )
 
 
 @pytest.mark.asyncio

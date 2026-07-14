@@ -14,15 +14,6 @@ from pathlib import Path
 from typing import Any
 
 
-def _message_digest(messages: list[dict[str, Any]]) -> str:
-    snippets = []
-    for msg in messages[-6:]:
-        role = str(msg.get("role") or "unknown")
-        content = str(msg.get("content") or "")[:300]
-        snippets.append(f"{role}: {content}")
-    return "\n".join(snippets)
-
-
 def create_reportable_reflection(
     *,
     data_root: Path,
@@ -38,20 +29,34 @@ def create_reportable_reflection(
     reflection_dir.mkdir(parents=True, exist_ok=True)
     safe_reason = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in reason)[:80] or "reflection"
     report_path = reflection_dir / f"{now.strftime('%Y%m%d-%H%M%S')}-{safe_reason}.jsonl"
+    metadata = dict(metadata or {})
     payload = {
-        "schema": "failure_reflection.v1",
+        "schema": "reportable_session_evidence.v2",
         "created_at": now.isoformat(),
         "agent_id": str(agent_id),
         "session_id": session_id,
         "reason": reason,
-        "trace_ref": (metadata or {}).get("trace_ref"),
-        "decision": f"session closed with reportable reason: {reason}",
-        "evidence": _message_digest(messages),
-        "outcome": (metadata or {}).get("outcome", "requires_review"),
-        "root_cause": (metadata or {}).get("root_cause", "not yet classified"),
-        "next_policy": (metadata or {}).get("next_policy", f"Review {reason} before repeating the same pattern"),
+        "trace_ref": metadata.get("trace_ref"),
+        "messages": messages,
+        "reportability_facts": {
+            key: metadata.get(key)
+            for key in (
+                "loop_guard_triggered",
+                "failed",
+                "partial_failure",
+                "commit",
+                "deployment",
+                "external_action",
+            )
+            if metadata.get(key) is not None
+        },
+        "outcome": metadata.get("outcome"),
+        "semantic_review_status": "not_run",
     }
-    report_path.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
+    report_path.write_text(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str) + "\n",
+        encoding="utf-8",
+    )
 
     return {
         "report_path": str(report_path),

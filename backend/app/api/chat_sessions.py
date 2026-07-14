@@ -857,19 +857,17 @@ async def _broadcast_session_permission_event(
         )
 
 
-def _session_permission_tool_result_channel_text(tool_name: str, tool_result: Any, *, limit: int = 1800) -> str:
+def _session_permission_tool_result_channel_text(tool_name: str, tool_result: Any) -> str:
     """Render the IM live copy for an approved permission tool result.
 
-    Web already receives the full structured event payload. Channel users need
-    the same result signal, but bounded so a large file/search result does not
-    flood the IM thread.
+    Channel transport adapters own any physical message-size chunking. This
+    renderer must preserve the complete approved result instead of deciding
+    which semantic tail the recipient may see.
     """
     name = str(tool_name or "unknown_tool").strip() or "unknown_tool"
     text = str(tool_result or "").strip()
     if not text:
         return f"Tool `{name}` completed after permission approval."
-    if len(text) > limit:
-        text = text[:limit].rstrip() + "\n\n[Result truncated for live channel delivery.]"
     return f"Tool `{name}` completed after permission approval.\n\n{text}"
 
 
@@ -901,6 +899,7 @@ class StartSessionRunIn(BaseModel):
     file_name: str = ""
     plan_mode_requested: bool = False
     permission_mode: Literal["default", "auto", "bypassPermissions"] | None = None
+    model_routing_locked: bool = False
     attachments: list[dict[str, Any]] = []
     parts: list[dict[str, Any]] = []
 
@@ -928,6 +927,7 @@ class BranchSessionIn(BaseModel):
     title: Optional[str] = None
     start_run: bool = True
     permission_mode: Literal["default", "auto", "bypassPermissions"] = DEFAULT_CCPLUS_PERMISSION_MODE.value
+    model_routing_locked: bool = False
     attachments: list[dict[str, Any]] = []
     parts: list[dict[str, Any]] = []
 
@@ -981,7 +981,7 @@ def _transcript_role_for_event(event: ChatTranscriptEvent) -> str:
         return role
     if event.event_type == "user_message":
         return "user"
-    if event.event_type == "assistant_message":
+    if event.event_type in {"assistant_message", "response_repair"}:
         return "assistant"
     if event.event_type in {"tool_result", "tool_call"}:
         return "tool_call"
@@ -1012,6 +1012,10 @@ _TRANSCRIPT_METADATA_KEEP_KEYS = {
     "filename",
     "kind",
     "message_id",
+    "original_message_id",
+    "original_transcript_event_id",
+    "repair_version",
+    "supersedes_message_id",
     "mime_type",
     "name",
     "path",
@@ -1230,7 +1234,13 @@ def _serialize_transcript_event(event: ChatTranscriptEvent, *, audience: str = "
     truncations: list[dict[str, Any]] = []
     content = event.content or ""
     projected_content = _project_interactive_tool_card_content(event, content)
-    if projected_content is not None:
+    event_type = str(getattr(event, "event_type", "") or "")
+    if event_type in {"user_message", "assistant_message", "response_repair", "summary_turn"}:
+        # These bytes are the user/model-authored product output or the exact
+        # recovery summary. UI payload economics must never replace their tail
+        # with a platform-authored truncation marker.
+        pass
+    elif projected_content is not None:
         content = projected_content
         truncations.append(
             {
@@ -1265,7 +1275,7 @@ def _serialize_transcript_event(event: ChatTranscriptEvent, *, audience: str = "
         audience="operator" if audience == "operator" else "user",
         preserve_user_content=(
             projected_content is not None
-            or str(getattr(event, "event_type", "")) in {"user_message", "assistant_message"}
+            or event_type in {"user_message", "assistant_message", "response_repair", "summary_turn"}
         ),
     )
 
@@ -1724,7 +1734,10 @@ async def create_session_run(
             display_content=body.display_content,
             file_name=body.file_name,
             plan_mode_requested=body.plan_mode_requested,
-            extra_metadata=_session_permission_metadata(permission_mode, session),
+            extra_metadata={
+                **_session_permission_metadata(permission_mode, session),
+                "model_routing_locked": body.model_routing_locked,
+            },
             attachments=body.attachments,
             parts=body.parts,
         )
@@ -1762,7 +1775,10 @@ async def start_session_run(
             display_content=body.display_content,
             file_name=body.file_name,
             plan_mode_requested=body.plan_mode_requested,
-            extra_metadata=_session_permission_metadata(body.permission_mode, session),
+            extra_metadata={
+                **_session_permission_metadata(body.permission_mode, session),
+                "model_routing_locked": body.model_routing_locked,
+            },
             attachments=body.attachments,
             parts=body.parts,
         )
@@ -1817,6 +1833,7 @@ async def branch_session(
                 extra_metadata={
                     **(getattr(request, "extra_metadata", None) or {}),
                     **_session_permission_metadata(body.permission_mode, branch_result.session),
+                    "model_routing_locked": body.model_routing_locked,
                 },
             )
         except ActiveWebChatRunExists as exc:

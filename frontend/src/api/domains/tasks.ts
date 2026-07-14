@@ -15,7 +15,6 @@ export interface TaskCreateParams {
   due_date?: string | null;
   confirmed_plan_id?: string;
   confirmed_plan_version?: number;
-  confirmed_plan_hash?: string;
   confirmed_plan_session_id?: string;
 }
 
@@ -29,7 +28,6 @@ export interface TaskTriggerParams {
   request_id: string;
   confirmed_plan_id?: string;
   confirmed_plan_version?: number;
-  confirmed_plan_hash?: string;
   confirmed_plan_session_id?: string;
 }
 

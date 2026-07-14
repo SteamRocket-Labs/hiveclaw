@@ -13,17 +13,17 @@ def test_evaluate_task_readiness_reports_core_scenarios_ready() -> None:
     assert report["benchmark_summary"]["failing_cases"] == 0
     assert report["benchmark_summary"]["passed_cases"] >= 8
     assert report["scenarios"]["research"]["ready"] is True
-    assert report["scenarios"]["research"]["task_profile"] == "research"
+    assert report["scenarios"]["research"]["task_profile"] == "model_owned"
     assert report["scenarios"]["coding_review"]["ready"] is True
-    assert report["scenarios"]["coding_review"]["task_profile"] == "coding"
+    assert report["scenarios"]["coding_review"]["task_profile"] == "model_owned"
     assert report["scenarios"]["operations"]["ready"] is True
-    assert report["scenarios"]["operations"]["task_profile"] == "operations"
+    assert report["scenarios"]["operations"]["task_profile"] == "model_owned"
     assert report["scenarios"]["session_recall"]["ready"] is True
-    assert report["scenarios"]["session_recall"]["task_profile"] == "memory_recall"
+    assert report["scenarios"]["session_recall"]["task_profile"] == "model_owned"
     assert report["scenarios"]["long_context_after_compaction"]["ready"] is True
-    assert report["scenarios"]["long_context_after_compaction"]["task_profile"] == "memory_recall"
+    assert report["scenarios"]["long_context_after_compaction"]["task_profile"] == "model_owned"
     assert report["scenarios"]["self_evolution"]["ready"] is True
-    assert report["scenarios"]["self_evolution"]["task_profile"] == "self_evolution"
+    assert report["scenarios"]["self_evolution"]["task_profile"] == "model_owned"
     assert report["scenarios"]["delegation_worker"]["ready"] is True
     assert report["scenarios"]["delegation_profile_matrix"]["ready"] is True
     assert report["scenarios"]["research"]["benchmark_ready"] is True

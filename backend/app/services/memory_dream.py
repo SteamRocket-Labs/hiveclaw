@@ -97,7 +97,7 @@ def _required_package_files(package_dir: Path, manifest: dict[str, Any]) -> tupl
     return ("summary.md", "labels.md", "review.md")
 
 
-def _discover_reviewed_t2_packages(root: Path, agent_id: uuid.UUID, *, max_packages: int) -> tuple[Path, ...]:
+def _discover_reviewed_t2_packages(root: Path, agent_id: uuid.UUID) -> tuple[Path, ...]:
     package_dirs: list[Path] = []
     seen: set[str] = set()
     for sessions_dir in (
@@ -120,9 +120,7 @@ def _discover_reviewed_t2_packages(root: Path, agent_id: uuid.UUID, *, max_packa
                 continue
             seen.add(identity)
             package_dirs.append(package_dir)
-            if len(package_dirs) >= max_packages:
-                return tuple(package_dirs)
-    return tuple(package_dirs[:max_packages])
+    return tuple(package_dirs)
 
 
 def _package_identity_key(*, root: Path, agent_id: uuid.UUID, package_dir: Path) -> str:
@@ -252,12 +250,11 @@ def prepare_memory_dream_workspace(
     *,
     agent_id: uuid.UUID,
     data_root: Path | str | None = None,
-    max_packages: int = 8,
 ) -> MemoryDreamWorkspaceResult:
     root = _data_root(data_root)
     workspace = _workspace_dir(root, agent_id)
     diff_path = workspace / PHASE2_DIFF_FILENAME
-    selected_packages = _discover_reviewed_t2_packages(root, agent_id, max_packages=max_packages)
+    selected_packages = _discover_reviewed_t2_packages(root, agent_id)
     if not selected_packages:
         diff_path.unlink(missing_ok=True)
         return MemoryDreamWorkspaceResult(
@@ -338,10 +335,9 @@ def run_memory_dream(
     *,
     agent_id: uuid.UUID,
     data_root: Path | str | None = None,
-    max_packages: int = 8,
 ) -> MemoryDreamRunResult:
     root = _data_root(data_root)
-    workspace_result = prepare_memory_dream_workspace(agent_id=agent_id, data_root=root, max_packages=max_packages)
+    workspace_result = prepare_memory_dream_workspace(agent_id=agent_id, data_root=root)
     if workspace_result.status != "changed":
         return MemoryDreamRunResult(
             status=workspace_result.status,

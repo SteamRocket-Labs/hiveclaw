@@ -56,7 +56,7 @@ class OfficeCLIExecutionError(OfficeCLIError):
         self.payload = payload
         message = f"OfficeCLI command {command!r} failed with exit code {returncode}"
         if stderr:
-            message = f"{message}: {stderr[:500]}"
+            message = f"{message}: {stderr}"
         super().__init__(message)
 
 

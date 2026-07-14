@@ -8,6 +8,19 @@ from app.models.system_settings import SystemSetting
 from app.services.code_execution.contracts import CodeExecutionResult
 
 
+def test_sandbox_probe_result_payload_preserves_complete_diagnostic_output() -> None:
+    from app.services.code_execution.probe import _result_payload
+
+    decisive_tail = "DECISIVE-PROBE-TAIL"
+    stdout = "a" * 3000 + decisive_tail
+    stderr = "b" * 2000 + decisive_tail
+
+    payload = _result_payload(CodeExecutionResult(stdout=stdout, stderr=stderr))
+
+    assert payload["stdout"] == stdout
+    assert payload["stderr"] == stderr
+
+
 @pytest.mark.asyncio
 async def test_sandbox_probe_collects_microvm_network_and_workspace_evidence(tmp_path, monkeypatch):
     from app.services.code_execution import probe

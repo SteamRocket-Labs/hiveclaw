@@ -138,10 +138,10 @@ async def _send_telegram_message(bot_token: str, chat_id: int | str, text: str) 
                         logger.error(
                             "[Telegram] Plain-text retry also failed: %s %s",
                             retry.status_code,
-                            retry.text[:200],
+                            retry.text,
                         )
                 elif resp.status_code != 200:
-                    logger.error("[Telegram] sendMessage failed: %s %s", resp.status_code, resp.text[:200])
+                    logger.error("[Telegram] sendMessage failed: %s %s", resp.status_code, resp.text)
     except Exception as exc:
         logger.error("[Telegram] Failed to send message to chat %s: %s", chat_id, exc)
 
@@ -169,7 +169,7 @@ async def _send_telegram_file(
         try:
             payload = resp.json()
         except Exception:
-            payload = {"ok": False, "description": resp.text[:200]}
+            payload = {"ok": False, "description": resp.text}
 
         if resp.status_code != 200 or not payload.get("ok"):
             raise RuntimeError(f"Telegram sendDocument failed: {resp.status_code} {payload}")

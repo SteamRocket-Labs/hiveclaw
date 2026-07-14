@@ -194,6 +194,7 @@ async def test_spawn_tool_foreground_returns_child_session_continuation(monkeypa
     import app.tools.handlers.subagent as handler_mod
 
     captured: dict = {}
+    full_content = "foreground evidence\n" + ("F" * 9000) + "\nEND_OF_FOREGROUND_EVIDENCE"
 
     async def fake_resolve(agent_id):
         return (
@@ -218,7 +219,13 @@ async def test_spawn_tool_foreground_returns_child_session_continuation(monkeypa
             name=spec.name,
             trace_id="",
             depth=2,
-            result=SubagentResult(name=spec.name, type=spec.type, status="completed", content="digest", tokens_used=7),
+            result=SubagentResult(
+                name=spec.name,
+                type=spec.type,
+                status="completed",
+                content=full_content,
+                tokens_used=7,
+            ),
         )
 
     async def fake_active_agent_team_contract(_request):
@@ -255,6 +262,8 @@ async def test_spawn_tool_foreground_returns_child_session_continuation(monkeypa
     assert captured["ctx"].child_session_id == "child-session"
     assert captured["create_child_session"]["parent_session_id"] == parent_session_id
     assert captured["update_child_session"]["status"] == "completed"
+    assert captured["update_child_session"]["summary"] == full_content
+    assert data["content"] == full_content
 
 
 @pytest.mark.asyncio

@@ -267,13 +267,6 @@ class TestHeartbeatIntegration:
 
 
 class TestDreamIntegration:
-    def test_v21_programmatic_dedup(self) -> None:
-        from app.services.auto_dream import _programmatic_dedup
-
-        lines = ["- [2026-04-06] User likes concise"] * 3 + ["- [2026-04-06] Project uses PostgreSQL"]
-        result = _programmatic_dedup(lines)
-        assert len(result) == 2
-
     def test_v22_dream_does_not_import_ingest_learnings(self) -> None:
         """run_dream should NOT call _ingest_learnings in the main path (heartbeat owns T2→T3)."""
         from app.services.auto_dream import run_dream

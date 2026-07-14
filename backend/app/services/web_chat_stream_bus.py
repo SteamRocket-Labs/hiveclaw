@@ -94,7 +94,7 @@ async def _listen_web_chat_stream_once() -> None:
             _FORWARDER_STATE["forwarded"] = int(_FORWARDER_STATE.get("forwarded") or 0) + 1
             _FORWARDER_STATE["last_sequence"] = envelope.get("sequence")
         except Exception as exc:  # noqa: BLE001 - one malformed event must not stop the forwarder.
-            _FORWARDER_STATE["last_error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
+            _FORWARDER_STATE["last_error"] = f"{type(exc).__name__}: {exc}"
             logger.warning("[WebChatStreamBus] forward failed: {}", exc)
 
 
@@ -110,7 +110,7 @@ async def start_web_chat_stream_forwarder(
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001
-                _FORWARDER_STATE["last_error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
+                _FORWARDER_STATE["last_error"] = f"{type(exc).__name__}: {exc}"
                 _FORWARDER_STATE["restart_count"] = int(_FORWARDER_STATE.get("restart_count") or 0) + 1
                 _FORWARDER_STATE["last_restart_at"] = datetime.now(timezone.utc).isoformat()
                 logger.warning("[WebChatStreamBus] forwarder reconnecting after error: {}", exc)

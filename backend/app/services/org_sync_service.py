@@ -195,7 +195,7 @@ class OrgSyncService:
                     return {"error": f"获取飞书 token 失败 (code={feishu_code}: {feishu_msg})"}
                 logger.info(f"[OrgSync] Got token: {token[:20]}...")
             except Exception as e:
-                return {"error": f"连接飞书失败: {str(e)[:100]}"}
+                return {"error": f"连接飞书失败: {e}"}
 
             now = datetime.now(timezone.utc)
             dept_count = 0
@@ -256,7 +256,7 @@ class OrgSyncService:
 
                 traceback.print_exc()
                 logger.error(f"[OrgSync] Department sync failed: {e}")
-                return {"error": f"部门同步失败: {str(e)[:200]}"}
+                return {"error": f"部门同步失败: {e}"}
 
             # --- Sync members ---
             try:
@@ -435,7 +435,7 @@ class OrgSyncService:
 
                 traceback.print_exc()
                 logger.error(f"[OrgSync] Member sync failed: {e}")
-                return {"error": f"成员同步失败: {str(e)[:200]}", "departments": dept_count}
+                return {"error": f"成员同步失败: {e}", "departments": dept_count}
 
             # Update last sync time on the tenant-scoped config.
             result = await db.execute(

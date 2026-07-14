@@ -309,6 +309,15 @@ def test_evolution_daemon_has_no_retired_scene_wiki_curation_lane() -> None:
     assert not (root / "app" / "services" / "memory_curation.py").exists()
 
 
+def test_evolution_daemon_uses_model_owned_skill_lifecycle_review() -> None:
+    root = Path(__file__).parent.parent.parent
+    source = (root / "app" / "services" / "evolution_daemon.py").read_text(encoding="utf-8")
+
+    assert "review_skill_lifecycle_with_model" in source
+    assert "run_skill_curator_pass" not in source
+    assert "model=model" in source
+
+
 def test_hook_setup_schedules_evolution_maintenance_after_heartbeat() -> None:
     from app.runtime import hooks_setup
     from app.runtime.hooks import HookEvent

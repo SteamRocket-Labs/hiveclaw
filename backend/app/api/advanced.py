@@ -86,7 +86,7 @@ async def delegate_task(
         action_artifact=action_artifact,
         evidence_id=evidence_id,
     )
-    plan_evidence = stamp_plan_gate_decision(
+    plan_binding = stamp_plan_gate_decision(
         {},
         decision=plan_decision,
         confirmed_plan_id=data.confirmed_plan_id,
@@ -95,7 +95,8 @@ async def delegate_task(
         requester_user_id=current_user.id,
         session_id=data.confirmed_plan_session_id,
         evidence_id=evidence_id,
-    ).get("plan_authorization")
+    )
+    plan_evidence = plan_binding.get("plan_authorization")
     if plan_evidence:
         # Delegation launches work in a separate durable runtime. Commit the
         # consumed lease before crossing that boundary so a later API-session
@@ -115,9 +116,9 @@ async def delegate_task(
                 root_session_id=data.confirmed_plan_session_id,
                 origin="rest",
             ),
-            confirmed_plan_id=data.confirmed_plan_id,
-            confirmed_plan_version=data.confirmed_plan_version,
-            confirmed_plan_hash=data.confirmed_plan_hash,
+            confirmed_plan_id=plan_binding.get("plan_id"),
+            confirmed_plan_version=plan_binding.get("plan_version"),
+            confirmed_plan_hash=plan_binding.get("plan_hash"),
             confirmed_plan_session_id=data.confirmed_plan_session_id,
             plan_authorization=plan_evidence,
         )

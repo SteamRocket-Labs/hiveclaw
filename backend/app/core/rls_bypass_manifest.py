@@ -297,6 +297,14 @@ RLS_BYPASS_ALLOWLIST = (
     ),
     _grant(
         *(
+            "app/scripts/repair_false_tool_evidence_notices.py",
+            "_main",
+            "'audited cross-tenant repair of exact retired tool-evidence verifier notices'",
+            ("session-state-only",),
+        )
+    ),
+    _grant(
+        *(
             "app/services/agent_identity_lifecycle.py",
             "ensure_agent_identity",
             "rls_bypass_reason",

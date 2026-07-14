@@ -97,7 +97,7 @@ async def _get_feishu_token_status(agent_id: uuid.UUID) -> dict:
             "configured": True,
             "ok": False,
             "app_id": app_id,
-            "message": f"{type(exc).__name__}: {str(exc)[:160]}",
+            "message": f"{type(exc).__name__}: {exc}",
         }
 
 

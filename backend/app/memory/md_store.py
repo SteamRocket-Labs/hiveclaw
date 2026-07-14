@@ -106,15 +106,14 @@ def _stable_entry_id(filename: str, content: str) -> str:
     return f"mem_{digest}"
 
 
-# Similarity thresholds for detecting near-duplicate T3 entries / skills.
+# Similarity threshold for reporting near-duplicate skill candidates.
 # Uses max(word-token Jaccard, char-bigram Jaccard) so both English and
-# Chinese paraphrases are caught. Thresholds are tuned empirically:
+# Chinese paraphrases are observed. The threshold is tuned empirically:
 #   - English paraphrase "user likes short replies" vs "user prefers short replies" → ~0.45-0.55
 #   - Chinese paraphrase "用户偏好简短回复" vs "用户喜欢简短回复" → char-bigram ~0.30-0.45
 #   - Genuinely distinct facts → typically <0.10
-# Since the handler returns a soft "[Skipped]" hint (not a hard error), the LLM
-# can re-phrase and retry, so we err on catching more paraphrases.
-MEMORY_DEDUP_THRESHOLD = 0.45
+# The score is advisory evidence for model review; it never blocks or rewrites
+# a skill candidate.
 SKILL_DEDUP_THRESHOLD = 0.50
 
 
@@ -134,13 +133,13 @@ def _char_bigram_set(text: str) -> frozenset[str]:
 
 
 def jaccard_similarity(a: str, b: str) -> float:
-    """Jaccard similarity — returns the MAX of word-token and char-bigram scores.
+    """Advisory similarity evidence for skill review.
 
     Word tokens catch English paraphrases ("user likes" vs "the user likes")
     where word boundaries are reliable. Character bigrams catch Chinese near-
     duplicates ("用户偏好简短回复" vs "用户喜欢简短回复") where whitespace
     tokenization produces near-empty intersection. Taking the max means
-    either script pattern can trigger dedup.
+    either script pattern can surface an overlap observation to the model.
     """
     tokens_a = _token_set(a)
     tokens_b = _token_set(b)
@@ -163,7 +162,7 @@ def list_retirement_candidates(
     data_root: Path,
     agent_id: uuid.UUID,
     *,
-    limit: int = 10,
+    limit: int | None = None,
     protected_markers: list[str] | None = None,
 ) -> list[dict]:
     """Retired at the C7 cutover: entry-level decay retirement was a flat-T3

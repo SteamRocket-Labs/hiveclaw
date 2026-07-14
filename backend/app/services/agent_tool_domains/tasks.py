@@ -45,6 +45,10 @@ async def _manage_tasks(
         if action == "create":
             task_type = args.get("task_type", "todo")
             request_id = str(args.get("request_id") or f"internal:{uuid.uuid4()}")
+            plan_evidence = args.get("_plan_authorization")
+            if not isinstance(plan_evidence, dict):
+                plan_evidence = {}
+            canonical_plan_id = plan_evidence.get("plan_id")
             request_hash = business_task_request_key(
                 tenant_id=tenant_id,
                 agent_id=agent_id,
@@ -63,9 +67,9 @@ async def _manage_tasks(
                 status="pending",
                 request_id=request_id,
                 request_hash=request_hash,
-                plan_id=uuid.UUID(str(args["confirmed_plan_id"])) if args.get("confirmed_plan_id") else None,
-                plan_version=args.get("confirmed_plan_version"),
-                plan_hash=args.get("confirmed_plan_hash"),
+                plan_id=uuid.UUID(str(canonical_plan_id)) if canonical_plan_id else None,
+                plan_version=plan_evidence.get("plan_version"),
+                plan_hash=plan_evidence.get("plan_hash"),
             )
             db.add(task)
             await db.commit()

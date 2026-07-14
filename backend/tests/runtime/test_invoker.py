@@ -2068,19 +2068,31 @@ async def test_invoke_agent_keeps_primary_for_simple_turn_without_explicit_smart
     assert captured["request"].model is primary_model
     assert captured["request"].fallback_model is fallback_model
     assert captured["request"].supports_vision is True
-    assert session_context.metadata["turn_route"] == {
+    route = session_context.metadata["turn_route"]
+    assert {
+        key: route[key]
+        for key in (
+            "selected_model",
+            "fallback_model",
+            "reason",
+            "task_profile",
+            "complexity",
+            "execution_shape",
+            "config_source",
+        )
+    } == {
         "selected_model": "gpt-4.1",
         "fallback_model": "gpt-4.1-mini",
         "reason": "primary_model",
-        "task_profile": "general",
-        "complexity": "low",
+        "task_profile": "model_owned",
+        "complexity": "model_owned",
         "execution_shape": "direct",
         "config_source": "runtime_default",
     }
 
 
 @pytest.mark.asyncio
-async def test_invoke_agent_routes_simple_turn_only_when_smart_routing_enabled(monkeypatch):
+async def test_invoke_agent_does_not_downgrade_model_from_smart_routing_keywords(monkeypatch):
     from app.runtime.invoker import AgentInvocationRequest, invoke_agent
 
     captured = {}
@@ -2130,15 +2142,27 @@ async def test_invoke_agent_routes_simple_turn_only_when_smart_routing_enabled(m
     )
 
     assert result.content == "ok"
-    assert captured["request"].model is fallback_model
-    assert captured["request"].fallback_model is primary_model
-    assert captured["request"].supports_vision is False
-    assert session_context.metadata["turn_route"] == {
-        "selected_model": "gpt-4.1-mini",
-        "fallback_model": "gpt-4.1",
-        "reason": "simple_turn_cheap_model",
-        "task_profile": "general",
-        "complexity": "low",
+    assert captured["request"].model is primary_model
+    assert captured["request"].fallback_model is fallback_model
+    assert captured["request"].supports_vision is True
+    route = session_context.metadata["turn_route"]
+    assert {
+        key: route[key]
+        for key in (
+            "selected_model",
+            "fallback_model",
+            "reason",
+            "task_profile",
+            "complexity",
+            "execution_shape",
+            "config_source",
+        )
+    } == {
+        "selected_model": "gpt-4.1",
+        "fallback_model": "gpt-4.1-mini",
+        "reason": "primary_model",
+        "task_profile": "model_owned",
+        "complexity": "model_owned",
         "execution_shape": "direct",
         "config_source": "agent_config",
     }
@@ -2198,12 +2222,24 @@ async def test_invoke_agent_keeps_primary_model_for_task_execution(monkeypatch):
     assert captured["request"].model is primary_model
     assert captured["request"].fallback_model is fallback_model
     assert captured["request"].supports_vision is True
-    assert session_context.metadata["turn_route"] == {
+    route = session_context.metadata["turn_route"]
+    assert {
+        key: route[key]
+        for key in (
+            "selected_model",
+            "fallback_model",
+            "reason",
+            "task_profile",
+            "complexity",
+            "execution_shape",
+            "config_source",
+        )
+    } == {
         "selected_model": "gpt-4.1",
         "fallback_model": "gpt-4.1-mini",
         "reason": "primary_model",
-        "task_profile": "general",
-        "complexity": "low",
+        "task_profile": "model_owned",
+        "complexity": "model_owned",
         "execution_shape": "direct",
         "config_source": "runtime_default",
     }
@@ -2262,12 +2298,24 @@ async def test_invoke_agent_respects_explicit_disabled_smart_model_routing(monke
     assert result.content == "ok"
     assert captured["request"].model is primary_model
     assert captured["request"].fallback_model is fallback_model
-    assert session_context.metadata["turn_route"] == {
+    route = session_context.metadata["turn_route"]
+    assert {
+        key: route[key]
+        for key in (
+            "selected_model",
+            "fallback_model",
+            "reason",
+            "task_profile",
+            "complexity",
+            "execution_shape",
+            "config_source",
+        )
+    } == {
         "selected_model": "gpt-4.1",
         "fallback_model": "gpt-4.1-mini",
         "reason": "primary_model",
-        "task_profile": "general",
-        "complexity": "low",
+        "task_profile": "model_owned",
+        "complexity": "model_owned",
         "execution_shape": "direct",
         "config_source": "agent_config",
     }
@@ -2536,13 +2584,21 @@ async def test_invoke_agent_uses_request_max_output_tokens(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_invoke_agent_stops_before_model_when_required_memory_is_unavailable(monkeypatch):
-    from app.kernel.contracts import TerminalReason
+async def test_invoke_agent_keeps_model_reasoning_alive_when_memory_is_unavailable(monkeypatch):
     from app.runtime.invoker import AgentInvocationRequest, invoke_agent
     from app.services.memory_service import MemoryContextResult
 
     tenant_id = uuid4()
-    fake_client = _FakeClient([])
+    fake_client = _FakeClient(
+        [
+            SimpleNamespace(
+                content="continued with visible evidence",
+                tool_calls=[],
+                reasoning_content=None,
+                usage={"total_tokens": 5},
+            )
+        ]
+    )
 
     async def runtime_config(_agent_id):
         return SimpleNamespace(
@@ -2562,15 +2618,32 @@ async def test_invoke_agent_stops_before_model_when_required_memory_is_unavailab
             code="resident_profile_unavailable",
             user_message="Required agent memory is temporarily unavailable.",
             retryable=True,
-            block_model=True,
+            conversation_available=True,
+            authority_context_available=False,
+            durable_write_available=False,
+            external_effects_available=False,
         )
 
     async def ignore_span(**_kwargs):
         return None
 
+    async def fake_build_agent_context(*_args, **_kwargs):
+        return "BASE_PROMPT"
+
+    async def fake_compress(messages, **_kwargs):
+        return messages
+
+    async def fake_tools(*_args, **_kwargs):
+        return []
+
     monkeypatch.setattr("app.runtime.invoker._resolve_runtime_config", runtime_config)
     monkeypatch.setattr("app.runtime.invoker.build_memory_context", unavailable)
+    monkeypatch.setattr("app.runtime.invoker.build_agent_context", fake_build_agent_context)
+    monkeypatch.setattr("app.runtime.invoker.maybe_compress_messages", fake_compress)
+    monkeypatch.setattr("app.runtime.invoker.get_agent_tools_for_llm", fake_tools)
     monkeypatch.setattr("app.runtime.invoker.create_llm_client", lambda **_kwargs: fake_client)
+    monkeypatch.setattr("app.runtime.invoker.record_token_usage", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("app.runtime.invoker.get_max_tokens", lambda *_args, **_kwargs: 2048)
     monkeypatch.setattr("app.runtime.invoker.persist_invocation_span", ignore_span)
 
     result = await invoke_agent(
@@ -2585,9 +2658,10 @@ async def test_invoke_agent_stops_before_model_when_required_memory_is_unavailab
         )
     )
 
-    assert result.terminal_reason == TerminalReason.MEMORY_UNAVAILABLE
-    assert result.content == "Required agent memory is temporarily unavailable."
-    assert fake_client.calls == []
+    assert result.content == "continued with visible evidence"
+    prompt_text = "\n".join(str(message.content) for message in fake_client.calls[0]["messages"])
+    assert "Memory runtime degraded" in prompt_text
+    assert "external effects are frozen" in prompt_text
 
 
 # ── 切口② Work Ledger enable decision on the general path ─────────────────────
@@ -2605,16 +2679,16 @@ def _route_request(query: str) -> "object":
     )
 
 
-def test_turn_route_disables_work_ledger_for_simple_qa():
+def test_turn_route_keeps_optional_work_ledger_reminder_available_for_simple_qa():
     from app.runtime.invoker import _resolve_effective_turn_route
 
     request = _route_request("hi there")
     _resolve_effective_turn_route(request, routing_config=None)
 
-    assert request.session_context.metadata["work_ledger_enabled"] is False
+    assert request.session_context.metadata["work_ledger_enabled"] is True
 
 
-def test_turn_route_enables_work_ledger_for_complex_multistep_turn():
+def test_turn_route_does_not_semantically_gate_work_ledger_by_prompt_complexity():
     from app.runtime.invoker import _resolve_effective_turn_route
 
     request = _route_request(

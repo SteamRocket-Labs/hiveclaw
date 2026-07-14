@@ -71,6 +71,49 @@ def test_evolution_verification_rejects_failed_command(tmp_path) -> None:
     assert "verification failed" in decision["reason"]
 
 
+def test_evolution_verification_preserves_complete_command_evidence(tmp_path) -> None:
+    from app.services.evolution_ledger import record_evolution_candidate
+    from app.services.evolution_verification import run_evolution_verification
+
+    stdout_head = "DECISIVE_STDOUT_HEAD"
+    stdout_tail = "DECISIVE_STDOUT_TAIL"
+    stderr_head = "DECISIVE_STDERR_HEAD"
+    stderr_tail = "DECISIVE_STDERR_TAIL"
+    candidate = record_evolution_candidate(
+        tmp_path,
+        target_type="fast_reflection",
+        target_id="session-1:complete-verification-evidence",
+        diff="+ candidate",
+        source_attempt_ids=["session-1"],
+        baseline_version="candidate",
+    )
+
+    report = run_evolution_verification(
+        workspace=tmp_path,
+        candidate=candidate,
+        graders=[
+            {
+                "type": "deterministic_command",
+                "command": [
+                    sys.executable,
+                    "-c",
+                    (
+                        "import sys; "
+                        f"print({stdout_head + 'A' * 2500 + stdout_tail!r}); "
+                        f"print({stderr_head + 'B' * 2500 + stderr_tail!r}, file=sys.stderr)"
+                    ),
+                ],
+            }
+        ],
+    )
+
+    evidence = report["checks"][0]["evidence"]
+    assert evidence["stdout"].startswith(stdout_head)
+    assert stdout_tail in evidence["stdout"]
+    assert evidence["stderr"].startswith(stderr_head)
+    assert stderr_tail in evidence["stderr"]
+
+
 def test_evolution_verification_holds_without_verification(tmp_path) -> None:
     from app.services.evolution_ledger import record_evolution_candidate
     from app.services.evolution_verification import decide_verified_promotion
@@ -261,5 +304,7 @@ def test_evolution_verification_skill_guard_rejects_unsafe_skill(tmp_path) -> No
 
     assert report["passed"] is False
     assert report["checks"][0]["type"] == "skill_guard"
-    assert report["checks"][0]["evidence"]["guard"]["allowed"] is False
+    assert report["checks"][0]["evidence"]["guard"]["allowed"] is True
+    assert report["checks"][0]["evidence"]["guard"]["requires_review"] is True
+    assert report["checks"][0]["evidence"]["guard"]["disposition"] == "quarantine"
     assert decide_verified_promotion(candidate, verification_report=report)["decision"] == "reject"

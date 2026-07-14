@@ -78,6 +78,44 @@ describe('chatRuntime helpers', () => {
     expect(fromSocket.ui).toEqual(uiForPhase('done'));
   });
 
+  it('applies an audited response repair by superseding the original assistant read model', () => {
+    const original = applyTranscriptEvent(createEmptyTranscriptReplayState(), {
+      id: 'evt-original',
+      sequence: 10,
+      message_id: 'message-1',
+      type: 'assistant_message',
+      event_type: 'assistant_message',
+      actor_type: 'assistant',
+      role: 'assistant',
+      content: 'retired verifier notice',
+      created_at: '2026-07-09T12:00:00Z',
+    });
+
+    const repaired = applyTranscriptEvent(original, {
+      id: 'evt-repair',
+      sequence: 11,
+      message_id: 'message-1',
+      type: 'response_repair',
+      event_type: 'response_repair',
+      actor_type: 'system',
+      role: 'assistant',
+      content: '模型原始正确答案',
+      metadata: {
+        original_message_id: 'message-1',
+        repair_version: 'false_tool_evidence_notice.v1',
+      },
+      created_at: '2026-07-13T12:00:00Z',
+    });
+
+    expect(repaired.messages).toHaveLength(1);
+    expect(repaired.messages[0]).toMatchObject({
+      role: 'assistant',
+      content: '模型原始正确答案',
+      messageId: 'message-1',
+      transcriptEventId: 'evt-repair',
+    });
+  });
+
   it('preserves transcript event id separately from durable message id during replay', () => {
     const state = applyTranscriptEvent(createEmptyTranscriptReplayState(), {
       id: 'evt-user-1',
@@ -1757,6 +1795,10 @@ describe('chatRuntime helpers', () => {
           provider: 'anthropic',
           name: 'claude-sonnet-4',
           context_window_tokens: 200000,
+          fallback_name: 'gpt-5-mini',
+          route_reason: 'smart_routing_simple_turn',
+          routing_config_source: 'agent.smart_model_routing_enabled',
+          routing_locked: false,
         },
         runtime: {
           connected: true,
@@ -1781,6 +1823,10 @@ describe('chatRuntime helpers', () => {
       provider: 'anthropic',
       name: 'claude-sonnet-4',
       context_window_tokens: 200000,
+      fallback_name: 'gpt-5-mini',
+      route_reason: 'smart_routing_simple_turn',
+      routing_config_source: 'agent.smart_model_routing_enabled',
+      routing_locked: false,
     });
     expect(summary.runtime).toMatchObject({
       connected: true,

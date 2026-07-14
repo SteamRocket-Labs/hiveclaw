@@ -286,7 +286,7 @@ async def drain_subagent_completion_wakes(
                     parent_agent_id=parent_agent_id,
                     signal_id=signal_id,
                     status="denied",
-                    detail=str(exc)[:300],
+                    detail=str(exc),
                 )
             )
             continue
@@ -346,7 +346,7 @@ async def drain_subagent_completion_wakes(
                     parent_agent_id=parent_agent_id,
                     signal_id=request.signal_id,
                     status="failed",
-                    detail=str(exc)[:300],
+                    detail=str(exc),
                 )
             )
     return results

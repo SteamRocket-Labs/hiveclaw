@@ -2109,6 +2109,7 @@ describe('AgentDetail extracted sections', () => {
           agent_type: 'native',
           primary_model_id: 'model-1',
           fallback_model_id: '',
+          execution_mode: 'coordinator_strict',
           // max_tokens_per_day: 10000,
           // max_tokens_per_month: 200000,
           max_triggers: 10,
@@ -2139,6 +2140,7 @@ describe('AgentDetail extracted sections', () => {
           webhook_rate_limit: 5,
           default_session_permission_mode: 'auto',
           smart_model_routing_enabled: false,
+          execution_mode: 'coordinator_strict',
           security_zone: 'restricted',
         }}
         onSettingsFormChange={vi.fn()}
@@ -2157,8 +2159,8 @@ describe('AgentDetail extracted sections', () => {
     );
 
     expect(markup).toContain('modelConfig');
-    expect(markup).not.toContain('Execution Mode');
-    expect(markup).not.toContain('Coordinator');
+    expect(markup).toContain('Execution Mode');
+    expect(markup).toContain('Strict coordinator');
     expect(markup).toContain('Patrol &amp; Agent Circle');
     expect(markup).toContain('Enable patrol');
     expect(markup).toContain('Patrol interval');
@@ -2297,6 +2299,7 @@ describe('AgentDetail extracted sections', () => {
           agent_type: 'native',
           primary_model_id: 'model-1',
           fallback_model_id: '',
+          execution_mode: 'standard',
           max_triggers: 10,
           min_poll_interval_min: 5,
           webhook_rate_limit: 5,
@@ -2314,6 +2317,7 @@ describe('AgentDetail extracted sections', () => {
           webhook_rate_limit: 5,
           default_session_permission_mode: 'default',
           smart_model_routing_enabled: false,
+          execution_mode: 'standard',
           security_zone: 'standard',
         }}
         onSettingsFormChange={vi.fn()}
@@ -4297,7 +4301,7 @@ describe('AgentDetail extracted sections', () => {
         gate_status: 'waiting',
         wait_status: 'waiting_for_gate',
         repairable: false,
-        promotion_eligible: false,
+        model_promotion_review: {},
         actions: [
           { action: 'approve_gate', enabled: true, run_id: 'workflow-run-1', step_id: 'approve-send', preview_id: 'preview-1', reason: 'approval required' },
           { action: 'reject_gate', enabled: true, run_id: 'workflow-run-1', step_id: 'approve-send', preview_id: 'preview-1', reason: 'approval required' },
@@ -5801,7 +5805,6 @@ describe('AgentDetail extracted sections', () => {
 
     expect(api.confirmAndHandoff).toHaveBeenCalledWith('agent-1', 'plan-1', {
       plan_version: 3,
-      plan_hash: 'sha256:abc123',
     });
   });
 

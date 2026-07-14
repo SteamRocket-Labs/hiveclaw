@@ -75,7 +75,8 @@ async def send_email(request: ToolExecutionRequest) -> str:
             "properties": {
                 "limit": {
                     "type": "integer",
-                    "description": "Max number of emails to return (default 10, max 30)",
+                    "minimum": 1,
+                    "description": "Optional explicit maximum number of emails to return. Omit it to return every email matching the folder/search boundary.",
                 },
                 "search": {
                     "type": "string",

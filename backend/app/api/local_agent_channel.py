@@ -640,12 +640,13 @@ async def upload_current_user_local_agent_workspace_file(
     content = await file.read()
     save_path.write_bytes(content)
 
-    preview_text = ""
+    extracted_text = ""
     if save_path.suffix.lower() not in _LOCAL_WORKSPACE_BINARY_EXTS:
         try:
-            preview_text = content.decode("utf-8")
+            extracted_text = content.decode("utf-8")
         except UnicodeDecodeError:
-            preview_text = ""
+            extracted_text = ""
+    preview_text = extracted_text
     if len(preview_text) > 6000:
         preview_text = f"{preview_text[:6000]}\n\n...[内容已截断，共 {len(preview_text)} 字]"
 
@@ -654,7 +655,7 @@ async def upload_current_user_local_agent_workspace_file(
         saved_filename=save_path.name,
         size=len(content),
         workspace_path=_workspace_rel_path(base, save_path),
-        extracted_text=preview_text,
+        extracted_text=extracted_text,
         preview_text=preview_text,
         conversion=None,
         is_image=save_path.suffix.lower() in {".png", ".jpg", ".jpeg", ".gif", ".webp"},

@@ -343,7 +343,7 @@ async def bridge_transcript_event_to_t0(
                                 t0_event_id = existing_t0_event.event_id
                                 t0_sequence = existing_t0_event.sequence
                         except Exception as exc:  # noqa: BLE001 - persist retryable projection failure.
-                            projection_error = f"{type(exc).__name__}: {str(exc)[:1000]}"
+                            projection_error = f"{type(exc).__name__}: {exc}"
                             transcript_event.projection_status = "failed"
                             transcript_event.projection_error = projection_error
                             metadata.update(
@@ -426,7 +426,7 @@ async def _run_transcript_projection_sweeper(
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - the next sweep remains a recovery path.
-            _STATE["last_error"] = f"projection_sweeper:{type(exc).__name__}:{str(exc)[:300]}"
+            _STATE["last_error"] = f"projection_sweeper:{type(exc).__name__}:{exc}"
             logger.warning("[RuntimeControlBus] transcript projection sweep failed: {}", exc)
         await asyncio.sleep(max(0.1, interval_seconds))
 
@@ -495,7 +495,7 @@ async def _listen_runtime_control_once() -> None:
             payload = json.loads(raw if isinstance(raw, str) else raw.decode("utf-8"))
             await handle_runtime_control_message(payload)
         except Exception as exc:  # noqa: BLE001 - one malformed control event must not stop listener.
-            _STATE["last_error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
+            _STATE["last_error"] = f"{type(exc).__name__}: {exc}"
             logger.warning("[RuntimeControlBus] failed to handle control message: {}", exc)
 
 
@@ -515,7 +515,7 @@ async def start_runtime_control_listener(
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - process can still run; reconnect keeps control plane live.
-                _STATE["last_error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
+                _STATE["last_error"] = f"{type(exc).__name__}: {exc}"
                 _STATE["restart_count"] = int(_STATE.get("restart_count") or 0) + 1
                 _STATE["last_restart_at"] = _now_iso()
                 logger.warning("[RuntimeControlBus] listener reconnecting after error: {}", exc)

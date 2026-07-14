@@ -274,17 +274,17 @@ async def _post_token(token_endpoint: str, payload: dict, *, now: float | None) 
                 headers={"Accept": "application/json", "Content-Type": "application/x-www-form-urlencoded"},
             )
     except httpx.HTTPError as exc:
-        raise OAuthError(message=f"OAuth token request failed: {str(exc)[:200]}") from exc
+        raise OAuthError(message=f"OAuth token request failed: {exc}") from exc
     if resp.status_code >= 400:
         raise OAuthError(
             message=f"OAuth token endpoint returned {resp.status_code}",
             status_code=resp.status_code,
-            details={"body": resp.text[:500]},
+            details={"body": resp.text},
         )
     try:
         data = resp.json()
     except (TypeError, ValueError) as exc:
         raise OAuthError(message="OAuth token endpoint returned non-JSON body") from exc
     if not isinstance(data, dict) or not data.get("access_token"):
-        raise OAuthError(message="OAuth token response missing access_token", details={"body": str(data)[:300]})
+        raise OAuthError(message="OAuth token response missing access_token", details={"body": str(data)})
     return OAuthTokenSet.from_token_response(data, now=stamp)

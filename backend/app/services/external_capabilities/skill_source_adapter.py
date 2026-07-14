@@ -47,6 +47,13 @@ def build_external_skill_bundle(
                 "findings": [finding.to_dict() for finding in guard_report.findings],
             }
         )
+    elif guard_report.requires_review:
+        notes.append(
+            {
+                "code": "skill_guard_review_required",
+                "findings": [finding.to_dict() for finding in guard_report.review_findings],
+            }
+        )
     if not any(item["path"].upper() == "SKILL.MD" for item in normalized_files):
         notes.append({"code": "missing_skill_md", "path": "SKILL.md"})
 

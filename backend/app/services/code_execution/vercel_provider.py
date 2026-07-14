@@ -188,8 +188,8 @@ async def execute_vercel_sandbox_command(
             sandbox.run_command(command[0], command[1:], cwd=_REMOTE_WORKSPACE, env=exec_env),
             timeout=timeout,
         )
-        stdout = (await finished.stdout())[:12000]
-        stderr = (await finished.stderr())[:6000]
+        stdout = await finished.stdout()
+        stderr = await finished.stderr()
         # Sync workspace (agent files + produced outputs) back to the local work_dir.
         await sandbox.run_command("tar", ["-czf", f"{_REMOTE_ROOT}/{_OUTPUT_ARCHIVE}", "-C", _REMOTE_WORKSPACE, "."])
         workspace_bytes = await sandbox.read_file(_OUTPUT_ARCHIVE)
@@ -229,7 +229,7 @@ async def execute_vercel_sandbox_command(
         )
     except Exception as e:
         return CodeExecutionResult(
-            error=f"❌ Vercel Sandbox execution error: {str(e)[:300]}",
+            error=f"❌ Vercel Sandbox execution error: {e}",
             evidence=_vercel_evidence(
                 network_policy=policy,
                 env_policy=env_policy,

@@ -61,7 +61,7 @@ class TestAssembleGroupsByKind:
         assert "- fact two" in result
         assert "[Objective Projection]" not in result
 
-    def test_higher_score_items_render_first_within_section(self) -> None:
+    def test_model_selected_order_is_preserved_within_section(self) -> None:
         items = [
             _make_item(MemoryKind.SEMANTIC, "low score fact", score=0.2),
             _make_item(MemoryKind.SEMANTIC, "high score fact", score=0.9),
@@ -69,9 +69,9 @@ class TestAssembleGroupsByKind:
         assembler = MemoryAssembler()
         result = assembler.assemble(items)
 
-        assert result.index("high score fact") < result.index("low score fact")
+        assert result.index("low score fact") < result.index("high score fact")
 
-    def test_activation_raw_score_orders_saturated_display_scores(self) -> None:
+    def test_activation_scores_do_not_reorder_model_selection(self) -> None:
         items = [
             _make_item(MemoryKind.SEMANTIC, "raw score loser", score=1.0, activation_raw_score=1.2),
             _make_item(MemoryKind.SEMANTIC, "raw score winner", score=1.0, activation_raw_score=2.4),
@@ -79,19 +79,20 @@ class TestAssembleGroupsByKind:
         assembler = MemoryAssembler()
         result = assembler.assemble(items)
 
-        assert result.index("raw score winner") < result.index("raw score loser")
+        assert result.index("raw score loser") < result.index("raw score winner")
 
 
-class TestAssembleBudgetTrim:
-    """Output respects budget_chars limit."""
+class TestAssembleBudgetAdvisory:
+    """Prompt budgets never decide which authorized memories the model sees."""
 
-    def test_trim_to_budget(self) -> None:
+    def test_budget_does_not_prune_memory_items(self) -> None:
         items = [_make_item(MemoryKind.SEMANTIC, f"fact number {i} with extra padding words") for i in range(100)]
         assembler = MemoryAssembler()
         result = assembler.assemble(items, budget_chars=200)
 
-        assert len(result) <= 250  # header + some slack for section header
         assert "[Semantic Memory]" in result
+        assert "fact number 0" in result
+        assert "fact number 99" in result
 
     def test_small_budget_still_produces_output(self) -> None:
         items = [_make_item(MemoryKind.EPISODIC, "short")]
@@ -101,8 +102,7 @@ class TestAssembleBudgetTrim:
         assert "[Episodic Memory]" in result
         assert "short" in result
 
-    def test_budget_prioritizes_earlier_sections(self) -> None:
-        """When budget is tight, episodic memory (first) gets included over external (last)."""
+    def test_budget_preserves_every_memory_section(self) -> None:
         items = [
             _make_item(MemoryKind.EPISODIC, "A" * 100),
             _make_item(MemoryKind.EXTERNAL, "B" * 100),
@@ -111,10 +111,9 @@ class TestAssembleBudgetTrim:
         result = assembler.assemble(items, budget_chars=120)
 
         assert "[Episodic Memory]" in result
-        # External may be trimmed out due to budget
-        assert "B" * 100 not in result
+        assert "B" * 100 in result
 
-    def test_budget_keeps_highest_scored_items_first(self) -> None:
+    def test_budget_preserves_lower_scored_authorized_items_too(self) -> None:
         items = [
             _make_item(MemoryKind.SEMANTIC, "very long but high score " + ("A" * 80), score=0.95),
             _make_item(MemoryKind.SEMANTIC, "very long but low score " + ("B" * 80), score=0.10),
@@ -123,13 +122,22 @@ class TestAssembleBudgetTrim:
         result = assembler.assemble(items, budget_chars=120)
 
         assert "very long but high score" in result
-        assert "very long but low score" not in result
+        assert "very long but low score" in result
+
+    def test_all_activation_reasons_are_visible(self) -> None:
+        item = _make_item(MemoryKind.SEMANTIC, "fact")
+        item.metadata["activation_reasons"] = [f"reason-{index}" for index in range(8)]
+
+        result = MemoryAssembler().assemble([item])
+
+        assert "reason-0" in result
+        assert "reason-7" in result
 
 
-class TestAssembleDedup:
-    """Duplicate items are removed."""
+class TestAssemblePreservesModelSelection:
+    """Assembly formats the model-selected set without making another choice."""
 
-    def test_exact_duplicates_removed(self) -> None:
+    def test_exact_duplicates_with_distinct_provenance_are_preserved(self) -> None:
         items = [
             _make_item(MemoryKind.SEMANTIC, "User prefers dark mode"),
             _make_item(MemoryKind.SEMANTIC, "User prefers dark mode"),
@@ -138,9 +146,9 @@ class TestAssembleDedup:
         assembler = MemoryAssembler()
         result = assembler.assemble(items)
 
-        assert result.count("User prefers dark mode") == 1
+        assert result.count("User prefers dark mode") == 3
 
-    def test_case_insensitive_dedup(self) -> None:
+    def test_case_variants_are_not_mechanically_collapsed(self) -> None:
         items = [
             _make_item(MemoryKind.SEMANTIC, "User prefers dark mode"),
             _make_item(MemoryKind.SEMANTIC, "user prefers dark mode"),
@@ -148,9 +156,8 @@ class TestAssembleDedup:
         assembler = MemoryAssembler()
         result = assembler.assemble(items)
 
-        # Both normalize to same hash, so only one kept
         count = result.lower().count("user prefers dark mode")
-        assert count == 1
+        assert count == 2
 
     def test_different_content_preserved(self) -> None:
         items = [
@@ -163,8 +170,7 @@ class TestAssembleDedup:
         assert "fact alpha" in result
         assert "fact beta" in result
 
-    def test_cross_kind_dedup(self) -> None:
-        """Same content in different kinds is still deduplicated."""
+    def test_cross_kind_provenance_is_preserved(self) -> None:
         items = [
             _make_item(MemoryKind.SEMANTIC, "shared fact"),
             _make_item(MemoryKind.EXTERNAL, "shared fact"),
@@ -172,7 +178,7 @@ class TestAssembleDedup:
         assembler = MemoryAssembler()
         result = assembler.assemble(items)
 
-        assert result.count("shared fact") == 1
+        assert result.count("shared fact") == 2
 
 
 class TestFreshnessSuffix:

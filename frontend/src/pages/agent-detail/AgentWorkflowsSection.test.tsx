@@ -49,7 +49,7 @@ const runRows: WorkflowRunSummary[] = [
     steps_failed: 1,
     promoted_definition_id: null,
     dynamic_workflow: { proposal_id: 'proposal-1', candidate_id: 'fanout-critic' },
-    outcome_evidence: { leaf_total: 2, leaf_done: 1, leaf_failed: 1, promotion_eligible: false },
+    outcome_evidence: { leaf_total: 2, leaf_done: 1, leaf_failed: 1, model_promotion_review: 'not_requested' },
     repair_plan: { repairable: true, strategy: 'resume_failed_leaves', failed_leaf_count: 1 },
   },
   {

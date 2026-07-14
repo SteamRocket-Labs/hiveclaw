@@ -218,11 +218,14 @@ def _owner_id(agent: Any) -> uuid.UUID | None:
 
 def _normalize_collection(value: str) -> str:
     normalized = re.sub(r"[^a-z0-9_-]+", "-", str(value or "inbox").strip().lower()).strip("-")
-    return (normalized or "inbox")[:120]
+    normalized = normalized or "inbox"
+    if len(normalized) > 120:
+        raise ValueError("target_collection exceeds 120 characters")
+    return normalized
 
 
 def _normalize_refs(values: list[str] | tuple[str, ...] | None) -> list[str]:
-    return list(dict.fromkeys(str(value).strip()[:500] for value in (values or []) if str(value).strip()))
+    return list(dict.fromkeys(str(value).strip() for value in (values or []) if str(value).strip()))
 
 
 class PersonalKnowledgeProposalService:
@@ -359,9 +362,11 @@ class PersonalKnowledgeProposalService:
         session_id: str | None = None,
         runtime_task_id: str | None = None,
     ) -> PersonalKnowledgeProposalView:
-        clean_idempotency_key = str(idempotency_key or "").strip()[:200]
+        clean_idempotency_key = str(idempotency_key or "").strip()
         if not clean_idempotency_key:
             raise ValueError("idempotency_key is required")
+        if len(clean_idempotency_key) > 200:
+            raise ValueError("idempotency_key exceeds 200 characters")
         existing = (
             await session.execute(
                 select(PersonalKnowledgeProposal).where(
@@ -393,13 +398,17 @@ class PersonalKnowledgeProposalService:
             declared_sensitivity=sensitivity,
             max_chars=self.max_content_chars,
         )
-        clean_title = str(title or "").strip()[:300]
-        clean_purpose = str(purpose or "").strip()[:2000]
+        clean_title = str(title or "").strip()
+        clean_purpose = str(purpose or "").strip()
         if not clean_title:
             raise ValueError("title is required")
+        if len(clean_title) > 300:
+            raise ValueError("title exceeds 300 characters")
         if not clean_purpose:
             raise ValueError("purpose is required")
-        clean_dedupe_key = str(dedupe_key or "").strip()[:128] or _sha256(decision.content)
+        clean_dedupe_key = str(dedupe_key or "").strip() or _sha256(decision.content)
+        if len(clean_dedupe_key) > 128:
+            raise ValueError("dedupe_key exceeds 128 characters")
         content_hash = _sha256(decision.content)
         normalized_collection = _normalize_collection(target_collection)
         source_sha256 = _proposal_source_sha256(
@@ -639,7 +648,7 @@ class PersonalKnowledgeProposalService:
             row.reviewed_by_user_id = reviewer_user_id
             row.reviewed_at = datetime.now(UTC)
             row.updated_at = row.reviewed_at
-            row.review_reason = str(reason or "").strip()[:2000] or None
+            row.review_reason = str(reason or "").strip() or None
             session.add(
                 AuditLog(
                     tenant_id=tenant_id,
@@ -656,7 +665,7 @@ class PersonalKnowledgeProposalService:
                 session,
                 row=row,
                 reviewer_user_id=reviewer_user_id,
-                review_reason=str(reason or "").strip()[:2000] or None,
+                review_reason=str(reason or "").strip() or None,
             )
         await session.flush()
         return _proposal_view(row)

@@ -8,8 +8,8 @@ missing decision surface:
   opening raw files);
 - approve → owner-authorized commit through the same physical hard checks
   the gate enforces (approval unlocks ONLY the owner hold — base drift,
-  hive.soul.v2 schema, source_refs, transient identifiers, frozen-charter
-  preservation all still refuse), then rollback snapshot + atomic soul.md
+  hive.soul.v2 schema, source_refs, and frozen-charter preservation all still
+  refuse), then rollback snapshot + atomic soul.md
   write + manifest advance + audit with the approver identity;
 - reject → package marked rejected with the reason, soul.md untouched.
 
@@ -161,11 +161,7 @@ async def reject_soul_candidate(
 
 def _verify_physics(*, workspace: Path, package_dir: Path, manifest: dict) -> tuple[bool, str]:
     """Hard checks the owner's click must NOT bypass."""
-    from app.services.auto_dream import (
-        _SOUL_TRANSIENT_PATTERNS,
-        _extract_frozen_charter,
-        _promotion_contradicts_frozen,
-    )
+    from app.services.auto_dream import _extract_frozen_charter
 
     if str(manifest.get("status") or "").lower() != "held":
         return False, f"candidate is not held (status={manifest.get('status')})"
@@ -188,14 +184,22 @@ def _verify_physics(*, workspace: Path, package_dir: Path, manifest: dict) -> tu
     if "<source_ref" not in soul_next:
         return False, "soul.md.next must preserve source_refs"
 
-    candidate_text = "\n".join([pitch, patch, soul_next])
-    if any(pattern.search(candidate_text) for pattern in _SOUL_TRANSIENT_PATTERNS):
-        return False, "candidate contains transient runtime identifiers"
-
+    candidate_text = "\n\n".join([pitch, patch, soul_next])
     frozen_charter = _extract_frozen_charter(current_soul)
     if frozen_charter:
-        contradicts, contra_reason = _promotion_contradicts_frozen(frozen_charter, candidate_text, None)
-        if contradicts:
+        review = manifest.get("frozen_charter_review")
+        if not isinstance(review, dict) or review.get("status") != "reviewed":
+            return False, "frozen Mission/charter semantic review is missing or unavailable — renominate"
+        if not isinstance(review.get("contradicts"), bool):
+            return False, "frozen Mission/charter semantic review has no typed verdict — renominate"
+        expected_frozen_sha = hashlib.sha256(frozen_charter.encode("utf-8")).hexdigest()
+        expected_candidate_sha = hashlib.sha256(candidate_text.encode("utf-8")).hexdigest()
+        if review.get("frozen_charter_sha256") != expected_frozen_sha:
+            return False, "frozen Mission/charter semantic review does not match the current charter — renominate"
+        if review.get("candidate_sha256") != expected_candidate_sha:
+            return False, "frozen Mission/charter semantic review does not match the staged candidate — renominate"
+        if review["contradicts"]:
+            contra_reason = str(review.get("reason") or "semantic review found a contradiction")
             return False, f"contradicts frozen Mission/charter: {contra_reason}"
         if 'frozen="true"' not in soul_next:
             return False, "soul.md.next must preserve the frozen identity/charter block"

@@ -262,19 +262,6 @@ RUNTIME_L2_CAPABILITY_SPECS: tuple[RuntimeL2CapabilitySpec, ...] = (
 )
 
 
-_ADMIN_PACK_QUERY_KEYWORDS = (
-    "mcp",
-    "server",
-    "servers",
-    "resource",
-    "resources",
-    "import",
-    "oauth",
-    "smithery",
-    "modelscope",
-)
-
-
 CAPABILITY_MAP: dict[str, str] = {
     "glob_search": "workspace.file.read",
     "list_files": "workspace.file.read",
@@ -486,13 +473,6 @@ def _matches_runtime_query(query: str, candidate: str) -> bool:
     return bool(compact_query and compact_query in _normalize_tool_query(candidate_lower))
 
 
-def _query_targets_admin_pack(query: str) -> bool:
-    normalized = query.strip().lower()
-    if not normalized:
-        return False
-    return any(keyword in normalized for keyword in _ADMIN_PACK_QUERY_KEYWORDS)
-
-
 def iter_runtime_l2_capability_specs(query: str = "") -> tuple[RuntimeL2CapabilitySpec, ...]:
     """Return taxonomy-owned runtime L2 capability specs."""
     normalized = query.strip().lower()
@@ -501,7 +481,6 @@ def iter_runtime_l2_capability_specs(query: str = "") -> tuple[RuntimeL2Capabili
     return tuple(
         spec
         for spec in RUNTIME_L2_CAPABILITY_SPECS
-        if (spec.source != "mcp" or _query_targets_admin_pack(normalized))
         if _matches_runtime_query(normalized, spec.name)
         or _matches_runtime_query(normalized, spec.summary)
         or any(_matches_runtime_query(normalized, tool) for tool in spec.tools)

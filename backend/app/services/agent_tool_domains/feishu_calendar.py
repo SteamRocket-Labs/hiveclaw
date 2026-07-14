@@ -24,10 +24,11 @@ async def _feishu_calendar_list(agent_id: uuid.UUID, arguments: dict) -> str:
     from app.services.agent_tools import channel_feishu_sender_open_id
 
     user_email = arguments.get("user_email", "").strip()
+    max_results_value = arguments.get("max_results")
     try:
-        max_results = max(1, int(arguments.get("max_results", 20)))
+        max_results = max(1, int(max_results_value)) if max_results_value is not None else None
     except (TypeError, ValueError):
-        max_results = 20
+        return "❌ 'max_results' must be a positive integer when provided."
 
     creds = await _get_feishu_token(agent_id)
     if not creds:
@@ -151,7 +152,7 @@ async def _feishu_calendar_list(agent_id: uuid.UUID, arguments: dict) -> str:
         return f"❌ Calendar API error: {data.get('msg')} (code {data.get('code')})"
 
     items = data.get("data", {}).get("items", [])
-    limited_items = items[:max_results]
+    visible_items = items if max_results is None else items[:max_results]
     if not items and not freebusy_section:
         return "📅 **Agent 创建的日历事件**：该时间段内没有事件。"
 
@@ -159,12 +160,12 @@ async def _feishu_calendar_list(agent_id: uuid.UUID, arguments: dict) -> str:
     if freebusy_section:
         lines.append(freebusy_section)
 
-    if limited_items:
-        header = f"📅 **Agent 创建的日历事件**（显示 {len(limited_items)}/{len(items)} 条）："
+    if visible_items:
+        header = f"📅 **Agent 创建的日历事件**（显示 {len(visible_items)}/{len(items)} 条）："
         lines.append(header)
     elif agent_cal_id:
         lines.append("📅 **Agent 创建的日历事件**：该时间段内没有事件。")
-    for ev in limited_items:
+    for ev in visible_items:
         summary = ev.get("summary", "(no title)")
         start = ev.get("start_time", {}).get("timestamp", "")
         end_t = ev.get("end_time", {}).get("timestamp", "")
@@ -272,7 +273,7 @@ async def _feishu_calendar_create(agent_id: uuid.UUID, arguments: dict) -> str:
     attendee_emails: list[str] = list(arguments.get("attendee_emails") or [])
     if user_email and user_email not in attendee_emails:
         attendee_emails.append(user_email)
-    for email in attendee_emails[:20]:
+    for email in attendee_emails:
         oid = await _feishu_resolve_open_id(token, email)
         if oid and oid not in attendee_open_ids:
             attendee_open_ids.append(oid)

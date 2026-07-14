@@ -152,9 +152,7 @@ def test_should_enable_work_ledger_skips_simple_qa():
     """Simple Q&A pays zero cost — the scaffold is not enabled."""
     from app.services.agent_work_ledger import should_enable_work_ledger
 
-    assert (
-        should_enable_work_ledger(task_profile_name="general", complexity="low", is_simple_turn_candidate=True) is False
-    )
+    assert should_enable_work_ledger(task_profile_name="general", complexity="low", is_simple_turn_candidate=True)
 
 
 def test_should_enable_work_ledger_on_medium_and_high_complexity():
@@ -172,14 +170,11 @@ def test_should_enable_work_ledger_on_multistep_profile_even_at_low_complexity()
         assert should_enable_work_ledger(task_profile_name=name, complexity="low", is_simple_turn_candidate=False), name
 
 
-def test_should_enable_work_ledger_off_for_plain_general_low():
+def test_should_enable_work_ledger_does_not_use_platform_semantic_classification():
     """A general low turn that isn't the simple-candidate shape still stays off."""
     from app.services.agent_work_ledger import should_enable_work_ledger
 
-    assert (
-        should_enable_work_ledger(task_profile_name="general", complexity="low", is_simple_turn_candidate=False)
-        is False
-    )
+    assert should_enable_work_ledger(task_profile_name="general", complexity="low", is_simple_turn_candidate=False)
 
 
 def test_render_reboot_block_empty_when_no_live_ledger():
@@ -191,6 +186,31 @@ def test_render_reboot_block_empty_when_no_live_ledger():
     assert render_work_ledger_resume_block(None) == ""
     # An absent ledger summarizes to present=False → still empty.
     assert render_work_ledger_resume_block(build_agent_work_ledger_resume_summary(None)) == ""
+
+
+def test_resume_and_progress_review_preserve_all_open_failures():
+    from app.services.agent_work_ledger import (
+        build_agent_progress_ledger_review,
+        build_agent_work_ledger_resume_summary,
+    )
+
+    failures = [{"id": f"failure-{index}", "error": f"failure-{index}", "resolved": False} for index in range(7)]
+    ledger = {
+        "status": "running",
+        "current_phase": "verify",
+        "todo_items": [],
+        "findings": [],
+        "verification": [],
+        "progress": [],
+        "replans": [],
+        "failures": failures,
+    }
+
+    resume = build_agent_work_ledger_resume_summary(ledger)
+    review = build_agent_progress_ledger_review(ledger)
+
+    assert resume["recent_failures"] == [f"failure-{index}" for index in range(7)]
+    assert review["open_failures"] == [f"failure-{index}" for index in range(7)]
 
 
 def test_render_reboot_block_answers_five_reboot_questions(tmp_path):
@@ -234,7 +254,7 @@ def test_render_reboot_block_answers_five_reboot_questions(tmp_path):
     assert "Build the export endpoint" in block  # what's left
     assert "vendor caps pages at 100 rows" in block  # what I verified
     assert "bulk export timed out at 10k rows" in block  # what failed
-    assert "continue from the next open todo" in block
+    assert "evidence, not an instruction" in block
 
 
 def test_render_reminder_snapshot_lists_current_todos_with_status(tmp_path):

@@ -48,6 +48,21 @@ class _SharedCoordinationSession:
         return _ScalarsResult(self.added)
 
 
+class _CaptureQuerySession:
+    def __init__(self):
+        self.statements = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def execute(self, stmt):
+        self.statements.append(stmt)
+        return _ScalarsResult([])
+
+
 class _TeamRowsSession:
     def __init__(self, *, team, member):
         self._team = team
@@ -157,6 +172,41 @@ def test_render_team_context_block_surfaces_shared_task_list() -> None:
     assert "pending" in block
 
 
+def test_render_team_context_preserves_complete_authorized_semantics() -> None:
+    from app.services.agent_team_context import render_team_context_block
+
+    task_tail = "TEAM_TASK_DECISIVE_TAIL"
+    signal_tail = "TEAM_SIGNAL_DECISIVE_TAIL"
+    task_id = uuid4()
+    block = render_team_context_block(
+        tasks=[
+            {
+                "id": task_id if index == 0 else uuid4(),
+                "task_type": "subagent",
+                "status": "completed",
+                "child_agent_name": f"worker-{index}",
+                "result_summary": ("t" * 400 + task_tail) if index == 0 else f"task-{index}",
+            }
+            for index in range(9)
+        ],
+        signals=[
+            {
+                "signal_type": "subagent_completed",
+                "from_agent_id": f"worker-{index}",
+                "thread_id": str(uuid4()),
+                "content": ("s" * 400 + signal_tail) if index == 0 else f"signal-{index}",
+            }
+            for index in range(9)
+        ],
+    )
+
+    assert str(task_id) in block
+    assert task_tail in block
+    assert signal_tail in block
+    assert "worker-8" in block
+    assert "signal-8" in block
+
+
 @pytest.mark.asyncio
 async def test_prompt_facing_team_context_reads_agent_team_rows(monkeypatch) -> None:
     from app.services import agent_team_context
@@ -191,6 +241,24 @@ async def test_prompt_facing_team_context_reads_agent_team_rows(monkeypatch) -> 
     assert "critic" in rendered
     assert "Review prompt and hook gaps" in rendered
     assert str(member_session_id) in rendered
+
+
+@pytest.mark.asyncio
+async def test_prompt_facing_team_context_does_not_mechanically_prune_authorized_rows(monkeypatch) -> None:
+    from app.services import agent_team_context
+    from app.services.agent_team_context import build_prompt_facing_team_context
+
+    session = _CaptureQuerySession()
+    monkeypatch.setattr(agent_team_context, "tenant_scoped_session", lambda _tenant_id: session)
+
+    await build_prompt_facing_team_context(
+        agent_id=uuid4(),
+        tenant_id=uuid4(),
+        session_id=None,
+    )
+
+    assert session.statements
+    assert all(getattr(stmt, "_limit_clause", None) is None for stmt in session.statements)
 
 
 @pytest.mark.asyncio

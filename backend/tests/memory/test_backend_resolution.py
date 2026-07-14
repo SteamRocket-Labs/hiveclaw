@@ -56,7 +56,22 @@ async def test_md_backend_store_writes_explicit_overlay_not_accepted_t3(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from app.memory.write_gate import MemoryWriteDecision
+
+    async def accept_reviewed_memory(content: str, *, category: str, **_kwargs) -> MemoryWriteDecision:
+        return MemoryWriteDecision(
+            original_content=content,
+            content=content,
+            category=category,
+            sensitivity="PL1_public",
+            metadata={"threat_gate_method": "test_model_reviewer"},
+        )
+
     monkeypatch.setattr("app.config.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+    monkeypatch.setattr(
+        "app.memory.explicit_overlay.prepare_memory_write_with_llm",
+        accept_reviewed_memory,
+    )
     backend = MDBackend(data_root=tmp_path)
     agent_id = uuid.uuid4()
 
@@ -66,6 +81,27 @@ async def test_md_backend_store_writes_explicit_overlay_not_accepted_t3(
     assert (memory_dir / "explicit" / "MEMORY.md").exists()
     assert not (memory_dir / "feedback.md").exists()
     assert not (memory_dir / "t3" / "user.md").exists()
+
+
+@pytest.mark.asyncio
+async def test_md_backend_search_has_no_hidden_default_candidate_limit(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = MDBackend(data_root=tmp_path)
+    agent_id = uuid.uuid4()
+    captured: dict[str, object] = {}
+
+    def fake_search_plane_facts(*_args, **kwargs):
+        captured.update(kwargs)
+        return [{"content": f"candidate {index}", "category": "general"} for index in range(25)]
+
+    monkeypatch.setattr("app.memory.plane_read.search_plane_facts", fake_search_plane_facts)
+
+    results = await backend.search(agent_id, "candidate")
+
+    assert captured["limit"] is None
+    assert len(results) == 25
 
 
 @pytest.mark.asyncio

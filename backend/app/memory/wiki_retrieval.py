@@ -34,10 +34,6 @@ logger = logging.getLogger(__name__)
 DEFAULT_WIKI_METHOD = "ppr"
 
 _PREVIEW_CHARS = 160
-# PPR scores are graph-mass values (sum≈1) — far smaller than BM25 scores.
-# Hits whose total score is zero are dropped; this floor only filters
-# numerically-dead nodes, not weak-but-reachable ones.
-_SCORE_FLOOR = 1e-9
 
 
 def _page_text(data_root: Path, agent_id: uuid.UUID, page_id: str) -> str:
@@ -67,7 +63,7 @@ def search_wiki_pages(
     query: str,
     *,
     method: str = DEFAULT_WIKI_METHOD,
-    limit: int = 5,
+    limit: int | None = None,
     graph: RelationGraph | None = None,
     page_dirs: tuple[str, ...] | None = None,
 ) -> list[dict]:
@@ -76,8 +72,10 @@ def search_wiki_pages(
     Defaults to the legacy wiki/scenes dirs; pass
     ``relation_graph.KNOWLEDGE_PAGE_DIRS`` to rank the two-plane
     knowledge/milestones network. Returns rows of ``{page_id, title, kind,
-    score, method, preview, source_ref}`` — ``source_ref`` always resolves
-    back to the Markdown truth source.
+    score, method, preview, content, source_ref}``. Ranking signals are
+    observations for callers; a limit is honored only when the caller
+    explicitly supplies one. ``source_ref`` always resolves back to the
+    complete Markdown truth source.
     """
     needle = (query or "").strip()
     if not needle:
@@ -100,8 +98,6 @@ def search_wiki_pages(
         corpus_tokens.append(_bm25_tokenize(f"{node.title} {node.tags} {_strip_frontmatter(text)}"))
 
     query_tokens = _bm25_tokenize(needle)
-    if not query_tokens:
-        return []
     bm25_scores = _bm25_score(query_tokens, corpus_tokens)
     lexical = {node.node_id: score for node, score in zip(active_nodes, bm25_scores)}
 
@@ -111,7 +107,7 @@ def search_wiki_pages(
 
     if normalized_method == "ppr":
         seeds = {node_id: score for node_id, score in lexical.items() if score > 0}
-        ppr_scores = personalized_pagerank(graph.adjacency(), seeds)
+        ppr_scores = personalized_pagerank(graph.adjacency(), seeds) if seeds else {}
         # Blend: graph relevance carries the ranking; a small lexical term
         # keeps direct hits ahead of equally-connected neighbors.
         max_lexical = max(lexical.values()) or 1.0
@@ -122,15 +118,12 @@ def search_wiki_pages(
     else:
         final = lexical
 
-    ranked = sorted(
-        (item for item in final.items() if item[1] > _SCORE_FLOOR),
-        key=lambda item: item[1],
-        reverse=True,
-    )
+    ranked = sorted(final.items(), key=lambda item: item[1], reverse=True)
+    visible = ranked if limit is None else ranked[: max(0, limit)]
 
     nodes_by_id = {node.node_id: node for node in active_nodes}
     hits: list[dict] = []
-    for node_id, score in ranked[: max(1, limit)]:
+    for node_id, score in visible:
         node = nodes_by_id[node_id]
         hits.append(
             {
@@ -140,6 +133,7 @@ def search_wiki_pages(
                 "score": round(score, 6),
                 "method": normalized_method,
                 "preview": _preview(texts.get(node_id, "")),
+                "content": texts.get(node_id, ""),
                 "source_ref": f"memory/{node_id}.md",
             }
         )

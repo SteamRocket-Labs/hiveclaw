@@ -311,7 +311,7 @@ def test_page_markdown_redacts_pl3_for_unauthorized_principal(tmp_path: Path) ->
     _seed_workspace(tmp_path)
     page_path = tmp_path / str(AGENT) / "memory" / "knowledge" / "salary-planning.md"
     page_path.write_text(
-        "---\ntitle: Salary Planning\ntype: concept\nstatus: active\n---\n\n"
+        "---\ntitle: Salary Planning\ntype: concept\nstatus: active\nsensitivity: PL3_sensitive\n---\n\n"
         "## Current Claim\n\nsalary planning is confidential\n",
         encoding="utf-8",
     )
@@ -324,6 +324,27 @@ def test_page_markdown_redacts_pl3_for_unauthorized_principal(tmp_path: Path) ->
     assert page is not None
     assert page["markdown"] == "[REDACTED_PL3]"
     assert "salary planning is confidential" not in page["markdown"]
+
+
+def test_page_markdown_does_not_infer_semantic_sensitivity_from_topic_words(tmp_path: Path) -> None:
+    from app.services.principal_context import Principal, PrincipalRole, PrincipalStack
+
+    _seed_workspace(tmp_path)
+    page_path = tmp_path / str(AGENT) / "memory" / "knowledge" / "salary-vocabulary.md"
+    page_path.write_text(
+        "---\ntitle: Salary Vocabulary\ntype: concept\nstatus: active\n---\n\n"
+        "## Current Claim\n\nThe word salary appears in this public glossary.\n",
+        encoding="utf-8",
+    )
+    stack = PrincipalStack(
+        direct_owner=Principal(role=PrincipalRole.OWNER, id="owner-1"),
+        current_user=Principal(role=PrincipalRole.CURRENT_USER, id="viewer-1"),
+    )
+
+    page = get_knowledge_page(tmp_path, AGENT, "knowledge/salary-vocabulary", principal_stack=stack)
+
+    assert page is not None
+    assert "The word salary appears" in page["markdown"]
 
 
 def test_events_merge_audit_and_dream_history(tmp_path: Path) -> None:

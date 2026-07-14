@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+from io import BytesIO
 from types import SimpleNamespace
 
 import pytest
@@ -184,3 +185,70 @@ def test_save_extracted_text_compatibility_wrapper_uses_document_conversion(monk
     assert txt_path.read_text(encoding="utf-8") == "Compatibility\n\nConverted"
     assert (workspace_root / "workspace" / ".hive" / "document_conversions").exists()
     assert [call["kind"] for call in calls].count("convert_local") == 1
+
+
+def test_legacy_pdf_extractor_preserves_pages_after_fifty(monkeypatch) -> None:
+    from app.services.document_conversion import _extract_pdf
+
+    class _Page:
+        def __init__(self, text: str):
+            self._text = text
+
+        def extract_text(self):
+            return self._text
+
+        def extract_tables(self):
+            return []
+
+    class _Pdf:
+        pages = [_Page(f"page-{index}") for index in range(51)]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    monkeypatch.setitem(sys.modules, "pdfplumber", SimpleNamespace(open=lambda _stream: _Pdf()))
+
+    result = _extract_pdf(b"%PDF-fake")
+
+    assert "page-50" in result
+
+
+def test_legacy_xlsx_extractor_preserves_all_sheets_and_rows() -> None:
+    from openpyxl import Workbook
+
+    from app.services.document_conversion import _extract_xlsx
+
+    workbook = Workbook()
+    workbook.remove(workbook.active)
+    for index in range(11):
+        sheet = workbook.create_sheet(f"sheet-{index}")
+        sheet.append([f"sheet-value-{index}"])
+    for row_index in range(2, 202):
+        workbook["sheet-10"].append([f"row-{row_index}"])
+    stream = BytesIO()
+    workbook.save(stream)
+
+    result = _extract_xlsx(stream.getvalue())
+
+    assert "## Sheet: sheet-10" in result
+    assert "row-201" in result
+
+
+def test_legacy_pptx_extractor_preserves_slides_after_fifty() -> None:
+    from pptx import Presentation
+
+    from app.services.document_conversion import _extract_pptx
+
+    presentation = Presentation()
+    for index in range(51):
+        slide = presentation.slides.add_slide(presentation.slide_layouts[5])
+        slide.shapes.title.text = f"slide-{index}"
+    stream = BytesIO()
+    presentation.save(stream)
+
+    result = _extract_pptx(stream.getvalue())
+
+    assert "slide-50" in result

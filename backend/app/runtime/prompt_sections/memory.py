@@ -76,15 +76,7 @@ the Work Ledger or workspace artifacts rather than durable memory.
 
 
 def build_memory_section(memory_snapshot: str = "", *, budget_chars: int | None = None) -> str:
-    """Render the memory section, optionally trimming the snapshot to a budget.
-
-    The static template (~1.3K chars) is always preserved — only the
-    `memory_snapshot` body is trimmed when `budget_chars` is set, so the
-    layered usage guidance stays intact even on tiny budgets.
-    """
+    """Render complete authorized memory; the final provider gate owns capacity."""
+    del budget_chars
     snapshot = memory_snapshot.strip() if memory_snapshot else "(no memory loaded)"
-    if budget_chars is not None and budget_chars > 0 and len(snapshot) > budget_chars:
-        snapshot = snapshot[:budget_chars].rstrip() + (
-            "\n...(memory context trimmed to fit budget — use search_memory to retrieve more)"
-        )
     return _MEMORY_SECTION_TEMPLATE.format(memory_snapshot=snapshot)

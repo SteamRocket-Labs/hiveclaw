@@ -242,6 +242,7 @@ def _summarize_chat_messages(messages: list) -> dict:
     last_team_memory_hit: dict | None = None
     last_tool_budget_event: dict | None = None
     last_retry_reason: str | None = None
+    last_model_route: dict | None = None
 
     for msg in messages:
         if getattr(msg, "role", None) == "tool_call":
@@ -256,6 +257,22 @@ def _summarize_chat_messages(messages: list) -> dict:
 
         event_data = _load_json_content(getattr(msg, "content", ""))
         event_type = event_data.get("event_type") or event_data.get("type")
+
+        if event_type == "model_route":
+            last_model_route = {
+                "id": event_data.get("selected_model_id"),
+                "label": event_data.get("selected_model_label"),
+                "provider": event_data.get("selected_provider"),
+                "name": event_data.get("selected_model"),
+                "supports_vision": event_data.get("selected_supports_vision"),
+                "context_window_tokens": event_data.get("selected_context_window_tokens"),
+                "fallback_name": event_data.get("fallback_model"),
+                "route_reason": event_data.get("reason"),
+                "routing_config_source": event_data.get("config_source"),
+                "routing_locked": bool(event_data.get("model_routing_locked")),
+                "created_at": _safe_isoformat(getattr(msg, "created_at", None)),
+            }
+            continue
 
         if event_type in ("pack_activation", "tool_group_activation"):
             for pack in event_data.get("tool_groups") or event_data.get("packs", []):
@@ -316,6 +333,7 @@ def _summarize_chat_messages(messages: list) -> dict:
         "last_team_memory_hit": last_team_memory_hit,
         "last_tool_budget_event": last_tool_budget_event,
         "last_retry_reason": last_retry_reason,
+        "last_model_route": last_model_route,
     }
 
 
@@ -557,6 +575,7 @@ async def get_session_runtime_summary(db: AsyncSession, session_id: uuid.UUID) -
             "last_team_memory_hit": None,
             "last_tool_budget_event": None,
             "last_retry_reason": None,
+            "last_model_route": None,
         }
 
     agent_result = await db.execute(select(Agent).where(Agent.id == session.agent_id))
@@ -581,13 +600,20 @@ async def get_session_runtime_summary(db: AsyncSession, session_id: uuid.UUID) -
     context_window_tokens = _resolve_context_window_tokens(model, agent)
     estimated_input_tokens = _estimate_session_input_tokens(messages)
 
+    route = summary.get("last_model_route") if isinstance(summary.get("last_model_route"), dict) else None
     summary["model"] = {
-        "label": getattr(model, "label", None),
-        "provider": getattr(model, "provider", None),
-        "name": getattr(model, "model", None),
-        "supports_vision": getattr(model, "supports_vision", None),
-        "context_window_tokens": context_window_tokens,
+        "id": route.get("id") if route else (str(model.id) if model is not None and model.id is not None else None),
+        "label": route.get("label") if route else getattr(model, "label", None),
+        "provider": route.get("provider") if route else getattr(model, "provider", None),
+        "name": route.get("name") if route else getattr(model, "model", None),
+        "supports_vision": route.get("supports_vision") if route else getattr(model, "supports_vision", None),
+        "context_window_tokens": route.get("context_window_tokens") if route else context_window_tokens,
+        "fallback_name": route.get("fallback_name") if route else None,
+        "route_reason": route.get("route_reason") if route else "primary_model",
+        "routing_config_source": route.get("routing_config_source") if route else None,
+        "routing_locked": route.get("routing_locked") if route else False,
     }
+    context_window_tokens = summary["model"]["context_window_tokens"]
     summary["runtime"] = {
         "estimated_input_tokens": estimated_input_tokens,
         "remaining_tokens_estimate": (

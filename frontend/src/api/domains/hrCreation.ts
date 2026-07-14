@@ -43,7 +43,6 @@ export interface HrCreationDraft {
 
 export interface HrCreationConfirmInput {
   blueprint_version: number;
-  blueprint_hash: string;
 }
 
 function draftPath(agentId: string, draftId: string): string {

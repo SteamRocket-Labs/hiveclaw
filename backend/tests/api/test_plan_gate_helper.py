@@ -26,6 +26,9 @@ async def test_enforce_plan_gate_threads_full_authority_binding_and_returns_deci
         authorization_lease_id=str(uuid4()),
         canonical_args_hash="args-hash",
         target_ref="task:new",
+        canonical_plan_id=str(uuid4()),
+        canonical_plan_version=3,
+        canonical_plan_hash="sha256:server-plan",
     )
     gate = _Gate(decision)
     agent_id = uuid4()
@@ -54,3 +57,35 @@ async def test_enforce_plan_gate_threads_full_authority_binding_and_returns_deci
     assert gate.kwargs["runtime_task_id"] == runtime_task_id
     assert gate.kwargs["target_ref"] == "task:new"
     assert gate.kwargs["evidence_id"] == "run-1"
+
+
+def test_stamp_plan_gate_decision_persists_server_canonical_plan_binding():
+    from app.api._plan_gate import stamp_plan_gate_decision
+    from app.services.plan_mode_gate import PlanGateDecision
+
+    canonical_plan_id = str(uuid4())
+    decision = PlanGateDecision(
+        allowed=True,
+        reason="confirmed_plan_lease_consumed",
+        authorization_lease_id=str(uuid4()),
+        canonical_args_hash="args-hash",
+        target_ref="task:new",
+        canonical_plan_id=canonical_plan_id,
+        canonical_plan_version=7,
+        canonical_plan_hash="sha256:server-plan",
+    )
+
+    stamped = stamp_plan_gate_decision(
+        {},
+        decision=decision,
+        confirmed_plan_id="legacy-client-id",
+        confirmed_plan_version=6,
+        confirmed_plan_hash="sha256:legacy-client",
+        requester_user_id=uuid4(),
+        evidence_id="task-create:1",
+    )
+
+    assert stamped["plan_id"] == canonical_plan_id
+    assert stamped["plan_version"] == 7
+    assert stamped["plan_hash"] == "sha256:server-plan"
+    assert stamped["plan_authorization"]["lease_id"] == decision.authorization_lease_id

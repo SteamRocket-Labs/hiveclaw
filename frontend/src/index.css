@@ -2829,6 +2829,23 @@
   color: var(--text-tertiary);
 }
 
+.exec-complete {
+  margin-top: 6px;
+  color: var(--text-secondary);
+  font-size: var(--text-meta);
+}
+
+.exec-complete > summary {
+  cursor: pointer;
+  color: var(--accent-primary);
+}
+
+.exec-complete-pre {
+  margin-top: 6px;
+  max-height: 360px;
+  overflow: auto;
+}
+
 .session-tui-thinking {
   margin-bottom: 8px;
   border: 1px solid var(--border-subtle);

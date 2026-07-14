@@ -1,10 +1,9 @@
-"""Version-bound positive and negative trials for provisional Skills.
+"""Version-bound, model-reviewed trials for provisional Skills.
 
-The trial ledger is the durable decision source for provisional Skill usage.
-It is intentionally separate from generic lifecycle candidate aggregation:
-only invocations that actually loaded the provisional Skill can advance it.
-Every transition mutates content, registry, candidate manifest, and evidence in
-one ``AgentAssetTransaction``.
+Runtime signals are durable evidence only. They never auto-promote or
+auto-rollback a Skill by count. A model reviewer reads the complete candidate,
+rollback baseline, and signal ledger; the platform then enforces exact version,
+transaction, verification, and rollback invariants around that decision.
 """
 
 from __future__ import annotations
@@ -14,10 +13,13 @@ import json
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from collections import Counter
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from app.services.agent_asset_transaction import AgentAssetTransaction
 from app.services.evolution_ledger import record_promotion_decision, record_rollback_event
+from app.services.llm_client import get_max_tokens
 from app.services.skill_candidate_package import update_skill_candidate_package_status
 from app.services.skill_evolution_registry import (
     STATE_ACTIVE,
@@ -31,8 +33,6 @@ from app.services.skill_evolution_registry import (
 )
 
 SCHEMA = "skill_provisional_trial.v1"
-DEFAULT_POSITIVE_SIGNAL_THRESHOLD = 3
-DEFAULT_NEGATIVE_SIGNAL_THRESHOLD = 2
 DEFAULT_TRIAL_WINDOW_DAYS = 14
 _TERMINAL_STATES = frozenset({"promoted", STATE_ROLLED_BACK, STATE_NEEDS_REVIEW})
 
@@ -107,15 +107,13 @@ def _stage_trial(
 
 def _public_progress(trial: dict[str, Any], *, decision: str) -> dict[str, Any]:
     signals = trial.get("signals") if isinstance(trial.get("signals"), dict) else {}
-    thresholds = trial.get("thresholds") if isinstance(trial.get("thresholds"), dict) else {}
     return {
         "trial_decision": decision,
         "candidate_id": trial.get("candidate_id"),
         "trial_state": trial.get("state"),
         "positive_signal_count": len(signals.get("positive") or []),
-        "positive_signal_threshold": int(thresholds.get("positive") or DEFAULT_POSITIVE_SIGNAL_THRESHOLD),
         "negative_signal_count": len(signals.get("negative") or []),
-        "negative_signal_threshold": int(thresholds.get("negative") or DEFAULT_NEGATIVE_SIGNAL_THRESHOLD),
+        "review_status": trial.get("review_status"),
     }
 
 
@@ -128,8 +126,6 @@ def initialize_provisional_trial(
     candidate_content: bytes,
     baseline_content: bytes | None,
     baseline_registry_entry: dict[str, Any] | None,
-    positive_signal_threshold: int = DEFAULT_POSITIVE_SIGNAL_THRESHOLD,
-    negative_signal_threshold: int = DEFAULT_NEGATIVE_SIGNAL_THRESHOLD,
     window_days: int = DEFAULT_TRIAL_WINDOW_DAYS,
     started_at: str | None = None,
     transaction: AgentAssetTransaction | None = None,
@@ -150,8 +146,6 @@ def initialize_provisional_trial(
                 candidate_content=candidate_content,
                 baseline_content=baseline_content,
                 baseline_registry_entry=baseline_registry_entry,
-                positive_signal_threshold=positive_signal_threshold,
-                negative_signal_threshold=negative_signal_threshold,
                 window_days=window_days,
                 started_at=started_at,
                 transaction=own_transaction,
@@ -203,11 +197,9 @@ def initialize_provisional_trial(
         "started_at": stamp,
         "updated_at": stamp,
         "window_days": max(1, int(window_days)),
-        "thresholds": {
-            "positive": max(1, int(positive_signal_threshold)),
-            "negative": max(1, int(negative_signal_threshold)),
-        },
         "signals": {"positive": [], "negative": []},
+        "review_status": "waiting_for_evidence",
+        "model_reviews": [],
         "rollback": rollback,
         "source_refs": [f"skill-candidate:{safe_id}", target_path],
     }
@@ -236,9 +228,8 @@ def initialize_provisional_trial(
         extra_metadata={
             "trial_state": STATE_PROVISIONAL,
             "positive_signal_count": 0,
-            "positive_signal_threshold": trial["thresholds"]["positive"],
             "negative_signal_count": 0,
-            "negative_signal_threshold": trial["thresholds"]["negative"],
+            "review_status": trial["review_status"],
         },
         transaction=transaction,
     )
@@ -309,6 +300,7 @@ def _mark_needs_review(
 ) -> dict[str, Any]:
     stamp = occurred_at or _now_iso()
     trial["state"] = STATE_NEEDS_REVIEW
+    trial["review_status"] = "held"
     trial["updated_at"] = stamp
     trial["decision_reason"] = reason
     _stage_trial(transaction, trial)
@@ -487,7 +479,7 @@ def sweep_expired_provisional_trials(
             workspace,
             trial=trial,
             entry=entry,
-            reason="Provisional Skill trial window expired before a terminal threshold was reached.",
+            reason="Provisional Skill trial window expired without a terminal model review decision.",
             occurred_at=stamp,
             transaction=transaction,
         )
@@ -582,7 +574,7 @@ def record_provisional_trial_signal(
             workspace,
             trial=trial,
             entry=entry,
-            reason="Provisional Skill trial window expired before a terminal threshold was reached.",
+            reason="Provisional Skill trial window expired before the pending model review completed.",
             occurred_at=stamp,
             transaction=transaction,
         )
@@ -606,148 +598,10 @@ def record_provisional_trial_signal(
         }
     )
     trial["updated_at"] = stamp
-    thresholds = trial.get("thresholds") if isinstance(trial.get("thresholds"), dict) else {}
-    positive_threshold = max(1, int(thresholds.get("positive") or DEFAULT_POSITIVE_SIGNAL_THRESHOLD))
-    negative_threshold = max(1, int(thresholds.get("negative") or DEFAULT_NEGATIVE_SIGNAL_THRESHOLD))
-
-    if normalized_kind == "positive" and len(signals.get("positive") or []) >= positive_threshold:
-        trial["state"] = "promoted"
-        trial["promoted_at"] = stamp
-        trial["decision_reason"] = "Positive runtime evidence threshold reached."
-        _stage_trial(transaction, trial)
-        upsert_skill_evolution_entry(
-            workspace,
-            skill_name=str(entry.get("skill_name") or skill_name),
-            target_path=target_path,
-            skill_origin=str(entry.get("skill_origin") or "unknown"),
-            evolvable=bool(entry.get("evolvable", True)),
-            active_version_hash=str(trial.get("candidate_version_hash") or "") or None,
-            last_candidate_id=candidate_id,
-            state=STATE_ACTIVE,
-            metadata={"commit_status": STATE_ACTIVE, "trial_state": "promoted", "promoted_at": stamp},
-            transaction=transaction,
-        )
-        update_skill_candidate_package_status(
-            workspace=workspace,
-            candidate_id=candidate_id,
-            status="promoted",
-            reason=trial["decision_reason"],
-            extra_metadata={
-                "trial_state": "promoted",
-                "positive_signal_count": len(signals.get("positive") or []),
-                "negative_signal_count": len(signals.get("negative") or []),
-            },
-            transaction=transaction,
-        )
-        from app.services.skill_lifecycle import record_skill_lifecycle_event
-
-        record_skill_lifecycle_event(
-            workspace,
-            skill_name=str(trial.get("skill_name") or skill_name),
-            status="promoted",
-            note=trial["decision_reason"],
-            transaction=transaction,
-        )
-        record_promotion_decision(
-            workspace,
-            candidate_id=candidate_id,
-            decision="promoted",
-            reason=trial["decision_reason"],
-            rollback_ref=str((trial.get("rollback") or {}).get("ref") or target_path),
-            metadata={"source": "provisional_trial", "candidate_version_hash": trial.get("candidate_version_hash")},
-            transaction=transaction,
-        )
-        return _public_progress(trial, decision="promoted")
-
-    if normalized_kind == "negative" and len(signals.get("negative") or []) >= negative_threshold:
-        rollback = trial.get("rollback") if isinstance(trial.get("rollback"), dict) else {}
-        action = str(rollback.get("action") or "manual_review")
-        if action == "manual_review":
-            return _mark_needs_review(
-                workspace,
-                trial=trial,
-                entry=entry,
-                reason="Negative threshold reached, but this legacy trial has no verified rollback baseline.",
-                transaction=transaction,
-            )
-        if action == "restore":
-            rollback_ref = str(rollback.get("ref") or "")
-            baseline = transaction.read_bytes(rollback_ref) if rollback_ref else None
-            if baseline is None or _sha256(baseline) != rollback.get("baseline_version_hash"):
-                return _mark_needs_review(
-                    workspace,
-                    trial=trial,
-                    entry=entry,
-                    reason="Verified rollback backup is missing or corrupted.",
-                    transaction=transaction,
-                )
-            transaction.stage_bytes(target_path, baseline)
-            restore_skill_evolution_entry(
-                workspace,
-                skill_name=str(trial.get("skill_name") or skill_name),
-                entry=rollback.get("baseline_registry_entry")
-                if isinstance(rollback.get("baseline_registry_entry"), dict)
-                else None,
-                transaction=transaction,
-            )
-            restored_ref = rollback_ref
-        else:
-            transaction.stage_delete(target_path)
-            upsert_skill_evolution_entry(
-                workspace,
-                skill_name=str(entry.get("skill_name") or skill_name),
-                target_path=target_path,
-                skill_origin=str(entry.get("skill_origin") or "unknown"),
-                evolvable=bool(entry.get("evolvable", True)),
-                active_version_hash=str(trial.get("candidate_version_hash") or "") or None,
-                last_candidate_id=candidate_id,
-                state=STATE_ROLLED_BACK,
-                metadata={"commit_status": STATE_ROLLED_BACK, "trial_state": STATE_ROLLED_BACK},
-                transaction=transaction,
-            )
-            restored_ref = f"deleted:{target_path}"
-
-        trial["state"] = STATE_ROLLED_BACK
-        trial["rolled_back_at"] = stamp
-        trial["updated_at"] = stamp
-        trial["decision_reason"] = "Negative runtime evidence threshold reached."
-        _stage_trial(transaction, trial)
-        update_skill_candidate_package_status(
-            workspace=workspace,
-            candidate_id=candidate_id,
-            status=STATE_ROLLED_BACK,
-            reason=trial["decision_reason"],
-            extra_metadata={
-                "trial_state": STATE_ROLLED_BACK,
-                "positive_signal_count": len(signals.get("positive") or []),
-                "negative_signal_count": len(signals.get("negative") or []),
-            },
-            transaction=transaction,
-        )
-        from app.services.skill_lifecycle import record_skill_lifecycle_event
-
-        record_skill_lifecycle_event(
-            workspace,
-            skill_name=str(trial.get("skill_name") or skill_name),
-            status=STATE_ROLLED_BACK,
-            note=trial["decision_reason"],
-            transaction=transaction,
-        )
-        rollback_event = record_rollback_event(
-            workspace,
-            candidate_id=candidate_id,
-            restored_ref=restored_ref,
-            reason=trial["decision_reason"],
-            operator="system",
-            metadata={
-                "source": "provisional_trial",
-                "rollback_action": action,
-                "candidate_version_hash": trial.get("candidate_version_hash"),
-            },
-            transaction=transaction,
-        )
-        return {**_public_progress(trial, decision=STATE_ROLLED_BACK), "rollback_event": rollback_event}
-
+    # Every new model-authored outcome is reviewable immediately. Counts and
+    # ordering stay in the ledger, but no fixed threshold owns the meaning.
+    trial["review_status"] = "pending_model_review"
+    trial["review_requested_at"] = stamp
     _stage_trial(transaction, trial)
     update_skill_candidate_package_status(
         workspace=workspace,
@@ -756,10 +610,500 @@ def record_provisional_trial_signal(
         extra_metadata={
             "trial_state": STATE_PROVISIONAL,
             "positive_signal_count": len(signals.get("positive") or []),
-            "positive_signal_threshold": positive_threshold,
             "negative_signal_count": len(signals.get("negative") or []),
-            "negative_signal_threshold": negative_threshold,
+            "review_status": trial["review_status"],
         },
         transaction=transaction,
     )
-    return _public_progress(trial, decision="continue_trial")
+    return _public_progress(trial, decision="model_review_pending")
+
+
+TrialReviewer = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
+_MODEL_TRIAL_DECISIONS = frozenset({"promote", "rollback", "continue", "hold"})
+
+
+def _trial_evidence_digest(trial: dict[str, Any]) -> str:
+    evidence = {
+        "candidate_id": trial.get("candidate_id"),
+        "candidate_version_hash": trial.get("candidate_version_hash"),
+        "signals": trial.get("signals"),
+        "rollback": trial.get("rollback"),
+    }
+    return hashlib.sha256(json.dumps(evidence, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+
+
+def _trial_review_payload(workspace: Path, trial: dict[str, Any]) -> dict[str, Any]:
+    target_path = str(trial.get("target_path") or "")
+    candidate = (workspace / target_path).read_bytes()
+    if _sha256(candidate) != trial.get("candidate_version_hash"):
+        raise ValueError("candidate_version_drift")
+    try:
+        candidate_content = candidate.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError("candidate_is_not_utf8_markdown") from exc
+
+    rollback = trial.get("rollback") if isinstance(trial.get("rollback"), dict) else {}
+    baseline_content: str | None = None
+    if rollback.get("action") == "restore":
+        rollback_ref = str(rollback.get("ref") or "")
+        baseline = (workspace / rollback_ref).read_bytes()
+        if _sha256(baseline) != rollback.get("baseline_version_hash"):
+            raise ValueError("rollback_baseline_drift")
+        try:
+            baseline_content = baseline.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError("rollback_baseline_is_not_utf8_markdown") from exc
+
+    return {
+        "schema": "skill_provisional_trial_review_input.v1",
+        "candidate_id": trial.get("candidate_id"),
+        "skill_name": trial.get("skill_name"),
+        "target_path": target_path,
+        "candidate_version_hash": trial.get("candidate_version_hash"),
+        "candidate_content": candidate_content,
+        "baseline_content": baseline_content,
+        "rollback_contract": rollback,
+        "signals": trial.get("signals") if isinstance(trial.get("signals"), dict) else {},
+        "source_refs": list(trial.get("source_refs") or []),
+        "started_at": trial.get("started_at"),
+        "review_requested_at": trial.get("review_requested_at"),
+        "evidence_digest": _trial_evidence_digest(trial),
+    }
+
+
+def _append_model_review(
+    trial: dict[str, Any],
+    *,
+    decision: str,
+    reason: str,
+    evidence_digest: str,
+    occurred_at: str,
+) -> None:
+    reviews = trial.setdefault("model_reviews", [])
+    if not isinstance(reviews, list):
+        reviews = []
+        trial["model_reviews"] = reviews
+    reviews.append(
+        {
+            "schema": "skill_provisional_trial_model_review.v1",
+            "decision": decision,
+            "reason": reason,
+            "evidence_digest": evidence_digest,
+            "occurred_at": occurred_at,
+        }
+    )
+
+
+def _apply_model_promotion(
+    workspace: Path,
+    *,
+    trial: dict[str, Any],
+    entry: dict[str, Any],
+    reason: str,
+    occurred_at: str,
+    transaction: AgentAssetTransaction,
+) -> dict[str, Any]:
+    candidate_id = str(trial["candidate_id"])
+    target_path = str(trial.get("target_path") or entry.get("target_path") or "")
+    signals = trial.get("signals") if isinstance(trial.get("signals"), dict) else {}
+    trial["state"] = "promoted"
+    trial["review_status"] = "reviewed"
+    trial["promoted_at"] = occurred_at
+    trial["updated_at"] = occurred_at
+    trial["decision_reason"] = reason
+    _stage_trial(transaction, trial)
+    upsert_skill_evolution_entry(
+        workspace,
+        skill_name=str(entry.get("skill_name") or trial.get("skill_name") or candidate_id),
+        target_path=target_path,
+        skill_origin=str(entry.get("skill_origin") or "unknown"),
+        evolvable=bool(entry.get("evolvable", True)),
+        active_version_hash=str(trial.get("candidate_version_hash") or "") or None,
+        last_candidate_id=candidate_id,
+        state=STATE_ACTIVE,
+        metadata={
+            "commit_status": STATE_ACTIVE,
+            "trial_state": "promoted",
+            "promoted_at": occurred_at,
+            "semantic_authority": "model_review",
+        },
+        transaction=transaction,
+    )
+    update_skill_candidate_package_status(
+        workspace=workspace,
+        candidate_id=candidate_id,
+        status="promoted",
+        reason=reason,
+        extra_metadata={
+            "trial_state": "promoted",
+            "positive_signal_count": len(signals.get("positive") or []),
+            "negative_signal_count": len(signals.get("negative") or []),
+            "semantic_authority": "model_review",
+        },
+        transaction=transaction,
+    )
+    from app.services.skill_lifecycle import record_skill_lifecycle_event
+
+    record_skill_lifecycle_event(
+        workspace,
+        skill_name=str(trial.get("skill_name") or candidate_id),
+        status="promoted",
+        note=reason,
+        transaction=transaction,
+    )
+    record_promotion_decision(
+        workspace,
+        candidate_id=candidate_id,
+        decision="promoted",
+        reason=reason,
+        rollback_ref=str((trial.get("rollback") or {}).get("ref") or target_path),
+        metadata={
+            "source": "provisional_trial_model_review",
+            "candidate_version_hash": trial.get("candidate_version_hash"),
+        },
+        transaction=transaction,
+    )
+    return _public_progress(trial, decision="promoted")
+
+
+def _apply_model_rollback(
+    workspace: Path,
+    *,
+    trial: dict[str, Any],
+    entry: dict[str, Any],
+    reason: str,
+    occurred_at: str,
+    transaction: AgentAssetTransaction,
+) -> dict[str, Any]:
+    candidate_id = str(trial["candidate_id"])
+    target_path = str(trial.get("target_path") or entry.get("target_path") or "")
+    rollback = trial.get("rollback") if isinstance(trial.get("rollback"), dict) else {}
+    action = str(rollback.get("action") or "manual_review")
+    if action == "manual_review":
+        return _mark_needs_review(
+            workspace,
+            trial=trial,
+            entry=entry,
+            reason=f"Model recommended rollback, but no verified rollback baseline exists. {reason}",
+            occurred_at=occurred_at,
+            transaction=transaction,
+        )
+    if action == "restore":
+        rollback_ref = str(rollback.get("ref") or "")
+        baseline = transaction.read_bytes(rollback_ref) if rollback_ref else None
+        if baseline is None or _sha256(baseline) != rollback.get("baseline_version_hash"):
+            return _mark_needs_review(
+                workspace,
+                trial=trial,
+                entry=entry,
+                reason="Model recommended rollback, but the verified rollback backup is missing or corrupted.",
+                occurred_at=occurred_at,
+                transaction=transaction,
+            )
+        transaction.stage_bytes(target_path, baseline)
+        restore_skill_evolution_entry(
+            workspace,
+            skill_name=str(trial.get("skill_name") or candidate_id),
+            entry=rollback.get("baseline_registry_entry")
+            if isinstance(rollback.get("baseline_registry_entry"), dict)
+            else None,
+            transaction=transaction,
+        )
+        restored_ref = rollback_ref
+    else:
+        transaction.stage_delete(target_path)
+        upsert_skill_evolution_entry(
+            workspace,
+            skill_name=str(entry.get("skill_name") or trial.get("skill_name") or candidate_id),
+            target_path=target_path,
+            skill_origin=str(entry.get("skill_origin") or "unknown"),
+            evolvable=bool(entry.get("evolvable", True)),
+            active_version_hash=str(trial.get("candidate_version_hash") or "") or None,
+            last_candidate_id=candidate_id,
+            state=STATE_ROLLED_BACK,
+            metadata={
+                "commit_status": STATE_ROLLED_BACK,
+                "trial_state": STATE_ROLLED_BACK,
+                "semantic_authority": "model_review",
+            },
+            transaction=transaction,
+        )
+        restored_ref = f"deleted:{target_path}"
+
+    signals = trial.get("signals") if isinstance(trial.get("signals"), dict) else {}
+    trial["state"] = STATE_ROLLED_BACK
+    trial["review_status"] = "reviewed"
+    trial["rolled_back_at"] = occurred_at
+    trial["updated_at"] = occurred_at
+    trial["decision_reason"] = reason
+    _stage_trial(transaction, trial)
+    update_skill_candidate_package_status(
+        workspace=workspace,
+        candidate_id=candidate_id,
+        status=STATE_ROLLED_BACK,
+        reason=reason,
+        extra_metadata={
+            "trial_state": STATE_ROLLED_BACK,
+            "positive_signal_count": len(signals.get("positive") or []),
+            "negative_signal_count": len(signals.get("negative") or []),
+            "semantic_authority": "model_review",
+        },
+        transaction=transaction,
+    )
+    from app.services.skill_lifecycle import record_skill_lifecycle_event
+
+    record_skill_lifecycle_event(
+        workspace,
+        skill_name=str(trial.get("skill_name") or candidate_id),
+        status=STATE_ROLLED_BACK,
+        note=reason,
+        transaction=transaction,
+    )
+    rollback_event = record_rollback_event(
+        workspace,
+        candidate_id=candidate_id,
+        restored_ref=restored_ref,
+        reason=reason,
+        operator="model_reviewer",
+        metadata={
+            "source": "provisional_trial_model_review",
+            "rollback_action": action,
+            "candidate_version_hash": trial.get("candidate_version_hash"),
+        },
+        transaction=transaction,
+    )
+    return {**_public_progress(trial, decision=STATE_ROLLED_BACK), "rollback_event": rollback_event}
+
+
+async def review_pending_provisional_trials(
+    workspace: Path,
+    *,
+    reviewer: TrialReviewer,
+    occurred_at: str | None = None,
+) -> dict[str, Any]:
+    """Apply model-authored trial decisions behind version/rollback hard gates."""
+
+    stamp = occurred_at or _now_iso()
+    reviewed = 0
+    decisions: Counter[str] = Counter()
+    errors: list[dict[str, str]] = []
+    for entry_snapshot in _provisional_entries(workspace):
+        candidate_id = str(entry_snapshot.get("last_candidate_id") or "").strip()
+        if not candidate_id:
+            continue
+        trial_snapshot = load_provisional_trial(workspace, candidate_id)
+        if not isinstance(trial_snapshot, dict) or trial_snapshot.get("review_status") != "pending_model_review":
+            continue
+        try:
+            payload = _trial_review_payload(workspace, trial_snapshot)
+            raw_review = await reviewer(payload)
+            if not isinstance(raw_review, dict):
+                raise ValueError("model review must be a JSON object")
+            decision = str(raw_review.get("decision") or "").strip().lower()
+            reason = str(raw_review.get("reason") or "").strip()
+            if decision not in _MODEL_TRIAL_DECISIONS or not reason:
+                raise ValueError("model review requires decision=promote|rollback|continue|hold and a reason")
+        except Exception as exc:  # noqa: BLE001 - observable retry, never a mechanical semantic fallback
+            errors.append({"candidate_id": candidate_id, "error": f"{type(exc).__name__}: {exc}"})
+            continue
+
+        with AgentAssetTransaction(
+            workspace,
+            operation="skill_provisional_trial_model_review",
+            evidence_refs=(f"skill-candidate:{candidate_id}", trial_rel_path(candidate_id)),
+        ) as transaction:
+            entry = get_skill_evolution_entry(
+                workspace,
+                str(entry_snapshot.get("skill_name") or trial_snapshot.get("skill_name") or ""),
+                transaction=transaction,
+            )
+            trial = load_provisional_trial(workspace, candidate_id, transaction=transaction)
+            if not isinstance(entry, dict) or not isinstance(trial, dict):
+                continue
+            if trial.get("review_status") != "pending_model_review":
+                continue
+            if _trial_evidence_digest(trial) != payload["evidence_digest"]:
+                # New evidence arrived while the model was reviewing. Preserve
+                # it and retry with the complete ledger on the next pass.
+                continue
+            target_path = str(trial.get("target_path") or entry.get("target_path") or "")
+            current = transaction.read_bytes(target_path) if target_path else None
+            if current is None or _sha256(current) != trial.get("candidate_version_hash"):
+                _mark_needs_review(
+                    workspace,
+                    trial=trial,
+                    entry=entry,
+                    reason="Provisional Skill content drifted during model review.",
+                    occurred_at=stamp,
+                    transaction=transaction,
+                )
+                transaction.commit()
+                reviewed += 1
+                decisions["hold"] += 1
+                continue
+
+            _append_model_review(
+                trial,
+                decision=decision,
+                reason=reason,
+                evidence_digest=str(payload["evidence_digest"]),
+                occurred_at=stamp,
+            )
+            if decision == "promote":
+                _apply_model_promotion(
+                    workspace,
+                    trial=trial,
+                    entry=entry,
+                    reason=reason,
+                    occurred_at=stamp,
+                    transaction=transaction,
+                )
+            elif decision == "rollback":
+                _apply_model_rollback(
+                    workspace,
+                    trial=trial,
+                    entry=entry,
+                    reason=reason,
+                    occurred_at=stamp,
+                    transaction=transaction,
+                )
+            elif decision == "hold":
+                _mark_needs_review(
+                    workspace,
+                    trial=trial,
+                    entry=entry,
+                    reason=reason,
+                    occurred_at=stamp,
+                    transaction=transaction,
+                )
+            else:
+                trial["review_status"] = "reviewed"
+                trial["updated_at"] = stamp
+                trial["decision_reason"] = reason
+                _stage_trial(transaction, trial)
+                signals = trial.get("signals") if isinstance(trial.get("signals"), dict) else {}
+                update_skill_candidate_package_status(
+                    workspace=workspace,
+                    candidate_id=candidate_id,
+                    status=STATE_PROVISIONAL,
+                    reason=reason,
+                    extra_metadata={
+                        "trial_state": STATE_PROVISIONAL,
+                        "review_status": "reviewed",
+                        "positive_signal_count": len(signals.get("positive") or []),
+                        "negative_signal_count": len(signals.get("negative") or []),
+                        "semantic_authority": "model_review",
+                    },
+                    transaction=transaction,
+                )
+            transaction.commit()
+            reviewed += 1
+            decisions[decision] += 1
+
+    return {
+        "reviewed": reviewed,
+        "decisions": dict(decisions),
+        "errors": errors,
+        "pending": sum(
+            1
+            for entry in _provisional_entries(workspace)
+            if (trial := load_provisional_trial(workspace, str(entry.get("last_candidate_id") or "")))
+            and trial.get("review_status") == "pending_model_review"
+        ),
+    }
+
+
+async def review_pending_provisional_trials_with_model(
+    workspace: Path,
+    *,
+    model: Any,
+    agent_id: Any = None,
+    tenant_id: Any = None,
+) -> dict[str, Any]:
+    """Run complete-input model review for every pending provisional trial."""
+
+    from app.services.llm_client import LLMMessage, create_llm_client_from_config, with_llm_usage_context
+    from app.services.semantic_input_coverage import prepare_covered_semantic_input
+
+    client = create_llm_client_from_config(
+        with_llm_usage_context(
+            {
+                "provider": getattr(model, "provider"),
+                "model": getattr(model, "model"),
+                "api_key": getattr(model, "api_key"),
+                "base_url": getattr(model, "base_url", None),
+            },
+            source="skill_provisional_trial_review",
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+        )
+    )
+    try:
+        try:
+            max_input_tokens = int(getattr(model, "max_input_tokens", None) or 128_000)
+        except (TypeError, ValueError):
+            max_input_tokens = 128_000
+        semantic_budget = max(max_input_tokens - 16_000, 8_000) * 3
+        output_tokens = get_max_tokens(
+            str(getattr(model, "provider", "") or ""),
+            str(getattr(model, "model", "") or ""),
+            getattr(model, "max_output_tokens", None),
+        )
+
+        async def reviewer(payload: dict[str, Any]) -> dict[str, Any]:
+            candidate_id = str(payload.get("candidate_id") or "unknown")
+            full_input = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
+
+            async def review_chunk(review_phase: str, review_prompt: str) -> str:
+                response = await client.complete(
+                    messages=[
+                        LLMMessage(
+                            role="system",
+                            content=(
+                                "Preserve every Skill trial fact, exception, failure, success, source ref, "
+                                "and rollback constraint for the final reviewer. Return coverage notes only."
+                            ),
+                        ),
+                        LLMMessage(role="user", content=review_prompt),
+                    ],
+                    temperature=0.1,
+                    max_tokens=output_tokens,
+                )
+                return str(response.content or "").strip()
+
+            covered = await prepare_covered_semantic_input(
+                phase=f"skill_provisional_trial_{candidate_id}",
+                sections=[(f"skill_trial:{candidate_id}", full_input)],
+                max_chars=semantic_budget,
+                coverage_path=workspace
+                / "memory"
+                / "control"
+                / "skill_trial_reviews"
+                / f"{_safe_candidate_id(candidate_id)}.coverage.json",
+                review_chunk=review_chunk,
+            )
+            response = await client.complete(
+                messages=[
+                    LLMMessage(
+                        role="system",
+                        content=(
+                            "You are the semantic authority for a provisional Skill trial. Review all supplied "
+                            "candidate, baseline, and signal evidence. Decide promote, rollback, continue, or hold. "
+                            "Counts and dates are observations, never automatic criteria. Platform version and "
+                            "rollback gates run after your decision. Return only JSON: "
+                            '{"decision":"promote|rollback|continue|hold","reason":"complete evidence-grounded reason"}'
+                        ),
+                    ),
+                    LLMMessage(role="user", content=covered),
+                ],
+                temperature=0.1,
+                max_tokens=output_tokens,
+            )
+            parsed = json.loads(str(response.content or "").strip())
+            if not isinstance(parsed, dict):
+                raise ValueError("model review response must be a JSON object")
+            return parsed
+
+        return await review_pending_provisional_trials(workspace, reviewer=reviewer)
+    finally:
+        await client.close()

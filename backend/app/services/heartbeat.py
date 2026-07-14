@@ -62,11 +62,6 @@ Use [SCORE:0-10] as a calibrated action-quality score, not a feeling:
 _heartbeat_tick_counts: dict[uuid.UUID, int] = {}
 _t2_mtimes: dict[uuid.UUID, dict[str, float]] = {}
 
-_HEARTBEAT_T2_FULL_MAX_CHARS = 24_000
-_HEARTBEAT_T2_INCREMENTAL_MAX_CHARS = 16_000
-_HEARTBEAT_T3_MAX_CHARS = 8_000
-_HEARTBEAT_EVOLUTION_CONTEXT_MAX_CHARS = 16_000
-
 
 def _format_heartbeat_exception(exc: BaseException) -> str:
     message = str(exc).strip()
@@ -79,19 +74,9 @@ def _log_heartbeat_error(agent_id: uuid.UUID, error_text: str) -> None:
 
 
 def _truncate_heartbeat_text(text: str, max_chars: int, label: str) -> str:
-    """Trim a single heartbeat section while preserving its opening and latest tail."""
-    if len(text) <= max_chars:
-        return text
-
-    marker = (
-        f"\n\n[... {label} truncated to fit heartbeat context budget; omitted {len(text) - max_chars:,} chars ...]\n\n"
-    )
-    if max_chars <= len(marker) + 200:
-        return text[: max(0, max_chars - len(marker))] + marker[:max_chars]
-
-    head_chars = max(100, int((max_chars - len(marker)) * 0.6))
-    tail_chars = max_chars - len(marker) - head_chars
-    return text[:head_chars] + marker + text[-tail_chars:]
+    """Compatibility wrapper that no longer performs semantic truncation."""
+    del max_chars, label
+    return text
 
 
 async def _create_heartbeat_runtime_task(agent_id: uuid.UUID, *, tenant_id: uuid.UUID | None = None) -> str | None:
@@ -207,7 +192,7 @@ async def _update_heartbeat_runtime_task(
         return
     fields = {
         "status": status,
-        "result_summary": result_summary[:2000],
+        "result_summary": result_summary,
         "metadata_json": metadata_json or {},
     }
     if session_id:
@@ -347,14 +332,10 @@ def _read_t2_full(agent_id: uuid.UUID) -> str:
     """Read canonical T2 Segment Packages for first tick initialization."""
     from app.config import get_settings
 
-    snapshots, current_mtimes = load_t2_package_snapshots(Path(get_settings().AGENT_DATA_DIR), agent_id, limit=12)
+    snapshots, current_mtimes = load_t2_package_snapshots(Path(get_settings().AGENT_DATA_DIR), agent_id)
     _t2_mtimes[agent_id] = current_mtimes
     snapshot = render_t2_package_snapshots(snapshots)
-    return _truncate_heartbeat_text(
-        snapshot or "(no canonical T2 segment packages yet)",
-        _HEARTBEAT_T2_FULL_MAX_CHARS,
-        "T2 full snapshot",
-    )
+    return snapshot or "(no canonical T2 segment packages yet)"
 
 
 def _read_t3_summary(agent_id: uuid.UUID) -> str:
@@ -369,7 +350,7 @@ def _read_t3_summary(agent_id: uuid.UUID) -> str:
             try:
                 content = fpath.read_text(encoding="utf-8", errors="replace").strip()
                 if content:
-                    parts.append(f"### {rel}\n{content[:500]}")
+                    parts.append(f"### {rel}\n{content}")
             except Exception as exc:
                 logger.debug("[Heartbeat] Failed to read profile plane {}: {}", fpath, exc)
     for subdir, label in (("knowledge", "knowledge pages"), ("milestones", "milestone pages")):
@@ -377,12 +358,8 @@ def _read_t3_summary(agent_id: uuid.UUID) -> str:
         if directory.exists():
             slugs = sorted(path.stem for path in directory.glob("*.md"))
             if slugs:
-                parts.append(f"### {label} ({len(slugs)})\n" + ", ".join(slugs[:40]))
-    return _truncate_heartbeat_text(
-        "\n\n".join(parts) if parts else "(no accepted two-plane memory yet)",
-        _HEARTBEAT_T3_MAX_CHARS,
-        "T3 summary",
-    )
+                parts.append(f"### {label} ({len(slugs)})\n" + ", ".join(slugs))
+    return "\n\n".join(parts) if parts else "(no accepted two-plane memory yet)"
 
 
 def _read_pending_t3_intake(agent_id: uuid.UUID) -> str:
@@ -425,14 +402,9 @@ def _read_incremental_t2(agent_id: uuid.UUID) -> str:
         Path(get_settings().AGENT_DATA_DIR),
         agent_id,
         known_mtimes=_t2_mtimes.get(agent_id, {}),
-        limit=8,
     )
     _t2_mtimes[agent_id] = current_mtimes
-    return _truncate_heartbeat_text(
-        render_t2_package_snapshots(snapshots),
-        _HEARTBEAT_T2_INCREMENTAL_MAX_CHARS,
-        "incremental T2 snapshot",
-    )
+    return render_t2_package_snapshots(snapshots)
 
 
 def _get_default_heartbeat_instruction() -> str:
@@ -559,7 +531,8 @@ def _parse_heartbeat_outcome(reply: str | None) -> tuple[str, int | None]:
     """Parse structured outcome from heartbeat reply.
 
     Expects LLM to output [OUTCOME:noop|action_taken|curated|failure] [SCORE:0-10].
-    Falls back to heuristics if structured tags are missing.
+    Missing tags remain unstructured semantic evidence; the platform does not
+    infer an action or failure from natural-language keywords.
 
     Returns (outcome_type, score).
     """
@@ -572,24 +545,16 @@ def _parse_heartbeat_outcome(reply: str | None) -> tuple[str, int | None]:
 
     if outcome_match:
         outcome = outcome_match.group(1).lower()
+    elif reply.strip().upper() == "HEARTBEAT_OK":
+        # Exact legacy machine contract, not a natural-language classifier.
+        outcome = "noop"
     else:
-        # Fallback heuristics — only when structured tags are absent
-        # Default to noop (not action_taken) to avoid inflating success rate
-        upper_reply = reply.upper()
-        if "CURATED" in upper_reply:
-            outcome = "curated"
-        elif any(kw in upper_reply for kw in ("WROTE", "CREATED", "UPDATED", "POSTED", "SENT", "FIXED")):
-            outcome = "action_taken"
-        else:
-            outcome = "noop"
+        outcome = "unstructured"
 
     if score_match:
         score = min(int(score_match.group(1)), 10)
     else:
-        # Fallback score based on outcome type — prevents silent None in
-        # telemetry while keeping semantic learning on governed memory paths.
-        _OUTCOME_FALLBACK_SCORES = {"action_taken": 5, "failure": 2, "noop": 0}
-        score = _OUTCOME_FALLBACK_SCORES.get(outcome, 0)
+        score = None
 
     return outcome, score
 
@@ -605,31 +570,17 @@ def _heartbeat_outcome_lane(outcome_type: str) -> str:
     }.get(normalized, "unknown")
 
 
-def _heartbeat_counts_as_useful(outcome_type: str, score: int | None) -> bool:
-    return (outcome_type or "").strip().lower() in {"action_taken", "curated"} and (score is None or score >= 5)
-
-
 def _heartbeat_action_label(outcome_type: str, summary: str) -> str:
     lane = _heartbeat_outcome_lane(outcome_type)
     if lane in {"agent_action", "memory_curation"}:
-        return summary[:100]
+        return summary
     return "none"
 
 
-_HEARTBEAT_REFLECTION_MAX_REPLY_CHARS = 48_000
-_HEARTBEAT_REFLECTION_MAX_CONTEXT_MESSAGES = 24
-
-
-def _truncate_heartbeat_reflection_text(text: str, max_chars: int = _HEARTBEAT_REFLECTION_MAX_REPLY_CHARS) -> str:
-    if len(text) <= max_chars:
-        return text
-    head_chars = max_chars // 2
-    tail_chars = max_chars - head_chars
-    return (
-        text[:head_chars]
-        + "\n...[truncated middle of heartbeat reflection; preserved head and final conclusion]...\n"
-        + text[-tail_chars:]
-    )
+def _truncate_heartbeat_reflection_text(text: str, max_chars: int | None = None) -> str:
+    """Compatibility wrapper; reflection semantics are never character-pruned."""
+    del max_chars
+    return text
 
 
 def _should_route_heartbeat_reflection(outcome_type: str, reply: str | None) -> tuple[bool, str | None]:
@@ -639,7 +590,7 @@ def _should_route_heartbeat_reflection(outcome_type: str, reply: str | None) -> 
         return False, "empty_reply"
     if normalized == "noop":
         return False, "low_signal_noop"
-    if normalized not in {"action_taken", "curated", "failure", "crash"}:
+    if normalized not in {"action_taken", "curated", "failure", "crash", "unstructured"}:
         return False, "unsupported_outcome"
     return True, None
 
@@ -659,7 +610,7 @@ def _build_heartbeat_reflection_messages(
 
     del metadata
     messages: list[dict] = []
-    for raw in (runtime_messages or [])[-_HEARTBEAT_REFLECTION_MAX_CONTEXT_MESSAGES:]:
+    for raw in runtime_messages or []:
         if not isinstance(raw, dict):
             continue
         role = str(raw.get("role") or "unknown")
@@ -744,7 +695,7 @@ async def _route_heartbeat_reflection_learning(
             "runtime_task_id": runtime_task_id,
             "assistant_message_id": assistant_message_id,
             "source": "heartbeat_reflection",
-            "final_response": (reply or "")[:2000],
+            "final_response": reply or "",
             "learning_boundary": "llm_judges_platform_governs",
         },
     }
@@ -768,70 +719,9 @@ async def _route_heartbeat_reflection_learning(
     return {"status": "scheduled", "source_refs": source_refs}
 
 
-_SKILL_OPPORTUNITY_COOLDOWN_TICKS = 5  # ~3.75 hours at 45-minute ticks
-_SKILL_OPPORTUNITY_STATE_FILENAME = "skill_opportunity_cooldown.json"
-_SKILL_OPPORTUNITY_IGNORED_TOOLS = {
-    "read_file",
-    "write_file",
-    "list_files",
-    "edit_file",
-    "save_memory",
-    "search_memory",
-}
-
-
-def _load_skill_opportunity_state(ws_root) -> dict:
-    import json
-
-    if ws_root is None:
-        return {}
-    path = ws_root / "evolution" / _SKILL_OPPORTUNITY_STATE_FILENAME
-    if not path.exists():
-        return {}
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception as exc:
-        logger.debug("[Heartbeat] failed to read skill opportunity state: {}", exc)
-        return {}
-
-
-def _save_capability_opportunity_state(ws_root, *, tick: int, tools: list[str]) -> None:
-    import json
-
-    if ws_root is None:
-        return
-    try:
-        evo_dir = ws_root / "evolution"
-        evo_dir.mkdir(parents=True, exist_ok=True)
-        (evo_dir / _SKILL_OPPORTUNITY_STATE_FILENAME).write_text(
-            json.dumps({"tick": tick, "tools": sorted(tools)}, ensure_ascii=False),
-            encoding="utf-8",
-        )
-    except Exception as exc:
-        logger.debug("[Heartbeat] failed to write skill opportunity state: {}", exc)
-
-
-def _skill_already_covers_tools(ws_root, frequent_tools: list[str]) -> str | None:
-    """If an existing skill declares tools ⊇ frequent_tools, return its name (skip suggestion)."""
-    if ws_root is None or not frequent_tools:
-        return None
-    try:
-        from app.skills import SkillRegistry, WorkspaceSkillLoader
-
-        loader = WorkspaceSkillLoader()
-        registry = SkillRegistry()
-        registry.register_many(loader.load_from_workspace(ws_root))
-    except Exception as exc:
-        logger.debug("[Heartbeat] skill coverage check failed: {}", exc)
-        return None
-
-    target = set(frequent_tools)
-    for name in registry.names():
-        parsed = registry.resolve(name)
-        declared = set(parsed.metadata.declared_tools or ())
-        if target.issubset(declared):
-            return name
-    return None
+def _activity_full_summary(activity) -> str:
+    detail = activity.detail_json if isinstance(getattr(activity, "detail_json", None), dict) else {}
+    return str(detail.get("full_summary") or getattr(activity, "summary", "") or "")
 
 
 async def _build_evolution_context(
@@ -846,7 +736,7 @@ async def _build_evolution_context(
 ) -> str:
     """Build structured learning context from activity logs and governed memory paths.
 
-    This feeds the heartbeat prompt with bounded runtime signals without reviving
+    This feeds the heartbeat prompt with the complete supplied runtime signals without reviving
     the retired ``evolution/scorecard.md`` and ``evolution/lineage.md`` semantic
     stores.
     """
@@ -865,7 +755,7 @@ async def _build_evolution_context(
             try:
                 compaction = compaction_path.read_text(encoding="utf-8", errors="replace").strip()
                 if compaction:
-                    parts.append(f"\n---\n## Last Session Compaction Summary\n{compaction[:2000]}")
+                    parts.append(f"\n---\n## Last Session Compaction Summary\n{compaction}")
             except Exception as e:
                 logger.debug(f"Failed to read compaction summary: {e}")
 
@@ -886,9 +776,9 @@ async def _build_evolution_context(
         total = len(recent_activities)
 
         # Detect repeated failure patterns
-        error_summaries = [a.summary[:80] for a in recent_activities if a.action_type == "error"]
+        error_summaries = [_activity_full_summary(a) for a in recent_activities if a.action_type == "error"]
         repeated_errors = [
-            f"  - '{err}' (x{count})" for err, count in Counter(error_summaries).most_common(3) if count > 1
+            f"  - '{err}' (x{count})" for err, count in Counter(error_summaries).most_common() if count > 1
         ]
 
         # Tool usage frequency
@@ -898,16 +788,20 @@ async def _build_evolution_context(
                 tool_name = a.detail_json.get("tool", "")
                 if tool_name:
                     tool_names.append(tool_name)
-        top_tools = [f"  - {name} (x{count})" for name, count in Counter(tool_names).most_common(5)]
+        tool_evidence = [f"  - {name} (x{count})" for name, count in Counter(tool_names).most_common()]
 
         # Include error details (not just summaries) for learning
         error_details = []
         for a in recent_activities:
             if a.action_type == "error" and a.detail_json:
-                detail = a.detail_json.get("error", "") or a.detail_json.get("message", "")
+                detail = (
+                    a.detail_json.get("full_summary", "")
+                    or a.detail_json.get("error", "")
+                    or a.detail_json.get("message", "")
+                    or _activity_full_summary(a)
+                )
                 if detail:
-                    error_details.append(f"  - {str(detail)[:300]}")
-        error_details = error_details[:5]  # Top 5 most recent errors
+                    error_details.append(f"  - {detail}")
 
         pattern_section = (
             f"\n---\n## Activity Pattern Analysis (auto-computed, last {total} activities)\n"
@@ -917,114 +811,22 @@ async def _build_evolution_context(
         )
         if repeated_errors:
             pattern_section += (
-                "- **Repeated failures** (MUST NOT retry these approaches):\n" + "\n".join(repeated_errors) + "\n"
+                "- **Repeated failure evidence** (evaluate causes and choose the next approach):\n"
+                + "\n".join(repeated_errors)
+                + "\n"
             )
         if error_details:
             pattern_section += "- **Recent error details** (learn from these):\n" + "\n".join(error_details) + "\n"
-        if top_tools:
-            pattern_section += "- Top tools used:\n" + "\n".join(top_tools) + "\n"
+        if tool_evidence:
+            pattern_section += (
+                "- **Complete Tool Usage Evidence** (counts are observations; the model decides reusable meaning):\n"
+                + "\n".join(tool_evidence)
+                + "\n"
+            )
 
         parts.append(pattern_section)
 
-        # Skill candidate hint — detect repeated tool-use patterns worth codifying.
-        # This is a candidate signal only; heartbeat itself has no tool surface.
-        _SKILL_THRESHOLD = 3  # same tool combo used 3+ times → suggest skill
-        if top_tools and tool_count >= 6:
-            # Check if any tool appears frequently enough to be worth a skill
-            frequent_tools = [
-                name
-                for name, count in Counter(tool_names).most_common(3)
-                if count >= _SKILL_THRESHOLD and name not in _SKILL_OPPORTUNITY_IGNORED_TOOLS
-            ]
-
-            should_push = bool(frequent_tools)
-            suppression_note: str | None = None
-
-            if should_push:
-                # Coverage check — skip if an existing skill already declares these tools.
-                covered_by = _skill_already_covers_tools(ws_root, frequent_tools)
-                if covered_by:
-                    should_push = False
-                    suppression_note = f"skill '{covered_by}' already covers tools {sorted(frequent_tools)}"
-
-            if should_push:
-                # Cooldown — skip if the same tool set was suggested recently.
-                state = _load_skill_opportunity_state(ws_root)
-                last_tick = int(state.get("tick", 0)) if isinstance(state.get("tick"), (int, float)) else 0
-                last_tools = sorted(state.get("tools", []) or [])
-                if (
-                    last_tools == sorted(frequent_tools)
-                    and tick_count
-                    and tick_count - last_tick < _SKILL_OPPORTUNITY_COOLDOWN_TICKS
-                ):
-                    should_push = False
-                    suppression_note = (
-                        f"cooldown: same tools suggested at tick {last_tick} "
-                        f"(<{_SKILL_OPPORTUNITY_COOLDOWN_TICKS} ticks ago)"
-                    )
-
-            if should_push and frequent_tools:
-                parts.append(
-                    "\n---\n## Skill Candidate Opportunity\n"
-                    f"You have used these tools repeatedly: {', '.join(frequent_tools)}.\n"
-                    "If the workflow around them is genuinely reusable, record it as a candidate "
-                    "signal. The skill distillation lane decides promotion:\n"
-                    "1. Include a `skill_candidate` capability block in the active "
-                    "`consolidation_pitch.md` or `revised_patch.md` artifact.\n"
-                    "2. Include source refs pointing at the sessions/evidence where the workflow repeated.\n"
-                    "3. A good candidate captures the *workflow* (multiple tools in sequence), not a single tool or one-off note."
-                )
-                if tick_count:
-                    _save_capability_opportunity_state(ws_root, tick=tick_count, tools=list(frequent_tools))
-            elif suppression_note:
-                logger.debug(
-                    "[Heartbeat] skill opportunity suppressed for {}: {}",
-                    agent_id,
-                    suppression_note,
-                )
-
-    # Cold start note: heartbeat is not a full agent bootstrap loop.
-    non_heartbeat_activities = [a for a in recent_activities if a.action_type != "heartbeat"]
-    is_cold_start = len(non_heartbeat_activities) < 3
-
-    if is_cold_start:
-        # Detect repeated bootstrap failures — use sliding window (not consecutive-only)
-        # to catch intermittent failure patterns like [ok, fail, ok, fail, fail]
-        recent_heartbeats = [a for a in recent_activities if a.action_type == "heartbeat"]
-        total_failures = sum(
-            1 for hb in recent_heartbeats[:6] if (hb.detail_json or {}).get("outcome_type", "") in ("crash", "failure")
-        )
-
-        if total_failures >= 5:
-            # M-19: Hard cap — stop retrying bootstrap (5 of 6 recent heartbeats failed)
-            parts.append(
-                "\n---\n## Bootstrap Exhausted (10 failures)\n"
-                "Bootstrap has failed repeatedly. Stop attempting bootstrap actions.\n"
-                "Proceed directly with normal heartbeat: review your recent work and memory, then do one small evidence-backed task.\n"
-                "Output: [OUTCOME:noop] [SCORE:1]"
-            )
-        elif total_failures >= 3:
-            parts.append(
-                "\n---\n## Bootstrap Recovery (auto-seeded)\n"
-                "Your previous bootstrap attempts failed. Evolution files have been\n"
-                "retired as a recovery surface. Skip bootstrapping and proceed with\n"
-                "the normal heartbeat protocol using governed memory/session evidence.\n"
-                "Focus on ONE simple action: review your recent work and memory, then do something small with evidence.\n"
-                "Output: [OUTCOME:action_taken] [SCORE:3]"
-            )
-        else:
-            parts.append(
-                "\n---\n## Bootstrap Mode (first heartbeats)\n"
-                "You have very little activity history. This is normal for a new agent.\n"
-                "Heartbeat does not perform bootstrap actions. It waits for reviewed T2 evidence "
-                "or explicit memory overlay entries before direct T3 consolidation."
-            )
-
-    return _truncate_heartbeat_text(
-        "\n\n".join(parts) if parts else "",
-        _HEARTBEAT_EVOLUTION_CONTEXT_MAX_CHARS,
-        "heartbeat evolution context",
-    )
+    return "\n\n".join(parts) if parts else ""
 
 
 def _get_canonical_workspace(agent_id: uuid.UUID) -> "Path | None":
@@ -1252,13 +1054,14 @@ async def _run_heartbeat_core_and_persist(
 
     from app.services.activity_logger import log_activity
 
-    summary = result.summary[:120] if result.summary else "empty"
+    summary = result.summary if result.summary else "empty"
     await log_activity(
         agent.id,
         "heartbeat",
         f"Heartbeat [{outcome_type}]: {summary}",
         detail={
-            "reply": reply[:500] if reply else "",
+            "reply": reply or "",
+            "summary": result.summary,
             "outcome_type": outcome_type,
             "outcome_lane": outcome_lane,
             "score": heartbeat_score,
@@ -1631,16 +1434,16 @@ async def _execute_heartbeat(
                 agent_id,
                 "heartbeat",
                 f"Heartbeat crash: {error_text[:80]}",
-                detail={"outcome_type": "crash", "error": error_text[:300]},
+                detail={"outcome_type": "crash", "error": error_text},
             )
         except Exception as log_err:
             logger.opt(exception=True).debug("Failed to log heartbeat crash to activity: {}", log_err)
         await _update_heartbeat_runtime_task(
             runtime_task_id,
             status="failed",
-            result_summary=f"Heartbeat failed: {error_text[:500]}",
+            result_summary=f"Heartbeat failed: {error_text}",
             session_id=heartbeat_session_id,
-            metadata_json={"error": error_text[:1000]},
+            metadata_json={"error": error_text},
         )
     finally:
         if lease_held:
@@ -1705,7 +1508,7 @@ async def _heartbeat_tick():
 
     except Exception as e:
         logger.opt(exception=True).error("Heartbeat tick error: {}", e)
-        await write_audit_log("heartbeat_error", {"error": str(e)[:300]})
+        await write_audit_log("heartbeat_error", {"error": str(e)})
 
 
 async def _sync_one_tenant(tenant_id: uuid.UUID) -> None:

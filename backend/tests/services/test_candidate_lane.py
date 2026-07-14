@@ -66,18 +66,17 @@ def test_heartbeat_template_routes_skill_evidence_to_candidate_lane() -> None:
     assert "skill_candidate" in template
 
 
-def test_heartbeat_skill_opportunity_hint_records_candidate_signal() -> None:
+def test_heartbeat_does_not_mechanically_author_skill_candidate_signal() -> None:
     import inspect
 
     from app.services import heartbeat
 
     source = inspect.getsource(heartbeat._build_evolution_context)
-    # The opportunity nudge must route through T3 job artifact evidence,
-    # not instruct the LLM to call the save_skill tool.
     assert "call `save_skill`" not in source
-    assert "Skill Candidate Opportunity" in source
-    assert "skill_candidate" in source
-    assert "consolidation_pitch.md" in source
+    assert "Skill Candidate Opportunity" not in source
+    assert "_SKILL_THRESHOLD" not in source
+    assert "_skill_already_covers_tools" not in source
+    assert "skill_opportunity_cooldown" not in source
     assert "save_memory" not in source
 
 

@@ -416,42 +416,43 @@ class ILinkClient:
         """
         url = f"{self._base_url}/ilink/bot/sendmessage"
         headers = self._auth_headers(bot_token)
+        chunks = [text[index : index + TEXT_MESSAGE_MAX_LEN] for index in range(0, len(text), TEXT_MESSAGE_MAX_LEN)]
+        if not chunks:
+            chunks = [""]
 
-        # Truncate text to max length
-        if len(text) > TEXT_MESSAGE_MAX_LEN:
-            text = text[:TEXT_MESSAGE_MAX_LEN]
-
-        client_id = f"hiveclaw-{secrets.token_hex(8)}"
-        body = {
-            "msg": {
-                "from_user_id": "",
-                "to_user_id": to_user_id,
-                "client_id": client_id,
-                "message_type": 2,
-                "message_state": 2,
-                "context_token": context_token,
-                "item_list": [
-                    {
-                        "type": 1,
-                        "text_item": {"text": text},
-                    }
-                ],
-            },
-            "base_info": {"channel_version": channel_version},
-        }
-
+        responses: list[dict[str, Any]] = []
         async with httpx.AsyncClient(timeout=SEND_TIMEOUT) as client:
-            resp = await client.post(url, headers=headers, json=body)
-            resp.raise_for_status()
-            data = resp.json()
+            for chunk in chunks:
+                body = {
+                    "msg": {
+                        "from_user_id": "",
+                        "to_user_id": to_user_id,
+                        "client_id": f"hiveclaw-{secrets.token_hex(8)}",
+                        "message_type": 2,
+                        "message_state": 2,
+                        "context_token": context_token,
+                        "item_list": [
+                            {
+                                "type": 1,
+                                "text_item": {"text": chunk},
+                            }
+                        ],
+                    },
+                    "base_info": {"channel_version": channel_version},
+                }
+                resp = await client.post(url, headers=headers, json=body)
+                resp.raise_for_status()
+                data = resp.json()
+                ret = data.get("ret", 0)
+                if ret != 0:
+                    logger.error(f"[iLink] sendmessage failed: ret={ret} data={data}")
+                    raise ILinkAPIError(f"sendmessage failed: ret={ret}")
+                responses.append(data)
 
-        ret = data.get("ret", 0)
-        if ret != 0:
-            logger.error(f"[iLink] sendmessage failed: ret={ret} data={data}")
-            raise ILinkAPIError(f"sendmessage failed: ret={ret}")
-
-        logger.debug(f"[iLink] Message sent to {to_user_id[:12]}...")
-        return data
+        logger.debug(f"[iLink] Message sent to {to_user_id[:12]}... in {len(chunks)} chunk(s)")
+        if len(responses) == 1:
+            return responses[0]
+        return {"ret": 0, "chunk_count": len(responses), "responses": responses}
 
     # ── Typing Indicator ─────────────────────────────────
 

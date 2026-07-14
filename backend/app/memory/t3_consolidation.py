@@ -25,6 +25,7 @@ DYNAMIC_TARGET_PATTERNS: tuple[str, ...] = (
     "memory/knowledge/<slug>.md (one atomic concept per page; a NEW page must carry >=1 `## Relations` edge)",
     "memory/milestones/<slug>.md (narrative anchors only; prefer ms- prefixed slugs)",
 )
+_T0_SOURCE_REF_RE = re.compile(r"^t0://session/([^/#\s]+)/segment/([^/#\s]+)")
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,15 +50,13 @@ def discover_pending_t3_sources(
     *,
     agent_id: uuid.UUID | str,
     data_root: Path | str,
-    max_packages: int = 8,
-    max_explicit_entries: int = 8,
 ) -> PendingT3Sources:
     root = Path(data_root)
     resolved_agent_id = uuid.UUID(str(agent_id)) if not isinstance(agent_id, uuid.UUID) else agent_id
-    package_dirs = _discover_reviewed_t2_packages(root=root, agent_id=resolved_agent_id, limit=max_packages)
+    package_dirs = _discover_reviewed_t2_packages(root=root, agent_id=resolved_agent_id)
     explicit_ids = [
         entry.entry_id for entry in load_explicit_overlay_entries(root, resolved_agent_id) if entry.status == "active"
-    ][:max_explicit_entries]
+    ]
     return PendingT3Sources(package_dirs=tuple(package_dirs), explicit_entry_ids=tuple(explicit_ids))
 
 
@@ -159,8 +158,6 @@ def stage_pending_t3_consolidation_job(
     agent_id: uuid.UUID | str,
     data_root: Path | str,
     job_id: str | None = None,
-    max_packages: int = 8,
-    max_explicit_entries: int = 8,
 ) -> T3ConsolidationBatchResult:
     """Stage one T3 job from currently unabsorbed canonical inputs.
 
@@ -173,8 +170,6 @@ def stage_pending_t3_consolidation_job(
     pending = discover_pending_t3_sources(
         agent_id=resolved_agent_id,
         data_root=root,
-        max_packages=max_packages,
-        max_explicit_entries=max_explicit_entries,
     )
     if job_id is None:
         existing = _find_existing_staged_job(root=root, agent_id=resolved_agent_id, pending=pending)
@@ -219,17 +214,38 @@ def _two_plane_neighborhood_lines(mem_dir: Path) -> list[str]:
     any_profile = False
     for target in PROFILE_PLANE_TARGETS:
         path = mem_dir.parent / target
-        lines.append(f"- `{target}` base_revision=`{file_sha256(path)}`")
+        revision = file_sha256(path)
+        lines.append(f"### `{target}`")
         if not path.exists():
+            lines.extend(
+                [
+                    "```json",
+                    json.dumps(
+                        {"path": target, "base_revision": revision, "exists": False, "content": ""},
+                        ensure_ascii=False,
+                        indent=2,
+                    ),
+                    "```",
+                    "",
+                ]
+            )
             continue
+        any_profile = True
         content = path.read_text(encoding="utf-8", errors="replace")
-        for match in re.finditer(
-            r"^###\s+(?P<heading>.+)$\n<!--\s*id:\s*(?P<entry_id>[^\s>]+)\s*-->", content, re.MULTILINE
-        ):
-            any_profile = True
-            lines.append(f"  - entry id={match.group('entry_id')} heading={match.group('heading').strip()}")
+        lines.extend(
+            [
+                "```json",
+                json.dumps(
+                    {"path": target, "base_revision": revision, "exists": True, "content": content},
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                "```",
+                "",
+            ]
+        )
     if not any_profile:
-        lines.append("  (no profile-plane entries yet)")
+        lines.append("(no profile-plane files yet)")
 
     lines.extend(["", "## Knowledge Plane (network pages)", ""])
     any_page = False
@@ -240,49 +256,31 @@ def _two_plane_neighborhood_lines(mem_dir: Path) -> list[str]:
         for path in sorted(directory.glob("*.md")):
             any_page = True
             content = path.read_text(encoding="utf-8", errors="replace")
-            title = _frontmatter_field(content, "title") or path.stem
-            status = _frontmatter_field(content, "status") or "active"
-            lines.append(
-                f"- `{subdir}/{path.stem}` [{label}] title={title} status={status} base_revision=`{file_sha256(path)}`"
+            target = f"memory/{subdir}/{path.name}"
+            lines.extend(
+                [
+                    f"### `{subdir}/{path.stem}`",
+                    "```json",
+                    json.dumps(
+                        {
+                            "path": target,
+                            "plane": label,
+                            "base_revision": file_sha256(path),
+                            "exists": True,
+                            "content": content,
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    ),
+                    "```",
+                    "",
+                ]
             )
-            claim = _first_section_line(content, "Current Claim")
-            if claim:
-                lines.append(f"  claim: {claim}")
-            for relation in _relation_lines(content)[:6]:
-                lines.append(f"  relation: {relation}")
     if not any_page:
         lines.append(
             "  (no knowledge/milestone pages yet — new knowledge pages must open the network with `## Relations` edges; forward references are allowed)"
         )
     return lines
-
-
-def _frontmatter_field(content: str, field: str) -> str:
-    if not content.startswith("---") or content.count("---") < 2:
-        return ""
-    frontmatter = content.split("---", 2)[1]
-    match = re.search(rf"^{re.escape(field)}:\s*(?P<value>.+)$", frontmatter, re.MULTILINE)
-    return match.group("value").strip() if match else ""
-
-
-def _first_section_line(content: str, section: str) -> str:
-    match = re.search(rf"^##\s+{re.escape(section)}\s*$\n+(?P<line>[^\n#].*)$", content, re.MULTILINE)
-    return match.group("line").strip() if match else ""
-
-
-def _relation_lines(content: str) -> list[str]:
-    in_relations = False
-    found: list[str] = []
-    for line in content.splitlines():
-        stripped = line.strip()
-        if re.match(r"^##\s+Relations\s*$", stripped):
-            in_relations = True
-            continue
-        if in_relations and stripped.startswith("## "):
-            break
-        if in_relations and stripped.startswith("- "):
-            found.append(stripped[2:].strip())
-    return found
 
 
 def write_t3_job_artifact(
@@ -327,18 +325,29 @@ def _load_package(*, root: Path, agent_id: uuid.UUID, package_dir: Path, issues:
     )
     ref_kind = "episode" if package_kind == "episode_stitch_package" else "segment"
     ref = f"t2://session/{session_id}/{ref_kind}/{source_id}"
+    source_refs = [str(source_ref) for source_ref in manifest.get("source_refs") or []]
+    t0_evidence = _load_t0_evidence(
+        root=root,
+        agent_id=agent_id,
+        source_refs=source_refs,
+    )
     payload = {
         "ref": ref,
         "source_kind": package_kind,
         "path": _relative_agent_path(root, agent_id, package_dir),
         "status": status or "reviewed",
-        "source_refs": [str(ref) for ref in manifest.get("source_refs") or []],
+        "source_refs": source_refs,
+        "manifest": manifest,
+        "review_md": _read_optional(package_dir / "review.md"),
         "review_sha256": _sha256_file(package_dir / "review.md"),
         "manifest_sha256": _sha256_file(package_dir / "manifest.json"),
+        "t0_evidence": t0_evidence,
+        "t0_evidence_complete": bool(t0_evidence) and all(item["available"] for item in t0_evidence),
     }
     if package_kind == "episode_stitch_package":
         payload.update(
             {
+                "synthesis_md": _read_optional(package_dir / "synthesis.md"),
                 "synthesis_sha256": _sha256_file(package_dir / "synthesis.md"),
                 "source_package_refs": [str(ref) for ref in manifest.get("source_packages") or []],
                 "trigger_package_id": str(manifest.get("trigger_package_id") or ""),
@@ -347,9 +356,64 @@ def _load_package(*, root: Path, agent_id: uuid.UUID, package_dir: Path, issues:
         return payload
     return {
         **payload,
+        "summary_md": _read_optional(package_dir / "summary.md"),
+        "labels_md": _read_optional(package_dir / "labels.md"),
         "summary_sha256": _sha256_file(package_dir / "summary.md"),
         "labels_sha256": _sha256_file(package_dir / "labels.md"),
     }
+
+
+def _load_t0_evidence(
+    *,
+    root: Path,
+    agent_id: uuid.UUID,
+    source_refs: list[str],
+) -> list[dict[str, Any]]:
+    """Resolve every T2 source ref to complete model-readable T0 evidence."""
+
+    evidence: list[dict[str, Any]] = []
+    seen_segments: set[tuple[str, str]] = set()
+    for source_ref in source_refs:
+        match = _T0_SOURCE_REF_RE.match(source_ref.strip())
+        if match is None:
+            evidence.append(
+                {
+                    "ref": source_ref,
+                    "available": False,
+                    "unavailable_reason": "unsupported_t0_source_ref",
+                    "source_md": "",
+                    "events_jsonl": "",
+                }
+            )
+            continue
+        session_id, segment_id = match.groups()
+        segment_key = (session_id, segment_id)
+        if segment_key in seen_segments:
+            continue
+        seen_segments.add(segment_key)
+        segment_dir = root / str(agent_id) / "memory" / "t0" / "sessions" / session_id / "segments" / segment_id
+        source_path = segment_dir / "source.md"
+        events_path = segment_dir / "events.jsonl"
+        source_md = _read_optional(source_path)
+        events_jsonl = _read_optional(events_path)
+        available = bool(source_md.strip()) and bool(events_jsonl.strip())
+        item = {
+            "ref": source_ref,
+            "available": available,
+            "source_path": _relative_agent_path(root, agent_id, source_path),
+            "events_path": _relative_agent_path(root, agent_id, events_path),
+            "source_sha256": _sha256_file(source_path),
+            "events_sha256": _sha256_file(events_path),
+            "source_md": source_md,
+            "events_jsonl": events_jsonl,
+        }
+        if not available:
+            missing = [
+                name for name, content in (("source.md", source_md), ("events.jsonl", events_jsonl)) if not content
+            ]
+            item["unavailable_reason"] = f"missing_or_empty:{','.join(missing)}"
+        evidence.append(item)
+    return evidence
 
 
 def _load_explicit_overlay_sources(
@@ -449,7 +513,7 @@ def _package_ref_from_dir(*, root: Path, agent_id: uuid.UUID, package_dir: Path)
     return f"t2://session/{session_id}/{ref_kind}/{source_id}"
 
 
-def _discover_reviewed_t2_packages(*, root: Path, agent_id: uuid.UUID, limit: int) -> list[Path]:
+def _discover_reviewed_t2_packages(*, root: Path, agent_id: uuid.UUID) -> list[Path]:
     package_dirs: list[Path] = []
     manifest_paths: list[Path] = []
     for sessions_dir in (
@@ -470,8 +534,6 @@ def _discover_reviewed_t2_packages(*, root: Path, agent_id: uuid.UUID, limit: in
         if _validate_t2_package_for_t3(package_dir=package_dir, manifest=manifest, package_kind=package_kind):
             continue
         package_dirs.append(package_dir)
-        if len(package_dirs) >= limit:
-            break
     return package_dirs
 
 

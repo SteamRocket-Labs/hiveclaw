@@ -65,7 +65,25 @@ def test_skill_loop_repeated_workflow_creates_verified_skill_candidate(tmp_path)
         agent_id=agent_id,
         session_id="loop-skill",
         messages=[{"role": "user", "content": "same release workflow as always"}],
-        metadata={"repeated_workflow_signature": "release -> tag -> build -> deploy -> smoke"},
+        metadata={
+            "repeated_workflow_signature": "release -> tag -> build -> deploy -> smoke",
+            "fast_reflection_classification": {
+                "signal_type": "repeated_task_pattern",
+                "lesson": "release -> tag -> build -> deploy -> smoke",
+                "confidence": 0.98,
+                "learning_brain_decision": {
+                    "schema": "fast_reflection_learning_brain_decision.v1",
+                    "container": "skill_candidate",
+                    "promotion_intent": "candidate",
+                    "skill_decision": {
+                        "action": "new",
+                        "candidate_name": "release-build-deploy-smoke",
+                        "target_skill": "",
+                        "reason": "The model found a reusable procedure in the complete turn.",
+                    },
+                },
+            },
+        },
     )
 
     skill = result["skill_candidate"]

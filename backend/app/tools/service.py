@@ -59,12 +59,6 @@ ActivityLogger = Callable[..., Awaitable[None] | None]
 EnsureRegistry = Callable[[], None]
 
 _TOOL_ERROR_PAYLOAD_RE = re.compile(r"<tool_error>(.*?)</tool_error>", re.DOTALL)
-_COMPANY_CONFLICT_PATTERNS = (
-    "bypass company policy",
-    "share credentials",
-    "expose pl3",
-    "expose pl4",
-)
 
 
 def _redact_args(arguments: Any) -> dict[str, Any]:
@@ -948,7 +942,7 @@ class ToolRuntimeService:
             session_id=runtime_context.session_id,
             tool_name=tool_name,
             tool_args=dict(arguments),
-            tool_result=result_text[:500],
+            tool_result=result_text,
             source=source,
             metadata=_tool_trace_metadata(runtime_context, tool_call_id=tool_call_id, source=source),
         )
@@ -971,7 +965,7 @@ class ToolRuntimeService:
             session_id=runtime_context.session_id,
             tool_name=tool_name,
             tool_args=dict(arguments),
-            error=error_text[:500],
+            error=error_text,
             source=source,
             metadata=_tool_trace_metadata(runtime_context, tool_call_id=tool_call_id, source=source),
         )
@@ -1260,7 +1254,7 @@ class ToolRuntimeService:
                 executor=self.backend.name if self.backend else "unknown",
                 arguments=arguments,
                 status="failed",
-                result={"error": type(exc).__name__, "message": str(exc)[:500]},
+                result={"error": type(exc).__name__, "message": str(exc)},
                 started_at=started_frame.get("started_at"),
                 trace_metadata_sink=trace_metadata_sink,
             )
@@ -1364,9 +1358,9 @@ class ToolRuntimeService:
         short-circuit to ``None`` without touching the gate.
 
         A caller that has already confirmed a plan may thread
-        ``confirmed_plan_id`` (and optionally ``confirmed_plan_version`` /
-        ``confirmed_plan_hash``) through the tool arguments; they are forwarded
-        to the gate so a confirmed handoff runs the tool.
+        ``confirmed_plan_id`` and ``confirmed_plan_version`` through the tool
+        arguments. A legacy hash is accepted but the gate resolves canonical
+        hash evidence from the server-owned plan row.
 
         A block never activates Plan Mode. Plan Mode entry is explicit user/UI
         state only; this gate may only refuse execution and ask for confirmation.
@@ -1453,6 +1447,9 @@ class ToolRuntimeService:
                     actionable_hint="Submit a new approval request from a newly confirmed plan.",
                 )
             if authorization_sink is not None:
+                # The approval ticket is immutable. New tickets already carry
+                # canonical plan fields; legacy tickets retain their verified
+                # evidence byte-for-byte instead of being rewritten at runtime.
                 authorization_sink.update(dict(consumed_plan_authorization))
             return None
 
@@ -1491,6 +1488,9 @@ class ToolRuntimeService:
                             str(runtime_task_id) if runtime_task_id is not None and session_id is None else None
                         ),
                         "evidence_id": str(evidence_id),
+                        "plan_id": str(getattr(decision, "canonical_plan_id", "") or ""),
+                        "plan_version": getattr(decision, "canonical_plan_version", None),
+                        "plan_hash": str(getattr(decision, "canonical_plan_hash", "") or ""),
                     }
                 )
             return None
@@ -1633,8 +1633,7 @@ def _build_tool_preflight_input(
     args_text = _json.dumps(arguments, ensure_ascii=False, default=str)
     privacy = PrivacyLayer().classify_and_mask(args_text)
     sensitivity = privacy.sensitivity
-    lower_action = f"{tool_name} {args_text}".lower()
-    company_conflict = any(pattern in lower_action for pattern in _COMPANY_CONFLICT_PATTERNS)
+    company_conflict = bool(getattr(runtime_context, "company_boundary_conflict", False))
     execution_identity = getattr(runtime_context, "execution_identity", None) if runtime_context is not None else None
     from app.tools.registry import tool_execution_policy
 

@@ -21,8 +21,11 @@ from app.services.personal_knowledge_access import (
 _WHITESPACE_RE = re.compile(r"\s+")
 
 
-def clean_graph_text(value: Any, *, max_len: int = 300) -> str:
-    return _WHITESPACE_RE.sub(" ", str(value or "").strip())[:max_len]
+def clean_graph_text(value: Any, *, max_len: int | None = 300) -> str:
+    clean = _WHITESPACE_RE.sub(" ", str(value or "").strip())
+    if max_len is not None and len(clean) > max_len:
+        raise ValueError(f"graph field exceeds the structural limit of {max_len} characters")
+    return clean
 
 
 def coerce_confidence(value: Any) -> float:
@@ -77,7 +80,7 @@ def build_personal_knowledge_search_statement(
     owner_user_id: uuid.UUID,
     query: str,
     principal: PersonalKnowledgePrincipal,
-    limit: int,
+    limit: int | None,
 ):
     clean_query = _WHITESPACE_RE.sub(" ", str(query or "").strip())
     if not clean_query:
@@ -91,7 +94,7 @@ def build_personal_knowledge_search_statement(
         KnowledgeSegment.content.ilike(like_query, escape="\\"),
         KnowledgeDocument.title.ilike(like_query, escape="\\"),
     )
-    return (
+    statement = (
         select(KnowledgeSegment, KnowledgeDocument, score)
         .join(KnowledgeDocument, KnowledgeDocument.id == KnowledgeSegment.document_id)
         .where(
@@ -113,8 +116,10 @@ def build_personal_knowledge_search_statement(
             ),
         )
         .order_by(desc(score), KnowledgeDocument.updated_at.desc(), KnowledgeSegment.position.asc())
-        .limit(max(1, int(limit or 5)))
     )
+    if limit is not None:
+        statement = statement.limit(max(1, int(limit)))
+    return statement
 
 
 def row_first(row: Any) -> Any:

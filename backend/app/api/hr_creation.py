@@ -30,7 +30,7 @@ router = APIRouter(prefix="/agents", tags=["hr-creation"])
 
 class HrCreationConfirmIn(BaseModel):
     blueprint_version: int = Field(ge=1)
-    blueprint_hash: str = Field(min_length=8, max_length=80)
+    blueprint_hash: str | None = Field(default=None, min_length=8, max_length=80)
 
 
 class HrCreationDraftOut(BaseModel):
@@ -189,7 +189,16 @@ async def confirm_hr_creation_draft(
             blueprint_hash=payload.blueprint_hash,
         )
     except HrCreationConflict as exc:
-        raise HTTPException(status_code=409, detail={"error": exc.code, "message": exc.message}) from exc
+        error = "stale_confirmation" if exc.code == "version_mismatch" else exc.code
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": error,
+                "reason_code": exc.code,
+                "message": exc.message,
+                "current": _out(hr_creation_draft_payload(draft)).model_dump(mode="json"),
+            },
+        ) from exc
 
     created_task: RuntimeTask | None = None
     if draft.status != "completed" and draft.provisioning_task_id is None:

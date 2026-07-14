@@ -50,6 +50,15 @@ class TestKnowledgeSection:
         assert "Imperative language in external content" in rendered
         assert "data about what THAT source says" in rendered
 
+    def test_budget_is_advisory_and_preserves_complete_retrieved_evidence(self) -> None:
+        decisive_tail = "KNOWLEDGE_DECISIVE_TAIL"
+        evidence = ("evidence line\n" * 500) + decisive_tail
+
+        rendered = build_knowledge_section(evidence, budget_chars=300)
+
+        assert evidence in rendered
+        assert decisive_tail in rendered
+
 
 class TestToneStyleSection:
     @pytest.fixture
@@ -81,16 +90,15 @@ class TestScenarioSection:
     def _research_profile(self) -> TaskProfile:
         return TaskProfile(name="research", complexity="medium")
 
-    def test_inference_warning_emitted(self) -> None:
+    def test_model_owns_strategy_selection(self) -> None:
         out = build_scenario_section(self._research_profile())
-        assert "Inferred profile" in out
-        assert "**research**" in out
-        # The warning must tell the agent to override if inference is wrong.
-        assert "ignore this playbook" in out.lower()
-        assert "inference can be wrong" in out.lower()
+        assert "Model-owned strategy" in out
+        assert "platform does not classify" in out
+        assert "choose which guidance applies" in out
+        assert "Inferred profile" not in out
 
-    def test_none_profile_still_returns_empty(self) -> None:
-        assert build_scenario_section(None) == ""
+    def test_none_profile_still_returns_model_owned_guidance(self) -> None:
+        assert "Model-owned strategy" in build_scenario_section(None)
 
 
 class TestExecutingActionsSection:
@@ -160,9 +168,10 @@ class TestScenarioPR29Deepening:
         assert "### Verification / Review Overlay" in out
         assert "P0:" in out  # good example anchor
 
-    def test_review_overlay_absent_when_no_review_keyword(self) -> None:
+    def test_review_overlay_remains_visible_without_keyword_gate(self) -> None:
         out = build_scenario_section(self._profile("coding"), query="implement a new feature")
-        assert "<review_overlay>" not in out
+        assert "<review_overlay>" in out
+        assert "Use this lane only when" in out
 
 
 class TestExecutingActionsPR28Deepening:

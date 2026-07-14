@@ -13,6 +13,7 @@ from app.agents.subagent_memory import SubagentMemoryStore, distill_and_record
 def _allowed_decision(content, **kwargs):
     return SimpleNamespace(
         rejected=False,
+        held=False,
         reason="",
         content=content,
         metadata={"entry_id": "e1", "sensitivity": "internal", "status": "active"},
@@ -102,7 +103,10 @@ def test_store_rejects_path_traversal_names(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_distill_and_record_one_layer(tmp_path, monkeypatch):
-    monkeypatch.setattr(mem_mod, "prepare_memory_write", _allowed_decision)
+    async def allow_with_llm(content, **kwargs):
+        return _allowed_decision(content, **kwargs)
+
+    monkeypatch.setattr(mem_mod, "prepare_memory_write_with_llm", allow_with_llm)
     store = SubagentMemoryStore(tmp_path)
 
     def distiller(run_log):
@@ -118,7 +122,10 @@ async def test_distill_and_record_one_layer(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_distill_and_record_accepts_async_distiller(tmp_path, monkeypatch):
-    monkeypatch.setattr(mem_mod, "prepare_memory_write", _allowed_decision)
+    async def allow_with_llm(content, **kwargs):
+        return _allowed_decision(content, **kwargs)
+
+    monkeypatch.setattr(mem_mod, "prepare_memory_write_with_llm", allow_with_llm)
     store = SubagentMemoryStore(tmp_path)
 
     async def distiller(run_log):
@@ -195,7 +202,11 @@ def _seed_entries(store: SubagentMemoryStore, monkeypatch, n: int = 3) -> list[s
         entry_id = f"e{len(ids) + 1}"
         ids.append(entry_id)
         return SimpleNamespace(
-            rejected=False, reason="", content=content, metadata={"entry_id": entry_id, "sensitivity": "internal"}
+            rejected=False,
+            held=False,
+            reason="",
+            content=content,
+            metadata={"entry_id": entry_id, "sensitivity": "internal"},
         )
 
     monkeypatch.setattr(mem_mod, "prepare_memory_write", decision)

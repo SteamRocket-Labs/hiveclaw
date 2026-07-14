@@ -156,6 +156,26 @@ class TestBuildTaskContext:
         ctx = build_task_context(messages, {"message": "hi bob"})
         assert ctx["agent_reasoning"] == "我来帮你联系Bob"
 
+    def test_preserves_complete_semantic_context(self) -> None:
+        user_tail = "USER_DECISIVE_TAIL"
+        assistant_tail = "ASSISTANT_DECISIVE_TAIL"
+        outbound_tail = "OUTBOUND_DECISIVE_TAIL"
+        user_content = "u" * 1200 + user_tail
+        assistant_content = "a" * 1200 + assistant_tail
+        outbound_content = "o" * 2500 + outbound_tail
+
+        ctx = build_task_context(
+            [
+                {"role": "user", "content": user_content},
+                {"role": "assistant", "content": assistant_content},
+            ],
+            {"message": outbound_content},
+        )
+
+        assert ctx["originator_message"] == user_content
+        assert ctx["agent_reasoning"] == assistant_content
+        assert ctx["outbound_message"] == outbound_content
+
 
 class TestShouldCapturePendingReplyContext:
     def test_skips_one_way_channel_delivery_without_originator(self) -> None:
@@ -296,3 +316,19 @@ class TestFormatPendingReplyContext:
         result = format_pending_reply_context([self._make_pending(originator_name=None, originator_identity=None)])
         assert "待回复任务上下文" in result
         assert "发起人" not in result
+
+    def test_preserves_complete_pending_reply_semantics(self) -> None:
+        outbound_tail = "OUTBOUND_DECISIVE_TAIL"
+        task_tail = "TASK_DECISIVE_TAIL"
+        action_tail = "ACTION_DECISIVE_TAIL"
+        pending = self._make_pending(
+            outbound_message="o" * 800 + outbound_tail,
+            task_summary="t" * 800 + task_tail,
+            expected_action="a" * 800 + action_tail,
+        )
+
+        result = format_pending_reply_context([pending])
+
+        assert outbound_tail in result
+        assert task_tail in result
+        assert action_tail in result

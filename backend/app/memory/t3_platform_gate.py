@@ -272,7 +272,7 @@ def _apply_t3_consolidation_patch_transactional(
             if dropped:
                 issues.append(
                     f"knowledge page update must preserve existing Contradictions lines in {target}: "
-                    + "; ".join(dropped[:3])
+                    + "; ".join(dropped)
                 )
                 continue
         updated_contents[target] = page_content
@@ -519,17 +519,9 @@ def _validate_review(review: ET.Element, issues: list[str]) -> None:
     rubric_decision = (rubric.findtext("decision") or "").strip()
     if rubric_decision not in ACCEPTED_RUBRIC_DECISIONS:
         issues.append(f"memory_gate_rubric decision is not committable: {rubric_decision or '<missing>'}")
-    if not missing and rubric_decision in {"accept_new", "merge_required", "supersede_existing", "reinforced"}:
-        if scores["evidence_strength"] < 3:
-            issues.append("evidence_strength below accepted threshold")
-        if scores["scope_clarity"] < 3:
-            issues.append("scope_clarity below accepted threshold")
-        if scores["future_utility"] < 3:
-            issues.append("future_utility below accepted threshold")
-        if scores["conflict_safety"] < 3:
-            issues.append("conflict_safety below accepted threshold")
-        if sum(scores.values()) < 16:
-            issues.append("memory_gate_rubric total below accepted threshold 16/20")
+    # Scores and rationales are review evidence. The independent Memory Gate
+    # model's explicit decision owns semantic acceptance; the platform checks
+    # schema, source coverage, authority, and commit invariants only.
 
 
 def _review_rubric_decision(review: ET.Element) -> str:

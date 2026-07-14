@@ -105,7 +105,7 @@ async def list_mcp_tools(agent_id: uuid.UUID, arguments: dict) -> str:
                 lines.append(f"### Server: {server}")
                 for t in server_tools:
                     marker = " [approval required]" if t.name in approval_names else ""
-                    lines.append(f"- **{t.name}**{marker} ({t.display_name}): {t.description[:100]}")
+                    lines.append(f"- **{t.name}**{marker} ({t.display_name}): {t.description}")
                 lines.append("")
 
             return "\n".join(lines)
@@ -113,7 +113,7 @@ async def list_mcp_tools(agent_id: uuid.UUID, arguments: dict) -> str:
         return render_tool_error(
             tool_name="list_mcp_tools",
             error_class="operation_failed",
-            message=f"Failed to list MCP tools: {type(exc).__name__}: {str(exc)[:200]}",
+            message=f"Failed to list MCP tools: {type(exc).__name__}: {str(exc)}",
             provider="mcp",
             retryable=True,
             actionable_hint="Retry after the MCP registry or database becomes available.",
@@ -231,7 +231,7 @@ async def inspect_mcp_tool(agent_id: uuid.UUID, arguments: dict) -> str:
         return render_tool_error(
             tool_name="inspect_mcp_tool",
             error_class="operation_failed",
-            message=f"Failed to inspect MCP tool: {type(exc).__name__}: {str(exc)[:200]}",
+            message=f"Failed to inspect MCP tool: {type(exc).__name__}: {str(exc)}",
             provider="mcp",
             retryable=True,
             actionable_hint="Retry after the MCP registry or database becomes available.",
@@ -423,7 +423,7 @@ async def call_mcp_tool(agent_id: uuid.UUID, arguments: dict) -> str:
         return render_tool_error(
             tool_name="call_mcp_tool",
             error_class="operation_failed",
-            message=f"MCP call failed: {type(exc).__name__}: {str(exc)[:200]}",
+            message=f"MCP call failed: {type(exc).__name__}: {str(exc)}",
             provider="mcp",
             retryable=True,
             actionable_hint="Check the MCP server is reachable and the API key is valid.",
@@ -565,7 +565,7 @@ async def mcp_list_resources(agent_id: uuid.UUID, arguments: dict) -> str:
         return render_tool_error(
             tool_name="mcp_list_resources",
             error_class="operation_failed",
-            message=f"Failed to list MCP resources: {type(exc).__name__}: {str(exc)[:200]}",
+            message=f"Failed to list MCP resources: {type(exc).__name__}: {str(exc)}",
             provider="mcp",
             retryable=True,
             actionable_hint="Check the MCP server is reachable and authorized.",
@@ -574,7 +574,7 @@ async def mcp_list_resources(agent_id: uuid.UUID, arguments: dict) -> str:
         return "This MCP server exposes no resources."
     lines = [f"## MCP Resources ({len(resources)})\n"]
     for r in resources:
-        desc = f": {r['description'][:120]}" if r.get("description") else ""
+        desc = f": {r['description']}" if r.get("description") else ""
         mime = f" [{r['mimeType']}]" if r.get("mimeType") else ""
         lines.append(f"- `{r['uri']}` — {r.get('name') or r['uri']}{mime}{desc}")
     return "\n".join(lines)
@@ -628,7 +628,7 @@ async def mcp_read_resource(agent_id: uuid.UUID, arguments: dict) -> str:
         return render_tool_error(
             tool_name="mcp_read_resource",
             error_class="operation_failed",
-            message=f"Failed to read MCP resource: {type(exc).__name__}: {str(exc)[:200]}",
+            message=f"Failed to read MCP resource: {type(exc).__name__}: {str(exc)}",
             provider="mcp",
             retryable=True,
             actionable_hint="Check the URI and that the MCP server is reachable and authorized.",
@@ -671,7 +671,7 @@ async def mcp_list_prompts(agent_id: uuid.UUID, arguments: dict) -> str:
         return render_tool_error(
             tool_name="mcp_list_prompts",
             error_class="operation_failed",
-            message=f"Failed to list MCP prompts: {type(exc).__name__}: {str(exc)[:200]}",
+            message=f"Failed to list MCP prompts: {type(exc).__name__}: {str(exc)}",
             provider="mcp",
             retryable=True,
             actionable_hint="Check the MCP server is reachable and authorized.",
@@ -684,7 +684,7 @@ async def mcp_list_prompts(agent_id: uuid.UUID, arguments: dict) -> str:
         arg_names = []
         if isinstance(args, list):
             arg_names = [str(arg.get("name")) for arg in args if isinstance(arg, dict) and arg.get("name")]
-        desc = f": {prompt['description'][:120]}" if prompt.get("description") else ""
+        desc = f": {prompt['description']}" if prompt.get("description") else ""
         suffix = f" args=({', '.join(arg_names)})" if arg_names else ""
         lines.append(f"- `{prompt['name']}`{suffix}{desc}")
     return "\n".join(lines)
@@ -803,7 +803,7 @@ async def mcp_get_prompt(agent_id: uuid.UUID, arguments: dict) -> str:
         return render_tool_error(
             tool_name="mcp_get_prompt",
             error_class="operation_failed",
-            message=f"Failed to get MCP prompt: {type(exc).__name__}: {str(exc)[:200]}",
+            message=f"Failed to get MCP prompt: {type(exc).__name__}: {str(exc)}",
             provider="mcp",
             retryable=True,
             actionable_hint="Check the prompt name and that the MCP server is reachable and authorized.",

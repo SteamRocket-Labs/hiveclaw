@@ -344,9 +344,9 @@ class DocumentConversionService:
             raise ValueError("Document conversion source is outside workspace") from exc
 
 
-def render_conversion_preview(result: DocumentConversionResult, *, max_chars: int = 8000) -> str:
+def render_conversion_preview(result: DocumentConversionResult, *, max_chars: int | None = None) -> str:
     preview = result.markdown.strip()
-    if len(preview) > max_chars:
+    if max_chars is not None and len(preview) > max_chars:
         preview = preview[:max_chars] + f"\n\n...[truncated, {len(result.markdown)} chars total]"
     warnings = ""
     if result.warnings:
@@ -421,7 +421,7 @@ def _extract_pdf(data: bytes) -> str:
 
         parts: list[str] = []
         with pdfplumber.open(io.BytesIO(data)) as pdf:
-            for index, page in enumerate(pdf.pages[:50]):
+            for index, page in enumerate(pdf.pages):
                 page_text = page.extract_text() or ""
                 if page_text.strip():
                     parts.append(f"--- Page {index + 1} ---\n{page_text.strip()}")
@@ -447,7 +447,7 @@ def _extract_pdf(data: bytes) -> str:
 
         reader = PdfReader(io.BytesIO(data))
         parts = []
-        for index, page in enumerate(reader.pages[:50]):
+        for index, page in enumerate(reader.pages):
             page_text = page.extract_text() or ""
             if page_text.strip():
                 parts.append(f"--- Page {index + 1} ---\n{page_text.strip()}")
@@ -487,10 +487,10 @@ def _extract_xlsx(data: bytes) -> str:
     wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
     try:
         parts: list[str] = []
-        for sheet_name in wb.sheetnames[:10]:
+        for sheet_name in wb.sheetnames:
             sheet = wb[sheet_name]
             rows = []
-            for row in sheet.iter_rows(max_row=200, values_only=True):
+            for row in sheet.iter_rows(values_only=True):
                 cells = [str(cell) if cell is not None else "" for cell in row]
                 if any(cell.strip() for cell in cells):
                     rows.append(" | ".join(cells))
@@ -508,7 +508,7 @@ def _extract_pptx(data: bytes) -> str:
 
     presentation = Presentation(io.BytesIO(data))
     parts: list[str] = []
-    for index, slide in enumerate(presentation.slides[:50]):
+    for index, slide in enumerate(presentation.slides):
         texts = []
         for shape in slide.shapes:
             if hasattr(shape, "text") and shape.text.strip():

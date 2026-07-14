@@ -161,6 +161,46 @@ def test_summarize_chat_messages_tolerates_non_datetime_created_at():
     assert summary["last_team_memory_hit"]["created_at"] is None
 
 
+def test_summarize_chat_messages_tracks_actual_turn_model_route():
+    summary = _summarize_chat_messages(
+        [
+            _msg(
+                "system",
+                json.dumps(
+                    {
+                        "type": "session_context",
+                        "event_type": "model_route",
+                        "selected_model_id": "fallback-id",
+                        "selected_model": "gpt-4.1-mini",
+                        "selected_model_label": "GPT-4.1 mini",
+                        "selected_provider": "openai",
+                        "selected_supports_vision": False,
+                        "selected_context_window_tokens": 128000,
+                        "fallback_model": "gpt-4.1",
+                        "reason": "simple_turn_cheap_model",
+                        "config_source": "agent_config",
+                        "model_routing_locked": False,
+                    }
+                ),
+            )
+        ]
+    )
+
+    assert summary["last_model_route"] == {
+        "id": "fallback-id",
+        "label": "GPT-4.1 mini",
+        "provider": "openai",
+        "name": "gpt-4.1-mini",
+        "supports_vision": False,
+        "context_window_tokens": 128000,
+        "fallback_name": "gpt-4.1",
+        "route_reason": "simple_turn_cheap_model",
+        "routing_config_source": "agent_config",
+        "routing_locked": False,
+        "created_at": "2026-04-02T12:00:00+00:00",
+    }
+
+
 class _ScalarResult:
     def __init__(self, value):
         self._value = value
@@ -237,11 +277,16 @@ async def test_get_session_runtime_summary_includes_model_and_runtime_estimates(
     summary = await get_session_runtime_summary(db, session_id)
 
     assert summary["model"] == {
+        "id": str(model_id),
         "label": "GPT-5.4",
         "provider": "openai",
         "name": "gpt-5.4",
         "supports_vision": True,
         "context_window_tokens": 128000,
+        "fallback_name": None,
+        "route_reason": "primary_model",
+        "routing_config_source": None,
+        "routing_locked": False,
     }
     assert summary["runtime"] == {
         "estimated_input_tokens": expected_tokens,

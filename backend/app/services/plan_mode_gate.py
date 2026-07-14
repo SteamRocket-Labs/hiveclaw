@@ -17,7 +17,7 @@ Design split (consistent with :mod:`app.services.plan_mode_service`):
 
 * Functional core (pure, separately unit tested in ``plan_mode_core``):
       action_kind -> intent mapping, cutover-exemption extraction, confirmed-plan
-      version/hash validation, and the confirmation-required envelope assembly.
+      version validation, and the confirmation-required envelope assembly.
 * Shell (this file): load the referenced plan row, resolve the artifact
   exemption (inline dict or async resolver callback), and translate the core
   decision into a :class:`PlanGateDecision`.
@@ -62,7 +62,7 @@ class PlanGateDecision:
     * ``reason`` — a stable machine code for logging / branching. One of:
       ``confirmed_plan_handoff`` / ``plan_exempt`` (allowed) or
       ``no_confirmed_plan`` / ``plan_not_found`` / ``plan_not_confirmed`` /
-      ``version_mismatch`` / ``hash_mismatch`` (blocked).
+      ``version_mismatch`` (blocked).
     * ``needs_plan_payload`` — legacy field name for the confirmation-required
       envelope to return to the caller when blocked; ``None`` when allowed.
     * ``exempt_reason`` — the cutover exemption that allowed the action, when
@@ -76,6 +76,9 @@ class PlanGateDecision:
     authorization_lease_id: str | None = None
     canonical_args_hash: str | None = None
     target_ref: str | None = None
+    canonical_plan_id: str | None = None
+    canonical_plan_version: int | None = None
+    canonical_plan_hash: str | None = None
 
     @property
     def needs_plan(self) -> bool:
@@ -116,8 +119,9 @@ class PlanModeGate:
         Resolution order (first match wins, short-circuiting later probes):
 
         1. **Confirmed-plan handoff** — a ``confirmed_plan_id`` resolving to a
-           ``confirmed`` :class:`AgentPlanRequest` whose ``plan_version`` /
-           ``plan_hash`` match the submitted ones (when supplied). -> *allow*.
+           ``confirmed`` :class:`AgentPlanRequest` whose visible
+           ``plan_version`` matches the submitted one. The hash is resolved
+           from the server-owned row. -> *allow*.
         2. **Cutover exemption** — the action's artifact carries
            ``plan_exempt_reason`` (probed from ``action_artifact`` or via
            ``artifact_resolver(action_ref)``). -> *allow*.
@@ -131,8 +135,9 @@ class PlanModeGate:
             action_ref: Optional id of the artifact under scrutiny (e.g. a
                 trigger id) — passed to ``artifact_resolver``.
             confirmed_plan_id: The plan claimed to authorise this action.
-            plan_version / plan_hash: The version/hash the caller is handing off
-                against; matched against the stored confirmed plan when present.
+            plan_version: The visible version the caller is handing off against.
+            plan_hash: Legacy compatibility input. It is ignored because the
+                server-owned plan row is the canonical hash authority.
             action_artifact: The artifact dict, when the caller has it inline.
             artifact_resolver: Async callback to fetch the artifact from
                 ``action_ref`` when not passed inline.
@@ -326,8 +331,8 @@ class PlanModeGate:
                     action_artifact=action_artifact,
                     evidence_id=str(evidence_id or f"plan-gate:{plan.id}:{action_kind}"),
                     confirmed_by_user_id=plan.confirmed_by_user_id,
-                    plan_version=plan_version,
-                    plan_hash=plan_hash,
+                    plan_version=plan.plan_version,
+                    plan_hash=plan.plan_hash,
                     session_factory=self.plan_authorization_session_factory,
                 )
             except PlanAuthorizationLeaseError as exc:
@@ -342,6 +347,9 @@ class PlanModeGate:
                 authorization_lease_id=str(lease.lease_id),
                 canonical_args_hash=lease.binding.canonical_args_hash,
                 target_ref=lease.binding.target_ref,
+                canonical_plan_id=str(lease.binding.plan_id),
+                canonical_plan_version=int(lease.binding.plan_version),
+                canonical_plan_hash=str(lease.binding.plan_hash),
             )
 
         logger.info(

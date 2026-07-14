@@ -149,6 +149,20 @@ def test_skill_gatherer_outputs_activation_candidates(tmp_path: Path) -> None:
     assert manifest["source_refs"] == ["skills/python-api/SKILL.md"]
 
 
+def test_skill_gatherer_does_not_drop_authorized_candidates_for_legacy_limit(tmp_path: Path) -> None:
+    from app.services.skill_catalog_ranker import gather_skill_candidates_for_prompt
+
+    skills = [_skill(f"skill-{index}") for index in range(3)]
+
+    candidates = gather_skill_candidates_for_prompt(tmp_path, skills, limit=1)
+
+    assert [candidate.candidate_ref["item_id"] for candidate in candidates] == [
+        "skill-0",
+        "skill-1",
+        "skill-2",
+    ]
+
+
 def test_skill_catalog_uses_evolution_registry_state_and_excludes_blocked_skills(tmp_path: Path) -> None:
     from app.services.skill_catalog_ranker import rank_skills_for_prompt_with_reasons
     from app.services.skill_evolution_registry import ORIGIN_T3_AUTO_CREATED, upsert_skill_evolution_entry

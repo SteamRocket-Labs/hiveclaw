@@ -1,7 +1,10 @@
-"""Conversation summarization — compress old messages to save tokens."""
+"""Conversation summarization — model-led, coverage-preserving compaction."""
 
+import hashlib
+import json
 import logging
 import re
+from dataclasses import dataclass
 
 from app.runtime.prompts.compaction import COMPACTION_LONG_RUN_STATE_CONTRACT
 from app.services.llm_error_policy import is_llm_error_message
@@ -263,21 +266,20 @@ work needs fresh confirmation, never a self-assigned restart.)
 
 
 # ── Summary input construction (docs/compaction-cc-alignment.md §3 P0) ──
-# CC baseline: the FULL history goes into the summary request; mechanical
-# truncation appears only as an over-window fallback (truncateHeadForPTLRetry
-# philosophy). Per-message caps below are defensive limits against single
-# anomalous entries (e.g. an un-spilled giant tool result), not routine pruning.
-_SUMMARY_INPUT_USER_ASSISTANT_CAP = 8000  # chars per user/assistant message (was 800)
-_SUMMARY_INPUT_TOOL_RESULT_CAP = 12000  # chars per tool result (was 1500)
-_SUMMARY_INPUT_TOOL_ARGS_CAP = 2000  # chars per tool-call args preview (was 300)
 _SUMMARY_INPUT_WINDOW_RATIO = 0.7  # input budget as fraction of the summary model window
 _SUMMARY_MAX_OUTPUT_TOKENS = 20_000  # CC COMPACT_MAX_OUTPUT_TOKENS (context.ts:12).
 # Cross-provider safety is handled by _resolve_summary_max_tokens, which clamps
 # to the provider/model output cap — no need to pre-shrink the budget here.
 
 
+@dataclass(frozen=True, slots=True)
+class SummaryInputChunk:
+    text: str
+    coverage_refs: tuple[str, ...]
+
+
 def _serialize_message_for_summary(msg: dict) -> list[str]:
-    """Serialize one message into summary-input lines with defensive caps."""
+    """Serialize one message without mechanically deleting semantic content."""
     lines: list[str] = []
     role = msg.get("role", "")
     content = msg.get("content", "")
@@ -286,21 +288,21 @@ def _serialize_message_for_summary(msg: dict) -> list[str]:
         for tc in msg["tool_calls"]:
             fn = tc.get("function", {})
             name = fn.get("name", "?")
-            args_preview = fn.get("arguments", "")[:_SUMMARY_INPUT_TOOL_ARGS_CAP]
-            lines.append(f"assistant: [called {name}({args_preview})]")
+            arguments = fn.get("arguments", "")
+            lines.append(f"assistant: [called {name}({arguments})]")
         return lines
 
     if role == "tool":
         if isinstance(content, str) and content.strip():
-            lines.append(f"tool_result: {content[:_SUMMARY_INPUT_TOOL_RESULT_CAP]}")
+            lines.append(f"tool_result: {content}")
         return lines
 
     if not isinstance(content, str) or not content.strip():
         return lines
     if role == "user":
-        lines.append(f"user: {content[:_SUMMARY_INPUT_USER_ASSISTANT_CAP]}")
+        lines.append(f"user: {content}")
     elif role == "assistant" and not is_llm_error_message(content):
-        lines.append(f"assistant: {content[:_SUMMARY_INPUT_USER_ASSISTANT_CAP]}")
+        lines.append(f"assistant: {content}")
     return lines
 
 
@@ -327,12 +329,7 @@ def _build_summary_input(
     provider: str,
     max_input_tokens: int | None = None,
 ) -> tuple[str, int]:
-    """Serialize the FULL message history for the summary LLM.
-
-    Returns (text, dropped_message_count). Mechanical head-drop happens ONLY
-    when the serialized input exceeds the summary model's window budget —
-    oldest messages go first, mirroring CC's truncateHeadForPTLRetry.
-    """
+    """Serialize the full history; chunking belongs to the model call layer."""
     per_message: list[str] = []
     for msg in messages:
         block = "\n".join(_serialize_message_for_summary(msg))
@@ -342,27 +339,57 @@ def _build_summary_input(
     if not per_message:
         return "", 0
 
-    budget_chars = _resolve_summary_input_budget_chars(provider, max_input_tokens)
+    return "\n".join(per_message), 0
 
-    # Accumulate from the newest backwards; everything older than the budget is dropped.
-    kept_reversed: list[str] = []
-    used = 0
-    for block in reversed(per_message):
-        cost = len(block) + 1  # +1 for the joining newline
-        if used + cost > budget_chars and kept_reversed:
-            break
-        kept_reversed.append(block)
-        used += cost
 
-    dropped = len(per_message) - len(kept_reversed)
-    if dropped:
-        logger.warning(
-            "[Summarizer] Summary input over window budget — dropped %d oldest of %d messages",
-            dropped,
-            len(per_message),
-            extra={"metric": "summary_input_head_drop", "dropped": dropped, "total": len(per_message)},
-        )
-    return "\n".join(reversed(kept_reversed)), dropped
+def _build_summary_input_chunks(
+    messages: list[dict],
+    *,
+    provider: str,
+    max_input_tokens: int | None = None,
+) -> list[SummaryInputChunk]:
+    """Cover every serialized message byte with model-readable chunks and hashes."""
+
+    budget_chars = max(_resolve_summary_input_budget_chars(provider, max_input_tokens), 1000)
+    chunks: list[SummaryInputChunk] = []
+    pending_blocks: list[str] = []
+    pending_refs: list[str] = []
+    pending_chars = 0
+
+    def flush() -> None:
+        nonlocal pending_chars
+        if pending_blocks:
+            chunks.append(SummaryInputChunk(text="\n".join(pending_blocks), coverage_refs=tuple(pending_refs)))
+            pending_blocks.clear()
+            pending_refs.clear()
+            pending_chars = 0
+
+    for message_index, message in enumerate(messages):
+        block = "\n".join(_serialize_message_for_summary(message))
+        if not block:
+            continue
+        if len(block) <= budget_chars:
+            if pending_blocks and pending_chars + len(block) + 1 > budget_chars:
+                flush()
+            digest = hashlib.sha256(block.encode("utf-8")).hexdigest()
+            pending_blocks.append(block)
+            pending_refs.append(f"message:{message_index}:chars:0-{len(block)}:sha256:{digest}")
+            pending_chars += len(block) + 1
+            continue
+
+        flush()
+        for start in range(0, len(block), budget_chars):
+            end = min(len(block), start + budget_chars)
+            segment = block[start:end]
+            digest = hashlib.sha256(segment.encode("utf-8")).hexdigest()
+            chunks.append(
+                SummaryInputChunk(
+                    text=segment,
+                    coverage_refs=(f"message:{message_index}:chars:{start}-{end}:sha256:{digest}",),
+                )
+            )
+    flush()
+    return chunks
 
 
 def _resolve_summary_max_tokens(provider: str, model: str) -> int:
@@ -398,12 +425,12 @@ async def _llm_summarize(
 
     provider = model_config.get("provider", "")
     model_name = model_config.get("model", "")
-    text, _ = _build_summary_input(
+    chunks = _build_summary_input_chunks(
         messages,
         provider=provider,
         max_input_tokens=model_config.get("max_input_tokens"),
     )
-    if not text:
+    if not chunks:
         return None
 
     if usage_source:
@@ -416,14 +443,95 @@ async def _llm_summarize(
         )
     client = create_llm_client_from_config(model_config)
     try:
-        response = await client.stream(
-            messages=[
-                LLMMessage(role="system", content=_SUMMARIZE_SYSTEM_PROMPT),
-                LLMMessage(role="user", content=text),
-            ],
-            max_tokens=_resolve_summary_max_tokens(provider, model_name),
-            temperature=0.3,
+        max_tokens = _resolve_summary_max_tokens(provider, model_name)
+
+        async def summarize_covered(text: str, coverage_refs: tuple[str, ...], *, phase: str) -> str | None:
+            payload = (
+                f"<compaction_phase>{phase}</compaction_phase>\n"
+                "<coverage_manifest>\n"
+                f"{json.dumps(list(coverage_refs), ensure_ascii=False)}\n"
+                "</coverage_manifest>\n"
+                "<covered_input>\n"
+                f"{text}\n"
+                "</covered_input>"
+            )
+            response = await client.stream(
+                messages=[
+                    LLMMessage(role="system", content=_SUMMARIZE_SYSTEM_PROMPT),
+                    LLMMessage(role="user", content=payload),
+                ],
+                max_tokens=max_tokens,
+                temperature=0.3,
+            )
+            return _extract_summary_from_response(response.content)
+
+        if len(chunks) == 1:
+            return await summarize_covered(chunks[0].text, chunks[0].coverage_refs, phase="single_pass")
+
+        summary_nodes: list[tuple[str, tuple[str, ...]]] = []
+        all_coverage_refs: list[str] = []
+        for index, chunk in enumerate(chunks, start=1):
+            summary = await summarize_covered(
+                chunk.text,
+                chunk.coverage_refs,
+                phase=f"map_chunk_{index}_of_{len(chunks)}",
+            )
+            if not summary:
+                return None
+            all_coverage_refs.extend(chunk.coverage_refs)
+            summary_nodes.append((summary, chunk.coverage_refs))
+
+        input_budget_chars = max(
+            _resolve_summary_input_budget_chars(provider, model_config.get("max_input_tokens")),
+            1000,
         )
-        return _extract_summary_from_response(response.content)
+        # Reducer outputs can be larger than their source chunks. Group a few
+        # nodes per pass and halve the node count each level; never construct
+        # the former unbounded reduce-all prompt.
+        reduce_budget_chars = max(input_budget_chars * 3, 8_000)
+        level = 1
+        while len(summary_nodes) > 1:
+            grouped: list[list[tuple[str, tuple[str, ...]]]] = []
+            index = 0
+            while index < len(summary_nodes):
+                group = [summary_nodes[index]]
+                group_chars = len(summary_nodes[index][0])
+                index += 1
+                while index < len(summary_nodes) and len(group) < 4:
+                    next_chars = len(summary_nodes[index][0])
+                    if len(group) >= 2 and group_chars + next_chars > reduce_budget_chars:
+                        break
+                    group.append(summary_nodes[index])
+                    group_chars += next_chars
+                    index += 1
+                grouped.append(group)
+
+            next_nodes: list[tuple[str, tuple[str, ...]]] = []
+            for group_index, group in enumerate(grouped, start=1):
+                if len(group) == 1 and len(grouped) > 1:
+                    next_nodes.append(group[0])
+                    continue
+                group_refs = tuple(ref for _text, refs in group for ref in refs)
+                group_text = "\n\n".join(
+                    f'<chunk_summary index="{node_index}" coverage={json.dumps(list(refs))}>\n{text}\n</chunk_summary>'
+                    for node_index, (text, refs) in enumerate(group, start=1)
+                )
+                reduced = await summarize_covered(
+                    group_text,
+                    group_refs,
+                    phase=f"reduce_level_{level}_group_{group_index}_of_{len(grouped)}",
+                )
+                if not reduced:
+                    return None
+                next_nodes.append((reduced, group_refs))
+            if len(next_nodes) >= len(summary_nodes):
+                logger.error("[Summarizer] hierarchical reducer made no progress at level %d", level)
+                return None
+            summary_nodes = next_nodes
+            level += 1
+
+        reduced = summary_nodes[0][0]
+        coverage_json = json.dumps(all_coverage_refs, ensure_ascii=False, separators=(",", ":"))
+        return f"{reduced}\n\n<compaction_coverage>{coverage_json}</compaction_coverage>"
     finally:
         await client.close()

@@ -145,7 +145,8 @@ def test_dynamic_outcome_summary_and_repair_plan_are_leaf_level():
     assert evidence["leaf_total"] == 2
     assert evidence["leaf_done"] == 1
     assert evidence["leaf_failed"] == 1
-    assert evidence["promotion_eligible"] is False
+    assert "promotion_eligible" not in evidence
+    assert evidence["model_promotion_review"] == "not_requested"
     assert repair["repairable"] is True
     assert repair["strategy"] == "resume_failed_leaves"
     assert repair["failed_leaves"][0]["leaf_id"] == "item-1"
@@ -161,7 +162,7 @@ def test_workflow_decision_entry_links_candidate_preview_run_outcome_and_repair(
             "failure_policy": {"repair_rounds": 1},
         },
         run_id="run-1",
-        outcome={"status": "failed", "promotion_eligible": False},
+        outcome={"status": "failed", "model_promotion_review": "not_requested"},
         repair_plan={"repairable": True, "strategy": "resume_failed_leaves"},
     )
 
@@ -174,7 +175,8 @@ def test_workflow_decision_entry_links_candidate_preview_run_outcome_and_repair(
     assert entry["failure_policy"] == {"repair_rounds": 1}
     assert entry["outcome"]["status"] == "failed"
     assert entry["repair_plan"]["strategy"] == "resume_failed_leaves"
-    assert entry["promotion_eligible"] is False
+    assert entry["model_promotion_review"] == "not_requested"
+    assert entry["agent_cycle_decision_entry"]["decision"] == "repair"
 
 
 def test_attach_workflow_decision_outcome_preserves_single_decision_chain():
@@ -189,7 +191,7 @@ def test_attach_workflow_decision_outcome_preserves_single_decision_chain():
     updated = attach_workflow_decision_outcome(
         dynamic_workflow=dynamic,
         run_id="run-1",
-        outcome_evidence={"status": "failed", "leaf_failed": 1, "promotion_eligible": False},
+        outcome_evidence={"status": "failed", "leaf_failed": 1, "model_promotion_review": "not_requested"},
         repair_plan={"repairable": True, "strategy": "resume_failed_leaves"},
     )
 
@@ -200,4 +202,19 @@ def test_attach_workflow_decision_outcome_preserves_single_decision_chain():
     assert entry["run_id"] == "run-1"
     assert entry["outcome"]["status"] == "failed"
     assert entry["repair_plan"]["repairable"] is True
-    assert entry["promotion_eligible"] is False
+    assert entry["model_promotion_review"] == "not_requested"
+
+
+def test_repair_plan_preserves_every_failed_leaf_for_model_and_operator_review():
+    task = SimpleNamespace(
+        status="failed", metadata_json={"dynamic_workflow": {"failure_policy": {"repair_rounds": 1}}}
+    )
+    leaves = [
+        SimpleNamespace(step_id="scan", leaf_id=f"item-{index}", status="failed", error=f"failure-{index}")
+        for index in range(25)
+    ]
+
+    repair = build_dynamic_workflow_repair_plan(task=task, steps=[], leaf_calls=leaves)
+
+    assert len(repair["failed_leaves"]) == 25
+    assert repair["failed_leaves"][-1]["leaf_id"] == "item-24"

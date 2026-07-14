@@ -125,20 +125,12 @@ rewrite summary.md, decide final promotion, write T3, or write soul.md.
 </task_steps>
 
 <rubric>
-Engineering labels are quantified:
-confidence = round_to_0_05(clamp(
-  0.40 * evidence_coverage
-  + 0.20 * source_integrity_score
-  + 0.15 * label_specificity
-  + 0.15 * internal_consistency
-  + 0.10 * closure_score
-  - penalties,
-  0.00,
-  1.00
-))
+Confidence is a calibrated explanation of your model judgment, grounded in the
+complete source bundle. There is no fixed formula and the platform does not map
+a numeric score to a semantic label or destination.
 source_integrity: complete|partial|replayed|missing_refs.
 risk_flags: privacy_sensitive|cross_tenant|security_relevant|production_impact|policy_conflict|evidence_gap.
-systems must come from the controlled registry, max 5.
+systems must come from the controlled registry; include every source-backed system.
 continuity_state maps summary continuity into a controlled engineering label.
 </rubric>
 
@@ -174,17 +166,9 @@ PL4/secret/credential/private key/token in summary/labels/review body, missing
 source refs, cross-tenant/principal scope violations, or malformed XML.
 
 After hard gates pass, return a structured review_rubric. Any score without this rubric is invalid.
-
-review_score = round_to_0_05(clamp(
-  0.35 * summary_fidelity
-  + 0.25 * source_ref_coverage
-  + 0.20 * label_alignment
-  + 0.10 * safety_scope
-  + 0.10 * package_closure
-  - review_penalties,
-  0.00,
-  1.00
-))
+Scores and review_score are calibrated explanations of your complete model
+judgment. No formula or platform score cutoff may choose approved, allowed_next,
+or any semantic lane; you must make and justify that decision directly.
 
 Score anchors:
 - summary_fidelity: 1.00 all key events/facts/decisions/corrections faithful
@@ -207,10 +191,10 @@ Score anchors:
   with low-risk open question; 0.50 rolling/evolving carryover only; 0.25 highly
   fragmented; 0.00 not a reviewable package.
 
-approved/t3_intake requires summary_fidelity >= 0.85, source_ref_coverage >=
-0.85, label_alignment >= 0.75, safety_scope >= 0.85, package_closure >= 0.75,
-review_score >= 0.80, package_status != rolling_checkpoint, segment_state=complete,
-and continuity_state = standalone.
+approved/t3_intake still requires the hard structural conditions:
+package_status != rolling_checkpoint, segment_state=complete, and
+continuity_state=standalone. Decide semantic fidelity, coverage, alignment, and
+safety from the complete evidence rather than numeric cutoffs.
 
 approved/episode_stitching is only allowed when the package is faithful and safe
 but continuity_state is same_episode_candidate, needs_previous, or needs_next.
@@ -296,16 +280,9 @@ Hard gates run first. Reject if synthesis lacks source package refs, lacks T0
 source refs, rewrites source T2 packages, contains PL4/secret material, crosses
 tenant/principal scope, or claims a closed episode without evidence.
 
-episode_review_score = round_to_0_05(clamp(
-  0.30 * continuity_fidelity
-  + 0.25 * source_ref_coverage
-  + 0.15 * correction_quality
-  + 0.20 * closure_quality
-  + 0.10 * safety_scope
-  - review_penalties,
-  0.00,
-  1.00
-))
+episode_review_score and metric scores are calibrated explanations of your
+complete model judgment. No formula or platform score cutoff may choose the
+decision or allowed_next lane.
 
 Score anchors:
 - continuity_fidelity: 1.00 same_episode directly proven by T0 refs; 0.75 likely
@@ -322,9 +299,9 @@ Score anchors:
 - safety_scope: 1.00 principal/tenant/sensitivity clear; 0.75 minor uncertainty;
   0.50 partially unknown; 0.25 visibility risk; 0.00 unauthorized/PL4/cross-tenant.
 
-approved/t3_intake requires continuity_fidelity >= 0.85, source_ref_coverage >=
-0.85, correction_quality >= 0.75, closure_quality >= 0.80, safety_scope >= 0.85,
-and episode_review_score >= 0.80.
+For approved/t3_intake, decide continuity fidelity, source coverage, correction
+quality, closure, and safety from all evidence. The platform enforces only the
+hard source, authority, schema, and closed-episode requirements.
 </rubric>
 
 <output_schema>

@@ -10,8 +10,10 @@ and the platform writes staged artifacts and applies Platform Gate.
 
 ## Inputs
 
-- `source_bundle.json`: Segment Packages, explicit overlay refs, principal context,
-  allowed target files.
+- `source_bundle.json`: complete reviewed T2 Markdown, each package's full
+  manifest, model-readable T0 `source.md` / `events.jsonl` resolved through its
+  source refs, explicit overlay content, and allowed target files. A hash or
+  path is provenance metadata, not a substitute for readable evidence.
 - `t3_neighborhood.md`: current accepted T3 blocks, base revisions, overlap hints.
 - Optional prior `consolidation_pitch.md`, pitch-feedback `review.md`,
   `revised_patch.md`, `conflict_bundle.json` during revise/rebase loops.
@@ -20,6 +22,9 @@ and the platform writes staged artifacts and applies Platform Gate.
 
 - Start from Segment Packages, not raw T0.
 - Use residual T0 evidence only through T2 source refs.
+- Inspect every supplied package and its residual evidence. When an entry says
+  `available=false`, do not manufacture the missing fact; choose `noop`, hold,
+  or reject the unsupported change in your own semantic decision.
 - Read the T3 neighborhood before creating or replacing any block.
 - Return `consolidation_pitch_md` and `revised_patch_md` in the JSON response.
 - A final Memory Gate review must be submitted after the latest `revised_patch.md`; an older review cannot authorize a newer patch.

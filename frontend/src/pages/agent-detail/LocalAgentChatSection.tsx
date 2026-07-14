@@ -304,6 +304,7 @@ function attachmentPayload(upload: AttachedLocalFile): Record<string, unknown> {
     path: upload.attachmentPath,
     workspace_path: upload.workspace_path,
     size: upload.size,
+    content: upload.extracted_text || '',
     preview_text: upload.preview_text || upload.extracted_text,
     preview_kind: upload.workspace_path?.toLowerCase().endsWith('.md') ? 'markdown' : undefined,
     source: 'hive_local_agent_chat',

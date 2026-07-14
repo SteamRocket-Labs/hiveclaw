@@ -78,7 +78,7 @@ def extract_text(file_path: Path, extension: str) -> str:
 
             with pdfplumber.open(file_path) as pdf:
                 text = "\n".join(page.extract_text() or "" for page in pdf.pages)
-            return text[:8000] or "[PDF内容提取失败]"
+            return text or "[PDF内容提取失败]"
         except ImportError:
             try:
                 result = subprocess.run(
@@ -87,7 +87,7 @@ def extract_text(file_path: Path, extension: str) -> str:
                     text=True,
                     timeout=30,
                 )
-                return result.stdout[:8000].strip() or "[无法解析PDF]"
+                return result.stdout.strip() or "[无法解析PDF]"
             except Exception as e:
                 return f"[PDF解析错误: {e}]"
         except Exception as e:
@@ -99,7 +99,7 @@ def extract_text(file_path: Path, extension: str) -> str:
 
             doc = Document(file_path)
             text = "\n".join(p.text for p in doc.paragraphs)
-            return text[:8000] or "[DOCX内容提取失败]"
+            return text or "[DOCX内容提取失败]"
         except ImportError:
             return "[需要安装 python-docx 库]"
         except Exception as e:
@@ -111,11 +111,11 @@ def extract_text(file_path: Path, extension: str) -> str:
 
             wb = openpyxl.load_workbook(file_path, read_only=True)
             lines: list[str] = []
-            for ws in wb.worksheets[:3]:
+            for ws in wb.worksheets:
                 lines.append(f"## Sheet: {ws.title}")
-                for row in ws.iter_rows(max_row=50, values_only=True):
+                for row in ws.iter_rows(values_only=True):
                     lines.append("\t".join(str(cell) if cell is not None else "" for cell in row))
-            return "\n".join(lines)[:8000] or "[Excel内容提取失败]"
+            return "\n".join(lines) or "[Excel内容提取失败]"
         except ImportError:
             return "[需要安装 openpyxl 库]"
         except Exception as e:
@@ -314,8 +314,8 @@ async def save_upload_for_agent(
                     force_refresh=False,
                 )
             )
-            extracted = render_conversion_preview(converted, max_chars=6000)
-            preview_text = extracted
+            extracted = render_conversion_preview(converted, max_chars=None)
+            preview_text = render_conversion_preview(converted, max_chars=6000)
             conversion = {
                 "status": "converted",
                 "markdown_path": converted.artifact_markdown_path,
@@ -327,19 +327,15 @@ async def save_upload_for_agent(
                 "source_sha256": converted.source_sha256,
             }
         except Exception as e:
-            extracted = f"[文档转换失败: {str(e)[:200]}]"
+            extracted = f"[文档转换失败: {e}]"
             preview_text = extracted
             conversion = {
                 "status": "failed",
-                "error": str(e)[:300],
+                "error": str(e),
                 "warnings": ["document_conversion_failed"],
             }
     else:
         extracted = f"[文件已保存，格式 {ext} 暂不支持文本提取，Agent 可通过 read_document 工具读取]"
-
-    # Truncate if too long
-    if len(extracted) > 6000:
-        extracted = extracted[:6000] + "\n\n...[内容已截断，共 " + str(len(extracted)) + " 字]"
 
     personal_kb_candidate: dict[str, object] = (
         {"skipped": True, "reason": "user_skip"}
@@ -386,7 +382,7 @@ async def save_upload_for_agent(
                 "skipped": False,
                 "status": "failed",
                 "origin": origin,
-                "error": str(exc)[:300],
+                "error": str(exc),
             }
 
     return {

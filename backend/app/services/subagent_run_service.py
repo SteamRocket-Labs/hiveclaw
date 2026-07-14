@@ -61,7 +61,6 @@ from app.services.tenant_resolver import resolve_tenant_for_agent
 SUBAGENT_RUN_TASK_TYPE = "subagent"
 SUBAGENT_RESTART_REPLAY_SAFE_TYPES = frozenset({SUBAGENT_TYPE_EXPLORER, SUBAGENT_TYPE_CRITIC})
 _CHILD_TOOL_TERMINAL_STATUSES = frozenset({"done", "completed", "failed", "error", "cancelled", "timed_out"})
-_DEFAULT_SUBAGENT_RESUME_BUDGET_CHARS = 240_000
 _DEFAULT_SUBAGENT_START_TOKEN_RESERVATION = 50_000
 _SUBAGENT_CANCEL_EVENTS: dict[str, asyncio.Event] = {}
 _PENDING_SUBAGENT_CANCELS: set[str] = set()
@@ -77,22 +76,6 @@ class SubagentRunStart:
 
 def _subagent_type_restart_replay_safe(spec_type: str | None) -> bool:
     return str(spec_type or "").strip() in SUBAGENT_RESTART_REPLAY_SAFE_TYPES
-
-
-def _subagent_resume_budget_chars(context_window_tokens: Any = None) -> int:
-    try:
-        tokens = int(context_window_tokens) if context_window_tokens is not None else None
-    except (TypeError, ValueError):
-        tokens = None
-    if not tokens or tokens <= 0:
-        return _DEFAULT_SUBAGENT_RESUME_BUDGET_CHARS
-    try:
-        from app.runtime.context_budget import compute_context_budget
-
-        budget = compute_context_budget(context_window_tokens=tokens, query="resume subagent transcript")
-        return max(60_000, int(budget.restore_budget_chars))
-    except Exception:
-        return _DEFAULT_SUBAGENT_RESUME_BUDGET_CHARS
 
 
 def _normalize_run_key(run_id: str | uuid.UUID | None) -> str:
@@ -472,7 +455,7 @@ def make_run_completer(run_id: str):
 
     async def _complete(result: SubagentResult) -> None:
         status = "completed" if result.ok else "failed"
-        summary = (result.content or result.error or "")[:8000]
+        summary = result.content or result.error or ""
         decision_entry = build_subagent_decision_entry(
             run_id=run_id,
             status=status,
@@ -855,7 +838,6 @@ async def _load_parent_messages_for_fork(
     agent_id: uuid.UUID,
     tenant_id: uuid.UUID | None,
     session_id: str | None,
-    limit: int = 120,
 ) -> list[dict[str, Any]]:
     if tenant_id is None or not session_id:
         return []
@@ -887,7 +869,6 @@ async def _load_parent_messages_for_fork(
                         ChatMessage.conversation_id == str(session_uuid),
                     )
                     .order_by(ChatMessage.created_at.desc())
-                    .limit(max(1, limit))
                 )
             )
             .scalars()
@@ -1076,7 +1057,14 @@ async def _load_subagent_resume_messages(
     They intentionally stay as ``role=user`` text so the kernel cannot replay
     historical tools, while the child still sees tool_call_id/tool_name/status
     and argument provenance.
+
+    ``context_window_tokens`` and ``max_resume_chars`` remain accepted for
+    compatibility only. They cannot mechanically select which transcript facts
+    the resumed model sees; any required compaction belongs to the model-aware
+    context pipeline with the complete transcript as evidence.
     """
+
+    del context_window_tokens, max_resume_chars
 
     session_id = str(child_session_id or "").strip()
     if not session_id:
@@ -1121,17 +1109,6 @@ async def _load_subagent_resume_messages(
     follow_up = str(prompt or "").strip()
     if follow_up and (not messages or messages[-1].get("content") != follow_up):
         messages.append({"role": "user", "content": follow_up})
-    budget_chars = int(max_resume_chars or _subagent_resume_budget_chars(context_window_tokens))
-    if budget_chars > 0:
-        selected: list[dict[str, Any]] = []
-        used = 0
-        for message in reversed(messages):
-            cost = len(str(message.get("role") or "")) + len(str(message.get("content") or "")) + 16
-            if selected and used + cost > budget_chars:
-                break
-            selected.append(message)
-            used += cost
-        messages = list(reversed(selected))
     return messages if len(messages) >= 2 else []
 
 
@@ -1448,7 +1425,7 @@ async def dispatch_persisted_subagent_run(task_id: str) -> bool:
             name=spec.name,
             type=spec.type,
             status="failed",
-            error=f"{type(exc).__name__}: {str(exc)[:500]}",
+            error=f"{type(exc).__name__}: {exc}",
         )
     finally:
         _release_subagent_cancel_event(run_id, cancel_event)

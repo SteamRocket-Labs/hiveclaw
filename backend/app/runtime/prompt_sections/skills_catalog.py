@@ -4,23 +4,22 @@ from __future__ import annotations
 
 
 def build_skills_catalog_section(skills_text: str = "", budget_chars: int = 4000) -> str:
-    """Build the skill catalog section.
+    """Build the complete skill catalog section.
 
     Args:
         skills_text: Pre-loaded skills index (name + summary lines).
-        budget_chars: Maximum character budget for the catalog.
+        budget_chars: Advisory compatibility argument; never used to prune
+            model-visible discovery metadata.
     """
     if not skills_text:
         return ""
 
-    truncated = skills_text
-    if len(truncated) > budget_chars:
-        truncated = truncated[:budget_chars] + "\n\n...(skill catalog truncated — use `load_skill` to see full details)"
+    del budget_chars
 
     return f"""\
 ## Skills
 
-{truncated}
+{skills_text}
 
 Skills are progressive-disclosure capability capsules. A folder-based skill can package references, \
 templates, scripts, workflow definitions, and subagent definitions; loading it adds context and guidance only. \

@@ -48,18 +48,55 @@ def test_build_summary_input_relaxed_tool_result_cap():
     assert big in text
 
 
-def test_build_summary_input_head_drop_only_when_over_window():
-    """Mechanical truncation appears ONLY as over-window fallback: drop oldest first
-    (CC truncateHeadForPTLRetry philosophy), keep the most recent messages intact."""
+def test_build_summary_input_never_head_drops_before_model_compaction():
+    """Provider window pressure is handled by covered chunks, not old-message deletion."""
     from app.services.conversation_summarizer import _build_summary_input
 
     messages = [{"role": "user", "content": f"msg-{i}-mark " + "z" * 1000} for i in range(50)]
 
     text, dropped = _build_summary_input(messages, provider="openai", max_input_tokens=2000)
 
-    assert dropped > 0
-    assert "msg-49-mark" in text  # newest kept
-    assert "msg-0-mark" not in text  # oldest dropped
+    assert dropped == 0
+    assert "msg-49-mark" in text
+    assert "msg-0-mark" in text
+
+
+def test_build_summary_input_keeps_long_message_and_tool_tails() -> None:
+    from app.services.conversation_summarizer import _build_summary_input
+
+    user_tail = "DECISIVE_USER_TAIL"
+    tool_tail = "DECISIVE_TOOL_TAIL"
+    args_tail = "DECISIVE_ARGS_TAIL"
+    messages = [
+        {"role": "user", "content": "u" * 20_000 + user_tail},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{"id": "c1", "function": {"name": "execute_code", "arguments": "a" * 8_000 + args_tail}}],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": "t" * 25_000 + tool_tail},
+    ]
+
+    text, dropped = _build_summary_input(messages, provider="openai", max_input_tokens=2_000)
+
+    assert dropped == 0
+    assert user_tail in text
+    assert tool_tail in text
+    assert args_tail in text
+
+
+def test_summary_chunks_cover_every_input_byte_with_hash_refs() -> None:
+    from app.services.conversation_summarizer import _build_summary_input_chunks
+
+    messages = [{"role": "user", "content": f"message-{index}:" + "x" * 4_000} for index in range(8)]
+    chunks = _build_summary_input_chunks(messages, provider="openai", max_input_tokens=2_000)
+
+    assert len(chunks) > 1
+    assert all(chunk.coverage_refs for chunk in chunks)
+    joined = "\n".join(chunk.text for chunk in chunks)
+    assert "message-0:" in joined
+    assert "message-7:" in joined
+    assert all("sha256:" in ref for chunk in chunks for ref in chunk.coverage_refs)
 
 
 def test_estimate_tokens_counts_cjk_text_without_ascii_underestimate() -> None:
@@ -102,6 +139,41 @@ async def test_llm_summarize_sends_full_history_and_raised_max_tokens(monkeypatc
     assert captured["max_tokens"] >= 8000
     assert "unique-marker-0-end" in captured["user_text"]  # old code kept only last 40
     assert captured["closed"] is True
+
+
+async def test_llm_summarize_hierarchically_reduces_without_oversized_reduce_prompt(monkeypatch):
+    import app.services.llm_client as llm_client_mod
+    from app.services.conversation_summarizer import _llm_summarize
+
+    calls: list[str] = []
+
+    class FakeClient:
+        async def stream(self, *, messages, max_tokens, temperature):
+            del max_tokens, temperature
+            user_text = messages[-1].content
+            calls.append(user_text)
+            phase = user_text.split("<compaction_phase>", 1)[1].split("</compaction_phase>", 1)[0]
+
+            class R:
+                content = f"<summary>{phase}:" + ("s" * 2500) + "</summary>"
+
+            return R()
+
+        async def close(self):
+            return None
+
+    monkeypatch.setattr(llm_client_mod, "create_llm_client", lambda **_: FakeClient())
+    messages = [{"role": "user", "content": f"marker-{index}:" + ("x" * 3000)} for index in range(18)]
+
+    result = await _llm_summarize(
+        messages,
+        {"provider": "openai", "model": "gpt-4o", "api_key": "k", "max_input_tokens": 1000},
+    )
+
+    assert result is not None
+    assert "<compaction_coverage>" in result
+    assert any("reduce_level_" in call for call in calls)
+    assert max(len(call) for call in calls) < 15000
 
 
 # ``_extract_summary`` (mechanical 11-section fallback) and its helpers were

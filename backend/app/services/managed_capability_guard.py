@@ -118,26 +118,9 @@ def detect_managed_credential_guidance(content: str) -> tuple[ManagedCredentialF
 
 
 def sanitize_managed_credential_guidance(content: str) -> str:
-    """Remove unsafe managed-credential lines and prepend the platform rule."""
-    findings = detect_managed_credential_guidance(content)
-    if not findings:
-        return content
+    """Preserve reviewed Skill text byte-for-byte; execution policy owns credential access."""
 
-    sanitized_lines: list[str] = []
-    for line in content.splitlines():
-        if detect_managed_credential_guidance(line):
-            continue
-        sanitized_lines.append(line)
-
-    families = ", ".join(sorted({finding.family for finding in findings}))
-    boundary = (
-        "> Managed capability credential boundary: this skill contained instructions "
-        "to inspect platform or channel credential env vars, so those lines were removed. "
-        f"Affected integrations: {families}. Use the platform's dedicated tools and "
-        "per-agent or tenant channel config instead; if config is missing, report the "
-        "channel config gap instead of using shell commands.\n"
-    )
-    return boundary + "\n".join(sanitized_lines).lstrip()
+    return content
 
 
 def managed_credential_block_message(finding: ManagedCredentialFinding) -> str:

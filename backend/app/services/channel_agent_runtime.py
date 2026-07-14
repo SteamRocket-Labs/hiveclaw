@@ -137,20 +137,36 @@ async def try_confirm_channel_plan_from_text(
 
 
 def _parse_channel_permission_action(text: str) -> str | None:
-    import re
+    """Parse an explicit permission command without inferring intent from prose."""
 
-    clean = text or ""
-    if re.search(
-        r"(本会话|当前会话|this session|for this session|session).*?(允许|批准|同意|可以|allow|approve|yes)",
-        clean,
-        re.IGNORECASE,
-    ):
-        return "allow_session"
-    if re.search(r"(拒绝|驳回|不通过|deny|denied|reject|rejected)", clean, re.IGNORECASE):
-        return "deny"
-    if re.search(r"(允许|批准|同意|可以|approve|approved|allow|allowed|yes|ok)", clean, re.IGNORECASE):
-        return "allow_once"
-    return None
+    clean = str(text or "").strip().rstrip("。.!！")
+    if not clean:
+        return None
+    lowered = clean.lower()
+    exact_commands = {
+        "允许": "allow_once",
+        "允许一次": "allow_once",
+        "允许本次": "allow_once",
+        "批准本次": "allow_once",
+        "本会话允许": "allow_session",
+        "当前会话允许": "allow_session",
+        "拒绝": "deny",
+        "拒绝本次": "deny",
+        "allow": "allow_once",
+        "allow once": "allow_once",
+        "allow session": "allow_session",
+        "deny": "deny",
+        "reject": "deny",
+    }
+    if lowered in exact_commands:
+        return exact_commands[lowered]
+
+    command = lowered.split(maxsplit=1)[0]
+    return {
+        "/allow": "allow_once",
+        "/allow-session": "allow_session",
+        "/deny": "deny",
+    }.get(command)
 
 
 _CHANNEL_PERMISSION_MODE_LABELS = {
@@ -171,8 +187,6 @@ def _channel_permission_mode_label_with_en(mode: str) -> str:
 
 
 def _parse_channel_permission_mode_command(text: str) -> tuple[str, str | None] | None:
-    import re
-
     clean = (text or "").strip()
     if not clean:
         return None
@@ -191,14 +205,8 @@ def _parse_channel_permission_mode_command(text: str) -> tuple[str, str | None] 
             return ("set", "bypassPermissions")
         return ("show", None)
 
-    if re.search(r"(查看|查询|当前).*(权限模式|权限设置)|^权限模式$|^查看权限$", clean, re.IGNORECASE):
+    if clean in {"权限模式", "查看权限", "查看权限模式", "当前权限模式"}:
         return ("show", None)
-    if re.search(r"(切换|设置|改成|改为).*(请求批准|ask first|ask|default)", clean, re.IGNORECASE):
-        return ("set", "default")
-    if re.search(r"(切换|设置|改成|改为).*(替我批准|auto|approve for me)", clean, re.IGNORECASE):
-        return ("set", "auto")
-    if re.search(r"(切换|设置|改成|改为).*(完全访问|full access|full|bypass)", clean, re.IGNORECASE):
-        return ("set", "bypassPermissions")
     return None
 
 
@@ -895,4 +903,4 @@ async def call_agent_llm(
         traceback.print_exc()
         error_msg = str(exc) or repr(exc)
         logger.error(f"[LLM] Primary model error: {error_msg}")
-        return f"⚠️ 调用模型出错: {error_msg[:150]}"
+        return f"⚠️ 调用模型出错: {error_msg}"

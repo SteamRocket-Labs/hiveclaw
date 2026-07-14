@@ -115,7 +115,34 @@ async def _approving_referee_review(*args, **kwargs):
     )
 
 
-def test_build_workflow_signature_filters_noise_and_consecutive_duplicates() -> None:
+def test_referee_explicit_approval_is_authoritative_over_explanatory_scores() -> None:
+    from app.services.skill_distiller import (
+        SkillRefereeReview,
+        _referee_review_passed,
+        _referee_review_payload,
+    )
+
+    review = SkillRefereeReview(
+        decision="approve",
+        scores={
+            "common_vs_episodic": 5,
+            "scope": 2,
+            "overlap": 4,
+            "safety": 5,
+            "eval_readiness": 4,
+        },
+        reason=(
+            "The bounded non-trigger contract makes the lower scope score acceptable; "
+            "approve the complete draft holistically."
+        ),
+        review_markdown="# Referee Review\n\nDecision: approve",
+    )
+
+    assert _referee_review_passed(review) is True
+    assert _referee_review_payload(review)["passed"] is True
+
+
+def test_build_workflow_signature_preserves_all_tool_facts_and_only_deduplicates_exact_replays() -> None:
     from app.services.skill_distiller import _build_workflow_signature
 
     signature = _build_workflow_signature(
@@ -130,21 +157,95 @@ def test_build_workflow_signature_filters_noise_and_consecutive_duplicates() -> 
         ]
     )
 
-    assert signature.normalized_tools == ("web_search", "web_fetch", "write_file")
-    assert signature.workflow_signature == "web_search -> web_fetch -> write_file"
+    assert signature.normalized_tools == (
+        "read_file",
+        "web_search",
+        "get_current_time",
+        "web_fetch",
+        "write_file",
+    )
+    assert signature.workflow_signature == "read_file -> web_search -> get_current_time -> web_fetch -> write_file"
     assert signature.blocker is None
 
 
-def test_build_workflow_signature_blocks_external_action_workflows() -> None:
+def test_single_tool_workflow_is_visible_to_model_review() -> None:
+    from app.services.skill_distiller import _build_workflow_signature
+
+    signature = _build_workflow_signature(["read_file"])
+
+    assert signature.workflow_signature == "read_file"
+    assert signature.blocker is None
+
+
+def test_build_workflow_signature_keeps_external_action_workflows_for_runtime_governance() -> None:
     from app.services.skill_distiller import _build_workflow_signature
 
     signature = _build_workflow_signature(["web_search", "send_email", "write_file"])
 
-    assert signature.workflow_signature is None
-    assert signature.blocker == "external_action_workflow"
+    assert signature.workflow_signature == "web_search -> send_email -> write_file"
+    assert signature.blocker is None
 
 
-def test_validate_skill_draft_rejects_unknown_tools_and_sensitive_content(tmp_path: Path) -> None:
+@pytest.mark.asyncio
+async def test_skill_distiller_draft_model_sees_all_evidence_and_long_tails(monkeypatch, tmp_path: Path) -> None:
+    from app.services import skill_distiller
+    from app.services.skill_distiller import SessionWorkflowEvidence
+
+    evidence = [
+        SessionWorkflowEvidence(
+            session_id=f"session-{index}",
+            source="web_chat",
+            occurred_at=f"2026-07-{index + 1:02d}T00:00:00Z",
+            status="success",
+            used_skill=False,
+            summary=("summary " * 80) + f"EVIDENCE-TAIL-{index}",
+            assistant_reply="completed",
+            tool_names=("read_file", "write_file"),
+        )
+        for index in range(20)
+    ]
+    captured: dict[str, str] = {}
+
+    class FakeClient:
+        async def complete(self, *, messages, **_kwargs):
+            captured["system"] = messages[0].content
+            captured["user"] = messages[1].content
+            return SimpleNamespace(
+                content=json.dumps(
+                    {
+                        "decision": "defer",
+                        "confidence": 0.5,
+                        "name": "",
+                        "description": "",
+                        "instructions_markdown": "",
+                        "declared_tools": [],
+                        "declared_packs": [],
+                        "consumed_memory_candidate_ids": [],
+                        "skill_markdown": "",
+                        "reason": "needs more evidence",
+                    }
+                )
+            )
+
+        async def close(self):
+            return None
+
+    monkeypatch.setattr(skill_distiller, "create_llm_client_from_config", lambda _config: FakeClient())
+
+    await skill_distiller._draft_skill_with_llm(
+        model=SimpleNamespace(provider="openai", model="gpt-4.1", api_key="k", base_url=None),
+        workflow_signature="read_file -> write_file",
+        evidence=evidence,
+        declared_packs=(),
+        workspace=tmp_path,
+    )
+
+    assert "session-19" in captured["user"]
+    assert "EVIDENCE-TAIL-19" in captured["user"]
+    assert "mechanical_review_signals" in captured["user"]
+
+
+def test_validate_skill_draft_rejects_unknown_tools_without_keyword_sensitive_judgment(tmp_path: Path) -> None:
     from app.services.agent_tool_domains.workspace import _render_skill_markdown
     from app.services.skill_distiller import DistilledSkillDraft, validate_distilled_skill
 
@@ -172,7 +273,7 @@ def test_validate_skill_draft_rejects_unknown_tools_and_sensitive_content(tmp_pa
     )
 
     assert any("unknown tool" in error for error in errors)
-    assert any("sensitive" in error for error in errors)
+    assert not any("sensitive" in error for error in errors)
 
 
 def test_validate_skill_draft_rejects_noncanonical_skill_frontmatter(tmp_path: Path) -> None:
@@ -209,7 +310,7 @@ def test_validate_skill_draft_rejects_noncanonical_skill_frontmatter(tmp_path: P
     assert any("frontmatter may only contain name and description" in error for error in errors)
 
 
-def test_resolve_existing_skill_as_patch_recommendation(tmp_path: Path) -> None:
+def test_resolve_exact_same_skill_name_does_not_rewrite_promote_to_patch(tmp_path: Path) -> None:
     from app.services.skill_distiller import DistilledSkillDraft, resolve_existing_skill_conflict
 
     workspace = tmp_path / "agent"
@@ -234,8 +335,67 @@ def test_resolve_existing_skill_as_patch_recommendation(tmp_path: Path) -> None:
         ),
     )
 
+    assert resolution.final_decision == "defer"
+    assert resolution.existing_skill_name == "Web Research"
+    assert "model must decide" in resolution.reason.lower()
+
+
+def test_resolve_exact_same_skill_name_honors_model_patch_decision(tmp_path: Path) -> None:
+    from app.services.skill_distiller import DistilledSkillDraft, resolve_existing_skill_conflict
+
+    workspace = tmp_path / "agent"
+    workspace.mkdir(parents=True)
+    _write_active_skill(workspace)
+
+    resolution = resolve_existing_skill_conflict(
+        workspace=workspace,
+        draft=DistilledSkillDraft(
+            decision="patch",
+            confidence=0.62,
+            name="Web Research",
+            description="Refine the existing web research procedure.",
+            instructions_markdown="Preserve the existing contract and add the reviewed correction.",
+            declared_tools=("web_search", "web_fetch"),
+            declared_packs=("web_pack",),
+            reason="The model judged this evidence to be a revision of the existing Skill.",
+        ),
+    )
+
     assert resolution.final_decision == "patch"
     assert resolution.existing_skill_name == "Web Research"
+
+
+def test_resolve_tool_overlap_as_observation_not_patch_decision(tmp_path: Path) -> None:
+    from app.services.skill_distiller import DistilledSkillDraft, resolve_existing_skill_conflict
+
+    workspace = tmp_path / "agent"
+    workspace.mkdir(parents=True)
+    _write_active_skill(workspace)
+
+    resolution = resolve_existing_skill_conflict(
+        workspace=workspace,
+        draft=DistilledSkillDraft(
+            decision="promote",
+            confidence=0.93,
+            name="Research Navigator",
+            description="A distinct research procedure using the same governed tools.",
+            instructions_markdown="Search, fetch, and synthesize with a different trigger.",
+            declared_tools=("web_search", "web_fetch"),
+            declared_packs=("web_pack",),
+            reason="The Skill Referee must judge semantic overlap.",
+        ),
+    )
+
+    assert resolution.final_decision == "promote"
+    assert resolution.existing_skill_name is None
+
+
+def test_summarize_assistant_reply_preserves_decisive_tail() -> None:
+    from app.services.skill_distiller import _summarize_assistant_reply
+
+    reply = "First line.\n" + ("evidence " * 80) + "DECISIVE_TAIL"
+
+    assert _summarize_assistant_reply(reply) == reply.strip()
 
 
 def test_render_skill_evidence_contrast_splits_success_and_failure_examples() -> None:
@@ -390,6 +550,16 @@ async def test_run_skill_distillation_cycle_promotes_high_confidence_candidate(m
         fake_load_internal_session_evidence,
     )
     monkeypatch.setattr("app.services.skill_distiller._draft_skill_with_llm", fake_draft_skill)
+
+    async def select_market_research_candidate(*, options, **_kwargs):
+        return next(
+            option for option in options if option.record.workflow_signature == "web_search -> web_fetch -> write_file"
+        )
+
+    monkeypatch.setattr(
+        "app.services.skill_distiller._select_skill_candidate_with_llm",
+        select_market_research_candidate,
+    )
     monkeypatch.setattr("app.services.skill_distiller._run_skill_artifact_gate", _passing_artifact_gate)
     monkeypatch.setattr("app.services.skill_distiller._review_skill_with_llm", _approving_referee_review)
     captured_factor_calls: list[dict] = []
@@ -1059,7 +1229,9 @@ async def test_run_skill_distillation_cycle_blocks_unsafe_skill_draft(monkeypatc
     assert eval_runs[-1]["dataset"] == "skill_distiller.verified_skill_guard"
     assert eval_runs[-1]["passed"] is False
     assert eval_runs[-1]["critical_regressions"] == 1
-    assert eval_runs[-1]["metadata"]["verification_report"]["checks"][0]["evidence"]["guard"]["allowed"] is False
+    guard = eval_runs[-1]["metadata"]["verification_report"]["checks"][0]["evidence"]["guard"]
+    assert guard["allowed"] is True
+    assert guard["requires_review"] is True
     assert promotion_decisions[-1]["decision"] == "held"
 
 
@@ -1167,7 +1339,7 @@ async def test_run_skill_distillation_cycle_applies_verified_patch(monkeypatch, 
 
 
 @pytest.mark.asyncio
-async def test_run_skill_distillation_cycle_prioritizes_patch_candidates(monkeypatch, tmp_path: Path) -> None:
+async def test_run_skill_distillation_cycle_gives_model_neutral_review_context(monkeypatch, tmp_path: Path) -> None:
     from app.services.skill_distiller import DistilledSkillDraft, SessionWorkflowEvidence, run_skill_distillation_cycle
 
     workspace = tmp_path / "agent"
@@ -1178,6 +1350,16 @@ async def test_run_skill_distillation_cycle_prioritizes_patch_candidates(monkeyp
         instructions="Search first, then fetch one page.",
     )
     captured_draft_kwargs: dict = {}
+
+    async def select_neutral_web_research_patch(*, options, **_kwargs):
+        return next(
+            option for option in options if option.record.workflow_signature == "load_skill -> web_search -> web_fetch"
+        )
+
+    monkeypatch.setattr(
+        "app.services.skill_distiller._select_skill_candidate_with_llm",
+        select_neutral_web_research_patch,
+    )
 
     async def fake_load_internal_session_evidence(*, agent_id, since_days, state, current_session_id):
         del agent_id, since_days, state, current_session_id
@@ -1213,7 +1395,7 @@ async def test_run_skill_distillation_cycle_prioritizes_patch_candidates(monkeyp
     async def fake_draft_skill(**kwargs):
         captured_draft_kwargs.update(kwargs)
         return DistilledSkillDraft(
-            decision="promote",
+            decision="patch",
             confidence=0.91,
             name="Web Research",
             description="Run web research and always synthesize source-backed findings.",
@@ -1257,9 +1439,9 @@ async def test_run_skill_distillation_cycle_prioritizes_patch_candidates(monkeyp
     skill_content = (workspace / "skills" / "web-research" / "SKILL.md").read_text(encoding="utf-8")
 
     assert result["status"] == "provisional"
-    assert captured_draft_kwargs["distillation_intent"] == "patch"
-    assert captured_draft_kwargs["target_skill_name"] == "Web Research"
-    assert captured_draft_kwargs["workflow_signature"] == "web_search -> web_fetch"
+    assert captured_draft_kwargs["distillation_intent"] == "review"
+    assert captured_draft_kwargs["target_skill_name"] is None
+    assert captured_draft_kwargs["workflow_signature"] == "load_skill -> web_search -> web_fetch"
     assert "Synthesize findings with source links before finishing." in skill_content
 
 
@@ -1316,9 +1498,10 @@ class TestSkillDistillerPromptStructure:
         for decision in ["promote", "patch", "defer", "reject"]:
             assert decision in prompt, f"missing decision: {decision}"
 
-    def test_patch_first_policy_is_explicit(self) -> None:
+    def test_existing_skill_comparison_is_model_owned(self) -> None:
         prompt = _extract_system_prompt_literal()
-        assert "patch-first" in prompt.lower()
+        assert "patch-first" not in prompt.lower()
+        assert "you decide whether" in prompt.lower()
         assert "success/failure contrast" in prompt.lower()
 
     def test_pipeline_context_warns_json_parsing(self) -> None:
@@ -1328,18 +1511,16 @@ class TestSkillDistillerPromptStructure:
 
 
 class TestSkillDistillerDecisionMatrix:
-    def test_promote_requires_high_confidence(self) -> None:
+    def test_counts_and_confidence_are_observations_not_platform_gates(self) -> None:
         prompt = _extract_system_prompt_literal()
-        assert "Confidence ≥ 0.85" in prompt
-        assert "3 successful" in prompt
+        assert "No platform count, age window, or confidence cutoff" in prompt
+        assert "Confidence ≥ 0.85" not in prompt
+        assert "3 successful" not in prompt
 
-    def test_scoring_rubric_has_numeric_anchors(self) -> None:
+    def test_scoring_rubric_leaves_calibration_to_model_judgment(self) -> None:
         prompt = _extract_system_prompt_literal()
-        assert "0.00-0.39" in prompt
-        assert "0.40-0.74" in prompt
-        assert "0.75-0.84" in prompt
-        assert "0.85-1.00" in prompt
-        assert "patch requires at least 2" in prompt
+        assert "calibrated 0.00-1.00 explanation of your own" in prompt
+        assert "patch requires at least 2" not in prompt
 
     def test_defer_is_default_when_uncertain(self) -> None:
         prompt = _extract_system_prompt_literal()
@@ -1455,3 +1636,90 @@ def test_provisional_distiller_commit_persists_version_bound_rollback_anchor(tmp
     assert trial["candidate_version_hash"] == entry["active_version_hash"]
     assert entry["metadata"]["trial_path"] == "evolution/skill_trials/cand-distiller/trial.json"
     assert manifest["status"] == "provisional"
+
+
+@pytest.mark.asyncio
+async def test_skill_candidate_selector_reads_complete_pool_and_can_choose_non_first(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    import app.services.llm_client as llm_client_module
+    from app.services.skill_distiller import (
+        SessionWorkflowEvidence,
+        SkillCandidateRecord,
+        SkillCandidateSelectionOption,
+        _select_skill_candidate_with_llm,
+    )
+
+    captured: dict[str, object] = {}
+
+    class FakeClient:
+        async def complete(self, *, messages, temperature, max_tokens):
+            captured["prompt"] = messages[-1].content
+            captured["temperature"] = temperature
+            captured["max_tokens"] = max_tokens
+            return SimpleNamespace(
+                content=json.dumps(
+                    {
+                        "selected_key": "workflow:second",
+                        "reason": "The second option has decisive reusable evidence.",
+                    }
+                )
+            )
+
+        async def close(self):
+            return None
+
+    monkeypatch.setattr(llm_client_module, "create_llm_client_from_config", lambda _config: FakeClient())
+    monkeypatch.setattr(llm_client_module, "with_llm_usage_context", lambda config, **_kwargs: config)
+
+    def option(key: str, marker: str) -> SkillCandidateSelectionOption:
+        return SkillCandidateSelectionOption(
+            key=key,
+            candidate_id=key,
+            record=SkillCandidateRecord(
+                skill_name=key,
+                workflow_signature=key,
+                promote_candidates=[],
+                patch_candidates=[],
+                last_status="candidate",
+                last_note=marker,
+                blocker="",
+                last_updated_at="2026-07-13T00:00:00+00:00",
+            ),
+            evidence=[
+                SessionWorkflowEvidence(
+                    session_id=key,
+                    source="test",
+                    occurred_at="2026-07-13T00:00:00+00:00",
+                    status="success",
+                    used_skill=False,
+                    summary=marker,
+                    assistant_reply=marker + "-TAIL",
+                    tool_names=("read_file",),
+                )
+            ],
+            direct_candidate=None,
+        )
+
+    options = [option("workflow:first", "FIRST-CANDIDATE"), option("workflow:second", "SECOND-DECISIVE")]
+    model = SimpleNamespace(
+        provider="openai",
+        model="test-selector",
+        api_key="test",
+        base_url=None,
+        max_output_tokens=32_768,
+    )
+
+    selected = await _select_skill_candidate_with_llm(
+        model=model,
+        options=options,
+        workspace=tmp_path,
+        agent_id=uuid4(),
+        tenant_id=uuid4(),
+    )
+
+    assert selected is options[1]
+    assert "FIRST-CANDIDATE-TAIL" in str(captured["prompt"])
+    assert "SECOND-DECISIVE-TAIL" in str(captured["prompt"])
+    assert captured["max_tokens"] == 32_768

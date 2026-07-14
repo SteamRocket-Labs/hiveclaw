@@ -213,16 +213,16 @@ def apply_business_task_outcome(
     finished_at = completed_at or datetime.now(timezone.utc)
     task.status = outcome.task_status
     task.last_execution_status = outcome.status.value
-    task.last_result = (outcome.result or outcome.summary)[:20_000] if outcome.is_success else None
+    task.last_result = outcome.result or outcome.summary if outcome.is_success else None
     task.last_error = (
-        (f"{outcome.error_code}: {outcome.summary}" if outcome.error_code else outcome.summary)[:20_000]
+        (f"{outcome.error_code}: {outcome.summary}" if outcome.error_code else outcome.summary)
         if not outcome.is_success
         else None
     )
     task.completed_at = finished_at
 
     runtime_task.status = outcome.runtime_status
-    runtime_task.result_summary = outcome.summary[:20_000]
+    runtime_task.result_summary = outcome.summary
     runtime_task.completed_at = finished_at
     metadata.update(
         {
@@ -550,7 +550,7 @@ async def _enqueue_business_task_channel_delivery(
             user_id=requester_user_id,
             channel_config_id=getattr(config, "id", None),
             delivery_target=target,
-            text=text[:20_000],
+            text=text,
             terminal_status=outcome.runtime_status,
             metadata={
                 "source": "business_task_runtime",

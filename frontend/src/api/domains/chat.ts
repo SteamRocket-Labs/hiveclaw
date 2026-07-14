@@ -99,6 +99,10 @@ export interface SessionRuntimeSummary {
     label?: string;
     provider?: string;
     name?: string;
+    fallback_name?: string | null;
+    route_reason?: string | null;
+    routing_config_source?: string | null;
+    routing_locked?: boolean;
     supports_vision?: boolean;
     context_window_tokens?: number | null;
   };
@@ -144,6 +148,7 @@ export interface StartSessionRunInput {
   file_name?: string;
   plan_mode_requested?: boolean;
   permission_mode?: 'auto' | 'default' | 'bypassPermissions';
+  model_routing_locked?: boolean;
   attachments?: Array<Record<string, unknown>>;
   parts?: Array<Record<string, unknown>>;
 }

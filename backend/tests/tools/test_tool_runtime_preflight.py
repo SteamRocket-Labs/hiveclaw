@@ -28,3 +28,20 @@ def test_sensitive_tool_preflight_still_refuses_credentials() -> None:
     )
 
     assert preflight.decision == PreflightDecision.REFUSE
+
+
+def test_local_tool_arguments_are_not_semantically_classified_as_company_conflict() -> None:
+    from app.services.action_preflight import ActionPreflightService, PreflightDecision
+    from app.tools.service import _build_tool_preflight_input
+
+    request = _build_tool_preflight_input(
+        "write_file",
+        {
+            "path": "policy-review.md",
+            "content": "Explain why agents must never bypass company policy.",
+        },
+    )
+    preflight = ActionPreflightService().evaluate(request)
+
+    assert request.company_boundary_conflict is False
+    assert preflight.decision == PreflightDecision.DO

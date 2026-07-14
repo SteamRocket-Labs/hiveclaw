@@ -1379,6 +1379,7 @@ function AgentDetailInner() {
         webhook_rate_limit: 5,
         default_session_permission_mode: 'default' as SessionPermissionMode,
         smart_model_routing_enabled: false,
+        execution_mode: 'standard' as 'standard' | 'coordinator' | 'coordinator_strict',
         security_zone: 'standard',
     });
     const [settingsSaving, setSettingsSaving] = useState(false);
@@ -1397,6 +1398,7 @@ function AgentDetailInner() {
                 webhook_rate_limit: (agent as any).webhook_rate_limit ?? 5,
                 default_session_permission_mode: defaultSessionPermissionModeFromAgent(agent),
                 smart_model_routing_enabled: !!(agent as any).smart_model_routing?.enabled,
+                execution_mode: ((agent as any).execution_mode || 'standard') as 'standard' | 'coordinator' | 'coordinator_strict',
                 security_zone: (agent as any).security_zone || 'standard',
             });
             settingsInitRef.current = true;
@@ -2030,7 +2032,7 @@ function AgentDetailInner() {
             const results = await Promise.all(uploadPromises);
             const newAttached = results.map(data => ({
                 name: data.filename,
-                text: data.preview_text || data.extracted_text,
+                text: data.extracted_text,
                 path: data.workspace_path,
                 imageUrl: data.image_data_url || undefined,
                 conversion: data.conversion ? {
@@ -2088,7 +2090,7 @@ function AgentDetailInner() {
             const results = await Promise.all(uploadPromises);
             const newAttached = results.map(data => ({
                 name: data.filename,
-                text: data.preview_text || data.extracted_text,
+                text: data.extracted_text,
                 path: data.workspace_path,
                 imageUrl: data.image_data_url || undefined,
                 conversion: data.conversion ? {

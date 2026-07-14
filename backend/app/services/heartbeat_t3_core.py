@@ -22,7 +22,8 @@ from app.memory.t3_consolidation import (
     write_t3_job_artifact,
 )
 from app.memory.t3_platform_gate import apply_t3_consolidation_patch
-from app.services.llm_client import LLMMessage, create_llm_client_from_config, with_llm_usage_context
+from app.services.llm_client import LLMMessage, create_llm_client_from_config, get_max_tokens, with_llm_usage_context
+from app.services.semantic_input_coverage import prepare_covered_semantic_input
 
 
 _T3_CONSOLIDATOR_TEMPLATE = Path(__file__).parent.parent / "templates" / "T3_CONSOLIDATOR.md"
@@ -197,17 +198,20 @@ async def _call_consolidator(
     job_id: str,
 ) -> dict[str, Any]:
     system_prompt = _T3_CONSOLIDATOR_TEMPLATE.read_text(encoding="utf-8").strip()
-    user_prompt = _truncate(
-        "\n\n".join(
-            [
-                f"job_id: {job_id}",
-                "source_bundle.json:",
-                _read_job_file(job_dir, "source_bundle.json"),
-                "t3_neighborhood.md:",
-                _read_job_file(job_dir, "t3_neighborhood.md"),
-                "Return JSON only. Do not include Markdown fences outside JSON.",
-            ]
-        )
+    covered_input = await _prepare_covered_semantic_input(
+        model=model,
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        phase="consolidator",
+        sections=[
+            ("source_bundle.json", _read_job_file(job_dir, "source_bundle.json")),
+            ("t3_neighborhood.md", _read_job_file(job_dir, "t3_neighborhood.md")),
+        ],
+        coverage_path=job_dir / "consolidator_input_coverage.json",
+        max_chars=_MAX_INPUT_CHARS,
+    )
+    user_prompt = (
+        f"job_id: {job_id}\n\n{covered_input}\n\nReturn JSON only. Do not include Markdown fences outside JSON."
     )
     return await _complete_json(
         model=model,
@@ -244,21 +248,21 @@ async def _call_memory_gate_review(
             ),
         ]
     )
-    user_prompt = _truncate(
-        "\n\n".join(
-            [
-                f"job_id: {job_id}",
-                "source_bundle.json:",
-                _read_job_file(job_dir, "source_bundle.json"),
-                "t3_neighborhood.md:",
-                _read_job_file(job_dir, "t3_neighborhood.md"),
-                "consolidation_pitch.md:",
-                consolidation_pitch_md,
-                "revised_patch.md:",
-                revised_patch_md,
-            ]
-        )
+    covered_input = await _prepare_covered_semantic_input(
+        model=model,
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        phase="memory_gate_review",
+        sections=[
+            ("source_bundle.json", _read_job_file(job_dir, "source_bundle.json")),
+            ("t3_neighborhood.md", _read_job_file(job_dir, "t3_neighborhood.md")),
+            ("consolidation_pitch.md", consolidation_pitch_md),
+            ("revised_patch.md", revised_patch_md),
+        ],
+        coverage_path=job_dir / "memory_gate_input_coverage.json",
+        max_chars=_MAX_INPUT_CHARS,
     )
+    user_prompt = f"job_id: {job_id}\n\n{covered_input}"
     return await _complete_json(
         model=model,
         agent_id=agent_id,
@@ -337,23 +341,57 @@ def _read_job_file(job_dir: Path, filename: str) -> str:
     return (job_dir / filename).read_text(encoding="utf-8", errors="replace")
 
 
-def _truncate(text: str, max_chars: int = _MAX_INPUT_CHARS) -> str:
-    if len(text) <= max_chars:
-        return text
-    marker = f"\n\n[... heartbeat direct T3 core input truncated; omitted {len(text) - max_chars:,} chars ...]\n\n"
-    head = max_chars // 2
-    tail = max_chars - head - len(marker)
-    return text[:head] + marker + text[-max(0, tail) :]
+async def _prepare_covered_semantic_input(
+    *,
+    model: Any,
+    agent_id: uuid.UUID,
+    tenant_id: uuid.UUID | str | None,
+    phase: str,
+    sections: list[tuple[str, str]],
+    coverage_path: Path,
+    max_chars: int = _MAX_INPUT_CHARS,
+) -> str:
+    async def _review_chunk(review_phase: str, prompt: str) -> str:
+        payload = await _complete_json(
+            model=model,
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            phase=review_phase,
+            messages=[
+                LLMMessage(
+                    role="system",
+                    content=(
+                        "You are a coverage reader for a later semantic decision. Review every supplied byte; "
+                        "return JSON only with a non-empty string key named coverage_notes."
+                    ),
+                ),
+                LLMMessage(role="user", content=prompt),
+            ],
+            max_tokens=_output_tokens(model, _REVIEW_OUTPUT_TOKENS),
+            temperature=0.1,
+        )
+        notes = payload.get("coverage_notes")
+        if not isinstance(notes, str) or not notes.strip():
+            raise ValueError("heartbeat semantic coverage response missing coverage_notes")
+        return notes.strip()
+
+    return await prepare_covered_semantic_input(
+        phase=phase,
+        sections=sections,
+        max_chars=max_chars,
+        coverage_path=coverage_path,
+        review_chunk=_review_chunk,
+    )
 
 
 def _output_tokens(model: Any, default: int) -> int:
     configured = getattr(model, "max_output_tokens", None)
-    if not configured:
-        return default
-    try:
-        return max(1024, min(int(configured), default))
-    except (TypeError, ValueError):
-        return default
+    requested = configured if configured else default
+    return get_max_tokens(
+        str(getattr(model, "provider", "") or ""),
+        str(getattr(model, "model", "") or ""),
+        requested,
+    )
 
 
 def _gate_summary(
@@ -366,7 +404,7 @@ def _gate_summary(
     if status == "committed":
         return f"{draft_summary} Platform Gate committed {len(committed_paths)} path(s)."
     if issues:
-        return f"{draft_summary} Platform Gate {status}: {', '.join(issues[:3])}."
+        return f"{draft_summary} Platform Gate {status}: {', '.join(issues)}."
     return f"{draft_summary} Platform Gate {status}."
 
 

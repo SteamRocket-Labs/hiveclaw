@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import logging
 import uuid
 from collections import OrderedDict
 from datetime import datetime, timezone
@@ -20,7 +21,7 @@ _FALLBACK_HEADLINE = "回顾到与查询相关的历史会话"
 _EXCLUDED_CHANNELS = {"agent", "heartbeat", "trigger", "task", "dream"}
 _EXCLUDED_ROLES = {"system", "tool_call"}
 _QUERY_SPLIT_RE = re.compile(r"\s+")
-_ARTIFACT_PATH_RE = re.compile(r"\b[\w./-]+\.[A-Za-z0-9]{1,8}\b")
+logger = logging.getLogger(__name__)
 
 
 def _normalize_text(value: str) -> str:
@@ -223,70 +224,15 @@ def _extract_context_snippets(
     )
 
 
-def _build_summary(headline: str, snippets: list[str], *, max_chars: int = 220) -> str:
-    parts: list[str] = []
-    if headline and headline != _FALLBACK_HEADLINE:
-        parts.append(headline)
-    for snippet in snippets:
-        cleaned = _clean_line(snippet)
-        if cleaned and cleaned not in parts:
-            parts.append(cleaned)
-    summary = "；".join(parts).strip("； ")
-    if len(summary) > max_chars:
-        summary = summary[: max_chars - 3].rstrip() + "..."
-    return summary or _FALLBACK_HEADLINE
-
-
-def _extract_artifact_paths(lines: list[str]) -> list[str]:
-    paths: list[str] = []
-    seen: set[str] = set()
-    for line in lines:
-        for match in _ARTIFACT_PATH_RE.findall(line):
-            if "/" not in match:
-                continue
-            if match in seen:
-                continue
-            seen.add(match)
-            paths.append(match)
-    return paths
-
-
 def _select_evidence_lines(
     transcript_lines: list[str],
     query: str,
     *,
-    max_lines: int = 2,
+    max_lines: int | None = None,
 ) -> list[str]:
-    if not transcript_lines:
-        return []
-
-    window = _extract_transcript_window_from_lines(transcript_lines, query, context_radius=1, max_lines=max_lines * 2)
-    candidate_lines = [line.strip() for line in window.splitlines() if line.strip()] or transcript_lines[:max_lines]
-    evidence: list[str] = []
-
-    assistant_lines = [line for line in candidate_lines if line.startswith("Assistant:")]
-    user_lines = [line for line in candidate_lines if line.startswith("User:")]
-
-    for line in assistant_lines + user_lines + candidate_lines:
-        if line not in evidence:
-            evidence.append(line)
-        if len(evidence) >= max_lines:
-            break
-
-    if not any(line.startswith("Assistant:") for line in evidence):
-        for line in transcript_lines:
-            if line.startswith("Assistant:") and line not in evidence:
-                evidence.append(line)
-                if len(evidence) >= max_lines:
-                    break
-
-    return evidence[:max_lines]
-
-
-def _strip_speaker(line: str) -> str:
-    if ":" not in line:
-        return line.strip()
-    return line.split(":", 1)[1].strip()
+    """Return complete mechanical evidence; semantic selection belongs to the model."""
+    del query, max_lines
+    return [line.strip() for line in transcript_lines if line.strip()]
 
 
 def _build_focused_recap(
@@ -295,21 +241,11 @@ def _build_focused_recap(
     evidence_lines: list[str],
     fallback_summary: str,
 ) -> str:
-    if not evidence_lines:
-        return fallback_summary or headline or _FALLBACK_HEADLINE
-
-    decision_line = next((line for line in evidence_lines if line.startswith("Assistant:")), evidence_lines[0])
-    decision = _strip_speaker(decision_line)
-    artifacts = _extract_artifact_paths(evidence_lines)
-
-    recap_parts = [f"Decision: {decision}"]
-    if artifacts:
-        recap_parts.append(f"Artifacts: {', '.join(artifacts)}")
-
-    supporting = [line for line in evidence_lines if line != decision_line]
-    if supporting:
-        recap_parts.append(f"Evidence: {' | '.join(supporting[:2])}")
-    return " ".join(part.strip() for part in recap_parts if part.strip())
+    del headline
+    evidence = "\n".join(line for line in evidence_lines if line.strip()).strip()
+    if evidence:
+        return f"Evidence passthrough:\n{evidence}"
+    return fallback_summary or _FALLBACK_HEADLINE
 
 
 def _annotate_recall_hit(
@@ -322,20 +258,23 @@ def _annotate_recall_hit(
     transcript_window = _extract_transcript_window_from_lines(transcript_lines, query)
     context_snippets = hit.get("context_snippets") or []
     snippets = hit.get("snippets") or []
-    summary = _build_summary(
-        headline,
-        (transcript_window.splitlines() if transcript_window else []) or context_snippets or snippets,
-    )
     evidence_lines = _select_evidence_lines(transcript_lines, query)
+    transcript = "\n".join(transcript_lines).strip()
+    evidence_passthrough = (
+        transcript or "\n".join(context_snippets or snippets).strip() or headline or _FALLBACK_HEADLINE
+    )
 
     hit["headline"] = headline
+    hit["transcript"] = transcript
     hit["transcript_window"] = transcript_window
-    hit["summary"] = summary
+    hit["summary"] = evidence_passthrough
+    hit["summary_method"] = "evidence_passthrough"
+    hit["summary_model_status"] = "not_requested"
     hit["evidence_lines"] = evidence_lines
     hit["focused_recap"] = _build_focused_recap(
         headline=headline,
         evidence_lines=evidence_lines,
-        fallback_summary=summary,
+        fallback_summary=evidence_passthrough,
     )
     return hit
 
@@ -348,21 +287,38 @@ async def _summarize_recall_hits(
 ) -> list[dict]:
     """Optionally enrich recall hits with a focused summary model.
 
-    This keeps the retrieval source md-first / transcript-first while using a
-    cheap summarizer to compress the recalled evidence into a cleaner recap.
-    Falls back silently to the heuristic summary when no tenant summary model is
-    configured or any LLM call fails.
+    Retrieval remains transcript-first. If the model is unavailable, the full
+    evidence passthrough remains visible and failure status is explicit; the
+    platform never authors a semantic fallback recap.
     """
-    if not hits or tenant_id is None:
+    if not hits:
+        return hits
+    if tenant_id is None:
+        for hit in hits:
+            hit["summary_model_status"] = "no_tenant"
         return hits
 
+    client = None
     try:
-        from app.services.llm_client import LLMMessage, create_llm_client_from_config, with_llm_usage_context
+        from app.services.llm_client import (
+            LLMMessage,
+            create_llm_client_from_config,
+            get_max_tokens,
+            with_llm_usage_context,
+        )
         from app.services.memory_service import _get_summary_model_config
 
         model_config = await _get_summary_model_config(tenant_id)
         if not model_config:
+            for hit in hits:
+                hit["summary_model_status"] = "no_model"
             return hits
+
+        output_tokens = get_max_tokens(
+            str(model_config.get("provider") or ""),
+            str(model_config.get("model") or ""),
+            model_config.get("max_output_tokens"),
+        )
 
         client = create_llm_client_from_config(
             with_llm_usage_context(
@@ -372,9 +328,10 @@ async def _summarize_recall_hits(
                 tenant_id=tenant_id,
             )
         )
-        try:
-            for hit in hits:
+        for hit in hits:
+            try:
                 evidence = hit.get("context_snippets") or hit.get("snippets") or []
+                complete_transcript = (hit.get("transcript") or "").strip()
                 transcript_window = (hit.get("transcript_window") or "").strip()
                 evidence_lines = hit.get("evidence_lines") or []
                 evidence_block = "\n".join(f"- {snippet}" for snippet in evidence if snippet)
@@ -384,6 +341,8 @@ async def _summarize_recall_hits(
                     evidence_block = (
                         f"{evidence_block}\nKey evidence:\n" + "\n".join(f"- {line}" for line in evidence_lines if line)
                     ).strip()
+                if complete_transcript:
+                    evidence_block = f"Complete transcript:\n{complete_transcript}\n\n{evidence_block}".strip()
                 if not evidence_block:
                     continue
 
@@ -400,7 +359,7 @@ async def _summarize_recall_hits(
                     "- Lead with what was DECIDED or PRODUCED in that session.\n"
                     "- Name concrete artifacts: file paths, commit hashes, ticket IDs,\n"
                     "  URLs, tool results — whatever the evidence shows.\n"
-                    "- Use ONLY the provided evidence block + headline + heuristic recap.\n"
+                    "- Use ONLY the provided evidence block + headline + evidence passthrough.\n"
                     "  Do not infer, extrapolate, or fabricate details not present.\n"
                     "- Match the query's language (English query → English summary,\n"
                     "  Chinese → Chinese).\n"
@@ -423,7 +382,7 @@ async def _summarize_recall_hits(
                     "<input>\n"
                     f"Query: {query}\n"
                     f"Headline: {hit.get('headline', _FALLBACK_HEADLINE)}\n"
-                    f"Heuristic recap: {hit.get('focused_recap', '')}\n"
+                    f"Evidence passthrough: {hit.get('focused_recap', '')}\n"
                     f"Evidence:\n{evidence_block}\n"
                     "</input>\n\n"
                     "<output_contract>\n"
@@ -433,17 +392,32 @@ async def _summarize_recall_hits(
                 )
                 response = await client.stream(
                     messages=[LLMMessage(role="user", content=prompt)],
-                    max_tokens=180,
+                    max_tokens=output_tokens,
                     temperature=0.1,
                 )
                 summary = (response.content or "").strip()
-                if summary:
-                    hit["summary"] = summary
-                    hit["focused_recap"] = summary
-        finally:
-            await client.close()
-    except Exception:
-        return hits
+                if not summary:
+                    raise RuntimeError("session recall summary model returned empty output")
+                hit["summary"] = summary
+                hit["focused_recap"] = summary
+                hit["summary_method"] = "model"
+                hit["summary_model_status"] = "completed"
+                hit.pop("summary_model_error_class", None)
+            except Exception as exc:  # noqa: BLE001 - keep complete evidence for this hit
+                logger.exception("Session recall model summary failed")
+                hit["summary_model_status"] = "failed"
+                hit["summary_model_error_class"] = type(exc).__name__
+    except Exception as exc:  # noqa: BLE001 - setup failure is observable on every hit
+        logger.exception("Session recall summary model setup failed")
+        for hit in hits:
+            hit["summary_model_status"] = "failed"
+            hit["summary_model_error_class"] = type(exc).__name__
+    finally:
+        if client is not None:
+            try:
+                await client.close()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Session recall summary client close failed: %s", exc)
 
     return hits
 
@@ -451,10 +425,10 @@ async def _summarize_recall_hits(
 def _infer_headline(body: str, query: str, *, fallback: str) -> str:
     snippets = _extract_snippets(body, query, snippet_limit=1)
     if snippets:
-        return snippets[0][:120]
+        return snippets[0]
     for line in _body_lines(body):
         if line:
-            return line[:120]
+            return line
     return fallback
 
 
@@ -504,7 +478,7 @@ def _search_t0_session_ledger(
     agent_id: uuid.UUID,
     query: str,
     *,
-    limit: int,
+    limit: int | None,
     snippet_limit: int,
 ) -> list[dict]:
     sessions_root = _t0_session_root(agent_id)
@@ -556,14 +530,14 @@ def _search_t0_session_ledger(
     hits.sort(key=lambda item: (-item["_score"], item["started_at"], item["session_id"]))
     for hit in hits:
         hit.pop("_score", None)
-    return hits[:limit]
+    return hits if limit is None else hits[:limit]
 
 
 def _search_t0_chat_logs(
     agent_id: uuid.UUID,
     query: str,
     *,
-    limit: int,
+    limit: int | None,
     snippet_limit: int,
 ) -> list[dict]:
     """Search legacy chat logs after the new session ledger misses."""
@@ -620,14 +594,14 @@ def _search_t0_chat_logs(
     hits.sort(key=lambda item: (-item["_score"], item["started_at"], item["session_id"]))
     for hit in hits:
         hit.pop("_score", None)
-    return hits[:limit]
+    return hits if limit is None else hits[:limit]
 
 
 async def _search_session_history_db(
     agent_id: uuid.UUID,
     query: str,
     *,
-    limit: int,
+    limit: int | None,
     snippet_limit: int,
     tenant_id: uuid.UUID | None = None,
 ) -> list[dict]:
@@ -635,7 +609,7 @@ async def _search_session_history_db(
     if not needle:
         return []
 
-    fetch_limit = max(limit * max(snippet_limit, 1) * 4, 20)
+    fetch_limit = max(limit * max(snippet_limit, 1) * 4, 20) if limit is not None else None
     pattern = f"%{needle}%"
 
     stmt = (
@@ -661,8 +635,9 @@ async def _search_session_history_db(
             ),
         )
         .order_by(ChatSession.last_message_at.desc(), ChatMessage.created_at.asc())
-        .limit(fetch_limit)
     )
+    if fetch_limit is not None:
+        stmt = stmt.limit(fetch_limit)
 
     async with tenant_scoped_session(tenant_id) as db:
         rows = (await db.execute(stmt)).all()
@@ -694,10 +669,16 @@ async def _search_session_history_db(
             if text and text not in group["snippets"] and len(group["snippets"]) < snippet_limit:
                 group["snippets"].append(text)
 
-            if len(grouped) >= limit and all(len(item["snippets"]) >= snippet_limit for item in grouped.values()):
+            if (
+                limit is not None
+                and len(grouped) >= limit
+                and all(len(item["snippets"]) >= snippet_limit for item in grouped.values())
+            ):
                 break
 
-        session_ids = list(grouped.keys())[:limit]
+        session_ids = list(grouped.keys())
+        if limit is not None:
+            session_ids = session_ids[:limit]
         transcript_stmt = (
             select(
                 ChatMessage.conversation_id,
@@ -739,14 +720,15 @@ async def _search_session_history_db(
             headline=item["headline"],
         )
 
-    return list(grouped.values())[:limit]
+    hits = list(grouped.values())
+    return hits if limit is None else hits[:limit]
 
 
 async def search_session_history(
     agent_id: uuid.UUID,
     query: str,
     *,
-    limit: int = 3,
+    limit: int | None = None,
     snippet_limit: int = 3,
     tenant_id: uuid.UUID | None = None,
 ) -> list[dict]:

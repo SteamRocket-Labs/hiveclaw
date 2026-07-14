@@ -147,6 +147,9 @@ async def test_unattended_direct_delegation_consumes_and_stamps_exact_action(mon
                 authorization_lease_id="lease-1",
                 canonical_args_hash="args-hash",
                 target_ref=kwargs["target_ref"],
+                canonical_plan_id=str(plan_id),
+                canonical_plan_version=3,
+                canonical_plan_hash="sha256:server-plan",
             )
 
     monkeypatch.setattr("app.database.tenant_scoped_session", lambda *_args, **_kwargs: _SessionContext())
@@ -177,6 +180,9 @@ async def test_unattended_direct_delegation_consumes_and_stamps_exact_action(mon
         "session_id": "parent-session",
         "runtime_task_id": None,
         "evidence_id": "delegation-start:runtime-1",
+        "plan_id": str(plan_id),
+        "plan_version": 3,
+        "plan_hash": "sha256:server-plan",
     }
 
 

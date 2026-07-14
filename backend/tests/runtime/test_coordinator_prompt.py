@@ -32,14 +32,16 @@ class TestPromptStructure:
             "<decision_matrix>",
             "<good_coordination_examples>",
             "<anti_patterns>",
-            "<allowed_tools>",
+            "<coordination_tools>",
             "<final_report_format>",
         ]:
             assert tag in prompt_text, f"missing tag: {tag}"
 
-    def test_role_is_dispatcher_not_executor(self, prompt_text: str) -> None:
-        assert "dispatcher" in prompt_text.lower()
-        assert "domain tools directly" in prompt_text.lower() or "not to execute" in prompt_text.lower()
+    def test_role_preserves_direct_execution_judgment(self, prompt_text: str) -> None:
+        lowered = prompt_text.lower()
+        assert "retain your assigned tools" in lowered
+        assert "execute work directly" in lowered
+        assert "strategy, not a restriction" in lowered
 
     def test_pipeline_context_documents_upstream_and_downstream(self, prompt_text: str) -> None:
         assert "Upstream" in prompt_text
@@ -71,12 +73,11 @@ class TestDecisionMatrix:
         ]:
             assert phase_marker in prompt_text, f"missing phase: {phase_marker}"
 
-    def test_matrix_has_tiebreakers(self, prompt_text: str) -> None:
-        assert "Tiebreakers" in prompt_text or "tiebreaker" in prompt_text.lower()
-        # Tiebreakers must give explicit defaults for the 3 common dilemmas.
-        assert "parallel" in prompt_text.lower() and "serial" in prompt_text.lower()
-        assert "continue" in prompt_text.lower() and "spawn" in prompt_text.lower()
-        assert "verify" in prompt_text.lower()
+    def test_matrix_is_advisory_not_a_mechanical_policy(self, prompt_text: str) -> None:
+        lowered = prompt_text.lower()
+        assert "non-binding decision guide" in lowered
+        assert "do not mechanically" in lowered
+        assert "no hard-coded tiebreaker" in lowered
 
 
 class TestGoodExamples:
@@ -85,8 +86,12 @@ class TestGoodExamples:
         assert "Example B" in prompt_text
 
     def test_examples_show_research_impl_verify_flow(self, prompt_text: str) -> None:
-        # Example A must walk through research → synthesize → implement → FRESH verify
-        assert "FRESH" in prompt_text or "fresh worker" in prompt_text.lower()
+        # Example A preserves verification while leaving the model free to pick
+        # direct inspection or an independent context proportionate to the claim.
+        normalized = " ".join(prompt_text.lower().split())
+        assert "proportionate verification" in normalized
+        assert "independent context would materially improve confidence" in normalized
+        assert "fresh worker" not in normalized
 
     def test_examples_show_parallel_read_only(self, prompt_text: str) -> None:
         # Example B must show parallel fan-out explicitly as a safe case.
@@ -99,27 +104,25 @@ class TestAntiPatterns:
         lowered = prompt_text.lower()
         # Must explicitly name each of the canonical coordinator failure modes.
         assert "delegate understanding" in lowered
-        assert "parallelize writes" in lowered or "editing the same file" in lowered
-        assert "self-verify" in lowered
-        assert "recursive" in lowered  # no nested coordination
-        assert "silent wait" in lowered or "pretend the answer is ready" in lowered
-        assert "domain execution" in lowered or "domain tool" in lowered
+        assert "uncontrolled conflicting writes" in lowered
+        assert "ownership, isolation, or merge protocol" in lowered
+        assert "uncritical self-confirmation" in lowered
+        assert "recursive" in lowered
+        assert "false completion" in lowered
+        assert "mechanical delegation" in lowered
         assert "vague delegation" in lowered
         assert "skipping synthesis" in lowered or "verbatim" in lowered
 
 
-class TestAllowedToolsAlignment:
-    def test_prompt_tools_match_allowed_set(self, prompt_text: str) -> None:
-        # The prompt explicitly lists what's allowed. It must agree with
-        # COORDINATOR_ALLOWED_TOOLS so the LLM's mental model matches runtime.
+class TestToolSurfaceAlignment:
+    def test_prompt_lists_strict_dispatcher_coordination_set(self, prompt_text: str) -> None:
         for tool_name in COORDINATOR_ALLOWED_TOOLS:
             assert tool_name in prompt_text, f"allowed tool not in prompt: {tool_name}"
 
-    def test_prompt_rejects_domain_tools_by_name(self, prompt_text: str) -> None:
-        # Must name at least two domain tools as unavailable so the LLM
-        # doesn't try them.
-        assert "web_search" in prompt_text
-        assert "execute_code" in prompt_text
+    def test_prompt_preserves_assigned_domain_tools_by_default(self, prompt_text: str) -> None:
+        lowered = prompt_text.lower()
+        assert "all other tools assigned to you remain available" in lowered
+        assert "explicit strict-dispatcher mode" in lowered
 
 
 class TestFinalReportFormat:
@@ -129,8 +132,8 @@ class TestFinalReportFormat:
         assert "## Next Actions" in prompt_text
 
     def test_report_handles_running_workers(self, prompt_text: str) -> None:
-        # If workers are still running, omit synthesis; never fabricate.
-        assert "still running" in prompt_text.lower() or "Waiting on" in prompt_text
+        # Running work remains visible, without imposing a mechanical report shape.
+        assert "running work" in prompt_text.lower()
         assert "fabricate" in prompt_text.lower() or "Never fabricate" in prompt_text
 
 
@@ -140,3 +143,7 @@ class TestHelperStillWorks:
         assert isinstance(out, str)
         assert "<role>" in out
         assert "<decision_matrix>" in out
+
+    def test_strict_dispatcher_requires_explicit_selection(self) -> None:
+        out = get_coordinator_prompt(dispatcher_only=True)
+        assert "explicitly selected strict dispatcher mode" in out

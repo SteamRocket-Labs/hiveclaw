@@ -32,6 +32,7 @@ THREAD_ITEM_TYPES = {
 EVENT_THREAD_ITEM_TYPES: dict[str, str] = {
     "user_message": "user_message",
     "assistant_message": "agent_message",
+    "response_repair": "agent_message",
     "thinking": "reasoning",
     "reasoning": "reasoning",
     "tool_call": "tool_call",

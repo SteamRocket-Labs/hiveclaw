@@ -15,9 +15,8 @@ Design notes
   threaded through for capability-scoped enforcement; even without them the
   kernel's default governed tool path applies, so a subagent can never bypass
   governance. (Mirrors how ``RuntimeResearchWorker`` stays governed.)
-* **Recursion is bounded.** A depth check (mirroring
-  ``OrchestrationPolicy.max_depth``) plus a base deny-list that removes every
-  spawn/delegation tool stops a subagent from spawning more subagents.
+* **Recursion is bounded.** Depth, cycle, authority, approval, and budget gates
+  bound nested collaboration without blanket-removing delegation tools.
 * **Memory is optional and governed.** When a tenant memory store is injected,
   ``记忆.md`` is added to the child prompt and successful runs can write implicit
   How via ``prepare_memory_write`` through ``SubagentMemoryStore``.
@@ -151,8 +150,9 @@ _CRITIC_ALLOWED_TOOLS: tuple[str, ...] = (
     "firecrawl_search",
 )
 
-# Tools every child worker is denied: no further spawning/delegation, no
-# async-task/trigger/channel side effects, and no user-interaction tools.
+# Human-facing tools every child worker is denied because a child cannot
+# truthfully complete them. Collaboration and side-effect tools remain subject
+# to the positive preset plus normal depth, authority, approval, and budget gates.
 _SUBAGENT_BASE_EXCLUDED_TOOLS: tuple[str, ...] = DELEGATED_WORKER_BASE_EXCLUDED_TOOLS
 
 DEFAULT_MAX_SUBAGENT_DEPTH = 2  # mirrors OrchestrationPolicy.max_depth
@@ -491,15 +491,17 @@ class SubagentSpawnContext:
 class SubagentBudget:
     """Structured resource quota baked into the contract.
 
-    This is what lets fan-out share source-capture caps across call sites:
-    the caps live in the spec instead of being hand-rolled per caller.
+    Tool rounds and timeout are enforceable resource ceilings. Legacy
+    source/output character fields remain compatibility-only advisories: once
+    the child has observed or authored semantic content, the parent receives it
+    in full rather than applying a second mechanical judgment layer.
     """
 
     max_tool_rounds: int = DEFAULT_SUBAGENT_TOOL_ROUNDS
     timeout_seconds: float | None = None
-    max_source_chars: int | None = None  # single-source cap (cf _MAX_SOURCE_CONTENT_CHARS=12000)
-    max_sources: int | None = None  # per-subagent source cap (cf _MAX_SOURCES_PER_WORKER=8)
-    max_output_chars: int | None = None  # digest truncation
+    max_source_chars: int | None = None  # legacy advisory; never truncates captured evidence
+    max_sources: int | None = None  # legacy advisory; never drops captured evidence
+    max_output_chars: int | None = None  # legacy advisory; never truncates child output
 
 
 @dataclass(slots=True)
@@ -568,8 +570,10 @@ def resolve_subagent_tools(spec: SubagentSpec) -> tuple[tuple[str, ...], tuple[s
     """Resolve a spec's allow/deny tool lists, layering the base exclusions.
 
     An ``explorer`` with no explicit allow-list falls back to the read-only
-    preset. The base exclusions (recursion guard + side-effect tools) are always
-    unioned in, de-duplicated while preserving order.
+    preset. Human-facing base exclusions are always unioned in, de-duplicated
+    while preserving order. The platform does not use a blanket recursion
+    blacklist; nested collaboration is governed by depth, cycle, authority,
+    approval, and budget.
     """
 
     allowed = spec.allowed_tools
@@ -636,9 +640,8 @@ def _source_from_tool_event(event: dict[str, Any], budget: SubagentBudget) -> di
     url = str(args.get("url") or "").strip()
     if not url:
         return None
+    del budget
     content = str(event.get("result") or "")
-    if budget.max_source_chars is not None and len(content) > budget.max_source_chars:
-        content = content[: budget.max_source_chars]
     return {"url": url, "tool_name": tool_name, "content": content}
 
 
@@ -1077,8 +1080,6 @@ async def _spawn_one(
                 "visibility": event.get("visibility") or "collapsed",
             },
         )
-        if budget.max_sources is not None and len(captured_sources) >= budget.max_sources:
-            return
         source = _source_from_tool_event(event, budget)
         if source is not None:
             captured_sources.append(source)
@@ -1276,8 +1277,6 @@ async def _spawn_one(
     except Exception as exc:  # hook failures are isolated; registry records handler failures
         logger.warning("[Subagent] SUBAGENT_STOP hook failed (non-fatal): %s", exc)
     content = raw_content
-    if budget.max_output_chars and len(content) > budget.max_output_chars:
-        content = content[: budget.max_output_chars]
     tokens_used = int(getattr(result, "tokens_used", 0) or 0)
     subagent_result = SubagentResult(
         name=spec.name,
@@ -1348,7 +1347,7 @@ async def _emit_completion_signal(ctx: SubagentSpawnContext, result: SubagentRes
             await gateway.send_signal(
                 from_agent_id=f"subagent:{result.name}",
                 to_agent_id=str(ctx.parent_agent_id),
-                content=(result.content or result.error or "")[:500],
+                content=result.content or result.error or "",
                 signal_type=SUBAGENT_COMPLETION_SIGNAL,
                 thread_id=ctx.trace_id or None,
                 metadata={

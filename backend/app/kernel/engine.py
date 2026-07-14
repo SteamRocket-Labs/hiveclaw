@@ -28,7 +28,6 @@ from app.kernel.contracts import (
     TerminalReason,
     ThinkingCallback,
 )
-from app.kernel.final_answer_evidence import verify_final_answer_tool_evidence
 from app.kernel.loop_guard import LoopGuard, LoopGuardDecision
 from app.kernel.reminder_scheduler import (
     _WORK_LEDGER_ENABLED_METADATA_KEY,
@@ -60,8 +59,7 @@ from app.services.invocation_trace import (
 from app.runtime.ccplus_contracts import ContextPolicyV1, build_context_policy
 from app.runtime.provider_prompt_ledger import build_provider_prompt_ledger
 from app.runtime.session_context_controller import prepare_session_context_for_request
-from app.runtime.tool_evidence_ledger import ToolEvidenceLedger
-from app.tools.registry import is_destructive_tool, is_parallel_safe_tool, result_char_limit_for_tool
+from app.tools.registry import is_destructive_tool, is_parallel_safe_tool, is_read_only_tool, result_char_limit_for_tool
 from app.tools.result_envelope import ToolContentEnvelope
 
 # CCPlus ContextPolicyV1 is the canonical source of truth for the kernel's
@@ -103,87 +101,6 @@ _PTL_ERROR_PATTERNS = (
 
 _OUTPUT_CAP_FINISH_REASONS = {"length", "max_tokens"}
 
-_UNBACKED_TOOL_RESULT_MARKERS = (
-    "已验证",
-    "验证不可用",
-    "返回",
-    "超时",
-    "不响应",
-    "未配置",
-    "不可用",
-    "tool call",
-    "tool result",
-    "timed out",
-    "timeout",
-    "returned",
-    "not configured",
-    "failed with",
-)
-
-_TEXT_ONLY_REQUEST_MARKERS = (
-    "prompt",
-    "system prompt",
-    "完整生产",
-    "导出",
-    "解释",
-    "说明",
-    "总结",
-    "介绍",
-    "模板",
-    "文本",
-    "模式",
-)
-
-_TOOL_STATUS_REQUEST_MARKERS = (
-    "工具状态",
-    "工具执行",
-    "调用情况",
-    "调用记录",
-    "工具结果",
-    "成功",
-    "失败",
-    "超时",
-    "返回了吗",
-    "返回了什么",
-    "返回结果",
-    "结果是什么",
-    "有没有调用",
-    "which tools",
-    "tool status",
-    "tool execution",
-    "tool calls",
-)
-
-
-def _is_text_only_request(latest_user_query: str) -> bool:
-    query = (latest_user_query or "").strip().lower()
-    if not query:
-        return False
-    if any(marker in query for marker in _TOOL_STATUS_REQUEST_MARKERS):
-        return False
-    return any(marker in query for marker in _TEXT_ONLY_REQUEST_MARKERS)
-
-
-def _repair_unbacked_tool_result_claim(
-    content: str,
-    *,
-    tool_names: set[str],
-    has_tool_evidence: bool,
-    latest_user_query: str = "",
-) -> str:
-    """Compatibility wrapper for older tests/callers; new code uses tool ledger summaries."""
-    del latest_user_query
-    return verify_final_answer_tool_evidence(
-        content,
-        available_tool_names=tool_names,
-        tool_evidence_summary={
-            "schema": "hive.ccplus.tool_evidence_ledger.v1",
-            "has_tool_evidence": bool(has_tool_evidence),
-            "tool_names": sorted(tool_names) if has_tool_evidence else [],
-        },
-    )
-
-
 _STREAM_OUTPUT_CONTINUATION_MAX_ATTEMPTS = 3
 # Fallback continuation budget when the active model carries no resolvable
 # provider (e.g. test fakes). Real runs resolve the provider's own ceiling.
@@ -207,7 +124,11 @@ _MICROCOMPACT_KEEP_RECENT = 5  # always keep the N most recent tool results
 # cleared results at 0% pressure, starving long heartbeat/DR sessions).
 _MICROCOMPACT_MIN_UTILIZATION = 0.5
 _MICROCOMPACT_NEVER_GAP_SECONDS = 10**12  # effectively "never clear"
-_MICROCOMPACT_CLEARED_MARKER = "[Old tool result cleared to save context space]"
+_MICROCOMPACT_CLEARED_MARKER = "[Tool result compacted; durable artifact available"
+_FULL_OUTPUT_ARTIFACT_RE = re.compile(
+    r"\[Full output saved to (?P<path>workspace/tool_results/[^\s\]]+) — "
+    r"(?P<chars>\d+) chars; sha256=(?P<sha256>[0-9a-f]{64}); char_range=0-(?P<end>\d+);"
+)
 
 
 def _compute_microcompact_gap(used_tokens: int, model_window: int | None) -> int:
@@ -503,7 +424,7 @@ def _build_runtime_attachment_sections(agent_id: Any, session_context: Any | Non
         logger.debug("[Kernel] runtime recovery manifest attachment unavailable: %s", exc)
 
     discovered_tools = [
-        str(name).strip() for name in getattr(session_context, "discovered_tools", [])[-12:] if str(name).strip()
+        str(name).strip() for name in getattr(session_context, "discovered_tools", []) if str(name).strip()
     ]
     if discovered_tools:
         sections.append(
@@ -523,7 +444,7 @@ def _build_runtime_attachment_sections(agent_id: Any, session_context: Any | Non
             if path and path not in recent_paths:
                 recent_paths.append(path)
         changed: list[str] = []
-        for path in recent_paths[-10:]:
+        for path in recent_paths:
             before = snapshots.get(path)
             if not isinstance(before, dict):
                 continue
@@ -569,7 +490,7 @@ def _build_runtime_memory_event_messages(session_context: Any | None) -> list[di
 
     events: list[dict] = []
 
-    for outcome in getattr(session_context, "recent_tool_outcomes", [])[-5:]:
+    for outcome in getattr(session_context, "recent_tool_outcomes", []):
         tool_name = outcome.get("tool", "?")
         summary = outcome.get("summary", "")
         if summary:
@@ -580,7 +501,7 @@ def _build_runtime_memory_event_messages(session_context: Any | None) -> list[di
                 }
             )
 
-    for path in getattr(session_context, "recent_writes", [])[-5:]:
+    for path in getattr(session_context, "recent_writes", []):
         if path:
             events.append(
                 {
@@ -589,7 +510,7 @@ def _build_runtime_memory_event_messages(session_context: Any | None) -> list[di
                 }
             )
 
-    for ref in getattr(session_context, "recent_external_refs", [])[-5:]:
+    for ref in getattr(session_context, "recent_external_refs", []):
         if ref:
             events.append(
                 {
@@ -598,7 +519,7 @@ def _build_runtime_memory_event_messages(session_context: Any | None) -> list[di
                 }
             )
 
-    for item in getattr(session_context, "pending_items", [])[-5:]:
+    for item in getattr(session_context, "pending_items", []):
         if item:
             events.append(
                 {
@@ -634,18 +555,51 @@ def _group_messages_by_api_round(messages: list[LLMMessage]) -> list[list[LLMMes
     return groups
 
 
-def _truncate_head_for_ptl(messages: list[LLMMessage], drop_ratio: float = 0.2) -> list[LLMMessage]:
-    """Drop the oldest N% of round-groups to reduce prompt size.
+def _prepare_ptl_round_group_fallback(
+    messages: list[LLMMessage],
+    *,
+    drop_ratio: float,
+    artifact_dir: Path,
+    session_id: str | None,
+    attempt: int,
+) -> tuple[list[LLMMessage], dict[str, Any]]:
+    """Persist exact dropped round groups before the terminal PTL fallback."""
 
-    This preserves recent rounds and keeps assistant tool calls paired with
-    their tool results.
-    """
     groups = _group_messages_by_api_round(messages)
     if len(groups) <= 2:
-        return messages
+        return messages, {
+            "recoverable": True,
+            "dropped_group_range": "0:0",
+            "dropped_message_count": 0,
+        }
     drop_count = max(1, int(len(groups) * drop_ratio))
-    kept = groups[drop_count:]
-    return [msg for group in kept for msg in group]
+    dropped = [message for group in groups[:drop_count] for message in group]
+    kept = [message for group in groups[drop_count:] for message in group]
+    payload = {
+        "schema": "hive.ptl_dropped_round_groups.v1",
+        "session_id": session_id,
+        "attempt": attempt,
+        "dropped_group_range": f"0:{drop_count}",
+        "messages": _llm_messages_to_dicts(dropped),
+    }
+    rendered = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    digest = hashlib.sha256(rendered.encode("utf-8")).hexdigest()
+    safe_session = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(session_id or "runtime"))[:80]
+    filename = f"ptl-dropped-{safe_session}-attempt-{attempt}-{digest[:12]}.json"
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    artifact_path = artifact_dir / filename
+    temporary_path = artifact_dir / f".{filename}.tmp"
+    temporary_path.write_text(rendered, encoding="utf-8")
+    temporary_path.replace(artifact_path)
+    return kept, {
+        "artifact_filename": filename,
+        "artifact_ref": f"workspace/tool_results/compaction/{filename}",
+        "sha256": digest,
+        "chars": len(rendered),
+        "dropped_group_range": f"0:{drop_count}",
+        "dropped_message_count": len(dropped),
+        "recoverable": True,
+    }
 
 
 def _humanize_llm_error(exc: Exception) -> str:
@@ -674,12 +628,6 @@ def _turn_token_budget_message(*, tokens_used: int, token_budget: int) -> str:
         "[Runtime Limit] This turn stopped because the configured token budget was exhausted "
         f"({tokens_used}/{token_budget} tokens used)."
     )
-
-
-_SOURCE_PERMISSION_BLOCK_MESSAGE = (
-    "[Permission Check] I cannot provide this answer because the draft referenced a governed connector source "
-    "that is not visible to the current user. The response was blocked and an audit event was recorded."
-)
 
 
 def _registered_connector_source_items(request: InvocationRequest) -> list[dict[str, Any]]:
@@ -1006,11 +954,11 @@ def _empty_assistant_fallback(collected_parts: list[dict[str, Any]]) -> str:
     elif isinstance(raw_result, str):
         normalized = raw_result.strip()
         if normalized.lower().startswith(("error", "failed", "[tool execution error]")) or normalized.startswith("❌"):
-            error_message = normalized.lstrip("❌ ")[:300]
+            error_message = normalized.lstrip("❌ ")
 
     if error_message:
         return (
-            f"[LLM Error] 模型在 {tool_name} 未完成后没有返回最终说明：{error_message[:300]} "
+            f"[LLM Error] 模型在 {tool_name} 未完成后没有返回最终说明：{error_message} "
             "你可以重试本轮；完整错误和运行证据已保留在技术详情中。"
         )
     return f"[LLM Error] 模型在 {tool_name} 完成后没有返回最终说明。工具结果已保留，你可以重试本轮。"
@@ -1040,6 +988,19 @@ def _extract_tool_side_effects(raw_result: Any) -> dict[str, Any] | None:
     artifact_records = [dict(item) for item in artifacts if isinstance(item, dict) and item.get("path")]
     if artifact_records:
         side_effects["artifacts"] = artifact_records
+    metadata = getattr(raw_result, "metadata", {}) or {}
+    proof = metadata.get("loop_guard_proof") if isinstance(metadata, dict) else None
+    if isinstance(proof, dict):
+        retry_exhausted = proof.get("retry_exhausted") is True
+        progress_token = str(proof.get("progress_token") or "").strip()
+        if retry_exhausted and progress_token:
+            # The tool may attest retry exhaustion and state identity, but it
+            # cannot attest its own side-effect safety.  The kernel derives
+            # that independently from the governed registry.
+            side_effects["loop_guard_proof"] = {
+                "retry_exhausted": True,
+                "progress_token": progress_token,
+            }
     return side_effects or None
 
 
@@ -1202,7 +1163,7 @@ async def _record_runtime_span(
             execution_identity_label=execution_identity.label if execution_identity is not None else None,
             metadata=clean_metadata,
             usage=clean_metadata.get("usage") if isinstance(clean_metadata.get("usage"), dict) else None,
-            error=str(clean_metadata.get("error") or "")[:4000] if clean_metadata.get("error") else None,
+            error=str(clean_metadata.get("error") or "") if clean_metadata.get("error") else None,
         )
     )
     return payload
@@ -1386,7 +1347,7 @@ async def _compress_messages_with_lifecycle_hooks(
         compact_summary = compressed[0].get("content", "") if compressed else ""
         post_metadata = {
             **hook_metadata,
-            "summary": str(compact_summary)[:3000],
+            "summary": str(compact_summary),
             "before_msgs": len(messages),
             "after_msgs": len(compressed),
         }
@@ -1947,7 +1908,8 @@ async def _execute_tool_with_hooks(
                 )
             raise
         except Exception as exc:
-            err = f"[Tool execution error] {type(exc).__name__}: {str(exc)[:200]}"
+            full_error = str(exc)
+            err = f"[Tool execution error] {type(exc).__name__}: {full_error}"
             runtime_failure_policy = build_runtime_failure_policy(
                 failure_kind="tool_failure",
                 message=err,
@@ -1975,7 +1937,7 @@ async def _execute_tool_with_hooks(
                 span_metadata = {
                     "status": "error",
                     "error_class": type(exc).__name__,
-                    "error": str(exc)[:500],
+                    "error": full_error,
                     "runtime_failure_policy": runtime_failure_policy,
                     "tool_result_ledger_entry": tool_result_ledger_entry,
                 }
@@ -1992,7 +1954,7 @@ async def _execute_tool_with_hooks(
                 span_metadata = {
                     "status": "error",
                     "error_class": type(exc).__name__,
-                    "error": str(exc)[:500],
+                    "error": full_error,
                     "runtime_failure_policy": runtime_failure_policy,
                     "tool_result_ledger_entry": tool_result_ledger_entry,
                 }
@@ -2032,32 +1994,28 @@ async def _execute_tool_with_hooks(
     result_str = _normalize_tool_result_for_llm(result)
     if tool_name == "load_skill" and request.session_context is not None:
         _register_loaded_skill_for_session(request, effective_args if isinstance(effective_args, dict) else {})
-    if tool_name == "load_skill" and request.session_context is not None:
-        result_str = await _execute_pending_skill_fork_handoffs(
-            result_str,
-            execute_tool=execute_tool,
-            request=request,
-            runtime_config=runtime_config,
-            parent_tool_call_id=tool_call_id,
-            emit_event=emit_event,
-            tools_for_llm=tools_for_llm,
-            api_messages=api_messages,
-            record_span=record_span,
-        )
     code_execution_evidence = None
     if isinstance(result, ToolContentEnvelope):
         envelope_metadata = getattr(result, "metadata", {}) or {}
         if isinstance(envelope_metadata, dict) and isinstance(envelope_metadata.get("code_execution_evidence"), dict):
             code_execution_evidence = dict(envelope_metadata["code_execution_evidence"])
     registered_connector_source_count = 0
+    current_connector_source_items: list[dict[str, Any]] = []
     if request.session_context is not None:
         try:
             from app.services.connector_acl import (
+                extract_connector_source_items,
                 register_connector_source_items,
                 register_connector_source_payload,
                 source_items_from_tool_call,
             )
 
+            current_connector_source_items = extract_connector_source_items(result, origin=f"tool:{tool_name}")
+            argument_source_items = source_items_from_tool_call(
+                tool_name,
+                effective_args,
+                origin=f"tool_args:{tool_name}",
+            )
             registered_connector_source_count = register_connector_source_payload(
                 request.session_context,
                 result,
@@ -2071,11 +2029,59 @@ async def _execute_tool_with_hooks(
                 )
             registered_connector_source_count += register_connector_source_items(
                 request.session_context,
-                source_items_from_tool_call(tool_name, effective_args, origin=f"tool_args:{tool_name}"),
+                argument_source_items,
                 origin=f"tool_args:{tool_name}",
             )
+            current_source_ids = {
+                str(item.get("source") or "").strip().lower()
+                for item in (*current_connector_source_items, *argument_source_items)
+                if str(item.get("source") or "").strip()
+            }
+            # Re-resolve the current call against the canonical session registry:
+            # an authoritative result may have replaced the argument-derived
+            # deny-by-default placeholder for the same source.
+            current_connector_source_items = [
+                item
+                for item in _registered_connector_source_items(request)
+                if str(item.get("source") or "").strip().lower() in current_source_ids
+            ]
         except Exception as exc:  # noqa: BLE001 - source registry must not break tool execution
             logger.warning("[Kernel] connector source registration failed for tool %s: %s", tool_name, exc)
+
+    if request.session_context is not None:
+        try:
+            from app.services.connector_acl import filter_connector_payload_for_prompt
+
+            prompt_filter = filter_connector_payload_for_prompt(
+                result,
+                source_items=current_connector_source_items,
+                tenant_id=getattr(runtime_config, "tenant_id", None),
+                current_user_id=getattr(request, "user_id", None),
+                agent_id=getattr(request, "agent_id", None),
+            )
+            result_str = _normalize_tool_result_for_llm(prompt_filter.payload)
+        except Exception as exc:  # noqa: BLE001 - fail closed for governed result ingress
+            logger.warning("[Kernel] connector prompt ingress filter unavailable for %s: %s", tool_name, exc)
+            result_str = json.dumps(
+                {"status": "source_acl_unavailable", "retryable": True, "tool": tool_name},
+                sort_keys=True,
+            )
+
+    # Apply source authorization to the loaded Skill result first. The nested
+    # governed spawn applies its own source authorization, and its complete
+    # result then remains visible to the parent model and POST_TOOL_USE hook.
+    if tool_name == "load_skill" and request.session_context is not None:
+        result_str = await _execute_pending_skill_fork_handoffs(
+            result_str,
+            execute_tool=execute_tool,
+            request=request,
+            runtime_config=runtime_config,
+            parent_tool_call_id=tool_call_id,
+            emit_event=emit_event,
+            tools_for_llm=tools_for_llm,
+            api_messages=api_messages,
+            record_span=record_span,
+        )
 
     post_hook_metadata = {
         "tenant_id": str(getattr(runtime_config, "tenant_id", "") or ""),
@@ -2088,14 +2094,33 @@ async def _execute_tool_with_hooks(
         session_id=request.memory_session_id,
         tool_name=tool_name,
         tool_args=effective_args,
-        tool_result=result_str[:500],
-        messages=request.messages[-10:] if request.messages else None,
+        tool_result=result_str,
+        messages=request.messages if request.messages else None,
         source=getattr(request.session_context, "source", None) if request.session_context else None,
         metadata=post_hook_metadata,
     )
     if post_tool_hook_result and post_tool_hook_result.output_rewrite is not None:
         rewrite = post_tool_hook_result.output_rewrite
         result_str = rewrite if isinstance(rewrite, str) else json.dumps(rewrite, ensure_ascii=False, sort_keys=True)
+        if request.session_context is not None:
+            from app.services.connector_acl import extract_connector_source_items, filter_connector_payload_for_prompt
+
+            rewrite_source_items = extract_connector_source_items(
+                result_str,
+                origin=f"post_tool_hook:{tool_name}",
+            )
+            if not rewrite_source_items:
+                rewrite_source_items = current_connector_source_items
+
+            result_str = _normalize_tool_result_for_llm(
+                filter_connector_payload_for_prompt(
+                    result_str,
+                    source_items=rewrite_source_items,
+                    tenant_id=getattr(runtime_config, "tenant_id", None),
+                    current_user_id=getattr(request, "user_id", None),
+                    agent_id=getattr(request, "agent_id", None),
+                ).payload
+            )
     tool_result_side_effects = _extract_tool_side_effects(result) or {}
     activation_event = _record_tool_activation_event(
         request,
@@ -2223,12 +2248,12 @@ async def _execute_tool_with_hooks(
         ):
             _ref = _args_dict.get("url") or _args_dict.get("query") or _args_dict.get("path", "")
             if _ref:
-                _session.track_external_ref(str(_ref)[:200])
+                _session.track_external_ref(str(_ref))
             _result_str = result_str
             if len(_result_str) > 100:
-                _session.track_tool_outcome(tool_name, _result_str[:200])
+                _session.track_tool_outcome(tool_name, _result_str)
         elif tool_name == "execute_code":
-            _session.track_tool_outcome(tool_name, result_str[:200])
+            _session.track_tool_outcome(tool_name, result_str)
 
     if side_effect_sink is not None:
         _captured_side_effects = _extract_tool_side_effects(result)
@@ -2455,7 +2480,7 @@ async def _execute_recovered_pending_tool_frames(
                 "tool_call_id": tool_call_id,
                 "arguments": dict(effective_args),
                 "status": status,
-                "result": str(result)[:1000],
+                "result": str(result),
             }
         )
         sections.append(f"Recovered pending tool `{tool_name}` replayed with status `{status}`.\n{result}")
@@ -2906,6 +2931,27 @@ def _maybe_activate_interactive_plan_from_tool_result(request: Any, result_str: 
     return None
 
 
+def _recoverable_context_file(
+    content: str,
+    *,
+    resource_ref: str,
+    inline_cap: int,
+) -> tuple[str, str]:
+    """Render file context with an exact durable recovery contract."""
+
+    digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    pointer = (
+        f"[context_resource resource_ref={resource_ref} sha256={digest} "
+        f"char_range=0-{len(content)}; use read_file to recover exact bytes]"
+    )
+    if len(content) <= inline_cap:
+        return content, pointer
+    preview_cap = max(inline_cap - len(pointer) - 1, 0)
+    preview = content[:preview_cap]
+    marker = f"{pointer[:-1]} omitted_range={preview_cap}-{len(content)}]"
+    return f"{preview}\n{marker}" if preview else marker, pointer
+
+
 def _build_restoration_context(
     agent_id: Any,
     session_context: Any | None = None,
@@ -2967,11 +3013,17 @@ def _build_restoration_context(
             try:
                 content = fpath.read_text(encoding="utf-8", errors="replace").strip()
                 if content:
-                    if len(content) > _per_file_cap:
-                        content = content[:_per_file_cap] + "\n...(truncated)"
-                    if total + len(content) <= _restore_budget:
-                        parts.append(f"### Agent Identity\n{content}")
-                        total += len(content)
+                    rendered, pointer = _recoverable_context_file(
+                        content,
+                        resource_ref="soul.md",
+                        inline_cap=_per_file_cap,
+                    )
+                    block = f"### Agent Identity\n{rendered}"
+                    if total + len(block) > _restore_budget:
+                        block = f"### Agent Identity\n{pointer}"
+                    if total + len(block) <= _restore_budget:
+                        parts.append(block)
+                        total += len(block)
             except Exception as exc:
                 logger.warning("[Kernel] post-compaction soul.md restore failed: %s", exc)
 
@@ -3038,12 +3090,18 @@ def _build_restoration_context(
                 content = fpath.read_text(encoding="utf-8", errors="replace").strip()
                 if not content:
                     continue
-                if len(content) > _per_file_cap:
-                    content = content[:_per_file_cap] + "\n...(truncated)"
-                if total + len(content) > _restore_budget:
-                    break
-                parts.append(f"### {label}\n{content}")
-                total += len(content)
+                rendered, pointer = _recoverable_context_file(
+                    content,
+                    resource_ref=rel_path,
+                    inline_cap=_per_file_cap,
+                )
+                block = f"### {label}\n{rendered}"
+                if total + len(block) > _restore_budget:
+                    block = f"### {label}\n{pointer}"
+                if total + len(block) > _restore_budget:
+                    continue
+                parts.append(block)
+                total += len(block)
             except Exception as exc:
                 logger.warning("[Kernel] post-compaction restore failed for %s: %s", label, exc)
                 continue
@@ -3067,23 +3125,28 @@ def _build_restoration_context(
                 content = fpath.read_text(encoding="utf-8", errors="replace").strip()
                 if not content or (content.startswith("# ") and len(content) < 30):
                     continue  # Skip empty templates
-                if len(content) > _per_file_cap:
-                    content = content[:_per_file_cap] + "\n...(truncated)"
-                if total + len(content) > _restore_budget:
-                    break
-                parts.append(f"### {label}\n{content}")
-                total += len(content)
+                rendered, pointer = _recoverable_context_file(
+                    content,
+                    resource_ref=rel_path,
+                    inline_cap=_per_file_cap,
+                )
+                block = f"### {label}\n{rendered}"
+                if total + len(block) > _restore_budget:
+                    block = f"### {label}\n{pointer}"
+                if total + len(block) > _restore_budget:
+                    continue
+                parts.append(block)
+                total += len(block)
             except Exception as exc:
                 logger.warning("[Kernel] post-compaction restore failed for %s: %s", label, exc)
                 continue
 
     # ── 3: Recently-read files ──
-    # Restore the working set after compaction: up to 5 files at the full
-    # per-file cap (CC restores ≤5 recently-read files post-compact).
-    # docs/compaction-cc-alignment.md §3 P2-1.
+    # Restore the full tracked working set after compaction. Individual files
+    # use truthful hash-addressed pointers when they cannot fit inline.
     if session_context and getattr(session_context, "recent_files", None):
         _file_budget = _per_file_cap
-        for fpath_str in reversed(session_context.recent_files[-5:]):
+        for fpath_str in reversed(session_context.recent_files):
             if total >= _restore_budget:
                 break
             try:
@@ -3091,19 +3154,28 @@ def _build_restoration_context(
                 if _resolved_recent is None:
                     continue
                 _fp, _label = _resolved_recent
-                if _fp.exists() and _fp.stat().st_size < 100_000:
+                if _fp.exists() and _fp.is_file():
                     content = _fp.read_text(encoding="utf-8", errors="replace").strip()
                     if content:
-                        content = content[:_file_budget]
-                        parts.append(f"### Recent File: {_label}\n```\n{content}\n```")
-                        total += len(content)
+                        rendered, pointer = _recoverable_context_file(
+                            content,
+                            resource_ref=_label,
+                            inline_cap=_file_budget,
+                        )
+                        block = f"### Recent File: {_label}\n```\n{rendered}\n```"
+                        if total + len(block) > _restore_budget:
+                            block = f"### Recent File: {_label}\n{pointer}"
+                        if total + len(block) > _restore_budget:
+                            continue
+                        parts.append(block)
+                        total += len(block)
             except Exception as exc:
                 logger.warning("[Kernel] post-compaction recent-file restore failed: %s", exc)
                 continue
 
     # ── 4: Recent tool outcomes ── (P0.5)
     if session_context and getattr(session_context, "recent_tool_outcomes", None):
-        _outcomes = session_context.recent_tool_outcomes[-5:]
+        _outcomes = session_context.recent_tool_outcomes
         if _outcomes and total < _restore_budget:
             _lines = [f"- {o.get('tool', '?')}: {o.get('summary', '')}" for o in _outcomes]
             _block = "### Recent Tool Results\n" + "\n".join(_lines)
@@ -3113,7 +3185,7 @@ def _build_restoration_context(
 
     # ── 5: Recent writes ── (P0.5)
     if session_context and getattr(session_context, "recent_writes", None):
-        _writes = session_context.recent_writes[-5:]
+        _writes = session_context.recent_writes
         if _writes and total < _restore_budget:
             _block = "### Recent Writes\n" + "\n".join(f"- {w}" for w in _writes)
             if total + len(_block) < _restore_budget:
@@ -3138,7 +3210,7 @@ def _build_restoration_context(
 
     # ── 8: Recent external references ── (P0.5)
     if session_context and getattr(session_context, "recent_external_refs", None):
-        _refs = session_context.recent_external_refs[-5:]
+        _refs = session_context.recent_external_refs
         if _refs and total < _restore_budget:
             _block = "### Recent External References\n" + "\n".join(f"- {r}" for r in _refs)
             if total + len(_block) < _restore_budget:
@@ -3147,7 +3219,7 @@ def _build_restoration_context(
 
     # ── 9: Pending work items ── (P0.5)
     if session_context and getattr(session_context, "pending_items", None):
-        _pending = session_context.pending_items[-5:]
+        _pending = session_context.pending_items
         if _pending and total < _restore_budget:
             _block = "### Pending Work\n" + "\n".join(f"- {p}" for p in _pending)
             if total + len(_block) < _restore_budget:
@@ -3188,9 +3260,6 @@ def _maybe_evict_tool_result(
     effective_threshold = _TOOL_RESULT_EVICTION_THRESHOLD if threshold is None else threshold
     if result_len <= effective_threshold and not force:
         return result
-    if force and result_len <= _TOOL_RESULT_PREVIEW_LENGTH:
-        return result
-
     logger.info(
         "[Kernel] Tool result evicted: tool=%s, chars=%d, threshold=%d, tool_call_id=%s, reason=%s",
         tool_name,
@@ -3204,27 +3273,63 @@ def _maybe_evict_tool_result(
     # exclusive by content: replaying the same tool_call_id must not silently
     # overwrite the original full output that a prior model turn referenced.
     eviction_path = ""
+    persistence_error = "artifact_directory_unavailable"
     if eviction_dir is not None:
         try:
             _Path(eviction_dir).mkdir(parents=True, exist_ok=True)
             file_name, full_path = _exclusive_eviction_path(_Path(eviction_dir), tool_call_id, result)
             if not full_path.exists():
                 full_path.write_text(result, encoding="utf-8")
+            if not full_path.is_file():
+                raise OSError("tool result artifact path is not a file")
             eviction_path = f"workspace/tool_results/{file_name}"
         except Exception as exc:
             logger.warning("[Kernel] Failed to write eviction file: %s", exc)
+            persistence_error = type(exc).__name__
 
-    preview = result[:_TOOL_RESULT_PREVIEW_LENGTH]
+    # Forced eviction is an explicit resource-paging path: retain a compact
+    # inline preview and always expose the complete, hash-pinned artifact.
+    # Normal threshold eviction keeps the larger standard preview.
+    preview_length = min(_TOOL_RESULT_PREVIEW_LENGTH, 512) if force else _TOOL_RESULT_PREVIEW_LENGTH
+    preview = result[:preview_length]
     if eviction_path:
+        digest = hashlib.sha256(result.encode("utf-8")).hexdigest()
         return (
             f"{preview}\n\n"
-            f"[Full output saved to {eviction_path} — {len(result)} chars; reason: {reason}. "
+            f"[Full output saved to {eviction_path} — {len(result)} chars; sha256={digest}; "
+            f"char_range=0-{len(result)}; reason: {reason}. "
             f'Use read_file("{eviction_path}") to retrieve.]'
         )
+    failure = {
+        "status": "tool_result_persistence_failed",
+        "tool": tool_name,
+        "tool_call_id": tool_call_id,
+        "original_chars": len(result),
+        "original_sha256": hashlib.sha256(result.encode("utf-8")).hexdigest(),
+        "reason": reason,
+        "failure": persistence_error,
+        "retryable": True,
+    }
+    # Without a durable pointer there is no lawful lossy replacement. Keep the
+    # complete evidence inline and expose the paging failure; the provider
+    # capacity gate may then compact/fail explicitly instead of hiding content.
     return (
-        f"{preview}\n\n"
-        f"[... truncated — full output {len(result)} chars, tool_call_id={tool_call_id}, reason: {reason}. "
-        f"Use read_file or grep_search to retrieve specific parts if needed.]"
+        f"{result}\n\n"
+        f"[tool_result_persistence_failed: complete output remains inline because no recovery pointer "
+        f"is available. {json.dumps(failure, ensure_ascii=False, sort_keys=True)}]"
+    )
+
+
+def _microcompact_artifact_replacement(content: str) -> str | None:
+    """Return a recoverable compact marker only for a verified artifact pointer."""
+
+    match = _FULL_OUTPUT_ARTIFACT_RE.search(str(content or ""))
+    if match is None or match.group("chars") != match.group("end"):
+        return None
+    return (
+        f"{_MICROCOMPACT_CLEARED_MARKER}; artifact_ref={match.group('path')}; "
+        f"sha256={match.group('sha256')}; char_range=0-{match.group('chars')}; "
+        "use read_file to recover exact evidence]"
     )
 
 

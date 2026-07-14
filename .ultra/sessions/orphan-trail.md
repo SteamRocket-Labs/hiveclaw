@@ -4,6 +4,29 @@ _Auto-maintained by session_trail.py. Each line records a session that edited co
 
 ## Sessions
 
+- 2026-07-13T14:33Z [sid:b3cea956]; branch:main; 23 files (orphan-trail.md, agents.py, chat_sessions.py, +20); last commit: 0a0dec170 fix(ui): restore navigation and governed session d
+- 2026-07-13T14:33Z [sid:b3d8c4ab]; branch:main; 23 files (orphan-trail.md, agents.py, chat_sessions.py, +20); last commit: 0a0dec170 fix(ui): restore navigation and governed session d
+- 2026-07-13T14:32Z [sid:a991d50d]; branch:main; 23 files (orphan-trail.md, agents.py, chat_sessions.py, +20); last commit: 0a0dec170 fix(ui): restore navigation and governed session d
+- 2026-07-13T14:32Z [sid:ba75eee2]; branch:main; 23 files (orphan-trail.md, agents.py, chat_sessions.py, +20); last commit: 0a0dec170 fix(ui): restore navigation and governed session d
+- 2026-07-13T14:31Z [sid:b3d8c4ab]; branch:main; 20 files (orphan-trail.md, agents.py, chat_sessions.py, +17); last commit: 0a0dec170 fix(ui): restore navigation and governed session d
+- 2026-07-13T14:08Z [sid:717b3400]; branch:main; 1 files (orphan-trail.md); last commit: 0a0dec170 fix(ui): restore navigation and governed session d
+- 2026-07-13T08:52Z [sid:4ad1559a]; branch:main; 1 files (orphan-trail.md); last commit: 42f6b6081 Revert "fix(security): fail closed on tenant schem
+- 2026-07-13T08:47Z [sid:7d158570]; branch:main; 1 files (orphan-trail.md); last commit: 42f6b6081 Revert "fix(security): fail closed on tenant schem
+- 2026-07-13T08:46Z [sid:5439fec3]; branch:main; 1 files (orphan-trail.md); last commit: 42f6b6081 Revert "fix(security): fail closed on tenant schem
+- 2026-07-13T08:46Z [sid:e8da339e]; branch:main; 1 files (orphan-trail.md); last commit: 42f6b6081 Revert "fix(security): fail closed on tenant schem
+- 2026-07-13T08:46Z [sid:5a990769]; branch:main; 1 files (orphan-trail.md); last commit: 42f6b6081 Revert "fix(security): fail closed on tenant schem
+- 2026-07-13T08:46Z [sid:20009760]; branch:main; 1 files (orphan-trail.md); last commit: 42f6b6081 Revert "fix(security): fail closed on tenant schem
+- 2026-07-13T08:45Z [sid:25405db4]; branch:main; 1 files (orphan-trail.md); last commit: 42f6b6081 Revert "fix(security): fail closed on tenant schem
+- 2026-07-13T08:45Z [sid:fc480721]; branch:main; 1 files (orphan-trail.md); last commit: 42f6b6081 Revert "fix(security): fail closed on tenant schem
+- 2026-07-13T08:44Z [sid:c18fb4fa]; branch:main; 1 files (orphan-trail.md); last commit: 42f6b6081 Revert "fix(security): fail closed on tenant schem
+- 2026-07-13T08:43Z [sid:db0ece05]; branch:main; 1 files (orphan-trail.md); last commit: 42f6b6081 Revert "fix(security): fail closed on tenant schem
+- 2026-07-13T08:43Z [sid:f2748bab]; branch:main; 1 files (orphan-trail.md); last commit: 42f6b6081 Revert "fix(security): fail closed on tenant schem
+- 2026-07-13T08:42Z [sid:db0ece05]; branch:main; 1 files (orphan-trail.md); last commit: 42f6b6081 Revert "fix(security): fail closed on tenant schem
+- 2026-07-13T08:38Z [sid:6a1cd614]; branch:main; 1 files (orphan-trail.md); last commit: 42f6b6081 Revert "fix(security): fail closed on tenant schem
+- 2026-07-13T08:34Z [sid:db0ece05]; branch:main; 1 files (orphan-trail.md); last commit: 42f6b6081 Revert "fix(security): fail closed on tenant schem
+- 2026-07-13T08:33Z [sid:127c79d1]; branch:main; 1 files (orphan-trail.md); last commit: 42f6b6081 Revert "fix(security): fail closed on tenant schem
+- 2026-07-13T08:25Z [sid:db0ece05]; branch:main; 1 files (orphan-trail.md); last commit: 42f6b6081 Revert "fix(security): fail closed on tenant schem
+- 2026-07-12T13:02Z [sid:520170cc]; branch:main; 1 files (agent-native-atomic-source-audit-2026-07-12.md); last commit: c7eb9d67a fix(R-008): harden legacy quarantine export
 - 2026-07-09T12:25Z [sid:5b3d1f83]; branch:main; 8 files (compact-snapshot.md, orphan-trail.md, activation.py, +5); last commit: f5530f38f fix activation feedback sidecar closure
 - 2026-07-09T06:23Z [sid:0a0c04a4]; branch:main; 2 files (compact-snapshot.md, orphan-trail.md); last commit: be8da95fb docs: record the fail-closed root fix in the C clo
 - 2026-07-09T06:08Z [sid:02225279]; branch:main; 2 files (compact-snapshot.md, orphan-trail.md); last commit: be8da95fb docs: record the fail-closed root fix in the C clo
@@ -81,26 +104,3 @@ _Auto-maintained by session_trail.py. Each line records a session that edited co
 - 2026-07-03T16:03Z [sid:63e46018]; branch:main; 56 files (project.yml, orphan-trail.md, subagent.py, +53); last commit: 84acd21c Normalize residual entropy and rebind dangling toke
 - 2026-07-03T15:59Z [sid:25309a6d]; branch:main; 56 files (project.yml, orphan-trail.md, subagent.py, +53); last commit: 84acd21c Normalize residual entropy and rebind dangling toke
 - 2026-07-03T15:51Z [sid:47c4a226]; branch:main; 56 files (project.yml, orphan-trail.md, subagent.py, +53); last commit: 84acd21c Normalize residual entropy and rebind dangling toke
-- 2026-07-03T14:49Z [sid:63e46018]; branch:main; 53 files (project.yml, orphan-trail.md, subagent.py, +50); last commit: 84acd21c Normalize residual entropy and rebind dangling toke
-- 2026-07-03T14:45Z [sid:25309a6d]; branch:main; 53 files (project.yml, orphan-trail.md, subagent.py, +50); last commit: 84acd21c Normalize residual entropy and rebind dangling toke
-- 2026-07-03T10:46Z [sid:63e46018]; branch:main; 38 files (orphan-trail.md, subagent.py, subagent_definition.py, +35); last commit: 84acd21c Normalize residual entropy and rebind dangling toke
-- 2026-07-03T10:07Z [sid:506ce0db]; branch:main; 34 files (project.yml, orphan-trail.md, subagent.py, +31); last commit: 84acd21c Normalize residual entropy and rebind dangling toke
-- 2026-07-03T10:03Z [sid:63e46018]; branch:main; 34 files (project.yml, orphan-trail.md, subagent.py, +31); last commit: 84acd21c Normalize residual entropy and rebind dangling toke
-- 2026-07-03T10:02Z [sid:25309a6d]; branch:main; 34 files (project.yml, orphan-trail.md, subagent.py, +31); last commit: 84acd21c Normalize residual entropy and rebind dangling toke
-- 2026-07-03T10:00Z [sid:fa23946f]; branch:main; 34 files (project.yml, orphan-trail.md, subagent.py, +31); last commit: 84acd21c Normalize residual entropy and rebind dangling toke
-- 2026-07-03T09:57Z [sid:63e46018]; branch:main; 34 files (project.yml, orphan-trail.md, subagent.py, +31); last commit: 84acd21c Normalize residual entropy and rebind dangling toke
-- 2026-07-03T09:50Z [sid:e1e5a38b]; branch:main; 33 files (orphan-trail.md, subagent.py, subagent_definition.py, +30); last commit: 84acd21c Normalize residual entropy and rebind dangling toke
-- 2026-07-03T09:50Z [sid:63e46018]; branch:main; 33 files (orphan-trail.md, subagent.py, subagent_definition.py, +30); last commit: 84acd21c Normalize residual entropy and rebind dangling toke
-- 2026-07-03T09:49Z [sid:e1e5a38b]; branch:main; 33 files (orphan-trail.md, subagent.py, subagent_definition.py, +30); last commit: 84acd21c Normalize residual entropy and rebind dangling toke
-- 2026-07-03T09:42Z [sid:63e46018]; branch:main; 33 files (orphan-trail.md, subagent.py, subagent_definition.py, +30); last commit: 84acd21c Normalize residual entropy and rebind dangling toke
-- 2026-07-03T09:41Z [sid:f1e0343b]; branch:main; 33 files (orphan-trail.md, subagent.py, subagent_definition.py, +30); last commit: 84acd21c Normalize residual entropy and rebind dangling toke
-- 2026-07-03T09:41Z [sid:7c349e09]; branch:main; 33 files (orphan-trail.md, subagent.py, subagent_definition.py, +30); last commit: 84acd21c Normalize residual entropy and rebind dangling toke
-- 2026-07-03T09:41Z [sid:506ce0db]; branch:main; 33 files (orphan-trail.md, subagent.py, subagent_definition.py, +30); last commit: 84acd21c Normalize residual entropy and rebind dangling toke
-- 2026-07-03T09:41Z [sid:e1e5a38b]; branch:main; 33 files (orphan-trail.md, subagent.py, subagent_definition.py, +30); last commit: 84acd21c Normalize residual entropy and rebind dangling toke
-- 2026-07-03T09:41Z [sid:63e46018]; branch:main; 33 files (orphan-trail.md, subagent.py, subagent_definition.py, +30); last commit: 84acd21c Normalize residual entropy and rebind dangling toke
-- 2026-07-03T09:34Z [sid:7c349e09]; branch:main; 30 files (orphan-trail.md, subagent.py, subagent_definition.py, +27); last commit: 84acd21c Normalize residual entropy and rebind dangling toke
-- 2026-07-03T09:34Z [sid:506ce0db]; branch:main; 30 files (orphan-trail.md, subagent.py, subagent_definition.py, +27); last commit: 84acd21c Normalize residual entropy and rebind dangling toke
-- 2026-07-03T09:33Z [sid:e1e5a38b]; branch:main; 30 files (orphan-trail.md, subagent.py, subagent_definition.py, +27); last commit: 84acd21c Normalize residual entropy and rebind dangling toke
-- 2026-07-03T09:32Z [sid:f1e0343b]; branch:main; 30 files (orphan-trail.md, subagent.py, subagent_definition.py, +27); last commit: 84acd21c Normalize residual entropy and rebind dangling toke
-- 2026-07-03T09:32Z [sid:e1e5a38b]; branch:main; 29 files (orphan-trail.md, subagent.py, subagent_definition.py, +26); last commit: 84acd21c Normalize residual entropy and rebind dangling toke
-- 2026-07-03T09:26Z [sid:63e46018]; branch:main; 29 files (orphan-trail.md, subagent.py, subagent_definition.py, +26); last commit: 84acd21c Normalize residual entropy and rebind dangling toke

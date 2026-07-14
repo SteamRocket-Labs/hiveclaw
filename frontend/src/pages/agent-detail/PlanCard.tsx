@@ -17,8 +17,8 @@
  *     which fetches the real plan by id and refetches), and
  *   - the Aware/Autonomy plan queue (`PlanQueueSection`).
  *
- * Confirm binds to `plan_version` + `plan_hash` (§8.2): the user confirms the
- * exact immutable version shown, never a mutable chat blob. Actions are only
+ * Confirm sends the displayed `plan_version`; the server resolves its own
+ * canonical hash. Actions are only
  * offered while the plan is `awaiting_confirmation`.
  */
 
@@ -169,12 +169,8 @@ export async function confirmAndHandoffPlan(
   plan: PlanRequest,
   api: PlanConfirmationApi = planApi,
 ): Promise<void> {
-  if (plan.plan_hash == null) {
-    throw new Error('missing_plan_hash');
-  }
   await api.confirmAndHandoff(agentId, plan.id, {
     plan_version: plan.plan_version,
-    plan_hash: plan.plan_hash,
   });
 }
 
@@ -237,10 +233,6 @@ export default function PlanCard({ agentId, plan, onChanged, dense = false }: Pl
   };
 
   const onConfirm = () => {
-    if (plan.plan_hash == null) {
-      setError(t('agent.plan.missingHash', 'This plan has no hash yet and cannot be confirmed.'));
-      return;
-    }
     return runAction('confirm', () => confirmAndHandoffPlan(agentId, plan));
   };
 

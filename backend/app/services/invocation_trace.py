@@ -285,7 +285,7 @@ async def record_invocation_span(
         evidence_refs=evidence_refs,
         truth_evidence_json=truth_evidence_json,
         metadata_json=clean_metadata,
-        error=str(error)[:4000] if error else None,
+        error=str(error) if error else None,
     )
     db.add(row)
     await db.flush()

@@ -58,11 +58,18 @@ def build_schedule_decision_entry(
 
 
 def confirmed_plan_ref_from_args(arguments: dict[str, Any]) -> dict[str, Any]:
-    plan_id = arguments.get("confirmed_plan_id")
+    evidence = arguments.get("_plan_authorization")
+    if not isinstance(evidence, dict):
+        evidence = {}
+    plan_id = evidence.get("plan_id") or arguments.get("confirmed_plan_id")
     if not plan_id:
         return {}
     return {
         "plan_id": str(plan_id),
-        "plan_version": arguments.get("confirmed_plan_version"),
-        "plan_hash": arguments.get("confirmed_plan_hash"),
+        "plan_version": (
+            evidence.get("plan_version")
+            if evidence.get("plan_version") is not None
+            else arguments.get("confirmed_plan_version")
+        ),
+        "plan_hash": evidence.get("plan_hash"),
     }

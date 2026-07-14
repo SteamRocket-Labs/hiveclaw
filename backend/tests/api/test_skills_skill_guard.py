@@ -29,8 +29,10 @@ async def test_preview_url_import_returns_skill_guard_report(monkeypatch):
         current_user=SimpleNamespace(tenant_id=uuid4()),
     )
 
-    assert result["skill_guard"]["allowed"] is False
-    assert result["skill_guard"]["risk_level"] == "critical"
+    assert result["skill_guard"]["allowed"] is True
+    assert result["skill_guard"]["requires_review"] is True
+    assert result["skill_guard"]["disposition"] == "quarantine"
+    assert result["skill_guard"]["risk_level"] == "medium"
     assert result["skill_guard"]["findings"][0]["category"] == "remote_shell_pipe"
 
 

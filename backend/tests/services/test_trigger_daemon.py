@@ -47,6 +47,29 @@ async def test_terminal_trigger_update_forwards_completion_outbox_atomically(mon
     assert captured["fields"]["completion_notification"] is notification
 
 
+@pytest.mark.asyncio
+async def test_terminal_trigger_update_preserves_full_result_summary(monkeypatch):
+    import app.services.trigger_daemon as daemon
+
+    captured = {}
+
+    async def fake_update_runtime_task_record(task_id, **fields):
+        captured["task_id"] = task_id
+        captured["fields"] = fields
+        return True
+
+    monkeypatch.setattr(daemon, "update_runtime_task_record", fake_update_runtime_task_record)
+    full_result = "trigger evidence\n" + ("T" * 3000) + "\nEND_OF_TRIGGER_EVIDENCE"
+
+    await daemon._update_trigger_runtime_task(
+        "trigger-run-full",
+        status="completed",
+        result_summary=full_result,
+    )
+
+    assert captured["fields"]["result_summary"] == full_result
+
+
 def test_trigger_completion_targets_reflection_projection_without_parent_rerun():
     import app.services.trigger_daemon as daemon
 

@@ -37,7 +37,6 @@ from app.models.feature_flag import FeatureFlag
 from app.models.user import User
 from app.runtime.context_budget import (
     ContextBudget,
-    _is_simple_turn_candidate,
     compute_context_budget,
     resolve_turn_model_route,
 )
@@ -161,6 +160,8 @@ class AgentInvocationRequest:
     max_tool_rounds: int | None = None
     invocation_scope: str | None = None
     smart_model_routing: dict[str, Any] | None = None
+    # Explicit per-turn/session user lock. Smart routing may never override it.
+    model_routing_locked: bool = False
     delegation_token: Any | None = None
     # RC11: when True the kernel exposes ZERO tools to the LLM (see get_agent_kernel).
     # Specialized reasoning passes set this so text synthesis cannot route through
@@ -660,13 +661,6 @@ async def _resolve_memory_context(
             )
         )
         await _consume_memory_context_status(request, tenant_id, runtime_memory_result)
-        if runtime_memory_result.block_model:
-            raise ContextDependencyUnavailable(
-                dependency="memory",
-                code=runtime_memory_result.code,
-                user_message=runtime_memory_result.user_message,
-                retryable=runtime_memory_result.retryable,
-            )
         runtime_memory_context = runtime_memory_result.content
         if runtime_memory_context:
             parts.append(
@@ -677,16 +671,20 @@ async def _resolve_memory_context(
                     content=runtime_memory_context,
                 )
             )
-        if runtime_memory_result.status == "degraded":
+        if runtime_memory_result.status != "ready":
             parts.append(
                 _context_engine().inject(
                     request.session_context,
                     kind="memory_runtime_status",
                     source="memory_provider:degraded",
                     content=(
-                        "[Memory runtime degraded] Some semantic recall is temporarily unavailable. "
-                        "Resident identity and owner constraints remain active; do not assume complete recall. "
-                        "State uncertainty and ask for missing facts when they matter."
+                        "[Memory runtime degraded] Some governed memory context is temporarily unavailable. "
+                        f"Authority context available: {runtime_memory_result.authority_context_available}. "
+                        f"Durable writes available: {runtime_memory_result.durable_write_available}. "
+                        f"External effects available: {runtime_memory_result.external_effects_available}. "
+                        "When authority context is unavailable, external effects are frozen. "
+                        "Continue reasoning from visible evidence, do not assume complete recall, "
+                        "state uncertainty, and ask for missing facts when they matter."
                     ),
                 )
             )
@@ -761,13 +759,20 @@ async def _consume_memory_context_status(
         "retryable": result.retryable,
         "attempts": result.attempts,
         "degraded_components": list(result.degraded_components),
-        "block_model": result.block_model,
+        "conversation_available": result.conversation_available,
+        "authority_context_available": result.authority_context_available,
+        "durable_write_available": result.durable_write_available,
+        "external_effects_available": result.external_effects_available,
     }
     metadata["memory_context_status"] = status_fact
     if result.status == "ready":
         return
 
-    event_type = "memory_context_unavailable" if result.block_model else "memory_context_degraded"
+    event_type = (
+        "memory_context_unavailable"
+        if result.status in {"unavailable", "blocked_authority"}
+        else "memory_context_degraded"
+    )
     event = {
         "type": "session_context",
         "event_type": event_type,
@@ -1020,6 +1025,28 @@ async def _execute_tool_with_request(
     tool_call_id: str | None = None,
     trace_metadata_sink: dict[str, Any] | None = None,
 ) -> str | ToolContentEnvelope:
+    memory_status = _session_metadata(request.session_context).get("memory_context_status")
+    if isinstance(memory_status, dict) and memory_status.get("external_effects_available") is False:
+        from app.tools.registry import is_read_only_tool
+        from app.tools.result_envelope import render_tool_error
+
+        if not is_read_only_tool(tool_name):
+            return render_tool_error(
+                tool_name=tool_name,
+                error_class="authority_context_unavailable",
+                message=(
+                    "This governed effect is temporarily frozen because memory authority context "
+                    "could not be verified. Read-only reasoning and inspection remain available."
+                ),
+                retryable=True,
+                actionable_hint="Retry after memory authority recovery, or continue with read-only tools.",
+                extra={
+                    "outcome": "unavailable",
+                    "dependency": "memory_authority_context",
+                    "effect_frozen": True,
+                },
+            )
+
     if request.tool_executor:
         executor_kwargs: dict[str, Any] = {}
         try:
@@ -1116,7 +1143,10 @@ def get_agent_kernel(request: AgentInvocationRequest | None = None) -> AgentKern
                         code=exc.code,
                         user_message=exc.user_message,
                         retryable=exc.retryable,
-                        block_model=True,
+                        conversation_available=exc.dependency != "soul",
+                        authority_context_available=False,
+                        durable_write_available=False,
+                        external_effects_available=False,
                         degraded_components=(exc.dependency,),
                         error_class=type(exc.__cause__).__name__ if exc.__cause__ else type(exc).__name__,
                     ),
@@ -1379,28 +1409,34 @@ def _resolve_effective_turn_route(
         session_source=request.session_context.source if request.session_context else None,
         supports_vision=request.supports_vision,
         routing_config=routing_config,
+        model_routing_locked=request.model_routing_locked,
     )
+    selected_model_id = getattr(route.model, "id", None)
     route_metadata = {
+        "selected_model_id": str(selected_model_id) if selected_model_id is not None else None,
         "selected_model": getattr(route.model, "model", None),
+        "selected_model_label": getattr(route.model, "label", None) or getattr(route.model, "model", None),
+        "selected_provider": getattr(route.model, "provider", None),
+        "selected_supports_vision": bool(getattr(route.model, "supports_vision", route.supports_vision)),
+        "selected_context_window_tokens": getattr(route.model, "max_input_tokens", None),
         "fallback_model": getattr(route.fallback_model, "model", None),
         "reason": route.reason,
         "task_profile": route.task_profile.name,
         "complexity": route.task_profile.complexity,
         "execution_shape": route.task_profile.execution_shape,
         "config_source": route.config_source,
+        "model_routing_locked": bool(request.model_routing_locked),
     }
     if request.session_context is not None:
         session_metadata = _session_metadata(request.session_context)
         session_metadata["turn_route"] = route_metadata
-        # Work Ledger slice 2 / T-G1: decide on the general path whether the
-        # cognitive scaffold may participate this turn (complex → scheduler
-        # eligibility + compaction reboot; simple Q&A → zero overhead). The
-        # kernel reads this flag; actual reminder frequency lives in the
-        # scheduler and is inferred from behavior.
+        # Keep the optional ledger reminder available for every turn. The
+        # scheduler's behavioral idle threshold avoids per-round overhead; the
+        # model, not a keyword classifier, decides whether to use ledger tools.
         session_metadata["work_ledger_enabled"] = should_enable_work_ledger(
             task_profile_name=route.task_profile.name,
             complexity=route.task_profile.complexity,
-            is_simple_turn_candidate=_is_simple_turn_candidate(_last_user_query(request.messages), route.task_profile),
+            is_simple_turn_candidate=False,
         )
     return {
         "model": route.model,

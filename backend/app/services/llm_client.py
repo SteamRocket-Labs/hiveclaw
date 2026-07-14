@@ -816,7 +816,7 @@ class OpenAICompatibleClient(LLMClient):
         response = await _post_with_status_retries(client, url, payload=payload, headers=self._get_headers())
 
         if response.status_code >= 400:
-            error_text = response.text[:500]
+            error_text = response.text
             raise LLMError(f"HTTP {response.status_code}: {error_text}")
 
         data = response.json()
@@ -900,7 +900,7 @@ class OpenAICompatibleClient(LLMClient):
                             await asyncio.sleep(wait)
                             await reset_partial_stream_for_retry()
                             continue
-                        raise LLMError(f"HTTP {resp.status_code}: {error_body[:500]}")
+                        raise LLMError(f"HTTP {resp.status_code}: {error_body}")
 
                     async for line in resp.aiter_lines():
                         chunk, in_think, tag_buffer = self._parse_stream_line(line, in_think, tag_buffer)
@@ -966,7 +966,7 @@ class OpenAICompatibleClient(LLMClient):
                     else:
                         raise LLMError(f"Rate limited after {max_retries} attempts: {e}")
                 else:
-                    raise LLMError(f"HTTP {e.response.status_code}: {e.response.text[:200]}")
+                    raise LLMError(f"HTTP {e.response.status_code}: {e.response.text}")
             except (httpx.ConnectError, httpx.ReadError, httpx.ConnectTimeout, httpx.ReadTimeout) as e:
                 if attempt < max_retries - 1:
                     wait = _retry_backoff_seconds(attempt)
@@ -1254,7 +1254,7 @@ class OpenAIResponsesClient(LLMClient):
         response = await _post_with_status_retries(client, url, payload=payload, headers=self._get_headers())
 
         if response.status_code >= 400:
-            error_text = response.text[:500]
+            error_text = response.text
             raise LLMError(f"HTTP {response.status_code}: {error_text}")
 
         data = response.json()
@@ -1673,7 +1673,7 @@ class GeminiClient(LLMClient):
         response = await _post_with_status_retries(client, url, payload=payload, headers=self._get_headers())
 
         if response.status_code >= 400:
-            error_text = response.text[:500]
+            error_text = response.text
             raise LLMError(f"HTTP {response.status_code}: {error_text}")
 
         data = response.json()
@@ -1750,7 +1750,7 @@ class GeminiClient(LLMClient):
                             final_usage = None
                             final_finish_reason = None
                             continue
-                        raise LLMError(f"HTTP {resp.status_code}: {error_body[:500]}")
+                        raise LLMError(f"HTTP {resp.status_code}: {error_body}")
 
                     async for line in resp.aiter_lines():
                         if not line.startswith("data:"):
@@ -1967,7 +1967,7 @@ class AnthropicClient(LLMClient):
         response = await _post_with_status_retries(client, url, payload=payload, headers=self._get_headers())
 
         if response.status_code >= 400:
-            error_text = response.text[:500]
+            error_text = response.text
             raise LLMError(f"HTTP {response.status_code}: {error_text}")
 
         data = response.json()
@@ -2067,7 +2067,7 @@ class AnthropicClient(LLMClient):
                             final_usage = None
                             final_model = self.model
                             continue
-                        raise LLMError(f"HTTP {resp.status_code}: {error_body[:500]}")
+                        raise LLMError(f"HTTP {resp.status_code}: {error_body}")
 
                     current_event = None
 

@@ -372,7 +372,12 @@ def seed_base_level_telemetry(data_root: Path, agent_id: uuid.UUID, *, now: date
         )
 
 
-def _score_cases(ranked_ids_by_case: dict[str, list[str]], cases: tuple[MemoryRecallCase, ...]) -> dict:
+def _score_cases(
+    ranked_ids_by_case: dict[str, list[str]],
+    cases: tuple[MemoryRecallCase, ...],
+    *,
+    ranked_scores_by_case: dict[str, list[float]] | None = None,
+) -> dict:
     case_reports: dict[str, dict] = {}
     recall_values: list[float] = []
     reciprocal_ranks: list[float] = []
@@ -390,7 +395,11 @@ def _score_cases(ranked_ids_by_case: dict[str, list[str]], cases: tuple[MemoryRe
                     break
             reciprocal_ranks.append(reciprocal)
         else:
-            recall = 1.0 if not top else 0.0
+            # Candidate visibility is not a semantic relevance claim. A
+            # negative query passes when every visible top-k candidate has a
+            # zero ranking signal; do not require mechanical candidate deletion.
+            top_scores = (ranked_scores_by_case or {}).get(case.id, [])[: case.k]
+            recall = 1.0 if not any(float(score or 0.0) > 0.0 for score in top_scores) else 0.0
         recall_values.append(recall)
         case_reports[case.id] = {
             "query": case.query,
@@ -419,6 +428,7 @@ def run_memory_recall_eval(
     """Rank fixture pages through the real ``search_wiki_pages`` path."""
     active_cases = cases or _DEFAULT_CASES
     ranked_by_case: dict[str, list[str]] = {}
+    scores_by_case: dict[str, list[float]] = {}
     for case in active_cases:
         hits = search_wiki_pages(
             data_root,
@@ -429,9 +439,15 @@ def run_memory_recall_eval(
             page_dirs=KNOWLEDGE_PAGE_DIRS,
         )
         ranked_by_case[case.id] = [str(hit.get("page_id") or "") for hit in hits]
-    report = _score_cases(ranked_by_case, active_cases)
+        scores_by_case[case.id] = [float(hit.get("score") or 0.0) for hit in hits]
+    report = _score_cases(
+        ranked_by_case,
+        active_cases,
+        ranked_scores_by_case=scores_by_case,
+    )
     for case in active_cases:
         report["cases"][case.id]["ranked_page_ids"] = ranked_by_case[case.id]
+        report["cases"][case.id]["ranked_scores"] = scores_by_case[case.id]
     report["benchmark"] = "memory_recall_baseline"
     report["method"] = method
     return report
@@ -490,7 +506,11 @@ async def run_retriever_pipeline_eval(
         )
         for case in active_cases
     )
-    report = _score_cases(ranked_by_case, scoring_cases)
+    report = _score_cases(
+        ranked_by_case,
+        scoring_cases,
+        ranked_scores_by_case=scores_by_case,
+    )
     for case in active_cases:
         report["cases"][case.id]["ranked_sources"] = ranked_by_case[case.id]
         report["cases"][case.id]["ranked_scores"] = scores_by_case[case.id]

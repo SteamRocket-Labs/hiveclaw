@@ -5,6 +5,17 @@ import uuid
 import pytest
 
 
+def test_feishu_file_render_without_explicit_limit_preserves_full_content() -> None:
+    from app.services.agent_tool_domains.feishu_drive import _render_file_text
+
+    full_text = "Feishu evidence\n" + ("F" * 25000) + "\nEND_OF_FEISHU_EVIDENCE"
+
+    rendered = _render_file_text("evidence.txt", "token", full_text, None, "drive")
+
+    assert full_text in rendered
+    assert "Truncated" not in rendered
+
+
 @pytest.mark.asyncio
 async def test_feishu_url_resolve_unwraps_wiki_file_node(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.services.agent_tool_domains import feishu_drive
@@ -97,6 +108,32 @@ async def test_feishu_url_read_routes_base_url_to_records_when_table_id_is_suppl
     )
 
     assert result == "BASE RECORDS WITH URL FIELDS"
+
+
+@pytest.mark.asyncio
+async def test_feishu_url_read_defaults_base_records_to_complete_all_page_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.agent_tool_domains import feishu_base, feishu_drive
+
+    async def fake_record_list(agent_id: uuid.UUID | str, arguments: dict) -> str:
+        assert agent_id == "agent-1"
+        assert arguments == {
+            "base_token": "base-token",
+            "table_id": "tbl_1",
+            "max_chars": None,
+            "fetch_all": True,
+        }
+        return "COMPLETE BASE RECORDS"
+
+    monkeypatch.setattr(feishu_base, "_feishu_base_record_list", fake_record_list)
+
+    result = await feishu_drive._feishu_url_read(
+        "agent-1",
+        {"url": "https://example.feishu.cn/base/base-token?table=tbl_1"},
+    )
+
+    assert result == "COMPLETE BASE RECORDS"
 
 
 @pytest.mark.asyncio

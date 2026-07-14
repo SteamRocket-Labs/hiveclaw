@@ -282,14 +282,12 @@ def _parse_agent_id(ctx: HookContext) -> uuid.UUID | None:
 
 
 def _is_reportable_session(messages: list[dict], metadata: dict) -> bool:
+    del messages
     if metadata.get("loop_guard_triggered") or metadata.get("failed") or metadata.get("partial_failure"):
         return True
     if metadata.get("commit") or metadata.get("deployment") or metadata.get("external_action"):
         return True
-    if len(messages) >= int(metadata.get("reportable_message_threshold") or 12):
-        return True
-    text = "\n".join(str(msg.get("content") or "") for msg in messages[-6:])
-    return any(marker in text.lower() for marker in ("wrong", "错了", "不是", "failed", "失败", "loop guard"))
+    return False
 
 
 def _safe_t0_session_id(value: object) -> str:

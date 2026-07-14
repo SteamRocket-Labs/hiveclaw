@@ -43,21 +43,23 @@ def test_coordinator_session_worker_tools_are_coordinator_and_core_visible() -> 
     assert "delegate_to_agent" not in COORDINATOR_ALLOWED_TOOLS
     assert "check_async_task" not in COORDINATOR_ALLOWED_TOOLS
 
-    filtered = filter_tools_for_coordinator(
-        [
-            {"function": {"name": "spawn_subagent", "parameters": {}}},
-            {"function": {"name": "check_subagent", "parameters": {}}},
-            {"function": {"name": "send_agent_session_message", "parameters": {}}},
-            {"function": {"name": "delegate_to_agent", "parameters": {}}},
-            {"function": {"name": "web_search", "parameters": {}}},
-            {"function": {"name": "execute_code", "parameters": {}}},
-        ]
-    )
+    tools = [
+        {"function": {"name": "spawn_subagent", "parameters": {}}},
+        {"function": {"name": "check_subagent", "parameters": {}}},
+        {"function": {"name": "send_agent_session_message", "parameters": {}}},
+        {"function": {"name": "delegate_to_agent", "parameters": {}}},
+        {"function": {"name": "web_search", "parameters": {}}},
+        {"function": {"name": "execute_code", "parameters": {}}},
+    ]
+    filtered = filter_tools_for_coordinator(tools)
     kept = {tool["function"]["name"] for tool in filtered}
     assert worker_tools <= kept
-    assert "delegate_to_agent" not in kept
-    assert "web_search" not in kept
-    assert "execute_code" not in kept
+    assert {"delegate_to_agent", "web_search", "execute_code"} <= kept
+
+    strict = filter_tools_for_coordinator(tools, dispatcher_only=True)
+    strict_kept = {tool["function"]["name"] for tool in strict}
+    assert worker_tools <= strict_kept
+    assert {"delegate_to_agent", "web_search", "execute_code"}.isdisjoint(strict_kept)
 
 
 def test_coordinator_prompt_directs_agenttool_nonblocking_worker_loop() -> None:
@@ -68,5 +70,5 @@ def test_coordinator_prompt_directs_agenttool_nonblocking_worker_loop() -> None:
     assert "check_subagent" in prompt
     assert "send_agent_session_message" in prompt
     assert "delegate_to_agent" not in prompt
-    assert "still running" in prompt.lower()
+    assert "running work" in prompt.lower()
     assert "never fabricate completion" in prompt.lower()

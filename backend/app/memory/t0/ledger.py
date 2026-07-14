@@ -881,7 +881,7 @@ def _sanitize_t0_content(content: Any) -> tuple[str, str, list[str]]:
     else:
         raw = json.dumps(content, ensure_ascii=False, sort_keys=True)
     decision = PrivacyLayer(PrivacyStore()).classify_and_mask(raw)
-    lint = lint_memory_form(decision.sanitized_text[:4000])
+    lint = lint_memory_form(decision.sanitized_text)
     form_warnings = sorted({violation.code for violation in lint.violations if violation.code != "empty"})
     return decision.sanitized_text, decision.sensitivity.value, form_warnings
 

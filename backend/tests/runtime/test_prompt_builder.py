@@ -40,16 +40,17 @@ class TestModelAwareBudget:
         budget = _compute_system_prompt_budget(64000)
         assert budget == 44800
 
-    def test_assemble_trims_frozen_when_over_budget(self) -> None:
-        from app.runtime.prompt_builder import PROMPT_CACHE_BOUNDARY, assemble_runtime_prompt
+    def test_assemble_fails_loudly_when_selected_prompt_exceeds_budget(self) -> None:
+        from app.runtime.prompt_builder import PromptBudgetExceededError, assemble_runtime_prompt
 
         frozen = "A" * 20000
         dynamic = "B" * 100
-        # 8K model → budget 15000 → 20000 + 100 > 15000 → should trim
-        result = assemble_runtime_prompt(frozen, dynamic, context_window_tokens=8000)
-        assert len(result) <= 15200  # budget + truncation notice
-        assert "B" * 100 in result  # dynamic preserved
-        assert PROMPT_CACHE_BOUNDARY.strip() in result  # cache split preserved even when trimmed
+        # 8K model → budget 15000. The final assembler is not allowed to
+        # silently choose which frozen or dynamic bytes survive.
+        with pytest.raises(PromptBudgetExceededError) as exc_info:
+            assemble_runtime_prompt(frozen, dynamic, context_window_tokens=8000)
+
+        assert exc_info.value.required_chars > exc_info.value.budget_chars
 
     def test_assemble_no_trim_when_within_budget(self) -> None:
         from app.runtime.prompt_builder import assemble_runtime_prompt
@@ -107,7 +108,7 @@ def test_dynamic_suffix_renders_available_deferred_tools():
     assert "schema_tokens=42" in suffix
 
 
-def test_dynamic_suffix_caps_deferred_tool_index_by_budget() -> None:
+def test_dynamic_suffix_preserves_every_deferred_tool_despite_advisory_budget() -> None:
     from app.runtime.context_budget import TaskProfile
     from app.runtime.prompt_builder import build_dynamic_prompt_suffix
 
@@ -139,8 +140,8 @@ def test_dynamic_suffix_caps_deferred_tool_index_by_budget() -> None:
 
     assert "## Available Deferred Tools" in suffix
     assert "tool_0" in suffix
-    assert "tool_29" not in suffix
-    assert "more available in manifest" in suffix
+    assert "tool_29" in suffix
+    assert "more available in manifest" not in suffix
 
 
 def test_dynamic_suffix_records_context_candidate_selection_ledger():
@@ -186,6 +187,40 @@ def test_dynamic_suffix_records_context_candidate_selection_ledger():
         decisions["dynamic:memory:memory_snapshot"]["render_order"]
         < decisions["dynamic:skill:skill_catalog"]["render_order"]
     )
+
+
+def test_dynamic_suffix_never_second_trims_authorized_semantic_inputs() -> None:
+    import hashlib
+
+    from app.runtime.prompt_builder import build_dynamic_prompt_suffix
+
+    memory_tail = "DECISIVE-MEMORY-TAIL"
+    retrieval_tail = "DECISIVE-RETRIEVAL-TAIL"
+    suffix_tail = "DECISIVE-SUFFIX-TAIL"
+    memory = ("memory-evidence " * 800) + memory_tail
+    retrieval = ("retrieval-evidence " * 500) + retrieval_tail
+    explicit_suffix = ("request-context " * 500) + suffix_tail
+    ledger: list[dict] = []
+
+    rendered = build_dynamic_prompt_suffix(
+        memory_snapshot=memory,
+        retrieval_context=retrieval,
+        system_prompt_suffix=explicit_suffix,
+        context_section_ledger=ledger,
+    )
+
+    assert memory_tail in rendered
+    assert retrieval_tail in rendered
+    assert suffix_tail in rendered
+    decisions = {item["candidate_id"]: item for item in ledger}
+    assert (
+        decisions["dynamic:memory:memory_snapshot"]["source_hash"] == hashlib.sha256(memory.encode()).hexdigest()[:16]
+    )
+    assert (
+        decisions["dynamic:knowledge:retrieval_context"]["source_hash"]
+        == hashlib.sha256(retrieval.encode()).hexdigest()[:16]
+    )
+    assert not any(item["decision"] == "selected_trimmed" for item in ledger)
 
 
 def test_dynamic_suffix_has_no_activation_hints_surface() -> None:
@@ -260,7 +295,7 @@ def test_dynamic_suffix_suggests_deferred_tool_groups_not_capability_packs():
     assert "These packs are likely useful" not in suffix
 
 
-def test_dynamic_suffix_trims_large_retrieval_but_keeps_suffix():
+def test_dynamic_suffix_preserves_complete_retrieval_and_suffix():
     from app.runtime.prompt_builder import build_dynamic_prompt_suffix
 
     retrieval = "\n".join(f"- item {i} {'x' * 80}" for i in range(80))
@@ -271,7 +306,8 @@ def test_dynamic_suffix_trims_large_retrieval_but_keeps_suffix():
     )
 
     assert "FINAL_SUFFIX" in suffix
-    assert len(suffix) < 3200
+    assert retrieval in suffix
+    assert "- item 79" in suffix
 
 
 def test_dynamic_suffix_includes_runtime_metadata_before_environment():
@@ -320,8 +356,8 @@ class TestFrozenPrefixMetering:
         from app.memory import metrics
         from app.runtime.prompt_builder import _meter_frozen_prefix
 
-        # 12000 tokens × 3.5 chars/token = 42000 chars. Stay below the
-        # 16000-token hard limit (56000 chars) so this warns but does not overrun.
+        # Stay below the higher cache advisory threshold so this records only
+        # the early warning band.
         bloated = "x" * 43000
         with caplog.at_level(logging.WARNING, logger="app.runtime.prompt_builder"):
             _meter_frozen_prefix(bloated)
@@ -331,7 +367,7 @@ class TestFrozenPrefixMetering:
         assert snap["frozen_prefix_overrun_total"] == 0
         assert any("above warn threshold" in rec.message and rec.levelno == logging.WARNING for rec in caplog.records)
 
-    def test_hard_limit_bumps_both_counters_logs_error(self, caplog) -> None:
+    def test_cache_advisory_overrun_bumps_both_counters_without_trimming(self, caplog) -> None:
         import logging
 
         from app.memory import metrics
@@ -339,15 +375,15 @@ class TestFrozenPrefixMetering:
 
         # 16000 tokens × 3.5 chars/token = 56000 chars; pad past the limit.
         oversized = "x" * 60000
-        with caplog.at_level(logging.ERROR, logger="app.runtime.prompt_builder"):
+        with caplog.at_level(logging.WARNING, logger="app.runtime.prompt_builder"):
             _meter_frozen_prefix(oversized)
 
         snap = metrics.snapshot()
         assert snap["frozen_prefix_warn_total"] == 1
         assert snap["frozen_prefix_overrun_total"] == 1
-        assert any("exceeds hard limit" in rec.message and rec.levelno == logging.ERROR for rec in caplog.records)
+        assert any("above cache advisory threshold" in rec.message for rec in caplog.records)
 
-    def test_exact_hard_limit_stays_warning_only(self, caplog) -> None:
+    def test_exact_cache_advisory_threshold_stays_early_warning_only(self, caplog) -> None:
         import logging
 
         from app.memory import metrics
@@ -362,7 +398,7 @@ class TestFrozenPrefixMetering:
         assert snap["frozen_prefix_warn_total"] == 1
         assert snap["frozen_prefix_overrun_total"] == 0
         assert any("above warn threshold" in rec.message and rec.levelno == logging.WARNING for rec in caplog.records)
-        assert not any("exceeds hard limit" in rec.message for rec in caplog.records)
+        assert not any("above cache advisory threshold" in rec.message for rec in caplog.records)
 
     def test_section_breakdown_attributes_frozen_prefix_growth(self) -> None:
         from app.runtime.prompt_builder import _measure_frozen_prefix_sections
@@ -399,13 +435,13 @@ class TestFrozenPrefixMetering:
         from app.runtime.prompt_builder import _meter_frozen_prefix
 
         oversized = "中文预算" * 5000
-        with caplog.at_level(logging.ERROR, logger="app.runtime.prompt_builder"):
+        with caplog.at_level(logging.WARNING, logger="app.runtime.prompt_builder"):
             _meter_frozen_prefix(oversized)
 
         snap = metrics.snapshot()
         assert snap["frozen_prefix_warn_total"] == 1
         assert snap["frozen_prefix_overrun_total"] == 1
-        assert any("exceeds hard limit" in rec.message for rec in caplog.records)
+        assert any("above cache advisory threshold" in rec.message for rec in caplog.records)
 
     def test_warn_log_includes_top_section_diagnostics(self, caplog) -> None:
         import logging
@@ -468,15 +504,11 @@ class TestFrozenPrefixMetering:
         assert "Output Efficiency" not in prefix
 
 
-# ── P1-W2-1: Frozen prefix hard cap ────────────────────────────
+# ── Frozen prefix cache-economics telemetry ───────────────────
 
 
-class TestFrozenPrefixHardCap:
-    """build_frozen_prompt_prefix must stay within `_FROZEN_PREFIX_CHAR_LIMIT`.
-
-    Skill catalog is dropped first because `load_skill` can hydrate any body
-    on demand — base sections drive behavior and trim only as last resort.
-    """
+class TestFrozenPrefixSemanticPreservation:
+    """Cache-economics thresholds observe size but never rewrite context."""
 
     def setup_method(self) -> None:
         from app.memory import metrics
@@ -490,92 +522,57 @@ class TestFrozenPrefixHardCap:
         assert "ctx" in prefix
         assert "## Skills" in prefix  # catalog kept when budget allows
 
-    def test_skill_catalog_dropped_when_only_catalog_pushes_over_limit(self) -> None:
-        """Base fits, catalog is huge — drop it (load_skill replaces it)."""
-        from app.runtime.prompt_builder import (
-            _FROZEN_PREFIX_CHAR_LIMIT,
-            build_frozen_prompt_prefix,
-        )
+    def test_large_inline_catalog_is_preserved_completely(self) -> None:
+        from app.runtime.prompt_builder import build_frozen_prompt_prefix
 
-        # Catalog alone blows past the 56K char hard cap.
-        bloated_catalog = "## Skills\n" + "\n".join(f"- skill_{i}: {'x' * 30}" for i in range(1800))
-        assert len(bloated_catalog) > _FROZEN_PREFIX_CHAR_LIMIT
+        decisive_tail = "DECISIVE_INLINE_SKILL_TAIL"
+        bloated_catalog = "## Skills\n" + "\n".join(f"- skill_{i}: {'x' * 30}" for i in range(1800)) + decisive_tail
 
         prefix = build_frozen_prompt_prefix(agent_context="tiny ctx", skill_catalog=bloated_catalog)
 
-        assert len(prefix) <= _FROZEN_PREFIX_CHAR_LIMIT
-        assert "tiny ctx" in prefix  # base preserved
-        # Catalog body must not appear in full — accept either fully dropped
-        # or trimmed to fit leftover budget.
-        assert bloated_catalog not in prefix
+        assert "tiny ctx" in prefix
+        assert bloated_catalog in prefix
+        assert decisive_tail in prefix
 
     def test_partial_catalog_kept_when_leftover_budget_fits(self) -> None:
         """Base small, modest-size catalog — re-fit a trimmed catalog."""
         from app.runtime.prompt_builder import build_frozen_prompt_prefix
 
-        # Modest catalog fits leftover budget.
         catalog = "## Skills\n" + "\n".join(f"- skill_{i}" for i in range(150))
         prefix = build_frozen_prompt_prefix(agent_context="ctx", skill_catalog=catalog)
-        # Base is small; catalog fits — should appear (full or trimmed).
-        assert "## Skills" in prefix
+        assert catalog in prefix
 
-    def test_tail_trim_when_base_alone_overflows(self) -> None:
-        """Base overflows on its own — Tier4 last-resort trim with observable notice.
+    def test_oversized_identity_tail_is_preserved(self) -> None:
+        from app.runtime.prompt_builder import build_frozen_prompt_prefix
 
-        I.3: when agent_context alone overflows the cap (no ## Context Material
-        to strip, no tool/task sections), the Tier4 identity-overrun path fires.
-        Core contracts: (1) size is bounded, (2) head is preserved,
-        (3) an observable marker appears (either the generic trim notice or
-        the louder identity-overrun marker introduced by I.3).
-        """
-        from app.runtime.prompt_builder import (
-            _FROZEN_PREFIX_CHAR_LIMIT,
-            _FROZEN_IDENTITY_OVERRUN_MARKER,
-            _FROZEN_PREFIX_TRIM_NOTICE,
-            build_frozen_prompt_prefix,
-        )
-
-        # Pump agent_context past the hard cap to force base trimming.
-        oversize_ctx = "soul_data " * 7000  # ~70K chars
+        decisive_tail = "DECISIVE_OVERSIZED_IDENTITY_TAIL"
+        oversize_ctx = ("soul_data " * 7000) + decisive_tail
         prefix = build_frozen_prompt_prefix(agent_context=oversize_ctx)
 
-        assert len(prefix) <= _FROZEN_PREFIX_CHAR_LIMIT
-        # The marker now sits before the immutable System/Tasks/Tools tail so
-        # safety-critical instructions remain byte-for-byte present.
-        assert _FROZEN_PREFIX_TRIM_NOTICE in prefix or _FROZEN_IDENTITY_OVERRUN_MARKER in prefix
+        assert oversize_ctx in prefix
+        assert decisive_tail in prefix
         assert "## System" in prefix
         assert "## Doing Tasks" in prefix
         assert "## Using Your Tools" in prefix
-        # Head of agent_context must be preserved (highest-value content).
         assert prefix.startswith("soul_data")
 
-    def test_metering_records_post_trim_size(self) -> None:
-        """Metric snapshot reflects the trimmed size, not the pre-trim size.
-
-        Otherwise overrun_total stays elevated forever after a single big
-        prompt, masking subsequent regressions.
-        """
+    def test_metering_records_complete_size_without_rewriting(self) -> None:
         from app.memory import metrics
-        from app.runtime.prompt_builder import (
-            _FROZEN_PREFIX_CHAR_LIMIT,
-            build_frozen_prompt_prefix,
-        )
+        from app.runtime.prompt_builder import build_frozen_prompt_prefix
 
         bloated_catalog = "## Skills\n" + "\n".join(f"- skill_{i}: {'x' * 30}" for i in range(2000))
-        assert len(bloated_catalog) > _FROZEN_PREFIX_CHAR_LIMIT
-        build_frozen_prompt_prefix(agent_context="ctx", skill_catalog=bloated_catalog)
+        rendered = build_frozen_prompt_prefix(agent_context="ctx", skill_catalog=bloated_catalog)
 
         snap = metrics.snapshot()
-        assert snap["frozen_prefix_chars"]["max"] <= _FROZEN_PREFIX_CHAR_LIMIT
+        assert snap["frozen_prefix_chars"]["max"] == len(rendered)
+        assert snap["frozen_prefix_overrun_total"] == 1
 
 
 # ── P1-W2-2: Dynamic suffix per-section caps ──────────────────
 
 
-class TestDynamicSuffixCaps:
-    """Memory snapshot, system_prompt_suffix, and pack/knowledge sections all
-    enforce per-section budgets so a runaway upstream caller can't push the
-    dynamic block past round-trip-cost-sensible size."""
+class TestDynamicSuffixSemanticPreservation:
+    """Advisory section budgets never cut authorized semantic inputs."""
 
     def test_memory_context_within_memory_budget_is_not_second_trimmed_to_ratio(self) -> None:
         from app.runtime.context_budget import TaskProfile
@@ -600,35 +597,31 @@ class TestDynamicSuffixCaps:
         assert "SCORE_AWARE_TAIL_SENTINEL" in suffix
         assert "memory context trimmed" not in suffix
 
-    def test_oversized_memory_context_trimmed_to_memory_budget(self) -> None:
+    def test_oversized_memory_context_is_preserved_completely(self) -> None:
         from app.runtime.prompt_builder import build_dynamic_prompt_suffix
 
-        # 50K-char memory context; default profile gives an 8K memory budget.
-        # Body must be capped + trim notice present.
-        bloated_memory = "MEMORY-LINE\n" * 5000  # ~60K chars
+        decisive_tail = "DECISIVE_MEMORY_TAIL"
+        bloated_memory = ("MEMORY-LINE\n" * 5000) + decisive_tail
         suffix = build_dynamic_prompt_suffix(
             memory_snapshot=bloated_memory,
         )
 
-        assert "## Your Memory System" in suffix  # template still present
-        assert "MEMORY-LINE" in suffix  # body partially preserved
-        assert "memory context trimmed" in suffix  # trim notice fired
+        assert "## Your Memory System" in suffix
+        assert bloated_memory in suffix
+        assert decisive_tail in suffix
+        assert "memory context trimmed" not in suffix
 
-    def test_system_prompt_suffix_trimmed_to_5k_cap(self) -> None:
-        from app.runtime.prompt_builder import (
-            _SYSTEM_PROMPT_SUFFIX_CHAR_CAP,
-            build_dynamic_prompt_suffix,
-        )
+    def test_large_system_prompt_suffix_is_preserved_completely(self) -> None:
+        from app.runtime.prompt_builder import build_dynamic_prompt_suffix
 
-        # 20K-char rogue suffix.
-        bloated_suffix = "x " * 10000  # 20K chars
+        decisive_tail = "DECISIVE_SYSTEM_SUFFIX_TAIL"
+        bloated_suffix = ("x " * 10000) + decisive_tail
         suffix = build_dynamic_prompt_suffix(
             system_prompt_suffix=bloated_suffix,
         )
 
-        # Final dynamic block must not contain the full pre-trim suffix.
-        # Allow some slack for the trim notice + headers.
-        assert len(suffix) < _SYSTEM_PROMPT_SUFFIX_CHAR_CAP + 500
+        assert bloated_suffix in suffix
+        assert decisive_tail in suffix
 
     def test_short_memory_snapshot_passes_through_unchanged(self) -> None:
         from app.runtime.prompt_builder import build_dynamic_prompt_suffix
@@ -686,83 +679,49 @@ def test_dynamic_suffix_omits_autonomous_section_for_live_chat() -> None:
     assert "Autonomous Work" not in suffix
 
 
-# ── C2: catalog over-budget degradation keeps minimum visibility ──
-# (docs/agent-lifecycle-cc-alignment.md 主题 C)
+# ── Legacy frozen-budget compatibility helper ──────────────────
 
 
-def test_frozen_prefix_omitted_catalog_keeps_minimum_visibility() -> None:
-    """When the leftover budget is too small for even a trimmed catalog, the
-    model must still learn that skills exist and how to reach them — never
-    silently blind."""
-    from app.runtime.prompt_builder import _FROZEN_PREFIX_CHAR_LIMIT, _enforce_frozen_prefix_budget
+def test_frozen_prefix_budget_helper_preserves_complete_catalog() -> None:
+    from app.runtime.prompt_builder import _enforce_frozen_prefix_budget
 
-    # Base fills the budget to within <200 chars of the limit
-    base = ["x" * (_FROZEN_PREFIX_CHAR_LIMIT - 150)]
+    base = ["x" * 56000]
     catalog = "| skill-a | does a | a.md |\n" * 50
 
     result = _enforce_frozen_prefix_budget(base, catalog)
 
-    assert "load_skill" in result  # the path back to the skills
-    assert len(result) <= _FROZEN_PREFIX_CHAR_LIMIT + 200  # notice itself stays bounded
+    assert catalog in result
+    assert result.startswith(base[0])
 
 
-def test_frozen_prefix_trimmed_catalog_signposts_remaining_skills() -> None:
-    """A trimmed catalog must say MORE skills exist and how to discover them."""
-    from app.runtime.prompt_builder import _FROZEN_PREFIX_CHAR_LIMIT, _enforce_frozen_prefix_budget
+def test_frozen_prefix_budget_helper_ignores_cache_advisory_char_limit() -> None:
+    from app.runtime.prompt_builder import _enforce_frozen_prefix_budget
 
-    base = ["x" * (_FROZEN_PREFIX_CHAR_LIMIT - 2_000)]  # leftover ≈2K — enough to trim into
+    base = ["base"]
     catalog = "\n".join(f"| skill-{i} | description {i} | s{i}.md |" for i in range(400))
-    assert len(catalog) > 4_000  # sanity: catalog genuinely overflows the leftover
 
-    result = _enforce_frozen_prefix_budget(base, catalog)
+    result = _enforce_frozen_prefix_budget(base, catalog, char_limit=100)
 
-    assert "skill-0" in result  # head of the catalog survives
-    assert "more skills" in result.lower()  # signpost
-    assert "load_skill" in result
+    assert catalog in result
+    assert "skill-399" in result
 
 
-def test_trim_block_marker_is_observable() -> None:
-    """C3: _trim_block's cut marker says it was budget-trimmed, not a bare ellipsis."""
+def test_trim_block_budget_is_advisory_and_preserves_complete_semantic_input() -> None:
     from app.runtime.prompt_builder import _trim_block
 
     result = _trim_block("line one\nline two\nline three\n" + "x" * 500, budget_chars=60)
 
-    assert "(trimmed" in result
-    assert len(result) <= 60  # marker counts against the budget
+    assert result == "line one\nline two\nline three\n" + "x" * 500
 
 
-# ── I.3 frozen budget inversion fix ────────────────────────────
+# ── Frozen context byte fidelity ───────────────────────────────
 
 
-class TestFrozenBudgetInversionFix:
-    """I.3 spec: identity-protected layered trim + window-scaled cap.
+class TestFrozenContextByteFidelity:
+    """All authorized frozen sections remain available to the model."""
 
-    These tests are RED until _enforce_frozen_prefix_budget gains the layered
-    trim (Tier0/soul untouched → Tier2/Context Material stripped → Tier3/Tools
-    trimmed → Tier4/soul last resort) and build_frozen_prompt_prefix accepts a
-    context_window_tokens kwarg that scales the cap.
-    """
-
-    def test_long_soul_survives_frozen_trim(self) -> None:
-        """Tier0 invariant: ## Identity & Mission survives when Context Material
-        and/or Tools sections are the cause of overflow.
-
-        Scenario: agent_context has a large soul block + large ## Context
-        Material block; system/tasks/tools sections bring the total above cap.
-        After enforcement the identity text must be fully present; Context
-        Material must be stripped/trimmed (Tier2) rather than the soul (Tier0),
-        proving the inversion bug is fixed.
-
-        Current BROKEN behavior: tail-trim of base_only silently strips
-        Tools/Tasks from the end while ## Context Material (mid agent_context)
-        survives. The new layered trim must do the OPPOSITE: strip Context
-        Material first, keep Tools/Tasks, never touch soul.
-        """
-        from app.runtime.prompt_builder import (
-            _CHARS_PER_TOKEN_ESTIMATE,
-            _FROZEN_PREFIX_TOKEN_LIMIT,
-            _enforce_frozen_prefix_budget,
-        )
+    def test_long_soul_context_and_tool_contract_all_survive(self) -> None:
+        from app.runtime.prompt_builder import _enforce_frozen_prefix_budget
 
         # Build a realistic agent_context: soul at head, large Context Material in middle.
         # Soul is small; Context Material is massive (this is the overflow culprit).
@@ -782,33 +741,14 @@ class TestFrozenBudgetInversionFix:
 
         base_parts = [agent_context, system_body, tasks_body, tools_body]
 
-        # Total chars must exceed cap so enforcement fires
-        cap_chars = int(_FROZEN_PREFIX_TOKEN_LIMIT * _CHARS_PER_TOKEN_ESTIMATE)
-        total_chars = sum(len(p) for p in base_parts)
-        assert total_chars > cap_chars, (
-            f"test invariant: total ({total_chars}) must exceed cap ({cap_chars}) to exercise trim path"
-        )
-
         result = _enforce_frozen_prefix_budget(base_parts, "")
 
-        # Tier0 invariant: soul identity text must be intact
-        assert "You are the chief analyst." in result, "soul identity text must survive trim"
+        assert agent_context in result
+        assert system_body in result
+        assert tasks_body in result
+        assert tools_body in result
 
-        # Tier3 invariant: tool guidance must survive (currently BROKEN — gets tail-trimmed)
-        assert "## Using Your Tools" in result, (
-            "Tools section (Tier3) must survive; currently broken because tail-trim drops it "
-            "while ## Context Material (Tier2) survives — this is the inversion bug"
-        )
-
-        # Tier2: Context Material (company boilerplate) must be stripped/trimmed — it's the
-        # lower-priority section that should be sacrificed first
-        full_company = "company boilerplate " * 2000
-        assert full_company not in result, (
-            "## Context Material (Tier2) must be trimmed/stripped; "
-            "currently it survives while Tools (Tier3) is lost — inversion bug"
-        )
-
-    def test_budget_cut_keeps_static_contract_and_context_recovery_pointer(self) -> None:
+    def test_advisory_char_limit_does_not_cut_static_contract_or_context(self) -> None:
         from app.runtime.prompt_builder import _enforce_frozen_prefix_budget
 
         agent_context = (
@@ -829,138 +769,103 @@ class TestFrozenBudgetInversionFix:
             char_limit=3500,
         )
 
-        assert len(rendered) <= 3500
+        assert agent_context in rendered
         assert "SYSTEM_CONTRACT_MUST_SURVIVE" in rendered
         assert "TASK_CONTRACT_MUST_SURVIVE" in rendered
         assert "TOOL_CONTRACT_MUST_SURVIVE" in rendered
-        assert "read_context_resource" in rendered
-        assert '"ref":"index"' in rendered
+        assert len(rendered) > 3500
 
 
-def test_final_system_prompt_truncation_has_recovery_pointer():
-    from app.runtime.prompt_builder import assemble_runtime_prompt
+def test_final_system_prompt_budget_never_blind_trims_frozen_contract():
+    import hashlib
 
-    prompt = assemble_runtime_prompt(
-        "FROZEN_HEAD\n" + ("frozen " * 1200),
-        "DYNAMIC_SUFFIX",
-        budget_profile=SimpleNamespace(system_prompt_budget_chars=1200),
+    from app.runtime.prompt_builder import PromptBudgetExceededError, assemble_runtime_prompt
+
+    frozen = "FROZEN_HEAD\n" + ("frozen " * 1200) + "\nDECISIVE_FROZEN_TAIL"
+    with pytest.raises(PromptBudgetExceededError) as exc_info:
+        assemble_runtime_prompt(
+            frozen,
+            "DYNAMIC_SUFFIX",
+            budget_profile=SimpleNamespace(system_prompt_budget_chars=1200),
+        )
+
+    error = exc_info.value
+    assert error.frozen_sha256 == hashlib.sha256(frozen.encode("utf-8")).hexdigest()
+    assert error.required_chars > error.budget_chars
+    assert "immutable frozen prompt contract" in str(error)
+
+
+def test_frozen_prefix_cache_economics_never_trim_model_identity() -> None:
+    from app.runtime.prompt_builder import build_frozen_prompt_prefix
+
+    decisive_tail = "DECISIVE_IDENTITY_TAIL_MUST_REACH_MODEL"
+    agent_context = "## Identity & Mission\n\n" + ("identity evidence " * 5_000) + decisive_tail
+
+    rendered = build_frozen_prompt_prefix(agent_context=agent_context)
+
+    assert decisive_tail in rendered
+    assert "identity overrun" not in rendered
+    assert "agent context omitted" not in rendered
+
+
+def test_skills_catalog_section_preserves_complete_discovery_index() -> None:
+    from app.runtime.prompt_sections.skills_catalog import build_skills_catalog_section
+
+    decisive_tail = "DECISIVE_SKILL_INDEX_TAIL"
+    skills_text = ("skill discovery evidence\n" * 400) + decisive_tail
+
+    rendered = build_skills_catalog_section(skills_text, budget_chars=300)
+
+    assert skills_text in rendered
+    assert decisive_tail in rendered
+
+
+def test_agent_skill_catalog_preserves_complete_ranked_descriptions(monkeypatch) -> None:
+    from uuid import uuid4
+
+    from app.services import agent_context
+
+    decisive_tail = "DECISIVE_RANKED_SKILL_TAIL"
+    skills_text = ("ranked skill description\n" * 400) + decisive_tail
+    monkeypatch.setattr(agent_context, "_load_skills_index", lambda *_args, **_kwargs: skills_text)
+
+    rendered = agent_context.build_skill_catalog_section_for_agent(uuid4())
+
+    assert skills_text in rendered
+    assert decisive_tail in rendered
+
+
+def test_context_window_argument_never_changes_frozen_semantic_bytes() -> None:
+    from app.runtime.prompt_builder import build_frozen_prompt_prefix
+
+    decisive_tail = "DECISIVE_WINDOW_INDEPENDENT_TAIL"
+    soul_text = "## Identity & Mission\n\n" + ("soul content " * 4500) + decisive_tail
+
+    result_no_window = build_frozen_prompt_prefix(agent_context=soul_text)
+    result_large_window = build_frozen_prompt_prefix(
+        agent_context=soul_text,
+        context_window_tokens=256000,
     )
 
-    assert len(prompt) <= 1200
-    assert "read_context_resource" in prompt
-    assert '"ref":"index"' in prompt
-    assert "DYNAMIC_SUFFIX" in prompt
+    assert result_no_window == result_large_window
+    assert decisive_tail in result_no_window
 
-    def test_frozen_cap_scales_with_window(self) -> None:
-        """Cap formula: max(16000, min(int(0.10 * window), 32000)) tokens.
 
-        A 256K-token window gives cap = 25600 tokens = 89600 chars.
-        A prefix that exceeds 16K tokens (56K chars) but fits in 25600 tokens
-        must survive un-trimmed when the large window is provided, but be
-        trimmed when no window is given (16K-token floor).
-        """
-        from app.runtime.prompt_builder import (
-            _CHARS_PER_TOKEN_ESTIMATE,
-            _FROZEN_PREFIX_TOKEN_LIMIT,
-            build_frozen_prompt_prefix,
-        )
+def test_oversized_soul_is_observed_without_rewriting(caplog) -> None:
+    import logging
 
-        # 18K tokens ≈ 63000 chars — exceeds 16K floor but fits 25.6K (256K window)
-        # Build a plausible prefix: soul + tasks + tools
-        soul_text = "## Identity & Mission\n\nYou are a senior assistant.\n" + ("soul content " * 4500)
-        # 4500 * 13 + header = ~58560 chars > 56000 chars floor cap
+    from app.runtime.prompt_builder import build_frozen_prompt_prefix
 
-        floor_cap_chars = int(_FROZEN_PREFIX_TOKEN_LIMIT * _CHARS_PER_TOKEN_ESTIMATE)
-        assert len(soul_text) > floor_cap_chars, (
-            f"soul_text ({len(soul_text)}) must exceed floor cap ({floor_cap_chars}) to test scaling"
-        )
+    decisive_tail = "DECISIVE_SOUL_OVER_ADVISORY_TAIL"
+    massive_soul = "## Identity & Mission\n\nYou are the soul.\n" + ("soul overflow content " * 4000) + decisive_tail
 
-        # No window → 16K floor → trim fires
-        result_no_window = build_frozen_prompt_prefix(agent_context=soul_text)
-        assert len(result_no_window) <= floor_cap_chars + 200  # trimmed to floor
+    with caplog.at_level(logging.WARNING, logger="app.runtime.prompt_builder"):
+        result = build_frozen_prompt_prefix(agent_context=massive_soul)
 
-        # Large window (256K) → cap = min(25600, 32000) = 25600 tokens = 89600 chars
-        large_window_cap_chars = int(min(int(0.10 * 256000), 32000) * _CHARS_PER_TOKEN_ESTIMATE)
-        assert len(soul_text) < large_window_cap_chars, (
-            f"soul_text ({len(soul_text)}) must fit in scaled cap ({large_window_cap_chars}) to test no-trim path"
-        )
-        result_large_window = build_frozen_prompt_prefix(
-            agent_context=soul_text,
-            context_window_tokens=256000,
-        )
-        # With 256K window the prefix fits — no trim marker should appear
-        assert "frozen prefix trimmed" not in result_large_window
-        assert "You are a senior assistant." in result_large_window
-
-    def test_soul_over_budget_is_observable(self, caplog) -> None:
-        """Tier4 last-resort: when soul alone exceeds cap, emit a LOUD trim
-        marker AND log an explicit WARNING — never silently discard identity.
-
-        'Overrun' here means the enforcement code must emit a WARNING that
-        specifically calls out that identity/soul had to be trimmed (not just
-        the generic warn-threshold log). The resulting prefix must also contain
-        a visible marker.
-        """
-        import logging
-
-        from app.runtime.prompt_builder import (
-            _CHARS_PER_TOKEN_ESTIMATE,
-            _FROZEN_PREFIX_TOKEN_LIMIT,
-            build_frozen_prompt_prefix,
-        )
-
-        # Soul that clearly exceeds the floor cap (16K tokens = 56K chars)
-        cap_chars = int(_FROZEN_PREFIX_TOKEN_LIMIT * _CHARS_PER_TOKEN_ESTIMATE)
-        massive_soul = "## Identity & Mission\n\nYou are the soul.\n" + ("soul overflow content " * 4000)
-        # ~88K chars — well over the 56K floor cap
-        assert len(massive_soul) > cap_chars, f"soul ({len(massive_soul)}) must exceed floor cap ({cap_chars})"
-
-        with caplog.at_level(logging.WARNING, logger="app.runtime.prompt_builder"):
-            result = build_frozen_prompt_prefix(agent_context=massive_soul)
-
-        # Result must be bounded (even after Tier4 trim, prefix stays under cap)
-        assert len(result) <= cap_chars + 500
-
-        # An observable loud marker SPECIFIC to soul/identity trim must appear in
-        # the output — not just the generic "frozen prefix trimmed to stay under cache budget" tail notice.
-        # The new code must emit _IDENTITY_OVERRUN_MARKER (or equivalent) when Tier4 fires.
-        _GENERIC_TRIM_NOTICE = "frozen prefix trimmed to stay under cache budget"
-        assert _GENERIC_TRIM_NOTICE not in result or (
-            "soul" in result.lower()
-            or "identity overrun" in result.lower()
-            or "[identity" in result.lower()
-            or "tier4" in result.lower()
-        ), "Tier4 must produce a distinct marker beyond the generic tail-trim notice"
-        # The key requirement: a soul/identity-specific loud marker exists in the output
-        has_loud_identity_marker = (
-            "identity overrun" in result.lower()
-            or "soul overrun" in result.lower()
-            or "[identity trimmed" in result.lower()
-            or "tier-4" in result.lower()
-            or "tier4" in result.lower()
-        )
-        assert has_loud_identity_marker, (
-            "Tier4 soul overrun must produce a LOUD DISTINCT marker in the output "
-            "(e.g. 'identity overrun', 'soul overrun', '[identity trimmed'), not just the generic notice. "
-            f"Got result ending: {result[-200:]!r}"
-        )
-
-        # Log must contain an explicit ERROR that calls out soul/identity being cut —
-        # the generic warn-threshold message is not enough
-        has_soul_trim_error_log = any(
-            rec.levelno >= logging.ERROR
-            and (
-                "soul" in rec.message.lower()
-                or "identity" in rec.message.lower()
-                or "tier 4" in rec.message.lower()
-                or "tier4" in rec.message.lower()
-            )
-            for rec in caplog.records
-        )
-        assert has_soul_trim_error_log, (
-            "Tier4 soul overrun must log an ERROR explicitly mentioning soul/identity trim; "
-            f"got: {[(r.levelno, r.message) for r in caplog.records]}"
-        )
+    assert massive_soul in result
+    assert decisive_tail in result
+    assert "identity overrun" not in result
+    assert any("cache advisory threshold" in rec.message for rec in caplog.records)
 
 
 class TestSkillCatalogInDynamicSuffix:

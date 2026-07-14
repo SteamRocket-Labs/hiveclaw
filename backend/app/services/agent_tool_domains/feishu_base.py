@@ -130,6 +130,134 @@ def _payload_has_more(payload: dict, *, returned_count: int, offset: int = 0) ->
     return isinstance(total, int) and offset + returned_count < total
 
 
+def _parse_base_list_window(arguments: dict, *, tool_name: str) -> tuple[int, int | None] | str:
+    """Parse an explicit result window without inventing a default ceiling."""
+
+    try:
+        offset = int(arguments.get("offset", 0))
+    except (TypeError, ValueError):
+        return _render_invalid_input(
+            "offset must be a non-negative integer.",
+            tool_name=tool_name,
+            actionable_hint="Omit offset to start at the beginning.",
+        )
+    if offset < 0:
+        return _render_invalid_input(
+            "offset must be a non-negative integer.",
+            tool_name=tool_name,
+            actionable_hint="Omit offset to start at the beginning.",
+        )
+
+    raw_limit = arguments.get("limit")
+    if raw_limit is None:
+        return offset, None
+    try:
+        limit = int(raw_limit)
+    except (TypeError, ValueError):
+        return _render_invalid_input(
+            "limit must be a positive integer when provided.",
+            tool_name=tool_name,
+            actionable_hint="Omit limit to return every item.",
+        )
+    if limit <= 0:
+        return _render_invalid_input(
+            "limit must be a positive integer when provided.",
+            tool_name=tool_name,
+            actionable_hint="Omit limit to return every item.",
+        )
+    return offset, limit
+
+
+async def _collect_openapi_list_items(
+    *,
+    token: str,
+    path: str,
+    page_size: int,
+    offset: int,
+    result_limit: int | None,
+) -> tuple[list[dict], int | None]:
+    """Read every OpenAPI page unless the caller explicitly sets a result ceiling."""
+
+    collected: list[dict] = []
+    total: int | None = None
+    next_page_token = ""
+    seen_page_tokens: set[str] = set()
+    required_count = None if result_limit is None else offset + result_limit
+
+    while True:
+        remaining = None if required_count is None else required_count - len(collected)
+        if remaining is not None and remaining <= 0:
+            break
+        request_size = page_size if remaining is None else min(page_size, max(1, remaining))
+        params: dict = {"page_size": request_size}
+        if next_page_token:
+            params["page_token"] = next_page_token
+        data = await _base_api_get(token, path, params)
+        page_items = data.get("items", [])
+        if not isinstance(page_items, list):
+            raise RuntimeError("Feishu Base list response field 'items' must be an array")
+        collected.extend(item for item in page_items if isinstance(item, dict))
+        if isinstance(data.get("total"), int):
+            total = data["total"]
+
+        if required_count is not None and len(collected) >= required_count:
+            break
+        has_more = bool(data.get("has_more")) or (total is not None and len(collected) < total)
+        if not has_more:
+            break
+        candidate_token = str(data.get("page_token") or "").strip()
+        if not candidate_token:
+            raise RuntimeError("Feishu Base reported more list items without a page_token")
+        if candidate_token in seen_page_tokens:
+            raise RuntimeError(f"Feishu Base repeated list page_token: {candidate_token}")
+        seen_page_tokens.add(candidate_token)
+        next_page_token = candidate_token
+
+    window = collected[offset:] if result_limit is None else collected[offset : offset + result_limit]
+    return window, total
+
+
+async def _collect_cli_offset_list_items(
+    *,
+    command_prefix: list[str],
+    page_size: int,
+    offset: int,
+    result_limit: int | None,
+) -> tuple[list[dict], int | None]:
+    """Read every CLI offset page unless the caller explicitly sets a result ceiling."""
+
+    collected: list[dict] = []
+    total: int | None = None
+    current_offset = offset
+
+    while True:
+        remaining = None if result_limit is None else result_limit - len(collected)
+        if remaining is not None and remaining <= 0:
+            break
+        request_size = page_size if remaining is None else min(page_size, remaining)
+        payload = await _run_feishu_base_shortcut(
+            [*command_prefix, "--offset", str(current_offset), "--limit", str(request_size)]
+        )
+        page_items = payload.get("items", [])
+        if not isinstance(page_items, list):
+            raise RuntimeError("lark-cli Base list response field 'items' must be an array")
+        normalized_items = [item for item in page_items if isinstance(item, dict)]
+        collected.extend(normalized_items)
+        if isinstance(payload.get("total"), int):
+            total = payload["total"]
+
+        if result_limit is not None and len(collected) >= result_limit:
+            break
+        has_more = _payload_has_more(payload, returned_count=len(normalized_items), offset=current_offset)
+        if not has_more:
+            break
+        if not normalized_items:
+            raise RuntimeError("lark-cli Base list reported more items but returned an empty page")
+        current_offset += len(normalized_items)
+
+    return collected, total
+
+
 def _base_record_list_params(*, page_size: int, view_id: str = "", page_token: str = "") -> dict:
     params: dict = {"page_size": page_size, "text_field_as_array": True}
     if view_id:
@@ -434,30 +562,52 @@ async def _feishu_base_table_list(agent_id, arguments: dict) -> str:
     if not base_token:
         return "❌ Missing required argument 'base_token'"
 
-    limit = min(max(1, int(arguments.get("limit", 50))), 100)
+    window = _parse_base_list_window(arguments, tool_name="feishu_base_table_list")
+    if isinstance(window, str):
+        return window
+    offset, result_limit = window
 
     # Try OpenAPI first
+    openapi_error: Exception | None = None
     creds = await _get_feishu_token(agent_id)
     if creds:
         _, token = creds
         try:
-            data = await _base_api_get(token, f"/bitable/v1/apps/{base_token}/tables", {"page_size": limit})
+            raw_items, total = await _collect_openapi_list_items(
+                token=token,
+                path=f"/bitable/v1/apps/{base_token}/tables",
+                page_size=100,
+                offset=offset,
+                result_limit=result_limit,
+            )
             items = [
-                {"table_id": t.get("table_id", ""), "table_name": t.get("name", "")} for t in data.get("items", [])
+                {"table_id": table.get("table_id", ""), "table_name": table.get("name", "")} for table in raw_items
             ]
-            return _render_base_tables(base_token, items, total=data.get("total"))
+            return _render_base_tables(base_token, items, total=total)
         except Exception as exc:
+            openapi_error = exc
             logger.warning("[FeishuBase] OpenAPI table_list failed, trying CLI: %s", exc)
 
     # CLI fallback
     if not await _feishu_cli_available():
+        if openapi_error is not None:
+            return render_tool_error(
+                tool_name="feishu_base_table_list",
+                error_class="provider_error",
+                message=f"Feishu Base table enumeration failed: {type(openapi_error).__name__}: {openapi_error}",
+                provider="feishu_openapi",
+                retryable=True,
+                actionable_hint="Retry after checking Feishu Base permissions and pagination response integrity.",
+            )
         return _not_configured_error("feishu_base_table_list")
 
-    offset = max(0, int(arguments.get("offset", 0)))
-    payload = await _run_feishu_base_shortcut(
-        ["base", "+table-list", "--base-token", base_token, "--offset", str(offset), "--limit", str(limit)]
+    items, total = await _collect_cli_offset_list_items(
+        command_prefix=["base", "+table-list", "--base-token", base_token],
+        page_size=100,
+        offset=offset,
+        result_limit=result_limit,
     )
-    return _render_base_tables(base_token, payload.get("items", []), total=payload.get("total"))
+    return _render_base_tables(base_token, items, total=total)
 
 
 async def _feishu_base_app_create(agent_id, arguments: dict) -> str:
@@ -499,38 +649,47 @@ async def _feishu_base_field_list(agent_id, arguments: dict) -> str:
     if not table_id:
         return _render_invalid_input("Missing required argument 'table_id'.", tool_name="feishu_base_field_list")
 
-    limit = min(max(1, int(arguments.get("limit", 100))), 200)
+    window = _parse_base_list_window(arguments, tool_name="feishu_base_field_list")
+    if isinstance(window, str):
+        return window
+    offset, result_limit = window
 
+    openapi_error: Exception | None = None
     creds = await _get_feishu_token(agent_id)
     if creds:
         _, token = creds
         try:
-            data = await _base_api_get(
-                token, f"/bitable/v1/apps/{base_token}/tables/{table_id}/fields", {"page_size": limit}
+            items, total = await _collect_openapi_list_items(
+                token=token,
+                path=f"/bitable/v1/apps/{base_token}/tables/{table_id}/fields",
+                page_size=200,
+                offset=offset,
+                result_limit=result_limit,
             )
-            return _render_base_fields(table_id, data.get("items", []), total=data.get("total"))
+            return _render_base_fields(table_id, items, total=total)
         except Exception as exc:
+            openapi_error = exc
             logger.warning("[FeishuBase] OpenAPI field_list failed, trying CLI: %s", exc)
 
     if not await _feishu_cli_available():
+        if openapi_error is not None:
+            return render_tool_error(
+                tool_name="feishu_base_field_list",
+                error_class="provider_error",
+                message=f"Feishu Base field enumeration failed: {type(openapi_error).__name__}: {openapi_error}",
+                provider="feishu_openapi",
+                retryable=True,
+                actionable_hint="Retry after checking Feishu Base permissions and pagination response integrity.",
+            )
         return _not_configured_error("feishu_base_field_list")
 
-    offset = max(0, int(arguments.get("offset", 0)))
-    payload = await _run_feishu_base_shortcut(
-        [
-            "base",
-            "+field-list",
-            "--base-token",
-            base_token,
-            "--table-id",
-            table_id,
-            "--offset",
-            str(offset),
-            "--limit",
-            str(limit),
-        ]
+    items, total = await _collect_cli_offset_list_items(
+        command_prefix=["base", "+field-list", "--base-token", base_token, "--table-id", table_id],
+        page_size=200,
+        offset=offset,
+        result_limit=result_limit,
     )
-    return _render_base_fields(table_id, payload.get("items", []), total=payload.get("total"))
+    return _render_base_fields(table_id, items, total=total)
 
 
 async def _feishu_base_field_create(agent_id, arguments: dict) -> str:
@@ -586,7 +745,15 @@ async def _feishu_base_record_list(agent_id, arguments: dict) -> str:
     filter_value = arguments.get("filter_value")
     has_filter = bool(filter_field and filter_op)
     fetch_all = _truthy(arguments.get("fetch_all")) or has_filter
-    max_records = min(max(1, int(arguments.get("max_records", 1000))), 5000)
+    max_records_value = arguments.get("max_records")
+    try:
+        max_records = max(1, int(max_records_value)) if max_records_value is not None else None
+    except (TypeError, ValueError):
+        return _render_invalid_input(
+            "max_records must be a positive integer when provided.",
+            tool_name="feishu_base_record_list",
+            actionable_hint="Omit max_records to scan every page, or pass an explicit positive scan ceiling.",
+        )
 
     creds = await _get_feishu_token(agent_id)
     if creds:
@@ -598,16 +765,22 @@ async def _feishu_base_record_list(agent_id, arguments: dict) -> str:
                 next_page = page_token
                 total: int | None = None
                 has_more = False
-                for _ in range(100):
-                    remaining = max_records - len(collected)
-                    if remaining <= 0:
+                seen_page_tokens: set[str] = set()
+                while True:
+                    remaining = None if max_records is None else max_records - len(collected)
+                    if remaining is not None and remaining <= 0:
                         has_more = True
                         break
+                    page_marker = next_page or "__first_page__"
+                    if page_marker in seen_page_tokens:
+                        has_more = True
+                        break
+                    seen_page_tokens.add(page_marker)
                     data = await _base_api_get(
                         token,
                         path,
                         _base_record_list_params(
-                            page_size=min(200, remaining),
+                            page_size=200 if remaining is None else min(200, remaining),
                             view_id=view_id,
                             page_token=next_page,
                         ),
@@ -648,7 +821,13 @@ async def _feishu_base_record_list(agent_id, arguments: dict) -> str:
                 next_page = ""
                 total: int | None = None
                 has_more = False
-                for _ in range(100):
+                seen_page_tokens: set[str] = set()
+                while True:
+                    page_marker = next_page or "__first_page__"
+                    if page_marker in seen_page_tokens:
+                        has_more = True
+                        break
+                    seen_page_tokens.add(page_marker)
                     data = await _base_api_get(
                         token,
                         path,
@@ -732,21 +911,62 @@ async def _feishu_base_record_list(agent_id, arguments: dict) -> str:
     if not await _feishu_cli_available():
         return _not_configured_error("feishu_base_record_list")
 
-    command = [
-        "base",
-        "+record-list",
-        "--base-token",
-        base_token,
-        "--table-id",
-        table_id,
-        "--offset",
-        str(offset),
-        "--limit",
-        str(limit),
-    ]
-    if view_id:
-        command.extend(["--view-id", view_id])
-    payload = await _run_feishu_base_shortcut(command)
+    def _cli_command(*, requested_offset: int, requested_limit: int) -> list[str]:
+        command = [
+            "base",
+            "+record-list",
+            "--base-token",
+            base_token,
+            "--table-id",
+            table_id,
+            "--offset",
+            str(requested_offset),
+            "--limit",
+            str(requested_limit),
+        ]
+        if view_id:
+            command.extend(["--view-id", view_id])
+        return command
+
+    if fetch_all:
+        items: list[dict] = []
+        current_offset = offset
+        total: int | None = None
+        has_more = False
+        while True:
+            remaining = None if max_records is None else max_records - len(items)
+            if remaining is not None and remaining <= 0:
+                has_more = True
+                break
+            page_limit = 200 if remaining is None else min(200, remaining)
+            payload = await _run_feishu_base_shortcut(
+                _cli_command(requested_offset=current_offset, requested_limit=page_limit)
+            )
+            page_items = payload.get("items", [])
+            if not isinstance(page_items, list):
+                page_items = []
+            if isinstance(payload.get("total"), int):
+                total = payload["total"]
+            items.extend(page_items)
+            has_more = _payload_has_more(payload, returned_count=len(page_items), offset=current_offset)
+            if not has_more or not page_items:
+                break
+            current_offset += len(page_items)
+
+        filtered_items = _filter_records(items, field_name=filter_field, op=filter_op, expected=filter_value)
+        display_items = [_project_record_fields(item, field_names) for item in filtered_items]
+        return _render_base_records(
+            table_id,
+            display_items,
+            total=total,
+            has_more=has_more,
+            next_offset=offset + len(items) if has_more else None,
+            field_names=field_names,
+            scanned_count=len(items),
+            matched_count=len(filtered_items) if has_filter else None,
+        )
+
+    payload = await _run_feishu_base_shortcut(_cli_command(requested_offset=offset, requested_limit=limit))
     items = payload.get("items", [])
     if not isinstance(items, list):
         items = []

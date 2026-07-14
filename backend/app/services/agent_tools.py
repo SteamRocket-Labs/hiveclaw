@@ -670,9 +670,14 @@ async def discoverable_tool_names_for_query(agent_id: uuid.UUID, query: str) -> 
 
 
 async def available_deferred_tool_names_for_agent(agent_id: uuid.UUID, *, limit: int = 80) -> list[str]:
-    """Stable turn-1 list of deferred tool names the agent may select/load."""
+    """Stable complete list of deferred tools the agent may select/load.
+
+    ``limit`` is retained only for source compatibility. A platform top-N here
+    would hide capabilities before the model could judge their relevance.
+    """
+    del limit
     names = await discoverable_tool_names_for_query(agent_id, "")
-    return sorted(dict.fromkeys(names))[:limit]
+    return sorted(dict.fromkeys(names))
 
 
 def _deferred_tool_group_for_name(tool_name: str) -> str:

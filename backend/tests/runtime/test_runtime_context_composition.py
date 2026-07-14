@@ -157,6 +157,36 @@ def test_runtime_assembly_state_owns_activation_candidates_without_mirror() -> N
     assert metadata_state["activation_candidates"] == [candidate.to_manifest()]
 
 
+def test_runtime_assembly_keeps_all_semantic_candidates_and_feedback_events() -> None:
+    session = SessionContext(session_id="complete-semantic-assembly")
+    state = ensure_runtime_assembly_state(session)
+
+    for index in range(3):
+        state.record_runtime_reminder_candidate({"id": f"reminder-{index}", "content": f"content-{index}"}, limit=1)
+        state.record_activation_event({"event_id": f"event-{index}"}, limit=1)
+    state.record_activation_candidates(
+        [{"candidate_ref": {"candidate_id": f"candidate-{index}"}} for index in range(3)],
+        limit=1,
+    )
+
+    metadata_state = session.metadata["runtime_assembly_state"]
+    assert [item["id"] for item in metadata_state["runtime_reminder_candidates"]] == [
+        "reminder-0",
+        "reminder-1",
+        "reminder-2",
+    ]
+    assert [item["event_id"] for item in metadata_state["activation_events"]] == [
+        "event-0",
+        "event-1",
+        "event-2",
+    ]
+    assert [item["candidate_ref"]["candidate_id"] for item in metadata_state["activation_candidates"]] == [
+        "candidate-0",
+        "candidate-1",
+        "candidate-2",
+    ]
+
+
 def test_tool_result_ledger_writes_only_runtime_assembly_state() -> None:
     from app.runtime.tool_result_ledger import append_tool_result_ledger_entry
 
@@ -234,6 +264,24 @@ def test_runtime_reminder_candidate_writes_only_runtime_assembly_state() -> None
     assert candidate["candidate_ref"]["candidate_id"].startswith("runtime_reminder:plan_mode_full:")
     assert "runtime_reminder_candidates" not in session.metadata
     assert session.metadata["runtime_assembly_state"]["runtime_reminder_candidates"] == [candidate]
+
+
+def test_runtime_reminder_candidate_preserves_complete_semantic_content() -> None:
+    from app.runtime.runtime_reminder_candidate import build_runtime_reminder_candidate
+
+    decisive_tail = "RUNTIME_REMINDER_DECISIVE_TAIL"
+    text = ("r" * 2_000) + decisive_tail
+
+    candidate = build_runtime_reminder_candidate(
+        source="loop_guard",
+        text=text,
+        ttl="current_round",
+        priority=90,
+        consumed_at=None,
+    )
+
+    assert candidate["content"] == text
+    assert candidate["content"].endswith(decisive_tail)
 
 
 def test_legacy_runtime_assembly_mirrors_are_promoted_once_and_removed() -> None:

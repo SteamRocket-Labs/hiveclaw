@@ -76,6 +76,20 @@ def _write_reviewed_t2_package(
         ),
         encoding="utf-8",
     )
+    t0_dir = root / str(agent_id) / "memory" / "t0" / "sessions" / session_id / "segments" / segment_id
+    t0_dir.mkdir(parents=True, exist_ok=True)
+    (t0_dir / "source.md").write_text(
+        f"# T0 Source\n\nTail source evidence for {session_id}/{segment_id}.\n",
+        encoding="utf-8",
+    )
+    (t0_dir / "events.jsonl").write_text(
+        json.dumps(
+            {"sequence": 1, "role": "user", "content": f"Tail source evidence for {session_id}/{segment_id}."},
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     return package_dir
 
 
@@ -132,6 +146,13 @@ def _write_episode_stitch_package(
         + "\n",
         encoding="utf-8",
     )
+    t0_dir = root / str(agent_id) / "memory" / "t0" / "sessions" / session_id / "segments" / "seg-1"
+    t0_dir.mkdir(parents=True, exist_ok=True)
+    (t0_dir / "source.md").write_text("# T0 Source\n\nEpisode tail source evidence.\n", encoding="utf-8")
+    (t0_dir / "events.jsonl").write_text(
+        json.dumps({"sequence": 1, "role": "user", "content": "Episode tail source evidence."}) + "\n",
+        encoding="utf-8",
+    )
     return package_dir
 
 
@@ -152,6 +173,26 @@ def _accepted_review() -> str:
   </memory_gate_rubric>
 </memory_gate_review>
 """
+
+
+def test_discover_pending_t3_sources_exposes_every_reviewed_package(tmp_path: Path) -> None:
+    from app.memory.t3_consolidation import discover_pending_t3_sources
+
+    agent_id = uuid.uuid4()
+    expected = {
+        _write_reviewed_t2_package(
+            tmp_path,
+            agent_id,
+            session_id=f"session-{index:02d}",
+            segment_id=f"segment-{index:02d}",
+        )
+        for index in range(10)
+    }
+
+    pending = discover_pending_t3_sources(agent_id=agent_id, data_root=tmp_path)
+
+    assert set(pending.package_dirs) == expected
+    assert len(pending.package_dirs) == 10
 
 
 def _accepted_review_for(*refs: str, decision: str = "accept_new") -> str:
@@ -238,6 +279,10 @@ def test_discover_pending_t3_sources_uses_episode_stitch_packages(tmp_path: Path
     assert bundle["source_packages"][0]["ref"] == "t2://session/s1/episode/episode-1"
     assert bundle["source_packages"][0]["source_kind"] == "episode_stitch_package"
     assert bundle["source_packages"][0]["synthesis_sha256"]
+    assert "用户跨片段讨论 T3 记忆收敛" in bundle["source_packages"][0]["synthesis_md"]
+    assert "<episode_review" in bundle["source_packages"][0]["review_md"]
+    assert bundle["source_packages"][0]["t0_evidence"][0]["available"] is True
+    assert "Episode tail source evidence" in bundle["source_packages"][0]["t0_evidence"][0]["source_md"]
 
 
 def test_discover_pending_t3_sources_rejects_non_standalone_segment(tmp_path: Path) -> None:
@@ -296,38 +341,17 @@ def test_build_t3_consolidation_batch_embeds_explicit_overlay_details(tmp_path: 
     assert "tool:save_memory" in bundle["explicit_overlay_entries"][0]["source_refs"]
 
 
-def test_platform_gate_rejects_low_score_reinforced_review(tmp_path: Path) -> None:
-    from app.memory.md_store import ensure_t3_layout
+def test_platform_gate_honors_model_accept_decision_without_score_cutoff(tmp_path: Path) -> None:
     from app.memory.t3_platform_gate import apply_t3_consolidation_patch, file_sha256
 
     agent_id = uuid.uuid4()
     _write_reviewed_t2_package(tmp_path, agent_id)
-    mem_dir = ensure_t3_layout(tmp_path, agent_id)
-    target = mem_dir / "t3" / "user.md"
-    base_sha = file_sha256(target)
+    target = "memory/profiles/owner.md"
+    base_sha = file_sha256(tmp_path / str(agent_id) / target)
     t2_ref = "t2://session/s1/segment/seg-1"
-    patch = f"""# Revised Patch
-
-<t3_consolidation_patch id="t3p_bad_reinforce" schema_version="t3.consolidation_patch.v1">
-  <base_revisions><base_revision path="memory/t3/user.md" sha256="{base_sha}"/></base_revisions>
-  <source_packages><source_package ref="{t2_ref}" status="reviewed"/></source_packages>
-  <target_files><target_file path="memory/t3/user.md"/></target_files>
-  <target_view_labels>
-    <target_view>user</target_view>
-    <consolidation_mode>reinforce</consolidation_mode>
-    <source_coverage>single_session</source_coverage>
-    <cue_strength>0.80</cue_strength>
-    <stability>stable</stability>
-    <behavior_impact>response_style</behavior_impact>
-    <prompt_priority>p1_dynamic</prompt_priority>
-  </target_view_labels>
-  <proposed_changes>
-    <reinforce_block target="memory/t3/user.md" block_id="usr_existing_rule"/>
-  </proposed_changes>
-  <evidence><source_ref>{t2_ref}#summary</source_ref></evidence>
-</t3_consolidation_patch>
-"""
-    low_review = _accepted_review_for(f"{t2_ref}#summary", decision="reinforced")
+    entry = "### Score-independent model decision\n<!-- id: model-owned-score -->\nThe Memory Gate model accepted this source-backed entry."
+    patch = _entry_patch(target, base_sha, "model-owned-score", entry, refs=[t2_ref])
+    low_review = _accepted_review_for(t2_ref, decision="accept_new")
     low_review = low_review.replace('value="4"', 'value="1"')
 
     result = apply_t3_consolidation_patch(
@@ -338,8 +362,8 @@ def test_platform_gate_rejects_low_score_reinforced_review(tmp_path: Path) -> No
         review_md=low_review,
     )
 
-    assert result.status == "held"
-    assert "evidence_strength below accepted threshold" in result.issues
+    assert result.status == "committed", result.issues
+    assert not result.issues
 
 
 def test_stage_pending_t3_consolidation_job_discovers_reviewed_packages_and_active_overlay(tmp_path: Path) -> None:
@@ -487,6 +511,12 @@ def test_build_t3_consolidation_batch_stages_source_bundle_and_neighborhood(tmp_
     bundle = json.loads((result.job_dir / "source_bundle.json").read_text(encoding="utf-8"))
     assert bundle["schema_version"] == "t3.source_bundle.v1"
     assert bundle["source_packages"][0]["ref"] == "t2://session/s1/segment/seg-1"
+    assert "用户要求 T3 通过 batch 收敛" in bundle["source_packages"][0]["summary_md"]
+    assert "<t2_labels" in bundle["source_packages"][0]["labels_md"]
+    assert "<t2_review" in bundle["source_packages"][0]["review_md"]
+    assert bundle["source_packages"][0]["t0_evidence"][0]["available"] is True
+    assert "Tail source evidence for s1/seg-1" in bundle["source_packages"][0]["t0_evidence"][0]["source_md"]
+    assert "Tail source evidence for s1/seg-1" in bundle["source_packages"][0]["t0_evidence"][0]["events_jsonl"]
     assert "memory/self/self.md" in bundle["allowed_target_files"]
     neighborhood = (result.job_dir / "t3_neighborhood.md").read_text(encoding="utf-8")
     assert "memory-batch-flow" in neighborhood

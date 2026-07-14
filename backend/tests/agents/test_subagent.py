@@ -112,10 +112,12 @@ def test_resolve_tools_explorer_uses_preset():
     allowed, excluded = resolve_subagent_tools(SubagentSpec(name="e", type="explorer"))
     assert "web_search" in allowed
     assert "read_file" in allowed
-    # recursion guard + delegation always denied
-    assert "delegate_to_agent" in excluded
-    assert "spawn_subagent" in excluded
-    assert "fanout_subagents" in excluded
+    # Child sessions are narrowed by their positive preset and governed depth,
+    # authority, cycle, and budget checks—not by a blanket recursion blacklist.
+    assert "delegate_to_agent" not in excluded
+    assert "spawn_subagent" not in excluded
+    assert "fanout_subagents" not in excluded
+    assert {"ask_user_question", "request_plan_mode"}.issubset(excluded)
 
 
 def test_resolve_tools_explicit_allowed_overrides_preset():
@@ -236,8 +238,9 @@ async def test_spawn_builds_governed_request():
     assert req.model is ctx.model  # child inherits the parent model
     assert req.max_tool_rounds == 6  # spec override wins over budget default
     assert req.delegation_token is token  # governance token threaded through
-    assert "delegate_to_agent" in req.excluded_tool_names
-    assert "spawn_subagent" in req.excluded_tool_names  # recursion guard
+    assert "delegate_to_agent" not in req.excluded_tool_names
+    assert "spawn_subagent" not in req.excluded_tool_names
+    assert {"ask_user_question", "request_plan_mode"}.issubset(req.excluded_tool_names)
     assert "web_search" in req.allowed_tool_names  # explorer preset applied
     assert req.messages == [{"role": "user", "content": "investigate X"}]  # fork=none
     assert req.session_context.source == "subagent"
@@ -457,14 +460,14 @@ async def test_unknown_type_without_explicit_tools_fails_closed():
 
 
 @pytest.mark.asyncio
-async def test_spawn_truncates_output():
+async def test_spawn_preserves_complete_output_past_legacy_advisory_cap():
     result = await _spawn_one(
         _ctx(),
         SubagentJob(spec=explorer_spec("e"), task="t"),
         budget=SubagentBudget(max_output_chars=5),
         invoke=_ok_invoke(content="0123456789"),
     )
-    assert result.content == "01234"
+    assert result.content == "0123456789"
 
 
 @pytest.mark.asyncio
@@ -557,7 +560,7 @@ async def test_spawn_worktree_isolation_uses_distinct_workspace(monkeypatch, tmp
 
 
 @pytest.mark.asyncio
-async def test_spawn_captures_sources_under_budget():
+async def test_spawn_preserves_all_complete_sources_past_legacy_advisory_caps():
     captured_request: list = []
 
     async def invoke(request):
@@ -586,7 +589,10 @@ async def test_spawn_captures_sources_under_budget():
     )
 
     assert captured_request[0].on_tool_call is not None
-    assert result.sources == [{"url": "https://example.com/a", "tool_name": "web_fetch", "content": "abc"}]
+    assert result.sources == [
+        {"url": "https://example.com/a", "tool_name": "web_fetch", "content": "abcdef"},
+        {"url": "https://example.com/b", "tool_name": "web_fetch", "content": "ignored by max_sources"},
+    ]
 
 
 @pytest.mark.asyncio
@@ -597,12 +603,17 @@ async def test_spawn_injects_memory_and_records_distilled_how(tmp_path, monkeypa
     def allowed_decision(content, **kwargs):
         return SimpleNamespace(
             rejected=False,
+            held=False,
             reason="",
             content=content,
             metadata={"entry_id": "e1", "sensitivity": "internal"},
         )
 
+    async def allowed_llm_decision(content, **kwargs):
+        return allowed_decision(content, **kwargs)
+
     monkeypatch.setattr(mem_mod, "prepare_memory_write", allowed_decision)
+    monkeypatch.setattr(mem_mod, "prepare_memory_write_with_llm", allowed_llm_decision)
     memory_store = SubagentMemoryStore(tmp_path)
     memory_store.record_how("e", "Prefer official docs.", category="source_calibration")
     captured: list = []

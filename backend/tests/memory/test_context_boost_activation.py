@@ -230,6 +230,18 @@ def test_pin_attention_set_replaces_previous_declaration() -> None:
     assert pinned == {"knowledge/platform-gate"}, "a new declaration supersedes the old one"
 
 
+def test_model_declared_pinned_attention_set_is_never_mechanically_capped() -> None:
+    from app.memory.session_working_set import WORKING_SET_MAX_ITEMS, pin_attention_set, working_set_seeds
+
+    declared = [f"knowledge/model-declared-{index}" for index in range(WORKING_SET_MAX_ITEMS + 12)]
+
+    ws = pin_attention_set(None, declared, now=NOW)
+    seeds = working_set_seeds(ws)
+
+    assert {item["ref"] for item in ws.items if item.get("pinned")} == set(declared)
+    assert set(seeds) == set(declared)
+
+
 def test_persisted_pinned_items_keep_refs_only(tmp_path: Path) -> None:
     from app.memory.session_working_set import load_working_set, pin_attention_set, save_working_set
 

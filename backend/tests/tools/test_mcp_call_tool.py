@@ -504,7 +504,7 @@ async def test_mcp_get_prompt_uses_live_prompts_get(install_fake_session, patch_
 
 
 @pytest.mark.asyncio
-async def test_mcp_get_prompt_import_as_skill_stages_blocked_skill_guard_review(
+async def test_mcp_get_prompt_import_as_skill_stages_governed_skill_guard_review(
     install_fake_session, patch_mcp_client, monkeypatch, tmp_path
 ):
     row = _approved_mcp_row(
@@ -534,8 +534,8 @@ async def test_mcp_get_prompt_import_as_skill_stages_blocked_skill_guard_review(
     out = await mcp_get_prompt(uuid.uuid4(), {"prompt_name": "review", "import_as_skill": True})
 
     assert "MCP Prompt Skill Review Required" in out
-    assert "- status: blocked" in out
-    assert "- skill_guard: critical" in out
+    assert "- status: review_required" in out
+    assert "- skill_guard:" in out
     assert not list(tmp_path.rglob("SKILL.md"))
 
 
@@ -639,11 +639,12 @@ async def test_read_mcp_resource_approval_mode_annotates_not_blocks(install_fake
 async def test_list_mcp_resources_marks_approval_tools(install_fake_session, monkeypatch):
     from app.tools.handlers.mcp import list_mcp_tools
 
+    description_tail = "MCP_TOOL_DESCRIPTION_DECISIVE_TAIL"
     rows = [
         _approved_mcp_row(
             name="weather",
             display_name="Weather",
-            description="Weather lookup",
+            description="d" * 150 + description_tail,
             mcp_server_name="weather-server",
             mcp_server_url="https://mcp.example.com",
         )
@@ -659,3 +660,47 @@ async def test_list_mcp_resources_marks_approval_tools(install_fake_session, mon
 
     assert "weather" in out  # approval tools stay discoverable
     assert "[approval required]" in out  # but the cost is visible up front
+    assert description_tail in out
+
+
+@pytest.mark.asyncio
+async def test_mcp_resource_and_prompt_discovery_preserve_full_descriptions(monkeypatch):
+    from app.tools.handlers import mcp as handler
+
+    resource_tail = "MCP_RESOURCE_DESCRIPTION_DECISIVE_TAIL"
+    prompt_tail = "MCP_PROMPT_DESCRIPTION_DECISIVE_TAIL"
+
+    class _Client:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def list_resources(self):
+            return [
+                {
+                    "uri": "resource://one",
+                    "name": "Resource One",
+                    "description": "r" * 180 + resource_tail,
+                    "mimeType": "text/plain",
+                }
+            ]
+
+        async def list_prompts(self):
+            return [
+                {
+                    "name": "review",
+                    "description": "p" * 180 + prompt_tail,
+                    "arguments": [],
+                }
+            ]
+
+    async def fake_resolve(*_args, **_kwargs):
+        return ("https://mcp.example.com", None, "server")
+
+    monkeypatch.setattr(handler, "_resolve_agent_mcp_server", fake_resolve)
+    monkeypatch.setattr("app.services.mcp_client.MCPClient", _Client)
+
+    resources = await handler.mcp_list_resources(uuid.uuid4(), {})
+    prompts = await handler.mcp_list_prompts(uuid.uuid4(), {})
+
+    assert resource_tail in resources
+    assert prompt_tail in prompts

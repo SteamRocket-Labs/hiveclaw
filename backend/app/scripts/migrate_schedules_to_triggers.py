@@ -66,7 +66,7 @@ async def migrate():
                 name=f"migrated_{name[:80]}",
                 type="cron",
                 config={"expr": cron_expr},
-                reason=instruction[:500] if instruction else f"Migrated schedule: {name}",
+                reason=instruction if instruction else f"Migrated schedule: {name}",
                 is_enabled=is_enabled,
                 fire_count=run_count or 0,
                 last_fired_at=last_run_at,

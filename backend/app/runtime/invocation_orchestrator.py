@@ -87,6 +87,19 @@ async def _assemble_invocation_state(
     if routing_config is None and request.agent_id is not None and request.fallback_model is not None:
         routing_config = await ports.resolve_smart_routing(request.agent_id)
     route = ports.resolve_turn_route(request, routing_config=routing_config)
+    if request.on_event is not None:
+        try:
+            await ports.maybe_await(
+                request.on_event(
+                    {
+                        "type": "session_context",
+                        "event_type": "model_route",
+                        **route["metadata"],
+                    }
+                )
+            )
+        except Exception as exc:
+            ports.logger.warning("[Invoker] model-route event callback failed: %s", exc)
     execution_identity = _resolve_execution_identity(request, ports)
     skill_catalog = _build_skill_catalog(request, ports)
     kernel_request = _build_kernel_request(
@@ -347,7 +360,7 @@ def _record_skill_usage(state: _InvocationState, terminal_status: str, assistant
             tool_events=state.skill_events,
             terminal_status=terminal_status,
             assistant_text=assistant_text,
-            note=assistant_text[:500],
+            note=assistant_text,
         )
     except Exception as exc:
         state.ports.logger.warning(
@@ -400,7 +413,7 @@ async def _emit_close_hooks(state: _InvocationState, result: Any) -> None:
         "pending_work": list(getattr(request.session_context, "pending_items", []) or [])
         if request.session_context
         else [],
-        "last_successful_step": result.content[:300],
+        "last_successful_step": result.content,
         "activation_events": list(ensure_runtime_assembly_state(request.session_context).activation_events)
         if request.session_context
         else [],

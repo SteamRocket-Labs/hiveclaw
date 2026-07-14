@@ -47,7 +47,7 @@ async def test_feishu_base_table_list_prefers_cli_when_available(monkeypatch: py
             "--offset",
             "0",
             "--limit",
-            "50",
+            "100",
             "--format",
             "json",
         ]
@@ -74,6 +74,79 @@ async def test_feishu_base_table_list_prefers_cli_when_available(monkeypatch: py
     assert "销售日报" in result
     assert "tbl_2" in result
     assert "<tool_error>" not in result
+
+
+@pytest.mark.asyncio
+async def test_feishu_base_table_list_defaults_to_all_openapi_pages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.agent_tool_domains import feishu_base
+
+    async def fake_get_feishu_token(_agent_id):
+        return "tenant", "tenant-token"
+
+    calls: list[dict] = []
+
+    async def fake_base_api_get(token: str, path: str, params: dict | None = None) -> dict:
+        assert token == "tenant-token"
+        assert path == "/bitable/v1/apps/app-token/tables"
+        calls.append(dict(params or {}))
+        if not params or not params.get("page_token"):
+            return {
+                "items": [{"table_id": "tbl_1", "name": "第一页"}],
+                "total": 2,
+                "has_more": True,
+                "page_token": "tables-next",
+            }
+        assert params["page_token"] == "tables-next"
+        return {
+            "items": [{"table_id": "tbl_2", "name": "决定性尾页"}],
+            "total": 2,
+            "has_more": False,
+        }
+
+    monkeypatch.setattr(feishu_base, "_get_feishu_token", fake_get_feishu_token)
+    monkeypatch.setattr(feishu_base, "_base_api_get", fake_base_api_get)
+
+    result = await feishu_base._feishu_base_table_list("agent-1", {"base_token": "app-token"})
+
+    assert calls == [
+        {"page_size": 100},
+        {"page_size": 100, "page_token": "tables-next"},
+    ]
+    assert "tbl_1" in result
+    assert "tbl_2" in result
+    assert "决定性尾页" in result
+
+
+@pytest.mark.asyncio
+async def test_feishu_base_table_list_defaults_to_all_cli_pages(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services.agent_tool_domains import feishu_base
+
+    async def fake_cli_available() -> bool:
+        return True
+
+    offsets: list[int] = []
+
+    async def fake_run_feishu_cli_command(args: list[str]) -> tuple[int, str, str]:
+        offset = int(args[args.index("--offset") + 1])
+        offsets.append(offset)
+        item = (
+            {"table_id": "tbl_1", "table_name": "第一页"}
+            if offset == 0
+            else {"table_id": "tbl_2", "table_name": "决定性尾页"}
+        )
+        return 0, json.dumps({"items": [item], "total": 2}), ""
+
+    monkeypatch.setattr(feishu_base, "_feishu_cli_available", fake_cli_available)
+    monkeypatch.setattr(feishu_base, "_run_feishu_cli_command", fake_run_feishu_cli_command)
+
+    result = await feishu_base._feishu_base_table_list("agent-1", {"base_token": "app-token"})
+
+    assert offsets == [0, 1]
+    assert "tbl_1" in result
+    assert "tbl_2" in result
+    assert "决定性尾页" in result
 
 
 @pytest.mark.asyncio
@@ -359,6 +432,48 @@ async def test_feishu_base_record_list_fetch_all_filters_negative_numeric_field(
 
 
 @pytest.mark.asyncio
+async def test_feishu_base_fetch_all_has_no_implicit_record_ceiling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.agent_tool_domains import feishu_base
+
+    async def fake_get_feishu_token(_agent_id):
+        return "tenant", "tenant-token"
+
+    calls = 0
+
+    async def fake_base_api_get(token: str, path: str, params: dict | None = None) -> dict:
+        nonlocal calls
+        assert token == "tenant-token"
+        assert path == "/bitable/v1/apps/app-token/tables/tbl_1/records"
+        calls += 1
+        start = (calls - 1) * 200
+        count = 200 if calls <= 5 else 1
+        items = [
+            {"record_id": f"rec_{index}", "fields": {"name": f"record-{index}"}}
+            for index in range(start, start + count)
+        ]
+        return {
+            "items": items,
+            "total": 1001,
+            "has_more": calls < 6,
+            "page_token": f"page-{calls + 1}" if calls < 6 else "",
+        }
+
+    monkeypatch.setattr(feishu_base, "_get_feishu_token", fake_get_feishu_token)
+    monkeypatch.setattr(feishu_base, "_base_api_get", fake_base_api_get)
+
+    result = await feishu_base._feishu_base_record_list(
+        "agent-1",
+        {"base_token": "app-token", "table_id": "tbl_1", "fetch_all": True},
+    )
+
+    assert calls == 6
+    assert "已扫描：1001/1001" in result
+    assert "record-1000" in result
+
+
+@pytest.mark.asyncio
 async def test_feishu_task_list_uses_user_identity(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.services.agent_tool_domains import feishu_tasks
 
@@ -587,7 +702,7 @@ async def test_feishu_base_field_list_prefers_cli_when_available(monkeypatch: py
             "--offset",
             "0",
             "--limit",
-            "100",
+            "200",
             "--format",
             "json",
         ]
@@ -616,6 +731,85 @@ async def test_feishu_base_field_list_prefers_cli_when_available(monkeypatch: py
     assert "状态" in result
     assert "fld_2" in result
     assert "<tool_error>" not in result
+
+
+@pytest.mark.asyncio
+async def test_feishu_base_field_list_defaults_to_all_openapi_pages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.agent_tool_domains import feishu_base
+
+    async def fake_get_feishu_token(_agent_id):
+        return "tenant", "tenant-token"
+
+    calls: list[dict] = []
+
+    async def fake_base_api_get(token: str, path: str, params: dict | None = None) -> dict:
+        assert token == "tenant-token"
+        assert path == "/bitable/v1/apps/app-token/tables/tbl_1/fields"
+        calls.append(dict(params or {}))
+        if not params or not params.get("page_token"):
+            return {
+                "items": [{"field_id": "fld_1", "field_name": "第一页", "type": 1}],
+                "total": 2,
+                "has_more": True,
+                "page_token": "fields-next",
+            }
+        assert params["page_token"] == "fields-next"
+        return {
+            "items": [{"field_id": "fld_2", "field_name": "决定性尾页", "type": 1}],
+            "total": 2,
+            "has_more": False,
+        }
+
+    monkeypatch.setattr(feishu_base, "_get_feishu_token", fake_get_feishu_token)
+    monkeypatch.setattr(feishu_base, "_base_api_get", fake_base_api_get)
+
+    result = await feishu_base._feishu_base_field_list(
+        "agent-1",
+        {"base_token": "app-token", "table_id": "tbl_1"},
+    )
+
+    assert calls == [
+        {"page_size": 200},
+        {"page_size": 200, "page_token": "fields-next"},
+    ]
+    assert "fld_1" in result
+    assert "fld_2" in result
+    assert "决定性尾页" in result
+
+
+@pytest.mark.asyncio
+async def test_feishu_base_field_list_defaults_to_all_cli_pages(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services.agent_tool_domains import feishu_base
+
+    async def fake_cli_available() -> bool:
+        return True
+
+    offsets: list[int] = []
+
+    async def fake_run_feishu_cli_command(args: list[str]) -> tuple[int, str, str]:
+        offset = int(args[args.index("--offset") + 1])
+        offsets.append(offset)
+        item = (
+            {"field_id": "fld_1", "field_name": "第一页", "type": 1}
+            if offset == 0
+            else {"field_id": "fld_2", "field_name": "决定性尾页", "type": 1}
+        )
+        return 0, json.dumps({"items": [item], "total": 2}), ""
+
+    monkeypatch.setattr(feishu_base, "_feishu_cli_available", fake_cli_available)
+    monkeypatch.setattr(feishu_base, "_run_feishu_cli_command", fake_run_feishu_cli_command)
+
+    result = await feishu_base._feishu_base_field_list(
+        "agent-1",
+        {"base_token": "app-token", "table_id": "tbl_1"},
+    )
+
+    assert offsets == [0, 1]
+    assert "fld_1" in result
+    assert "fld_2" in result
+    assert "决定性尾页" in result
 
 
 @pytest.mark.asyncio

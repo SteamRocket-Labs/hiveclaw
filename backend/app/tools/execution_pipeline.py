@@ -408,7 +408,7 @@ async def _execute_tool(state: _ToolExecutionState) -> Any:
         error_payload = ports.extract_error_payload(result_text)
         failed = ports.tool_result_failed(result)
         if failed and error_payload is None:
-            error_payload = {"error_class": "legacy_tool_error", "message": result_text[:500], "retryable": False}
+            error_payload = {"error_class": "legacy_tool_error", "message": result_text, "retryable": False}
         _record_lifecycle(state, "failed" if failed else "completed")
         await _log_execution_result(state, result_text, error_payload)
         rewritten = await _run_result_hooks(state, result_text, failed)
@@ -454,13 +454,13 @@ async def _log_execution_result(
                 "backend": service.backend.name if service.backend else "unknown",
                 "args": {
                     key: (
-                        ports.json.dumps(value, ensure_ascii=False, default=str)[:100]
+                        ports.json.dumps(value, ensure_ascii=False, default=str)
                         if isinstance(value, (dict, list))
-                        else str(value)[:100]
+                        else str(value)
                     )
                     for key, value in state.arguments.items()
                 },
-                "result": result_text[:300],
+                "result": result_text,
                 "tool_call_lifecycle": ports.latest_context_record(state.runtime_context, "tool_lifecycle_records"),
                 "tool_execution_frame": ports.latest_context_record(state.runtime_context, "tool_execution_frames"),
                 **approval_detail,
@@ -525,7 +525,7 @@ async def _handle_execution_failure(
     message = (
         f"{request.tool_name} exceeded the {int(timeout_seconds or 0)} second time limit."
         if is_timeout
-        else f"{request.tool_name} failed with {type(exception).__name__}: {str(exception)[:500]}"
+        else f"{request.tool_name} failed with {type(exception).__name__}: {str(exception)}"
     )
     rendered = ports.render_tool_error(
         tool_name=request.tool_name,
@@ -547,7 +547,7 @@ async def _handle_execution_failure(
         executor=service.backend.name if service.backend else "unknown",
         arguments=state.arguments,
         status="failed",
-        result={"error": error_class if is_timeout else type(exception).__name__, "message": message[:500]},
+        result={"error": error_class if is_timeout else type(exception).__name__, "message": message},
         trace_metadata_sink=request.trace_metadata_sink,
     )
     if request.emit_runtime_hooks:

@@ -335,7 +335,7 @@ async def record_projection_failure(
     record = await get_asset_record(db, tenant_id=tenant_id, asset_id=asset_id, for_update=True)
     if record is None:
         return False
-    error_text = f"{type(error).__name__}: {error}"[:2000]
+    error_text = f"{type(error).__name__}: {error}"
     record.projection_status = "failed"
     record.projection_error = error_text
     db.add(
@@ -374,7 +374,7 @@ async def reconcile_asset(
         return {"status": "drifted", "expected_hash": expected_hash, "actual_hash": actual_hash}
     except Exception as exc:
         record.projection_status = "failed"
-        record.projection_error = f"{type(exc).__name__}: {exc}"[:2000]
+        record.projection_error = f"{type(exc).__name__}: {exc}"
         raise
 
 

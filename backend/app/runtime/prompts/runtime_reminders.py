@@ -32,11 +32,12 @@ WORK_LEDGER_REMINDER = (
 )
 
 PROGRESS_REPLAN_POLICY = (
-    "Progress Ledger runtime policy: needs_replan=true. "
+    "Progress Ledger advisory: replan_advisory=true. "
     f"{INTERNAL_REMINDER_GUARD} "
-    "The current tactic is stalled or has unresolved failures. Before continuing with non-ledger work, "
-    "read the ledger if needed, then use record_finding with type='replan' to record the changed strategy "
-    "and update todos/owners with track_todo. Do not repeat the latest progress unchanged."
+    "Mechanical evidence indicates a stall or unresolved failures. This signal is not a semantic decision "
+    "and does not force a transition: the model decides whether to replan, retry, continue, or stop after "
+    "reviewing the complete ledger. If the model changes strategy, it may record that decision with "
+    "record_finding and update todos with track_todo."
 )
 
 LOOP_GUARD_WARN_GUIDANCE = (

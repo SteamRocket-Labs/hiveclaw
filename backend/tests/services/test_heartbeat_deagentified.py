@@ -194,3 +194,49 @@ async def test_heartbeat_t3_core_skips_llm_when_no_pending_sources(tmp_path, mon
 
     assert result.status == "skipped"
     assert result.skip_reason == "no_pending_t3_sources"
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_oversized_semantic_input_is_fully_chunked_and_model_reduced(tmp_path, monkeypatch) -> None:
+    """Long-tail T3 evidence must reach a model pass; platform code may not head/tail slice it."""
+    from app.services import heartbeat_t3_core
+
+    tail = "DECISIVE-T3-TAIL-MUST-BE-REVIEWED"
+    sections = [
+        ("source_bundle.json", "A" * 420 + tail),
+        ("t3_neighborhood.md", "B" * 380 + "NEIGHBORHOOD-TAIL"),
+    ]
+    calls: list[dict] = []
+
+    async def fake_complete_json(**kwargs):
+        calls.append(kwargs)
+        phase = str(kwargs["phase"])
+        user_text = kwargs["messages"][-1].content
+        if "coverage_map" in phase:
+            return {"coverage_notes": f"notes:{phase}:{user_text[-80:]}"}
+        if "coverage_reduce" in phase:
+            return {"coverage_notes": f"reduced:{phase}:{user_text[-120:]}"}
+        raise AssertionError(f"unexpected phase: {phase}")
+
+    monkeypatch.setattr(heartbeat_t3_core, "_complete_json", fake_complete_json)
+    coverage_path = tmp_path / "coverage.json"
+
+    prepared = await heartbeat_t3_core._prepare_covered_semantic_input(
+        model=SimpleNamespace(provider="openai", model="gpt-4.1", max_output_tokens=8192),
+        agent_id=uuid4(),
+        tenant_id=uuid4(),
+        phase="consolidator",
+        sections=sections,
+        coverage_path=coverage_path,
+        max_chars=180,
+    )
+
+    mapped_text = "\n".join(call["messages"][-1].content for call in calls if "coverage_map" in call["phase"])
+    assert tail in mapped_text
+    assert "NEIGHBORHOOD-TAIL" in mapped_text
+    assert "heartbeat direct T3 core input truncated" not in mapped_text
+    assert "model_coverage_notes" in prepared
+    coverage = json.loads(coverage_path.read_text(encoding="utf-8"))
+    assert coverage["complete"] is True
+    assert coverage["source_chars"] == sum(len(text) for _, text in sections)
+    assert all(row["sha256"] for row in coverage["chunks"])

@@ -318,7 +318,7 @@ async def create_task(
         raise HTTPException(status_code=409, detail="Agent tenant is required for task execution")
     # Plan Mode early intercept (§9.3): a todo task auto-executes in the
     # background (execute_task), so it needs a confirmed plan.
-    action_artifact = data.model_dump(mode="json")
+    action_artifact = data.model_dump(mode="json", exclude={"confirmed_plan_hash"})
     request_hash = business_task_request_key(
         tenant_id=agent.tenant_id,
         agent_id=agent_id,
@@ -350,7 +350,7 @@ async def create_task(
         action_artifact=action_artifact,
         evidence_id=evidence_id,
     )
-    plan_evidence = stamp_plan_gate_decision(
+    plan_binding = stamp_plan_gate_decision(
         {},
         decision=plan_decision,
         confirmed_plan_id=data.confirmed_plan_id,
@@ -359,7 +359,9 @@ async def create_task(
         requester_user_id=current_user.id,
         session_id=data.confirmed_plan_session_id,
         evidence_id=evidence_id,
-    ).get("plan_authorization")
+    )
+    plan_evidence = plan_binding.get("plan_authorization")
+    canonical_plan_id = plan_binding.get("plan_id")
     task = Task(
         agent_id=agent_id,
         tenant_id=agent.tenant_id,
@@ -372,9 +374,9 @@ async def create_task(
         authority_state="owned",
         request_id=data.request_id,
         request_hash=request_hash,
-        plan_id=uuid.UUID(data.confirmed_plan_id) if data.confirmed_plan_id else None,
-        plan_version=data.confirmed_plan_version,
-        plan_hash=data.confirmed_plan_hash,
+        plan_id=uuid.UUID(str(canonical_plan_id)) if canonical_plan_id else None,
+        plan_version=plan_binding.get("plan_version"),
+        plan_hash=plan_binding.get("plan_hash"),
         plan_authorization=plan_evidence,
     )
     root_session_id, delivery_target = await _task_delivery_context(
@@ -723,7 +725,10 @@ async def _trigger_task_run(
         agent_id=agent_id,
         requester_user_id=current_user.id,
         action="trigger",
-        payload={**action_artifact, **trigger_in.model_dump(mode="json")},
+        payload={
+            **action_artifact,
+            **trigger_in.model_dump(mode="json", exclude={"confirmed_plan_hash"}),
+        },
     )
     existing_run = await _load_matching_runtime_request(
         db,
@@ -761,7 +766,7 @@ async def _trigger_task_run(
         action_artifact=action_artifact,
         evidence_id=evidence_id,
     )
-    task.plan_authorization = stamp_plan_gate_decision(
+    plan_binding = stamp_plan_gate_decision(
         {},
         decision=plan_decision,
         confirmed_plan_id=trigger_in.confirmed_plan_id,
@@ -770,10 +775,12 @@ async def _trigger_task_run(
         requester_user_id=current_user.id,
         session_id=trigger_in.confirmed_plan_session_id,
         evidence_id=evidence_id,
-    ).get("plan_authorization")
-    task.plan_id = uuid.UUID(trigger_in.confirmed_plan_id) if trigger_in.confirmed_plan_id else None
-    task.plan_version = trigger_in.confirmed_plan_version
-    task.plan_hash = trigger_in.confirmed_plan_hash
+    )
+    task.plan_authorization = plan_binding.get("plan_authorization")
+    canonical_plan_id = plan_binding.get("plan_id")
+    task.plan_id = uuid.UUID(str(canonical_plan_id)) if canonical_plan_id else None
+    task.plan_version = plan_binding.get("plan_version")
+    task.plan_hash = plan_binding.get("plan_hash")
 
     root_session_id, delivery_target = await _task_delivery_context(
         db,

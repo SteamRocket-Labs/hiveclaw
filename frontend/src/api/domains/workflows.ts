@@ -96,7 +96,7 @@ export interface WorkflowOutcomeEvidence {
   leaf_total?: number;
   leaf_done?: number;
   leaf_failed?: number;
-  promotion_eligible?: boolean;
+  model_promotion_review?: string | Record<string, unknown>;
   success_criteria_count?: number;
   [key: string]: unknown;
 }
@@ -202,7 +202,7 @@ export interface WorkflowRunSummary {
   repair_plan?: WorkflowRepairPlan | null;
 }
 
-/** Repeated-run evidence: "this flow ran N times — suggest 固化". */
+/** Complete grouped run evidence; the model/user decides whether to propose promotion. */
 export interface WorkflowPromoteSuggestion {
   definition_hash: string;
   name: string;
@@ -251,7 +251,6 @@ export interface StartWorkflowOptions {
   previewId: string;
   confirmedPlanId?: string;
   planVersion?: number;
-  planHash?: string;
   ledgerTodoId?: string;
 }
 
@@ -263,7 +262,6 @@ export function startWorkflow(
     preview_id: options.previewId,
     confirmed_plan_id: options.confirmedPlanId ?? null,
     plan_version: options.planVersion ?? null,
-    plan_hash: options.planHash ?? null,
     ledger_todo_id: options.ledgerTodoId ?? null,
   });
 }

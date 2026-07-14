@@ -29,7 +29,11 @@ def _normalize_status(value: Any) -> str:
 
 @dataclass(slots=True)
 class ToolEvidenceLedger:
-    """Collects the tool facts that a final answer is allowed to cite."""
+    """Collect mechanical tool facts for spans, replay, audit, and debugging.
+
+    This ledger is an evidence surface.  It is deliberately not a semantic
+    gate and must never be used to rewrite or license an assistant answer.
+    """
 
     events: list[dict[str, Any]] = field(default_factory=list)
 

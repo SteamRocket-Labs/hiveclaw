@@ -39,85 +39,6 @@ def _is_within(path: Path, root: Path) -> bool:
     return True
 
 
-# Dangerous patterns to block
-_DANGEROUS_BASH = [
-    "rm -rf /",
-    "rm -rf ~",
-    "sudo ",
-    "mkfs",
-    "dd if=",
-    ":(){ :",
-    "chmod 777 /",
-    "chown ",
-    "shutdown",
-    "reboot",
-    "curl ",
-    "wget ",
-    "nc ",
-    "ncat ",
-    "ssh ",
-    "scp ",
-    "python3 -c",
-    "python -c",
-]
-
-_DANGEROUS_PYTHON_IMPORTS = [
-    "subprocess",
-    "shutil.rmtree",
-    "os.system",
-    "os.popen",
-    "os.exec",
-    "os.spawn",
-    "socket",
-    "http.client",
-    "urllib.request",
-    "requests",
-    "ftplib",
-    "smtplib",
-    "telnetlib",
-    "ctypes",
-    "__import__",
-    "importlib",
-]
-
-# Node.js dangerous patterns — kept as module-level constant
-# so _check_code_safety can reference it without redefinition.
-_DANGEROUS_NODE = [
-    "child_" + "process",  # split to avoid hook false-positive
-    "fs.rmSync",
-    "fs.rmdirSync",
-    "process.exit",
-    "require('http')",
-    "require('https')",
-    "require('net')",
-]
-
-_DANGEROUS_COMMAND_PATTERNS = [
-    "rm -rf /",
-    "rm -rf ~",
-    "sudo ",
-    "docker ",
-    "docker-compose",
-    "kubectl ",
-    "systemctl ",
-    "service ",
-    "apt ",
-    "apt-get ",
-    "yum ",
-    "apk ",
-    "curl ",
-    "wget ",
-    "nc ",
-    "ncat ",
-    "ssh ",
-    "scp ",
-    "chmod 777 /",
-    "chown ",
-    "shutdown",
-    "reboot",
-]
-
-
 def _contains_parent_path_reference(text: str) -> bool:
     normalized = text.replace("\\", "/")
     parent_path_markers = (
@@ -131,36 +52,15 @@ def _contains_parent_path_reference(text: str) -> bool:
 
 
 def _check_code_safety(language: str, code: str) -> str | None:
-    """Check code for dangerous patterns. Returns error message if unsafe, None if ok."""
-    code_lower = code.lower()
+    """Reject concrete workspace escapes; sandbox/governance owns semantics."""
     if _contains_parent_path_reference(code):
         return "❌ Blocked: directory traversal not allowed"
-
-    if language == "bash":
-        for pattern in _DANGEROUS_BASH:
-            if pattern.lower() in code_lower:
-                return f"❌ Blocked: dangerous command detected ({pattern.strip()})"
-
-    elif language == "python":
-        for pattern in _DANGEROUS_PYTHON_IMPORTS:
-            if pattern.lower() in code_lower:
-                return f"❌ Blocked: unsafe operation detected ({pattern})"
-
-    elif language == "node":
-        for pattern in _DANGEROUS_NODE:
-            if pattern.lower() in code_lower:
-                return f"❌ Blocked: unsafe operation detected ({pattern})"
-
     return None
 
 
 def _check_command_safety(command: str) -> str | None:
-    command_lower = command.lower()
     if _contains_parent_path_reference(command):
         return "❌ Blocked: directory traversal not allowed"
-    for pattern in _DANGEROUS_COMMAND_PATTERNS:
-        if pattern.lower() in command_lower:
-            return f"❌ Blocked: dangerous command detected ({pattern.strip()})"
     return None
 
 
@@ -436,8 +336,8 @@ async def _execute_code(
         )
         _promote_nested_workspace_artifacts(work_dir)
         artifacts = _workspace_artifact_manifest(work_dir, workspace_before, source="execute_code")
-        stdout_str = result.stdout[:10000]
-        stderr_str = result.stderr[:5000]
+        stdout_str = result.stdout
+        stderr_str = result.stderr
 
         # Post-exec: stage skills produced by `npx skills add` from sandbox HOME.
         # Third-party skill artifacts must pass Trust Gate before activation.
@@ -488,7 +388,7 @@ async def _execute_code(
         return _with_code_execution_evidence("\n\n".join(result_parts), result, artifacts=artifacts)
 
     except Exception as e:
-        return f"❌ Execution error: {str(e)[:200]}"
+        return f"❌ Execution error: {str(e)}"
     finally:
         # Clean up temp script
         try:
@@ -523,8 +423,8 @@ async def _run_command(ws: Path, arguments: dict) -> str | ToolContentEnvelope:
     rendered = render_command_result(
         command,
         CodeExecutionResult(
-            stdout=result.stdout[:12000],
-            stderr=result.stderr[:6000],
+            stdout=result.stdout,
+            stderr=result.stderr,
             exit_code=result.exit_code,
             error=result.error,
             timed_out=result.timed_out,

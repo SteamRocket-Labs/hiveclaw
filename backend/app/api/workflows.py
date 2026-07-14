@@ -95,6 +95,7 @@ class WorkflowStartRequest(BaseModel):
     preview_id: uuid.UUID
     confirmed_plan_id: str | None = None
     plan_version: int | None = None
+    # Legacy wire compatibility only; PlanModeGate resolves the canonical hash.
     plan_hash: str | None = None
     ledger_todo_id: str | None = None
 
@@ -525,9 +526,9 @@ async def start_workflow_endpoint(
             )
         plan_authorization = stamp_confirmed_plan_provenance(
             {},
-            plan_id=payload.confirmed_plan_id,
-            plan_version=payload.plan_version,
-            plan_hash=payload.plan_hash,
+            plan_id=getattr(decision, "canonical_plan_id", None),
+            plan_version=getattr(decision, "canonical_plan_version", None),
+            plan_hash=getattr(decision, "canonical_plan_hash", None),
             authorization_lease_id=getattr(decision, "authorization_lease_id", None),
             canonical_args_hash=getattr(decision, "canonical_args_hash", None),
             target_ref=getattr(decision, "target_ref", None),

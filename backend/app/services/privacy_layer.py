@@ -63,10 +63,6 @@ class PrivacyLayer:
         re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{20,}\b"),
         re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
     )
-    _SENSITIVE_RE = re.compile(
-        r"\b(salary|compensation|health|medical|contract amount|bank|financial|layoff|acquisition|m&a)\b",
-        re.I,
-    )
 
     def __init__(self, store: PrivacyStore | None = None) -> None:
         self.store = store or PrivacyStore()
@@ -100,9 +96,6 @@ class PrivacyLayer:
         )
         if email_found or phone_found:
             return PrivacyDecision(text, sanitized, SensitivityLevel.PL2_PII, placeholders=placeholders)
-
-        if self._SENSITIVE_RE.search(text):
-            return PrivacyDecision(text, sanitized, SensitivityLevel.PL3_SENSITIVE, placeholders=placeholders)
 
         return PrivacyDecision(text, sanitized, SensitivityLevel.PL1_PUBLIC, placeholders=placeholders)
 

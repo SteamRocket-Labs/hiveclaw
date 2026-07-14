@@ -131,8 +131,8 @@ async def run_skill_tool(workspace: Path, arguments: dict) -> str | ToolContentE
     rendered = render_command_result(
         f"{skill_name}:{script}",
         CodeExecutionResult(
-            stdout=result.stdout[:12000],
-            stderr=result.stderr[:6000],
+            stdout=result.stdout,
+            stderr=result.stderr,
             exit_code=result.exit_code,
             error=result.error,
             timed_out=result.timed_out,

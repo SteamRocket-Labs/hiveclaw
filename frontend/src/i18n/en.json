@@ -1588,6 +1588,7 @@
       "disclosure": {
         "processing": "Processing",
         "processed": "Processed",
+        "showCompleteOutput": "Show complete output",
         "waiting": "Waiting for input",
         "stepCount": "{{count}} steps",
         "working": "Working"
@@ -3293,7 +3294,7 @@
     "leafEvidence": "{{failed}}/{{total}} leaf calls failed",
     "leafCalls": "Worker calls",
     "repair": "Repair run",
-    "suggestionBody": "\"{{name}}\" completed {{count}} times — consider promoting it to a reusable template.",
+    "suggestionBody": "\"{{name}}\" has {{count}} recorded runs. Review the complete evidence before deciding whether to propose a reusable template.",
     "loadingDetail": "Loading step details…",
     "emptySteps": "This run recorded no steps.",
     "statusDraft": "Pending approval",

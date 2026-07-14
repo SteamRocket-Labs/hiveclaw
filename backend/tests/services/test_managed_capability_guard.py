@@ -8,6 +8,7 @@ from app.services.managed_capability_guard import (
     MANAGED_CREDENTIAL_PREFIXES,
     detect_managed_credential_command,
     detect_managed_credential_guidance,
+    sanitize_managed_credential_guidance,
 )
 
 
@@ -66,3 +67,9 @@ send_email(to="ops@example.com", subject="hello")
 """
 
     assert detect_managed_credential_guidance(content) == ()
+
+
+def test_skill_loading_does_not_delete_or_rewrite_managed_credential_guidance() -> None:
+    content = "# Setup\n\nexport FEISHU_APP_SECRET=example-placeholder\nUse tenant channel config in production."
+
+    assert sanitize_managed_credential_guidance(content) == content

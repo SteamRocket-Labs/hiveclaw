@@ -142,11 +142,11 @@ async def test_llm_model(
             **reasoning_kwargs,
         )
         latency_ms = int((time.time() - start) * 1000)
-        reply = (response.content or "")[:100] if response else ""
+        reply = (response.content or "") if response else ""
         return {"success": True, "latency_ms": latency_ms, "reply": reply}
     except Exception as e:
         latency_ms = int((time.time() - start) * 1000)
-        return {"success": False, "latency_ms": latency_ms, "error": str(e)[:500]}
+        return {"success": False, "latency_ms": latency_ms, "error": str(e)}
 
 
 @router.get("/llm-models")

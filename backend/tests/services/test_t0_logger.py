@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -26,6 +27,12 @@ from app.services.t0_logger import (
     migrate_t0_layout,
     write_t0_log,
 )
+
+
+def test_recent_chat_backfill_has_no_implicit_first_n_session_cap() -> None:
+    signature = inspect.signature(backfill_recent_chat_logs)
+
+    assert signature.parameters["limit_sessions"].default is None
 
 
 # ── Helpers ──
@@ -107,10 +114,9 @@ class TestTruncate:
     def test_exact_length(self) -> None:
         assert _truncate("12345", 5) == "12345"
 
-    def test_truncation(self) -> None:
+    def test_requested_preview_limit_does_not_prune_canonical_t0_evidence(self) -> None:
         result = _truncate("hello world", 5)
-        assert result == "hello…"
-        assert len(result) == 6  # 5 + ellipsis
+        assert result == "hello world"
 
 
 # ── Format functions ──

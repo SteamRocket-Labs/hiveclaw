@@ -4,6 +4,7 @@ from malformed Feishu OpenAPI responses (the root cause of the Railway
 """
 
 import httpx
+import pytest
 
 from app.services.agent_tool_domains.feishu_docs import _safe_feishu_json
 
@@ -53,11 +54,30 @@ def test_returns_error_envelope_when_json_is_not_a_dict():
     assert "non-JSON response" in data["msg"]
 
 
-def test_error_msg_truncates_long_bodies_to_200_chars():
-    body = "x" * 5000
+def test_error_msg_preserves_complete_provider_body_for_kernel_recovery():
+    tail = "DECISIVE_FEISHU_PROVIDER_ERROR_TAIL"
+    body = ("x" * 5000) + tail
     resp = _response(body, status=500, content_type="text/plain")
     data = _safe_feishu_json(resp, "doc_delete")
     assert data["code"] == 500
-    # msg contains a 200-char snippet (surrounded by framing text), never the full body.
-    assert "x" * 200 in data["msg"]
-    assert "x" * 201 not in data["msg"]
+    assert body in data["msg"]
+    assert tail in data["msg"]
+
+
+@pytest.mark.asyncio
+async def test_wiki_file_route_uses_full_file_content_by_default(monkeypatch: pytest.MonkeyPatch):
+    from app.services.agent_tool_domains import feishu_docs, feishu_drive
+
+    async def fake_drive_file_read(agent_id, arguments):
+        assert agent_id == "agent-1"
+        assert arguments == {"file_token": "file-token", "file_name": "evidence.txt"}
+        return "COMPLETE FILE CONTENT"
+
+    monkeypatch.setattr(feishu_drive, "_feishu_drive_file_read", fake_drive_file_read)
+
+    result = await feishu_docs._route_wiki_non_doc_node(
+        "agent-1",
+        {"obj_type": "file", "obj_token": "file-token", "title": "evidence.txt"},
+    )
+
+    assert "COMPLETE FILE CONTENT" in result

@@ -123,6 +123,28 @@ async def test_failed_leaf_isolates_and_fails_step():
     assert journal.statuses("r")["fan"] == "failed"
 
 
+async def test_fanout_failure_reason_preserves_every_leaf_failure() -> None:
+    compiled = compile_workflow(_fan_definition())
+    journal = InMemoryWorkflowJournal()
+    concurrency = {"now": 0, "peak": 0}
+    targets = [f"target-{index}" for index in range(6)]
+    leaf, _calls = _tracking_leaf(
+        concurrency,
+        fail_leaves={f"item-{index}" for index in range(len(targets))},
+    )
+
+    outcome = await execute_workflow(
+        compiled,
+        run_id="r-all-failures",
+        args={"targets": targets},
+        journal=journal,
+        leaf_executor=leaf,
+    )
+
+    assert outcome.status == "failed"
+    assert "item-5" in (outcome.reason or "")
+
+
 async def test_fanout_resume_skips_done_leaves():
     compiled = compile_workflow(_fan_definition())
     journal = InMemoryWorkflowJournal()

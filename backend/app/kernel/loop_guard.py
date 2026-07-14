@@ -1,11 +1,10 @@
-"""Deterministic loop guard for the kernel tool loop.
+"""Observable loop diagnostics for the kernel tool loop.
 
-A4 (docs/agent-lifecycle-cc-alignment.md 主题 A): warn-before-abort.
-CC philosophy (doc §12.2 "soft constraints > hard constraints"): when a
-non-progress pattern is detected, the model first receives a diagnostic
-warning with self-correction guidance; only if the same pattern keeps
-growing past the abort threshold (warn threshold × 1.5) is the run
-force-stopped. Each pattern warns exactly once.
+Counts and text similarity are heuristic signals: they may warn the model but
+must not decide that legitimate work is finished.  A hard loop outcome is
+available only when a tool explicitly reports retry exhaustion, the operation
+is side-effect-free, and the same progress token proves that state did not
+advance.  The model still authors the terminal explanation.
 """
 
 from __future__ import annotations
@@ -151,12 +150,24 @@ class LoopGuard:
         )
         return self._escalate(identical_check, tool_name=tool_name, args_digest=_digest(canonical))
 
-    def observe_tool_result(self, tool_name: str, args: dict[str, Any] | None, result: str) -> LoopGuardDecision | None:
+    def observe_tool_result(
+        self,
+        tool_name: str,
+        args: dict[str, Any] | None,
+        result: str,
+        *,
+        side_effect_free: bool = False,
+        retry_exhausted: bool = False,
+        progress_token: str | None = None,
+    ) -> LoopGuardDecision | None:
         if not _is_failure(str(result)):
             return None
         self.failed_tool_calls += 1
         canonical = _canonical_args(args)
-        result_digest = _digest(str(result)[:1000])
+        # A terminal retry decision must compare the complete failure evidence.
+        # Prefix-only digests can collapse distinct failures whose decisive
+        # diagnostics appear late in stdout/stderr.
+        result_digest = _digest(str(result))
         key = (tool_name, canonical, result_digest)
         self._failure_counts[key] = self._failure_counts.get(key, 0) + 1
 
@@ -173,12 +184,35 @@ class LoopGuard:
 
         repeat_check = _PatternCheck(
             reason="repeated_tool_failure",
-            detail=(f"{tool_name} failed repeatedly with the same result digest {result_digest}: {str(result)[:200]}"),
+            detail=(f"{tool_name} failed repeatedly with the same result digest {result_digest}: {str(result)}"),
             warn_key=f"failure:{tool_name}:{_digest(canonical)}:{result_digest}",
             count=self._failure_counts[key],
             warn_threshold=self.repeated_failure_threshold,
         )
-        return self._escalate(repeat_check, tool_name=tool_name, args_digest=_digest(canonical))
+        decision = self._escalate(repeat_check, tool_name=tool_name, args_digest=_digest(canonical))
+        if decision:
+            return decision
+
+        if (
+            side_effect_free
+            and retry_exhausted
+            and progress_token
+            and self._failure_counts[key] >= _abort_threshold(self.repeated_failure_threshold)
+        ):
+            proof = {
+                "side_effect_free": True,
+                "retry_exhausted": True,
+                "progress_token": progress_token,
+                "identical_failure_count": self._failure_counts[key],
+            }
+            return self._decision(
+                repeat_check,
+                severity="abort",
+                tool_name=tool_name,
+                args_digest=_digest(canonical),
+                extra_trace={"proof": proof},
+            )
+        return None
 
     def observe_assistant_text(self, content: str | None) -> LoopGuardDecision | None:
         normalized = " ".join((content or "").strip().lower().split())
@@ -253,11 +287,7 @@ class LoopGuard:
         args_digest: str | None = None,
         extra_trace: dict[str, Any] | None = None,
     ) -> LoopGuardDecision | None:
-        """Map a pattern count to warn (once per pattern) or abort."""
-        if check.count >= _abort_threshold(check.warn_threshold):
-            return self._decision(
-                check, severity="abort", tool_name=tool_name, args_digest=args_digest, extra_trace=extra_trace
-            )
+        """Emit one model-visible warning per heuristic pattern."""
         if check.count >= check.warn_threshold and check.warn_key not in self._warned:
             self._warned.add(check.warn_key)
             return self._decision(
@@ -342,7 +372,7 @@ def _runtime_outcome_for_loop_guard(
     return RuntimeOutcome(
         status="blocked",
         terminal_reason="loop_guard",
-        next_action="stop_and_report_non_progress",
+        next_action="model_summarize_and_stop",
         reason=reason,
         details=details,
     )

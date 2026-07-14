@@ -54,10 +54,10 @@ A2A_SYSTEM_PROMPT_SUFFIX = (
     "  your user's identity unless relevant and authorized.\n"
     "</privacy_boundary>\n\n"
     "<anti_patterns>\n"
-    "- ❌ **Nested delegation**: do NOT call `delegate_to_agent` to forward this\n"
-    "  request to yet another agent. The sender already chose you; handle it\n"
-    "  directly or return a Blocker. Nesting breaks the A2A contract and\n"
-    "  fans out timeout risk.\n"
+    "- **Bounded nested delegation**: you MAY call `delegate_to_agent` or another\n"
+    "  peer when specialization materially helps. The runtime enforces inherited\n"
+    "  authority, maximum depth, cycle detection, and budget. If a boundary is\n"
+    "  reached, return the typed blocker instead of bypassing it.\n"
     "- ❌ **Pleasantries and filler**: don't write 'Sure, happy to help!' or\n"
     "  'Let me know if you need more'. The peer parses content; filler wastes\n"
     "  tokens on both sides.\n"
@@ -639,7 +639,7 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                 return (
                     f"❌ 未找到联系人「{member_name}」。\n"
                     f"关系列表中的联系人：{', '.join(names) if names else '（空）'}\n"
-                    f"通讯录搜索结果：{_search_result[:200]}"
+                    f"通讯录搜索结果：{_search_result}"
                 )
 
             if (
@@ -765,7 +765,7 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
 
             return f"❌ {member_name} has no Feishu user_id/open_id and cannot be resolved via email/phone"
     except Exception as e:
-        return f"❌ Message send error: {str(e)[:200]}"
+        return f"❌ Message send error: {str(e)}"
 
 
 async def _send_web_message(agent_id: uuid.UUID, args: dict) -> str:
@@ -879,7 +879,7 @@ async def _send_web_message(agent_id: uuid.UUID, args: dict) -> str:
             return f"✅ Message sent to {display} on web platform. It has been saved to their chat history."
 
     except Exception as e:
-        return f"❌ Web message send error: {str(e)[:200]}"
+        return f"❌ Web message send error: {str(e)}"
 
 
 async def _persist_agent_tool_call(
@@ -945,15 +945,27 @@ def _build_agent_message_tool_executor(
     session_agent_id: uuid.UUID,
     session_id: str,
     participant_id: uuid.UUID | None,
+    delegation_trace_id: str | None = None,
+    delegation_depth: int = 1,
+    delegation_max_depth: int = 2,
 ):
     """Wrap A2A tool execution with chat-history persistence."""
 
     async def _executor(tool_name: str, tool_args: dict, *, emit_runtime_hooks: bool = True) -> str:
         from app.services.agent_tools import execute_tool
 
+        effective_args = dict(tool_args)
+        if tool_name in {"send_message_to_agent", "delegate_to_agent", "spawn_subagent"}:
+            effective_args.update(
+                {
+                    "_a2a_trace_id": delegation_trace_id,
+                    "_a2a_depth": delegation_depth + 1,
+                    "_a2a_max_depth": delegation_max_depth,
+                }
+            )
         tool_result = await execute_tool(
             tool_name,
-            tool_args,
+            effective_args,
             target_agent_id,
             owner_id,
             emit_runtime_hooks=emit_runtime_hooks,
@@ -964,7 +976,7 @@ def _build_agent_message_tool_executor(
             session_id=session_id,
             participant_id=participant_id,
             tool_name=tool_name,
-            tool_args=tool_args,
+            tool_args=effective_args,
             tool_result=tool_result,
         )
         return tool_result
@@ -986,7 +998,10 @@ async def _invoke_agent_message_runtime(
     parent_session_id: str | None = None,
     execution_principal: dict[str, Any] | None = None,
     root_runtime_task_id: str | None = None,
-) -> str:
+    delegation_trace_id: str | None = None,
+    delegation_depth: int = 1,
+    delegation_max_depth: int = 2,
+) -> Any:
     """Run the target agent reply through the shared runtime kernel."""
     from app.agents.orchestrator import AGENT_MESSAGE_TIMEOUT_SECONDS, OrchestrationPolicy, delegate_to_agent
 
@@ -998,13 +1013,17 @@ async def _invoke_agent_message_runtime(
         session_id=session_id,
         parent_agent_id=from_agent_id,
         parent_session_id=parent_session_id or session_id,
-        trace_id=f"a2a:{session_id}:{from_agent_id}:{target.id}",
+        trace_id=delegation_trace_id or f"a2a:{session_id}:{from_agent_id}:{target.id}",
+        depth=delegation_depth,
         tool_executor=_build_agent_message_tool_executor(
             target_agent_id=target.id,
             owner_id=owner_id,
             session_agent_id=session_agent_id,
             session_id=session_id,
             participant_id=participant_id,
+            delegation_trace_id=delegation_trace_id or f"a2a:{session_id}:{from_agent_id}:{target.id}",
+            delegation_depth=delegation_depth,
+            delegation_max_depth=delegation_max_depth,
         ),
         system_prompt_suffix=A2A_SYSTEM_PROMPT_SUFFIX,
         max_tool_rounds=getattr(target, "max_tool_rounds", None) or 200,
@@ -1012,10 +1031,15 @@ async def _invoke_agent_message_runtime(
         # A2A is a real multi-tool turn (the target may call feishu_wiki_list,
         # read documents, and synthesize a final answer). Keep the inner budget
         # below the tool wrapper cap, but well above short consult latency.
-        policy=OrchestrationPolicy(timeout_seconds=AGENT_MESSAGE_TIMEOUT_SECONDS, tool_profile="agent_message"),
+        policy=OrchestrationPolicy(
+            max_depth=delegation_max_depth,
+            timeout_seconds=AGENT_MESSAGE_TIMEOUT_SECONDS,
+            tool_profile="agent_message",
+        ),
         permission_profile=permission_profile,
         execution_principal=execution_principal,
         root_runtime_task_id=root_runtime_task_id,
+        return_result=True,
     )
 
 
@@ -1055,6 +1079,20 @@ async def _send_message_to_agent_outcome(
             error_code="invalid_arguments",
             message="Please provide target agent name and message content",
         )
+
+    try:
+        delegation_depth = max(1, int(args.get("_a2a_depth") or 1))
+        delegation_max_depth = max(1, int(args.get("_a2a_max_depth") or 2))
+    except (TypeError, ValueError):
+        return _a2a_failure("consult", error_code="invalid_delegation_context", message="Invalid A2A depth context")
+    if delegation_depth > delegation_max_depth:
+        return _a2a_failure(
+            "consult",
+            error_code="delegation_depth_limited",
+            message=f"Delegation depth limit reached ({delegation_depth}/{delegation_max_depth})",
+            status="blocked",
+        )
+    delegated_trace_id = str(args.get("_a2a_trace_id") or "").strip() or None
 
     try:
         from app.models.agent import Agent
@@ -1236,7 +1274,7 @@ async def _send_message_to_agent_outcome(
             chat_session.last_message_at = datetime.now(timezone.utc)
             await db.commit()
 
-            target_reply = await _invoke_agent_message_runtime(
+            target_result = await _invoke_agent_message_runtime(
                 target=target,
                 target_model=target_model,
                 conversation_messages=conversation_messages,
@@ -1249,6 +1287,23 @@ async def _send_message_to_agent_outcome(
                 parent_session_id=principal.root_session_id if principal else None,
                 execution_principal=principal.to_evidence() if principal else None,
                 root_runtime_task_id=principal.root_runtime_task_id if principal else None,
+                delegation_trace_id=delegated_trace_id,
+                delegation_depth=delegation_depth,
+                delegation_max_depth=delegation_max_depth,
+            )
+
+            target_reply = str(getattr(target_result, "content", target_result) or "")
+            child_invocation = (
+                target_result.to_dict().get("child_invocation")
+                if hasattr(target_result, "to_dict")
+                else {
+                    "trace_id": delegated_trace_id or f"a2a:{session_id}:{from_agent_id}:{target.id}",
+                    "session_id": session_id,
+                    "parts": [],
+                    "artifact_refs": [],
+                    "terminal_reason": None,
+                    "legacy_evidence_unavailable": True,
+                }
             )
 
             if not target_reply:
@@ -1290,6 +1345,7 @@ async def _send_message_to_agent_outcome(
                         "to_agent_name": target.name,
                         "semantic_memory_eligible": True,
                         "execution_principal": principal.to_evidence() if principal else None,
+                        "child_invocation": child_invocation,
                     },
                 )
                 await db2.commit()
@@ -1301,13 +1357,13 @@ async def _send_message_to_agent_outcome(
                 target.id,
                 "agent_msg_sent",
                 f"Replied to message from {source_name}",
-                detail={"partner": source_name, "message": message_text[:200], "reply": target_reply[:200]},
+                detail={"partner": source_name, "message": message_text, "reply": target_reply},
             )
             await log_activity(
                 from_agent_id,
                 "agent_msg_sent",
                 f"Sent message to {target.name} and received reply",
-                detail={"partner": target.name, "message": message_text[:200], "reply": target_reply[:200]},
+                detail={"partner": target.name, "message": message_text, "reply": target_reply},
             )
 
             return A2AOutcome.success(
@@ -1322,6 +1378,7 @@ async def _send_message_to_agent_outcome(
                     "source_agent": source_name,
                     "source_agent_id": str(from_agent_id),
                     "reply": target_reply,
+                    "child_invocation": child_invocation,
                     "message": f"{target.name} replied.",
                     "continuation_tool": "send_message_to_agent",
                 },
@@ -1334,7 +1391,7 @@ async def _send_message_to_agent_outcome(
         return _a2a_failure(
             "consult",
             error_code="message_runtime_error",
-            message=f"Message send error: {str(e)[:200]}",
+            message=f"Message send error: {str(e)}",
             retryable=True,
         )
 
@@ -1440,6 +1497,22 @@ async def _delegate_to_agent_async_outcome(
             return _a2a_failure("delegate", error_code="invalid_timeout", message=timeout_error)
         assert timeout_seconds is not None
         child_session_id = uuid.uuid4().hex
+        try:
+            delegation_depth = max(1, int(args.get("_a2a_depth") or 1))
+            delegation_max_depth = max(1, int(args.get("_a2a_max_depth") or 2))
+        except (TypeError, ValueError):
+            return _a2a_failure(
+                "delegate",
+                error_code="invalid_delegation_context",
+                message="Invalid A2A depth context",
+            )
+        if delegation_depth > delegation_max_depth:
+            return _a2a_failure(
+                "delegate",
+                error_code="delegation_depth_limited",
+                message=f"Delegation depth limit reached ({delegation_depth}/{delegation_max_depth})",
+                status="blocked",
+            )
         handle = await delegate_async(
             target=target,
             target_model=target_model,
@@ -1454,8 +1527,14 @@ async def _delegate_to_agent_async_outcome(
             parent_agent_id=from_agent_id,
             parent_agent_name=source_agent.name,
             parent_session_id=(principal.root_session_id if principal else None) or args.get("parent_session_id"),
+            trace_id=str(args.get("_a2a_trace_id") or "").strip() or None,
+            depth=delegation_depth,
             max_tool_rounds=args.get("max_tool_rounds"),
-            policy=OrchestrationPolicy(timeout_seconds=timeout_seconds, tool_profile=tool_profile),
+            policy=OrchestrationPolicy(
+                max_depth=delegation_max_depth,
+                timeout_seconds=timeout_seconds,
+                tool_profile=tool_profile,
+            ),
             tenant_id=getattr(source_agent, "tenant_id", None),
             confirmed_plan_id=args.get("confirmed_plan_id"),
             confirmed_plan_version=args.get("confirmed_plan_version"),

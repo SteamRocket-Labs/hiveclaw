@@ -47,16 +47,18 @@ def test_preview_agent_blueprint_schema_exposes_role_description_prompt_guard():
     assert params["properties"]["heartbeat_topics"]["maxLength"] == HR_LONG_TEXT_MAX_CHARS
     assert "source_attributions" in params["properties"]
     assert "blueprint_id" in params["properties"]
+    assert params["properties"]["archetype"]["enum"]
+    assert params["properties"]["risk_class"]["enum"] == ["standard", "high"]
     source_schema = params["properties"]["source_attributions"]["items"]["properties"]
     assert "supported_by_company_kb" not in source_schema["source_type"]["enum"]
 
 
-def test_hr_role_description_prompt_guard_trims_to_tool_limit():
+def test_hr_role_description_prompt_guard_does_not_silently_truncate():
     from app.tools.handlers.hr import ROLE_DESCRIPTION_MAX_CHARS, _trim_role_description_for_prompt_guard
 
     result = _trim_role_description_for_prompt_guard("x" * (ROLE_DESCRIPTION_MAX_CHARS + 50))
 
-    assert len(result) == ROLE_DESCRIPTION_MAX_CHARS
+    assert len(result) == ROLE_DESCRIPTION_MAX_CHARS + 50
 
 
 def test_hr_default_skill_count_includes_builtin_and_pack_skill_capsules():
@@ -66,7 +68,7 @@ def test_hr_default_skill_count_includes_builtin_and_pack_skill_capsules():
     assert _default_skill_count() == len(DEFAULT_BUILTIN_SKILL_FOLDERS) + len(DEFAULT_PACK_SKILL_FOLDERS)
 
 
-def test_build_blueprint_preview_payload_trims_role_description_to_prompt_guard():
+def test_build_blueprint_preview_payload_preserves_full_role_description():
     from app.tools.handlers.hr import ROLE_DESCRIPTION_MAX_CHARS, _build_blueprint_preview_payload
 
     payload = _build_blueprint_preview_payload(
@@ -79,7 +81,7 @@ def test_build_blueprint_preview_payload_trims_role_description_to_prompt_guard(
         }
     )
 
-    assert len(payload["blueprint"]["role_description"]) == ROLE_DESCRIPTION_MAX_CHARS
+    assert len(payload["blueprint"]["role_description"]) == ROLE_DESCRIPTION_MAX_CHARS + 50
 
 
 def test_hr_tool_included_in_hr_tools_set():
@@ -309,7 +311,7 @@ def test_build_blueprint_preview_payload_defaults_missing_source_type_to_unknown
     assert "unknown_or_needs_company_source" in payload["confirmation_requirements"]["source_types_to_present"]
 
 
-def test_build_blueprint_preview_payload_auto_recommends_platform_skills() -> None:
+def test_build_blueprint_preview_payload_does_not_keyword_select_platform_skills() -> None:
     from app.tools.handlers.hr import _build_blueprint_preview_payload
 
     payload = _build_blueprint_preview_payload(
@@ -322,19 +324,18 @@ def test_build_blueprint_preview_payload_auto_recommends_platform_skills() -> No
         }
     )
 
-    assert payload["recommended_skill_names"] == ["feishu-integration"]
+    assert payload["recommended_skill_names"] == []
     assert payload["blueprint"]["skill_names"] == []
     assert payload["blueprint"]["effective_skill_names"] == []
-    assert payload["blueprint"]["deferred_skill_names"] == ["feishu-integration"]
+    assert payload["blueprint"]["deferred_skill_names"] == []
     assert payload["will_install"] == []
-    assert any(
-        "defer extra installs until a builtin/default dry run proves a real gap" in step
-        for step in payload["manual_steps"]
-    )
-    assert any("builtin workspace + web research" in item for item in payload["capability_routing"]["builtin_paths"])
+    assert not any("feishu-integration" in step for step in payload["manual_steps"])
+    assert payload["capability_routing"]["builtin_paths"] == [
+        "builtin tools + default skills are available; the Agent chooses which governed capability to use."
+    ]
 
 
-def test_build_blueprint_preview_payload_warns_when_external_installs_cover_builtin_office_flows() -> None:
+def test_build_blueprint_preview_payload_does_not_semantically_judge_external_install_purpose() -> None:
     from app.tools.handlers.hr import _build_blueprint_preview_payload
 
     payload = _build_blueprint_preview_payload(
@@ -347,11 +348,11 @@ def test_build_blueprint_preview_payload_warns_when_external_installs_cover_buil
         }
     )
 
-    assert any("default productivity skills already cover" in warning for warning in payload["warnings"])
-    assert any("PDF/DOCX/XLSX/PPTX" in item for item in payload["capability_routing"]["builtin_paths"])
+    assert not any("default productivity skills already cover" in warning for warning in payload["warnings"])
+    assert not any("PDF/DOCX/XLSX/PPTX" in item for item in payload["capability_routing"]["builtin_paths"])
 
 
-def test_build_blueprint_preview_payload_requires_governance_for_finance_external_publishing() -> None:
+def test_build_blueprint_preview_payload_does_not_keyword_classify_finance_role_as_high_risk() -> None:
     from app.tools.handlers.hr import _build_blueprint_preview_payload
 
     payload = _build_blueprint_preview_payload(
@@ -365,10 +366,29 @@ def test_build_blueprint_preview_payload_requires_governance_for_finance_externa
         }
     )
 
+    assert payload["risk_class"] == "standard"
+    assert "governance" not in payload["missing_gates"]
+
+
+def test_build_blueprint_preview_payload_respects_explicit_model_authored_risk_and_archetype() -> None:
+    from app.tools.handlers.hr import _build_blueprint_preview_payload
+
+    payload = _build_blueprint_preview_payload(
+        {
+            "name": "研究助理",
+            "role_description": "A role whose prose contains no classifier keywords.",
+            "primary_users": ["团队"],
+            "core_outputs": ["报告"],
+            "focus_content": "开始工作",
+            "risk_class": "high",
+            "archetype": "research_analyst",
+            "boundaries": "",
+        }
+    )
+
     assert payload["risk_class"] == "high"
+    assert payload["blueprint"]["archetype"] == "research_analyst"
     assert "governance" in payload["missing_gates"]
-    assert payload["creation_flow"]["gates"]["governance"]["status"] == "missing"
-    assert any("governance gate" in warning for warning in payload["warnings"])
 
 
 def test_blueprint_hash_is_stable_for_semantically_identical_payloads() -> None:
@@ -817,6 +837,21 @@ def test_create_digital_employee_uses_validated_model_resolution() -> None:
     assert "_resolve_employee_refinement_model" in src
     assert "_claim_canonical_hr_blueprint" in src
     assert "confirmed_blueprint_hash" not in src
+
+
+def test_hr_trigger_config_is_structurally_held_instead_of_keyword_inferred() -> None:
+    from app.services.hr_provisioning_runner import _normalize_blueprint_trigger_config, run_hr_provisioning
+
+    config, hold_reason = _normalize_blueprint_trigger_config(
+        {"name": "daily_report", "type": "cron", "config": {}, "reason": "Send a report."}
+    )
+
+    assert config == {}
+    assert hold_reason == "missing_cron_expr"
+    source = inspect.getsource(run_hr_provisioning)
+    for forbidden in ("every_2h", "every_4h", "every_hour", '"weekly" in trig_name', '"daily" in trig_name'):
+        assert forbidden not in source
+    assert "is_enabled=not bool(_config_hold_reason)" in source
 
 
 def test_create_digital_employee_uses_audited_identity_bootstrap_bypass() -> None:

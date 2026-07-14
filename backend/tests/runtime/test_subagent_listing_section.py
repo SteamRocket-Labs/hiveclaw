@@ -75,6 +75,28 @@ def test_subagent_listing_section_includes_custom_definitions_in_same_spawn_path
     assert "same `spawn_subagent` tool" in section
 
 
+def test_subagent_listing_preserves_complete_allowed_tool_surface(tmp_path: Path) -> None:
+    from app.agents.subagent import SubagentSpec
+    from app.agents.subagent_definition import definition_store_for_agent
+    from app.runtime.prompt_sections.subagent_listing import build_subagent_listing_section
+
+    agent_id = "agent-full-tools"
+    allowed_tools = tuple(f"tool_{index}" for index in range(8))
+    definition_store_for_agent(agent_id, agent_data_dir=tmp_path).save(
+        SubagentSpec(
+            name="full-tool-worker",
+            description="Worker with a complete governed tool surface.",
+            type="general-purpose",
+            allowed_tools=allowed_tools,
+            system_prompt="Use every authorized tool when relevant.",
+        )
+    )
+
+    section = build_subagent_listing_section(agent_id=agent_id, agent_data_dir=tmp_path)
+
+    assert "tool_7" in section
+
+
 def test_subagent_listing_projects_activation_keys_for_builtin_and_custom_definitions(tmp_path: Path) -> None:
     from app.agents.subagent import SubagentSpec
     from app.agents.subagent_definition import definition_store_for_agent

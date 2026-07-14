@@ -1,45 +1,14 @@
-"""P1-W2-6 — active capability packs section size discipline.
-
-A single bloated pack (e.g. feishu with 30+ tools) used to spend ~600
-chars per pack on an enumerable tool list the model never reads
-verbatim. The section now:
-  - caps each summary to 100 chars (single line)
-  - shows the first 5 tools then "(+N more)"
-  - has a default budget of 1200 chars (was 2000)
-
-These tests pin those invariants so future contributors can't quietly
-re-bloat the section.
-"""
+"""Active capability groups must remain complete in model-visible context."""
 
 from __future__ import annotations
 
 import re
 
-from app.runtime.prompt_sections.active_tool_groups import (
-    _DEFAULT_BUDGET_CHARS,
-    _SUMMARY_MAX_CHARS,
-    _TOOLS_PREVIEW_COUNT,
-    build_active_tool_groups_section,
-)
+from app.runtime.prompt_sections.active_tool_groups import build_active_tool_groups_section
 from app.tools.runtime_tool_groups import RUNTIME_TOOL_GROUPS
 
 
 _HAN_RE = re.compile(r"[\u4e00-\u9fff]")
-
-
-# ── Constants pinned ──────────────────────────────────────────
-
-
-def test_default_budget_is_1200_chars() -> None:
-    assert _DEFAULT_BUDGET_CHARS == 1200
-
-
-def test_summary_capped_at_100_chars() -> None:
-    assert _SUMMARY_MAX_CHARS == 100
-
-
-def test_tools_preview_capped_at_5() -> None:
-    assert _TOOLS_PREVIEW_COUNT == 5
 
 
 # ── Behaviour ─────────────────────────────────────────────────
@@ -59,13 +28,10 @@ def test_short_pack_renders_inline_summary_and_tools() -> None:
     assert "+0 more" not in section  # no remainder marker when nothing trimmed
 
 
-def test_long_summary_is_trimmed_to_cap_with_ellipsis() -> None:
-    long_summary = "A" * 200
+def test_long_summary_is_preserved() -> None:
+    long_summary = "A" * 200 + " END_OF_SUMMARY"
     section = build_active_tool_groups_section([{"name": "p", "summary": long_summary, "tools": []}])
-    head_line = next(line for line in section.splitlines() if line.startswith("- p"))
-    # `- p: ` (5 chars) + summary body (≤100, ending with ellipsis)
-    assert len(head_line) <= 5 + _SUMMARY_MAX_CHARS
-    assert head_line.endswith("…")
+    assert long_summary in section
 
 
 def test_summary_collapses_whitespace() -> None:
@@ -74,14 +40,10 @@ def test_summary_collapses_whitespace() -> None:
     assert "- p: line1 line2 line3" in section
 
 
-def test_tools_list_truncated_with_remainder_count() -> None:
-    """30-tool feishu-style pack should expose 5 + count, not the full list."""
+def test_tools_list_preserves_every_callable_name() -> None:
     tools = [f"tool_{i}" for i in range(30)]
     section = build_active_tool_groups_section([{"name": "feishu", "tools": tools}])
-    assert "tool_0, tool_1, tool_2, tool_3, tool_4 (+25 more)" in section
-    # Verify no later tool name leaks through.
-    assert "tool_15" not in section
-    assert "tool_29" not in section
+    assert all(tool in section for tool in tools)
 
 
 def test_pack_without_summary_omits_colon() -> None:
@@ -90,17 +52,16 @@ def test_pack_without_summary_omits_colon() -> None:
     assert head_line == "- p"
 
 
-def test_section_respects_explicit_budget_with_truncation_marker() -> None:
+def test_section_budget_is_advisory_and_does_not_remove_model_visible_groups() -> None:
     packs = [{"name": f"pack_{i}", "summary": "x" * 80, "tools": [f"t_{j}" for j in range(10)]} for i in range(20)]
     section = build_active_tool_groups_section(packs, budget_chars=300)
-    assert len(section) <= 300
-    assert section.rstrip().endswith("...(trimmed)")
+    assert "pack_0" in section
+    assert "pack_19" in section
+    assert "t_9" in section
+    assert "trimmed" not in section
 
 
-def test_total_size_for_typical_three_packs_stays_under_500_chars() -> None:
-    """Three realistic packs with full summaries + toolsets should fit
-    well under 500 chars — the cap-and-preview logic is what makes that
-    possible. Catches regressions where someone re-enumerates tools."""
+def test_typical_three_packs_preserve_the_complete_tool_surface() -> None:
     packs = [
         {
             "name": "web",
@@ -111,7 +72,8 @@ def test_total_size_for_typical_three_packs_stays_under_500_chars() -> None:
         {"name": "email", "summary": "SMTP/IMAP email", "tools": ["smtp_send", "imap_fetch", "imap_search"]},
     ]
     section = build_active_tool_groups_section(packs)
-    assert len(section) < 500
+    assert "feishu_op_34" in section
+    assert "imap_search" in section
 
 
 def test_runtime_tool_group_prompt_metadata_is_english_only() -> None:

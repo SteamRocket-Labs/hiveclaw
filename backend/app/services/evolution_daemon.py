@@ -72,12 +72,23 @@ async def _maybe_run_skill_distillation(
         return None
 
 
-def _maybe_run_skill_curator(workspace: Path) -> dict | None:
-    """Decay/archive unused agent-authored skills without deleting them."""
+async def _maybe_run_skill_curator(
+    *,
+    workspace: Path,
+    model,
+    agent_id: uuid.UUID,
+    tenant_id: uuid.UUID | None,
+) -> dict | None:
+    """Run complete-input model review; never infer lifecycle from counters."""
     try:
-        from app.services.skill_curator import run_skill_curator_pass
+        from app.services.skill_curator import review_skill_lifecycle_with_model
 
-        return run_skill_curator_pass(workspace)
+        return await review_skill_lifecycle_with_model(
+            workspace,
+            model=model,
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+        )
     except Exception as exc:
         logger.warning("[EvolutionDaemon] Skill curator pass failed for {}: {}", workspace, exc)
         return None
@@ -155,6 +166,7 @@ async def run_heartbeat_evolution_maintenance(
         "skill_distillation": None,
         "skill_curator": None,
         "provisional_trial_sweep": None,
+        "provisional_trial_model_review": None,
         "dream_triggered": False,
         "t3_normalization": None,
         "enhancement_sync": None,
@@ -178,6 +190,14 @@ async def run_heartbeat_evolution_maintenance(
         else:
             model = await _resolve_agent_model(agent_id, tenant_id)
             if model is not None:
+                from app.services.provisional_trial import review_pending_provisional_trials_with_model
+
+                report["provisional_trial_model_review"] = await review_pending_provisional_trials_with_model(
+                    workspace,
+                    model=model,
+                    agent_id=agent_id,
+                    tenant_id=tenant_id,
+                )
                 report["skill_distillation"] = await _maybe_run_skill_distillation(
                     agent_id=agent_id,
                     workspace=workspace,
@@ -186,7 +206,14 @@ async def run_heartbeat_evolution_maintenance(
                     model=model,
                     current_session_id=current_session_id,
                 )
-            report["skill_curator"] = _maybe_run_skill_curator(workspace)
+                report["skill_curator"] = await _maybe_run_skill_curator(
+                    workspace=workspace,
+                    model=model,
+                    agent_id=agent_id,
+                    tenant_id=tenant_id,
+                )
+            else:
+                report["skill_curator"] = {"status": "held", "reason": "model_unavailable"}
     except Exception as exc:
         logger.warning("[EvolutionDaemon] Skill maintenance setup failed for {}: {}", agent_id, exc)
 

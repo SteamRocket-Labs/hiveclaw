@@ -6,7 +6,6 @@ import time
 
 from app.kernel.engine import (
     _group_messages_by_api_round,
-    _truncate_head_for_ptl,
     _MICROCOMPACT_GAP_SECONDS,
     _MICROCOMPACT_KEEP_RECENT,
     _PTL_MAX_RETRIES,
@@ -39,6 +38,21 @@ class TestMicrocompactConstants:
 
     def test_keep_recent_5(self) -> None:
         assert _MICROCOMPACT_KEEP_RECENT == 5
+
+
+def test_microcompact_only_replaces_results_with_truthful_durable_artifact_refs(tmp_path) -> None:
+    from app.kernel.engine import _maybe_evict_tool_result, _microcompact_artifact_replacement
+
+    raw = "old tool evidence\n" * 5_000
+    inline = _maybe_evict_tool_result("run_code", "call_old", raw, eviction_dir=tmp_path)
+
+    replacement = _microcompact_artifact_replacement(inline)
+
+    assert replacement is not None
+    assert "artifact_ref=workspace/tool_results/call_old.txt" in replacement
+    assert "sha256=" in replacement
+    assert f"char_range=0-{len(raw)}" in replacement
+    assert _microcompact_artifact_replacement("unpersisted old tool evidence") is None
 
 
 # ── G3: PTL constants ──
@@ -97,52 +111,6 @@ class TestGroupMessagesByApiRound:
         groups = _group_messages_by_api_round(msgs)
         assert len(groups) == 2
         assert len(groups[1]) == 1  # incomplete round
-
-
-# ── G3: _truncate_head_for_ptl ──
-
-
-class TestTruncateHeadForPTL:
-    def test_drops_20_percent(self) -> None:
-        msgs = []
-        for i in range(10):
-            msgs.append(LLMMessage(role="user", content=f"q{i}"))
-            msgs.append(LLMMessage(role="assistant", content=f"a{i}"))
-        result = _truncate_head_for_ptl(msgs, drop_ratio=0.2)
-        # 10 rounds, drop 2 = keep 8 = 16 messages
-        assert len(result) == 16
-
-    def test_min_1_dropped(self) -> None:
-        msgs = [
-            LLMMessage(role="user", content="q1"),
-            LLMMessage(role="assistant", content="a1"),
-            LLMMessage(role="user", content="q2"),
-            LLMMessage(role="assistant", content="a2"),
-            LLMMessage(role="user", content="q3"),
-            LLMMessage(role="assistant", content="a3"),
-        ]
-        result = _truncate_head_for_ptl(msgs, drop_ratio=0.2)
-        # 3 rounds, drop max(1, 0.6) = 1 → keep 2 = 4 messages
-        assert len(result) == 4
-
-    def test_too_few_rounds(self) -> None:
-        msgs = [
-            LLMMessage(role="user", content="q1"),
-            LLMMessage(role="assistant", content="a1"),
-        ]
-        # ≤2 rounds → return as-is
-        result = _truncate_head_for_ptl(msgs, drop_ratio=0.2)
-        assert len(result) == len(msgs)
-
-    def test_preserves_recent(self) -> None:
-        msgs = []
-        for i in range(5):
-            msgs.append(LLMMessage(role="user", content=f"q{i}"))
-            msgs.append(LLMMessage(role="assistant", content=f"a{i}"))
-        result = _truncate_head_for_ptl(msgs, drop_ratio=0.2)
-        # Should keep the most recent rounds
-        assert result[-1].content == "a4"
-        assert result[-2].content == "q4"
 
 
 # ── G5: Summarize prompt 11-section ──

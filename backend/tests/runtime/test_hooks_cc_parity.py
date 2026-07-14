@@ -71,7 +71,7 @@ def test_ccplus_broader_hook_catalog_declares_only_live_contracts() -> None:
             "agent_scoped",
         }
         assert entry["failure_policy"] in {
-            "fail_closed_if_blocking",
+            "advisory_default_explicit_required_supported",
             "observe_continue",
         }
 
@@ -106,7 +106,7 @@ def test_previously_planned_hook_contracts_have_live_runtime_consumers() -> None
         entry = catalog[event_name]
         assert entry["lifecycle_state"] == "active"
         assert entry["blocking_supported"] is True
-        assert entry["failure_policy"] == "fail_closed_if_blocking"
+        assert entry["failure_policy"] == "advisory_default_explicit_required_supported"
 
     # Subagent lifecycle hooks are live-emitted by app/agents/subagent.py and must
     # remain active despite having no default memory handler in hooks_setup.py.

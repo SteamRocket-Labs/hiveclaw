@@ -89,7 +89,7 @@ def confirm_hr_creation_draft_record(
     *,
     confirming_user_id: uuid.UUID,
     blueprint_version: int,
-    blueprint_hash: str,
+    blueprint_hash: str | None = None,
     now: datetime | None = None,
 ) -> None:
     current = now or _now()
@@ -97,8 +97,11 @@ def confirm_hr_creation_draft_record(
         raise HrCreationConflict("requester_mismatch", "Only the requesting user can confirm this blueprint.")
     if draft.blueprint_version != blueprint_version:
         raise HrCreationConflict("version_mismatch", "Blueprint version changed; review the latest preview.")
-    if draft.blueprint_hash != blueprint_hash:
-        raise HrCreationConflict("hash_mismatch", "Blueprint hash changed; review the latest preview.")
+    # Compatibility only: old clients may still echo the canonical hash, but
+    # it is not an authority claim. The server-owned row/version binds this
+    # authenticated confirmation; provisioning continues to use
+    # ``draft.blueprint_hash`` internally for immutable step hashes.
+    del blueprint_hash
     if draft.status == "awaiting_confirmation" and draft.expires_at is not None and draft.expires_at <= current:
         raise HrCreationConflict("expired", "This HR blueprint preview expired. Ask HR to generate a fresh preview.")
     if draft.status != "awaiting_confirmation":
@@ -331,7 +334,7 @@ def transition_hr_provisioning_step_record(
     step.heartbeat_at = current
     step.receipt_json = dict(receipt or step.receipt_json or {})
     step.error_code = error_code[:100] if error_code else None
-    step.error_message = error_message[:4000] if error_message else None
+    step.error_message = error_message if error_message else None
 
 
 def derive_hr_provisioning_readiness(
@@ -558,7 +561,7 @@ def mark_hr_creation_failed_record(
         _assert_hr_creation_claim(draft, claim)
     draft.status = "failed"
     draft.failure_code = code[:100]
-    draft.failure_message = message[:4000]
+    draft.failure_message = message
     draft.claim_expires_at = None
     draft.claim_token = None
     draft.claim_heartbeat_at = None

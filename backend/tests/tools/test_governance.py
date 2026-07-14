@@ -831,10 +831,8 @@ async def test_governance_asks_session_for_dangerous_run_command_subcommand():
 
 
 @pytest.mark.asyncio
-async def test_governance_blocks_run_command_shell_expansion_path_syntax():
+async def test_governance_allows_shell_expansion_and_globs_inside_governed_sandbox():
     from app.tools.governance import GovernanceDependencies, ToolGovernanceContext, run_tool_governance
-
-    approval_calls: list[dict] = []
 
     async def resolve_security_zone(_agent_id):
         return "standard"
@@ -851,18 +849,8 @@ async def test_governance_blocks_run_command_shell_expansion_path_syntax():
     async def write_audit(**_kwargs):
         return None
 
-    async def request_approval(*, agent_id, user_id, tool_name, arguments, capability, reason=None):
-        approval_calls.append(
-            {
-                "agent_id": agent_id,
-                "user_id": user_id,
-                "tool_name": tool_name,
-                "arguments": arguments,
-                "capability": capability,
-                "reason": reason,
-            }
-        )
-        return {"allowed": False, "approval_id": "approval-path-syntax"}
+    async def request_approval(**_kwargs):
+        raise AssertionError("ordinary shell syntax must not create a synthetic approval gate")
 
     message = await run_tool_governance(
         ToolGovernanceContext(
@@ -870,7 +858,7 @@ async def test_governance_blocks_run_command_shell_expansion_path_syntax():
             user_id=uuid4(),
             tenant_id=str(uuid4()),
             tool_name="run_command",
-            arguments={"command": "cat $(pwd)/.env"},
+            arguments={"command": "printf '%s\\n' \"$HOME\" && printf '%s\\n' workspace/*.txt"},
         ),
         GovernanceDependencies(
             resolve_security_zone=resolve_security_zone,
@@ -880,11 +868,44 @@ async def test_governance_blocks_run_command_shell_expansion_path_syntax():
         ),
     )
 
-    assert message is not None
-    assert "not executed" in message
-    assert "workspace.command.path_syntax" in message
-    assert "shell expansion" in message
-    assert approval_calls == []
+    assert message is None
+
+
+@pytest.mark.asyncio
+async def test_governance_timeout_is_typed_unavailable_not_policy_denied(monkeypatch):
+    import asyncio
+
+    from app.tools import governance
+
+    events: list[dict] = []
+
+    async def unavailable_pipeline(*_args, **_kwargs):
+        await asyncio.sleep(0.05)
+
+    monkeypatch.setattr(governance, "_GOVERNANCE_TIMEOUT_SECONDS", 0.001)
+    monkeypatch.setattr(governance, "_run_governance_inner", unavailable_pipeline)
+    message = await governance.run_tool_governance(
+        governance.ToolGovernanceContext(
+            agent_id=uuid4(),
+            user_id=uuid4(),
+            tenant_id=str(uuid4()),
+            tool_name="run_command",
+            arguments={"command": "pwd"},
+        ),
+        governance.GovernanceDependencies(
+            resolve_security_zone=lambda _agent_id: "standard",
+            check_capability=lambda *_args: None,
+            write_audit_event=lambda **_kwargs: None,
+            request_approval=lambda **_kwargs: None,
+        ),
+        event_callback=events.append,
+    )
+
+    assert "<tool_error>" in message
+    assert '"error_class": "governance_dependency_unavailable"' in message
+    assert '"outcome": "unavailable"' in message
+    assert "policy denied" not in message.lower()
+    assert events[-1]["status"] == "unavailable"
 
 
 # ── P0-1a: tenant_id=None fail-closed for non-safe tools ──────────────

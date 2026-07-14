@@ -59,7 +59,7 @@ async def _route_wiki_non_doc_node(agent_id: uuid.UUID, node_info: dict) -> str 
 
         routed_result = await _feishu_drive_file_read(
             agent_id,
-            {"file_token": obj_token, "file_name": node_info.get("title") or "", "max_chars": 6000},
+            {"file_token": obj_token, "file_name": node_info.get("title") or ""},
         )
         return _wiki_non_doc_hint(node_info, routed_result)
     return _wiki_non_doc_hint(node_info, "")
@@ -81,17 +81,17 @@ def _safe_feishu_json(resp: httpx.Response, op: str) -> dict:
         data = None
     if isinstance(data, dict):
         return data
-    snippet = (resp.text or "")[:200]
+    body = resp.text or ""
     logger.warning(
-        "Feishu %s returned non-JSON body (status=%s, content_type=%s): %r",
+        "Feishu %s returned non-JSON body (status=%s, content_type=%s, chars=%s)",
         op,
         resp.status_code,
         resp.headers.get("content-type"),
-        snippet,
+        len(body),
     )
     return {
         "code": resp.status_code or -1,
-        "msg": f"non-JSON response from Feishu (status {resp.status_code}): {snippet}",
+        "msg": f"non-JSON response from Feishu (status {resp.status_code}): {body}",
     }
 
 
@@ -123,12 +123,12 @@ async def _feishu_doc_read_via_openapi(agent_id: uuid.UUID, arguments: dict) -> 
     document_token = arguments.get("document_token", "").strip()
     if not document_token:
         return "❌ Missing required argument 'document_token'"
-    from app.services.agent_tool_domains.feishu_drive import _parse_feishu_url
+    from app.services.agent_tool_domains.feishu_drive import _max_chars, _parse_feishu_url
 
     parsed_target = _parse_feishu_url(document_token)
     if parsed_target and parsed_target.kind in ("doc", "docx", "wiki"):
         document_token = parsed_target.token
-    max_chars = min(int(arguments.get("max_chars", 6000)), 20000)
+    max_chars = _max_chars(arguments)
 
     creds = await _get_feishu_token(agent_id)
     if not creds:
@@ -169,7 +169,7 @@ async def _feishu_doc_read_via_openapi(agent_id: uuid.UUID, arguments: dict) -> 
         )
 
     truncated = ""
-    if len(content) > max_chars:
+    if max_chars is not None and len(content) > max_chars:
         content = content[:max_chars]
         truncated = f"\n\n_(Truncated to {max_chars} chars)_"
 
@@ -183,12 +183,12 @@ async def _feishu_doc_read(agent_id: uuid.UUID, arguments: dict) -> str:
     document_token = arguments.get("document_token", "").strip()
     if not document_token:
         return "❌ Missing required argument 'document_token'"
-    from app.services.agent_tool_domains.feishu_drive import _parse_feishu_url
+    from app.services.agent_tool_domains.feishu_drive import _max_chars, _parse_feishu_url
 
     parsed_target = _parse_feishu_url(document_token)
     if parsed_target and parsed_target.kind in ("doc", "docx", "wiki"):
         document_token = parsed_target.token
-    max_chars = min(int(arguments.get("max_chars", 6000)), 20000)
+    max_chars = _max_chars(arguments)
 
     if not await _feishu_cli_available():
         return await _feishu_doc_read_via_openapi(agent_id, arguments)
@@ -224,7 +224,7 @@ async def _feishu_doc_read(agent_id: uuid.UUID, arguments: dict) -> str:
                 _feishu_doc_source_items(agent_id, document_token, read_token),
             )
         truncated = ""
-        if len(content) > max_chars:
+        if max_chars is not None and len(content) > max_chars:
             content = content[:max_chars]
             truncated = f"\n\n_(Truncated to {max_chars} chars)_"
         return with_connector_source_items(

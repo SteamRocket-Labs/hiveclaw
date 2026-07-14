@@ -1,10 +1,10 @@
-"""Part D red tests: profile-plane write side (spec §3.2/§3.3/§4.4).
+"""Part D tests: profile-plane write side (spec §3.2/§3.3/§4.4).
 
 工序 1/2 ride-along: the T2 labels call now also carries four-plane signals
 (self-signal, per-plane nutrients, milestone criteria hits) — two logical
 steps, one LLM call. 工序 3 teaching lives in HEARTBEAT.md: operation patches
-with motif + scenario-condition tiers (80/15/5), counter-example demotion on
-negative feedback. Feedback itself already reaches the batch through the
+with an evidence-based motif/scenario/edge-case balance chosen by the model,
+plus counter-example demotion on negative feedback. Feedback itself reaches the batch through the
 explicit overlay (session_feedback → overlay → T3 batch) — pinned here as the
 production wiring for demotion input.
 """
@@ -142,17 +142,33 @@ def test_heartbeat_template_teaches_profile_entries() -> None:
     assert "upsert_entry" in template
     assert "memory/self/self.md" in template
     assert "memory/profiles/owner.md" in template
-    # motif + scenario-condition three tiers (spec §3.2)
-    assert "80%" in template and "15%" in template and "5%" in template
+    # The model chooses the semantic balance; fixed quotas must never substitute.
+    assert "no fixed percentage" in template
+    assert "80%" not in template and "15%" not in template and "5%" not in template
     # counter-example demotion on negative feedback (spec §3.2/§4.4)
     assert "反例下调" in template or "counter-example" in template
 
 
 @pytest.mark.asyncio
-async def test_feedback_overlay_reaches_t3_batch(tmp_path: Path) -> None:
+async def test_feedback_overlay_reaches_t3_batch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Production demotion input: session feedback → overlay → T3 batch."""
     from app.memory.t3_consolidation import build_t3_consolidation_batch, discover_pending_t3_sources
+    from app.memory.write_gate import MemoryWriteDecision
     from app.services.session_feedback import write_session_feedback_overlay
+
+    async def accept_reviewed_memory(content: str, *, category: str, **_kwargs) -> MemoryWriteDecision:
+        return MemoryWriteDecision(
+            original_content=content,
+            content=content,
+            category=category,
+            sensitivity="PL1_public",
+            metadata={"threat_gate_method": "test_model_reviewer"},
+        )
+
+    monkeypatch.setattr(
+        "app.memory.explicit_overlay.prepare_memory_write_with_llm",
+        accept_reviewed_memory,
+    )
 
     agent_id = uuid4()
     await write_session_feedback_overlay(

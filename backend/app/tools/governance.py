@@ -21,6 +21,7 @@ from app.runtime.ccplus_contracts import (
     normalize_permission_mode,
 )
 from app.tools.execpolicy import evaluate_command
+from app.tools.result_envelope import render_tool_error
 
 logger = logging.getLogger(__name__)
 
@@ -151,15 +152,6 @@ _DESTRUCTIVE_DELETE_CAPABILITY = "workspace.command.destructive_delete"
 _DESTRUCTIVE_DELETE_RISK_CLASS = "destructive_delete"
 _DESTRUCTIVE_DELETE_CONFIRMATION_KIND = "destructive_once"
 _DESTRUCTIVE_COMMANDS = frozenset({"rm", "rmdir", "unlink", "trash", "shred"})
-_RUN_COMMAND_PATH_SYNTAX_CAPABILITY = "workspace.command.path_syntax"
-_RUN_COMMAND_PATH_SYNTAX_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"^//"), "UNC/network path syntax"),
-    (re.compile(r"^~[A-Za-z0-9_-]+(?:/|$)"), "~user path expansion"),
-    (re.compile(r"\$\([^)]+\)|`[^`]+`"), "shell expansion"),
-    (re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*[^}]*\}"), "environment variable expansion"),
-    (re.compile(r"\$[A-Za-z_][A-Za-z0-9_]*"), "environment variable expansion"),
-    (re.compile(r"[*?\[]"), "glob path syntax"),
-)
 _NO_PERMISSION_HOOK_DECISION = object()
 
 
@@ -237,10 +229,6 @@ def _detect_dangerous_command(tool_name: str, arguments: dict[str, Any]) -> tupl
     command = str(arguments.get("command", "")).strip()
     if not command:
         return None
-    for subcommand in _split_shell_subcommands(command):
-        path_syntax = _detect_high_risk_path_syntax(subcommand)
-        if path_syntax:
-            return _RUN_COMMAND_PATH_SYNTAX_CAPABILITY, path_syntax
     destructive_delete = _detect_destructive_delete(tool_name, arguments)
     if destructive_delete:
         return destructive_delete
@@ -337,22 +325,6 @@ def _append_subcommand(parts: list[str], current: list[str]) -> None:
     part = "".join(current).strip()
     if part:
         parts.append(part)
-
-
-def _detect_high_risk_path_syntax(command: str) -> str | None:
-    import shlex
-
-    try:
-        tokens = shlex.split(command, posix=True)
-    except ValueError:
-        tokens = command.split()
-    for token in tokens:
-        if token.startswith("-"):
-            continue
-        for pattern, description in _RUN_COMMAND_PATH_SYNTAX_PATTERNS:
-            if pattern.search(token):
-                return f"{description} in run_command path argument"
-    return None
 
 
 _GOVERNANCE_TIMEOUT_SECONDS = 5.0
@@ -919,11 +891,28 @@ async def run_tool_governance(
         )
     except asyncio.TimeoutError:
         logger.warning(
-            "[Governance] Timeout (%ss) for tool %s — blocking (fail-closed)",
+            "[Governance] Timeout (%ss) for tool %s — authority unavailable (fail-closed)",
             _GOVERNANCE_TIMEOUT_SECONDS,
             context.tool_name,
         )
-        return f"🔒 Tool '{context.tool_name}' blocked — governance check timed out. Please retry."
+        await _emit_event(
+            event_callback,
+            {
+                "type": "governance_unavailable",
+                "tool_name": context.tool_name,
+                "status": "unavailable",
+                "error_class": "governance_dependency_unavailable",
+                "retryable": True,
+            },
+        )
+        return render_tool_error(
+            tool_name=context.tool_name,
+            error_class="governance_dependency_unavailable",
+            message=f"Governance authority for '{context.tool_name}' is temporarily unavailable.",
+            retryable=True,
+            actionable_hint="Retry after the governance dependency recovers; no policy denial was made.",
+            extra={"outcome": "unavailable", "dependency": "tool_governance"},
+        )
 
 
 @dataclass(slots=True)
@@ -1328,31 +1317,6 @@ async def _check_path_and_secret_risks(
     reason: str | None,
     event_callback: EventCallback | None,
 ) -> str | None:
-    if capability == _RUN_COMMAND_PATH_SYNTAX_CAPABILITY:
-        message = _teaching_block_message(
-            context.tool_name,
-            reason=f"this command uses high-risk path syntax ({reason})",
-            capability=capability,
-            next_steps=[
-                "rewrite the command with literal workspace-relative paths",
-                "avoid shell expansion, environment-variable paths, UNC paths, ~user, and glob syntax",
-                "ask the user to provide the exact path when needed",
-            ],
-        )
-        await _write_capability_audit(
-            context, deps, tenant_uuid, action="command_path_syntax_blocked", capability=capability, reason=reason
-        )
-        await _emit_event(
-            event_callback,
-            {
-                "type": "permission",
-                "tool_name": context.tool_name,
-                "status": "blocked",
-                "message": message,
-                "capability": capability,
-            },
-        )
-        return message
     if capability != "workspace.command.secret_exfiltration":
         return None
     from app.services.managed_capability_guard import (

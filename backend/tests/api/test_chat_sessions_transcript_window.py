@@ -185,6 +185,34 @@ def test_transcript_projection_caps_oversize_event_payloads():
     assert len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) <= 12_000
 
 
+def test_transcript_projection_preserves_full_user_visible_model_answer() -> None:
+    import app.api.chat_sessions as api
+
+    tail = "DECISIVE_MODEL_OUTPUT_TAIL"
+    content = ("answer evidence " * 1_000) + tail
+    event = SimpleNamespace(
+        id=uuid4(),
+        session_id=uuid4(),
+        run_id=uuid4(),
+        message_id=uuid4(),
+        sequence=43,
+        event_type="assistant_message",
+        actor_type="assistant",
+        visibility_scope="direct_user",
+        listed_surface="chat",
+        content=content,
+        parts_json=[],
+        metadata_json={"role": "assistant"},
+        created_at=None,
+    )
+
+    payload = api._serialize_transcript_event(event)
+
+    assert payload["content"] == content
+    assert tail in payload["content"]
+    assert payload["metadata"].get("_payload_truncated") is not True
+
+
 def test_transcript_projection_preserves_large_interactive_tool_card_json():
     import app.api.chat_sessions as api
 

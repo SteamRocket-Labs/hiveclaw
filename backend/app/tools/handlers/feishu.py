@@ -119,7 +119,8 @@ async def feishu_wiki_list(agent_id: uuid.UUID, arguments: dict) -> str:
                 },
                 "max_chars": {
                     "type": "integer",
-                    "description": "Max characters to return (default 6000, max 20000)",
+                    "minimum": 1,
+                    "description": "Optional explicit result limit; omit for full content.",
                 },
             },
             "required": ["document_token"],
@@ -200,7 +201,8 @@ async def feishu_url_resolve(agent_id: uuid.UUID, arguments: dict) -> str:
                 },
                 "max_chars": {
                     "type": "integer",
-                    "description": "Max characters to return for document/file extraction (default 6000, max 20000).",
+                    "minimum": 1,
+                    "description": "Optional explicit document/file result limit; omit for full content.",
                 },
                 "table_id": {
                     "type": "string",
@@ -212,7 +214,10 @@ async def feishu_url_resolve(agent_id: uuid.UUID, arguments: dict) -> str:
                 },
                 "limit": {
                     "type": "integer",
-                    "description": "Optional Base record page size. Default 100, max 200.",
+                    "description": (
+                        "Optional explicit Base record page size/ceiling. Omit it, along with pagination arguments, "
+                        "to read every record page for a Base URL."
+                    ),
                 },
                 "offset": {
                     "type": "integer",
@@ -224,11 +229,15 @@ async def feishu_url_resolve(agent_id: uuid.UUID, arguments: dict) -> str:
                 },
                 "fetch_all": {
                     "type": "boolean",
-                    "description": "For Base record reads, scan all pages up to max_records. Use with filters for full-table analysis.",
+                    "description": (
+                        "For Base record reads, scan all pages. This is the default for a Base URL when no explicit "
+                        "limit, offset, page_token, or max_records window is supplied."
+                    ),
                 },
                 "max_records": {
                     "type": "integer",
-                    "description": "For Base fetch_all reads, maximum records to scan. Default 1000, max 5000.",
+                    "minimum": 1,
+                    "description": "Optional explicit record ceiling for Base fetch_all reads. Omit it to scan every page.",
                 },
                 "field_names": {
                     "type": "array",
@@ -317,7 +326,8 @@ async def feishu_url_read(agent_id: uuid.UUID, arguments: dict) -> str:
                 },
                 "max_chars": {
                     "type": "integer",
-                    "description": "Max characters to return (default 6000, max 20000).",
+                    "minimum": 1,
+                    "description": "Optional explicit result limit; omit for full content.",
                 },
             },
             "required": [],
@@ -503,11 +513,11 @@ async def feishu_base_app_create(agent_id: uuid.UUID, arguments: dict) -> str:
                 },
                 "offset": {
                     "type": "integer",
-                    "description": "Optional pagination offset. Default 0.",
+                    "description": "Optional zero-based result offset. Default 0.",
                 },
                 "limit": {
                     "type": "integer",
-                    "description": "Optional page size. Default 50, max 100.",
+                    "description": "Optional explicit result ceiling. Omit to return every table across all pages.",
                 },
             },
             "required": ["base_token"],
@@ -569,11 +579,12 @@ async def feishu_base_table_list(agent_id: uuid.UUID, arguments: dict) -> str:
                 },
                 "fetch_all": {
                     "type": "boolean",
-                    "description": "Scan all pages up to max_records. Use this with filters for full-table analysis.",
+                    "description": "Scan all pages. Use this with filters for full-table analysis.",
                 },
                 "max_records": {
                     "type": "integer",
-                    "description": "Maximum records to scan when fetch_all is true or a filter is supplied. Default 1000, max 5000.",
+                    "minimum": 1,
+                    "description": "Optional explicit record ceiling when fetch_all is true or a filter is supplied. Omit it to scan every page.",
                 },
                 "field_names": {
                     "type": "array",
@@ -736,11 +747,11 @@ async def feishu_base_record_delete(agent_id: uuid.UUID, arguments: dict) -> str
                 },
                 "offset": {
                     "type": "integer",
-                    "description": "Optional pagination offset. Default 0.",
+                    "description": "Optional zero-based result offset. Default 0.",
                 },
                 "limit": {
                     "type": "integer",
-                    "description": "Optional page size. Default 100, max 200.",
+                    "description": "Optional explicit result ceiling. Omit to return every field across all pages.",
                 },
             },
             "required": ["base_token", "table_id"],
@@ -1446,7 +1457,8 @@ async def feishu_user_search(agent_id: uuid.UUID, arguments: dict) -> str:
                 },
                 "max_results": {
                     "type": "integer",
-                    "description": "Max agent-created calendar events to return (default 20).",
+                    "minimum": 1,
+                    "description": "Optional explicit maximum number of agent-created calendar events to return. Omit it to return every event supplied by Feishu for the requested time window.",
                 },
             },
             "required": [],

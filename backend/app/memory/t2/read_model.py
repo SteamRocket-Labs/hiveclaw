@@ -89,7 +89,7 @@ def render_t2_package_snapshots(snapshots: list[T2PackageSnapshot] | tuple[T2Pac
         ]
         if snapshot.source_refs:
             lines.append("- source_refs:")
-            lines.extend(f"  - {ref}" for ref in snapshot.source_refs[:8])
+            lines.extend(f"  - {ref}" for ref in snapshot.source_refs)
         sections = (
             (("synthesis.md", snapshot.synthesis_md), ("review.md", snapshot.review_md))
             if snapshot.package_kind == "episode_stitch_package"
@@ -102,7 +102,7 @@ def render_t2_package_snapshots(snapshots: list[T2PackageSnapshot] | tuple[T2Pac
         for label, text in sections:
             if text.strip():
                 lines.append(f"#### {label}")
-                lines.append(text.strip()[:2000])
+                lines.append(text.strip())
         blocks.append("\n".join(lines))
     return "\n\n".join(blocks)
 

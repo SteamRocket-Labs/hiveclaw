@@ -103,23 +103,17 @@ async def test_delegate_to_agent_builds_runtime_request(monkeypatch):
     assert request.session_context.source == "agent"
     assert request.session_context.channel == "agent"
     assert request.session_context.session_id == "session-1"
-    assert request.core_tools_only is True
-    # D-14: delegation applies the single-source base deny-list (shared with
-    # subagents) plus save_skill plus memory read+write denials. Assert the
-    # security-relevant invariants against the deny-list source of truth rather
-    # than a brittle hand-maintained ordered snapshot.
-    from app.agents.orchestrator import (
-        _DELEGATION_BASE_EXCLUDED_TOOLS,
-        _DELEGATION_MEMORY_WRITE_TOOLS,
-    )
+    assert request.core_tools_only is False
+    # Default delegation inherits the governed parent capability surface. The
+    # harness may deny human-facing interaction tools, but it must not replace
+    # the child's judgment by mechanically removing Memory, Skill, or bounded
+    # nested-collaboration capabilities.
+    from app.agents.orchestrator import _DELEGATION_BASE_EXCLUDED_TOOLS
 
     excluded = set(request.excluded_tool_names)
-    assert set(_DELEGATION_BASE_EXCLUDED_TOOLS).issubset(excluded)
-    assert set(_DELEGATION_MEMORY_WRITE_TOOLS).issubset(excluded)
-    assert "save_skill" in excluded
-    assert {"search_memory", "load_memory"}.issubset(excluded)
-    # recursion guard: source/control tools must be denied on the delegate surface
-    assert {"delegate_to_agent", "spawn_subagent", "check_subagent"}.issubset(excluded)
+    assert excluded == set(_DELEGATION_BASE_EXCLUDED_TOOLS)
+    assert {"save_memory", "save_skill", "search_memory", "load_memory"}.isdisjoint(excluded)
+    assert {"delegate_to_agent", "spawn_subagent", "check_subagent"}.isdisjoint(excluded)
     assert request.max_tool_rounds == 7
     assert "A2A_SUFFIX" in request.system_prompt_suffix
     # F-1: slim worker prompt — isolation_contract + tool_policy remain; forced
@@ -129,22 +123,23 @@ async def test_delegate_to_agent_builds_runtime_request(monkeypatch):
     assert "Completed:" not in request.system_prompt_suffix
     assert "Evidence:" not in request.system_prompt_suffix
     assert "Blockers:" not in request.system_prompt_suffix
-    assert "Do NOT read or write long-term memory" in request.system_prompt_suffix
-    assert request.session_context.metadata["delegation_tool_policy"] == "worker_safe"
-    assert request.session_context.metadata["delegation_memory_policy"] == "isolated_no_long_term_memory"
+    assert (
+        "all durable writes still pass evidence, permission, review, and rollback governance"
+        in request.system_prompt_suffix
+    )
+    assert request.session_context.metadata["delegation_tool_policy"] == "worker_inherited_governed"
+    assert request.session_context.metadata["delegation_memory_policy"] == "governed_long_term_memory"
     assert request.delegation_token is not None
     assert request.delegation_token.parent_agent_id == owner_id
     assert request.delegation_token.child_agent_id == target.id
-    assert request.delegation_token.inherit_parent_capabilities is False
-    assert "workspace.file.read" in request.delegation_token.granted_capabilities
-    assert "workspace.file.write" in request.delegation_token.granted_capabilities
-    assert "agent.memory.write" not in request.delegation_token.granted_capabilities
+    assert request.delegation_token.inherit_parent_capabilities is True
+    assert request.delegation_token.granted_capabilities == frozenset()
     assert request.execution_identity is not None
     assert request.execution_identity.identity_type == "delegated_user"
     assert request.execution_identity.identity_id == user_id
     assert request.execution_identity.label == "User via web"
     assert request.session_context.metadata["delegation_token_id"] == request.delegation_token.delegation_id
-    assert "agent.memory.write" not in request.session_context.metadata["delegation_token_capabilities"]
+    assert request.session_context.metadata["delegation_token_capabilities"] == []
 
 
 @pytest.mark.asyncio
@@ -622,7 +617,7 @@ async def test_delegate_to_agent_supports_research_readonly_profile(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_agent_message_profile_uses_target_agent_tool_surface_without_recursion(monkeypatch):
+async def test_agent_message_profile_inherits_target_tools_and_governed_memory(monkeypatch):
     from app.agents.orchestrator import AgentDelegationRequest, OrchestrationPolicy, _delegate
 
     target = SimpleNamespace(id=uuid4(), name="Feishu Knowledge", role_description="Knowledge assistant")
@@ -653,13 +648,10 @@ async def test_agent_message_profile_uses_target_agent_tool_surface_without_recu
     assert result.failed is False
     assert request.core_tools_only is False
     assert request.allowed_tool_names == ()
-    assert "send_message_to_agent" in request.excluded_tool_names
-    assert "delegate_to_agent" in request.excluded_tool_names
-    assert "save_memory" in request.excluded_tool_names
-    assert "save_skill" in request.excluded_tool_names
+    assert request.excluded_tool_names == ()
     assert request.delegation_token is None
     assert request.session_context.metadata["agent_message_tool_policy"] == "peer_agent_tool_surface"
-    assert request.session_context.metadata["agent_message_memory_policy"] == "peer_read_only_memory"
+    assert request.session_context.metadata["agent_message_memory_policy"] == "peer_governed_memory"
     assert "peer agent request" in request.system_prompt_suffix
 
 
@@ -698,7 +690,53 @@ async def test_peer_agent_delegation_profile_inherits_capability_token_scope(mon
     assert request.delegation_token is not None
     assert request.delegation_token.inherit_parent_capabilities is True
     assert request.session_context.metadata["delegation_tool_policy"] == "peer_agent_tool_surface"
-    assert request.session_context.metadata["delegation_memory_policy"] == "peer_read_only_memory"
+    assert request.session_context.metadata["delegation_memory_policy"] == "peer_governed_memory"
+
+
+@pytest.mark.asyncio
+async def test_nested_a2a_cycle_is_blocked_on_the_shared_trace(monkeypatch):
+    from app.agents.orchestrator import AgentDelegationRequest, OrchestrationPolicy, _delegate
+
+    agent_a = SimpleNamespace(id=uuid4(), name="A", role_description="A")
+    agent_b = SimpleNamespace(id=uuid4(), name="B", role_description="B")
+    model = SimpleNamespace(provider="openai", model="gpt-4.1")
+    nested = {}
+
+    async def fake_invoke_agent(_request):
+        nested["result"] = await _delegate(
+            AgentDelegationRequest(
+                target=agent_a,
+                target_model=model,
+                conversation_messages=[{"role": "user", "content": "back to A"}],
+                owner_id=uuid4(),
+                session_id="nested",
+                parent_agent_id=agent_b.id,
+                trace_id="shared-a2a-trace",
+                depth=2,
+                policy=OrchestrationPolicy(max_depth=3, tool_profile="agent_message"),
+                interaction_type="agent_message",
+            )
+        )
+        return SimpleNamespace(content=nested["result"].content)
+
+    monkeypatch.setattr("app.agents.orchestrator.invoke_agent", fake_invoke_agent)
+    await _delegate(
+        AgentDelegationRequest(
+            target=agent_b,
+            target_model=model,
+            conversation_messages=[{"role": "user", "content": "ask B"}],
+            owner_id=uuid4(),
+            session_id="root",
+            parent_agent_id=agent_a.id,
+            trace_id="shared-a2a-trace",
+            depth=1,
+            policy=OrchestrationPolicy(max_depth=3, tool_profile="agent_message"),
+            interaction_type="agent_message",
+        )
+    )
+
+    assert nested["result"].failed is True
+    assert "cycle" in nested["result"].content.lower()
 
 
 @pytest.mark.asyncio
@@ -1787,7 +1825,7 @@ class TestDelegationResultSerialization:
         )
         payload = result.to_dict()
 
-        assert payload["status"] == "ok"
+        assert payload["status"] == "completed"
         assert payload["content"] == "answer body"
         assert payload["child_session_id"] == "cs"
         assert payload["trace_id"] == "t"

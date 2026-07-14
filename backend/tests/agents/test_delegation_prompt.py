@@ -48,11 +48,12 @@ class TestIsolationContract:
     def test_declares_parent_history_unavailable(self, worker_safe_prompt: str) -> None:
         assert "NOT available" in worker_safe_prompt
 
-    def test_forbids_nested_delegation(self, worker_safe_prompt: str) -> None:
-        assert (
-            "nested workers" in worker_safe_prompt.lower()
-            or "delegation tools are disabled" in worker_safe_prompt.lower()
-        )
+    def test_describes_governed_bounded_nested_delegation(self, worker_safe_prompt: str) -> None:
+        lowered = worker_safe_prompt.lower()
+        assert "nested delegation" in lowered
+        assert "depth" in lowered
+        assert "cycle" in lowered
+        assert "delegation tools are disabled" not in lowered
 
     def test_forbids_context_leak(self, worker_safe_prompt: str) -> None:
         assert "leak" in worker_safe_prompt.lower()

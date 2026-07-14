@@ -171,8 +171,32 @@ async def test_build_session_memory_payload_with_llm_falls_back_without_model(mo
     )
 
     assert payload.session_id == "fallback-session"
+    assert payload.source == "deterministic_fallback:model_unavailable;source=turn_stop"
     assert payload.current_state == "我已经完成了 T2 Memory Gate 修复。"
     assert payload.pending_work == ["下一步我会验证 hook 接线。"]
+
+
+@pytest.mark.asyncio
+async def test_build_session_memory_payload_with_llm_marks_model_failure_fallback(monkeypatch) -> None:
+    from app.services import session_memory
+
+    async def fake_model_config(_tenant_id):
+        return {"provider": "fake", "model": "fake-session-memory"}
+
+    async def failing_writer(**_kwargs):
+        raise RuntimeError("writer unavailable")
+
+    monkeypatch.setattr(session_memory, "_get_session_memory_model_config", fake_model_config)
+    monkeypatch.setattr(session_memory, "_run_session_memory_llm", failing_writer)
+
+    payload = await session_memory.build_session_memory_payload_with_llm(
+        [{"role": "user", "content": "保留完整会话证据。"}],
+        metadata={"session_id": "failed-session", "source": "session_close"},
+        agent_id=uuid4(),
+        tenant_id=uuid4(),
+    )
+
+    assert payload.source == "deterministic_fallback:model_failure:RuntimeError;source=session_close"
 
 
 def test_merge_session_memory_into_recovery_manifest_restores_pending_work(tmp_path: Path) -> None:
@@ -330,7 +354,7 @@ def test_update_session_memory_retires_legacy_memory_sessions_hot_file(tmp_path:
     assert not legacy_hot.exists()
 
 
-def test_update_session_memory_caps_lists_and_worklog(tmp_path: Path) -> None:
+def test_update_session_memory_preserves_all_model_authored_items(tmp_path: Path) -> None:
     from app.services.session_memory import SessionMemoryPayload, load_session_memory, update_session_memory
 
     agent_id = uuid4()
@@ -340,7 +364,7 @@ def test_update_session_memory_caps_lists_and_worklog(tmp_path: Path) -> None:
             session_id="session-456",
             source="session_close",
             current_state="Closing out the session.",
-            task_spec="Cap noisy sections.",
+            task_spec="Preserve model-authored continuity without platform semantic pruning.",
             important_files=[f"backend/app/file_{index}.py" for index in range(20)],
             pending_work=[f"pending {index}" for index in range(20)],
             worklog=[f"log entry {index} " + ("x" * 300) for index in range(25)],
@@ -351,7 +375,9 @@ def test_update_session_memory_caps_lists_and_worklog(tmp_path: Path) -> None:
     payload = load_session_memory(agent_id, data_root=tmp_path)
 
     assert payload is not None
-    assert len(payload.important_files) == 12
-    assert len(payload.pending_work) == 10
-    assert len(payload.worklog) == 20
-    assert all(len(item) <= 200 for item in payload.worklog)
+    assert len(payload.important_files) == 20
+    assert len(payload.pending_work) == 20
+    assert len(payload.worklog) == 25
+    assert payload.important_files[-1] == "backend/app/file_19.py"
+    assert payload.pending_work[-1] == "pending 19"
+    assert payload.worklog[-1] == "log entry 24 " + ("x" * 300)

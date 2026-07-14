@@ -578,12 +578,14 @@ class TestSendFile:
             extra_config={},
         )
 
+        decisive_tail = "DECISIVE-FALLBACK-TAIL"
+        long_message = "a" * 4000 + decisive_tail
         result = await ChannelDeliveryService.send_file(
             db=_FakeDB(config),
             agent_id=agent_id,
             reply_target={"channel": "wechat_personal", "to_user_id": "wxid_abc", "context_token": "ctx"},
             file_path=file_path,
-            message="请查收",
+            message=long_message,
             delivery_mode="live",
         )
 
@@ -592,6 +594,7 @@ class TestSendFile:
         assert result.detail["fallback_used"] is True
         assert "微信文件直传失败" in sent_texts[-1]
         assert "token=signed" in sent_texts[-1]
+        assert decisive_tail in sent_texts[-1]
 
     @pytest.mark.asyncio
     async def test_send_file_wechat_uploads_and_sends_media(self, monkeypatch, tmp_path) -> None:

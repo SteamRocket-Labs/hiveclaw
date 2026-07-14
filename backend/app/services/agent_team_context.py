@@ -27,11 +27,8 @@ def _clean(value: Any) -> str:
     return str(value or "").strip()
 
 
-def _short(value: Any, limit: int = 220) -> str:
-    text = " ".join(_clean(value).split())
-    if len(text) <= limit:
-        return text
-    return text[: max(0, limit - 3)].rstrip() + "..."
+def _render_text(value: Any) -> str:
+    return " ".join(_clean(value).split())
 
 
 def _id(value: Any) -> str:
@@ -53,11 +50,11 @@ def _uuid_or_none(value: Any) -> uuid.UUID | None:
 
 
 def _task_line(task: dict[str, Any]) -> str:
-    task_id = _id(task.get("id") or task.get("task_id"))[:8]
+    task_id = _id(task.get("id") or task.get("task_id"))
     task_type = _clean(task.get("task_type")) or "task"
     status = _clean(task.get("status")) or "unknown"
     teammate = _clean(task.get("child_agent_name") or task.get("child_agent_id") or task.get("name")) or "teammate"
-    summary = _short(task.get("result_summary") or task.get("prompt") or task.get("summary"))
+    summary = _render_text(task.get("result_summary") or task.get("prompt") or task.get("summary"))
     suffix = f" — {summary}" if summary else ""
     return f"- {task_type} {task_id} [{status}] {teammate}{suffix}"
 
@@ -66,21 +63,21 @@ def _signal_line(signal: dict[str, Any]) -> str:
     signal_type = _clean(signal.get("signal_type")) or "signal"
     sender = _clean(signal.get("from_agent_id")) or "teammate"
     thread = _clean(signal.get("thread_id"))
-    content = _short(signal.get("content"))
-    thread_suffix = f" thread={thread[:8]}" if thread else ""
+    content = _render_text(signal.get("content"))
+    thread_suffix = f" thread={thread}" if thread else ""
     return f"- [{signal_type}]{thread_suffix} from {sender}: {content}"
 
 
 def _team_line(team: dict[str, Any]) -> str:
     name = _clean(team.get("name")) or "Team"
     status = _clean(team.get("status")) or "active"
-    team_id = _id(team.get("id"))[:8]
+    team_id = _id(team.get("id"))
     return f"- team {team_id} [{status}] {name}"
 
 
 def _team_member_line(member: dict[str, Any]) -> str:
     name = _clean(member.get("member_name")) or "member"
-    role = _short(member.get("member_role"), limit=120)
+    role = _render_text(member.get("member_role"))
     status = _clean(member.get("status")) or "idle"
     session_id = _id(member.get("chat_session_id"))
     session_suffix = f" session={session_id}" if session_id else ""
@@ -89,11 +86,11 @@ def _team_member_line(member: dict[str, Any]) -> str:
 
 
 def _shared_task_line(task: dict[str, Any]) -> str:
-    task_id = _clean(task.get("id"))[:8]
+    task_id = _clean(task.get("id"))
     status = _clean(task.get("status")) or "pending"
     owner = _clean(task.get("owner"))
-    title = _short(task.get("title") or task.get("content") or task.get("subject"), limit=180)
-    description = _short(task.get("description"), limit=120)
+    title = _render_text(task.get("title") or task.get("content") or task.get("subject"))
+    description = _render_text(task.get("description"))
     owner_suffix = f" owner={owner}" if owner else ""
     description_suffix = f" — {description}" if description else ""
     id_suffix = f" {task_id}" if task_id else ""
@@ -110,6 +107,9 @@ def render_team_context_block(
     signal_limit: int = 8,
     team_limit: int = 5,
 ) -> str:
+    # Retained for API compatibility; semantic prompt context is never pruned
+    # by renderer-local counters.
+    del task_limit, signal_limit, team_limit
     task_rows = [task for task in (tasks or []) if isinstance(task, dict)]
     signal_rows = [signal for signal in (signals or []) if isinstance(signal, dict)]
     team_rows = [team for team in (teams or []) if isinstance(team, dict)]
@@ -121,13 +121,11 @@ def render_team_context_block(
     if team_rows:
         lines.append("## Agent Team Workspace")
         lines.append("Current enterable Team workspaces projected from AgentTeam rows and member sessions:")
-        for team in team_rows[: max(1, team_limit)]:
+        for team in team_rows:
             lines.append(_team_line(team))
-            for member in list(team.get("members") or [])[: max(1, task_limit)]:
+            for member in list(team.get("members") or []):
                 if isinstance(member, dict):
                     lines.append(_team_member_line(member))
-        if len(team_rows) > team_limit:
-            lines.append(f"- ... {len(team_rows) - team_limit} more active team workspace(s)")
 
     if shared_task_rows:
         if lines:
@@ -136,22 +134,16 @@ def render_team_context_block(
         lines.append(
             "Open parent-session Work Ledger todos for this Team; use owner=member_name to pick the next slice:"
         )
-        for task in shared_task_rows[: max(1, task_limit)]:
+        for task in shared_task_rows:
             lines.append(_shared_task_line(task))
-        if len(shared_task_rows) > task_limit:
-            lines.append(
-                f"- ... {len(shared_task_rows) - task_limit} more shared task(s); call read_ledger for detail."
-            )
 
     if task_rows:
         if lines:
             lines.append("")
         lines.append("## Team Context")
         lines.append("Current teammate/workflow state projected from Session/T0-backed runtime records:")
-        for task in task_rows[: max(1, task_limit)]:
+        for task in task_rows:
             lines.append(_task_line(task))
-        if len(task_rows) > task_limit:
-            lines.append(f"- ... {len(task_rows) - task_limit} more active/recent team task(s)")
 
     if signal_rows:
         if lines:
@@ -161,10 +153,8 @@ def render_team_context_block(
             "Unread durable coordination signals; treat completion notices as next-turn context, "
             "not as a repeated status check:"
         )
-        for signal in signal_rows[: max(1, signal_limit)]:
+        for signal in signal_rows:
             lines.append(_signal_line(signal))
-        if len(signal_rows) > signal_limit:
-            lines.append(f"- ... {len(signal_rows) - signal_limit} more mailbox signal(s)")
 
     return "\n".join(lines).strip()
 
@@ -231,6 +221,7 @@ async def build_prompt_facing_team_context(
 ) -> str:
     """Build the CC-style team context/mailbox block for the current agent turn."""
 
+    del task_limit, signal_limit
     if not tenant_id:
         return ""
     session_key = _clean(session_id)
@@ -239,7 +230,6 @@ async def build_prompt_facing_team_context(
             select(RuntimeTask)
             .where(RuntimeTask.parent_agent_id == agent_id, RuntimeTask.task_type.in_(tuple(_TEAM_TASK_TYPES)))
             .order_by(RuntimeTask.created_at.desc())
-            .limit(max(1, task_limit))
         )
         if session_key:
             task_stmt = task_stmt.where(
@@ -255,7 +245,6 @@ async def build_prompt_facing_team_context(
             select(CoordinationSignal)
             .where(CoordinationSignal.to_agent_id == str(agent_id))
             .order_by(CoordinationSignal.created_at.desc())
-            .limit(max(1, signal_limit))
         )
         if session_key:
             signal_stmt = signal_stmt.where(CoordinationSignal.thread_id == session_key)
@@ -265,7 +254,6 @@ async def build_prompt_facing_team_context(
             select(AgentTeam)
             .where(AgentTeam.lead_agent_id == agent_id, AgentTeam.status == "active")
             .order_by(AgentTeam.created_at.desc())
-            .limit(5)
         )
         session_uuid = _uuid_or_none(session_key)
         if session_uuid is not None:
@@ -338,6 +326,4 @@ async def build_prompt_facing_team_context(
         signals=signals,
         teams=teams,
         shared_tasks=shared_tasks,
-        task_limit=task_limit,
-        signal_limit=signal_limit,
     )

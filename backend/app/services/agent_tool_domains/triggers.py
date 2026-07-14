@@ -64,6 +64,22 @@ def _plan_authorization_stamp_kwargs(arguments: dict) -> dict:
     }
 
 
+def _canonical_plan_stamp_kwargs(arguments: dict) -> dict:
+    evidence = arguments.get("_plan_authorization")
+    if not isinstance(evidence, dict):
+        evidence = {}
+    return {
+        "plan_id": evidence.get("plan_id") or arguments.get("confirmed_plan_id"),
+        "plan_version": (
+            evidence.get("plan_version")
+            if evidence.get("plan_version") is not None
+            else arguments.get("confirmed_plan_version")
+        ),
+        # Never persist a caller-echoed hash without server authorization evidence.
+        "plan_hash": evidence.get("plan_hash"),
+    }
+
+
 #: Exec/automation CC-alignment (docs/trigger-cc-alignment.md §2): the three
 #: driving-semantic buckets every wire-level ``type`` collapses into. The 6 type
 #: strings are just the schedule/detection mechanisms; these three are the
@@ -480,9 +496,7 @@ async def _handle_set_trigger(
         config["token"] = token
     config = stamp_confirmed_plan_provenance(
         config,
-        plan_id=arguments.get("confirmed_plan_id"),
-        plan_version=arguments.get("confirmed_plan_version"),
-        plan_hash=arguments.get("confirmed_plan_hash"),
+        **_canonical_plan_stamp_kwargs(arguments),
         **_plan_authorization_stamp_kwargs(arguments),
     )
     config = _stamp_user_declined_plan_mode(config)
@@ -641,7 +655,7 @@ async def _handle_set_trigger(
                 {
                     "name": name,
                     "type": ttype,
-                    "reason": reason[:100],
+                    "reason": reason,
                 },
                 agent_id=agent_id,
             )
@@ -748,9 +762,7 @@ async def _handle_update_trigger(
                 final_config["trigger_class"] = arguments.get("trigger_class")
             final_config = stamp_confirmed_plan_provenance(
                 final_config,
-                plan_id=arguments.get("confirmed_plan_id"),
-                plan_version=arguments.get("confirmed_plan_version"),
-                plan_hash=arguments.get("confirmed_plan_hash"),
+                **_canonical_plan_stamp_kwargs(arguments),
                 **_plan_authorization_stamp_kwargs(arguments),
             )
             final_config = _stamp_user_declined_plan_mode(final_config)
@@ -1087,8 +1099,8 @@ async def _handle_list_triggers(
             )
         for t in triggers:
             status = "✅ active" if t.is_enabled else "⏸ disabled"
-            config_str = str(t.config)[:50]
-            reason_str = t.reason[:40] if t.reason else ""
+            config_str = str(t.config)
+            reason_str = t.reason if t.reason else ""
             lines.append(f"| {t.name} | {t.type} | {config_str} | {reason_str} | {status} | {t.fire_count} |")
 
         if agent is not None:
@@ -1107,7 +1119,7 @@ async def _handle_list_triggers(
                     ]
                 )
                 trigger_names_by_id = {str(t.id): t.name for t in triggers}
-                for finding in findings[:20]:
+                for finding in findings:
                     trigger_id = finding.get("trigger_id")
                     trigger_name = trigger_names_by_id.get(str(trigger_id), "") if trigger_id else ""
                     lines.append(
@@ -1115,11 +1127,9 @@ async def _handle_list_triggers(
                             severity=finding.get("severity", ""),
                             category=finding.get("category", ""),
                             trigger=trigger_name,
-                            recommendation=str(finding.get("recommendation", "")).replace("|", "/")[:160],
+                            recommendation=str(finding.get("recommendation", "")).replace("|", "/"),
                         )
                     )
-                if len(findings) > 20:
-                    lines.append(f"| info | truncated | | {len(findings) - 20} more diagnostics omitted |")
 
         return "\n".join(lines)
 

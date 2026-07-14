@@ -166,7 +166,7 @@ class WeComStreamManager:
                         await client.reply_stream(
                             frame,
                             stream_id,
-                            f"Processing error: {str(e)[:100]}",
+                            f"Processing error: {e}",
                             finish=True,
                         )
                     except Exception:

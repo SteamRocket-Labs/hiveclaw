@@ -59,6 +59,8 @@ def _stage_held_candidate(
     candidate_id: str = "soulcand-1",
     soul_next: str | None = None,
     base_sha: str | None = None,
+    include_frozen_review: bool = True,
+    contradicts_frozen: bool = False,
 ) -> Path:
     package_dir = ws / "memory" / ".staging" / "soul_candidates" / candidate_id
     package_dir.mkdir(parents=True, exist_ok=True)
@@ -71,6 +73,18 @@ def _stage_held_candidate(
     (package_dir / "soul_pitch.md").write_text("长期稳定的质量标准,提名入魂。", encoding="utf-8")
     (package_dir / "soul_patch.md").write_text(
         "+ soul_quality block\n<source_ref>t3:worker.md#wr-1</source_ref>\n", encoding="utf-8"
+    )
+    frozen_charter = ""
+    if include_frozen_review:
+        from app.services.auto_dream import _extract_frozen_charter
+
+        frozen_charter = _extract_frozen_charter(current)
+    candidate_text = "\n\n".join(
+        [
+            "长期稳定的质量标准,提名入魂。",
+            "+ soul_quality block\n<source_ref>t3:worker.md#wr-1</source_ref>\n",
+            next_text,
+        ]
     )
     manifest = {
         "schema": "soul_candidate_package.v1",
@@ -86,6 +100,16 @@ def _stage_held_candidate(
         "next_path": f"memory/.staging/soul_candidates/{candidate_id}/soul.md.next",
         "memory_gate_review": {"candidate_id": candidate_id, "recommendation": "promote"},
     }
+    if include_frozen_review:
+        manifest["frozen_charter_review"] = {
+            "status": "reviewed",
+            "contradicts": contradicts_frozen,
+            "reason": "test semantic review",
+            "reviewer": "frozen_mission_llm",
+            "source": "independent_llm",
+            "frozen_charter_sha256": hashlib.sha256(frozen_charter.encode("utf-8")).hexdigest(),
+            "candidate_sha256": hashlib.sha256(candidate_text.encode("utf-8")).hexdigest(),
+        }
     (package_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     return package_dir
 
@@ -140,6 +164,29 @@ async def test_approve_commits_soul_with_rollback_and_owner_audit(tmp_path: Path
 
 
 @pytest.mark.asyncio
+async def test_owner_approval_does_not_regex_reject_semantic_discussion_of_runtime_ids(tmp_path: Path) -> None:
+    from app.services.soul_approval import approve_soul_candidate
+
+    ws = _workspace(tmp_path)
+    current = _seed_soul(ws)
+    next_text = (
+        current + "<soul_quality>\n## Quality\n审计 runtime_task_id 的来源，但不要把具体运行 ID 写入长期身份。\n"
+        "<source_ref>t3:worker.md#wr-1</source_ref>\n</soul_quality>\n"
+    )
+    _stage_held_candidate(ws, candidate_id="soulcand-runtime-design", soul_next=next_text)
+
+    result = await approve_soul_candidate(
+        workspace=ws,
+        agent_id=AGENT_ID,
+        candidate_id="soulcand-runtime-design",
+        approver_id=OWNER_ID,
+    )
+
+    assert result["status"] == "committed"
+    assert "runtime_task_id" in (ws / "soul.md").read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
 async def test_approve_still_refuses_frozen_charter_violation(tmp_path: Path) -> None:
     """Owner approval unlocks the hold — it does not relax the other gates:
     a rewrite that drops the frozen identity block stays refused."""
@@ -164,6 +211,44 @@ async def test_approve_still_refuses_frozen_charter_violation(tmp_path: Path) ->
     assert result["status"] == "refused"
     assert "frozen" in result["reason"].lower()
     assert "服务所有个人用户" not in (ws / "soul.md").read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_approve_refuses_when_staged_frozen_semantic_review_is_missing(tmp_path: Path) -> None:
+    from app.services.soul_approval import approve_soul_candidate
+
+    ws = _workspace(tmp_path)
+    _seed_soul(ws)
+    _stage_held_candidate(ws, candidate_id="soulcand-missing-review", include_frozen_review=False)
+
+    result = await approve_soul_candidate(
+        workspace=ws,
+        agent_id=AGENT_ID,
+        candidate_id="soulcand-missing-review",
+        approver_id=OWNER_ID,
+    )
+
+    assert result["status"] == "refused"
+    assert "semantic review" in result["reason"].lower()
+
+
+@pytest.mark.asyncio
+async def test_approve_refuses_when_staged_llm_review_found_contradiction(tmp_path: Path) -> None:
+    from app.services.soul_approval import approve_soul_candidate
+
+    ws = _workspace(tmp_path)
+    _seed_soul(ws)
+    _stage_held_candidate(ws, candidate_id="soulcand-contradiction", contradicts_frozen=True)
+
+    result = await approve_soul_candidate(
+        workspace=ws,
+        agent_id=AGENT_ID,
+        candidate_id="soulcand-contradiction",
+        approver_id=OWNER_ID,
+    )
+
+    assert result["status"] == "refused"
+    assert "contradicts frozen" in result["reason"].lower()
 
 
 @pytest.mark.asyncio
@@ -236,6 +321,7 @@ def test_dream_stage_records_owner_approval_flag(tmp_path: Path) -> None:
         "soul_md_next": "next",
         "requires_owner_approval": True,
         "source_refs": ["t3:worker.md#wr-1"],
+        "frozen_charter_review": {"status": "reviewed", "contradicts": False},
     }
 
     _candidate_id, package_dir = _stage_soul_candidate_package(
@@ -248,3 +334,4 @@ def test_dream_stage_records_owner_approval_flag(tmp_path: Path) -> None:
 
     manifest = json.loads((package_dir / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["requires_owner_approval"] is True
+    assert manifest["frozen_charter_review"] == {"status": "reviewed", "contradicts": False}

@@ -1,13 +1,12 @@
-"""Part A red tests: read side split into two planes (spec §4.2).
+"""Read-side tests for complete evidence and model-owned semantic selection.
 
 - Resident plane (P0, no retrieval, no LLM): self/self.md + profiles/*.md +
   active explicit overlay entries go into the prompt WHOLE — never trimmed
   per-entry; self's active failure modes float to the very top. Over-budget
   is a WRITE-side convergence failure signal (one-shot alert, no hard trim).
-- Retrieval plane (query top-k, zero LLM): knowledge/milestones pages via the
-  PPR link graph; ``[[k:Title]]`` edges resolve into knowledge/, forward refs
-  allowed. Knowledge hits never enter the LLM rerank pool (reads never run
-  an LLM — the network was built at write time).
+- Retrieval plane: knowledge/milestones pages expose every active page and its
+  complete Markdown to the model selector. BM25/PPR remain ranking evidence;
+  they never choose a top-k or hide zero-score pages from model judgment.
 """
 
 from __future__ import annotations
@@ -245,8 +244,41 @@ def test_knowledge_pages_are_retrieved_by_query(tmp_path: Path) -> None:
     assert all(item.metadata.get("source_type") == "knowledge_ppr" for item in items)
 
 
-def test_llm_rerank_machinery_is_retired() -> None:
-    """Reads never run an LLM (spec §4.2): the rerank side-query is gone entirely."""
+def test_knowledge_search_returns_every_active_page_with_complete_markdown(tmp_path: Path) -> None:
+    from app.memory.wiki_retrieval import search_wiki_pages
+
+    agent_id = uuid4()
+    decisive_tail = "DECISIVE_TAIL_" + ("x" * 240)
+    for index in range(7):
+        body = (
+            f"## Current Claim\n{decisive_tail}\n"
+            if index == 6
+            else f"## Current Claim\nunrelated knowledge page {index}\n"
+        )
+        _write_knowledge_page(
+            tmp_path,
+            agent_id,
+            slug=f"page-{index}",
+            title=f"Page {index}",
+            body=body,
+        )
+
+    hits = search_wiki_pages(
+        tmp_path,
+        agent_id,
+        "salary planning",
+        limit=None,
+        page_dirs=("knowledge", "milestones"),
+    )
+
+    assert len(hits) == 7
+    decisive = next(hit for hit in hits if hit["page_id"] == "knowledge/page-6")
+    assert decisive_tail in decisive["content"]
+    assert decisive["score"] == 0.0
+
+
+def test_legacy_threshold_rerank_machinery_is_retired() -> None:
+    """The model selector must not inherit the retired score-threshold reranker."""
     from app.memory import retriever as retriever_module
 
     assert not hasattr(retriever_module, "_rerank_semantic_items")

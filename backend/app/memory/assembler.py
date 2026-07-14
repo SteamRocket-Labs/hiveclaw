@@ -1,12 +1,7 @@
-"""Assemble retrieved memory items into a prompt-ready text section.
-
-Groups items by kind in priority order, deduplicates by content hash,
-and trims output to a character budget.
-"""
+"""Assemble retrieved memory items into a complete prompt-ready text section."""
 
 from __future__ import annotations
 
-import hashlib
 from datetime import UTC, datetime
 
 from app.memory.types import MemoryItem, MemoryKind, parse_utc_timestamp
@@ -21,11 +16,6 @@ _SECTION_ORDER: list[tuple[MemoryKind, str]] = [
     (MemoryKind.SEMANTIC, "[Semantic Memory]"),
     (MemoryKind.EXTERNAL, "[External Memory]"),
 ]
-
-
-def _content_hash(content: str) -> str:
-    """Produce a short hash for deduplication."""
-    return hashlib.md5(content.strip().lower().encode("utf-8")).hexdigest()  # noqa: S324
 
 
 def _freshness_suffix(item: MemoryItem) -> str:
@@ -51,56 +41,32 @@ def _activation_suffix(item: MemoryItem) -> str:
     compact = [str(reason).strip() for reason in reasons if str(reason).strip()]
     if not compact:
         return ""
-    return f" [why={','.join(compact[:4])}]"
-
-
-def _memory_item_sort_score(item: MemoryItem) -> float:
-    raw_score = item.metadata.get("activation_raw_score")
-    if raw_score is not None:
-        try:
-            return float(raw_score)
-        except (TypeError, ValueError):
-            pass
-    return float(item.score or 0.0)
+    return f" [why={','.join(compact)}]"
 
 
 class MemoryAssembler:
     """Assemble retrieved memory items into a prompt section."""
 
     def assemble(self, items: list[MemoryItem], budget_chars: int = 20000) -> str:
-        """Render memory items grouped by kind, deduplicated and budget-trimmed.
+        """Render the authorized, model-selected items without another choice.
 
         Returns a string with section headers ready to inject into a system prompt.
         """
-        # Sort ALL items first so dedup keeps the highest-ranked version (CR-01).
-        sorted_items = sorted(items, key=_memory_item_sort_score, reverse=True)
-
-        # Deduplicate by content hash (highest score wins since we sorted first)
-        seen: set[str] = set()
-        unique_items: list[MemoryItem] = []
-        for item in sorted_items:
-            h = _content_hash(item.content)
-            if h not in seen:
-                seen.add(h)
-                unique_items.append(item)
-
+        del budget_chars  # Compatibility-only: final provider capacity gate owns prompt size.
         # Group by kind
         groups: dict[MemoryKind, list[MemoryItem]] = {}
-        for item in unique_items:
+        for item in items:
             groups.setdefault(item.kind, []).append(item)
-        # Items already sorted by score from the global sort above
+        # Preserve the selector's order within each presentation section.
 
         # Build output in priority order
         sections: list[str] = []
-        total_chars = 0
-
         for kind, header in _SECTION_ORDER:
             kind_items = groups.get(kind)
             if not kind_items:
                 continue
 
             lines: list[str] = [header]
-            header_len = len(header) + 1
             for item in kind_items:
                 freshness = _freshness_suffix(item)
                 activation = _activation_suffix(item)
@@ -108,18 +74,10 @@ class MemoryAssembler:
                 _cat = item.metadata.get("category", "")
                 _cat_prefix = f"[{_cat}] " if _cat and _cat != "general" else ""
                 line = f"- {_cat_prefix}{item.content}{activation}{freshness}"
-                line_len = len(line) + 1  # +1 for newline
-                if total_chars + line_len > budget_chars:
-                    break
                 lines.append(line)
-                total_chars += line_len
 
             # Only add the section if it has content beyond the header
             if len(lines) > 1:
-                total_chars += header_len  # Count header only if section has content
                 sections.append("\n".join(lines))
-
-            if total_chars >= budget_chars:
-                break
 
         return "\n\n".join(sections)

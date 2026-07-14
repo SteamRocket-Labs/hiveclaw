@@ -230,6 +230,9 @@ def _client(user, monkeypatch, *, gate_allowed=True, gate_reason=None, access_le
             authorization_lease_id="lease-1" if gate_allowed else None,
             canonical_args_hash="args-hash" if gate_allowed else None,
             target_ref=kwargs.get("target_ref") if gate_allowed else None,
+            canonical_plan_id=kwargs.get("confirmed_plan_id") if gate_allowed else None,
+            canonical_plan_version=kwargs.get("plan_version") if gate_allowed else None,
+            canonical_plan_hash="sha256:server-plan" if gate_allowed and kwargs.get("confirmed_plan_id") else None,
         )
 
     fake_gate_check.calls = []
@@ -392,7 +395,6 @@ def test_confirmed_plan_is_consumed_for_the_exact_workflow_preview(monkeypatch):
             "preview_id": preview["preview_id"],
             "confirmed_plan_id": plan_id,
             "plan_version": 2,
-            "plan_hash": "abc123",
         },
     )
     assert resp.status_code == 200

@@ -168,6 +168,7 @@ def test_start_session_run_routes_to_runtime_service(monkeypatch):
     assert captured["session"] is session
     assert captured["content"] == "hello"
     assert captured["extra_metadata"] == {
+        "model_routing_locked": False,
         "permission_mode": "default",
         "writable_roots": ["workspace/"],
         "permission_profile": {"mode": "default", "allowed_tools": [], "writable_roots": ["workspace/"]},
@@ -232,6 +233,7 @@ def test_create_session_run_atomically_creates_human_session_and_starts_runtime(
     assert captured["display_content"] == "hello"
     assert captured["file_name"] == ""
     assert captured["extra_metadata"] == {
+        "model_routing_locked": False,
         "permission_mode": "auto",
         "writable_roots": ["workspace/"],
         "permission_profile": {"mode": "auto", "allowed_tools": [], "writable_roots": ["workspace/"]},
@@ -267,6 +269,7 @@ def test_start_session_run_threads_ccplus_permission_profile(monkeypatch):
 
     assert response.status_code == 201
     assert captured["extra_metadata"] == {
+        "model_routing_locked": False,
         "permission_mode": "default",
         "writable_roots": ["workspace/"],
         "permission_profile": {"mode": "default", "allowed_tools": ["send_email"], "writable_roots": ["workspace/"]},
@@ -883,6 +886,17 @@ def test_session_permission_event_broadcast_delivers_im_realtime_copy(monkeypatc
             },
         }
     ]
+
+
+def test_session_permission_tool_result_channel_copy_preserves_complete_result() -> None:
+    decisive_tail = "DECISIVE-PERMISSION-RESULT-TAIL"
+    tool_result = "a" * 5000 + decisive_tail
+
+    rendered = chat_sessions_api._session_permission_tool_result_channel_text("read_file", tool_result)
+
+    assert tool_result in rendered
+    assert rendered.endswith(decisive_tail)
+    assert "truncated" not in rendered.lower()
 
 
 def test_resolve_session_permission_rejects_duplicate_resolution_before_reexecution(monkeypatch):

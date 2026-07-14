@@ -18,8 +18,8 @@ import type { RunStepKind, RunStepSnapshot, RunTimelineSnapshot } from './chatDi
 // - running: shimmering "Working" header + live elapsed seconds, expanded.
 // - done: collapses to one line by default — finished process recedes, the
 //   final answer is the star. blocked/failed stay expanded (they need eyes).
-// - command steps render structured exec output (head/tail clip + exit code),
-//   never a raw JSON blob.
+// - command steps render structured exec output (preview + recoverable complete
+//   output + exit code), never a raw JSON blob or an irreversible truncation.
 
 const EXEC_CLIP_LINES = 5;
 
@@ -94,6 +94,7 @@ function clipLines(text: string, limit: number): { head: string[]; tail: string[
 }
 
 function ExecOutput({ exec }: { exec: ExecDetails }) {
+  const { t } = useTranslation();
   const output = exec.output ?? '';
   const { head, tail, clipped } = clipLines(output, EXEC_CLIP_LINES);
   const exitCode = exec.exit_code;
@@ -110,11 +111,19 @@ function ExecOutput({ exec }: { exec: ExecDetails }) {
         </div>
       )}
       {output && (
-        <pre className="exec-pre">
-          {head.join('\n')}
-          {clipped > 0 && <span className="exec-clip">{`\n… ${clipped} lines …\n`}</span>}
-          {tail.length > 0 && tail.join('\n')}
-        </pre>
+        <>
+          <pre className="exec-pre">
+            {head.join('\n')}
+            {clipped > 0 && <span className="exec-clip">{`\n… ${clipped} lines …\n`}</span>}
+            {tail.length > 0 && tail.join('\n')}
+          </pre>
+          {clipped > 0 && (
+            <details className="exec-complete">
+              <summary>{t('agent.chat.disclosure.showCompleteOutput', 'Show complete output')}</summary>
+              <pre className="exec-pre exec-complete-pre">{output}</pre>
+            </details>
+          )}
+        </>
       )}
     </div>
   );

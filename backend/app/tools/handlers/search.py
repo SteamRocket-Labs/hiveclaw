@@ -421,7 +421,11 @@ async def advanced_web_search(arguments: dict) -> str:
                     "type": "boolean",
                     "description": "Skip direct web_fetch in auto mode and start with provider extractors.",
                 },
-                "max_chars": {"type": "integer", "minimum": 1, "maximum": 30000},
+                "max_chars": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Optional explicit result limit; omit for full content.",
+                },
             },
             "required": ["url"],
         },
@@ -564,7 +568,11 @@ async def exa_search(arguments: dict) -> str:
             "type": "object",
             "properties": {
                 "url": {"type": "string", "description": "URL to fetch through Exa MCP."},
-                "max_chars": {"type": "integer", "minimum": 1, "maximum": 30000},
+                "max_chars": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Optional explicit result limit; omit for full content.",
+                },
             },
             "required": ["url"],
         },
@@ -741,7 +749,11 @@ async def tavily_search(arguments: dict) -> str:
                 },
                 "format": {"type": "string", "enum": ["markdown", "text"], "description": "Output format."},
                 "include_images": {"type": "boolean", "description": "Include image metadata when supported."},
-                "max_chars": {"type": "integer", "minimum": 1, "maximum": 30000},
+                "max_chars": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Optional explicit result limit; omit for full content.",
+                },
             },
             "required": ["url"],
         },
@@ -798,7 +810,7 @@ async def tavily_extract(arguments: dict) -> str:
             "- Prefer this after `web_search` identifies the right page, or as the default known-URL path in cloud deployments.\n"
             "- Prefer this before heavier providers when the page is simple and directly fetchable.\n"
             "- This tool is for known URLs, not keyword search. Use `web_search` first if needed.\n"
-            "- The result may be truncated for very long pages."
+            "- Omit `max_chars` to receive the complete extracted content; set it only when you intentionally want a shorter result."
         ),
         parameters={
             "type": "object",
@@ -809,7 +821,8 @@ async def tavily_extract(arguments: dict) -> str:
                 },
                 "max_chars": {
                     "type": "integer",
-                    "description": "Max characters to return (default 8000, max 20000)",
+                    "minimum": 1,
+                    "description": "Optional explicit result limit; omit for full content.",
                 },
             },
             "required": ["url"],
@@ -939,7 +952,11 @@ async def firecrawl_search(arguments: dict) -> str:
             "type": "object",
             "properties": {
                 "url": {"type": "string", "description": "The URL to fetch and extract."},
-                "max_chars": {"type": "integer", "description": "Max characters to return (default 12000, max 30000)"},
+                "max_chars": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Optional explicit result limit; omit for full content.",
+                },
                 "formats": {
                     "type": "array",
                     "items": {
@@ -1041,7 +1058,11 @@ async def firecrawl_fetch(arguments: dict) -> str:
             "type": "object",
             "properties": {
                 "url": {"type": "string", "description": "The URL to scrape."},
-                "max_chars": {"type": "integer", "description": "Max characters to return (default 12000, max 30000)"},
+                "max_chars": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Optional explicit result limit; omit for full content.",
+                },
                 "output_formats": {
                     "type": "array",
                     "items": {
@@ -1228,13 +1249,13 @@ async def search_clawhub(arguments: dict) -> str:
             return f'🔍 No ClawHub skills found for "{query}"'
 
         lines = [f'🔍 ClawHub skills for "{query}" ({len(results)} results):\n']
-        for r in results[:8]:
+        for r in results:
             slug = r.get("slug", "?")
             name = r.get("displayName", slug)
-            summary = r.get("summary", "")[:100]
+            summary = r.get("summary", "")
             lines.append(f"**{name}** (slug: `{slug}`)\n{summary}\n")
 
         lines.append("\n💡 Pass the `slug` values to `create_digital_employee(clawhub_slugs=[...])` to install.")
         return "\n".join(lines)
     except Exception as e:
-        return f"❌ ClawHub search error: {str(e)[:200]}"
+        return f"❌ ClawHub search error: {str(e)}"

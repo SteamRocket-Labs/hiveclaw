@@ -114,7 +114,7 @@ async def _get_teams_access_token(config: ChannelConfig) -> str | None:
                     )
                 except Exception:
                     logger.error(
-                        f"Teams: OAuth token request failed for agent {agent_id}: status={resp.status_code}, response={error_body[:500]}"
+                        f"Teams: OAuth token request failed for agent {agent_id}: status={resp.status_code}, response={error_body}"
                     )
                 logger.error(f"Teams: Token URL={token_url}, tenant_id={tenant_id}, client_id={app_id[:20]}...")
                 return None
@@ -140,7 +140,7 @@ async def _get_teams_access_token(config: ChannelConfig) -> str | None:
                 )
         except Exception:
             logger.error(
-                f"Teams: OAuth token HTTP error for agent {agent_id}: status={e.response.status_code if hasattr(e, 'response') and e.response else 'unknown'}, response={error_body[:500]}"
+                f"Teams: OAuth token HTTP error for agent {agent_id}: status={e.response.status_code if hasattr(e, 'response') and e.response else 'unknown'}, response={error_body}"
             )
         logger.error(f"Teams: Token URL={token_url}, tenant_id={tenant_id}, client_id={app_id[:20]}...")
         return None
@@ -211,9 +211,7 @@ async def _send_teams_message_single_chunk(
                         f"Teams: Failed to send message: status={resp.status_code}, error={error_code}, description={error_description}"
                     )
                 except Exception:
-                    logger.error(
-                        f"Teams: Failed to send message: status={resp.status_code}, response={error_body[:500]}"
-                    )
+                    logger.error(f"Teams: Failed to send message: status={resp.status_code}, response={error_body}")
                 logger.error(
                     f"Teams: POST URL={post_url}, conversation_id={conversation_id}, service_url={service_url}"
                 )
@@ -233,7 +231,7 @@ async def _send_teams_message_single_chunk(
                 )
         except Exception:
             logger.error(
-                f"Teams: HTTP error sending message: status={e.response.status_code if hasattr(e, 'response') and e.response else 'unknown'}, response={error_body[:500]}"
+                f"Teams: HTTP error sending message: status={e.response.status_code if hasattr(e, 'response') and e.response else 'unknown'}, response={error_body}"
             )
         logger.error(f"Teams: POST URL={post_url}, conversation_id={conversation_id}, service_url={service_url}")
         raise

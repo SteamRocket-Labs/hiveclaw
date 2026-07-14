@@ -33,7 +33,7 @@ router = APIRouter(prefix="/desktop", tags=["desktop-agents"])
 
 
 SecurityZone = Literal["public", "standard", "restricted"]
-ExecutionMode = Literal["standard", "coordinator"]
+ExecutionMode = Literal["standard", "coordinator", "coordinator_strict"]
 
 
 class SubAgentCreate(BaseModel):

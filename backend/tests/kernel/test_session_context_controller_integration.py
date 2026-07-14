@@ -22,7 +22,7 @@ class _FakeClient:
 
 
 @pytest.mark.asyncio
-async def test_kernel_compacts_tool_result_before_next_model_request() -> None:
+async def test_kernel_preserves_unrecoverable_tool_result_before_next_model_request() -> None:
     from app.kernel.contracts import InvocationRequest
     from app.kernel.engine import AgentKernel, KernelDependencies, RuntimeConfig
     from app.runtime.session import SessionContext
@@ -113,9 +113,8 @@ async def test_kernel_compacts_tool_result_before_next_model_request() -> None:
     second_messages = fake_client.calls[1]["messages"]
     tool_messages = [msg for msg in second_messages if msg.role == "tool"]
     assert tool_messages
-    assert tool_messages[0].content.startswith("[Tool result compacted before next model request:")
-    assert "X" * 120 not in tool_messages[0].content
-    assert any(event.get("event_type") == "tool_result_budget_pass" for event in events)
+    assert tool_messages[0].content == "X" * 120
+    assert not any(event.get("event_type") == "tool_result_budget_pass" for event in events)
 
 
 @pytest.mark.asyncio

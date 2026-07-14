@@ -59,6 +59,44 @@ async def test_chat_upload_routes_documents_through_conversion_service(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_chat_upload_keeps_complete_converted_text_for_model_input(monkeypatch, tmp_path):
+    import app.api.upload as upload_api
+
+    async def fake_check_agent_access(db, current_user, agent_id):
+        return None
+
+    decisive_tail = "DECISIVE-UPLOAD-TAIL"
+    converted_markdown = "# Uploaded\n\n" + ("a" * 7000) + decisive_tail
+    _install_fake_markitdown(monkeypatch, converted_markdown)
+    monkeypatch.setattr(upload_api, "WORKSPACE_ROOT", tmp_path)
+    monkeypatch.setattr(upload_api, "check_agent_access", fake_check_agent_access)
+
+    async def fake_register_workspace_path(_db, **kwargs):
+        return SimpleNamespace(**kwargs)
+
+    monkeypatch.setattr(
+        "app.services.workspace_resource_authority.register_workspace_path",
+        fake_register_workspace_path,
+    )
+
+    agent_id = uuid.uuid4()
+    file = UploadFile(io.BytesIO(b"<h1>raw</h1>"), filename="long-report.html")
+    result = await upload_api.upload_file(
+        background_tasks=None,
+        file=file,
+        agent_id=agent_id,
+        skip_personal_kb=True,
+        current_user=SimpleNamespace(id=uuid.uuid4(), tenant_id=uuid.uuid4()),
+        db=object(),
+    )
+
+    assert decisive_tail in result["extracted_text"]
+    assert result["extracted_text"].endswith(decisive_tail)
+    assert decisive_tail not in result["preview_text"]
+    assert "truncated" in result["preview_text"].lower()
+
+
+@pytest.mark.asyncio
 async def test_chat_upload_default_registers_personal_kb_candidate(monkeypatch, tmp_path):
     import app.api.upload as upload_api
 

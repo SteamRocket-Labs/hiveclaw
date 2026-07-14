@@ -35,6 +35,23 @@ async def test_tool_search_returns_structured_discovery_sections(monkeypatch, tm
     assert "Web Research" in text
 
 
+def test_tool_search_manifest_renderer_preserves_every_candidate() -> None:
+    from app.services.tool_search_manifest import render_tool_search_manifest_sections
+
+    manifest = {
+        "loaded_tool_schemas": [
+            {"name": f"tool_{index}", "description": f"description-{index}"} for index in range(25)
+        ],
+        "skill_candidates": [],
+        "subagent_candidates": [],
+        "mcp_candidates": [],
+    }
+
+    rendered = render_tool_search_manifest_sections(manifest)
+
+    assert "tool_24" in rendered
+
+
 def test_tasks_json_protected_write_points_to_work_ledger(tmp_path):
     from app.services.agent_tool_domains.workspace import _write_file
 

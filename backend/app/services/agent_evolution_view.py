@@ -203,13 +203,12 @@ def _build_skill_ecosystem(workspace: Path) -> dict[str, Any]:
                 trial = None
             if isinstance(trial, dict):
                 signals = trial.get("signals") if isinstance(trial.get("signals"), dict) else {}
-                thresholds = trial.get("thresholds") if isinstance(trial.get("thresholds"), dict) else {}
                 item["trial"] = {
                     "state": str(trial.get("state") or state),
                     "positive_count": len(signals.get("positive") or []),
-                    "positive_threshold": int(thresholds.get("positive") or 3),
                     "negative_count": len(signals.get("negative") or []),
-                    "negative_threshold": int(thresholds.get("negative") or 2),
+                    "review_status": str(trial.get("review_status") or "waiting_for_evidence"),
+                    "model_review_count": len(trial.get("model_reviews") or []),
                     "window_days": int(trial.get("window_days") or 14),
                     "started_at": trial.get("started_at"),
                     "updated_at": trial.get("updated_at"),

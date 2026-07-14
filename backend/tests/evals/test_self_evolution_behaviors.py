@@ -33,6 +33,20 @@ def _read(path: Path) -> str:
         return ""
 
 
+def _skill_nomination(*, action: str, candidate_name: str = "", target_skill: str = "") -> dict[str, Any]:
+    return {
+        "schema": "fast_reflection_learning_brain_decision.v1",
+        "container": "skill_candidate",
+        "promotion_intent": "candidate",
+        "skill_decision": {
+            "action": action,
+            "candidate_name": candidate_name,
+            "target_skill": target_skill,
+            "reason": "Model judged the complete turn to contain reusable skill evidence.",
+        },
+    }
+
+
 def test_next_turn_adaptation_projects_the_lesson(behavior_workspace) -> None:
     """A user correction becomes an active session-learning projection the
     very next turn — no durable memory or skill promotion required."""
@@ -86,6 +100,10 @@ def test_repeated_workflow_creates_verified_skill_candidate(behavior_workspace) 
                 "signal_type": "repeated_task_pattern",
                 "lesson": "deploy -> canary -> verify -> rollback notes",
                 "confidence": 1.0,
+                "learning_brain_decision": _skill_nomination(
+                    action="new",
+                    candidate_name="deploy-canary-verification",
+                ),
             },
             "repeated_workflow_signature": "deploy -> canary -> verify -> rollback notes",
         },
@@ -118,6 +136,10 @@ def test_tool_failure_lesson_routes_to_patch_with_eval_evidence(behavior_workspa
                 "signal_type": "verification_failure",
                 "lesson": "incident-response skill needs rollback verification guidance",
                 "confidence": 1.0,
+                "learning_brain_decision": _skill_nomination(
+                    action="patch",
+                    target_skill="incident-response",
+                ),
             },
             "loaded_skill_name": "incident-response",
             "verification_failed": True,
@@ -131,9 +153,8 @@ def test_tool_failure_lesson_routes_to_patch_with_eval_evidence(behavior_workspa
     assert '"event": "eval_run"' in ledger_text or '"event":"eval_run"' in ledger_text
 
 
-def test_skill_lifecycle_promotes_and_patches_with_candidate_package(behavior_workspace) -> None:
-    """Repeated success promotes; a loaded-skill miss patches; an auditable
-    candidate package lands on disk."""
+def test_skill_lifecycle_records_complete_evidence_without_mechanical_promotion(behavior_workspace) -> None:
+    """Counts stay evidence-only until the Skill Distiller model decides."""
     from app.services.skill_lifecycle import record_skill_execution
 
     workspace = Path(behavior_workspace["data_root"]) / str(behavior_workspace["agent_id"])
@@ -171,8 +192,10 @@ def test_skill_lifecycle_promotes_and_patches_with_candidate_package(behavior_wo
     )
     skill_candidates_dir = workspace / "evolution" / "skill_candidates"
 
-    assert promote_result.get("decision") == "promote", json.dumps(promote_result, ensure_ascii=False)
-    assert patch_result.get("decision") == "patch", json.dumps(patch_result, ensure_ascii=False)
+    assert promote_result.get("decision") == "candidate", json.dumps(promote_result, ensure_ascii=False)
+    assert promote_result.get("promote_candidate_count") == 3
+    assert patch_result.get("decision") == "candidate", json.dumps(patch_result, ensure_ascii=False)
+    assert patch_result.get("patch_candidate_count") == 2
     assert skill_candidates_dir.exists() and any(
         (package / "candidate_signal.md").exists() and "deploy-checklist" in _read(package / "manifest.json")
         for package in skill_candidates_dir.iterdir()

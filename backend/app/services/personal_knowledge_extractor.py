@@ -81,9 +81,16 @@ def _loads_json_object(content: str) -> dict[str, Any]:
     return parsed
 
 
-def _clean_text(value: Any, *, max_len: int = 300) -> str:
+def _clean_text(
+    value: Any,
+    *,
+    max_len: int | None = 300,
+    field_name: str = "text",
+) -> str:
     clean = re.sub(r"\s+", " ", str(value or "").strip())
-    return clean[:max_len]
+    if max_len is not None and len(clean) > max_len:
+        raise PersonalKnowledgeExtractionError(f"{field_name} exceeds the structural limit of {max_len} characters")
+    return clean
 
 
 def _confidence(value: Any) -> float:
@@ -101,21 +108,33 @@ def parse_extraction_payload(payload: dict[str, Any]) -> KnowledgeExtractionResu
     for item in payload.get("entities") or []:
         if not isinstance(item, dict):
             continue
-        name = _clean_text(item.get("canonical_name") or item.get("name"))
+        name = _clean_text(
+            item.get("canonical_name") or item.get("name"),
+            field_name="canonical_name",
+        )
         if not name:
             continue
         aliases = [
             alias
-            for alias in (_clean_text(alias) for alias in (item.get("aliases") or []))
+            for alias in (_clean_text(alias, field_name="alias") for alias in (item.get("aliases") or []))
             if alias and alias.lower() != name.lower()
-        ][:12]
+        ]
         entities.append(
             KnowledgeExtractionEntity(
                 canonical_name=name,
-                entity_type=_clean_text(item.get("type") or item.get("entity_type") or "freeform", max_len=80)
+                entity_type=_clean_text(
+                    item.get("type") or item.get("entity_type") or "freeform",
+                    max_len=80,
+                    field_name="entity_type",
+                )
                 or "freeform",
                 aliases=tuple(dict.fromkeys(aliases)),
-                description=_clean_text(item.get("description"), max_len=1000) or None,
+                description=_clean_text(
+                    item.get("description"),
+                    max_len=None,
+                    field_name="description",
+                )
+                or None,
                 confidence=_confidence(item.get("confidence")),
             )
         )
@@ -124,9 +143,16 @@ def parse_extraction_payload(payload: dict[str, Any]) -> KnowledgeExtractionResu
     for item in payload.get("assertions") or []:
         if not isinstance(item, dict):
             continue
-        subject = _clean_text(item.get("subject") or item.get("subject_text"))
-        predicate = _clean_text(item.get("predicate"), max_len=120)
-        obj = _clean_text(item.get("object") or item.get("object_text"), max_len=2000)
+        subject = _clean_text(
+            item.get("subject") or item.get("subject_text"),
+            field_name="subject",
+        )
+        predicate = _clean_text(item.get("predicate"), max_len=120, field_name="predicate")
+        obj = _clean_text(
+            item.get("object") or item.get("object_text"),
+            max_len=None,
+            field_name="object",
+        )
         if not subject or not predicate or not obj:
             continue
         assertions.append(
@@ -142,9 +168,15 @@ def parse_extraction_payload(payload: dict[str, Any]) -> KnowledgeExtractionResu
     for item in payload.get("links") or []:
         if not isinstance(item, dict):
             continue
-        from_name = _clean_text(item.get("from") or item.get("from_name"))
-        to_name = _clean_text(item.get("to") or item.get("to_name"))
-        relation = _clean_text(item.get("relation"), max_len=80)
+        from_name = _clean_text(
+            item.get("from") or item.get("from_name"),
+            field_name="from_name",
+        )
+        to_name = _clean_text(
+            item.get("to") or item.get("to_name"),
+            field_name="to_name",
+        )
+        relation = _clean_text(item.get("relation"), max_len=80, field_name="relation")
         if not from_name or not to_name or not relation:
             continue
         links.append(
@@ -152,17 +184,27 @@ def parse_extraction_payload(payload: dict[str, Any]) -> KnowledgeExtractionResu
                 from_name=from_name,
                 to_name=to_name,
                 relation=relation,
-                from_type=_clean_text(item.get("from_type") or "freeform", max_len=80) or "freeform",
-                to_type=_clean_text(item.get("to_type") or "freeform", max_len=80) or "freeform",
+                from_type=_clean_text(
+                    item.get("from_type") or "freeform",
+                    max_len=80,
+                    field_name="from_type",
+                )
+                or "freeform",
+                to_type=_clean_text(
+                    item.get("to_type") or "freeform",
+                    max_len=80,
+                    field_name="to_type",
+                )
+                or "freeform",
                 confidence=_confidence(item.get("confidence")),
             )
         )
 
-    warnings = [_clean_text(warning, max_len=300) for warning in (payload.get("warnings") or [])]
+    warnings = [_clean_text(warning, max_len=None, field_name="warning") for warning in (payload.get("warnings") or [])]
     return KnowledgeExtractionResult(
-        entities=tuple(entities[:40]),
-        assertions=tuple(assertions[:40]),
-        links=tuple(links[:60]),
+        entities=tuple(entities),
+        assertions=tuple(assertions),
+        links=tuple(links),
         warnings=tuple(warning for warning in warnings if warning),
     )
 
@@ -197,7 +239,12 @@ class PersonalKnowledgeLLMExtractor:
         if not model_config:
             raise PersonalKnowledgeExtractionUnavailable("knowledge_extractor_model_unavailable")
 
-        from app.services.llm_client import LLMMessage, create_llm_client_from_config, with_llm_usage_context
+        from app.services.llm_client import (
+            LLMMessage,
+            create_llm_client_from_config,
+            get_max_tokens,
+            with_llm_usage_context,
+        )
 
         client = create_llm_client_from_config(
             with_llm_usage_context(
@@ -216,7 +263,9 @@ class PersonalKnowledgeLLMExtractor:
             "- entities[]: {canonical_name, type, aliases[], description, confidence}.\n"
             "- assertions[]: {subject, predicate, object, confidence}.\n"
             "- links[]: {from, from_type, to, to_type, relation, confidence}.\n"
-            "- Keep names short and stable. Prefer user-facing concepts, people, orgs, projects, documents.\n"
+            "- Structural limits: names/aliases/subjects <=300 chars; types/relations <=80; predicates <=120.\n"
+            "- Description, assertion object, and warning text must preserve every source-grounded detail needed for meaning.\n"
+            "- Keep identifiers short and stable. Prefer user-facing concepts, people, orgs, projects, documents.\n"
             "- If the segment has no durable knowledge, return empty arrays.\n"
         )
         payload = {
@@ -236,7 +285,11 @@ class PersonalKnowledgeLLMExtractor:
                     LLMMessage(role="user", content=json.dumps(payload, ensure_ascii=False, indent=2)),
                 ],
                 temperature=0.0,
-                max_tokens=4096,
+                max_tokens=get_max_tokens(
+                    str(model_config.get("provider") or ""),
+                    str(model_config.get("model") or ""),
+                    model_config.get("max_output_tokens"),
+                ),
             )
         finally:
             await client.close()

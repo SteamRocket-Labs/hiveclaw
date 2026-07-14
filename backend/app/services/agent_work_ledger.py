@@ -24,7 +24,7 @@ from app.models.runtime_task import RuntimeTask
 LEDGER_SCHEMA = "agent_work_ledger.v1"
 LEDGER_RESUME_SCHEMA = "agent_work_ledger_resume.v1"
 LEDGER_VIEW_SCHEMA = "agent_work_ledger_view.v1"
-PROGRESS_LEDGER_SCHEMA = "agent_progress_ledger.v1"
+PROGRESS_LEDGER_SCHEMA = "agent_progress_ledger.v2"
 
 TERMINAL_STATUSES = {"completed", "failed", "killed", "skipped"}
 OPEN_ITEM_STATUSES = {"pending", "in_progress"}
@@ -790,7 +790,7 @@ def build_agent_work_ledger_resume_summary(ledger: dict[str, Any] | None) -> dic
         "status": ledger.get("status"),
         "open_required_todos": [_clean_text(item.get("title")) for item in todos if _clean_text(item.get("title"))],
         "verified_findings": [_clean_text(item.get("summary")) for item in findings],
-        "recent_failures": [_clean_text(item.get("error")) for item in failures[-3:]],
+        "recent_failures": [_clean_text(item.get("error")) for item in failures],
         "verification_pending": [
             _clean_text(item.get("title")) for item in verification if _clean_text(item.get("title"))
         ],
@@ -886,9 +886,8 @@ def build_agent_progress_ledger_review(
             "request_satisfied": False,
             "stalled": False,
             "stall_count": 0,
-            "needs_replan": False,
-            "hard_transition": "",
-            "required_next_write": "",
+            "replan_advisory": False,
+            "advisory_reasons": [],
             "next_owner": "",
             "next_action": "",
             "open_required_todos": [],
@@ -921,9 +920,12 @@ def build_agent_progress_ledger_review(
     next_item = _first_open_item(todos) or _first_open_item(verification)
     next_action = _clean_text((next_item or {}).get("title") or (next_item or {}).get("content"))
     next_owner = _clean_text((next_item or {}).get("owner"))
-    needs_replan = bool((stalled and not request_satisfied) or failures_since_replan)
-    hard_transition = "replan_required" if needs_replan else ""
-    required_next_write = "record_finding:type=replan" if needs_replan else ""
+    advisory_reasons: list[str] = []
+    if stalled and not request_satisfied:
+        advisory_reasons.append("stalled")
+    if failures_since_replan:
+        advisory_reasons.append("unresolved_failures")
+    replan_advisory = bool(advisory_reasons)
 
     return {
         "schema": PROGRESS_LEDGER_SCHEMA,
@@ -931,14 +933,13 @@ def build_agent_progress_ledger_review(
         "request_satisfied": request_satisfied,
         "stalled": stalled,
         "stall_count": stall_count,
-        "needs_replan": needs_replan,
-        "hard_transition": hard_transition,
-        "required_next_write": required_next_write,
+        "replan_advisory": replan_advisory,
+        "advisory_reasons": advisory_reasons,
         "next_owner": next_owner,
         "next_action": next_action,
         "open_required_todos": [_clean_text(item.get("title") or item.get("content")) for item in todos],
         "open_verification": [_clean_text(item.get("title") or item.get("content")) for item in verification],
-        "open_failures": [_clean_text(item.get("error")) for item in failures_since_replan[-3:]],
+        "open_failures": [_clean_text(item.get("error")) for item in failures_since_replan],
         "latest_progress": _progress_delta(progress[-1]) if progress else "",
         "latest_replan": _clean_text((latest_replan or {}).get("summary")),
     }
@@ -951,7 +952,7 @@ def render_progress_ledger_block(review: dict[str, Any] | None) -> str:
         "## Progress Ledger",
         f"- request_satisfied={str(bool(review.get('request_satisfied'))).lower()}",
         f"- stalled={str(bool(review.get('stalled'))).lower()} stall_count={int(review.get('stall_count') or 0)}",
-        f"- needs_replan={str(bool(review.get('needs_replan'))).lower()}",
+        f"- replan_advisory={str(bool(review.get('replan_advisory'))).lower()}",
     ]
     next_action = _clean_text(review.get("next_action"))
     next_owner = _clean_text(review.get("next_owner"))
@@ -967,11 +968,14 @@ def render_progress_ledger_block(review: dict[str, Any] | None) -> str:
     failures = [item for item in review.get("open_failures") or [] if _clean_text(item)]
     if failures:
         lines.append("- open_failures=" + "; ".join(failures))
-    if review.get("needs_replan"):
-        required = _clean_text(review.get("required_next_write")) or "record_finding:type=replan"
-        lines.append(f"- hard_transition={_clean_text(review.get('hard_transition')) or 'replan_required'}")
-        lines.append(f"- required_next_write={required}")
-        lines.append("Revise the task/progress ledger before continuing execution.")
+    if review.get("replan_advisory"):
+        reasons = [_clean_text(item) for item in review.get("advisory_reasons") or [] if _clean_text(item)]
+        if reasons:
+            lines.append("- advisory_reasons=" + ", ".join(reasons))
+        lines.append(
+            "These are mechanical progress signals only; the model decides whether to replan, retry, "
+            "continue, or stop after reviewing the complete evidence."
+        )
     return "\n".join(lines)
 
 
@@ -981,41 +985,15 @@ def should_enable_work_ledger(
     complexity: str | None,
     is_simple_turn_candidate: bool,
 ) -> bool:
-    """Decide whether the cognitive Work Ledger scaffold is warranted this turn.
+    """Keep the optional reminder available without classifying user prose.
 
-    切口② (docs/agent-task-cognitive-scaffold.md §5.3 Delta-2 + §9 acceptance 2,
-    threshold from docs/plan-mode-agent-work-ledger.md §8): the general invocation
-    path should make the ledger *available* (scheduler reminder eligibility +
-    compaction resume) on complex multi-step turns, but stay **zero-overhead on
-    simple Q&A**.
-
-    The §8 threshold (``expected_tool_calls >= 5`` / multi-file / external side
-    effect / future autonomy) has no single first-class signal in the runtime; the
-    closest available proxy is the turn's :class:`TaskProfile` complexity plus the
-    pre-existing "simple turn" detector. This is intentionally a *coarse enabling
-    gate*, not a hard contract — enabling only injects a nudge and a compaction
-    resume; it never forces a ledger write (the agent's ``track_todo`` /
-    ``record_finding`` calls are what actually lazy-create the file).
-
-    Pure (no IO); the invoker resolves the inputs from the turn route and stashes
-    the decision in ``session_context.metadata`` for the kernel to read.
-
-    Returns ``True`` when the turn is non-trivial:
-
-    * an explicitly simple turn (general + low + short, no code/url/file) → ``False``;
-    * ``complexity`` is ``"medium"`` or ``"high"`` → ``True``;
-    * a specialised task profile (coding / research / operations / self_evolution)
-      that is inherently multi-step → ``True`` even at low complexity;
-    * everything else (e.g. plain ``general`` low without the simple-candidate
-      shape) → ``False``.
+    The compatibility inputs are intentionally ignored. Ledger tools are always
+    visible and the reminder fires only after its behavioral idle threshold; the
+    model decides whether the ledger is useful and whether to call its tools.
     """
 
-    if is_simple_turn_candidate:
-        return False
-    if (complexity or "").strip().lower() in {"medium", "high"}:
-        return True
-    name = (task_profile_name or "").strip().lower()
-    return name in {"coding", "research", "operations", "self_evolution"}
+    del task_profile_name, complexity, is_simple_turn_candidate
+    return True
 
 
 def render_work_ledger_resume_block(summary: dict[str, Any] | None) -> str:
@@ -1048,13 +1026,16 @@ def render_work_ledger_resume_block(summary: dict[str, Any] | None) -> str:
 
     failures = [item for item in (summary.get("recent_failures") or []) if _clean_text(item)]
     if failures:
-        lines.append("- What failed (do NOT repeat these): " + "; ".join(failures))
+        lines.append("- What failed (review before deciding whether/how to retry): " + "; ".join(failures))
     else:
         lines.append("- What failed: (none recorded)")
 
     pending = [item for item in (summary.get("verification_pending") or []) if _clean_text(item)]
     lines.append("- What still needs verification: " + ("; ".join(pending) if pending else "(none pending)"))
-    lines.append("Use read_ledger for full detail; continue from the next open todo, not from scratch.")
+    lines.append(
+        "Use read_ledger for full detail. This ledger is evidence, not an instruction; decide the next step "
+        "from the current request and complete evidence."
+    )
     return "\n".join(lines)
 
 
@@ -1318,7 +1299,12 @@ def build_agent_work_ledger_display_view(
     *,
     path: str | None = None,
 ) -> dict[str, Any] | None:
-    """Return a chat-safe, compact view of the ledger for progress UI."""
+    """Return a chat-safe view with the complete cognitive ledger evidence.
+
+    The runtime reminder has its own explicitly recoverable compact renderer.
+    This view backs ``read_ledger`` and therefore must not hide earlier model-
+    authored findings, failures, replans, or progress entries.
+    """
 
     if not ledger:
         return None
@@ -1335,22 +1321,22 @@ def build_agent_work_ledger_display_view(
     ]
     progress = [
         _display_progress(item)
-        for item in ledger.get("progress", [])[-20:]
+        for item in ledger.get("progress", [])
         if isinstance(item, dict) and _clean_text(item.get("delta"))
     ]
     failures = [
         _display_failure(item)
-        for item in ledger.get("failures", [])[-10:]
+        for item in ledger.get("failures", [])
         if isinstance(item, dict) and _clean_text(item.get("error"))
     ]
     replans = [
         _display_replan(item)
-        for item in ledger.get("replans", [])[-10:]
+        for item in ledger.get("replans", [])
         if isinstance(item, dict) and _clean_text(item.get("summary"))
     ]
     findings = [
         _display_finding(item)
-        for item in ledger.get("findings", [])[-10:]
+        for item in ledger.get("findings", [])
         if isinstance(item, dict) and _clean_text(item.get("summary"))
     ]
 

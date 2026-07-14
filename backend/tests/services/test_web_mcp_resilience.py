@@ -196,6 +196,24 @@ async def test_web_fetch_extracts_html_content(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_web_fetch_without_explicit_limit_preserves_full_content(monkeypatch):
+    from app.services.agent_tool_domains import web_mcp
+
+    full_text = "plain evidence\n" + ("W" * 35000) + "\nEND_OF_WEB_FETCH_EVIDENCE"
+    monkeypatch.setattr(
+        "httpx.AsyncClient",
+        lambda *args, **kwargs: _FakeAsyncClient(
+            _FakeResponse(status_code=200, text=full_text, headers={"content-type": "text/plain"}),
+        ),
+    )
+
+    result = await web_mcp._web_fetch({"url": "https://example.com/evidence.txt"})
+
+    assert full_text in result
+    assert "truncated" not in result
+
+
+@pytest.mark.asyncio
 async def test_web_fetch_uses_document_conversion_for_html_markdown_artifact(monkeypatch, tmp_path):
     from app.services.agent_tool_domains import web_mcp
 
@@ -1121,12 +1139,13 @@ async def test_exa_search_forwards_search_type_category_and_filters(monkeypatch)
 
     requests: list[dict] = []
     monkeypatch.setattr(web_mcp, "_get_tool_config", fake_get_tool_config)
+    full_text = "Dense text " + ("E" * 1000) + " END_OF_EXA_RESULT"
     monkeypatch.setattr(
         "httpx.AsyncClient",
         lambda *args, **kwargs: _CapturingAsyncClient(
             _FakeResponse(
                 status_code=200,
-                json_data={"results": [{"title": "Paper", "url": "https://arxiv.org/abs/1", "text": "Dense text"}]},
+                json_data={"results": [{"title": "Paper", "url": "https://arxiv.org/abs/1", "text": full_text}]},
             ),
             requests,
         ),
@@ -1145,6 +1164,7 @@ async def test_exa_search_forwards_search_type_category_and_filters(monkeypatch)
     )
 
     assert "Exa search" in result
+    assert full_text in result
     assert requests[0]["url"] == "https://api.exa.ai/search"
     assert requests[0]["json"] == {
         "query": "multi-agent memory papers",

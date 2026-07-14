@@ -727,6 +727,31 @@ def test_build_restoration_context_file_budget_uses_per_file_cap(tmp_path, monke
     assert marker_tail in restored  # old cap//2 (4K) would have cut this off
 
 
+def test_build_restoration_context_long_soul_has_hash_pinned_recovery_ref(tmp_path, monkeypatch):
+    import hashlib
+
+    from app.kernel.engine import _build_restoration_context
+    from app.runtime.session import SessionContext
+
+    agent_id = uuid4()
+    workspace = tmp_path / str(agent_id)
+    workspace.mkdir(parents=True)
+    soul = "# Soul\n" + ("identity evidence\n" * 1_000) + "DECISIVE_SOUL_TAIL"
+    (workspace / "soul.md").write_text(soul, encoding="utf-8")
+    session = SessionContext(
+        metadata={"context_budget": SimpleNamespace(restore_budget_chars=20_000, restore_per_file_cap_chars=2_000)}
+    )
+
+    monkeypatch.setattr("app.config.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+
+    restored = _build_restoration_context(agent_id, session_context=session)
+
+    assert "resource_ref=soul.md" in restored
+    assert f"sha256={hashlib.sha256(soul.encode('utf-8')).hexdigest()}" in restored
+    assert f"char_range=0-{len(soul)}" in restored
+    assert "omitted_range=" in restored
+
+
 def test_build_restoration_context_injects_persisted_recovery_manifest(tmp_path, monkeypatch):
     from app.kernel.engine import _build_restoration_context
     from app.runtime.session import SessionContext
@@ -897,8 +922,11 @@ async def test_compress_messages_with_lifecycle_hooks_emits_pre_and_post(monkeyp
     async def fake_emit_hook(event, **kwargs):
         hook_calls.append((event, kwargs))
 
+    summary_tail = "COMPACTION_SUMMARY_DECISIVE_TAIL"
+    full_summary = "s" * 3500 + summary_tail
+
     async def fake_compressor(messages, **_kwargs):
-        return [{"role": "system", "content": "compressed summary"}, messages[-1]]
+        return [{"role": "system", "content": full_summary}, messages[-1]]
 
     monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit_hook)
 
@@ -915,14 +943,14 @@ async def test_compress_messages_with_lifecycle_hooks_emits_pre_and_post(monkeyp
         metadata={"phase": "initial_context_compaction"},
     )
 
-    assert compressed[0]["content"] == "compressed summary"
+    assert compressed[0]["content"] == full_summary
     assert hook_calls[0][0] == HookEvent.PRE_COMPACTION
     assert hook_calls[0][1]["messages"] == messages
     assert hook_calls[0][1]["metadata"]["trigger"] == "initial"
     assert hook_calls[0][1]["metadata"]["phase"] == "initial_context_compaction"
     assert hook_calls[1][0] == HookEvent.POST_COMPACTION
     assert hook_calls[1][1]["metadata"]["trigger"] == "initial"
-    assert hook_calls[1][1]["metadata"]["summary"] == "compressed summary"
+    assert hook_calls[1][1]["metadata"]["summary"] == full_summary
     assert hook_calls[1][1]["metadata"]["before_msgs"] == 2
     assert hook_calls[1][1]["metadata"]["after_msgs"] == 2
 
@@ -1025,6 +1053,28 @@ def test_build_persisted_memory_messages_includes_runtime_events():
         "Runtime event: pending work Verify rollback checklist before production deploy" in content
         for content in contents
     )
+
+
+def test_build_persisted_memory_messages_preserves_every_pending_item():
+    from app.kernel.contracts import InvocationRequest
+    from app.kernel.engine import _build_persisted_memory_messages
+    from app.runtime.session import SessionContext
+
+    pending_items = [f"pending-item-{index}" for index in range(9)]
+    session = SessionContext(pending_items=pending_items)
+    request = InvocationRequest(
+        model=SimpleNamespace(provider="openai", model="gpt-4.1"),
+        messages=[{"role": "user", "content": "继续全部任务"}],
+        agent_name="Ops Agent",
+        role_description="deployment helper",
+        session_context=session,
+    )
+
+    persisted = _build_persisted_memory_messages(request, "已继续")
+    contents = [msg.get("content", "") for msg in persisted if isinstance(msg.get("content"), str)]
+
+    for item in pending_items:
+        assert f"Runtime event: pending work {item}" in contents
 
 
 def test_should_expand_tools_does_not_expand_fs_read_skill_file():
@@ -1385,6 +1435,109 @@ async def test_hook_emitter_consumes_post_tool_output_rewrite(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_post_tool_hook_and_recovery_tracking_receive_full_semantic_evidence(monkeypatch):
+    from app.kernel.contracts import InvocationRequest
+    from app.kernel.engine import _execute_tool_with_hooks
+    from app.runtime.hooks import HookEvent
+    from app.runtime.session import SessionContext
+
+    captured: dict = {}
+
+    async def fake_emit_hook(event, **kwargs):
+        if event == HookEvent.POST_TOOL_USE:
+            captured.update(kwargs)
+        return None
+
+    monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit_hook)
+    tail = "DECISIVE_TOOL_RESULT_TAIL"
+    oldest = "OLDEST_AUTHORIZED_MESSAGE"
+    raw_result = ("tool evidence " * 300) + tail
+    session = SessionContext(session_id="s-full-hook")
+    request = InvocationRequest(
+        model=SimpleNamespace(provider="openai", model="gpt-4.1"),
+        messages=[{"role": "user", "content": oldest}]
+        + [{"role": "assistant", "content": f"message-{index}"} for index in range(14)],
+        agent_name="Agent",
+        role_description="role",
+        session_context=session,
+        memory_session_id="s-full-hook",
+    )
+
+    async def fake_execute_tool(_tool_name, _tool_args, _request, _emit_event):
+        return raw_result
+
+    async def emit_event(_event):
+        return None
+
+    result, _effective_args, executed = await _execute_tool_with_hooks(
+        execute_tool=fake_execute_tool,
+        request=request,
+        tool_name="execute_code",
+        tool_args={"code": "print('ok')"},
+        emit_event=emit_event,
+    )
+
+    assert executed is True
+    assert result == raw_result
+    assert tail in captured["tool_result"]
+    assert captured["messages"][0]["content"] == oldest
+    assert tail in session.recent_tool_outcomes[-1]["summary"]
+
+
+@pytest.mark.asyncio
+async def test_tool_failure_preserves_full_error_for_model_hook_and_span(monkeypatch):
+    from app.kernel.contracts import InvocationRequest, RuntimeConfig
+    from app.kernel.engine import _execute_tool_with_hooks
+    from app.runtime.hooks import HookEvent
+    from app.runtime.session import SessionContext
+
+    captured_hook: dict = {}
+    captured_spans: list[dict] = []
+    error_tail = "TOOL_ERROR_DECISIVE_TAIL"
+    full_error = "e" * 900 + error_tail
+
+    async def fake_emit_hook(event, **kwargs):
+        if event == HookEvent.POST_TOOL_FAILURE:
+            captured_hook.update(kwargs)
+        return None
+
+    async def failing_tool(*_args, **_kwargs):
+        raise RuntimeError(full_error)
+
+    async def record_span(**kwargs):
+        captured_spans.append(kwargs)
+
+    async def emit_event(_event):
+        return None
+
+    monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit_hook)
+    request = InvocationRequest(
+        model=SimpleNamespace(provider="openai", model="gpt-4.1"),
+        messages=[{"role": "user", "content": "call tool"}],
+        agent_name="Agent",
+        role_description="role",
+        agent_id=uuid4(),
+        session_context=SessionContext(session_id="s-tool-error"),
+        memory_session_id="s-tool-error",
+    )
+
+    result, _effective_args, executed = await _execute_tool_with_hooks(
+        execute_tool=failing_tool,
+        request=request,
+        runtime_config=RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=3),
+        tool_name="read_file",
+        tool_args={"path": "missing"},
+        emit_event=emit_event,
+        record_span=record_span,
+    )
+
+    assert executed is False
+    assert error_tail in result
+    assert error_tail in captured_hook["error"]
+    assert error_tail in captured_spans[-1]["metadata"]["error"]
+
+
+@pytest.mark.asyncio
 async def test_execute_tool_with_hooks_records_lifecycle_records_in_tool_span():
     from app.kernel.contracts import InvocationRequest
     from app.kernel.engine import _execute_tool_with_hooks
@@ -1636,9 +1789,12 @@ async def test_recovered_pending_tool_frame_replays_read_only_tool_through_gover
     )
     calls: list[dict[str, object]] = []
 
+    recovered_tail = "RECOVERED_RESULT_DECISIVE_TAIL"
+    recovered_result = "r" * 1400 + recovered_tail
+
     async def fake_execute_tool(_tool_name, _tool_args, _request, _emit_event, *, tool_call_id=None):
         calls.append({"tool_name": _tool_name, "args": dict(_tool_args), "tool_call_id": tool_call_id})
-        return "Recovered contents"
+        return recovered_result
 
     async def emit_event(_event):
         return None
@@ -1658,9 +1814,10 @@ async def test_recovered_pending_tool_frame_replays_read_only_tool_through_gover
         }
     ]
     assert "Recovered pending tool `read_file` replayed" in text
-    assert "Recovered contents" in text
+    assert recovered_result in text
     assert session.metadata["recovered_pending_tool_frames"] == []
     assert session.metadata["recovered_tool_frame_replay_results"][0]["status"] == "done"
+    assert session.metadata["recovered_tool_frame_replay_results"][0]["result"] == recovered_result
 
 
 @pytest.mark.asyncio
@@ -1716,6 +1873,23 @@ async def test_recovered_pending_tool_frame_fails_closed_for_mutating_tool(monke
     assert reconciliation["tool_name"] == "write_file"
     assert reconciliation["status"] == "needs_reconciliation"
     assert reconciliation["reason"] == "recovered_tool_frame_not_replay_safe"
+
+
+def test_skill_handoff_execution_preserves_full_result_in_recovery_metadata() -> None:
+    from app.services.skill_execution_adapter import record_skill_handoff_execution
+
+    tail = "HANDOFF_RESULT_DECISIVE_TAIL"
+    result = "h" * 2500 + tail
+    metadata = {"pending_skill_handoffs": [{"skill": "Research", "skill_slug": "research"}]}
+
+    record_skill_handoff_execution(
+        metadata,
+        {"skill": "Research", "skill_slug": "research", "source": "skills/research/SKILL.md"},
+        tool_call_id="call-1",
+        result=result,
+    )
+
+    assert metadata["executed_skill_handoffs"][0]["result"] == result
 
 
 @pytest.mark.asyncio
@@ -3352,14 +3526,84 @@ def test_maybe_evict_tool_result_truncates_large_output():
     assert _maybe_evict_tool_result("list_files", "call_3", large) == large
     assert _maybe_evict_tool_result("web_search", "call_exempt", large) == large
 
-    # Non-exempt large result — truncated (no eviction_dir)
+    # Non-exempt large result without durable storage returns a typed,
+    # retryable persistence failure; it never invents a recovery pointer.
     evicted = _maybe_evict_tool_result("run_code", "call_4", large)
-    assert len(evicted) < len(large)
-    assert "truncated" in evicted
-    assert "60000 chars" in evicted
+    assert len(evicted) > len(large)
+    assert "tool_result_persistence_failed" in evicted
+    assert '"retryable": true' in evicted
+    assert "Full output saved" not in evicted
+    assert "complete output remains inline" in evicted
     assert "call_4" in evicted
-    # Preview should be present (first 2000 chars)
-    assert evicted.startswith("x" * 2000)
+    assert evicted.startswith(large)
+
+
+def test_ptl_round_group_fallback_persists_full_dropped_messages_and_hash(tmp_path):
+    import hashlib
+    import json
+
+    from app.kernel.engine import LLMMessage, _prepare_ptl_round_group_fallback
+
+    messages = [
+        LLMMessage(role="user", content="old-user"),
+        LLMMessage(role="assistant", content="old-answer"),
+        LLMMessage(role="user", content="middle-user"),
+        LLMMessage(role="assistant", content="middle-answer"),
+        LLMMessage(role="user", content="latest-user"),
+        LLMMessage(role="assistant", content="latest-answer"),
+    ]
+
+    kept, receipt = _prepare_ptl_round_group_fallback(
+        messages,
+        drop_ratio=0.34,
+        artifact_dir=tmp_path,
+        session_id="session-1",
+        attempt=2,
+    )
+
+    assert kept[0].content == "middle-user"
+    artifact_path = tmp_path / receipt["artifact_filename"]
+    payload = artifact_path.read_text(encoding="utf-8")
+    assert "old-user" in payload and "old-answer" in payload
+    assert receipt["sha256"] == hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    assert receipt["dropped_group_range"] == "0:1"
+    assert receipt["recoverable"] is True
+    assert json.loads(payload)["messages"][0]["content"] == "old-user"
+
+
+def test_forced_tool_result_eviction_always_returns_a_recoverable_pointer(tmp_path):
+    from app.kernel.engine import _maybe_evict_tool_result
+
+    raw = "short-but-semantic\n" * 180
+
+    inline = _maybe_evict_tool_result(
+        "read_file",
+        "call_force_short",
+        raw,
+        eviction_dir=tmp_path,
+        force=True,
+        reason="round aggregate budget",
+    )
+
+    assert inline != raw
+    assert "workspace/tool_results/call_force_short.txt" in inline
+    assert f"char_range=0-{len(raw)}" in inline
+    assert (tmp_path / "call_force_short.txt").read_text(encoding="utf-8") == raw
+
+
+def test_maybe_evict_never_emits_pointer_when_artifact_write_fails(tmp_path):
+    from app.kernel.engine import _maybe_evict_tool_result
+
+    invalid_dir = tmp_path / "not-a-directory"
+    invalid_dir.write_text("occupied", encoding="utf-8")
+    large = "evidence\n" * 10_000
+
+    result = _maybe_evict_tool_result("run_code", "call_failed_write", large, eviction_dir=invalid_dir)
+
+    assert "tool_result_persistence_failed" in result
+    assert '"retryable": true' in result
+    assert "workspace/tool_results" not in result
+    assert "Full output saved" not in result
 
 
 def test_maybe_evict_writes_file_when_eviction_dir_provided(tmp_path):
@@ -3477,11 +3721,12 @@ async def test_large_tool_result_evicted_in_kernel_loop():
 
     assert result.content == "done"
 
-    # The second LLM call should have received the evicted (truncated) tool result
+    # If durable persistence is unavailable, the model keeps the complete result
+    # rather than receiving a semantically truncated substitute.
     second_call_messages = fake_client.calls[1]["messages"]
     tool_msg = [m for m in second_call_messages if m.role == "tool"][0]
-    assert len(tool_msg.content) < len(large_result)
-    assert "truncated" in tool_msg.content
+    assert large_result in tool_msg.content
+    assert "tool_result_persistence_failed" in tool_msg.content
 
 
 @pytest.mark.asyncio

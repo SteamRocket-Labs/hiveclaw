@@ -11,7 +11,7 @@ Security-critical responsibilities concentrated here:
 * §6.3 — deterministic ``plan_json`` skeleton + schema validation
 * §7   — state-machine transition legality
 * §8.1 — self-confirm prohibition (the agent may not confirm its own plan)
-* §8.2 — confirmation must bind to the exact ``plan_version`` + ``plan_hash``
+* §8.2 — confirmation binds the visible version to the server-canonical plan hash
 * canonical sha256 hashing (key-order independent, stable across processes)
 * §6.2 — markdown frontmatter that mirrors the DB record
 """
@@ -221,7 +221,7 @@ def recent_plan_mode_recommendation_was_shown(messages: list[dict] | tuple[dict,
     """
     if not messages:
         return False
-    for message in reversed(list(messages)[-8:]):
+    for message in reversed(list(messages)):
         content = getattr(message, "content", None)
         role = getattr(message, "role", None)
         if isinstance(message, dict):
@@ -884,42 +884,6 @@ def validate_plan_json(plan_json: dict) -> list[str]:
     return errors
 
 
-# Plan Mode meta-steps: steps describing the *planning ritual* (submitting the
-# plan card, calling exit_plan_mode, waiting for confirmation) or explicit
-# non-execution placeholders. ``steps`` must list only the real execution work
-# the user is confirming — meta-steps are the canonical 偏离 the CC alignment
-# targets (e.g. a step "本步不实施 / 提交计划卡片"). Markers are specific phrases
-# to avoid false positives on legitimate steps like "等待数据源返回".
-_META_STEP_MARKERS: tuple[str, ...] = (
-    "exit_plan_mode",
-    "exit plan mode",
-    "提交计划",
-    "提交本计划",
-    "提交该计划",
-    "提交计划卡片",
-    "等待用户确认",
-    "等待确认",
-    "wait for confirmation",
-    "wait for user confirmation",
-    "await confirmation",
-    "await user confirmation",
-    "submit the plan",
-    "submit this plan",
-    "present the plan",
-    "本步不实施",
-    "本步骤不实施",
-    "this step does not implement",
-    "no-op step",
-)
-
-
-def _step_is_meta(description: str) -> bool:
-    text = description.strip().lower()
-    if not text:
-        return False
-    return any(marker in text for marker in _META_STEP_MARKERS)
-
-
 def _validate_steps(steps: object, errors: list[str]) -> None:
     if steps is None:
         return
@@ -937,12 +901,6 @@ def _validate_steps(steps: object, errors: list[str]) -> None:
         description = str(step.get("description") or "").strip()
         if not description:
             errors.append(f"steps[{index}].description must be a non-empty string")
-        elif _step_is_meta(description):
-            errors.append(
-                f"steps[{index}] is a Plan Mode meta-step ({description!r}); "
-                "list only the real execution steps the user is confirming, "
-                "not the planning ritual (submitting/awaiting the plan card)"
-            )
 
 
 def _validate_str_list(value: object, field: str, errors: list[str]) -> None:
@@ -1000,7 +958,6 @@ class ConfirmationCheck:
 
     * ``not_confirmable``        -> 409 (wrong status)
     * ``version_mismatch``       -> 409
-    * ``hash_mismatch``          -> 409
     * ``missing_confirming_user``-> 401/403
     """
 
@@ -1016,8 +973,8 @@ def validate_confirmation(
     stored_hash: str,
     requested_by_user_id: UUID | str | None,
     submitted_version: int,
-    submitted_hash: str,
     confirming_user_id: UUID | str | None,
+    submitted_hash: str | None = None,
     authorization_source: str | None = None,
 ) -> ConfirmationCheck:
     """Decide whether a confirmation attempt is valid.
@@ -1027,7 +984,8 @@ def validate_confirmation(
     1. The plan is in ``awaiting_confirmation`` (only confirmable status).
     2. A real confirming user is present (§8.5 — no system/agent confirm).
     3. The submitted ``plan_version`` matches the stored one (§8.2).
-    4. The submitted ``plan_hash`` matches the stored one (§8.2).
+    The server-owned plan row and version bind the decision. ``submitted_hash``
+    is accepted only for legacy compatibility and never used as authority.
     """
     if status != "awaiting_confirmation":
         return ConfirmationCheck(
@@ -1061,12 +1019,7 @@ def validate_confirmation(
             message=(f"submitted plan_version {submitted_version} does not match current version {stored_version}"),
         )
 
-    if submitted_hash != stored_hash:
-        return ConfirmationCheck(
-            ok=False,
-            error_code="hash_mismatch",
-            message="submitted plan_hash does not match the current plan",
-        )
+    del stored_hash, submitted_hash
 
     return ConfirmationCheck(ok=True)
 
@@ -1229,8 +1182,9 @@ class HandoffCheck:
     a plan); this gates an *already-confirmed* plan being handed to execution.
 
     ``error_code`` is one of ``plan_not_confirmed`` /
-    ``missing_plan_version_hash`` / ``version_mismatch`` / ``hash_mismatch`` —
-    all of which collapse to a confirmation-required block at the gate.
+    ``missing_plan_version`` / ``version_mismatch`` — all of which collapse to
+    a confirmation-required block at the gate. The plan hash is server-owned
+    evidence and is never supplied as an authority claim by a client/model.
     """
 
     ok: bool
@@ -1248,10 +1202,11 @@ def validate_plan_handoff(
 ) -> HandoffCheck:
     """Decide whether a referenced plan may hand off to the execution layer (§9.0).
 
-    The plan must be ``confirmed`` and the caller must submit both
-    ``submitted_version`` and ``submitted_hash``. They must match the stored
-    values exactly (§8.2 / §8.3 — a confirmed plan that was edited has a new
-    hash and cannot execute the old confirmation).
+    The plan must be ``confirmed`` and the caller must submit the visible
+    ``submitted_version`` so stale UI/model handoffs fail closed. The server
+    resolves its own canonical hash from the confirmed plan row. A legacy
+    ``submitted_hash`` is accepted for wire compatibility but never compared or
+    treated as authority.
     """
     if status != "confirmed":
         return HandoffCheck(
@@ -1259,24 +1214,19 @@ def validate_plan_handoff(
             error_code="plan_not_confirmed",
             message=f"referenced plan is in status {status!r}, not 'confirmed'",
         )
-    if submitted_version is None or submitted_hash is None:
+    if submitted_version is None:
         return HandoffCheck(
             ok=False,
-            error_code="missing_plan_version_hash",
-            message="confirmed plan handoff requires plan_version and plan_hash",
+            error_code="missing_plan_version",
+            message="confirmed plan handoff requires plan_version",
         )
-    if submitted_version is not None and submitted_version != stored_version:
+    if submitted_version != stored_version:
         return HandoffCheck(
             ok=False,
             error_code="version_mismatch",
             message=(f"submitted plan_version {submitted_version} does not match confirmed version {stored_version}"),
         )
-    if submitted_hash is not None and submitted_hash != stored_hash:
-        return HandoffCheck(
-            ok=False,
-            error_code="hash_mismatch",
-            message="submitted plan_hash does not match the confirmed plan",
-        )
+    del stored_hash, submitted_hash
     return HandoffCheck(ok=True)
 
 

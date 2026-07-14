@@ -39,8 +39,15 @@ def classify_text_sensitivity(text: str) -> str:
     return PrivacyLayer().classify_and_mask(text).sensitivity.value
 
 
-def classify_and_redact_text(text: str, principal_stack: PrincipalStack | None = None) -> tuple[str, str]:
+def classify_and_redact_text(
+    text: str,
+    principal_stack: PrincipalStack | None = None,
+    *,
+    sensitivity: str | None = None,
+) -> tuple[str, str]:
     decision = PrivacyLayer().classify_and_mask(text)
-    return redact_text_for_principal(decision.sanitized_text, decision.sensitivity.value, principal_stack), (
-        decision.sensitivity.value
+    resolved_sensitivity = sensitivity or decision.sensitivity.value
+    return (
+        redact_text_for_principal(decision.sanitized_text, resolved_sensitivity, principal_stack),
+        resolved_sensitivity,
     )

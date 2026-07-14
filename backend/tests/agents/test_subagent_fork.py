@@ -43,7 +43,7 @@ def test_worker_preset_allows_writes():
     assert "write_file" in allowed
     assert "edit_file" in allowed
     assert "read_file" in allowed
-    assert "spawn_subagent" in excluded  # recursion guard still applies
+    assert "spawn_subagent" not in excluded  # depth/cycle/budget govern recursion
 
 
 def test_critic_preset_is_read_only():

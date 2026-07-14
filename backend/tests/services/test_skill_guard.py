@@ -36,7 +36,7 @@ def test_skill_guard_blocks_secret_material_and_path_escape():
     assert "secret_material" in categories
 
 
-def test_skill_guard_blocks_tenant_identifier_leak():
+def test_skill_guard_quarantines_tenant_identifier_for_semantic_review():
     from app.services.skill_guard import scan_skill_files
 
     report = scan_skill_files(
@@ -49,11 +49,13 @@ def test_skill_guard_blocks_tenant_identifier_leak():
         source="unit",
     )
 
-    assert report.allowed is False
-    assert any(finding.category == "tenant_identifier_leak" for finding in report.blocking_findings)
+    assert report.allowed is True
+    assert report.requires_review is True
+    assert report.disposition == "quarantine"
+    assert any(finding.category == "tenant_identifier_leak" for finding in report.review_findings)
 
 
-def test_skill_guard_blocks_pipe_to_shell_installers():
+def test_skill_guard_quarantines_pipe_to_shell_instructions():
     from app.services.skill_guard import scan_skill_files
 
     report = scan_skill_files(
@@ -66,11 +68,13 @@ def test_skill_guard_blocks_pipe_to_shell_installers():
         source="unit",
     )
 
-    assert report.allowed is False
-    assert any(finding.category == "remote_shell_pipe" for finding in report.blocking_findings)
+    assert report.allowed is True
+    assert report.requires_review is True
+    assert report.disposition == "quarantine"
+    assert any(finding.category == "remote_shell_pipe" for finding in report.review_findings)
 
 
-def test_skill_guard_blocks_managed_channel_env_credential_guidance():
+def test_skill_guard_quarantines_managed_channel_env_credential_guidance():
     from app.services.skill_guard import scan_skill_files
 
     report = scan_skill_files(
@@ -91,5 +95,7 @@ def test_skill_guard_blocks_managed_channel_env_credential_guidance():
         source="unit",
     )
 
-    assert report.allowed is False
-    assert any(finding.category == "managed_credential_env_guidance" for finding in report.blocking_findings)
+    assert report.allowed is True
+    assert report.requires_review is True
+    assert report.disposition == "quarantine"
+    assert any(finding.category == "managed_credential_env_guidance" for finding in report.review_findings)

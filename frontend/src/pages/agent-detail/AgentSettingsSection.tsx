@@ -18,6 +18,7 @@ type AgentSettingsForm = {
   webhook_rate_limit: number;
   default_session_permission_mode: 'default' | 'auto' | 'bypassPermissions';
   smart_model_routing_enabled: boolean;
+  execution_mode: 'standard' | 'coordinator' | 'coordinator_strict';
   security_zone: string;
 };
 
@@ -212,6 +213,7 @@ export default function AgentSettingsSection({
     settingsForm.webhook_rate_limit !== ((agent as any)?.webhook_rate_limit ?? 5) ||
     settingsForm.default_session_permission_mode !== ((agent as any)?.default_session_permission_mode || 'default') ||
     settingsForm.smart_model_routing_enabled !== !!((agent as any)?.smart_model_routing?.enabled) ||
+    settingsForm.execution_mode !== ((agent as any)?.execution_mode || 'standard') ||
     settingsForm.security_zone !== ((agent as any)?.security_zone || 'standard');
   const patrolHasChanges =
     patrolForm.enabled !== persistedPatrolForm.enabled ||
@@ -230,6 +232,7 @@ export default function AgentSettingsSection({
         min_poll_interval_min: settingsForm.min_poll_interval_min,
         webhook_rate_limit: settingsForm.webhook_rate_limit,
         default_session_permission_mode: settingsForm.default_session_permission_mode,
+        execution_mode: settingsForm.execution_mode,
         security_zone: settingsForm.security_zone,
         smart_model_routing: settingsForm.smart_model_routing_enabled
           ? { enabled: true, max_simple_chars: 160, max_simple_words: 28 }
@@ -543,6 +546,38 @@ export default function AgentSettingsSection({
                 'The mode can still be changed from the conversation composer.',
               )}
         </div>
+      </div>
+
+      <div className="card agent-settings-card">
+        <h4 className="agent-settings-card-title">
+          {t('agent.settings.executionMode.title', 'Execution Mode')}
+        </h4>
+        <p className="agent-settings-card-desc">
+          {t(
+            'agent.settings.executionMode.description',
+            'Coordinator guidance does not remove direct tools. Strict coordinator is an explicit dispatcher-only boundary.',
+          )}
+        </p>
+        <label className="agent-settings-label" htmlFor="agent-execution-mode">
+          {t('agent.settings.executionMode.label', 'Execution Mode')}
+        </label>
+        <select
+          id="agent-execution-mode"
+          name="execution_mode"
+          className="input agent-settings-input-full"
+          value={settingsForm.execution_mode}
+          disabled={!canManage}
+          onChange={(event) => onSettingsFormChange((form) => ({
+            ...form,
+            execution_mode: event.target.value as AgentSettingsForm['execution_mode'],
+          }))}
+        >
+          <option value="standard">{t('agent.settings.executionMode.standard', 'Standard')}</option>
+          <option value="coordinator">{t('agent.settings.executionMode.coordinator', 'Coordinator')}</option>
+          <option value="coordinator_strict">
+            {t('agent.settings.executionMode.coordinatorStrict', 'Strict coordinator')}
+          </option>
+        </select>
       </div>
 
       <div className="card agent-settings-card">

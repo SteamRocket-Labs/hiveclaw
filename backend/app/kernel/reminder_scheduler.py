@@ -248,13 +248,13 @@ def _progress_replan_content(_session_context: Any, round_state: RoundState) -> 
             review = provider()
     except Exception:
         review = None
-    if not isinstance(review, dict) or not review.get("needs_replan"):
+    if not isinstance(review, dict) or not review.get("replan_advisory"):
         return None
 
     parts = [
         _PROGRESS_REPLAN_POLICY,
         f"stall_count={int(review.get('stall_count') or 0)}",
-        "needs_replan=true",
+        "replan_advisory=true",
     ]
     next_action = str(review.get("next_action") or "").strip()
     if next_action:
@@ -267,7 +267,10 @@ def _progress_replan_content(_session_context: Any, round_state: RoundState) -> 
         parts.append(f"latest_progress={latest}")
     failures = [str(item).strip() for item in (review.get("open_failures") or []) if str(item).strip()]
     if failures:
-        parts.append("open_failures=" + "; ".join(failures[:3]))
+        parts.append("open_failures=" + "; ".join(failures))
+    reasons = [str(item).strip() for item in (review.get("advisory_reasons") or []) if str(item).strip()]
+    if reasons:
+        parts.append("advisory_reasons=" + ", ".join(reasons))
     return "\n".join(parts)
 
 

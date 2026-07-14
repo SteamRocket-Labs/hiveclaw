@@ -1,8 +1,8 @@
 """Subagent evolution loop (docs/subagent-evolution-loop.md): memory → definition.
 
 P1 nomination + drafting: after a successful distillation write, if an
-AGENT-LEVEL definition has accumulated ≥ threshold active memory entries and
-has no pending proposal, the platform LLM drafts a revised system-prompt body
+AGENT-LEVEL definition has active memory evidence and no pending proposal, the
+platform LLM reviews the complete evidence and may draft a revised system-prompt body
 that absorbs the mature craft. The draft lands as a proposal file — never
 applied directly; P2's approval surface (manual or auto mode) is the only
 writer of the definition itself.
@@ -31,7 +31,7 @@ from app.agents.subagent_definition import (
     validate_subagent_name,
 )
 from app.agents.subagent_memory import SubagentMemoryStore
-from app.services.llm_client import chat_complete
+from app.services.llm_client import chat_complete, get_max_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -191,7 +191,15 @@ async def draft_improvement(
                 {"role": "user", "content": user_message},
             ],
             temperature=0.3,
-            max_tokens=8192,  # CC-standard auxiliary-call floor
+            # Use the provider/model's real output capability. The revised body
+            # must round-trip in full; a convenient fixed cap may not starve it.
+            max_tokens=max(
+                8192,
+                int(
+                    model_config.get("max_output_tokens")
+                    or get_max_tokens(model_config["provider"], model_config["model"])
+                ),
+            ),
             timeout=90.0,
             usage_source="subagent_evolution",
             usage_agent_id=agent_id,
@@ -529,17 +537,16 @@ async def maybe_nominate(
     threshold: int | None = None,
     agent_data_dir: Path | str | None = None,
 ) -> EvolutionProposal | None:
-    """Evolution-loop nomination (P1): threshold-gated, agent-level-only, fail-soft.
+    """Evolution-loop nomination (P1): model-reviewed, agent-level-only, fail-soft.
 
     Returns the created proposal, or None when no nomination happened (the
     overwhelmingly normal case). Never raises — this rides the spawn path.
     """
 
     try:
-        if threshold is None:
-            from app.config import get_settings
-
-            threshold = get_settings().SUBAGENT_EVOLUTION_THRESHOLD
+        # Compatibility-only: historic callers pass a count threshold. Counts
+        # remain observable but never decide whether the model may review.
+        _ = threshold
 
         # Agent-level definitions only: tenant/builtin/inline have no file here.
         definition_store = definition_store_for_agent(agent_id, agent_data_dir=agent_data_dir)
@@ -547,24 +554,11 @@ async def maybe_nominate(
         if spec is None:
             return None
 
-        if memory_store.count_active_entries(spec_name) < threshold:
+        if memory_store.count_active_entries(spec_name) == 0:
             return None
 
         proposal_store = proposal_store_for_agent(agent_id, agent_data_dir=agent_data_dir)
         if proposal_store.load_pending(spec_name) is not None:
-            return None
-
-        # Draft-budget coherence guard: the drafter must return the REWRITTEN
-        # body in full within its 8192-token output budget. A body past ~24K
-        # chars (~6K tokens) cannot round-trip — skip loudly instead of
-        # burning an LLM call into a guaranteed parse failure on every
-        # distillation tick. Owner remedy: prune the definition manually.
-        if len(spec.system_prompt) > 24_000:
-            logger.warning(
-                "[SubagentEvolution] %s body too large for the draft budget (%d chars) — nomination skipped",
-                spec_name,
-                len(spec.system_prompt),
-            )
             return None
 
         active_memory = memory_store.load(spec_name, active_only=True)

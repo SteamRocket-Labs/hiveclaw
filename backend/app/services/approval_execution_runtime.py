@@ -114,7 +114,7 @@ def _set_task_terminal(
         task.status = "failed"
         side_effect_risk = "not_started" if approval_status == "needs_reapproval" else "confirmed_failed"
     task.completed_at = task.completed_at or now
-    task.result_summary = (result or f"Approval execution {approval_status}")[:20_000]
+    task.result_summary = result or f"Approval execution {approval_status}"
     metadata.update(
         {
             "phase": "terminal",
@@ -203,7 +203,7 @@ async def _enqueue_origin_continuation(
     from app.services.runtime_notification_outbox import CompletionNotification, enqueue_completion_notification
 
     tool_name = str(approval.tool_name or approval.action_type or "approved_action")
-    result_text = str(execution_result or task.result_summary or "")[:20_000]
+    result_text = str(execution_result or task.result_summary or "")
     model_context = (
         "[Approval tool result]\n"
         f"Approval: {approval.id}\n"
@@ -466,13 +466,13 @@ async def _mark_preflight_reapproval(
         if approval.consumed_at is not None or approval.execution_status == "executing":
             return _quarantine_unknown_execution(task, approval)
         approval.execution_status = "needs_reapproval"
-        approval.execution_result = error[:20_000]
+        approval.execution_result = error
         approval.execution_receipt = {
             **dict(approval.execution_receipt or {}),
             "status": "needs_reapproval",
             "side_effect_state": "not_started",
             "automatic_replay": False,
-            "error": error[:2_000],
+            "error": error,
         }
         return _set_task_terminal(task, approval_status="needs_reapproval", result=error)
 
@@ -519,7 +519,7 @@ async def _handle_operational_failure(
             metadata.update(
                 {
                     "phase": "retry_wait",
-                    "retry_reason": error[:2_000],
+                    "retry_reason": error,
                     "retry_attempt": attempts,
                     "side_effect_risk": "not_started",
                     "reconciliation_retry_allowed": True,
@@ -528,14 +528,14 @@ async def _handle_operational_failure(
             task.metadata_json = metadata
             return "retry_scheduled"
         approval.execution_status = "failed"
-        approval.execution_result = error[:20_000]
+        approval.execution_result = error
         approval.execution_receipt = {
             **dict(approval.execution_receipt or {}),
             "status": "failed",
             "side_effect_state": "not_started",
             "automatic_replay": False,
             "attempt_count": attempts,
-            "error": error[:2_000],
+            "error": error,
         }
         return _set_task_terminal(task, approval_status="failed", result=error)
 

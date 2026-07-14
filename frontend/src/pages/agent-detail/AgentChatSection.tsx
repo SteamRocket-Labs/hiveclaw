@@ -1214,6 +1214,16 @@ function AgentChatSection({
   const modelBadgeTitle = [
     runtimeSummary?.model?.provider,
     runtimeSummary?.model?.name,
+    runtimeSummary?.model?.fallback_name
+      ? `fallback: ${runtimeSummary.model.fallback_name}`
+      : null,
+    runtimeSummary?.model?.route_reason
+      ? `route: ${runtimeSummary.model.route_reason}`
+      : null,
+    runtimeSummary?.model?.routing_config_source
+      ? `source: ${runtimeSummary.model.routing_config_source}`
+      : null,
+    runtimeSummary?.model?.routing_locked ? 'model locked by user' : null,
     runtimeUsageTitle,
   ].filter(Boolean).join(' · ');
 

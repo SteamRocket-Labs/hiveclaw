@@ -33,10 +33,6 @@ _FUTURE_PREFIXES = (
 )
 _SESSION_MEMORY_VERSION = 2
 SESSION_MEMORY_PROMPT_VERSION = "session_memory.writer.v1"
-_MAX_FILES_AND_FUNCTIONS = 12
-_MAX_PENDING_WORK = 10
-_MAX_WORKLOG_ITEMS = 20
-_MAX_WORKLOG_ITEM_CHARS = 200
 _SECTION_SPECS: tuple[tuple[str, str, str], ...] = (
     ("Session Title", "session_title", "text"),
     ("Current State", "current_state", "text"),
@@ -217,17 +213,12 @@ def _render_text_block(text: str) -> str:
     return text.strip() if text and text.strip() else "- (none)"
 
 
-def _normalize_list(items: list[str], *, limit: int | None = None, item_char_limit: int | None = None) -> list[str]:
+def _normalize_list(items: list[str]) -> list[str]:
     cleaned: list[str] = []
     for item in items:
         if not item or not str(item).strip():
             continue
-        normalized = str(item).strip()
-        if item_char_limit is not None and len(normalized) > item_char_limit:
-            normalized = normalized[:item_char_limit].rstrip()
-        cleaned.append(normalized)
-    if limit is not None:
-        cleaned = cleaned[-limit:]
+        cleaned.append(str(item).strip())
     return cleaned
 
 
@@ -277,8 +268,10 @@ def render_session_memory(payload: SessionMemoryPayload) -> str:
 
 
 def render_session_memory_excerpt(payload: SessionMemoryPayload, *, budget_chars: int = 5000) -> str:
-    if budget_chars <= 0:
-        return ""
+    # Compatibility argument only. Session continuity is model-authored; a
+    # caller may not silently drop whole semantic sections after the model has
+    # selected them. Provider-capacity handling belongs to covered compaction.
+    del budget_chars
     blocks: dict[str, str] = {}
     for title, attr_name, kind in _SECTION_SPECS:
         value = getattr(payload, attr_name)
@@ -290,16 +283,11 @@ def render_session_memory_excerpt(payload: SessionMemoryPayload, *, budget_chars
         blocks["Last Successful Step"] = f"## Last Successful Step\n{_render_text_block(payload.last_successful_step)}"
 
     parts: list[str] = []
-    used = 0
     for title in _SECTION_PRIORITY:
         block = blocks.get(title)
         if not block:
             continue
-        block_cost = len(block) + (2 if parts else 0)
-        if used + block_cost > budget_chars:
-            continue
         parts.append(block)
-        used += block_cost
     return "\n\n".join(parts)
 
 
@@ -321,7 +309,7 @@ async def build_session_memory_payload_with_llm(
     fallback = build_session_memory_payload_from_messages(messages, metadata=metadata)
     model_config = await _get_session_memory_model_config(tenant_id)
     if not model_config:
-        return fallback
+        return _mark_deterministic_fallback(fallback, reason="model_unavailable")
     try:
         raw = await _run_session_memory_llm(
             model_config=model_config,
@@ -333,7 +321,15 @@ async def build_session_memory_payload_with_llm(
         return _session_memory_payload_from_llm(raw, fallback=fallback, metadata=metadata)
     except Exception as exc:  # noqa: BLE001 - continuity fallback must not fail the agent turn
         logger.warning("LLM session memory writer failed; using deterministic fallback: %s", exc)
-        return fallback
+        return _mark_deterministic_fallback(fallback, reason=f"model_failure:{type(exc).__name__}")
+
+
+def _mark_deterministic_fallback(payload: SessionMemoryPayload, *, reason: str) -> SessionMemoryPayload:
+    """Persist that platform-authored continuity was a failure-path projection."""
+
+    original_source = payload.source.strip() or "unknown"
+    payload.source = f"deterministic_fallback:{reason};source={original_source}"
+    return payload
 
 
 async def _get_session_memory_model_config(tenant_id: UUID | str | None) -> dict[str, Any] | None:
@@ -356,7 +352,12 @@ async def _run_session_memory_llm(
     agent_id: UUID | str | None,
     tenant_id: UUID | str | None,
 ) -> str:
-    from app.services.llm_client import LLMMessage, create_llm_client_from_config, with_llm_usage_context
+    from app.services.llm_client import (
+        LLMMessage,
+        create_llm_client_from_config,
+        get_max_tokens,
+        with_llm_usage_context,
+    )
 
     payload = {
         "schema_version": SESSION_MEMORY_PROMPT_VERSION,
@@ -378,7 +379,11 @@ async def _run_session_memory_llm(
                 LLMMessage(role="system", content=_SESSION_MEMORY_WRITER_PROMPT),
                 LLMMessage(role="user", content=json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)),
             ],
-            max_tokens=4096,
+            max_tokens=get_max_tokens(
+                str(model_config.get("provider") or ""),
+                str(model_config.get("model") or ""),
+                model_config.get("max_output_tokens"),
+            ),
             temperature=0.2,
         )
         content = response.content or ""
@@ -468,17 +473,13 @@ def update_session_memory(
         ).strip(),
         current_state=payload.current_state.strip(),
         task_spec=payload.task_spec.strip(),
-        important_files=_normalize_list(payload.important_files, limit=_MAX_FILES_AND_FUNCTIONS),
+        important_files=_normalize_list(payload.important_files),
         workflow=_normalize_list(payload.workflow),
         errors_corrections=_normalize_list(payload.errors_corrections),
         key_results=_normalize_list(payload.key_results),
-        pending_work=_normalize_list(payload.pending_work, limit=_MAX_PENDING_WORK),
+        pending_work=_normalize_list(payload.pending_work),
         last_successful_step=payload.last_successful_step.strip(),
-        worklog=_normalize_list(
-            payload.worklog,
-            limit=_MAX_WORKLOG_ITEMS,
-            item_char_limit=_MAX_WORKLOG_ITEM_CHARS,
-        ),
+        worklog=_normalize_list(payload.worklog),
         updated_at=payload.updated_at or datetime.now(timezone.utc).isoformat(),
         compaction_count=max(int(payload.compaction_count or 0), 0),
         last_compaction_at=(payload.last_compaction_at or "").strip() or None,
@@ -615,8 +616,7 @@ def load_session_memory(
         current_state=sections.get("Current State", "").replace("- (none)", "").strip(),
         task_spec=sections.get("Task Specification", sections.get("Task Spec", "")).replace("- (none)", "").strip(),
         important_files=_normalize_list(
-            _parse_list_block(sections.get("Files and Functions", sections.get("Important Files / Artifacts", ""))),
-            limit=_MAX_FILES_AND_FUNCTIONS,
+            _parse_list_block(sections.get("Files and Functions", sections.get("Important Files / Artifacts", "")))
         ),
         workflow=_parse_list_block(sections.get("Workflow", "")),
         errors_corrections=_parse_list_block(
@@ -625,11 +625,7 @@ def load_session_memory(
         key_results=_parse_list_block(sections.get("Key Results", "")),
         pending_work=_parse_list_block(sections.get("Pending Work", "")),
         last_successful_step=sections.get("Last Successful Step", "").replace("- (none)", "").strip(),
-        worklog=_normalize_list(
-            _parse_list_block(sections.get("Worklog", "")),
-            limit=_MAX_WORKLOG_ITEMS,
-            item_char_limit=_MAX_WORKLOG_ITEM_CHARS,
-        ),
+        worklog=_normalize_list(_parse_list_block(sections.get("Worklog", ""))),
         updated_at=updated_at,
         compaction_count=int(metadata.get("compaction_count") or 0),
         last_compaction_at=metadata.get("last_compaction_at") or None,
@@ -690,8 +686,7 @@ def build_session_memory_payload_from_messages(
         current_state=current_state,
         task_spec=str(metadata.get("task_spec") or (user_messages[0] if user_messages else "")).strip(),
         important_files=_normalize_list(
-            [str(item).strip() for item in metadata.get("important_files", []) if str(item).strip()],
-            limit=_MAX_FILES_AND_FUNCTIONS,
+            [str(item).strip() for item in metadata.get("important_files", []) if str(item).strip()]
         ),
         workflow=workflow,
         errors_corrections=_normalize_list(
@@ -702,7 +697,7 @@ def build_session_memory_payload_from_messages(
             str(item).strip() for item in (metadata.get("pending_work") or future_steps) if str(item).strip()
         ],
         last_successful_step=str(metadata.get("last_successful_step") or current_state).strip(),
-        worklog=_normalize_list(worklog, limit=_MAX_WORKLOG_ITEMS, item_char_limit=_MAX_WORKLOG_ITEM_CHARS),
+        worklog=_normalize_list(worklog),
         compaction_count=int(metadata.get("compaction_count") or 0),
         last_compaction_at=str(metadata.get("last_compaction_at") or "").strip() or None,
     )

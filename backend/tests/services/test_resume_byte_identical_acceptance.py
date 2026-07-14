@@ -120,15 +120,8 @@ def test_resume_byte_identical_pairs_frozen_bytes_with_original_tool_call_id():
     assert "call_db-row-2" not in json.dumps(conversation)
 
 
-def test_resume_byte_identical_legacy_row_without_record_does_flat_truncate():
-    """Negative control: a legacy row with NO record DOES re-truncate to 50K.
-
-    This pins the boundary — the frozen-bytes path is gated on the presence of
-    ``content_replacement``. A row that never persisted one falls back to the
-    flat-truncation branch, which is exactly the behavior the frozen path
-    replaces for real runtime rows. If the gate inverted, this control would
-    break.
-    """
+def test_resume_legacy_row_without_record_preserves_complete_result():
+    """Legacy rows are not silently clipped when no recoverable pointer exists."""
     full_result = "L" * 70_000
     payload = {
         "name": "list_dir",
@@ -143,10 +136,7 @@ def test_resume_byte_identical_legacy_row_without_record_does_flat_truncate():
     conversation = conversation_from_history_messages(history)
     _assistant_msg, tool_msg = conversation
 
-    # Legacy path flat-truncates to 50K + marker — NOT byte-identical to source.
-    assert tool_msg["content"].startswith("L" * 50_000)
-    assert tool_msg["content"].endswith("[... truncated, full output may be in workspace/tool_results/]")
-    assert tool_msg["content"] != full_result
+    assert tool_msg["content"] == full_result
 
 
 def test_resume_byte_identical_preserves_frozen_bytes_longer_than_flat_cap():

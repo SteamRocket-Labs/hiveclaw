@@ -34,8 +34,8 @@ def _make_skill(
     )
 
 
-class TestCatalogBudgetControl:
-    """render_catalog respects budget_chars and degrades gracefully."""
+class TestCatalogVisibility:
+    """Catalog assembly preserves all model-visible activation evidence."""
 
     def test_small_catalog_renders_fully(self) -> None:
         reg = SkillRegistry()
@@ -46,36 +46,33 @@ class TestCatalogBudgetControl:
         assert "Search the web" in result
         assert "file_ops" in result
 
-    def test_large_catalog_truncates_descriptions(self) -> None:
+    def test_large_catalog_preserves_descriptions_past_advisory_budget(self) -> None:
         reg = SkillRegistry()
         reg.register(_make_skill("core", "System skill", is_system=True))
         for i in range(20):
             reg.register(_make_skill("user_skill_" + str(i), "A" * 200))
         result = reg.render_catalog(budget_chars=2000)
-        # System skill description preserved
         assert "System skill" in result
-        # User skills present but descriptions truncated
         assert "user_skill_0" in result
-        assert "A" * 200 not in result
+        assert "A" * 200 in result
 
-    def test_system_skills_never_truncated(self) -> None:
+    def test_system_and_user_skills_are_both_complete(self) -> None:
         reg = SkillRegistry()
         reg.register(_make_skill("core", "Important system description that must survive", is_system=True))
         for i in range(30):
             reg.register(_make_skill("u" + str(i), "X" * 300))
         result = reg.render_catalog(budget_chars=1500)
         assert "Important system description that must survive" in result
+        assert "X" * 300 in result
 
-    def test_extreme_budget_shows_names_only(self) -> None:
+    def test_small_advisory_budget_does_not_reduce_descriptions_to_names_only(self) -> None:
         reg = SkillRegistry()
         reg.register(_make_skill("core", "System", is_system=True))
         for i in range(50):
             reg.register(_make_skill("s" + str(i), "Y" * 500))
         result = reg.render_catalog(budget_chars=800)
-        # Names should still be present
         assert "s0" in result
-        # But full descriptions should not
-        assert "Y" * 500 not in result
+        assert "Y" * 500 in result
 
     def test_empty_registry(self) -> None:
         reg = SkillRegistry()
@@ -112,14 +109,24 @@ class TestCatalogBudgetControl:
         assert "disabled" not in result
         assert "hidden" not in result
 
-    def test_catalog_truncates_each_description_to_250_chars(self) -> None:
+    def test_catalog_preserves_each_complete_description(self) -> None:
         reg = SkillRegistry()
         reg.register(_make_skill("verbose", "B" * 400))
 
         result = reg.render_catalog(budget_chars=4000)
 
-        assert "B" * 250 in result
-        assert "B" * 300 not in result
+        assert "B" * 400 in result
+
+    def test_catalog_preserves_decisive_description_tail_past_advisory_budget(self) -> None:
+        reg = SkillRegistry()
+        decisive_tail = "DECISIVE_SKILL_ACTIVATION_TAIL"
+        description = ("Complete activation evidence. " * 80) + decisive_tail
+        reg.register(_make_skill("complete-skill", description))
+
+        result = reg.render_catalog(budget_chars=300)
+
+        assert description in result
+        assert decisive_tail in result
 
     def test_skills_for_paths_matches_declared_path_globs(self) -> None:
         reg = SkillRegistry()

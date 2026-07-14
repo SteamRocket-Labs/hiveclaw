@@ -212,7 +212,7 @@ async def _set_approval_continuation_status(
         }
     )
     if error:
-        receipt["continuation_error"] = error[:1_000]
+        receipt["continuation_error"] = error
     else:
         receipt.pop("continuation_error", None)
     approval.execution_receipt = receipt
@@ -393,7 +393,7 @@ class RuntimeNotificationOutboxService:
                                         "[Approval tool result]\n"
                                         f"Approval: {metadata.get('approval_id') or 'unknown'}\n"
                                         f"Tool: {metadata.get('tool_name') or 'approved_action'}\n"
-                                        f"Result: {str(task.result_summary or '')[:20_000]}\n"
+                                        f"Result: {str(task.result_summary or '')}\n"
                                         "Continue the original task from this approved tool result."
                                     )
                                 }
@@ -445,7 +445,7 @@ class RuntimeNotificationOutboxService:
             ).scalar_one_or_none()
             if row is None or row.status != "processing" or row.locked_by != worker_id:
                 return "stale"
-            row.last_error = f"{type(error).__name__}: {str(error)[:1000]}"
+            row.last_error = f"{type(error).__name__}: {error}"
             row.locked_by = None
             row.locked_at = None
             if int(row.attempt_count or 0) >= self._max_attempts:

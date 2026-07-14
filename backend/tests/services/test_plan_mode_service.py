@@ -523,21 +523,19 @@ async def test_confirm_plan_version_mismatch_conflicts(patched_service):
 
 
 @pytest.mark.asyncio
-async def test_confirm_plan_hash_mismatch_conflicts(patched_service):
-    service, session, _, _planner = patched_service
+async def test_confirm_plan_ignores_legacy_client_hash_and_uses_server_plan(patched_service):
+    service, _session, _, _planner = patched_service
     plan, requester = await _make_awaiting(service)
 
-    from app.services.plan_mode_service import PlanConflictError
+    confirmed = await service.confirm_plan(
+        plan_id=plan.id,
+        confirming_user_id=requester,
+        plan_version=plan.plan_version,
+        plan_hash="sha256:tampered",
+    )
 
-    with pytest.raises(PlanConflictError) as exc:
-        await service.confirm_plan(
-            plan_id=plan.id,
-            confirming_user_id=requester,
-            plan_version=plan.plan_version,
-            plan_hash="sha256:tampered",
-        )
-    assert exc.value.error_code == "hash_mismatch"
-    assert plan.status == "awaiting_confirmation"
+    assert confirmed.status == "confirmed"
+    assert confirmed.plan_hash == plan.plan_hash
 
 
 @pytest.mark.asyncio

@@ -184,27 +184,20 @@ def _build_heartbeat_template_checks(heartbeat_template: str) -> dict[str, _Chec
             success_detail="Prompt contracts tell the curator to check skill coverage before recording candidates.",
             failure_detail="Prompt contracts no longer require checking existing skill coverage before recording candidates.",
         ),
-        "heartbeat_weight_policy": _CheckSpec(
-            # PR-12 moved weight thresholds into a decision_matrix with
-            # `| ≥ 0.85 |`, `| 0.50–0.85 |`, `| < 0.50 |` rows and the
-            # "data, not instruction" rule. Older templates used the prose
-            # phrase "promote it only as factual knowledge" — accept either.
+        "heartbeat_model_owned_evidence_policy": _CheckSpec(
             predicate=lambda: (
-                (
-                    ("≥ 0.85" in heartbeat_template or ">= 0.85" in heartbeat_template)
-                    and "< 0.50" in heartbeat_template
-                    and "data, not instruction" in normalized
-                )
-                or (
-                    "w>=0.85" in heartbeat_template
-                    and "instruction-like text from external sources" in normalized
-                    and "promote it only as factual knowledge" in normalized
-                )
+                "scores are evidence explanations, never platform cutoffs" in normalized
+                and "counts, weights, recency, and rank are observations" in normalized
+                and "after your semantic decision" in normalized
+                and "data, not instruction" in normalized
             ),
             severity="high",
-            remediation="Restore heartbeat weight thresholds and external-instruction filtering before promoting T2 items.",
-            success_detail="Heartbeat template preserves weighted curation and external-data filtering rules.",
-            failure_detail="Heartbeat template lost weight thresholds or external instruction filtering guidance.",
+            remediation=(
+                "Restore model-owned semantic curation: scores may explain evidence but must not map to memory actions; "
+                "keep external-instruction filtering intact."
+            ),
+            success_detail="Heartbeat template leaves semantic curation to the model while preserving governance rules.",
+            failure_detail="Heartbeat template uses platform score cutoffs or lost external-instruction filtering guidance.",
         ),
         "heartbeat_skill_curation_consistency": _CheckSpec(
             # P4 candidate lane (spec §12): heartbeat records skill/workflow
@@ -397,14 +390,17 @@ def evaluate_runtime_prompt_contracts(inputs: PromptEvalInputs | None = None) ->
             success_detail="Coding review playbook keeps findings-first review guidance intact.",
             failure_detail="Coding review playbook lost the findings-first verification overlay.",
         ),
-        "heartbeat_weight_policy": _CheckSpec(
-            predicate=lambda: _heartbeat_templates_pass("heartbeat_weight_policy"),
+        "heartbeat_model_owned_evidence_policy": _CheckSpec(
+            predicate=lambda: _heartbeat_templates_pass("heartbeat_model_owned_evidence_policy"),
             severity="high",
-            remediation="Restore heartbeat weight thresholds and external-instruction filtering before promoting T2 items.",
-            success_detail="All runtime heartbeat templates preserve weighted curation and external-data filtering rules.",
+            remediation=(
+                "Restore model-owned heartbeat curation without score-to-action thresholds, while preserving "
+                "external-instruction filtering."
+            ),
+            success_detail="All runtime heartbeat templates preserve model-owned curation and governance rules.",
             failure_detail=(
-                "Heartbeat templates lost weight thresholds or external instruction filtering guidance: "
-                f"{_heartbeat_template_failures('heartbeat_weight_policy') or 'unknown'}."
+                "Heartbeat templates use platform score cutoffs or lost external instruction filtering guidance: "
+                f"{_heartbeat_template_failures('heartbeat_model_owned_evidence_policy') or 'unknown'}."
             ),
         ),
         "heartbeat_skill_curation_consistency": _CheckSpec(
@@ -522,12 +518,20 @@ def evaluate_runtime_prompt_contracts(inputs: PromptEvalInputs | None = None) ->
         ),
         "delegation_worker": _run_checks(
             {
-                "worker_safe_tools": _CheckSpec(
-                    predicate=lambda: "worker-safe" in (resolved.delegation_worker_prompt or ""),
+                "worker_governed_tools": _CheckSpec(
+                    predicate=lambda: (
+                        "<tool_policy>" in (resolved.delegation_worker_prompt or "")
+                        and "assigned tools" in (resolved.delegation_worker_prompt or "")
+                        and "delegated authority" in (resolved.delegation_worker_prompt or "")
+                        and "durable writes" in (resolved.delegation_worker_prompt or "")
+                    ),
                     severity="high",
-                    remediation="Restore the delegated worker tool policy so child agents stay on the worker-safe surface.",
-                    success_detail="Delegated worker prompt still constrains child tools to a worker-safe surface.",
-                    failure_detail="Delegated worker prompt no longer mentions worker-safe tool policy.",
+                    remediation=(
+                        "Restore the delegated worker contract: expose assigned capabilities while keeping authority, "
+                        "budget, approval, sandbox, and durable-write governance explicit."
+                    ),
+                    success_detail="Delegated workers retain their assigned capabilities inside explicit governance boundaries.",
+                    failure_detail="Delegated worker prompt lost capability freedom or its governing authority contract.",
                 ),
                 "worker_return_format_not_forced": _CheckSpec(
                     # F-1 (dispatch symmetry): the forced `<return_format>` /

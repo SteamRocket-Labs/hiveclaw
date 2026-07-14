@@ -320,6 +320,44 @@ async def test_feishu_wiki_list_continues_when_permission_filter_returns_empty_p
 
 
 @pytest.mark.asyncio
+async def test_feishu_wiki_recursive_list_traverses_every_depth_and_stops_cycles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.agent_tool_domains import feishu_wiki
+
+    children_by_parent = {
+        None: [{"title": "Level 0", "node_token": "level-0", "obj_token": "doc-0", "has_child": True}],
+        "level-0": [{"title": "Level 1", "node_token": "level-1", "obj_token": "doc-1", "has_child": True}],
+        "level-1": [{"title": "Level 2", "node_token": "level-2", "obj_token": "doc-2", "has_child": True}],
+        "level-2": [{"title": "Level 3", "node_token": "level-3", "obj_token": "doc-3", "has_child": True}],
+        "level-3": [{"title": "Cycle Back", "node_token": "level-0", "obj_token": "doc-0", "has_child": True}],
+    }
+    expanded_parents: list[str | None] = []
+
+    async def fake_cli_available() -> bool:
+        return True
+
+    async def fake_cli_api_request(method: str, path: str, *, params=None, body=None):
+        assert method == "GET"
+        assert path == "/open-apis/wiki/v2/spaces/space-1/nodes"
+        assert body is None
+        parent = (params or {}).get("parent_node_token")
+        expanded_parents.append(parent)
+        return {"code": 0, "data": {"items": children_by_parent.get(parent, []), "has_more": False}}
+
+    monkeypatch.setattr(feishu_wiki, "_feishu_cli_available", fake_cli_available)
+    monkeypatch.setattr(feishu_wiki, "_feishu_cli_api_request", fake_cli_api_request)
+
+    result = await feishu_wiki._feishu_wiki_list(
+        "agent-1",
+        {"space_id": "space-1", "recursive": True},
+    )
+
+    assert "Level 3" in result
+    assert expanded_parents == [None, "level-0", "level-1", "level-2", "level-3"]
+
+
+@pytest.mark.asyncio
 async def test_feishu_doc_read_routes_wiki_sheet_to_sheet_info(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.services.agent_tool_domains import feishu_docs
 

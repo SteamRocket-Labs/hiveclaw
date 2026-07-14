@@ -20,11 +20,11 @@ function displayItem(value: unknown): string {
 }
 
 function initialDraft(preview: HrPreviewToolResult): HrCreationDraft | undefined {
-  if (!preview.blueprintId || !preview.blueprintHash) return undefined;
+  if (!preview.blueprintId) return undefined;
   return {
     blueprint_id: preview.blueprintId,
     blueprint_version: preview.blueprintVersion,
-    blueprint_hash: preview.blueprintHash,
+    blueprint_hash: preview.blueprintHash || '',
     draft_status: preview.status,
     blueprint: {},
   };
@@ -72,15 +72,15 @@ export function HrBlueprintPreviewCard({ agentId, preview, onSendMessage }: HrBl
   });
   const status = draft?.draft_status || preview.status;
   const provisioningSteps = draft?.provisioning_steps || [];
-  const canonicalReady = Boolean(agentId && preview.blueprintId && preview.blueprintHash);
+  const canonicalReady = Boolean(agentId && preview.blueprintId);
   const durableAction = hrCreationActionForStatus(status);
 
   const confirmMutation = useMutation({
     mutationFn: () => hrCreationApi.confirm(agentId!, preview.blueprintId!, {
       blueprint_version: preview.blueprintVersion,
-      blueprint_hash: preview.blueprintHash!,
     }),
     onSuccess: (nextDraft) => queryClient.setQueryData(queryKey, nextDraft),
+    onError: () => queryClient.invalidateQueries({ queryKey }),
   });
   const rejectMutation = useMutation({
     mutationFn: () => hrCreationApi.reject(agentId!, preview.blueprintId!),

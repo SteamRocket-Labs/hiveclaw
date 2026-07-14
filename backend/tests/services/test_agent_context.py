@@ -6,7 +6,7 @@ from uuid import uuid4
 import pytest
 
 
-def test_recoverable_context_excerpt_carries_hash_pinned_continuation():
+def test_context_excerpt_budget_is_advisory_and_preserves_complete_authorized_content():
     from app.services.agent_context import AgentContextResource, render_context_resource_excerpt
 
     resource = AgentContextResource(
@@ -17,12 +17,8 @@ def test_recoverable_context_excerpt_carries_hash_pinned_continuation():
 
     rendered = render_context_resource_excerpt(resource, budget_chars=320)
 
-    assert "OMITTED_SUFFIX" not in rendered
-    assert "context_ref=agent-context://company" in rendered
-    assert "read_context_resource" in rendered
-    assert '"ref":"company"' in rendered
-    assert '"offset":' in rendered
-    assert f'"expected_sha256":"{resource.sha256}"' in rendered
+    assert rendered == resource.content
+    assert "OMITTED_SUFFIX" in rendered
 
 
 def test_personal_kb_is_not_an_agent_context_resource():
@@ -33,7 +29,7 @@ def test_personal_kb_is_not_an_agent_context_resource():
 
 
 @pytest.mark.asyncio
-async def test_build_agent_context_renders_recoverable_previews_for_every_bounded_resource(monkeypatch, tmp_path):
+async def test_build_agent_context_preserves_every_complete_authorized_resource(monkeypatch, tmp_path):
     import app.services.agent_context as agent_context
 
     agent_id = uuid4()
@@ -80,10 +76,8 @@ async def test_build_agent_context_renders_recoverable_previews_for_every_bounde
         include_skill_catalog=False,
     )
 
-    for ref in ("soul", "company", "organization", "a2a-collaborators"):
-        assert f'"ref":"{ref}"' in prompt
     for omitted_suffix in ("SOUL_SUFFIX", "COMPANY_SUFFIX", "ORG_SUFFIX", "A2A_SUFFIX"):
-        assert omitted_suffix not in prompt
+        assert omitted_suffix in prompt
 
 
 class _FakeScalarResult:

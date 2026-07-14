@@ -8,6 +8,18 @@ from types import SimpleNamespace
 import pytest
 
 
+async def _safe_memory_threat_classifier(**_kwargs):
+    from app.memory.write_gate import MemoryThreatAssessment
+
+    return MemoryThreatAssessment(
+        rejected=False,
+        labels=[],
+        method="llm_classifier",
+        confidence=0.99,
+        rationale="No memory-write threat detected.",
+    )
+
+
 def _write_t3_ready_package(root: Path, agent_id: uuid.UUID) -> Path:
     package_dir = root / str(agent_id) / "memory" / "sessions" / "s1" / "segments" / "seg-1"
     package_dir.mkdir(parents=True, exist_ok=True)
@@ -55,6 +67,10 @@ async def test_save_memory_writes_explicit_overlay_not_accepted_t3(tmp_path: Pat
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr("app.config.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+        mp.setattr(
+            "app.memory.write_gate.classify_memory_write_threat_with_llm",
+            _safe_memory_threat_classifier,
+        )
         result = await save_memory(agent_id, {"content": "User prefers concise answers", "category": "feedback"})
 
     memory_dir = tmp_path / str(agent_id) / "memory"
@@ -65,6 +81,78 @@ async def test_save_memory_writes_explicit_overlay_not_accepted_t3(tmp_path: Pat
     assert "User prefers concise answers" in overlay_index.read_text(encoding="utf-8")
     assert not (memory_dir / "feedback.md").exists()
     assert not (memory_dir / "t3" / "user.md").exists()
+
+
+@pytest.mark.asyncio
+async def test_save_memory_holds_when_semantic_reviewer_is_unavailable(tmp_path: Path) -> None:
+    from app.tools.handlers.memory import save_memory
+
+    agent_id = uuid.uuid4()
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr("app.config.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+        result = await save_memory(agent_id, {"content": "User prefers concise answers", "category": "feedback"})
+
+    assert result.startswith("[Held]")
+    assert "semantic_review_unavailable" in result
+    assert not (tmp_path / str(agent_id) / "memory" / "explicit" / "MEMORY.md").exists()
+
+
+@pytest.mark.asyncio
+async def test_save_memory_result_preserves_committed_decisive_tail(tmp_path: Path) -> None:
+    from app.tools.handlers.memory import save_memory
+
+    agent_id = uuid.uuid4()
+    tail = "EXPLICIT_MEMORY_COMMITTED_DECISIVE_TAIL"
+    content = "Permanent user preference with complete rationale: " + ("context " * 80) + tail
+
+    async def write_overlay(*_args, **_kwargs):
+        return SimpleNamespace(
+            status="saved",
+            category="feedback",
+            target_hint="user",
+            content=content,
+            entry_id="memory-tail",
+            sensitivity="PL1_public",
+            reason="",
+        )
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr("app.config.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+        mp.setattr("app.memory.explicit_overlay.write_explicit_memory_overlay", write_overlay)
+        result = await save_memory(agent_id, {"content": content, "category": "feedback"})
+
+    assert tail in result
+
+
+@pytest.mark.asyncio
+async def test_save_memory_never_uses_regex_to_reject_episodic_semantics(tmp_path: Path) -> None:
+    from app.tools.handlers.memory import save_memory
+
+    agent_id = uuid.uuid4()
+    content = "巡检没有更新，但用户明确要求长期记住该事实"
+    captured: dict = {}
+
+    async def write_overlay(*_args, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            status="active",
+            category="reference",
+            target_hint="capabilities",
+            content=content,
+            entry_id="explicit-episodic-review",
+            sensitivity="PL1_public",
+            reason="",
+        )
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr("app.config.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+        mp.setattr("app.memory.explicit_overlay.write_explicit_memory_overlay", write_overlay)
+        result = await save_memory(agent_id, {"content": content, "category": "reference"})
+
+    assert captured["content"] == content
+    assert result.startswith("Saved to explicit memory overlay")
+    assert "[Skipped]" not in result
 
 
 @pytest.mark.asyncio
@@ -92,6 +180,10 @@ async def test_search_and_load_memory_include_explicit_overlay(tmp_path: Path) -
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr("app.config.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+        mp.setattr(
+            "app.memory.write_gate.classify_memory_write_threat_with_llm",
+            _safe_memory_threat_classifier,
+        )
         await save_memory(agent_id, {"content": "Use snake_case for Python variable names", "category": "feedback"})
         result = await search_memory(agent_id, {"query": "snake_case", "scope": "facts"})
 
@@ -108,6 +200,68 @@ async def test_search_and_load_memory_include_explicit_overlay(tmp_path: Path) -
 
 
 @pytest.mark.asyncio
+async def test_search_memory_has_no_hidden_default_result_cap(tmp_path: Path) -> None:
+    from app.tools.handlers.memory import search_memory
+
+    agent_id = uuid.uuid4()
+    decisive_tail = "MEMORY_SEARCH_LAST_AUTHORIZED_CANDIDATE"
+
+    def fake_search_overlay(_root, _agent_id, _query, *, limit):
+        assert limit is None
+        return [
+            {
+                "id": f"memory-{index}",
+                "category": "feedback",
+                "content": decisive_tail if index == 24 else f"authorized candidate {index}",
+                "preview": f"preview {index}",
+                "target_hint": "user",
+                "sensitivity": "PL1_public",
+            }
+            for index in range(25)
+        ]
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr("app.config.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+        mp.setattr("app.memory.explicit_overlay.search_explicit_overlay_entries", fake_search_overlay)
+        mp.setattr("app.memory.plane_read.search_plane_facts", lambda *_args, **_kwargs: [])
+        result = await search_memory(agent_id, {"query": "candidate", "scope": "facts"})
+
+    assert decisive_tail in result
+    assert "memory-24" in result
+
+
+@pytest.mark.asyncio
+async def test_search_memory_returns_complete_recalled_session_transcript(tmp_path: Path) -> None:
+    from app.tools.handlers.memory import search_memory
+
+    agent_id = uuid.uuid4()
+    decisive_tail = "DECISIVE_SESSION_TRANSCRIPT_TAIL"
+
+    async def fake_search_session_history(*_args, **_kwargs):
+        return [
+            {
+                "started_at": "2026-07-13T00:00:00Z",
+                "source": "web",
+                "headline": "Relevant prior session",
+                "focused_recap": "Short recap without the decisive tail.",
+                "summary": "Short summary without the decisive tail.",
+                "evidence_lines": ["User: initial evidence"],
+                "transcript_window": "User: nearby context only",
+                "context_snippets": ["nearby context only"],
+                "transcript": "User: initial evidence\nAssistant: complete reasoning\n" + decisive_tail,
+            }
+        ]
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr("app.config.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+        mp.setattr("app.tools.handlers.memory.search_session_history", fake_search_session_history)
+        result = await search_memory(agent_id, {"query": "relevant", "scope": "sessions"})
+
+    assert "Complete transcript:" in result
+    assert decisive_tail in result
+
+
+@pytest.mark.asyncio
 async def test_update_memory_supersedes_explicit_overlay_entry(tmp_path: Path) -> None:
     from app.memory.explicit_overlay import load_explicit_overlay_entries
     from app.tools.handlers.memory import save_memory, update_memory
@@ -116,6 +270,10 @@ async def test_update_memory_supersedes_explicit_overlay_entry(tmp_path: Path) -
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr("app.config.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+        mp.setattr(
+            "app.memory.write_gate.classify_memory_write_threat_with_llm",
+            _safe_memory_threat_classifier,
+        )
         await save_memory(agent_id, {"content": "User prefers short replies", "category": "feedback"})
         old_entry = load_explicit_overlay_entries(tmp_path, agent_id)[0]
 
@@ -143,6 +301,10 @@ async def test_retire_memory_deactivates_explicit_overlay_entry(tmp_path: Path) 
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr("app.config.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+        mp.setattr(
+            "app.memory.write_gate.classify_memory_write_threat_with_llm",
+            _safe_memory_threat_classifier,
+        )
         await save_memory(
             agent_id,
             {"content": "Temporary preference for blue buttons during prototype review", "category": "feedback"},

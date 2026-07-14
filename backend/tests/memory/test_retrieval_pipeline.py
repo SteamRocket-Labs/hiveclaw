@@ -206,18 +206,31 @@ async def test_retrieve_no_files(data_root: Path, agent_id: uuid.UUID, retriever
     assert [item for item in items if item.kind == MemoryKind.SEMANTIC] == []
 
 
+def _write_complete_overlay_fixture(data_root: Path, agent_id: uuid.UUID) -> None:
+    for index in range(12):
+        content = (
+            "The decisive exception is preserved only in the final record."
+            if index == 11
+            else f"unrelated archived observation {index}"
+        )
+        _write_overlay_entry(data_root, agent_id, entry_id=f"ex-{index}", content=content)
+
+
 @pytest.mark.asyncio
-async def test_rerank_config_is_ignored_reads_run_zero_llm(
+async def test_model_selector_sees_every_authorized_candidate_and_can_choose_a_low_mechanical_tail(
     data_root: Path, agent_id: uuid.UUID, retriever: MemoryRetriever, monkeypatch
 ) -> None:
-    """spec §4.2: reads never run an LLM — a passed rerank config is inert."""
+    """Lexical score and fixed top-k are observations, never semantic authority."""
 
-    def _boom(*_a, **_k):  # any LLM client construction would be a violation
-        raise AssertionError("retrieval must not construct an LLM client")
+    _write_complete_overlay_fixture(data_root, agent_id)
+    observed: dict[str, object] = {}
 
-    monkeypatch.setattr("app.services.llm_client.create_llm_client_from_config", _boom, raising=False)
-    _write_overlay_entry(data_root, agent_id, entry_id="ex-1", content="salary planning note")
+    async def fake_selector(*, items, **_kwargs):
+        observed["contents"] = [item.content for item in items]
+        decisive = next(item for item in items if "decisive exception" in item.content)
+        return [decisive.metadata["selection_candidate_id"]], "tail exception is decisive"
 
+    monkeypatch.setattr(retriever, "_select_with_model", fake_selector, raising=False)
     items = await retriever.retrieve(
         agent_id,
         "salary planning",
@@ -226,7 +239,54 @@ async def test_rerank_config_is_ignored_reads_run_zero_llm(
         rerank_model_config={"provider": "fake", "model": "fake"},
     )
 
-    assert any("salary planning" in item.content for item in items)
+    assert len(observed["contents"]) == 12
+    assert len(items) == 1
+    assert "decisive exception" in items[0].content
+    assert items[0].metadata["semantic_selection_status"] == "model_selected"
+    assert retriever.last_selection_status == "model_selected"
+
+
+@pytest.mark.asyncio
+async def test_model_selector_failure_returns_every_authorized_candidate_observably(
+    data_root: Path, agent_id: uuid.UUID, retriever: MemoryRetriever, monkeypatch
+) -> None:
+    _write_complete_overlay_fixture(data_root, agent_id)
+
+    async def failed_selector(**_kwargs):
+        raise RuntimeError("selector unavailable")
+
+    monkeypatch.setattr(retriever, "_select_with_model", failed_selector, raising=False)
+    items = await retriever.retrieve(
+        agent_id,
+        "salary planning",
+        session_id=None,
+        tenant_id=None,
+        rerank_model_config={"provider": "fake", "model": "fake"},
+    )
+
+    assert len(items) == 12
+    assert {item.metadata["semantic_selection_status"] for item in items} == {"failed"}
+    assert retriever.last_selection_status == "failed"
+    assert retriever.last_selection_error == "RuntimeError"
+
+
+@pytest.mark.asyncio
+async def test_missing_selector_model_returns_all_candidates_instead_of_mechanical_top_k(
+    data_root: Path, agent_id: uuid.UUID, retriever: MemoryRetriever
+) -> None:
+    _write_complete_overlay_fixture(data_root, agent_id)
+
+    items = await retriever.retrieve(
+        agent_id,
+        "salary planning",
+        session_id=None,
+        tenant_id=None,
+        rerank_model_config=None,
+    )
+
+    assert len(items) == 12
+    assert {item.metadata["semantic_selection_status"] for item in items} == {"model_unavailable"}
+    assert retriever.last_selection_status == "model_unavailable"
 
 
 def test_memory_retriever_exposes_only_live_retrieval_entrypoints(data_root: Path) -> None:

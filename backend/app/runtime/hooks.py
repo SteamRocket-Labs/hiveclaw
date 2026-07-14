@@ -309,9 +309,9 @@ def _hook_catalog_trust_level(event: HookEvent) -> str:
 
 
 def _hook_catalog_failure_policy(event: HookEvent) -> str:
-    if event in _ACTIVE_OBSERVE_ONLY_HOOK_EVENTS:
-        return "observe_continue"
-    return "fail_closed_if_blocking"
+    if hook_event_supports_blocking(event):
+        return "advisory_default_explicit_required_supported"
+    return "observe_continue"
 
 
 _BLOCKING_HOOK_EVENTS: frozenset[HookEvent] = frozenset(
@@ -337,7 +337,7 @@ def hook_event_supports_blocking(event: HookEvent) -> bool:
 
 def default_hook_failure_mode(event: HookEvent) -> HookFailureMode:
     """Return the executable default, not a descriptive catalog string."""
-    return "required" if hook_event_supports_blocking(event) else "advisory"
+    return "advisory"
 
 
 def _normalize_failure_mode(value: str | None, *, event: HookEvent | None = None) -> HookFailureMode:

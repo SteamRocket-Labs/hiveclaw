@@ -77,7 +77,7 @@ def mark_daemon_error(name: str, exc: BaseException | str) -> None:
         record.started_at = record.started_at or now
         record.last_heartbeat_at = now
         record.last_error_at = now
-        record.last_error = str(exc)[:500]
+        record.last_error = str(exc)
         record.error_count += 1
 
 
@@ -88,7 +88,7 @@ def mark_daemon_crashed(name: str, exc: BaseException | str) -> None:
         record.state = "crashed"
         record.started_at = record.started_at or now
         record.last_error_at = now
-        record.last_error = str(exc)[:500]
+        record.last_error = str(exc)
         record.crash_count += 1
 
 
@@ -99,7 +99,7 @@ def mark_daemon_stopped(name: str, reason: str = "task exited") -> None:
         record.state = "stopped"
         record.started_at = record.started_at or now
         record.last_error_at = now
-        record.last_error = reason[:500]
+        record.last_error = reason
 
 
 def _iso(value: datetime | None) -> str | None:

@@ -243,15 +243,19 @@ async def test_resource_authority_upgrade_tolerates_legacy_json_unicode_null(pg_
     try:
         async with verify_engine.connect() as connection:
             rows = (
-                await connection.execute(
-                    text(
-                        "SELECT owner_user_id, root_session_id, authority_state "
-                        "FROM agent_activity_logs WHERE id IN (:activity_id, :valid_activity_id) "
-                        "ORDER BY id"
-                    ),
-                    {"activity_id": activity_id, "valid_activity_id": valid_activity_id},
+                (
+                    await connection.execute(
+                        text(
+                            "SELECT owner_user_id, root_session_id, authority_state "
+                            "FROM agent_activity_logs WHERE id IN (:activity_id, :valid_activity_id) "
+                            "ORDER BY id"
+                        ),
+                        {"activity_id": activity_id, "valid_activity_id": valid_activity_id},
+                    )
                 )
-            ).mappings().all()
+                .mappings()
+                .all()
+            )
     finally:
         await verify_engine.dispose()
 

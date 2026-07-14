@@ -12,6 +12,7 @@ export interface AgentCreateParams {
   agent_class?: string;
   primary_model_id?: string;
   security_zone?: string;
+  execution_mode?: 'standard' | 'coordinator' | 'coordinator_strict';
 }
 
 export interface AgentUpdateParams {

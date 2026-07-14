@@ -1,9 +1,8 @@
-"""Model-aware, task-aware context budget planning."""
+"""Model-window-aware context planning with model-owned task semantics."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-import re
 
 
 _DEFAULT_SYSTEM_PROMPT_CHAR_BUDGET = 60000
@@ -101,130 +100,6 @@ class ContextBudget:
     rerank_max_select: int
 
 
-_CODING_HINTS = (
-    "bug",
-    "fix",
-    "code",
-    "refactor",
-    "test",
-    "stack trace",
-    "traceback",
-    "compile",
-    "api",
-    "endpoint",
-    "migration",
-    "function",
-    "class",
-    ".py",
-    ".ts",
-    ".tsx",
-    ".js",
-    "read_file",
-    "write_file",
-    "repo",
-    "修复",
-    "代码",
-    "测试",
-    "接口",
-    "函数",
-    "文件",
-    "编译",
-    "回归",
-)
-_CODING_REVIEW_HINTS = (
-    "review",
-    "audit",
-    "verify",
-    "verification",
-    "inspect",
-    "regression",
-    "regressions",
-    "implementation",
-    "代码审查",
-    "评审",
-    "审查",
-    "复核",
-    "回归",
-    "实现",
-)
-_RESEARCH_HINTS = (
-    "research",
-    "analyze",
-    "analysis",
-    "compare",
-    "market",
-    "competitor",
-    "latest",
-    "news",
-    "source",
-    "sources",
-    "report",
-    "web",
-    "browse",
-    "investigate",
-    "trend",
-    "公开资料",
-    "来源",
-    "研究",
-    "竞品",
-    "行业",
-    "新闻",
-    "链接",
-    "分析",
-    "调研",
-)
-_OPERATIONS_HINTS = (
-    "deploy",
-    "monitor",
-    "incident",
-    "alert",
-    "cron",
-    "trigger",
-    "heartbeat",
-    "automation",
-    "ops",
-    "runbook",
-    "queue",
-    "worker",
-    "dashboard",
-    "告警",
-    "触发器",
-    "心跳",
-    "自动化",
-    "运维",
-    "部署",
-    "监控",
-)
-_MEMORY_RECALL_HINTS = (
-    "recall",
-    "remember",
-    "search_memory",
-    "session history",
-    "chat history",
-    "transcript",
-    "memory system",
-    "回忆",
-    "想起",
-    "会话历史",
-    "聊天记录",
-    "上次",
-    "之前",
-    "决定",
-)
-_SELF_EVOLUTION_HINTS = (
-    "save_skill",
-    "skill",
-    "workflow",
-    "runbook",
-    "reusable",
-    "repeatable",
-    "playbook",
-    "沉淀",
-    "复用",
-    "可复用",
-    "重复成功",
-    "工作流",
-)
 _EXECUTION_SHAPES = {
     "direct",
     "one_off_parallel",
@@ -233,134 +108,6 @@ _EXECUTION_SHAPES = {
     "long_running",
     "recurrent",
 }
-_ONE_OFF_PARALLEL_HINTS = (
-    "parallel",
-    "fan out",
-    "fanout",
-    "independent",
-    "separable",
-    "worker",
-    "workers",
-    "session worker",
-    "并行",
-    "独立",
-    "多个方向",
-    "分别研究",
-    "分别检查",
-    "多路",
-)
-_FIXED_SEQUENCE_HINTS = (
-    "fixed sequence",
-    "strict order",
-    "ordered steps",
-    "must not drift",
-    "step order",
-    "workflow",
-    "固定顺序",
-    "严格顺序",
-    "流程",
-    "步骤顺序",
-    "不能漂移",
-)
-_APPROVAL_GATE_HINTS = (
-    "approval",
-    "approval gate",
-    "confirm before",
-    "human review",
-    "manual approval",
-    "gate",
-    "审批",
-    "人工审批",
-    "确认后",
-    "批准后",
-    "审核通过",
-)
-_LONG_RUNNING_HINTS = (
-    "long-running",
-    "long running",
-    "background",
-    "resume later",
-    "overnight",
-    "wait and continue",
-    "长任务",
-    "长时间",
-    "后台",
-    "稍后恢复",
-    "等待后继续",
-)
-_RECURRENT_HINTS = (
-    "recurring",
-    "recurrent",
-    "repeat",
-    "scheduled",
-    "daily",
-    "weekly",
-    "hourly",
-    "cron",
-    "每天",
-    "每周",
-    "每小时",
-    "定时",
-    "周期",
-    "重复运行",
-)
-_MCP_EXTENSION_HINTS = (
-    "mcp",
-    "import_mcp_server",
-    "discover_resources",
-    "smithery",
-    "modelscope",
-    "install tool",
-    "install tools",
-    "install capability",
-    "platform extension",
-    "扩展能力",
-    "导入 mcp",
-    "导入一个 mcp",
-    "安装 mcp",
-    "安装工具",
-    "安装能力",
-)
-
-_FILE_EXTENSION_HINTS = (".py", ".ts", ".tsx", ".js")
-_FILE_EXTENSION_PATTERN = re.compile(r"\b[\w./-]+\.(?:py|ts|tsx|js)\b")
-_URL_PATTERN = re.compile(r"https?://|www\.", re.IGNORECASE)
-# Generic naming conventions that signal a cheaper/smaller model across
-# providers. These are cross-vendor patterns, not provider-specific names.
-_CHEAP_MODEL_HINTS = (
-    "mini",
-    "flash",
-    "nano",
-    "lite",
-    "small",
-    "fast",
-    "turbo",
-    "8b",
-    "7b",
-    "3b",
-)
-_NO_CHEAP_ROUTE_SESSION_SOURCES = {"task", "schedule", "heartbeat", "agent"}
-_NO_CHEAP_ROUTE_EXECUTION_MODES = {"task", "heartbeat", "coordinator"}
-
-
-def _contains_keyword(haystack: str, keyword: str) -> bool:
-    if keyword in _FILE_EXTENSION_HINTS:
-        suffix = keyword[1:]
-        return any(match.endswith(f".{suffix}") for match in _FILE_EXTENSION_PATTERN.findall(haystack))
-
-    lowered = keyword.lower()
-    if any("\u4e00" <= char <= "\u9fff" for char in lowered):
-        return lowered in haystack
-
-    if " " in lowered:
-        return lowered in haystack
-
-    pattern = re.compile(rf"(?<![a-z0-9_]){re.escape(lowered)}(?![a-z0-9_])")
-    return pattern.search(haystack) is not None
-
-
-def _keyword_score(haystack: str, keywords: tuple[str, ...]) -> int:
-    return sum(1 for keyword in keywords if _contains_keyword(haystack, keyword))
 
 
 def normalize_execution_shape(value: object) -> str:
@@ -369,28 +116,13 @@ def normalize_execution_shape(value: object) -> str:
 
 
 def infer_execution_shape(query: str, messages: list[dict] | None = None) -> str:
-    haystack = " ".join(
-        part
-        for part in [
-            query.strip(),
-            " ".join(
-                str(msg.get("content", ""))
-                for msg in messages or []
-                if msg.get("role") == "user" and isinstance(msg.get("content"), str)
-            ),
-        ]
-        if part
-    ).lower()
-    if _keyword_score(haystack, _APPROVAL_GATE_HINTS) >= 1:
-        return "approval_gate"
-    if _keyword_score(haystack, _RECURRENT_HINTS) >= 1:
-        return "recurrent"
-    if _keyword_score(haystack, _FIXED_SEQUENCE_HINTS) >= 1:
-        return "fixed_sequence"
-    if _keyword_score(haystack, _LONG_RUNNING_HINTS) >= 1:
-        return "long_running"
-    if _keyword_score(haystack, _ONE_OFF_PARALLEL_HINTS) >= 1:
-        return "one_off_parallel"
+    """Return the neutral shape; the model declares orchestration through its tool choices.
+
+    ``query`` and ``messages`` remain in the compatibility signature so existing
+    callers do not break. Natural-language keyword matching must never select a
+    workflow, approval, recurrent, or delegation strategy for the model.
+    """
+    del query, messages
     return "direct"
 
 
@@ -436,159 +168,19 @@ def build_tool_execution_shape_decision(tool_name: str, execution_shape: str) ->
     }
 
 
-def _model_descriptor(model: object | None) -> str:
-    if model is None:
-        return ""
-    parts = (
-        str(getattr(model, "provider", "") or ""),
-        str(getattr(model, "label", "") or ""),
-        str(getattr(model, "model", "") or ""),
-    )
-    return " ".join(part.strip().lower() for part in parts if part and part.strip())
-
-
-def _cheap_model_signal_score(model: object | None) -> int:
-    descriptor = _model_descriptor(model)
-    if not descriptor:
-        return 0
-
-    score = sum(1 for hint in _CHEAP_MODEL_HINTS if hint in descriptor)
-    max_input_tokens = getattr(model, "max_input_tokens", None)
-    if isinstance(max_input_tokens, int) and 0 < max_input_tokens <= 64000:
-        score += 1
-
-    # Check ProviderSpec.cost_tier if available (no name-matching needed)
-    provider = str(getattr(model, "provider", "") or "").strip()
-    if provider:
-        try:
-            from app.services.llm_client import get_provider_spec
-
-            spec = get_provider_spec(provider)
-            if spec and spec.cost_tier == "cheap":
-                score += 2
-        except Exception:
-            pass
-    return score
-
-
-def _is_clearly_cheaper_model(candidate: object | None, primary: object | None) -> bool:
-    candidate_score = _cheap_model_signal_score(candidate)
-    primary_score = _cheap_model_signal_score(primary)
-    if candidate_score <= primary_score:
-        return False
-    return candidate_score >= 1
-
-
-def _allows_cheap_route(*, invocation_scope: str | None, session_source: str | None) -> bool:
-    if invocation_scope and invocation_scope.lower() in _NO_CHEAP_ROUTE_EXECUTION_MODES:
-        return False
-    if session_source and session_source.lower() in _NO_CHEAP_ROUTE_SESSION_SOURCES:
-        return False
-    return True
-
-
-def _is_simple_turn_candidate(query: str, task_profile: TaskProfile) -> bool:
-    return _is_simple_turn_candidate_with_limits(query, task_profile, max_chars=160, max_words=28)
-
-
-def _is_simple_turn_candidate_with_limits(
-    query: str,
-    task_profile: TaskProfile,
-    *,
-    max_chars: int,
-    max_words: int,
-) -> bool:
-    text = query.strip()
-    if not text:
-        return False
-    if task_profile.name != "general" or task_profile.complexity != "low":
-        return False
-    if len(text) > max_chars:
-        return False
-    if len(text.split()) > max_words:
-        return False
-    if text.count("\n") > 1:
-        return False
-    if "```" in text or "`" in text:
-        return False
-    if _URL_PATTERN.search(text):
-        return False
-    if _FILE_EXTENSION_PATTERN.search(text.lower()):
-        return False
-    return True
-
-
-def _coerce_routing_int(value: object, default: int) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
-
-
-def _routing_enabled(routing_config: dict[str, object] | None) -> bool | None:
-    if routing_config is None:
-        return None
-    return bool(routing_config.get("enabled", False))
-
-
 def infer_task_profile(query: str, messages: list[dict] | None = None) -> TaskProfile:
-    """Infer the dominant task shape from the latest request."""
-    haystack = " ".join(
-        part
-        for part in [
-            query.strip(),
-            " ".join(
-                str(msg.get("content", ""))
-                for msg in messages or []
-                if msg.get("role") == "user" and isinstance(msg.get("content"), str)
-            ),
-        ]
-        if part
-    ).lower()
+    """Return a neutral profile without interpreting user prose.
 
-    scores = {
-        "coding": _keyword_score(haystack, _CODING_HINTS),
-        "research": _keyword_score(haystack, _RESEARCH_HINTS),
-        "operations": _keyword_score(haystack, _OPERATIONS_HINTS),
-        "memory_recall": _keyword_score(haystack, _MEMORY_RECALL_HINTS),
-        "self_evolution": _keyword_score(haystack, _SELF_EVOLUTION_HINTS),
-    }
-    coding_review_score = _keyword_score(haystack, _CODING_REVIEW_HINTS)
-    if coding_review_score >= 2:
-        scores["coding"] += 3
-
-    # Specialized agent behaviors should route to their own playbooks when there
-    # is strong evidence, rather than being flattened into "general".
-    if scores["memory_recall"] >= 2:
-        scores["memory_recall"] += 2
-    if scores["self_evolution"] >= 2:
-        scores["self_evolution"] += 2
-
-    name = max(scores, key=scores.get) if any(scores.values()) else "general"
-
-    query_len = len(haystack)
-    if query_len > 400 or sum(scores.values()) >= 6:
-        complexity = "high"
-    elif query_len > 120 or sum(scores.values()) >= 3:
-        complexity = "medium"
-    else:
-        complexity = "low"
-
-    explicit_mcp_extension = any(hint in haystack for hint in _MCP_EXTENSION_HINTS)
-
-    suggested_deferred_tool_groups: tuple[str, ...] = ()
-    if explicit_mcp_extension:
-        suggested_deferred_tool_groups = ("mcp_admin",)
-    elif name == "research":
-        suggested_deferred_tool_groups = ("web",)
-
-    execution_shape = infer_execution_shape(query, messages=messages)
-
+    The legacy name is retained for API compatibility. Task type, complexity,
+    execution shape, and deferred tools are model decisions, not platform
+    keyword-classification outputs.
+    """
+    del query, messages
     return TaskProfile(
-        name=name,
-        complexity=complexity,
-        suggested_deferred_tool_group_names=suggested_deferred_tool_groups,
-        execution_shape=execution_shape,
+        name="model_owned",
+        complexity="model_owned",
+        suggested_deferred_tool_group_names=(),
+        execution_shape="direct",
     )
 
 
@@ -602,16 +194,17 @@ def resolve_turn_model_route(
     session_source: str | None = None,
     supports_vision: bool = False,
     routing_config: dict[str, object] | None = None,
+    model_routing_locked: bool = False,
 ) -> TurnModelRoute:
-    """Resolve the effective model for the current turn.
+    """Keep the configured primary model; fallback is provider-failure recovery.
 
-    Conservative by design:
-    - Only route to a cheaper fallback when the turn looks like a simple
-      low-stakes conversation request.
-    - Task/heartbeat/schedule/delegation paths always stay on the primary model.
+    Routing configuration may govern availability and failover, but natural
+    language, prompt length, or keyword-derived task labels must not silently
+    downgrade the model that reasons about the turn.
     """
 
     profile = infer_task_profile(query, messages=messages)
+    del invocation_scope, session_source
     primary_supports_vision = bool(supports_vision or getattr(primary_model, "supports_vision", False))
     config_source = "agent_config" if routing_config is not None else "runtime_default"
     if primary_model is None:
@@ -624,65 +217,21 @@ def resolve_turn_model_route(
             config_source=config_source,
         )
 
-    if not _allows_cheap_route(invocation_scope=invocation_scope, session_source=session_source):
+    if model_routing_locked:
         return TurnModelRoute(
             model=primary_model,
             fallback_model=fallback_model,
             supports_vision=primary_supports_vision,
-            reason="primary_model",
-            task_profile=profile,
-            config_source=config_source,
-        )
-
-    routing_enabled = _routing_enabled(routing_config)
-    if routing_enabled is not True:
-        return TurnModelRoute(
-            model=primary_model,
-            fallback_model=fallback_model,
-            supports_vision=primary_supports_vision,
-            reason="primary_model",
-            task_profile=profile,
-            config_source=config_source,
-        )
-
-    if not _is_clearly_cheaper_model(fallback_model, primary_model):
-        return TurnModelRoute(
-            model=primary_model,
-            fallback_model=fallback_model,
-            supports_vision=primary_supports_vision,
-            reason="primary_model",
-            task_profile=profile,
-            config_source=config_source,
-        )
-
-    max_simple_chars = _coerce_routing_int(
-        routing_config.get("max_simple_chars") if routing_config else None,
-        160,
-    )
-    max_simple_words = _coerce_routing_int(
-        routing_config.get("max_simple_words") if routing_config else None,
-        28,
-    )
-    if not _is_simple_turn_candidate_with_limits(
-        query,
-        profile,
-        max_chars=max_simple_chars,
-        max_words=max_simple_words,
-    ):
-        return TurnModelRoute(
-            model=primary_model,
-            fallback_model=fallback_model,
-            supports_vision=primary_supports_vision,
-            reason="primary_model",
+            reason="user_model_lock",
             task_profile=profile,
             config_source=config_source,
         )
 
     return TurnModelRoute(
-        model=fallback_model,
-        fallback_model=primary_model,
-        supports_vision=bool(supports_vision or getattr(fallback_model, "supports_vision", False)),
-        reason="simple_turn_cheap_model",
+        model=primary_model,
+        fallback_model=fallback_model,
+        supports_vision=primary_supports_vision,
+        reason="primary_model",
         task_profile=profile,
         config_source=config_source,
     )
@@ -699,78 +248,22 @@ def compute_context_budget(
     messages: list[dict] | None = None,
     active_pack_count: int = 0,
 ) -> ContextBudget:
-    """Compute section budgets for prompts, memory recall, and restoration."""
+    """Compute hardware-window budgets without classifying request semantics."""
     system_budget = compute_system_prompt_budget(context_window_tokens)
     profile = infer_task_profile(query, messages=messages)
 
-    # P1.3: Task-aware ratio profiles — each task type prioritizes different context
-    #
-    # Coding: boost restore (recent files, pending, write artifacts), moderate memory
-    # Research: boost external/knowledge, high memory for accumulated findings
-    # Operations: boost focus/triggers/failure patterns, moderate restore
-    # General: balanced defaults
-    if profile.name == "coding":
-        retrieval_ratio = 0.12
-        knowledge_ratio = 0.04
-        memory_ratio = 0.24
-        focus_ratio = 0.07  # higher — current task state matters
-        restore_ratio = 0.65  # higher — recent files/writes/pending critical
-        triggers_ratio = 0.03
-        semantic_base = 16
-        episodic_base = 4
-        external_base = 4
-    elif profile.name == "research":
-        retrieval_ratio = 0.15
-        knowledge_ratio = 0.10  # higher — external evidence is king
-        memory_ratio = 0.28  # higher — accumulated findings
-        focus_ratio = 0.05
-        restore_ratio = 0.50
-        triggers_ratio = 0.03
-        semantic_base = 20
-        episodic_base = 5
-        external_base = 8  # higher — more external sources
-    elif profile.name == "operations":
-        retrieval_ratio = 0.10
-        knowledge_ratio = 0.05
-        memory_ratio = 0.22
-        focus_ratio = 0.08  # higher — operational state
-        restore_ratio = 0.55
-        triggers_ratio = 0.07  # higher — trigger/cron state matters
-        semantic_base = 14
-        episodic_base = 4
-        external_base = 4
-    elif profile.name == "memory_recall":
-        retrieval_ratio = 0.14
-        knowledge_ratio = 0.03
-        memory_ratio = 0.30
-        focus_ratio = 0.07
-        restore_ratio = 0.60
-        triggers_ratio = 0.03
-        semantic_base = 18
-        episodic_base = 7
-        external_base = 2
-    elif profile.name == "self_evolution":
-        retrieval_ratio = 0.10
-        knowledge_ratio = 0.03
-        memory_ratio = 0.24
-        focus_ratio = 0.07
-        restore_ratio = 0.58
-        triggers_ratio = 0.03
-        semantic_base = 16
-        episodic_base = 5
-        external_base = 2
-    else:
-        retrieval_ratio = 0.09
-        knowledge_ratio = 0.04
-        memory_ratio = 0.20
-        focus_ratio = 0.06
-        restore_ratio = 0.55
-        triggers_ratio = 0.05
-        semantic_base = 12
-        episodic_base = 4
-        external_base = 3
-
-    complexity_bonus = {"low": 0, "medium": 1, "high": 2}[profile.complexity]
+    # Use one capability-preserving envelope for every request. These values are
+    # observability/planning hints at prompt assembly and capacity limits at
+    # retrieval boundaries; no user wording changes what the model can see.
+    retrieval_ratio = 0.15
+    knowledge_ratio = 0.10
+    memory_ratio = 0.30
+    focus_ratio = 0.08
+    restore_ratio = 0.65
+    triggers_ratio = 0.07
+    semantic_base = 20
+    episodic_base = 7
+    external_base = 8
     if system_budget >= 300000:
         large_context_bonus = 8
     elif system_budget >= 160000:
@@ -788,9 +281,7 @@ def compute_context_budget(
     retrieval_budget = _clamp(int(system_budget * retrieval_ratio), 3000, 48000)
     knowledge_budget = _clamp(int(system_budget * knowledge_ratio), 1500, 40000)
     memory_budget = _clamp(int(system_budget * memory_ratio), 12000, 96000)
-    skill_catalog_budget = _clamp(int(system_budget * 0.08), 4000, 32000)
-    if profile.name == "self_evolution":
-        skill_catalog_budget = _clamp(int(system_budget * 0.11), 6000, 48000)
+    skill_catalog_budget = _clamp(int(system_budget * 0.11), 6000, 48000)
     soul_budget = _clamp(int(system_budget * 0.22), 16000, 80000)
     relationships_budget = _clamp(int(system_budget * 0.035), 2000, 16000)
     company_info_budget = _clamp(int(system_budget * 0.07), 5000, 32000)
@@ -800,9 +291,9 @@ def compute_context_budget(
     restore_budget = _clamp(int(system_budget * restore_ratio), 12000, 240000)
     restore_per_file_cap = _clamp(int(restore_budget * 0.2), 2500, 40000)
 
-    semantic_limit = _clamp(semantic_base + complexity_bonus * 2 + large_context_bonus * 2, 8, 64)
-    episodic_limit = _clamp(episodic_base + complexity_bonus + large_context_bonus, 3, 16)
-    external_limit = _clamp(external_base + complexity_bonus + large_context_bonus, 2, 24)
+    semantic_limit = _clamp(semantic_base + large_context_bonus * 2, 8, 64)
+    episodic_limit = _clamp(episodic_base + large_context_bonus, 3, 16)
+    external_limit = _clamp(external_base + large_context_bonus, 2, 24)
     rerank_max_select = _clamp(max(semantic_limit // 2, 8), 5, 24)
 
     return ContextBudget(

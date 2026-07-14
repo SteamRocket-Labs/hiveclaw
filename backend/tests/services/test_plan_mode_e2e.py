@@ -434,23 +434,21 @@ async def test_confirming_stale_version_conflicts(e2e):
 
 
 @pytest.mark.asyncio
-async def test_confirming_stale_hash_conflicts(e2e):
-    """§8.2 / §8.3 — a confirmed plan binds to its exact hash; a mismatched hash
-    (e.g. the plan was edited after the preview) is refused."""
-    from app.services.plan_mode_service import PlanConflictError
-
+async def test_confirming_ignores_legacy_client_hash_and_binds_server_plan(e2e):
+    """§8.2 / §8.3 — the server row, not an echoed client hash, is authoritative."""
     service, _session, agent = e2e
     requester = uuid4()
     plan = await _drive_to_awaiting(service, agent=agent, requester=requester)
 
-    with pytest.raises(PlanConflictError) as exc_info:
-        await service.confirm_plan(
-            plan_id=plan.id,
-            confirming_user_id=requester,
-            plan_version=plan.plan_version,
-            plan_hash="sha256:stale",
-        )
-    assert exc_info.value.error_code == "hash_mismatch"
+    confirmed = await service.confirm_plan(
+        plan_id=plan.id,
+        confirming_user_id=requester,
+        plan_version=plan.plan_version,
+        plan_hash="sha256:stale",
+    )
+
+    assert confirmed.status == "confirmed"
+    assert confirmed.plan_hash == plan.plan_hash
 
 
 # ---------------------------------------------------------------------------

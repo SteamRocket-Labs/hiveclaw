@@ -51,6 +51,16 @@ def test_agent_create_schema_rejects_legacy_agent_class_value():
     assert payload.agent_class == "internal_tenant"
 
 
+def test_agent_schema_accepts_explicit_strict_coordinator_mode():
+    from app.schemas.schemas import AgentCreate, AgentUpdate
+
+    created = AgentCreate(name="Strict Coordinator", execution_mode="coordinator_strict")
+    updated = AgentUpdate(execution_mode="coordinator_strict")
+
+    assert created.execution_mode == "coordinator_strict"
+    assert updated.execution_mode == "coordinator_strict"
+
+
 def test_agent_create_accepts_role_descriptions_up_to_prompt_guard_limit():
     from app.schemas.schemas import AgentCreate
 

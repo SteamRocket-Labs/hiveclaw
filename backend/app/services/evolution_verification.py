@@ -77,8 +77,8 @@ def _run_deterministic_command(workspace: Path, grader: dict[str, Any]) -> dict[
         evidence={
             "command": [str(part) for part in command],
             "returncode": completed.returncode,
-            "stdout": completed.stdout[-2000:],
-            "stderr": completed.stderr[-2000:],
+            "stdout": completed.stdout,
+            "stderr": completed.stderr,
         },
     )
 
@@ -329,6 +329,7 @@ def _run_skill_guard_check(workspace: Path, grader: dict[str, Any]) -> dict[str,
     )
     passed = (
         guard.allowed
+        and not guard.requires_review
         and parse_smoke["parsed"]
         and load_smoke["loaded"]
         and not tool_dry_run["unknown_tools"]

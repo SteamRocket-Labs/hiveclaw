@@ -687,6 +687,31 @@ async def test_run_completer_maps_ok_to_completed(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_run_completer_preserves_full_result_for_runtime_and_child_session(monkeypatch):
+    captured: dict = {}
+
+    async def _fake_update(run_id, **fields):
+        captured["run_id"] = run_id
+        captured.update(fields)
+        return True
+
+    async def _fake_session_state(**kwargs):
+        captured["session_state_update"] = kwargs
+
+    monkeypatch.setattr(svc, "update_runtime_task_record", _fake_update)
+    monkeypatch.setattr(svc, "update_subagent_child_session_state_for_run", _fake_session_state)
+    full_result = "child evidence\n" + ("E" * 9000) + "\nEND_OF_CHILD_EVIDENCE"
+
+    await svc.make_run_completer("run-full")(
+        SubagentResult(name="scout", type="worker", status="completed", content=full_result, tokens_used=42)
+    )
+
+    assert captured["result_summary"] == full_result
+    assert captured["session_state_update"]["summary"] == full_result
+    assert captured["metadata_json"]["completion_journal"][-1]["summary"] == full_result
+
+
+@pytest.mark.asyncio
 async def test_run_completer_maps_failure_to_failed(monkeypatch):
     captured: dict = {}
 
@@ -1325,6 +1350,33 @@ async def test_load_subagent_resume_messages_uses_budget_not_fixed_event_count(m
 
 
 @pytest.mark.asyncio
+async def test_load_subagent_resume_messages_never_discards_early_transcript_for_a_char_budget(monkeypatch):
+    parent_agent_id = uuid.uuid4()
+    child_session_id = uuid.uuid4().hex
+    events = [
+        SimpleNamespace(event_type="user_message", role="user", content="EARLIEST_DECISIVE_CONTEXT", metadata={}),
+        SimpleNamespace(event_type="assistant_message", role="assistant", content="middle evidence", metadata={}),
+        SimpleNamespace(event_type="user_message", role="user", content="latest evidence", metadata={}),
+    ]
+
+    monkeypatch.setattr("app.memory.t0.ledger.replay_t0_session_events", lambda **_kwargs: list(events))
+
+    messages = await svc._load_subagent_resume_messages(
+        parent_agent_id=parent_agent_id,
+        child_session_id=child_session_id,
+        prompt="continue",
+        max_resume_chars=20,
+    )
+
+    assert [message["content"] for message in messages] == [
+        "EARLIEST_DECISIVE_CONTEXT",
+        "middle evidence",
+        "latest evidence",
+        "continue",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_load_subagent_resume_messages_preserves_tool_metadata_without_executable_tool_calls(monkeypatch):
     parent_agent_id = uuid.uuid4()
     child_session_id = uuid.uuid4().hex
@@ -1549,22 +1601,32 @@ async def test_dispatch_persisted_subagent_run_restores_model_resolver_for_real_
 async def test_dispatch_persisted_subagent_run_restores_memory_and_fork_context(monkeypatch, tmp_path):
     from app.agents import subagent as subagent_core
     from app.agents import subagent_memory as memory_mod
+    from app.memory.write_gate import MemoryWriteDecision
 
     run_id = uuid.uuid4().hex
     parent = uuid.uuid4()
     tenant_id = uuid.uuid4()
     parent_model = SimpleNamespace(provider="openai", model="parent", api_key="k", base_url=None)
-    memory_store = SubagentMemoryStore(tmp_path / "subagent-memory")
-    memory_store.record_how("researcher", "Prefer primary filings.", category="source_calibration")
     calls: dict[str, object] = {}
 
-    async def allowed_memory_write(content, **_kwargs):
-        return SimpleNamespace(
+    def reviewed_memory_write(content, *, category, **_kwargs):
+        return MemoryWriteDecision(
+            original_content=content,
             rejected=False,
             reason="",
             content=content,
+            category=category,
+            sensitivity="PL2_internal",
             metadata={"entry_id": "worker-lesson", "sensitivity": "internal"},
         )
+
+    async def allowed_memory_write(content, *, category, **kwargs):
+        return reviewed_memory_write(content, category=category, **kwargs)
+
+    monkeypatch.setattr(memory_mod, "prepare_memory_write", reviewed_memory_write)
+    monkeypatch.setattr(memory_mod, "prepare_memory_write_with_llm", allowed_memory_write)
+    memory_store = SubagentMemoryStore(tmp_path / "subagent-memory")
+    memory_store.record_how("researcher", "Prefer primary filings.", category="source_calibration")
 
     async def fake_get_runtime_task_record(task_id):
         assert task_id == run_id
@@ -1623,7 +1685,6 @@ async def test_dispatch_persisted_subagent_run_restores_memory_and_fork_context(
     async def fake_update_child_session(**kwargs):
         calls["child_session_update"] = kwargs
 
-    monkeypatch.setattr(memory_mod, "prepare_memory_write_with_llm", allowed_memory_write)
     monkeypatch.setattr(svc, "get_runtime_task_record", fake_get_runtime_task_record)
     monkeypatch.setattr(svc, "_resolve_parent_runtime", fake_resolve_parent_runtime, raising=False)
     monkeypatch.setattr(svc, "_load_parent_messages_for_fork", fake_load_parent_messages_for_fork, raising=False)
@@ -1636,9 +1697,13 @@ async def test_dispatch_persisted_subagent_run_restores_memory_and_fork_context(
         raising=False,
     )
     monkeypatch.setattr(svc, "spawn_subagent", real_spawn_with_fake_invoke, raising=False)
+
+    async def noop_async(**_kwargs):
+        return None
+
     monkeypatch.setattr(subagent_core, "_append_subagent_t0_event", lambda **_kwargs: None)
     monkeypatch.setattr(subagent_core, "_seal_subagent_t0_segment", lambda **_kwargs: None)
-    monkeypatch.setattr(subagent_core, "_emit_subagent_lifecycle_hook", lambda **_kwargs: None)
+    monkeypatch.setattr(subagent_core, "_emit_subagent_lifecycle_hook", noop_async)
     monkeypatch.setattr(svc, "update_runtime_task_record", fake_update_runtime_task_record)
     monkeypatch.setattr(svc, "update_subagent_child_session_state_for_run", fake_update_child_session)
 

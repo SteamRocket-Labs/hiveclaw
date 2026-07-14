@@ -108,6 +108,28 @@ async def test_log_activity_commits_successfully(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_activity_summary_preview_preserves_complete_text_in_durable_detail(monkeypatch):
+    from app.services.activity_logger import log_activity
+
+    fake_session = _FailingSession(fail_on_commit=False)
+    _patch_tenant_scoped_session(monkeypatch, lambda: fake_session)
+    decisive_tail = "ACTIVITY_DECISIVE_TAIL"
+    summary = ("s" * 1_200) + decisive_tail
+
+    await log_activity(
+        agent_id=uuid.uuid4(),
+        action_type="tool_call",
+        summary=summary,
+        detail={"tool": "example"},
+    )
+
+    row = fake_session.added[0]
+    assert len(row.summary) <= 500
+    assert row.detail_json["full_summary"] == summary
+    assert row.detail_json["full_summary"].endswith(decisive_tail)
+
+
+@pytest.mark.asyncio
 async def test_log_activity_persists_owner_and_root_session_or_quarantines_unknown_provenance(monkeypatch):
     from app.services.activity_logger import log_activity
 

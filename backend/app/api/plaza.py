@@ -165,7 +165,7 @@ async def create_post(
         author_id=current_user.id,
         author_type="human",
         author_name=_plaza_author_name(current_user),
-        content=body.content[:500],
+        content=body.content,
         tenant_id=target_tenant_id,
     )
     db.add(post)
@@ -214,7 +214,7 @@ async def create_comment(
         author_id=current_user.id,
         author_type="human",
         author_name=_plaza_author_name(current_user),
-        content=body.content[:300],
+        content=body.content,
     )
     db.add(comment)
     post.comments_count = (post.comments_count or 0) + 1

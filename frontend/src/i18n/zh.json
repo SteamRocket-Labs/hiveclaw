@@ -1588,6 +1588,7 @@
       "disclosure": {
         "processing": "处理中",
         "processed": "已处理",
+        "showCompleteOutput": "查看完整输出",
         "waiting": "等待输入",
         "stepCount": "{{count}} 个步骤",
         "working": "处理中"
@@ -3320,7 +3321,7 @@
     "leafEvidence": "{{failed}}/{{total}} 个工作调用失败",
     "leafCalls": "工作调用",
     "repair": "修复运行",
-    "suggestionBody": "「{{name}}」已成功运行 {{count}} 次——建议固化为可复用模板。",
+    "suggestionBody": "「{{name}}」已有 {{count}} 条运行证据。请先查看完整证据，再由模型或你决定是否提出模板固化申请。",
     "loadingDetail": "正在加载步骤明细…",
     "emptySteps": "该运行没有步骤记录。",
     "statusDraft": "待审批",

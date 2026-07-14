@@ -198,7 +198,7 @@ def record_skill_handoff_execution(
             "source": str(handoff.get("source") or ""),
             "execution_tool": "spawn_subagent",
             "tool_call_id": tool_call_id,
-            "result": str(result)[:2000],
+            "result": str(result),
         }
     )
     metadata["executed_skill_handoffs"] = executed

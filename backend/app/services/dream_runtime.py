@@ -276,7 +276,7 @@ def _complete_task(
     normalized_outcome = {"status": "completed", **dict(outcome or {})}
     task.status = "completed"
     task.completed_at = task.completed_at or now
-    task.result_summary = json.dumps(normalized_outcome, ensure_ascii=False, default=str)[:20_000]
+    task.result_summary = json.dumps(normalized_outcome, ensure_ascii=False, default=str)
     _clear_claim(task)
     metadata.update(
         {
@@ -399,12 +399,12 @@ async def _finalize_dream(
             task.status = "resumable"
             task.scheduled_at = _utcnow() + timedelta(seconds=max(5, attempts * 10))
             task.completed_at = None
-            task.result_summary = error[:20_000]
+            task.result_summary = error
             _clear_claim(task)
             metadata.update(
                 {
                     "phase": "retry_wait",
-                    "retry_reason": error[:2_000],
+                    "retry_reason": error,
                     "automatic_retry_allowed": True,
                     "last_attempt_outcome": dict(result or {}),
                 }
@@ -413,7 +413,7 @@ async def _finalize_dream(
             return "retry_scheduled"
         task.status = "needs_reconciliation"
         task.completed_at = _utcnow()
-        task.result_summary = error[:20_000]
+        task.result_summary = error
         _clear_claim(task)
         metadata.update(
             {
@@ -423,7 +423,7 @@ async def _finalize_dream(
                 "reconciliation_status": "open",
                 "reconciliation_reason": "dream_retry_exhausted",
                 "reconciliation_retry_allowed": True,
-                "outcome": {"status": "needs_reconciliation", "error": error[:2_000]},
+                "outcome": {"status": "needs_reconciliation", "error": error},
                 "last_attempt_outcome": dict(result or {}),
             }
         )

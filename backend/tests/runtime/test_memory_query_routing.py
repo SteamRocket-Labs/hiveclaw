@@ -257,8 +257,9 @@ async def test_resolve_memory_context_emits_durable_degraded_fact_and_model_mark
 
 
 @pytest.mark.asyncio
-async def test_resolve_memory_context_blocks_model_when_resident_context_is_unavailable(monkeypatch) -> None:
-    from app.kernel.contracts import ContextDependencyUnavailable
+async def test_resolve_memory_context_keeps_conversation_alive_when_resident_context_is_unavailable(
+    monkeypatch,
+) -> None:
     from app.runtime import invoker
     from app.runtime.invoker import AgentInvocationRequest
     from app.services.memory_service import MemoryContextResult
@@ -272,7 +273,10 @@ async def test_resolve_memory_context_blocks_model_when_resident_context_is_unav
             code="resident_profile_unavailable",
             user_message="Required agent memory is temporarily unavailable.",
             retryable=True,
-            block_model=True,
+            conversation_available=True,
+            authority_context_available=False,
+            durable_write_available=False,
+            external_effects_available=False,
         )
 
     async def ignore_span(**_kwargs):
@@ -293,8 +297,13 @@ async def test_resolve_memory_context_blocks_model_when_resident_context_is_unav
         ),
     )
 
-    with pytest.raises(ContextDependencyUnavailable) as exc:
-        await invoker._resolve_memory_context(request, uuid4())
+    context = await invoker._resolve_memory_context(request, uuid4())
 
-    assert exc.value.dependency == "memory"
+    assert "Memory runtime degraded" in context
+    assert "external effects are frozen" in context
     assert events[0]["event_type"] == "memory_context_unavailable"
+    status = request.session_context.metadata["memory_context_status"]
+    assert status["conversation_available"] is True
+    assert status["authority_context_available"] is False
+    assert status["durable_write_available"] is False
+    assert status["external_effects_available"] is False

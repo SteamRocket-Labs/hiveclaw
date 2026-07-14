@@ -3,11 +3,35 @@ from __future__ import annotations
 from types import SimpleNamespace
 from uuid import uuid4
 
+import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from app.api.memory import router
 from app.core.security import get_current_admin, get_current_user
+
+
+@pytest.fixture(autouse=True)
+def _review_team_memory_semantics(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep HTTP tests on the accepted Memory Gate path without platform fallback."""
+    import app.memory.write_gate as write_gate
+    import app.services.team_memory as team_memory
+
+    real_prepare = write_gate.prepare_memory_write
+
+    async def reviewed_prepare(content: str, **kwargs):
+        kwargs.pop("tenant_id", None)
+        assessment = write_gate.MemoryThreatAssessment(
+            rejected=False,
+            confidence=0.99,
+            rationale="deterministic test double for an explicit model review",
+            semantic_review_available=True,
+            complete_coverage=True,
+            coverage_refs=("test://team-memory-api/full-input",),
+        )
+        return real_prepare(content, threat_assessment=assessment, **kwargs)
+
+    monkeypatch.setattr(team_memory, "prepare_memory_write_with_llm", reviewed_prepare)
 
 
 def _build_client(*, role: str, tmp_path):

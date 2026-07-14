@@ -116,10 +116,13 @@ def search_plane_facts(
     agent_id: uuid.UUID | str,
     query: str,
     *,
-    limit: int = 5,
+    limit: int | None = None,
 ) -> list[dict]:
-    """Rank two-plane facts for a query: knowledge pages via the link graph
-    (PPR), profile entries via lexical overlap. Zero LLM."""
+    """Return ranked two-plane candidates without hiding their full semantics.
+
+    Ranking signals are observations. A count limit is applied only when the
+    calling model explicitly supplies one.
+    """
     needle = (query or "").strip().lower()
     results: list[dict] = []
     try:
@@ -138,7 +141,7 @@ def search_plane_facts(
                 {
                     "id": str(hit.get("page_id") or "").rsplit("/", 1)[-1],
                     "category": str(hit.get("kind") or "knowledge"),
-                    "content": str(hit.get("preview") or ""),
+                    "content": str(hit.get("content") or hit.get("preview") or ""),
                     "preview": str(hit.get("preview") or ""),
                     "timestamp": "",
                     "source": str(hit.get("source_ref") or ""),
@@ -166,7 +169,7 @@ def search_plane_facts(
                 )
     if not results and not _has_two_plane_documents(data_root, agent_id):
         results.extend(_search_legacy_flat_t3(data_root, agent_id, query, limit=limit))
-    return results[: max(1, limit)]
+    return results if limit is None else results[:limit]
 
 
 def load_plane_entries(data_root: Path | str, agent_id: uuid.UUID | str, ids: list[str]) -> list[dict]:
@@ -260,7 +263,7 @@ def _search_legacy_flat_t3(
     agent_id: uuid.UUID | str,
     query: str,
     *,
-    limit: int,
+    limit: int | None,
 ) -> list[dict]:
     terms = [term for term in re.split(r"\W+", (query or "").strip().lower()) if term]
     if not terms:
@@ -289,7 +292,7 @@ def _search_legacy_flat_t3(
                     },
                 }
             )
-            if len(hits) >= max(1, limit):
+            if limit is not None and len(hits) >= limit:
                 return hits
     return hits
 

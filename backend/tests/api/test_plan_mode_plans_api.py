@@ -468,7 +468,7 @@ def test_confirm_and_handoff_success_returns_handoff_payload(monkeypatch):
     assert captured["plan_hash"] == "sha256:abc"
 
 
-def test_confirm_version_mismatch_maps_to_409(monkeypatch):
+def test_confirm_version_mismatch_maps_to_stale_confirmation_409(monkeypatch):
     agent_id = uuid4()
 
     class _Service:
@@ -484,7 +484,9 @@ def test_confirm_version_mismatch_maps_to_409(monkeypatch):
         json={"plan_version": 1, "plan_hash": "sha256:abc"},
     )
     assert resp.status_code == 409
-    assert resp.json()["detail"]["error"] == "version_mismatch"
+    assert resp.json()["detail"]["error"] == "stale_confirmation"
+    assert resp.json()["detail"]["reason_code"] == "version_mismatch"
+    assert resp.json()["detail"]["current"]["plan_version"] == 1
 
 
 def test_confirm_self_confirm_maps_to_403(monkeypatch):

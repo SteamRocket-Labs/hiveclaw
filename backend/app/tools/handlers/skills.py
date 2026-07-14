@@ -283,8 +283,8 @@ async def tool_search(agent_id: uuid.UUID, workspace: Path, arguments: dict) -> 
         name="pin_skill",
         description=(
             "Pin or unpin one of your own skills to control auto-archival.\n\n"
-            "Pinned skills are never auto-archived by the skill curator, even after "
-            "long disuse; unpin to let an unused skill age out naturally.\n"
+            "Pinned skills cannot be archived or marked stale by lifecycle review. "
+            "Unpin only when you want a future model review to be allowed to propose that change.\n"
             "Use this when the skill-evolution digest warns that a still-useful "
             "skill is nearing auto-archival, or to retire a skill you no longer need."
         ),
@@ -326,5 +326,5 @@ def pin_skill(workspace: Path, arguments: dict, tenant_id: str | None = None) ->
 
     set_skill_pinned(workspace, slug, pinned)
     if pinned:
-        return f"📌 Pinned skill '{slug}'. The curator will never auto-archive it while pinned."
-    return f"Unpinned skill '{slug}'. It can now age out and be auto-archived if it stays unused."
+        return f"📌 Pinned skill '{slug}'. Model lifecycle review cannot archive or mark it stale while pinned."
+    return f"Unpinned skill '{slug}'. A future model lifecycle review may propose a governed state change."

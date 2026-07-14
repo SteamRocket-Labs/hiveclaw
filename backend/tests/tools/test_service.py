@@ -1726,8 +1726,10 @@ async def test_tool_runtime_service_exception_returns_structured_error():
         activity_logger=None,
     )
 
+    full_error = "invalid upstream payload " + ("E" * 700) + " END_OF_UPSTREAM_ERROR"
+
     async def broken_execute(self, *_args, **_kwargs):
-        raise ValueError("invalid upstream payload")
+        raise ValueError(full_error)
 
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setattr(ToolRuntimeService, "execute_with_context", broken_execute)
@@ -1747,6 +1749,7 @@ async def test_tool_runtime_service_exception_returns_structured_error():
     assert payload["error_class"] == "tool_execution_error"
     assert payload["retryable"] is False
     assert payload["provider"] == "runtime"
+    assert full_error in payload["message"]
 
 
 @pytest.mark.asyncio

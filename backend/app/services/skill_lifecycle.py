@@ -7,7 +7,6 @@ import hashlib
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -56,11 +55,6 @@ class SkillCandidateRecord:
     last_updated_at: str
 
 
-_WINDOW_DAYS = 14
-_PROMOTE_THRESHOLD = 3
-_PATCH_THRESHOLD = 2
-
-
 def _candidate_path(workspace: Path) -> Path:
     evolution_dir = workspace / "evolution"
     evolution_dir.mkdir(parents=True, exist_ok=True)
@@ -94,35 +88,14 @@ def _usage_path(workspace: Path) -> Path:
     return evolution_dir / "skill_usage.jsonl"
 
 
-def _promotion_evidence_path(workspace: Path) -> Path:
-    evolution_dir = workspace / "evolution"
-    evolution_dir.mkdir(parents=True, exist_ok=True)
-    return evolution_dir / "skill_promotion_evidence.jsonl"
-
-
 def _ensure_iso(occurred_at: str | None) -> str:
     return occurred_at or datetime.now(timezone.utc).isoformat()
 
 
-def _parse_iso(value: str) -> datetime | None:
-    try:
-        normalized = value.replace("Z", "+00:00")
-        return datetime.fromisoformat(normalized)
-    except ValueError:
-        return None
+def _append_observed_stamp(stamps: list[str], stamp: str) -> list[str]:
+    """Preserve every observed signal; ordering/counts are evidence, not verdicts."""
 
-
-def _filter_recent(stamps: list[str], *, anchor: str) -> list[str]:
-    anchor_dt = _parse_iso(anchor)
-    if anchor_dt is None:
-        return stamps[-2:]
-    floor = anchor_dt - timedelta(days=_WINDOW_DAYS)
-    filtered: list[str] = []
-    for stamp in stamps:
-        parsed = _parse_iso(stamp)
-        if parsed is None or parsed >= floor:
-            filtered.append(stamp)
-    return list(dict.fromkeys(filtered))[-10:]
+    return list(dict.fromkeys([*stamps, stamp]))
 
 
 def _normalize_tool_names(tool_names: list[str] | tuple[str, ...]) -> list[str]:
@@ -152,45 +125,6 @@ def _evidence_refs(*, session_id: str | None, runtime_task_id: str | None, trace
         refs.append(f"trace:{trace_id}")
     refs.append("evolution/skill_usage.jsonl")
     return refs
-
-
-def _append_promotion_evidence(
-    workspace: Path,
-    *,
-    decision: str,
-    usage_event: dict[str, Any],
-    candidate_result: dict[str, Any],
-    transaction: AgentAssetTransaction,
-) -> str:
-    path = _promotion_evidence_path(workspace)
-    event = {
-        "schema": "skill_promotion_evidence.v1",
-        "occurred_at": usage_event["occurred_at"],
-        "decision": decision,
-        "source": usage_event["source"],
-        "skill_name": usage_event["skill_name"],
-        "loaded_skill_names": list(usage_event["loaded_skill_names"]),
-        "tool_names": list(usage_event["tool_names"]),
-        "workflow_signature": usage_event["workflow_signature"],
-        "status": usage_event["status"],
-        "session_id": usage_event["session_id"],
-        "runtime_task_id": usage_event["runtime_task_id"],
-        "trace_id": usage_event["trace_id"],
-        "evidence_refs": _evidence_refs(
-            session_id=usage_event.get("session_id"),
-            runtime_task_id=usage_event.get("runtime_task_id"),
-            trace_id=usage_event.get("trace_id"),
-        ),
-        "promote_candidate_count": candidate_result.get("promote_candidate_count", 0),
-        "patch_candidate_count": candidate_result.get("patch_candidate_count", 0),
-        "note": usage_event["note"],
-        "blocker": usage_event["blocker"],
-    }
-    transaction.append_text(
-        path.relative_to(workspace).as_posix(),
-        json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n",
-    )
-    return "evolution/skill_promotion_evidence.jsonl"
 
 
 def _load_candidates(path: Path) -> dict[str, SkillCandidateRecord]:
@@ -337,7 +271,7 @@ def _write_candidate_package(
         "blocker": record.blocker,
         "last_updated_at": record.last_updated_at,
     }
-    source_refs = ["evolution/skill_usage.jsonl", "evolution/skill_promotion_evidence.jsonl"]
+    source_refs = ["evolution/skill_usage.jsonl"]
     if record.workflow_signature:
         source_refs.append(f"workflow_signature:{record.workflow_signature}")
     return write_skill_candidate_package(
@@ -465,9 +399,9 @@ def record_skill_execution(
     stamp = _ensure_iso(occurred_at)
     normalized_status = status.strip().lower()
     if normalized_status == "success":
-        record.promote_candidates = _filter_recent(record.promote_candidates + [stamp], anchor=stamp)
+        record.promote_candidates = _append_observed_stamp(record.promote_candidates, stamp)
     elif used_skill and normalized_status in {"failed", "workaround"}:
-        record.patch_candidates = _filter_recent(record.patch_candidates + [stamp], anchor=stamp)
+        record.patch_candidates = _append_observed_stamp(record.patch_candidates, stamp)
 
     record.skill_name = skill_name
     record.last_status = normalized_status
@@ -475,33 +409,16 @@ def record_skill_execution(
     record.blocker = (blocker or "").strip()
     record.last_updated_at = stamp
 
+    # Runtime aggregation owns facts only. The Skill Distiller model reviews
+    # all evidence and authors promote/patch/defer/reject.
     decision = "candidate"
-    if used_skill and len(record.patch_candidates) >= _PATCH_THRESHOLD:
-        decision = "patch"
-        record_skill_lifecycle_event(
-            workspace,
-            skill_name=skill_name,
-            status="patch",
-            note=note,
-            transaction=transaction,
-        )
-    elif normalized_status == "success" and not record.blocker and len(record.promote_candidates) >= _PROMOTE_THRESHOLD:
-        decision = "promote"
-        record_skill_lifecycle_event(
-            workspace,
-            skill_name=skill_name,
-            status="promote",
-            note=note,
-            transaction=transaction,
-        )
-    else:
-        record_skill_lifecycle_event(
-            workspace,
-            skill_name=skill_name,
-            status="candidate",
-            note=note,
-            transaction=transaction,
-        )
+    record_skill_lifecycle_event(
+        workspace,
+        skill_name=skill_name,
+        status="candidate",
+        note=note,
+        transaction=transaction,
+    )
     _write_candidate_package(workspace, record, status=decision, transaction=transaction)
     legacy_path = "evolution/skill_candidates.md"
     if transaction.read_bytes(legacy_path) is not None:
@@ -536,8 +453,8 @@ def record_skill_runtime_usage(
 
     This is intentionally small and file-backed like the existing lifecycle
     artifacts: the runtime can call it from web chat / trigger / task paths
-    without depending on the distiller daemon. Non-actionable/noop sessions are
-    still logged for observability, but they do not pollute candidate counters.
+    without depending on the distiller daemon. Every status remains reviewable
+    evidence; counters are observations only and never choose a semantic lane.
     """
 
     if transaction is None:
@@ -598,15 +515,6 @@ def record_skill_runtime_usage(
         json.dumps(usage_event, ensure_ascii=False, sort_keys=True) + "\n",
     )
 
-    if normalized_status in {"noop", "unknown", ""}:
-        return {
-            "decision": "ignored",
-            "workflow_signature": workflow_signature,
-            "promote_candidate_count": 0,
-            "patch_candidate_count": 0,
-            "last_status": normalized_status or "unknown",
-        }
-
     trial_kind = (
         "positive"
         if normalized_status == "success" and not (blocker or "").strip()
@@ -654,6 +562,9 @@ def record_skill_runtime_usage(
             "provisional_trials": provisional_trials,
         }
 
+    # Evolvability is an authority boundary, not a semantic judgment. Preserve
+    # the usage evidence above, but never open an automatic patch lane for a
+    # system-owned or otherwise non-evolvable Skill.
     if (
         used_skill
         and normalized_status in {"failed", "workaround"}
@@ -678,14 +589,6 @@ def record_skill_runtime_usage(
         occurred_at=stamp,
         transaction=transaction,
     )
-    if result.get("decision") in {"promote", "patch"}:
-        result["evidence_ref"] = _append_promotion_evidence(
-            workspace,
-            decision=str(result["decision"]),
-            usage_event=usage_event,
-            candidate_result=result,
-            transaction=transaction,
-        )
     if provisional_trials:
         result["provisional_trials"] = provisional_trials
     return result

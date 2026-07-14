@@ -486,7 +486,7 @@ async def feishu_oauth_callback_get(code: str, state: str, db: AsyncSession = De
     except Exception as exc:
         session.status = "expired"
         session.provider_type = "feishu"
-        session.error_msg = str(exc)[:500]
+        session.error_msg = str(exc)
         await db.commit()
         return HTMLResponse("<html><body>Feishu SSO failed.</body></html>", status_code=400)
 

@@ -39,7 +39,7 @@ def apply_trigger_failure_policy(trigger: Any, *, error: str, now: datetime | No
         {
             "failure_count": failure_count,
             "last_failure_at": current.isoformat(),
-            "last_failure": str(error)[:1000],
+            "last_failure": str(error),
             "backoff_until": backoff_until.isoformat(),
             "last_runtime_failure_policy": runtime_failure_policy,
         }

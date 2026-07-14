@@ -1,6 +1,6 @@
 """Evolution loop P1 (docs/subagent-evolution-loop.md): nomination + drafting.
 
-Threshold-gated, agent-level-only, fail-soft. The proposal is a file —
+Model-reviewed, agent-level-only, fail-soft. The proposal is a file —
 never applied here; P2's approval surface is the only definition writer.
 """
 
@@ -50,7 +50,11 @@ def _seed_memory(store: SubagentMemoryStore, monkeypatch, n: int) -> list[str]:
         entry_id = f"e{len(ids) + 1}"
         ids.append(entry_id)
         return SimpleNamespace(
-            rejected=False, reason="", content=content, metadata={"entry_id": entry_id, "sensitivity": "internal"}
+            rejected=False,
+            held=False,
+            reason="",
+            content=content,
+            metadata={"entry_id": entry_id, "sensitivity": "internal"},
         )
 
     monkeypatch.setattr(mem_mod, "prepare_memory_write", decision)
@@ -172,55 +176,63 @@ async def test_nominate_creates_pending_proposal(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_nominate_skips_oversized_body_without_llm_call(tmp_path, monkeypatch):
-    """Limit-coherence guard: a body too large to round-trip the 8192 draft
-    budget must skip nomination loudly instead of failing every tick."""
+async def test_nominate_reviews_oversized_body_instead_of_mechanically_skipping(tmp_path, monkeypatch):
     agent_id = uuid.uuid4()
     _agent_definition(agent_id, tmp_path, body="x" * 25_000)
     memory_store = SubagentMemoryStore(tmp_path / "mem")
-    _seed_memory(memory_store, monkeypatch, n=9)
+    ids = _seed_memory(memory_store, monkeypatch, n=9)
+    calls = []
 
-    async def fail_chat(**kwargs):
-        raise AssertionError("LLM must not be called for an oversized body")
+    async def fake_chat(**kwargs):
+        calls.append(kwargs)
+        return _draft_response([ids[0]])
 
-    monkeypatch.setattr(evo_mod, "chat_complete", fail_chat)
+    async def fake_capture(**kwargs):
+        return None
 
-    assert (
-        await maybe_nominate(
-            agent_id=agent_id,
-            spec_name="scout",
-            memory_store=memory_store,
-            model_config=_MODEL_CONFIG,
-            threshold=8,
-            agent_data_dir=tmp_path,
-        )
-        is None
+    monkeypatch.setattr(evo_mod, "chat_complete", fake_chat)
+    monkeypatch.setattr(evo_mod, "_capture_subagent_candidate_factor", fake_capture)
+
+    proposal = await maybe_nominate(
+        agent_id=agent_id,
+        spec_name="scout",
+        memory_store=memory_store,
+        model_config=_MODEL_CONFIG,
+        threshold=8,
+        agent_data_dir=tmp_path,
     )
+    assert proposal is not None
+    assert calls
 
 
 @pytest.mark.asyncio
-async def test_nominate_skips_below_threshold_without_llm_call(tmp_path, monkeypatch):
+async def test_nominate_lets_model_review_any_available_memory_instead_of_count_gating(tmp_path, monkeypatch):
     agent_id = uuid.uuid4()
     _agent_definition(agent_id, tmp_path)
     memory_store = SubagentMemoryStore(tmp_path / "mem")
-    _seed_memory(memory_store, monkeypatch, n=3)
+    ids = _seed_memory(memory_store, monkeypatch, n=3)
+    calls = []
 
-    async def fail_chat(**kwargs):
-        raise AssertionError("LLM must not be called below threshold")
+    async def fake_chat(**kwargs):
+        calls.append(kwargs)
+        return _draft_response([ids[0]])
 
-    monkeypatch.setattr(evo_mod, "chat_complete", fail_chat)
+    async def fake_capture(**kwargs):
+        return None
 
-    assert (
-        await maybe_nominate(
-            agent_id=agent_id,
-            spec_name="scout",
-            memory_store=memory_store,
-            model_config=_MODEL_CONFIG,
-            threshold=8,
-            agent_data_dir=tmp_path,
-        )
-        is None
+    monkeypatch.setattr(evo_mod, "chat_complete", fake_chat)
+    monkeypatch.setattr(evo_mod, "_capture_subagent_candidate_factor", fake_capture)
+
+    proposal = await maybe_nominate(
+        agent_id=agent_id,
+        spec_name="scout",
+        memory_store=memory_store,
+        model_config=_MODEL_CONFIG,
+        threshold=8,
+        agent_data_dir=tmp_path,
     )
+    assert proposal is not None
+    assert calls
 
 
 @pytest.mark.asyncio
@@ -478,11 +490,26 @@ async def test_spawn_distillation_triggers_nomination(tmp_path, monkeypatch):
         return None
 
     monkeypatch.setattr(evo_mod, "maybe_nominate", fake_nominate)
+
+    async def allow_with_llm(content, **kwargs):
+        return SimpleNamespace(
+            rejected=False,
+            held=False,
+            reason="",
+            content=content,
+            metadata={"entry_id": "e1", "sensitivity": "internal"},
+        )
+
+    monkeypatch.setattr(mem_mod, "prepare_memory_write_with_llm", allow_with_llm)
     monkeypatch.setattr(
         mem_mod,
         "prepare_memory_write",
         lambda content, **kw: SimpleNamespace(
-            rejected=False, reason="", content=content, metadata={"entry_id": "e1", "sensitivity": "internal"}
+            rejected=False,
+            held=False,
+            reason="",
+            content=content,
+            metadata={"entry_id": "e1", "sensitivity": "internal"},
         ),
     )
 

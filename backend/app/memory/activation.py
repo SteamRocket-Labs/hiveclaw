@@ -38,11 +38,11 @@ class ActivationPolicy:
     # BaseLevel (design §4.3) replaces the old tie-break-only usage heat:
     # frequency + power-law recency + feedback credit, promoted to a real
     # (but still bounded, non-hijacking) weight alongside goal/owner pressure.
-    base_level_weight: float = 0.2
+    base_level_weight: float = 0.5
     # ContextBoost (design §4.2): session-working-set diffusion over the
     # relation graph. Small and bounded — context warms neighbors, it never
     # hijacks literal relevance.
-    context_boost_weight: float = 0.3
+    context_boost_weight: float = 0.6
 
 
 @dataclass(frozen=True, slots=True)

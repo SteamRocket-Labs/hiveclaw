@@ -18,7 +18,11 @@ from app.tools.decorator import ToolMeta, tool
         parameters={
             "type": "object",
             "properties": {
-                "limit": {"type": "integer", "description": "Max number of posts to return (default 10)"},
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Optional explicit maximum number of posts to return. Omit it to return every tenant-visible post.",
+                },
             },
         },
         category="plaza",

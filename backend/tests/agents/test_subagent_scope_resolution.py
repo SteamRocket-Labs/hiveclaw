@@ -169,8 +169,24 @@ def test_list_skips_filename_frontmatter_name_mismatch(tmp_path):
         resolve_subagent_definition("foo", agent_id=AGENT_ID, tenant_id=None, agent_data_dir=tmp_path)
 
 
-def test_agent_memory_store_isolated_from_tenant(tmp_path):
+def test_agent_memory_store_isolated_from_tenant(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from app.agents import subagent_memory as subagent_memory_module
+
     other_agent = uuid.UUID("00000000-0000-0000-0000-00000000a002")
+
+    monkeypatch.setattr(
+        subagent_memory_module,
+        "prepare_memory_write",
+        lambda content, **_kwargs: SimpleNamespace(
+            rejected=False,
+            held=False,
+            reason="",
+            content=content,
+            metadata={"entry_id": "semantic-review-1", "sensitivity": "PL1_public"},
+        ),
+    )
 
     agent_mem = memory_store_for_agent(AGENT_ID, agent_data_dir=tmp_path)
     other_mem = memory_store_for_agent(other_agent, agent_data_dir=tmp_path)

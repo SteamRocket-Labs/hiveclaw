@@ -273,10 +273,11 @@ async def test_system_hr_personal_kb_read_is_bound_to_current_requester(monkeypa
 
     assert service.calls[0]["owner_user_id"] == requester_id
     assert service.calls[0]["owner_user_id"] != first_creator_id
+    assert service.calls[0]["limit"] is None
 
 
 @pytest.mark.asyncio
-async def test_read_personal_kb_tool_uses_same_owner_acl_and_bounds_segments(monkeypatch) -> None:
+async def test_read_personal_kb_tool_uses_same_owner_acl_and_honors_only_explicit_bounds(monkeypatch) -> None:
     from app.tools.handlers import knowledge as knowledge_handler
 
     tenant_id = uuid.uuid4()
@@ -285,6 +286,8 @@ async def test_read_personal_kb_tool_uses_same_owner_acl_and_bounds_segments(mon
     document_id = uuid.uuid4()
     first_segment_id = uuid.uuid4()
     second_segment_id = uuid.uuid4()
+    decisive_tail = "PERSONAL_KB_DECISIVE_TAIL"
+    complete_second_segment = "SECOND-SECRET-CONTENT" + (" context" * 1_200) + decisive_tail
     detail = PersonalKnowledgeDocumentDetail(
         document_id=document_id,
         title="Private operating notes",
@@ -312,7 +315,7 @@ async def test_read_personal_kb_tool_uses_same_owner_acl_and_bounds_segments(mon
                 segment_id=second_segment_id,
                 position=1,
                 heading_path=["Two"],
-                content="SECOND-SECRET-CONTENT",
+                content=complete_second_segment,
                 token_count=5,
             ),
         ],
@@ -359,3 +362,24 @@ async def test_read_personal_kb_tool_uses_same_owner_acl_and_bounds_segments(mon
     assert service.calls[0]["principal"].principal_type == "agent_runtime"
     assert service.calls[0]["principal"].requester_user_id == owner_id
     assert service.calls[0]["principal"].agent_id == agent_id
+
+    complete_result = await knowledge_handler.read_personal_kb(
+        ToolExecutionRequest(
+            tool_name="read_personal_kb",
+            arguments={
+                "document_id": str(document_id),
+                "segment_ids": [str(second_segment_id)],
+            },
+            context=ToolExecutionContext(
+                agent_id=agent_id,
+                user_id=owner_id,
+                tenant_id=str(tenant_id),
+                workspace=Path("/tmp/workspace"),
+            ),
+        )
+    )
+    complete_payload = json.loads(complete_result)
+
+    assert complete_payload["truncated"] is False
+    assert complete_payload["segments"][0]["content"] == complete_second_segment
+    assert decisive_tail in complete_payload["segments"][0]["content"]

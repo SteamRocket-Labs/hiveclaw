@@ -118,7 +118,7 @@ class TestFormatBindings:
         source = _SOURCE_PATH.read_text(encoding="utf-8")
         assert 'f"Query: {query}\\n"' in source
         assert "f\"Headline: {hit.get('headline', _FALLBACK_HEADLINE)}\\n\"" in source
-        assert "f\"Heuristic recap: {hit.get('focused_recap', '')}\\n\"" in source
+        assert "f\"Evidence passthrough: {hit.get('focused_recap', '')}\\n\"" in source
         assert 'f"Evidence:\\n{evidence_block}\\n"' in source
 
     def test_prompt_still_wired_to_llm_call(self) -> None:
@@ -127,4 +127,5 @@ class TestFormatBindings:
         source = _SOURCE_PATH.read_text(encoding="utf-8")
         # Minimal sanity: the message construction still wraps the prompt.
         assert 'LLMMessage(role="user", content=prompt)' in source
-        assert "max_tokens=180" in source  # length budget preserved
+        assert "output_tokens = get_max_tokens(" in source
+        assert "max_tokens=output_tokens" in source

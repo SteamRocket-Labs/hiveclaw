@@ -248,7 +248,7 @@ class FeishuWSManager:
                 extra["connection_status"] = connection_status
                 extra["last_connection_checked_at"] = now.isoformat()
                 if error:
-                    extra["last_connection_error"] = error[:500]
+                    extra["last_connection_error"] = error
                     extra["last_connection_error_at"] = now.isoformat()
                 else:
                     extra.pop("last_connection_error", None)

@@ -37,9 +37,9 @@ _SYSTEM_REFLECTION_SOURCES = frozenset(
 
 def _message_digest(messages: list[dict[str, Any]]) -> str:
     snippets: list[str] = []
-    for message in messages[-6:]:
+    for message in messages:
         role = str(message.get("role") or "unknown")
-        content = str(message.get("content") or "").strip().replace("\n", " ")[:400]
+        content = str(message.get("content") or "").strip()
         if content:
             snippets.append(f"{role}: {content}")
     return "\n".join(snippets)
@@ -65,7 +65,7 @@ def _classification_from_metadata(metadata: dict[str, Any]) -> dict[str, Any] | 
         return None
     result = {
         "signal_type": signal_type,
-        "lesson": lesson[:1000],
+        "lesson": lesson,
         "method": str(raw.get("method") or "learning_brain_agent").strip() or "learning_brain_agent",
         "confidence": float(raw.get("confidence") or 0.0),
     }
@@ -82,22 +82,6 @@ def _classify_signal(messages: list[dict[str, Any]], metadata: dict[str, Any]) -
         if classifier_result["signal_type"] == "low_signal":
             return None
         return classifier_result
-
-    explicit = str(metadata.get("fast_reflection_signal") or metadata.get("user_correction") or "").strip()
-    if explicit:
-        return {
-            "signal_type": "user_preference_correction",
-            "lesson": explicit[:1000],
-            "method": "explicit_metadata",
-            "confidence": 1.0,
-        }
-    if metadata.get("repeated_workflow_signature"):
-        return {
-            "signal_type": "repeated_task_pattern",
-            "lesson": str(metadata["repeated_workflow_signature"])[:1000],
-            "method": "structured_metadata",
-            "confidence": 1.0,
-        }
     return None
 
 
@@ -165,7 +149,7 @@ def create_fast_reflection_candidate(
         "classification_method": classification_method,
         "classification_confidence": float(signal.get("confidence") or 0.0),
         "message_digest": _message_digest(messages),
-        "final_response": str(metadata.get("final_response") or "")[:1000],
+        "final_response": str(metadata.get("final_response") or ""),
         "source": str(metadata.get("source") or "runtime"),
         "source_refs": source_attempt_ids,
         "promotion_state": "candidate",

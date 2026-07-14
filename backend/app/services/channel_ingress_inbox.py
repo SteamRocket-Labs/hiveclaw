@@ -375,7 +375,7 @@ class ChannelIngressInboxService:
             ).scalar_one_or_none()
             if row is None or row.status != "processing" or row.locked_by != worker_id:
                 return "stale"
-            row.last_error = f"{type(error).__name__}: {str(error)[:1000]}"
+            row.last_error = f"{type(error).__name__}: {error}"
             row.locked_by = None
             row.locked_at = None
             if int(row.attempt_count or 0) >= self._max_attempts:

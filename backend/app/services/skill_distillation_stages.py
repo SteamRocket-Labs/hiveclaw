@@ -11,35 +11,14 @@ from app.services.skill_lifecycle import SkillCandidateRecord
 
 @dataclass(slots=True, frozen=True)
 class RankedSkillCandidates:
-    patchable: tuple[SkillCandidateRecord, ...]
-    promotable: tuple[SkillCandidateRecord, ...]
+    reviewable: tuple[SkillCandidateRecord, ...]
 
 
 def rank_skill_candidates(
     records: Iterable[SkillCandidateRecord],
-    *,
-    patch_threshold: int,
-    promote_threshold: int,
 ) -> RankedSkillCandidates:
-    candidates = tuple(records)
-    patchable = sorted(
-        (record for record in candidates if not record.blocker and len(record.patch_candidates) >= patch_threshold),
-        key=lambda record: (len(record.patch_candidates), record.last_updated_at),
-        reverse=True,
-    )
-    promotable = sorted(
-        (
-            record
-            for record in candidates
-            if record.last_status == "success"
-            and not record.blocker
-            and len(record.promote_candidates) >= promote_threshold
-            and not record.patch_candidates
-        ),
-        key=lambda record: (len(record.promote_candidates), record.last_updated_at),
-        reverse=True,
-    )
-    return RankedSkillCandidates(tuple(patchable), tuple(promotable))
+    """Expose every authorized candidate; the model assigns semantic lanes."""
+    return RankedSkillCandidates(tuple(records))
 
 
 def _cursor_part(item: Any, key: str) -> str:

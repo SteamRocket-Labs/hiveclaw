@@ -182,10 +182,8 @@ def build_workflow_decision_entry(
     dynamic = mapping(dynamic_workflow)
     outcome_payload = mapping(outcome)
     repair_payload = mapping(repair_plan)
-    promotion_eligible = bool(
-        outcome_payload.get("promotion_eligible")
-        or dynamic.get("promotion_eligible")
-        or (outcome_payload.get("status") == "completed" and not repair_payload.get("repairable"))
+    model_promotion_review = str(
+        outcome_payload.get("model_promotion_review") or dynamic.get("model_promotion_review") or "not_requested"
     )
     status = str(outcome_payload.get("status") or ("previewed" if not run_id else "running"))
     repairable = bool(repair_payload.get("repairable"))
@@ -199,16 +197,16 @@ def build_workflow_decision_entry(
         "failure_policy": mapping(dynamic.get("failure_policy")),
         "outcome": outcome_payload,
         "repair_plan": repair_payload,
-        "promotion_eligible": promotion_eligible,
+        "model_promotion_review": model_promotion_review,
         "agent_cycle_decision_entry": build_agent_cycle_decision_entry(
             subsystem="workflow",
             trigger="dynamic_workflow",
             judge="dynamic_workflow.build_workflow_decision_entry",
-            decision="repair" if repairable else ("promote" if promotion_eligible else "run_or_preview"),
+            decision="repair" if repairable else "observe",
             outcome=status,
             next_action="apply_repair_plan"
             if repairable
-            else ("promote_candidate" if promotion_eligible else "continue"),
+            else ("request_model_promotion_review" if status == "completed" else "continue"),
             model_interaction="completion_wake" if run_id else "preview_manifest",
             user_visible=True,
             permission_result="governed_runtime",
@@ -261,9 +259,9 @@ def summarize_dynamic_workflow_outcome(*, task: Any, steps: list[Any], leaf_call
         "leaf_total": leaf_total,
         "leaf_done": _status_count(leaf_calls, "done"),
         "leaf_failed": _status_count(leaf_calls, "failed"),
-        "promotion_eligible": bool(
-            status == "completed" and _status_count(steps, "failed") == 0 and _status_count(leaf_calls, "failed") == 0
-        ),
+        # Completion/failure counts are typed execution facts. Promotion is a
+        # separate semantic review owned by the model (or an explicit human).
+        "model_promotion_review": "not_requested",
     }
     metadata = getattr(task, "metadata_json", None) or {}
     dynamic = mapping(metadata.get("dynamic_workflow"))
@@ -310,8 +308,8 @@ def build_dynamic_workflow_repair_plan(*, task: Any, steps: list[Any], leaf_call
         "repair_rounds": repair_rounds,
         "failed_leaf_count": len(failed_leaves),
         "failed_step_count": len(failed_steps),
-        "failed_leaves": failed_leaves[:20],
-        "failed_steps": failed_steps[:20],
+        "failed_leaves": failed_leaves,
+        "failed_steps": failed_steps,
         "next_action": "repair_workflow_run" if repairable else None,
     }
 

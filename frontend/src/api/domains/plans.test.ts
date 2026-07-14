@@ -9,7 +9,7 @@ describe('plan mode API adapter', () => {
     vi.restoreAllMocks();
   });
 
-  it('builds agent-scoped plan URLs and binds confirm to version + hash', async () => {
+  it('builds agent-scoped plan URLs and confirms by server-current version', async () => {
     vi.doMock('../core', async () => {
       const actual = await vi.importActual<typeof import('../core')>('../core');
       return {
@@ -33,8 +33,8 @@ describe('plan mode API adapter', () => {
       session_id: 'sess-1',
     });
     await planApi.revise('agent-1', 'plan-1', { fill: { revision_request: 'tighten scope' } });
-    await planApi.confirm('agent-1', 'plan-1', { plan_version: 2, plan_hash: 'sha256:abc' });
-    await planApi.confirmAndHandoff('agent-1', 'plan-1', { plan_version: 2, plan_hash: 'sha256:abc' });
+    await planApi.confirm('agent-1', 'plan-1', { plan_version: 2 });
+    await planApi.confirmAndHandoff('agent-1', 'plan-1', { plan_version: 2 });
     await planApi.reject('agent-1', 'plan-1', { reason: 'not now' });
     await planApi.handoff('agent-1', 'plan-1');
     await planApi.createRecommendation('agent-1', {
@@ -58,11 +58,9 @@ describe('plan mode API adapter', () => {
     });
     expect(post).toHaveBeenNthCalledWith(3, '/agents/agent-1/plans/plan-1/confirm', {
       plan_version: 2,
-      plan_hash: 'sha256:abc',
     });
     expect(post).toHaveBeenNthCalledWith(4, '/agents/agent-1/plans/plan-1/confirm-and-handoff', {
       plan_version: 2,
-      plan_hash: 'sha256:abc',
     });
     expect(post).toHaveBeenNthCalledWith(5, '/agents/agent-1/plans/plan-1/reject', { reason: 'not now' });
     expect(post).toHaveBeenNthCalledWith(6, '/agents/agent-1/plans/plan-1/handoff', {});

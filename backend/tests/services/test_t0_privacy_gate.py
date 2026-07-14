@@ -48,7 +48,7 @@ class TestT0PrivacyGate:
         assert "<Credential_" in content
         assert "t0_sensitivity: PL4_credential" in content
 
-    def test_pl3_sensitive_keyword_marks_frontmatter(self, agent_id: uuid.UUID, tmp_agent_dir: Path) -> None:
+    def test_semantic_keyword_does_not_mechanically_mark_pl3(self, agent_id: uuid.UUID, tmp_agent_dir: Path) -> None:
         path = _write(
             agent_id,
             tmp_agent_dir,
@@ -60,7 +60,7 @@ class TestT0PrivacyGate:
             metadata={"source": "web", "session_id": "s-2"},
         )
         content = path.read_text(encoding="utf-8")
-        assert "t0_sensitivity: PL3_sensitive" in content
+        assert "t0_sensitivity: PL1_public" in content
         assert "salary" in content.lower()
 
     def test_pl1_chat_marks_public(self, agent_id: uuid.UUID, tmp_agent_dir: Path) -> None:

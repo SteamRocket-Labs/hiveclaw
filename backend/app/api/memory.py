@@ -306,6 +306,7 @@ async def upsert_team_memory(
         SecretScanError,
         TeamMemoryConflictError,
         TeamMemoryStore,
+        TeamMemoryWriteHeldError,
         TeamMemoryWriteRejectedError,
     )
 
@@ -325,6 +326,11 @@ async def upsert_team_memory(
         )
     except SecretScanError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except TeamMemoryWriteHeldError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "semantic_review_unavailable", "retryable": True, "message": str(exc)},
+        ) from exc
     except TeamMemoryWriteRejectedError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except InvalidTeamMemoryModeError as exc:

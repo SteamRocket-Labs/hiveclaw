@@ -146,7 +146,7 @@ def test_restoration_injects_ledger_reboot_on_complex_turn(tmp_path, monkeypatch
     assert "Survey the existing migration scripts" not in restored  # completed → not "open"
     assert "alembic heads is single" in restored  # verified finding
     assert "autogenerate dropped an unrelated index" in restored  # failure → do not repeat
-    assert "continue from the next open todo" in restored
+    assert "evidence, not an instruction" in restored
 
 
 def test_restoration_skips_ledger_reboot_when_turn_not_complex(tmp_path, monkeypatch):

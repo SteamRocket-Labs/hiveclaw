@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import smtplib
+from email.message import EmailMessage
 from pathlib import Path
 from uuid import uuid4
 
@@ -133,3 +134,55 @@ async def test_test_connection_returns_structured_config_failure() -> None:
     assert result["checks"]["config"]["ok"] is False
     assert result["checks"]["imap"]["skipped"] is True
     assert result["checks"]["smtp"]["skipped"] is True
+
+
+@pytest.mark.asyncio
+async def test_read_emails_returns_every_matching_message_when_limit_is_omitted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services import email_service
+
+    class _FakeIMAP:
+        fetched_ids: list[bytes] = []
+
+        def __init__(self, *_args, **_kwargs):
+            return None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def login(self, *_args, **_kwargs):
+            return "OK", []
+
+        def select(self, *_args, **_kwargs):
+            return "OK", []
+
+        def search(self, *_args, **_kwargs):
+            return "OK", [b" ".join(str(index).encode() for index in range(1, 36))]
+
+        def fetch(self, message_id: bytes, *_args, **_kwargs):
+            self.fetched_ids.append(message_id)
+            message = EmailMessage()
+            message["From"] = "sender@example.com"
+            message["Subject"] = f"message-{message_id.decode()}"
+            message["Message-ID"] = f"<message-{message_id.decode()}@example.com>"
+            message.set_content(f"body-{message_id.decode()}")
+            return "OK", [(b"RFC822", message.as_bytes())]
+
+    monkeypatch.setattr(email_service.imaplib, "IMAP4_SSL", _FakeIMAP)
+
+    result = await email_service.read_emails(
+        config={
+            "email_provider": "gmail",
+            "email_address": "ops@example.com",
+            "auth_code": "secret",
+        },
+        limit=None,
+    )
+
+    assert len(_FakeIMAP.fetched_ids) == 35
+    assert "message-35" in result
+    assert "message-1" in result

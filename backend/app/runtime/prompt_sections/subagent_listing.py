@@ -48,7 +48,7 @@ def _render_custom_definition_rows(
             extra.append(f"max_tool_rounds={max_rounds}")
         allowed_tools = row.get("allowed_tools")
         if isinstance(allowed_tools, list) and allowed_tools:
-            extra.append("tools=" + ",".join(str(tool) for tool in allowed_tools[:6]))
+            extra.append("tools=" + ",".join(str(tool) for tool in allowed_tools))
         suffix = f" [{'; '.join(extra)}]" if extra else ""
         lines.append(f"- `{name}` ({scope}, type=`{worker_type}`): {description}{suffix}")
     return lines
@@ -106,7 +106,7 @@ def gather_subagent_candidates(
     agent_id: Any | None = None,
     tenant_id: Any | None = None,
     agent_data_dir: Path | str | None = None,
-    limit: int = 20,
+    limit: int | None = None,
 ) -> list[ActivationCandidate]:
     manifests = build_subagent_activation_key_manifest(
         agent_id=agent_id,
@@ -114,7 +114,8 @@ def gather_subagent_candidates(
         agent_data_dir=agent_data_dir,
     )
     candidates: list[ActivationCandidate] = []
-    for index, manifest in enumerate(manifests[: max(1, int(limit or 20))]):
+    del limit
+    for index, manifest in enumerate(manifests):
         key_features = dict(manifest.get("key_features") or {})
         value_pointer = dict(manifest.get("value_pointer") or {})
         name = next(iter(key_features.get("name") or ()), "")

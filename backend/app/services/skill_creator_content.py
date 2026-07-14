@@ -20,7 +20,6 @@ _FILE_MAP = {
     "scripts____init__.py": "scripts/__init__.py",
     "scripts__aggregate_benchmark.py": "scripts/aggregate_benchmark.py",
     "scripts__generate_report.py": "scripts/generate_report.py",
-    "scripts__improve_description.py": "scripts/improve_description.py",
     "scripts__package_skill.py": "scripts/package_skill.py",
     "scripts__quick_validate.py": "scripts/quick_validate.py",
     "scripts__utils.py": "scripts/utils.py",
@@ -50,7 +49,7 @@ At a high level, the process of creating a skill goes like this:
 
 - Decide what you want the skill to do and roughly how it should do it
 - Write a draft of the skill
-- Create a few test prompts and run claude-with-access-to-the-skill on them
+- Create a few test prompts and run the configured Agent/model with access to the skill on them
 - Help the user evaluate the results both qualitatively and quantitatively
 - Rewrite the skill based on feedback from the user's evaluation
 - Repeat until you're satisfied
@@ -176,8 +175,12 @@ Read user feedback from `feedback.json`. Empty feedback means the user thought i
 For rigorous comparison between two versions. Read `agents/comparator.md` and `agents/analyzer.md`.
 
 ## Description Optimization
-Optimize the description for better triggering accuracy: collect real trigger
-hits/misses as JSON evidence, then use `scripts/improve_description.py`.
+Optimize the description for better triggering accuracy by collecting real
+trigger hits/misses as JSON evidence. The current Agent must inspect the complete
+evidence, prior attempts, and current `SKILL.md`, then author the revised
+description itself. The platform may validate structure and persist the exact
+reviewed text; it must not route this semantic decision through a privileged
+vendor-specific model or mechanically synthesize the description.
 
 ---
 
@@ -189,7 +192,6 @@ hits/misses as JSON evidence, then use `scripts/improve_description.py`.
 - `references/schemas.md` — JSON structures for evals.json, grading.json, etc.
 - `scripts/aggregate_benchmark.py` — Aggregate benchmark results
 - `scripts/generate_report.py` — Generate optimization report
-- `scripts/improve_description.py` — Improve skill description
 - `scripts/package_skill.py` — Package skill for distribution
 - `scripts/quick_validate.py` — Quick validation
 - `scripts/utils.py` — Shared utilities

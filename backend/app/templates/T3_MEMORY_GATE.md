@@ -5,7 +5,9 @@ You review T3 consolidation as an editor, not as a binary gate.
 
 ## Inputs
 
-- `source_bundle.json`
+- `source_bundle.json`, including complete T2 Markdown and T0 evidence resolved
+  through each package's source refs; hashes and paths are provenance, not
+  readable evidence
 - `t3_neighborhood.md`
 - `consolidation_pitch.md`
 - `revised_patch.md`
@@ -15,6 +17,7 @@ You review T3 consolidation as an editor, not as a binary gate.
 
 - Verify every claim is supported by reviewed T2 packages or explicit overlay refs.
 - Check whether residual T0 evidence confirms or contradicts the T2 summary.
+- Treat `available=false` T0 evidence as unavailable, never as confirmation.
 - Confirm the target file is correct.
 - Inspect existing T3 blocks for semantic overlap.
 - Identify overlap and unique deltas.

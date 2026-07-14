@@ -36,6 +36,16 @@ WORKING_SET_MAX_ITEMS = 32
 WORKING_SET_SEED_TOP_N = 8
 
 
+def _bounded_working_set_items(merged: dict[str, dict]) -> list[dict]:
+    """Bound mechanical carry-over without deleting model-declared pinned refs."""
+
+    ordered = sorted(merged.values(), key=lambda item: (-item["strength"], item["ref"]))
+    pinned = [item for item in ordered if item.get("pinned")]
+    unpinned = [item for item in ordered if not item.get("pinned")]
+    remaining = max(0, WORKING_SET_MAX_ITEMS - len(pinned))
+    return [*pinned, *unpinned[:remaining]]
+
+
 @dataclass(slots=True)
 class SessionWorkingSet:
     turn_index: int = 0
@@ -92,7 +102,7 @@ def advance_working_set(
         if pinned:
             entry["pinned"] = True
         merged[ref] = entry
-    items = sorted(merged.values(), key=lambda item: (-item["strength"], item["ref"]))[:WORKING_SET_MAX_ITEMS]
+    items = _bounded_working_set_items(merged)
     return SessionWorkingSet(turn_index=turn_index, items=items)
 
 
@@ -117,7 +127,7 @@ def pin_attention_set(
         if not ref:
             continue
         merged[ref] = {"ref": ref, "strength": 1.0, "last_turn": base.turn_index, "ts": when, "pinned": True}
-    items = sorted(merged.values(), key=lambda item: (-item["strength"], item["ref"]))[:WORKING_SET_MAX_ITEMS]
+    items = _bounded_working_set_items(merged)
     return SessionWorkingSet(turn_index=base.turn_index, items=items)
 
 
@@ -128,7 +138,9 @@ def clear_pinned_items(existing: SessionWorkingSet) -> SessionWorkingSet:
 
 
 def working_set_seeds(working_set: SessionWorkingSet, *, top_n: int = WORKING_SET_SEED_TOP_N) -> dict[str, float]:
-    return {str(item["ref"]): float(item["strength"]) for item in working_set.items[: max(1, top_n)]}
+    pinned = [item for item in working_set.items if item.get("pinned")]
+    unpinned = [item for item in working_set.items if not item.get("pinned")][: max(1, top_n)]
+    return {str(item["ref"]): float(item["strength"]) for item in [*pinned, *unpinned]}
 
 
 def touch_working_set(
@@ -150,7 +162,7 @@ def touch_working_set(
         if not ref:
             continue
         merged[ref] = {"ref": ref, "strength": 1.0, "last_turn": existing.turn_index, "ts": when}
-    items = sorted(merged.values(), key=lambda item: (-item["strength"], item["ref"]))[:WORKING_SET_MAX_ITEMS]
+    items = _bounded_working_set_items(merged)
     return SessionWorkingSet(turn_index=existing.turn_index, items=items)
 
 

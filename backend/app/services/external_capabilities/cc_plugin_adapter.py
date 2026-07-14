@@ -724,5 +724,5 @@ def _first_body_line(body: str) -> str:
     for line in body.splitlines():
         stripped = line.strip()
         if stripped and not stripped.startswith("#"):
-            return stripped[:1024]
+            return stripped
     return ""

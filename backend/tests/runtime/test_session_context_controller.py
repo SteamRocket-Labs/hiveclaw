@@ -41,9 +41,16 @@ def test_cumulative_run_tokens_do_not_trigger_context_limit() -> None:
     assert status.full_context_window_limit_reached is False
 
 
-def test_tool_result_budget_pass_compacts_oldest_non_exempt_tool_results() -> None:
+def test_tool_result_budget_pass_compacts_only_recoverable_tool_results() -> None:
     from app.runtime.session_context_controller import apply_tool_result_budget
 
+    digest = "a" * 64
+    recoverable = (
+        "C" * 80
+        + "\n\n[Full output saved to workspace/tool_results/c.txt — 8000 chars; "
+        + f"sha256={digest}; char_range=0-8000; reason: threshold. "
+        + 'Use read_file("workspace/tool_results/c.txt") to retrieve.]'
+    )
     messages = [
         _msg("user", "search"),
         _msg(
@@ -57,7 +64,7 @@ def test_tool_result_budget_pass_compacts_oldest_non_exempt_tool_results() -> No
         ),
         _msg("tool", "A" * 80, tool_call_id="a"),
         _msg("tool", "B" * 80, tool_call_id="b"),
-        _msg("tool", "C" * 80, tool_call_id="c"),
+        _msg("tool", recoverable, tool_call_id="c"),
     ]
 
     result = apply_tool_result_budget(
@@ -68,22 +75,24 @@ def test_tool_result_budget_pass_compacts_oldest_non_exempt_tool_results() -> No
     )
 
     assert result.changed is True
-    assert result.trimmed_count == 2
-    assert result.messages[2].content.startswith("[Tool result compacted before next model request:")
+    assert result.trimmed_count == 1
+    assert result.messages[2].content == "A" * 80
     assert result.messages[3].content == "B" * 80
     assert result.messages[4].content.startswith("[Tool result compacted before next model request:")
+    assert "workspace/tool_results/c.txt" in result.messages[4].content
+    assert digest in result.messages[4].content
     assert result.after_chars < result.before_chars
-    assert [item["tool_call_id"] for item in result.trimmed_context_effects] == ["a", "c"]
-    assert result.trimmed_context_effects[0]["tool_name"] == "run_command"
+    assert [item["tool_call_id"] for item in result.trimmed_context_effects] == ["c"]
+    assert result.trimmed_context_effects[0]["tool_name"] == "web_fetch"
     assert result.trimmed_context_effects[0]["reload_pointer"] == {
-        "kind": "conversation_tool_result",
-        "message_index": 2,
-        "tool_call_id": "a",
+        "kind": "workspace_artifact",
+        "path": "workspace/tool_results/c.txt",
+        "sha256": digest,
+        "char_range": "0-8000",
     }
-    assert result.trimmed_context_effects[1]["result_kind"] == "evidence"
-    assert result.trimmed_context_effects[1]["context_effect"] == "external_reference"
-    assert result.trimmed_context_effects[1]["source_refs"] == ["url:https://example.com/a"]
-    assert result.trimmed_context_effects[1]["preview"] == "C" * 80
+    assert result.trimmed_context_effects[0]["result_kind"] == "evidence"
+    assert result.trimmed_context_effects[0]["context_effect"] == "external_reference"
+    assert result.trimmed_context_effects[0]["source_refs"] == ["url:https://example.com/a"]
 
 
 @pytest.mark.asyncio
@@ -96,11 +105,19 @@ async def test_prepare_session_context_records_tool_result_budget_runtime_decisi
     async def fake_compress(messages, **_kwargs):
         raise AssertionError("tool-result budget pass should not force semantic compression")
 
+    digest = "b" * 64
+    recoverable = (
+        "A" * 120
+        + "\n\n[Full output saved to workspace/tool_results/call-1.txt — 1200 chars; "
+        + f"sha256={digest}; char_range=0-1200; reason: threshold. "
+        + 'Use read_file("workspace/tool_results/call-1.txt") to retrieve.]'
+    )
+
     await prepare_session_context_for_request(
         messages=[
             _msg("user", "inspect"),
             _msg("assistant", "", tool_calls=[{"id": "call-1", "function": {"name": "run_command"}}]),
-            _msg("tool", "A" * 120, tool_call_id="call-1"),
+            _msg("tool", recoverable, tool_call_id="call-1"),
         ],
         policy=ContextPolicyV1(model_window=256_000, round_tool_result_budget=60, tool_result_inline_limit=50),
         estimate_tokens=lambda _msgs: 100,
@@ -127,7 +144,7 @@ async def test_prepare_session_context_records_tool_result_budget_runtime_decisi
     assert runtime_decision["details"]["tool_result_trimmed"] is True
     assert runtime_decision["details"]["trimmed_tool_call_ids"] == ["call-1"]
     assert runtime_decision["details"]["trimmed_context_effects"][0]["tool_call_id"] == "call-1"
-    assert budget_event["trimmed_context_effects"][0]["preview"] == "A" * 120
+    assert budget_event["trimmed_context_effects"][0]["reload_pointer"]["path"] == ("workspace/tool_results/call-1.txt")
 
 
 @pytest.mark.asyncio

@@ -126,7 +126,7 @@ def classify_llm_error(exc: Exception) -> LLMErrorClassification:
 
     return LLMErrorClassification(
         kind="unknown",
-        user_message=f"[LLM Error] AI 模型调用异常，请稍后重试。({msg[:80]})",
+        user_message=f"[LLM Error] AI 模型调用异常，请稍后重试。({msg})",
     )
 
 

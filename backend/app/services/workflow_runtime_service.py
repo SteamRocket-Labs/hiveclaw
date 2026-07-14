@@ -366,10 +366,10 @@ class _PGWorkflowJournal:
     async def record_step_failed(self, run_id: str, step_id: str, *, error: str) -> None:
         from sqlalchemy import func
 
-        await self._upsert(run_id, step_id, status="failed", error=error[:4000], finished_at=func.now())
+        await self._upsert(run_id, step_id, status="failed", error=error, finished_at=func.now())
         self._observe_step_finished(run_id, step_id, "failed")
         self._mirror_step(step_id, "failed")
-        await self._append_step_event(run_id, step_id, status="failed", reason=error[:4000])
+        await self._append_step_event(run_id, step_id, status="failed", reason=error)
 
     async def record_step_skipped(self, run_id: str, step_id: str, *, definition_hash: str) -> None:
         from app.services.workflow_metrics import record_workflow_step
@@ -379,10 +379,10 @@ class _PGWorkflowJournal:
         await self._append_step_event(run_id, step_id, status="skipped")
 
     async def record_step_suspended(self, run_id: str, step_id: str, *, reason: str) -> None:
-        await self._upsert(run_id, step_id, status="suspended", error=reason[:4000])
+        await self._upsert(run_id, step_id, status="suspended", error=reason)
         self._observe_step_finished(run_id, step_id, "suspended")
         self._mirror_step(step_id, "suspended")
-        await self._append_step_event(run_id, step_id, status="suspended", reason=reason[:4000])
+        await self._append_step_event(run_id, step_id, status="suspended", reason=reason)
 
     # ── leaf-level journal (v1 decision 6) ───────────────────────
 
@@ -484,7 +484,7 @@ class _PGWorkflowJournal:
         from sqlalchemy import func
         from app.services.workflow_metrics import record_workflow_leaf_call
 
-        await self._upsert_leaf(run_id, step_id, leaf_id, status="failed", error=error[:4000], finished_at=func.now())
+        await self._upsert_leaf(run_id, step_id, leaf_id, status="failed", error=error, finished_at=func.now())
         record_workflow_leaf_call("failed")
 
 
@@ -1502,8 +1502,6 @@ class WorkflowRuntimeService:
                 output_text = json.dumps(outputs, ensure_ascii=False, sort_keys=True, default=str)
             except TypeError:
                 output_text = str(outputs)
-            if len(output_text) > 4000:
-                output_text = output_text[:3997].rstrip() + "..."
             parts.append(f"Outputs: {output_text}")
         return "\n".join(parts)
 

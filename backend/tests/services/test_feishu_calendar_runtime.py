@@ -126,6 +126,92 @@ async def test_feishu_calendar_list_respects_max_results_and_labels_agent_events
 
 
 @pytest.mark.asyncio
+async def test_feishu_calendar_list_returns_all_provider_events_when_max_results_is_omitted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.agent_tool_domains import feishu_calendar
+
+    async def fake_get_feishu_token(_agent_id):
+        return ("app", "tenant-token")
+
+    async def fake_get_agent_calendar_id(_token):
+        return ("cal_agent_1", None)
+
+    fake_client = _FakeAsyncClient(
+        get_payloads=[
+            {
+                "code": 0,
+                "data": {
+                    "items": [
+                        {
+                            "summary": f"Agent Event {index}",
+                            "event_id": f"evt_{index}",
+                            "start_time": {"timestamp": "1712710800"},
+                            "end_time": {"timestamp": "1712714400"},
+                        }
+                        for index in range(1, 22)
+                    ]
+                },
+            }
+        ],
+    )
+
+    monkeypatch.setattr(feishu_calendar, "_get_feishu_token", fake_get_feishu_token)
+    monkeypatch.setattr(feishu_calendar, "_get_agent_calendar_id", fake_get_agent_calendar_id)
+    monkeypatch.setattr("httpx.AsyncClient", lambda *args, **kwargs: fake_client)
+
+    result = await feishu_calendar._feishu_calendar_list("agent-1", {})
+
+    assert "Agent Event 1" in result
+    assert "Agent Event 21" in result
+
+
+@pytest.mark.asyncio
+async def test_feishu_calendar_create_resolves_every_explicit_attendee_email(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.agent_tool_domains import feishu_calendar
+
+    async def fake_get_feishu_token(_agent_id):
+        return ("app", "tenant-token")
+
+    async def fake_get_agent_calendar_id(_token):
+        return ("cal_agent_1", None)
+
+    resolved_emails: list[str] = []
+
+    async def fake_resolve_open_id(_token, email):
+        resolved_emails.append(email)
+        return f"ou_{email.split('@', 1)[0]}"
+
+    attendee_emails = [f"attendee{index}@example.com" for index in range(1, 22)]
+    fake_client = _FakeAsyncClient(
+        post_payloads=[
+            {"code": 0, "data": {"event": {"event_id": "evt_all"}}},
+            *[{"code": 0, "data": {}} for _ in attendee_emails],
+        ]
+    )
+
+    monkeypatch.setattr(feishu_calendar, "_get_feishu_token", fake_get_feishu_token)
+    monkeypatch.setattr(feishu_calendar, "_get_agent_calendar_id", fake_get_agent_calendar_id)
+    monkeypatch.setattr(feishu_calendar, "_feishu_resolve_open_id", fake_resolve_open_id)
+    monkeypatch.setattr("httpx.AsyncClient", lambda *args, **kwargs: fake_client)
+
+    result = await feishu_calendar._feishu_calendar_create(
+        "agent-1",
+        {
+            "summary": "All hands",
+            "start_time": "2026-07-14T10:00:00+08:00",
+            "end_time": "2026-07-14T11:00:00+08:00",
+            "attendee_emails": attendee_emails,
+        },
+    )
+
+    assert resolved_emails == attendee_emails
+    assert attendee_emails[-1] in result
+
+
+@pytest.mark.asyncio
 async def test_feishu_calendar_update_only_requires_event_id(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.services.agent_tool_domains import feishu_calendar
 

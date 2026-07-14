@@ -73,6 +73,9 @@ def install_active_skill_package(
     if not guard_report.allowed:
         categories = ", ".join(finding.category for finding in guard_report.blocking_findings)
         raise ValueError(f"SkillGuard blocked active skill package before installation: {categories}")
+    if guard_report.requires_review:
+        categories = ", ".join(finding.category for finding in guard_report.review_findings)
+        raise ValueError(f"SkillGuard quarantined active skill package for semantic/admin review: {categories}")
 
     skill_dir = (workspace / "skills" / safe_folder).resolve()
     skills_root = (workspace / "skills").resolve()

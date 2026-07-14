@@ -39,11 +39,29 @@ class SkillGuardReport:
     def blocking_findings(self) -> tuple[SkillGuardFinding, ...]:
         return tuple(finding for finding in self.findings if finding.severity == "block")
 
+    @property
+    def review_findings(self) -> tuple[SkillGuardFinding, ...]:
+        return tuple(finding for finding in self.findings if finding.severity == "warning")
+
+    @property
+    def requires_review(self) -> bool:
+        return bool(self.review_findings)
+
+    @property
+    def disposition(self) -> str:
+        if self.blocking_findings:
+            return "blocked"
+        if self.review_findings:
+            return "quarantine"
+        return "allowed"
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "allowed": self.allowed,
             "risk_level": self.risk_level,
             "source": self.source,
+            "requires_review": self.requires_review,
+            "disposition": self.disposition,
             "findings": [finding.to_dict() for finding in self.findings],
         }
 
@@ -85,10 +103,9 @@ def _risk_level(findings: tuple[SkillGuardFinding, ...]) -> str:
 def scan_skill_files(files: Iterable[dict[str, Any]], *, source: str = "unknown") -> SkillGuardReport:
     """Scan a skill package before it becomes active.
 
-    This is intentionally static and conservative. It blocks payloads that can
-    escape the package, embed secrets, install remote shell scripts, or run
-    destructive root-level commands. Lower-confidence operational risks are
-    warnings so platform admins can still inspect them.
+    Exact package-boundary, binary, and credential violations are blocked.
+    Natural-language command patterns are review signals that quarantine the
+    package before activation; execution policy remains authoritative later.
     """
     findings: list[SkillGuardFinding] = []
 
@@ -129,7 +146,7 @@ def scan_skill_files(files: Iterable[dict[str, Any]], *, source: str = "unknown"
         if _TENANT_IDENTIFIER_RE.search(content):
             findings.append(
                 SkillGuardFinding(
-                    severity="block",
+                    severity="warning",
                     category="tenant_identifier_leak",
                     path=path,
                     message="Skill content appears to embed tenant/user/agent identifiers.",
@@ -140,7 +157,7 @@ def scan_skill_files(files: Iterable[dict[str, Any]], *, source: str = "unknown"
         if managed_credential_findings:
             findings.append(
                 SkillGuardFinding(
-                    severity="block",
+                    severity="warning",
                     category="managed_credential_env_guidance",
                     path=path,
                     message=(
@@ -156,7 +173,7 @@ def scan_skill_files(files: Iterable[dict[str, Any]], *, source: str = "unknown"
         if _REMOTE_SHELL_PIPE_RE.search(content):
             findings.append(
                 SkillGuardFinding(
-                    severity="block",
+                    severity="warning",
                     category="remote_shell_pipe",
                     path=path,
                     message="Skill asks to pipe a remote network payload directly into a shell/interpreter.",
@@ -166,7 +183,7 @@ def scan_skill_files(files: Iterable[dict[str, Any]], *, source: str = "unknown"
         if _DESTRUCTIVE_ROOT_RE.search(content):
             findings.append(
                 SkillGuardFinding(
-                    severity="block",
+                    severity="warning",
                     category="destructive_root_command",
                     path=path,
                     message="Skill contains a root-level destructive command pattern.",

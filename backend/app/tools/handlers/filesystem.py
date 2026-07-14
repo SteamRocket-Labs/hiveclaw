@@ -72,7 +72,7 @@ def list_files(workspace: Path, arguments: dict, tenant_id: str | None = None, a
             "- Common files: soul.md (personality), memory/self/self.md (self-model), memory/profiles/owner.md, "
             "memory/knowledge/<concept>.md, memory/milestones/<slug>.md, memory/explicit/MEMORY.md (memory), "
             "tasks.json (tasks), skills/<slug>/SKILL.md (skill files), enterprise_info/ (shared company info)\n"
-            "- For large files, the output may be truncated. Check if the result ends with a truncation marker.\n"
+            "- File semantics are returned completely; oversized transport payloads are preserved in a recoverable workspace artifact.\n"
             "- You can read office documents (PDF, Word, Excel) via the separate `read_document` tool.\n"
             "- If the file does not exist, an error will be returned — this is normal, do not retry.\n"
             "- Prefer reading a file before editing it with `edit_file` to understand its current contents."
@@ -279,7 +279,8 @@ def glob_search(workspace: Path, arguments: dict, tenant_id: str | None = None, 
                 },
                 "max_results": {
                     "type": "integer",
-                    "description": "Maximum number of matches to return",
+                    "minimum": 1,
+                    "description": "Optional explicit maximum. Omit it to return every authorized match.",
                 },
             },
             "required": ["pattern"],
@@ -299,7 +300,7 @@ def grep_search(workspace: Path, arguments: dict, tenant_id: str | None = None, 
         workspace,
         arguments.get("pattern", ""),
         arguments.get("root", ""),
-        arguments.get("max_results", 50),
+        arguments.get("max_results"),
         authority_scope=authority_scope,
     )
 
@@ -367,6 +368,11 @@ def delete_file(workspace: Path, arguments: dict, tenant_id: str | None = None, 
                     "type": "integer",
                     "description": "Optional page cap for conversion engines that support it.",
                 },
+                "max_chars": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Optional explicit character cap when return_format=preview; omit for complete content.",
+                },
                 "force_refresh": {
                     "type": "boolean",
                     "description": "Rebuild the Markdown artifact instead of reusing the cached conversion.",
@@ -374,7 +380,7 @@ def delete_file(workspace: Path, arguments: dict, tenant_id: str | None = None, 
                 "return_format": {
                     "type": "string",
                     "enum": ["preview", "markdown", "metadata", "pages"],
-                    "description": "Return preview plus artifact paths, full markdown, metadata, or page artifact listing. Default preview.",
+                    "description": "Return preview plus artifact paths, full markdown, metadata, or page artifact listing. Default markdown (complete content).",
                 },
             },
             "required": ["path"],
@@ -392,11 +398,14 @@ def delete_file(workspace: Path, arguments: dict, tenant_id: str | None = None, 
 async def read_document(workspace: Path, arguments: dict, tenant_id: str | None = None, authority_scope=None) -> str:
     from app.services.agent_tool_domains.workspace import _read_document
 
-    max_chars = arguments.get("max_chars", 8000)
-    try:
-        max_chars = int(max_chars)
-    except (TypeError, ValueError):
-        max_chars = 8000
+    raw_max_chars = arguments.get("max_chars")
+    if raw_max_chars is None:
+        max_chars = None
+    else:
+        try:
+            max_chars = max(1, int(raw_max_chars))
+        except (TypeError, ValueError):
+            return "[Error] max_chars must be a positive integer when provided."
     return await _read_document(
         workspace,
         arguments.get("path", ""),
@@ -405,7 +414,7 @@ async def read_document(workspace: Path, arguments: dict, tenant_id: str | None 
         mode=str(arguments.get("mode") or "auto"),
         max_pages=arguments.get("max_pages"),
         force_refresh=bool(arguments.get("force_refresh", False)),
-        return_format=str(arguments.get("return_format") or "preview"),
+        return_format=str(arguments.get("return_format") or "markdown"),
         authority_scope=authority_scope,
     )
 

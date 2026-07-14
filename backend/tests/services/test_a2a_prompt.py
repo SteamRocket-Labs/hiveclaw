@@ -65,11 +65,12 @@ class TestPrivacyBoundary:
 
 
 class TestAntiPatterns:
-    def test_forbids_nested_delegation(self, prompt_text: str) -> None:
+    def test_allows_bounded_nested_delegation(self, prompt_text: str) -> None:
         lowered = prompt_text.lower()
-        assert "nested delegation" in lowered
+        assert "bounded nested delegation" in lowered
         assert "delegate_to_agent" in prompt_text
-        assert "fans out timeout risk" in lowered or "breaks the A2A contract" in prompt_text
+        assert "do not call `delegate_to_agent`" not in lowered
+        assert "depth" in lowered and "cycle" in lowered and "budget" in lowered
 
     def test_rejects_pleasantries(self, prompt_text: str) -> None:
         lowered = prompt_text.lower()

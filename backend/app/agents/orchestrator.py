@@ -78,21 +78,17 @@ class DelegationToolProfile:
 _DELEGATION_TOOL_PROFILES: dict[str, DelegationToolProfile] = {
     "worker_safe": DelegationToolProfile(
         name="worker_safe",
-        core_tools_only=True,
+        core_tools_only=False,
         allowed_tools=(),
-        excluded_tools=_DELEGATION_BASE_EXCLUDED_TOOLS
-        + ("save_skill", "search_memory", "load_memory")
-        + _DELEGATION_MEMORY_WRITE_TOOLS,
-        tool_policy="worker_safe",
+        excluded_tools=_DELEGATION_BASE_EXCLUDED_TOOLS,
+        tool_policy="worker_inherited_governed",
         tool_rule=(
-            "Your tool surface is worker-safe: do the delegated work, but do not schedule triggers, "
-            "manage async tasks, or send deliverables directly to channels."
+            "Use your assigned tools inside the delegated authority, depth, budget, approval, and sandbox contract."
         ),
-        memory_policy="isolated_no_long_term_memory",
+        memory_policy="governed_long_term_memory",
         memory_rule=(
-            "Do NOT read or write long-term memory. "
-            "Long-term memory tools are disabled for this worker session. "
-            "Skill creation/update is also disabled — only the parent agent manages skills."
+            "You MAY read memory and propose durable Memory or Skill changes when relevant; all durable writes "
+            "still pass evidence, permission, review, and rollback governance."
         ),
     ),
     "memory_readonly": DelegationToolProfile(
@@ -179,16 +175,16 @@ _DELEGATION_TOOL_PROFILES: dict[str, DelegationToolProfile] = {
         name="agent_message",
         core_tools_only=False,
         allowed_tools=(),
-        excluded_tools=_DELEGATION_BASE_EXCLUDED_TOOLS + ("save_skill",) + _DELEGATION_MEMORY_WRITE_TOOLS,
+        excluded_tools=(),
         tool_policy="peer_agent_tool_surface",
         tool_rule=(
-            "This is a peer agent request. Use your own assigned/read-authorized tools when needed, "
-            "but do not delegate recursively, manage triggers/workflows, or send deliverables directly to channels."
+            "This is a peer agent request. Use your assigned tools within inherited authority. "
+            "Bounded nested delegation is allowed when depth, cycle, and budget checks admit it."
         ),
-        memory_policy="peer_read_only_memory",
+        memory_policy="peer_governed_memory",
         memory_rule=(
-            "You MAY read long-term memory when it materially helps answer the peer request. "
-            "Writing memory and creating/updating skills are disabled for this peer session."
+            "You MAY read memory and propose governed Memory or Skill updates when materially relevant. "
+            "Durable changes still require the normal Memory/Skill gates."
         ),
     ),
 }
@@ -237,7 +233,9 @@ def _issue_delegation_token_for_request(
         return None
     parent_agent_id = _maybe_uuid(request.parent_agent_id) or request.owner_id
     ttl_seconds = max(DEFAULT_DELEGATION_TTL_SECONDS, float(request.policy.timeout_seconds) + 30.0)
-    granted_capabilities = None if profile.name == "agent_message" else _delegation_capability_grants(profile)
+    granted_capabilities = (
+        None if profile.name in {"agent_message", "worker_safe"} else _delegation_capability_grants(profile)
+    )
     return issue_delegation_token(
         parent_agent_id=parent_agent_id,
         child_agent_id=child_agent_id,
@@ -260,15 +258,18 @@ def _build_delegated_worker_prompt(profile: DelegationToolProfile, parent_name: 
         if parent_name
         else "你正在处理委派方交来的工作；完成后把结论与证据返回给委派方。"
     )
+    nesting_rule = (
+        "- Nested delegation is available only when the inherited tool surface and depth, cycle, authority, "
+        "approval, and budget checks allow it; it is a model choice inside those boundaries.\n"
+    )
     return (
         "<isolation_contract>\n"
         "- The delegated task is the ONLY authoritative context you have.\n"
         "- The parent agent's conversation history is NOT available to you.\n"
         "- Do not assume shared state with the parent beyond what the task says.\n"
         "- Do not leak information about the parent's other tasks or sessions.\n"
-        "- Delegation tools are disabled in worker sessions — do not try to spawn\n"
-        "  nested workers. If the task truly exceeds your scope, say so explicitly\n"
-        "  and let the parent re-scope.\n"
+        f"{nesting_rule}"
+        "- Return clarification needs to the parent instead of pretending to be the human user.\n"
         "</isolation_contract>\n\n"
         "<tool_policy>\n"
         f"- {profile.tool_rule}\n"
@@ -281,13 +282,10 @@ def _build_delegated_worker_prompt(profile: DelegationToolProfile, parent_name: 
 _DELEGATED_WORKER_PROMPT_SUFFIX = _build_delegated_worker_prompt(_DELEGATION_TOOL_PROFILES["worker_safe"])
 
 
-# P0-3a: per-trace visited-agent tracking for cycle detection.
-# `max_depth` alone cannot stop A→B→A→B style loops if a child uses the
-# messaging tool to bounce work back to a previously-active agent (the
-# delegation-tool blacklist doesn't cover messaging). The set is keyed by
-# trace_id and populated/cleaned via a try/finally in `_delegate` so that
-# concurrent traces don't interfere and successful chains free their
-# entries deterministically.
+# Per-trace visited-agent tracking for cycle detection. `max_depth` bounds
+# chain length while this set prevents A→B→A re-entry without mechanically
+# removing collaboration tools. It is populated/cleaned via try/finally so
+# concurrent traces do not interfere and successful chains release state.
 _visited_agents_by_trace: dict[str, set[str]] = {}
 
 
@@ -932,6 +930,9 @@ class AgentDelegationResult:
     timed_out: bool = False
     depth_limited: bool = False
     failed: bool = False
+    parts: tuple[dict[str, Any], ...] = ()
+    artifact_refs: tuple[str, ...] = ()
+    terminal_reason: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """P1-W3-2: structured representation for parent agents that need
@@ -949,7 +950,14 @@ class AgentDelegationResult:
         elif self.failed:
             status = "failed"
         else:
-            status = "ok"
+            status = "completed"
+        child_invocation = {
+            "trace_id": self.trace_id,
+            "session_id": self.child_session_id,
+            "parts": [dict(part) for part in self.parts],
+            "artifact_refs": list(self.artifact_refs),
+            "terminal_reason": self.terminal_reason,
+        }
         return {
             "status": status,
             "content": self.content,
@@ -959,6 +967,7 @@ class AgentDelegationResult:
             "timed_out": self.timed_out,
             "depth_limited": self.depth_limited,
             "failed": self.failed,
+            "child_invocation": child_invocation,
         }
 
     def to_json(self) -> str:
@@ -1138,6 +1147,13 @@ async def _delegation_plan_gate_allows(request: AgentDelegationRequest) -> tuple
             evidence_id=f"delegation-start:{request.runtime_task_id or request.session_id}",
         )
         if decision.allowed and getattr(decision, "authorization_lease_id", None):
+            request.confirmed_plan_id = getattr(decision, "canonical_plan_id", None) or request.confirmed_plan_id
+            request.confirmed_plan_version = (
+                getattr(decision, "canonical_plan_version", None)
+                if getattr(decision, "canonical_plan_version", None) is not None
+                else request.confirmed_plan_version
+            )
+            request.confirmed_plan_hash = getattr(decision, "canonical_plan_hash", None) or request.confirmed_plan_hash
             request.plan_authorization = {
                 "schema": "hive.plan_authorization_evidence.v1",
                 "lease_id": str(decision.authorization_lease_id),
@@ -1147,6 +1163,9 @@ async def _delegation_plan_gate_allows(request: AgentDelegationRequest) -> tuple
                 "session_id": authorization_session_id,
                 "runtime_task_id": authorization_runtime_task_id,
                 "evidence_id": f"delegation-start:{request.runtime_task_id or request.session_id}",
+                "plan_id": str(request.confirmed_plan_id or ""),
+                "plan_version": request.confirmed_plan_version,
+                "plan_hash": str(request.confirmed_plan_hash or ""),
             }
             await db.commit()
     return decision.allowed, decision.reason
@@ -1215,7 +1234,8 @@ async def delegate_to_agent(
     target_artifact_path: str | None = None,
     target_artifacts: list[dict[str, Any]] | None = None,
     edit_mode: str | None = None,
-) -> str:
+    return_result: bool = False,
+) -> str | AgentDelegationResult:
     """Delegate one conversational turn to another agent through the runtime."""
     request = AgentDelegationRequest(
         target=target,
@@ -1251,7 +1271,7 @@ async def delegate_to_agent(
         edit_mode=_normalize_delegation_edit_mode(edit_mode),
     )
     result = await _delegate(request)
-    return result.content
+    return result if return_result else result.content
 
 
 def _delegation_ledger_owner(request: AgentDelegationRequest) -> str:
@@ -1372,11 +1392,11 @@ async def _delegate(request: AgentDelegationRequest) -> AgentDelegationResult:
             failed=True,
         )
 
-    # P0-3a: cycle detection along the same trace_id. depth check above only
-    # blocks linear A→B→C→D chains; without this, a child can use the
-    # messaging tool to bounce work back to a previously-active agent
-    # (A→B→A→B…), since the delegation-tool blacklist doesn't cover messaging.
+    # Cycle detection along the same trace_id complements the bounded depth
+    # contract. Nested collaboration remains available inside authority and
+    # budget boundaries, but A→B→A re-entry on one active trace is not valid.
     target_agent_key = str(getattr(request.target, "id", ""))
+    parent_agent_key = str(request.parent_agent_id or "")
     visited = _visited_agents_by_trace.setdefault(trace_id, set())
     if target_agent_key and target_agent_key in visited:
         target_label = getattr(request.target, "name", None) or target_agent_key
@@ -1390,8 +1410,11 @@ async def _delegate(request: AgentDelegationRequest) -> AgentDelegationResult:
             depth=request.depth,
             failed=True,
         )
-    if target_agent_key:
-        visited.add(target_agent_key)
+    added_agent_keys: set[str] = set()
+    for agent_key in (parent_agent_key, target_agent_key):
+        if agent_key and agent_key not in visited:
+            visited.add(agent_key)
+            added_agent_keys.add(agent_key)
 
     _stamp_ledger_todo_owner(request)
 
@@ -1408,10 +1431,10 @@ async def _delegate(request: AgentDelegationRequest) -> AgentDelegationResult:
     finally:
         # Drop this hop from the visited set; clean the dict entry once empty
         # so long-lived processes don't leak memory across many short traces.
-        if target_agent_key:
+        if added_agent_keys:
             current = _visited_agents_by_trace.get(trace_id)
             if current is not None:
-                current.discard(target_agent_key)
+                current.difference_update(added_agent_keys)
                 if not current:
                     _visited_agents_by_trace.pop(trace_id, None)
 
@@ -1801,11 +1824,28 @@ async def _delegate_after_cycle_check(
             invoke_agent(invocation),
             timeout=max(request.policy.timeout_seconds, 0.01),
         )
+        result_parts = getattr(result, "parts", None) or []
+        terminal_reason = getattr(result, "terminal_reason", None)
         delegation_result = AgentDelegationResult(
             content=result.content or "",
             child_session_id=child_session_id,
             trace_id=trace_id,
             depth=request.depth,
+            parts=tuple(dict(part) for part in result_parts if isinstance(part, dict)),
+            artifact_refs=tuple(
+                str(ref)
+                for part in result_parts
+                if isinstance(part, dict)
+                for ref in (
+                    part.get("artifact_ref"),
+                    part.get("path") if part.get("type") == "artifact" else None,
+                    part.get("url") if part.get("type") == "artifact" else None,
+                )
+                if ref
+            ),
+            terminal_reason=(
+                terminal_reason.value if getattr(terminal_reason, "value", None) else str(terminal_reason or "") or None
+            ),
         )
     except asyncio.TimeoutError:
         _delegation_status = "timeout"
@@ -1819,7 +1859,7 @@ async def _delegate_after_cycle_check(
         )
     except Exception as exc:
         _delegation_status = "error"
-        # M-22: Log full stack server-side; return only safe summary to LLM
+        # Keep the full exception message available to the parent model; the stack remains server-side.
         logger.error(
             "[Orchestrator] Child agent %s failed (depth=%d, trace=%s): %s",
             request.target.name,
@@ -1830,7 +1870,7 @@ async def _delegate_after_cycle_check(
         )
         delegation_result = AgentDelegationResult(
             content=(
-                f"⚠️ Delegation to {request.target.name} failed: {type(exc).__name__}: {str(exc)[:300]}\n"
+                f"⚠️ Delegation to {request.target.name} failed: {type(exc).__name__}: {str(exc)}\n"
                 f"Trace: {trace_id}, depth: {request.depth}"
             ),
             child_session_id=child_session_id,

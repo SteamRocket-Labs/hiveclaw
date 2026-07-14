@@ -49,7 +49,7 @@ async def _handle_email_tool(tool_name: str, agent_id: uuid.UUID, ws: Path, argu
         elif tool_name == "read_emails":
             return await read_emails(
                 config=config,
-                limit=arguments.get("limit", 10),
+                limit=arguments.get("limit"),
                 search=arguments.get("search"),
                 folder=arguments.get("folder", "INBOX"),
             )
@@ -73,7 +73,7 @@ async def _handle_email_tool(tool_name: str, agent_id: uuid.UUID, ws: Path, argu
         return render_tool_error(
             tool_name=tool_name,
             error_class="provider_error",
-            message=f"Email tool error: {str(e)[:200]}",
+            message=f"Email tool error: {e}",
             provider=provider,
             retryable=False,
             actionable_hint="Check mailbox configuration and provider response before retrying.",

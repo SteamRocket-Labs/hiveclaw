@@ -42,6 +42,9 @@ async def _insert_activity(
         # non-owner role, the INSERT itself fails closed. Pin the GUC to the
         # agent's tenant and stamp the row so isolation holds on read.
         resolved_tenant_id = tenant_id or await resolve_tenant_for_agent(agent_id)
+        durable_detail = dict(detail or {})
+        if summary and len(summary) > 500:
+            durable_detail["full_summary"] = summary
         async with tenant_scoped_session(resolved_tenant_id) as db:
             db.add(
                 AgentActivityLog(
@@ -52,7 +55,7 @@ async def _insert_activity(
                     authority_state="owned" if owner_user_id is not None else "quarantined",
                     action_type=action_type,
                     summary=summary[:500] if summary else "",
-                    detail_json=detail,
+                    detail_json=durable_detail or None,
                     related_id=related_id,
                 )
             )

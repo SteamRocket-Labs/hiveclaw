@@ -228,7 +228,11 @@ def gather_skill_candidates_for_prompt(
         path_triggered_skill_names=path_triggered_skill_names,
     )
     candidates: list[ActivationCandidate] = []
-    for decision in decisions[: max(1, int(limit or 20))]:
+    # ``limit`` is retained for call-site compatibility only. Candidate
+    # gathering is an evidence phase; selection belongs to the model/runtime
+    # activation policy with the complete authorized candidate set visible.
+    _ = limit
+    for decision in decisions:
         keys = decision.activation_keys
         preview = f"{decision.skill.metadata.name}: {decision.skill.metadata.description}".strip()
         rank_score = min(1.0, max(0.1, decision.score / 1000 if decision.score else 0.1))

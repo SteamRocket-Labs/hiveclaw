@@ -671,13 +671,13 @@ class TestHookEvents:
             HookEvent.WORKTREE_REMOVE,
         ],
     )
-    async def test_required_hook_failures_fail_closed_for_every_blocking_event(self, event: HookEvent) -> None:
+    async def test_explicit_required_hook_failures_fail_closed_for_every_blocking_event(self, event: HookEvent) -> None:
         reg = HookRegistry()
 
         async def broken(_ctx):
             raise RuntimeError("required boundary unavailable")
 
-        reg.register(event, broken, key=f"required:{event.value}")
+        reg.register(event, broken, key=f"required:{event.value}", failure_mode="required")
 
         result = await reg.emit(HookContext(event=event))
 
@@ -716,8 +716,21 @@ class TestHookEvents:
         blocking = {item["event"] for item in reg.describe_event_catalog() if item["blocking_supported"]}
 
         for event in HookEvent:
-            expected = "required" if event.value in blocking else "advisory"
-            assert default_hook_failure_mode(event) == expected
+            assert default_hook_failure_mode(event) == "advisory"
+
+        assert blocking  # the catalog still exposes where explicit enforcement is supported
+
+    @pytest.mark.asyncio
+    async def test_blockable_hook_is_advisory_unless_enforcement_is_explicit(self) -> None:
+        reg = HookRegistry()
+
+        async def broken(_ctx):
+            raise RuntimeError("optional observer unavailable")
+
+        reg.register(HookEvent.PRE_TOOL_USE, broken, key="observer:pre-tool")
+        result = await reg.emit(HookContext(event=HookEvent.PRE_TOOL_USE, tool_name="read_file"))
+
+        assert result is None
 
     def test_legacy_continue_runtime_policy_is_safely_migrated_to_inherit(self) -> None:
         from app.runtime.hooks import configure_hook_runtime, reset_hook_runtime_config

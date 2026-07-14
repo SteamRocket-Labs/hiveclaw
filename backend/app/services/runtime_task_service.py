@@ -257,7 +257,7 @@ def build_completion_journal_entry(
         "trace_id": str(trace_id or "").strip() or None,
         "session_id": str(session_id or "").strip() or None,
         "side_effect_risk": str(side_effect_risk or "unknown").strip(),
-        "summary": (summary or "").strip()[:1000],
+        "summary": (summary or "").strip(),
         "recorded_at": datetime.now(timezone.utc).isoformat(),
     }
 

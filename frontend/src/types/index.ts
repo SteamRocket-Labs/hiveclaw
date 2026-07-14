@@ -46,7 +46,7 @@ export interface Agent {
     heartbeat_active_hours: string;
     last_heartbeat_at?: string;
     timezone?: string;
-    execution_mode?: 'standard' | 'coordinator';
+    execution_mode?: 'standard' | 'coordinator' | 'coordinator_strict';
     default_session_permission_mode?: 'default' | 'auto' | 'bypassPermissions';
     smart_model_routing?: { enabled: boolean; max_simple_chars: number; max_simple_words: number } | null;
     context_window_size?: number;

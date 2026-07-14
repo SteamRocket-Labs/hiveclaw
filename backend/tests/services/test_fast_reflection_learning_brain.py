@@ -26,11 +26,10 @@ def test_learning_brain_prompt_preserves_complete_message_context() -> None:
     assert "signal_type" in system_text
     assert "container" in system_text
     assert "promotion_intent" in system_text
+    assert "skill_decision" in system_text
     assert "<confidence_scoring_rubric>" in system_text
-    assert "0.00-0.39" in system_text
-    assert "0.40-0.69" in system_text
-    assert "0.70-0.84" in system_text
-    assert "0.85-1.00" in system_text
+    assert "0.00-0.39" not in system_text
+    assert "platform cutoff" in system_text.lower()
     assert "message-0" in user_text
     assert "message-11" in user_text
     assert user_text.count('"role": "user"') == 12
@@ -47,6 +46,12 @@ def test_parse_learning_brain_json_projects_rich_decision_to_classification() ->
             "confidence": 0.91,
             "container": "skill_candidate",
             "promotion_intent": "candidate",
+            "skill_decision": {
+                "action": "new",
+                "candidate_name": "governed-deployment",
+                "target_skill": "",
+                "reason": "The reusable procedure deserves a Skill candidate.",
+            },
             "rationale": "The same governed deploy flow recurred with successful verification.",
             "evidence_refs": ["message:0", "metadata:repeated_workflow_signature"],
             "boundary_checks": {
@@ -67,10 +72,63 @@ def test_parse_learning_brain_json_projects_rich_decision_to_classification() ->
     assert result["learning_brain_decision"]["schema"] == "fast_reflection_learning_brain_decision.v1"
     assert result["learning_brain_decision"]["container"] == "skill_candidate"
     assert result["learning_brain_decision"]["promotion_intent"] == "candidate"
+    assert result["learning_brain_decision"]["skill_decision"]["action"] == "new"
+    assert result["learning_brain_decision"]["skill_decision"]["candidate_name"] == "governed-deployment"
     assert result["learning_brain_decision"]["evidence_refs"] == [
         "message:0",
         "metadata:repeated_workflow_signature",
     ]
+
+
+def test_parse_learning_brain_json_preserves_complete_model_judgment() -> None:
+    from app.services.fast_reflection_learning_brain import parse_learning_brain_json
+
+    lesson_tail = "LEARNING_BRAIN_LESSON_DECISIVE_TAIL"
+    rationale_tail = "LEARNING_BRAIN_RATIONALE_DECISIVE_TAIL"
+    lesson = "l" * 1400 + lesson_tail
+    rationale = "r" * 1400 + rationale_tail
+
+    result = parse_learning_brain_json(
+        json.dumps(
+            {
+                "signal_type": "workflow_correction",
+                "lesson": lesson,
+                "confidence": 0.93,
+                "container": "session_learning",
+                "promotion_intent": "candidate",
+                "rationale": rationale,
+                "evidence_refs": ["message:0"],
+            }
+        )
+    )
+
+    assert result is not None
+    assert result["lesson"] == lesson
+    assert result["learning_brain_decision"]["lesson"] == lesson
+    assert result["learning_brain_decision"]["rationale"] == rationale
+
+
+def test_parse_learning_brain_json_preserves_every_complete_evidence_reference() -> None:
+    from app.services.fast_reflection_learning_brain import parse_learning_brain_json
+
+    evidence_refs = [f"message:{index}:" + ("e" * 700) for index in range(35)]
+
+    result = parse_learning_brain_json(
+        json.dumps(
+            {
+                "signal_type": "workflow_correction",
+                "lesson": "Preserve the model-authored evidence set for governed review.",
+                "confidence": 0.93,
+                "container": "session_learning",
+                "promotion_intent": "candidate",
+                "rationale": "Every reference may carry a distinct evidence anchor.",
+                "evidence_refs": evidence_refs,
+            }
+        )
+    )
+
+    assert result is not None
+    assert result["learning_brain_decision"]["evidence_refs"] == evidence_refs
 
 
 def test_parse_learning_brain_json_accepts_soul_candidate_container() -> None:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import xml.etree.ElementTree as ET
+
 
 def test_t2_prompts_are_contracts_not_short_role_prompts() -> None:
     from app.memory.t2.prompts import (
@@ -30,11 +32,12 @@ def test_t2_prompts_are_contracts_not_short_role_prompts() -> None:
         assert "Do not write soul.md" in prompt
 
 
-def test_learning_brain_prompt_contains_quantified_engineering_rubric() -> None:
+def test_learning_brain_prompt_keeps_scores_as_model_observations() -> None:
     from app.memory.t2.prompts import LEARNING_BRAIN_LABELS_PROMPT
 
-    assert "confidence = round_to_0_05" in LEARNING_BRAIN_LABELS_PROMPT
-    assert "0.40 * evidence_coverage" in LEARNING_BRAIN_LABELS_PROMPT
+    assert "confidence = round_to_0_05" not in LEARNING_BRAIN_LABELS_PROMPT
+    assert "0.40 * evidence_coverage" not in LEARNING_BRAIN_LABELS_PROMPT
+    assert "model judgment" in LEARNING_BRAIN_LABELS_PROMPT.lower()
     assert "source_integrity" in LEARNING_BRAIN_LABELS_PROMPT
     assert "risk_flags" in LEARNING_BRAIN_LABELS_PROMPT
     assert "systems" in LEARNING_BRAIN_LABELS_PROMPT
@@ -45,7 +48,8 @@ def test_learning_brain_prompt_contains_quantified_engineering_rubric() -> None:
 def test_memory_gate_prompt_requires_structured_review_rubric() -> None:
     from app.memory.t2.prompts import MEMORY_GATE_REVIEW_PROMPT
 
-    assert "review_score = round_to_0_05" in MEMORY_GATE_REVIEW_PROMPT
+    assert "review_score = round_to_0_05" not in MEMORY_GATE_REVIEW_PROMPT
+    assert "platform score cutoff" in MEMORY_GATE_REVIEW_PROMPT.lower()
     assert "summary_fidelity" in MEMORY_GATE_REVIEW_PROMPT
     assert "source_ref_coverage" in MEMORY_GATE_REVIEW_PROMPT
     assert "label_alignment" in MEMORY_GATE_REVIEW_PROMPT
@@ -72,7 +76,59 @@ def test_episode_prompts_require_t0_refs_and_review_rubric() -> None:
     assert "Do not stitch based only on summary similarity" in EPISODE_STITCHER_PROMPT
     assert "t0_source_refs" in EPISODE_STITCHER_PROMPT
     assert "Do not rewrite original T2 packages" in EPISODE_STITCHER_PROMPT
-    assert "episode_review_score = round_to_0_05" in EPISODE_GATE_REVIEW_PROMPT
+    assert "episode_review_score = round_to_0_05" not in EPISODE_GATE_REVIEW_PROMPT
+    assert "platform score cutoff" in EPISODE_GATE_REVIEW_PROMPT.lower()
     assert "continuity_fidelity" in EPISODE_GATE_REVIEW_PROMPT
     assert "correction_quality" in EPISODE_GATE_REVIEW_PROMPT
     assert '<episode_review_rubric schema_version="t2.episode_review_rubric.v1">' in EPISODE_GATE_REVIEW_PROMPT
+
+
+def test_segment_platform_gate_does_not_override_low_score_model_approval() -> None:
+    from app.memory.t2.segment_package import _validate_review_rubric
+
+    review = ET.fromstring(
+        """
+        <t2_review>
+          <decision>approved</decision><allowed_next>t3_intake</allowed_next>
+          <review_rubric schema_version="t2.review_rubric.v1">
+            <score name="summary_fidelity" value="0.10"/>
+            <score name="source_ref_coverage" value="0.20"/>
+            <score name="label_alignment" value="0.30"/>
+            <score name="safety_scope" value="0.40"/>
+            <score name="package_closure" value="0.50"/>
+            <review_score>0.11</review_score>
+          </review_rubric>
+        </t2_review>
+        """
+    )
+    issues: list[str] = []
+
+    _validate_review_rubric(summary=None, labels=None, review=review, issues=issues)
+
+    assert issues == []
+
+
+def test_episode_platform_gate_does_not_override_low_score_model_approval() -> None:
+    from app.memory.t2.segment_package import _validate_episode_review_rubric
+
+    synthesis = ET.fromstring('<episode_synthesis status="closed"/>')
+    review = ET.fromstring(
+        """
+        <episode_review>
+          <decision>approved</decision><allowed_next>t3_intake</allowed_next>
+          <episode_review_rubric schema_version="t2.episode_review_rubric.v1">
+            <score name="continuity_fidelity" value="0.10"/>
+            <score name="source_ref_coverage" value="0.20"/>
+            <score name="correction_quality" value="0.30"/>
+            <score name="closure_quality" value="0.40"/>
+            <score name="safety_scope" value="0.50"/>
+            <review_score>0.11</review_score>
+          </episode_review_rubric>
+        </episode_review>
+        """
+    )
+    issues: list[str] = []
+
+    _validate_episode_review_rubric(synthesis=synthesis, review=review, issues=issues)
+
+    assert issues == []

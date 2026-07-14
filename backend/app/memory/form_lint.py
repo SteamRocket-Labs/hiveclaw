@@ -10,6 +10,7 @@ from dataclasses import dataclass
 class FormViolation:
     code: str
     message: str
+    blocking: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,17 +32,19 @@ def lint_memory_form(content: str) -> FormLintResult:
     text = (content or "").strip()
     violations: list[FormViolation] = []
     if not text:
-        violations.append(FormViolation("empty", "Memory content is empty."))
+        violations.append(FormViolation("empty", "Memory content is empty.", blocking=True))
     if _EN_PRONOUN_RE.search(text) or _CJK_PRONOUN_RE.search(text):
         violations.append(FormViolation("ambiguous_pronoun", "Replace pronouns with explicit actors or objects."))
     if _RELATIVE_TIME_RE.search(text):
         violations.append(FormViolation("relative_time", "Replace relative time with an absolute date or timestamp."))
-    return FormLintResult(ok=not violations, violations=violations)
+    return FormLintResult(ok=not any(violation.blocking for violation in violations), violations=violations)
 
 
 def enforce_memory_form(content: str) -> None:
     result = lint_memory_form(content)
     if result.ok:
         return
-    details = "; ".join(f"{violation.code}: {violation.message}" for violation in result.violations)
+    details = "; ".join(
+        f"{violation.code}: {violation.message}" for violation in result.violations if violation.blocking
+    )
     raise ValueError(f"Form Contract violation: {details}")

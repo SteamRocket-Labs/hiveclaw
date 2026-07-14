@@ -140,12 +140,15 @@ def _parse_feishu_url(value: str) -> FeishuUrlTarget | None:
     return FeishuUrlTarget(kind="unknown", token=raw, url=raw)
 
 
-def _max_chars(arguments: dict) -> int:
+def _max_chars(arguments: dict) -> int | None:
+    raw = arguments.get("max_chars")
+    if raw in (None, ""):
+        return None
     try:
-        value = int(arguments.get("max_chars", 6000))
+        value = int(raw)
     except (TypeError, ValueError):
-        value = 6000
-    return min(max(value, 1), 20000)
+        return None
+    return max(value, 1)
 
 
 def _error(tool_name: str, message: str, *, hint: str | None = None) -> str:
@@ -376,9 +379,10 @@ async def _feishu_url_read(agent_id: uuid.UUID | str, arguments: dict) -> str:
             record_args: dict = {
                 "base_token": token,
                 "table_id": table_id,
-                "limit": arguments.get("limit", 100),
                 "max_chars": max_chars,
             }
+            if arguments.get("limit") is not None:
+                record_args["limit"] = arguments.get("limit")
             if view_id:
                 record_args["view_id"] = view_id
             if arguments.get("offset") is not None:
@@ -396,6 +400,14 @@ async def _feishu_url_read(agent_id: uuid.UUID | str, arguments: dict) -> str:
             ):
                 if arguments.get(key) is not None:
                     record_args[key] = arguments.get(key)
+            if (
+                arguments.get("fetch_all") is None
+                and arguments.get("limit") is None
+                and arguments.get("offset") is None
+                and not arguments.get("page_token")
+                and arguments.get("max_records") is None
+            ):
+                record_args["fetch_all"] = True
             return await _feishu_base_record_list(agent_id, record_args)
 
         from app.services.agent_tool_domains.feishu_base import _feishu_base_table_list
@@ -598,9 +610,9 @@ def _extract_file_text(content: bytes, filename: str) -> str | None:
     return None
 
 
-def _render_file_text(filename: str, token: str, text: str, max_chars: int, source: str) -> str:
+def _render_file_text(filename: str, token: str, text: str, max_chars: int | None, source: str) -> str:
     truncated = ""
-    if len(text) > max_chars:
+    if max_chars is not None and len(text) > max_chars:
         text = text[:max_chars]
         truncated = f"\n\n_(Truncated to {max_chars} chars)_"
     return f"📎 **Feishu file content** (`{token}`)\n文件名：{filename}\n来源：{source}\n\n{text}{truncated}"

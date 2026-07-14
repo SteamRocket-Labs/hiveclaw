@@ -122,7 +122,6 @@ describe('startWorkflow', () => {
       previewId: 'preview-1',
       confirmedPlanId: 'plan-9',
       planVersion: 2,
-      planHash: 'ph',
     });
 
     const body = JSON.parse(String(requestOf().init.body));
@@ -133,7 +132,7 @@ describe('startWorkflow', () => {
     expect(body.args_hash).toBeUndefined();
     expect(body.confirmed_plan_id).toBe('plan-9');
     expect(body.plan_version).toBe(2);
-    expect(body.plan_hash).toBe('ph');
+    expect(body.plan_hash).toBeUndefined();
   });
 });
 
@@ -165,7 +164,7 @@ describe('getWorkflowRun', () => {
         definition_hash: 'h',
         definition_source: 'dynamic_workflow',
         dynamic_workflow: { proposal_id: 'proposal-1', candidate_id: 'fanout-critic' },
-        outcome_evidence: { leaf_total: 2, leaf_done: 1, leaf_failed: 1, promotion_eligible: false },
+        outcome_evidence: { leaf_total: 2, leaf_done: 1, leaf_failed: 1, model_promotion_review: 'not_requested' },
         repair_plan: { repairable: true, strategy: 'resume_failed_leaves', failed_leaf_count: 1 },
         leaf_calls: [{ step_id: 'scan', leaf_id: 'item-1', status: 'failed', error: 'timeout' }],
         steps: [

@@ -140,6 +140,23 @@ def test_read_t3_summary_reads_two_plane_memory(agent_id: uuid.UUID, tmp_agent_d
     assert "postgresql" in result
 
 
+def test_read_t3_summary_preserves_profile_and_index_tails(agent_id: uuid.UUID, tmp_agent_dir: Path) -> None:
+    memory_dir = tmp_agent_dir / str(agent_id) / "memory"
+    (memory_dir / "self").mkdir(parents=True, exist_ok=True)
+    profile_tail = "DECISIVE_T3_PROFILE_TAIL"
+    (memory_dir / "self" / "self.md").write_text(("profile evidence " * 800) + profile_tail, encoding="utf-8")
+    (memory_dir / "knowledge").mkdir(parents=True, exist_ok=True)
+    for index in range(55):
+        (memory_dir / "knowledge" / f"knowledge-{index:02d}.md").write_text("evidence", encoding="utf-8")
+
+    with patch("app.config.get_settings") as mock:
+        mock.return_value.AGENT_DATA_DIR = str(tmp_agent_dir)
+        result = _read_t3_summary(agent_id)
+
+    assert profile_tail in result
+    assert "knowledge-54" in result
+
+
 def test_read_pending_t3_intake_uses_direct_core_language(agent_id: uuid.UUID, tmp_agent_dir: Path) -> None:
     _write_t2_package(tmp_agent_dir, agent_id, session_id="session-1", segment_id="seg-1")
 

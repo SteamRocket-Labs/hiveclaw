@@ -630,10 +630,10 @@ async def execute_task(
     except Exception as e:
         error_msg = str(e) or repr(e)
         logger.error(f"[TaskExec] Error: {error_msg}")
-        await _log_error(task_id, f"执行出错: {error_msg[:150]}", tenant_id=tenant_id)
+        await _log_error(task_id, f"执行出错: {error_msg}", tenant_id=tenant_id)
         return TaskExecutionOutcome(
             status=TaskExecutionStatus.FAILED,
-            summary=f"Task execution failed: {error_msg[:500]}",
+            summary=f"Task execution failed: {error_msg}",
             error_code=type(e).__name__,
             retryable=True,
             reflection_session_id=str(reflection_session_id),
@@ -683,7 +683,7 @@ async def execute_task(
         agent_id,
         "task_updated",
         f"任务执行: {task_title[:60]}",
-        detail={"task_id": str(task_id), "task_type": task_type, "title": task_title, "reply": reply[:500]},
+        detail={"task_id": str(task_id), "task_type": task_type, "title": task_title, "reply": reply},
         related_id=task_id,
     )
     return TaskExecutionOutcome(

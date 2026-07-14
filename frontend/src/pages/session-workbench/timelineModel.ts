@@ -399,7 +399,6 @@ export interface WorkflowRunControlsModel {
   gateStatus: string;
   waitStatus: string;
   repairable: boolean;
-  promotionEligible: boolean;
   actions: WorkflowRunActionModel[];
   raw: Record<string, unknown>;
 }
@@ -567,7 +566,6 @@ function normalizeWorkflowControls(item: Record<string, unknown>): WorkflowRunCo
     gateStatus: readString(controls, ['gate_status', 'gateStatus'], 'clear'),
     waitStatus: readString(controls, ['wait_status', 'waitStatus'], 'not_waiting'),
     repairable: Boolean(controls.repairable),
-    promotionEligible: Boolean(controls.promotion_eligible ?? controls.promotionEligible),
     actions,
     raw: controls,
   };

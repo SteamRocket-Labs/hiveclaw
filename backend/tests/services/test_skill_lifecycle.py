@@ -53,7 +53,7 @@ def test_record_skill_lifecycle_event_appends_review_log(tmp_path: Path) -> None
     assert "[patched] deploy-checklist: Updated rollback guidance." in content
 
 
-def test_record_skill_execution_promotes_candidate_after_three_recent_successes(tmp_path: Path) -> None:
+def test_record_skill_execution_keeps_repeated_successes_as_model_review_evidence(tmp_path: Path) -> None:
     from app.services.skill_lifecycle import record_skill_execution
 
     first = record_skill_execution(
@@ -90,20 +90,21 @@ def test_record_skill_execution_promotes_candidate_after_three_recent_successes(
 
     assert first["decision"] == "candidate"
     assert second["decision"] == "candidate"
-    assert third["decision"] == "promote"
+    assert third["decision"] == "candidate"
     assert not (tmp_path / "evolution" / "skill_candidates.md").exists()
     assert {manifest["skill_name"] for manifest in manifests} == {"deploy-checklist"}
-    assert manifests[0]["status"] == "promote"
+    assert manifests[0]["status"] == "candidate"
     assert manifests[0]["metadata"]["workflow_signature"] == "deploy-checklist"
     assert (packages[0] / "candidate_signal.md").exists()
     assert not (packages[0] / "SKILL.md.draft").exists()
     assert (packages[0] / "skill_pitch.md").exists()
     assert (packages[0] / "eval_plan.md").exists()
     assert (packages[0] / "failure_cases.md").exists()
-    assert "[promote] deploy-checklist" in review
+    assert manifests[0]["metadata"]["promote_candidate_count"] == 3
+    assert "[candidate] deploy-checklist" in review
 
 
-def test_record_skill_execution_marks_patch_candidate_after_repeated_loaded_failures(tmp_path: Path) -> None:
+def test_record_skill_execution_keeps_repeated_failures_as_model_review_evidence(tmp_path: Path) -> None:
     from app.services.skill_lifecycle import record_skill_execution
 
     first = record_skill_execution(
@@ -132,12 +133,12 @@ def test_record_skill_execution_marks_patch_candidate_after_repeated_loaded_fail
     manifest = json.loads((packages[0] / "manifest.json").read_text(encoding="utf-8"))
 
     assert first["decision"] == "candidate"
-    assert second["decision"] == "patch"
+    assert second["decision"] == "candidate"
     assert not (tmp_path / "evolution" / "skill_candidates.md").exists()
     assert manifest["skill_name"] == "incident-response"
-    assert manifest["status"] == "patch"
+    assert manifest["status"] == "candidate"
     assert manifest["metadata"]["patch_candidate_count"] == 2
-    assert "[patch] incident-response" in review
+    assert "[candidate] incident-response" in review
 
 
 def test_record_skill_runtime_usage_derives_workflow_and_patch_signal(tmp_path: Path) -> None:
@@ -171,7 +172,7 @@ def test_record_skill_runtime_usage_derives_workflow_and_patch_signal(tmp_path: 
     manifest = json.loads((packages[0] / "manifest.json").read_text(encoding="utf-8"))
 
     assert first["decision"] == "candidate"
-    assert second["decision"] == "patch"
+    assert second["decision"] == "candidate"
     assert first["workflow_signature"] == second["workflow_signature"] == "load_skill+read_file+write_file"
     assert '"source": "web_chat"' in usage_log
     assert '"session_id": "session-1"' in usage_log
@@ -179,7 +180,7 @@ def test_record_skill_runtime_usage_derives_workflow_and_patch_signal(tmp_path: 
     assert manifest["metadata"]["patch_candidate_count"] == 2
 
 
-def test_record_skill_runtime_usage_writes_promotion_evidence_for_patch(tmp_path: Path) -> None:
+def test_record_skill_runtime_usage_does_not_author_patch_evidence_from_counts(tmp_path: Path) -> None:
     from app.services.skill_lifecycle import record_skill_runtime_usage
 
     record_skill_runtime_usage(
@@ -209,18 +210,12 @@ def test_record_skill_runtime_usage_writes_promotion_evidence_for_patch(tmp_path
         trace_id="trace-2",
     )
 
-    evidence_path = tmp_path / "evolution" / "skill_promotion_evidence.jsonl"
-    evidence = evidence_path.read_text(encoding="utf-8")
-
-    assert result["decision"] == "patch"
-    assert result["evidence_ref"] == "evolution/skill_promotion_evidence.jsonl"
-    assert '"schema": "skill_promotion_evidence.v1"' in evidence
-    assert '"decision": "patch"' in evidence
-    assert '"runtime_task_id": "rt-2"' in evidence
-    assert '"trace:trace-2"' in evidence
+    assert result["decision"] == "candidate"
+    assert "evidence_ref" not in result
+    assert not (tmp_path / "evolution" / "skill_promotion_evidence.jsonl").exists()
 
 
-def test_record_skill_runtime_usage_writes_promotion_evidence_for_promote(tmp_path: Path) -> None:
+def test_record_skill_runtime_usage_does_not_author_promotion_from_counts(tmp_path: Path) -> None:
     from app.services.skill_lifecycle import record_skill_runtime_usage
 
     for index in range(3):
@@ -238,15 +233,12 @@ def test_record_skill_runtime_usage_writes_promotion_evidence_for_promote(tmp_pa
             trace_id=f"trace-{index}",
         )
 
-    evidence = (tmp_path / "evolution" / "skill_promotion_evidence.jsonl").read_text(encoding="utf-8")
-
-    assert result["decision"] == "promote"
-    assert '"decision": "promote"' in evidence
-    assert '"skill_name": "deploy-checklist"' in evidence
-    assert '"runtime_task:rt-2"' in evidence
+    assert result["decision"] == "candidate"
+    assert "evidence_ref" not in result
+    assert not (tmp_path / "evolution" / "skill_promotion_evidence.jsonl").exists()
 
 
-def test_record_skill_runtime_usage_ignores_noop_without_polluting_candidates(tmp_path: Path) -> None:
+def test_record_skill_runtime_usage_preserves_noop_as_model_review_evidence(tmp_path: Path) -> None:
     from app.services.skill_lifecycle import record_skill_runtime_usage
 
     result = record_skill_runtime_usage(
@@ -261,9 +253,13 @@ def test_record_skill_runtime_usage_ignores_noop_without_polluting_candidates(tm
         source="web_chat",
     )
 
-    assert result["decision"] == "ignored"
+    assert result["decision"] == "candidate"
     assert not (tmp_path / "evolution" / "skill_candidates.md").exists()
     assert (tmp_path / "evolution" / "skill_usage.jsonl").exists()
+    manifests = list((tmp_path / "evolution" / "skill_candidates").glob("*/manifest.json"))
+    assert len(manifests) == 1
+    package = json.loads(manifests[0].read_text(encoding="utf-8"))
+    assert package["metadata"]["last_status"] == "noop"
 
 
 def test_skill_runtime_usage_serializes_usage_review_and_candidates_across_processes(tmp_path: Path) -> None:

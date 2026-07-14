@@ -236,7 +236,7 @@ async def propose_personal_kb_item(request: ToolExecutionRequest) -> str:
             "Use this when the current answer needs durable owner-provided documents, notes, URLs, or "
             "personal knowledge artifacts. Results are tenant-, owner-, sensitivity-, and grant-filtered "
             "before they are returned. Call `read_personal_kb` with returned document and segment IDs when "
-            "exact bounded content is needed. Do not use filesystem reads as a substitute for these tools "
+            "exact content is needed. Do not use filesystem reads as a substitute for these tools "
             "when the question is about the Personal KB."
         ),
         parameters={
@@ -248,7 +248,8 @@ async def propose_personal_kb_item(request: ToolExecutionRequest) -> str:
                 },
                 "limit": {
                     "type": "integer",
-                    "description": "Maximum number of snippets to return. Defaults to 5, capped at 10.",
+                    "minimum": 1,
+                    "description": "Optional explicit maximum number of candidates to return; omit to receive every authorized candidate.",
                 },
             },
             "required": ["query"],
@@ -272,7 +273,14 @@ async def search_personal_kb(request: ToolExecutionRequest) -> str:
     if tenant_id is None:
         return json.dumps({"results": [], "warnings": ["tenant_id is required"]}, ensure_ascii=False)
 
-    limit = max(1, min(10, int(request.arguments.get("limit") or 5)))
+    raw_limit = request.arguments.get("limit")
+    if raw_limit is None:
+        limit = None
+    else:
+        try:
+            limit = max(1, int(raw_limit))
+        except (TypeError, ValueError):
+            return json.dumps({"results": [], "warnings": ["limit must be a positive integer"]}, ensure_ascii=False)
     async with tenant_scoped_session(tenant_id) as db:
         owner_user_id = await _resolve_agent_owner(
             db,
@@ -317,10 +325,10 @@ async def search_personal_kb(request: ToolExecutionRequest) -> str:
     ToolMeta(
         name="read_personal_kb",
         description=(
-            "Read bounded segments from an owner Personal Knowledge Base document after locating it with "
+            "Read complete authorized segments from an owner Personal Knowledge Base document after locating it with "
             "search_personal_kb. The document is resolved through the governed Knowledge Core; tenant, owner, "
-            "sensitivity, and grant checks are repeated for every read. Never use filesystem tools to bypass "
-            "this access boundary."
+            "sensitivity, and grant checks are repeated for every read. An explicit max_chars is honored only "
+            "when the calling model intentionally asks for a shorter result. Never use filesystem tools to bypass this access boundary."
         ),
         parameters={
             "type": "object",
@@ -336,7 +344,8 @@ async def search_personal_kb(request: ToolExecutionRequest) -> str:
                 },
                 "max_chars": {
                     "type": "integer",
-                    "description": "Maximum total document characters to return. Defaults to 8000, capped at 20000.",
+                    "minimum": 1,
+                    "description": "Optional explicit maximum total document characters to return; omit for complete selected segments.",
                 },
             },
             "required": ["document_id"],
@@ -373,10 +382,17 @@ async def read_personal_kb(request: ToolExecutionRequest) -> str:
             )
         segment_ids.add(segment_id)
 
-    try:
-        max_chars = max(1, min(20_000, int(request.arguments.get("max_chars") or 8_000)))
-    except (TypeError, ValueError):
-        return json.dumps({"segments": [], "warnings": ["max_chars must be an integer"]}, ensure_ascii=False)
+    raw_max_chars = request.arguments.get("max_chars")
+    if raw_max_chars is None:
+        max_chars = None
+    else:
+        try:
+            max_chars = max(1, int(raw_max_chars))
+        except (TypeError, ValueError):
+            return json.dumps(
+                {"segments": [], "warnings": ["max_chars must be a positive integer"]},
+                ensure_ascii=False,
+            )
 
     async with tenant_scoped_session(tenant_id) as db:
         owner_user_id = await _resolve_agent_owner(
@@ -405,11 +421,11 @@ async def read_personal_kb(request: ToolExecutionRequest) -> str:
     remaining_chars = max_chars
     truncated = False
     for index, segment in enumerate(eligible_segments):
-        if remaining_chars <= 0:
+        if remaining_chars is not None and remaining_chars <= 0:
             truncated = True
             break
         full_content = str(segment.content or "")
-        bounded_content = full_content[:remaining_chars]
+        bounded_content = full_content if remaining_chars is None else full_content[:remaining_chars]
         segment_truncated = len(bounded_content) < len(full_content)
         rendered_segments.append(
             {
@@ -421,8 +437,11 @@ async def read_personal_kb(request: ToolExecutionRequest) -> str:
                 "truncated": segment_truncated,
             }
         )
-        remaining_chars -= len(bounded_content)
-        if segment_truncated or (index < len(eligible_segments) - 1 and remaining_chars <= 0):
+        if remaining_chars is not None:
+            remaining_chars -= len(bounded_content)
+        if segment_truncated or (
+            remaining_chars is not None and index < len(eligible_segments) - 1 and remaining_chars <= 0
+        ):
             truncated = True
             break
 

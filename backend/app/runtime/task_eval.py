@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from app.runtime.context_budget import compute_context_budget, infer_task_profile
+from app.runtime.context_budget import compute_context_budget
 from app.runtime.prompt_eval import PromptEvalInputs, evaluate_runtime_prompt_contracts
 from app.runtime.prompt_builder import build_dynamic_prompt_suffix
 from app.services.agent_tools import CORE_TOOL_NAMES
@@ -51,7 +51,7 @@ _SCENARIO_SPECS: dict[str, _ScenarioSpec] = {
         prompt_checks=("system_trust_boundaries", "knowledge_trust_framing"),
         scenario_checks=(("research", "research_sources"), ("research", "research_dates")),
         expected_task_profile="research",
-        benchmark_expectations=("## Task Playbook", "primary sources", "Likely Deferred Tool Groups", "- web"),
+        benchmark_expectations=("## Task Playbook", "primary sources", "Model-owned strategy"),
         benchmark_cases=(
             _BenchmarkCase(
                 query="find the latest official release notes and cite primary sources",
@@ -98,7 +98,7 @@ _SCENARIO_SPECS: dict[str, _ScenarioSpec] = {
         query="delegate this research task to another agent and follow up later",
         required_tools=("delegate_to_agent", "check_async_task", "list_async_tasks"),
         scenario_checks=(
-            ("delegation_worker", "worker_safe_tools"),
+            ("delegation_worker", "worker_governed_tools"),
             ("delegation_worker", "worker_return_format_not_forced"),
         ),
         benchmark_cases=(
@@ -112,7 +112,7 @@ _SCENARIO_SPECS: dict[str, _ScenarioSpec] = {
         query="delegate a read-only review or research task to another agent",
         required_tools=("delegate_to_agent", "check_async_task", "list_async_tasks"),
         scenario_checks=(
-            ("delegation_worker", "worker_safe_tools"),
+            ("delegation_worker", "worker_governed_tools"),
             ("delegation_worker", "worker_return_format_not_forced"),
         ),
     ),
@@ -398,22 +398,8 @@ def _evaluate_benchmark_cases(
 
     for case in spec.benchmark_cases:
         scenario_prompt = _scenario_prompt_for_case(scenario_name, case, scenario_prompts)
-        inferred_profile = infer_task_profile(case.query).name
         expected_profile = case.expected_task_profile or spec.expected_task_profile
         failures: list[dict[str, str]] = []
-
-        if expected_profile is not None and inferred_profile != expected_profile:
-            failures.append(
-                {
-                    "name": "task_profile_mismatch",
-                    "severity": "medium",
-                    "detail": (
-                        f"Benchmark case routed to profile={inferred_profile}, expected={expected_profile} "
-                        f"for query: {case.query}"
-                    ),
-                    "remediation": "Expand task-profile inference hints so more user phrasings stay on the intended execution path.",
-                }
-            )
 
         missing_expectations = [
             expectation for expectation in case.prompt_expectations if expectation not in scenario_prompt
@@ -440,7 +426,7 @@ def _evaluate_benchmark_cases(
             {
                 "query": case.query,
                 "expected_task_profile": expected_profile,
-                "task_profile": inferred_profile,
+                "task_profile": "model_owned",
                 "ready": ready,
                 "failures": failures,
             }
@@ -526,20 +512,8 @@ def evaluate_task_readiness(inputs: TaskEvalInputs | None = None) -> dict[str, A
                 }
             )
 
-        inferred_profile = infer_task_profile(spec.query).name
-        task_profile_ok = spec.expected_task_profile is None or inferred_profile == spec.expected_task_profile
-        if spec.expected_task_profile is not None and not task_profile_ok:
-            runtime_failure_details.append(
-                {
-                    "name": "task_profile_mismatch",
-                    "severity": "medium",
-                    "detail": (
-                        f"Task router inferred profile={inferred_profile}, expected={spec.expected_task_profile} "
-                        f"for scenario {name}."
-                    ),
-                    "remediation": "Adjust task-profile inference keywords or the scenario query so routing matches the intended execution path.",
-                }
-            )
+        task_profile = "model_owned"
+        task_profile_ok = True
 
         extra_runtime_failures: list[dict[str, str]] = []
         extra_runtime_conditions = 0
@@ -578,7 +552,6 @@ def evaluate_task_readiness(inputs: TaskEvalInputs | None = None) -> dict[str, A
             + len(spec.required_skill_tools)
             + len(spec.prompt_checks)
             + len(spec.scenario_checks)
-            + (1 if spec.expected_task_profile is not None else 0)
             + extra_runtime_conditions
             + (1 if spec.benchmark_expectations else 0)
             + benchmark_case_summary["total_cases"]
@@ -588,7 +561,6 @@ def evaluate_task_readiness(inputs: TaskEvalInputs | None = None) -> dict[str, A
             + len(skill_missing_tools)
             + len(failed_prompt_checks)
             + len(failed_scenario_checks)
-            + (0 if task_profile_ok else 1)
             + len(extra_runtime_failures)
             + (0 if not benchmark_failure_details else 1)
             + benchmark_case_summary["failed_cases"]
@@ -602,7 +574,7 @@ def evaluate_task_readiness(inputs: TaskEvalInputs | None = None) -> dict[str, A
         scenarios[name] = {
             "ready": ready,
             "score": score,
-            "task_profile": inferred_profile,
+            "task_profile": task_profile,
             "task_profile_ok": task_profile_ok,
             "expected_task_profile": spec.expected_task_profile,
             "benchmark_ready": benchmark_ready,

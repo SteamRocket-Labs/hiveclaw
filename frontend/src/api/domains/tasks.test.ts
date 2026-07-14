@@ -55,7 +55,6 @@ describe('taskApi durable request identity', () => {
       request_id: 'trigger-request-1',
       confirmed_plan_id: 'plan-1',
       confirmed_plan_version: 2,
-      confirmed_plan_hash: 'sha256:plan',
     });
 
     const call = fetchMock.mock.calls[0];
@@ -64,7 +63,6 @@ describe('taskApi durable request identity', () => {
       request_id: 'trigger-request-1',
       confirmed_plan_id: 'plan-1',
       confirmed_plan_version: 2,
-      confirmed_plan_hash: 'sha256:plan',
     });
   });
 
@@ -75,7 +73,6 @@ describe('taskApi durable request identity', () => {
       request_id: 'retry-request-1',
       confirmed_plan_id: 'plan-2',
       confirmed_plan_version: 3,
-      confirmed_plan_hash: 'sha256:retry',
     });
     await taskApi.reconcile('agent-1', 'task-1', {
       decision: 'retry_safe',

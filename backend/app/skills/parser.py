@@ -56,7 +56,7 @@ class SkillParser:
 
         if frontmatter:
             name = self._string_value(frontmatter.get("name")) or name
-            description = self._string_value(frontmatter.get("description"))[:1024]
+            description = self._string_value(frontmatter.get("description"))
 
         declared_tools = self._string_tuple(frontmatter.get("tools"))
         declared_packs = self._string_tuple(frontmatter.get("packs"))
@@ -85,7 +85,7 @@ class SkillParser:
             for line in body.splitlines():
                 line = line.strip()
                 if line and not line.startswith("#"):
-                    description = line[:1024]
+                    description = line
                     break
 
         # Step 9: only the consumed fields are mapped into SkillMetadata. Any

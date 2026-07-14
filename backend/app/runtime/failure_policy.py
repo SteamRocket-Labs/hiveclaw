@@ -78,7 +78,7 @@ def build_runtime_failure_policy(
 ) -> dict[str, Any]:
     kind = str(failure_kind or "unknown")
     defaults = dict(_DEFAULTS.get(kind, {}))
-    summary = model_visible_summary or (str(message or "").strip()[:500] or kind)
+    summary = model_visible_summary or (str(message or "").strip() or kind)
     return {
         "schema": "hive.ccplus.runtime_failure_policy.v1",
         "failure_kind": kind,

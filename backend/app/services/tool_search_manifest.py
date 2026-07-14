@@ -111,7 +111,7 @@ def render_tool_search_manifest_sections(manifest: dict[str, Any]) -> str:
         if not isinstance(rows, list) or not rows:
             lines.append("- none")
             continue
-        for row in rows[:20]:
+        for row in rows:
             if not isinstance(row, dict):
                 continue
             label = _as_text(row.get(label_key))

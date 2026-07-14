@@ -599,7 +599,7 @@ class PersonalKnowledgeService:
     ) -> KnowledgeAssertion | None:
         subject = _clean_graph_text(subject_text)
         pred = _clean_graph_text(predicate, max_len=120)
-        obj = _clean_graph_text(object_text, max_len=2000)
+        obj = _clean_graph_text(object_text, max_len=None)
         if not subject or not pred or not obj:
             return None
         result = await session.execute(
@@ -2217,7 +2217,7 @@ class PersonalKnowledgeService:
     async def _fail_import_job_after_worker_error(
         self, session: Any, *, job: Any, metadata: dict[str, Any], error: str
     ) -> None:
-        warning = f"personal_kb_import_worker_error:{error}"[:500]
+        warning = f"personal_kb_import_worker_error:{error}"
         job.stage = "failed"
         job.status = "failed"
         job.error_message = warning
@@ -2420,13 +2420,13 @@ class PersonalKnowledgeService:
         owner_user_id: uuid.UUID,
         query: str,
         principal: PersonalKnowledgePrincipal,
-        limit: int = 5,
+        limit: int | None = None,
     ) -> list[KnowledgeSearchHit]:
         clean_query = _WHITESPACE_RE.sub(" ", str(query or "").strip())
         if not clean_query:
             raise ValueError("query must not be empty")
-        result_limit = max(1, int(limit or 5))
-        candidate_limit = max(result_limit * 3, 10)
+        result_limit = max(1, int(limit)) if limit is not None else None
+        candidate_limit = max(result_limit * 3, 10) if result_limit is not None else None
 
         candidates: dict[uuid.UUID, dict[str, Any]] = {}
 
@@ -2476,23 +2476,23 @@ class PersonalKnowledgeService:
             add_candidate(segment=segment, document=document, channel="text", rank=rank, raw_score=float(score or 0.0))
 
         like_query = f"%{_escape_like(clean_query)}%"
-        entity_rows = (
-            await session.execute(
-                select(KnowledgeEntity)
-                .where(
-                    KnowledgeEntity.tenant_id == tenant_id,
-                    KnowledgeEntity.scope_type == "person",
-                    KnowledgeEntity.scope_id == owner_user_id,
-                    KnowledgeEntity.merged_into_entity_id.is_(None),
-                    or_(
-                        KnowledgeEntity.canonical_name.ilike(like_query, escape="\\"),
-                        cast(KnowledgeEntity.aliases_json, Text).ilike(like_query, escape="\\"),
-                    ),
-                )
-                .order_by(KnowledgeEntity.confidence.desc(), KnowledgeEntity.updated_at.desc())
-                .limit(candidate_limit)
+        entity_statement = (
+            select(KnowledgeEntity)
+            .where(
+                KnowledgeEntity.tenant_id == tenant_id,
+                KnowledgeEntity.scope_type == "person",
+                KnowledgeEntity.scope_id == owner_user_id,
+                KnowledgeEntity.merged_into_entity_id.is_(None),
+                or_(
+                    KnowledgeEntity.canonical_name.ilike(like_query, escape="\\"),
+                    cast(KnowledgeEntity.aliases_json, Text).ilike(like_query, escape="\\"),
+                ),
             )
-        ).all()
+            .order_by(KnowledgeEntity.confidence.desc(), KnowledgeEntity.updated_at.desc())
+        )
+        if candidate_limit is not None:
+            entity_statement = entity_statement.limit(candidate_limit)
+        entity_rows = (await session.execute(entity_statement)).all()
         entities = [
             entity
             for row in entity_rows
@@ -2513,12 +2513,16 @@ class PersonalKnowledgeService:
         if vector_provider is not None:
             provider_name = vector_provider.__class__.__name__
             try:
+                vector_search_arguments = {
+                    "tenant_id": tenant_id,
+                    "owner_user_id": owner_user_id,
+                    "query": clean_query,
+                    "principal": principal.evidence(),
+                }
+                if candidate_limit is not None:
+                    vector_search_arguments["limit"] = candidate_limit
                 call = vector_provider.search_personal_segments(
-                    tenant_id=tenant_id,
-                    owner_user_id=owner_user_id,
-                    query=clean_query,
-                    limit=candidate_limit,
-                    principal=principal.evidence(),
+                    **vector_search_arguments,
                 )
                 vector_hits = await call if inspect.isawaitable(call) else call
                 for hit in list(vector_hits or []):
@@ -2564,21 +2568,20 @@ class PersonalKnowledgeService:
         if entities:
             entity_ids = [entity.id for entity in entities if getattr(entity, "id", None) is not None]
             if entity_ids:
-                graph_link_limit = max(candidate_limit * 50, 250)
-                graph_rows = (
-                    await session.execute(
-                        select(KnowledgeLink)
-                        .where(
-                            KnowledgeLink.tenant_id == tenant_id,
-                            KnowledgeLink.scope_type == "person",
-                            KnowledgeLink.scope_id == owner_user_id,
-                            KnowledgeLink.from_kind == "entity",
-                            KnowledgeLink.to_kind == "entity",
-                        )
-                        .order_by(KnowledgeLink.confidence.desc())
-                        .limit(graph_link_limit)
+                graph_statement = (
+                    select(KnowledgeLink)
+                    .where(
+                        KnowledgeLink.tenant_id == tenant_id,
+                        KnowledgeLink.scope_type == "person",
+                        KnowledgeLink.scope_id == owner_user_id,
+                        KnowledgeLink.from_kind == "entity",
+                        KnowledgeLink.to_kind == "entity",
                     )
-                ).all()
+                    .order_by(KnowledgeLink.confidence.desc())
+                )
+                if candidate_limit is not None:
+                    graph_statement = graph_statement.limit(max(candidate_limit * 50, 250))
+                graph_rows = (await session.execute(graph_statement)).all()
                 adjacency: dict[str, list[str]] = {}
                 links: list[Any] = []
                 for row in graph_rows:
@@ -2715,13 +2718,15 @@ class PersonalKnowledgeService:
                 max((trace["raw_score"] for trace in entry["channels"].values()), default=0.0),
             ),
             reverse=True,
-        )[:result_limit]
+        )
+        if result_limit is not None:
+            ranked_entries = ranked_entries[:result_limit]
         for entry in ranked_entries:
             segment, document = entry["segment"], entry["document"]
             boosts = dict(entry["boosts"])
             final_score = float(entry["rrf"]) + float(boosts["heat"]) + float(boosts["freshness"])
             content = str(segment.content or "").strip()
-            snippet = content[:500]
+            snippet = content
             document_metadata = dict(getattr(document, "doc_metadata_json", None) or {})
             hits.append(
                 KnowledgeSearchHit(

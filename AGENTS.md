@@ -15,7 +15,7 @@ Hive exists to be **two things, and every line of code must serve one of them**:
 
 ## Reference Baselines — 对照物顺序
 
-Hive is a **Cloud Code Python evolution**, so implementation comparisons must use the current local source baselines in this order:
+Hive is a **claude code Python evolution**, so implementation comparisons must use the current local source baselines in this order:
 
 1. **FreeCode TS runnable baseline**: `/Users/rocky243/vc-saas/free-code-main` — first reference for answering "what is the essential CC runtime semantics?"
 2. **claw-code Python port**: `/Users/rocky243/Context Engineering/claw-code/src` — only for Python-port direction and existing port boundaries; not a full parity baseline.
@@ -94,6 +94,74 @@ Hive is an **AI-native system**. Three layers, in strict priority order:
 
 **Review lens — apply to every subsystem:** ① Is the LLM's input visibility complete? ② Is its output budget sufficient? ③ Is the prompt engineered to benchmark quality? ④ Does mechanical processing appear only as an observable fallback?
 
+## Model Agency Boundary — 模型语义主权与平台治理边界
+
+**Non-negotiable law:** once authenticated authority, data visibility, side-effect permissions, resource ceilings, and execution isolation have established the frame, the LLM is the sole owner of semantic judgment, reasoning, synthesis, prioritization, and final expression inside that frame. The platform owns mechanical facts and action governance; it does not own the meaning of those facts and must not impersonate the model.
+
+### Hard-constraint allowlist
+
+Platform code may hard-block or mechanically constrain a path only when the decision is grounded in one of these externally verifiable invariants:
+
+1. **Authority and data ingress:** tenant/RLS/principal/delegation binding, source ACL, sensitivity access, credential visibility.
+2. **Side effects:** explicit policy, approval/checkpoint, irreversible or externally visible action boundaries.
+3. **Execution isolation:** sandbox/provider capability, host-secret isolation, path/transport/protocol safety.
+4. **Resources and lifecycle:** provider context window, explicit token/cost/tool-round budgets, cancellation, timeout, cycle/depth limits.
+5. **Evidence and recovery:** typed receipts, transcript/span ordering, idempotency, replay, rollback, durable-write commit rules.
+6. **Machine contracts:** exact schema, syntax, or protocol validity at an API boundary; failure requests a repair/retry and never authorizes platform-written semantic content.
+
+If a proposed hard gate cannot name one of these invariants and its authoritative fact source, it is not governance. It is a model-capability restriction and requires architecture review before implementation.
+
+### Forbidden implementation patterns
+
+The following are prohibited on any live intelligence path, including session runtime, Plan Mode, compaction, Memory, Soul, Skill, Workflow, A2A/subagent, model routing, and final-answer delivery:
+
+- using keywords, regexes, counters, string similarity, or fixed thresholds to decide semantic truth, task intent, answer correctness, progress, contradiction, importance, or learning value;
+- replacing, appending to, or suppressing a model-authored final answer because a natural-language scanner disagrees with it; evidence mismatches may emit audit events or trigger a new evidence-grounded LLM turn, but may not rewrite the answer;
+- silently slicing head/tail/prefixes, retaining only the first N candidates, or clearing evidence before an intelligent task sees it merely to fit a convenient budget;
+- allowing a mechanical fallback to accept, reject, promote, delete, or rewrite Memory/Soul/Skill/plan semantics when the LLM reviewer is unavailable;
+- removing tools or delegation capability based on generic task wording rather than the explicit intersection of principal authority, capability policy, approval state, and resource limits;
+- interpreting arbitrary natural-language substrings as permission, approval, or confirmation grants; authority mutations require a structured authenticated action or an explicit anchored command grammar bound to the current object/session;
+- secretly downgrading the selected model through heuristic routing, or treating a client-echoed server hash as semantic authority;
+- producing platform-authored prose that presents an inferred failure, denial, or contradiction as if it were the model's conclusion.
+
+Tests that assert any forbidden behavior are not evidence that the behavior is correct; they are regression debt and must be reversed before the implementation is changed.
+
+### Required runtime shape
+
+Use this sequence for every agent turn and every background intelligence lane:
+
+1. **Before model input:** establish principal, authorized sources, provenance, and explicit resource limits. Unauthorized bytes do not enter context.
+2. **Inside the frame:** give the LLM all authorized evidence, sufficient output budget, the real available capability surface, and benchmark-quality instructions. The LLM decides what the evidence means and what to say or propose.
+3. **Before an effect:** enforce capability policy, approval, sandbox, quota, and idempotency. A denied action stays denied without degrading unrelated reasoning.
+4. **After execution:** return typed status, receipt/invocation/artifact refs, retryability, and recovery state. The LLM interprets them; the platform persists them.
+5. **Before delivery or durable promotion:** enforce only exact authority/secret/write invariants. Prefer preventing unauthorized ingress. If a deterministic final failsafe finds exact forbidden bytes, redact only those bytes or ask the LLM to regenerate from authorized evidence; never replace the whole answer with fixed semantic prose.
+
+### Mechanical fallback contract
+
+A mechanical fallback is allowed only on a clearly identified failure path and must satisfy all of the following:
+
+- it is observable through a typed state, span/event, and metric;
+- it preserves the original evidence or a truthful, readable recovery reference;
+- it does not create semantic truth and cannot accept/reject/promote/delete/rewrite semantic material;
+- its allowed outcomes are limited to abstain, hold/quarantine, retry, degrade, request review, or report a typed infrastructure failure;
+- recovery re-enters the LLM-primary path instead of making the fallback permanent.
+
+When a physical context window is the limiting boundary, use model-led compaction first. If one call still cannot cover the input, use complete chunk/map-reduce coverage with source refs and an explicit coverage ledger. Mechanical dropping is only a last-resort provider-failure recovery path; it must be visible and recoverable, never routine preprocessing.
+
+### Mandatory review and TDD gate
+
+Any change touching prompt assembly, context selection, compaction, model routing, loop termination, tool eligibility, delegation, final-answer handling, Memory/Soul/Skill semantics, or Plan Mode must document and test:
+
+1. the exact hard invariant being enforced and its authoritative fact source;
+2. whether natural-language content is inspected to produce a hard outcome;
+3. whether the same goal can be enforced at data ingress or immediately before the external effect;
+4. proof that the LLM sees all authorized evidence and receives a task-sized output budget;
+5. proof that model-authored output remains byte-faithful outside exact unauthorized-secret redaction;
+6. fallback observability, evidence preservation, and recovery behavior;
+7. current-source comparison with FreeCode/CC first and Codex only as an additive engineering baseline.
+
+Required regressions include benign text containing security/tool keywords, decisive evidence at the end of long inputs, nested A2A receipts, unavailable-vs-denied infrastructure states, context recovery after compaction, and preservation of the model's original final answer.
+
 ## Delivery Discipline — One Complete Pass, No MVP (交付纪律 — 一次改完，零技术债)
 
 **Owner law (2026-06-08, "必须记住"): any revision/rework round ships as ONE complete pass — no MVP, no phased "first implementation," no technical debt deferred.** Before starting a change, define the *complete* scope up front (tests, edge cases, error paths, schema migration, **legacy-data backfill**, production cleanup, observability) and deliver it in one pass. Forbidden: "ship Phase 0 first," default-off flags hiding half-built work, "add tests later," "skip the migration for now."
@@ -160,6 +228,7 @@ Treat these documents as the current truth surface before making architecture cl
 - `docs/hive-sota-master-goal.md` — canonical SOTA total goal, target matrix, and future loop-comparison ledger.
 - `docs/eval-system-spec.md` — current eval direction: no Railway eval clone, no nightly behavior gate, production evidence readout plus deterministic CI gates.
 - `docs/ccplus-north-star-contract-2026-06-24.md` — canonical CCPlus boundary contract: CC semantic baseline, Codex engineering delta, Hive-native evolution, local CLI parity, and remote proprietary exclusion.
+- `docs/runtime-model-agency-constraint-audit-2026-07-13.md` — canonical Model Agency Boundary audit and closure record: C-01 through C-20 findings, CC/FreeCode/Codex comparison, one-pass repairs, and acceptance evidence.
 - `docs/harness-engineering-audit-2026-06-11.md` — harness audit, remediation log, and verification evidence.
 - `docs/round2-sota-benchmark-2026.md` — second-round SOTA benchmark, detailed comparison sources, and milestone evidence.
 - `docs/memory-clean-loop-refactor-plan-2026-06-17.md` — current memory clean-loop redesign and Agent Markdown Wiki / Learning Vault target.

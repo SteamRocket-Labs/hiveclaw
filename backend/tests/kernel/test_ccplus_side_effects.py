@@ -190,6 +190,51 @@ async def test_tool_new_messages_injected_on_parallel_path() -> None:
 
 
 @pytest.mark.asyncio
+async def test_proven_non_progress_is_summarized_by_model_without_more_tools(monkeypatch) -> None:
+    from app.kernel import engine
+    from app.kernel.loop_guard import LoopGuard
+
+    monkeypatch.setattr(engine, "LoopGuard", lambda: LoopGuard(repeated_failure_threshold=2))
+    fake_client = _FakeClient(
+        [
+            _tool_call_response("read_file", "call_retry_1", '{"path":"same.txt"}'),
+            _tool_call_response("read_file", "call_retry_2", '{"path":"same.txt"}'),
+            _tool_call_response("read_file", "call_retry_3", '{"path":"same.txt"}'),
+            _final_response("I exhausted the read retry and preserved the evidence; please repair access, then retry."),
+        ]
+    )
+
+    def execute_tool(_tool_name, _args, _request, _emit_event):
+        return ToolContentEnvelope(
+            text="[Tool execution error] timeout",
+            metadata={
+                "loop_guard_proof": {
+                    "retry_exhausted": True,
+                    "progress_token": "storage-state-v1",
+                }
+            },
+        )
+
+    kernel = AgentKernel(_base_deps(fake_client=fake_client, execute_tool=execute_tool))
+    result = await kernel.handle(
+        InvocationRequest(
+            model=SimpleNamespace(provider="openai", model="gpt-4.1", api_key="key", base_url=None),
+            messages=[{"role": "user", "content": "Read the file completely"}],
+            agent_name="Engineer",
+            role_description="Investigates repositories",
+            agent_id=uuid4(),
+            user_id=uuid4(),
+        )
+    )
+
+    assert result.content.startswith("I exhausted the read retry")
+    assert len(fake_client.calls) == 4
+    assert not fake_client.calls[3]["tools"]
+    assert any("loop_guard_terminal_evidence" in str(message.content) for message in fake_client.calls[3]["messages"])
+    assert not result.content.startswith("[Loop Guard]")
+
+
+@pytest.mark.asyncio
 async def test_tool_new_messages_wait_until_all_same_round_tool_results_are_appended() -> None:
     """D-08: injected messages must not split the provider's tool-result block.
 

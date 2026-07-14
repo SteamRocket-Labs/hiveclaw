@@ -429,7 +429,6 @@ async def _load_parent_messages_for_fork(
     agent_id: uuid.UUID,
     tenant_id: uuid.UUID | None,
     session_id: str | None,
-    limit: int = 120,
 ) -> list[dict[str, Any]]:
     if tenant_id is None or not session_id:
         return []
@@ -461,7 +460,6 @@ async def _load_parent_messages_for_fork(
                         ChatMessage.conversation_id == str(session_uuid),
                     )
                     .order_by(desc(ChatMessage.created_at))
-                    .limit(max(1, limit))
                 )
             )
             .scalars()
@@ -489,8 +487,9 @@ async def _load_parent_messages_for_fork(
             "'critic' — read-only verification specialist; pass it the original task plus the claims or "
             "artifacts to check and it returns a PASS/FAIL/PARTIAL verdict with evidence. "
             "Named definitions (via definition_name) override type, tools, model, and prompt from their "
-            "stored 定义.md. Subagents cannot delegate or spawn further and run under the same governance "
-            "as you. To hand work to another standalone digital employee (To Employee), use delegate_to_agent instead. "
+            "stored 定义.md. Subagents may use bounded nested delegation when inherited authority, depth, cycle, "
+            "approval, and budget checks admit it; every child runs under the same governance as you. To hand work "
+            "to another standalone digital employee (To Employee), use delegate_to_agent instead. "
             "For Agent Team: first call team_create to create the Team container, then call this tool with "
             "team_name and name to spawn a teammate; use send_agent_session_message with to/member_name to talk "
             "inside the Team. "
@@ -901,7 +900,7 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
             child_session_id=child_session_id,
             parent_agent_id=agent_id,
             status=foreground_status,
-            summary=(result.content or result.error or "spawn produced no result")[:8000]
+            summary=(result.content or result.error or "spawn produced no result")
             if result
             else "spawn produced no result",
             run_id=foreground_run_id,

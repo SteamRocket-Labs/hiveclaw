@@ -173,7 +173,7 @@ async def _search_smithery_api(query: str, max_results: int, api_key: str) -> li
                 {
                     "name": srv.get("qualifiedName", ""),
                     "display_name": srv.get("displayName", ""),
-                    "description": srv.get("description", "")[:200],
+                    "description": srv.get("description", ""),
                     "remote": srv.get("remote", False),
                     "verified": srv.get("verified", False),
                     "use_count": srv.get("useCount", 0),
@@ -245,7 +245,7 @@ async def _search_modelscope_api(query: str, max_results: int) -> list[dict]:
                 {
                     "name": server_id,
                     "display_name": srv.get("name", server_id),
-                    "description": srv.get("description", "")[:200],
+                    "description": srv.get("description", ""),
                     "remote": srv.get("is_hosted", False),
                     "verified": True,
                     "use_count": 0,
@@ -348,7 +348,7 @@ async def _ensure_smithery_connection(api_key: str, mcp_url: str, display_name: 
                 headers=headers,
             )
             if conn_resp.status_code not in (200, 201):
-                return {"error": f"Failed to create connection: HTTP {conn_resp.status_code} — {conn_resp.text[:200]}"}
+                return {"error": f"Failed to create connection: HTTP {conn_resp.status_code} — {conn_resp.text}"}
 
             conn_data = conn_resp.json()
             result = {
@@ -360,7 +360,7 @@ async def _ensure_smithery_connection(api_key: str, mcp_url: str, display_name: 
                 result["auth_url"] = status.get("authorizationUrl", "")
             return result
     except Exception as e:
-        return {"error": str(e)[:200]}
+        return {"error": str(e)}
 
 
 async def import_mcp_from_smithery(
@@ -456,12 +456,10 @@ async def import_mcp_from_smithery(
                 if len(agent_assignments) >= len(existing_server_tools) and all(
                     is_mcp_metadata_runtime_approved(tool) for tool in existing_server_tools
                 ):
-                    tool_names = [t.display_name for t in existing_server_tools[:5]]
-                    more = f" ... and {len(existing_server_tools) - 5} more" if len(existing_server_tools) > 5 else ""
+                    tool_names = [t.display_name for t in existing_server_tools]
                     return (
                         f"⏭️ You already have **{len(existing_server_tools)}** tools from this MCP server installed:\n"
                         + "\n".join(f"  • {n}" for n in tool_names)
-                        + more
                         + "\n\nNo action needed. These tools are ready to use."
                         + '\n\n💡 If tools stopped working (e.g. OAuth expired), use `import_mcp_server(server_id="....", reauthorize=true)` to re-authorize.'
                     )
@@ -493,7 +491,7 @@ async def import_mcp_from_smithery(
             if not server_info:
                 return f"❌ Server '{server_id}' not found on Smithery."
     except Exception as e:
-        return f"❌ Failed to fetch server info: {str(e)[:200]}"
+        return f"❌ Failed to fetch server info: {e}"
 
     display_name = server_info.get("displayName", server_id.split("/")[-1])
     description = server_info.get("description", "")

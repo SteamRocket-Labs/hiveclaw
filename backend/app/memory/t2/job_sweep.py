@@ -212,7 +212,7 @@ async def _emit_retry_exhausted_alert(manifest_path: Path, manifest: dict[str, A
         "t0_segment_id": str(manifest.get("t0_segment_id") or ""),
         "retry_count": _retry_count(manifest),
         "status": str(manifest.get("status") or ""),
-        "issues": [str(issue) for issue in (manifest.get("issues") or [])][:5],
+        "issues": [str(issue) for issue in (manifest.get("issues") or [])],
     }
     agent_id = _parse_uuid(manifest.get("agent_id"))
     try:

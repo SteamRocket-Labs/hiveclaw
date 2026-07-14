@@ -287,7 +287,7 @@ def quarantine_invalid_mcp_metadata(
     }
     fingerprint = hashlib.sha256(_canonical_json(fingerprint_payload).encode("utf-8")).hexdigest()
     flags = list(_risk_flags(description, schema_copy))
-    flags.extend(["invalid_metadata", f"validation:{str(validation_error)[:160]}"])
+    flags.extend(["invalid_metadata", f"validation:{validation_error}"])
 
     tool.mcp_raw_description = description[:MAX_RAW_DESCRIPTION_CHARS]
     tool.mcp_raw_schema = stored_schema

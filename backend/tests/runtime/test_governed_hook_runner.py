@@ -395,7 +395,13 @@ async def test_governed_hook_specs_register_into_existing_hook_registry(tmp_path
         registry=registry,
         runner=runner,
         specs=[
-            HookSpec(key="stop-shell", event=HookEvent.STOP, type="command", command="echo stop"),
+            HookSpec(
+                key="stop-shell",
+                event=HookEvent.STOP,
+                type="command",
+                command="echo stop",
+                failure_mode="required",
+            ),
             HookSpec(key="notify-shell", event=HookEvent.NOTIFICATION, type="command", command="echo notify"),
         ],
     )

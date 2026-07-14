@@ -1,10 +1,8 @@
-"""Promote suggestions (§9 P13, §4/§6.6 seed): repeated ephemeral evidence.
+"""Neutral review evidence for ephemeral Workflow definitions.
 
-When the same ephemeral definition (same definition_hash) completes
-``WORKFLOW_PROMOTE_SUGGESTION_THRESHOLD`` times, that is the evidence the
-product path waits for — suggest 保存为模板/自动化. This module only
-OBSERVES and proposes (§10 decision 4: the agent/user still walks the
-promote-proposal → human-approval path); it never registers anything itself.
+This module groups every observed run without deciding that repetition or
+completion means promotion. The agent/model or user may use the complete facts
+to author a promotion proposal; the platform never registers one itself.
 """
 
 from __future__ import annotations
@@ -14,7 +12,6 @@ from dataclasses import dataclass, field
 
 from sqlalchemy import or_, select
 
-from app.config import get_settings
 from app.database import tenant_scoped_session
 from app.models.runtime_task import RuntimeTask
 from app.models.workflow import WorkflowDefinitionRecord
@@ -45,22 +42,27 @@ def _quality_evidence_for_runs(runs: list[RuntimeTask]) -> dict:
         if evidence:
             dynamic_evidence.append(evidence)
 
-    if not dynamic_evidence:
-        return {
-            "promotion_eligible": all(run.status == "completed" for run in runs),
-            "runs_with_outcome_evidence": 0,
-        }
-
-    return {
-        "promotion_eligible": all(bool(evidence.get("promotion_eligible")) for evidence in dynamic_evidence),
+    status_counts: dict[str, int] = {}
+    for run in runs:
+        status = str(run.status or "unknown")
+        status_counts[status] = status_counts.get(status, 0) + 1
+    payload = {
+        "model_promotion_review": "not_requested",
+        "status_counts": status_counts,
         "runs_with_outcome_evidence": len(dynamic_evidence),
-        "steps_failed": sum(int(evidence.get("steps_failed") or 0) for evidence in dynamic_evidence),
-        "leaf_failed": sum(int(evidence.get("leaf_failed") or 0) for evidence in dynamic_evidence),
-        "leaf_total": sum(int(evidence.get("leaf_total") or 0) for evidence in dynamic_evidence),
-        "success_criteria_count": max(
-            int(evidence.get("success_criteria_count") or 0) for evidence in dynamic_evidence
-        ),
     }
+    if dynamic_evidence:
+        payload.update(
+            {
+                "steps_failed": sum(int(evidence.get("steps_failed") or 0) for evidence in dynamic_evidence),
+                "leaf_failed": sum(int(evidence.get("leaf_failed") or 0) for evidence in dynamic_evidence),
+                "leaf_total": sum(int(evidence.get("leaf_total") or 0) for evidence in dynamic_evidence),
+                "success_criteria_count": max(
+                    int(evidence.get("success_criteria_count") or 0) for evidence in dynamic_evidence
+                ),
+            }
+        )
+    return payload
 
 
 async def collect_promote_suggestions(
@@ -70,14 +72,15 @@ async def collect_promote_suggestions(
     session_factory=None,
     threshold: int | None = None,
 ) -> list[PromoteSuggestion]:
-    """Group completed ephemeral runs by definition_hash; suggest promotion
-    once a hash crosses the threshold and no registered definition already
-    carries that name. ``agent_id`` narrows the evidence to one agent's runs
-    (the agent-page surface)."""
-    limit = threshold if threshold is not None else get_settings().WORKFLOW_PROMOTE_SUGGESTION_THRESHOLD
+    """Group all ephemeral runs by definition_hash for neutral review.
+
+    ``threshold`` is accepted for API compatibility but cannot hide evidence.
+    ``agent_id`` narrows the evidence to the requested authority scope.
+    """
+    _ = threshold
 
     async with tenant_scoped_session(str(tenant_id), session_factory=session_factory) as session:
-        criteria = [RuntimeTask.task_type == "workflow", RuntimeTask.status == "completed"]
+        criteria = [RuntimeTask.task_type == "workflow"]
         if agent_id is not None:
             criteria.append(RuntimeTask.parent_agent_id == agent_id)
         rows = (await session.execute(select(RuntimeTask).where(*criteria))).scalars().all()
@@ -114,8 +117,6 @@ async def collect_promote_suggestions(
 
     suggestions: list[PromoteSuggestion] = []
     for definition_hash, runs in by_hash.items():
-        if len(runs) < limit:
-            continue
         name = ((runs[0].metadata_json or {}).get("definition_json") or {}).get("name") or "unnamed-workflow"
         if name in registered_names:
             continue  # already a template — nothing to suggest
@@ -124,7 +125,7 @@ async def collect_promote_suggestions(
                 definition_hash=definition_hash,
                 name=name,
                 run_count=len(runs),
-                sample_run_ids=[run.id for run in runs[:5]],
+                sample_run_ids=[run.id for run in runs],
                 quality_evidence=_quality_evidence_for_runs(runs),
             )
         )

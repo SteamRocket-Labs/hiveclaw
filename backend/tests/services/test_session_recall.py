@@ -154,6 +154,39 @@ async def test_search_session_history_prefers_t0_session_ledger(monkeypatch, tmp
 
 
 @pytest.mark.asyncio
+async def test_search_session_history_has_no_hidden_default_result_cap(monkeypatch, tmp_path: Path) -> None:
+    from app.memory.t0.ledger import append_t0_session_event
+    from app.services.session_recall import search_session_history
+
+    agent_id = uuid.uuid4()
+    for index in range(4):
+        append_t0_session_event(
+            agent_id=agent_id,
+            session_id=f"sess-full-{index}",
+            event_type="user_message",
+            role="user",
+            content=f"shared recall marker with distinct evidence {index}",
+            source="web",
+            data_root=tmp_path,
+            created_at=datetime(2026, 4, 9, 9, index, tzinfo=timezone.utc),
+        )
+
+    def _unexpected_session(*_a, **_k):
+        raise AssertionError("T0 session ledger should satisfy recall without touching DB")
+
+    monkeypatch.setattr("app.services.session_recall.tenant_scoped_session", _unexpected_session)
+    monkeypatch.setattr(
+        "app.services.session_recall.get_settings",
+        lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
+    )
+
+    hits = await search_session_history(agent_id, "shared recall marker")
+
+    assert len(hits) == 4
+    assert {hit["session_id"] for hit in hits} == {f"sess-full-{index}" for index in range(4)}
+
+
+@pytest.mark.asyncio
 async def test_search_session_history_prefers_t0_chat_logs(monkeypatch, tmp_path: Path) -> None:
     from app.services.session_recall import search_session_history
 
@@ -333,13 +366,113 @@ tools: []
     hits = await search_session_history(agent_id, "release checklist", limit=3, snippet_limit=2)
 
     assert len(hits) == 1
-    assert hits[0]["focused_recap"].startswith("Decision:")
+    assert hits[0]["focused_recap"].startswith("Evidence passthrough:")
     assert "preflight、deploy、post-verify" in hits[0]["focused_recap"]
     assert "docs/release-checklist.md" in hits[0]["focused_recap"]
     assert hits[0]["evidence_lines"] == [
+        "User: 上次关于 release checklist 我们最后怎么定的？",
         "Assistant: 我们决定把发布核对表固定成三个阶段：preflight、deploy、post-verify。",
+        "User: 需要落到哪里？",
         "Assistant: 我会把最终版本写到 docs/release-checklist.md，并在 PR 模板里链接它。",
     ]
+    assert hits[0]["summary_method"] == "evidence_passthrough"
+    assert hits[0]["summary_model_status"] == "no_tenant"
+    assert "User: 需要落到哪里？" in hits[0]["transcript"]
+    assert "Assistant: 我会把最终版本写到 docs/release-checklist.md，并在 PR 模板里链接它。" in hits[0]["transcript"]
+
+
+@pytest.mark.asyncio
+async def test_summary_model_receives_complete_recalled_transcript(monkeypatch) -> None:
+    from app.services import session_recall
+
+    captured: dict[str, object] = {}
+    decisive_tail = "SESSION_RECALL_DECISIVE_TAIL"
+    transcript = "User: question\nAssistant: " + ("x" * 4_000) + decisive_tail
+    hits = [
+        {
+            "headline": "Past decision",
+            "summary": "fallback",
+            "focused_recap": "fallback recap",
+            "snippets": ["question"],
+            "context_snippets": ["question"],
+            "transcript_window": "User: question",
+            "evidence_lines": ["User: question"],
+            "transcript": transcript,
+        }
+    ]
+
+    async def _get_summary_model_config(_tenant_id):
+        return {
+            "provider": "openai",
+            "model": "test",
+            "api_key": "key",
+            "max_output_tokens": 32_768,
+        }
+
+    class _Client:
+        async def stream(self, *, messages, max_tokens, temperature):
+            captured["prompt"] = messages[0].content
+            captured["max_tokens"] = max_tokens
+            captured["temperature"] = temperature
+            return SimpleNamespace(content="complete recap")
+
+        async def close(self):
+            return None
+
+    monkeypatch.setattr("app.services.memory_service._get_summary_model_config", _get_summary_model_config)
+    monkeypatch.setattr("app.services.llm_client.create_llm_client_from_config", lambda _config: _Client())
+    monkeypatch.setattr("app.services.llm_client.with_llm_usage_context", lambda config, **_kwargs: config)
+
+    result = await session_recall._summarize_recall_hits("question", hits, uuid.uuid4(), uuid.uuid4())
+
+    assert decisive_tail in str(captured["prompt"])
+    assert captured["max_tokens"] == 32_768
+    assert result[0]["summary"] == "complete recap"
+    assert result[0]["summary_method"] == "model"
+    assert result[0]["summary_model_status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_summary_model_failure_keeps_full_evidence_passthrough_and_is_observable(monkeypatch) -> None:
+    from app.services import session_recall
+
+    decisive_tail = "RECALL_FAILURE_DECISIVE_TAIL"
+    transcript = "User: question\nAssistant: " + ("evidence " * 80) + decisive_tail
+    hits = [
+        {
+            "headline": "Past decision",
+            "summary": transcript,
+            "focused_recap": "Evidence passthrough:\n" + transcript,
+            "snippets": ["question"],
+            "context_snippets": ["question"],
+            "transcript_window": "User: question",
+            "evidence_lines": transcript.splitlines(),
+            "transcript": transcript,
+            "summary_method": "evidence_passthrough",
+        }
+    ]
+
+    async def _get_summary_model_config(_tenant_id):
+        return {"provider": "openai", "model": "test", "api_key": "key"}
+
+    class _Client:
+        async def stream(self, **_kwargs):
+            raise RuntimeError("model unavailable")
+
+        async def close(self):
+            return None
+
+    monkeypatch.setattr("app.services.memory_service._get_summary_model_config", _get_summary_model_config)
+    monkeypatch.setattr("app.services.llm_client.create_llm_client_from_config", lambda _config: _Client())
+    monkeypatch.setattr("app.services.llm_client.with_llm_usage_context", lambda config, **_kwargs: config)
+
+    result = await session_recall._summarize_recall_hits("question", hits, uuid.uuid4(), uuid.uuid4())
+
+    assert decisive_tail in result[0]["summary"]
+    assert decisive_tail in result[0]["focused_recap"]
+    assert result[0]["summary_method"] == "evidence_passthrough"
+    assert result[0]["summary_model_status"] == "failed"
+    assert result[0]["summary_model_error_class"] == "RuntimeError"
 
 
 @pytest.mark.asyncio

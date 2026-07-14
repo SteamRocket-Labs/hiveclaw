@@ -115,7 +115,7 @@ async def save_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: uuid.UUID
     # pass request.context.tenant_id so governed memory writes retain tenant
     # context for the optional enhancement adapter boundary.
     from app.config import get_settings
-    from app.memory.explicit_overlay import looks_episodic_observation, write_explicit_memory_overlay
+    from app.memory.explicit_overlay import write_explicit_memory_overlay
 
     content = (arguments.get("content") or "").strip()
     if not content:
@@ -124,12 +124,6 @@ async def save_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: uuid.UUID
     raw_refs = arguments.get("source_refs")
     source_refs = [str(ref).strip() for ref in raw_refs if str(ref).strip()] if isinstance(raw_refs, list) else []
     source_refs.append("tool:save_memory")
-
-    if looks_episodic_observation(content):
-        return (
-            "[Skipped] This reads as an episodic observation (routine scan / no-change log). "
-            "It belongs in the T0/session ledger or workspace notes, not explicit long-term memory."
-        )
 
     result = await write_explicit_memory_overlay(
         agent_id,
@@ -142,17 +136,15 @@ async def save_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: uuid.UUID
 
     if result.status == "rejected":
         return f"[Rejected] {result.sensitivity}: {result.reason}"
+    if result.status == "held":
+        return f"[Held] {result.sensitivity}: {result.reason}"
     if result.status == "duplicate":
         return (
-            f"[Skipped] Similar explicit memory already exists ({result.entry_id}) "
-            f"in {result.target_hint}: {result.content[:80]}"
+            f"[Skipped] Exact explicit memory already exists ({result.entry_id}) "
+            f"in {result.target_hint}: {result.content}"
         )
 
-    saved = content[:80]
-    return (
-        f"Saved to explicit memory overlay [{result.category}] ({result.target_hint}): "
-        f"{saved}{'...' if len(content) > 80 else ''}"
-    )
+    return f"Saved to explicit memory overlay [{result.category}] ({result.target_hint}): {result.content}"
 
 
 # -- update_memory / retire_memory -------------------------------------------
@@ -492,6 +484,8 @@ async def update_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: uuid.UU
             )
             if result.status == "rejected":
                 return f"[Rejected] {result.sensitivity}: {result.reason}"
+            if result.status == "held":
+                return f"[Held] {result.sensitivity}: {result.reason}"
             update_explicit_overlay_status(
                 data_root,
                 agent_id,
@@ -500,7 +494,7 @@ async def update_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: uuid.UU
                 reason=f"superseded_by:{result.entry_id}",
                 accepted_blocks=[],
             )
-            return f"Updated explicit memory {memory_id} -> {result.entry_id} [{result.category}]: {content[:80]}"
+            return f"Updated explicit memory {memory_id} -> {result.entry_id} [{result.category}]: {content}"
     if old_entry is None:
         return f"[Error] Memory entry not found or not visible: {memory_id}"
     if is_accepted_t3_target(old_entry.source):
@@ -622,7 +616,6 @@ def load_memory(agent_id: uuid.UUID, arguments: dict) -> str:
         ids = [part.strip() for part in raw_ids.split(",") if part.strip()]
     else:
         ids = [str(item).strip() for item in raw_ids if str(item).strip()]
-    ids = ids[:20]
     if not ids:
         return "[Error] ids is required and cannot be empty."
 
@@ -698,8 +691,8 @@ def load_memory(agent_id: uuid.UUID, arguments: dict) -> str:
             "- Decisions, preferences, or constraints from past sessions\n"
             "- Strategies that worked or approaches that failed\n"
             "- Any fact you saved previously with save_memory\n\n"
-            "Returns matching fact IDs/previews and recalled session snippets ranked by relevance. "
-            "Call load_memory(ids=[...]) to expand preview-only fact results."
+            "Returns every authorized matching fact and recalled session by default, with complete semantic content. "
+            "Set limit only when you intentionally want the retrieval layer to return fewer candidates."
         ),
         parameters={
             "type": "object",
@@ -715,7 +708,8 @@ def load_memory(agent_id: uuid.UUID, arguments: dict) -> str:
                 },
                 "limit": {
                     "type": "integer",
-                    "description": "Maximum results to return. Default: 10.",
+                    "minimum": 1,
+                    "description": "Optional explicit maximum results to return; omit for every authorized matching candidate.",
                 },
                 "date_from": {
                     "type": "string",
@@ -747,7 +741,14 @@ async def search_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: str | N
         return "[Error] query is required."
 
     scope = arguments.get("scope", "all")
-    limit = min(int(arguments.get("limit", 10)), 20)
+    raw_limit = arguments.get("limit")
+    if raw_limit is None:
+        limit = None
+    else:
+        try:
+            limit = max(1, int(raw_limit))
+        except (TypeError, ValueError):
+            return "[Error] limit must be a positive integer when provided."
     date_from = (arguments.get("date_from") or "").strip() or None
     date_to = (arguments.get("date_to") or "").strip() or None
     results: list[str] = []
@@ -770,11 +771,11 @@ async def search_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: str | N
             for f in overlay_facts:
                 entry_id = f.get("id", "")
                 cat = f.get("category", "general")
-                preview = f.get("preview") or f.get("content", "")
+                content = f.get("content") or f.get("preview", "")
                 target_hint = f.get("target_hint", "unknown")
                 results.append(
                     f"- id={entry_id} [{cat}] source=explicit_overlay target={target_hint} "
-                    f'{preview} load_memory(ids=["{entry_id}"])'
+                    f'{content} load_memory(ids=["{entry_id}"])'
                 )
 
         from app.memory.plane_read import search_plane_facts
@@ -795,21 +796,23 @@ async def search_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: str | N
             md_facts=facts,
         )
         if backend_facts:
-            facts = _dedupe_fact_results([*backend_facts, *facts])[:limit]
+            facts = _dedupe_fact_results([*backend_facts, *facts])
+            if limit is not None:
+                facts = facts[:limit]
         facts = [fact for fact in facts if _memory_fact_visible(fact)]
         if facts:
             results.append("## Semantic Memory")
             for f in facts:
                 entry_id = f.get("id", "")
                 cat = f.get("category", "general")
-                preview = f.get("preview") or f.get("content", "")
+                content = f.get("content") or f.get("preview", "")
                 ts = f.get("timestamp", "")
                 ts_display = f" ({ts[:10]})" if ts else ""
                 source = f.get("source", "")
                 source_display = f" source={source}" if source else ""
                 id_display = f"id={entry_id} " if entry_id else ""
                 load_hint = f' load_memory(ids=["{entry_id}"])' if entry_id else ""
-                results.append(f"- {id_display}[{cat}]{ts_display}{source_display} {preview}{load_hint}")
+                results.append(f"- {id_display}[{cat}]{ts_display}{source_display} {content}{load_hint}")
 
     # --- Cross-session recall ---
     if scope in ("sessions", "all"):
@@ -835,23 +838,31 @@ async def search_memory(agent_id: uuid.UUID, arguments: dict, tenant_id: str | N
                     summary = (hit.get("summary") or "").strip()
                     if summary and summary != focused_recap:
                         results.append(f"  Summary: {summary}")
-                    evidence_lines = hit.get("evidence_lines") or []
-                    if evidence_lines:
-                        results.append("  Evidence:")
-                        for line in evidence_lines:
-                            cleaned = line.strip()
-                            if cleaned:
-                                results.append(f"    {cleaned}")
-                    transcript_window = (hit.get("transcript_window") or "").strip()
-                    if transcript_window:
-                        results.append("  Context:")
-                        for line in transcript_window.splitlines():
-                            cleaned = line.strip()
-                            if cleaned:
-                                results.append(f"    {cleaned}")
-                    display_snippets = hit.get("context_snippets") or hit.get("snippets", [])
-                    for snippet in display_snippets:
-                        results.append(f"  - {snippet}")
+                    complete_transcript = (hit.get("transcript") or "").strip()
+                    if complete_transcript:
+                        results.append("  Complete transcript:")
+                        for line in complete_transcript.splitlines():
+                            results.append(f"    {line}")
+                    else:
+                        # Legacy/degraded hits may lack a canonical transcript.
+                        # In that case expose every available evidence projection.
+                        evidence_lines = hit.get("evidence_lines") or []
+                        if evidence_lines:
+                            results.append("  Evidence:")
+                            for line in evidence_lines:
+                                cleaned = line.strip()
+                                if cleaned:
+                                    results.append(f"    {cleaned}")
+                        transcript_window = (hit.get("transcript_window") or "").strip()
+                        if transcript_window:
+                            results.append("  Context:")
+                            for line in transcript_window.splitlines():
+                                cleaned = line.strip()
+                                if cleaned:
+                                    results.append(f"    {cleaned}")
+                        display_snippets = hit.get("context_snippets") or hit.get("snippets", [])
+                        for snippet in display_snippets:
+                            results.append(f"  - {snippet}")
         except Exception as exc:
             results.append(f"## Session Recall\n- [Search error: {exc}]")
 
@@ -866,7 +877,7 @@ async def _search_semantic_backend_facts(
     *,
     tenant_id: str | None,
     query: str,
-    limit: int,
+    limit: int | None,
     date_from: str | None,
     date_to: str | None,
     md_facts: list[dict],

@@ -441,9 +441,10 @@ def list_knowledge_pages(
             continue
         for path in sorted(directory.glob("*.md")):
             text = _read_text(path)
-            if not can_access_sensitivity(classify_text_sensitivity(text), principal_stack):
-                continue
             frontmatter = _parse_frontmatter(text)
+            sensitivity = frontmatter.get("sensitivity") or classify_text_sensitivity(text)
+            if not can_access_sensitivity(sensitivity, principal_stack):
+                continue
             pages.append(
                 {
                     "id": f"{subdir}/{path.stem}",
@@ -474,7 +475,12 @@ def get_knowledge_page(
     if not path.exists():
         return None
     text = _read_text(path)
-    visible_text, _sensitivity = classify_and_redact_text(text, principal_stack)
+    frontmatter = _parse_frontmatter(text)
+    visible_text, _sensitivity = classify_and_redact_text(
+        text,
+        principal_stack,
+        sensitivity=frontmatter.get("sensitivity"),
+    )
 
     # P9 wikilink navigation: outgoing/incoming edges from the derived
     # relation graph (rebuilt from Markdown — never persisted).

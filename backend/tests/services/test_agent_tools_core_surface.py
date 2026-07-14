@@ -1,12 +1,8 @@
 """T1 core tool surface invariants (docs/execution-mode-spectrum.md §4.6 / §8.1).
 
-T1.1 atomic pair (red tests #1/#3/#7): the source capabilities
-``spawn_subagent`` / ``propose_dynamic_workflow`` / ``preview_workflow`` / ``start_workflow`` are promoted to
-``CORE_TOOL_NAMES`` (turn-1 visible via the ``_always_tools`` fallback), and —
-in the SAME commit — both recursion exclusion sets deny them. Once the tools
-are in core, ``core_tools_only=True`` child profiles would otherwise leak them
-into child tool surfaces (the pack gate that passively blocked them is no
-longer in the path).
+Source capabilities are turn-1 visible and remain available inside governed
+child sessions. Depth, cycle, authority, approval, and budget enforce the
+boundary; a blanket recursion blacklist must not replace model judgment.
 
 T1.2 (red test #2): the work-ledger trio ``track_todo`` / ``record_finding`` /
 ``read_ledger`` joins ``CORE_TOOL_NAMES`` — working memory is an agent
@@ -129,70 +125,59 @@ def test_session_and_extension_surfaces_use_taxonomy_facade_instead_of_runtime_g
     assert "RUNTIME_TOOL_GROUPS" not in inspect.getsource(agents_api.get_agent_extension_registry)
 
 
-# ── Red test #3 — recursion guard, BOTH paths ───────────────────────
+# ── Child capability boundary — govern actions, do not blacklist thought ──
 
 
-def test_subagent_base_exclusions_deny_source_capabilities():
+def test_subagent_base_exclusions_only_deny_human_interaction_tools():
     from app.agents.subagent import _SUBAGENT_BASE_EXCLUDED_TOOLS
 
-    assert SOURCE_CAPABILITY_TOOLS <= set(_SUBAGENT_BASE_EXCLUDED_TOOLS)
+    excluded = set(_SUBAGENT_BASE_EXCLUDED_TOOLS)
+    assert excluded == {"ask_user_question", "request_plan_mode"}
+    assert SOURCE_CAPABILITY_TOOLS.isdisjoint(excluded)
 
 
-def test_resolve_subagent_tools_excludes_source_capabilities_for_all_types():
-    """Every subagent type — including unknown/custom types whose empty
-    allow-list means "all core tools" downstream — must carry the base
-    exclusions for the three source capabilities."""
+def test_resolve_subagent_tools_does_not_blanket_exclude_source_capabilities():
+    """Positive presets may narrow a role, but the shared deny-list cannot
+    mechanically erase nested collaboration from every child."""
     from app.agents.subagent import SubagentSpec, resolve_subagent_tools
 
     for subagent_type in ("explorer", "worker", "critic", "custom-profile"):
         spec = SubagentSpec(name="t1-probe", type=subagent_type)
         excluded = resolve_subagent_tools(spec)[1]
-        assert SOURCE_CAPABILITY_TOOLS <= set(excluded), subagent_type
+        assert SOURCE_CAPABILITY_TOOLS.isdisjoint(excluded), subagent_type
+        assert {"ask_user_question", "request_plan_mode"}.issubset(excluded)
 
 
-def test_delegation_base_exclusions_deny_source_capabilities():
+def test_delegation_base_exclusions_preserve_source_capabilities():
     from app.agents.orchestrator import _DELEGATION_BASE_EXCLUDED_TOOLS
 
-    assert SOURCE_CAPABILITY_TOOLS <= set(_DELEGATION_BASE_EXCLUDED_TOOLS)
+    excluded = set(_DELEGATION_BASE_EXCLUDED_TOOLS)
+    assert excluded == {"ask_user_question", "request_plan_mode"}
+    assert SOURCE_CAPABILITY_TOOLS.isdisjoint(excluded)
 
 
 def test_delegation_and_subagent_share_one_base_exclusion_policy():
-    """Child-agent recursion/control exclusions must have one source of truth."""
+    """The minimal human-interaction exclusion boundary has one source of truth."""
     from app.agents.orchestrator import _DELEGATION_BASE_EXCLUDED_TOOLS
     from app.agents.subagent import _SUBAGENT_BASE_EXCLUDED_TOOLS
     from app.agents.tool_policies import DELEGATED_WORKER_BASE_EXCLUDED_TOOLS
 
     assert _SUBAGENT_BASE_EXCLUDED_TOOLS == DELEGATED_WORKER_BASE_EXCLUDED_TOOLS
     assert _DELEGATION_BASE_EXCLUDED_TOOLS == DELEGATED_WORKER_BASE_EXCLUDED_TOOLS
-    for tool_name in (
-        "delegate_to_agent",
-        "send_message_to_agent",
-        "spawn_subagent",
-        "check_subagent",
-        "fanout_subagents",
-        "propose_dynamic_workflow",
-        "preview_workflow",
-        "start_workflow",
-        "ask_user_question",
-        "request_plan_mode",
-    ):
-        assert tool_name in DELEGATED_WORKER_BASE_EXCLUDED_TOOLS
+    assert DELEGATED_WORKER_BASE_EXCLUDED_TOOLS == ("ask_user_question", "request_plan_mode")
 
 
-def test_delegation_profiles_never_grant_source_capabilities():
-    """Behavioural pin: no delegation profile's effective tool-name set may
-    contain a source capability — covers both ``core_tools_only`` subtraction
-    profiles (worker_safe, memory_readonly) and allowlist profiles
-    (review_readonly, research_readonly)."""
+def test_memory_readonly_profile_preserves_governed_source_capabilities():
+    """A memory-write restriction must not silently become an intelligence or
+    collaboration restriction."""
     from app.agents.orchestrator import (
         _DELEGATION_TOOL_PROFILES,
         _delegation_profile_tool_names,
     )
 
-    for profile in _DELEGATION_TOOL_PROFILES.values():
-        effective = _delegation_profile_tool_names(profile)
-        leaked = SOURCE_CAPABILITY_TOOLS & effective
-        assert not leaked, f"{profile.name} leaks {leaked}"
+    effective = _delegation_profile_tool_names(_DELEGATION_TOOL_PROFILES["memory_readonly"])
+
+    assert SOURCE_CAPABILITY_TOOLS <= effective
 
 
 # ── Step 0 — CORE-only pack retired, no catalog straddle ─────────────

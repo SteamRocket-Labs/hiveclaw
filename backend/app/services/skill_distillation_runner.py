@@ -27,12 +27,9 @@ async def run_skill_distillation(
 ) -> dict[str, Any]:
     # Bind an explicit per-call dependency snapshot so tests, DI, and runtime
     # overrides observe the same facade values without copying a module namespace.
-    _MIN_CONFIDENCE = support._MIN_CONFIDENCE
-    _PATCH_THRESHOLD = support._PATCH_THRESHOLD
-    _PROMOTE_THRESHOLD = support._PROMOTE_THRESHOLD
-    _PROMOTE_WINDOW_DAYS = support._PROMOTE_WINDOW_DAYS
     _build_workflow_signature = support._build_workflow_signature
     _capture_skill_candidate_package_factor = support._capture_skill_candidate_package_factor
+    _collect_direct_skill_candidates = support._collect_direct_skill_candidates
     _commit_skill_with_asset_revision = support._commit_skill_with_asset_revision
     _draft_skill_with_llm = support._draft_skill_with_llm
     _infer_skill_name = support._infer_skill_name
@@ -43,7 +40,8 @@ async def run_skill_distillation(
     _resolve_patch_target_skill = support._resolve_patch_target_skill
     _run_skill_artifact_gate = support._run_skill_artifact_gate
     _run_skill_referee_gate = support._run_skill_referee_gate
-    _select_direct_skill_candidate = support._select_direct_skill_candidate
+    _select_skill_candidate_with_llm = support._select_skill_candidate_with_llm
+    SkillCandidateSelectionOption = support.SkillCandidateSelectionOption
     advance_distiller_cursor = support.advance_distiller_cursor
     datetime = support.datetime
     infer_static_runtime_tool_group_names = support.infer_static_runtime_tool_group_names
@@ -87,24 +85,22 @@ async def run_skill_distillation(
     state = load_distiller_state(workspace)
     evidence = await _load_internal_session_evidence(
         agent_id=agent_id,
-        since_days=_PROMOTE_WINDOW_DAYS,
+        since_days=None,
         state=state,
         current_session_id=current_session_id,
     )
-    direct_candidate: DirectSkillCandidate | None = None
-    if not evidence:
-        direct_candidate = _select_direct_skill_candidate(
-            skill_candidate_drafts=flywheel_skill_candidate_drafts,
-            memory_skill_candidates=memory_skill_candidates,
-            workspace=workspace,
-        )
-        if direct_candidate is None:
-            return {
-                "status": "idle",
-                "processed_sessions": 0,
-                "workflow_candidates_recorded": workflow_candidates_recorded,
-                "memory_skill_candidates": len(memory_skill_candidates),
-            }
+    direct_candidates: list[DirectSkillCandidate] = _collect_direct_skill_candidates(
+        skill_candidate_drafts=flywheel_skill_candidate_drafts,
+        memory_skill_candidates=memory_skill_candidates,
+        workspace=workspace,
+    )
+    if not evidence and not direct_candidates:
+        return {
+            "status": "idle",
+            "processed_sessions": 0,
+            "workflow_candidates_recorded": workflow_candidates_recorded,
+            "memory_skill_candidates": len(memory_skill_candidates),
+        }
 
     processed = 0
     last_cursor = advance_distiller_cursor(
@@ -117,13 +113,6 @@ async def run_skill_distillation(
         processed += 1
         fingerprint = _build_workflow_signature(item.tool_names)
         if fingerprint.workflow_signature is None:
-            if fingerprint.blocker == "external_action_workflow":
-                record_skill_lifecycle_event(
-                    workspace,
-                    skill_name="(distiller)",
-                    status="rejected",
-                    note=f"Skipped external-action workflow from session {item.session_id}.",
-                )
             continue
         if item.status == "noop":
             continue
@@ -133,7 +122,7 @@ async def run_skill_distillation(
             if item.used_skill and item.loaded_skill_names
             else _infer_skill_name(fingerprint.workflow_signature)
         )
-        decision = record_skill_execution(
+        record_skill_execution(
             workspace,
             skill_name=skill_record_name,
             workflow_signature=fingerprint.workflow_signature,
@@ -144,44 +133,82 @@ async def run_skill_distillation(
             occurred_at=item.occurred_at,
         )
         grouped.setdefault(fingerprint.workflow_signature, []).append(item)
-        if decision["decision"] == "patch":
-            update_skill_candidate_record(
-                workspace,
-                workflow_signature=fingerprint.workflow_signature,
-                last_status="patch",
-                last_note=item.summary,
-            )
 
     state.last_processed_at = last_cursor[0] or state.last_processed_at
     state.last_processed_session_id = last_cursor[1] or state.last_processed_session_id
     save_distiller_state(workspace, state)
 
     candidates = load_skill_candidates(workspace)
-    ranked_candidates = rank_skill_candidates(
-        candidates.values(),
-        patch_threshold=_PATCH_THRESHOLD,
-        promote_threshold=_PROMOTE_THRESHOLD,
-    )
-    patchable = ranked_candidates.patchable
-    promotable = ranked_candidates.promotable
-    if direct_candidate is None and not patchable and not promotable:
-        direct_candidate = _select_direct_skill_candidate(
-            skill_candidate_drafts=flywheel_skill_candidate_drafts,
-            memory_skill_candidates=memory_skill_candidates,
-            workspace=workspace,
-        )
+    ranked_candidates = rank_skill_candidates(candidates.values())
+    reviewable = ranked_candidates.reviewable
     if model is None:
         return {"status": "candidate", "processed_sessions": processed}
-    if direct_candidate is None and not patchable and not promotable:
+    if not direct_candidates and not reviewable:
         return {"status": "candidate", "processed_sessions": processed}
 
-    if direct_candidate is not None:
-        distillation_intent = direct_candidate.distillation_intent
-        record = direct_candidate.record
-        evidence_for_candidate = direct_candidate.evidence
-    else:
-        distillation_intent = "patch" if patchable else "promote"
-        record = patchable[0] if patchable else promotable[0]
+    selection_options: list[SkillCandidateSelectionOption] = []
+    for direct in direct_candidates:
+        selection_options.append(
+            SkillCandidateSelectionOption(
+                key=f"direct:{direct.record.workflow_signature}:{direct.candidate_id}",
+                candidate_id=direct.candidate_id,
+                record=direct.record,
+                evidence=direct.evidence,
+                direct_candidate=direct,
+            )
+        )
+    direct_workflow_signatures = {
+        value for direct in direct_candidates for value in (direct.record.workflow_signature, direct.candidate_id)
+    }
+    for candidate_record in reviewable:
+        if candidate_record.workflow_signature in direct_workflow_signatures:
+            continue
+        candidate_evidence = grouped.get(candidate_record.workflow_signature, [])
+        if not candidate_evidence:
+            candidate_evidence = [
+                item
+                for item in evidence
+                if _build_workflow_signature(item.tool_names).workflow_signature == candidate_record.workflow_signature
+            ]
+        selection_options.append(
+            SkillCandidateSelectionOption(
+                key=f"workflow:{candidate_record.workflow_signature}",
+                candidate_id=candidate_record.workflow_signature,
+                record=candidate_record,
+                evidence=candidate_evidence,
+                direct_candidate=None,
+            )
+        )
+
+    try:
+        selected_option = await _select_skill_candidate_with_llm(
+            model=model,
+            options=selection_options,
+            workspace=workspace,
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+        )
+    except Exception as exc:  # noqa: BLE001 - selector failure must hold, never choose mechanically
+        logger.warning("[skill_distiller] candidate selector failed for %s: %s", agent_id, exc)
+        return {
+            "status": "held",
+            "processed_sessions": processed,
+            "reason": f"skill_candidate_selector_failed:{type(exc).__name__}",
+            "candidate_count": len(selection_options),
+        }
+    if selected_option is None:
+        return {
+            "status": "held",
+            "processed_sessions": processed,
+            "reason": "skill_candidate_selector_deferred",
+            "candidate_count": len(selection_options),
+        }
+
+    distillation_intent = "review"
+    record = selected_option.record
+    evidence_for_candidate = selected_option.evidence
+    direct_candidate = selected_option.direct_candidate
+    if not evidence_for_candidate and direct_candidate is None:
         evidence_for_candidate = grouped.get(record.workflow_signature, [])
         if not evidence_for_candidate:
             evidence_for_candidate = [
@@ -201,7 +228,7 @@ async def run_skill_distillation(
         else (),
         workspace=workspace,
         distillation_intent=distillation_intent,
-        target_skill_name=record.skill_name if distillation_intent == "patch" else None,
+        target_skill_name=None,
         evidence_contrast=render_skill_evidence_contrast(evidence_for_candidate),
         memory_candidates=memory_skill_candidates,
         skill_candidate_drafts=flywheel_skill_candidate_drafts,
@@ -210,8 +237,8 @@ async def run_skill_distillation(
     )
 
     conflict = resolve_existing_skill_conflict(workspace=workspace, draft=draft)
-    if draft.decision in {"defer", "reject"} or draft.confidence < _MIN_CONFIDENCE:
-        note = draft.reason or "LLM confidence was below the promotion threshold."
+    if draft.decision in {"defer", "reject"}:
+        note = draft.reason or "The Skill Distiller model deferred this candidate."
         update_skill_candidate_record(
             workspace,
             workflow_signature=record.workflow_signature,
@@ -229,9 +256,26 @@ async def run_skill_distillation(
         )
         return {"status": "deferred", "processed_sessions": processed}
 
+    if conflict.final_decision in {"defer", "reject"}:
+        note = conflict.reason or draft.reason or "The Skill candidate requires another model decision."
+        update_skill_candidate_record(
+            workspace,
+            workflow_signature=record.workflow_signature,
+            skill_name=draft.name or record.skill_name,
+            blocker="semantic_conflict_deferred",
+            last_status="defer",
+            last_note=note,
+            last_updated_at=datetime.now(timezone.utc).isoformat(),
+        )
+        record_skill_lifecycle_event(
+            workspace,
+            skill_name=draft.name or record.skill_name,
+            status="defer",
+            note=note,
+        )
+        return {"status": "deferred", "processed_sessions": processed, "reason": note}
+
     final_decision = conflict.final_decision
-    if distillation_intent == "patch" or draft.decision == "patch":
-        final_decision = "patch"
     effective_draft = (
         replace(draft, name=conflict.existing_skill_name)
         if final_decision == "patch" and conflict.existing_skill_name
@@ -517,7 +561,7 @@ async def run_skill_distillation(
                     verification_report=verification_report,
                     artifact_gate_report=artifact_gate_report,
                     referee_review=referee_review,
-                    extra={"save_result": save_result[:500]},
+                    extra={"save_result": save_result},
                 ),
             )
             update_skill_candidate_record(
@@ -553,7 +597,7 @@ async def run_skill_distillation(
                 verification_report=verification_report,
                 artifact_gate_report=artifact_gate_report,
                 referee_review=referee_review,
-                extra={"save_result": save_result[:500]},
+                extra={"save_result": save_result},
             ),
         )
         update_skill_candidate_package_status(
@@ -800,7 +844,7 @@ async def run_skill_distillation(
                 verification_report=verification_report,
                 artifact_gate_report=artifact_gate_report,
                 referee_review=referee_review,
-                extra={"save_result": save_result[:500]},
+                extra={"save_result": save_result},
             ),
         )
         update_skill_candidate_record(
@@ -836,7 +880,7 @@ async def run_skill_distillation(
             verification_report=verification_report,
             artifact_gate_report=artifact_gate_report,
             referee_review=referee_review,
-            extra={"save_result": save_result[:500]},
+            extra={"save_result": save_result},
         ),
     )
     update_skill_candidate_package_status(

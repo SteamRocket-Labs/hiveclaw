@@ -75,10 +75,6 @@ _TASKS: dict[str, asyncio.Task] = {}
 _CURRENT_BROADCAST_RUN_ID: ContextVar[str | None] = ContextVar("_CURRENT_BROADCAST_RUN_ID", default=None)
 _PERMISSION_METADATA_KEYS = ("permission_mode", "permission_profile", "writable_roots")
 _CHANNEL_DELIVERY_TOOL_NAMES = ("send_channel_message", "send_channel_file")
-_CHANNEL_DELIVERY_CHANNEL_HINT_RE = re.compile(
-    r"(飞书|feishu|lark|即时通讯|企业微信|wecom|微信|wechat|telegram|slack|discord|im)",
-    re.IGNORECASE,
-)
 _SESSION_CONTEXT_RUNTIME_EVENT_TYPES = {
     "context_window_status",
     "compaction_skipped",
@@ -88,6 +84,7 @@ _SESSION_CONTEXT_RUNTIME_EVENT_TYPES = {
     "provider_call_ledger",
     "memory_context_degraded",
     "memory_context_unavailable",
+    "model_route",
 }
 
 
@@ -192,10 +189,6 @@ async def _create_runtime_budget_root_run_for_chat(
         return None
 
 
-_CHANNEL_DELIVERY_ACTION_HINT_RE = re.compile(
-    r"(发给|发送|转发|同步|推送|回传|传回|发回|投递|share|send|forward|deliver|post)",
-    re.IGNORECASE,
-)
 _TERMINAL_ARTIFACT_DECLARATION_RE = re.compile(
     r"(?i)\b(deliverable|deliverables|artifact|artifacts|final file|final files)\b|交付物|最终文件|最终交付"
 )
@@ -394,19 +387,9 @@ def _is_web_origin_turn(metadata: dict[str, Any], runtime_session_context: Any) 
 
 
 def _explicit_channel_delivery_requested(metadata: dict[str, Any], prompt: str | None = None) -> bool:
-    if metadata.get("allow_channel_delivery_tools") is True:
-        return True
-    text = " ".join(
-        part
-        for part in (
-            prompt,
-            metadata.get("display_content"),
-            metadata.get("llm_content"),
-            metadata.get("content"),
-        )
-        if isinstance(part, str) and part.strip()
-    )
-    return bool(_CHANNEL_DELIVERY_CHANNEL_HINT_RE.search(text) and _CHANNEL_DELIVERY_ACTION_HINT_RE.search(text))
+    """Use only the typed turn contract; never infer authority from prose."""
+    del prompt
+    return metadata.get("allow_channel_delivery_tools") is True
 
 
 def _runtime_turn_excluded_tool_names(
@@ -954,7 +937,7 @@ async def _reconcile_terminal_transcript_ghost(db: AsyncSession, task: RuntimeTa
     _apply_terminal_task_update(
         task,
         status=status,
-        result_summary=str(getattr(terminal_event, "content", None) or "")[:500],
+        result_summary=str(getattr(terminal_event, "content", None) or ""),
         metadata_json=metadata,
     )
     await db.commit()
@@ -1307,11 +1290,6 @@ def conversation_from_history_messages(history_messages) -> list[dict]:
                 replacement = tc_data.get("content_replacement") if isinstance(tc_data, dict) else None
                 frozen_inline = replacement.get("inline_content") if isinstance(replacement, dict) else None
                 tool_result = str(frozen_inline if frozen_inline is not None else tc_result)
-                if frozen_inline is None and len(tool_result) > 50000:
-                    logger.info("[WebChatRun] Tool result truncated on reload: {}→50000 chars", len(tool_result))
-                    tool_result = (
-                        tool_result[:50000] + "\n\n[... truncated, full output may be in workspace/tool_results/]"
-                    )
                 conversation.append({"role": "tool", "tool_call_id": tc_id, "content": tool_result})
             except Exception as exc:
                 logger.debug("[WebChatRun] Repaired malformed tool_call record during replay: {}", exc)
@@ -2349,7 +2327,7 @@ def _with_reclaimed_web_chat_resume_context(task: RuntimeTask) -> dict[str, Any]
                 runtime_task_id=task.id,
             )
         except Exception as exc:
-            metadata["restart_resume_context_error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
+            metadata["restart_resume_context_error"] = f"{type(exc).__name__}: {exc}"
     metadata["resumed_after_restart"] = True
     metadata["resumed_at"] = datetime.now(timezone.utc).isoformat()
     metadata["recovery_state"] = "recovering"
@@ -3241,8 +3219,6 @@ async def _persist_tool_call(
             parsed_raw_result = {}
     model_seen_result = data.get("model_seen_result")
     content_replacement = data.get("content_replacement")
-    if len(raw_str) > 50000:
-        raw_str = raw_str[:50000] + "\n\n[... truncated]"
     from app.services.decision_trace import extract_decision_id_from_text
     from app.services.tenant_resolver import resolve_tenant_for_agent
 

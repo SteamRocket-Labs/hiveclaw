@@ -29,7 +29,7 @@ from pathlib import Path
 
 from app.agents.subagent_definition import _tenant_subagent_root, validate_subagent_name
 from app.memory.write_gate import MemoryWriteDecision, prepare_memory_write, prepare_memory_write_with_llm
-from app.services.llm_client import chat_complete
+from app.services.llm_client import chat_complete, get_max_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +53,7 @@ HowDistiller = Callable[[str], "list[tuple[str, str]] | Awaitable[list[tuple[str
 class HowWriteResult:
     written: bool
     rejected: bool
+    held: bool = False
     reason: str = ""
     content: str = ""
 
@@ -119,12 +120,17 @@ class SubagentMemoryStore:
         if decision.rejected:
             logger.warning("[SubagentMemory] write rejected by gate: name=%s reason=%s", spec_name, decision.reason)
             return HowWriteResult(written=False, rejected=True, reason=decision.reason)
+        if decision.held:
+            logger.info(
+                "[SubagentMemory] write held for semantic review: name=%s reason=%s", spec_name, decision.reason
+            )
+            return HowWriteResult(written=False, rejected=False, held=True, reason=decision.reason)
 
         self.base_dir.mkdir(parents=True, exist_ok=True)
         entry = self._format_entry(decision.content, category=category, metadata=decision.metadata)
         with self._path(spec_name).open("a", encoding="utf-8") as fh:
             fh.write(entry)
-        return HowWriteResult(written=True, rejected=False, content=decision.content)
+        return HowWriteResult(written=True, rejected=False, held=False, content=decision.content)
 
     def load(self, spec_name: str, *, active_only: bool = False) -> str:
         """Return the subagent's memory text (empty string if none yet).
@@ -255,7 +261,11 @@ async def llm_distill_how(
                 {"role": "user", "content": run_log},
             ],
             temperature=0.2,
-            max_tokens=8192,  # CC-standard auxiliary-call floor
+            max_tokens=get_max_tokens(
+                str(model_config.get("provider") or ""),
+                str(model_config.get("model") or ""),
+                model_config.get("max_output_tokens"),
+            ),
             timeout=45.0,
             usage_source="subagent_memory",
             usage_agent_id=agent_id,

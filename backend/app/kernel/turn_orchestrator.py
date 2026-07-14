@@ -30,7 +30,6 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
     STREAM_RETRY_TOMBSTONE = support.STREAM_RETRY_TOMBSTONE
     SessionContext = support.SessionContext
     TerminalReason = support.TerminalReason
-    ToolEvidenceLedger = support.ToolEvidenceLedger
     ToolExpansionResult = support.ToolExpansionResult
     _KernelCancelledError = support._KernelCancelledError
     _MICROCOMPACT_CLEARED_MARKER = support._MICROCOMPACT_CLEARED_MARKER
@@ -40,7 +39,6 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
     _MIDLOOP_COMPACT_THRESHOLD = support._MIDLOOP_COMPACT_THRESHOLD
     _PARALLEL_SEMAPHORE_LIMIT = support._PARALLEL_SEMAPHORE_LIMIT
     _PTL_MAX_RETRIES = support._PTL_MAX_RETRIES
-    _SOURCE_PERMISSION_BLOCK_MESSAGE = support._SOURCE_PERMISSION_BLOCK_MESSAGE
     _TOOL_RESULTS_AGGREGATE_BUDGET = support._TOOL_RESULTS_AGGREGATE_BUDGET
     _TOOL_RESULT_PREVIEW_LENGTH = support._TOOL_RESULT_PREVIEW_LENGTH
     _WORK_LEDGER_ENABLED_METADATA_KEY = support._WORK_LEDGER_ENABLED_METADATA_KEY
@@ -69,6 +67,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
     _humanize_llm_error = support._humanize_llm_error
     _invalidate_prompt_prefix_cache = support._invalidate_prompt_prefix_cache
     _is_concurrency_safe_tool = support._is_concurrency_safe_tool
+    is_read_only_tool = support.is_read_only_tool
     _is_prompt_too_long = support._is_prompt_too_long
     _is_terminal_tool_card_signal = support._is_terminal_tool_card_signal
     _latest_user_query = support._latest_user_query
@@ -79,6 +78,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
     _merge_active_tool_groups = support._merge_active_tool_groups
     _mid_run_items_to_user_messages = support._mid_run_items_to_user_messages
     _persist_recovery_manifest_checkpoint = support._persist_recovery_manifest_checkpoint
+    _prepare_ptl_round_group_fallback = support._prepare_ptl_round_group_fallback
     _record_runtime_span = support._record_runtime_span
     _registered_connector_source_items = support._registered_connector_source_items
     _resolve_eviction_threshold = support._resolve_eviction_threshold
@@ -93,7 +93,6 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
     _tool_message_content = support._tool_message_content
     _tool_result_requests_user_clarification = support._tool_result_requests_user_clarification
     _tool_round_limit_message = support._tool_round_limit_message
-    _truncate_head_for_ptl = support._truncate_head_for_ptl
     _usage_int = support._usage_int
     asyncio = support.asyncio
     build_context_policy = support.build_context_policy
@@ -117,7 +116,6 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
     set_execution_identity = support.set_execution_identity
     set_invocation_id = support.set_invocation_id
     should_surface_without_model_fallback = support.should_surface_without_model_fallback
-    verify_final_answer_tool_evidence = support.verify_final_answer_tool_evidence
 
     previous_identity = get_execution_identity()
     trace_token = None
@@ -137,6 +135,20 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
             root_span_id=invocation_span_id,
             **kwargs,
         )
+
+    def _turn_route_span_metadata() -> dict[str, Any]:
+        session_metadata = (
+            request.session_context.metadata
+            if request.session_context is not None and isinstance(request.session_context.metadata, dict)
+            else {}
+        )
+        route = session_metadata.get("turn_route") if isinstance(session_metadata.get("turn_route"), dict) else {}
+        return {
+            "turn_route_reason": route.get("reason"),
+            "routing_config_source": route.get("config_source"),
+            "model_routing_locked": bool(route.get("model_routing_locked")),
+            "selected_model_id": route.get("selected_model_id"),
+        }
 
     if request.agent_id:
         metadata = request.session_context.metadata if request.session_context else {}
@@ -279,13 +291,17 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
         # B-01 fix: detect coordinator mode early, include prompt in suffix BEFORE budget enforcement
         from app.runtime.coordinator import (
             is_coordinator_mode,
+            is_strict_dispatcher_mode,
             get_coordinator_prompt,
             filter_tools_for_coordinator,
         )
 
         _is_coordinator = is_coordinator_mode(agent=runtime_config, request=request)
+        _is_strict_dispatcher = is_strict_dispatcher_mode(agent=runtime_config, request=request)
         _system_prompt_suffix = request.system_prompt_suffix or ""
-        _protected_system_prompt_suffixes = [get_coordinator_prompt()] if _is_coordinator else []
+        _protected_system_prompt_suffixes = (
+            [get_coordinator_prompt(dispatcher_only=_is_strict_dispatcher)] if _is_coordinator else []
+        )
 
         def _system_prompt_suffix_sections() -> list[str]:
             return [
@@ -385,8 +401,15 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
 
         # B-01/B-04 fix: Coordinator mode — filter tools (prompt already in budget via suffix)
         if _is_coordinator:
-            tools_for_llm = filter_tools_for_coordinator(tools_for_llm)
-            logger.info("[Kernel] Coordinator mode active for agent %s", request.agent_id)
+            tools_for_llm = filter_tools_for_coordinator(
+                tools_for_llm,
+                dispatcher_only=_is_strict_dispatcher,
+            )
+            logger.info(
+                "[Kernel] Coordinator mode active for agent %s (dispatcher_only=%s)",
+                request.agent_id,
+                _is_strict_dispatcher,
+            )
 
         tools_for_llm = await _restore_recovered_deferred_tool_schemas(
             request=request,
@@ -536,11 +559,11 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
             if not source_items:
                 return final_content, True
             from app.services.connector_acl import (
+                redact_forbidden_generated_source_fragments,
                 record_generated_source_permission_check,
-                validate_generated_source_permissions,
             )
 
-            check = validate_generated_source_permissions(
+            redacted_content, check = redact_forbidden_generated_source_fragments(
                 final_content,
                 source_items=source_items,
                 tenant_id=runtime_config.tenant_id,
@@ -571,13 +594,13 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                         "type": "event",
                         "event_type": "generated_source_permission_block",
                         "title": "Source Permission Check",
-                        "text": "Blocked a generated response that referenced an inaccessible governed connector source.",
+                        "text": "Precisely redacted inaccessible connector fragments from the generated response.",
                         "status": "warning",
                         "forbidden_source_count": len(check.forbidden_sources),
                     },
                 }
             )
-            return _SOURCE_PERMISSION_BLOCK_MESSAGE, False
+            return redacted_content, False
 
         async def _flush_buffered_chunks() -> None:
             nonlocal delivered_chunk_count
@@ -591,46 +614,6 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                     logger.warning("[Kernel] on_chunk buffered flush failed: %s", _cb_exc)
                     break
                 delivered_chunk_count += 1
-
-        async def _abort_for_loop_guard(decision: LoopGuardDecision) -> InvocationResult:
-            outcome = decision.outcome
-            terminal_reason = (
-                TerminalReason(outcome.terminal_reason)
-                if outcome is not None and outcome.terminal_reason
-                else (
-                    TerminalReason.TOOL_BUDGET if decision.reason == "total_tool_calls" else TerminalReason.LOOP_GUARD
-                )
-            )
-            if terminal_reason == TerminalReason.TOOL_BUDGET:
-                message = (
-                    "[Tool Budget] 本次已达到工具调用预算，我已保留当前进度。"
-                    "请回复“继续”，我会从最近的上下文接着处理；如果任务很大，也可以让我分批处理。"
-                )
-                event_title = "Tool Budget Reached"
-            else:
-                message = f"[Loop Guard] Stopped repeated non-progress pattern: {decision.message}"
-                event_title = "Loop Guard Triggered"
-            await _emit_event(
-                {
-                    "type": "loop_guard",
-                    "part": {
-                        "type": "event",
-                        "event_type": "loop_guard_triggered",
-                        "title": event_title,
-                        "text": message,
-                        "status": "warning",
-                        **decision.trace_event,
-                    },
-                }
-            )
-            await self._persist_before_exit(request, runtime_config, message, api_messages)
-            return InvocationResult(
-                content=message,
-                tokens_used=accumulated_tokens,
-                final_tools=tools_for_llm,
-                parts=collected_parts + [{"type": "text", "text": message}],
-                terminal_reason=terminal_reason,
-            )
 
         async def _pause_for_user_clarification() -> InvocationResult:
             if request.agent_id and accumulated_tokens > 0:
@@ -958,6 +941,8 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
         # captured when a tool result carries it and consumed right after the
         # round's tool results are appended.
         _tool_terminal_signal: str | None = None
+        _loop_guard_summary_pending = False
+        _loop_guard_terminal_decision: LoopGuardDecision | None = None
         try:
             client = self._deps.create_client(active_model)
         except Exception as exc:
@@ -974,7 +959,11 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
         # Intentionally persists across rounds — discovered tool schemas stay active once loaded.
         full_toolset = None
         try:
-            for round_i in range(max_rounds):
+            # A proven no-progress outcome reserves one final, tool-free model
+            # round so the model—not the harness—authors the explanation.
+            for round_i in range(max_rounds + 1):
+                if round_i >= max_rounds and not _loop_guard_summary_pending:
+                    break
                 if request.cancel_event and request.cancel_event.is_set():
                     if request.agent_id and accumulated_tokens > 0:
                         await _maybe_await(self._deps.record_token_usage(request.agent_id, accumulated_tokens))
@@ -1129,6 +1118,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                             name="llm.stream",
                             started_at_ms=llm_started_ms,
                             metadata={
+                                **_turn_route_span_metadata(),
                                 "provider": getattr(active_model, "provider", ""),
                                 "model": getattr(active_model, "model", ""),
                                 "round": round_i + 1,
@@ -1169,10 +1159,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                             tool_schema_tokens=int(provider_prompt_ledger.get("tool_schema_tokens") or 0),
                         )
                         if cost_loop_decision:
-                            if cost_loop_decision.severity == "warn":
-                                await _inject_loop_guard_warning(cost_loop_decision)
-                            else:
-                                return await _abort_for_loop_guard(cost_loop_decision)
+                            await _inject_loop_guard_warning(cost_loop_decision)
                         break
                     except _KernelCancelledError:
                         await _record_span(
@@ -1180,6 +1167,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                             name="llm.stream",
                             started_at_ms=llm_started_ms,
                             metadata={
+                                **_turn_route_span_metadata(),
                                 "provider": getattr(active_model, "provider", ""),
                                 "model": getattr(active_model, "model", ""),
                                 "round": round_i + 1,
@@ -1202,12 +1190,13 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                             name="llm.stream",
                             started_at_ms=llm_started_ms,
                             metadata={
+                                **_turn_route_span_metadata(),
                                 "provider": getattr(active_model, "provider", ""),
                                 "model": getattr(active_model, "model", ""),
                                 "round": round_i + 1,
                                 "status": "error",
                                 "error_class": type(exc).__name__,
-                                "error": str(exc)[:500],
+                                "error": str(exc),
                             },
                         )
                         logger.error(
@@ -1331,15 +1320,21 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                         ptl_retries,
                                         _PTL_MAX_RETRIES,
                                     )
+                                    if request.eviction_dir is None:
+                                        raise RuntimeError(
+                                            "PTL round-group fallback refused because no durable artifact directory is available"
+                                        ) from exc
+                                    _ptl_kept, _ptl_recovery_receipt = _prepare_ptl_round_group_fallback(
+                                        api_messages[1:],
+                                        drop_ratio=0.2,
+                                        artifact_dir=request.eviction_dir / "compaction",
+                                        session_id=request.memory_session_id,
+                                        attempt=ptl_retries,
+                                    )
                                     _truncated = _dicts_to_llm_messages(
                                         await _apply_mechanical_compaction_with_lifecycle_hooks(
                                             _llm_messages_to_dicts(api_messages[1:]),
-                                            compact=lambda items: _llm_messages_to_dicts(
-                                                _truncate_head_for_ptl(
-                                                    _dicts_to_llm_messages(items),
-                                                    drop_ratio=0.2,
-                                                )
-                                            ),
+                                            compact=lambda _items: _llm_messages_to_dicts(_ptl_kept),
                                             agent_id=request.agent_id,
                                             session_id=request.memory_session_id,
                                             trigger="prompt_too_long",
@@ -1348,6 +1343,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                                 "attempt": ptl_retries,
                                                 "strategy": "round_group",
                                                 "agent_name": request.agent_name,
+                                                "recovery_receipt": _ptl_recovery_receipt,
                                             },
                                         )
                                     )
@@ -1387,6 +1383,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                             "reason": "prompt_too_long_retry",
                                             "strategy": "round_group",
                                             "attempt": ptl_retries,
+                                            "recovery_receipt": _ptl_recovery_receipt,
                                         }
                                     )
                                     logger.info(
@@ -1545,7 +1542,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                             getattr(active_model, "model", "?"),
                             round_i + 1,
                             type(exc).__name__,
-                            str(exc)[:300],
+                            str(exc),
                         )
                         if (
                             fallback_model is not None
@@ -1594,7 +1591,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                         await self._persist_before_exit(
                             request,
                             runtime_config,
-                            f"[LLM call error] {type(exc).__name__}: {str(exc)[:200]}",
+                            f"[LLM call error] {type(exc).__name__}: {str(exc)}",
                             api_messages,
                         )
                         return _build_error_result(
@@ -1619,27 +1616,13 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
 
                 text_loop_decision = loop_guard.observe_assistant_text(response.content)
                 if text_loop_decision:
-                    if text_loop_decision.severity == "warn":
-                        await _inject_loop_guard_warning(text_loop_decision)
-                    else:
-                        return await _abort_for_loop_guard(text_loop_decision)
+                    await _inject_loop_guard_warning(text_loop_decision)
 
                 if not response.tool_calls:
                     final_content = (
                         response.content
                         if isinstance(response.content, str) and response.content.strip()
                         else _empty_assistant_fallback(collected_parts)
-                    )
-                    _available_tool_names = {
-                        str(tool.get("function", {}).get("name"))
-                        for tool in (tools_for_llm or [])
-                        if isinstance(tool, dict) and tool.get("function", {}).get("name")
-                    }
-                    _tool_evidence_summary = ToolEvidenceLedger.from_parts(collected_parts).to_summary()
-                    final_content = verify_final_answer_tool_evidence(
-                        final_content,
-                        available_tool_names=_available_tool_names,
-                        tool_evidence_summary=_tool_evidence_summary,
                     )
                     final_content, _source_permission_allowed = await _enforce_generated_source_permissions(
                         final_content
@@ -1756,7 +1739,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                             messages=_llm_messages_to_dicts(api_messages[1:]),
                             source=_session_source,
                             metadata={
-                                "last_response": final_content[:2000] if final_content else "",
+                                "last_response": final_content or "",
                                 "turn_count": round_i + 1,
                                 "tenant_id": str(runtime_config.tenant_id) if runtime_config.tenant_id else None,
                                 "agent_name": request.agent_name or "Agent",
@@ -1805,12 +1788,12 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                         logger.warning(
                             "[Kernel] Malformed tool arguments — returning error to LLM: tool=%s, raw=%s",
                             tool_name,
-                            (raw_args or "")[:200],
+                            raw_args or "",
                         )
                         # Report parse error as tool result instead of silently using empty dict
                         _parse_err = (
                             f"[Argument Parse Error] Failed to parse JSON arguments for '{tool_name}'. "
-                            f"Raw input (truncated): {(raw_args or '')[:200]}. "
+                            f"Raw input: {raw_args or ''}. "
                             f"Please fix JSON syntax and retry."
                         )
                         _err_event = {"name": tool_name, "args": {}, "status": "done", "result": _parse_err}
@@ -1832,10 +1815,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                     _round_tool_names.append(tool_name)
                     call_loop_decision = loop_guard.observe_tool_call(tool_name, args)
                     if call_loop_decision:
-                        if call_loop_decision.severity == "warn":
-                            await _inject_loop_guard_warning(call_loop_decision)
-                        else:
-                            return await _abort_for_loop_guard(call_loop_decision)
+                        await _inject_loop_guard_warning(call_loop_decision)
 
                 _round_side_effect_messages: list[dict[str, Any]] = []
                 if len(parsed_tool_calls) > 1 and any(
@@ -1958,7 +1938,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                             _tn = parsed_tool_calls[_i][1]
                             logger.warning("[Kernel] Parallel tool %s failed: %s", _tn, _r)
                             results[_i] = (
-                                f"[Tool execution error] {type(_r).__name__}: {str(_r)[:200]}",
+                                f"[Tool execution error] {type(_r).__name__}: {str(_r)}",
                                 parsed_tool_calls[_i][2],
                                 False,
                                 None,
@@ -1967,12 +1947,20 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                     # 3. Emit "done" events and append tool results in original order
                     for (tc, tool_name, _original_args), execution in zip(parsed_tool_calls, results):
                         result, effective_args, _executed, _side_effects = execution
-                        result_loop_decision = loop_guard.observe_tool_result(tool_name, effective_args, str(result))
+                        _loop_proof = (_side_effects or {}).get("loop_guard_proof") or {}
+                        result_loop_decision = loop_guard.observe_tool_result(
+                            tool_name,
+                            effective_args,
+                            str(result),
+                            side_effect_free=is_read_only_tool(tool_name),
+                            retry_exhausted=_loop_proof.get("retry_exhausted") is True,
+                            progress_token=str(_loop_proof.get("progress_token") or "") or None,
+                        )
                         if result_loop_decision:
                             if result_loop_decision.severity == "warn":
                                 await _inject_loop_guard_warning(result_loop_decision)
                             else:
-                                return await _abort_for_loop_guard(result_loop_decision)
+                                _loop_guard_terminal_decision = result_loop_decision
                         _raw_result = str(result)
                         _replacement_reason = "result size threshold"
                         _content = _maybe_evict_tool_result(tool_name, tc["id"], _raw_result, request.eviction_dir)
@@ -1992,11 +1980,6 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                 force=True,
                                 reason="round aggregate budget",
                             )
-                            if len(_content) == len(str(result)):
-                                _content = (
-                                    str(result)[:_TOOL_RESULT_PREVIEW_LENGTH]
-                                    + f"\n\n[... truncated to fit round aggregate budget ({_TOOL_RESULTS_AGGREGATE_BUDGET} chars)]"
-                                )
                         _round_tool_chars += len(_content)
                         done_payload = {
                             "name": tool_name,
@@ -2121,12 +2104,20 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                 final_tools=tools_for_llm,
                                 collected_parts=collected_parts,
                             )
-                        result_loop_decision = loop_guard.observe_tool_result(tool_name, args, str(result))
+                        _loop_proof = (_side_effects or {}).get("loop_guard_proof") or {}
+                        result_loop_decision = loop_guard.observe_tool_result(
+                            tool_name,
+                            args,
+                            str(result),
+                            side_effect_free=is_read_only_tool(tool_name),
+                            retry_exhausted=_loop_proof.get("retry_exhausted") is True,
+                            progress_token=str(_loop_proof.get("progress_token") or "") or None,
+                        )
                         if result_loop_decision:
                             if result_loop_decision.severity == "warn":
                                 await _inject_loop_guard_warning(result_loop_decision)
                             else:
-                                return await _abort_for_loop_guard(result_loop_decision)
+                                _loop_guard_terminal_decision = result_loop_decision
 
                         if request.expand_tools and request.agent_id:
                             if executed and _should_expand_tools(tool_name, args):
@@ -2244,7 +2235,12 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                 if full_toolset is not None:
                                     # B-04 fix: re-filter expanded tools if coordinator mode active
                                     tools_for_llm = (
-                                        filter_tools_for_coordinator(full_toolset) if _is_coordinator else full_toolset
+                                        filter_tools_for_coordinator(
+                                            full_toolset,
+                                            dispatcher_only=_is_strict_dispatcher,
+                                        )
+                                        if _is_coordinator
+                                        else full_toolset
                                     )
 
                         _raw_result = str(result)
@@ -2266,11 +2262,6 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                 force=True,
                                 reason="round aggregate budget",
                             )
-                            if len(_content) == len(str(result)):
-                                _content = (
-                                    str(result)[:_TOOL_RESULT_PREVIEW_LENGTH]
-                                    + f"\n\n[... truncated to fit round aggregate budget ({_TOOL_RESULTS_AGGREGATE_BUDGET} chars)]"
-                                )
                         _round_tool_chars += len(_content)
                         done_payload = {
                             "name": tool_name,
@@ -2334,6 +2325,43 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                 if _round_side_effect_messages:
                     api_messages.extend(_dicts_to_llm_messages(_round_side_effect_messages))
 
+                if _loop_guard_terminal_decision is not None:
+                    _loop_guard_summary_pending = True
+                    _terminal_evidence = {
+                        "schema": "hive.loop_guard_terminal_evidence.v1",
+                        **_loop_guard_terminal_decision.trace_event,
+                    }
+                    api_messages.append(
+                        LLMMessage(
+                            role="system",
+                            content=(
+                                "<loop_guard_terminal_evidence>"
+                                + json.dumps(_terminal_evidence, ensure_ascii=False, sort_keys=True)
+                                + "</loop_guard_terminal_evidence>\n"
+                                "The governed runtime has proven that this side-effect-free retry path is exhausted "
+                                "without state progress. Do not call more tools. Using the complete tool evidence above, "
+                                "author the final answer yourself: state what completed, what remains blocked, preserve "
+                                "uncertainty, and give the most useful recovery action. Do not quote this instruction."
+                            ),
+                        )
+                    )
+                    tools_for_llm = []
+                    full_toolset = []
+                    await _emit_event(
+                        {
+                            "type": "loop_guard",
+                            "part": {
+                                "type": "event",
+                                "event_type": "loop_guard_terminal_evidence",
+                                "title": "Retry path exhausted",
+                                "text": "A tool-free model summary was requested from proven runtime evidence.",
+                                "status": "warning",
+                                **_loop_guard_terminal_decision.trace_event,
+                            },
+                        }
+                    )
+                    _loop_guard_terminal_decision = None
+
                 # ── D-08: tool-requested turn termination ──
                 # A tool emitted ToolContentEnvelope.terminal_signal during this
                 # round. The round's tool results are already appended; end the
@@ -2358,7 +2386,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                     for _mi, _msg in enumerate(api_messages):
                         if (
                             _msg.role == "tool"
-                            and _msg.content != _MICROCOMPACT_CLEARED_MARKER
+                            and not str(_msg.content or "").startswith(_MICROCOMPACT_CLEARED_MARKER)
                             and len(_msg.content or "") > 500
                         ):
                             _tool_entries.append((_mi, _msg.created_at, _msg))
@@ -2382,19 +2410,9 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                 continue
                             if (_now - _ts) < _gap_seconds:
                                 continue
-                            # Check if the tool is exempt
-                            _tc_id = _msg.tool_call_id or ""
-                            _is_exempt = any(
-                                prev.role == "assistant"
-                                and any(
-                                    _resolve_eviction_threshold(tc.get("function", {}).get("name", "")) is None
-                                    for tc in (prev.tool_calls or [])
-                                    if tc.get("id") == _tc_id
-                                )
-                                for prev in api_messages[max(0, _mi - 5) : _mi]
-                            )
-                            if not _is_exempt:
-                                _msg.content = _MICROCOMPACT_CLEARED_MARKER
+                            replacement = support._microcompact_artifact_replacement(str(_msg.content or ""))
+                            if replacement is not None:
+                                _msg.content = replacement
                                 _mc_cleared += 1
                         if _mc_cleared:
                             logger.info(
@@ -2444,7 +2462,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                             "agent_name": request.agent_name,
                             "important_files": list(getattr(request.session_context, "recent_files", []) or []),
                             "pending_work": list(getattr(request.session_context, "pending_items", []) or []),
-                            "last_successful_step": "".join(streamed_chunks)[-300:],
+                            "last_successful_step": "".join(streamed_chunks),
                         },
                         post_hook_async=True,
                         model_provider=active_model.provider,

@@ -30,69 +30,33 @@ from app.services.token_tracker import estimate_tokens_from_text
 _ACTIVE_TOOL_GROUPS_CHAR_BUDGET = 1200
 _RETRIEVAL_CHAR_BUDGET = 3000
 _CONTINUITY_CHAR_BUDGET = 2500
-# P1-W2-2: Per-section caps in the dynamic suffix.
-# Memory context is already selected by MemoryAssembler using score-aware
-# trimming at memory_budget_chars. The prompt builder must not apply a smaller
-# ratio cap afterwards; that would overwrite the assembler's ranking. System
-# prompt suffix is user-supplied — fixed ceiling stops a runaway upstream caller
-# from pushing the suffix past sensible round-trip cost.
+# Per-section sizes below are advisory telemetry labels. Semantic source bytes
+# are never cut here; the final provider-sized assembly is the capacity gate.
 _DEFAULT_MEMORY_SNAPSHOT_BUDGET = 8000
-_SYSTEM_PROMPT_SUFFIX_CHAR_CAP = 5000
+_SYSTEM_PROMPT_SUFFIX_ADVISORY_CHARS = 5000
 
-# P1-1b/W2-1: Frozen-prefix token guard rails.
-# Guard rails are calibrated for long-context production agents: 16K frozen
+# Frozen-prefix cache-economics telemetry.
+# Advisory thresholds are calibrated for long-context production agents: 16K frozen
 # tokens is still a small slice of a 256K context, while 12K gives operators
 # enough headroom to see static prefix growth before it hurts cache efficiency.
-# `_CHARS_PER_TOKEN_ESTIMATE` is intentionally only for inverse direction
-# (token budget → char budget). Measured text paths use CJK-aware token
-# estimation from token_tracker.
 _FROZEN_PREFIX_TOKEN_WARN = 12000
-_FROZEN_PREFIX_TOKEN_LIMIT = 16000
-# I.3: cap scales with context window: max(16K, min(10% of window, 32K)) tokens.
-# 16K floor preserves cache economics on small models; 32K ceiling prevents
-# the frozen prefix from consuming too much of even a 512K window.
-_FROZEN_PREFIX_TOKEN_CAP_MIN = 16000
-_FROZEN_PREFIX_TOKEN_CAP_MAX = 32000
-_FROZEN_PREFIX_TOKEN_CAP_RATIO = 0.10
-_CHARS_PER_TOKEN_ESTIMATE = 3.5
-_FROZEN_PREFIX_CHAR_LIMIT = int(_FROZEN_PREFIX_TOKEN_LIMIT * _CHARS_PER_TOKEN_ESTIMATE)
-_FROZEN_PREFIX_TRIM_NOTICE = (
-    "\n\n[frozen context trimmed to stay under cache budget; recover omitted agent context with "
-    '`read_context_resource({"ref":"index"})`; load omitted skills with `load_skill(name)`]'
-)
-# I.3 Tier4: loud, distinct marker when the soul/identity section itself had to be trimmed.
-# This is intentionally MORE alarming than the generic trim notice to make
-# runaway soul growth immediately obvious in prompt logs/reviews.
-_FROZEN_IDENTITY_OVERRUN_MARKER = (
-    "\n\n[identity overrun: ## Identity & Mission was trimmed to fit the context budget — "
-    'recover the full version with `read_context_resource({"ref":"soul"})` or inspect '
-    '`read_context_resource({"ref":"index"})`; reduce soul.md to restore resident identity fidelity]'
-)
-_FROZEN_CONTEXT_RECOVERY_MARKER = (
-    "\n\n[agent context omitted to preserve the immutable System / Tasks / Tools contract; "
-    'call `read_context_resource({"ref":"index"})` and load the relevant hash-pinned resource page]'
-)
-_SYSTEM_PROMPT_TRUNCATION_NOTICE = (
-    "\n\n[agent context truncated to fit the model context window; "
-    'recover it with `read_context_resource({"ref":"index"})`]'
-)
+_FROZEN_PREFIX_TOKEN_ADVISORY = 16000
 _FROZEN_PREFIX_SECTION_RE = re.compile(r"(?m)^#{2,3}\s+(.+?)\s*$")
 _FROZEN_PREFIX_TOP_SECTION_LIMIT = 6
 
 
-def _compute_frozen_cap_tokens(context_window_tokens: int | None) -> int:
-    """Derive the frozen-prefix token cap from the model context window.
+class PromptBudgetExceededError(ValueError):
+    """Selected prompt sections cannot fit without violating their contracts."""
 
-    I.3 formula: max(16K, min(10% of window, 32K)).
-    - Floor 16K: preserves cache economics on small/medium models.
-    - Ceiling 32K: keeps the frozen prefix ≤ 12.5% of even a 256K window
-      so there is headroom for conversation turns.
-    - No window → 16K floor (backward-compatible default).
-    """
-    if not context_window_tokens or context_window_tokens <= 0:
-        return _FROZEN_PREFIX_TOKEN_CAP_MIN
-    scaled = int(_FROZEN_PREFIX_TOKEN_CAP_RATIO * context_window_tokens)
-    return max(_FROZEN_PREFIX_TOKEN_CAP_MIN, min(scaled, _FROZEN_PREFIX_TOKEN_CAP_MAX))
+    def __init__(self, *, budget_chars: int, required_chars: int, frozen_prefix: str, dynamic_suffix: str) -> None:
+        self.budget_chars = budget_chars
+        self.required_chars = required_chars
+        self.frozen_sha256 = hashlib.sha256(frozen_prefix.encode("utf-8")).hexdigest()
+        self.dynamic_sha256 = hashlib.sha256(dynamic_suffix.encode("utf-8")).hexdigest()
+        super().__init__(
+            "immutable frozen prompt contract and selected dynamic sections exceed the model prompt budget; "
+            f"required={required_chars} budget={budget_chars}. Refusing blind truncation."
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,7 +79,7 @@ class ContextSectionCandidate:
     reason: str = "context_section_present"
     budget_key: str | None = None
     budget_chars: int | None = None
-    enforce_budget: bool = False
+    source_payload: str | None = None
 
 
 def _context_section_source_hash(text: str) -> str:
@@ -131,13 +95,14 @@ def _append_context_section_decision(
 ) -> None:
     if ledger is None:
         return
-    source_chars = len(candidate.content or "")
+    source_payload = candidate.source_payload if candidate.source_payload is not None else candidate.content
+    source_chars = len(source_payload or "")
     rendered_chars = len(rendered_content or "")
     candidate_ref = build_context_candidate_ref(
         kind=candidate.kind,
         item_id=candidate.name,
         version="dynamic_section",
-        payload=candidate.content,
+        payload=source_payload,
     ).to_manifest(legacy_id=candidate.candidate_id)
     ledger.append(
         {
@@ -154,12 +119,12 @@ def _append_context_section_decision(
             "decision": decision,
             "budget_key": candidate.budget_key,
             "budget_chars": candidate.budget_chars,
-            "budget_enforced": candidate.enforce_budget,
+            "budget_enforced": False,
             "source_chars": source_chars,
-            "source_tokens": estimate_tokens_from_text(candidate.content or ""),
+            "source_tokens": estimate_tokens_from_text(source_payload or ""),
             "rendered_chars": rendered_chars,
             "rendered_tokens": estimate_tokens_from_text(rendered_content or ""),
-            "source_hash": _context_section_source_hash(candidate.content or ""),
+            "source_hash": _context_section_source_hash(source_payload or ""),
         }
     )
 
@@ -184,11 +149,7 @@ def _select_context_section_candidates(
         rendered_content = content
         decision = "selected_within_budget"
         if candidate.budget_chars is not None and candidate.budget_chars > 0 and len(content) > candidate.budget_chars:
-            if candidate.enforce_budget:
-                rendered_content = _trim_block(content, budget_chars=candidate.budget_chars)
-                decision = "selected_trimmed"
-            else:
-                decision = "selected_over_budget"
+            decision = "selected_over_advisory_budget"
 
         selected.append((candidate.render_order, rendered_content))
         _append_context_section_decision(
@@ -206,65 +167,14 @@ _TRIM_MARKER = "\n...(trimmed to fit context budget)"
 
 
 def _trim_block(text: str, *, budget_chars: int) -> str:
-    if not text or budget_chars <= 0:
-        return ""
-    stripped = text.strip()
-    if len(stripped) <= budget_chars:
-        return stripped
-
-    # Marker counts against the budget so callers' size contracts hold.
-    line_budget = max(0, budget_chars - len(_TRIM_MARKER))
-    lines = stripped.splitlines()
-    kept: list[str] = []
-    used = 0
-    for line in lines:
-        normalized = line.rstrip()
-        if not normalized:
-            continue
-        line_cost = len(normalized) + 1
-        if used + line_cost > line_budget:
-            break
-        kept.append(normalized)
-        used += line_cost
-
-    if not kept:
-        head = stripped[:line_budget].rstrip()
-        return (head + _TRIM_MARKER) if head else stripped[:budget_chars]
-
-    return "\n".join(kept).rstrip() + _TRIM_MARKER
+    """Compatibility renderer; section budgets are advisory, never semantic selectors."""
+    del budget_chars
+    return text.strip()
 
 
 def _normalize_frozen_prefix_section_name(raw_name: str) -> str:
     normalized = re.sub(r"[^a-z0-9]+", "_", raw_name.strip().lower()).strip("_")
     return normalized or "unnamed"
-
-
-def _char_limit_for_token_cap(text: str, cap_tokens: int, *, fallback_chars: int) -> int:
-    """Find a char cap whose actual text estimate stays within `cap_tokens`."""
-    if cap_tokens <= 0:
-        return 0
-    upper = max(min(len(text), fallback_chars), 0)
-    if upper <= 0:
-        return 0
-    if estimate_tokens_from_text(text[:upper]) <= cap_tokens:
-        return fallback_chars
-
-    lo = 0
-    hi = upper
-    while lo < hi:
-        mid = (lo + hi + 1) // 2
-        if estimate_tokens_from_text(text[:mid]) <= cap_tokens:
-            lo = mid
-        else:
-            hi = mid - 1
-    return max(lo, 1)
-
-
-def _trim_to_token_cap(text: str, cap_tokens: int) -> str:
-    if estimate_tokens_from_text(text) <= cap_tokens:
-        return text
-    char_limit = _char_limit_for_token_cap(text, cap_tokens, fallback_chars=len(text))
-    return _trim_block(text, budget_chars=char_limit)
 
 
 def _measure_frozen_prefix_sections(prefix: str) -> list[FrozenPrefixSection]:
@@ -377,19 +287,13 @@ def build_frozen_prompt_prefix(
     backward-compatible / inline-context callers, but the invoker's primary path
     no longer populates it — catalog flows through `build_dynamic_prompt_suffix`.
 
-    P1-1b: Every build is metered. Token estimate above
-    `_FROZEN_PREFIX_TOKEN_WARN` logs a warning; above
-    `_FROZEN_PREFIX_TOKEN_LIMIT` logs an error.
-
-    P1-W2-1: Hard cap enforced via identity-protected layered trim (I.3):
-      Tier1 (skill catalog) → Tier2 (## Context Material) → Tier3 (Tools/Tasks/System
-      bodies) → Tier4 (soul last-resort with loud marker + ERROR log).
-    Cap scales with model context window via `_compute_frozen_cap_tokens`.
+    Every build is metered for cache/cost observability. Cache economics are
+    never allowed to trim identity or context; the final provider-sized prompt
+    assembly is the only capacity gate and fails loudly when the complete
+    contract cannot fit.
 
     Args:
-        context_window_tokens: Model's max_input_tokens. When provided the cap
-            scales as max(16K, min(10% of window, 32K)) tokens. Defaults to
-            the 16K floor for backward compatibility.
+        context_window_tokens: Retained for API compatibility and metering.
     """
     from app.runtime.prompt_sections import (
         build_system_section,
@@ -407,150 +311,33 @@ def build_frozen_prompt_prefix(
     ]
     del memory_snapshot  # kept for backward-compatible callers; memory lives in dynamic suffix
 
-    cap_tokens = _compute_frozen_cap_tokens(context_window_tokens)
-    cap_chars = int(cap_tokens * _CHARS_PER_TOKEN_ESTIMATE)
-
     parts = list(base_parts)
     if skill_catalog:
         parts.append(skill_catalog)
     prefix = "\n\n".join(parts)
 
-    if estimate_tokens_from_text(prefix) > cap_tokens:
-        text_aware_cap_chars = _char_limit_for_token_cap(prefix, cap_tokens, fallback_chars=cap_chars)
-        prefix = _enforce_frozen_prefix_budget(base_parts, skill_catalog, char_limit=text_aware_cap_chars)
-        prefix = _trim_to_token_cap(prefix, cap_tokens)
-
     _meter_frozen_prefix(prefix)
     return prefix
-
-
-# C2 (docs/agent-lifecycle-cc-alignment.md 主题 C): an over-budget catalog must
-# never leave the model blind — degraded states keep a signpost back to skills.
-_CATALOG_OMITTED_NOTICE = (
-    "## Skills\n"
-    "[Skill catalog omitted to fit the context budget — skills are still available: "
-    "call load_skill(name) to load one, or list the skills/ directory to discover them.]"
-)
-_CATALOG_TRIMMED_SUFFIX = (
-    "\n[... catalog truncated to fit the context budget — more skills exist: "
-    "list the skills/ directory or call load_skill(name) directly.]"
-)
-
-
-# I.3: regex to locate the ## Context Material block inside agent_context.
-# Matches from "## Context Material" through (but not including) the next ##-level
-# heading, or through end-of-string. Used by the Tier2 stripper.
-_CONTEXT_MATERIAL_BLOCK_RE = re.compile(
-    r"(?m)^(## Context Material\b.*?)(?=^##\s|\Z)",
-    re.DOTALL,
-)
-_CONTEXT_MATERIAL_OMITTED_NOTICE = (
-    "\n## Context Material\n"
-    '[context material omitted to fit context budget; call `read_context_resource({"ref":"index"})` '
-    "and select company, organization, channels, or A2A collaborators]"
-)
-
-
-def _strip_context_material(agent_context: str) -> str:
-    """Tier2 trim: replace the ## Context Material block with a minimal signpost.
-
-    Returns the agent_context string with the Context Material body replaced by
-    a one-line notice. If the block is not found the input is returned unchanged.
-    """
-    match = _CONTEXT_MATERIAL_BLOCK_RE.search(agent_context)
-    if not match:
-        return agent_context
-    return agent_context[: match.start()] + _CONTEXT_MATERIAL_OMITTED_NOTICE + agent_context[match.end() :]
 
 
 def _enforce_frozen_prefix_budget(
     base_parts: list[str],
     skill_catalog: str,
     *,
-    char_limit: int = _FROZEN_PREFIX_CHAR_LIMIT,
+    char_limit: int | None = None,
 ) -> str:
-    """Hard-cap the assembled prefix to `char_limit` (default: `_FROZEN_PREFIX_CHAR_LIMIT`).
+    """Compatibility helper that preserves every prefix byte.
 
-    I.3 identity-protected layered trim — executed in priority order:
-
-    Tier1 (skill catalog)
-        Drop the catalog body first. `load_skill` hydrates any skill body on
-        demand, so this is the safest cut. Always leave a signpost (C2).
-
-    Tier2 (## Context Material)
-        Strip the company/org/channel boilerplate block from agent_context and
-        replace with a one-line notice. This information is less critical than
-        the tool/task rules that come after it.
-
-    Tier3 (recoverable agent context)
-        Preserve System / Tasks / Tools byte-for-byte. If the prefix still
-        overflows, cut only the agent-context head and leave an explicit
-        ``read_context_resource`` continuation. A static execution contract
-        that cannot fit fails loud instead of being silently weakened.
-
-    The no-op path (prefix fits under cap) is unchanged from the previous
-    implementation so warm-path performance is unaffected.
+    ``char_limit`` is intentionally ignored: it represented a cache-economics
+    target, not a provider resource boundary. Callers must use
+    ``assemble_runtime_prompt`` for the real, fail-loud capacity check.
     """
-    import logging
 
-    base_only = "\n\n".join(base_parts)
-
-    # ── No-op: catalog fits in the leftover budget ───────────────────────────
-    if len(base_only) <= char_limit:
-        if not skill_catalog:
-            return base_only
-        leftover = char_limit - len(base_only) - 6
-        if leftover < 200:
-            return f"{base_only}\n\n{_CATALOG_OMITTED_NOTICE}"
-        trimmed = _trim_block(skill_catalog, budget_chars=max(200, leftover - len(_CATALOG_TRIMMED_SUFFIX)))
-        if not trimmed:
-            return f"{base_only}\n\n{_CATALOG_OMITTED_NOTICE}"
-        if len(trimmed) < len(skill_catalog):
-            trimmed += _CATALOG_TRIMMED_SUFFIX
-        result = f"{base_only}\n\n{trimmed}"
-        if len(result) > char_limit:
-            result = result[:char_limit]
-        return result
-
-    # ── Base sections overflow — layered trim ───────────────────────────────
-    # base_parts layout: [agent_context, system, tasks, tools]
-    # Catalog is already implicitly dropped (not in base_parts).
-
-    agent_context = base_parts[0] if base_parts else ""
-    tail_parts = list(base_parts[1:])  # [system, tasks, tools]
-
-    # Tier2: strip ## Context Material from agent_context
-    agent_context_t2 = _strip_context_material(agent_context)
-    candidate = "\n\n".join([agent_context_t2] + tail_parts)
-    if len(candidate) <= char_limit:
-        return candidate
-
-    # Tier3: the static execution contract is not recoverable from a tool and
-    # therefore must remain byte-identical. Only agent context may be reduced.
-    critical_tail = "\n\n".join(tail_parts)
-    separator = "\n\n" if critical_tail else ""
-    marker = (
-        _FROZEN_CONTEXT_RECOVERY_MARKER
-        if any(heading in agent_context_t2 for heading in ("## Context Material", "## A2A Collaborators"))
-        else _FROZEN_IDENTITY_OVERRUN_MARKER
-    )
-    available_for_agent_context = char_limit - len(separator) - len(critical_tail)
-    if available_for_agent_context <= len(marker):
-        raise ValueError(
-            "immutable System / Tasks / Tools contract exceeds the frozen-prefix budget; "
-            "refuse to silently trim safety-critical instructions"
-        )
-
-    logger = logging.getLogger(__name__)
-    logger.error(
-        "[PromptBuilder] recoverable agent context exceeds the frozen-prefix cap (%d chars); "
-        "preserving System / Tasks / Tools and emitting a hash-pinned context recovery pointer.",
-        char_limit,
-    )
-    preview_budget = available_for_agent_context - len(marker)
-    preview = agent_context_t2[:preview_budget].rstrip()
-    trimmed_agent_context = f"{preview}{marker}" if preview else marker.lstrip("\n")
-    return f"{trimmed_agent_context}{separator}{critical_tail}"
+    del char_limit
+    parts = [*base_parts]
+    if skill_catalog:
+        parts.append(skill_catalog)
+    return "\n\n".join(parts)
 
 
 def _meter_frozen_prefix(prefix: str) -> None:
@@ -563,7 +350,7 @@ def _meter_frozen_prefix(prefix: str) -> None:
     chars = len(prefix)
     tokens = estimate_tokens_from_text(prefix)
     warn = tokens >= _FROZEN_PREFIX_TOKEN_WARN
-    overrun = tokens > _FROZEN_PREFIX_TOKEN_LIMIT
+    overrun = tokens > _FROZEN_PREFIX_TOKEN_ADVISORY
     record_frozen_prefix_metering(chars=chars, tokens=tokens, warn=warn, overrun=overrun)
 
     if not warn:
@@ -579,19 +366,19 @@ def _meter_frozen_prefix(prefix: str) -> None:
         "chars": chars,
         "tokens": tokens,
         "warn_threshold": _FROZEN_PREFIX_TOKEN_WARN,
-        "hard_limit": _FROZEN_PREFIX_TOKEN_LIMIT,
+        "advisory_threshold": _FROZEN_PREFIX_TOKEN_ADVISORY,
         "section_tokens": section_tokens,
         "section_chars": section_chars,
         "top_sections": top_sections,
     }
     if overrun:
-        logger.error(
-            "[PromptBuilder] frozen prefix exceeds hard limit: ~%d tokens (chars=%d, limit=%d) — "
+        logger.warning(
+            "[PromptBuilder] frozen prefix above cache advisory threshold: ~%d tokens (chars=%d, advisory=%d) — "
             "prompt cache hit-rate will degrade and per-call cost will rise. "
-            "Trim agent_context / system / tasks / tools sections. top_sections=%s",
+            "Preserve semantic bytes; use the final provider budget gate or model-led compaction. top_sections=%s",
             tokens,
             chars,
-            _FROZEN_PREFIX_TOKEN_LIMIT,
+            _FROZEN_PREFIX_TOKEN_ADVISORY,
             top_sections,
             extra=extra,
         )
@@ -602,7 +389,7 @@ def _meter_frozen_prefix(prefix: str) -> None:
             tokens,
             chars,
             _FROZEN_PREFIX_TOKEN_WARN,
-            _FROZEN_PREFIX_TOKEN_LIMIT,
+            _FROZEN_PREFIX_TOKEN_ADVISORY,
             top_sections,
             extra=extra,
         )
@@ -623,36 +410,20 @@ def _render_active_tool_groups(
 def _render_deferred_tool_index(deferred_candidates: list[Any], *, budget_chars: int) -> str:
     if not deferred_candidates:
         return ""
+    del budget_chars  # Compatibility-only: complete discovery metadata is part of the model contract.
     header = [
         "## Available Deferred Tools",
         "These tools are not loaded yet. To load exactly one schema, call `tool_search` with `select:<tool_name>`.",
     ]
     lines = list(header)
-    rendered_count = 0
-    for idx, candidate in enumerate(deferred_candidates):
+    for candidate in deferred_candidates:
         details = (
             f"group={candidate.group}; risk={candidate.risk}; "
             f"schema_tokens={candidate.schema_token_cost}; reason={candidate.reason}"
         )
         line = f"- {candidate.name} — `{candidate.selector}` ({details})"
-        remaining_after = len(deferred_candidates) - idx - 1
-        omitted_line = f"- ...(+{remaining_after} more available in manifest)" if remaining_after else ""
-        tentative = "\n".join([*lines, line, *([omitted_line] if omitted_line else [])])
-        if len(tentative) > budget_chars:
-            break
         lines.append(line)
-        rendered_count += 1
-
-    if rendered_count < len(deferred_candidates):
-        omitted_line = f"- ...(+{len(deferred_candidates) - rendered_count} more available in manifest)"
-        while len(lines) > len(header) and len("\n".join([*lines, omitted_line])) > budget_chars:
-            lines.pop()
-            rendered_count -= 1
-            omitted_line = f"- ...(+{len(deferred_candidates) - rendered_count} more available in manifest)"
-        if len("\n".join([*lines, omitted_line])) <= budget_chars:
-            lines.append(omitted_line)
-    rendered = "\n".join(lines)
-    return rendered if len(rendered) <= budget_chars else _trim_block(rendered, budget_chars=budget_chars)
+    return "\n".join(lines)
 
 
 # B4 (docs/agent-lifecycle-cc-alignment.md 主题 B): autonomous-work semantics
@@ -731,10 +502,10 @@ def build_dynamic_prompt_suffix(
         content: str,
         budget_key: str | None = None,
         budget_chars: int | None = None,
-        enforce_budget: bool = False,
         score: float = 1.0,
         source_ref: str = "runtime.prompt_builder",
         reason: str = "context_section_present",
+        source_payload: str | None = None,
     ) -> None:
         section_candidates.append(
             ContextSectionCandidate(
@@ -748,7 +519,7 @@ def build_dynamic_prompt_suffix(
                 reason=reason,
                 budget_key=budget_key,
                 budget_chars=budget_chars,
-                enforce_budget=enforce_budget,
+                source_payload=source_payload,
             )
         )
 
@@ -778,27 +549,25 @@ def build_dynamic_prompt_suffix(
 
     memory_budget_chars = getattr(budget_profile, "memory_budget_chars", _DEFAULT_MEMORY_SNAPSHOT_BUDGET)
 
-    # § Memory (4-layer pyramid + current query-scoped memory context) — the
-    # resolver/assembler already ranks and trims to memory_budget_chars, so this
-    # layer uses the same cap only as a hard safety guard for rogue callers.
+    # § Memory (4-layer pyramid + current query-scoped memory context). The
+    # supplied budget is recorded for observability; these bytes remain intact.
     if memory_snapshot:
-        snapshot_cap = max(int(memory_budget_chars), 1500)
         add_candidate(
             candidate_id="dynamic:memory:memory_snapshot",
             kind="memory",
             name="memory_snapshot",
-            content=build_memory_section(memory_snapshot, budget_chars=snapshot_cap),
+            content=build_memory_section(memory_snapshot, budget_chars=None),
             budget_key="memory_budget_chars",
             budget_chars=memory_budget_chars,
+            source_payload=memory_snapshot,
         )
 
     if session_learning_projection:
-        learning_block = _trim_block(session_learning_projection, budget_chars=1200)
         add_candidate(
             candidate_id="dynamic:memory:session_learning_projection",
             kind="memory",
             name="session_learning_projection",
-            content=learning_block,
+            content=session_learning_projection,
             budget_key="session_learning_projection_chars",
             budget_chars=1200,
         )
@@ -808,36 +577,32 @@ def build_dynamic_prompt_suffix(
         _CONTINUITY_CHAR_BUDGET,
     )
     if continuity_context:
-        continuity_block = _trim_block(continuity_context, budget_chars=continuity_budget)
         add_candidate(
             candidate_id="dynamic:session:continuity",
             kind="session_continuity",
             name="continuity_context",
-            content=f"## Session Continuity\n{continuity_block}" if continuity_block else "",
+            content=f"## Session Continuity\n{continuity_context}",
             budget_key="continuity_context_chars",
             budget_chars=continuity_budget,
+            source_payload=continuity_context,
         )
 
     runtime_budget = getattr(budget_profile, "runtime_triggers_budget_chars", 3000)
-    runtime_block = (
-        _trim_block(runtime_metadata_context, budget_chars=runtime_budget) if runtime_metadata_context else ""
-    )
     add_candidate(
         candidate_id="dynamic:runtime:runtime_metadata",
         kind="runtime_metadata",
         name="runtime_metadata_context",
-        content=runtime_block,
+        content=runtime_metadata_context,
         budget_key="runtime_triggers_budget_chars",
         budget_chars=runtime_budget,
     )
 
     permissions_budget = min(runtime_budget, 2400)
-    permissions_block = _trim_block(permissions_context, budget_chars=permissions_budget) if permissions_context else ""
     add_candidate(
         candidate_id="dynamic:permissions:permissions_context",
         kind="permissions",
         name="permissions_context",
-        content=permissions_block,
+        content=permissions_context,
         budget_key="permissions_context_chars",
         budget_chars=permissions_budget,
     )
@@ -897,10 +662,9 @@ def build_dynamic_prompt_suffix(
         content=skill_catalog,
         budget_key="skill_catalog_budget_chars",
         budget_chars=skill_catalog_budget,
-        enforce_budget=True,
     )
 
-    knowledge = build_knowledge_section(retrieval_context, budget_chars=retrieval_budget) if retrieval_context else ""
+    knowledge = build_knowledge_section(retrieval_context, budget_chars=None) if retrieval_context else ""
     add_candidate(
         candidate_id="dynamic:knowledge:retrieval_context",
         kind="knowledge",
@@ -908,6 +672,7 @@ def build_dynamic_prompt_suffix(
         content=knowledge,
         budget_key="retrieval_budget_chars",
         budget_chars=retrieval_budget,
+        source_payload=retrieval_context,
     )
 
     suggested_deferred_tool_groups = (
@@ -949,9 +714,8 @@ def build_dynamic_prompt_suffix(
         suffix_sections.append(system_prompt_suffix)
     suffix_sections.extend(section for section in (system_prompt_suffix_sections or []) if section)
     for idx, suffix_section in enumerate(suffix_sections):
-        # P1-W2-2/A6: cap each request-specific suffix independently. Runtime
-        # callers may inject multiple critical suffixes (for example delegation
-        # handoff + coordinator mode); one large section must not erase another.
+        # Record each request-specific suffix independently so an oversized
+        # caller is attributable without erasing another critical section.
         is_hook_context = suffix_section.lstrip().startswith("## Hook Additional Context")
         add_candidate(
             candidate_id=(
@@ -961,11 +725,12 @@ def build_dynamic_prompt_suffix(
             ),
             kind="hook_context" if is_hook_context else "system_prompt_suffix",
             name="user_prompt_submit" if is_hook_context else "system_prompt_suffix",
-            content=_trim_block(suffix_section, budget_chars=_SYSTEM_PROMPT_SUFFIX_CHAR_CAP),
+            content=suffix_section,
             budget_key="hook_context_chars" if is_hook_context else "system_prompt_suffix_chars",
-            budget_chars=_SYSTEM_PROMPT_SUFFIX_CHAR_CAP,
+            budget_chars=_SYSTEM_PROMPT_SUFFIX_ADVISORY_CHARS,
             source_ref="hook:user_prompt_submit" if is_hook_context else "runtime.system_prompt_suffix",
             reason="hook_additional_context" if is_hook_context else "system_prompt_suffix_present",
+            source_payload=suffix_section,
         )
 
     parts = _select_context_section_candidates(section_candidates, context_section_ledger=context_section_ledger)
@@ -992,10 +757,12 @@ def assemble_runtime_prompt(
     context_window_tokens: int | None = None,
     budget_profile: ContextBudget | None = None,
 ) -> str:
-    """Combine frozen prefix + dynamic suffix into final system prompt.
+    """Combine already-budgeted frozen and dynamic prompt sections.
 
-    If total exceeds budget, frozen prefix is trimmed (dynamic suffix preserved
-    because it contains per-round retrieval and runtime tool-group context).
+    This final layer is not a second semantic selection authority. Upstream
+    section ledgers must inline or defer recoverable material first; if their
+    selected result still cannot fit, fail loudly rather than byte-slicing an
+    immutable contract or an unpersisted dynamic section.
 
     Args:
         context_window_tokens: Model's context window in tokens. When provided,
@@ -1036,29 +803,16 @@ def assemble_runtime_prompt(
     if len(prompt) > budget:
         overshoot = len(prompt) - budget
         _logger.warning(
-            "[PromptBuilder] System prompt exceeds budget: %d chars (budget=%d, ctx_window=%s, overshoot=%d) — trimming frozen prefix",
+            "[PromptBuilder] System prompt exceeds budget: %d chars (budget=%d, ctx_window=%s, overshoot=%d) — refusing blind truncation",
             len(prompt),
             budget,
             context_window_tokens or "default",
             overshoot,
         )
-        # Trim frozen prefix from the end, preserve the cache boundary + dynamic suffix.
-        if dynamic_suffix:
-            dynamic_block = f"\n\n{PROMPT_CACHE_BOUNDARY}\n\n{dynamic_suffix}"
-            truncation_notice = _SYSTEM_PROMPT_TRUNCATION_NOTICE
-        else:
-            dynamic_block = ""
-            truncation_notice = _SYSTEM_PROMPT_TRUNCATION_NOTICE
-
-        max_frozen = budget - len(dynamic_block) - len(truncation_notice)
-        if max_frozen > 0:
-            trimmed_frozen = frozen_prefix[:max_frozen].rstrip()
-            prompt = f"{trimmed_frozen}{truncation_notice}{dynamic_block}"
-        else:
-            if dynamic_suffix:
-                boundary_prefix = f"{PROMPT_CACHE_BOUNDARY}\n\n"
-                available_dynamic = max(budget - len(boundary_prefix), 0)
-                prompt = f"{boundary_prefix}{dynamic_suffix[:available_dynamic]}"
-            else:
-                prompt = frozen_prefix[:budget]
+        raise PromptBudgetExceededError(
+            budget_chars=budget,
+            required_chars=len(prompt),
+            frozen_prefix=frozen_prefix,
+            dynamic_suffix=dynamic_suffix,
+        )
     return prompt

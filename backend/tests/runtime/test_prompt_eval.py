@@ -20,7 +20,7 @@ def test_evaluate_runtime_prompt_contracts_has_no_failures() -> None:
     assert "skill_patch_instead_of_duplicate_guidance" in report["passed"]
     assert "heartbeat_skill_curation_consistency" in report["passed"]
     assert "task_playbook_review_overlay" in report["passed"]
-    assert "heartbeat_weight_policy" in report["passed"]
+    assert "heartbeat_model_owned_evidence_policy" in report["passed"]
     assert report["scenarios"]["research"]["failed"] == []
     assert report["scenarios"]["coding_review"]["failed"] == []
     assert report["scenarios"]["operations"]["failed"] == []
@@ -62,6 +62,7 @@ def test_evaluate_runtime_prompt_contracts_reports_failure_details() -> None:
     assert "output_scale_matches_user_request" in report["failed"]
     assert "skill_patch_instead_of_duplicate_guidance" in report["failed"]
     assert "heartbeat_skill_curation_consistency" in report["failed"]
+    assert "heartbeat_model_owned_evidence_policy" in report["failed"]
     assert report["checks"]["system_trust_boundaries"]["passed"] is False
     assert report["checks"]["system_trust_boundaries"]["severity"] == "critical"
     assert report["checks"]["system_trust_boundaries"]["remediation"]

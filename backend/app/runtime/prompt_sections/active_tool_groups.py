@@ -4,36 +4,19 @@ from __future__ import annotations
 
 from typing import Any
 
-# P1-W2-6: tighten the per-group prompt footprint so that adding a group
-# doesn't quietly inflate every round's input cost. Groups grow over time
-# as new tools land — without these caps a single Feishu group at 30+
-# tools could spend ~600 chars per group on an enumerable list the model
-# never needs verbatim.
-_SUMMARY_MAX_CHARS = 100
-_TOOLS_PREVIEW_COUNT = 5
 _DEFAULT_BUDGET_CHARS = 1200
 
 
 def _format_tools_inline(tools: list[str]) -> str:
-    """Show first N tools and a count of the rest; never enumerate everything."""
-    if not tools:
-        return ""
-    preview = tools[:_TOOLS_PREVIEW_COUNT]
-    rendered = ", ".join(preview)
-    remainder = len(tools) - len(preview)
-    if remainder > 0:
-        rendered += f" (+{remainder} more)"
-    return rendered
+    """Render the complete callable surface visible to the model."""
+    return ", ".join(tools)
 
 
 def _trim_summary(summary: str) -> str:
-    """Single-line summary capped at `_SUMMARY_MAX_CHARS`."""
+    """Normalize whitespace without discarding semantic content."""
     if not summary:
         return ""
-    flat = " ".join(summary.split())  # collapse newlines/spaces
-    if len(flat) <= _SUMMARY_MAX_CHARS:
-        return flat
-    return flat[: _SUMMARY_MAX_CHARS - 1].rstrip() + "…"
+    return " ".join(summary.split())
 
 
 def build_active_tool_groups_section(
@@ -45,9 +28,11 @@ def build_active_tool_groups_section(
 
     Args:
         active_tool_groups: List of tool group dicts with keys: name, summary, tools.
-        budget_chars: Max chars for the section. Default 1200 (was
-            2000) — tool groups are referential signposts, not full docs.
+        budget_chars: Compatibility-only advisory. Provider capacity is
+            enforced after complete prompt assembly; this section never
+            decides which callable tools the model is allowed to see.
     """
+    del budget_chars
     if not active_tool_groups:
         return ""
 
@@ -69,9 +54,4 @@ def build_active_tool_groups_section(
         if tools_inline:
             lines.append(f"  Tools: {tools_inline}")
 
-    text = "\n".join(lines)
-    if len(text) > budget_chars:
-        # C3: observable trim marker (kept short — this section runs on tight budgets)
-        marker = "\n...(trimmed)"
-        text = text[: budget_chars - len(marker)].rstrip() + marker
-    return text
+    return "\n".join(lines)

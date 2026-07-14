@@ -1,4 +1,4 @@
-"""Archetype inference + default charters (§7, §16.2).
+"""Explicit archetype selection + default charters (§7, §16.2).
 
 Hive's HR refine path uses these archetypes as a sanity floor: even when an
 owner does not author a `company_charter` / `owner_agency_charter`, every
@@ -21,81 +21,19 @@ class Archetype(StrEnum):
     GENERALIST = "generalist"
 
 
-_KEYWORDS: dict[Archetype, tuple[str, ...]] = {
-    Archetype.CHIEF_OF_STAFF: (
-        "chief of staff",
-        "leadership",
-        "executive",
-        "okr",
-        "leadership cadence",
-        "ceo",
-    ),
-    Archetype.RESEARCH_ANALYST: (
-        "research analyst",
-        "research",
-        "analyst",
-        "memo",
-        "sector",
-        "competitor",
-        "landscape",
-    ),
-    Archetype.CUSTOMER_SUCCESS: (
-        "customer success",
-        "ticket",
-        "renewal",
-        "support",
-        "escalation",
-    ),
-    Archetype.ENGINEERING_ASSISTANT: (
-        "engineering",
-        "engineer",
-        "pull request",
-        "pr review",
-        "deploy",
-        "code review",
-    ),
-    Archetype.OPS_ADMIN: (
-        "ops",
-        "operations",
-        "admin",
-        "schedule",
-        "calendar",
-        "travel",
-    ),
-    Archetype.VENDOR_LIAISON: (
-        "vendor",
-        "procurement",
-        "supplier",
-        "contract negotiation",
-    ),
-}
-
-
 def infer_archetype(
     *,
     role_description: str,
     primary_users: list[str] | None,
     core_outputs: list[str] | None,
 ) -> Archetype:
-    haystack = " ".join(
-        [
-            role_description or "",
-            " ".join(primary_users or []),
-            " ".join(core_outputs or []),
-        ]
-    ).lower()
+    """Compatibility API: prose never selects an archetype.
 
-    if not haystack.strip():
-        return Archetype.GENERALIST
-
-    best: Archetype = Archetype.GENERALIST
-    best_score = 0
-    for archetype, keywords in _KEYWORDS.items():
-        score = sum(1 for keyword in keywords if keyword in haystack)
-        if score > best_score:
-            best = archetype
-            best_score = score
-    return best
+    Archetype selection is semantic judgment and must be authored explicitly by
+    the Agent/user in the structured blueprint. Missing selection is neutral.
+    """
+    del role_description, primary_users, core_outputs
+    return Archetype.GENERALIST
 
 
 def default_owner_charter(archetype: Archetype) -> dict[str, list[str]]:
@@ -301,18 +239,15 @@ def default_company_charter(archetype: Archetype) -> dict[str, list[str]]:
 
 
 def apply_archetype_defaults(blueprint: dict) -> dict:
-    """Fill in `company_charter` / `owner_agency_charter` from inferred archetype.
+    """Fill charter scaffolding from an explicitly selected archetype.
 
     Caller-supplied keys are preserved verbatim. Only empty / missing keys are
     replaced with the archetype default so HR refinement always emits a
     non-blank charter block.
     """
 
-    archetype = infer_archetype(
-        role_description=str(blueprint.get("role_description", "")),
-        primary_users=list(blueprint.get("primary_users") or []),
-        core_outputs=list(blueprint.get("core_outputs") or []),
-    )
+    raw_archetype = str(blueprint.get("archetype") or Archetype.GENERALIST.value).strip()
+    archetype = Archetype(raw_archetype)
     applied = dict(blueprint)
     applied["archetype"] = archetype.value
 

@@ -119,10 +119,10 @@ async def _upload_image(agent_id: uuid.UUID, ws: Path, arguments: dict) -> str:
                 f"**Name**: {result.get('name', file_name)}"
             )
         else:
-            error_detail = resp.text[:300]
+            error_detail = resp.text
             return f"❌ Upload failed (HTTP {resp.status_code}): {error_detail}"
 
     except httpx.TimeoutException:
         return "❌ Upload timed out after 60s. The file may be too large or the network is slow."
     except Exception as e:
-        return f"❌ Upload error: {type(e).__name__}: {str(e)[:300]}"
+        return f"❌ Upload error: {type(e).__name__}: {e}"

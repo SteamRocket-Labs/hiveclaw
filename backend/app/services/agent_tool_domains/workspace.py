@@ -8,6 +8,7 @@ import subprocess
 import uuid
 import json
 from pathlib import Path
+from typing import Any
 
 from app.config import get_settings
 from app.services.legacy_company_files import COMPANY_CONTEXT_FILENAMES, company_context_path_allowed
@@ -253,8 +254,6 @@ def _read_file(
 
     try:
         content = file_path.read_text(encoding="utf-8", errors="replace")
-        if len(content) > 16000:
-            content = content[:16000] + f"\n\n...[truncated, {len(content)} chars total]"
         if _is_skill_instruction_file(ws, file_path):
             content = sanitize_managed_credential_guidance(content)
         return _append_workspace_provenance_hint(content, ws, rel_path, directory=False)
@@ -663,22 +662,20 @@ def _submit_skill_activation_candidate(
                 "Pass overwrite=true to request a patch candidate, or choose a different skill name/folder_name."
             ),
         )
+    semantic_observations: list[dict[str, Any]] = []
     if not overwrite:
         similar = _find_similar_existing_skill(ws, name=skill_name, description=skill_description)
         if similar is not None:
             sim_skill, sim_score = similar
-            return _workspace_error(
-                tool_name,
-                "similar_skill_exists",
-                (
-                    f"A semantically similar skill already exists "
-                    f"(similarity={sim_score:.2f}): {sim_skill.metadata.name} at "
-                    f"{sim_skill.relative_path}. Description: {sim_skill.metadata.description}"
-                ),
-                actionable_hint=(
-                    "Patch the existing skill (pass overwrite=true and the same name/folder), "
-                    "or pick a clearly distinct name and description that captures the difference."
-                ),
+            semantic_observations.append(
+                {
+                    "kind": "similar_existing_skill",
+                    "similarity": sim_score,
+                    "skill_name": sim_skill.metadata.name,
+                    "relative_path": sim_skill.relative_path,
+                    "description": sim_skill.metadata.description,
+                    "authority": "observation_only",
+                }
             )
         similar_candidate = _find_similar_pending_skill_candidate(
             ws,
@@ -687,18 +684,15 @@ def _submit_skill_activation_candidate(
         )
         if similar_candidate is not None:
             manifest, sim_score = similar_candidate
-            return _workspace_error(
-                tool_name,
-                "similar_skill_exists",
-                (
-                    f"A semantically similar skill candidate already exists "
-                    f"(similarity={sim_score:.2f}): {manifest.get('skill_name')} at "
-                    f"{manifest.get('draft_path') or manifest.get('candidate_signal_path')}"
-                ),
-                actionable_hint=(
-                    "Wait for the existing candidate to pass Skill Gate, or submit a patch candidate with "
-                    "overwrite=true if this adds distinct value."
-                ),
+            semantic_observations.append(
+                {
+                    "kind": "similar_pending_skill_candidate",
+                    "similarity": sim_score,
+                    "candidate_id": manifest.get("candidate_id"),
+                    "skill_name": manifest.get("skill_name"),
+                    "draft_path": manifest.get("draft_path") or manifest.get("candidate_signal_path"),
+                    "authority": "observation_only",
+                }
             )
 
     rendered = _render_skill_markdown(
@@ -752,6 +746,7 @@ def _submit_skill_activation_candidate(
                     "agent_id": str(agent_id) if agent_id else None,
                     "overwrite_requested": bool(overwrite),
                     "source_tool": tool_name,
+                    "semantic_observations": semantic_observations,
                 },
                 transaction=transaction,
             )
@@ -764,7 +759,11 @@ def _submit_skill_activation_candidate(
                 last_candidate_id=candidate_id,
                 state="candidate",
                 source_refs=["tool:save_skill"],
-                metadata={"draft_path": manifest["draft_path"], "source_tool": tool_name},
+                metadata={
+                    "draft_path": manifest["draft_path"],
+                    "source_tool": tool_name,
+                    "semantic_observations": semantic_observations,
+                },
                 transaction=transaction,
             )
             record_evolution_candidate(
@@ -784,6 +783,7 @@ def _submit_skill_activation_candidate(
                     "overwrite_requested": bool(overwrite),
                     "agent_id": str(agent_id) if agent_id else None,
                     "source_tool": tool_name,
+                    "semantic_observations": semantic_observations,
                 },
                 transaction=transaction,
             )
@@ -822,13 +822,13 @@ def _submit_skill_activation_candidate(
 async def _read_document(
     ws: Path,
     rel_path: str,
-    max_chars: int = 8000,
+    max_chars: int | None = None,
     tenant_id: str | None = None,
     tool_name: str = "read_document",
     mode: str = "auto",
     max_pages: int | None = None,
     force_refresh: bool = False,
-    return_format: str = "preview",
+    return_format: str = "markdown",
     authority_scope=None,
 ) -> str:
     if not _authority_allows_path(authority_scope, rel_path):
@@ -871,15 +871,12 @@ async def _read_document(
                 user_id=None,
                 mode=mode if mode in {"auto", "fast", "ocr", "layout", "vision"} else "auto",
                 max_pages=max_pages,
-                max_output_chars=max_chars,
+                max_output_chars=None,
                 force_refresh=force_refresh,
             )
         )
         if return_format == "markdown":
-            content = result.markdown
-            if len(content) > max_chars:
-                content = content[:max_chars] + f"\n\n...[truncated, {len(result.markdown)} chars total]"
-            return content
+            return result.markdown
         if return_format == "metadata":
             metadata_path = workspace_root / result.artifact_metadata_path
             return metadata_path.read_text(encoding="utf-8", errors="replace")
@@ -900,7 +897,7 @@ async def _read_document(
     except ValueError as e:
         return _workspace_error(tool_name, "bad_arguments", str(e))
     except Exception as e:
-        return _workspace_error(tool_name, "operation_failed", f"Document read failed: {str(e)[:200]}")
+        return _workspace_error(tool_name, "operation_failed", f"Document read failed: {str(e)}")
 
 
 _WRITE_PROTECTED = {
@@ -1192,8 +1189,6 @@ def _glob_search(
             if not _authority_allows_path(authority_scope, rel, directory=resolved.is_dir()):
                 continue
             matches.append(rel)
-            if len(matches) >= 100:
-                break
     except Exception as e:
         return _workspace_error(tool_name, "operation_failed", f"Glob search failed: {e}", retryable=True)
 
@@ -1208,7 +1203,7 @@ def _grep_search(
     ws: Path,
     pattern: str,
     root: str = "",
-    max_results: int = 50,
+    max_results: int | None = None,
     tool_name: str = "grep_search",
     authority_scope=None,
 ) -> str:
@@ -1218,22 +1213,17 @@ def _grep_search(
     if not search_root.exists():
         return _workspace_error(tool_name, "not_found", f"Directory not found: {root or '/'}")
 
-    max_results = max(1, min(int(max_results), 200))
+    explicit_limit = max(1, int(max_results)) if max_results is not None else None
     matches: list[str] = []
 
     if shutil.which("rg"):
         try:
+            command = ["rg", "--line-number", "--color", "never"]
+            if explicit_limit is not None:
+                command.extend(("--max-count", str(explicit_limit)))
+            command.extend((pattern, str(search_root)))
             proc = subprocess.run(
-                [
-                    "rg",
-                    "--line-number",
-                    "--color",
-                    "never",
-                    "--max-count",
-                    str(max_results),
-                    pattern,
-                    str(search_root),
-                ],
+                command,
                 capture_output=True,
                 text=True,
                 check=False,
@@ -1245,11 +1235,13 @@ def _grep_search(
                     if not _authority_allows_path(authority_scope, result_path):
                         continue
                     matches.append(normalized)
+                    if explicit_limit is not None and len(matches) >= explicit_limit:
+                        break
             elif proc.returncode not in (0, 1):
                 return _workspace_error(
                     tool_name,
                     "operation_failed",
-                    f"Grep search failed: {proc.stderr.strip()[:200]}",
+                    f"Grep search failed: {proc.stderr.strip()}",
                     retryable=True,
                 )
         except Exception as e:
@@ -1265,7 +1257,7 @@ def _grep_search(
             )
         try:
             for path in sorted(search_root.rglob("*")):
-                if len(matches) >= max_results:
+                if explicit_limit is not None and len(matches) >= explicit_limit:
                     break
                 if not path.is_file():
                     continue
@@ -1277,7 +1269,7 @@ def _grep_search(
                         for idx, line in enumerate(handle, start=1):
                             if compiled.search(line):
                                 matches.append(f"{path.relative_to(ws).as_posix()}:{idx}:{line.strip()}")
-                                if len(matches) >= max_results:
+                                if explicit_limit is not None and len(matches) >= explicit_limit:
                                     break
                 except Exception as _read_err:
                     logger.debug("[Workspace] grep: skipped file %s: %s", path, _read_err)
@@ -1288,7 +1280,7 @@ def _grep_search(
     if not matches:
         return f"🔎 No matches for '{pattern}'"
     lines = [f"🔎 Grep results for '{pattern}' ({len(matches)} match(es)):"]
-    lines.extend(f"- {match}" for match in matches[:max_results])
+    lines.extend(f"- {match}" for match in matches)
     return "\n".join(lines)
 
 
@@ -1349,7 +1341,7 @@ async def _tool_search(ws: Path, query: str = "", agent_id: uuid.UUID | str | No
     if matching_skills:
         lines.append("")
         lines.append("Matching skills:")
-        for skill in matching_skills[:20]:
+        for skill in matching_skills:
             declared = (
                 ", ".join(skill.metadata.declared_tools) if skill.metadata.declared_tools else "no declared tools"
             )

@@ -338,7 +338,7 @@ async def _finalize_pre_invocation_response(
         content=response,
         thinking=None,
         status=status,
-        result_summary=response[:500],
+        result_summary=response,
     )
     if not finalized:
         return
@@ -739,6 +739,7 @@ def _agent_invocation_request(
         mid_run_message_drain=lambda: state.ports.context.claim_mid_run_messages(state.run_uuid),
         disable_tools=state.disable_tools_for_turn,
         excluded_tool_names=state.excluded_tool_names_for_turn,
+        model_routing_locked=bool(state.metadata.get("model_routing_locked")),
         emit_turn_stop=False,
     )
 
@@ -934,7 +935,7 @@ async def _handle_web_chat_failure(state: _WebChatRunState, exc: Exception) -> N
         await _handle_cancelled_failure(state)
         return
     summary = f"Web chat run failed: {type(exc).__name__}"
-    metadata = {"error": str(exc)[:500], "terminal_reason": TerminalReason.PROVIDER_ERROR.value}
+    metadata = {"error": str(exc), "terminal_reason": TerminalReason.PROVIDER_ERROR.value}
     try:
         if state.stream_batcher is not None:
             await state.stream_batcher.flush()
@@ -1014,8 +1015,8 @@ async def _handle_terminal_persistence_failure(
         terminal,
     )
     metadata = {
-        "error": str(terminal)[:500],
-        "original_error": str(original)[:500],
+        "error": str(terminal),
+        "original_error": str(original),
         "terminal_reason": TerminalReason.PERSISTENCE_ERROR.value,
         "persistence_error": True,
     }

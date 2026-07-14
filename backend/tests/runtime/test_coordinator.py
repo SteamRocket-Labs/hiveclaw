@@ -7,6 +7,7 @@ from app.runtime.coordinator import (
     filter_tools_for_coordinator,
     get_coordinator_prompt,
     is_coordinator_mode,
+    is_strict_dispatcher_mode,
 )
 
 
@@ -28,6 +29,17 @@ class TestCoordinatorMode:
 
         assert is_coordinator_mode(agent=FakeAgent()) is True
 
+    def test_strict_dispatcher_is_explicit(self) -> None:
+        class DefaultCoordinator:
+            execution_mode = "coordinator"
+
+        class StrictCoordinator:
+            execution_mode = "coordinator_strict"
+
+        assert is_strict_dispatcher_mode(agent=DefaultCoordinator()) is False
+        assert is_strict_dispatcher_mode(agent=StrictCoordinator()) is True
+        assert is_coordinator_mode(agent=StrictCoordinator()) is True
+
     def test_not_active_for_normal_mode(self) -> None:
         class FakeRequest:
             execution_mode = "normal"
@@ -45,19 +57,20 @@ class TestCoordinatorMode:
         assert "check_subagent" in prompt
         assert "send_agent_session_message" in prompt
         assert "delegate_to_agent" not in prompt
-        assert "send_message_to_agent" not in prompt
         assert "delegate understanding" in prompt.lower()
-        # Coordination-artifact-only use of local file tools is encoded in
-        # <allowed_tools>.
-        assert "coordination artifacts" in prompt.lower()
-        # Status-over-completion when workers still running is in anti_patterns
-        # ("silent wait") and final_report_format.
-        assert "still running" in prompt.lower() or "Waiting on" in prompt
+        assert "strategy, not a restriction on your judgment" in prompt.lower()
+        assert "actual task, evidence, authority, cost, and conflict risk" in prompt.lower()
+        assert "no hard-coded tiebreaker" in prompt.lower()
+        assert "no verification needed" not in prompt.lower()
+        assert "serialize per-file-set always" not in prompt.lower()
+        # Runtime truth is mandatory; the exact reporting template is adaptive.
+        assert "false completion" in prompt.lower()
+        assert "running or unevidenced work" in prompt.lower()
         assert "## Status" in prompt
         assert "## Synthesis" in prompt
         assert "wake policy" in prompt.lower()
 
-    def test_filter_keeps_only_allowed_tools(self) -> None:
+    def test_default_coordinator_keeps_full_assigned_tool_surface(self) -> None:
         tools = [
             {"function": {"name": "spawn_subagent", "parameters": {}}},
             {"function": {"name": "check_subagent", "parameters": {}}},
@@ -66,12 +79,17 @@ class TestCoordinatorMode:
             {"function": {"name": "execute_code", "parameters": {}}},
         ]
         filtered = filter_tools_for_coordinator(tools)
-        names = {t["function"]["name"] for t in filtered}
-        assert "spawn_subagent" in names
-        assert "check_subagent" in names
-        assert "read_file" in names
-        assert "web_search" not in names
-        assert "execute_code" not in names
+        assert filtered == tools
+
+    def test_explicit_strict_dispatcher_filters_tools(self) -> None:
+        tools = [
+            {"function": {"name": "spawn_subagent", "parameters": {}}},
+            {"function": {"name": "web_search", "parameters": {}}},
+        ]
+
+        filtered = filter_tools_for_coordinator(tools, dispatcher_only=True)
+
+        assert [tool["function"]["name"] for tool in filtered] == ["spawn_subagent"]
 
     def test_filter_empty_tools(self) -> None:
         assert filter_tools_for_coordinator([]) == []

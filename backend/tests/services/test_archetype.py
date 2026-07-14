@@ -12,44 +12,44 @@ from app.services.archetype import (
 
 
 class TestInferArchetype:
-    def test_research_analyst(self) -> None:
+    def test_role_prose_does_not_select_research_archetype(self) -> None:
         assert (
             infer_archetype(
                 role_description="research analyst tracking sector trends",
                 primary_users=["partner"],
                 core_outputs=["weekly research memos", "competitor landscape"],
             )
-            == Archetype.RESEARCH_ANALYST
+            == Archetype.GENERALIST
         )
 
-    def test_chief_of_staff(self) -> None:
+    def test_role_prose_does_not_select_chief_of_staff_archetype(self) -> None:
         assert (
             infer_archetype(
                 role_description="chief of staff coordinating leadership cadence",
                 primary_users=["ceo"],
                 core_outputs=["weekly leadership digest", "OKR tracking"],
             )
-            == Archetype.CHIEF_OF_STAFF
+            == Archetype.GENERALIST
         )
 
-    def test_customer_success(self) -> None:
+    def test_role_prose_does_not_select_customer_success_archetype(self) -> None:
         assert (
             infer_archetype(
                 role_description="customer success replying to ticket escalations",
                 primary_users=["enterprise customers"],
                 core_outputs=["ticket triage", "renewal risk notes"],
             )
-            == Archetype.CUSTOMER_SUCCESS
+            == Archetype.GENERALIST
         )
 
-    def test_engineering_assistant(self) -> None:
+    def test_role_prose_does_not_select_engineering_archetype(self) -> None:
         assert (
             infer_archetype(
                 role_description="engineering assistant reviewing pull requests",
                 primary_users=["staff engineer"],
                 core_outputs=["PR review notes", "deploy checklists"],
             )
-            == Archetype.ENGINEERING_ASSISTANT
+            == Archetype.GENERALIST
         )
 
     def test_falls_back_to_generalist(self) -> None:
@@ -83,8 +83,9 @@ class TestDefaultCompanyCharter:
 
 
 class TestApplyArchetypeDefaults:
-    def test_fills_missing_charter_from_archetype(self) -> None:
+    def test_fills_missing_charter_from_explicit_model_authored_archetype(self) -> None:
         blueprint = {
+            "archetype": Archetype.RESEARCH_ANALYST.value,
             "role_description": "research analyst tracking emerging markets",
             "primary_users": ["partner"],
             "core_outputs": ["weekly research memos"],
@@ -97,8 +98,20 @@ class TestApplyArchetypeDefaults:
         assert applied["owner_agency_charter"]["confirm_first"]
         assert applied["company_charter"]["goals"]
 
+    def test_role_prose_without_explicit_archetype_uses_neutral_generalist(self) -> None:
+        applied = apply_archetype_defaults(
+            {
+                "role_description": "research analyst tracking emerging markets",
+                "primary_users": ["partner"],
+                "core_outputs": ["weekly research memos"],
+            }
+        )
+
+        assert applied["archetype"] == Archetype.GENERALIST.value
+
     def test_explicit_charter_overrides_archetype(self) -> None:
         blueprint = {
+            "archetype": Archetype.RESEARCH_ANALYST.value,
             "role_description": "research analyst tracking emerging markets",
             "primary_users": ["partner"],
             "core_outputs": ["weekly research memos"],

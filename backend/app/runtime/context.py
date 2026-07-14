@@ -193,21 +193,20 @@ class RuntimeAssemblyState:
         self.persist()
 
     def record_runtime_reminder_candidate(self, candidate: dict[str, Any], *, limit: int = 50) -> None:
+        _ = limit  # compatibility only; semantic candidates are never silently discarded
         self.runtime_reminder_candidates.append(dict(candidate))
-        if len(self.runtime_reminder_candidates) > limit:
-            del self.runtime_reminder_candidates[: len(self.runtime_reminder_candidates) - limit]
         self.persist()
 
     def record_activation_candidates(self, candidates: list[Any] | tuple[Any, ...], *, limit: int = 200) -> None:
+        _ = limit  # compatibility only; preserve complete activation coverage
         entries = [_manifest_payload(candidate) for candidate in candidates]
-        self.activation_candidates = entries[-limit:]
+        self.activation_candidates = entries
         self.persist()
 
     def record_activation_event(self, event: Any, *, limit: int = 200) -> None:
+        _ = limit  # compatibility only; feedback evidence must remain complete
         manifest = _manifest_payload(event)
         self.activation_events.append(manifest)
-        if len(self.activation_events) > limit:
-            del self.activation_events[: len(self.activation_events) - limit]
         self.persist()
 
     def record_deferred_tools(self, candidates: list[Any] | tuple[Any, ...]) -> None:

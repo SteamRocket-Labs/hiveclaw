@@ -7,7 +7,6 @@ and composes a comprehensive system prompt.
 from dataclasses import dataclass
 import hashlib
 import json
-import re
 import uuid
 from pathlib import Path
 
@@ -24,14 +23,6 @@ settings = get_settings()
 # Two workspace roots exist — tool workspace and persistent data
 TOOL_WORKSPACE = Path("/tmp/hive_workspaces")
 PERSISTENT_DATA = Path(settings.AGENT_DATA_DIR)
-_PROMPT_INJECTION_PATTERNS: tuple[tuple[str, str], ...] = (
-    (r"ignore\s+(previous|all|above|prior)\s+instructions", "prompt_injection"),
-    (r"do\s+not\s+tell\s+the\s+user", "deception_hide"),
-    (r"system\s+prompt\s+override", "sys_prompt_override"),
-    (r"disregard\s+(your|all|any)\s+(instructions|rules|guidelines)", "disregard_rules"),
-    (r"act\s+as\s+(if|though)\s+you\s+(have\s+no|don't\s+have)\s+(restrictions|limits|rules)", "bypass_restrictions"),
-)
-
 AGENT_CONTEXT_RESOURCE_REFS: tuple[str, ...] = (
     "index",
     "soul",
@@ -79,37 +70,18 @@ def _context_resource_continuation(resource: AgentContextResource, *, offset: in
 
 
 def render_context_resource_excerpt(resource: AgentContextResource, *, budget_chars: int) -> str:
-    """Render a bounded resident preview with a hash-pinned recovery call."""
+    """Render complete authorized context; the final provider gate owns capacity."""
 
-    content = resource.content.strip()
-    if not content or len(content) <= budget_chars:
-        return content
-
-    # The continuation is more important than another preview character. Two
-    # passes account for the offset digit count changing the marker length.
-    offset = max(0, budget_chars - len(_context_resource_continuation(resource, offset=0)))
-    for _ in range(2):
-        continuation = _context_resource_continuation(resource, offset=offset)
-        offset = max(0, budget_chars - len(continuation))
-    continuation = _context_resource_continuation(resource, offset=offset)
-    preview = content[:offset].rstrip()
-    rendered = f"{preview}{continuation}" if preview else continuation.lstrip("\n")
-    # Tiny custom budgets must never erase the recovery pointer. Normal runtime
-    # budgets are much larger than the marker; in the pathological case the
-    # marker is allowed to exceed the requested preview budget and the global
-    # prompt budget remains the final hard bound.
-    return rendered
+    del budget_chars
+    return resource.content.strip()
 
 
-def _read_file_safe(path: Path, max_chars: int | None = 3000) -> str:
-    """Read a file, return empty if missing, and optionally cap its size."""
+def _read_file_safe(path: Path) -> str:
+    """Read a complete file and return empty if it is missing or unreadable."""
     if not path.exists():
         return ""
     try:
-        content = path.read_text(encoding="utf-8", errors="replace").strip()
-        if max_chars is not None and len(content) > max_chars:
-            content = content[:max_chars] + "\n...(truncated)"
-        return content
+        return path.read_text(encoding="utf-8", errors="replace").strip()
     except Exception:
         return ""
 
@@ -140,23 +112,6 @@ def _read_identity_file(paths: tuple[Path, ...], *, source_name: str) -> str:
     return ""
 
 
-def _sanitize_prompt_context(content: str, *, source_name: str) -> str:
-    text = (content or "").strip()
-    if not text:
-        return ""
-
-    findings: list[str] = []
-    for pattern, label in _PROMPT_INJECTION_PATTERNS:
-        if re.search(pattern, text, re.IGNORECASE):
-            findings.append(label)
-
-    if findings:
-        logger.warning("Blocked prompt context from {} due to {}", source_name, ", ".join(findings))
-        return f"[BLOCKED: {source_name} contained potential prompt injection ({', '.join(findings)}). Content not loaded.]"
-
-    return text
-
-
 def _parse_skill_frontmatter(content: str, filename: str) -> tuple[str, str]:
     """Parse YAML frontmatter from a skill .md file.
 
@@ -180,7 +135,7 @@ def _parse_skill_frontmatter(content: str, filename: str) -> tuple[str, str]:
                 elif line.lower().startswith("description:"):
                     val = line[12:].strip().strip('"').strip("'")
                     if val:
-                        description = val[:200]
+                        description = val
             if description:
                 return name, description
 
@@ -191,12 +146,12 @@ def _parse_skill_frontmatter(content: str, filename: str) -> tuple[str, str]:
         if line in ("---",) or line.startswith("name:") or line.startswith("description:"):
             continue
         if line and not line.startswith("#"):
-            description = line[:200]
+            description = line
             break
     if not description:
         lines = stripped.split("\n")
         if lines:
-            description = lines[0].strip().lstrip("# ")[:200]
+            description = lines[0].strip().lstrip("# ")
 
     return name, description
 
@@ -305,10 +260,6 @@ def build_skill_catalog_section_for_agent(
         path_triggered_skill_names=path_triggered_skill_names,
         ranking_manifest=ranking_manifest,
     )
-    if len(skills_text) > skill_budget:
-        skills_text = (
-            skills_text[:skill_budget] + "\n\n...(skill catalog truncated — use `load_skill` to see full details)"
-        )
     return build_skills_catalog_section(skills_text, budget_chars=skill_budget)
 
 
@@ -481,7 +432,7 @@ async def _load_company_intro(
                 setting = result.scalar_one_or_none()
                 if setting and setting.value and setting.value.get("content"):
                     company_intro = str(setting.value["content"]).strip()
-            return _sanitize_prompt_context(company_intro, source_name="company_intro")
+            return company_intro
     except Exception as exc:
         logger.debug("Failed to load company intro for agent {}: {}", agent_id, exc)
         return ""
@@ -507,7 +458,7 @@ async def load_agent_context_resource(
             (tool_ws / "soul.md", data_ws / "soul.md"),
             source_name="soul.md",
         )
-        content = _sanitize_prompt_context(_strip_primary_heading(content), source_name="soul.md")
+        content = _strip_primary_heading(content).strip()
         return AgentContextResource(ref=resource_ref, source_ref=source_ref, content=content)
 
     if resource_ref == "company":
@@ -518,10 +469,10 @@ async def load_agent_context_resource(
         content = ""
         if tenant_id is not None:
             org_path = PERSISTENT_DATA / f"enterprise_info_{tenant_id}" / "org_structure.md"
-            content = _read_file_safe(org_path, max_chars=None)
+            content = _read_file_safe(org_path)
             if "尚未同步" in content or "尚未填写" in content:
                 content = ""
-            content = _sanitize_prompt_context(_strip_primary_heading(content), source_name="org_structure.md")
+            content = _strip_primary_heading(content).strip()
         return AgentContextResource(ref=resource_ref, source_ref=source_ref, content=content)
 
     if resource_ref == "channels":
@@ -620,16 +571,12 @@ async def build_agent_context(
             logger.warning("Failed to resolve tenant for frozen agent context {}: {}", agent_id, exc)
 
     # --- Soul ---
-    soul_budget = budget_profile.soul_budget_chars if budget_profile else 16000
-    a2a_budget = budget_profile.relationships_budget_chars if budget_profile else 6000
-    company_info_budget = budget_profile.company_info_budget_chars if budget_profile else 5000
-    org_structure_budget = budget_profile.org_structure_budget_chars if budget_profile else 2000
     soul_resource = await load_agent_context_resource(
         agent_id=agent_id,
         tenant_id=_agent_tenant_id,
         resource_ref="soul",
     )
-    soul = render_context_resource_excerpt(soul_resource, budget_chars=soul_budget)
+    soul = soul_resource.content.strip()
 
     # --- Memory ---
     # NOTE: canonical memory files are no longer loaded here. T3 markdown memory flows
@@ -678,8 +625,7 @@ async def build_agent_context(
         resource_ref="company",
     )
     if company_resource.content:
-        company_preview = render_context_resource_excerpt(company_resource, budget_chars=company_info_budget)
-        context_parts.append(f"### Company Information\n{company_preview}")
+        context_parts.append(f"### Company Information\n{company_resource.content.strip()}")
 
     organization_resource = await load_agent_context_resource(
         agent_id=agent_id,
@@ -687,11 +633,7 @@ async def build_agent_context(
         resource_ref="organization",
     )
     if organization_resource.content:
-        organization_preview = render_context_resource_excerpt(
-            organization_resource,
-            budget_chars=org_structure_budget,
-        )
-        context_parts.append(f"### Organization Structure\n{organization_preview}")
+        context_parts.append(f"### Organization Structure\n{organization_resource.content.strip()}")
 
     # soul personality is now rendered inside identity_section (build_identity_section)
 
@@ -706,7 +648,7 @@ async def build_agent_context(
         tenant_id=_agent_tenant_id,
         resource_ref="a2a-collaborators",
     )
-    a2a_section = render_context_resource_excerpt(a2a_resource, budget_chars=a2a_budget)
+    a2a_section = a2a_resource.content.strip()
 
     # Operating contract via modular section
     operating_contract = build_executing_actions_section(invocation_scope)

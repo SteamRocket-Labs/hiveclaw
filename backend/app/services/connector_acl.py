@@ -52,6 +52,13 @@ class GeneratedSourcePermissionCheck:
     authorization_decision_entry: dict[str, Any] | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class ConnectorPromptFilterResult:
+    payload: Any
+    allowed_sources: tuple[str, ...] = ()
+    forbidden_sources: tuple[str, ...] = ()
+
+
 def _string(value: Any) -> str:
     if isinstance(value, uuid.UUID):
         return str(value)
@@ -613,6 +620,97 @@ def filter_connector_results_for_prompt(
     ]
 
 
+def filter_connector_payload_for_prompt(
+    payload: Any,
+    *,
+    source_items: list[dict[str, Any]],
+    tenant_id: uuid.UUID | str | None,
+    current_user_id: uuid.UUID | str | None,
+    agent_id: uuid.UUID | str | None = None,
+) -> ConnectorPromptFilterResult:
+    """Remove unauthorized connector payloads before they enter model context.
+
+    Structured lists preserve authorized siblings. Opaque text/envelopes are
+    replaced by a typed denial because their fragments cannot be attributed
+    safely. The original connector remains the evidence authority.
+    """
+
+    allowed_sources: list[str] = []
+    forbidden_sources: list[str] = []
+    visible_by_source: dict[str, bool] = {}
+    for item in source_items:
+        if not isinstance(item, dict):
+            continue
+        source = _source_id(item)
+        if not source:
+            continue
+        visible = connector_item_visible(
+            item,
+            tenant_id=tenant_id,
+            current_user_id=current_user_id,
+            agent_id=agent_id,
+        )
+        visible_by_source[source.lower()] = visible
+        target = allowed_sources if visible else forbidden_sources
+        if source not in target:
+            target.append(source)
+
+    if not forbidden_sources:
+        return ConnectorPromptFilterResult(payload=payload, allowed_sources=tuple(allowed_sources))
+
+    denied_marker = json.dumps(
+        {
+            "status": "source_permission_denied",
+            "forbidden_source_count": len(forbidden_sources),
+            "retryable": False,
+        },
+        sort_keys=True,
+    )
+    omitted = object()
+
+    def visit(value: Any) -> Any:
+        from app.tools.result_envelope import ToolContentEnvelope
+
+        if isinstance(value, ToolContentEnvelope):
+            return ToolContentEnvelope(
+                text=denied_marker,
+                metadata={
+                    "source_permission": {
+                        "status": "denied",
+                        "forbidden_source_count": len(forbidden_sources),
+                    }
+                },
+            )
+        if isinstance(value, dict):
+            source = _source_id(value)
+            if source and visible_by_source.get(source.lower()) is False:
+                return omitted
+            filtered: dict[str, Any] = {}
+            for key, child in value.items():
+                filtered_child = visit(child)
+                if filtered_child is not omitted:
+                    filtered[key] = filtered_child
+            return filtered
+        if isinstance(value, list):
+            return [child for item in value if (child := visit(item)) is not omitted]
+        if isinstance(value, tuple):
+            return tuple(child for item in value if (child := visit(item)) is not omitted)
+        if isinstance(value, str):
+            # Opaque connector text cannot prove which bytes belong to which
+            # source. Do not let it cross the prompt ingress boundary.
+            return denied_marker
+        return value
+
+    filtered = visit(payload)
+    if filtered is omitted or filtered in ({}, [], ()):
+        filtered = denied_marker
+    return ConnectorPromptFilterResult(
+        payload=filtered,
+        allowed_sources=tuple(allowed_sources),
+        forbidden_sources=tuple(forbidden_sources),
+    )
+
+
 def validate_generated_source_permissions(
     text: str,
     *,
@@ -667,3 +765,46 @@ def validate_generated_source_permissions(
         forbidden_sources=forbidden_sources,
         authorization_decision_entry=authorization_decision_entry,
     )
+
+
+def redact_forbidden_generated_source_fragments(
+    text: str,
+    *,
+    source_items: list[dict[str, Any]],
+    tenant_id: uuid.UUID | str | None,
+    current_user_id: uuid.UUID | str | None,
+    agent_id: uuid.UUID | str | None = None,
+) -> tuple[str, GeneratedSourcePermissionCheck]:
+    """Apply an exact final failsafe while preserving unrelated model prose."""
+
+    check = validate_generated_source_permissions(
+        text,
+        source_items=source_items,
+        tenant_id=tenant_id,
+        current_user_id=current_user_id,
+        agent_id=agent_id,
+    )
+    if check.allowed:
+        return text, check
+
+    forbidden = set(check.forbidden_sources)
+    redacted = str(text or "")
+    for source in forbidden:
+        redacted = redacted.replace(source, "[REDACTED_FORBIDDEN_SOURCE]")
+
+    protected_signatures: set[str] = set()
+    for item in source_items:
+        if isinstance(item, dict) and _source_id(item) in forbidden:
+            protected_signatures.update(_string_set(item.get("protected_snippet_signatures")))
+    if protected_signatures:
+        lines: list[str] = []
+        for line in redacted.splitlines(keepends=True):
+            if _rendered_signature_set(line) & protected_signatures:
+                newline = "\n" if line.endswith("\n") else ""
+                lines.append("[REDACTED_FORBIDDEN_SOURCE_FRAGMENT]" + newline)
+            else:
+                lines.append(line)
+        redacted = "".join(lines)
+    if not redacted.strip():
+        redacted = "[REDACTED_FORBIDDEN_SOURCE_FRAGMENT]"
+    return redacted, check

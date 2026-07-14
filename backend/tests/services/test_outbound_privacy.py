@@ -44,17 +44,16 @@ class TestRedactOutbound:
         assert decision.sensitivity == SensitivityLevel.PL4_CREDENTIAL
         assert "sk-AAAAAAAA" not in decision.text
 
-    def test_pl3_external_channel_is_stripped(self) -> None:
+    def test_semantic_keyword_does_not_mechanically_classify_or_strip_output(self) -> None:
         decision = redact_outbound(
             "Vendor proposal references Q3 salary band 280k",
             channel="feishu",
         )
         assert decision.rejected is False
-        assert decision.sensitivity == SensitivityLevel.PL3_SENSITIVE
-        assert "salary" not in decision.text.lower()
-        assert "[REDACTED_PL3]" in decision.text
+        assert decision.sensitivity == SensitivityLevel.PL1_PUBLIC
+        assert decision.text == "Vendor proposal references Q3 salary band 280k"
 
-    def test_pl3_owner_private_web_channel_allows_passthrough(self) -> None:
+    def test_explicitly_typed_pl3_owner_private_web_channel_allows_passthrough(self) -> None:
         owner = Principal(role=PrincipalRole.OWNER, id="alice", label="Alice")
         current = Principal(role=PrincipalRole.CURRENT_USER, id="alice", label="Alice")
         stack = PrincipalStack(direct_owner=owner, current_user=current)
@@ -62,10 +61,21 @@ class TestRedactOutbound:
             "Internal note: planned salary review next week",
             channel="web",
             principal_stack=stack,
+            declared_sensitivity=SensitivityLevel.PL3_SENSITIVE,
         )
         assert decision.rejected is False
         assert decision.sensitivity == SensitivityLevel.PL3_SENSITIVE
         assert "salary" in decision.text.lower()
+
+    def test_explicitly_typed_pl3_external_channel_is_stripped(self) -> None:
+        decision = redact_outbound(
+            "A confidential business note without magic keywords",
+            channel="feishu",
+            declared_sensitivity=SensitivityLevel.PL3_SENSITIVE,
+        )
+        assert decision.rejected is False
+        assert decision.sensitivity == SensitivityLevel.PL3_SENSITIVE
+        assert decision.text == "[REDACTED_PL3]"
 
     def test_pl2_pii_replaced_with_typed_placeholder(self) -> None:
         decision = redact_outbound(
@@ -118,7 +128,7 @@ class TestChannelDeliveryRedaction:
         assert called == {}
 
     @pytest.mark.asyncio
-    async def test_send_text_redacts_pl3_for_external_channel(self, monkeypatch) -> None:
+    async def test_send_text_preserves_ordinary_semantic_content_for_external_channel(self, monkeypatch) -> None:
         captured: dict[str, object] = {}
 
         async def fake_send(bot_token, chat_id, text):
@@ -146,5 +156,4 @@ class TestChannelDeliveryRedaction:
 
         assert result.ok is True
         text_sent = str(captured.get("text", ""))
-        assert "salary" not in text_sent.lower()
-        assert "[REDACTED_PL3]" in text_sent
+        assert text_sent == "Vendor asking about salary range for the role"

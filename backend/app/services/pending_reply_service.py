@@ -18,7 +18,6 @@ from app.models.pending_reply import PendingReplyContext
 logger = logging.getLogger(__name__)
 
 DEFAULT_EXPIRY_HOURS = 48
-PENDING_REPLY_CLAIM_LIMIT = 3
 
 # ── Tool → recipient arg mapping ──
 
@@ -179,16 +178,16 @@ def build_task_context(messages: list[dict], tool_args: dict) -> dict:
         if not isinstance(content, str) or not content.strip():
             continue
         if role == "user" and not originator_message:
-            originator_message = content[:500]
+            originator_message = content
         elif role == "assistant" and not agent_reasoning and not msg.get("tool_calls"):
-            agent_reasoning = content[:500]
+            agent_reasoning = content
         if originator_message and agent_reasoning:
             break
 
     return {
         "originator_message": originator_message,
         "agent_reasoning": agent_reasoning,
-        "outbound_message": (tool_args.get("message") or "")[:500],
+        "outbound_message": tool_args.get("message") or "",
     }
 
 
@@ -217,13 +216,15 @@ async def capture_pending_reply(
         return None
 
     context = build_task_context(messages, tool_args)
+    context["originator_name"] = originator_name
+    context["originator_identity"] = originator_identity
     message_text = (tool_args.get("message") or "").strip()
 
     # Build expected_action from originator's request
     expected_action = ""
     if context["originator_message"]:
         expected_action = (
-            f"Fulfill the originator's request: {context['originator_message'][:300]}. "
+            f"Fulfill the originator's request: {context['originator_message']}. "
             f"After handling the reply, notify the originator ({originator_name or 'the requester'}) of the result."
         )
 
@@ -233,11 +234,11 @@ async def capture_pending_reply(
         tenant_id=tenant_id,
         recipient_channel=recipient["channel"],
         recipient_identity=recipient["identity"],
-        outbound_message=message_text[:2000],
-        task_summary=context["originator_message"][:1000] or f"Agent sent: {message_text[:200]}",
+        outbound_message=message_text,
+        task_summary=context["originator_message"] or f"Agent sent: {message_text}",
         originator_name=originator_name[:100] if originator_name else None,
         originator_identity=originator_identity[:200] if originator_identity else None,
-        expected_action=expected_action[:2000] if expected_action else None,
+        expected_action=expected_action if expected_action else None,
         full_context_json=context,
         status="pending",
         expires_at=now + timedelta(hours=DEFAULT_EXPIRY_HOURS),
@@ -276,7 +277,6 @@ async def lookup_pending_replies(
             PendingReplyContext.expires_at > now,
         )
         .order_by(PendingReplyContext.created_at.desc())
-        .limit(3)
     )
     return list(result.scalars().all())
 
@@ -302,7 +302,6 @@ async def claim_and_fulfill_pending_replies(
             PendingReplyContext.expires_at > now,
         )
         .order_by(PendingReplyContext.created_at.desc())
-        .limit(PENDING_REPLY_CLAIM_LIMIT)
         .with_for_update(skip_locked=True)
         .subquery()
     )
@@ -339,20 +338,20 @@ def format_pending_reply_context(pending_replies: list[PendingReplyContext]) -> 
         if pr.originator_name:
             parts.append(f"- 发起人：{pr.originator_name}")
         if getattr(pr, "originator_identity", None):
-            parts.append(f"- 发起人标识：{pr.originator_identity[:200]}")
+            parts.append(f"- 发起人标识：{pr.originator_identity}")
         if getattr(pr, "recipient_identity", None):
-            parts.append(f"- 收件人标识：{pr.recipient_identity[:200]}")
+            parts.append(f"- 收件人标识：{pr.recipient_identity}")
         created_at = getattr(pr, "created_at", None)
         if created_at:
             try:
                 parts.append(f"- 创建时间：{created_at.astimezone(timezone.utc).isoformat()}")
             except Exception:
                 parts.append(f"- 创建时间：{created_at}")
-        parts.append(f'- 已发送内容："{pr.outbound_message[:300]}"')
+        parts.append(f'- 已发送内容："{pr.outbound_message}"')
         if pr.task_summary:
-            parts.append(f"- 原始请求：{pr.task_summary[:300]}")
+            parts.append(f"- 原始请求：{pr.task_summary}")
         if pr.expected_action:
-            parts.append(f"- 期望操作：{pr.expected_action[:300]}")
+            parts.append(f"- 期望操作：{pr.expected_action}")
         parts.append("")
 
     parts.extend(

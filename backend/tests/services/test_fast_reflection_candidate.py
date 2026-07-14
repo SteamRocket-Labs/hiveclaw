@@ -19,8 +19,17 @@ def test_fast_reflection_candidate_records_user_correction_without_durable_memor
         metadata={
             "tenant_id": str(uuid.uuid4()),
             "final_response": "收到。",
-            "fast_reflection_signal": "用这个项目时以后都用 npm，不要用 yarn。",
             "skill_candidate_loop_enabled": False,
+            "fast_reflection_classification": {
+                "method": "learning_brain_agent",
+                "signal_type": "user_preference_correction",
+                "lesson": "用这个项目时以后都用 npm，不要用 yarn。",
+                "confidence": 0.97,
+                "learning_brain_decision": {
+                    "container": "memory_candidate",
+                    "promotion_intent": "candidate",
+                },
+            },
         },
     )
 
@@ -38,6 +47,44 @@ def test_fast_reflection_candidate_records_user_correction_without_durable_memor
     assert candidate["metadata"]["signal_type"] == "user_preference_correction"
     assert not (workspace / "memory" / "t2").exists()
     assert not (workspace / "skills").exists()
+
+
+def test_fast_reflection_preserves_full_model_judgment_and_evidence(tmp_path) -> None:
+    from app.services.evolution_ledger import load_evolution_ledger
+    from app.services.fast_reflection_service import create_fast_reflection_candidate
+
+    agent_id = uuid.uuid4()
+    lesson_tail = "LESSON_DECISIVE_TAIL"
+    earliest_tail = "EARLIEST_EVIDENCE_TAIL"
+    final_tail = "FINAL_RESPONSE_DECISIVE_TAIL"
+    lesson = "l" * 1400 + lesson_tail
+    messages = [
+        {"role": "user", "content": "e" * 700 + earliest_tail},
+        *({"role": "assistant", "content": f"message-{index}"} for index in range(7)),
+    ]
+
+    create_fast_reflection_candidate(
+        data_root=tmp_path,
+        agent_id=agent_id,
+        session_id="session-full",
+        messages=messages,
+        metadata={
+            "skill_candidate_loop_enabled": False,
+            "final_response": "f" * 1400 + final_tail,
+            "fast_reflection_classification": {
+                "method": "learning_brain_agent",
+                "signal_type": "workflow_correction",
+                "lesson": lesson,
+                "confidence": 0.95,
+            },
+        },
+    )
+
+    candidate = load_evolution_ledger(tmp_path / str(agent_id))[0]
+    metadata = candidate["metadata"]
+    assert metadata["lesson"] == lesson
+    assert earliest_tail in metadata["message_digest"]
+    assert final_tail in metadata["final_response"]
 
 
 def test_fast_reflection_marker_fallback_is_not_a_learning_candidate(tmp_path) -> None:
@@ -207,7 +254,7 @@ def test_fast_reflection_llm_low_signal_suppresses_marker_fallback(tmp_path) -> 
     assert not (tmp_path / str(agent_id) / "evolution" / "evolution_ledger.jsonl").exists()
 
 
-def test_repeated_workflow_signal_bridges_to_skill_candidate(tmp_path) -> None:
+def test_model_nominated_repeated_workflow_bridges_to_skill_candidate(tmp_path) -> None:
     from app.services.evolution_ledger import load_evolution_ledger
     from app.services.fast_reflection_service import create_fast_reflection_candidate
 
@@ -217,7 +264,25 @@ def test_repeated_workflow_signal_bridges_to_skill_candidate(tmp_path) -> None:
         agent_id=agent_id,
         session_id="session-wf",
         messages=[{"role": "user", "content": "deploy steps: build then migrate then restart, same as last time"}],
-        metadata={"repeated_workflow_signature": "deploy -> build -> migrate -> restart"},
+        metadata={
+            "repeated_workflow_signature": "deploy -> build -> migrate -> restart",
+            "fast_reflection_classification": {
+                "method": "learning_brain_agent",
+                "signal_type": "repeated_task_pattern",
+                "lesson": "Use the governed deploy sequence: build, migrate, restart, verify.",
+                "confidence": 0.94,
+                "learning_brain_decision": {
+                    "container": "skill_candidate",
+                    "promotion_intent": "candidate",
+                    "skill_decision": {
+                        "action": "new",
+                        "candidate_name": "governed-deploy-workflow",
+                        "target_skill": "",
+                        "reason": "The complete evidence shows a reusable procedure.",
+                    },
+                },
+            },
+        },
     )
 
     assert result["status"] == "candidate_created"
@@ -238,6 +303,22 @@ def test_repeated_workflow_signal_bridges_to_skill_candidate(tmp_path) -> None:
     assert not (candidate_dir / "SKILL.md").exists()
 
 
+def test_repeated_workflow_metadata_is_evidence_not_a_semantic_fallback(tmp_path) -> None:
+    from app.services.fast_reflection_service import create_fast_reflection_candidate
+
+    agent_id = uuid.uuid4()
+    result = create_fast_reflection_candidate(
+        data_root=tmp_path,
+        agent_id=agent_id,
+        session_id="session-wf-no-model",
+        messages=[{"role": "user", "content": "deploy steps: build then migrate then restart"}],
+        metadata={"repeated_workflow_signature": "deploy -> build -> migrate -> restart"},
+    )
+
+    assert result == {"status": "skipped", "reason": "low_signal"}
+    assert not (tmp_path / str(agent_id) / "evolution" / "evolution_ledger.jsonl").exists()
+
+
 def test_skill_candidate_loop_flag_disables_skill_bridge_only(tmp_path) -> None:
     from app.services.evolution_ledger import load_evolution_ledger
     from app.services.fast_reflection_service import create_fast_reflection_candidate
@@ -252,6 +333,22 @@ def test_skill_candidate_loop_flag_disables_skill_bridge_only(tmp_path) -> None:
         metadata={
             "repeated_workflow_signature": "deploy -> build -> migrate -> restart",
             "skill_candidate_loop_enabled": False,
+            "fast_reflection_classification": {
+                "method": "learning_brain_agent",
+                "signal_type": "repeated_task_pattern",
+                "lesson": "Use the governed deploy sequence: build, migrate, restart, verify.",
+                "confidence": 0.94,
+                "learning_brain_decision": {
+                    "container": "skill_candidate",
+                    "promotion_intent": "candidate",
+                    "skill_decision": {
+                        "action": "new",
+                        "candidate_name": "governed-deploy-workflow",
+                        "target_skill": "",
+                        "reason": "Reusable procedure.",
+                    },
+                },
+            },
         },
     )
 
@@ -286,11 +383,21 @@ def test_user_preference_correction_does_not_bridge_to_skill(tmp_path) -> None:
         session_id="session-pref",
         messages=[{"role": "user", "content": "以后不要用 emoji"}],
         metadata={
-            "fast_reflection_signal": "以后不要用 emoji",
             "skill_candidate_loop_enabled": True,
+            "fast_reflection_classification": {
+                "method": "learning_brain_agent",
+                "signal_type": "user_preference_correction",
+                "lesson": "以后不要用 emoji",
+                "confidence": 0.96,
+                "learning_brain_decision": {
+                    "container": "memory_candidate",
+                    "promotion_intent": "candidate",
+                },
+            },
         },
     )
 
     assert result["status"] == "candidate_created"
     assert result["signal_type"] == "user_preference_correction"
     assert result["skill_candidate"]["status"] == "skipped"
+    assert result["skill_candidate"]["reason"] == "model_did_not_nominate_skill"

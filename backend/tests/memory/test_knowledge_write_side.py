@@ -41,6 +41,9 @@ t2-a1b2
 
 ## Relations
 - is_a [[k:Scaling Solution]]
+
+## Decisive Tail Context
+这一段位于页面末尾，决定新证据应更新现有页面而不是机械新建重复页面。
 """
 
 
@@ -59,7 +62,8 @@ def test_neighborhood_lists_two_plane_state(tmp_path: Path) -> None:
     self_dir = _mem_dir(tmp_path, agent_id) / "self"
     self_dir.mkdir(parents=True, exist_ok=True)
     (self_dir / "self.md").write_text(
-        "## 失败模式\n\n### 爱猜 — active\n<!-- id: fm-guessing -->\n- 状态: active\n",
+        "## 失败模式\n\n### 爱猜 — active\n<!-- id: fm-guessing -->\n- 状态: active\n\n"
+        "## 完整上下文\n这条尾部说明决定该失败模式仍然有效，不能只凭标题判断。\n",
         encoding="utf-8",
     )
 
@@ -71,6 +75,8 @@ def test_neighborhood_lists_two_plane_state(tmp_path: Path) -> None:
     assert "milestones/ms-web3-report" in neighborhood
     assert "fm-guessing" in neighborhood  # profile-plane entry ids visible
     assert "memory/self/self.md" in neighborhood  # base revision line for the fixed files
+    assert "决定新证据应更新现有页面" in neighborhood
+    assert "决定该失败模式仍然有效" in neighborhood
 
 
 def test_source_bundle_allows_two_plane_targets(tmp_path: Path) -> None:

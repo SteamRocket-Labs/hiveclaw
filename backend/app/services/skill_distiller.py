@@ -1,10 +1,8 @@
-"""Heartbeat-driven skill distillation loop.
+"""Model-owned, evidence-backed Skill distillation loop.
 
-Conservative automation only:
-- detect repeated internal workflows from structured session data
-- ask an LLM for a draft only after thresholds are met
-- validate and dedupe before saving a new skill
-- apply verified patches to existing skills through the same evolution ledger
+The platform gathers complete typed evidence and enforces verification,
+authority, transactional commit, and rollback. The model alone decides whether
+that evidence means promote, patch, defer, or reject.
 """
 
 from __future__ import annotations
@@ -17,7 +15,7 @@ import uuid
 import hashlib
 from contextlib import AbstractAsyncContextManager
 from dataclasses import asdict, dataclass, replace
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -46,46 +44,25 @@ from app.services.skill_candidate_package import (
 from app.skills import SkillParser, WorkspaceSkillLoader
 from app.tools.collector import collect_tools
 from app.tools.runtime_tool_groups import RUNTIME_TOOL_GROUPS, infer_static_runtime_tool_group_names
-from app.services.llm_client import LLMMessage, create_llm_client_from_config, with_llm_usage_context
+from app.services.llm_client import LLMMessage, create_llm_client_from_config, get_max_tokens, with_llm_usage_context
 
 logger = logging.getLogger(__name__)
 
-_NOISE_TOOLS = {
-    "read_file",
-    "read_document",
-    "list_files",
-    "glob_search",
-    "grep_search",
-    "get_current_time",
-    "tool_search",
-    "save_memory",
-    "search_memory",
-    "load_skill",
-    "save_skill",
-    "check_async_task",
-    "list_async_tasks",
-}
-_EXTERNAL_ACTION_TOOLS = {
-    "send_email",
-    "reply_email",
-    "send_feishu_message",
-    "send_web_message",
-    "plaza_create_post",
-    "plaza_add_comment",
-    "send_message_to_agent",
-    "delegate_to_agent",
-}
 _INTERNAL_SESSION_SOURCES = {"heartbeat", "trigger", "task"}
-_PROMOTE_WINDOW_DAYS = 14
-_PROMOTE_THRESHOLD = 3
-_PATCH_THRESHOLD = 2
-_MIN_CONFIDENCE = 0.85
 _CANONICAL_SKILL_FRONTMATTER_KEYS = {"name", "description"}
 _TIME_SENSITIVE_PATTERNS = (
     re.compile(r"\b(?:today|tomorrow|yesterday|this session|current session)\b", re.IGNORECASE),
     re.compile(r"\b\d{4}-\d{2}-\d{2}\b"),
     re.compile(r"\b(?:user_id|session_id|private_token|access_token|api_key)\s*[:=]", re.IGNORECASE),
 )
+
+
+def _selected_model_output_tokens(model: Any) -> int:
+    return get_max_tokens(
+        str(getattr(model, "provider", "") or ""),
+        str(getattr(model, "model", "") or ""),
+        getattr(model, "max_output_tokens", None),
+    )
 
 
 def _skill_frontmatter_for_exact_draft(rendered_markdown: str) -> tuple[dict[str, Any], list[str]]:
@@ -165,6 +142,17 @@ class DirectSkillCandidate:
     candidate_id: str
 
 
+@dataclass(slots=True)
+class SkillCandidateSelectionOption:
+    """One fully readable candidate offered to the model-owned scheduler."""
+
+    key: str
+    candidate_id: str
+    record: SkillCandidateRecord
+    evidence: list[SessionWorkflowEvidence]
+    direct_candidate: DirectSkillCandidate | None = None
+
+
 _TERMINAL_SKILL_CANDIDATE_STATUSES = {"provisional", "promoted", "patched", "held", "rejected", "archived"}
 _REFEREE_SCORE_KEYS = ("common_vs_episodic", "scope", "overlap", "safety", "eval_readiness")
 
@@ -229,7 +217,7 @@ def load_memory_workflow_candidates(data_root: Path, agent_id: uuid.UUID) -> lis
     return _load_memory_container_candidates(data_root, agent_id, container="workflow_candidate")
 
 
-def load_flywheel_skill_candidate_drafts(workspace: Path, *, limit: int = 10) -> list[dict[str, Any]]:
+def load_flywheel_skill_candidate_drafts(workspace: Path, *, limit: int | None = None) -> list[dict[str, Any]]:
     """Read inactive skill candidate evidence produced by flywheel/lifecycle loops."""
     root = workspace / "evolution" / "skill_candidates"
     if not root.exists():
@@ -264,7 +252,7 @@ def load_flywheel_skill_candidate_drafts(workspace: Path, *, limit: int = 10) ->
             {
                 "candidate_id": skill_path.parent.name,
                 "path": str(skill_path.relative_to(workspace)),
-                "content": content[:4000],
+                "content": content,
                 "status": status,
                 "package_type": str(manifest.get("package_type") or ""),
                 "skill_name": str(manifest.get("skill_name") or ""),
@@ -274,7 +262,7 @@ def load_flywheel_skill_candidate_drafts(workspace: Path, *, limit: int = 10) ->
                 "metadata": metadata,
             }
         )
-        if len(drafts) >= limit:
+        if limit is not None and len(drafts) >= limit:
             break
     return drafts
 
@@ -323,28 +311,16 @@ def record_workflow_candidates_from_memory(
     return recorded
 
 
-def _compact_candidate_summary(content: str, *, limit: int = 240) -> str:
+def _compact_candidate_summary(content: str) -> str:
     normalized = " ".join(line.strip() for line in (content or "").splitlines() if line.strip())
-    return normalized[:limit] or "Skill candidate evidence is available for writer review."
+    return normalized or "Skill candidate evidence is available for writer review."
 
 
 def _candidate_intent_from_manifest(candidate: dict[str, Any], workspace: Path) -> str:
-    metadata = candidate.get("metadata") if isinstance(candidate.get("metadata"), dict) else {}
-    status = str(candidate.get("status") or "").strip().lower()
-    package_type = str(candidate.get("package_type") or "").strip().lower()
-    target_path = str(candidate.get("target_path") or "").strip()
-    if status == "patch" or package_type == "patch":
-        return "patch"
-    if bool(metadata.get("overwrite_requested")):
-        return "patch"
-    try:
-        if int(metadata.get("patch_candidate_count") or 0) >= _PATCH_THRESHOLD:
-            return "patch"
-    except (TypeError, ValueError):
-        pass
-    if target_path and (workspace / target_path).exists():
-        return "patch"
-    return "promote"
+    # Manifest fields and counts are supplied to the reviewer as observations.
+    # They never pre-author the semantic lane.
+    _ = (candidate, workspace)
+    return "review"
 
 
 def _direct_candidate_from_package(candidate: dict[str, Any], *, workspace: Path) -> DirectSkillCandidate | None:
@@ -371,10 +347,10 @@ def _direct_candidate_from_package(candidate: dict[str, Any], *, workspace: Path
             session_id=f"skill_candidate_package:{candidate_id}",
             source="skill_candidate_package",
             occurred_at=occurred_at,
-            status="success" if intent == "promote" else "workaround",
+            status="candidate",
             used_skill=False,
             summary=_compact_candidate_summary(content),
-            assistant_reply="[OUTCOME:action_taken] " + _compact_candidate_summary(content),
+            assistant_reply=content,
             tool_names=("skill_candidate_package", "skill_writer"),
             loaded_skill_names=(),
         )
@@ -382,9 +358,9 @@ def _direct_candidate_from_package(candidate: dict[str, Any], *, workspace: Path
     record = SkillCandidateRecord(
         skill_name=skill_name,
         workflow_signature=workflow_signature,
-        promote_candidates=source_refs if intent == "promote" else [],
-        patch_candidates=source_refs if intent == "patch" else [],
-        last_status="success" if intent == "promote" else "workaround",
+        promote_candidates=[],
+        patch_candidates=[],
+        last_status="candidate",
         last_note=_compact_candidate_summary(content),
         blocker="",
         last_updated_at=occurred_at,
@@ -409,10 +385,10 @@ def _direct_candidate_from_memory(candidate: dict[str, str]) -> DirectSkillCandi
             session_id=workflow_signature,
             source="memory_skill_candidate",
             occurred_at=occurred_at,
-            status="success",
+            status="candidate",
             used_skill=False,
             summary=_compact_candidate_summary(content),
-            assistant_reply="[OUTCOME:action_taken] " + _compact_candidate_summary(content),
+            assistant_reply=content,
             tool_names=("memory_skill_candidate", "skill_writer"),
             loaded_skill_names=(),
         )
@@ -420,9 +396,9 @@ def _direct_candidate_from_memory(candidate: dict[str, str]) -> DirectSkillCandi
     record = SkillCandidateRecord(
         skill_name=_infer_skill_name(workflow_signature),
         workflow_signature=workflow_signature,
-        promote_candidates=[workflow_signature],
+        promote_candidates=[],
         patch_candidates=[],
-        last_status="success",
+        last_status="candidate",
         last_note=_compact_candidate_summary(content),
         blocker="",
         last_updated_at=occurred_at,
@@ -430,26 +406,121 @@ def _direct_candidate_from_memory(candidate: dict[str, str]) -> DirectSkillCandi
     return DirectSkillCandidate(
         record=record,
         evidence=evidence,
-        distillation_intent="promote",
+        distillation_intent="review",
         candidate_id=entry_id,
     )
 
 
-def _select_direct_skill_candidate(
+def _collect_direct_skill_candidates(
     *,
     skill_candidate_drafts: list[dict[str, Any]],
     memory_skill_candidates: list[dict[str, str]],
     workspace: Path,
-) -> DirectSkillCandidate | None:
+) -> list[DirectSkillCandidate]:
+    candidates_by_key: dict[tuple[str, str], DirectSkillCandidate] = {}
+
+    def add(direct: DirectSkillCandidate | None) -> None:
+        if direct is None:
+            return
+        key = (direct.candidate_id, direct.record.workflow_signature)
+        existing = candidates_by_key.get(key)
+        if existing is None:
+            candidates_by_key[key] = direct
+            return
+        existing.evidence.extend(direct.evidence)
+
     for candidate in skill_candidate_drafts:
-        direct = _direct_candidate_from_package(candidate, workspace=workspace)
-        if direct is not None:
-            return direct
+        add(_direct_candidate_from_package(candidate, workspace=workspace))
     for candidate in memory_skill_candidates:
-        direct = _direct_candidate_from_memory(candidate)
-        if direct is not None:
-            return direct
-    return None
+        add(_direct_candidate_from_memory(candidate))
+    return list(candidates_by_key.values())
+
+
+async def _select_skill_candidate_with_llm(
+    *,
+    model: Any,
+    options: list[SkillCandidateSelectionOption],
+    workspace: Path,
+    agent_id: uuid.UUID | None,
+    tenant_id: uuid.UUID | None,
+) -> SkillCandidateSelectionOption | None:
+    """Let the selected model choose the next semantic candidate to review.
+
+    The platform may schedule one bounded review transaction at a time, but it
+    must not turn list order, counters, timestamps, or lexical rank into the
+    semantic choice. Failure or abstention holds the pool intact.
+    """
+
+    if not options:
+        return None
+    if len(options) == 1:
+        return options[0]
+
+    from app.services.llm_client import (
+        LLMMessage,
+        create_llm_client_from_config,
+        with_llm_usage_context,
+    )
+
+    system_prompt = (
+        "<role>\n"
+        "You schedule the next Skill candidate review. Read the complete authorized candidate pool and choose "
+        "the one whose evidence most justifies semantic review now, or choose none when no candidate is ready.\n"
+        "</role>\n\n"
+        "<authority_boundary>\n"
+        "List order, timestamps, counts, names, and platform metadata are observations only. They are not cutoffs "
+        "or priority rules. Do not decide promote/patch/reject here; only select the next candidate for the full "
+        "Skill Writer and Referee transaction.\n"
+        "</authority_boundary>\n\n"
+        "<output_contract>\n"
+        'Return raw JSON only: {"selected_key": "one exact key or none", "reason": "evidence-grounded rationale"}.\n'
+        "</output_contract>"
+    )
+    payload = {
+        "existing_skills": _render_existing_skill_summaries(workspace),
+        "candidate_options": [
+            {
+                "key": option.key,
+                "candidate_id": option.candidate_id,
+                "record": asdict(option.record),
+                "evidence": [asdict(item) for item in option.evidence],
+            }
+            for option in options
+        ],
+    }
+    client = create_llm_client_from_config(
+        with_llm_usage_context(
+            {
+                "provider": getattr(model, "provider"),
+                "model": getattr(model, "model"),
+                "api_key": getattr(model, "api_key"),
+                "base_url": getattr(model, "base_url", None),
+            },
+            source="skill_candidate_selector",
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            metadata={"candidate_count": len(options)},
+        )
+    )
+    try:
+        response = await client.complete(
+            messages=[
+                LLMMessage(role="system", content=system_prompt),
+                LLMMessage(role="user", content=json.dumps(payload, ensure_ascii=False, indent=2, default=str)),
+            ],
+            temperature=0.1,
+            max_tokens=_selected_model_output_tokens(model),
+        )
+        decision = _parse_json_object(response.content or "")
+        selected_key = str(decision.get("selected_key") or "").strip()
+        if selected_key.lower() == "none":
+            return None
+        for option in options:
+            if option.key == selected_key:
+                return option
+        raise ValueError("skill candidate selector returned an unknown selected_key")
+    finally:
+        await client.close()
 
 
 def _state_path(workspace: Path) -> Path:
@@ -481,17 +552,13 @@ def _build_workflow_signature(tool_names: list[str] | tuple[str, ...]) -> Workfl
     filtered: list[str] = []
     for tool_name in tool_names:
         normalized = tool_name.strip()
-        if not normalized or normalized in _NOISE_TOOLS:
+        if not normalized:
             continue
         if filtered and filtered[-1] == normalized:
             continue
         filtered.append(normalized)
 
-    if any(tool_name in _EXTERNAL_ACTION_TOOLS for tool_name in filtered):
-        return WorkflowSignature(
-            normalized_tools=tuple(filtered), workflow_signature=None, blocker="external_action_workflow"
-        )
-    if len(filtered) < 2:
+    if not filtered:
         return WorkflowSignature(
             normalized_tools=tuple(filtered), workflow_signature=None, blocker="insufficient_signal"
         )
@@ -583,13 +650,16 @@ def validate_distilled_skill(
     if parsed.metadata.description.strip() and parsed.metadata.description.strip() != draft.description.strip():
         errors.append("SKILL.md draft frontmatter description does not match the LLM decision")
 
-    combined_text = "\n".join([draft.description, draft.instructions_markdown])
-    for pattern in _TIME_SENSITIVE_PATTERNS:
-        if pattern.search(combined_text):
-            errors.append("sensitive or session-specific content detected")
-            break
-
     return errors
+
+
+def distilled_skill_review_signals(draft: DistilledSkillDraft) -> tuple[str, ...]:
+    """Return mechanical observations for the LLM referee, never accept/reject authority."""
+
+    combined_text = "\n".join([draft.description, draft.instructions_markdown])
+    if any(pattern.search(combined_text) for pattern in _TIME_SENSITIVE_PATTERNS):
+        return ("time_sensitive_or_session_specific_text",)
+    return ()
 
 
 def _is_relative_to(path: Path, parent: Path) -> bool:
@@ -996,25 +1066,20 @@ def resolve_existing_skill_conflict(*, workspace: Path, draft: DistilledSkillDra
     normalized_name = draft.name.strip().lower()
     for skill in existing_skills:
         if skill.metadata.name.strip().lower() == normalized_name:
-            return SkillConflictResolution(
-                final_decision="patch",
-                existing_skill_name=skill.metadata.name,
-                reason="existing skill with the same name already exists",
-            )
-
-    desired = set(draft.declared_tools) | set(draft.declared_packs)
-    if desired:
-        for skill in existing_skills:
-            current = set(skill.metadata.declared_tools) | set(skill.metadata.declared_packs)
-            if not current:
-                continue
-            overlap = len(desired & current) / max(len(desired | current), 1)
-            if overlap >= 0.8:
+            if draft.decision == "patch":
                 return SkillConflictResolution(
                     final_decision="patch",
                     existing_skill_name=skill.metadata.name,
-                    reason="existing skill overlaps heavily with the proposed tools and packs",
+                    reason=draft.reason,
                 )
+            return SkillConflictResolution(
+                final_decision="defer",
+                existing_skill_name=skill.metadata.name,
+                reason=(
+                    "An existing Skill has the same name; the model must decide "
+                    "whether this is an exact patch, a distinct renamed Skill, or a deferral."
+                ),
+            )
 
     return SkillConflictResolution(final_decision=draft.decision or "defer")
 
@@ -1095,7 +1160,7 @@ def _parse_loaded_skill_name(content: str) -> str | None:
     for key in ("skill_name", "name", "skill", "query"):
         value = str(args.get(key) or "").strip()
         if value:
-            return value[:120]
+            return value
     return None
 
 
@@ -1113,8 +1178,7 @@ def _normalize_session_status(reply: str) -> str:
 def _summarize_assistant_reply(reply: str) -> str:
     if not reply.strip():
         return "Internal workflow session recorded."
-    first_line = reply.strip().splitlines()[0].strip()
-    return first_line[:200]
+    return reply.strip()
 
 
 def _evidence_summary_dict(item: SessionWorkflowEvidence) -> dict[str, Any]:
@@ -1134,7 +1198,7 @@ def _select_representative_evidence(
     evidence: list[SessionWorkflowEvidence],
     *,
     status: set[str] | None = None,
-    limit: int = 6,
+    limit: int | None = None,
 ) -> list[SessionWorkflowEvidence]:
     candidates = [item for item in evidence if status is None or item.status in status]
     if not candidates:
@@ -1146,7 +1210,7 @@ def _select_representative_evidence(
         if item.session_id in {existing.session_id for existing in selected}:
             continue
         selected.append(item)
-        if len(selected) >= limit:
+        if limit is not None and len(selected) >= limit:
             break
     return selected
 
@@ -1170,12 +1234,14 @@ def render_skill_evidence_contrast(evidence: list[SessionWorkflowEvidence]) -> s
 async def _load_internal_session_evidence(
     *,
     agent_id: uuid.UUID,
-    since_days: int,
+    since_days: int | None,
     state: DistillerState,
     current_session_id: str | None,
 ) -> list[SessionWorkflowEvidence]:
     del current_session_id  # cursoring by timestamp/session_id already handles the current session
-    cutoff = datetime.now(timezone.utc) - timedelta(days=since_days)
+    # ``since_days`` is retained for call compatibility only. Age may be an
+    # observation in the prompt, but it cannot hide authorized evidence.
+    _ = since_days
     evidence: list[SessionWorkflowEvidence] = []
 
     # Distiller runs in a daemon context with no request GUC. Resolve the owning
@@ -1190,7 +1256,6 @@ async def _load_internal_session_evidence(
                     .where(
                         ChatSession.agent_id == agent_id,
                         ChatSession.source_channel.in_(tuple(_INTERNAL_SESSION_SOURCES)),
-                        ChatSession.created_at >= cutoff,
                     )
                     .order_by(ChatSession.created_at.asc(), ChatSession.id.asc())
                 )
@@ -1265,7 +1330,7 @@ def _render_existing_skill_summaries(workspace: Path) -> str:
     if not skills:
         return "(none)"
     lines: list[str] = []
-    for skill in skills[:25]:
+    for skill in skills:
         lines.append(
             f"- {skill.metadata.name}: {skill.metadata.description} | tools={','.join(skill.metadata.declared_tools) or '-'} | packs={','.join(skill.metadata.declared_packs) or '-'}"
         )
@@ -1274,8 +1339,8 @@ def _render_existing_skill_summaries(workspace: Path) -> str:
 
 def _infer_skill_name(signature: str) -> str:
     parts = [part.strip().replace("_", " ") for part in signature.split("->")]
-    title = " / ".join(" ".join(word.capitalize() for word in part.split()) for part in parts[:3])
-    return title[:120] or "Internal Workflow"
+    title = " / ".join(" ".join(word.capitalize() for word in part.split()) for part in parts)
+    return title or "Internal Workflow"
 
 
 async def _draft_skill_with_llm(
@@ -1296,7 +1361,7 @@ async def _draft_skill_with_llm(
     system_prompt = (
         "<role>\n"
         "You are a conservative skill distiller. You consume evidence-backed\n"
-        "skill_candidate signals — repeated internal workflows with session\n"
+        "skill_candidate signals — internal workflows with session\n"
         "evidence attached — and adjudicate whether any candidate is stable\n"
         "enough to graduate into a reusable SKILL.md. You do not invent\n"
         "skills from raw ungoverned patterns: every promotion must trace to\n"
@@ -1305,9 +1370,9 @@ async def _draft_skill_with_llm(
         "pipeline stages.\n"
         "</role>\n\n"
         "<pipeline_context>\n"
-        "Upstream: the candidate lane recorded an evidence-backed\n"
-        "skill_candidate — a workflow signature that recurred ≥2 times across\n"
-        "sessions, with recent session evidence attached.\n"
+        "Upstream: the candidate lane recorded evidence-backed observations\n"
+        "without assigning promote/patch meaning. Counts, dates, statuses, and\n"
+        "manifest hints are evidence only; review all attached material.\n"
         "Downstream: your JSON decision drives an automated action —\n"
         "  - promote → your complete skill_markdown is staged, verified, then committed exactly\n"
         "  - patch   → your complete skill_markdown replaces an existing SKILL.md exactly after gates pass\n"
@@ -1317,23 +1382,18 @@ async def _draft_skill_with_llm(
         "or missing keys breaks the pipeline.\n"
         "</pipeline_context>\n\n"
         "<confidence_scoring_rubric>\n"
-        "Use confidence as a calibrated 0.00-1.00 score, not a feeling:\n"
-        "- 0.00-0.39: reject. Evidence is one-off, unsafe, contradictory, or mostly session-specific.\n"
-        "- 0.40-0.74: defer. Some reusable shape exists, but evidence is too thin or boundaries are unclear.\n"
-        "- 0.75-0.84: candidate-quality but not promotable. Ask for more evidence or choose defer unless patch evidence is decisive.\n"
-        "- 0.85-1.00: promotable/patchable only when source refs are concrete, no anti-patterns appear, and the output is a complete reusable SKILL.md.\n"
-        "Promotion requires at least 3 successful evidence points inside the 14-day window; "
-        "patch requires at least 2 failure/workaround signals for an already used skill.\n"
+        "Use confidence as a calibrated 0.00-1.00 explanation of your own\n"
+        "judgment. No platform count, age window, or confidence cutoff decides\n"
+        "the lane. Ground the decision in source refs, contradictions, safety,\n"
+        "generalizability, and the complete success/failure contrast.\n"
         "</confidence_scoring_rubric>\n\n"
-        "<patch_first_policy>\n"
-        "Hive is patch-first. If a workflow involved an already loaded skill\n"
-        "and the attached success/failure contrast shows repeated failures,\n"
-        "prefer patching that existing SKILL.md over creating a new skill.\n"
-        "Use the success/failure contrast like Devin Session Insights: isolate\n"
-        "what the successful traces did that the failed traces missed, then\n"
-        "patch only that reusable delta. Do not create a duplicate skill when\n"
-        "an existing skill can absorb the improvement.\n"
-        "</patch_first_policy>\n\n"
+        "<existing_skill_comparison>\n"
+        "Review the complete existing Skill catalog and success/failure contrast.\n"
+        "You decide whether the evidence describes a patch to an existing Skill,\n"
+        "a genuinely distinct reusable Skill, a deferral, or a rejection. Explain\n"
+        "the semantic boundary in reason; names and tool overlap are observations,\n"
+        "not platform-authored decisions.\n"
+        "</existing_skill_comparison>\n\n"
         "<autonomy_boundary>\n"
         "A trigger is wake policy, not the goal itself.\n"
         "Skills capture reusable procedures, not active work state.\n"
@@ -1344,7 +1404,7 @@ async def _draft_skill_with_llm(
         "</autonomy_boundary>\n\n"
         "<decision_matrix>\n"
         "- **promote** — workflow is stable, generic, safe, and NOT covered by\n"
-        "  an existing skill. Confidence ≥ 0.85 and 3 successful evidence points required.\n"
+        "  an existing skill, based on the complete evidence.\n"
         "- **patch**   — existing skill covers part of the workflow; your draft\n"
         "  refines its instructions or adds a missing tool hint.\n"
         "- **defer**   — evidence is too thin, too recent, or too specific to\n"
@@ -1353,14 +1413,15 @@ async def _draft_skill_with_llm(
         "  session-specific tokens/IDs/dates that cannot generalize.\n"
         "</decision_matrix>\n\n"
         "<anti_patterns>\n"
-        "Never promote workflows containing any of these signals:\n"
+        "Review and generalize workflows containing any of these signals; they are observations, not automatic blockers:\n"
         "- Specific dates (e.g., '2026-04-16', 'this week', 'yesterday')\n"
         "- Session-bound IDs (message_id, task_id, trace_id, UUIDs)\n"
         "- User-specific names or email addresses\n"
         "- Credentials, tokens, or config values\n"
         "- One-off cleanup or migration actions\n"
         "- Workflows that only make sense in one agent's current tasks\n"
-        "When these appear, choose reject (with reason) or defer.\n"
+        "When these appear, decide whether the reusable procedure can be separated from episodic details. "
+        "Reject or defer only when that semantic generalization is not supported by the evidence.\n"
         "</anti_patterns>\n\n"
         "<output_contract>\n"
         "Return raw JSON only. No markdown fences. No prose outside the JSON.\n"
@@ -1373,17 +1434,24 @@ async def _draft_skill_with_llm(
         "</output_contract>"
     )
     evidence_lines = []
-    for item in _select_representative_evidence(evidence, limit=8):
+    for item in evidence:
         evidence_lines.append(
             f"- session={item.session_id} source={item.source} at={item.occurred_at}\n"
             f"  status={item.status} used_skill={item.used_skill}"
             f" loaded_skills={', '.join(item.loaded_skill_names) or '-'}\n"
             f"  tools={', '.join(item.tool_names)}\n"
-            f"  summary={item.summary}"
+            f"  summary={item.summary}\n"
+            f"  assistant_reply={item.assistant_reply}"
         )
+    evidence_signal_text = "\n".join("\n".join((item.summary, item.assistant_reply)) for item in evidence)
+    evidence_review_signals = (
+        "time_sensitive_or_session_specific_text"
+        if any(pattern.search(evidence_signal_text) for pattern in _TIME_SENSITIVE_PATTERNS)
+        else "(none)"
+    )
     memory_lines = [
         f"- id={candidate['entry_id']} [{candidate.get('timestamp') or '-'}] {candidate['content']}"
-        for candidate in (memory_candidates or [])[:5]
+        for candidate in (memory_candidates or [])
     ]
     memory_block = (
         "memory_candidate_evidence (curated skill_candidate signals from T3 memory; "
@@ -1393,8 +1461,12 @@ async def _draft_skill_with_llm(
         else ""
     )
     draft_lines = [
-        f"- id={candidate['candidate_id']} path={candidate['path']}\n{candidate['content']}"
-        for candidate in (skill_candidate_drafts or [])[:3]
+        (
+            f"- id={candidate['candidate_id']} path={candidate['path']} "
+            f"metadata={json.dumps(candidate.get('metadata') or {}, ensure_ascii=False, sort_keys=True)}\n"
+            f"{candidate['content']}"
+        )
+        for candidate in (skill_candidate_drafts or [])
     ]
     draft_block = (
         "flywheel_skill_candidate_evidence (inactive candidate_signal.md evidence or LLM-authored SKILL.md drafts; use as evidence, not as activated skills):\n"
@@ -1415,6 +1487,8 @@ async def _draft_skill_with_llm(
         f"{chr(10).join(evidence_lines)}\n\n"
         "success_failure_contrast:\n"
         f"{evidence_contrast or render_skill_evidence_contrast(evidence)}\n\n"
+        "mechanical_review_signals (observations only; make the semantic decision yourself):\n"
+        f"{evidence_review_signals}\n\n"
         f"{memory_block}"
         f"{draft_block}"
         "Respond with JSON only using:\n"
@@ -1452,16 +1526,51 @@ async def _draft_skill_with_llm(
         )
     )
     try:
+        try:
+            max_input_tokens = int(getattr(model, "max_input_tokens", None) or 128_000)
+        except (TypeError, ValueError):
+            max_input_tokens = 128_000
+        semantic_budget = max(max_input_tokens - 8_192 - 8_000, 8_000) * 3
+        if len(prompt) > semantic_budget:
+            from app.services.semantic_input_coverage import prepare_covered_semantic_input
+
+            async def _review_chunk(review_phase: str, review_prompt: str) -> str:
+                review_response = await client.complete(
+                    messages=[
+                        LLMMessage(
+                            role="system",
+                            content=(
+                                "You are a Skill evidence coverage reader. Preserve every reusable pattern, "
+                                "failure, exception, source reference, and episodic-contamination concern. "
+                                "Return coverage notes only and do not make the final promotion decision."
+                            ),
+                        ),
+                        LLMMessage(role="user", content=review_prompt),
+                    ],
+                    temperature=0.1,
+                    max_tokens=_selected_model_output_tokens(model),
+                )
+                return str(getattr(review_response, "content", None) or review_response).strip()
+
+            covered = await prepare_covered_semantic_input(
+                phase="skill_distillation",
+                sections=[("skill_distillation_prompt", prompt)],
+                max_chars=semantic_budget,
+                coverage_path=workspace / "memory" / "control" / "skill_distiller_input_coverage.json",
+                review_chunk=_review_chunk,
+            )
+            prompt = (
+                "The complete Skill evidence input was reviewed by coverage-preserving model passes. "
+                "Use the notes below and make the final promote/patch/defer/reject decision yourself.\n\n"
+                f"{covered}\n\nReturn raw JSON using the required output contract."
+            )
         response = await client.complete(
             messages=[
                 LLMMessage(role="system", content=system_prompt),
                 LLMMessage(role="user", content=prompt),
             ],
             temperature=0.2,
-            # CC auxiliary floor (8192): a distilled SKILL.md is a full document
-            # (frontmatter + method body); the old 1400 hard cap truncated any
-            # skill richer than a stub. Provider cap still clamps via min().
-            max_tokens=min(getattr(model, "max_output_tokens", None) or 8192, 8192),
+            max_tokens=_selected_model_output_tokens(model),
         )
     except Exception as exc:  # noqa: BLE001
         record_autonomous_llm_call(source="skill_distiller", outcome="failure")
@@ -1558,9 +1667,13 @@ def _normalize_referee_review(payload: dict[str, Any]) -> SkillRefereeReview:
 
 
 def _referee_review_passed(review: SkillRefereeReview) -> bool:
-    if review.decision != "approve":
-        return False
-    return all(int(review.scores.get(key) or 0) >= 3 for key in _REFEREE_SCORE_KEYS)
+    """Follow the referee model's explicit holistic decision.
+
+    Dimension scores are structured evidence for operators and later review;
+    the platform must not turn them into a second semantic decision rule.
+    """
+
+    return review.decision == "approve"
 
 
 def _referee_review_payload(review: SkillRefereeReview) -> dict[str, Any]:
@@ -1592,7 +1705,9 @@ async def _review_skill_with_llm(
         "capability capsule rather than episodic memory, current task state, or a duplicate.\n"
         "</role>\n\n"
         "<rubric>\n"
-        "Score every dimension 0-5. Approval requires all scores >= 3.\n"
+        "Score every dimension 0-5 as evidence for your reasoning. Then make one holistic "
+        "approve|hold|reject decision. Your explicit decision is authoritative; scores do not "
+        "act as independent platform cutoffs.\n"
         "- common_vs_episodic: reusable procedure vs one-off/session state\n"
         "- scope: bounded trigger and non-trigger conditions\n"
         "- overlap: does not duplicate an existing skill without reason\n"
@@ -1606,7 +1721,7 @@ async def _review_skill_with_llm(
     )
     evidence_lines = [
         f"- source={item.source} session={item.session_id} status={item.status} summary={item.summary}"
-        for item in evidence[:8]
+        for item in evidence
     ]
     prompt = (
         f"final_decision: {final_decision}\n"
@@ -1618,11 +1733,13 @@ async def _review_skill_with_llm(
         "evidence:\n"
         f"{chr(10).join(evidence_lines) or '(none)'}\n\n"
         "verification_report:\n"
-        f"{json.dumps(verification_report, ensure_ascii=False, sort_keys=True, default=str)[:6000]}\n\n"
+        f"{json.dumps(verification_report, ensure_ascii=False, sort_keys=True, default=str)}\n\n"
         "artifact_gate_report:\n"
-        f"{json.dumps(artifact_gate_report or {}, ensure_ascii=False, sort_keys=True, default=str)[:4000]}\n\n"
+        f"{json.dumps(artifact_gate_report or {}, ensure_ascii=False, sort_keys=True, default=str)}\n\n"
+        "mechanical_review_signals (observations only; make the semantic decision yourself):\n"
+        f"{', '.join(distilled_skill_review_signals(draft)) or '(none)'}\n\n"
         "SKILL.md draft:\n"
-        f"{rendered_markdown[:12000]}\n"
+        f"{rendered_markdown}\n"
     )
 
     from app.memory.metrics import record_autonomous_llm_call
@@ -1648,7 +1765,7 @@ async def _review_skill_with_llm(
                 LLMMessage(role="user", content=prompt),
             ],
             temperature=0.1,
-            max_tokens=min(getattr(model, "max_output_tokens", None) or 4096, 4096),
+            max_tokens=_selected_model_output_tokens(model),
         )
         payload = _parse_json_object(response.content or "")
         record_autonomous_llm_call(source="skill_referee", outcome="success")

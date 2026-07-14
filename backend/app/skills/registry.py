@@ -8,18 +8,9 @@ from pathlib import PurePosixPath
 
 from .types import ParsedSkill
 
-_CATALOG_DESCRIPTION_CHAR_LIMIT = 250
-
 
 def _model_catalog_visible(skill: ParsedSkill) -> bool:
     return not skill.metadata.hidden and not skill.metadata.disable_model_invocation
-
-
-def _catalog_description(skill: ParsedSkill, *, max_chars: int = _CATALOG_DESCRIPTION_CHAR_LIMIT) -> str:
-    description = skill.metadata.description or ""
-    if len(description) <= max_chars:
-        return description
-    return description[:max_chars].rstrip() + "..."
 
 
 def _normalize_match_path(path: str) -> str:
@@ -100,13 +91,13 @@ class SkillRegistry:
         return "\n\n".join(part for part in parts if part)
 
     def render_catalog(self, *, budget_chars: int = 8000) -> str:
-        """Render skill catalog with budget-aware truncation.
+        """Render every model-visible skill with its complete description.
 
-        Three degradation levels (aligned with Claude Code's skill listing strategy):
-        1. Full descriptions (if within budget)
-        2. Truncated descriptions (system skills preserved, others truncated)
-        3. Names-only for non-system skills (extreme budget pressure)
+        ``budget_chars`` is retained as an advisory compatibility argument.
+        The final provider prompt gate owns physical capacity; catalog assembly
+        never decides which activation evidence the model may see.
         """
+        del budget_chars
         visible_skills = [skill for skill in self._skills.values() if _model_catalog_visible(skill)]
         if not visible_skills:
             return ""
@@ -131,35 +122,11 @@ class SkillRegistry:
             "If no skill matches the current task, use your tools directly without loading a skill."
         )
         table_header = "\n| Skill | Description | File |\n|-------|-------------|------|\n"
-        overhead = len(header) + len(footer) + len(table_header) + 10
-        row_budget = budget_chars - overhead
-
-        # Level 1: try full descriptions
-        full_rows = [f"| {s.metadata.name} | {_catalog_description(s)} | {s.relative_path} |" for s in visible_skills]
-        if sum(len(r) + 1 for r in full_rows) <= row_budget:
-            return header + table_header + "\n".join(full_rows) + footer
-
-        # Level 2: truncate non-system skill descriptions
-        system_skills = [s for s in visible_skills if s.metadata.is_system]
-        user_skills = [s for s in visible_skills if not s.metadata.is_system]
-
-        system_rows = [f"| {s.metadata.name} | {_catalog_description(s)} | {s.relative_path} |" for s in system_skills]
-        system_chars = sum(len(r) + 1 for r in system_rows)
-        remaining = row_budget - system_chars
-        max_desc = max(20, remaining // max(len(user_skills), 1) - 20) if user_skills else 0
-
-        if max_desc >= 20:
-            user_rows = []
-            for s in user_skills:
-                desc = s.metadata.description
-                if len(desc) > max_desc:
-                    desc = desc[:max_desc] + "..."
-                user_rows.append(f"| {s.metadata.name} | {desc} | {s.relative_path} |")
-            return header + table_header + "\n".join(system_rows + user_rows) + footer
-
-        # Level 3: names-only for non-system
-        user_rows = [f"| {s.metadata.name} | — | {s.relative_path} |" for s in user_skills]
-        return header + table_header + "\n".join(system_rows + user_rows) + footer
+        rows = [
+            f"| {skill.metadata.name} | {skill.metadata.description or ''} | {skill.relative_path} |"
+            for skill in visible_skills
+        ]
+        return header + table_header + "\n".join(rows) + footer
 
     def skills_for_paths(self, paths: list[str] | tuple[str, ...]) -> list[ParsedSkill]:
         """Return model-visible skills whose declared path globs match any path."""

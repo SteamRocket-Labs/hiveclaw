@@ -168,6 +168,40 @@ async def test_build_agent_message_tool_executor_persists_tool_calls(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_agent_message_tool_executor_propagates_bounded_a2a_context(monkeypatch):
+    from app.services.agent_tools import _build_agent_message_tool_executor
+
+    captured = {}
+
+    async def fake_execute_tool(tool_name, args, *_args, **_kwargs):
+        captured["tool_name"] = tool_name
+        captured["args"] = dict(args)
+        return "ok"
+
+    async def fake_persist(**_kwargs):
+        return None
+
+    monkeypatch.setattr("app.services.agent_tools.execute_tool", fake_execute_tool)
+    monkeypatch.setattr("app.services.agent_tool_domains.messaging._persist_agent_tool_call", fake_persist)
+    executor = _build_agent_message_tool_executor(
+        target_agent_id=uuid4(),
+        owner_id=uuid4(),
+        session_agent_id=uuid4(),
+        session_id="nested-session",
+        participant_id=uuid4(),
+        delegation_trace_id="trace-a-b-c",
+        delegation_depth=1,
+        delegation_max_depth=3,
+    )
+
+    await executor("send_message_to_agent", {"agent_name": "C", "message": "continue"})
+
+    assert captured["args"]["_a2a_trace_id"] == "trace-a-b-c"
+    assert captured["args"]["_a2a_depth"] == 2
+    assert captured["args"]["_a2a_max_depth"] == 3
+
+
+@pytest.mark.asyncio
 async def test_delegate_to_agent_async_passes_tool_profile(monkeypatch):
     from app.services.agent_tool_domains.messaging import _delegate_to_agent_async
 

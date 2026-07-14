@@ -104,7 +104,7 @@ async def _feishu_user_search(agent_id: uuid.UUID, arguments: dict) -> str:
 
     if scored_cache:
         scored_cache.sort(key=lambda x: x[0], reverse=True)
-        return _format_user_result([u for _, u in scored_cache[:5]], name, "cache")
+        return _format_user_result([u for _, u in scored_cache], name, "cache")
 
     # ── Resolve agent tenant_id ──────────────────────────────────────────────
     # RLS 阶段1 + Finding #2: resolve the agent's tenant via the audited
@@ -154,7 +154,7 @@ async def _feishu_user_search(agent_id: uuid.UUID, arguments: dict) -> str:
 
         if scored_members:
             scored_members.sort(key=lambda x: x[0], reverse=True)
-            return _format_user_result([u for _, u in scored_members[:5]], name, "directory")
+            return _format_user_result([u for _, u in scored_members], name, "directory")
     except Exception as e:
         logger.debug("Suppressed OrgMember search: %s", e)
 
@@ -191,7 +191,7 @@ async def _feishu_user_search(agent_id: uuid.UUID, arguments: dict) -> str:
 
         if scored_users:
             scored_users.sort(key=lambda x: x[0], reverse=True)
-            return _format_user_result([u for _, u in scored_users[:5]], name, "users")
+            return _format_user_result([u for _, u in scored_users], name, "users")
     except Exception as e:
         logger.debug("Suppressed User search: %s", e)
 

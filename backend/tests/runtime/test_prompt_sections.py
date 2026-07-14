@@ -219,6 +219,24 @@ class TestTriggersSection:
         assert "focus_ref" not in section
         assert "objective_id" not in section
 
+    def test_active_trigger_context_preserves_every_trigger_and_full_reason(self) -> None:
+        triggers = [
+            {
+                "name": f"trigger_{index}",
+                "type": "event",
+                "config": {"event": f"event_{index}", "detail": "C" * 200},
+                "reason": f"reason_{index}_" + ("R" * 600) + f"_END_{index}",
+            }
+            for index in range(12)
+        ]
+
+        section = build_triggers_section(triggers, budget_chars=200)
+
+        assert "trigger_0" in section
+        assert "trigger_11" in section
+        assert "_END_11" in section
+        assert "truncated" not in section
+
 
 class TestEnvironmentSection:
     def test_has_header(self) -> None:

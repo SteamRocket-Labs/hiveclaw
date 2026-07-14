@@ -317,7 +317,7 @@ class MCPClient:
                 for t in tools
             ]
         except httpx.HTTPError as e:
-            raise Exception(f"Connection failed: {str(e)[:200]}")
+            raise Exception(f"Connection failed: {e}")
 
     async def call_tool(self, tool_name: str, arguments: dict) -> str:
         """Execute a tool on the MCP server."""
@@ -333,7 +333,7 @@ class MCPClient:
                 return render_tool_error(
                     tool_name=tool_name,
                     error_class="provider_error",
-                    message=f"MCP tool execution error: {msg[:200]}",
+                    message=f"MCP tool execution error: {msg}",
                     provider="mcp",
                     retryable=False,
                     actionable_hint="Retry after checking MCP server authorization and arguments.",
@@ -365,7 +365,7 @@ class MCPClient:
             return render_tool_error(
                 tool_name=tool_name,
                 error_class="transport_failure",
-                message=f"MCP connection failed: {str(e)[:200]}",
+                message=f"MCP connection failed: {str(e)}",
                 provider="mcp",
                 retryable=True,
                 actionable_hint="Retry later or check the MCP server URL and network reachability.",
@@ -396,7 +396,7 @@ class MCPClient:
                 if isinstance(r, dict)
             ]
         except httpx.HTTPError as e:
-            raise Exception(f"Connection failed: {str(e)[:200]}")
+            raise Exception(f"Connection failed: {e}")
 
     async def list_prompts(self) -> list[dict]:
         """Fetch available prompt templates from the MCP server (``prompts/list``)."""
@@ -418,7 +418,7 @@ class MCPClient:
                 if isinstance(p, dict)
             ]
         except httpx.HTTPError as e:
-            raise Exception(f"Connection failed: {str(e)[:200]}")
+            raise Exception(f"Connection failed: {e}")
 
     def _prompt_content_to_text(self, content) -> str:
         if isinstance(content, str):
@@ -446,7 +446,7 @@ class MCPClient:
                 return render_tool_error(
                     tool_name="mcp_get_prompt",
                     error_class="provider_error",
-                    message=f"MCP prompt get error: {msg[:200]}",
+                    message=f"MCP prompt get error: {msg}",
                     provider="mcp",
                     retryable=False,
                     actionable_hint="Verify the prompt name from mcp_list_prompts and server authorization.",
@@ -474,7 +474,7 @@ class MCPClient:
             return render_tool_error(
                 tool_name="mcp_get_prompt",
                 error_class="transport_failure",
-                message=f"MCP connection failed: {str(e)[:200]}",
+                message=f"MCP connection failed: {str(e)}",
                 provider="mcp",
                 retryable=True,
                 actionable_hint="Retry later or check the MCP server URL and network reachability.",
@@ -496,7 +496,7 @@ class MCPClient:
                 return render_tool_error(
                     tool_name="mcp_read_resource",
                     error_class="provider_error",
-                    message=f"MCP resource read error: {msg[:200]}",
+                    message=f"MCP resource read error: {msg}",
                     provider="mcp",
                     retryable=False,
                     actionable_hint="Verify the resource URI from mcp_list_resources and server authorization.",
@@ -521,7 +521,7 @@ class MCPClient:
             return render_tool_error(
                 tool_name="mcp_read_resource",
                 error_class="transport_failure",
-                message=f"MCP connection failed: {str(e)[:200]}",
+                message=f"MCP connection failed: {str(e)}",
                 provider="mcp",
                 retryable=True,
                 actionable_hint="Retry later or check the MCP server URL and network reachability.",

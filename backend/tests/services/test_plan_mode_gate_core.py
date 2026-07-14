@@ -143,7 +143,7 @@ def test_validate_plan_handoff_version_mismatch():
     assert check.error_code == "version_mismatch"
 
 
-def test_validate_plan_handoff_hash_mismatch():
+def test_validate_plan_handoff_ignores_client_echoed_hash():
     from app.services.plan_mode_core import validate_plan_handoff
 
     check = validate_plan_handoff(
@@ -153,12 +153,12 @@ def test_validate_plan_handoff_hash_mismatch():
         submitted_version=1,
         submitted_hash="sha256:tampered",
     )
-    assert check.ok is False
-    assert check.error_code == "hash_mismatch"
+    assert check.ok is True
+    assert check.error_code is None
 
 
-def test_validate_plan_handoff_requires_submitted_version_and_hash():
-    """Execution-layer handoff must bind to the exact confirmed version/hash."""
+def test_validate_plan_handoff_requires_only_submitted_version():
+    """The client guards staleness by version; the server owns the plan hash."""
     from app.services.plan_mode_core import validate_plan_handoff
 
     check = validate_plan_handoff(
@@ -169,7 +169,22 @@ def test_validate_plan_handoff_requires_submitted_version_and_hash():
         submitted_hash=None,
     )
     assert check.ok is False
-    assert check.error_code == "missing_plan_version_hash"
+    assert check.error_code == "missing_plan_version"
+
+
+def test_validate_plan_handoff_accepts_matching_version_without_hash():
+    from app.services.plan_mode_core import validate_plan_handoff
+
+    check = validate_plan_handoff(
+        status="confirmed",
+        stored_version=3,
+        stored_hash="sha256:server-owned",
+        submitted_version=3,
+        submitted_hash=None,
+    )
+
+    assert check.ok is True
+    assert check.error_code is None
 
 
 # ---------------------------------------------------------------------------

@@ -196,6 +196,9 @@ async def test_runtime_config_execution_mode_reaches_prompt_builder_and_tool_fil
     )
 
     assert captured_modes == ["coordinator"]
-    assert fake_client.calls[0]["tools"][0]["function"]["name"] == "spawn_subagent"
-    assert len(fake_client.calls[0]["tools"]) == 1
+    assert [tool["function"]["name"] for tool in fake_client.calls[0]["tools"]] == [
+        "spawn_subagent",
+        "delegate_to_agent",
+        "web_search",
+    ]
     assert "MODE=coordinator" in fake_client.calls[0]["messages"][0].content

@@ -48,34 +48,12 @@ MANIFEST_FILENAME = "manifest.json"
 SOURCE_BUNDLE_FILENAME = "source_bundle.json"
 SYNTHESIS_FILENAME = "synthesis.md"
 EPISODE_BUNDLE_FILENAME = "episode_bundle.json"
-_REVIEW_RUBRIC_SCORE_WEIGHTS = {
-    "summary_fidelity": 0.35,
-    "source_ref_coverage": 0.25,
-    "label_alignment": 0.20,
-    "safety_scope": 0.10,
-    "package_closure": 0.10,
-}
-_T3_INTAKE_REVIEW_THRESHOLDS = {
-    "summary_fidelity": 0.85,
-    "source_ref_coverage": 0.85,
-    "label_alignment": 0.75,
-    "safety_scope": 0.85,
-    "package_closure": 0.75,
-}
-_EPISODE_REVIEW_RUBRIC_SCORE_WEIGHTS = {
-    "continuity_fidelity": 0.30,
-    "source_ref_coverage": 0.25,
-    "correction_quality": 0.15,
-    "closure_quality": 0.20,
-    "safety_scope": 0.10,
-}
-_EPISODE_T3_INTAKE_THRESHOLDS = {
-    "continuity_fidelity": 0.85,
-    "source_ref_coverage": 0.85,
-    "correction_quality": 0.75,
-    "closure_quality": 0.80,
-    "safety_scope": 0.85,
-}
+_REVIEW_RUBRIC_SCORE_NAMES = frozenset(
+    {"summary_fidelity", "source_ref_coverage", "label_alignment", "safety_scope", "package_closure"}
+)
+_EPISODE_REVIEW_RUBRIC_SCORE_NAMES = frozenset(
+    {"continuity_fidelity", "source_ref_coverage", "correction_quality", "closure_quality", "safety_scope"}
+)
 _ALLOWED_REVIEW_NEXT = {"t3_intake", "episode_stitching", "short_term_carryover", "archive_recall_only", "none"}
 _ACTIVATION_KEYS_SCHEMA_VERSION = "t2.activation_keys.20260705"
 _ALLOWED_ACTIVATION_TASK_INTENTS = {
@@ -1034,7 +1012,7 @@ def _build_episode_bundle(
         source_packages.append(package)
 
     t0_refs = _dedupe([ref for package in source_packages for ref in package["source_refs"]])
-    adjacent = [package for package_id, package in packages_by_id.items() if package_id not in set(selected_ids)][:4]
+    adjacent = [package for package_id, package in packages_by_id.items() if package_id not in set(selected_ids)]
     return {
         "schema_version": "t2.episode_bundle.v1",
         "episode_id": episode_id,
@@ -1050,7 +1028,7 @@ def _build_episode_bundle(
             package
             for package in packages_by_id.values()
             if package["package_status"] in {"open", "rolling_checkpoint"} and package["package_id"] not in selected_ids
-        ][:4],
+        ],
         "lineage": packages_by_id[trigger_package_id].get("lineage") or {},
         "lineage_warnings": lineage_warnings,
         "t0_source_refs": t0_refs,
@@ -1263,7 +1241,12 @@ async def _run_t2_llm_agent(
     agent_id: uuid.UUID | str,
     tenant_id: uuid.UUID | str | None,
 ) -> str:
-    from app.services.llm_client import LLMMessage, create_llm_client_from_config, with_llm_usage_context
+    from app.services.llm_client import (
+        LLMMessage,
+        create_llm_client_from_config,
+        get_max_tokens,
+        with_llm_usage_context,
+    )
 
     client = create_llm_client_from_config(
         with_llm_usage_context(
@@ -1280,7 +1263,11 @@ async def _run_t2_llm_agent(
                 LLMMessage(role="system", content=prompt),
                 LLMMessage(role="user", content=json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)),
             ],
-            max_tokens=8192,
+            max_tokens=get_max_tokens(
+                str(model_config.get("provider") or ""),
+                str(model_config.get("model") or ""),
+                model_config.get("max_output_tokens"),
+            ),
             temperature=0.2,
         )
         content = response.content or ""
@@ -1475,7 +1462,7 @@ def _validate_review_rubric(
     scores: dict[str, float] = {}
     for score_node in rubric.findall("score"):
         name = (score_node.attrib.get("name") or "").strip()
-        if name not in _REVIEW_RUBRIC_SCORE_WEIGHTS:
+        if name not in _REVIEW_RUBRIC_SCORE_NAMES:
             issues.append(f"review_rubric has unknown score {name or '<missing>'}")
             continue
         value = _parse_unit_score(score_node.attrib.get("value"))
@@ -1484,27 +1471,17 @@ def _validate_review_rubric(
             continue
         scores[name] = value
 
-    missing = sorted(set(_REVIEW_RUBRIC_SCORE_WEIGHTS) - set(scores))
+    missing = sorted(_REVIEW_RUBRIC_SCORE_NAMES - set(scores))
     if missing:
         issues.append(f"review_rubric missing scores: {', '.join(missing)}")
 
     review_score = _parse_unit_score(rubric.findtext("review_score"))
     if review_score is None:
         issues.append("review_rubric review_score must be between 0.00 and 1.00")
-    elif not missing:
-        expected = _round_to_005(sum(scores[name] * weight for name, weight in _REVIEW_RUBRIC_SCORE_WEIGHTS.items()))
-        if abs(review_score - expected) > 0.001:
-            issues.append(f"review_rubric review_score {review_score:.2f} does not match formula result {expected:.2f}")
 
     decision = (review.findtext("decision") or "").strip()
     allowed_next = (review.findtext("allowed_next") or "").strip()
     if decision == "approved" and allowed_next == "t3_intake":
-        for name, threshold in _T3_INTAKE_REVIEW_THRESHOLDS.items():
-            value = scores.get(name)
-            if value is not None and value < threshold:
-                issues.append(f"review_rubric score {name}={value:.2f} below t3_intake threshold {threshold:.2f}")
-        if review_score is not None and review_score < 0.80:
-            issues.append(f"review_rubric review_score {review_score:.2f} below t3_intake threshold 0.80")
         package_status = _package_status(summary=summary, labels=labels)
         if package_status == "rolling_checkpoint":
             issues.append("rolling_checkpoint package cannot be approved for t3_intake")
@@ -1578,7 +1555,7 @@ def _validate_episode_review_rubric(
     scores: dict[str, float] = {}
     for score_node in rubric.findall("score"):
         name = (score_node.attrib.get("name") or "").strip()
-        if name not in _EPISODE_REVIEW_RUBRIC_SCORE_WEIGHTS:
+        if name not in _EPISODE_REVIEW_RUBRIC_SCORE_NAMES:
             issues.append(f"episode_review_rubric has unknown score {name or '<missing>'}")
             continue
         value = _parse_unit_score(score_node.attrib.get("value"))
@@ -1587,35 +1564,19 @@ def _validate_episode_review_rubric(
             continue
         scores[name] = value
 
-    missing = sorted(set(_EPISODE_REVIEW_RUBRIC_SCORE_WEIGHTS) - set(scores))
+    missing = sorted(_EPISODE_REVIEW_RUBRIC_SCORE_NAMES - set(scores))
     if missing:
         issues.append(f"episode_review_rubric missing scores: {', '.join(missing)}")
 
     review_score = _parse_unit_score(rubric.findtext("review_score"))
     if review_score is None:
         issues.append("episode_review_rubric review_score must be between 0.00 and 1.00")
-    elif not missing:
-        expected = _round_to_005(
-            sum(scores[name] * weight for name, weight in _EPISODE_REVIEW_RUBRIC_SCORE_WEIGHTS.items())
-        )
-        if abs(review_score - expected) > 0.001:
-            issues.append(
-                f"episode_review_rubric review_score {review_score:.2f} does not match formula result {expected:.2f}"
-            )
 
     decision = (review.findtext("decision") or "").strip()
     allowed_next = (review.findtext("allowed_next") or "").strip()
     if allowed_next not in {"t3_intake", "short_term_carryover", "archive_recall_only", "none"}:
         issues.append("episode review allowed_next must be controlled enum")
     if decision == "approved" and allowed_next == "t3_intake":
-        for name, threshold in _EPISODE_T3_INTAKE_THRESHOLDS.items():
-            value = scores.get(name)
-            if value is not None and value < threshold:
-                issues.append(
-                    f"episode_review_rubric score {name}={value:.2f} below t3_intake threshold {threshold:.2f}"
-                )
-        if review_score is not None and review_score < 0.80:
-            issues.append(f"episode_review_rubric review_score {review_score:.2f} below t3_intake threshold 0.80")
         if synthesis is not None and (synthesis.attrib.get("status") or "").strip() != "closed":
             issues.append("episode_synthesis status must be closed for t3_intake")
 

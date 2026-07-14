@@ -611,7 +611,7 @@ async def complete_approval_ticket(
         if row.execution_status != "executing":
             raise ApprovalTicketError(f"approval ticket completion lost execution ownership: {row.execution_status}")
         row.execution_status = str(status)
-        row.execution_result = str(result)[:20_000]
+        row.execution_result = str(result)
         row.execution_receipt = dict(receipt)
         await db.flush()
 

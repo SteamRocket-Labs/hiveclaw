@@ -85,19 +85,10 @@ async def test_execute_code_fails_closed_without_sandbox_or_explicit_dev_bypass(
     assert "HIVE_ALLOW_UNSANDBOXED_CODE_EXEC=1" in result
 
 
-@pytest.mark.asyncio
-async def test_run_command_blocks_high_risk_commands(tmp_path: Path):
-    from app.services.agent_tool_domains.code_exec import _run_command
+def test_run_command_handler_defers_high_risk_semantics_to_governance():
+    from app.services.agent_tool_domains.code_exec import _check_command_safety
 
-    result = await _run_command(
-        tmp_path,
-        {
-            "command": "docker ps",
-            "timeout": 5,
-        },
-    )
-
-    assert "Blocked" in result
+    assert _check_command_safety("docker ps") is None
 
 
 def test_execution_environment_does_not_inherit_platform_secrets(tmp_path: Path, monkeypatch):
@@ -150,6 +141,49 @@ def test_code_execution_blocks_parent_workspace_path_references():
     assert "directory traversal" in (_check_code_safety("node", "fs.writeFileSync('../logs/x', 'bad')") or "")
     assert "directory traversal" in (_check_code_safety("bash", "echo bad > ../evolution/x") or "")
     assert "directory traversal" in (_check_command_safety("cat ../runtime_artifacts/session_memory.md") or "")
+
+
+def test_code_execution_does_not_replace_sandbox_governance_with_keyword_blacklists():
+    from app.services.agent_tool_domains.code_exec import _check_code_safety, _check_command_safety
+
+    assert (
+        _check_code_safety("python", "import requests\nprint(requests.get('https://example.com').status_code)") is None
+    )
+    assert _check_code_safety("bash", "curl -I https://example.com") is None
+    assert _check_code_safety("node", "require('https').get('https://example.com', console.log)") is None
+    assert _check_command_safety("pytest tests/test_*.py -q") is None
+    assert _check_command_safety("curl -I https://example.com") is None
+
+
+@pytest.mark.asyncio
+async def test_run_command_preserves_complete_stdout_and_stderr(tmp_path: Path, monkeypatch):
+    from app.services.agent_tool_domains import code_exec
+    from app.services.code_execution.contracts import CodeExecutionResult
+
+    stdout = "out:" + ("x" * 13000) + ":stdout-end"
+    stderr = "err:" + ("y" * 7000) + ":stderr-end"
+
+    async def fake_execute(*_args, **_kwargs):
+        return CodeExecutionResult(stdout=stdout, stderr=stderr, exit_code=1)
+
+    monkeypatch.setattr(code_exec, "execute_agent_command", fake_execute)
+    result = await code_exec._run_command(tmp_path, {"command": "printf complete", "timeout": 5})
+
+    assert ":stdout-end" in str(result)
+    assert ":stderr-end" in str(result)
+
+
+def test_code_execution_paths_have_no_silent_stdout_or_stderr_slicing():
+    modules = [
+        Path(__file__).parents[2] / "app/services/agent_tool_domains/code_exec.py",
+        Path(__file__).parents[2] / "app/services/agent_tool_domains/skill_runtime.py",
+        Path(__file__).parents[2] / "app/services/code_execution/vercel_provider.py",
+    ]
+
+    for module in modules:
+        source = module.read_text(encoding="utf-8")
+        assert "stdout[:" not in source, module
+        assert "stderr[:" not in source, module
 
 
 @pytest.mark.asyncio

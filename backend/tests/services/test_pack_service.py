@@ -207,6 +207,7 @@ def test_summarize_chat_messages_extracts_runtime_events_and_tool_usage():
         "last_team_memory_hit": None,
         "last_tool_budget_event": None,
         "last_retry_reason": None,
+        "last_model_route": None,
     }
     assert "activated_packs" not in summary
 

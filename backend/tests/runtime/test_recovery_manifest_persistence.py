@@ -327,3 +327,40 @@ def test_recovery_manifest_filename_constant_documented() -> None:
     expected = Path("runtime_artifacts") / "recovery_manifest.json"
     assert expected.name == "recovery_manifest.json"
     assert expected.parent.name == "runtime_artifacts"
+
+
+def test_restoration_budget_omission_keeps_hash_pinned_full_manifest_pointer() -> None:
+    import hashlib
+
+    sc = SessionContext(session_id="large-manifest")
+    for index in range(40):
+        sc.track_file_read(f"workspace/very-long-file-{index}.md")
+        sc.track_pending_item(f"pending-work-{index}")
+
+    manifest = build_recovery_manifest(sc)
+    canonical = json.dumps(manifest.to_payload(), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    text = manifest.to_restoration_text(budget_chars=700)
+
+    assert "runtime_artifacts/recovery_manifest.json" in text
+    assert hashlib.sha256(canonical.encode("utf-8")).hexdigest() in text
+    assert "omitted_fields" in text
+    assert len(text) <= 700
+
+
+def test_session_recovery_tracking_never_discards_older_items_or_semantic_tails() -> None:
+    sc = SessionContext(session_id="complete-recovery")
+    outcome_tail = "DECISIVE_RECOVERY_OUTCOME_TAIL"
+    for index in range(40):
+        sc.track_file_read(f"workspace/read-{index}.md")
+        sc.track_file_write(f"workspace/write-{index}.md")
+        sc.track_external_ref(f"https://example.com/source/{index}")
+        sc.track_pending_item(f"pending-{index}")
+    sc.track_tool_outcome("execute_code", ("evidence " * 100) + outcome_tail)
+
+    manifest = build_recovery_manifest(sc)
+
+    assert len(manifest.recent_reads) == 40
+    assert len(manifest.recent_writes) == 40
+    assert len(manifest.recent_external_refs) == 40
+    assert len(manifest.pending_items) == 40
+    assert outcome_tail in manifest.recent_tool_outcomes[-1]["summary"]

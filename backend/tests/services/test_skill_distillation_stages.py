@@ -22,7 +22,7 @@ def _record(
     )
 
 
-def test_rank_candidate_stage_is_pure_and_patch_lane_wins_only_on_real_signals() -> None:
+def test_candidate_stage_keeps_every_record_visible_and_thresholds_are_observations_only() -> None:
     from app.services.skill_distillation_stages import rank_skill_candidates
 
     records = [
@@ -33,10 +33,15 @@ def test_rank_candidate_stage_is_pure_and_patch_lane_wins_only_on_real_signals()
         _record("mixed", promote=5, patch=1),
     ]
 
-    ranked = rank_skill_candidates(records, patch_threshold=2, promote_threshold=3)
+    ranked = rank_skill_candidates(records)
 
-    assert [item.skill_name for item in ranked.patchable] == ["patch-new", "patch-old"]
-    assert [item.skill_name for item in ranked.promotable] == ["promote"]
+    assert [item.skill_name for item in ranked.reviewable] == [
+        "promote",
+        "patch-old",
+        "patch-new",
+        "blocked",
+        "mixed",
+    ]
     assert records[0].promote_candidates == ["0", "1", "2"]
 
 

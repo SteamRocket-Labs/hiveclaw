@@ -167,6 +167,29 @@ def test_prepare_memory_dream_workspace_writes_diff_without_touching_t3(tmp_path
     assert t3_user.read_text(encoding="utf-8") == "# T3 User\n\n"
 
 
+def test_prepare_memory_dream_workspace_exposes_every_reviewed_package(tmp_path: Path) -> None:
+    from app.services.memory_dream import prepare_memory_dream_workspace
+
+    agent_id = uuid4()
+    expected = {
+        _write_reviewed_t2_package(
+            tmp_path,
+            agent_id=agent_id,
+            session_id=f"session-{index:02d}",
+            segment_id=f"segment-{index:02d}",
+            package_id=f"pkg-{index:02d}",
+            claim=f"Tail evidence {index}",
+        )
+        for index in range(10)
+    }
+
+    result = prepare_memory_dream_workspace(agent_id=agent_id, data_root=tmp_path)
+
+    assert set(result.selected_package_dirs) == expected
+    assert len(result.selected_package_dirs) == 10
+    assert "Tail evidence 9" in (result.workspace_dir / "raw_t2_inputs.md").read_text(encoding="utf-8")
+
+
 def test_memory_dream_workspace_baseline_suppresses_unchanged_inputs(tmp_path: Path) -> None:
     from app.services.memory_dream import finalize_memory_dream_workspace, prepare_memory_dream_workspace
 

@@ -213,7 +213,7 @@ async def test_channel_permission_mode_command_allows_auditable_user_to_select_f
         db=db,
         agent_id=agent_id,
         user=user,
-        user_text="切换到完全访问",
+        user_text="/permissions full",
         session_id=str(session.id),
         session_source="feishu",
         durable_session=session,
@@ -579,3 +579,44 @@ def test_non_feishu_channels_do_not_import_feishu_runtime_helper() -> None:
         source = path.read_text(encoding="utf-8")
         assert "from app.api.feishu import _call_agent_llm" not in source, path
         assert "from app.services.channel_agent_runtime import call_agent_llm" in source, path
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("允许", "allow_once"),
+        ("允许本次", "allow_once"),
+        ("本会话允许", "allow_session"),
+        ("拒绝", "deny"),
+        ("/allow", "allow_once"),
+        ("/allow-session", "allow_session"),
+        ("/deny", "deny"),
+    ],
+)
+def test_channel_permission_parser_accepts_only_explicit_command_grammar(text: str, expected: str) -> None:
+    from app.services.channel_agent_runtime import _parse_channel_permission_action
+
+    assert _parse_channel_permission_action(text) == expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "我不同意，现在不要批准",
+        "Can you explain why this is allowed?",
+        "可以先说明风险，但不要执行",
+        "这次批准流程是谁设计的？",
+    ],
+)
+def test_channel_permission_parser_does_not_infer_authority_from_natural_language(text: str) -> None:
+    from app.services.channel_agent_runtime import _parse_channel_permission_action
+
+    assert _parse_channel_permission_action(text) is None
+
+
+def test_channel_permission_mode_mutation_requires_slash_command() -> None:
+    from app.services.channel_agent_runtime import _parse_channel_permission_mode_command
+
+    assert _parse_channel_permission_mode_command("/permissions full") == ("set", "bypassPermissions")
+    assert _parse_channel_permission_mode_command("查看权限") == ("show", None)
+    assert _parse_channel_permission_mode_command("请设置成完全访问并继续") is None

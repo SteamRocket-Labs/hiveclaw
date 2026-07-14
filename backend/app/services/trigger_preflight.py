@@ -280,7 +280,7 @@ async def load_context_from(db: AsyncSession, *, agent_id: uuid.UUID, context_re
     from app.models.chat_session import ChatSession
 
     sections: list[str] = []
-    for ref in context_refs[:8]:
+    for ref in context_refs:
         ref_type = None
         ref_id = None
         external_conv_id = None
@@ -334,7 +334,6 @@ async def load_context_from(db: AsyncSession, *, agent_id: uuid.UUID, context_re
                     ChatMessage.role.in_(("user", "assistant")),
                 )
                 .order_by(ChatMessage.created_at.desc())
-                .limit(6)
             )
             messages = list(reversed(result.scalars().all()))
             lines = [
@@ -343,9 +342,9 @@ async def load_context_from(db: AsyncSession, *, agent_id: uuid.UUID, context_re
             for message in messages:
                 content = str(getattr(message, "content", "") or "").strip()
                 if content:
-                    lines.append(f"- {getattr(message, 'role', 'message')}: {content[:600]}")
+                    lines.append(f"- {getattr(message, 'role', 'message')}: {content}")
             if len(lines) > 1:
                 sections.append("\n".join(lines))
         except Exception:
             continue
-    return "\n\n".join(sections)[:6000]
+    return "\n\n".join(sections)

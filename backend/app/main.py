@@ -914,7 +914,7 @@ async def health_check():
             "status": "degraded",
             "latest_probe_present": False,
             "scheduler_enabled": should_run_sandbox_probe_scheduler(),
-            "error": {"type": type(exc).__name__, "message": str(exc)[:500]},
+            "error": {"type": type(exc).__name__, "message": str(exc)},
         }
     status = daemon_health_status()
     if rls_runtime_role["status"] in {"critical", "degraded"} and status == "ok":

@@ -81,7 +81,8 @@ def test_agent_evolution_view_v2_uses_unified_memory_and_skill_paths(tmp_path: P
             "started_at": "2026-07-11T00:00:00Z",
             "updated_at": "2026-07-11T00:03:00Z",
             "window_days": 14,
-            "thresholds": {"positive": 3, "negative": 2},
+            "review_status": "pending_model_review",
+            "model_reviews": [],
             "signals": {"positive": [{"id": "p1"}, {"id": "p2"}], "negative": [{"id": "n1"}]},
         },
     )
@@ -134,9 +135,9 @@ def test_agent_evolution_view_v2_uses_unified_memory_and_skill_paths(tmp_path: P
     assert trial_skill["trial"] == {
         "state": "provisional",
         "positive_count": 2,
-        "positive_threshold": 3,
         "negative_count": 1,
-        "negative_threshold": 2,
+        "review_status": "pending_model_review",
+        "model_review_count": 0,
         "window_days": 14,
         "started_at": "2026-07-11T00:00:00Z",
         "updated_at": "2026-07-11T00:03:00Z",

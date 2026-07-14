@@ -195,7 +195,7 @@ async def _redis_wakeup_listener() -> None:
     except asyncio.CancelledError:
         raise
     except Exception as exc:  # noqa: BLE001 - polling remains the fallback.
-        _STATE["last_error"] = f"redis_listener:{type(exc).__name__}:{str(exc)[:300]}"
+        _STATE["last_error"] = f"redis_listener:{type(exc).__name__}:{exc}"
         logger.warning("[RuntimeTaskWorker] Redis wakeup listener stopped: {}", exc)
 
 
@@ -362,7 +362,7 @@ async def _execute_claimed_workflow_task(run_id: UUID) -> None:
 
         await execute_claimed_workflow_run(run_id)
     except Exception as exc:  # noqa: BLE001 - worker loop must keep running.
-        _STATE["last_error"] = f"workflow:{type(exc).__name__}:{str(exc)[:300]}"
+        _STATE["last_error"] = f"workflow:{type(exc).__name__}:{exc}"
         logger.exception("[RuntimeTaskWorker] workflow task {} failed", run_id)
 
 
@@ -372,7 +372,7 @@ async def _execute_claimed_hr_provisioning_task(task_id: UUID) -> None:
 
         await execute_claimed_hr_provisioning(task_id)
     except Exception as exc:  # noqa: BLE001 - worker loop must keep running.
-        _STATE["last_error"] = f"hr_provisioning:{type(exc).__name__}:{str(exc)[:300]}"
+        _STATE["last_error"] = f"hr_provisioning:{type(exc).__name__}:{exc}"
         logger.exception("[RuntimeTaskWorker] HR provisioning task {} failed", task_id)
 
 
@@ -382,7 +382,7 @@ async def _execute_claimed_dream_task(task_id: UUID) -> None:
 
         await execute_claimed_dream(task_id)
     except Exception as exc:  # noqa: BLE001 - worker loop must keep running.
-        _STATE["last_error"] = f"dream:{type(exc).__name__}:{str(exc)[:300]}"
+        _STATE["last_error"] = f"dream:{type(exc).__name__}:{exc}"
         logger.exception("[RuntimeTaskWorker] Dream task {} failed", task_id)
 
 
@@ -394,7 +394,7 @@ async def _execute_claimed_delegation_task(task_id: UUID) -> None:
         if not ok:
             logger.warning("[RuntimeTaskWorker] delegation task {} could not be dispatched", task_id)
     except Exception as exc:  # noqa: BLE001
-        _STATE["last_error"] = f"delegation:{type(exc).__name__}:{str(exc)[:300]}"
+        _STATE["last_error"] = f"delegation:{type(exc).__name__}:{exc}"
         logger.exception("[RuntimeTaskWorker] delegation task {} failed", task_id)
 
 
@@ -406,7 +406,7 @@ async def _execute_claimed_subagent_task(task_id: UUID) -> None:
         if not ok:
             logger.warning("[RuntimeTaskWorker] subagent task {} could not be dispatched", task_id)
     except Exception as exc:  # noqa: BLE001
-        _STATE["last_error"] = f"subagent:{type(exc).__name__}:{str(exc)[:300]}"
+        _STATE["last_error"] = f"subagent:{type(exc).__name__}:{exc}"
         logger.exception("[RuntimeTaskWorker] subagent task {} failed", task_id)
 
 
@@ -418,7 +418,7 @@ async def _execute_claimed_trigger_task(task_id: UUID) -> None:
         if not ok:
             logger.warning("[RuntimeTaskWorker] trigger task {} could not be dispatched", task_id)
     except Exception as exc:  # noqa: BLE001
-        _STATE["last_error"] = f"trigger:{type(exc).__name__}:{str(exc)[:300]}"
+        _STATE["last_error"] = f"trigger:{type(exc).__name__}:{exc}"
         logger.exception("[RuntimeTaskWorker] trigger task {} failed", task_id)
 
 
@@ -428,7 +428,7 @@ async def _execute_claimed_approval_execution_task(task_id: UUID) -> None:
 
         await execute_claimed_approval_execution(task_id)
     except Exception as exc:  # noqa: BLE001 - preserve uncertainty rather than replaying a side effect.
-        _STATE["last_error"] = f"approval_execution:{type(exc).__name__}:{str(exc)[:300]}"
+        _STATE["last_error"] = f"approval_execution:{type(exc).__name__}:{exc}"
         logger.exception("[RuntimeTaskWorker] approval execution task {} failed", task_id)
         try:
             from app.services.runtime_task_service import update_runtime_task_record
@@ -438,7 +438,7 @@ async def _execute_claimed_approval_execution_task(task_id: UUID) -> None:
                 status="needs_reconciliation",
                 result_summary=(
                     "Approval worker failed outside its persisted state machine; side effects require review: "
-                    f"{type(exc).__name__}: {str(exc)[:500]}"
+                    f"{type(exc).__name__}: {exc}"
                 ),
             )
         except Exception as persist_exc:  # noqa: BLE001
@@ -483,7 +483,7 @@ async def _execute_claimed_business_task(runtime_task_id: UUID) -> None:
             except Exception as exc:  # convert operational executor failure into the typed terminal contract.
                 outcome = TaskExecutionOutcome(
                     status=TaskExecutionStatus.FAILED,
-                    summary=f"Business task executor failed: {type(exc).__name__}: {str(exc)[:500]}",
+                    summary=f"Business task executor failed: {type(exc).__name__}: {exc}",
                     error_code=type(exc).__name__,
                     retryable=True,
                 )
@@ -492,7 +492,7 @@ async def _execute_claimed_business_task(runtime_task_id: UUID) -> None:
         finally:
             release_business_task_cancel_event(runtime_task_id, cancel_event)
     except Exception as exc:  # noqa: BLE001
-        _STATE["last_error"] = f"business_task:{type(exc).__name__}:{str(exc)[:300]}"
+        _STATE["last_error"] = f"business_task:{type(exc).__name__}:{exc}"
         logger.exception("[RuntimeTaskWorker] business task {} failed", runtime_task_id)
         try:
             from app.services.runtime_task_service import update_runtime_task_record
@@ -502,7 +502,7 @@ async def _execute_claimed_business_task(runtime_task_id: UUID) -> None:
                 status="needs_reconciliation",
                 result_summary=(
                     "business_task worker failed outside the atomic finalizer; side effects are unknown: "
-                    f"{type(exc).__name__}: {str(exc)[:500]}"
+                    f"{type(exc).__name__}: {exc}"
                 ),
             )
         except Exception as persist_exc:  # noqa: BLE001 - original failure is already logged.
@@ -527,32 +527,32 @@ async def start_runtime_task_worker_loop() -> None:
             try:
                 await reconcile_hr_creation_drafts_once()
             except Exception as exc:  # noqa: BLE001 - normal task claiming must continue.
-                _STATE["last_error"] = f"hr_reconcile:{type(exc).__name__}: {str(exc)[:500]}"
+                _STATE["last_error"] = f"hr_reconcile:{type(exc).__name__}: {exc}"
                 logger.exception("[RuntimeTaskWorker] HR draft reconciliation tick failed")
             try:
                 await reconcile_stale_business_tasks_once()
             except Exception as exc:  # noqa: BLE001 - normal task claiming must continue.
-                _STATE["last_error"] = f"business_task_reconcile:{type(exc).__name__}: {str(exc)[:500]}"
+                _STATE["last_error"] = f"business_task_reconcile:{type(exc).__name__}: {exc}"
                 logger.exception("[RuntimeTaskWorker] BusinessTask reconciliation tick failed")
             try:
                 await drain_budget_transition_outbox_once(worker_id=worker_id)
             except Exception as exc:  # noqa: BLE001 - task claiming must continue after one delivery failure.
-                _STATE["last_error"] = f"budget_outbox:{type(exc).__name__}: {str(exc)[:500]}"
+                _STATE["last_error"] = f"budget_outbox:{type(exc).__name__}: {exc}"
                 logger.exception("[RuntimeTaskWorker] budget transition outbox tick failed")
             try:
                 await drain_channel_delivery_outbox_once(worker_id=worker_id)
             except Exception as exc:  # noqa: BLE001 - task claiming must continue after one delivery failure.
-                _STATE["last_error"] = f"channel_outbox:{type(exc).__name__}: {str(exc)[:500]}"
+                _STATE["last_error"] = f"channel_outbox:{type(exc).__name__}: {exc}"
                 logger.exception("[RuntimeTaskWorker] channel delivery outbox tick failed")
             try:
                 await drain_runtime_notification_outbox_once(worker_id=worker_id)
             except Exception as exc:  # noqa: BLE001 - task claiming must continue after one outbox failure.
-                _STATE["last_error"] = f"outbox:{type(exc).__name__}: {str(exc)[:500]}"
+                _STATE["last_error"] = f"outbox:{type(exc).__name__}: {exc}"
                 logger.exception("[RuntimeTaskWorker] completion outbox tick failed")
             try:
                 await claim_and_dispatch_once(worker_id=worker_id)
             except Exception as exc:  # noqa: BLE001 - worker loop must survive one bad claim.
-                _STATE["last_error"] = f"{type(exc).__name__}: {str(exc)[:500]}"
+                _STATE["last_error"] = f"{type(exc).__name__}: {exc}"
                 logger.exception("[RuntimeTaskWorker] claim/dispatch tick failed")
             event = _wakeup_event()
             event.clear()

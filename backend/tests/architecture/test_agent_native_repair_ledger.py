@@ -164,13 +164,36 @@ def test_every_group_has_an_executable_document_and_evidence_route() -> None:
         section = source[match.start() : end]
         required = (
             "**依赖 Group**",
+            "**AA 开工入口**",
+            "**@原始断点证据**",
             "@必须先读",
             "**首个 Red**",
+            "**证据回填**",
             "**退出门**",
             f"EVID-G{group}-*",
             "**执行**" if group == 0 else "**源码入口**",
         )
         assert all(marker in section for marker in required), f"Group {group} is missing an executable route"
+        assert f"@{CONTEXT_CONTRACT.relative_to(REPO_ROOT).as_posix()}" in section, (
+            f"Group {group} does not route to the Context contract"
+        )
+        assert f"@{SESSION_CONTRACT.relative_to(REPO_ROOT).as_posix()}" in section, (
+            f"Group {group} does not route to the Session contract"
+        )
+
+
+def test_repair_ledger_defines_context_read_receipt_and_evidence_round_trip() -> None:
+    source = REPORT.read_text(encoding="utf-8")
+
+    for required in (
+        "`AA → 上下文包 → 施工 → 证据` 闭环合同",
+        "context_read_receipt:",
+        'aa_entry: "§9 Group <n> + §12.1/§12.2 owner rows"',
+        'role: "authority | design | original_evidence | migration | acceptance"',
+        'evidence_sink: "EVID-G<group>-<序号>"',
+        "先在 `§12.4` 创建或更新稳定 `EVID-G<group>-<序号>`",
+    ):
+        assert required in source
 
 
 def test_document_routes_are_portable_and_external_refs_are_snapshot_bound() -> None:

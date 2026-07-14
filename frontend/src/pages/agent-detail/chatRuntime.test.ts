@@ -1850,7 +1850,7 @@ describe('chatRuntime helpers', () => {
 });
 
 describe('memory runtime degradation', () => {
-  it('projects a persisted degraded-memory event as a retryable user-facing error', () => {
+  it('projects degraded memory as a retryable warning without marking the run failed', () => {
     const message = normalizeStoredChatMessage({
       id: 'memory-event-1',
       sequence: 12,
@@ -1859,7 +1859,7 @@ describe('memory runtime degradation', () => {
       content: JSON.stringify({
         type: 'session_context',
         event_type: 'memory_context_degraded',
-        status: 'failed',
+        status: 'degraded',
         code: 'semantic_retrieval_unavailable',
         retryable: true,
         retry_reason: 'Retry the original turn after memory recovery.',
@@ -1868,7 +1868,8 @@ describe('memory runtime degradation', () => {
     });
 
     expect(message.role).toBe('event');
-    expect(message.threadItem?.item_type).toBe('error');
+    expect(message.threadItem?.item_type).toBe('warning');
+    expect(message.threadItem?.item_status).toBe('succeeded');
     expect(message.threadItem?.item_data).toMatchObject({
       code: 'semantic_retrieval_unavailable',
       retryable: true,

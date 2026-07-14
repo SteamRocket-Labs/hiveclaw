@@ -41,6 +41,7 @@ const DATA_BY_TYPE: Record<ThreadItemType, Record<string, unknown>> = {
   },
   artifact: { artifact_id: 'artifact-1', path: 'report.md', action: 'updated' },
   boundary: { phase: 'cancelled', reason: 'user_stop' },
+  warning: { code: 'semantic_retrieval_unavailable', reason: 'Partial context', retryable: true },
   error: { code: 'provider_timeout', reason: 'Timed out', retryable: true },
   event: { event_type: 'hook_progress', title: 'Hook' },
 };
@@ -165,6 +166,7 @@ describe('ThreadItemRenderer', () => {
     expect(shouldRenderThreadItemInConversation(userItem('event'), false)).toBe(false);
     expect(shouldRenderThreadItemInConversation(userItem('artifact'), false)).toBe(false);
     expect(shouldRenderThreadItemInConversation(userItem('approval_request'), false)).toBe(true);
+    expect(shouldRenderThreadItemInConversation(userItem('warning'), false)).toBe(true);
     expect(shouldRenderThreadItemInConversation(userItem('error'), false)).toBe(true);
     expect(shouldRenderThreadItemInConversation(userItem('plan'), false)).toBe(true);
     expect(shouldRenderThreadItemInConversation(item('event'), true)).toBe(true);

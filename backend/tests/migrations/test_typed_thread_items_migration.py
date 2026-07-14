@@ -21,7 +21,7 @@ def test_typed_thread_item_backfill_keeps_its_historical_map_as_runtime_subset()
     assert migration.revision == "typed_thread_items_0710"
     assert migration.down_revision == "personal_kb_local_receipts_0710"
     assert migration.EVENT_THREAD_ITEM_TYPES.items() <= EVENT_THREAD_ITEM_TYPES.items()
-    assert EVENT_THREAD_ITEM_TYPES["memory_context_degraded"] == "error"
+    assert EVENT_THREAD_ITEM_TYPES["memory_context_degraded"] == "warning"
     assert EVENT_THREAD_ITEM_TYPES["memory_context_unavailable"] == "error"
     sql = migration._backfill_sql()
     assert " LIKE " not in sql.upper()
@@ -33,3 +33,19 @@ def test_typed_thread_item_backfill_keeps_its_historical_map_as_runtime_subset()
     assert "COALESCE(NULLIF(item_type, ''), 'event')" not in sql
     source = Path(migration.__file__).read_text(encoding="utf-8")
     assert "autocommit_block" in source
+
+
+def test_memory_context_degraded_severity_migration_is_reversible() -> None:
+    path = Path(__file__).resolve().parents[2] / "alembic" / "versions" / "memory_context_warning_0714.py"
+    spec = importlib.util.spec_from_file_location("memory_context_warning_0714", path)
+    assert spec and spec.loader
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+
+    assert migration.revision == "memory_context_warning_0714"
+    assert migration.down_revision == "session_permission_semantics_0713"
+    assert "event_type = 'memory_context_degraded'" in migration._upgrade_sql()
+    assert "item_type = 'warning'" in migration._upgrade_sql()
+    assert "item_status = 'succeeded'" in migration._upgrade_sql()
+    assert "item_type = 'error'" in migration._downgrade_sql()
+    assert "item_status = 'failed'" in migration._downgrade_sql()

@@ -64,6 +64,7 @@ def test_thread_item_union_exposes_discriminator_and_all_renderer_variants() -> 
         "context_compaction",
         "artifact",
         "boundary",
+        "warning",
         "error",
         "event",
     }
@@ -183,6 +184,8 @@ def test_user_thread_projection_never_echoes_raw_reasoning_or_unknown_runtime_co
         ("session_compact", "system", "context_compaction"),
         ("artifact_delivery", "system", "artifact"),
         ("run_cancelled", "system", "boundary"),
+        ("memory_context_degraded", "system", "warning"),
+        ("memory_context_unavailable", "system", "error"),
         ("error", "system", "error"),
         ("unknown_future_event", "system", "event"),
     ],
@@ -201,6 +204,7 @@ def test_thread_item_classification_is_explicit_and_vendor_neutral(event_type: s
         ("subagent_activity", "member_run_started", "running"),
         ("boundary", "run_cancelled", "cancelled"),
         ("approval_request", "permission_request", "waiting_user"),
+        ("warning", "memory_context_degraded", "succeeded"),
     ],
 )
 def test_thread_item_status_matches_the_historical_backfill(

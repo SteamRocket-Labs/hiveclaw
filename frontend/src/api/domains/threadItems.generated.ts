@@ -217,6 +217,11 @@ export interface BoundaryThreadItem extends ThreadItemBase {
   item_data: BoundaryItemData;
 }
 
+export interface WarningThreadItem extends ThreadItemBase {
+  item_type: "warning";
+  item_data: ErrorItemData;
+}
+
 export interface ErrorThreadItem extends ThreadItemBase {
   item_type: "error";
   item_data: ErrorItemData;
@@ -241,6 +246,7 @@ export type ThreadItem =
   | CompactionThreadItem
   | ArtifactThreadItem
   | BoundaryThreadItem
+  | WarningThreadItem
   | ErrorThreadItem
   | EventThreadItem
 ;
@@ -272,7 +278,7 @@ export const LEGACY_THREAD_ITEM_TYPE_MAP: Readonly<Record<string, ThreadItemType
   "member_message_rejected": "subagent_activity",
   "member_run_started": "subagent_activity",
   "member_spawned": "subagent_activity",
-  "memory_context_degraded": "error",
+  "memory_context_degraded": "warning",
   "memory_context_unavailable": "error",
   "permission": "approval_request",
   "permission_profile_updated": "approval_decision",

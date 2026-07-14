@@ -249,6 +249,7 @@ async def test_resolve_memory_context_emits_durable_degraded_fact_and_model_mark
     assert "RESIDENT_IDENTITY" in context
     assert "do not assume complete recall" in context
     assert events[0]["event_type"] == "memory_context_degraded"
+    assert events[0]["status"] == "degraded"
     assert events[0]["retryable"] is True
     assert spans[0]["span_type"] == "memory"
     assert spans[0]["status"] == "degraded"

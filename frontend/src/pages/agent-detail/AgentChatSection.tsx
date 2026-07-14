@@ -1427,7 +1427,7 @@ function AgentChatSection({
           t={t}
         />
       ) : null;
-      const retryAnchor = item.item_type === 'error' && item.item_data.retryable
+      const retryAnchor = (item.item_type === 'warning' || item.item_type === 'error') && item.item_data.retryable
         ? findRetryAnchorMessage(visibleTimeline, index)
         : null;
       const recoveryActions = retryAnchor && onBranchMessage ? (

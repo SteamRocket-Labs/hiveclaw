@@ -29,6 +29,7 @@ const TITLES: Record<ThreadItemType, string> = {
   context_compaction: 'Context compaction',
   artifact: 'Artifact',
   boundary: 'Run boundary',
+  warning: 'Runtime warning',
   error: 'Runtime error',
   event: 'Runtime event',
 };
@@ -37,10 +38,10 @@ function assertNever(value: never): never {
   throw new Error(`Unhandled ThreadItem renderer variant: ${String(value)}`);
 }
 
-function statusIcon(status: ThreadItemStatus): React.ReactNode {
+function statusIcon(status: ThreadItemStatus, itemType: ThreadItemType): React.ReactNode {
   if (status === 'running') return <IconLoader2 className="thread-item-spinner" size={14} aria-hidden="true" />;
   if (status === 'waiting_user') return <IconClock size={14} aria-hidden="true" />;
-  if (status === 'failed') return <IconAlertTriangle size={14} aria-hidden="true" />;
+  if (status === 'failed' || itemType === 'warning') return <IconAlertTriangle size={14} aria-hidden="true" />;
   if (status === 'cancelled') return <IconBan size={14} aria-hidden="true" />;
   return <IconCheck size={14} aria-hidden="true" />;
 }
@@ -101,6 +102,7 @@ function detailsFor(item: ThreadItem, t: (key: string, fallback: string) => stri
         { label: 'phase', value: item.item_data.phase },
         { label: 'reason', value: item.item_data.reason },
       ];
+    case 'warning':
     case 'error':
       return [
         { label: 'retry', value: item.item_data.retryable ? t('sessionWorkbench.threadItem.value.retryable', 'retryable') : t('sessionWorkbench.threadItem.value.notRetryable', 'not retryable') },
@@ -124,7 +126,7 @@ export interface ThreadItemRendererProps {
   actions?: React.ReactNode;
 }
 
-const USER_CONVERSATION_ITEM_TYPES = new Set<ThreadItemType>(['approval_request', 'error', 'plan']);
+const USER_CONVERSATION_ITEM_TYPES = new Set<ThreadItemType>(['approval_request', 'warning', 'error', 'plan']);
 
 export function shouldRenderThreadItemInConversation(item: ThreadItem, operatorView: boolean): boolean {
   if (operatorView && item.audience === 'operator') return true;
@@ -171,7 +173,7 @@ export function ThreadItemRenderer({
       aria-current={selected ? 'true' : undefined}
     >
       <header className="thread-item-header">
-        <span className="thread-item-status-icon" data-status={item.item_status}>{statusIcon(item.item_status)}</span>
+        <span className="thread-item-status-icon" data-status={item.item_status}>{statusIcon(item.item_status, item.item_type)}</span>
         <strong>{title}</strong>
         <span className="thread-item-status-text">{status}</span>
         <span className="thread-item-sequence">#{item.sequence}</span>

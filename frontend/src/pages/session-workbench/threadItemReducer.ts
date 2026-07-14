@@ -20,6 +20,7 @@ export const THREAD_ITEM_TYPES: readonly ThreadItemType[] = [
   'context_compaction',
   'artifact',
   'boundary',
+  'warning',
   'error',
   'event',
 ] as const;
@@ -205,6 +206,7 @@ function legacyItemData(itemType: ThreadItemType, eventType: string, data: Recor
       };
     case 'boundary':
       return { phase: text(data.phase || data.status), reason: text(data.reason) };
+    case 'warning':
     case 'error':
       return {
         code: text(data.code || data.error_code),
@@ -485,6 +487,14 @@ export function threadItemToAgentChatMessage(item: ThreadItem): AgentChatMessage
       };
     case 'boundary':
       return { ...base, eventStatus: item.item_data.phase || item.item_status, eventReason: item.item_data.reason || undefined };
+    case 'warning':
+      return {
+        ...base,
+        eventStatus: 'degraded',
+        eventReason: item.item_data.reason || undefined,
+        eventRetryable: item.item_data.retryable,
+        eventRetryReason: item.item_data.retry_reason || undefined,
+      };
     case 'error':
       return {
         ...base,

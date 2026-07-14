@@ -24,12 +24,14 @@
 }
 
 .thread-item-card[data-thread-item-status='failed'] { --thread-item-tone: var(--error); }
+.thread-item-card[data-thread-item-type='warning'] { --thread-item-tone: var(--warning); }
 .thread-item-card[data-thread-item-status='waiting_user'] { --thread-item-tone: var(--warning); }
 .thread-item-card[data-thread-item-status='cancelled'] { --thread-item-tone: var(--text-tertiary); }
 
 /* The decorative tone may be lighter than a text color; keep state labels AA-readable. */
 [data-theme='light'] .thread-item-card { --thread-item-readable-tone: var(--accent-hover); }
 [data-theme='light'] .thread-item-card[data-thread-item-status='failed'] { --thread-item-readable-tone: #b91c1c; }
+[data-theme='light'] .thread-item-card[data-thread-item-type='warning'] { --thread-item-readable-tone: #8a5100; }
 [data-theme='light'] .thread-item-card[data-thread-item-status='waiting_user'] { --thread-item-readable-tone: #8a5100; }
 [data-theme='light'] .thread-item-card[data-thread-item-status='cancelled'] { --thread-item-readable-tone: var(--text-secondary); }
 

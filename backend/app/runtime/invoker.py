@@ -776,7 +776,7 @@ async def _consume_memory_context_status(
     event = {
         "type": "session_context",
         "event_type": event_type,
-        "status": "failed",
+        "status": "degraded" if result.status == "degraded" else "failed",
         "code": result.code,
         "retryable": result.retryable,
         "retry_reason": "Retry the original turn after memory recovery.",

@@ -25,6 +25,7 @@ THREAD_ITEM_TYPES = {
     "context_compaction",
     "artifact",
     "boundary",
+    "warning",
     "error",
     "event",
 }
@@ -97,7 +98,7 @@ EVENT_THREAD_ITEM_TYPES: dict[str, str] = {
     "quota_exceeded": "error",
     "runtime_action_failed": "error",
     "runtime_action_blocked": "error",
-    "memory_context_degraded": "error",
+    "memory_context_degraded": "warning",
     "memory_context_unavailable": "error",
 }
 
@@ -329,6 +330,11 @@ class BoundaryThreadItem(ThreadItemBase):
     item_data: BoundaryItemData
 
 
+class WarningThreadItem(ThreadItemBase):
+    item_type: Literal["warning"]
+    item_data: ErrorItemData
+
+
 class ErrorThreadItem(ThreadItemBase):
     item_type: Literal["error"]
     item_data: ErrorItemData
@@ -353,6 +359,7 @@ ThreadItem = Annotated[
     | CompactionThreadItem
     | ArtifactThreadItem
     | BoundaryThreadItem
+    | WarningThreadItem
     | ErrorThreadItem
     | EventThreadItem,
     Field(discriminator="item_type"),
@@ -526,7 +533,7 @@ def _item_data(item_type: str, *, event_type: str, data: dict[str, Any]) -> dict
         }
     if item_type == "boundary":
         return {"phase": _text(data.get("phase") or data.get("status")), "reason": _text(data.get("reason"))}
-    if item_type == "error":
+    if item_type in {"warning", "error"}:
         return {
             "code": _text(data.get("code") or data.get("error_code")),
             "reason": _text(data.get("reason") or data.get("error")),
@@ -632,6 +639,8 @@ def _user_summary(
             "run_cancelled": "任务已取消。",
             "cancelled": "任务已取消。",
         }.get(phase, "任务状态已更新。")
+    if item_type == "warning":
+        return _text(data.get("user_summary") or data.get("message")) or "部分上下文暂时不可用，任务仍可继续。"
     if item_type == "error":
         if bool(data.get("retryable")):
             return "连接或服务暂时不可用，本次任务可以安全重试。"
@@ -655,7 +664,7 @@ def _user_action(
             "impact": "可能产生不可逆影响" if destructive else "可撤销或只读操作",
             "details": _safe_argument_details(data.get("arguments")),
         }
-    if item_type == "error" and bool(data.get("retryable")):
+    if item_type in {"warning", "error"} and bool(data.get("retryable")):
         return {
             "kind": "retry_turn",
             "label": "重试本轮",
@@ -710,7 +719,7 @@ def _user_item_data(item_type: str, item_data: dict[str, Any]) -> dict[str, Any]
         clean["original_message_count"] = None
         clean["kept_message_count"] = None
         clean["continuity_sections_injected"] = []
-    elif item_type == "error":
+    elif item_type in {"warning", "error"}:
         clean["code"] = None
         clean["reason"] = None
         clean["retry_reason"] = None

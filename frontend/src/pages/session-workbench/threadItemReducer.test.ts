@@ -56,6 +56,7 @@ describe('typed ThreadItem reducer', () => {
       'context_compaction',
       'artifact',
       'boundary',
+      'warning',
       'error',
       'event',
     ]);

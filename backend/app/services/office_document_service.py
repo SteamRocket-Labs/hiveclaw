@@ -86,6 +86,82 @@ class OfficePreviewMalformedError(OfficePreviewError):
     error_code = "office_preview_malformed"
 
 
+def extract_officecli_text_payload(payload: dict[str, Any], *, office_format: str) -> str:
+    """Convert OfficeCLI's format-specific text response into complete readable text."""
+
+    normalized_format = office_format.strip().lower().removeprefix(".")
+    if normalized_format not in SUPPORTED_OFFICE_KINDS:
+        raise OfficePreviewMalformedError(f"Unsupported OfficeCLI text payload format: {office_format}")
+    if payload.get("success") is not True:
+        raise OfficePreviewMalformedError("OfficeCLI text preview returned an unsuccessful payload")
+
+    data = payload.get("data")
+    if isinstance(data, str):
+        return data
+    if not isinstance(data, dict):
+        raise OfficePreviewMalformedError("OfficeCLI text preview returned an invalid data object")
+
+    if normalized_format == "docx":
+        elements = data.get("elements")
+        total_elements = data.get("totalElements")
+        if (
+            not isinstance(elements, list)
+            or type(total_elements) is not int
+            or total_elements != len(elements)
+        ):
+            raise OfficePreviewMalformedError("OfficeCLI DOCX text payload has invalid element coverage")
+        paragraphs: list[str] = []
+        for element in elements:
+            if not isinstance(element, dict) or not isinstance(element.get("text"), str):
+                raise OfficePreviewMalformedError("OfficeCLI DOCX text payload contains an invalid element")
+            paragraphs.append(element["text"])
+        return "\n\n".join(paragraphs)
+
+    if normalized_format == "xlsx":
+        sheets = data.get("sheets")
+        if not isinstance(sheets, list):
+            raise OfficePreviewMalformedError("OfficeCLI XLSX text payload has invalid sheet coverage")
+        rendered_sheets: list[str] = []
+        for sheet in sheets:
+            if not isinstance(sheet, dict) or not isinstance(sheet.get("name"), str):
+                raise OfficePreviewMalformedError("OfficeCLI XLSX text payload contains an invalid sheet")
+            rows = sheet.get("rows")
+            if not isinstance(rows, list):
+                raise OfficePreviewMalformedError("OfficeCLI XLSX text payload contains invalid rows")
+            rendered_rows = [f"Sheet: {sheet['name']}"]
+            for row in rows:
+                if not isinstance(row, dict) or type(row.get("row")) is not int:
+                    raise OfficePreviewMalformedError("OfficeCLI XLSX text payload contains an invalid row")
+                cells = row.get("cells")
+                if not isinstance(cells, dict):
+                    raise OfficePreviewMalformedError("OfficeCLI XLSX text payload contains invalid cells")
+                rendered_cells: list[str] = []
+                for coordinate, value in cells.items():
+                    if not isinstance(coordinate, str) or not (
+                        value is None or isinstance(value, (str, int, float, bool))
+                    ):
+                        raise OfficePreviewMalformedError("OfficeCLI XLSX text payload contains an invalid cell")
+                    cell_text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+                    rendered_cells.append(f"{coordinate}: {cell_text}")
+                rendered_rows.append(f"Row {row['row']}: " + "\t".join(rendered_cells))
+            rendered_sheets.append("\n".join(rendered_rows))
+        return "\n\n".join(rendered_sheets)
+
+    slides = data.get("slides")
+    total_slides = data.get("totalSlides")
+    if not isinstance(slides, list) or type(total_slides) is not int or total_slides != len(slides):
+        raise OfficePreviewMalformedError("OfficeCLI PPTX text payload has invalid slide coverage")
+    rendered_slides: list[str] = []
+    for slide in slides:
+        if not isinstance(slide, dict) or type(slide.get("index")) is not int or slide["index"] < 0:
+            raise OfficePreviewMalformedError("OfficeCLI PPTX text payload contains an invalid slide")
+        texts = slide.get("texts")
+        if not isinstance(texts, list) or any(not isinstance(value, str) for value in texts):
+            raise OfficePreviewMalformedError("OfficeCLI PPTX text payload contains invalid slide text")
+        rendered_slides.append("\n".join([f"Slide {slide['index'] + 1}", *texts]))
+    return "\n\n".join(rendered_slides)
+
+
 class OfficeDocumentService:
     """Workspace-scoped document manager for Office artifacts and sidecars."""
 
@@ -316,7 +392,7 @@ class OfficeDocumentService:
 
         try:
             payload = self.adapter.run_view(target, mode="text", cwd=self.workspace)
-            text = self._payload_text(payload, mode="text")
+            text = extract_officecli_text_payload(payload, office_format=target.suffix)
         except (OfficeCLIError, OfficePreviewMalformedError) as text_error:
             raise OfficePreviewUnavailableError(
                 f"OfficeCLI HTML and text preview modes failed ({type(text_error).__name__})"

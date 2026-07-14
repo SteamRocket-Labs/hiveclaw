@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import html as html_lib
 import json
 import shutil
 import tempfile
@@ -12,7 +13,12 @@ from openpyxl import Workbook
 from pptx import Presentation
 from pptx.util import Inches
 
-from app.services.office_document_service import OFFICE_PREVIEW_CSP, OfficeDocumentService
+from app.services.office_document_service import (
+    OFFICE_PREVIEW_CSP,
+    OfficeDocumentService,
+    OfficePreviewMalformedError,
+    extract_officecli_text_payload,
+)
 from app.services.officecli_adapter import OfficeCLIAdapter
 
 
@@ -42,8 +48,32 @@ def _write_contract_fixtures(root: Path) -> dict[str, Path]:
     return {"docx": docx_path, "xlsx": xlsx_path, "pptx": pptx_path}
 
 
-def _valid_view_payload(payload: dict[str, Any]) -> bool:
+def _valid_html_view_payload(payload: dict[str, Any]) -> bool:
     return payload.get("success") is True and isinstance(payload.get("data"), str) and bool(payload["data"].strip())
+
+
+def _valid_text_view_payload(payload: dict[str, Any], *, office_format: str) -> bool:
+    try:
+        return bool(extract_officecli_text_payload(payload, office_format=office_format).strip())
+    except OfficePreviewMalformedError:
+        return False
+
+
+def _preview_contains_csp(rendered_html: str) -> bool:
+    escaped_csp = html_lib.escape(OFFICE_PREVIEW_CSP, quote=True)
+    return (
+        'http-equiv="Content-Security-Policy"' in rendered_html
+        and f'content="{escaped_csp}"' in rendered_html
+    )
+
+
+def _contract_format_ok(result: dict[str, Any]) -> bool:
+    return (
+        result.get("html") is True
+        and result.get("text") is True
+        and result.get("service_preview_mode") == "html"
+        and result.get("csp") is True
+    )
 
 
 def verify_officecli_binary_contract(*, binary: str | Path) -> dict[str, Any]:
@@ -60,12 +90,18 @@ def verify_officecli_binary_contract(*, binary: str | Path) -> dict[str, Any]:
             text_payload = adapter.run_view(path, mode="text", cwd=root)
             preview = service.render_preview(path.name)
             format_results[office_format] = {
-                "html": _valid_view_payload(html_payload),
-                "text": _valid_view_payload(text_payload),
+                "html": _valid_html_view_payload(html_payload),
+                "text": _valid_text_view_payload(text_payload, office_format=office_format),
                 "service_preview_mode": preview.preview_mode,
-                "csp": OFFICE_PREVIEW_CSP in preview.html,
+                "csp": _preview_contains_csp(preview.html),
                 "output_bytes": preview.output_bytes,
             }
+
+    failed_formats = sorted(
+        office_format for office_format, result in format_results.items() if not _contract_format_ok(result)
+    )
+    if failed_formats:
+        raise RuntimeError(f"OfficeCLI binary contract failed for: {', '.join(failed_formats)}")
 
     return {
         "status": "ok",

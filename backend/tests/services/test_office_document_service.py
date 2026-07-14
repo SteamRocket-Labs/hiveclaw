@@ -127,7 +127,16 @@ def test_office_preview_falls_back_to_escaped_text_on_html_renderer_failure(tmp_
     adapter = _PreviewAdapter(
         [
             OfficeCLIExecutionError(command="view", returncode=2, stderr="html renderer unavailable"),
-            {"success": True, "data": "<script>alert('no')</script>\nVisible text"},
+            {
+                "success": True,
+                "data": {
+                    "elements": [
+                        {"path": "/body/0", "text": "<script>alert('no')</script>", "type": "paragraph"},
+                        {"path": "/body/1", "text": "Visible text", "type": "paragraph"},
+                    ],
+                    "totalElements": 2,
+                },
+            },
         ]
     )
     service = OfficeDocumentService(tmp_path, adapter=adapter, preview_max_bytes=1024 * 1024)
@@ -139,6 +148,89 @@ def test_office_preview_falls_back_to_escaped_text_on_html_renderer_failure(tmp_
     assert "&lt;script&gt;" in result.html
     assert "<script>alert" not in result.html
     assert [call["mode"] for call in adapter.calls] == ["html", "text"]
+
+
+@pytest.mark.parametrize(
+    ("office_format", "payload", "expected_fragments"),
+    [
+        (
+            "docx",
+            {
+                "success": True,
+                "data": {
+                    "elements": [
+                        {"path": "/body/0", "text": "First paragraph", "type": "paragraph"},
+                        {"path": "/body/1", "text": "Last paragraph sentinel", "type": "paragraph"},
+                    ],
+                    "totalElements": 2,
+                },
+            },
+            ("First paragraph", "Last paragraph sentinel"),
+        ),
+        (
+            "xlsx",
+            {
+                "success": True,
+                "data": {
+                    "sheets": [
+                        {
+                            "name": "Summary",
+                            "rows": [{"row": 1, "cells": {"A1": "Revenue", "B1": 42}}],
+                        },
+                        {
+                            "name": "Last sheet sentinel",
+                            "rows": [{"row": 9, "cells": {"Z9": True}}],
+                        },
+                    ]
+                },
+            },
+            ("Sheet: Summary", "A1: Revenue", "B1: 42", "Last sheet sentinel", "Z9: true"),
+        ),
+        (
+            "pptx",
+            {
+                "success": True,
+                "data": {
+                    "slides": [
+                        {"index": 0, "path": "/slides/0", "texts": ["Opening"]},
+                        {"index": 7, "path": "/slides/7", "texts": ["Last slide sentinel"]},
+                    ],
+                    "totalSlides": 2,
+                },
+            },
+            ("Slide 1", "Opening", "Slide 8", "Last slide sentinel"),
+        ),
+    ],
+)
+def test_officecli_structured_text_payload_preserves_all_format_content(
+    office_format,
+    payload,
+    expected_fragments,
+):
+    from app.services.office_document_service import extract_officecli_text_payload
+
+    rendered = extract_officecli_text_payload(payload, office_format=office_format)
+
+    for fragment in expected_fragments:
+        assert fragment in rendered
+
+
+@pytest.mark.parametrize(
+    ("office_format", "payload"),
+    [
+        ("docx", {"success": True, "data": {"elements": [{"text": 7}], "totalElements": 1}}),
+        ("xlsx", {"success": True, "data": {"sheets": [{"name": "Sheet", "rows": "not-a-list"}]}}),
+        (
+            "pptx",
+            {"success": True, "data": {"slides": [{"index": 0, "texts": ["only one"]}], "totalSlides": 2}},
+        ),
+    ],
+)
+def test_officecli_structured_text_payload_rejects_malformed_or_incomplete_contract(office_format, payload):
+    from app.services.office_document_service import OfficePreviewMalformedError, extract_officecli_text_payload
+
+    with pytest.raises(OfficePreviewMalformedError):
+        extract_officecli_text_payload(payload, office_format=office_format)
 
 
 def test_office_preview_retries_once_then_fails_when_source_keeps_changing(tmp_path):

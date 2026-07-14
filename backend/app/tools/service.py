@@ -19,9 +19,13 @@ from typing import Any, Awaitable, Callable
 from app.agents.coordination import CoordinationRuntime, coordination_runtime
 from app.agents.coordination_gateway import CoordinationGateway, InProcessCoordinationGateway
 from app.agents.coordination_wiring import gateway_scope
-from app.core.execution_context import ExecutionPrincipal
+from app.core.execution_context import A2AToolAuthorityFrame, ExecutionPrincipal
 from app.runtime.decision_ledger import build_authorization_decision_entry
-from app.runtime.ccplus_contracts import ToolCallLifecycleV1, ToolExecutionFrameV1
+from app.runtime.ccplus_contracts import (
+    ToolCallLifecycleV1,
+    ToolExecutionFrameV1,
+    permission_profile_snapshot,
+)
 from app.services.action_preflight import (
     ActionPreflightInput,
     ActionPreflightResult,
@@ -41,6 +45,7 @@ from app.services.capability_group_policy_service import (
     policy_capability_group_names_for_tool,
 )
 from app.tools.governance import EventCallback, GovernanceDependencies, ToolGovernanceContext
+from app.tools.execution_pipeline import ToolExecutionRequest as PipelineRequest, run_tool_execution
 from app.tools.plan_gate_registry import hard_gated_action_kind
 from app.tools.result_envelope import ToolContentEnvelope, render_tool_error
 from app.tools.runtime import ToolExecutionContext, ToolExecutionRegistry, ToolExecutionRequest
@@ -521,12 +526,7 @@ def _record_final_tool_decision(
     governance_context: ToolGovernanceContext | None = None,
 ) -> dict[str, Any]:
     profile = runtime_context.permission_profile
-    if is_dataclass(profile):
-        policy_snapshot = asdict(profile)
-    elif isinstance(profile, dict):
-        policy_snapshot = dict(profile)
-    else:
-        policy_snapshot = {"mode": "default"}
+    policy_snapshot = permission_profile_snapshot(profile)
     if governance_context is not None:
         guard_policy_snapshot = getattr(governance_context, "guard_policy_snapshot", None)
         guard_policy_verdict = getattr(governance_context, "guard_policy_verdict", None)
@@ -580,6 +580,28 @@ def _record_final_tool_decision(
                 "idempotency_key": decision.idempotency_key,
                 "authority_policy_snapshot": policy_snapshot,
                 "authority_capability_snapshot": capability_snapshot,
+                "execution_principal": (
+                    runtime_context.execution_principal.to_evidence()
+                    if isinstance(runtime_context.execution_principal, ExecutionPrincipal)
+                    else None
+                ),
+                "authority_snapshot_hash": runtime_context.authority_snapshot_hash,
+                "authority_policy_hash": runtime_context.authority_policy_hash,
+                "authority_frame_schema": runtime_context.authority_frame_schema,
+                "authority_frame_receipt": {
+                    "schema": runtime_context.authority_frame_schema,
+                    "capability_snapshot_hash": runtime_context.authority_snapshot_hash,
+                    "policy_snapshot_hash": runtime_context.authority_policy_hash,
+                    "trace_id": runtime_context.authority_trace_id,
+                    "session_id": runtime_context.session_id,
+                    "parent_session_id": runtime_context.authority_parent_session_id,
+                    "runtime_task_id": runtime_context.runtime_task_id,
+                    "root_runtime_task_id": runtime_context.authority_root_runtime_task_id,
+                    "budget_run_id": runtime_context.authority_budget_run_id,
+                    "delegation_id": runtime_context.authority_delegation_id,
+                    "sandbox_profile": runtime_context.authority_sandbox_profile,
+                    "approval_policy": runtime_context.authority_approval_policy,
+                },
             }
         )
     return payload
@@ -850,6 +872,7 @@ class ToolRuntimeService:
         agent_id: uuid.UUID,
         user_id: uuid.UUID,
         execution_identity: Any | None = None,
+        authority_frame: A2AToolAuthorityFrame | None = None,
         tool_call_id: str | None = None,
         event_callback: EventCallback | None = None,
         delegation_token: Any | None = None,
@@ -870,9 +893,6 @@ class ToolRuntimeService:
         _expected_asset_refs: tuple[Any, ...] | None = None,
     ) -> str | ToolContentEnvelope:
         """Delegate to the single run_tool_execution lifecycle owner."""
-        from app.tools.execution_pipeline import ToolExecutionRequest as PipelineRequest
-        from app.tools.execution_pipeline import run_tool_execution
-
         return await run_tool_execution(
             self,
             PipelineRequest(
@@ -881,6 +901,7 @@ class ToolRuntimeService:
                 agent_id=agent_id,
                 user_id=user_id,
                 execution_identity=execution_identity,
+                authority_frame=authority_frame,
                 tool_call_id=tool_call_id,
                 event_callback=event_callback,
                 delegation_token=delegation_token,

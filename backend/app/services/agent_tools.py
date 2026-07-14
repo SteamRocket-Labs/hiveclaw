@@ -25,6 +25,7 @@ from urllib.parse import quote
 from sqlalchemy import or_, select
 
 from app.database import tenant_scoped_session
+from app.core.execution_context import A2AToolAuthorityFrame
 from app.models.agent import Agent
 from app.config import get_settings
 from app.services.channel_delivery_service import ChannelDeliveryService, channel_delivery_target
@@ -1063,6 +1064,8 @@ async def execute_tool(
     arguments: dict,
     agent_id: uuid.UUID,
     user_id: uuid.UUID,
+    execution_identity: Any | None = None,
+    authority_frame: A2AToolAuthorityFrame | None = None,
     tool_call_id: str | None = None,
     event_callback: ToolEventCallback | None = None,
     delegation_token: Any | None = None,
@@ -1075,6 +1078,7 @@ async def execute_tool(
     round_state: dict[str, Any] | None = None,
     t0_refs: tuple[str, ...] = (),
     plan_mode_interactive_available: bool = False,
+    plan_mode_unattended_available: bool = False,
     emit_runtime_hooks: bool = True,
     trace_metadata_sink: dict[str, Any] | None = None,
     workspace_override: Path | str | None = None,
@@ -1085,6 +1089,8 @@ async def execute_tool(
         arguments,
         agent_id=agent_id,
         user_id=user_id,
+        execution_identity=execution_identity,
+        authority_frame=authority_frame,
         tool_call_id=tool_call_id,
         event_callback=event_callback,
         delegation_token=delegation_token,
@@ -1097,6 +1103,7 @@ async def execute_tool(
         round_state=round_state,
         t0_refs=t0_refs,
         plan_mode_interactive_available=plan_mode_interactive_available,
+        plan_mode_unattended_available=plan_mode_unattended_available,
         emit_runtime_hooks=emit_runtime_hooks,
         trace_metadata_sink=trace_metadata_sink,
         workspace_override=workspace_override,

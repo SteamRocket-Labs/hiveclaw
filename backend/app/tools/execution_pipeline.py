@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable
+
+from app.core.execution_context import A2A_TOOL_AUTHORITY_FRAME_SCHEMA, A2AToolAuthorityFrame, ExecutionPrincipal
+from app.runtime.ccplus_contracts import permission_profile_snapshot, permission_profile_snapshot_hash
+from app.services.execution_receipts import canonical_payload_hash
 
 if TYPE_CHECKING:
     from app.tools.service import ApprovalDecisionSet, EventCallback, ToolContentEnvelope
@@ -16,6 +21,7 @@ class ToolExecutionRequest:
     agent_id: Any
     user_id: Any
     execution_identity: Any | None = None
+    authority_frame: A2AToolAuthorityFrame | None = None
     tool_call_id: str | None = None
     event_callback: EventCallback | None = None
     delegation_token: Any | None = None
@@ -130,6 +136,9 @@ def _record_precontext_block(state: _ToolExecutionState, *, outcome: Any, reason
 
 async def _prepare_runtime_context(state: _ToolExecutionState) -> _Stop | None:
     request, ports, service = state.request, state.ports, state.service
+    authority_block = _validate_authority_frame(state)
+    if authority_block is not None:
+        return authority_block
     approval = request.approval_decision
     if approval is not None and (
         approval.tool_name != request.tool_name
@@ -185,6 +194,30 @@ async def _prepare_runtime_context(state: _ToolExecutionState) -> _Stop | None:
         t0_refs=request.t0_refs,
     )
     _configure_runtime_context(state)
+    principal = state.runtime_context.execution_principal
+    if (
+        request.authority_frame is not None
+        and request.authority_frame.required
+        and (
+            not isinstance(principal, ExecutionPrincipal)
+            or str(principal.tenant_id) != str(state.runtime_context.tenant_id)
+        )
+    ):
+        _record_precontext_block(
+            state,
+            outcome=ports.decision_outcome_type.DENY,
+            reason="a2a_authority_tenant_mismatch",
+        )
+        return _Stop(
+            ports.render_tool_error(
+                tool_name=request.tool_name,
+                error_class="authority_context_unavailable",
+                message="The A2A authority tenant does not match the resolved tool runtime.",
+                provider="a2a_authority_frame",
+                retryable=False,
+                actionable_hint="Recreate the delegated run from its authenticated parent session.",
+            )
+        )
     state.original_arguments = dict(state.arguments)
     _record_lifecycle(state, "created")
     state.arguments = ports.inject_runtime_arguments(request.tool_name, state.arguments, state.runtime_context)
@@ -204,12 +237,193 @@ def _configure_runtime_context(state: _ToolExecutionState) -> None:
     context.delegation_token = request.delegation_token
     if request.execution_identity is not None:
         context.execution_identity = request.execution_identity
+    authority_frame = request.authority_frame
+    principal = authority_frame.principal if authority_frame is not None else None
+    if isinstance(principal, Mapping):
+        principal = ExecutionPrincipal.from_evidence(principal)
+    context.execution_principal = principal
+    context.authority_snapshot_hash = authority_frame.capability_snapshot_hash if authority_frame else None
+    context.authority_policy_hash = authority_frame.policy_snapshot_hash if authority_frame else None
+    context.authority_frame_schema = authority_frame.schema if authority_frame else None
+    context.authority_frame_required = authority_frame is not None
+    context.authority_trace_id = authority_frame.trace_id if authority_frame else None
+    context.authority_parent_session_id = authority_frame.parent_session_id if authority_frame else None
+    context.authority_root_runtime_task_id = authority_frame.root_runtime_task_id if authority_frame else None
+    context.authority_budget_run_id = authority_frame.budget_run_id if authority_frame else None
+    context.authority_delegation_id = authority_frame.delegation_id if authority_frame else None
+    context.authority_sandbox_profile = authority_frame.sandbox_profile if authority_frame else None
+    context.authority_approval_policy = authority_frame.approval_policy if authority_frame else None
     context.approval_decision = request.approval_decision
     context.emit_runtime_hooks = request.emit_runtime_hooks
     context.plan_mode_interactive_available = request.plan_mode_interactive_available
     context.plan_mode_unattended_available = request.plan_mode_unattended_available
     if request.workspace_override is not None:
         context.workspace = state.ports.path_type(request.workspace_override)
+
+
+def _valid_sha256(value: Any) -> bool:
+    normalized = str(value or "").strip().lower()
+    return len(normalized) == 64 and all(char in "0123456789abcdef" for char in normalized)
+
+
+def _authority_principal(frame: A2AToolAuthorityFrame) -> ExecutionPrincipal | None:
+    principal = frame.principal
+    try:
+        if isinstance(principal, Mapping):
+            principal = ExecutionPrincipal.from_evidence(principal)
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return None
+    return principal if isinstance(principal, ExecutionPrincipal) else None
+
+
+def _identity_snapshot(value: Any | None) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if isinstance(value, Mapping):
+        source = value
+    else:
+        source = {
+            "identity_type": getattr(value, "identity_type", None),
+            "identity_id": getattr(value, "identity_id", None),
+            "label": getattr(value, "label", None),
+        }
+    identity_type = str(source.get("identity_type") or "").strip()
+    if not identity_type:
+        return None
+    identity_id = source.get("identity_id")
+    return {
+        "identity_type": identity_type,
+        "identity_id": str(identity_id) if identity_id else None,
+        "label": source.get("label"),
+    }
+
+
+def _authority_snapshot_failure(
+    request: ToolExecutionRequest,
+    frame: A2AToolAuthorityFrame,
+    principal: ExecutionPrincipal,
+) -> tuple[str, str] | None:
+    snapshot = dict(frame.capability_snapshot) if isinstance(frame.capability_snapshot, Mapping) else None
+    if snapshot is None:
+        return "a2a_authority_snapshot_missing", "The A2A authority snapshot is missing."
+    if canonical_payload_hash(snapshot) != frame.capability_snapshot_hash:
+        return "a2a_authority_snapshot_drift", "The A2A authority snapshot no longer matches its receipt."
+    profile = permission_profile_snapshot(frame.permission_profile)
+    if permission_profile_snapshot(request.permission_profile) != profile:
+        return "a2a_authority_policy_drift", "The A2A permission profile changed before the tool effect."
+    if snapshot.get("permission_profile") != profile:
+        return "a2a_authority_snapshot_drift", "The A2A permission profile is not bound to the authority snapshot."
+    if snapshot.get("execution_principal") != principal.to_evidence():
+        return "a2a_execution_principal_drift", "The A2A principal is not bound to the authority snapshot."
+    expected_bindings = {
+        "tenant_id": str(principal.tenant_id),
+        "owner_id": str(request.user_id or ""),
+        "target_agent_id": str(request.agent_id or ""),
+        "session_id": str(frame.session_id or ""),
+        "parent_session_id": str(frame.parent_session_id or ""),
+        "runtime_task_id": str(frame.runtime_task_id or ""),
+        "root_runtime_task_id": str(frame.root_runtime_task_id or ""),
+        "budget_run_id": str(frame.budget_run_id or ""),
+        "trace_id": str(frame.trace_id or ""),
+    }
+    for key, expected in expected_bindings.items():
+        if str(snapshot.get(key) or "") != expected:
+            return "a2a_authority_binding_drift", f"The A2A authority binding '{key}' changed before effect."
+    if _identity_snapshot(frame.execution_identity) != snapshot.get("execution_identity"):
+        return "a2a_execution_identity_drift", "The A2A execution identity changed before the tool effect."
+    if _identity_snapshot(request.execution_identity) != _identity_snapshot(frame.execution_identity):
+        return "a2a_execution_identity_drift", "The tool request did not consume the framed execution identity."
+    if str(request.session_id or "") != str(frame.session_id or ""):
+        return "a2a_authority_binding_drift", "The tool request session differs from the A2A authority frame."
+    if str(request.runtime_task_id or "") != str(frame.runtime_task_id or ""):
+        return "a2a_authority_binding_drift", "The tool request task differs from the A2A authority frame."
+    if str(request.budget_run_id or "") != str(frame.budget_run_id or ""):
+        return "a2a_authority_binding_drift", "The tool request budget differs from the A2A authority frame."
+    if str(principal.root_runtime_task_id or "") != str(frame.root_runtime_task_id or ""):
+        return "a2a_authority_binding_drift", "The root task differs from the A2A execution principal."
+    if not str(frame.trace_id or "").strip():
+        return "a2a_authority_binding_drift", "The A2A authority frame has no trace reference."
+    if str(profile.get("sandbox") or "") != str(frame.sandbox_profile or ""):
+        return "a2a_sandbox_profile_drift", "The A2A sandbox profile changed before the tool effect."
+    if str(profile.get("approval_policy") or "") != str(frame.approval_policy or ""):
+        return "a2a_approval_policy_drift", "The A2A approval policy changed before the tool effect."
+    token = frame.delegation_token
+    if token is not None:
+        if str(getattr(token, "parent_agent_id", "")) != str(snapshot.get("source_agent_id") or ""):
+            return "a2a_delegation_token_drift", "The delegation token parent differs from the authority frame."
+        if str(getattr(token, "child_agent_id", "")) != str(snapshot.get("target_agent_id") or ""):
+            return "a2a_delegation_token_drift", "The delegation token child differs from the authority frame."
+        if frame.delegation_id and str(getattr(token, "delegation_id", "")) != frame.delegation_id:
+            return "a2a_delegation_token_drift", "The delegation token id differs from the authority frame."
+    elif snapshot.get("interaction_type") == "delegation":
+        return "a2a_delegation_token_missing", "The delegated A2A effect has no delegation token."
+    return None
+
+
+def _authority_frame_failure(
+    request: ToolExecutionRequest,
+    frame: A2AToolAuthorityFrame,
+    principal: ExecutionPrincipal | None,
+) -> tuple[str, str] | None:
+    if frame.required is not True:
+        return "a2a_authority_frame_required_invalid", "The A2A authority frame cannot disable effect validation."
+    if frame.schema != A2A_TOOL_AUTHORITY_FRAME_SCHEMA:
+        return "a2a_authority_frame_version_invalid", "The A2A authority frame version is missing or unsupported."
+    if principal is None:
+        return "a2a_execution_principal_missing", "The A2A execution principal is missing or invalid."
+    if str(principal.source_agent_id) != str(request.agent_id):
+        return "a2a_execution_principal_agent_mismatch", "The A2A principal does not match the target Agent."
+    if str(principal.requester_user_id or "") != str(request.user_id or ""):
+        return "a2a_execution_principal_requester_mismatch", "The A2A principal does not match the requester."
+    if not principal.root_session_id:
+        return "a2a_root_session_missing", "The A2A execution principal has no root session authority."
+    if not _valid_sha256(frame.capability_snapshot_hash):
+        return "a2a_authority_snapshot_invalid", "The A2A authority snapshot hash is missing or invalid."
+    if not _valid_sha256(frame.policy_snapshot_hash):
+        return "a2a_authority_policy_invalid", "The A2A permission policy hash is missing or invalid."
+    if frame.policy_snapshot_hash != permission_profile_snapshot_hash(frame.permission_profile):
+        return "a2a_authority_policy_drift", "The A2A permission profile no longer matches its receipt."
+    snapshot_failure = _authority_snapshot_failure(request, frame, principal)
+    if snapshot_failure is not None:
+        return snapshot_failure
+    denied_actions = {
+        str(action).strip()
+        for action in permission_profile_snapshot(frame.permission_profile).get("denied_actions", ())
+        if str(action).strip()
+    }
+    if request.tool_name in denied_actions:
+        return (
+            "a2a_parent_effect_denied",
+            f"The parent A2A permission profile explicitly denies tool '{request.tool_name}'.",
+        )
+    return None
+
+
+def _validate_authority_frame(state: _ToolExecutionState) -> _Stop | None:
+    request, ports = state.request, state.ports
+    frame = request.authority_frame
+    if frame is None:
+        return None
+    failure = _authority_frame_failure(request, frame, _authority_principal(frame))
+    if failure is None:
+        return None
+    reason, message = failure
+    _record_precontext_block(
+        state,
+        outcome=ports.decision_outcome_type.DENY,
+        reason=reason,
+    )
+    return _Stop(
+        ports.render_tool_error(
+            tool_name=request.tool_name,
+            error_class="authority_context_unavailable",
+            message=message,
+            provider="a2a_authority_frame",
+            retryable=False,
+            actionable_hint="Recreate the delegated run from its authenticated parent session.",
+            extra={"outcome": "unavailable", "reason_code": reason},
+        )
+    )
 
 
 def _record_lifecycle(state: _ToolExecutionState, status: str, *decisions: str) -> None:

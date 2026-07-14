@@ -22,6 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from app.config import get_settings
+from app.core.execution_context import A2AToolAuthorityFrame, ExecutionPrincipal
 from app.database import async_session, tenant_scoped_session
 from app.kernel import (
     AgentKernel,
@@ -41,7 +42,11 @@ from app.runtime.context_budget import (
     resolve_turn_model_route,
 )
 from app.runtime.context_engine import DefaultContextEngine
-from app.runtime.ccplus_contracts import PermissionProfileV1, build_permission_profile
+from app.runtime.ccplus_contracts import (
+    PermissionProfileV1,
+    build_permission_profile,
+    permission_profile_snapshot,
+)
 from app.runtime.prompt_builder import build_frozen_prompt_prefix
 from app.runtime.session import SessionContext
 from app.runtime.session_key import build_session_key, ensure_session_key
@@ -78,7 +83,7 @@ from app.services.token_tracker import (
     extract_usage_tokens,
     record_token_usage,
 )
-from app.tools.result_envelope import ToolContentEnvelope
+from app.tools.result_envelope import ToolContentEnvelope, render_tool_error
 
 logger = logging.getLogger(__name__)
 
@@ -347,7 +352,12 @@ def _permission_profile_from_session_context(session_context: SessionContext | N
     return None
 
 
-def _tool_frame_kwargs_from_session_context(session_context: SessionContext | None) -> dict[str, Any]:
+def _tool_frame_kwargs_from_session_context(
+    session_context: SessionContext | None,
+    *,
+    execution_identity: Any | None = None,
+    delegation_token: Any | None = None,
+) -> dict[str, Any]:
     metadata = getattr(session_context, "metadata", None) if session_context is not None else None
     if not isinstance(metadata, dict):
         return {}
@@ -379,6 +389,65 @@ def _tool_frame_kwargs_from_session_context(session_context: SessionContext | No
     )
     if origin_channel:
         result["origin_channel"] = str(origin_channel)
+    authority_keys = (
+        "execution_principal",
+        "a2a_authority_snapshot_hash",
+        "a2a_authority_policy_hash",
+        "a2a_authority_frame_schema",
+        "a2a_authority_required",
+    )
+    interaction_type = str(metadata.get("interaction_type") or "").strip()
+    a2a_context = interaction_type in {"delegation", "agent_message"} or bool(
+        metadata.get("delegation") or metadata.get("agent_message")
+    )
+    if a2a_context or any(metadata.get(key) is not None for key in authority_keys):
+        principal = None
+        principal_payload = metadata.get("execution_principal")
+        try:
+            principal = (
+                principal_payload
+                if isinstance(principal_payload, ExecutionPrincipal)
+                else ExecutionPrincipal.from_evidence(principal_payload)
+            )
+        except (AttributeError, KeyError, TypeError, ValueError):
+            pass
+        capability_snapshot = (
+            dict(metadata.get("a2a_authority_snapshot"))
+            if isinstance(metadata.get("a2a_authority_snapshot"), dict)
+            else None
+        )
+        permission_profile = permission_profile_snapshot(_permission_profile_from_session_context(session_context))
+        snapshot = capability_snapshot or {}
+        sandbox_profile = str(permission_profile.get("sandbox") or "").strip() or None
+        approval_policy = str(permission_profile.get("approval_policy") or "").strip() or None
+        result["authority_frame"] = A2AToolAuthorityFrame(
+            schema=str(metadata.get("a2a_authority_frame_schema") or "") or None,
+            principal=principal,
+            capability_snapshot_hash=str(metadata.get("a2a_authority_snapshot_hash") or "") or None,
+            policy_snapshot_hash=str(metadata.get("a2a_authority_policy_hash") or "") or None,
+            capability_snapshot=capability_snapshot,
+            permission_profile=permission_profile,
+            execution_identity=execution_identity,
+            delegation_token=delegation_token,
+            session_id=str(snapshot.get("session_id") or getattr(session_context, "session_id", None) or "") or None,
+            parent_session_id=str(snapshot.get("parent_session_id") or "") or None,
+            runtime_task_id=str(snapshot.get("runtime_task_id") or metadata.get("runtime_task_id") or "") or None,
+            root_runtime_task_id=str(snapshot.get("root_runtime_task_id") or "") or None,
+            budget_run_id=str(snapshot.get("budget_run_id") or metadata.get("budget_run_id") or "") or None,
+            trace_id=str(
+                snapshot.get("trace_id")
+                or metadata.get("delegation_trace_id")
+                or metadata.get("agent_message_trace_id")
+                or ""
+            )
+            or None,
+            delegation_id=str(metadata.get("delegation_token_id") or "") or None,
+            sandbox_profile=sandbox_profile,
+            approval_policy=approval_policy,
+            # Presence of an A2A runtime marker or authority receipt is enough
+            # to require the atomic frame. A persisted flag may not disable it.
+            required=True,
+        )
     return result
 
 
@@ -1028,7 +1097,6 @@ async def _execute_tool_with_request(
     memory_status = _session_metadata(request.session_context).get("memory_context_status")
     if isinstance(memory_status, dict) and memory_status.get("external_effects_available") is False:
         from app.tools.registry import is_read_only_tool
-        from app.tools.result_envelope import render_tool_error
 
         if not is_read_only_tool(tool_name):
             return render_tool_error(
@@ -1055,8 +1123,31 @@ async def _execute_tool_with_request(
         except (TypeError, ValueError):
             executor_params = {}
             accepts_kwargs = False
-        if accepts_kwargs or "delegation_token" in executor_params:
-            executor_kwargs["delegation_token"] = request.delegation_token
+        frame_kwargs = _tool_frame_kwargs_from_session_context(
+            request.session_context,
+            execution_identity=request.execution_identity,
+            delegation_token=request.delegation_token,
+        )
+        authority_frame = frame_kwargs.get("authority_frame")
+        if authority_frame is not None and not (accepts_kwargs or "authority_frame" in executor_params):
+            return render_tool_error(
+                tool_name=tool_name,
+                error_class="authority_context_unavailable",
+                message="The custom tool executor cannot consume the required atomic A2A authority frame.",
+                provider="a2a_authority_frame",
+                retryable=False,
+                actionable_hint="Use an executor that accepts authority_frame or recreate the delegation.",
+                extra={
+                    "outcome": "unavailable",
+                    "reason_code": "a2a_custom_executor_authority_frame_unsupported",
+                    "effect_frozen": True,
+                },
+            )
+        if authority_frame is None:
+            if accepts_kwargs or "delegation_token" in executor_params:
+                executor_kwargs["delegation_token"] = request.delegation_token
+            if accepts_kwargs or "execution_identity" in executor_params:
+                executor_kwargs["execution_identity"] = request.execution_identity
         if accepts_kwargs or "event_callback" in executor_params:
             executor_kwargs["event_callback"] = emit_event
         if accepts_kwargs or "plan_mode_interactive_available" in executor_params:
@@ -1065,7 +1156,7 @@ async def _execute_tool_with_request(
             )
         if accepts_kwargs or "plan_mode_unattended_available" in executor_params:
             executor_kwargs["plan_mode_unattended_available"] = _plan_mode_unattended_available(request.session_context)
-        if accepts_kwargs or "permission_profile" in executor_params:
+        if authority_frame is None and (accepts_kwargs or "permission_profile" in executor_params):
             executor_kwargs["permission_profile"] = _permission_profile_from_session_context(request.session_context)
         if accepts_kwargs or "tool_call_id" in executor_params:
             executor_kwargs["tool_call_id"] = tool_call_id
@@ -1073,8 +1164,9 @@ async def _execute_tool_with_request(
             executor_kwargs["trace_metadata_sink"] = trace_metadata_sink
         if accepts_kwargs or "emit_runtime_hooks" in executor_params:
             executor_kwargs["emit_runtime_hooks"] = False
-        frame_kwargs = _tool_frame_kwargs_from_session_context(request.session_context)
         for key, value in frame_kwargs.items():
+            if authority_frame is not None and key in {"runtime_task_id", "budget_run_id"}:
+                continue
             if accepts_kwargs or key in executor_params:
                 executor_kwargs[key] = value
         return await _maybe_await(request.tool_executor(tool_name, args, **executor_kwargs))
@@ -1083,6 +1175,8 @@ async def _execute_tool_with_request(
         "agent_id": request.agent_id,
         "user_id": request.user_id or request.agent_id,
     }
+    if "execution_identity" in inspect.signature(execute_tool).parameters:
+        execute_kwargs["execution_identity"] = request.execution_identity
     if "event_callback" in inspect.signature(execute_tool).parameters:
         execute_kwargs["event_callback"] = emit_event
     if "delegation_token" in inspect.signature(execute_tool).parameters:
@@ -1102,7 +1196,26 @@ async def _execute_tool_with_request(
     if trace_metadata_sink is not None and "trace_metadata_sink" in inspect.signature(execute_tool).parameters:
         execute_kwargs["trace_metadata_sink"] = trace_metadata_sink
     execute_params = inspect.signature(execute_tool).parameters
-    for key, value in _tool_frame_kwargs_from_session_context(request.session_context).items():
+    frame_kwargs = _tool_frame_kwargs_from_session_context(
+        request.session_context,
+        execution_identity=request.execution_identity,
+        delegation_token=request.delegation_token,
+    )
+    if frame_kwargs.get("authority_frame") is not None and "authority_frame" not in execute_params:
+        return render_tool_error(
+            tool_name=tool_name,
+            error_class="authority_context_unavailable",
+            message="The governed tool runtime cannot consume the required atomic A2A authority frame.",
+            provider="a2a_authority_frame",
+            retryable=False,
+            actionable_hint="Restore the governed authority-frame adapter before retrying the delegation.",
+            extra={
+                "outcome": "unavailable",
+                "reason_code": "a2a_tool_runtime_authority_frame_unsupported",
+                "effect_frozen": True,
+            },
+        )
+    for key, value in frame_kwargs.items():
         if key in execute_params:
             execute_kwargs[key] = value
     if "emit_runtime_hooks" in inspect.signature(execute_tool).parameters:

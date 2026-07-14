@@ -10,6 +10,23 @@ from uuid import uuid4
 import pytest
 
 
+def _a2a_authority_kwargs(*, target, owner_id, parent_agent_id, session_id: str) -> dict:
+    from app.core.execution_context import ExecutionPrincipal
+
+    tenant_id = getattr(target, "tenant_id", None) or uuid4()
+    target.tenant_id = tenant_id
+    return {
+        "tenant_id": tenant_id,
+        "execution_principal": ExecutionPrincipal(
+            tenant_id=tenant_id,
+            source_agent_id=parent_agent_id,
+            requester_user_id=owner_id,
+            root_session_id=session_id,
+            delegation_chain=(f"agent:{parent_agent_id}",),
+        ).to_evidence(),
+    }
+
+
 @pytest.fixture(autouse=True)
 def _stub_activity_logger(monkeypatch):
     async def fake_log_activity(*args, **kwargs):
@@ -133,7 +150,7 @@ async def test_build_agent_message_tool_executor_persists_tool_calls(monkeypatch
     participant_id = uuid4()
     calls = {}
 
-    async def fake_execute_tool(tool_name, args, agent_id, user_id, *, emit_runtime_hooks=True):
+    async def fake_execute_tool(tool_name, args, agent_id, user_id, *, emit_runtime_hooks=True, **_kwargs):
         calls["execute"] = (tool_name, args, agent_id, user_id, emit_runtime_hooks)
         return "TOOL_RESULT"
 
@@ -199,6 +216,144 @@ async def test_agent_message_tool_executor_propagates_bounded_a2a_context(monkey
     assert captured["args"]["_a2a_trace_id"] == "trace-a-b-c"
     assert captured["args"]["_a2a_depth"] == 2
     assert captured["args"]["_a2a_max_depth"] == 3
+
+
+@pytest.mark.asyncio
+async def test_agent_message_tool_executor_forwards_complete_authority_frame(monkeypatch):
+    from app.core.execution_context import A2AToolAuthorityFrame, ExecutionIdentity, ExecutionPrincipal
+    from app.runtime.ccplus_contracts import permission_profile_snapshot, permission_profile_snapshot_hash
+    from app.services.agent_tools import _build_agent_message_tool_executor
+    from app.services.execution_receipts import canonical_payload_hash
+
+    target_id = uuid4()
+    owner_id = uuid4()
+    tenant_id = uuid4()
+    principal = ExecutionPrincipal(
+        tenant_id=tenant_id,
+        source_agent_id=target_id,
+        requester_user_id=owner_id,
+        root_session_id="root-session-1",
+        root_runtime_task_id="root-task-1",
+        delegation_chain=("agent:source", f"agent:{target_id}"),
+    )
+    identity = ExecutionIdentity(
+        identity_type="delegated_user",
+        identity_id=owner_id,
+        label="requester via web",
+    )
+    profile = {
+        "mode": "dontAsk",
+        "allowed_tools": ["read_file"],
+        "sandbox": "read_only",
+    }
+    trace_sink: dict[str, object] = {}
+    captured: dict[str, object] = {}
+    profile_snapshot = permission_profile_snapshot(profile)
+    capability_snapshot = {
+        "schema": "hive.a2a_authority_snapshot.v1",
+        "tenant_id": str(tenant_id),
+        "owner_id": str(owner_id),
+        "source_agent_id": "source-agent",
+        "target_agent_id": str(target_id),
+        "session_id": "child-session-1",
+        "parent_session_id": "root-session-1",
+        "trace_id": "trace-a2a-1",
+        "runtime_task_id": "child-task-1",
+        "root_runtime_task_id": "root-task-1",
+        "budget_run_id": "budget-1",
+        "interaction_type": "agent_message",
+        "depth": 2,
+        "tool_profile": "agent_message",
+        "permission_profile": profile_snapshot,
+        "execution_identity": {
+            "identity_type": identity.identity_type,
+            "identity_id": str(identity.identity_id),
+            "label": identity.label,
+        },
+        "execution_principal": principal.to_evidence(),
+    }
+    authority_frame = A2AToolAuthorityFrame(
+        schema="hive.a2a_tool_authority_frame.v1",
+        principal=principal,
+        capability_snapshot=capability_snapshot,
+        capability_snapshot_hash=canonical_payload_hash(capability_snapshot),
+        policy_snapshot_hash=permission_profile_snapshot_hash(profile),
+        permission_profile=profile_snapshot,
+        execution_identity=identity,
+        session_id="child-session-1",
+        parent_session_id="root-session-1",
+        runtime_task_id="child-task-1",
+        root_runtime_task_id="root-task-1",
+        budget_run_id="budget-1",
+        trace_id="trace-a2a-1",
+        sandbox_profile="read_only",
+        approval_policy=str(profile_snapshot["approval_policy"]),
+    )
+
+    async def fake_execute_tool(tool_name, args, agent_id, user_id, **kwargs):
+        captured.update(
+            {
+                "tool_name": tool_name,
+                "args": dict(args),
+                "agent_id": agent_id,
+                "user_id": user_id,
+                "kwargs": kwargs,
+            }
+        )
+        return "ok"
+
+    async def fake_persist(**_kwargs):
+        return None
+
+    monkeypatch.setattr("app.services.agent_tools.execute_tool", fake_execute_tool)
+    monkeypatch.setattr("app.services.agent_tool_domains.messaging._persist_agent_tool_call", fake_persist)
+    executor = _build_agent_message_tool_executor(
+        target_agent_id=target_id,
+        owner_id=owner_id,
+        session_agent_id=target_id,
+        session_id="child-session-1",
+        participant_id=uuid4(),
+        delegation_trace_id="trace-a2a-1",
+        delegation_depth=2,
+        delegation_max_depth=4,
+    )
+
+    result = await executor(
+        "read_file",
+        {"path": "workspace/report.md"},
+        authority_frame=authority_frame,
+        event_callback="event-callback",
+        tool_call_id="tool-call-1",
+        trace_metadata_sink=trace_sink,
+        turn_id="turn-1",
+        origin_channel="agent",
+        round_state={"trace_id": "trace-a2a-1"},
+        t0_refs=("t0://event/1",),
+        plan_mode_interactive_available=False,
+        plan_mode_unattended_available=True,
+        emit_runtime_hooks=False,
+    )
+
+    assert result == "ok"
+    assert captured["agent_id"] == target_id
+    assert captured["user_id"] == owner_id
+    kwargs = captured["kwargs"]
+    assert kwargs["execution_identity"] is identity
+    assert kwargs["authority_frame"] is authority_frame
+    assert kwargs["delegation_token"] is None
+    assert kwargs["event_callback"] == "event-callback"
+    assert kwargs["permission_profile"] == profile_snapshot
+    assert kwargs["tool_call_id"] == "tool-call-1"
+    assert kwargs["trace_metadata_sink"] is trace_sink
+    assert kwargs["session_id"] == "child-session-1"
+    assert kwargs["turn_id"] == "turn-1"
+    assert kwargs["runtime_task_id"] == "child-task-1"
+    assert kwargs["budget_run_id"] == "budget-1"
+    assert kwargs["origin_channel"] == "agent"
+    assert kwargs["round_state"] == {"trace_id": "trace-a2a-1"}
+    assert kwargs["t0_refs"] == ("t0://event/1",)
+    assert kwargs["plan_mode_unattended_available"] is True
+    assert kwargs["emit_runtime_hooks"] is False
 
 
 @pytest.mark.asyncio
@@ -300,6 +455,81 @@ async def test_delegate_to_agent_async_threads_runtime_budget_to_cloud_delegatio
 
 
 @pytest.mark.asyncio
+async def test_delegate_async_propagates_authority_unavailable_as_typed_failure(monkeypatch):
+    from app.core.execution_context import ExecutionPrincipal
+    from app.services.agent_tool_domains.messaging import _delegate_to_agent_async_outcome
+
+    from_agent_id = uuid4()
+    requester_user_id = uuid4()
+    tenant_id = uuid4()
+    source_agent = SimpleNamespace(
+        id=from_agent_id,
+        name="Source Agent",
+        creator_id=requester_user_id,
+        tenant_id=tenant_id,
+    )
+    target = SimpleNamespace(id=uuid4(), name="Target Agent", role_description="Helpful agent", tenant_id=tenant_id)
+    target_model = SimpleNamespace(provider="openai", model="gpt-4.1")
+    principal = ExecutionPrincipal(
+        tenant_id=tenant_id,
+        source_agent_id=from_agent_id,
+        requester_user_id=requester_user_id,
+        root_session_id="root-session-authority-failure",
+    )
+
+    async def fake_resolve(*_args, **_kwargs):
+        return source_agent, target, target_model, None
+
+    async def fake_delegate_async(**_kwargs):
+        return SimpleNamespace(
+            task_id="authority_unavailable",
+            trace_id="trace-authority-failure",
+            target_name=target.name,
+            status="authority_unavailable:a2a_execution_principal_drift",
+        )
+
+    monkeypatch.setattr("app.services.agent_tool_domains.messaging._resolve_target_agent_runtime", fake_resolve)
+    monkeypatch.setattr("app.agents.orchestrator.delegate_async", fake_delegate_async)
+
+    outcome = await _delegate_to_agent_async_outcome(
+        from_agent_id,
+        {"agent_name": target.name, "message": "do work"},
+        principal=principal,
+    )
+
+    assert outcome.ok is False
+    assert outcome.status == "unavailable"
+    assert outcome.error_code == "a2a_execution_principal_drift"
+
+
+def test_delegation_runtime_failure_maps_typed_unavailable():
+    from app.services.agent_tool_domains.messaging import _delegation_runtime_failure_outcome
+
+    outcome = _delegation_runtime_failure_outcome(
+        "consult",
+        SimpleNamespace(
+            failed=True,
+            content="A2A authority verification failed; the delegated invocation was not started.",
+            terminal_reason="a2a_execution_principal_missing",
+            parts=(
+                {
+                    "type": "runtime_status",
+                    "status": "unavailable",
+                    "error_code": "a2a_execution_principal_missing",
+                    "retryable": False,
+                },
+            ),
+        ),
+    )
+
+    assert outcome is not None
+    assert outcome.ok is False
+    assert outcome.status == "unavailable"
+    assert outcome.error_code == "a2a_execution_principal_missing"
+    assert outcome.retryable is False
+
+
+@pytest.mark.asyncio
 async def test_delegate_async_reserves_budget_before_creating_runtime_task(monkeypatch):
     from app.agents import orchestrator
     from app.agents.orchestrator import delegate_async
@@ -340,16 +570,24 @@ async def test_delegate_async_reserves_budget_before_creating_runtime_task(monke
     budget_run_id = uuid4()
     target = SimpleNamespace(id=uuid4(), name="BudgetedWorker", role_description="")
     model = SimpleNamespace(provider="openai", model="gpt-4.1", api_key="k", base_url=None, max_output_tokens=None)
+    owner_id = uuid4()
+    parent_agent_id = uuid4()
 
     handle = await delegate_async(
         target=target,
         target_model=model,
         conversation_messages=[{"role": "user", "content": "do delegated work"}],
-        owner_id=uuid4(),
+        owner_id=owner_id,
         session_id="delegation-session",
-        parent_agent_id=uuid4(),
+        parent_agent_id=parent_agent_id,
         budget_run_id=budget_run_id,
         budget_service=FakeBudgetService(),
+        **_a2a_authority_kwargs(
+            target=target,
+            owner_id=owner_id,
+            parent_agent_id=parent_agent_id,
+            session_id="delegation-session",
+        ),
     )
 
     reservation = captured["reservation"]
@@ -413,17 +651,26 @@ async def test_delegate_async_approval_wait_persists_exact_task_without_dispatch
     monkeypatch.setattr(orchestrator, "gateway_scope", lambda *_args, **_kwargs: FakeGateway())
     monkeypatch.setattr("app.services.runtime_task_worker.notify_runtime_task_worker", fake_notify)
 
+    target = SimpleNamespace(id=uuid4(), name="BudgetedWorker", role_description="")
+    owner_id = uuid4()
+    parent_agent_id = uuid4()
     handle = await delegate_async(
-        target=SimpleNamespace(id=uuid4(), name="BudgetedWorker", role_description=""),
+        target=target,
         target_model=SimpleNamespace(
             provider="openai", model="gpt-4.1", api_key="k", base_url=None, max_output_tokens=None
         ),
         conversation_messages=[{"role": "user", "content": "do delegated work"}],
-        owner_id=uuid4(),
+        owner_id=owner_id,
         session_id="delegation-session",
-        parent_agent_id=uuid4(),
+        parent_agent_id=parent_agent_id,
         budget_run_id=uuid4(),
         budget_service=WaitingBudgetService(),
+        **_a2a_authority_kwargs(
+            target=target,
+            owner_id=owner_id,
+            parent_agent_id=parent_agent_id,
+            session_id="delegation-session",
+        ),
     )
 
     assert handle.status == "waiting_budget_approval"

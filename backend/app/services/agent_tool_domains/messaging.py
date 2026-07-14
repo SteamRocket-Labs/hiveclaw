@@ -9,7 +9,7 @@ from typing import Any
 
 from sqlalchemy import select
 
-from app.core.execution_context import ExecutionPrincipal
+from app.core.execution_context import A2AToolAuthorityFrame, ExecutionPrincipal
 from app.database import tenant_scoped_session
 from app.services.a2a_collaboration_policy import resolve_a2a_collaboration_policy
 from app.services.a2a_outcome import A2AOutcome, A2AOperation
@@ -139,6 +139,30 @@ def _a2a_failure(
         message=str(message).lstrip("❌⚠️ ").strip(),
         retryable=retryable,
         status=status,
+    )
+
+
+def _delegation_runtime_failure_outcome(
+    operation: A2AOperation,
+    result: Any,
+) -> A2AOutcome | None:
+    """Preserve a child runtime's typed failure instead of treating its prose as a reply."""
+    if not bool(getattr(result, "failed", False)):
+        return None
+    parts = getattr(result, "parts", ()) or ()
+    runtime_status = next(
+        (part for part in parts if isinstance(part, dict) and str(part.get("type") or "") == "runtime_status"),
+        {},
+    )
+    error_code = str(
+        runtime_status.get("error_code") or getattr(result, "terminal_reason", None) or "a2a_child_runtime_failed"
+    )
+    return _a2a_failure(
+        operation,
+        error_code=error_code,
+        message=str(getattr(result, "content", "") or "The delegated Agent runtime failed."),
+        retryable=bool(runtime_status.get("retryable", False)),
+        status=str(runtime_status.get("status") or "failed"),
     )
 
 
@@ -950,10 +974,33 @@ def _build_agent_message_tool_executor(
     delegation_max_depth: int = 2,
 ):
     """Wrap A2A tool execution with chat-history persistence."""
+    message_session_id = session_id
 
-    async def _executor(tool_name: str, tool_args: dict, *, emit_runtime_hooks: bool = True) -> str:
+    async def _executor(
+        tool_name: str,
+        tool_args: dict,
+        *,
+        authority_frame: A2AToolAuthorityFrame | None = None,
+        event_callback: Any | None = None,
+        tool_call_id: str | None = None,
+        trace_metadata_sink: dict[str, Any] | None = None,
+        turn_id: str | None = None,
+        origin_channel: str | None = None,
+        round_state: dict[str, Any] | None = None,
+        t0_refs: tuple[str, ...] = (),
+        plan_mode_interactive_available: bool = False,
+        plan_mode_unattended_available: bool = False,
+        emit_runtime_hooks: bool = True,
+    ) -> str:
         from app.services.agent_tools import execute_tool
 
+        effective_authority_frame = authority_frame or A2AToolAuthorityFrame(
+            schema=None,
+            principal=None,
+            capability_snapshot_hash=None,
+            policy_snapshot_hash=None,
+            required=True,
+        )
         effective_args = dict(tool_args)
         if tool_name in {"send_message_to_agent", "delegate_to_agent", "spawn_subagent"}:
             effective_args.update(
@@ -968,12 +1015,28 @@ def _build_agent_message_tool_executor(
             effective_args,
             target_agent_id,
             owner_id,
+            execution_identity=effective_authority_frame.execution_identity,
+            authority_frame=effective_authority_frame,
+            delegation_token=effective_authority_frame.delegation_token,
+            event_callback=event_callback,
+            permission_profile=effective_authority_frame.permission_profile,
+            tool_call_id=tool_call_id,
+            trace_metadata_sink=trace_metadata_sink,
+            session_id=effective_authority_frame.session_id or message_session_id,
+            turn_id=turn_id,
+            runtime_task_id=effective_authority_frame.runtime_task_id,
+            budget_run_id=effective_authority_frame.budget_run_id,
+            origin_channel=origin_channel,
+            round_state=round_state,
+            t0_refs=t0_refs,
+            plan_mode_interactive_available=plan_mode_interactive_available,
+            plan_mode_unattended_available=plan_mode_unattended_available,
             emit_runtime_hooks=emit_runtime_hooks,
         )
         await _persist_agent_tool_call(
             session_agent_id=session_agent_id,
             owner_id=owner_id,
-            session_id=session_id,
+            session_id=message_session_id,
             participant_id=participant_id,
             tool_name=tool_name,
             tool_args=effective_args,
@@ -1292,6 +1355,10 @@ async def _send_message_to_agent_outcome(
                 delegation_max_depth=delegation_max_depth,
             )
 
+            runtime_failure = _delegation_runtime_failure_outcome("consult", target_result)
+            if runtime_failure is not None:
+                return runtime_failure
+
             target_reply = str(getattr(target_result, "content", target_result) or "")
             child_invocation = (
                 target_result.to_dict().get("child_invocation")
@@ -1564,6 +1631,15 @@ async def _delegate_to_agent_async_outcome(
                 message="Delegation is blocked by an active coordination lease",
                 status="blocked",
                 retryable=True,
+            )
+        handle_status = str(getattr(handle, "status", "running"))
+        if handle_status.startswith("authority_unavailable"):
+            _, _, reason = handle_status.partition(":")
+            return _a2a_failure(
+                "delegate",
+                error_code=reason or "a2a_authority_unavailable",
+                message="The delegated invocation was not queued because its authority frame is unavailable.",
+                status="unavailable",
             )
         return A2AOutcome.success(
             operation="delegate",

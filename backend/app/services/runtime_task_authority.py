@@ -32,6 +32,21 @@ def execution_principal_from_tool_context(context: Any) -> ExecutionPrincipal:
     tenant_id = str(getattr(context, "tenant_id", None) or "").strip()
     if not tenant_id:
         raise ValueError("RuntimeTask control requires a tenant-bound tool context")
+    carried = getattr(context, "execution_principal", None)
+    if carried is not None:
+        if isinstance(carried, Mapping):
+            carried = ExecutionPrincipal.from_evidence(carried)
+        if not isinstance(carried, ExecutionPrincipal):
+            raise ValueError("A2A execution principal is invalid")
+        if str(carried.tenant_id) != tenant_id:
+            raise ValueError("A2A execution principal tenant does not match the tool context")
+        if str(carried.source_agent_id) != str(context.agent_id):
+            raise ValueError("A2A execution principal source Agent does not match the tool context")
+        if str(carried.requester_user_id or "") != str(getattr(context, "user_id", None) or ""):
+            raise ValueError("A2A execution principal requester does not match the tool context")
+        return carried
+    if bool(getattr(context, "authority_frame_required", False)):
+        raise ValueError("A2A execution principal is required")
     return ExecutionPrincipal(
         tenant_id=tenant_id,
         source_agent_id=uuid.UUID(str(context.agent_id)),

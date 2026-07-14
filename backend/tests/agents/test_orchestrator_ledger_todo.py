@@ -46,15 +46,27 @@ def _stub_target() -> SimpleNamespace:
 
 
 def _request(parent_id: uuid.UUID, target: SimpleNamespace, ledger_todo_id: str | None) -> AgentDelegationRequest:
+    from app.core.execution_context import ExecutionPrincipal
+
+    owner_id = uuid.uuid4()
+    tenant_id = getattr(target, "tenant_id", None) or uuid.uuid4()
+    target.tenant_id = tenant_id
     return AgentDelegationRequest(
         target=target,
         target_model=SimpleNamespace(provider="anthropic", model="claude-x"),
         conversation_messages=[{"role": "user", "content": "do the delegated thing"}],
-        owner_id=uuid.uuid4(),
+        owner_id=owner_id,
         session_id="child-sess",
         parent_agent_id=parent_id,
         parent_session_id=PARENT_SESSION,
         ledger_todo_id=ledger_todo_id,
+        execution_principal=ExecutionPrincipal(
+            tenant_id=tenant_id,
+            source_agent_id=parent_id,
+            requester_user_id=owner_id,
+            root_session_id=PARENT_SESSION,
+            delegation_chain=(f"agent:{parent_id}",),
+        ).to_evidence(),
     )
 
 

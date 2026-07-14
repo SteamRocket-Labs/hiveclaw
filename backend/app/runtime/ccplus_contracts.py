@@ -7,10 +7,12 @@ runtime adapters can share them without coupling.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, is_dataclass
 from dataclasses import fields as dataclass_fields
 from dataclasses import replace
 from enum import Enum
+import hashlib
+import json
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -161,6 +163,42 @@ def build_permission_profile(overrides: dict[str, Any] | None = None) -> Permiss
     if "mode" in clean:
         clean["mode"] = normalize_permission_mode(clean["mode"])
     return replace(base, **clean) if clean else base
+
+
+def _permission_profile_json_value(value: Any) -> Any:
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, tuple):
+        return [_permission_profile_json_value(item) for item in value]
+    if isinstance(value, list):
+        return [_permission_profile_json_value(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _permission_profile_json_value(item) for key, item in value.items()}
+    return value
+
+
+def permission_profile_snapshot(value: Any | None) -> dict[str, Any]:
+    """Return the one canonical policy payload used by runtime and receipts."""
+    if isinstance(value, PermissionProfileV1):
+        profile = value
+    elif isinstance(value, dict):
+        profile = build_permission_profile(value)
+    elif is_dataclass(value):
+        profile = build_permission_profile(asdict(value))
+    else:
+        profile = PermissionProfileV1()
+    return _permission_profile_json_value(asdict(profile))
+
+
+def permission_profile_snapshot_hash(value: Any | None) -> str:
+    encoded = json.dumps(
+        permission_profile_snapshot(value),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)

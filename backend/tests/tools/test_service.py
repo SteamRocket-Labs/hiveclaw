@@ -209,15 +209,43 @@ def test_workspace_mutation_evidence_captures_hash_and_deletion_without_live_reh
 
 @pytest.mark.asyncio
 async def test_tool_runtime_service_executes_through_registry_and_logs(monkeypatch):
+    from app.core.execution_context import (
+        A2A_TOOL_AUTHORITY_FRAME_SCHEMA,
+        A2AToolAuthorityFrame,
+        ExecutionPrincipal,
+    )
+    from app.runtime.ccplus_contracts import (
+        PermissionMode,
+        PermissionProfileV1,
+        permission_profile_snapshot,
+        permission_profile_snapshot_hash,
+    )
+    from app.services.execution_receipts import canonical_payload_hash
     from app.tools.governance import ToolGovernanceContext
     from app.tools.runtime import ToolExecutionContext
     from app.tools.service import ToolRuntimeService
 
+    permission_profile = PermissionProfileV1(
+        mode=PermissionMode.DONT_ASK,
+        allowed_tools=("write_file",),
+    )
     context = ToolExecutionContext(
         agent_id=uuid4(),
         user_id=uuid4(),
         tenant_id=str(uuid4()),
         workspace=Path("/tmp/ws"),
+        permission_profile=permission_profile,
+        session_id="child-session-a2a",
+        runtime_task_id="child-task-a2a",
+        budget_run_id="budget-a2a",
+    )
+    execution_principal = ExecutionPrincipal(
+        tenant_id=context.tenant_id,
+        source_agent_id=context.agent_id,
+        requester_user_id=context.user_id,
+        root_session_id="root-session-a2a",
+        root_runtime_task_id="root-task-a2a",
+        delegation_chain=("agent:parent", f"agent:{context.agent_id}"),
     )
     governance_context = ToolGovernanceContext(
         agent_id=context.agent_id,
@@ -227,8 +255,32 @@ async def test_tool_runtime_service_executes_through_registry_and_logs(monkeypat
         arguments={"path": "workspace/notes.md", "content": "x"},
     )
     parent_agent_id = uuid4()
-    delegation_token = SimpleNamespace(parent_agent_id=parent_agent_id)
+    delegation_token = SimpleNamespace(
+        delegation_id="delegation-a2a",
+        parent_agent_id=parent_agent_id,
+        child_agent_id=context.agent_id,
+    )
     governance_context.delegation_token = delegation_token
+    profile_snapshot = permission_profile_snapshot(permission_profile)
+    authority_snapshot = {
+        "schema": "hive.a2a_authority_snapshot.v1",
+        "tenant_id": str(context.tenant_id),
+        "owner_id": str(context.user_id),
+        "source_agent_id": str(parent_agent_id),
+        "target_agent_id": str(context.agent_id),
+        "session_id": "child-session-a2a",
+        "parent_session_id": "root-session-a2a",
+        "trace_id": "trace-a2a",
+        "runtime_task_id": "child-task-a2a",
+        "root_runtime_task_id": "root-task-a2a",
+        "budget_run_id": "budget-a2a",
+        "interaction_type": "delegation",
+        "depth": 1,
+        "tool_profile": "worker_safe",
+        "permission_profile": profile_snapshot,
+        "execution_identity": None,
+        "execution_principal": execution_principal.to_evidence(),
+    }
     runtime_resolver = _FakeRuntimeResolver(context)
     governance_resolver = _FakeGovernanceResolver(governance_context, SimpleNamespace())
     registry = _FakeRegistry("OK")
@@ -281,12 +333,34 @@ async def test_tool_runtime_service_executes_through_registry_and_logs(monkeypat
         {"path": "workspace/notes.md", "content": "x"},
         agent_id=context.agent_id,
         user_id=context.user_id,
+        authority_frame=A2AToolAuthorityFrame(
+            schema=A2A_TOOL_AUTHORITY_FRAME_SCHEMA,
+            principal=execution_principal,
+            capability_snapshot=authority_snapshot,
+            capability_snapshot_hash=canonical_payload_hash(authority_snapshot),
+            policy_snapshot_hash=permission_profile_snapshot_hash(permission_profile),
+            permission_profile=permission_profile,
+            delegation_token=delegation_token,
+            session_id="child-session-a2a",
+            parent_session_id="root-session-a2a",
+            runtime_task_id="child-task-a2a",
+            root_runtime_task_id="root-task-a2a",
+            budget_run_id="budget-a2a",
+            trace_id="trace-a2a",
+            delegation_id="delegation-a2a",
+            sandbox_profile=str(profile_snapshot["sandbox"]),
+            approval_policy=str(profile_snapshot["approval_policy"]),
+        ),
+        session_id="child-session-a2a",
+        runtime_task_id="child-task-a2a",
+        budget_run_id="budget-a2a",
+        permission_profile=permission_profile,
         delegation_token=delegation_token,
         trace_metadata_sink=trace_metadata,
     )
 
     assert result == "OK"
-    assert runtime_resolver.calls == [(context.agent_id, context.user_id, None)]
+    assert runtime_resolver.calls == [(context.agent_id, context.user_id, "child-session-a2a")]
     assert governance_resolver.deps_calls == 1
     assert governance_resolver.context_calls[0][3] is delegation_token
     assert ensured == [True]
@@ -310,9 +384,325 @@ async def test_tool_runtime_service_executes_through_registry_and_logs(monkeypat
     assert trace_metadata["authority_policy_snapshot"]["guard_policy"]["version"] == 11
     assert trace_metadata["authority_policy_snapshot"]["guard_policy_verdict"]["decision"] == "allow"
     assert trace_metadata["authority_capability_snapshot"]["live_policy"]["name"] == "workspace.file.write"
+    assert trace_metadata["execution_principal"] == execution_principal.to_evidence()
+    assert trace_metadata["authority_snapshot_hash"] == canonical_payload_hash(authority_snapshot)
+    assert trace_metadata["authority_frame_schema"] == A2A_TOOL_AUTHORITY_FRAME_SCHEMA
+    assert trace_metadata["authority_policy_hash"] == permission_profile_snapshot_hash(permission_profile)
+    assert trace_metadata["authority_frame_receipt"] == {
+        "schema": A2A_TOOL_AUTHORITY_FRAME_SCHEMA,
+        "capability_snapshot_hash": canonical_payload_hash(authority_snapshot),
+        "policy_snapshot_hash": permission_profile_snapshot_hash(permission_profile),
+        "trace_id": "trace-a2a",
+        "session_id": "child-session-a2a",
+        "parent_session_id": "root-session-a2a",
+        "runtime_task_id": "child-task-a2a",
+        "root_runtime_task_id": "root-task-a2a",
+        "budget_run_id": "budget-a2a",
+        "delegation_id": "delegation-a2a",
+        "sandbox_profile": "workspace_write",
+        "approval_policy": "granular",
+    }
+    assert trace_metadata["tool_decision"]["policy_snapshot_hash"] == trace_metadata["policy_snapshot_hash"]
     assert trace_metadata["workspace_mutation_evidence_captured"] is True
     assert trace_metadata["workspace_mutation_states"]["workspace/notes.md"]["exists"] is False
     assert trace_metadata["workspace_mutation_lineage"][0]["path"] == "workspace/notes.md"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("frame_overrides", "reason_code"),
+    [
+        ({"schema": None}, "a2a_authority_frame_version_invalid"),
+        ({"principal": None}, "a2a_execution_principal_missing"),
+        ({"capability_snapshot_hash": "not-a-hash"}, "a2a_authority_snapshot_invalid"),
+        ({"policy_snapshot_hash": "f" * 64}, "a2a_authority_policy_drift"),
+        ({"required": False}, "a2a_authority_frame_required_invalid"),
+    ],
+)
+async def test_a2a_authority_frame_fails_before_effect(frame_overrides, reason_code, tmp_path):
+    from app.core.execution_context import (
+        A2A_TOOL_AUTHORITY_FRAME_SCHEMA,
+        A2AToolAuthorityFrame,
+        ExecutionPrincipal,
+    )
+    from app.runtime.ccplus_contracts import (
+        PermissionMode,
+        PermissionProfileV1,
+        permission_profile_snapshot,
+        permission_profile_snapshot_hash,
+    )
+    from app.services.execution_receipts import canonical_payload_hash
+    from app.tools.runtime import ToolExecutionContext
+    from app.tools.service import ToolRuntimeService
+
+    profile = PermissionProfileV1(mode=PermissionMode.DONT_ASK, allowed_tools=("write_file",))
+    context = ToolExecutionContext(
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        tenant_id=str(uuid4()),
+        workspace=tmp_path,
+        permission_profile=profile,
+    )
+    principal = ExecutionPrincipal(
+        tenant_id=context.tenant_id,
+        source_agent_id=context.agent_id,
+        requester_user_id=context.user_id,
+        root_session_id="root-session",
+    )
+    profile_snapshot = permission_profile_snapshot(profile)
+    authority_snapshot = {
+        "schema": "hive.a2a_authority_snapshot.v1",
+        "tenant_id": str(context.tenant_id),
+        "owner_id": str(context.user_id),
+        "source_agent_id": "source-agent",
+        "target_agent_id": str(context.agent_id),
+        "session_id": "child-session",
+        "parent_session_id": "root-session",
+        "trace_id": "trace-a2a",
+        "runtime_task_id": "",
+        "root_runtime_task_id": "",
+        "budget_run_id": "",
+        "interaction_type": "agent_message",
+        "depth": 1,
+        "tool_profile": "agent_message",
+        "permission_profile": profile_snapshot,
+        "execution_identity": None,
+        "execution_principal": principal.to_evidence(),
+    }
+    runtime_resolver = _FakeRuntimeResolver(context)
+    registry = _FakeRegistry("EFFECT_RAN")
+    service = ToolRuntimeService(
+        runtime_resolver=runtime_resolver,
+        governance_resolver=SimpleNamespace(),
+        registry=registry,
+        ensure_registry=lambda: None,
+        governance_runner=lambda *_args, **_kwargs: None,
+        fallback_executor=lambda *_args, **_kwargs: "fallback",
+        direct_fallback_executor=lambda *_args, **_kwargs: "direct-fallback",
+    )
+    frame = {
+        "principal": principal,
+        "capability_snapshot": authority_snapshot,
+        "capability_snapshot_hash": canonical_payload_hash(authority_snapshot),
+        "policy_snapshot_hash": permission_profile_snapshot_hash(profile),
+        "schema": A2A_TOOL_AUTHORITY_FRAME_SCHEMA,
+        "permission_profile": profile,
+        "session_id": "child-session",
+        "parent_session_id": "root-session",
+        "trace_id": "trace-a2a",
+        "sandbox_profile": str(profile_snapshot["sandbox"]),
+        "approval_policy": str(profile_snapshot["approval_policy"]),
+    }
+    frame.update(frame_overrides)
+
+    result = await service.execute(
+        "write_file",
+        {"path": "workspace/a.md", "content": "x"},
+        agent_id=context.agent_id,
+        user_id=context.user_id,
+        session_id="child-session",
+        permission_profile=profile,
+        authority_frame=A2AToolAuthorityFrame(**frame),
+    )
+
+    assert "<tool_error>" in str(result)
+    assert reason_code in str(result)
+    assert runtime_resolver.calls == []
+    assert registry.calls == []
+
+
+@pytest.mark.asyncio
+async def test_a2a_authority_frame_rejects_capability_snapshot_drift_before_effect(tmp_path):
+    from app.core.execution_context import (
+        A2A_TOOL_AUTHORITY_FRAME_SCHEMA,
+        A2AToolAuthorityFrame,
+        ExecutionPrincipal,
+    )
+    from app.runtime.ccplus_contracts import (
+        PermissionMode,
+        PermissionProfileV1,
+        permission_profile_snapshot,
+        permission_profile_snapshot_hash,
+    )
+    from app.services.execution_receipts import canonical_payload_hash
+    from app.tools.runtime import ToolExecutionContext
+    from app.tools.service import ToolRuntimeService
+
+    profile = PermissionProfileV1(mode=PermissionMode.DONT_ASK, allowed_tools=("write_file",))
+    context = ToolExecutionContext(
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        tenant_id=str(uuid4()),
+        workspace=tmp_path,
+        permission_profile=profile,
+    )
+    principal = ExecutionPrincipal(
+        tenant_id=context.tenant_id,
+        source_agent_id=context.agent_id,
+        requester_user_id=context.user_id,
+        root_session_id="root-session",
+        root_runtime_task_id="root-task",
+    )
+    snapshot = {
+        "schema": "hive.a2a_authority_snapshot.v1",
+        "tenant_id": context.tenant_id,
+        "owner_id": str(context.user_id),
+        "source_agent_id": "",
+        "target_agent_id": str(context.agent_id),
+        "session_id": "child-session",
+        "parent_session_id": "",
+        "trace_id": "trace-a2a",
+        "runtime_task_id": "",
+        "root_runtime_task_id": "root-task",
+        "budget_run_id": "",
+        "interaction_type": "agent_message",
+        "depth": 1,
+        "tool_profile": "agent_message",
+        "permission_profile": permission_profile_snapshot(profile),
+        "execution_identity": None,
+        "execution_principal": principal.to_evidence(),
+    }
+    trusted_hash = canonical_payload_hash(snapshot)
+    snapshot["target_agent_id"] = str(uuid4())
+    runtime_resolver = _FakeRuntimeResolver(context)
+    registry = _FakeRegistry("EFFECT_RAN")
+    service = ToolRuntimeService(
+        runtime_resolver=runtime_resolver,
+        governance_resolver=SimpleNamespace(),
+        registry=registry,
+        ensure_registry=lambda: None,
+        governance_runner=lambda *_args, **_kwargs: None,
+        fallback_executor=lambda *_args, **_kwargs: "fallback",
+        direct_fallback_executor=lambda *_args, **_kwargs: "direct-fallback",
+    )
+
+    result = await service.execute(
+        "write_file",
+        {"path": "workspace/a.md", "content": "x"},
+        agent_id=context.agent_id,
+        user_id=context.user_id,
+        session_id="child-session",
+        permission_profile=profile,
+        authority_frame=A2AToolAuthorityFrame(
+            schema=A2A_TOOL_AUTHORITY_FRAME_SCHEMA,
+            principal=principal,
+            capability_snapshot=snapshot,
+            capability_snapshot_hash=trusted_hash,
+            policy_snapshot_hash=permission_profile_snapshot_hash(profile),
+            permission_profile=profile,
+            session_id="child-session",
+            root_runtime_task_id="root-task",
+            trace_id="trace-a2a",
+            sandbox_profile="workspace_write",
+            approval_policy="granular",
+        ),
+    )
+
+    assert "a2a_authority_snapshot_drift" in str(result)
+    assert runtime_resolver.calls == []
+    assert registry.calls == []
+
+
+@pytest.mark.asyncio
+async def test_a2a_parent_profile_exact_effect_deny_overrides_global_allow(tmp_path):
+    from app.core.execution_context import (
+        A2A_TOOL_AUTHORITY_FRAME_SCHEMA,
+        A2AToolAuthorityFrame,
+        ExecutionPrincipal,
+    )
+    from app.runtime.ccplus_contracts import (
+        PermissionMode,
+        PermissionProfileV1,
+        permission_profile_snapshot,
+        permission_profile_snapshot_hash,
+    )
+    from app.services.execution_receipts import canonical_payload_hash
+    from app.tools.runtime import ToolExecutionContext
+    from app.tools.service import ToolRuntimeService
+
+    profile = PermissionProfileV1(
+        mode=PermissionMode.BYPASS_PERMISSIONS,
+        allowed_tools=("read_file", "tool_search", "delegate_to_agent"),
+        denied_actions=("write_file",),
+    )
+    context = ToolExecutionContext(
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        tenant_id=str(uuid4()),
+        workspace=tmp_path,
+        permission_profile=profile,
+    )
+    principal = ExecutionPrincipal(
+        tenant_id=context.tenant_id,
+        source_agent_id=context.agent_id,
+        requester_user_id=context.user_id,
+        root_session_id="root-session",
+    )
+    profile_snapshot = permission_profile_snapshot(profile)
+    snapshot = {
+        "schema": "hive.a2a_authority_snapshot.v1",
+        "tenant_id": context.tenant_id,
+        "owner_id": str(context.user_id),
+        "source_agent_id": "",
+        "target_agent_id": str(context.agent_id),
+        "session_id": "child-session",
+        "parent_session_id": "root-session",
+        "trace_id": "trace-a2a-deny",
+        "runtime_task_id": "",
+        "root_runtime_task_id": "",
+        "budget_run_id": "",
+        "interaction_type": "agent_message",
+        "depth": 1,
+        "tool_profile": "agent_message",
+        "permission_profile": profile_snapshot,
+        "execution_identity": None,
+        "execution_principal": principal.to_evidence(),
+    }
+    registry = _FakeRegistry("EFFECT_RAN")
+    governance_context = SimpleNamespace(
+        agent_id=context.agent_id,
+        user_id=context.user_id,
+        tenant_id=context.tenant_id,
+        tool_name="write_file",
+        arguments={"path": "workspace/a.md", "content": "x"},
+        delegation_token=None,
+        permission_profile=profile,
+    )
+    service = ToolRuntimeService(
+        runtime_resolver=_FakeRuntimeResolver(context),
+        governance_resolver=_FakeGovernanceResolver(governance_context, SimpleNamespace()),
+        registry=registry,
+        ensure_registry=lambda: None,
+        governance_runner=lambda *_args, **_kwargs: None,
+        fallback_executor=lambda *_args, **_kwargs: "fallback",
+        direct_fallback_executor=lambda *_args, **_kwargs: "direct-fallback",
+    )
+
+    result = await service.execute(
+        "write_file",
+        {"path": "workspace/a.md", "content": "x"},
+        agent_id=context.agent_id,
+        user_id=context.user_id,
+        session_id="child-session",
+        permission_profile=profile,
+        emit_runtime_hooks=False,
+        authority_frame=A2AToolAuthorityFrame(
+            schema=A2A_TOOL_AUTHORITY_FRAME_SCHEMA,
+            principal=principal,
+            capability_snapshot=snapshot,
+            capability_snapshot_hash=canonical_payload_hash(snapshot),
+            policy_snapshot_hash=permission_profile_snapshot_hash(profile),
+            permission_profile=profile,
+            session_id="child-session",
+            parent_session_id="root-session",
+            trace_id="trace-a2a-deny",
+            sandbox_profile=str(profile_snapshot["sandbox"]),
+            approval_policy=str(profile_snapshot["approval_policy"]),
+        ),
+    )
+
+    assert "a2a_parent_effect_denied" in str(result)
+    assert registry.calls == []
 
 
 @pytest.mark.asyncio

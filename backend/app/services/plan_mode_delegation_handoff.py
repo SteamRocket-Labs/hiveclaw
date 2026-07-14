@@ -84,9 +84,18 @@ async def delegation_handoff_handler(_db: Any, plan: Any) -> dict[str, Any]:
         raise ValueError("Delegation handoff requires a confirmed user id")
 
     from app.agents.orchestrator import OrchestrationPolicy, delegate_async
+    from app.core.execution_context import ExecutionPrincipal
 
     tool_profile = str(payload.get("tool_profile") or "worker_safe").strip() or "worker_safe"
     plan_authorization = require_active_plan_authorization(plan)
+    execution_principal = ExecutionPrincipal(
+        tenant_id=plan.tenant_id,
+        source_agent_id=plan.agent_id,
+        requester_user_id=user_id,
+        root_session_id=payload.get("parent_session_id") or getattr(plan, "session_id", None),
+        root_runtime_task_id=plan_authorization.get("runtime_task_id"),
+        origin="confirmed_plan_handoff",
+    )
     handle = await delegate_async(
         target=target,
         target_model=target_model,
@@ -96,7 +105,7 @@ async def delegation_handoff_handler(_db: Any, plan: Any) -> dict[str, Any]:
                 "content": f"[Plan Mode confirmed delegation] {message}",
             }
         ],
-        owner_id=getattr(source_agent, "creator_id", None) or user_id,
+        owner_id=user_id,
         session_id=uuid.uuid4().hex,
         parent_agent_id=plan.agent_id,
         parent_session_id=payload.get("parent_session_id") or getattr(plan, "session_id", None),
@@ -111,6 +120,8 @@ async def delegation_handoff_handler(_db: Any, plan: Any) -> dict[str, Any]:
         confirmed_plan_hash=plan.plan_hash,
         confirmed_plan_session_id=getattr(plan, "session_id", None),
         plan_authorization=plan_authorization,
+        execution_principal=execution_principal.to_evidence(),
+        root_runtime_task_id=execution_principal.root_runtime_task_id,
     )
     if str(getattr(handle, "status", "")).startswith("plan_required"):
         raise ValueError(f"Delegation handoff was blocked by Plan Mode: {handle.status}")

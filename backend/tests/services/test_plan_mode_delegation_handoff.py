@@ -83,7 +83,7 @@ async def test_delegation_handoff_starts_async_delegation_with_confirmed_plan(mo
     }
     assert captured["target"] is target_agent
     assert captured["target_model"] is target_model
-    assert captured["owner_id"] == source_agent.creator_id
+    assert captured["owner_id"] == confirmer_id
     assert captured["parent_agent_id"] == parent_agent_id
     assert captured["parent_session_id"] == "wechat-session"
     assert captured["tenant_id"] == tenant_id
@@ -92,6 +92,16 @@ async def test_delegation_handoff_starts_async_delegation_with_confirmed_plan(mo
     assert captured["confirmed_plan_hash"] == "sha256:abc"
     assert captured["confirmed_plan_session_id"] == "wechat-session"
     assert captured["plan_authorization"] == plan.metadata_json["active_plan_authorization"]
+    assert captured["execution_principal"] == {
+        "schema": "hive.execution_principal.v1",
+        "tenant_id": str(tenant_id),
+        "source_agent_id": str(parent_agent_id),
+        "requester_user_id": str(confirmer_id),
+        "root_session_id": "wechat-session",
+        "root_runtime_task_id": None,
+        "origin": "confirmed_plan_handoff",
+        "delegation_chain": [],
+    }
     assert captured["policy"].tool_profile == "research_readonly"
     assert captured["max_tool_rounds"] == 16
     assert captured["conversation_messages"][0]["content"].startswith("[Plan Mode confirmed delegation]")

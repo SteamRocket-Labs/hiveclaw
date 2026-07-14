@@ -14,6 +14,9 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 
+A2A_TOOL_AUTHORITY_FRAME_SCHEMA = "hive.a2a_tool_authority_frame.v1"
+
+
 @dataclass(frozen=True)
 class ExecutionIdentity:
     """Represents who triggered/is responsible for the current agent action."""
@@ -108,6 +111,36 @@ class ExecutionPrincipal:
             raise ValueError("execution principal source Agent does not match the caller")
         if tenant_id is None or str(self.tenant_id) != str(tenant_id):
             raise ValueError("execution principal tenant does not match the source Agent")
+
+
+@dataclass(frozen=True, slots=True)
+class A2AToolAuthorityFrame:
+    """Atomic authority envelope carried from an A2A session into tool effects.
+
+    The frame stays typed as one value so principal and receipt hashes cannot
+    be independently dropped while traversing custom executors or facades.
+    Invalid fields remain representable and are rejected by the effect-boundary
+    validator before runtime resolution.
+    """
+
+    schema: str | None
+    principal: ExecutionPrincipal | Mapping[str, Any] | None
+    capability_snapshot_hash: str | None
+    policy_snapshot_hash: str | None
+    capability_snapshot: Mapping[str, Any] | None = None
+    permission_profile: Any | None = None
+    execution_identity: Any | None = None
+    delegation_token: Any | None = None
+    session_id: str | None = None
+    parent_session_id: str | None = None
+    runtime_task_id: str | None = None
+    root_runtime_task_id: str | None = None
+    budget_run_id: str | None = None
+    trace_id: str | None = None
+    delegation_id: str | None = None
+    sandbox_profile: str | None = None
+    approval_policy: str | None = None
+    required: bool = True
 
 
 # ContextVar — set once at request/task entry point, read by audit layer

@@ -554,6 +554,154 @@ async def test_custom_tool_executor_disables_inner_runtime_hooks():
 
 
 @pytest.mark.asyncio
+async def test_custom_tool_executor_receives_a2a_authority_frame_from_session_context():
+    from app.core.execution_context import A2AToolAuthorityFrame, ExecutionIdentity, ExecutionPrincipal
+    from app.runtime.ccplus_contracts import permission_profile_snapshot, permission_profile_snapshot_hash
+    from app.runtime.invoker import AgentInvocationRequest, _execute_tool_with_request
+    from app.runtime.session import SessionContext
+    from app.services.execution_receipts import canonical_payload_hash
+
+    agent_id = uuid4()
+    user_id = uuid4()
+    tenant_id = uuid4()
+    identity = ExecutionIdentity(
+        identity_type="delegated_user",
+        identity_id=user_id,
+        label="requester via web",
+    )
+    principal = ExecutionPrincipal(
+        tenant_id=tenant_id,
+        source_agent_id=agent_id,
+        requester_user_id=user_id,
+        root_session_id="root-session-2",
+        root_runtime_task_id="root-task-2",
+        delegation_chain=("agent:source", f"agent:{agent_id}"),
+    )
+    permission_profile = {
+        "mode": "dontAsk",
+        "allowed_tools": ["read_file"],
+        "sandbox": "read_only",
+    }
+    capability_snapshot = {
+        "schema": "hive.a2a_authority_snapshot.v1",
+        "tenant_id": str(tenant_id),
+        "owner_id": str(user_id),
+        "source_agent_id": "source-agent",
+        "target_agent_id": str(agent_id),
+        "session_id": "child-session-2",
+        "parent_session_id": "root-session-2",
+        "trace_id": "trace-a2a-2",
+        "runtime_task_id": "child-task-2",
+        "root_runtime_task_id": "root-task-2",
+        "budget_run_id": "budget-2",
+        "interaction_type": "agent_message",
+        "depth": 2,
+        "tool_profile": "agent_message",
+        "permission_profile": permission_profile_snapshot(permission_profile),
+        "execution_identity": {
+            "identity_type": identity.identity_type,
+            "identity_id": str(identity.identity_id),
+            "label": identity.label,
+        },
+        "execution_principal": principal.to_evidence(),
+    }
+    seen: dict[str, object] = {}
+
+    async def custom_executor(
+        tool_name,
+        args,
+        *,
+        authority_frame=None,
+    ):
+        seen.update(locals())
+        return "custom-ok"
+
+    async def emit_event(_payload):
+        return None
+
+    request = AgentInvocationRequest(
+        model=object(),
+        messages=[{"role": "user", "content": "x"}],
+        agent_name="Target",
+        role_description="role",
+        agent_id=agent_id,
+        user_id=user_id,
+        execution_identity=identity,
+        tool_executor=custom_executor,
+        session_context=SessionContext(
+            session_id="child-session-2",
+            source="agent",
+            channel="agent",
+            metadata={
+                "execution_principal": principal.to_evidence(),
+                "permission_profile": permission_profile,
+                "runtime_task_id": "child-task-2",
+                "budget_run_id": "budget-2",
+                "delegation_trace_id": "trace-a2a-2",
+                "delegation_parent_session_id": "root-session-2",
+                "a2a_authority_snapshot": capability_snapshot,
+                "a2a_authority_snapshot_hash": canonical_payload_hash(capability_snapshot),
+                "a2a_authority_policy_hash": permission_profile_snapshot_hash(permission_profile),
+                "a2a_authority_frame_schema": "hive.a2a_tool_authority_frame.v1",
+                "a2a_authority_required": True,
+            },
+        ),
+    )
+
+    result = await _execute_tool_with_request("read_file", {"path": "workspace/a.md"}, request, emit_event)
+
+    assert result == "custom-ok"
+    assert isinstance(seen["authority_frame"], A2AToolAuthorityFrame)
+    assert seen["authority_frame"].principal == principal
+    assert seen["authority_frame"].capability_snapshot == capability_snapshot
+    assert seen["authority_frame"].capability_snapshot_hash == canonical_payload_hash(capability_snapshot)
+    assert seen["authority_frame"].policy_snapshot_hash == permission_profile_snapshot_hash(permission_profile)
+    assert seen["authority_frame"].permission_profile == permission_profile_snapshot(permission_profile)
+    assert seen["authority_frame"].execution_identity is identity
+    assert seen["authority_frame"].session_id == "child-session-2"
+    assert seen["authority_frame"].parent_session_id == "root-session-2"
+    assert seen["authority_frame"].runtime_task_id == "child-task-2"
+    assert seen["authority_frame"].root_runtime_task_id == "root-task-2"
+    assert seen["authority_frame"].budget_run_id == "budget-2"
+    assert seen["authority_frame"].trace_id == "trace-a2a-2"
+    assert seen["authority_frame"].sandbox_profile == "read_only"
+    assert seen["authority_frame"].schema == "hive.a2a_tool_authority_frame.v1"
+    assert seen["authority_frame"].required is True
+
+    incompatible_calls: list[tuple[str, dict]] = []
+
+    async def incompatible_executor(tool_name, args):
+        incompatible_calls.append((tool_name, args))
+        return "UNFRAMED_EFFECT_RAN"
+
+    request.tool_executor = incompatible_executor
+    blocked = await _execute_tool_with_request("read_file", {"path": "workspace/a.md"}, request, emit_event)
+
+    assert "a2a_custom_executor_authority_frame_unsupported" in str(blocked)
+    assert incompatible_calls == []
+
+
+def test_a2a_session_marker_without_receipt_builds_required_invalid_frame():
+    from app.runtime.invoker import _tool_frame_kwargs_from_session_context
+    from app.runtime.session import SessionContext
+
+    frame_kwargs = _tool_frame_kwargs_from_session_context(
+        SessionContext(
+            session_id="legacy-child-session",
+            source="agent",
+            channel="agent",
+            metadata={"interaction_type": "delegation", "delegation": True},
+        )
+    )
+
+    frame = frame_kwargs["authority_frame"]
+    assert frame.required is True
+    assert frame.schema is None
+    assert frame.principal is None
+    assert frame.session_id == "legacy-child-session"
+
+
+@pytest.mark.asyncio
 async def test_execute_tool_receives_interactive_available_for_web_chat_session(monkeypatch):
     from app.runtime.invoker import AgentInvocationRequest, _execute_tool_with_request
     from app.runtime.session import SessionContext

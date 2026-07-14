@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
-from app.core.execution_context import ExecutionIdentity
+from app.core.execution_context import ExecutionIdentity, ExecutionPrincipal
 from app.tools.result_envelope import ToolContentEnvelope
 
 if TYPE_CHECKING:
@@ -24,6 +24,18 @@ class ToolExecutionContext:
     tenant_id: str | None
     workspace: Path
     execution_identity: ExecutionIdentity | None = None
+    execution_principal: ExecutionPrincipal | None = None
+    authority_snapshot_hash: str | None = None
+    authority_policy_hash: str | None = None
+    authority_frame_schema: str | None = None
+    authority_frame_required: bool = False
+    authority_trace_id: str | None = None
+    authority_parent_session_id: str | None = None
+    authority_root_runtime_task_id: str | None = None
+    authority_budget_run_id: str | None = None
+    authority_delegation_id: str | None = None
+    authority_sandbox_profile: str | None = None
+    authority_approval_policy: str | None = None
     session_id: str | None = None
     permission_profile: "PermissionProfileV1 | None" = None
     delegation_token: Any | None = None

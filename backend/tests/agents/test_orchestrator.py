@@ -9,6 +9,99 @@ from uuid import uuid4
 import pytest
 
 
+def _a2a_authority_kwargs(
+    *,
+    target,
+    owner_id,
+    session_id: str,
+    parent_agent_id=None,
+    parent_session_id: str | None = None,
+    root_runtime_task_id: str | None = None,
+) -> dict:
+    """Build the authenticated parent frame required by a live delegation."""
+    from app.core.execution_context import ExecutionPrincipal
+
+    tenant_id = getattr(target, "tenant_id", None) or uuid4()
+    target.tenant_id = tenant_id
+    source_agent_id = parent_agent_id or uuid4()
+    root_session_id = parent_session_id or session_id
+    principal = ExecutionPrincipal(
+        tenant_id=tenant_id,
+        source_agent_id=source_agent_id,
+        requester_user_id=owner_id,
+        root_session_id=root_session_id,
+        root_runtime_task_id=root_runtime_task_id,
+        delegation_chain=(f"agent:{source_agent_id}",),
+    )
+    return {
+        "parent_agent_id": source_agent_id,
+        "parent_session_id": root_session_id,
+        "execution_principal": principal.to_evidence(),
+        "root_runtime_task_id": root_runtime_task_id,
+    }
+
+
+def _persisted_a2a_authority_metadata(
+    *,
+    task_id: str,
+    trace_id: str,
+    target,
+    target_model,
+    owner_id,
+    parent_agent_id,
+    parent_session_id: str,
+    child_session_id: str,
+    conversation_messages: list[dict],
+    tool_profile: str,
+    timeout_seconds: float = 120.0,
+    max_tool_rounds: int | None = None,
+    execution_identity_metadata: dict | None = None,
+) -> dict:
+    from app.agents.orchestrator import (
+        AgentDelegationRequest,
+        OrchestrationPolicy,
+        _build_delegation_execution_receipt,
+        _execution_identity_from_metadata,
+    )
+    from app.core.execution_context import ExecutionPrincipal
+
+    tenant_id = getattr(target, "tenant_id", None) or uuid4()
+    target.tenant_id = tenant_id
+    principal = ExecutionPrincipal(
+        tenant_id=tenant_id,
+        source_agent_id=parent_agent_id,
+        requester_user_id=owner_id,
+        root_session_id=parent_session_id,
+        delegation_chain=(f"agent:{parent_agent_id}",),
+    )
+    request = AgentDelegationRequest(
+        target=target,
+        target_model=target_model,
+        conversation_messages=conversation_messages,
+        owner_id=owner_id,
+        session_id=child_session_id,
+        system_prompt_suffix="",
+        max_tool_rounds=max_tool_rounds,
+        parent_agent_id=parent_agent_id,
+        parent_session_id=parent_session_id,
+        trace_id=trace_id,
+        policy=OrchestrationPolicy(timeout_seconds=timeout_seconds, tool_profile=tool_profile),
+        execution_identity=_execution_identity_from_metadata(execution_identity_metadata),
+        execution_principal=principal.to_evidence(),
+        runtime_task_id=task_id,
+    )
+    request.execution_receipt = _build_delegation_execution_receipt(
+        request,
+        task_id=task_id,
+        trace_id=trace_id,
+        status="pending",
+    )
+    return {
+        "execution_principal": principal.to_evidence(),
+        "execution_receipt": request.execution_receipt,
+    }
+
+
 @pytest.fixture(autouse=True)
 def _stub_activity_logger(monkeypatch):
     async def fake_log_activity(*args, **kwargs):
@@ -61,6 +154,7 @@ async def test_delegate_to_agent_builds_runtime_request(monkeypatch):
     )
     tool_executor = object()
     owner_id = uuid4()
+    parent_agent_id = uuid4()
     captured = {}
 
     async def fake_invoke_agent(request):
@@ -81,6 +175,12 @@ async def test_delegate_to_agent_builds_runtime_request(monkeypatch):
             tool_executor=tool_executor,
             system_prompt_suffix="A2A_SUFFIX",
             max_tool_rounds=7,
+            **_a2a_authority_kwargs(
+                target=target,
+                owner_id=owner_id,
+                session_id="session-1",
+                parent_agent_id=parent_agent_id,
+            ),
         )
     finally:
         clear_execution_identity()
@@ -130,7 +230,7 @@ async def test_delegate_to_agent_builds_runtime_request(monkeypatch):
     assert request.session_context.metadata["delegation_tool_policy"] == "worker_inherited_governed"
     assert request.session_context.metadata["delegation_memory_policy"] == "governed_long_term_memory"
     assert request.delegation_token is not None
-    assert request.delegation_token.parent_agent_id == owner_id
+    assert request.delegation_token.parent_agent_id == parent_agent_id
     assert request.delegation_token.child_agent_id == target.id
     assert request.delegation_token.inherit_parent_capabilities is True
     assert request.delegation_token.granted_capabilities == frozenset()
@@ -173,7 +273,12 @@ async def test_delegate_async_serializes_duplicate_work_with_coordination_lease(
         "conversation_messages": [{"role": "user", "content": "Prepare the market map"}],
         "owner_id": owner_id,
         "session_id": "session-lease",
-        "parent_agent_id": parent_id,
+        **_a2a_authority_kwargs(
+            target=target,
+            owner_id=owner_id,
+            session_id="session-lease",
+            parent_agent_id=parent_id,
+        ),
     }
     first = await delegate_async(**kwargs)
     second = await delegate_async(**kwargs)
@@ -219,6 +324,8 @@ async def test_delegate_async_captures_execution_identity_before_background_spaw
     monkeypatch.setattr("app.services.runtime_task_worker.notify_runtime_task_worker", fake_notify_runtime_task_worker)
 
     user_id = uuid4()
+    owner_id = uuid4()
+    parent_agent_id = uuid4()
     set_execution_identity(
         ExecutionIdentity(identity_type="delegated_user", identity_id=user_id, label="User via Feishu")
     )
@@ -227,9 +334,14 @@ async def test_delegate_async_captures_execution_identity_before_background_spaw
             target=target,
             target_model=target_model,
             conversation_messages=[{"role": "user", "content": "Prepare the market map"}],
-            owner_id=uuid4(),
+            owner_id=owner_id,
             session_id="session-identity",
-            parent_agent_id=uuid4(),
+            **_a2a_authority_kwargs(
+                target=target,
+                owner_id=owner_id,
+                session_id="session-identity",
+                parent_agent_id=parent_agent_id,
+            ),
         )
     finally:
         clear_execution_identity()
@@ -277,14 +389,21 @@ async def test_delegate_async_enqueues_for_worker_claim_instead_of_in_process_sp
     monkeypatch.setattr("app.agents.orchestrator._spawn_async_delegation_task", fake_spawn_async_delegation_task)
     monkeypatch.setattr("app.services.runtime_task_worker.notify_runtime_task_worker", fake_notify_runtime_task_worker)
 
+    owner_id = uuid4()
+    parent_agent_id = uuid4()
     handle = await delegate_async(
         target=target,
         target_model=target_model,
         conversation_messages=[{"role": "user", "content": "Prepare the market map"}],
-        owner_id=uuid4(),
+        owner_id=owner_id,
         session_id="session-worker-claim",
-        parent_agent_id=uuid4(),
-        parent_session_id="parent-session-worker-claim",
+        **_a2a_authority_kwargs(
+            target=target,
+            owner_id=owner_id,
+            session_id="session-worker-claim",
+            parent_agent_id=parent_agent_id,
+            parent_session_id="parent-session-worker-claim",
+        ),
     )
 
     assert handle.status == "queued"
@@ -358,21 +477,24 @@ async def test_delegate_to_agent_enforces_depth_limit(monkeypatch):
 async def test_delegate_fails_closed_when_delegation_token_cannot_be_issued(monkeypatch):
     from app.agents.orchestrator import AgentDelegationRequest, _delegate
 
-    target = SimpleNamespace(id="not-a-uuid", name="Broken Target", role_description="Helpful")
+    target = SimpleNamespace(id=uuid4(), name="Broken Target", role_description="Helpful")
     target_model = SimpleNamespace(provider="openai", model="gpt-4.1")
+    owner_id = uuid4()
 
     async def _unexpected_invoke(_request):
         raise AssertionError("invoke_agent must not run without a delegation token")
 
     monkeypatch.setattr("app.agents.orchestrator.invoke_agent", _unexpected_invoke)
+    monkeypatch.setattr("app.agents.orchestrator._issue_delegation_token_for_request", lambda *_args: None)
 
     result = await _delegate(
         AgentDelegationRequest(
             target=target,
             target_model=target_model,
             conversation_messages=[{"role": "user", "content": "hello"}],
-            owner_id=uuid4(),
+            owner_id=owner_id,
             session_id="bad-token-child",
+            **_a2a_authority_kwargs(target=target, owner_id=owner_id, session_id="bad-token-child"),
         )
     )
 
@@ -387,12 +509,13 @@ async def test_delegate_to_agent_applies_timeout_and_trace_metadata(monkeypatch)
     target = SimpleNamespace(id=uuid4(), name="Target", role_description="Helpful")
     target_model = SimpleNamespace(provider="openai", model="gpt-4.1")
     owner_id = uuid4()
+    parent_agent_id = uuid4()
 
     async def fake_invoke_agent(request):
         metadata = request.session_context.metadata
         assert metadata["delegation"] is True
         assert metadata["delegation_depth"] == 1
-        assert metadata["delegation_parent_agent_id"] == "source-agent"
+        assert metadata["delegation_parent_agent_id"] == str(parent_agent_id)
         assert metadata["delegation_parent_session_id"] == "parent-session"
         assert metadata["delegation_trace_id"] == "trace-123"
         await asyncio.sleep(0.05)
@@ -407,11 +530,16 @@ async def test_delegate_to_agent_applies_timeout_and_trace_metadata(monkeypatch)
             conversation_messages=[{"role": "user", "content": "hello"}],
             owner_id=owner_id,
             session_id="child-session",
-            parent_agent_id="source-agent",
-            parent_session_id="parent-session",
             trace_id="trace-123",
             depth=1,
             policy=OrchestrationPolicy(timeout_seconds=0.01),
+            **_a2a_authority_kwargs(
+                target=target,
+                owner_id=owner_id,
+                session_id="child-session",
+                parent_agent_id=parent_agent_id,
+                parent_session_id="parent-session",
+            ),
         )
     )
 
@@ -424,11 +552,23 @@ async def test_delegate_to_agent_applies_timeout_and_trace_metadata(monkeypatch)
 @pytest.mark.asyncio
 async def test_delegate_to_agent_threads_permission_profile_into_child_runtime(monkeypatch):
     from app.agents.orchestrator import AgentDelegationRequest, OrchestrationPolicy, _delegate
+    from app.core.execution_context import ExecutionPrincipal
     from app.runtime.ccplus_contracts import PermissionMode, PermissionProfileV1
 
     target = SimpleNamespace(id=uuid4(), name="Target", role_description="Helpful")
     target_model = SimpleNamespace(provider="openai", model="gpt-4.1")
     captured = {}
+    tenant_id = uuid4()
+    owner_id = uuid4()
+    parent_agent_id = uuid4()
+    principal = ExecutionPrincipal(
+        tenant_id=tenant_id,
+        source_agent_id=parent_agent_id,
+        requester_user_id=owner_id,
+        root_session_id="root-session-permission",
+        root_runtime_task_id="root-task-permission",
+        delegation_chain=(f"agent:{parent_agent_id}",),
+    )
 
     async def fake_invoke_agent(request):
         captured["request"] = request
@@ -441,13 +581,15 @@ async def test_delegate_to_agent_threads_permission_profile_into_child_runtime(m
             target=target,
             target_model=target_model,
             conversation_messages=[{"role": "user", "content": "hello"}],
-            owner_id=uuid4(),
+            owner_id=owner_id,
             session_id="child-session",
-            parent_agent_id="source-agent",
+            parent_agent_id=parent_agent_id,
             parent_session_id="parent-session",
             trace_id="trace-permission",
             depth=1,
             policy=OrchestrationPolicy(timeout_seconds=5.0),
+            execution_principal=principal.to_evidence(),
+            root_runtime_task_id="root-task-permission",
             permission_profile=PermissionProfileV1(
                 mode=PermissionMode.BYPASS_PERMISSIONS,
                 allowed_tools=("web_search", "feishu_doc_read"),
@@ -464,6 +606,18 @@ async def test_delegate_to_agent_threads_permission_profile_into_child_runtime(m
         "feishu_doc_read",
     ]
     assert metadata["delegation_parent_session_id"] == "parent-session"
+    assert metadata["a2a_authority_frame_schema"] == "hive.a2a_tool_authority_frame.v1"
+    assert metadata["a2a_authority_required"] is True
+    assert len(metadata["a2a_authority_snapshot_hash"]) == 64
+    assert len(metadata["a2a_authority_policy_hash"]) == 64
+    child_principal = ExecutionPrincipal.from_evidence(metadata["execution_principal"])
+    assert child_principal is not None
+    assert child_principal.tenant_id == tenant_id
+    assert child_principal.source_agent_id == target.id
+    assert child_principal.requester_user_id == owner_id
+    assert child_principal.root_session_id == "root-session-permission"
+    assert child_principal.root_runtime_task_id == "root-task-permission"
+    assert child_principal.delegation_chain[-1] == f"agent:{target.id}"
 
 
 @pytest.mark.asyncio
@@ -473,6 +627,7 @@ async def test_delegate_to_agent_supports_memory_readonly_profile(monkeypatch):
     target = SimpleNamespace(id=uuid4(), name="Target", role_description="Helpful")
     target_model = SimpleNamespace(provider="openai", model="gpt-4.1")
     captured = {}
+    owner_id = uuid4()
 
     async def fake_invoke_agent(request):
         captured["request"] = request
@@ -485,9 +640,10 @@ async def test_delegate_to_agent_supports_memory_readonly_profile(monkeypatch):
             target=target,
             target_model=target_model,
             conversation_messages=[{"role": "user", "content": "search past memory and summarize it"}],
-            owner_id=uuid4(),
+            owner_id=owner_id,
             session_id="memory-child",
             policy=OrchestrationPolicy(tool_profile="memory_readonly"),
+            **_a2a_authority_kwargs(target=target, owner_id=owner_id, session_id="memory-child"),
         )
     )
 
@@ -509,6 +665,7 @@ async def test_delegate_to_agent_supports_review_readonly_profile(monkeypatch):
     target = SimpleNamespace(id=uuid4(), name="Reviewer", role_description="Helpful")
     target_model = SimpleNamespace(provider="openai", model="gpt-4.1")
     captured = {}
+    owner_id = uuid4()
 
     async def fake_invoke_agent(request):
         captured["request"] = request
@@ -521,9 +678,10 @@ async def test_delegate_to_agent_supports_review_readonly_profile(monkeypatch):
             target=target,
             target_model=target_model,
             conversation_messages=[{"role": "user", "content": "review these files and identify risks"}],
-            owner_id=uuid4(),
+            owner_id=owner_id,
             session_id="review-child",
             policy=OrchestrationPolicy(tool_profile="review_readonly"),
+            **_a2a_authority_kwargs(target=target, owner_id=owner_id, session_id="review-child"),
         )
     )
 
@@ -564,6 +722,7 @@ async def test_delegate_to_agent_supports_research_readonly_profile(monkeypatch)
     target = SimpleNamespace(id=uuid4(), name="Researcher", role_description="Helpful")
     target_model = SimpleNamespace(provider="openai", model="gpt-4.1")
     captured = {}
+    owner_id = uuid4()
 
     async def fake_invoke_agent(request):
         captured["request"] = request
@@ -576,9 +735,10 @@ async def test_delegate_to_agent_supports_research_readonly_profile(monkeypatch)
             target=target,
             target_model=target_model,
             conversation_messages=[{"role": "user", "content": "research the latest market movement"}],
-            owner_id=uuid4(),
+            owner_id=owner_id,
             session_id="research-child",
             policy=OrchestrationPolicy(tool_profile="research_readonly"),
+            **_a2a_authority_kwargs(target=target, owner_id=owner_id, session_id="research-child"),
         )
     )
 
@@ -623,6 +783,8 @@ async def test_agent_message_profile_inherits_target_tools_and_governed_memory(m
     target = SimpleNamespace(id=uuid4(), name="Feishu Knowledge", role_description="Knowledge assistant")
     target_model = SimpleNamespace(provider="openai", model="gpt-4.1")
     captured = {}
+    owner_id = uuid4()
+    parent_agent_id = uuid4()
 
     async def fake_invoke_agent(request):
         captured["request"] = request
@@ -635,12 +797,17 @@ async def test_agent_message_profile_inherits_target_tools_and_governed_memory(m
             target=target,
             target_model=target_model,
             conversation_messages=[{"role": "user", "content": "请查飞书知识库里的灵巧手报告"}],
-            owner_id=uuid4(),
+            owner_id=owner_id,
             session_id="agent-message-child",
-            parent_agent_id=uuid4(),
-            parent_session_id="parent-session",
             interaction_type="agent_message",
             policy=OrchestrationPolicy(timeout_seconds=120, tool_profile="agent_message"),
+            **_a2a_authority_kwargs(
+                target=target,
+                owner_id=owner_id,
+                session_id="agent-message-child",
+                parent_agent_id=parent_agent_id,
+                parent_session_id="parent-session",
+            ),
         )
     )
 
@@ -662,6 +829,8 @@ async def test_peer_agent_delegation_profile_inherits_capability_token_scope(mon
     target = SimpleNamespace(id=uuid4(), name="Feishu Knowledge", role_description="Knowledge assistant")
     target_model = SimpleNamespace(provider="openai", model="gpt-4.1")
     captured = {}
+    owner_id = uuid4()
+    parent_agent_id = uuid4()
 
     async def fake_invoke_agent(request):
         captured["request"] = request
@@ -674,12 +843,17 @@ async def test_peer_agent_delegation_profile_inherits_capability_token_scope(mon
             target=target,
             target_model=target_model,
             conversation_messages=[{"role": "user", "content": "请查飞书知识库里的报告"}],
-            owner_id=uuid4(),
+            owner_id=owner_id,
             session_id="peer-child",
-            parent_agent_id=uuid4(),
-            parent_session_id="parent-session",
             interaction_type="delegation",
             policy=OrchestrationPolicy(timeout_seconds=120, tool_profile="agent_message"),
+            **_a2a_authority_kwargs(
+                target=target,
+                owner_id=owner_id,
+                session_id="peer-child",
+                parent_agent_id=parent_agent_id,
+                parent_session_id="parent-session",
+            ),
         )
     )
 
@@ -701,6 +875,10 @@ async def test_nested_a2a_cycle_is_blocked_on_the_shared_trace(monkeypatch):
     agent_b = SimpleNamespace(id=uuid4(), name="B", role_description="B")
     model = SimpleNamespace(provider="openai", model="gpt-4.1")
     nested = {}
+    owner_id = uuid4()
+    tenant_id = uuid4()
+    agent_a.tenant_id = tenant_id
+    agent_b.tenant_id = tenant_id
 
     async def fake_invoke_agent(_request):
         nested["result"] = await _delegate(
@@ -708,13 +886,19 @@ async def test_nested_a2a_cycle_is_blocked_on_the_shared_trace(monkeypatch):
                 target=agent_a,
                 target_model=model,
                 conversation_messages=[{"role": "user", "content": "back to A"}],
-                owner_id=uuid4(),
+                owner_id=owner_id,
                 session_id="nested",
-                parent_agent_id=agent_b.id,
                 trace_id="shared-a2a-trace",
                 depth=2,
                 policy=OrchestrationPolicy(max_depth=3, tool_profile="agent_message"),
                 interaction_type="agent_message",
+                **_a2a_authority_kwargs(
+                    target=agent_a,
+                    owner_id=owner_id,
+                    session_id="nested",
+                    parent_agent_id=agent_b.id,
+                    parent_session_id="root",
+                ),
             )
         )
         return SimpleNamespace(content=nested["result"].content)
@@ -725,13 +909,19 @@ async def test_nested_a2a_cycle_is_blocked_on_the_shared_trace(monkeypatch):
             target=agent_b,
             target_model=model,
             conversation_messages=[{"role": "user", "content": "ask B"}],
-            owner_id=uuid4(),
+            owner_id=owner_id,
             session_id="root",
-            parent_agent_id=agent_a.id,
             trace_id="shared-a2a-trace",
             depth=1,
             policy=OrchestrationPolicy(max_depth=3, tool_profile="agent_message"),
             interaction_type="agent_message",
+            **_a2a_authority_kwargs(
+                target=agent_b,
+                owner_id=owner_id,
+                session_id="root",
+                parent_agent_id=agent_a.id,
+                parent_session_id="root",
+            ),
         )
     )
 
@@ -757,14 +947,21 @@ async def test_delegate_async_returns_handle_immediately(monkeypatch):
 
     target = SimpleNamespace(id=uuid4(), name="Worker", role_description="helper")
     model = SimpleNamespace(provider="openai", model="gpt-4.1", api_key="k", base_url=None, max_output_tokens=None)
+    owner_id = uuid4()
+    parent_agent_id = uuid4()
 
     handle = await delegate_async(
         target=target,
         target_model=model,
         conversation_messages=[{"role": "user", "content": "do research"}],
-        owner_id=uuid4(),
+        owner_id=owner_id,
         session_id="sess-1",
-        parent_agent_id=uuid4(),
+        **_a2a_authority_kwargs(
+            target=target,
+            owner_id=owner_id,
+            session_id="sess-1",
+            parent_agent_id=parent_agent_id,
+        ),
     )
 
     assert handle.task_id
@@ -805,9 +1002,14 @@ async def test_delegate_async_default_worker_safe_persists_mutating_replay_contr
         conversation_messages=[{"role": "user", "content": "do research"}],
         owner_id=owner_id,
         session_id="sess-restart",
-        parent_agent_id=parent_agent_id,
-        parent_session_id="parent-session",
         max_tool_rounds=11,
+        **_a2a_authority_kwargs(
+            target=target,
+            owner_id=owner_id,
+            session_id="sess-restart",
+            parent_agent_id=parent_agent_id,
+            parent_session_id="parent-session",
+        ),
     )
 
     assert handle.task_id
@@ -863,10 +1065,15 @@ async def test_delegate_async_persists_readonly_resumable_payload_for_restart_re
         conversation_messages=[{"role": "user", "content": "do research"}],
         owner_id=owner_id,
         session_id="sess-restart",
-        parent_agent_id=parent_agent_id,
-        parent_session_id="parent-session",
         max_tool_rounds=11,
         policy=OrchestrationPolicy(tool_profile="review_readonly"),
+        **_a2a_authority_kwargs(
+            target=target,
+            owner_id=owner_id,
+            session_id="sess-restart",
+            parent_agent_id=parent_agent_id,
+            parent_session_id="parent-session",
+        ),
     )
 
     assert handle.task_id
@@ -898,6 +1105,25 @@ async def test_resume_persisted_async_delegations_rehydrates_tasks(monkeypatch):
     target = SimpleNamespace(id=uuid4(), name="Worker", role_description="helper")
     model = SimpleNamespace(provider="openai", model="gpt-4.1", api_key="k", base_url=None, max_output_tokens=None)
     updates: list[tuple[str, dict]] = []
+    execution_identity_metadata = {
+        "identity_type": "delegated_user",
+        "identity_id": str(delegated_user_id),
+        "label": "User via recovered session",
+    }
+    authority_metadata = _persisted_a2a_authority_metadata(
+        task_id=task_id,
+        trace_id="trace-resume",
+        target=target,
+        target_model=model,
+        owner_id=owner_id,
+        parent_agent_id=parent_agent_id,
+        parent_session_id="parent-session",
+        child_session_id="child-session",
+        conversation_messages=[{"role": "user", "content": "resume me"}],
+        tool_profile="review_readonly",
+        max_tool_rounds=9,
+        execution_identity_metadata=execution_identity_metadata,
+    )
 
     async def fake_list_active_runtime_task_records(limit=50, statuses=("pending", "running")):
         assert "pending" in statuses
@@ -922,11 +1148,8 @@ async def test_resume_persisted_async_delegations_rehydrates_tasks(monkeypatch):
                     "max_tool_rounds": 9,
                     "timeout_seconds": 120.0,
                     "tool_profile": "review_readonly",
-                    "execution_identity": {
-                        "identity_type": "delegated_user",
-                        "identity_id": str(delegated_user_id),
-                        "label": "User via recovered session",
-                    },
+                    "execution_identity": execution_identity_metadata,
+                    **authority_metadata,
                 },
             }
         ]
@@ -959,7 +1182,7 @@ async def test_resume_persisted_async_delegations_rehydrates_tasks(monkeypatch):
         assert resumed == [task_id]
         assert task_id in _async_tasks
 
-        await asyncio.sleep(0.05)
+        await asyncio.wait_for(_async_tasks[task_id].task, timeout=2.0)
         status = await check_async_delegation(task_id, parent_agent_id=parent_agent_id)
 
         assert status["status"] == "completed"
@@ -1195,15 +1418,22 @@ async def test_delegate_async_waits_for_activity_log_persistence(monkeypatch):
 
     target = SimpleNamespace(id=uuid4(), name="Worker", role_description="helper")
     model = SimpleNamespace(provider="openai", model="gpt-4.1", api_key="k", base_url=None, max_output_tokens=None)
+    owner_id = uuid4()
+    parent_agent_id = uuid4()
 
     pending = asyncio.create_task(
         delegate_async(
             target=target,
             target_model=model,
             conversation_messages=[{"role": "user", "content": "do research"}],
-            owner_id=uuid4(),
+            owner_id=owner_id,
             session_id="sess-wait-log",
-            parent_agent_id=uuid4(),
+            **_a2a_authority_kwargs(
+                target=target,
+                owner_id=owner_id,
+                session_id="sess-wait-log",
+                parent_agent_id=parent_agent_id,
+            ),
         )
     )
 
@@ -1398,9 +1628,22 @@ async def test_delegate_async_handles_failure(monkeypatch):
 
     task_id = uuid4().hex
     owner_id = uuid4()
+    parent_agent_id = uuid4()
     target = SimpleNamespace(id=uuid4(), name="Crasher", role_description="")
     model = SimpleNamespace(provider="openai", model="gpt-4.1", api_key="k", base_url=None, max_output_tokens=None)
     updates: list[tuple[str, dict]] = []
+    authority_metadata = _persisted_a2a_authority_metadata(
+        task_id=task_id,
+        trace_id="trace-failure",
+        target=target,
+        target_model=model,
+        owner_id=owner_id,
+        parent_agent_id=parent_agent_id,
+        parent_session_id="parent-session-failure",
+        child_session_id="sess-2",
+        conversation_messages=[{"role": "user", "content": "crash"}],
+        tool_profile="review_readonly",
+    )
 
     async def fake_get_runtime_task_record(task_id_arg):
         assert task_id_arg == task_id
@@ -1409,8 +1652,9 @@ async def test_delegate_async_handles_failure(monkeypatch):
             "task_type": "delegation",
             "status": "running",
             "trace_id": "trace-failure",
-            "parent_agent_id": str(uuid4()),
+            "parent_agent_id": str(parent_agent_id),
             "child_agent_id": str(target.id),
+            "parent_session_id": "parent-session-failure",
             "child_session_id": "sess-2",
             "depth": 1,
             "metadata": {
@@ -1418,6 +1662,7 @@ async def test_delegate_async_handles_failure(monkeypatch):
                 "target_agent_id": str(target.id),
                 "conversation_messages": [{"role": "user", "content": "crash"}],
                 "tool_profile": "review_readonly",
+                **authority_metadata,
             },
         }
 
@@ -1435,7 +1680,7 @@ async def test_delegate_async_handles_failure(monkeypatch):
     monkeypatch.setattr("app.agents.orchestrator.update_runtime_task_record", fake_update_runtime_task_record)
 
     assert await dispatch_persisted_async_delegation(task_id) is True
-    await asyncio.sleep(0.05)
+    await asyncio.wait_for(_async_tasks[task_id].task, timeout=2.0)
 
     assert any(task_id_arg == task_id and payload.get("status") == "failed" for task_id_arg, payload in updates)
     _async_tasks.clear()
@@ -1556,6 +1801,18 @@ async def test_delegate_async_persists_runtime_task_lifecycle(monkeypatch):
     model = SimpleNamespace(provider="openai", model="gpt-4.1", api_key="k", base_url=None, max_output_tokens=None)
     updates: list[tuple[str, dict]] = []
     spans: list[dict] = []
+    authority_metadata = _persisted_a2a_authority_metadata(
+        task_id=task_id,
+        trace_id="trace-runtime",
+        target=target,
+        target_model=model,
+        owner_id=owner_id,
+        parent_agent_id=parent_agent_id,
+        parent_session_id="parent-session-runtime",
+        child_session_id="sess-runtime",
+        conversation_messages=[{"role": "user", "content": "do research"}],
+        tool_profile="review_readonly",
+    )
 
     async def fake_get_runtime_task_record(task_id_arg):
         assert task_id_arg == task_id
@@ -1566,6 +1823,7 @@ async def test_delegate_async_persists_runtime_task_lifecycle(monkeypatch):
             "trace_id": "trace-runtime",
             "parent_agent_id": str(parent_agent_id),
             "child_agent_id": str(target.id),
+            "parent_session_id": "parent-session-runtime",
             "child_session_id": "sess-runtime",
             "depth": 1,
             "metadata": {
@@ -1573,6 +1831,7 @@ async def test_delegate_async_persists_runtime_task_lifecycle(monkeypatch):
                 "target_agent_id": str(target.id),
                 "conversation_messages": [{"role": "user", "content": "do research"}],
                 "tool_profile": "review_readonly",
+                **authority_metadata,
             },
         }
 
@@ -1631,6 +1890,10 @@ async def test_delegate_async_persists_runtime_task_lifecycle(monkeypatch):
                 "side_effect_refs": receipt["result_refs"],
                 "truth_evidence": [receipt],
                 "execution_receipt": receipt,
+                "authority_frame_schema": receipt["authority_frame_schema"],
+                "authority_snapshot_hash": receipt["capability_snapshot_hash"],
+                "policy_snapshot_hash": receipt["policy_snapshot_hash"],
+                "execution_principal": receipt["execution_principal"],
                 "source": "a2a_delegation",
             },
             "usage": None,
@@ -1656,6 +1919,7 @@ def _delegation_request(*, target, owner_id, depth=1, trace_id=None, max_depth=5
         depth=depth,
         trace_id=trace_id,
         policy=OrchestrationPolicy(max_depth=max_depth),
+        **_a2a_authority_kwargs(target=target, owner_id=owner_id, session_id="cycle-session"),
     )
 
 
@@ -1787,15 +2051,21 @@ async def test_delegate_concurrent_traces_do_not_interfere(monkeypatch):
     async def run_trace(trace_id, session_id):
         from app.agents.orchestrator import AgentDelegationRequest, OrchestrationPolicy
 
+        owner_id = uuid4()
         return await _delegate(
             AgentDelegationRequest(
                 target=shared_target,
                 target_model=SimpleNamespace(provider="openai", model="gpt-4.1"),
                 conversation_messages=[{"role": "user", "content": "x"}],
-                owner_id=uuid4(),
+                owner_id=owner_id,
                 session_id=session_id,
                 trace_id=trace_id,
                 policy=OrchestrationPolicy(max_depth=5),
+                **_a2a_authority_kwargs(
+                    target=shared_target,
+                    owner_id=owner_id,
+                    session_id=session_id,
+                ),
             )
         )
 

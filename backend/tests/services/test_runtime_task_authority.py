@@ -88,6 +88,59 @@ def test_runtime_task_authority_binds_user_session_agent_and_tenant() -> None:
     assert wrong_session.reason == "root_session_mismatch"
 
 
+def test_tool_context_preserves_root_execution_principal_across_a2a_hops() -> None:
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    user_id = uuid4()
+    principal = ExecutionPrincipal(
+        tenant_id=tenant_id,
+        source_agent_id=agent_id,
+        requester_user_id=user_id,
+        root_session_id="root-session",
+        root_runtime_task_id="root-task",
+        origin="a2a_delegation",
+        delegation_chain=("agent:parent", f"agent:{agent_id}"),
+    )
+    context = SimpleNamespace(
+        tenant_id=str(tenant_id),
+        agent_id=agent_id,
+        user_id=user_id,
+        session_id="child-session",
+        runtime_task_id="child-task",
+        execution_principal=principal,
+        authority_frame_required=True,
+    )
+
+    resolved = execution_principal_from_tool_context(context)
+
+    assert resolved is principal
+    assert resolved.root_session_id == "root-session"
+    assert resolved.root_runtime_task_id == "root-task"
+    assert resolved.delegation_chain == ("agent:parent", f"agent:{agent_id}")
+
+
+def test_tool_context_rejects_mismatched_a2a_execution_principal() -> None:
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    context = SimpleNamespace(
+        tenant_id=str(tenant_id),
+        agent_id=agent_id,
+        user_id=uuid4(),
+        session_id="child-session",
+        runtime_task_id="child-task",
+        execution_principal=ExecutionPrincipal(
+            tenant_id=tenant_id,
+            source_agent_id=agent_id,
+            requester_user_id=uuid4(),
+            root_session_id="root-session",
+        ),
+        authority_frame_required=True,
+    )
+
+    with pytest.raises(ValueError, match="requester"):
+        execution_principal_from_tool_context(context)
+
+
 def test_runtime_task_authority_fails_closed_without_root_evidence() -> None:
     tenant_id = uuid4()
     agent_id = uuid4()

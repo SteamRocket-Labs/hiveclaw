@@ -7,7 +7,7 @@ import hashlib
 import json
 import logging
 import uuid
-from dataclasses import asdict, dataclass, field, is_dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
@@ -17,7 +17,9 @@ from app.agents.coordination_gateway import CoordinationGateway
 from app.agents.coordination_wiring import gateway_scope
 from app.agents.delegation_token import DEFAULT_DELEGATION_TTL_SECONDS, issue_delegation_token
 from app.agents.tool_policies import DELEGATED_WORKER_BASE_EXCLUDED_TOOLS
+from app.core.execution_context import A2A_TOOL_AUTHORITY_FRAME_SCHEMA, ExecutionPrincipal
 from app.kernel.contracts import ExecutionIdentityRef
+from app.runtime.ccplus_contracts import permission_profile_snapshot, permission_profile_snapshot_hash
 from app.runtime.invoker import AgentInvocationRequest, invoke_agent
 from app.runtime.session import SessionContext
 from app.services.agent_tools import CORE_TOOL_NAMES
@@ -418,11 +420,7 @@ def _runtime_json_safe(value: Any) -> Any:
 def _permission_profile_metadata(value: Any | None) -> dict[str, Any] | None:
     if value is None:
         return None
-    if isinstance(value, dict):
-        return _runtime_json_safe(value)
-    if is_dataclass(value):
-        return _runtime_json_safe(asdict(value))
-    return None
+    return permission_profile_snapshot(value)
 
 
 def _estimate_prompt_tokens_from_messages(messages: list[dict] | None) -> int:
@@ -602,6 +600,20 @@ class AgentDelegationRequest:
     execution_receipt: dict[str, Any] | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class DelegationAuthorityReceiptFailure:
+    reason_code: str
+    expected: dict[str, Any]
+    actual: dict[str, Any]
+
+    def to_metadata(self) -> dict[str, Any]:
+        return {
+            "reason_code": self.reason_code,
+            "expected": _runtime_json_safe(self.expected),
+            "actual": _runtime_json_safe(self.actual),
+        }
+
+
 def _delegation_request_hash(request: AgentDelegationRequest) -> str:
     return canonical_payload_hash(
         {
@@ -619,27 +631,39 @@ def _delegation_request_hash(request: AgentDelegationRequest) -> str:
     )
 
 
+def _delegation_authority_snapshot(request: AgentDelegationRequest) -> dict[str, Any]:
+    """Build the complete replayable authority facts consumed by child effects."""
+    child_principal = _child_execution_principal(request)
+    return {
+        "schema": "hive.a2a_authority_snapshot.v1",
+        "tenant_id": str(request.tenant_id or getattr(request.target, "tenant_id", "") or ""),
+        "owner_id": str(request.owner_id),
+        "source_agent_id": str(request.parent_agent_id or ""),
+        "target_agent_id": str(getattr(request.target, "id", "")),
+        "session_id": str(request.session_id or ""),
+        "parent_session_id": str(request.parent_session_id or ""),
+        "trace_id": str(request.trace_id or ""),
+        "runtime_task_id": str(request.runtime_task_id or ""),
+        "root_runtime_task_id": str(request.root_runtime_task_id or ""),
+        "budget_run_id": str(request.budget_run_id or ""),
+        "interaction_type": request.interaction_type,
+        "depth": request.depth,
+        "tool_profile": request.policy.tool_profile,
+        "permission_profile": _permission_profile_metadata(request.permission_profile),
+        "execution_identity": _execution_identity_to_metadata(request.execution_identity),
+        "parent_execution_principal": request.execution_principal,
+        "execution_principal": child_principal.to_evidence() if child_principal is not None else None,
+        "plan_id": str(request.confirmed_plan_id or ""),
+        "plan_version": request.confirmed_plan_version,
+        "plan_hash": request.confirmed_plan_hash,
+        "plan_session_id": request.confirmed_plan_session_id,
+        "plan_authorization": request.plan_authorization,
+        "plan_exempt_reason": request.plan_exempt_reason,
+    }
+
+
 def _delegation_authority_snapshot_hash(request: AgentDelegationRequest) -> str:
-    return canonical_payload_hash(
-        {
-            "schema": "hive.a2a_authority_snapshot.v1",
-            "tenant_id": str(request.tenant_id or ""),
-            "owner_id": str(request.owner_id),
-            "source_agent_id": str(request.parent_agent_id or ""),
-            "target_agent_id": str(getattr(request.target, "id", "")),
-            "tool_profile": request.policy.tool_profile,
-            "permission_profile": _permission_profile_metadata(request.permission_profile),
-            "execution_identity": _execution_identity_to_metadata(request.execution_identity),
-            "execution_principal": request.execution_principal,
-            "root_runtime_task_id": request.root_runtime_task_id,
-            "plan_id": str(request.confirmed_plan_id or ""),
-            "plan_version": request.confirmed_plan_version,
-            "plan_hash": request.confirmed_plan_hash,
-            "plan_session_id": request.confirmed_plan_session_id,
-            "plan_authorization": request.plan_authorization,
-            "plan_exempt_reason": request.plan_exempt_reason,
-        }
-    )
+    return canonical_payload_hash(_delegation_authority_snapshot(request))
 
 
 def _delegation_result_refs(request: AgentDelegationRequest, *, task_id: str) -> list[str]:
@@ -663,6 +687,60 @@ def _delegation_chain(request: AgentDelegationRequest) -> list[str]:
     return chain
 
 
+def _child_execution_principal(request: AgentDelegationRequest) -> ExecutionPrincipal | None:
+    """Rebind a trusted outer principal to the target Agent without losing its root."""
+    parent = ExecutionPrincipal.from_evidence(request.execution_principal)
+    if parent is None:
+        return None
+    parent_agent_id = _maybe_uuid(request.parent_agent_id)
+    if parent_agent_id is None:
+        raise ValueError("A2A delegation is missing an explicit parent Agent binding")
+    if parent.source_agent_id != parent_agent_id:
+        raise ValueError("A2A execution principal source Agent does not match the delegating Agent")
+    if parent.requester_user_id != request.owner_id:
+        raise ValueError("A2A execution principal requester does not match the delegation owner")
+    request_tenant = request.tenant_id
+    if request_tenant is not None and str(parent.tenant_id) != str(request_tenant):
+        raise ValueError("A2A execution principal tenant does not match the delegation tenant")
+    target_tenant = getattr(request.target, "tenant_id", None)
+    if target_tenant is not None and str(parent.tenant_id) != str(target_tenant):
+        raise ValueError("A2A execution principal tenant does not match the target Agent tenant")
+    target_agent_id = _maybe_uuid(getattr(request.target, "id", None))
+    if target_agent_id is None:
+        raise ValueError("A2A target Agent id is invalid")
+    return ExecutionPrincipal(
+        tenant_id=parent.tenant_id,
+        source_agent_id=target_agent_id,
+        requester_user_id=parent.requester_user_id,
+        root_session_id=parent.root_session_id or request.parent_session_id or request.session_id,
+        root_runtime_task_id=parent.root_runtime_task_id or request.root_runtime_task_id,
+        origin="a2a_delegation",
+        delegation_chain=tuple(_delegation_chain(request)),
+    )
+
+
+def _a2a_authority_metadata(
+    request: AgentDelegationRequest,
+    *,
+    child_principal: ExecutionPrincipal | None,
+) -> dict[str, Any]:
+    if child_principal is None:
+        return {}
+    receipt = request.execution_receipt if isinstance(request.execution_receipt, dict) else {}
+    authority_snapshot = _delegation_authority_snapshot(request)
+    authority_snapshot_hash = str(receipt.get("capability_snapshot_hash") or "").strip()
+    if not authority_snapshot_hash:
+        authority_snapshot_hash = canonical_payload_hash(authority_snapshot)
+    return {
+        "execution_principal": child_principal.to_evidence(),
+        "a2a_authority_frame_schema": A2A_TOOL_AUTHORITY_FRAME_SCHEMA,
+        "a2a_authority_required": True,
+        "a2a_authority_snapshot": authority_snapshot,
+        "a2a_authority_snapshot_hash": authority_snapshot_hash,
+        "a2a_authority_policy_hash": permission_profile_snapshot_hash(request.permission_profile),
+    }
+
+
 def _build_delegation_execution_receipt(
     request: AgentDelegationRequest,
     *,
@@ -671,7 +749,7 @@ def _build_delegation_execution_receipt(
     status: str,
 ) -> dict[str, Any]:
     previous = request.execution_receipt if isinstance(request.execution_receipt, dict) else {}
-    return build_execution_receipt(
+    receipt = build_execution_receipt(
         request_hash=str(previous.get("request_hash") or _delegation_request_hash(request)),
         capability_snapshot_hash=str(
             previous.get("capability_snapshot_hash") or _delegation_authority_snapshot_hash(request)
@@ -682,6 +760,77 @@ def _build_delegation_execution_receipt(
         trace_id=trace_id,
         span_id=f"remote-action:{task_id}",
     )
+    receipt["policy_snapshot_hash"] = permission_profile_snapshot_hash(request.permission_profile)
+    receipt["authority_frame_schema"] = A2A_TOOL_AUTHORITY_FRAME_SCHEMA
+    child_principal = _child_execution_principal(request)
+    if child_principal is not None:
+        receipt["execution_principal"] = child_principal.to_evidence()
+    return receipt
+
+
+def _delegation_authority_receipt_failure(
+    request: AgentDelegationRequest,
+    *,
+    required: bool = False,
+) -> DelegationAuthorityReceiptFailure | None:
+    receipt = request.execution_receipt if isinstance(request.execution_receipt, dict) else None
+    actual: dict[str, Any] = {
+        "authority_frame_schema": A2A_TOOL_AUTHORITY_FRAME_SCHEMA,
+        "request_hash": _delegation_request_hash(request),
+        "policy_snapshot_hash": permission_profile_snapshot_hash(request.permission_profile),
+    }
+    try:
+        current_principal = _child_execution_principal(request)
+        actual["capability_snapshot_hash"] = _delegation_authority_snapshot_hash(request)
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+        actual["execution_principal_error"] = str(exc)
+        return DelegationAuthorityReceiptFailure(
+            "a2a_execution_principal_drift",
+            receipt or {},
+            actual,
+        )
+    actual["execution_principal"] = current_principal.to_evidence() if current_principal is not None else None
+    if current_principal is None:
+        return DelegationAuthorityReceiptFailure(
+            "a2a_execution_principal_missing",
+            receipt or {},
+            actual,
+        )
+    if receipt is None:
+        if not required:
+            return None
+        return DelegationAuthorityReceiptFailure(
+            reason_code="a2a_authority_receipt_missing",
+            expected={},
+            actual=actual,
+        )
+
+    expected = {
+        "authority_frame_schema": receipt.get("authority_frame_schema"),
+        "request_hash": receipt.get("request_hash"),
+        "capability_snapshot_hash": receipt.get("capability_snapshot_hash"),
+        "policy_snapshot_hash": receipt.get("policy_snapshot_hash"),
+        "execution_principal": receipt.get("execution_principal"),
+    }
+    if expected["authority_frame_schema"] != actual["authority_frame_schema"]:
+        return DelegationAuthorityReceiptFailure("a2a_authority_frame_version_invalid", expected, actual)
+    if expected["request_hash"] != actual["request_hash"]:
+        return DelegationAuthorityReceiptFailure("a2a_request_snapshot_drift", expected, actual)
+    if expected["capability_snapshot_hash"] != actual["capability_snapshot_hash"]:
+        return DelegationAuthorityReceiptFailure("a2a_authority_snapshot_drift", expected, actual)
+    if expected["policy_snapshot_hash"] != actual["policy_snapshot_hash"]:
+        return DelegationAuthorityReceiptFailure("a2a_authority_policy_drift", expected, actual)
+
+    try:
+        expected_principal = ExecutionPrincipal.from_evidence(expected["execution_principal"])
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+        actual["execution_principal_error"] = str(exc)
+        return DelegationAuthorityReceiptFailure("a2a_execution_principal_drift", expected, actual)
+    if expected_principal is None:
+        return DelegationAuthorityReceiptFailure("a2a_execution_principal_missing", expected, actual)
+    if expected_principal.to_evidence() != current_principal.to_evidence():
+        return DelegationAuthorityReceiptFailure("a2a_execution_principal_drift", expected, actual)
+    return None
 
 
 async def _persist_delegation_terminal_evidence(
@@ -734,7 +883,14 @@ async def _persist_delegation_terminal_evidence(
             "side_effect_refs": receipt["result_refs"],
             "truth_evidence": [receipt],
             "execution_receipt": receipt,
-            **({"execution_principal": request.execution_principal} if request.execution_principal else {}),
+            "authority_frame_schema": receipt.get("authority_frame_schema"),
+            "authority_snapshot_hash": receipt.get("capability_snapshot_hash"),
+            "policy_snapshot_hash": receipt.get("policy_snapshot_hash"),
+            **(
+                {"execution_principal": receipt.get("execution_principal")}
+                if receipt.get("execution_principal")
+                else {}
+            ),
             **({"root_runtime_task_id": request.root_runtime_task_id} if request.root_runtime_task_id else {}),
             "source": "a2a_delegation",
         },
@@ -997,10 +1153,15 @@ def _delegation_user_message(conversation_messages: list[dict[str, Any]]) -> str
 
 
 def _build_runtime_task_metadata(request: AgentDelegationRequest, *, task_id: str) -> dict[str, Any]:
+    authority_snapshot = _delegation_authority_snapshot(request)
     metadata: dict[str, Any] = {
         "message_count": len(request.conversation_messages),
         "system_prompt_suffix": request.system_prompt_suffix,
         "tool_profile": request.policy.tool_profile,
+        "authority_frame_schema": A2A_TOOL_AUTHORITY_FRAME_SCHEMA,
+        "authority_snapshot": authority_snapshot,
+        "authority_snapshot_hash": canonical_payload_hash(authority_snapshot),
+        "authority_policy_hash": permission_profile_snapshot_hash(request.permission_profile),
     }
     if request.confirmed_plan_id is not None:
         metadata.update(
@@ -1373,9 +1534,45 @@ async def _settle_delegation_budget(
         logger.debug("[Orchestrator] delegation budget settlement failed for %s", task_id, exc_info=True)
 
 
+def _authority_receipt_failure_result(
+    request: AgentDelegationRequest,
+    *,
+    trace_id: str,
+    child_session_id: str,
+    failure: DelegationAuthorityReceiptFailure,
+) -> AgentDelegationResult:
+    fresh_authority_unavailable = failure.reason_code in {
+        "a2a_execution_principal_missing",
+        "a2a_execution_principal_drift",
+    }
+    status = "unavailable" if fresh_authority_unavailable else "needs_reconciliation"
+    return AgentDelegationResult(
+        content="A2A authority verification failed; the delegated invocation was not started.",
+        child_session_id=child_session_id,
+        trace_id=trace_id,
+        depth=request.depth,
+        failed=True,
+        parts=(
+            {
+                "type": "runtime_status",
+                "status": status,
+                "error_code": failure.reason_code,
+                "retryable": False,
+                "authority_reconciliation": failure.to_metadata(),
+            },
+        ),
+        terminal_reason=failure.reason_code,
+    )
+
+
 async def _delegate(request: AgentDelegationRequest) -> AgentDelegationResult:
     trace_id = request.trace_id or uuid.uuid4().hex
     child_session_id = request.session_id or uuid.uuid4().hex
+    # The effect-boundary authority snapshot must bind the same generated
+    # identifiers returned to the caller; keeping them only in local variables
+    # would leave synchronous A2A tool effects with an unverifiable empty trace.
+    request.trace_id = trace_id
+    request.session_id = child_session_id
     tool_profile = _resolve_delegation_tool_profile(request.policy.tool_profile)
     is_delegation = request.interaction_type == "delegation"
 
@@ -1419,6 +1616,14 @@ async def _delegate(request: AgentDelegationRequest) -> AgentDelegationResult:
     _stamp_ledger_todo_owner(request)
 
     try:
+        authority_failure = _delegation_authority_receipt_failure(request)
+        if authority_failure is not None:
+            return _authority_receipt_failure_result(
+                request,
+                trace_id=trace_id,
+                child_session_id=child_session_id,
+                failure=authority_failure,
+            )
         result = await _delegate_after_cycle_check(
             request,
             trace_id=trace_id,
@@ -1449,6 +1654,30 @@ async def _delegate_after_cycle_check(
 ) -> AgentDelegationResult:
     """Original _delegate body, extracted so cycle tracking can wrap it
     with try/finally without indenting hundreds of lines."""
+    try:
+        child_execution_principal = _child_execution_principal(request)
+    except (KeyError, TypeError, ValueError) as exc:
+        return AgentDelegationResult(
+            content="A2A authority frame is unavailable; the delegated invocation was not started.",
+            child_session_id=child_session_id,
+            trace_id=trace_id,
+            depth=request.depth,
+            failed=True,
+            parts=(
+                {
+                    "type": "runtime_status",
+                    "status": "unavailable",
+                    "error_code": "a2a_authority_frame_invalid",
+                    "retryable": False,
+                    "message": str(exc),
+                },
+            ),
+            terminal_reason="a2a_authority_frame_invalid",
+        )
+    authority_metadata = _a2a_authority_metadata(
+        request,
+        child_principal=child_execution_principal,
+    )
     if is_delegation:
         try:
             from app.runtime.hooks import HookEvent, emit_hook
@@ -1505,6 +1734,7 @@ async def _delegate_after_cycle_check(
 
     session_metadata: dict[str, Any] = {
         "interaction_type": request.interaction_type,
+        **authority_metadata,
     }
     permission_profile = _permission_profile_metadata(request.permission_profile)
     if permission_profile:
@@ -1693,6 +1923,7 @@ async def _delegate_after_cycle_check(
                         "from_agent": str(request.parent_agent_id) if request.parent_agent_id else None,
                         "to_agent": str(request.target.id),
                         "to_agent_name": request.target.name,
+                        **authority_metadata,
                         **artifact_contract,
                         **(
                             {
@@ -2502,6 +2733,48 @@ async def _build_delegation_request_from_runtime_record(record: dict[str, Any]) 
     )
 
 
+async def _hold_delegation_authority_failure(
+    *,
+    task_id: str,
+    record: dict[str, Any],
+    request: AgentDelegationRequest,
+    failure: DelegationAuthorityReceiptFailure,
+) -> None:
+    summary = (
+        "Task was not dispatched because its persisted A2A authority receipt no longer matches "
+        "the authenticated request frame. Reconciliation is required before retry."
+    )
+    metadata = build_restart_reconciliation_metadata(
+        record.get("metadata") if isinstance(record.get("metadata"), dict) else {},
+        task_type="delegation",
+        task_id=task_id,
+        blocker=failure.reason_code,
+        summary=summary,
+        trace_id=str(request.trace_id or record.get("trace_id") or ""),
+        session_id=str(request.session_id or record.get("child_session_id") or ""),
+    )
+    metadata.update(
+        {
+            "automatic_retry_disabled": True,
+            "authority_frame_schema": A2A_TOOL_AUTHORITY_FRAME_SCHEMA,
+            "authority_reconciliation": failure.to_metadata(),
+        }
+    )
+    try:
+        await update_runtime_task_record(
+            task_id,
+            status="needs_reconciliation",
+            result_summary=summary,
+            metadata_json=metadata,
+        )
+    except Exception as exc:
+        logger.error(
+            "[Orchestrator] Failed to persist A2A authority reconciliation hold for %s: %s",
+            task_id,
+            exc,
+        )
+
+
 async def dispatch_persisted_async_delegation(task_id: str) -> bool:
     """Dispatch a RuntimeTask-claimed delegation inside the worker process."""
     if task_id in _async_tasks:
@@ -2515,6 +2788,15 @@ async def dispatch_persisted_async_delegation(task_id: str) -> bool:
         return False
     request = await _build_delegation_request_from_runtime_record(record)
     if request is None:
+        return False
+    authority_failure = _delegation_authority_receipt_failure(request, required=True)
+    if authority_failure is not None:
+        await _hold_delegation_authority_failure(
+            task_id=task_id,
+            record=record,
+            request=request,
+            failure=authority_failure,
+        )
         return False
     _spawn_async_delegation_task(task_id=task_id, request=request, trace_id=request.trace_id or uuid.uuid4().hex)
     await update_runtime_task_record(
@@ -2620,12 +2902,6 @@ async def delegate_async(
         edit_mode=_normalize_delegation_edit_mode(edit_mode),
         budget_run_id=str(budget_uuid) if budget_uuid is not None else None,
     )
-    request.execution_receipt = _build_delegation_execution_receipt(
-        request,
-        task_id=task_id,
-        trace_id=real_trace_id,
-        status="pending",
-    )
     plan_allowed, plan_reason = await _delegation_plan_gate_allows(request)
     if not plan_allowed:
         return AsyncDelegationHandle(
@@ -2634,6 +2910,20 @@ async def delegate_async(
             target_name=getattr(target, "name", "unknown"),
             status=f"plan_required:{plan_reason or 'no_confirmed_plan'}",
         )
+    authority_failure = _delegation_authority_receipt_failure(request)
+    if authority_failure is not None:
+        return AsyncDelegationHandle(
+            task_id="authority_unavailable",
+            trace_id=real_trace_id,
+            target_name=getattr(target, "name", "unknown"),
+            status=f"authority_unavailable:{authority_failure.reason_code}",
+        )
+    request.execution_receipt = _build_delegation_execution_receipt(
+        request,
+        task_id=task_id,
+        trace_id=real_trace_id,
+        status="pending",
+    )
     coordination_key = _delegation_coordination_key(request)
     lease_ttl = int((policy or request.policy).timeout_seconds) + 60
     async with gateway_scope(coordination_gateway, tenant_id=tenant_id) as gateway:
@@ -3138,69 +3428,18 @@ async def resume_persisted_async_delegations(*, limit: int = 50) -> list[str]:
                 )
             continue
 
-        target_agent_id = _maybe_uuid(metadata.get("target_agent_id") or record.get("child_agent_id"))
-        owner_id = _maybe_uuid(metadata.get("owner_id"))
-        conversation_messages = metadata.get("conversation_messages")
-        if target_agent_id is None or owner_id is None or not isinstance(conversation_messages, list):
-            logger.warning("[Orchestrator] Runtime task %s missing resumable metadata; cannot resume", task_id)
+        request = await _build_delegation_request_from_runtime_record(record)
+        if request is None:
             continue
-
-        resolved = await _resolve_resumable_target_runtime(target_agent_id)
-        if resolved is None:
-            try:
-                await update_runtime_task_record(
-                    task_id,
-                    status="failed",
-                    result_summary="Task could not be resumed after restart because the target agent runtime is unavailable.",
-                    metadata_json={"resume_failed": True},
-                )
-            except Exception as exc:
-                logger.warning("[Orchestrator] Failed to persist resume failure for %s: %s", task_id, exc)
+        authority_failure = _delegation_authority_receipt_failure(request, required=True)
+        if authority_failure is not None:
+            await _hold_delegation_authority_failure(
+                task_id=task_id,
+                record=record,
+                request=request,
+                failure=authority_failure,
+            )
             continue
-
-        target, target_model = resolved
-        request = AgentDelegationRequest(
-            target=target,
-            target_model=target_model,
-            conversation_messages=conversation_messages,
-            owner_id=owner_id,
-            session_id=str(record.get("child_session_id") or uuid.uuid4().hex),
-            tool_executor=None,
-            system_prompt_suffix=str(metadata.get("system_prompt_suffix") or ""),
-            max_tool_rounds=metadata.get("max_tool_rounds"),
-            parent_agent_id=record.get("parent_agent_id"),
-            parent_session_id=record.get("parent_session_id"),
-            trace_id=str(record.get("trace_id") or uuid.uuid4().hex),
-            depth=int(record.get("depth") or 1),
-            policy=OrchestrationPolicy(
-                timeout_seconds=float(metadata.get("timeout_seconds") or 120.0),
-                tool_profile=str(metadata.get("tool_profile") or "worker_safe"),
-            ),
-            execution_identity=_execution_identity_from_metadata(metadata.get("execution_identity")),
-            confirmed_plan_id=metadata.get("plan_id"),
-            confirmed_plan_version=metadata.get("plan_version"),
-            confirmed_plan_hash=metadata.get("plan_hash"),
-            confirmed_plan_session_id=metadata.get("plan_session_id"),
-            plan_authorization=metadata.get("plan_authorization")
-            if isinstance(metadata.get("plan_authorization"), dict)
-            else None,
-            plan_exempt_reason=metadata.get("plan_exempt_reason"),
-            runtime_task_id=task_id,
-            restart_replay_contract=metadata.get("restart_replay_contract")
-            if isinstance(metadata.get("restart_replay_contract"), dict)
-            else None,
-            permission_profile=metadata.get("permission_profile"),
-            target_artifact_path=metadata.get("target_artifact_path"),
-            target_artifacts=metadata.get("target_artifacts")
-            if isinstance(metadata.get("target_artifacts"), list)
-            else [],
-            edit_mode=metadata.get("edit_mode"),
-            tenant_id=metadata.get("tenant_id") or record.get("tenant_id"),
-            ledger_todo_id=metadata.get("ledger_todo_id"),
-            execution_receipt=metadata.get("execution_receipt")
-            if isinstance(metadata.get("execution_receipt"), dict)
-            else None,
-        )
 
         _spawn_async_delegation_task(task_id=task_id, request=request, trace_id=request.trace_id or uuid.uuid4().hex)
         try:

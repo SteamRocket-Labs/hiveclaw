@@ -54,6 +54,25 @@ def _fake_invoke_capturing(store: dict, content: str = "result"):
     return fake_invoke
 
 
+def _authority_kwargs(*, target, owner_id: uuid.UUID, session_id: str) -> dict:
+    from app.core.execution_context import ExecutionPrincipal
+
+    tenant_id = getattr(target, "tenant_id", None) or uuid.uuid4()
+    parent_agent_id = uuid.uuid4()
+    target.tenant_id = tenant_id
+    return {
+        "parent_agent_id": parent_agent_id,
+        "parent_session_id": session_id,
+        "execution_principal": ExecutionPrincipal(
+            tenant_id=tenant_id,
+            source_agent_id=parent_agent_id,
+            requester_user_id=owner_id,
+            root_session_id=session_id,
+            delegation_chain=(f"agent:{parent_agent_id}",),
+        ).to_evidence(),
+    }
+
+
 # ---------------------------------------------------------------------------
 # test_delegate_passes_instruction_verbatim
 # RED until _build_delegation_brief is replaced with _delegation_user_message
@@ -77,12 +96,15 @@ async def test_delegate_passes_instruction_verbatim(monkeypatch):
 
     monkeypatch.setattr("app.agents.orchestrator._delegation_plan_gate_allows", _fake_plan_gate)
 
+    target = _target()
+    owner_id = uuid.uuid4()
     await delegate_to_agent(
-        target=_target(),
+        target=target,
         target_model=_model(),
         conversation_messages=[{"role": "user", "content": INSTRUCTION}],
-        owner_id=uuid.uuid4(),
+        owner_id=owner_id,
         session_id="sess-symm-1",
+        **_authority_kwargs(target=target, owner_id=owner_id, session_id="sess-symm-1"),
     )
 
     req = captured["request"]
@@ -111,12 +133,15 @@ async def test_delegate_no_three_section_envelope(monkeypatch):
 
     monkeypatch.setattr("app.agents.orchestrator._delegation_plan_gate_allows", _fake_plan_gate)
 
+    target = _target()
+    owner_id = uuid.uuid4()
     await delegate_to_agent(
-        target=_target(),
+        target=target,
         target_model=_model(),
         conversation_messages=[{"role": "user", "content": INSTRUCTION}],
-        owner_id=uuid.uuid4(),
+        owner_id=owner_id,
         session_id="sess-symm-2",
+        **_authority_kwargs(target=target, owner_id=owner_id, session_id="sess-symm-2"),
     )
 
     req = captured["request"]
@@ -148,6 +173,7 @@ async def test_delegate_keeps_source_as_metadata(monkeypatch):
 
     target = _target()
     parent_name = "CoordinatorAgent"
+    owner_id = uuid.uuid4()
 
     captured: dict = {}
     monkeypatch.setattr("app.agents.orchestrator.invoke_agent", _fake_invoke_capturing(captured))
@@ -161,9 +187,10 @@ async def test_delegate_keeps_source_as_metadata(monkeypatch):
         target=target,
         target_model=_model(),
         conversation_messages=[{"role": "user", "content": INSTRUCTION}],
-        owner_id=uuid.uuid4(),
+        owner_id=owner_id,
         session_id="sess-symm-3",
         parent_agent_name=parent_name,
+        **_authority_kwargs(target=target, owner_id=owner_id, session_id="sess-symm-3"),
     )
 
     req = captured["request"]
@@ -206,6 +233,7 @@ async def test_delegate_preserves_identity_semantics(monkeypatch):
         conversation_messages=[{"role": "user", "content": INSTRUCTION}],
         owner_id=owner_id,
         session_id="sess-symm-4",
+        **_authority_kwargs(target=target, owner_id=owner_id, session_id="sess-symm-4"),
     )
 
     req = captured["request"]
@@ -246,12 +274,14 @@ async def test_spawn_and_delegate_same_user_message_for_same_instruction(monkeyp
 
     monkeypatch.setattr("app.agents.orchestrator._delegation_plan_gate_allows", _fake_plan_gate)
 
+    target = _target()
     await delegate_to_agent(
-        target=_target(),
+        target=target,
         target_model=_model(),
         conversation_messages=[{"role": "user", "content": INSTRUCTION}],
         owner_id=owner_id,
         session_id="sess-symm-5a",
+        **_authority_kwargs(target=target, owner_id=owner_id, session_id="sess-symm-5a"),
     )
     delegate_user_msg = delegate_captured["request"].messages[0]["content"]
 

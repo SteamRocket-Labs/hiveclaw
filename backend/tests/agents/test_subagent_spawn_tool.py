@@ -48,11 +48,12 @@ def _tool_request(
     *,
     session_id: str | None = "sess-1",
     tenant_id: str | None = None,
+    user_id: uuid.UUID | None = None,
     round_state: dict | None = None,
 ) -> ToolExecutionRequest:
     context = ToolExecutionContext(
         agent_id=uuid.uuid4(),
-        user_id=uuid.uuid4(),
+        user_id=user_id or uuid.uuid4(),
         tenant_id=tenant_id,
         workspace=Path("/tmp"),
         session_id=session_id,
@@ -948,6 +949,31 @@ async def test_spawn_tool_background_returns_child_session_and_wake_first_contra
     assert captured["start"]["parent_user_id"] is not None
     assert captured["start"]["parent_session_id"] == "sess-1"
     assert captured["start"]["context_mode"] == "none"
+
+
+@pytest.mark.asyncio
+async def test_spawn_tool_background_returns_typed_unavailable_without_requester(monkeypatch):
+    import app.tools.handlers.subagent as handler_mod
+
+    async def unexpected_resolve(_agent_id):  # pragma: no cover - authority gate must run first
+        raise AssertionError("requester-less background spawn must not resolve a parent runtime")
+
+    monkeypatch.setattr(handler_mod, "_resolve_parent_runtime", unexpected_resolve)
+
+    request = _tool_request(
+        {"task": "inspect private requester context", "run_in_background": True},
+        user_id=uuid.UUID(int=0),
+    )
+    request.context.user_id = None
+    data = json.loads(await handler_mod.spawn_subagent_tool(request))
+
+    assert data == {
+        "ok": False,
+        "status": "unavailable",
+        "error_code": "subagent_requester_unavailable",
+        "retryable": False,
+        "message": "后台 Subagent 缺少已认证的请求者身份，任务未入队。",
+    }
 
 
 @pytest.mark.asyncio

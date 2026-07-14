@@ -9,6 +9,7 @@ from sqlalchemy import select
 from app.database import tenant_scoped_session
 from app.models.coordination import CoordinationSignal
 from app.models.runtime_task import RuntimeTask
+from app.services.runtime_task_authority import RuntimeTaskRequesterUnavailable
 
 pytestmark = pytest.mark.usefixtures("migrated_pg_url")
 
@@ -485,7 +486,9 @@ async def test_production_parent_wake_invoker_routes_wake_context_to_outbox(monk
     parent_id = uuid.uuid4()
     parent_session_id = uuid.uuid4()
     tid = uuid.uuid4()
-    user_id = uuid.uuid4()
+    creator_user_id = uuid.uuid4()
+    requester_user_id = uuid.uuid4()
+    run_id = uuid.uuid4().hex
     agent = SimpleNamespace(
         id=parent_id,
         tenant_id=tid,
@@ -494,14 +497,14 @@ async def test_production_parent_wake_invoker_routes_wake_context_to_outbox(monk
         fallback_model_id=None,
         name="Researcher",
         role_description="explores topics",
-        creator_id=user_id,
+        creator_id=creator_user_id,
         max_tool_rounds=40,
     )
     parent_session = SimpleNamespace(
         id=parent_session_id,
         agent_id=parent_id,
         tenant_id=tid,
-        user_id=user_id,
+        user_id=requester_user_id,
         parent_session_id=None,
         root_session_id=None,
         transcript_metadata_json={},
@@ -510,8 +513,23 @@ async def test_production_parent_wake_invoker_routes_wake_context_to_outbox(monk
         session_kind="human_chat",
         runtime_source="web_chat",
     )
-    user = SimpleNamespace(id=user_id, tenant_id=tid)
+    user = SimpleNamespace(id=requester_user_id, tenant_id=tid)
     monkeypatch.setattr(swc, "tenant_scoped_session", lambda *a, **k: _FakeAgentSession([agent, parent_session, user]))
+
+    async def fake_get_runtime_task_record(task_id):
+        assert task_id == run_id
+        return {
+            "task_id": run_id,
+            "task_type": "subagent",
+            "tenant_id": str(tid),
+            "parent_agent_id": str(parent_id),
+            "root_user_id": str(requester_user_id),
+            "root_session_id": str(parent_session_id),
+            "delegation_chain": [f"agent:{parent_id}", f"subagent:{run_id}"],
+            "metadata": {"root_user_id": str(requester_user_id)},
+        }
+
+    monkeypatch.setattr(swc, "get_runtime_task_record", fake_get_runtime_task_record, raising=False)
 
     captured: dict = {}
 
@@ -537,19 +555,120 @@ async def test_production_parent_wake_invoker_routes_wake_context_to_outbox(monk
             from_agent_id="subagent:researcher",
             thread_id=f"subagent:{parent_session_id}:trace-1",
             content="found 3 sources",
-            metadata={"budget_run_id": "budget-run-1", "subagent_run_id": "subagent-run-1"},
+            metadata={
+                "budget_run_id": "budget-run-1",
+                "subagent_run_id": run_id,
+                "parent_user_id": str(requester_user_id),
+            },
         )
     )
 
     assert result == {"ok": True, "status": "queued", "outbox_id": str(outbox_id)}
     notification = captured["notification"]
     assert notification.source_kind == "subagent"
-    assert notification.source_run_id == "subagent-run-1"
+    assert notification.source_run_id == run_id
     assert notification.parent_agent_id == agent.id
     assert notification.parent_user_id == user.id
     assert notification.parent_session_id == parent_session.id
     assert notification.summary == "found 3 sources"
     assert notification.metadata["budget_run_id"] == "budget-run-1"
+
+
+async def test_production_parent_wake_invoker_holds_creator_drift_against_runtime_requester(monkeypatch):
+    from app.services import subagent_wake_consumer as swc
+    from app.services.subagent_wake_consumer import SubagentWakeRequest, build_production_parent_wake_invoker
+
+    parent_id = uuid.uuid4()
+    parent_session_id = uuid.uuid4()
+    tenant_id = uuid.uuid4()
+    creator_user_id = uuid.uuid4()
+    requester_user_id = uuid.uuid4()
+    run_id = uuid.uuid4().hex
+    agent = SimpleNamespace(id=parent_id, tenant_id=tenant_id, status="active", creator_id=creator_user_id)
+    drifted_session = SimpleNamespace(
+        id=parent_session_id,
+        agent_id=parent_id,
+        tenant_id=tenant_id,
+        user_id=creator_user_id,
+    )
+    monkeypatch.setattr(swc, "tenant_scoped_session", lambda *a, **k: _FakeAgentSession([agent, drifted_session]))
+
+    async def fake_get_runtime_task_record(task_id):
+        assert task_id == run_id
+        return {
+            "task_id": run_id,
+            "task_type": "subagent",
+            "tenant_id": str(tenant_id),
+            "parent_agent_id": str(parent_id),
+            "root_user_id": str(requester_user_id),
+            "root_session_id": str(parent_session_id),
+            "delegation_chain": [f"agent:{parent_id}", f"subagent:{run_id}"],
+            "metadata": {"root_user_id": str(requester_user_id)},
+        }
+
+    async def unexpected_enqueue(*_args, **_kwargs):  # pragma: no cover - identity drift must hold
+        raise AssertionError("drifted creator identity must not receive a parent wake")
+
+    monkeypatch.setattr(swc, "get_runtime_task_record", fake_get_runtime_task_record, raising=False)
+    monkeypatch.setattr(swc, "enqueue_completion_notification", unexpected_enqueue)
+
+    with pytest.raises(RuntimeTaskRequesterUnavailable) as exc_info:
+        await build_production_parent_wake_invoker()(
+            SubagentWakeRequest(
+                tenant_id=tenant_id,
+                parent_agent_id=parent_id,
+                signal_id=uuid.uuid4(),
+                from_agent_id="subagent:critic",
+                thread_id=f"subagent:{parent_session_id}:trace-1",
+                content="done",
+                metadata={"subagent_run_id": run_id},
+            )
+        )
+
+    assert exc_info.value.reason_code == "parent_session_user_mismatch"
+
+
+async def test_production_parent_wake_invoker_holds_when_runtime_task_identity_is_missing(monkeypatch):
+    from app.services import subagent_wake_consumer as swc
+    from app.services.subagent_wake_consumer import SubagentWakeRequest, build_production_parent_wake_invoker
+
+    parent_id = uuid.uuid4()
+    parent_session_id = uuid.uuid4()
+    tenant_id = uuid.uuid4()
+    requester_user_id = uuid.uuid4()
+    agent = SimpleNamespace(id=parent_id, tenant_id=tenant_id, status="active", creator_id=uuid.uuid4())
+    parent_session = SimpleNamespace(
+        id=parent_session_id,
+        agent_id=parent_id,
+        tenant_id=tenant_id,
+        user_id=requester_user_id,
+    )
+    monkeypatch.setattr(swc, "tenant_scoped_session", lambda *a, **k: _FakeAgentSession([agent, parent_session]))
+
+    async def unexpected_runtime_lookup(*_args, **_kwargs):  # pragma: no cover - no canonical id exists
+        raise AssertionError("a completion signal without a RuntimeTask id must not guess authority")
+
+    async def unexpected_enqueue(*_args, **_kwargs):  # pragma: no cover - identity must hold
+        raise AssertionError("an unbound completion signal must not wake the parent")
+
+    monkeypatch.setattr(swc, "get_runtime_task_record", unexpected_runtime_lookup, raising=False)
+    monkeypatch.setattr(swc, "enqueue_completion_notification", unexpected_enqueue)
+
+    with pytest.raises(RuntimeTaskRequesterUnavailable) as exc_info:
+        await build_production_parent_wake_invoker()(
+            SubagentWakeRequest(
+                tenant_id=tenant_id,
+                parent_agent_id=parent_id,
+                signal_id=uuid.uuid4(),
+                from_agent_id="subagent:critic",
+                thread_id=f"subagent:{parent_session_id}:trace-1",
+                content="done",
+                metadata={},
+            )
+        )
+
+    assert exc_info.value.reason_code == "runtime_task_id_missing"
+    assert exc_info.value.evidence["authority_source"] == "runtime_tasks.root_user_id"
 
 
 async def test_production_parent_wake_invoker_never_calls_model_before_outbox(monkeypatch):
@@ -565,6 +684,7 @@ async def test_production_parent_wake_invoker_never_calls_model_before_outbox(mo
     parent_session_id = uuid.uuid4()
     tid = uuid.uuid4()
     user_id = uuid.uuid4()
+    run_id = uuid.uuid4().hex
     agent = SimpleNamespace(
         id=parent_id,
         tenant_id=tid,
@@ -591,6 +711,21 @@ async def test_production_parent_wake_invoker_never_calls_model_before_outbox(mo
     )
     user = SimpleNamespace(id=user_id, tenant_id=tid)
     monkeypatch.setattr(swc, "tenant_scoped_session", lambda *a, **k: _FakeAgentSession([agent, parent_session, user]))
+
+    async def fake_get_runtime_task_record(task_id):
+        assert task_id == run_id
+        return {
+            "task_id": run_id,
+            "task_type": "subagent",
+            "tenant_id": str(tid),
+            "parent_agent_id": str(parent_id),
+            "root_user_id": str(user_id),
+            "root_session_id": str(parent_session_id),
+            "delegation_chain": [f"agent:{parent_id}", f"subagent:{run_id}"],
+            "metadata": {"root_user_id": str(user_id)},
+        }
+
+    monkeypatch.setattr(swc, "get_runtime_task_record", fake_get_runtime_task_record, raising=False)
 
     captured: dict = {}
 
@@ -621,6 +756,7 @@ async def test_production_parent_wake_invoker_never_calls_model_before_outbox(mo
             from_agent_id="subagent:researcher",
             thread_id=f"subagent:{parent_session_id}:trace-1",
             content="found 3 sources",
+            metadata={"subagent_run_id": run_id, "parent_user_id": str(user_id)},
         )
     )
 

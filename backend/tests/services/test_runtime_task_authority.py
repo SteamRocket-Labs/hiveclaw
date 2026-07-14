@@ -3,10 +3,14 @@ from __future__ import annotations
 from types import SimpleNamespace
 from uuid import uuid4
 
+import pytest
+
 from app.core.execution_context import ExecutionPrincipal
 from app.services.runtime_task_authority import (
+    RuntimeTaskRequesterUnavailable,
     authorize_runtime_task_record,
     execution_principal_from_tool_context,
+    runtime_task_requester_user_id,
 )
 
 
@@ -109,6 +113,43 @@ def test_runtime_task_authority_fails_closed_without_root_evidence() -> None:
     )
     assert decision.allowed is False
     assert decision.reason == "root_authority_missing"
+
+
+def test_runtime_task_requester_uses_only_canonical_root_user_column() -> None:
+    requester_id = uuid4()
+    record = {
+        "root_user_id": str(requester_id),
+        "metadata": {
+            "root_user_id": str(requester_id),
+            "execution_principal": {"requester_user_id": str(requester_id)},
+        },
+    }
+
+    assert runtime_task_requester_user_id(record) == requester_id
+
+
+def test_runtime_task_requester_rejects_metadata_fallback_and_conflicts() -> None:
+    metadata_requester = uuid4()
+    with pytest.raises(RuntimeTaskRequesterUnavailable) as missing:
+        runtime_task_requester_user_id(
+            {
+                "metadata": {
+                    "root_user_id": str(metadata_requester),
+                    "execution_principal": {"requester_user_id": str(metadata_requester)},
+                }
+            }
+        )
+    assert missing.value.reason_code == "root_user_id_missing"
+
+    canonical_requester = uuid4()
+    with pytest.raises(RuntimeTaskRequesterUnavailable) as conflict:
+        runtime_task_requester_user_id(
+            {
+                "root_user_id": str(canonical_requester),
+                "metadata": {"root_user_id": str(metadata_requester)},
+            }
+        )
+    assert conflict.value.reason_code == "root_user_id_mismatch"
 
 
 def test_manager_override_is_explicit_reasoned_and_never_implicit() -> None:

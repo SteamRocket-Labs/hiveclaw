@@ -27,6 +27,8 @@ from app.services.runtime_budget_service import (
     RuntimeBudgetService,
 )
 from app.services.runtime_notification_outbox import CompletionNotification, enqueue_completion_notification
+from app.services.runtime_task_authority import RuntimeTaskRequesterUnavailable, runtime_task_requester_user_id
+from app.services.runtime_task_service import get_runtime_task_record
 
 logger = logging.getLogger(__name__)
 
@@ -462,25 +464,96 @@ def build_production_parent_wake_invoker() -> ParentWakeInvoker:
                     request.parent_agent_id,
                 )
                 return None
-            owner_id = getattr(parent_session, "user_id", None) or getattr(agent, "creator_id", None)
-            owner = (
-                (await session.execute(select(User).where(User.id == uuid.UUID(str(owner_id))))).scalar_one_or_none()
-                if owner_id
-                else None
-            )
-            if owner is None:
-                logger.warning(
-                    "[SubagentWake] parent session %s for agent %s has no user — skipping wake",
-                    parent_session_id,
-                    request.parent_agent_id,
+
+            signal_metadata = dict(request.metadata or {})
+
+            def requester_unavailable(reason_code: str, **evidence: Any) -> RuntimeTaskRequesterUnavailable:
+                return RuntimeTaskRequesterUnavailable(
+                    reason_code=reason_code,
+                    evidence={
+                        "authority_source": "runtime_tasks.root_user_id",
+                        "signal_id": str(request.signal_id),
+                        "tenant_id": str(request.tenant_id),
+                        "parent_agent_id": str(request.parent_agent_id),
+                        "parent_session_id": str(parent_session_id),
+                        **evidence,
+                    },
                 )
-                return None
+
             source_run_id = str(
-                (request.metadata or {}).get("subagent_run_id")
-                or (request.metadata or {}).get("runtime_task_id")
-                or request.signal_id
-            )
-            child_session_id = _uuid_or_none((request.metadata or {}).get("child_session_id"))
+                signal_metadata.get("subagent_run_id") or signal_metadata.get("runtime_task_id") or ""
+            ).strip()
+            if not source_run_id:
+                raise requester_unavailable("runtime_task_id_missing")
+
+            runtime_task = await get_runtime_task_record(source_run_id)
+            if runtime_task is None:
+                raise requester_unavailable("runtime_task_not_found", runtime_task_id=source_run_id)
+            if str(runtime_task.get("task_type") or "").strip() != "subagent":
+                raise requester_unavailable(
+                    "runtime_task_type_mismatch",
+                    runtime_task_id=source_run_id,
+                    runtime_task_type=runtime_task.get("task_type"),
+                )
+            if _uuid_or_none(runtime_task.get("tenant_id")) != request.tenant_id:
+                raise requester_unavailable(
+                    "runtime_task_tenant_mismatch",
+                    runtime_task_id=source_run_id,
+                    runtime_task_tenant_id=str(runtime_task.get("tenant_id") or "") or None,
+                )
+            if _uuid_or_none(runtime_task.get("parent_agent_id")) != request.parent_agent_id:
+                raise requester_unavailable(
+                    "runtime_task_parent_agent_mismatch",
+                    runtime_task_id=source_run_id,
+                    runtime_task_parent_agent_id=str(runtime_task.get("parent_agent_id") or "") or None,
+                )
+            if _uuid_or_none(runtime_task.get("root_session_id")) != parent_session_id:
+                raise requester_unavailable(
+                    "runtime_task_parent_session_mismatch",
+                    runtime_task_id=source_run_id,
+                    runtime_task_root_session_id=str(runtime_task.get("root_session_id") or "") or None,
+                )
+            try:
+                requester_user_id = runtime_task_requester_user_id(runtime_task)
+            except RuntimeTaskRequesterUnavailable as exc:
+                raise requester_unavailable(
+                    exc.reason_code,
+                    runtime_task_id=source_run_id,
+                    **exc.evidence,
+                ) from exc
+
+            signal_requester_user_id = signal_metadata.get("parent_user_id")
+            if signal_requester_user_id is not None and _uuid_or_none(signal_requester_user_id) != requester_user_id:
+                raise requester_unavailable(
+                    "signal_requester_mismatch",
+                    runtime_task_id=source_run_id,
+                    root_user_id=str(requester_user_id),
+                    signal_parent_user_id=str(signal_requester_user_id),
+                )
+            parent_session_user_id = _uuid_or_none(getattr(parent_session, "user_id", None))
+            if parent_session_user_id != requester_user_id:
+                raise requester_unavailable(
+                    "parent_session_user_mismatch",
+                    runtime_task_id=source_run_id,
+                    root_user_id=str(requester_user_id),
+                    parent_session_user_id=(str(parent_session_user_id) if parent_session_user_id else None),
+                )
+
+            owner = (
+                await session.execute(
+                    select(User).where(
+                        User.id == requester_user_id,
+                        User.tenant_id == request.tenant_id,
+                    )
+                )
+            ).scalar_one_or_none()
+            if owner is None:
+                raise requester_unavailable(
+                    "requester_user_not_found",
+                    runtime_task_id=source_run_id,
+                    root_user_id=str(requester_user_id),
+                )
+            child_session_id = _uuid_or_none(signal_metadata.get("child_session_id"))
             outbox_id = await enqueue_completion_notification(
                 session,
                 CompletionNotification(
@@ -501,7 +574,7 @@ def build_production_parent_wake_invoker() -> ParentWakeInvoker:
                         "from_agent_id": request.from_agent_id,
                         "thread_id": request.thread_id,
                         "parent_agent_id": str(request.parent_agent_id),
-                        **(request.metadata or {}),
+                        **signal_metadata,
                     },
                     payload_rank=50,
                 ),

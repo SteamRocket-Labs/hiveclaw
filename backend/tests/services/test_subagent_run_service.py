@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from types import SimpleNamespace
@@ -16,6 +17,19 @@ from app.models.chat_session import ChatSession
 from app.models.runtime_task import RuntimeTask
 from app.services import subagent_run_service as svc
 from app.services.runtime_budget_service import RuntimeBudgetApprovalRequired, RuntimeBudgetDenied
+from app.services.runtime_task_authority import RuntimeTaskRequesterUnavailable
+
+
+def _runtime_requester_fields(
+    *,
+    requester_user_id: uuid.UUID,
+    parent_session_id: str = "parent-session",
+) -> dict[str, object]:
+    return {
+        "root_user_id": str(requester_user_id),
+        "root_session_id": parent_session_id,
+        "delegation_chain": ["agent:parent", "subagent:child"],
+    }
 
 
 @pytest.mark.asyncio
@@ -81,6 +95,25 @@ async def test_start_subagent_run_queues_subagent_task_and_wakes_worker(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_start_subagent_run_rejects_missing_durable_requester_before_enqueue(monkeypatch):
+    async def _unexpected_create(**_kwargs):  # pragma: no cover - authority must fail before persistence
+        raise AssertionError("requester-less RuntimeTask must not be created")
+
+    monkeypatch.setattr(svc, "create_runtime_task_record", _unexpected_create)
+
+    with pytest.raises(RuntimeTaskRequesterUnavailable) as exc_info:
+        await svc.start_subagent_run(
+            parent_agent_id=uuid.uuid4(),
+            parent_user_id=None,
+            spec_name="scout",
+            spec_type="explorer",
+            task="inspect evidence",
+        )
+
+    assert exc_info.value.reason_code == "root_user_id_missing"
+
+
+@pytest.mark.asyncio
 async def test_start_subagent_run_reserves_runtime_budget_before_creating_task(monkeypatch):
     captured: dict = {}
 
@@ -93,12 +126,17 @@ async def test_start_subagent_run_reserves_runtime_budget_before_creating_task(m
             captured["reservation"] = reservation
             return object()
 
+    async def _fake_child_session(**_kwargs):
+        return None
+
     monkeypatch.setattr(svc, "create_runtime_task_record", _fake_create)
+    monkeypatch.setattr(svc, "create_subagent_child_session", _fake_child_session)
     parent = uuid.uuid4()
     budget_run_id = uuid.uuid4()
 
     started = await svc.start_subagent_run(
         parent_agent_id=parent,
+        parent_user_id=uuid.uuid4(),
         spec_name="scout",
         spec_type=SUBAGENT_TYPE_WORKER,
         task="do x",
@@ -134,6 +172,7 @@ async def test_start_subagent_run_budget_denial_does_not_create_runtime_task(mon
     with pytest.raises(RuntimeBudgetDenied):
         await svc.start_subagent_run(
             parent_agent_id=uuid.uuid4(),
+            parent_user_id=uuid.uuid4(),
             spec_name="scout",
             spec_type=SUBAGENT_TYPE_WORKER,
             task="do x",
@@ -196,7 +235,11 @@ async def test_start_subagent_run_persists_full_spec_snapshot(monkeypatch):
         captured.update(kwargs)
         return kwargs["task_id"]
 
+    async def _fake_child_session(**_kwargs):
+        return None
+
     monkeypatch.setattr(svc, "create_runtime_task_record", _fake_create)
+    monkeypatch.setattr(svc, "create_subagent_child_session", _fake_child_session)
     parent = uuid.uuid4()
     spec = SubagentSpec(
         name="code-reviewer",
@@ -221,6 +264,7 @@ async def test_start_subagent_run_persists_full_spec_snapshot(monkeypatch):
 
     await svc.start_subagent_run(
         parent_agent_id=parent,
+        parent_user_id=uuid.uuid4(),
         spec_name=spec.name,
         spec_type=spec.type,
         task="review x",
@@ -313,21 +357,32 @@ async def test_start_subagent_run_real_pg_creates_child_session_and_runtime_task
 
     tenant_id = uuid.uuid4()
     parent_agent_id = uuid.uuid4()
-    user_id = uuid.uuid4()
+    creator_user_id = uuid.uuid4()
+    requester_user_id = uuid.uuid4()
     parent_session_id = uuid.uuid4()
 
     async with tenant_scoped_session(None, session_factory=owner_sessionmaker) as session:
         session.add(Tenant(id=tenant_id, name="subagent-real", slug=f"sa-{tenant_id.hex[:10]}"))
     async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
-        session.add(
-            User(
-                id=user_id,
-                username=f"sa-u-{user_id.hex[:10]}",
-                email=f"{user_id.hex[:10]}@subagent.test",
-                password_hash="x",
-                display_name="Subagent Owner",
-                tenant_id=tenant_id,
-            )
+        session.add_all(
+            [
+                User(
+                    id=creator_user_id,
+                    username=f"sa-creator-{creator_user_id.hex[:10]}",
+                    email=f"{creator_user_id.hex[:10]}@subagent.test",
+                    password_hash="x",
+                    display_name="Agent Creator",
+                    tenant_id=tenant_id,
+                ),
+                User(
+                    id=requester_user_id,
+                    username=f"sa-requester-{requester_user_id.hex[:10]}",
+                    email=f"{requester_user_id.hex[:10]}@subagent.test",
+                    password_hash="x",
+                    display_name="Shared Agent Requester",
+                    tenant_id=tenant_id,
+                ),
+            ]
         )
         await session.flush()
         session.add(
@@ -336,8 +391,8 @@ async def test_start_subagent_run_real_pg_creates_child_session_and_runtime_task
                 tenant_id=tenant_id,
                 name="parent-agent",
                 role_description="parent",
-                creator_id=user_id,
-                sponsor_user_id=user_id,
+                creator_id=creator_user_id,
+                sponsor_user_id=creator_user_id,
             )
         )
         await session.flush()
@@ -346,7 +401,7 @@ async def test_start_subagent_run_real_pg_creates_child_session_and_runtime_task
                 id=parent_session_id,
                 agent_id=parent_agent_id,
                 tenant_id=tenant_id,
-                user_id=user_id,
+                user_id=requester_user_id,
                 title="Parent Session",
                 source_channel="web",
             )
@@ -365,7 +420,7 @@ async def test_start_subagent_run_real_pg_creates_child_session_and_runtime_task
 
     started = await svc.start_subagent_run(
         parent_agent_id=parent_agent_id,
-        parent_user_id=user_id,
+        parent_user_id=requester_user_id,
         spec_name="researcher",
         spec_type="explorer",
         task="inspect the evidence",
@@ -385,6 +440,8 @@ async def test_start_subagent_run_real_pg_creates_child_session_and_runtime_task
 
     assert child_session.source_channel == "subagent"
     assert child_session.session_kind == "subagent"
+    assert child_session.user_id == requester_user_id
+    assert child_session.user_id != creator_user_id
     assert child_session.parent_session_id == parent_session_id
     assert (
         child_session.transcript_metadata_json["session_contract"]["continuation_address"] == started.child_session_id
@@ -395,10 +452,26 @@ async def test_start_subagent_run_real_pg_creates_child_session_and_runtime_task
     # pending and a shared worker claims it to running.
     assert runtime_task.status == "pending"
     assert runtime_task.parent_agent_id == parent_agent_id
+    assert runtime_task.root_user_id == requester_user_id
+    assert runtime_task.root_user_id != creator_user_id
     assert runtime_task.parent_session_id == str(parent_session_id)
     assert runtime_task.child_session_id == started.child_session_id
     assert runtime_task.metadata_json["session_contract"]["continuation_address"] == started.child_session_id
     assert runtime_task.metadata_json["session_contract"]["run_id"] == started.run_id
+    assert runtime_task.metadata_json["root_user_id"] == str(requester_user_id)
+
+    await svc._validate_subagent_child_session_requester(
+        parent_agent_id=parent_agent_id,
+        child_session_id=started.child_session_id,
+        requester_user_id=requester_user_id,
+    )
+    with pytest.raises(RuntimeTaskRequesterUnavailable) as exc_info:
+        await svc._validate_subagent_child_session_requester(
+            parent_agent_id=parent_agent_id,
+            child_session_id=started.child_session_id,
+            requester_user_id=creator_user_id,
+        )
+    assert exc_info.value.reason_code == "child_session_user_mismatch"
 
 
 @pytest.mark.usefixtures("migrated_pg_url")
@@ -649,9 +722,19 @@ async def test_start_subagent_run_marks_readonly_types_restart_resumable(monkeyp
         captured.update(kwargs)
         return kwargs["task_id"]
 
+    async def _fake_child_session(**_kwargs):
+        return None
+
     monkeypatch.setattr(svc, "create_runtime_task_record", _fake_create)
+    monkeypatch.setattr(svc, "create_subagent_child_session", _fake_child_session)
     parent = uuid.uuid4()
-    await svc.start_subagent_run(parent_agent_id=parent, spec_name="scout", spec_type="explorer", task="read x")
+    await svc.start_subagent_run(
+        parent_agent_id=parent,
+        parent_user_id=uuid.uuid4(),
+        spec_name="scout",
+        spec_type="explorer",
+        task="read x",
+    )
 
     assert captured["metadata_json"]["subagent_type"] == "explorer"
     assert captured["metadata_json"]["resumable_subagent"] is True
@@ -776,6 +859,10 @@ async def test_subagent_completion_projects_child_session_event_to_parent(monkey
             "parent_agent_id": str(parent_agent_id),
             "child_session_id": str(child_session_id),
             "parent_session_id": str(parent_session_id),
+            **_runtime_requester_fields(
+                requester_user_id=parent_user_id,
+                parent_session_id=str(parent_session_id),
+            ),
             "metadata": {
                 "child_session_id": str(child_session_id),
                 "subagent_name": "critic",
@@ -843,6 +930,89 @@ async def test_subagent_completion_projects_child_session_event_to_parent(monkey
             "subagent_decision_entry": parent_event["metadata"]["subagent_decision_entry"],
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_subagent_completion_holds_without_wake_when_child_session_user_drifted(monkeypatch):
+    child_session_id = uuid.uuid4()
+    parent_session_id = uuid.uuid4()
+    parent_agent_id = uuid.uuid4()
+    requester_user_id = uuid.uuid4()
+    creator_user_id = uuid.uuid4()
+    tenant_id = uuid.uuid4()
+    updates: list[dict] = []
+    captured_events: list[dict] = []
+    captured_wakeups: list[dict] = []
+
+    session = SimpleNamespace(
+        id=child_session_id,
+        agent_id=parent_agent_id,
+        tenant_id=tenant_id,
+        user_id=creator_user_id,
+        transcript_metadata_json={},
+        root_session_id=parent_session_id,
+        parent_session_id=parent_session_id,
+        visibility_scope="team",
+        listed_surface="parent",
+    )
+
+    class _Scalar:
+        def scalar_one_or_none(self):
+            return session
+
+    class _FakeSession:
+        async def execute(self, _stmt):
+            return _Scalar()
+
+        async def commit(self):
+            return None
+
+    class _Ctx:
+        async def __aenter__(self):
+            return _FakeSession()
+
+        async def __aexit__(self, *_exc):
+            return False
+
+    async def fake_get_runtime_task_record(_run_id):
+        return {
+            "task_id": "run-1",
+            "parent_agent_id": str(parent_agent_id),
+            "child_session_id": str(child_session_id),
+            "parent_session_id": str(parent_session_id),
+            **_runtime_requester_fields(
+                requester_user_id=requester_user_id,
+                parent_session_id=str(parent_session_id),
+            ),
+            "metadata": {"root_user_id": str(requester_user_id)},
+        }
+
+    async def fake_update_runtime_task_record(_run_id, **kwargs):
+        updates.append(kwargs)
+        return True
+
+    async def fake_append_session_event(**kwargs):
+        captured_events.append(kwargs)
+
+    async def fake_wake(**kwargs):
+        captured_wakeups.append(kwargs)
+
+    async def fake_resolve_tenant_for_agent(_agent_id):
+        return tenant_id
+
+    monkeypatch.setattr(svc, "get_runtime_task_record", fake_get_runtime_task_record)
+    monkeypatch.setattr(svc, "resolve_tenant_for_agent", fake_resolve_tenant_for_agent)
+    monkeypatch.setattr(svc, "tenant_scoped_session", lambda _tenant_id: _Ctx())
+    monkeypatch.setattr(svc, "update_runtime_task_record", fake_update_runtime_task_record)
+    monkeypatch.setattr(svc, "append_session_event", fake_append_session_event)
+    monkeypatch.setattr(svc, "_wake_parent_session_from_subagent_completion", fake_wake)
+
+    await svc.update_subagent_child_session_state_for_run(run_id="run-1", status="completed", summary="done")
+
+    assert captured_events == []
+    assert captured_wakeups == []
+    assert updates[-1]["status"] == "needs_reconciliation"
+    assert updates[-1]["metadata_json"]["requester_identity_reason"] == "child_session_user_mismatch"
 
 
 @pytest.mark.asyncio
@@ -1006,6 +1176,7 @@ async def test_resume_persisted_subagent_runs_rehydrates_readonly_worker(monkeyp
                 "prompt": "read x",
                 "trace_id": "trace-subagent",
                 "parent_session_id": "parent-session",
+                **_runtime_requester_fields(requester_user_id=uuid.uuid4()),
                 "metadata": {
                     "subagent_type": "explorer",
                     "subagent_name": "scout",
@@ -1060,6 +1231,7 @@ async def test_resume_persisted_subagent_runs_uses_full_spec_snapshot(monkeypatc
                 "prompt": "review x",
                 "trace_id": "trace-subagent",
                 "parent_session_id": "parent-session",
+                **_runtime_requester_fields(requester_user_id=uuid.uuid4()),
                 "metadata": {
                     "subagent_type": "critic",
                     "subagent_name": "code-reviewer",
@@ -1125,6 +1297,49 @@ async def test_resume_persisted_subagent_runs_uses_full_spec_snapshot(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_resume_persisted_subagent_runs_holds_missing_requester_without_worker_wake(monkeypatch):
+    run_id = uuid.uuid4().hex
+    updates: list[dict] = []
+    wakeups: list[dict] = []
+
+    async def fake_list_active_runtime_task_records(**_kwargs):
+        return [
+            {
+                "task_id": run_id,
+                "task_type": svc.SUBAGENT_RUN_TASK_TYPE,
+                "status": "running",
+                "parent_agent_id": str(uuid.uuid4()),
+                "prompt": "must remain held",
+                "parent_session_id": "parent-session",
+                "metadata": {
+                    "subagent_type": "explorer",
+                    "subagent_name": "scout",
+                    "resume_after_restart": True,
+                    "resumable_subagent": True,
+                    "root_user_id": str(uuid.uuid4()),
+                },
+            }
+        ]
+
+    async def fake_update_runtime_task_record(_task_id, **kwargs):
+        updates.append(kwargs)
+        return True
+
+    async def fake_notify(**kwargs):
+        wakeups.append(kwargs)
+
+    monkeypatch.setattr(svc, "list_active_runtime_task_records", fake_list_active_runtime_task_records)
+    monkeypatch.setattr(svc, "update_runtime_task_record", fake_update_runtime_task_record)
+    monkeypatch.setattr("app.services.runtime_task_worker.notify_runtime_task_worker", fake_notify)
+
+    assert await svc.resume_persisted_subagent_runs() == []
+    assert wakeups == []
+    assert updates[-1]["status"] == "needs_reconciliation"
+    assert updates[-1]["metadata_json"]["requester_identity_phase"] == "restart_requeue"
+    assert updates[-1]["metadata_json"]["requester_identity_reason"] == "root_user_id_missing"
+
+
+@pytest.mark.asyncio
 async def test_dispatch_persisted_subagent_run_uses_full_spec_snapshot(monkeypatch):
     run_id = uuid.uuid4().hex
     parent = uuid.uuid4()
@@ -1143,6 +1358,7 @@ async def test_dispatch_persisted_subagent_run_uses_full_spec_snapshot(monkeypat
             "trace_id": "trace-subagent",
             "parent_session_id": "parent-session",
             "child_session_id": child_session_id,
+            **_runtime_requester_fields(requester_user_id=uuid.uuid4()),
             "metadata": {
                 "subagent_type": "critic",
                 "subagent_name": "code-reviewer",
@@ -1231,6 +1447,232 @@ async def test_dispatch_persisted_subagent_run_uses_full_spec_snapshot(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_dispatch_persisted_subagent_run_rebinds_creator_context_to_durable_requester(monkeypatch):
+    run_id = uuid.uuid4().hex
+    parent_agent_id = uuid.uuid4()
+    creator_user_id = uuid.uuid4()
+    requester_user_id = uuid.uuid4()
+    tenant_id = uuid.uuid4()
+    calls: dict[str, object] = {}
+
+    async def fake_get_runtime_task_record(_task_id):
+        return {
+            "task_id": run_id,
+            "task_type": svc.SUBAGENT_RUN_TASK_TYPE,
+            "status": "running",
+            "parent_agent_id": str(parent_agent_id),
+            "prompt": "inspect requester knowledge",
+            "parent_session_id": "parent-session",
+            **_runtime_requester_fields(requester_user_id=requester_user_id),
+            "metadata": {
+                "subagent_type": "critic",
+                "subagent_name": "identity-critic",
+                "resume_after_restart": True,
+                "resumable_subagent": True,
+                "root_user_id": str(requester_user_id),
+                "recovery_metadata": {
+                    "requester_user_id": str(creator_user_id),
+                    "requester_authority_source": "untrusted_metadata",
+                },
+            },
+        }
+
+    async def fake_resolve_parent_runtime(_parent_agent_id):
+        return SubagentSpawnContext(
+            parent_agent_id=parent_agent_id,
+            parent_user_id=creator_user_id,
+            model=object(),
+            parent_agent_name="Shared Agent",
+            tenant_id=tenant_id,
+        )
+
+    async def fake_spawn_subagent(ctx, spec, _task, **_kwargs):
+        calls["ctx"] = ctx
+        return SimpleNamespace(
+            result=SubagentResult(name=spec.name, type=spec.type, status="completed", content="done")
+        )
+
+    async def fake_update_runtime_task_record(_task_id, **kwargs):
+        calls.setdefault("updates", []).append(kwargs)
+        return True
+
+    async def fake_update_child_session(**_kwargs):
+        return None
+
+    monkeypatch.setattr(svc, "get_runtime_task_record", fake_get_runtime_task_record)
+    monkeypatch.setattr(svc, "_resolve_parent_runtime", fake_resolve_parent_runtime)
+    monkeypatch.setattr(svc, "spawn_subagent", fake_spawn_subagent)
+    monkeypatch.setattr(svc, "update_runtime_task_record", fake_update_runtime_task_record)
+    monkeypatch.setattr(svc, "update_subagent_child_session_state_for_run", fake_update_child_session)
+
+    assert await svc.dispatch_persisted_subagent_run(run_id) is True
+    ctx = calls["ctx"]
+    assert ctx.parent_user_id == requester_user_id
+    assert ctx.parent_user_id != creator_user_id
+    assert ctx.recovery_metadata["requester_user_id"] == str(requester_user_id)
+    assert ctx.recovery_metadata["requester_authority_source"] == "runtime_tasks.root_user_id"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_persisted_subagent_runs_keep_concurrent_requesters_isolated(monkeypatch):
+    parent_agent_id = uuid.uuid4()
+    creator_user_id = uuid.uuid4()
+    tenant_id = uuid.uuid4()
+    requester_by_run = {uuid.uuid4().hex: uuid.uuid4(), uuid.uuid4().hex: uuid.uuid4()}
+    observed: dict[str, uuid.UUID] = {}
+
+    async def fake_get_runtime_task_record(task_id):
+        requester_user_id = requester_by_run[task_id]
+        return {
+            "task_id": task_id,
+            "task_type": svc.SUBAGENT_RUN_TASK_TYPE,
+            "status": "running",
+            "parent_agent_id": str(parent_agent_id),
+            "prompt": f"work for {requester_user_id}",
+            "parent_session_id": f"session-{task_id}",
+            **_runtime_requester_fields(
+                requester_user_id=requester_user_id,
+                parent_session_id=f"session-{task_id}",
+            ),
+            "metadata": {
+                "subagent_type": "critic",
+                "subagent_name": "identity-critic",
+                "resume_after_restart": True,
+                "resumable_subagent": True,
+                "root_user_id": str(requester_user_id),
+            },
+        }
+
+    async def fake_resolve_parent_runtime(_parent_agent_id):
+        return SubagentSpawnContext(
+            parent_agent_id=parent_agent_id,
+            parent_user_id=creator_user_id,
+            model=object(),
+            parent_agent_name="Shared Agent",
+            tenant_id=tenant_id,
+        )
+
+    async def fake_spawn_subagent(ctx, spec, _task, **_kwargs):
+        observed[ctx.subagent_run_id] = ctx.parent_user_id
+        return SimpleNamespace(
+            result=SubagentResult(name=spec.name, type=spec.type, status="completed", content="done")
+        )
+
+    async def fake_update_runtime_task_record(_task_id, **_kwargs):
+        return True
+
+    async def fake_update_child_session(**_kwargs):
+        return None
+
+    monkeypatch.setattr(svc, "get_runtime_task_record", fake_get_runtime_task_record)
+    monkeypatch.setattr(svc, "_resolve_parent_runtime", fake_resolve_parent_runtime)
+    monkeypatch.setattr(svc, "spawn_subagent", fake_spawn_subagent)
+    monkeypatch.setattr(svc, "update_runtime_task_record", fake_update_runtime_task_record)
+    monkeypatch.setattr(svc, "update_subagent_child_session_state_for_run", fake_update_child_session)
+
+    results = await asyncio.gather(*(svc.dispatch_persisted_subagent_run(run_id) for run_id in requester_by_run))
+
+    assert results == [True, True]
+    assert observed == requester_by_run
+    assert creator_user_id not in observed.values()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_persisted_subagent_run_holds_when_durable_requester_is_missing(monkeypatch):
+    run_id = uuid.uuid4().hex
+    parent_agent_id = uuid.uuid4()
+    updates: list[dict] = []
+
+    async def fake_get_runtime_task_record(_task_id):
+        return {
+            "task_id": run_id,
+            "task_type": svc.SUBAGENT_RUN_TASK_TYPE,
+            "status": "running",
+            "parent_agent_id": str(parent_agent_id),
+            "prompt": "must not execute",
+            "parent_session_id": "parent-session",
+            "metadata": {
+                "subagent_type": "critic",
+                "subagent_name": "identity-critic",
+                "resume_after_restart": True,
+                "resumable_subagent": True,
+                "root_user_id": str(uuid.uuid4()),
+            },
+        }
+
+    async def unexpected_resolve(_parent_agent_id):  # pragma: no cover - authority must stop before runtime load
+        raise AssertionError("creator fallback must not be consulted")
+
+    async def unexpected_spawn(*_args, **_kwargs):  # pragma: no cover - authority must stop before model execution
+        raise AssertionError("requester-less subagent must not execute")
+
+    async def fake_update_runtime_task_record(_task_id, **kwargs):
+        updates.append(kwargs)
+        return True
+
+    monkeypatch.setattr(svc, "get_runtime_task_record", fake_get_runtime_task_record)
+    monkeypatch.setattr(svc, "_resolve_parent_runtime", unexpected_resolve)
+    monkeypatch.setattr(svc, "spawn_subagent", unexpected_spawn)
+    monkeypatch.setattr(svc, "update_runtime_task_record", fake_update_runtime_task_record)
+
+    assert await svc.dispatch_persisted_subagent_run(run_id) is True
+    assert updates[-1]["status"] == "needs_reconciliation"
+    assert updates[-1]["metadata_json"]["requester_identity_status"] == "unavailable"
+    assert updates[-1]["metadata_json"]["requester_identity_reason"] == "root_user_id_missing"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_persisted_subagent_run_holds_session_drift_before_model_input(monkeypatch):
+    run_id = uuid.uuid4().hex
+    parent_agent_id = uuid.uuid4()
+    requester_user_id = uuid.uuid4()
+    updates: list[dict] = []
+
+    async def fake_get_runtime_task_record(_task_id):
+        return {
+            "task_id": run_id,
+            "task_type": svc.SUBAGENT_RUN_TASK_TYPE,
+            "status": "running",
+            "parent_agent_id": str(parent_agent_id),
+            "prompt": "must not see another user's transcript",
+            "parent_session_id": str(uuid.uuid4()),
+            "child_session_id": str(uuid.uuid4()),
+            **_runtime_requester_fields(requester_user_id=requester_user_id),
+            "metadata": {
+                "subagent_type": "explorer",
+                "subagent_name": "scout",
+                "resume_after_restart": True,
+                "resumable_subagent": True,
+                "root_user_id": str(requester_user_id),
+            },
+        }
+
+    async def fake_load_subagent_resume_messages(**kwargs):
+        assert kwargs["requester_user_id"] == requester_user_id
+        raise RuntimeTaskRequesterUnavailable(
+            reason_code="child_session_user_mismatch",
+            evidence={"authority_source": "runtime_tasks.root_user_id"},
+        )
+
+    async def unexpected_resolve(*_args, **_kwargs):  # pragma: no cover - model path must stay cold
+        raise AssertionError("session authority drift must hold before model/runtime resolution")
+
+    async def fake_update_runtime_task_record(_task_id, **kwargs):
+        updates.append(kwargs)
+        return True
+
+    monkeypatch.setattr(svc, "get_runtime_task_record", fake_get_runtime_task_record)
+    monkeypatch.setattr(svc, "_load_subagent_resume_messages", fake_load_subagent_resume_messages)
+    monkeypatch.setattr(svc, "_resolve_parent_runtime", unexpected_resolve)
+    monkeypatch.setattr(svc, "update_runtime_task_record", fake_update_runtime_task_record)
+
+    assert await svc.dispatch_persisted_subagent_run(run_id) is True
+    assert updates[-1]["status"] == "needs_reconciliation"
+    assert updates[-1]["metadata_json"]["requester_identity_phase"] == "pre_model_input"
+    assert updates[-1]["metadata_json"]["requester_identity_reason"] == "child_session_user_mismatch"
+
+
+@pytest.mark.asyncio
 async def test_dispatch_general_purpose_with_child_transcript_uses_resume_messages(monkeypatch):
     run_id = uuid.uuid4().hex
     parent = uuid.uuid4()
@@ -1254,6 +1696,7 @@ async def test_dispatch_general_purpose_with_child_transcript_uses_resume_messag
             "trace_id": "trace-subagent",
             "parent_session_id": "parent-session",
             "child_session_id": child_session_id,
+            **_runtime_requester_fields(requester_user_id=uuid.uuid4()),
             "metadata": {
                 "subagent_type": "general-purpose",
                 "subagent_name": "general-purpose",
@@ -1350,6 +1793,59 @@ async def test_load_subagent_resume_messages_uses_budget_not_fixed_event_count(m
 
 
 @pytest.mark.asyncio
+async def test_load_subagent_resume_messages_rejects_child_session_requester_drift(monkeypatch):
+    parent_agent_id = uuid.uuid4()
+    child_session_id = uuid.uuid4()
+    requester_user_id = uuid.uuid4()
+    creator_user_id = uuid.uuid4()
+    tenant_id = uuid.uuid4()
+    session = SimpleNamespace(
+        id=child_session_id,
+        agent_id=parent_agent_id,
+        tenant_id=tenant_id,
+        user_id=creator_user_id,
+    )
+
+    class _Scalar:
+        def scalar_one_or_none(self):
+            return session
+
+    class _FakeSession:
+        async def execute(self, _stmt):
+            return _Scalar()
+
+    class _Ctx:
+        async def __aenter__(self):
+            return _FakeSession()
+
+        async def __aexit__(self, *_exc):
+            return False
+
+    async def fake_resolve_tenant_for_agent(_agent_id):
+        return tenant_id
+
+    monkeypatch.setattr(
+        "app.memory.t0.ledger.replay_t0_session_events",
+        lambda **_kwargs: [
+            SimpleNamespace(event_type="user_message", role="user", content="creator-private", metadata={})
+        ],
+    )
+    monkeypatch.setattr(svc, "resolve_tenant_for_agent", fake_resolve_tenant_for_agent)
+    monkeypatch.setattr(svc, "tenant_scoped_session", lambda _tenant_id: _Ctx())
+
+    with pytest.raises(RuntimeTaskRequesterUnavailable) as exc_info:
+        await svc._load_subagent_resume_messages(
+            parent_agent_id=parent_agent_id,
+            child_session_id=str(child_session_id),
+            prompt="continue",
+            requester_user_id=requester_user_id,
+        )
+
+    assert exc_info.value.reason_code == "child_session_user_mismatch"
+    assert exc_info.value.evidence["child_session_user_id"] == str(creator_user_id)
+
+
+@pytest.mark.asyncio
 async def test_load_subagent_resume_messages_never_discards_early_transcript_for_a_char_budget(monkeypatch):
     parent_agent_id = uuid.uuid4()
     child_session_id = uuid.uuid4().hex
@@ -1442,6 +1938,7 @@ async def test_dispatch_allows_audited_non_idempotent_reconciliation_retry(monke
             "prompt": "retry approved work",
             "trace_id": "trace-subagent",
             "parent_session_id": "parent-session",
+            **_runtime_requester_fields(requester_user_id=uuid.uuid4()),
             "metadata": {
                 "subagent_type": "general-purpose",
                 "subagent_name": "general-purpose",
@@ -1518,6 +2015,8 @@ async def test_dispatch_persisted_subagent_run_restores_model_resolver_for_real_
     run_id = uuid.uuid4().hex
     parent = uuid.uuid4()
     tenant_id = uuid.uuid4()
+    creator_user_id = uuid.uuid4()
+    requester_user_id = uuid.uuid4()
     parent_model = SimpleNamespace(provider="openai", model="parent", api_key="k", base_url=None)
     child_model = SimpleNamespace(provider="openai", model="child", api_key="k", base_url=None)
     calls: dict[str, object] = {}
@@ -1533,6 +2032,7 @@ async def test_dispatch_persisted_subagent_run_restores_model_resolver_for_real_
             "prompt": "review x",
             "trace_id": "trace-subagent",
             "parent_session_id": "parent-session",
+            **_runtime_requester_fields(requester_user_id=requester_user_id),
             "metadata": {
                 "subagent_type": "critic",
                 "subagent_name": "code-reviewer",
@@ -1553,7 +2053,7 @@ async def test_dispatch_persisted_subagent_run_restores_model_resolver_for_real_
         assert parent_agent_id == parent
         return SubagentSpawnContext(
             parent_agent_id=parent,
-            parent_user_id=uuid.uuid4(),
+            parent_user_id=creator_user_id,
             model=parent_model,
             parent_agent_name="Parent",
             tenant_id=tenant_id,
@@ -1593,6 +2093,10 @@ async def test_dispatch_persisted_subagent_run_restores_model_resolver_for_real_
     assert dispatched is True
     assert calls["model_override"] == ("child-model", tenant_id)
     assert calls["request"].model is child_model
+    assert calls["request"].user_id == requester_user_id
+    assert calls["request"].user_id != creator_user_id
+    assert calls["request"].session_context.metadata["requester_user_id"] == str(requester_user_id)
+    assert calls["request"].session_context.metadata["requester_authority_source"] == "runtime_tasks.root_user_id"
     assert calls["updates"][-1][1]["status"] == "completed"
     assert calls["child_session_update"]["status"] == "completed"
 
@@ -1639,6 +2143,7 @@ async def test_dispatch_persisted_subagent_run_restores_memory_and_fork_context(
             "prompt": "continue research",
             "trace_id": "trace-subagent",
             "parent_session_id": "parent-session",
+            **_runtime_requester_fields(requester_user_id=uuid.uuid4()),
             "metadata": {
                 "subagent_type": "explorer",
                 "subagent_name": "researcher",
@@ -1734,6 +2239,7 @@ async def test_resume_persisted_subagent_runs_reconciles_general_purpose_without
                 "prompt": "summarize this report",
                 "trace_id": "trace-subagent",
                 "parent_session_id": "parent-session",
+                **_runtime_requester_fields(requester_user_id=uuid.uuid4()),
                 "metadata": {
                     "subagent_type": "general-purpose",
                     "subagent_name": "analyst",
@@ -1823,6 +2329,7 @@ async def test_resume_persisted_subagent_runs_recovers_false_positive_reconcilia
                 "prompt": "summarize this report",
                 "trace_id": "trace-subagent",
                 "parent_session_id": "parent-session",
+                **_runtime_requester_fields(requester_user_id=uuid.uuid4()),
                 "metadata": {
                     "subagent_type": "general-purpose",
                     "subagent_name": "analyst",
@@ -1889,6 +2396,7 @@ async def test_resume_persisted_subagent_runs_reconciles_general_purpose_with_re
                 "prompt": "write file then inspect it",
                 "trace_id": "trace-subagent",
                 "parent_session_id": "parent-session",
+                **_runtime_requester_fields(requester_user_id=uuid.uuid4()),
                 "metadata": {
                     "subagent_type": "general-purpose",
                     "subagent_name": "analyst",
@@ -1960,6 +2468,7 @@ async def test_resume_persisted_subagent_runs_restores_readonly_child_pending_fr
                 "trace_id": "trace-subagent",
                 "parent_session_id": "parent-session",
                 "child_session_id": child_session_id,
+                **_runtime_requester_fields(requester_user_id=uuid.uuid4()),
                 "metadata": {
                     "subagent_type": "explorer",
                     "subagent_name": "scout",
@@ -2027,6 +2536,7 @@ async def test_resume_persisted_subagent_runs_reconciles_mutating_child_pending_
                 "trace_id": "trace-subagent",
                 "parent_session_id": "parent-session",
                 "child_session_id": "child-session",
+                **_runtime_requester_fields(requester_user_id=uuid.uuid4()),
                 "metadata": {
                     "subagent_type": "explorer",
                     "subagent_name": "worker",
@@ -2091,6 +2601,7 @@ async def test_resume_persisted_subagent_runs_marks_mutating_record_for_reconcil
                 "parent_agent_id": str(uuid.uuid4()),
                 "child_agent_name": "worker",
                 "prompt": "write x",
+                **_runtime_requester_fields(requester_user_id=uuid.uuid4()),
                 "metadata": {
                     "subagent_type": "worker",
                     "subagent_name": "worker",
@@ -2136,6 +2647,7 @@ async def test_resume_persisted_subagent_runs_reconciles_mutating_worker_even_wi
                 "prompt": "write x",
                 "trace_id": "trace-subagent",
                 "parent_session_id": "parent-session",
+                **_runtime_requester_fields(requester_user_id=uuid.uuid4()),
                 "metadata": {
                     "subagent_type": "worker",
                     "subagent_name": "worker",
@@ -2206,6 +2718,7 @@ async def test_resume_persisted_subagent_runs_refuses_mutating_worker_without_re
                 "parent_agent_id": str(uuid.uuid4()),
                 "child_agent_name": "worker",
                 "prompt": "write x",
+                **_runtime_requester_fields(requester_user_id=uuid.uuid4()),
                 "metadata": {
                     "subagent_type": "worker",
                     "subagent_name": "worker",
@@ -2288,6 +2801,7 @@ async def test_dispatch_persisted_subagent_run_honors_cancel_arriving_during_hyd
             "prompt": "read x",
             "trace_id": "trace-subagent",
             "parent_session_id": "parent-session",
+            **_runtime_requester_fields(requester_user_id=uuid.uuid4()),
             "metadata": {
                 "subagent_type": "explorer",
                 "subagent_name": "scout",

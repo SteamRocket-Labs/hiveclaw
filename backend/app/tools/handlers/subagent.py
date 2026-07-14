@@ -509,6 +509,16 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
     task = str(normalized_args.get("task") or "").strip()
     if not task:
         return _json({"ok": False, "error": "prompt or task is required"})
+    if bool(normalized_args.get("run_in_background")) and request.context.user_id is None:
+        return _json(
+            {
+                "ok": False,
+                "status": "unavailable",
+                "error_code": "subagent_requester_unavailable",
+                "retryable": False,
+                "message": "后台 Subagent 缺少已认证的请求者身份，任务未入队。",
+            }
+        )
     execution_shape_decision = build_tool_execution_shape_decision(
         "spawn_subagent",
         execution_shape_from_round_state(request.context.round_state),

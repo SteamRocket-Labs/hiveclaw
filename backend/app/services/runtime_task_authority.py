@@ -18,6 +18,15 @@ class RuntimeTaskAuthorityDecision:
     evidence: dict[str, Any] = field(default_factory=dict)
 
 
+class RuntimeTaskRequesterUnavailable(ValueError):
+    """Canonical requester identity is missing, invalid, or internally inconsistent."""
+
+    def __init__(self, *, reason_code: str, evidence: Mapping[str, Any] | None = None) -> None:
+        self.reason_code = str(reason_code or "runtime_task_requester_unavailable")
+        self.evidence = dict(evidence or {})
+        super().__init__(self.reason_code)
+
+
 def execution_principal_from_tool_context(context: Any) -> ExecutionPrincipal:
     """Build control authority only from runtime-owned tool context."""
     tenant_id = str(getattr(context, "tenant_id", None) or "").strip()
@@ -36,6 +45,43 @@ def execution_principal_from_tool_context(context: Any) -> ExecutionPrincipal:
 def _metadata(record: Mapping[str, Any]) -> dict[str, Any]:
     raw = record.get("metadata") or record.get("metadata_json")
     return dict(raw) if isinstance(raw, Mapping) else {}
+
+
+def runtime_task_requester_user_id(record: Mapping[str, Any]) -> uuid.UUID:
+    """Return the durable requester from ``runtime_tasks.root_user_id`` only.
+
+    Metadata remains useful consistency evidence, but it is never allowed to
+    repair or replace a missing canonical column during worker replay.
+    """
+
+    canonical_raw = str(record.get("root_user_id") or "").strip()
+    metadata = _metadata(record)
+    principal = metadata.get("execution_principal")
+    principal = dict(principal) if isinstance(principal, Mapping) else {}
+    evidence = {
+        "authority_source": "runtime_tasks.root_user_id",
+        "task_id": str(record.get("task_id") or record.get("id") or "") or None,
+        "root_user_id": canonical_raw or None,
+        "metadata_root_user_id": str(metadata.get("root_user_id") or "").strip() or None,
+        "principal_requester_user_id": str(principal.get("requester_user_id") or "").strip() or None,
+    }
+    if not canonical_raw:
+        raise RuntimeTaskRequesterUnavailable(reason_code="root_user_id_missing", evidence=evidence)
+    try:
+        requester_user_id = uuid.UUID(canonical_raw)
+    except ValueError as exc:
+        raise RuntimeTaskRequesterUnavailable(reason_code="root_user_id_invalid", evidence=evidence) from exc
+
+    for candidate in (evidence["metadata_root_user_id"], evidence["principal_requester_user_id"]):
+        if candidate is None:
+            continue
+        try:
+            candidate_user_id = uuid.UUID(candidate)
+        except ValueError as exc:
+            raise RuntimeTaskRequesterUnavailable(reason_code="root_user_id_mismatch", evidence=evidence) from exc
+        if candidate_user_id != requester_user_id:
+            raise RuntimeTaskRequesterUnavailable(reason_code="root_user_id_mismatch", evidence=evidence)
+    return requester_user_id
 
 
 def runtime_task_root_authority(record: Mapping[str, Any]) -> dict[str, Any]:

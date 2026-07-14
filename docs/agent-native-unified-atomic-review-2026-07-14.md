@@ -2,15 +2,15 @@
 
 > 状态：当前工作账本、Group 0–10 施工入口与后续修复证据总报告；不是实现完成声明
 >
-> 审查快照：`main@501db6555dae374e5fcf43a6fdcfe8a3dd89343e` + 2026-07-14 当前未提交工作树
+> 原始审查冻结快照：`main@501db6555dae374e5fcf43a6fdcfe8a3dd89343e` + 2026-07-14 当时未提交工作树；后续施工不改写这个审查锚点，每条 `EVID-*` 另记自己的开工 HEAD、工作树与生产快照
 >
-> 总账编排更新：2026-07-15；本次只补全 Group 路由、规范交叉表、owner map 与证据回填合同，没有把旧源码证据冒充为 2026-07-15 重新全量认证。
+> 修复账本滚动更新：2026-07-15；Group 0 已关闭，Group 1 已写入 `EVID-G1-001/002/003` 的本地实现与验收证据，但三项 production deploy/canary 仍 open；不得把局部 Green 冒充 Group 1 或 103 项完成。
 >
 > 组合输入：`agent-native-atomic-review-2026-07-14.md`、`agent-native-extreme-boundary-atomic-review-2026-07-14.md`、`unified-context-assembly-and-progressive-disclosure-2026-07-14.md`、`session-v2-cc-codex-alignment-contract-2026-07-14.md`、修订后的 `reusable-agent-native-atomic-review-prompt.md`，以及当前 Hive / FreeCode / Codex 本地源码。
 >
 > 本地基线快照：FreeCode `7dc15d6c8fb0c40c7fcc02ce9b58204324252632`；claw-code Python/Rust `d229a9b022d4845d28a728677e6a6b7c22ec5a2e`；claude-code-org `a99de1bb3c0c301b83b784abbcdb7a3674b2cd45`；Codex `5c19155cbd93bfa099016e7487259f61669823ff`。四个对照仓库的 tracked source 均无 diff；各自仅有未跟踪的本地索引、审查文档或 assistant 配置，不作为源码证据。
 >
-> 本轮只修改审查与设计文档，不修改业务代码、数据库、部署配置或生产数据。当前工作树包含其它 session 的大量未提交业务改动；本轮没有 reset、覆盖、暂存或归属这些改动。本文的数量和行号绑定上述快照，不是永久 KPI。
+> 原始统一审查阶段只修改审查与设计文档；进入施工后，业务代码、测试、只读生产预检和文档证据按 `EVID-*` 独立推进。当前工作树仍包含其它 session 的大量未提交业务改动；每条证据只拥有其显式 path manifest，未 reset、覆盖或归属其它改动。本文的数量和旧行号绑定原始快照，不是永久 KPI。
 
 ## 0. 如何使用这份终极修复报告
 
@@ -1053,7 +1053,7 @@ Group 0 是全局证据门，不拥有业务 leaf。下面 103 行必须与 cano
 <!-- canonical-ledger-start -->
 - P0 | P0-F1 | in_progress-local-green:EVID-G1-001 | agent-controlled `web_fetch` / URL-import / remote-fetch-forwarding SSRF family；production canary 待执行
 - P1 | P0-F2 | in_progress-local-green:EVID-G1-002 | migration/RLS readiness 已本地 fail-closed；独立 commit、deploy 与 production startup canary 待执行
-- P1 | E-1 | inherited-current-evidence | durable subagent requester 被 creator 顶替
+- P1 | E-1 | in_progress-local-green:EVID-G1-003 | durable dispatch/pre-model replay/completion/wake 已改为只认 `RuntimeTask.root_user_id`；production deploy/canary 与 1,499 条 legacy held drift 的 operator disposition 待完成
 - P1 | P1-004 | inherited-current-evidence | A2A inner effect 丢 outer execution frame
 - P1 | P1-F4 | inherited-current-evidence | RecoveryManifest 缺恢复授权绑定
 - P1 | C-BP1 | inherited-current-evidence | terminal hook 同步 T2 LLM 阻塞完成
@@ -1164,7 +1164,7 @@ Group 0 是全局证据门，不拥有业务 leaf。下面 103 行必须与 cano
 | Group | 证据前缀 | Owner 范围 | 当前证据状态 | 下一次写入要求 |
 |---:|---|---|---|---|
 | 0 | `EVID-G0-*` | 0 leaf / 0 Missing | `closed`：`EVID-G0-001/002`；文档 Git truth、owner/path/decision/scenario CI、跨仓快照与现有 fake-provider/PG/Redis harness 基座成立 | 后续仅在 ledger/路径/场景变化时追加 delta；业务场景 Green 由 owner Group 负责 |
-| 1 | `EVID-G1-*` | 16 leaf / 0 Missing | `in_progress`：`EVID-G1-001` 已完成 P0-F1 本地 Red→Green 与仓级回归；`EVID-G1-002` 已完成 P0-F2 本地 Red→Green、真实 PG rollback/re-upgrade 与 production read-only catalog preflight；两项 deploy/canary 均 open，其余 14 leaf open | 先形成 P0-F2 独立 commit；再按 P0/P1 可独立发布家族继续写 production canary 与 authority/credential/budget 闭环 |
+| 1 | `EVID-G1-*` | 16 leaf / 0 Missing | `in_progress`：`EVID-G1-001` 完成 P0-F1 本地闭环；`EVID-G1-002` 完成 P0-F2 本地闭环与 production catalog preflight；`EVID-G1-003` 完成 E-1 requester authority 本地闭环、真实 PG 与 production legacy drift 只读盘点；三项 deploy/canary 均 open，其余 13 leaf open | 先形成 E-1 独立 commit；再部署三项已本地 Green 的安全家族并补 canary/legacy disposition；随后进入 P1-004 execution frame |
 | 2 | `EVID-G2-*` | 14 leaf / 0 Missing | `open` | 写 Session event/item/reducer、persist-before-publish、projection/backfill 与 SESSION-G 结果 |
 | 3 | `EVID-G3-*` | 7 leaf / 0 Missing | `open` | 写 root admission、reserve/commit/release、terminal CAS、approval resume 与 fanout 曲线 |
 | 4 | `EVID-G4-*` | 6 leaf / 0 Missing | `open` | 写 result ref、mailbox lease/CAS、integration epoch、partial/late/duplicate 与 100-way return storm |
@@ -1299,6 +1299,34 @@ Group 0 是全局证据门，不拥有业务 leaf。下面 103 行必须与 cano
 - Model Agency / 北极星：该 hard gate逐项命中 machine contracts、authority、execution isolation 与 evidence/recovery allowlist；不检查 Prompt、模型输出、任务意义或自然语言，不裁剪 context，也不把 catalog failure伪装成模型结论。API/runtime 只能在机械 schema 不可消费时 fail-closed，不能因此禁用无关模型能力。
 - commit / deploy / production canary：deployed-source prerequisite commit=`f7902ab7b`；包含本记录的 P0-F2 独立 commit 尚待创建并作为 Git 事实源，不在自身内容中嵌入自引用 hash。三服务未部署；production fail/allow startup、health、runtime `app_rls` 跨 tenant 行为与 rollback drill 均 open。
 - 七原子：Input=container env + migration graph；Authority=schema owner vs runtime role；Execution=single entrypoint gate；Evidence=typed JSON/exit/catalog/Git blob；Recovery=restart/rollback/re-upgrade；Consumption=runtime/API 只在 ready 后启动；Acceptance=本地与 production read-only 已绿、deploy/canary 未验，因此 canonical 仍为 `in_progress`。
+
+#### EVID-G1-003：E-1 durable background subagent requester authority
+
+- `leaf_ids`：`E-1`；同根范围覆盖 background enqueue、RuntimeTask worker dispatch、restart requeue、child transcript replay、completion projection、daemon wake、Tool/T0/audit/HR Personal KB requester 传播。前台同步 Sub-agent 不依赖 durable RuntimeTask，未被偷换成另一套后台身份模型。
+- owner Group / 依赖 Group：Group 1 / Group 0；后续 `P1-004` 必须复用本项收敛后的 execution principal，但不能把 A2A frame 债务并入本项冒充关闭。
+- 当前状态：`in_progress`；本地实现、真实 PostgreSQL、故障回归、仓级 suite、FreeCode/Codex 对照和 production legacy read-only preflight 已绿；独立 commit 后三服务 deploy、跨用户 live canary 与 legacy held drift 的 operator disposition 尚未完成，故不得标 `closed`。
+- 证据 owner / 更新时间：主 Agent / 2026-07-15。
+- 冻结事实：开工 HEAD `5ad6ff3c6f22e5100844514ac6004f0705c12d31`；最终归属复核时共享工作树仍有 62 个 tracked dirty 与 4 个 untracked path。本项只拥有 `backend/app/services/runtime_task_authority.py`、`backend/app/services/subagent_run_service.py`、`backend/app/services/subagent_wake_consumer.py`、`backend/app/tools/handlers/subagent.py`、5 个对应 test path 与本文证据 hunk；没有接管 dirty 的 `backend/app/agents/subagent.py`、`backend/app/agents/orchestrator.py` 或 `backend/app/services/agent_team_runtime_service.py`。
+- 已完整读取的 `@必须先读` 快照：`runtime-model-agency-constraint-audit`=`366c8a5e4351e76083e6096a8cca09fe93a952ce831cf01e3cae34e2f8b91530`、`agent-permission-governance-spec`=`e60f2dcf8711999cf655ccae180fb52810ad2a73f265028c1c56226ba73099ac`、`session-permission-and-enterprise-hard-rules`=`db8d895b283ecb7ae747ef7fbbb76591f32aba599052d24d759dcb31c83f7cb0`、`governance-layer-architecture`=`593c54f399708d3c4d61bf1900b8d788ecc1a3127077a1ffd9ab3a938b3ad94e`、`tool-call-governance-closure`=`05db3f2d3747a083575fe92f20acd3635ff1f0e48b372b3a6fe201e72df93963`、`session-rls-preflight`=`057b7631c75c80ce394096ea5c53cd3afc2b41d0994dcb62860d2fdc8a4029dc`、`rls-enforcement-migration-plan`=`66864a7c18233d7bcfcc825344eccc93a604d13039c40616d7b2b0387348b466`、`personal-company-knowledge-boundary`=`644dd7f85c2a212d6e93101a4101607d3e58ab79a8d6f8048061c5f654305609`、`personal-kb-completion-contract`=`7dad2c59695109d06c38e4f24cc39648c53fa66b59761c3af99b70ae57328544`、`runtime-budget-conformance`=`5299826c1a4b561328739e7bfc2d2438eb98388cf235124989a59b624dd8c039`。直接裁决条款是 accountable principal 与 actor 分离、Sub-agent 继承父 session/delegation 且只能缩权、Personal KB 属于 requester/owner 而不是 Agent、跨 owner 默认 fail closed。
+- 当前 live entry / authority source：`spawn_subagent_tool(run_in_background)` 只能从 authenticated `ToolExecutionContext.user_id` 入队；`start_subagent_run()` 把它写入 canonical `runtime_tasks.root_user_id`、child session 与 metadata；worker/restart/completion/wake 一律经 `runtime_task_requester_user_id()` 读取该列。metadata 与 execution principal 只做一致性证据，不能在 canonical 列缺失时 fallback；`agent.creator_id` 不再出现在 durable dispatch/wake authority path。
+- Red 1：首次运行 `pytest tests/services/test_runtime_task_authority.py tests/services/test_subagent_run_service.py -q` 在 collection 以缺少 `runtime_task_requester_user_id` 正确失败；只补 helper 后得到 5 个行为失败，分别坐实 enqueue 可缺 requester、dispatch 用 creator、并发 requester 串线、缺 requester 未 hold、child completion 可按漂移 session user wake。
+- Red 2：background tool 入口缺 requester 的回归先失败，因为旧实现仍进入 parent runtime resolver；新增 typed `subagent_requester_unavailable` 后 focused test Green。
+- Red 3：`pytest ...test_production_parent_wake_invoker_holds_creator_drift... ...holds_when_runtime_task_identity_is_missing -q` → `2 failed`；旧 daemon wake 不读 RuntimeTask，仍使用 `parent_session.user_id or agent.creator_id`，且缺 task id 时可退到 signal id。
+- Red 4：production 只读盘点暴露旧 child transcript 入口后，新增 pre-model 两条回归；首次执行 → `2 failed`，正确失败为 loader 不接 requester、dispatch 不捕获 child-session authority drift。
+- 实现：新增 typed `RuntimeTaskRequesterUnavailable(reason_code,evidence)`；`runtime_task_requester_user_id()` 只认 canonical column，并拒绝 metadata/principal 冲突。background enqueue 在预算、child session 或 RuntimeTask 写入前拒绝 missing/invalid requester；worker 用 canonical requester 覆盖任何 resolver/legacy creator context，且 canonical recovery metadata 最后写入，不能被不可信 persisted metadata 反覆盖。
+- pre-model 数据入口：只有 child T0 transcript 实际存在时，loader 才在返回任何 message 前查询实际 `ChatSession(id,agent_id)` 并校验 `session.user_id == RuntimeTask.root_user_id`；missing/invalid/mismatch 进入 `pre_model_input` typed hold，模型、ToolRuntime 和 parent resolver 均不启动。无 transcript 的新执行不为方便而伪造 history，也不读取其它 user bytes。
+- completion / wake / restart：completion projection 在写 child/parent event 或 outbox 前复核 child session user；restart requeue 在通知 worker 前复核 root requester；daemon wake 必须携 `subagent_run_id|runtime_task_id`，再校验 task type、tenant、parent Agent、root session、signal requester、parent session user 与 requester User tenant。缺失或漂移抛 typed unavailable，drain 保留 signal；不再以 signal id 或 creator 猜 authority。
+- Recovery / observability：deterministic identity 缺失或冲突进入 `needs_reconciliation`，记录 phase、reason、authority source、evidence、decision entry 与 required operator action；默认没有 `reconciliation_retry_allowed`，因此 generic admin retry fail closed，operator 仍可 inspect/archive/resolve。瞬时 DB/transport exception 不被伪装成身份事实，继续走 worker retry；原证据和 signal 保留。
+- migration / dry-run / backfill / cleanup / rollback：`root_user_id`/session 列已存在，无 schema migration。生产 READ ONLY 查询得到 `8,967` 条 subagent RuntimeTask：`completed=3,725`、`killed=26`、`needs_reconciliation=5,216`，无 pending/running/resumable/suspended；active missing root=`0`、metadata/root conflict=`0`。held 中 `1,499` 条满足 `child.user_id != root_user_id`，交叉查询证明 `1,499/1,499 child.user_id=agent.creator_id` 且 `root_user_id!=creator_id`，同时 `1,499/1,499` parent session 已缺失；因此没有足够机械证据自动改写 session owner，保持 quarantine 才是正确 backfill 结论。rollback 只回退代码 commit，不删除/重写这些历史证据。
+- FreeCode/CC 语义底线：当前 FreeCode `runAsyncAgentLifecycle()` 保留完整 child message/progress/final/task notification，`resumeAgentBackground()` 从 transcript 恢复 tool/context；本项没有删工具、裁上下文、降模型或改变 result 语义，只在 authorized input 前增加 Hive 多用户 authority frame。Codex `ThreadManager.spawn_subagent()` 先 materialize/flush parent rollout，且测试要求 child 持久化 parent originator、completion 通知 parent；Hive 对应地保留 lineage/notification，同时把 Codex 单用户没有的 requester 绑定做成 additive enterprise delta。
+- Green（定向）：真实 PG creator≠requester enqueue + session allow/deny 与两条 pre-model 回归 → `3 passed in 6.29s`；authority/run/wake/tool/architecture/worker/HR PKB 合集最终 → `121 passed in 9.55s`；scoped `ruff check` → `All checks passed!`，`ruff format --check` → `9 files already formatted`。
+- Green（仓级最终复跑）：`cd backend && source .venv/bin/activate && pytest tests -q` → `7016 passed, 2 skipped in 235.72s`，exit `0`；该结果包含最终 tenant-bound pre-model gate、wake authority、真实 PG 与文档 ledger validator 当前代码状态。
+- fault / concurrency / security：覆盖 creator context 注入、malicious recovery metadata 覆盖 requester、两个 requester 并发隔离、missing/invalid/conflicting root、restart missing requester、child completion drift、pre-model transcript drift、wake task-id missing、signal/session/requester drift；架构墓碑断言 durable dispatch/wake 不得重新引入 creator 或 signal-id fallback。
+- 真实消费：real spawn 的 `AgentInvocationRequest.user_id` 与 `SessionContext.metadata.requester_user_id` 均为 durable requester；T0/tool/audit 继续消费同一 runtime context；`test_system_hr_personal_kb_read_is_bound_to_current_requester` 证明 HR Personal KB 仍按当前 requester 查库。E-1 只恢复可信 principal，不替代 `KB-AUTH-001` 的 cross-principal grant/sensitivity ceiling 修复。
+- commit / deploy / production canary：包含本记录与 9 个 owned code/test path 的独立 E-1 commit 是 Git 机械事实源，本文不嵌入自引用 hash。尚未部署；三服务 freshness、成员 B 触发 creator A 的共享 Agent 后 child/T0/audit/HR PKB 均归 B、wake signal 保留/恢复，以及 1,499 条 held legacy drift 的 operator archive/retain 决策仍 open。
+- 七原子：Input=authenticated background tool context；Authority=`runtime_tasks.root_user_id` + exact session/tenant binding；Execution=single RuntimeTask worker/wake path；Evidence=typed hold/decision entry/T0/span/outbox/signal；Recovery=quarantine、no blind retry、operator inspect/archive/resolve；Consumption=AgentInvocationRequest/Tool/T0/audit/HR PKB/parent wake；Acceptance=本地与 production read-only 已绿、deploy/live canary/legacy disposition未验。因此 canonical 行为 `in_progress-local-green:EVID-G1-003`，不是 closed。
+- 残余风险 / 下一动作：先独立 commit；再按三服务规则部署并执行 creator≠requester 的受控 production canary。对 1,499 条历史 held drift 只允许 dry-run 后显式 operator retain/archive；因 parent session 已不存在，不得用 creator、metadata 或自然语言猜 requester 并批量回填。完成 live canary 与 disposition evidence 后才可关闭 E-1，然后进入 `P1-004`。
+- 对应 §12.2 canonical 行已更新为 `in_progress-local-green:EVID-G1-003`；不改变 103 分母、severity 或 Group owner。
 
 ## 13. Missing、Coverage Gap 与完成口径
 

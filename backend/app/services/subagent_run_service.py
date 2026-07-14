@@ -55,7 +55,11 @@ from app.services.runtime_budget_service import (
     RuntimeBudgetSettlement,
     estimate_reservation_tokens,
 )
-from app.services.runtime_task_authority import authorize_runtime_task_record
+from app.services.runtime_task_authority import (
+    RuntimeTaskRequesterUnavailable,
+    authorize_runtime_task_record,
+    runtime_task_requester_user_id,
+)
 from app.services.tenant_resolver import resolve_tenant_for_agent
 
 SUBAGENT_RUN_TASK_TYPE = "subagent"
@@ -193,6 +197,8 @@ async def create_subagent_child_session(
         "parent_session_id": parent_session_id,
         "context_mode": context_mode,
         "trace_id": trace_id,
+        "root_user_id": str(parent_user_id),
+        "requester_authority_source": "subagent_enqueue.parent_user_id",
         "lightweight_identity": True,
         "has_digital_employee_identity": False,
     }
@@ -267,6 +273,19 @@ async def start_subagent_run(
 ) -> SubagentRunStart:
     """Create the durable queued record for a background subagent. Returns
     the run id and child session id the parent can use for continuation."""
+    try:
+        requester_user_id = uuid.UUID(str(parent_user_id)) if parent_user_id is not None else None
+    except (TypeError, ValueError, AttributeError) as exc:
+        raise RuntimeTaskRequesterUnavailable(
+            reason_code="root_user_id_invalid",
+            evidence={"authority_source": "runtime_tasks.root_user_id"},
+        ) from exc
+    if requester_user_id is None:
+        raise RuntimeTaskRequesterUnavailable(
+            reason_code="root_user_id_missing",
+            evidence={"authority_source": "runtime_tasks.root_user_id"},
+        )
+    parent_user_id = requester_user_id
     run_id = uuid.uuid4().hex
     budget_uuid = _uuid_or_none(budget_run_id)
     budget_reservation_key: str | None = None
@@ -541,6 +560,17 @@ async def update_subagent_child_session_state_for_run(
     if record is None:
         return
     record_metadata = dict(record.get("metadata") or {})
+    try:
+        requester_user_id = runtime_task_requester_user_id(record)
+    except RuntimeTaskRequesterUnavailable as exc:
+        await _hold_subagent_requester_identity(
+            run_id=run_id,
+            metadata=record_metadata,
+            reason=exc.reason_code,
+            evidence=exc.evidence,
+            phase="completion_projection",
+        )
+        return
     child_session_id = str(record.get("child_session_id") or record_metadata.get("child_session_id") or "").strip()
     child_session_uuid = _uuid_or_none(child_session_id)
     parent_agent_uuid = _uuid_or_none(record.get("parent_agent_id"))
@@ -554,6 +584,20 @@ async def update_subagent_child_session_state_for_run(
         )
         session = result.scalar_one_or_none()
         if session is None:
+            return
+        if session.user_id != requester_user_id:
+            await _hold_subagent_requester_identity(
+                run_id=run_id,
+                metadata=record_metadata,
+                reason="child_session_user_mismatch",
+                evidence={
+                    "authority_source": "runtime_tasks.root_user_id",
+                    "root_user_id": str(requester_user_id),
+                    "child_session_id": str(child_session_uuid),
+                    "child_session_user_id": str(session.user_id) if session.user_id else None,
+                },
+                phase="completion_projection",
+            )
             return
         metadata = dict(session.transcript_metadata_json or {})
         budget_run_id = _uuid_or_none(metadata.get("budget_run_id"))
@@ -579,7 +623,7 @@ async def update_subagent_child_session_state_for_run(
             event_type="subagent_task_completed" if status == "completed" else "subagent_task_failed",
             content=summary,
             role="assistant",
-            user_id=session.user_id,
+            user_id=requester_user_id,
             run_id=run_id,
             runtime_task_id=run_id,
             root_session_id=session.root_session_id,
@@ -616,7 +660,7 @@ async def update_subagent_child_session_state_for_run(
                 event_type="child_session",
                 content=summary,
                 role="system",
-                user_id=session.user_id,
+                user_id=requester_user_id,
                 run_id=run_id,
                 runtime_task_id=run_id,
                 root_session_id=root_session_id,
@@ -636,7 +680,7 @@ async def update_subagent_child_session_state_for_run(
                 "run_id": run_id,
                 "tenant_id": tenant_id,
                 "parent_agent_id": parent_agent_uuid,
-                "parent_user_id": session.user_id,
+                "parent_user_id": requester_user_id,
                 "parent_session_id": parent_session_id,
                 "child_session_id": child_session_uuid,
                 "status": status,
@@ -747,7 +791,7 @@ async def _wake_parent_session_from_subagent_completion(
     )
 
 
-async def _resolve_parent_runtime(parent_agent_id: uuid.UUID) -> SubagentSpawnContext | None:
+async def _resolve_parent_runtime(parent_agent_id: uuid.UUID) -> dict[str, Any] | None:
     from app.services.model_resolution import choose_runtime_model_pair
 
     tenant_id = await resolve_tenant_for_agent(parent_agent_id, session_factory=async_session)
@@ -794,15 +838,19 @@ async def _resolve_parent_runtime(parent_agent_id: uuid.UUID) -> SubagentSpawnCo
         model, fallback_model = choose_runtime_model_pair(primary_model, fallback_model, None)
         if model is None:
             return None
-        return SubagentSpawnContext(
-            parent_agent_id=parent_agent_id,
-            parent_user_id=agent.creator_id,
-            model=model,
-            fallback_model=fallback_model,
-            parent_agent_name=getattr(agent, "name", None) or "Agent",
-            role_description=getattr(agent, "role_description", None) or "",
-            tenant_id=agent.tenant_id,
-        )
+        # Requester identity is intentionally absent here. Agent configuration
+        # and model resolution come from the parent Agent, while the caller is
+        # rebound later from the canonical RuntimeTask.root_user_id.
+        return {
+            "ctx_kwargs": {
+                "parent_agent_id": parent_agent_id,
+                "model": model,
+                "fallback_model": fallback_model,
+                "parent_agent_name": getattr(agent, "name", None) or "Agent",
+                "role_description": getattr(agent, "role_description", None) or "",
+                "tenant_id": agent.tenant_id,
+            }
+        }
 
 
 async def _resolve_model_override(model_name: str, tenant_id: uuid.UUID | None) -> Any | None:
@@ -934,11 +982,18 @@ async def _hydrate_worker_runtime_context(
     return runtime
 
 
-def _coerce_runtime_context(runtime: Any) -> SubagentSpawnContext | None:
+def _coerce_runtime_context(
+    runtime: Any,
+    *,
+    requester_user_id: uuid.UUID,
+) -> SubagentSpawnContext | None:
     if isinstance(runtime, SubagentSpawnContext):
+        runtime.parent_user_id = requester_user_id
         return runtime
     if isinstance(runtime, dict) and isinstance(runtime.get("ctx_kwargs"), dict):
-        return SubagentSpawnContext(**runtime["ctx_kwargs"])
+        ctx_kwargs = dict(runtime["ctx_kwargs"])
+        ctx_kwargs["parent_user_id"] = requester_user_id
+        return SubagentSpawnContext(**ctx_kwargs)
     return None
 
 
@@ -1040,11 +1095,72 @@ def _child_pending_frame_recovery_metadata(
     }
 
 
+async def _validate_subagent_child_session_requester(
+    *,
+    parent_agent_id: uuid.UUID,
+    child_session_id: str,
+    requester_user_id: uuid.UUID,
+) -> None:
+    """Bind replayable child-session evidence to the durable requester."""
+
+    child_session_uuid = _uuid_or_none(child_session_id)
+    if child_session_uuid is None:
+        raise RuntimeTaskRequesterUnavailable(
+            reason_code="child_session_id_invalid",
+            evidence={
+                "authority_source": "runtime_tasks.root_user_id",
+                "child_session_id": child_session_id or None,
+            },
+        )
+    tenant_id = await resolve_tenant_for_agent(parent_agent_id)
+    tenant_uuid = _uuid_or_none(tenant_id)
+    if tenant_uuid is None:
+        raise RuntimeTaskRequesterUnavailable(
+            reason_code="child_session_tenant_unavailable",
+            evidence={
+                "authority_source": "runtime_tasks.root_user_id",
+                "child_session_id": str(child_session_uuid),
+                "parent_agent_id": str(parent_agent_id),
+            },
+        )
+    async with tenant_scoped_session(tenant_id) as db:
+        result = await db.execute(
+            select(ChatSession).where(
+                ChatSession.id == child_session_uuid,
+                ChatSession.agent_id == parent_agent_id,
+                ChatSession.tenant_id == tenant_uuid,
+            )
+        )
+        session = result.scalar_one_or_none()
+    if session is None:
+        raise RuntimeTaskRequesterUnavailable(
+            reason_code="child_session_not_found",
+            evidence={
+                "authority_source": "runtime_tasks.root_user_id",
+                "child_session_id": str(child_session_uuid),
+                "parent_agent_id": str(parent_agent_id),
+                "root_user_id": str(requester_user_id),
+            },
+        )
+    child_session_user_id = _uuid_or_none(session.user_id)
+    if child_session_user_id != requester_user_id:
+        raise RuntimeTaskRequesterUnavailable(
+            reason_code="child_session_user_mismatch",
+            evidence={
+                "authority_source": "runtime_tasks.root_user_id",
+                "child_session_id": str(child_session_uuid),
+                "child_session_user_id": str(child_session_user_id) if child_session_user_id else None,
+                "root_user_id": str(requester_user_id),
+            },
+        )
+
+
 async def _load_subagent_resume_messages(
     *,
     parent_agent_id: uuid.UUID,
     child_session_id: str | None,
     prompt: str,
+    requester_user_id: uuid.UUID | None = None,
     context_window_tokens: Any = None,
     max_resume_chars: int | None = None,
 ) -> list[dict[str, Any]]:
@@ -1076,6 +1192,13 @@ async def _load_subagent_resume_messages(
     except Exception as exc:
         logger.info("[Subagent] no replayable child T0 transcript for %s: %s", session_id, exc)
         return []
+
+    if requester_user_id is not None and events:
+        await _validate_subagent_child_session_requester(
+            parent_agent_id=parent_agent_id,
+            child_session_id=session_id,
+            requester_user_id=requester_user_id,
+        )
 
     def _tool_transcript_message(event_type: str, content: str, metadata: dict[str, Any]) -> dict[str, Any]:
         payload = {
@@ -1172,6 +1295,55 @@ async def _mark_subagent_run_needs_reconciliation(
         )
     except Exception:
         logger.debug("[Subagent] child session reconciliation projection failed for run %s", run_id, exc_info=True)
+
+
+async def _hold_subagent_requester_identity(
+    *,
+    run_id: str,
+    metadata: dict[str, Any],
+    reason: str,
+    evidence: dict[str, Any] | None = None,
+    phase: str,
+) -> None:
+    """Hold execution without projecting or waking through an untrusted user id."""
+
+    normalized_reason = str(reason or "requester_identity_unavailable").strip()
+    normalized_phase = str(phase or "runtime").strip() or "runtime"
+    summary = "Subagent execution is held because its durable requester identity is unavailable or inconsistent."
+    decision_entry = build_subagent_decision_entry(
+        run_id=run_id,
+        status="needs_reconciliation",
+        subagent_name=metadata.get("subagent_name"),
+        subagent_type=metadata.get("subagent_type"),
+        replay_mode="blocked",
+        blocker="requester_identity_unavailable",
+        safe_to_retry=False,
+        retry_available=False,
+        required_user_action="repair_runtime_task_requester_authority",
+        child_session_id=metadata.get("child_session_id"),
+        parent_session_id=metadata.get("parent_session_id"),
+        summary=summary,
+    )
+    await update_runtime_task_record(
+        run_id,
+        status="needs_reconciliation",
+        result_summary=summary,
+        metadata_json={
+            "requester_identity_status": "unavailable",
+            "requester_identity_reason": normalized_reason,
+            "requester_identity_phase": normalized_phase,
+            "requester_authority_source": "runtime_tasks.root_user_id",
+            "requester_identity_evidence": dict(evidence or {}),
+            "worker_dispatch_failed": normalized_phase == "worker_dispatch",
+            "requester_identity_hold": True,
+            "subagent_decision_entry": decision_entry,
+        },
+    )
+    logger.warning(
+        "[Subagent] held run %s because durable requester authority is unavailable: %s",
+        run_id,
+        normalized_reason,
+    )
 
 
 async def _mark_subagent_run_killed(*, run_id: str, summary: str) -> None:
@@ -1273,6 +1445,17 @@ async def dispatch_persisted_subagent_run(task_id: str) -> bool:
             metadata_json={"resume_failed": True, "worker_dispatch_failed": True},
         )
         return True
+    try:
+        requester_user_id = runtime_task_requester_user_id(record)
+    except RuntimeTaskRequesterUnavailable as exc:
+        await _hold_subagent_requester_identity(
+            run_id=run_id,
+            metadata=metadata,
+            reason=exc.reason_code,
+            evidence=exc.evidence,
+            phase="worker_dispatch",
+        )
+        return True
 
     snapshot_spec = subagent_spec_from_snapshot(metadata.get("subagent_spec"))
     spec_type = str((snapshot_spec.type if snapshot_spec is not None else metadata.get("subagent_type")) or "")
@@ -1300,12 +1483,23 @@ async def dispatch_persisted_subagent_run(task_id: str) -> bool:
         return True
 
     parent_agent_id = uuid.UUID(str(record.get("parent_agent_id") or ""))
-    resume_messages = await _load_subagent_resume_messages(
-        parent_agent_id=parent_agent_id,
-        child_session_id=child_session_id,
-        prompt=str(record.get("prompt") or ""),
-        context_window_tokens=metadata.get("context_window_tokens"),
-    )
+    try:
+        resume_messages = await _load_subagent_resume_messages(
+            parent_agent_id=parent_agent_id,
+            child_session_id=child_session_id,
+            prompt=str(record.get("prompt") or ""),
+            requester_user_id=requester_user_id,
+            context_window_tokens=metadata.get("context_window_tokens"),
+        )
+    except RuntimeTaskRequesterUnavailable as exc:
+        await _hold_subagent_requester_identity(
+            run_id=run_id,
+            metadata=metadata,
+            reason=exc.reason_code,
+            evidence=exc.evidence,
+            phase="pre_model_input",
+        )
+        return True
     replay_blocker = None if resume_messages else _subagent_restart_replay_blocker(spec_type, metadata)
     reconciliation_retry_consumed = False
     if replay_blocker is not None and has_restart_reconciliation_retry_contract(
@@ -1330,7 +1524,10 @@ async def dispatch_persisted_subagent_run(task_id: str) -> bool:
         )
         return True
 
-    runtime = _coerce_runtime_context(await _resolve_parent_runtime(parent_agent_id))
+    runtime = _coerce_runtime_context(
+        await _resolve_parent_runtime(parent_agent_id),
+        requester_user_id=requester_user_id,
+    )
     if runtime is None:
         await update_runtime_task_record(
             run_id,
@@ -1344,16 +1541,26 @@ async def dispatch_persisted_subagent_run(task_id: str) -> bool:
     runtime.subagent_run_id = run_id
     runtime.child_session_id = child_session_id or runtime.child_session_id
     runtime.budget_run_id = str(record.get("budget_run_id") or metadata.get("budget_run_id") or "") or None
+    recovery_metadata = dict(runtime.recovery_metadata or {})
     if isinstance(metadata.get("recovery_metadata"), dict):
-        runtime.recovery_metadata = dict(metadata["recovery_metadata"])
+        recovery_metadata.update(dict(metadata["recovery_metadata"]))
     elif child_frame is not None:
-        runtime.recovery_metadata = _child_pending_frame_recovery_metadata(
-            frame=child_frame,
-            run_id=run_id,
-            child_session_id=runtime.child_session_id,
-            parent_session_id=runtime.parent_session_id,
-            trace_id=runtime.trace_id,
+        recovery_metadata.update(
+            _child_pending_frame_recovery_metadata(
+                frame=child_frame,
+                run_id=run_id,
+                child_session_id=runtime.child_session_id,
+                parent_session_id=runtime.parent_session_id,
+                trace_id=runtime.trace_id,
+            )
         )
+    recovery_metadata.update(
+        {
+            "requester_user_id": str(requester_user_id),
+            "requester_authority_source": "runtime_tasks.root_user_id",
+        }
+    )
+    runtime.recovery_metadata = recovery_metadata
 
     spec = snapshot_spec or SubagentSpec(
         name=str(metadata.get("subagent_name") or record.get("child_agent_name") or spec_type or "subagent"),
@@ -1383,6 +1590,9 @@ async def dispatch_persisted_subagent_run(task_id: str) -> bool:
         "worker_dispatched_at": datetime.now(timezone.utc).isoformat(),
         "restart_resume_mode": "transcript" if resume_messages else "replay",
         "restart_replay_journal": dispatch_metadata.get("restart_replay_journal"),
+        "requester_identity_status": "available",
+        "requester_user_id": str(requester_user_id),
+        "requester_authority_source": "runtime_tasks.root_user_id",
     }
     if reconciliation_retry_consumed:
         running_metadata.update(
@@ -1449,6 +1659,17 @@ async def resume_persisted_subagent_runs(*, limit: int = 50) -> list[str]:
         snapshot_spec = subagent_spec_from_snapshot(metadata.get("subagent_spec"))
         spec_type = str((snapshot_spec.type if snapshot_spec is not None else metadata.get("subagent_type")) or "")
         if not metadata.get("resume_after_restart") or not metadata.get("resumable_subagent"):
+            continue
+        try:
+            runtime_task_requester_user_id(record)
+        except RuntimeTaskRequesterUnavailable as exc:
+            await _hold_subagent_requester_identity(
+                run_id=run_id,
+                metadata=dict(metadata),
+                reason=exc.reason_code,
+                evidence=exc.evidence,
+                phase="restart_requeue",
+            )
             continue
         child_session_id = str(record.get("child_session_id") or metadata.get("child_session_id") or "").strip()
         parent_session_id = str(record.get("parent_session_id") or metadata.get("parent_session_id") or "").strip()

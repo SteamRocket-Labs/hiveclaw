@@ -1,10 +1,24 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 import json
 import sys
 from types import SimpleNamespace
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _pin_public_web_targets(monkeypatch):
+    """Keep non-security web provider tests independent of external DNS."""
+
+    async def resolver(_hostname: str, _port: int) -> tuple[str, ...]:
+        return ("93.184.216.34",)
+
+    monkeypatch.setattr(
+        "app.services.governed_egress.resolve_public_addresses",
+        resolver,
+    )
 
 
 def _extract_tool_error_payload(result: str) -> dict:
@@ -30,9 +44,13 @@ class _FakeResponse:
         self._json_data = json_data or {}
         self.headers = headers or {}
         self.content = content
+        self.num_bytes_downloaded = len(content or text.encode())
 
     def json(self) -> dict:
         return self._json_data
+
+    async def aiter_bytes(self):
+        yield self.content or self.text.encode()
 
 
 class _FakeAsyncClient:
@@ -50,6 +68,11 @@ class _FakeAsyncClient:
 
     async def post(self, *args, **kwargs):
         return self._response
+
+    @asynccontextmanager
+    async def stream(self, method: str, *args, **kwargs):
+        response = await (self.get(*args, **kwargs) if method == "GET" else self.post(*args, **kwargs))
+        yield response
 
 
 class _SequencedAsyncClient:
@@ -76,6 +99,11 @@ class _SequencedAsyncClient:
         self._calls.append(("post", url))
         return self._next_response()
 
+    @asynccontextmanager
+    async def stream(self, method: str, url: str, *args, **kwargs):
+        response = await (self.get(url, *args, **kwargs) if method == "GET" else self.post(url, *args, **kwargs))
+        yield response
+
 
 class _CapturingAsyncClient:
     def __init__(self, response: _FakeResponse, requests: list[dict]):
@@ -95,6 +123,11 @@ class _CapturingAsyncClient:
     async def post(self, url: str, *args, **kwargs):
         self._requests.append({"method": "POST", "url": url, **kwargs})
         return self._response
+
+    @asynccontextmanager
+    async def stream(self, method: str, url: str, *args, **kwargs):
+        response = await (self.get(url, *args, **kwargs) if method == "GET" else self.post(url, *args, **kwargs))
+        yield response
 
 
 class _ScalarResult:
@@ -184,7 +217,12 @@ async def test_web_fetch_extracts_html_content(monkeypatch):
     monkeypatch.setattr(
         "httpx.AsyncClient",
         lambda *args, **kwargs: _FakeAsyncClient(
-            _FakeResponse(status_code=200, text=html, headers={"content-type": "text/html"}),
+            _FakeResponse(
+                status_code=200,
+                text=html,
+                content=html.strip().encode(),
+                headers={"content-type": "text/html"},
+            ),
         ),
     )
 
@@ -247,7 +285,12 @@ async def test_web_fetch_uses_document_conversion_for_html_markdown_artifact(mon
     monkeypatch.setattr(
         "httpx.AsyncClient",
         lambda *args, **kwargs: _FakeAsyncClient(
-            _FakeResponse(status_code=200, text=html, headers={"content-type": "text/html"}),
+            _FakeResponse(
+                status_code=200,
+                text=html,
+                content=html.strip().encode(),
+                headers={"content-type": "text/html"},
+            ),
         ),
     )
 

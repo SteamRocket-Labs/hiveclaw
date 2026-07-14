@@ -20,6 +20,7 @@ from app.services.document_conversion import (
     DocumentConversionService,
     render_conversion_preview,
 )
+from app.services.governed_egress import GovernedEgressError, fetch_public_http, validate_public_http_url
 from app.services.tenant_resolver import resolve_tenant_for_agent
 from app.tools.result_envelope import classify_http_status, render_tool_error, render_tool_fallback
 
@@ -233,6 +234,30 @@ def _invalid_argument_error(tool_name: str, message: str, *, provider: str, hint
         retryable=False,
         actionable_hint=hint,
     )
+
+
+def _network_egress_error(tool_name: str, provider: str, error: GovernedEgressError) -> str:
+    return render_tool_error(
+        tool_name=tool_name,
+        error_class=error.code,
+        message=f"{tool_name} refused the requested network target: {error.reason}",
+        provider=provider,
+        retryable=error.code == "network_timeout",
+        actionable_hint=(
+            "Use a canonical public http/https URL. Private, local, metadata, ambiguous-IP, credential-bearing, "
+            "unsafe redirect, and over-limit targets are not available to agent-controlled fetches."
+        ),
+    )
+
+
+async def _validate_remote_fetch_target(tool_name: str, provider: str, normalized_url: str) -> str | None:
+    """Apply the same public-target gate before forwarding a URL to a remote extractor."""
+
+    try:
+        await validate_public_http_url(normalized_url)
+    except GovernedEgressError as error:
+        return _network_egress_error(tool_name, provider, error)
+    return None
 
 
 def _http_error(tool_name: str, *, provider: str, status_code: int, detail: str, hint: str | None = None) -> str:
@@ -559,9 +584,18 @@ async def _anysearch_extract(arguments: dict) -> str:
             provider="anysearch_mcp",
             hint="Pass the URL returned by search when you need AnySearch's full-page Markdown extraction.",
         )
-    if not _looks_like_url(url):
-        url = f"https://{url}"
-    return await _call_anysearch_mcp_tool("anysearch_extract", "extract", {"url": url})
+    normalized_url = _normalize_url(url)
+    if not normalized_url:
+        return _invalid_argument_error(
+            "anysearch_extract",
+            f"anysearch_extract received an invalid URL: {url}",
+            provider="anysearch_mcp",
+            hint="Use a valid public http/https URL. If you only have keywords, use advanced_web_search first.",
+        )
+    denied = await _validate_remote_fetch_target("anysearch_extract", "anysearch_mcp", normalized_url)
+    if denied:
+        return denied
+    return await _call_anysearch_mcp_tool("anysearch_extract", "extract", {"url": normalized_url})
 
 
 async def _get_tool_config(tool_name: str) -> dict:
@@ -1070,6 +1104,9 @@ async def _advanced_web_fetch(arguments: dict) -> str:
             provider="advanced_web_fetch",
             hint="Use a valid URL. If you only have keywords, use advanced_web_search first.",
         )
+    denied = await _validate_remote_fetch_target("advanced_web_fetch", "advanced_web_fetch", normalized_url)
+    if denied:
+        return denied
 
     provider = _optional_enum(arguments.get("provider"), _ADVANCED_WEB_FETCH_PROVIDERS, default="auto") or "auto"
     max_chars = _requested_max_chars(arguments)
@@ -1299,8 +1336,11 @@ async def _web_fetch(arguments: dict) -> str:
     max_chars = _requested_max_chars(arguments)
 
     try:
-        async with httpx.AsyncClient(follow_redirects=True, timeout=20) as client:
-            resp = await client.get(normalized_url, headers={"User-Agent": "Hive WebFetch/1.0"})
+        resp = await fetch_public_http(
+            normalized_url,
+            headers={"User-Agent": "Hive WebFetch/1.0"},
+        )
+        fetched_url = resp.url
 
         if resp.status_code >= 300:
             error_class, retryable = classify_http_status(resp.status_code)
@@ -1321,12 +1361,12 @@ async def _web_fetch(arguments: dict) -> str:
             try:
                 converted = _convert_fetched_content(
                     data=raw_bytes,
-                    filename=_filename_for_fetched_content(normalized_url, "application/pdf"),
-                    normalized_url=normalized_url,
+                    filename=_filename_for_fetched_content(fetched_url, "application/pdf"),
+                    normalized_url=fetched_url,
                     content_type=content_type or "application/pdf",
                 )
             except Exception as e:
-                logger.debug("PDF conversion failed for %s: %s", normalized_url, e)
+                logger.debug("PDF conversion failed for %s: %s", fetched_url, e)
                 return await _web_fetch_failure_result(
                     arguments,
                     normalized_url=normalized_url,
@@ -1347,7 +1387,7 @@ async def _web_fetch(arguments: dict) -> str:
                     retryable=True,
                     actionable_hint="The PDF may be scanned or image-only; try a crawler-backed reader or another source.",
                 )
-            return _render_web_fetch_conversion(normalized_url, converted, max_chars)
+            return _render_web_fetch_conversion(fetched_url, converted, max_chars)
         else:
             text = resp.text.strip()
             if (
@@ -1358,8 +1398,8 @@ async def _web_fetch(arguments: dict) -> str:
                 markup = text
                 converted = _convert_fetched_content(
                     data=raw_bytes or markup.encode("utf-8"),
-                    filename=_filename_for_fetched_content(normalized_url, content_type or "text/html"),
-                    normalized_url=normalized_url,
+                    filename=_filename_for_fetched_content(fetched_url, content_type or "text/html"),
+                    normalized_url=fetched_url,
                     content_type=content_type or "text/html",
                 )
                 text = converted.markdown.strip()
@@ -1384,7 +1424,7 @@ async def _web_fetch(arguments: dict) -> str:
                         retryable=False,
                         actionable_hint="Try another URL or use search to find a cleaner source page.",
                     )
-                return _render_web_fetch_conversion(normalized_url, converted, max_chars)
+                return _render_web_fetch_conversion(fetched_url, converted, max_chars)
         if not text:
             return await _web_fetch_failure_result(
                 arguments,
@@ -1398,7 +1438,9 @@ async def _web_fetch(arguments: dict) -> str:
             )
         if max_chars is not None and len(text) > max_chars:
             text = text[:max_chars] + f"\n\n[... truncated at {max_chars} chars]"
-        return f"📄 **Fetched content from: {normalized_url}**\n\n{text}"
+        return f"📄 **Fetched content from: {fetched_url}**\n\n{text}"
+    except GovernedEgressError as error:
+        return _network_egress_error("web_fetch", "web_fetch", error)
     except Exception as e:
         return await _web_fetch_failure_result(
             arguments,
@@ -1535,6 +1577,9 @@ async def _tavily_extract(arguments: dict) -> str:
             provider="tavily",
             hint="Use a valid URL. If you only have keywords, use advanced_web_search first.",
         )
+    denied = await _validate_remote_fetch_target("tavily_extract", "tavily", normalized_url)
+    if denied:
+        return denied
 
     config = await _get_tool_config("tavily_extract")
     api_key = config.get("api_key") or config.get("tavily_api_key") or await _get_tavily_api_key()
@@ -1621,6 +1666,9 @@ async def _exa_fetch(arguments: dict) -> str:
             provider="exa",
             hint="Use a valid URL. If you only have keywords, use advanced_web_search first.",
         )
+    denied = await _validate_remote_fetch_target("exa_fetch", "exa", normalized_url)
+    if denied:
+        return denied
 
     config = await _get_tool_config("exa_fetch")
     api_key = config.get("api_key") or config.get("exa_api_key") or await _get_exa_api_key()
@@ -1675,6 +1723,9 @@ async def _firecrawl_fetch(arguments: dict) -> str:
             provider="firecrawl",
             hint="Use a valid URL. If you only have keywords, use web_search first.",
         )
+    denied = await _validate_remote_fetch_target("firecrawl_fetch", "firecrawl", normalized_url)
+    if denied:
+        return denied
 
     config = await _get_tool_config("firecrawl_fetch")
     api_key = config.get("api_key") or config.get("firecrawl_api_key") or await _get_firecrawl_api_key()
@@ -1826,6 +1877,9 @@ async def _xcrawl_scrape(arguments: dict) -> str:
             provider="xcrawl",
             hint="Use a valid URL. If you only have keywords, use web_search first.",
         )
+    denied = await _validate_remote_fetch_target("xcrawl_scrape", "xcrawl", normalized_url)
+    if denied:
+        return denied
 
     api_key = await _get_xcrawl_api_key()
     if not api_key:

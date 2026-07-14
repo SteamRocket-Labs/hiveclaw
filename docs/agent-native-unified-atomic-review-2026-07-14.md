@@ -1051,7 +1051,7 @@ Group 0 是全局证据门，不拥有业务 leaf。下面 103 行必须与 cano
 `inherited-recheck` 表示来自前一工作账本，本轮未重新执行该 leaf 的全部验收；它仍在当前 ledger，但开工前必须按当前 checkout 重验。`current-confirmed` 表示本轮重新读取了直接源码。family、alias、scenario、coverage gap、Missing 不计数。
 
 <!-- canonical-ledger-start -->
-- P0 | P0-F1 | inherited-current-evidence | agent-controlled `web_fetch` SSRF
+- P0 | P0-F1 | in_progress-local-green:EVID-G1-001 | agent-controlled `web_fetch` / URL-import / remote-fetch-forwarding SSRF family；production canary 待执行
 - P1 | P0-F2 | inherited-current-evidence | Alembic 增量迁移失败仍启动
 - P1 | E-1 | inherited-current-evidence | durable subagent requester 被 creator 顶替
 - P1 | P1-004 | inherited-current-evidence | A2A inner effect 丢 outer execution frame
@@ -1164,7 +1164,7 @@ Group 0 是全局证据门，不拥有业务 leaf。下面 103 行必须与 cano
 | Group | 证据前缀 | Owner 范围 | 当前证据状态 | 下一次写入要求 |
 |---:|---|---|---|---|
 | 0 | `EVID-G0-*` | 0 leaf / 0 Missing | `closed`：`EVID-G0-001/002`；文档 Git truth、owner/path/decision/scenario CI、跨仓快照与现有 fake-provider/PG/Redis harness 基座成立 | 后续仅在 ledger/路径/场景变化时追加 delta；业务场景 Green 由 owner Group 负责 |
-| 1 | `EVID-G1-*` | 16 leaf / 0 Missing | `open` | 按 P0/P1 可独立发布家族写 Red→Green、安全反证、迁移、rollback 与生产 canary |
+| 1 | `EVID-G1-*` | 16 leaf / 0 Missing | `in_progress`：`EVID-G1-001` 已完成 P0-F1 本地 Red→Green 与仓级回归，production canary 尚未执行；其余 15 leaf open | 按 P0/P1 可独立发布家族继续写迁移、rollback、生产 canary 与 authority/credential/budget 闭环 |
 | 2 | `EVID-G2-*` | 14 leaf / 0 Missing | `open` | 写 Session event/item/reducer、persist-before-publish、projection/backfill 与 SESSION-G 结果 |
 | 3 | `EVID-G3-*` | 7 leaf / 0 Missing | `open` | 写 root admission、reserve/commit/release、terminal CAS、approval resume 与 fanout 曲线 |
 | 4 | `EVID-G4-*` | 6 leaf / 0 Missing | `open` | 写 result ref、mailbox lease/CAS、integration epoch、partial/late/duplicate 与 100-way return storm |
@@ -1248,6 +1248,32 @@ Group 0 是全局证据门，不拥有业务 leaf。下面 103 行必须与 cano
 - commit / deploy：包含本记录的 Group 0 commit 是 Git 机械事实源，不在自身内容中嵌入自引用 hash；本 Group 无业务 runtime、migration 或生产部署。
 - 七原子：Input=总报告/Prompt/两份设计；Authority=AGENTS/L0/L1；Execution=pytest + CI；Evidence=marker map/hash/Git index；Recovery=external snapshot 与 delta 规则；Consumption=所有 Group runbook/CI；Acceptance=8 + 40 + 170 tests、ruff、diff check。
 - 残余风险：业务 leaf 与极端行为仍按 owner Group 保持 open；这不是 Group 0 未闭环，也不能被误读成系统能力已闭环。
+
+#### EVID-G1-001：P0-F1 governed public HTTP egress
+
+- `leaf_ids`：`P0-F1`；同根范围包含 Agent `web_fetch`/advanced fetch、Personal KB URL import、`upload_image(url=...)` 的远端 URL 转交；未把固定 provider API、显式 Custom API connector 或受权内网连接器偷换成“任意公网 fetch”。
+- owner Group / 依赖 Group：Group 1 / Group 0。
+- 当前状态：`in_progress`；当前 checkout 的实现、fault matrix、相关回归与 backend 仓级 suite 已绿，但 commit 后三服务部署与 production canary 尚未执行，故不得标 `closed`。
+- 证据 owner / 更新时间：主 Agent / 2026-07-15。
+- 冻结事实：开工 HEAD `770a64189eecb291655e727cb04ffb5fd5cd27d1`；Group 0 之外仍有共享脏工作树。本家族只拥有 `backend/app/services/governed_egress.py`、`backend/app/services/agent_tool_domains/web_mcp.py`、`backend/app/services/agent_tool_domains/image_upload.py`、`backend/app/services/personal_knowledge_service.py`、`backend/tests/services/test_governed_egress.py`、`backend/tests/services/test_web_mcp_resilience.py`、`backend/tests/services/test_web_mcp_conversion.py` 与本文证据 hunk；没有接管其它 dirty path。
+- `@docs` 当前快照：Group 1 的 10 份 must-read 文档均在开工 checkout 存在并记录 SHA-256；P0 直接裁决消费 `@docs/runtime-model-agency-constraint-audit-2026-07-13.md` 的 hard-constraint allowlist / Model Agency、`@docs/ccplus-governance-layer-architecture-2026-06-28.md` 的 L0 call-time boundary，以及本文 §9/§12 的 P0-F1 逐跳验收。完整 hash 清单由本轮 `shasum -a 256` 输出保留，后续 Group 1 leaf 继续按各自路由读取，不能以本证据代替 Knowledge/RLS/Budget 全文裁决。
+- 当前 live entry：`web_mcp._web_fetch` 是 Hive 本机直取；`_advanced_web_fetch`、AnySearch/Tavily/Exa/Firecrawl/XCrawl 在把 URL 交给远端 extractor 前重新执行相同 public-target gate；`PersonalKnowledgeService.ingest_url` 不再自行 `follow_redirects=True`；`_upload_image(url=...)` 不再把私网/metadata URL转交 ImageKit。
+- 权威事实源：URL parser、`ipaddress` 网络属性、resolver 的全部 A/AAAA、pinned socket peer、redirect Location/origin、单调 redirect 计数、wall-clock timeout 与 wire/decoded byte 计数。平台没有检查页面关键词、意图、正确性或内容意义。
+- Red 1：`pytest tests/services/test_governed_egress.py -q` → collection error `ModuleNotFoundError: app.services.governed_egress`，证明 governed transport 缺失。
+- Red 2：建立网络事实层测试后同命令 → `2 failed, 26 passed`；私网 `web_fetch` 仍返回 `provider_error`，AnySearch 仍收到 `127.0.0.1`。
+- Red 3：扩展 Personal KB / ImageKit seam 后同命令 → `2 failed, 28 passed`；Personal KB 仍构造直接 HTTP client，ImageKit 仍收到私网 URL。
+- Red 4：增加端口与 resolver fail-closed 后同命令 → `2 failed, 31 passed`；port 0 与 unexpected resolver error 尚未 fail-closed。增加 durable typed exception 文本后先得到 `17 failed, 16 passed`，证明原 exception string 未携机械 error code。
+- 实现：新增严格 `http/https` URL normalization；拒绝 userinfo、控制字符、反斜杠、非法/零端口、single-label/混淆 IP、IPv6 zone、mapped/6to4/Teredo/NAT64 表示；所有 A/AAAA 必须全为公网。`PinnedPublicNetworkBackend` 只向验证 IP 建连并核对实际 peer，`trust_env=False` 禁止未经治理代理；redirect 逐跳重新解析/解析 DNS/注册 pins，HTTPS→HTTP 拒绝、跨 origin 清除 Authorization/Cookie/Proxy-Authorization；响应以流式 wire/decoded ceilings 和总 wall-clock timeout 约束。
+- Model Agency：上限只约束网络资源和未授权 ingress；超过上限返回 typed infrastructure failure，不生成部分摘要、不机械裁剪后冒充完整页面、不判断页面语义。合法响应 bytes 原样交给既有 document conversion/模型消费；`max_chars` 仍只在模型显式请求时使用。
+- migration / backfill / cleanup / rollback：无 schema/data migration。旧 `trigger_daemon._is_private_url` 暂未删除，因为其 poll path 仍独立消费；后续统一时必须保持 trigger 行为测试。代码 rollback 是回退本独立 commit；无不可逆数据动作。
+- Green（定向）：`pytest tests/services/test_governed_egress.py -q` → `33 passed`；`pytest tests/services/test_governed_egress.py tests/services/test_web_mcp_resilience.py tests/services/test_web_mcp_conversion.py -q` 的上一个稳定点为 `78 passed`；Personal KB/API/Web 合并回归为 `107 passed`；Model Agency + tool definition 为 `46 passed`；scoped `ruff check` → `All checks passed!`。
+- Green（仓级，最终提交前复跑）：`cd backend && source .venv/bin/activate && pytest tests -q` → `6987 passed, 2 skipped in 227.99s`，exit `0`；该结果已经覆盖 typed exception code 与本记录所述最终代码状态。
+- fault/security：覆盖 metadata、IPv4/IPv6 private/loopback/link-local/unspecified、mapped/zone/十进制/八进制/十六进制混淆、多 DNS 答案含一个私网、同 host redirect 后 DNS rebinding、302→metadata、HTTPS downgrade、redirect loop、跨 origin credential、compression bomb、总超时、socket peer 与 pin 不一致；测试未访问真实 metadata/localhost/内网。
+- 本机 live probe：尝试 `fetch_public_http('https://example.com')` 时，本机受控 DNS 返回保留的 `198.18.0.27`，validator 按设计 fail-closed；这证明 proxy/fake-IP 不会静默绕过，但不是公网成功 canary，也不能冒充 production evidence。
+- Evidence / Recovery / Consumption：deny 经 `render_tool_error(error_class=network_target_denied)` 进入既有 ToolResult/span/transcript；Personal KB queued job 的 exception string 现在携带 code；timeout/too-large/redirect deny 保留不同 typed code，可由模型解释并换源/重试。成功内容继续由 Web conversion、PKB ingestion 或 ImageKit consumer 消费。
+- commit / deploy / production canary：包含本记录与 7 个 owned code/test path 的独立 P0 commit 是 Git 机械事实源，本文不内嵌自身 commit 的自引用 hash；尚未部署，Railway 三服务 freshness、生产 DNS/redirect/metadata deny 与 public allow canary 均 open。
+- 七原子：Input=Agent/user URL；Authority=public-target L0 policy；Execution=pinned transport/remote target gate；Evidence=typed code + tool/job receipts；Recovery=retry/换源且无 partial semantic fallback；Consumption=Web/PKB/ImageKit live path；Acceptance=本地已绿、production 未验。因此 canonical 行保持 `in_progress`，不是 `closed`。
+- 残余边界：显式 Custom API、MCP、HTTP Hook 和企业内网连接器拥有不同的管理员配置/approval/network scope，不能被本 P0 public-fetch policy 粗暴删除；它们在 Group 1 的 authority/B-01 与后续 governance recheck 中必须证明 allowlist/pinning/credential/receipt，而不是默认继承“public fetch 已安全”。
 
 ## 13. Missing、Coverage Gap 与完成口径
 

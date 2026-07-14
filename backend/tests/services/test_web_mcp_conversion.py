@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -7,6 +8,18 @@ import pytest
 
 from tests.services.test_web_mcp_resilience import _FakeResponse
 
+
+@pytest.fixture(autouse=True)
+def _pin_public_web_targets(monkeypatch):
+    """Keep conversion tests independent of external DNS."""
+
+    async def resolver(_hostname: str, _port: int) -> tuple[str, ...]:
+        return ("93.184.216.34",)
+
+    monkeypatch.setattr(
+        "app.services.governed_egress.resolve_public_addresses",
+        resolver,
+    )
 
 class _FakeAsyncClient:
     def __init__(self, response: _FakeResponse):
@@ -20,6 +33,11 @@ class _FakeAsyncClient:
 
     async def get(self, *args, **kwargs):
         return self._response
+
+    @asynccontextmanager
+    async def stream(self, method: str, *args, **kwargs):
+        assert method == "GET"
+        yield await self.get(*args, **kwargs)
 
 
 @pytest.mark.asyncio

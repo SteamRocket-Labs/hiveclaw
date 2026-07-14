@@ -33,6 +33,15 @@ async def _upload_image(agent_id: uuid.UUID, ws: Path, arguments: dict) -> str:
     if not file_path and not url:
         return "❌ Please provide either 'file_path' (workspace path) or 'url' (public image URL)"
 
+    if url:
+        from app.services.governed_egress import GovernedEgressError, validate_public_http_url
+
+        try:
+            validated_target = await validate_public_http_url(str(url))
+        except GovernedEgressError as error:
+            return f"❌ {error.code}: {error.reason}"
+        url = validated_target.url
+
     # ── Load ImageKit credentials (global → per-agent fallback) ──
     private_key = ""
     try:

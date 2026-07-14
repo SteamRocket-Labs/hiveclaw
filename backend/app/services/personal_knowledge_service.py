@@ -1622,15 +1622,21 @@ class PersonalKnowledgeService:
         source_sha256: str | None = None,
     ) -> PersonalKnowledgeIngestResult:
         clean_url = str(url or "").strip()
-        parsed = urlparse(clean_url)
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-            raise ValueError("url must be an absolute http(s) URL")
+        from app.services.governed_egress import EgressLimits, fetch_public_http
 
-        import httpx
-
-        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
-            response = await client.get(clean_url)
-            response.raise_for_status()
+        response = await fetch_public_http(
+            clean_url,
+            limits=EgressLimits(
+                max_redirects=5,
+                max_wire_bytes=32 * 1024 * 1024,
+                max_decoded_bytes=32 * 1024 * 1024,
+                total_timeout_seconds=20.0,
+            ),
+        )
+        if response.status_code >= 400:
+            raise ValueError(f"url import failed with HTTP {response.status_code}")
+        final_url = response.url
+        parsed = urlparse(final_url)
         filename = _safe_filename(Path(parsed.path).name or "imported-url.html")
         return await self.ingest_source_bytes(
             session,
@@ -1640,7 +1646,7 @@ class PersonalKnowledgeService:
             data=response.content,
             title=title,
             source_kind="url",
-            source_uri=clean_url,
+            source_uri=final_url,
             created_by_user_id=created_by_user_id,
             agent_searchable=agent_searchable,
             sensitivity=sensitivity,

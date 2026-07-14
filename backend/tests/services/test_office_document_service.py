@@ -215,10 +215,42 @@ def test_officecli_structured_text_payload_preserves_all_format_content(
         assert fragment in rendered
 
 
+def test_officecli_docx_total_elements_may_include_nodes_nested_in_rendered_top_level_blocks():
+    from app.services.office_document_service import extract_officecli_text_payload
+
+    payload = {
+        "success": True,
+        "data": {
+            "elements": [
+                {"path": "/body/0", "text": "Heading", "type": "paragraph"},
+                {"path": "/body/1", "text": "Paragraph", "type": "paragraph"},
+                {"path": "/body/2", "text": "Table cell content", "type": "table"},
+            ],
+            "totalElements": 4,
+        },
+    }
+
+    rendered = extract_officecli_text_payload(payload, office_format="docx")
+
+    assert "Heading" in rendered
+    assert "Paragraph" in rendered
+    assert "Table cell content" in rendered
+
+
 @pytest.mark.parametrize(
     ("office_format", "payload"),
     [
         ("docx", {"success": True, "data": {"elements": [{"text": 7}], "totalElements": 1}}),
+        (
+            "docx",
+            {
+                "success": True,
+                "data": {
+                    "elements": [{"text": "one"}, {"text": "two"}],
+                    "totalElements": 1,
+                },
+            },
+        ),
         ("xlsx", {"success": True, "data": {"sheets": [{"name": "Sheet", "rows": "not-a-list"}]}}),
         (
             "pptx",

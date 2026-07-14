@@ -107,7 +107,7 @@ def extract_officecli_text_payload(payload: dict[str, Any], *, office_format: st
         if (
             not isinstance(elements, list)
             or type(total_elements) is not int
-            or total_elements != len(elements)
+            or total_elements < len(elements)
         ):
             raise OfficePreviewMalformedError("OfficeCLI DOCX text payload has invalid element coverage")
         paragraphs: list[str] = []

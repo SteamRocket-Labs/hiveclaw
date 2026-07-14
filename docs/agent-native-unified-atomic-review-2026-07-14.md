@@ -1420,7 +1420,8 @@ context_read_receipt:
 - Green 2：`cd backend && source .venv/bin/activate && pytest tests/architecture/test_agent_native_repair_ledger.py -q` → `9 passed in 0.25s`。
 - Green 3：`cd backend && source .venv/bin/activate && ruff check tests/architecture/test_agent_native_repair_ledger.py` → `All checks passed!`；owned paths `git diff --check` → exit `0`；validator SHA-256=`dcd48426580d9155dcca1c85f2fe126431368740488bc1995506735d08d151fc`。
 - 扩展套件隔离：同一工作树 `pytest tests/architecture -q` → `1 failed, 171 passed`；唯一失败为当前未提交 P1-004 改动使 `app/tools/service.py` 的 high-risk root 超过 60 行，失败路径不在本记录两条 owned path。该结果不计作 Group 0 Green，也不允许被本文改动掩盖；由 `EVID-G1-004/P1-004` 在其完整 Red→Green 中收口。
-- migration / deploy：纯文档导航与 architecture validator 变更；无 schema、runtime 或生产部署。
+- commit / deploy：Group 上下文包与 validator 的独立 commit=`b07de7811`；本证据同步不改 runtime/schema，无 production deploy。
+- migration / rollback：纯文档导航与 architecture validator 变更；无 schema/data migration。rollback 为回退 `b07de7811`，不涉及生产状态。
 - 七原子：Input=AA Group/leaf；Authority=L0/L1 + Group docs；Execution=Red→实现→验收；Evidence=Context Read Receipt + EVID；Recovery=稳定章节/跨仓 snapshot/delta；Consumption=11 个 Group runbook；Acceptance=11/11 marker 和 validator Green。
 - 残余风险：文档路由只能防止漏读和证据失联，不能证明业务 leaf 已实现；各 Group 仍必须用当前源码与真实运行重验。后续任何新增/删除/拆分 leaf 或规范文档必须同时更新对应上下文包和本机门。
 

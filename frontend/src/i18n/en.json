@@ -858,8 +858,6 @@
       "workspaceTooltip": "Private file storage for this employee",
       "workflows": "Workflows",
       "workflowsTooltip": "Automation flows this employee has built — review past runs and promote proven ones into templates",
-      "office": "Office",
-      "officeTooltip": "WYSIWYG editing for DOCX, XLSX, and PPTX files",
       "chat": "Chat",
       "activityLog": "Activity Log",
       "activityLogTooltip": "Complete history of actions, messages, and system events",
@@ -1712,18 +1710,6 @@
       "gitline": {
         "rewoundTail": "rewound — head moved before this point"
       }
-    },
-    "office": {
-      "title": "Office",
-      "subtitle": "DOCX, XLSX, and PPTX editing for this workspace",
-      "pathLabel": "Document path",
-      "open": "Open",
-      "create": "Create",
-      "save": "Save",
-      "disabledTitle": "ONLYOFFICE is not configured",
-      "documentMissingTitle": "Office document not found",
-      "documentMissingMessage": "Create it first, then open it again.",
-      "emptyState": "Open or create an Office document to start editing."
     },
     "activityLog": {
       "title": "Activity Log",

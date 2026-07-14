@@ -16,7 +16,10 @@ from app.core.security import get_current_user
 from app.database import get_db, pin_rls_tenant_context
 from app.models.chat_artifact import ChatArtifact
 from app.models.user import User
-from app.services.chat_artifact_delivery import read_chat_artifact_snapshot_content
+from app.services.chat_artifact_delivery import (
+    read_chat_artifact_snapshot_content,
+    resolve_chat_artifact_file,
+)
 from app.services.file_download_tokens import (
     InvalidChannelFileDownloadToken,
     NotChannelFileDownloadToken,
@@ -584,17 +587,14 @@ async def download_artifact(
         manager_override_reason=operator_reason,
         agent_access=agent_access,
     )
-    snapshot = artifact.snapshot_json or {}
-    storage_rel = str(snapshot.get("snapshot_storage_path") or "").strip()
-    target: Path | None = None
-    if storage_rel:
-        candidate = _safe_agent_relative_path(agent_id, storage_rel)
-        if candidate.exists() and candidate.is_file():
-            target = candidate
+    target, artifact_source = resolve_chat_artifact_file(artifact, _agent_base_dir(agent_id))
     if target is None:
-        target = _safe_path(agent_id, artifact.path)
-    if not target.exists() or not target.is_file():
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact file not found")
+        detail = (
+            "Artifact delivery snapshot is no longer available"
+            if artifact_source == "missing_delivery_snapshot"
+            else "Artifact file not found"
+        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
     return FileResponse(path=str(target), filename=artifact.name or target.name)
 
 

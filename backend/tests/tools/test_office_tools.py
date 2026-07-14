@@ -62,30 +62,15 @@ async def test_office_document_create_tool_creates_docx(tmp_path):
     assert (tmp_path / "workspace" / "demo.docx").is_file()
 
 
-@pytest.mark.asyncio
-async def test_office_document_apply_tool_rejects_active_editor_session(tmp_path):
-    from app.services.office_document_service import OfficeDocumentService
-    from app.tools.handlers.office import office_document_apply
+def test_office_document_apply_tool_has_no_retired_editor_session_bypass():
+    from app.tools.collector import collect_tools
 
-    target = tmp_path / "workspace" / "demo.docx"
-    target.parent.mkdir(parents=True)
-    target.write_bytes(b"old-version")
-    OfficeDocumentService(tmp_path).set_active_editor_session(
-        "workspace/demo.docx",
-        session_id="session-1",
-        user_id="user-1",
+    collected = collect_tools()
+    definition = next(
+        tool["function"]
+        for tool in collected.openai_tools
+        if tool["function"]["name"] == "office_document_apply"
     )
 
-    result = json.loads(
-        await office_document_apply(
-            tmp_path,
-            {
-                "path": "workspace/demo.docx",
-                "operations": [{"op": "replace_text", "from": "old", "to": "new"}],
-            },
-        )
-    )
-
-    assert result["ok"] is False
-    assert result["error"] == "active_editor_session"
-    assert target.read_bytes() == b"old-version"
+    assert "require_no_active_editor" not in definition["parameters"]["properties"]
+    assert "editor session" not in definition["description"].lower()

@@ -241,3 +241,55 @@ async def test_artifact_download_query_jwt_pins_token_tenant_before_user_lookup(
     assert response.path == str(target)
     assert response.filename == "artifact.md"
     assert db.pinned_tenants == [tenant_id]
+
+
+@pytest.mark.asyncio
+async def test_artifact_download_does_not_fall_back_when_declared_snapshot_is_missing(tmp_path, monkeypatch) -> None:
+    import app.api.files as files_api
+
+    settings = _settings(tmp_path)
+    monkeypatch.setattr(files_api, "settings", settings)
+
+    agent_id = uuid4()
+    artifact_id = uuid4()
+    current = tmp_path / str(agent_id) / "workspace" / "artifact.md"
+    current.parent.mkdir(parents=True)
+    current.write_text("new current content", encoding="utf-8")
+    user = SimpleNamespace(id=uuid4(), is_active=True, tenant_id=uuid4(), role="member")
+
+    async def fake_load_user(**_kwargs):
+        return user
+
+    async def fake_check_agent_access(*_args):
+        return SimpleNamespace(id=agent_id, tenant_id=user.tenant_id), "manage"
+
+    async def fake_load_artifact_or_404(**_kwargs):
+        return SimpleNamespace(
+            id=artifact_id,
+            agent_id=agent_id,
+            path="workspace/artifact.md",
+            name="artifact.md",
+            snapshot_json={
+                "snapshot_storage_path": "runtime_artifacts/chat_artifact_snapshots/missing/artifact.md",
+            },
+        )
+
+    async def fake_authorize_resource_action(*_args, **_kwargs):
+        return SimpleNamespace(authority_source="resource_owner", operator_view=False)
+
+    monkeypatch.setattr(files_api, "_load_download_user_from_jwt", fake_load_user)
+    monkeypatch.setattr(files_api, "check_agent_access", fake_check_agent_access)
+    monkeypatch.setattr(files_api, "_load_chat_artifact_or_404", fake_load_artifact_or_404)
+    monkeypatch.setattr(files_api, "authorize_resource_action", fake_authorize_resource_action)
+
+    with pytest.raises(HTTPException) as exc:
+        await files_api.download_artifact(
+            agent_id=agent_id,
+            artifact_id=artifact_id,
+            token="browser-query-jwt",
+            credentials=None,
+            db=object(),
+        )
+
+    assert exc.value.status_code == 404
+    assert exc.value.detail == "Artifact delivery snapshot is no longer available"

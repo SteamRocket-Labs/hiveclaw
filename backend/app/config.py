@@ -129,12 +129,7 @@ class Settings(BaseSettings):
     OFFICECLI_BIN: str = "officecli"
     OFFICECLI_SHA256: str = ""
     OFFICECLI_TIMEOUT_SECONDS: int = 45
-
-    # ONLYOFFICE DocumentServer
-    ONLYOFFICE_DOCS_URL: str = ""
-    ONLYOFFICE_INTERNAL_DOCS_URL: str = ""
-    ONLYOFFICE_JWT_SECRET: str = ""
-    ONLYOFFICE_DOWNLOAD_TOKEN_EXPIRE_SECONDS: int = 300
+    OFFICECLI_PREVIEW_MAX_BYTES: int = 25 * 1024 * 1024
 
     # Feishu OAuth
     FEISHU_APP_ID: str = ""

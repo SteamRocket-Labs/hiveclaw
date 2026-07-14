@@ -858,8 +858,6 @@
       "workspaceTooltip": "此员工的私有文件存储",
       "workflows": "工作流",
       "workflowsTooltip": "这位员工沉淀的自动化流程——查看运行记录,把验证过的流程固化为模板",
-      "office": "Office",
-      "officeTooltip": "DOCX、XLSX、PPTX 文件的所见即所得编辑",
       "chat": "聊天",
       "activityLog": "工作日志",
       "activityLogTooltip": "完整的操作、消息和系统事件记录",
@@ -1712,18 +1710,6 @@
       "gitline": {
         "rewoundTail": "已回退 — 当前头在此点之前"
       }
-    },
-    "office": {
-      "title": "Office",
-      "subtitle": "此工作区的 DOCX、XLSX、PPTX 在线编辑",
-      "pathLabel": "文档路径",
-      "open": "打开",
-      "create": "创建",
-      "save": "保存",
-      "disabledTitle": "ONLYOFFICE 未配置",
-      "documentMissingTitle": "找不到 Office 文档",
-      "documentMissingMessage": "请先创建文档，然后再次打开。",
-      "emptyState": "打开或创建 Office 文档后开始编辑。"
     },
     "activityLog": {
       "title": "工作日志",

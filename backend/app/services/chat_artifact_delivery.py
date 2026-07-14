@@ -5,10 +5,11 @@ from __future__ import annotations
 import hashlib
 import json
 import mimetypes
+import shutil
 import uuid
 from datetime import datetime, timezone, timedelta
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Literal
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -385,20 +386,54 @@ async def cleanup_chat_artifact_snapshots_for_agent(
     retention_days: float = DEFAULT_CHAT_ARTIFACT_SNAPSHOT_RETENTION_DAYS,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    result = await db.execute(select(ChatArtifact.snapshot_json).where(ChatArtifact.agent_id == agent_id))
-    snapshot_payloads = result.scalars().all()
+    result = await db.execute(
+        select(ChatArtifact.id, ChatArtifact.snapshot_json).where(ChatArtifact.agent_id == agent_id)
+    )
+    artifact_rows = result.all()
+    live_artifact_ids = {str(artifact_id) for artifact_id, _snapshot in artifact_rows}
     referenced_paths: list[str] = []
-    for snapshot in snapshot_payloads:
+    for _artifact_id, snapshot in artifact_rows:
         if isinstance(snapshot, dict):
             storage_path = str(snapshot.get("snapshot_storage_path") or "").strip()
             if storage_path:
                 referenced_paths.append(storage_path)
-    return cleanup_chat_artifact_snapshots(
+    report = cleanup_chat_artifact_snapshots(
         workspace_root=workspace_root,
         referenced_snapshot_paths=referenced_paths,
         retention_days=retention_days,
         now=now,
     )
+    report["office_preview_cache_removed_count"] = _cleanup_orphaned_office_preview_caches(
+        workspace_root=workspace_root,
+        live_artifact_ids=live_artifact_ids,
+    )
+    _write_snapshot_gc_report(Path(workspace_root).resolve(), report)
+    return report
+
+
+def _cleanup_orphaned_office_preview_caches(
+    *,
+    workspace_root: Path,
+    live_artifact_ids: set[str],
+) -> int:
+    """Remove derived Office preview caches whose ChatArtifact no longer exists."""
+    cache_root = Path(workspace_root).resolve() / ".office_meta" / "artifacts"
+    if not cache_root.is_dir():
+        return 0
+
+    removed_count = 0
+    for artifact_cache in cache_root.iterdir():
+        if artifact_cache.is_symlink() or not artifact_cache.is_dir():
+            continue
+        try:
+            uuid.UUID(artifact_cache.name)
+        except ValueError:
+            continue
+        if artifact_cache.name in live_artifact_ids:
+            continue
+        shutil.rmtree(artifact_cache)
+        removed_count += 1
+    return removed_count
 
 
 def _write_content_snapshot(
@@ -460,40 +495,62 @@ def _workspace_changed(artifact: ChatArtifact, workspace_root: Path) -> bool | N
     return current_hash != getattr(artifact, "snapshot_hash", None)
 
 
+ArtifactFileSource = Literal[
+    "delivery_snapshot",
+    "legacy_current_file_fallback",
+    "missing_delivery_snapshot",
+    "missing_legacy_current_file",
+]
+
+
+def resolve_chat_artifact_file(
+    artifact: ChatArtifact,
+    workspace_root: Path,
+) -> tuple[Path | None, ArtifactFileSource]:
+    """Resolve artifact bytes without substituting current data for a declared snapshot."""
+
+    root = Path(workspace_root).resolve()
+    snapshot = artifact.snapshot_json if isinstance(artifact.snapshot_json, dict) else {}
+    storage_rel = str(snapshot.get("snapshot_storage_path") or "").replace("\\", "/").strip()
+    if storage_rel:
+        rel = PurePosixPath(storage_rel)
+        if not rel.is_absolute() and not any(part in {"", ".", ".."} for part in rel.parts):
+            snapshot_path = (root / rel.as_posix()).resolve()
+            try:
+                snapshot_path.relative_to(root)
+            except ValueError:
+                pass
+            else:
+                if snapshot_path.is_file():
+                    return snapshot_path, "delivery_snapshot"
+        return None, "missing_delivery_snapshot"
+
+    current_rel = _safe_workspace_relative_path(str(getattr(artifact, "path", "") or ""))
+    if current_rel is not None:
+        current = (root / current_rel.as_posix()).resolve()
+        try:
+            current.relative_to(root)
+        except ValueError:
+            pass
+        else:
+            if current.is_file():
+                return current, "legacy_current_file_fallback"
+    return None, "missing_legacy_current_file"
+
+
 def read_chat_artifact_snapshot_content(artifact: ChatArtifact, workspace_root: Path) -> dict[str, Any]:
     """Read the delivery-time artifact snapshot, falling back explicitly for legacy rows."""
-    snapshot = artifact.snapshot_json or {}
-    storage_rel = str(snapshot.get("snapshot_storage_path") or "").strip()
-    workspace_root = workspace_root.resolve()
-    if storage_rel:
-        snapshot_path = (workspace_root / storage_rel).resolve()
-        try:
-            snapshot_path.relative_to(workspace_root)
-        except ValueError:
-            snapshot_path = workspace_root / "__invalid_snapshot_path__"
-        if snapshot_path.exists() and snapshot_path.is_file():
-            return {
-                "path": artifact.path,
-                "content": _read_text_or_binary_marker(snapshot_path),
-                "uses_snapshot": True,
-                "legacy_current_file_fallback": False,
-                "workspace_changed": _workspace_changed(artifact, workspace_root),
-                "snapshot_hash": artifact.snapshot_hash,
-                "content_hash": snapshot.get("content_hash"),
-            }
-
-    current = (workspace_root / str(artifact.path or "")).resolve()
-    try:
-        current.relative_to(workspace_root)
-    except ValueError:
-        current = workspace_root / "__invalid_current_path__"
-    if current.exists() and current.is_file():
+    root = Path(workspace_root).resolve()
+    snapshot = artifact.snapshot_json if isinstance(artifact.snapshot_json, dict) else {}
+    target, source = resolve_chat_artifact_file(artifact, root)
+    if target is not None:
+        uses_snapshot = source == "delivery_snapshot"
         return {
             "path": artifact.path,
-            "content": _read_text_or_binary_marker(current),
-            "uses_snapshot": False,
-            "legacy_current_file_fallback": True,
-            "workspace_changed": None,
+            "content": _read_text_or_binary_marker(target),
+            "uses_snapshot": uses_snapshot,
+            "legacy_current_file_fallback": source == "legacy_current_file_fallback",
+            "workspace_changed": _workspace_changed(artifact, root) if uses_snapshot else None,
             "snapshot_hash": artifact.snapshot_hash,
             "content_hash": snapshot.get("content_hash"),
         }
@@ -501,7 +558,7 @@ def read_chat_artifact_snapshot_content(artifact: ChatArtifact, workspace_root: 
         "path": artifact.path,
         "content": "",
         "uses_snapshot": False,
-        "legacy_current_file_fallback": True,
+        "legacy_current_file_fallback": source == "missing_legacy_current_file",
         "workspace_changed": None,
         "snapshot_hash": artifact.snapshot_hash,
         "content_hash": snapshot.get("content_hash"),

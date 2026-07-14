@@ -332,35 +332,21 @@ async def test_chat_history_filters_foreign_sessions_before_loading_messages(mon
     assert all(call["resource_kind"] == "chat_session" for call in filter_calls)
 
 
-def test_office_capability_token_binds_requester_identity(monkeypatch):
+def test_office_router_exposes_preview_without_legacy_capability_token_routes():
     import app.api.office as office_api
-    from jose import jwt
 
-    user_id = uuid4()
-    monkeypatch.setattr(
-        office_api,
-        "settings",
-        SimpleNamespace(
-            ONLYOFFICE_JWT_SECRET="office-secret",
-            JWT_SECRET_KEY="fallback-secret",
-            ONLYOFFICE_DOWNLOAD_TOKEN_EXPIRE_SECONDS=300,
-        ),
-    )
+    route_paths = {route.path for route in office_api.router.routes}
 
-    token = office_api.make_document_token(
-        agent_id=uuid4(),
-        path="workspace/report.docx",
-        purpose="callback",
-        user_id=user_id,
-    )
-    payload = jwt.decode(token, "office-secret", algorithms=["HS256"])
-
-    assert payload["uid"] == str(user_id)
-    assert payload["authority_action"] == "write"
+    assert "/agents/{agent_id}/office/preview" in route_paths
+    assert "/agents/{agent_id}/office/artifacts/{artifact_id}/preview" in route_paths
+    assert "/agents/{agent_id}/office/editor-config" not in route_paths
+    assert "/agents/{agent_id}/office/callback" not in route_paths
+    assert "/agents/{agent_id}/office/force-save" not in route_paths
+    assert "/agents/{agent_id}/office/download" not in route_paths
 
 
 @pytest.mark.asyncio
-async def test_office_editor_config_authorizes_resource_before_issuing_tokens(monkeypatch, tmp_path):
+async def test_office_preview_authorizes_resource_before_rendering(monkeypatch, tmp_path):
     import app.api.office as office_api
     from app.services.workspace_resource_authority import WorkspaceAuthorityError
 
@@ -373,15 +359,7 @@ async def test_office_editor_config_authorizes_resource_before_issuing_tokens(mo
     monkeypatch.setattr(
         office_api,
         "settings",
-        SimpleNamespace(
-            AGENT_DATA_DIR=str(tmp_path),
-            BASE_URL="https://hive.example.test",
-            PUBLIC_BASE_URL="https://hive.example.test",
-            ONLYOFFICE_DOCS_URL="https://docs.example.test",
-            ONLYOFFICE_JWT_SECRET="office-secret",
-            ONLYOFFICE_DOWNLOAD_TOKEN_EXPIRE_SECONDS=300,
-            JWT_SECRET_KEY="fallback-secret",
-        ),
+        SimpleNamespace(AGENT_DATA_DIR=str(tmp_path), OFFICECLI_PREVIEW_MAX_BYTES=1024 * 1024),
     )
 
     async def fake_access(*_args):
@@ -394,10 +372,11 @@ async def test_office_editor_config_authorizes_resource_before_issuing_tokens(mo
     monkeypatch.setattr(office_api, "authorize_workspace_path", fake_authorize, raising=False)
 
     with pytest.raises(Exception) as exc_info:
-        await office_api.get_editor_config(
+        await office_api.preview_office_document(
             agent_id=agent_id,
             path="workspace/foreign.docx",
-            mode="edit",
+            operator_view=False,
+            operator_reason=None,
             current_user=user,
             db=SimpleNamespace(),
         )

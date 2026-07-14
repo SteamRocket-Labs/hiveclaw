@@ -26,6 +26,20 @@ ALLOWED_OFFICECLI_COMMANDS: frozenset[str] = frozenset(
     }
 )
 
+ALLOWED_OFFICECLI_VIEW_MODES: frozenset[str] = frozenset(
+    {
+        "text",
+        "annotated",
+        "outline",
+        "stats",
+        "issues",
+        "html",
+        "svg",
+        "screenshot",
+        "forms",
+    }
+)
+
 
 class OfficeCLIError(RuntimeError):
     """Base class for OfficeCLI adapter failures."""
@@ -60,6 +74,15 @@ class OfficeCLIExecutionError(OfficeCLIError):
         super().__init__(message)
 
 
+class OfficeCLITimeoutError(OfficeCLIError):
+    """Raised when OfficeCLI exceeds the configured execution deadline."""
+
+    def __init__(self, *, command: str, timeout_seconds: int) -> None:
+        self.command = command
+        self.timeout_seconds = timeout_seconds
+        super().__init__(f"OfficeCLI command {command!r} timed out after {timeout_seconds} seconds")
+
+
 Runner = Callable[..., subprocess.CompletedProcess[str]]
 
 
@@ -83,6 +106,7 @@ class OfficeCLIAdapter:
         self.binary_sha256 = binary_sha256 if binary_sha256 is not None else getattr(settings, "OFFICECLI_SHA256", "")
         self.runner = runner or subprocess.run
         self.timeout_seconds = timeout_seconds or int(getattr(settings, "OFFICECLI_TIMEOUT_SECONDS", 45))
+        self._version: str | None = None
 
     def run(
         self,
@@ -96,22 +120,85 @@ class OfficeCLIAdapter:
         if command not in ALLOWED_OFFICECLI_COMMANDS:
             raise OfficeCLICommandError(f"OfficeCLI command {command!r} is not allowed")
 
+        normalized_options = dict(options or {})
+        if command == "view":
+            mode = str(normalized_options.pop("mode", "outline") or "outline")
+            page = normalized_options.pop("page", None)
+            return self.run_view(
+                path,
+                mode=mode,
+                page=page,
+                options=normalized_options,
+                cwd=cwd,
+            )
+
         self._verify_binary_sha256()
 
         args = [self.binary, command, str(path), "--json"]
-        args.extend(self._option_args(options or {}))
-        env = os.environ.copy()
-        env["OFFICECLI_SKIP_UPDATE"] = "1"
+        args.extend(self._option_args(normalized_options))
+        return self._run_json(command, args, cwd=cwd)
 
-        completed = self.runner(
-            args,
-            cwd=Path(cwd) if cwd is not None else None,
-            env=env,
-            timeout=self.timeout_seconds,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+    def run_view(
+        self,
+        path: str | Path,
+        *,
+        mode: str,
+        page: int | None = None,
+        options: dict[str, Any] | None = None,
+        cwd: str | Path | None = None,
+    ) -> dict[str, Any]:
+        """Run the real OfficeCLI positional view contract.
+
+        OfficeCLI 1.0.88 accepts ``view <file> <mode> [options]``. Keeping this
+        shape explicit prevents a generic flag serializer from regressing it to
+        the invalid ``--mode`` form.
+        """
+
+        normalized_mode = (mode or "").strip().lower()
+        if normalized_mode not in ALLOWED_OFFICECLI_VIEW_MODES:
+            raise OfficeCLICommandError(f"OfficeCLI view mode {normalized_mode!r} is not allowed")
+
+        normalized_options = dict(options or {})
+        reserved_options = {"command", "path", "file", "mode", "page", "json"}
+        conflicting_options = reserved_options.intersection(normalized_options)
+        if conflicting_options:
+            names = ", ".join(sorted(conflicting_options))
+            raise OfficeCLICommandError(f"OfficeCLI view options cannot override reserved fields: {names}")
+
+        self._verify_binary_sha256()
+        if page is not None:
+            normalized_options["page"] = page
+        args = [self.binary, "view", str(path), normalized_mode, "--json"]
+        args.extend(self._option_args(normalized_options))
+        return self._run_json("view", args, cwd=cwd)
+
+    def version(self) -> str:
+        """Return a stable renderer version for preview cache evidence."""
+
+        if self._version is not None:
+            return self._version
+        self._verify_binary_sha256()
+        completed = self._run_process([self.binary, "--version"], command="version", cwd=None)
+        if completed.returncode != 0:
+            raise OfficeCLIExecutionError(
+                command="version",
+                returncode=completed.returncode,
+                stderr=completed.stderr or "",
+            )
+        version = (completed.stdout or "").strip().splitlines()
+        if not version:
+            raise OfficeCLIOutputError("OfficeCLI version returned empty output")
+        self._version = version[0][:256]
+        return self._version
+
+    def _run_json(
+        self,
+        command: str,
+        args: list[str],
+        *,
+        cwd: str | Path | None,
+    ) -> dict[str, Any]:
+        completed = self._run_process(args, command=command, cwd=cwd)
         stdout = completed.stdout or ""
         stderr = completed.stderr or ""
         payload = self._parse_json(stdout, allow_empty=completed.returncode != 0)
@@ -126,6 +213,46 @@ class OfficeCLIAdapter:
         if payload is None:
             raise OfficeCLIOutputError(f"OfficeCLI command {command!r} returned no JSON output")
         return payload
+
+    def _run_process(
+        self,
+        args: list[str],
+        *,
+        command: str,
+        cwd: str | Path | None,
+    ) -> subprocess.CompletedProcess[str]:
+        env = os.environ.copy()
+        env["OFFICECLI_SKIP_UPDATE"] = "1"
+        try:
+            return self.runner(
+                args,
+                cwd=Path(cwd) if cwd is not None else None,
+                env=env,
+                timeout=self.timeout_seconds,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise OfficeCLITimeoutError(command=command, timeout_seconds=self.timeout_seconds) from exc
+        except FileNotFoundError as exc:
+            raise OfficeCLIExecutionError(
+                command=command,
+                returncode=127,
+                stderr="OfficeCLI binary is unavailable",
+            ) from exc
+        except PermissionError as exc:
+            raise OfficeCLIExecutionError(
+                command=command,
+                returncode=126,
+                stderr="OfficeCLI binary is not executable",
+            ) from exc
+        except OSError as exc:
+            raise OfficeCLIExecutionError(
+                command=command,
+                returncode=126,
+                stderr=f"OfficeCLI process could not start ({type(exc).__name__})",
+            ) from exc
 
     def _verify_binary_sha256(self) -> None:
         expected = (self.binary_sha256 or "").strip().lower()

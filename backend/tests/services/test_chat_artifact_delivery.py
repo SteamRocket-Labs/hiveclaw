@@ -95,6 +95,36 @@ def test_artifact_open_returns_delivery_snapshot_after_workspace_overwrite(tmp_p
     assert content["workspace_changed"] is True
 
 
+def test_artifact_with_declared_missing_snapshot_never_falls_back_to_current_workspace(tmp_path):
+    from app.models.chat_artifact import ChatArtifact
+    from app.services.chat_artifact_delivery import read_chat_artifact_snapshot_content
+
+    workspace = tmp_path / "agent"
+    current = workspace / "workspace" / "report.md"
+    current.parent.mkdir(parents=True)
+    current.write_text("new current content\n", encoding="utf-8")
+    artifact = ChatArtifact(
+        id=uuid4(),
+        tenant_id=None,
+        agent_id=uuid4(),
+        session_id=uuid4(),
+        message_id=uuid4(),
+        path="workspace/report.md",
+        name="report.md",
+        snapshot_hash="declared-snapshot",
+        snapshot_json={
+            "snapshot_storage_path": "runtime_artifacts/chat_artifact_snapshots/missing/report.md",
+        },
+    )
+
+    content = read_chat_artifact_snapshot_content(artifact, workspace)
+
+    assert content["missing"] is True
+    assert content["uses_snapshot"] is False
+    assert content["legacy_current_file_fallback"] is False
+    assert content["content"] == ""
+
+
 def test_chat_artifact_snapshot_cleanup_deletes_only_unreferenced_expired_files(tmp_path):
     from app.services.chat_artifact_delivery import (
         CHAT_ARTIFACT_SNAPSHOT_DIR,
@@ -134,6 +164,41 @@ def test_chat_artifact_snapshot_cleanup_deletes_only_unreferenced_expired_files(
     assert gc_report["schema"] == "chat_artifact_snapshot_gc.v1"
     assert gc_report["removed_count"] == 1
     assert gc_report["retention_days"] == 30.0
+
+
+@pytest.mark.asyncio
+async def test_chat_artifact_snapshot_cleanup_prunes_only_orphaned_office_preview_caches(tmp_path):
+    from app.services.chat_artifact_delivery import cleanup_chat_artifact_snapshots_for_agent
+
+    agent_id = uuid4()
+    live_artifact_id = uuid4()
+    orphan_artifact_id = uuid4()
+    workspace = tmp_path / "agent"
+    live_cache = workspace / ".office_meta" / "artifacts" / str(live_artifact_id) / "preview"
+    orphan_cache = workspace / ".office_meta" / "artifacts" / str(orphan_artifact_id) / "preview"
+    for cache in (live_cache, orphan_cache):
+        cache.mkdir(parents=True)
+        (cache / "current.html").write_text("preview", encoding="utf-8")
+
+    class _Result:
+        def all(self):
+            return [(live_artifact_id, {})]
+
+    class _DB:
+        async def execute(self, _statement):
+            return _Result()
+
+    report = await cleanup_chat_artifact_snapshots_for_agent(
+        db=_DB(),
+        agent_id=agent_id,
+        workspace_root=workspace,
+        retention_days=30,
+        now=datetime(2026, 2, 15, tzinfo=timezone.utc),
+    )
+
+    assert live_cache.exists()
+    assert not orphan_cache.exists()
+    assert report["office_preview_cache_removed_count"] == 1
 
 
 def test_execute_heartbeat_wires_chat_artifact_snapshot_retention():

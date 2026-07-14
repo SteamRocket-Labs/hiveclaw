@@ -74,7 +74,6 @@ import {
   submitWorkflowPromotionProposal,
 } from '../../api/domains/workflows';
 import { showAppToast } from '../../components/AppDialogs';
-import { saveBlob } from '../../utils/authenticatedResource';
 import { composerShortcutText } from './sessionComposerShortcuts';
 import type { ToolCallMeta, WorkflowPreviewToolMeta } from './toolResultEnvelope';
 import {
@@ -100,8 +99,10 @@ import {
   ArtifactCards,
   ArtifactPreviewPanel,
   artifactWorkspaceAgentId,
+  downloadChatArtifact,
   getArtifactOpenMode,
   getEffectiveArtifactPreviewKind,
+  loadOfficeArtifactPreview,
   type ArtifactPreviewState,
 } from './ArtifactSurface';
 import {
@@ -1311,6 +1312,10 @@ function AgentChatSection({
 	    [onRunSessionCommand, rewindUnavailableReason],
 	  );
 
+  const downloadArtifactFile = React.useCallback((artifact: ChatArtifactPart) => {
+    const artifactAgentId = artifactWorkspaceAgentId(artifact, effectiveAgentId);
+    return artifactAgentId ? downloadChatArtifact(artifact, artifactAgentId, resourceOperatorOptions, t) : Promise.resolve();
+  }, [effectiveAgentId, resourceOperatorOptions, t]);
   const openArtifact = React.useCallback(async (artifact: ChatArtifactPart) => {
     const artifactAgentId = artifactWorkspaceAgentId(artifact, effectiveAgentId);
     if (!artifactAgentId) return;
@@ -1318,17 +1323,23 @@ function AgentChatSection({
       ? fileApi.downloadArtifact(artifactAgentId, artifact.id, resourceOperatorOptions)
       : fileApi.download(artifactAgentId, artifact.path, resourceOperatorOptions);
     if (getArtifactOpenMode(artifact) === 'download') {
-      try {
-        saveBlob(await fetchArtifactBlob(), artifact.name);
-      } catch (error) {
-        showAppToast(t('agent.chat.artifacts.downloadFailed', 'Download failed: {{message}}', {
-          message: error instanceof Error ? error.message : String(error),
-        }), 'error');
-      }
+      await downloadArtifactFile(artifact);
       return;
     }
 
     const previewKind = getEffectiveArtifactPreviewKind(artifact);
+    if (previewKind === 'office') {
+      setArtifactPreview({ artifact, loading: true });
+      try {
+        setArtifactPreview(await loadOfficeArtifactPreview(artifact, artifactAgentId, resourceOperatorOptions));
+      } catch (error) {
+        setArtifactPreview({
+          artifact,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      return;
+    }
     if (previewKind === 'markdown' || previewKind === 'text' || !previewKind) {
       setArtifactPreview({ artifact, loading: true });
       try {
@@ -1370,7 +1381,7 @@ function AgentChatSection({
         error: error instanceof Error ? error.message : String(error),
       });
     }
-  }, [effectiveAgentId, resourceOperatorOptions, t]);
+  }, [downloadArtifactFile, effectiveAgentId, resourceOperatorOptions, t]);
 
   const requestSubagentRetry = React.useCallback(
     async (worker: RuntimeSectionItemModel) => {
@@ -2304,6 +2315,8 @@ function AgentChatSection({
                 <ArtifactPreviewPanel
                   preview={artifactPreview}
                   onClose={() => setArtifactPreview(null)}
+                  onRetry={() => void openArtifact(artifactPreview.artifact)}
+                  onDownload={() => void downloadArtifactFile(artifactPreview.artifact)}
                   t={t}
                 />
               )}

@@ -56,6 +56,7 @@ import {
   isSessionWorkbenchRoute,
 } from '../AgentDetail';
 import type { PlanRequest } from '../../api/domains/plans';
+import { AGENT_WORKBENCH_AREAS } from './agentDetailPolicy';
 
 describe('userFacingRuntimeStatus', () => {
   it('maps known states and never falls back to raw runtime values', () => {
@@ -2242,6 +2243,21 @@ describe('AgentDetail extracted sections', () => {
     expect(detailSource).not.toContain('AgentGovernanceSection');
   });
 
+  it('removes the retired Office Online tag and dedicated tab from Agent Detail', async () => {
+    const fsModuleId = 'node:fs';
+    const { readFileSync } = (await import(/* @vite-ignore */ fsModuleId)) as {
+      readFileSync: (path: URL, encoding: string) => string;
+    };
+    const detailSource = readFileSync(new URL('../AgentDetail.tsx', import.meta.url), 'utf8');
+    const documentsArea = AGENT_WORKBENCH_AREAS.find((area) => area.id === 'documents');
+
+    expect(Array.from(AGENT_DETAIL_TABS)).not.toContain('office');
+    expect(documentsArea?.tabs).toEqual(['workspace']);
+    expect(getAgentDetailHashTab('#office', AGENT_DETAIL_TABS)).toBeNull();
+    expect(detailSource).not.toContain('OfficeWorkbenchSection');
+    expect(detailSource).not.toContain("activeTab === 'office'");
+  });
+
   it('treats Local Agent as a real agent with a local runtime label and focused detail tabs', () => {
     expect(isLocalAgentRuntimeType({ agent_type: 'local_agent' })).toBe(true);
     expect(isLocalAgentRuntimeType({ agent_type: 'native' })).toBe(false);
@@ -3249,7 +3265,7 @@ describe('AgentDetail extracted sections', () => {
     expect(getArtifactOpenMode({ name: 'notes.txt', path: 'workspace/notes.txt', previewKind: 'text' })).toBe('inspector_preview');
     expect(getArtifactOpenMode({ name: 'chart.png', path: 'workspace/chart.png', previewKind: 'image' })).toBe('inspector_preview');
     expect(getArtifactOpenMode({ name: 'slides.pdf', path: 'workspace/slides.pdf', previewKind: 'pdf' })).toBe('inspector_preview');
-    expect(getArtifactOpenMode({ name: 'deck.pptx', path: 'workspace/deck.pptx', previewKind: 'office' })).toBe('download');
+    expect(getArtifactOpenMode({ name: 'deck.pptx', path: 'workspace/deck.pptx', previewKind: 'office' })).toBe('inspector_preview');
     expect(getArtifactOpenMode({ name: 'archive.zip', path: 'workspace/archive.zip', previewKind: 'download' })).toBe('download');
   });
 

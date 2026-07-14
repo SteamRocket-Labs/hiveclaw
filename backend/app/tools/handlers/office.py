@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import Any
 
 from app.services.office_document_service import (
-    OfficeDocumentActiveSessionError,
     OfficeDocumentError,
     OfficeDocumentService,
 )
@@ -71,8 +70,6 @@ def _json_error(error: str, message: str, **payload: Any) -> str:
 def _handle_office_error(exc: Exception) -> str:
     if isinstance(exc, WorkspaceAuthorityError):
         return _json_error(exc.code, exc.message)
-    if isinstance(exc, OfficeDocumentActiveSessionError):
-        return _json_error(exc.error_code, str(exc))
     if isinstance(exc, OfficeDocumentError):
         return _json_error(exc.error_code, str(exc))
     if isinstance(exc, OfficeCLIError):
@@ -247,10 +244,7 @@ async def office_document_query(
 @tool(
     ToolMeta(
         name="office_document_apply",
-        description=(
-            "Apply structured OfficeCLI operations to a DOCX/XLSX/PPTX. "
-            "By default this refuses to write while an ONLYOFFICE editor session is active."
-        ),
+        description="Apply structured OfficeCLI operations to a DOCX/XLSX/PPTX.",
         parameters={
             "type": "object",
             "properties": {
@@ -261,10 +255,6 @@ async def office_document_query(
                     "description": "OfficeCLI operation objects",
                 },
                 "output_path": {"type": "string", "description": "Optional workspace-relative output path"},
-                "require_no_active_editor": {
-                    "type": "boolean",
-                    "description": "Defaults to true; refuse agent writes during active human editing",
-                },
             },
             "required": ["path", "operations"],
         },
@@ -307,7 +297,6 @@ async def office_document_apply(
             str(arguments.get("path", "")),
             operations=operations,
             output_path=arguments.get("output_path"),
-            require_no_active_editor=arguments.get("require_no_active_editor", True),
         )
         return _json_ok_with_office_sources(
             tenant_id=tenant_id,

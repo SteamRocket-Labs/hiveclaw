@@ -25,7 +25,6 @@ describe('UX-04 orchestration and composition boundaries', () => {
       'AgentEvolutionSection',
       'AgentExtensionsSection',
       'AgentKnowledgeSection',
-      'OfficeWorkbenchSection',
       'AgentSettingsSection',
       'AgentWorkspaceSection',
       'AgentA2ASection',
@@ -34,6 +33,7 @@ describe('UX-04 orchestration and composition boundaries', () => {
     ]) {
       expect(source, section).toContain(`const ${section} = lazy(() => import(`);
     }
+    expect(source).not.toContain('OfficeWorkbenchSection');
     expect(source).toContain('<Suspense fallback={<AgentDetailSectionFallback />}');
     expect(source).not.toContain("from '../components/FileBrowser'");
     expect(source).not.toContain('buildNewSkillFilePath');

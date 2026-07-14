@@ -1,8 +1,7 @@
-import { get, post } from '../core';
+import { getBlob, post } from '../core';
+import type { ResourceAuthorityOptions } from './files';
 
 export type OfficeKind = 'docx' | 'xlsx' | 'pptx';
-export type OfficeEditorMode = 'edit' | 'view';
-
 export interface OfficeDocumentCreateInput {
   path: string;
   kind: OfficeKind;
@@ -16,37 +15,28 @@ export interface OfficeDocumentCreateResponse {
   size: number;
 }
 
-export interface OfficeForceSaveResponse {
-  status: 'ok';
-  result: {
-    error: number;
-    key?: string;
-  };
+function authorityParams(authority?: ResourceAuthorityOptions): URLSearchParams {
+  const params = new URLSearchParams();
+  if (authority?.operatorView) {
+    params.set('operator_view', 'true');
+    params.set('operator_reason', authority.reason || 'Agent workspace administration');
+  }
+  return params;
 }
-
-export interface OnlyOfficeEnabledConfig {
-  enabled: true;
-  documentServerUrl: string;
-  config: Record<string, unknown>;
-}
-
-export interface OnlyOfficeDisabledConfig {
-  enabled: false;
-  reason: string;
-  required_env?: string[];
-}
-
-export type OfficeEditorConfig = OnlyOfficeEnabledConfig | OnlyOfficeDisabledConfig;
 
 export const officeApi = {
   createDocument: (agentId: string, data: OfficeDocumentCreateInput) =>
     post<OfficeDocumentCreateResponse>(`/agents/${agentId}/office/documents`, data),
 
-  getEditorConfig: (agentId: string, path: string, mode: OfficeEditorMode = 'edit') =>
-    get<OfficeEditorConfig>(
-      `/agents/${agentId}/office/editor-config?path=${encodeURIComponent(path)}&mode=${encodeURIComponent(mode)}`,
-    ),
+  getWorkspacePreview: (agentId: string, path: string, authority?: ResourceAuthorityOptions) => {
+    const params = authorityParams(authority);
+    params.set('path', path);
+    return getBlob(`/agents/${agentId}/office/preview?${params.toString()}`);
+  },
 
-  forceSave: (agentId: string, path: string) =>
-    post<OfficeForceSaveResponse>(`/agents/${agentId}/office/force-save`, { path }),
+  getArtifactPreview: (agentId: string, artifactId: string, authority?: ResourceAuthorityOptions) => {
+    const params = authorityParams(authority);
+    const query = params.size ? `?${params.toString()}` : '';
+    return getBlob(`/agents/${agentId}/office/artifacts/${encodeURIComponent(artifactId)}/preview${query}`);
+  },
 };

@@ -118,7 +118,6 @@ const AgentEvolutionSection = lazy(() => import('./agent-detail/AgentEvolutionSe
 const AgentExtensionsSection = lazy(() => import('./agent-detail/AgentExtensionsSection'));
 const AgentKnowledgeSection = lazy(() => import('./agent-detail/AgentKnowledgeSection'));
 const AgentBusinessTasksSection = lazy(() => import('./agent-detail/AgentBusinessTasksSection'));
-const OfficeWorkbenchSection = lazy(() => import('./agent-detail/OfficeWorkbenchSection'));
 const AgentSettingsSection = lazy(() => import('./agent-detail/AgentSettingsSection'));
 const AgentWorkspaceSection = lazy(() => import('./agent-detail/AgentWorkspaceSection'));
 const AgentA2ASection = lazy(() => import('./agent-detail/AgentA2ASection'));
@@ -2548,10 +2547,6 @@ function AgentDetailInner() {
                             <AgentWorkspaceSection agentId={id!} canUseOperatorView={canManage} />
                         )
                     )
-                }
-
-                {
-                    activeTab === 'office' && <OfficeWorkbenchSection agentId={id!} />
                 }
 
                 {

@@ -2,7 +2,8 @@ import { useTranslation } from 'react-i18next';
 import { IconDownload, IconExternalLink, IconFileText, IconX } from '@tabler/icons-react';
 
 import MarkdownRenderer from '../../components/MarkdownRenderer';
-import { fileApi } from '../../api/domains/files';
+import { fileApi, type ResourceAuthorityOptions } from '../../api/domains/files';
+import { officeApi } from '../../api/domains/office';
 import { saveBlob } from '../../utils/authenticatedResource';
 import { showAppToast } from '../../components/AppDialogs';
 import type { ChatArtifactPart } from './chatRuntime';
@@ -41,12 +42,13 @@ export function getEffectiveArtifactPreviewKind(artifact: Pick<ChatArtifactPart,
   if (['txt', 'csv', 'json', 'jsonl', 'log', 'xml', 'yaml', 'yml'].includes(suffix)) return 'text';
   if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'].includes(suffix)) return 'image';
   if (suffix === 'pdf') return 'pdf';
+  if (['docx', 'xlsx', 'pptx'].includes(suffix)) return 'office';
   return 'download';
 }
 
 export function getArtifactOpenMode(artifact: Pick<ChatArtifactPart, 'name' | 'path' | 'previewKind'>): ArtifactOpenMode {
   const previewKind = getEffectiveArtifactPreviewKind(artifact);
-  if (previewKind && ['markdown', 'text', 'image', 'pdf'].includes(previewKind)) {
+  if (previewKind && ['markdown', 'text', 'image', 'pdf', 'office'].includes(previewKind)) {
     return 'inspector_preview';
   }
   return 'download';
@@ -85,6 +87,40 @@ export function artifactWorkspaceAgentId(
   return artifact.downloadAgentId || artifact.ownerAgentId || artifact.sourceAgentId || fallbackAgentId || null;
 }
 
+export async function loadOfficeArtifactPreview(
+  artifact: ChatArtifactPart,
+  artifactAgentId: string,
+  authority?: ResourceAuthorityOptions,
+): Promise<ArtifactPreviewState> {
+  const blob = artifact.id
+    ? await officeApi.getArtifactPreview(artifactAgentId, artifact.id, authority)
+    : await officeApi.getWorkspacePreview(artifactAgentId, artifact.path, authority);
+  return {
+    artifact,
+    url: URL.createObjectURL(blob),
+    usingSnapshot: Boolean(artifact.id && artifact.snapshotHash),
+    legacyCurrentFileFallback: Boolean(artifact.id && !artifact.snapshotHash),
+  };
+}
+
+export async function downloadChatArtifact(
+  artifact: ChatArtifactPart,
+  artifactAgentId: string,
+  authority: ResourceAuthorityOptions | undefined,
+  t: Translate,
+): Promise<void> {
+  try {
+    const blob = artifact.id
+      ? await fileApi.downloadArtifact(artifactAgentId, artifact.id, authority)
+      : await fileApi.download(artifactAgentId, artifact.path, authority);
+    saveBlob(blob, artifact.name);
+  } catch (error) {
+    showAppToast(t('agent.chat.artifacts.downloadFailed', 'Download failed: {{message}}', {
+      message: error instanceof Error ? error.message : String(error),
+    }), 'error');
+  }
+}
+
 export function shortArtifactAgentId(value: unknown): string {
   const text = stringValue(value).trim();
   if (!text) return '';
@@ -116,10 +152,14 @@ export function artifactContributorLabel(artifact: ChatArtifactPart, fallbackAge
 export function ArtifactPreviewPanel({
   preview,
   onClose,
+  onRetry,
+  onDownload,
   t,
 }: {
   preview: ArtifactPreviewState;
   onClose: () => void;
+  onRetry?: () => void;
+  onDownload?: () => void;
   t: Translate;
 }) {
   const previewKind = getEffectiveArtifactPreviewKind(preview.artifact);
@@ -193,7 +233,7 @@ export function ArtifactPreviewPanel({
               {preview.workspaceChanged ? ` · ${t('agent.chat.artifacts.workspaceChanged', 'Workspace file changed after delivery')}` : ''}
             </div>
           </div>
-          {preview.url && (
+          {preview.url && previewKind !== 'office' && (
             <a
               href={preview.url}
               target="_blank"
@@ -203,6 +243,27 @@ export function ArtifactPreviewPanel({
             >
               <IconExternalLink size={14} />
             </a>
+          )}
+          {onDownload && (
+            <button
+              type="button"
+              onClick={onDownload}
+              aria-label={`${t('agent.chat.artifacts.download', 'Download')} ${preview.artifact.name}`}
+              title={t('agent.chat.artifacts.download', 'Download')}
+              style={{
+                border: '1px solid var(--border-subtle)',
+                background: 'transparent',
+                borderRadius: '6px',
+                padding: '3px',
+                color: 'var(--text-secondary)',
+                cursor: 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              <IconDownload size={13} />
+            </button>
           )}
           <button
             type="button"
@@ -230,8 +291,13 @@ export function ArtifactPreviewPanel({
               {t('common.loading', 'Loading')}
             </div>
           ) : preview.error ? (
-            <div style={{ fontSize: '12px', color: 'var(--danger-text)' }}>
-              {preview.error}
+            <div style={{ display: 'grid', gap: '10px', fontSize: '12px', color: 'var(--danger-text)' }}>
+              <span>{preview.error}</span>
+              {onRetry && (
+                <button type="button" className="btn btn-secondary" onClick={onRetry} style={{ justifySelf: 'start' }}>
+                  {t('common.retry', 'Retry')}
+                </button>
+              )}
             </div>
           ) : previewKind === 'image' && preview.url ? (
             <img
@@ -244,6 +310,14 @@ export function ArtifactPreviewPanel({
               title={preview.artifact.name}
               src={preview.url}
               style={{ width: '100%', height: '62vh', border: '1px solid var(--border-subtle)', borderRadius: '6px' }}
+            />
+          ) : previewKind === 'office' && preview.url ? (
+            <iframe
+              title={preview.artifact.name}
+              src={preview.url}
+              sandbox="allow-scripts"
+              referrerPolicy="no-referrer"
+              style={{ width: '100%', height: '62vh', border: '1px solid var(--border-subtle)', borderRadius: '6px', background: '#fff' }}
             />
           ) : previewKind === 'markdown' ? (
             <div style={{ fontSize: '12px', lineHeight: 1.6 }}>
@@ -305,19 +379,9 @@ export function ArtifactCards({
           : undefined;
         const size = formatArtifactSize(artifact.size);
         const openArtifact = () => onOpenArtifact?.(artifact);
-        const downloadArtifact = async () => {
-          if (!downloadAgentId) return;
-          try {
-            const blob = artifact.id
-              ? await fileApi.downloadArtifact(downloadAgentId, artifact.id, authority)
-              : await fileApi.download(downloadAgentId, artifact.path, authority);
-            saveBlob(blob, artifact.name);
-          } catch (error) {
-            showAppToast(t('agent.chat.artifacts.downloadFailed', 'Download failed: {{message}}', {
-              message: error instanceof Error ? error.message : String(error),
-            }), 'error');
-          }
-        };
+        const downloadArtifact = () => downloadAgentId
+          ? downloadChatArtifact(artifact, downloadAgentId, authority, t)
+          : Promise.resolve();
         return (
           <div
             key={`${artifact.id || artifact.path}`}

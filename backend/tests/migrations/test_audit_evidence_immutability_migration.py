@@ -11,6 +11,7 @@ from sqlalchemy.pool import NullPool
 
 from app.models import import_all_models
 from app.models.audit import AuditLog
+from app.models.external_principal import ExternalPrincipal
 from app.models.security_audit import SecurityAuditEvent
 from app.models.tenant import Tenant
 
@@ -34,6 +35,9 @@ def test_migration_contract_guards_both_audit_evidence_tables() -> None:
     assert "BEFORE TRUNCATE ON audit_logs" in migration
     assert "trg_security_audit_events_no_truncate" in migration
     assert "BEFORE TRUNCATE ON security_audit_events" in migration
+    assert ('op.drop_constraint("fk_audit_logs_external_principal_id", "audit_logs", type_="foreignkey")') in migration
+    assert 'ondelete="RESTRICT"' in migration
+    assert migration.count('ondelete="SET NULL"') == 1
     assert "DROP TRIGGER IF EXISTS trg_audit_logs_immutable ON audit_logs" in migration
     assert "DROP TRIGGER IF EXISTS trg_security_audit_events_immutable ON security_audit_events" in migration
     assert "DROP TRIGGER IF EXISTS trg_audit_logs_no_truncate ON audit_logs" in migration
@@ -72,6 +76,14 @@ async def test_fresh_bootstrap_installs_both_audit_evidence_guards(
                     )
                 )
             ).all()
+            audit_principal_fk = await connection.scalar(
+                text(
+                    "SELECT pg_get_constraintdef(oid) "
+                    "FROM pg_constraint "
+                    "WHERE conrelid = 'audit_logs'::regclass "
+                    "AND conname = 'fk_audit_logs_external_principal_id'"
+                )
+            )
 
         triggers = {row.tgname: row for row in trigger_rows}
         assert set(triggers) == {
@@ -94,6 +106,8 @@ async def test_fresh_bootstrap_installs_both_audit_evidence_guards(
                 "trg_security_audit_events_immutable",
             )
         )
+        assert audit_principal_fk is not None
+        assert "ON DELETE RESTRICT" in audit_principal_fk
         assert all(
             "TRUNCATE" in triggers[name].pg_get_triggerdef
             for name in (
@@ -114,6 +128,7 @@ async def test_release_upgrade_rejects_direct_mutation_for_both_audit_tables(
     tenant_id = uuid.uuid4()
     audit_log_id = uuid.uuid4()
     security_event_id = uuid.uuid4()
+    external_principal_id = uuid.uuid4()
 
     try:
         async with session_factory() as db:
@@ -128,9 +143,23 @@ async def test_release_upgrade_rejects_direct_mutation_for_both_audit_tables(
 
         async with session_factory() as db:
             db.add(
+                ExternalPrincipal(
+                    id=external_principal_id,
+                    tenant_id=tenant_id,
+                    provider="slack",
+                    installation_ref="audit-immutability-proof",
+                    subject_id="audit-proof-subject",
+                    display_name="Audit Proof Principal",
+                )
+            )
+            await db.commit()
+
+        async with session_factory() as db:
+            db.add(
                 AuditLog(
                     id=audit_log_id,
                     tenant_id=tenant_id,
+                    external_principal_id=external_principal_id,
                     action="audit.proof.created",
                     details={"proof": "original"},
                 )
@@ -195,12 +224,23 @@ async def test_release_upgrade_rejects_direct_mutation_for_both_audit_tables(
                 await db.rollback()
 
         async with session_factory() as db:
+            with pytest.raises(DBAPIError) as principal_delete_rejected:
+                await db.execute(
+                    text("DELETE FROM external_principals WHERE id = :id"),
+                    {"id": external_principal_id},
+                )
+                await db.commit()
+            assert principal_delete_rejected.value.orig.sqlstate == "23503"
+            await db.rollback()
+
+        async with session_factory() as db:
             audit_log = await db.get(AuditLog, audit_log_id)
             security_event = await db.get(SecurityAuditEvent, security_event_id)
 
         assert audit_log is not None
         assert audit_log.action == "audit.proof.created"
         assert audit_log.details == {"proof": "original"}
+        assert audit_log.external_principal_id == external_principal_id
         assert security_event is not None
         assert security_event.action == "security.audit.proof.created"
         assert security_event.details == {"proof": "original"}

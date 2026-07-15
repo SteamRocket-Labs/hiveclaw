@@ -31,7 +31,13 @@ class AuditLog(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
     external_principal_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("external_principals.id", ondelete="SET NULL"), index=True
+        UUID(as_uuid=True),
+        ForeignKey(
+            "external_principals.id",
+            name="fk_audit_logs_external_principal_id",
+            ondelete="RESTRICT",
+        ),
+        index=True,
     )
     agent_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("agents.id"))
     tenant_id: Mapped[uuid.UUID | None] = mapped_column(

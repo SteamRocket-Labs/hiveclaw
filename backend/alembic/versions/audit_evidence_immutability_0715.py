@@ -14,6 +14,16 @@ depends_on = None
 
 
 def upgrade() -> None:
+    op.drop_constraint("fk_audit_logs_external_principal_id", "audit_logs", type_="foreignkey")
+    op.create_foreign_key(
+        "fk_audit_logs_external_principal_id",
+        "audit_logs",
+        "external_principals",
+        ["external_principal_id"],
+        ["id"],
+        ondelete="RESTRICT",
+    )
+
     op.execute(
         """
         CREATE OR REPLACE FUNCTION reject_audit_evidence_mutation()
@@ -70,3 +80,12 @@ def downgrade() -> None:
     op.execute("DROP TRIGGER IF EXISTS trg_audit_logs_no_truncate ON audit_logs")
     op.execute("DROP TRIGGER IF EXISTS trg_security_audit_events_no_truncate ON security_audit_events")
     op.execute("DROP FUNCTION IF EXISTS reject_audit_evidence_mutation()")
+    op.drop_constraint("fk_audit_logs_external_principal_id", "audit_logs", type_="foreignkey")
+    op.create_foreign_key(
+        "fk_audit_logs_external_principal_id",
+        "audit_logs",
+        "external_principals",
+        ["external_principal_id"],
+        ["id"],
+        ondelete="SET NULL",
+    )

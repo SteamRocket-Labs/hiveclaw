@@ -12,6 +12,14 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
 
+_AUDIT_PRINCIPAL_FK_SQL = text(
+    "SELECT pg_get_constraintdef(oid) "
+    "FROM pg_constraint "
+    "WHERE conrelid = 'audit_logs'::regclass "
+    "AND conname = 'fk_audit_logs_external_principal_id'"
+)
+
+
 def _alembic(database_url: str, command: str, target: str) -> None:
     from tests.integration.conftest import BACKEND_ROOT
 
@@ -42,8 +50,11 @@ async def test_real_schema_readiness_detects_force_drift_and_survives_rollback_r
     try:
         async with engine.connect() as connection:
             initial = await inspect_schema_readiness(connection)
+            initial_audit_principal_fk = await connection.scalar(_AUDIT_PRINCIPAL_FK_SQL)
         assert initial.ready is True
         assert initial.checked_trigger_count == 4
+        assert initial_audit_principal_fk is not None
+        assert "ON DELETE RESTRICT" in initial_audit_principal_fk
 
         async with engine.begin() as connection:
             await connection.execute(text("ALTER TABLE runtime_tasks NO FORCE ROW LEVEL SECURITY"))
@@ -63,10 +74,13 @@ async def test_real_schema_readiness_detects_force_drift_and_survives_rollback_r
     try:
         async with engine.connect() as connection:
             rolled_back = await inspect_schema_readiness(connection)
+            rolled_back_audit_principal_fk = await connection.scalar(_AUDIT_PRINCIPAL_FK_SQL)
         assert rolled_back.ready is False
         rollback_issue_codes = {issue.code for issue in rolled_back.issues}
         assert "alembic_head_mismatch" in rollback_issue_codes
         assert "schema_trigger_missing" in rollback_issue_codes
+        assert rolled_back_audit_principal_fk is not None
+        assert "ON DELETE SET NULL" in rolled_back_audit_principal_fk
     finally:
         await engine.dispose()
 
@@ -75,7 +89,10 @@ async def test_real_schema_readiness_detects_force_drift_and_survives_rollback_r
     try:
         async with engine.connect() as connection:
             restored = await inspect_schema_readiness(connection)
+            restored_audit_principal_fk = await connection.scalar(_AUDIT_PRINCIPAL_FK_SQL)
         assert restored.ready is True
         assert restored.checked_trigger_count == 4
+        assert restored_audit_principal_fk is not None
+        assert "ON DELETE RESTRICT" in restored_audit_principal_fk
     finally:
         await engine.dispose()

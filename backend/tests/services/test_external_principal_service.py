@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 import uuid
 
 import pytest
-from sqlalchemy import delete, func, select
+from sqlalchemy import func, select
 
 from app.database import tenant_scoped_session
 from app.models.agent import Agent
@@ -54,16 +54,8 @@ async def _seed_tenant_agent(owner_sessionmaker):
     return tenant_id, user_id, agent_id
 
 
-async def _clear(owner_sessionmaker):
-    async with owner_sessionmaker() as db:
-        await db.execute(delete(ExternalPrincipalBindingEvent))
-        await db.execute(delete(ExternalPrincipal))
-        await db.commit()
-
-
 @pytest.mark.usefixtures("migrated_pg_url")
 async def test_unbound_external_principal_is_idempotent_without_creating_user(owner_sessionmaker):
-    await _clear(owner_sessionmaker)
     tenant_id, _owner_id, _agent_id = await _seed_tenant_agent(owner_sessionmaker)
     before_users = 0
     async with owner_sessionmaker() as db:
@@ -92,7 +84,20 @@ async def test_unbound_external_principal_is_idempotent_without_creating_user(ow
 
     async with owner_sessionmaker() as db:
         after_users = (await db.execute(select(func.count()).select_from(User))).scalar_one()
-        principals = (await db.execute(select(ExternalPrincipal))).scalars().all()
+        principals = (
+            (
+                await db.execute(
+                    select(ExternalPrincipal).where(
+                        ExternalPrincipal.tenant_id == tenant_id,
+                        ExternalPrincipal.provider == "slack",
+                        ExternalPrincipal.installation_ref == "config-a",
+                        ExternalPrincipal.subject_id == "U123",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
 
     assert first.principal.id == second.principal.id
     assert first.actor.id is None
@@ -106,7 +111,6 @@ async def test_unbound_external_principal_is_idempotent_without_creating_user(ow
 
 @pytest.mark.usefixtures("migrated_pg_url")
 async def test_identity_scope_includes_tenant_and_installation(owner_sessionmaker):
-    await _clear(owner_sessionmaker)
     tenant_a, _owner_a, _agent_a = await _seed_tenant_agent(owner_sessionmaker)
     tenant_b, _owner_b, _agent_b = await _seed_tenant_agent(owner_sessionmaker)
 
@@ -133,7 +137,6 @@ async def test_identity_scope_includes_tenant_and_installation(owner_sessionmake
 
 @pytest.mark.usefixtures("migrated_pg_url")
 async def test_link_and_unlink_are_explicit_audited_authority_transitions(owner_sessionmaker):
-    await _clear(owner_sessionmaker)
     tenant_id, owner_id, _agent_id = await _seed_tenant_agent(owner_sessionmaker)
     async with tenant_scoped_session(tenant_id, session_factory=owner_sessionmaker) as db:
         resolved = await resolve_or_create_external_principal(
@@ -196,7 +199,6 @@ async def test_link_and_unlink_are_explicit_audited_authority_transitions(owner_
 
 @pytest.mark.usefixtures("migrated_pg_url")
 async def test_revoked_installation_fails_closed_and_keeps_history(owner_sessionmaker):
-    await _clear(owner_sessionmaker)
     tenant_id, owner_id, _agent_id = await _seed_tenant_agent(owner_sessionmaker)
     async with tenant_scoped_session(tenant_id, session_factory=owner_sessionmaker) as db:
         resolved = await resolve_or_create_external_principal(
@@ -237,7 +239,6 @@ async def test_revoked_installation_fails_closed_and_keeps_history(owner_session
 
 @pytest.mark.usefixtures("migrated_pg_url")
 async def test_channel_config_retirement_revokes_the_exact_installation(owner_sessionmaker):
-    await _clear(owner_sessionmaker)
     tenant_id, owner_id, agent_id = await _seed_tenant_agent(owner_sessionmaker)
     config_id = uuid.uuid4()
     async with tenant_scoped_session(tenant_id, session_factory=owner_sessionmaker) as db:
@@ -293,7 +294,6 @@ async def test_channel_config_retirement_revokes_the_exact_installation(owner_se
 
 @pytest.mark.usefixtures("migrated_pg_url")
 async def test_external_principal_rls_hides_other_tenant(owner_sessionmaker, app_user_sessionmaker):
-    await _clear(owner_sessionmaker)
     tenant_a, _owner_a, _agent_a = await _seed_tenant_agent(owner_sessionmaker)
     tenant_b, _owner_b, _agent_b = await _seed_tenant_agent(owner_sessionmaker)
     async with tenant_scoped_session(tenant_a, session_factory=owner_sessionmaker) as db:

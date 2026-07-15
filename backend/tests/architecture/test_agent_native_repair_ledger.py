@@ -210,6 +210,12 @@ def test_document_routes_are_portable_and_external_refs_are_snapshot_bound() -> 
         "@document routes must not depend on one developer's absolute filesystem path"
     )
     assert all((REPO_ROOT / reference).is_file() for reference in local_references)
+    tracked = _git_tracked_paths()
+    untracked_local_references = sorted(local_references - tracked)
+    assert not untracked_local_references, (
+        "local @document routes must survive a clean checkout; untracked routes: "
+        f"{untracked_local_references}"
+    )
 
     external_rows = re.findall(
         r"^- hive-connect \| ([0-9a-f]{40}) \| ([^|]+?) \| ([0-9a-f]{64})$",

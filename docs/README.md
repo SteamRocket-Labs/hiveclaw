@@ -38,6 +38,12 @@
 - `external-behavior-eval-ci.md` — 外部行为 eval CI canonical design。
 - `remote-workstation-runtime.md` — agent 远程工作站 runtime 探索稿；它记录安全边界和可能切片，不是当前 canonical 主线。
 
+## AA 修复上下文包（Git truth）
+
+`agent-native-unified-atomic-review-2026-07-14.md` 是 Group 0–10 的唯一施工导航（简称 `AA`）。每个 Group 的 `@原始断点证据`、`@必须先读` 与 `@按需读取` 清单以 AA 的稳定章节为准；本文不复制那份逐 Group 清单，避免形成第二个路由事实源。
+
+AA 引用的全部本仓 `@docs/*.md` 必须进入 Git，保证 clean checkout、CI 和后续修复 Session 能沿 `AA → 上下文包 → 施工 → EVID-G*` 复现同一上下文。历史 review/plan 被纳入 Git 只表示它是可读取的原始证据，不恢复其旧完成声明，也不允许覆盖当前源码、生产事实或 AA 的 owner/status。
+
 ## 活跃设计领域
 
 `hive-sota-master-goal.md` 第 3 节是 canonical 原子能力地图。设计文档之间出现重叠时，优先用它裁决边界。

@@ -4,7 +4,7 @@
 >
 > 原始审查冻结快照：`main@501db6555dae374e5fcf43a6fdcfe8a3dd89343e` + 2026-07-14 当时未提交工作树；后续施工不改写这个审查锚点，每条 `EVID-*` 另记自己的开工 HEAD、工作树与生产快照
 >
-> 修复账本滚动更新：2026-07-15；Group 0 已用 `EVID-G0-006` 把 11 个上下文包、89 个可执行 `@` 文档入口、逐 Group 详细路由和证据回流做成机器门并保持关闭；Group 1 的 exact-source 三服务部署已经成功，`P0-F1/P0-F2/E-1/P1-004/P1-F4/KB-EXTRACT-001/KB-AUTH-001/KB-PROP-001/BUD-ROOT-001/AUDIT-IMM-001/AUDIT-TENANT-001/F-PLAINTEXT/P2-F8/P2-F6/KB-CONTRACT-001` 已分别以 `EVID-G1-001/002/003/004/005/006/007/008/009/010/011/012/013/014/015` 关闭；前十四项有各自 production canary，`KB-CONTRACT-001` 是不改变 runtime bytes 的 canonical docs + architecture gate 闭环。Group 1 当前为 15/16 closed、1/16 pending，不再有“已部署但未关闭”的 leaf。2026-07-15T13:37Z 因 production `backend-volume` 在重启批次中从约 24.8 GB 急升到 28.65 GB，Group 1 曾显式暂停；`EVID-G8-PRE-001/002/003` 已分别关闭继续写放大、transaction lifecycle 与当次容量事故处置，容器 `df` 已降到 `11,316,330,496` bytes（24%），核心数据停止门成立。三项前置证据都不关闭任何 Group 8 leaf 或 `MISS-RETENTION-001`；Object Storage、snapshot CAS、sealed T0 archive、T2 authority/replay 与跨资产 retention 仍未完成。不得把 15 个独立 leaf、三个 Group 8 前置子闭环或其叠加冒充 Group 1、Group 8、103 项或产品总目标完成。
+> 修复账本滚动更新：2026-07-16；Group 0 已用 `EVID-G0-006` 把 11 个上下文包、89 个可执行 `@` 文档入口、逐 Group 详细路由和证据回流做成机器门并保持关闭。Group 1 的 16 个 owner leaf 已分别由 `EVID-G1-001` 至 `EVID-G1-016` 全部关闭；`B-01` 的 immutable HR runtime authority、migration、并发恢复、全量回归、三服务 exact-source 部署和 production fail-closed canary 记录在 `EVID-G1-016`，因此 Group 1 当前为 16/16 closed、0 pending、0 deployed-but-open。2026-07-15T13:37Z 因 production `backend-volume` 在重启批次中从约 24.8 GB 急升到 28.65 GB，Group 1 曾显式暂停；`EVID-G8-PRE-001/002/003` 已分别关闭继续写放大、transaction lifecycle 与当次容量事故处置，核心数据停止门成立。B-01 发布后同挂载点 `df -B1 /data/agents` 为 used=`11,360,583,680` bytes（24%），未执行新的清理或核心数据删除。三个 Group 8 前置证据仍不关闭任何 Group 8 leaf 或 `MISS-RETENTION-001`；Object Storage、snapshot CAS、sealed T0 archive、T2 authority/replay 与跨资产 retention 仍未完成。不得把 Group 1 closed、三个 Group 8 前置子闭环或其叠加冒充 Group 2–10、103 项或产品总目标完成。
 >
 > 组合输入：`agent-native-atomic-review-2026-07-14.md`、`agent-native-extreme-boundary-atomic-review-2026-07-14.md`、`unified-context-assembly-and-progressive-disclosure-2026-07-14.md`、`session-v2-cc-codex-alignment-contract-2026-07-14.md`、修订后的 `reusable-agent-native-atomic-review-prompt.md`，以及当前 Hive / FreeCode / Codex 本地源码。
 >
@@ -593,7 +593,7 @@ Group 摘要不能替代以下两份文档：
 | Group | owner canonical leaf | owner Missing | 当前状态 |
 |---:|---:|---:|---|
 | 0 | 0（全局门） | 0 | closed：`EVID-G0-002/003/004/005/006`，Git truth、机器账本、11 个上下文包/89 个 `@` 文档入口、跨仓快照与 clean-checkout harness 已闭环 |
-| 1 | 16 | 0 | in_progress：`P0-F1/P0-F2/E-1/P1-004/P1-F4/KB-EXTRACT-001/KB-AUTH-001/KB-PROP-001/BUD-ROOT-001/AUDIT-IMM-001/AUDIT-TENANT-001/F-PLAINTEXT/P2-F8/P2-F6/KB-CONTRACT-001` 已关闭（15/16）；无 deployed-but-open leaf；仅 `B-01` 待施工 |
+| 1 | 16 | 0 | closed：16/16 owner leaf 均有独立 `EVID-G1-001`–`EVID-G1-016`；0 pending、0 deployed-but-open；最后一项 `B-01` 已由 immutable runtime authority、migration、并发恢复、全量回归、三服务 exact-source 与 production canary 闭环 |
 | 2 | 14 | 0 | open |
 | 3 | 7 | 0 | open |
 | 4 | 6 | 0 | open |
@@ -1256,7 +1256,7 @@ Group 0 是全局证据门，不拥有业务 leaf。下面 103 行必须与 cano
 - P2 | G-09 | inherited-recheck | 旧报告 UI leaf G-09
 - P2 | G-10 | inherited-recheck | 旧报告 UI leaf G-10
 - P2 | G-01B | inherited-split | UI 以 `includes('expired')` 决定 hard state
-- P3 | B-01 | inherited-recheck | HR 受信固定业务体绕统一 tool throat
+- P3 | B-01 | closed:EVID-G1-016 | commit `b805dd67e` 将 HR provisioning 绑定到 authenticated confirmation、immutable blueprint digest 与 RuntimeTask authority snapshot；全量回归、迁移、三服务 exact-source、production trigger/RLS/inventory/tamper canary 全绿
 - P3 | A-05 | inherited-recheck | 旧报告单 Agent leaf A-05
 - P3 | A-06 | inherited-recheck | 旧报告单 Agent leaf A-06
 - P3 | A-07 | inherited-recheck | 旧报告单 Agent leaf A-07
@@ -1326,7 +1326,7 @@ Group 0 是全局证据门，不拥有业务 leaf。下面 103 行必须与 cano
 | Group | 证据前缀 | Owner 范围 | 当前证据状态 | 下一次写入要求 |
 |---:|---|---|---|---|
 | 0 | `EVID-G0-*` | 0 leaf / 0 Missing | `closed`：`EVID-G0-001/002/003/004/005/006`；文档 Git truth、owner/path/decision/scenario CI、11 个 Group 上下文包、89 个去重 `@` 文档入口、跨仓快照与 fake-provider/PG/Redis harness 基座成立 | 后续任何新增本地 `@docs` 必须先进入 Git 并同步上下文包索引；业务场景 Green 仍由 owner Group 负责 |
-| 1 | `EVID-G1-*` | 16 leaf / 0 Missing | `in_progress`：`P0-F1/P0-F2/E-1/P1-004/P1-F4/KB-EXTRACT-001/KB-AUTH-001/KB-PROP-001/BUD-ROOT-001/AUDIT-IMM-001/AUDIT-TENANT-001/F-PLAINTEXT/P2-F8/P2-F6/KB-CONTRACT-001` 已分别关闭（15/16）；前十四项 code/production canary 绿，KB contract 的 docs/metadata architecture gate 绿；无 deployed-but-open leaf，仅 `B-01` 未施工 | 按 §12.1 owner map 重验 `B-01`；必须独立完成 Red→Green、治理/审计/fault/consumer 与适用 production evidence，不得用前十五项关闭冒充 Group 1 closed |
+| 1 | `EVID-G1-*` | 16 leaf / 0 Missing | `closed`：16/16 owner leaf 已由 `EVID-G1-001`–`EVID-G1-016` 分别关闭；0 pending、0 deployed-but-open；code/docs/migration/backfill-or-quarantine、fault/concurrency、全量回归、exact-source deployment 与适用 production canary 均有独立记录 | Group 1 只在其 authority/security 合同被后续 Group 改动时重开；当前按依赖顺序进入 Group 2，禁止用 Group 1 closed 冒充 103 清零 |
 | 2 | `EVID-G2-*` | 14 leaf / 0 Missing | `open` | 写 Session event/item/reducer、persist-before-publish、projection/backfill 与 SESSION-G 结果 |
 | 3 | `EVID-G3-*` | 7 leaf / 0 Missing | `open` | 写 root admission、reserve/commit/release、terminal CAS、approval resume 与 fanout 曲线 |
 | 4 | `EVID-G4-*` | 6 leaf / 0 Missing | `open` | 写 result ref、mailbox lease/CAS、integration epoch、partial/late/duplicate 与 100-way return storm |
@@ -2385,7 +2385,49 @@ context_read_receipt:
 - 回归验收：`cd backend && .venv/bin/pytest tests/tools/test_personal_knowledge_tool.py tests/integration/test_personal_knowledge_cross_owner.py -q` 为 `22 passed in 8.32s`；覆盖 owner-direct、cross-owner、grant、sensitivity ceiling 与 PL4 boundary。本 leaf 没有 schema/migration/backfill/deploy，因为 source runtime 与 production data 零改动；强行重发不会产生新验收事实。
 - 七原子：Input=authenticated runtime lane 与 Knowledge tool call；Authority=owner policy/`agent_searchable` 或 explicit grant + requester/purpose/delegation/sensitivity ceiling；Execution=已有 `search_personal_kb` / `read_personal_kb` handler；Evidence=canonical matrix、tool metadata 与 architecture/regression tests；Recovery=denied/unavailable/grant-required 状态保持 typed 且可重试；Consumption=模型与开发者从 tool schema/spec 获得相同契约；Acceptance=Red→Green + 22 个读权限回归。本 leaf 的七原子成立。
 - 北极星裁决：硬结果只来自 authenticated principal、runtime lane、explicit grant、sensitivity ceiling 与 PL4 credential boundary 这些 Authority/Data Ingress 事实源；不读取自然语言决定权限、不裁剪 model context/output、不删工具、不改写 final。owner-direct 保留 CC 能力面，跨 principal 使用 Hive enterprise grant/ceiling，符合 capability-preserving determinism。
-- 残余边界：`B-01` 仍待独立 current-source 重验与 Red→Green；Group 1 为 15/16 closed、0 deployed-but-open、1/16 pending。Group 8 的 Knowledge/Memory durable extraction、T2/T3/soul、retention 与 replay 不由本证据关闭。103 分母、severity、owner 与 5 个 Missing 均不变。
+- 历史边界：本证据关闭当时 `B-01` 尚待独立 current-source 重验，Group 1 为 15/16 closed；后继 `EVID-G1-016` 已完成该 leaf 并把当前滚动状态收敛为 16/16 closed。Group 8 的 Knowledge/Memory durable extraction、T2/T3/soul、retention 与 replay 不由本证据关闭。103 分母、severity、owner 与 5 个 Missing 均不变。
+
+#### EVID-G1-016：B-01 immutable HR RuntimeTask authority 与受信业务体边界
+
+- `leaf_ids`：`B-01`；owner Group / 依赖 Group：Group 1 / Group 0。本证据只关闭 HR canonical blueprint 从 authenticated confirmation 到 durable RuntimeTask、受信 domain runner、revision/retry/reconciliation 的 authority 与 TOCTOU 断点；不要求后台 worker 伪装成一次模型 tool call，也不把 Group 2 Session truth、Group 3 root ledger、Group 8 schema-wait/retention 或全部 tool governance 并入本 leaf。
+- 当前状态：`closed`。原报告“worker 直调固定业务体绕统一 tool throat”经 refute-first 复核后被校正：受信、参数封闭、无模型自由输入的 domain worker 直接调用唯一业务 lifecycle owner 本身不是治理缺陷；真实缺口是 confirmed blueprint、requester confirmation、RuntimeTask principal/session/delegation/idempotency 与执行前 live row 之间没有不可变、可重验的同一 authority frame。commit `b805dd67e` 已把这些事实绑定，并为 legacy、并发和未知副作用建立 fail-closed recovery。canonical 为 `closed:EVID-G1-016`。
+
+```yaml
+context_read_receipt:
+  aa_entry: "§9 Group 1 + §12.1/§12.2 B-01 + §12.3 Group 1"
+  leaf_ids: ["B-01"]
+  documents:
+    - {ref: "@docs/agent-native-atomic-review-2026-07-14.md", sha256: "4f1e8893fe03251c02ce9805300b94d6db00c34e032c978f3805c2b1f061e919", decision: "revalidate the original P3 trusted-business-body/tool-throat finding instead of accepting its wording"}
+    - {ref: "@docs/agent-native-atomic-source-audit-2026-07-12.md", sha256: "c8598067672d6cffc6bbbb16ce9bd3862ba6e84fd32e5386536cf588446d28cd", decision: "preserve the durable confirmation-to-RuntimeTask and retry/cancel lifecycle already closed by R-003"}
+    - {ref: "@docs/session-workspace-hr-atomic-closure-2026-07-10.md", sha256: "3548d87486ee994e7dc626be7849e48359dd49e502b96bcee1e26f625b95b519", decision: "preserve requester-only authenticated confirmation, exact version/hash, canonical DB payload and idempotent recovery"}
+    - {ref: "@docs/agent-permission-governance-spec-2026-07-07.md", sha256: "d346ad45591d3d01d6499735d116db37b9dda00284a9cf99103a8a0ad8080649", decision: "actor capability cannot exceed the accountable authenticated principal and effect authority"}
+    - {ref: "@docs/ccplus-session-permission-and-enterprise-hard-rules-2026-06-25.md", sha256: "db8d895b283ecb7ae747ef7fbbb76591f32aba599052d24d759dcb31c83f7cb0", decision: "session permission never overrides tenant, resource, confirmation, sandbox or enterprise effect boundaries"}
+  source_commit: "b805dd67e"
+  source_paths:
+    - "backend/app/api/hr_creation.py"
+    - "backend/app/services/hr_creation_service.py"
+    - "backend/app/services/hr_creation_reconciliation.py"
+    - "backend/app/services/hr_provisioning_runtime.py"
+    - "backend/app/services/hr_provisioning_runner.py"
+    - "backend/app/tools/handlers/hr.py"
+    - "backend/app/db_bootstrap.py"
+    - "backend/app/core/rls_bypass_manifest.py"
+    - "backend/alembic/versions/hr_runtime_authority_0715.py"
+  evidence_sink: "EVID-G1-016"
+```
+
+- TDD Red：先后以独立回归证明未确认 draft 仍可建 task、worker 接受篡改 authority、claim 前 principal/session/delegation 漂移、blueprint payload TOCTOU、failed revision 原地覆写、已有/未知副作用仍生成 successor、exact retry 双 successor、revision/retry 锁顺序竞争、runner 把缺确认误判成普通失败、fresh bootstrap 未装 trigger、migration 会降级 terminal evidence、superseded row 可被复活，以及 reconciler query shape 未进入 RLS bypass manifest。每一项都在实现前得到确定失败，不以已有 happy-path 测试替代。
+- Authority/执行实现：canonical JSON、payload hash 与 blueprint hash 只有一套 helper；`build_hr_provisioning_runtime_task()` 必须看到 requester 本人 authenticated confirmation，并把 tenant、requester、HR Agent、parent/root session、delegation chain、idempotency key、完整 payload digest、config/policy snapshot 写入任务。worker 只接收 typed `_runtime_authority`，claim 时按 `RuntimeTask -> HrCreationDraft` 的统一锁序重新读取 live rows 和全部 snapshot；任何 drift 都进入 typed `needs_reconciliation`、提升 claim fence、清 lease、写审计，且不会调用 domain side effect。
+- 不可变与并发恢复：数据库 trigger 禁止 `confirmed/creating/provisioning/failed/completed/superseded` blueprint payload 改写，并禁止 superseded status 复活。failed revision 只有在 task 明确 terminal、`side_effect_risk=not_started`、无 task/draft claim、无 `created_agent_id`、全部 step 未尝试且无 receipt/timestamp 时才创建新 UUID/version successor；原 draft/task/step 证据保留。相同 payload retry 幂等返回唯一 successor，不同 payload 拒绝；双 revision 与 revision-vs-retry 真实 PostgreSQL 并发测试证明只有一个序列化结果。其它状态一律 `reconciliation_required`，不自动重放未知副作用。
+- Migration/rollback：`hr_runtime_authority_0715` 以 `storage_blob_lifecycle_0715` 为唯一 parent，schema-owner transaction 内对所有 HR RuntimeTask `FOR UPDATE`；可证明有效的 runnable legacy task 回填 snapshot，active/claimed legacy worker 提升 task+draft fence 并隔离，authority 不完整者进入 append-only quarantine audit，`completed/killed/skipped/needs_reconciliation` 原终态保留。fresh `create_all` 同样安装 trigger；secure downgrade 故意保留 trigger、hash 与审计，不删除数据或重开旧漏洞。migration tests 覆盖 backfill、quarantine、terminal preservation、RLS 恢复、trigger 和 downgrade。
+- Green/本地验收：最终定向命令 `pytest tests/security/test_rls_bypass_allowlist.py tests/services/test_hr_provisioning_runtime.py tests/tools/test_hr_handler.py tests/architecture/test_tool_runtime_single_entry.py tests/migrations/test_hr_runtime_authority_migration.py -q` 为 `76 passed in 27.90s`；Group 1 唯一收口全量 `cd backend && source .venv/bin/activate && pytest tests -q` 为 `7259 passed, 2 skipped in 274.04s`。scoped Ruff=`All checks passed!`，`alembic heads`=`hr_runtime_authority_0715 (head)`，`git diff --check` 与 staged diff check 均 exit 0；B-01 code-reviewer 最终 verdict=`APPROVE`，无剩余 P0/P1/P2 finding。
+- Production preflight：部署前 schema readiness actual/expected=`storage_blob_lifecycle_0715`、130 tables、`issues=[]`；只读 schema-owner inventory 为 HR task=0、draft=0、active claim=0、linked-without-confirmation=0。因此 migration 没有修改、隔离或删除任何现存 HR 业务行。
+- Exact-source deployment：从 `b805dd67e` Git archive 部署 backend=`2e09bebd-ac62-4166-99ef-e9a6a5a77a51`、frontend=`edfe7211-43b1-4941-bbb4-b59d738a413d`，均 `SUCCESS`。backend-api 初次 deployment=`83fedb46-7d85-4a87-b726-3c2596694e0d` 在 schema owner 完成 migration 前按 readiness fail closed，10 次重试耗尽后为 `REMOVED`；schema ready 后从同一 archive 重提 `4fc3d15f-8383-4ebc-9f87-5054159c39be` 为 `SUCCESS`。该恢复缺口继续归 Group 8 schema-wait fault matrix，不伪装成 B-01 未关闭。
+- Live source/DB/health：本地 commit 与 backend、backend-api 的 `hr_provisioning_runtime.py`=`5c8e634f…03e11`、`hr_creation_service.py`=`6e4eb918…3e768`、`handlers/hr.py`=`e3647cd5…c0cef`、migration=`cbef5ae9…9a19` SHA-256 逐字一致。production schema head=`hr_runtime_authority_0715`；immutability trigger count=1、enabled=`O`；`runtime_tasks/hr_creation_drafts/audit_logs` 均 `ENABLE+FORCE RLS`；HR task/draft/active claim/quarantine audit/unprocessed task 全为 0。exact-code canary 的合法 frame `baseline_issues=[]`；篡改 payload 得到 `blueprint_payload_integrity_mismatch/immutable_blueprint_mismatch/config_snapshot_mismatch`；缺 requester confirmation 被拒绝，`side_effects=0`。backend health=`ok`、runtime role=`app_rls/strict/non-superuser/non-BYPASSRLS`、三 daemon 与 sandbox healthy，frontend HTTP=200。
+- Storage 停止门：本次不执行 storage GC、quarantine、move、hardlink、CAS 或删除。发布后同挂载点 `df -B1 /data/agents` 为 total=`48,891,670,528`、used=`11,360,583,680`、available=`37,514,309,632`、usage=`24%`；相对 `EVID-G8-PRE-003` 仅是正常运行增量，核心数据与既有 manifests/receipts 全部保留。
+- 七原子：Input=authenticated requester 对 exact draft version/hash 的结构化确认；Authority=tenant/requester/HR Agent/session/delegation/idempotency + immutable DB digest；Execution=durable RuntimeTask worker 调唯一受信 HR domain lifecycle owner，effect 前 live revalidation；Evidence=task snapshots、draft/step/claim state、trigger、audit、migration receipts、tests/deploy/live hashes；Recovery=task→draft 锁序、claim fence、safe successor、typed reconciliation、secure downgrade、same-archive retry；Consumption=confirm API、worker、reconciler、retry/cancel/revision API 与 HR UI 继续消费同一 canonical draft/task projection；Acceptance=Red→Green、PG concurrency/migration、full suite、review、三服务、production source/DB/fault/health。七原子均有当前真实消费路径。
+- 北极星裁决：本 leaf 的 hard gate 只读取 Authority/Data Ingress、Side Effect、Evidence/Recovery 和 Machine Contract 的外部可验证事实；不扫描自然语言判断意图、不限制模型推理/输出、不删工具、不把平台 prose 当模型结论。模型仍负责设计 HR blueprint；平台只确保用户确认的那一份 blueprint 以正确 principal 执行一次。它保留 CC 的模型能力面，采用 Codex typed task/snapshot/recovery 工程增量，并保留 Hive-native HR/control-plane lifecycle，符合 capability-preserving determinism。
+- 残余边界：Group 1 当前为 16/16 closed、0 pending、0 deployed-but-open。Group 2 继续建立 Session event/item/reducer 与 persist-before-publish；Group 8 继续解决固定 schema readiness 重试耗尽、durable Memory/Knowledge 与跨资产 retention。103 分母、severity、owner 与 5 个 Missing 均不变；当前施工入口切换到 Group 2。
 
 #### EVID-G8-PRE-001：backend-volume default Skill startup 写放大止血
 

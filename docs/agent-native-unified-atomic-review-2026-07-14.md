@@ -4,7 +4,7 @@
 >
 > 原始审查冻结快照：`main@501db6555dae374e5fcf43a6fdcfe8a3dd89343e` + 2026-07-14 当时未提交工作树；后续施工不改写这个审查锚点，每条 `EVID-*` 另记自己的开工 HEAD、工作树与生产快照
 >
-> 修复账本滚动更新：2026-07-15；Group 0 已用 `EVID-G0-006` 把 11 个上下文包、88 个可执行 `@` 文档入口、逐 Group 详细路由和证据回流做成机器门并保持关闭；Group 1 的同源三服务部署已经成功，`P0-F1/P0-F2/E-1/P1-004/P1-F4/KB-EXTRACT-001/KB-AUTH-001` 已分别以 `EVID-G1-001/002/003/004/005/006/007` 完成 production canary 并关闭；Group 1 当前为 7/16 closed、9/16 pending，不再有“已部署但未关闭”的 leaf。不得把 7 个独立 leaf 的关闭冒充 Group 1 或 103 项完成。
+> 修复账本滚动更新：2026-07-15；Group 0 已用 `EVID-G0-006` 把 11 个上下文包、88 个可执行 `@` 文档入口、逐 Group 详细路由和证据回流做成机器门并保持关闭；Group 1 的同源三服务部署已经成功，`P0-F1/P0-F2/E-1/P1-004/P1-F4/KB-EXTRACT-001/KB-AUTH-001/KB-PROP-001` 已分别以 `EVID-G1-001/002/003/004/005/006/007/008` 完成 production canary 并关闭；Group 1 当前为 8/16 closed、8/16 pending，不再有“已部署但未关闭”的 leaf。不得把 8 个独立 leaf 的关闭冒充 Group 1 或 103 项完成。
 >
 > 组合输入：`agent-native-atomic-review-2026-07-14.md`、`agent-native-extreme-boundary-atomic-review-2026-07-14.md`、`unified-context-assembly-and-progressive-disclosure-2026-07-14.md`、`session-v2-cc-codex-alignment-contract-2026-07-14.md`、修订后的 `reusable-agent-native-atomic-review-prompt.md`，以及当前 Hive / FreeCode / Codex 本地源码。
 >
@@ -593,7 +593,7 @@ Group 摘要不能替代以下两份文档：
 | Group | owner canonical leaf | owner Missing | 当前状态 |
 |---:|---:|---:|---|
 | 0 | 0（全局门） | 0 | closed：`EVID-G0-002/003/004/005/006`，Git truth、机器账本、11 个上下文包/88 个 `@` 文档入口、跨仓快照与 clean-checkout harness 已闭环 |
-| 1 | 16 | 0 | in_progress：`P0-F1/P0-F2/E-1/P1-004/P1-F4/KB-EXTRACT-001/KB-AUTH-001` 已关闭（7/16）；无 deployed-but-open leaf；其余 9 个 leaf 待施工 |
+| 1 | 16 | 0 | in_progress：`P0-F1/P0-F2/E-1/P1-004/P1-F4/KB-EXTRACT-001/KB-AUTH-001/KB-PROP-001` 已关闭（8/16）；无 deployed-but-open leaf；其余 8 个 leaf 待施工 |
 | 2 | 14 | 0 | open |
 | 3 | 7 | 0 | open |
 | 4 | 6 | 0 | open |
@@ -1223,7 +1223,7 @@ Group 0 是全局证据门，不拥有业务 leaf。下面 103 行必须与 cano
 - P1 | G-01A | inherited-split | 平台 failure prose 冒充 assistant/final author
 - P1 | KB-AUTH-001 | closed:EVID-G1-007 | commit `637a56395` 的 requester/session/purpose/delegation-bound authority、PL4 reference-only、legacy quarantine、三服务部署与 production transaction canary 已全绿
 - P1 | KB-EXTRACT-001 | closed:EVID-G1-006 | canonical sensitivity enum、全部写边界、PL3/PL4 extraction gate、可逆 backfill、DB constraint 与 production canary 已绿
-- P1 | KB-PROP-001 | inherited-split | sensitivity/provenance 未贯穿 transcript/T0/T2/outbound
+- P1 | KB-PROP-001 | closed:EVID-G1-008 | commit `62e262c11` 将 trusted Knowledge sensitivity/provenance 贯穿 transcript、T0、T2 eligibility、direct/outbox channel effect 与 nested subagent return；append-only legacy dry-run、三服务部署和 production canary 已绿
 - P2 | A-01 | inherited-current-evidence | 模型正文前缀机械判失败
 - P2 | A-03 | inherited-current-evidence | compaction active projection/replay 边界漂移
 - P2 | A-04 | inherited-current-evidence | Redis 降级取消不可观测/phase 漂移
@@ -1325,7 +1325,7 @@ Group 0 是全局证据门，不拥有业务 leaf。下面 103 行必须与 cano
 | Group | 证据前缀 | Owner 范围 | 当前证据状态 | 下一次写入要求 |
 |---:|---|---|---|---|
 | 0 | `EVID-G0-*` | 0 leaf / 0 Missing | `closed`：`EVID-G0-001/002/003/004/005/006`；文档 Git truth、owner/path/decision/scenario CI、11 个 Group 上下文包、88 个去重 `@` 文档入口、跨仓快照与 fake-provider/PG/Redis harness 基座成立 | 后续任何新增本地 `@docs` 必须先进入 Git 并同步上下文包索引；业务场景 Green 仍由 owner Group 负责 |
-| 1 | `EVID-G1-*` | 16 leaf / 0 Missing | `in_progress`：七个独立 code commit；`P0-F1/P0-F2/E-1/P1-004/P1-F4/KB-EXTRACT-001/KB-AUTH-001` production canary 已绿并关闭（7/16）；无 deployed-but-open leaf；其余 9 leaf 未施工 | 按依赖开工 `KB-PROP-001`；每个剩余 leaf 仍须独立 Red→Green、迁移/回填、fault、rollback、consumer 与 production evidence，不得用前七项关闭冒充 Group 1 closed |
+| 1 | `EVID-G1-*` | 16 leaf / 0 Missing | `in_progress`：八个独立 code commit；`P0-F1/P0-F2/E-1/P1-004/P1-F4/KB-EXTRACT-001/KB-AUTH-001/KB-PROP-001` production canary 已绿并关闭（8/16）；无 deployed-but-open leaf；其余 8 leaf 未施工 | 按 §12.1 owner map 与依赖重验下一个 Group 1 leaf；每个剩余 leaf 仍须独立 Red→Green、迁移/回填、fault、rollback、consumer 与 production evidence，不得用前八项关闭冒充 Group 1 closed |
 | 2 | `EVID-G2-*` | 14 leaf / 0 Missing | `open` | 写 Session event/item/reducer、persist-before-publish、projection/backfill 与 SESSION-G 结果 |
 | 3 | `EVID-G3-*` | 7 leaf / 0 Missing | `open` | 写 root admission、reserve/commit/release、terminal CAS、approval resume 与 fanout 曲线 |
 | 4 | `EVID-G4-*` | 6 leaf / 0 Missing | `open` | 写 result ref、mailbox lease/CAS、integration epoch、partial/late/duplicate 与 100-way return storm |
@@ -1954,6 +1954,63 @@ context_read_receipt:
 - Model Agency / CCPlus 裁决：所有 hard outcome 都指向 tenant/principal/resource/action/sensitivity/expiry/delegation/credential scheme/DB constraint；未按关键词、相似度或模型正文决定权限，未删除无关工具、压缩 authorized PL1–PL3 input 或替换模型 final。owner-direct 能力保留，跨 principal 只在 bytes ingress/effect boundary 收紧；符合 CC tool agency 底线、Codex typed policy 工程增量与 Hive-native enterprise authority。
 - 七原子关闭：Input=runtime principal + resource/action；Authority=owner relation或 bounded grant + DB/RLS；Execution=tool→typed service→SQL fresh-check；Evidence=decision/tool payload/grant row/migration recovery metadata；Recovery=deny/unavailable/expiry/revoke/quarantine/re-authorize、transaction rollback、fail-closed startup 与 safe downgrade；Consumption=search/read tools、owner grant API/UI、proposal policy；Acceptance=Red→125+real-PG+10 frontend+build+ruff/alembic+detached 7116+production catalog/actual-data/health。七原子均有当前真实消费与 production 证据，因此本 leaf 可独立 `closed`。
 - commit/deploy/health：code/evidence commit=`637a56395`。同一 commit 的 Git archive 部署 backend=`075c1a80-221f-4abd-8a5e-783e6bbd7051`、frontend=`ad045cd9-4e68-4b8a-b774-d5566236b0ed` 均 `SUCCESS`；backend-api 首次 deployment=`7e513468-5987-4a95-9239-39eeb824c3da` 在主 migration 前按 schema readiness fail closed 并耗尽 10 次 restart，schema ready 后从同一 commit 重提 `2ed6c667-2a0f-494b-a160-ff6e55e2d197` 为 `SUCCESS`。最终 backend `/api/health`=`status=ok`，runtime role=`app_rls / strict / non-superuser / non-bypassrls`，evolution/trigger/workflow daemon 均 running+healthy；frontend=`HTTP/2 200`。该证据关闭时 Group 1 为 4/16 closed、3/16 deployed-but-open、9/16 pending；当前滚动状态只以 §9 与 §12.3 为准。103 分母、severity、owner 与 5 个 Missing 均不变，下一 Knowledge leaf 为 `KB-PROP-001`。
+
+#### EVID-G1-008：KB-PROP-001 Knowledge sensitivity/provenance 端到端传播
+
+- `leaf_ids`：`KB-PROP-001`；owner Group / 依赖 Group：Group 1 / Group 0、`E-1`、`P1-004`、`KB-EXTRACT-001`、`KB-AUTH-001`。本项只关闭已经获准进入模型的 Knowledge bytes 在 transcript、T0、T2 eligibility、nested subagent return 与 channel effect 之间丢失 sensitivity/provenance 的 seam；它不重新定义读权限，也不把 sensitivity 变成 owner-direct search/read 的通用闸。
+- 当前状态：`closed`。trusted machine result projection、实时与 terminal delivery consumer、append-only legacy disposition、TDD/ruff/SQL compile、独立 Git-index snapshot、三服务部署、生产 dry-run、容器 exact-code canary 与 health 均已 Green；canonical 为 `closed:EVID-G1-008`。
+- 冻结事实：开工 HEAD=`fb8c92b9f33429aed4e7851398a22d3687c178ff`；code commit=`62e262c117c4bbb32cb8276df37ab25c20de492d`、tree=`29401943a5463266fc1e37da808856c0b16d6a4e`，精确 ownership manifest 为 19 个 backend code/test path、`1848 insertions(+), 28 deletions(-)`。共享工作树同时存在 DB/Hook/Session/terminal 等其它 session 改动；本项对 `chat_transcript.py`、`subagent.py` 和 `test_chat_transcript.py` 逐 hunk staging，未纳入 after-commit、`evidence_mode` 或其它外部改动。`git show --name-status 62e262c11` 是唯一代码 ownership 事实源。
+
+```yaml
+context_read_receipt:
+  aa_entry: "§9 Group 1 + §12.1/§12.2 KB-PROP-001 + §12.3 Group 1"
+  leaf_ids: ["KB-PROP-001"]
+  documents:
+    - ref: "@docs/agent-native-atomic-review-2026-07-14.md §11 D-KB1 / §20–§22"
+      role: "original_evidence"
+      decision_consumed: "sensitivity 不替代 requester/grant 读权限；但必须约束持久化与跨边界外传，并保持工具合同诚实"
+      sha256: "4f1e8893fe03251c02ce9805300b94d6db00c34e032c978f3805c2b1f061e919"
+    - ref: "@docs/personal-company-knowledge-tool-boundary-2026-07-10.md"
+      role: "knowledge boundary contract"
+      decision_consumed: "Personal/Company Knowledge 都通过 governed tool result 暴露；下游只能消费可信 authority/sensitivity envelope，不扫描正文推断权限"
+      sha256: "644dd7f85c2a212d6e93101a4101607d3e58ab79a8d6f8048061c5f654305609"
+    - ref: "@docs/agent-permission-governance-spec-2026-07-07.md"
+      role: "authority and effect contract"
+      decision_consumed: "在 bytes ingress 与外部 effect 边界执行 machine-authoritative policy；denied/unavailable/approval-required 保持 typed"
+      sha256: "e60f2dcf8711999cf655ccae180fb52810ad2a73f265028c1c56226ba73099ac"
+    - ref: "@docs/unified-context-assembly-and-progressive-disclosure-2026-07-14.md"
+      role: "context resource compatibility"
+      decision_consumed: "保留原始 authorized evidence 或 lossless ref；metadata projection 不能取代正文、引用或可恢复资源"
+      sha256: "c83a1f94b206af7de8bc44f7f4de35746c65d255574a347cbfd80ce0cc3075b7"
+    - ref: "@docs/session-v2-cc-codex-alignment-contract-2026-07-14.md"
+      role: "Session compatibility"
+      decision_consumed: "provenance 先作为现有 transcript/T0 的 typed metadata 贯穿，canonical Session item/reducer 仍由 Group 2 建立，禁止本 leaf 私造第二事件语言"
+      sha256: "52a13072ef51ec1ad8f22be5f484b274880c4b7aea801104bd4ca5cdc27c0ac4"
+  evidence_sink: "EVID-G1-008"
+```
+
+- CC/Codex 当前源码对照：FreeCode `7dc15d6c8` 的 `src/utils/toolResultStorage.ts:1-3,137-183` 对超大 tool result 保留完整 session 文件与可恢复 preview，`src/remote/sdkMessageAdapter.ts:176-194` 按结构化 `tool_result` block 恢复 remote result；Hive 没有用 sensitivity 丢弃 raw Knowledge evidence。Codex `5c19155cb` 的 `codex-rs/protocol/src/models.rs:1029-1045` 集中定义 typed `FunctionCallOutputPayload`，`rollout-trace/.../normalize.rs:445-457` 在无法内联时保留 raw payload ref，`rollout-trace/.../agents.rs:309-327` 把 canonical tool-result raw payload ref 带到 multi-agent edge；Hive 的 typed provenance + source/hash ref 是 additive control-plane delta，没有缩小 CC tool/result capability。
+- Red：首轮新回归在 collection 阶段因 `app.services.knowledge_provenance` 不存在而失败；建立最小 projector 后，五个回归分别坐实旧 `send_channel_message` adapter 不接收 sensitivity、nested subagent result 不携 provenance、assistant/T0/T2/outbox 消费链缺口；legacy repair 首轮因 repair module/entrypoint 缺失失败。失败都来自缺少 typed machine seam，不是自然语言扫描器的期望变化。
+- Green 实现：
+  - `knowledge_provenance.py` 只读取 `search/read_personal_kb`、`search/read_company_kb` 的可信 result envelope，按 canonical enum 求 `max_sensitivity`，记录 source manifest/result SHA-256、authority、coverage 与 warning；缺失/非法机器标签 fail closed 为 `PL4_credential`，但普通正文即使包含 `private/secret/restricted/credential` 也不会改变 PL1。
+  - `append_session_event()` 把 tool result projection 写入同一 transcript metadata，并让同 run/turn 的 assistant message 继承聚合 provenance；T0 保留原始可审计 evidence 和敏感等级，PL3/PL4 只把 `semantic_memory_eligible=false` 传给 T2，绝不删除 raw transcript/T0。
+  - T2 source-bundle 同时排除实时 `semantic_memory_eligible=false` 事件和 append-only repair 指向的 legacy transcript event，`excluded_refs` 保留可恢复引用；没有机械摘要、正文截断或平台生成语义。
+  - terminal `channel_delivery_outbox` 在 intent commit 前按 tenant/agent/session/run 加载 provenance；即时 `send_channel_message` 在实际 external effect 前按同一 run/turn 加载并传入 `content_sensitivity`。两个路径都复用 `ChannelDeliveryService` 的 typed policy，不从 message body 反推敏感度。
+  - foreground/background subagent、`spawn_subagent`、`check_subagent` 与 nested forwarding 都携 `hive.knowledge_provenance_aggregate.v1`；merge 保留 child source refs、tool names、coverage 与最大 sensitivity，避免 100-way/嵌套返回时 child label 消失。
+  - `repair_knowledge_provenance.py` 默认 dry-run，只有 `--apply --confirm` 才 append `knowledge_provenance_repair` event；不 update 原 transcript，不复制正文，只保存 target event id、typed projection、hash/ref 与版本。metadata JSON 已是现有 durable schema，因此本 leaf 不需要伪造空 migration。
+- 本地验收：TDD 最小 Green 为 `13 passed`，append-only repair Green 为 `4 passed`，nested source-ref 回归 Green；owned-area 宽回归为 `195 passed, 26 skipped`。从 staged Git index 解出的独立快照 `/tmp/hive-kbprop-index-20260715-a/backend` 初跑得到 `89 passed, 9 skipped in 3.26s`，文档回填时用下方同一解释器/同一快照复验为 `89 passed, 9 skipped in 2.83s`；同一快照对 19 个 owned code/test path 执行 `ruff check` 为 `All checks passed!`，`git diff --cached --check` 无输出。SQLAlchemy PostgreSQL compile 证明 JSON metadata filter 生成 `metadata_json ->> 'tool_name' IN (...)`，不是 SQLite-only 假绿。
+
+```bash
+cd /tmp/hive-kbprop-index-20260715-a/backend
+/Users/rocky243/vc-saas/hiveclaw-main/backend/.venv/bin/pytest tests/services/test_knowledge_provenance.py tests/services/test_knowledge_provenance_repair.py tests/services/test_agent_tools_channel_delivery.py tests/services/test_chat_transcript.py tests/services/test_channel_delivery_outbox.py tests/agents/test_subagent.py tests/agents/test_subagent_spawn_tool.py -q
+```
+
+- production deploy/health：同一 commit archive 部署 backend=`dcb72fa7-964f-47a7-bc79-0c415891045b`、backend-api=`02101bee-5473-437f-a19f-a760929f1264`、frontend=`c56ae319-0b43-4dc4-aa41-4233695fa17c`，三项最终均 `SUCCESS`。backend `/api/health`=`status=ok/version=1.7.0`，runtime role=`app_rls`、`strict`、non-superuser、non-BYPASSRLS，evolution/trigger/workflow daemon 均 healthy；frontend=`HTTP/2 200`。
+- production legacy disposition：backend 容器内运行 `python -m app.scripts.repair_knowledge_provenance` 默认 dry-run，结果 `tool_results_scanned=0`、`knowledge_results=0`、`sensitive_results=0`、`affected_sessions=0`、`repair_events_appended=0`。因此本次没有历史 Knowledge result 或既存 T2/T3 派生物需要 apply/quarantine/rebuild；没有把“脚本存在”冒充已经执行的迁移。
+- production exact-code canary：容器内直接调用已部署 `build_knowledge_provenance()`：显式 PL3 得到 `max_sensitivity=PL3_sensitive / semantic_memory_eligible=false`；正文包含 `private_secret_restricted_credential` 但显式标签为 PL1 时仍为 `PL1_public / eligible=true`；缺失标签得到 `held_invalid_sensitivity / PL4_credential / eligible=false / coverage.complete=false`。三项均输出稳定 result/source-manifest SHA-256，证明 hard outcome 只依赖机器标签与 schema，不依赖自然语言关键词。
+- rollback/fault：invalid/missing/forwarded-drift label 只会 fail closed、hold semantic promotion 或让外传进入 typed policy，不会删除 raw evidence或替模型写结论。若新链路故障，forward-safe containment 是暂停新 channel delivery、保留 transcript/T0/outbox/repair ref 并重试 projector；repair 是 append-only，原 bytes 无需数据 rollback。禁止回退到“丢 provenance 仍外传/蒸馏”的旧路径。生产历史扫描为零，所以本项不存在待回滚 data mutation。
+- 七原子：Input=governed Knowledge tool result + exact run/turn/child envelope；Authority=KB-AUTH requester/grant frame + canonical sensitivity label；Execution=single projector/aggregator + T2/effect consumer；Evidence=transcript/T0 metadata、source/result hashes、outbox detail、subagent aggregate 与 append-only repair ref；Recovery=PL4 fail-closed、hold/retry、raw evidence preservation、dry-run/confirm；Consumption=T2 distillation eligibility、direct/terminal channel delivery、foreground/background/nested subagent；Acceptance=Red→Green、independent index snapshot、ruff/PG compile、three-service deploy、production dry-run/canary/health。七原子均有当前真实路径，因此本 leaf 可独立关闭。
+- 残余边界：`KB-CONTRACT-001` 仍负责 Knowledge tool description/schema/runtime 三者诚实一致；Group 2 仍负责 canonical Session event/item/reducer 与 persist-before-publish；Group 6 仍负责通用 Context Resource Plane 和 100-way context pressure；Group 8 仍负责完整 T0→T2→T3→soul durable intelligence loop。对应 canonical 行已更新为 `closed:EVID-G1-008`；Group 1 当前为 8/16 closed、0 deployed-but-open、8/16 pending，103 分母、severity、owner 与 5 个 Missing 均不变。
 
 ## 13. Missing、Coverage Gap 与完成口径
 

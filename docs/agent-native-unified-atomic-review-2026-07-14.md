@@ -4,7 +4,7 @@
 >
 > 原始审查冻结快照：`main@501db6555dae374e5fcf43a6fdcfe8a3dd89343e` + 2026-07-14 当时未提交工作树；后续施工不改写这个审查锚点，每条 `EVID-*` 另记自己的开工 HEAD、工作树与生产快照
 >
-> 修复账本滚动更新：2026-07-15；Group 0 已用 `EVID-G0-005` 把 11 个上下文包总索引、逐 Group 详细路由和证据回流做成机器门并保持关闭；Group 1 的同源三服务部署已经成功，`P0-F1/P0-F2/KB-EXTRACT-001/KB-AUTH-001` 已分别以 `EVID-G1-001/002/006/007` 完成 production canary 并关闭，`E-1/P1-004/P1-F4` 仍因 live authority/recovery canary 与历史数据处置保持 open；不得把 4 个独立 leaf 的关闭冒充 Group 1 或 103 项完成。
+> 修复账本滚动更新：2026-07-15；Group 0 已用 `EVID-G0-006` 把 11 个上下文包、88 个可执行 `@` 文档入口、逐 Group 详细路由和证据回流做成机器门并保持关闭；Group 1 的同源三服务部署已经成功，`P0-F1/P0-F2/KB-EXTRACT-001/KB-AUTH-001` 已分别以 `EVID-G1-001/002/006/007` 完成 production canary 并关闭，`E-1/P1-004/P1-F4` 仍因 live authority/recovery canary 与历史数据处置保持 open；不得把 4 个独立 leaf 的关闭冒充 Group 1 或 103 项完成。
 >
 > 组合输入：`agent-native-atomic-review-2026-07-14.md`、`agent-native-extreme-boundary-atomic-review-2026-07-14.md`、`unified-context-assembly-and-progressive-disclosure-2026-07-14.md`、`session-v2-cc-codex-alignment-contract-2026-07-14.md`、修订后的 `reusable-agent-native-atomic-review-prompt.md`，以及当前 Hive / FreeCode / Codex 本地源码。
 >
@@ -147,6 +147,15 @@ context_read_receipt:
 - Group 9 | primary=@docs/frontend-design-refinement-2026-07-03.md; @docs/session-timeline-projection-contract-2026-07-04.md; @docs/chat-artifact-delivery-redesign-2026-06-20.md | purpose=让 UI/Workspace/Artifact 消费同一 typed truth，完成 backfill 与旧路径退出 | detail=§9 Group 9 @原始断点证据/@必须先读/@按需读取 | sink=§12.4 EVID-G9-*
 - Group 10 | primary=@docs/hive-sota-master-goal.md; @docs/eval-system-spec.md; @docs/self-evolution-sota-plan.md | purpose=逐 leaf refute-first 重认证、真实 paired replay、Goal 1 非劣与总账清零 | detail=§9 Group 10 @原始断点证据/@必须先读/@按需读取 | sink=§12.4 EVID-G10-*
 <!-- group-context-package-map-end -->
+
+<!-- group-context-route-inventory-start -->
+- root=1
+- local=79
+- external=8
+- total=88
+<!-- group-context-route-inventory-end -->
+
+当前 `§9` 的完整 Group 路由共有 **88 个去重后的可执行文档入口**：仓库根 `@AGENTS.md` 1 份、本仓 `@docs` 79 份、固定 Hive Connect snapshot 8 份。这个数字是路由完整性快照，不是要求每个 leaf 一次加载 88 份文档：执行者只读取本 Group 的 `@必须先读`，再按实际触及的子域展开 `@按需读取`；实际消费必须写进 `Context Read Receipt`。本仓入口必须全部 Git-tracked，跨仓入口必须通过 §0.3 的 commit + SHA-256 registry；`backend/tests/architecture/test_agent_native_repair_ledger.py` 负责验证 11/11 Group、路径可读性、唯一 owner 与证据往返。
 
 如果施工中发现一份真正影响目标状态、迁移、运行或验收的文档未出现在当前 Group 的完整 `@` 路由中，必须先更新本 Group 路由、`Context Read Receipt` 和 architecture validator，再写业务代码；禁止把未登记文档当隐藏权威。反之，纯历史叙述、已被新合同覆盖的旧方案或无 live consumer 的文档只留在 `@原始断点证据`/archive，不得塞进 `@必须先读` 增加上下文噪声。
 
@@ -583,8 +592,8 @@ Group 摘要不能替代以下两份文档：
 
 | Group | owner canonical leaf | owner Missing | 当前状态 |
 |---:|---:|---:|---|
-| 0 | 0（全局门） | 0 | closed：`EVID-G0-002/003/004/005`，Git truth、机器账本、11 个上下文包/总索引、跨仓快照与 clean-checkout harness 已闭环 |
-| 1 | 16 | 0 | in_progress：`P0-F1/P0-F2/KB-EXTRACT-001` 已关闭；`E-1/P1-004/P1-F4` 已部署但 live authority/recovery gate 仍 open；其余 10 个 leaf 待施工 |
+| 0 | 0（全局门） | 0 | closed：`EVID-G0-002/003/004/005/006`，Git truth、机器账本、11 个上下文包/88 个 `@` 文档入口、跨仓快照与 clean-checkout harness 已闭环 |
+| 1 | 16 | 0 | in_progress：`P0-F1/P0-F2/KB-EXTRACT-001/KB-AUTH-001` 已关闭（4/16）；`E-1/P1-004/P1-F4` 已部署但 live authority/recovery gate 仍 open（3/16）；其余 9 个 leaf 待施工 |
 | 2 | 14 | 0 | open |
 | 3 | 7 | 0 | open |
 | 4 | 6 | 0 | open |
@@ -640,7 +649,7 @@ Group 摘要不能替代以下两份文档：
 
 **依赖 Group**：Group 0。P0/P1 家族自身闭环后立即发布，不等待 Group 2–10。
 
-**AA 开工入口**：本文 `§12.1` 的 16 个 Group 1 owner 行、`§12.2` 对应 canonical 行、`§12.3 EVID-G1-*` 和已有 `§12.4 EVID-G1-001/002/003/004/005/006`；每次只开一个 leaf/同根安全家族，不把 Group 1 当成单个巨型改动。
+**AA 开工入口**：本文 `§12.1` 的 16 个 Group 1 owner 行、`§12.2` 对应 canonical 行、`§12.3 EVID-G1-*` 和 `§12.4` 下由该索引列出的全部当前证据记录；每次只开一个 leaf/同根安全家族，不把 Group 1 当成单个巨型改动，也不在本入口硬编码易漂移的证据编号清单。
 
 **@原始断点证据**：
 
@@ -1315,7 +1324,7 @@ Group 0 是全局证据门，不拥有业务 leaf。下面 103 行必须与 cano
 <!-- group-evidence-index-start -->
 | Group | 证据前缀 | Owner 范围 | 当前证据状态 | 下一次写入要求 |
 |---:|---|---|---|---|
-| 0 | `EVID-G0-*` | 0 leaf / 0 Missing | `closed`：`EVID-G0-001/002/003/004/005`；文档 Git truth、owner/path/decision/scenario CI、11 个 Group 上下文包与机器总索引、59 份本地 `@docs` clean-checkout 快照、跨仓快照与 fake-provider/PG/Redis harness 基座成立 | 后续任何新增本地 `@docs` 必须先进入 Git 并同步上下文包索引；业务场景 Green 仍由 owner Group 负责 |
+| 0 | `EVID-G0-*` | 0 leaf / 0 Missing | `closed`：`EVID-G0-001/002/003/004/005/006`；文档 Git truth、owner/path/decision/scenario CI、11 个 Group 上下文包、88 个去重 `@` 文档入口、跨仓快照与 fake-provider/PG/Redis harness 基座成立 | 后续任何新增本地 `@docs` 必须先进入 Git 并同步上下文包索引；业务场景 Green 仍由 owner Group 负责 |
 | 1 | `EVID-G1-*` | 16 leaf / 0 Missing | `in_progress`：七个独立 code commit；`P0-F1/P0-F2/KB-EXTRACT-001/KB-AUTH-001` production canary 已绿并关闭（4/16）；`E-1/P1-004/P1-F4` 已部署但 live authority/recovery gate 仍 open（3/16），P1-F4 最新 dry-run=`54 would_quarantine`；其余 9 leaf 未施工 | 先完成 E-1 legacy disposition、P1-004 A2A canary、P1-F4 apply/恢复 canary；随后按依赖开工 `KB-PROP-001`，不得用本地 Green、shared deploy 或 dry-run 冒充 leaf closed |
 | 2 | `EVID-G2-*` | 14 leaf / 0 Missing | `open` | 写 Session event/item/reducer、persist-before-publish、projection/backfill 与 SESSION-G 结果 |
 | 3 | `EVID-G3-*` | 7 leaf / 0 Missing | `open` | 写 root admission、reserve/commit/release、terminal CAS、approval resume 与 fanout 曲线 |
@@ -1544,6 +1553,46 @@ context_read_receipt:
 - migration / rollback：纯 Markdown 导航与 architecture validator，无 schema/data migration、backfill 或 runtime。rollback 只能同时回退 §0.6 与对应 validator；单独删索引会让测试 Red，单独删 validator 会重新允许路由静默漂移。
 - 七原子：Input=Group/leaf/Missing；Authority=L0/L1 + §9 完整路由；Execution=primary→detail→源码/Red；Evidence=Context Read Receipt + EVID；Recovery=稳定章节、Git-tracked docs、跨仓 pinned snapshot 与 route delta；Consumption=后续每个 Group 的开工流程；Acceptance=11/11 index、79/79 本仓路由、8/8 跨仓 hash、10 tests、ruff、diff check。
 - 残余风险：文档路由只能保证施工者拿到正确上下文和回填位置，不能证明任何业务 leaf 已 Green；Group 1 仍是 5 个 local Green/production gate open，Group 2–10 状态不因本记录改变。
+
+#### EVID-G0-006：88 个 `@` 文档入口与防漂移开工索引终校
+
+- `leaf_ids` / `missing_ids`：无；本记录只收紧 AA 的施工导航和证据回流，不改变 103 个 breakpoint、5 个 Missing、severity、owner 或业务状态。
+- owner Group / 依赖 Group：Group 0 / 无。
+- 当前状态：`closed`；11/11 Group 的完整上下文包继续以 §9 为唯一事实源，当前 88 个去重入口已有显式 inventory 与机器守恒。
+- 证据 owner / 更新时间：主 Agent / 2026-07-15。
+- 冻结事实：开工 HEAD=`bba729daf790645cd8bdc96e565da04cc6b56956`；共享工作树有其它 session 的 tracked/untracked 改动。本项 owned paths 仅为本文与 `backend/tests/architecture/test_agent_native_repair_ledger.py`，没有接管、覆盖或 stage 其它路径。
+- Context Read Receipt：
+
+```yaml
+context_read_receipt:
+  aa_entry: "§0.5–§0.6 + §9 Group 0–10 + §12.3/§12.4"
+  leaf_ids: []
+  documents:
+    - ref: "@docs/agent-native-unified-atomic-review-2026-07-14.md §0.5–§0.6"
+      role: "authority"
+      decision_consumed: "AA 只保存导航、owner、裁决和证据；长设计留在逐 Group 分类的 @文档，施工后必须把证据收回 AA"
+    - ref: "@docs/unified-context-assembly-and-progressive-disclosure-2026-07-14.md §施工消费合同"
+      role: "design"
+      decision_consumed: "Context 全文设计由对应 Group 消费，不能复制成 AA 的第二份设计真相"
+    - ref: "@docs/session-v2-cc-codex-alignment-contract-2026-07-14.md §施工消费合同"
+      role: "design"
+      decision_consumed: "Session Event/Item/Reducer 的实施和验收证据回填统一 canonical ledger"
+  source_baselines:
+    hive_head: "bba729daf790645cd8bdc96e565da04cc6b56956"
+    freecode_head: "not-applicable: docs-only navigation guard; each business leaf still performs fresh source comparison"
+    codex_head: "not-applicable: docs-only navigation guard; each business leaf still performs fresh source comparison"
+  conflicts_or_deltas:
+    - "既有 Group 1 快速状态漏列已关闭的 KB-AUTH-001，和 §12.3 的 4/16 truth 漂移"
+    - "Group 1 AA 开工入口硬编码到 EVID-G1-006，新增证据后会继续漂移"
+    - "既有路由校验确认路径存在，但没有把 1 root + 79 local + 8 external 的当前总量变成显式守恒量"
+  evidence_sink: "EVID-G0-006"
+```
+
+- Red：先新增 `test_group_context_route_inventory_is_explicit_and_current`，执行 `pytest -q tests/architecture/test_agent_native_repair_ledger.py::test_group_context_route_inventory_is_explicit_and_current` → `1 failed`；正确失败为 AA 缺少 `group-context-route-inventory` machine-readable region，证明“全部 `@` 出来”只有 prose/路径存在性，没有总量防漂移门。
+- 实现：§0.6 显式声明 11 个 Group 当前共有 root 1、本仓 79、跨仓 8、总计 88 个去重入口；保留 `@必须先读` 与 `@按需读取` 的软披露边界，不要求单 leaf 全量加载。Group 1 快速状态同步为 4/16 closed、3/16 deployed-open、9/16 pending；AA 开工入口改为以 §12.3 索引读取 §12.4 全部当前证据，不再硬编码易漂移编号。
+- Green：targeted inventory gate → `1 passed`；写回最终证据后的完整 ledger validator → `11 passed`；`ruff check tests/architecture/test_agent_native_repair_ledger.py` → `All checks passed!`。
+- migration / deploy / rollback：纯 Markdown 导航与 architecture validator，无 schema/data/runtime migration 或三服务部署。回退必须同时回退 inventory 文字、machine region 与 validator；不得只删一侧制造假 Green。
+- 七原子：Input=Group/leaf；Authority=L0/L1 + §9 唯一路由；Execution=AA→primary→完整 Group 包→源码/Red；Evidence=inventory test + Context Read Receipt + EVID；Recovery=Git history、stable section、route delta；Consumption=所有后续 Group 开工；Acceptance=11/11 Group、88/88 路由、11 tests、Ruff。业务 leaf 状态不因本记录改变。
 
 #### EVID-G1-001：P0-F1 governed public HTTP egress
 

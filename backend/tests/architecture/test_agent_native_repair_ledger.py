@@ -225,6 +225,33 @@ def test_every_group_has_one_machine_readable_context_package_index() -> None:
         assert sink.strip() == f"§12.4 EVID-G{group}-*"
 
 
+def test_group_context_route_inventory_is_explicit_and_current() -> None:
+    source = REPORT.read_text(encoding="utf-8")
+    route_section = source[source.index("\n## 9.") : source.index("\n## 10.")]
+    references = set(
+        re.findall(
+            r"`@(AGENTS\.md|docs/[A-Za-z0-9._/-]+\.md|hive-connect:[A-Za-z0-9._/-]+\.md)`",
+            route_section,
+        )
+    )
+    actual = {
+        "root": sum(reference == "AGENTS.md" for reference in references),
+        "local": sum(reference.startswith("docs/") for reference in references),
+        "external": sum(reference.startswith("hive-connect:") for reference in references),
+        "total": len(references),
+    }
+    declared = {
+        key: int(value)
+        for key, value in re.findall(
+            r"^- (root|local|external|total)=(\d+)$",
+            _region(source, "group-context-route-inventory"),
+            re.MULTILINE,
+        )
+    }
+
+    assert declared == actual == {"root": 1, "local": 79, "external": 8, "total": 88}
+
+
 def test_document_routes_are_portable_and_external_refs_are_snapshot_bound() -> None:
     source = REPORT.read_text(encoding="utf-8")
     references = set(re.findall(r"`@([^`]+\.md)`", source))

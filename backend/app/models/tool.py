@@ -8,6 +8,7 @@ from sqlalchemy.dialects.postgresql import JSON, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
+from app.services.agent_tool_config_storage import EncryptedAgentToolConfig
 
 
 class Tool(Base):
@@ -79,7 +80,9 @@ class AgentTool(Base):
     # assignment's prior intent so administrator review can restore exactly
     # that state without overriding an explicit agent-level disable.
     mcp_trust_requested_enabled: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
-    config: Mapped[dict] = mapped_column(JSON, default=dict)  # per-agent tool config overrides
+    # The complete document is envelope-encrypted because third-party MCP
+    # providers may use arbitrary credential field names.
+    config: Mapped[dict] = mapped_column(EncryptedAgentToolConfig(), default=dict)
     source: Mapped[str] = mapped_column(String(20), default="system")  # "system" | "user_installed"
     installed_by_agent_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), nullable=True

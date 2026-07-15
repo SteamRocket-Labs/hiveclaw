@@ -26,7 +26,8 @@ from app.services.governance_capability_taxonomy import capability_descriptor_fo
 from app.services.mcp_client import MCPClient
 from app.services.tool_config_service import (
     encrypt_tool_config_secrets,
-    mask_tool_config_secrets,
+    mask_agent_tool_config_secrets,
+    merge_agent_tool_config_secrets,
     merge_tool_config_secrets,
     resolve_tool_config_for_tenant_display,
     update_tenant_tool_config,
@@ -432,7 +433,7 @@ def _serialize_tool(tool: Tool, *, enabled: bool | None = None, config: dict | N
         "category": tool.category,
         "icon": tool.icon,
         "parameters_schema": tool.parameters_schema or {},
-        "config": mask_tool_config_secrets(
+        "config": mask_agent_tool_config_secrets(
             config if config is not None else (tool.config or {}), tool.config_schema or {}
         ),
         "config_schema": tool.config_schema or {},
@@ -536,8 +537,8 @@ def _serialize_agent_tool_row(tool: Tool, agent_tool: AgentTool | None) -> dict:
         ),
         "agent_tool_id": str(agent_tool.id) if agent_tool else None,
         "source": agent_tool.source if agent_tool else "system",
-        "global_config": mask_tool_config_secrets(tool.config or {}, tool.config_schema or {}),
-        "agent_config": mask_tool_config_secrets(agent_config or {}, tool.config_schema or {}),
+        "global_config": mask_agent_tool_config_secrets(tool.config or {}, tool.config_schema or {}),
+        "agent_config": mask_agent_tool_config_secrets(agent_config or {}, tool.config_schema or {}),
     }
 
 
@@ -966,7 +967,8 @@ async def get_category_config(
     if not rows:
         return {"config": {}}
     agent_tool, tool = rows[0]
-    return {"config": {**(tool.config or {}), **(agent_tool.config or {})}}
+    effective_config = {**(tool.config or {}), **(agent_tool.config or {})}
+    return {"config": mask_agent_tool_config_secrets(effective_config, tool.config_schema or {})}
 
 
 @router.get("/tools/agents/{agent_id}/runtime/feishu-status")
@@ -997,11 +999,16 @@ async def update_category_config(
         .join(Tool, Tool.id == AgentTool.tool_id)
         .where(AgentTool.agent_id == agent_id, Tool.category == category)
     )
-    assignments = [agent_tool for agent_tool, tool in rows_result.all() if is_tool_allowed_for_agent(tool, agent)]
-    for assignment in assignments:
-        assignment.config = data.config
+    rows = [row for row in rows_result.all() if is_tool_allowed_for_agent(row[1], agent)]
+    for assignment, tool in rows:
+        assignment.config = merge_agent_tool_config_secrets(
+            data.config,
+            assignment.config,
+            tool.config_schema or {},
+        )
     await db.commit()
-    return {"ok": True, "config": data.config}
+    response_config = mask_agent_tool_config_secrets(rows[0][0].config, rows[0][1].config_schema or {}) if rows else {}
+    return {"ok": True, "config": response_config}
 
 
 @router.post("/tools/agents/{agent_id}/category-config/{category}/test")
@@ -1017,8 +1024,19 @@ async def test_category_config(
         payload = await _build_feishu_runtime_status(agent_id, db=db, tenant_id=tenant_id)
         payload.update(await _probe_feishu_cardkit_status(agent_id=agent_id, db=db, tenant_id=tenant_id))
         return payload
-    config_payload = await get_category_config(agent_id=agent_id, category=category, current_user=current_user, db=db)
-    config = config_payload.get("config", {})
+    if category in {"email", "agentbay"}:
+        config_result = await db.execute(
+            select(AgentTool, Tool)
+            .join(Tool, Tool.id == AgentTool.tool_id)
+            .where(AgentTool.agent_id == agent_id, Tool.category == category)
+            .order_by(Tool.display_name.asc())
+        )
+        runtime_rows = [
+            (agent_tool, tool) for agent_tool, tool in config_result.all() if is_tool_allowed_for_agent(tool, agent)
+        ]
+        config = {**(runtime_rows[0][1].config or {}), **(runtime_rows[0][0].config or {})} if runtime_rows else {}
+    else:
+        config = {}
     if category == "email":
         return await test_email_connection(config)
     if category == "agentbay":
@@ -1036,18 +1054,23 @@ async def update_tool_config(
     db: AsyncSession = Depends(get_db),
 ):
     agent = await _require_manage_access(db, current_user, agent_id)
-    if not await _get_visible_agent_tool(db, agent, tool_id):
+    tool = await _get_visible_agent_tool(db, agent, tool_id)
+    if not tool:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tool not found")
     assignment, _ = await ensure_agent_tool_assignment(
         db,
         agent_id=agent_id,
         tool_id=tool_id,
         enabled=True,
-        config=data.config,
+        config=None,
         source="system",
         merge_config=False,
     )
-    assignment.config = data.config
+    assignment.config = merge_agent_tool_config_secrets(
+        data.config,
+        assignment.config,
+        tool.config_schema or {},
+    )
     await db.commit()
     return {"ok": True}
 

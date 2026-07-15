@@ -178,6 +178,87 @@ def test_serialize_tool_exposes_provider_auth_metadata_for_no_key_web_tools():
     assert xcrawl_payload["provider_auth"]["label"] == "Key required"
 
 
+def test_serialize_agent_tool_row_masks_schema_less_mcp_credentials() -> None:
+    import app.api.tools as tools_api
+    from app.services.tool_config_service import MASKED_SECRET_SENTINEL
+
+    tenant_id = uuid4()
+    tool = _make_mcp_tool(name="github_lookup", tenant_id=tenant_id)
+    assignment = SimpleNamespace(
+        id=uuid4(),
+        tool_id=tool.id,
+        enabled=True,
+        source="user_installed",
+        config={
+            "api_key": "direct-mcp-secret",
+            "nested": {"githubPersonalAccessToken": "nested-mcp-secret"},
+            "smithery_namespace": "safe-namespace",
+        },
+    )
+
+    payload = tools_api._serialize_agent_tool_row(tool, assignment)
+
+    assert payload["config"]["api_key"] == MASKED_SECRET_SENTINEL
+    assert payload["config"]["nested"]["githubPersonalAccessToken"] == MASKED_SECRET_SENTINEL
+    assert payload["agent_config"]["api_key"] == MASKED_SECRET_SENTINEL
+    assert payload["agent_config"]["nested"]["githubPersonalAccessToken"] == MASKED_SECRET_SENTINEL
+    assert payload["agent_config"]["smithery_namespace"] == "safe-namespace"
+    assert "direct-mcp-secret" not in str(payload)
+    assert "nested-mcp-secret" not in str(payload)
+
+
+@pytest.mark.asyncio
+async def test_category_config_masks_credentials_and_preserves_them_on_sentinel_update(monkeypatch) -> None:
+    import app.api.tools as tools_api
+    from app.services.tool_config_service import MASKED_SECRET_SENTINEL
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    current_user = SimpleNamespace(id=uuid4(), role="org_admin", tenant_id=tenant_id)
+    agent = SimpleNamespace(id=agent_id, tenant_id=tenant_id, creator_id=current_user.id)
+    tool = _make_mcp_tool(name="github_lookup", tenant_id=tenant_id)
+    tool.category = "mcp"
+    assignment = SimpleNamespace(
+        id=uuid4(),
+        agent_id=agent_id,
+        tool_id=tool.id,
+        enabled=True,
+        source="user_installed",
+        config={"api_key": "stored-secret", "region": "cn"},
+    )
+
+    async def fake_check_agent_access(_db, _user, target_agent_id):
+        assert target_agent_id == agent_id
+        return agent, "manage"
+
+    monkeypatch.setattr(tools_api, "check_agent_access", fake_check_agent_access)
+
+    read_db = _FakeDB([_ListResult([(assignment, tool)])])
+    payload = await tools_api.get_category_config(
+        agent_id=agent_id,
+        category="mcp",
+        current_user=current_user,
+        db=read_db,
+    )
+    assert payload == {"config": {"api_key": MASKED_SECRET_SENTINEL, "region": "cn"}}
+
+    write_db = _FakeDB([_ListResult([(assignment, tool)])])
+    updated = await tools_api.update_category_config(
+        agent_id=agent_id,
+        category="mcp",
+        data=tools_api.CategoryConfigIn(config={"api_key": MASKED_SECRET_SENTINEL, "region": "us"}),
+        current_user=current_user,
+        db=write_db,
+    )
+
+    assert assignment.config == {"api_key": "stored-secret", "region": "us"}
+    assert updated == {
+        "ok": True,
+        "config": {"api_key": MASKED_SECRET_SENTINEL, "region": "us"},
+    }
+    assert write_db.committed is True
+
+
 @pytest.mark.asyncio
 async def test_list_agent_tools_with_config_surfaces_only_agent_declared_pack_tools(monkeypatch):
     import app.api.tools as tools_api
@@ -743,6 +824,50 @@ async def test_test_category_config_reports_feishu_cli_status(monkeypatch):
     assert result["cardkit_ready"] is False
     assert result["cardkit_verified"] is True
     assert result["cardkit_probe_supported"] is True
+
+
+@pytest.mark.asyncio
+async def test_test_email_category_uses_runtime_secret_not_masked_display_value(monkeypatch) -> None:
+    import app.api.tools as tools_api
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    current_user = SimpleNamespace(id=uuid4(), role="org_admin", tenant_id=tenant_id)
+    agent = SimpleNamespace(id=agent_id, tenant_id=tenant_id, creator_id=current_user.id)
+    tool = _make_builtin_tool(name="send_email", category="email")
+    assignment = SimpleNamespace(
+        id=uuid4(),
+        agent_id=agent_id,
+        tool_id=tool.id,
+        config={
+            "email_provider": "gmail",
+            "email_address": "ops@example.test",
+            "auth_code": "mail-runtime-secret",
+        },
+    )
+    db = _FakeDB([_ListResult([(assignment, tool)])])
+    observed: dict = {}
+
+    async def fake_require_manage_access(_db, _user, target_agent_id):
+        assert target_agent_id == agent_id
+        return agent
+
+    async def fake_test_email_connection(config):
+        observed.update(config)
+        return {"ok": True}
+
+    monkeypatch.setattr(tools_api, "_require_manage_access", fake_require_manage_access)
+    monkeypatch.setattr(tools_api, "test_email_connection", fake_test_email_connection)
+
+    result = await tools_api.test_category_config(
+        agent_id=agent_id,
+        category="email",
+        current_user=current_user,
+        db=db,
+    )
+
+    assert result == {"ok": True}
+    assert observed["auth_code"] == "mail-runtime-secret"
 
 
 @pytest.mark.asyncio

@@ -10,6 +10,7 @@ across tenants.
 
 from __future__ import annotations
 
+from copy import deepcopy
 import logging
 import re
 import uuid
@@ -20,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import tenant_scoped_session
 from app.models.tenant_tool_config import TenantToolConfig
 from app.models.tool import AgentTool, Tool
+from app.services.agent_tool_config_storage import is_agent_tool_credential_key
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +81,31 @@ def mask_tool_config_secrets(config: dict | None, config_schema: dict | None) ->
     return masked
 
 
+def _is_masked_secret_value(value: object) -> bool:
+    rows = _split_multiline_secret_rows(value)
+    return bool(rows) and all(row == MASKED_SECRET_SENTINEL for row in rows)
+
+
+def mask_agent_tool_config_secrets(config: dict | None, config_schema: dict | None) -> dict:
+    """Mask schema-declared and structurally named AgentTool credentials."""
+
+    def mask(item: object) -> object:
+        if isinstance(item, dict):
+            protected: dict[str, object] = {}
+            for key, child in item.items():
+                if is_agent_tool_credential_key(key) and child:
+                    protected[key] = child if _is_masked_secret_value(child) else MASKED_SECRET_SENTINEL
+                else:
+                    protected[key] = mask(child)
+            return protected
+        if isinstance(item, list):
+            return [mask(child) for child in item]
+        return item
+
+    schema_masked = mask_tool_config_secrets(config, config_schema)
+    return mask(schema_masked)  # type: ignore[return-value]
+
+
 def merge_tool_config_secrets(
     incoming: dict | None,
     stored: dict | None,
@@ -118,6 +145,43 @@ def merge_tool_config_secrets(
             else:
                 incoming.pop(key, None)
     return incoming
+
+
+def merge_agent_tool_config_secrets(
+    incoming: dict | None,
+    stored: dict | None,
+    config_schema: dict | None,
+) -> dict:
+    """Preserve stored AgentTool credentials when a masked API value returns."""
+
+    schema_merged = merge_tool_config_secrets(incoming, stored, config_schema)
+    stored = stored if isinstance(stored, dict) else {}
+
+    def merge(item: object, previous: object) -> object:
+        if isinstance(previous, dict):
+            output = deepcopy(item) if isinstance(item, dict) else {}
+            for key, old_child in previous.items():
+                if is_agent_tool_credential_key(key):
+                    if key not in output or _is_masked_secret_value(output.get(key)):
+                        output[key] = deepcopy(old_child)
+                    continue
+                if isinstance(old_child, (dict, list)):
+                    candidate = merge(output.get(key), old_child)
+                    if candidate not in ({}, []) or key in output:
+                        output[key] = candidate
+            return output
+        if isinstance(previous, list):
+            current = list(item) if isinstance(item, list) else []
+            output: list[object] = []
+            for index, old_child in enumerate(previous):
+                new_child = current[index] if index < len(current) else None
+                output.append(merge(new_child, old_child))
+            if len(current) > len(previous):
+                output.extend(deepcopy(current[len(previous) :]))
+            return output
+        return deepcopy(item)
+
+    return merge(schema_merged, stored)  # type: ignore[return-value]
 
 
 _ENCRYPTED_SECRET_PREFIX = "enc:v1:"

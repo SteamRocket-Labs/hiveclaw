@@ -4,7 +4,7 @@
 >
 > 原始审查冻结快照：`main@501db6555dae374e5fcf43a6fdcfe8a3dd89343e` + 2026-07-14 当时未提交工作树；后续施工不改写这个审查锚点，每条 `EVID-*` 另记自己的开工 HEAD、工作树与生产快照
 >
-> 修复账本滚动更新：2026-07-15；Group 0 已用 `EVID-G0-006` 把 11 个上下文包、88 个可执行 `@` 文档入口、逐 Group 详细路由和证据回流做成机器门并保持关闭；Group 1 的同源三服务部署已经成功，`P0-F1/P0-F2/E-1/P1-004/P1-F4/KB-EXTRACT-001/KB-AUTH-001/KB-PROP-001/BUD-ROOT-001/AUDIT-IMM-001` 已分别以 `EVID-G1-001/002/003/004/005/006/007/008/009/010` 完成 production canary 并关闭；Group 1 当前为 10/16 closed、6/16 pending，不再有“已部署但未关闭”的 leaf。不得把 10 个独立 leaf 的关闭冒充 Group 1 或 103 项完成。
+> 修复账本滚动更新：2026-07-15；Group 0 已用 `EVID-G0-006` 把 11 个上下文包、88 个可执行 `@` 文档入口、逐 Group 详细路由和证据回流做成机器门并保持关闭；Group 1 的同源三服务部署已经成功，`P0-F1/P0-F2/E-1/P1-004/P1-F4/KB-EXTRACT-001/KB-AUTH-001/KB-PROP-001/BUD-ROOT-001/AUDIT-IMM-001/AUDIT-TENANT-001` 已分别以 `EVID-G1-001/002/003/004/005/006/007/008/009/010/011` 完成 production canary 并关闭；Group 1 当前为 11/16 closed、5/16 pending，不再有“已部署但未关闭”的 leaf。不得把 11 个独立 leaf 的关闭冒充 Group 1 或 103 项完成。
 >
 > 组合输入：`agent-native-atomic-review-2026-07-14.md`、`agent-native-extreme-boundary-atomic-review-2026-07-14.md`、`unified-context-assembly-and-progressive-disclosure-2026-07-14.md`、`session-v2-cc-codex-alignment-contract-2026-07-14.md`、修订后的 `reusable-agent-native-atomic-review-prompt.md`，以及当前 Hive / FreeCode / Codex 本地源码。
 >
@@ -593,7 +593,7 @@ Group 摘要不能替代以下两份文档：
 | Group | owner canonical leaf | owner Missing | 当前状态 |
 |---:|---:|---:|---|
 | 0 | 0（全局门） | 0 | closed：`EVID-G0-002/003/004/005/006`，Git truth、机器账本、11 个上下文包/88 个 `@` 文档入口、跨仓快照与 clean-checkout harness 已闭环 |
-| 1 | 16 | 0 | in_progress：`P0-F1/P0-F2/E-1/P1-004/P1-F4/KB-EXTRACT-001/KB-AUTH-001/KB-PROP-001/BUD-ROOT-001/AUDIT-IMM-001` 已关闭（10/16）；无 deployed-but-open leaf；其余 6 个 leaf 待施工 |
+| 1 | 16 | 0 | in_progress：`P0-F1/P0-F2/E-1/P1-004/P1-F4/KB-EXTRACT-001/KB-AUTH-001/KB-PROP-001/BUD-ROOT-001/AUDIT-IMM-001/AUDIT-TENANT-001` 已关闭（11/16）；无 deployed-but-open leaf；其余 5 个 leaf 待施工 |
 | 2 | 14 | 0 | open |
 | 3 | 7 | 0 | open |
 | 4 | 6 | 0 | open |
@@ -916,7 +916,7 @@ Group 摘要不能替代以下两份文档：
 
 **源码入口**：terminal hook/T2 job/outbox、T0 projection/hash verifier、T2/T3 write authority/locks、capability factor consumers、Memory availability gates、Knowledge ACL/index/retention/audit。
 
-**首个 Red**：在 terminal commit 后注入 T2 provider outage、worker crash/restart、dead-letter/requeue、T0 hash tamper、并发 T3 write、rolling deploy 期间旧实例长期持有 Agent asset lock、Knowledge ACL revoke 与 retention/legal hold；证明 terminal 被阻塞、证据不可验、锁外写、无 timeout 的新实例 startup 等待、永久 held 或跨资产删除不守恒。`EVID-G1-010` 已记录一次 production deployment 从提交到 `SUCCESS` 约 7 分钟、其中 uvicorn startup wait 约 3 分 20 秒且公共 health 一度 502 的真实输入；最后可见 startup seam 与当前无 timeout blocking `flock` 源码一致，但没有进程 stack 证据，必须由 Group 8 fault injection 最终坐实或推翻。它作为 lock/recovery 验收场景回流，不新增第 104 个 leaf，也不得被 `AUDIT-IMM-001` 的关闭掩盖。
+**首个 Red**：在 terminal commit 后注入 T2 provider outage、worker crash/restart、dead-letter/requeue、T0 hash tamper、并发 T3 write、rolling deploy 期间旧实例长期持有 Agent asset lock、Knowledge ACL revoke 与 retention/legal hold；证明 terminal 被阻塞、证据不可验、锁外写、无 timeout 的新实例 startup 等待、永久 held 或跨资产删除不守恒。`EVID-G1-010/011` 已连续两次记录 production backend 在 `startup: push default skills to every existing agent across tenants` 后长停顿，后一次 deployment 从创建到 `SUCCESS` 约 6 分 50 秒、uvicorn startup 从 `Waiting` 到 daemon ready 约 3 分 20 秒，health 的 `event_loop.max_lag_ms=190949.93`；停顿位置已重复确证，但当前仍无进程 stack，必须由 Group 8 fault injection 最终坐实或推翻 blocking `flock` 根因并建立 bounded typed recovery。`EVID-G1-011` 还捕获 `MemoryEnhancementSyncResult` 没有 `skipped` 属性的每轮 warning，而同一 health 将 evolution daemon 报为 healthy 且 `last_error=null`；该证据并入既有 `F-OBS1` 的错误可见性/清除验收，不新增第 104 个 leaf。两项都不得被 Group 1 audit leaf 的关闭掩盖。
 
 **证据回填**：`EVID-G8-*` 必须保存 T0/T2/T3/soul source refs/hash/lock/outbox/job/retry/dead-letter/requeue、Knowledge ACL/retention/legal-hold 与跨资产 deletion/export ledger；同步 `§12.2` 九行、`§13.1` 两个 Missing 和 `§12.3`。
 
@@ -1237,7 +1237,7 @@ Group 0 是全局证据门，不拥有业务 leaf。下面 103 行必须与 cano
 - P2 | B-03 | inherited-current-evidence | governance outcome 从平台文本反推
 - P2 | E-2 | inherited-current-evidence | Hive Connect local A2A 不 wake parent
 - P2 | AUDIT-IMM-001 | closed:EVID-G1-010 | commit `94e3ecf58/c0e1108a6` 在数据库层禁止两张 canonical audit 表 UPDATE/DELETE/TRUNCATE，外部 principal provenance 改为 RESTRICT；真实 PG、clean-checkout 全量、三服务部署与 production 零残留事务 canary 已绿
-- P2 | AUDIT-TENANT-001 | inherited-split | tenant=None 安全审计静默丢弃
+- P2 | AUDIT-TENANT-001 | closed:EVID-G1-011 | commit `09c3823a0` 将 tenantless security event 路由到不可变 operator audit plane，返回 typed receipt；真实 PG/app_rls、clean-checkout 全量、成功认证 audit-failure fail-closed、三服务部署与 production append-only canary 已绿
 - P2 | F-PLAINTEXT | inherited-current-evidence | agent tool config 明文 MCP credential
 - P2 | P2-F8 | inherited-current-evidence | `rg` 参数缺 `--` 可 flag injection
 - P2 | P2-F6 | inherited-current-evidence | model config 写入缺 cross-tenant reference 校验
@@ -1325,7 +1325,7 @@ Group 0 是全局证据门，不拥有业务 leaf。下面 103 行必须与 cano
 | Group | 证据前缀 | Owner 范围 | 当前证据状态 | 下一次写入要求 |
 |---:|---|---|---|---|
 | 0 | `EVID-G0-*` | 0 leaf / 0 Missing | `closed`：`EVID-G0-001/002/003/004/005/006`；文档 Git truth、owner/path/decision/scenario CI、11 个 Group 上下文包、88 个去重 `@` 文档入口、跨仓快照与 fake-provider/PG/Redis harness 基座成立 | 后续任何新增本地 `@docs` 必须先进入 Git 并同步上下文包索引；业务场景 Green 仍由 owner Group 负责 |
-| 1 | `EVID-G1-*` | 16 leaf / 0 Missing | `in_progress`：`P0-F1/P0-F2/E-1/P1-004/P1-F4/KB-EXTRACT-001/KB-AUTH-001/KB-PROP-001/BUD-ROOT-001/AUDIT-IMM-001` 的独立 code/evidence、production canary 均已绿并关闭（10/16）；无 deployed-but-open leaf；其余 6 leaf 未施工 | 按 §12.1 owner map 与依赖重验下一个 Group 1 leaf；每个剩余 leaf 仍须独立 Red→Green、迁移/回填、fault、rollback、consumer 与 production evidence，不得用前十项关闭冒充 Group 1 closed |
+| 1 | `EVID-G1-*` | 16 leaf / 0 Missing | `in_progress`：`P0-F1/P0-F2/E-1/P1-004/P1-F4/KB-EXTRACT-001/KB-AUTH-001/KB-PROP-001/BUD-ROOT-001/AUDIT-IMM-001/AUDIT-TENANT-001` 的独立 code/evidence、production canary 均已绿并关闭（11/16）；无 deployed-but-open leaf；其余 5 leaf 未施工 | 按 §12.1 owner map 与依赖重验下一个 Group 1 leaf；每个剩余 leaf 仍须独立 Red→Green、迁移/回填、fault、rollback、consumer 与 production evidence，不得用前十一项关闭冒充 Group 1 closed |
 | 2 | `EVID-G2-*` | 14 leaf / 0 Missing | `open` | 写 Session event/item/reducer、persist-before-publish、projection/backfill 与 SESSION-G 结果 |
 | 3 | `EVID-G3-*` | 7 leaf / 0 Missing | `open` | 写 root admission、reserve/commit/release、terminal CAS、approval resume 与 fanout 曲线 |
 | 4 | `EVID-G4-*` | 6 leaf / 0 Missing | `open` | 写 result ref、mailbox lease/CAS、integration epoch、partial/late/duplicate 与 100-way return storm |
@@ -2130,7 +2130,64 @@ context_read_receipt:
 - retention 边界：不可变 trigger 不等于“永不允许受治理的 retention”。`MISS-RETENTION-001` 必须另建 legal-hold/partition/archive/export/deletion ledger 与 schema-owner maintenance 路径；它不得重新开放 runtime UPDATE/DELETE，也不能让 account deletion 通过 SET NULL 抹 provenance。在该 Missing 关闭前，本项选择 evidence-preserving fail closed。
 - 七原子：Input=append audit insert 与 schema-owner/runtime mutation attempt；Authority=schema catalog、migration head、principal FK 与 runtime role；Execution=single DB trigger/FK boundary + startup readiness；Evidence=append rows、trigger catalog、typed SQLSTATE、deployment/readiness/canary receipts；Recovery=transaction rollback、fail-closed restart、same-source retry、forward-fix/downgrade runbook；Consumption=AuditLog/SecurityAuditEvent writer、principal lifecycle、operator readiness/health；Acceptance=TDD Red→Green、fresh/release/downgrade real PG、clean-checkout 7165、CC/Codex source comparison、three-service production、six-attack+FK zero-residue canaries。七原子均有当前真实路径，因此本 leaf 可独立关闭。
 - 北极星裁决：hard outcome 只依据 Evidence/Recovery/Machine Contract 的数据库事实；不读取自然语言、不判断模型结论、不裁剪 authorized input、不限制模型 output，也不替换 model final。CC append-only lifecycle 是语义底座，Codex ordered/recoverable recorder 是工程增量，Hive 增加 enterprise DB immutability、principal provenance 与 live readiness，属于 capability-preserving determinism。
-- 残余边界：`AUDIT-TENANT-001` 仍负责 tenant-less security audit 的 typed disposition；`MISS-RETENTION-001` 仍负责合规生命周期；Group 8 接收 rolling-deploy asset-lock wait 场景。对应 canonical 行已更新为 `closed:EVID-G1-010`；Group 1 当前为 10/16 closed、0 deployed-but-open、6/16 pending。103 分母、severity、owner 与 5 个 Missing 均不变；下一 Group 1 leaf 为 `AUDIT-TENANT-001`。
+- 后继边界：`AUDIT-TENANT-001` 已由 `EVID-G1-011` 独立关闭；`MISS-RETENTION-001` 仍负责合规生命周期，Group 8 继续接收 rolling-deploy asset-lock wait 场景。对应 canonical 行保持 `closed:EVID-G1-010`；本证据关闭当时 Group 1 为 10/16 closed、0 deployed-but-open、6/16 pending，当前滚动状态只以 §9 与 §12.3 为准。103 分母、severity、owner 与 5 个 Missing 均不变。
+
+#### EVID-G1-011：AUDIT-TENANT-001 tenantless 安全审计 typed disposition
+
+- `leaf_ids`：`AUDIT-TENANT-001`；owner Group / 依赖 Group：Group 1 / Group 0。本项只关闭 `write_audit_event()` 在 `tenant_id=None/zero UUID` 时 warning 后直接 return、没有 durable row/typed receipt，以及成功密码/OIDC 登录在 audit failure 后仍签发 token 的 fail-open seam；不重开 `AUDIT-IMM-001`，不冒充 `MISS-RETENTION-001`，也不把 rolling-deploy startup lag 或 Memory health 漂移算成新 leaf。
+- 当前状态：`closed`。typed tenant/platform receipt、operator-only immutable sink、成功认证 fail-closed、真实 PostgreSQL `app_rls`、RLS bypass allowlist、clean-checkout 全量 backend、三服务 exact-source 部署、production append-only canary 与 health 均已 Green；canonical 为 `closed:EVID-G1-011`。
+- 冻结事实与 ownership：开工 HEAD=`d8e7d296b202a687775297e2aff11e5fc463afce`；code commit=`09c3823a06ac399fd7e7da43a89c4d59dbc419c7`，tree=`b82744a04e3cababe156aa3935ba3ce852c0da81`，10 files，`432 insertions(+), 34 deletions(-)`。提交后共享工作树仍有 53 个 tracked dirty 与 5 个 untracked path，均属于其它 session；本项只 stage `auth.py`、`oidc.py`、`policy.py`、`rls_bypass_manifest.py`、`audit_logger.py` 及五个对应测试文件，`git show --name-status 09c3823a0` 是 ownership 事实源。
+
+```yaml
+context_read_receipt:
+  aa_entry: "§9 Group 1 + §12.1/§12.2 AUDIT-TENANT-001 + §12.3 Group 1 + EVID-G1-010 residual boundary"
+  leaf_ids: ["AUDIT-TENANT-001"]
+  documents:
+    - ref: "@docs/agent-native-atomic-review-2026-07-14.md"
+      role: "original atomic breakpoint and construction gates"
+      decision_consumed: "security evidence needs a durable typed disposition; warning-and-return is not a completion state"
+      sha256: "4f1e8893fe03251c02ce9805300b94d6db00c34e032c978f3805c2b1f061e919"
+    - ref: "@docs/agent-native-atomic-review-501db655.md"
+      role: "parallel RLS and evidence-path review"
+      decision_consumed: "runtime-role truth, explicit bypass ownership and real consumer behavior must be proved together"
+      sha256: "014734a43994bd1b4a906f89eea21d4686b08c88ec167d8c5046c0f0cdc7f0bb"
+    - ref: "@docs/runtime-model-agency-constraint-audit-2026-07-13.md"
+      role: "Model Agency hard-constraint law"
+      decision_consumed: "evidence durability and authenticated effect issuance are allowed hard invariants; model semantics remain untouched"
+      sha256: "366c8a5e4351e76083e6096a8cca09fe93a952ce831cf01e3cae34e2f8b91530"
+    - ref: "@docs/agent-permission-governance-spec-2026-07-07.md"
+      role: "enterprise principal and audit authority"
+      decision_consumed: "tenantless/public principals need attributable evidence without inventing a tenant or depending on uncommitted FK rows"
+      sha256: "e60f2dcf8711999cf655ccae180fb52810ad2a73f265028c1c56226ba73099ac"
+    - ref: "@docs/ccplus-session-permission-and-enterprise-hard-rules-2026-06-25.md"
+      role: "CCPlus capability-preserving governance floor"
+      decision_consumed: "deny unauditable authentication effects at the narrow effect boundary without restricting unrelated reasoning"
+      sha256: "db8d895b283ecb7ae747ef7fbbb76591f32aba599052d24d759dcb31c83f7cb0"
+    - ref: "@docs/session-rls-preflight-review-2026-07-09.md"
+      role: "non-owner runtime/RLS preflight"
+      decision_consumed: "operator rows require an explicit audited scope and must be exercised under the production app_rls role"
+      sha256: "057b7631c75c80ce394096ea5c53cd3afc2b41d0994dcb62860d2fdc8a4029dc"
+    - ref: "@docs/rls-enforcement-migration-plan.md"
+      role: "RLS recovery and deployment discipline"
+      decision_consumed: "reuse the existing operator audit plane and static bypass manifest instead of adding a shadow table or implicit tenant"
+      sha256: "66864a7c18233d7bcfcc825344eccc93a604d13039c40616d7b2b0387348b466"
+  evidence_sink: "EVID-G1-011"
+```
+
+- CC/FreeCode 当前源码对照：FreeCode HEAD=`7dc15d6c8fb0c40c7fcc02ce9b58204324252632`；`src/utils/sessionStorage.ts` SHA-256=`8a123ebce1ee72b9081d34b8f3697e5fcc9c7576df5b98e4206bb28414134412` 仍以 append 写入 session evidence，`src/types/logs.ts` SHA-256=`ccc8d6e57ba25f277a1ab2cff457a0486a93658d91509b779cacc4fcdd69190e` 区分 replay-all event 与 last-wins snapshot。CC 没有 Hive 的 enterprise tenant/operator plane，因此本项保留其 append-only evidence floor，不伪造 vendor parity。
+- Codex 当前源码对照：Codex HEAD=`5c19155cbd93bfa099016e7487259f61669823ff`；`codex-rs/rollout/src/recorder.rs` SHA-256=`ad9c29f5ee1d38d2fab224bdab0c758342a82d3769e8b3441da91cfc12bd029a` 仍提供 ordered append、flush acknowledgement、reopen/retry 与 writer-error 可见性。Hive 采用其 typed receipt/failure 工程增量，并用 operator RLS plane 承担无 tenant 的 enterprise attribution；这不是平台代写模型语义。
+- Red：原 `test_write_audit_event_skips_zero_uuid_tenant/test_write_audit_event_skips_missing_tenant` 明确把丢弃当正确行为。替换后的 writer/sink Red 为 `5 failed, 5 passed`：两条 receipt 为 `None`、sink function 不存在、sink failure 没有传播；成功认证 Red 分别稳定证明 password login 在 audit exception 后仍返回 `200`，OIDC 在同一异常后 `DID NOT RAISE HTTPException`。这些旧测试属于 fail-open regression debt，已反转而非保留兼容。
+- Green 实现：`app/core/policy.py::write_audit_event` 统一先捕获 execution identity，再按权威事实分流：真实 tenant 继续写 `security_audit_events` hash chain；`None/zero UUID` 调用 `write_platform_security_audit_event`，返回 frozen `SecurityAuditWriteReceipt(event_id, scope, tenant_id)`。新 sink 复用已由 `AUDIT-IMM-001` 锁死 UPDATE/DELETE/TRUNCATE 的 `audit_logs`，在独立 `async_session` 与静态 manifest 约束的 `operator platform security audit insert` scope 内 commit；actor/resource/request/execution identity 写入 `hive.platform_security_audit.v1` envelope，tenant/user/agent FK 均保持 NULL，避免 public registration/OIDC 未提交行的 FK/事务耦合。没有新表、shadow log 或猜造 tenant。
+- effect/failure 语义：platform sink 不 catch-and-null，insert/serialization/RLS failure 原样向上；成功 password login 与 OIDC login 在 audit exception 时 rollback 并返回 `503 Security audit unavailable; authentication was not completed`，不发 token、不 commit auto-provision。已解析到 user 的错误凭据仍返回 401，因为没有授予效果；对应 audit 成功时同样落入 tenant hash chain 或 platform plane。该 hard outcome 只依据 durable evidence 是否 committed，不读取用户名/自然语言来做语义判断。
+- 本地验收：writer/sink Green=`10 passed`；core/auth/OIDC/governance/approval/RLS allowlist 聚合=`52 passed`；全部 auth/OIDC 邻接=`56 passed`；真实 PG strict-RLS bootstrap 整文件=`6 passed`。owned 10 paths `ruff check`、format 与 `git diff --check` 均 clean。exact detached worktree=`/tmp/hive-audit-tenant-09c3823a0`、HEAD=`09c3823a0`：首次在 Codex outer sandbox 内为 `6762 passed, 409 skipped, 1 failed`，唯一失败是嵌套 `sandbox-exec: Operation not permitted`；同一 exact commit 在已批准的单层 OS sandbox 中该用例=`1 passed`，再跑完整 backend 得到 `7170 passed, 2 skipped in 242.24s`、exit `0`。没有删除测试、降低阈值或把 409 个环境 skip 当全量 Green。
+- migration/backfill：本 leaf 不改变 schema；operator `audit_logs`、RLS policy、四个 immutability trigger 与 readiness 已由 `EVID-G1-010` 上线，新增 shadow schema 反而制造双事实源，所以没有空 migration。过去被 warning-and-return 丢掉的 event 没有可验证 bytes，无法安全回填；明确记为历史不可恢复 evidence gap，禁止根据应用日志猜造审计事实。cutover 后每次成功写都有 event UUID 与 scope receipt。
+- production deploy/freshness：exact `09c3823a0` Git archive 的 `policy.py` SHA-256=`a8300d3160a9ad3840c605df527795770548f467031e281e18511575b55b45a9`、`audit_logger.py`=`b602262d8614956bd30667c970b2a4e2f7f4aac36fcaacab312e7a190d1c3e0e` 与 live backend 容器一致。backend=`68e93420-a5e1-45cc-ab2f-5b0d509a5f67`、backend-api=`8ff72414-8f1e-4f7e-9324-161dbdd7873b`、frontend=`13c0e03a-15b8-45d7-a1c6-a26400d828ec` 均 `SUCCESS`；backend health=`status=ok`、schema head=`audit_evidence_immutability_0715`、runtime role=`app_rls/non-superuser/non-BYPASSRLS/strict`、三 daemon/RuntimeTask worker/sandbox probe 均健康，frontend=`HTTP/2 200`。
+- production canary：第一次多行 `python -c` 被 Railway SSH 参数重组，在任何 import/DB call 前以 `Argument expected for -c`、exit `2` 结束，不计证据且没有写 row。随后通过 stdin 执行同一已部署代码，append-only event=`b941ae45-9298-4af1-8d62-e2edbcbdb9d9`、marker=`AUDIT-TENANT-001-production-canary-1f791d93533940c489d725ec96c8f35c`；回读断言 scope=`platform_operator`、action=`platform_security.auth.login`、schema=`hive.platform_security_audit.v1`、tenant/user/agent 均 NULL、actor/request_id byte-preserved，exit `0`。该一条无 PII canary 是不可变验收证据，按设计不删除。
+- fault/recovery/rollback：sink unavailable 时成功认证停在 effect 前并以 typed 503 允许客户端重试；恢复后下一次独立请求重新执行完整 authority/audit gate，不在旧请求里静默补发 token。实现没有 data migration，安全回退优先 forward-fix；若回旧镜像，新的 append-only rows仍可读但旧代码会重新丢 tenantless event，因此不能把代码 rollback 当安全恢复。rollback 前必须保留当前镜像或立即 forward-fix，不能撤掉 `AUDIT-IMM-001` trigger。
+- 部署期间额外证据：backend 从 09:32:02 创建到 09:38:49 `SUCCESS`，uvicorn 在 09:34:59 `Waiting for application startup`，09:35:06 进入 default-skill push 后长停顿，health 最终报 `event_loop.max_lag_ms=190949.93`；该重复输入已回流 §9 Group 8 的 lock/recovery Red。启动后日志还显示 `MemoryEnhancementSyncResult` 缺少 `skipped`，但 evolution daemon health 为 healthy 且 `last_error=null`；该漂移进入 Group 8 `F-OBS1` 验收。两者不影响本 leaf 的 audit writer/consumer 七原子，也不被本 leaf 关闭。
+- 七原子：Input=`tenant_id=None/zero` security event 与 authenticated login outcome；Authority=tenant UUID、operator RLS scope、static bypass manifest 与 immutable DB trigger；Execution=`write_audit_event` 单入口分流 + `write_platform_security_audit_event` 独立 commit + auth effect gate；Evidence=typed receipt、immutable row、versioned envelope、deployment/hash/canary；Recovery=exception propagation、rollback/503、next-request retry、historical-gap disclosure；Consumption=password login、OIDC、governance callers与 operator audit read；Acceptance=TDD Red→Green、allowlist、真实 PG/app_rls、clean-checkout 7170、三服务 exact archive、production append/read canary 与 health。七原子均有当前真实路径，因此本 leaf 可独立关闭。
+- 北极星裁决：新增 hard gate 只依据 Authority、Evidence、Recovery 与 Machine Contract 的机械事实；不读取自然语言判真假、不裁剪 authorized evidence、不降低 output/context budget、不改写模型 final。CC 的 append-only lifecycle 是语义底座，Codex 的 typed recorder/failure 是工程增量，Hive 增加 tenant/operator 双审计面与企业认证 effect gate，属于 capability-preserving determinism。
+- 残余边界：`MISS-RETENTION-001` 继续负责 audit retention/export/legal hold；Group 8 负责 startup asset lock 与 `F-OBS1` health 真相；本项不声明这些已修。对应 canonical 行已更新为 `closed:EVID-G1-011`；Group 1 当前为 11/16 closed、0 deployed-but-open、5/16 pending。103 分母、severity、owner 与 5 个 Missing 均不变；下一 Group 1 leaf 为 `F-PLAINTEXT`。
 
 ## 13. Missing、Coverage Gap 与完成口径
 

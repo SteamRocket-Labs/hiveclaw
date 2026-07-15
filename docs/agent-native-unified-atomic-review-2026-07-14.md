@@ -4,7 +4,7 @@
 >
 > 原始审查冻结快照：`main@501db6555dae374e5fcf43a6fdcfe8a3dd89343e` + 2026-07-14 当时未提交工作树；后续施工不改写这个审查锚点，每条 `EVID-*` 另记自己的开工 HEAD、工作树与生产快照
 >
-> 修复账本滚动更新：2026-07-15；Group 0 已用 `EVID-G0-006` 把 11 个上下文包、88 个可执行 `@` 文档入口、逐 Group 详细路由和证据回流做成机器门并保持关闭；Group 1 的同源三服务部署已经成功，`P0-F1/P0-F2/E-1/P1-004/P1-F4/KB-EXTRACT-001/KB-AUTH-001/KB-PROP-001` 已分别以 `EVID-G1-001/002/003/004/005/006/007/008` 完成 production canary 并关闭；Group 1 当前为 8/16 closed、8/16 pending，不再有“已部署但未关闭”的 leaf。不得把 8 个独立 leaf 的关闭冒充 Group 1 或 103 项完成。
+> 修复账本滚动更新：2026-07-15；Group 0 已用 `EVID-G0-006` 把 11 个上下文包、88 个可执行 `@` 文档入口、逐 Group 详细路由和证据回流做成机器门并保持关闭；Group 1 的同源三服务部署已经成功，`P0-F1/P0-F2/E-1/P1-004/P1-F4/KB-EXTRACT-001/KB-AUTH-001/KB-PROP-001/BUD-ROOT-001` 已分别以 `EVID-G1-001/002/003/004/005/006/007/008/009` 完成 production canary 并关闭；Group 1 当前为 9/16 closed、7/16 pending，不再有“已部署但未关闭”的 leaf。不得把 9 个独立 leaf 的关闭冒充 Group 1 或 103 项完成。
 >
 > 组合输入：`agent-native-atomic-review-2026-07-14.md`、`agent-native-extreme-boundary-atomic-review-2026-07-14.md`、`unified-context-assembly-and-progressive-disclosure-2026-07-14.md`、`session-v2-cc-codex-alignment-contract-2026-07-14.md`、修订后的 `reusable-agent-native-atomic-review-prompt.md`，以及当前 Hive / FreeCode / Codex 本地源码。
 >
@@ -593,7 +593,7 @@ Group 摘要不能替代以下两份文档：
 | Group | owner canonical leaf | owner Missing | 当前状态 |
 |---:|---:|---:|---|
 | 0 | 0（全局门） | 0 | closed：`EVID-G0-002/003/004/005/006`，Git truth、机器账本、11 个上下文包/88 个 `@` 文档入口、跨仓快照与 clean-checkout harness 已闭环 |
-| 1 | 16 | 0 | in_progress：`P0-F1/P0-F2/E-1/P1-004/P1-F4/KB-EXTRACT-001/KB-AUTH-001/KB-PROP-001` 已关闭（8/16）；无 deployed-but-open leaf；其余 8 个 leaf 待施工 |
+| 1 | 16 | 0 | in_progress：`P0-F1/P0-F2/E-1/P1-004/P1-F4/KB-EXTRACT-001/KB-AUTH-001/KB-PROP-001/BUD-ROOT-001` 已关闭（9/16）；无 deployed-but-open leaf；其余 7 个 leaf 待施工 |
 | 2 | 14 | 0 | open |
 | 3 | 7 | 0 | open |
 | 4 | 6 | 0 | open |
@@ -672,7 +672,7 @@ Group 摘要不能替代以下两份文档：
 - `@docs/personal-knowledge-base-completion-contract-2026-07-08.md`
 - `@docs/runtime-budget-conformance-audit-2026-07-09.md`
 
-**@按需读取**：`@docs/personal-knowledge-base-spec.md`、`@docs/personal-knowledge-base-capability-rebaseline-2026-07-09.md`、`@docs/ccplus-governance-code-repair-plan-2026-06-28.md`、`@docs/ccplus-governance-truth-search-repair-plan-2026-06-28.md`。
+**@按需读取**：`@docs/personal-knowledge-base-spec.md`、`@docs/personal-knowledge-base-capability-rebaseline-2026-07-09.md`、`@docs/ccplus-governance-code-repair-plan-2026-06-28.md`、`@docs/ccplus-governance-truth-search-repair-plan-2026-06-28.md`、`@docs/runtime-budget-control-plane-plan-2026-07-03.md`。
 
 **源码入口**：先用 graph 查 egress/web fetch、database startup/migration/RLS、principal/delegation frame、tool governance、runtime budget、Personal KB access/proposal/extraction；再读 exact live path。
 
@@ -1303,7 +1303,7 @@ Group 0 是全局证据门，不拥有业务 leaf。下面 103 行必须与 cano
 - P1 | WF-HARDLIMIT-001 | inherited-current-evidence | Workflow 固定方便性上限 hard fail
 - P1 | WF-PARTIAL-001 | inherited-current-evidence | Workflow partial join/result contract 缺失
 - P1 | BUD-BREAKER-001 | inherited-current-evidence | runtime breaker 机械终止/cancel
-- P1 | BUD-ROOT-001 | inherited-current-evidence | budget root failure work-amplification fail-open
+- P1 | BUD-ROOT-001 | closed:EVID-G1-009 | commit `3c1998607` 建立 typed budget-root unavailable contract：交互回合保留 direct reasoning/answer、work-amplification 双层禁用，后台/自治入口 fail-closed；三服务部署、production exact-code canary、指标、零 legacy active task inventory 与 health 已绿
 - P1 | SUBAGENT-APPROVAL-001 | inherited-current-evidence | foreground approval 无 durable intent
 - P1 | CONC-MAILBOX-001 | inherited-current-evidence | parent mailbox JSON lost-update race
 - P1 | ROOT-TREE-001 | added-current-confirmed | direct/team/workflow 无统一 root coverage/result/integration ledger
@@ -1325,7 +1325,7 @@ Group 0 是全局证据门，不拥有业务 leaf。下面 103 行必须与 cano
 | Group | 证据前缀 | Owner 范围 | 当前证据状态 | 下一次写入要求 |
 |---:|---|---|---|---|
 | 0 | `EVID-G0-*` | 0 leaf / 0 Missing | `closed`：`EVID-G0-001/002/003/004/005/006`；文档 Git truth、owner/path/decision/scenario CI、11 个 Group 上下文包、88 个去重 `@` 文档入口、跨仓快照与 fake-provider/PG/Redis harness 基座成立 | 后续任何新增本地 `@docs` 必须先进入 Git 并同步上下文包索引；业务场景 Green 仍由 owner Group 负责 |
-| 1 | `EVID-G1-*` | 16 leaf / 0 Missing | `in_progress`：八个独立 code commit；`P0-F1/P0-F2/E-1/P1-004/P1-F4/KB-EXTRACT-001/KB-AUTH-001/KB-PROP-001` production canary 已绿并关闭（8/16）；无 deployed-but-open leaf；其余 8 leaf 未施工 | 按 §12.1 owner map 与依赖重验下一个 Group 1 leaf；每个剩余 leaf 仍须独立 Red→Green、迁移/回填、fault、rollback、consumer 与 production evidence，不得用前八项关闭冒充 Group 1 closed |
+| 1 | `EVID-G1-*` | 16 leaf / 0 Missing | `in_progress`：`P0-F1/P0-F2/E-1/P1-004/P1-F4/KB-EXTRACT-001/KB-AUTH-001/KB-PROP-001/BUD-ROOT-001` 的独立 code/evidence、production canary 均已绿并关闭（9/16）；无 deployed-but-open leaf；其余 7 leaf 未施工 | 按 §12.1 owner map 与依赖重验下一个 Group 1 leaf；每个剩余 leaf 仍须独立 Red→Green、迁移/回填、fault、rollback、consumer 与 production evidence，不得用前九项关闭冒充 Group 1 closed |
 | 2 | `EVID-G2-*` | 14 leaf / 0 Missing | `open` | 写 Session event/item/reducer、persist-before-publish、projection/backfill 与 SESSION-G 结果 |
 | 3 | `EVID-G3-*` | 7 leaf / 0 Missing | `open` | 写 root admission、reserve/commit/release、terminal CAS、approval resume 与 fanout 曲线 |
 | 4 | `EVID-G4-*` | 6 leaf / 0 Missing | `open` | 写 result ref、mailbox lease/CAS、integration epoch、partial/late/duplicate 与 100-way return storm |
@@ -2010,7 +2010,68 @@ cd /tmp/hive-kbprop-index-20260715-a/backend
 - production exact-code canary：容器内直接调用已部署 `build_knowledge_provenance()`：显式 PL3 得到 `max_sensitivity=PL3_sensitive / semantic_memory_eligible=false`；正文包含 `private_secret_restricted_credential` 但显式标签为 PL1 时仍为 `PL1_public / eligible=true`；缺失标签得到 `held_invalid_sensitivity / PL4_credential / eligible=false / coverage.complete=false`。三项均输出稳定 result/source-manifest SHA-256，证明 hard outcome 只依赖机器标签与 schema，不依赖自然语言关键词。
 - rollback/fault：invalid/missing/forwarded-drift label 只会 fail closed、hold semantic promotion 或让外传进入 typed policy，不会删除 raw evidence或替模型写结论。若新链路故障，forward-safe containment 是暂停新 channel delivery、保留 transcript/T0/outbox/repair ref 并重试 projector；repair 是 append-only，原 bytes 无需数据 rollback。禁止回退到“丢 provenance 仍外传/蒸馏”的旧路径。生产历史扫描为零，所以本项不存在待回滚 data mutation。
 - 七原子：Input=governed Knowledge tool result + exact run/turn/child envelope；Authority=KB-AUTH requester/grant frame + canonical sensitivity label；Execution=single projector/aggregator + T2/effect consumer；Evidence=transcript/T0 metadata、source/result hashes、outbox detail、subagent aggregate 与 append-only repair ref；Recovery=PL4 fail-closed、hold/retry、raw evidence preservation、dry-run/confirm；Consumption=T2 distillation eligibility、direct/terminal channel delivery、foreground/background/nested subagent；Acceptance=Red→Green、independent index snapshot、ruff/PG compile、three-service deploy、production dry-run/canary/health。七原子均有当前真实路径，因此本 leaf 可独立关闭。
-- 残余边界：`KB-CONTRACT-001` 仍负责 Knowledge tool description/schema/runtime 三者诚实一致；Group 2 仍负责 canonical Session event/item/reducer 与 persist-before-publish；Group 6 仍负责通用 Context Resource Plane 和 100-way context pressure；Group 8 仍负责完整 T0→T2→T3→soul durable intelligence loop。对应 canonical 行已更新为 `closed:EVID-G1-008`；Group 1 当前为 8/16 closed、0 deployed-but-open、8/16 pending，103 分母、severity、owner 与 5 个 Missing 均不变。
+- 残余边界：`KB-CONTRACT-001` 仍负责 Knowledge tool description/schema/runtime 三者诚实一致；Group 2 仍负责 canonical Session event/item/reducer 与 persist-before-publish；Group 6 仍负责通用 Context Resource Plane 和 100-way context pressure；Group 8 仍负责完整 T0→T2→T3→soul durable intelligence loop。对应 canonical 行已更新为 `closed:EVID-G1-008`；本证据关闭当时 Group 1 为 8/16 closed、0 deployed-but-open、8/16 pending，当前滚动状态只以 §9 与 §12.3 为准。103 分母、severity、owner 与 5 个 Missing 均不变。
+
+#### EVID-G1-009：BUD-ROOT-001 budget-root unavailable failover 与 work-amplification containment
+
+- `leaf_ids`：`BUD-ROOT-001`；owner Group / 依赖 Group：Group 1 / Group 0。本项只关闭“创建 authoritative budget root 失败时，执行链仍继续放大工作或把单 Session 锁死”这一 seam；不关闭 `BUD-BREAKER-001` 的运行中 breaker/terminal 语义、`ROOT-TREE-001` 的统一 root coverage/result ledger、Group 3 的 reserve/commit/release admission，也不代替 Group 4/5/6 的 100-way fan-in、fleet fairness 和 context-pressure 修复。
+- 当前状态：`closed`。资源事实源、interactive/background 分流、capability assembly 与 pre-effect 双闸、typed runtime/UI/metrics、legacy containment、Red→Green、完整 staged snapshot、CC/Codex 源码对照、三服务部署、production exact-code canary、active-task inventory 与 health 均已 Green；canonical 为 `closed:EVID-G1-009`。
+- 冻结事实与 ownership：开工 HEAD=`7fd2835de2c072cb6147537dc290b901cb6ec285`。完整 backend suite 在 BUD 施工期间坐实上一 Knowledge leaf 新增的 `repair_knowledge_provenance.py` RLS bypass 未登记 manifest；该独立安全回归先以 commit=`b744d4b9966451eb6f0248edad5883a7b98a0cce` 修复并通过 6/6 allowlist 测试，未冒充 BUD 语义。BUD code commit=`3c1998607220f0021c4f6a00af308ef5371f5622`、tree=`23725f0c0f1826009b8a6c6a478711206c5e0bf5`，精确 ownership 为 35 个 backend/frontend code/test path、`1358 insertions(+), 89 deletions(-)`；生产 archive 来自该 HEAD，因而同时包含其安全父提交。共享工作树的 DB/Hook/Session/terminal 等其它 session 改动仍未 stage、未覆盖，`git show --name-status 3c1998607` 是 BUD ownership 事实源。
+
+```yaml
+context_read_receipt:
+  aa_entry: "§9 Group 1 + §12.1/§12.2 BUD-ROOT-001 + §12.3 Group 1"
+  leaf_ids: ["BUD-ROOT-001"]
+  documents:
+    - ref: "@docs/runtime-budget-control-plane-plan-2026-07-03.md"
+      role: "budget authority and root lifecycle"
+      decision_consumed: "预算必须绑定唯一 root run；平台拥有可验证资源账本，不能用预算故障替模型生成语义终答"
+      sha256: "7bfa0a469859eb149fb45012e32bfe5dc8daa09668bbadb33e906a14db69445c"
+    - ref: "@docs/runtime-budget-conformance-audit-2026-07-09.md"
+      role: "current runtime budget contract"
+      decision_consumed: "根预算、child 继承、reserve/commit/release 与 typed terminal 是机械事实；缺失 authority 不得继续后台执行"
+      sha256: "5299826c1a4b561328739e7bfc2d2438eb98388cf235124989a59b624dd8c039"
+    - ref: "@docs/agent-native-extreme-boundary-atomic-review-2026-07-14.md"
+      role: "original extreme-boundary evidence"
+      decision_consumed: "单 root Session 的 100 child、巨型 capability surface 与跨渠道压力下，budget failure 必须限制新增工作而不是冻结 direct answer"
+      sha256: "f11ba2fcae90731d1d2a53e667b71dbe7c191006326523ac24c3231d7f1ab881"
+    - ref: "@docs/runtime-model-agency-constraint-audit-2026-07-13.md"
+      role: "Model Agency hard-gate law"
+      decision_consumed: "hard outcome 指向 resource/lifecycle 事实；禁止自然语言扫描、平台终答和对 authorized reasoning 的机械饥饿"
+      sha256: "366c8a5e4351e76083e6096a8cca09fe93a952ce831cf01e3cae34e2f8b91530"
+    - ref: "@docs/ccplus-session-permission-and-enterprise-hard-rules-2026-06-25.md"
+      role: "permission and recoverability floor"
+      decision_consumed: "一次 effect deny 不冻结无关能力；unavailable/denied/approval-required/retryable 必须可区分并可恢复"
+      sha256: "db8d895b283ecb7ae747ef7fbbb76591f32aba599052d24d759dcb31c83f7cb0"
+    - ref: "@docs/session-v2-cc-codex-alignment-contract-2026-07-14.md"
+      role: "Session typed state compatibility"
+      decision_consumed: "budget 状态进入既有 RuntimeTask/Session transport projection，不私造第二事件语言；UI 只消费 safe typed projection"
+      sha256: "52a13072ef51ec1ad8f22be5f484b274880c4b7aea801104bd4ca5cdc27c0ac4"
+    - ref: "@docs/ccplus-north-star-contract-2026-06-24.md"
+      role: "CCPlus synthesis boundary"
+      decision_consumed: "CC lifecycle/capability surface是语义底座，Codex typed control 是 additive delta，Hive 只在权威和资源边界收紧副作用"
+      sha256: "9b2bda91cc42a4464ec9b91c483b78fb83965fe0ff6909836ea1fecc18299e5e"
+  evidence_sink: "EVID-G1-009"
+```
+
+- CC/FreeCode 当前源码对照：FreeCode HEAD=`7dc15d6c8fb0c40c7fcc02ce9b58204324252632`；`src/query.ts` SHA-256=`74e0ce0d86cfd453add8dc1d15ccb6311b02964b8321e3721b8e71fbd87252ce`，其 `1506-1515` 在工具被 max-turn 中止时保留 typed attachment，`1704-1711` 产出 typed `max_turns` terminal 而不让平台伪造模型结论；`src/constants/prompts.ts` SHA-256=`7dac778e089a7f002403df2a2efb6f0b9e4a450af21766680ab8948596c10f25`，`186-193` 明确单个 permission deny 不冻结无关 reasoning，并允许 context compression。Hive 因而保留当前交互回合的模型推理/直接回答，只禁用会新增 child/workflow/continuation/external work 的能力。
+- Codex 当前源码对照：Codex HEAD=`5c19155cbd93bfa099016e7487259f61669823ff`；`ext/goal/src/extension.rs` SHA-256=`456a9a6401899d26c543e2f6b08c1eab584984ae9bcc31c03e8b1bfab2f43fbe` 的 `271-320` 记录 turn abort/error 与 typed usage-limit reason；`runtime.rs` SHA-256=`68f7c4275958820c35c4d9410f8cb1e86d1eb805ecae02867be4b5ede078d5c6` 的 `238-305` 把 usage limit 绑定当前 turn、记账 progress 并以 `UsageLimited/Blocked` 终止；`spec.rs` SHA-256=`fdfc7aa6eeb6ce62f904e5e76246f7d7debf3ce93fbce75eaa9eba9dff6b4990` 的 `35-88` 只接受显式 token budget，由系统拥有 budget/usage 状态。Hive 采用 typed lifecycle/accounting，并增加更窄的 work-amplification containment；没有借预算故障缩小 authorized input、偷偷换模型或改写模型 final。
+- 首个 Red 与逐 seam Red：最小 backend contract/guard suite 首轮为 `8 failed, 1 passed`；conditional `schedule_wakeup` 三个断言失败，证明“创建 continuation”和“精确 stop”不能被同一工具名粗暴处理；旧 `SessionContext` budget id 泄漏、缺失 typed user message、`goal_start/update_goal` 分类、Goal API `start_immediately` 非交互标记分别有独立失败；frontend 首轮缺少 runtime-budget state module；architecture gate 坐实 `AgentChatSection` 一度为 2405 行、超过 2400；metrics Red 坐实 Slack 被错误归入未知 source。所有失败都指向 resource/lifecycle machine seam，没有靠关键词或模型正文构造 hard outcome。
+- Green 实现：
+  - 新增 `hive.runtime_budget_binding.v1`：`bound/inherited/not_applicable/unavailable` 均是 typed binding。budget service exception 是 authoritative unavailable 事实；interactive 只对“本轮模型继续推理并直接回答” fail-open，同时强制 `work_amplifying_tools_disabled=true`；noninteractive/background 在创建 RuntimeTask、调用 LLM 或执行 effect 前 fail-closed。缺少 typed binding 的 legacy queued task 在 ORM load fence 被转换为 `legacy_budget_unbound` containment，不能被 `None` 当安全。
+  - work-amplifying 集合来自 `ToolMeta` decorator/registry，而不是第二份易漂移硬编码表。`spawn_subagent/delegate_to_agent/send_message_to_agent/send_agent_session_message/start_workflow/set_trigger/update_trigger/goal_start` 可整体从 capability assembly 排除；`schedule_wakeup` 与 `update_goal` 保留精确安全子动作：`stop=true` 以及 pause/complete/blocked/progress-only 可用，创建 wakeup、`status=active` 或新 `objective` 才在 pre-effect 被拒绝。这样故障态仍能取消、停止、收口，不形成“安全闸导致无法退出”的死循环。
+  - Invoker 在 handler effect 前再次调用参数级 classifier；即使旧 prompt、缓存工具列表或代码旁路仍暴露工具，也只返回 `status=unavailable / retryable=true / effect_started=false` 的 typed envelope。平台 notice 只陈述基础设施事实和可用恢复动作，不伪装成 assistant conclusion；模型 final 在 exact secret redaction 之外保持 byte-faithful。
+  - `goal_continuation`（含 summary）、agent-session continuation、team member、`/loop` self-pace、trigger same-session 和 Goal API `start_immediately` 明确 `budget_interactive=false`；human web/channel、Plan handoff 和 Advanced Plan 仍为 interactive。旧 `SessionContext` 的 budget metadata 在新 turn 组装前清除，避免上一 turn 的 root id/status 漂移到下一 turn。
+  - `/metrics` 以低基数 `source × decision` 导出 `runtime_budget_root_failures_total`；web、Feishu、WeCom、WeChat Personal、Slack、Teams、Discord、DingTalk、Telegram、Local Bridge 与 autonomous source 分组稳定。RuntimeTask API 与 Session UI 只暴露 safe projection；`RuntimeBudgetNotice` 呈现“可直接回答、放大能力暂不可用、可重试”，不泄露 exception/内部 policy bytes。
+- 本地完整验收：最终 Git-index 精确快照=`/tmp/hive-budroot-release.wnrfuF`，加入只读 `.git` symlink 让 Git-truth architecture tests 读取同一 index，并复用 `node_modules` symlink；不是从脏工作树直接宣称 Green。backend 全量命令 `pytest tests -q --deselect tests/services/test_command_tooling.py::test_run_command_executes_inside_workspace` → `6744 passed, 405 skipped, 1 deselected in 210.94s`；唯一 outer-sandbox 不可嵌套用例在其正常边界单独运行 → `1 passed in 2.04s`，合计 `6745 passed, 405 skipped`。frontend `npm run test` → `116 files / 672 passed`；`npm run build` exit `0`，`AgentDetail=291245/380000 bytes, gzip=82634/115000`、`vendor=591449/620000, gzip=186474/200000`；owned paths `ruff check`=`All checks passed!`，`git diff --cached --check` 无输出。
+- 全量 suite 的失败处置保持可追溯：较早 exact snapshot 暴露 5 项失败，其中 3 项是 detached snapshot 无 `.git` 导致 Git-truth 测试无法取证，补只读 Git metadata 后复验；1 项是上一 Knowledge leaf 的 RLS manifest 真回归，独立 commit `b744d4b99` 修复并通过 6/6；1 项是 Codex outer sandbox 内不能再启动 OS sandbox，已在正常单层 sandbox 边界单独 Green。没有删除测试、降低阈值或把 harness failure 冒充产品通过。
+- migration/backfill 裁决：本 leaf 没有新增数据库列或第二 durable schema，binding 复用 `RuntimeTask.budget_run_id`、现有 `metadata_json` 和 Session safe projection，因此不伪造空 migration。生产只读 inventory 在全部 executable task type 的 `pending/running` 范围得到 `active_executable_total=0`、`legacy_unbound_total=0`；没有需要就地改写的 live legacy task。以后若读到历史 unbound queued task，load fence 只 hold/fail-closed 并保留证据，不自动补造 budget authority。
+- production deploy/freshness：同一 `3c1998607` archive 部署 backend=`8dd55589-0324-400f-990b-67945e46a601`、backend-api=`783a654e-d3f4-4ac9-953d-24dae3457e70`、frontend=`5f078955-38a7-4862-9080-e306fe06ade7`，三项最终均 `SUCCESS`。backend 首次启动完成 migration/schema readiness、RLS/tool audit 与既有任务恢复后通过 `/api/health`：`status=ok/version=1.7.0`，runtime role=`app_rls / strict / non-superuser / non-BYPASSRLS`，evolution/trigger/workflow daemon、RuntimeTask worker、runtime control bus 与 Vercel Sandbox deny-all probe 均健康；frontend=`HTTP/2 200`。`/metrics` 已存在 `runtime_budget_root_failures_total` 的 HELP/TYPE，即使零事件也可被监控发现。
+- production exact-code 证明：容器内 `runtime_budget_failover.py` SHA-256=`8a66d5f8495747d96c57f02cfba709b007e98b14581891ef22fd186c9d48623a`、`registry.py`=`3c80da874e0e5cb17a1a72d817c1fa24c311e9d52d508442e526dee169f6896d`，与本地 commit bytes 完全一致。canary 直接调用已部署代码并带 assertions：interactive=`unavailable/fail_open=true/fail_closed=false/disable=true`；background=`unavailable/fail_open=false/fail_closed=true/disable=true`；整体排除包含 `goal_start/spawn_subagent`，不包含 conditional `schedule_wakeup/update_goal`；参数级结果为 `wakeup_stop=false/wakeup_create=true/goal_active=true/goal_objective=true/goal_paused=false/goal_complete=false`。assertion 全部 exit `0`。
+- fault/recovery/rollback：budget root unavailable 时，交互回合只降级放大能力，authorized reasoning/direct answer 仍可完成；后台入口在持久任务/LLM/effect 前终止，Invoker 双闸防 capability-cache/参数旁路。exact stop/pause/complete/blocked 继续可用，故障不会把 Session 锁进不可退出状态。恢复只在“下一个独立 turn”重新做 authoritative admission，不在旧 turn 内静默重开工具。安全回退是保留 typed evidence、hold/retry 和 forward-fix；禁止回滚到旧 fail-open 放大路径。该变更无生产数据 mutation，production inventory 为零，因而 rollback 不需要破坏性 data reversal。
+- 七原子：Input=authenticated turn/continuation source + budget admission exception；Authority=RuntimeBudgetService/DB root binding 与 ToolMeta effect classification；Execution=entry admission + capability assembly + Invoker pre-effect guard；Evidence=typed binding、RuntimeTask metadata、tool envelope、Session projection、metric/deployment/hash；Recovery=direct-answer degradation、hold/fail-closed、exact stop/complete、next-turn retry、legacy quarantine；Consumption=web/channel/plan、Goal/Team/Trigger/Loop workers、tool runtime、API/UI/metrics；Acceptance=逐 seam Red→Green、exact-index 全量 backend/frontend/build/ruff、CC/Codex current source、三服务 production、exact-code canary、零 legacy active inventory 与 health。七原子均有当前真实路径，因此本 leaf 可独立关闭。
+- 北极星裁决：hard gate 唯一依据是可验证的资源/生命周期事实和 effect 分类；没有检查自然语言来判任务重要性、没有静默裁剪 authorized context、没有降低模型输出预算、没有替换模型 final。CC 的 full-capability interactive loop 是底座，Codex 的 typed usage/control 是工程增量，Hive 在其上增加企业级 root authority、双闸、恢复与可观测性；这是 capability-preserving determinism，不是把 Agent 机械化。
+- 残余边界：`BUD-BREAKER-001` 仍由 Group 6 修正运行中 breaker/cancel/terminal；`ROOT-TREE-001` 与 root admission/reservation/coverage ledger 仍由 Group 3 关闭；Group 4 仍需 100-child result manifest/integration epoch，Group 5 仍需 fleet fairness，Group 6 仍需 capability/context/output progressive disclosure。对应 canonical 行已更新为 `closed:EVID-G1-009`；Group 1 当前为 9/16 closed、0 deployed-but-open、7/16 pending。103 分母、severity、owner 与 5 个 Missing 均不变。
 
 ## 13. Missing、Coverage Gap 与完成口径
 

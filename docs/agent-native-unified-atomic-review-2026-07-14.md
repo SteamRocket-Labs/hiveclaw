@@ -4,7 +4,7 @@
 >
 > 原始审查冻结快照：`main@501db6555dae374e5fcf43a6fdcfe8a3dd89343e` + 2026-07-14 当时未提交工作树；后续施工不改写这个审查锚点，每条 `EVID-*` 另记自己的开工 HEAD、工作树与生产快照
 >
-> 修复账本滚动更新：2026-07-15；Group 0 已用 `EVID-G0-004` 补上 clean-checkout 上下文包并重新关闭；Group 1 已写入 `EVID-G1-001/002/003/004` 的本地实现与验收证据，但四项 production deploy/canary 仍 open；不得把局部 Green 冒充 Group 1 或 103 项完成。
+> 修复账本滚动更新：2026-07-15；Group 0 已用 `EVID-G0-005` 把 11 个上下文包总索引、逐 Group 详细路由和证据回流做成机器门并保持关闭；Group 1 已写入 `EVID-G1-001/002/003/004/005` 的本地实现与验收证据，但五项 production deploy/canary 仍 open；不得把局部 Green 冒充 Group 1 或 103 项完成。
 >
 > 组合输入：`agent-native-atomic-review-2026-07-14.md`、`agent-native-extreme-boundary-atomic-review-2026-07-14.md`、`unified-context-assembly-and-progressive-disclosure-2026-07-14.md`、`session-v2-cc-codex-alignment-contract-2026-07-14.md`、修订后的 `reusable-agent-native-atomic-review-prompt.md`，以及当前 Hive / FreeCode / Codex 本地源码。
 >
@@ -122,6 +122,33 @@ context_read_receipt:
 ```
 
 “读过”只有在 `decision_consumed` 能对应到实现、测试或明确的 refute 证据时才成立。不得把整份文档名堆进 receipt，却不说明本 leaf 消费了什么。
+
+### 0.6 Group 上下文包总索引
+
+本索引解决“打开 AA 后下一步去哪里”的问题；`§9` 对应 Group 的 `@原始断点证据`、`@必须先读`、`@按需读取`/专项读取清单才是该 Group 的**完整文档集合**，本节只给最快的主合同入口，不复制长清单形成第二事实源。执行者必须先从本节跳到主合同，再回到 `§9 Group n` 展开完整上下文包，最后把实际消费的章节和裁决写入 `Context Read Receipt`。
+
+文档角色固定如下：
+
+- `primary`：该 Group 最先打开的设计/运行主合同，用于找到目标状态和具体施工语义；它不替代 L0/L1。
+- `detail`：该 Group 的完整 `@` 路由，依次恢复原始证据、强制合同和触及子域时的专项文档。
+- `purpose`：从该上下文包必须带回实现与测试的核心决策；若实际 leaf 不消费该决策，必须在 receipt 中解释差异。
+- `sink`：完成 Red、实现、迁移/回填、验证、发布和 rollback 后唯一回填位置；只在外部聊天或 commit 留证据不算完成。
+
+<!-- group-context-package-map-start -->
+- Group 0 | primary=@docs/reusable-agent-native-atomic-review-prompt.md; @docs/unified-context-assembly-and-progressive-disclosure-2026-07-14.md; @docs/session-v2-cc-codex-alignment-contract-2026-07-14.md | purpose=冻结北极星、审查口径、owner/路由/证据机器真相 | detail=§9 Group 0 @原始断点证据/@必须先读/@按需读取 | sink=§12.4 EVID-G0-*
+- Group 1 | primary=@docs/agent-permission-governance-spec-2026-07-07.md; @docs/ccplus-session-permission-and-enterprise-hard-rules-2026-06-25.md; @docs/personal-company-knowledge-tool-boundary-2026-07-10.md | purpose=收敛 authenticated principal、逐 effect 权限、安全事实源和 fail-closed 恢复 | detail=§9 Group 1 @原始断点证据/@必须先读/@按需读取 | sink=§12.4 EVID-G1-*
+- Group 2 | primary=@docs/session-v2-cc-codex-alignment-contract-2026-07-14.md; @docs/session-timeline-projection-contract-2026-07-04.md | purpose=建立唯一 Session Event/Item/Reducer、typed outcome 与 persist-before-publish | detail=§9 Group 2 @原始断点证据/@必须先读/@按需读取 | sink=§12.4 EVID-G2-*
+- Group 3 | primary=@docs/ccplus-subagent-team-skill-mcp-hooks-parity-audit-2026-06-27.md; @docs/dynamic-workflow-harness-semantics-2026-06-24.md; @docs/runtime-budget-control-plane-plan-2026-07-03.md | purpose=统一 direct/team/workflow root admission、预算预留、approval 与单调终态 | detail=§9 Group 3 @原始断点证据/@必须先读/@按需读取 | sink=§12.4 EVID-G3-*
+- Group 4 | primary=@docs/agent-team-session-workbench-root-cause-and-repair-plan-2026-07-02.md; @docs/chat-artifact-delivery-redesign-2026-06-20.md; @docs/a2a-session-substrate-design-2026-06-24.md | purpose=把 child result、mailbox、fan-in 与 parent integration 变成 durable ref/epoch | detail=§9 Group 4 @原始断点证据/@必须先读/@按需读取 | sink=§12.4 EVID-G4-*
+- Group 5 | primary=@docs/trigger-cc-alignment.md; @docs/runtime-budget-control-plane-plan-2026-07-03.md; @docs/harness-engineering-audit-2026-06-11.md | purpose=建立 fleet/root 公平调度、Trigger 分页续扫和 control-plane reserve | detail=§9 Group 5 @原始断点证据/@必须先读/@按需读取 | sink=§12.4 EVID-G5-*
+- Group 6 | primary=@docs/unified-context-assembly-and-progressive-disclosure-2026-07-14.md; @docs/ccplus-session-runtime-token-compaction-alignment-2026-06-27.md; @docs/runtime-model-agency-constraint-audit-2026-07-13.md | purpose=实现 lossless progressive disclosure、soft pressure、compaction/output 恢复和模型语义主权 | detail=§9 Group 6 @原始断点证据/@必须先读/@按需读取 | sink=§12.4 EVID-G6-*
+- Group 7 | primary=@docs/a2a-integrated-implementation-plan-2026-06-27.md; @docs/a2a-session-substrate-design-2026-06-24.md; @hive-connect:docs/bridge-protocol.zh-CN.md | purpose=分离逐 hop execution/result 与每 destination delivery，并绑定跨渠道 authority | detail=§9 Group 7 @原始断点证据/@必须先读/@按需读取 | sink=§12.4 EVID-G7-*
+- Group 8 | primary=@docs/memory-clean-loop-refactor-plan-2026-06-17.md; @docs/memory-system-flow-map-2026-06-17.md; @docs/company-knowledge-base-spec-2026-07-07.md | purpose=闭环 T0→T2→T3→soul、durable intelligence job、Enterprise Knowledge 与 retention | detail=§9 Group 8 @原始断点证据/@必须先读/@按需读取 | sink=§12.4 EVID-G8-*
+- Group 9 | primary=@docs/frontend-design-refinement-2026-07-03.md; @docs/session-timeline-projection-contract-2026-07-04.md; @docs/chat-artifact-delivery-redesign-2026-06-20.md | purpose=让 UI/Workspace/Artifact 消费同一 typed truth，完成 backfill 与旧路径退出 | detail=§9 Group 9 @原始断点证据/@必须先读/@按需读取 | sink=§12.4 EVID-G9-*
+- Group 10 | primary=@docs/hive-sota-master-goal.md; @docs/eval-system-spec.md; @docs/self-evolution-sota-plan.md | purpose=逐 leaf refute-first 重认证、真实 paired replay、Goal 1 非劣与总账清零 | detail=§9 Group 10 @原始断点证据/@必须先读/@按需读取 | sink=§12.4 EVID-G10-*
+<!-- group-context-package-map-end -->
+
+如果施工中发现一份真正影响目标状态、迁移、运行或验收的文档未出现在当前 Group 的完整 `@` 路由中，必须先更新本 Group 路由、`Context Read Receipt` 和 architecture validator，再写业务代码；禁止把未登记文档当隐藏权威。反之，纯历史叙述、已被新合同覆盖的旧方案或无 live consumer 的文档只留在 `@原始断点证据`/archive，不得塞进 `@必须先读` 增加上下文噪声。
 
 ## 1. 最终裁决
 
@@ -556,8 +583,8 @@ Group 摘要不能替代以下两份文档：
 
 | Group | owner canonical leaf | owner Missing | 当前状态 |
 |---:|---:|---:|---|
-| 0 | 0（全局门） | 0 | closed：`EVID-G0-002/003/004`，Git truth、机器账本、11 个上下文包、跨仓快照与 clean-checkout harness 已闭环 |
-| 1 | 16 | 0 | open |
+| 0 | 0（全局门） | 0 | closed：`EVID-G0-002/003/004/005`，Git truth、机器账本、11 个上下文包/总索引、跨仓快照与 clean-checkout harness 已闭环 |
+| 1 | 16 | 0 | in_progress：5 个 leaf 本地 Green，production gate 均 open；其余 11 个 leaf 待施工 |
 | 2 | 14 | 0 | open |
 | 3 | 7 | 0 | open |
 | 4 | 6 | 0 | open |
@@ -613,7 +640,7 @@ Group 摘要不能替代以下两份文档：
 
 **依赖 Group**：Group 0。P0/P1 家族自身闭环后立即发布，不等待 Group 2–10。
 
-**AA 开工入口**：本文 `§12.1` 的 16 个 Group 1 owner 行、`§12.2` 对应 canonical 行、`§12.3 EVID-G1-*` 和已有 `§12.4 EVID-G1-001/002/003/004`；每次只开一个 leaf/同根安全家族，不把 Group 1 当成单个巨型改动。
+**AA 开工入口**：本文 `§12.1` 的 16 个 Group 1 owner 行、`§12.2` 对应 canonical 行、`§12.3 EVID-G1-*` 和已有 `§12.4 EVID-G1-001/002/003/004/005`；每次只开一个 leaf/同根安全家族，不把 Group 1 当成单个巨型改动。
 
 **@原始断点证据**：
 
@@ -1180,7 +1207,7 @@ Group 0 是全局证据门，不拥有业务 leaf。下面 103 行必须与 cano
 - P1 | P0-F2 | in_progress-local-green:EVID-G1-002 | deployed-source reconciliation `f7902ab7b` 与 fail-closed readiness commit `5ad6ff3c6` 已落地；production deploy/startup canary 待执行
 - P1 | E-1 | in_progress-local-green:EVID-G1-003 | durable requester authority commit `3b3b281543bc` 已落地；production deploy/canary 与 1,499 条 legacy held drift 的 operator disposition 待完成
 - P1 | P1-004 | in_progress-local-green:EVID-G1-004 | typed A2A authority frame、persisted receipt/restart drift hold 与 effect-boundary validation 已落地；production deploy/canary 待执行
-- P1 | P1-F4 | inherited-current-evidence | RecoveryManifest 缺恢复授权绑定
+- P1 | P1-F4 | in_progress-local-green:EVID-G1-005 | signed authority frame、per-session provenance、opaque immutable resource、legacy quarantine 与所有恢复 consumer 已落地；production deploy/dry-run/canary 待执行
 - P1 | C-BP1 | inherited-current-evidence | terminal hook 同步 T2 LLM 阻塞完成
 - P1 | P1-008 | inherited-current-evidence | Memory dependency failure 冻结无关 effect
 - P1 | P1-017 | inherited-dirty-fix-unaccepted | transcript commit 与 T0 wake 可见性
@@ -1288,8 +1315,8 @@ Group 0 是全局证据门，不拥有业务 leaf。下面 103 行必须与 cano
 <!-- group-evidence-index-start -->
 | Group | 证据前缀 | Owner 范围 | 当前证据状态 | 下一次写入要求 |
 |---:|---|---|---|---|
-| 0 | `EVID-G0-*` | 0 leaf / 0 Missing | `closed`：`EVID-G0-001/002/003/004`；文档 Git truth、owner/path/decision/scenario CI、11 个 Group 上下文包、59 份本地 `@docs` clean-checkout 快照、跨仓快照与 fake-provider/PG/Redis harness 基座成立 | 后续任何新增本地 `@docs` 必须先进入 Git；业务场景 Green 仍由 owner Group 负责 |
-| 1 | `EVID-G1-*` | 16 leaf / 0 Missing | `in_progress`：`EVID-G1-001/002/003/004` 的独立 commits `10b74360a`、`5ad6ff3c6`、`3b3b281543bc`、`585581319` 已落地；P0-F1/P0-F2/E-1/P1-004 本地 Green，production deploy/canary 与 E-1 legacy disposition 仍 open；其余 12 leaf 未闭环 | 继续 P1-F4 RecoveryManifest authority Red→Green；安全家族 production 发布时补三服务 freshness、canary 与 legacy disposition，不用 commit 状态冒充 production closed |
+| 0 | `EVID-G0-*` | 0 leaf / 0 Missing | `closed`：`EVID-G0-001/002/003/004/005`；文档 Git truth、owner/path/decision/scenario CI、11 个 Group 上下文包与机器总索引、59 份本地 `@docs` clean-checkout 快照、跨仓快照与 fake-provider/PG/Redis harness 基座成立 | 后续任何新增本地 `@docs` 必须先进入 Git 并同步上下文包索引；业务场景 Green 仍由 owner Group 负责 |
+| 1 | `EVID-G1-*` | 16 leaf / 0 Missing | `in_progress`：`EVID-G1-001/002/003/004/005` 的独立 commits `10b74360a`、`5ad6ff3c6`、`3b3b281543bc`、`585581319`、`67a0bcdcb` 已落地；P0-F1/P0-F2/E-1/P1-004/P1-F4 本地 Green，production deploy/canary、P1-F4 legacy dry-run/apply 与 E-1 legacy disposition 仍 open；其余 11 leaf 未闭环 | 继续下一项 Group 1 authority leaf；安全家族 production 发布时逐 leaf 补三服务 freshness、canary、migration/disposition，不用 commit 状态冒充 production closed |
 | 2 | `EVID-G2-*` | 14 leaf / 0 Missing | `open` | 写 Session event/item/reducer、persist-before-publish、projection/backfill 与 SESSION-G 结果 |
 | 3 | `EVID-G3-*` | 7 leaf / 0 Missing | `open` | 写 root admission、reserve/commit/release、terminal CAS、approval resume 与 fanout 曲线 |
 | 4 | `EVID-G4-*` | 6 leaf / 0 Missing | `open` | 写 result ref、mailbox lease/CAS、integration epoch、partial/late/duplicate 与 100-way return storm |
@@ -1465,6 +1492,59 @@ context_read_receipt:
 - 七原子：Input=AA 的 local `@docs` 集合；Authority=AA/L0/L1 层级；Execution=Git index + architecture validator；Evidence=`git ls-files`、staged snapshot、full pytest；Recovery=commit 历史与 route delta；Consumption=所有 Group 修复 Session/CI；Acceptance=59/59 tracked、46 focused、7014 full Green。
 - 残余风险：跨仓 Hive Connect 仍按 §0.3 commit+SHA registry 取证，不被本地 59 文件替代；后续新增 `@docs` 若未入 Git会由同一测试立即失败。业务 leaf 仍按 owner Group 保持原状态。
 
+#### EVID-G0-005：Group 0–10 上下文包总索引与可执行回流门
+
+- `leaf_ids` / `missing_ids`：无；本记录只增强终极施工导航，不改变 103 个 breakpoint、5 个 Missing、severity、owner 或业务状态。
+- owner Group / 依赖 Group：Group 0 / 无。
+- 当前状态：`closed`；11/11 Group 都已有“主合同 → §9 完整 `@` 路由 → 源码/Red → §12.4 证据”的唯一入口，且由 architecture validator 守恒。
+- 证据 owner / 更新时间：主 Agent / 2026-07-15。
+- 冻结事实：开工 HEAD=`67a0bcdcb37c6cc7a23471717bc7dd50c2821741`；开工工作树有 55 个 tracked dirty、4 个 untracked path。本项 owned manifest 仅为本文的 Group 0/Group 1 导航与 `EVID-G0-005`/`EVID-G1-005` 证据 hunk，以及 `backend/tests/architecture/test_agent_native_repair_ledger.py` 的路由门；其它业务改动未 stage、未覆盖、未归属本项。
+- Context Read Receipt：
+
+```yaml
+context_read_receipt:
+  aa_entry: "§0.5–§0.6 + §9 Group 0–10 + §12.3/§12.4"
+  leaf_ids: []
+  documents:
+    - ref: "@docs/unified-context-assembly-and-progressive-disclosure-2026-07-14.md §0 本文要拍板的核心结论"
+      role: "design"
+      decision_consumed: "Context 主合同必须逐 Group 进入 AA owner/consumer 路由，任何容量、迁移和裁决变化都回填同一总账"
+    - ref: "@docs/session-v2-cc-codex-alignment-contract-2026-07-14.md §0 本文的裁决位置"
+      role: "design"
+      decision_consumed: "Session Event/Item/Reducer 与 S/SESSION-G 不能被 Group 摘要替代，实际 schema/reducer/UI/生产证据必须回流 AA"
+    - ref: "@docs/agent-native-atomic-review-2026-07-14.md §13–§22"
+      role: "original_evidence"
+      decision_consumed: "保留原断点语义和施工反例，不继承旧完成状态"
+    - ref: "@docs/agent-native-atomic-review-501db655.md §13–§22"
+      role: "original_evidence"
+      decision_consumed: "逐 leaf 恢复安全、principal、Recovery、Memory、UI 和迁移 fault 证据"
+    - ref: "@docs/agent-native-extreme-boundary-atomic-review-2026-07-14.md §5–§12"
+      role: "acceptance"
+      decision_consumed: "把单 root 100 child、400 Skill/200 MCP、大 Memory 和跨渠道 fault 送到唯一 owner Group"
+  source_baselines:
+    hive_head: "67a0bcdcb37c6cc7a23471717bc7dd50c2821741"
+    freecode_head: "not-applicable: docs-only route registry; each business leaf rechecks its source baseline"
+    codex_head: "not-applicable: docs-only route registry; each business leaf rechecks its source baseline"
+  conflicts_or_deltas:
+    - "既有 §9 已有 11 个长上下文包，但 AA 顶部没有一个可机械校验的快速总索引，执行者仍需人工猜第一份主合同"
+    - "Group 1 AA 入口只列到 EVID-G1-004，和已存在的 EVID-G1-005/canonical 状态漂移"
+  evidence_sink: "EVID-G0-005"
+```
+
+- Red 1：先给 architecture validator 增加 `test_every_group_has_one_machine_readable_context_package_index`，再运行 `pytest -q tests/architecture/test_agent_native_repair_ledger.py::test_every_group_has_one_machine_readable_context_package_index` → `1 failed`；正确失败为 AA 缺少 `group-context-package-map` machine-readable region。旧门只验证每个 Group 分散存在若干标记，无法证明有 0–10 唯一总索引、主合同、读取目的和证据 sink。
+- Red 2：首次运行整份 ledger validator → `1 failed, 9 passed`；新证据把本仓 Markdown 通配模式误写成反引号内的真实 `@` 路由，portable-route 校验正确将其判为不存在文件。修复为普通描述文字，不通过放宽 path validator 掩盖错误。
+- 实现：新增 §0.6 的 11 行 Group 上下文包总索引；每行指名最先打开的 `primary` 文档、必须带回施工的 `purpose`、§9 完整 `@` 路由和 §12.4 `EVID-Gn-*` sink。§9 仍是完整清单的唯一事实源，索引不复制所有长文档列表；未登记的新权威必须先更新路由/receipt/validator，纯历史或被覆盖方案不得污染 `@必须先读`。同步把 Group 1 AA 入口补到 `EVID-G1-005`，并更新 Group 0 顶部状态、§9 汇总和 §12.3 索引。
+- 本仓文档审计：AA 当前解析出 79 个唯一的本仓 Markdown `@` 路由，`is_file + git ls-files --error-unmatch` 结果 `missing_or_untracked=0`；两份关键 Context/Session 合同和三份原始 Review 的文档引用差集只出现示例/运行时文件名 `AGENTS.md`、`CLAUDE.md`、`SKILL.md`、`backend-session-audit.md`、`soul.md`、`source.md`，没有遗漏新的子系统施工合同。
+- 跨仓审计：`https://github.com/rocky2431/hive-connect.git` 的本地/remote HEAD 均为固定快照 `6cf0b591c037c52ab6b0542c1756006023c7f218`；对 §0.3 registry 的 8 个文件逐一执行 `git show <commit>:<path> | shasum -a 256`，结果 `verified=8 failed=0`。Group 7 仍必须在实际开工时 fresh-check registry delta，不能继承本次结果冒充未来状态。
+- Green 1：新增门单测 → `1 passed in 0.23s`。
+- Green 2：`cd backend && source .venv/bin/activate && pytest -q tests/architecture/test_agent_native_repair_ledger.py` → `10 passed in 0.29s`。
+- Green 3：`cd backend && source .venv/bin/activate && ruff check tests/architecture/test_agent_native_repair_ledger.py` → `All checks passed!`；owned paths `git diff --check` → exit `0`。
+- Green 4（独立 Git truth）：在写回本条证据前，以备用 index 从 HEAD 只加入候选 AA 与 route validator，得到 tree=`2d06e60cefb6712a0f88183b2892d5f86b5c5f34`、临时 verification commit=`d1bf15cc2156d7be398d68613cc682158f8ea292`；detached checkout 执行 `pytest -q tests/architecture` → `174 passed in 9.04s`，同一 validator Ruff → `All checks passed!`。验证结束后临时 worktree 已清理；结果不依赖当前 55 个 tracked dirty/4 个 untracked 外部路径；最终证据文字另由 Green 2/3 与提交前 diff check 重验。
+- commit / deploy：本文与 route validator 组成独立两文件 commit；最终 hash 由 Git history 记录，正文不预写自引用 commit。纯文档/CI 门禁不触发三服务部署。
+- migration / rollback：纯 Markdown 导航与 architecture validator，无 schema/data migration、backfill 或 runtime。rollback 只能同时回退 §0.6 与对应 validator；单独删索引会让测试 Red，单独删 validator 会重新允许路由静默漂移。
+- 七原子：Input=Group/leaf/Missing；Authority=L0/L1 + §9 完整路由；Execution=primary→detail→源码/Red；Evidence=Context Read Receipt + EVID；Recovery=稳定章节、Git-tracked docs、跨仓 pinned snapshot 与 route delta；Consumption=后续每个 Group 的开工流程；Acceptance=11/11 index、79/79 本仓路由、8/8 跨仓 hash、10 tests、ruff、diff check。
+- 残余风险：文档路由只能保证施工者拿到正确上下文和回填位置，不能证明任何业务 leaf 已 Green；Group 1 仍是 5 个 local Green/production gate open，Group 2–10 状态不因本记录改变。
+
 #### EVID-G1-001：P0-F1 governed public HTTP egress
 
 - `leaf_ids`：`P0-F1`；同根范围包含 Agent `web_fetch`/advanced fetch、Personal KB URL import、`upload_image(url=...)` 的远端 URL 转交；未把固定 provider API、显式 Custom API connector 或受权内网连接器偷换成“任意公网 fetch”。
@@ -1611,6 +1691,78 @@ context_read_receipt:
 - 七原子：Input=authenticated parent principal + child request；Authority=tenant/requester/source/target + policy/sandbox/approval frame；Execution=single ToolRuntime pre-effect validator；Evidence=receipt/hash/principal/span/typed outcome；Recovery=unavailable/needs_reconciliation、evidence-preserving hold；Consumption=Invoker/custom executor/ToolRuntime/RuntimeTask/A2A outcome；Acceptance=Red→201 + 172 + 7014、production read-only Green，deploy/live canary open。
 - 残余风险 / 下一动作：A2A failure 的最终 Session item/prose 统一属于 Group 2 typed truth，不能在本项冒充关闭；通用 resume authorization 进入下一 leaf `P1-F4`。P1-004 只有完成三服务 deploy、跨用户 live A2A effect/no-effect 与 restart/rollback canary 后才能从 `in_progress` 改 `closed`。
 - 对应 §12.2 canonical 行已更新为 `in_progress-local-green:EVID-G1-004`；Group 1 仍有 12 个 leaf 未闭环，103 分母、severity 与 owner 不变。
+
+#### EVID-G1-005：P1-F4 RecoveryManifest authority、immutable resource 与 legacy quarantine
+
+- `leaf_ids`：`P1-F4`；同根范围覆盖 turn-start load/hydration、tool checkpoint、pre/post-compaction prompt restoration、recovered tool-frame replay、Web Runtime root/task/T0 sequence 传播、完整 manifest 渐进读取、raw workspace/API/code-exec 旁路、legacy fleet cutover 与 observability。它不替代 Group 2 的 canonical Session event/item，也不关闭 Group 6 的通用 Context Resource Plane。
+- owner Group / 依赖 Group：Group 1 / Group 0、`E-1`、`P1-004`。本项消费前两项建立的 authenticated requester 与 A2A principal/delegation frame；缺失可信 authority 时只让恢复能力进入 typed unavailable，不阻塞当前模型用本轮授权输入继续推理。
+- 当前状态：`in_progress`；本地实现、对抗 Red→Green、独立 Git-index snapshot、宽回归、FreeCode/Codex 当前源码对照与 production read-only inventory 已绿。三服务部署、production fleet dry-run、受控 legacy quarantine/apply、direct/A2A/restart live canary、metrics/rollback drill 未执行，因此 canonical 为 `in_progress-local-green:EVID-G1-005`，不是 production closed。
+- 证据 owner / 更新时间：主 Agent / 2026-07-15。
+- 冻结事实：开工 HEAD=`611e58e8cd8dce3211f1b7884594ad012a720202`；code commit=`67a0bcdcb`；staged verification tree=`d7e5789a78e020832506b97a599eff65df77e78a`、temporary commit=`339cddfaaa036401598c8e5aec9cdf77f8c521b3`。共享工作树同时存在 Hook、DB、Session terminal 等其它 session 改动；本项对 `backend/app/kernel/engine.py`、`backend/app/services/web_chat_run_orchestrator.py`、`backend/app/services/web_chat_runtime.py` 逐 hunk staging，排除了 `evidence_mode`、DB transaction、terminal classifier/reconciliation 等外部 hunks。`git show --name-status 67a0bcdcb` 是本项 29 个 path 的精确 ownership manifest。
+- Context Read Receipt：
+
+```yaml
+context_read_receipt:
+  aa_entry: "§9 Group 1 + §12.1 P1-F4 + §12.2 P1-F4"
+  leaf_ids: ["P1-F4"]
+  documents:
+    - ref: "@docs/agent-native-atomic-review-2026-07-14.md §13 [P1-F4] + §20–§22"
+      role: "original_evidence"
+      decision_consumed: "legacy singleton 无 session_id 时 fail-open、post-compaction 旁路校验、agent-writable manifest 不可作为恢复权威"
+    - ref: "@docs/agent-native-atomic-review-501db655.md §13 [P1-005] + §20–§22"
+      role: "original_evidence"
+      decision_consumed: "恢复状态必须绑定 tenant/Agent/requester/session/root task/policy/config/delegation，并为 legacy 保留可审计隔离路径"
+    - ref: "@docs/runtime-model-agency-constraint-audit-2026-07-13.md §5–§11 + §13–§15"
+      role: "authority"
+      decision_consumed: "hard outcome 只读取身份、权限、完整性、生命周期等机械事实；失败只能 hold/quarantine/unavailable，不改写模型语义"
+    - ref: "@docs/unified-context-assembly-and-progressive-disclosure-2026-07-14.md §1 + §7.3 + §7.6 + §8–§15"
+      role: "design"
+      decision_consumed: "超预算恢复证据外置为 hash-pinned、分页、可恢复 resource；禁止 raw path、静默切片或 dangling pointer"
+    - ref: "@docs/session-v2-cc-codex-alignment-contract-2026-07-14.md §9–§14 + §16.2 + §19 + §21–§24"
+      role: "design"
+      decision_consumed: "resume/fork/compact 使用稳定 session/root identity 和 typed recovery state；projection 不能成为第二事实源"
+    - ref: "@docs/agent-permission-governance-spec-2026-07-07.md"
+      role: "authority"
+      decision_consumed: "requester、principal、delegation 与 permission profile 必须来自 authenticated runtime frame，逐 hop 只能缩权"
+    - ref: "@docs/ccplus-session-permission-and-enterprise-hard-rules-2026-06-25.md"
+      role: "authority"
+      decision_consumed: "Session 恢复不能扩大旧权限，denied/unavailable/held 必须可区分并可恢复"
+    - ref: "@docs/ccplus-governance-layer-architecture-2026-06-28.md + @docs/ccplus-tool-call-governance-closure-landing-plan-2026-06-28.md"
+      role: "design"
+      decision_consumed: "恢复 tool frame 仍须经过当前 governed tool throat，旧 pending metadata 不能直接重放 effect"
+  source_baselines:
+    hive_head: "611e58e8cd8dce3211f1b7884594ad012a720202"
+    freecode_head: "7dc15d6c8fb0c40c7fcc02ce9b58204324252632"
+    codex_head: "5c19155cbd93bfa099016e7487259f61669823ff"
+  conflicts_or_deltas:
+    - "历史方案建议直接恢复被 revert 的大实现；当前代码与 Session/Context contracts 已变化，本项重建同一 fail-closed 语义而未盲目 cherry-pick 旧实现"
+    - "首版 hash pointer 指向 mutable raw filesystem path，经过对抗 review 证明可绕过 verified loader；最终改为 authority+content hash 的 opaque immutable resource"
+    - "production 54 个 legacy 文件虽都有 session_id，但均无 HMAC、root task、principal/policy/config/delegation binding，不能因 session_id 存在而自动信任或签名"
+    - "FreeCode/Codex 提供 session/rollout resume 与 fork 工程底线，不提供 Hive 多租户 requester authority；signed frame 是 additive enterprise delta"
+  evidence_sink: "EVID-G1-005"
+```
+
+- 已完整读取的 `@必须先读` 快照：`AGENTS.md`=`647ae3f2e101a2da9955c071dbdd6ecff80781cb9f11f9ff812cbb3836e254ff`、`hive-sota-master-goal`=`ba2e820d019f74eeaf6b90e6d72eef4da2f28a4c09fc48b24887a0f3daebe6a8`、`ccplus-north-star-contract`=`9b2bda91cc42a4464ec9b91c483b78fb83965fe0ff6909836ea1fecc18299e5e`、`runtime-model-agency`=`366c8a5e4351e76083e6096a8cca09fe93a952ce831cf01e3cae34e2f8b91530`、`unified-context`=`c83a1f94b206af7de8bc44f7f4de35746c65d255574a347cbfd80ce0cc3075b7`、`session-v2`=`52a13072ef51ec1ad8f22be5f484b274880c4b7aea801104bd4ca5cdc27c0ac4`、`agent-permission-governance`=`e60f2dcf8711999cf655ccae180fb52810ad2a73f265028c1c56226ba73099ac`、`session-enterprise-hard-rules`=`db8d895b283ecb7ae747ef7fbbb76591f32aba599052d24d759dcb31c83f7cb0`、`governance-layer-architecture`=`593c54f399708d3c4d61bf1900b8d788ecc1a3127077a1ffd9ab3a938b3ad94e`、`tool-call-governance-closure`=`05db3f2d3747a083575fe92f20acd3635ff1f0e48b372b3a6fe201e72df93963`、`session-rls-preflight`=`057b7631c75c80ce394096ea5c53cd3afc2b41d0994dcb62860d2fdc8a4029dc`、`rls-enforcement-migration`=`66864a7c18233d7bcfcc825344eccc93a604d13039c40616d7b2b0387348b466`、`personal-company-knowledge-boundary`=`644dd7f85c2a212d6e93101a4101607d3e58ab79a8d6f8048061c5f654305609`、`personal-kb-completion`=`7dad2c59695109d06c38e4f24cc39648c53fa66b59761c3af99b70ae57328544`、`runtime-budget-conformance`=`5299826c1a4b561328739e7bfc2d2438eb98388cf235124989a59b624dd8c039`。Knowledge/RLS 文档只用于证明 requester/tenant/authority 不可猜测；本 leaf 未修改 PKB sensitivity 或数据库 RLS。
+- FreeCode/CC current-source 对照：FreeCode HEAD=`7dc15d6c...`；`src/utils/sessionRestore.ts` SHA-256=`9dfe9c2203aac5c3cc6d49e45bf2f8fd381582781b5cec3abbc4ceb6d219e177`、`src/utils/sessionStorage.ts`=`8a123ebce1ee72b9081d34b8f3697e5fcc9c7576df5b98e4206bb28414134412`、`src/commands/resume/resume.tsx`=`5ba5d9bde131f8bed73fe3687bd625d5d908ed31cf78846b878e2f6c4ca36a9e`。其语义底线是 session ID 与 project/transcript path 原子切换、从 transcript 恢复 file/todo/context-collapse 状态、fork 使用新 session 且不污染原 transcript；Hive 保留完整 resume/fork 能力，没有用 authority gate 删除工具、证据或历史。
+- Codex current-source 对照：Codex HEAD=`5c19155c...`；`rollout_reconstruction.rs`=`47f1e2923255480036e065ba41f4068248201586639b43e274843e94f7faa410`、`thread_manager.rs`=`9d6603a353352e51f1b9b4a8d58be9af8e4851fd79792576d0281859ae806c8e`、`session/tests.rs`=`4995c78d8c431bbf16c8bdd9d741f7a8a4fac3e066c35c7026d1097488f248f9`、`thread_resume.rs`=`7f69d60547b3662e1cf3376a749f48ff7aaf54239376e84714229d191fe314d7`、`thread_fork.rs`=`c5940e0b8fd9177dcf6668f24f7ce8d77e046b3ea6c323d6e71304211b27d8e7`。Codex 从 durable rollout/thread store 重建 history/window/settings/world state，root resume 保持 thread/session identity，subagent 恢复 persisted parent session，fork 生成新 thread 且原 rollout bytes 不变；Hive 采用 typed reconstruction/immutable evidence 思路并增加 tenant/requester/delegation 权威。
+- 当前 live entry / authority source / unique writer / consumer：`TurnOrchestrator.run_agent_turn()` 在 `RuntimeConfig` 建立后调用 `resolve_recovery_authority()`，以 tenant、Agent、requester、session、root session/root RuntimeTask、execution principal/hash、permission policy hash、runtime/model config hash、base transcript sequence 与 A2A delegation hash生成唯一 `RecoveryAuthorityFrame`。`persist_recovery_manifest()` 是唯一 head writer；`load_recovery_manifest()` 是唯一 head loader。turn-start hydration、runtime prompt attachment、post-compaction restoration 与 recovered tool replay只消费同一个 `RecoveryManifestLoadResult`，不再自行重开文件或从普通 `pending_tool_frames` fallback。
+- 实现（存储与完整性）：current head 路径为 `<agent>/runtime_artifacts/recovery_manifests/<sha256(session)>/<authority_digest>.json`；envelope 使用 purpose-derived HMAC-SHA256、0600、temp+fsync+atomic replace。policy/config/base-sequence/root/principal 任一漂移返回 typed `held`；损坏、无签名或无法证明 authority 的 legacy bytes 原样移入 content-hash quarantine。agent/session path traversal、agent/runtime/snapshot symlink swap 与 immutable collision 均 fail closed。
+- 实现（lossless progressive recovery）：模型可见 pointer 不再暴露 mutable storage path，而是 `recovery-manifest://<authority_digest>/<envelope_sha256>`。render 前把已验证 envelope exact bytes materialize 到 immutable snapshot；`read_context_resource` 逐页重验 tenant/Agent/requester/session/root task/policy/direct identity 或 execution-principal/delegation hash、HMAC 与 content hash。pointer 同时记录 chars/bytes/hash/reader tool；后续 checkpoint 覆盖 mutable head 不改变旧 pointer bytes。
+- 实现（旁路封口）：`read_file`、list/glob/grep、WorkspaceAuthority、raw Files API、artifact delivery path 与 isolated code-exec workspace 都隐藏/拒绝 `runtime_artifacts/recovery_manifests/**`、`runtime_artifacts/recovery_manifest.json`、`workspace/recovery_manifest.json`。opaque ref 不是 bearer token；另一个 requester/session/root 即使拿到 ref 也只能得到 typed `authority_denied`，tamper 只能得到 `integrity_mismatch`。
+- 实现（failure awareness / stale revoke）：snapshot materialization 失败时，首次 prompt 与 post-compaction 都注入无内部 path/ref 的 `Recovery State{status=unavailable,reason=resource_snapshot_unavailable}`，不再静默省略。checkpoint persist 若 `held` 或抛异常，立即撤销 turn-start 旧 `loaded` result，转为 typed held/unavailable，防止旧 policy/transcript state 在下一次 compaction 继续消费。authority/root task 缺失只关闭恢复车道并记录状态，不饿死当前模型。
+- Model Agency：没有检查 prompt/final 的关键词、相似度或语义；没有替换、追加或压制模型终答；没有按恢复失败删除无关 tools、context 或 output budget。唯一 hard outcomes 来自 authenticated identity、exact policy/config hashes、HMAC、filesystem isolation、session/root lifecycle 与 schema。fallback 仅为 absent/held/quarantined/unavailable/retry/review，并保留 exact evidence 或 opaque recovery ref。
+- Red 证据：① cross-session/cross-agent/policy/config/base-sequence drift、无 session legacy 与 agent-forged manifest 原实现可 hydrate 或无 provenance；② model-visible held payload 泄露 `manifest_ref`；③完整 pointer 无 immutable `resource_path`，并可通过 raw workspace listing/read 绕过 verified loader；④`read_context_resource` schema 没有 dynamic recovery ref；⑤ base transcript sequence `0` 被 `or` 错换为 fallback `99`；⑥ unavailable metric 没有记录；⑦ symlinked quarantine destination 与 snapshot parent swap 未拒绝；⑧ snapshot materialization failure 在首次/post-compaction prompt 静默消失；⑨ checkpoint persist `held` 后仍保留旧 `loaded` result。最后一项 Red 命令 `pytest -q tests/kernel/test_engine.py -k 'recovery_checkpoint_hold_revokes or recovery_checkpoint_exception_revokes' -x` 正确得到 `1 failed`，失败断言为旧 result identity 未撤销。
+- migration / dry-run / backfill / cleanup：无数据库 migration。`python -m app.scripts.repair_recovery_manifest_authority` 默认只读 dry-run；`--apply` 还必须显式 `--confirm`，只把 exact legacy bytes 移到可逆 quarantine，不猜 requester/root/policy/config，也不把 unsigned bytes自动签名。生产 2026-07-15 read-only SSH inventory：`legacy=54`、`valid_json=54`、`with_session_id=54`、`signed=0`、`workspace_legacy=0`、`scoped_heads=0`、`quarantine=0`，`JWT_SECRET_KEY` 已配置且非已知默认值。上一盘点为 56 后漂移到 54，证明 fleet 在持续变化；部署后必须重新 dry-run，不能继承本次数字执行 apply。
+- rollback：部署前可回退 `67a0bcdcb`。部署/生成 signed head 或执行 quarantine 后，直接退回旧 unsigned singleton reader 会重新打开 P1，不是允许的 rollback；只能 forward-fix 到“保留 signed/quarantine/raw-path guards，但将 recovery lane typed unavailable”的安全版本，或先停止相关 runtime、验证无 active recovery consumer 后恢复同一 authority contract。quarantine bytes 不删除，可按 operator 证据审查，但不得放回 live legacy path让旧代码消费。
+- Green（focused current worktree）：最终命令覆盖 runtime/persistence/metrics/legacy/architecture/kernel/e2e/web context/API/workspace/context-resource/tool registry，结果 `238 passed in 6.37s`；scoped `ruff check` → `All checks passed!`。
+- Green（宽回归 current worktree）：`pytest -q tests/kernel tests/runtime tests/api/test_prometheus_metrics.py tests/api/test_files_channel_download_token.py tests/api/test_files_write_boundaries.py tests/tools/test_workspace.py tests/tools/test_context_resource_tool.py tests/tools/test_workspace_resource_tool_authority.py tests/tools/test_filesystem_unified_facades.py tests/e2e/test_tool_call_recovery_closure.py tests/services/test_web_chat_run_orchestrator.py tests/services/test_web_chat_runtime.py tests/services/test_recovery_authority_web_context.py` → `1260 passed in 24.75s`，`git diff --check` exit `0`。
+- Green（独立 staged snapshot）：以 `git write-tree + commit-tree + git worktree add --detach` 构造只含 Git index 的 `339cddfaaa036401598c8e5aec9cdf77f8c521b3`，同一 focused suite → `238 passed in 6.78s`；同一 scoped Ruff → `All checks passed!`。因此结果不依赖共享工作树未提交 Hook/DB/Session hunks。
+- fault / security / observability：覆盖 concurrent sessions、fork isolation、different root task、tenant/requester/agent/principal/policy/config/transcript/delegation drift、unsigned/corrupt/tampered envelope、atomic replace failure、path traversal/symlink swap、immutable pointer、foreign ref、snapshot tamper、raw API/workspace/code-exec denial、missing authority、checkpoint stale revoke 与 recovered-effect replay gate。`recovery_manifest_events_total{operation,status,reason}` 使用 bounded labels 暴露 resolve/load/persist/resource 的 bound/loaded/held/quarantined/unavailable 等状态。
+- 真实消费：Web worker 把 root RuntimeTask/root session 和 accepted user T0 sequence 写入 `SessionContext`；Kernel turn 只 load/hydrate 一次；prompt/post-compaction 使用同一 verified result；tool checkpoint 每次更新该 result；recovered mutating tool frame 还要求 session metadata 中 authority digest 与 result 一致；模型通过既有 core `read_context_resource` 恢复完整 signed envelope。raw 文件不进入 Workspace/Artifact consumer，operator 使用 metrics、quarantine inventory 与受控 repair script。
+- commit / deploy / production canary：独立 code commit=`67a0bcdcb`。当前 production 仍是旧 deployment：backend=`9efe5fb2-8f83-4c32-b4dd-644f8ed52b61`、backend-api=`473f495d-9eec-4cfc-ad68-035f8a39d7ac`、frontend=`033c935b-051f-4475-90f5-35c2c473b02b`，三者状态均 `SUCCESS` 但 source message 都是 `fcd7a0d55424`，不包含本 commit。尚未部署；direct owner、creator≠requester、nested A2A、restart/compact、legacy quarantine、foreign ref/no-content、metrics 与安全 rollback canary 均 open。
+- 七原子：Input=authenticated InvocationRequest + Session/T0/root metadata；Authority=signed `RecoveryAuthorityFrame` + current tool context；Execution=single store/loader + governed context-resource/replay gate；Evidence=HMAC envelope、immutable hash ref、typed status、metrics、exact quarantine bytes；Recovery=absent/held/quarantine/unavailable、atomic persistence、dry-run/confirm、safe forward rollback；Consumption=turn hydration、prompt、compaction、tool replay、context resource、operator metrics；Acceptance=Red→238 + 1260 + staged 238、source baseline与 production read-only 已绿，deploy/live canary/migration apply未验。因此只允许 `in_progress-local-green:EVID-G1-005`。
+- 残余风险 / 下一动作：先部署三服务同一 commit，再在最新 volume 上执行 repair dry-run；选择受控 Agent 验证一个 unsigned legacy exact quarantine、一个新 signed scoped head、一次 restart+compaction、一次 foreign requester deny、一次 nested A2A principal/delegation bind，并检查 metrics/health。只有 apply/disposition、三服务 freshness、live no-leak/no-duplicate-effect 与安全 rollback evidence 全部写回后，P1-F4 才可 `closed`。本地施工可继续下一 Group 1 leaf，但不得用后续进度掩盖这些 production gate。
+- 对应 §12.2 canonical 行已更新为 `in_progress-local-green:EVID-G1-005`；Group 1 仍有 11 个 leaf 未闭环，103 分母、severity、Group owner 与 5 个 Missing 均不变。
 
 ## 13. Missing、Coverage Gap 与完成口径
 

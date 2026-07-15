@@ -196,6 +196,35 @@ def test_repair_ledger_defines_context_read_receipt_and_evidence_round_trip() ->
         assert required in source
 
 
+def test_every_group_has_one_machine_readable_context_package_index() -> None:
+    source = REPORT.read_text(encoding="utf-8")
+    package_rows = re.findall(
+        r"^- Group (\d+) \| primary=([^|]+?) \| purpose=([^|]+?) \| detail=([^|]+?) \| sink=(.+)$",
+        _region(source, "group-context-package-map"),
+        re.MULTILINE,
+    )
+
+    assert [int(group) for group, _, _, _, _ in package_rows] == list(range(11))
+    assert len({int(group) for group, _, _, _, _ in package_rows}) == 11
+
+    group_matches = list(re.finditer(r"^### Group (\d+)：", source, re.MULTILINE))
+    for group_text, primary, purpose, detail, sink in package_rows:
+        group = int(group_text)
+        match = next(item for item in group_matches if int(item.group(1)) == group)
+        next_matches = [item for item in group_matches if item.start() > match.start()]
+        end = next_matches[0].start() if next_matches else source.index("\n## 10.", match.start())
+        section = source[match.start() : end]
+
+        primary_refs = re.findall(r"@(?:docs/|hive-connect:)[A-Za-z0-9._/-]+\.md", primary)
+        assert primary_refs, f"Group {group} has no primary context document"
+        assert all(reference in section for reference in primary_refs), (
+            f"Group {group} primary context must also appear in its exhaustive route"
+        )
+        assert purpose.strip(), f"Group {group} has no context-reading purpose"
+        assert detail.strip() == f"§9 Group {group} @原始断点证据/@必须先读/@按需读取"
+        assert sink.strip() == f"§12.4 EVID-G{group}-*"
+
+
 def test_document_routes_are_portable_and_external_refs_are_snapshot_bound() -> None:
     source = REPORT.read_text(encoding="utf-8")
     references = set(re.findall(r"`@([^`]+\.md)`", source))

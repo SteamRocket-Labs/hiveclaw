@@ -1,12 +1,12 @@
 # Backend Volume 存储生命周期与冷热分层设计
 
-> 状态：P0 启动期写放大止血与 transaction payload 生命周期底座已于 2026-07-15 部署；21,163 个历史 default-Skill transaction 已完成 authority/backfill，11,977 个过期 rollback payload（6,211,996,397 bytes）已进入可恢复 quarantine。24 小时 grace 尚未结束，physical sweep 未执行；Object Storage、T2、snapshot、T0、trace/cache 的完整冷热分层仍待 Group 8 后续施工。
+> 状态：P0 启动期写放大止血与 transaction payload 生命周期底座已于 2026-07-15 部署；21,163 个历史 default-Skill transaction 已完成 authority/backfill。生产事故处置已完成 restore drill、两批 transaction 精确 physical sweep、无引用 web-fetch cache 清理、PostgreSQL ACK trace spool 收敛，以及 retry-exhausted T2 可重建 staging payload 逐出；容器文件系统占用已降至 `11,316,330,496` bytes（24%）。T0、当前 Memory、10 个非 exhausted/running T2 job、workspace、workspace snapshots、当前/held transaction 与其它核心数据均未删除；Object Storage、snapshot CAS、sealed T0 cold archive 和常态化 trace/cache/T2 lifecycle 仍待 Group 8 后续施工。
 >
 > 日期：2026-07-15。
 >
 > 范围：Hive Railway production 的 `backend-volume`、Agent workspace、Memory T0/T2、workspace snapshot、Agent asset transaction、invocation trace 和可重建缓存。
 >
-> 本文定义机制、迁移、保留和验收，并持续记录生产施工证据。§2.3.1 记录启动期止血，§2.3.2 记录已落地的 transaction lifecycle、storage metadata schema、production backfill 与 quarantine。不得把该 transaction 子闭环冒充完整 retention/cold-storage 闭环：Object Storage/resolver、跨资产 ref/pin/lease/legal hold、T2/snapshot/T0/trace/cache 迁移和 physical sweep 仍未完成。
+> 本文定义机制、迁移、保留和验收，并持续记录生产施工证据。§2.3.1 记录启动期止血，§2.3.2 记录已落地的 transaction lifecycle 与 physical receipts，§2.7 记录事故期安全清理和明确停止边界。不得把事故期一次性处置冒充完整 retention/cold-storage 闭环：Object Storage/resolver、跨资产 ref/pin/lease/legal hold、T2 authority/replay、snapshot CAS、T0 cold archive 与常态化 trace/cache policy 仍未完成。
 
 ## 0. 文档定位
 
@@ -78,7 +78,7 @@
 4. 让所有新写入经过新边界，并保持旧数据可读。
 5. 回填旧数据、做 byte/hash/count parity，再切换读取位置。
 6. 生成 production dry-run manifest。
-7. 经明确确认后 quarantine；观察 grace window 后才 physical sweep。
+7. 经明确确认后 quarantine；常态自动策略观察 grace window 后才 physical sweep。事故期只有在逐对象 restore drill、独立 immutable manifest、二次 hash/count/authority 复核和显式 operator disposition 同时成立时，才允许对该精确 manifest 做即时 sweep；该例外不得泛化到 T0、Memory、snapshot、workspace、held/current transaction 或未完成 job。
 
 不可逆删除的确认门是安全要求，不是分阶段交付或 MVP。代码、迁移、回填、观测、恢复和测试仍应在同一完整施工轮中完成。
 
@@ -86,13 +86,13 @@
 
 ### 2.1 Railway 存储状态
 
-2026-07-15T14:35Z 最新复核结果：
+2026-07-15T15:28Z 最新复核结果：
 
 - `backend-volume` 挂载于 `/data/agents`。
 - Railway UI 配额仍为 `50 GB`；容器内 `df -B1 /data/agents` 的文件系统总量为 `48,891,670,528` bytes。
-- 止血部署前容器使用量为 `28,648,972,288` bytes；止血部署后为 `28,650,721,280` bytes，均为 `59%`，部署后可用 `20,224,172,032` bytes。
-- transaction quarantine 后 Railway Volume truth surface 为 `currentSizeMB=27,111.91552`、`sizeMB=50,000`、`status=Ready`。quarantine 只是同一 Volume 内的原子路径移动，不会释放物理块；只有 grace 后的独立 `sweep --apply` 才会使容量下降。
-- 本文最初 inventory 的约 `24.80 GB` 已不再是当前值；后续容量结论必须使用本节的新时间戳证据。
+- 止血部署前容器使用量为 `28,648,972,288` bytes；止血部署后为 `28,650,721,280` bytes，均为 `59%`。用户随后观察到 Railway UI `30.27 GB`，但 UI/GraphQL 是滞后采样面；生产清理的即时机械事实源为同一挂载点的容器内 `df`、逐目录 allocated bytes、immutable manifest 和 receipt。
+- 完成 §2.7 的精确清理后，`df -B1 /data/agents` 为 total=`48,891,670,528`、used=`11,316,330,496`、available=`37,558,562,816`、usage=`24%`。同卷 quarantine 为 0 bytes；fresh transaction GC=`candidate_count=0/hold_count=2091`，fresh sweep=`candidate_count=0`。
+- 本文早期的约 `24.80 GB`、`27,111.91552 MB` 和 UI `30.27 GB` 都是事故过程快照，不再代表当前内核占用；后续曲线必须同时标注 Railway 采样时间和容器 `df` 时间。
 - PostgreSQL Volume 约 `9.60 GB`，与 `backend-volume` 已经物理分离。
 - Redis Volume 约 `1.50 GB`。
 - production 当前没有 Railway Bucket。
@@ -103,13 +103,15 @@
 
 | 类别 | 当前只读取证 | 权威判断 | 当前动作边界 |
 |---|---:|---|---|
-| Agent asset transaction journals | lifecycle 部署后的 production inventory 为 23,224 个，transaction tree `11,927,841,204` bytes，其中 stage/backups payload `11,836,695,357` bytes | 历史 committed payload 是容量异常主因；新 transaction 已有 recoverable/finalized/GC 状态 | 21,163 个安全候选已 backfill；其它 2,061 个保留为人工 hold |
-| `active_skill_package_install` | 数量仍为 21,163；backfill 候选 payload `11,422,977,781` bytes；其中 11,977 个、`6,211,996,397` bytes 已 quarantine，9,186 个仍受 commit-based retention 保护 | exact-match 增长已停止；旧 rollback payload 现在有权威状态和恢复路径 | grace 内禁止 sweep；retention 到期后重新生成 manifest，不复用旧判断 |
+| Agent asset transaction journals | lifecycle 部署后原始 inventory 为 23,224 个、payload `11,836,695,357` bytes；两批 sweep 后整个 transaction tree allocated=`777,310,208` bytes | 历史 committed payload 是容量异常主因；journal、当前 revision、hold 与恢复元数据仍保留 | fresh GC/sweep 均无 candidate；2,091 个 policy hold 不动 |
+| `active_skill_package_install` | 先对 11,977 个原过期 payload 做 restore drill 后精确重隔离并释放 `6,211,996,397` bytes；再只按 `next_revision < current_revision` 释放 9,118 个 superseded payload、`5,176,697,828` bytes | exact-match 增长已停止；旧 revision 可由当前 revision/journal 和 receipts 证明已被替代 | current/latest revision、68 个 superseded dry-run hold、其它 policy hold 均保留 |
 | `evolution/skill_review.md` transaction payload | 约 7.10 GB；当前实际 `skill_review.md` 总计仅约 25.4 MB | 全文件 append + stage + backup 产生约 280 倍放大 | 改为 append delta transaction |
-| T0 `source.md` | 约 2.77 GB | canonical readable projection | 必须保留或无损归档 |
-| T0 `events.jsonl` | 约 2.74 GB | canonical portable raw evidence | 必须保留或无损归档 |
-| Workspace snapshots | 536 个 manifest，引用内容约 2.38 GB；唯一 hash 内容约 90.4 MB | 同内容跨 checkpoint 被反复复制，约 26.36 倍重复 | 改成 tenant-scoped CAS |
-| T2 staging jobs | 7,078 个；7,077 held；约 1.49 GB | 大部分是未完成 Memory 工作，不是缓存垃圾 | 修复 authority 并重放后再按状态清理 |
+| T0 `source.md` + `events.jsonl` + indexes | allocated=`6,365,040,640` bytes | canonical portable evidence 与 readable projection，不是异常垃圾 | 本次零删除；后续只能 sealed archive + byte/hash/order replay |
+| Workspace snapshots | allocated=`2,546,212,864` bytes | rollback/fork 核心数据；相邻 checkpoint 高重复，但删除会降低恢复能力 | 本次零删除；只允许后续 tenant-scoped CAS，在 checkpoint 语义不变后回填 |
+| T2 staging jobs | 清理前 allocated=`1,601,486,848` bytes；7,095 个 retry-exhausted job 的 15,803 个可重建临时文件释放后为 `67,907,584` bytes | `job_manifest.json`、status、issues、tenant/session/segment 和 replay identity 是恢复权威；`source_bundle/candidate` 可从 T0/DB 重建 | 7,095 个 manifest 全保留；10 个非 exhausted/running job 连 payload 一起保留 |
+| Invocation JSONL spool | rotation 前 allocated=`2,093,240,320` bytes；PostgreSQL 已 ACK 637,844 lines / `2,081,917,321` logical bytes，未 ACK 3,305 lines / `10,634,149` bytes | `InvocationSpan` PostgreSQL 是 canonical query surface；未 ACK bytes 仍是 recoverable spool | 只逐出 PG ACK 段，未 ACK 全量保留；常态 bounded rotation 仍待实现 |
+| `.hive/web_fetch` conversion cache | 清理前 10,967 files、allocated=`1,620,996,096` bytes | 唯一 consumer 使用 `force_refresh=True` 可重建，且无 durable ref/index consumer | hash manifest 后清空；未来如被 artifact/T0 引用必须先提升为 durable ref |
+| Agent workspace | allocated=`623,652,864` bytes | 用户与 Agent 当前工作区，是 live product state | 本次零删除 |
 
 ### 2.3 修复前 Transaction 增长根因
 
@@ -157,7 +159,7 @@ Railway production 证据：
 
 闭环边界：本节只证明“继续制造大批重复 transaction”已经停止。历史 transaction 的 lifecycle/backfill/quarantine 进展见 §2.3.2；storage resolver/Object Storage、T2 authority、snapshot CAS、T0 cold archive 和 physical sweep 仍不由本节关闭。
 
-### 2.3.2 Transaction lifecycle、backfill 与 quarantine（已部署；physical sweep 待 grace）
+### 2.3.2 Transaction lifecycle、backfill、restore 与 physical sweep（已部署并执行精确事故处置）
 
 实现 commit：`df4a815c5`（`feat(storage): add recoverable volume lifecycle`）。
 
@@ -190,9 +192,12 @@ Production inventory/backfill/quarantine 证据：
 2. backfill manifest=`backfill-a6e367767e8f4bb9b6ea6b887adf1f24`、SHA-256=`a0dba48ef5affb211e6f187fe9331348c167ba5eef31215d69ee8eaec38d439a`：21,163 candidates、`11,422,977,781` bytes、2,061 holds。Railway SSH 输出通道中断后远端幂等 apply 继续；第二份 manifest=`backfill-51b1879ee8d649b6905c3c14d0bfeac0`、SHA-256=`1d0a4c95c4b77a6a024efb343b900ed12e324deb3467ace20501bf833b43605d` 对剩余候选重验，两份 durable backfill receipt 均已落盘。
 3. backfill 终态复核 manifest=`backfill-746e86895f074935aecffa1908406cc4`：`candidate_count=0`、`candidate_bytes=0`、`hold_count=2061`。
 4. GC dry-run manifest=`gc-9acf3eafae5c413098e9f786140f3d2b`、SHA-256=`9c0adf4f497750effaa14e4b5ffd5f957260e681f2b75a517e8b15c10784ccd4`：11,977 candidates、`6,211,996,397` bytes、2,071 hard holds；另有 9,186 个 finalized payload 仍在 commit-based retention 窗口，不进入 candidate，也不被 CLI 伪装成 hard hold。
-5. quarantine receipt=`.storage_lifecycle/runs/gc-9acf3eafae5c413098e9f786140f3d2b.quarantine.json`：processed=`11,977` / `6,211,996,397` bytes，`skipped=[]`。post-quarantine GC dry-run=`candidate_count=0`；sweep dry-run=`candidate_count=0`，证明 24 小时 grace 正在生效。
+5. 首次 quarantine receipt=`gc-9acf3eafae5c413098e9f786140f3d2b.quarantine.json`：processed=`11,977` / `6,211,996,397` bytes、`skipped=[]`。因同卷 quarantine 不释放物理块，先执行 production restore drill：receipt=`gc-9acf3eafae5c413098e9f786140f3d2b.restore.json`，processed=`11,977`、`skipped=[]`。
+6. 以原 11,977 个 candidate key 重建 exact-scope emergency manifest=`gc-emergency-gc-912ffd7a4a1148aa94c0225c0a92bb08.json`、SHA-256=`ed827ee0554f14215ad532e06a437bd0665f6e361ba98b345b27203684af805f`；新近跨过 retention 的另 1 个对象（876,181 bytes）明确排除。重隔离 receipt=`gc-912ffd7a4a1148aa94c0225c0a92bb08.quarantine.json`，独立 sweep run=`sweep-e5065cf4fcb94203a7963ab7bc0d40c3`、manifest SHA-256=`b7dd6cfa313ec35578e375bbf35896c8aa07aae888d37054fdbcba9f9f9a7433`，processed=`11,977` / `6,211,996,397` bytes、`skipped=[]`。
+7. 第二批只选择 `next_revision < current_revision`、allowlisted operation、finalized/hot、tenant 已归属、无 legal hold/pin 的 superseded revision。dry-run run=`superseded-tx-463a31ab067e4ddba1c0cfd9cd3c1230`、SHA-256=`bad71215de264df92ba13d01856dc3c861827cb2a2f22a5d28a1fe2256836895`：9,118 candidates / `5,176,697,828` bytes、68 holds。逐对象复核隔离 0 skip 后，独立 sweep run=`sweep-734cc757559540d1b3b50e1a243d452a`、SHA-256=`bcfdc738df0ae687a8cb3720eee1dc6bc7abab45c59a13a70870248f3931c10c` 精确释放同一数量/字节，`skipped=[]`。
+8. 终态复扫：transaction quarantine=0 bytes；fresh sweep=`candidate_count=0/hold_count=0`；fresh GC=`candidate_count=0/hold_count=2091`。这些 hold、latest/current revision 和未知 operation 均未删除。
 
-闭环裁决：transaction payload 的 Input/Authority/Execution/Evidence/Recovery/Acceptance 已建立，且 production startup/Skill Distiller 是真实 consumer；因此可称“transaction lifecycle 子闭环”。它不关闭 `MISS-RETENTION-001`：跨 Memory/Knowledge/Artifact/Audit 的 policy、legal hold/export/deletion ledger、Object Storage、resolver、T2/snapshot/T0/trace/cache consumer、restore drill 和 physical sweep 仍未闭环。
+闭环裁决：transaction payload 的 Input/Authority/Execution/Evidence/Recovery/Acceptance 已建立，且 production startup/Skill Distiller 是真实 consumer；两批逐对象 physical receipts 与 restore drill 已补齐该子域的事故处置证据，因此可称“transaction lifecycle 子闭环”。它不关闭 `MISS-RETENTION-001`：跨 Memory/Knowledge/Artifact/Audit 的统一 policy、legal hold/export/deletion ledger、Object Storage/resolver、T2 authority/replay、snapshot CAS、T0 cold archive，以及常态化 trace/cache consumer 仍未闭环。
 
 ### 2.4 T2 backlog 根因
 
@@ -228,6 +233,24 @@ Production inventory/backfill/quarantine 证据：
 - `index.json`：segment ordering、hash chain 和 locator metadata。
 
 `ChatTranscriptEvent` 仍是 cloud run ordering/replay/fork/checkpoint 的 transactional authority；T0 是 exactly-once portable Memory evidence projection。冷热分层不能把两者重新混成双运行权威，也不能因 `source.md` 与 `events.jsonl` 内容相关就任意删除其中一个。
+
+### 2.7 事故期派生数据收敛与停止边界
+
+在 transaction physical sweep 之外，本次只处理了三类具备机械重建/ACK 事实的数据：
+
+1. **Web conversion cache**：manifest=`web-fetch-cache-76dd7f64e078404da5c7a90b951939e8.json`、SHA-256=`5c17bd38ab58a587b70ce6096be46b1a49500f6681424cea2633dd1fce72d77e`，10,967 files、logical=`1,593,226,204`、allocated=`1,620,996,096` bytes、open fd=0。隔离后重新创建空 active root，再按同一 exact file set sweep；quarantine/sweep receipts 均 `skipped=[]`。
+2. **Invocation compatibility spool**：dry-run=`invocation-spool-ack-dry-run-20260715.json`、SHA-256=`e37164e5f5a984bc33db1daafaaaebced2dd23b96473288562bc5eed02cdb18d`。67 个 active JSONL 原子轮转；按 `(agent_id, trace_id, span_id)` 与 canonical PostgreSQL `InvocationSpan` 对账，637,844 lines / `2,081,917,321` bytes 已 ACK，3,305 lines / `10,634,149` bytes 未 ACK，invalid=0。只清 ACK 副本，未 ACK bytes 写入 per-agent `unacked_spool`；receipt=`invocation-spool-ack-20260715.sweep.json`、`skipped=[]`。
+3. **Retry-exhausted T2 可重建 staging payload**：manifest=`t2-exhausted-staging-f96a016b0ee4479094d738f7877bdd27.json`、SHA-256=`dd265d42a4a6f0cc4f1edd4f3445d239d24d3788fe21c09c5460d530485dda6b`。只选择 `status=held`、`retry_count>=3`、已有 `retry_exhausted_alerted_at`，且目录内文件全部属于 `source_bundle.json` / `*.candidate.md` / `platform_gate_report.json` allowlist 的 7,095 个 job。15,803 个文件、logical=`1,487,234,748`、allocated=`1,533,579,264` bytes 经全量 hash 复核后隔离并 sweep；每个 `job_manifest.json`、issues、tenant/session/segment、retry state 与重放 identity 原位保留，10 个不满足条件的 job 连 payload 一起保留。quarantine/sweep receipts 均 `skipped=[]`。
+
+事故处置在 `df used=11,316,330,496` bytes 时按 owner 决策停止。随后启动的 workspace snapshot 重复率只读扫描已被终止，没有执行去重、hardlink、移动或删除。剩余大项的明确裁决是：
+
+- T0 allocated=`6,365,040,640` bytes：核心证据，禁止直接删除；
+- workspace snapshots allocated=`2,546,212,864` bytes：rollback/fork 核心，禁止通过减少 checkpoint 清理；
+- workspace allocated=`623,652,864` bytes：当前用户/Agent 数据，禁止清理；
+- transaction tree allocated=`777,310,208` bytes：journal、latest/current revision、hold 与恢复元数据，fresh GC 无 candidate；
+- T2 staging allocated=`67,907,584` bytes：保留的 manifests 与 10 个非 eligible job，不再清理。
+
+这条停止边界高于“继续降低数字”的优化目标：后续只能通过完整 Group 8 的 sealed archive、tenant-scoped CAS、bounded spool/cache 和 authority/replay 合同优化，不能复用本次一次性脚本继续删除核心数据。
 
 ## 3. 不采用的方案
 
@@ -642,6 +665,8 @@ Restore/fork：
 - 长时间不可投递时告警，不静默丢 evidence。
 - 缺 tenant 时 fail closed，不能写成全局 DB span；同时要保留可诊断的 bounded failure receipt。
 
+2026-07-15 事故处置已完成一次 canonical ACK reconciliation，详细 receipt 见 §2.7。这证明“已 ACK 副本可安全逐出、未 ACK bytes 必须保留”，但 active writer 仍会继续 append 当前 JSONL；没有轮转阈值、backpressure、oldest-age metric 和定时 sweeper 之前，本节仍是待 Group 8 常态化实现，不能用一次性清理冒充关闭。
+
 ### 7.7 Web/raw conversion cache
 
 转换产物按引用提升：
@@ -650,6 +675,8 @@ Restore/fork：
 - 被 artifact、citation、T0 或 durable source object 引用时，创建 durable ref 并切换 retention class。
 - `force_refresh=True` 只能生成新 cache candidate，不能绕过 dedup/ref lifecycle。
 - 无引用的 raw/conversion 按 TTL 回收。
+
+2026-07-15 已对当时无 durable ref/index consumer、且 consumer 使用 `force_refresh=True` 重建的 `.hive/web_fetch` cache 做 exact manifest 清理，详细 receipt 见 §2.7。active root 已原位重建，生产 reader 路径未改变。未来增长仍需本节的 ref promotion、TTL、容量 metric 与定时 GC；若产物进入 artifact/citation/T0，必须先 durable promotion，不能沿用此次“全部可重建”的历史判断。
 
 ## 8. 可恢复 GC 机制
 
@@ -1099,11 +1126,13 @@ backend/tests/memory/test_t0_cold_storage.py
 - 未知、corrupt、unowned、unfinalized、有 ref/pin/lease/legal hold 的对象绝不删除。
 - Volume backup 和 Object Storage backup 均完成 restore drill。
 
-当前 production 证据：dry-run/hash-bound apply/journal recheck/quarantine receipt 已通过；11,977 个对象处于 24 小时可恢复 grace。restore 实现与单元回归存在，但本轮没有为了演示而恢复 production quarantine；physical sweep、Volume/Object Storage restore drill 和跨资产 GC 尚未通过，因此本小节仍是局部闭环。
+当前 production 证据：transaction dry-run/hash-bound apply/journal recheck/quarantine/restore/sweep 均有 durable receipt；首批 11,977 个对象先完成 production restore drill，再以 exact scope 重隔离和 sweep，第二批 9,118 个 superseded revision 也经独立 manifest/sweep 复核，全部 `skipped=[]`。web cache、trace ACK spool 与 T2 rebuildable staging 也有各自 exact manifest 和双段 receipt。Volume 级备份恢复、Object Storage restore drill 和跨资产统一 GC 尚未通过，因此本小节仍是“已完成事故 scope + 完整生命周期局部闭环”。
 
 ### 15.5 生产容量
 
-按当前只读 inventory 粗略估算，在以下条件全部满足后：
+事故处置前本文曾估算完整冷热分层后热 Volume 约 8-12 GB。2026-07-15T15:28Z 的实际 production `df` 已为 used=`11,316,330,496`、available=`37,558,562,816`、usage=`24%`；这是清理明确可重建/已 ACK/已 supersede 数据后的事实，不是继续删除核心数据的目标值。
+
+后续容量优化仍依赖：
 
 - 旧 transaction 大 payload 安全 finalization/GC；
 - snapshot CAS 回填；
@@ -1111,7 +1140,7 @@ backend/tests/memory/test_t0_cold_storage.py
 - sealed T0 冷归档；
 - trace/cache 有界化；
 
-热 Volume 可能从当前约 28.65 GB 降到约 8-12 GB。该数字是设计估算，不是承诺；最终只以 production dry-run manifest 和迁移后 `du`/Railway metrics 为准。
+后续不再以“低于 11.3 GB”为完成条件。T0、snapshot、workspace、current Memory 和 hold 的自然体量可以使热层高于该值；只有在 capability-preserving 的 sealed archive/CAS/resolver 路径上线并完成 byte/hash/replay 后，才允许相应物理块离开热 Volume。最终同时以 production immutable manifest、容器 `df`/allocated bytes 和滞后的 Railway metrics 为准。
 
 ### 15.6 完成定义
 
@@ -1127,21 +1156,24 @@ backend/tests/memory/test_t0_cold_storage.py
 
 “创建了 Bucket”“新增了表”“磁盘变小了”都不足以单独证明闭环。
 
-截至 2026-07-15T14:35Z：第 1、2 项已对 transaction substrate 成立；第 3 项已存在 transaction backfill receipts；第 5 项只有 quarantine receipt，尚无 grace 后 sweep receipt；第 4、6、7 项以及所有非 transaction 资产仍未齐。因此当前裁决是“transaction lifecycle 子闭环 + 完整方案未闭环”，不是 Group 8 或 `MISS-RETENTION-001` 完成。
+截至 2026-07-15T15:28Z：第 1、2、3 项已对 transaction substrate 成立；第 5 项已有 transaction restore/sweep、web cache、trace ACK 与 T2 staging 事故处置 receipts；第 7 项已有本次 `df` 和主要目录 allocated-byte 终态。Object Storage parity、Volume/Object restore drill、snapshot CAS/fork、sealed T0 replay、T2 authority/replay、常态 scheduler/metrics 和跨资产 legal-hold/export/deletion ledger 仍未齐。因此当前裁决是“transaction lifecycle 子闭环 + 派生数据事故处置完成 + 完整 Group 8 方案未闭环”，不是 Group 8 或 `MISS-RETENTION-001` 完成。
 
 ## 16. 当前继续禁止的动作
 
-transaction quarantine 已按 §2.3.2 完成；在 24 小时 grace、独立 sweep manifest 和明确删除确认之前：
+本次事故清理已按 §2.3.2/§2.7 收口，owner 明确要求“可优化的优化，不勉强；不删除核心数据”。从该时点起：
 
-- 不 physical delete 已 quarantine 的 production transaction payload；不以旧 GC manifest 绕过新 sweep dry-run。
-- 不删除任何 held/retention-active transaction、T2 staging、T0、snapshot、trace 或 cache 文件。
+- 不再对当前 Volume 做一次性物理清理；任何新动作必须回到完整 Group 8 代码、测试、migration/backfill、restore 和用户对具体不可逆 manifest 的确认门。
+- 不删除或即时 dedup T0、T2 job manifest/issues/replay identity、current Memory/Soul/Skill、workspace、workspace snapshot、current/latest transaction、policy hold、unacked trace 或有 durable ref 的 cache/artifact。
+- 不把“目录大”“重复率高”“retry exhausted”“Railway 曲线未回落”单独作为删除事实；T2 只允许逐出可由 T0/DB 重建的 allowlisted 临时 payload，且本次 eligible 集合已处理完。
+- 不执行 snapshot hardlink/CAS one-off；必须先实现 tenant-scoped CAS、immutable ref、checkpoint pin/lease、fork/restore parity 与 rollback，再迁移。
+- 不以旧 GC、sweep、cache、trace 或 T2 manifest 扩大候选范围；所有 receipts 只证明当时 exact file set。
 - 不创建 Railway Bucket。
 - 不修改 Volume mount、容量、backup schedule 或 service variables。
 - 不部署 storage provider。
 - 不对现有 held job 执行批量重放。
 - 不把现有 `backend-volume` 目录直接同步后删除源文件。
 
-这保证历史数据安全边界成立，也保留后续对 provider、retention 和 legal hold 的审阅空间。
+这保证容量优化永远服从 Memory、恢复、fork、rollback、审计与用户文件完整性，也保留后续对 provider、retention 和 legal hold 的审阅空间。
 
 ## 17. 参考资料
 

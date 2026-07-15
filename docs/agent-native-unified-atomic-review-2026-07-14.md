@@ -4,7 +4,7 @@
 >
 > 原始审查冻结快照：`main@501db6555dae374e5fcf43a6fdcfe8a3dd89343e` + 2026-07-14 当时未提交工作树；后续施工不改写这个审查锚点，每条 `EVID-*` 另记自己的开工 HEAD、工作树与生产快照
 >
-> 修复账本滚动更新：2026-07-15；Group 0 已用 `EVID-G0-006` 把 11 个上下文包、88 个可执行 `@` 文档入口、逐 Group 详细路由和证据回流做成机器门并保持关闭；Group 1 的同源三服务部署已经成功，`P0-F1/P0-F2/E-1/P1-004/P1-F4/KB-EXTRACT-001/KB-AUTH-001/KB-PROP-001/BUD-ROOT-001/AUDIT-IMM-001/AUDIT-TENANT-001` 已分别以 `EVID-G1-001/002/003/004/005/006/007/008/009/010/011` 完成 production canary 并关闭；Group 1 当前为 11/16 closed、5/16 pending，不再有“已部署但未关闭”的 leaf。不得把 11 个独立 leaf 的关闭冒充 Group 1 或 103 项完成。
+> 修复账本滚动更新：2026-07-15；Group 0 已用 `EVID-G0-006` 把 11 个上下文包、88 个可执行 `@` 文档入口、逐 Group 详细路由和证据回流做成机器门并保持关闭；Group 1 的同源三服务部署已经成功，`P0-F1/P0-F2/E-1/P1-004/P1-F4/KB-EXTRACT-001/KB-AUTH-001/KB-PROP-001/BUD-ROOT-001/AUDIT-IMM-001/AUDIT-TENANT-001/F-PLAINTEXT` 已分别以 `EVID-G1-001/002/003/004/005/006/007/008/009/010/011/012` 完成 production canary 并关闭；Group 1 当前为 12/16 closed、4/16 pending，不再有“已部署但未关闭”的 leaf。不得把 12 个独立 leaf 的关闭冒充 Group 1 或 103 项完成。
 >
 > 组合输入：`agent-native-atomic-review-2026-07-14.md`、`agent-native-extreme-boundary-atomic-review-2026-07-14.md`、`unified-context-assembly-and-progressive-disclosure-2026-07-14.md`、`session-v2-cc-codex-alignment-contract-2026-07-14.md`、修订后的 `reusable-agent-native-atomic-review-prompt.md`，以及当前 Hive / FreeCode / Codex 本地源码。
 >
@@ -593,7 +593,7 @@ Group 摘要不能替代以下两份文档：
 | Group | owner canonical leaf | owner Missing | 当前状态 |
 |---:|---:|---:|---|
 | 0 | 0（全局门） | 0 | closed：`EVID-G0-002/003/004/005/006`，Git truth、机器账本、11 个上下文包/88 个 `@` 文档入口、跨仓快照与 clean-checkout harness 已闭环 |
-| 1 | 16 | 0 | in_progress：`P0-F1/P0-F2/E-1/P1-004/P1-F4/KB-EXTRACT-001/KB-AUTH-001/KB-PROP-001/BUD-ROOT-001/AUDIT-IMM-001/AUDIT-TENANT-001` 已关闭（11/16）；无 deployed-but-open leaf；其余 5 个 leaf 待施工 |
+| 1 | 16 | 0 | in_progress：`P0-F1/P0-F2/E-1/P1-004/P1-F4/KB-EXTRACT-001/KB-AUTH-001/KB-PROP-001/BUD-ROOT-001/AUDIT-IMM-001/AUDIT-TENANT-001/F-PLAINTEXT` 已关闭（12/16）；无 deployed-but-open leaf；其余 4 个 leaf 待施工 |
 | 2 | 14 | 0 | open |
 | 3 | 7 | 0 | open |
 | 4 | 6 | 0 | open |
@@ -916,7 +916,7 @@ Group 摘要不能替代以下两份文档：
 
 **源码入口**：terminal hook/T2 job/outbox、T0 projection/hash verifier、T2/T3 write authority/locks、capability factor consumers、Memory availability gates、Knowledge ACL/index/retention/audit。
 
-**首个 Red**：在 terminal commit 后注入 T2 provider outage、worker crash/restart、dead-letter/requeue、T0 hash tamper、并发 T3 write、rolling deploy 期间旧实例长期持有 Agent asset lock、Knowledge ACL revoke 与 retention/legal hold；证明 terminal 被阻塞、证据不可验、锁外写、无 timeout 的新实例 startup 等待、永久 held 或跨资产删除不守恒。`EVID-G1-010/011` 已连续两次记录 production backend 在 `startup: push default skills to every existing agent across tenants` 后长停顿，后一次 deployment 从创建到 `SUCCESS` 约 6 分 50 秒、uvicorn startup 从 `Waiting` 到 daemon ready 约 3 分 20 秒，health 的 `event_loop.max_lag_ms=190949.93`；停顿位置已重复确证，但当前仍无进程 stack，必须由 Group 8 fault injection 最终坐实或推翻 blocking `flock` 根因并建立 bounded typed recovery。`EVID-G1-011` 还捕获 `MemoryEnhancementSyncResult` 没有 `skipped` 属性的每轮 warning，而同一 health 将 evolution daemon 报为 healthy 且 `last_error=null`；该证据并入既有 `F-OBS1` 的错误可见性/清除验收，不新增第 104 个 leaf。两项都不得被 Group 1 audit leaf 的关闭掩盖。
+**首个 Red**：在 terminal commit 后注入 T2 provider outage、worker crash/restart、dead-letter/requeue、T0 hash tamper、并发 T3 write、rolling deploy 期间旧实例长期持有 Agent asset lock、Knowledge ACL revoke 与 retention/legal hold；证明 terminal 被阻塞、证据不可验、锁外写、无 timeout 的新实例 startup 等待、永久 held 或跨资产删除不守恒。`EVID-G1-010/011/012` 已连续三次记录 production backend 在 `startup: push default skills to every existing agent across tenants` 后长停顿；第三次从 deployment 创建到 daemon ready 约 6 分 51 秒，default-skill push 后等待约 203 秒，health 的 `event_loop.max_lag_ms=203831.58`。停顿位置已重复确证，但当前仍无进程 stack，必须由 Group 8 fault injection 最终坐实或推翻 blocking `flock` 根因并建立 bounded typed recovery。`EVID-G1-011` 还捕获 `MemoryEnhancementSyncResult` 没有 `skipped` 属性的每轮 warning，而同一 health 将 evolution daemon 报为 healthy 且 `last_error=null`；该证据并入既有 `F-OBS1` 的错误可见性/清除验收，不新增第 104 个 leaf。两项都不得被 Group 1 安全 leaf 的关闭掩盖。
 
 **证据回填**：`EVID-G8-*` 必须保存 T0/T2/T3/soul source refs/hash/lock/outbox/job/retry/dead-letter/requeue、Knowledge ACL/retention/legal-hold 与跨资产 deletion/export ledger；同步 `§12.2` 九行、`§13.1` 两个 Missing 和 `§12.3`。
 
@@ -1238,7 +1238,7 @@ Group 0 是全局证据门，不拥有业务 leaf。下面 103 行必须与 cano
 - P2 | E-2 | inherited-current-evidence | Hive Connect local A2A 不 wake parent
 - P2 | AUDIT-IMM-001 | closed:EVID-G1-010 | commit `94e3ecf58/c0e1108a6` 在数据库层禁止两张 canonical audit 表 UPDATE/DELETE/TRUNCATE，外部 principal provenance 改为 RESTRICT；真实 PG、clean-checkout 全量、三服务部署与 production 零残留事务 canary 已绿
 - P2 | AUDIT-TENANT-001 | closed:EVID-G1-011 | commit `09c3823a0` 将 tenantless security event 路由到不可变 operator audit plane，返回 typed receipt；真实 PG/app_rls、clean-checkout 全量、成功认证 audit-failure fail-closed、三服务部署与 production append-only canary 已绿
-- P2 | F-PLAINTEXT | inherited-current-evidence | agent tool config 明文 MCP credential
+- P2 | F-PLAINTEXT | closed:EVID-G1-012 | commit `8570efdad` 对全部非空 `AgentTool.config` 做版本化认证信封加密、透明运行时解密、API 结构化遮罩与 secure migration；真实 PG、clean-checkout 全量、三服务 exact-source 部署和 production 706/706 encrypted、0 plaintext inventory 已绿
 - P2 | P2-F8 | inherited-current-evidence | `rg` 参数缺 `--` 可 flag injection
 - P2 | P2-F6 | inherited-current-evidence | model config 写入缺 cross-tenant reference 校验
 - P2 | KB-CONTRACT-001 | inherited-split | Knowledge tool description/spec/implementation 不一致
@@ -1325,7 +1325,7 @@ Group 0 是全局证据门，不拥有业务 leaf。下面 103 行必须与 cano
 | Group | 证据前缀 | Owner 范围 | 当前证据状态 | 下一次写入要求 |
 |---:|---|---|---|---|
 | 0 | `EVID-G0-*` | 0 leaf / 0 Missing | `closed`：`EVID-G0-001/002/003/004/005/006`；文档 Git truth、owner/path/decision/scenario CI、11 个 Group 上下文包、88 个去重 `@` 文档入口、跨仓快照与 fake-provider/PG/Redis harness 基座成立 | 后续任何新增本地 `@docs` 必须先进入 Git 并同步上下文包索引；业务场景 Green 仍由 owner Group 负责 |
-| 1 | `EVID-G1-*` | 16 leaf / 0 Missing | `in_progress`：`P0-F1/P0-F2/E-1/P1-004/P1-F4/KB-EXTRACT-001/KB-AUTH-001/KB-PROP-001/BUD-ROOT-001/AUDIT-IMM-001/AUDIT-TENANT-001` 的独立 code/evidence、production canary 均已绿并关闭（11/16）；无 deployed-but-open leaf；其余 5 leaf 未施工 | 按 §12.1 owner map 与依赖重验下一个 Group 1 leaf；每个剩余 leaf 仍须独立 Red→Green、迁移/回填、fault、rollback、consumer 与 production evidence，不得用前十一项关闭冒充 Group 1 closed |
+| 1 | `EVID-G1-*` | 16 leaf / 0 Missing | `in_progress`：`P0-F1/P0-F2/E-1/P1-004/P1-F4/KB-EXTRACT-001/KB-AUTH-001/KB-PROP-001/BUD-ROOT-001/AUDIT-IMM-001/AUDIT-TENANT-001/F-PLAINTEXT` 的独立 code/evidence、production canary 均已绿并关闭（12/16）；无 deployed-but-open leaf；其余 4 leaf 未施工 | 按 §12.1 owner map 与依赖重验下一个 Group 1 leaf；每个剩余 leaf 仍须独立 Red→Green、迁移/回填、fault、rollback、consumer 与 production evidence，不得用前十二项关闭冒充 Group 1 closed |
 | 2 | `EVID-G2-*` | 14 leaf / 0 Missing | `open` | 写 Session event/item/reducer、persist-before-publish、projection/backfill 与 SESSION-G 结果 |
 | 3 | `EVID-G3-*` | 7 leaf / 0 Missing | `open` | 写 root admission、reserve/commit/release、terminal CAS、approval resume 与 fanout 曲线 |
 | 4 | `EVID-G4-*` | 6 leaf / 0 Missing | `open` | 写 result ref、mailbox lease/CAS、integration epoch、partial/late/duplicate 与 100-way return storm |
@@ -2187,7 +2187,65 @@ context_read_receipt:
 - 部署期间额外证据：backend 从 09:32:02 创建到 09:38:49 `SUCCESS`，uvicorn 在 09:34:59 `Waiting for application startup`，09:35:06 进入 default-skill push 后长停顿，health 最终报 `event_loop.max_lag_ms=190949.93`；该重复输入已回流 §9 Group 8 的 lock/recovery Red。启动后日志还显示 `MemoryEnhancementSyncResult` 缺少 `skipped`，但 evolution daemon health 为 healthy 且 `last_error=null`；该漂移进入 Group 8 `F-OBS1` 验收。两者不影响本 leaf 的 audit writer/consumer 七原子，也不被本 leaf 关闭。
 - 七原子：Input=`tenant_id=None/zero` security event 与 authenticated login outcome；Authority=tenant UUID、operator RLS scope、static bypass manifest 与 immutable DB trigger；Execution=`write_audit_event` 单入口分流 + `write_platform_security_audit_event` 独立 commit + auth effect gate；Evidence=typed receipt、immutable row、versioned envelope、deployment/hash/canary；Recovery=exception propagation、rollback/503、next-request retry、historical-gap disclosure；Consumption=password login、OIDC、governance callers与 operator audit read；Acceptance=TDD Red→Green、allowlist、真实 PG/app_rls、clean-checkout 7170、三服务 exact archive、production append/read canary 与 health。七原子均有当前真实路径，因此本 leaf 可独立关闭。
 - 北极星裁决：新增 hard gate 只依据 Authority、Evidence、Recovery 与 Machine Contract 的机械事实；不读取自然语言判真假、不裁剪 authorized evidence、不降低 output/context budget、不改写模型 final。CC 的 append-only lifecycle 是语义底座，Codex 的 typed recorder/failure 是工程增量，Hive 增加 tenant/operator 双审计面与企业认证 effect gate，属于 capability-preserving determinism。
-- 残余边界：`MISS-RETENTION-001` 继续负责 audit retention/export/legal hold；Group 8 负责 startup asset lock 与 `F-OBS1` health 真相；本项不声明这些已修。对应 canonical 行已更新为 `closed:EVID-G1-011`；Group 1 当前为 11/16 closed、0 deployed-but-open、5/16 pending。103 分母、severity、owner 与 5 个 Missing 均不变；下一 Group 1 leaf 为 `F-PLAINTEXT`。
+- 残余边界：`MISS-RETENTION-001` 继续负责 audit retention/export/legal hold；Group 8 负责 startup asset lock 与 `F-OBS1` health 真相；本项不声明这些已修。对应 canonical 行保持 `closed:EVID-G1-011`；本证据关闭当时 Group 1 为 11/16 closed、0 deployed-but-open、5/16 pending，当前滚动状态只以 §9 与 §12.3 为准。103 分母、severity、owner 与 5 个 Missing 均不变；当时下一 Group 1 leaf 为 `F-PLAINTEXT`。
+
+#### EVID-G1-012：F-PLAINTEXT AgentTool 配置全信封加密
+
+- `leaf_ids`：`F-PLAINTEXT`；owner Group / 依赖 Group：Group 1 / Group 0。本项只关闭每个 Agent 的 `AgentTool.config` 会把任意 MCP/API/email credential 以可读 JSON 落库并经配置 API 回传的 seam；不把 Personal KB sensitivity、MCP OAuth token store、全局 `Tool.config` 或 tenant config 合并进本 leaf，也不以删减 MCP 配置字段来换安全。
+- 当前状态：`closed`。完整非空配置的 authenticated envelope、透明运行时解密、API 双层遮罩与 sentinel merge、key rotation、真实 migration/backfill、secure downgrade、真实 PostgreSQL、exact-checkout 全量 backend、三服务 exact-source 部署、线上零明文 inventory 与 health 均已 Green；canonical 为 `closed:EVID-G1-012`。
+- 冻结事实与 ownership：开工 HEAD=`786a36ae6d8083b03846e6734a5593192785679f`；code commit=`8570efdad20dc638a3afde608c57aac80a788432`，tree=`206b59c77498bc428af9e7509d4071ac67b2c7e4`，parent=`786a36ae6d8083b03846e6734a5593192785679f`，10 files，`1034 insertions(+), 16 deletions(-)`。共享工作树中的其它 session 改动从未 stage、reset 或归属本项；`git show --name-status 8570efdad` 是 owned manifest 事实源。
+
+```yaml
+context_read_receipt:
+  aa_entry: "§9 Group 1 + §12.1/§12.2 F-PLAINTEXT + §12.3 Group 1"
+  leaf_ids: ["F-PLAINTEXT"]
+  documents:
+    - ref: "@docs/agent-native-atomic-review-2026-07-14.md"
+      role: "original atomic review and credential-storage refutation boundary"
+      decision_consumed: "most platform secret paths being encrypted does not refute plaintext bytes in the per-agent AgentTool override path"
+      sha256: "4f1e8893fe03251c02ce9805300b94d6db00c34e032c978f3805c2b1f061e919"
+    - ref: "@docs/agent-native-atomic-review-501db655.md"
+      role: "parallel authority and narrow-effect-boundary review"
+      decision_consumed: "credential visibility is a machine authority invariant; denial must remain typed and must not remove unrelated Agent capability"
+      sha256: "014734a43994bd1b4a906f89eea21d4686b08c88ec167d8c5046c0f0cdc7f0bb"
+    - ref: "@docs/runtime-model-agency-constraint-audit-2026-07-13.md"
+      role: "Model Agency hard-constraint law"
+      decision_consumed: "protect stored credential bytes at ingress/read/effect boundaries without inspecting natural language or changing model output"
+      sha256: "366c8a5e4351e76083e6096a8cca09fe93a952ce831cf01e3cae34e2f8b91530"
+    - ref: "@docs/agent-permission-governance-spec-2026-07-07.md"
+      role: "enterprise credential and agent authority"
+      decision_consumed: "manage access authorizes configuration but never authorizes returning reusable secret bytes to the UI"
+      sha256: "e60f2dcf8711999cf655ccae180fb52810ad2a73f265028c1c56226ba73099ac"
+    - ref: "@docs/ccplus-session-permission-and-enterprise-hard-rules-2026-06-25.md"
+      role: "CCPlus capability-preserving security floor"
+      decision_consumed: "retain the full MCP capability surface while enforcing credential visibility and durable storage at the narrow authoritative boundary"
+      sha256: "db8d895b283ecb7ae747ef7fbbb76591f32aba599052d24d759dcb31c83f7cb0"
+    - ref: "@docs/ccplus-tool-call-governance-closure-landing-plan-2026-06-28.md"
+      role: "tool configuration and call-time governance closure"
+      decision_consumed: "configuration persistence, runtime consumption and effect governance need one traceable authority path instead of display/runtime copies"
+      sha256: "05db3f2d3747a083575fe92f20acd3635ff1f0e48b372b3a6fe201e72df93963"
+    - ref: "@docs/rls-enforcement-migration-plan.md"
+      role: "schema-owner migration, app_rls cutover and rollback discipline"
+      decision_consumed: "backfill under schema authority, verify under runtime role and never make downgrade reintroduce plaintext"
+      sha256: "66864a7c18233d7bcfcc825344eccc93a604d13039c40616d7b2b0387348b466"
+  evidence_sink: "EVID-G1-012"
+```
+
+- 原断点证据：开工版本的 `models/tool.py:82` 将 `AgentTool.config` 直接映射为 JSON；`resource_discovery.py:395-422` 把 `smithery_api_key` 直接写入该列；开工 API 的 `_serialize_agent_tool_row/get_category_config/update_category_config/update_tool_config` 合并、返回或覆盖 raw config。其结果不是“可能命名为 api_key 的少数字段”而是任意第三方 provider 自定义 key 都可能以明文落库，且 schema-less/nested credential 可越过只依赖 `config_schema.sensitive` 的展示遮罩。
+- CC/FreeCode 当前源码对照：FreeCode HEAD=`7dc15d6c8fb0c40c7fcc02ce9b58204324252632`。`src/services/mcp/config.ts` SHA-256=`fd78fd3d5b9c18245e8ad14b152463ac7bc21e27ab0c8263a42a47d94ee9a151` 保留完整 MCP config，并以 temp + datasync + rename 做原子更新；`src/services/mcp/auth.ts` SHA-256=`fce615a24470f433b43976917a83db8ff388caeeb75a50ac543c48a70ea4a2e8` 将 OAuth client secret 交给 `getSecureStorage`。但 `src/utils/secureStorage/index.ts` SHA-256=`e73e784ce18ba8f5e2b1d8c8fc6877662257b9d8df0ee3f89c9118670c79ab51` 在 macOS keychain 不可用时 fallback 到 plaintext、Linux 直接 plaintext；Hive 保留“完整配置可用、原子持久化”的 CC 语义底座，不复制其本地单用户明文 fallback 到企业云数据库。
+- Codex 当前源码对照：Codex HEAD=`5c19155cbd93bfa099016e7487259f61669823ff`。`codex-rs/core/src/config/mod.rs` SHA-256=`a762c13f9d5a77a79421be1cd163db0f645e6c5f2764be0cbeb0297ef12cb095` 的 `ensure_no_inline_bearer_tokens` 拒绝 inline bearer token 并要求 env reference；`codex-rs/rmcp-client/src/oauth/resolved_store.rs` SHA-256=`2d112b9c6faf13c84f938420f9a289da735a634a47b45a42812452e36546e371` 把 concrete credential store 固定在一次 client lifecycle，读写删失败时拒绝热切换到可能陈旧的 store。Hive 采用其“凭据 authority 明确、失败可见、不隐式热切换”的工程增量，但由于多 tenant 云端 Agent 配置必须可迁移/轮换，使用数据库 authenticated envelope 而不是要求所有 provider 改名或删字段。
+- Red：首轮 storage/API 回归稳定为 `8 failed`，分别证明完整 envelope helper 缺失、raw JSON bind/result、wrong-key/tamper/noop provider 未 fail-closed，以及 schema-less API credential 泄漏；补上 runtime/display 分离后，email connection Red=`1 failed`，证明测试端拿到的是遮罩 sentinel 而非真实 `auth_code`；再加 structural-key case 后，ModelScope Red=`1 failed`，证明 `modelscope_api_token` 未被 schema-only 策略遮罩。三类 Red 都先于对应实现，不以改测试期望保留明文行为。
+- Green 实现：`agent_tool_config_storage.py` 用版本化 `hive:agent-tool-config:v1:<key_id>:<fernet-token>` 把每个非空 JSON document 整体封进 authenticated envelope；`AgentToolConfigType` 在 SQLAlchemy bind/result boundary 自动加解密，现有 MCP/email/search/runtime consumer 继续拿到同形 dict。空 `{}` 保持空；无 `SECRETS_MASTER_KEY` 的 noop provider 对非空写入明确失败；wrong key、畸形或被篡改 envelope fail-closed；previous-key keyring 可读并由迁移重包到 current key。该设计不猜第三方 credential 字段，也不把配置能力缩成 allowlist。
+- API/消费闭环：展示侧 `mask_agent_tool_config_secrets` 同时使用 schema `sensitive` 标记与递归 structural credential key，覆盖 nested `githubPersonalAccessToken`、`clientSecret`、`api_key`、`modelscope_api_token`，不误遮罩 `token_budget`；更新侧 `merge_agent_tool_config_secrets` 将 sentinel 精确还原为已有值，避免普通 UI 保存清空 secret。`test_category_config` 从 ORM runtime config 读取真实解密值，Email/AgentBay 连接测试不消费 display sentinel；因此“API 不回传 credential”和“运行时仍完整可用”同时成立。
+- migration/backfill/rollback：Alembic `agent_tool_config_encryption_0715` 在 schema-owner 事务中先 count-only inventory，再将全部 legacy non-empty row 加密/轮换，最后强制验证 `plaintext=0/non_current=0/malformed=0`；缺 master key 或发现 malformed envelope 直接阻断 migration。operator 脚本默认 dry-run，`--apply` 还必须显式 `--confirm`。downgrade 故意不解密，旧镜像若不认识 envelope 就 fail closed，安全恢复路径是保留 current code 或 forward-fix，而不是把 credential 重新落成明文。
+- 本地验收：相关 storage/API/migration/邻接套件=`162 passed`；owned Python files 的 `ruff check`、`ruff format --check` 与 `git diff --check` 均 clean。真实 PostgreSQL migration test=`1 passed`，覆盖 legacy raw plaintext→raw ciphertext、ORM transparent read、新 ORM write raw ciphertext 与 secure downgrade。exact detached worktree=`/tmp/hive-f-plaintext-8570efdad`、HEAD=`8570efdad` 的完整 backend 为 `7182 passed, 2 skipped in 255.69s`、exit `0`；没有把环境 skip 当通过，也没有借共享 dirty tree 形成全量声明。
+- production deploy/freshness：exact `8570efdad` Git archive 部署 backend=`3d423b2a-3ffe-429d-8857-58fcbc42be82`、backend-api=`3e7e0aa7-70fc-415b-8ed3-db955a500f6d`、frontend=`22b8da1a-da7e-4552-9855-84df8271846e`，2026-07-15 中断后复核仍全部 `SUCCESS`。live `agent_tool_config_storage.py` SHA-256=`0593b749cffce9762bd73e19ec5e850de6a6cdf22e620b4bc6c4ca232e182265`、migration SHA-256=`cdaaea5dafc4b88e733108a3c04879a96d521a58d89b64551a4b7a5f508440ef` 与 Git source 一致。backend health=`status=ok`、runtime=`app_rls/strict/non-superuser/non-BYPASSRLS`、三 daemon/RuntimeTask worker/sandbox probe 均健康；frontend=`HTTP/2 200`。
+- production inventory/canary：线上 count-only 报告=`rows 13810 / non_empty 706 / encrypted 706 / plaintext 0 / non_current 0 / malformed 0`，只输出计数不输出任何配置或 secret bytes。schema 从 `audit_evidence_immutability_0715` 升到 `agent_tool_config_encryption_0715`；backend-api 首次 deployment=`a3b7c6a1-273d-4229-9516-0ad57aeafb6c` 在 schema owner 尚未完成 migration 时按 readiness 预期 fail-closed，schema ready 后以同一 exact archive 重提为最终成功 deployment，证明恢复没有切换代码或绕过 head gate。
+- fault/recovery：单元/真实 PG 覆盖 wrong key、tampered/malformed envelope、缺 master key、previous-key rotation、重复 migration、empty config 与 secure downgrade；失败不会返回伪空配置、不会覆盖原 ciphertext，也不会让 UI sentinel 污染 runtime credential。生产 schema race 证明 read-only API role 在 stale head 时 hold，schema owner ready 后同源 retry 恢复。配置 envelope 不进入模型 prompt，运行时仅在已通过 Agent/tenant access 的 tool config consumer 内解密。
+- 部署期间额外证据：backend 在 `startup: push default skills to every existing agent across tenants` 后再次等待约 203 秒，daemon 于 12:02:07 UTC 才 ready，health 记录 `event_loop.max_lag_ms=203831.58`。这是 `EVID-G1-010/011` 后第三次同位置复现，已回流 §9 Group 8 的 startup asset-lock/fault-injection Red；没有进程 stack 前仍不得把 blocking `flock` 当已证根因，也不新增第 104 个 leaf。
+- 七原子：Input=manage-authorized per-agent arbitrary tool config 与 legacy rows；Authority=Agent/tenant manage access、schema-owner migration role、SecretsProvider current/previous keyring；Execution=ORM bind/result 单入口 + API masked display/runtime split + Alembic transactional backfill；Evidence=versioned authenticated envelope、count-only inventory、test/deploy/source hash；Recovery=fail-closed read/write、key rotation、idempotent rewrap、schema readiness retry、secure downgrade；Consumption=Smithery/MCP/search/email/AgentBay 等原调用方透明拿到完整 dict，UI 只拿 sentinel；Acceptance=TDD 三轮 Red→Green、162 targeted、真实 PG、exact-checkout 7182、三服务同源、production 706/706 与 health。七原子均有当前真实路径，因此本 leaf 可独立关闭。
+- 北极星裁决：hard gate 的事实源只来自 Credential Visibility、Authority、Machine Contract、Evidence/Recovery allowlist；实现不扫描自然语言、不裁剪 authorized evidence、不降低 context/output budget、不改写模型 final，也不删除 Skill/MCP/subagent/workflow 能力。CC 的完整 MCP config/lifecycle 是语义底座，Codex 的 explicit credential authority/fail-visible storage 是工程增量，Hive 增加 multi-tenant DB envelope、RLS migration、API sentinel 与 fleet key rotation，属于 capability-preserving determinism 和 Hive-native enterprise delta。
+- 残余边界：MCP OAuth token store 继续由独立 OAuth authority 管理；全局 `Tool.config` 与 `TenantToolConfig` 的 schema-driven secret 路径没有被本 leaf 偷换为“全部配置已统一”，后续治理重验仍以各自 consumer 为准。Group 8 继续负责 startup asset lock；这些边界不影响 `AgentTool.config` 的零明文闭环。对应 canonical 行已更新为 `closed:EVID-G1-012`；Group 1 当前为 12/16 closed、0 deployed-but-open、4/16 pending。103 分母、severity、owner 与 5 个 Missing 均不变；下一 Group 1 leaf 为 `P2-F8`。
 
 ## 13. Missing、Coverage Gap 与完成口径
 

@@ -44,8 +44,8 @@ def test_runtime_event_fencing_large_tables_use_rolling_safe_operations() -> Non
     assert "dream" in source
 
 
-async def test_runtime_event_fencing_upgrade_contract(chain_migrated_pg_url: str) -> None:
-    engine = create_async_engine(chain_migrated_pg_url, poolclass=NullPool)
+async def test_runtime_event_fencing_upgrade_contract(revision_parent_migrated_pg_url: str) -> None:
+    engine = create_async_engine(revision_parent_migrated_pg_url, poolclass=NullPool)
     try:
         async with engine.connect() as connection:
             schema = await connection.run_sync(

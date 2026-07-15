@@ -24,8 +24,8 @@ def test_approval_continuation_migration_has_reversible_constraint_and_backfill(
     assert "ON CONFLICT ON CONSTRAINT uq_runtime_notification_outbox_delivery DO NOTHING" in source
 
 
-async def test_approval_continuation_constraint_is_installed_in_real_postgres(chain_migrated_pg_url: str) -> None:
-    engine = create_async_engine(chain_migrated_pg_url, poolclass=NullPool)
+async def test_approval_continuation_constraint_is_installed_in_real_postgres(revision_parent_migrated_pg_url: str) -> None:
+    engine = create_async_engine(revision_parent_migrated_pg_url, poolclass=NullPool)
     try:
         async with engine.connect() as connection:
             checks = await connection.run_sync(

@@ -27,8 +27,8 @@ def _run_alembic(database_url: str, target: str) -> subprocess.CompletedProcess[
     )
 
 
-async def test_approval_execution_envelope_upgrade_adds_bound_columns(chain_migrated_pg_url: str) -> None:
-    engine = create_async_engine(chain_migrated_pg_url, poolclass=NullPool)
+async def test_approval_execution_envelope_upgrade_adds_bound_columns(revision_parent_migrated_pg_url: str) -> None:
+    engine = create_async_engine(revision_parent_migrated_pg_url, poolclass=NullPool)
     try:
         async with engine.connect() as connection:
             columns = await connection.run_sync(

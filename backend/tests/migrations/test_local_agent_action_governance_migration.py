@@ -45,9 +45,9 @@ def test_local_agent_action_governance_migration_contract_exists() -> None:
 
 @pytest.mark.asyncio
 async def test_local_agent_action_governance_upgrade_has_typed_columns_and_bearer_expiry(
-    chain_migrated_pg_url: str,
+    revision_parent_migrated_pg_url: str,
 ) -> None:
-    engine = create_async_engine(chain_migrated_pg_url, poolclass=NullPool)
+    engine = create_async_engine(revision_parent_migrated_pg_url, poolclass=NullPool)
     try:
         async with engine.connect() as connection:
             columns = await connection.run_sync(

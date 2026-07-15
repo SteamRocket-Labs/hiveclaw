@@ -60,8 +60,8 @@ async def _assert_revision_trigger(database_url: str) -> None:
     assert "trg_config_revision_immutability" in names
 
 
-async def test_ai_asset_upgrade_path_installs_revision_trigger(chain_migrated_pg_url: str) -> None:
-    await _assert_revision_trigger(chain_migrated_pg_url)
+async def test_ai_asset_upgrade_path_installs_revision_trigger(revision_parent_migrated_pg_url: str) -> None:
+    await _assert_revision_trigger(revision_parent_migrated_pg_url)
 
 
 async def test_ai_asset_bootstrap_path_installs_revision_trigger(migrated_pg_url: str) -> None:

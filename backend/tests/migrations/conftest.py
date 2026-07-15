@@ -1,29 +1,23 @@
 """Real-PG fixtures for migration tests (§9 P1).
 
 Re-exports the shared Testcontainers fixtures from tests/integration/conftest
-and adds ``chain_migrated_pg_url`` — the UPGRADE-path complement to the
-bootstrap-path ``migrated_pg_url``:
+and adds ``revision_parent_migrated_pg_url`` — an isolated parent→head proof
+for the newest revision, complementary to bootstrap-path ``migrated_pg_url``:
 
 * ``migrated_pg_url``       — empty DB → db_bootstrap (create_all + RLS + stamp).
   This is what every fresh deployment runs.
-* ``chain_migrated_pg_url`` — empty DB → ``alembic upgrade <head's parent>`` →
-  ``alembic upgrade head``. The second stage truly EXECUTES the newest
-  migration's DDL, which is what every existing production deployment runs on
-  release. Without it the bootstrap stamp would short-circuit new migrations
-  and their SQL would never be exercised by any test.
-
-The two-stage design is deliberate: the previous implementation bootstrapped
-to head and then *rewound* by dropping a hand-maintained list of
-latest-migration tables/columns/indexes. Every new migration silently rotted
-that list (unlisted new tables collided with ``CREATE TABLE`` on the replay —
-the DuplicateTableError class of errors). Upgrading the empty database through
-the chain itself needs no list and cannot rot: the head's parent is derived
-from the alembic script directory at runtime.
+* ``revision_parent_migrated_pg_url`` — production bootstrap of current
+  metadata → exact subtraction of only the newest revision's owned objects →
+  stamp that revision's parent → ordinary ``alembic upgrade head``. This is a
+  revision-isolated migration proof, not a claim that the historical chain was
+  replayed from revision zero. Tests prove every object owned by the newest
+  revision is absent before Alembic executes it.
 """
 
 from __future__ import annotations
 
 import os
+import importlib.util
 import subprocess
 import sys
 from typing import Any
@@ -76,6 +70,124 @@ def _alembic_upgrade(database_url: str, target: str) -> None:
     if result.returncode != 0:
         pytest.fail(
             f"alembic upgrade {target} failed:\n"
+            f"stdout tail: {result.stdout[-2000:]}\nstderr tail: {result.stderr[-2000:]}"
+        )
+
+
+def _bootstrap_current_head(database_url: str) -> None:
+    """Run the production fresh-database bootstrap before projecting parent."""
+
+    env = {**os.environ, "DATABASE_URL": database_url}
+    result = subprocess.run(
+        [sys.executable, "-m", "alembic", "upgrade", "head"],
+        cwd=BACKEND_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    if result.returncode != 0:
+        pytest.fail(
+            "fresh bootstrap to head failed:\n"
+            f"stdout tail: {result.stdout[-2000:]}\nstderr tail: {result.stderr[-2000:]}"
+        )
+
+
+def _session_v2_revision_module():
+    migration_path = BACKEND_ROOT / "alembic" / "versions" / "session_v2_0716.py"
+    spec = importlib.util.spec_from_file_location("session_v2_parent_projection", migration_path)
+    if spec is None or spec.loader is None:
+        pytest.fail(f"cannot load Session V2 migration: {migration_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _project_head_to_session_v2_parent(container, *, database: str) -> None:
+    """Remove exactly the artifacts owned by ``session_v2_0716`` and stamp parent."""
+
+    revision = _session_v2_revision_module()
+    statements = [
+        "DROP TRIGGER IF EXISTS trg_session_writer_epoch ON runtime_tasks",
+        "DROP TRIGGER IF EXISTS trg_session_event_v2_contract ON chat_transcript_events",
+    ]
+    statements.extend(
+        f'ALTER TABLE chat_transcript_events DROP COLUMN IF EXISTS "{column}" CASCADE'
+        for column in revision.SESSION_V2_EVENT_COLUMNS
+    )
+    statements.extend(
+        f'ALTER TABLE runtime_tasks DROP COLUMN IF EXISTS "{column}" CASCADE'
+        for column in revision.SESSION_V2_RUNTIME_TASK_COLUMNS
+    )
+    statements.extend(
+        f'DROP TABLE IF EXISTS "{table}" CASCADE'
+        for table in (*revision.SESSION_V2_TENANT_TABLES, *revision.SESSION_V2_GLOBAL_TABLES)
+    )
+    statements.extend(
+        f"DROP FUNCTION IF EXISTS {function_name} CASCADE" for function_name in revision.SESSION_V2_FUNCTIONS
+    )
+    statements.extend(
+        [
+            "DELETE FROM alembic_version",
+            f"INSERT INTO alembic_version(version_num) VALUES ('{revision.down_revision}')",
+        ]
+    )
+    sql = ";\n".join(statements) + ";"
+    code, output = container.exec(["psql", "-v", "ON_ERROR_STOP=1", "-U", "test", "-d", database, "-c", sql])
+    if code != 0:
+        pytest.fail(f"failed to project Session V2 parent schema: {output}")
+
+
+def _assert_session_v2_parent_projection(container, *, database: str) -> None:
+    revision = _session_v2_revision_module()
+    table_names = (*revision.SESSION_V2_TENANT_TABLES, *revision.SESSION_V2_GLOBAL_TABLES)
+    table_array = ",".join(f"'{name}'" for name in table_names)
+    event_columns = ",".join(f"'{name}'" for name in revision.SESSION_V2_EVENT_COLUMNS)
+    runtime_columns = ",".join(f"'{name}'" for name in revision.SESSION_V2_RUNTIME_TASK_COLUMNS)
+    query = f"""
+      SELECT
+        (SELECT version_num FROM alembic_version),
+        (SELECT count(*) FROM pg_tables WHERE schemaname='public' AND tablename IN ({table_array})),
+        (SELECT count(*) FROM information_schema.columns
+          WHERE table_schema='public' AND table_name='chat_transcript_events'
+            AND column_name IN ({event_columns})),
+        (SELECT count(*) FROM information_schema.columns
+          WHERE table_schema='public' AND table_name='runtime_tasks'
+            AND column_name IN ({runtime_columns})),
+        (SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal
+          AND tgname IN ('trg_session_event_v2_contract','trg_session_writer_epoch')),
+        (SELECT count(*) FROM pg_proc
+          WHERE proname IN ('enforce_session_event_v2_contract','enforce_session_writer_epoch','enforce_session_v2_tenant_binding'))
+    """
+    code, output = container.exec(["psql", "-U", "test", "-d", database, "-At", "-F", "|", "-c", query])
+    if code != 0:
+        pytest.fail(f"failed to inspect projected parent schema: {output}")
+    evidence = (output.decode() if isinstance(output, bytes) else str(output)).strip()
+    expected = f"{revision.down_revision}|0|0|0|0|0"
+    if evidence != expected:
+        pytest.fail(f"Session V2 parent projection is not exact: expected {expected!r}, got {evidence!r}")
+
+
+def _prepare_session_v2_release_upgrade(container, *, database: str, database_url: str) -> None:
+    _bootstrap_current_head(database_url)
+    _project_head_to_session_v2_parent(container, database=database)
+    _assert_session_v2_parent_projection(container, database=database)
+    _alembic_upgrade(database_url, "head")
+
+
+def _alembic_downgrade(database_url: str, target: str) -> None:
+    env = {**os.environ, "DATABASE_URL": database_url}
+    result = subprocess.run(
+        [sys.executable, "-m", "alembic", "downgrade", target],
+        cwd=BACKEND_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    if result.returncode != 0:
+        pytest.fail(
+            f"alembic downgrade {target} failed:\n"
             f"stdout tail: {result.stdout[-2000:]}\nstderr tail: {result.stderr[-2000:]}"
         )
 
@@ -134,20 +246,62 @@ async def insert_agent_at_schema_revision(
 
 
 @pytest.fixture(scope="session")
-def chain_migrated_pg_url(pg_container) -> str:  # noqa: F811  (pytest fixture param, not a redefinition)
-    """Simulate a production release upgrade so the newest migration truly executes.
-
-    Steps: (1) create a fresh database; (2) ``alembic upgrade`` to the current
-    head's PARENT — the state an existing deployment is in before the release;
-    (3) ``alembic upgrade head`` — actually executes the newest migration's DDL.
-    """
-    code, output = pg_container.exec(["psql", "-U", "test", "-d", "postgres", "-c", "CREATE DATABASE chaintest"])
+def revision_parent_migrated_pg_url(pg_container) -> str:  # noqa: F811  (pytest fixture param)
+    """Prove the newest revision from its exact projected parent using normal Alembic."""
+    code, output = pg_container.exec(
+        ["psql", "-U", "test", "-d", "postgres", "-c", "CREATE DATABASE revisionparenttest"]
+    )
     if code != 0:
-        pytest.fail(f"failed to create chaintest database: {output}")
+        pytest.fail(f"failed to create revisionparenttest database: {output}")
 
     # NB: str(URL) masks the password as '***' — must render explicitly.
-    async_url = make_url(_async_url(pg_container)).set(database="chaintest").render_as_string(hide_password=False)
+    async_url = (
+        make_url(_async_url(pg_container)).set(database="revisionparenttest").render_as_string(hide_password=False)
+    )
 
-    _alembic_upgrade(async_url, _current_head_parent())
-    _alembic_upgrade(async_url, "head")
+    _prepare_session_v2_release_upgrade(
+        pg_container,
+        database="revisionparenttest",
+        database_url=async_url,
+    )
+    return async_url
+
+
+@pytest.fixture(scope="session")
+def session_v2_roundtrip_pg_url(pg_container) -> str:  # noqa: F811  (pytest fixture injection)
+    """Dedicated parent→head database for downgrade/re-upgrade evidence tests."""
+
+    code, output = pg_container.exec(
+        ["psql", "-U", "test", "-d", "postgres", "-c", "CREATE DATABASE sessionv2roundtrip"]
+    )
+    if code != 0:
+        pytest.fail(f"failed to create sessionv2roundtrip database: {output}")
+    async_url = (
+        make_url(_async_url(pg_container)).set(database="sessionv2roundtrip").render_as_string(hide_password=False)
+    )
+    _prepare_session_v2_release_upgrade(
+        pg_container,
+        database="sessionv2roundtrip",
+        database_url=async_url,
+    )
+    return async_url
+
+
+@pytest.fixture(scope="session")
+def session_v2_invalid_index_pg_url(pg_container) -> str:  # noqa: F811  (pytest fixture injection)
+    """Dedicated head database for invalid concurrent-index residue recovery."""
+
+    code, output = pg_container.exec(
+        ["psql", "-U", "test", "-d", "postgres", "-c", "CREATE DATABASE sessionv2invalidindex"]
+    )
+    if code != 0:
+        pytest.fail(f"failed to create sessionv2invalidindex database: {output}")
+    async_url = (
+        make_url(_async_url(pg_container)).set(database="sessionv2invalidindex").render_as_string(hide_password=False)
+    )
+    _prepare_session_v2_release_upgrade(
+        pg_container,
+        database="sessionv2invalidindex",
+        database_url=async_url,
+    )
     return async_url

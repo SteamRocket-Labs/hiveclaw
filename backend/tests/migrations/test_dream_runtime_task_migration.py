@@ -18,8 +18,8 @@ def test_dream_runtime_task_migration_extends_and_rolls_back_task_type_contract(
     assert "DISABLE ROW LEVEL SECURITY" in source
 
 
-async def test_dream_runtime_task_upgrade_installs_real_postgres_constraint(chain_migrated_pg_url: str) -> None:
-    engine = create_async_engine(chain_migrated_pg_url, poolclass=NullPool)
+async def test_dream_runtime_task_upgrade_installs_real_postgres_constraint(revision_parent_migrated_pg_url: str) -> None:
+    engine = create_async_engine(revision_parent_migrated_pg_url, poolclass=NullPool)
     try:
         async with engine.connect() as connection:
             checks = await connection.run_sync(

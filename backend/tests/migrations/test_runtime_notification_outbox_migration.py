@@ -17,8 +17,8 @@ def test_fresh_bootstrap_forces_recent_durable_state_tables():
     assert tables <= set(STRICT_TENANT_RLS_TABLES)
 
 
-async def test_runtime_notification_outbox_upgrade_contract(chain_migrated_pg_url: str) -> None:
-    engine = create_async_engine(chain_migrated_pg_url, poolclass=NullPool)
+async def test_runtime_notification_outbox_upgrade_contract(revision_parent_migrated_pg_url: str) -> None:
+    engine = create_async_engine(revision_parent_migrated_pg_url, poolclass=NullPool)
     try:
         async with engine.connect() as connection:
             schema = await connection.run_sync(

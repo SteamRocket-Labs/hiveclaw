@@ -120,10 +120,10 @@ async def test_fresh_bootstrap_installs_both_audit_evidence_guards(
 
 
 async def test_release_upgrade_rejects_direct_mutation_for_both_audit_tables(
-    chain_migrated_pg_url: str,
+    revision_parent_migrated_pg_url: str,
 ) -> None:
     import_all_models()
-    engine = create_async_engine(chain_migrated_pg_url, poolclass=NullPool)
+    engine = create_async_engine(revision_parent_migrated_pg_url, poolclass=NullPool)
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     tenant_id = uuid.uuid4()
     audit_log_id = uuid.uuid4()
@@ -261,12 +261,12 @@ async def test_release_upgrade_rejects_direct_mutation_for_both_audit_tables(
 
 
 async def test_schema_readiness_fails_closed_when_an_audit_guard_is_dropped(
-    chain_migrated_pg_url: str,
+    revision_parent_migrated_pg_url: str,
 ) -> None:
     from app.db_bootstrap import apply_audit_evidence_immutability
     from app.scripts.verify_schema_readiness import inspect_schema_readiness
 
-    engine = create_async_engine(chain_migrated_pg_url, poolclass=NullPool)
+    engine = create_async_engine(revision_parent_migrated_pg_url, poolclass=NullPool)
     try:
         async with engine.connect() as connection:
             assert (await inspect_schema_readiness(connection)).ready is True

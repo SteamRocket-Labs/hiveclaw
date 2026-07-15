@@ -109,6 +109,7 @@ class RuntimeTask(Base):
         default="pending",
         index=True,
     )  # pending → running → completed | failed | killed
+    writer_generation: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default=text("1"))
 
     # Context
     prompt: Mapped[str | None] = mapped_column(Text, nullable=True)

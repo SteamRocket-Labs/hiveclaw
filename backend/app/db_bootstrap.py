@@ -170,6 +170,21 @@ _ADDITIONAL_FORCED_TENANT_TABLES: tuple[str, ...] = (
     "storage_blobs",
     "storage_blob_refs",
     "storage_gc_runs",
+    # Session V2 canonical command/event/recovery plane.
+    "session_event_cursors",
+    "session_event_outbox",
+    "session_commands",
+    "session_turn_inputs",
+    "session_input_admissions",
+    "session_carry_forwards",
+    "session_control_inputs",
+    "session_turn_replacements",
+    "session_tool_invocations",
+    "session_model_results",
+    "session_round_obligations",
+    "session_next_round_plans",
+    "session_run_outcomes",
+    "session_feedback_aggregates",
 )
 
 # Every table carrying ``tenant_id`` belongs to exactly one semantic class.
@@ -271,6 +286,20 @@ STRICT_TENANT_RLS_TABLES: tuple[str, ...] = (
     "runtime_tasks",
     "security_audit_events",
     "session_feedback_events",
+    "session_event_cursors",
+    "session_event_outbox",
+    "session_commands",
+    "session_turn_inputs",
+    "session_input_admissions",
+    "session_carry_forwards",
+    "session_control_inputs",
+    "session_turn_replacements",
+    "session_tool_invocations",
+    "session_model_results",
+    "session_round_obligations",
+    "session_next_round_plans",
+    "session_run_outcomes",
+    "session_feedback_aggregates",
     "sso_scan_sessions",
     "storage_blobs",
     "storage_blob_refs",
@@ -754,6 +783,74 @@ def apply_audit_evidence_immutability(connection: Connection) -> None:
         )
 
 
+def apply_session_v2_contracts(connection: Connection) -> None:
+    """Install exact Session V2 event/writer guards on create_all bootstraps."""
+
+    if connection.dialect.name != "postgresql":
+        return
+    existing = set(inspect(connection).get_table_names())
+    required = {"chat_transcript_events", "runtime_tasks", "session_writer_epochs"}
+    if not required <= existing:
+        return
+
+    connection.execute(
+        text(
+            """
+            INSERT INTO session_writer_epochs
+              (id,state,new_run_generation,allowed_existing_generations_json,enforcement_mode,version)
+            VALUES ('global','legacy_open',1,'[1]'::jsonb,'observe',1)
+            ON CONFLICT (id) DO NOTHING
+            """
+        )
+    )
+    # Fresh bootstrap and Alembic upgrade install the exact same generated
+    # definitions; there is no hand-maintained SQL matrix to drift.
+    from app.services.session_event_contract import (
+        SESSION_V2_AUTHORITY_TABLES,
+        SESSION_V2_TRIGGER_FUNCTION_SIGNATURES,
+        build_session_event_contract_function_sql,
+        build_session_tenant_binding_function_sql,
+        build_session_writer_epoch_function_sql,
+    )
+
+    connection.execute(text(build_session_event_contract_function_sql()))
+    connection.execute(text(build_session_writer_epoch_function_sql()))
+    connection.execute(text(build_session_tenant_binding_function_sql()))
+    for function_signature in SESSION_V2_TRIGGER_FUNCTION_SIGNATURES:
+        connection.execute(text(f"REVOKE EXECUTE ON FUNCTION {function_signature} FROM PUBLIC"))
+    connection.execute(text("DROP TRIGGER IF EXISTS trg_session_event_v2_contract ON chat_transcript_events"))
+    connection.execute(
+        text(
+            """
+            CREATE TRIGGER trg_session_event_v2_contract
+            BEFORE INSERT OR UPDATE ON chat_transcript_events
+            FOR EACH ROW EXECUTE FUNCTION public.enforce_session_event_v2_contract()
+            """
+        )
+    )
+    connection.execute(text("DROP TRIGGER IF EXISTS trg_session_writer_epoch ON runtime_tasks"))
+    connection.execute(
+        text(
+            """
+            CREATE TRIGGER trg_session_writer_epoch
+            BEFORE INSERT OR UPDATE ON runtime_tasks
+            FOR EACH ROW EXECUTE FUNCTION public.enforce_session_writer_epoch()
+            """
+        )
+    )
+    for table in SESSION_V2_AUTHORITY_TABLES:
+        if table not in existing:
+            continue
+        trigger = f"trg_{table}_tenant_binding"
+        connection.execute(text(f'DROP TRIGGER IF EXISTS "{trigger}" ON "{table}"'))
+        connection.execute(
+            text(
+                f'CREATE TRIGGER "{trigger}" BEFORE INSERT OR UPDATE ON "{table}" '
+                "FOR EACH ROW EXECUTE FUNCTION public.enforce_session_v2_tenant_binding()"
+            )
+        )
+
+
 class AlembicContextProtocol(Protocol):
     def configure(self, **kwargs) -> None: ...
 
@@ -793,6 +890,7 @@ def prepare_runtime_schema(connection: Connection, metadata: MetaData) -> bool:
     apply_hr_creation_blueprint_immutability(connection)
     apply_workflow_promotion_immutability(connection)
     apply_audit_evidence_immutability(connection)
+    apply_session_v2_contracts(connection)
     return True
 
 
@@ -835,6 +933,7 @@ def bootstrap_database_to_head(connection: Connection, metadata: MetaData, heads
     apply_hr_creation_blueprint_immutability(connection)
     apply_workflow_promotion_immutability(connection)
     apply_audit_evidence_immutability(connection)
+    apply_session_v2_contracts(connection)
     ensure_alembic_version_table_width(connection)
     connection.execute(text("DELETE FROM alembic_version"))
     for head in heads:

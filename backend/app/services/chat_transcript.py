@@ -92,7 +92,12 @@ async def lock_transcript_session(db: AsyncSession, *, session_id: uuid.UUID) ->
     dialect_name = getattr(getattr(bind, "dialect", None), "name", "")
     if dialect_name == "postgresql":
         lock_key = int.from_bytes(session_id.bytes[:8], byteorder="big", signed=True)
-        await db.execute(select(func.pg_advisory_xact_lock(lock_key)))
+        # The advisory lock is the first mutation authority for a session.  A
+        # caller may already hold dirty RuntimeTask state (for example web-run
+        # admission or recovery quarantine); flushing it before this lock would
+        # invert the global advisory -> row-lock order and can deadlock.
+        with db.no_autoflush:
+            await db.execute(select(func.pg_advisory_xact_lock(lock_key)))
 
 
 async def read_transcript_revision(
@@ -116,16 +121,34 @@ async def read_transcript_revision(
 async def allocate_transcript_sequence(db: AsyncSession, *, session_id: uuid.UUID) -> int:
     """Allocate a collision-free sequence inside the caller's DB transaction.
 
-    PostgreSQL workers serialize per session with a transaction advisory lock.
-    The following ``MAX + 1`` therefore remains monotonic for the session while
-    preserving all existing sequence values during migration.
+    Production callers use :func:`allocate_session_sequence_range`; this thin
+    compatibility wrapper exists only for old direct tests/callers that have
+    not supplied the authenticated Session authority tuple.
     """
     if not isinstance(db, AsyncSession):
         # Narrow compatibility for unit-test recording sessions; production
         # AsyncSession always takes the DB-serialized path below.
         return uuid.uuid4().int & ((1 << 63) - 1)
-    revision = await read_transcript_revision(db, session_id=session_id, lock=True)
-    return revision + 1
+    raise ValueError("tenant_id and agent_id are required for sequence allocation")
+
+
+async def _allocate_authoritative_transcript_sequence(
+    db: AsyncSession,
+    *,
+    session_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    agent_id: uuid.UUID,
+) -> tuple[int, Any]:
+    from app.services.session_v2_persistence import allocate_session_sequence_range
+
+    allocation = await allocate_session_sequence_range(
+        db,
+        session_id=session_id,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        count=1,
+    )
+    return allocation.sequences.start, allocation.session
 
 
 def build_transcript_item_contract(
@@ -190,7 +213,19 @@ async def append_session_event(
     event_id = uuid.uuid4()
     if session_uuid is None:
         raise ValueError(f"session_id must be a UUID for transcript persistence: {session_id!r}")
-    sequence = await allocate_transcript_sequence(db, session_id=session_uuid)
+    if isinstance(db, AsyncSession):
+        if tenant_uuid is None or agent_uuid is None:
+            raise ValueError("tenant_id and agent_id are required for transcript persistence")
+        sequence, authoritative_session = await _allocate_authoritative_transcript_sequence(
+            db,
+            session_id=session_uuid,
+            tenant_id=tenant_uuid,
+            agent_id=agent_uuid,
+        )
+        tenant_uuid = authoritative_session.tenant_id
+        agent_uuid = authoritative_session.agent_id
+    else:
+        sequence = await allocate_transcript_sequence(db, session_id=session_uuid)
     content_text = content or ""
     event_input_metadata = enrich_knowledge_event_metadata(
         event_type=event_type,

@@ -24,10 +24,10 @@ def test_hook_failure_mode_migration_is_reversible_and_preserves_legacy_preview(
 
 
 async def test_hook_failure_mode_migration_transforms_and_rolls_back_real_postgres(
-    chain_migrated_pg_url: str,
+    revision_parent_migrated_pg_url: str,
 ) -> None:
     namespace = runpy.run_path(str(MIGRATION))
-    engine = create_async_engine(chain_migrated_pg_url, poolclass=NullPool)
+    engine = create_async_engine(revision_parent_migrated_pg_url, poolclass=NullPool)
     key = "agent:00000000-0000-4000-8000-000000000005:hook_runtime"
     try:
         async with engine.begin() as connection:

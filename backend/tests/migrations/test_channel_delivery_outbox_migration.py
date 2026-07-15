@@ -12,8 +12,8 @@ def test_fresh_bootstrap_forces_channel_delivery_outbox_rls():
     assert "channel_delivery_outbox" in STRICT_TENANT_RLS_TABLES
 
 
-async def test_channel_delivery_outbox_upgrade_contract(chain_migrated_pg_url: str) -> None:
-    engine = create_async_engine(chain_migrated_pg_url, poolclass=NullPool)
+async def test_channel_delivery_outbox_upgrade_contract(revision_parent_migrated_pg_url: str) -> None:
+    engine = create_async_engine(revision_parent_migrated_pg_url, poolclass=NullPool)
     try:
         async with engine.connect() as connection:
             schema = await connection.run_sync(

@@ -12,8 +12,8 @@ def test_fresh_bootstrap_forces_budget_transition_outbox():
     assert "budget_transition_outbox" in STRICT_TENANT_RLS_TABLES
 
 
-async def test_budget_transition_outbox_upgrade_contract(chain_migrated_pg_url: str) -> None:
-    engine = create_async_engine(chain_migrated_pg_url, poolclass=NullPool)
+async def test_budget_transition_outbox_upgrade_contract(revision_parent_migrated_pg_url: str) -> None:
+    engine = create_async_engine(revision_parent_migrated_pg_url, poolclass=NullPool)
     try:
         async with engine.connect() as connection:
             schema = await connection.run_sync(

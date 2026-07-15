@@ -2,7 +2,7 @@
 
 Both deployment paths are exercised against real PostgreSQL:
 
-* upgrade path (``chain_migrated_pg_url``) — ``add_workflow_tables_0604``
+* upgrade path (``revision_parent_migrated_pg_url``) — ``add_workflow_tables_0604``
   actually executes its DDL;
 * bootstrap path (``migrated_pg_url``) — ``db_bootstrap.apply_rls_policies``
   covers the create_all+stamp shortcut every fresh deployment takes.
@@ -263,9 +263,9 @@ async def _assert_token_quota_hard_cap_columns(database_url: str) -> None:
     assert {row.column_name for row in agent_rows} == set(_AGENT_TOKEN_QUOTA_COLUMNS)
 
 
-async def test_upgrade_path_creates_workflow_tables_with_forced_rls(chain_migrated_pg_url):
+async def test_upgrade_path_creates_workflow_tables_with_forced_rls(revision_parent_migrated_pg_url):
     """The migration's own DDL (executed, not stamped) must produce the contract."""
-    await _assert_workflow_tables_forced_rls(chain_migrated_pg_url)
+    await _assert_workflow_tables_forced_rls(revision_parent_migrated_pg_url)
 
 
 async def test_bootstrap_path_creates_workflow_tables_with_forced_rls(migrated_pg_url):
@@ -274,48 +274,48 @@ async def test_bootstrap_path_creates_workflow_tables_with_forced_rls(migrated_p
     await _assert_workflow_tables_forced_rls(migrated_pg_url)
 
 
-async def test_upgrade_path_creates_coordination_tables_with_forced_rls(chain_migrated_pg_url):
-    await _assert_coordination_tables_forced_rls(chain_migrated_pg_url)
+async def test_upgrade_path_creates_coordination_tables_with_forced_rls(revision_parent_migrated_pg_url):
+    await _assert_coordination_tables_forced_rls(revision_parent_migrated_pg_url)
 
 
 async def test_bootstrap_path_creates_coordination_tables_with_forced_rls(migrated_pg_url):
     await _assert_coordination_tables_forced_rls(migrated_pg_url)
 
 
-async def test_upgrade_path_creates_session_feedback_events_with_forced_rls(chain_migrated_pg_url):
-    await _assert_feedback_tables_forced_rls(chain_migrated_pg_url)
+async def test_upgrade_path_creates_session_feedback_events_with_forced_rls(revision_parent_migrated_pg_url):
+    await _assert_feedback_tables_forced_rls(revision_parent_migrated_pg_url)
 
 
 async def test_bootstrap_path_creates_session_feedback_events_with_forced_rls(migrated_pg_url):
     await _assert_feedback_tables_forced_rls(migrated_pg_url)
 
 
-async def test_upgrade_path_creates_invocation_spans_with_forced_rls(chain_migrated_pg_url):
-    await _assert_invocation_trace_tables_forced_rls(chain_migrated_pg_url)
+async def test_upgrade_path_creates_invocation_spans_with_forced_rls(revision_parent_migrated_pg_url):
+    await _assert_invocation_trace_tables_forced_rls(revision_parent_migrated_pg_url)
 
 
 async def test_bootstrap_path_creates_invocation_spans_with_forced_rls(migrated_pg_url):
     await _assert_invocation_trace_tables_forced_rls(migrated_pg_url)
 
 
-async def test_upgrade_path_adds_invocation_span_execution_identity_columns(chain_migrated_pg_url):
-    await _assert_invocation_span_identity_columns(chain_migrated_pg_url)
+async def test_upgrade_path_adds_invocation_span_execution_identity_columns(revision_parent_migrated_pg_url):
+    await _assert_invocation_span_identity_columns(revision_parent_migrated_pg_url)
 
 
 async def test_bootstrap_path_adds_invocation_span_execution_identity_columns(migrated_pg_url):
     await _assert_invocation_span_identity_columns(migrated_pg_url)
 
 
-async def test_upgrade_path_adds_token_quota_hard_cap_columns(chain_migrated_pg_url):
-    await _assert_token_quota_hard_cap_columns(chain_migrated_pg_url)
+async def test_upgrade_path_adds_token_quota_hard_cap_columns(revision_parent_migrated_pg_url):
+    await _assert_token_quota_hard_cap_columns(revision_parent_migrated_pg_url)
 
 
 async def test_bootstrap_path_adds_token_quota_hard_cap_columns(migrated_pg_url):
     await _assert_token_quota_hard_cap_columns(migrated_pg_url)
 
 
-async def test_upgrade_path_adds_chat_message_thinking_signature(chain_migrated_pg_url):
-    engine = create_async_engine(chain_migrated_pg_url, poolclass=NullPool)
+async def test_upgrade_path_adds_chat_message_thinking_signature(revision_parent_migrated_pg_url):
+    engine = create_async_engine(revision_parent_migrated_pg_url, poolclass=NullPool)
     try:
         async with engine.connect() as conn:
             exists = (
@@ -360,9 +360,9 @@ async def _assert_no_workflow_step_phase(database_url: str) -> None:
     assert exists is False, "workflow_steps.phase must be dropped (Step 10 dead column)"
 
 
-async def test_upgrade_path_drops_workflow_step_phase(chain_migrated_pg_url):
+async def test_upgrade_path_drops_workflow_step_phase(revision_parent_migrated_pg_url):
     """Step 10: the migration's DROP COLUMN removes the dead phase column."""
-    await _assert_no_workflow_step_phase(chain_migrated_pg_url)
+    await _assert_no_workflow_step_phase(revision_parent_migrated_pg_url)
 
 
 async def test_bootstrap_path_has_no_workflow_step_phase(migrated_pg_url):

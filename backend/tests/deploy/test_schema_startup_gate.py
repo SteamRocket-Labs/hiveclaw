@@ -8,8 +8,8 @@ import subprocess
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 REPO_ROOT = BACKEND_ROOT.parent
 ENTRYPOINT = BACKEND_ROOT / "entrypoint.sh"
-PRODUCTION_HEAD = "memory_context_warning_0714"
-PRODUCTION_HEAD_PATH = Path("backend/alembic/versions/memory_context_warning_0714.py")
+PRODUCTION_HEAD = "personal_kb_sensitivity_canonical_0715"
+PRODUCTION_HEAD_PATH = Path("backend/alembic/versions/personal_kb_sensitivity_canonical_0715.py")
 
 
 def _write_command_stub(bin_dir: Path, name: str, body: str) -> None:

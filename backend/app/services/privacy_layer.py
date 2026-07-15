@@ -16,6 +16,65 @@ class SensitivityLevel(StrEnum):
     PL4_CREDENTIAL = "PL4_credential"
 
 
+_SENSITIVITY_ALIASES: dict[str, SensitivityLevel] = {
+    "public": SensitivityLevel.PL1_PUBLIC,
+    "internal": SensitivityLevel.PL1_PUBLIC,
+    "pl1": SensitivityLevel.PL1_PUBLIC,
+    "pl1_public": SensitivityLevel.PL1_PUBLIC,
+    "pii": SensitivityLevel.PL2_PII,
+    "pl2": SensitivityLevel.PL2_PII,
+    "pl2_pii": SensitivityLevel.PL2_PII,
+    "private": SensitivityLevel.PL3_SENSITIVE,
+    "confidential": SensitivityLevel.PL3_SENSITIVE,
+    "secret": SensitivityLevel.PL3_SENSITIVE,
+    "restricted": SensitivityLevel.PL3_SENSITIVE,
+    "sensitive": SensitivityLevel.PL3_SENSITIVE,
+    "pl3": SensitivityLevel.PL3_SENSITIVE,
+    "pl3_sensitive": SensitivityLevel.PL3_SENSITIVE,
+    "credential": SensitivityLevel.PL4_CREDENTIAL,
+    "credentials": SensitivityLevel.PL4_CREDENTIAL,
+    "pl4": SensitivityLevel.PL4_CREDENTIAL,
+    "pl4_credential": SensitivityLevel.PL4_CREDENTIAL,
+}
+_SENSITIVITY_RANK = {
+    SensitivityLevel.PL1_PUBLIC: 1,
+    SensitivityLevel.PL2_PII: 2,
+    SensitivityLevel.PL3_SENSITIVE: 3,
+    SensitivityLevel.PL4_CREDENTIAL: 4,
+}
+
+
+def canonicalize_sensitivity(value: SensitivityLevel | str | None) -> SensitivityLevel:
+    """Return the one persisted sensitivity enum or reject an unknown write label."""
+
+    if isinstance(value, SensitivityLevel):
+        return value
+    normalized = str(value or "").strip().lower()
+    try:
+        return _SENSITIVITY_ALIASES[normalized]
+    except KeyError as exc:
+        raise ValueError(f"unsupported sensitivity: {value!r}") from exc
+
+
+def sensitivity_rank(value: SensitivityLevel | str | None) -> int:
+    return _SENSITIVITY_RANK[canonicalize_sensitivity(value)]
+
+
+def max_sensitivity(*values: SensitivityLevel | str | None) -> SensitivityLevel:
+    if not values:
+        raise ValueError("at least one sensitivity is required")
+    return max((canonicalize_sensitivity(value) for value in values), key=_SENSITIVITY_RANK.__getitem__)
+
+
+def is_sensitive_extraction_blocked(value: SensitivityLevel | str | None) -> bool:
+    """Fail closed for legacy/unknown values on the durable extraction path."""
+
+    try:
+        return sensitivity_rank(value) >= _SENSITIVITY_RANK[SensitivityLevel.PL3_SENSITIVE]
+    except ValueError:
+        return True
+
+
 @dataclass(slots=True)
 class PrivacyDecision:
     original_text: str

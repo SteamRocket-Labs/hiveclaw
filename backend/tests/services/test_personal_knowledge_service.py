@@ -842,6 +842,37 @@ async def test_ingest_markdown_marks_document_degraded_when_extraction_fails(tmp
 
 
 @pytest.mark.asyncio
+async def test_ingest_markdown_canonicalizes_pl3_and_skips_graph_extraction(tmp_path: Path) -> None:
+    from app.services.personal_knowledge_service import PersonalKnowledgeService
+
+    tenant_id = uuid.uuid4()
+    owner_id = uuid.uuid4()
+    extractor = _UsageKnowledgeExtractor()
+    session = _FakeAsyncSession()
+    service = PersonalKnowledgeService(data_root=tmp_path, extractor=extractor)
+
+    result = await service.ingest_markdown(
+        session,
+        tenant_id=tenant_id,
+        owner_user_id=owner_id,
+        title="Confidential operating note",
+        markdown="# Restricted\n\nThis authorized source stays searchable but must not enter the graph.",
+        source_kind="paste",
+        created_by_user_id=owner_id,
+        sensitivity="confidential",
+    )
+
+    documents = [obj for obj in session.added if isinstance(obj, KnowledgeDocument)]
+    jobs = [obj for obj in session.added if isinstance(obj, KnowledgeIndexJob)]
+
+    assert extractor.calls == 0
+    assert result.status == "degraded"
+    assert result.warnings == ["knowledge_extraction_skipped_sensitive"]
+    assert documents[-1].sensitivity == "PL3_sensitive"
+    assert jobs[-1].error_message == "knowledge_extraction_skipped_sensitive"
+
+
+@pytest.mark.asyncio
 async def test_patch_and_rebuild_personal_document_index_update_existing_document(tmp_path: Path) -> None:
     from app.services.personal_knowledge_service import PersonalKnowledgeService
 
@@ -880,7 +911,7 @@ async def test_patch_and_rebuild_personal_document_index_update_existing_documen
 
     assert patched is not None
     assert document.agent_searchable is False
-    assert document.sensitivity == "private"
+    assert document.sensitivity == "PL3_sensitive"
     assert document.status == "archived"
 
 

@@ -19,32 +19,13 @@ from app.models.config_revision import ConfigRevision
 from app.models.knowledge import KnowledgeDocument, KnowledgeGrant, PersonalKnowledgeProposal
 from app.services.config_versioning import get_history, save_revision
 
-from app.services.privacy_layer import PrivacyLayer, SensitivityLevel
-
-
-_SENSITIVITY_RANK = {
-    "public": 1,
-    "pl1": 1,
-    "pl1_public": 1,
-    "internal": 1,
-    "pii": 2,
-    "pl2": 2,
-    "pl2_pii": 2,
-    "private": 3,
-    "confidential": 3,
-    "sensitive": 3,
-    "pl3": 3,
-    "pl3_sensitive": 3,
-    "credential": 4,
-    "pl4": 4,
-    "pl4_credential": 4,
-}
-_CANONICAL_SENSITIVITY = {
-    1: SensitivityLevel.PL1_PUBLIC.value,
-    2: SensitivityLevel.PL2_PII.value,
-    3: SensitivityLevel.PL3_SENSITIVE.value,
-    4: SensitivityLevel.PL4_CREDENTIAL.value,
-}
+from app.services.privacy_layer import (
+    PrivacyLayer,
+    SensitivityLevel,
+    canonicalize_sensitivity,
+    max_sensitivity,
+    sensitivity_rank,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,17 +104,19 @@ def evaluate_proposal_content(
         )
 
     privacy = PrivacyLayer().classify_and_mask(clean_content)
-    inferred_rank = _SENSITIVITY_RANK[privacy.sensitivity.value.lower()]
-    declared_rank = _SENSITIVITY_RANK.get(str(declared_sensitivity or "internal").strip().lower(), 0)
-    if declared_rank == 0:
+    inferred_rank = sensitivity_rank(privacy.sensitivity)
+    try:
+        canonical_declared = canonicalize_sensitivity(declared_sensitivity or "internal")
+    except ValueError:
         return ProposalContentDecision(
             "reject",
             privacy.sanitized_text,
             privacy.sensitivity.value,
             ("invalid_sensitivity",),
         )
-    effective_rank = max(inferred_rank, declared_rank)
-    effective_sensitivity = _CANONICAL_SENSITIVITY[effective_rank]
+    declared_rank = sensitivity_rank(canonical_declared)
+    effective_sensitivity = max_sensitivity(privacy.sensitivity, canonical_declared)
+    effective_rank = sensitivity_rank(effective_sensitivity)
     if privacy.rejected or effective_rank == 4:
         return ProposalContentDecision(
             "reject",
@@ -148,7 +131,7 @@ def evaluate_proposal_content(
     return ProposalContentDecision(
         "ask",
         privacy.sanitized_text,
-        effective_sensitivity,
+        effective_sensitivity.value,
         tuple(reasons),
     )
 

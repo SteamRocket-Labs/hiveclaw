@@ -32,6 +32,17 @@ def test_proposal_policy_upgrades_underclassified_pii_and_preserves_evidence_sha
     assert "sensitivity_upgraded" in decision.reason_codes
 
 
+def test_proposal_policy_uses_the_shared_canonical_pl3_aliases() -> None:
+    decision = evaluate_proposal_content(
+        content="Board-only operating context.",
+        declared_sensitivity="confidential",
+        max_chars=20_000,
+    )
+
+    assert decision.outcome == "ask"
+    assert decision.sensitivity == "PL3_sensitive"
+
+
 def test_proposal_policy_rejects_oversized_content() -> None:
     decision = evaluate_proposal_content(
         content="x" * 101,

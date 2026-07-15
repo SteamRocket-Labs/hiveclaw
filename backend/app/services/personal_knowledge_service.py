@@ -43,7 +43,6 @@ from app.services.personal_knowledge_index_search import (
     build_personal_knowledge_search_statement,
 )
 from app.services.personal_knowledge_ingest import (
-    _SENSITIVE_EXTRACTION_BLOCKLIST,
     _SUPPORTED_IMPORT_EXTENSIONS,
     _WHITESPACE_RE,
     _clean_title,
@@ -69,6 +68,7 @@ from app.services.personal_knowledge_jobs import (
     DEFAULT_IMPORT_JOB_MAX_ATTEMPTS as _DEFAULT_IMPORT_JOB_MAX_ATTEMPTS,
     build_personal_knowledge_job_claim_statement,
 )
+from app.services.privacy_layer import canonicalize_sensitivity, is_sensitive_extraction_blocked
 
 
 _DEFAULT_EXTRACTOR = object()
@@ -811,6 +811,7 @@ class PersonalKnowledgeService:
         sensitivity: str,
         metadata: dict[str, Any],
     ) -> PersonalKnowledgeIngestResult:
+        canonical_sensitivity = canonicalize_sensitivity(sensitivity).value
         clean_source_sha256 = _validate_source_sha256(source_sha256)
         clean_source_kind = _clean_title(source_kind).lower().replace(" ", "_")
         clean_title = _clean_title(title)
@@ -826,6 +827,7 @@ class PersonalKnowledgeService:
         document_metadata = {
             **(getattr(document, "doc_metadata_json", {}) or {}),
             **metadata,
+            "sensitivity": canonical_sensitivity,
             "queued_import_kind": metadata.get("queued_import_kind"),
             "queued_at": datetime.now(timezone.utc).isoformat(),
         }
@@ -842,7 +844,7 @@ class PersonalKnowledgeService:
                 artifact_hash=artifact_hash,
                 title=clean_title,
                 status="queued",
-                sensitivity=sensitivity,
+                sensitivity=canonical_sensitivity,
                 agent_searchable=agent_searchable,
                 canonical_md_path=canonical_md_path,
                 canonical_md_sha256=canonical_md_sha256,
@@ -856,7 +858,7 @@ class PersonalKnowledgeService:
             document.artifact_hash = artifact_hash
             document.title = clean_title
             document.status = "queued"
-            document.sensitivity = sensitivity
+            document.sensitivity = canonical_sensitivity
             document.agent_searchable = agent_searchable
             document.canonical_md_path = canonical_md_path
             document.canonical_md_sha256 = canonical_md_sha256
@@ -875,6 +877,7 @@ class PersonalKnowledgeService:
         job_metadata = {
             **(getattr(job, "job_metadata_json", {}) or {}),
             **metadata,
+            "sensitivity": canonical_sensitivity,
             "source_kind": clean_source_kind,
             "source_sha256": clean_source_sha256,
             "warnings": [],
@@ -928,6 +931,7 @@ class PersonalKnowledgeService:
         doc_metadata: dict[str, Any] | None = None,
         source_sha256: str | None = None,
     ) -> PersonalKnowledgeIngestResult:
+        canonical_sensitivity = canonicalize_sensitivity(sensitivity).value
         canonical_md = _normalize_markdown(markdown)
         if not canonical_md:
             raise ValueError("markdown must not be empty")
@@ -947,7 +951,7 @@ class PersonalKnowledgeService:
             "source_uri": source_uri,
             "created_by_user_id": str(created_by_user_id) if created_by_user_id else None,
             "agent_searchable": bool(agent_searchable),
-            "sensitivity": sensitivity,
+            "sensitivity": canonical_sensitivity,
             "doc_metadata": dict(doc_metadata or {}),
         }
         return await self._queue_import_job(
@@ -963,7 +967,7 @@ class PersonalKnowledgeService:
             canonical_md_sha256=artifact_hash,
             created_by_user_id=created_by_user_id,
             agent_searchable=agent_searchable,
-            sensitivity=sensitivity,
+            sensitivity=canonical_sensitivity,
             metadata=metadata,
         )
 
@@ -984,6 +988,7 @@ class PersonalKnowledgeService:
         source_mime_type: str | None = None,
         doc_metadata: dict[str, Any] | None = None,
     ) -> PersonalKnowledgeIngestResult:
+        canonical_sensitivity = canonicalize_sensitivity(sensitivity).value
         safe_name = _safe_filename(filename)
         source_hash = _sha256_bytes(data)
         spool_path = personal_knowledge_import_spool_path(self.data_root, owner_user_id, source_hash, safe_name)
@@ -1001,7 +1006,7 @@ class PersonalKnowledgeService:
             "source_mime_type": source_mime_type or mimetypes.guess_type(safe_name)[0] or "",
             "created_by_user_id": str(created_by_user_id) if created_by_user_id else None,
             "agent_searchable": bool(agent_searchable),
-            "sensitivity": sensitivity,
+            "sensitivity": canonical_sensitivity,
             "doc_metadata": dict(doc_metadata or {}),
         }
         return await self._queue_import_job(
@@ -1017,7 +1022,7 @@ class PersonalKnowledgeService:
             canonical_md_sha256=None,
             created_by_user_id=created_by_user_id,
             agent_searchable=agent_searchable,
-            sensitivity=sensitivity,
+            sensitivity=canonical_sensitivity,
             metadata=metadata,
         )
 
@@ -1033,6 +1038,7 @@ class PersonalKnowledgeService:
         agent_searchable: bool = True,
         sensitivity: str = "internal",
     ) -> PersonalKnowledgeIngestResult:
+        canonical_sensitivity = canonicalize_sensitivity(sensitivity).value
         clean_url = str(url or "").strip()
         parsed = urlparse(clean_url)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
@@ -1047,7 +1053,7 @@ class PersonalKnowledgeService:
             "source_uri": clean_url,
             "created_by_user_id": str(created_by_user_id) if created_by_user_id else None,
             "agent_searchable": bool(agent_searchable),
-            "sensitivity": sensitivity,
+            "sensitivity": canonical_sensitivity,
             "doc_metadata": {},
         }
         return await self._queue_import_job(
@@ -1063,7 +1069,7 @@ class PersonalKnowledgeService:
             canonical_md_sha256=None,
             created_by_user_id=created_by_user_id,
             agent_searchable=agent_searchable,
-            sensitivity=sensitivity,
+            sensitivity=canonical_sensitivity,
             metadata=metadata,
         )
 
@@ -1085,6 +1091,7 @@ class PersonalKnowledgeService:
         warnings: list[str] | None = None,
         force_reindex: bool = False,
     ) -> PersonalKnowledgeIngestResult:
+        canonical_sensitivity = canonicalize_sensitivity(sensitivity).value
         canonical_md = _normalize_markdown(markdown)
         if not canonical_md:
             raise ValueError("markdown must not be empty")
@@ -1124,7 +1131,7 @@ class PersonalKnowledgeService:
                 artifact_hash=artifact_hash,
                 title=clean_title,
                 status="ready",
-                sensitivity=sensitivity,
+                sensitivity=canonical_sensitivity,
                 agent_searchable=agent_searchable,
                 canonical_md_path=canonical_md_path,
                 canonical_md_sha256=artifact_hash,
@@ -1138,7 +1145,7 @@ class PersonalKnowledgeService:
             document.artifact_hash = artifact_hash
             document.title = clean_title
             document.status = "ready"
-            document.sensitivity = sensitivity
+            document.sensitivity = canonical_sensitivity
             document.agent_searchable = agent_searchable
             document.canonical_md_path = canonical_md_path
             document.canonical_md_sha256 = artifact_hash
@@ -1197,7 +1204,7 @@ class PersonalKnowledgeService:
 
         extractor = self._knowledge_extractor()
         if extractor is not None:
-            if str(sensitivity or "").lower() in _SENSITIVE_EXTRACTION_BLOCKLIST:
+            if is_sensitive_extraction_blocked(canonical_sensitivity):
                 final_status = "degraded"
                 final_stage = "extracting"
                 final_error = "knowledge_extraction_skipped_sensitive"
@@ -1217,7 +1224,7 @@ class PersonalKnowledgeService:
                         owner_user_id=owner_user_id,
                         document=document,
                         segments=segment_objects,
-                        sensitivity=sensitivity,
+                        sensitivity=canonical_sensitivity,
                         extraction_usage=extraction_usage_summary,
                     )
                     all_warnings.extend(extraction_warnings)
@@ -1348,6 +1355,7 @@ class PersonalKnowledgeService:
         doc_metadata: dict[str, Any] | None = None,
         source_sha256: str | None = None,
     ) -> PersonalKnowledgeIngestResult:
+        canonical_sensitivity = canonicalize_sensitivity(sensitivity).value
         safe_name = _safe_filename(filename)
         ext = _extension_for_filename(safe_name)
         source_hash = _validate_source_sha256(source_sha256) if source_sha256 is not None else _sha256_bytes(data)
@@ -1365,7 +1373,7 @@ class PersonalKnowledgeService:
                 source_uri=source_uri,
                 created_by_user_id=created_by_user_id,
                 agent_searchable=agent_searchable,
-                sensitivity=sensitivity,
+                sensitivity=canonical_sensitivity,
                 source_mime_type=source_mime_type,
                 source_hash=source_hash,
                 media_kind=media_kind,
@@ -1381,7 +1389,7 @@ class PersonalKnowledgeService:
                 source_hash=source_hash,
                 artifact_hash=artifact_hash,
                 title=_clean_title(safe_name),
-                sensitivity=sensitivity,
+                sensitivity=canonical_sensitivity,
                 agent_searchable=agent_searchable,
                 created_by_user_id=created_by_user_id,
                 stage="converting",
@@ -1428,7 +1436,7 @@ class PersonalKnowledgeService:
             source_uri=source_uri,
             created_by_user_id=created_by_user_id,
             agent_searchable=agent_searchable,
-            sensitivity=sensitivity,
+            sensitivity=canonical_sensitivity,
             source_sha256=source_hash
             if source_sha256 is not None
             else getattr(conversion, "source_sha256", source_hash),
@@ -1454,6 +1462,7 @@ class PersonalKnowledgeService:
         error_message: str,
         metadata: dict[str, Any],
     ) -> PersonalKnowledgeIngestResult:
+        canonical_sensitivity = canonicalize_sensitivity(sensitivity).value
         document = KnowledgeDocument(
             id=uuid.uuid4(),
             tenant_id=tenant_id,
@@ -1466,7 +1475,7 @@ class PersonalKnowledgeService:
             artifact_hash=artifact_hash,
             title=title,
             status="failed",
-            sensitivity=sensitivity,
+            sensitivity=canonical_sensitivity,
             agent_searchable=agent_searchable,
             canonical_md_path="",
             canonical_md_sha256=None,
@@ -1525,6 +1534,7 @@ class PersonalKnowledgeService:
         media_kind: str,
         doc_metadata: dict[str, Any] | None,
     ) -> PersonalKnowledgeIngestResult:
+        canonical_sensitivity = canonicalize_sensitivity(sensitivity).value
         provider = self._media_transcription_provider()
         base_metadata = {
             "source_filename": filename,
@@ -1543,7 +1553,7 @@ class PersonalKnowledgeService:
                 source_hash=source_hash,
                 artifact_hash=source_hash,
                 title=title_from_filename_or_uri(filename, source_uri, title),
-                sensitivity=sensitivity,
+                sensitivity=canonical_sensitivity,
                 agent_searchable=agent_searchable,
                 created_by_user_id=created_by_user_id,
                 stage="transcribing",
@@ -1574,7 +1584,7 @@ class PersonalKnowledgeService:
                 source_hash=source_hash,
                 artifact_hash=source_hash,
                 title=title_from_filename_or_uri(filename, source_uri, title),
-                sensitivity=sensitivity,
+                sensitivity=canonical_sensitivity,
                 agent_searchable=agent_searchable,
                 created_by_user_id=created_by_user_id,
                 stage="transcribing",
@@ -1602,7 +1612,7 @@ class PersonalKnowledgeService:
             source_uri=source_uri,
             created_by_user_id=created_by_user_id,
             agent_searchable=agent_searchable,
-            sensitivity=sensitivity,
+            sensitivity=canonical_sensitivity,
             source_sha256=source_hash,
             doc_metadata=media_metadata,
             warnings=warnings,
@@ -1621,6 +1631,7 @@ class PersonalKnowledgeService:
         sensitivity: str = "internal",
         source_sha256: str | None = None,
     ) -> PersonalKnowledgeIngestResult:
+        canonical_sensitivity = canonicalize_sensitivity(sensitivity).value
         clean_url = str(url or "").strip()
         from app.services.governed_egress import EgressLimits, fetch_public_http
 
@@ -1649,7 +1660,7 @@ class PersonalKnowledgeService:
             source_uri=final_url,
             created_by_user_id=created_by_user_id,
             agent_searchable=agent_searchable,
-            sensitivity=sensitivity,
+            sensitivity=canonical_sensitivity,
             source_mime_type=response.headers.get("content-type"),
             source_sha256=source_sha256,
         )
@@ -1957,7 +1968,7 @@ class PersonalKnowledgeService:
         if agent_searchable is not None:
             document.agent_searchable = bool(agent_searchable)
         if sensitivity is not None:
-            document.sensitivity = str(sensitivity)
+            document.sensitivity = canonicalize_sensitivity(sensitivity).value
         if status is not None:
             document.status = str(status)
         await session.flush()

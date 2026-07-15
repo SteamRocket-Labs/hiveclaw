@@ -245,7 +245,11 @@ async def test_llm_extractor_returns_usage_tokens_for_job_accounting(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_llm_extractor_skips_sensitive_without_resolving_model() -> None:
+@pytest.mark.parametrize(
+    "sensitivity",
+    ["private", "confidential", "secret", "restricted", "PL3_sensitive", "PL4", "PL4_credential"],
+)
+async def test_llm_extractor_skips_sensitive_without_resolving_model(sensitivity: str) -> None:
     async def unexpected_resolver(_tenant_id):  # pragma: no cover - must not run
         raise AssertionError("sensitive extraction must not resolve a model")
 
@@ -256,7 +260,7 @@ async def test_llm_extractor_skips_sensitive_without_resolving_model() -> None:
             source_ref={},
             tenant_id=uuid.uuid4(),
             owner_user_id=uuid.uuid4(),
-            sensitivity="PL4",
+            sensitivity=sensitivity,
         )
 
 

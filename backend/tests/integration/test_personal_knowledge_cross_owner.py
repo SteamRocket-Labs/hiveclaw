@@ -86,7 +86,7 @@ async def _seed_two_owners(owner_sessionmaker) -> dict[str, uuid.UUID]:
                 title="ownerA-doc",
                 canonical_md_path=f"persons/{ids['ownerA']}/kb/x.md",
                 status="ready",
-                sensitivity="internal",
+                sensitivity="PL1_public",
                 agent_searchable=True,
                 created_by_user_id=ids["ownerA"],
             )

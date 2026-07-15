@@ -37,6 +37,10 @@ class KnowledgeDocument(Base):
     __tablename__ = "knowledge_documents"
     __table_args__ = (
         UniqueConstraint("tenant_id", "scope_type", "scope_id", "source_sha256", name="uq_knowledge_document_source"),
+        CheckConstraint(
+            "sensitivity IN ('PL1_public','PL2_pii','PL3_sensitive','PL4_credential')",
+            name="ck_knowledge_documents_sensitivity",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -54,7 +58,9 @@ class KnowledgeDocument(Base):
     artifact_hash: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     title: Mapped[str] = mapped_column(String(300), nullable=False)
     status: Mapped[str] = mapped_column(String(40), nullable=False, default="pending", index=True)
-    sensitivity: Mapped[str] = mapped_column(String(30), nullable=False, default="internal", index=True)
+    sensitivity: Mapped[str] = mapped_column(
+        String(30), nullable=False, default="PL1_public", server_default="PL1_public", index=True
+    )
     agent_searchable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
     canonical_md_path: Mapped[str] = mapped_column(Text, nullable=False)
     canonical_md_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -291,6 +297,10 @@ class PersonalKnowledgeProposal(Base):
         CheckConstraint(
             "policy_outcome IN ('approve','ask','reject')",
             name="ck_personal_kb_proposal_policy_outcome",
+        ),
+        CheckConstraint(
+            "sensitivity IN ('PL1_public','PL2_pii','PL3_sensitive','PL4_credential')",
+            name="ck_personal_kb_proposal_sensitivity",
         ),
     )
 

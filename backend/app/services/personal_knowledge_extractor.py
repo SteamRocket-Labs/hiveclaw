@@ -8,6 +8,8 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Sequence
 
+from app.services.privacy_layer import is_sensitive_extraction_blocked
+
 
 _FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE | re.MULTILINE)
 
@@ -232,7 +234,7 @@ class PersonalKnowledgeLLMExtractor:
         owner_user_id: uuid.UUID,
         sensitivity: str,
     ) -> KnowledgeExtractionResult:
-        if str(sensitivity or "").lower() in {"private", "secret", "restricted", "pl3", "pl4", "credential"}:
+        if is_sensitive_extraction_blocked(sensitivity):
             raise PersonalKnowledgeExtractionUnavailable("knowledge_extraction_skipped_sensitive")
 
         model_config = await self._resolve_model_config(tenant_id)

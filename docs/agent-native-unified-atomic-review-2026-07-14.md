@@ -4,7 +4,7 @@
 >
 > 原始审查冻结快照：`main@501db6555dae374e5fcf43a6fdcfe8a3dd89343e` + 2026-07-14 当时未提交工作树；后续施工不改写这个审查锚点，每条 `EVID-*` 另记自己的开工 HEAD、工作树与生产快照
 >
-> 修复账本滚动更新：2026-07-15；Group 0 已用 `EVID-G0-006` 把 11 个上下文包、88 个可执行 `@` 文档入口、逐 Group 详细路由和证据回流做成机器门并保持关闭；Group 1 的 exact-source 三服务部署已经成功，`P0-F1/P0-F2/E-1/P1-004/P1-F4/KB-EXTRACT-001/KB-AUTH-001/KB-PROP-001/BUD-ROOT-001/AUDIT-IMM-001/AUDIT-TENANT-001/F-PLAINTEXT/P2-F8/P2-F6` 已分别以 `EVID-G1-001/002/003/004/005/006/007/008/009/010/011/012/013/014` 完成 production canary 并关闭；Group 1 当前为 14/16 closed、2/16 pending，不再有“已部署但未关闭”的 leaf。不得把 14 个独立 leaf 的关闭冒充 Group 1 或 103 项完成。
+> 修复账本滚动更新：2026-07-15；Group 0 已用 `EVID-G0-006` 把 11 个上下文包、89 个可执行 `@` 文档入口、逐 Group 详细路由和证据回流做成机器门并保持关闭；Group 1 的 exact-source 三服务部署已经成功，`P0-F1/P0-F2/E-1/P1-004/P1-F4/KB-EXTRACT-001/KB-AUTH-001/KB-PROP-001/BUD-ROOT-001/AUDIT-IMM-001/AUDIT-TENANT-001/F-PLAINTEXT/P2-F8/P2-F6` 已分别以 `EVID-G1-001/002/003/004/005/006/007/008/009/010/011/012/013/014` 完成 production canary 并关闭；Group 1 当前为 14/16 closed、2/16 pending，不再有“已部署但未关闭”的 leaf。2026-07-15T13:37Z 因 production `backend-volume` 在重启批次中从约 24.8 GB 急升到 28.65 GB，Group 1 显式暂停；`EVID-G8-PRE-001` 已独立封住 default Skill startup 写放大，但不关闭任何 Group 8 leaf 或 `MISS-RETENTION-001`。不得把 14 个独立 leaf、该 P0 止血或两者叠加冒充 Group 1、Group 8、103 项或产品总目标完成。
 >
 > 组合输入：`agent-native-atomic-review-2026-07-14.md`、`agent-native-extreme-boundary-atomic-review-2026-07-14.md`、`unified-context-assembly-and-progressive-disclosure-2026-07-14.md`、`session-v2-cc-codex-alignment-contract-2026-07-14.md`、修订后的 `reusable-agent-native-atomic-review-prompt.md`，以及当前 Hive / FreeCode / Codex 本地源码。
 >
@@ -150,12 +150,12 @@ context_read_receipt:
 
 <!-- group-context-route-inventory-start -->
 - root=1
-- local=79
+- local=80
 - external=8
-- total=88
+- total=89
 <!-- group-context-route-inventory-end -->
 
-当前 `§9` 的完整 Group 路由共有 **88 个去重后的可执行文档入口**：仓库根 `@AGENTS.md` 1 份、本仓 `@docs` 79 份、固定 Hive Connect snapshot 8 份。这个数字是路由完整性快照，不是要求每个 leaf 一次加载 88 份文档：执行者只读取本 Group 的 `@必须先读`，再按实际触及的子域展开 `@按需读取`；实际消费必须写进 `Context Read Receipt`。本仓入口必须全部 Git-tracked，跨仓入口必须通过 §0.3 的 commit + SHA-256 registry；`backend/tests/architecture/test_agent_native_repair_ledger.py` 负责验证 11/11 Group、路径可读性、唯一 owner 与证据往返。
+当前 `§9` 的完整 Group 路由共有 **89 个去重后的可执行文档入口**：仓库根 `@AGENTS.md` 1 份、本仓 `@docs` 80 份、固定 Hive Connect snapshot 8 份。这个数字是路由完整性快照，不是要求每个 leaf 一次加载 89 份文档：执行者只读取本 Group 的 `@必须先读`，再按实际触及的子域展开 `@按需读取`；实际消费必须写进 `Context Read Receipt`。本仓入口必须全部 Git-tracked，跨仓入口必须通过 §0.3 的 commit + SHA-256 registry；`backend/tests/architecture/test_agent_native_repair_ledger.py` 负责验证 11/11 Group、路径可读性、唯一 owner 与证据往返。
 
 如果施工中发现一份真正影响目标状态、迁移、运行或验收的文档未出现在当前 Group 的完整 `@` 路由中，必须先更新本 Group 路由、`Context Read Receipt` 和 architecture validator，再写业务代码；禁止把未登记文档当隐藏权威。反之，纯历史叙述、已被新合同覆盖的旧方案或无 live consumer 的文档只留在 `@原始断点证据`/archive，不得塞进 `@必须先读` 增加上下文噪声。
 
@@ -592,7 +592,7 @@ Group 摘要不能替代以下两份文档：
 
 | Group | owner canonical leaf | owner Missing | 当前状态 |
 |---:|---:|---:|---|
-| 0 | 0（全局门） | 0 | closed：`EVID-G0-002/003/004/005/006`，Git truth、机器账本、11 个上下文包/88 个 `@` 文档入口、跨仓快照与 clean-checkout harness 已闭环 |
+| 0 | 0（全局门） | 0 | closed：`EVID-G0-002/003/004/005/006`，Git truth、机器账本、11 个上下文包/89 个 `@` 文档入口、跨仓快照与 clean-checkout harness 已闭环 |
 | 1 | 16 | 0 | in_progress：`P0-F1/P0-F2/E-1/P1-004/P1-F4/KB-EXTRACT-001/KB-AUTH-001/KB-PROP-001/BUD-ROOT-001/AUDIT-IMM-001/AUDIT-TENANT-001/F-PLAINTEXT/P2-F8/P2-F6` 已关闭（14/16）；无 deployed-but-open leaf；其余 2 个 leaf 待施工 |
 | 2 | 14 | 0 | open |
 | 3 | 7 | 0 | open |
@@ -905,6 +905,7 @@ Group 摘要不能替代以下两份文档：
 - `@docs/memory-vault-path-contract-2026-06-23.md`
 - `@docs/agent-memory-md-first-spec.md`
 - `@docs/agent-memory-purity-spec.md`
+- `@docs/backend-volume-storage-lifecycle-design-2026-07-15.md`（production inventory、冷热分层、transaction/T2/snapshot/T0 lifecycle、dry-run/quarantine/sweep 与 `EVID-G8-PRE-001` 止血证据）
 - `@docs/self-evolution-sota-plan.md`
 - `@docs/t0-append-only-session-ledger-redesign-2026-06-18.md`
 - `@docs/company-knowledge-base-spec-2026-07-07.md`
@@ -916,7 +917,7 @@ Group 摘要不能替代以下两份文档：
 
 **源码入口**：terminal hook/T2 job/outbox、T0 projection/hash verifier、T2/T3 write authority/locks、capability factor consumers、Memory availability gates、Knowledge ACL/index/retention/audit。
 
-**首个 Red**：在 terminal commit 后注入 T2 provider outage、worker crash/restart、dead-letter/requeue、T0 hash tamper、并发 T3 write、rolling deploy 期间旧实例长期持有 Agent asset lock、Knowledge ACL revoke 与 retention/legal hold；证明 terminal 被阻塞、证据不可验、锁外写、无 timeout 的新实例 startup 等待、永久 held 或跨资产删除不守恒。`EVID-G1-010/011/012/013/014` 已连续五次记录 production backend 在 `startup: push default skills to every existing agent across tenants` 后长停顿；第三、四、五次都从该日志到 daemon ready 等待约 203 秒，对应 health 的 `event_loop.max_lag_ms` 依次为 `203831.58`、`197663.07`、`198063.26`。第五次还出现 backend 启动容器后约 126 秒才进入 entrypoint、backend-api 在 migration ready 前耗尽 10 次 readiness 重试且必须从同一 exact archive 重提的恢复缺口。停顿位置与量级已重复确证，但当前仍无进程 stack，必须由 Group 8 fault injection 最终坐实或推翻 blocking `flock` 根因并建立 bounded typed recovery；部署排序/重试也必须证明不会把 retryable schema wait 变成永久退出。`EVID-G1-011` 还捕获 `MemoryEnhancementSyncResult` 没有 `skipped` 属性的每轮 warning，而同一 health 将 evolution daemon 报为 healthy 且 `last_error=null`；该证据并入既有 `F-OBS1` 的错误可见性/清除验收，不新增第 104 个 leaf。两项都不得被 Group 1 安全 leaf 的关闭掩盖。
+**首个 Red**：在 terminal commit 后注入 T2 provider outage、worker crash/restart、dead-letter/requeue、T0 hash tamper、并发 T3 write、rolling deploy 期间旧实例长期持有 Agent asset lock、Knowledge ACL revoke 与 retention/legal hold；证明 terminal 被阻塞、证据不可验、锁外写、无 timeout 的新实例 startup 等待、永久 held 或跨资产删除不守恒。`EVID-G1-010/011/012/013/014` 已连续五次记录 production backend 在 `startup: push default skills to every existing agent across tenants` 后长停顿；第三、四、五次都从该日志到 daemon ready 等待约 203 秒，对应 health 的 `event_loop.max_lag_ms` 依次为 `203831.58`、`197663.07`、`198063.26`。第五次还出现 backend 启动容器后约 126 秒才进入 entrypoint、backend-api 在 migration ready 前耗尽 10 次 readiness 重试且必须从同一 exact archive 重提的恢复缺口。`EVID-G8-PRE-001` 已进一步坐实其中的 exact-match write-amplification 根因：止血前有 21,163 个 `active_skill_package_install` committed transaction、约 11.51 GB，多个重启小时各新增约 918 个/0.51–0.53 GB；修复重启后该计数保持 21,163，Volume 只增加约 1.67 MiB，health `event_loop.max_lag_ms` 降为 `33468.71`。因此“重复 Skill install 制造阶梯式容量增长”已关闭；但旧 journal 扫描、blocking `flock`、schema-wait recovery 和 33 秒剩余 lag 尚未被该止血全部解释，仍必须由 Group 8 fault injection 建立 bounded typed recovery。`EVID-G1-011` 捕获的 `MemoryEnhancementSyncResult` 缺少 `skipped` warning 与 health `last_error=null` 仍并入 `F-OBS1`，不新增第 104 个 leaf，也不得被 Group 1 或 P0 止血掩盖。
 
 **证据回填**：`EVID-G8-*` 必须保存 T0/T2/T3/soul source refs/hash/lock/outbox/job/retry/dead-letter/requeue、Knowledge ACL/retention/legal-hold 与跨资产 deletion/export ledger；同步 `§12.2` 九行、`§13.1` 两个 Missing 和 `§12.3`。
 
@@ -1324,7 +1325,7 @@ Group 0 是全局证据门，不拥有业务 leaf。下面 103 行必须与 cano
 <!-- group-evidence-index-start -->
 | Group | 证据前缀 | Owner 范围 | 当前证据状态 | 下一次写入要求 |
 |---:|---|---|---|---|
-| 0 | `EVID-G0-*` | 0 leaf / 0 Missing | `closed`：`EVID-G0-001/002/003/004/005/006`；文档 Git truth、owner/path/decision/scenario CI、11 个 Group 上下文包、88 个去重 `@` 文档入口、跨仓快照与 fake-provider/PG/Redis harness 基座成立 | 后续任何新增本地 `@docs` 必须先进入 Git 并同步上下文包索引；业务场景 Green 仍由 owner Group 负责 |
+| 0 | `EVID-G0-*` | 0 leaf / 0 Missing | `closed`：`EVID-G0-001/002/003/004/005/006`；文档 Git truth、owner/path/decision/scenario CI、11 个 Group 上下文包、89 个去重 `@` 文档入口、跨仓快照与 fake-provider/PG/Redis harness 基座成立 | 后续任何新增本地 `@docs` 必须先进入 Git 并同步上下文包索引；业务场景 Green 仍由 owner Group 负责 |
 | 1 | `EVID-G1-*` | 16 leaf / 0 Missing | `in_progress`：`P0-F1/P0-F2/E-1/P1-004/P1-F4/KB-EXTRACT-001/KB-AUTH-001/KB-PROP-001/BUD-ROOT-001/AUDIT-IMM-001/AUDIT-TENANT-001/F-PLAINTEXT/P2-F8/P2-F6` 的独立 code/evidence、production canary 均已绿并关闭（14/16）；无 deployed-but-open leaf；其余 2 leaf 未施工 | 按 §12.1 owner map 与依赖重验下一个 Group 1 leaf；每个剩余 leaf 仍须独立 Red→Green、迁移/回填、fault、rollback、consumer 与 production evidence，不得用前十四项关闭冒充 Group 1 closed |
 | 2 | `EVID-G2-*` | 14 leaf / 0 Missing | `open` | 写 Session event/item/reducer、persist-before-publish、projection/backfill 与 SESSION-G 结果 |
 | 3 | `EVID-G3-*` | 7 leaf / 0 Missing | `open` | 写 root admission、reserve/commit/release、terminal CAS、approval resume 与 fanout 曲线 |
@@ -1332,7 +1333,7 @@ Group 0 是全局证据门，不拥有业务 leaf。下面 103 行必须与 cano
 | 5 | `EVID-G5-*` | 2 leaf / 0 Missing | `open` | 写 fleet scheduler/trigger benchmark、公平性、分页续扫与 control-plane reserve |
 | 6 | `EVID-G6-*` | 10 leaf / 0 Missing | `open` | 写 CTX-A–F、capacity ledger、progressive disclosure、compaction/output recovery 与尾部证据覆盖 |
 | 7 | `EVID-G7-*` | 1 leaf / 1 Missing | `open` | 写跨渠道 execution/delivery ledger、逐 hop authority、fault matrix 与真实/沙箱 channel 分层证据 |
-| 8 | `EVID-G8-*` | 9 leaf / 2 Missing | `open` | 写 T0→T2→T3→soul、durable intelligence job、Enterprise Knowledge、retention/legal hold 与恢复证据 |
+| 8 | `EVID-G8-*` | 9 leaf / 2 Missing | `open；已有 EVID-G8-PRE-001 止血前置证据` | 写 T0→T2→T3→soul、durable intelligence job、Enterprise Knowledge、retention/legal hold 与恢复证据 |
 | 9 | `EVID-G9-*` | 19 leaf / 1 Missing | `open` | 写 canonical UI consumer、legacy 退出、historical backfill、Artifact/AI Asset 与浏览器/生产验收 |
 | 10 | `EVID-G10-*` | 19 leaf / 1 Missing | `open` | 写 inherited leaf 重认证、真实 behavior eval、paired replay、Goal 1 非劣与总账清零证据 |
 <!-- group-evidence-index-end -->
@@ -1551,14 +1552,14 @@ context_read_receipt:
 - Green 4（独立 Git truth）：在写回本条证据前，以备用 index 从 HEAD 只加入候选 AA 与 route validator，得到 tree=`2d06e60cefb6712a0f88183b2892d5f86b5c5f34`、临时 verification commit=`d1bf15cc2156d7be398d68613cc682158f8ea292`；detached checkout 执行 `pytest -q tests/architecture` → `174 passed in 9.04s`，同一 validator Ruff → `All checks passed!`。验证结束后临时 worktree 已清理；结果不依赖当前 55 个 tracked dirty/4 个 untracked 外部路径；最终证据文字另由 Green 2/3 与提交前 diff check 重验。
 - commit / deploy：本文与 route validator 组成独立两文件 commit；最终 hash 由 Git history 记录，正文不预写自引用 commit。纯文档/CI 门禁不触发三服务部署。
 - migration / rollback：纯 Markdown 导航与 architecture validator，无 schema/data migration、backfill 或 runtime。rollback 只能同时回退 §0.6 与对应 validator；单独删索引会让测试 Red，单独删 validator 会重新允许路由静默漂移。
-- 七原子：Input=Group/leaf/Missing；Authority=L0/L1 + §9 完整路由；Execution=primary→detail→源码/Red；Evidence=Context Read Receipt + EVID；Recovery=稳定章节、Git-tracked docs、跨仓 pinned snapshot 与 route delta；Consumption=后续每个 Group 的开工流程；Acceptance=11/11 index、79/79 本仓路由、8/8 跨仓 hash、10 tests、ruff、diff check。
+- 七原子：Input=Group/leaf/Missing；Authority=L0/L1 + §9 完整路由；Execution=primary→detail→源码/Red；Evidence=Context Read Receipt + EVID；Recovery=稳定章节、Git-tracked docs、跨仓 pinned snapshot 与 route delta；Consumption=后续每个 Group 的开工流程；Acceptance=当次 11/11 index、79/79 本仓路由、8/8 跨仓 hash、10 tests、ruff、diff check；当前新增的第 80 份本仓路由由 `EVID-G0-006` 的 89/89 守恒门承接。
 - 残余风险：文档路由只能保证施工者拿到正确上下文和回填位置，不能证明任何业务 leaf 已 Green；Group 1 仍是 5 个 local Green/production gate open，Group 2–10 状态不因本记录改变。
 
-#### EVID-G0-006：88 个 `@` 文档入口与防漂移开工索引终校
+#### EVID-G0-006：89 个 `@` 文档入口与防漂移开工索引终校
 
 - `leaf_ids` / `missing_ids`：无；本记录只收紧 AA 的施工导航和证据回流，不改变 103 个 breakpoint、5 个 Missing、severity、owner 或业务状态。
 - owner Group / 依赖 Group：Group 0 / 无。
-- 当前状态：`closed`；11/11 Group 的完整上下文包继续以 §9 为唯一事实源，当前 88 个去重入口已有显式 inventory 与机器守恒。
+- 当前状态：`closed`；11/11 Group 的完整上下文包继续以 §9 为唯一事实源，当前 89 个去重入口已有显式 inventory 与机器守恒。
 - 证据 owner / 更新时间：主 Agent / 2026-07-15。
 - 冻结事实：开工 HEAD=`bba729daf790645cd8bdc96e565da04cc6b56956`；共享工作树有其它 session 的 tracked/untracked 改动。本项 owned paths 仅为本文与 `backend/tests/architecture/test_agent_native_repair_ledger.py`，没有接管、覆盖或 stage 其它路径。
 - Context Read Receipt：
@@ -1589,10 +1590,10 @@ context_read_receipt:
 ```
 
 - Red：先新增 `test_group_context_route_inventory_is_explicit_and_current`，执行 `pytest -q tests/architecture/test_agent_native_repair_ledger.py::test_group_context_route_inventory_is_explicit_and_current` → `1 failed`；正确失败为 AA 缺少 `group-context-route-inventory` machine-readable region，证明“全部 `@` 出来”只有 prose/路径存在性，没有总量防漂移门。
-- 实现：§0.6 显式声明 11 个 Group 当前共有 root 1、本仓 79、跨仓 8、总计 88 个去重入口；保留 `@必须先读` 与 `@按需读取` 的软披露边界，不要求单 leaf 全量加载。Group 1 快速状态同步为 4/16 closed、3/16 deployed-open、9/16 pending；AA 开工入口改为以 §12.3 索引读取 §12.4 全部当前证据，不再硬编码易漂移编号。
+- 实现：§0.6 显式声明 11 个 Group 当前共有 root 1、本仓 80、跨仓 8、总计 89 个去重入口；保留 `@必须先读` 与 `@按需读取` 的软披露边界，不要求单 leaf 全量加载。Group 1 快速状态同步为 14/16 closed、2/16 pending；AA 开工入口以 §12.3 索引读取 §12.4 全部当前证据，不再硬编码易漂移编号。
 - Green：targeted inventory gate → `1 passed`；写回最终证据后的完整 ledger validator → `11 passed`；`ruff check tests/architecture/test_agent_native_repair_ledger.py` → `All checks passed!`。
 - migration / deploy / rollback：纯 Markdown 导航与 architecture validator，无 schema/data/runtime migration 或三服务部署。回退必须同时回退 inventory 文字、machine region 与 validator；不得只删一侧制造假 Green。
-- 七原子：Input=Group/leaf；Authority=L0/L1 + §9 唯一路由；Execution=AA→primary→完整 Group 包→源码/Red；Evidence=inventory test + Context Read Receipt + EVID；Recovery=Git history、stable section、route delta；Consumption=所有后续 Group 开工；Acceptance=11/11 Group、88/88 路由、11 tests、Ruff。业务 leaf 状态不因本记录改变。
+- 七原子：Input=Group/leaf；Authority=L0/L1 + §9 唯一路由；Execution=AA→primary→完整 Group 包→源码/Red；Evidence=inventory test + Context Read Receipt + EVID；Recovery=Git history、stable section、route delta；Consumption=所有后续 Group 开工；Acceptance=11/11 Group、89/89 路由、11 tests、Ruff。业务 leaf 状态不因本记录改变。
 
 #### EVID-G1-001：P0-F1 governed public HTTP egress
 
@@ -2356,6 +2357,20 @@ context_read_receipt:
 - 七原子：Input=Agent create/update、Role Template create/update、AI Asset rollback 与 legacy migration model refs；Authority=server-side tenant ID + tenant-owned enabled `LLMModel` + composite FK；Execution=governed preflight 与 DB constraint 两层唯一写边界；Evidence=typed errors、canonical audit quarantine、real-PG `IntegrityError`、constraint catalog、revision/deploy/live hashes；Recovery=mutation 前拒绝、选择同 tenant model 重试、legacy audited null、secure downgrade 保留边界；Consumption=Agent runtime、Role Template provisioning 与 AI Asset rollback 只拿到可归属的 ref，Team 非消费边界显式路由；Acceptance=Red→Green、ruff、real PG、两次全量、三服务、production inventory/catalog/health。七原子均有当前真实路径，因此该 leaf 可独立关闭。
 - 北极星裁决：硬约束指向可验证的 Authority/Data Ingress 事实源 `tenant_id` 与 FK，不读取自然语言、不判断模型质量、不偷偷路由到别的模型、不删 capability、不裁剪 context/output、不改写 model-authored final。CC 保留显式模型选择语义，Codex 的 typed config/managed defaults 作为工程参照，Hive 仅增加 enterprise tenant authority、审计与恢复，符合 capability-preserving determinism。
 - 残余边界：Group 8 继续负责 startup stall、event-loop lag 与 schema-wait recovery；Group 3–4 负责 Agent Team model metadata 在进入真实 execution 前的 authority；Group 1 尚余 `KB-CONTRACT-001`、`B-01`。对应 canonical 行已更新为 `closed:EVID-G1-014`；Group 1 当前为 14/16 closed、0 deployed-but-open、2/16 pending。103 分母、severity、owner 与 5 个 Missing 均不变；下一 Group 1 leaf 为 `KB-CONTRACT-001`。
+
+#### EVID-G8-PRE-001：backend-volume default Skill startup 写放大止血
+
+- 证据性质：Group 8 / `MISS-RETENTION-001` 的前置 P0 安全闭环，不关闭九个 Group 8 breakpoint，也不把 `MISS-RETENTION-001` 从 `missing` 改为 `closed`，因此 103 个 breakpoint、5 个 Missing 及其 owner 均不变。Group 1 在 `EVID-G1-014` 后显式暂停，仍为 14/16 closed、2/16 pending；`KB-CONTRACT-001` 未开工且没有文件改动。
+- canonical 详细设计与 production inventory：`@docs/backend-volume-storage-lifecycle-design-2026-07-15.md`。该文档是后续 Agent transaction finalization、T2 authority/replay、snapshot CAS、sealed T0 cold archive、Blob/Ref/Resolver、dry-run/quarantine/sweep 的施工入口；本记录只同步总账事实，不复制完整方案。
+- production 事故事实：Railway 30 日曲线从约 3 GB 阶梯式升到接近 29 GB。容器 `df -B1 /data/agents` 在止血部署前为 total=`48,891,670,528`、used=`28,648,972,288`、available=`20,225,921,024`、usage=`59%`。只读 journal inventory 为 23,186 个 transaction、约 11,921,293,967 bytes；其中 `active_skill_package_install` 为 21,163 个 committed、约 11,510,468,012 bytes。相较同日早期文档快照 14,733 个/约 7.80 GB，单类已新增 6,430 个/约 3.71 GB。
+- 根因直证：修复前 startup 对每个 Agent × 每个 default Skill 无条件调用 `install_active_skill_package(overwrite=True)`；每次创建 `active_skill_package_install`，stage 全文件，lifecycle 读取并重写完整 `skill_review.md`，prepare 再复制完整 backup，commit 后没有 payload finalization。逐小时 journal 显示多个重启小时各新增约 918 个/0.51–0.53 GB，`2026-07-15T12` 单小时 1,622 个/约 0.95 GB，和 deployment/restart 阶梯一致。
+- TDD Red：`test_asset_transaction_without_staged_changes_leaves_no_journal`、`test_install_active_skill_package_exact_overwrite_is_zero_write`、`test_default_skill_startup_batches_one_recovery_scan_per_agent` 首跑为 `3 failed`，分别命中 no-op 仍写 aborted journal、exact overwrite 仍返回 installed 并写入、startup batch helper 不存在。
+- Green/实现：commit=`b2fbb530e`，仅含 `agent_asset_transaction.py`、`skill_installation.py`、`skill_seeder.py` 及两个对应测试文件。`AgentAssetTransaction` 延迟到首个真实 mutation 才建 journal；exact Skill bytes 在 lock 内返回 `unchanged` 且不写 lifecycle/revision/mtime；startup 收敛为每 Agent 一次 recovery scan 和至多一个 batch transaction。共享工作树其它 session 的 60+ tracked/untracked 改动未 stage、reset、覆盖或进入 deployment archive。
+- 验收：事故 Red 集合 Green=`3 passed in 0.15s`；transaction/installer/lifecycle 聚焦=`21 passed in 1.20s`；scoped Ruff=`All checks passed!`；`git diff --check` exit 0；当前共享 checkout 完整 backend `pytest tests -q`=`7221 passed, 2 skipped in 261.22s`。
+- 三服务 exact-source deployment：backend=`33b02f96-7b3f-4b7f-95a5-2ed1788ca215`、backend-api=`26e0972a-bc04-41bf-bb77-6544654f4c7e`、frontend=`f2c85d24-73ce-4733-ade1-621392a55335`，均 `SUCCESS`。首次并发 `railway up` 在 GraphQL TLS handshake EOF 前失败且未创建 deployment；随后按服务串行重试成功，未触碰 production data。
+- production canary：修复重启前后 `active_skill_package_install` 均为 21,163；deployment cutover 后没有新 transaction journal。post-deploy `df` used=`28,650,721,280`、available=`20,224,172,032`，仅增加 1,748,992 bytes（约 1.67 MiB），未再出现约 0.5 GB 阶梯。backend health=`status=ok`、runtime role=`app_rls/strict/non-superuser/non-BYPASSRLS`、daemon/sandbox healthy；`event_loop.max_lag_ms=33468.71`，较修复前 `198063.26` 下降但仍非完成态。
+- 七原子：Input=backend volume-bound startup + default registry packages；Authority=server-side registry/Agent workspace lock；Execution=每 Agent 单 batch + exact-byte no-op；Evidence=journal count/bytes、df、test/deploy/health receipts；Recovery=旧 journal 保留、no-change 零 mutation、deployment TLS 失败可同源重试；Consumption=startup 真实调用新 installer/batch；Acceptance=Red→Green、full suite、三服务、production restart count/bytes 对账。该七原子只关闭“继续制造 exact-match startup payload”的独立事故 scope。
+- 未关闭边界：历史 11.92 GB transaction payload 未删除；没有创建 Bucket、修改 mount/backup/env、批量重放 held T2、迁移 T0/snapshot 或执行 GC。旧 journal O(n) recovery scan、blocking `flock`、33 秒剩余 lag、backend-api schema-wait、T2 authority、snapshot duplication 与 retention/legal hold 仍由 Group 8 完整施工；任何历史物理删除必须先有 inventory manifest、ref/pin/lease/legal-hold 校验、dry-run、quarantine/grace 和用户对该 manifest 的明确确认。
 
 ## 13. Missing、Coverage Gap 与完成口径
 

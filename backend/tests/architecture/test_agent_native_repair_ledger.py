@@ -249,7 +249,7 @@ def test_group_context_route_inventory_is_explicit_and_current() -> None:
         )
     }
 
-    assert declared == actual == {"root": 1, "local": 79, "external": 8, "total": 88}
+    assert declared == actual == {"root": 1, "local": 80, "external": 8, "total": 89}
 
 
 def test_document_routes_are_portable_and_external_refs_are_snapshot_bound() -> None:

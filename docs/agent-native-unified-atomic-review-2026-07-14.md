@@ -4,7 +4,7 @@
 >
 > 原始审查冻结快照：`main@501db6555dae374e5fcf43a6fdcfe8a3dd89343e` + 2026-07-14 当时未提交工作树；后续施工不改写这个审查锚点，每条 `EVID-*` 另记自己的开工 HEAD、工作树与生产快照
 >
-> 修复账本滚动更新：2026-07-15；Group 0 已用 `EVID-G0-005` 把 11 个上下文包总索引、逐 Group 详细路由和证据回流做成机器门并保持关闭；Group 1 的同源三服务部署已经成功，`P0-F1/P0-F2` 以 `EVID-G1-001/002` 完成 production canary 并关闭，`E-1/P1-004/P1-F4` 仍因 live authority/recovery canary 与历史数据处置保持 open；不得把 2 个 leaf 的关闭冒充 Group 1 或 103 项完成。
+> 修复账本滚动更新：2026-07-15；Group 0 已用 `EVID-G0-005` 把 11 个上下文包总索引、逐 Group 详细路由和证据回流做成机器门并保持关闭；Group 1 的同源三服务部署已经成功，`P0-F1/P0-F2/KB-EXTRACT-001` 以 `EVID-G1-001/002/006` 完成 production canary 并关闭，`E-1/P1-004/P1-F4` 仍因 live authority/recovery canary 与历史数据处置保持 open；不得把 3 个 leaf 的关闭冒充 Group 1 或 103 项完成。
 >
 > 组合输入：`agent-native-atomic-review-2026-07-14.md`、`agent-native-extreme-boundary-atomic-review-2026-07-14.md`、`unified-context-assembly-and-progressive-disclosure-2026-07-14.md`、`session-v2-cc-codex-alignment-contract-2026-07-14.md`、修订后的 `reusable-agent-native-atomic-review-prompt.md`，以及当前 Hive / FreeCode / Codex 本地源码。
 >
@@ -584,7 +584,7 @@ Group 摘要不能替代以下两份文档：
 | Group | owner canonical leaf | owner Missing | 当前状态 |
 |---:|---:|---:|---|
 | 0 | 0（全局门） | 0 | closed：`EVID-G0-002/003/004/005`，Git truth、机器账本、11 个上下文包/总索引、跨仓快照与 clean-checkout harness 已闭环 |
-| 1 | 16 | 0 | in_progress：`P0-F1/P0-F2` 已关闭；`E-1/P1-004/P1-F4` 已部署但 live authority/recovery gate 仍 open；其余 11 个 leaf 待施工 |
+| 1 | 16 | 0 | in_progress：`P0-F1/P0-F2/KB-EXTRACT-001` 已关闭；`E-1/P1-004/P1-F4` 已部署但 live authority/recovery gate 仍 open；其余 10 个 leaf 待施工 |
 | 2 | 14 | 0 | open |
 | 3 | 7 | 0 | open |
 | 4 | 6 | 0 | open |
@@ -640,7 +640,7 @@ Group 摘要不能替代以下两份文档：
 
 **依赖 Group**：Group 0。P0/P1 家族自身闭环后立即发布，不等待 Group 2–10。
 
-**AA 开工入口**：本文 `§12.1` 的 16 个 Group 1 owner 行、`§12.2` 对应 canonical 行、`§12.3 EVID-G1-*` 和已有 `§12.4 EVID-G1-001/002/003/004/005`；每次只开一个 leaf/同根安全家族，不把 Group 1 当成单个巨型改动。
+**AA 开工入口**：本文 `§12.1` 的 16 个 Group 1 owner 行、`§12.2` 对应 canonical 行、`§12.3 EVID-G1-*` 和已有 `§12.4 EVID-G1-001/002/003/004/005/006`；每次只开一个 leaf/同根安全家族，不把 Group 1 当成单个巨型改动。
 
 **@原始断点证据**：
 
@@ -1213,7 +1213,7 @@ Group 0 是全局证据门，不拥有业务 leaf。下面 103 行必须与 cano
 - P1 | P1-017 | inherited-dirty-fix-unaccepted | transcript commit 与 T0 wake 可见性
 - P1 | G-01A | inherited-split | 平台 failure prose 冒充 assistant/final author
 - P1 | KB-AUTH-001 | inherited-split | cross-principal PKB requester/grant/ceiling
-- P1 | KB-EXTRACT-001 | inherited-split | sensitivity canonical enum 与 extraction blocklist 漂移
+- P1 | KB-EXTRACT-001 | closed:EVID-G1-006 | canonical sensitivity enum、全部写边界、PL3/PL4 extraction gate、可逆 backfill、DB constraint 与 production canary 已绿
 - P1 | KB-PROP-001 | inherited-split | sensitivity/provenance 未贯穿 transcript/T0/T2/outbound
 - P2 | A-01 | inherited-current-evidence | 模型正文前缀机械判失败
 - P2 | A-03 | inherited-current-evidence | compaction active projection/replay 边界漂移
@@ -1316,7 +1316,7 @@ Group 0 是全局证据门，不拥有业务 leaf。下面 103 行必须与 cano
 | Group | 证据前缀 | Owner 范围 | 当前证据状态 | 下一次写入要求 |
 |---:|---|---|---|---|
 | 0 | `EVID-G0-*` | 0 leaf / 0 Missing | `closed`：`EVID-G0-001/002/003/004/005`；文档 Git truth、owner/path/decision/scenario CI、11 个 Group 上下文包与机器总索引、59 份本地 `@docs` clean-checkout 快照、跨仓快照与 fake-provider/PG/Redis harness 基座成立 | 后续任何新增本地 `@docs` 必须先进入 Git 并同步上下文包索引；业务场景 Green 仍由 owner Group 负责 |
-| 1 | `EVID-G1-*` | 16 leaf / 0 Missing | `in_progress`：五个独立 code commit 已随 `1b822eb766` 三服务同源部署；`P0-F1/P0-F2` production canary 已绿并关闭；`E-1/P1-004/P1-F4` 已部署但 live authority/recovery gate 仍 open，P1-F4 最新 dry-run=`54 would_quarantine`；其余 11 leaf 未闭环 | 继续下一项 Group 1 authority leaf；并行完成 E-1 legacy disposition、P1-004 A2A canary、P1-F4 apply/恢复 canary，不能用 shared deploy 或 dry-run 冒充 leaf closed |
+| 1 | `EVID-G1-*` | 16 leaf / 0 Missing | `in_progress`：六个独立 code commit；`P0-F1/P0-F2/KB-EXTRACT-001` production canary 已绿并关闭；`E-1/P1-004/P1-F4` 已部署但 live authority/recovery gate 仍 open，P1-F4 最新 dry-run=`54 would_quarantine`；其余 10 leaf 未施工 | 下一项进入 `KB-AUTH-001`，建立跨 principal explicit grant/sensitivity ceiling 与 PL4 reference-only read；并行完成 E-1 legacy disposition、P1-004 A2A canary、P1-F4 apply/恢复 canary，不能用 shared deploy 或 dry-run 冒充 leaf closed |
 | 2 | `EVID-G2-*` | 14 leaf / 0 Missing | `open` | 写 Session event/item/reducer、persist-before-publish、projection/backfill 与 SESSION-G 结果 |
 | 3 | `EVID-G3-*` | 7 leaf / 0 Missing | `open` | 写 root admission、reserve/commit/release、terminal CAS、approval resume 与 fanout 曲线 |
 | 4 | `EVID-G4-*` | 6 leaf / 0 Missing | `open` | 写 result ref、mailbox lease/CAS、integration epoch、partial/late/duplicate 与 100-way return storm |
@@ -1763,6 +1763,66 @@ context_read_receipt:
 - 七原子：Input=authenticated InvocationRequest + Session/T0/root metadata；Authority=signed `RecoveryAuthorityFrame` + current tool context；Execution=single store/loader + governed context-resource/replay gate；Evidence=HMAC envelope、immutable hash ref、typed status、metrics、exact quarantine bytes；Recovery=absent/held/quarantine/unavailable、atomic persistence、dry-run/confirm、safe forward rollback；Consumption=turn hydration、prompt、compaction、tool replay、context resource、operator metrics；Acceptance=Red→238 + 1260 + staged 238、source baseline、production deploy/read-only/dry-run 已绿，live canary 与 migration apply 未验。因此只允许 `in_progress-production-dry-run:EVID-G1-005`。
 - 残余风险 / 下一动作：先对 `54` 条处置集合做 operator 审查，再以 `--apply --confirm` 执行可逆 quarantine；选择受控 Agent 验证一个 unsigned legacy exact quarantine、一个新 signed scoped head、一次 restart+compaction、一次 foreign requester deny、一次 nested A2A principal/delegation bind，并检查 metrics/health。只有 apply/disposition、live no-leak/no-duplicate-effect 与安全 rollback evidence 全部写回后，P1-F4 才可 `closed`。本地施工可继续下一 Group 1 leaf，但不得用后续进度掩盖这些 production gate。
 - 对应 §12.2 canonical 行已更新为 `in_progress-production-dry-run:EVID-G1-005`；Group 1 仍有 14 个 leaf 未闭环，103 分母、severity、Group owner 与 5 个 Missing 均不变。
+
+#### EVID-G1-006：KB-EXTRACT-001 sensitivity 单一枚举与持久抽取硬闸
+
+- `leaf_ids`：`KB-EXTRACT-001`；owner Group / 依赖 Group：Group 1 / Group 0。本证据只关闭 sensitivity canonicalization 与 durable graph extraction seam；不关闭 `KB-AUTH-001` 的跨 principal read/grant、`KB-PROP-001` 的 provenance/外传，也不关闭 `KB-CONTRACT-001` 的 tool schema/描述一致性。
+- 当前状态：`closed`。实现、可逆 migration/backfill、真实 PostgreSQL round-trip、clean-checkout 全量 backend、production schema/data/RLS、三服务 source freshness 与 recovery 都已 Green；对应 canonical 为 `closed:EVID-G1-006`。
+- 冻结事实：开工 HEAD=`29794cd39ba2af563985da03cae427cc1c46006a`；共享工作树已有 50+ 个与本 leaf 无关的 tracked/untracked 改动，均未 stage、覆盖或归属本项。owned code manifest 为 commit `53287e7166fb4af7020188f466b90b0d10e9a06c` 的 15 个 migration/model/service/test path；`git show 53287e716 --name-only` 与 staged manifest 一致。
+
+```yaml
+context_read_receipt:
+  aa_entry: "§9 Group 1 + §12.1/§12.2 KB-EXTRACT-001"
+  leaf_ids: ["KB-EXTRACT-001"]
+  documents:
+    - ref: "@docs/personal-knowledge-base-completion-contract-2026-07-08.md §A4. LLM 知识抽取 / §2026-07-08 A4/A5 / §2026-07-14 Tool-first 重基线"
+      role: "design + acceptance"
+      decision_consumed: "完整 segment 交给 LLM；PL3/PL4 在外部抽取前按显式 sensitivity fail closed；失败写 degraded/warning，不能伪 ready"
+      sha256: "7dad2c59695109d06c38e4f24cc39648c53fa66b59761c3af99b70ae57328544"
+    - ref: "@docs/personal-knowledge-base-spec.md §3 Authority / Content / Index / §9 Permission / §12 七原子验收"
+      role: "authority"
+      decision_consumed: "owner truth、content truth 与可重建 index 分离；sensitivity/source policy 在返回或持久投影前由 authority plane 生效"
+      sha256: "9ddf849312667e254143b8c73e0a365ba67cc631ab24f48c51a258d37872db2b"
+    - ref: "@docs/personal-company-knowledge-tool-boundary-2026-07-10.md §0 最终决策 / §6 三视图 / §8 Permission 与 unavailable semantics"
+      role: "runtime boundary"
+      decision_consumed: "不把 Knowledge 内容预注入；当前 turn/read authority 与持久 evidence 分层；本 leaf 不借 extraction gate 改写 owner-direct read 语义"
+      sha256: "644dd7f85c2a212d6e93101a4101607d3e58ab79a8d6f8048061c5f654305609"
+    - ref: "@docs/runtime-model-agency-constraint-audit-2026-07-13.md §5 Model Agency Boundary / §C-20 / §7 物理边界"
+      role: "north-star guard"
+      decision_consumed: "硬闸只绑定显式 data-ingress/secret/durable-write 事实；不以关键词猜语义，不改写模型输出；unknown 只能 hold/fail closed"
+      sha256: "366c8a5e4351e76083e6096a8cca09fe93a952ce831cf01e3cae34e2f8b91530"
+    - ref: "@docs/ccplus-north-star-contract-2026-06-24.md §0.1 Decision Order / §2 Source Priority / §6 Codex Delta / §8 Atomic Capability Boundary"
+      role: "baseline arbitration"
+      decision_consumed: "保留 CC capability floor；Personal KB sensitivity 是 Hive-native governance，不用平台确定性缩减模型能力"
+      sha256: "9b2bda91cc42a4464ec9b91c483b78fb83965fe0ff6909836ea1fecc18299e5e"
+  source_baselines:
+    hive_head: "29794cd39ba2af563985da03cae427cc1c46006a"
+    freecode_head: "7dc15d6c8fb0c40c7fcc02ce9b58204324252632"
+    codex_head: "5c19155cbd93bfa099016e7487259f61669823ff"
+  conflicts_or_deltas:
+    - "FreeCode/Codex 当前源码未发现 PL1/PL2/PL3/PL4 或 Hive Personal KB sensitivity/extraction 同名合同；本项是 Hive-native additive governance，不是 parity 收缩"
+    - "旧代码/文档混用 internal/private/confidential/pl3/pl4；实现统一为四个 persisted enum，同时保留 legacy alias 与精确可逆来源"
+  evidence_sink: "EVID-G1-006"
+```
+
+- Red（开工快照）：新 contract test 首先因 `canonicalize_sensitivity` 不存在而 ImportError；alias 对抗抽取为 `3 failed, 4 passed, 8 deselected`；service 回归证明 `confidential` 仍调用 extractor、patch 后仍保存 `private`；migration test 首先因 revision 不存在失败，真实 PG 数据仍保留非 canonical label。失败分别命中“枚举事实源分裂、抽取 blocklist 漏洞、写边界漂移、无 backfill/constraint”，不是环境噪声。
+- 实现：`privacy_layer.py` 成为唯一 sensitivity owner，persisted enum 固定为 `PL1_public/PL2_pii/PL3_sensitive/PL4_credential`；所有 ingest/queue/media/failure/patch/proposal write boundary 先 canonicalize，未知新写入直接拒绝；proposal 的 inferred/declared sensitivity 只可取更高等级。`personal_knowledge_extractor.py` 与 service 共享同一 `is_sensitive_extraction_blocked()`，所有 PL3/PL4 legacy alias 与 unknown 在 external LLM/graph projection 前 fail closed，并写 `knowledge_extraction_skipped_sensitive` degraded evidence；未新增自然语言主题词 hard gate。
+- migration/backfill：revision `personal_kb_sensitivity_canonical_0715` 以 `memory_context_warning_0714` 为唯一 parent；legacy alias 映射至四枚举，未知历史值保守映射 PL3；原值分别进入 document metadata/proposal reason-code recovery marker；default 改为 `PL1_public`，两表新增 validated CHECK。downgrade 精确恢复原 label/metadata，并在 upgrade/downgrade 后重新 `ENABLE + FORCE RLS`。
+- Green（独立 clean worktree `/tmp/hive-kb-extract-53287e716`，HEAD=`53287e716`）：focused service contract `86 passed in 0.42s`；Personal KB 全家族 `114 passed in 7.23s`；migration/schema/startup family `27 passed in 20.52s`；此前同一 clean snapshot 全量 backend 为 `7098 passed, 2 skipped in 244.50s`。可复现命令：
+
+```bash
+cd backend
+source .venv/bin/activate
+pytest -q tests/services/test_personal_knowledge_sensitivity.py tests/services/test_personal_knowledge_extractor.py tests/services/test_personal_knowledge_proposal_policy.py tests/services/test_personal_knowledge_service.py
+pytest -q tests/services/test_personal_knowledge_sensitivity.py tests/services/test_personal_knowledge_proposal_policy.py tests/services/test_personal_knowledge_service.py tests/services/test_personal_knowledge_extractor.py tests/api/test_agent_personal_knowledge_api.py tests/integration/test_personal_knowledge_cross_owner.py tests/integration/test_personal_knowledge_proposals.py tests/migrations/test_personal_knowledge_core_migration.py tests/tools/test_personal_knowledge_tool.py
+pytest -q tests/migrations/test_personal_kb_sensitivity_migration.py tests/migrations/test_workflow_migration.py tests/deploy/test_schema_startup_gate.py
+pytest -q
+```
+- production preflight/backfill：升级前 head=`memory_context_warning_0714`，schema-owner 视图为 `knowledge_documents internal=17`、proposal=0、两项 CHECK 不存在。升级后 head=`personal_kb_sensitivity_canonical_0715`；schema-owner 视图为 `PL1_public=17`、legacy recovery `internal=17`、proposal=0、noncanonical=0；两个 CHECK 均 `convalidated=true`，两表 `relrowsecurity=true/relforcerowsecurity=true`，document default=`'PL1_public'::character varying`。runtime `app_rls` 无 tenant context 的同一查询返回 0 行，证明未用 schema-owner 可见性冒充 runtime authority。
+- commit / deploy / recovery：独立 code commit=`53287e716`。同一 Git archive 部署后 backend=`f8e6fb64-4fdd-4897-b7c6-d3b5cdcf7311`、frontend=`db6041bf-799e-412e-80d8-d12016018e58` 均 `SUCCESS`；backend-api 首次 deployment=`c5efe31c-0afb-4459-b078-1670909848a0` 在 backend migration 尚未完成时耗尽 restart 并被移除，证明 startup schema gate fail closed；待 schema ready 后从同一 archive 重试 `1e1bddbf-5d21-433b-87ff-3f6674ec4653` 为 `SUCCESS`。2026-07-15 当前 Railway latest 仍是上述三项，backend `/api/health`=200、RLS runtime role=`app_rls` strict、三个 daemon healthy、frontend=200。
+- 七原子：Input=upload/import/media/patch/proposal 的显式 sensitivity；Authority=server-side canonical enum + DB CHECK，非自然语言自报权限；Execution=单 canonicalizer + write boundary + extraction gate；Evidence=canonical column、legacy recovery marker、degraded warning、migration/catalog/deploy log；Recovery=unknown fail closed、reversible downgrade、startup hold、同源重试；Consumption=PL1/PL2 可继续进入 LLM graph extraction，PL3/PL4 保留 owner 文档但不进入持久图谱，proposal 消费同一 rank；Acceptance=alias/unknown/real-PG/full-suite/production 数据、RLS、三服务与失败恢复全部 Green。
+- 北极星裁决：本项限制的是“未获准敏感 bytes 进入 external extractor 与 durable graph projection”这一 data-ingress/durable-write 物理效果，不限制 owner 的模型当场读取、推理或表达；没有扫描自然语言决定真伪、重要性或正确性，也没有替换模型 final。因而符合 capability-preserving determinism，不违背 CC floor、Codex additive delta 或 Hive-native Memory/Knowledge 优势。
+- 残余边界：下一 leaf 必须是 `KB-AUTH-001`，按 owner-direct、autonomous owner-agent、requester≠owner/shared/A2A/subagent、PL4 reference-only 四路径建立 fresh read decision；`KB-PROP-001` 继续负责 sensitivity/provenance 在 transcript/T0/T2/outbound 的传播；`KB-CONTRACT-001` 负责 tool description/schema/runtime 三者诚实一致。三者未因本项关闭而降级。Group 1 现为 3/16 closed、3/16 deployed-but-open、10/16 pending；103 分母、severity、owner 与 5 个 Missing 不变。
 
 ## 13. Missing、Coverage Gap 与完成口径
 

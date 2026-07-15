@@ -234,6 +234,7 @@ async def start_session_goal(
                 attachments=list(body.attachments),
                 parts=list(body.parts),
                 runtime_task_type="web_chat_turn",
+                budget_interactive=False,
                 extra_metadata={
                     "source": "session_goal",
                     "goal_id": str(goal.id),

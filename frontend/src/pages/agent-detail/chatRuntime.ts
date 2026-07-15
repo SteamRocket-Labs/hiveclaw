@@ -5,6 +5,7 @@ import {
   threadItemToAgentChatMessage,
 } from '../session-workbench/threadItemReducer';
 import { normalizeToolCallResult, type ToolCallMeta } from './toolResultEnvelope';
+import type { RuntimeBudgetState } from './runtimeBudgetState';
 
 export const MIN_COMPOSER_HEIGHT = 44;
 export const MAX_COMPOSER_HEIGHT = 160;
@@ -229,6 +230,7 @@ function messageIdentityFromStoredPayload(payload: any): Pick<AgentChatMessage, 
 export interface SessionRunState {
   runId: string;
   status: string;
+  runtimeBudget?: RuntimeBudgetState;
 }
 
 /**

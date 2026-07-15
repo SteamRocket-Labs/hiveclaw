@@ -1433,6 +1433,7 @@ async def test_goals_api_starts_first_goal_turn_in_the_same_request(monkeypatch)
     assert captured["display_content"] == "Finish all parity work."
     assert captured["attachments"] == [{"path": "workspace/brief.md"}]
     assert captured["runtime_task_type"] == "web_chat_turn"
+    assert captured["budget_interactive"] is False
     assert captured["extra_metadata"]["goal_id"] == result["id"]
     assert db.added[0].metadata_json["last_goal_run_id"] == "run-1"
 

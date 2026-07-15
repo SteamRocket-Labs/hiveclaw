@@ -57,6 +57,7 @@ class CollectedTools:
     read_only_names: frozenset[str]
     parallel_safe_names: frozenset[str]
     destructive_names: frozenset[str]
+    work_amplifying_names: frozenset[str]
     result_char_limits: dict[str, int | None]
     pack_tool_groups: dict[str, list[str]]
 
@@ -130,12 +131,19 @@ def collect_tools() -> CollectedTools:
     read_only: set[str] = set()
     parallel_safe: set[str] = set()
     destructive: set[str] = set()
+    work_amplifying: set[str] = set()
     result_char_limits: dict[str, int | None] = {}
     pack_groups: dict[str, list[str]] = {}
 
     seen_canonical: set[str] = set()
 
     for name, (meta, fn) in all_metas.items():
+        if meta.work_amplifying_safe_when not in {"", "stop_true", "goal_nonactivating"}:
+            raise ValueError(
+                f"Unsupported work_amplifying_safe_when={meta.work_amplifying_safe_when!r} for tool {name}"
+            )
+        if meta.work_amplifying_safe_when and not meta.work_amplifying:
+            raise ValueError(f"Tool {name} declares a work-amplifying exemption without work_amplifying=True")
         is_canonical = name == meta.name
         if is_canonical and name not in seen_canonical:
             seen_canonical.add(name)
@@ -153,6 +161,8 @@ def collect_tools() -> CollectedTools:
             parallel_safe.add(name)
         if meta.destructive:
             destructive.add(name)
+        if meta.work_amplifying:
+            work_amplifying.add(name)
         if meta.max_result_chars is not None:
             result_char_limits[name] = meta.max_result_chars
 
@@ -178,6 +188,7 @@ def collect_tools() -> CollectedTools:
         read_only_names=frozenset(read_only),
         parallel_safe_names=frozenset(parallel_safe),
         destructive_names=frozenset(destructive),
+        work_amplifying_names=frozenset(work_amplifying),
         result_char_limits=result_char_limits,
         pack_tool_groups=pack_groups,
     )

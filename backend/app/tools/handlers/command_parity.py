@@ -314,6 +314,7 @@ async def task_stop(request: ToolExecutionRequest) -> str:
         },
         category="command_goal",
         display_name="Goal Start",
+        work_amplifying=True,
         adapter="request",
     )
 )
@@ -361,6 +362,8 @@ async def goal_start(request: ToolExecutionRequest) -> str:
         },
         category="command_goal",
         display_name="Update Goal",
+        work_amplifying=True,
+        work_amplifying_safe_when="goal_nonactivating",
         adapter="request",
     )
 )

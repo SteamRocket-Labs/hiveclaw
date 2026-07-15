@@ -63,6 +63,14 @@ class ToolMeta:
     idempotency_scope: str = "none"
     external_visible: bool = False
     delegated_user_authorized: bool = False
+    # Starts or wakes additional model work (subagent, A2A, workflow,
+    # scheduled/continuation execution). Runtime-budget failover consumes this
+    # exact metadata at capability assembly and at the pre-effect boundary.
+    work_amplifying: bool = False
+    # Exact machine-contract exemption for a dual-purpose tool. Supported
+    # value: ``stop_true`` (the call is non-amplifying only when args.stop is
+    # literally true). Empty means every call amplifies work.
+    work_amplifying_safe_when: str = ""
 
     # Governance
     governance: str = ""  # "" | "safe" | "sensitive"

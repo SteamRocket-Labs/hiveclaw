@@ -13,6 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from app.kernel.contracts import ExecutionIdentityRef, TerminalReason
 from app.runtime.invoker import AgentInvocationRequest
 from app.runtime.runtime_phase import RunPhaseEmitter, RuntimePhase
+from app.services.runtime_budget_failover import runtime_budget_model_notice, runtime_budget_payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,6 +175,8 @@ async def run_web_chat_task(
 async def _run_web_chat_stages(state: _WebChatRunState) -> None:
     await _load_web_chat_context(state)
     await _configure_runtime_session(state)
+    if await _handle_budget_unavailable_before_model(state):
+        return
     if await _handle_pre_invocation_terminal(state):
         return
     callbacks = _WebChatCallbacks(state)
@@ -272,12 +275,19 @@ async def _configure_runtime_session(state: _WebChatRunState) -> None:
     )
     context.metadata["root_runtime_task_id"] = str(root_runtime_task_id)
     context.metadata["root_session_id"] = str(root_session_id)
+    runtime_budget = state.metadata.get("runtime_budget")
+    if isinstance(runtime_budget, dict):
+        context.metadata["runtime_budget"] = dict(runtime_budget)
+    else:
+        context.metadata.pop("runtime_budget", None)
     base_transcript_sequence = state.metadata.get("initial_user_message_t0_sequence")
     if isinstance(base_transcript_sequence, int) and not isinstance(base_transcript_sequence, bool):
         context.metadata["base_transcript_sequence"] = base_transcript_sequence
     budget_run_id = getattr(state.runtime_task, "budget_run_id", None) or state.metadata.get("budget_run_id")
     if budget_run_id:
         context.metadata["budget_run_id"] = str(budget_run_id)
+    else:
+        context.metadata.pop("budget_run_id", None)
     if state.summary_turn_mode:
         context.metadata["budget_summary_turn"] = True
     else:
@@ -300,6 +310,43 @@ async def _configure_runtime_session(state: _WebChatRunState) -> None:
         plan_mode_requested=bool(state.metadata.get("plan_mode_requested")),
         history_messages=state.history_messages,
     )
+
+
+async def _handle_budget_unavailable_before_model(state: _WebChatRunState) -> bool:
+    """Fail closed for autonomous/legacy work before any LLM or tool effect."""
+
+    payload = runtime_budget_payload(state.metadata)
+    if not payload or payload.get("status") != "unavailable" or payload.get("interactive") is not False:
+        return False
+    reason = str(payload.get("reason") or "runtime_budget_service_unavailable")
+    await state.ports.terminal.finalize_without_assistant(
+        run_uuid=state.run_uuid,
+        agent_id=state.agent.id,
+        status="failed",
+        result_summary="Runtime budget admission unavailable; autonomous execution did not start.",
+        metadata_json={
+            "runtime_budget": payload,
+            "terminal_reason": TerminalReason.TOOL_BUDGET.value,
+            "effect_started": False,
+        },
+    )
+    await state.ports.events.broadcast(
+        state.agent.id,
+        state.session_id,
+        {
+            "type": "runtime_budget_unavailable",
+            "status": "unavailable",
+            "reason": reason,
+            "retryable": True,
+            "effect_started": False,
+        },
+    )
+    if state.phase_emitter is not None:
+        await state.phase_emitter.transition(
+            RuntimePhase.FAILED,
+            detail={"reason": reason, "retryable": True},
+        )
+    return True
 
 
 def _copy_optional_runtime_metadata(state: _WebChatRunState) -> None:
@@ -614,7 +661,12 @@ async def _prepare_pending_suffix(state: _WebChatRunState) -> str:
             "Use the following durable resume context to continue from the saved artifacts instead of "
             f"starting over.\n{str(restart.get('resume_prompt')).strip()}",
         )
-    suffix = _join_suffix(suffix, state.channel_delivery_suffix, state.ports.artifacts.prompt_suffix())
+    suffix = _join_suffix(
+        suffix,
+        state.channel_delivery_suffix,
+        state.ports.artifacts.prompt_suffix(),
+        runtime_budget_model_notice(state.metadata),
+    )
     trusted_decline = await _bind_trusted_decline(state)
     if trusted_decline:
         suffix = _join_suffix(

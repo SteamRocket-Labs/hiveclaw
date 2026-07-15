@@ -457,6 +457,7 @@ async def continue_agent_session_from_mailbox(
         display_content=display_content,
         append_user_message=False,
         runtime_task_type=_runtime_task_type_for_session(session, runtime_task_type),
+        budget_interactive=False,
         extra_metadata={
             "source": source_channel,
             "agent_session_message": True,

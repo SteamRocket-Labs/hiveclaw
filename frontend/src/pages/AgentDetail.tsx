@@ -56,6 +56,7 @@ import {
     type ChatMessagesUpdater,
 } from './agent-detail/sessionMessageStore';
 import { normalizeToolCallResult } from './agent-detail/toolResultEnvelope';
+import { sessionRunStateFromPayload } from './agent-detail/runtimeBudgetState';
 import { agentApi, type AgentCapabilityInstall, type AgentChannelCapability } from '../api/domains/agents';
 import { activityApi } from '../api/domains/activity';
 import { enterpriseApi } from '../api/domains/enterprise';
@@ -1764,7 +1765,7 @@ function AgentDetailInner() {
                         });
                         commandStartedRun = true;
                         setPlanModeRequested(false);
-                        setActiveRunState(activeRuntimeKey, { runId: run.run_id, status: run.status || 'running' });
+                        setActiveRunState(activeRuntimeKey, sessionRunStateFromPayload(run));
                         invalidateSessionRuntimeQueries(id, commandSessionId);
                         return;
                     }
@@ -1886,7 +1887,7 @@ function AgentDetailInner() {
             setAttachedFiles([]);
             setPlanModeRequested(false);
             setGoalModeRequested(false);
-            setActiveRunState(activeRuntimeKey, { runId: started.run.run_id, status: started.run.status || 'running' });
+            setActiveRunState(activeRuntimeKey, sessionRunStateFromPayload(started.run));
             invalidateSessionRuntimeQueries(id, runSessionId);
             if (completedGoalRequestId && goalStartRequestRef.current?.requestId === completedGoalRequestId) {
                 goalStartRequestRef.current = null;
@@ -1929,7 +1930,7 @@ function AgentDetailInner() {
                 content: userMsg,
                 timestamp: new Date().toISOString(),
             });
-            setActiveRunState(activeRuntimeKey, { runId: started.run.run_id, status: started.run.status || 'running' });
+            setActiveRunState(activeRuntimeKey, sessionRunStateFromPayload(started.run));
             invalidateSessionRuntimeQueries(id, runSessionId);
         } catch (err: any) {
             setIsWaiting(false);
@@ -1953,10 +1954,7 @@ function AgentDetailInner() {
                 action,
             });
             if (response?.run?.run_id) {
-                setActiveRunState(activeRuntimeKey, {
-                    runId: response.run.run_id,
-                    status: response.run.status || 'running',
-                });
+                setActiveRunState(activeRuntimeKey, sessionRunStateFromPayload(response.run));
             }
             invalidateSessionRuntimeQueries(id, sessionId);
             await selectSession(activeSession);
@@ -1998,7 +1996,7 @@ function AgentDetailInner() {
             if (draftContent) setChatInput(draftContent);
             if (response.run?.run_id) {
                 const branchKey = buildSessionRuntimeKey(id, String(branchSession.id));
-                setActiveRunState(branchKey, { runId: response.run.run_id, status: response.run.status || 'running' });
+                setActiveRunState(branchKey, sessionRunStateFromPayload(response.run));
                 invalidateSessionRuntimeQueries(id, String(branchSession.id));
             }
             await fetchBranchLineage(id, String(branchSession.id));
@@ -2155,20 +2153,14 @@ function AgentDetailInner() {
         if (activeSessionRun && isLiveRun(activeSessionRun)) {
             if (shouldIgnoreObservedActiveRun({
                 key,
-                run: {
-                    runId: activeSessionRun.run_id,
-                    status: activeSessionRun.status,
-                },
+                run: sessionRunStateFromPayload(activeSessionRun),
                 terminalRunIds: locallyTerminalRunIdsRef.current,
                 terminalSessionKeys: locallyTerminalSessionKeysRef.current,
             })) {
                 invalidateSessionRuntimeQueries(id, String(activeSession.id), false);
                 return;
             }
-            const observedUiState = observeActiveRunState(key, {
-                runId: activeSessionRun.run_id,
-                status: activeSessionRun.status,
-            });
+            const observedUiState = observeActiveRunState(key, sessionRunStateFromPayload(activeSessionRun));
             setActivePhase(observedUiState.phase);
             setIsWaiting(observedUiState.isWaiting);
             setIsStreaming(observedUiState.isStreaming);
@@ -2606,6 +2598,7 @@ function AgentDetailInner() {
                             isWaiting={isWaiting}
                             runtimePhase={activePhase}
                             activeRunStatus={currentActiveRunState?.status || null}
+                            runtimeBudget={currentActiveRunState?.runtimeBudget || null}
                             planModeRequested={planModeRequested}
                             onTogglePlanMode={handleTogglePlanMode}
                             goalModeRequested={goalModeRequested}

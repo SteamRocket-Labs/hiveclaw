@@ -231,6 +231,7 @@ async def continue_session_goal(
         file_name="",
         append_user_message=False,
         runtime_task_type="goal_continuation",
+        budget_interactive=False,
         run_id=continuation_run_id,
         extra_metadata={
             "source": "goal_continuation",
@@ -375,6 +376,7 @@ async def _handle_budget_summary_turn_completion(
             file_name="",
             append_user_message=False,
             runtime_task_type="goal_continuation",
+            budget_interactive=False,
             extra_metadata={
                 "source": "goal_continuation",
                 "budget_summary_turn": True,
@@ -472,6 +474,7 @@ async def _maybe_issue_budget_summary_turn(
         file_name="",
         append_user_message=False,
         runtime_task_type="goal_continuation",
+        budget_interactive=False,
         extra_metadata={
             "source": "goal_continuation",
             "budget_summary_turn": True,

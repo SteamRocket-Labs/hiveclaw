@@ -612,6 +612,7 @@ async def start_agent_team_member_run(
             content=body.content,
             display_content=body.display_content,
             runtime_task_type="team_member",
+            budget_interactive=False,
             extra_metadata=metadata,
         )
         status_value = str(run.get("status") or "running")

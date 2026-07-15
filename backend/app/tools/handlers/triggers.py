@@ -66,6 +66,7 @@ from app.tools.decorator import RESULT_CHARS_UNLIMITED, ToolMeta, tool
         display_name="Set Trigger",
         icon="\u23f0",
         plan_gate_action_kind="create_enabled_trigger",
+        work_amplifying=True,
         adapter="agent_args",
     )
 )
@@ -124,6 +125,8 @@ async def set_trigger(
         display_name="Schedule Wakeup",
         icon="⏰",
         plan_gate_action_kind="create_enabled_trigger",
+        work_amplifying=True,
+        work_amplifying_safe_when="stop_true",
         adapter="agent_args",
     )
 )
@@ -187,6 +190,7 @@ async def schedule_wakeup(
         display_name="Update Trigger",
         icon="\U0001f504",
         plan_gate_action_kind="create_enabled_trigger",
+        work_amplifying=True,
         adapter="agent_args",
     )
 )

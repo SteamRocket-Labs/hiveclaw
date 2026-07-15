@@ -16,6 +16,7 @@ import {
   type SessionRunState,
 } from './chatRuntime';
 import { normalizeToolCallResult } from './toolResultEnvelope';
+import { sessionRunStateFromPayload } from './runtimeBudgetState';
 import type { SessionSocketMessageContext } from './useSessionTransportController';
 
 type MessageUpdater = (updater: (messages: AgentChatMessage[]) => AgentChatMessage[]) => void;
@@ -100,11 +101,12 @@ export function projectSessionSocketEvent(
     return;
   }
 
-  if (d.type === 'run_started' && d.run_id) {
-    setActiveRunState(key, { runId: String(d.run_id), status: d.status || 'running' });
+  if ((d.type === 'run_queued' || d.type === 'run_started') && d.run_id) {
+    setActiveRunState(key, sessionRunStateFromPayload(d));
     invalidateSessionRuntimeQueries(agentId, sessionId);
-    setSessionPhase(key, 'starting');
-    if (isActiveRuntime) syncActivePhase('starting');
+    const phase = d.type === 'run_queued' ? 'queued' : 'starting';
+    setSessionPhase(key, phase);
+    if (isActiveRuntime) syncActivePhase(phase);
     return;
   }
 

@@ -449,6 +449,7 @@ async def preview_workflow(request: ToolExecutionRequest) -> str:
         category="workflow",
         display_name="Start Workflow",
         governance="sensitive",
+        work_amplifying=True,
     )
 )
 async def start_workflow(request: ToolExecutionRequest) -> str:

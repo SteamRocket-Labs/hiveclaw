@@ -240,6 +240,15 @@ export interface SessionRun {
   started_at?: string | null;
   completed_at?: string | null;
   result_summary?: string | null;
+  runtime_budget?: {
+    schema: 'hive.runtime_budget_binding.v1';
+    status: string;
+    reason?: string;
+    retryable?: boolean;
+    interactive?: boolean;
+    work_amplifying_tools_disabled?: boolean;
+    recovery?: string;
+  } | null;
 }
 
 export const chatApi = {

@@ -228,6 +228,51 @@ def is_destructive_tool(name: str) -> bool:
     return name in _DESTRUCTIVE_NAMES
 
 
+def work_amplifying_tool_names() -> tuple[str, ...]:
+    """Return the decorator-sourced capability set in deterministic order."""
+    from .collector import collect_tools
+
+    return tuple(sorted(collect_tools().work_amplifying_names))
+
+
+def work_amplifying_tool_exclusion_names() -> tuple[str, ...]:
+    """Tools that can be removed wholesale without hiding a safe sub-action."""
+
+    registered = _ensure_tools_registered()
+    return tuple(
+        sorted(
+            name
+            for name, (meta, _fn) in registered.items()
+            if meta.work_amplifying and not meta.work_amplifying_safe_when
+        )
+    )
+
+
+def is_work_amplifying_tool(name: str) -> bool:
+    entry = _ensure_tools_registered(name).get(name)
+    if entry is None:
+        return False
+    meta, _fn = entry
+    return bool(meta.work_amplifying)
+
+
+def is_work_amplifying_tool_call(name: str, arguments: dict[str, Any] | None) -> bool:
+    entry = _ensure_tools_registered(name).get(name)
+    if entry is None:
+        return False
+    meta, _fn = entry
+    if not meta.work_amplifying:
+        return False
+    if meta.work_amplifying_safe_when == "stop_true":
+        return (arguments or {}).get("stop") is not True
+    if meta.work_amplifying_safe_when == "goal_nonactivating":
+        payload = arguments or {}
+        status = str(payload.get("status") or "").strip().lower()
+        objective = str(payload.get("objective") or "").strip()
+        return status == "active" or bool(objective)
+    return True
+
+
 def result_char_limit_for_tool(name: str) -> int | None:
     """Return the tool's configured ToolMeta.max_result_chars, or None if unset
     (caller falls back to the global eviction threshold)."""

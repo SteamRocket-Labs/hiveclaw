@@ -155,6 +155,7 @@ async def send_web_message(agent_id: uuid.UUID, arguments: dict) -> str:
         category="communication",
         display_name="Send Message to Agent",
         icon="\U0001f916",
+        work_amplifying=True,
         adapter="agent_args",
     )
 )
@@ -310,6 +311,7 @@ async def send_message_to_agent(agent_id: uuid.UUID, arguments: dict) -> str:
         display_name="Delegate to Agent",
         icon="\U0001f9ed",
         plan_gate_action_kind="bridge:self",
+        work_amplifying=True,
         adapter="agent_args",
     )
 )

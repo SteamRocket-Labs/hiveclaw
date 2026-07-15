@@ -1373,6 +1373,15 @@ def get_agent_kernel(request: AgentInvocationRequest | None = None) -> AgentKern
         tool_call_id: str | None = None,
         trace_metadata_sink: dict[str, Any] | None = None,
     ) -> str | ToolContentEnvelope:
+        from app.services.runtime_budget_failover import (
+            runtime_budget_blocks_amplification,
+            unavailable_work_amplifying_tool_result,
+        )
+        from app.tools.registry import is_work_amplifying_tool_call
+
+        session_metadata = _session_metadata(getattr(request, "session_context", None))
+        if is_work_amplifying_tool_call(tool_name, args) and runtime_budget_blocks_amplification(session_metadata):
+            return unavailable_work_amplifying_tool_result(tool_name, session_metadata)
         return await _execute_tool_with_request(
             tool_name,
             args,

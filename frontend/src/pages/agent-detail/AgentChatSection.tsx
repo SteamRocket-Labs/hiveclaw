@@ -426,7 +426,7 @@ interface AgentChatSectionProps {
   isWaiting: boolean;
   /** Turn lifecycle phase for the active session (§3 seam 1). Rendering seams 2-4 consume this. */
   runtimePhase?: RuntimePhase;
-  activeRunStatus?: string | null;
+  activeRunStatus?: string | null; runtimeBudget?: React.ComponentProps<typeof SessionTransportStatus>['runtimeBudget'];
 
   chatEndRef: React.RefObject<HTMLDivElement | null>;
   showScrollBtn: boolean;
@@ -1124,7 +1124,7 @@ function AgentChatSection({
   transportNotice,
   isWaiting,
   runtimePhase = 'idle',
-  activeRunStatus,
+  activeRunStatus, runtimeBudget,
 
   chatEndRef,
   showScrollBtn,
@@ -2273,7 +2273,7 @@ function AgentChatSection({
               </div>
             ) : !isDraftSession ? (
               <SessionTransportStatus
-                phase={transportPhase}
+                phase={transportPhase} runtimeBudget={runtimeBudget}
                 attempt={transportReconnectAttempt}
                 onReconnect={onReconnectTransport}
               />

@@ -727,6 +727,7 @@ async def _execute_loop_self_pace(
         content=f"{prompt}{_SELF_PACE_KICKOFF_SUFFIX}",
         display_content=f"/loop {prompt}",
         runtime_task_type=WEB_CHAT_TURN_TASK_TYPE,
+        budget_interactive=False,
         extra_metadata={"source": "loop_self_pace_kickoff", "command": "loop"},
     )
     return {

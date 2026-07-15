@@ -501,6 +501,7 @@ async def _load_parent_messages_for_fork(
         display_name="Spawn Subagent",
         icon="🧬",
         governance="sensitive",
+        work_amplifying=True,
         adapter="request",
     )
 )
@@ -1110,6 +1111,7 @@ async def check_subagent(request: ToolExecutionRequest) -> str:
         display_name="Send Agent Session Message",
         icon="✉️",
         governance="sensitive",
+        work_amplifying=True,
         adapter="request",
     )
 )

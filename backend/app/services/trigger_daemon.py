@@ -1629,6 +1629,7 @@ async def _deliver_batch_to_source_session(
                 session=session,
                 content=content,
                 runtime_task_type=WEB_CHAT_TURN_TASK_TYPE,
+                budget_interactive=False,
                 extra_metadata={
                     "source": "loop_same_session",
                     "trigger_ids": trigger_ids,

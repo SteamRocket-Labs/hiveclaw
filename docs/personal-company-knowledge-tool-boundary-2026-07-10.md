@@ -3,7 +3,7 @@
 > 首版日期：2026-07-10
 > 重基线日期：2026-07-14
 > 状态：canonical runtime contract
-> 当前代码基线：Hive checkout `09fcca1aa1e49ace9db335e1216845418b0ce27b`
+> 当前代码基线：Hive checkout `ff465f3f607a47fe780b2dfbe886b9d3320b166b`
 > 范围：Personal KB、Company KB、Agent Memory、Context Assembly、Tool Runtime、Transcript Replay
 
 ## 0. 最终决策
@@ -66,6 +66,16 @@ Company Context 中的 `company_profile.md`、`org_structure.md` 是受信任治
 
 ## 3. Personal KB 读取闭环
 
+Personal read authority 使用下列唯一矩阵；owner-direct PL1–PL3 不因文档 sensitivity 再被 blanket deny，但 typed sensitivity 仍必须传播到 durable evidence、蒸馏、outbound 与审计：
+
+<!-- personal-kb-read-authority-matrix-start -->
+| Runtime lane | PL1–PL3 read authority | PL4 result |
+|---|---|---|
+| Interactive owner-direct turn | Authenticated requester is the owner; owner policy plus `agent_searchable`; explicit grant not required | opaque credential reference only |
+| Autonomous owner Agent | unexpired explicit grant bound to requester/Agent, session or task purpose, delegation when applicable, and sensitivity ceiling | opaque credential reference only |
+| Shared/cross-user/A2A/subagent | unexpired explicit grant bound to requester, session or task purpose, delegation when applicable, and sensitivity ceiling; owner-Agent relationship alone is insufficient | opaque credential reference only |
+<!-- personal-kb-read-authority-matrix-end -->
+
 ```mermaid
 sequenceDiagram
   participant U as User
@@ -78,7 +88,7 @@ sequenceDiagram
   U->>A: task
   Note over A: initial context has tool schema, no KB content
   A->>T: search_personal_kb(query, filters)
-  T->>P: tenant + owner + user + agent + grant + sensitivity
+  T->>P: tenant + owner + requester + runtime lane + grant when required + sensitivity
   P-->>T: allow / deny / unavailable
   T->>K: fused search
   K-->>A: bounded snippets + IDs + source refs + trace
@@ -108,7 +118,7 @@ sequenceDiagram
 - `document_id` 必填；
 - `segment_ids` 可选；
 - 仅在调用方显式给出时使用 `max_chars`；
-- 每次调用重新执行 tenant/owner/grant/sensitivity；
+- 每次调用按同一矩阵重新执行 tenant/owner/runtime-lane/agent_searchable，并在需要 grant 的路径 fresh-check purpose/expiry/delegation/sensitivity ceiling；
 - 返回 selected IDs、source refs、`truncated`；
 - 不能通过 canonical path/filesystem tool 绕过。
 
@@ -290,7 +300,7 @@ retryable_failure
 
 - invoker 不 prefetch/inject Personal KB；
 - default retrieval context 不 prefetch knowledge；
-- search/read 使用 owner/grant/sensitivity；
+- search/read 使用 canonical runtime-lane matrix；需要 grant 的路径 fresh-check purpose/expiry/delegation/sensitivity ceiling；
 - current-turn result 完整；
 - durable evidence 完整；
 - next-turn pointer 无 title/snippet/body/score trace；

@@ -126,6 +126,16 @@ LLM 负责语义 extraction/alignment/synthesis；平台负责 schema、authorit
 
 Initial/Base Context 只携带 knowledge tool schema，不携带 Personal KB title、preview、snippet、score、source ref、profile 或 hint。
 
+Personal read authority 使用下列唯一矩阵；`sensitivity` 在 owner-direct 路径仍进入 evidence、持久化、蒸馏、outbound 与审计策略，但不是 PL1–PL3 的第二个 blanket read deny：
+
+<!-- personal-kb-read-authority-matrix-start -->
+| Runtime lane | PL1–PL3 read authority | PL4 result |
+|---|---|---|
+| Interactive owner-direct turn | Authenticated requester is the owner; owner policy plus `agent_searchable`; explicit grant not required | opaque credential reference only |
+| Autonomous owner Agent | unexpired explicit grant bound to requester/Agent, session or task purpose, delegation when applicable, and sensitivity ceiling | opaque credential reference only |
+| Shared/cross-user/A2A/subagent | unexpired explicit grant bound to requester, session or task purpose, delegation when applicable, and sensitivity ceiling; owner-Agent relationship alone is insufficient | opaque credential reference only |
+<!-- personal-kb-read-authority-matrix-end -->
+
 ### 5.2 Search
 
 ```text
@@ -143,7 +153,7 @@ search_personal_kb(query, filters?, top_k?)
 - optional vector candidates；
 - RRF/equivalent explainable fusion。
 
-所有 candidates 在 model-visible return 前执行 owner/grant/sensitivity/agent_searchable filter。
+所有 candidates 在 model-visible return 前执行上述 runtime-lane authority decision 与 `agent_searchable` filter；需要 grant 的路径还必须 fresh-check purpose、expiry、delegation 和 sensitivity ceiling。PL4 不进入 Knowledge 正文结果。
 
 ### 5.3 Read
 
@@ -247,7 +257,7 @@ Provider/index 都是可拔 derived capability：
 | 原子 | Personal 完成要求 |
 |---|---|
 | Input | 多源 authenticated ingest、canonical artifact、job/retry/dedupe |
-| Authority | owner/grant/sensitivity/source policy/Agent delegation |
+| Authority | canonical runtime-lane matrix + owner/agent_searchable + required grant/purpose/expiry/delegation/sensitivity ceiling |
 | Execution | API/UI/tools 共享 Personal domain service，无 filesystem/provider bypass |
 | Evidence | source refs/hash/job/proposal/revision/tool/T0/span |
 | Recovery | retry/cancel/reindex/rollback/revoke/delete/tombstone |

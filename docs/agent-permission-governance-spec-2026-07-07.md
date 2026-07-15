@@ -3,7 +3,7 @@
 > 首版日期：2026-07-07
 > 重基线日期：2026-07-14
 > 状态：Knowledge authority canonical contract；Company 实现尚未落地
-> 当前代码基线：Hive checkout `09fcca1aa1e49ace9db335e1216845418b0ce27b`
+> 当前代码基线：Hive checkout `ff465f3f607a47fe780b2dfbe886b9d3320b166b`
 > 范围：Agent delegation、Personal Knowledge、Company Knowledge、A2A/Workflow、tools、connector source ACL
 
 ## 0. 一页结论
@@ -178,13 +178,15 @@ execute_action
 
 Personal KB 属于 owner，不属于某个 Agent。
 
-| 场景 | 默认结果 |
-|---|---|
-| Owner 使用自己的授权 Agent | owner + agent_searchable + sensitivity + grant/policy 共同决定 |
-| Owner 使用公共/他人 Agent | 无 session/explicit grant 默认 deny |
-| A2A worker 读取 owner Personal KB | delegation/A2A 不能替代 Personal grant |
-| Owner 直接 ingest | 允许进入 governed ingestion |
-| Agent 自主 durable write | Personal proposal，不直接落 owner truth |
+<!-- personal-kb-read-authority-matrix-start -->
+| Runtime lane | PL1–PL3 read authority | PL4 result |
+|---|---|---|
+| Interactive owner-direct turn | Authenticated requester is the owner; owner policy plus `agent_searchable`; explicit grant not required | opaque credential reference only |
+| Autonomous owner Agent | unexpired explicit grant bound to requester/Agent, session or task purpose, delegation when applicable, and sensitivity ceiling | opaque credential reference only |
+| Shared/cross-user/A2A/subagent | unexpired explicit grant bound to requester, session or task purpose, delegation when applicable, and sensitivity ceiling; owner-Agent relationship alone is insufficient | opaque credential reference only |
+<!-- personal-kb-read-authority-matrix-end -->
+
+该矩阵只裁决 search/read bytes 是否可以进入当前模型 frame。Owner direct ingest 仍允许进入 governed ingestion；Agent 自主 durable write 仍必须形成 Personal proposal，不能直接落 owner truth。所有成功 read 的 canonical sensitivity 和 permission decision 必须进入 evidence/provenance；下游不得根据正文关键词重新猜 sensitivity。
 
 ### 5.2 `KnowledgeGrant`
 

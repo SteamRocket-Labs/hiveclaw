@@ -4,7 +4,7 @@
 >
 > 原始审查冻结快照：`main@501db6555dae374e5fcf43a6fdcfe8a3dd89343e` + 2026-07-14 当时未提交工作树；后续施工不改写这个审查锚点，每条 `EVID-*` 另记自己的开工 HEAD、工作树与生产快照
 >
-> 修复账本滚动更新：2026-07-15；Group 0 已用 `EVID-G0-006` 把 11 个上下文包、89 个可执行 `@` 文档入口、逐 Group 详细路由和证据回流做成机器门并保持关闭；Group 1 的 exact-source 三服务部署已经成功，`P0-F1/P0-F2/E-1/P1-004/P1-F4/KB-EXTRACT-001/KB-AUTH-001/KB-PROP-001/BUD-ROOT-001/AUDIT-IMM-001/AUDIT-TENANT-001/F-PLAINTEXT/P2-F8/P2-F6` 已分别以 `EVID-G1-001/002/003/004/005/006/007/008/009/010/011/012/013/014` 完成 production canary 并关闭；Group 1 当前为 14/16 closed、2/16 pending，不再有“已部署但未关闭”的 leaf。2026-07-15T13:37Z 因 production `backend-volume` 在重启批次中从约 24.8 GB 急升到 28.65 GB，Group 1 显式暂停；`EVID-G8-PRE-001` 已独立封住 default Skill startup 写放大，`EVID-G8-PRE-002` 已部署 transaction finalization/schema/CLI 并完成 21,163 个历史 transaction backfill，`EVID-G8-PRE-003` 又完成 production restore drill、两批 transaction exact sweep、无引用 web-fetch cache 清理、PostgreSQL ACK trace spool 收敛和 retry-exhausted T2 可重建 staging 逐出。容器 `df` 已从 28.65 GB 降到 `11,316,330,496` bytes（24%）；T0、当前 Memory、workspace、snapshots、current/held transaction 和非 eligible T2 job 均未删除，owner 已明确停止继续清理。三项前置证据都不关闭任何 Group 8 leaf 或 `MISS-RETENTION-001`；Object Storage、snapshot CAS、sealed T0 archive、T2 authority/replay 与跨资产 retention 仍未完成。不得把 14 个独立 leaf、三个 Group 8 前置子闭环或其叠加冒充 Group 1、Group 8、103 项或产品总目标完成。
+> 修复账本滚动更新：2026-07-15；Group 0 已用 `EVID-G0-006` 把 11 个上下文包、89 个可执行 `@` 文档入口、逐 Group 详细路由和证据回流做成机器门并保持关闭；Group 1 的 exact-source 三服务部署已经成功，`P0-F1/P0-F2/E-1/P1-004/P1-F4/KB-EXTRACT-001/KB-AUTH-001/KB-PROP-001/BUD-ROOT-001/AUDIT-IMM-001/AUDIT-TENANT-001/F-PLAINTEXT/P2-F8/P2-F6/KB-CONTRACT-001` 已分别以 `EVID-G1-001/002/003/004/005/006/007/008/009/010/011/012/013/014/015` 关闭；前十四项有各自 production canary，`KB-CONTRACT-001` 是不改变 runtime bytes 的 canonical docs + architecture gate 闭环。Group 1 当前为 15/16 closed、1/16 pending，不再有“已部署但未关闭”的 leaf。2026-07-15T13:37Z 因 production `backend-volume` 在重启批次中从约 24.8 GB 急升到 28.65 GB，Group 1 曾显式暂停；`EVID-G8-PRE-001/002/003` 已分别关闭继续写放大、transaction lifecycle 与当次容量事故处置，容器 `df` 已降到 `11,316,330,496` bytes（24%），核心数据停止门成立。三项前置证据都不关闭任何 Group 8 leaf 或 `MISS-RETENTION-001`；Object Storage、snapshot CAS、sealed T0 archive、T2 authority/replay 与跨资产 retention 仍未完成。不得把 15 个独立 leaf、三个 Group 8 前置子闭环或其叠加冒充 Group 1、Group 8、103 项或产品总目标完成。
 >
 > 组合输入：`agent-native-atomic-review-2026-07-14.md`、`agent-native-extreme-boundary-atomic-review-2026-07-14.md`、`unified-context-assembly-and-progressive-disclosure-2026-07-14.md`、`session-v2-cc-codex-alignment-contract-2026-07-14.md`、修订后的 `reusable-agent-native-atomic-review-prompt.md`，以及当前 Hive / FreeCode / Codex 本地源码。
 >
@@ -593,7 +593,7 @@ Group 摘要不能替代以下两份文档：
 | Group | owner canonical leaf | owner Missing | 当前状态 |
 |---:|---:|---:|---|
 | 0 | 0（全局门） | 0 | closed：`EVID-G0-002/003/004/005/006`，Git truth、机器账本、11 个上下文包/89 个 `@` 文档入口、跨仓快照与 clean-checkout harness 已闭环 |
-| 1 | 16 | 0 | in_progress：`P0-F1/P0-F2/E-1/P1-004/P1-F4/KB-EXTRACT-001/KB-AUTH-001/KB-PROP-001/BUD-ROOT-001/AUDIT-IMM-001/AUDIT-TENANT-001/F-PLAINTEXT/P2-F8/P2-F6` 已关闭（14/16）；无 deployed-but-open leaf；其余 2 个 leaf 待施工 |
+| 1 | 16 | 0 | in_progress：`P0-F1/P0-F2/E-1/P1-004/P1-F4/KB-EXTRACT-001/KB-AUTH-001/KB-PROP-001/BUD-ROOT-001/AUDIT-IMM-001/AUDIT-TENANT-001/F-PLAINTEXT/P2-F8/P2-F6/KB-CONTRACT-001` 已关闭（15/16）；无 deployed-but-open leaf；仅 `B-01` 待施工 |
 | 2 | 14 | 0 | open |
 | 3 | 7 | 0 | open |
 | 4 | 6 | 0 | open |
@@ -1242,7 +1242,7 @@ Group 0 是全局证据门，不拥有业务 leaf。下面 103 行必须与 cano
 - P2 | F-PLAINTEXT | closed:EVID-G1-012 | commit `8570efdad` 对全部非空 `AgentTool.config` 做版本化认证信封加密、透明运行时解密、API 结构化遮罩与 secure migration；真实 PG、clean-checkout 全量、三服务 exact-source 部署和 production 706/706 encrypted、0 plaintext inventory 已绿
 - P2 | P2-F8 | closed:EVID-G1-013 | commit `6776c3d12` 在 model-authored search pattern 前加入 `rg --` machine-contract boundary；CC/Codex 源码对照、TDD、623 tools tests、clean-checkout 全量、三服务部署、live hash 与 production `--files/--pre` literal canary 已绿
 - P2 | P2-F6 | closed:EVID-G1-014 | 原报告“Agent API 缺校验”经 current-source 复核被纠偏；commit `32778e239/4bae5e0e3` 把 Agent、AI Asset rollback、Role Template 与 DB composite FK 收敛到 tenant-owned enabled model authority，真实 PG、clean-checkout 全量、三服务 exact-source 部署、live hash 与 production constraint/inventory canary 已绿
-- P2 | KB-CONTRACT-001 | inherited-split | Knowledge tool description/spec/implementation 不一致
+- P2 | KB-CONTRACT-001 | closed:EVID-G1-015 | 三份 canonical Knowledge spec 共享同一 read-authority matrix，architecture gate 与 current tool metadata/runtime 对齐；owner-direct PL1–PL3、grant-required lanes 与 PL4 语义不再冲突
 - P2 | G-02 | inherited-current-evidence | production i18n key 缺失
 - P2 | H-404a | inherited-current-evidence | Messages read-state UI/backend 404 契约
 - P2 | H-404b | inherited-current-evidence | channel test UI/backend 404 契约
@@ -1326,7 +1326,7 @@ Group 0 是全局证据门，不拥有业务 leaf。下面 103 行必须与 cano
 | Group | 证据前缀 | Owner 范围 | 当前证据状态 | 下一次写入要求 |
 |---:|---|---|---|---|
 | 0 | `EVID-G0-*` | 0 leaf / 0 Missing | `closed`：`EVID-G0-001/002/003/004/005/006`；文档 Git truth、owner/path/decision/scenario CI、11 个 Group 上下文包、89 个去重 `@` 文档入口、跨仓快照与 fake-provider/PG/Redis harness 基座成立 | 后续任何新增本地 `@docs` 必须先进入 Git 并同步上下文包索引；业务场景 Green 仍由 owner Group 负责 |
-| 1 | `EVID-G1-*` | 16 leaf / 0 Missing | `in_progress`：`P0-F1/P0-F2/E-1/P1-004/P1-F4/KB-EXTRACT-001/KB-AUTH-001/KB-PROP-001/BUD-ROOT-001/AUDIT-IMM-001/AUDIT-TENANT-001/F-PLAINTEXT/P2-F8/P2-F6` 的独立 code/evidence、production canary 均已绿并关闭（14/16）；无 deployed-but-open leaf；其余 2 leaf 未施工 | 按 §12.1 owner map 与依赖重验下一个 Group 1 leaf；每个剩余 leaf 仍须独立 Red→Green、迁移/回填、fault、rollback、consumer 与 production evidence，不得用前十四项关闭冒充 Group 1 closed |
+| 1 | `EVID-G1-*` | 16 leaf / 0 Missing | `in_progress`：`P0-F1/P0-F2/E-1/P1-004/P1-F4/KB-EXTRACT-001/KB-AUTH-001/KB-PROP-001/BUD-ROOT-001/AUDIT-IMM-001/AUDIT-TENANT-001/F-PLAINTEXT/P2-F8/P2-F6/KB-CONTRACT-001` 已分别关闭（15/16）；前十四项 code/production canary 绿，KB contract 的 docs/metadata architecture gate 绿；无 deployed-but-open leaf，仅 `B-01` 未施工 | 按 §12.1 owner map 重验 `B-01`；必须独立完成 Red→Green、治理/审计/fault/consumer 与适用 production evidence，不得用前十五项关闭冒充 Group 1 closed |
 | 2 | `EVID-G2-*` | 14 leaf / 0 Missing | `open` | 写 Session event/item/reducer、persist-before-publish、projection/backfill 与 SESSION-G 结果 |
 | 3 | `EVID-G3-*` | 7 leaf / 0 Missing | `open` | 写 root admission、reserve/commit/release、terminal CAS、approval resume 与 fanout 曲线 |
 | 4 | `EVID-G4-*` | 6 leaf / 0 Missing | `open` | 写 result ref、mailbox lease/CAS、integration epoch、partial/late/duplicate 与 100-way return storm |
@@ -2357,6 +2357,35 @@ context_read_receipt:
 - 七原子：Input=Agent create/update、Role Template create/update、AI Asset rollback 与 legacy migration model refs；Authority=server-side tenant ID + tenant-owned enabled `LLMModel` + composite FK；Execution=governed preflight 与 DB constraint 两层唯一写边界；Evidence=typed errors、canonical audit quarantine、real-PG `IntegrityError`、constraint catalog、revision/deploy/live hashes；Recovery=mutation 前拒绝、选择同 tenant model 重试、legacy audited null、secure downgrade 保留边界；Consumption=Agent runtime、Role Template provisioning 与 AI Asset rollback 只拿到可归属的 ref，Team 非消费边界显式路由；Acceptance=Red→Green、ruff、real PG、两次全量、三服务、production inventory/catalog/health。七原子均有当前真实路径，因此该 leaf 可独立关闭。
 - 北极星裁决：硬约束指向可验证的 Authority/Data Ingress 事实源 `tenant_id` 与 FK，不读取自然语言、不判断模型质量、不偷偷路由到别的模型、不删 capability、不裁剪 context/output、不改写 model-authored final。CC 保留显式模型选择语义，Codex 的 typed config/managed defaults 作为工程参照，Hive 仅增加 enterprise tenant authority、审计与恢复，符合 capability-preserving determinism。
 - 残余边界：Group 8 继续负责 startup stall、event-loop lag 与 schema-wait recovery；Group 3–4 负责 Agent Team model metadata 在进入真实 execution 前的 authority；Group 1 尚余 `KB-CONTRACT-001`、`B-01`。对应 canonical 行已更新为 `closed:EVID-G1-014`；Group 1 当前为 14/16 closed、0 deployed-but-open、2/16 pending。103 分母、severity、owner 与 5 个 Missing 均不变；下一 Group 1 leaf 为 `KB-CONTRACT-001`。
+
+#### EVID-G1-015：KB-CONTRACT-001 Personal KB 读权限诚实契约
+
+- `leaf_ids`：`KB-CONTRACT-001`；owner Group / 依赖 Group：Group 1 / Group 0。本证据只关闭 Personal KB 的 canonical spec、tool metadata 与已存在 runtime read-authority 之间的诚实性断点；不改变 runtime bytes、读取能力、sensitivity 语义、数据库或 production data，也不把 `B-01` 或 Group 8 Knowledge/Memory durable loop 并入本 leaf。
+- 当前状态：`closed`。三份 canonical Knowledge 文档共享逐字相同的 read-authority matrix，architecture gate 同时导入真实 tool handler 并锁定 metadata 语义；owner-direct PL1–PL3、grant-required lanes、sensitivity ceiling 与 PL4 opaque credential reference 不再互相矛盾。canonical 为 `closed:EVID-G1-015`。
+
+```yaml
+context_read_receipt:
+  aa_entry: "§9 Group 1 + §12.1/§12.2 KB-CONTRACT-001 + §12.3 Group 1"
+  leaf_ids: ["KB-CONTRACT-001"]
+  documents:
+    - {ref: "@docs/agent-native-atomic-review-2026-07-14.md", sha256: "4f1e8893fe03251c02ce9805300b94d6db00c34e032c978f3805c2b1f061e919", decision: "original tool-contract finding is revalidated against current handler metadata and the three canonical specs"}
+    - {ref: "@docs/personal-knowledge-base-spec.md", sha256: "f239a20c4c71c8bf303252614b8dc4661b3f63cc00d0355d458cc962df008135", decision: "Personal KB product semantics now use the shared runtime-lane authority matrix"}
+    - {ref: "@docs/personal-company-knowledge-tool-boundary-2026-07-10.md", sha256: "c3cc6ead427ae6aff1fbdb1bdf6af5039fffc8c194d2891adb551596109d98a6", decision: "personal/company tool boundary no longer applies a blanket owner or sensitivity read rule"}
+    - {ref: "@docs/agent-permission-governance-spec-2026-07-07.md", sha256: "d346ad45591d3d01d6499735d116db37b9dda00284a9cf99103a8a0ad8080649", decision: "permission governance names the same owner-direct and explicit-grant runtime lanes"}
+  source:
+    ref: "backend/app/tools/handlers/knowledge.py"
+    sha256: "a4481832b9dbdf82d42662e1e2e2073a39b17d9f0b6a7e3b5f1f8d7cd7615527"
+    decision: "runtime metadata already states the truthful authority contract and is not changed by this leaf"
+  evidence_sink: "EVID-G1-015"
+```
+
+- refute-first 结论：原报告把“读侧不用 sensitivity 过滤”整体当成 bug 过重。current-source 显示 sensitivity 主管 durable extraction/promotion 与跨 principal ceiling；interactive owner-direct 读 PL1–PL3 依据 authenticated owner policy + `agent_searchable`，而 autonomous owner Agent、shared/cross-user、A2A 与 subagent 必须有未过期 explicit grant，并绑定 requester、session/task purpose、delegation 和 sensitivity ceiling。真实缺口是三份规范仍保留 blanket 描述，模型、开发者与 reviewer 可以得到与 tool metadata/runtime 相反的结论。
+- Red：新增 `backend/tests/architecture/test_personal_knowledge_contract_alignment.py`后，`cd backend && .venv/bin/pytest tests/architecture/test_personal_knowledge_contract_alignment.py -q` 首跑为 `1 failed, 1 passed`；失败精确命中三份 spec 缺少 canonical Personal KB read matrix，tool metadata 测试已经通过，证明断点在文档契约而不是已有 runtime 描述。
+- Green/实现：三份 spec 都以 `personal-kb-read-authority-matrix-start/end` 包裹同一矩阵，并删除周边 blanket owner/grant/sensitivity 表述。测试逐字比对三份 matrix，同时导入 `search_personal_kb` / `read_personal_kb` 的真实 `meta.description`，明确拒绝旧的虚假文案 `Results are tenant-, owner-, sensitivity-, and grant-filtered`。复跑同一命令为 `2 passed in 2.15s`。
+- 回归验收：`cd backend && .venv/bin/pytest tests/tools/test_personal_knowledge_tool.py tests/integration/test_personal_knowledge_cross_owner.py -q` 为 `22 passed in 8.32s`；覆盖 owner-direct、cross-owner、grant、sensitivity ceiling 与 PL4 boundary。本 leaf 没有 schema/migration/backfill/deploy，因为 source runtime 与 production data 零改动；强行重发不会产生新验收事实。
+- 七原子：Input=authenticated runtime lane 与 Knowledge tool call；Authority=owner policy/`agent_searchable` 或 explicit grant + requester/purpose/delegation/sensitivity ceiling；Execution=已有 `search_personal_kb` / `read_personal_kb` handler；Evidence=canonical matrix、tool metadata 与 architecture/regression tests；Recovery=denied/unavailable/grant-required 状态保持 typed 且可重试；Consumption=模型与开发者从 tool schema/spec 获得相同契约；Acceptance=Red→Green + 22 个读权限回归。本 leaf 的七原子成立。
+- 北极星裁决：硬结果只来自 authenticated principal、runtime lane、explicit grant、sensitivity ceiling 与 PL4 credential boundary 这些 Authority/Data Ingress 事实源；不读取自然语言决定权限、不裁剪 model context/output、不删工具、不改写 final。owner-direct 保留 CC 能力面，跨 principal 使用 Hive enterprise grant/ceiling，符合 capability-preserving determinism。
+- 残余边界：`B-01` 仍待独立 current-source 重验与 Red→Green；Group 1 为 15/16 closed、0 deployed-but-open、1/16 pending。Group 8 的 Knowledge/Memory durable extraction、T2/T3/soul、retention 与 replay 不由本证据关闭。103 分母、severity、owner 与 5 个 Missing 均不变。
 
 #### EVID-G8-PRE-001：backend-volume default Skill startup 写放大止血
 

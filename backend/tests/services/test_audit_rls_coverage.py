@@ -91,6 +91,7 @@ def test_force_all_tenant_rls_migration_covers_bootstrap_force_tables() -> None:
     budget_transition_module = _load_migration_module("budget_transition_outbox_0711.py")
     complete_coverage_module = _load_migration_module("rls_complete_coverage_0712.py")
     tenant_null_module = _load_migration_module("tenant_null_semantics_0712.py")
+    storage_lifecycle_module = _load_migration_module("storage_blob_lifecycle_0715.py")
     migration_tables = (
         set(force_all_module._FORCE_TABLES)
         | set(remaining_module._ALL_TABLES)
@@ -112,6 +113,7 @@ def test_force_all_tenant_rls_migration_covers_bootstrap_force_tables() -> None:
         | set(tenant_null_module.TENANT_OWNED_TABLES)
         | set(tenant_null_module.PLATFORM_SHARED)
         | set(tenant_null_module.OPERATOR_NULLABLE)
+        | set(storage_lifecycle_module._TABLES)
     )
 
     missing = sorted(set(RLS_FORCED_TENANT_TABLES) - migration_tables)

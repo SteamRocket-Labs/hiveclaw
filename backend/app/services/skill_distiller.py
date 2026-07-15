@@ -828,12 +828,14 @@ async def _commit_skill_with_asset_revision(
     from app.services.agent_asset_transaction import (
         AgentAssetTransaction,
         compensate_agent_asset_transaction,
+        finalize_agent_asset_transaction,
     )
 
     with AgentAssetTransaction(
         workspace,
         operation="skill_distiller_native_commit",
         evidence_refs=(f"skill-candidate:{candidate_id}",) if candidate_id else (),
+        requires_projection=tenant_id is not None,
     ) as transaction:
         result = _commit_skill_markdown_exact(
             workspace=workspace,
@@ -870,6 +872,11 @@ async def _commit_skill_with_asset_revision(
         )
         logger.exception("[SkillDistiller] asset revision failed; compensated %s", target_relative_path)
         return f"❌ skill asset revision failed; native transaction compensated: {type(exc).__name__}: {exc}"
+    finalize_agent_asset_transaction(
+        workspace,
+        receipt,
+        projection_ref=f"ai_asset:workspace_skill:{agent_id}:{Path(target_relative_path).parts[1]}",
+    )
     return result
 
 

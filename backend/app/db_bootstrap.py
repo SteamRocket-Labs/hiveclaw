@@ -167,6 +167,9 @@ _ADDITIONAL_FORCED_TENANT_TABLES: tuple[str, ...] = (
     "local_agent_channel_ws_tickets",
     "workspace_resource_manifests",
     "tenant_scope_quarantine_records",
+    "storage_blobs",
+    "storage_blob_refs",
+    "storage_gc_runs",
 )
 
 # Every table carrying ``tenant_id`` belongs to exactly one semantic class.
@@ -269,6 +272,9 @@ STRICT_TENANT_RLS_TABLES: tuple[str, ...] = (
     "security_audit_events",
     "session_feedback_events",
     "sso_scan_sessions",
+    "storage_blobs",
+    "storage_blob_refs",
+    "storage_gc_runs",
     "task_logs",
     "tasks",
     "tenant_channel_configs",

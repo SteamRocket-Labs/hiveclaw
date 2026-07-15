@@ -137,6 +137,14 @@ RLS_BYPASS_ALLOWLIST = (
     ),
     _grant(
         *(
+            "app/scripts/storage_lifecycle.py",
+            "_authoritative_agent_tenants",
+            "'storage lifecycle fleet Agent tenant authority inventory'",
+            ("select:Agent.id,Agent.tenant_id",),
+        )
+    ),
+    _grant(
+        *(
             "app/api/admin.py",
             "get_metrics_timeseries",
             "'platform admin metrics timeseries cross-tenant aggregation'",

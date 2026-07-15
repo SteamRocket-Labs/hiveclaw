@@ -15,13 +15,15 @@ import os
 import shutil
 import uuid
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
 SCHEMA_VERSION = "hive.agent_asset_transaction.v1"
 REVISION_SCHEMA = "hive.agent_asset_revision.v1"
 RECEIPT_SCHEMA = "hive.agent_asset_receipt.v1"
+DEFAULT_ROLLBACK_WINDOW_SECONDS = 24 * 60 * 60
+_SUFFIX_PROBE_BYTES = 4096
 
 
 class AssetTransactionError(RuntimeError):
@@ -47,8 +49,24 @@ class AssetCommitReceipt:
     recovered: bool = False
 
 
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return _utc_now().isoformat()
+
+
+def _parse_timestamp(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _control_root(agent_root: Path) -> Path:
@@ -118,6 +136,35 @@ def _sha256_file(path: Path) -> str | None:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _tail_bytes(path: Path, size: int) -> bytes:
+    if size <= 0 or not path.exists():
+        return b""
+    with path.open("rb") as handle:
+        handle.seek(-min(size, path.stat().st_size), os.SEEK_END)
+        return handle.read()
+
+
+def _tail_sha256(path: Path, size: int) -> str:
+    return _sha256_bytes(_tail_bytes(path, size))
+
+
+def _append_durable(path: Path, content: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("ab") as handle:
+        handle.write(content)
+        handle.flush()
+        os.fsync(handle.fileno())
+    _fsync_directory(path.parent)
+
+
+def _truncate_durable(path: Path, size: int) -> None:
+    with path.open("r+b") as handle:
+        handle.truncate(size)
+        handle.flush()
+        os.fsync(handle.fileno())
+    _fsync_directory(path.parent)
 
 
 def _normalize_relative_path(value: str | Path) -> str:
@@ -267,12 +314,18 @@ class AgentAssetTransaction:
         expected_revision: int | None = None,
         idempotency_key: str | None = None,
         evidence_refs: Iterable[str] = (),
+        requires_projection: bool = False,
+        retention_class: str = "rollback_payload",
+        rollback_window_seconds: int = DEFAULT_ROLLBACK_WINDOW_SECONDS,
     ) -> None:
         self.agent_root = Path(agent_root).resolve()
         self.operation = str(operation or "unknown").strip() or "unknown"
         self.expected_revision = expected_revision
         self.idempotency_key = str(idempotency_key or "").strip() or None
         self.evidence_refs = tuple(str(ref).strip() for ref in evidence_refs if str(ref).strip())
+        self.requires_projection = bool(requires_projection)
+        self.retention_class = str(retention_class or "rollback_payload").strip() or "rollback_payload"
+        self.rollback_window_seconds = max(0, int(rollback_window_seconds))
         self.transaction_id = uuid.uuid4().hex
         self.transaction_dir = _transactions_root(self.agent_root) / self.transaction_id
         self.journal_path = self.transaction_dir / "journal.json"
@@ -325,6 +378,11 @@ class AgentAssetTransaction:
             "next_revision": self._base_revision + 1,
             "idempotency_key": self.idempotency_key,
             "evidence_refs": list(self.evidence_refs),
+            "requires_projection": self.requires_projection,
+            "retention_class": self.retention_class,
+            "rollback_window_seconds": self.rollback_window_seconds,
+            "lifecycle_state": "staging",
+            "payload_state": "hot",
             "operations": [],
             "applied_paths": [],
             "created_at": _now(),
@@ -334,8 +392,18 @@ class AgentAssetTransaction:
 
     def __exit__(self, exc_type, exc, traceback) -> None:
         try:
-            if not self.is_replay and self._journal.get("status") == "staging":
+            if (
+                exc_type is None
+                and not self.is_replay
+                and self._receipt is not None
+                and not self.requires_projection
+                and self._journal.get("status") == "committed"
+            ):
+                _finalize_journal_locked(self.journal_path)
+                self._journal = _read_json(self.journal_path)
+            elif not self.is_replay and self._journal.get("status") == "staging":
                 self._journal["status"] = "aborted"
+                self._journal["lifecycle_state"] = "aborted"
                 self._journal["updated_at"] = _now()
                 _atomic_write_json(self.journal_path, self._journal)
         finally:
@@ -375,12 +443,59 @@ class AgentAssetTransaction:
         normalized = _normalize_relative_path(relative_path)
         self._operations[normalized] = {"path": normalized, "action": "delete", "desired_sha256": None}
 
+    def stage_truncate(
+        self,
+        relative_path: str | Path,
+        *,
+        target_size: int,
+        expected_removed_sha256: str,
+    ) -> None:
+        """Stage a crash-recoverable tail truncation without copying the prefix."""
+
+        if self.is_replay:
+            return
+        if self._journal and self._journal.get("status") != "staging":
+            raise AssetTransactionError("cannot stage after transaction preparation")
+        normalized = _normalize_relative_path(relative_path)
+        target = _target_path(self.agent_root, normalized)
+        before_size = target.stat().st_size if target.exists() else 0
+        resolved_target_size = int(target_size)
+        if resolved_target_size < 0 or resolved_target_size > before_size:
+            raise ValueError("truncate target_size must be within the current file")
+        removed_size = before_size - resolved_target_size
+        removed = _tail_bytes(target, removed_size)
+        if _sha256_bytes(removed) != expected_removed_sha256:
+            raise StaleAssetRevisionError(f"asset append tail changed before compensation: {normalized}")
+        self._ensure_journal()
+        digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+        stage_path = self.transaction_dir / "stage" / f"{digest}.truncate.bin"
+        _atomic_write_bytes(stage_path, removed)
+        suffix_size = min(before_size, _SUFFIX_PROBE_BYTES)
+        self._operations[normalized] = {
+            "path": normalized,
+            "action": "truncate",
+            "stage_file": stage_path.relative_to(self.transaction_dir).as_posix(),
+            "before_size": before_size,
+            "before_suffix_size": suffix_size,
+            "before_suffix_sha256": _tail_sha256(target, suffix_size),
+            "target_size": resolved_target_size,
+            "removed_size": removed_size,
+            "removed_sha256": expected_removed_sha256,
+        }
+
     def read_bytes(self, relative_path: str | Path) -> bytes | None:
         normalized = _normalize_relative_path(relative_path)
         operation = self._operations.get(normalized)
         if operation is not None:
             if operation["action"] == "delete":
                 return None
+            if operation["action"] == "append":
+                target = _target_path(self.agent_root, normalized)
+                base = target.read_bytes() if target.exists() else b""
+                return base + (self.transaction_dir / operation["stage_file"]).read_bytes()
+            if operation["action"] == "truncate":
+                target = _target_path(self.agent_root, normalized)
+                return target.read_bytes()[: int(operation["target_size"])]
             return (self.transaction_dir / operation["stage_file"]).read_bytes()
         target = _target_path(self.agent_root, normalized)
         return target.read_bytes() if target.exists() else None
@@ -390,8 +505,46 @@ class AgentAssetTransaction:
         return content.decode(encoding) if content is not None else None
 
     def append_text(self, relative_path: str | Path, content: str, *, encoding: str = "utf-8") -> None:
-        existing = self.read_text(relative_path, encoding=encoding) or ""
-        self.stage_text(relative_path, existing + content, encoding=encoding)
+        if self.is_replay:
+            return
+        if self._journal and self._journal.get("status") != "staging":
+            raise AssetTransactionError("cannot stage after transaction preparation")
+        delta = str(content).encode(encoding)
+        if not delta:
+            return
+        normalized = _normalize_relative_path(relative_path)
+        existing_operation = self._operations.get(normalized)
+        if existing_operation is not None and existing_operation["action"] != "append":
+            existing = self.read_bytes(normalized) or b""
+            self.stage_bytes(normalized, existing + delta)
+            return
+        target = _target_path(self.agent_root, normalized)
+        if existing_operation is None:
+            before_size = target.stat().st_size if target.exists() else 0
+            suffix_size = min(before_size, _SUFFIX_PROBE_BYTES)
+            staged_delta = delta
+            before_suffix_sha256 = _tail_sha256(target, suffix_size)
+        else:
+            before_size = int(existing_operation["before_size"])
+            suffix_size = int(existing_operation["before_suffix_size"])
+            before_suffix_sha256 = str(existing_operation["before_suffix_sha256"])
+            staged_delta = (self.transaction_dir / str(existing_operation["stage_file"])).read_bytes() + delta
+        self._ensure_journal()
+        digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+        stage_path = self.transaction_dir / "stage" / f"{digest}.append.bin"
+        _atomic_write_bytes(stage_path, staged_delta)
+        self._operations[normalized] = {
+            "path": normalized,
+            "action": "append",
+            "stage_file": stage_path.relative_to(self.transaction_dir).as_posix(),
+            "before_exists": target.exists(),
+            "before_size": before_size,
+            "before_suffix_size": suffix_size,
+            "before_suffix_sha256": before_suffix_sha256,
+            "append_size": len(staged_delta),
+            "append_sha256": _sha256_bytes(staged_delta),
+            "desired_size": before_size + len(staged_delta),
+        }
 
     def _prepare(self) -> None:
         if self.is_replay:
@@ -410,6 +563,15 @@ class AgentAssetTransaction:
         prepared: list[dict[str, Any]] = []
         for relative_path, operation in self._operations.items():
             target = _target_path(self.agent_root, relative_path)
+            if operation["action"] in {"append", "truncate"}:
+                current_size = target.stat().st_size if target.exists() else 0
+                if current_size != int(operation["before_size"]):
+                    raise StaleAssetRevisionError(f"asset target size changed outside transaction: {relative_path}")
+                suffix_size = int(operation.get("before_suffix_size") or 0)
+                if _tail_sha256(target, suffix_size) != operation.get("before_suffix_sha256"):
+                    raise StaleAssetRevisionError(f"asset target tail changed outside transaction: {relative_path}")
+                prepared.append({**operation, "backup_file": None})
+                continue
             before_exists = target.exists()
             backup_file = None
             before_sha256 = _sha256_file(target)
@@ -428,6 +590,7 @@ class AgentAssetTransaction:
             )
         self._journal["operations"] = prepared
         self._journal["status"] = "prepared"
+        self._journal["lifecycle_state"] = "prepared"
         self._journal["prepared_at"] = _now()
         self._journal["updated_at"] = _now()
         _atomic_write_json(self.journal_path, self._journal)
@@ -437,6 +600,7 @@ class AgentAssetTransaction:
             return self._receipt
         self._prepare()
         self._journal["status"] = "applying"
+        self._journal["lifecycle_state"] = "applying"
         self._journal["updated_at"] = _now()
         _atomic_write_json(self.journal_path, self._journal)
         applied: list[dict[str, Any]] = []
@@ -461,8 +625,14 @@ class AgentAssetTransaction:
             )
             if self.idempotency_key:
                 _atomic_write_json(_receipt_path(self.agent_root, self.idempotency_key), receipt_payload)
+            committed_at = _utc_now()
             self._journal["status"] = "committed"
-            self._journal["committed_at"] = _now()
+            self._journal["lifecycle_state"] = "committed_recoverable"
+            self._journal["committed_at"] = committed_at.isoformat()
+            self._journal["rollback_deadline"] = (
+                committed_at + timedelta(seconds=self.rollback_window_seconds)
+            ).isoformat()
+            self._journal["payload_gc_at"] = self._journal["rollback_deadline"]
             self._journal["updated_at"] = _now()
             _atomic_write_json(self.journal_path, self._journal)
             self._receipt = _receipt_from_payload(receipt_payload, agent_root=self.agent_root)
@@ -475,6 +645,7 @@ class AgentAssetTransaction:
                 raise
             _rollback_operations(self.agent_root, self.transaction_dir, reversed(applied))
             self._journal["status"] = "rolled_back"
+            self._journal["lifecycle_state"] = "rolled_back"
             self._journal["rolled_back_at"] = _now()
             self._journal["updated_at"] = _now()
             try:
@@ -486,6 +657,46 @@ class AgentAssetTransaction:
 
 def _apply_operation(agent_root: Path, transaction_dir: Path, operation: dict[str, Any]) -> None:
     target = _target_path(agent_root, str(operation["path"]))
+    action = str(operation.get("action") or "")
+    if action == "append":
+        stage = transaction_dir / str(operation["stage_file"])
+        append_size = int(operation["append_size"])
+        if not stage.is_file() or stage.stat().st_size != append_size:
+            raise AssetTransactionCorruptionError(f"invalid append stage: {operation['path']}")
+        append_content = stage.read_bytes()
+        if _sha256_bytes(append_content) != operation.get("append_sha256"):
+            raise AssetTransactionCorruptionError(f"invalid append digest: {operation['path']}")
+        before_size = int(operation["before_size"])
+        desired_size = int(operation["desired_size"])
+        current_size = target.stat().st_size if target.exists() else 0
+        if current_size == desired_size:
+            if _tail_sha256(target, append_size) != operation.get("append_sha256"):
+                raise AssetTransactionCorruptionError(f"applied append tail mismatch: {operation['path']}")
+            return
+        if current_size != before_size:
+            raise StaleAssetRevisionError(f"asset append boundary changed outside transaction: {operation['path']}")
+        suffix_size = int(operation.get("before_suffix_size") or 0)
+        if _tail_sha256(target, suffix_size) != operation.get("before_suffix_sha256"):
+            raise StaleAssetRevisionError(f"asset append source changed outside transaction: {operation['path']}")
+        _append_durable(target, append_content)
+        return
+    if action == "truncate":
+        stage = transaction_dir / str(operation["stage_file"])
+        removed_size = int(operation["removed_size"])
+        if not stage.is_file() or stage.stat().st_size != removed_size:
+            raise AssetTransactionCorruptionError(f"invalid truncate stage: {operation['path']}")
+        removed = stage.read_bytes()
+        if _sha256_bytes(removed) != operation.get("removed_sha256"):
+            raise AssetTransactionCorruptionError(f"invalid truncate digest: {operation['path']}")
+        before_size = int(operation["before_size"])
+        target_size = int(operation["target_size"])
+        current_size = target.stat().st_size if target.exists() else 0
+        if current_size == target_size:
+            return
+        if current_size != before_size or _tail_sha256(target, removed_size) != operation.get("removed_sha256"):
+            raise StaleAssetRevisionError(f"asset truncate boundary changed outside transaction: {operation['path']}")
+        _truncate_durable(target, target_size)
+        return
     desired_sha = operation.get("desired_sha256")
     current_sha = _sha256_file(target)
     if operation["action"] == "write" and current_sha == desired_sha:
@@ -509,6 +720,32 @@ def _apply_operation(agent_root: Path, transaction_dir: Path, operation: dict[st
 def _rollback_operations(agent_root: Path, transaction_dir: Path, operations: Iterable[dict[str, Any]]) -> None:
     for operation in operations:
         target = _target_path(agent_root, str(operation["path"]))
+        action = str(operation.get("action") or "")
+        if action == "append":
+            before_size = int(operation["before_size"])
+            desired_size = int(operation["desired_size"])
+            append_size = int(operation["append_size"])
+            current_size = target.stat().st_size if target.exists() else 0
+            if current_size == before_size:
+                continue
+            if current_size != desired_size or _tail_sha256(target, append_size) != operation.get("append_sha256"):
+                raise AssetTransactionCorruptionError(f"cannot rollback changed append tail: {operation['path']}")
+            _truncate_durable(target, before_size)
+            continue
+        if action == "truncate":
+            before_size = int(operation["before_size"])
+            target_size = int(operation["target_size"])
+            current_size = target.stat().st_size if target.exists() else 0
+            if current_size == before_size:
+                continue
+            if current_size != target_size:
+                raise AssetTransactionCorruptionError(f"cannot rollback changed truncate target: {operation['path']}")
+            stage = transaction_dir / str(operation["stage_file"])
+            removed = stage.read_bytes()
+            if _sha256_bytes(removed) != operation.get("removed_sha256"):
+                raise AssetTransactionCorruptionError(f"invalid truncate rollback stage: {operation['path']}")
+            _append_durable(target, removed)
+            continue
         backup_file = operation.get("backup_file")
         if operation.get("before_exists"):
             backup = transaction_dir / str(backup_file or "")
@@ -534,6 +771,7 @@ def _recover_incomplete_locked(agent_root: Path) -> list[AssetCommitReceipt]:
             raise AssetTransactionCorruptionError(f"unsupported transaction journal: {journal_path}")
         if status == "staging":
             journal["status"] = "aborted"
+            journal["lifecycle_state"] = "aborted"
             journal["updated_at"] = _now()
             _atomic_write_json(journal_path, journal)
             continue
@@ -549,6 +787,7 @@ def _recover_incomplete_locked(agent_root: Path) -> list[AssetCommitReceipt]:
                 f"cannot recover transaction {journal['transaction_id']} at revision {current_revision}"
             )
         journal["status"] = "applying"
+        journal["lifecycle_state"] = "applying"
         journal["recovery_started_at"] = _now()
         _atomic_write_json(journal_path, journal)
         applied: list[dict[str, Any]] = []
@@ -575,8 +814,15 @@ def _recover_incomplete_locked(agent_root: Path) -> list[AssetCommitReceipt]:
             if idempotency_key:
                 _atomic_write_json(_receipt_path(agent_root, idempotency_key), receipt_payload)
             journal["status"] = "committed"
+            committed_at = _parse_timestamp(journal.get("committed_at")) or _utc_now()
+            rollback_window = max(0, int(journal.get("rollback_window_seconds") or DEFAULT_ROLLBACK_WINDOW_SECONDS))
+            journal["lifecycle_state"] = "committed_recoverable"
             journal["recovered"] = True
-            journal["committed_at"] = _now()
+            journal["committed_at"] = committed_at.isoformat()
+            journal["rollback_deadline"] = (
+                committed_at + timedelta(seconds=rollback_window)
+            ).isoformat()
+            journal["payload_gc_at"] = journal["rollback_deadline"]
             journal["updated_at"] = _now()
             _atomic_write_json(journal_path, journal)
             recovered.append(_receipt_from_payload(receipt_payload, agent_root=agent_root, recovered=True))
@@ -585,6 +831,7 @@ def _recover_incomplete_locked(agent_root: Path) -> list[AssetCommitReceipt]:
                 raise
             _rollback_operations(agent_root, transaction_dir, reversed(applied))
             journal["status"] = "rolled_back"
+            journal["lifecycle_state"] = "rolled_back"
             journal["recovery_failed_at"] = _now()
             journal["updated_at"] = _now()
             _atomic_write_json(journal_path, journal)
@@ -604,6 +851,67 @@ def recover_agent_asset_transactions(agent_root: Path | str) -> list[AssetCommit
         _unlock(handle)
 
 
+def _finalize_journal_locked(
+    journal_path: Path,
+    *,
+    projection_ref: str | None = None,
+    pinned_until: datetime | None = None,
+) -> dict[str, Any]:
+    journal = _read_json(journal_path)
+    if journal.get("status") != "committed":
+        raise AssetTransactionCorruptionError(
+            f"cannot finalize non-committed transaction: {journal.get('transaction_id') or journal_path.parent.name}"
+        )
+    lifecycle_state = str(journal.get("lifecycle_state") or "committed_recoverable")
+    if lifecycle_state not in {"committed_recoverable", "finalized"}:
+        raise AssetTransactionCorruptionError(
+            f"cannot finalize transaction in lifecycle state {lifecycle_state}: {journal_path}"
+        )
+    finalized_at = _parse_timestamp(journal.get("finalized_at")) or _utc_now()
+    if pinned_until is not None:
+        normalized_pin = pinned_until
+        if normalized_pin.tzinfo is None:
+            normalized_pin = normalized_pin.replace(tzinfo=timezone.utc)
+        journal["pinned_until"] = normalized_pin.astimezone(timezone.utc).isoformat()
+    if projection_ref is not None:
+        journal["projection_ref"] = str(projection_ref)
+    rollback_deadline = _parse_timestamp(journal.get("rollback_deadline")) or finalized_at
+    pin_deadline = _parse_timestamp(journal.get("pinned_until"))
+    gc_at = max(item for item in (finalized_at, rollback_deadline, pin_deadline) if item is not None)
+    journal["retention_class"] = str(journal.get("retention_class") or "rollback_payload")
+    journal["lifecycle_state"] = "finalized"
+    journal["finalized_at"] = finalized_at.isoformat()
+    journal["payload_gc_at"] = gc_at.isoformat()
+    journal.setdefault("payload_state", "hot")
+    journal["updated_at"] = _now()
+    _atomic_write_json(journal_path, journal)
+    return journal
+
+
+def finalize_agent_asset_transaction(
+    agent_root: Path | str,
+    receipt: AssetCommitReceipt,
+    *,
+    projection_ref: str | None = None,
+    pinned_until: datetime | None = None,
+) -> dict[str, Any]:
+    """Finalize a committed file transaction after its external projection commits."""
+
+    root = Path(agent_root).resolve()
+    handle = _lock(root)
+    try:
+        journal = _read_json(receipt.journal_path)
+        if journal.get("transaction_id") != receipt.transaction_id:
+            raise AssetTransactionCorruptionError(f"receipt/journal mismatch: {receipt.transaction_id}")
+        return _finalize_journal_locked(
+            receipt.journal_path,
+            projection_ref=projection_ref,
+            pinned_until=pinned_until,
+        )
+    finally:
+        _unlock(handle)
+
+
 def compensate_agent_asset_transaction(
     agent_root: Path | str,
     receipt: AssetCommitReceipt,
@@ -616,10 +924,19 @@ def compensate_agent_asset_transaction(
     journal = _read_json(receipt.journal_path)
     if journal.get("status") != "committed" or journal.get("transaction_id") != receipt.transaction_id:
         raise AssetTransactionCorruptionError(f"cannot compensate non-committed transaction: {receipt.transaction_id}")
+    if str(journal.get("lifecycle_state") or "committed_recoverable") == "finalized":
+        raise AssetTransactionError(f"cannot compensate finalized transaction: {receipt.transaction_id}")
     operations = list(journal.get("operations") or [])
     for operation in operations:
         target = _target_path(root, str(operation["path"]))
-        if _sha256_file(target) != operation.get("desired_sha256"):
+        if operation.get("action") == "append":
+            if (
+                not target.exists()
+                or target.stat().st_size != int(operation["desired_size"])
+                or _tail_sha256(target, int(operation["append_size"])) != operation.get("append_sha256")
+            ):
+                raise StaleAssetRevisionError(f"asset append target changed before compensation: {operation['path']}")
+        elif _sha256_file(target) != operation.get("desired_sha256"):
             raise StaleAssetRevisionError(f"asset target changed before compensation: {operation['path']}")
 
     key_material = f"{receipt.transaction_id}\0{reason}".encode("utf-8")
@@ -632,14 +949,27 @@ def compensate_agent_asset_transaction(
     ) as transaction:
         if not transaction.is_replay:
             for operation in operations:
-                if operation.get("before_exists"):
+                if operation.get("action") == "append":
+                    transaction.stage_truncate(
+                        str(operation["path"]),
+                        target_size=int(operation["before_size"]),
+                        expected_removed_sha256=str(operation["append_sha256"]),
+                    )
+                elif operation.get("before_exists"):
                     backup = receipt.journal_path.parent / str(operation.get("backup_file") or "")
                     if not backup.is_file() or _sha256_file(backup) != operation.get("before_sha256"):
                         raise AssetTransactionCorruptionError(f"cannot compensate missing backup: {operation['path']}")
                     transaction.stage_bytes(str(operation["path"]), backup.read_bytes())
                 else:
                     transaction.stage_delete(str(operation["path"]))
-        return transaction.commit()
+        compensation = transaction.commit()
+        journal["lifecycle_state"] = "compensated"
+        journal["compensated_at"] = _now()
+        journal["compensation_transaction_id"] = compensation.transaction_id
+        journal["payload_gc_at"] = journal["compensated_at"]
+        journal["updated_at"] = _now()
+        _atomic_write_json(receipt.journal_path, journal)
+        return compensation
 
 
 def replay_asset_receipt(receipt: AssetCommitReceipt) -> AssetCommitReceipt:

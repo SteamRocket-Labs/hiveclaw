@@ -3,7 +3,20 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, Enum, ForeignKey, Index, Integer, String, Text, event, func
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    Enum,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Index,
+    Integer,
+    String,
+    Text,
+    event,
+    func,
+)
 from sqlalchemy.dialects.postgresql import JSON, UUID
 from sqlalchemy.orm import Mapped, Session, mapped_column, relationship
 
@@ -18,6 +31,16 @@ class Agent(Base):
 
     __tablename__ = "agents"
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "primary_model_id"],
+            ["llm_models.tenant_id", "llm_models.id"],
+            name="fk_agents_primary_model_tenant",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "fallback_model_id"],
+            ["llm_models.tenant_id", "llm_models.id"],
+            name="fk_agents_fallback_model_tenant",
+        ),
         CheckConstraint(
             "default_session_permission_mode IN ('default', 'auto', 'bypassPermissions')",
             name="ck_agents_default_session_permission_mode",
@@ -195,6 +218,13 @@ class AgentTemplate(Base):
     """Digital employee template for quick creation / Role Template (ARCHITECTURE.md §6.2)."""
 
     __tablename__ = "agent_templates"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "model_id"],
+            ["llm_models.tenant_id", "llm_models.id"],
+            name="fk_agent_templates_model_tenant",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String(100), nullable=False)

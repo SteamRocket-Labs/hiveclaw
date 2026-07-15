@@ -735,6 +735,25 @@ async def apply_native_revision(db: AsyncSession, record: Any, content: dict[str
         ).scalar_one_or_none()
         if native is None:
             raise ValueError("native Agent asset no longer exists")
+        config = dict(content.get("config") or {})
+        primary_model_id = (
+            _uuid(config["primary_model_id"])
+            if "primary_model_id" in config
+            else _uuid(getattr(native, "primary_model_id", None))
+        )
+        fallback_model_id = (
+            _uuid(config["fallback_model_id"])
+            if "fallback_model_id" in config
+            else _uuid(getattr(native, "fallback_model_id", None))
+        )
+        from app.services.agent_model_authority import validate_agent_model_references
+
+        await validate_agent_model_references(
+            db,
+            tenant_id=record.tenant_id,
+            primary_model_id=primary_model_id,
+            fallback_model_id=fallback_model_id,
+        )
         apply_agent_content(native, content)
         await db.flush()
         return project_agent(native)

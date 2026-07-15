@@ -18,9 +18,30 @@ from app.core.security import get_current_admin, get_current_user
 from app.database import get_db
 from app.models.agent import AgentTemplate
 from app.models.user import User
+from app.services.agent_model_authority import ModelReferenceAuthorityError, validate_tenant_model_references
 from app.services.sync_service import bump_sync_version
 
 router = APIRouter(tags=["role-templates"])
+
+
+async def _validate_template_model_reference(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID | None,
+    model_id: uuid.UUID | None,
+) -> None:
+    if model_id is None:
+        return
+    if tenant_id is None:
+        raise HTTPException(status_code=400, detail="Tenant-owned model is required for a role template")
+    try:
+        await validate_tenant_model_references(
+            db,
+            tenant_id=tenant_id,
+            references={"model_id": model_id},
+        )
+    except ModelReferenceAuthorityError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 # ─── Schemas ────────────────────────────────────────────
@@ -88,6 +109,11 @@ async def create_role_template(
     db: AsyncSession = Depends(get_db),
 ):
     """Create a Role Template for the current tenant (admin only)."""
+    await _validate_template_model_reference(
+        db,
+        tenant_id=current_user.tenant_id,
+        model_id=body.model_id,
+    )
     template = AgentTemplate(
         name=body.name,
         description=body.description,
@@ -126,7 +152,14 @@ async def update_role_template(
     if template.is_builtin:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cannot modify builtin templates")
 
-    for field, value in body.model_dump(exclude_unset=True).items():
+    update_data = body.model_dump(exclude_unset=True)
+    if "model_id" in update_data:
+        await _validate_template_model_reference(
+            db,
+            tenant_id=template.tenant_id,
+            model_id=update_data["model_id"],
+        )
+    for field, value in update_data.items():
         setattr(template, field, value)
     template.config_version += 1
     await db.flush()

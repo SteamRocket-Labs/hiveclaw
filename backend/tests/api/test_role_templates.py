@@ -142,6 +142,29 @@ def test_create_role_template():
     assert len(fake_db.added) == 1
 
 
+def test_create_role_template_rejects_cross_tenant_or_unavailable_model():
+    client, fake_db = _build_client()
+    with patch.object(rt_mod, "bump_sync_version", new_callable=AsyncMock, return_value=2):
+        resp = client.post(
+            "/role-templates",
+            json={"name": "Invalid model template", "model_id": str(uuid4())},
+        )
+    assert resp.status_code == 400
+    assert fake_db.added == []
+
+
+def test_create_role_template_accepts_enabled_same_tenant_model():
+    model_id = uuid4()
+    client, fake_db = _build_client(templates=[model_id])
+    with patch.object(rt_mod, "bump_sync_version", new_callable=AsyncMock, return_value=2):
+        resp = client.post(
+            "/role-templates",
+            json={"name": "Tenant model template", "model_id": str(model_id)},
+        )
+    assert resp.status_code == 201
+    assert fake_db.added[0].model_id == model_id
+
+
 # ─── PATCH /role-templates/{id} ─────────────────────────
 
 
@@ -152,6 +175,16 @@ def test_update_role_template():
     assert resp.status_code == 200
     assert resp.json()["name"] == "新名字"
     assert _EXISTING_TEMPLATE.config_version == 2
+
+
+def test_update_role_template_rejects_cross_tenant_or_unavailable_model():
+    original_model_id = uuid4()
+    template = SimpleNamespace(**{**vars(_EXISTING_TEMPLATE), "model_id": original_model_id, "config_version": 1})
+    client, _ = _build_client(by_id={_TEMPLATE_ID: template})
+    resp = client.patch(f"/role-templates/{_TEMPLATE_ID}", json={"model_id": str(uuid4())})
+    assert resp.status_code == 400
+    assert template.model_id == original_model_id
+    assert template.config_version == 1
 
 
 def test_update_nonexistent_returns_404():

@@ -1,12 +1,12 @@
 # Backend Volume 存储生命周期与冷热分层设计
 
-> 状态：P0 存储事故已受理；启动期写放大止血已于 2026-07-15 部署并验收，历史数据 lifecycle/backfill/quarantine 仍待完整实施。
+> 状态：P0 启动期写放大止血与 transaction payload 生命周期底座已于 2026-07-15 部署；21,163 个历史 default-Skill transaction 已完成 authority/backfill，11,977 个过期 rollback payload（6,211,996,397 bytes）已进入可恢复 quarantine。24 小时 grace 尚未结束，physical sweep 未执行；Object Storage、T2、snapshot、T0、trace/cache 的完整冷热分层仍待 Group 8 后续施工。
 >
 > 日期：2026-07-15。
 >
 > 范围：Hive Railway production 的 `backend-volume`、Agent workspace、Memory T0/T2、workspace snapshot、Agent asset transaction、invocation trace 和可重建缓存。
 >
-> 本文定义机制、迁移、保留和验收，并持续记录生产施工证据。除 §2.3.1 明确列出的启动期止血修复外，Object Storage、storage metadata、backfill、quarantine、sweep 和历史数据物理清理均尚未执行。
+> 本文定义机制、迁移、保留和验收，并持续记录生产施工证据。§2.3.1 记录启动期止血，§2.3.2 记录已落地的 transaction lifecycle、storage metadata schema、production backfill 与 quarantine。不得把该 transaction 子闭环冒充完整 retention/cold-storage 闭环：Object Storage/resolver、跨资产 ref/pin/lease/legal hold、T2/snapshot/T0/trace/cache 迁移和 physical sweep 仍未完成。
 
 ## 0. 文档定位
 
@@ -86,11 +86,12 @@
 
 ### 2.1 Railway 存储状态
 
-2026-07-15T13:37Z 复核结果：
+2026-07-15T14:35Z 最新复核结果：
 
 - `backend-volume` 挂载于 `/data/agents`。
 - Railway UI 配额仍为 `50 GB`；容器内 `df -B1 /data/agents` 的文件系统总量为 `48,891,670,528` bytes。
-- 止血部署前使用量为 `28,648,972,288` bytes；部署后为 `28,650,721,280` bytes，均为 `59%`，部署后可用 `20,224,172,032` bytes。
+- 止血部署前容器使用量为 `28,648,972,288` bytes；止血部署后为 `28,650,721,280` bytes，均为 `59%`，部署后可用 `20,224,172,032` bytes。
+- transaction quarantine 后 Railway Volume truth surface 为 `currentSizeMB=27,111.91552`、`sizeMB=50,000`、`status=Ready`。quarantine 只是同一 Volume 内的原子路径移动，不会释放物理块；只有 grace 后的独立 `sweep --apply` 才会使容量下降。
 - 本文最初 inventory 的约 `24.80 GB` 已不再是当前值；后续容量结论必须使用本节的新时间戳证据。
 - PostgreSQL Volume 约 `9.60 GB`，与 `backend-volume` 已经物理分离。
 - Redis Volume 约 `1.50 GB`。
@@ -102,8 +103,8 @@
 
 | 类别 | 当前只读取证 | 权威判断 | 当前动作边界 |
 |---|---:|---|---|
-| Agent asset transaction journals | 止血前 23,186 个、约 11,921,293,967 bytes；止血重启后 23,189 个，其中新增的 3 个发生在 deployment cutover 前，deployment 创建时间之后无新 journal | 大量 rollback/stage payload 在 commit 后永久残留 | 历史 payload 仍不可直接删；必须走 finalize/ref/quarantine |
-| `active_skill_package_install` | 21,163 个 committed、约 11,510,468,012 bytes；止血重启前后计数均为 21,163 | 本轮已封住 exact-match 启动重复安装；历史 payload 仍是最大存量异常 | 启动止血已闭环；继续实施历史 payload lifecycle |
+| Agent asset transaction journals | lifecycle 部署后的 production inventory 为 23,224 个，transaction tree `11,927,841,204` bytes，其中 stage/backups payload `11,836,695,357` bytes | 历史 committed payload 是容量异常主因；新 transaction 已有 recoverable/finalized/GC 状态 | 21,163 个安全候选已 backfill；其它 2,061 个保留为人工 hold |
+| `active_skill_package_install` | 数量仍为 21,163；backfill 候选 payload `11,422,977,781` bytes；其中 11,977 个、`6,211,996,397` bytes 已 quarantine，9,186 个仍受 commit-based retention 保护 | exact-match 增长已停止；旧 rollback payload 现在有权威状态和恢复路径 | grace 内禁止 sweep；retention 到期后重新生成 manifest，不复用旧判断 |
 | `evolution/skill_review.md` transaction payload | 约 7.10 GB；当前实际 `skill_review.md` 总计仅约 25.4 MB | 全文件 append + stage + backup 产生约 280 倍放大 | 改为 append delta transaction |
 | T0 `source.md` | 约 2.77 GB | canonical readable projection | 必须保留或无损归档 |
 | T0 `events.jsonl` | 约 2.74 GB | canonical portable raw evidence | 必须保留或无损归档 |
@@ -154,7 +155,44 @@ Railway production 证据：
 - Volume：重启前 `28,648,972,288` bytes，重启后 `28,650,721,280` bytes，仅增加 `1,748,992` bytes（约 1.67 MiB），未再出现约 0.5 GB 阶梯。
 - health：`status=ok`；新实例 `event_loop.max_lag_ms=33,468.71`，相较修复前实例的 `198,063.26` 明显下降，但仍作为后续 startup/lifecycle 性能债继续跟踪。
 
-闭环边界：本节只证明“继续制造大批重复 transaction”已经停止，不表示历史 11.92 GB transaction payload 已清理，也不替代 storage blob/ref、T2 authority、snapshot CAS、T0 cold archive、dry-run/quarantine/sweep 的完整施工。
+闭环边界：本节只证明“继续制造大批重复 transaction”已经停止。历史 transaction 的 lifecycle/backfill/quarantine 进展见 §2.3.2；storage resolver/Object Storage、T2 authority、snapshot CAS、T0 cold archive 和 physical sweep 仍不由本节关闭。
+
+### 2.3.2 Transaction lifecycle、backfill 与 quarantine（已部署；physical sweep 待 grace）
+
+实现 commit：`df4a815c5`（`feat(storage): add recoverable volume lifecycle`）。
+
+已落地边界：
+
+- `AgentAssetTransaction` 的 append 只 stage delta；recovery/compensation 用 size、suffix hash 和 append hash 保证 crash-idempotent，不再复制整份历史 ledger。
+- transaction 保留兼容 `status=committed`，同时新增 `staging/prepared/applying/committed_recoverable/finalized/compensated` 生命周期、`rollback_deadline`、`payload_gc_at`、pin/projection/retention metadata。普通 file-only transaction 成功退出后自动 finalize；cross-store transaction 必须由真实 projection consumer 显式 finalize。
+- Skill Distiller 采用“file commit -> DB asset projection -> finalize”；DB projection 失败时仍走 compensation，不把未完成 saga 当作可 GC。
+- 新增 tenant-scoped `storage_blobs`、`storage_blob_refs`、`storage_gc_runs` 与严格 RLS/FORCE RLS migration `storage_blob_lifecycle_0715`。这三张表是后续对象存储权威底座；当前没有据此宣称 S3 provider/resolver 已完成。
+- 新增 verified immutable `FilesystemBlobStore` 和 transaction lifecycle CLI；path traversal、hash/size mismatch、无 GC receipt 的 delete 均拒绝。
+- backfill 只自动 finalize allowlist 中的 `active_skill_package_install` / `startup_default_registry_skill_batch`；unknown、corrupt、unowned、未 committed 或 evidence mismatch 全部 hold。apply 绑定 immutable manifest SHA，并在每个 Agent lock 内重新验证 journal hash/状态。
+- `gc --apply` 只把 `stage/backups` 原子移动到 `.storage_lifecycle/quarantine/<run_id>/...`，保留 journal 和 restore 路径；`sweep --apply` 才是 physical delete，且必须使用 grace 后重新生成的 manifest。
+
+TDD 与本地验收：
+
+- 初始 transaction/storage Red 为 `7 failed`；model/migration/blob Red 为 `6 failed`，分别证明 append full-copy、finalize contract、lifecycle module、tenant/RLS schema 和 blob contract 缺失。
+- 聚焦 transaction/storage Green=`8 passed`；model/migration/blob/RLS Green=`11 passed`；扩大聚焦回归=`72 passed in 1.73s`。
+- 首次完整 backend 为 `5 failed, 7230 passed, 2 skipped`，暴露 migration head、RLS bypass registration、RLS migration coverage 和 Skill Distiller auto-finalize compensation 漂移；修复后 targeted=`14 passed in 10.72s`。
+- 最终完整 backend：`pytest tests -q` -> `7235 passed, 2 skipped in 271.69s`；scoped Ruff=`All checks passed!`；`git diff --check` 通过。
+
+Production migration/deployment：
+
+- backend=`b47ea815-d41f-42d1-b011-6bdf1f006deb`、backend-api=`372ab45d-8c03-47f5-a252-7e08ea773015`、frontend=`cf930cde-b88c-4e6f-bc14-bb78f449d977`，latest 均为 `SUCCESS`。
+- backend migration readiness：expected/actual head 均为 `storage_blob_lifecycle_0715`，`checked_table_count=130`、`issues=[]`、`ready=true`。首次 backend-api 在 migration 完成前按 fail-closed readiness 拒绝旧 schema；schema ready 后用同一 `df4a815c5` archive 重提并成功。该时序恢复缺口继续进入 Group 8 bounded schema-wait 验收，不被最终成功掩盖。
+- backend health=`status=ok`；runtime role=`app_rls/strict/non-superuser/non-BYPASSRLS`；三 daemon、RuntimeTask worker 和 sandbox probe 健康；frontend=`HTTP/2 200`。
+
+Production inventory/backfill/quarantine 证据：
+
+1. inventory artifact=`/data/agents/.storage_lifecycle/manifests/inventory-2026-07-15T14-24-25.112625+00-00.json`：23,224 transactions，logical=`11,927,841,204` bytes，payload=`11,836,695,357` bytes。
+2. backfill manifest=`backfill-a6e367767e8f4bb9b6ea6b887adf1f24`、SHA-256=`a0dba48ef5affb211e6f187fe9331348c167ba5eef31215d69ee8eaec38d439a`：21,163 candidates、`11,422,977,781` bytes、2,061 holds。Railway SSH 输出通道中断后远端幂等 apply 继续；第二份 manifest=`backfill-51b1879ee8d649b6905c3c14d0bfeac0`、SHA-256=`1d0a4c95c4b77a6a024efb343b900ed12e324deb3467ace20501bf833b43605d` 对剩余候选重验，两份 durable backfill receipt 均已落盘。
+3. backfill 终态复核 manifest=`backfill-746e86895f074935aecffa1908406cc4`：`candidate_count=0`、`candidate_bytes=0`、`hold_count=2061`。
+4. GC dry-run manifest=`gc-9acf3eafae5c413098e9f786140f3d2b`、SHA-256=`9c0adf4f497750effaa14e4b5ffd5f957260e681f2b75a517e8b15c10784ccd4`：11,977 candidates、`6,211,996,397` bytes、2,071 hard holds；另有 9,186 个 finalized payload 仍在 commit-based retention 窗口，不进入 candidate，也不被 CLI 伪装成 hard hold。
+5. quarantine receipt=`.storage_lifecycle/runs/gc-9acf3eafae5c413098e9f786140f3d2b.quarantine.json`：processed=`11,977` / `6,211,996,397` bytes，`skipped=[]`。post-quarantine GC dry-run=`candidate_count=0`；sweep dry-run=`candidate_count=0`，证明 24 小时 grace 正在生效。
+
+闭环裁决：transaction payload 的 Input/Authority/Execution/Evidence/Recovery/Acceptance 已建立，且 production startup/Skill Distiller 是真实 consumer；因此可称“transaction lifecycle 子闭环”。它不关闭 `MISS-RETENTION-001`：跨 Memory/Knowledge/Artifact/Audit 的 policy、legal hold/export/deletion ledger、Object Storage、resolver、T2/snapshot/T0/trace/cache consumer、restore drill 和 physical sweep 仍未闭环。
 
 ### 2.4 T2 backlog 根因
 
@@ -817,21 +855,28 @@ python -m app.scripts.storage_lifecycle backfill --dry-run --json
 python -m app.scripts.storage_lifecycle gc --dry-run --json
 ```
 
-以上是计划中的 CLI contract，当前文档阶段尚未实现。
+transaction payload 子路径的上述 CLI 已由 `df4a815c5` 实现并在 production 执行；T2、snapshot、T0、trace/cache 与 Object Storage 的 inventory/backfill 尚未接入该 CLI，不能因 transaction 子路径可用就宣称全资产 inventory 完成。
 
-`gc --apply` 属于不可逆生产操作，必须：
+apply contract 分成两个不同风险层：
+
+- `backfill --apply`：只写 lifecycle/authority metadata，不移动或删除 payload；仍必须绑定已审阅 manifest SHA 并逐 journal recheck。
+- `gc --apply`：只进入可恢复 quarantine，不做 physical delete；必须绑定 manifest SHA、重新检查 finalized/retention/pin/legal-hold/journal hash，并产生 receipt。
+- `sweep --apply`：在 grace 后 physical delete quarantine payload，属于不可逆生产操作；必须使用 grace 后重新生成和审阅的 sweep manifest，不能复用 GC manifest。
+
+所有 apply 必须：
 
 - 标记为 `HIGH-RISK OPERATION`；
 - 绑定已审阅的 dry-run `manifest_sha256`；
 - 经用户明确确认；
-- 先 quarantine，不直接 physical delete；
-- grace window 后再次确认或按已批准 policy sweep。
+- quarantine 与 physical sweep 分离；
+- grace window 后再次确认或按已批准 policy sweep；
+- unknown/corrupt/unowned/changed/held 对象 fail closed，不以容量压力跳过权威校验。
 
-## 11. TDD 与故障注入计划
+## 11. TDD、已验收范围与剩余故障注入
 
 ### 11.1 Red tests
 
-至少先写以下失败回归：
+以下清单同时作为完整方案的 test ledger。transaction/blob/schema/CLI 子集已按 §2.3.2 Red→Green；T2/snapshot/T0/trace/Object Storage 子集仍是待施工 Red，不得把未创建或未执行的测试算作通过。
 
 #### Skill/transaction
 
@@ -909,7 +954,7 @@ source .venv/bin/activate
 pytest tests -q
 ```
 
-不能在测试尚未创建或未执行时声称这些命令已通过。
+当前已执行证据只覆盖实际存在的 transaction/blob/schema/CLI 与邻接测试，最终完整 backend 为 `7235 passed, 2 skipped in 271.69s`。上述尚不存在的 `test_t2_storage_lifecycle.py`、`test_t0_cold_storage.py`、`test_invocation_trace_spool.py` 等命令仍是后续验收合同；不能在测试尚未创建或未执行时声称通过。
 
 ## 12. 可观测性与运营指标
 
@@ -968,25 +1013,32 @@ blob_orphan_uploads_total
 
 ## 14. 精确施工文件图
 
-### 14.1 计划新增
+### 14.1 新增文件状态
 
 ```text
+# 已新增并进入 df4a815c5
 backend/app/models/storage_blob.py
 backend/app/services/blob_store.py
-backend/app/services/storage_resolver.py
 backend/app/services/storage_lifecycle.py
 backend/app/scripts/storage_lifecycle.py
-backend/alembic/versions/<revision>_add_storage_blob_lifecycle.py
+backend/alembic/versions/storage_blob_lifecycle_0715.py
 
 backend/tests/services/test_blob_store.py
 backend/tests/services/test_storage_lifecycle.py
 backend/tests/services/test_agent_asset_transaction_retention.py
+backend/tests/models/test_storage_blob.py
+backend/tests/migrations/test_storage_blob_lifecycle_migration.py
+
+# 完整冷热分层仍待新增
+backend/app/services/storage_resolver.py
 backend/tests/services/test_invocation_trace_spool.py
 backend/tests/memory/test_t2_storage_lifecycle.py
 backend/tests/memory/test_t0_cold_storage.py
 ```
 
-### 14.2 计划修改
+### 14.2 修改文件状态
+
+本轮已修改 `agent_asset_transaction.py` 和 `skill_distiller.py`，并保留 §2.3.1 已完成的 Skill startup 止血。下表其余行仍是完整 Group 8 施工范围；“出现在表里”不代表已实现。
 
 | 文件 | 函数/边界 | 改动 |
 |---|---|---|
@@ -994,6 +1046,7 @@ backend/tests/memory/test_t0_cold_storage.py
 | `backend/app/services/skill_installation.py` | `install_active_skill_package` | manifest/digest contract；真实 transition 才 transaction/lifecycle |
 | `backend/app/services/skill_lifecycle.py` | `record_skill_lifecycle_event` | 使用 append delta；只记录真实 transition |
 | `backend/app/services/agent_asset_transaction.py` | `stage_bytes`、`append_text`、`commit`、recovery、compensation | append operation、committed_recoverable/finalized、retention metadata、payload GC |
+| `backend/app/services/skill_distiller.py` | native package commit/DB projection | file commit 后显式 projection/finalize；projection 失败可 compensation |
 | `backend/app/runtime/hooks_setup.py` | `_build_t2_for_sealed_segment` | authoritative tenant resolution；metadata 比对；typed hold |
 | `backend/app/memory/t2/segment_package.py` | `build_t2_segment_package*` | source refs/coverage ledger、resolver reconstruction、commit 后 staging lifecycle |
 | `backend/app/memory/t2/job_sweep.py` | retry/sweep | authority 修复后的 retry state；reason 分型；不删 exhausted work |
@@ -1046,6 +1099,8 @@ backend/tests/memory/test_t0_cold_storage.py
 - 未知、corrupt、unowned、unfinalized、有 ref/pin/lease/legal hold 的对象绝不删除。
 - Volume backup 和 Object Storage backup 均完成 restore drill。
 
+当前 production 证据：dry-run/hash-bound apply/journal recheck/quarantine receipt 已通过；11,977 个对象处于 24 小时可恢复 grace。restore 实现与单元回归存在，但本轮没有为了演示而恢复 production quarantine；physical sweep、Volume/Object Storage restore drill 和跨资产 GC 尚未通过，因此本小节仍是局部闭环。
+
 ### 15.5 生产容量
 
 按当前只读 inventory 粗略估算，在以下条件全部满足后：
@@ -1060,7 +1115,7 @@ backend/tests/memory/test_t0_cold_storage.py
 
 ### 15.6 完成定义
 
-只有以下证据同时存在才能称为完成：
+只有以下证据同时存在才能称为完整 storage lifecycle 完成：
 
 1. 当前代码路径和 migrations。
 2. 聚焦测试与完整 backend suite 零失败。
@@ -1072,11 +1127,14 @@ backend/tests/memory/test_t0_cold_storage.py
 
 “创建了 Bucket”“新增了表”“磁盘变小了”都不足以单独证明闭环。
 
-## 16. 当前不执行事项
+截至 2026-07-15T14:35Z：第 1、2 项已对 transaction substrate 成立；第 3 项已存在 transaction backfill receipts；第 5 项只有 quarantine receipt，尚无 grace 后 sweep receipt；第 4、6、7 项以及所有非 transaction 资产仍未齐。因此当前裁决是“transaction lifecycle 子闭环 + 完整方案未闭环”，不是 Group 8 或 `MISS-RETENTION-001` 完成。
 
-在剩余 lifecycle、迁移、backfill 与 dry-run 全部完成之前：
+## 16. 当前继续禁止的动作
 
-- 不删除任何 production transaction、T2 staging、T0、snapshot、trace 或 cache 文件。
+transaction quarantine 已按 §2.3.2 完成；在 24 小时 grace、独立 sweep manifest 和明确删除确认之前：
+
+- 不 physical delete 已 quarantine 的 production transaction payload；不以旧 GC manifest 绕过新 sweep dry-run。
+- 不删除任何 held/retention-active transaction、T2 staging、T0、snapshot、trace 或 cache 文件。
 - 不创建 Railway Bucket。
 - 不修改 Volume mount、容量、backup schedule 或 service variables。
 - 不部署 storage provider。

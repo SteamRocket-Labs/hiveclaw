@@ -4,7 +4,7 @@
 >
 > 原始审查冻结快照：`main@501db6555dae374e5fcf43a6fdcfe8a3dd89343e` + 2026-07-14 当时未提交工作树；后续施工不改写这个审查锚点，每条 `EVID-*` 另记自己的开工 HEAD、工作树与生产快照
 >
-> 修复账本滚动更新：2026-07-15；Group 0 已用 `EVID-G0-006` 把 11 个上下文包、88 个可执行 `@` 文档入口、逐 Group 详细路由和证据回流做成机器门并保持关闭；Group 1 的同源三服务部署已经成功，`P0-F1/P0-F2/E-1/P1-004/P1-F4/KB-EXTRACT-001/KB-AUTH-001/KB-PROP-001/BUD-ROOT-001/AUDIT-IMM-001/AUDIT-TENANT-001/F-PLAINTEXT` 已分别以 `EVID-G1-001/002/003/004/005/006/007/008/009/010/011/012` 完成 production canary 并关闭；Group 1 当前为 12/16 closed、4/16 pending，不再有“已部署但未关闭”的 leaf。不得把 12 个独立 leaf 的关闭冒充 Group 1 或 103 项完成。
+> 修复账本滚动更新：2026-07-15；Group 0 已用 `EVID-G0-006` 把 11 个上下文包、88 个可执行 `@` 文档入口、逐 Group 详细路由和证据回流做成机器门并保持关闭；Group 1 的同源三服务部署已经成功，`P0-F1/P0-F2/E-1/P1-004/P1-F4/KB-EXTRACT-001/KB-AUTH-001/KB-PROP-001/BUD-ROOT-001/AUDIT-IMM-001/AUDIT-TENANT-001/F-PLAINTEXT/P2-F8` 已分别以 `EVID-G1-001/002/003/004/005/006/007/008/009/010/011/012/013` 完成 production canary 并关闭；Group 1 当前为 13/16 closed、3/16 pending，不再有“已部署但未关闭”的 leaf。不得把 13 个独立 leaf 的关闭冒充 Group 1 或 103 项完成。
 >
 > 组合输入：`agent-native-atomic-review-2026-07-14.md`、`agent-native-extreme-boundary-atomic-review-2026-07-14.md`、`unified-context-assembly-and-progressive-disclosure-2026-07-14.md`、`session-v2-cc-codex-alignment-contract-2026-07-14.md`、修订后的 `reusable-agent-native-atomic-review-prompt.md`，以及当前 Hive / FreeCode / Codex 本地源码。
 >
@@ -593,7 +593,7 @@ Group 摘要不能替代以下两份文档：
 | Group | owner canonical leaf | owner Missing | 当前状态 |
 |---:|---:|---:|---|
 | 0 | 0（全局门） | 0 | closed：`EVID-G0-002/003/004/005/006`，Git truth、机器账本、11 个上下文包/88 个 `@` 文档入口、跨仓快照与 clean-checkout harness 已闭环 |
-| 1 | 16 | 0 | in_progress：`P0-F1/P0-F2/E-1/P1-004/P1-F4/KB-EXTRACT-001/KB-AUTH-001/KB-PROP-001/BUD-ROOT-001/AUDIT-IMM-001/AUDIT-TENANT-001/F-PLAINTEXT` 已关闭（12/16）；无 deployed-but-open leaf；其余 4 个 leaf 待施工 |
+| 1 | 16 | 0 | in_progress：`P0-F1/P0-F2/E-1/P1-004/P1-F4/KB-EXTRACT-001/KB-AUTH-001/KB-PROP-001/BUD-ROOT-001/AUDIT-IMM-001/AUDIT-TENANT-001/F-PLAINTEXT/P2-F8` 已关闭（13/16）；无 deployed-but-open leaf；其余 3 个 leaf 待施工 |
 | 2 | 14 | 0 | open |
 | 3 | 7 | 0 | open |
 | 4 | 6 | 0 | open |
@@ -916,7 +916,7 @@ Group 摘要不能替代以下两份文档：
 
 **源码入口**：terminal hook/T2 job/outbox、T0 projection/hash verifier、T2/T3 write authority/locks、capability factor consumers、Memory availability gates、Knowledge ACL/index/retention/audit。
 
-**首个 Red**：在 terminal commit 后注入 T2 provider outage、worker crash/restart、dead-letter/requeue、T0 hash tamper、并发 T3 write、rolling deploy 期间旧实例长期持有 Agent asset lock、Knowledge ACL revoke 与 retention/legal hold；证明 terminal 被阻塞、证据不可验、锁外写、无 timeout 的新实例 startup 等待、永久 held 或跨资产删除不守恒。`EVID-G1-010/011/012` 已连续三次记录 production backend 在 `startup: push default skills to every existing agent across tenants` 后长停顿；第三次从 deployment 创建到 daemon ready 约 6 分 51 秒，default-skill push 后等待约 203 秒，health 的 `event_loop.max_lag_ms=203831.58`。停顿位置已重复确证，但当前仍无进程 stack，必须由 Group 8 fault injection 最终坐实或推翻 blocking `flock` 根因并建立 bounded typed recovery。`EVID-G1-011` 还捕获 `MemoryEnhancementSyncResult` 没有 `skipped` 属性的每轮 warning，而同一 health 将 evolution daemon 报为 healthy 且 `last_error=null`；该证据并入既有 `F-OBS1` 的错误可见性/清除验收，不新增第 104 个 leaf。两项都不得被 Group 1 安全 leaf 的关闭掩盖。
+**首个 Red**：在 terminal commit 后注入 T2 provider outage、worker crash/restart、dead-letter/requeue、T0 hash tamper、并发 T3 write、rolling deploy 期间旧实例长期持有 Agent asset lock、Knowledge ACL revoke 与 retention/legal hold；证明 terminal 被阻塞、证据不可验、锁外写、无 timeout 的新实例 startup 等待、永久 held 或跨资产删除不守恒。`EVID-G1-010/011/012/013` 已连续四次记录 production backend 在 `startup: push default skills to every existing agent across tenants` 后长停顿；第三、四次都从该日志到 daemon ready 等待约 203 秒，第三次 health 的 `event_loop.max_lag_ms=203831.58`，第四次为 `197663.07`。停顿位置与量级已重复确证，但当前仍无进程 stack，必须由 Group 8 fault injection 最终坐实或推翻 blocking `flock` 根因并建立 bounded typed recovery。`EVID-G1-011` 还捕获 `MemoryEnhancementSyncResult` 没有 `skipped` 属性的每轮 warning，而同一 health 将 evolution daemon 报为 healthy 且 `last_error=null`；该证据并入既有 `F-OBS1` 的错误可见性/清除验收，不新增第 104 个 leaf。两项都不得被 Group 1 安全 leaf 的关闭掩盖。
 
 **证据回填**：`EVID-G8-*` 必须保存 T0/T2/T3/soul source refs/hash/lock/outbox/job/retry/dead-letter/requeue、Knowledge ACL/retention/legal-hold 与跨资产 deletion/export ledger；同步 `§12.2` 九行、`§13.1` 两个 Missing 和 `§12.3`。
 
@@ -1239,7 +1239,7 @@ Group 0 是全局证据门，不拥有业务 leaf。下面 103 行必须与 cano
 - P2 | AUDIT-IMM-001 | closed:EVID-G1-010 | commit `94e3ecf58/c0e1108a6` 在数据库层禁止两张 canonical audit 表 UPDATE/DELETE/TRUNCATE，外部 principal provenance 改为 RESTRICT；真实 PG、clean-checkout 全量、三服务部署与 production 零残留事务 canary 已绿
 - P2 | AUDIT-TENANT-001 | closed:EVID-G1-011 | commit `09c3823a0` 将 tenantless security event 路由到不可变 operator audit plane，返回 typed receipt；真实 PG/app_rls、clean-checkout 全量、成功认证 audit-failure fail-closed、三服务部署与 production append-only canary 已绿
 - P2 | F-PLAINTEXT | closed:EVID-G1-012 | commit `8570efdad` 对全部非空 `AgentTool.config` 做版本化认证信封加密、透明运行时解密、API 结构化遮罩与 secure migration；真实 PG、clean-checkout 全量、三服务 exact-source 部署和 production 706/706 encrypted、0 plaintext inventory 已绿
-- P2 | P2-F8 | inherited-current-evidence | `rg` 参数缺 `--` 可 flag injection
+- P2 | P2-F8 | closed:EVID-G1-013 | commit `6776c3d12` 在 model-authored search pattern 前加入 `rg --` machine-contract boundary；CC/Codex 源码对照、TDD、623 tools tests、clean-checkout 全量、三服务部署、live hash 与 production `--files/--pre` literal canary 已绿
 - P2 | P2-F6 | inherited-current-evidence | model config 写入缺 cross-tenant reference 校验
 - P2 | KB-CONTRACT-001 | inherited-split | Knowledge tool description/spec/implementation 不一致
 - P2 | G-02 | inherited-current-evidence | production i18n key 缺失
@@ -1325,7 +1325,7 @@ Group 0 是全局证据门，不拥有业务 leaf。下面 103 行必须与 cano
 | Group | 证据前缀 | Owner 范围 | 当前证据状态 | 下一次写入要求 |
 |---:|---|---|---|---|
 | 0 | `EVID-G0-*` | 0 leaf / 0 Missing | `closed`：`EVID-G0-001/002/003/004/005/006`；文档 Git truth、owner/path/decision/scenario CI、11 个 Group 上下文包、88 个去重 `@` 文档入口、跨仓快照与 fake-provider/PG/Redis harness 基座成立 | 后续任何新增本地 `@docs` 必须先进入 Git 并同步上下文包索引；业务场景 Green 仍由 owner Group 负责 |
-| 1 | `EVID-G1-*` | 16 leaf / 0 Missing | `in_progress`：`P0-F1/P0-F2/E-1/P1-004/P1-F4/KB-EXTRACT-001/KB-AUTH-001/KB-PROP-001/BUD-ROOT-001/AUDIT-IMM-001/AUDIT-TENANT-001/F-PLAINTEXT` 的独立 code/evidence、production canary 均已绿并关闭（12/16）；无 deployed-but-open leaf；其余 4 leaf 未施工 | 按 §12.1 owner map 与依赖重验下一个 Group 1 leaf；每个剩余 leaf 仍须独立 Red→Green、迁移/回填、fault、rollback、consumer 与 production evidence，不得用前十二项关闭冒充 Group 1 closed |
+| 1 | `EVID-G1-*` | 16 leaf / 0 Missing | `in_progress`：`P0-F1/P0-F2/E-1/P1-004/P1-F4/KB-EXTRACT-001/KB-AUTH-001/KB-PROP-001/BUD-ROOT-001/AUDIT-IMM-001/AUDIT-TENANT-001/F-PLAINTEXT/P2-F8` 的独立 code/evidence、production canary 均已绿并关闭（13/16）；无 deployed-but-open leaf；其余 3 leaf 未施工 | 按 §12.1 owner map 与依赖重验下一个 Group 1 leaf；每个剩余 leaf 仍须独立 Red→Green、迁移/回填、fault、rollback、consumer 与 production evidence，不得用前十三项关闭冒充 Group 1 closed |
 | 2 | `EVID-G2-*` | 14 leaf / 0 Missing | `open` | 写 Session event/item/reducer、persist-before-publish、projection/backfill 与 SESSION-G 结果 |
 | 3 | `EVID-G3-*` | 7 leaf / 0 Missing | `open` | 写 root admission、reserve/commit/release、terminal CAS、approval resume 与 fanout 曲线 |
 | 4 | `EVID-G4-*` | 6 leaf / 0 Missing | `open` | 写 result ref、mailbox lease/CAS、integration epoch、partial/late/duplicate 与 100-way return storm |
@@ -2245,7 +2245,69 @@ context_read_receipt:
 - 部署期间额外证据：backend 在 `startup: push default skills to every existing agent across tenants` 后再次等待约 203 秒，daemon 于 12:02:07 UTC 才 ready，health 记录 `event_loop.max_lag_ms=203831.58`。这是 `EVID-G1-010/011` 后第三次同位置复现，已回流 §9 Group 8 的 startup asset-lock/fault-injection Red；没有进程 stack 前仍不得把 blocking `flock` 当已证根因，也不新增第 104 个 leaf。
 - 七原子：Input=manage-authorized per-agent arbitrary tool config 与 legacy rows；Authority=Agent/tenant manage access、schema-owner migration role、SecretsProvider current/previous keyring；Execution=ORM bind/result 单入口 + API masked display/runtime split + Alembic transactional backfill；Evidence=versioned authenticated envelope、count-only inventory、test/deploy/source hash；Recovery=fail-closed read/write、key rotation、idempotent rewrap、schema readiness retry、secure downgrade；Consumption=Smithery/MCP/search/email/AgentBay 等原调用方透明拿到完整 dict，UI 只拿 sentinel；Acceptance=TDD 三轮 Red→Green、162 targeted、真实 PG、exact-checkout 7182、三服务同源、production 706/706 与 health。七原子均有当前真实路径，因此本 leaf 可独立关闭。
 - 北极星裁决：hard gate 的事实源只来自 Credential Visibility、Authority、Machine Contract、Evidence/Recovery allowlist；实现不扫描自然语言、不裁剪 authorized evidence、不降低 context/output budget、不改写模型 final，也不删除 Skill/MCP/subagent/workflow 能力。CC 的完整 MCP config/lifecycle 是语义底座，Codex 的 explicit credential authority/fail-visible storage 是工程增量，Hive 增加 multi-tenant DB envelope、RLS migration、API sentinel 与 fleet key rotation，属于 capability-preserving determinism 和 Hive-native enterprise delta。
-- 残余边界：MCP OAuth token store 继续由独立 OAuth authority 管理；全局 `Tool.config` 与 `TenantToolConfig` 的 schema-driven secret 路径没有被本 leaf 偷换为“全部配置已统一”，后续治理重验仍以各自 consumer 为准。Group 8 继续负责 startup asset lock；这些边界不影响 `AgentTool.config` 的零明文闭环。对应 canonical 行已更新为 `closed:EVID-G1-012`；Group 1 当前为 12/16 closed、0 deployed-but-open、4/16 pending。103 分母、severity、owner 与 5 个 Missing 均不变；下一 Group 1 leaf 为 `P2-F8`。
+- 残余边界：MCP OAuth token store 继续由独立 OAuth authority 管理；全局 `Tool.config` 与 `TenantToolConfig` 的 schema-driven secret 路径没有被本 leaf 偷换为“全部配置已统一”，后续治理重验仍以各自 consumer 为准。Group 8 继续负责 startup asset lock；这些边界不影响 `AgentTool.config` 的零明文闭环。对应 canonical 行保持 `closed:EVID-G1-012`；本证据关闭当时 Group 1 为 12/16 closed、0 deployed-but-open、4/16 pending，当前滚动状态只以 §9 与 §12.3 为准。103 分母、severity、owner 与 5 个 Missing 均不变；当时下一 Group 1 leaf 为 `P2-F8`。
+
+#### EVID-G1-013：P2-F8 ripgrep option terminator
+
+- `leaf_ids`：`P2-F8`；owner Group / 依赖 Group：Group 1 / Group 0。本项只关闭 `grep_search` 把 model-authored regex 直接放进 `rg` argv、导致以 `-` 开头的合法 pattern 被解释成 `--files`、`--pre` 等 CLI option 的 machine-contract seam；不把通用 Bash command、code-execution sandbox、Workspace scan budget/timeout 或 Group 6 context pressure 合并进本 leaf。
+- 当前状态：`closed`。argv option terminator、leading-dash pattern byte preservation、路径 authority 邻接、真实 ripgrep、clean-checkout 全量 backend、三服务 exact-source 部署、live source hash、production `--files/--pre` literal canary 与 health 均已 Green；canonical 为 `closed:EVID-G1-013`。
+- 冻结事实与 ownership：开工 HEAD=`52accd18d6f5b46e64558ce2f232ebfc0b6e8d0c`；code commit=`6776c3d12c9c3bb9844245aaa80fbd0017f87fea`，tree=`c60854775bce2000a292739cbf2e9987a9e81b23`，parent=`52accd18d6f5b46e64558ce2f232ebfc0b6e8d0c`，2 files，`40 insertions(+), 1 deletion(-)`。`workspace.py` 与 `test_workspace_search.py` 开工时均无 diff；共享工作树其它 session 改动未 stage、reset 或归属本项，`git show --name-status 6776c3d12` 是 owned manifest 事实源。
+
+```yaml
+context_read_receipt:
+  aa_entry: "§9 Group 1 + §12.1/§12.2 P2-F8 + §12.3 Group 1"
+  leaf_ids: ["P2-F8"]
+  documents:
+    - ref: "@docs/agent-native-atomic-review-2026-07-14.md"
+      role: "original P2-F8 code-path evidence"
+      decision_consumed: "grep_search passes an untrusted pattern to rg without an option terminator; this is argv flag injection, not shell interpolation"
+      sha256: "4f1e8893fe03251c02ce9805300b94d6db00c34e032c978f3805c2b1f061e919"
+    - ref: "@docs/agent-native-atomic-review-501db655.md"
+      role: "parallel authority/effect-boundary review"
+      decision_consumed: "the parallel report adds no duplicate P2-F8 leaf; its narrow-effect rule prevents merging this fix with unrelated tool-governance work"
+      sha256: "014734a43994bd1b4a906f89eea21d4686b08c88ec167d8c5046c0f0cdc7f0bb"
+    - ref: "@docs/unified-context-assembly-and-progressive-disclosure-2026-07-14.md"
+      role: "CCPlus tool execution envelope"
+      decision_consumed: "model chooses the regex; platform owns exact argv/protocol validity and effect isolation without reducing the capability surface"
+      sha256: "c83a1f94b206af7de8bc44f7f4de35746c65d255574a347cbfd80ce0cc3075b7"
+    - ref: "@docs/session-v2-cc-codex-alignment-contract-2026-07-14.md"
+      role: "session tool-call and typed recovery contract"
+      decision_consumed: "tool input bytes remain model-authored while the executor provides deterministic machine framing"
+      sha256: "52a13072ef51ec1ad8f22be5f484b274880c4b7aea801104bd4ca5cdc27c0ac4"
+    - ref: "@docs/runtime-model-agency-constraint-audit-2026-07-13.md"
+      role: "Model Agency hard-constraint law"
+      decision_consumed: "machine syntax/protocol safety is an allowed hard invariant; natural-language pattern blacklists are not"
+      sha256: "366c8a5e4351e76083e6096a8cca09fe93a952ce831cf01e3cae34e2f8b91530"
+    - ref: "@docs/ccplus-session-permission-and-enterprise-hard-rules-2026-06-25.md"
+      role: "CCPlus workspace/sandbox boundary"
+      decision_consumed: "session permission cannot bypass tool-specific safety preflight, but a deny must not delete safe read capability"
+      sha256: "db8d895b283ecb7ae747ef7fbbb76591f32aba599052d24d759dcb31c83f7cb0"
+    - ref: "@docs/ccplus-governance-layer-architecture-2026-06-28.md"
+      role: "tool-specific preflight ordering"
+      decision_consumed: "validate final tool input at the narrow executor boundary and preserve all earlier authority decisions"
+      sha256: "593c54f399708d3c4d61bf1900b8d788ecc1a3127077a1ffd9ab3a938b3ad94e"
+    - ref: "@docs/ccplus-tool-call-governance-closure-landing-plan-2026-06-28.md"
+      role: "workspace core and call-time governance"
+      decision_consumed: "grep remains a core read capability; path boundary and exact machine invocation are platform-owned"
+      sha256: "05db3f2d3747a083575fe92f20acd3635ff1f0e48b372b3a6fe201e72df93963"
+  evidence_sink: "EVID-G1-013"
+```
+
+- 原断点证据：开工版本 `workspace.py::_grep_search` 构造 `['rg', '--line-number', '--color', 'never', pattern, search_root]`；虽然 `subprocess.run` 使用 argv list 且没有 shell interpolation，`rg` 自己仍会把 `pattern='--files'` 当控制参数，把 `--pre=<command>` 当预处理器配置。攻击面是 argument/parser differential：模型请求搜索某个字符串，外部程序却执行另一种模式；不能用“没有 shell=True”推翻。
+- CC/FreeCode 当前源码对照：FreeCode HEAD=`7dc15d6c8fb0c40c7fcc02ce9b58204324252632`。`src/tools/GrepTool/GrepTool.ts` SHA-256=`80300c3119836315b802de705a5732c8377f36b05dee31ddcbb38a9abf0bfc07` 在 pattern 以 `-` 开头时显式使用 `-e pattern`，保留搜索能力同时阻止 option interpretation；`src/tools/BashTool/readOnlyValidation.ts` SHA-256=`07a99b7cc73ce9ee45dc0a5cb47755ef5cf2170e6b0d95cd273ff9ece5656c18` 还把 `rg --pre` 记录为可导致外部命令执行的真实危险面。Hive 必须达到这条 CC 语义/安全下限，不能靠禁止 leading-dash 搜索词降级。
+- Codex 当前源码对照：Codex HEAD=`5c19155cbd93bfa099016e7487259f61669823ff`。`codex-rs/rollout/src/search.rs` SHA-256=`21e203405393a0634e018fb15b586026f5ca1ce97929ef76fcbdad22667c7758` 在 search term 前始终 `.arg('--')`；`codex-rs/shell-command/src/command_safety/is_safe_command.rs` SHA-256=`e10962e362cb35ee1dbe83554df572d00803535c69a1476700f6a9fb275c9318` 对通用 shell `rg` 额外拒绝 `--pre/--hostname-bin/--search-zip`。Hive 的 fixed `grep_search` 采用更窄、更确定的 Codex option terminator；通用 command surface 仍由既有 sandbox/governance 独立负责。
+- Red：先新增 `test_grep_search_terminates_rg_options_before_untrusted_pattern`，mock 只捕获 argv 并返回无副作用结果；初跑稳定为 `1 failed`，差异精确显示 index 4 为用户 `--files`，预期为 `--`，没有因文件系统、ripgrep 缺失或随机输出失败。该测试同时断言 subprocess 仍是 `capture_output=True/text=True/check=False`，修复不能偷偷换成 shell string。
+- Green/Refactor：唯一生产变化把末尾 argv 改成 `('--', pattern, absolute_search_root)`，并注释 model-authored pattern 永远是 data；不增加关键词表、不拒绝以 `-` 开头的 regex、不重写 pattern，也不改变 existing `max_results`、path authority、fallback regex 或 typed error path。单测=`1 passed`；Workspace search/path-authority 邻接=`42 passed`；完整 `tests/tools`=`623 passed`；owned files 的 `ruff check`、`ruff format --check`、`git diff --check` 均 clean。
+- 本机真实 ripgrep：在非 mock 路径调用 `_grep_search(Path.cwd(), '--files', root='tests/tools', max_results=3)`，返回 `test_workspace_search.py` 中 3 条 `--files` 字面匹配，而不是文件清单或 option error；证明 argv contract 和真实 binary 语义一致。
+- clean-checkout 全量：detached worktree=`/tmp/hive-p2-f8-6776c3d12`、HEAD=`6776c3d12`，执行完整 backend 得到 `7183 passed, 2 skipped in 257.77s`、exit `0`。共享主工作树的其它 session 改动不在该 checkout，不把它们的测试结果归给本项。
+- migration/backfill/rollback：本 leaf 不改变 schema、持久数据或 UI，所以没有空 migration/backfill。历史 flag-like 查询没有 durable effect 可安全推断或回填；invocation evidence 按原 bytes 保留。rollback 到旧代码会重新打开 parser differential，安全恢复是保留当前 commit 或 forward-fix；不需要数据 rollback，也不得用 pattern blacklist 作为临时降级。
+- production deploy/freshness：exact `6776c3d12` Git archive 部署 backend=`4591c65f-4457-4240-91e7-3702abcf6625`、backend-api=`7c180839-6601-45b5-8b39-ea3044fe7468`、frontend=`fcc0eeb9-7797-4425-be14-5e5b16c1a0c6`，三者均 `SUCCESS`。live `workspace.py` SHA-256=`914ae383254a593e007b9dd11760943d95d9ac073269606345d9b128b4e02b59` 与 Git source 一致；backend schema readiness=`agent_tool_config_encryption_0715`、issues=`[]`，health=`status=ok`、runtime=`app_rls/strict/non-superuser/non-BYPASSRLS`、三 daemon/RuntimeTask worker/sandbox probe 均健康；frontend=`HTTP/2 200`。
+- production canary：第一次 `python -c` 因 Railway SSH 丢失远端引号，在 import/函数调用前 shell syntax error、exit `2`，不计行为证据且没有副作用。保留远端引号后，同一 live function 对 `--files` 与 `--pre` 各返回 `workspace.py:1228` 的字面匹配，证明两者都没有进入 rg option plane；canary 只读代码目录，不创建或修改生产数据。
+- fault/recovery：leading-dash bytes 由 `--` 机械隔离；ordinary no-match 仍是正常空结果，invalid regex/rg unavailable 仍走既有 typed error/fallback，不伪造匹配。path escape/authority tests 保持 Green。若 binary invocation 失败，原 pattern 和 stderr 可用于重试；修复不把一次搜索拒绝扩散为 Session/Agent hard stop。Workspace scan duration/output/resource ceiling 属于既有 Group 6 `SESSION-G13`/capacity ledger 验收，不在本 leaf 造第二套 limiter。
+- 部署期间额外证据：第四次 backend startup 于 12:20:07 UTC 进入 `startup: push default skills to every existing agent across tenants`，daemon 到 12:23:29 才 ready，约 203 秒；health `event_loop.max_lag_ms=197663.07`。它与 `EVID-G1-010/011/012` 同位置同量级，已回流 §9 Group 8；没有进程 stack 前仍不得把 blocking `flock` 当已证根因，也不新增第 104 个 leaf。
+- 七原子：Input=model-authored regex/root/max_results；Authority=resolved Workspace boundary 与 `authority_scope` path predicate；Execution=`_grep_search` 唯一 argv constructor + `rg -- pattern absolute_root`；Evidence=captured argv、真实 binary result、live source hash、production literal canary；Recovery=no-match/error 保持 typed、原 input 可重试、无持久数据回滚；Consumption=原 `grep_search` tool/Skill/subagent/workspace caller 继续消费同形文本结果；Acceptance=TDD Red→Green、42/623 targeted、真实 rg、clean-checkout 7183、三服务同源、production `--files/--pre` 与 health。七原子均有当前真实路径，因此本 leaf 可独立关闭。
+- 北极星裁决：`--` 只执行 Machine Contract / Execution Isolation 的可验证硬不变量，平台不判断 regex 语义、不扫描自然语言关键词、不删工具、不裁剪结果、不降低 context/output budget、不改写模型 final。CC 的完整 leading-dash pattern 能力是语义底座，Codex 的 typed argv terminator 是工程增量，Hive 保留 tenant/path authority 与企业 evidence，属于 capability-preserving determinism。
+- 残余边界：通用 Bash/command 中用户显式选择的 `rg` flags 继续由 sandbox/approval/command safety 管理，不能用本 leaf 冒充整个 command plane 已关闭；Group 6 继续负责大目录搜索的时间/输出/context pressure。对应 canonical 行已更新为 `closed:EVID-G1-013`；Group 1 当前为 13/16 closed、0 deployed-but-open、3/16 pending。103 分母、severity、owner 与 5 个 Missing 均不变；下一 Group 1 leaf 为 `P2-F6`。
 
 ## 13. Missing、Coverage Gap 与完成口径
 

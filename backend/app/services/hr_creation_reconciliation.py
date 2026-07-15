@@ -32,6 +32,16 @@ def _clear_stale_claim(draft: HrCreationDraft) -> None:
     draft.claim_expires_at = None
 
 
+def _has_stale_domain_claim(draft: HrCreationDraft, task: RuntimeTask, *, now: datetime) -> bool:
+    if draft.status not in {"creating", "provisioning"} or draft.claim_token is None:
+        return False
+    if draft.claim_expires_at is not None and draft.claim_expires_at > now:
+        return False
+    if task.status in {"pending", "resumable"}:
+        return True
+    return task.status == "running" and (task.claim_expires_at is None or task.claim_expires_at <= now)
+
+
 def _candidate_statement(statement, *, now: datetime, limit: int, tenant_id: uuid.UUID | None):
     stale_domain_claim = and_(
         HrCreationDraft.status.in_(("creating", "provisioning")),
@@ -70,7 +80,6 @@ def _candidate_statement(statement, *, now: datetime, limit: int, tenant_id: uui
         )
         .order_by(HrCreationDraft.updated_at.asc(), HrCreationDraft.created_at.asc())
         .limit(max(1, min(int(limit), 500)))
-        .with_for_update(skip_locked=True, of=HrCreationDraft)
     )
     return statement.where(HrCreationDraft.tenant_id == tenant_id) if tenant_id is not None else statement
 
@@ -125,6 +134,8 @@ async def _block_missing_authority(
 ) -> None:
     if task is not None:
         uncertain = task.status in {"running", "completed", "needs_reconciliation"}
+        if task.status == "running" or task.claimed_by is not None:
+            task.claim_version = int(task.claim_version or 0) + 1
         task.status = "needs_reconciliation" if uncertain else "killed"
         task.completed_at = now
         task.claimed_by = None
@@ -261,27 +272,38 @@ async def reconcile_hr_creation_drafts_once(
         database.async_session() as db,
         enter_rls_bypass(db, reason="HR draft expiry and orphaned provisioning reconciliation"),
     ):
-        statement = _candidate_statement(select(HrCreationDraft), now=now, limit=limit, tenant_id=tenant_id)
-        drafts = list((await db.execute(statement)).scalars())
-        summary["checked"] = len(drafts)
-        for draft in drafts:
+        statement = _candidate_statement(
+            select(HrCreationDraft.id, HrCreationDraft.provisioning_task_id),
+            now=now,
+            limit=limit,
+            tenant_id=tenant_id,
+        )
+        candidates = list((await db.execute(statement)).all())
+        summary["checked"] = len(candidates)
+        for draft_id, linked_task_id in candidates:
+            # All HR mutations share RuntimeTask -> draft lock order. Candidate
+            # discovery is intentionally unlocked; the fresh locked row below
+            # is the authority and stale candidates are skipped.
             task = (
-                await db.get(RuntimeTask, draft.provisioning_task_id, with_for_update=True)
-                if draft.provisioning_task_id
-                else None
+                await db.get(RuntimeTask, linked_task_id, with_for_update=True) if linked_task_id is not None else None
             )
+            draft = await db.get(HrCreationDraft, draft_id, populate_existing=True, with_for_update=True)
+            if draft is None or draft.provisioning_task_id != linked_task_id:
+                continue
             if draft.status == "awaiting_confirmation":
                 summary["expired"] += int(await _expire_preview(db, draft, now=now))
+            elif draft.status not in _ACTIVE_DRAFT_STATUSES:
+                continue
             elif draft.confirmed_by_user_id is None or draft.confirmed_at is None:
                 await _block_missing_authority(db, draft, task, now=now)
                 summary["authority_blocked"] += 1
             elif task is None:
                 await _recover_missing_job(db, draft, now=now)
                 summary["jobs_created"] += 1
-            elif task.status in _TERMINAL_TASK_STATUSES:
+            elif draft.status in {"confirmed", "creating", "provisioning"} and task.status in _TERMINAL_TASK_STATUSES:
                 await _converge_terminal_task(db, draft, task)
                 summary["failed_converged"] += 1
-            elif draft.claim_token is not None:
+            elif _has_stale_domain_claim(draft, task, now=now):
                 _release_claim_for_replay(draft, task)
                 summary["claims_released"] += 1
         await db.commit()

@@ -73,6 +73,12 @@ async def run_hr_provisioning(request: ToolExecutionRequest, *, support: Any) ->
         draft_id, scope_tenant_id, user_id, session_id, args, claim = await _claim_canonical_hr_blueprint(request)
     except (HrCreationConflict, ValueError) as exc:
         code = getattr(exc, "code", "invalid_request")
+        if request.arguments.get("_runtime_authority") is not None and code in {
+            "blueprint_integrity_mismatch",
+            "missing_confirmation_evidence",
+            "runtime_authority_mismatch",
+        }:
+            raise
         message = getattr(exc, "message", str(exc))
         return json.dumps({"status": "error", "error": code, "message": message}, ensure_ascii=False)
 

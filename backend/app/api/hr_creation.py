@@ -113,6 +113,66 @@ async def _linked_provisioning_task_or_none(
     return (await db.execute(statement)).scalar_one_or_none()
 
 
+async def _load_hr_draft_and_task_for_mutation(
+    *,
+    db: AsyncSession,
+    current_user: User,
+    agent_id: uuid.UUID,
+    draft_id: uuid.UUID,
+    task_required: bool = True,
+) -> tuple[HrCreationDraft, RuntimeTask | None]:
+    """Lock one HR mutation in the global RuntimeTask -> draft order."""
+
+    agent = await _load_hr_agent_for_user(db=db, current_user=current_user, agent_id=agent_id)
+    try:
+        candidate = await load_hr_creation_draft(
+            db,
+            draft_id=draft_id,
+            tenant_id=agent.tenant_id,
+            hr_agent_id=agent_id,
+            requested_by_user_id=current_user.id,
+            for_update=False,
+        )
+        linked_task_id = candidate.provisioning_task_id
+        task: RuntimeTask | None = None
+        if linked_task_id is not None:
+            task = (
+                await db.execute(
+                    select(RuntimeTask)
+                    .where(
+                        RuntimeTask.id == linked_task_id,
+                        RuntimeTask.tenant_id == agent.tenant_id,
+                        RuntimeTask.task_type == "hr_provisioning",
+                    )
+                    .with_for_update()
+                )
+            ).scalar_one_or_none()
+            if task is None:
+                raise HrCreationConflict("provisioning_task_missing", "HR provisioning task link is invalid.")
+        elif task_required:
+            raise HrCreationConflict(
+                "provisioning_task_missing",
+                "Confirmed HR draft has no durable provisioning task.",
+            )
+        draft = await load_hr_creation_draft(
+            db,
+            draft_id=draft_id,
+            tenant_id=agent.tenant_id,
+            hr_agent_id=agent_id,
+            requested_by_user_id=current_user.id,
+            for_update=True,
+        )
+        if draft.provisioning_task_id != linked_task_id:
+            raise HrCreationConflict(
+                "retry_required",
+                "HR provisioning state changed while acquiring mutation authority; reload and retry.",
+            )
+        return draft, task
+    except HrCreationConflict as exc:
+        status_code = 404 if exc.code == "not_found" else 409
+        raise HTTPException(status_code=status_code, detail={"error": exc.code, "message": exc.message}) from exc
+
+
 @router.get("/{agent_id}/hr-creation-drafts", response_model=list[HrCreationDraftOut])
 async def list_hr_creation_drafts(
     agent_id: uuid.UUID,
@@ -246,29 +306,6 @@ async def confirm_hr_creation_draft(
     return _out(hr_creation_draft_payload(draft, runtime_task=task))
 
 
-async def _linked_provisioning_task(
-    db: AsyncSession,
-    *,
-    draft,
-) -> RuntimeTask:
-    if draft.provisioning_task_id is None:
-        raise HrCreationConflict("provisioning_task_missing", "Confirmed HR draft has no durable provisioning task.")
-    task = (
-        await db.execute(
-            select(RuntimeTask)
-            .where(
-                RuntimeTask.id == draft.provisioning_task_id,
-                RuntimeTask.tenant_id == draft.tenant_id,
-                RuntimeTask.task_type == "hr_provisioning",
-            )
-            .with_for_update()
-        )
-    ).scalar_one_or_none()
-    if task is None:
-        raise HrCreationConflict("provisioning_task_missing", "HR provisioning task link is invalid.")
-    return task
-
-
 @router.post("/{agent_id}/hr-creation-drafts/{draft_id}/retry", response_model=HrCreationDraftOut)
 async def retry_hr_creation_draft(
     agent_id: uuid.UUID,
@@ -276,11 +313,14 @@ async def retry_hr_creation_draft(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    draft = await _load_for_user(
-        db=db, current_user=current_user, agent_id=agent_id, draft_id=draft_id, for_update=True
+    draft, task = await _load_hr_draft_and_task_for_mutation(
+        db=db,
+        current_user=current_user,
+        agent_id=agent_id,
+        draft_id=draft_id,
     )
     try:
-        task = await _linked_provisioning_task(db, draft=draft)
+        assert task is not None
         if draft.status not in {"failed", "provisioning"}:
             raise HrCreationConflict("invalid_status", f"HR provisioning cannot be retried from {draft.status}.")
         if draft.confirmed_by_user_id is None or draft.confirmed_at is None:
@@ -356,11 +396,14 @@ async def cancel_hr_creation_draft(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    draft = await _load_for_user(
-        db=db, current_user=current_user, agent_id=agent_id, draft_id=draft_id, for_update=True
+    draft, task = await _load_hr_draft_and_task_for_mutation(
+        db=db,
+        current_user=current_user,
+        agent_id=agent_id,
+        draft_id=draft_id,
     )
     try:
-        task = await _linked_provisioning_task(db, draft=draft)
+        assert task is not None
         if draft.status not in {"confirmed", "creating", "provisioning", "failed"}:
             raise HrCreationConflict("invalid_status", f"HR provisioning cannot be cancelled from {draft.status}.")
     except HrCreationConflict as exc:
@@ -438,10 +481,13 @@ async def abandon_hr_creation_draft(
 ):
     from app.services.hr_creation_recovery import abandon_hr_creation
 
-    draft = await _load_for_user(
-        db=db, current_user=current_user, agent_id=agent_id, draft_id=draft_id, for_update=True
+    draft, task = await _load_hr_draft_and_task_for_mutation(
+        db=db,
+        current_user=current_user,
+        agent_id=agent_id,
+        draft_id=draft_id,
+        task_required=False,
     )
-    task = await _linked_provisioning_task_or_none(db, draft=draft, for_update=True)
     try:
         await abandon_hr_creation(db, draft, actor_id=current_user.id, task=task)
     except HrCreationConflict as exc:

@@ -576,7 +576,7 @@ RLS_BYPASS_ALLOWLIST = (
             "app/services/hr_creation_reconciliation.py",
             "reconcile_hr_creation_drafts_once",
             "'HR draft expiry and orphaned provisioning reconciliation'",
-            ("select:HrCreationDraft",),
+            ("select:HrCreationDraft.id,HrCreationDraft.provisioning_task_id",),
         )
     ),
     _grant(

@@ -839,6 +839,45 @@ def test_create_digital_employee_uses_validated_model_resolution() -> None:
     assert "confirmed_blueprint_hash" not in src
 
 
+@pytest.mark.asyncio
+async def test_durable_hr_runner_propagates_confirmation_authority_drift() -> None:
+    import json
+    import uuid
+
+    from app.services.hr_creation_service import HrCreationConflict
+    from app.services.hr_provisioning_runner import run_hr_provisioning
+
+    async def reject_claim(_request):
+        raise HrCreationConflict(
+            "missing_confirmation_evidence",
+            "Authenticated confirmation drifted after prepare.",
+        )
+
+    support = SimpleNamespace(
+        _append_hr_creation_t0_event=None,
+        _build_blueprint_preview_payload=None,
+        _build_create_employee_result=None,
+        _claim_canonical_hr_blueprint=reject_claim,
+        _dedupe_strings=None,
+        _install_external_skill_ref=None,
+        _parse_list=None,
+        _refine_soul_inputs=None,
+        _resolve_employee_creation_model=None,
+        _resolve_employee_refinement_model=None,
+        _stamp_hr_blueprint_trigger_exemption=None,
+        _trim_role_description_for_prompt_guard=None,
+        json=json,
+        logger=SimpleNamespace(),
+        stage_external_skill_package_review_for_tenant=None,
+        uuid=uuid,
+    )
+    request = SimpleNamespace(arguments={"_runtime_authority": {"runtime_task_id": str(uuid4())}})
+
+    with pytest.raises(HrCreationConflict) as exc_info:
+        await run_hr_provisioning(request, support=support)
+    assert exc_info.value.code == "missing_confirmation_evidence"
+
+
 def test_hr_trigger_config_is_structurally_held_instead_of_keyword_inferred() -> None:
     from app.services.hr_provisioning_runner import _normalize_blueprint_trigger_config, run_hr_provisioning
 

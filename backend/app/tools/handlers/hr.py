@@ -255,8 +255,9 @@ def _canonical_json(value: object) -> str:
 
 
 def _blueprint_hash(blueprint: dict) -> str:
-    digest = hashlib.sha256(_canonical_json(blueprint).encode("utf-8")).hexdigest()[:24]
-    return f"bp_{digest}"
+    from app.services.hr_creation_service import canonical_hr_blueprint_hash
+
+    return canonical_hr_blueprint_hash(blueprint)
 
 
 def _text_blob(*values: object) -> str:
@@ -1303,6 +1304,9 @@ async def _claim_canonical_hr_blueprint(
     """Bind a retry-safe create call to one authenticated, session-scoped draft."""
     from app.database import tenant_scoped_session
     from app.services.hr_creation_service import (
+        HrCreationConflict,
+        canonical_hr_blueprint_hash,
+        canonical_hr_blueprint_payload_hash,
         claim_hr_creation_draft_record,
         load_hr_creation_draft,
         validate_hr_creation_blueprint,
@@ -1329,7 +1333,52 @@ async def _claim_canonical_hr_blueprint(
         raise ValueError("could not resolve the requesting tenant")
     tenant_id = uuid.UUID(str(raw_tenant_id))
 
+    expected_authority = request.arguments.get("_runtime_authority")
+    expected: dict[str, Any] | None = None
+    runtime_task_id: uuid.UUID | None = None
+    if expected_authority is not None:
+        if not isinstance(expected_authority, dict):
+            raise HrCreationConflict("runtime_authority_mismatch", "HR runtime authority must be a typed object.")
+        expected = dict(expected_authority)
+        try:
+            runtime_task_id = uuid.UUID(str(expected.get("runtime_task_id") or ""))
+        except (TypeError, ValueError) as exc:
+            raise HrCreationConflict(
+                "runtime_authority_mismatch",
+                "HR runtime authority has no valid RuntimeTask identity.",
+            ) from exc
+        if str(runtime_task_id) != str(getattr(request.context, "runtime_task_id", None) or ""):
+            raise HrCreationConflict(
+                "runtime_authority_mismatch",
+                "HR runtime request does not match its execution context.",
+            )
+
     async with tenant_scoped_session(tenant_id) as db:
+        if runtime_task_id is not None and expected is not None:
+            from app.models.runtime_task import RuntimeTask
+
+            runtime_task = await db.get(RuntimeTask, runtime_task_id, with_for_update=True)
+            task_metadata = dict(runtime_task.metadata_json or {}) if runtime_task is not None else {}
+            if (
+                runtime_task is None
+                or runtime_task.task_type != "hr_provisioning"
+                or runtime_task.status != "running"
+                or runtime_task.tenant_id != tenant_id
+                or runtime_task.parent_agent_id != hr_agent_id
+                or runtime_task.root_user_id != user_id
+                or str(runtime_task.parent_session_id or "") != str(session_id)
+                or str(runtime_task.root_session_id or "") != str(session_id)
+                or runtime_task.config_snapshot_hash != expected.get("config_snapshot_hash")
+                or runtime_task.policy_snapshot_hash != expected.get("policy_snapshot_hash")
+                or task_metadata.get("draft_id") != str(draft_id)
+                or task_metadata.get("blueprint_version") != expected.get("blueprint_version")
+                or task_metadata.get("blueprint_hash") != expected.get("blueprint_hash")
+                or task_metadata.get("blueprint_payload_hash") != expected.get("blueprint_payload_hash")
+            ):
+                raise HrCreationConflict(
+                    "runtime_authority_mismatch",
+                    "HR RuntimeTask authority changed before the canonical blueprint claim.",
+                )
         draft = await load_hr_creation_draft(
             db,
             draft_id=draft_id,
@@ -1339,7 +1388,39 @@ async def _claim_canonical_hr_blueprint(
             session_id=session_id,
             for_update=True,
         )
+        if draft.confirmed_by_user_id != user_id or draft.confirmed_at is None:
+            raise HrCreationConflict(
+                "missing_confirmation_evidence",
+                "HR creation requires authenticated confirmation from the requesting user.",
+            )
+        if runtime_task_id is not None and expected is not None:
+            from app.services.hr_provisioning_runtime import _runtime_authority_issues
+
+            authority_issues = _runtime_authority_issues(runtime_task, draft)
+            if authority_issues:
+                raise HrCreationConflict(
+                    "runtime_authority_mismatch",
+                    "HR RuntimeTask authority changed before the canonical blueprint claim.",
+                )
         canonical_blueprint = dict(draft.blueprint_json or {})
+        payload_hash = canonical_hr_blueprint_payload_hash(canonical_blueprint)
+        canonical_hash = canonical_hr_blueprint_hash(canonical_blueprint)
+        if draft.blueprint_hash != canonical_hash:
+            raise HrCreationConflict(
+                "blueprint_integrity_mismatch",
+                "Canonical blueprint content no longer matches its persisted digest.",
+            )
+        if expected is not None:
+            expected_values = {
+                "blueprint_version": int(draft.blueprint_version),
+                "blueprint_hash": str(draft.blueprint_hash),
+                "blueprint_payload_hash": payload_hash,
+            }
+            if any(expected.get(key) != value for key, value in expected_values.items()):
+                raise HrCreationConflict(
+                    "runtime_authority_mismatch",
+                    "HR runtime authority changed before the canonical blueprint claim.",
+                )
         # Semantic validation must not acquire a lease. A malformed canonical
         # draft remains confirmed and immediately repairable instead of
         # blocking every retry for the lease duration.

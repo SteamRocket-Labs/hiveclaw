@@ -588,6 +588,54 @@ def apply_config_revision_immutability(connection: Connection) -> None:
     )
 
 
+def apply_hr_creation_blueprint_immutability(connection: Connection) -> None:
+    """Install the confirmed HR blueprint guard skipped by create_all + stamp."""
+
+    if connection.dialect.name != "postgresql":
+        return
+    if "hr_creation_drafts" not in set(inspect(connection).get_table_names()):
+        return
+    connection.execute(
+        text(
+            """
+            CREATE OR REPLACE FUNCTION enforce_hr_creation_blueprint_immutability()
+            RETURNS trigger
+            LANGUAGE plpgsql
+            AS $$
+            BEGIN
+                IF (OLD.status = 'superseded' AND OLD.status IS DISTINCT FROM NEW.status)
+                   OR (
+                        OLD.status IN ('confirmed', 'creating', 'provisioning', 'failed', 'completed', 'superseded')
+                        AND (
+                        OLD.blueprint_version IS DISTINCT FROM NEW.blueprint_version
+                        OR OLD.blueprint_hash IS DISTINCT FROM NEW.blueprint_hash
+                        OR OLD.blueprint_json IS DISTINCT FROM NEW.blueprint_json
+                        )
+                   )
+                THEN
+                    RAISE EXCEPTION 'confirmed HR blueprint is immutable'
+                        USING ERRCODE = '23514';
+                END IF;
+                RETURN NEW;
+            END;
+            $$
+            """
+        )
+    )
+    connection.execute(text("DROP TRIGGER IF EXISTS trg_hr_creation_blueprint_immutable ON hr_creation_drafts"))
+    connection.execute(
+        text(
+            """
+            CREATE TRIGGER trg_hr_creation_blueprint_immutable
+            BEFORE UPDATE OF blueprint_version, blueprint_hash, blueprint_json, status
+            ON hr_creation_drafts
+            FOR EACH ROW
+            EXECUTE FUNCTION enforce_hr_creation_blueprint_immutability()
+            """
+        )
+    )
+
+
 def apply_workflow_promotion_immutability(connection: Connection) -> None:
     """Install the proposal snapshot guard on create_all + stamp bootstraps."""
 
@@ -742,6 +790,7 @@ def prepare_runtime_schema(connection: Connection, metadata: MetaData) -> bool:
     metadata.create_all(bind=connection)
     apply_rls_policies(connection)
     apply_config_revision_immutability(connection)
+    apply_hr_creation_blueprint_immutability(connection)
     apply_workflow_promotion_immutability(connection)
     apply_audit_evidence_immutability(connection)
     return True
@@ -783,6 +832,7 @@ def bootstrap_database_to_head(connection: Connection, metadata: MetaData, heads
     # without tenant isolation (§9 P0 gap fix).
     apply_rls_policies(connection)
     apply_config_revision_immutability(connection)
+    apply_hr_creation_blueprint_immutability(connection)
     apply_workflow_promotion_immutability(connection)
     apply_audit_evidence_immutability(connection)
     ensure_alembic_version_table_width(connection)

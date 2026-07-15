@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -28,6 +29,102 @@ class HrCreationConflict(ValueError):
 
 def _now() -> datetime:
     return datetime.now(UTC)
+
+
+def canonical_hr_blueprint_json(blueprint: dict[str, Any]) -> str:
+    return json.dumps(blueprint, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def canonical_hr_blueprint_payload_hash(blueprint: dict[str, Any]) -> str:
+    return hashlib.sha256(canonical_hr_blueprint_json(blueprint).encode("utf-8")).hexdigest()
+
+
+def canonical_hr_blueprint_hash(blueprint: dict[str, Any]) -> str:
+    return f"bp_{canonical_hr_blueprint_payload_hash(blueprint)[:24]}"
+
+
+_SAFE_FAILED_REVISION_TASK_STATUSES = frozenset({"failed", "killed", "skipped"})
+
+
+def _failed_revision_blockers(draft: HrCreationDraft, task: Any | None) -> list[str]:
+    """Return mechanical evidence that makes a successor unsafe.
+
+    This deliberately does not infer whether a completed step was harmless.
+    A successor is allowed only when the durable facts prove execution never
+    started; every unknown or partially journaled state stays recoverable via
+    operator reconciliation.
+    """
+
+    blockers: list[str] = []
+    if task is None:
+        blockers.append("runtime_task_missing")
+        return blockers
+    if task.status not in _SAFE_FAILED_REVISION_TASK_STATUSES:
+        blockers.append("runtime_task_not_safely_terminal")
+    if task.claimed_by is not None or task.claim_expires_at is not None:
+        blockers.append("runtime_task_claim_present")
+    if str((task.metadata_json or {}).get("side_effect_risk") or "") != "not_started":
+        blockers.append("runtime_task_side_effect_risk")
+    if draft.created_agent_id is not None:
+        blockers.append("created_asset_present")
+    for step in draft.provisioning_steps:
+        if (
+            step.status != "pending"
+            or int(step.attempt_count or 0) > 0
+            or bool(step.receipt_json)
+            or step.started_at is not None
+            or step.completed_at is not None
+        ):
+            blockers.append("provisioning_step_execution_evidence")
+            break
+    return blockers
+
+
+async def _resolve_exact_hr_revision_retry(
+    db: AsyncSession,
+    *,
+    superseded_draft: HrCreationDraft,
+    preview_payload: dict[str, Any],
+) -> HrCreationDraft:
+    raw_successor_id = str((superseded_draft.provisioning_json or {}).get("superseded_by_draft_id") or "")
+    try:
+        successor_id = uuid.UUID(raw_successor_id)
+    except (TypeError, ValueError) as exc:
+        raise HrCreationConflict(
+            "reconciliation_required",
+            "Superseded HR blueprint has no valid successor evidence.",
+        ) from exc
+    successor = (
+        await db.execute(
+            select(HrCreationDraft)
+            .options(selectinload(HrCreationDraft.provisioning_steps))
+            .where(
+                HrCreationDraft.id == successor_id,
+                HrCreationDraft.tenant_id == superseded_draft.tenant_id,
+                HrCreationDraft.hr_agent_id == superseded_draft.hr_agent_id,
+                HrCreationDraft.session_id == superseded_draft.session_id,
+                HrCreationDraft.requested_by_user_id == superseded_draft.requested_by_user_id,
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if successor is None:
+        raise HrCreationConflict(
+            "reconciliation_required",
+            "Superseded HR blueprint successor is missing.",
+        )
+    if (
+        successor.blueprint_version != superseded_draft.blueprint_version + 1
+        or successor.blueprint_hash != str(preview_payload["blueprint_hash"])
+        or dict(successor.blueprint_json or {}) != dict(preview_payload["blueprint"])
+        or str((successor.preview_json or {}).get("supersedes_blueprint_id") or "") != str(superseded_draft.id)
+    ):
+        raise HrCreationConflict(
+            "superseded",
+            "This immutable blueprint was already superseded by a different revision.",
+        )
+    return successor
 
 
 @dataclass(frozen=True, slots=True)
@@ -403,25 +500,109 @@ async def upsert_hr_creation_draft(
     blueprint_id: uuid.UUID | None = None,
 ) -> HrCreationDraft:
     draft: HrCreationDraft | None = None
+    superseded_draft: HrCreationDraft | None = None
     if blueprint_id is not None:
+        scope = (
+            HrCreationDraft.id == blueprint_id,
+            HrCreationDraft.tenant_id == tenant_id,
+            HrCreationDraft.hr_agent_id == hr_agent_id,
+            HrCreationDraft.session_id == session_id,
+            HrCreationDraft.requested_by_user_id == requested_by_user_id,
+        )
+        candidate = (await db.execute(select(HrCreationDraft).where(*scope))).scalar_one_or_none()
+        if candidate is None:
+            raise HrCreationConflict("not_found", "HR creation draft was not found in this session.")
+
+        # Runtime workers lock RuntimeTask before HrCreationDraft. Preserve the
+        # same order when a failed immutable revision supersedes its old job so
+        # user editing cannot deadlock or race the durable worker.
+        linked_task_id = candidate.provisioning_task_id if candidate.status == "failed" else None
+        linked_task = None
+        if linked_task_id is not None:
+            from app.models.runtime_task import RuntimeTask
+
+            linked_task = await db.get(RuntimeTask, linked_task_id, with_for_update=True)
         result = await db.execute(
             select(HrCreationDraft)
             .options(selectinload(HrCreationDraft.provisioning_steps))
-            .where(
-                HrCreationDraft.id == blueprint_id,
-                HrCreationDraft.tenant_id == tenant_id,
-                HrCreationDraft.hr_agent_id == hr_agent_id,
-                HrCreationDraft.session_id == session_id,
-                HrCreationDraft.requested_by_user_id == requested_by_user_id,
-            )
+            .where(*scope)
             .with_for_update()
+            .execution_options(populate_existing=True)
         )
         draft = result.scalar_one_or_none()
         if draft is None:
             raise HrCreationConflict("not_found", "HR creation draft was not found in this session.")
-        if draft.status in {"confirmed", "creating", "provisioning", "completed"}:
-            raise HrCreationConflict("immutable", "A confirmed, started, or completed blueprint cannot be revised.")
-        draft.blueprint_version += 1
+        if draft.status == "superseded":
+            return await _resolve_exact_hr_revision_retry(
+                db,
+                superseded_draft=draft,
+                preview_payload=preview_payload,
+            )
+        if draft.status == "failed" and draft.provisioning_task_id != linked_task_id:
+            raise HrCreationConflict(
+                "retry_required",
+                "Provisioning state changed while preparing the revision; reload the latest blueprint and retry.",
+            )
+        if draft.status not in {"awaiting_confirmation", "failed"}:
+            raise HrCreationConflict(
+                "immutable",
+                f"A {draft.status} blueprint cannot be revised in place.",
+            )
+        if draft.status == "failed":
+            revision_blockers = _failed_revision_blockers(draft, linked_task)
+            if revision_blockers:
+                raise HrCreationConflict(
+                    "reconciliation_required",
+                    "The failed blueprint has execution evidence or unknown side effects and requires operator "
+                    "reconciliation before a successor can be created: " + ", ".join(revision_blockers),
+                )
+
+            current = _now()
+            next_draft_id = uuid.uuid4()
+            if linked_task is not None:
+                task_metadata = dict(linked_task.metadata_json or {})
+                if linked_task.status not in {"failed", "killed", "skipped", "needs_reconciliation"}:
+                    linked_task.status = "killed"
+                    linked_task.completed_at = current
+                    linked_task.result_summary = "Superseded by an explicitly revised HR blueprint."
+                linked_task.claim_version = int(linked_task.claim_version or 0) + 1
+                linked_task.claimed_by = None
+                linked_task.claim_expires_at = None
+                task_metadata.update(
+                    {
+                        "phase": "terminal",
+                        "automatic_retry_allowed": False,
+                        "superseded_at": current.isoformat(),
+                        "superseded_by_draft_id": str(next_draft_id),
+                        "superseded_by_blueprint_version": int(draft.blueprint_version) + 1,
+                    }
+                )
+                linked_task.metadata_json = task_metadata
+
+            superseded_draft = draft
+            superseded_draft.status = "superseded"
+            superseded_draft.claim_token = None
+            superseded_draft.claim_version = int(superseded_draft.claim_version or 0) + 1
+            superseded_draft.claim_heartbeat_at = None
+            superseded_draft.claim_expires_at = None
+            superseded_draft.provisioning_json = {
+                **dict(superseded_draft.provisioning_json or {}),
+                "superseded_at": current.isoformat(),
+                "superseded_by_draft_id": str(next_draft_id),
+                "superseded_by_blueprint_version": int(superseded_draft.blueprint_version) + 1,
+            }
+            draft = HrCreationDraft(
+                id=next_draft_id,
+                tenant_id=tenant_id,
+                hr_agent_id=hr_agent_id,
+                session_id=session_id,
+                requested_by_user_id=requested_by_user_id,
+                blueprint_version=int(superseded_draft.blueprint_version) + 1,
+                provisioning_steps=[],
+            )
+            db.add(draft)
+        else:
+            draft.blueprint_version += 1
     else:
         draft = HrCreationDraft(
             tenant_id=tenant_id,
@@ -436,7 +617,10 @@ async def upsert_hr_creation_draft(
     draft.status = "awaiting_confirmation"
     draft.blueprint_hash = str(preview_payload["blueprint_hash"])
     draft.blueprint_json = dict(preview_payload["blueprint"])
-    draft.preview_json = dict(preview_payload)
+    draft.preview_json = {
+        **dict(preview_payload),
+        **({"supersedes_blueprint_id": str(superseded_draft.id)} if superseded_draft is not None else {}),
+    }
     draft.confirmed_by_user_id = None
     draft.confirmed_at = None
     draft.rejected_by_user_id = None
@@ -476,7 +660,7 @@ async def load_hr_creation_draft(
     if session_id is not None:
         statement = statement.where(HrCreationDraft.session_id == session_id)
     if for_update:
-        statement = statement.with_for_update()
+        statement = statement.with_for_update().execution_options(populate_existing=True)
     result = await db.execute(statement)
     draft = result.scalar_one_or_none()
     if draft is None:

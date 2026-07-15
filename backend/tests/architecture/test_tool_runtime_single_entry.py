@@ -81,14 +81,54 @@ def test_tool_runtime_service_is_the_only_class_that_executes_registry_requests(
         if rel not in {
             "app/tools/service.py",
             "app/tools/runtime.py",
-            # HR's fenced provisioning worker constructs the same typed domain
-            # request for run_hr_provisioning; it does not execute a registry
-            # request or bypass ToolRuntimeService.
+            # HR's fenced provisioning worker constructs one fixed typed domain
+            # request after revalidating the confirmed RuntimeTask authority. It
+            # shares the handler's lifecycle owner but never dispatches a
+            # registry request or accepts an arbitrary tool name/argument body.
             "app/services/hr_provisioning_runtime.py",
         }:
             violations.append(rel)
 
     assert violations == []
+
+
+def test_hr_durable_worker_has_one_fixed_authorized_domain_boundary() -> None:
+    runtime_source = (APP_ROOT / "services/hr_provisioning_runtime.py").read_text(encoding="utf-8")
+    runner_callers = set()
+    for path in _python_files(APP_ROOT):
+        if path.name == "hr_provisioning_runner.py":
+            continue
+        if "run_hr_provisioning(" in path.read_text(encoding="utf-8"):
+            runner_callers.add(str(path.relative_to(APP_ROOT.parent)))
+
+    assert runner_callers == {
+        "app/services/hr_provisioning_runtime.py",
+        "app/tools/handlers/hr.py",
+    }
+    assert "_runtime_authority_issues(task, draft)" in runtime_source
+    assert 'tool_name="create_digital_employee"' in runtime_source
+    assert '"blueprint_id": str(draft.id)' in runtime_source
+    assert '"_runtime_authority": {' in runtime_source
+    assert '"blueprint_payload_hash": canonical_hr_blueprint_payload_hash' in runtime_source
+    assert "ToolRuntimeService" not in runtime_source
+
+
+def test_hr_mutation_endpoints_share_task_then_draft_lock_order() -> None:
+    source = (APP_ROOT / "api/hr_creation.py").read_text(encoding="utf-8")
+
+    assert "def _load_hr_draft_and_task_for_mutation" in source
+    assert source.count("_load_hr_draft_and_task_for_mutation(") >= 4
+
+
+def test_hr_reconciler_uses_the_same_task_then_draft_lock_order() -> None:
+    source = (APP_ROOT / "services/hr_creation_reconciliation.py").read_text(encoding="utf-8")
+
+    assert ".with_for_update(skip_locked=True, of=HrCreationDraft)" not in source
+    task_lock = "await db.get(RuntimeTask, linked_task_id, with_for_update=True)"
+    draft_lock = "await db.get(HrCreationDraft, draft_id, populate_existing=True, with_for_update=True)"
+    assert task_lock in source
+    assert draft_lock in source
+    assert source.index(task_lock) < source.index(draft_lock)
 
 
 def test_tool_runtime_service_approved_path_reenters_the_single_execution_kernel() -> None:

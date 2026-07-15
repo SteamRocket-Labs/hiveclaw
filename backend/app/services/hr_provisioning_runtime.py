@@ -20,11 +20,17 @@ from sqlalchemy import select
 
 from app.models.hr_creation import HrCreationDraft
 from app.models.runtime_task import RuntimeTask
+from app.services.hr_creation_service import (
+    HrCreationConflict,
+    canonical_hr_blueprint_hash,
+    canonical_hr_blueprint_payload_hash,
+)
 from app.services.runtime_task_fence import assert_runtime_task_fence, renew_current_runtime_task_lease
 
 
 HR_PROVISIONING_JOB_SCHEMA = "hr_provisioning_job.v1"
 _TERMINAL_TASK_STATUSES = {"completed", "failed", "killed", "skipped", "needs_reconciliation"}
+_AUTHORIZED_DRAFT_STATUSES = {"confirmed", "creating", "provisioning", "failed"}
 
 
 def _utcnow() -> datetime:
@@ -36,11 +42,96 @@ def _snapshot_hash(value: dict[str, Any]) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def _config_snapshot(draft: HrCreationDraft) -> dict[str, Any]:
+    blueprint_payload_hash = canonical_hr_blueprint_payload_hash(dict(draft.blueprint_json or {}))
+    return {
+        "task_type": "hr_provisioning",
+        "draft_id": str(draft.id),
+        "blueprint_version": int(draft.blueprint_version),
+        "blueprint_hash": str(draft.blueprint_hash),
+        "blueprint_payload_hash": blueprint_payload_hash,
+        "hr_agent_id": str(draft.hr_agent_id),
+        "session_id": str(draft.session_id),
+    }
+
+
+def _policy_snapshot(draft: HrCreationDraft) -> dict[str, Any]:
+    return {
+        "tenant_id": str(draft.tenant_id),
+        "requested_by_user_id": str(draft.requested_by_user_id),
+        "confirmed_by_user_id": str(draft.confirmed_by_user_id) if draft.confirmed_by_user_id else None,
+        "confirmed_at": draft.confirmed_at.isoformat() if draft.confirmed_at else None,
+    }
+
+
+def _assert_authenticated_confirmation(draft: HrCreationDraft) -> None:
+    if (
+        draft.status not in _AUTHORIZED_DRAFT_STATUSES
+        or draft.confirmed_by_user_id is None
+        or draft.confirmed_at is None
+        or draft.confirmed_by_user_id != draft.requested_by_user_id
+    ):
+        raise ValueError("HR provisioning requires authenticated confirmation evidence from the requesting user")
+    blueprint = dict(draft.blueprint_json or {})
+    if draft.blueprint_hash != canonical_hr_blueprint_hash(blueprint):
+        raise ValueError("HR provisioning requires canonical blueprint content matching its persisted digest")
+
+
+def _runtime_authority_issues(task: RuntimeTask, draft: HrCreationDraft) -> list[str]:
+    issues: list[str] = []
+    if draft.provisioning_task_id != task.id:
+        issues.append("draft_link_mismatch")
+    if (
+        draft.status not in _AUTHORIZED_DRAFT_STATUSES
+        or draft.confirmed_by_user_id is None
+        or draft.confirmed_at is None
+        or draft.confirmed_by_user_id != draft.requested_by_user_id
+    ):
+        issues.append("missing_confirmation_evidence")
+    if task.task_type != "hr_provisioning":
+        issues.append("task_type_mismatch")
+    if task.tenant_id != draft.tenant_id:
+        issues.append("tenant_mismatch")
+    if task.parent_agent_id != draft.hr_agent_id:
+        issues.append("hr_agent_mismatch")
+    if task.root_user_id != draft.requested_by_user_id:
+        issues.append("requester_mismatch")
+    if str(task.parent_session_id or "") != str(draft.session_id):
+        issues.append("session_mismatch")
+    if str(task.root_session_id or "") != str(draft.session_id):
+        issues.append("root_session_mismatch")
+    if list(task.delegation_chain_json or []) != [f"agent:{draft.hr_agent_id}"]:
+        issues.append("delegation_chain_mismatch")
+    if task.root_idempotency_key != f"hr-provisioning:{draft.id}-v{draft.blueprint_version}":
+        issues.append("idempotency_key_mismatch")
+
+    blueprint = dict(draft.blueprint_json or {})
+    blueprint_payload_hash = canonical_hr_blueprint_payload_hash(blueprint)
+    if draft.blueprint_hash != canonical_hr_blueprint_hash(blueprint):
+        issues.append("blueprint_payload_integrity_mismatch")
+    metadata = dict(task.metadata_json or {})
+    expected_metadata = {
+        "schema": HR_PROVISIONING_JOB_SCHEMA,
+        "draft_id": str(draft.id),
+        "blueprint_version": int(draft.blueprint_version),
+        "blueprint_hash": str(draft.blueprint_hash),
+        "blueprint_payload_hash": blueprint_payload_hash,
+    }
+    if any(metadata.get(key) != value for key, value in expected_metadata.items()):
+        issues.append("immutable_blueprint_mismatch")
+    if task.config_snapshot_hash != _snapshot_hash(_config_snapshot(draft)):
+        issues.append("config_snapshot_mismatch")
+    if task.policy_snapshot_hash != _snapshot_hash(_policy_snapshot(draft)):
+        issues.append("policy_snapshot_mismatch")
+    return issues
+
+
 def build_hr_provisioning_runtime_task(draft: HrCreationDraft) -> RuntimeTask:
     """Build the one replay-safe job for an immutable confirmed blueprint."""
 
     if draft.id is None or draft.tenant_id is None:
         raise ValueError("HR provisioning requires a persisted, tenant-bound draft")
+    _assert_authenticated_confirmation(draft)
     task_id = uuid.uuid4()
     session_id = str(draft.session_id)
     metadata = {
@@ -48,25 +139,14 @@ def build_hr_provisioning_runtime_task(draft: HrCreationDraft) -> RuntimeTask:
         "draft_id": str(draft.id),
         "blueprint_version": int(draft.blueprint_version),
         "blueprint_hash": str(draft.blueprint_hash),
+        "blueprint_payload_hash": canonical_hr_blueprint_payload_hash(dict(draft.blueprint_json or {})),
         "phase": "queued",
         "side_effect_risk": "not_started",
         "automatic_retry_allowed": True,
         "queued_at": _utcnow().isoformat(),
     }
-    config = {
-        "task_type": "hr_provisioning",
-        "draft_id": str(draft.id),
-        "blueprint_version": int(draft.blueprint_version),
-        "blueprint_hash": str(draft.blueprint_hash),
-        "hr_agent_id": str(draft.hr_agent_id),
-        "session_id": session_id,
-    }
-    policy = {
-        "tenant_id": str(draft.tenant_id),
-        "requested_by_user_id": str(draft.requested_by_user_id),
-        "confirmed_by_user_id": str(draft.confirmed_by_user_id) if draft.confirmed_by_user_id else None,
-        "confirmed_at": draft.confirmed_at.isoformat() if draft.confirmed_at else None,
-    }
+    config = _config_snapshot(draft)
+    policy = _policy_snapshot(draft)
     return RuntimeTask(
         id=task_id,
         task_type="hr_provisioning",
@@ -162,6 +242,47 @@ def _schedule_for_draft_claim(task: RuntimeTask, draft: HrCreationDraft, *, reas
     return "waiting_claim_expiry"
 
 
+async def _mark_runtime_authority_blocked(
+    db,
+    *,
+    task: RuntimeTask,
+    draft: HrCreationDraft,
+    issues: list[str],
+) -> str:
+    from app.core.policy import write_audit_event
+
+    now = _utcnow()
+    if task.status == "running" or task.claimed_by is not None:
+        task.claim_version = int(task.claim_version or 0) + 1
+    task.status = "needs_reconciliation"
+    task.completed_at = now
+    task.result_summary = "HR provisioning runtime authority no longer matches its confirmed blueprint."
+    _clear_runtime_claim(task)
+    task.metadata_json = {
+        **dict(task.metadata_json or {}),
+        "phase": "terminal",
+        "terminal_at": now.isoformat(),
+        "side_effect_risk": "not_started",
+        "automatic_retry_allowed": False,
+        "needs_reconciliation": True,
+        "reconciliation_reason": "hr_runtime_authority_mismatch",
+        "authority_issues": list(issues),
+    }
+    await write_audit_event(
+        db,
+        event_type="hr.creation_runtime_authority_blocked",
+        severity="warning",
+        actor_type="system",
+        actor_id=None,
+        tenant_id=draft.tenant_id,
+        action="block_hr_provisioning_runtime_authority_mismatch",
+        resource_type="hr_creation_draft",
+        resource_id=draft.id,
+        details={"runtime_task_id": str(task.id), "authority_issues": list(issues)},
+    )
+    return "needs_reconciliation"
+
+
 async def _load_tenant_id(task_id: uuid.UUID) -> uuid.UUID | None:
     import app.database as database
     from app.services.tenant_resolver import resolve_tenant_for_runtime_task
@@ -241,6 +362,18 @@ async def _prepare_hr_provisioning(
             )
         if task.status != "running":
             return str(task.status or "not_claimed"), task, draft
+        authority_issues = _runtime_authority_issues(task, draft)
+        if authority_issues:
+            return (
+                await _mark_runtime_authority_blocked(
+                    db,
+                    task=task,
+                    draft=draft,
+                    issues=authority_issues,
+                ),
+                task,
+                draft,
+            )
         metadata.update(
             {
                 "phase": "executing",
@@ -264,7 +397,17 @@ async def _run_domain_provisioning(*, task: RuntimeTask, draft: HrCreationDraft)
     workspace = await ensure_workspace(draft.hr_agent_id, tenant_id=str(draft.tenant_id))
     request = ToolExecutionRequest(
         tool_name="create_digital_employee",
-        arguments={"blueprint_id": str(draft.id)},
+        arguments={
+            "blueprint_id": str(draft.id),
+            "_runtime_authority": {
+                "runtime_task_id": str(task.id),
+                "blueprint_version": int(draft.blueprint_version),
+                "blueprint_hash": str(draft.blueprint_hash),
+                "blueprint_payload_hash": canonical_hr_blueprint_payload_hash(dict(draft.blueprint_json or {})),
+                "config_snapshot_hash": str(task.config_snapshot_hash),
+                "policy_snapshot_hash": str(task.policy_snapshot_hash),
+            },
+        },
         context=ToolExecutionContext(
             agent_id=draft.hr_agent_id,
             user_id=draft.requested_by_user_id,
@@ -284,6 +427,7 @@ async def _converge_hr_provisioning(
     *,
     runner_result: str | None,
     runner_error: str | None,
+    authority_issues: list[str] | None = None,
 ) -> str:
     import app.database as database
 
@@ -318,6 +462,13 @@ async def _converge_hr_provisioning(
                 "automatic_retry_allowed": False,
             }
             return "needs_reconciliation"
+        if authority_issues:
+            return await _mark_runtime_authority_blocked(
+                db,
+                task=task,
+                draft=draft,
+                issues=authority_issues,
+            )
         if draft.status == "completed":
             return _mark_task_completed(task, draft)
         if draft.status == "failed":
@@ -366,8 +517,18 @@ async def execute_claimed_hr_provisioning(task_id: uuid.UUID) -> str:
     await renew_current_runtime_task_lease(lease_seconds=600.0)
     result: str | None = None
     error: str | None = None
+    authority_issues: list[str] = []
     try:
         result = await _run_domain_provisioning(task=task, draft=draft)
+    except HrCreationConflict as exc:
+        error = f"{type(exc).__name__}: {exc}"
+        if exc.code in {
+            "blueprint_integrity_mismatch",
+            "missing_confirmation_evidence",
+            "runtime_authority_mismatch",
+        }:
+            authority_issues.append(exc.code)
+        logger.warning("[HRProvisioning] task {} blocked at domain claim: {}", task_id, exc.code)
     except Exception as exc:  # The draft journal decides whether replay is safe.
         error = f"{type(exc).__name__}: {exc}"
         logger.exception("[HRProvisioning] task {} failed before convergence", task_id)
@@ -376,4 +537,5 @@ async def execute_claimed_hr_provisioning(task_id: uuid.UUID) -> str:
         tenant_id,
         runner_result=result,
         runner_error=error,
+        authority_issues=authority_issues,
     )

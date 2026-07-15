@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import hashlib
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -62,6 +64,9 @@ async def test_hr_provisioning_job_migration_really_backfills_confirmed_draft(pg
     agent_id = uuid.uuid4()
     session_id = uuid.uuid4()
     draft_id = uuid.uuid4()
+    blueprint = {"name": "Researcher"}
+    encoded_blueprint = json.dumps(blueprint, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    blueprint_hash = f"bp_{hashlib.sha256(encoded_blueprint).hexdigest()[:24]}"
     engine = create_async_engine(database_url, poolclass=NullPool)
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
     try:
@@ -97,7 +102,7 @@ async def test_hr_provisioning_job_migration_really_backfills_confirmed_draft(pg
                     "confirmed_by_user_id, confirmed_at, claim_version, attempt_count, provisioning_json"
                     ") VALUES ("
                     ":id, :tenant_id, :agent_id, :session_id, :user_id, 'confirmed', "
-                    "3, 'sha256:migration', CAST(:blueprint AS jsonb), CAST(:preview AS jsonb), "
+                    "3, :blueprint_hash, CAST(:blueprint AS jsonb), CAST(:preview AS jsonb), "
                     ":user_id, :confirmed_at, 0, 0, '{}'::jsonb)"
                 ),
                 {
@@ -106,7 +111,8 @@ async def test_hr_provisioning_job_migration_really_backfills_confirmed_draft(pg
                     "agent_id": agent_id,
                     "session_id": session_id,
                     "user_id": user_id,
-                    "blueprint": '{"name":"Researcher"}',
+                    "blueprint_hash": blueprint_hash,
+                    "blueprint": json.dumps(blueprint, separators=(",", ":")),
                     "preview": '{"status":"preview"}',
                     "confirmed_at": datetime.now(timezone.utc),
                 },

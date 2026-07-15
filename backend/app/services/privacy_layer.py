@@ -111,10 +111,10 @@ class PrivacyStore:
 
 class PrivacyLayer:
     _EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
-    # ``(?!:)`` keeps a digit run from ending on the ``:`` of a clock (HH:MM): without it a
-    # "YYYY-MM-DD HH" prefix matched as a >=10-digit phone, corrupting "2026-06-04 17:00" into
-    # "<Phone>:00" (D9). Real phones (incl. ``+86 138 1234 5678``) are unaffected.
-    _PHONE_RE = re.compile(r"\b(?:\+?\d[\d\s().-]{7,}\d)(?!:)\b")
+    # A phone candidate must be a standalone token. In particular, it must not start after the
+    # hyphen of a UUID or end before the separator of a clock/identifier. Digit-count validation
+    # below applies the E.164 15-digit ceiling after formatting characters are removed.
+    _PHONE_RE = re.compile(r"(?<![\w-])(?:\+?\d[\d\s().-]{7,}\d)(?![\w:-])")
     _CREDENTIAL_PATTERNS = (
         re.compile(r"\b(?:api[_-]?key|secret|token|password|credential)\s*[:=]\s*[A-Za-z0-9_\-./+=]{12,}\b", re.I),
         re.compile(r"\bsk-[A-Za-z0-9_\-]{20,}\b"),
@@ -152,6 +152,7 @@ class PrivacyLayer:
             "Phone",
             placeholders,
             min_digits=10,
+            max_digits=15,
         )
         if email_found or phone_found:
             return PrivacyDecision(text, sanitized, SensitivityLevel.PL2_PII, placeholders=placeholders)
@@ -165,22 +166,24 @@ class PrivacyLayer:
         placeholder_type: str,
         placeholders: dict[str, str],
         min_digits: int = 0,
+        max_digits: int = 0,
     ) -> tuple[str, bool]:
         found = False
 
         def repl(match: re.Match[str]) -> str:
             nonlocal found
-            found = True
             original = match.group(0)
-            if min_digits and sum(ch.isdigit() for ch in original) < min_digits:
+            digit_count = sum(ch.isdigit() for ch in original)
+            if min_digits and digit_count < min_digits:
                 return original
+            if max_digits and digit_count > max_digits:
+                return original
+            found = True
             placeholder = self.store.placeholder_for(placeholder_type, original)
             placeholders[placeholder] = original
             return placeholder
 
         replaced = pattern.sub(repl, text)
-        if min_digits and replaced == text:
-            return replaced, False
         return replaced, found
 
     @staticmethod

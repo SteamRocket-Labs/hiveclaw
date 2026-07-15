@@ -68,6 +68,28 @@ def test_real_phone_numbers_are_still_redacted() -> None:
     assert spaced.sensitivity == SensitivityLevel.PL2_PII
 
 
+def test_uuid_evidence_references_are_not_redacted_as_phone_numbers() -> None:
+    layer = PrivacyLayer(store=PrivacyStore())
+    source_ref = "knowledge_id=9bd5f6fa-4a09-4f08-8abc-295353671106"
+
+    decision = layer.classify_and_mask(source_ref)
+
+    assert decision.sanitized_text == source_ref
+    assert decision.placeholders == {}
+    assert decision.sensitivity == SensitivityLevel.PL1_PUBLIC
+
+
+def test_long_numeric_opaque_identifiers_are_not_redacted_as_phone_numbers() -> None:
+    layer = PrivacyLayer(store=PrivacyStore())
+    opaque_ref = "event_id=12345678-1234-1234-1234-123456789012"
+
+    decision = layer.classify_and_mask(opaque_ref)
+
+    assert decision.sanitized_text == opaque_ref
+    assert decision.placeholders == {}
+    assert decision.sensitivity == SensitivityLevel.PL1_PUBLIC
+
+
 def test_pl3_is_suppressed_for_non_owner_current_user() -> None:
     stack = PrincipalStack(
         company=Principal(PrincipalRole.COMPANY, "tenant-1", "Acme"),

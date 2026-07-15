@@ -230,7 +230,11 @@ async def test_release_upgrade_rejects_direct_mutation_for_both_audit_tables(
                     {"id": external_principal_id},
                 )
                 await db.commit()
-            assert principal_delete_rejected.value.orig.sqlstate == "23503"
+            # PostgreSQL 18 reports explicit ON DELETE RESTRICT as 23001
+            # (restrict_violation), while PostgreSQL 16 reports this FK path as
+            # 23503 (foreign_key_violation). Both are class-23 integrity failures;
+            # any other status would weaken or misrepresent the provenance guard.
+            assert principal_delete_rejected.value.orig.sqlstate in {"23001", "23503"}
             await db.rollback()
 
         async with session_factory() as db:

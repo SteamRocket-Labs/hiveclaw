@@ -646,6 +646,60 @@ def apply_workflow_promotion_immutability(connection: Connection) -> None:
     )
 
 
+_AUDIT_EVIDENCE_TABLES: tuple[str, ...] = (
+    "audit_logs",
+    "security_audit_events",
+)
+
+
+def apply_audit_evidence_immutability(connection: Connection) -> None:
+    """Install append-only guards skipped by create_all + stamp bootstrap."""
+
+    if connection.dialect.name != "postgresql":
+        return
+    existing_tables = set(inspect(connection).get_table_names())
+    guarded_tables = [table for table in _AUDIT_EVIDENCE_TABLES if table in existing_tables]
+    if not guarded_tables:
+        return
+    connection.execute(
+        text(
+            """
+            CREATE OR REPLACE FUNCTION reject_audit_evidence_mutation()
+            RETURNS trigger AS $$
+            BEGIN
+                RAISE EXCEPTION 'audit evidence is append-only: %', TG_TABLE_NAME
+                    USING ERRCODE = '55000';
+                RETURN NULL;
+            END;
+            $$ LANGUAGE plpgsql
+            """
+        )
+    )
+    for table in guarded_tables:
+        trigger_name = f"trg_{table}_immutable"
+        truncate_trigger_name = f"trg_{table}_no_truncate"
+        connection.execute(text(f"DROP TRIGGER IF EXISTS {trigger_name} ON {table}"))
+        connection.execute(
+            text(
+                f"""
+                CREATE TRIGGER {trigger_name}
+                BEFORE UPDATE OR DELETE ON {table}
+                FOR EACH ROW EXECUTE FUNCTION reject_audit_evidence_mutation()
+                """
+            )
+        )
+        connection.execute(text(f"DROP TRIGGER IF EXISTS {truncate_trigger_name} ON {table}"))
+        connection.execute(
+            text(
+                f"""
+                CREATE TRIGGER {truncate_trigger_name}
+                BEFORE TRUNCATE ON {table}
+                FOR EACH STATEMENT EXECUTE FUNCTION reject_audit_evidence_mutation()
+                """
+            )
+        )
+
+
 class AlembicContextProtocol(Protocol):
     def configure(self, **kwargs) -> None: ...
 
@@ -683,6 +737,7 @@ def prepare_runtime_schema(connection: Connection, metadata: MetaData) -> bool:
     apply_rls_policies(connection)
     apply_config_revision_immutability(connection)
     apply_workflow_promotion_immutability(connection)
+    apply_audit_evidence_immutability(connection)
     return True
 
 
@@ -723,6 +778,7 @@ def bootstrap_database_to_head(connection: Connection, metadata: MetaData, heads
     apply_rls_policies(connection)
     apply_config_revision_immutability(connection)
     apply_workflow_promotion_immutability(connection)
+    apply_audit_evidence_immutability(connection)
     ensure_alembic_version_table_width(connection)
     connection.execute(text("DELETE FROM alembic_version"))
     for head in heads:

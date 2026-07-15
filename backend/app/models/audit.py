@@ -24,7 +24,7 @@ from app.database import Base
 
 
 class AuditLog(Base):
-    """Audit trail for all operations."""
+    """Append-only audit trail for all operations."""
 
     __tablename__ = "audit_logs"
 

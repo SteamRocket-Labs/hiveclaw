@@ -43,6 +43,30 @@ class SchemaTableState:
 
 
 @dataclass(frozen=True, slots=True)
+class SchemaTriggerState:
+    trigger_name: str
+    table_name: str
+    exists: bool
+    enabled: bool
+    is_row: bool
+    is_before: bool
+    handles_update: bool
+    handles_delete: bool
+    handles_truncate: bool
+    function_name: str
+
+
+@dataclass(frozen=True, slots=True)
+class SchemaTriggerRequirement:
+    table_name: str
+    function_name: str
+    is_row: bool
+    handles_update: bool = False
+    handles_delete: bool = False
+    handles_truncate: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class SchemaReadinessIssue:
     code: str
     object_name: str
@@ -55,6 +79,7 @@ class SchemaReadinessReport:
     expected_heads: tuple[str, ...]
     actual_heads: tuple[str, ...]
     checked_table_count: int
+    checked_trigger_count: int
     issues: tuple[SchemaReadinessIssue, ...]
 
     @property
@@ -70,6 +95,8 @@ def evaluate_schema_readiness(
     strict_tenant_tables: Sequence[str],
     table_states: Mapping[str, SchemaTableState],
     required_rls_tables: Sequence[str] | None = None,
+    required_triggers: Mapping[str, SchemaTriggerRequirement] | None = None,
+    trigger_states: Mapping[str, SchemaTriggerState] | None = None,
 ) -> SchemaReadinessReport:
     """Evaluate exact catalog invariants without inspecting semantic content."""
 
@@ -78,6 +105,8 @@ def evaluate_schema_readiness(
     expected_tables = tuple(dict.fromkeys(expected_rls_tables))
     strict_tables = set(strict_tenant_tables)
     required_tables = set(expected_tables if required_rls_tables is None else required_rls_tables)
+    expected_triggers = dict(required_triggers or {})
+    actual_triggers = dict(trigger_states or {})
     issues: list[SchemaReadinessIssue] = []
 
     if normalized_actual_heads != normalized_expected_heads:
@@ -85,10 +114,7 @@ def evaluate_schema_readiness(
             SchemaReadinessIssue(
                 code="alembic_head_mismatch",
                 object_name="alembic_version",
-                reason=(
-                    f"expected={list(normalized_expected_heads)!r} "
-                    f"actual={list(normalized_actual_heads)!r}"
-                ),
+                reason=(f"expected={list(normalized_expected_heads)!r} actual={list(normalized_actual_heads)!r}"),
             )
         )
 
@@ -146,10 +172,54 @@ def evaluate_schema_readiness(
                     )
                 )
 
+    for trigger_name, requirement in expected_triggers.items():
+        state = actual_triggers.get(trigger_name)
+        if state is None or not state.exists:
+            issues.append(
+                SchemaReadinessIssue(
+                    code="schema_trigger_missing",
+                    object_name=trigger_name,
+                    reason=f"required trigger is absent from {requirement.table_name}",
+                )
+            )
+            continue
+        if not state.enabled:
+            issues.append(
+                SchemaReadinessIssue(
+                    code="schema_trigger_disabled",
+                    object_name=trigger_name,
+                    reason="pg_trigger.tgenabled is disabled",
+                )
+            )
+        invalid_facts: list[str] = []
+        if state.table_name != requirement.table_name:
+            invalid_facts.append(f"table={state.table_name!r}")
+        if state.function_name != requirement.function_name:
+            invalid_facts.append(f"function={state.function_name!r}")
+        if state.is_row != requirement.is_row:
+            invalid_facts.append("row_level" if state.is_row else "statement_level")
+        if not state.is_before:
+            invalid_facts.append("not_before")
+        if state.handles_update != requirement.handles_update:
+            invalid_facts.append("unexpected_update_contract")
+        if state.handles_delete != requirement.handles_delete:
+            invalid_facts.append("unexpected_delete_contract")
+        if state.handles_truncate != requirement.handles_truncate:
+            invalid_facts.append("unexpected_truncate_contract")
+        if invalid_facts:
+            issues.append(
+                SchemaReadinessIssue(
+                    code="schema_trigger_invalid",
+                    object_name=trigger_name,
+                    reason=", ".join(invalid_facts),
+                )
+            )
+
     return SchemaReadinessReport(
         expected_heads=normalized_expected_heads,
         actual_heads=normalized_actual_heads,
         checked_table_count=len(expected_tables),
+        checked_trigger_count=len(expected_triggers),
         issues=tuple(issues),
     )
 
@@ -197,6 +267,60 @@ _CATALOG_SQL = text(
 )
 
 
+REQUIRED_SCHEMA_TRIGGERS: dict[str, SchemaTriggerRequirement] = {
+    "trg_audit_logs_immutable": SchemaTriggerRequirement(
+        table_name="audit_logs",
+        function_name="reject_audit_evidence_mutation",
+        is_row=True,
+        handles_update=True,
+        handles_delete=True,
+    ),
+    "trg_security_audit_events_immutable": SchemaTriggerRequirement(
+        table_name="security_audit_events",
+        function_name="reject_audit_evidence_mutation",
+        is_row=True,
+        handles_update=True,
+        handles_delete=True,
+    ),
+    "trg_audit_logs_no_truncate": SchemaTriggerRequirement(
+        table_name="audit_logs",
+        function_name="reject_audit_evidence_mutation",
+        is_row=False,
+        handles_truncate=True,
+    ),
+    "trg_security_audit_events_no_truncate": SchemaTriggerRequirement(
+        table_name="security_audit_events",
+        function_name="reject_audit_evidence_mutation",
+        is_row=False,
+        handles_truncate=True,
+    ),
+}
+
+
+_TRIGGER_CATALOG_SQL = text(
+    """
+    SELECT
+        trigger.tgname AS trigger_name,
+        relation.relname AS table_name,
+        true AS exists,
+        trigger.tgenabled <> 'D' AS enabled,
+        (trigger.tgtype & 1) <> 0 AS is_row,
+        (trigger.tgtype & 2) <> 0 AS is_before,
+        (trigger.tgtype & 16) <> 0 AS handles_update,
+        (trigger.tgtype & 8) <> 0 AS handles_delete,
+        (trigger.tgtype & 32) <> 0 AS handles_truncate,
+        function.proname AS function_name
+    FROM pg_trigger AS trigger
+    JOIN pg_class AS relation ON relation.oid = trigger.tgrelid
+    JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+    JOIN pg_proc AS function ON function.oid = trigger.tgfoid
+    WHERE NOT trigger.tgisinternal
+      AND namespace.nspname = 'public'
+      AND trigger.tgname = ANY(CAST(:expected_trigger_names AS text[]))
+    """
+)
+
+
 async def inspect_schema_readiness(connection: AsyncConnection) -> SchemaReadinessReport:
     import_all_models()
     expected_heads = expected_alembic_heads()
@@ -222,6 +346,27 @@ async def inspect_schema_readiness(connection: AsyncConnection) -> SchemaReadine
         )
         for row in rows
     }
+    trigger_rows = (
+        await connection.execute(
+            _TRIGGER_CATALOG_SQL,
+            {"expected_trigger_names": list(REQUIRED_SCHEMA_TRIGGERS)},
+        )
+    ).all()
+    trigger_states = {
+        str(row.trigger_name): SchemaTriggerState(
+            trigger_name=str(row.trigger_name),
+            table_name=str(row.table_name),
+            exists=bool(row.exists),
+            enabled=bool(row.enabled),
+            is_row=bool(row.is_row),
+            is_before=bool(row.is_before),
+            handles_update=bool(row.handles_update),
+            handles_delete=bool(row.handles_delete),
+            handles_truncate=bool(row.handles_truncate),
+            function_name=str(row.function_name),
+        )
+        for row in trigger_rows
+    }
     return evaluate_schema_readiness(
         expected_heads=expected_heads,
         actual_heads=actual_heads,
@@ -231,6 +376,8 @@ async def inspect_schema_readiness(connection: AsyncConnection) -> SchemaReadine
         required_rls_tables=tuple(
             table_name for table_name in RLS_FORCED_TENANT_TABLES if table_name in Base.metadata.tables
         ),
+        required_triggers=REQUIRED_SCHEMA_TRIGGERS,
+        trigger_states=trigger_states,
     )
 
 
@@ -240,6 +387,7 @@ def _report_payload(report: SchemaReadinessReport) -> dict[str, object]:
         "expected_heads": list(report.expected_heads),
         "actual_heads": list(report.actual_heads),
         "checked_table_count": report.checked_table_count,
+        "checked_trigger_count": report.checked_trigger_count,
         "issues": [asdict(issue) for issue in report.issues],
     }
 

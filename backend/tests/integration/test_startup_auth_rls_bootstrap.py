@@ -184,5 +184,6 @@ async def test_system_startup_audit_event_writes_operator_row_under_app_rls(
         row = (await db.execute(select(AuditLog).where(AuditLog.action == action))).scalar_one_or_none()
         assert row is not None
         assert row.tenant_id is None
-        await db.delete(row)
-        await db.commit()
+        # The integration database is disposable and the action is unique.
+        # Canonical audit evidence is append-only, so test cleanup must not
+        # weaken the same database invariant this path is expected to honor.

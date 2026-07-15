@@ -140,7 +140,7 @@ async def test_ensure_agent_identity_backfills_sponsor_and_participant() -> None
 
 
 @pytest.mark.asyncio
-async def test_ensure_agent_identity_seeds_owner_scope_personal_knowledge_grant() -> None:
+async def test_ensure_agent_identity_never_invents_autonomous_personal_knowledge_authority() -> None:
     from app.models.knowledge import KnowledgeGrant
     from app.services.agent_identity_lifecycle import ensure_agent_identity
 
@@ -161,18 +161,7 @@ async def test_ensure_agent_identity_seeds_owner_scope_personal_knowledge_grant(
     await ensure_agent_identity(db, agent)
 
     grants = [item for item in db.added if isinstance(item, KnowledgeGrant)]
-    assert len(grants) == 1
-    grant = grants[0]
-    assert grant.tenant_id == tenant_id
-    assert grant.scope_type == "person"
-    assert grant.scope_id == owner_id
-    assert grant.resource_type == "scope"
-    assert grant.resource_id == owner_id
-    assert grant.grantee_type == "agent"
-    assert grant.grantee_id == agent.id
-    assert grant.permission == "search"
-    assert grant.created_by_user_id == owner_id
-    assert grant.grant_metadata_json["reason"] == "owner_personal_kb_autonomous_access"
+    assert grants == []
 
 
 @pytest.mark.asyncio

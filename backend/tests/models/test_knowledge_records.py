@@ -67,7 +67,15 @@ def test_knowledge_grants_use_resource_and_grantee_scale_for_a2a_permissions() -
 
     table = KnowledgeGrant.__table__
 
-    for column_name in ("resource_type", "resource_id", "grantee_type", "grantee_id", "permission"):
+    for column_name in (
+        "resource_type",
+        "resource_id",
+        "grantee_type",
+        "grantee_id",
+        "permission",
+        "sensitivity_ceiling",
+        "binding_key",
+    ):
         assert table.columns[column_name].nullable is False
 
     unique_constraints = [
@@ -84,6 +92,16 @@ def test_knowledge_grants_use_resource_and_grantee_scale_for_a2a_permissions() -
             "grantee_type",
             "grantee_id",
             "permission",
+            "binding_key",
         }
         for constraint in unique_constraints
     )
+    check_names = {
+        constraint.name for constraint in table.constraints if constraint.__class__.__name__ == "CheckConstraint"
+    }
+    assert {
+        "ck_knowledge_grant_sensitivity_ceiling",
+        "ck_knowledge_grant_agent_binding",
+        "ck_knowledge_grant_resource_binding",
+        "ck_knowledge_grant_revoke_actor",
+    } <= check_names

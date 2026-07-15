@@ -166,7 +166,16 @@ vi.mock('@tanstack/react-query', () => ({
               grantee_type: 'agent',
               grantee_id: 'agent-1',
               permission: 'search',
-              expires_at: null,
+              requester_user_id: 'user-1',
+              session_id: null,
+              purpose: 'autonomous_agent',
+              delegation_id: null,
+              sensitivity_ceiling: 'PL3_sensitive',
+              binding_key: 'pkb:test',
+              expires_at: '2099-01-01T00:00:00Z',
+              revoked_at: null,
+              revoked_by_user_id: null,
+              active: true,
               metadata: { reason: 'research' },
               created_at: '2026-07-01T00:00:00Z',
             },
@@ -257,7 +266,7 @@ vi.mock('../api/domains/knowledge', () => ({
   },
 }));
 
-import PersonalKnowledge, { ProposalReviewPanel, RevisionHistory } from './PersonalKnowledge';
+import PersonalKnowledge, { GrantsPanel, ProposalReviewPanel, RevisionHistory } from './PersonalKnowledge';
 
 describe('PersonalKnowledge', () => {
   beforeEach(() => {
@@ -370,6 +379,45 @@ describe('PersonalKnowledge', () => {
     expect(revisionHtml).toContain('版本 1');
     expect(revisionHtml).toContain('Owner approved proposal');
     expect(revisionHtml).toContain('回滚到此版本');
+  });
+
+  it('renders every authority binding required for an autonomous or cross-principal grant', () => {
+    const html = renderToStaticMarkup(
+      <GrantsPanel
+        grants={[]}
+        granteeType="agent"
+        granteeId="agent-1"
+        permission="read"
+        requesterUserId=""
+        sessionId=""
+        purpose="autonomous_agent"
+        delegationId=""
+        sensitivityCeiling="PL3_sensitive"
+        expiresAt="2099-01-01T00:00"
+        onGranteeTypeChange={vi.fn()}
+        onGranteeIdChange={vi.fn()}
+        onPermissionChange={vi.fn()}
+        onRequesterUserIdChange={vi.fn()}
+        onSessionIdChange={vi.fn()}
+        onPurposeChange={vi.fn()}
+        onDelegationIdChange={vi.fn()}
+        onSensitivityCeilingChange={vi.fn()}
+        onExpiresAtChange={vi.fn()}
+        onCreate={vi.fn()}
+        onDelete={vi.fn()}
+        createPending={false}
+        deletingGrantId={null}
+      />,
+    );
+
+    expect(html).toContain('autonomous_agent');
+    expect(html).toContain('interactive_session');
+    expect(html).toContain('a2a_delegation');
+    expect(html).toContain('PL3_sensitive');
+    expect(html).toContain('PL4_credential');
+    expect(html).toContain('datetime-local');
+    expect(html).toContain('到期时间');
+    expect(html).not.toContain('value="session"');
   });
 
   it('renders a 403 as access denied and never as zero assets or an empty Personal KB', () => {

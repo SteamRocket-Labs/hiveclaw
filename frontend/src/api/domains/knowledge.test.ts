@@ -142,7 +142,7 @@ describe('knowledgeApi personal KB endpoints', () => {
       .mockResolvedValueOnce(jsonResponse({ entities: [], links: [], assertions: [] }))
       .mockResolvedValueOnce(jsonResponse({ grants: [] }))
       .mockResolvedValueOnce(jsonResponse({ grant_id: 'grant-1' }))
-      .mockResolvedValueOnce(jsonResponse({ deleted: true }));
+      .mockResolvedValueOnce(jsonResponse({ revoked: true, deleted: false }));
 
     const file = new File(['# Upload'], 'upload.md', { type: 'text/markdown' });
     await knowledgeApi.myPersonalImportFile(file, { title: 'Upload', sensitivity: 'internal' });
@@ -158,6 +158,9 @@ describe('knowledgeApi personal KB endpoints', () => {
       grantee_type: 'agent',
       grantee_id: 'agent-1',
       permission: 'search',
+      purpose: 'autonomous_agent',
+      sensitivity_ceiling: 'PL3_sensitive',
+      expires_at: '2099-01-01T00:00:00Z',
       metadata: { reason: 'research' },
     });
     await knowledgeApi.myPersonalDeleteGrant('grant-1');
@@ -176,6 +179,11 @@ describe('knowledgeApi personal KB endpoints', () => {
     expect(requestOf(7).url).toBe('/api/knowledge/personal/grants');
     expect(requestOf(8).url).toBe('/api/knowledge/personal/grants');
     expect(requestOf(8).init.method).toBe('POST');
+    expect(JSON.parse(String(requestOf(8).init.body))).toMatchObject({
+      purpose: 'autonomous_agent',
+      sensitivity_ceiling: 'PL3_sensitive',
+      expires_at: '2099-01-01T00:00:00Z',
+    });
     expect(requestOf(9).url).toBe('/api/knowledge/personal/grants/grant-1');
     expect(requestOf(9).init.method).toBe('DELETE');
   });

@@ -320,6 +320,11 @@ class PersonalKnowledgeProposalService:
                 KnowledgeGrant.grantee_type == "agent",
                 KnowledgeGrant.grantee_id == agent_id,
                 KnowledgeGrant.permission == "manage",
+                KnowledgeGrant.requester_user_id == owner_user_id,
+                KnowledgeGrant.purpose == "autonomous_agent",
+                KnowledgeGrant.session_id.is_(None),
+                KnowledgeGrant.delegation_id.is_(None),
+                KnowledgeGrant.revoked_at.is_(None),
                 or_(KnowledgeGrant.expires_at.is_(None), KnowledgeGrant.expires_at > datetime.now(UTC)),
             )
         )

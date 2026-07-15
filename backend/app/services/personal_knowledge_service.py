@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import inspect
+import json
 import mimetypes
 import re
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,7 @@ from urllib.parse import urlparse
 from sqlalchemy import Text, cast, delete, func, or_, select, update
 
 from app.config import get_settings
+from app.models.agent import Agent
 from app.models.knowledge import (
     KnowledgeAssertion,
     KnowledgeDocument,
@@ -24,11 +26,15 @@ from app.models.knowledge import (
     KnowledgeLink,
     KnowledgeSegment,
 )
+from app.models.user import User
 from app.services.personal_knowledge_access import (
+    AgentRuntimePrincipal,
+    PersonalKnowledgePermissionDecision,
     PersonalKnowledgePrincipal,
     _personal_knowledge_access_predicate,
     _personal_knowledge_agent_visibility_predicate,
     build_personal_knowledge_document_list_statement,
+    resolve_personal_knowledge_permission,
 )
 from app.services.personal_knowledge_index_search import (
     _clean_graph_text,
@@ -68,12 +74,33 @@ from app.services.personal_knowledge_jobs import (
     DEFAULT_IMPORT_JOB_MAX_ATTEMPTS as _DEFAULT_IMPORT_JOB_MAX_ATTEMPTS,
     build_personal_knowledge_job_claim_statement,
 )
-from app.services.privacy_layer import canonicalize_sensitivity, is_sensitive_extraction_blocked
+from app.services.privacy_layer import SensitivityLevel, canonicalize_sensitivity, is_sensitive_extraction_blocked
 
 
 _DEFAULT_EXTRACTOR = object()
 _DEFAULT_IMPORT_JOB_QUEUED_GRACE_SECONDS = 0
 _DEFAULT_IMPORT_JOB_RUNNING_TIMEOUT_SECONDS = 600
+_CREDENTIAL_REFERENCE_KEYS = ("credential_reference", "credential_ref", "secret_reference", "secret_ref")
+_CREDENTIAL_REFERENCE_PREFIXES = ("secret://", "credential://", "vault://")
+_PERSONAL_AGENT_GRANT_PURPOSES = frozenset(
+    {"interactive_session", "autonomous_agent", "a2a_delegation", "subagent_delegation"}
+)
+_PERSONAL_DELEGATED_GRANT_PURPOSES = frozenset({"a2a_delegation", "subagent_delegation"})
+
+
+def _credential_reference_from_metadata(metadata: dict[str, Any] | None) -> str | None:
+    """Return an opaque Secret Store reference; raw URLs, paths, and values are never accepted."""
+
+    values = dict(metadata or {})
+    for key in _CREDENTIAL_REFERENCE_KEYS:
+        candidate = str(values.get(key) or "").strip()
+        if not candidate or len(candidate) > 512:
+            continue
+        if any(char.isspace() or ord(char) < 32 for char in candidate):
+            continue
+        if candidate.lower().startswith(_CREDENTIAL_REFERENCE_PREFIXES):
+            return candidate
+    return None
 
 
 @dataclass(frozen=True)
@@ -139,6 +166,24 @@ class KnowledgeSearchHit:
     sensitivity: str
     metadata: dict[str, Any]
     score_trace: dict[str, Any] = field(default_factory=dict)
+    credential_reference: str | None = None
+
+
+@dataclass(frozen=True)
+class PersonalKnowledgeSearchResult:
+    status: str
+    hits: list[KnowledgeSearchHit]
+    authority: PersonalKnowledgePermissionDecision
+    warnings: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class PersonalKnowledgeDocumentReadResult:
+    status: str
+    document: PersonalKnowledgeDocumentDetail | None
+    credential_reference: str | None
+    authority: PersonalKnowledgePermissionDecision
+    warnings: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -173,7 +218,16 @@ class PersonalKnowledgeGrantSummary:
     grantee_type: str
     grantee_id: uuid.UUID
     permission: str
+    requester_user_id: uuid.UUID | None
+    session_id: str | None
+    purpose: str | None
+    delegation_id: str | None
+    sensitivity_ceiling: str
+    binding_key: str
     expires_at: Any
+    revoked_at: Any
+    revoked_by_user_id: uuid.UUID | None
+    active: bool
     metadata: dict[str, Any]
     created_at: Any
 
@@ -345,6 +399,11 @@ class PersonalKnowledgeService:
         if not rows:
             return None
         document, segment_count = rows[0][0], rows[0][1]
+        try:
+            if canonicalize_sensitivity(document.sensitivity) == SensitivityLevel.PL4_CREDENTIAL:
+                return None
+        except ValueError:
+            return None
         segment_rows = (
             await session.execute(
                 select(KnowledgeSegment)
@@ -374,6 +433,131 @@ class PersonalKnowledgeService:
             )
         summary = self._document_summary(owner_user_id=owner_user_id, document=document, segment_count=segment_count)
         return PersonalKnowledgeDocumentDetail(**summary.__dict__, segments=segments)
+
+    async def get_personal_document_with_authority(
+        self,
+        session: Any,
+        *,
+        tenant_id: uuid.UUID,
+        owner_user_id: uuid.UUID,
+        document_id: uuid.UUID,
+        principal: PersonalKnowledgePrincipal,
+    ) -> PersonalKnowledgeDocumentReadResult:
+        """Fresh-check document authority before any title or segment content is loaded."""
+
+        metadata_rows = (
+            await session.execute(
+                select(
+                    KnowledgeDocument.id,
+                    KnowledgeDocument.sensitivity,
+                    KnowledgeDocument.agent_searchable,
+                    KnowledgeDocument.doc_metadata_json,
+                ).where(
+                    KnowledgeDocument.tenant_id == tenant_id,
+                    KnowledgeDocument.scope_type == "person",
+                    KnowledgeDocument.scope_id == owner_user_id,
+                    KnowledgeDocument.id == document_id,
+                    KnowledgeDocument.status != "deleted",
+                )
+            )
+        ).all()
+        if not metadata_rows:
+            scope_decision = await resolve_personal_knowledge_permission(
+                session,
+                tenant_id=tenant_id,
+                owner_user_id=owner_user_id,
+                principal=principal,
+                action="read",
+            )
+            return PersonalKnowledgeDocumentReadResult(
+                status="empty" if scope_decision.allowed else "denied",
+                document=None,
+                credential_reference=None,
+                authority=replace(
+                    scope_decision,
+                    document_id=document_id,
+                    deny_reason_code=None if scope_decision.allowed else scope_decision.deny_reason_code,
+                ),
+                warnings=["document_not_found"] if scope_decision.allowed else [],
+            )
+
+        row = metadata_rows[0]
+        sensitivity = str(row[1] or "")
+        agent_searchable = bool(row[2])
+        metadata = dict(row[3] or {})
+        decision = await resolve_personal_knowledge_permission(
+            session,
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+            principal=principal,
+            action="read",
+            document_id=document_id,
+            document_sensitivity=sensitivity,
+        )
+        if not decision.allowed:
+            return PersonalKnowledgeDocumentReadResult(
+                status="denied",
+                document=None,
+                credential_reference=None,
+                authority=decision,
+            )
+        if isinstance(principal, AgentRuntimePrincipal) and not agent_searchable:
+            return PersonalKnowledgeDocumentReadResult(
+                status="denied",
+                document=None,
+                credential_reference=None,
+                authority=replace(
+                    decision,
+                    allowed=False,
+                    authority_source="none",
+                    deny_reason_code="agent_searchable_disabled",
+                ),
+            )
+        try:
+            canonical_sensitivity = canonicalize_sensitivity(sensitivity)
+        except ValueError:
+            return PersonalKnowledgeDocumentReadResult(
+                status="denied",
+                document=None,
+                credential_reference=None,
+                authority=replace(
+                    decision,
+                    allowed=False,
+                    authority_source="none",
+                    deny_reason_code="document_sensitivity_invalid",
+                ),
+            )
+        if canonical_sensitivity == SensitivityLevel.PL4_CREDENTIAL:
+            credential_reference = _credential_reference_from_metadata(metadata)
+            return PersonalKnowledgeDocumentReadResult(
+                status="ok" if credential_reference else "unavailable",
+                document=None,
+                credential_reference=credential_reference,
+                authority=replace(decision, credential_reference_only=True),
+                warnings=[] if credential_reference else ["credential_reference_unavailable"],
+            )
+
+        document = await self.get_personal_document(
+            session,
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+            document_id=document_id,
+            principal=principal,
+        )
+        if document is None:
+            return PersonalKnowledgeDocumentReadResult(
+                status="unavailable",
+                document=None,
+                credential_reference=None,
+                authority=replace(decision, retryable=True),
+                warnings=["authority_or_document_changed_during_read"],
+            )
+        return PersonalKnowledgeDocumentReadResult(
+            status="ok",
+            document=document,
+            credential_reference=None,
+            authority=decision,
+        )
 
     def _source_preview_from_metadata(self, metadata: dict[str, Any]) -> PersonalKnowledgeSourcePreview | None:
         source_path = str(metadata.get("queued_source_path") or "").strip()
@@ -419,6 +603,11 @@ class PersonalKnowledgeService:
         if not rows:
             return None
         document = rows[0][0]
+        try:
+            if canonicalize_sensitivity(document.sensitivity) == SensitivityLevel.PL4_CREDENTIAL:
+                return None
+        except ValueError:
+            return None
         preview = self._source_preview_from_metadata(dict(getattr(document, "doc_metadata_json", {}) or {}))
         if preview is not None:
             return preview
@@ -1703,6 +1892,9 @@ class PersonalKnowledgeService:
         return summaries
 
     def _grant_summary(self, grant: Any) -> PersonalKnowledgeGrantSummary:
+        now = datetime.now(timezone.utc)
+        expires_at = getattr(grant, "expires_at", None)
+        active = getattr(grant, "revoked_at", None) is None and (expires_at is None or expires_at > now)
         return PersonalKnowledgeGrantSummary(
             grant_id=grant.id,
             resource_type=str(grant.resource_type or "scope"),
@@ -1711,7 +1903,16 @@ class PersonalKnowledgeService:
             grantee_type=str(grant.grantee_type or ""),
             grantee_id=grant.grantee_id,
             permission=str(grant.permission or ""),
-            expires_at=grant.expires_at,
+            requester_user_id=getattr(grant, "requester_user_id", None),
+            session_id=str(getattr(grant, "session_id", "") or "") or None,
+            purpose=str(getattr(grant, "purpose", "") or "") or None,
+            delegation_id=str(getattr(grant, "delegation_id", "") or "") or None,
+            sensitivity_ceiling=str(getattr(grant, "sensitivity_ceiling", "PL1_public") or "PL1_public"),
+            binding_key=str(getattr(grant, "binding_key", "") or ""),
+            expires_at=expires_at,
+            revoked_at=getattr(grant, "revoked_at", None),
+            revoked_by_user_id=getattr(grant, "revoked_by_user_id", None),
+            active=active,
             metadata=dict(grant.grant_metadata_json or {}),
             created_at=grant.created_at,
         )
@@ -1759,6 +1960,11 @@ class PersonalKnowledgeService:
         grantee_type: str,
         grantee_id: uuid.UUID,
         permission: str,
+        requester_user_id: uuid.UUID | None = None,
+        session_id: str | None = None,
+        purpose: str | None = None,
+        delegation_id: str | None = None,
+        sensitivity_ceiling: str = "PL1_public",
         expires_at: datetime | None = None,
         grant_metadata: dict[str, Any] | None = None,
     ) -> PersonalKnowledgeGrantSummary | None:
@@ -1769,15 +1975,103 @@ class PersonalKnowledgeService:
         clean_permission = str(permission or "search").strip().lower()
         if clean_resource_type not in {"scope", "document"}:
             raise ValueError("resource_type must be scope or document")
-        if clean_grantee_type not in {"user", "agent", "session"}:
-            raise ValueError("grantee_type must be user, agent, or session")
+        if clean_grantee_type not in {"user", "agent"}:
+            raise ValueError("grantee_type must be user or agent; session is a binding on an agent grant")
         if clean_permission not in {"read", "search", "manage"}:
             raise ValueError("permission must be read, search, or manage")
-        resolved_resource_id = document_id if clean_resource_type == "document" else owner_user_id
-        if resource_id is not None:
-            resolved_resource_id = resource_id
+        if clean_resource_type == "scope":
+            if resource_id is not None and resource_id != owner_user_id:
+                raise ValueError("scope resource_id must be the Personal Knowledge owner")
+            if document_id is not None:
+                raise ValueError("document_id is not valid for a scope grant")
+            resolved_resource_id = owner_user_id
+        else:
+            resolved_resource_id = document_id or resource_id
+            if document_id is not None and resource_id is not None and document_id != resource_id:
+                raise ValueError("document_id and resource_id must match")
         if resolved_resource_id is None:
             raise ValueError("resource_id is required")
+
+        canonical_ceiling = canonicalize_sensitivity(sensitivity_ceiling).value
+        clean_session_id = str(session_id or "").strip() or None
+        clean_purpose = str(purpose or "").strip().lower() or None
+        clean_delegation_id = str(delegation_id or "").strip() or None
+        resolved_requester_id = requester_user_id
+        if clean_grantee_type == "agent":
+            if clean_purpose not in _PERSONAL_AGENT_GRANT_PURPOSES:
+                raise ValueError("purpose is required for an agent grant")
+            if clean_purpose == "autonomous_agent":
+                resolved_requester_id = resolved_requester_id or owner_user_id
+                if resolved_requester_id != owner_user_id:
+                    raise ValueError("autonomous_agent grants are restricted to the owner requester")
+                if clean_session_id is not None:
+                    raise ValueError("autonomous_agent grants cannot carry session_id")
+                if clean_delegation_id is not None:
+                    raise ValueError("autonomous_agent grants cannot carry delegation_id")
+            else:
+                if resolved_requester_id is None:
+                    raise ValueError("requester_user_id is required for an agent grant")
+                if clean_session_id is None:
+                    raise ValueError("session_id is required for an interactive or delegated agent grant")
+            if clean_purpose in _PERSONAL_DELEGATED_GRANT_PURPOSES and clean_delegation_id is None:
+                raise ValueError("delegation_id is required for a delegated agent grant")
+            if clean_purpose not in _PERSONAL_DELEGATED_GRANT_PURPOSES and clean_delegation_id is not None:
+                raise ValueError("delegation_id is valid only for a delegated agent grant")
+            if expires_at is None:
+                raise ValueError("expires_at is required for an agent grant")
+            if expires_at.tzinfo is None or expires_at.utcoffset() is None:
+                raise ValueError("expires_at must include a timezone")
+            if expires_at <= datetime.now(timezone.utc):
+                raise ValueError("expires_at must be in the future")
+        else:
+            resolved_requester_id = None
+            clean_session_id = None
+            clean_purpose = None
+            clean_delegation_id = None
+
+        if clean_resource_type == "document":
+            document_exists = (
+                await session.execute(
+                    select(KnowledgeDocument.id).where(
+                        KnowledgeDocument.id == resolved_resource_id,
+                        KnowledgeDocument.tenant_id == tenant_id,
+                        KnowledgeDocument.scope_type == "person",
+                        KnowledgeDocument.scope_id == owner_user_id,
+                        KnowledgeDocument.status != "deleted",
+                    )
+                )
+            ).scalar_one_or_none()
+            if document_exists is None:
+                raise ValueError("document does not belong to the Personal Knowledge owner")
+
+        grantee_model = Agent if clean_grantee_type == "agent" else User
+        grantee_tenant_id = getattr(grantee_model, "tenant_id")
+        grantee_exists = (
+            await session.execute(
+                select(grantee_model.id).where(
+                    grantee_model.id == grantee_id,
+                    grantee_tenant_id == tenant_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if grantee_exists is None:
+            raise ValueError(f"{clean_grantee_type} grantee does not belong to the tenant")
+
+        binding_payload = {
+            "tenant_id": str(tenant_id),
+            "owner_user_id": str(owner_user_id),
+            "resource_type": clean_resource_type,
+            "resource_id": str(resolved_resource_id),
+            "grantee_type": clean_grantee_type,
+            "grantee_id": str(grantee_id),
+            "permission": clean_permission,
+            "requester_user_id": str(resolved_requester_id) if resolved_requester_id else None,
+            "session_id": clean_session_id,
+            "purpose": clean_purpose,
+            "delegation_id": clean_delegation_id,
+            "sensitivity_ceiling": canonical_ceiling,
+        }
+        binding_key = f"pkb:{_sha256(json.dumps(binding_payload, sort_keys=True, separators=(',', ':')))}"
 
         result = await session.execute(
             select(KnowledgeGrant).where(
@@ -1789,6 +2083,7 @@ class PersonalKnowledgeService:
                 KnowledgeGrant.grantee_type == clean_grantee_type,
                 KnowledgeGrant.grantee_id == grantee_id,
                 KnowledgeGrant.permission == clean_permission,
+                KnowledgeGrant.binding_key == binding_key,
             )
         )
         grant = result.scalar_one_or_none()
@@ -1804,11 +2099,24 @@ class PersonalKnowledgeService:
                 grantee_type=clean_grantee_type,
                 grantee_id=grantee_id,
                 permission=clean_permission,
+                binding_key=binding_key,
                 created_by_user_id=current_user_id,
             )
             session.add(grant)
+        previous_revoked_at = getattr(grant, "revoked_at", None)
+        grant.requester_user_id = resolved_requester_id
+        grant.session_id = clean_session_id
+        grant.purpose = clean_purpose
+        grant.delegation_id = clean_delegation_id
+        grant.sensitivity_ceiling = canonical_ceiling
+        grant.binding_key = binding_key
         grant.expires_at = expires_at
-        grant.grant_metadata_json = dict(grant_metadata or {})
+        grant.revoked_at = None
+        grant.revoked_by_user_id = None
+        metadata = dict(grant_metadata or {})
+        if previous_revoked_at is not None:
+            metadata["reactivated_from_revoked_at"] = previous_revoked_at.isoformat()
+        grant.grant_metadata_json = metadata
         await session.flush()
         return self._grant_summary(grant)
 
@@ -1834,7 +2142,12 @@ class PersonalKnowledgeService:
         grant = result.scalar_one_or_none()
         if grant is None:
             return False
-        await session.delete(grant)
+        grant.revoked_at = datetime.now(timezone.utc)
+        grant.revoked_by_user_id = current_user_id
+        metadata = dict(grant.grant_metadata_json or {})
+        metadata["authority_status"] = "revoked"
+        metadata["revoked_at"] = grant.revoked_at.isoformat()
+        grant.grant_metadata_json = metadata
         await session.flush()
         return True
 
@@ -2429,6 +2742,62 @@ class PersonalKnowledgeService:
             results=results,
         )
 
+    async def search_personal_with_authority(
+        self,
+        session: Any,
+        *,
+        tenant_id: uuid.UUID,
+        owner_user_id: uuid.UUID,
+        query: str,
+        principal: PersonalKnowledgePrincipal,
+        limit: int | None = None,
+    ) -> PersonalKnowledgeSearchResult:
+        """Return an explicit scope decision plus only model-safe search hits."""
+
+        decision = await resolve_personal_knowledge_permission(
+            session,
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+            principal=principal,
+            action="search",
+        )
+        if not decision.allowed:
+            return PersonalKnowledgeSearchResult(status="denied", hits=[], authority=decision)
+        hits = await self.search_personal(
+            session,
+            tenant_id=tenant_id,
+            owner_user_id=owner_user_id,
+            query=query,
+            principal=principal,
+            limit=limit,
+        )
+        unavailable_credential_refs = sum(
+            1
+            for hit in hits
+            if hit.sensitivity == SensitivityLevel.PL4_CREDENTIAL.value and not hit.credential_reference
+        )
+        safe_hits = [
+            hit for hit in hits if hit.sensitivity != SensitivityLevel.PL4_CREDENTIAL.value or hit.credential_reference
+        ]
+        if safe_hits and unavailable_credential_refs:
+            status = "partial"
+        elif safe_hits:
+            status = "ok"
+        elif unavailable_credential_refs:
+            status = "unavailable"
+        else:
+            status = "empty"
+        return PersonalKnowledgeSearchResult(
+            status=status,
+            hits=safe_hits,
+            authority=decision,
+            warnings=(
+                [f"credential_reference_unavailable:{unavailable_credential_refs}"]
+                if unavailable_credential_refs
+                else []
+            ),
+        )
+
     async def search_personal(
         self,
         session: Any,
@@ -2742,23 +3111,50 @@ class PersonalKnowledgeService:
             segment, document = entry["segment"], entry["document"]
             boosts = dict(entry["boosts"])
             final_score = float(entry["rrf"]) + float(boosts["heat"]) + float(boosts["freshness"])
-            content = str(segment.content or "").strip()
-            snippet = content
             document_metadata = dict(getattr(document, "doc_metadata_json", None) or {})
+            try:
+                sensitivity = canonicalize_sensitivity(getattr(document, "sensitivity", None))
+            except ValueError:
+                # Unknown legacy sensitivity fails closed as credential-like: no
+                # title, heading, source path, or segment bytes leave this layer.
+                sensitivity = SensitivityLevel.PL4_CREDENTIAL
+            credential_reference = (
+                _credential_reference_from_metadata(document_metadata)
+                if sensitivity == SensitivityLevel.PL4_CREDENTIAL
+                else None
+            )
+            if sensitivity == SensitivityLevel.PL4_CREDENTIAL:
+                title = "Credential reference"
+                snippet = ""
+                source_ref = credential_reference or ""
+                heading_path: list[str] = []
+                safe_metadata: dict[str, Any] = {}
+                safe_document_metadata: dict[str, Any] = {}
+            else:
+                title = str(document.title or "Untitled knowledge document")
+                snippet = str(segment.content or "").strip()
+                source_ref = entry["source_ref"]
+                heading_path = list(segment.heading_path_json or [])
+                safe_metadata = {
+                    "canonical_md_path": document.canonical_md_path,
+                    "source_sha256": document.source_sha256,
+                }
+                safe_document_metadata = {
+                    key: document_metadata[key]
+                    for key in ("citation_count", "usage_count", "reference_count")
+                    if key in document_metadata
+                }
             hits.append(
                 KnowledgeSearchHit(
                     document_id=document.id,
                     segment_id=segment.id,
-                    title=str(document.title or "Untitled knowledge document"),
+                    title=title,
                     snippet=snippet,
-                    source_ref=entry["source_ref"],
+                    source_ref=source_ref,
                     score=final_score,
-                    heading_path=list(segment.heading_path_json or []),
-                    sensitivity=str(document.sensitivity or "internal"),
-                    metadata={
-                        "canonical_md_path": document.canonical_md_path,
-                        "source_sha256": document.source_sha256,
-                    },
+                    heading_path=heading_path,
+                    sensitivity=sensitivity.value,
+                    metadata=safe_metadata,
                     score_trace={
                         "channels": dict(entry["channels"]),
                         "rrf": float(entry["rrf"]),
@@ -2766,12 +3162,9 @@ class PersonalKnowledgeService:
                         "final": final_score,
                         "optional_vector": optional_vector_trace,
                         "document_status": str(getattr(document, "status", "ready") or "ready"),
-                        "document_metadata": {
-                            key: document_metadata[key]
-                            for key in ("citation_count", "usage_count", "reference_count")
-                            if key in document_metadata
-                        },
+                        "document_metadata": safe_document_metadata,
                     },
+                    credential_reference=credential_reference,
                 )
             )
         return hits

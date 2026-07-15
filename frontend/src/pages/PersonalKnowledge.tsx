@@ -19,6 +19,7 @@ import {
   knowledgeApi,
   type PersonalKnowledgeDocumentDetail,
   type PersonalKnowledgeDocumentSummary,
+  type PersonalKnowledgeGrantRequest,
   type PersonalKnowledgeGrantSummary,
   type PersonalKnowledgeGraphSummary,
   type PersonalKnowledgeJobSummary,
@@ -374,46 +375,85 @@ function GraphPanel({ graph }: { graph?: PersonalKnowledgeGraphSummary }) {
   );
 }
 
-function GrantsPanel({
+type PersonalKnowledgeGrantPurpose = 'interactive_session' | 'autonomous_agent' | 'a2a_delegation' | 'subagent_delegation';
+type PersonalKnowledgeSensitivityCeiling = 'PL1_public' | 'PL2_pii' | 'PL3_sensitive' | 'PL4_credential';
+
+function defaultGrantExpiryLocal(): string {
+  const expires = new Date(Date.now() + 60 * 60 * 1000);
+  const local = new Date(expires.getTime() - expires.getTimezoneOffset() * 60_000);
+  return local.toISOString().slice(0, 16);
+}
+
+export function GrantsPanel({
   grants,
   granteeType,
   granteeId,
   permission,
+  requesterUserId,
+  sessionId,
+  purpose,
+  delegationId,
+  sensitivityCeiling,
+  expiresAt,
   onGranteeTypeChange,
   onGranteeIdChange,
   onPermissionChange,
+  onRequesterUserIdChange,
+  onSessionIdChange,
+  onPurposeChange,
+  onDelegationIdChange,
+  onSensitivityCeilingChange,
+  onExpiresAtChange,
   onCreate,
   onDelete,
   createPending,
   deletingGrantId,
 }: {
   grants: PersonalKnowledgeGrantSummary[];
-  granteeType: 'user' | 'agent' | 'session';
+  granteeType: 'user' | 'agent';
   granteeId: string;
   permission: 'read' | 'search' | 'manage';
-  onGranteeTypeChange: (value: 'user' | 'agent' | 'session') => void;
+  requesterUserId: string;
+  sessionId: string;
+  purpose: PersonalKnowledgeGrantPurpose;
+  delegationId: string;
+  sensitivityCeiling: PersonalKnowledgeSensitivityCeiling;
+  expiresAt: string;
+  onGranteeTypeChange: (value: 'user' | 'agent') => void;
   onGranteeIdChange: (value: string) => void;
   onPermissionChange: (value: 'read' | 'search' | 'manage') => void;
+  onRequesterUserIdChange: (value: string) => void;
+  onSessionIdChange: (value: string) => void;
+  onPurposeChange: (value: PersonalKnowledgeGrantPurpose) => void;
+  onDelegationIdChange: (value: string) => void;
+  onSensitivityCeilingChange: (value: PersonalKnowledgeSensitivityCeiling) => void;
+  onExpiresAtChange: (value: string) => void;
   onCreate: (event: FormEvent) => void;
   onDelete: (grantId: string) => void;
   createPending: boolean;
   deletingGrantId?: string | null;
 }) {
   const { t } = useTranslation();
+  const delegatedPurpose = purpose === 'a2a_delegation' || purpose === 'subagent_delegation';
+  const requiresSession = granteeType === 'agent' && purpose !== 'autonomous_agent';
+  const createDisabled = !granteeId.trim()
+    || createPending
+    || (granteeType === 'agent' && !expiresAt)
+    || (requiresSession && (!requesterUserId.trim() || !sessionId.trim()))
+    || (delegatedPurpose && !delegationId.trim());
   return (
     <section className="personal-kb-panel">
       <div className="personal-kb-panel-heading">
         <div>
           <h2>{t('personalKnowledge.grants', '授权')}</h2>
-          <p>{t('personalKnowledge.grantsDesc', 'Owner 默认可读写；Agent、user、session grant 都由后端 knowledge_grants 判定。')}</p>
+          <p>{t('personalKnowledge.grantsDesc', 'Owner 直接交互可读 PL1–PL3；自动、共享与跨用户 Agent 必须绑定 requester、session/purpose、到期时间与 sensitivity ceiling。PL4 始终只返回 credential reference。')}</p>
         </div>
         <IconShieldCheck size={18} stroke={1.7} />
       </div>
       <form className="personal-kb-grant-form" onSubmit={onCreate}>
-        <select value={granteeType} onChange={(event) => onGranteeTypeChange(event.target.value as 'user' | 'agent' | 'session')}>
+        <select value={granteeType} onChange={(event) => onGranteeTypeChange(event.target.value as 'user' | 'agent')}>
           <option value="agent">agent</option>
           <option value="user">user</option>
-          <option value="session">session</option>
         </select>
         <input value={granteeId} onChange={(event) => onGranteeIdChange(event.target.value)} placeholder="grantee UUID" />
         <select value={permission} onChange={(event) => onPermissionChange(event.target.value as 'read' | 'search' | 'manage')}>
@@ -421,7 +461,61 @@ function GrantsPanel({
           <option value="read">read</option>
           <option value="manage">manage</option>
         </select>
-        <button type="submit" className="btn btn-primary" disabled={!granteeId.trim() || createPending}>
+        <select
+          value={sensitivityCeiling}
+          aria-label={t('personalKnowledge.sensitivityCeiling', '敏感级别上限')}
+          onChange={(event) => onSensitivityCeilingChange(event.target.value as PersonalKnowledgeSensitivityCeiling)}
+        >
+          <option value="PL1_public">PL1_public</option>
+          <option value="PL2_pii">PL2_pii</option>
+          <option value="PL3_sensitive">PL3_sensitive</option>
+          <option value="PL4_credential">PL4_credential · reference only</option>
+        </select>
+        {granteeType === 'agent' && (
+          <>
+            <select
+              value={purpose}
+              aria-label={t('personalKnowledge.grantPurpose', '授权用途')}
+              onChange={(event) => onPurposeChange(event.target.value as PersonalKnowledgeGrantPurpose)}
+            >
+              <option value="autonomous_agent">autonomous_agent</option>
+              <option value="interactive_session">interactive_session</option>
+              <option value="a2a_delegation">a2a_delegation</option>
+              <option value="subagent_delegation">subagent_delegation</option>
+            </select>
+            {requiresSession && (
+              <>
+                <input
+                  value={requesterUserId}
+                  onChange={(event) => onRequesterUserIdChange(event.target.value)}
+                  placeholder="requester user UUID"
+                />
+                <input
+                  value={sessionId}
+                  onChange={(event) => onSessionIdChange(event.target.value)}
+                  placeholder="bound session ID"
+                />
+              </>
+            )}
+            {delegatedPurpose && (
+              <input
+                value={delegationId}
+                onChange={(event) => onDelegationIdChange(event.target.value)}
+                placeholder="delegation ID"
+              />
+            )}
+            <label>
+              <span>{t('personalKnowledge.grantExpiresAt', '到期时间')}</span>
+              <input
+                type="datetime-local"
+                value={expiresAt}
+                onChange={(event) => onExpiresAtChange(event.target.value)}
+                required
+              />
+            </label>
+          </>
+        )}
+        <button type="submit" className="btn btn-primary" disabled={createDisabled}>
           {t('personalKnowledge.createGrant', '创建授权')}
         </button>
       </form>
@@ -430,7 +524,14 @@ function GrantsPanel({
           <div key={grant.grant_id} className="personal-kb-grant-row">
             <div>
               <strong>{grant.grantee_type}:{grant.grantee_id}</strong>
-              <span>{grant.permission} · {grant.resource_type}</span>
+              <span>
+                {grant.permission} · {grant.resource_type} · {grant.sensitivity_ceiling}
+                {grant.purpose ? ` · ${grant.purpose}` : ''}
+                {grant.active ? '' : ` · ${t('personalKnowledge.revokedOrExpired', '已撤销/过期')}`}
+              </span>
+              {grant.requester_user_id && <code>requester:{grant.requester_user_id}</code>}
+              {grant.session_id && <code>session:{grant.session_id}</code>}
+              {grant.delegation_id && <code>delegation:{grant.delegation_id}</code>}
               {grant.expires_at && <code>{grant.expires_at}</code>}
             </div>
             <button
@@ -715,9 +816,15 @@ export default function PersonalKnowledge() {
   const [url, setUrl] = useState('');
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [busyJobId, setBusyJobId] = useState<string | null>(null);
-  const [granteeType, setGranteeType] = useState<'user' | 'agent' | 'session'>('agent');
+  const [granteeType, setGranteeType] = useState<'user' | 'agent'>('agent');
   const [granteeId, setGranteeId] = useState('');
   const [grantPermission, setGrantPermission] = useState<'read' | 'search' | 'manage'>('search');
+  const [grantRequesterUserId, setGrantRequesterUserId] = useState('');
+  const [grantSessionId, setGrantSessionId] = useState('');
+  const [grantPurpose, setGrantPurpose] = useState<PersonalKnowledgeGrantPurpose>('autonomous_agent');
+  const [grantDelegationId, setGrantDelegationId] = useState('');
+  const [grantSensitivityCeiling, setGrantSensitivityCeiling] = useState<PersonalKnowledgeSensitivityCeiling>('PL3_sensitive');
+  const [grantExpiresAt, setGrantExpiresAt] = useState(defaultGrantExpiryLocal);
   const [deletingGrantId, setDeletingGrantId] = useState<string | null>(null);
   const [busyProposalId, setBusyProposalId] = useState<string | null>(null);
   const [rollbackPendingVersion, setRollbackPendingVersion] = useState<number | null>(null);
@@ -831,15 +938,33 @@ export default function PersonalKnowledge() {
     },
   });
   const createGrantMutation = useMutation({
-    mutationFn: () =>
-      knowledgeApi.myPersonalCreateGrant({
+    mutationFn: () => {
+      const request: PersonalKnowledgeGrantRequest = {
         resource_type: 'scope',
         grantee_type: granteeType,
         grantee_id: granteeId.trim(),
         permission: grantPermission,
-      }),
+        sensitivity_ceiling: grantSensitivityCeiling,
+      };
+      if (granteeType === 'agent') {
+        request.purpose = grantPurpose;
+        request.expires_at = new Date(grantExpiresAt).toISOString();
+        if (grantPurpose !== 'autonomous_agent') {
+          request.requester_user_id = grantRequesterUserId.trim();
+          request.session_id = grantSessionId.trim();
+        }
+        if (grantPurpose === 'a2a_delegation' || grantPurpose === 'subagent_delegation') {
+          request.delegation_id = grantDelegationId.trim();
+        }
+      }
+      return knowledgeApi.myPersonalCreateGrant(request);
+    },
     onSuccess: () => {
       setGranteeId('');
+      setGrantRequesterUserId('');
+      setGrantSessionId('');
+      setGrantDelegationId('');
+      setGrantExpiresAt(defaultGrantExpiryLocal());
       void queryClient.invalidateQueries({ queryKey: ['personal-knowledge-grants'] });
     },
   });
@@ -1073,9 +1198,21 @@ export default function PersonalKnowledge() {
                 granteeType={granteeType}
                 granteeId={granteeId}
                 permission={grantPermission}
+                requesterUserId={grantRequesterUserId}
+                sessionId={grantSessionId}
+                purpose={grantPurpose}
+                delegationId={grantDelegationId}
+                sensitivityCeiling={grantSensitivityCeiling}
+                expiresAt={grantExpiresAt}
                 onGranteeTypeChange={setGranteeType}
                 onGranteeIdChange={setGranteeId}
                 onPermissionChange={setGrantPermission}
+                onRequesterUserIdChange={setGrantRequesterUserId}
+                onSessionIdChange={setGrantSessionId}
+                onPurposeChange={setGrantPurpose}
+                onDelegationIdChange={setGrantDelegationId}
+                onSensitivityCeilingChange={setGrantSensitivityCeiling}
+                onExpiresAtChange={setGrantExpiresAt}
                 onCreate={(event) => {
                   event.preventDefault();
                   if (granteeId.trim()) createGrantMutation.mutate();

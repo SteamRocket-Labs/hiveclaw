@@ -295,10 +295,19 @@ export interface PersonalKnowledgeGrantSummary {
   resource_type: string;
   resource_id: string;
   document_id: string | null;
-  grantee_type: 'user' | 'agent' | 'session' | string;
+  grantee_type: 'user' | 'agent' | string;
   grantee_id: string;
   permission: 'read' | 'search' | 'manage' | string;
+  requester_user_id: string | null;
+  session_id: string | null;
+  purpose: 'interactive_session' | 'autonomous_agent' | 'a2a_delegation' | 'subagent_delegation' | string | null;
+  delegation_id: string | null;
+  sensitivity_ceiling: 'PL1_public' | 'PL2_pii' | 'PL3_sensitive' | 'PL4_credential' | string;
+  binding_key: string;
   expires_at: string | null;
+  revoked_at: string | null;
+  revoked_by_user_id: string | null;
+  active: boolean;
   metadata: Record<string, unknown>;
   created_at: string | null;
 }
@@ -307,9 +316,14 @@ export interface PersonalKnowledgeGrantRequest {
   resource_type: 'scope' | 'document';
   resource_id?: string;
   document_id?: string;
-  grantee_type: 'user' | 'agent' | 'session';
+  grantee_type: 'user' | 'agent';
   grantee_id: string;
   permission?: 'read' | 'search' | 'manage';
+  requester_user_id?: string | null;
+  session_id?: string | null;
+  purpose?: 'interactive_session' | 'autonomous_agent' | 'a2a_delegation' | 'subagent_delegation' | null;
+  delegation_id?: string | null;
+  sensitivity_ceiling?: 'PL1_public' | 'PL2_pii' | 'PL3_sensitive' | 'PL4_credential';
   expires_at?: string | null;
   metadata?: Record<string, unknown>;
 }
@@ -427,7 +441,7 @@ export const knowledgeApi = {
   myPersonalCreateGrant: (body: PersonalKnowledgeGrantRequest) =>
     post<PersonalKnowledgeGrantSummary>('/knowledge/personal/grants', body),
   myPersonalDeleteGrant: (grantId: string) =>
-    del<{ deleted: boolean }>(`/knowledge/personal/grants/${grantId}`),
+    del<{ revoked: boolean; deleted: false }>(`/knowledge/personal/grants/${grantId}`),
   myPersonalProposals: (status?: string) => {
     const suffix = status ? `?${new URLSearchParams({ status }).toString()}` : '';
     return get<{ proposals: PersonalKnowledgeProposalSummary[] }>(`/knowledge/personal/proposals${suffix}`);

@@ -243,7 +243,7 @@ class KnowledgeIndexJob(Base):
 
 
 class KnowledgeGrant(Base):
-    """Personal Knowledge permission edge; broader grantee fields are compatibility-reserved."""
+    """Personal Knowledge permission edge with authenticated runtime bindings."""
 
     __tablename__ = "knowledge_grants"
     __table_args__ = (
@@ -256,7 +256,32 @@ class KnowledgeGrant(Base):
             "grantee_type",
             "grantee_id",
             "permission",
+            "binding_key",
             name="uq_knowledge_grant_resource_grantee",
+        ),
+        CheckConstraint(
+            "sensitivity_ceiling IN ('PL1_public','PL2_pii','PL3_sensitive','PL4_credential')",
+            name="ck_knowledge_grant_sensitivity_ceiling",
+        ),
+        CheckConstraint(
+            "grantee_type != 'agent' OR revoked_at IS NOT NULL OR ("
+            "requester_user_id IS NOT NULL AND expires_at IS NOT NULL "
+            "AND ((purpose = 'autonomous_agent' AND requester_user_id = scope_id "
+            "AND session_id IS NULL AND delegation_id IS NULL) "
+            "OR (purpose = 'interactive_session' AND session_id IS NOT NULL AND delegation_id IS NULL) "
+            "OR (purpose IN ('a2a_delegation','subagent_delegation') "
+            "AND session_id IS NOT NULL AND delegation_id IS NOT NULL)))",
+            name="ck_knowledge_grant_agent_binding",
+        ),
+        CheckConstraint(
+            "revoked_at IS NOT NULL OR ((resource_type = 'scope' AND resource_id = scope_id "
+            "AND document_id IS NULL) OR (resource_type = 'document' AND document_id IS NOT NULL "
+            "AND resource_id = document_id))",
+            name="ck_knowledge_grant_resource_binding",
+        ),
+        CheckConstraint(
+            "revoked_by_user_id IS NULL OR revoked_at IS NOT NULL",
+            name="ck_knowledge_grant_revoke_actor",
         ),
     )
 
@@ -274,11 +299,27 @@ class KnowledgeGrant(Base):
     grantee_type: Mapped[str] = mapped_column(String(30), nullable=False, index=True)
     grantee_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
     permission: Mapped[str] = mapped_column(String(30), nullable=False, default="search", index=True)
+    requester_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    session_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    purpose: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
+    delegation_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    sensitivity_ceiling: Mapped[str] = mapped_column(
+        String(30), nullable=False, default="PL1_public", server_default="PL1_public", index=True
+    )
+    binding_key: Mapped[str] = mapped_column(
+        String(200), nullable=False, default=lambda: f"compat:{uuid.uuid4().hex}", index=True
+    )
     grant_metadata_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
     )
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    revoked_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 

@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import json
 import hashlib
+import logging
 import uuid
+from collections.abc import Mapping
 from typing import Any
 
 from sqlalchemy import select
 
+from app.core.execution_context import ExecutionPrincipal
 from app.database import tenant_scoped_session
 from app.models.agent import Agent
 from app.services.personal_knowledge_access import AgentRuntimePrincipal
@@ -19,6 +22,9 @@ from app.services.personal_knowledge_proposals import (
 )
 from app.tools.decorator import ToolMeta, tool
 from app.tools.runtime import ToolExecutionRequest
+
+
+logger = logging.getLogger(__name__)
 
 
 def _coerce_uuid(value: Any) -> uuid.UUID | None:
@@ -78,12 +84,65 @@ def _proposal_idempotency_key(request: ToolExecutionRequest) -> str:
 
 
 def _personal_kb_runtime_principal(request: ToolExecutionRequest) -> AgentRuntimePrincipal:
-    delegation_id = getattr(request.context.delegation_token, "delegation_id", None)
+    context = request.context
+    context_requester = _coerce_uuid(context.user_id)
+    carried = context.execution_principal
+    if isinstance(carried, Mapping):
+        try:
+            carried = ExecutionPrincipal.from_evidence(carried)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("execution_principal_invalid") from exc
+    if carried is not None and not isinstance(carried, ExecutionPrincipal):
+        raise ValueError("execution_principal_invalid")
+    if carried is None and context.authority_frame_required:
+        raise ValueError("execution_principal_required")
+
+    if carried is not None:
+        try:
+            carried.assert_scope(tenant_id=context.tenant_id, source_agent_id=context.agent_id)
+        except ValueError as exc:
+            raise ValueError("execution_principal_scope_mismatch") from exc
+        if context_requester != carried.requester_user_id:
+            raise ValueError("execution_principal_requester_mismatch")
+        requester_user_id = carried.requester_user_id
+    else:
+        requester_user_id = context_requester
+
+    execution_identity = context.execution_identity
+    if execution_identity is not None:
+        identity_type = str(getattr(execution_identity, "identity_type", "") or "")
+        identity_id = _coerce_uuid(getattr(execution_identity, "identity_id", None))
+        if identity_type == "delegated_user" and identity_id != requester_user_id:
+            raise ValueError("execution_identity_requester_mismatch")
+        if identity_type == "agent_bot" and identity_id not in (None, context.agent_id):
+            raise ValueError("execution_identity_agent_mismatch")
+
+    token_delegation_id = getattr(context.delegation_token, "delegation_id", None)
+    delegation_id = context.authority_delegation_id or token_delegation_id
+    delegation_id = str(delegation_id).strip() if delegation_id else None
+    carried_origin = str(getattr(carried, "origin", "") or "").strip().lower()
+    if carried_origin == "a2a_delegation" or bool(getattr(carried, "delegation_chain", ())):
+        purpose = "a2a_delegation"
+    elif "subagent" in carried_origin or (carried is None and delegation_id is not None):
+        purpose = "subagent_delegation"
+    elif str(getattr(execution_identity, "identity_type", "") or "") == "agent_bot":
+        purpose = "autonomous_agent"
+    else:
+        purpose = "interactive_session"
+
+    session_id = str(context.session_id).strip() if context.session_id else None
+    if purpose != "autonomous_agent" and not session_id:
+        raise ValueError("personal_kb_session_binding_missing")
+    if purpose in {"a2a_delegation", "subagent_delegation"} and not delegation_id:
+        raise ValueError("personal_kb_delegation_binding_missing")
     return AgentRuntimePrincipal(
-        agent_id=request.context.agent_id,
-        requester_user_id=_coerce_uuid(request.context.user_id),
-        session_id=str(request.context.session_id) if request.context.session_id else None,
-        delegation_id=str(delegation_id) if delegation_id else None,
+        agent_id=context.agent_id,
+        requester_user_id=requester_user_id,
+        session_id=session_id,
+        runtime_task_id=str(context.runtime_task_id).strip() if context.runtime_task_id else None,
+        delegation_id=delegation_id,
+        purpose=purpose,
+        autonomous=purpose == "autonomous_agent",
     )
 
 
@@ -234,8 +293,12 @@ async def propose_personal_kb_item(request: ToolExecutionRequest) -> str:
         description=(
             "Search the owner's Personal Knowledge Base through the governed Knowledge Core.\n\n"
             "Use this when the current answer needs durable owner-provided documents, notes, URLs, or "
-            "personal knowledge artifacts. Results are tenant-, owner-, sensitivity-, and grant-filtered "
-            "before they are returned. Call `read_personal_kb` with returned document and segment IDs when "
+            "personal knowledge artifacts. Interactive owner turns may read agent_searchable PL1-PL3 content; "
+            "autonomous, shared, cross-user, A2A, and subagent turns require an unexpired explicit grant bound "
+            "to requester, session/purpose, delegation when applicable, and a sensitivity ceiling. PL4 never "
+            "returns Knowledge text and can expose only an opaque Secret Store credential reference. The result "
+            "has typed ok/empty/denied/unavailable/partial status plus authority evidence. Call `read_personal_kb` "
+            "with returned document and segment IDs when "
             "exact content is needed. Do not use filesystem reads as a substitute for these tools "
             "when the question is about the Personal KB."
         ),
@@ -267,11 +330,22 @@ async def propose_personal_kb_item(request: ToolExecutionRequest) -> str:
 async def search_personal_kb(request: ToolExecutionRequest) -> str:
     query = str(request.arguments.get("query") or "").strip()
     if not query:
-        return json.dumps({"results": [], "warnings": ["query is required"]}, ensure_ascii=False)
+        return json.dumps(
+            {"status": "invalid_request", "results": [], "authority": None, "warnings": ["query is required"]},
+            ensure_ascii=False,
+        )
 
     tenant_id = _coerce_uuid(request.context.tenant_id)
     if tenant_id is None:
-        return json.dumps({"results": [], "warnings": ["tenant_id is required"]}, ensure_ascii=False)
+        return json.dumps(
+            {
+                "status": "unavailable",
+                "results": [],
+                "authority": None,
+                "warnings": ["tenant_id is required"],
+            },
+            ensure_ascii=False,
+        )
 
     raw_limit = request.arguments.get("limit")
     if raw_limit is None:
@@ -280,7 +354,27 @@ async def search_personal_kb(request: ToolExecutionRequest) -> str:
         try:
             limit = max(1, int(raw_limit))
         except (TypeError, ValueError):
-            return json.dumps({"results": [], "warnings": ["limit must be a positive integer"]}, ensure_ascii=False)
+            return json.dumps(
+                {
+                    "status": "invalid_request",
+                    "results": [],
+                    "authority": None,
+                    "warnings": ["limit must be a positive integer"],
+                },
+                ensure_ascii=False,
+            )
+    try:
+        principal = _personal_kb_runtime_principal(request)
+    except ValueError as exc:
+        return json.dumps(
+            {
+                "status": "unavailable",
+                "results": [],
+                "authority": None,
+                "warnings": [str(exc)],
+            },
+            ensure_ascii=False,
+        )
     async with tenant_scoped_session(tenant_id) as db:
         owner_user_id = await _resolve_agent_owner(
             db,
@@ -288,34 +382,65 @@ async def search_personal_kb(request: ToolExecutionRequest) -> str:
             requester_user_id=request.context.user_id,
         )
         if owner_user_id is None:
-            return json.dumps({"results": [], "warnings": ["agent not found"]}, ensure_ascii=False)
-        hits = await PersonalKnowledgeService().search_personal(
-            db,
-            tenant_id=tenant_id,
-            owner_user_id=owner_user_id,
-            query=query,
-            principal=_personal_kb_runtime_principal(request),
-            limit=limit,
+            return json.dumps(
+                {"status": "unavailable", "results": [], "authority": None, "warnings": ["agent not found"]},
+                ensure_ascii=False,
+            )
+        try:
+            result = await PersonalKnowledgeService().search_personal_with_authority(
+                db,
+                tenant_id=tenant_id,
+                owner_user_id=owner_user_id,
+                query=query,
+                principal=principal,
+                limit=limit,
+            )
+        except Exception:  # noqa: BLE001 - infrastructure failure becomes a typed, observable non-semantic state
+            logger.exception("Personal KB search backend failed")
+            return json.dumps(
+                {
+                    "status": "unavailable",
+                    "results": [],
+                    "authority": None,
+                    "warnings": ["knowledge_backend_unavailable"],
+                },
+                ensure_ascii=False,
+            )
+
+    rendered_results: list[dict[str, Any]] = []
+    for hit in result.hits:
+        if hit.credential_reference:
+            rendered_results.append(
+                {
+                    "result_kind": "credential_reference",
+                    "document_id": str(hit.document_id),
+                    "credential_reference": hit.credential_reference,
+                    "sensitivity": "PL4_credential",
+                }
+            )
+            continue
+        rendered_results.append(
+            {
+                "result_kind": "knowledge_segment",
+                "document_id": str(hit.document_id),
+                "segment_id": str(hit.segment_id),
+                "title": hit.title,
+                "snippet": hit.snippet,
+                "source_ref": hit.source_ref,
+                "score": hit.score,
+                "heading_path": hit.heading_path,
+                "sensitivity": hit.sensitivity,
+                "metadata": hit.metadata,
+                "score_trace": hit.score_trace,
+            }
         )
 
     return json.dumps(
         {
-            "results": [
-                {
-                    "document_id": str(hit.document_id),
-                    "segment_id": str(hit.segment_id),
-                    "title": hit.title,
-                    "snippet": hit.snippet,
-                    "source_ref": hit.source_ref,
-                    "score": hit.score,
-                    "heading_path": hit.heading_path,
-                    "sensitivity": hit.sensitivity,
-                    "metadata": hit.metadata,
-                    "score_trace": hit.score_trace,
-                }
-                for hit in hits
-            ],
-            "warnings": [],
+            "status": result.status,
+            "results": rendered_results,
+            "authority": result.authority.evidence(),
+            "warnings": list(result.warnings),
         },
         ensure_ascii=False,
     )
@@ -327,7 +452,9 @@ async def search_personal_kb(request: ToolExecutionRequest) -> str:
         description=(
             "Read complete authorized segments from an owner Personal Knowledge Base document after locating it with "
             "search_personal_kb. The document is resolved through the governed Knowledge Core; tenant, owner, "
-            "sensitivity, and grant checks are repeated for every read. An explicit max_chars is honored only "
+            "requester/session/purpose/delegation grant and sensitivity-ceiling checks are repeated for every read. "
+            "Interactive owner turns may read agent_searchable PL1-PL3; PL4 returns only an opaque credential "
+            "reference and never a title, snippet, heading, source path, or segment body. An explicit max_chars is honored only "
             "when the calling model intentionally asks for a shorter result. Never use filesystem tools to bypass this access boundary."
         ),
         parameters={
@@ -363,21 +490,45 @@ async def search_personal_kb(request: ToolExecutionRequest) -> str:
 async def read_personal_kb(request: ToolExecutionRequest) -> str:
     tenant_id = _coerce_uuid(request.context.tenant_id)
     if tenant_id is None:
-        return json.dumps({"segments": [], "warnings": ["tenant_id is required"]}, ensure_ascii=False)
+        return json.dumps(
+            {"status": "unavailable", "segments": [], "authority": None, "warnings": ["tenant_id is required"]},
+            ensure_ascii=False,
+        )
 
     document_id = _coerce_uuid(request.arguments.get("document_id"))
     if document_id is None:
-        return json.dumps({"segments": [], "warnings": ["valid document_id is required"]}, ensure_ascii=False)
+        return json.dumps(
+            {
+                "status": "invalid_request",
+                "segments": [],
+                "authority": None,
+                "warnings": ["valid document_id is required"],
+            },
+            ensure_ascii=False,
+        )
 
     raw_segment_ids = request.arguments.get("segment_ids") or []
     if not isinstance(raw_segment_ids, list):
-        return json.dumps({"segments": [], "warnings": ["segment_ids must be an array"]}, ensure_ascii=False)
+        return json.dumps(
+            {
+                "status": "invalid_request",
+                "segments": [],
+                "authority": None,
+                "warnings": ["segment_ids must be an array"],
+            },
+            ensure_ascii=False,
+        )
     segment_ids: set[uuid.UUID] = set()
     for raw_segment_id in raw_segment_ids:
         segment_id = _coerce_uuid(raw_segment_id)
         if segment_id is None:
             return json.dumps(
-                {"segments": [], "warnings": [f"invalid segment_id: {raw_segment_id}"]},
+                {
+                    "status": "invalid_request",
+                    "segments": [],
+                    "authority": None,
+                    "warnings": [f"invalid segment_id: {raw_segment_id}"],
+                },
                 ensure_ascii=False,
             )
         segment_ids.add(segment_id)
@@ -390,9 +541,22 @@ async def read_personal_kb(request: ToolExecutionRequest) -> str:
             max_chars = max(1, int(raw_max_chars))
         except (TypeError, ValueError):
             return json.dumps(
-                {"segments": [], "warnings": ["max_chars must be a positive integer"]},
+                {
+                    "status": "invalid_request",
+                    "segments": [],
+                    "authority": None,
+                    "warnings": ["max_chars must be a positive integer"],
+                },
                 ensure_ascii=False,
             )
+
+    try:
+        principal = _personal_kb_runtime_principal(request)
+    except ValueError as exc:
+        return json.dumps(
+            {"status": "unavailable", "segments": [], "authority": None, "warnings": [str(exc)]},
+            ensure_ascii=False,
+        )
 
     async with tenant_scoped_session(tenant_id) as db:
         owner_user_id = await _resolve_agent_owner(
@@ -401,18 +565,69 @@ async def read_personal_kb(request: ToolExecutionRequest) -> str:
             requester_user_id=request.context.user_id,
         )
         if owner_user_id is None:
-            return json.dumps({"segments": [], "warnings": ["agent not found"]}, ensure_ascii=False)
-        detail = await PersonalKnowledgeService().get_personal_document(
-            db,
-            tenant_id=tenant_id,
-            owner_user_id=owner_user_id,
-            document_id=document_id,
-            principal=_personal_kb_runtime_principal(request),
+            return json.dumps(
+                {"status": "unavailable", "segments": [], "authority": None, "warnings": ["agent not found"]},
+                ensure_ascii=False,
+            )
+        try:
+            result = await PersonalKnowledgeService().get_personal_document_with_authority(
+                db,
+                tenant_id=tenant_id,
+                owner_user_id=owner_user_id,
+                document_id=document_id,
+                principal=principal,
+            )
+        except Exception:  # noqa: BLE001 - infrastructure failure becomes a typed, observable non-semantic state
+            logger.exception("Personal KB read backend failed")
+            return json.dumps(
+                {
+                    "status": "unavailable",
+                    "segments": [],
+                    "authority": None,
+                    "warnings": ["knowledge_backend_unavailable"],
+                },
+                ensure_ascii=False,
+            )
+
+    if result.status != "ok":
+        return json.dumps(
+            {
+                "status": result.status,
+                "document_id": str(document_id),
+                "segments": [],
+                "truncated": False,
+                "authority": result.authority.evidence(),
+                "warnings": list(result.warnings),
+            },
+            ensure_ascii=False,
+        )
+    if result.credential_reference:
+        return json.dumps(
+            {
+                "status": "ok",
+                "result_kind": "credential_reference",
+                "document_id": str(document_id),
+                "sensitivity": "PL4_credential",
+                "credential_reference": result.credential_reference,
+                "segments": [],
+                "truncated": False,
+                "authority": result.authority.evidence(),
+                "warnings": list(result.warnings),
+            },
+            ensure_ascii=False,
         )
 
+    detail = result.document
     if detail is None:
         return json.dumps(
-            {"segments": [], "warnings": ["document not found or not accessible"]},
+            {
+                "status": "unavailable",
+                "document_id": str(document_id),
+                "segments": [],
+                "truncated": False,
+                "authority": result.authority.evidence(),
+                "warnings": ["document_body_unavailable"],
+            },
             ensure_ascii=False,
         )
 
@@ -447,13 +662,16 @@ async def read_personal_kb(request: ToolExecutionRequest) -> str:
 
     return json.dumps(
         {
+            "status": "ok",
+            "result_kind": "knowledge_segments",
             "document_id": str(detail.document_id),
             "title": detail.title,
             "source_ref": detail.source_ref,
             "sensitivity": detail.sensitivity,
             "segments": rendered_segments,
             "truncated": truncated,
-            "warnings": [],
+            "authority": result.authority.evidence(),
+            "warnings": list(result.warnings),
         },
         ensure_ascii=False,
     )

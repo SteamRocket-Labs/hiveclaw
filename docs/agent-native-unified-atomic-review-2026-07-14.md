@@ -4,7 +4,7 @@
 >
 > 原始审查冻结快照：`main@501db6555dae374e5fcf43a6fdcfe8a3dd89343e` + 2026-07-14 当时未提交工作树；后续施工不改写这个审查锚点，每条 `EVID-*` 另记自己的开工 HEAD、工作树与生产快照
 >
-> 修复账本滚动更新：2026-07-15；Group 0 已用 `EVID-G0-005` 把 11 个上下文包总索引、逐 Group 详细路由和证据回流做成机器门并保持关闭；Group 1 的同源三服务部署已经成功，`P0-F1/P0-F2/KB-EXTRACT-001` 以 `EVID-G1-001/002/006` 完成 production canary 并关闭，`E-1/P1-004/P1-F4` 仍因 live authority/recovery canary 与历史数据处置保持 open；不得把 3 个 leaf 的关闭冒充 Group 1 或 103 项完成。
+> 修复账本滚动更新：2026-07-15；Group 0 已用 `EVID-G0-005` 把 11 个上下文包总索引、逐 Group 详细路由和证据回流做成机器门并保持关闭；Group 1 的同源三服务部署已经成功，`P0-F1/P0-F2/KB-EXTRACT-001` 以 `EVID-G1-001/002/006` 完成 production canary 并关闭，`KB-AUTH-001` 已通过 `EVID-G1-007` 的本地与 detached clean-snapshot 全量验收但尚未 commit/deploy/canary，`E-1/P1-004/P1-F4` 仍因 live authority/recovery canary 与历史数据处置保持 open；不得把 3 个 leaf 的关闭或 1 个本地 Green 冒充 Group 1 或 103 项完成。
 >
 > 组合输入：`agent-native-atomic-review-2026-07-14.md`、`agent-native-extreme-boundary-atomic-review-2026-07-14.md`、`unified-context-assembly-and-progressive-disclosure-2026-07-14.md`、`session-v2-cc-codex-alignment-contract-2026-07-14.md`、修订后的 `reusable-agent-native-atomic-review-prompt.md`，以及当前 Hive / FreeCode / Codex 本地源码。
 >
@@ -1212,7 +1212,7 @@ Group 0 是全局证据门，不拥有业务 leaf。下面 103 行必须与 cano
 - P1 | P1-008 | inherited-current-evidence | Memory dependency failure 冻结无关 effect
 - P1 | P1-017 | inherited-dirty-fix-unaccepted | transcript commit 与 T0 wake 可见性
 - P1 | G-01A | inherited-split | 平台 failure prose 冒充 assistant/final author
-- P1 | KB-AUTH-001 | inherited-split | cross-principal PKB requester/grant/ceiling
+- P1 | KB-AUTH-001 | in_progress-local-green:EVID-G1-007 | typed requester/session/purpose/delegation grant、sensitivity ceiling、PL4 reference-only 与可逆 legacy quarantine 已通过 detached clean-snapshot 全量；commit/deploy/live canary 待完成
 - P1 | KB-EXTRACT-001 | closed:EVID-G1-006 | canonical sensitivity enum、全部写边界、PL3/PL4 extraction gate、可逆 backfill、DB constraint 与 production canary 已绿
 - P1 | KB-PROP-001 | inherited-split | sensitivity/provenance 未贯穿 transcript/T0/T2/outbound
 - P2 | A-01 | inherited-current-evidence | 模型正文前缀机械判失败
@@ -1316,7 +1316,7 @@ Group 0 是全局证据门，不拥有业务 leaf。下面 103 行必须与 cano
 | Group | 证据前缀 | Owner 范围 | 当前证据状态 | 下一次写入要求 |
 |---:|---|---|---|---|
 | 0 | `EVID-G0-*` | 0 leaf / 0 Missing | `closed`：`EVID-G0-001/002/003/004/005`；文档 Git truth、owner/path/decision/scenario CI、11 个 Group 上下文包与机器总索引、59 份本地 `@docs` clean-checkout 快照、跨仓快照与 fake-provider/PG/Redis harness 基座成立 | 后续任何新增本地 `@docs` 必须先进入 Git 并同步上下文包索引；业务场景 Green 仍由 owner Group 负责 |
-| 1 | `EVID-G1-*` | 16 leaf / 0 Missing | `in_progress`：六个独立 code commit；`P0-F1/P0-F2/KB-EXTRACT-001` production canary 已绿并关闭；`E-1/P1-004/P1-F4` 已部署但 live authority/recovery gate 仍 open，P1-F4 最新 dry-run=`54 would_quarantine`；其余 10 leaf 未施工 | 下一项进入 `KB-AUTH-001`，建立跨 principal explicit grant/sensitivity ceiling 与 PL4 reference-only read；并行完成 E-1 legacy disposition、P1-004 A2A canary、P1-F4 apply/恢复 canary，不能用 shared deploy 或 dry-run 冒充 leaf closed |
+| 1 | `EVID-G1-*` | 16 leaf / 0 Missing | `in_progress`：六个独立 code commit；`P0-F1/P0-F2/KB-EXTRACT-001` production canary 已绿并关闭；`KB-AUTH-001` 已完成本地 typed authority、migration/real-PG、API/UI/tool 与 detached clean-snapshot 全量回归，仍等待独立 commit、三服务部署与 live canary；`E-1/P1-004/P1-F4` 已部署但 live authority/recovery gate 仍 open，P1-F4 最新 dry-run=`54 would_quarantine`；其余 9 leaf 未施工 | 先把 `EVID-G1-007` 的 production grant inventory/quarantine、owner/shared/A2A/PL4/revoke canary 与安全 rollback 闭合；并行完成 E-1 legacy disposition、P1-004 A2A canary、P1-F4 apply/恢复 canary，不能用本地 Green、shared deploy 或 dry-run 冒充 leaf closed |
 | 2 | `EVID-G2-*` | 14 leaf / 0 Missing | `open` | 写 Session event/item/reducer、persist-before-publish、projection/backfill 与 SESSION-G 结果 |
 | 3 | `EVID-G3-*` | 7 leaf / 0 Missing | `open` | 写 root admission、reserve/commit/release、terminal CAS、approval resume 与 fanout 曲线 |
 | 4 | `EVID-G4-*` | 6 leaf / 0 Missing | `open` | 写 result ref、mailbox lease/CAS、integration epoch、partial/late/duplicate 与 100-way return storm |
@@ -1823,6 +1823,81 @@ pytest -q
 - 七原子：Input=upload/import/media/patch/proposal 的显式 sensitivity；Authority=server-side canonical enum + DB CHECK，非自然语言自报权限；Execution=单 canonicalizer + write boundary + extraction gate；Evidence=canonical column、legacy recovery marker、degraded warning、migration/catalog/deploy log；Recovery=unknown fail closed、reversible downgrade、startup hold、同源重试；Consumption=PL1/PL2 可继续进入 LLM graph extraction，PL3/PL4 保留 owner 文档但不进入持久图谱，proposal 消费同一 rank；Acceptance=alias/unknown/real-PG/full-suite/production 数据、RLS、三服务与失败恢复全部 Green。
 - 北极星裁决：本项限制的是“未获准敏感 bytes 进入 external extractor 与 durable graph projection”这一 data-ingress/durable-write 物理效果，不限制 owner 的模型当场读取、推理或表达；没有扫描自然语言决定真伪、重要性或正确性，也没有替换模型 final。因而符合 capability-preserving determinism，不违背 CC floor、Codex additive delta 或 Hive-native Memory/Knowledge 优势。
 - 残余边界：下一 leaf 必须是 `KB-AUTH-001`，按 owner-direct、autonomous owner-agent、requester≠owner/shared/A2A/subagent、PL4 reference-only 四路径建立 fresh read decision；`KB-PROP-001` 继续负责 sensitivity/provenance 在 transcript/T0/T2/outbound 的传播；`KB-CONTRACT-001` 负责 tool description/schema/runtime 三者诚实一致。三者未因本项关闭而降级。Group 1 现为 3/16 closed、3/16 deployed-but-open、10/16 pending；103 分母、severity、owner 与 5 个 Missing 不变。
+
+#### EVID-G1-007：KB-AUTH-001 Personal KB requester-bound authority
+
+- `leaf_ids`：`KB-AUTH-001`；owner Group / 依赖 Group：Group 1 / Group 0，并消费 E-1/P1-004 已建立的 authenticated requester/execution-principal frame。本证据只关闭 Personal KB 当场 search/read/grant authority；`KB-PROP-001` 仍拥有 transcript/T0/T2/outbound provenance，`KB-CONTRACT-001` 仍拥有全部 Knowledge spec/schema/description 总同步，不能借本 leaf 合并清零。
+- 当前状态：`in_progress-local-green`。typed authority、migration/legacy quarantine、real-PG round-trip、owner/shared/A2A/subagent/PL4/revoke 回归、grant API/UI、frontend build、独立 staged snapshot 全量 backend 与 production read-only inventory 已 Green；commit、production migration、三服务 deployment、live authority canary 与安全 rollback 尚未完成，因此 canonical 只允许 `in_progress-local-green:EVID-G1-007`。
+- 冻结事实：开工 HEAD=`e912408c8b8bc64455a9bbbfd2478d87781c1f9c`；工作树进入本 leaf 前已有其它 Session 的 runtime/Hook/Session/DB 等未提交改动。本 leaf 当前 owned manifest 是 8 个 backend model/service/tool/API path、9 个既有 backend test path、2 个新增 migration/test path、4 个 frontend API/page/test path与本文证据 hunk；其它 dirty path 未 reset、覆盖、stage 或归属本项。
+
+```yaml
+context_read_receipt:
+  aa_entry: "§9 Group 1 + §12.1/§12.2 KB-AUTH-001 + §12.3 Group 1"
+  leaf_ids: ["KB-AUTH-001"]
+  documents:
+    - ref: "@docs/agent-native-atomic-review-2026-07-14.md §11 Personal KB tool-only 与 Knowledge authority 结论 / §D-KB1"
+      role: "original_evidence"
+      decision_consumed: "保留 owner 交互态 PL1–PL3=owned Agent + agent_searchable；autonomous/shared/cross-user/A2A/subagent 强制 explicit grant+requester/session/purpose/delegation/ceiling/expiry；PL4 只返 opaque credential reference"
+      sha256: "4f1e8893fe03251c02ce9805300b94d6db00c34e032c978f3805c2b1f061e919"
+    - ref: "@docs/agent-native-extreme-boundary-atomic-review-2026-07-14.md §9 Group 1 / §10 依赖顺序"
+      role: "original_evidence"
+      decision_consumed: "KB authority 必须消费唯一 requester/principal/delegation frame，same owner 或 creator 身份不能替代当前 requester"
+      sha256: "f11ba2fcae90731d1d2a53e667b71dbe7c191006326523ac24c3231d7f1ab881"
+    - ref: "@docs/agent-permission-governance-spec-2026-07-07.md §2 Principal 模型 / §4 Action 模型 / §5 Personal Knowledge Authority / §8 ToolRuntime、A2A 与 Workflow / §10 Typed failure 与恢复"
+      role: "authority"
+      decision_consumed: "accountable user、actor Agent 与 context principal 分离；search 不隐含 read；A2A/Workflow/visibility 不放大 Personal grant；每次 effect fresh-check 并返回 typed decision"
+      sha256: "e60f2dcf8711999cf655ccae180fb52810ad2a73f265028c1c56226ba73099ac"
+    - ref: "@docs/personal-company-knowledge-tool-boundary-2026-07-10.md §0 最终决策 / §3 Personal KB 读取闭环 / §6 三个视图 / §8 Permission 与 unavailable semantics / §10 回归与验收"
+      role: "runtime boundary + acceptance"
+      decision_consumed: "Knowledge 仍为 tool-first；search/read 在 effect boundary 重新判权；current-turn 返回 authorized result，denied/unavailable/empty 分离，filesystem 不得旁路"
+      sha256: "644dd7f85c2a212d6e93101a4101607d3e58ab79a8d6f8048061c5f654305609"
+    - ref: "@docs/personal-knowledge-base-spec.md §3 Authority / Content / Index / §5 读取 / §9 Permission / §12 七原子验收 / §13 不变量"
+      role: "design + acceptance"
+      decision_consumed: "owner/grant/sensitivity/source/session/purpose/action 取交集；SQL/content/tool/UI 共享 Personal authority service，未授权 bytes 不进入 model-visible result 或 graph/source side channel"
+      sha256: "9ddf849312667e254143b8c73e0a365ba67cc631ab24f48c51a258d37872db2b"
+    - ref: "@docs/personal-knowledge-base-completion-contract-2026-07-08.md §A7/A8 Runtime Tool-first / §A10 授权管理 API / §A12 授权 UI / §2026-07-14 Tool-first 重基线"
+      role: "implementation history + consumer"
+      decision_consumed: "复用既有 search/read、owner grant API 与 Personal Knowledge UI，但撤销 session-as-grantee、自动永久 grant 和 DELETE 硬删等旧语义"
+      sha256: "7dad2c59695109d06c38e4f24cc39648c53fa66b59761c3af99b70ae57328544"
+    - ref: "@docs/unified-context-assembly-and-progressive-disclosure-2026-07-14.md §7.6 Personal KB / Enterprise Knowledge / §18.3 无限资源检索 / §18.4 Tool 四态"
+      role: "context design"
+      decision_consumed: "Personal KB 不进入 resident context；descriptor/ref 不等于 executable authority；read result 必须携带可行动 typed state，不用 prompt 容量策略代替资源判权"
+      sha256: "c83a1f94b206af7de8bc44f7f4de35746c65d255574a347cbfd80ce0cc3075b7"
+    - ref: "@docs/session-v2-cc-codex-alignment-contract-2026-07-14.md §16.2 A2A 保留 authority 与 receipt / §19 Visibility 与隐私"
+      role: "session evidence"
+      decision_consumed: "delegator/requester/scope/delegation/session/receipt 不得在 child 或 UI 投影中丢失；denied 不伪装 empty，精确隐藏内容不删除机械 identity"
+      sha256: "52a13072ef51ec1ad8f22be5f484b274880c4b7aea801104bd4ca5cdc27c0ac4"
+    - ref: "@docs/ccplus-session-permission-and-enterprise-hard-rules-2026-06-25.md §Layering Contract / §Session Permission Behavior"
+      role: "CCPlus permission boundary"
+      decision_consumed: "session permission mode只能决定是否询问，不能扩大 tenant/resource/credential authority；resource hard rule 在 session allow/bypass 之外持续生效"
+      sha256: "db8d895b283ecb7ae747ef7fbbb76591f32aba599052d24d759dcb31c83f7cb0"
+    - ref: "@docs/runtime-model-agency-constraint-audit-2026-07-13.md §5 Model Agency Boundary / §9–§11 修复与验收"
+      role: "north-star guard"
+      decision_consumed: "硬结果只来自 authenticated identity、resource ACL、sensitivity、expiry 与 exact schema；平台不扫描自然语言授权、不替换模型 final，failure 只返回 typed facts"
+      sha256: "366c8a5e4351e76083e6096a8cca09fe93a952ce831cf01e3cae34e2f8b91530"
+  source_baselines:
+    hive_head: "e912408c8b8bc64455a9bbbfd2478d87781c1f9c"
+    freecode_head: "7dc15d6c8fb0c40c7fcc02ce9b58204324252632"
+    codex_head: "5c19155cbd93bfa099016e7487259f61669823ff"
+  conflicts_or_deltas:
+    - "FreeCode 的 Tool.call/canUseTool 与 resolveHookPermissionDecision 保留逐 tool allow/deny/ask，且 hook allow 不越过 deny/ask；它没有 Hive Personal KB resource authority，同名 capability 不存在，不能复制为 owner/grant 方案"
+    - "Codex 的 AskForApproval/SandboxPolicy 是可取的 typed effect-control 工程增量，但不是 Personal owner/resource ACL；Hive-native KnowledgeGrant/decision 在其外层补齐 accountable principal 与 data visibility"
+    - "旧 completion evidence 允许 session grantee、自动 owner-agent grant 与硬 DELETE；当前 L0/L1/authority 合同要求 session 只是 Agent grant binding、无可证意图的历史 grant quarantine、revoke 保留审计"
+  evidence_sink: "EVID-G1-007"
+```
+
+- Red：① migration 文件不存在、`AgentRuntimePrincipal` 无 purpose/autonomous evidence、identity lifecycle 自动创建永久 owner grant；② typed search/read result class 缺失，tool 无法表达 denied/empty/unavailable/partial；③ grant service/API 不接受 requester/session/purpose/delegation/ceiling，frontend `GrantsPanel` 无这些 binding；④ migration 缺 resource-binding CHECK；⑤ revoked grant 仍可能参与 proposal auto-approve；⑥新增 autonomous session 契约测试按 `pytest -q tests/services/test_personal_knowledge_service.py::test_agent_grant_rejects_unbounded_or_unbound_authority -x` 正确 Red，实际错误为 `agent grantee does not belong to the tenant` 而非 service 层拒绝 `autonomous_agent grants cannot carry session_id`；⑦第一份 staged snapshot `6eeaa8853c0471418d0da85ab8ff58f5c9cad713` 全量得到 `1 failed, 7115 passed, 2 skipped`，唯一失败是 migration closure test 仍把旧 head `personal_kb_sensitivity_canonical_0715` 写死。这些失败分别命中 authority、typed evidence、DB contract、consumer、machine-contract repair 与仓级验收漂移，不是环境噪声。
+- 实现（principal/decision）：`AgentRuntimePrincipal` 只从 trusted `ToolExecutionContext`、`ExecutionPrincipal`、runtime identity、session/root task 和 delegation token 组装；model arguments 不能自报 owner/requester/autonomous。`PersonalKnowledgePermissionDecision` 记录 action、owner、authority source、grant/ceiling/expiry、deny code、retryability 与 principal evidence；interactive owner 只在 requester=owner、owned Agent、非 autonomous、exact session 时走 direct，autonomous/shared/cross-user/A2A/subagent 必须匹配 owner-created unexpired Agent grant，delegated lane 还必须 exact delegation。
+- 实现（逐 effect/PL4/旁路）：search permission 不能执行 read；search 与 document read 每次 fresh-check，SQL 在 title/segment bytes 离开 PostgreSQL 前同时约束 tenant、owner、agent_searchable、resource、action、requester/session/purpose/delegation、ceiling、expiry、revoke。PL4/unknown sensitivity 不返回 title/snippet/heading/source path/body，只接受 `secret://`、`credential://`、`vault://` opaque reference；缺 reference 为 typed unavailable。legacy detail/source-preview 同样 fail closed，tool handler 还有最终 byte-shape failsafe。
+- 实现（grant lifecycle/API/UI）：删除 Agent identity lifecycle 的自动 grant；active Agent grant 必须 purpose+requester+expiry，interactive/delegated 必须 session，A2A/subagent 必须 delegation，autonomous 只允许 owner requester 且无 session/delegation。grant 使用 deterministic binding key，DELETE 改为 auditable soft revoke；API schema 先返回可修复 4xx，UI 暴露 grantee、requester、purpose、session、delegation、ceiling、expiry 与 active/revoked 状态，不再把 session 当 grantee。
+- migration/backfill/rollback：revision `personal_kb_authority_0715` 以 `personal_kb_sensitivity_canonical_0715` 为唯一 parent；新增 requester/session/purpose/delegation/ceiling/binding/revoke 字段、索引、FK、unique 与三类 CHECK。所有无法机械证明意图的 legacy grant 保留原 metadata recovery copy，但设 `legacy_quarantined`、PL1 ceiling、stable legacy binding 与 `revoked_at`，不猜授权。downgrade 恢复旧列形状前把全部 edge 过期并写 `downgrade_quarantined`，所以 rollback 不会重开旧漏洞；upgrade/downgrade 都恢复 ENABLE+FORCE RLS。
+- Green（当前工作树）：backend authority/migration/tool/service/API/model/proposal adjacent family：`125 passed in 14.32s`；同一命令内 real PostgreSQL upgrade→constraint/quarantine→downgrade→re-upgrade round-trip Green；Ruff=`All checks passed!`，20 files format-check；`alembic heads`=`personal_kb_authority_0715 (head)`。frontend API/page：`2 files / 10 tests passed`；`npm run build` exit 0，7356 modules，AgentDetail 与 shared vendor bundle budgets 均 Green。`git diff --check` exit 0。
+- Green（独立 staged snapshot）：Git index 精确 24 个 owned path；`git write-tree + commit-tree + git worktree add --detach` 生成 tree=`cf5e0eac800d2a7f08fcea558df35f20ee42986d`、snapshot=`e803a2461441afbe6fcb767d249f7f01cd0320e7`，复用主仓 `.venv` 在 detached backend 执行 `pytest -q` → `7116 passed, 2 skipped in 247.77s`。第一 snapshot 暴露的旧 closure-head 测试已进入同一 Red→Green，而不是被排除；因此全量结果不依赖其它 Session 的 unstaged 工作树。
+- production read-only preflight：通过 Railway Postgres public TCP proxy、schema owner 的 read-only transaction 查询；未执行 DDL/DML。当前 head=`personal_kb_sensitivity_canonical_0715`；legacy grant=`4`，覆盖 `1 tenant / 3 owners`，全部为 `agent + scope + search`、全部未过期，user/session grant=`0`；Personal documents=`17`，全部 `PL1_public + agent_searchable=true`。因此 migration 将精确 quarantine 4 条旧自动 Agent grant；owner interactive direct 不依赖这些 edge，旧 autonomous read 会按设计转为 typed deny，直到 owner 创建有 ceiling/purpose/expiry 的新 grant。
+- fault/security matrix：已覆盖 owner interactive PL1–PL3、autonomous no-grant、cross-owner/no-grant、wrong requester/session/purpose/delegation、search-vs-read、PL1/PL3 ceiling、expired/revoked grant、human explicit grant、HR requester scope、nested A2A carried principal mismatch、PL4 secret bytes/reference missing、legacy detail/preview bypass、proposal auto-approve after revoke、invalid resource/grantee tenant 与 real-PG legacy round-trip。尚待 production actual-data/live-session canary 才能关闭。
+- Model Agency / CCPlus 裁决：所有 hard outcome 都指向 tenant/principal/resource/action/sensitivity/expiry/delegation/credential scheme/DB constraint；未按关键词、相似度或模型正文决定权限，未删除无关工具、压缩 authorized PL1–PL3 input 或替换模型 final。owner-direct 能力保留，跨 principal 只在 bytes ingress/effect boundary 收紧；符合 CC tool agency 底线、Codex typed policy 工程增量与 Hive-native enterprise authority。
+- 七原子当前状态：Input=runtime principal + resource/action；Authority=owner relation或 bounded grant + DB/RLS；Execution=tool→typed service→SQL fresh-check；Evidence=decision/tool payload/grant row/migration recovery metadata；Recovery=deny/unavailable/expiry/revoke/quarantine/re-authorize/safe downgrade；Consumption=search/read tools、owner grant API/UI、proposal policy；Acceptance=Red→125+real-PG+10 frontend+build+ruff/alembic+detached 7116。因 commit、production migration/canary 尚 open，七原子仍不得标 closed。
+- production/commit 待补：记录独立 code/evidence commit；同一 Git archive 部署 backend/backend-api/frontend；验证 head/columns/CHECK/RLS、4/4 legacy 全 quarantined、active unbound=0、owner PL3 direct、shared requester deny→bounded allow、wrong session/delegation/ceiling/revoke deny、PL4 only ref、health 与 safe forward rollback。完成后原位补 commit/deployment IDs 与 canary bytes，并把 canonical/Group 计数改为 closed；任何缺项继续保持本状态。
 
 ## 13. Missing、Coverage Gap 与完成口径
 

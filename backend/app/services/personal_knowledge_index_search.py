@@ -113,6 +113,7 @@ def build_personal_knowledge_search_statement(
                 tenant_id=tenant_id,
                 owner_user_id=owner_user_id,
                 principal=principal,
+                action="search",
             ),
         )
         .order_by(desc(score), KnowledgeDocument.updated_at.desc(), KnowledgeSegment.position.asc())

@@ -18,7 +18,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import enter_rls_bypass
 from app.models.agent import Agent
-from app.models.knowledge import KnowledgeGrant
 from app.models.participant import Participant
 from app.models.runtime_task import RuntimeTask
 from app.models.schedule import AgentSchedule
@@ -30,66 +29,6 @@ _ACTIVE_RUNTIME_TASK_STATUSES = ("pending", "running")
 
 def _uuid_or_new(value: uuid.UUID | None) -> uuid.UUID:
     return value if value is not None else uuid.uuid4()
-
-
-def _coerce_uuid(value: Any) -> uuid.UUID | None:
-    if value is None:
-        return None
-    try:
-        return uuid.UUID(str(value))
-    except (TypeError, ValueError, AttributeError):
-        return None
-
-
-async def _ensure_owner_personal_knowledge_grant(
-    db: AsyncSession,
-    agent: Agent,
-    *,
-    owner_user_id: Any,
-) -> None:
-    tenant_id = _coerce_uuid(getattr(agent, "tenant_id", None))
-    owner_id = _coerce_uuid(owner_user_id)
-    agent_id = _coerce_uuid(getattr(agent, "id", None))
-    if tenant_id is None or owner_id is None or agent_id is None:
-        return
-
-    no_autoflush = getattr(db, "no_autoflush", contextlib.nullcontext())
-    with no_autoflush:
-        result = await db.execute(
-            select(KnowledgeGrant).where(
-                KnowledgeGrant.tenant_id == tenant_id,
-                KnowledgeGrant.scope_type == "person",
-                KnowledgeGrant.scope_id == owner_id,
-                KnowledgeGrant.resource_type == "scope",
-                KnowledgeGrant.resource_id == owner_id,
-                KnowledgeGrant.grantee_type == "agent",
-                KnowledgeGrant.grantee_id == agent_id,
-                KnowledgeGrant.permission.in_(("read", "search", "manage")),
-            )
-        )
-        existing = result.scalar_one_or_none()
-    if isinstance(existing, KnowledgeGrant):
-        return
-
-    db.add(
-        KnowledgeGrant(
-            id=uuid.uuid4(),
-            tenant_id=tenant_id,
-            scope_type="person",
-            scope_id=owner_id,
-            resource_type="scope",
-            resource_id=owner_id,
-            document_id=None,
-            grantee_type="agent",
-            grantee_id=agent_id,
-            permission="search",
-            created_by_user_id=owner_id,
-            grant_metadata_json={
-                "source": "agent_identity_lifecycle",
-                "reason": "owner_personal_kb_autonomous_access",
-            },
-        )
-    )
 
 
 def get_agent_lifecycle_block_reason(agent: Any) -> str | None:
@@ -194,7 +133,6 @@ async def ensure_agent_identity(
         participant.avatar_url = avatar_url if avatar_url is not None else getattr(agent, "avatar_url", None)
 
     agent.participant_id = participant.id
-    await _ensure_owner_personal_knowledge_grant(db, agent, owner_user_id=owner_user_id)
     await db.flush()
     return participant.id
 

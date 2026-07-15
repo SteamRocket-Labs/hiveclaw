@@ -7,10 +7,14 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.core.execution_context import ExecutionIdentity, ExecutionPrincipal
+from app.services.personal_knowledge_access import PersonalKnowledgePermissionDecision
 from app.services.personal_knowledge_service import (
     KnowledgeSearchHit,
     PersonalKnowledgeDocumentDetail,
+    PersonalKnowledgeDocumentReadResult,
     PersonalKnowledgeDocumentSegment,
+    PersonalKnowledgeSearchResult,
 )
 from app.tools.runtime import ToolExecutionContext, ToolExecutionRequest
 
@@ -44,9 +48,20 @@ class _FakeSearchService:
         self.hit = hit
         self.calls: list[dict] = []
 
-    async def search_personal(self, session, **kwargs):
+    async def search_personal_with_authority(self, session, **kwargs):
         self.calls.append(kwargs)
-        return [self.hit]
+        return PersonalKnowledgeSearchResult(
+            status="ok",
+            hits=[self.hit],
+            authority=PersonalKnowledgePermissionDecision(
+                allowed=True,
+                action="search",
+                owner_user_id=kwargs["owner_user_id"],
+                authority_source="interactive_owner_agent",
+                sensitivity_ceiling="PL3_sensitive",
+                principal=kwargs["principal"].evidence(),
+            ),
+        )
 
 
 class _FakeReadService:
@@ -54,9 +69,43 @@ class _FakeReadService:
         self.detail = detail
         self.calls: list[dict] = []
 
-    async def get_personal_document(self, session, **kwargs):
+    async def get_personal_document_with_authority(self, session, **kwargs):
         self.calls.append(kwargs)
-        return self.detail
+        return PersonalKnowledgeDocumentReadResult(
+            status="ok",
+            document=self.detail,
+            credential_reference=None,
+            authority=PersonalKnowledgePermissionDecision(
+                allowed=True,
+                action="read",
+                owner_user_id=kwargs["owner_user_id"],
+                authority_source="interactive_owner_agent",
+                sensitivity_ceiling="PL3_sensitive",
+                document_id=kwargs["document_id"],
+                document_sensitivity=self.detail.sensitivity,
+                principal=kwargs["principal"].evidence(),
+            ),
+        )
+
+
+class _FakeTypedSearchService:
+    def __init__(self, result: PersonalKnowledgeSearchResult) -> None:
+        self.result = result
+        self.calls: list[dict] = []
+
+    async def search_personal_with_authority(self, session, **kwargs):
+        self.calls.append(kwargs)
+        return self.result
+
+
+class _FakeTypedReadService:
+    def __init__(self, result: PersonalKnowledgeDocumentReadResult) -> None:
+        self.result = result
+        self.calls: list[dict] = []
+
+    async def get_personal_document_with_authority(self, session, **kwargs):
+        self.calls.append(kwargs)
+        return self.result
 
 
 class _FakeProposalService:
@@ -201,13 +250,25 @@ async def test_search_personal_kb_tool_uses_agent_owner_and_returns_json(monkeyp
                 user_id=user_id,
                 tenant_id=str(tenant_id),
                 workspace=Path("/tmp/workspace"),
+                execution_principal=ExecutionPrincipal(
+                    tenant_id=tenant_id,
+                    source_agent_id=agent_id,
+                    requester_user_id=user_id,
+                    root_session_id="session-search-1",
+                    origin="a2a_delegation",
+                    delegation_chain=("agent:parent", f"agent:{agent_id}"),
+                ),
                 session_id="session-search-1",
+                authority_delegation_id="delegation-search-1",
                 delegation_token=delegation_token,
             ),
         )
     )
 
     payload = json.loads(result)
+    assert payload["status"] == "ok"
+    assert payload["authority"]["allowed"] is True
+    assert payload["authority"]["authority_source"] == "interactive_owner_agent"
     assert payload["results"][0]["document_id"] == str(document_id)
     assert payload["results"][0]["segment_id"] == str(segment_id)
     assert payload["results"][0]["source_ref"] == hit.source_ref
@@ -218,7 +279,10 @@ async def test_search_personal_kb_tool_uses_agent_owner_and_returns_json(monkeyp
         "agent_id": str(agent_id),
         "requester_user_id": str(user_id),
         "session_id": "session-search-1",
+        "runtime_task_id": None,
         "delegation_id": "delegation-search-1",
+        "purpose": "a2a_delegation",
+        "autonomous": False,
     }
 
 
@@ -267,6 +331,7 @@ async def test_system_hr_personal_kb_read_is_bound_to_current_requester(monkeypa
                 user_id=requester_id,
                 tenant_id=str(tenant_id),
                 workspace=Path("/tmp/workspace"),
+                session_id="system-hr-requester-session",
             ),
         )
     )
@@ -340,11 +405,14 @@ async def test_read_personal_kb_tool_uses_same_owner_acl_and_honors_only_explici
                 user_id=owner_id,
                 tenant_id=str(tenant_id),
                 workspace=Path("/tmp/workspace"),
+                session_id="read-personal-session",
             ),
         )
     )
 
     payload = json.loads(result)
+    assert payload["status"] == "ok"
+    assert payload["authority"]["allowed"] is True
     assert payload["document_id"] == str(document_id)
     assert payload["title"] == "Private operating notes"
     assert payload["segments"] == [
@@ -375,6 +443,7 @@ async def test_read_personal_kb_tool_uses_same_owner_acl_and_honors_only_explici
                 user_id=owner_id,
                 tenant_id=str(tenant_id),
                 workspace=Path("/tmp/workspace"),
+                session_id="read-personal-session",
             ),
         )
     )
@@ -383,3 +452,217 @@ async def test_read_personal_kb_tool_uses_same_owner_acl_and_honors_only_explici
     assert complete_payload["truncated"] is False
     assert complete_payload["segments"][0]["content"] == complete_second_segment
     assert decisive_tail in complete_payload["segments"][0]["content"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "allowed", "reason_code"),
+    [
+        ("empty", True, None),
+        ("denied", False, "explicit_grant_required"),
+        ("unavailable", False, "authority_context_unavailable"),
+    ],
+)
+async def test_search_personal_kb_returns_typed_empty_denied_and_unavailable_states(
+    monkeypatch,
+    status: str,
+    allowed: bool,
+    reason_code: str | None,
+) -> None:
+    from app.tools.handlers import knowledge as knowledge_handler
+
+    tenant_id = uuid.uuid4()
+    agent_id = uuid.uuid4()
+    owner_id = uuid.uuid4()
+    decision = PersonalKnowledgePermissionDecision(
+        allowed=allowed,
+        action="search",
+        owner_user_id=owner_id,
+        authority_source="explicit_agent_grant" if allowed else "none",
+        sensitivity_ceiling="PL3_sensitive" if allowed else None,
+        deny_reason_code=reason_code,
+        principal={"principal_type": "agent_runtime"},
+    )
+    service = _FakeTypedSearchService(PersonalKnowledgeSearchResult(status=status, hits=[], authority=decision))
+    session_context = _SessionContext(
+        SimpleNamespace(id=agent_id, owner_user_id=owner_id, sponsor_user_id=None, creator_id=owner_id)
+    )
+    monkeypatch.setattr(knowledge_handler, "tenant_scoped_session", lambda _tenant_id: session_context)
+    monkeypatch.setattr(knowledge_handler, "PersonalKnowledgeService", lambda: service)
+
+    payload = json.loads(
+        await knowledge_handler.search_personal_kb(
+            ToolExecutionRequest(
+                tool_name="search_personal_kb",
+                arguments={"query": "nothing matches"},
+                context=ToolExecutionContext(
+                    agent_id=agent_id,
+                    user_id=owner_id,
+                    tenant_id=str(tenant_id),
+                    workspace=Path("/tmp/workspace"),
+                    session_id="typed-search-session",
+                ),
+            )
+        )
+    )
+
+    assert payload["status"] == status
+    assert payload["results"] == []
+    assert payload["authority"]["allowed"] is allowed
+    assert payload["authority"]["deny_reason_code"] == reason_code
+
+
+@pytest.mark.asyncio
+async def test_read_personal_kb_pl4_returns_only_opaque_credential_reference(monkeypatch) -> None:
+    from app.tools.handlers import knowledge as knowledge_handler
+
+    tenant_id = uuid.uuid4()
+    owner_id = uuid.uuid4()
+    agent_id = uuid.uuid4()
+    document_id = uuid.uuid4()
+    secret = "sk-this-must-never-leave-the-knowledge-boundary"
+    detail = PersonalKnowledgeDocumentDetail(
+        document_id=document_id,
+        title=f"production credential {secret}",
+        source_kind="paste",
+        source_uri=None,
+        source_sha256="f" * 64,
+        source_ref=f"kb://person/{owner_id}/documents/{document_id}",
+        canonical_md_path="persons/owner/kb/credential.md",
+        status="ready",
+        sensitivity="PL4_credential",
+        agent_searchable=True,
+        segment_count=1,
+        created_at=None,
+        updated_at=None,
+        metadata={"credential_reference": "secret://tenant/provider-credential"},
+        segments=[
+            PersonalKnowledgeDocumentSegment(
+                segment_id=uuid.uuid4(),
+                position=0,
+                heading_path=[secret],
+                content=secret,
+                token_count=10,
+            )
+        ],
+    )
+    decision = PersonalKnowledgePermissionDecision(
+        allowed=True,
+        action="read",
+        owner_user_id=owner_id,
+        authority_source="interactive_owner_agent",
+        sensitivity_ceiling="PL4_credential",
+        document_id=document_id,
+        document_sensitivity="PL4_credential",
+        credential_reference_only=True,
+        principal={"principal_type": "agent_runtime"},
+    )
+    service = _FakeTypedReadService(
+        PersonalKnowledgeDocumentReadResult(
+            status="ok",
+            document=detail,
+            credential_reference="secret://tenant/provider-credential",
+            authority=decision,
+        )
+    )
+    session_context = _SessionContext(
+        SimpleNamespace(id=agent_id, owner_user_id=owner_id, sponsor_user_id=None, creator_id=owner_id)
+    )
+    monkeypatch.setattr(knowledge_handler, "tenant_scoped_session", lambda _tenant_id: session_context)
+    monkeypatch.setattr(knowledge_handler, "PersonalKnowledgeService", lambda: service)
+
+    rendered = await knowledge_handler.read_personal_kb(
+        ToolExecutionRequest(
+            tool_name="read_personal_kb",
+            arguments={"document_id": str(document_id)},
+            context=ToolExecutionContext(
+                agent_id=agent_id,
+                user_id=owner_id,
+                tenant_id=str(tenant_id),
+                workspace=Path("/tmp/workspace"),
+                session_id="credential-read-session",
+            ),
+        )
+    )
+    payload = json.loads(rendered)
+
+    assert payload["status"] == "ok"
+    assert payload["result_kind"] == "credential_reference"
+    assert payload["credential_reference"] == "secret://tenant/provider-credential"
+    assert payload["segments"] == []
+    assert payload["authority"]["credential_reference_only"] is True
+    assert secret not in rendered
+    assert "title" not in payload
+    assert "source_ref" not in payload
+
+
+def test_personal_kb_a2a_principal_is_bound_to_carried_requester_session_and_delegation() -> None:
+    from app.tools.handlers.knowledge import _personal_kb_runtime_principal
+
+    tenant_id = uuid.uuid4()
+    agent_id = uuid.uuid4()
+    requester_id = uuid.uuid4()
+    context = ToolExecutionContext(
+        agent_id=agent_id,
+        user_id=requester_id,
+        tenant_id=str(tenant_id),
+        workspace=Path("/tmp/workspace"),
+        execution_principal=ExecutionPrincipal(
+            tenant_id=tenant_id,
+            source_agent_id=agent_id,
+            requester_user_id=requester_id,
+            root_session_id="root-session",
+            origin="a2a_delegation",
+            delegation_chain=("agent:parent", f"agent:{agent_id}"),
+        ),
+        authority_frame_required=True,
+        authority_delegation_id="delegation-42",
+        session_id="child-session",
+        runtime_task_id="child-task",
+    )
+
+    principal = _personal_kb_runtime_principal(
+        ToolExecutionRequest(tool_name="search_personal_kb", arguments={"query": "q"}, context=context)
+    )
+
+    assert principal.requester_user_id == requester_id
+    assert principal.session_id == "child-session"
+    assert principal.runtime_task_id == "child-task"
+    assert principal.delegation_id == "delegation-42"
+    assert principal.purpose == "a2a_delegation"
+    assert principal.autonomous is False
+
+    context.user_id = uuid.uuid4()
+    with pytest.raises(ValueError, match="execution_principal_requester_mismatch"):
+        _personal_kb_runtime_principal(
+            ToolExecutionRequest(tool_name="search_personal_kb", arguments={"query": "q"}, context=context)
+        )
+
+
+def test_personal_kb_autonomous_principal_comes_from_runtime_identity_not_model_text() -> None:
+    from app.tools.handlers.knowledge import _personal_kb_runtime_principal
+
+    agent_id = uuid.uuid4()
+    requester_id = uuid.uuid4()
+    principal = _personal_kb_runtime_principal(
+        ToolExecutionRequest(
+            tool_name="search_personal_kb",
+            arguments={"purpose": "interactive_session", "autonomous": False},
+            context=ToolExecutionContext(
+                agent_id=agent_id,
+                user_id=requester_id,
+                tenant_id=str(uuid.uuid4()),
+                workspace=Path("/tmp/workspace"),
+                execution_identity=ExecutionIdentity(
+                    identity_type="agent_bot",
+                    identity_id=agent_id,
+                    label="Agent: scheduled",
+                ),
+                runtime_task_id="autonomous-task",
+            ),
+        )
+    )
+
+    assert principal.purpose == "autonomous_agent"
+    assert principal.autonomous is True
+    assert principal.session_id is None

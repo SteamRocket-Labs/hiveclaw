@@ -443,7 +443,16 @@ def test_current_user_personal_knowledge_grant_routes_use_owner_scope(monkeypatc
                     grantee_type="agent",
                     grantee_id=agent_grantee_id,
                     permission="search",
-                    expires_at=None,
+                    requester_user_id=owner_id,
+                    session_id=None,
+                    purpose="autonomous_agent",
+                    delegation_id=None,
+                    sensitivity_ceiling="PL3_sensitive",
+                    binding_key="pkb:test",
+                    expires_at="2099-01-01T00:00:00+00:00",
+                    revoked_at=None,
+                    revoked_by_user_id=None,
+                    active=True,
                     metadata={"reason": "research agent"},
                     created_at=None,
                 )
@@ -459,7 +468,16 @@ def test_current_user_personal_knowledge_grant_routes_use_owner_scope(monkeypatc
                 grantee_type=kwargs["grantee_type"],
                 grantee_id=kwargs["grantee_id"],
                 permission=kwargs["permission"],
+                requester_user_id=kwargs["requester_user_id"],
+                session_id=kwargs["session_id"],
+                purpose=kwargs["purpose"],
+                delegation_id=kwargs["delegation_id"],
+                sensitivity_ceiling=kwargs["sensitivity_ceiling"],
+                binding_key="pkb:test",
                 expires_at=kwargs["expires_at"],
+                revoked_at=None,
+                revoked_by_user_id=None,
+                active=True,
                 metadata=kwargs["grant_metadata"],
                 created_at=None,
             )
@@ -479,6 +497,10 @@ def test_current_user_personal_knowledge_grant_routes_use_owner_scope(monkeypatc
             "grantee_type": "agent",
             "grantee_id": str(agent_grantee_id),
             "permission": "search",
+            "requester_user_id": str(owner_id),
+            "purpose": "autonomous_agent",
+            "sensitivity_ceiling": "PL3_sensitive",
+            "expires_at": "2099-01-01T00:00:00Z",
             "metadata": {"reason": "research agent"},
         },
     )
@@ -488,14 +510,41 @@ def test_current_user_personal_knowledge_grant_routes_use_owner_scope(monkeypatc
     assert listed.json()["grants"][0]["grant_id"] == str(grant_id)
     assert created.status_code == 200
     assert created.json()["grantee_id"] == str(agent_grantee_id)
+    assert created.json()["purpose"] == "autonomous_agent"
+    assert created.json()["sensitivity_ceiling"] == "PL3_sensitive"
     assert deleted.status_code == 200
-    assert deleted.json()["deleted"] is True
+    assert deleted.json() == {"revoked": True, "deleted": False}
     assert fake_db.commit_count == 2
     assert [name for name, _kwargs in captured] == ["list_grants", "create_grant", "delete_grant"]
     for _name, kwargs in captured:
         assert kwargs["tenant_id"] == user.tenant_id
         assert kwargs["owner_user_id"] == owner_id
         assert kwargs["current_user_id"] == owner_id
+
+
+def test_current_user_personal_knowledge_rejects_unbounded_agent_grant(monkeypatch):
+    owner_id = uuid4()
+    user = SimpleNamespace(id=owner_id, role="member", tenant_id=uuid4(), is_active=True)
+
+    class _FakeService:
+        async def create_personal_grant(self, session, **kwargs):  # pragma: no cover - schema must reject first
+            raise AssertionError("unbounded agent grant reached the service")
+
+    monkeypatch.setattr(agent_knowledge_api, "PersonalKnowledgeService", lambda: _FakeService(), raising=False)
+    client, fake_db, _user = _personal_client(monkeypatch, user=user)
+
+    response = client.post(
+        "/knowledge/personal/grants",
+        json={
+            "resource_type": "scope",
+            "grantee_type": "agent",
+            "grantee_id": str(uuid4()),
+            "permission": "search",
+        },
+    )
+
+    assert response.status_code == 422
+    assert fake_db.commit_count == 0
 
 
 def test_current_user_personal_knowledge_graph_route_uses_owner_scope(monkeypatch):

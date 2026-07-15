@@ -356,6 +356,7 @@ async def test_get_personal_document_source_preview_reads_queued_image(tmp_path:
     document = SimpleNamespace(
         id=uuid.uuid4(),
         source_sha256="a" * 64,
+        sensitivity="PL1_public",
         doc_metadata_json={
             "queued_source_path": source_rel.as_posix(),
             "source_filename": "112233.png",
@@ -389,6 +390,7 @@ async def test_get_personal_document_source_preview_rejects_path_escape(tmp_path
     document = SimpleNamespace(
         id=uuid.uuid4(),
         source_sha256="a" * 64,
+        sensitivity="PL1_public",
         doc_metadata_json={
             "queued_source_path": "../secret.png",
             "source_filename": "secret.png",
@@ -944,7 +946,11 @@ def test_external_search_statement_requires_matching_user_or_agent_grant() -> No
         tenant_id=uuid.uuid4(),
         owner_user_id=uuid.uuid4(),
         query="source refs",
-        principal=AgentRuntimePrincipal(agent_id=uuid.uuid4(), requester_user_id=uuid.uuid4()),
+        principal=AgentRuntimePrincipal(
+            agent_id=uuid.uuid4(),
+            requester_user_id=uuid.uuid4(),
+            session_id="cross-principal-search",
+        ),
         limit=5,
     )
     compiled = str(statement.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": False}))
@@ -956,14 +962,19 @@ def test_external_search_statement_requires_matching_user_or_agent_grant() -> No
     assert "knowledge_documents.agent_searchable IS true" in compiled
 
 
-def test_owner_agent_search_statement_uses_agent_owner_chain_without_trusting_agent_id() -> None:
+def test_interactive_owner_agent_search_uses_requester_bound_owner_chain() -> None:
     from app.services.personal_knowledge_service import build_personal_knowledge_search_statement
 
+    owner_id = uuid.uuid4()
     statement = build_personal_knowledge_search_statement(
         tenant_id=uuid.uuid4(),
-        owner_user_id=uuid.uuid4(),
+        owner_user_id=owner_id,
         query="source refs",
-        principal=AgentRuntimePrincipal(agent_id=uuid.uuid4(), requester_user_id=None),
+        principal=AgentRuntimePrincipal(
+            agent_id=uuid.uuid4(),
+            requester_user_id=owner_id,
+            session_id="owner-interactive-search",
+        ),
         limit=5,
     )
     compiled = str(statement.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": False}))
@@ -984,7 +995,11 @@ def test_personal_document_list_statement_requires_grant_for_non_owner() -> None
     statement = build_personal_knowledge_document_list_statement(
         tenant_id=uuid.uuid4(),
         owner_user_id=uuid.uuid4(),
-        principal=AgentRuntimePrincipal(agent_id=uuid.uuid4(), requester_user_id=uuid.uuid4()),
+        principal=AgentRuntimePrincipal(
+            agent_id=uuid.uuid4(),
+            requester_user_id=uuid.uuid4(),
+            session_id="cross-principal-read",
+        ),
         limit=25,
     )
     compiled = str(statement.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": False}))
@@ -999,10 +1014,15 @@ def test_personal_document_list_statement_requires_grant_for_non_owner() -> None
 def test_agent_document_detail_statement_requires_agent_searchable_for_non_owner() -> None:
     from app.services.personal_knowledge_service import build_personal_knowledge_document_list_statement
 
+    owner_id = uuid.uuid4()
     statement = build_personal_knowledge_document_list_statement(
         tenant_id=uuid.uuid4(),
-        owner_user_id=uuid.uuid4(),
-        principal=AgentRuntimePrincipal(agent_id=uuid.uuid4(), requester_user_id=None),
+        owner_user_id=owner_id,
+        principal=AgentRuntimePrincipal(
+            agent_id=uuid.uuid4(),
+            requester_user_id=owner_id,
+            session_id="owner-detail-read",
+        ),
         limit=1,
         document_id=uuid.uuid4(),
     )
@@ -1342,7 +1362,8 @@ async def test_create_personal_grant_writes_owner_scope_grant(tmp_path: Path) ->
     tenant_id = uuid.uuid4()
     owner_id = uuid.uuid4()
     agent_id = uuid.uuid4()
-    session = _FakeAsyncSession()
+    expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
+    session = _FakeAsyncSession(existing_document=agent_id)
     service = PersonalKnowledgeService(data_root=tmp_path)
 
     grant = await service.create_personal_grant(
@@ -1356,6 +1377,10 @@ async def test_create_personal_grant_writes_owner_scope_grant(tmp_path: Path) ->
         grantee_type="agent",
         grantee_id=agent_id,
         permission="search",
+        requester_user_id=owner_id,
+        purpose="autonomous_agent",
+        sensitivity_ceiling="PL3_sensitive",
+        expires_at=expires_at,
         grant_metadata={"reason": "research"},
     )
 
@@ -1363,11 +1388,103 @@ async def test_create_personal_grant_writes_owner_scope_grant(tmp_path: Path) ->
     assert grant is not None
     assert grant.grantee_id == agent_id
     assert grant.permission == "search"
+    assert grant.requester_user_id == owner_id
+    assert grant.purpose == "autonomous_agent"
+    assert grant.sensitivity_ceiling == "PL3_sensitive"
+    assert grant.expires_at == expires_at
+    assert grant.revoked_at is None
     assert added_grants[-1].scope_type == "person"
     assert added_grants[-1].scope_id == owner_id
     assert added_grants[-1].resource_type == "scope"
     assert added_grants[-1].resource_id == owner_id
+    assert added_grants[-1].binding_key.startswith("pkb:")
     assert added_grants[-1].grant_metadata_json == {"reason": "research"}
+
+
+@pytest.mark.asyncio
+async def test_agent_grant_rejects_unbounded_or_unbound_authority(tmp_path: Path) -> None:
+    from app.services.personal_knowledge_service import PersonalKnowledgeService
+
+    service = PersonalKnowledgeService(data_root=tmp_path)
+    common = {
+        "tenant_id": uuid.uuid4(),
+        "owner_user_id": uuid.uuid4(),
+        "resource_type": "scope",
+        "resource_id": None,
+        "document_id": None,
+        "grantee_type": "agent",
+        "grantee_id": uuid.uuid4(),
+        "permission": "read",
+        "sensitivity_ceiling": "PL3_sensitive",
+    }
+    common["resource_id"] = common["owner_user_id"]
+
+    with pytest.raises(ValueError, match="expires_at is required"):
+        await service.create_personal_grant(
+            _FakeAsyncSession(),
+            current_user_id=common["owner_user_id"],
+            requester_user_id=common["owner_user_id"],
+            purpose="autonomous_agent",
+            **common,
+        )
+
+    with pytest.raises(ValueError, match="autonomous_agent grants cannot carry session_id"):
+        await service.create_personal_grant(
+            _FakeAsyncSession(),
+            current_user_id=common["owner_user_id"],
+            requester_user_id=common["owner_user_id"],
+            session_id="browser-session-must-not-bind-autonomous-authority",
+            purpose="autonomous_agent",
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            **common,
+        )
+
+    with pytest.raises(ValueError, match="session_id is required"):
+        await service.create_personal_grant(
+            _FakeAsyncSession(),
+            current_user_id=common["owner_user_id"],
+            requester_user_id=uuid.uuid4(),
+            purpose="a2a_delegation",
+            delegation_id="delegation-1",
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            **common,
+        )
+
+
+@pytest.mark.asyncio
+async def test_delete_personal_grant_is_auditable_soft_revoke(tmp_path: Path) -> None:
+    from app.services.personal_knowledge_service import PersonalKnowledgeService
+
+    owner_id = uuid.uuid4()
+    grant = KnowledgeGrant(
+        id=uuid.uuid4(),
+        tenant_id=uuid.uuid4(),
+        scope_type="person",
+        scope_id=owner_id,
+        resource_type="scope",
+        resource_id=owner_id,
+        grantee_type="user",
+        grantee_id=uuid.uuid4(),
+        permission="read",
+        sensitivity_ceiling="PL2_pii",
+        binding_key="pkb:test",
+        grant_metadata_json={"reason": "temporary review"},
+    )
+    session = _FakeAsyncSession(existing_document=grant)
+
+    revoked = await PersonalKnowledgeService(data_root=tmp_path).delete_personal_grant(
+        session,
+        tenant_id=grant.tenant_id,
+        owner_user_id=owner_id,
+        current_user_id=owner_id,
+        grant_id=grant.id,
+    )
+
+    assert revoked is True
+    assert grant.revoked_at is not None
+    assert grant.revoked_by_user_id == owner_id
+    assert grant.grant_metadata_json["authority_status"] == "revoked"
+    assert session.deleted == []
 
 
 @pytest.mark.asyncio
@@ -1702,7 +1819,11 @@ def test_personal_knowledge_access_predicate_filters_expired_grants() -> None:
         tenant_id=uuid.uuid4(),
         owner_user_id=uuid.uuid4(),
         query="source refs",
-        principal=AgentRuntimePrincipal(agent_id=uuid.uuid4(), requester_user_id=uuid.uuid4()),
+        principal=AgentRuntimePrincipal(
+            agent_id=uuid.uuid4(),
+            requester_user_id=uuid.uuid4(),
+            session_id="expiry-check-session",
+        ),
         limit=5,
     )
     compiled = str(statement.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": False}))
@@ -1741,6 +1862,7 @@ def test_agent_runtime_principal_is_agent_searchable_and_delegation_bound() -> N
         requester_user_id=requester_id,
         session_id="session-42",
         delegation_id="delegation-42",
+        purpose="a2a_delegation",
     )
     statement = build_personal_knowledge_search_statement(
         tenant_id=uuid.uuid4(),
@@ -1756,11 +1878,15 @@ def test_agent_runtime_principal_is_agent_searchable_and_delegation_bound() -> N
         "agent_id": str(agent_id),
         "requester_user_id": str(requester_id),
         "session_id": "session-42",
+        "runtime_task_id": None,
         "delegation_id": "delegation-42",
+        "purpose": "a2a_delegation",
+        "autonomous": False,
     }
-    assert "agents.id" in compiled
+    assert "agents.id" not in compiled
     assert "knowledge_documents.agent_searchable IS true" in compiled
     assert "knowledge_grants" in compiled
+    assert "knowledge_grants.delegation_id" in compiled
 
 
 def test_personal_import_job_claim_statement_uses_skip_locked_and_time_guards() -> None:

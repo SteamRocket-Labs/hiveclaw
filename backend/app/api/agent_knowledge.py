@@ -15,7 +15,7 @@ from typing import Any
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, Response, UploadFile
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -62,11 +62,46 @@ class PersonalKnowledgeGrantRequest(BaseModel):
     resource_type: str = Field("scope", pattern="^(scope|document)$")
     resource_id: uuid.UUID | None = None
     document_id: uuid.UUID | None = None
-    grantee_type: str = Field(..., pattern="^(user|agent|session)$")
+    grantee_type: str = Field(..., pattern="^(user|agent)$")
     grantee_id: uuid.UUID
     permission: str = Field("search", pattern="^(read|search|manage)$")
+    requester_user_id: uuid.UUID | None = None
+    session_id: str | None = Field(None, min_length=1, max_length=255)
+    purpose: str | None = Field(
+        None,
+        pattern="^(interactive_session|autonomous_agent|a2a_delegation|subagent_delegation)$",
+    )
+    delegation_id: str | None = Field(None, min_length=1, max_length=255)
+    sensitivity_ceiling: str = Field(
+        "PL1_public",
+        pattern="^(PL1_public|PL2_pii|PL3_sensitive|PL4_credential)$",
+    )
     expires_at: datetime | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_authority_binding(self) -> "PersonalKnowledgeGrantRequest":
+        if self.grantee_type == "user":
+            if any((self.requester_user_id, self.session_id, self.purpose, self.delegation_id)):
+                raise ValueError("user grants cannot carry agent runtime bindings")
+            return self
+        if self.purpose is None:
+            raise ValueError("purpose is required for an agent grant")
+        if self.expires_at is None:
+            raise ValueError("expires_at is required for an agent grant")
+        if self.purpose == "autonomous_agent":
+            if self.session_id is not None or self.delegation_id is not None:
+                raise ValueError("autonomous_agent grants cannot carry session or delegation bindings")
+            return self
+        if self.requester_user_id is None:
+            raise ValueError("requester_user_id is required for an interactive or delegated agent grant")
+        if self.session_id is None:
+            raise ValueError("session_id is required for an interactive or delegated agent grant")
+        if self.purpose in {"a2a_delegation", "subagent_delegation"} and self.delegation_id is None:
+            raise ValueError("delegation_id is required for a delegated agent grant")
+        if self.purpose == "interactive_session" and self.delegation_id is not None:
+            raise ValueError("interactive_session grants cannot carry delegation_id")
+        return self
 
 
 class PersonalKnowledgeProposalDecisionRequest(BaseModel):
@@ -379,6 +414,11 @@ async def create_current_user_personal_grant(
             grantee_type=body.grantee_type,
             grantee_id=body.grantee_id,
             permission=body.permission,
+            requester_user_id=body.requester_user_id,
+            session_id=body.session_id,
+            purpose=body.purpose,
+            delegation_id=body.delegation_id,
+            sensitivity_ceiling=body.sensitivity_ceiling,
             expires_at=body.expires_at,
             grant_metadata=body.metadata,
         )
@@ -407,7 +447,7 @@ async def delete_current_user_personal_grant(
     if not deleted:
         raise HTTPException(status_code=404, detail="Personal knowledge grant not found")
     await db.commit()
-    return {"deleted": True}
+    return {"revoked": True, "deleted": False}
 
 
 @personal_router.get("/search")

@@ -493,6 +493,11 @@ def make_run_completer(run_id: str):
             token_usage={"total_tokens": result.tokens_used},
             metadata_json={
                 "subagent_decision_entry": decision_entry,
+                **(
+                    {"knowledge_provenance": result.knowledge_provenance}
+                    if result.knowledge_provenance is not None
+                    else {}
+                ),
                 "completion_journal": [
                     build_completion_journal_entry(
                         task_type=SUBAGENT_RUN_TASK_TYPE,

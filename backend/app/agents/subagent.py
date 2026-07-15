@@ -43,6 +43,12 @@ from typing import Any, Literal
 from app.agents.tool_policies import DELEGATED_WORKER_BASE_EXCLUDED_TOOLS
 from app.runtime.invoker import AgentInvocationRequest, invoke_agent
 from app.runtime.session import SessionContext
+from app.services.knowledge_provenance import (
+    KNOWLEDGE_PROVENANCE_KEY,
+    apply_inherited_knowledge_provenance,
+    enrich_knowledge_event_metadata,
+    merge_knowledge_provenance,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -529,6 +535,7 @@ class SubagentResult:
     tokens_used: int = 0
     error: str | None = None
     sources: list[dict[str, str]] = field(default_factory=list)
+    knowledge_provenance: dict[str, Any] | None = None
 
     @property
     def ok(self) -> bool:
@@ -1025,6 +1032,7 @@ async def _spawn_one(
         logger.warning("[Subagent] SUBAGENT_START hook failed (non-fatal): %s", exc)
     rounds = spec.max_tool_rounds or budget.max_tool_rounds
     captured_sources: list[dict[str, str]] = []
+    captured_knowledge_provenance: list[tuple[str, dict[str, Any]]] = []
 
     async def on_tool_call(event: dict[str, Any]) -> None:
         status = str(event.get("status") or "")
@@ -1062,15 +1070,10 @@ async def _spawn_one(
         if status in {"done", "completed", "failed"} or "result" in event:
             payload["result"] = str(event.get("result", ""))
         payload = {key: value for key, value in payload.items() if value is not None}
-        _append_subagent_t0_event(
-            ctx=ctx,
-            spec=spec,
-            session_id=t0_session_id,
-            child_depth=child_depth,
+        payload_content = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+        event_metadata = enrich_knowledge_event_metadata(
             event_type="tool_result" if status in {"done", "completed", "failed"} else "tool_call",
-            role="tool",
-            t0_role="tool",
-            content=json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str),
+            content=payload_content,
             metadata={
                 "tool_name": event.get("name", ""),
                 "status": status,
@@ -1080,6 +1083,25 @@ async def _spawn_one(
                 "visibility": event.get("visibility") or "collapsed",
             },
         )
+        _append_subagent_t0_event(
+            ctx=ctx,
+            spec=spec,
+            session_id=t0_session_id,
+            child_depth=child_depth,
+            event_type="tool_result" if status in {"done", "completed", "failed"} else "tool_call",
+            role="tool",
+            t0_role="tool",
+            content=payload_content,
+            metadata=event_metadata,
+        )
+        provenance = event_metadata.get(KNOWLEDGE_PROVENANCE_KEY)
+        if isinstance(provenance, dict):
+            event_ref = (
+                f"subagent://tool-call/{tool_call_id}"
+                if tool_call_id
+                else f"subagent://tool-event/{len(captured_knowledge_provenance)}"
+            )
+            captured_knowledge_provenance.append((event_ref, provenance))
         source = _source_from_tool_event(event, budget)
         if source is not None:
             captured_sources.append(source)
@@ -1237,6 +1259,7 @@ async def _spawn_one(
         )
 
     raw_content = str(getattr(result, "content", "") or "").strip()
+    knowledge_provenance = merge_knowledge_provenance(captured_knowledge_provenance)
     _append_subagent_t0_event(
         ctx=ctx,
         spec=spec,
@@ -1245,7 +1268,10 @@ async def _spawn_one(
         event_type="assistant_message",
         role="assistant",
         content=raw_content,
-        metadata={"status": "completed"},
+        metadata=apply_inherited_knowledge_provenance(
+            {"status": "completed"},
+            knowledge_provenance,
+        ),
     )
     sealed = _seal_subagent_t0_segment(
         ctx=ctx,
@@ -1285,6 +1311,7 @@ async def _spawn_one(
         content=content,
         tokens_used=tokens_used,
         sources=captured_sources,
+        knowledge_provenance=knowledge_provenance,
     )
     await _record_memory_from_result(ctx, job, subagent_result)
     return subagent_result
@@ -1356,6 +1383,11 @@ async def _emit_completion_signal(ctx: SubagentSpawnContext, result: SubagentRes
                     "child_session_id": ctx.child_session_id,
                     "parent_user_id": str(ctx.parent_user_id) if ctx.parent_user_id else None,
                     "terminal_status": result.status,
+                    **(
+                        {KNOWLEDGE_PROVENANCE_KEY: result.knowledge_provenance}
+                        if result.knowledge_provenance is not None
+                        else {}
+                    ),
                     **({"budget_run_id": str(ctx.budget_run_id)} if ctx.budget_run_id else {}),
                 },
             )

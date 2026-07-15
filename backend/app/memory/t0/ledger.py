@@ -24,7 +24,8 @@ from xml.sax.saxutils import quoteattr
 
 from app.config import get_settings
 from app.memory.form_lint import lint_memory_form
-from app.services.privacy_layer import PrivacyLayer, PrivacyStore
+from app.services.knowledge_provenance import enrich_knowledge_event_metadata
+from app.services.privacy_layer import PrivacyLayer, PrivacyStore, canonicalize_sensitivity, max_sensitivity
 
 try:  # pragma: no cover - Windows fallback; production/dev targets are Unix.
     import fcntl
@@ -119,9 +120,28 @@ def append_t0_session_event(
     sequence = int(index.get("next_sequence") or 1)
     path = session_dir / segment["path"]
     jsonl_path = session_dir / _segment_events_path(segment)
-    sanitized_content, sensitivity, form_warnings = _sanitize_t0_content(content)
     event_id = _new_event_id()
     event_metadata = _clean_metadata(metadata)
+    event_metadata = enrich_knowledge_event_metadata(
+        event_type=event_type,
+        content=content,
+        metadata=event_metadata,
+    )
+    sanitized_content, detected_sensitivity, form_warnings = _sanitize_t0_content(content)
+    declared_sensitivity = event_metadata.get("content_sensitivity")
+    try:
+        sensitivity = (
+            max_sensitivity(detected_sensitivity, declared_sensitivity).value
+            if declared_sensitivity is not None
+            else canonicalize_sensitivity(detected_sensitivity).value
+        )
+    except ValueError:
+        # Invalid typed provenance is a machine-contract failure. Preserve the
+        # evidence and fail closed for every downstream durable consumer.
+        sensitivity = "PL4_credential"
+        event_metadata["semantic_memory_eligible"] = False
+        event_metadata["content_sensitivity"] = sensitivity
+        event_metadata["sensitivity_contract_error"] = "invalid_declared_sensitivity"
     if form_warnings:
         event_metadata["form_warnings"] = form_warnings
     event_record = _build_event_record(

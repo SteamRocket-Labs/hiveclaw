@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -93,6 +94,79 @@ async def test_append_session_event_writes_typed_transcript_and_queues_t0_projec
         }
     ]
     assert transcript_events[0].metadata_json["t0_bridge_pending"] is True
+
+
+@pytest.mark.asyncio
+async def test_append_session_event_projects_typed_knowledge_provenance_into_transcript(monkeypatch):
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.services.chat_transcript import append_session_event
+
+    document_id = str(uuid4())
+    segment_id = str(uuid4())
+    tool_result = {
+        "status": "ok",
+        "authority": {
+            "schema": "hive.personal_knowledge_permission_decision.v1",
+            "allowed": True,
+            "action": "search",
+            "owner_user_id": str(uuid4()),
+            "authority_source": "owner_direct_interactive",
+            "sensitivity_ceiling": "PL3_sensitive",
+            "principal": {"requester_user_id": str(uuid4()), "purpose": "interactive_user_request"},
+        },
+        "results": [
+            {
+                "document_id": document_id,
+                "segment_id": segment_id,
+                "source_ref": f"kb://person/alice/documents/{document_id}#segment={segment_id}",
+                "snippet": "content without policy keywords",
+                "sensitivity": "PL3_sensitive",
+            }
+        ],
+    }
+    db = _FakeDB()
+
+    async def ignore_t0_publish(**_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "app.services.runtime_control_bus.publish_transcript_t0_bridge",
+        ignore_t0_publish,
+    )
+    monkeypatch.setattr(
+        "app.services.chat_transcript.schedule_after_commit",
+        lambda *_args, **_kwargs: None,
+        raising=False,
+    )
+
+    await append_session_event(
+        db=db,
+        agent_id=uuid4(),
+        tenant_id=uuid4(),
+        session_id=uuid4(),
+        run_id=uuid4(),
+        actor_type="tool",
+        event_type="tool_result",
+        role="tool_call",
+        t0_role="tool",
+        content=json.dumps(
+            {
+                "name": "search_personal_kb",
+                "status": "done",
+                "result": json.dumps(tool_result),
+            }
+        ),
+        metadata={"source": "web_chat_runtime", "tool_name": "search_personal_kb"},
+        materialize_chat_message=False,
+    )
+
+    transcript_event = next(item for item in db.added if isinstance(item, ChatTranscriptEvent))
+    assert transcript_event.metadata_json["content_sensitivity"] == "PL3_sensitive"
+    assert transcript_event.metadata_json["semantic_memory_eligible"] is False
+    provenance = transcript_event.metadata_json["knowledge_provenance"]
+    assert provenance["max_sensitivity"] == "PL3_sensitive"
+    assert provenance["authority"] == tool_result["authority"]
+    assert provenance["sources"][0]["source_ref"].endswith(f"#segment={segment_id}")
 
 
 @pytest.mark.asyncio

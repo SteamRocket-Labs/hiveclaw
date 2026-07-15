@@ -937,6 +937,7 @@ async def spawn_subagent_tool(request: ToolExecutionRequest) -> str:
             "content": result.content if result else "",
             "error": result.error if result else "spawn produced no result",
             "tokens_used": result.tokens_used if result else 0,
+            "knowledge_provenance": result.knowledge_provenance if result else None,
             "execution_shape_decision": execution_shape_decision,
             "continuation": {
                 "address": child_session_id,
@@ -1028,6 +1029,7 @@ async def check_subagent(request: ToolExecutionRequest) -> str:
                 "return_contract": return_contract["return_contract"],
                 "subagent_return_contract": return_contract,
                 "subagent_decision_entry": decision_entry,
+                "knowledge_provenance": metadata.get("knowledge_provenance"),
                 "safe_to_retry": decision_entry["safe_to_retry"],
                 "required_user_action": decision_entry["required_user_action"],
                 "session_state": {

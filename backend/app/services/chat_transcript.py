@@ -19,6 +19,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.memory.t0.ledger import T0AppendResult
 from app.models.audit import ChatMessage
 from app.models.chat_transcript_event import ChatTranscriptEvent
+from app.services.knowledge_provenance import (
+    apply_inherited_knowledge_provenance,
+    enrich_knowledge_event_metadata,
+    load_transcript_knowledge_provenance,
+)
 from app.services.thread_items import classify_thread_item, classify_thread_item_status
 
 
@@ -187,10 +192,29 @@ async def append_session_event(
         raise ValueError(f"session_id must be a UUID for transcript persistence: {session_id!r}")
     sequence = await allocate_transcript_sequence(db, session_id=session_uuid)
     content_text = content or ""
+    event_input_metadata = enrich_knowledge_event_metadata(
+        event_type=event_type,
+        content=content_text,
+        metadata=metadata,
+    )
+    if event_type == "assistant_message" and isinstance(db, AsyncSession):
+        inherited_provenance = await load_transcript_knowledge_provenance(
+            db,
+            tenant_id=tenant_uuid,
+            agent_id=agent_uuid,
+            session_id=session_uuid,
+            run_id=run_uuid,
+            turn_id=str(event_input_metadata.get("turn_id") or "").strip() or None,
+            before_sequence=sequence,
+        )
+        event_input_metadata = apply_inherited_knowledge_provenance(
+            event_input_metadata,
+            inherited_provenance,
+        )
     item_type, item_status = build_transcript_item_contract(
         event_type=event_type,
         role=role,
-        metadata=metadata,
+        metadata=event_input_metadata,
     )
 
     chat_message: ChatMessage | None = None
@@ -217,7 +241,7 @@ async def append_session_event(
         db.add(chat_message)
 
     event_metadata = _metadata_with_transcript_refs(
-        metadata=metadata,
+        metadata=event_input_metadata,
         event_id=event_id,
         sequence=sequence,
         parts=parts,
@@ -247,9 +271,9 @@ async def append_session_event(
         schema_version=1,
         item_type=item_type,
         item_status=item_status,
-        turn_id=str((metadata or {}).get("turn_id") or "").strip() or None,
-        causation_id=_uuid_or_none((metadata or {}).get("causation_id")) or _uuid_or_none(parent_event_id),
-        correlation_id=_uuid_or_none((metadata or {}).get("correlation_id")) or run_uuid,
+        turn_id=str(event_input_metadata.get("turn_id") or "").strip() or None,
+        causation_id=_uuid_or_none(event_input_metadata.get("causation_id")) or _uuid_or_none(parent_event_id),
+        correlation_id=_uuid_or_none(event_input_metadata.get("correlation_id")) or run_uuid,
         actor_type=actor_type,
         event_type=event_type,
         visibility_scope=visibility_scope,

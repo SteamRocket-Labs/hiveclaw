@@ -675,13 +675,29 @@ def _build_source_bundle(
     package_id: str,
     session_lineage: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    session_events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=root)
+    excluded_transcript_event_ids = _knowledge_provenance_excluded_transcript_event_ids(session_events)
     segment_events = [
         event
-        for event in replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=root)
+        for event in session_events
         if event.segment_id == t0_segment_id
     ]
-    events = [event for event in segment_events if _is_t2_semantic_source_event(event)]
-    excluded_events = [event for event in segment_events if not _is_t2_semantic_source_event(event)]
+    events = [
+        event
+        for event in segment_events
+        if _is_t2_semantic_source_event(
+            event,
+            excluded_transcript_event_ids=excluded_transcript_event_ids,
+        )
+    ]
+    excluded_events = [
+        event
+        for event in segment_events
+        if not _is_t2_semantic_source_event(
+            event,
+            excluded_transcript_event_ids=excluded_transcript_event_ids,
+        )
+    ]
     if not events:
         raise ValueError(f"no semantic T0 events for session={session_id} segment={t0_segment_id}")
     if not any(_is_semantic_content_event(event) for event in events):
@@ -729,8 +745,31 @@ def _build_source_bundle(
     }
 
 
-def _is_t2_semantic_source_event(event: Any) -> bool:
+def _knowledge_provenance_excluded_transcript_event_ids(events: list[Any]) -> set[str]:
+    """Return exact legacy transcript ids superseded by sensitive repairs."""
+
+    excluded: set[str] = set()
+    for event in events:
+        if str(getattr(event, "event_type", "") or "") != "knowledge_provenance_repair":
+            continue
+        metadata = event.metadata if isinstance(getattr(event, "metadata", None), dict) else {}
+        if not _is_false_metadata_flag(metadata.get("semantic_memory_eligible")):
+            continue
+        target_id = str(metadata.get("target_transcript_event_id") or "").strip()
+        if target_id:
+            excluded.add(target_id)
+    return excluded
+
+
+def _is_t2_semantic_source_event(
+    event: Any,
+    *,
+    excluded_transcript_event_ids: set[str] | None = None,
+) -> bool:
     metadata = event.metadata or {}
+    transcript_event_id = str(metadata.get("transcript_event_id") or "").strip()
+    if transcript_event_id and transcript_event_id in (excluded_transcript_event_ids or set()):
+        return False
     if _is_false_metadata_flag(metadata.get("semantic_memory_eligible")):
         return False
     if _is_true_metadata_flag(metadata.get("projection_only")):

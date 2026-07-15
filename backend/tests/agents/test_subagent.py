@@ -327,6 +327,86 @@ async def test_spawn_writes_replayable_t0_sidechain(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_subagent_propagates_typed_knowledge_provenance_to_its_final_result_and_t0(
+    monkeypatch,
+    tmp_path,
+):
+    import json
+
+    from app.memory.t0.ledger import replay_t0_session_events
+
+    tenant_id = uuid.uuid4()
+    parent_agent_id = uuid.uuid4()
+    ctx = _ctx(
+        parent_agent_id=parent_agent_id,
+        tenant_id=tenant_id,
+        trace_id="trace-kb-provenance",
+        parent_session_id="parent-session",
+    )
+    document_id = str(uuid.uuid4())
+    segment_id = str(uuid.uuid4())
+
+    monkeypatch.setattr(
+        "app.memory.t0.ledger.get_settings",
+        lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
+    )
+
+    async def invoke(request):
+        await request.on_tool_call(
+            {
+                "status": "done",
+                "name": "search_personal_kb",
+                "tool_call_id": "call-kb",
+                "args": {"query": "governed"},
+                "result": json.dumps(
+                    {
+                        "status": "ok",
+                        "authority": {"allowed": True, "authority_source": "owner_direct_interactive"},
+                        "results": [
+                            {
+                                "document_id": document_id,
+                                "segment_id": segment_id,
+                                "source_ref": f"kb://person/alice/documents/{document_id}#segment={segment_id}",
+                                "snippet": "typed body",
+                                "sensitivity": "PL3_sensitive",
+                            }
+                        ],
+                    }
+                ),
+            }
+        )
+        return SimpleNamespace(content="child digest", tokens_used=11)
+
+    result = await _spawn_one(
+        ctx,
+        SubagentJob(
+            spec=SubagentSpec(
+                name="scout",
+                type="explorer",
+                allowed_tools=("search_personal_kb",),
+            ),
+            task="investigate X",
+        ),
+        invoke=invoke,
+    )
+
+    assert result.ok
+    assert result.knowledge_provenance is not None
+    assert result.knowledge_provenance["max_sensitivity"] == "PL3_sensitive"
+    assert result.knowledge_provenance["source_event_refs"] == ["subagent://tool-call/call-kb"]
+
+    session_dirs = list((tmp_path / str(parent_agent_id) / "memory" / "t0" / "sessions").iterdir())
+    events = replay_t0_session_events(
+        agent_id=parent_agent_id,
+        session_id=session_dirs[0].name,
+        data_root=tmp_path,
+    )
+    assistant_event = next(event for event in events if event.event_type == "assistant_message")
+    assert assistant_event.metadata["knowledge_provenance"]["max_sensitivity"] == "PL3_sensitive"
+    assert assistant_event.metadata["semantic_memory_eligible"] is False
+
+
+@pytest.mark.asyncio
 async def test_spawn_emits_cc_subagent_start_and_stop_hooks(monkeypatch, tmp_path):
     from app.runtime.hooks import HookContext, HookEvent, hook_registry
 

@@ -226,6 +226,12 @@ async def test_spawn_tool_foreground_returns_child_session_continuation(monkeypa
                 status="completed",
                 content=full_content,
                 tokens_used=7,
+                knowledge_provenance={
+                    "schema": "hive.knowledge_provenance_aggregate.v1",
+                    "max_sensitivity": "PL3_sensitive",
+                    "semantic_memory_eligible": False,
+                    "source_event_refs": ["subagent://tool-call/call-kb"],
+                },
             ),
         )
 
@@ -265,6 +271,7 @@ async def test_spawn_tool_foreground_returns_child_session_continuation(monkeypa
     assert captured["update_child_session"]["status"] == "completed"
     assert captured["update_child_session"]["summary"] == full_content
     assert data["content"] == full_content
+    assert data["knowledge_provenance"]["max_sensitivity"] == "PL3_sensitive"
 
 
 @pytest.mark.asyncio
@@ -1003,6 +1010,12 @@ async def test_check_subagent_returns_child_session_refs_and_fallback_language(m
                 "subagent_name": "scout",
                 "subagent_type": "explorer",
                 "child_session_id": "child-session",
+                "knowledge_provenance": {
+                    "schema": "hive.knowledge_provenance_aggregate.v1",
+                    "max_sensitivity": "PL3_sensitive",
+                    "semantic_memory_eligible": False,
+                    "source_event_refs": ["subagent://tool-call/call-kb"],
+                },
                 "session_contract": {
                     "kind": "subagent_child_session",
                     "continuation_address": "child-session",
@@ -1038,6 +1051,7 @@ async def test_check_subagent_returns_child_session_refs_and_fallback_language(m
     assert data["transcript_refs"]["session_id"] == "child-session"
     assert data["continuation"]["address"] == "child-session"
     assert data["result"] == "done"
+    assert data["knowledge_provenance"]["max_sensitivity"] == "PL3_sensitive"
     assert data["model_guidance"] == "fallback_inspection_only"
 
 

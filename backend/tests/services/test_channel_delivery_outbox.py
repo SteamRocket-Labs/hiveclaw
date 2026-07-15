@@ -15,6 +15,7 @@ from app.models.channel_delivery_outbox import ChannelDeliveryOutbox
 from app.models.chat_artifact import ChatArtifact
 from app.models.audit import ChatMessage
 from app.models.chat_session import ChatSession
+from app.models.chat_transcript_event import ChatTranscriptEvent
 from app.models.external_principal import ExternalPrincipal
 from app.models.runtime_task import RuntimeTask
 from app.models.tenant import Tenant
@@ -237,6 +238,77 @@ async def test_uncommitted_terminal_intent_does_not_escape_caller_transaction(ow
             )
         ).scalar_one()
     assert count == 0
+
+
+@pytest.mark.usefixtures("migrated_pg_url")
+async def test_terminal_outbox_inherits_typed_knowledge_provenance_and_enforces_it_on_retry(
+    owner_sessionmaker,
+    tmp_path,
+):
+    from app.services.knowledge_provenance import build_knowledge_provenance
+
+    seed = await _seed_delivery(owner_sessionmaker, tmp_path)
+    provenance = build_knowledge_provenance(
+        "read_personal_kb",
+        {
+            "status": "ok",
+            "document_id": str(uuid.uuid4()),
+            "source_ref": "kb://person/owner/private",
+            "sensitivity": "PL3_sensitive",
+            "authority": {
+                "schema": "hive.personal_knowledge_permission_decision.v1",
+                "allowed": True,
+                "action": "read",
+                "owner_user_id": str(seed["user_id"]),
+                "authority_source": "owner_direct_interactive",
+                "sensitivity_ceiling": "PL3_sensitive",
+                "principal": {"requester_user_id": str(seed["user_id"])},
+            },
+            "segments": [{"segment_id": str(uuid.uuid4()), "content": "private body"}],
+        },
+    )
+    assert provenance is not None
+    async with tenant_scoped_session(seed["tenant_id"], session_factory=owner_sessionmaker) as db:
+        db.add(
+            ChatTranscriptEvent(
+                id=uuid.uuid4(),
+                sequence=1,
+                tenant_id=seed["tenant_id"],
+                agent_id=seed["agent_id"],
+                session_id=seed["session_id"],
+                run_id=seed["run_id"],
+                actor_type="tool",
+                event_type="tool_result",
+                content="durable raw tool evidence",
+                metadata_json={"knowledge_provenance": provenance},
+            )
+        )
+        await db.flush()
+        outbox_id = await enqueue_channel_delivery(db, _intent(seed, text="model-authored answer"))
+        await db.commit()
+
+    async with owner_sessionmaker() as db:
+        row = await db.get(ChannelDeliveryOutbox, outbox_id)
+        assert row is not None
+        assert row.metadata_json["content_sensitivity"] == "PL3_sensitive"
+        assert row.metadata_json["knowledge_provenance"]["source_event_refs"]
+
+    calls: list[dict] = []
+
+    async def send_text(**kwargs):
+        calls.append(kwargs)
+        return DeliveryResult(True, "success", "telegram", "ok")
+
+    service = ChannelDeliveryOutboxService(
+        session_factory=owner_sessionmaker,
+        retry_base_seconds=0,
+        text_sender=send_text,
+    )
+    await service.drain_once(worker_id="knowledge-provenance-worker")
+
+    assert len(calls) == 1
+    assert calls[0]["content_sensitivity"] == "PL3_sensitive"
+    assert calls[0]["extra_detail"]["knowledge_provenance"]["source_event_refs"]
 
 
 @pytest.mark.usefixtures("migrated_pg_url")

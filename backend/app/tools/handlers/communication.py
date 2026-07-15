@@ -513,14 +513,24 @@ async def get_current_time(agent_id: uuid.UUID, arguments: dict) -> str:
         display_name="Send Channel Message",
         icon="\U0001f4e9",
         governance="sensitive",
-        adapter="agent_args",
+        adapter="request",
     )
 )
-async def send_channel_message(agent_id: uuid.UUID, arguments: dict) -> str:
+async def send_channel_message(request: ToolExecutionRequest) -> str:
     from app.services.agent_tool_domains.messaging import _normalize_messaging_result
     from app.services.agent_tools import _send_channel_message
 
-    return _normalize_messaging_result("send_channel_message", await _send_channel_message(agent_id, arguments))
+    return _normalize_messaging_result(
+        "send_channel_message",
+        await _send_channel_message(
+            request.context.agent_id,
+            request.arguments,
+            tenant_id=request.context.tenant_id,
+            session_id=request.context.session_id,
+            runtime_task_id=request.context.runtime_task_id,
+            turn_id=request.context.turn_id,
+        ),
+    )
 
 
 # -- send_channel_file --------------------------------------------------------

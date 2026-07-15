@@ -1210,7 +1210,15 @@ async def _send_channel_file(agent_id: uuid.UUID, ws: Path, arguments: dict) -> 
         return msg
 
 
-async def _send_channel_message(agent_id: uuid.UUID, arguments: dict) -> str:
+async def _send_channel_message(
+    agent_id: uuid.UUID,
+    arguments: dict,
+    *,
+    tenant_id: uuid.UUID | str | None = None,
+    session_id: uuid.UUID | str | None = None,
+    runtime_task_id: uuid.UUID | str | None = None,
+    turn_id: str | None = None,
+) -> str:
     """Send a text message to the current requester / persisted reply target."""
     message = str(arguments.get("message", "") or "").strip()
     if not message:
@@ -1222,15 +1230,49 @@ async def _send_channel_message(agent_id: uuid.UUID, arguments: dict) -> str:
 
     # RLS 阶段1: delivery reads users/agents (policy-bearing) — scope to the
     # agent's tenant (audited single-row bypass to resolve it).
-    tid = await resolve_tenant_for_agent(agent_id)
+    try:
+        tid = tenant_id if isinstance(tenant_id, uuid.UUID) else uuid.UUID(str(tenant_id))
+    except (TypeError, ValueError):
+        tid = await resolve_tenant_for_agent(agent_id)
+
+    def _typed_uuid(value: uuid.UUID | str | None) -> uuid.UUID | None:
+        try:
+            return value if isinstance(value, uuid.UUID) else uuid.UUID(str(value))
+        except (TypeError, ValueError):
+            return None
+
     async with tenant_scoped_session(tid) as db:
+        from app.services.knowledge_provenance import (
+            knowledge_content_sensitivity,
+            load_transcript_knowledge_provenance,
+        )
+
+        typed_session_id = _typed_uuid(session_id)
+        typed_run_id = _typed_uuid(runtime_task_id)
+        typed_turn_id = str(turn_id or "").strip() or None
+        provenance = None
+        if typed_session_id is not None and (typed_run_id is not None or typed_turn_id is not None):
+            provenance = await load_transcript_knowledge_provenance(
+                db,
+                tenant_id=tid,
+                agent_id=agent_id,
+                session_id=typed_session_id,
+                run_id=typed_run_id,
+                turn_id=typed_turn_id,
+            )
+        extra_detail: dict[str, Any] = {"tool_name": "send_channel_message"}
+        if provenance is not None:
+            extra_detail["knowledge_provenance"] = provenance
         result = await ChannelDeliveryService.send_text(
             db=db,
             agent_id=agent_id,
             reply_target=reply_target,
             text=message,
             delivery_mode="live",
-            extra_detail={"tool_name": "send_channel_message"},
+            extra_detail=extra_detail,
+            content_sensitivity=knowledge_content_sensitivity(
+                {"knowledge_provenance": provenance} if provenance is not None else None
+            ),
         )
 
     if result.ok:

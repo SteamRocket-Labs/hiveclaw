@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import contextlib
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 import hashlib
 import json
@@ -24,6 +24,11 @@ from app.models.channel_delivery_outbox import ChannelDeliveryOutbox
 from app.models.chat_artifact import ChatArtifact
 from app.models.external_principal import ExternalPrincipal
 from app.services.channel_delivery_service import ChannelDeliveryService, DeliveryResult
+from app.services.knowledge_provenance import (
+    apply_inherited_knowledge_provenance,
+    knowledge_content_sensitivity,
+    load_transcript_knowledge_provenance,
+)
 
 DeliveryKind = Literal["terminal_result", "interactive_prompt"]
 TextSender = Callable[..., Awaitable[DeliveryResult]]
@@ -160,6 +165,18 @@ async def enqueue_channel_delivery(db: AsyncSession, intent: ChannelDeliveryInte
     committed terminal payload by replaying the same run and target.
     """
 
+    provenance = await load_transcript_knowledge_provenance(
+        db,
+        tenant_id=_uuid(intent.tenant_id, field="tenant_id"),
+        agent_id=_uuid(intent.agent_id, field="agent_id"),
+        session_id=_uuid(intent.session_id, field="session_id"),
+        run_id=_uuid(intent.runtime_task_id, field="runtime_task_id"),
+    )
+    if provenance is not None:
+        intent = replace(
+            intent,
+            metadata=apply_inherited_knowledge_provenance(intent.metadata, provenance),
+        )
     values = _intent_values(intent)
     stmt = (
         insert(ChannelDeliveryOutbox)
@@ -453,6 +470,7 @@ class ChannelDeliveryOutboxService:
             "extra_detail": {
                 "channel_delivery_outbox_id": str(item.id),
                 "runtime_task_id": str(item.runtime_task_id),
+                "knowledge_provenance": item.metadata.get("knowledge_provenance"),
             },
         }
         async with tenant_scoped_session(
@@ -466,7 +484,12 @@ class ChannelDeliveryOutboxService:
                 worker_id=worker_id,
                 part_key="text",
                 sender=self._text_sender,
-                sender_kwargs={"db": db, "text": item.text, **common},
+                sender_kwargs={
+                    "db": db,
+                    "text": item.text,
+                    "content_sensitivity": knowledge_content_sensitivity(item.metadata),
+                    **common,
+                },
             )
             for artifact_id, file_path in artifact_paths:
                 await self._send_part(

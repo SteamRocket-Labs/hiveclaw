@@ -4,7 +4,7 @@
 >
 > 原始审查冻结快照：`main@501db6555dae374e5fcf43a6fdcfe8a3dd89343e` + 2026-07-14 当时未提交工作树；后续施工不改写这个审查锚点，每条 `EVID-*` 另记自己的开工 HEAD、工作树与生产快照
 >
-> 修复账本滚动更新：2026-07-15；Group 0 已用 `EVID-G0-006` 把 11 个上下文包、88 个可执行 `@` 文档入口、逐 Group 详细路由和证据回流做成机器门并保持关闭；Group 1 的同源三服务部署已经成功，`P0-F1/P0-F2/E-1/KB-EXTRACT-001/KB-AUTH-001` 已分别以 `EVID-G1-001/002/003/006/007` 完成 production canary 并关闭，`P1-004/P1-F4` 仍因 live authority/recovery canary 保持 open；不得把 5 个独立 leaf 的关闭冒充 Group 1 或 103 项完成。
+> 修复账本滚动更新：2026-07-15；Group 0 已用 `EVID-G0-006` 把 11 个上下文包、88 个可执行 `@` 文档入口、逐 Group 详细路由和证据回流做成机器门并保持关闭；Group 1 的同源三服务部署已经成功，`P0-F1/P0-F2/E-1/P1-004/KB-EXTRACT-001/KB-AUTH-001` 已分别以 `EVID-G1-001/002/003/004/006/007` 完成 production canary 并关闭，`P1-F4` 仍因最终 replay/rollback gate 保持 open；不得把 6 个独立 leaf 的关闭冒充 Group 1 或 103 项完成。
 >
 > 组合输入：`agent-native-atomic-review-2026-07-14.md`、`agent-native-extreme-boundary-atomic-review-2026-07-14.md`、`unified-context-assembly-and-progressive-disclosure-2026-07-14.md`、`session-v2-cc-codex-alignment-contract-2026-07-14.md`、修订后的 `reusable-agent-native-atomic-review-prompt.md`，以及当前 Hive / FreeCode / Codex 本地源码。
 >
@@ -593,7 +593,7 @@ Group 摘要不能替代以下两份文档：
 | Group | owner canonical leaf | owner Missing | 当前状态 |
 |---:|---:|---:|---|
 | 0 | 0（全局门） | 0 | closed：`EVID-G0-002/003/004/005/006`，Git truth、机器账本、11 个上下文包/88 个 `@` 文档入口、跨仓快照与 clean-checkout harness 已闭环 |
-| 1 | 16 | 0 | in_progress：`P0-F1/P0-F2/E-1/KB-EXTRACT-001/KB-AUTH-001` 已关闭（5/16）；`P1-004/P1-F4` 已部署但 live authority/recovery gate 仍 open（2/16）；其余 9 个 leaf 待施工 |
+| 1 | 16 | 0 | in_progress：`P0-F1/P0-F2/E-1/P1-004/KB-EXTRACT-001/KB-AUTH-001` 已关闭（6/16）；`P1-F4` 已部署且 apply/canary 基本完成，最终 replay/rollback gate 仍 open（1/16）；其余 9 个 leaf 待施工 |
 | 2 | 14 | 0 | open |
 | 3 | 7 | 0 | open |
 | 4 | 6 | 0 | open |
@@ -1215,7 +1215,7 @@ Group 0 是全局证据门，不拥有业务 leaf。下面 103 行必须与 cano
 - P0 | P0-F1 | closed:EVID-G1-001 | governed egress commit `10b74360a` 已随 `1b822eb766` 三服务同源部署；public/redirect allow 与 metadata/downgrade typed deny production canary 已绿
 - P1 | P0-F2 | closed:EVID-G1-002 | deployed-source reconciliation `f7902ab7b` 与 fail-closed readiness `5ad6ff3c6` 已随 `1b822eb766` 部署；schema/startup/runtime-role/cross-tenant production canary 已绿
 - P1 | E-1 | closed:EVID-G1-003 | durable requester authority commit `3b3b281543bc` 已部署；production actual-data + exact-code spawn/wake canary、creator drift hold、1,499 条 legacy `retain_needs_reconciliation` disposition 与零副作用 rollback drill 已绿
-- P1 | P1-004 | in_progress-production-deployed:EVID-G1-004 | typed A2A authority frame、persisted receipt/restart drift hold 与 effect-boundary validation 已部署；sync/async/nested live canary 待执行
+- P1 | P1-004 | closed:EVID-G1-004 | typed A2A frame commit `585581319` 已部署；production exact-code sync/persisted-async/nested canary、read capability preservation、exact write deny、immutable drift/restart hold 与零副作用 rollback drill 已绿
 - P1 | P1-F4 | in_progress-production-dry-run:EVID-G1-005 | signed authority frame与所有恢复 consumer 已部署；fleet dry-run=`54 would_quarantine`，apply/disposition 与 direct/A2A/restart canary 待完成
 - P1 | C-BP1 | inherited-current-evidence | terminal hook 同步 T2 LLM 阻塞完成
 - P1 | P1-008 | inherited-current-evidence | Memory dependency failure 冻结无关 effect
@@ -1325,7 +1325,7 @@ Group 0 是全局证据门，不拥有业务 leaf。下面 103 行必须与 cano
 | Group | 证据前缀 | Owner 范围 | 当前证据状态 | 下一次写入要求 |
 |---:|---|---|---|---|
 | 0 | `EVID-G0-*` | 0 leaf / 0 Missing | `closed`：`EVID-G0-001/002/003/004/005/006`；文档 Git truth、owner/path/decision/scenario CI、11 个 Group 上下文包、88 个去重 `@` 文档入口、跨仓快照与 fake-provider/PG/Redis harness 基座成立 | 后续任何新增本地 `@docs` 必须先进入 Git 并同步上下文包索引；业务场景 Green 仍由 owner Group 负责 |
-| 1 | `EVID-G1-*` | 16 leaf / 0 Missing | `in_progress`：七个独立 code commit；`P0-F1/P0-F2/E-1/KB-EXTRACT-001/KB-AUTH-001` production canary 已绿并关闭（5/16）；`P1-004/P1-F4` 已部署但 live authority/recovery gate 仍 open（2/16），P1-F4 最新 apply/canary 证据待回填；其余 9 leaf 未施工 | 先完成 P1-004 A2A canary 与 P1-F4 replay/rollback gate；随后按依赖开工 `KB-PROP-001`，不得用本地 Green、shared deploy 或 dry-run 冒充 leaf closed |
+| 1 | `EVID-G1-*` | 16 leaf / 0 Missing | `in_progress`：七个独立 code commit；`P0-F1/P0-F2/E-1/P1-004/KB-EXTRACT-001/KB-AUTH-001` production canary 已绿并关闭（6/16）；`P1-F4` 已部署且 apply/canary 基本完成，最终 replay/rollback gate 仍 open（1/16）；其余 9 leaf 未施工 | 先完成 P1-F4 replay/no-duplicate-effect 与安全 rollback evidence；随后按依赖开工 `KB-PROP-001`，不得用本地 Green、shared deploy 或局部 canary 冒充 leaf closed |
 | 2 | `EVID-G2-*` | 14 leaf / 0 Missing | `open` | 写 Session event/item/reducer、persist-before-publish、projection/backfill 与 SESSION-G 结果 |
 | 3 | `EVID-G3-*` | 7 leaf / 0 Missing | `open` | 写 root admission、reserve/commit/release、terminal CAS、approval resume 与 fanout 曲线 |
 | 4 | `EVID-G4-*` | 6 leaf / 0 Missing | `open` | 写 result ref、mailbox lease/CAS、integration epoch、partial/late/duplicate 与 100-way return storm |
@@ -1672,13 +1672,13 @@ context_read_receipt:
 - operator disposition / rollback drill：生产二次只读盘点确认 legacy active/resumable=`0`、1,499 条 creator drift 的 parent session 全部缺失，无法从机械事实安全恢复 requester；因此显式选择 `retain_needs_reconciliation`，禁止 automatic rewrite/retry/archive。安全 rollback/fault drill 不是把旧漏洞重新部署，而是向已部署代码注入 creator 漂移并验证 pre-enqueue hold、零 effect、原证据保留；恢复只能重新进入 requester-authoritative 路径。
 - 七原子：Input=authenticated background tool context；Authority=`runtime_tasks.root_user_id` + exact session/tenant binding；Execution=single RuntimeTask worker/wake path；Evidence=typed hold/decision entry/T0/span/outbox/signal；Recovery=`retain_needs_reconciliation`、no blind retry、operator inspect/archive/resolve；Consumption=AgentInvocationRequest/Tool/T0/audit/HR PKB/parent wake；Acceptance=本地 real-PG/故障/全仓回归、production actual-data + exact deployed-code canary、三服务部署、legacy disposition 与零副作用 rollback drill 全绿。因此 canonical 行为 `closed:EVID-G1-003`。
 - 残余边界：E-1 已关闭，但不替代 `P1-004` 的跨 hop A2A authority receipt，也不替代 `P1-F4` 的通用 RecoveryManifest。1,499 条 retained legacy records 是显式保留的历史隔离证据，不是可自动重试的活动任务；未来逐案 resolve/archive 必须产生独立 operator receipt，禁止用 creator、metadata 或自然语言猜 requester。
-- 对应 §12.2 canonical 行已更新为 `closed:EVID-G1-003`；Group 1 当前为 5/16 closed、2/16 deployed-but-open、9/16 pending；不改变 103 分母、severity 或 Group owner。
+- 对应 §12.2 canonical 行已更新为 `closed:EVID-G1-003`；本项关闭时 Group 1 为 5/16 closed、2/16 deployed-but-open、9/16 pending，当前滚动状态只以 §9 与 §12.3 为准；不改变 103 分母、severity 或 Group owner。
 
 #### EVID-G1-004：P1-004 typed A2A authority frame 与 restart receipt
 
 - `leaf_ids`：`P1-004`；同根范围覆盖 sync/async A2A、custom executor、ToolRuntime effect boundary、RuntimeTask persistence/worker dispatch/restart resume、confirmed Plan handoff 与 child failure outcome。它不替代 `P1-F4` 的通用 RecoveryManifest，也不宣称 Group 2 的最终 Session item/prose 已闭环。
 - owner Group / 依赖 Group：Group 1 / Group 0、`E-1`。本项复用 `E-1` 的 authenticated requester/root principal，再把它原子化绑定到 child tool effect；没有重新引入 creator fallback。
-- 当前状态：`in_progress`；本地实现、独立 staged snapshot、仓级 clean-checkout、FreeCode/Codex 对照、production read-only preflight 与三服务部署已绿；sync/async/nested A2A live canary 与安全 rollback drill 未执行，因此 canonical 为 `in_progress-production-deployed:EVID-G1-004`，不是 closed。
+- 当前状态：`closed`；本地实现、独立 staged snapshot、仓级 clean-checkout、FreeCode/Codex 对照、production read-only preflight、三服务部署、sync/persisted-async/nested exact-code canary、effect/no-effect 与安全 rollback containment drill 均已绿；canonical 为 `closed:EVID-G1-004`。
 - 证据 owner / 更新时间：主 Agent / 2026-07-15。
 - 冻结事实：开工 HEAD=`0a8bba2bd`；code commit=`58558131918a5b706c7438f52ea76ec9d8f560c7`。提交前共享工作树含 hook/DB/Session 等其它 Session 改动；本项逐 hunk 排除了 `db=None`、hook `evidence_mode`、hook metadata 与对应测试期待，只提交 `git show --name-only 585581319` 所列 20 个 authority-frame 实现/测试 path。
 - Context Read Receipt：
@@ -1737,10 +1737,12 @@ context_read_receipt:
 - Green（静态/架构）：scoped `ruff check` → `All checks passed!`；`ruff format --check` → `20 files already formatted`；当前工作树 `pytest tests/architecture -q` → `172 passed`。新增 frame 使 high-risk root 临时超过 60 行的 Red，通过把 execution-pipeline import 提到模块级恢复薄入口，不删除 contract。
 - Green（仓级）：并发工作树最终 `pytest tests -q` → `7041 passed, 2 skipped in 235.98s`；更严格的 Git-only clean checkout 在 `19c6ddeb7` 纳管上下文包后执行同命令 → `7014 passed, 2 skipped in 251.57s`。后者不含其它 Session 的 27 个未提交测试，是可复现提交基线。
 - fault / security：覆盖 missing/drift receipt、nested chain、cross-tenant target、requester/source mismatch、missing parent、required=false、snapshot/profile/hash/identity/sandbox/approval/token drift、exact parent deny、custom executor 不兼容、legacy marker、benign security words、restart hold 与 async/sync typed failure。
-- commit / deploy / production canary：独立 code commit=`585581319` 已随 source=`1b822eb766` 完成三服务同源部署；production preflight 只读且上线前 delegation row=`0`。sync/async/nested creator≠requester A2A、effect deny/no-effect receipt、restart reconciliation 与安全 rollback drill仍 open。
-- 七原子：Input=authenticated parent principal + child request；Authority=tenant/requester/source/target + policy/sandbox/approval frame；Execution=single ToolRuntime pre-effect validator；Evidence=receipt/hash/principal/span/typed outcome；Recovery=unavailable/needs_reconciliation、evidence-preserving hold；Consumption=Invoker/custom executor/ToolRuntime/RuntimeTask/A2A outcome；Acceptance=Red→201 + 172 + 7014、production read-only与deploy Green，live authority/effect canary仍 open。
-- 残余风险 / 下一动作：A2A failure 的最终 Session item/prose 统一属于 Group 2 typed truth，不能在本项冒充关闭；通用 resume authorization 进入 `P1-F4`。P1-004 已完成 deploy，仍必须完成跨用户 live A2A effect/no-effect 与 restart/rollback canary 后才能从 `in_progress` 改 `closed`。
-- 对应 §12.2 canonical 行已更新为 `in_progress-production-deployed:EVID-G1-004`；该证据初次写入时 Group 1 仍有 14 个 leaf 未闭环。当前滚动状态只以 §9 与 §12.3 为准；103 分母、severity 与 owner 不变。
+- commit / deploy / production canary：独立 code commit=`585581319` 已随 source=`1b822eb766` 完成三服务同源部署；production preflight 只读且上线前 delegation row=`0`。受控 canary 在当前 production backend 容器直接运行已部署代码：A→B→C 两跳 principal 保留 requester/root session/root task 并将 chain 扩展为三个 Agent；同步 `_delegate`、custom executor typed frame 与 persisted async dispatch 均通过，benign message 中的 `security/approval/tool/secret` 不改变 authority；receipt 的 policy/snapshot hash 与 effect frame 一致。
+- effect / capability / recovery canary：同一 immutable frame、RuntimeTask、budget、trace 与 delegation token 贯穿 inner ToolRuntime；受控 `read_file` fake registry 被调用 `1` 次并返回 `READ_ONLY_EFFECT_OK`，证明 parent deny 不会删除无关 read-only 能力；同一 profile 明确 deny `write_file` 时 registry 调用 `0`，返回 typed `a2a_parent_effect_denied`。不接受 `authority_frame` 的 legacy custom executor 调用 `0`。persisted async 正常派发 `1` 次；restart snapshot drift 不 spawn，写入内存捕获的 `needs_reconciliation`，reason=`a2a_authority_snapshot_drift`、`automatic_retry_disabled=true`。
+- rollback / fault drill：未把旧漏洞重新部署。canary 依次注入 budget binding drift、RuntimeTask binding drift、delegation token missing、incompatible executor 与 restart receipt drift；每次都在 registry/effect 前以 typed unavailable/hold 停止，handler 调用 `0`、production DB 写入 `0`、模型调用 `0`、外部副作用 `0`。这就是可安全执行的 forward rollback containment：停止新 admission，保留 immutable receipt，drain 或 hold 已存在 run；不得回到忽略 frame 的旧 effect path。
+- 七原子：Input=authenticated parent principal + child request；Authority=tenant/requester/source/target + policy/sandbox/approval/token frame；Execution=single ToolRuntime pre-effect validator；Evidence=receipt/hash/principal/span/typed outcome；Recovery=unavailable/needs_reconciliation、evidence-preserving hold、no blind retry；Consumption=Invoker/custom executor/ToolRuntime/RuntimeTask/A2A outcome；Acceptance=Red→201 + 172 + 7014、production deploy/read-only preflight、sync/async/nested exact-code canary、capability preservation、effect deny 与 drift/rollback fault matrix 全绿。因此 canonical 行为 `closed:EVID-G1-004`。
+- 残余边界：A2A failure 的最终 Session item/prose 统一属于 Group 2 typed truth；通用 resume authorization 属于 `P1-F4`。二者没有被本项合并关闭。P1-004 只关闭逐 hop authority frame、effect boundary 与 persisted A2A restart receipt。
+- 对应 §12.2 canonical 行已更新为 `closed:EVID-G1-004`；本项关闭后 Group 1 为 6/16 closed、1/16 deployed-but-open、9/16 pending；当前滚动状态只以 §9 与 §12.3 为准，103 分母、severity 与 owner 不变。
 
 #### EVID-G1-005：P1-F4 RecoveryManifest authority、immutable resource 与 legacy quarantine
 

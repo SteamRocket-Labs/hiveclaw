@@ -1,6 +1,43 @@
 from __future__ import annotations
 
 
+def test_grep_search_terminates_rg_options_before_untrusted_pattern(monkeypatch, tmp_path):
+    from app.services.agent_tool_domains import workspace
+
+    search_root = tmp_path / "workspace"
+    search_root.mkdir()
+    target = search_root / "record.txt"
+    target.write_text("--files\n", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return workspace.subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=f"{target}:1:--files\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(workspace.shutil, "which", lambda name: "/usr/bin/rg" if name == "rg" else None)
+    monkeypatch.setattr(workspace.subprocess, "run", fake_run)
+
+    result = workspace._grep_search(tmp_path, "--files", root="workspace")
+
+    assert captured["command"] == [
+        "rg",
+        "--line-number",
+        "--color",
+        "never",
+        "--",
+        "--files",
+        str(search_root.resolve()),
+    ]
+    assert captured["kwargs"] == {"capture_output": True, "text": True, "check": False}
+    assert "workspace/record.txt:1:--files" in result
+
+
 def test_grep_search_fallback_treats_pattern_as_regex(monkeypatch, tmp_path):
     from app.services.agent_tool_domains import workspace
 

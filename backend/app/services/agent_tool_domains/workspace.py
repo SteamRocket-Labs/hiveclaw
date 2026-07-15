@@ -1224,7 +1224,9 @@ def _grep_search(
             command = ["rg", "--line-number", "--color", "never"]
             if explicit_limit is not None:
                 command.extend(("--max-count", str(explicit_limit)))
-            command.extend((pattern, str(search_root)))
+            # The model-authored pattern is data, never an rg option (for
+            # example ``--pre`` or ``--files``).
+            command.extend(("--", pattern, str(search_root)))
             proc = subprocess.run(
                 command,
                 capture_output=True,

@@ -465,6 +465,45 @@ async def cleanup_retired_builtin_skills() -> dict:
     }
 
 
+def _push_default_skill_packages_to_agent(*, agent_dir: Path, default_skills: list[Skill]) -> dict[str, int]:
+    """Install one Agent's default Skills under one lock and one optional transaction."""
+
+    from app.services.agent_asset_transaction import AgentAssetTransaction
+    from app.services.skill_installation import install_active_skill_package
+
+    result_counts = {"pushed": 0, "updated": 0, "unchanged": 0}
+    with AgentAssetTransaction(
+        agent_dir,
+        operation="startup_default_registry_skill_batch",
+        evidence_refs=("startup-default-skill-registry",),
+    ) as transaction:
+        for skill in default_skills:
+            if not skill.files:
+                continue
+            existing_paths = {
+                sf.path
+                for sf in skill.files
+                if (agent_dir / "skills" / skill.folder_name / sf.path).is_file()
+            }
+            install_result = install_active_skill_package(
+                workspace=agent_dir,
+                folder_name=skill.folder_name,
+                files=[{"path": sf.path, "content": sf.content} for sf in skill.files],
+                source=f"startup_default_registry_skill:{skill.id}",
+                overwrite=True,
+                transaction=transaction,
+            )
+            if install_result["status"] == "unchanged":
+                result_counts["unchanged"] += 1
+            elif any(path not in existing_paths for path in install_result["files"]):
+                result_counts["pushed"] += 1
+            else:
+                result_counts["updated"] += 1
+        if transaction.has_changes:
+            transaction.commit()
+    return result_counts
+
+
 async def push_default_skills_to_existing_agents():
     """Deploy all is_default skills into the workspace of every existing agent that is missing them.
 
@@ -474,7 +513,6 @@ async def push_default_skills_to_existing_agents():
     from app.models.agent import Agent
     from app.models.skill import Skill
     from app.services.agent_manager import agent_manager
-    from app.services.skill_installation import install_active_skill_package
     from sqlalchemy.orm import selectinload
 
     # Startup: pushes default skills into every agent across all tenants — the
@@ -499,34 +537,16 @@ async def push_default_skills_to_existing_agents():
 
         pushed = 0
         updated = 0
+        unchanged = 0
         for agent in agents:
             agent_dir = agent_manager._agent_dir(agent.id)
-            for skill in default_skills:
-                if not skill.files:
-                    continue
-                before = {
-                    sf.path: (agent_dir / "skills" / skill.folder_name / sf.path).read_text(encoding="utf-8")
-                    for sf in skill.files
-                    if (agent_dir / "skills" / skill.folder_name / sf.path).is_file()
-                }
-                install_active_skill_package(
-                    workspace=agent_dir,
-                    folder_name=skill.folder_name,
-                    files=[{"path": sf.path, "content": sf.content} for sf in skill.files],
-                    source=f"startup_default_registry_skill:{skill.id}",
-                    overwrite=True,
-                )
-                after_paths = [agent_dir / "skills" / skill.folder_name / sf.path for sf in skill.files]
-                if any(
-                    path.is_file() and sf.path not in before for path, sf in zip(after_paths, skill.files, strict=False)
-                ):
-                    pushed += 1
-                    logger.info(f"[SkillSeeder] Pushed '{skill.name}' to agent {agent.id}")
-                elif any(
-                    path.is_file() and path.read_text(encoding="utf-8") != before.get(sf.path, "")
-                    for path, sf in zip(after_paths, skill.files, strict=False)
-                ):
-                    updated += 1
+            install_counts = _push_default_skill_packages_to_agent(
+                agent_dir=agent_dir,
+                default_skills=default_skills,
+            )
+            pushed += install_counts["pushed"]
+            updated += install_counts["updated"]
+            unchanged += install_counts["unchanged"]
             legacy_removed = remove_legacy_flat_skill_files(agent_dir)
             if legacy_removed:
                 updated += len(legacy_removed)
@@ -537,6 +557,14 @@ async def push_default_skills_to_existing_agents():
                 )
 
         if pushed or updated:
-            logger.info(f"[SkillSeeder] Pushed {pushed} new + {updated} updated skill files to existing agents")
+            logger.info(
+                "[SkillSeeder] Default Skill startup result: {} pushed, {} updated, {} unchanged",
+                pushed,
+                updated,
+                unchanged,
+            )
         else:
-            logger.info("[SkillSeeder] All existing agents already have up-to-date default skills")
+            logger.info(
+                "[SkillSeeder] All existing agents already have up-to-date default skills ({} unchanged)",
+                unchanged,
+            )

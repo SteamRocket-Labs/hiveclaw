@@ -97,6 +97,20 @@ def test_asset_transaction_idempotency_replays_first_receipt(tmp_path: Path) -> 
     assert read_agent_asset_revision(agent_root) == 1
 
 
+def test_asset_transaction_without_staged_changes_leaves_no_journal(tmp_path: Path) -> None:
+    from app.services.agent_asset_transaction import AgentAssetTransaction, read_agent_asset_revision
+
+    agent_root = tmp_path / "agent"
+
+    with AgentAssetTransaction(agent_root, operation="read-only-check") as transaction:
+        assert transaction.has_changes is False
+        assert transaction.read_text("skills/example/SKILL.md") is None
+
+    transactions_root = agent_root / "runtime_artifacts" / "asset_transactions" / "transactions"
+    assert list(transactions_root.glob("*/journal.json")) == []
+    assert read_agent_asset_revision(agent_root) == 0
+
+
 def test_asset_transaction_rolls_back_every_target_when_replace_hits_disk_full(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

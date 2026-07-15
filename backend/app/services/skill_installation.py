@@ -100,7 +100,8 @@ def install_active_skill_package(
                 overwrite=overwrite,
                 transaction=own_transaction,
             )
-            own_transaction.commit()
+            if own_transaction.has_changes:
+                own_transaction.commit()
             return result
 
     written: list[str] = []
@@ -110,23 +111,27 @@ def install_active_skill_package(
             file_path.relative_to(skill_dir)
         except ValueError as exc:
             raise ValueError(f"Skill file escapes package boundary: {item['path']}") from exc
-        transaction.stage_text(file_path.relative_to(workspace).as_posix(), item["content"])
+        relative_path = file_path.relative_to(workspace).as_posix()
+        if transaction.read_text(relative_path) == item["content"]:
+            continue
+        transaction.stage_text(relative_path, item["content"])
         written.append(item["path"])
 
-    try:
-        record_skill_lifecycle_event(
-            workspace,
-            skill_name=safe_folder,
-            status="installed",
-            note=f"Installed active skill package from {source}; files={len(written)}",
-            transaction=transaction,
-        )
-    except Exception:
-        # Lifecycle telemetry must not break a verified explicit install.
-        pass
+    if written:
+        try:
+            record_skill_lifecycle_event(
+                workspace,
+                skill_name=safe_folder,
+                status="installed",
+                note=f"Installed active skill package from {source}; files={len(written)}",
+                transaction=transaction,
+            )
+        except Exception:
+            # Lifecycle telemetry must not break a verified explicit install.
+            pass
 
     return {
-        "status": "installed",
+        "status": "installed" if written else "unchanged",
         "folder_name": safe_folder,
         "files_written": len(written),
         "files": written,

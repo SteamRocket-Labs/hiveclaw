@@ -308,6 +308,13 @@ class AgentAssetTransaction:
             raise StaleAssetRevisionError(
                 f"expected revision {self.expected_revision}, current revision {self._base_revision}"
             )
+        return self
+
+    def _ensure_journal(self) -> None:
+        """Create durable transaction state only after the first real mutation."""
+
+        if self.is_replay or self._journal:
+            return
         self.transaction_dir.mkdir(parents=True, exist_ok=False)
         self._journal = {
             "schema_version": SCHEMA_VERSION,
@@ -324,7 +331,6 @@ class AgentAssetTransaction:
             "updated_at": _now(),
         }
         _atomic_write_json(self.journal_path, self._journal)
-        return self
 
     def __exit__(self, exc_type, exc, traceback) -> None:
         try:
@@ -343,8 +349,9 @@ class AgentAssetTransaction:
     def stage_bytes(self, relative_path: str | Path, content: bytes) -> None:
         if self.is_replay:
             return
-        if self._journal.get("status") != "staging":
+        if self._journal and self._journal.get("status") != "staging":
             raise AssetTransactionError("cannot stage after transaction preparation")
+        self._ensure_journal()
         normalized = _normalize_relative_path(relative_path)
         digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
         stage_path = self.transaction_dir / "stage" / f"{digest}.bin"
@@ -362,8 +369,9 @@ class AgentAssetTransaction:
     def stage_delete(self, relative_path: str | Path) -> None:
         if self.is_replay:
             return
-        if self._journal.get("status") != "staging":
+        if self._journal and self._journal.get("status") != "staging":
             raise AssetTransactionError("cannot stage after transaction preparation")
+        self._ensure_journal()
         normalized = _normalize_relative_path(relative_path)
         self._operations[normalized] = {"path": normalized, "action": "delete", "desired_sha256": None}
 
@@ -388,6 +396,10 @@ class AgentAssetTransaction:
     def _prepare(self) -> None:
         if self.is_replay:
             return
+        # Preserve the pre-existing explicit-commit contract for callers that
+        # intentionally commit an empty revision. Read-only contexts that do
+        # not call commit remain journal-free.
+        self._ensure_journal()
         if self._journal.get("status") in {"prepared", "applying", "committed"}:
             return
         current_revision = read_agent_asset_revision(self.agent_root)

@@ -232,7 +232,7 @@ def test_ccplus_v1_profiles_default_to_governed_safe_values():
         after_message_count=8,
         pre_hook_refs=("hook://pre_compaction/1",),
         post_hook_refs=("hook://post_compaction/1",),
-        recovery_manifest_ref="workspace/runtime_artifacts/recovery_manifest.json",
+        recovery_manifest_ref=f"recovery-manifest://{'a' * 64}/{'b' * 64}",
     )
     assert compaction.trigger == "request_preflight"
     assert compaction.recovery_manifest_ref is not None

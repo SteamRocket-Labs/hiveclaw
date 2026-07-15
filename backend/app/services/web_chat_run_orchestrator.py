@@ -260,6 +260,21 @@ async def _configure_runtime_session(state: _WebChatRunState) -> None:
     context.channel = str(state.metadata.get("channel") or context.channel or "web")
     context.metadata["tenant_id"] = str(state.agent.tenant_id) if state.agent.tenant_id else None
     context.metadata["runtime_task_id"] = state.run_uuid.hex
+    root_runtime_task_id = (
+        getattr(state.runtime_task, "root_runtime_task_id", None)
+        or state.metadata.get("root_runtime_task_id")
+        or state.run_uuid
+    )
+    root_session_id = (
+        getattr(state.runtime_task, "root_session_id", None)
+        or state.metadata.get("root_session_id")
+        or state.session_id
+    )
+    context.metadata["root_runtime_task_id"] = str(root_runtime_task_id)
+    context.metadata["root_session_id"] = str(root_session_id)
+    base_transcript_sequence = state.metadata.get("initial_user_message_t0_sequence")
+    if isinstance(base_transcript_sequence, int) and not isinstance(base_transcript_sequence, bool):
+        context.metadata["base_transcript_sequence"] = base_transcript_sequence
     budget_run_id = getattr(state.runtime_task, "budget_run_id", None) or state.metadata.get("budget_run_id")
     if budget_run_id:
         context.metadata["budget_run_id"] = str(budget_run_id)

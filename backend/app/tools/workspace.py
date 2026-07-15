@@ -16,6 +16,7 @@ from app.memory.hygiene import repair_agent_memory_hygiene
 from app.memory.md_store import ensure_t3_layout, rebuild_index
 from app.models.agent import Agent
 from app.models.task import Task
+from app.runtime.recovery_manifest_legacy_repair import quarantine_legacy_recovery_manifest
 from app.services.tenant_resolver import resolve_tenant_for_agent
 
 logger = logging.getLogger(__name__)
@@ -150,10 +151,16 @@ def _archive_legacy_memory_files(agent_dir: Path) -> list[str]:
 
 def _migrate_workspace_runtime_artifacts(agent_dir: Path) -> list[str]:
     moved: list[str] = []
+    legacy_recovery_path = agent_dir / "workspace" / "recovery_manifest.json"
+    if quarantine_legacy_recovery_manifest(
+        legacy_recovery_path,
+        agent_root=agent_dir,
+        apply=True,
+    ):
+        moved.append("workspace/recovery_manifest.json->runtime_artifacts/recovery_manifests/quarantine/")
     mappings = {
         "workspace/session_memory.md": "runtime_artifacts/session_memory.md",
         "workspace/compaction_summary.md": "runtime_artifacts/compaction_summary.md",
-        "workspace/recovery_manifest.json": "runtime_artifacts/recovery_manifest.json",
         "skills/.usage.json": "evolution/skill_usage.json",
         "state.json": "runtime_artifacts/agent_state.json",
     }

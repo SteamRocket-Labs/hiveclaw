@@ -3800,6 +3800,13 @@ async def _materialize_initial_user_turn_for_worker(
             metadata["elicitation_effective_prompt"] = effective_answer
             metadata["latest_user_prompt_overrides_history"] = True
         metadata["initial_user_message_t0_event_id"] = str(user_event.event_id)
+        event_sequence = getattr(user_event, "sequence", None)
+        if (
+            isinstance(event_sequence, int)
+            and not isinstance(event_sequence, bool)
+            and event_sequence >= 0
+        ):
+            metadata["initial_user_message_t0_sequence"] = event_sequence
     metadata["initial_user_message_t0_materialized"] = True
     metadata["initial_user_message_t0_materialized_at"] = datetime.now(timezone.utc).isoformat()
     runtime_task.metadata_json = metadata

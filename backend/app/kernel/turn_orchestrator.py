@@ -192,11 +192,26 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
         runtime_execution_mode = getattr(runtime_config, "execution_mode", None)
         if not request.invocation_scope and runtime_execution_mode:
             request.invocation_scope = runtime_execution_mode
-        if request.agent_id and request.session_context is not None:
+        from app.runtime.recovery_manifest_store import (
+            resolve_recovery_authority,
+            unavailable_recovery_result,
+        )
+
+        recovery_resolution = resolve_recovery_authority(request, runtime_config)
+        request.recovery_authority = recovery_resolution.frame
+        if recovery_resolution.frame is not None and request.session_context is not None:
             try:
-                _load_and_hydrate_recovery_manifest(request.agent_id, request.session_context)
+                request.recovery_manifest_result = _load_and_hydrate_recovery_manifest(
+                    recovery_resolution.frame,
+                    request.session_context,
+                )
             except Exception as exc:
                 logger.debug("[Kernel] early recovery manifest hydrate unavailable: %s", exc)
+                request.recovery_manifest_result = unavailable_recovery_result(type(exc).__name__)
+        else:
+            request.recovery_manifest_result = unavailable_recovery_result(
+                recovery_resolution.reason or "authority_unavailable"
+            )
 
         try:
             resolved_memory_context = await _maybe_await(
@@ -306,7 +321,11 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
         def _system_prompt_suffix_sections() -> list[str]:
             return [
                 *_protected_system_prompt_suffixes,
-                *_build_runtime_attachment_sections(request.agent_id, session_ctx),
+                *_build_runtime_attachment_sections(
+                    request.agent_id,
+                    session_ctx,
+                    request.recovery_manifest_result,
+                ),
             ]
 
         # P0.4 Observability: prompt cache hit/miss
@@ -699,12 +718,10 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                     logger.warning("[Kernel] Auto-save compaction summary failed: %s", _exc)
 
             # P1-W3-9 — RecoveryManifest persistence.
-            # build_recovery_manifest captures the structured runtime
-            # state (recent reads/writes, active skills/packs, pending
-            # work) that natural-language summaries flatten away. Written
-            # to the agent workspace so the next invocation's
-            # prompt_builder (or operator inspection) can rehydrate the
-            # exact post-compaction state.
+            # Structured state is committed through the authority-bound
+            # store. The next invocation consumes only its verified load
+            # result; omitted bytes are exposed through an immutable governed
+            # context-resource ref, never a raw workspace path.
             if request.agent_id and getattr(request, "session_context", None) is not None:
                 try:
                     _persist_recovery_manifest_checkpoint(request, delete_if_empty=True)
@@ -2482,6 +2499,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                 _restored = _build_restoration_context(
                                     request.agent_id,
                                     session_context=request.session_context,
+                                    recovery_result=request.recovery_manifest_result,
                                 )
                             except Exception as _restore_err:
                                 logger.debug("[Kernel] Post-compact restoration failed: %s", _restore_err)

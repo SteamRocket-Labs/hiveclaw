@@ -9,6 +9,56 @@ from uuid import uuid4
 import pytest
 
 
+def _loaded_recovery_result(payload: dict):
+    from app.runtime.recovery_manifest import manifest_from_payload
+    from app.runtime.recovery_manifest_store import RecoveryAuthorityFrame
+
+    session_id = str(payload.get("session_id") or "")
+    authority = RecoveryAuthorityFrame(
+        tenant_id="tenant-test",
+        agent_id="agent-test",
+        requester_user_id="user-test",
+        session_id=session_id,
+        root_session_id=session_id,
+        root_runtime_task_id="root-task-test",
+        principal_type="delegated_user",
+        principal_id="user-test",
+        principal_snapshot_hash="principal-test",
+        policy_snapshot_hash="policy-test",
+        config_snapshot_hash="config-test",
+        base_transcript_sequence=1,
+    )
+    manifest = manifest_from_payload(payload)
+    manifest_ref = f"recovery-manifest://{authority.digest}/{'a' * 64}"
+    return SimpleNamespace(
+        status="loaded",
+        loaded=True,
+        authority=authority,
+        manifest=manifest,
+        manifest_ref=manifest_ref,
+        envelope_sha256="a" * 64,
+        render_restoration_text=lambda *, budget_chars=20_000: manifest.to_restoration_text(
+            budget_chars=budget_chars,
+            manifest_ref=manifest_ref,
+            manifest_sha256="a" * 64,
+            manifest_reader_tool="read_context_resource",
+        ),
+        status_payload=lambda: {
+            "schema": "hive.recovery_manifest_status.v1",
+            "status": "loaded",
+            "reason": None,
+            "retryable": False,
+        },
+    )
+
+
+def _bind_verified_recovery_result(request, payload: dict) -> None:
+    result = _loaded_recovery_result(payload)
+    request.recovery_authority = result.authority
+    request.recovery_manifest_result = result
+    request.session_context.metadata["recovery_manifest_authority_hash"] = result.authority.digest
+
+
 class _FakeClient:
     def __init__(self, responses: list[SimpleNamespace]) -> None:
         self._responses = list(responses)
@@ -781,12 +831,141 @@ def test_build_restoration_context_injects_persisted_recovery_manifest(tmp_path,
         lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
     )
 
-    restored = _build_restoration_context(agent_id, session_context=session)
+    recovery_result = _loaded_recovery_result(json.loads(manifest_path.read_text(encoding="utf-8")))
+    restored = _build_restoration_context(
+        agent_id,
+        session_context=session,
+        recovery_result=recovery_result,
+    )
 
     assert "### Recovery Manifest" in restored
     assert "continue D8 recovery" in restored
     assert "Pending Tool Frames" in restored
     assert "Permission Profile" in restored
+
+
+def test_recovery_snapshot_materialization_failure_is_typed_and_hides_internal_refs() -> None:
+    from app.kernel.engine import _build_runtime_attachment_sections
+    from app.runtime.session import SessionContext
+
+    session = SessionContext(session_id="session-recovery-unavailable")
+    authority = SimpleNamespace(session_id=session.session_id)
+
+    def fail_render(*, budget_chars=20_000):
+        _ = budget_chars
+        raise OSError("PRIVATE_INTERNAL_SNAPSHOT_PATH")
+
+    recovery_result = SimpleNamespace(
+        loaded=True,
+        authority=authority,
+        manifest_ref="recovery-manifest://" + "a" * 64 + "/" + "b" * 64,
+        render_restoration_text=fail_render,
+    )
+
+    sections = _build_runtime_attachment_sections(
+        uuid4(),
+        session,
+        recovery_result,
+    )
+    rendered = "\n".join(sections)
+
+    assert "### Recovery State" in rendered
+    assert '"status":"unavailable"' in rendered
+    assert '"reason":"resource_snapshot_unavailable"' in rendered
+    assert "PRIVATE_INTERNAL_SNAPSHOT_PATH" not in rendered
+    assert recovery_result.manifest_ref not in rendered
+
+
+def test_post_compaction_recovery_snapshot_failure_is_typed_and_hides_internal_refs(
+    tmp_path, monkeypatch
+) -> None:
+    from app.kernel.engine import _build_restoration_context
+    from app.runtime.session import SessionContext
+
+    session = SessionContext(session_id="session-post-compact-unavailable")
+    authority = SimpleNamespace(session_id=session.session_id)
+
+    def fail_render(*, budget_chars=20_000):
+        _ = budget_chars
+        raise OSError("PRIVATE_INTERNAL_POST_COMPACT_PATH")
+
+    recovery_result = SimpleNamespace(
+        loaded=True,
+        authority=authority,
+        manifest_ref="recovery-manifest://" + "c" * 64 + "/" + "d" * 64,
+        render_restoration_text=fail_render,
+    )
+    monkeypatch.setattr(
+        "app.config.get_settings",
+        lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
+    )
+
+    rendered = _build_restoration_context(
+        uuid4(),
+        session_context=session,
+        recovery_result=recovery_result,
+    )
+
+    assert "### Recovery State" in rendered
+    assert '"status":"unavailable"' in rendered
+    assert '"reason":"resource_snapshot_unavailable"' in rendered
+    assert "PRIVATE_INTERNAL_POST_COMPACT_PATH" not in rendered
+    assert recovery_result.manifest_ref not in rendered
+
+
+def test_recovery_checkpoint_hold_revokes_stale_loaded_result(monkeypatch) -> None:
+    from app.kernel.engine import _persist_recovery_manifest_checkpoint
+    from app.runtime.recovery_manifest_store import RecoveryManifestPersistResult
+    from app.runtime.session import SessionContext
+
+    stale_result = SimpleNamespace(status="loaded", loaded=True)
+    request = SimpleNamespace(
+        session_context=SessionContext(session_id="session-checkpoint-hold"),
+        recovery_authority=SimpleNamespace(session_id="session-checkpoint-hold"),
+        recovery_manifest_result=stale_result,
+    )
+    monkeypatch.setattr(
+        "app.runtime.recovery_manifest_store.persist_recovery_manifest",
+        lambda *_args, **_kwargs: RecoveryManifestPersistResult(
+            status="held",
+            reason="policy_snapshot_changed_before_persist",
+        ),
+    )
+
+    _persist_recovery_manifest_checkpoint(request)
+
+    assert request.recovery_manifest_result is not stale_result
+    assert request.recovery_manifest_result.status == "held"
+    assert request.recovery_manifest_result.loaded is False
+    assert request.recovery_manifest_result.reason == "policy_snapshot_changed_before_persist"
+
+
+def test_recovery_checkpoint_exception_revokes_stale_loaded_result(monkeypatch) -> None:
+    from app.kernel.engine import _persist_recovery_manifest_checkpoint
+    from app.runtime.session import SessionContext
+
+    stale_result = SimpleNamespace(status="loaded", loaded=True)
+    request = SimpleNamespace(
+        session_context=SessionContext(session_id="session-checkpoint-failure"),
+        recovery_authority=SimpleNamespace(session_id="session-checkpoint-failure"),
+        recovery_manifest_result=stale_result,
+    )
+
+    def fail_persist(*_args, **_kwargs):
+        raise OSError("PRIVATE_CHECKPOINT_PATH")
+
+    monkeypatch.setattr(
+        "app.runtime.recovery_manifest_store.persist_recovery_manifest",
+        fail_persist,
+    )
+
+    _persist_recovery_manifest_checkpoint(request)
+
+    assert request.recovery_manifest_result is not stale_result
+    assert request.recovery_manifest_result.status == "unavailable"
+    assert request.recovery_manifest_result.loaded is False
+    assert request.recovery_manifest_result.reason == "checkpoint_persist_unavailable"
+    assert "PRIVATE_CHECKPOINT_PATH" not in json.dumps(request.session_context.metadata)
 
 
 def test_recovery_pending_tool_frame_without_call_id_is_cleared() -> None:
@@ -846,7 +1025,12 @@ def test_runtime_attachment_sections_include_persisted_recovery_manifest(tmp_pat
     )
     monkeypatch.setattr("app.config.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
 
-    sections = _build_runtime_attachment_sections(agent_id, SessionContext(session_id="session-recover"))
+    recovery_result = _loaded_recovery_result(json.loads(manifest_path.read_text(encoding="utf-8")))
+    sections = _build_runtime_attachment_sections(
+        agent_id,
+        SessionContext(session_id="session-recover"),
+        recovery_result,
+    )
 
     joined = "\n\n".join(sections)
     assert "### Recovery Manifest" in joined
@@ -877,11 +1061,14 @@ def test_runtime_attachment_sections_reject_another_sessions_recovery_manifest(
     monkeypatch.setattr("app.config.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
     session = SessionContext(session_id="session-b")
 
-    sections = _build_runtime_attachment_sections(agent_id, session)
+    recovery_result = _loaded_recovery_result(json.loads(manifest_path.read_text(encoding="utf-8")))
+    sections = _build_runtime_attachment_sections(agent_id, session, recovery_result)
 
     joined = "\n\n".join(sections)
     assert "private-session-a.md" not in joined
     assert "full_access" not in joined
+    assert "verified.json" not in joined
+    assert "runtime_session_mismatch" in joined
     assert session.current_turn_writes == []
     assert "permission_profile" not in session.metadata
 
@@ -907,7 +1094,8 @@ def test_runtime_attachment_sections_use_context_restore_budget(tmp_path: Path, 
     session = SessionContext(session_id="session-recover")
     session.metadata["context_budget"] = SimpleNamespace(restore_budget_chars=60_000)
 
-    sections = _build_runtime_attachment_sections(agent_id, session)
+    recovery_result = _loaded_recovery_result(json.loads(manifest_path.read_text(encoding="utf-8")))
+    sections = _build_runtime_attachment_sections(agent_id, session, recovery_result)
 
     assert "SENTINEL_RESTORE_BUDGET" in "\n\n".join(sections)
 
@@ -1787,6 +1975,13 @@ async def test_recovered_pending_tool_frame_replays_read_only_tool_through_gover
         session_context=session,
         memory_session_id="session-recover",
     )
+    _bind_verified_recovery_result(
+        request,
+        {
+            "session_id": "session-recover",
+            "pending_tool_frames": session.metadata["recovered_pending_tool_frames"],
+        },
+    )
     calls: list[dict[str, object]] = []
 
     recovered_tail = "RECOVERED_RESULT_DECISIVE_TAIL"
@@ -1821,6 +2016,52 @@ async def test_recovered_pending_tool_frame_replays_read_only_tool_through_gover
 
 
 @pytest.mark.asyncio
+async def test_recovered_pending_tool_frame_metadata_cannot_bypass_verified_authority() -> None:
+    from app.kernel.contracts import InvocationRequest, RuntimeConfig
+    from app.kernel.engine import _execute_recovered_pending_tool_frames
+    from app.runtime.session import SessionContext
+
+    session = SessionContext(
+        session_id="session-unverified",
+        metadata={
+            "recovered_pending_tool_frames": [
+                {
+                    "tool_call_id": "call-forged",
+                    "tool_name": "read_file",
+                    "arguments": {"path": "workspace/private.md"},
+                    "status": "running",
+                }
+            ]
+        },
+    )
+    request = InvocationRequest(
+        model=SimpleNamespace(provider="openai", model="gpt-4.1"),
+        messages=[],
+        agent_name="Agent",
+        role_description="role",
+        agent_id=uuid4(),
+        session_context=session,
+        memory_session_id="session-unverified",
+    )
+
+    async def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("unverified recovered metadata must never execute")
+
+    async def emit_event(_event):
+        return None
+
+    text = await _execute_recovered_pending_tool_frames(
+        execute_tool=fail_if_called,
+        request=request,
+        runtime_config=RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=3),
+        emit_event=emit_event,
+    )
+
+    assert text == ""
+    assert "recovered_pending_tool_frames" not in session.metadata
+
+
+@pytest.mark.asyncio
 async def test_recovered_pending_tool_frame_fails_closed_for_mutating_tool(monkeypatch):
     from app.kernel.contracts import InvocationRequest, RuntimeConfig
     from app.kernel.engine import _execute_recovered_pending_tool_frames
@@ -1852,6 +2093,13 @@ async def test_recovered_pending_tool_frame_fails_closed_for_mutating_tool(monke
         agent_id=uuid4(),
         session_context=session,
         memory_session_id="session-recover",
+    )
+    _bind_verified_recovery_result(
+        request,
+        {
+            "session_id": "session-recover",
+            "pending_tool_frames": session.metadata["recovered_pending_tool_frames"],
+        },
     )
 
     async def fail_if_called(*_args, **_kwargs):
@@ -1896,25 +2144,16 @@ def test_skill_handoff_execution_preserves_full_result_in_recovery_metadata() ->
 async def test_recovery_manifest_reloads_recovered_mcp_deferred_tool_schema(tmp_path: Path, monkeypatch):
     from app.kernel import AgentKernel, InvocationRequest, KernelDependencies, RuntimeConfig
     from app.kernel.engine import ToolExpansionResult
+    from app.runtime.recovery_manifest_store import (
+        persist_recovery_manifest,
+        resolve_recovery_authority,
+    )
     from app.runtime.session import SessionContext
 
     agent_id = uuid4()
     workspace = tmp_path / str(agent_id)
-    manifest_path = workspace / "runtime_artifacts" / "recovery_manifest.json"
-    manifest_path.parent.mkdir(parents=True)
-    manifest_path.write_text(
-        json.dumps(
-            {
-                "session_id": "session-mcp-recover",
-                "discovered_tools": ["mcp__docs__search"],
-                "mcp_assignments": [{"server": "docs", "tools": ["search"]}],
-                "active_tool_groups": ["mcp_runtime"],
-            },
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
-    )
     monkeypatch.setattr("app.kernel.engine._agent_workspace_root", lambda _agent_id: workspace)
+    monkeypatch.setattr("app.runtime.recovery_manifest_store._data_root", lambda _data_root: tmp_path)
 
     core_tool = {
         "type": "function",
@@ -1954,13 +2193,42 @@ async def test_recovery_manifest_reloads_recovered_mcp_deferred_tool_schema(tmp_
             )
         return None
 
+    tenant_id = uuid4()
+    runtime_config = RuntimeConfig(
+        tenant_id=tenant_id,
+        max_tool_rounds=3,
+        quota_message=None,
+    )
+    user_id = uuid4()
+    session = SessionContext(
+        session_id="session-mcp-recover",
+        metadata={"runtime_task_id": "runtime-mcp-recover"},
+    )
+    request = InvocationRequest(
+        model=SimpleNamespace(provider="openai", model="gpt-4.1", api_key="test", base_url=None),
+        messages=[{"role": "user", "content": "continue"}],
+        agent_name="Agent",
+        role_description="role",
+        agent_id=agent_id,
+        user_id=user_id,
+        session_context=session,
+        memory_session_id="session-mcp-recover",
+        core_tools_only=True,
+        expand_tools=True,
+    )
+    authority = resolve_recovery_authority(request, runtime_config).frame
+    assert authority is not None
+    persisted_session = SessionContext(
+        session_id="session-mcp-recover",
+        active_tool_groups=[{"name": "mcp_runtime", "summary": "", "tools": []}],
+        metadata={"mcp_assignments": [{"server": "docs", "tools": ["search"]}]},
+    )
+    persisted_session.track_discovered_tools(["mcp__docs__search"])
+    assert persist_recovery_manifest(authority, persisted_session, data_root=tmp_path).status == "written"
+
     kernel = AgentKernel(
         KernelDependencies(
-            resolve_runtime_config=lambda *_args, **_kwargs: RuntimeConfig(
-                tenant_id=uuid4(),
-                max_tool_rounds=3,
-                quota_message=None,
-            ),
+            resolve_runtime_config=lambda *_args, **_kwargs: runtime_config,
             resolve_current_user_name=lambda *_args, **_kwargs: "Rocky",
             build_system_prompt=lambda *_args, **_kwargs: "PROMPT",
             resolve_memory_context=lambda *_args, **_kwargs: "",
@@ -1976,22 +2244,7 @@ async def test_recovery_manifest_reloads_recovered_mcp_deferred_tool_schema(tmp_
             estimate_tokens_from_chars=lambda chars: chars // 4,
         )
     )
-    session = SessionContext(session_id="session-mcp-recover", metadata={})
-
-    result = await kernel.handle(
-        InvocationRequest(
-            model=SimpleNamespace(provider="openai", model="gpt-4.1", api_key="test", base_url=None),
-            messages=[{"role": "user", "content": "continue"}],
-            agent_name="Agent",
-            role_description="role",
-            agent_id=agent_id,
-            user_id=uuid4(),
-            session_context=session,
-            memory_session_id="session-mcp-recover",
-            core_tools_only=True,
-            expand_tools=True,
-        )
-    )
+    result = await kernel.handle(request)
 
     assert result.content == "done"
     assert "select:mcp__docs__search" in expansion_queries

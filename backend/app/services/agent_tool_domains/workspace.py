@@ -16,6 +16,7 @@ from app.services.managed_capability_guard import sanitize_managed_credential_gu
 from app.services.workspace_resource_authority import (
     WorkspaceAuthorityError,
     authorize_workspace_tool_path,
+    is_recovery_manifest_storage_path,
 )
 from app.skills import SkillRegistry, WorkspaceSkillLoader
 from app.tools.result_envelope import ToolContentEnvelope, render_tool_error
@@ -79,6 +80,8 @@ def _append_workspace_provenance_hint(
 
 
 def _authority_allows_path(authority_scope, rel_path: str, *, directory: bool = False) -> bool:
+    if is_recovery_manifest_storage_path(rel_path):
+        return False
     if authority_scope is None:
         return True
     normalized = str(rel_path or "").replace("\\", "/").strip().lstrip("/")

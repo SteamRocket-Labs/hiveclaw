@@ -15,6 +15,7 @@ from app.services.external_capabilities.skill_source_adapter import (
     stage_external_skill_package_review_for_agent_workspace,
 )
 from app.services.subprocess_env import build_agent_subprocess_env
+from app.services.workspace_resource_authority import is_recovery_manifest_storage_path
 from app.tools.result_envelope import ToolContentEnvelope
 
 logger = logging.getLogger(__name__)
@@ -90,6 +91,8 @@ def authorized_execution_workspace(canonical_workspace: Path, authority_scope):
     try:
         for allowed_path in sorted(authority_scope.allowed_paths):
             if not allowed_path.startswith("workspace/"):
+                continue
+            if is_recovery_manifest_storage_path(allowed_path):
                 continue
             rel = Path(allowed_path.removeprefix("workspace/"))
             source = (canonical_work / rel).resolve()

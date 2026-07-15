@@ -393,16 +393,20 @@ def test_killed_process_invoke_agent_persists_recoverable_tool_matrix(
     env["TOOL_STARTED_PATH"] = str(tool_started_path)
     env["PYTHONPATH"] = str(backend_root) + os.pathsep + env.get("PYTHONPATH", "")
     process = subprocess.Popen([sys.executable, str(child_script)], cwd=backend_root, env=env)
-    manifest_path = tmp_path / str(agent_id) / "runtime_artifacts" / "recovery_manifest.json"
+    manifest_root = tmp_path / str(agent_id) / "runtime_artifacts" / "recovery_manifests"
+    manifest_path: Path | None = None
     try:
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
-            if manifest_path.exists() and tool_started_path.exists():
+            manifest_candidates = [path for path in manifest_root.rglob("*.json") if "quarantine" not in path.parts]
+            if manifest_candidates:
+                manifest_path = manifest_candidates[0]
+            if manifest_path is not None and manifest_path.exists() and tool_started_path.exists():
                 break
             if process.poll() is not None:
                 raise AssertionError(
                     f"child process exited before tool crash point: rc={process.returncode}, "
-                    f"manifest_exists={manifest_path.exists()}"
+                    f"manifest_exists={manifest_path is not None and manifest_path.exists()}"
                 )
             time.sleep(0.05)
         else:
@@ -417,7 +421,18 @@ def test_killed_process_invoke_agent_persists_recoverable_tool_matrix(
     assert tool_started["args"] == tool_arguments
     assert tool_started["tool_call_id"] == tool_call_id
 
-    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest_path is not None
+    envelope = json.loads(manifest_path.read_text(encoding="utf-8"))
+    from app.runtime.recovery_manifest_store import (
+        RecoveryAuthorityFrame,
+        load_recovery_manifest,
+    )
+
+    authority = RecoveryAuthorityFrame.from_payload(envelope["body"]["authority"])
+    recovery_result = load_recovery_manifest(authority, data_root=tmp_path)
+    assert recovery_result.status == "loaded"
+    assert recovery_result.manifest is not None
+    payload = recovery_result.manifest.to_payload()
     assert payload["session_id"] == session_id
     assert payload["pending_tool_frames"][0]["tool_call_id"] == tool_call_id
     assert payload["pending_tool_frames"][0]["tool_name"] == tool_name
@@ -432,7 +447,11 @@ def test_killed_process_invoke_agent_persists_recoverable_tool_matrix(
     from app.runtime.session import SessionContext
 
     monkeypatch.setattr("app.config.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
-    restored = _build_restoration_context(agent_id, session_context=SessionContext(session_id=session_id))
+    restored = _build_restoration_context(
+        agent_id,
+        session_context=SessionContext(session_id=session_id),
+        recovery_result=recovery_result,
+    )
     assert tool_call_id in restored
     assert tool_name in restored
     assert "Pending Skill Handoffs" in restored
@@ -444,80 +463,106 @@ def test_killed_process_invoke_agent_persists_recoverable_tool_matrix(
 
 def test_persisted_recovery_manifest_restores_full_crash_matrix(tmp_path, monkeypatch) -> None:
     from app.kernel.engine import _build_restoration_context
+    from app.runtime.ccplus_contracts import permission_profile_snapshot_hash
+    from app.runtime.recovery_manifest import (
+        hydrate_session_context_from_recovery_manifest,
+        manifest_from_payload,
+    )
+    from app.runtime.recovery_manifest_store import (
+        RecoveryAuthorityFrame,
+        load_recovery_manifest,
+        persist_recovery_manifest,
+    )
     from app.runtime.session import SessionContext
 
     agent_id = uuid4()
-    manifest_path = tmp_path / str(agent_id) / "runtime_artifacts" / "recovery_manifest.json"
-    manifest_path.parent.mkdir(parents=True)
-    manifest_path.write_text(
-        json.dumps(
+    manifest_payload = {
+        "session_id": "session-crash-matrix",
+        "discovered_tools": ["firecrawl_fetch"],
+        "pending_tool_frames": [
             {
-                "session_id": "session-crash-matrix",
-                "discovered_tools": ["firecrawl_fetch"],
-                "pending_tool_frames": [
-                    {
-                        "permission_request_id": "perm-1",
-                        "tool_call_id": "call-send",
-                        "tool_name": "send_email",
-                        "runtime_task_id": "runtime-1",
-                        "turn_id": "turn-1",
-                        "round_state": {"round": 2},
-                        "t0_refs": ["t0://sessions/session-crash-matrix/events/5"],
-                    }
-                ],
-                "permission_checkpoints": [
-                    {
-                        "permission_request_id": "perm-1",
-                        "decision": "deny",
-                        "continuation_runtime_task_id": "runtime-denial-continuation",
-                    }
-                ],
-                "compaction_lifecycle_records": [
-                    {"compaction_id": "compact-1", "trigger": "mid_loop_auto", "status": "completed"}
-                ],
-                "permission_profile": {"mode": "request", "allowed_tools": ["send_email"]},
-                "mcp_assignments": [{"server": "docs", "tool": "read_mcp_resource"}],
-                "truth_evidence_refs": ["truth://provider-error/web-search"],
-                "truth_evidence": [{"evidence_id": "truth://provider-error/web-search", "provider": "searxng"}],
-                "pending_skill_handoffs": [
-                    {
-                        "skill": "Research",
-                        "skill_slug": "research",
-                        "execution_tool": "spawn_subagent",
-                        "tool_arguments": {
-                            "skill_source": "skills/research/SKILL.md",
-                            "permission_profile": {"mode": "auto", "allowed_tools": ["web_search"]},
-                        },
-                    }
-                ],
-                "executed_skill_handoffs": [
-                    {
-                        "skill": "Review",
-                        "skill_slug": "review",
-                        "tool_call_id": "call-load:skill:review",
-                        "result": '{"child_session_id": "child-review"}',
-                    }
-                ],
-                "continuation_records": [
-                    {
-                        "source": "session_permission_denied_resume",
-                        "resumed_from_permission_request_id": "perm-1",
-                        "denied_tool_name": "send_email",
-                        "resumed_runtime_task_id": "runtime-denial-continuation",
-                        "t0_refs": ["t0://sessions/session-crash-matrix/events/5"],
-                    }
-                ],
-            },
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
+                "permission_request_id": "perm-1",
+                "tool_call_id": "call-send",
+                "tool_name": "send_email",
+                "runtime_task_id": "runtime-1",
+                "turn_id": "turn-1",
+                "round_state": {"round": 2},
+                "t0_refs": ["t0://sessions/session-crash-matrix/events/5"],
+            }
+        ],
+        "permission_checkpoints": [
+            {
+                "permission_request_id": "perm-1",
+                "decision": "deny",
+                "continuation_runtime_task_id": "runtime-denial-continuation",
+            }
+        ],
+        "compaction_lifecycle_records": [
+            {"compaction_id": "compact-1", "trigger": "mid_loop_auto", "status": "completed"}
+        ],
+        "permission_profile": {"mode": "request", "allowed_tools": ["send_email"]},
+        "mcp_assignments": [{"server": "docs", "tool": "read_mcp_resource"}],
+        "truth_evidence_refs": ["truth://provider-error/web-search"],
+        "truth_evidence": [{"evidence_id": "truth://provider-error/web-search", "provider": "searxng"}],
+        "pending_skill_handoffs": [
+            {
+                "skill": "Research",
+                "skill_slug": "research",
+                "execution_tool": "spawn_subagent",
+                "tool_arguments": {
+                    "skill_source": "skills/research/SKILL.md",
+                    "permission_profile": {"mode": "auto", "allowed_tools": ["web_search"]},
+                },
+            }
+        ],
+        "executed_skill_handoffs": [
+            {
+                "skill": "Review",
+                "skill_slug": "review",
+                "tool_call_id": "call-load:skill:review",
+                "result": '{"child_session_id": "child-review"}',
+            }
+        ],
+        "continuation_records": [
+            {
+                "source": "session_permission_denied_resume",
+                "resumed_from_permission_request_id": "perm-1",
+                "denied_tool_name": "send_email",
+                "resumed_runtime_task_id": "runtime-denial-continuation",
+                "t0_refs": ["t0://sessions/session-crash-matrix/events/5"],
+            }
+        ],
+    }
+    manifest = manifest_from_payload(manifest_payload)
+    persisted_session = SessionContext(session_id="session-crash-matrix")
+    assert hydrate_session_context_from_recovery_manifest(persisted_session, manifest) is True
+    authority = RecoveryAuthorityFrame(
+        tenant_id="tenant-test",
+        agent_id=str(agent_id),
+        requester_user_id="user-test",
+        session_id="session-crash-matrix",
+        root_session_id="session-crash-matrix",
+        root_runtime_task_id="root-task-test",
+        principal_type="delegated_user",
+        principal_id="user-test",
+        principal_snapshot_hash="principal-test",
+        policy_snapshot_hash=permission_profile_snapshot_hash(manifest.permission_profile),
+        config_snapshot_hash="config-test",
+        base_transcript_sequence=None,
     )
+    assert persist_recovery_manifest(authority, persisted_session, data_root=tmp_path).status == "written"
+    recovery_result = load_recovery_manifest(authority, data_root=tmp_path)
+    assert recovery_result.status == "loaded"
     monkeypatch.setattr(
         "app.config.get_settings",
         lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)),
     )
 
-    restored = _build_restoration_context(agent_id, session_context=SessionContext(session_id="session-crash-matrix"))
+    restored = _build_restoration_context(
+        agent_id,
+        session_context=SessionContext(session_id="session-crash-matrix"),
+        recovery_result=recovery_result,
+    )
 
     assert "### Recovery Manifest" in restored
     assert "Pending Tool Frames" in restored

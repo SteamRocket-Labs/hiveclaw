@@ -1,29 +1,52 @@
-"""P1-W3-9 — RecoveryManifest is now actually persisted on compaction.
+"""P1-W3-9 — RecoveryManifest persists through the authority-bound store.
 
 The dataclass existed but only `app/evals/run.py` ever built one. This
 test pins the new path:
   - build_recovery_manifest pulls the structured state from SessionContext
-  - the in-process JSON shape matches what the kernel writes to
-    `runtime_artifacts/recovery_manifest.json` on PRE_COMPACTION
+  - the in-process JSON shape survives signed-envelope persistence and load
+    on PRE_COMPACTION
 
 Driving the kernel through a real compaction is heavy; instead we
-exercise the construction + serialization that the kernel inlines, and
-add a smoke test for the round-trip JSON write so future contributors
-who change the shape have a forcing function.
+exercise construction + serialization and the governed store round trip so
+future contributors who change the shape have a forcing function.
 """
 
 from __future__ import annotations
 
 import json
-from pathlib import Path
+
+import pytest
 
 from app.runtime.recovery_manifest import (
     build_recovery_manifest,
     hydrate_session_context_from_recovery_manifest,
+    manifest_from_payload,
+)
+from app.runtime.recovery_manifest_store import (
+    RecoveryAuthorityFrame,
     load_recovery_manifest,
     persist_recovery_manifest,
+    recovery_manifest_path,
 )
+from app.runtime.ccplus_contracts import permission_profile_snapshot_hash
 from app.runtime.session import SessionContext
+
+
+def _authority(*, agent_id: str, session_id: str) -> RecoveryAuthorityFrame:
+    return RecoveryAuthorityFrame(
+        tenant_id="tenant-test",
+        agent_id=agent_id,
+        requester_user_id="user-test",
+        session_id=session_id,
+        root_session_id=session_id,
+        root_runtime_task_id="root-task-test",
+        principal_type="delegated_user",
+        principal_id="user-test",
+        principal_snapshot_hash="principal-test",
+        policy_snapshot_hash=permission_profile_snapshot_hash(None),
+        config_snapshot_hash="config-test",
+        base_transcript_sequence=None,
+    )
 
 
 # ── Manifest carries the right runtime state ─────────────────
@@ -101,41 +124,31 @@ def test_manifest_round_trips_through_json(tmp_path) -> None:
     assert decoded["recent_tool_outcomes"][0]["tool"] == "read_file"
 
 
-def test_load_recovery_manifest_reads_runtime_artifacts(tmp_path) -> None:
-    agent_id = "agent-1"
-    manifest_path = tmp_path / agent_id / "runtime_artifacts" / "recovery_manifest.json"
-    manifest_path.parent.mkdir(parents=True)
-    manifest_path.write_text(
-        json.dumps(
-            {
-                "session_id": "session-1",
-                "recent_reads": ["workspace/report.md"],
-                "recent_writes": ["workspace/output.md"],
-                "current_turn_writes": ["workspace/output.md"],
-                "recent_tool_outcomes": [{"tool": "web_search", "summary": "found source"}],
-                "active_skills": ["research"],
-                "active_tool_groups": ["web_pack"],
-                "recent_external_refs": ["https://example.com"],
-                "pending_items": ["finish D8 recovery"],
-                "blocked_patterns": ["do not retry stale tool"],
-                "discovered_tools": ["web_search"],
-                "pending_tool_frames": [{"tool_name": "write_file", "status": "pending"}],
-                "permission_checkpoints": [{"permission_request_id": "perm-1", "decision": "allow_once"}],
-                "hook_lifecycle_records": [{"hook": "pre_tool_use", "status": "ok"}],
-                "compaction_lifecycle_records": [{"phase": "post", "status": "ok"}],
-                "permission_profile": {"mode": "default", "allowed_tools": ["write_file"]},
-                "mcp_assignments": [{"server": "docs", "tool": "search"}],
-                "truth_evidence_refs": ["truth://policy/email-confirmation"],
-                "truth_evidence": [{"evidence_id": "truth://policy/email-confirmation"}],
-            },
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
+def test_manifest_from_payload_restores_every_runtime_bucket() -> None:
+    manifest = manifest_from_payload(
+        {
+            "session_id": "session-1",
+            "recent_reads": ["workspace/report.md"],
+            "recent_writes": ["workspace/output.md"],
+            "current_turn_writes": ["workspace/output.md"],
+            "recent_tool_outcomes": [{"tool": "web_search", "summary": "found source"}],
+            "active_skills": ["research"],
+            "active_tool_groups": ["web_pack"],
+            "recent_external_refs": ["https://example.com"],
+            "pending_items": ["finish D8 recovery"],
+            "blocked_patterns": ["do not retry stale tool"],
+            "discovered_tools": ["web_search"],
+            "pending_tool_frames": [{"tool_name": "write_file", "status": "pending"}],
+            "permission_checkpoints": [{"permission_request_id": "perm-1", "decision": "allow_once"}],
+            "hook_lifecycle_records": [{"hook": "pre_tool_use", "status": "ok"}],
+            "compaction_lifecycle_records": [{"phase": "post", "status": "ok"}],
+            "permission_profile": {"mode": "default", "allowed_tools": ["write_file"]},
+            "mcp_assignments": [{"server": "docs", "tool": "search"}],
+            "truth_evidence_refs": ["truth://policy/email-confirmation"],
+            "truth_evidence": [{"evidence_id": "truth://policy/email-confirmation"}],
+        }
     )
 
-    manifest = load_recovery_manifest(agent_id, data_root=tmp_path)
-
-    assert manifest is not None
     assert manifest.session_id == "session-1"
     assert manifest.recent_reads == ["workspace/report.md"]
     assert manifest.current_turn_writes == ["workspace/output.md"]
@@ -147,38 +160,30 @@ def test_load_recovery_manifest_reads_runtime_artifacts(tmp_path) -> None:
 
 
 def test_recovery_manifest_hydrates_session_context_runtime_state(tmp_path) -> None:
-    agent_id = "agent-1"
-    manifest_path = tmp_path / agent_id / "runtime_artifacts" / "recovery_manifest.json"
-    manifest_path.parent.mkdir(parents=True)
-    manifest_path.write_text(
-        json.dumps(
-            {
-                "session_id": "session-1",
-                "recent_reads": ["workspace/report.md"],
-                "recent_writes": ["workspace/output.md"],
-                "current_turn_writes": ["workspace/output.md"],
-                "recent_tool_outcomes": [{"tool": "web_search", "summary": "found source"}],
-                "active_skills": ["research"],
-                "active_tool_groups": ["web_pack"],
-                "recent_external_refs": ["https://example.com"],
-                "pending_items": ["finish D10 hydrate"],
-                "discovered_tools": ["exa_search"],
-                "pending_tool_frames": [{"tool_name": "write_file", "tool_call_id": "call-1", "status": "running"}],
-                "permission_checkpoints": [{"permission_request_id": "perm-1", "decision": "allow_once"}],
-                "hook_lifecycle_records": [{"event": "PRE_TOOL_USE", "status": "ok"}],
-                "compaction_lifecycle_records": [{"phase": "post", "status": "ok"}],
-                "permission_profile": {"mode": "default", "allowed_tools": ["write_file"]},
-                "mcp_assignments": [{"server": "docs", "tools": ["search"]}],
-                "truth_evidence_refs": ["truth://policy/email-confirmation"],
-                "truth_evidence": [{"evidence_id": "truth://policy/email-confirmation"}],
-                "pending_skill_handoffs": [{"skill_slug": "research", "execution_tool": "spawn_subagent"}],
-                "continuation_records": [{"source": "session_permission_resume", "origin_channel": "feishu"}],
-            },
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
+    manifest = manifest_from_payload(
+        {
+            "session_id": "session-1",
+            "recent_reads": ["workspace/report.md"],
+            "recent_writes": ["workspace/output.md"],
+            "current_turn_writes": ["workspace/output.md"],
+            "recent_tool_outcomes": [{"tool": "web_search", "summary": "found source"}],
+            "active_skills": ["research"],
+            "active_tool_groups": ["web_pack"],
+            "recent_external_refs": ["https://example.com"],
+            "pending_items": ["finish D10 hydrate"],
+            "discovered_tools": ["exa_search"],
+            "pending_tool_frames": [{"tool_name": "write_file", "tool_call_id": "call-1", "status": "running"}],
+            "permission_checkpoints": [{"permission_request_id": "perm-1", "decision": "allow_once"}],
+            "hook_lifecycle_records": [{"event": "PRE_TOOL_USE", "status": "ok"}],
+            "compaction_lifecycle_records": [{"phase": "post", "status": "ok"}],
+            "permission_profile": {"mode": "default", "allowed_tools": ["write_file"]},
+            "mcp_assignments": [{"server": "docs", "tools": ["search"]}],
+            "truth_evidence_refs": ["truth://policy/email-confirmation"],
+            "truth_evidence": [{"evidence_id": "truth://policy/email-confirmation"}],
+            "pending_skill_handoffs": [{"skill_slug": "research", "execution_tool": "spawn_subagent"}],
+            "continuation_records": [{"source": "session_permission_resume", "origin_channel": "feishu"}],
+        }
     )
-    manifest = load_recovery_manifest(agent_id, data_root=tmp_path)
     session = SessionContext(session_id="session-1", metadata={"pending_tool_frames": [{"tool_call_id": "old"}]})
 
     hydrate_session_context_from_recovery_manifest(session, manifest)
@@ -229,6 +234,7 @@ def test_recovery_manifest_never_leaks_runtime_state_into_another_session() -> N
 
 def test_persist_recovery_manifest_deletes_stale_empty_checkpoint(tmp_path) -> None:
     agent_id = "agent-1"
+    authority = _authority(agent_id=agent_id, session_id="session-1")
     sc = SessionContext(
         session_id="session-1",
         metadata={
@@ -240,16 +246,18 @@ def test_persist_recovery_manifest_deletes_stale_empty_checkpoint(tmp_path) -> N
         },
     )
 
-    written = persist_recovery_manifest(agent_id, sc, data_root=tmp_path)
-    manifest_path = tmp_path / agent_id / "runtime_artifacts" / "recovery_manifest.json"
+    written = persist_recovery_manifest(authority, sc, data_root=tmp_path)
+    manifest_path = recovery_manifest_path(authority, data_root=tmp_path)
 
-    assert written == [manifest_path]
-    assert load_recovery_manifest(agent_id, data_root=tmp_path) is not None
+    assert written.status == "written"
+    assert written.paths == (manifest_path,)
+    assert load_recovery_manifest(authority, data_root=tmp_path).status == "loaded"
 
     sc.metadata.clear()
-    persist_recovery_manifest(agent_id, sc, data_root=tmp_path, delete_if_empty=True)
+    deleted = persist_recovery_manifest(authority, sc, data_root=tmp_path, delete_if_empty=True)
 
-    assert load_recovery_manifest(agent_id, data_root=tmp_path) is None
+    assert deleted.status == "deleted"
+    assert load_recovery_manifest(authority, data_root=tmp_path).status == "absent"
     assert not manifest_path.exists()
 
 
@@ -320,13 +328,14 @@ def test_manifest_to_restoration_text_includes_mcp_and_truth_sections() -> None:
     assert "Truth Evidence" in text
 
 
-def test_recovery_manifest_filename_constant_documented() -> None:
-    """Anchor the filename so the prompt-builder side and operator tools
-    target the same path. Lives next to compaction_summary.md in the
-    runtime_artifacts dir."""
-    expected = Path("runtime_artifacts") / "recovery_manifest.json"
-    assert expected.name == "recovery_manifest.json"
-    assert expected.parent.name == "runtime_artifacts"
+def test_unpersisted_renderer_never_advertises_legacy_singleton() -> None:
+    sc = SessionContext(session_id="inline-only")
+    sc.track_pending_item("preserve this inline")
+
+    text = build_recovery_manifest(sc).to_restoration_text()
+
+    assert "preserve this inline" in text
+    assert "runtime_artifacts/recovery_manifest.json" not in text
 
 
 def test_restoration_budget_omission_keeps_hash_pinned_full_manifest_pointer() -> None:
@@ -339,12 +348,27 @@ def test_restoration_budget_omission_keeps_hash_pinned_full_manifest_pointer() -
 
     manifest = build_recovery_manifest(sc)
     canonical = json.dumps(manifest.to_payload(), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    text = manifest.to_restoration_text(budget_chars=700)
+    manifest_ref = f"recovery-manifest://{'a' * 64}/{'b' * 64}"
+    text = manifest.to_restoration_text(
+        budget_chars=700,
+        manifest_ref=manifest_ref,
+        manifest_reader_tool="read_context_resource",
+    )
 
-    assert "runtime_artifacts/recovery_manifest.json" in text
+    assert manifest_ref in text
+    assert '"reader_tool":"read_context_resource"' in text
     assert hashlib.sha256(canonical.encode("utf-8")).hexdigest() in text
     assert "omitted_fields" in text
     assert len(text) <= 700
+
+
+def test_restoration_budget_refuses_lossy_omission_without_persisted_reference() -> None:
+    sc = SessionContext(session_id="large-unpersisted")
+    for index in range(40):
+        sc.track_pending_item(f"pending-work-{index}-" + ("x" * 100))
+
+    with pytest.raises(ValueError, match="manifest_ref"):
+        build_recovery_manifest(sc).to_restoration_text(budget_chars=700)
 
 
 def test_session_recovery_tracking_never_discards_older_items_or_semantic_tails() -> None:

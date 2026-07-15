@@ -39,6 +39,18 @@ def _is_workspace_path(path: str) -> bool:
     return path == "workspace" or path.startswith("workspace/")
 
 
+def is_recovery_manifest_storage_path(path: str) -> bool:
+    normalized = str(path or "").replace("\\", "/").strip().strip("/")
+    return (
+        normalized in {
+            "runtime_artifacts/recovery_manifest.json",
+            "workspace/recovery_manifest.json",
+            "runtime_artifacts/recovery_manifests",
+        }
+        or normalized.startswith("runtime_artifacts/recovery_manifests/")
+    )
+
+
 @dataclass(frozen=True)
 class WorkspaceAuthorityScope:
     agent_id: uuid.UUID
@@ -50,6 +62,8 @@ class WorkspaceAuthorityScope:
     known_paths: frozenset[str] = frozenset()
 
     def can_read(self, path: str) -> bool:
+        if is_recovery_manifest_storage_path(path):
+            return False
         if self.operator_view:
             return True
         normalized = normalize_workspace_resource_path(path)
@@ -62,6 +76,10 @@ class WorkspaceAuthorityScope:
         )
 
     def visible_child(self, parent: str, child_name: str, *, is_dir: bool) -> bool:
+        raw_parent = str(parent or "").replace("\\", "/").strip().strip("/")
+        raw_child = f"{raw_parent}/{child_name}" if raw_parent else child_name
+        if is_recovery_manifest_storage_path(raw_child):
+            return False
         if self.operator_view:
             return True
         parent_path = normalize_workspace_resource_path(parent)
@@ -109,6 +127,11 @@ def authorize_workspace_tool_path(
             "workspace_resource_path_escape",
             "The requested path is outside the Agent workspace.",
         ) from exc
+    if is_recovery_manifest_storage_path(requested_path):
+        raise WorkspaceAuthorityError(
+            "recovery_manifest_raw_access_forbidden",
+            "Recovery Manifest storage is available only through its authority-bound context resource ref.",
+        )
     target = (root / requested_path).resolve()
     try:
         normalized = target.relative_to(root).as_posix()

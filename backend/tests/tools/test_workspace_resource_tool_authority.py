@@ -44,6 +44,63 @@ def test_workspace_read_tools_hide_foreign_session_files(tmp_path):
     assert "foreign/private.md" not in grepped
 
 
+def test_workspace_tools_never_expose_raw_recovery_manifest_storage(tmp_path):
+    from app.services.agent_tool_domains.workspace import _glob_search, _grep_search, _list_files, _read_file
+
+    workspace = tmp_path / "agent"
+    manifest = (
+        workspace
+        / "runtime_artifacts"
+        / "recovery_manifests"
+        / "session-hash"
+        / "authority-hash.json"
+    )
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text('{"pending_items":["PRIVATE_RECOVERY_SENTINEL"]}', encoding="utf-8")
+    runtime_legacy = workspace / "runtime_artifacts" / "recovery_manifest.json"
+    workspace_legacy = workspace / "workspace" / "recovery_manifest.json"
+    runtime_legacy.write_text('{"pending_items":["RUNTIME_LEGACY_SENTINEL"]}', encoding="utf-8")
+    workspace_legacy.parent.mkdir(parents=True)
+    workspace_legacy.write_text('{"pending_items":["WORKSPACE_LEGACY_SENTINEL"]}', encoding="utf-8")
+    scope = _scope()
+
+    listing = _list_files(workspace, "runtime_artifacts", authority_scope=scope)
+    workspace_listing = _list_files(workspace, "workspace", authority_scope=scope)
+    direct = str(
+        _read_file(
+            workspace,
+            "runtime_artifacts/recovery_manifests/session-hash/authority-hash.json",
+            authority_scope=scope,
+        )
+    )
+    globbed = _glob_search(workspace, "**/*.json", "", authority_scope=scope)
+    grepped = _grep_search(workspace, "PRIVATE_RECOVERY_SENTINEL", "", authority_scope=scope)
+
+    assert "recovery_manifests" not in listing
+    assert "recovery_manifest.json" not in listing
+    assert "recovery_manifest.json" not in workspace_listing
+    assert "auth_or_permission" in direct
+    assert "PRIVATE_RECOVERY_SENTINEL" not in direct
+    assert "authority-hash.json" not in globbed
+    assert "authority-hash.json" not in grepped
+    assert "No matches" in grepped
+
+
+def test_workspace_authority_never_delivers_legacy_recovery_manifest(tmp_path):
+    from app.services.workspace_resource_authority import WorkspaceAuthorityError, authorize_workspace_tool_path
+
+    with pytest.raises(WorkspaceAuthorityError) as exc:
+        authorize_workspace_tool_path(
+            tmp_path,
+            _scope(),
+            "workspace/recovery_manifest.json",
+            action="deliver",
+            require_user_workspace=True,
+        )
+
+    assert exc.value.code == "recovery_manifest_raw_access_forbidden"
+
+
 def test_workspace_write_rejects_foreign_manifest_even_when_file_is_absent(tmp_path):
     from app.services.agent_tool_domains.workspace import _write_file
     from app.services.workspace_resource_authority import (

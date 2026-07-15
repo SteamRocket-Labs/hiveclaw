@@ -104,6 +104,11 @@ class InvocationRequest:
     eviction_dir: Path | None = None
     invocation_scope: str | None = None
     delegation_token: Any | None = None
+    # Internal recovery boundary state. These values are resolved from
+    # authenticated runtime facts after RuntimeConfig is available and are
+    # consumed by every recovery reader/writer in the turn.
+    recovery_authority: Any | None = None
+    recovery_manifest_result: Any | None = None
 
 
 @dataclass(slots=True)

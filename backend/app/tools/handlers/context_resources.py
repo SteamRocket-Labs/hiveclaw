@@ -12,6 +12,7 @@ from app.tools.runtime import ToolExecutionRequest
 
 _ALLOWED_ARGUMENTS = frozenset({"ref", "offset", "limit", "expected_sha256"})
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_RECOVERY_RESOURCE_REF_RE = re.compile(r"^recovery-manifest://[0-9a-f]{64}/[0-9a-f]{64}$")
 _DEFAULT_PAGE_CHARS = 6000
 _MIN_PAGE_CHARS = 256
 _MAX_PAGE_CHARS = 12000
@@ -38,7 +39,8 @@ def _invalid(reason: str, **extra: Any) -> str:
         description=(
             "Read a hash-pinned page of this Agent's runtime context when the resident prompt says content was "
             "omitted. This is a governed continuation channel for soul, company information, organization "
-            "structure, configured channels, and A2A collaborators. The Agent and tenant are always taken from "
+            "structure, configured channels, A2A collaborators, and an authority-bound Recovery Manifest ref "
+            "named by the current runtime prompt. The Agent, tenant, requester, session, and root task are taken from "
             "the trusted tool execution context; callers cannot select another principal.\n\n"
             "Start with ref='index' when the truncation notice does not identify one source. Continue with the "
             "returned next_offset and expected_sha256. If status is stale_resource, restart at offset 0 using "
@@ -49,8 +51,16 @@ def _invalid(reason: str, **extra: Any) -> str:
             "type": "object",
             "properties": {
                 "ref": {
-                    "type": "string",
-                    "enum": list(AGENT_CONTEXT_RESOURCE_REFS),
+                    "anyOf": [
+                        {
+                            "type": "string",
+                            "enum": list(AGENT_CONTEXT_RESOURCE_REFS),
+                        },
+                        {
+                            "type": "string",
+                            "pattern": "^recovery-manifest://[0-9a-f]{64}/[0-9a-f]{64}$",
+                        },
+                    ],
                     "description": "Agent-bound runtime context resource to read.",
                 },
                 "offset": {
@@ -89,7 +99,8 @@ async def read_context_resource(request: ToolExecutionRequest) -> str:
         return _invalid("caller-selected principals or unknown fields are forbidden", unknown_fields=unknown_fields)
 
     ref = arguments.get("ref")
-    if ref not in AGENT_CONTEXT_RESOURCE_REFS:
+    recovery_resource = isinstance(ref, str) and _RECOVERY_RESOURCE_REF_RE.fullmatch(ref) is not None
+    if ref not in AGENT_CONTEXT_RESOURCE_REFS and not recovery_resource:
         return _invalid("unsupported context resource", allowed_refs=list(AGENT_CONTEXT_RESOURCE_REFS))
 
     offset = arguments.get("offset", 0)
@@ -111,6 +122,51 @@ async def read_context_resource(request: ToolExecutionRequest) -> str:
                 "schema": "hive.agent_context_resource_page.v1",
                 "status": "authority_denied",
                 "reason": "trusted tenant context is required",
+            }
+        )
+
+    if recovery_resource:
+        from app.runtime.recovery_manifest_store import read_recovery_manifest_resource
+
+        resource = read_recovery_manifest_resource(ref, context=request.context)
+        if resource.status != "ok" or resource.content is None or resource.sha256 is None:
+            return _json(
+                {
+                    "schema": "hive.agent_context_resource_page.v1",
+                    "status": resource.status,
+                    "reason": resource.reason,
+                    "retryable": resource.status == "not_found",
+                }
+            )
+        actual_sha256 = resource.sha256
+        if expected_sha256 is not None and expected_sha256 != actual_sha256:
+            return _json(
+                {
+                    "schema": "hive.agent_context_resource_page.v1",
+                    "status": "stale_resource",
+                    "ref": ref,
+                    "source_ref": ref,
+                    "expected_sha256": expected_sha256,
+                    "actual_sha256": actual_sha256,
+                    "restart_offset": 0,
+                    "total_chars": len(resource.content),
+                }
+            )
+        content = resource.content[offset : offset + limit]
+        next_offset = min(offset + len(content), len(resource.content))
+        return _json(
+            {
+                "schema": "hive.agent_context_resource_page.v1",
+                "status": "ok",
+                "ref": ref,
+                "context_ref": ref,
+                "source_ref": ref,
+                "sha256": actual_sha256,
+                "offset": offset,
+                "next_offset": next_offset,
+                "complete": next_offset >= len(resource.content),
+                "total_chars": len(resource.content),
+                "content": content,
             }
         )
 

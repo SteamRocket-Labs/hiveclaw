@@ -17,8 +17,8 @@ from typing import Any
 from app.services.session_memory import load_session_memory
 
 logger = logging.getLogger(__name__)
-RECOVERY_MANIFEST_REL_PATH = Path("runtime_artifacts") / "recovery_manifest.json"
-LEGACY_RECOVERY_MANIFEST_REL_PATH = Path("workspace") / "recovery_manifest.json"
+LEGACY_RUNTIME_RECOVERY_MANIFEST_REL_PATH = Path("runtime_artifacts") / "recovery_manifest.json"
+LEGACY_WORKSPACE_RECOVERY_MANIFEST_REL_PATH = Path("workspace") / "recovery_manifest.json"
 
 
 @dataclass(slots=True)
@@ -117,7 +117,16 @@ class RecoveryManifest:
             "continuation_records": self.continuation_records,
         }
 
-    def to_restoration_text(self, *, budget_chars: int = 20000) -> str:
+    def to_restoration_text(
+        self,
+        *,
+        budget_chars: int = 20000,
+        manifest_ref: str | None = None,
+        manifest_sha256: str | None = None,
+        manifest_chars: int | None = None,
+        manifest_bytes: int | None = None,
+        manifest_reader_tool: str | None = None,
+    ) -> str:
         """Render recoverable prompt state plus a hash-pinned full-manifest pointer.
 
         Prompt space is a real resource boundary, but it must never become a
@@ -134,7 +143,16 @@ class RecoveryManifest:
             sort_keys=True,
             separators=(",", ":"),
         )
-        manifest_sha256 = hashlib.sha256(canonical_payload.encode("utf-8")).hexdigest()
+        resolved_manifest_ref = str(manifest_ref or "").strip() or None
+        resolved_manifest_sha256 = manifest_sha256 or hashlib.sha256(canonical_payload.encode("utf-8")).hexdigest()
+        resolved_manifest_chars = (
+            manifest_chars if isinstance(manifest_chars, int) and manifest_chars >= 0 else len(canonical_payload)
+        )
+        resolved_manifest_bytes = (
+            manifest_bytes
+            if isinstance(manifest_bytes, int) and manifest_bytes >= 0
+            else len(canonical_payload.encode("utf-8"))
+        )
 
         field_blocks: list[tuple[str, str]] = []
 
@@ -195,13 +213,18 @@ class RecoveryManifest:
 
         def _pointer(omitted_fields: list[str]) -> str:
             metadata = {
-                "manifest_ref": RECOVERY_MANIFEST_REL_PATH.as_posix(),
-                "manifest_sha256": manifest_sha256,
-                "manifest_chars": len(canonical_payload),
+                "manifest_sha256": resolved_manifest_sha256,
+                "manifest_chars": resolved_manifest_chars,
+                "manifest_bytes": resolved_manifest_bytes,
                 "omitted_fields": omitted_fields,
                 "session_id": self.session_id,
             }
-            return "### Full Recovery Manifest Pointer\n" + json.dumps(
+            if resolved_manifest_ref is not None:
+                metadata["manifest_ref"] = resolved_manifest_ref
+            if manifest_reader_tool:
+                metadata["reader_tool"] = manifest_reader_tool
+            title = "Full Recovery Manifest Pointer" if resolved_manifest_ref else "Recovery Manifest Integrity"
+            return f"### {title}\n" + json.dumps(
                 metadata,
                 ensure_ascii=False,
                 sort_keys=True,
@@ -219,18 +242,26 @@ class RecoveryManifest:
 
         selected_names = {name for name, _ in selected}
         omitted_fields = [name for name, _ in field_blocks if name not in selected_names]
+        if omitted_fields and resolved_manifest_ref is None:
+            raise ValueError("persisted manifest_ref is required when restoration text omits populated fields")
         rendered = "\n\n".join([*(text for _, text in selected), _pointer(omitted_fields)])
         if len(rendered) <= budget_chars:
             return rendered
 
+        if resolved_manifest_ref is None:
+            raise ValueError("persisted manifest_ref is required when restoration text exceeds its budget")
+        compact_metadata: dict[str, Any] = {
+            "manifest_ref": resolved_manifest_ref,
+            "manifest_sha256": resolved_manifest_sha256,
+            "manifest_chars": resolved_manifest_chars,
+            "manifest_bytes": resolved_manifest_bytes,
+            "omitted_fields": "all populated prompt sections; inspect the hash-pinned manifest",
+            "omitted_field_count": len(field_blocks),
+        }
+        if manifest_reader_tool:
+            compact_metadata["reader_tool"] = manifest_reader_tool
         compact_pointer = "### Full Recovery Manifest Pointer\n" + json.dumps(
-            {
-                "manifest_ref": RECOVERY_MANIFEST_REL_PATH.as_posix(),
-                "manifest_sha256": manifest_sha256,
-                "manifest_chars": len(canonical_payload),
-                "omitted_fields": "all populated prompt sections; inspect the hash-pinned manifest",
-                "omitted_field_count": len(field_blocks),
-            },
+            compact_metadata,
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),
@@ -315,15 +346,7 @@ def _continuation_records_from_metadata(metadata: dict[str, Any]) -> list[dict[s
     return records
 
 
-def recovery_manifest_path(agent_id: Any, *, data_root: str | Path | None = None) -> Path:
-    if data_root is None:
-        from app.config import get_settings
-
-        data_root = get_settings().AGENT_DATA_DIR
-    return Path(data_root) / str(agent_id) / RECOVERY_MANIFEST_REL_PATH
-
-
-def _manifest_from_payload(payload: dict[str, Any]) -> RecoveryManifest:
+def manifest_from_payload(payload: dict[str, Any]) -> RecoveryManifest:
     return RecoveryManifest(
         session_id=str(payload.get("session_id")) if payload.get("session_id") else None,
         recent_reads=_string_list(payload.get("recent_reads")),
@@ -349,29 +372,6 @@ def _manifest_from_payload(payload: dict[str, Any]) -> RecoveryManifest:
         executed_skill_handoffs=_dict_list(payload.get("executed_skill_handoffs")),
         continuation_records=_dict_list(payload.get("continuation_records")),
     )
-
-
-def load_recovery_manifest(
-    agent_id: Any,
-    *,
-    data_root: str | Path | None = None,
-) -> RecoveryManifest | None:
-    """Load the persisted RecoveryManifest from the production runtime artifact path."""
-    path = recovery_manifest_path(agent_id, data_root=data_root)
-    candidates = [path, path.parent.parent / LEGACY_RECOVERY_MANIFEST_REL_PATH]
-    for candidate in candidates:
-        if not candidate.exists():
-            continue
-        try:
-            payload = json.loads(candidate.read_text(encoding="utf-8"))
-        except Exception as exc:
-            logger.warning("Failed to load recovery manifest from %s: %s", candidate, exc)
-            return None
-        if not isinstance(payload, dict):
-            logger.warning("Recovery manifest at %s is not a JSON object", candidate)
-            return None
-        return _manifest_from_payload(payload)
-    return None
 
 
 def _append_unique_strings(target: list[str], values: list[str], *, limit: int | None = None) -> None:
@@ -443,17 +443,15 @@ def _mcp_server_refs_from_assignments(assignments: list[dict[str, Any]]) -> list
 def recovery_manifest_matches_session(session_context: Any, manifest: RecoveryManifest | None) -> bool:
     """Return whether session-scoped recovery state belongs to this session.
 
-    Legacy manifests without a ``session_id`` retain their compatibility path.
-    Once a manifest declares an owner session, an absent or different runtime
-    session must not consume its writes, tool frames, permissions, or prompt
-    restoration text.
+    A manifest without a ``session_id`` cannot prove authority and therefore
+    must never hydrate writes, tool frames, permissions, or prompt state.
     """
 
     if manifest is None:
         return False
     manifest_session_id = str(manifest.session_id or "").strip()
     if not manifest_session_id:
-        return True
+        return False
     runtime_session_id = str(getattr(session_context, "session_id", None) or "").strip()
     return bool(runtime_session_id and runtime_session_id == manifest_session_id)
 
@@ -623,58 +621,3 @@ def merge_session_memory_into_manifest(
             {"tool": "session_memory:last_successful_step", "summary": payload.last_successful_step}
         )
     return manifest
-
-
-def persist_recovery_manifest(
-    agent_id: Any,
-    session_context: Any,
-    *,
-    data_root: str | Path | None = None,
-    delete_if_empty: bool = False,
-) -> list[Path]:
-    """Persist the current recovery manifest to the canonical runtime artifact path.
-
-    This is intentionally shared by compaction and tool-lifecycle checkpoints:
-    a process may die before compaction, so killed-process recovery cannot rely
-    on the compaction path alone.
-    """
-
-    if agent_id is None or session_context is None:
-        return []
-
-    if data_root is None:
-        from app.config import get_settings
-
-        roots = [
-            Path(get_settings().AGENT_DATA_DIR) / str(agent_id),
-            Path("/tmp/hive_workspaces") / str(agent_id),
-        ]
-
-        def should_write_root(root: Path) -> bool:
-            return root.exists() or root == roots[0]
-
-    else:
-        roots = [Path(data_root) / str(agent_id)]
-
-        def should_write_root(_root: Path) -> bool:
-            return True
-
-    manifest = build_recovery_manifest(session_context)
-    manifest = merge_session_memory_into_manifest(manifest, agent_id=agent_id, data_root=data_root)
-    written: list[Path] = []
-    payload = manifest.to_payload()
-    for root in roots:
-        if not should_write_root(root):
-            continue
-        path = root / RECOVERY_MANIFEST_REL_PATH
-        legacy_path = root / LEGACY_RECOVERY_MANIFEST_REL_PATH
-        if manifest.is_empty():
-            if delete_if_empty:
-                path.unlink(missing_ok=True)
-                legacy_path.unlink(missing_ok=True)
-            continue
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        legacy_path.unlink(missing_ok=True)
-        written.append(path)
-    return written

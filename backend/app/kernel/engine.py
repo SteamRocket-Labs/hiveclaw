@@ -388,40 +388,102 @@ def _file_snapshot_changed(before: dict[str, Any], current: dict[str, Any]) -> b
     return False
 
 
-def _load_and_hydrate_recovery_manifest(agent_id: Any, session_context: Any | None):
-    if agent_id is None or session_context is None:
-        return None
-    from app.runtime.recovery_manifest import (
-        hydrate_session_context_from_recovery_manifest,
+def _load_and_hydrate_recovery_manifest(authority: Any, session_context: Any | None):
+    from app.runtime.recovery_manifest_store import (
         load_recovery_manifest,
-        recovery_manifest_matches_session,
+        unavailable_recovery_result,
     )
 
-    workspace = _agent_workspace_root(agent_id)
-    manifest = load_recovery_manifest(agent_id, data_root=workspace.parent)
-    if manifest is not None and not recovery_manifest_matches_session(session_context, manifest):
+    if authority is None:
+        return unavailable_recovery_result("authority_unavailable")
+    if session_context is None:
+        return unavailable_recovery_result("session_context_unavailable")
+    result = load_recovery_manifest(authority)
+    result.hydrate(session_context)
+    metadata = getattr(session_context, "metadata", None)
+    if isinstance(metadata, dict):
+        metadata["recovery_manifest_load"] = result.status_payload() or {
+            "schema": "hive.recovery_manifest_status.v1",
+            "status": "absent",
+            "reason": result.reason,
+        }
+    return result
+
+
+def _recovery_result_matches_session(recovery_result: Any, session_context: Any | None) -> bool:
+    if recovery_result is None or not getattr(recovery_result, "loaded", False):
+        return False
+    authority = getattr(recovery_result, "authority", None)
+    authority_session_id = str(getattr(authority, "session_id", None) or "").strip()
+    runtime_session_id = str(getattr(session_context, "session_id", None) or "").strip()
+    return bool(authority_session_id and runtime_session_id and authority_session_id == runtime_session_id)
+
+
+def _recovery_status_payload_for_session(
+    recovery_result: Any,
+    session_context: Any | None,
+) -> dict[str, Any] | None:
+    if recovery_result is None:
         return None
-    if manifest is not None:
-        hydrate_session_context_from_recovery_manifest(session_context, manifest)
-    return manifest
+    if getattr(recovery_result, "loaded", False) and not _recovery_result_matches_session(
+        recovery_result,
+        session_context,
+    ):
+        return {
+            "schema": "hive.recovery_manifest_status.v1",
+            "status": "held",
+            "reason": "runtime_session_mismatch",
+            "retryable": False,
+        }
+    return recovery_result.status_payload()
 
 
-def _build_runtime_attachment_sections(agent_id: Any, session_context: Any | None) -> list[str]:
+def _unavailable_recovery_status_payload(reason: str) -> dict[str, Any]:
+    from app.runtime.recovery_manifest_store import unavailable_recovery_result
+
+    return unavailable_recovery_result(reason).status_payload() or {
+        "schema": "hive.recovery_manifest_status.v1",
+        "status": "unavailable",
+        "reason": reason,
+        "retryable": True,
+    }
+
+
+def _build_runtime_attachment_sections(
+    agent_id: Any,
+    session_context: Any | None,
+    recovery_result: Any | None = None,
+) -> list[str]:
     if session_context is None:
         return []
 
     sections: list[str] = []
     try:
-        manifest = _load_and_hydrate_recovery_manifest(agent_id, session_context)
-        if manifest is not None:
+        if _recovery_result_matches_session(recovery_result, session_context):
             metadata = getattr(session_context, "metadata", {}) or {}
             budget_profile = metadata.get("context_budget") if isinstance(metadata, dict) else None
             restore_budget = getattr(budget_profile, "restore_budget_chars", 20000)
-            manifest_text = manifest.to_restoration_text(budget_chars=restore_budget)
+            manifest_text = recovery_result.render_restoration_text(budget_chars=restore_budget)
             if manifest_text:
                 sections.append(f"### Recovery Manifest\n{manifest_text}")
+        elif recovery_result is not None:
+            status_payload = _recovery_status_payload_for_session(recovery_result, session_context)
+            if status_payload is not None:
+                sections.append(
+                    "### Recovery State\n"
+                    + json.dumps(status_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+                )
     except Exception as exc:
         logger.debug("[Kernel] runtime recovery manifest attachment unavailable: %s", exc)
+        sections.append(
+            "### Recovery State\n"
+            + json.dumps(
+                _unavailable_recovery_status_payload("resource_snapshot_unavailable"),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        )
 
     discovered_tools = [
         str(name).strip() for name in getattr(session_context, "discovered_tools", []) if str(name).strip()
@@ -1476,18 +1538,65 @@ def _persist_recovery_manifest_checkpoint(
     *,
     delete_if_empty: bool = False,
 ) -> None:
-    if not request.agent_id or request.session_context is None:
+    if request.session_context is None:
+        return
+    metadata = request.session_context.metadata if isinstance(request.session_context.metadata, dict) else None
+    authority = request.recovery_authority
+    if authority is None:
+        from app.runtime.recovery_manifest_store import unavailable_recovery_result
+
+        request.recovery_manifest_result = unavailable_recovery_result("authority_unavailable")
+        if metadata is not None:
+            metadata["recovery_manifest_persist"] = {
+                "schema": "hive.recovery_manifest_persist_status.v1",
+                "status": "held",
+                "reason": "authority_unavailable",
+            }
         return
     try:
-        from app.runtime.recovery_manifest import persist_recovery_manifest
+        from app.runtime.recovery_manifest_store import (
+            RecoveryManifestLoadResult,
+            load_recovery_manifest,
+            persist_recovery_manifest,
+            unavailable_recovery_result,
+        )
 
-        persist_recovery_manifest(
-            request.agent_id,
+        result = persist_recovery_manifest(
+            authority,
             request.session_context,
             delete_if_empty=delete_if_empty,
         )
+        if result.status in {"written", "deleted"}:
+            request.recovery_manifest_result = load_recovery_manifest(authority)
+        else:
+            # A checkpoint that did not commit under the current authority
+            # invalidates the turn-start recovery snapshot. Keeping that old
+            # loaded result would let post-compaction consume stale policy or
+            # transcript state after the authoritative persist gate held.
+            request.recovery_manifest_result = RecoveryManifestLoadResult(
+                status="absent" if result.status == "skipped" else result.status,
+                reason=result.reason,
+                authority=authority,
+            )
+        if metadata is not None:
+            metadata["recovery_manifest_persist"] = {
+                "schema": "hive.recovery_manifest_persist_status.v1",
+                "status": result.status,
+                "reason": result.reason,
+            }
     except Exception as exc:  # noqa: BLE001 - recovery snapshots must not break tool execution
+        from app.runtime.recovery_manifest_store import unavailable_recovery_result
+
         logger.warning("[Kernel] Recovery manifest checkpoint failed (non-fatal): %s", exc)
+        request.recovery_manifest_result = unavailable_recovery_result(
+            "checkpoint_persist_unavailable"
+        )
+        if metadata is not None:
+            metadata["recovery_manifest_persist"] = {
+                "schema": "hive.recovery_manifest_persist_status.v1",
+                "status": "unavailable",
+                "reason": "checkpoint_persist_unavailable",
+            }
 
 
 def _merge_trace_metadata_sink(span_metadata: dict[str, Any], trace_metadata_sink: dict[str, Any]) -> None:
@@ -2348,8 +2457,6 @@ def _recovered_pending_tool_frames(session_context: Any | None) -> list[dict[str
     if not isinstance(metadata, dict):
         return []
     raw = metadata.get("recovered_pending_tool_frames")
-    if raw is None:
-        raw = metadata.get("pending_tool_frames")
     if isinstance(raw, dict):
         raw = [raw]
     if not isinstance(raw, list):
@@ -2424,6 +2531,17 @@ async def _execute_recovered_pending_tool_frames(
     session = request.session_context
     metadata = getattr(session, "metadata", None) if session is not None else None
     if not isinstance(metadata, dict):
+        return ""
+    recovery_result = request.recovery_manifest_result
+    recovery_authority = getattr(recovery_result, "authority", None)
+    verified_authority_hash = getattr(recovery_authority, "digest", None)
+    if (
+        recovery_result is None
+        or not getattr(recovery_result, "loaded", False)
+        or not verified_authority_hash
+        or metadata.get("recovery_manifest_authority_hash") != verified_authority_hash
+    ):
+        metadata.pop("recovered_pending_tool_frames", None)
         return ""
     frames = _recovered_pending_tool_frames(session)
     if not frames:
@@ -2955,6 +3073,7 @@ def _recoverable_context_file(
 def _build_restoration_context(
     agent_id: Any,
     session_context: Any | None = None,
+    recovery_result: Any | None = None,
 ) -> str:
     """Build critical context to re-inject after mid-loop compaction.
 
@@ -2991,20 +3110,40 @@ def _build_restoration_context(
     # compaction. It must be consumed before free-form summaries so pending
     # tool frames, permission checkpoints, and hook lifecycle records survive
     # restart/fork/compact boundaries.
-    if _resolved_ws:
+    if recovery_result is not None:
         try:
-            from app.runtime.recovery_manifest import load_recovery_manifest
-
-            _manifest = load_recovery_manifest(agent_id, data_root=_resolved_ws.parent)
-            if _manifest is not None and not _manifest.is_empty():
-                _manifest_text = _manifest.to_restoration_text(budget_chars=max(_restore_budget - total, 0)).strip()
+            if _recovery_result_matches_session(recovery_result, session_context):
+                _manifest_text = recovery_result.render_restoration_text(
+                    budget_chars=max(_restore_budget - total, 0)
+                ).strip()
                 if _manifest_text:
                     _manifest_block = f"### Recovery Manifest\n{_manifest_text}"
                     if total + len(_manifest_block) <= _restore_budget:
                         parts.append(_manifest_block)
                         total += len(_manifest_block)
+            else:
+                _status_payload = _recovery_status_payload_for_session(recovery_result, session_context)
+                if _status_payload is not None:
+                    _status_block = "### Recovery State\n" + json.dumps(
+                        _status_payload,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                    if total + len(_status_block) <= _restore_budget:
+                        parts.append(_status_block)
+                        total += len(_status_block)
         except Exception as exc:
             logger.warning("[Kernel] post-compaction recovery_manifest restore failed: %s", exc)
+            _status_block = "### Recovery State\n" + json.dumps(
+                _unavailable_recovery_status_payload("resource_snapshot_unavailable"),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            if total + len(_status_block) <= _restore_budget:
+                parts.append(_status_block)
+                total += len(_status_block)
 
     # ── 1: Soul (durable identity) ──
     if _resolved_ws:

@@ -226,6 +226,13 @@ def _raise_raw_system_read_guard(path: str, *, access_level: str) -> None:
     """Agent use permits execution, not browsing internal Agent state."""
 
     normalized = _normalized_rel_path(path)
+    from app.services.workspace_resource_authority import is_recovery_manifest_storage_path
+
+    if is_recovery_manifest_storage_path(normalized):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Recovery Manifest storage is available only through its governed context resource.",
+        )
     if not normalized:
         return
     top_level = normalized.split("/", 1)[0]

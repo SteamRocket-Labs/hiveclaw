@@ -283,9 +283,13 @@ async def login(data: UserLogin, db: AsyncSession = Depends(get_db)):
             action="login",
             details={"username": identifier},
         )
-    except Exception:
-        logger.warning("Audit write failed for auth.login", exc_info=True)
+    except Exception as exc:
+        logger.error("Audit write failed for auth.login; authentication denied", exc_info=True)
         await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Security audit unavailable; authentication was not completed",
+        ) from exc
 
     return TokenResponse(
         access_token=token,

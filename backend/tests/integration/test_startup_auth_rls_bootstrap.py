@@ -187,3 +187,40 @@ async def test_system_startup_audit_event_writes_operator_row_under_app_rls(
         # The integration database is disposable and the action is unique.
         # Canonical audit evidence is append-only, so test cleanup must not
         # weaken the same database invariant this path is expected to honor.
+
+
+async def test_tenantless_security_event_writes_operator_row_under_app_rls(
+    owner_sessionmaker,
+    app_user_sessionmaker,
+    monkeypatch,
+):
+    from app.core.policy import write_audit_event
+    from app.services import audit_logger
+
+    actor_id = uuid.uuid4()
+    marker = uuid.uuid4().hex
+    monkeypatch.setattr(audit_logger, "async_session", app_user_sessionmaker)
+
+    async with app_user_sessionmaker() as request_db:
+        receipt = await write_audit_event(
+            request_db,
+            event_type="auth.login_failed",
+            severity="warn",
+            actor_type="user",
+            actor_id=actor_id,
+            tenant_id=None,
+            action="login_failed",
+            details={"marker": marker},
+        )
+
+    assert receipt.scope == "platform_operator"
+    assert receipt.tenant_id is None
+    async with owner_sessionmaker() as verification_db:
+        row = (await verification_db.execute(select(AuditLog).where(AuditLog.id == receipt.event_id))).scalar_one()
+    assert row.tenant_id is None
+    assert row.action == "platform_security.auth.login_failed"
+    assert row.user_id is None
+    assert row.agent_id is None
+    assert row.details["schema_version"] == "hive.platform_security_audit.v1"
+    assert row.details["actor"] == {"type": "user", "id": str(actor_id)}
+    assert row.details["details"] == {"marker": marker}

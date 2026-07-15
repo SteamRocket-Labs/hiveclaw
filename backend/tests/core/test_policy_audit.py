@@ -45,14 +45,32 @@ class _CaptureAuditDB:
         self.added.append(event)
 
     async def flush(self) -> None:
+        for event in self.added:
+            if getattr(event, "id", None) is None:
+                event.id = uuid.uuid4()
         self.flushed = True
 
 
 @pytest.mark.asyncio
-async def test_write_audit_event_skips_zero_uuid_tenant() -> None:
-    db = _FailIfTouchedDB()
+async def test_write_audit_event_routes_zero_uuid_tenant_to_platform_audit(monkeypatch) -> None:
+    from app.services import audit_logger
 
-    await write_audit_event(
+    db = _FailIfTouchedDB()
+    platform_event_id = uuid.uuid4()
+    captured: dict[str, object] = {}
+
+    async def fake_write_platform_security_audit_event(**kwargs):
+        captured.update(kwargs)
+        return platform_event_id
+
+    monkeypatch.setattr(
+        audit_logger,
+        "write_platform_security_audit_event",
+        fake_write_platform_security_audit_event,
+        raising=False,
+    )
+
+    receipt = await write_audit_event(
         db,  # type: ignore[arg-type]
         event_type="auth.login",
         severity="info",
@@ -63,6 +81,12 @@ async def test_write_audit_event_skips_zero_uuid_tenant() -> None:
         details={"username": "tenantless-user"},
     )
 
+    assert receipt.scope == "platform_operator"
+    assert receipt.event_id == platform_event_id
+    assert receipt.tenant_id is None
+    assert captured["event_type"] == "auth.login"
+    assert captured["actor_type"] == "user"
+    assert captured["action"] == "login"
     assert db.added == []
     assert db.flushed is False
 
@@ -200,7 +224,7 @@ async def test_write_audit_event_previous_hash_query_is_tenant_scoped() -> None:
     tenant_id = uuid.uuid4()
     db = _CaptureAuditDB(previous_hash="same-tenant-prev")
 
-    await write_audit_event(
+    receipt = await write_audit_event(
         db,  # type: ignore[arg-type]
         event_type="auth.login",
         severity="info",
@@ -213,13 +237,30 @@ async def test_write_audit_event_previous_hash_query_is_tenant_scoped() -> None:
 
     assert db.executed
     assert "tenant_id" in str(db.executed[0])
+    assert receipt.scope == "tenant_security"
+    assert receipt.tenant_id == tenant_id
+    assert isinstance(receipt.event_id, uuid.UUID)
+    assert receipt.event_id == db.added[0].id
 
 
 @pytest.mark.asyncio
-async def test_write_audit_event_skips_missing_tenant() -> None:
-    db = _FailIfTouchedDB()
+async def test_write_audit_event_routes_missing_tenant_to_platform_audit(monkeypatch) -> None:
+    from app.services import audit_logger
 
-    await write_audit_event(
+    db = _FailIfTouchedDB()
+    platform_event_id = uuid.uuid4()
+
+    async def fake_write_platform_security_audit_event(**_kwargs):
+        return platform_event_id
+
+    monkeypatch.setattr(
+        audit_logger,
+        "write_platform_security_audit_event",
+        fake_write_platform_security_audit_event,
+        raising=False,
+    )
+
+    receipt = await write_audit_event(
         db,  # type: ignore[arg-type]
         event_type="auth.login",
         severity="info",
@@ -230,5 +271,36 @@ async def test_write_audit_event_skips_missing_tenant() -> None:
         details={"username": "setup-user"},
     )
 
+    assert receipt.scope == "platform_operator"
+    assert receipt.event_id == platform_event_id
+    assert receipt.tenant_id is None
     assert db.added == []
     assert db.flushed is False
+
+
+@pytest.mark.asyncio
+async def test_write_audit_event_surfaces_platform_audit_failure(monkeypatch) -> None:
+    from app.services import audit_logger
+
+    db = _FailIfTouchedDB()
+
+    async def fail_platform_audit(**_kwargs):
+        raise RuntimeError("platform audit unavailable")
+
+    monkeypatch.setattr(
+        audit_logger,
+        "write_platform_security_audit_event",
+        fail_platform_audit,
+        raising=False,
+    )
+
+    with pytest.raises(RuntimeError, match="platform audit unavailable"):
+        await write_audit_event(
+            db,  # type: ignore[arg-type]
+            event_type="auth.login_failed",
+            severity="warn",
+            actor_type="user",
+            actor_id=uuid.uuid4(),
+            tenant_id=None,
+            action="login_failed",
+        )

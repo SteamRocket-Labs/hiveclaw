@@ -5,6 +5,8 @@ Evaluates resource_permissions table with optional ABAC conditions.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from enum import StrEnum
 import logging
 import uuid
 
@@ -15,6 +17,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.security_audit import ResourcePermission
 
 logger = logging.getLogger(__name__)
+
+
+class SecurityAuditScope(StrEnum):
+    TENANT = "tenant_security"
+    PLATFORM = "platform_operator"
+
+
+@dataclass(frozen=True, slots=True)
+class SecurityAuditWriteReceipt:
+    event_id: uuid.UUID
+    scope: SecurityAuditScope
+    tenant_id: uuid.UUID | None
 
 
 def compute_audit_event_hash(
@@ -218,16 +232,48 @@ async def write_audit_event(
     details: dict | None = None,
     ip_address: str | None = None,
     request_id: uuid.UUID | None = None,
-) -> None:
-    """Write a tamper-evident audit event with hash chain."""
+) -> SecurityAuditWriteReceipt:
+    """Write to the tenant hash chain or immutable operator audit plane."""
     from app.models.security_audit import SecurityAuditEvent
 
+    # Read execution identity from ContextVar (set by channel handlers / trigger daemon)
+    exec_identity_type = None
+    exec_identity_id = None
+    exec_identity_label = None
+    try:
+        from app.core.execution_context import get_execution_identity
+
+        identity = get_execution_identity()
+        if identity:
+            exec_identity_type = identity.identity_type
+            exec_identity_id = identity.identity_id
+            exec_identity_label = identity.label
+    except Exception as exc:  # noqa: BLE001 - audit writing must not fail on optional context capture
+        logger.debug("Execution identity unavailable for audit event %s: %s", event_type, exc)
+
     if tenant_id is None or tenant_id == uuid.UUID(int=0):
-        logger.warning(
-            "Skipping audit event %s without a persistable tenant_id",
-            event_type,
+        from app.services.audit_logger import write_platform_security_audit_event
+
+        event_id = await write_platform_security_audit_event(
+            event_type=event_type,
+            severity=severity,
+            actor_type=actor_type,
+            actor_id=actor_id,
+            action=action,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            details=details,
+            ip_address=ip_address,
+            request_id=request_id,
+            execution_identity_type=exec_identity_type,
+            execution_identity_id=exec_identity_id,
+            execution_identity_label=exec_identity_label,
         )
-        return
+        return SecurityAuditWriteReceipt(
+            event_id=event_id,
+            scope=SecurityAuditScope.PLATFORM,
+            tenant_id=None,
+        )
 
     await _lock_audit_chain(db, tenant_id)
 
@@ -244,21 +290,6 @@ async def write_audit_event(
         .limit(1)
     )
     prev_hash = result.scalar_one_or_none() or "genesis"
-
-    # Read execution identity from ContextVar (set by channel handlers / trigger daemon)
-    exec_identity_type = None
-    exec_identity_id = None
-    exec_identity_label = None
-    try:
-        from app.core.execution_context import get_execution_identity
-
-        identity = get_execution_identity()
-        if identity:
-            exec_identity_type = identity.identity_type
-            exec_identity_id = identity.identity_id
-            exec_identity_label = identity.label
-    except Exception as exc:  # noqa: BLE001 - audit writing must not fail on optional context capture
-        logger.debug("Execution identity unavailable for audit event %s: %s", event_type, exc)
 
     event_hash = compute_audit_event_hash(
         event_type=event_type,
@@ -298,3 +329,8 @@ async def write_audit_event(
     )
     db.add(event)
     await db.flush()
+    return SecurityAuditWriteReceipt(
+        event_id=event.id,
+        scope=SecurityAuditScope.TENANT,
+        tenant_id=tenant_id,
+    )

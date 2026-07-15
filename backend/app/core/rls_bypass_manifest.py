@@ -605,6 +605,14 @@ RLS_BYPASS_ALLOWLIST = (
     ),
     _grant(
         *(
+            "app/services/audit_logger.py",
+            "write_platform_security_audit_event",
+            "'operator platform security audit insert'",
+            ("session-state-only",),
+        )
+    ),
+    _grant(
+        *(
             "app/services/skill_seeder.py",
             "seed_skills",
             "'startup builtin skill registry seed'",

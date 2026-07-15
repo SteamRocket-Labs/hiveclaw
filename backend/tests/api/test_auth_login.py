@@ -174,7 +174,7 @@ def test_login_success_scopes_session_to_user_tenant_for_audit():
     assert db.sync_session.info[database._RLS_TENANT_INFO_KEY] == str(tenant_id)
 
 
-def test_login_success_rolls_back_session_after_audit_failure():
+def test_login_success_fails_closed_after_audit_failure():
     user = _fake_user(username="alice", email="alice@example.com")
     db = _FakeDB([user])
 
@@ -190,7 +190,8 @@ def test_login_success_rolls_back_session_after_audit_failure():
             json={"username": "alice", "password": "whatever"},
         )
 
-    assert resp.status_code == 200
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == "Security audit unavailable; authentication was not completed"
     assert db.rollback_called is True
 
 

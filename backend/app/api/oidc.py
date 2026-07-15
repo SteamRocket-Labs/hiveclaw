@@ -153,8 +153,13 @@ async def oidc_callback(
             action="oidc_login",
             details={"issuer": cfg["issuer_url"], "sub": oidc_user["sub"]},
         )
-    except Exception:
-        logger.warning("Audit write failed for auth.oidc_login", exc_info=True)
+    except Exception as exc:
+        logger.error("Audit write failed for auth.oidc_login; authentication denied", exc_info=True)
+        await db.rollback()
+        raise HTTPException(
+            status_code=503,
+            detail="Security audit unavailable; authentication was not completed",
+        ) from exc
 
     await db.commit()
 

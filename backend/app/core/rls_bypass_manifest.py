@@ -129,6 +129,14 @@ RLS_BYPASS_ALLOWLIST = (
     ),
     _grant(
         *(
+            "app/scripts/repair_knowledge_provenance.py",
+            "_main",
+            "'append-only cross-tenant Knowledge provenance repair'",
+            ("session-state-only",),
+        )
+    ),
+    _grant(
+        *(
             "app/api/admin.py",
             "get_metrics_timeseries",
             "'platform admin metrics timeseries cross-tenant aggregation'",

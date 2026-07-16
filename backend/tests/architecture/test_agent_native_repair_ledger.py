@@ -145,8 +145,8 @@ def test_missing_design_decisions_and_evidence_index_are_total() -> None:
     )
 
     assert [decision for decision, _ in context_decisions] == list("ABCDEF")
-    assert [decision for decision, _ in session_decisions] == [f"{number:02d}" for number in range(1, 13)]
-    assert [int(case) for case, _ in golden_cases] == list(range(1, 14))
+    assert [decision for decision, _ in session_decisions] == [f"{number:02d}" for number in range(1, 31)]
+    assert [int(case) for case, _ in golden_cases] == list(range(1, 31))
 
 
 def test_every_group_has_an_executable_document_and_evidence_route() -> None:

@@ -142,10 +142,13 @@ describe('AgentDetail session permission state', () => {
 describe('AgentDetail realtime refresh contract', () => {
   it('reduces terminal websocket events without replacing the hydrated message array', async () => {
     const source = await readSource('./agent-detail/sessionSocketEventProjector.ts');
+    const pageSource = await readSource('./AgentDetail.tsx');
 
     expect(source).toContain('applyTranscriptToSession(agentId, sessionId, transcriptEvent, isActiveRuntime)');
     expect(source).not.toContain('void selectSession(session)');
     expect(source).not.toContain("parseChatMsg({ role: 'assistant', content: `⚠️ ${message}` })");
+    expect(pageSource).toContain('applyCanonicalSessionSnapshot({ event: projectionEvent, store: consumed.store');
+    expect(pageSource).toContain('if (consumed.canonical && consumed.store)');
   });
 
   it('keeps the initial transcript read window slim', async () => {

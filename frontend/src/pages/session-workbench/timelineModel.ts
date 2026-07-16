@@ -1536,7 +1536,35 @@ function mainTurnActiveRunStatus(input: BuildThreadTimelineInput, cells: ThreadT
 }
 
 function isRenderableAssistantAnswer(message: AgentChatMessage): boolean {
+  if (message.sessionItem) {
+    return message.sessionItem.kind === 'assistant_final'
+      && message.sessionItem.terminal
+      && Boolean(message.content?.trim());
+  }
   return message.role === 'assistant' && Boolean(message.content?.trim());
+}
+
+function isCanonicalSessionProcessItem(message: AgentChatMessage): boolean {
+  const kind = message.sessionItem?.kind;
+  if (!kind) return false;
+  return kind.startsWith('assistant_')
+    || kind.startsWith('tool_')
+    || kind.startsWith('file_')
+    || kind.startsWith('memory_')
+    || kind.startsWith('skill_')
+    || kind.startsWith('workflow_')
+    || kind.startsWith('a2a_')
+    || kind === 'mcp_call'
+    || kind === 'web_search'
+    || kind === 'image_view'
+    || kind === 'code_execution'
+    || kind === 'context_source'
+    || kind === 'context_compaction'
+    || kind === 'subagent'
+    || kind === 'hook'
+    || kind === 'approval'
+    || kind === 'user_question'
+    || kind === 'result_commit';
 }
 
 function assistantReasoningStepMessage(message: AgentChatMessage): AgentChatMessage {
@@ -1688,6 +1716,11 @@ function buildCells(messages: AgentChatMessage[]): ThreadTimelineCell[] {
         message,
         index,
       });
+      return;
+    }
+
+    if (isCanonicalSessionProcessItem(message)) {
+      pendingRun.push({ message, index });
       return;
     }
 

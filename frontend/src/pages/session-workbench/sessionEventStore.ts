@@ -52,8 +52,18 @@ export type SessionItemV2 = {
   terminal: boolean;
   revision: number;
   content: string;
+  payload: Record<string, unknown>;
+  actor: SessionEventV2['actor'];
+  visibility: SessionEventV2['visibility'];
+  display?: SessionEventV2['display'];
+  resultId?: string;
+  invocationId?: string;
+  providerToolUseId?: string;
+  parentItemId?: string;
+  renderOwnerId?: string;
   summary?: string;
   source_blocks?: Array<{ item_id: string; block_index: number; content_hash: string }>;
+  occurredAt: string;
   first_sequence: number;
   last_sequence: number;
   last_ordinal?: number;
@@ -230,7 +240,21 @@ function reduceContiguous(store: SessionEventStore, event: SessionEventV2): Sess
       [event.item_id]: {
         id: event.item_id, kind: event.item_kind, scope: event.scope,
         lifecycle: event.lifecycle, terminal: isTerminal(event), revision: (prior?.revision ?? 0) + 1,
-        content, summary: event.display?.summary ?? prior?.summary, source_blocks: sourceBlocks,
+        content,
+        payload: { ...(prior?.payload || {}), ...event.payload },
+        actor: event.actor,
+        visibility: event.visibility,
+        display: event.display ?? prior?.display,
+        resultId: event.result_id ?? prior?.resultId,
+        invocationId: event.invocation_id ?? prior?.invocationId,
+        providerToolUseId: event.provider_tool_use_id ?? prior?.providerToolUseId,
+        parentItemId: event.parent_item_id ?? prior?.parentItemId,
+        renderOwnerId: typeof event.payload.render_owner_id === 'string'
+          ? event.payload.render_owner_id
+          : prior?.renderOwnerId,
+        summary: event.display?.summary ?? prior?.summary,
+        source_blocks: sourceBlocks,
+        occurredAt: prior?.occurredAt ?? event.occurred_at,
         first_sequence: prior?.first_sequence ?? event.sequence, last_sequence: event.sequence,
         last_ordinal: ordinal ?? prior?.last_ordinal,
       },

@@ -134,6 +134,32 @@ describe('session workbench timeline model', () => {
     expect(model.header.status).toBe('complete');
   });
 
+  it('uses Session V2 item kinds instead of assistant text content to decide finality', () => {
+    const messages: AgentChatMessage[] = [
+      { id: 'u1', role: 'user', content: 'Inspect it.' },
+      {
+        id: 'unknown-1',
+        role: 'assistant',
+        content: 'This is provider text with no final phase.',
+        sessionItem: {
+          id: 'unknown-1', kind: 'assistant_text', lifecycle: 'completed', terminal: true,
+        } as AgentChatMessage['sessionItem'],
+      },
+    ];
+
+    const model = buildThreadTimeline({
+      messages,
+      activeSession: { id: 'session-1', title: 'Typed finality' },
+      isWaiting: false,
+      isStreaming: false,
+      activeRunStatus: 'running',
+    });
+
+    expect(model.cells[0]?.kind).toBe('user_turn');
+    expect(model.cells.filter((cell) => cell.kind === 'active_run').length).toBeGreaterThanOrEqual(1);
+    expect(model.cells.some((cell) => cell.kind === 'assistant_final')).toBe(false);
+  });
+
   it('keeps completed run steps in interleaved thinking/tool sequence', () => {
     const messages: AgentChatMessage[] = [
       { id: 'u1', role: 'user', content: 'Fix the session renderer.' },

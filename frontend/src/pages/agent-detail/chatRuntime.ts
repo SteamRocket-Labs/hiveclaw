@@ -4,6 +4,7 @@ import {
   normalizeThreadItemPayload,
   threadItemToAgentChatMessage,
 } from '../session-workbench/threadItemReducer';
+import type { SessionItemV2 } from '../session-workbench/sessionEventStore';
 import { normalizeToolCallResult, type ToolCallMeta } from './toolResultEnvelope';
 import type { RuntimeBudgetState } from './runtimeBudgetState';
 
@@ -68,6 +69,8 @@ export interface AgentChatMessage {
 	  eventType?: string;
   /** Canonical UI protocol. Optional only while historical rows cross the compatibility reducer. */
   threadItem?: ThreadItem;
+  /** Session V2 canonical item. Present only for the canonical event-store projection. */
+  sessionItem?: SessionItemV2;
   eventTitle?: string;
   eventStatus?: string;
   eventToolName?: string;

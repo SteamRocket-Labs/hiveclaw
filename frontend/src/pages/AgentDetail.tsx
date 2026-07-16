@@ -77,7 +77,7 @@ import {
     type SessionTransportCallbacks,
 } from './agent-detail/useSessionTransportController';
 import { projectSessionSocketEvent } from './agent-detail/sessionSocketEventProjector';
-import { consumeSessionEnvelope } from './agent-detail/sessionEventConsumer';
+import { applyCanonicalSessionSnapshot, consumeSessionEnvelope } from './agent-detail/sessionEventConsumer';
 import type { SessionEventStore } from './session-workbench/sessionEventStore';
 import {
     buildAssignmentHandoff,
@@ -448,7 +448,6 @@ function AgentDetailInner() {
             || kind === 'hr_preview',
         );
     };
-
     const applyTranscriptToSession = (
         agentId: string,
         sessionId: string,
@@ -467,6 +466,7 @@ function AgentDetailInner() {
             if (consumed.sessionEnvelope && consumed.store === sessionEventStoresRef.current[key]) return;
             if (consumed.store) sessionEventStoresRef.current[key] = consumed.store;
             projectionEvent = consumed.projectionEvent;
+            if (consumed.canonical && consumed.store) return applyCanonicalSessionSnapshot({ event: projectionEvent, store: consumed.store, active: isActiveRuntime, onTranscript: () => { transcriptEventsRef.current[key] = mergeTranscriptBackfill(existingEvents, [projectionEvent]); }, onActivity: () => { runtimeActivityAtRef.current[key] = Date.now(); }, onTerminal: (runId) => markActiveRunTerminal(key, runId), onMessages: (messages, terminal) => { setChatMessagesSessionId(sessionId); (terminal ? setChatMessagesAfterQueued : enqueueChatMessagesUpdate)(() => mergePendingForSession(key, messages)); } });
         } catch (error) {
             console.warn(`[SessionEventV2] Rejected invalid envelope for ${key}:`, error);
             return;

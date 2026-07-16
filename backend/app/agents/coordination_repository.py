@@ -90,13 +90,31 @@ class CoordinationRepository:
             )
 
         existing = await self._session.execute(
-            select(CoordinationLease.id).where(
+            select(
+                CoordinationLease.id,
+                CoordinationLease.agent_id,
+                CoordinationLease.expires_at,
+            ).where(
                 CoordinationLease.tenant_id == self._tenant_id,
                 CoordinationLease.task_key == task_key,
             )
         )
-        existing_id = existing.scalar_one_or_none()
-        return LeaseAcquireResult(acquired=False, existing_lease_id=str(existing_id) if existing_id else None)
+        existing_row = existing.first()
+        existing_lease = (
+            Lease(
+                id=str(existing_row.id),
+                task_key=task_key,
+                agent_id=str(existing_row.agent_id),
+                expires_at=existing_row.expires_at,
+            )
+            if existing_row is not None
+            else None
+        )
+        return LeaseAcquireResult(
+            acquired=False,
+            lease=existing_lease,
+            existing_lease_id=existing_lease.id if existing_lease is not None else None,
+        )
 
     async def send_signal(
         self,

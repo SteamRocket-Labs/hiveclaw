@@ -10,12 +10,78 @@ class _DB:
     def __init__(self) -> None:
         self.added = []
         self.flushes = 0
+        self.commits = 0
 
     def add(self, value):
         self.added.append(value)
 
     async def flush(self) -> None:
         self.flushes += 1
+
+    async def commit(self) -> None:
+        self.commits += 1
+
+
+@pytest.fixture(autouse=True)
+def _team_root_ledger_double(monkeypatch):
+    """Keep legacy unit doubles focused; PG tests exercise the real ledger."""
+
+    from app.services.runtime_root_ledger import RuntimeRootCoverage
+
+    async def fake_register_requested_set(**kwargs):
+        db = kwargs["db"]
+        rows = getattr(db, "team_root_rows", {})
+        for item in kwargs["work_items"]:
+            rows[item["intent_key"]] = {"state": "requested", "disposition": "requested"}
+        db.team_root_rows = rows
+        await db.commit()
+
+    async def fake_transition(db, *, intent_key, requested_state, **_kwargs):
+        rows = getattr(db, "team_root_rows", {})
+        row = rows.setdefault(intent_key, {"state": "requested", "disposition": "requested"})
+        row["state"] = requested_state
+        row["disposition"] = (
+            "not_admitted"
+            if requested_state == "not_admitted"
+            else "deferred"
+            if requested_state in {"requested", "waiting_approval"}
+            else "admitted"
+        )
+        return SimpleNamespace(**row), SimpleNamespace(applied=True)
+
+    async def fake_read_coverage(db, **_kwargs):
+        rows = list(getattr(db, "team_root_rows", {}).values())
+        return RuntimeRootCoverage(
+            requested=len(rows),
+            admitted=sum(row["disposition"] == "admitted" for row in rows),
+            deferred=sum(row["disposition"] in {"requested", "deferred"} for row in rows),
+            not_admitted=sum(row["disposition"] == "not_admitted" for row in rows),
+            expected=sum(row["disposition"] == "admitted" for row in rows),
+            terminal=sum(
+                row["disposition"] == "admitted"
+                and row["state"] in {"completed", "failed", "killed", "skipped", "cancelled"}
+                for row in rows
+            ),
+            running=sum(row["state"] in {"queued", "running", "needs_reconciliation"} for row in rows),
+            waiting_approval=sum(row["state"] == "waiting_approval" for row in rows),
+        )
+
+    async def fake_find_active_run(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "app.services.agent_team_runtime_service._register_team_fanout_requested_set",
+        fake_register_requested_set,
+    )
+    monkeypatch.setattr(
+        "app.services.agent_team_runtime_service.transition_runtime_root_item",
+        fake_transition,
+    )
+    monkeypatch.setattr(
+        "app.services.agent_team_runtime_service.read_runtime_root_coverage",
+        fake_read_coverage,
+    )
+    monkeypatch.setattr("app.services.web_chat_runtime._find_active_run", fake_find_active_run)
 
 
 class _ScalarOne:
@@ -249,7 +315,7 @@ async def test_agenttool_teammate_spawn_creates_member_session_and_starts_runtim
 
 
 @pytest.mark.asyncio
-async def test_agenttool_teammate_spawn_reserves_team_session_before_records_and_inherits_budget(monkeypatch):
+async def test_agenttool_teammate_spawn_persists_exact_intent_before_budget_and_inherits_budget(monkeypatch):
     from app.services.agent_team_runtime_service import (
         TeamMemberCreateSpec,
         create_agent_team_runtime_result,
@@ -276,7 +342,8 @@ async def test_agenttool_teammate_spawn_reserves_team_session_before_records_and
 
     class BudgetService:
         async def reserve(self, reservation):
-            assert not db.added, "admission must happen before member/session records are written"
+            assert db.commits >= 1, "the complete requested set must be durable before admission"
+            assert db.team_root_rows, "the exact Team intent must exist before the budget call"
             captured["reservation"] = reservation
             return RuntimeBudgetReservationResult(
                 allowed=True,
@@ -320,6 +387,7 @@ async def test_agenttool_teammate_spawn_reserves_team_session_before_records_and
 
     assert payload["ok"] is True
     assert captured["reservation"].budget_run_id == budget_run_id
+    assert captured["reservation"].runtime_task_id == captured["continuation"]["run_id"]
     assert captured["reservation"].team_sessions == 1
     assert captured["reservation"].background_tasks == 1
     assert captured["continuation"]["extra_metadata"]["budget_run_id"] == str(budget_run_id)
@@ -328,7 +396,7 @@ async def test_agenttool_teammate_spawn_reserves_team_session_before_records_and
 
 
 @pytest.mark.asyncio
-async def test_agenttool_teammate_spawn_waits_for_approval_without_half_created_member(monkeypatch):
+async def test_agenttool_teammate_spawn_waits_for_approval_with_exact_durable_member_and_run(monkeypatch):
     from app.models.agent_team import AgentTeamMember
     from app.models.chat_session import ChatSession
     from app.services.agent_team_runtime_service import TeamMemberCreateSpec, spawn_agent_team_member_runtime
@@ -339,6 +407,7 @@ async def test_agenttool_teammate_spawn_waits_for_approval_without_half_created_
     user = SimpleNamespace(id=uuid4())
     parent_session = SimpleNamespace(id=uuid4(), root_session_id=None)
     team = SimpleNamespace(id=uuid4(), name="Budget Team", parent_session_id=parent_session.id)
+    captured = {}
 
     class WaitingBudgetService:
         async def reserve(self, reservation):
@@ -347,6 +416,20 @@ async def test_agenttool_teammate_spawn_waits_for_approval_without_half_created_
                 budget_run_id=reservation.budget_run_id,
                 dimensions=["team_sessions"],
             )
+
+    async def fake_continue_agent_session_from_mailbox(**kwargs):
+        captured["continuation"] = kwargs
+        return {
+            "ok": True,
+            "status": "waiting_budget_approval",
+            "consumer": "continuation_turn",
+            "run_id": str(kwargs["run_id"]),
+        }
+
+    monkeypatch.setattr(
+        "app.services.agent_team_runtime_service.continue_agent_session_from_mailbox",
+        fake_continue_agent_session_from_mailbox,
+    )
 
     payload = await spawn_agent_team_member_runtime(
         db=db,
@@ -361,9 +444,13 @@ async def test_agenttool_teammate_spawn_waits_for_approval_without_half_created_
         budget_service=WaitingBudgetService(),
     )
 
-    assert payload["ok"] is False
+    assert payload["ok"] is True
     assert payload["status"] == "waiting_budget_approval"
-    assert not any(isinstance(item, (AgentTeamMember, ChatSession)) for item in db.added)
+    assert any(isinstance(item, AgentTeamMember) for item in db.added)
+    assert any(isinstance(item, ChatSession) for item in db.added)
+    assert captured["continuation"]["budget_admission_status_override"] == "waiting_budget_approval"
+    assert captured["continuation"]["root_item_intent"].approval_ref
+    assert payload["run"]["coverage"]["deferred"] == 1
 
 
 @pytest.mark.asyncio
@@ -392,6 +479,19 @@ async def test_agenttool_teammate_spawn_uses_unique_name_in_budget_reservation(m
                 dimensions=["team_sessions"],
             )
 
+    async def fake_continue_agent_session_from_mailbox(**kwargs):
+        return {
+            "ok": True,
+            "status": "waiting_budget_approval",
+            "consumer": "continuation_turn",
+            "run_id": str(kwargs["run_id"]),
+        }
+
+    monkeypatch.setattr(
+        "app.services.agent_team_runtime_service.continue_agent_session_from_mailbox",
+        fake_continue_agent_session_from_mailbox,
+    )
+
     payload = await spawn_agent_team_member_runtime(
         db=db,
         agent=SimpleNamespace(id=uuid4(), tenant_id=uuid4()),
@@ -406,21 +506,22 @@ async def test_agenttool_teammate_spawn_uses_unique_name_in_budget_reservation(m
     )
 
     assert payload["member_name"] == "critic-2"
-    assert captured["reservation"].reservation_key.endswith(":critic-2")
+    assert captured["reservation"].metadata["member_name"] == "critic-2"
 
 
 @pytest.mark.asyncio
-async def test_agenttool_teammate_spawn_releases_admission_when_record_flush_fails():
+async def test_agenttool_teammate_spawn_does_not_reserve_when_exact_record_flush_fails():
     from app.services.agent_team_runtime_service import TeamMemberCreateSpec, spawn_agent_team_member_runtime
     from app.services.runtime_budget_service import RuntimeBudgetReservationResult
 
     db = _FailingFlushDB()
     parent_session = SimpleNamespace(id=uuid4(), root_session_id=None)
     team = SimpleNamespace(id=uuid4(), name="Budget Team", parent_session_id=parent_session.id)
-    captured: dict = {}
+    captured: dict = {"reserve_calls": 0}
 
     class BudgetService:
         async def reserve(self, reservation):
+            captured["reserve_calls"] += 1
             return RuntimeBudgetReservationResult(
                 allowed=True,
                 would_deny=False,
@@ -445,9 +546,8 @@ async def test_agenttool_teammate_spawn_releases_admission_when_record_flush_fai
             budget_service=BudgetService(),
         )
 
-    assert captured["settlement"].actual_team_sessions == 0
-    assert captured["settlement"].actual_background_tasks == 0
-    assert captured["settlement"].reason == "agent_team_member_spawn_failed"
+    assert captured["reserve_calls"] == 0
+    assert "settlement" not in captured
 
 
 @pytest.mark.asyncio
@@ -566,6 +666,105 @@ async def test_message_agent_team_members_runtime_broadcasts_to_member_sessions(
         item for item in db.added if isinstance(item, AgentTeamEvent) and item.event_type == "member_message_queued"
     ]
     assert len(queued_events) - queued_before == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("size", [1, 10, 25, 50, 100])
+async def test_team_fanout_capacity_curve_commits_requested_set_before_mixed_admission(monkeypatch, size):
+    from app.services.agent_team_runtime_service import message_agent_team_members_runtime
+    from app.services.runtime_budget_service import (
+        RuntimeBudgetApprovalRequired,
+        RuntimeBudgetDenied,
+        RuntimeBudgetReservationResult,
+    )
+
+    db = _DB()
+    agent = SimpleNamespace(id=uuid4(), tenant_id=uuid4())
+    user = SimpleNamespace(id=uuid4())
+    team = SimpleNamespace(id=uuid4(), name="Capacity Team", parent_session_id=uuid4())
+    members = [
+        SimpleNamespace(
+            id=uuid4(),
+            member_name=f"worker-{index}",
+            chat_session_id=uuid4(),
+            runtime_task_id=None,
+            status="idle",
+            metadata_json={},
+        )
+        for index in range(size)
+    ]
+    sessions = [SimpleNamespace(id=member.chat_session_id) for member in members]
+    continued_run_ids = []
+
+    class MixedBudgetService:
+        async def reserve(self, reservation):
+            assert len(db.team_root_rows) == size
+            ordinal = int(reservation.metadata["ordinal"])
+            if ordinal % 3 == 1:
+                raise RuntimeBudgetApprovalRequired(
+                    "approval required",
+                    budget_run_id=reservation.budget_run_id,
+                    dimensions=["background_tasks"],
+                )
+            if ordinal % 3 == 2:
+                raise RuntimeBudgetDenied(
+                    "hard budget denial",
+                    budget_run_id=reservation.budget_run_id,
+                    dimensions=["background_tasks"],
+                )
+            return RuntimeBudgetReservationResult(
+                allowed=True,
+                would_deny=False,
+                idempotent=False,
+                budget_run_id=reservation.budget_run_id,
+            )
+
+        async def settle(self, _settlement):
+            return None
+
+    async def fake_continue_agent_session_from_mailbox(**kwargs):
+        intent = kwargs["root_item_intent"]
+        row = db.team_root_rows[intent.intent_key]
+        row["state"] = intent.state
+        row["disposition"] = intent.admission_disposition
+        continued_run_ids.append(kwargs["run_id"])
+        waiting = kwargs["budget_admission_status_override"] == "waiting_budget_approval"
+        return {
+            "ok": True,
+            "status": "waiting_budget_approval" if waiting else "queued",
+            "consumer": "continuation_turn",
+            "run_id": str(kwargs["run_id"]),
+        }
+
+    monkeypatch.setattr(
+        "app.services.agent_team_runtime_service.continue_agent_session_from_mailbox",
+        fake_continue_agent_session_from_mailbox,
+    )
+
+    payload = await message_agent_team_members_runtime(
+        db=db,
+        agent=agent,
+        user=user,
+        team=team,
+        members=members,
+        member_sessions=sessions,
+        message="process the assigned slice",
+        budget_run_id=uuid4(),
+        budget_service=MixedBudgetService(),
+        operation_id="tool-call-capacity-fixture",
+    )
+
+    admitted = sum(index % 3 == 0 for index in range(size))
+    deferred = sum(index % 3 == 1 for index in range(size))
+    not_admitted = sum(index % 3 == 2 for index in range(size))
+    assert payload["message_count"] == size
+    assert payload["coverage"]["requested"] == size
+    assert payload["coverage"]["admitted"] == admitted
+    assert payload["coverage"]["deferred"] == deferred
+    assert payload["coverage"]["not_admitted"] == not_admitted
+    assert payload["coverage"]["conserved"] is True
+    assert len(continued_run_ids) == admitted + deferred
+    assert len(set(continued_run_ids)) == admitted + deferred
 
 
 @pytest.mark.asyncio

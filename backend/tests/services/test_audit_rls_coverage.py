@@ -93,6 +93,7 @@ def test_force_all_tenant_rls_migration_covers_bootstrap_force_tables() -> None:
     tenant_null_module = _load_migration_module("tenant_null_semantics_0712.py")
     storage_lifecycle_module = _load_migration_module("storage_blob_lifecycle_0715.py")
     session_v2_module = _load_migration_module("session_v2_0716.py")
+    runtime_root_module = _load_migration_module("runtime_root_ledger_0716.py")
     migration_tables = (
         set(force_all_module._FORCE_TABLES)
         | set(remaining_module._ALL_TABLES)
@@ -116,6 +117,7 @@ def test_force_all_tenant_rls_migration_covers_bootstrap_force_tables() -> None:
         | set(tenant_null_module.OPERATOR_NULLABLE)
         | set(storage_lifecycle_module._TABLES)
         | set(session_v2_module.SESSION_V2_TENANT_TABLES)
+        | set(runtime_root_module.RUNTIME_ROOT_LEDGER_TABLES)
     )
 
     missing = sorted(set(RLS_FORCED_TENANT_TABLES) - migration_tables)

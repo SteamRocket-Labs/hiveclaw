@@ -340,7 +340,12 @@ async def test_valid_receipt_does_not_scan_benign_security_tool_words(monkeypatc
     request = _delegation_request(
         message="Explain why security approval tool and secret are words in this harmless sentence."
     )
-    record = {"task_id": "task-a2a", "task_type": "delegation", "status": "pending"}
+    record = {
+        "task_id": "task-a2a",
+        "task_type": "delegation",
+        "status": "pending",
+        "metadata": {"coordination_publish_state": "published"},
+    }
     spawns: list[dict] = []
 
     async def fake_get(_task_id):

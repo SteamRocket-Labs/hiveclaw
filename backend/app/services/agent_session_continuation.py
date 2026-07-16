@@ -18,6 +18,7 @@ from app.models.chat_session import ChatSession
 from app.models.user import User
 from app.services.chat_message_parts import build_session_native_event
 from app.services.chat_transcript import append_session_event
+from app.services.runtime_root_ledger import RuntimeRootIntentSpec
 from app.services.web_chat_runtime import (
     WEB_CHAT_TURN_TASK_TYPE,
     _find_active_run,
@@ -346,6 +347,9 @@ async def continue_agent_session_from_mailbox(
     llm_content: str | None = None,
     mailbox_role: str | None = "user",
     model_message_role: str = "user",
+    run_id: uuid.UUID | None = None,
+    root_item_intent: RuntimeRootIntentSpec | None = None,
+    budget_admission_status_override: str | None = None,
 ) -> dict[str, Any]:
     """Append and consume a follow-up message for an Agent-Agent session."""
 
@@ -462,6 +466,9 @@ async def continue_agent_session_from_mailbox(
         append_user_message=False,
         runtime_task_type=_runtime_task_type_for_session(session, runtime_task_type),
         budget_interactive=False,
+        run_id=run_id,
+        root_item_intent=root_item_intent,
+        budget_admission_status_override=budget_admission_status_override,
         extra_metadata={
             "source": source_channel,
             "agent_session_message": True,
@@ -479,7 +486,9 @@ async def continue_agent_session_from_mailbox(
     return {
         **run,
         "ok": True,
-        "status": "started",
+        "status": (
+            "waiting_budget_approval" if str(run.get("status") or "") == "waiting_budget_approval" else "started"
+        ),
         "consumer": "continuation_turn",
         "child_session_id": str(session.id),
     }

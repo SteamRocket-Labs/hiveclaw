@@ -101,11 +101,37 @@ async def test_agent_team_handoff_creates_member_sessions_and_starts_runtime(mon
         mailbox_calls.append(kwargs)
         return {"run_id": "00112233445566778899aabbccddeeff", "status": "queued", "consumer": "mailbox"}
 
+    async def fake_register_team_fanout_requested_set(**_kwargs):
+        return None
+
+    async def fake_read_runtime_root_coverage(*_args, **_kwargs):
+        return SimpleNamespace(
+            to_dict=lambda: {
+                "requested": 1,
+                "admitted": 1,
+                "deferred": 0,
+                "not_admitted": 0,
+                "expected": 1,
+                "terminal": 0,
+                "running": 1,
+                "waiting_approval": 0,
+                "conserved": True,
+            }
+        )
+
     monkeypatch.setattr("app.services.agent_team_runtime_service.emit_hook", fake_emit_hook)
     monkeypatch.setattr("app.services.agent_team_runtime_service.append_session_event", fake_append_session_event)
     monkeypatch.setattr(
         "app.services.agent_team_runtime_service.continue_agent_session_from_mailbox",
         fake_continue_agent_session_from_mailbox,
+    )
+    monkeypatch.setattr(
+        "app.services.agent_team_runtime_service._register_team_fanout_requested_set",
+        fake_register_team_fanout_requested_set,
+    )
+    monkeypatch.setattr(
+        "app.services.agent_team_runtime_service.read_runtime_root_coverage",
+        fake_read_runtime_root_coverage,
     )
 
     result = await mod.agent_team_handoff(db=db, plan=plan)

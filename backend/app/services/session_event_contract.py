@@ -413,8 +413,16 @@ def build_session_event_contract_function_sql() -> str:
               SELECT 1 FROM public.runtime_tasks AS legacy_run
               WHERE legacy_run.id=NEW.run_id
                 AND legacy_run.tenant_id=NEW.tenant_id
-                AND legacy_run.parent_session_id=NEW.session_id::text
-                AND legacy_run.parent_agent_id=NEW.agent_id
+                AND (
+                  (
+                    legacy_run.parent_session_id=NEW.session_id::text
+                    AND legacy_run.parent_agent_id=NEW.agent_id
+                  )
+                  OR (
+                    legacy_run.child_session_id=NEW.session_id::text
+                    AND COALESCE(legacy_run.child_agent_id, legacy_run.parent_agent_id)=NEW.agent_id
+                  )
+                )
                 AND epoch.allowed_existing_generations_json
                     @> to_jsonb(ARRAY[legacy_run.writer_generation])
             )

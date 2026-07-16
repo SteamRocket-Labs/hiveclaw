@@ -32,6 +32,22 @@ _RESTART_RESUMABLE_TASK_TYPES = (
     "dream",
 )
 _TERMINAL_STATUSES = {"completed", "failed", "killed", "skipped", "needs_reconciliation"}
+_RUNTIME_TASK_ROOT_STATE = {
+    "pending": "queued",
+    "queued": "queued",
+    "running": "running",
+    "resumable": "suspended",
+    "suspended": "suspended",
+    "waiting_approval": "waiting_approval",
+    "waiting_budget_approval": "waiting_approval",
+    "completed": "completed",
+    "failed": "failed",
+    "killed": "killed",
+    "skipped": "skipped",
+    "cancelled": "cancelled",
+    "canceled": "cancelled",
+    "needs_reconciliation": "needs_reconciliation",
+}
 RUNTIME_RESTART_REPLAY_CONTRACT_SCHEMA = "runtime_restart_replay_contract.v1"
 RUNTIME_RESTART_REPLAY_JOURNAL_SCHEMA = "runtime_restart_replay_journal.v1"
 RUNTIME_RECONCILIATION_RETRY_CONTRACT_SCHEMA = "runtime_reconciliation_retry_contract.v1"
@@ -44,6 +60,16 @@ def _coerce_task_id(task_id: str | uuid.UUID) -> uuid.UUID | None:
         return uuid.UUID(str(task_id))
     except (ValueError, TypeError, AttributeError):
         return None
+
+
+def _runtime_task_root_state(status: str, *, override: str | None = None) -> str:
+    if override:
+        return override
+    normalized = str(status or "").strip()
+    root_state = _RUNTIME_TASK_ROOT_STATE.get(normalized)
+    if root_state is None:
+        raise ValueError(f"Unsupported RuntimeTask status for root ledger: {normalized!r}")
+    return root_state
 
 
 def _task_to_dict(task: RuntimeTask) -> dict[str, Any]:
@@ -397,10 +423,23 @@ async def create_runtime_task_record(
     root_idempotency_key: str | None = None,
     config_snapshot_hash: str | None = None,
     policy_snapshot_hash: str | None = None,
+    root_item_intent_key: str | None = None,
+    root_item_work_type: str | None = None,
+    root_item_target_ref: str | None = None,
+    root_item_path: list[str] | tuple[str, ...] | None = None,
+    root_item_state: str = "queued",
+    root_item_admission_disposition: str | None = None,
+    root_item_reason_code: str | None = None,
+    root_item_approval_ref: str | None = None,
 ) -> str:
     runtime_task_id = _coerce_task_id(task_id)
     if runtime_task_id is None:
         raise ValueError(f"Invalid runtime task id: {task_id!r}")
+    normalized_root_runtime_task_id = (
+        _coerce_task_id(root_runtime_task_id) if root_runtime_task_id is not None else None
+    )
+    if root_runtime_task_id is not None and normalized_root_runtime_task_id is None:
+        raise ValueError(f"Invalid root runtime task id: {root_runtime_task_id!r}")
 
     started_at = datetime.now(timezone.utc) if status == "running" else None
     # Stage-2b: runtime_tasks now carries a tenant_id (RLS). Derive it from the
@@ -427,6 +466,13 @@ async def create_runtime_task_record(
         source=f"runtime_task:{task_type}",
     ) as db:
         try:
+            effective_root_runtime_task_id = (
+                normalized_root_runtime_task_id
+                if normalized_root_runtime_task_id is not None
+                else runtime_task_id
+                if str(root_item_intent_key or "").strip()
+                else None
+            )
             task = RuntimeTask(
                 id=runtime_task_id,
                 task_type=task_type,
@@ -440,9 +486,7 @@ async def create_runtime_task_record(
                 child_session_id=child_session_id,
                 root_user_id=root_user_id,
                 root_session_id=str(root_session_id or "").strip() or None,
-                root_runtime_task_id=_coerce_task_id(root_runtime_task_id)
-                if root_runtime_task_id is not None
-                else None,
+                root_runtime_task_id=effective_root_runtime_task_id,
                 delegation_chain_json=[str(item) for item in (delegation_chain or []) if str(item).strip()],
                 depth=depth,
                 metadata_json=metadata_json,
@@ -460,6 +504,35 @@ async def create_runtime_task_record(
 
             await assign_runtime_task_writer_generation(db, task)
             db.add(task)
+            if str(root_item_intent_key or "").strip():
+                from app.services.runtime_root_ledger import register_runtime_root_item
+
+                await register_runtime_root_item(
+                    db,
+                    tenant_id=tenant_id,
+                    root_runtime_task_id=effective_root_runtime_task_id or runtime_task_id,
+                    parent_runtime_task_id=(
+                        normalized_root_runtime_task_id if normalized_root_runtime_task_id != runtime_task_id else None
+                    ),
+                    runtime_task_id=runtime_task_id,
+                    source_agent_id=parent_agent_id,
+                    root_user_id=root_user_id,
+                    root_session_id=root_session_id,
+                    intent_key=str(root_item_intent_key),
+                    work_type=str(root_item_work_type or task_type),
+                    target_ref=str(
+                        root_item_target_ref
+                        or (f"agent:{child_agent_id}" if child_agent_id is not None else f"runtime:{task_type}")
+                    ),
+                    path=root_item_path or delegation_chain,
+                    state=root_item_state,
+                    admission_disposition=root_item_admission_disposition,
+                    reason_code=root_item_reason_code,
+                    budget_reservation_key=budget_reservation_key,
+                    approval_ref=root_item_approval_ref,
+                    child_session_id=child_session_id,
+                    metadata={"runtime_task_type": task_type},
+                )
             await db.commit()
         except Exception:
             await db.rollback()
@@ -473,6 +546,8 @@ async def update_runtime_task_record(task_id: str, **fields: Any) -> bool:
         return False
 
     completion_notification = fields.pop("completion_notification", None)
+    root_item_state = str(fields.pop("root_item_state", "") or "").strip() or None
+    root_item_reason_code = str(fields.pop("root_item_reason_code", "") or "").strip() or None
     if completion_notification is not None and not isinstance(completion_notification, CompletionNotification):
         raise TypeError("completion_notification must be CompletionNotification")
 
@@ -486,7 +561,7 @@ async def update_runtime_task_record(task_id: str, **fields: Any) -> bool:
         source="runtime_task_status_update",
     ) as db:
         try:
-            result = await db.execute(select(RuntimeTask).where(RuntimeTask.id == runtime_task_id))
+            result = await db.execute(select(RuntimeTask).where(RuntimeTask.id == runtime_task_id).with_for_update())
             task = result.scalar_one_or_none()
             if task is None:
                 return False
@@ -494,6 +569,33 @@ async def update_runtime_task_record(task_id: str, **fields: Any) -> bool:
             from app.services.runtime_task_fence import assert_runtime_task_fence
 
             assert_runtime_task_fence(task)
+
+            requested_status = str(fields.get("status") or "").strip()
+            current_status = str(getattr(task, "status", "") or "").strip()
+            sealed_terminal_statuses = {"completed", "failed", "killed", "skipped"}
+            if current_status in sealed_terminal_statuses and requested_status and requested_status != current_status:
+                metadata = dict(getattr(task, "metadata_json", None) or {})
+                metadata["late_terminal_attempt"] = {
+                    "observed_status": current_status,
+                    "requested_status": requested_status,
+                    "observed_at": datetime.now(timezone.utc).isoformat(),
+                }
+                task.metadata_json = metadata
+                if getattr(task, "root_runtime_task_id", None) is not None:
+                    from app.services.runtime_root_ledger import transition_runtime_root_item_by_task
+
+                    await transition_runtime_root_item_by_task(
+                        db,
+                        runtime_task_id=runtime_task_id,
+                        requested_state=_runtime_task_root_state(
+                            requested_status,
+                            override=root_item_state,
+                        ),
+                        reason_code=root_item_reason_code or "late_terminal_attempt",
+                        metadata={"observed_runtime_task_status": current_status},
+                    )
+                await db.commit()
+                return False
 
             for key, value in fields.items():
                 if hasattr(task, key):
@@ -537,6 +639,22 @@ async def update_runtime_task_record(task_id: str, **fields: Any) -> bool:
                 metadata = dict(getattr(task, "metadata_json", None) or {})
                 metadata["completion_outbox_id"] = str(outbox_id)
                 task.metadata_json = metadata
+
+            if requested_status and getattr(task, "root_runtime_task_id", None) is not None:
+                from app.services.runtime_root_ledger import transition_runtime_root_item_by_task
+
+                await transition_runtime_root_item_by_task(
+                    db,
+                    runtime_task_id=runtime_task_id,
+                    requested_state=_runtime_task_root_state(
+                        requested_status,
+                        override=root_item_state,
+                    ),
+                    reason_code=(
+                        root_item_reason_code or str(fields.get("budget_terminal_reason") or "").strip() or None
+                    ),
+                    result_refs=[f"runtime-task://{runtime_task_id}"],
+                )
 
             await db.commit()
         except Exception:

@@ -12,6 +12,7 @@ import pytest
 from sqlalchemy import select
 
 from app.database import tenant_scoped_session
+from app.models.runtime_root_item import RuntimeRootItem
 from app.models.runtime_task import RuntimeTask
 from app.models.workflow import WorkflowQuota, WorkflowStep
 from app.runtime.dynamic_workflow import build_dynamic_workflow_run_metadata
@@ -111,6 +112,9 @@ async def test_start_run_completes_and_journals(service, tenant_id, owner_sessio
             (await session.execute(select(WorkflowStep).where(WorkflowStep.run_id == handle.run_id))).scalars().all()
         )
         quota = (await session.execute(select(WorkflowQuota).where(WorkflowQuota.run_id == handle.run_id))).scalar_one()
+        root_item = (
+            await session.execute(select(RuntimeRootItem).where(RuntimeRootItem.runtime_task_id == handle.run_id))
+        ).scalar_one()
 
     assert task.task_type == "workflow"
     assert task.status == "completed"
@@ -118,6 +122,10 @@ async def test_start_run_completes_and_journals(service, tenant_id, owner_sessio
     assert task.metadata_json["tenant_id"] == str(tenant_id)
     assert {s.step_id: s.status for s in steps} == {"scan": "done", "report": "done"}
     assert quota.allocated_tokens == 50_000
+    assert root_item.root_runtime_task_id == handle.run_id
+    assert root_item.intent_key == f"workflow:{handle.run_id}"
+    assert root_item.work_type == "workflow"
+    assert root_item.state == "completed"
 
 
 async def test_workflow_root_reserves_and_settles_background_execution(

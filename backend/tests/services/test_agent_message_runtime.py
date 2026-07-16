@@ -545,6 +545,10 @@ async def test_delegate_async_reserves_budget_before_creating_runtime_task(monke
         captured["create"] = kwargs
         return kwargs["task_id"]
 
+    async def fake_update_runtime_task_record(*_args, **kwargs):
+        captured["update"] = kwargs
+        return True
+
     async def fake_acquire_lease(**_kwargs):
         return SimpleNamespace(acquired=True, lease=SimpleNamespace(id="lease-1"))
 
@@ -565,6 +569,7 @@ async def test_delegate_async_reserves_budget_before_creating_runtime_task(monke
         return FakeGateway()
 
     monkeypatch.setattr(orchestrator, "create_runtime_task_record", fake_create_runtime_task_record)
+    monkeypatch.setattr(orchestrator, "update_runtime_task_record", fake_update_runtime_task_record)
     monkeypatch.setattr(orchestrator, "gateway_scope", fake_gateway_scope)
 
     budget_run_id = uuid4()

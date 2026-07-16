@@ -9,9 +9,10 @@ sessions. It is deliberately separate from A2A employee delegation.
 from __future__ import annotations
 
 import json
+import hashlib
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import or_, select
@@ -28,8 +29,14 @@ from app.services.agent_session_continuation import continue_agent_session_from_
 from app.services.chat_message_parts import build_session_native_event
 from app.services.chat_transcript import append_session_event
 from app.services.execution_admission import ExecutionAdmission
-from app.services.runtime_budget_service import RuntimeBudgetReservation, RuntimeBudgetService
+from app.services.runtime_budget_service import RuntimeBudgetDenied, RuntimeBudgetReservation, RuntimeBudgetService
 from app.services.runtime_notification_outbox import CompletionNotification, enqueue_completion_notification
+from app.services.runtime_root_ledger import (
+    RuntimeRootIntentSpec,
+    read_runtime_root_coverage,
+    register_runtime_root_item,
+    transition_runtime_root_item,
+)
 from app.services.tenant_resolver import resolve_tenant_for_agent
 
 ACTIVE_AGENT_TEAM_MEMBER_STATUSES = frozenset(
@@ -467,6 +474,117 @@ async def create_agent_team_runtime(**kwargs: Any) -> dict[str, Any]:
     return result.payload
 
 
+_TEAM_FANOUT_NAMESPACE = uuid.UUID("1da6b22f-32f0-4d93-ad42-e829a61b43a9")
+_TEAM_FANOUT_PRODUCER_LEASE_SECONDS = 60
+
+
+def _team_fanout_operation_identity(
+    *,
+    team_id: uuid.UUID,
+    operation_id: str | None,
+    root_runtime_task_id: uuid.UUID | str | None,
+) -> tuple[str, uuid.UUID]:
+    operation = str(operation_id or "").strip() or uuid.uuid4().hex
+    root_id = _uuid_or_none(root_runtime_task_id)
+    if root_id is None:
+        root_id = uuid.uuid5(_TEAM_FANOUT_NAMESPACE, f"team:{team_id}:operation:{operation}")
+    return operation, root_id
+
+
+def _team_fanout_work_items(
+    *,
+    team: AgentTeam,
+    members: list[AgentTeamMember],
+    operation_id: str,
+    root_runtime_task_id: uuid.UUID,
+    message: str,
+    ordinal_overrides: dict[uuid.UUID, int] | None = None,
+) -> list[dict[str, Any]]:
+    message_sha256 = hashlib.sha256(message.encode("utf-8")).hexdigest()
+    items: list[dict[str, Any]] = []
+    for ordinal, member in enumerate(members):
+        effective_ordinal = int((ordinal_overrides or {}).get(member.id, ordinal))
+        stable_material = f"{root_runtime_task_id}:{operation_id}:{member.id}:{message_sha256}"
+        run_id = uuid.uuid5(_TEAM_FANOUT_NAMESPACE, stable_material)
+        operation_hash = hashlib.sha256(operation_id.encode("utf-8")).hexdigest()[:20]
+        intent_key = f"team:{team.id}:{operation_hash}:member:{member.id}"
+        items.append(
+            {
+                "member": member,
+                "ordinal": effective_ordinal,
+                "run_id": run_id,
+                "intent_key": intent_key,
+                "target_ref": f"team-member:{member.id}",
+                "reservation_key": f"agent-team:{team.id}:{operation_hash}:{member.id}",
+                "message_sha256": message_sha256,
+            }
+        )
+    return items
+
+
+async def _register_team_fanout_requested_set(
+    *,
+    db: Any,
+    agent: Any,
+    user: Any,
+    team: AgentTeam,
+    operation_id: str,
+    root_runtime_task_id: uuid.UUID,
+    message: str,
+    work_items: list[dict[str, Any]],
+    source: str,
+    display_content: str,
+    interrupt_requested: bool,
+    budget_run_id: uuid.UUID | None,
+    reserve_new_team_sessions: bool,
+) -> None:
+    """Commit every requested Team member before the first child can start."""
+
+    lease_expires_at = datetime.now(timezone.utc) + timedelta(seconds=_TEAM_FANOUT_PRODUCER_LEASE_SECONDS)
+    for item in work_items:
+        member = item["member"]
+        root_item = await register_runtime_root_item(
+            db,
+            tenant_id=agent.tenant_id,
+            root_runtime_task_id=root_runtime_task_id,
+            source_agent_id=agent.id,
+            root_user_id=user.id,
+            root_session_id=str(team.parent_session_id),
+            intent_key=item["intent_key"],
+            work_type="team_member",
+            target_ref=item["target_ref"],
+            path=(f"agent:{agent.id}", f"team:{team.id}"),
+            state="requested",
+            admission_disposition="requested",
+            budget_reservation_key=item["reservation_key"],
+            child_session_id=str(member.chat_session_id),
+            metadata={
+                "schema": "hive.runtime_root_team_intent.v1",
+                "operation_id": operation_id,
+                "ordinal": item["ordinal"],
+                "team_id": str(team.id),
+                "member_id": str(member.id),
+                "member_name": member.member_name,
+                "message": message,
+                "display_content": display_content,
+                "message_sha256": item["message_sha256"],
+                "source": source,
+                "budget_run_id": str(budget_run_id) if budget_run_id is not None else None,
+                "reserve_new_team_sessions": bool(reserve_new_team_sessions),
+                "interrupt_requested": bool(interrupt_requested),
+            },
+        )
+        if root_item.state == "requested" and root_item.runtime_task_id is None:
+            root_item.recovery_claimed_by = f"fanout-producer:{operation_id}"[:200]
+            root_item.recovery_claim_expires_at = lease_expires_at
+    # This is the deliberate durability fence: a crash after this commit leaves
+    # the not-yet-admitted members as recoverable deferred rows, never invisible.
+    if hasattr(db, "commit"):
+        await db.commit()
+    else:
+        await db.flush()
+
+
 async def spawn_agent_team_member_runtime(
     *,
     db: Any,
@@ -480,6 +598,8 @@ async def spawn_agent_team_member_runtime(
     mode: str = "",
     budget_run_id: uuid.UUID | str | None = None,
     budget_service: RuntimeBudgetService | None = None,
+    root_runtime_task_id: uuid.UUID | str | None = None,
+    operation_id: str | None = None,
 ) -> dict[str, Any]:
     """Create and start one teammate from the AgentTool ``team_name + name`` branch."""
 
@@ -498,37 +618,6 @@ async def spawn_agent_team_member_runtime(
         existing_members = list(existing_result.scalars().all())
     unique_name = _unique_member_name(spec.name, existing_members)
 
-    budget_uuid = _uuid_or_none(budget_run_id)
-    admission = ExecutionAdmission(budget_service) if budget_uuid is not None else None
-    admission_decision = None
-    if admission is not None and budget_uuid is not None:
-        admission_decision = await admission.admit(
-            RuntimeBudgetReservation(
-                budget_run_id=budget_uuid,
-                reservation_key=f"agent_team:{team.id}:member:{unique_name.lower()}",
-                team_sessions=1,
-                background_tasks=1,
-                reason="agent_team_member_spawn",
-                metadata={
-                    "work_type": "agent_team_member",
-                    "team_id": str(team.id),
-                    "team_name": team.name,
-                    "member_name": unique_name,
-                    "parent_session_id": str(getattr(parent_session, "id", "")),
-                },
-            )
-        )
-        if admission_decision.waiting:
-            return {
-                "ok": False,
-                "status": "waiting_budget_approval",
-                "team_id": str(team.id),
-                "team_name": team.name,
-                "member_name": unique_name,
-                "message": admission_decision.user_message,
-                "denied_dimensions": list(admission_decision.denied_dimensions),
-            }
-
     member_spec = TeamMemberCreateSpec(
         name=unique_name,
         role=spec.role,
@@ -539,85 +628,62 @@ async def spawn_agent_team_member_runtime(
         display_content=spec.display_content,
         metadata={**(spec.metadata or {}), "agent_tool_branch": "teammate_spawn", "mode": mode},
     )
-    try:
-        member, member_session = _build_team_member_records(
-            agent=agent,
-            user=user,
-            parent_session=parent_session,
-            team=team,
-            spec=member_spec,
-            source=source,
-        )
-        db.add(member_session)
-        db.add(member)
-        db.add(
-            AgentTeamEvent(
-                id=uuid.uuid4(),
-                team_id=team.id,
-                receiver_member_id=member.id,
-                event_type="member_spawned",
-                payload_json={
-                    "member_name": member.member_name,
-                    "member_role": member.member_role,
-                    "source": source,
-                    "mode": mode,
-                },
-            )
-        )
-        await db.flush()
-        await _append_team_member_parent_event(
-            db=db,
-            agent=agent,
-            user=user,
-            parent_session=parent_session,
-            team=team,
-            member=member,
-            source=source,
-            command="spawn_subagent",
-        )
-        run_payload = await message_agent_team_members_runtime(
-            db=db,
-            agent=agent,
-            user=user,
-            team=team,
-            members=[member],
-            member_sessions=[member_session],
-            message=prompt_text,
-            display_content=spec.display_content or prompt_text,
-            interrupt_requested=False,
-            source=source,
-            budget_run_id=budget_uuid,
-        )
-    except Exception:
-        if admission is not None and admission_decision is not None:
-            await admission.settle(
-                admission_decision,
-                actual_team_sessions=0,
-                actual_background_tasks=0,
-                reason="agent_team_member_spawn_failed",
-            )
-        raise
-    if admission is not None and admission_decision is not None:
-        run_started = any(
-            str(item.get("status") or "") in {"queued", "started", "running"}
-            for item in list(run_payload.get("results") or [])
-            if isinstance(item, dict)
-        )
-        await admission.settle(
-            admission_decision,
-            actual_team_sessions=1,
-            actual_background_tasks=1 if run_started else 0,
-            reason="agent_team_member_spawned",
-            metadata={
-                "work_type": "agent_team_member",
-                "team_id": str(team.id),
-                "member_id": str(member.id),
-                "child_session_id": str(member.chat_session_id),
+    member, member_session = _build_team_member_records(
+        agent=agent,
+        user=user,
+        parent_session=parent_session,
+        team=team,
+        spec=member_spec,
+        source=source,
+    )
+    db.add(member_session)
+    db.add(member)
+    db.add(
+        AgentTeamEvent(
+            id=uuid.uuid4(),
+            team_id=team.id,
+            receiver_member_id=member.id,
+            event_type="member_spawned",
+            payload_json={
+                "member_name": member.member_name,
+                "member_role": member.member_role,
+                "source": source,
+                "mode": mode,
             },
         )
+    )
+    await db.flush()
+    await _append_team_member_parent_event(
+        db=db,
+        agent=agent,
+        user=user,
+        parent_session=parent_session,
+        team=team,
+        member=member,
+        source=source,
+        command="spawn_subagent",
+    )
+    run_payload = await message_agent_team_members_runtime(
+        db=db,
+        agent=agent,
+        user=user,
+        team=team,
+        members=[member],
+        member_sessions=[member_session],
+        message=prompt_text,
+        display_content=spec.display_content or prompt_text,
+        interrupt_requested=False,
+        source=source,
+        budget_run_id=_uuid_or_none(budget_run_id),
+        budget_service=budget_service,
+        root_runtime_task_id=root_runtime_task_id,
+        operation_id=operation_id or f"spawn:{member.id}",
+        reserve_new_team_sessions=True,
+    )
+    result_status = str((run_payload.get("results") or [{}])[0].get("status") or "")
     return {
         "ok": bool(run_payload.get("ok")),
-        "status": "teammate_spawned",
+        "status": "waiting_budget_approval" if result_status == "waiting_budget_approval" else "teammate_spawned",
         "team_id": str(team.id),
         "team_name": team.name,
         "member": _team_member_payload(member),
@@ -974,6 +1040,11 @@ async def message_agent_team_members_runtime(
     interrupt_requested: bool = False,
     source: str = "agent_team",
     budget_run_id: uuid.UUID | str | None = None,
+    budget_service: RuntimeBudgetService | None = None,
+    root_runtime_task_id: uuid.UUID | str | None = None,
+    operation_id: str | None = None,
+    reserve_new_team_sessions: bool = False,
+    fanout_ordinal_overrides: dict[uuid.UUID, int] | None = None,
 ) -> dict[str, Any]:
     message_text = str(message or "").strip()
     if not message_text:
@@ -981,11 +1052,50 @@ async def message_agent_team_members_runtime(
     if not members:
         raise ValueError("No matching team members")
 
+    operation, root_id = _team_fanout_operation_identity(
+        team_id=team.id,
+        operation_id=operation_id,
+        root_runtime_task_id=root_runtime_task_id,
+    )
+    budget_uuid = _uuid_or_none(budget_run_id)
+    work_items = _team_fanout_work_items(
+        team=team,
+        members=members,
+        operation_id=operation,
+        root_runtime_task_id=root_id,
+        message=message_text,
+        ordinal_overrides=fanout_ordinal_overrides,
+    )
+    await _register_team_fanout_requested_set(
+        db=db,
+        agent=agent,
+        user=user,
+        team=team,
+        operation_id=operation,
+        root_runtime_task_id=root_id,
+        message=message_text,
+        work_items=work_items,
+        source=source,
+        display_content=display_content,
+        interrupt_requested=interrupt_requested,
+        budget_run_id=budget_uuid,
+        reserve_new_team_sessions=reserve_new_team_sessions,
+    )
+
     sessions_by_id = {str(session.id): session for session in member_sessions}
+    admission = ExecutionAdmission(budget_service) if budget_uuid is not None else None
     results: list[dict[str, Any]] = []
-    for member in members:
+    for item in work_items:
+        member = item["member"]
         session = sessions_by_id.get(str(member.chat_session_id))
         if session is None:
+            await transition_runtime_root_item(
+                db,
+                root_runtime_task_id=root_id,
+                intent_key=item["intent_key"],
+                requested_state="not_admitted",
+                reason_code="team_member_session_not_found",
+            )
             results.append(
                 {
                     "member_id": str(member.id),
@@ -996,25 +1106,196 @@ async def message_agent_team_members_runtime(
                 }
             )
             continue
-        run = await continue_agent_session_from_mailbox(
-            db=db,
-            agent=agent,
-            user=user,
-            session=session,
-            message=message_text,
-            display_content=display_content,
-            interrupt_requested=interrupt_requested,
-            parent_session_id=team.parent_session_id,
-            runtime_task_type="team_member",
-            extra_metadata={"budget_run_id": str(budget_run_id)} if budget_run_id else None,
+
+        # A live input joins an already-admitted turn and is not a new child
+        # execution. Avoid charging/pausing work-amplification budget for it.
+        active_run = None
+        if budget_uuid is not None:
+            from app.services.web_chat_runtime import _find_active_run
+
+            active_run = await _find_active_run(db, agent_id=agent.id, session_id=session.id)
+
+        admission_decision = None
+        if admission is not None and budget_uuid is not None and active_run is None:
+            try:
+                admission_decision = await admission.admit(
+                    RuntimeBudgetReservation(
+                        budget_run_id=budget_uuid,
+                        reservation_key=item["reservation_key"],
+                        team_sessions=1 if reserve_new_team_sessions else 0,
+                        background_tasks=1,
+                        continuation_wakes=1,
+                        reason="agent_team_member_spawn" if reserve_new_team_sessions else "agent_team_member_turn",
+                        runtime_task_id=item["run_id"],
+                        metadata={
+                            "work_type": "agent_team_member",
+                            "root_runtime_task_id": str(root_id),
+                            "root_item_intent_key": item["intent_key"],
+                            "operation_id": operation,
+                            "ordinal": item["ordinal"],
+                            "team_id": str(team.id),
+                            "team_name": team.name,
+                            "member_id": str(member.id),
+                            "member_name": member.member_name,
+                            "child_session_id": str(member.chat_session_id),
+                            "parent_session_id": str(team.parent_session_id),
+                            "message_sha256": item["message_sha256"],
+                        },
+                    )
+                )
+            except RuntimeBudgetDenied as exc:
+                await transition_runtime_root_item(
+                    db,
+                    root_runtime_task_id=root_id,
+                    intent_key=item["intent_key"],
+                    requested_state="not_admitted",
+                    reason_code="runtime_budget_denied",
+                    metadata={"budget_error": str(exc)},
+                )
+                results.append(
+                    {
+                        "member_id": str(member.id),
+                        "member_name": member.member_name,
+                        "child_session_id": str(member.chat_session_id),
+                        "status": "rejected",
+                        "reason": str(exc),
+                        "retryable": False,
+                    }
+                )
+                continue
+
+        waiting = bool(admission_decision is not None and admission_decision.waiting)
+        root_intent = RuntimeRootIntentSpec(
+            intent_key=item["intent_key"],
+            work_type="team_member",
+            target_ref=item["target_ref"],
+            path=(f"agent:{agent.id}", f"team:{team.id}"),
+            state="waiting_approval" if waiting else "queued",
+            admission_disposition="deferred" if waiting else "admitted",
+            reason_code="runtime_budget_approval_required" if waiting else None,
+            approval_ref=(
+                f"runtime-budget://{budget_uuid}/reservation/{item['reservation_key']}"
+                if waiting and budget_uuid is not None
+                else None
+            ),
+            budget_reservation_key=item["reservation_key"] if budget_uuid is not None else None,
+            metadata={
+                "operation_id": operation,
+                "ordinal": item["ordinal"],
+                "message_sha256": item["message_sha256"],
+            },
         )
+        try:
+            run = await continue_agent_session_from_mailbox(
+                db=db,
+                agent=agent,
+                user=user,
+                session=session,
+                message=message_text,
+                display_content=display_content,
+                interrupt_requested=interrupt_requested,
+                parent_session_id=team.parent_session_id,
+                runtime_task_type="team_member",
+                extra_metadata={
+                    "budget_run_id": str(budget_uuid) if budget_uuid else None,
+                    "root_runtime_task_id": str(root_id),
+                    "team_operation_id": operation,
+                    "team_root_item_intent_key": item["intent_key"],
+                },
+                run_id=None if active_run is not None else item["run_id"],
+                root_item_intent=None if active_run is not None else root_intent,
+                budget_admission_status_override=(
+                    "waiting_budget_approval"
+                    if waiting
+                    else "approved"
+                    if budget_uuid is not None and active_run is None
+                    else None
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001 - other members remain independently recoverable.
+            root_item, _ = await transition_runtime_root_item(
+                db,
+                root_runtime_task_id=root_id,
+                intent_key=item["intent_key"],
+                requested_state="requested",
+                reason_code="team_member_admission_interrupted",
+                metadata={
+                    "retryable": True,
+                    "error_class": type(exc).__name__,
+                    "error": str(exc),
+                },
+            )
+            if root_item is not None:
+                root_item.recovery_claimed_by = None
+                root_item.recovery_claim_expires_at = None
+                root_item.next_recovery_at = datetime.now(timezone.utc)
+            if admission is not None and admission_decision is not None:
+                await admission.settle(
+                    admission_decision,
+                    reason="agent_team_member_admission_interrupted",
+                    runtime_task_id=item["run_id"],
+                )
+            results.append(
+                {
+                    "member_id": str(member.id),
+                    "member_name": member.member_name,
+                    "child_session_id": str(member.chat_session_id),
+                    "status": "deferred",
+                    "reason": "team_member_admission_interrupted",
+                    "retryable": True,
+                    "error_class": type(exc).__name__,
+                }
+            )
+            continue
+
         status = str(run.get("status") or "queued")
         if status in {"queued", "started", "running"}:
             _stamp_member_runtime(member, run, status=status)
             event_type = "member_message_queued"
+        elif status == "waiting_budget_approval":
+            _stamp_member_runtime(member, run, status=status)
+            member.status = "waiting"
+            event_type = "member_message_waiting_budget_approval"
         else:
             member.status = "blocked" if status == "rejected" else member.status
             event_type = "member_message_rejected"
+            if status == "rejected":
+                await transition_runtime_root_item(
+                    db,
+                    root_runtime_task_id=root_id,
+                    intent_key=item["intent_key"],
+                    requested_state="not_admitted",
+                    reason_code=str(run.get("reason") or "team_member_runtime_rejected"),
+                )
+
+        if str(run.get("consumer") or "") == "session_v2_round_input":
+            receipt = dict(run.get("session_input_receipt") or {})
+            input_id = str(receipt.get("input_id") or "").strip()
+            await transition_runtime_root_item(
+                db,
+                root_runtime_task_id=root_id,
+                intent_key=item["intent_key"],
+                requested_state="completed",
+                reason_code="delivered_to_active_team_turn",
+                result_refs=((f"session-input://{input_id}",) if input_id else ()),
+            )
+
+        if admission is not None and admission_decision is not None:
+            run_started = status in {"queued", "started", "running"}
+            await admission.settle(
+                admission_decision,
+                actual_team_sessions=1 if reserve_new_team_sessions else 0,
+                actual_background_tasks=1 if run_started else 0,
+                actual_continuation_wakes=1 if run_started else 0,
+                reason="agent_team_member_admitted" if run_started else "agent_team_member_waiting",
+                runtime_task_id=item["run_id"],
+                metadata={
+                    "root_runtime_task_id": str(root_id),
+                    "root_item_intent_key": item["intent_key"],
+                    "team_id": str(team.id),
+                    "member_id": str(member.id),
+                },
+            )
         db.add(
             AgentTeamEvent(
                 id=uuid.uuid4(),
@@ -1029,6 +1310,9 @@ async def message_agent_team_members_runtime(
                     "reason": run.get("reason"),
                     "message_preview": message_text[:240],
                     "source": source,
+                    "root_runtime_task_id": str(root_id),
+                    "root_item_intent_key": item["intent_key"],
+                    "operation_id": operation,
                 },
             )
         )
@@ -1041,14 +1325,22 @@ async def message_agent_team_members_runtime(
                 "consumer": run.get("consumer"),
                 "run_id": run.get("run_id"),
                 "reason": run.get("reason"),
+                "approval_ref": root_intent.approval_ref,
+                "root_item_intent_key": item["intent_key"],
             }
         )
 
     await db.flush()
+    if hasattr(db, "commit"):
+        await db.commit()
+    coverage = await read_runtime_root_coverage(db, root_runtime_task_id=root_id)
     return {
-        "ok": all(item.get("status") != "rejected" for item in results),
+        "ok": all(result.get("status") != "rejected" for result in results),
         "team_id": str(team.id),
         "team_name": team.name,
+        "operation_id": operation,
+        "root_runtime_task_id": str(root_id),
+        "coverage": coverage.to_dict(),
         "message_count": len(results),
         "interrupt_requested": interrupt_requested,
         "results": results,
@@ -1245,6 +1537,19 @@ async def spawn_agent_team_member_from_tool_request(
             source="agent_tool_teammate_spawn",
             mode=mode,
             budget_run_id=getattr(request.context, "budget_run_id", None),
+            root_runtime_task_id=(
+                getattr(request.context, "authority_root_runtime_task_id", None)
+                or getattr(request.context, "runtime_task_id", None)
+            ),
+            operation_id=str(
+                (
+                    (getattr(request.context, "tool_execution_frames", None) or [{}])[-1].get("tool_call_id")
+                    if isinstance((getattr(request.context, "tool_execution_frames", None) or [{}])[-1], dict)
+                    else ""
+                )
+                or ""
+            ).strip()
+            or None,
         )
 
 
@@ -1319,6 +1624,20 @@ async def send_agent_team_message_from_tool_request(request: Any) -> dict[str, A
             display_content=str(getattr(request, "arguments", {}).get("display_content") or ""),
             interrupt_requested=bool(getattr(request, "arguments", {}).get("interrupt")),
             source="send_agent_session_message",
+            budget_run_id=getattr(request.context, "budget_run_id", None),
+            root_runtime_task_id=(
+                getattr(request.context, "authority_root_runtime_task_id", None)
+                or getattr(request.context, "runtime_task_id", None)
+            ),
+            operation_id=str(
+                (
+                    (getattr(request.context, "tool_execution_frames", None) or [{}])[-1].get("tool_call_id")
+                    if isinstance((getattr(request.context, "tool_execution_frames", None) or [{}])[-1], dict)
+                    else ""
+                )
+                or ""
+            ).strip()
+            or None,
         )
         payload["member_name"] = member_name
         return payload

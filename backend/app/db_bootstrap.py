@@ -185,6 +185,8 @@ _ADDITIONAL_FORCED_TENANT_TABLES: tuple[str, ...] = (
     "session_next_round_plans",
     "session_run_outcomes",
     "session_feedback_aggregates",
+    # Group 3 mixed direct/Subagent/Team/Workflow/A2A admission coverage.
+    "runtime_root_items",
 )
 
 # Every table carrying ``tenant_id`` belongs to exactly one semantic class.
@@ -284,6 +286,7 @@ STRICT_TENANT_RLS_TABLES: tuple[str, ...] = (
     "runtime_budget_events",
     "runtime_budget_runs",
     "runtime_tasks",
+    "runtime_root_items",
     "security_audit_events",
     "session_feedback_events",
     "session_event_cursors",

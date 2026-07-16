@@ -1120,34 +1120,10 @@ async def send_agent_session_message(request: ToolExecutionRequest) -> str:
     message = str(request.arguments.get("message") or "").strip()
     if child_session_uuid is None:
         if request.arguments.get("team_id") or request.arguments.get("team_name") or request.arguments.get("to"):
-            reservation_pair = None
-            try:
-                reservation_pair = await _reserve_agent_session_message_budget(
-                    budget_run_id=request.context.budget_run_id,
-                    child_session_id=None,
-                    parent_session_id=request.context.session_id,
-                )
-                waiting_payload = _waiting_admission_payload(reservation_pair)
-                if waiting_payload is not None:
-                    return _json(waiting_payload)
-            except RuntimeBudgetDenied as exc:
-                return _json({"ok": False, "error": str(exc), "error_code": "runtime_budget_denied"})
             try:
                 payload = await send_agent_team_message_from_tool_request(request)
-                await _settle_agent_session_message_budget(
-                    reservation_pair,
-                    status=str(payload.get("status") or "queued") if isinstance(payload, dict) else "queued",
-                    consumer=str(payload.get("consumer") or "") if isinstance(payload, dict) else None,
-                    reason="agent_team_message_queued",
-                )
                 return _json(payload)
             except Exception as exc:
-                await _settle_agent_session_message_budget(
-                    reservation_pair,
-                    status="failed",
-                    consumer=None,
-                    reason="agent_team_message_failed",
-                )
                 return _json({"ok": False, "error": f"Agent Team message failed: {exc}"})
         return _json({"ok": False, "error": "child_session_id or team_id/member_name is required"})
     if not message:

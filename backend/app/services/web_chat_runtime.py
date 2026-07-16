@@ -65,6 +65,11 @@ from app.services.runtime_budget_failover import (
 )
 from app.services.runtime_budget_failover_metrics import record_runtime_budget_root_failure
 from app.services.runtime_budget_service import RuntimeBudgetPolicyLookup, RuntimeBudgetRunCreate, RuntimeBudgetService
+from app.services.runtime_root_ledger import (
+    RuntimeRootIntentSpec,
+    register_runtime_task_root_item,
+    transition_runtime_root_item_by_task,
+)
 from app.services.web_chat_broker import web_chat_broker
 
 
@@ -605,17 +610,19 @@ def _apply_terminal_task_update(
     result_summary: str | None,
     metadata_json: dict[str, Any] | None,
 ) -> None:
-    preserve_existing_killed = getattr(task, "status", None) == "killed" and status != "killed"
-    if preserve_existing_killed:
+    existing_status = str(getattr(task, "status", None) or "")
+    sealed_terminal_statuses = {"completed", "failed", "killed", "skipped"}
+    preserve_existing_terminal = existing_status in sealed_terminal_statuses and status != existing_status
+    if preserve_existing_terminal:
         metadata = dict(metadata_json or {})
-        metadata["terminal_update_preserved_status"] = "killed"
+        metadata["terminal_update_preserved_status"] = existing_status
         metadata["terminal_update_attempted_status"] = status
         metadata_json = metadata
-        status_for_timestamp = "killed"
+        status_for_timestamp = existing_status
     else:
         task.status = status
         status_for_timestamp = status
-    if result_summary is not None and not preserve_existing_killed:
+    if result_summary is not None and not preserve_existing_terminal:
         task.result_summary = result_summary
     if metadata_json:
         metadata = dict(task.metadata_json or {})
@@ -697,6 +704,16 @@ async def _apply_terminal_task_update_and_settle(
         }
     )
     locked_task.metadata_json = terminal_metadata
+
+    if getattr(locked_task, "root_runtime_task_id", None) is not None:
+        await transition_runtime_root_item_by_task(
+            db,
+            runtime_task_id=locked_task.id,
+            requested_state=str(locked_task.status),
+            reason_code=f"web_chat_terminal:{terminal_source}",
+            result_refs=(f"runtime-task://{locked_task.id}",),
+            metadata={"terminal_execution_fence_ref": terminal_fence},
+        )
 
     from app.services.session_control_input import settle_pending_controls_for_run
 
@@ -1920,6 +1937,8 @@ async def start_web_chat_run(
     runtime_task_type: str = WEB_CHAT_TURN_TASK_TYPE,
     run_id: uuid.UUID | None = None,
     budget_interactive: bool = True,
+    root_item_intent: RuntimeRootIntentSpec | None = None,
+    budget_admission_status_override: str | None = None,
 ) -> dict[str, Any]:
     if is_agent_expired(agent):
         raise HTTPException(status_code=403, detail="Agent has expired")
@@ -1997,6 +2016,12 @@ async def start_web_chat_run(
             "bound": "root",
             "unavailable": "unavailable",
         }.get(budget_binding.status)
+    if budget_admission_status_override is not None:
+        if budget_admission_status_override not in {"waiting_budget_approval", "approved"}:
+            raise HTTPException(status_code=400, detail="Unsupported budget admission status override")
+        if inherited_budget_run_id is None:
+            raise HTTPException(status_code=409, detail="Budget admission override requires an inherited budget run")
+        budget_admission_status = budget_admission_status_override
     _require_runtime_budget_admission(budget_binding)
     supplied_metadata = apply_runtime_budget_root_binding(supplied_metadata, budget_binding)
     supplied_metadata["budget_interactive"] = bool(budget_interactive)
@@ -2029,7 +2054,11 @@ async def start_web_chat_run(
         depth=1,
         tenant_id=getattr(agent, "tenant_id", None),
         budget_run_id=budget_run_id,
+        budget_reservation_key=(root_item_intent.budget_reservation_key if root_item_intent else None),
         budget_admission_status=budget_admission_status,
+        budget_terminal_reason=(
+            "runtime_budget_approval_required" if budget_admission_status == "waiting_budget_approval" else None
+        ),
         budget_snapshot_json=(dict(budget_binding.payload) if budget_binding.status != "not_applicable" else None),
         metadata_json={
             "user_id": str(user.id),
@@ -2085,6 +2114,17 @@ async def start_web_chat_run(
     # cutover can fail closed without leaving a generation-less run.
     await assign_runtime_task_writer_generation(db, runtime_task)
     db.add(runtime_task)
+    await register_runtime_task_root_item(
+        db,
+        task=runtime_task,
+        intent=root_item_intent
+        or RuntimeRootIntentSpec(
+            intent_key=f"direct:{run_uuid}",
+            work_type="direct",
+            target_ref=f"session:{session.id}",
+            path=(f"agent:{agent.id}",),
+        ),
+    )
     if append_user_message:
         db.add(
             ChatMessage(
@@ -2353,6 +2393,12 @@ async def start_web_chat_run(
         await broadcast_web_chat_event(agent.id, session.id, {"type": "user_message_queued", **payload})
         raise ActiveWebChatRunExists(payload) from exc
 
+    if budget_admission_status == "waiting_budget_approval":
+        payload = _runtime_task_to_run(runtime_task)
+        payload["status"] = "waiting_budget_approval"
+        payload["approval_ref"] = root_item_intent.approval_ref if root_item_intent else None
+        return payload
+
     try:
         from app.services.runtime_task_worker import notify_runtime_task_worker
 
@@ -2567,6 +2613,16 @@ async def start_channel_chat_run_from_saved_turn(
 
     await assign_runtime_task_writer_generation(db, runtime_task)
     db.add(runtime_task)
+    await register_runtime_task_root_item(
+        db,
+        task=runtime_task,
+        intent=RuntimeRootIntentSpec(
+            intent_key=f"direct:{run_uuid}",
+            work_type="direct",
+            target_ref=f"session:{session.id}",
+            path=(f"agent:{agent.id}",),
+        ),
+    )
     try:
         await db.flush()
         await db.commit()

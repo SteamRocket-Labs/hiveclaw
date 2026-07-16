@@ -1179,6 +1179,22 @@ class RuntimeBudgetService:
                 },
             )
             db.add(event)
+            await db.flush()
+            from app.services.runtime_root_ledger import transition_runtime_root_item_by_task
+
+            approval_ref = f"runtime-budget-event://{event.id}"
+            for task_id in resumed_task_ids:
+                await transition_runtime_root_item_by_task(
+                    db,
+                    runtime_task_id=task_id,
+                    requested_state="queued",
+                    reason_code="runtime_budget_approval_granted",
+                    approval_ref=approval_ref,
+                    metadata={
+                        "approval_actor_user_id": str(actor_user_id) if actor_user_id else None,
+                        "approval_budget_run_id": str(run.id),
+                    },
+                )
             await enqueue_budget_transition(
                 db,
                 run=run,
@@ -1235,22 +1251,28 @@ class RuntimeBudgetService:
             run.terminal_reason = "runtime_budget_approval_rejected"
             run.completed_at = current
             self._clear_reserved(run)
-            await db.execute(
-                update(RuntimeTask)
-                .where(
-                    RuntimeTask.budget_run_id == run.id,
-                    RuntimeTask.status.in_(("pending", "resumable")),
-                    RuntimeTask.claimed_by.is_(None),
-                    RuntimeTask.budget_admission_status == "waiting_budget_approval",
+            waiting_tasks = list(
+                (
+                    await db.execute(
+                        select(RuntimeTask)
+                        .where(
+                            RuntimeTask.budget_run_id == run.id,
+                            RuntimeTask.status.in_(("pending", "resumable")),
+                            RuntimeTask.claimed_by.is_(None),
+                            RuntimeTask.budget_admission_status == "waiting_budget_approval",
+                        )
+                        .with_for_update()
+                    )
                 )
-                .values(
-                    status="killed",
-                    completed_at=current,
-                    budget_admission_status="rejected",
-                    budget_terminal_reason="runtime_budget_approval_rejected",
-                    result_summary="Runtime budget approval was rejected before this work was claimed.",
-                )
+                .scalars()
+                .all()
             )
+            for task in waiting_tasks:
+                task.status = "killed"
+                task.completed_at = current
+                task.budget_admission_status = "rejected"
+                task.budget_terminal_reason = "runtime_budget_approval_rejected"
+                task.result_summary = "Runtime budget approval was rejected before this work was claimed."
             event = self._event(
                 run,
                 event_type="overrun_rejected",
@@ -1265,6 +1287,22 @@ class RuntimeBudgetService:
                 },
             )
             db.add(event)
+            await db.flush()
+            from app.services.runtime_root_ledger import transition_runtime_root_item_by_task
+
+            approval_ref = f"runtime-budget-event://{event.id}"
+            for task in waiting_tasks:
+                await transition_runtime_root_item_by_task(
+                    db,
+                    runtime_task_id=task.id,
+                    requested_state="not_admitted",
+                    reason_code="runtime_budget_approval_rejected",
+                    approval_ref=approval_ref,
+                    metadata={
+                        "approval_actor_user_id": str(actor_user_id) if actor_user_id else None,
+                        "approval_budget_run_id": str(run.id),
+                    },
+                )
             await enqueue_budget_transition(
                 db,
                 run=run,

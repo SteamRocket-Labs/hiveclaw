@@ -33,7 +33,7 @@ SESSION_V2_EXISTING_TRANSCRIPT_INDEXES = (
 )
 
 SESSION_V2_PARENT_REVISION = "hr_runtime_authority_0715"
-SESSION_V2_HEAD_REVISION = "session_v2_projection_epoch_0716"
+SESSION_V2_HEAD_REVISION = "runtime_root_ledger_0716"
 
 
 def test_session_v2_migration_is_the_single_head_and_secure_downgrade_preserves_evidence() -> None:
@@ -78,7 +78,7 @@ def test_session_v2_revision_snapshots_match_their_owned_live_contracts() -> Non
         SESSION_V2_TRIGGER_FUNCTION_SIGNATURES as frozen_function_signatures,
         build_session_writer_epoch_function_sql as build_frozen_writer_sql,
     )
-    from migration_snapshots.session_v2_projection_epoch_contract_0716 import (
+    from migration_snapshots.runtime_root_ledger_contract_0716 import (
         build_session_event_contract_function_sql as build_frozen_event_sql,
     )
     from migration_snapshots.session_v2_admission_revision_contract_0716 import (

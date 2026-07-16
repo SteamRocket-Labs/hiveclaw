@@ -549,6 +549,14 @@ RLS_BYPASS_ALLOWLIST = (
     ),
     _grant(
         *(
+            "app/services/team_fanout_recovery.py",
+            "_worker_session",
+            "f'team_fanout_recovery.{operation}'",
+            ("session-state-only",),
+        )
+    ),
+    _grant(
+        *(
             "app/services/runtime_control_bus.py",
             "sweep_pending_transcript_t0_bridges",
             "'sweep pending transcript T0 projections'",

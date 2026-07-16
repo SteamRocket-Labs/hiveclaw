@@ -108,6 +108,10 @@ def _project_head_to_session_v2_parent(container, *, database: str) -> None:
 
     revision = _session_v2_revision_module()
     statements = [
+        # Post-Session-V2 Group 3 head artifact. The release fixture projects
+        # back through Session V2 and must not leave the newest table behind
+        # before the ordinary upgrade replays runtime_root_ledger_0716.
+        "DROP TABLE IF EXISTS runtime_root_items CASCADE",
         "DROP TRIGGER IF EXISTS trg_session_writer_epoch ON runtime_tasks",
         "DROP TRIGGER IF EXISTS trg_session_event_v2_contract ON chat_transcript_events",
     ]

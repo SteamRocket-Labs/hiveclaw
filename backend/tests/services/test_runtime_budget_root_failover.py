@@ -156,6 +156,9 @@ async def test_start_interactive_run_persists_typed_degraded_budget_state(monkey
     async def no_op(*_args, **_kwargs):
         return None
 
+    async def no_op_root_item(*_args, **_kwargs):
+        return SimpleNamespace()
+
     async def assign_writer_generation(_db, task):
         task.writer_generation = 1
         return 1
@@ -163,6 +166,7 @@ async def test_start_interactive_run_persists_typed_degraded_budget_state(monkey
     monkeypatch.setattr(runtime, "_find_active_run", no_active)
     monkeypatch.setattr(runtime, "_create_runtime_budget_root_run_for_chat", unavailable)
     monkeypatch.setattr(runtime, "broadcast_web_chat_event", no_op)
+    monkeypatch.setattr(runtime, "register_runtime_task_root_item", no_op_root_item)
     monkeypatch.setattr(
         "app.services.session_writer_epoch.assign_runtime_task_writer_generation",
         assign_writer_generation,

@@ -233,6 +233,32 @@ def test_terminal_task_update_preserves_existing_killed_status():
     assert task.metadata_json["terminal_update_attempted_status"] == "completed"
 
 
+def test_terminal_task_update_preserves_existing_completed_status_from_late_kill():
+    import app.services.web_chat_runtime as runtime
+
+    task = SimpleNamespace(
+        id=uuid4(),
+        status="completed",
+        created_at=None,
+        started_at=None,
+        completed_at=datetime(2026, 7, 2, 12, 0, tzinfo=timezone.utc),
+        result_summary="model-authored final",
+        metadata_json={"terminal_reason": "stop"},
+    )
+
+    runtime._apply_terminal_task_update(
+        task,
+        status="killed",
+        result_summary="late cancellation",
+        metadata_json={"cancelled_by": "late_control"},
+    )
+
+    assert task.status == "completed"
+    assert task.result_summary == "model-authored final"
+    assert task.metadata_json["terminal_update_preserved_status"] == "completed"
+    assert task.metadata_json["terminal_update_attempted_status"] == "killed"
+
+
 def test_runtime_session_permission_metadata_prefers_latest_session_override():
     import app.services.web_chat_runtime as runtime
     from app.runtime.session import SessionContext
@@ -3645,6 +3671,7 @@ async def test_start_web_chat_run_creates_runtime_task_and_user_message(monkeypa
     import app.services.web_chat_runtime as runtime
     from app.memory.t0.ledger import replay_t0_session_events
     from app.models.audit import ChatMessage
+    from app.models.runtime_root_item import RuntimeRootItem
     from app.models.runtime_task import RuntimeTask
 
     agent_id = uuid4()
@@ -3699,6 +3726,7 @@ async def test_start_web_chat_run_creates_runtime_task_and_user_message(monkeypa
     assert result["status"] == "pending"
     assert any(isinstance(item, ChatMessage) and item.role == "user" for item in db.added)
     task = next(item for item in db.added if isinstance(item, RuntimeTask))
+    root_item = next(item for item in db.added if isinstance(item, RuntimeRootItem))
     assert task.task_type == "web_chat_turn"
     assert task.status == "pending"
     assert task.writer_generation == 1
@@ -3715,6 +3743,12 @@ async def test_start_web_chat_run_creates_runtime_task_and_user_message(monkeypa
     assert task.metadata_json["initial_user_message"]["content"] == "请规划一个长任务"
     assert task.metadata_json["initial_user_message"]["message_id"]
     assert task.metadata_json["initial_user_message_t0_materialized"] is False
+    assert root_item.runtime_task_id == task.id
+    assert root_item.root_runtime_task_id == task.id
+    assert root_item.intent_key == f"direct:{task.id}"
+    assert root_item.work_type == "direct"
+    assert root_item.state == "queued"
+    assert root_item.admission_disposition == "admitted"
     assert db.commits == 1
     assert runtime_lock_order[:2] == ["lock", "find_active"]
     assert not scheduled
@@ -4856,6 +4890,8 @@ async def test_start_web_chat_run_queues_when_active_run_unique_index_conflicts(
         async def execute(self, _stmt):
             if "session_writer_epochs" in str(_stmt):
                 return await super().execute(_stmt)
+            if "runtime_root_items" in str(_stmt):
+                return _ScalarResult(None)
             self.execute_calls += 1
             return _ScalarResult(None if self.execute_calls == 1 else active_run)
 

@@ -408,10 +408,334 @@ async def test_delegate_async_enqueues_for_worker_claim_instead_of_in_process_sp
 
     assert handle.status == "queued"
     assert created["task_type"] == "delegation"
-    assert created["status"] == "pending"
+    assert created["status"] == "suspended"
     assert spawned == []
-    assert updates == []
+    assert len(updates) == 1
+    assert updates[0][1]["status"] == "pending"
+    assert updates[0][1]["metadata_json"]["coordination_publish_state"] == "published"
     assert wakeups == [{"reason": "delegation_created", "runtime_task_id": handle.task_id}]
+
+
+@pytest.mark.asyncio
+async def test_delegate_async_commits_enqueue_before_coordination_publish_and_worker_wake(monkeypatch):
+    from app.agents.coordination import Lease, LeaseAcquireResult
+    from app.agents.orchestrator import delegate_async
+
+    order: list[str] = []
+    created: dict = {}
+
+    class Gateway:
+        async def acquire_lease(self, *, task_key, agent_id, ttl_seconds):
+            order.append("lease")
+            return LeaseAcquireResult(
+                acquired=True,
+                lease=Lease(
+                    id="lease-1",
+                    task_key=task_key,
+                    agent_id=agent_id,
+                    expires_at=datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds),
+                ),
+            )
+
+        async def send_signal(self, **_kwargs):
+            order.append("signal")
+            return SimpleNamespace(id="signal-1", thread_id="thread-1")
+
+    async def fake_create_runtime_task_record(**kwargs):
+        order.append("enqueue")
+        created.update(kwargs)
+        return kwargs["task_id"]
+
+    async def fake_notify_runtime_task_worker(**_kwargs):
+        order.append("worker_wake")
+
+    async def fake_update_runtime_task_record(*_args, **_kwargs):
+        order.append("admission_commit")
+        return True
+
+    async def fake_persist_delegation_event(**_kwargs):
+        return None
+
+    monkeypatch.setattr("app.agents.orchestrator.create_runtime_task_record", fake_create_runtime_task_record)
+    monkeypatch.setattr("app.agents.orchestrator.update_runtime_task_record", fake_update_runtime_task_record)
+    monkeypatch.setattr("app.agents.orchestrator._persist_delegation_event", fake_persist_delegation_event)
+    monkeypatch.setattr("app.services.runtime_task_worker.notify_runtime_task_worker", fake_notify_runtime_task_worker)
+
+    target = SimpleNamespace(id=uuid4(), name="Target", role_description="")
+    owner_id = uuid4()
+    parent_agent_id = uuid4()
+    handle = await delegate_async(
+        target=target,
+        target_model=SimpleNamespace(provider="openai", model="gpt-4.1"),
+        conversation_messages=[{"role": "user", "content": "inspect"}],
+        owner_id=owner_id,
+        session_id="child-session",
+        coordination_gateway=Gateway(),
+        **_a2a_authority_kwargs(
+            target=target,
+            owner_id=owner_id,
+            session_id="child-session",
+            parent_agent_id=parent_agent_id,
+            parent_session_id="root-session",
+        ),
+    )
+
+    assert handle.status == "queued"
+    assert order == ["enqueue", "lease", "signal", "admission_commit", "worker_wake"]
+    assert created["root_item_intent_key"] == f"a2a:{handle.task_id}"
+    assert created["root_item_work_type"] == "a2a"
+    assert created["root_item_state"] == "queued"
+
+
+@pytest.mark.asyncio
+async def test_coordination_recovery_reuses_existing_signal_after_lease_expiry() -> None:
+    from app.agents.coordination import Lease, LeaseAcquireResult, Signal
+    from app.agents.orchestrator import (
+        AgentDelegationRequest,
+        OrchestrationPolicy,
+        _ensure_delegation_coordination_published,
+    )
+
+    task_id = str(uuid4())
+    target = SimpleNamespace(id=uuid4(), name="Target", role_description="")
+    parent_agent_id = uuid4()
+    existing_signal = Signal(
+        id="signal-existing",
+        from_agent_id=str(parent_agent_id),
+        to_agent_id=str(target.id),
+        content="inspect",
+        signal_type="delegation_started",
+        thread_id="trace-recovery",
+        created_at=datetime.now(timezone.utc),
+        metadata={"runtime_task_id": task_id},
+    )
+    sent: list[dict] = []
+
+    class Gateway:
+        async def acquire_lease(self, *, task_key, agent_id, ttl_seconds):
+            return LeaseAcquireResult(
+                acquired=True,
+                lease=Lease(
+                    id="lease-reacquired",
+                    task_key=task_key,
+                    agent_id=agent_id,
+                    expires_at=datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds),
+                ),
+            )
+
+        async def read_signals(self, agent_id, *, thread_id=None):
+            assert agent_id == str(target.id)
+            assert thread_id == "trace-recovery"
+            return [existing_signal]
+
+        async def send_signal(self, **kwargs):
+            sent.append(kwargs)
+            raise AssertionError("recovery must reuse the durable signal")
+
+    request = AgentDelegationRequest(
+        target=target,
+        target_model=SimpleNamespace(provider="openai", model="gpt-4.1"),
+        conversation_messages=[{"role": "user", "content": "inspect"}],
+        owner_id=uuid4(),
+        session_id="child-recovery",
+        parent_agent_id=parent_agent_id,
+        parent_session_id="parent-recovery",
+        trace_id="trace-recovery",
+        policy=OrchestrationPolicy(timeout_seconds=120),
+        runtime_task_id=task_id,
+    )
+
+    admission = await _ensure_delegation_coordination_published(
+        task_id=task_id,
+        request=request,
+        coordination_gateway=Gateway(),
+    )
+
+    assert admission.published is True
+    assert admission.lease_id == "lease-reacquired"
+    assert admission.signal_id == "signal-existing"
+    assert admission.signal_thread_id == "trace-recovery"
+    assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_delegate_async_enqueue_failure_cannot_publish_or_return_queued(monkeypatch):
+    from app.agents.orchestrator import delegate_async
+
+    effects: list[str] = []
+
+    class Gateway:
+        async def acquire_lease(self, **_kwargs):
+            effects.append("lease")
+            raise AssertionError("coordination must not run after enqueue failure")
+
+    async def fail_create_runtime_task_record(**_kwargs):
+        raise RuntimeError("durable enqueue unavailable")
+
+    async def unexpected_wake(**_kwargs):
+        effects.append("worker_wake")
+
+    monkeypatch.setattr("app.agents.orchestrator.create_runtime_task_record", fail_create_runtime_task_record)
+    monkeypatch.setattr("app.services.runtime_task_worker.notify_runtime_task_worker", unexpected_wake)
+
+    target = SimpleNamespace(id=uuid4(), name="Target", role_description="")
+    owner_id = uuid4()
+    with pytest.raises(RuntimeError, match="durable enqueue unavailable"):
+        await delegate_async(
+            target=target,
+            target_model=SimpleNamespace(provider="openai", model="gpt-4.1"),
+            conversation_messages=[{"role": "user", "content": "inspect"}],
+            owner_id=owner_id,
+            session_id="child-session",
+            coordination_gateway=Gateway(),
+            **_a2a_authority_kwargs(
+                target=target,
+                owner_id=owner_id,
+                session_id="child-session",
+                parent_agent_id=uuid4(),
+                parent_session_id="root-session",
+            ),
+        )
+
+    assert effects == []
+
+
+@pytest.mark.asyncio
+async def test_delegate_async_persists_cycle_as_not_admitted_without_side_effects(monkeypatch):
+    from app.agents.orchestrator import delegate_async
+    from app.core.execution_context import ExecutionPrincipal
+
+    created: dict = {}
+    effects: list[str] = []
+
+    class Gateway:
+        async def acquire_lease(self, **_kwargs):
+            effects.append("lease")
+            raise AssertionError("cycle must stop before coordination")
+
+    async def fake_create_runtime_task_record(**kwargs):
+        created.update(kwargs)
+        return kwargs["task_id"]
+
+    async def unexpected_wake(**_kwargs):
+        effects.append("worker_wake")
+
+    async def fake_persist_delegation_event(**_kwargs):
+        return None
+
+    monkeypatch.setattr("app.agents.orchestrator.create_runtime_task_record", fake_create_runtime_task_record)
+    monkeypatch.setattr("app.agents.orchestrator._persist_delegation_event", fake_persist_delegation_event)
+    monkeypatch.setattr("app.services.runtime_task_worker.notify_runtime_task_worker", unexpected_wake)
+
+    parent_agent_id = uuid4()
+    target = SimpleNamespace(id=uuid4(), name="Target", role_description="", tenant_id=uuid4())
+    owner_id = uuid4()
+    principal = ExecutionPrincipal(
+        tenant_id=target.tenant_id,
+        source_agent_id=parent_agent_id,
+        requester_user_id=owner_id,
+        root_session_id="root-session",
+        delegation_chain=(f"agent:{parent_agent_id}", f"agent:{target.id}"),
+    )
+    handle = await delegate_async(
+        target=target,
+        target_model=SimpleNamespace(provider="openai", model="gpt-4.1"),
+        conversation_messages=[{"role": "user", "content": "re-enter"}],
+        owner_id=owner_id,
+        session_id="cycle-session",
+        parent_agent_id=parent_agent_id,
+        parent_session_id="root-session",
+        tenant_id=target.tenant_id,
+        execution_principal=principal.to_evidence(),
+        coordination_gateway=Gateway(),
+    )
+
+    assert handle.status == "cycle_blocked"
+    assert created["status"] == "skipped"
+    assert created["root_item_state"] == "not_admitted"
+    assert created["root_item_admission_disposition"] == "not_admitted"
+    assert created["root_item_reason_code"] == "runtime_root_cycle_detected"
+    assert effects == []
+
+
+@pytest.mark.asyncio
+async def test_approved_a2a_task_publishes_coordination_before_worker_execution(monkeypatch):
+    from app.agents.orchestrator import (
+        _DelegationCoordinationAdmission,
+        dispatch_persisted_async_delegation,
+    )
+
+    task_id = uuid4().hex
+    owner_id = uuid4()
+    parent_agent_id = uuid4()
+    target = SimpleNamespace(id=uuid4(), name="Approved Worker", role_description="")
+    model = SimpleNamespace(provider="openai", model="gpt-4.1", api_key="k", base_url=None)
+    authority_metadata = _persisted_a2a_authority_metadata(
+        task_id=task_id,
+        trace_id="trace-approved",
+        target=target,
+        target_model=model,
+        owner_id=owner_id,
+        parent_agent_id=parent_agent_id,
+        parent_session_id="parent-approved",
+        child_session_id="child-approved",
+        conversation_messages=[{"role": "user", "content": "continue after approval"}],
+        tool_profile="review_readonly",
+    )
+    order = []
+
+    async def fake_get_runtime_task_record(_task_id):
+        return {
+            "task_id": task_id,
+            "task_type": "delegation",
+            "status": "pending",
+            "trace_id": "trace-approved",
+            "parent_agent_id": str(parent_agent_id),
+            "child_agent_id": str(target.id),
+            "parent_session_id": "parent-approved",
+            "child_session_id": "child-approved",
+            "depth": 1,
+            "budget_admission_status": "approved",
+            "metadata": {
+                "owner_id": str(owner_id),
+                "target_agent_id": str(target.id),
+                "conversation_messages": [{"role": "user", "content": "continue after approval"}],
+                "tool_profile": "review_readonly",
+                "coordination_publish_state": "pending",
+                **authority_metadata,
+            },
+        }
+
+    async def fake_resolve_target_runtime(_child_agent_id):
+        return target, model
+
+    async def fake_publish(**_kwargs):
+        order.append("coordination")
+        return _DelegationCoordinationAdmission(
+            published=True,
+            lease_id="lease-approved",
+            task_key="task-key-approved",
+            signal_id="signal-approved",
+            signal_thread_id="trace-approved",
+        )
+
+    async def fake_update(_task_id, **kwargs):
+        order.append("running_commit")
+        assert kwargs["status"] == "running"
+        assert kwargs["metadata_json"]["coordination_publish_state"] == "published"
+        return True
+
+    def fake_spawn(**_kwargs):
+        order.append("execute")
+
+    monkeypatch.setattr("app.agents.orchestrator.get_runtime_task_record", fake_get_runtime_task_record)
+    monkeypatch.setattr("app.agents.orchestrator._resolve_resumable_target_runtime", fake_resolve_target_runtime)
+    monkeypatch.setattr("app.agents.orchestrator._ensure_delegation_coordination_published", fake_publish)
+    monkeypatch.setattr("app.agents.orchestrator.update_runtime_task_record", fake_update)
+    monkeypatch.setattr("app.agents.orchestrator._spawn_async_delegation_task", fake_spawn)
+
+    assert await dispatch_persisted_async_delegation(task_id) is True
+    assert order == ["coordination", "running_commit", "execute"]
 
 
 @pytest.mark.asyncio
@@ -968,7 +1292,7 @@ async def test_delegate_async_returns_handle_immediately(monkeypatch):
     assert handle.target_name == "Worker"
     assert handle.status == "queued"
     assert created["task_type"] == "delegation"
-    assert created["status"] == "pending"
+    assert created["status"] == "suspended"
 
 
 @pytest.mark.asyncio
@@ -1013,7 +1337,7 @@ async def test_delegate_async_default_worker_safe_persists_mutating_replay_contr
     )
 
     assert handle.task_id
-    assert created["status"] == "pending"
+    assert created["status"] == "suspended"
     assert created["child_agent_id"] == target.id
     assert created["parent_agent_id"] == parent_agent_id
     metadata = created["metadata_json"]
@@ -1077,7 +1401,7 @@ async def test_delegate_async_persists_readonly_resumable_payload_for_restart_re
     )
 
     assert handle.task_id
-    assert created["status"] == "pending"
+    assert created["status"] == "suspended"
     assert created["child_agent_id"] == target.id
     assert created["parent_agent_id"] == parent_agent_id
     metadata = created["metadata_json"]

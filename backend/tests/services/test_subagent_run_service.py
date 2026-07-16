@@ -45,7 +45,7 @@ async def test_start_subagent_run_queues_subagent_task_and_wakes_worker(monkeypa
 
     async def _fake_child_session(**kwargs):
         captured["child_session"] = kwargs
-        return "child-session-1"
+        return str(kwargs["child_session_id"])
 
     monkeypatch.setattr(svc, "create_runtime_task_record", _fake_create)
     monkeypatch.setattr(svc, "create_subagent_child_session", _fake_child_session)
@@ -65,7 +65,7 @@ async def test_start_subagent_run_queues_subagent_task_and_wakes_worker(monkeypa
         context_window_tokens=1_000_000,
     )
     assert started.run_id == captured["task_id"]
-    assert started.child_session_id == "child-session-1"
+    assert started.child_session_id == str(captured["child_session"]["child_session_id"])
     assert captured["task_type"] == svc.SUBAGENT_RUN_TASK_TYPE == "subagent"
     assert captured["status"] == "pending"
     assert captured["parent_agent_id"] == parent
@@ -92,6 +92,49 @@ async def test_start_subagent_run_queues_subagent_task_and_wakes_worker(monkeypa
     )
     assert "restart_resume_blocker" not in captured["metadata_json"]
     assert captured["notify"] == {"reason": "subagent_created", "runtime_task_id": started.run_id}
+
+
+@pytest.mark.asyncio
+async def test_subagent_durable_enqueue_precedes_child_session_projection(monkeypatch):
+    order: list[str] = []
+    captured: dict[str, object] = {}
+
+    async def _fake_create(**kwargs):
+        order.append("runtime_task")
+        captured["create"] = kwargs
+        return kwargs["task_id"]
+
+    async def _fake_child_session(**kwargs):
+        order.append("child_session")
+        captured["child"] = kwargs
+        return str(kwargs["child_session_id"])
+
+    async def _fake_notify(**_kwargs):
+        order.append("worker_wake")
+
+    monkeypatch.setattr(svc, "create_runtime_task_record", _fake_create)
+    monkeypatch.setattr(svc, "create_subagent_child_session", _fake_child_session)
+    monkeypatch.setattr("app.services.runtime_task_worker.notify_runtime_task_worker", _fake_notify)
+
+    parent_agent_id = uuid.uuid4()
+    parent_user_id = uuid.uuid4()
+    root_runtime_task_id = uuid.uuid4()
+    started = await svc.start_subagent_run(
+        parent_agent_id=parent_agent_id,
+        parent_user_id=parent_user_id,
+        spec_name="scout",
+        spec_type="explorer",
+        task="inspect",
+        parent_session_id=str(uuid.uuid4()),
+        root_runtime_task_id=root_runtime_task_id,
+    )
+
+    assert order == ["runtime_task", "child_session", "worker_wake"]
+    assert captured["create"]["child_session_id"] == started.child_session_id
+    assert captured["child"]["child_session_id"] == uuid.UUID(started.child_session_id)
+    assert captured["child"]["runtime_task_id"] == uuid.UUID(started.run_id)
+    assert captured["create"]["root_item_intent_key"] == f"subagent:{started.run_id}"
+    assert captured["create"]["root_item_state"] == "queued"
 
 
 @pytest.mark.asyncio
@@ -308,7 +351,7 @@ async def test_start_subagent_run_creates_child_session_and_records_session_cont
 
     async def _fake_create_child_session(**kwargs):
         captured["child_session_kwargs"] = kwargs
-        return "child-session"
+        return str(kwargs["child_session_id"])
 
     async def _fake_create(**kwargs):
         captured["runtime_task"] = kwargs
@@ -331,19 +374,19 @@ async def test_start_subagent_run_creates_child_session_and_records_session_cont
     )
 
     assert started.run_id == captured["runtime_task"]["task_id"]
-    assert started.child_session_id == "child-session"
+    assert started.child_session_id == str(captured["child_session_kwargs"]["child_session_id"])
     assert captured["child_session_kwargs"]["parent_agent_id"] == parent
     assert captured["child_session_kwargs"]["parent_user_id"] == user
     assert captured["child_session_kwargs"]["parent_session_id"] == "parent-session"
     assert captured["child_session_kwargs"]["spec_name"] == "scout"
     assert captured["child_session_kwargs"]["spec_type"] == "explorer"
     assert captured["child_session_kwargs"]["run_id"] == started.run_id
-    assert captured["runtime_task"]["child_session_id"] == "child-session"
+    assert captured["runtime_task"]["child_session_id"] == started.child_session_id
     metadata = captured["runtime_task"]["metadata_json"]
-    assert metadata["child_session_id"] == "child-session"
+    assert metadata["child_session_id"] == started.child_session_id
     assert metadata["context_mode"] == "none"
     assert metadata["session_contract"]["kind"] == "subagent_child_session"
-    assert metadata["session_contract"]["continuation_address"] == "child-session"
+    assert metadata["session_contract"]["continuation_address"] == started.child_session_id
     assert metadata["session_contract"]["run_id"] == started.run_id
 
 

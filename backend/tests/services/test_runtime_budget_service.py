@@ -1003,6 +1003,7 @@ async def test_require_confirmation_freezes_and_approval_resumes_exact_pending_t
     monkeypatch,
 ):
     from app.models.runtime_budget import RuntimeBudgetEvent, RuntimeBudgetRun
+    from app.models.runtime_root_item import RuntimeRootItem
     from app.models.runtime_task import RuntimeTask
     from app.services import runtime_task_worker
     from app.services.runtime_budget_service import (
@@ -1021,6 +1022,7 @@ async def test_require_confirmation_freezes_and_approval_resumes_exact_pending_t
         max_background_tasks=0,
     )
     task_id = uuid.uuid4()
+    source_agent_id = uuid.uuid4()
     async with owner_sessionmaker() as db:
         db.add(
             RuntimeTask(
@@ -1031,6 +1033,23 @@ async def test_require_confirmation_freezes_and_approval_resumes_exact_pending_t
                 budget_run_id=run.id,
                 budget_reservation_key="approval-child",
                 budget_admission_status="admitting",
+                root_runtime_task_id=task_id,
+            )
+        )
+        await db.flush()
+        db.add(
+            RuntimeRootItem(
+                tenant_id=tenant_id,
+                root_runtime_task_id=task_id,
+                runtime_task_id=task_id,
+                source_agent_id=source_agent_id,
+                intent_key=f"subagent:{task_id}",
+                work_type="subagent",
+                target_ref="subagent:reviewer",
+                path_json=[f"agent:{source_agent_id}", "subagent:reviewer"],
+                state="waiting_approval",
+                admission_disposition="deferred",
+                approval_ref=f"runtime-budget://{run.id}/reservation/approval-child",
             )
         )
         await db.commit()
@@ -1071,6 +1090,9 @@ async def test_require_confirmation_freezes_and_approval_resumes_exact_pending_t
 
     async with owner_sessionmaker() as db:
         resumed_task = (await db.execute(select(RuntimeTask).where(RuntimeTask.id == task_id))).scalar_one()
+        resumed_root_item = (
+            await db.execute(select(RuntimeRootItem).where(RuntimeRootItem.runtime_task_id == task_id))
+        ).scalar_one()
         events = list(
             (
                 await db.execute(
@@ -1092,6 +1114,10 @@ async def test_require_confirmation_freezes_and_approval_resumes_exact_pending_t
     assert resumed_task.status == "pending"
     assert resumed_task.budget_admission_status == "approved"
     assert resumed_task.budget_terminal_reason is None
+    assert resumed_root_item.state == "queued"
+    assert resumed_root_item.admission_disposition == "admitted"
+    assert resumed_root_item.reason_code == "runtime_budget_approval_granted"
+    assert resumed_root_item.approval_ref == f"runtime-budget-event://{events[-1].id}"
     assert [event.event_type for event in events] == ["denial", "reservation", "overrun_approved"]
     assert events[-1].metadata_json["actor_user_id"] == str(actor_id)
     assert events[-1].metadata_json["resumed_runtime_task_ids"] == [str(task_id)]
@@ -1101,6 +1127,7 @@ async def test_require_confirmation_freezes_and_approval_resumes_exact_pending_t
 @pytest.mark.usefixtures("migrated_pg_url")
 async def test_reject_overrun_stops_frozen_tasks_and_records_actor(owner_sessionmaker):
     from app.models.runtime_budget import RuntimeBudgetEvent, RuntimeBudgetRun
+    from app.models.runtime_root_item import RuntimeRootItem
     from app.models.runtime_task import RuntimeTask
     from app.services.runtime_budget_service import RuntimeBudgetService
 
@@ -1108,6 +1135,7 @@ async def test_reject_overrun_stops_frozen_tasks_and_records_actor(owner_session
     service = RuntimeBudgetService(session_factory=owner_sessionmaker)
     run = await _create_run(service, tenant_id, fail_mode="require_confirmation")
     task_id = uuid.uuid4()
+    source_agent_id = uuid.uuid4()
     async with owner_sessionmaker() as db:
         db.add(
             RuntimeTask(
@@ -1117,6 +1145,23 @@ async def test_reject_overrun_stops_frozen_tasks_and_records_actor(owner_session
                 status="pending",
                 budget_run_id=run.id,
                 budget_admission_status="waiting_budget_approval",
+                root_runtime_task_id=task_id,
+            )
+        )
+        await db.flush()
+        db.add(
+            RuntimeRootItem(
+                tenant_id=tenant_id,
+                root_runtime_task_id=task_id,
+                runtime_task_id=task_id,
+                source_agent_id=source_agent_id,
+                intent_key=f"workflow:{task_id}",
+                work_type="workflow",
+                target_ref=f"workflow:{task_id}",
+                path_json=[f"agent:{source_agent_id}", f"workflow:{task_id}"],
+                state="waiting_approval",
+                admission_disposition="deferred",
+                approval_ref=f"runtime-budget://{run.id}/reservation/workflow:{task_id}",
             )
         )
         stored_run = (await db.execute(select(RuntimeBudgetRun).where(RuntimeBudgetRun.id == run.id))).scalar_one()
@@ -1133,6 +1178,9 @@ async def test_reject_overrun_stops_frozen_tasks_and_records_actor(owner_session
 
     async with owner_sessionmaker() as db:
         stopped_task = (await db.execute(select(RuntimeTask).where(RuntimeTask.id == task_id))).scalar_one()
+        stopped_root_item = (
+            await db.execute(select(RuntimeRootItem).where(RuntimeRootItem.runtime_task_id == task_id))
+        ).scalar_one()
         event = (
             await db.execute(
                 select(RuntimeBudgetEvent).where(
@@ -1146,6 +1194,10 @@ async def test_reject_overrun_stops_frozen_tasks_and_records_actor(owner_session
     assert stopped_task.status == "killed"
     assert stopped_task.budget_admission_status == "rejected"
     assert stopped_task.budget_terminal_reason == "runtime_budget_approval_rejected"
+    assert stopped_root_item.state == "not_admitted"
+    assert stopped_root_item.admission_disposition == "not_admitted"
+    assert stopped_root_item.reason_code == "runtime_budget_approval_rejected"
+    assert stopped_root_item.approval_ref == f"runtime-budget-event://{event.id}"
     assert event.reason == "owner declined further work"
     assert event.metadata_json["actor_user_id"] == str(actor_id)
 

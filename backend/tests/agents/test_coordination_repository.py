@@ -119,13 +119,17 @@ class TestLease:
         # Upsert returns no row (WHERE expires_at <= current was false) →
         # repository follows up with a SELECT to find the existing lease id.
         existing_id = uuid.uuid4()
+        expires_at = now + timedelta(seconds=600)
         session.queue(
             _ExecuteResult(first=None),
-            _ExecuteResult(scalar=existing_id),
+            _ExecuteResult(first=_Row(id=existing_id, agent_id="agent_a", expires_at=expires_at)),
         )
         result = await repo.acquire_lease(task_key="task-1", agent_id="agent_b", ttl_seconds=600)
         assert result.acquired is False
         assert result.existing_lease_id == str(existing_id)
+        assert result.lease is not None
+        assert result.lease.agent_id == "agent_a"
+        assert result.lease.expires_at == expires_at
 
 
 async def _acquire_with_known_id(

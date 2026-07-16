@@ -904,6 +904,32 @@ class WorkflowRuntimeService:
 
             await assign_runtime_task_writer_generation(session, task)
             session.add(task)
+            from app.services.runtime_root_ledger import (
+                RuntimeRootIntentSpec,
+                register_runtime_task_root_item,
+            )
+
+            await register_runtime_task_root_item(
+                session,
+                task=task,
+                intent=RuntimeRootIntentSpec(
+                    intent_key=f"workflow:{run_id}",
+                    work_type="workflow",
+                    target_ref=f"workflow:{run_id}",
+                    path=((f"agent:{agent_id}",) if agent_id is not None else ()),
+                    state=(
+                        "waiting_approval" if admission_decision.waiting else "queued" if enqueue_only else "running"
+                    ),
+                    admission_disposition=("deferred" if admission_decision.waiting else "admitted"),
+                    reason_code=("runtime_budget_approval_required" if admission_decision.waiting else None),
+                    approval_ref=(
+                        f"runtime-budget://{budget_uuid}/reservation/{budget_reservation_key}"
+                        if admission_decision.waiting
+                        else None
+                    ),
+                    budget_reservation_key=budget_reservation_key,
+                ),
+            )
             session.add(
                 WorkflowQuota(
                     tenant_id=tenant_id,
@@ -1211,6 +1237,14 @@ class WorkflowRuntimeService:
                     db_row.status = "unknown_requires_reconciliation"
                 task = (await session.execute(select(RuntimeTask).where(RuntimeTask.id == run_id))).scalar_one()
                 task.status = "suspended"
+                from app.services.runtime_root_ledger import transition_runtime_root_item_by_task
+
+                await transition_runtime_root_item_by_task(
+                    session,
+                    runtime_task_id=run_id,
+                    requested_state="suspended",
+                    reason_code="workflow_external_step_reconciliation_required",
+                )
                 meta = dict(task.metadata_json or {})
                 meta["needs_reconciliation"] = [row.step_id for row in in_flight_external]
                 task.metadata_json = meta
@@ -1231,6 +1265,13 @@ class WorkflowRuntimeService:
         async with self._session(tenant_id) as session:
             task = (await session.execute(select(RuntimeTask).where(RuntimeTask.id == run_id))).scalar_one()
             task.status = "running"
+            from app.services.runtime_root_ledger import transition_runtime_root_item_by_task
+
+            await transition_runtime_root_item_by_task(
+                session,
+                runtime_task_id=run_id,
+                requested_state="running",
+            )
 
         return await self._execute(compiled, run_id=run_id, tenant_id=tenant_id, args=args, leaf_executor=leaf_executor)
 
@@ -1242,6 +1283,14 @@ class WorkflowRuntimeService:
             if task is None:
                 raise WorkflowRunNotFound(str(run_id))
             task.status = "killed"
+            from app.services.runtime_root_ledger import transition_runtime_root_item_by_task
+
+            await transition_runtime_root_item_by_task(
+                session,
+                runtime_task_id=task.id,
+                requested_state="killed",
+                reason_code="workflow_killed",
+            )
 
     async def record_dynamic_repair_attempt(
         self, run_id: uuid.UUID | str, *, tenant_id: uuid.UUID | str | None = None
@@ -1754,6 +1803,15 @@ class WorkflowRuntimeService:
                     "suspended": "suspended",
                     "killed": "killed",
                 }[outcome.status]
+            from app.services.runtime_root_ledger import transition_runtime_root_item_by_task
+
+            await transition_runtime_root_item_by_task(
+                session,
+                runtime_task_id=run_id,
+                requested_state=str(task.status),
+                reason_code=str(outcome.reason or "").strip() or None,
+                result_refs=[f"runtime-task://{run_id}"],
+            )
             if outcome.reason:
                 metadata = dict(task.metadata_json or {})
                 metadata["last_outcome_reason"] = outcome.reason

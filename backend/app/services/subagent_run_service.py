@@ -174,6 +174,8 @@ async def create_subagent_child_session(
     spec_type: str,
     task: str,
     run_id: str,
+    child_session_id: uuid.UUID | str | None = None,
+    runtime_task_id: uuid.UUID | str | None = None,
     parent_session_id: str | None = None,
     tenant_id: uuid.UUID | None = None,
     trace_id: str | None = None,
@@ -183,12 +185,13 @@ async def create_subagent_child_session(
     """Create the lightweight child-session projection for a background subagent."""
 
     resolved_tenant_id = tenant_id if tenant_id is not None else await resolve_tenant_for_agent(parent_agent_id)
-    child_session_id = uuid.uuid4()
+    child_session_uuid = _uuid_or_none(child_session_id) or uuid.uuid4()
+    runtime_task_uuid = _uuid_or_none(runtime_task_id or run_id)
     parent_session_uuid = _uuid_or_none(parent_session_id)
     metadata = {
         "session_contract": _build_subagent_session_contract(
             run_id=run_id,
-            child_session_id=str(child_session_id),
+            child_session_id=str(child_session_uuid),
         ),
         "session_state": session_state,
         "subagent_name": spec_name,
@@ -204,7 +207,7 @@ async def create_subagent_child_session(
     }
     async with tenant_scoped_session(resolved_tenant_id) as db:
         session = ChatSession(
-            id=child_session_id,
+            id=child_session_uuid,
             agent_id=parent_agent_id,
             tenant_id=resolved_tenant_id,
             user_id=parent_user_id,
@@ -217,11 +220,9 @@ async def create_subagent_child_session(
             listed_surface="parent",
             parent_session_id=parent_session_uuid,
             root_session_id=parent_session_uuid,
-            # RuntimeTask is created immediately after this projection. Keep the
-            # FK empty here to avoid referencing a row that has not been inserted
-            # yet; the run id remains in metadata and the RuntimeTask points back
-            # to this child session via child_session_id.
-            runtime_task_id=None,
+            # Group 3 admission contract: the durable RuntimeTask is committed
+            # before this projection, so the FK can bind the exact queued intent.
+            runtime_task_id=runtime_task_uuid,
             transcript_metadata_json=metadata,
         )
         db.add(session)
@@ -229,7 +230,7 @@ async def create_subagent_child_session(
             db=db,
             agent_id=parent_agent_id,
             tenant_id=resolved_tenant_id,
-            session_id=child_session_id,
+            session_id=child_session_uuid,
             actor_type="agent",
             event_type=(
                 "subagent_task_waiting_budget_approval"
@@ -239,8 +240,8 @@ async def create_subagent_child_session(
             content=task,
             role="user",
             user_id=parent_user_id,
-            run_id=None,
-            runtime_task_id=None,
+            run_id=runtime_task_uuid,
+            runtime_task_id=runtime_task_uuid,
             root_session_id=parent_session_uuid,
             parent_session_id=parent_session_uuid,
             metadata=metadata,
@@ -249,7 +250,7 @@ async def create_subagent_child_session(
             source="subagent",
         )
         await db.commit()
-    return str(child_session_id)
+    return str(child_session_uuid)
 
 
 async def start_subagent_run(
@@ -287,6 +288,8 @@ async def start_subagent_run(
         )
     parent_user_id = requester_user_id
     run_id = uuid.uuid4().hex
+    child_session_uuid = uuid.uuid4()
+    child_session_id = str(child_session_uuid)
     budget_uuid = _uuid_or_none(budget_run_id)
     budget_reservation_key: str | None = None
     reservation_service = budget_service or (RuntimeBudgetService() if budget_uuid is not None else None)
@@ -320,20 +323,6 @@ async def start_subagent_run(
         )
         admission_status = admission.status
 
-    child_session_id = None
-    if parent_user_id is not None:
-        child_session_id = await create_subagent_child_session(
-            parent_agent_id=parent_agent_id,
-            parent_user_id=parent_user_id,
-            spec_name=spec_name,
-            spec_type=spec_type,
-            task=task,
-            run_id=run_id,
-            parent_session_id=parent_session_id,
-            trace_id=trace_id,
-            context_mode=context_mode,
-            session_state=("waiting_budget_approval" if admission_status == "waiting_budget_approval" else "running"),
-        )
     replay_safe = _subagent_type_restart_replay_safe(spec_type)
     side_effect_risk = "read_only" if replay_safe else "mutating"
     return_contract = build_subagent_return_contract(
@@ -438,6 +427,22 @@ async def start_subagent_run(
             root_session_id=parent_session_id,
             root_runtime_task_id=root_runtime_task_id,
             delegation_chain=metadata["delegation_chain"],
+            root_item_intent_key=f"subagent:{run_id}",
+            root_item_work_type="subagent",
+            root_item_target_ref=f"subagent:{spec_name}",
+            root_item_path=[f"agent:{parent_agent_id}"],
+            root_item_state=("waiting_approval" if admission_status == "waiting_budget_approval" else "queued"),
+            root_item_admission_disposition=(
+                "deferred" if admission_status == "waiting_budget_approval" else "admitted"
+            ),
+            root_item_reason_code=(
+                "runtime_budget_approval_required" if admission_status == "waiting_budget_approval" else None
+            ),
+            root_item_approval_ref=(
+                f"runtime-budget://{budget_uuid}/reservation/{budget_reservation_key}"
+                if admission_status == "waiting_budget_approval" and budget_uuid and budget_reservation_key
+                else None
+            ),
         )
     except Exception:
         if (
@@ -451,6 +456,47 @@ async def start_subagent_run(
                     budget_run_id=budget_uuid,
                     reservation_key=budget_reservation_key,
                     reason="subagent_enqueue_failed",
+                    runtime_task_id=uuid.UUID(run_id),
+                )
+            )
+        raise
+    try:
+        child_session_id = await create_subagent_child_session(
+            parent_agent_id=parent_agent_id,
+            parent_user_id=parent_user_id,
+            spec_name=spec_name,
+            spec_type=spec_type,
+            task=task,
+            run_id=run_id,
+            child_session_id=child_session_uuid,
+            runtime_task_id=uuid.UUID(run_id),
+            parent_session_id=parent_session_id,
+            trace_id=trace_id,
+            context_mode=context_mode,
+            session_state=("waiting_budget_approval" if admission_status == "waiting_budget_approval" else "running"),
+        )
+    except Exception:
+        await update_runtime_task_record(
+            persisted_run_id,
+            status="needs_reconciliation",
+            result_summary="Subagent child session projection failed after durable enqueue.",
+            metadata_json={
+                "child_session_projection_failed": True,
+                "child_session_id": child_session_id,
+                "recovery_action": "rebuild_child_session_projection",
+            },
+        )
+        if (
+            budget_uuid is not None
+            and budget_reservation_key
+            and reservation_service is not None
+            and admission_status == "admitted"
+        ):
+            await reservation_service.settle(
+                RuntimeBudgetSettlement(
+                    budget_run_id=budget_uuid,
+                    reservation_key=budget_reservation_key,
+                    reason="subagent_child_session_projection_failed",
                     runtime_task_id=uuid.UUID(run_id),
                 )
             )

@@ -428,6 +428,36 @@ async def test_runtime_worker_consumes_hr_draft_reconciler(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_runtime_worker_consumes_team_fanout_recovery_and_records_counts(monkeypatch):
+    import app.services.runtime_task_worker as worker
+
+    calls = []
+
+    class FakeRecoveryService:
+        async def drain_once(self, *, worker_id, limit):
+            calls.append((worker_id, limit))
+            return {
+                "claimed": 3,
+                "recovered": 2,
+                "retried": 1,
+                "needs_reconciliation": 0,
+            }
+
+    monkeypatch.setattr(
+        "app.services.team_fanout_recovery.TeamFanoutRecoveryService",
+        FakeRecoveryService,
+        raising=False,
+    )
+    before = int(worker._STATE.get("team_fanout_recovered") or 0)
+
+    result = await worker.recover_team_fanout_admissions_once(worker_id="runtime-worker")
+
+    assert calls == [("runtime-worker", 100)]
+    assert result["claimed"] == 3
+    assert worker._STATE["team_fanout_recovered"] == before + 2
+
+
+@pytest.mark.asyncio
 async def test_runtime_worker_loop_calls_hr_reconciler_before_claiming(monkeypatch):
     import asyncio
 

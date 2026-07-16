@@ -361,6 +361,102 @@ async def test_terminal_runtime_task_enqueues_completion_in_same_transaction(mon
 
 
 @pytest.mark.asyncio
+async def test_late_completion_cannot_overwrite_killed_runtime_task(monkeypatch):
+    from app.services.runtime_task_service import update_runtime_task_record
+
+    tenant_id = uuid4()
+    killed_at = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
+    task = type(
+        "RuntimeTaskStub",
+        (),
+        {
+            "id": uuid4(),
+            "tenant_id": tenant_id,
+            "task_type": "delegation",
+            "status": "killed",
+            "metadata_json": {"terminal_reason": "cancelled_by_user"},
+            "started_at": killed_at,
+            "completed_at": killed_at,
+            "trace_id": "trace",
+            "result_summary": "cancelled",
+            "claim_version": 0,
+        },
+    )()
+    fake_session = _UpdateSession(task)
+    _route_runtime_accessors(monkeypatch, fake_session, tenant_id=tenant_id)
+
+    async def fake_resolve_runtime_task_tenant(*_args, **_kwargs):
+        return tenant_id
+
+    monkeypatch.setattr(
+        "app.services.runtime_task_service.resolve_tenant_for_runtime_task",
+        fake_resolve_runtime_task_tenant,
+    )
+
+    updated = await update_runtime_task_record(
+        task.id.hex,
+        status="completed",
+        result_summary="late success",
+    )
+
+    assert updated is False
+    assert task.status == "killed"
+    assert task.result_summary == "cancelled"
+    assert task.metadata_json["late_terminal_attempt"]["requested_status"] == "completed"
+    assert fake_session.commit_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_resumable_runtime_task_maps_to_supported_root_suspended_state(monkeypatch):
+    from app.services.runtime_task_service import update_runtime_task_record
+
+    tenant_id = uuid4()
+    task = type(
+        "RuntimeTaskStub",
+        (),
+        {
+            "id": uuid4(),
+            "tenant_id": tenant_id,
+            "task_type": "subagent",
+            "status": "running",
+            "metadata_json": {},
+            "started_at": None,
+            "completed_at": None,
+            "trace_id": "trace",
+            "result_summary": None,
+            "claim_version": 0,
+            "root_runtime_task_id": uuid4(),
+        },
+    )()
+    fake_session = _UpdateSession(task)
+    _route_runtime_accessors(monkeypatch, fake_session, tenant_id=tenant_id)
+
+    async def fake_resolve_runtime_task_tenant(*_args, **_kwargs):
+        return tenant_id
+
+    transitions = []
+
+    async def fake_transition(_db, **kwargs):
+        transitions.append(kwargs)
+        return None, None
+
+    monkeypatch.setattr(
+        "app.services.runtime_task_service.resolve_tenant_for_runtime_task",
+        fake_resolve_runtime_task_tenant,
+    )
+    monkeypatch.setattr(
+        "app.services.runtime_root_ledger.transition_runtime_root_item_by_task",
+        fake_transition,
+    )
+
+    updated = await update_runtime_task_record(task.id.hex, status="resumable")
+
+    assert updated is True
+    assert task.status == "resumable"
+    assert transitions[0]["requested_state"] == "suspended"
+
+
+@pytest.mark.asyncio
 async def test_create_runtime_task_record_rolls_back_on_commit_error(monkeypatch):
     from app.services.runtime_task_service import create_runtime_task_record
 
@@ -407,6 +503,26 @@ async def test_create_runtime_task_record_persists_runtime_budget_metadata(monke
     assert task.root_session_id == root_session_id
     assert task.root_runtime_task_id == root_runtime_task_id
     assert task.delegation_chain_json == [f"agent:{parent_agent_id}", "subagent:scout"]
+
+
+@pytest.mark.asyncio
+async def test_create_runtime_task_record_rejects_malformed_root_runtime_task_id(monkeypatch):
+    from app.services.runtime_task_service import create_runtime_task_record
+
+    fake_session = _CreateSession()
+    _route_runtime_accessors(monkeypatch, fake_session, tenant_id=uuid4())
+
+    with pytest.raises(ValueError, match="Invalid root runtime task id"):
+        await create_runtime_task_record(
+            task_id=uuid4().hex,
+            task_type="subagent",
+            parent_agent_id=uuid4(),
+            root_runtime_task_id="not-a-uuid",
+            root_item_intent_key="subagent:scout",
+        )
+
+    assert fake_session.added == []
+    assert fake_session.commit_calls == 0
 
 
 @pytest.mark.asyncio

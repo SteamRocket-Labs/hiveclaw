@@ -97,6 +97,10 @@ _STATE: dict[str, Any] = {
     "session_input_dispatches_dispatched": 0,
     "session_input_dispatches_deferred": 0,
     "session_input_dispatches_retried": 0,
+    "team_fanout_claimed": 0,
+    "team_fanout_recovered": 0,
+    "team_fanout_retried": 0,
+    "team_fanout_needs_reconciliation": 0,
     "dream_dispatched": 0,
 }
 
@@ -335,6 +339,18 @@ async def reconcile_stale_business_tasks_once() -> dict[str, int]:
         summary.get("quarantined") or 0
     )
     return summary
+
+
+async def recover_team_fanout_admissions_once(*, worker_id: str) -> dict[str, int]:
+    """Recover complete Team requested sets left between reserve/enqueue steps."""
+
+    from app.services.team_fanout_recovery import TeamFanoutRecoveryService
+
+    counts = await TeamFanoutRecoveryService().drain_once(worker_id=worker_id, limit=100)
+    for key in ("claimed", "recovered", "retried", "needs_reconciliation"):
+        state_key = f"team_fanout_{key}"
+        _STATE[state_key] = int(_STATE.get(state_key) or 0) + int(counts.get(key) or 0)
+    return counts
 
 
 async def recover_session_control_inputs_once(
@@ -898,6 +914,11 @@ async def start_runtime_task_worker_loop() -> None:
             except Exception as exc:  # noqa: BLE001 - task claiming must continue after one outbox failure.
                 _STATE["last_error"] = f"outbox:{type(exc).__name__}: {exc}"
                 logger.exception("[RuntimeTaskWorker] completion outbox tick failed")
+            try:
+                await recover_team_fanout_admissions_once(worker_id=worker_id)
+            except Exception as exc:  # noqa: BLE001 - normal task claiming must continue.
+                _STATE["last_error"] = f"team_fanout_recovery:{type(exc).__name__}: {exc}"
+                logger.exception("[RuntimeTaskWorker] Team fanout recovery tick failed")
             try:
                 await claim_and_dispatch_once(worker_id=worker_id)
             except Exception as exc:  # noqa: BLE001 - worker loop must survive one bad claim.

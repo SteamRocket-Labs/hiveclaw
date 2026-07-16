@@ -82,7 +82,7 @@ class CoordinationRuntime:
         current = self._now()
         existing = self._leases.get(task_key)
         if existing and existing.expires_at > current:
-            return LeaseAcquireResult(acquired=False, existing_lease_id=existing.id)
+            return LeaseAcquireResult(acquired=False, lease=existing, existing_lease_id=existing.id)
         lease = Lease(
             id=str(uuid.uuid4()),
             task_key=task_key,

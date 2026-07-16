@@ -1,14 +1,14 @@
 # Hive Session V2：CC 底线与 Codex 抽象对齐契约（2026-07-14）
 
-> 状态：设计权威；Group 2 Session 机械事实语言已于 2026-07-16 闭环，Group 3 root admission/coverage substrate 已于 2026-07-17 闭环；完整 Session V2 程序仍按 Group 4/6/7/8/9/10 继续验收
+> 状态：设计权威；Group 2 Session 机械事实语言已于 2026-07-16 闭环，Group 3 root admission/coverage substrate 与 Group 4 durable result/mailbox/fan-in 已于 2026-07-17 闭环；完整 Session V2 程序仍按 Group 6/7/8/9/10 继续验收
 >
 > 集成关系：本文裁决 Session Event / Item / Reducer，不独立定义当前断点总数或程序施工顺序。fleet、单根 Session 的 100-way root execution、Context Resource Plane、跨渠道 A2A 与 canonical ledger 统一以 `docs/agent-native-unified-atomic-review-2026-07-14.md` 为准。
 >
-> 施工消费合同：后续实现必须先读本文全文，不得用 Group 摘要、旧 UI 文档或兼容投影替代。总报告 §8.1 必须同步维护本文章节、`S-01`–`S-30` 与 `SESSION-G1`–`SESSION-G30` 的唯一 Group 归属；§9 的 Group 2 是 Session 机械事实语言主实现，Group 3 已消费并关闭 root admission/coverage/G9，Group 4/6/7/8/9/10 继续消费 result/fan-in、compaction、跨渠道、Memory/Knowledge evidence、产品投影与最终重认证合同；§12 维护 canonical owner、状态和对应 `EVID-G*`。任何 event/item/schema、migration/backfill、reducer、UI/E2E 或生产证据都必须回填总报告，并同步更新本文设计状态；两边不一致时不得宣称闭环。
+> 施工消费合同：后续实现必须先读本文全文，不得用 Group 摘要、旧 UI 文档或兼容投影替代。总报告 §8.1 必须同步维护本文章节、`S-01`–`S-30` 与 `SESSION-G1`–`SESSION-G30` 的唯一 Group 归属；§9 的 Group 2 是 Session 机械事实语言主实现，Group 3 已消费并关闭 root admission/coverage/G9，Group 4 已消费并关闭 result/fan-in/mailbox，Group 6/7/8/9/10 继续消费 compaction、跨渠道、Memory/Knowledge evidence、产品投影与最终重认证合同；§12 维护 canonical owner、状态和对应 `EVID-G*`。任何 event/item/schema、migration/backfill、reducer、UI/E2E 或生产证据都必须回填总报告，并同步更新本文设计状态；两边不一致时不得宣称闭环。
 >
 > 适用范围：Web Session、RuntimeTask、ChatSession、模型循环、工具循环、Hook、Skill、Memory、Sub-agent、A2A、Workflow、Compaction、文件与交付物，以及它们在主时间线、右侧运行面板、恢复/重放中的统一表达
 >
-> 本文同时记录目标契约与当前证据。2026-07-16 已实现并验收 Group 2 所有 14 个 owner leaf，2026-07-17 已实现并验收 Group 3 所有 7 个 root admission/coverage owner leaf：canonical event/item、persist-before-publish、ready/cursor transport、canonical frontend reducer、mixed-runtime root ledger、durable cycle/approval、单调终态与 Team fanout recovery 已进入 live path；但这不等于完整 Session V2 已结束。100-way result return/fan-in、极端 compaction、跨渠道 A2A、首次连接/真实重连浏览器终验、全历史 backfill、V1 writer 退出、feedback 产品面与最终生产观察仍由其唯一 owner Group 继续关闭。
+> 本文同时记录目标契约与当前证据。2026-07-16 已实现并验收 Group 2 所有 14 个 owner leaf，2026-07-17 已实现并验收 Group 3 的 7 个 root admission/coverage owner leaf 与 Group 4 的 6 个 durable result/mailbox/fan-in owner leaf：canonical event/item、persist-before-publish、ready/cursor transport、canonical frontend reducer、mixed-runtime root ledger、durable cycle/approval、单调终态、Team fanout recovery、immutable result object、ref-only outbox、ordered integration page 与 governed reader 已进入 live path；但这不等于完整 Session V2 已结束。极端 compaction、跨渠道 A2A、首次连接/真实重连浏览器终验、全历史 backfill、V1 writer 退出、feedback 产品面与最终生产观察仍由其唯一 owner Group 继续关闭。
 
 ---
 
@@ -363,6 +363,8 @@ type TurnReconciledPayloadV2 = {
 | Railway production（Group 2 exact source） | backend `e59dd282-97e5-42cb-b67a-84836bed0e09`；backend-api `77967ddf-77d8-4b70-84f4-f3b2d8299895`；frontend `3eb6c453-90dc-422d-990e-96ee2ee0131b` | 三服务均 `SUCCESS` 且来自 `5ffdb464f` archive；结合 migration/projection/health/log canary 才构成 Group 2 生产证据，不能外推为完整 Session V2 完成 |
 | Hive（Group 3 implementation） | `01e979bb3` | `runtime_root_items`、A2A/Subagent/Team/Workflow admission、durable path/approval/terminal、Team fanout recovery 与对应 migration/tests；只关闭 Group 3，不吞并 Group 4 result/fan-in |
 | Railway production（Group 3 exact source） | backend `b67055e5-9dbc-4e4d-903e-14fe8322b728`；backend-api `dd748dd4-ea68-4d94-a5bb-4fda7ecd7b90`；frontend `20ca32aa-7682-4f6a-b6a5-ceebcca0fdad` | 三服务最新 deployment 均 `SUCCESS` 且来自 `01e979bb3`；首次 API readiness fail-closed/同 archive 重提、migration head、145-table/4-trigger readiness、RLS/health 共同构成 Group 3 生产证据 |
+| Hive（Group 4 implementation） | `4e385d423` | immutable `runtime_result_objects`、ref-only completion outbox、mailbox cursor、integration epoch/page、governed reader、metrics、lossless migration 与 real-PG concurrency/fault tests；只关闭 Group 4，不吞并 Group 6 完整 Context Resource Plane |
+| Railway production（Group 4 exact source） | backend `b16d1c5b-c28a-480e-896b-a8dd2ffd153a`；backend-api `da84f7ae-0157-4551-95d0-4f93dbe0f029`；frontend `96090a47-4267-488a-b0f5-94a5c18e6667` | 三服务均 `SUCCESS` 且来自 `4e385d423`；migration head=`runtime_result_fanin_0717`，148-table/4-trigger readiness、147-row lossless backfill、RLS/FORCE、source hash、health 与 ref-only production inventory 共同构成 Group 4 生产证据 |
 | FreeCode | `7dc15d6c8fb0c40c7fcc02ce9b58204324252632` | CC 可运行语义底线 |
 | claude-code-org | `a99de1bb3c0c301b83b784abbcdb7a3674b2cd45` | CC 交叉验证 |
 | Codex | `5c19155cbd93bfa099016e7487259f61669823ff` | typed thread/item 与 Workbench 工程增量 |
@@ -3141,18 +3143,19 @@ flowchart LR
 | CC / Codex 源码基线核对 | 已完成 | 使用冻结 commit；已补 steer/input queue 与 typed history/recovery 对照 |
 | 2026-07-15 生产事故取证 | 局部完成 | Railway 已证实 1.13 秒内 5 次 WS accepted；保留日志不足以唯一确认某个 PermissionError，未作伪结论 |
 | Session V2 完整目标契约 | 已完成 | 本文已覆盖 CC semantic floor、Codex additive delta、exact event/hook matrix、Turn/Run/Round、typed reconciliation、input admission/carry-forward、command/result/outcome/obligation/assembly/saga/tool aggregates、可重放 child progress、writer epoch、四状态、steer/queue/replace/Stop/feedback、迁移与验收 |
-| 当前 Hive 七原子审计 | 已完成并持续更新 | Group 2 Session truth 与 Group 3 root admission/coverage 的七原子已闭环；完整 Session V2 仍有其它 owner Group 的断点，不把 21 个局部 closed leaf 冒充总程序完成 |
+| 当前 Hive 七原子审计 | 已完成并持续更新 | Group 2 Session truth、Group 3 root admission/coverage 与 Group 4 durable result/mailbox/fan-in 的七原子已闭环；完整 Session V2 仍有其它 owner Group 的断点，不把 27 个局部 closed leaf 冒充总程序完成 |
 | Runtime/Event V2 | Group 2 闭环 | accepted input、command、event/outbox、stable item/lifecycle/ordinal、typed projection 与 writer epoch substrate 已进入 live path；Group 9 仍拥有全历史 backfill、V1 writer 退出与最终 cleanup |
-| Model result/sidecar isolation | Group 2 闭环 | per-Round model result、obligation/assembly、tool pair、RunOutcomeSeal 与 terminal reconciliation 已建立；trace/metric/T0 等 sidecar 失败不再改写模型结果。Group 4/6/8 仍分别验收高压 result fan-in、context 与 durable evidence consumer |
+| Model result/sidecar isolation | Group 2 + Group 4 闭环 | Group 2 已建立 per-Round model result、obligation/assembly、tool pair、RunOutcomeSeal 与 terminal reconciliation；Group 4 已把高压 child result 收敛为 immutable bytes + ref-only ordered pages，trace/metric/T0 等 sidecar 失败不改写模型结果。Group 6/8 仍分别验收完整 context plane 与 durable evidence consumer |
 | WebSocket ready + contiguous recovery | Group 2 协议闭环 | 服务端 `session.ready`、attempt/generation、highest-contiguous cursor、gap/duplicate/out-of-order reducer 已实现；Group 9 仍拥有多标签页、真实浏览器重连和长时生产观察 |
-| HumanInput intent/mailbox | Group 2 闭环 | start/steer/queue/replace/answer/fork 使用 durable command、Hook admission、mailbox claim/bind/settlement 与幂等 receipt；Group 4 后续消费 100-way parent fan-in mailbox，不另造输入事实语言 |
-| Mixed-runtime root admission/coverage | Group 3 闭环 | direct/Subagent/A2A/Team/Workflow 使用同一 `root_runtime_task_id` 与 requested/admitted/deferred/not_admitted/terminal ledger；durable cycle、approval intent、Team recovery 与单调终态已部署。Group 4 继续拥有 result manifest/mailbox/integration epoch |
+| HumanInput intent/mailbox | Group 2 闭环；Group 4 result mailbox 闭环 | start/steer/queue/replace/answer/fork 继续使用 Group 2 durable command/Hook admission/mailbox settlement；100-way child completion 使用 Group 4 独立 result mailbox cursor/page，不另造输入事实语言，也不把 input queue 与 result fan-in 混为一表 |
+| Mixed-runtime root admission/coverage | Group 3 + Group 4 闭环 | direct/Subagent/A2A/Team/Workflow 使用同一 `root_runtime_task_id` 与 requested/admitted/deferred/not_admitted/terminal ledger；result manifest/ref、mailbox sequence、integration epoch 与 partial/late/duplicate recovery 已由 Group 4 在该 root identity 上闭环 |
+| Durable result / parent fan-in | Group 4 闭环 | 100×1 MiB synthetic return storm 形成 4 个 25-ref page；完整 bytes 只在 immutable result truth，通过 governed reader 恢复；parent Prompt 不线性承载 raw child bytes。真实 100 个付费 child provider 曲线仍是独立 coverage gap |
 | Stop contract | Group 2 闭环 | cancel 使用 typed ControlInput receipt，accepted 后才进入 cancelling，terminal settlement/ACK 丢失重查/幂等恢复均有测试；前端不再乐观伪造 cancelled |
 | Evaluation Feedback V2 | 局部闭环 | 有 useful/misleading 和 feedback/memory sidecar；无 item/result target、文本/更新/撤回完整合同，且不得与 steer 混用 |
 | Frontend typed projection | Group 2 canonical consumer 闭环 | canonical V2 event 只经 `SessionEventStore` reducer 一次；页面从 store 投影，不再把 typed event 交给 legacy message reducer 二次归类；`assistant_text(unknown)` 不冒充 final，tool pair 和 zero-copy final 不重复。Group 9 仍拥有完整 Workbench/right rail/历史产品终验 |
-| 数据迁移/backfill/cleanup | 局部完成 | 六个 additive Session V2 migration 后继续以 `runtime_root_ledger_0716` additive migration 建立 Group 3 root ledger，production head/readiness 已闭环；legacy-open projection 保持兼容。全历史 backfill、generation-1 退出、V1 decoder 清理仍由 Group 9 完成 |
-| 自动化黄金轨迹验收 | Group 2–3 范围完成 | Group 2 full backend 7466/前端 687；Group 3 focused 480、full backend 7508 passed/2 skipped、frontend SESSION-G9 targeted 31、full 119 files/688 tests 与 build/bundle budget 全绿。SESSION-G9 canonical backend + reducer/right-panel projection 已关闭；其它 G1–G30 仍按唯一 owner 验收 |
-| Railway 行为修复与生产验收 | Group 2–3 完成，程序级未完成 | 两个 Group 均有 exact-source 三服务部署、health/RLS/daemon/migration/readiness 证据；Group 3 首轮 API 在 schema ready 前 fail-closed 后由同 archive 重提成功。完整 Session V2 仍需后续 owner 的 result/context/channel/browser/writer cutover 和观察窗口 |
+| 数据迁移/backfill/cleanup | 局部完成 | Group 4 additive head=`runtime_result_fanin_0717` 已在 Group 3 root ledger 之上部署，并将 147 条历史 inline outbox 无损变为 immutable object + ref-only routing；legacy-open Session projection 保持兼容。全历史 Session backfill、generation-1 退出、V1 decoder 清理仍由 Group 9 完成 |
+| 自动化黄金轨迹验收 | Group 2–4 范围完成 | Group 2 full backend 7466/前端 687；Group 3 focused 480、full backend 7508/2 skipped；Group 4 focused 81、full backend 7525/2 skipped、frontend full 119 files/688 tests 与 build/bundle budget 全绿。其它 G1–G30 仍按唯一 owner 验收 |
+| Railway 行为修复与生产验收 | Group 2–4 完成，程序级未完成 | 三个 Group 均有 exact-source 三服务部署、health/RLS/daemon/migration/readiness 证据；Group 4 schema-owner rollout 中旧 stopped instance 的直接 blocking transaction 仅在锁图前置条件成立时终止，迁移随后完成且 147 条历史 result hash/size 零损坏。完整 Session V2 仍需后续 owner 的 context/channel/browser/writer cutover 和观察窗口 |
 
 ### 28.1 Group 2 实现与验收记录（2026-07-16）
 
@@ -3175,9 +3178,23 @@ Group 3 没有把“100 个 child”解释成平台全量 Agent 数，而是严�
 - capacity/Golden G9：pure root ledger 与 Team runtime 均覆盖 `1/10/25/50/100` mixed fanout，并满足 `requested = admitted + deferred + not_admitted`。Workflow gate/wait/restart/resume 更新同一 RuntimeTask/root item；frontend full regression 同时覆盖 Workflow segment、gate waiter、dedupe/count，因此 SESSION-G9 canonical scenario 已闭环。Group 9 的真实浏览器/right-rail 组合终验是独立 consumer acceptance，不重开 G9 owner。
 - tests：Group 3 focused=`480 passed`；backend full=`7508 passed, 2 skipped in 332.99s`；frontend SESSION-G9 `timelineModel` targeted=`31 passed`，full=`119 files / 688 tests`，typecheck/build/bundle budget 通过；real-PG migration、RLS、authority、100-way tenant isolation 与 lease fault injection 均在上述分母内。
 - production：backend=`b67055e5-9dbc-4e4d-903e-14fe8322b728`、backend-api=`dd748dd4-ea68-4d94-a5bb-4fda7ecd7b90`、frontend=`20ca32aa-7682-4f6a-b6a5-ceebcca0fdad` 均 `SUCCESS`。生产 actual/expected head=`runtime_root_ledger_0716`、145 tables/4 triggers readiness clean，runtime=`app_rls/strict/non-superuser/non-BYPASSRLS`，worker/daemon/HTTP healthy。首次 backend-api 在 migration 前按设计 fail-closed，schema ready 后同 archive 重提成功，未放宽门也未改写客户数据。
-- residual boundary：Group 3 的 7/7 owner leaf 已闭环，但 result manifest、mailbox/integration epoch 与 return storm 仍属 Group 4；context/compaction 属 Group 6，跨渠道属 Group 7，UI/backfill/writer cutover 属 Group 9。完整 Session V2 仍未完成。
+- residual boundary：Group 3 的 7/7 owner leaf 已闭环；在该证据形成时 result manifest、mailbox/integration epoch 与 return storm 仍属 Group 4，现已由下节 `§28.3` 和总报告 `EVID-G4-001`–`006` 独立关闭。context/compaction 仍属 Group 6，跨渠道属 Group 7，UI/backfill/writer cutover 属 Group 9；完整 Session V2 仍未完成。
 
 因此当前正确结论扩展为：**Group 2 已建立唯一 Session 机械事实语言，Group 3 已建立其上的统一 root admission/coverage 与 G9 backend substrate；后续 Group 必须消费这两层事实，不得另造 event、root ledger 或 terminal 解释。**
+
+### 28.3 Group 4 durable result/mailbox/fan-in 实现与验收记录（2026-07-17）
+
+Group 4 严格消费 Group 2 的 canonical Session event/item 与 Group 3 的 root/item identity，没有把“减少 prompt”实现成截断 child 语义。CC/FreeCode 的可恢复完整 task output 是语义底线；Codex typed wait/status 是工程增量；Hive 在其上增加 tenant RLS、immutable hash ref、durable page、epoch/lease 与 governed reader。平台只决定 bytes 存放、authority、顺序、重试和恢复，模型继续决定结果含义与最终表达。
+
+- code/migration：commit=`4e385d423`；新增 `runtime_result_objects`、`runtime_result_mailbox_cursors`、`runtime_result_integration_pages`，将 `runtime_notification_outbox` 改为 ref-only，加入 `read_runtime_result`、parent continuation 与 bounded Prometheus metrics。additive production head=`runtime_result_fanin_0717`，upgrade/downgrade 均对 legacy summary/artifacts/private metadata lossless。
+- concurrency/recovery：parent mailbox 使用唯一 sequence + cursor version；page 使用 integration epoch、claim token、lease、manifest hash 与 prior-page fence。interleaved roots 保留全局 mailbox 顺序，parallel workers 不能先交付更晚 epoch；duplicate、partial、late、payload-rank revision、ACK-after-commit、expired lease 与 final-before-crash 都有 typed replay 路径。旧 hash ref 在新 revision 交付后仍可读取。
+- capacity/consumer：100 个各约 1 MiB 的 synthetic child result 保留 100 份完整 immutable bytes，但 parent 只收到 4 个各 25 refs 的 page；每页 runtime context `<16,000` chars、合计 `<64,000` chars，raw decisive tail 可经 governed reader 恢复且不在 prompt manifest 中。A2A/Subagent/Team/Workflow/Trigger/Approval/RuntimeTask 均消费同一 completion contract。
+- tests：四个新增边界测试先为 `FFFF`；第一次 full suite 的唯一失败暴露 cursor first-create race，修复后 critical real-PG=`5 passed`、focused=`81 passed`、backend full=`7525 passed, 2 skipped in 375.96s`。frontend full=`119 files / 688 tests`，typecheck/build/bundle budget、Ruff、diff check 与 Alembic single-head 均通过。
+- production：backend=`b16d1c5b-c28a-480e-896b-a8dd2ffd153a`、backend-api=`da84f7ae-0157-4551-95d0-4f93dbe0f029`、frontend=`96090a47-4267-488a-b0f5-94a5c18e6667` 均 `SUCCESS`。production 147 条历史 outbox 对应 147 个 result object，hash/size/orphan/missing-ref 均为 0；inline `summary/artifacts_json` 列为 0，新 ref 列为 8。四张相关表 RLS ENABLE+FORCE，source SHA 与本地 commit 一致，schema readiness/health/daemon/sandbox/frontend 全绿。
+- rollout incident：migration 曾等待旧 stopped backend 的 outbox AccessShareLock；只读 `pg_blocking_pids` 锁图确认唯一直接 blocker 后，使用 PID + blocker relation 双前置条件终止该旧事务，PostgreSQL 回滚它后 migration 正常提交。没有批量 terminate、没有删除客户结果、没有放宽 readiness；该恢复事实同步保存在总报告 `EVID-G4-006`。
+- residual boundary：Group 4 的 6/6 owner leaf 已闭环，但 Group 6 仍负责所有资源域统一 disclosure、compaction/output continuation 与 pressure recovery；Group 7 仍负责跨渠道 delivery；Group 9 仍负责真实浏览器、全历史 Session backfill 与 V1 writer cleanup；Group 10 仍负责总重认证。真实 100 个付费 child 同秒 completion 仍是 coverage gap，不影响本 Group 的 ref-only mechanical contract 已独立发布。
+
+因此当前正确结论进一步扩展为：**Group 2 提供唯一 Session 机械事实语言，Group 3 提供统一 root admission/coverage，Group 4 提供其上的无损、可恢复、ref-only result integration；后续 Group 必须消费这三层，不得恢复 inline result、JSON mailbox 或第二套 terminal/wake 解释。**
 
 ---
 
@@ -3193,6 +3210,9 @@ Group 3 没有把“100 个 child”解释成平台全量 Agent 数，而是严�
 - `backend/app/api/chat_sessions.py`：steer、cancel、feedback、history API
 - `backend/app/api/websocket.py`：当前 accept/bootstrap/receive/cancel transport
 - `backend/app/services/web_chat_stream_bus.py`：Redis stream/pubsub transport
+- `backend/app/models/runtime_result.py`、`backend/app/models/runtime_notification_outbox.py`：immutable result、mailbox cursor/page 与 ref-only completion schema
+- `backend/app/services/runtime_result_store.py`、`backend/app/services/runtime_notification_outbox.py`：canonical result encoding/hash、sequence/epoch、claim/lease、page delivery 与 recovery
+- `backend/app/services/agent_session_continuation.py`、`backend/app/tools/handlers/context_resources.py::read_runtime_result`：parent ref-only continuation 与 governed complete-result reader
 - `backend/app/models/session_feedback.py`、`backend/app/services/session_feedback.py`：当前评价、overlay 与 activation sidecar
 - `frontend/src/pages/agent-detail/useSessionTransportController.ts`、`chatTransportRecovery.ts`：连接状态与 replay cursor
 - `frontend/src/pages/agent-detail/sessionSocketEventProjector.ts`、`frontend/src/pages/AgentDetail.tsx`：live terminal、REST hydration 与数组替换
@@ -3214,6 +3234,7 @@ Group 3 没有把“100 个 child”解释成平台全量 Agent 数，而是严�
 - `/Users/rocky243/vc-saas/free-code-main/src/utils/sessionStart.ts`、`src/query/stopHooks.ts`、`src/utils/hooks.ts`：SessionStart/PreToolUse/Stop/SubagentStop 边界语义
 - `/Users/rocky243/vc-saas/free-code-main/src/services/compact/compact.ts::buildPostCompactMessages`：boundary → summary → preserved → attachments → hook results 精确顺序
 - `/Users/rocky243/vc-saas/free-code-main/src/tools/AgentTool/UI.tsx`：child live progress、最近活动、tool count 与 token usage
+- `/Users/rocky243/vc-saas/free-code-main/src/tasks/LocalAgentTask/LocalAgentTask.tsx`、`src/tools/TaskOutputTool/TaskOutputTool.tsx`、`src/utils/task/diskOutput.ts`：atomic completion notification、完整 task output/ref 与 durable disk result 底线
 - `/Users/rocky243/vc-saas/free-code-main/src/screens/REPL.tsx`、`src/components/Messages.tsx`：running queue、abort、稳定 streaming identity、完整 transcript/虚拟滚动/展开消费
 
 ### Codex
@@ -3229,3 +3250,4 @@ Group 3 没有把“100 个 child”解释成平台全量 Agent 数，而是严�
 - `/Users/rocky243/Context Engineering/codex/codex-rs/app-server/tests/suite/v2/turn_steer.rs`：steer acceptance/regression evidence
 - `/Users/rocky243/Context Engineering/codex/codex-rs/app-server/src/thread_state.rs`、`app-server/src/request_processors/thread_lifecycle.rs`：active turn lock、lifecycle 与 terminal follow-up
 - `/Users/rocky243/Context Engineering/codex/codex-rs/tui/src/chatwidget.rs`、`tui/src/streaming/controller.rs`、`tui/src/chatwidget/input_queue.rs`：committed history、active streaming tail 与 pending input 产品表达
+- `/Users/rocky243/Context Engineering/codex/codex-rs/core/src/tools/handlers/multi_agents/wait.rs`、`multi_agents_common.rs`：typed agent wait/status 与 collaboration state 工程增量

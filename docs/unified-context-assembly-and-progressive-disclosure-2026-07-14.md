@@ -2,10 +2,10 @@
 
 > 集成关系：本文是 Context Resource Plane 的设计权威，不独立定义当前断点总数或程序施工顺序。fleet、单根 Session 的 100-way root execution、Session truth、跨渠道 A2A 与 canonical ledger 统一以 `docs/agent-native-unified-atomic-review-2026-07-14.md` 为准。
 >
-> 施工消费合同：后续实现必须先读本文全文，不得用 Group 摘要、旧审查结论或单个参数表替代。总报告 §8.1 维护本文章节交叉表与 `CTX-A`–`CTX-F` 决策归属；§9 的 Group 6 是 Context/Capability 主实现，Group 4 消费 durable result 合同，Group 1/2/3/7/8/9 消费各资源域子合同，Group 10 做最终重认证；§12 维护 canonical owner、状态与对应 `EVID-G*` 证据。任何实现、测试、容量曲线、迁移或裁决变化都必须回填总报告，并同步更新本文对应设计状态；两边不一致时不得宣称闭环。
+> 施工消费合同：后续实现必须先读本文全文，不得用 Group 摘要、旧审查结论或单个参数表替代。总报告 §8.1 维护本文章节交叉表与 `CTX-A`–`CTX-F` 决策归属；§9 的 Group 6 是 Context/Capability 主实现，Group 4 已消费并关闭 durable result/ref-only fan-in 子合同，Group 1/2/3/7/8/9 消费各资源域子合同，Group 10 做最终重认证；§12 维护 canonical owner、状态与对应 `EVID-G*` 证据。任何实现、测试、容量曲线、迁移或裁决变化都必须回填总报告，并同步更新本文对应设计状态；两边不一致时不得宣称闭环。
 
 - 日期：2026-07-14
-- 状态：讨论基线（Design Proposal，尚未声明实现完成）
+- 状态：设计权威；Group 4 durable result/ref-only fan-in 子域已于 2026-07-17 闭环，Group 6 完整 Context Resource Plane 仍未完成
 - 范围：Agent Memory、Skill、Tool / MCP、Sub-agent / Agent Team、Workflow、Knowledge、Hooks、会话历史、Tool Result 与 Provider Prompt 组装
 - 基准模型：256K context window；同时要求 128K、512K、1M 窗口可按同一公式工作
 - 目标：在资源数量近似无限时，首轮常驻上下文仍保持有界，全部授权资源保持真实可发现、可读取、可恢复、可审计，且不做静默硬截断
@@ -1377,6 +1377,19 @@ D_available
 9. 所有 exhaustive 请求都有 coverage ledger，不能用 top-k 冒充全集；
 10. 普通小任务的首次响应延迟与 cache hit 不因统一协议显著回退。
 
+### 18.9 Group 4 已落地的 result-resource 子合同（2026-07-17）
+
+Group 4 只关闭本架构中的“大型 child/runtime result 如何无损外置、按 ref 汇入 parent、并可恢复读取”子域，不宣称完整 Context Resource Plane 已实现：
+
+- 完整 canonical result bytes 只写 immutable `runtime_result_objects`，以 tenant/source/run/SHA-256 绑定；outbox、integration page 与 parent runtime context 只携 ref/hash/size/status/source/coverage，不携平台 summary 或 artifact body；
+- `runtime_result_mailbox_cursors` 为同一 parent 分配唯一 sequence 和 integration epoch，`runtime_result_integration_pages` 保存 page manifest/hash、range、claim token、lease、attempt、receipt 与 coverage；前序 page fence 阻止乱序 wake；
+- `read_runtime_result` 在当前 authenticated principal 和 page/outbox manifest 下读取完整 payload，并复核 expected hash/size；新 authority revision 不覆盖旧 object，旧 ref 保持可恢复；
+- A2A、Subagent、Team、Workflow、Trigger、Approval 与 RuntimeTask terminal 共用同一 result contract；partial/late/duplicate/revision/final-before-crash 均由 durable mechanical facts 恢复，平台不判断结果语义；
+- real-PG 100×1 MiB fixture 形成 4 个 25-ref page，每页 runtime context `<16,000` chars、合计 `<64,000` chars，100 份完整 payload 的 hash/size 和决定性尾部均可恢复；这证明 raw result 不线性进入 parent Prompt，但不冒充真实 100 个付费 child 的 provider/延迟曲线；
+- implementation commit=`4e385d423`，migration=`runtime_result_fanin_0717`；backend full=`7525 passed, 2 skipped`，frontend full=`119 files / 688 tests`；三服务 production exact-source 均 `SUCCESS`。147 条历史 outbox 已无损回填，production `bad_sha256/bad_size/orphan/missing_ref=0`，相关表 RLS ENABLE+FORCE。
+
+仍由 Group 6 唯一拥有的断点包括：所有 Skill/MCP/Sub-agent/Workflow/Memory/Knowledge/Hook/Workspace 资源的统一 descriptor/index/cursor、registered/discoverable/active/executable 四态、provider snapshot、pressure ledger、LLM-primary compaction/output continuation、跨资源 eviction/replay 与百万资源 tail reachability。Group 4 的 result store/page 可以被 Group 6 复用，但不能被外推为 CTX-A–CTX-F 已关闭。
+
 ---
 
 ## 19. 源码证据索引
@@ -1389,17 +1402,20 @@ D_available
 | CC auto-memory 一跳召回 | `/Users/rocky243/vc-saas/free-code-main/src/memdir/memoryScan.ts`、`findRelevantMemories.ts`、`src/utils/attachments.ts` |
 | CC deferred Tool Search | `/Users/rocky243/vc-saas/free-code-main/src/tools/ToolSearchTool/ToolSearchTool.ts` |
 | CC Skill 1% listing budget | `/Users/rocky243/vc-saas/free-code-main/src/tools/SkillTool/prompt.ts` |
+| CC task result durability/notification | `/Users/rocky243/vc-saas/free-code-main/src/tasks/LocalAgentTask/LocalAgentTask.tsx`、`src/tools/TaskOutputTool/TaskOutputTool.tsx`、`src/utils/task/diskOutput.ts` |
 | Codex turn snapshot 与 Skill/plugin injection | `/Users/rocky243/Context Engineering/codex/codex-rs/core/src/session/turn.rs` |
 | Codex deferred tool registry/BM25 search | `/Users/rocky243/Context Engineering/codex/codex-rs/core/src/tools/spec_plan.rs`、`tools/handlers/tool_search.rs` |
 | Codex approval/sandbox/retry | `/Users/rocky243/Context Engineering/codex/codex-rs/core/src/tools/orchestrator.rs` |
 | Codex history projection/compaction | `/Users/rocky243/Context Engineering/codex/codex-rs/core/src/context_manager/history.rs`、`core/src/compact.rs` |
 | Codex AGENTS/Skill budget | `/Users/rocky243/Context Engineering/codex/codex-rs/core/src/agents_md.rs`、`codex-rs/core-skills/src/render.rs` |
+| Codex typed multi-agent wait/status | `/Users/rocky243/Context Engineering/codex/codex-rs/core/src/tools/handlers/multi_agents/wait.rs`、`multi_agents_common.rs` |
 | Hive provider prompt ledger | `backend/app/runtime/provider_prompt_ledger.py`、`backend/app/services/runtime_budget_llm.py` |
 | Hive current system prompt planner | `backend/app/runtime/context_budget.py`、`backend/app/runtime/prompt_builder.py` |
 | Hive current Memory selection/assembly | `backend/app/memory/retriever.py`、`backend/app/memory/assembler.py`、`backend/app/tools/handlers/memory.py` |
 | Hive current Skill/Sub-agent/Tool Search listing | `backend/app/skills/registry.py`、`backend/app/runtime/prompt_sections/subagent_listing.py`、`backend/app/services/agent_tool_domains/workspace.py` |
 | Hive 可复用 hash-pinned paging | `backend/app/tools/handlers/context_resources.py` |
 | Hive 可恢复 tool-result/compaction 资产 | `backend/app/runtime/session_context_controller.py`、`backend/app/kernel/engine.py` |
+| Hive Group 4 immutable result/ref-only fan-in | `backend/app/models/runtime_result.py`、`backend/app/models/runtime_notification_outbox.py`、`backend/app/services/runtime_result_store.py`、`backend/app/services/runtime_notification_outbox.py`、`backend/app/services/agent_session_continuation.py`、`backend/app/tools/handlers/context_resources.py::read_runtime_result` |
 
 这份索引用于后续实现 review：任何“已对齐 CC”“已吸收 Codex”“已完成 CC Plus”的声明，都必须回到这些 live path 与七原子验收，而不能只引用本文设计。
 
@@ -1413,4 +1429,5 @@ D_available
 4. **接受 Tool registered / discoverable / active / executable 四态。**
 5. **接受内部统一 Context Resource Protocol，外部保留领域 tools。**
 6. **接受 8% 只是 Resident review center，不是新的输入硬上限。**
-7. **在这六项确认前不实施局部 35K/65K patch；确认后按第 10、11、14、18 节一次完成测试、实现、观测与消费闭环。**
+7. **拒绝局部 35K/65K patch；Group 6 必须按第 10、11、14、18 节一次完成剩余 Context Resource Plane 的测试、实现、观测与消费闭环。**
+8. **接受 Group 4 `4e385d423` 的 immutable result + ref-only page 作为已验证子合同；后续只能复用/扩展，不能恢复 inline raw result、静默截断或平台 summary。**

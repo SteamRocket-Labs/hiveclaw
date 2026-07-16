@@ -33,7 +33,7 @@ SESSION_V2_EXISTING_TRANSCRIPT_INDEXES = (
 )
 
 SESSION_V2_PARENT_REVISION = "hr_runtime_authority_0715"
-SESSION_V2_HEAD_REVISION = "session_v2_permission_tool_0716"
+SESSION_V2_HEAD_REVISION = "session_v2_projection_epoch_0716"
 
 
 def test_session_v2_migration_is_the_single_head_and_secure_downgrade_preserves_evidence() -> None:
@@ -78,8 +78,10 @@ def test_session_v2_revision_snapshots_match_their_owned_live_contracts() -> Non
         SESSION_V2_TRIGGER_FUNCTION_SIGNATURES as frozen_function_signatures,
         build_session_writer_epoch_function_sql as build_frozen_writer_sql,
     )
-    from migration_snapshots.session_v2_admission_revision_contract_0716 import (
+    from migration_snapshots.session_v2_projection_epoch_contract_0716 import (
         build_session_event_contract_function_sql as build_frozen_event_sql,
+    )
+    from migration_snapshots.session_v2_admission_revision_contract_0716 import (
         build_session_tenant_binding_function_sql as build_frozen_authority_sql,
     )
     from app.services.session_event_contract import (
@@ -2736,6 +2738,34 @@ async def test_writer_epoch_db_fence_rejects_late_v1_and_old_generation_mutation
             "writer_epoch_rejected V2 run generation",
         )
         await execute_ok(event_insert, event_values(sequence=3, schema_version=2, run_id=run_v2))
+
+        # T0 projection is a derived sidecar transition performed by the
+        # current runtime, not a late legacy semantic writer.  A pre-existing
+        # row must remain projectable after its generation has drained from
+        # the semantic writer epoch.
+        await execute_ok(
+            text("""
+              UPDATE chat_transcript_events
+              SET projection_status='projected',projection_attempts=1,
+                  projected_at=now(),
+                  metadata_json=metadata_json ||
+                    jsonb_build_object(
+                      't0_bridge_pending',false,
+                      't0_bridge_relay_source','runtime_control_bus'
+                    )
+              WHERE id=:id
+            """),
+            {"id": legacy_v1["id"]},
+        )
+        await execute_rejected(
+            text("""
+              UPDATE chat_transcript_events
+              SET metadata_json=metadata_json || jsonb_build_object('semantic_rewrite',true)
+              WHERE id=:id
+            """),
+            {"id": legacy_v1["id"]},
+            "writer_epoch_rejected legacy transcript mutation",
+        )
     finally:
         async with engine.begin() as connection:
             await connection.execute(

@@ -362,6 +362,33 @@ def build_session_event_contract_function_sql() -> str:
              OR NEW.agent_id IS DISTINCT FROM bound_agent_id THEN
             RAISE EXCEPTION 'session_event_authority_binding_mismatch' USING ERRCODE='23514';
           END IF;
+          IF TG_OP='UPDATE'
+             AND (to_jsonb(NEW) - ARRAY[
+                    'metadata_json','projection_status','projection_attempts',
+                    'projection_error','projected_at'
+                 ]::text[])
+                 = (to_jsonb(OLD) - ARRAY[
+                    'metadata_json','projection_status','projection_attempts',
+                    'projection_error','projected_at'
+                 ]::text[])
+             AND (COALESCE(NEW.metadata_json,'{{}}'::jsonb) - ARRAY[
+                    't0_bridge_pending','t0_bridge_last_error','t0_bridge_attempts',
+                    't0_bridge_relayed_at','t0_bridge_relay_source',
+                    't0_bridge_segment_id','t0_bridge_event_id','t0_bridge_sequence'
+                 ]::text[])
+                 = (COALESCE(OLD.metadata_json,'{{}}'::jsonb) - ARRAY[
+                    't0_bridge_pending','t0_bridge_last_error','t0_bridge_attempts',
+                    't0_bridge_relayed_at','t0_bridge_relay_source',
+                    't0_bridge_segment_id','t0_bridge_event_id','t0_bridge_sequence'
+                 ]::text[])
+             AND NEW.projection_status IN ('pending','projecting','projected','failed','not_requested')
+             AND NEW.projection_attempts >= OLD.projection_attempts
+             AND (OLD.projection_status <> 'projected' OR NEW.projection_status='projected') THEN
+            -- Projection is a current derived-evidence transition, not a late
+            -- semantic writer. Canonical event bytes stay immutable while a
+            -- drained legacy generation can still finish its T0 sidecar.
+            RETURN NEW;
+          END IF;
           SELECT * INTO epoch FROM public.session_writer_epochs WHERE id='global';
           IF epoch.id IS NOT NULL AND epoch.enforcement_mode='enforce' THEN
             IF NEW.schema_version <> 2 THEN

@@ -1,7 +1,7 @@
 # Runtime Budget Control Plane 方案
 
 日期：2026-07-03
-状态：已定稿；2026-07-04 补充主 Agent 终止契约、Subagent/Workflow/Agent Team 计量边界和默认 profile 数值后进入实现验收
+状态：已定稿；2026-07-04 补充主 Agent 终止契约、Subagent/Workflow/Agent Team 计量边界和默认 profile 数值后进入实现验收；2026-07-17 Group 3 admission/approval/root coverage 切片已生产闭环，完整控制面仍按本文总验收判断
 范围：Hive runtime admission、预算预占、执行计量、自动运行熔断，以及企业控制中台里的预算治理。
 
 ## 1. 问题定义
@@ -1262,3 +1262,13 @@ You may summarize completed work, but you may not call spawn_subagent, start_wor
 - enforce 上线前必须经过 observe 模式 production readout；tenant-level kill-switch 必须验证可用。
 - budget denial 和 circuit breaker 在 API、timeline、admin UI 中可见。
 - production 能回答：哪次 run 花了 tokens、为什么被允许、什么时候停止、是哪条 policy allow/deny。
+
+## 18. 2026-07-17 Group 3 admission/approval 实现证据
+
+Group 3 只关闭本文中与“reserve + durable enqueue 先于 expected”“approval intent durable”“mixed runtime 共享 root”直接相关的切片；它不把本文所有预算校准、breaker、UI 或 fleet 调度要求冒充完成。
+
+- commit=`01e979bb3` 把 A2A/Subagent/Team/Workflow 的 budget decision 绑定到 exact RuntimeTask 与 `runtime_root_items`。reserved work 才计为 admitted/expected；waiting approval 计为 deferred 并持久化 `approval_ref`，不唤醒 worker；enqueue/publish 失败会 settle/reconcile，而不是留下 ghost expected。
+- approve/reject 只推进原 budget reservation、task 和 root item；malformed root ID fail fast，root intent 不能重绑另一 RuntimeTask。terminal transition sealed，late completion 不会重新消费预算或覆盖 kill/cancel。
+- Team 先提交完整 requested set，再逐成员 reserve；producer crash 使用 exact recovery intent、lease 与 bounded retry/hold。`1/10/25/50/100` mixed fanout 均满足 `requested = admitted + deferred + not_admitted`、`expected = admitted`。
+- 验收：Group 3 focused=`480 passed`，backend full=`7508 passed, 2 skipped`，real-PG migration/RLS/100-way isolation 通过；production head=`runtime_root_ledger_0716`，RuntimeTask worker 暴露 Team recovery counters，三服务最新部署均 `SUCCESS`。
+- 剩余：运行中 `BUD-BREAKER-001`、fleet fairness、production calibration/observe window、tenant admin UI、hard-stop inventory 与 context/output pressure 仍由后续 Group 5/6/9/10 按 canonical 总报告关闭。

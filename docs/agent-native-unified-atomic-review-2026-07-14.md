@@ -4,7 +4,7 @@
 >
 > 原始审查冻结快照：`main@501db6555dae374e5fcf43a6fdcfe8a3dd89343e` + 2026-07-14 当时未提交工作树；后续施工不改写这个审查锚点，每条 `EVID-*` 另记自己的开工 HEAD、工作树与生产快照
 >
-> 修复账本滚动更新：2026-07-16；Group 0 已用 `EVID-G0-006` 把 11 个上下文包、89 个可执行 `@` 文档入口、逐 Group 详细路由和证据回流做成机器门并保持关闭。Group 1 的 16 个 owner leaf 已分别由 `EVID-G1-001` 至 `EVID-G1-016` 全部关闭；`B-01` 的 immutable HR runtime authority、migration、并发恢复、全量回归、三服务 exact-source 部署和 production fail-closed canary 记录在 `EVID-G1-016`，因此 Group 1 当前为 16/16 closed、0 pending、0 deployed-but-open。2026-07-15T13:37Z 因 production `backend-volume` 在重启批次中从约 24.8 GB 急升到 28.65 GB，Group 1 曾显式暂停；`EVID-G8-PRE-001/002/003` 已分别关闭继续写放大、transaction lifecycle 与当次容量事故处置，核心数据停止门成立。B-01 发布后同挂载点 `df -B1 /data/agents` 为 used=`11,360,583,680` bytes（24%），未执行新的清理或核心数据删除。三个 Group 8 前置证据仍不关闭任何 Group 8 leaf 或 `MISS-RETENTION-001`；Object Storage、snapshot CAS、sealed T0 archive、T2 authority/replay 与跨资产 retention 仍未完成。不得把 Group 1 closed、三个 Group 8 前置子闭环或其叠加冒充 Group 2–10、103 项或产品总目标完成。
+> 修复账本滚动更新：2026-07-17；Group 0 证据门保持关闭；Group 1 的 16 个 owner leaf 已由 `EVID-G1-001`–`016` 关闭，Group 2 的 14 个 owner leaf 已由 `EVID-G2-001`–`014` 关闭，Group 3 的 7 个 owner leaf 已由 `EVID-G3-001`–`007` 关闭，因此当前业务 leaf 为 **37/103 closed**，Group 4–10 与 5 个 Missing 仍未完成。Group 3 exact-source commit=`01e979bb3`，migration head=`runtime_root_ledger_0716`，backend/full frontend 回归、三服务生产发布、schema/RLS/health 与 fail-closed rolling recovery 记录在 `EVID-G3-*`。2026-07-15T13:37Z 因 production `backend-volume` 在重启批次中从约 24.8 GB 急升到 28.65 GB，Group 1 曾显式暂停；`EVID-G8-PRE-001/002/003` 已分别关闭继续写放大、transaction lifecycle 与当次容量事故处置，核心数据停止门成立。B-01 发布后同挂载点 `df -B1 /data/agents` 为 used=`11,360,583,680` bytes（24%），未执行新的清理或核心数据删除。三个 Group 8 前置证据仍不关闭任何 Group 8 leaf 或 `MISS-RETENTION-001`；Object Storage、snapshot CAS、sealed T0 archive、T2 authority/replay 与跨资产 retention 仍未完成。不得把 37 个 closed leaf、三个 Group 8 前置子闭环或其叠加冒充 103/103、完整 Session V2 或产品总目标完成。
 >
 > 组合输入：`agent-native-atomic-review-2026-07-14.md`、`agent-native-extreme-boundary-atomic-review-2026-07-14.md`、`unified-context-assembly-and-progressive-disclosure-2026-07-14.md`、`session-v2-cc-codex-alignment-contract-2026-07-14.md`、修订后的 `reusable-agent-native-atomic-review-prompt.md`，以及当前 Hive / FreeCode / Codex 本地源码。
 >
@@ -630,7 +630,7 @@ Group 摘要不能替代以下两份文档：
 | 0 | 0（全局门） | 0 | closed：`EVID-G0-002/003/004/005/006`，Git truth、机器账本、11 个上下文包/89 个 `@` 文档入口、跨仓快照与 clean-checkout harness 已闭环 |
 | 1 | 16 | 0 | closed：16/16 owner leaf 均有独立 `EVID-G1-001`–`EVID-G1-016`；0 pending、0 deployed-but-open；最后一项 `B-01` 已由 immutable runtime authority、migration、并发恢复、全量回归、三服务 exact-source 与 production canary 闭环 |
 | 2 | 14 | 0 | closed：14/14 owner leaf 已由 `EVID-G2-001`–`EVID-G2-014` 独立关闭；完整 Session V2 与 103 总账仍未完成 |
-| 3 | 7 | 0 | open |
+| 3 | 7 | 0 | closed：7/7 owner leaf 已由 `EVID-G3-001`–`EVID-G3-007` 独立关闭；统一 root admission/coverage、durable cycle/approval、单调终态与 Team fanout recovery 已部署，Group 4 的 result/fan-in 不在本状态内 |
 | 4 | 6 | 0 | open |
 | 5 | 2 | 0 | open |
 | 6 | 10 | 0 | open |
@@ -756,6 +756,8 @@ Group 摘要不能替代以下两份文档：
 ### Group 3：Root admission、预算与终态
 
 **Owner leaf（7）**：`A2A-ADMISSION-001`、`SUBAGENT-ADMISSION-001`、`A2A-CYCLE-001`、`A2A-TERMINAL-001`、`TEAM-FANOUT-001`、`SUBAGENT-APPROVAL-001`、`ROOT-TREE-001`。
+
+**当前状态（2026-07-17）**：`closed`，7/7 owner leaf 已由 `EVID-G3-001`–`EVID-G3-007` 关闭。`runtime_root_items` 现在是 direct/Subagent/A2A/Team/Workflow 的统一 admission/coverage 事实层；Group 4 仍唯一拥有 durable result payload、mailbox、integration epoch 与 100-way return storm，不能由本 Group 越权关闭。
 
 **依赖 Group**：Group 0–2。root ledger、approval 与 terminal 必须复用 Group 2 的 canonical event/item 和 Group 1 的 authority frame。
 
@@ -1330,19 +1332,19 @@ Group 0 是全局证据门，不拥有业务 leaf。下面 103 行必须与 cano
 - P1 | XCB-OBS-001 | inherited-current-evidence | stream/parts 无界且 pressure observation 缺失
 - P1 | CONC-FANIN-001 | inherited-current-evidence | full child result 直接进入 parent context
 - P1 | CONC-WAKE-002 | reworded-current-confirmed | per-child delivery intent 无 root integration epoch/coalesced manifest
-- P1 | A2A-ADMISSION-001 | inherited-current-evidence | queued ghost delegation
-- P1 | SUBAGENT-ADMISSION-001 | inherited-current-evidence | ghost child session
-- P1 | A2A-CYCLE-001 | inherited-current-evidence | durable/restart cycle guard 缺失
-- P1 | A2A-TERMINAL-001 | inherited-current-evidence | late completion 可覆盖 cancel/kill
+- P1 | A2A-ADMISSION-001 | closed:EVID-G3-001 | A2A 在 coordination signal/wakeup 前持久化 budget admission、RuntimeTask、root item 与 exact recovery identity；lease expiry 复用原 signal，不再产生 ghost delegation
+- P1 | SUBAGENT-ADMISSION-001 | closed:EVID-G3-002 | Subagent 先落 durable task/root admission 再投影 child session；approval wait 不唤醒 worker，projection crash 可从原 task 恢复
+- P1 | A2A-CYCLE-001 | closed:EVID-G3-003 | delegation path/cycle 成为 durable root item 事实；restart 后仍按同一路径拒绝 cycle，拒绝态不产生 child effect
+- P1 | A2A-TERMINAL-001 | closed:EVID-G3-004 | root/task terminal 使用锁定后的单调 transition；completed/failed/killed/cancelled/not_admitted 均拒绝 late completion 回退
 - P1 | CHANNEL-FAIRNESS-001 | reclassified-plane-current | channel ingress/delivery 全局 FIFO
-- P1 | TEAM-FANOUT-001 | inherited-current-evidence | Agent Team 半启动无 coverage ledger
+- P1 | TEAM-FANOUT-001 | closed:EVID-G3-005 | Team 在逐成员 admission 前提交完整 requested set 与 exact recovery intent；lease/retry/hold worker 恢复 producer crash，1/10/25/50/100 守恒
 - P1 | WF-HARDLIMIT-001 | inherited-current-evidence | Workflow 固定方便性上限 hard fail
 - P1 | WF-PARTIAL-001 | inherited-current-evidence | Workflow partial join/result contract 缺失
 - P1 | BUD-BREAKER-001 | inherited-current-evidence | runtime breaker 机械终止/cancel
 - P1 | BUD-ROOT-001 | closed:EVID-G1-009 | commit `3c1998607` 建立 typed budget-root unavailable contract：交互回合保留 direct reasoning/answer、work-amplification 双层禁用，后台/自治入口 fail-closed；三服务部署、production exact-code canary、指标、零 legacy active task inventory 与 health 已绿
-- P1 | SUBAGENT-APPROVAL-001 | inherited-current-evidence | foreground approval 无 durable intent
+- P1 | SUBAGENT-APPROVAL-001 | closed:EVID-G3-006 | foreground approval 绑定 exact RuntimeTask/root item/approval ref；approve/reject 幂等推进同一 intent，等待期不执行
 - P1 | CONC-MAILBOX-001 | inherited-current-evidence | parent mailbox JSON lost-update race
-- P1 | ROOT-TREE-001 | added-current-confirmed | direct/team/workflow 无统一 root coverage/result/integration ledger
+- P1 | ROOT-TREE-001 | closed:EVID-G3-007 | direct/Subagent/A2A/Team/Workflow 共享 `root_runtime_task_id` 与 requested/admitted/deferred/not_admitted/terminal coverage；result payload/integration epoch 继续由 Group 4 唯一拥有
 - P1 | FLEET-SCHED-001 | added-current-confirmed | RuntimeTask 全局 priority/FIFO 无 tenant/root fairness
 - P2 | FLEET-TRIGGER-001 | added-current-confirmed | trigger daemon 全量 O(N) scan 无 page/shard/cursor
 - P2 | SES-ACCEPT-001 | closed:EVID-G2-009 | accepted input、command、canonical event 与 outbox 在 admission transaction 中成立，worker 只 claim/apply
@@ -1361,9 +1363,9 @@ Group 0 是全局证据门，不拥有业务 leaf。下面 103 行必须与 cano
 | Group | 证据前缀 | Owner 范围 | 当前证据状态 | 下一次写入要求 |
 |---:|---|---|---|---|
 | 0 | `EVID-G0-*` | 0 leaf / 0 Missing | `closed`：`EVID-G0-001/002/003/004/005/006`；文档 Git truth、owner/path/decision/scenario CI、11 个 Group 上下文包、89 个去重 `@` 文档入口、跨仓快照与 fake-provider/PG/Redis harness 基座成立 | 后续任何新增本地 `@docs` 必须先进入 Git 并同步上下文包索引；业务场景 Green 仍由 owner Group 负责 |
-| 1 | `EVID-G1-*` | 16 leaf / 0 Missing | `closed`：16/16 owner leaf 已由 `EVID-G1-001`–`EVID-G1-016` 分别关闭；0 pending、0 deployed-but-open；code/docs/migration/backfill-or-quarantine、fault/concurrency、全量回归、exact-source deployment 与适用 production canary 均有独立记录 | Group 1 只在其 authority/security 合同被后续 Group 改动时重开；Group 2 已在其上完成，当前下一施工入口为 Group 3，禁止用前两组 closed 冒充 103 清零 |
+| 1 | `EVID-G1-*` | 16 leaf / 0 Missing | `closed`：16/16 owner leaf 已由 `EVID-G1-001`–`EVID-G1-016` 分别关闭；0 pending、0 deployed-but-open；code/docs/migration/backfill-or-quarantine、fault/concurrency、全量回归、exact-source deployment 与适用 production canary 均有独立记录 | Group 1 只在其 authority/security 合同被后续 Group 改动时重开；Group 2–3 已在其上完成，当前下一施工入口为 Group 4，禁止用 37 个 closed leaf 冒充 103 清零 |
 | 2 | `EVID-G2-*` | 14 leaf / 0 Missing | `closed`：14/14 owner leaf 已由 `EVID-G2-001`–`EVID-G2-014` 分别关闭；三次 code commit、六个 additive migration、fault/recovery、backend/frontend 全量回归、三服务 exact-source deployment 与 production projection/health 证据齐全 | 后续 Group 若改变 canonical event/item/reducer、writer epoch 或 final byte-faithful contract 必须重开受影响 leaf；Group 9 继续全历史 backfill/V1 cleanup/browser 终验，不得反向恢复 legacy reducer |
-| 3 | `EVID-G3-*` | 7 leaf / 0 Missing | `open` | 写 root admission、reserve/commit/release、terminal CAS、approval resume 与 fanout 曲线 |
+| 3 | `EVID-G3-*` | 7 leaf / 0 Missing | `closed`：`EVID-G3-001`–`007`；code/migration、real-PG RLS/authority、lease/crash recovery、1/10/25/50/100 mixed fanout、backend/frontend 全量回归、三服务 exact-source deployment 与 production schema/health 证据齐全 | 后续 Group 若改变 root identity、coverage conservation、cycle/path、approval intent 或 terminal monotonicity 必须重开对应 leaf；Group 4 只消费 admitted item/result refs，不得另造 root ledger |
 | 4 | `EVID-G4-*` | 6 leaf / 0 Missing | `open` | 写 result ref、mailbox lease/CAS、integration epoch、partial/late/duplicate 与 100-way return storm |
 | 5 | `EVID-G5-*` | 2 leaf / 0 Missing | `open` | 写 fleet scheduler/trigger benchmark、公平性、分页续扫与 control-plane reserve |
 | 6 | `EVID-G6-*` | 10 leaf / 0 Missing | `open` | 写 CTX-A–F、capacity ledger、progressive disclosure、compaction/output recovery 与尾部证据覆盖 |
@@ -2107,7 +2109,7 @@ context_read_receipt:
 - fault/recovery/rollback：budget root unavailable 时，交互回合只降级放大能力，authorized reasoning/direct answer 仍可完成；后台入口在持久任务/LLM/effect 前终止，Invoker 双闸防 capability-cache/参数旁路。exact stop/pause/complete/blocked 继续可用，故障不会把 Session 锁进不可退出状态。恢复只在“下一个独立 turn”重新做 authoritative admission，不在旧 turn 内静默重开工具。安全回退是保留 typed evidence、hold/retry 和 forward-fix；禁止回滚到旧 fail-open 放大路径。该变更无生产数据 mutation，production inventory 为零，因而 rollback 不需要破坏性 data reversal。
 - 七原子：Input=authenticated turn/continuation source + budget admission exception；Authority=RuntimeBudgetService/DB root binding 与 ToolMeta effect classification；Execution=entry admission + capability assembly + Invoker pre-effect guard；Evidence=typed binding、RuntimeTask metadata、tool envelope、Session projection、metric/deployment/hash；Recovery=direct-answer degradation、hold/fail-closed、exact stop/complete、next-turn retry、legacy quarantine；Consumption=web/channel/plan、Goal/Team/Trigger/Loop workers、tool runtime、API/UI/metrics；Acceptance=逐 seam Red→Green、exact-index 全量 backend/frontend/build/ruff、CC/Codex current source、三服务 production、exact-code canary、零 legacy active inventory 与 health。七原子均有当前真实路径，因此本 leaf 可独立关闭。
 - 北极星裁决：hard gate 唯一依据是可验证的资源/生命周期事实和 effect 分类；没有检查自然语言来判任务重要性、没有静默裁剪 authorized context、没有降低模型输出预算、没有替换模型 final。CC 的 full-capability interactive loop 是底座，Codex 的 typed usage/control 是工程增量，Hive 在其上增加企业级 root authority、双闸、恢复与可观测性；这是 capability-preserving determinism，不是把 Agent 机械化。
-- 残余边界：`BUD-BREAKER-001` 仍由 Group 6 修正运行中 breaker/cancel/terminal；`ROOT-TREE-001` 与 root admission/reservation/coverage ledger 仍由 Group 3 关闭；Group 4 仍需 100-child result manifest/integration epoch，Group 5 仍需 fleet fairness，Group 6 仍需 capability/context/output progressive disclosure。对应 canonical 行已更新为 `closed:EVID-G1-009`；本证据关闭当时 Group 1 为 9/16 closed、0 deployed-but-open、7/16 pending，当前滚动状态只以 §9 与 §12.3 为准。103 分母、severity、owner 与 5 个 Missing 均不变。
+- 残余边界：本证据关闭当时 `ROOT-TREE-001` 与 root admission/reservation/coverage ledger 尚属 Group 3，现已由 `EVID-G3-007` 独立关闭；`BUD-BREAKER-001` 仍由 Group 6 修正运行中 breaker/cancel/terminal，Group 4 仍需 100-child result manifest/integration epoch，Group 5 仍需 fleet fairness，Group 6 仍需 capability/context/output progressive disclosure。对应 canonical 行保持 `closed:EVID-G1-009`；本证据关闭当时 Group 1 为 9/16 closed、0 deployed-but-open、7/16 pending，当前滚动状态只以 §9 与 §12.3 为准。103 分母、severity、owner 与 5 个 Missing 均不变。
 
 #### EVID-G1-010：AUDIT-IMM-001 数据库审计证据不可变与 provenance 守恒
 
@@ -2462,7 +2464,7 @@ context_read_receipt:
 - Storage 停止门：本次不执行 storage GC、quarantine、move、hardlink、CAS 或删除。发布后同挂载点 `df -B1 /data/agents` 为 total=`48,891,670,528`、used=`11,360,583,680`、available=`37,514,309,632`、usage=`24%`；相对 `EVID-G8-PRE-003` 仅是正常运行增量，核心数据与既有 manifests/receipts 全部保留。
 - 七原子：Input=authenticated requester 对 exact draft version/hash 的结构化确认；Authority=tenant/requester/HR Agent/session/delegation/idempotency + immutable DB digest；Execution=durable RuntimeTask worker 调唯一受信 HR domain lifecycle owner，effect 前 live revalidation；Evidence=task snapshots、draft/step/claim state、trigger、audit、migration receipts、tests/deploy/live hashes；Recovery=task→draft 锁序、claim fence、safe successor、typed reconciliation、secure downgrade、same-archive retry；Consumption=confirm API、worker、reconciler、retry/cancel/revision API 与 HR UI 继续消费同一 canonical draft/task projection；Acceptance=Red→Green、PG concurrency/migration、full suite、review、三服务、production source/DB/fault/health。七原子均有当前真实消费路径。
 - 北极星裁决：本 leaf 的 hard gate 只读取 Authority/Data Ingress、Side Effect、Evidence/Recovery 和 Machine Contract 的外部可验证事实；不扫描自然语言判断意图、不限制模型推理/输出、不删工具、不把平台 prose 当模型结论。模型仍负责设计 HR blueprint；平台只确保用户确认的那一份 blueprint 以正确 principal 执行一次。它保留 CC 的模型能力面，采用 Codex typed task/snapshot/recovery 工程增量，并保留 Hive-native HR/control-plane lifecycle，符合 capability-preserving determinism。
-- 残余边界：本记录形成时 Group 1 为 16/16 closed，随后 Group 2 已建立 Session event/item/reducer 与 persist-before-publish 并以 `EVID-G2-001`–`014` 独立关闭。Group 8 仍负责固定 schema readiness 重试耗尽、durable Memory/Knowledge 与跨资产 retention。103 分母、severity、owner 与 5 个 Missing 均不变；当前下一施工入口为 Group 3。
+- 残余边界：本记录形成时 Group 1 为 16/16 closed，随后 Group 2 已建立 Session event/item/reducer 与 persist-before-publish，Group 3 已建立 root admission/coverage，并分别以 `EVID-G2-001`–`014`、`EVID-G3-001`–`007` 独立关闭。Group 8 仍负责固定 schema readiness 重试耗尽、durable Memory/Knowledge 与跨资产 retention。103 分母、severity、owner 与 5 个 Missing 均不变；当前下一施工入口为 Group 4。
 
 ### Group 2 共同验收边界（适用于 `EVID-G2-001`–`EVID-G2-014`）
 
@@ -2470,7 +2472,7 @@ context_read_receipt:
 - source/commit：`c50fea9da` 建立 Session command/event/outbox、input admission/mailbox/dispatch、permission/control/tool、Round result/obligation/outcome、replacement saga、ready/cursor/writer epoch 与 frontend canonical store；`578e773ba` 修复 rolling cutover 时 legacy-open Run 的证据投影；`5ffdb464f` 删除 canonical event 到 legacy message reducer 的二次解释链。六个 additive migration 以 `session_v2_projection_epoch_0716` 为当前 head，secure downgrade 保留 canonical evidence/constraint，不重开 V1 写权威。
 - TDD/Green：原始 focused failure set=`219 passed`；Group 2 backend focused=`700 passed`；`cd backend && source .venv/bin/activate && pytest tests -q`=`7466 passed, 2 skipped in 336.72s`。前端先后复现 projector 缺失、`assistant_text` 被误判 final、tool result 重复渲染；修复后 targeted=`4 files / 47 tests`、full=`119 files / 687 tests`，`tsc && vite build && bundle budget` 通过，7362 modules，AgentDetail/vendor budgets 均未越界。architecture ledger 另把 Session ADR/scenario 守恒从 12/13 扩到 30/30。
 - production/fault/recovery：首轮 exact-source 部署捕获 `writer_epoch_rejected legacy run authority`；没有删事件或放宽所有 writer，而是以 additive projection epoch 区分“新写权威”与“既有 Run evidence projection”。同一 event 后续 `attempts=1`、`error=null`、成功 projected，open projection=`0`。最终 `5ffdb464f` 三服务 deployment：backend=`e59dd282-97e5-42cb-b67a-84836bed0e09`、backend-api=`77967ddf-77d8-4b70-84f4-f3b2d8299895`、frontend=`3eb6c453-90dc-422d-990e-96ee2ee0131b`，全部 `SUCCESS`；backend health=`ok`，runtime=`app_rls/strict/non-superuser/non-BYPASSRLS`，sandbox passed，三个 daemon healthy，frontend HTTP 200，最终部署日志无 `writer_epoch_rejected`/Traceback/IntegrityError/Exception/ERROR 命中。
-- 完成边界：本共同证据只支撑下列 14 个 Group 2 owner leaf，不把完整 Session V2、103 总账或 G1–G30 全部标绿。Group 3/4/6/7/8/9/10 仍分别拥有 root admission、100-way result/fan-in、极端 context/compaction、跨渠道、durable Memory/Knowledge evidence、feedback/产品投影/历史 backfill/V1 cleanup 与最终重认证。Group 2 的 writer epoch 仍为 observe/legacy-open compatible；`v2_only` 最终切换只由 Group 9 在分母、观察窗、rollback artifact 与 browser E2E 齐备后执行。
+- 完成边界：本共同证据只支撑下列 14 个 Group 2 owner leaf，不把完整 Session V2、103 总账或 G1–G30 全部标绿。其关闭时 Group 3/4/6/7/8/9/10 分别拥有 root admission、100-way result/fan-in、极端 context/compaction、跨渠道、durable Memory/Knowledge evidence、feedback/产品投影/历史 backfill/V1 cleanup 与最终重认证；其中 Group 3 现已由独立 `EVID-G3-*` 关闭，其余 owner 不变。Group 2 的 writer epoch 仍为 observe/legacy-open compatible；`v2_only` 最终切换只由 Group 9 在分母、观察窗、rollback artifact 与 browser E2E 齐备后执行。
 
 #### EVID-G2-001：G-01A 模型与平台作者边界
 
@@ -2556,6 +2558,60 @@ context_read_receipt:
 - 最后一次 refute-first 发现：backend V2 已正确，但 `AgentDetail.applyTranscriptToSession` 又把相同 raw event 送入 legacy `applyTranscriptEvent`，`timelineModel` 还会把任意非空 assistant text 当 final；这证明只看 producer 会产生虚假闭环。新增 Red 分别得到 projector function missing、`assistant_text`→final 和 tool pair 两条消息的确定失败。
 - 实现/消费：canonical V2 event 现在只进入 `SessionEventStore` 一次；页面消息由 store snapshot 投影，`SessionItemV2` 保留 payload/actor/visibility/display/result/invocation/parent/render-owner/occurred-at；tool result child 合并到对应 call，final 从 ordered source blocks zero-copy 解析，legacy/V1 仍在显式 compatibility path。
 - Green/边界：targeted `47 passed`、frontend full `687 passed`、build/budget 全绿。Group 9 可在此 store 上完成 Workbench/right rail/多标签页/browser/backfill/V1 cleanup，但不得重新引入第二 reducer 或 heuristic finality。
+
+### Group 3 共同验收边界（适用于 `EVID-G3-001`–`EVID-G3-007`）
+
+- Context Read Receipt：施工前重读本文 Group 3 路由、`@docs/session-v2-cc-codex-alignment-contract-2026-07-14.md`、`@docs/ccplus-subagent-team-skill-mcp-hooks-parity-audit-2026-06-27.md`、`@docs/dynamic-workflow-harness-semantics-2026-06-24.md` 与 `@docs/runtime-budget-control-plane-plan-2026-07-03.md`，并逐条对照当前 direct/Subagent/A2A/Team/Workflow、RuntimeTask、budget、coordination 与 Session event 实现。裁决保持 CC/FreeCode delegation/workflow 能力面，采用 Codex-style typed item/lease/recovery 作为 additive engineering delta，同时保留 Hive-native Team、Workflow 与企业治理；平台只约束 authenticated authority、资源 admission、lifecycle、evidence 与 exact machine contract，不判断模型该委派什么任务。
+- source/commit/migration：实现 commit=`01e979bb3`，41 个 owned backend/migration/test 文件，`4245 insertions(+), 291 deletions(-)`；其它 session 的 `.env.example`、`.ultra/**`、`.artifacts/**` 未 stage、reset 或部署。新增 `runtime_root_items` 作为 durable mechanical coverage ledger，包含 root/parent/task/session/agent、intent/work type/target/path、admission/state、budget/approval、child session/result refs 与 recovery lease/version；migration=`runtime_root_ledger_0716` 为 additive head，生产启用并强制 RLS，重装 paired parent/child session authority contract。
+- 实现闭环：A2A 与 Subagent 都先完成 budget decision 和 durable RuntimeTask/root item，再发布 coordination 或建立 child-session projection；Team 在逐成员 admission 前写入完整 requested set 和 exact recovery intent，并由有租约、有限重试、最终 hold 的 worker 恢复 producer crash；direct web/channel、A2A/Subagent、Team、Workflow 共用 `root_runtime_task_id`、root coverage 与单调 state transition。Workflow gate/budget wait/resume 更新同一 root item；RuntimeTask approve/reject/cancel/terminal 也推进同一事实，不从 assistant prose 猜状态。
+- TDD/Green：Red 覆盖 malformed root ID、ghost child/session、lease expiry 后重复 signal、durable cycle、terminal late completion、approval wait 误唤醒、Team producer crash/不完整 intent/无限 retry、real-PG 100-way/RLS/authority 与 workflow suspended mapping。Group 3 focused=`480 passed`；`cd backend && source .venv/bin/activate && pytest tests -q`=`7508 passed, 2 skipped in 332.99s`；frontend SESSION-G9 `timelineModel` targeted=`31 passed`，full=`119 files / 688 tests`，`tsc + vite build + bundle budget` 通过；41 个 Python 文件 Ruff check/format、`git diff --check` 与 `alembic heads` 全绿。
+- capacity/fault/recovery：pure coverage 与真实 Team fanout 都对 `1/10/25/50/100` 参数化，断言 `requested = admitted + deferred + not_admitted` 且 `expected = admitted`；100-way real PG fixture 同时验证 tenant isolation。producer lease expiry 可 reclaim；缺 exact message/operation/ordinal 的 recovery intent 只能 hold，不由平台编造工作；retry exhaustion 进入 `needs_reconciliation`/hold 而非自旋。A2A coordination recovery 以 `runtime_task_id` 复用原 signal，cycle/terminal 在进程重启后仍是 durable 事实。
+- production/fault/recovery：从 `01e979bb3` Git archive 发布。backend=`b67055e5-9dbc-4e4d-903e-14fe8322b728`、frontend=`20ca32aa-7682-4f6a-b6a5-ceebcca0fdad` 均 `SUCCESS`。backend-api 首次 deployment=`ebd727ba-dc7b-4044-a843-ba45922e6bec` 在主 backend 完成 migration 前按 schema readiness fail closed，10 次重启后为 `REMOVED`；schema ready 后从同一 archive 重提 `dd748dd4-ea68-4d94-a5bb-4fda7ecd7b90` 为 `SUCCESS`。该 rolling 顺序证据不放宽 readiness，也不伪装首轮成功；后续发布先等 schema owner 成功再启动只读 API。
+- production truth：backend 与 backend-api 均报告 actual/expected head=`runtime_root_ledger_0716`、checked tables=`145`、checked triggers=`4`、issues=`[]`、ready=`true`；backend-api 日志有 `RLS runtime role verified: role=app_rls` 与 `Application startup complete`。public backend health=`ok`，runtime role=`app_rls/strict/non-superuser/non-BYPASSRLS`，evolution/trigger/workflow daemon healthy，RuntimeTask worker running 且暴露 `team_fanout_claimed/recovered/retried/needs_reconciliation` 指标；frontend HTTP/2 200。本次生产验收不插入、删除或改写客户 root item。
+- 七原子：Input=模型/Workflow 决定的 exact requested intents；Authority=tenant/principal/root user/session/agent/budget frame；Execution=RuntimeTask worker、coordination gateway、Team/Workflow runtime 的唯一 governed paths；Evidence=RuntimeTask、root item、coordination signal、Session event 与 health metrics；Recovery=lease reclaim、idempotent signal、task/root replay、bounded retry/hold 与 terminal CAS；Consumption=direct/Subagent/A2A/Team/Workflow、budget approval、worker 与 Session projection 真实读写同一 ledger；Acceptance=Red→Green、real PG/RLS、capacity/fault、全量回归、三服务 exact-source 与 production readiness/health。七原子在 Group 3 范围内闭环。
+- 残余边界：Group 3 关闭 root admission/coverage/path/approval/terminal，不声称 100 个 child 的 result payload 已可无损汇入 parent context。Group 4 仍拥有 result manifest、mailbox lease/CAS、integration epoch、partial/late/duplicate 与 return storm；Group 5 仍拥有 fleet fairness，Group 6 仍拥有 context/compaction/output 与运行中 breaker，Group 7 仍拥有跨渠道交付，Group 9 仍拥有最终 UI/browser/backfill。当前总账为 37/103 closed，5 个 Missing 不变。
+
+#### EVID-G3-001：A2A-ADMISSION-001 durable enqueue 先于 coordination
+
+- `leaf_ids`：`A2A-ADMISSION-001`；owner/依赖：Group 3 / Group 0–2；当前状态：`closed`。
+- Red/实现：旧路径可先发 delegation signal、后丢 RuntimeTask，形成 queued ghost。现在 budget admission 后先持久化 `RuntimeTask + RuntimeRootItem`；coordination publish 失败进入 `needs_reconciliation`，等价工作持有 lease 时进入 `not_admitted` 并释放 reservation。worker/recovery 只对这条 durable task 发布 signal。
+- 恢复/验收：`test_coordination_recovery_reuses_existing_signal_after_lease_expiry` 证明 lease 过期后按 `runtime_task_id` 找回原 signal，不重复通知；signal metadata、coordination key、lease 与 root ID 回写原 task。
+
+#### EVID-G3-002：SUBAGENT-ADMISSION-001 无 ghost child session
+
+- `leaf_ids`：`SUBAGENT-ADMISSION-001`；owner/依赖：Group 3 / Group 0–2；当前状态：`closed`。
+- Red/实现：旧 Subagent 可在 durable enqueue 失败时留下 child session。现在 `start_subagent_run` 先完成 reservation、RuntimeTask 与 root item，再建立 child-session projection；projection 中断保留 `recovery_action=rebuild_child_session_projection`，由原 task 恢复而不是新建第二 child。
+- Authority/验收：frozen Session contract 同时接受合法 parent endpoint 和与 RuntimeTask 绑定的 child endpoint，并拒绝不成对 agent/session；real-PG migration/authority fixture 已通过。
+
+#### EVID-G3-003：A2A-CYCLE-001 durable path 与 restart cycle guard
+
+- `leaf_ids`：`A2A-CYCLE-001`；owner/依赖：Group 3 / Group 0–2；当前状态：`closed`。
+- Red/实现：进程内集合无法在重启后阻止 A→B→A。现在 ancestor/target path 写入 root item 与 task delegation chain；重复 target 产生 `runtime_root_cycle_detected`、`not_admitted`，不发布 signal、不启动 child effect。
+- 验收：nested/shared-trace、restart payload 与 root path 单元/真实持久化测试证明 cycle 是 durable mechanical fact，不依赖自然语言、模型名称或进程内缓存。
+
+#### EVID-G3-004：A2A-TERMINAL-001 单调终态
+
+- `leaf_ids`：`A2A-TERMINAL-001`；owner/依赖：Group 3 / Group 2 typed outcome；当前状态：`closed`。
+- Red/实现：late child completion 曾可能覆盖 kill/cancel。root transition 在锁定当前行后只允许合法前向边；`completed/failed/killed/skipped/cancelled/not_admitted` 全部 sealed，RuntimeTask 与 web/channel finalization 也保留既有 terminal。
+- 验收：所有 terminal state 的参数化 late-completion、terminal cancel race、completed 后 late kill 与 worker reconciliation tests 均通过；无平台文本参与状态判断。
+
+#### EVID-G3-005：TEAM-FANOUT-001 完整 requested set 与 crash recovery
+
+- `leaf_ids`：`TEAM-FANOUT-001`；owner/依赖：Group 3 / Group 0–2；当前状态：`closed`。
+- Red/实现：旧 Team 逐成员 create，进程在第 N 个 member 崩溃时没有总分母。现在先用稳定 operation/ordinal/intent key 提交完整 requested set，再逐项 budget admission/durable enqueue；producer lease 未完成的 item 由 cross-tenant audited claim、tenant-scoped delivery 的 recovery worker 接管。
+- 验收：`1/10/25/50/100` mixed admission 曲线守恒；producer lease expiry reclaim、exact intent 校验、重试后 hold、worker health counters 与 fake/real DB fixtures 全绿。recovery 不能补写缺失 message 或 semantic defaults。
+
+#### EVID-G3-006：SUBAGENT-APPROVAL-001 exact durable approval intent
+
+- `leaf_ids`：`SUBAGENT-APPROVAL-001`；owner/依赖：Group 3 / Group 1 authority + Group 2 control item；当前状态：`closed`。
+- Red/实现：foreground over-budget 过去可能只返回提示，重启后不知道批准哪次工作。现在 waiting approval 绑定 exact budget run/reservation、RuntimeTask、root item 与 `approval_ref`，不 wake worker；approve/reject 幂等推进原 task/root state，root intent 不能重新绑定另一 task。
+- 验收：Subagent、Team 与 Workflow waiting-approval fixtures、budget exact pending-task resume/reject、malformed root ID 和 immutable root-task binding tests 通过。
+
+#### EVID-G3-007：ROOT-TREE-001 统一 mixed-runtime root coverage
+
+- `leaf_ids`：`ROOT-TREE-001`；owner/依赖：Group 3 / Group 0–2；当前状态：`closed`。
+- 实现/消费：direct web/channel、Subagent、A2A、Team 与 Workflow 都写同一 `root_runtime_task_id` 下的 `requested/admitted/deferred/not_admitted/expected/terminal/waiting_approval` 事实；RuntimeTask create/update、budget decision、Workflow gate/resume 与 terminal settlement 推进同一 item。frontend `timelineModel` 的 Workflow segment、gate waiter、dedupe/count 继续消费 canonical projection，SESSION-G9 的 gate/wait/restart/resume 因此不再产生 ghost running。
+- 验收/边界：coverage conservation、100-way tenant isolation、Workflow suspend/resume/kill、invalid root identity、frontend `timelineModel` targeted=`31 passed` 与 production worker/readiness 均通过。`result_refs_json` 只保留稳定消费槽位；Group 4 仍负责 durable result manifest、mailbox 与 integration epoch，不得把本 evidence 外推为 return-storm 已解决。
 
 #### EVID-G8-PRE-001：backend-volume default Skill startup 写放大止血
 

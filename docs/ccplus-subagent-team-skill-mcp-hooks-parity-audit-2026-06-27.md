@@ -1,7 +1,7 @@
 # CCPlus Subagent / Agent Team / Skill / MCP / Hooks Parity Audit
 
 日期：2026-06-27
-状态：代码级复核结论；2026-06-27 总检后状态回写
+状态：代码级复核结论；2026-06-27 总检后状态回写；2026-07-17 增补 Group 3 durable admission/coverage 生产证据
 范围：Subagent、Agent Team、Skill / MCP Skill、MCP runtime、Hooks runtime，以及它们在单个 session 内的模型触发与消费逻辑
 
 ## 文档关系
@@ -587,3 +587,13 @@ Highest-risk gaps: Agent Team, Hooks external runtime, coordinator-subagent trig
 ```
 
 后续不能只用 “工具注册了 / API 有 / tests passed” 判断对齐。必须按 session 内模型是否能自然触发、工具调用是否产生 CC 等价 side effect、后续 turn 是否消费结果来判定。
+
+## 10. 2026-07-17 Group 3 durable runtime 证据更新
+
+本节是后继实现证据，不改写 2026-06-27 的历史快照。canonical 状态与逐 leaf 证据仍以 `docs/agent-native-unified-atomic-review-2026-07-14.md` 的 `EVID-G3-001`–`EVID-G3-007` 为准。
+
+- commit=`01e979bb3` 新增 `runtime_root_items`、统一 root admission/coverage service 与 Team fanout recovery，并接入 A2A/Subagent/Agent Team/Workflow、RuntimeTask、budget approval 和 Session event contract。
+- Subagent/A2A 现在先落 durable task/root intent 再建立 child projection 或发布 coordination；等待批准时保留 exact intent 且不执行。delegation path/cycle 与 terminal seal 可跨进程恢复。
+- Agent Team 在逐成员 admission 前提交完整 requested set；producer crash 由 exact-intent lease worker 恢复，缺 message/identity 时只 hold，不让平台猜任务。Team 与 mixed root fixture 对 `1/10/25/50/100` 全部满足 coverage conservation。
+- 验收：Group 3 focused=`480 passed`；backend full=`7508 passed, 2 skipped`；frontend full=`119 files / 688 tests` 并通过 build/bundle budget；production 三服务从同一 archive 成功，head=`runtime_root_ledger_0716`、schema/RLS/health clean。
+- 边界：本节只关闭 root admission、cycle、approval、terminal 与 Team fanout coverage。Group 4 的 durable result/mailbox/integration epoch 尚未由本节关闭；Skill progressive disclosure、MCP live protocol 与 external hook runner 也不能因 Group 3 通过而被重新标成已完成。

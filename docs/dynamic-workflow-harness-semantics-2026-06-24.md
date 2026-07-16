@@ -5,6 +5,8 @@
 > 关系：本文属于 `docs/ccplus-round2-v2-hive-connect-master-plan-2026-06-24.md` 的 Workflow 主线专项，是 `docs/dynamic-workflow-cc-alignment-redesign-2026-06-23.md` 的补充，不替代它。06-23 文档回答“Hive 当前 runtime 和 CC Dynamic Workflow 的差距”；本文专门回答“Dynamic Workflow 的底层语义、几种常见形式如何组合、以及动态 harness 如何沉淀成固定 workflow”。
 >
 > **2026-06-27 裁决更新**：本文保留为 Dynamic Harness 语义补充；当前实施顺序、唯一主线、前端呈现、failure repair 和验收标准以 [`dynamic-workflow-ccplus-implementation-plan-2026-06-27.md`](./dynamic-workflow-ccplus-implementation-plan-2026-06-27.md) 为准。
+>
+> **2026-07-17 实现边界更新**：Group 3 已把现有 structured Workflow 的 root admission、budget wait/approval、gate/resume 与单调终态接入统一 durable root ledger；本文定义的 Dynamic Harness proposal/pattern algebra/outcome promotion 仍是未被该 substrate 自动关闭的独立语义范围。
 
 ## 文档索引关系
 
@@ -481,3 +483,12 @@ Hive 下一步不应该继续只增强固定 workflow 模板，也不应该为�
 ```
 
 这会让 Workflow 从“Agent 可以提交一份流程 JSON”进化成“Agent 能自己设计、评审、试跑、修正、沉淀 harness 的系统”。
+
+## 12. Group 3 structured Workflow substrate 证据（2026-07-17）
+
+本次实现没有把 Dynamic Workflow 降成固定模板，也没有让平台决定模型应该怎样拆任务。它只关闭执行外壳的机械事实断点：
+
+- commit=`01e979bb3`；`WorkflowRuntimeService` 在 run 创建时写入与 RuntimeTask 相同的 `root_runtime_task_id`/root item，budget overrun 进入 durable `waiting_approval`，gate/suspend/resume/kill/completion 推进同一单调状态。
+- direct/Subagent/A2A/Team/Workflow 共享 requested/admitted/deferred/not_admitted/expected/terminal coverage，Workflow 不再拥有第二套 root truth；SESSION-G9 backend gate/wait/restart/resume substrate 由 `EVID-G3-006/007` 关闭。
+- focused Group 3=`480 passed`，backend full=`7508 passed, 2 skipped`；production head=`runtime_root_ledger_0716`，三服务最新 deployment 均 `SUCCESS`，schema/RLS/worker/daemon health clean。
+- 未关闭范围：`HarnessProposal`、pattern algebra、lowering、critic/outcome scoring、promotion 与真实 UI 卡片仍按本文 §7–§10 和唯一实施入口验收；Group 4 继续负责 Workflow partial result、mailbox/integration epoch 与 return storm。

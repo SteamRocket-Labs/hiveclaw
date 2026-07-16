@@ -184,6 +184,7 @@ async def test_claim_available_reclaims_expired_running_task_with_new_fence():
     assert task.claim_version == 5
     assert task.attempt_count == 3
     assert task.metadata_json["reclaimed_expired_claim"] is True
+    assert task.metadata_json["lease_reclaim_count"] == 1
     assert task.metadata_json["previous_claim"]["worker_id"] == "dead-worker"
     assert task.metadata_json["previous_claim"]["claim_version"] == 4
     assert task.metadata_json["claim_fence"] == f"{task.id.hex}:5"

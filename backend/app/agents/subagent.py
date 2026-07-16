@@ -901,6 +901,7 @@ async def _emit_subagent_lifecycle_hook(
 
     return await emit_hook(
         event,
+        evidence_mode="independent",
         agent_id=ctx.parent_agent_id,
         session_id=session_id or ctx.parent_session_id,
         prompt=prompt,

@@ -438,7 +438,7 @@ async def test_single_tool_call_stays_sequential():
 
 @pytest.mark.asyncio
 async def test_parallel_batch_emits_events_in_order():
-    """Running events emitted first (all), then done events in order."""
+    """Batch boundaries are ordered while concurrent effect starts stay truthful."""
     from app.kernel.contracts import InvocationRequest
     from app.kernel.engine import AgentKernel
 
@@ -499,11 +499,23 @@ async def test_parallel_batch_emits_events_in_order():
         )
     )
 
-    # All "running" events emitted first, then all "done" events
-    assert tool_call_events == [
+    # All calls become visible in provider order before execution.  The
+    # pre-effect fences race truthfully inside the parallel-safe segment, so
+    # their relative order is deliberately not a semantic contract.  The
+    # gathered terminal results return to provider order only after every
+    # pre-effect fence has been recorded.
+    assert tool_call_events[:3] == [
         {"name": "read_file", "status": "running"},
         {"name": "glob_search", "status": "running"},
         {"name": "list_files", "status": "running"},
+    ]
+    assert all(event["status"] == "effect_started" for event in tool_call_events[3:6])
+    assert {event["name"] for event in tool_call_events[3:6]} == {
+        "read_file",
+        "glob_search",
+        "list_files",
+    }
+    assert tool_call_events[6:] == [
         {"name": "read_file", "status": "done"},
         {"name": "glob_search", "status": "done"},
         {"name": "list_files", "status": "done"},

@@ -47,6 +47,7 @@ async def send_notification(
 
     await emit_hook(
         HookEvent.NOTIFICATION,
+        evidence_db=db,
         source="notification_service",
         metadata={
             "tenant_id": str(tenant_id) if tenant_id else None,

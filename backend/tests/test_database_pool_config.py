@@ -51,3 +51,11 @@ def test_snapshot_db_pool_reports_occupancy_fields() -> None:
     assert snap["pool_timeout_seconds"] > 0
     assert snap["capacity"] == snap["size"] + snap["max_overflow"]
     assert snap["saturation_pct"] >= 0.0
+
+
+def test_runtime_task_web_chat_recovery_budget_has_a_bounded_default() -> None:
+    from app.config import Settings
+
+    settings = Settings(_env_file=None)
+
+    assert settings.RUNTIME_TASK_WEB_CHAT_MAX_EXECUTION_ATTEMPTS == 3

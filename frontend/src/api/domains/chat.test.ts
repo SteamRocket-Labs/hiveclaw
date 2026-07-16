@@ -64,6 +64,7 @@ describe('chat API adapter', () => {
     await chatApi.getSessionTranscript('agent-1', 'session-1', { beforeSequence: 57, limit: 100 });
     await chatApi.getSessionTranscript('agent-1', 'session-1', { afterSequence: 41 });
     await chatApi.getSessionTranscript('agent-1', 'session-1');
+    await chatApi.getSessionTranscript('agent-1', 'session-1', { afterSequence: 41, schemaVersion: 2 });
 
     expect(get).toHaveBeenNthCalledWith(
       1,
@@ -77,6 +78,11 @@ describe('chat API adapter', () => {
     );
     expect(get).toHaveBeenNthCalledWith(3, '/agents/agent-1/sessions/session-1/transcript?after_sequence=41', undefined);
     expect(get).toHaveBeenNthCalledWith(4, '/agents/agent-1/sessions/session-1/transcript', undefined);
+    expect(get).toHaveBeenNthCalledWith(
+      5,
+      '/agents/agent-1/sessions/session-1/transcript?after_sequence=41&schema_version=2',
+      undefined,
+    );
   });
 
   it('sends structured attachment metadata when starting a session run', async () => {

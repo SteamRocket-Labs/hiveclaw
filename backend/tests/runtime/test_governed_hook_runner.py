@@ -247,6 +247,40 @@ async def test_command_hook_uses_governed_code_execution_and_writes_replayable_e
 
 
 @pytest.mark.asyncio
+async def test_governed_hook_span_reuses_boundary_evidence_transaction(tmp_path: Path) -> None:
+    from app.runtime.hook_runner import GovernedHookRunner, HookRunnerPolicy, HookSpec
+
+    evidence_db = object()
+    captured: list[tuple[dict, object | None]] = []
+
+    async def fake_span_recorder(fact: dict, *, evidence_db=None) -> None:
+        captured.append((fact, evidence_db))
+
+    async def fake_command_executor(_command: list[str], **_kwargs) -> CodeExecutionResult:
+        return CodeExecutionResult(stdout="ok", exit_code=0)
+
+    runner = GovernedHookRunner(
+        policy=HookRunnerPolicy(enabled=True, work_dir=tmp_path, allowed_hook_types={"command"}),
+        command_executor=fake_command_executor,
+        span_recorder=fake_span_recorder,
+    )
+
+    await runner.run(
+        HookSpec(key="file-audit", event=HookEvent.FILE_CHANGED, type="command", command="echo ok"),
+        HookContext(
+            event=HookEvent.FILE_CHANGED,
+            session_id="session-1",
+            agent_id="agent-1",
+            metadata={"tenant_id": "tenant-1", "runtime_task_id": "task-1"},
+            _evidence_db=evidence_db,
+        ),
+    )
+
+    assert len(captured) == 1
+    assert captured[0][1] is evidence_db
+
+
+@pytest.mark.asyncio
 async def test_prompt_and_agent_hooks_are_routed_through_injected_governed_adapters(tmp_path: Path) -> None:
     from app.runtime.hook_runner import GovernedHookRunner, HookRunnerPolicy, HookSpec
 

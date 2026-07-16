@@ -1,8 +1,8 @@
 """Continuation controls for long-lived Agent-to-Agent sessions.
 
-The transcript event is the durable mailbox truth. Active runs consume the same
-message through the existing mid-run drain; inactive open sessions start a new
-durable turn; terminal sessions reject the continuation and record that fact.
+The transcript event is durable evidence. Active runs consume a canonical
+Session V2 input at the next provider boundary; inactive open sessions start a
+new durable turn; terminal sessions reject the continuation and record it.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from app.services.chat_transcript import append_session_event
 from app.services.web_chat_runtime import (
     WEB_CHAT_TURN_TASK_TYPE,
     _find_active_run,
-    _queue_saved_mid_run_user_message,
+    _submit_active_session_input,
     start_web_chat_run,
 )
 
@@ -166,8 +166,8 @@ async def _append_mailbox_event(
     parts: list[dict[str, Any]] | None = None,
     materialize_chat_message: bool = True,
     source: str = "agent_session_mailbox",
-) -> None:
-    await append_session_event(
+) -> Any:
+    return await append_session_event(
         db=db,
         agent_id=agent.id,
         tenant_id=getattr(session, "tenant_id", None) or getattr(agent, "tenant_id", None),
@@ -408,7 +408,7 @@ async def continue_agent_session_from_mailbox(
             }
 
     active_run = await _find_active_run(db=db, agent_id=agent.id, session_id=session.id)
-    await _append_mailbox_event(
+    mailbox_event = await _append_mailbox_event(
         db=db,
         agent=agent,
         user=user,
@@ -419,7 +419,7 @@ async def continue_agent_session_from_mailbox(
         run_id=getattr(active_run, "id", None) if active_run is not None else None,
         metadata={
             **metadata_base,
-            "consumer": "mid_run_message_drain" if active_run is not None else "continuation_turn",
+            "consumer": "session_v2_round_input" if active_run is not None else "continuation_turn",
         },
         role=mailbox_role,
         parts=parts,
@@ -428,7 +428,10 @@ async def continue_agent_session_from_mailbox(
     )
 
     if active_run is not None:
-        payload = await _queue_saved_mid_run_user_message(
+        mailbox_event_id = getattr(mailbox_event, "event_id", None) or getattr(mailbox_event, "id", None)
+        if mailbox_event_id is None:
+            raise RuntimeError("agent session event is missing a stable identity")
+        payload = await _submit_active_session_input(
             db=db,
             active_run=active_run,
             agent=agent,
@@ -439,12 +442,13 @@ async def continue_agent_session_from_mailbox(
             source_channel=source_channel,
             message_already_in_t0=True,
             role=model_role,
+            idempotency_key=f"agent-session-event:{mailbox_event_id}",
         )
         return {
             **payload,
             "ok": True,
             "status": "queued",
-            "consumer": "mid_run_message_drain",
+            "consumer": "session_v2_round_input",
             "child_session_id": str(session.id),
         }
 

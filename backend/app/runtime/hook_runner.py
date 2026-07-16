@@ -44,7 +44,7 @@ PromptExecutor = Callable[..., Awaitable[dict[str, Any]]]
 HttpExecutor = Callable[..., Awaitable[dict[str, Any]]]
 AgentExecutor = Callable[..., Awaitable[dict[str, Any]]]
 TranscriptWriter = Callable[[dict[str, Any]], Awaitable[None] | None]
-SpanRecorder = Callable[[dict[str, Any]], Awaitable[None] | None]
+SpanRecorder = Callable[..., Awaitable[None] | None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -273,12 +273,15 @@ class GovernedHookRunner:
         }
         await _maybe_await(self.transcript_writer(payload))
 
-    async def _record_span(self, fact: dict[str, Any]) -> None:
+    async def _record_span(self, fact: dict[str, Any], *, evidence_db: Any = None) -> None:
         if self.span_recorder is None:
             return
-        await _maybe_await(self.span_recorder(fact))
+        if evidence_db is None:
+            await _maybe_await(self.span_recorder(fact))
+            return
+        await _maybe_await(self.span_recorder(fact, evidence_db=evidence_db))
 
-    async def _disabled(self, spec: HookSpec, reason: str) -> HookRunRecord:
+    async def _disabled(self, spec: HookSpec, ctx: HookContext, reason: str) -> HookRunRecord:
         record = HookRunRecord(
             key=spec.key, event=spec.event.value, hook_type=spec.type, status="disabled", error=reason
         )
@@ -292,15 +295,23 @@ class GovernedHookRunner:
                 "error": reason,
                 "failure_mode": spec.failure_mode or default_hook_failure_mode(spec.event),
                 "retryable": True,
-            }
+                "agent_id": str(ctx.agent_id) if ctx.agent_id is not None else None,
+                "session_id": ctx.session_id,
+                "tenant_id": ctx.metadata.get("tenant_id"),
+                "user_id": ctx.metadata.get("user_id"),
+                "runtime_task_id": ctx.metadata.get("runtime_task_id"),
+                "request_id": ctx.metadata.get("request_id"),
+                "trace_id": ctx.metadata.get("trace_id"),
+            },
+            evidence_db=ctx._evidence_db,
         )
         return record
 
     async def run(self, spec: HookSpec, ctx: HookContext) -> HookRunRecord:
         if not self.policy.enabled:
-            return await self._disabled(spec, "hook runner disabled by policy")
+            return await self._disabled(spec, ctx, "hook runner disabled by policy")
         if spec.type not in self.policy.allowed_hook_types:
-            return await self._disabled(spec, f"hook type {spec.type!r} disabled by policy")
+            return await self._disabled(spec, ctx, f"hook type {spec.type!r} disabled by policy")
 
         await self._write_transcript_event(
             spec=spec,
@@ -361,7 +372,8 @@ class GovernedHookRunner:
                 "runtime_task_id": ctx.metadata.get("runtime_task_id"),
                 "request_id": ctx.metadata.get("request_id"),
                 "trace_id": ctx.metadata.get("trace_id"),
-            }
+            },
+            evidence_db=ctx._evidence_db,
         )
         return record
 

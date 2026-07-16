@@ -9,6 +9,7 @@ import time
 import uuid
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -48,7 +49,6 @@ from app.services.chat_message_parts import (
 from app.services.chat_artifact_delivery import create_chat_artifacts_for_message, tool_session_write_paths
 from app.services.chat_transcript import append_session_event, lock_transcript_session
 from app.services.conversation_interaction_service import mark_latest_pending_clarification_answered
-from app.services.llm_error_policy import is_llm_error_message
 from app.services.llm_utils import STREAM_RETRY_TOMBSTONE
 from app.services import plan_mode_core
 from app.services.plan_mode_file import provision_agent_plan_file_slot
@@ -77,14 +77,22 @@ _EXECUTABLE_CHAT_TASK_TYPES = (
 )
 _ACTIVE_WEB_CHAT_UNIQUE_INDEX_NAME = "uq_runtime_tasks_active_web_chat_session"
 _FINAL_ASSISTANT_MARKER_UNIQUE_INDEX_NAME = "uq_chat_messages_web_chat_final_decision_trace"
-_ACTIVE_STATUSES = ("pending", "running")
-_TERMINAL_STATUSES = {"completed", "failed", "killed", "skipped"}
+# A permission-waiting turn remains the one active Session turn even while no
+# worker owns it.  Treating only pending/running as active allowed a second Run
+# to be admitted beside a suspended approval and broke the exactly-once tool
+# continuation contract.
+_ACTIVE_STATUSES = ("pending", "running", "suspended", "resumable")
+_TERMINAL_STATUSES = {"completed", "failed", "killed", "skipped", "needs_reconciliation"}
 _TERMINAL_TRANSCRIPT_EVENT_TYPES = ("assistant_message", "run_completed", "done", "error", "quota_exceeded")
-_USER_VISIBLE_WEB_CHAT_ERROR = "[LLM Error] AI 模型调用异常，请稍后重试。"
 _CANCEL_EVENTS: dict[str, asyncio.Event] = {}
 _TASKS: dict[str, asyncio.Task] = {}
 _CURRENT_BROADCAST_RUN_ID: ContextVar[str | None] = ContextVar("_CURRENT_BROADCAST_RUN_ID", default=None)
-_PERMISSION_METADATA_KEYS = ("permission_mode", "permission_profile", "writable_roots")
+_PERMISSION_METADATA_KEYS = (
+    "permission_mode",
+    "permission_profile",
+    "writable_roots",
+    "session_permission_grants",
+)
 _CHANNEL_DELIVERY_TOOL_NAMES = ("send_channel_message", "send_channel_file")
 _SESSION_CONTEXT_RUNTIME_EVENT_TYPES = {
     "context_window_status",
@@ -97,6 +105,18 @@ _SESSION_CONTEXT_RUNTIME_EVENT_TYPES = {
     "memory_context_unavailable",
     "model_route",
 }
+
+
+@dataclass(frozen=True, slots=True)
+class CancelSignalDeliveryReceipt:
+    """Mechanical delivery facts for one idempotent cancel signal attempt."""
+
+    run_id: str
+    delivery_state: str
+    local_delivered: bool
+    cross_process_delivered: bool
+    retryable: bool
+    error_class: str | None = None
 
 
 def _runtime_actor_user_id(user: Any) -> uuid.UUID | None:
@@ -130,6 +150,34 @@ async def _lock_session_runtime_mutation(db: AsyncSession, *, session_id: uuid.U
 
     if isinstance(db, AsyncSession):
         await lock_transcript_session(db, session_id=session_id)
+
+
+async def _lock_runtime_task_for_session_mutation(
+    db: AsyncSession,
+    *,
+    run_uuid: uuid.UUID,
+    tenant_id: uuid.UUID | str,
+    agent_id: uuid.UUID | str,
+    session_id: uuid.UUID | str,
+) -> RuntimeTask | None:
+    """Lock a RuntimeTask only inside its server-derived authority frame."""
+
+    tenant_uuid = tenant_id if isinstance(tenant_id, uuid.UUID) else uuid.UUID(str(tenant_id))
+    agent_uuid = agent_id if isinstance(agent_id, uuid.UUID) else uuid.UUID(str(agent_id))
+    session_uuid = session_id if isinstance(session_id, uuid.UUID) else uuid.UUID(str(session_id))
+    await _lock_session_runtime_mutation(db, session_id=session_uuid)
+    result = await db.execute(
+        select(RuntimeTask)
+        .where(
+            RuntimeTask.id == run_uuid,
+            RuntimeTask.task_type.in_(_EXECUTABLE_CHAT_TASK_TYPES),
+            RuntimeTask.tenant_id == tenant_uuid,
+            RuntimeTask.parent_agent_id == agent_uuid,
+            RuntimeTask.parent_session_id == str(session_uuid),
+        )
+        .with_for_update()
+    )
+    return result.scalar_one_or_none()
 
 
 async def _create_runtime_budget_root_run_for_chat(
@@ -385,6 +433,7 @@ def _permission_metadata_from_mapping(metadata: dict[str, Any] | None) -> dict[s
         "mode": mode,
         "allowed_tools": allowed_tools,
         "writable_roots": writable_roots,
+        "session_grants": list(metadata.get("session_permission_grants") or profile.get("session_grants") or []),
     }
     return {
         "permission_mode": mode,
@@ -572,8 +621,92 @@ def _apply_terminal_task_update(
         metadata = dict(task.metadata_json or {})
         metadata.update(metadata_json)
         task.metadata_json = metadata
-    if status_for_timestamp in {"completed", "failed", "killed", "skipped"} and task.completed_at is None:
+    if status_for_timestamp in _TERMINAL_STATUSES and task.completed_at is None:
         task.completed_at = datetime.now(timezone.utc)
+
+
+async def _apply_terminal_task_update_and_settle(
+    db: AsyncSession,
+    task: RuntimeTask,
+    *,
+    status: str,
+    result_summary: str | None,
+    metadata_json: dict[str, Any] | None,
+    terminal_source: str,
+) -> RuntimeTask:
+    """The sole web-chat terminal RuntimeTask writer and control settler.
+
+    The session authority lock, RuntimeTask row lock, terminal mutation and
+    pending ControlInput settlement all share this transaction. Callers retain
+    commit ownership so their transcript/artifact writes remain atomic too.
+    """
+
+    if not isinstance(db, AsyncSession):
+        # Legacy isolated unit doubles have no SQL transaction or Session V2
+        # tables to settle. Production always supplies AsyncSession; PG tests
+        # cover the atomic terminal/control path above this compatibility seam.
+        _apply_terminal_task_update(
+            task,
+            status=status,
+            result_summary=result_summary,
+            metadata_json=metadata_json,
+        )
+        return task
+
+    session_id = uuid.UUID(str(task.parent_session_id))
+    await lock_transcript_session(db, session_id=session_id)
+    locked_task = await db.scalar(
+        select(RuntimeTask)
+        .where(
+            RuntimeTask.id == task.id,
+            RuntimeTask.tenant_id == task.tenant_id,
+            RuntimeTask.parent_agent_id == task.parent_agent_id,
+            RuntimeTask.parent_session_id == str(session_id),
+        )
+        .with_for_update()
+    )
+    if locked_task is None:
+        raise RuntimeError("runtime_task_disappeared_during_terminal_commit")
+    _apply_terminal_task_update(
+        locked_task,
+        status=status,
+        result_summary=result_summary,
+        metadata_json=metadata_json,
+    )
+    if locked_task.status not in _TERMINAL_STATUSES:
+        raise ValueError("terminal_runtime_task_status_required")
+
+    terminal_metadata = dict(locked_task.metadata_json or {})
+    terminal_fence = str(terminal_metadata.get("terminal_execution_fence_ref") or "")
+    if not terminal_fence:
+        fence_payload = {
+            "run_id": str(locked_task.id),
+            "status": locked_task.status,
+            "claim_version": int(getattr(locked_task, "claim_version", 0) or 0),
+            "completed_at": (locked_task.completed_at.isoformat() if locked_task.completed_at is not None else None),
+        }
+        fence_sha = hashlib.sha256(
+            json.dumps(fence_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        terminal_fence = f"runtime-task-terminal:{fence_sha}"
+    terminal_metadata.update(
+        {
+            "terminal_execution_fence_ref": terminal_fence,
+            "terminal_commit_source": str(terminal_source),
+            "terminal_committed_status": locked_task.status,
+        }
+    )
+    locked_task.metadata_json = terminal_metadata
+
+    from app.services.session_control_input import settle_pending_controls_for_run
+
+    await settle_pending_controls_for_run(
+        db,
+        task=locked_task,
+        execution_fence_ref=terminal_fence,
+        terminal_source=terminal_source,
+    )
+    return locked_task
 
 
 def _runtime_prompt_metadata_update(runtime_session_context: Any) -> dict[str, Any]:
@@ -836,6 +969,11 @@ def _duration_ms_from_tool_step(data: dict[str, Any]) -> int | None:
 
 def _tool_step_contract(data: dict[str, Any], *, fallback_run_id: uuid.UUID | str | None = None) -> dict[str, Any]:
     payload = dict(data)
+    # Provider-private reasoning is committed through the dedicated
+    # assistant_reasoning_private lane.  Tool cards are a direct-user
+    # projection and must never duplicate those bytes or signatures.
+    payload.pop("reasoning_content", None)
+    payload.pop("reasoning_signature", None)
     status = str(payload.get("status") or "done")
     tool_call_id = (
         payload.get("tool_call_id")
@@ -940,8 +1078,7 @@ def _terminal_status_from_transcript_event(event: ChatTranscriptEvent) -> str | 
     status = str(metadata.get("status") or "").lower()
     if status in _TERMINAL_STATUSES:
         return status
-    content = str(getattr(event, "content", None) or "")
-    if event_type in {"error", "quota_exceeded"} or is_llm_error_message(content):
+    if event_type in {"error", "quota_exceeded"}:
         return "failed"
     return "completed"
 
@@ -986,11 +1123,13 @@ async def _reconcile_terminal_transcript_ghost(db: AsyncSession, task: RuntimeTa
     terminal_event_id = getattr(terminal_event, "id", None)
     if terminal_event_id:
         metadata["terminal_transcript_event_id"] = str(terminal_event_id)
-    _apply_terminal_task_update(
+    await _apply_terminal_task_update_and_settle(
+        db,
         task,
         status=status,
         result_summary=str(getattr(terminal_event, "content", None) or ""),
         metadata_json=metadata,
+        terminal_source="terminal_transcript_reconciliation",
     )
     await db.commit()
     logger.warning(
@@ -1001,7 +1140,7 @@ async def _reconcile_terminal_transcript_ghost(db: AsyncSession, task: RuntimeTa
     return True
 
 
-async def _queue_mid_run_user_message(
+async def _submit_active_session_input(
     *,
     db: AsyncSession,
     active_run: RuntimeTask,
@@ -1014,97 +1153,72 @@ async def _queue_mid_run_user_message(
     attachments: list[dict[str, Any]] | None = None,
     parts: list[dict[str, Any]] | None = None,
     extra_metadata: dict[str, Any] | None = None,
+    source_channel: str = "web",
+    role: str = "user",
+    idempotency_key: str | None = None,
+    message_already_in_t0: bool = False,
 ) -> dict[str, Any]:
-    message_id = uuid.uuid4()
-    saved_content = _saved_user_content(content=content, display_content=display_content, file_name=file_name)
-    session.last_message_at = datetime.now(timezone.utc)
+    """Persist one active-turn input through the canonical Session V2 plane."""
+
+    from app.services.session_live_input import submit_live_human_input
+
     metadata = dict(getattr(active_run, "metadata_json", None) or {})
-    supplied_metadata = dict(extra_metadata or {})
-    if supplied_metadata:
-        metadata.update(supplied_metadata)
-    pending = list(metadata.get("pending_user_messages") or [])
+    active_turn_id = str(metadata.get("turn_id") or f"turn-{active_run.id.hex}")
+    stable_key = str(idempotency_key or "").strip()
+    input_id = uuid.uuid4()
+    if stable_key:
+        try:
+            input_id = uuid.UUID(stable_key.rsplit(":", 1)[-1])
+        except ValueError:
+            input_id = uuid.uuid5(uuid.UUID("0ae8d216-08fb-4aac-bd4a-c630759bc57c"), stable_key)
+    session.last_message_at = datetime.now(timezone.utc)
+    receipt = await submit_live_human_input(
+        db=db,
+        agent=agent,
+        user=user,
+        session=session,
+        content=content,
+        source=source_channel,
+        input_id=input_id,
+        idempotency_key=stable_key or f"{source_channel}:active-input:{input_id}",
+        requested_kind="steer_current_turn",
+        expected_turn_id=active_turn_id,
+        expected_run_id=active_run.id,
+        terminal_fallback="queue_next_turn",
+        display_content=display_content,
+        file_name=file_name,
+        attachments=attachments,
+        parts=parts,
+        role=role,
+        runtime_metadata={
+            **dict(extra_metadata or {}),
+            "source": source_channel,
+            "existing_user_message_saved": bool(message_already_in_t0),
+            "canonical_session_input": True,
+        },
+    )
+    saved_content = _saved_user_content(content=content, display_content=display_content, file_name=file_name)
     queued = {
-        "id": message_id.hex,
+        "id": str(receipt["input_id"]),
+        "input_id": str(receipt["input_id"]),
         "content": saved_content,
         "llm_content": content,
-        "display_content": display_content if display_content else saved_content,
-        "role": "user",
-        "source": "web",
-        "user_id": str(user.id),
+        "display_content": display_content or saved_content,
+        "role": role,
+        "source": source_channel,
         "file_name": file_name,
         "attachments": attachments or [],
         "parts": parts or [],
-        "metadata": supplied_metadata,
-        "t0_materialized": False,
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "status": receipt["input_status"],
+        "dispatch_status": receipt["dispatch_status"],
+        "queue_ordinal": receipt["queue_ordinal"],
     }
-    pending.append(queued)
-    metadata["pending_user_messages"] = pending
-    metadata["pending_user_message_count"] = len(pending)
-    active_run.metadata_json = metadata
-    db.add(
-        ChatMessage(
-            id=message_id,
-            agent_id=agent.id,
-            tenant_id=getattr(agent, "tenant_id", None),
-            user_id=user.id,
-            role="user",
-            content=saved_content,
-            conversation_id=str(session.id),
-        )
-    )
-    await db.commit()
-    return queued
-
-
-async def _materialize_pending_mid_run_user_message(
-    *,
-    db: AsyncSession,
-    task: RuntimeTask,
-    item: dict[str, Any],
-) -> None:
-    if item.get("t0_materialized") is True:
-        return
-    session_id = getattr(task, "parent_session_id", None)
-    agent_id = getattr(task, "parent_agent_id", None)
-    if not session_id or not agent_id:
-        return
-    role = str(item.get("role") or "user").strip().lower()
-    if role not in {"user", "system"}:
-        role = "user"
-    source = str(item.get("source") or "web")
-    content = str(item.get("content") or "")
-    if not content:
-        return
-    item_metadata = dict(item.get("metadata") or {})
-    await append_session_event(
-        db=db,
-        agent_id=agent_id,
-        tenant_id=getattr(task, "tenant_id", None),
-        session_id=session_id,
-        run_id=getattr(task, "id", None),
-        actor_type="user" if role == "user" else "system",
-        event_type="user_message" if role == "user" else "agent_session_message",
-        role=role,
-        user_id=item.get("user_id"),
-        external_principal_id=item.get("external_principal_id"),
-        content=content,
-        message_id=item.get("id"),
-        parts=item.get("parts") or None,
-        source=source,
-        materialize_chat_message=False,
-        metadata={
-            "source": source,
-            "queued": True,
-            "runtime_mailbox_role": role,
-            "display_content": item.get("display_content") or content,
-            "file_name": item.get("file_name") or "",
-            "llm_content_present": bool(item.get("llm_content") and item.get("llm_content") != content),
-            "attachments": item.get("attachments") or [],
-            "worker_materialized": True,
-            **item_metadata,
-        },
-    )
+    payload = _runtime_task_to_run(active_run)
+    payload["turn_id"] = active_turn_id
+    payload["queued"] = queued
+    payload["queued_user_message"] = queued
+    payload["session_input_receipt"] = receipt
+    return payload
 
 
 async def _persist_stream_step_event(
@@ -1114,95 +1228,36 @@ async def _persist_stream_step_event(
     user_id: uuid.UUID | str | None,
     session_id: str,
     run_uuid: uuid.UUID,
+    provider_request_id: str,
+    phase: str,
+    lifecycle: str,
     event_type: str,
     content: str,
     part: dict[str, Any] | None,
     external_principal_id: uuid.UUID | str | None = None,
 ) -> Any | None:
-    if not content:
-        return None
-    try:
-        async with tenant_scoped_session(tenant_id) as db:
-            result = await append_session_event(
-                db=db,
-                agent_id=agent_id,
-                tenant_id=tenant_id,
-                session_id=session_id,
-                actor_type="assistant",
-                event_type=event_type,
-                role="assistant",
-                user_id=user_id,
-                external_principal_id=external_principal_id,
-                run_id=run_uuid,
-                runtime_task_id=run_uuid,
-                content=content,
-                parts=[part] if isinstance(part, dict) else None,
-                source="web_chat_runtime",
-                materialize_chat_message=False,
-                metadata={
-                    "source": "web_chat_runtime",
-                    "runtime_task_id": run_uuid.hex,
-                    "stream_event_type": event_type,
-                    "durable_stream_step": True,
-                },
-            )
-            await db.commit()
-            return result
-    except Exception as exc:
-        logger.warning("[WebChatRun] Stream step transcript persistence failed (non-fatal): {}", exc)
-        return None
+    del user_id, external_principal_id, event_type, part
+    from app.models.session_v2 import SessionEventOutbox
+    from app.services.session_model_round import append_model_stream_delta
 
-
-async def _claim_pending_mid_run_user_messages(run_id: str | uuid.UUID) -> list[dict[str, Any]]:
-    run_uuid = _run_id(run_id)
-    tenant_id = await resolve_tenant_for_runtime_task(
-        run_uuid,
-        session_factory=_async_session,
-    )
-    if tenant_id is None:
-        return []
-    async with tenant_scoped_session(
-        tenant_id,
-        session_factory=_async_session,
-        require_tenant=True,
-        source="durable_web_run_mid_run_message_drain",
-    ) as db:
-        result = await db.execute(
-            select(RuntimeTask).where(
-                RuntimeTask.id == run_uuid,
-                RuntimeTask.tenant_id == tenant_id,
-            )
+    async with tenant_scoped_session(tenant_id) as db:
+        event = await append_model_stream_delta(
+            db,
+            tenant_id=uuid.UUID(str(tenant_id)),
+            agent_id=uuid.UUID(str(agent_id)),
+            session_id=uuid.UUID(str(session_id)),
+            run_id=run_uuid,
+            provider_request_id=provider_request_id,
+            content=content,
+            phase=phase,
+            lifecycle=lifecycle,
         )
-        task = result.scalar_one_or_none()
-        if task is None:
-            return []
-        metadata = dict(task.metadata_json or {})
-        pending = [item for item in metadata.get("pending_user_messages") or [] if isinstance(item, dict)]
-        if not pending:
-            return []
-        for item in pending:
-            await _materialize_pending_mid_run_user_message(db=db, task=task, item=item)
-        metadata["pending_user_messages"] = []
-        metadata["pending_user_message_count"] = 0
-        task.metadata_json = metadata
-    drained: list[dict[str, Any]] = []
-    for item in pending:
-        content = item.get("llm_content") or item.get("content")
-        if not content:
-            continue
-        role = str(item.get("role") or "user").strip().lower()
-        if role not in {"user", "system"}:
-            role = "user"
-        drained.append(
-            {
-                "role": role,
-                "content": content,
-                "display_content": item.get("display_content") or item.get("content") or content,
-                "attachments": item.get("attachments") or [],
-                "parts": item.get("parts") or [],
-            }
-        )
-    return drained
+        outbox = await db.scalar(select(SessionEventOutbox).where(SessionEventOutbox.event_id == event.id))
+        if outbox is None:
+            raise RuntimeError("canonical_stream_event_missing_outbox")
+        envelope = dict(outbox.envelope_json or {})
+        await db.commit()
+        return envelope
 
 
 def _resolved_tool_call_id(tc_data: dict, msg_id: Any) -> str:
@@ -1308,10 +1363,17 @@ def conversation_from_history_messages(history_messages) -> list[dict]:
         if isinstance(msg, dict):
             role = str(msg.get("role") or "").strip()
             content = msg.get("content")
-            if role in {"system", "user", "assistant", "tool"} and content is not None:
-                entry = {"role": role, "content": str(content)}
+            has_tool_calls = role == "assistant" and isinstance(msg.get("tool_calls"), list)
+            if role in {"system", "user", "assistant", "tool"} and (content is not None or has_tool_calls):
+                entry = {"role": role, "content": None if content is None else str(content)}
                 if role == "tool" and msg.get("tool_call_id"):
                     entry["tool_call_id"] = str(msg["tool_call_id"])
+                if has_tool_calls:
+                    entry["tool_calls"] = list(msg["tool_calls"])
+                if msg.get("reasoning_content") is not None:
+                    entry["reasoning_content"] = msg["reasoning_content"]
+                if msg.get("reasoning_signature") is not None:
+                    entry["reasoning_signature"] = msg["reasoning_signature"]
                 conversation.append(entry)
             continue
 
@@ -1357,9 +1419,6 @@ def conversation_from_history_messages(history_messages) -> list[dict]:
                 )
             continue
 
-        if msg.role == "assistant" and is_llm_error_message(msg.content):
-            continue
-
         entry = {"role": msg.role, "content": msg.content}
         if getattr(msg, "thinking", None):
             entry["reasoning_content"] = msg.thinking
@@ -1367,6 +1426,86 @@ def conversation_from_history_messages(history_messages) -> list[dict]:
             entry["reasoning_signature"] = msg.thinking_signature
         conversation.append(entry)
     return conversation
+
+
+def _round_index_from_id(round_id: str) -> int:
+    marker = ":round:"
+    if marker not in str(round_id):
+        raise RuntimeError("session_permission_resume_round_id_invalid")
+    value = str(round_id).split(marker, 1)[1].split(":", 1)[0]
+    index = int(value)
+    if index <= 0:
+        raise RuntimeError("session_permission_resume_round_index_invalid")
+    return index
+
+
+async def _session_permission_resume_history(
+    db: AsyncSession,
+    runtime_task: RuntimeTask,
+) -> tuple[list[dict[str, Any]], int]:
+    """Rebuild the exact sealed assistant/tool batch before native continuation."""
+
+    resume = dict((runtime_task.metadata_json or {}).get("session_permission_resume") or {})
+    if not resume:
+        return [], 0
+    from app.models.session_v2 import SessionModelResult, SessionToolInvocation
+
+    try:
+        source_result_id = uuid.UUID(str(resume["source_result_id"]))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError("session_permission_resume_result_binding_invalid") from exc
+    result = await db.scalar(
+        select(SessionModelResult).where(
+            SessionModelResult.id == source_result_id,
+            SessionModelResult.run_id == runtime_task.id,
+            SessionModelResult.session_id == uuid.UUID(str(runtime_task.parent_session_id)),
+            SessionModelResult.state == "round_committed",
+        )
+    )
+    if result is None:
+        raise RuntimeError("session_permission_resume_result_missing")
+    response = dict((result.seal_json or {}).get("response") or {})
+    tool_calls = list(response.get("tool_calls") or [])
+    if not tool_calls:
+        raise RuntimeError("session_permission_resume_tool_batch_missing")
+    invocations = list(
+        (
+            await db.execute(
+                select(SessionToolInvocation).where(
+                    SessionToolInvocation.tenant_id == result.tenant_id,
+                    SessionToolInvocation.session_id == result.session_id,
+                    SessionToolInvocation.run_id == result.run_id,
+                    SessionToolInvocation.provider_request_id == result.provider_request_id,
+                )
+            )
+        ).scalars()
+    )
+    by_provider_id = {row.provider_tool_use_id: row for row in invocations}
+    tool_messages: list[dict[str, Any]] = []
+    for call in tool_calls:
+        provider_tool_use_id = str((call or {}).get("id") or "") if isinstance(call, dict) else ""
+        invocation = by_provider_id.get(provider_tool_use_id)
+        if invocation is None or invocation.result_event_id is None:
+            raise RuntimeError("session_permission_resume_has_unsettled_tool_obligation")
+        result_event = await db.get(ChatTranscriptEvent, invocation.result_event_id)
+        if result_event is None or result_event.item_kind != "tool_result":
+            raise RuntimeError("session_permission_resume_tool_result_missing")
+        payload = dict((result_event.metadata_json or {}).get("v2_payload") or {})
+        tool_messages.append(
+            {
+                "role": "tool",
+                "tool_call_id": provider_tool_use_id,
+                "content": str(payload.get("content") or ""),
+            }
+        )
+    assistant_message = {
+        "role": "assistant",
+        "content": response.get("content") or None,
+        "tool_calls": tool_calls,
+        "reasoning_content": response.get("reasoning_content"),
+        "reasoning_signature": response.get("reasoning_signature"),
+    }
+    return [assistant_message, *tool_messages], _round_index_from_id(result.round_id)
 
 
 def _parse_projection_datetime(value: Any) -> datetime | None:
@@ -1585,6 +1724,18 @@ async def broadcast_web_chat_event(
     agent_id: uuid.UUID, session_id: str | uuid.UUID | None, event: dict[str, Any]
 ) -> None:
     event_payload = dict(event)
+    if event_payload.get("schema") == "hive.session_event" and int(event_payload.get("schema_version") or 0) == 2:
+        audience = str((event_payload.get("visibility") or {}).get("audience") or "")
+        if audience in {"direct_user", "participants"}:
+            # Canonical envelopes are already committed with an outbox row.
+            # Keep their bytes untouched; the outbox owns cross-instance Redis
+            # delivery and may legally redeliver the same immutable event_id.
+            await web_chat_broker.send_session_message(
+                str(agent_id),
+                str(session_id) if session_id else None,
+                event_payload,
+            )
+        return
     run_id = event_payload.get("run_id") or event_payload.get("runtime_task_id") or _CURRENT_BROADCAST_RUN_ID.get()
     if run_id and not event_payload.get("run_id"):
         event_payload["run_id"] = str(run_id)
@@ -1734,7 +1885,7 @@ async def steer_active_web_chat_turn(
     if expected_turn_id and str(expected_turn_id) != active_turn_id:
         raise HTTPException(status_code=409, detail="active turn has changed; refresh before steering this turn")
 
-    queued = await _queue_mid_run_user_message(
+    payload = await _submit_active_session_input(
         db=db,
         active_run=active,
         agent=agent,
@@ -1747,11 +1898,7 @@ async def steer_active_web_chat_turn(
         parts=parts,
         extra_metadata=extra_metadata,
     )
-    payload = _runtime_task_to_run(active)
-    payload["turn_id"] = active_turn_id
-    payload["queued"] = queued
-    payload["queued_user_message"] = queued
-    payload["steer_strategy"] = "pending_mid_run_user_message"
+    payload["steer_strategy"] = "canonical_session_v2_input"
     await broadcast_web_chat_event(agent.id, session.id, {"type": "turn_steered", **payload})
     return payload
 
@@ -1800,7 +1947,7 @@ async def start_web_chat_run(
     if active:
         if not append_user_message:
             raise HTTPException(status_code=409, detail="A web chat run is already active for this branch")
-        queued = await _queue_mid_run_user_message(
+        payload = await _submit_active_session_input(
             db=db,
             active_run=active,
             agent=agent,
@@ -1813,8 +1960,6 @@ async def start_web_chat_run(
             parts=parts,
             extra_metadata=extra_metadata,
         )
-        payload = _runtime_task_to_run(active)
-        payload["queued_user_message"] = queued
         await broadcast_web_chat_event(agent.id, session.id, {"type": "user_message_queued", **payload})
         raise ActiveWebChatRunExists(payload)
 
@@ -1933,6 +2078,12 @@ async def start_web_chat_run(
             },
         )
         runtime_task.metadata_json["initial_user_message_t0_materialized"] = False
+    from app.services.session_writer_epoch import assign_runtime_task_writer_generation
+
+    # The DB epoch, not an application default, authorizes which writer
+    # generation may create this new RuntimeTask.  Bind it before INSERT so a
+    # cutover can fail closed without leaving a generation-less run.
+    await assign_runtime_task_writer_generation(db, runtime_task)
     db.add(runtime_task)
     if append_user_message:
         db.add(
@@ -1948,6 +2099,228 @@ async def start_web_chat_run(
         )
     try:
         await db.flush()
+        session_v2_input_id = _uuid_or_none(supplied_metadata.get("session_v2_input_id"))
+        session_v2_rolled_over_input_id = _uuid_or_none(supplied_metadata.get("session_v2_rolled_over_input_id"))
+        if session_v2_input_id is not None and session_v2_rolled_over_input_id is not None:
+            raise HTTPException(status_code=409, detail="Session V2 run has ambiguous input ownership")
+        if session_v2_input_id is not None:
+            from app.models.session_v2 import (
+                SessionCommand,
+                SessionInputAdmission,
+                SessionTurnInput,
+                SessionTurnReplacement,
+            )
+            from app.services.session_turn_replacement import admit_replacement_run
+            from app.services.session_v2_persistence import SessionEventDraft, append_session_events
+            from app.services.session_v2_persistence import resolve_session_mutation_authority
+
+            input_row = await db.scalar(
+                select(SessionTurnInput)
+                .where(
+                    SessionTurnInput.id == session_v2_input_id,
+                    SessionTurnInput.tenant_id == getattr(agent, "tenant_id", None),
+                    SessionTurnInput.session_id == session.id,
+                )
+                .with_for_update()
+            )
+            admission = (
+                await db.scalar(
+                    select(SessionInputAdmission)
+                    .where(
+                        SessionInputAdmission.input_id == session_v2_input_id,
+                        SessionInputAdmission.input_revision == input_row.revision,
+                    )
+                    .with_for_update()
+                )
+                if input_row is not None
+                else None
+            )
+            command = await db.get(SessionCommand, input_row.command_id) if input_row is not None else None
+            replacement_saga_id = _uuid_or_none(supplied_metadata.get("session_v2_replacement_saga_id"))
+            replacement_saga = (
+                await db.get(SessionTurnReplacement, replacement_saga_id) if replacement_saga_id is not None else None
+            )
+            if replacement_saga_id is not None:
+                if (
+                    input_row is None
+                    or admission is None
+                    or command is None
+                    or replacement_saga is None
+                    or admission.state != "admitted"
+                    or input_row.status != "queued"
+                    or input_row.intent != "interrupt_and_replace"
+                    or input_row.target_turn_id != turn_id
+                    or replacement_saga.replacement_input_id != input_row.id
+                    or replacement_saga.replacement_turn_id != turn_id
+                    or replacement_saga.state != "replacement_queued"
+                    or admission.command_id != input_row.command_id
+                    or command.principal_id != user.id
+                ):
+                    raise HTTPException(status_code=409, detail="Session V2 replacement input is not queueable")
+                authority = await resolve_session_mutation_authority(
+                    db,
+                    user=user,
+                    agent_id=agent.id,
+                    session_id=session.id,
+                    action="mutate_session_input",
+                )
+                await admit_replacement_run(
+                    db,
+                    authority=authority,
+                    saga_id=replacement_saga.id,
+                    run_id=run_uuid,
+                )
+            elif (
+                input_row is None
+                or admission is None
+                or command is None
+                or admission.state != "admitted"
+                or (
+                    (input_row.intent == "start_turn" and input_row.status != "accepted")
+                    or (input_row.intent in {"queue_next_turn", "steer_current_turn"} and input_row.status != "queued")
+                    or input_row.intent not in {"start_turn", "queue_next_turn", "steer_current_turn"}
+                )
+                or (input_row.intent == "steer_current_turn" and input_row.rolled_over_to_turn_id != turn_id)
+                or admission.command_id != input_row.command_id
+                or command.principal_id != user.id
+            ):
+                raise HTTPException(status_code=409, detail="Session V2 start input is not admitted")
+            else:
+                was_initial_start = input_row.intent == "start_turn"
+                input_row.status = "queued"
+                input_row.target_turn_id = turn_id
+                input_row.target_run_id = run_uuid
+                input_row.version = int(input_row.version) + 1
+                command.receipt_ref = f"session-input:{input_row.id}:queued:{run_uuid}"
+                session_scope = {
+                    "level": "session",
+                    "session_id": str(session.id),
+                    "thread_id": str(session.id),
+                }
+                turn_scope = {**session_scope, "level": "turn", "turn_id": turn_id}
+                run_scope = {**turn_scope, "level": "run", "run_id": str(run_uuid)}
+                queue_drafts = []
+                if was_initial_start:
+                    queue_drafts.extend(
+                        [
+                            SessionEventDraft(
+                                item_id=input_row.id,
+                                item_kind="human_input",
+                                lifecycle="queued",
+                                scope=session_scope,
+                                actor={"type": "runtime"},
+                                payload={
+                                    "input_id": str(input_row.id),
+                                    "intent": "start_turn",
+                                    "queue_priority": "now",
+                                    "queue_ordinal": input_row.queue_ordinal,
+                                    "target_turn_id": turn_id,
+                                    "target_run_id": str(run_uuid),
+                                },
+                                command_id=input_row.command_id,
+                                input_id=input_row.id,
+                            ),
+                            SessionEventDraft(
+                                item_id=uuid.uuid5(input_row.id, "turn-item"),
+                                item_kind="turn",
+                                lifecycle="accepted",
+                                scope=turn_scope,
+                                actor={"type": "runtime"},
+                                payload={"turn_id": turn_id, "input_id": str(input_row.id)},
+                                command_id=input_row.command_id,
+                                input_id=input_row.id,
+                            ),
+                        ]
+                    )
+                queue_drafts.append(
+                    SessionEventDraft(
+                        item_id=run_uuid,
+                        item_kind="run",
+                        lifecycle="queued",
+                        scope=run_scope,
+                        actor={"type": "runtime"},
+                        payload={"run_id": str(run_uuid), "input_id": str(input_row.id)},
+                        command_id=input_row.command_id,
+                        input_id=input_row.id,
+                    )
+                )
+                await append_session_events(
+                    db,
+                    tenant_id=getattr(agent, "tenant_id", None),
+                    agent_id=agent.id,
+                    session_id=session.id,
+                    drafts=queue_drafts,
+                )
+        elif session_v2_rolled_over_input_id is not None:
+            from app.models.session_v2 import SessionCommand, SessionInputAdmission, SessionTurnInput
+            from app.services.session_v2_persistence import SessionEventDraft, append_session_events
+
+            input_row = await db.scalar(
+                select(SessionTurnInput)
+                .where(
+                    SessionTurnInput.id == session_v2_rolled_over_input_id,
+                    SessionTurnInput.tenant_id == getattr(agent, "tenant_id", None),
+                    SessionTurnInput.session_id == session.id,
+                )
+                .with_for_update()
+            )
+            admission = (
+                await db.scalar(
+                    select(SessionInputAdmission)
+                    .where(
+                        SessionInputAdmission.input_id == session_v2_rolled_over_input_id,
+                        SessionInputAdmission.input_revision == input_row.revision,
+                    )
+                    .with_for_update()
+                )
+                if input_row is not None
+                else None
+            )
+            command = await db.get(SessionCommand, input_row.command_id) if input_row is not None else None
+            if (
+                input_row is None
+                or admission is None
+                or command is None
+                or admission.state != "admitted"
+                or input_row.intent != "steer_current_turn"
+                or input_row.status != "rolled_over"
+                or input_row.rolled_over_to_turn_id != turn_id
+                or input_row.target_turn_id != turn_id
+                or input_row.target_run_id is not None
+                or admission.command_id != input_row.command_id
+                or command.principal_id != user.id
+                or command.receipt_ref != input_row.settlement_ref
+            ):
+                raise HTTPException(status_code=409, detail="Session V2 rollover successor is not admitted")
+            session_scope = {
+                "level": "session",
+                "session_id": str(session.id),
+                "thread_id": str(session.id),
+            }
+            turn_scope = {**session_scope, "level": "turn", "turn_id": turn_id}
+            run_scope = {**turn_scope, "level": "run", "run_id": str(run_uuid)}
+            await append_session_events(
+                db,
+                tenant_id=getattr(agent, "tenant_id", None),
+                agent_id=agent.id,
+                session_id=session.id,
+                drafts=[
+                    SessionEventDraft(
+                        item_id=run_uuid,
+                        item_kind="run",
+                        lifecycle="queued",
+                        scope=run_scope,
+                        actor={"type": "runtime"},
+                        payload={
+                            "run_id": str(run_uuid),
+                            "input_id": str(input_row.id),
+                            "rollover_successor": True,
+                        },
+                        command_id=input_row.command_id,
+                        input_id=input_row.id,
+                    )
+                ],
+            )
         await db.commit()
     except IntegrityError as exc:
         await db.rollback()
@@ -1959,7 +2332,11 @@ async def start_web_chat_run(
                 status_code=409,
                 detail="Web chat run already exists, but the active run could not be loaded. Retry the request.",
             ) from exc
-        payload = await _queue_saved_mid_run_user_message(
+        if not append_user_message:
+            raise HTTPException(
+                status_code=409, detail="A web chat run became active before this turn was staged"
+            ) from exc
+        payload = await _submit_active_session_input(
             db=db,
             active_run=active_after_conflict,
             agent=agent,
@@ -1973,6 +2350,7 @@ async def start_web_chat_run(
             attachments=attachments,
             parts=parts,
         )
+        await broadcast_web_chat_event(agent.id, session.id, {"type": "user_message_queued", **payload})
         raise ActiveWebChatRunExists(payload) from exc
 
     try:
@@ -1984,74 +2362,6 @@ async def start_web_chat_run(
     payload = _runtime_task_to_run(runtime_task)
     await broadcast_web_chat_event(agent.id, session.id, {"type": "run_queued", **payload})
     await broadcast_web_chat_event(agent.id, session.id, build_phase_event(RuntimePhase.QUEUED, run_id=run_uuid.hex))
-    return payload
-
-
-async def _queue_saved_mid_run_user_message(
-    *,
-    db: AsyncSession,
-    active_run: RuntimeTask,
-    agent: Agent,
-    user: User,
-    session: ChatSession,
-    content: str,
-    display_content: str = "",
-    file_name: str = "",
-    source_channel: str = "channel",
-    message_already_in_t0: bool = False,
-    attachments: list[dict[str, Any]] | None = None,
-    parts: list[dict[str, Any]] | None = None,
-    role: str = "user",
-    idempotency_key: str | None = None,
-) -> dict[str, Any]:
-    queued_role = str(role or "user").strip().lower()
-    if queued_role not in {"user", "system"}:
-        queued_role = "user"
-    saved_content = _saved_user_content(content=content, display_content=display_content, file_name=file_name)
-    metadata = dict(getattr(active_run, "metadata_json", None) or {})
-    pending = list(metadata.get("pending_user_messages") or [])
-    queued_id = str(idempotency_key or "").strip() or uuid.uuid4().hex
-    existing = next((item for item in pending if str(item.get("id") or "") == queued_id), None)
-    if existing is not None:
-        payload = _runtime_task_to_run(active_run)
-        payload["queued_user_message"] = existing
-        return payload
-    queued = {
-        "id": queued_id,
-        "content": saved_content,
-        "llm_content": content,
-        "display_content": display_content if display_content else saved_content,
-        "role": queued_role,
-        "source": source_channel,
-        "user_id": str(_runtime_actor_user_id(user)) if _runtime_actor_user_id(user) else None,
-        "external_principal_id": (
-            str(_runtime_actor_external_principal_id(user)) if _runtime_actor_external_principal_id(user) else None
-        ),
-        "file_name": file_name,
-        "attachments": attachments or [],
-        "parts": parts or [],
-        "metadata": {
-            "source": source_channel,
-            "queued": True,
-            "existing_user_message_saved": True,
-            "runtime_mailbox_role": queued_role,
-            "display_content": display_content,
-            "file_name": file_name,
-            "llm_content_present": bool(content and content != saved_content),
-            "attachments": attachments or [],
-        },
-        "t0_materialized": bool(message_already_in_t0),
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
-    pending.append(queued)
-    metadata["pending_user_messages"] = pending
-    metadata["pending_user_message_count"] = len(pending)
-    active_run.metadata_json = metadata
-    session.last_message_at = datetime.now(timezone.utc)
-    await db.commit()
-    payload = _runtime_task_to_run(active_run)
-    payload["queued_user_message"] = queued
-    await broadcast_web_chat_event(agent.id, session.id, {"type": "user_message_queued", **payload})
     return payload
 
 
@@ -2115,7 +2425,7 @@ async def start_channel_chat_run_from_saved_turn(
 
     active = await _find_active_run(db, agent_id=agent.id, session_id=session.id)
     if active:
-        queued = await _queue_saved_mid_run_user_message(
+        queued = await _submit_active_session_input(
             db=db,
             active_run=active,
             agent=agent,
@@ -2128,6 +2438,7 @@ async def start_channel_chat_run_from_saved_turn(
             message_already_in_t0=False,
             idempotency_key=f"channel-ingress:{ingress.event_id}" if ingress else None,
         )
+        await broadcast_web_chat_event(agent.id, session.id, {"type": "user_message_queued", **queued})
         if ingress is not None:
             bind_channel_ingress_runtime_result(runtime_task_id=active.id, session_id=session.id)
         return queued
@@ -2141,6 +2452,9 @@ async def start_channel_chat_run_from_saved_turn(
     session_metadata = dict(getattr(session, "transcript_metadata_json", None) or {})
     allowed_tools = [
         str(item) for item in (session_metadata.get("session_permission_allowed_tools") or []) if str(item).strip()
+    ]
+    session_grants = [
+        dict(item) for item in (session_metadata.get("session_permission_grants") or []) if isinstance(item, dict)
     ]
     writable_roots = list(DEFAULT_CCPLUS_WRITABLE_ROOTS)
     permission_mode = normalize_permission_mode(
@@ -2172,6 +2486,7 @@ async def start_channel_chat_run_from_saved_turn(
             "mode": permission_mode,
             "allowed_tools": allowed_tools,
             "writable_roots": writable_roots,
+            "session_grants": session_grants,
         },
         **({"channel_ingress_event_id": str(ingress.event_id)} if ingress else {}),
         **(extra_metadata or {}),
@@ -2248,6 +2563,9 @@ async def start_channel_chat_run_from_saved_turn(
         metadata_json=metadata,
         root_idempotency_key=ingress_root_key or "",
     )
+    from app.services.session_writer_epoch import assign_runtime_task_writer_generation
+
+    await assign_runtime_task_writer_generation(db, runtime_task)
     db.add(runtime_task)
     try:
         await db.flush()
@@ -2279,7 +2597,7 @@ async def start_channel_chat_run_from_saved_turn(
                 status_code=409,
                 detail="Channel run already exists, but the active run could not be loaded. Retry the request.",
             ) from exc
-        queued = await _queue_saved_mid_run_user_message(
+        queued = await _submit_active_session_input(
             db=db,
             active_run=active_after_conflict,
             agent=agent,
@@ -2292,6 +2610,7 @@ async def start_channel_chat_run_from_saved_turn(
             message_already_in_t0=False,
             idempotency_key=f"channel-ingress:{ingress.event_id}" if ingress else None,
         )
+        await broadcast_web_chat_event(agent.id, session.id, {"type": "user_message_queued", **queued})
         if ingress is not None:
             bind_channel_ingress_runtime_result(runtime_task_id=active_after_conflict.id, session_id=session.id)
         return queued
@@ -2314,26 +2633,63 @@ async def start_channel_chat_run_from_saved_turn(
 async def cancel_web_chat_run(
     *,
     db: AsyncSession,
+    tenant_id: uuid.UUID,
     agent_id: uuid.UUID,
     session_id: str | uuid.UUID,
     run_id: str | uuid.UUID,
     user_id: uuid.UUID,
 ) -> dict[str, Any]:
+    """Compatibility facade over the canonical Session V2 ControlInput path."""
+
     run_uuid = _run_id(run_id)
-    result = await db.execute(
-        select(RuntimeTask).where(
-            RuntimeTask.id == run_uuid,
-            RuntimeTask.task_type.in_(_EXECUTABLE_CHAT_TASK_TYPES),
-            RuntimeTask.parent_agent_id == agent_id,
-            RuntimeTask.parent_session_id == str(session_id),
-            RuntimeTask.status.in_(_ACTIVE_STATUSES),
+    session_uuid = uuid.UUID(str(session_id))
+    agent = await db.scalar(select(Agent).where(Agent.id == agent_id, Agent.tenant_id == tenant_id))
+    user = await db.scalar(select(User).where(User.id == user_id, User.tenant_id == tenant_id))
+    session = await db.scalar(
+        select(ChatSession).where(
+            ChatSession.id == session_uuid,
+            ChatSession.tenant_id == tenant_id,
+            ChatSession.agent_id == agent_id,
         )
     )
-    task = result.scalar_one_or_none()
+    if agent is None or user is None or session is None:
+        raise HTTPException(status_code=404, detail="Session authority not found")
+
+    from app.services.session_live_input import submit_live_cancel_input
+
+    receipt = await submit_live_cancel_input(
+        db=db,
+        agent=agent,
+        user=user,
+        session=session,
+        run_id=run_uuid,
+        source="cancel_web_chat_run",
+    )
+    task = await db.get(RuntimeTask, run_uuid)
     if task is None:
         raise HTTPException(status_code=404, detail="Active run not found")
+    payload = _runtime_task_to_run(task)
+    payload["control_input"] = receipt
+    return payload
 
+
+async def signal_web_chat_cancel(
+    *,
+    run_id: str | uuid.UUID,
+    agent_id: str | uuid.UUID,
+    session_id: str | uuid.UUID,
+    user_id: str | uuid.UUID,
+) -> CancelSignalDeliveryReceipt:
+    """Deliver a cancel signal without claiming that the Run is terminal.
+
+    Session V2 ControlInput acceptance calls this only after its ``applying``
+    transaction commits. The return value separates same-process delivery from
+    cross-process delivery; the worker later settles the durable execution fence.
+    """
+
+    run_uuid = _run_id(run_id)
     cancel_event = _CANCEL_EVENTS.get(run_uuid.hex)
+    local_delivered = cancel_event is not None
     if cancel_event is not None:
         cancel_event.set()
     try:
@@ -2345,23 +2701,27 @@ async def cancel_web_chat_run(
             session_id=str(session_id),
             user_id=str(user_id),
         )
-    except Exception as exc:  # noqa: BLE001 - DB state is still the cancellation truth for API callers.
-        logger.debug("[WebChatRun] failed to publish cross-process cancel for {}: {}", run_uuid.hex, exc)
-    metadata = dict(task.metadata_json or {})
-    metadata["cancelled_by_user"] = True
-    metadata["cancelled_by_user_id"] = str(user_id)
-    task.metadata_json = metadata
-    task.status = "killed"
-    task.result_summary = task.result_summary or "Generation stopped by user."
-    task.completed_at = datetime.now(timezone.utc)
-    await db.commit()
-
-    payload = _runtime_task_to_run(task)
-    await broadcast_web_chat_event(agent_id, session_id, {"type": "run_cancelled", **payload})
-    # Cross-process cancels may land after the executing worker is already gone;
-    # broadcast the terminal phase here so the UI state machine always settles.
-    await broadcast_web_chat_event(agent_id, session_id, build_phase_event(RuntimePhase.CANCELLED, run_id=run_uuid.hex))
-    return payload
+    except Exception as exc:  # noqa: BLE001 - returned as a typed retryable delivery failure.
+        logger.warning(
+            "[WebChatRun] cross-process cancel delivery unavailable for {}: error_class={}",
+            run_uuid.hex,
+            type(exc).__name__,
+        )
+        return CancelSignalDeliveryReceipt(
+            run_id=run_uuid.hex,
+            delivery_state="unavailable",
+            local_delivered=local_delivered,
+            cross_process_delivered=False,
+            retryable=True,
+            error_class=type(exc).__name__,
+        )
+    return CancelSignalDeliveryReceipt(
+        run_id=run_uuid.hex,
+        delivery_state="delivered",
+        local_delivered=local_delivered,
+        cross_process_delivered=True,
+        retryable=False,
+    )
 
 
 async def resume_persisted_web_chat_runs(*, limit: int = 50) -> list[str]:
@@ -2564,6 +2924,7 @@ async def _append_file_changes_event(
         }
         hook_result = await emit_hook(
             HookEvent.FILE_CHANGED,
+            evidence_db=db,
             agent_id=agent_id,
             session_id=session_id,
             source=source,
@@ -2575,6 +2936,7 @@ async def _append_file_changes_event(
     if attached_artifact_paths or declared_artifact_paths or rejected_artifact_paths:
         await emit_hook(
             HookEvent.ARTIFACT_CHANGED,
+            evidence_db=db,
             agent_id=agent_id,
             session_id=session_id,
             source=source,
@@ -2766,15 +3128,13 @@ async def _finalize_web_chat_run_with_assistant(
 
     tenant_id = await resolve_tenant_for_agent(agent_id)
     async with tenant_scoped_session(tenant_id) as db:
-        result = await db.execute(
-            select(RuntimeTask)
-            .where(
-                RuntimeTask.id == run_uuid,
-                RuntimeTask.task_type.in_(_EXECUTABLE_CHAT_TASK_TYPES),
-            )
-            .with_for_update()
+        task = await _lock_runtime_task_for_session_mutation(
+            db,
+            run_uuid=run_uuid,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            session_id=session_id,
         )
-        task = result.scalar_one_or_none()
         if task is None:
             logger.warning("[WebChatRun] Finalization skipped; runtime task {} not found", run_uuid.hex)
             return False
@@ -2801,11 +3161,13 @@ async def _finalize_web_chat_run_with_assistant(
         )
         if existing_message_result.scalar_one_or_none() is not None:
             logger.info("[WebChatRun] Duplicate final assistant message skipped for run {}", run_uuid.hex)
-            _apply_terminal_task_update(
+            await _apply_terminal_task_update_and_settle(
+                db,
                 task,
                 status=status,
                 result_summary=result_summary,
                 metadata_json=metadata_json,
+                terminal_source="assistant_duplicate_finalizer",
             )
             await _project_agent_team_terminal_state(
                 db=db,
@@ -2918,11 +3280,13 @@ async def _finalize_web_chat_run_with_assistant(
                 metadata_json["artifact_paths"] = [part["path"] for part in artifact_parts]
                 metadata_json["artifacts"] = artifact_parts
             persisted_thinking = thinking or getattr(kernel_persisted_message, "thinking", None)
-            _apply_terminal_task_update(
+            await _apply_terminal_task_update_and_settle(
+                db,
                 task,
                 status=status,
                 result_summary=result_summary,
                 metadata_json=metadata_json,
+                terminal_source="assistant_kernel_message_finalizer",
             )
             await _project_agent_team_terminal_state(
                 db=db,
@@ -3037,11 +3401,13 @@ async def _finalize_web_chat_run_with_assistant(
             metadata_json["artifact_ids"] = [part["artifact_id"] for part in artifact_parts]
             metadata_json["artifact_paths"] = [part["path"] for part in artifact_parts]
             metadata_json["artifacts"] = artifact_parts
-        _apply_terminal_task_update(
+        await _apply_terminal_task_update_and_settle(
+            db,
             task,
             status=status,
             result_summary=result_summary,
             metadata_json=metadata_json,
+            terminal_source="assistant_message_finalizer",
         )
         await _project_agent_team_terminal_state(
             db=db,
@@ -3126,6 +3492,7 @@ async def _finalize_web_chat_run_without_assistant(
     *,
     run_uuid: uuid.UUID,
     agent_id: uuid.UUID,
+    session_id: str,
     status: str,
     result_summary: str | None,
     metadata_json: dict[str, Any] | None = None,
@@ -3139,15 +3506,13 @@ async def _finalize_web_chat_run_without_assistant(
 
     tenant_id = await resolve_tenant_for_agent(agent_id)
     async with tenant_scoped_session(tenant_id) as db:
-        result = await db.execute(
-            select(RuntimeTask)
-            .where(
-                RuntimeTask.id == run_uuid,
-                RuntimeTask.task_type.in_(_EXECUTABLE_CHAT_TASK_TYPES),
-            )
-            .with_for_update()
+        task = await _lock_runtime_task_for_session_mutation(
+            db,
+            run_uuid=run_uuid,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            session_id=session_id,
         )
-        task = result.scalar_one_or_none()
         if task is None:
             logger.warning("[WebChatRun] Tool-card finalization skipped; runtime task {} not found", run_uuid.hex)
             return False
@@ -3171,11 +3536,13 @@ async def _finalize_web_chat_run_without_assistant(
             metadata_json["file_change_lineage"] = [
                 dict(item) for item in (file_change_lineage or []) if isinstance(item, dict)
             ]
-        _apply_terminal_task_update(
+        await _apply_terminal_task_update_and_settle(
+            db,
             task,
             status=status,
             result_summary=result_summary,
             metadata_json=metadata_json,
+            terminal_source="tool_card_finalizer",
         )
         merged_metadata = dict(getattr(task, "metadata_json", None) or {})
         await _project_agent_team_terminal_state(
@@ -3263,6 +3630,7 @@ async def _emit_terminal_turn_hook(
 
         await emit_hook(
             HookEvent.TURN_STOP if terminal_event == "turn_stop" else HookEvent.TURN_ABORT,
+            evidence_mode="independent",
             agent_id=agent_id,
             session_id=session_id,
             source=str(payload["source"]),
@@ -3274,6 +3642,151 @@ async def _emit_terminal_turn_hook(
 
 
 async def _persist_tool_call(
+    *,
+    agent_id: uuid.UUID,
+    user_id: uuid.UUID | None,
+    session_id: str,
+    data: dict[str, Any],
+    external_principal_id: uuid.UUID | None = None,
+) -> list[dict[str, Any]]:
+    """Persist the canonical tool lifecycle before returning live envelopes."""
+
+    del user_id, external_principal_id
+    from app.models.session_v2 import SessionEventOutbox, SessionToolInvocation
+    from app.services.session_tool_runtime import (
+        complete_tool_invocation,
+        mark_tool_effect_started,
+        prepare_tool_invocation,
+    )
+    from app.services.tenant_resolver import resolve_tenant_for_agent
+
+    payload = _tool_step_contract(data)
+    status = str(payload.get("status") or "")
+    provider_request_id = str(payload.get("provider_request_id") or "").strip()
+    provider_tool_use_id = str(payload.get("tool_call_id") or "").strip()
+    run_id = _uuid_or_none(payload.get("runtime_task_id") or payload.get("run_id"))
+    if not provider_tool_use_id or run_id is None:
+        raise RuntimeError("canonical_tool_event_requires_run_and_provider_tool_use_id")
+    tenant_id = await resolve_tenant_for_agent(agent_id)
+    session_uuid = uuid.UUID(str(session_id))
+    async with tenant_scoped_session(tenant_id) as db:
+        if status == "running":
+            if not provider_request_id:
+                raise RuntimeError("canonical_tool_start_requires_provider_request_id")
+            invocation = await prepare_tool_invocation(
+                db,
+                tenant_id=tenant_id,
+                agent_id=agent_id,
+                session_id=session_uuid,
+                run_id=run_id,
+                provider_request_id=provider_request_id,
+                provider_tool_use_id=provider_tool_use_id,
+                tool_name=str(payload.get("name") or ""),
+                arguments=payload.get("args") if isinstance(payload.get("args"), dict) else {},
+            )
+            event_ids = list(
+                (
+                    await db.execute(
+                        select(ChatTranscriptEvent.id).where(
+                            ChatTranscriptEvent.invocation_id == invocation.id,
+                            ChatTranscriptEvent.item_kind == "tool_call",
+                            ChatTranscriptEvent.lifecycle == "started",
+                        )
+                    )
+                ).scalars()
+            )
+        else:
+            invocation = await db.scalar(
+                select(SessionToolInvocation)
+                .where(
+                    SessionToolInvocation.tenant_id == tenant_id,
+                    SessionToolInvocation.session_id == session_uuid,
+                    SessionToolInvocation.run_id == run_id,
+                    SessionToolInvocation.provider_tool_use_id == provider_tool_use_id,
+                    *(
+                        [SessionToolInvocation.provider_request_id == provider_request_id]
+                        if provider_request_id
+                        else []
+                    ),
+                )
+                .with_for_update()
+            )
+            if invocation is None:
+                raise RuntimeError("canonical_tool_invocation_not_found")
+            if status == "effect_started":
+                events = await mark_tool_effect_started(
+                    db,
+                    tenant_id=tenant_id,
+                    agent_id=agent_id,
+                    session_id=session_uuid,
+                    invocation_id=invocation.id,
+                )
+            elif status in {"done", "completed", "failed"}:
+                raw_result = payload.get("result") or ""
+                provider_content = payload.get("model_seen_result")
+                if provider_content is None:
+                    provider_content = _knowledge_tool_replay_projection(
+                        tool_name=str(payload.get("name") or ""),
+                        args=payload.get("args") if isinstance(payload.get("args"), dict) else {},
+                        raw_result=raw_result,
+                    )
+                if provider_content is None:
+                    provider_content = str(raw_result)
+                artifact_parts: list[dict[str, Any]] = []
+                artifact_paths = tool_session_write_paths(
+                    str(payload.get("name") or ""),
+                    payload.get("args") if isinstance(payload.get("args"), dict) else {},
+                    artifacts=payload.get("artifacts") if isinstance(payload.get("artifacts"), list) else None,
+                )
+                if artifact_paths:
+                    artifact_parts = await create_chat_artifacts_for_message(
+                        db=db,
+                        agent_id=agent_id,
+                        tenant_id=tenant_id,
+                        session_id=session_id,
+                        message_id=uuid.uuid5(invocation.id, "tool-result-artifact-message"),
+                        runtime_task_id=run_id,
+                        paths=artifact_paths,
+                        workspace_root=Path(get_settings().AGENT_DATA_DIR) / str(agent_id),
+                        source="workspace_write",
+                    )
+                events = await complete_tool_invocation(
+                    db,
+                    tenant_id=tenant_id,
+                    agent_id=agent_id,
+                    session_id=session_uuid,
+                    invocation_id=invocation.id,
+                    provider_result_content=str(provider_content),
+                    execution_evidence=(
+                        payload.get("tool_execution_evidence")
+                        if isinstance(payload.get("tool_execution_evidence"), dict)
+                        else None
+                    ),
+                    effective_arguments=(payload.get("args") if isinstance(payload.get("args"), dict) else None),
+                    parts=artifact_parts,
+                )
+            else:
+                raise RuntimeError("unsupported canonical tool lifecycle")
+            event_ids = [event.id for event in events]
+        await db.flush()
+        envelopes = (
+            list(
+                (
+                    await db.execute(
+                        select(SessionEventOutbox.envelope_json)
+                        .where(SessionEventOutbox.event_id.in_(event_ids))
+                        .order_by(SessionEventOutbox.sequence)
+                    )
+                ).scalars()
+            )
+            if event_ids
+            else []
+        )
+        await db.commit()
+        return [dict(envelope or {}) for envelope in envelopes]
+
+
+async def _persist_legacy_tool_call(
     *,
     agent_id: uuid.UUID,
     user_id: uuid.UUID | None,
@@ -3772,6 +4285,7 @@ async def _update_runtime_task(
     status: str,
     result_summary: str | None = None,
     metadata_json: dict[str, Any] | None = None,
+    channel_delivery_text: str | None = None,
 ) -> None:
     tenant_id = await resolve_tenant_for_runtime_task(
         run_uuid,
@@ -3794,6 +4308,16 @@ async def _update_runtime_task(
         task = result.scalar_one_or_none()
         if task is None:
             return
+        if status in _TERMINAL_STATUSES:
+            await _apply_terminal_task_update_and_settle(
+                db,
+                task,
+                status=status,
+                result_summary=result_summary,
+                metadata_json=metadata_json,
+                terminal_source="runtime_status_update",
+            )
+            return
         task.status = status
         if result_summary is not None:
             task.result_summary = result_summary
@@ -3801,8 +4325,23 @@ async def _update_runtime_task(
             metadata = dict(task.metadata_json or {})
             metadata.update(metadata_json)
             task.metadata_json = metadata
-        if status in {"completed", "failed", "killed", "skipped"} and task.completed_at is None:
-            task.completed_at = datetime.now(timezone.utc)
+        if channel_delivery_text:
+            merged_metadata = dict(task.metadata_json or {})
+            if task.parent_agent_id is None or not task.parent_session_id:
+                raise RuntimeError("interactive_channel_prompt_missing_session_authority")
+            await _enqueue_terminal_channel_delivery(
+                db=db,
+                task=task,
+                agent_id=task.parent_agent_id,
+                session_id=str(task.parent_session_id),
+                user_id=_uuid_or_none(merged_metadata.get("user_id")) or task.root_user_id,
+                external_principal_id=_uuid_or_none(merged_metadata.get("external_principal_id")),
+                content=channel_delivery_text,
+                status=status,
+                artifact_parts=[],
+                metadata_json=merged_metadata,
+                delivery_kind="interactive_prompt",
+            )
 
 
 async def _materialize_initial_user_turn_for_worker(
@@ -3879,11 +4418,7 @@ async def _materialize_initial_user_turn_for_worker(
             metadata["latest_user_prompt_overrides_history"] = True
         metadata["initial_user_message_t0_event_id"] = str(user_event.event_id)
         event_sequence = getattr(user_event, "sequence", None)
-        if (
-            isinstance(event_sequence, int)
-            and not isinstance(event_sequence, bool)
-            and event_sequence >= 0
-        ):
+        if isinstance(event_sequence, int) and not isinstance(event_sequence, bool) and event_sequence >= 0:
             metadata["initial_user_message_t0_sequence"] = event_sequence
     metadata["initial_user_message_t0_materialized"] = True
     metadata["initial_user_message_t0_materialized_at"] = datetime.now(timezone.utc).isoformat()
@@ -4093,6 +4628,11 @@ async def _load_runtime_context(
         )
         history_messages = list(reversed(history_result.scalars().all()))
         history_messages = await _apply_active_projection_to_history(db, session, history_messages)
+        resume_history, resume_round_index = await _session_permission_resume_history(db, runtime_task)
+        if resume_history:
+            history_messages = [*history_messages, *resume_history]
+            metadata["session_resume_round_index"] = resume_round_index
+            runtime_task.metadata_json = metadata
         return runtime_task, agent, user, primary_model, fallback_model, history_messages, session
 
 
@@ -4201,7 +4741,6 @@ def _web_chat_run_ports() -> Any:
             maybe_enter_plan_mode=_maybe_handle_plan_mode_entry,
             claim_pending_reply_suffix=_claim_pending_reply_suffix_for_session,
             runtime_excluded_tools=_runtime_turn_excluded_tool_names,
-            claim_mid_run_messages=_claim_pending_mid_run_user_messages,
             active_channel_delivery_target=_active_channel_delivery_target_for_turn,
             is_web_origin_turn=_is_web_origin_turn,
             channel_permission_prompt=_channel_session_permission_prompt_for_tool_call,
@@ -4252,11 +4791,9 @@ def _web_chat_run_ports() -> Any:
             invoke_agent=invoke_agent,
             tenant_scoped_session=tenant_scoped_session,
             plan_mode_core=plan_mode_core,
-            is_llm_error_message=is_llm_error_message,
             interactive_pause_summary=_interactive_pause_summary_for_tool_call,
             cancel_events=_CANCEL_EVENTS,
             broadcast_run_context=_CURRENT_BROADCAST_RUN_ID,
-            user_visible_error=_USER_VISIBLE_WEB_CHAT_ERROR,
             logger=logger,
         ),
     )
@@ -4303,7 +4840,91 @@ async def _reconcile_claimed_web_chat_terminal_ghost(run_uuid: uuid.UUID) -> boo
         from app.services.runtime_task_fence import assert_runtime_task_fence
 
         assert_runtime_task_fence(task)
-        return await _reconcile_terminal_transcript_ghost(db, task)
+        if await _reconcile_terminal_transcript_ghost(db, task):
+            return True
+        return await _quarantine_exhausted_web_chat_recovery(db, task)
+
+
+async def _quarantine_exhausted_web_chat_recovery(db: AsyncSession, task: RuntimeTask) -> bool:
+    """Bound crash recovery without inventing a semantic assistant result."""
+    metadata = dict(getattr(task, "metadata_json", None) or {})
+    if not metadata.get("reclaimed_expired_claim"):
+        return False
+    max_attempts = max(1, int(get_settings().RUNTIME_TASK_WEB_CHAT_MAX_EXECUTION_ATTEMPTS))
+    attempt_count = int(getattr(task, "attempt_count", 0) or 0)
+    # The claim service increments before execution. ``>`` therefore allows
+    # exactly max_attempts actual executions and quarantines the next reclaim.
+    if attempt_count <= max_attempts:
+        return False
+
+    summary = (
+        "Web chat recovery stopped after repeated expired worker claims; administrator reconciliation is required."
+    )
+    metadata.update(
+        {
+            "recovery_state": "needs_reconciliation",
+            "needs_reconciliation": True,
+            "reconciliation_status": "open",
+            "reconciliation_reason": "web_chat_recovery_attempts_exhausted",
+            "automatic_retry_allowed": False,
+            "execution_attempt_count": attempt_count,
+            "max_execution_attempts": max_attempts,
+            "terminal_reason": TerminalReason.PERSISTENCE_ERROR.value,
+        }
+    )
+    await _apply_terminal_task_update_and_settle(
+        db,
+        task,
+        status="needs_reconciliation",
+        result_summary=summary,
+        metadata_json=metadata,
+        terminal_source="web_chat_recovery_quarantine",
+    )
+    task.claimed_by = None
+    task.claim_expires_at = None
+    task.scheduled_at = None
+    await append_session_event(
+        db=db,
+        agent_id=task.parent_agent_id,
+        tenant_id=task.tenant_id,
+        session_id=task.parent_session_id,
+        run_id=task.id,
+        actor_type="system",
+        event_type="error",
+        content=summary,
+        source="web_chat_recovery",
+        materialize_chat_message=False,
+        metadata={
+            "status": "needs_reconciliation",
+            "terminal_reason": TerminalReason.PERSISTENCE_ERROR.value,
+            "reconciliation_reason": "web_chat_recovery_attempts_exhausted",
+            "execution_attempt_count": attempt_count,
+            "max_execution_attempts": max_attempts,
+        },
+    )
+    await db.commit()
+    logger.error(
+        "[WebChatRun] Quarantined run {} after {} execution claims (limit={})",
+        task.id,
+        attempt_count,
+        max_attempts,
+    )
+    await broadcast_web_chat_event(
+        task.parent_agent_id,
+        task.parent_session_id,
+        {
+            "type": "error",
+            "content": summary,
+            "status": "needs_reconciliation",
+            "run_id": task.id.hex,
+        },
+    )
+    await broadcast_web_chat_event(
+        task.parent_agent_id,
+        task.parent_session_id,
+        build_phase_event(RuntimePhase.FAILED, run_id=task.id.hex),
+    )
+    return True
 
 
 # Kept as an overridable module global for tests and for parity with other services.

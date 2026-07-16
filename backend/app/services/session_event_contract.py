@@ -66,13 +66,20 @@ EVENT_KIND_MATRIX: dict[str, EventKindRule] = {
     ),
     "control_input": EventKindRule(
         _words("accepted started applied rejected failed needs_reconciliation reconciled"),
-        _words("run"),
+        # Unknown/stale targets still need a canonical rejected receipt, but a
+        # rejected attempt must not forge a run authority that does not exist.
+        _words("session run"),
         _words("applied rejected failed"),
     ),
     "turn_replacement": EventKindRule(
         _words("requested cancelling fenced queued admitted completed failed needs_reconciliation reconciled"),
         _words("session"),
         _words("completed failed"),
+    ),
+    "carry_forward": EventKindRule(
+        _words("claimed bound consumed needs_reconciliation reconciled"),
+        _words("round"),
+        _words("consumed"),
     ),
     "assistant_text": EventKindRule(_CONTENT_LIFECYCLES, _words("round"), _CONTENT_TERMINAL),
     "assistant_commentary": EventKindRule(_CONTENT_LIFECYCLES, _words("round"), _CONTENT_TERMINAL),
@@ -243,6 +250,8 @@ SCOPE_REQUIRED_IDS: dict[str, tuple[str, ...]] = {
 ASSISTANT_PHASES = {
     "assistant_text": "unknown",
     "assistant_commentary": "commentary",
+    "assistant_reasoning_summary": "reasoning_summary",
+    "assistant_reasoning_private": "reasoning_private",
     "assistant_final": "final",
 }
 ACTOR_TYPES = _words("user assistant runtime tool hook workflow agent system")
@@ -458,7 +467,18 @@ def build_session_event_contract_function_sql() -> str:
             WHERE input.id=NEW.input_id
               AND input.tenant_id=NEW.tenant_id
               AND input.session_id=NEW.session_id
-              AND (NEW.command_id IS NULL OR input.command_id=NEW.command_id)
+              AND (
+                NEW.command_id IS NULL
+                OR input.command_id=NEW.command_id
+                OR EXISTS (
+                  SELECT 1 FROM public.session_commands AS linked_command
+                  WHERE linked_command.id=NEW.command_id
+                    AND linked_command.namespace='turn_replacement'
+                    AND linked_command.causation_command_id=input.command_id
+                    AND linked_command.tenant_id=input.tenant_id
+                    AND linked_command.session_id=input.session_id
+                )
+              )
               AND (input.target_run_id IS NULL OR NEW.run_id IS NULL OR input.target_run_id=NEW.run_id)
           ) THEN
             RAISE EXCEPTION 'session_event_input_authority_mismatch' USING ERRCODE='23514';
@@ -495,10 +515,19 @@ def build_session_event_contract_function_sql() -> str:
           ELSIF NEW.item_kind='assistant_commentary'
              AND COALESCE(NEW.metadata_json->'v2_payload'->>'phase','commentary') <> 'commentary' THEN
             RAISE EXCEPTION 'assistant_commentary phase must be commentary' USING ERRCODE='23514';
+          ELSIF NEW.item_kind='assistant_reasoning_summary'
+             AND COALESCE(NEW.metadata_json->'v2_payload'->>'phase','reasoning_summary') <> 'reasoning_summary' THEN
+            RAISE EXCEPTION 'assistant_reasoning_summary phase must be reasoning_summary' USING ERRCODE='23514';
+          ELSIF NEW.item_kind='assistant_reasoning_private'
+             AND COALESCE(NEW.metadata_json->'v2_payload'->>'phase','reasoning_private') <> 'reasoning_private' THEN
+            RAISE EXCEPTION 'assistant_reasoning_private phase must be reasoning_private' USING ERRCODE='23514';
           ELSIF NEW.item_kind='assistant_final'
              AND COALESCE(NEW.metadata_json->'v2_payload'->>'phase','final') <> 'final' THEN
             RAISE EXCEPTION 'assistant_final phase must be final' USING ERRCODE='23514';
-          ELSIF NEW.item_kind NOT IN ('assistant_text','assistant_commentary','assistant_final')
+          ELSIF NEW.item_kind NOT IN (
+            'assistant_text','assistant_commentary','assistant_reasoning_summary',
+            'assistant_reasoning_private','assistant_final'
+          )
              AND NEW.metadata_json->'v2_payload' ? 'phase' THEN
             RAISE EXCEPTION 'assistant phase is illegal for this item kind' USING ERRCODE='23514';
           END IF;
@@ -616,6 +645,8 @@ _SESSION_V2_AUTHORITY_RULES: tuple[tuple[str, str], ...] = (
           WHERE command.id=NEW.command_id
             AND command.tenant_id=NEW.tenant_id
             AND command.session_id=NEW.session_id
+            AND NEW.input_revision > 0
+            AND NEW.input_revision <= turn_input.revision
         )
         AND (NEW.hook_item_id IS NULL OR EXISTS (
           SELECT 1 FROM public.chat_transcript_events AS hook_event
@@ -699,11 +730,6 @@ _SESSION_V2_AUTHORITY_RULES: tuple[tuple[str, str], ...] = (
             ON parent_command.id=saga_command.causation_command_id
            AND parent_command.tenant_id=saga_command.tenant_id
            AND parent_command.session_id=saga_command.session_id
-          JOIN public.session_commands AS cancel_command
-            ON cancel_command.id=NEW.cancel_command_id
-           AND cancel_command.causation_command_id=saga_command.id
-           AND cancel_command.tenant_id=saga_command.tenant_id
-           AND cancel_command.session_id=saga_command.session_id
           JOIN public.session_turn_inputs AS replacement_input
             ON replacement_input.id=NEW.replacement_input_id
            AND replacement_input.command_id=parent_command.id
@@ -714,23 +740,51 @@ _SESSION_V2_AUTHORITY_RULES: tuple[tuple[str, str], ...] = (
            AND admission.command_id=parent_command.id
            AND admission.tenant_id=saga_command.tenant_id
            AND admission.session_id=saga_command.session_id
-          JOIN public.session_control_inputs AS cancel_control
-            ON cancel_control.id=NEW.cancel_control_id
-           AND cancel_control.command_id=cancel_command.id
-           AND cancel_control.expected_run_id=NEW.old_run_id
-           AND cancel_control.tenant_id=saga_command.tenant_id
-           AND cancel_control.session_id=saga_command.session_id
+           AND admission.input_revision=replacement_input.revision
           WHERE saga_command.id=NEW.command_id
             AND saga_command.namespace='turn_replacement'
-            AND cancel_command.namespace='control_input'
             AND parent_command.namespace='human_input'
             AND parent_command.command_kind='interrupt_and_replace'
             AND replacement_input.intent='interrupt_and_replace'
-            AND replacement_input.target_turn_id=NEW.old_turn_id
-            AND replacement_input.target_run_id=NEW.old_run_id
+            AND (
+              (NEW.state IN ('requested','cancel_accepted','old_run_fenced')
+               AND replacement_input.target_turn_id=NEW.old_turn_id
+               AND replacement_input.target_run_id=NEW.old_run_id)
+              OR
+              (NEW.state IN ('replacement_queued','replacement_admitted','completed','failed','needs_reconciliation')
+               AND replacement_input.target_turn_id IN (NEW.old_turn_id,NEW.replacement_turn_id))
+            )
             AND admission.state='admitted'
             AND saga_command.tenant_id=NEW.tenant_id
             AND saga_command.session_id=NEW.session_id
+        )
+        AND (
+          (NEW.state IN ('requested','needs_reconciliation')
+           AND NEW.cancel_control_id IS NULL
+           AND NEW.cancel_command_id IS NULL)
+          OR
+          (NEW.state<>'requested'
+           AND NEW.cancel_control_id IS NOT NULL
+           AND NEW.cancel_command_id IS NOT NULL
+           AND EXISTS (
+             SELECT 1
+             FROM public.session_commands AS saga_command
+             JOIN public.session_commands AS cancel_command
+               ON cancel_command.id=NEW.cancel_command_id
+              AND cancel_command.causation_command_id=saga_command.id
+              AND cancel_command.tenant_id=saga_command.tenant_id
+              AND cancel_command.session_id=saga_command.session_id
+              AND cancel_command.namespace='control_input'
+             JOIN public.session_control_inputs AS cancel_control
+               ON cancel_control.id=NEW.cancel_control_id
+              AND cancel_control.command_id=cancel_command.id
+              AND cancel_control.expected_run_id=NEW.old_run_id
+              AND cancel_control.tenant_id=saga_command.tenant_id
+              AND cancel_control.session_id=saga_command.session_id
+             WHERE saga_command.id=NEW.command_id
+               AND saga_command.tenant_id=NEW.tenant_id
+               AND saga_command.session_id=NEW.session_id
+           ))
         )
         AND EXISTS (
           SELECT 1 FROM public.runtime_tasks AS old_run
@@ -769,8 +823,10 @@ _SESSION_V2_AUTHORITY_RULES: tuple[tuple[str, str], ...] = (
         AND (NEW.result_event_id IS NULL OR EXISTS (
           SELECT 1 FROM public.chat_transcript_events AS result_event
           WHERE result_event.id=NEW.result_event_id
-            AND result_event.item_id=NEW.invocation_item_id
+            AND result_event.item_kind='tool_result'
+            AND result_event.lifecycle='completed'
             AND result_event.invocation_id=NEW.id
+            AND result_event.provider_tool_use_id=NEW.provider_tool_use_id
             AND result_event.tenant_id=NEW.tenant_id
             AND result_event.session_id=NEW.session_id
             AND result_event.run_id=NEW.run_id

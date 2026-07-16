@@ -92,21 +92,30 @@ async def _resume_materialized_user_message(
     if session is None or agent is None or user is None:
         raise RuntimeError("materialized channel ingress authority cannot be restored")
 
-    from app.services.web_chat_runtime import start_channel_chat_run_from_saved_turn
+    from app.services.session_live_input import submit_live_human_input
 
-    run = await start_channel_chat_run_from_saved_turn(
+    receipt = await submit_live_human_input(
         db=db,
         agent=agent,
         user=user,
         session=session,
         content=message.content,
-        source_channel=session.source_channel or item.provider,
-        extra_metadata={"channel_ingress_recovered_from_message_id": str(message.id)},
+        source=session.source_channel or item.provider,
+        input_id=item.id,
+        idempotency_key=f"channel:{item.provider}:ingress:{item.id}",
+        runtime_metadata={
+            "source": session.source_channel or item.provider,
+            "channel": session.source_channel or item.provider,
+            "channel_ingress_event_id": str(item.id),
+            "budget_interactive": False,
+        },
     )
+    run = dict(receipt.get("run") or {})
     return {
         "status": "accepted",
-        "runtime_task_id": run.get("run_id"),
+        "runtime_task_id": run.get("run_id") or receipt.get("target_run_id"),
         "session_id": str(session.id),
+        "input_id": receipt["input_id"],
         "recovered_from_materialized_user_message": True,
     }
 

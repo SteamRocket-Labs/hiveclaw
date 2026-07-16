@@ -196,6 +196,7 @@ class RuntimeTaskClaimService:
             metadata = dict(getattr(task, "metadata_json", None) or {})
             if reclaimed_expired_claim:
                 metadata["reclaimed_expired_claim"] = True
+                metadata["lease_reclaim_count"] = int(metadata.get("lease_reclaim_count") or 0) + 1
                 metadata["reclaimed_at"] = now.isoformat()
                 metadata["recovery_state"] = "recovering"
                 metadata["previous_claim"] = previous_claim

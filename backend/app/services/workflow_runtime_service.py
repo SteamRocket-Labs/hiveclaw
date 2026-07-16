@@ -900,6 +900,9 @@ class WorkflowRuntimeService:
                 budget_terminal_reason=("runtime_budget_approval_required" if admission_decision.waiting else None),
                 metadata_json=metadata_json,
             )
+            from app.services.session_writer_epoch import assign_runtime_task_writer_generation
+
+            await assign_runtime_task_writer_generation(session, task)
             session.add(task)
             session.add(
                 WorkflowQuota(

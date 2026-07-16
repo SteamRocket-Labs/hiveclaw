@@ -37,15 +37,20 @@ async def test_append_session_event_writes_typed_transcript_and_queues_t0_projec
     created_at = datetime(2026, 6, 20, 12, 30, tzinfo=timezone.utc)
     db = _FakeDB()
     published = []
+    scheduled = []
 
     async def fake_publish_transcript_t0_bridge(**kwargs):
         published.append(kwargs)
+
+    def fake_schedule_after_commit(_db, callback, *, description):
+        scheduled.append((description, callback))
 
     monkeypatch.setattr("app.memory.t0.ledger.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
     monkeypatch.setattr(
         "app.services.runtime_control_bus.publish_transcript_t0_bridge",
         fake_publish_transcript_t0_bridge,
     )
+    monkeypatch.setattr("app.services.chat_transcript.schedule_after_commit", fake_schedule_after_commit)
 
     result = await append_session_event(
         db=db,
@@ -85,6 +90,9 @@ async def test_append_session_event_writes_typed_transcript_and_queues_t0_projec
 
     events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path)
     assert events == []
+    assert published == []
+    assert len(scheduled) == 1
+    await scheduled[0][1]()
     assert published == [
         {
             "transcript_event_id": result.event_id,
@@ -181,15 +189,20 @@ async def test_append_session_event_queues_non_message_runtime_event_for_t0(monk
     session_id = uuid4()
     db = _FakeDB()
     published = []
+    scheduled = []
 
     async def fake_publish_transcript_t0_bridge(**kwargs):
         published.append(kwargs)
+
+    def fake_schedule_after_commit(_db, callback, *, description):
+        scheduled.append((description, callback))
 
     monkeypatch.setattr("app.memory.t0.ledger.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
     monkeypatch.setattr(
         "app.services.runtime_control_bus.publish_transcript_t0_bridge",
         fake_publish_transcript_t0_bridge,
     )
+    monkeypatch.setattr("app.services.chat_transcript.schedule_after_commit", fake_schedule_after_commit)
 
     await append_session_event(
         db=db,
@@ -212,6 +225,9 @@ async def test_append_session_event_queues_non_message_runtime_event_for_t0(monk
     assert transcript_events[0].projection_status == "pending"
     events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path)
     assert events == []
+    assert published == []
+    assert len(scheduled) == 1
+    await scheduled[0][1]()
     assert len(published) == 1
 
 
@@ -263,15 +279,20 @@ async def test_append_session_event_all_roles_use_committed_t0_projection(monkey
     session_id = uuid4()
     db = _FakeDB()
     published = []
+    scheduled = []
 
     async def fake_publish_transcript_t0_bridge(**kwargs):
         published.append(kwargs)
+
+    def fake_schedule_after_commit(_db, callback, *, description):
+        scheduled.append((description, callback))
 
     monkeypatch.setattr("app.memory.t0.ledger.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
     monkeypatch.setattr(
         "app.services.runtime_control_bus.publish_transcript_t0_bridge",
         fake_publish_transcript_t0_bridge,
     )
+    monkeypatch.setattr("app.services.chat_transcript.schedule_after_commit", fake_schedule_after_commit)
 
     result = await transcript.append_session_event(
         db=db,
@@ -290,6 +311,9 @@ async def test_append_session_event_all_roles_use_committed_t0_projection(monkey
     assert len(transcript_events) == 1
     assert result.t0_result is None
     assert replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path) == []
+    assert published == []
+    assert len(scheduled) == 1
+    await scheduled[0][1]()
     assert published == [
         {
             "transcript_event_id": result.event_id,

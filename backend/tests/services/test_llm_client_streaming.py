@@ -3,7 +3,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from app.services.llm_client import AnthropicClient, LLMMessage, OpenAICompatibleClient, STREAM_RETRY_TOMBSTONE
+from app.services.llm_client import AnthropicClient, LLMMessage, OpenAICompatibleClient
 
 
 class _FakeStreamResponse:
@@ -276,7 +276,9 @@ async def test_openai_compatible_streaming_retries_http_status_errors(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_openai_compatible_streaming_retry_tombstones_partial_content(monkeypatch):
+async def test_openai_compatible_streaming_interruption_is_unknown_without_blind_replay(monkeypatch):
+    from app.services.llm_client import LLMError
+
     retry_client = _InterruptedThenSuccessfulStreamClient()
     client = OpenAICompatibleClient(api_key="test", model="gpt-test", base_url="https://example.test/v1")
     chunks: list[str] = []
@@ -293,21 +295,23 @@ async def test_openai_compatible_streaming_retry_tombstones_partial_content(monk
     monkeypatch.setattr(client, "_get_client", fake_get_client)
     monkeypatch.setattr("app.services.llm_client.asyncio.sleep", fake_sleep)
 
-    response = await client.stream(
-        [LLMMessage(role="user", content="hello")],
-        temperature=0.7,
-        max_tokens=16,
-        on_chunk=on_chunk,
-    )
+    with pytest.raises(LLMError) as exc_info:
+        await client.stream(
+            [LLMMessage(role="user", content="hello")],
+            temperature=0.7,
+            max_tokens=16,
+            on_chunk=on_chunk,
+        )
 
-    assert retry_client.calls == 2
-    assert response.content == "partial answer"
-    assert chunks == ["partial ", STREAM_RETRY_TOMBSTONE, "partial ", "answer"]
-    assert STREAM_RETRY_TOMBSTONE not in response.content
+    assert exc_info.value.delivery_state == "unknown"
+    assert retry_client.calls == 1
+    assert chunks == ["partial "]
 
 
 @pytest.mark.asyncio
-async def test_openai_compatible_complete_retries_http_status_errors(monkeypatch):
+async def test_openai_compatible_complete_does_not_replay_unknown_503(monkeypatch):
+    from app.services.llm_client import LLMError
+
     retry_client = _RetryPostStatusClient()
     client = OpenAICompatibleClient(api_key="test", model="gpt-test", base_url="https://example.test/v1")
 
@@ -320,12 +324,13 @@ async def test_openai_compatible_complete_retries_http_status_errors(monkeypatch
     monkeypatch.setattr(client, "_get_client", fake_get_client)
     monkeypatch.setattr("app.services.llm_client.asyncio.sleep", fake_sleep)
 
-    response = await client.complete(
-        [LLMMessage(role="user", content="hello")],
-        temperature=0.7,
-        max_tokens=16,
-    )
+    with pytest.raises(LLMError) as exc_info:
+        await client.complete(
+            [LLMMessage(role="user", content="hello")],
+            temperature=0.7,
+            max_tokens=16,
+        )
 
-    assert retry_client.calls == 2
-    assert response.content == "ok"
-    assert response.finish_reason == "stop"
+    assert exc_info.value.delivery_state == "unknown"
+    assert exc_info.value.http_status == 503
+    assert retry_client.calls == 1

@@ -104,26 +104,28 @@ async def _record_blocked_run(
 
     run_id = uuid.uuid4()
     async with tenant_scoped_session(str(tenant_id), session_factory=session_factory) as session:
-        session.add(
-            RuntimeTask(
-                id=run_id,
-                task_type="workflow",
-                tenant_id=tenant_id,
-                status="suspended",
-                parent_agent_id=agent_id,
-                parent_session_id=str(parent_session_id) if parent_session_id else None,
-                child_session_id=str(parent_session_id) if parent_session_id else None,
-                metadata_json={
-                    "definition_source": "registered",
-                    "tenant_id": str(tenant_id),
-                    "workflow_ref": ref,
-                    "needs_reconfirmation": True,
-                    "last_outcome_reason": reason,
-                    "parent_session_id": str(parent_session_id) if parent_session_id else None,
-                    "root_session_id": str(parent_session_id) if parent_session_id else None,
-                },
-            )
+        task = RuntimeTask(
+            id=run_id,
+            task_type="workflow",
+            tenant_id=tenant_id,
+            status="suspended",
+            parent_agent_id=agent_id,
+            parent_session_id=str(parent_session_id) if parent_session_id else None,
+            child_session_id=str(parent_session_id) if parent_session_id else None,
+            metadata_json={
+                "definition_source": "registered",
+                "tenant_id": str(tenant_id),
+                "workflow_ref": ref,
+                "needs_reconfirmation": True,
+                "last_outcome_reason": reason,
+                "parent_session_id": str(parent_session_id) if parent_session_id else None,
+                "root_session_id": str(parent_session_id) if parent_session_id else None,
+            },
         )
+        from app.services.session_writer_epoch import assign_runtime_task_writer_generation
+
+        await assign_runtime_task_writer_generation(session, task)
+        session.add(task)
     return run_id
 
 

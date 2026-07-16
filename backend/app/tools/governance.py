@@ -21,6 +21,7 @@ from app.runtime.ccplus_contracts import (
     normalize_permission_mode,
 )
 from app.tools.execpolicy import evaluate_command
+from app.tools.decision import ToolBoundaryBlock, ToolDecisionOutcome
 from app.tools.result_envelope import render_tool_error
 
 logger = logging.getLogger(__name__)
@@ -365,18 +366,30 @@ def _permission_mode_for_context(context: ToolGovernanceContext) -> PermissionMo
 
 
 def _has_exact_session_grant(context: ToolGovernanceContext) -> bool:
-    """Match a single approved call without widening permission for the tool name."""
+    """Match an exact approved payload without widening to a tool wildcard."""
     profile = context.permission_profile
-    if profile is None or getattr(profile, "session_grant_scope", None) != "once":
-        return False
-    if getattr(profile, "session_grant_tool_name", None) != context.tool_name:
+    if profile is None:
         return False
     from app.services.approval_ticket import hash_tool_input
 
-    return getattr(profile, "session_grant_input_hash", None) == hash_tool_input(
-        context.tool_name,
-        context.arguments,
-    )
+    input_hash = hash_tool_input(context.tool_name, context.arguments)
+    if (
+        getattr(profile, "session_grant_scope", None) == "once"
+        and getattr(profile, "session_grant_tool_name", None) == context.tool_name
+        and getattr(profile, "session_grant_input_hash", None) == input_hash
+    ):
+        return True
+    for raw_grant in tuple(getattr(profile, "session_grants", ()) or ()):
+        if not isinstance(raw_grant, dict):
+            continue
+        if (
+            raw_grant.get("scope") == "session"
+            and raw_grant.get("status", "active") == "active"
+            and raw_grant.get("tool_name") == context.tool_name
+            and raw_grant.get("input_hash") == input_hash
+        ):
+            return True
+    return False
 
 
 def _session_no_policy_action(context: ToolGovernanceContext) -> str:
@@ -407,6 +420,24 @@ def _session_no_policy_action(context: ToolGovernanceContext) -> str:
     if mode == PermissionMode.AUTO:
         return "allow" if context.tool_name in _SESSION_AUTO_ALLOW_TOOLS else "ask"
     return "ask"
+
+
+def _stable_session_permission_request_id(context: ToolGovernanceContext) -> str:
+    """Derive the durable permission item identity from mechanical call facts."""
+
+    try:
+        namespace = uuid.UUID(str(context.session_id))
+    except (TypeError, ValueError):
+        namespace = uuid.NAMESPACE_URL
+    call_key = ":".join(
+        (
+            "session-tool-permission",
+            str(context.runtime_task_id or ""),
+            str(context.tool_call_id or ""),
+            context.tool_name,
+        )
+    )
+    return str(uuid.uuid5(namespace, call_key))
 
 
 def _session_explicit_policy_action(context: ToolGovernanceContext) -> str:
@@ -512,7 +543,11 @@ async def _emit_session_no_policy_result(
         f"Reason: {request_reason or 'no enterprise capability policy is configured for this tool'}. "
         "Ask the current session user for approval before retrying this tool; do not create a backend approval request."
     )
-    permission_request_id = str(uuid.uuid4())
+    permission_request_id = _stable_session_permission_request_id(context)
+    # The typed ToolDecision carries this same identity into Session V2.  The
+    # UI route, permission item, and invocation therefore address one durable
+    # object instead of relying on a recent-event scan.
+    context.approval_id = permission_request_id
     profile = context.permission_profile or PermissionProfileV1()
     pending_frame = PendingToolFrameV1(
         permission_request_id=permission_request_id,
@@ -759,12 +794,17 @@ async def _emit_permission_denied_hook(
 
     await emit_hook(
         HookEvent.PERMISSION_DENIED,
+        evidence_mode="independent",
         agent_id=context.agent_id,
         session_id=context.session_id,
         tool_name=context.tool_name,
         tool_args=context.arguments,
         source="tool_governance",
         metadata={
+            "tenant_id": context.tenant_id,
+            "user_id": str(context.user_id),
+            "runtime_task_id": context.runtime_task_id,
+            "trace_id": context.runtime_task_id,
             "permission": permission_request,
             "permission_request": permission_request,
             "capability": capability,
@@ -788,12 +828,17 @@ async def _apply_permission_request_hook(
 
     hook_result = await emit_hook(
         HookEvent.PERMISSION_REQUEST,
+        evidence_mode="independent",
         agent_id=context.agent_id,
         session_id=context.session_id,
         tool_name=context.tool_name,
         tool_args=context.arguments,
         source="tool_governance",
         metadata={
+            "tenant_id": context.tenant_id,
+            "user_id": str(context.user_id),
+            "runtime_task_id": context.runtime_task_id,
+            "trace_id": context.runtime_task_id,
             "permission": permission_request,
             "permission_request": permission_request,
             "capability": capability,
@@ -878,17 +923,28 @@ async def run_tool_governance(
     deps: GovernanceDependencies,
     *,
     event_callback: EventCallback | None = None,
-) -> str | None:
+) -> ToolBoundaryBlock | None:
     """Run governance checks before tool execution.
 
     Returns a blocking message when execution should stop, otherwise None.
     Entire governance pipeline has a hard timeout to prevent hanging on DB issues.
     """
+    observed_events: list[dict[str, Any]] = []
+
+    async def capture_event(payload: dict[str, Any]) -> None:
+        observed_events.append(dict(payload))
+        await _emit_event(event_callback, payload)
+
     try:
-        return await asyncio.wait_for(
-            _run_governance_inner(context, deps, event_callback=event_callback),
+        message = await asyncio.wait_for(
+            _run_governance_inner(context, deps, event_callback=capture_event),
             timeout=_GOVERNANCE_TIMEOUT_SECONDS,
         )
+        if message is None:
+            return None
+        if isinstance(message, ToolBoundaryBlock):
+            return message
+        return _typed_governance_block(str(message), observed_events)
     except asyncio.TimeoutError:
         logger.warning(
             "[Governance] Timeout (%ss) for tool %s — authority unavailable (fail-closed)",
@@ -905,14 +961,85 @@ async def run_tool_governance(
                 "retryable": True,
             },
         )
-        return render_tool_error(
-            tool_name=context.tool_name,
-            error_class="governance_dependency_unavailable",
-            message=f"Governance authority for '{context.tool_name}' is temporarily unavailable.",
+        return ToolBoundaryBlock(
+            render_tool_error(
+                tool_name=context.tool_name,
+                error_class="governance_dependency_unavailable",
+                message=f"Governance authority for '{context.tool_name}' is temporarily unavailable.",
+                retryable=True,
+                actionable_hint="Retry after the governance dependency recovers; no policy denial was made.",
+                extra={"outcome": "unavailable", "dependency": "tool_governance"},
+            ),
+            outcome=ToolDecisionOutcome.UNAVAILABLE,
+            reason_code="governance_dependency_unavailable",
+            status="unavailable",
             retryable=True,
-            actionable_hint="Retry after the governance dependency recovers; no policy denial was made.",
-            extra={"outcome": "unavailable", "dependency": "tool_governance"},
         )
+
+
+_APPROVAL_BLOCK_STATUSES = frozenset({"approval_required", "session_permission_required", "permission_required"})
+_DENIED_BLOCK_STATUSES = frozenset(
+    {
+        "denied",
+        "permission_denied",
+        "capability_denied",
+        "delegation_token_denied",
+        "governance_hook_denied",
+        "guard_policy_denied",
+        "approval_decision_mismatch",
+    }
+)
+_UNAVAILABLE_BLOCK_STATUSES = frozenset(
+    {"unavailable", "governance_unavailable", "dependency_unavailable", "authority_unavailable"}
+)
+
+
+def _typed_governance_block(message: str, observed_events: list[dict[str, Any]]) -> ToolBoundaryBlock:
+    """Resolve a block only from exact JSON/event fields, never display prose."""
+
+    evidence: dict[str, Any] = {}
+    try:
+        parsed = json.loads(message)
+    except (TypeError, ValueError):
+        parsed = None
+    if isinstance(parsed, dict):
+        evidence = parsed
+    for event in reversed(observed_events):
+        if event.get("status") or event.get("outcome") or event.get("error_class"):
+            evidence = event
+            break
+
+    status = str(evidence.get("status") or "").strip().lower()
+    explicit_outcome = str(evidence.get("outcome") or evidence.get("decision") or "").strip().lower()
+    error_class = str(evidence.get("error_class") or "").strip().lower()
+    retryable = bool(evidence.get("retryable", False))
+
+    if explicit_outcome in {"require_approval", "approval_required", "ask"} or status in _APPROVAL_BLOCK_STATUSES:
+        outcome = ToolDecisionOutcome.REQUIRE_APPROVAL
+        reason_code = status or explicit_outcome or "approval_required"
+    elif (
+        explicit_outcome == "unavailable"
+        or status in _UNAVAILABLE_BLOCK_STATUSES
+        or error_class.endswith("_unavailable")
+    ):
+        outcome = ToolDecisionOutcome.UNAVAILABLE
+        reason_code = error_class or status or "governance_unavailable"
+    elif explicit_outcome in {"deny", "denied"} or status in _DENIED_BLOCK_STATUSES:
+        outcome = ToolDecisionOutcome.DENY
+        reason_code = status or explicit_outcome or "governance_denied"
+    else:
+        outcome = ToolDecisionOutcome.UNAVAILABLE
+        reason_code = "untyped_governance_block"
+        status = status or "unavailable"
+        retryable = True
+
+    return ToolBoundaryBlock(
+        message,
+        outcome=outcome,
+        reason_code=reason_code,
+        status=status,
+        retryable=retryable,
+    )
 
 
 @dataclass(slots=True)

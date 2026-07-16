@@ -59,6 +59,13 @@ def _bind_verified_recovery_result(request, payload: dict) -> None:
     request.session_context.metadata["recovery_manifest_authority_hash"] = result.authority.digest
 
 
+def _record_governed_tool_success(trace_metadata_sink) -> None:
+    """Give tool test doubles the same settlement facts as the live pipeline."""
+    assert isinstance(trace_metadata_sink, dict)
+    trace_metadata_sink.setdefault("tool_decision", {"outcome": "allow"})
+    trace_metadata_sink.setdefault("tool_execution_frame", {"status": "completed"})
+
+
 class _FakeClient:
     def __init__(self, responses: list[SimpleNamespace]) -> None:
         self._responses = list(responses)
@@ -97,26 +104,86 @@ def test_llm_message_dict_round_trip_preserves_reasoning_signature() -> None:
     assert restored[0].reasoning_signature == "sig-round-trip"
 
 
-def test_empty_assistant_fallback_is_actionable_and_keeps_raw_error_in_technical_evidence() -> None:
-    from app.kernel.engine import _empty_assistant_fallback
+@pytest.mark.asyncio
+async def test_empty_provider_response_is_typed_failure_without_platform_assistant_prose() -> None:
+    from app.kernel import AgentKernel, InvocationRequest, KernelDependencies, RuntimeConfig
+    from app.kernel.contracts import TerminalReason
 
-    content = _empty_assistant_fallback(
+    model = SimpleNamespace(provider="openai", model="gpt-4.1", api_key="key", base_url=None)
+    client = _FakeClient(
         [
-            {
-                "type": "tool_call",
-                "name": "create_digital_employee",
-                "status": "done",
-                "result": '{"status":"error","error":"creation_in_progress","message":"Creation is already in progress."}',
-            }
+            SimpleNamespace(
+                content="",
+                tool_calls=[],
+                reasoning_content=None,
+                reasoning_signature=None,
+                finish_reason="stop",
+                usage={"total_tokens": 3},
+            )
         ]
     )
+    failures: list[dict] = []
+    kernel = AgentKernel(
+        KernelDependencies(
+            resolve_runtime_config=lambda *_a, **_k: RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=1),
+            resolve_current_user_name=lambda *_a, **_k: "Rocky",
+            build_system_prompt=lambda *_a, **_k: "PROMPT",
+            resolve_memory_context=lambda *_a, **_k: "",
+            get_tools=lambda *_a, **_k: [],
+            maybe_compress_messages=lambda messages, **_k: messages,
+            create_client=lambda _model: client,
+            execute_tool=lambda *_a, **_k: "",
+            persist_memory=lambda **_k: None,
+            record_token_usage=lambda *_a, **_k: None,
+            get_max_tokens=lambda *_a, **_k: 2048,
+            extract_usage_tokens=lambda usage: usage.get("total_tokens") if usage else None,
+            estimate_tokens_from_chars=lambda chars: chars // 4,
+        )
+    )
 
-    assert content.startswith("[LLM Error]")
-    assert "create_digital_employee" in content
-    assert "Creation is already in progress." in content
-    assert "重试" in content
-    assert "creation_in_progress" not in content
-    assert content != "[LLM returned empty content]"
+    result = await kernel.handle(
+        InvocationRequest(
+            model=model,
+            messages=[{"role": "user", "content": "answer"}],
+            agent_name="Agent",
+            role_description="Answers",
+            agent_id=uuid4(),
+            user_id=uuid4(),
+            model_request_prepare=lambda **_payload: "provider-request:round-1",
+            model_request_fail=lambda **payload: failures.append(payload),
+        )
+    )
+
+    assert result.content == ""
+    assert result.parts == []
+    assert result.terminal_reason is TerminalReason.PROVIDER_ERROR
+    assert failures == [
+        {
+            "round_index": 1,
+            "provider_request_id": "provider-request:round-1",
+            "error_class": "provider_empty_response",
+            "delivery_state": "response_received",
+            "retry_safe": True,
+        }
+    ]
+
+
+def test_model_authored_error_prefix_remains_memory_eligible() -> None:
+    from app.kernel import InvocationRequest
+    from app.kernel.engine import _build_persisted_memory_messages
+
+    request = InvocationRequest(
+        model=SimpleNamespace(),
+        messages=[{"role": "user", "content": "Quote the old error label."}],
+        agent_name="Agent",
+        role_description="Quotes text",
+        memory_messages=[{"role": "user", "content": "Quote the old error label."}],
+    )
+    authored = "[LLM Error] is a quoted historical UI label, not this result's machine status."
+
+    persisted = _build_persisted_memory_messages(request, authored)
+
+    assert persisted[-1] == {"role": "assistant", "content": authored}
 
 
 def test_permissions_context_exposes_plan_mode_plan_file_as_writable_root() -> None:
@@ -244,6 +311,17 @@ async def test_kernel_continues_streaming_output_after_output_cap() -> None:
         )
     )
 
+    prepared_requests: list[dict] = []
+    committed_results: list[dict] = []
+
+    async def prepare_request(**payload):
+        prepared_requests.append(payload)
+        return f"provider-request-{int(payload.get('continuation_index') or 0)}"
+
+    async def commit_result(**payload):
+        committed_results.append(payload)
+        return {"result_id": str(uuid4()), "provider_request_id": payload["provider_request_id"]}
+
     result = await kernel.handle(
         InvocationRequest(
             model=model,
@@ -252,6 +330,8 @@ async def test_kernel_continues_streaming_output_after_output_cap() -> None:
             role_description="Writes reports",
             agent_id=uuid4(),
             user_id=uuid4(),
+            model_request_prepare=prepare_request,
+            model_response_commit=commit_result,
         )
     )
 
@@ -263,6 +343,22 @@ async def test_kernel_continues_streaming_output_after_output_cap() -> None:
     continuation_messages = fake_client.calls[1]["messages"]
     assert any(message.role == "assistant" and message.content == "part one " for message in continuation_messages)
     assert "Continue the previous answer" in continuation_messages[-1].content
+    assert [payload["continuation_index"] for payload in prepared_requests] == [0, 1]
+    assert [payload["provider_request_id"] for payload in committed_results] == [
+        "provider-request-1",
+        "provider-request-0",
+    ]
+    assert committed_results[0]["logical_round_complete"] is False
+    assert committed_results[1]["logical_round_complete"] is True
+    assert committed_results[1]["response"]["content"] == "part one part two"
+    assert [entry["continuation_index"] for entry in committed_results[1]["response"]["provider_call_ledger"]] == [
+        0,
+        1,
+    ]
+    assert prepared_requests[0]["wire_request"]["max_tokens"] == 2048
+    assert prepared_requests[1]["wire_request"]["max_tokens"] == 131072
+    assert result.model_result_receipt is not None
+    assert result.model_result_receipt["provider_request_id"] == "provider-request-0"
 
 
 @pytest.mark.asyncio
@@ -528,6 +624,217 @@ async def test_kernel_drains_mid_run_user_messages_between_tool_rounds() -> None
         message.role == "user" and message.content == "Actually focus on the security boundary."
         for message in second_round_messages
     )
+
+
+@pytest.mark.asyncio
+async def test_kernel_binds_round_inputs_and_commits_exact_provider_request_receipt() -> None:
+    from app.kernel import AgentKernel, InvocationRequest, KernelDependencies, RuntimeConfig
+
+    model = SimpleNamespace(provider="openai", model="gpt-4.1", api_key="key", base_url=None)
+    fake_client = _FakeClient(
+        [
+            SimpleNamespace(
+                content="done",
+                tool_calls=[],
+                reasoning_content=None,
+                usage={"total_tokens": 7},
+            )
+        ]
+    )
+    lifecycle: list[tuple[str, object]] = []
+
+    async def bind_round_inputs(round_index: int):
+        lifecycle.append(("bind", round_index))
+        return [
+            {
+                "role": "user",
+                "content": "Use the newly supplied production evidence.",
+                "session_input_id": "input-1",
+            }
+        ]
+
+    async def prepare_model_request(**payload):
+        lifecycle.append(("prepare", payload))
+        return "provider-request:round-1"
+
+    async def commit_model_response(**payload):
+        lifecycle.append(("commit", payload))
+
+    kernel = AgentKernel(
+        KernelDependencies(
+            resolve_runtime_config=lambda *_args, **_kwargs: RuntimeConfig(
+                tenant_id=uuid4(),
+                max_tool_rounds=1,
+                quota_message=None,
+            ),
+            resolve_current_user_name=lambda *_args, **_kwargs: "Rocky",
+            build_system_prompt=lambda *_args, **_kwargs: "PROMPT",
+            resolve_memory_context=lambda *_args, **_kwargs: "",
+            get_tools=lambda *_args, **_kwargs: [],
+            maybe_compress_messages=lambda messages, **_kwargs: messages,
+            create_client=lambda _model: fake_client,
+            execute_tool=lambda *_args, **_kwargs: "",
+            persist_memory=lambda **_kwargs: None,
+            record_token_usage=lambda *_args, **_kwargs: None,
+            get_max_tokens=lambda _provider, _model, override=None: override or 2048,
+            extract_usage_tokens=lambda usage: usage.get("total_tokens"),
+            estimate_tokens_from_chars=lambda chars: chars // 4,
+        )
+    )
+
+    result = await kernel.handle(
+        InvocationRequest(
+            model=model,
+            messages=[{"role": "user", "content": "Inspect the project"}],
+            agent_name="Engineer",
+            role_description="Investigates repositories",
+            agent_id=uuid4(),
+            user_id=uuid4(),
+            round_input_bind=bind_round_inputs,
+            model_request_prepare=prepare_model_request,
+            model_response_commit=commit_model_response,
+        )
+    )
+
+    assert result.content == "done"
+    assert [item[0] for item in lifecycle] == ["bind", "prepare", "commit"]
+    sent_messages = fake_client.calls[0]["messages"]
+    assert any(
+        message.role == "user" and message.content == "Use the newly supplied production evidence."
+        for message in sent_messages
+    )
+    prepare_payload = lifecycle[1][1]
+    assert prepare_payload["round_index"] == 1
+    assert prepare_payload["messages"] == sent_messages
+    assert prepare_payload["provider"] == "openai"
+    assert prepare_payload["model"] == "gpt-4.1"
+    assert prepare_payload["provider_idempotency_supported"] is False
+    assert prepare_payload["provider_idempotency_key_applied"] is False
+    commit_payload = lifecycle[2][1]
+    assert commit_payload["round_index"] == 1
+    assert commit_payload["provider_request_id"] == "provider-request:round-1"
+
+
+@pytest.mark.asyncio
+async def test_kernel_never_retries_an_ambiguous_provider_send_on_a_fallback_model() -> None:
+    from app.kernel import AgentKernel, InvocationRequest, KernelDependencies, RuntimeConfig
+    from app.kernel.contracts import ProviderRequestNeedsReconciliation
+    from app.services.llm_utils import LLMError
+
+    primary_model = SimpleNamespace(provider="openai", model="gpt-4.1", api_key="key", base_url=None)
+    fallback_model = SimpleNamespace(provider="anthropic", model="claude-sonnet", api_key="key", base_url=None)
+    primary_client = _FakeClient([LLMError("Connection failed after retries: request timed out")])
+    fallback_client = _FakeClient(
+        [
+            SimpleNamespace(
+                content="must not be sent",
+                tool_calls=[],
+                reasoning_content=None,
+                usage={"total_tokens": 1},
+            )
+        ]
+    )
+    failed_requests: list[dict] = []
+
+    kernel = AgentKernel(
+        KernelDependencies(
+            resolve_runtime_config=lambda *_args, **_kwargs: RuntimeConfig(
+                tenant_id=uuid4(),
+                max_tool_rounds=1,
+                quota_message=None,
+            ),
+            resolve_current_user_name=lambda *_args, **_kwargs: "Rocky",
+            build_system_prompt=lambda *_args, **_kwargs: "PROMPT",
+            resolve_memory_context=lambda *_args, **_kwargs: "",
+            get_tools=lambda *_args, **_kwargs: [],
+            maybe_compress_messages=lambda messages, **_kwargs: messages,
+            create_client=lambda model: primary_client if model is primary_model else fallback_client,
+            execute_tool=lambda *_args, **_kwargs: "",
+            persist_memory=lambda **_kwargs: None,
+            record_token_usage=lambda *_args, **_kwargs: None,
+            get_max_tokens=lambda _provider, _model, override=None: override or 2048,
+            extract_usage_tokens=lambda usage: usage.get("total_tokens") if usage else None,
+            estimate_tokens_from_chars=lambda chars: chars // 4,
+        )
+    )
+
+    with pytest.raises(ProviderRequestNeedsReconciliation):
+        await kernel.handle(
+            InvocationRequest(
+                model=primary_model,
+                fallback_model=fallback_model,
+                messages=[{"role": "user", "content": "Inspect the project"}],
+                agent_name="Engineer",
+                role_description="Investigates repositories",
+                agent_id=uuid4(),
+                user_id=uuid4(),
+                model_request_prepare=lambda **_payload: "provider-request:round-1",
+                model_request_fail=lambda **payload: failed_requests.append(payload),
+            )
+        )
+
+    assert len(primary_client.calls) == 1
+    assert fallback_client.calls == []
+    assert failed_requests == [
+        {
+            "round_index": 1,
+            "provider_request_id": "provider-request:round-1",
+            "error_class": "timeout",
+            "delivery_state": "unknown",
+            "retry_safe": False,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_provider_error_text_cannot_authorize_replay_without_typed_rejection() -> None:
+    from app.kernel import AgentKernel, InvocationRequest, KernelDependencies, RuntimeConfig
+    from app.kernel.contracts import ProviderRequestNeedsReconciliation
+    from app.services.llm_utils import LLMError
+
+    primary_model = SimpleNamespace(provider="openai", model="gpt-4.1", api_key="key", base_url=None)
+    fallback_model = SimpleNamespace(provider="anthropic", model="claude-sonnet", api_key="key", base_url=None)
+    primary_client = _FakeClient([LLMError("HTTP 400: benign text says prompt too long and retry me")])
+    fallback_client = _FakeClient(
+        [SimpleNamespace(content="must not run", tool_calls=[], reasoning_content=None, usage={})]
+    )
+    failures: list[dict] = []
+    kernel = AgentKernel(
+        KernelDependencies(
+            resolve_runtime_config=lambda *_a, **_k: RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=1),
+            resolve_current_user_name=lambda *_a, **_k: "Rocky",
+            build_system_prompt=lambda *_a, **_k: "PROMPT",
+            resolve_memory_context=lambda *_a, **_k: "",
+            get_tools=lambda *_a, **_k: [],
+            maybe_compress_messages=lambda messages, **_k: messages,
+            create_client=lambda model: primary_client if model is primary_model else fallback_client,
+            execute_tool=lambda *_a, **_k: "",
+            persist_memory=lambda **_k: None,
+            record_token_usage=lambda *_a, **_k: None,
+            get_max_tokens=lambda *_a, **_k: 2048,
+            extract_usage_tokens=lambda usage: None,
+            estimate_tokens_from_chars=lambda chars: chars // 4,
+        )
+    )
+
+    with pytest.raises(ProviderRequestNeedsReconciliation):
+        await kernel.handle(
+            InvocationRequest(
+                model=primary_model,
+                fallback_model=fallback_model,
+                messages=[{"role": "user", "content": "hello"}],
+                agent_name="Agent",
+                role_description="test",
+                agent_id=uuid4(),
+                user_id=uuid4(),
+                model_request_prepare=lambda **_payload: "provider-request:text-only",
+                model_request_fail=lambda **payload: failures.append(payload),
+            )
+        )
+
+    assert fallback_client.calls == []
+    assert failures[0]["delivery_state"] == "unknown"
+    assert failures[0]["retry_safe"] is False
 
 
 def test_mid_run_drain_prefers_structured_llm_content_over_display_text() -> None:
@@ -876,9 +1183,7 @@ def test_recovery_snapshot_materialization_failure_is_typed_and_hides_internal_r
     assert recovery_result.manifest_ref not in rendered
 
 
-def test_post_compaction_recovery_snapshot_failure_is_typed_and_hides_internal_refs(
-    tmp_path, monkeypatch
-) -> None:
+def test_post_compaction_recovery_snapshot_failure_is_typed_and_hides_internal_refs(tmp_path, monkeypatch) -> None:
     from app.kernel.engine import _build_restoration_context
     from app.runtime.session import SessionContext
 
@@ -1437,7 +1742,15 @@ async def test_execute_tool_with_hooks_tracks_structured_code_execution_artifact
         agent_id=uuid4(),
     )
 
-    async def fake_execute_tool(_tool_name, _tool_args, _request, _emit_event):
+    async def fake_execute_tool(
+        _tool_name,
+        _tool_args,
+        _request,
+        _emit_event,
+        *,
+        trace_metadata_sink=None,
+    ):
+        _record_governed_tool_success(trace_metadata_sink)
         return ToolContentEnvelope(
             text="Workbook created",
             artifacts=(
@@ -1603,7 +1916,15 @@ async def test_hook_emitter_consumes_post_tool_output_rewrite(monkeypatch):
         memory_session_id="s-rewrite",
     )
 
-    async def fake_execute_tool(_tool_name, _tool_args, _request, _emit_event):
+    async def fake_execute_tool(
+        _tool_name,
+        _tool_args,
+        _request,
+        _emit_event,
+        *,
+        trace_metadata_sink=None,
+    ):
+        _record_governed_tool_success(trace_metadata_sink)
         return "raw secret output"
 
     async def emit_event(_event):
@@ -1651,7 +1972,15 @@ async def test_post_tool_hook_and_recovery_tracking_receive_full_semantic_eviden
         memory_session_id="s-full-hook",
     )
 
-    async def fake_execute_tool(_tool_name, _tool_args, _request, _emit_event):
+    async def fake_execute_tool(
+        _tool_name,
+        _tool_args,
+        _request,
+        _emit_event,
+        *,
+        trace_metadata_sink=None,
+    ):
+        _record_governed_tool_success(trace_metadata_sink)
         return raw_result
 
     async def emit_event(_event):
@@ -1749,8 +2078,16 @@ async def test_execute_tool_with_hooks_records_lifecycle_records_in_tool_span():
         memory_session_id="session-1",
     )
 
-    async def fake_execute_tool(_tool_name, tool_args, _request, _emit_event):
+    async def fake_execute_tool(
+        _tool_name,
+        tool_args,
+        _request,
+        _emit_event,
+        *,
+        trace_metadata_sink=None,
+    ):
         assert tool_args == {"query": "github trending"}
+        _record_governed_tool_success(trace_metadata_sink)
         return "search result"
 
     async def emit_event(_event):
@@ -1829,7 +2166,16 @@ async def test_execute_tool_with_hooks_executes_pending_skill_fork_handoff(monke
     )
     calls: list[dict[str, object]] = []
 
-    async def fake_execute_tool(_tool_name, _tool_args, _request, _emit_event, *, tool_call_id=None):
+    async def fake_execute_tool(
+        _tool_name,
+        _tool_args,
+        _request,
+        _emit_event,
+        *,
+        tool_call_id=None,
+        trace_metadata_sink=None,
+    ):
+        _record_governed_tool_success(trace_metadata_sink)
         calls.append({"tool_name": _tool_name, "args": dict(_tool_args), "tool_call_id": tool_call_id})
         if _tool_name == "load_skill":
             return "Loaded Research"
@@ -1911,7 +2257,16 @@ async def test_load_skill_frontmatter_fork_executes_in_same_tool_call(tmp_path: 
     )
     calls: list[dict[str, object]] = []
 
-    async def fake_execute_tool(_tool_name, _tool_args, _request, _emit_event, *, tool_call_id=None):
+    async def fake_execute_tool(
+        _tool_name,
+        _tool_args,
+        _request,
+        _emit_event,
+        *,
+        tool_call_id=None,
+        trace_metadata_sink=None,
+    ):
+        _record_governed_tool_success(trace_metadata_sink)
         calls.append({"tool_name": _tool_name, "args": dict(_tool_args), "tool_call_id": tool_call_id})
         if _tool_name == "load_skill":
             return "Loaded Research"
@@ -1987,7 +2342,16 @@ async def test_recovered_pending_tool_frame_replays_read_only_tool_through_gover
     recovered_tail = "RECOVERED_RESULT_DECISIVE_TAIL"
     recovered_result = "r" * 1400 + recovered_tail
 
-    async def fake_execute_tool(_tool_name, _tool_args, _request, _emit_event, *, tool_call_id=None):
+    async def fake_execute_tool(
+        _tool_name,
+        _tool_args,
+        _request,
+        _emit_event,
+        *,
+        tool_call_id=None,
+        trace_metadata_sink=None,
+    ):
+        _record_governed_tool_success(trace_metadata_sink)
         calls.append({"tool_name": _tool_name, "args": dict(_tool_args), "tool_call_id": tool_call_id})
         return recovered_result
 
@@ -2286,6 +2650,7 @@ async def test_execute_tool_with_hooks_writes_trace_metadata_sink_to_span(monkey
     ):
         assert tool_call_id == "call-send"
         assert isinstance(trace_metadata_sink, dict)
+        _record_governed_tool_success(trace_metadata_sink)
         trace_metadata_sink["evidence_refs"] = ["truth://policy/email-confirmation"]
         trace_metadata_sink["truth_evidence"] = [{"evidence_id": "truth://policy/email-confirmation"}]
         return "sent"
@@ -2346,6 +2711,7 @@ async def test_execute_tool_with_hooks_records_tool_result_ledger(monkeypatch):
     spans: list[dict] = []
 
     async def fake_execute_tool(_tool_name, _tool_args, _request, _emit_event, *, trace_metadata_sink=None):
+        _record_governed_tool_success(trace_metadata_sink)
         trace_metadata_sink["evidence_refs"] = ["truth://search/result"]
         return "result text"
 

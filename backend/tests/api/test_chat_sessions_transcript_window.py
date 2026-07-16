@@ -130,6 +130,41 @@ async def test_transcript_before_sequence_pages_older_history_ascending(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_transcript_schema_v2_returns_canonical_envelopes_without_thread_item_downcast(monkeypatch):
+    api, agent, session, user = _setup(monkeypatch)
+    rows = [_event(session.id, 6)]
+    db = _DB(session, rows)
+
+    monkeypatch.setattr(
+        "app.services.session_event_contract.serialize_session_event",
+        lambda event, **_kwargs: {
+            "schema": "hive.session_event",
+            "schema_version": 2,
+            "event_id": str(event.id),
+            "sequence": event.sequence,
+        },
+    )
+
+    payload = await api.get_session_transcript(
+        agent_id=agent.id,
+        session_id=session.id,
+        after_sequence=5,
+        schema_version=2,
+        current_user=user,
+        db=db,
+    )
+
+    assert payload == [
+        {
+            "schema": "hive.session_event",
+            "schema_version": 2,
+            "event_id": str(rows[0].id),
+            "sequence": 6,
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_transcript_default_limit_tightened_to_200(monkeypatch):
     import inspect
 

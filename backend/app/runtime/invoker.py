@@ -32,7 +32,15 @@ from app.kernel import (
     RuntimeConfig,
     ToolExpansionResult,
 )
-from app.kernel.contracts import ContextDependencyUnavailable, MidRunMessageDrain, TerminalReason
+from app.kernel.contracts import (
+    ContextDependencyUnavailable,
+    MidRunMessageDrain,
+    ModelRequestFail,
+    ModelRequestPrepare,
+    ModelResponseCommit,
+    RoundInputBind,
+    TerminalReason,
+)
 from app.models.agent import Agent
 from app.models.feature_flag import FeatureFlag
 from app.models.user import User
@@ -156,6 +164,11 @@ class AgentInvocationRequest:
     standalone_system_prompt: str = ""
     tool_executor: ToolExecutor | None = None
     mid_run_message_drain: MidRunMessageDrain | None = None
+    round_input_bind: RoundInputBind | None = None
+    model_request_prepare: ModelRequestPrepare | None = None
+    model_response_commit: ModelResponseCommit | None = None
+    model_request_fail: ModelRequestFail | None = None
+    initial_round_index: int = 0
     cancel_event: asyncio.Event | None = None
     initial_tools: list[dict] | None = None
     core_tools_only: bool = True
@@ -861,6 +874,7 @@ async def _consume_memory_context_status(
         or f"memory:{request.agent_id}:{request.memory_session_id or 'runtime'}"
     )
     await persist_invocation_span(
+        db=None,
         tenant_id=tenant_id,
         trace_id=trace_id,
         span_id=f"memory-{result.code[:40]}-{uuid.uuid4().hex[:8]}",
@@ -1093,6 +1107,7 @@ async def _execute_tool_with_request(
     *,
     tool_call_id: str | None = None,
     trace_metadata_sink: dict[str, Any] | None = None,
+    pre_effect_callback: Callable[[dict[str, Any]], Any] | None = None,
 ) -> str | ToolContentEnvelope:
     memory_status = _session_metadata(request.session_context).get("memory_context_status")
     if isinstance(memory_status, dict) and memory_status.get("external_effects_available") is False:
@@ -1162,6 +1177,22 @@ async def _execute_tool_with_request(
             executor_kwargs["tool_call_id"] = tool_call_id
         if trace_metadata_sink is not None and (accepts_kwargs or "trace_metadata_sink" in executor_params):
             executor_kwargs["trace_metadata_sink"] = trace_metadata_sink
+        if pre_effect_callback is not None and (accepts_kwargs or "pre_effect_callback" in executor_params):
+            executor_kwargs["pre_effect_callback"] = pre_effect_callback
+        elif pre_effect_callback is not None:
+            # A custom executor is itself the final execution boundary when it
+            # does not expose an internal governed pre-effect hook. Persist the
+            # fence immediately before handing it control, never before the
+            # request-level authority checks above.
+            await _maybe_await(
+                pre_effect_callback(
+                    {
+                        "tool_call_id": tool_call_id,
+                        "tool_name": tool_name,
+                        "arguments": dict(args),
+                    }
+                )
+            )
         if accepts_kwargs or "emit_runtime_hooks" in executor_params:
             executor_kwargs["emit_runtime_hooks"] = False
         for key, value in frame_kwargs.items():
@@ -1195,6 +1226,8 @@ async def _execute_tool_with_request(
         execute_kwargs["tool_call_id"] = tool_call_id
     if trace_metadata_sink is not None and "trace_metadata_sink" in inspect.signature(execute_tool).parameters:
         execute_kwargs["trace_metadata_sink"] = trace_metadata_sink
+    if pre_effect_callback is not None and "pre_effect_callback" in inspect.signature(execute_tool).parameters:
+        execute_kwargs["pre_effect_callback"] = pre_effect_callback
     execute_params = inspect.signature(execute_tool).parameters
     frame_kwargs = _tool_frame_kwargs_from_session_context(
         request.session_context,
@@ -1271,6 +1304,7 @@ def get_agent_kernel(request: AgentInvocationRequest | None = None) -> AgentKern
             metadata = _session_metadata(request.session_context)
             await emit_hook(
                 HookEvent.INSTRUCTIONS_LOADED,
+                evidence_mode="independent",
                 agent_id=request.agent_id,
                 session_id=request.memory_session_id
                 or (request.session_context.session_id if request.session_context else None),
@@ -1372,6 +1406,7 @@ def get_agent_kernel(request: AgentInvocationRequest | None = None) -> AgentKern
         *,
         tool_call_id: str | None = None,
         trace_metadata_sink: dict[str, Any] | None = None,
+        pre_effect_callback: Callable[[dict[str, Any]], Any] | None = None,
     ) -> str | ToolContentEnvelope:
         from app.services.runtime_budget_failover import (
             runtime_budget_blocks_amplification,
@@ -1389,6 +1424,7 @@ def get_agent_kernel(request: AgentInvocationRequest | None = None) -> AgentKern
             emit_event,
             tool_call_id=tool_call_id,
             trace_metadata_sink=trace_metadata_sink,
+            pre_effect_callback=pre_effect_callback,
         )  # type: ignore[arg-type]
 
     return AgentKernel(

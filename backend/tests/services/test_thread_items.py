@@ -173,6 +173,9 @@ def test_user_thread_projection_never_echoes_raw_reasoning_or_unknown_runtime_co
 
     assert raw_internal_content not in str(item)
     assert item["content"] == item["user_summary"]
+    if item_type == "reasoning":
+        assert item["user_summary"] == ""
+        assert "Agent 正在整理思路" not in str(item)
 
 
 @pytest.mark.parametrize(
@@ -250,3 +253,49 @@ async def test_live_web_chat_broadcast_carries_same_thread_item_contract(monkeyp
     assert sent[0]["item_data"]["arguments"] == {}
     assert "arguments" not in sent[0]
     assert "risk_class" not in sent[0]
+
+
+@pytest.mark.asyncio
+async def test_canonical_session_broadcast_preserves_committed_envelope_bytes(monkeypatch) -> None:
+    from app.services import web_chat_runtime
+
+    sent: list[dict] = []
+
+    async def capture(_agent_id, _session_id, payload):
+        sent.append(payload)
+
+    monkeypatch.setattr(web_chat_runtime.web_chat_broker, "send_session_message", capture)
+    envelope = {
+        "schema": "hive.session_event",
+        "schema_version": 2,
+        "event_id": "canonical-1",
+        "sequence": 9,
+        "tenant_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+        "scope": {
+            "level": "round",
+            "session_id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+            "thread_id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+            "turn_id": "turn-1",
+            "run_id": "dddddddd-dddd-dddd-dddd-dddddddddddd",
+            "round_id": "round-1",
+        },
+        "item_id": "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee",
+        "item_kind": "assistant_text",
+        "kind": "assistant_text.delta",
+        "lifecycle": "delta",
+        "payload_schema": "hive.session.payload.assistant_text.delta.v2",
+        "actor": {"type": "assistant"},
+        "visibility": {"audience": "direct_user"},
+        "payload": {"phase": "unknown", "content": "literal bytes"},
+        "content_hash": "f" * 64,
+        "occurred_at": "2026-07-16T00:00:00Z",
+        "persisted_at": "2026-07-16T00:00:00Z",
+    }
+
+    await web_chat_runtime.broadcast_web_chat_event(
+        uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+        uuid.UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+        envelope,
+    )
+
+    assert sent == [envelope]

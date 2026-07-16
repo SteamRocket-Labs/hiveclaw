@@ -14,6 +14,13 @@ class _Result:
     def all(self):
         return self._rows
 
+    def scalar_one_or_none(self):
+        if not self._rows:
+            return None
+        if len(self._rows) != 1:
+            raise AssertionError(f"Expected one scalar row, got {len(self._rows)}")
+        return self._rows[0]
+
 
 class _QueuedDB:
     def __init__(self, *results):
@@ -22,6 +29,19 @@ class _QueuedDB:
         self.commits = 0
 
     async def execute(self, _stmt):
+        if "session_writer_epochs" in str(_stmt):
+            return _Result(
+                [
+                    SimpleNamespace(
+                        state="legacy_open",
+                        new_run_generation=1,
+                        allowed_existing_generations_json=[1, 2],
+                        enforcement_mode="observe",
+                        version=1,
+                        release_id=None,
+                    )
+                ]
+            )
         if not self._results:
             raise AssertionError("Unexpected execute call")
         return _Result(self._results.pop(0))

@@ -7,7 +7,7 @@ from dataclasses import asdict
 from datetime import datetime, timezone as tz
 from typing import Any, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import or_, select, func
@@ -26,42 +26,30 @@ from app.models.user import User
 from app.runtime.ccplus_contracts import (
     DEFAULT_CCPLUS_PERMISSION_MODE,
     DEFAULT_CCPLUS_WRITABLE_ROOTS,
-    PendingToolFrameV1,
-    PermissionCheckpointV1,
-    build_permission_profile,
     normalize_permission_mode,
     tenant_permission_default_from_value as _tenant_permission_default_from_value,
 )
-from app.runtime.hooks import HookEvent, emit_hook
 from app.services.chat_artifact_delivery import artifact_part_from_model
-from app.services.chat_message_parts import build_session_native_event, serialize_chat_message, split_inline_tools
+from app.services.chat_message_parts import serialize_chat_message, split_inline_tools
 from app.services.chat_transcript import append_session_event
 from app.services.web_chat_runtime import (
     ActiveWebChatRunExists,
-    _persist_tool_call,
     broadcast_web_chat_event,
-    cancel_web_chat_run,
     get_active_web_chat_run,
-    start_channel_chat_run_from_saved_turn,
     start_web_chat_run,
-    steer_active_web_chat_turn,
 )
 from app.services.web_chat_broker import web_chat_broker
 from app.services.conversation_branch_service import create_conversation_branch
 from app.services.session_index import read_session_index
 from app.services.session_feedback import read_activation_feedback_sidecar, record_session_feedback
 from app.services.session_control_plane import build_session_json_export, build_session_workbench
+from app.services.session_live_input import IdempotencyConflict, submit_live_cancel_input, submit_live_human_input
 
 router = APIRouter(prefix="/agents", tags=["chat-sessions"])
 logger = logging.getLogger(__name__)
 
 _LEGACY_HIDDEN_CHAT_SOURCES = ("trigger", "task", "heartbeat")
 _MINE_HIDDEN_CHAT_SOURCES = _LEGACY_HIDDEN_CHAT_SOURCES
-_SESSION_PERMISSION_RESOLUTION_EVENT_TYPES = {
-    "permission_resolved",
-    "session_permission_decision",
-    "session_permission_expired",
-}
 _ARTIFACT_AGENT_FIELD_PREFIXES = ("owner", "source", "download", "delivery")
 
 
@@ -194,11 +182,19 @@ def _session_permission_metadata(
     allowed_tools = [
         str(item) for item in (session_metadata.get("session_permission_allowed_tools") or []) if str(item).strip()
     ]
+    session_grants = [
+        dict(item) for item in (session_metadata.get("session_permission_grants") or []) if isinstance(item, dict)
+    ]
     writable_roots = list(DEFAULT_CCPLUS_WRITABLE_ROOTS)
     return {
         "permission_mode": mode,
         "writable_roots": writable_roots,
-        "permission_profile": {"mode": mode, "allowed_tools": allowed_tools, "writable_roots": writable_roots},
+        "permission_profile": {
+            "mode": mode,
+            "allowed_tools": allowed_tools,
+            "writable_roots": writable_roots,
+            "session_grants": session_grants,
+        },
     }
 
 
@@ -416,471 +412,6 @@ def _string_tuple(value: Any) -> tuple[str, ...]:
     return tuple(str(item) for item in value if str(item).strip())
 
 
-def _permission_request_from_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
-    request_payload = payload.get("permission_request")
-    if isinstance(request_payload, dict):
-        return request_payload
-
-    permission_payload = payload.get("permission")
-    if isinstance(permission_payload, dict):
-        nested_request = permission_payload.get("permission_request")
-        if isinstance(nested_request, dict):
-            return nested_request
-        if permission_payload.get("permission_request_id"):
-            return permission_payload
-
-    part_payload = payload.get("part")
-    if isinstance(part_payload, dict):
-        nested_request = _permission_request_from_payload(part_payload)
-        if nested_request is not None:
-            return nested_request
-
-    parts_payload = payload.get("parts")
-    if isinstance(parts_payload, list):
-        for part in parts_payload:
-            if isinstance(part, dict):
-                nested_request = _permission_request_from_payload(part)
-                if nested_request is not None:
-                    return nested_request
-
-    result_payload = _json_object(payload.get("result"))
-    if result_payload:
-        nested_request = _permission_request_from_payload(result_payload)
-        if nested_request is not None:
-            return nested_request
-
-    if payload.get("permission_request_id") and (
-        payload.get("tool_name") or isinstance(payload.get("arguments"), dict)
-    ):
-        return {
-            key: value
-            for key, value in payload.items()
-            if key
-            in {
-                "permission_request_id",
-                "session_id",
-                "runtime_task_id",
-                "turn_id",
-                "tool_call_id",
-                "tool_name",
-                "tool_display_name",
-                "arguments",
-                "capability",
-                "permission_mode",
-                "decision_reason",
-                "risk_class",
-                "confirmation_kind",
-                "allow_session_allowed",
-                "destructive",
-                "pending_tool_frame",
-                "created_at",
-                "expires_at",
-            }
-        }
-    return None
-
-
-def _permission_request_payload_from_event(event: ChatTranscriptEvent) -> tuple[dict[str, Any], dict[str, Any]] | None:
-    metadata = dict(getattr(event, "metadata_json", None) or {})
-    tool_payload = _json_object(getattr(event, "content", None))
-    request_payload = _permission_request_from_payload(metadata) or _permission_request_from_payload(tool_payload)
-    if not isinstance(request_payload, dict):
-        return None
-    if not tool_payload and metadata:
-        tool_payload = metadata
-    return request_payload, tool_payload if isinstance(tool_payload, dict) else {}
-
-
-def _event_payloads(event: ChatTranscriptEvent) -> tuple[dict[str, Any], dict[str, Any]]:
-    return dict(getattr(event, "metadata_json", None) or {}), _json_object(getattr(event, "content", None))
-
-
-def _event_type_from_payload(event: ChatTranscriptEvent, metadata: dict[str, Any], content: dict[str, Any]) -> str:
-    return str(
-        getattr(event, "event_type", None)
-        or metadata.get("event_type")
-        or metadata.get("runtime_event_type")
-        or content.get("event_type")
-        or content.get("type")
-        or ""
-    )
-
-
-def _permission_resolution_payload_from_event(event: ChatTranscriptEvent) -> dict[str, Any] | None:
-    metadata, content = _event_payloads(event)
-    event_type = _event_type_from_payload(event, metadata, content)
-    if event_type not in _SESSION_PERMISSION_RESOLUTION_EVENT_TYPES:
-        return None
-    request_payload = _permission_request_from_payload(metadata) or _permission_request_from_payload(content) or {}
-    permission_request_id = (
-        metadata.get("permission_request_id")
-        or content.get("permission_request_id")
-        or request_payload.get("permission_request_id")
-    )
-    if not permission_request_id:
-        return None
-    merged = {**content, **metadata}
-    merged["event_type"] = event_type
-    merged["permission_request_id"] = str(permission_request_id)
-    if request_payload:
-        merged["permission_request"] = request_payload
-    return merged
-
-
-def _parse_permission_datetime(value: Any) -> datetime | None:
-    if not value:
-        return None
-    if isinstance(value, datetime):
-        parsed = value
-    elif isinstance(value, str):
-        normalized = value.strip()
-        if not normalized:
-            return None
-        if normalized.endswith("Z"):
-            normalized = f"{normalized[:-1]}+00:00"
-        try:
-            parsed = datetime.fromisoformat(normalized)
-        except ValueError:
-            return None
-    else:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=tz.utc)
-    return parsed.astimezone(tz.utc)
-
-
-def _pending_tool_frame_is_expired(pending_frame: PendingToolFrameV1, *, now: datetime | None = None) -> bool:
-    expires_at = _parse_permission_datetime(pending_frame.expires_at)
-    if expires_at is None:
-        return False
-    current = now or datetime.now(tz.utc)
-    if current.tzinfo is None:
-        current = current.replace(tzinfo=tz.utc)
-    return expires_at <= current.astimezone(tz.utc)
-
-
-def _session_permission_expired_payload(
-    *,
-    permission_request_id: str,
-    request_payload: dict[str, Any],
-    pending_frame: PendingToolFrameV1,
-    source_event_id: str | None,
-) -> dict[str, Any]:
-    return {
-        "type": "permission_resolved",
-        "event_type": "session_permission_expired",
-        "permission_request_id": permission_request_id,
-        "permission_request": request_payload,
-        "permission_checkpoint": _permission_checkpoint_payload(
-            permission_request_id=permission_request_id,
-            decision="expired",
-            pending_frame=pending_frame,
-            resolver_user_id=None,
-            resolution_channel="system",
-        ),
-        "decision": "expired",
-        "status": "expired",
-        "tool_name": pending_frame.tool_name or request_payload.get("tool_name"),
-        "tool_call_id": pending_frame.tool_call_id,
-        "source_event_id": source_event_id,
-        "reason": "Permission request expired before resolution",
-        "message": "Permission request expired before resolution.",
-    }
-
-
-async def _append_session_permission_expired_event(
-    *,
-    db: AsyncSession,
-    event: ChatTranscriptEvent,
-    request_payload: dict[str, Any],
-    pending_frame: PendingToolFrameV1,
-) -> dict[str, Any]:
-    permission_request_id = str(request_payload.get("permission_request_id") or pending_frame.permission_request_id)
-    payload = _session_permission_expired_payload(
-        permission_request_id=permission_request_id,
-        request_payload=request_payload,
-        pending_frame=pending_frame,
-        source_event_id=str(getattr(event, "id", "")) if getattr(event, "id", None) else None,
-    )
-    await append_session_event(
-        db=db,
-        agent_id=getattr(event, "agent_id", None),
-        tenant_id=getattr(event, "tenant_id", None),
-        session_id=getattr(event, "session_id", None),
-        run_id=getattr(event, "run_id", None),
-        actor_type="system",
-        event_type="session_permission_expired",
-        role="system",
-        content=json.dumps(payload, ensure_ascii=False, sort_keys=True),
-        source="system",
-        metadata=payload,
-        materialize_chat_message=False,
-    )
-    return payload
-
-
-async def expire_stale_session_permission_requests(
-    *,
-    db: AsyncSession,
-    now: datetime | None = None,
-    limit: int = 500,
-) -> int:
-    """Best-effort startup/maintenance scanner for stale CCPlus permission frames."""
-    result = await db.execute(
-        select(ChatTranscriptEvent)
-        .where(
-            ChatTranscriptEvent.event_type.in_(
-                [
-                    "permission",
-                    "tool_result",
-                    "permission_resolved",
-                    "session_permission_decision",
-                    "session_permission_expired",
-                ]
-            )
-        )
-        .order_by(ChatTranscriptEvent.created_at.desc())
-        .limit(limit)
-    )
-    resolved_request_ids: set[str] = set()
-    expired_count = 0
-    for event in result.scalars().all():
-        resolution_payload = _permission_resolution_payload_from_event(event)
-        if resolution_payload is not None:
-            resolved_request_ids.add(str(resolution_payload["permission_request_id"]))
-            continue
-        parsed = _permission_request_payload_from_event(event)
-        if parsed is None:
-            continue
-        request_payload, tool_payload = parsed
-        permission_request_id = str(request_payload.get("permission_request_id") or "")
-        if not permission_request_id or permission_request_id in resolved_request_ids:
-            continue
-        pending_frame = _pending_tool_frame_from_payload(
-            request_payload,
-            tool_payload,
-            session_id=str(getattr(event, "session_id", "") or ""),
-        )
-        if not _pending_tool_frame_is_expired(pending_frame, now=now):
-            continue
-        await _append_session_permission_expired_event(
-            db=db,
-            event=event,
-            request_payload=request_payload,
-            pending_frame=pending_frame,
-        )
-        resolved_request_ids.add(permission_request_id)
-        expired_count += 1
-    if expired_count:
-        await db.commit()
-    return expired_count
-
-
-def _pending_tool_frame_from_payload(
-    request_payload: dict[str, Any],
-    tool_payload: dict[str, Any],
-    *,
-    session_id: str,
-) -> PendingToolFrameV1:
-    pending_payload = request_payload.get("pending_tool_frame")
-    if not isinstance(pending_payload, dict):
-        pending_payload = {}
-    arguments = pending_payload.get("arguments")
-    if not isinstance(arguments, dict):
-        arguments = request_payload.get("arguments") if isinstance(request_payload.get("arguments"), dict) else {}
-    profile_payload = pending_payload.get("permission_profile")
-    permission_request_id = str(
-        pending_payload.get("permission_request_id") or request_payload.get("permission_request_id") or ""
-    )
-    return PendingToolFrameV1(
-        permission_request_id=permission_request_id,
-        session_id=str(pending_payload.get("session_id") or request_payload.get("session_id") or session_id),
-        turn_id=str(pending_payload.get("turn_id")) if pending_payload.get("turn_id") else None,
-        runtime_task_id=str(
-            pending_payload.get("runtime_task_id")
-            or request_payload.get("runtime_task_id")
-            or tool_payload.get("runtime_task_id")
-            or ""
-        )
-        or None,
-        tool_call_id=str(
-            pending_payload.get("tool_call_id")
-            or request_payload.get("tool_call_id")
-            or tool_payload.get("tool_call_id")
-            or ""
-        ),
-        tool_name=str(pending_payload.get("tool_name") or request_payload.get("tool_name") or ""),
-        arguments=dict(arguments),
-        origin_channel=str(pending_payload.get("origin_channel")) if pending_payload.get("origin_channel") else None,
-        permission_profile=build_permission_profile(profile_payload if isinstance(profile_payload, dict) else None),
-        round_state=dict(pending_payload.get("round_state") or {})
-        if isinstance(pending_payload.get("round_state"), dict)
-        else {},
-        knowledge_refs=_string_tuple(pending_payload.get("knowledge_refs")),
-        hook_refs=_string_tuple(pending_payload.get("hook_refs")),
-        t0_refs=_string_tuple(pending_payload.get("t0_refs")),
-        created_at=str(pending_payload.get("created_at") or request_payload.get("created_at"))
-        if pending_payload.get("created_at") or request_payload.get("created_at")
-        else None,
-        expires_at=str(pending_payload.get("expires_at") or request_payload.get("expires_at"))
-        if pending_payload.get("expires_at") or request_payload.get("expires_at")
-        else None,
-        status=str(pending_payload.get("status") or "pending"),
-    )
-
-
-def _permission_checkpoint_payload(
-    *,
-    permission_request_id: str,
-    decision: str,
-    pending_frame: PendingToolFrameV1,
-    resolver_user_id: str | None,
-    resolution_channel: str,
-    continuation_runtime_task_id: str | None = None,
-    denial_tool_result_ref: str | None = None,
-) -> dict[str, Any]:
-    checkpoint = PermissionCheckpointV1(
-        permission_request_id=permission_request_id,
-        decision=decision,
-        pending_frame=pending_frame,
-        resolver_user_id=resolver_user_id,
-        resolved_at=datetime.now(tz.utc).isoformat(),
-        resolution_channel=resolution_channel,
-        continuation_runtime_task_id=continuation_runtime_task_id,
-        denial_tool_result_ref=denial_tool_result_ref,
-    )
-    return _json_ready(asdict(checkpoint))
-
-
-def _session_permission_exception_message(exc: Exception) -> str:
-    if isinstance(exc, HTTPException):
-        detail = exc.detail
-        if isinstance(detail, dict):
-            message = detail.get("message") or detail.get("detail")
-            return str(message) if message else json.dumps(detail, ensure_ascii=False, sort_keys=True)
-        return str(detail)
-    return str(exc) or exc.__class__.__name__
-
-
-def _session_permission_origin_channel(session: ChatSession, pending_frame: PendingToolFrameV1) -> str:
-    return str(pending_frame.origin_channel or getattr(session, "source_channel", None) or "web").strip() or "web"
-
-
-async def _start_session_permission_continuation_run(
-    *,
-    db: Any,
-    agent: Any,
-    user: User,
-    session: ChatSession,
-    content: str,
-    extra_metadata: dict[str, Any],
-    pending_frame: PendingToolFrameV1,
-) -> dict[str, Any]:
-    active_run = await get_active_web_chat_run(db=db, agent_id=agent.id, session_id=session.id)
-    if active_run:
-        return active_run
-
-    source_channel = _session_permission_origin_channel(session, pending_frame)
-    metadata = {
-        **extra_metadata,
-        "origin_channel": pending_frame.origin_channel or source_channel,
-        "channel": source_channel,
-        "delivery_target_json": getattr(session, "delivery_target_json", None),
-    }
-    if source_channel != "web":
-        return await start_channel_chat_run_from_saved_turn(
-            db=db,
-            agent=agent,
-            user=user,
-            session=session,
-            content=content,
-            source_channel=source_channel,
-            display_content="",
-            extra_metadata=metadata,
-        )
-    return await start_web_chat_run(
-        db=db,
-        agent=agent,
-        user=user,
-        session=session,
-        content=content,
-        display_content="",
-        append_user_message=False,
-        extra_metadata=metadata,
-    )
-
-
-async def _broadcast_session_permission_event(
-    *,
-    db: Any,
-    agent_id: uuid.UUID,
-    session_id: uuid.UUID,
-    session: ChatSession,
-    payload: dict[str, Any],
-    channel_text: str | None = None,
-) -> None:
-    await broadcast_web_chat_event(agent_id, session_id, payload)
-    source_channel = str(getattr(session, "source_channel", None) or "web").strip().lower() or "web"
-    target = getattr(session, "delivery_target_json", None)
-    delivery_text = channel_text
-    if (
-        str(payload.get("event_type") or payload.get("type") or "") == "tool_result"
-        and payload.get("result") is not None
-    ):
-        delivery_text = _session_permission_tool_result_channel_text(
-            str(payload.get("name") or payload.get("tool_name") or "unknown_tool"),
-            payload.get("result"),
-        )
-    if source_channel == "web" or not isinstance(target, dict) or not delivery_text:
-        return
-    try:
-        from app.services.channel_delivery_service import ChannelDeliveryService
-
-        await ChannelDeliveryService.send_text(
-            db=db,
-            agent_id=agent_id,
-            reply_target=target,
-            text=delivery_text,
-            delivery_mode="live",
-            extra_detail={
-                "source": "session_permission_event",
-                "event_type": str(payload.get("event_type") or payload.get("type") or ""),
-                "session_id": str(session_id),
-            },
-        )
-    except Exception as exc:
-        logger.warning(
-            "Session permission channel event delivery failed: agent_id=%s session_id=%s error=%s",
-            agent_id,
-            session_id,
-            exc,
-        )
-
-
-def _session_permission_tool_result_channel_text(tool_name: str, tool_result: Any) -> str:
-    """Render the IM live copy for an approved permission tool result.
-
-    Channel transport adapters own any physical message-size chunking. This
-    renderer must preserve the complete approved result instead of deciding
-    which semantic tail the recipient may see.
-    """
-    name = str(tool_name or "unknown_tool").strip() or "unknown_tool"
-    text = str(tool_result or "").strip()
-    if not text:
-        return f"Tool `{name}` completed after permission approval."
-    return f"Tool `{name}` completed after permission approval.\n\n{text}"
-
-
-def _permission_request_allows_session_scope(request_payload: dict[str, Any]) -> bool:
-    if request_payload.get("allow_session_allowed") is False:
-        return False
-    if request_payload.get("risk_class") == "destructive_delete":
-        return False
-    if request_payload.get("confirmation_kind") == "destructive_once":
-        return False
-    return True
-
-
 class CreateSessionIn(BaseModel):
     title: Optional[str] = None
 
@@ -902,6 +433,8 @@ class StartSessionRunIn(BaseModel):
     model_routing_locked: bool = False
     attachments: list[dict[str, Any]] = []
     parts: list[dict[str, Any]] = []
+    input_id: Optional[uuid.UUID] = None
+    idempotency_key: Optional[str] = Field(default=None, min_length=1, max_length=200)
 
 
 class CreateSessionRunIn(StartSessionRunIn):
@@ -940,6 +473,36 @@ class SteerSessionTurnIn(BaseModel):
     permission_mode: Literal["default", "auto", "bypassPermissions"] = DEFAULT_CCPLUS_PERMISSION_MODE.value
     attachments: list[dict[str, Any]] = []
     parts: list[dict[str, Any]] = []
+    input_id: Optional[uuid.UUID] = None
+    idempotency_key: Optional[str] = None
+    expected_run_id: Optional[uuid.UUID] = None
+    terminal_fallback: Literal["queue_next_turn", "reject"] = "queue_next_turn"
+
+
+class SessionHumanInputIn(BaseModel):
+    kind: Literal[
+        "start_turn",
+        "steer_current_turn",
+        "queue_next_turn",
+        "interrupt_and_replace",
+        "answer_request",
+        "fork_side_thread",
+    ]
+    input_id: uuid.UUID
+    idempotency_key: str = Field(min_length=1, max_length=200)
+    content_parts: list[dict[str, Any]]
+    expected_turn_id: Optional[str] = None
+    expected_run_id: Optional[uuid.UUID] = None
+    terminal_fallback: Optional[Literal["queue_next_turn", "reject"]] = None
+    request_item_id: Optional[uuid.UUID] = None
+    fork_after_sequence: Optional[int] = Field(default=None, ge=1)
+    plan_mode_requested: bool = False
+    permission_mode: Literal["default", "auto", "bypassPermissions"] | None = None
+    model_routing_locked: bool = False
+
+
+class ReviseSessionHumanInputIn(BaseModel):
+    content_parts: list[dict[str, Any]]
 
 
 class ResolveSessionPermissionIn(BaseModel):
@@ -1588,7 +1151,7 @@ async def update_session_permission_profile(
         .where(
             RuntimeTask.parent_agent_id == agent_id,
             RuntimeTask.parent_session_id == str(session_id),
-            RuntimeTask.status.in_(("pending", "running")),
+            RuntimeTask.status.in_(("pending", "running", "suspended", "resumable")),
         )
         .order_by(RuntimeTask.created_at.desc())
         .limit(1)
@@ -1725,26 +1288,32 @@ async def create_session_run(
         or await _resolve_tenant_permission_default(db, session.tenant_id)
     )
     try:
-        run = await start_web_chat_run(
+        receipt = await submit_live_human_input(
             db=db,
             agent=agent,
             user=current_user,
             session=session,
             content=body.content,
+            source="legacy_rest_create_session_run",
+            input_id=body.input_id,
+            idempotency_key=body.idempotency_key,
             display_content=body.display_content,
             file_name=body.file_name,
             plan_mode_requested=body.plan_mode_requested,
-            extra_metadata={
+            runtime_metadata={
                 **_session_permission_metadata(permission_mode, session),
                 "model_routing_locked": body.model_routing_locked,
             },
             attachments=body.attachments,
             parts=body.parts,
         )
-    except ActiveWebChatRunExists as exc:
-        return JSONResponse(
-            status_code=202, content={"session": _session_out(session, current_user).model_dump(), "run": exc.run}
-        )
+        run = dict(receipt.get("run") or {})
+    except IdempotencyConflict as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "idempotency_conflict", "command_id": str(exc.command_id), "receipt_ref": exc.receipt_ref},
+        ) from exc
 
     await db.refresh(session)
     return CreateSessionRunOut(session=_session_out(session, current_user, message_count=1), run=run)
@@ -1766,24 +1335,34 @@ async def start_session_run(
         current_user=current_user,
     )
     try:
-        return await start_web_chat_run(
+        receipt = await submit_live_human_input(
             db=db,
             agent=agent,
             user=current_user,
             session=session,
             content=body.content,
+            source="legacy_rest_start_session_run",
+            input_id=body.input_id,
+            idempotency_key=body.idempotency_key,
             display_content=body.display_content,
             file_name=body.file_name,
             plan_mode_requested=body.plan_mode_requested,
-            extra_metadata={
+            runtime_metadata={
                 **_session_permission_metadata(body.permission_mode, session),
                 "model_routing_locked": body.model_routing_locked,
             },
             attachments=body.attachments,
             parts=body.parts,
         )
-    except ActiveWebChatRunExists as exc:
-        return JSONResponse(status_code=202, content={"status": "queued", **exc.run})
+        if receipt.get("run"):
+            return receipt["run"]
+        return JSONResponse(status_code=202, content=receipt)
+    except IdempotencyConflict as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "idempotency_conflict", "command_id": str(exc.command_id), "receipt_ref": exc.receipt_ref},
+        ) from exc
 
 
 @router.post("/{agent_id}/sessions/{session_id}/branches", status_code=201, response_model=BranchSessionOut)
@@ -2075,34 +1654,270 @@ async def get_active_session_run(
     return await get_active_web_chat_run(db=db, agent_id=agent_id, session_id=session_id)
 
 
-@router.post("/{agent_id}/sessions/{session_id}/turns/steer")
-async def steer_session_turn(
+def _session_input_runtime_content(content_parts: list[dict[str, Any]]) -> str:
+    if len(content_parts) == 1 and isinstance(content_parts[0], dict):
+        for key in ("text", "content"):
+            value = content_parts[0].get(key)
+            if isinstance(value, str):
+                return value
+    return json.dumps(content_parts, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _if_match_revision(value: str | None) -> int:
+    clean = str(value or "").strip()
+    if clean.startswith("W/"):
+        clean = clean[2:].strip()
+    clean = clean.strip('"')
+    try:
+        revision = int(clean)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=428, detail="If-Match input revision is required") from exc
+    if revision <= 0:
+        raise HTTPException(status_code=428, detail="If-Match input revision must be positive")
+    return revision
+
+
+def _validate_session_input_shape(body: SessionHumanInputIn) -> None:
+    if not body.content_parts:
+        raise HTTPException(status_code=422, detail="content_parts must not be empty")
+    if body.kind in {"steer_current_turn", "interrupt_and_replace"}:
+        if body.expected_turn_id is None or body.expected_run_id is None:
+            raise HTTPException(status_code=422, detail=f"{body.kind} requires expected_turn_id and expected_run_id")
+    if body.kind == "steer_current_turn" and body.terminal_fallback is None:
+        raise HTTPException(status_code=422, detail="steer_current_turn requires terminal_fallback")
+    if body.kind == "answer_request" and body.request_item_id is None:
+        raise HTTPException(status_code=422, detail="answer_request requires request_item_id")
+    if body.kind == "fork_side_thread" and body.fork_after_sequence is None:
+        raise HTTPException(status_code=422, detail="fork_side_thread requires fork_after_sequence")
+
+
+async def _submit_session_human_input(
+    *,
     agent_id: uuid.UUID,
     session_id: uuid.UUID,
-    body: SteerSessionTurnIn,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """Queue an additional user message into the currently active turn."""
+    body: SessionHumanInputIn,
+    current_user: User,
+    db: AsyncSession,
+) -> dict[str, Any]:
+    _validate_session_input_shape(body)
     session, agent, _authority_source = await _get_run_session_and_agent(
         db=db,
         agent_id=agent_id,
         session_id=session_id,
         current_user=current_user,
     )
-    return await steer_active_web_chat_turn(
+    try:
+        receipt = await submit_live_human_input(
+            db=db,
+            agent=agent,
+            user=current_user,
+            session=session,
+            content="",
+            parts=body.content_parts,
+            source="session_input_api",
+            input_id=body.input_id,
+            idempotency_key=body.idempotency_key,
+            requested_kind=body.kind,
+            expected_turn_id=body.expected_turn_id,
+            expected_run_id=body.expected_run_id,
+            terminal_fallback=body.terminal_fallback or "queue_next_turn",
+            request_item_id=body.request_item_id,
+            fork_after_sequence=body.fork_after_sequence,
+            plan_mode_requested=body.plan_mode_requested,
+            runtime_metadata={
+                **_session_permission_metadata(body.permission_mode, session),
+                "model_routing_locked": body.model_routing_locked,
+            },
+        )
+    except IdempotencyConflict as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "idempotency_conflict",
+                "command_id": str(exc.command_id),
+                "receipt_ref": exc.receipt_ref,
+            },
+        ) from exc
+    dispatch = dict(receipt.get("dispatch") or {})
+    return {
+        **receipt,
+        "replacement": dispatch if dispatch.get("kind") == "replacement" else None,
+        "fork": dispatch if dispatch.get("kind") == "fork" else None,
+    }
+
+
+@router.post("/{agent_id}/sessions/{session_id}/inputs")
+async def submit_session_human_input(
+    agent_id: uuid.UUID,
+    session_id: uuid.UUID,
+    body: SessionHumanInputIn,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Accept, Hook-admit and dispatch one explicit HumanInput intent."""
+
+    return await _submit_session_human_input(
+        agent_id=agent_id,
+        session_id=session_id,
+        body=body,
+        current_user=current_user,
         db=db,
-        agent=agent,
-        user=current_user,
-        session=session,
-        content=body.content,
-        display_content=body.display_content,
-        file_name=body.file_name,
-        expected_turn_id=body.expected_turn_id,
-        attachments=body.attachments,
-        parts=body.parts,
-        extra_metadata=_session_permission_metadata(body.permission_mode, session),
     )
+
+
+@router.patch("/{agent_id}/sessions/{session_id}/inputs/{input_id}")
+async def revise_session_human_input(
+    agent_id: uuid.UUID,
+    session_id: uuid.UUID,
+    input_id: uuid.UUID,
+    body: ReviseSessionHumanInputIn,
+    if_match: str | None = Header(default=None, alias="If-Match"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    from app.models.session_v2 import SessionTurnInput
+    from app.services.session_human_input import InputRevisionConflict, revise_unbound_human_input
+    from app.services.session_input_admission import run_user_prompt_admission
+    from app.services.session_input_dispatch import dispatch_admitted_input_fast_path
+    from app.services.session_v2_persistence import resolve_session_mutation_authority
+
+    await _get_run_session_and_agent(db=db, agent_id=agent_id, session_id=session_id, current_user=current_user)
+    authority = await resolve_session_mutation_authority(
+        db,
+        user=current_user,
+        agent_id=agent_id,
+        session_id=session_id,
+        action="mutate_session_input",
+    )
+    try:
+        receipt = await revise_unbound_human_input(
+            db,
+            authority=authority,
+            input_id=input_id,
+            expected_revision=_if_match_revision(if_match),
+            content_parts=body.content_parts,
+        )
+        await db.commit()
+        admission = await run_user_prompt_admission(
+            db,
+            authority=authority,
+            input_id=input_id,
+            worker_id=f"input-revision:{input_id}:{receipt.revision}",
+        )
+        dispatch = None
+        if admission.state == "admitted":
+            dispatch = await dispatch_admitted_input_fast_path(
+                db,
+                admission_id=admission.admission_id,
+                worker_id=f"input-revision-dispatch:{input_id}:{receipt.revision}",
+            )
+    except InputRevisionConflict as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "input_revision_conflict", "current_revision": exc.current_revision},
+        ) from exc
+    current = await db.get(SessionTurnInput, input_id)
+    if current is None:
+        raise RuntimeError("revised input disappeared")
+    return {
+        "schema": "hive.human_input_receipt",
+        "schema_version": 2,
+        **asdict(receipt),
+        "status": current.status,
+        "admission_state": admission.state,
+        "reason_code": admission.reason_code,
+        "dispatch_status": dispatch.state if dispatch is not None else "not_applicable",
+        "dispatch": dict(dispatch.receipt or {}) if dispatch is not None else {},
+    }
+
+
+@router.delete("/{agent_id}/sessions/{session_id}/inputs/{input_id}")
+async def cancel_session_human_input(
+    agent_id: uuid.UUID,
+    session_id: uuid.UUID,
+    input_id: uuid.UUID,
+    if_match: str | None = Header(default=None, alias="If-Match"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    from app.services.session_human_input import InputRevisionConflict, cancel_unbound_human_input
+    from app.services.session_v2_persistence import resolve_session_mutation_authority
+
+    await _get_run_session_and_agent(db=db, agent_id=agent_id, session_id=session_id, current_user=current_user)
+    authority = await resolve_session_mutation_authority(
+        db,
+        user=current_user,
+        agent_id=agent_id,
+        session_id=session_id,
+        action="mutate_session_input",
+    )
+    try:
+        receipt = await cancel_unbound_human_input(
+            db,
+            authority=authority,
+            input_id=input_id,
+            expected_revision=_if_match_revision(if_match),
+        )
+        await db.commit()
+    except InputRevisionConflict as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "input_revision_conflict", "current_revision": exc.current_revision},
+        ) from exc
+    return {"schema": "hive.human_input_receipt", "schema_version": 2, **asdict(receipt)}
+
+
+@router.post("/{agent_id}/sessions/{session_id}/turns/steer")
+async def steer_session_turn(
+    agent_id: uuid.UUID,
+    session_id: uuid.UUID,
+    body: SteerSessionTurnIn,
+    idempotency_key_header: str | None = Header(default=None, alias="Idempotency-Key"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Compatibility wrapper over the canonical Session V2 HumanInput API."""
+    await _get_run_session_and_agent(
+        db=db,
+        agent_id=agent_id,
+        session_id=session_id,
+        current_user=current_user,
+    )
+    active = await get_active_web_chat_run(db=db, agent_id=agent_id, session_id=session_id)
+    if active is None:
+        raise HTTPException(status_code=404, detail="No active turn to steer")
+    run_id = body.expected_run_id or uuid.UUID(str(active["run_id"]))
+    turn_id = body.expected_turn_id or str(active.get("turn_id") or f"turn-{run_id.hex}")
+    input_id = body.input_id or uuid.uuid4()
+    content_parts = list(body.parts or [])
+    if not content_parts:
+        content_parts = [{"type": "text", "text": body.content}]
+    content_parts.extend({"type": "attachment", "attachment": item} for item in body.attachments)
+    receipt = await _submit_session_human_input(
+        agent_id=agent_id,
+        session_id=session_id,
+        body=SessionHumanInputIn(
+            kind="steer_current_turn",
+            input_id=input_id,
+            idempotency_key=body.idempotency_key or idempotency_key_header or f"steer:{input_id}",
+            content_parts=content_parts,
+            expected_turn_id=turn_id,
+            expected_run_id=run_id,
+            terminal_fallback=body.terminal_fallback,
+            permission_mode=body.permission_mode,
+        ),
+        current_user=current_user,
+        db=db,
+    )
+    return {
+        **receipt,
+        "queued": receipt,
+        "queued_user_message": receipt,
+        "steer_strategy": "session_v2_durable_mailbox",
+    }
 
 
 @router.post("/{agent_id}/sessions/{session_id}/permissions/{permission_request_id}/resolve")
@@ -2114,342 +1929,57 @@ async def resolve_session_permission(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Resolve a CCPlus session-local permission request inside the same chat session."""
-    session, agent, _authority_source = await _get_run_session_and_agent(
+    """Apply a typed permission response and resume the original RuntimeTask."""
+    await _get_run_session_and_agent(
         db=db,
         agent_id=agent_id,
         session_id=session_id,
         current_user=current_user,
     )
-    result = await db.execute(
-        select(ChatTranscriptEvent)
-        .where(
-            ChatTranscriptEvent.agent_id == agent_id,
-            ChatTranscriptEvent.session_id == session_id,
-        )
-        .order_by(ChatTranscriptEvent.created_at.desc())
-        .limit(300)
-    )
-    pending_event: ChatTranscriptEvent | None = None
-    request_payload: dict[str, Any] | None = None
-    tool_payload: dict[str, Any] | None = None
-    for event in result.scalars().all():
-        resolved_payload = _permission_resolution_payload_from_event(event)
-        if resolved_payload is not None and str(resolved_payload.get("permission_request_id")) == str(
-            permission_request_id
-        ):
-            raise HTTPException(status_code=409, detail="Session permission request already resolved")
-        parsed = _permission_request_payload_from_event(event)
-        if parsed is None:
-            continue
-        candidate_request, candidate_tool = parsed
-        if str(candidate_request.get("permission_request_id")) == str(permission_request_id):
-            pending_event = event
-            request_payload = candidate_request
-            tool_payload = candidate_tool
-            break
-    if pending_event is None or request_payload is None or tool_payload is None:
-        raise HTTPException(status_code=404, detail="Pending session permission request not found")
+    from app.services.session_permission_runtime import resolve_session_tool_permission
+    from app.services.session_v2_persistence import resolve_session_mutation_authority
 
-    pending_frame = _pending_tool_frame_from_payload(request_payload, tool_payload, session_id=str(session_id))
-    if _pending_tool_frame_is_expired(pending_frame):
-        expired_payload = _session_permission_expired_payload(
-            permission_request_id=str(permission_request_id),
-            request_payload=request_payload,
-            pending_frame=pending_frame,
-            source_event_id=str(pending_event.id),
-        )
-        await append_session_event(
-            db=db,
-            agent_id=agent_id,
-            tenant_id=getattr(agent, "tenant_id", None),
-            session_id=session_id,
-            run_id=pending_event.run_id,
-            actor_type="system",
-            event_type="session_permission_expired",
-            role="system",
-            user_id=current_user.id,
-            content=json.dumps(expired_payload, ensure_ascii=False, sort_keys=True),
-            source="web",
-            metadata=expired_payload,
-            materialize_chat_message=False,
-        )
-        await db.commit()
-        await _broadcast_session_permission_event(
-            db=db,
-            agent_id=agent_id,
-            session_id=session_id,
-            session=session,
-            payload=expired_payload,
-            channel_text="The pending permission request expired. Please send the request again if you still want to proceed.",
-        )
-        raise HTTPException(status_code=410, detail="Session permission request expired")
-    tool_call_id = pending_frame.tool_call_id or str(tool_payload.get("tool_call_id") or "")
-    permission_checkpoint = _permission_checkpoint_payload(
-        permission_request_id=str(permission_request_id),
-        decision=body.action,
-        pending_frame=pending_frame,
-        resolver_user_id=str(current_user.id),
-        resolution_channel=pending_frame.origin_channel or getattr(session, "source_channel", None) or "web",
-    )
-    resolution_metadata = {
-        "permission_request_id": str(permission_request_id),
-        "permission_request": request_payload,
-        "permission_checkpoint": permission_checkpoint,
-        "decision": body.action,
-        "feedback": body.feedback,
-        "tool_name": request_payload.get("tool_name"),
-        "tool_call_id": tool_call_id,
-        "source_event_id": str(pending_event.id),
-    }
-    tool_name = str(request_payload.get("tool_name") or "")
-    arguments = request_payload.get("arguments") if isinstance(request_payload.get("arguments"), dict) else {}
-
-    if body.action == "allow_session" and not _permission_request_allows_session_scope(request_payload):
-        raise HTTPException(status_code=400, detail="Destructive permissions can only be allowed once")
-
-    if body.action == "allow_session":
-        session_metadata = dict(session.transcript_metadata_json or {})
-        allowed_tools = [str(item) for item in (session_metadata.get("session_permission_allowed_tools") or [])]
-        if tool_name and tool_name not in allowed_tools:
-            allowed_tools.append(tool_name)
-        session_metadata["session_permission_allowed_tools"] = allowed_tools
-        session.transcript_metadata_json = session_metadata
-        await db.flush()
-
-    await append_session_event(
-        db=db,
+    authority = await resolve_session_mutation_authority(
+        db,
+        user=current_user,
         agent_id=agent_id,
-        tenant_id=getattr(agent, "tenant_id", None),
         session_id=session_id,
-        run_id=pending_event.run_id,
-        actor_type="user",
-        event_type="session_permission_decision",
-        user_id=current_user.id,
-        content=json.dumps(resolution_metadata, ensure_ascii=False, sort_keys=True),
-        source="web",
-        metadata=resolution_metadata,
-        materialize_chat_message=False,
+        action="respond_tool_permission",
     )
-    await db.commit()
-
-    if body.action == "deny":
-        await emit_hook(
-            HookEvent.PERMISSION_DENIED,
-            agent_id=agent_id,
-            session_id=str(session_id),
-            tool_name=tool_name,
-            tool_args=arguments,
-            source="session_permission_resolve",
-            metadata=resolution_metadata,
-        )
-        try:
-            run_payload = await _start_session_permission_continuation_run(
-                db=db,
-                agent=agent,
-                user=current_user,
-                session=session,
-                content=(
-                    f"The user denied the session permission request for tool {tool_name or 'unknown_tool'}. "
-                    "Do not retry the denied tool in this continuation. Explain the denial and offer a safe "
-                    "alternative path that stays within the current permissions."
-                ),
-                pending_frame=pending_frame,
-                extra_metadata={
-                    **_session_permission_metadata(
-                        str(request_payload.get("permission_mode") or DEFAULT_CCPLUS_PERMISSION_MODE.value), session
-                    ),
-                    "source": "session_permission_denied_resume",
-                    "latest_user_prompt_overrides_history": True,
-                    "resumed_from_permission_request_id": str(permission_request_id),
-                    "denied_tool_name": tool_name,
-                    "denied_tool_call_id": tool_call_id,
-                    "resumed_turn_id": pending_frame.turn_id,
-                    "resumed_runtime_task_id": pending_frame.runtime_task_id,
-                    "round_state": dict(pending_frame.round_state or {}),
-                    "t0_refs": list(pending_frame.t0_refs or ()),
-                },
-            )
-        except ActiveWebChatRunExists as exc:
-            run_payload = {"status": "queued", **exc.run}
-        await _broadcast_session_permission_event(
-            db=db,
-            agent_id=agent_id,
-            session_id=session_id,
-            session=session,
-            payload={
-                "type": "permission_resolved",
-                "event_type": "permission_resolved",
-                **resolution_metadata,
-                "status": "denied",
-                "run": run_payload,
-            },
-            channel_text=f"Permission request for tool `{tool_name or 'unknown_tool'}` was denied.",
-        )
-        return {"status": "denied", "permission_request_id": str(permission_request_id), "run": run_payload}
-
-    if not tool_name:
-        raise HTTPException(status_code=400, detail="Permission request is missing tool_name")
-
-    from app.services.agent_tools import execute_session_permission_tool
-    from app.services.approval_ticket import hash_tool_input
-
     try:
-        permission_profile = {
-            "mode": "bypassPermissions",
-            "allowed_tools": [tool_name],
-            "writable_roots": list(DEFAULT_CCPLUS_WRITABLE_ROOTS),
-        }
-        if body.action == "allow_once":
-            permission_profile.update(
-                {
-                    "session_grant_scope": "once",
-                    "session_grant_tool_name": tool_name,
-                    "session_grant_input_hash": hash_tool_input(tool_name, arguments),
-                }
-            )
-        tool_result = await execute_session_permission_tool(
-            tool_name,
-            arguments,
-            agent_id=agent_id,
-            user_id=current_user.id,
-            session_id=str(session_id),
-            permission_profile=permission_profile,
-            tool_call_id=tool_call_id or None,
-            turn_id=pending_frame.turn_id,
-            runtime_task_id=pending_frame.runtime_task_id,
-            origin_channel=pending_frame.origin_channel,
-            round_state=dict(pending_frame.round_state or {}),
-            t0_refs=tuple(pending_frame.t0_refs or ()),
+        receipt = await resolve_session_tool_permission(
+            db,
+            authority=authority,
+            permission_request_id=permission_request_id,
+            decision=body.action,
         )
-        persisted_tool_event = await _persist_tool_call(
-            agent_id=agent_id,
-            user_id=current_user.id,
-            session_id=str(session_id),
-            data={
-                "name": tool_name,
-                "args": arguments,
-                "status": "done",
-                "result": str(tool_result),
-                "tool_call_id": tool_call_id,
-                "run_id": str(pending_event.run_id) if pending_event.run_id else None,
-                "runtime_task_id": str(pending_event.run_id) if pending_event.run_id else None,
-                "visibility": "expanded",
+    except IdempotencyConflict as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "idempotency_conflict",
+                "command_id": str(exc.command_id),
+                "receipt_ref": exc.receipt_ref,
             },
-        )
-        await _broadcast_session_permission_event(
-            db=db,
-            agent_id=agent_id,
-            session_id=session_id,
-            session=session,
-            payload={
-                "type": "tool_call",
-                "event_type": "tool_result",
-                "role": "tool_call",
-                "name": tool_name,
-                "args": arguments,
-                "status": "done",
-                "result": str(tool_result),
-                "tool_call_id": tool_call_id,
-                "transcript_event_id": str(persisted_tool_event.event_id) if persisted_tool_event else None,
-                "sequence": persisted_tool_event.sequence if persisted_tool_event else None,
-                "metadata": persisted_tool_event.transcript_event.metadata_json if persisted_tool_event else {},
-            },
-            channel_text=_session_permission_tool_result_channel_text(tool_name, tool_result),
-        )
+        ) from exc
+    except ValueError as exc:
+        await db.rollback()
+        code = str(exc)
+        status_code = 404 if code == "pending_session_permission_not_found" else 409
+        if code == "destructive_permission_must_be_allow_once":
+            status_code = 400
+        if code == "tool_permission_request_expired":
+            status_code = 410
+        raise HTTPException(status_code=status_code, detail={"code": code}) from exc
+    from app.services.runtime_task_worker import notify_runtime_task_worker
 
-        try:
-            run_payload = await _start_session_permission_continuation_run(
-                db=db,
-                agent=agent,
-                user=current_user,
-                session=session,
-                content="Continue after the approved session permission tool result.",
-                pending_frame=pending_frame,
-                extra_metadata={
-                    **_session_permission_metadata(
-                        str(request_payload.get("permission_mode") or DEFAULT_CCPLUS_PERMISSION_MODE.value), session
-                    ),
-                    "source": "session_permission_resume",
-                    "resumed_from_permission_request_id": str(permission_request_id),
-                    "resumed_turn_id": pending_frame.turn_id,
-                    "resumed_runtime_task_id": pending_frame.runtime_task_id,
-                    "round_state": dict(pending_frame.round_state or {}),
-                    "t0_refs": list(pending_frame.t0_refs or ()),
-                },
-            )
-        except ActiveWebChatRunExists as exc:
-            run_payload = {"status": "queued", **exc.run}
-    except Exception as exc:
-        error_message = _session_permission_exception_message(exc)
-        error_type = exc.__class__.__name__
-        failure_payload = {
-            "type": "permission_resolved",
-            "event_type": "permission_resolved",
-            **resolution_metadata,
-            "status": "failed",
-            "error": error_message,
-            "error_type": error_type,
-            "tool_name": tool_name,
-            "tool_call_id": tool_call_id,
-            "capability": request_payload.get("capability"),
-            "reason": error_message,
-            "message": f"Permission request could not be completed: {error_message}",
-            "retryable": True,
-        }
-        logger.exception(
-            "Session permission resolve failed: agent_id=%s session_id=%s permission_request_id=%s tool=%s",
-            agent_id,
-            session_id,
-            permission_request_id,
-            tool_name,
+    if receipt.run_status == "resumable":
+        await notify_runtime_task_worker(
+            reason="session_permission_resolved",
+            runtime_task_id=receipt.run_id,
         )
-        event_payload = build_session_native_event(failure_payload)
-        await append_session_event(
-            db=db,
-            agent_id=agent_id,
-            tenant_id=getattr(agent, "tenant_id", None),
-            session_id=session_id,
-            run_id=pending_event.run_id,
-            actor_type="system",
-            event_type="permission_resolved",
-            role="system",
-            user_id=current_user.id,
-            content=json.dumps(failure_payload, ensure_ascii=False, sort_keys=True),
-            source="web",
-            parts=[event_payload["part"]] if isinstance(event_payload.get("part"), dict) else None,
-            metadata=failure_payload,
-        )
-        await db.commit()
-        await _broadcast_session_permission_event(
-            db=db,
-            agent_id=agent_id,
-            session_id=session_id,
-            session=session,
-            payload=failure_payload,
-            channel_text=failure_payload["message"],
-        )
-        return {
-            "status": "failed",
-            "permission_request_id": str(permission_request_id),
-            "error": error_message,
-            "error_type": error_type,
-        }
-
-    await _broadcast_session_permission_event(
-        db=db,
-        agent_id=agent_id,
-        session_id=session_id,
-        session=session,
-        payload={
-            "type": "permission_resolved",
-            "event_type": "permission_resolved",
-            **resolution_metadata,
-            "status": "allowed",
-            "run": run_payload,
-        },
-    )
-    return {"status": "allowed", "permission_request_id": str(permission_request_id), "run": run_payload}
+    return receipt.to_dict()
 
 
 @router.get("/{agent_id}/threads/{session_id}/read")
@@ -2489,6 +2019,7 @@ async def get_session_transcript(
     before_sequence: int | None = None,
     direction: str = "forward",
     limit: int = 200,
+    schema_version: int | None = None,
     operator_view: bool = Query(default=False),
     operator_reason: str | None = Query(default=None),
     current_user: User = Depends(get_current_user),
@@ -2547,9 +2078,53 @@ async def get_session_transcript(
         )
         rows = list(events_result.scalars().all())
     audience = "operator" if authority_source == "manager_override" else "user"
-    payload = [_serialize_transcript_event(event, audience=audience) for event in rows]
+    if schema_version not in {None, 2}:
+        raise HTTPException(status_code=400, detail="schema_version must be 2 when specified")
+    if schema_version == 2:
+        from app.services.session_event_contract import serialize_session_event
+
+        payload = [serialize_session_event(event, audience=audience) for event in rows]
+    else:
+        payload = [_serialize_transcript_event(event, audience=audience) for event in rows]
     await db.commit()
     return payload
+
+
+async def _cancel_session_run_v2(
+    *,
+    agent_id: uuid.UUID,
+    session_id: uuid.UUID,
+    run_id: uuid.UUID,
+    idempotency_key: str | None,
+    current_user: User,
+    db: AsyncSession,
+) -> dict[str, Any]:
+    session, agent, _authority_source = await _get_run_session_and_agent(
+        db=db,
+        agent_id=agent_id,
+        session_id=session_id,
+        current_user=current_user,
+    )
+    try:
+        return await submit_live_cancel_input(
+            db=db,
+            agent=agent,
+            user=current_user,
+            session=session,
+            run_id=run_id,
+            source="rest_cancel",
+            idempotency_key=idempotency_key,
+        )
+    except IdempotencyConflict as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "idempotency_conflict",
+                "command_id": str(exc.command_id),
+                "receipt_ref": exc.receipt_ref,
+            },
+        ) from exc
 
 
 @router.post("/{agent_id}/sessions/{session_id}/runs/{run_id}/cancel")
@@ -2557,22 +2132,19 @@ async def cancel_session_run(
     agent_id: uuid.UUID,
     session_id: uuid.UUID,
     run_id: uuid.UUID,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Explicitly stop an active durable web chat run."""
-    await _get_run_session_and_agent(
-        db=db,
-        agent_id=agent_id,
-        session_id=session_id,
-        current_user=current_user,
-    )
-    return await cancel_web_chat_run(
-        db=db,
+    """Accept a typed cancel request; terminal state waits for worker fence settlement."""
+
+    return await _cancel_session_run_v2(
         agent_id=agent_id,
         session_id=session_id,
         run_id=run_id,
-        user_id=current_user.id,
+        idempotency_key=idempotency_key,
+        current_user=current_user,
+        db=db,
     )
 
 
@@ -2581,22 +2153,19 @@ async def interrupt_thread_turn(
     agent_id: uuid.UUID,
     session_id: uuid.UUID,
     run_id: uuid.UUID,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Thread-style alias for interrupting an active durable turn."""
-    await _get_run_session_and_agent(
-        db=db,
-        agent_id=agent_id,
-        session_id=session_id,
-        current_user=current_user,
-    )
-    return await cancel_web_chat_run(
-        db=db,
+    """Thread-style alias over the same typed ControlInput command."""
+
+    return await _cancel_session_run_v2(
         agent_id=agent_id,
         session_id=session_id,
         run_id=run_id,
-        user_id=current_user.id,
+        idempotency_key=idempotency_key,
+        current_user=current_user,
+        db=db,
     )
 
 
@@ -2628,6 +2197,7 @@ async def delete_session(
 
         remove_hook = await emit_hook(
             HookEvent.WORKTREE_REMOVE,
+            evidence_mode="independent",
             agent_id=agent_id,
             session_id=str(session_id),
             source="chat_session_delete",

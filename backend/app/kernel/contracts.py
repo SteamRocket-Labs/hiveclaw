@@ -17,7 +17,20 @@ ToolCallback = Callable[[dict], Awaitable[None] | None]
 EventCallback = Callable[[dict], Awaitable[None] | None]
 ToolExecutor = Callable[..., Awaitable[str] | str]
 MidRunMessageDrain = Callable[[], Awaitable[list[dict]] | list[dict]]
+RoundInputBind = Callable[[int], Awaitable[list[dict]] | list[dict]]
+ModelRequestPrepare = Callable[..., Awaitable[str] | str]
+ModelResponseCommit = Callable[..., Awaitable[dict[str, Any] | None] | dict[str, Any] | None]
+ModelRequestFail = Callable[..., Awaitable[None] | None]
 MessagePart = dict[str, Any]
+
+
+class ProviderRequestNeedsReconciliation(RuntimeError):
+    """A provider request may have been accepted and cannot be replayed safely."""
+
+    def __init__(self, *, provider_request_id: str, error_class: str) -> None:
+        super().__init__("provider_request_delivery_is_ambiguous")
+        self.provider_request_id = provider_request_id
+        self.error_class = error_class
 
 
 class TerminalReason(str, Enum):
@@ -93,6 +106,14 @@ class InvocationRequest:
     skill_catalog: str = ""
     tool_executor: ToolExecutor | None = None
     mid_run_message_drain: MidRunMessageDrain | None = None
+    round_input_bind: RoundInputBind | None = None
+    model_request_prepare: ModelRequestPrepare | None = None
+    model_response_commit: ModelResponseCommit | None = None
+    model_request_fail: ModelRequestFail | None = None
+    # Number of already committed logical rounds reconstructed into messages
+    # before this invocation. Recovery continues at the next round; it never
+    # re-sends an already sealed Provider request.
+    initial_round_index: int = 0
     cancel_event: asyncio.Event | None = None
     initial_tools: list[dict] | None = None
     core_tools_only: bool = True
@@ -119,6 +140,9 @@ class InvocationResult:
     parts: list[MessagePart] = field(default_factory=list)
     reasoning_signature: str | None = None
     terminal_reason: TerminalReason = TerminalReason.TURN_STOP
+    # Durable Session V2 ModelResultSeal selected as the terminal candidate.
+    # This is an exact mechanical receipt, never platform-authored semantics.
+    model_result_receipt: dict[str, Any] | None = None
 
 
 @dataclass(slots=True)

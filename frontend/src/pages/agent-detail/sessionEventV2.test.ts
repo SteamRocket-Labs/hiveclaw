@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   createSessionEventStore,
+  reduceSessionCompatibilityEvent,
   reduceSessionEvent,
   type SessionEventV2,
 } from '../session-workbench/sessionEventStore';
@@ -169,5 +170,35 @@ describe('SessionEventStore', () => {
       event_id: 'legacy-1', sequence: 1, compatibility_status: 'needs_reconciliation',
     };
     expect(() => reduceSessionEvent(createSessionEventStore(), compatibility as unknown as SessionEventV2)).toThrow('unsupported_session_event_schema');
+  });
+
+  it('quarantines a mixed-generation compatibility envelope while advancing only the contiguous delivery cursor', () => {
+    const store = reduceSessionCompatibilityEvent(createSessionEventStore(4), {
+      schema: 'hive.session_event_compatibility',
+      schema_version: 1,
+      compatibility_status: 'needs_reconciliation',
+      event_id: 'legacy-5',
+      sequence: 5,
+      reason: 'unmapped_legacy_kind',
+    });
+
+    expect(store.highestContiguousSequence).toBe(5);
+    expect(store.items).toEqual({});
+    expect(store.projection.phase).toBe('stale');
+    expect(store.compatibilityQuarantine).toEqual([
+      { eventId: 'legacy-5', sequence: 5, reason: 'unmapped_legacy_kind' },
+    ]);
+  });
+
+  it('switches to explicit full hydration when the out-of-order buffer reaches its resource ceiling', () => {
+    let store = createSessionEventStore(0, 2);
+    store = reduceSessionEvent(store, event(3));
+    store = reduceSessionEvent(store, event(4));
+    store = reduceSessionEvent(store, event(5));
+
+    expect(store.projection.phase).toBe('stale');
+    expect(store.recoveryRequired).toBe('full_hydration');
+    expect(store.bufferedEvents).toEqual({});
+    expect(store.highestContiguousSequence).toBe(0);
   });
 });

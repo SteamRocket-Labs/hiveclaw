@@ -983,8 +983,10 @@ async def _execute_team_command(
                 payload_json={"closed_at": now.isoformat(), "source": "command"},
             )
         )
+        await db.flush()
         await emit_hook(
             HookEvent.TEAM_CLOSED,
+            evidence_db=db,
             agent_id=agent.id,
             session_id=str(team.parent_session_id),
             source="agent_team",

@@ -50,12 +50,24 @@ function makeHarness(data: Record<string, unknown>, isActiveRuntime = true) {
 }
 
 describe('session socket event projector', () => {
-  it('projects durable transcript truth and refreshes the active session after a terminal event', () => {
+  it('projects canonical SessionEventV2 without terminal array hydration', () => {
     const harness = makeHarness({
-      id: 'event-1',
+      schema: 'hive.session_event',
+      schema_version: 2,
+      event_id: 'event-1',
       sequence: 7,
-      event_type: 'run_completed',
-      metadata_json: { run_id: 'run-1' },
+      item_id: 'run-1',
+      item_kind: 'run',
+      lifecycle: 'completed',
+      kind: 'run.completed',
+      payload_schema: 'hive.session.payload.run.completed.v2',
+      tenant_id: 'tenant-1',
+      scope: { level: 'run', session_id: 'session-1', thread_id: 'session-1', turn_id: 'turn-1', run_id: 'run-1' },
+      actor: { type: 'runtime' },
+      visibility: { audience: 'direct_user' },
+      payload: {},
+      occurred_at: '2026-07-16T00:00:00Z',
+      persisted_at: '2026-07-16T00:00:00Z',
     });
 
     projectSessionSocketEvent(harness.context, harness.dependencies);
@@ -63,11 +75,10 @@ describe('session socket event projector', () => {
     expect(harness.dependencies.applyTranscriptToSession).toHaveBeenCalledWith(
       'agent-1',
       'session-1',
-      expect.objectContaining({ id: 'event-1', event_type: 'run_completed' }),
+      expect.objectContaining({ event_id: 'event-1', kind: 'run.completed' }),
       true,
     );
-    expect(harness.dependencies.selectSession).toHaveBeenCalledWith({ id: 'session-1' });
-    expect(harness.dependencies.fetchMySessions).toHaveBeenCalledWith(true, 'agent-1');
+    expect(harness.dependencies.selectSession).not.toHaveBeenCalled();
   });
 
   it('closes a background session socket only after a terminal stream event is durably projected', () => {
@@ -83,15 +94,16 @@ describe('session socket event projector', () => {
     expect(harness.dependencies.selectSession).not.toHaveBeenCalled();
   });
 
-  it('turns an expired authorization error into a visible terminal message and disables reconnect', () => {
-    const harness = makeHarness({ type: 'error', message: 'Session token expired' });
+  it('keeps typed platform errors out of assistant-authored messages', () => {
+    const harness = makeHarness({
+      type: 'session.error',
+      error: { code: 'auth_failed', retryable: false, message_key: 'session.auth_failed' },
+    });
 
     projectSessionSocketEvent(harness.context, harness.dependencies);
 
-    expect(harness.failAuthentication).toHaveBeenCalledWith('agent-1:session-1', true);
-    expect(harness.dependencies.setAgentExpired).toHaveBeenCalledWith(true);
-    expect(harness.messages()).toEqual([
-      expect.objectContaining({ role: 'assistant', content: '⚠️ Session token expired' }),
-    ]);
+    expect(harness.failAuthentication).toHaveBeenCalledWith('agent-1:session-1', false);
+    expect(harness.messages()).toEqual([]);
+    expect(harness.dependencies.setTransportNotice).toHaveBeenCalledWith('session.auth_failed');
   });
 });

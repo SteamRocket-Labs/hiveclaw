@@ -21,6 +21,7 @@ from app.runtime.ccplus_contracts import HookLifecycleV1
 logger = logging.getLogger(__name__)
 
 HookFailureMode = Literal["required", "advisory"]
+HookEvidenceMode = Literal["independent", "caller_transaction"]
 
 
 class HookEvent(StrEnum):
@@ -469,6 +470,10 @@ class HookContext:
     # Session lifecycle fields (RESPONSE_COMPLETE, SESSION_IDLE, SESSION_CLOSE)
     messages: list[dict] | None = None
     source: str | None = None
+    # Internal-only persistence boundary. It is deliberately excluded from
+    # Hook wire payloads and repr/equality so plugins can never observe or
+    # retain a live SQLAlchemy session.
+    _evidence_db: Any = field(default=None, repr=False, compare=False)
 
 
 @dataclass(slots=True)
@@ -971,7 +976,7 @@ def _append_hook_lifecycle_record(
     if exc is not None:
         result_payload = {"error_class": type(exc).__name__, "error": str(exc)}
     lifecycle = HookLifecycleV1(
-        hook_run_id=str(uuid.uuid4()),
+        hook_run_id=str(metadata.get("hook_run_id") or uuid.uuid4()),
         event=ctx.event.value,
         source=source,
         trust_level=_binding_trust_level(binding),
@@ -1261,6 +1266,7 @@ class HookRegistry:
                 metadata=dict(ctx.metadata or {}),
                 messages=ctx.messages,
                 source=ctx.source,
+                _evidence_db=ctx._evidence_db,
             )
         )
 
@@ -1604,9 +1610,28 @@ class HookRegistry:
 hook_registry = HookRegistry()
 
 
-async def emit_hook(event: HookEvent, **kwargs: Any) -> HookResult | None:
-    """Emit one hook boundary and persist its operator evidence as a span."""
-    ctx = HookContext(event=event, **kwargs)
+async def emit_hook(
+    event: HookEvent,
+    *,
+    evidence_db: Any = None,
+    evidence_mode: HookEvidenceMode | None = None,
+    **kwargs: Any,
+) -> HookResult | None:
+    """Emit one hook and persist evidence without guessing transaction scope.
+
+    Post-effect callers pass ``evidence_db`` so Hook evidence participates in
+    the transaction that owns the referenced rows. Pre-effect and runtime-only
+    callers use ``evidence_mode=\"independent\"``. ``None`` remains a
+    compatibility default for external/test callers, while an architecture
+    test requires every production call site to make the choice explicit.
+    """
+    if evidence_mode not in {None, "independent", "caller_transaction"}:
+        raise ValueError(f"unsupported Hook evidence mode: {evidence_mode!r}")
+    if evidence_db is not None and evidence_mode == "independent":
+        raise ValueError("evidence_db cannot be combined with evidence_mode='independent'")
+    if evidence_db is None and evidence_mode == "caller_transaction":
+        raise ValueError("evidence_mode='caller_transaction' requires evidence_db")
+    ctx = HookContext(event=event, _evidence_db=evidence_db, **kwargs)
     started = time.perf_counter()
     result = await hook_registry.emit(ctx)
     try:
@@ -1641,7 +1666,7 @@ async def _persist_hook_boundary_evidence(
         or metadata.get("request_id")
         or f"hook:{ctx.event.value}:{uuid.uuid4().hex}"
     )
-    hook_run_id = uuid.uuid4().hex
+    hook_run_id = str(metadata.get("hook_run_id") or uuid.uuid4().hex)
     decision = _hook_decision(ctx.event, result)
     safe_input = {
         "event": ctx.event.value,
@@ -1654,9 +1679,19 @@ async def _persist_hook_boundary_evidence(
         "metadata_keys": sorted(str(key) for key in metadata if key != "hook_lifecycle_records"),
     }
     safe_result = asdict(result) if result is not None else {}
+    recoverable_hook_result = (
+        {
+            "hook_run_id": hook_run_id,
+            "hook_result_payload": _json_ready(safe_result),
+            "hook_result_hash": _stable_hash(safe_result),
+        }
+        if ctx.event == HookEvent.USER_PROMPT_SUBMIT
+        else {}
+    )
     from app.services.invocation_trace import persist_invocation_span
 
     await persist_invocation_span(
+        db=ctx._evidence_db,
         tenant_id=tenant_id,
         trace_id=trace_id,
         span_id=f"hook-{ctx.event.value}-{hook_run_id[:12]}",
@@ -1681,8 +1716,10 @@ async def _persist_hook_boundary_evidence(
             else default_hook_failure_mode(ctx.event),
             "input_hash": _stable_hash(safe_input),
             "result_hash": _stable_hash(safe_result) if safe_result else None,
+            **recoverable_hook_result,
             "hook_lifecycle_records": list(metadata.get("hook_lifecycle_records") or []),
             "source": ctx.source,
+            "evidence_transaction": "caller_transaction" if ctx._evidence_db is not None else "independent",
         },
         error=result.reason if result and result.failure else None,
     )

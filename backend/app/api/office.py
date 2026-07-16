@@ -188,6 +188,7 @@ async def _render_with_evidence(
             exc.error_code,
         )
         await persist_invocation_span(
+            db=None,
             tenant_id=tenant_id,
             trace_id=trace_id,
             span_id=span_id,
@@ -242,6 +243,7 @@ async def _render_with_evidence(
         result.output_bytes,
     )
     await persist_invocation_span(
+        db=None,
         tenant_id=tenant_id,
         trace_id=trace_id,
         span_id=span_id,

@@ -172,13 +172,14 @@ async def _default_http_hook_executor(
     return {"status_code": response.status_code, "text": text, "body": text}
 
 
-async def _record_governed_hook_span(fact: dict[str, Any]) -> None:
+async def _record_governed_hook_span(fact: dict[str, Any], *, evidence_db: Any = None) -> None:
     tenant_id = fact.get("tenant_id")
     if not tenant_id:
         return
     trace_id = str(fact.get("trace_id") or current_invocation_id() or new_invocation_id())
     hook_key = str(fact.get("hook_key") or "hook")
     await persist_invocation_span(
+        db=evidence_db,
         tenant_id=tenant_id,
         trace_id=trace_id,
         span_id=f"hook-{uuid.uuid4().hex[:12]}",

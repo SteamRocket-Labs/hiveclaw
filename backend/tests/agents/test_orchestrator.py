@@ -1866,6 +1866,7 @@ async def test_delegate_async_persists_runtime_task_lifecycle(monkeypatch):
     assert receipt["result_refs"] == [f"runtime-task://{task_id}", "session://sess-runtime"]
     assert spans == [
         {
+            "db": None,
             "tenant_id": None,
             "trace_id": "trace-runtime",
             "span_id": f"remote-action:{task_id}",

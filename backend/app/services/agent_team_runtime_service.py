@@ -425,10 +425,12 @@ async def create_agent_team_runtime_result(
             payload_json={"name": team.name, "member_count": len(created_members), "source": source},
         )
     )
+    await db.flush()
 
     if emit_created_hook:
         await emit_hook(
             HookEvent.TEAM_CREATED,
+            evidence_db=db,
             agent_id=agent.id,
             session_id=str(parent_session_id),
             source="agent_team",
@@ -439,8 +441,6 @@ async def create_agent_team_runtime_result(
                 "runtime_path": "agent_team_runtime_service",
             },
         )
-
-    await db.flush()
     if append_parent_events:
         for member in created_members:
             await _append_team_member_parent_event(
@@ -904,6 +904,7 @@ async def project_agent_team_close_completion(
     if succeeded:
         await emit_hook(
             HookEvent.TEAM_CLOSED,
+            evidence_db=db,
             agent_id=team.lead_agent_id,
             session_id=str(team.parent_session_id),
             source="agent_team",

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from uuid import uuid4
+from uuid import uuid4, uuid5
 
 import pytest
 
@@ -213,21 +213,27 @@ async def test_start_team_member_run_starts_runtime_and_records_event(monkeypatc
     async def fake_load_member_session_or_404(*_args, **_kwargs):
         return session
 
-    async def fake_start(**kwargs):
+    async def fake_submit_live_input(**kwargs):
         captured.update(kwargs)
-        return {"run_id": "00112233445566778899aabbccddeeff", "status": "running"}
+        return {
+            "intent": "start_turn",
+            "input_id": str(kwargs["input_id"]),
+            "target_run_id": "00112233-4455-6677-8899-aabbccddeeff",
+            "run": {"run_id": "00112233445566778899aabbccddeeff", "status": "running"},
+        }
 
     monkeypatch.setattr(teams_api, "check_agent_access", fake_access)
     monkeypatch.setattr(teams_api, "_load_team_or_404", fake_load_team_or_404)
     monkeypatch.setattr(teams_api, "_load_team_member_or_404", fake_load_member_or_404, raising=False)
     monkeypatch.setattr(teams_api, "_load_member_session_or_404", fake_load_member_session_or_404, raising=False)
-    monkeypatch.setattr(teams_api, "start_web_chat_run", fake_start, raising=False)
+    monkeypatch.setattr(teams_api, "submit_live_human_input", fake_submit_live_input)
 
     result = await teams_api.start_agent_team_member_run(
         agent_id=agent_id,
         team_id=team_id,
         member_id=member_id,
         body=teams_api.StartAgentTeamMemberRunIn(content="review the hook implementation"),
+        idempotency_key_header="team-retry-key",
         current_user=user,
         db=db,
     )
@@ -236,9 +242,12 @@ async def test_start_team_member_run_starts_runtime_and_records_event(monkeypatc
     assert result["runtime_task_type"] == "team_member"
     assert member.status == "running"
     assert str(member.runtime_task_id) == "00112233-4455-6677-8899-aabbccddeeff"
-    assert captured["runtime_task_type"] == "team_member"
-    assert captured["extra_metadata"]["team_id"] == str(team_id)
-    assert captured["extra_metadata"]["member_id"] == str(member_id)
+    assert captured["source"] == "agent_team_member_run"
+    assert captured["idempotency_key"] == "team-retry-key"
+    assert captured["input_id"] == uuid5(teams_api._TEAM_MEMBER_INPUT_NAMESPACE, "team-retry-key")
+    assert captured["runtime_metadata"]["runtime_task_type"] == "team_member"
+    assert captured["runtime_metadata"]["team_id"] == str(team_id)
+    assert captured["runtime_metadata"]["member_id"] == str(member_id)
     assert any(isinstance(item, AgentTeamEvent) and item.event_type == "member_run_started" for item in db.added)
 
 

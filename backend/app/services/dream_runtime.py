@@ -169,6 +169,9 @@ async def enqueue_dream_runtime_task(
             recovery_source=recovery_source,
             now=now,
         )
+        from app.services.session_writer_epoch import assign_runtime_task_writer_generation
+
+        await assign_runtime_task_writer_generation(db, created_task)
         db.add(created_task)
         await db.flush()
         from app.core.policy import write_audit_event

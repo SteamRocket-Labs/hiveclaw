@@ -64,13 +64,13 @@ class RuntimeTask(Base):
             unique=True,
             postgresql_where=text(
                 "task_type IN ('web_chat_turn', 'goal_continuation', 'team_member', 'advanced_plan') "
-                "AND status IN ('pending', 'running') "
+                "AND status IN ('pending', 'running', 'suspended', 'resumable') "
                 "AND parent_agent_id IS NOT NULL "
                 "AND parent_session_id IS NOT NULL"
             ),
             sqlite_where=text(
                 "task_type IN ('web_chat_turn', 'goal_continuation', 'team_member', 'advanced_plan') "
-                "AND status IN ('pending', 'running') "
+                "AND status IN ('pending', 'running', 'suspended', 'resumable') "
                 "AND parent_agent_id IS NOT NULL "
                 "AND parent_session_id IS NOT NULL"
             ),

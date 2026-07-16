@@ -201,6 +201,11 @@ def _build_kernel_request(
         skill_catalog=skill_catalog,
         tool_executor=request.tool_executor,
         mid_run_message_drain=request.mid_run_message_drain,
+        round_input_bind=request.round_input_bind,
+        model_request_prepare=request.model_request_prepare,
+        model_response_commit=request.model_response_commit,
+        model_request_fail=request.model_request_fail,
+        initial_round_index=max(0, int(request.initial_round_index or 0)),
         cancel_event=request.cancel_event,
         initial_tools=request.initial_tools or (ports.combined_tools() if request.agent_id is None else None),
         core_tools_only=request.core_tools_only,
@@ -238,6 +243,7 @@ async def _run_setup_hook(state: _InvocationState) -> AgentInvocationResult | No
     try:
         result = await emit_hook(
             HookEvent.SETUP,
+            evidence_mode="independent",
             agent_id=request.agent_id,
             session_id=session_id,
             source=source,
@@ -271,6 +277,7 @@ async def _run_prompt_hook(state: _InvocationState) -> AgentInvocationResult | N
     try:
         result = await emit_hook(
             HookEvent.USER_PROMPT_SUBMIT,
+            evidence_mode="independent",
             agent_id=request.agent_id,
             session_id=session_id,
             prompt=state.ports.latest_user_prompt(request.messages),
@@ -304,6 +311,7 @@ async def _run_session_start_hook(state: _InvocationState) -> AgentInvocationRes
     try:
         result = await emit_hook(
             HookEvent.SESSION_START,
+            evidence_mode="independent",
             agent_id=request.agent_id,
             session_id=request.memory_session_id,
             source=source,
@@ -421,6 +429,7 @@ async def _emit_close_hooks(state: _InvocationState, result: Any) -> None:
     try:
         await emit_hook(
             HookEvent.SESSION_END,
+            evidence_mode="independent",
             agent_id=request.agent_id,
             session_id=request.memory_session_id,
             source=source,
@@ -430,6 +439,7 @@ async def _emit_close_hooks(state: _InvocationState, result: Any) -> None:
         if request.emit_turn_stop:
             await emit_hook(
                 HookEvent.TURN_STOP,
+                evidence_mode="independent",
                 agent_id=request.agent_id,
                 session_id=request.memory_session_id,
                 source=source,

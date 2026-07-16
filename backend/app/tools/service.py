@@ -50,14 +50,14 @@ from app.tools.plan_gate_registry import hard_gated_action_kind
 from app.tools.result_envelope import ToolContentEnvelope, render_tool_error
 from app.tools.runtime import ToolExecutionContext, ToolExecutionRegistry, ToolExecutionRequest
 from app.tools.backends import LocalToolRuntimeBackend, ToolRuntimeBackend
-from app.tools.decision import ToolDecisionOutcome, build_tool_decision
+from app.tools.decision import ToolBoundaryBlock, ToolDecisionOutcome, build_tool_decision
 from app.tools.validation import validate_tool_arguments
 
 
 RuntimeResolver = Callable[..., Awaitable[ToolExecutionContext] | ToolExecutionContext]
 GovernanceRunner = Callable[
     [ToolGovernanceContext, GovernanceDependencies],
-    Awaitable[str | None] | str | None,
+    Awaitable[ToolBoundaryBlock | None] | ToolBoundaryBlock | None,
 ]
 FallbackExecutor = Callable[[str, dict, ToolExecutionContext], Awaitable[str] | str]
 ActivityLogger = Callable[..., Awaitable[None] | None]
@@ -290,7 +290,10 @@ def _extract_tool_error_payload(result: str) -> dict[str, Any] | None:
 
 def _tool_result_failed(result: Any) -> bool:
     rendered = str(result or "")
-    if _extract_tool_error_payload(rendered) is not None or rendered.lstrip().startswith("❌"):
+    # Hard outcomes come only from an exact machine receipt.  Human/model text
+    # is allowed to discuss failures (and use any emoji) without changing the
+    # execution state of the tool invocation.
+    if _extract_tool_error_payload(rendered) is not None:
         return True
     try:
         payload = _json.loads(rendered)
@@ -693,7 +696,7 @@ class ToolRuntimeService:
     governance_resolver: Any
     registry: ToolExecutionRegistry
     ensure_registry: EnsureRegistry
-    governance_runner: Callable[..., Awaitable[str | None] | str | None]
+    governance_runner: Callable[..., Awaitable[ToolBoundaryBlock | None] | ToolBoundaryBlock | None]
     fallback_executor: FallbackExecutor
     direct_fallback_executor: FallbackExecutor
     activity_logger: ActivityLogger | None = None
@@ -772,6 +775,7 @@ class ToolRuntimeService:
         result_text = str(result)
         await emit_hook(
             HookEvent.INSTRUCTIONS_LOADED,
+            evidence_mode="independent",
             agent_id=context.agent_id,
             session_id=context.session_id,
             source="load_skill",
@@ -888,11 +892,11 @@ class ToolRuntimeService:
         plan_mode_unattended_available: bool = False,
         emit_runtime_hooks: bool = True,
         trace_metadata_sink: dict[str, Any] | None = None,
+        pre_effect_callback: Callable[[dict[str, Any]], Any] | None = None,
         workspace_override: Path | str | None = None,
         _approval_decision: ApprovalDecisionSet | None = None,
         _expected_asset_refs: tuple[Any, ...] | None = None,
     ) -> str | ToolContentEnvelope:
-        """Delegate to the single run_tool_execution lifecycle owner."""
         return await run_tool_execution(
             self,
             PipelineRequest(
@@ -917,6 +921,7 @@ class ToolRuntimeService:
                 plan_mode_unattended_available=plan_mode_unattended_available,
                 emit_runtime_hooks=emit_runtime_hooks,
                 trace_metadata_sink=trace_metadata_sink,
+                pre_effect_callback=pre_effect_callback,
                 workspace_override=workspace_override,
                 approval_decision=_approval_decision,
                 expected_asset_refs=_expected_asset_refs,
@@ -937,6 +942,7 @@ class ToolRuntimeService:
 
         return await emit_hook(
             HookEvent.PRE_TOOL_USE,
+            evidence_mode="independent",
             agent_id=runtime_context.agent_id,
             session_id=runtime_context.session_id,
             tool_name=tool_name,
@@ -959,6 +965,7 @@ class ToolRuntimeService:
 
         return await emit_hook(
             HookEvent.POST_TOOL_USE,
+            evidence_mode="independent",
             agent_id=runtime_context.agent_id,
             session_id=runtime_context.session_id,
             tool_name=tool_name,
@@ -982,6 +989,7 @@ class ToolRuntimeService:
 
         await emit_hook(
             HookEvent.POST_TOOL_FAILURE,
+            evidence_mode="independent",
             agent_id=runtime_context.agent_id,
             session_id=runtime_context.session_id,
             tool_name=tool_name,
@@ -1537,7 +1545,7 @@ class ToolRuntimeService:
         runtime_context: ToolExecutionContext,
         *,
         trace_metadata_sink: dict[str, Any] | None = None,
-    ) -> str | None:
+    ) -> ToolBoundaryBlock | None:
         if not self.preflight_enabled or self.preflight_service is None:
             return None
 
@@ -1608,12 +1616,25 @@ class ToolRuntimeService:
             decision_ref = f"decision/{decision.id}"
 
         await self._log_preflight_decision(tool_name, runtime_context, preflight)
-        return _render_preflight_block(
+        rendered = _render_preflight_block(
             tool_name,
             preflight,
             checkpoint_id=checkpoint_id,
             decision_ref=decision_ref,
             authorization_decision_entry=authorization_decision_entry,
+        )
+        outcome = {
+            PreflightDecision.ASK: ToolDecisionOutcome.REQUIRE_APPROVAL,
+            PreflightDecision.ESCALATE: ToolDecisionOutcome.REQUIRE_APPROVAL,
+            PreflightDecision.PREPARE_ONLY: ToolDecisionOutcome.ALLOW_PREPARE_ONLY,
+            PreflightDecision.REFUSE: ToolDecisionOutcome.DENY,
+        }.get(preflight.decision, ToolDecisionOutcome.UNAVAILABLE)
+        return ToolBoundaryBlock(
+            rendered,
+            outcome=outcome,
+            reason_code=f"preflight_{preflight.decision.value}",
+            status=preflight.decision.value,
+            retryable=preflight.decision in {PreflightDecision.ASK, PreflightDecision.ESCALATE},
         )
 
     async def _log_preflight_decision(

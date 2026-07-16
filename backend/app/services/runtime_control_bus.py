@@ -472,6 +472,7 @@ async def handle_runtime_control_message(message: dict[str, Any]) -> bool:
             )
         await emit_hook(
             hook_event,
+            evidence_mode="independent",
             agent_id=message.get("agent_id"),
             session_id=message.get("session_id"),
             messages=messages,

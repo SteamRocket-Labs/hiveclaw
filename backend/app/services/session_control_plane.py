@@ -1206,6 +1206,8 @@ def _build_active_turn_state(
         ),
         terminal_reason=metadata.get("terminal_reason"),
         active_tool_call_ids=active_tool_call_ids,
+        # Read-only compatibility for pre-Session-V2 rows. No production path
+        # may write or drain this legacy RuntimeTask metadata field.
         pending_steer_messages=tuple(metadata.get("pending_user_messages") or ()),
     )
 

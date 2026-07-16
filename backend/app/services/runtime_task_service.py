@@ -427,37 +427,39 @@ async def create_runtime_task_record(
         source=f"runtime_task:{task_type}",
     ) as db:
         try:
-            db.add(
-                RuntimeTask(
-                    id=runtime_task_id,
-                    task_type=task_type,
-                    status=status,
-                    parent_agent_id=parent_agent_id,
-                    child_agent_id=child_agent_id,
-                    child_agent_name=child_agent_name,
-                    prompt=prompt,
-                    trace_id=trace_id,
-                    parent_session_id=parent_session_id,
-                    child_session_id=child_session_id,
-                    root_user_id=root_user_id,
-                    root_session_id=str(root_session_id or "").strip() or None,
-                    root_runtime_task_id=_coerce_task_id(root_runtime_task_id)
-                    if root_runtime_task_id is not None
-                    else None,
-                    delegation_chain_json=[str(item) for item in (delegation_chain or []) if str(item).strip()],
-                    depth=depth,
-                    metadata_json=metadata_json,
-                    started_at=started_at,
-                    tenant_id=tenant_id,
-                    budget_run_id=budget_run_id,
-                    budget_reservation_key=budget_reservation_key,
-                    budget_admission_status=budget_admission_status,
-                    budget_terminal_reason=budget_terminal_reason,
-                    root_idempotency_key=root_idempotency_key or f"{task_type}:{runtime_task_id}",
-                    config_snapshot_hash=config_snapshot_hash,
-                    policy_snapshot_hash=policy_snapshot_hash,
-                )
+            task = RuntimeTask(
+                id=runtime_task_id,
+                task_type=task_type,
+                status=status,
+                parent_agent_id=parent_agent_id,
+                child_agent_id=child_agent_id,
+                child_agent_name=child_agent_name,
+                prompt=prompt,
+                trace_id=trace_id,
+                parent_session_id=parent_session_id,
+                child_session_id=child_session_id,
+                root_user_id=root_user_id,
+                root_session_id=str(root_session_id or "").strip() or None,
+                root_runtime_task_id=_coerce_task_id(root_runtime_task_id)
+                if root_runtime_task_id is not None
+                else None,
+                delegation_chain_json=[str(item) for item in (delegation_chain or []) if str(item).strip()],
+                depth=depth,
+                metadata_json=metadata_json,
+                started_at=started_at,
+                tenant_id=tenant_id,
+                budget_run_id=budget_run_id,
+                budget_reservation_key=budget_reservation_key,
+                budget_admission_status=budget_admission_status,
+                budget_terminal_reason=budget_terminal_reason,
+                root_idempotency_key=root_idempotency_key or f"{task_type}:{runtime_task_id}",
+                config_snapshot_hash=config_snapshot_hash,
+                policy_snapshot_hash=policy_snapshot_hash,
             )
+            from app.services.session_writer_epoch import assign_runtime_task_writer_generation
+
+            await assign_runtime_task_writer_generation(db, task)
+            db.add(task)
             await db.commit()
         except Exception:
             await db.rollback()

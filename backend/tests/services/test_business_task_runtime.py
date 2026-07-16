@@ -5,6 +5,14 @@ from types import SimpleNamespace
 import uuid
 
 
+class _ScalarResult:
+    def __init__(self, value: object) -> None:
+        self._value = value
+
+    def scalar_one_or_none(self) -> object:
+        return self._value
+
+
 class _FakeDb:
     def __init__(self) -> None:
         self.added: list[object] = []
@@ -21,6 +29,20 @@ class _FakeDb:
 
     async def commit(self) -> None:
         self.commits += 1
+
+    async def execute(self, statement: object) -> _ScalarResult:
+        if "session_writer_epochs" not in str(statement):
+            raise AssertionError(f"Unexpected execute call: {statement}")
+        return _ScalarResult(
+            SimpleNamespace(
+                state="legacy_open",
+                new_run_generation=1,
+                allowed_existing_generations_json=[1, 2],
+                enforcement_mode="observe",
+                version=1,
+                release_id=None,
+            )
+        )
 
     async def get(self, _model: object, record_id: uuid.UUID, **_kwargs: object) -> object | None:
         return self.records.get(record_id)

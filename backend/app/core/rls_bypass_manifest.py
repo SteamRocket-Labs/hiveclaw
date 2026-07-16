@@ -597,6 +597,78 @@ RLS_BYPASS_ALLOWLIST = (
     ),
     _grant(
         *(
+            "app/services/runtime_task_worker.py",
+            "recover_session_control_inputs_once",
+            "'runtime task worker recover stale Session V2 control inputs'",
+            ("session-state-only",),
+        )
+    ),
+    _grant(
+        *(
+            "app/services/runtime_task_worker.py",
+            "expire_session_permission_requests_once",
+            "'runtime task worker expire Session V2 permission requests'",
+            ("session-state-only",),
+        )
+    ),
+    _grant(
+        *(
+            "app/services/runtime_task_worker.py",
+            "recover_session_model_rounds_once",
+            "'runtime task worker recover sealed Session V2 model rounds'",
+            ("session-state-only",),
+        )
+    ),
+    _grant(
+        *(
+            "app/services/runtime_task_worker.py",
+            "recover_session_terminal_outcomes_once",
+            "'runtime task worker recover sealed Session V2 terminal outcomes'",
+            ("session-state-only",),
+        )
+    ),
+    _grant(
+        *(
+            "app/services/runtime_task_worker.py",
+            "recover_session_terminal_outcomes_once",
+            "'runtime task worker recover Session V2 terminal candidates'",
+            ("session-state-only",),
+        )
+    ),
+    _grant(
+        *(
+            "app/services/runtime_task_worker.py",
+            "recover_turn_replacement_sagas_once",
+            "'runtime task worker recover Session V2 turn replacement sagas'",
+            ("session-state-only",),
+        )
+    ),
+    _grant(
+        *(
+            "app/services/runtime_task_worker.py",
+            "recover_stale_session_input_admissions_once",
+            "'runtime task worker recover stale Session V2 input admissions'",
+            ("session-state-only",),
+        )
+    ),
+    _grant(
+        *(
+            "app/services/runtime_task_worker.py",
+            "recover_session_input_dispatches_once",
+            "'runtime task worker dispatch admitted Session V2 inputs'",
+            ("session-state-only",),
+        )
+    ),
+    _grant(
+        *(
+            "app/services/session_event_outbox.py",
+            "_worker_session",
+            "f'session_event_outbox.{operation}'",
+            ("session-state-only",),
+        )
+    ),
+    _grant(
+        *(
             "app/services/session_workspace_snapshot.py",
             "recover_workspace_restores_from_transcript",
             "'workspace restore crash recovery'",

@@ -181,6 +181,9 @@ async def _recover_missing_job(
         }
     else:
         task.metadata_json = {**dict(task.metadata_json or {}), "recovered_missing_job": True}
+    from app.services.session_writer_epoch import assign_runtime_task_writer_generation
+
+    await assign_runtime_task_writer_generation(db, task)
     db.add(task)
     await db.flush()
     draft.provisioning_task_id = task.id

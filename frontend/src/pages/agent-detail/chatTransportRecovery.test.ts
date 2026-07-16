@@ -16,11 +16,12 @@ describe('chat transport recovery policy', () => {
   });
 
   it('separates offline, reconnecting, degraded, connected, and auth-failed states', () => {
-    expect(chatTransportPhase({ online: false, connected: false, attempts: 99 })).toBe('offline');
-    expect(chatTransportPhase({ online: true, connected: true, attempts: 99 })).toBe('connected');
-    expect(chatTransportPhase({ online: true, connected: false, attempts: 2 })).toBe('reconnecting');
-    expect(chatTransportPhase({ online: true, connected: false, attempts: 5 })).toBe('degraded');
-    expect(chatTransportPhase({ online: true, connected: false, attempts: 0, authFailed: true })).toBe('auth_failed');
+    expect(chatTransportPhase({ online: false, connected: false, attempts: 99, everReady: false })).toBe('offline');
+    expect(chatTransportPhase({ online: true, connected: true, attempts: 99, everReady: true })).toBe('connected');
+    expect(chatTransportPhase({ online: true, connected: false, attempts: 0, everReady: false })).toBe('initializing');
+    expect(chatTransportPhase({ online: true, connected: false, attempts: 2, everReady: true })).toBe('reconnecting');
+    expect(chatTransportPhase({ online: true, connected: false, attempts: 5, everReady: false })).toBe('degraded');
+    expect(chatTransportPhase({ online: true, connected: false, attempts: 0, everReady: false, authFailed: true })).toBe('auth_failed');
   });
 
   it('polls durable backfill only while the network is available and realtime is degraded', () => {

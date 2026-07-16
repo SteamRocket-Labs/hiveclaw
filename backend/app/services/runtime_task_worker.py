@@ -4,7 +4,7 @@ import asyncio
 import json
 import os
 import socket
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID
 
@@ -68,6 +68,35 @@ _STATE: dict[str, Any] = {
     "hr_provisioning_dispatched": 0,
     "hr_drafts_reconciled": 0,
     "business_tasks_reconciled": 0,
+    "session_controls_claimed": 0,
+    "session_controls_started": 0,
+    "session_controls_signalled": 0,
+    "session_controls_settled": 0,
+    "session_permissions_expired": 0,
+    "session_model_rounds_committed": 0,
+    "session_model_rounds_needs_reconciliation": 0,
+    "session_terminal_outcomes_committed": 0,
+    "session_terminal_outcomes_needs_reconciliation": 0,
+    "session_terminal_candidates_committed": 0,
+    "session_terminal_candidates_held": 0,
+    "turn_replacements_claimed": 0,
+    "turn_replacements_transitioned": 0,
+    "turn_replacements_signalled": 0,
+    "turn_replacements_started_runs": 0,
+    "turn_replacements_completed": 0,
+    "turn_replacements_retryable_failures": 0,
+    "turn_replacements_needs_reconciliation": 0,
+    "session_event_outbox_claimed": 0,
+    "session_event_outbox_published": 0,
+    "session_event_outbox_retried": 0,
+    "session_event_outbox_dead_lettered": 0,
+    "input_admissions_claimed": 0,
+    "input_admissions_recovered": 0,
+    "input_admissions_needs_reconciliation": 0,
+    "session_input_dispatches_claimed": 0,
+    "session_input_dispatches_dispatched": 0,
+    "session_input_dispatches_deferred": 0,
+    "session_input_dispatches_retried": 0,
     "dream_dispatched": 0,
 }
 
@@ -251,6 +280,25 @@ async def drain_runtime_notification_outbox_once(*, worker_id: str) -> dict[str,
     return counts
 
 
+async def drain_session_event_outbox_once(
+    *,
+    worker_id: str,
+    publish_callback=None,
+    session_factory=async_session,
+) -> dict[str, int]:
+    from app.services.session_event_outbox import SessionEventOutboxPublisher
+
+    service = SessionEventOutboxPublisher(session_factory=session_factory)
+    counts = await service.drain_once(
+        worker_id=worker_id,
+        publish_callback=publish_callback,
+    )
+    for key in ("claimed", "published", "retried", "dead_lettered"):
+        state_key = f"session_event_outbox_{key}"
+        _STATE[state_key] = int(_STATE.get(state_key) or 0) + int(counts.get(key) or 0)
+    return counts
+
+
 async def drain_channel_delivery_outbox_once(*, worker_id: str) -> dict[str, int]:
     counts = await ChannelDeliveryOutboxService().drain_once(worker_id=worker_id, limit=20)
     for key in ("claimed", "delivered", "retried", "dead_lettered", "needs_reconciliation"):
@@ -287,6 +335,267 @@ async def reconcile_stale_business_tasks_once() -> dict[str, int]:
         summary.get("quarantined") or 0
     )
     return summary
+
+
+async def recover_session_control_inputs_once(
+    *,
+    worker_id: str,
+    signal_callback=None,
+    stale_after: timedelta = timedelta(seconds=5),
+    tenant_id: UUID | None = None,
+    session_factory=async_session,
+) -> dict[str, int]:
+    """Run the cross-tenant control recovery lane under audited RLS bypass."""
+
+    from app.services.session_control_input import recover_stale_cancel_control_inputs_once
+
+    async with (
+        session_factory() as db,
+        enter_rls_bypass(
+            db,
+            reason="runtime task worker recover stale Session V2 control inputs",
+            actor_id=worker_id,
+        ),
+    ):
+        counts = await recover_stale_cancel_control_inputs_once(
+            db,
+            worker_id=worker_id,
+            signal_callback=signal_callback,
+            stale_after=stale_after,
+            tenant_id=tenant_id,
+        )
+    for key in ("claimed", "started", "signalled", "settled"):
+        state_key = f"session_controls_{key}"
+        _STATE[state_key] = int(_STATE.get(state_key) or 0) + int(counts.get(key) or 0)
+    return counts
+
+
+async def expire_session_permission_requests_once(
+    *,
+    worker_id: str,
+    session_factory=async_session,
+) -> int:
+    """Settle expired permission waits while the runtime remains online."""
+
+    from app.services.session_permission_runtime import expire_stale_session_permission_requests
+
+    async with (
+        session_factory() as db,
+        enter_rls_bypass(
+            db,
+            reason="runtime task worker expire Session V2 permission requests",
+            actor_id=worker_id,
+        ),
+    ):
+        expired = await expire_stale_session_permission_requests(db=db)
+    _STATE["session_permissions_expired"] = int(_STATE.get("session_permissions_expired") or 0) + expired
+    return expired
+
+
+async def recover_session_model_rounds_once(
+    *,
+    worker_id: str,
+    limit: int = 50,
+    run_id: UUID | None = None,
+    session_factory=async_session,
+) -> dict[str, int]:
+    """Commit durable ModelResult seals without replaying Provider requests."""
+
+    from app.services.session_model_round import recover_sealed_model_rounds_once
+
+    async with (
+        session_factory() as db,
+        enter_rls_bypass(
+            db,
+            reason="runtime task worker recover sealed Session V2 model rounds",
+            actor_id=worker_id,
+        ),
+    ):
+        counts = await recover_sealed_model_rounds_once(
+            db,
+            worker_id=worker_id,
+            limit=limit,
+            run_id=run_id,
+        )
+        await db.commit()
+    _STATE["session_model_rounds_committed"] = int(_STATE.get("session_model_rounds_committed") or 0) + int(
+        counts.get("round_committed") or 0
+    )
+    _STATE["session_model_rounds_needs_reconciliation"] = int(
+        _STATE.get("session_model_rounds_needs_reconciliation") or 0
+    ) + int(counts.get("needs_reconciliation") or 0)
+    return counts
+
+
+async def recover_session_terminal_outcomes_once(
+    *,
+    worker_id: str,
+    limit: int = 50,
+    run_id: UUID | None = None,
+    session_factory=async_session,
+) -> dict[str, int]:
+    """Recover sealed outcomes, then eligible results, using stable identities."""
+
+    from app.services.session_terminal_outcome import (
+        recover_terminal_candidates_once,
+        recover_terminal_outcomes_once,
+    )
+
+    async with (
+        session_factory() as db,
+        enter_rls_bypass(
+            db,
+            reason="runtime task worker recover sealed Session V2 terminal outcomes",
+            actor_id=worker_id,
+        ),
+    ):
+        sealed = await recover_terminal_outcomes_once(
+            db,
+            worker_id=worker_id,
+            limit=limit,
+            run_id=run_id,
+        )
+        await db.commit()
+    async with (
+        session_factory() as db,
+        enter_rls_bypass(
+            db,
+            reason="runtime task worker recover Session V2 terminal candidates",
+            actor_id=worker_id,
+        ),
+    ):
+        candidates = await recover_terminal_candidates_once(
+            db,
+            worker_id=worker_id,
+            limit=limit,
+            run_id=run_id,
+        )
+        await db.commit()
+    _STATE["session_terminal_outcomes_committed"] = int(_STATE.get("session_terminal_outcomes_committed") or 0) + int(
+        sealed.get("terminal_committed") or 0
+    )
+    _STATE["session_terminal_outcomes_needs_reconciliation"] = int(
+        _STATE.get("session_terminal_outcomes_needs_reconciliation") or 0
+    ) + int(sealed.get("needs_reconciliation") or 0)
+    _STATE["session_terminal_candidates_committed"] = int(
+        _STATE.get("session_terminal_candidates_committed") or 0
+    ) + int(candidates.get("terminal_committed") or 0)
+    _STATE["session_terminal_candidates_held"] = int(_STATE.get("session_terminal_candidates_held") or 0) + int(
+        candidates.get("held") or 0
+    )
+    return {
+        "sealed_terminal_committed": int(sealed.get("terminal_committed") or 0),
+        "sealed_needs_reconciliation": int(sealed.get("needs_reconciliation") or 0),
+        "candidate_terminal_committed": int(candidates.get("terminal_committed") or 0),
+        "candidate_held": int(candidates.get("held") or 0),
+    }
+
+
+async def recover_turn_replacement_sagas_once(
+    *,
+    worker_id: str,
+    signal_callback=None,
+    start_replacement_callback=None,
+    stale_after: timedelta = timedelta(seconds=5),
+    tenant_id: UUID | None = None,
+    session_factory=async_session,
+) -> dict[str, int]:
+    """Advance durable replacement sagas under the worker's audited RLS lane."""
+
+    from app.services.session_turn_replacement import recover_turn_replacements_once
+
+    async with (
+        session_factory() as db,
+        enter_rls_bypass(
+            db,
+            reason="runtime task worker recover Session V2 turn replacement sagas",
+            actor_id=worker_id,
+        ),
+    ):
+        counts = await recover_turn_replacements_once(
+            db,
+            worker_id=worker_id,
+            signal_callback=signal_callback,
+            start_replacement_callback=start_replacement_callback,
+            stale_after=stale_after,
+            tenant_id=tenant_id,
+        )
+    for key in (
+        "claimed",
+        "transitioned",
+        "signalled",
+        "started_runs",
+        "completed",
+        "retryable_failures",
+        "needs_reconciliation",
+    ):
+        state_key = f"turn_replacements_{key}"
+        _STATE[state_key] = int(_STATE.get(state_key) or 0) + int(counts.get(key) or 0)
+    return counts
+
+
+async def recover_stale_session_input_admissions_once(
+    *,
+    worker_id: str,
+    managed_result_lookup=None,
+    stale_after: timedelta = timedelta(minutes=2),
+    tenant_id: UUID | None = None,
+    session_factory=async_session,
+) -> dict[str, int]:
+    """Recover stale current-revision admission attempts under audited RLS."""
+
+    from app.services.session_input_admission import recover_stale_input_admissions_once
+
+    async with (
+        session_factory() as db,
+        enter_rls_bypass(
+            db,
+            reason="runtime task worker recover stale Session V2 input admissions",
+            actor_id=worker_id,
+        ),
+    ):
+        counts = await recover_stale_input_admissions_once(
+            db,
+            worker_id=worker_id,
+            managed_result_lookup=managed_result_lookup,
+            stale_after=stale_after,
+            tenant_id=tenant_id,
+        )
+    for key in ("claimed", "recovered", "needs_reconciliation"):
+        state_key = f"input_admissions_{key}"
+        _STATE[state_key] = int(_STATE.get(state_key) or 0) + int(counts.get(key) or 0)
+    return counts
+
+
+async def recover_session_input_dispatches_once(
+    *,
+    worker_id: str,
+    stale_after: timedelta = timedelta(seconds=5),
+    tenant_id: UUID | None = None,
+    session_factory=async_session,
+) -> dict[str, int]:
+    """Dispatch every admitted HumanInput from the durable database lane."""
+
+    from app.services.session_input_dispatch import recover_admitted_session_inputs_once
+
+    async with (
+        session_factory() as db,
+        enter_rls_bypass(
+            db,
+            reason="runtime task worker dispatch admitted Session V2 inputs",
+            actor_id=worker_id,
+        ),
+    ):
+        counts = await recover_admitted_session_inputs_once(
+            db,
+            worker_id=worker_id,
+            stale_after=stale_after,
+            tenant_id=tenant_id,
+        )
+    for key in ("claimed", "dispatched", "deferred", "retried"):
+        state_key = f"session_input_dispatches_{key}"
+        _STATE[state_key] = int(_STATE.get(state_key) or 0) + int(counts.get(key) or 0)
+    return counts
 
 
 def _dispatch_claimed_task(task: RuntimeTask) -> bool:
@@ -524,6 +833,46 @@ async def start_runtime_task_worker_loop() -> None:
     logger.info("[RuntimeTaskWorker] started worker_id={}", worker_id)
     try:
         while True:
+            try:
+                await drain_session_event_outbox_once(worker_id=worker_id)
+            except Exception as exc:  # noqa: BLE001 - task claiming must continue after publisher failure.
+                _STATE["last_error"] = f"session_event_outbox:{type(exc).__name__}: {exc}"
+                logger.exception("[RuntimeTaskWorker] Session event outbox tick failed")
+            try:
+                await recover_session_control_inputs_once(worker_id=worker_id)
+            except Exception as exc:  # noqa: BLE001 - normal task claiming must continue.
+                _STATE["last_error"] = f"session_control_recovery:{type(exc).__name__}: {exc}"
+                logger.exception("[RuntimeTaskWorker] Session control recovery tick failed")
+            try:
+                await expire_session_permission_requests_once(worker_id=worker_id)
+            except Exception as exc:  # noqa: BLE001 - normal task claiming must continue.
+                _STATE["last_error"] = f"session_permission_expiry:{type(exc).__name__}: {exc}"
+                logger.exception("[RuntimeTaskWorker] Session permission expiry tick failed")
+            try:
+                await recover_stale_session_input_admissions_once(worker_id=worker_id)
+            except Exception as exc:  # noqa: BLE001 - normal task claiming must continue.
+                _STATE["last_error"] = f"input_admission_recovery:{type(exc).__name__}: {exc}"
+                logger.exception("[RuntimeTaskWorker] input admission recovery tick failed")
+            try:
+                await recover_session_input_dispatches_once(worker_id=worker_id)
+            except Exception as exc:  # noqa: BLE001 - normal task claiming must continue.
+                _STATE["last_error"] = f"session_input_dispatch:{type(exc).__name__}: {exc}"
+                logger.exception("[RuntimeTaskWorker] Session V2 input dispatch tick failed")
+            try:
+                await recover_turn_replacement_sagas_once(worker_id=worker_id)
+            except Exception as exc:  # noqa: BLE001 - normal task claiming must continue.
+                _STATE["last_error"] = f"turn_replacement_recovery:{type(exc).__name__}: {exc}"
+                logger.exception("[RuntimeTaskWorker] turn replacement recovery tick failed")
+            try:
+                await recover_session_model_rounds_once(worker_id=worker_id)
+            except Exception as exc:  # noqa: BLE001 - normal task claiming must continue.
+                _STATE["last_error"] = f"session_model_round_recovery:{type(exc).__name__}: {exc}"
+                logger.exception("[RuntimeTaskWorker] Session V2 model round recovery tick failed")
+            try:
+                await recover_session_terminal_outcomes_once(worker_id=worker_id)
+            except Exception as exc:  # noqa: BLE001 - normal task claiming must continue.
+                _STATE["last_error"] = f"session_terminal_recovery:{type(exc).__name__}: {exc}"
+                logger.exception("[RuntimeTaskWorker] Session V2 terminal recovery tick failed")
             try:
                 await reconcile_hr_creation_drafts_once()
             except Exception as exc:  # noqa: BLE001 - normal task claiming must continue.

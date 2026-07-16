@@ -506,6 +506,7 @@ async def test_list_sessions_projects_session_full_access_without_auxiliary_gran
         "mode": "bypassPermissions",
         "allowed_tools": ["web_search"],
         "writable_roots": ["workspace/"],
+        "session_grants": [],
     }
 
 

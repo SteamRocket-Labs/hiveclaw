@@ -183,6 +183,9 @@ async def stage_business_task_runtime(
             "delivery_target": dict(delivery_target or {}) or None,
         },
     )
+    from app.services.session_writer_epoch import assign_runtime_task_writer_generation
+
+    await assign_runtime_task_writer_generation(db, runtime_task)
     db.add(runtime_task)
     task.active_runtime_task_id = runtime_task_id
     task.execution_attempt = attempt

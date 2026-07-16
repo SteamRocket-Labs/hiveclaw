@@ -87,6 +87,7 @@ async def task_create(request: ToolExecutionRequest) -> str:
     task = result["item"]
     await emit_hook(
         HookEvent.TASK_CREATED,
+        evidence_mode="independent",
         agent_id=request.context.agent_id,
         session_id=_session_id(request),
         source="command_task",
@@ -133,6 +134,7 @@ async def task_update(request: ToolExecutionRequest) -> str:
     if str(task.get("status") or "").strip() == "completed":
         await emit_hook(
             HookEvent.TASK_COMPLETED,
+            evidence_mode="independent",
             agent_id=request.context.agent_id,
             session_id=_session_id(request),
             source="command_task",

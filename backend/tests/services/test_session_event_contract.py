@@ -90,10 +90,16 @@ def _legacy_row(**overrides):
 
 
 def test_exact_event_matrix_accepts_only_canonical_kind_scope_and_payload_schema() -> None:
-    from app.services.session_event_contract import SessionEventContractError, validate_session_event
+    from app.services.session_event_contract import (
+        EVENT_KIND_MATRIX,
+        SessionEventContractError,
+        validate_session_event,
+    )
 
     valid = _event()
     assert validate_session_event(valid) is valid
+    assert "result_commit" in EVENT_KIND_MATRIX
+    assert "model_result" not in EVENT_KIND_MATRIX
 
     for invalid in (
         {**valid, "kind": "assistant.final"},

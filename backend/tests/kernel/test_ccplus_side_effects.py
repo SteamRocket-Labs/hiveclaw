@@ -190,7 +190,7 @@ async def test_tool_new_messages_injected_on_parallel_path() -> None:
 
 
 @pytest.mark.asyncio
-async def test_proven_non_progress_is_summarized_by_model_without_more_tools(monkeypatch) -> None:
+async def test_proven_non_progress_is_summarized_by_model_without_platform_tool_removal(monkeypatch) -> None:
     from app.kernel import engine
     from app.kernel.loop_guard import LoopGuard
 
@@ -204,7 +204,9 @@ async def test_proven_non_progress_is_summarized_by_model_without_more_tools(mon
         ]
     )
 
-    def execute_tool(_tool_name, _args, _request, _emit_event):
+    def execute_tool(_tool_name, _args, _request, _emit_event, *, trace_metadata_sink=None):
+        trace_metadata_sink["tool_decision"] = {"outcome": "allow"}
+        trace_metadata_sink["tool_execution_frame"] = {"status": "failed"}
         return ToolContentEnvelope(
             text="[Tool execution error] timeout",
             metadata={
@@ -229,7 +231,10 @@ async def test_proven_non_progress_is_summarized_by_model_without_more_tools(mon
 
     assert result.content.startswith("I exhausted the read retry")
     assert len(fake_client.calls) == 4
-    assert not fake_client.calls[3]["tools"]
+    assert [tool["function"]["name"] for tool in fake_client.calls[3]["tools"]] == [
+        "read_file",
+        "list_files",
+    ]
     assert any("loop_guard_terminal_evidence" in str(message.content) for message in fake_client.calls[3]["messages"])
     assert not result.content.startswith("[Loop Guard]")
 

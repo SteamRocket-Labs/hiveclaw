@@ -284,6 +284,7 @@ export const chatApi = {
       beforeSequence?: number;
       direction?: 'forward' | 'backward';
       limit?: number;
+      schemaVersion?: 2;
     },
   ) => {
     const params = new URLSearchParams();
@@ -291,12 +292,14 @@ export const chatApi = {
     if (typeof options?.beforeSequence === 'number') params.set('before_sequence', String(options.beforeSequence));
     if (options?.direction) params.set('direction', options.direction);
     if (typeof options?.limit === 'number') params.set('limit', String(options.limit));
+    if (options?.schemaVersion === 2) params.set('schema_version', '2');
     const requestOptions = options ? { ...options } : undefined;
     if (requestOptions) {
       delete requestOptions.afterSequence;
       delete requestOptions.beforeSequence;
       delete requestOptions.direction;
       delete requestOptions.limit;
+      delete requestOptions.schemaVersion;
       delete requestOptions.operatorView;
       delete requestOptions.operatorReason;
     }

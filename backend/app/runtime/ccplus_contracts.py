@@ -74,6 +74,7 @@ class PermissionProfileV1:
     session_grant_scope: str | None = None
     session_grant_tool_name: str | None = None
     session_grant_input_hash: str | None = None
+    session_grants: tuple[dict[str, Any], ...] = ()
     denied_actions: tuple[str, ...] = ()
     capability_policy_snapshot: dict[str, Any] = field(default_factory=dict)
     default_decision: str = "escalate"

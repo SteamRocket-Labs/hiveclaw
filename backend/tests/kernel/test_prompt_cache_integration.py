@@ -392,6 +392,11 @@ async def test_tool_expansion_rebuild_preserves_dynamic_memory_and_effective_suf
             active_tool_groups=[{"name": "web_pack", "summary": "web research tools", "tools": ["web_search"]}],
         )
 
+    async def _governed_discovery_tool(*_args, trace_metadata_sink=None, **_kwargs):
+        trace_metadata_sink["tool_decision"] = {"outcome": "allow"}
+        trace_metadata_sink["tool_execution_frame"] = {"status": "completed"}
+        return "discovered"
+
     kernel = AgentKernel(
         KernelDependencies(
             resolve_runtime_config=lambda _agent_id: RuntimeConfig(tenant_id=uuid4(), max_tool_rounds=3),
@@ -405,7 +410,7 @@ async def test_tool_expansion_rebuild_preserves_dynamic_memory_and_effective_suf
             resolve_tool_expansion=resolve_tool_expansion,
             maybe_compress_messages=lambda messages, **_kwargs: messages,
             create_client=lambda _model: fake_client,
-            execute_tool=lambda *_args, **_kwargs: "discovered",
+            execute_tool=_governed_discovery_tool,
             persist_memory=lambda **_kwargs: None,
             record_token_usage=lambda *_args, **_kwargs: None,
             get_max_tokens=lambda *_args, **_kwargs: 1024,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -18,6 +19,7 @@ from app.config import get_settings
 
 _invocation_id: ContextVar[str | None] = ContextVar("hive_invocation_id", default=None)
 logger = logging.getLogger(__name__)
+INVOCATION_SPAN_PERSIST_TIMEOUT_SECONDS = 2.0
 
 
 def current_invocation_id() -> str | None:
@@ -312,6 +314,7 @@ async def record_invocation_span(
 
 async def persist_invocation_span(
     *,
+    db: AsyncSession | None = None,
     tenant_id: uuid.UUID | str | None,
     trace_id: str,
     span_id: str,
@@ -332,6 +335,7 @@ async def persist_invocation_span(
     metadata: dict[str, Any] | None = None,
     usage: dict[str, Any] | None = None,
     error: str | None = None,
+    timeout_seconds: float = INVOCATION_SPAN_PERSIST_TIMEOUT_SECONDS,
 ) -> None:
     """Best-effort production writer used by the kernel.
 
@@ -343,35 +347,70 @@ async def persist_invocation_span(
     if coerced_tenant_id is None:
         logger.warning("[InvocationTrace] skip DB span without tenant_id: trace=%s span=%s", trace_id, span_id)
         return
-    try:
-        from app.database import tenant_scoped_session
+    clean_metadata = dict(metadata or {})
+    started = time.perf_counter()
 
-        async with tenant_scoped_session(coerced_tenant_id) as db:
-            await record_invocation_span(
-                db,
-                tenant_id=coerced_tenant_id,
-                trace_id=trace_id,
-                span_id=span_id,
-                parent_span_id=parent_span_id,
-                parent_trace_id=parent_trace_id,
-                span_type=span_type,
-                name=name,
-                status=status,
-                duration_ms=duration_ms,
-                agent_id=_coerce_uuid(agent_id),
-                user_id=_coerce_uuid(user_id),
-                runtime_task_id=_coerce_uuid(runtime_task_id),
-                session_id=session_id,
-                request_id=_coerce_uuid(request_id),
-                execution_identity_type=execution_identity_type,
-                execution_identity_id=execution_identity_id,
-                execution_identity_label=execution_identity_label,
-                metadata=metadata,
-                usage=usage,
-                error=error,
-            )
-            await db.commit()
+    async def _write(target_db: AsyncSession) -> None:
+        await record_invocation_span(
+            target_db,
+            tenant_id=coerced_tenant_id,
+            trace_id=trace_id,
+            span_id=span_id,
+            parent_span_id=parent_span_id,
+            parent_trace_id=parent_trace_id,
+            span_type=span_type,
+            name=name,
+            status=status,
+            duration_ms=duration_ms,
+            agent_id=_coerce_uuid(agent_id),
+            user_id=_coerce_uuid(user_id),
+            runtime_task_id=_coerce_uuid(runtime_task_id),
+            session_id=session_id,
+            request_id=_coerce_uuid(request_id),
+            execution_identity_type=execution_identity_type,
+            execution_identity_id=execution_identity_id,
+            execution_identity_label=execution_identity_label,
+            metadata=clean_metadata,
+            usage=usage,
+            error=error,
+        )
+
+    try:
+        async with asyncio.timeout(max(0.001, float(timeout_seconds))):
+            if db is not None:
+                # The savepoint isolates best-effort evidence failures from the
+                # caller's business transaction. Reusing the same connection is
+                # the critical invariant: an InvocationSpan FK can no longer
+                # wait on a RuntimeTask row locked by its own caller.
+                async with db.begin_nested():
+                    await _write(db)
+            else:
+                from app.database import tenant_scoped_session
+
+                async with tenant_scoped_session(coerced_tenant_id) as independent_db:
+                    await _write(independent_db)
+    except TimeoutError:
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        _record_span_metric(
+            span_type=span_type,
+            status="persist_timeout",
+            duration_ms=elapsed_ms,
+            metadata=clean_metadata,
+        )
+        logger.warning(
+            "[InvocationTrace] timed out persisting span trace=%s span=%s after %.3fs",
+            trace_id,
+            span_id,
+            timeout_seconds,
+        )
     except Exception as exc:  # noqa: BLE001 - tracing must not break runtime
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        _record_span_metric(
+            span_type=span_type,
+            status="persist_error",
+            duration_ms=elapsed_ms,
+            metadata=clean_metadata,
+        )
         logger.warning("[InvocationTrace] failed to persist span trace=%s span=%s: %s", trace_id, span_id, exc)
 
 

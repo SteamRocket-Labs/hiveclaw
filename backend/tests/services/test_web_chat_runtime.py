@@ -7,10 +7,45 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from sqlalchemy.exc import SQLAlchemyError
+
+from app.services.llm_client import LLMError
 
 
 async def _noop_async(*_args, **_kwargs):
     return None
+
+
+async def _fake_canonical_active_input(**kwargs):
+    active = kwargs["active_run"]
+    input_id = uuid4()
+    content = kwargs["content"]
+    display_content = kwargs.get("display_content") or content
+    file_name = kwargs.get("file_name") or ""
+    saved_content = f"[file:{file_name}]\n{display_content}" if file_name else display_content
+    queued = {
+        "id": str(input_id),
+        "input_id": str(input_id),
+        "content": saved_content,
+        "llm_content": content,
+        "display_content": display_content,
+        "role": kwargs.get("role") or "user",
+        "source": kwargs.get("source_channel") or "web",
+        "file_name": file_name,
+        "attachments": kwargs.get("attachments") or [],
+        "parts": kwargs.get("parts") or [],
+        "status": "queued",
+        "dispatch_status": "mailbox_queued",
+        "queue_ordinal": 1,
+    }
+    return {
+        "run_id": active.id.hex,
+        "status": active.status,
+        "turn_id": (active.metadata_json or {}).get("turn_id") or f"turn-{active.id.hex}",
+        "queued": queued,
+        "queued_user_message": queued,
+        "session_input_receipt": {"input_id": str(input_id), "input_status": "queued"},
+    }
 
 
 class _ScalarResult:
@@ -31,6 +66,17 @@ class _FakeDB:
         self.commits = 0
 
     async def execute(self, _stmt):
+        if "session_writer_epochs" in str(_stmt):
+            return _ScalarResult(
+                SimpleNamespace(
+                    state="legacy_open",
+                    new_run_generation=1,
+                    allowed_existing_generations_json=[1],
+                    enforcement_mode="observe",
+                    version=1,
+                    release_id="test-epoch",
+                )
+            )
         return _ScalarResult(self.active_run)
 
     def add(self, value):
@@ -41,6 +87,25 @@ class _FakeDB:
 
     async def flush(self):
         return None
+
+
+def test_public_tool_step_contract_never_carries_provider_private_reasoning():
+    import app.services.web_chat_runtime as runtime
+
+    payload = runtime._tool_step_contract(
+        {
+            "name": "read_file",
+            "status": "done",
+            "tool_call_id": "provider-tool-1",
+            "result": "public tool result",
+            "reasoning_content": "RAW_PRIVATE_REASONING",
+            "reasoning_signature": "provider-private-signature",
+        }
+    )
+
+    assert "reasoning_content" not in payload
+    assert "reasoning_signature" not in payload
+    assert payload["result"] == "public tool result"
 
 
 def test_clear_interactive_plan_mode_clears_typed_state_and_metadata_mirror():
@@ -101,6 +166,18 @@ def test_history_replay_preserves_full_unfrozen_tool_result():
         "tool_call_id": "call-full-result",
         "content": full_result,
     }
+
+
+def test_terminal_status_never_comes_from_assistant_natural_language_prefix():
+    import app.services.web_chat_runtime as runtime
+
+    event = SimpleNamespace(
+        event_type="assistant_message",
+        metadata_json={},
+        content="[LLM Error] This is model-authored analysis of an error format.",
+    )
+
+    assert runtime._terminal_status_from_transcript_event(event) == "completed"
 
 
 def test_terminal_task_update_persists_and_projects_terminal_reason():
@@ -181,6 +258,7 @@ def test_runtime_session_permission_metadata_prefers_latest_session_override():
         "mode": "bypassPermissions",
         "allowed_tools": ["track_todo"],
         "writable_roots": ["workspace/"],
+        "session_grants": [],
     }
     assert context.metadata["permission_mode"] == "bypassPermissions"
     assert context.metadata["writable_roots"] == ["workspace/"]
@@ -188,6 +266,7 @@ def test_runtime_session_permission_metadata_prefers_latest_session_override():
         "mode": "bypassPermissions",
         "allowed_tools": ["track_todo"],
         "writable_roots": ["workspace/"],
+        "session_grants": [],
     }
 
 
@@ -736,7 +815,19 @@ def _phase_run_fixtures():
     return run_id, agent, user, llm_model, runtime_task
 
 
-def _patch_phase_run(monkeypatch, runtime, *, runtime_task, agent, user, llm_model, fake_invoke, events):
+def _patch_phase_run(
+    monkeypatch,
+    runtime,
+    *,
+    runtime_task,
+    agent,
+    user,
+    llm_model,
+    fake_invoke,
+    events,
+    persist_stream_steps: bool = False,
+):
+    import app.services.web_chat_run_orchestrator as orchestrator
     from app.runtime.session import SessionContext
 
     runtime_context = SessionContext(session_id=str(runtime_task.parent_session_id), source="web", channel="web")
@@ -753,13 +844,37 @@ def _patch_phase_run(monkeypatch, runtime, *, runtime_task, agent, user, llm_mod
     async def fake_finalize(**_kwargs):
         return True
 
+    async def fake_prepare_model_request(state, **_payload):
+        provider_request_id = f"test:{state.run_uuid}:round:1:attempt:1"
+        state.active_provider_request_id = provider_request_id
+        return provider_request_id
+
+    async def invoke_with_model_request_fence(request):
+        await request.model_request_prepare(
+            round_index=1,
+            messages=[],
+            tools=[],
+            provider="openai",
+            model="gpt-4.1",
+            wire_request={},
+        )
+        return await fake_invoke(request)
+
+    async def fake_persist_stream_step(**kwargs):
+        return {
+            "type": kwargs["event_type"],
+            "content": kwargs["content"],
+            "visibility": {"audience": "direct_user"},
+        }
+
     async def noop_async(*_args, **_kwargs):
         return None
 
     monkeypatch.setattr(runtime, "_load_runtime_context", fake_load_context)
     monkeypatch.setattr(runtime.web_chat_broker, "get_or_create_runtime_session", fake_runtime_session)
     monkeypatch.setattr(runtime, "_maybe_handle_plan_mode_entry", noop_async)
-    monkeypatch.setattr(runtime, "invoke_agent", fake_invoke)
+    monkeypatch.setattr(runtime, "invoke_agent", invoke_with_model_request_fence)
+    monkeypatch.setattr(orchestrator, "_prepare_session_model_request", fake_prepare_model_request)
     monkeypatch.setattr(runtime, "_finalize_web_chat_run_with_assistant", fake_finalize)
     monkeypatch.setattr(runtime, "_persist_runtime_event", noop_async)
     monkeypatch.setattr(runtime, "_persist_tool_call", noop_async)
@@ -767,6 +882,8 @@ def _patch_phase_run(monkeypatch, runtime, *, runtime_task, agent, user, llm_mod
     monkeypatch.setattr(runtime, "broadcast_web_chat_event", capture_broadcast)
     monkeypatch.setattr(runtime, "_emit_terminal_turn_hook", noop_async)
     monkeypatch.setattr(runtime, "_resume_queued_plan_handoffs", noop_async)
+    if not persist_stream_steps:
+        monkeypatch.setattr(runtime, "_persist_stream_step_event", fake_persist_stream_step)
 
 
 @pytest.mark.asyncio
@@ -843,6 +960,7 @@ async def test_execute_web_chat_run_exposes_reclaimed_claim_as_resuming(monkeypa
 @pytest.mark.asyncio
 async def test_execute_web_chat_run_persists_stream_steps_for_replay(monkeypatch):
     import app.services.web_chat_runtime as runtime
+    import app.services.session_model_round as session_model_round
 
     run_id, agent, user, llm_model, runtime_task = _phase_run_fixtures()
     events: list[dict] = []
@@ -879,45 +997,41 @@ async def test_execute_web_chat_run_persists_stream_steps_for_replay(monkeypatch
         llm_model=llm_model,
         fake_invoke=fake_invoke,
         events=events,
+        persist_stream_steps=True,
     )
 
     class _FakeTenantSession:
         async def __aenter__(self):
-            return _FakeDB()
+            return _StreamDB()
 
         async def __aexit__(self, *_args):
             return False
 
-    async def fake_append_session_event(**kwargs):
+    class _StreamDB(_FakeDB):
+        async def scalar(self, _statement):
+            return SimpleNamespace(
+                envelope_json={
+                    "type": "session.event",
+                    "visibility": {"audience": "direct_user"},
+                }
+            )
+
+    async def fake_append_model_stream_delta(_db, **kwargs):
         persisted.append(kwargs)
-        return SimpleNamespace(
-            event_id=uuid4(),
-            message_id=None,
-            sequence=len(persisted),
-            transcript_event=SimpleNamespace(
-                content=kwargs.get("content") or "",
-                parts_json=kwargs.get("parts") or [],
-                metadata_json=kwargs.get("metadata") or {},
-            ),
-        )
+        return SimpleNamespace(id=uuid4())
 
     monkeypatch.setattr(runtime, "tenant_scoped_session", lambda _tenant_id: _FakeTenantSession())
-    monkeypatch.setattr(runtime, "append_session_event", fake_append_session_event)
+    monkeypatch.setattr(session_model_round, "append_model_stream_delta", fake_append_model_stream_delta)
 
     await runtime.execute_web_chat_run(run_id)
 
-    stream_events = [event for event in persisted if event.get("event_type") in {"chunk", "thinking"}]
-    assert [(event["event_type"], event["content"]) for event in stream_events] == [
-        ("chunk", "I will inspect the session renderer."),
-        ("thinking", "Checking the transcript contract."),
+    assert [(event["phase"], event["content"]) for event in persisted] == [
+        ("unknown", "I will inspect the session renderer."),
+        ("reasoning_private", "Checking the transcript contract."),
     ]
-    assert all(event["actor_type"] == "assistant" for event in stream_events)
-    assert all(event["role"] == "assistant" for event in stream_events)
-    assert all(event["materialize_chat_message"] is False for event in stream_events)
-    assert all(event["run_id"] == run_id for event in stream_events)
-    assert all(event["runtime_task_id"] == run_id for event in stream_events)
-    assert stream_events[0]["parts"] == [{"type": "text_delta", "text": "I will inspect the session renderer."}]
-    assert stream_events[1]["parts"] == [{"type": "reasoning", "text": "Checking the transcript contract."}]
+    assert all(event["run_id"] == run_id for event in persisted)
+    assert all(event["lifecycle"] == "delta" for event in persisted)
+    assert all(event["provider_request_id"].startswith("test:") for event in persisted)
 
 
 @pytest.mark.asyncio
@@ -1829,16 +1943,18 @@ async def test_disconnect_does_not_cancel_registered_web_chat_run():
 
 
 @pytest.mark.asyncio
-async def test_cancel_web_chat_run_sets_cancel_event_and_marks_runtime_task_killed(monkeypatch):
+async def test_cancel_web_chat_run_compatibility_facade_uses_canonical_control_input(monkeypatch):
     import app.services.web_chat_runtime as runtime
 
     run_id = uuid4()
+    tenant_id = uuid4()
     agent_id = uuid4()
     session_id = uuid4()
     user_id = uuid4()
     runtime_task = SimpleNamespace(
         id=run_id,
         task_type="web_chat_turn",
+        tenant_id=tenant_id,
         status="running",
         parent_agent_id=agent_id,
         parent_session_id=str(session_id),
@@ -1846,35 +1962,156 @@ async def test_cancel_web_chat_run_sets_cancel_event_and_marks_runtime_task_kill
         result_summary=None,
         completed_at=None,
     )
-    db = _FakeDB(active_run=runtime_task)
-    cancel_event = asyncio.Event()
-    published_cancels = []
+    agent = SimpleNamespace(id=agent_id, tenant_id=tenant_id)
+    user = SimpleNamespace(id=user_id, tenant_id=tenant_id)
+    session = SimpleNamespace(id=session_id, tenant_id=tenant_id, agent_id=agent_id)
+    calls = []
 
-    async def fake_publish_web_chat_cancel(**kwargs):
-        published_cancels.append(kwargs)
+    class _CanonicalDB(_FakeDB):
+        def __init__(self):
+            super().__init__(active_run=runtime_task)
+            self.rows = [agent, user, session]
 
-    monkeypatch.setattr("app.services.runtime_control_bus.publish_web_chat_cancel", fake_publish_web_chat_cancel)
-    runtime.register_web_chat_run_for_test(run_id.hex, cancel_event=cancel_event)
+        async def scalar(self, _stmt):
+            return self.rows.pop(0)
 
-    try:
-        result = await runtime.cancel_web_chat_run(
-            db=db,
+        async def get(self, _model, _key):
+            return runtime_task
+
+    async def fake_submit_live_cancel_input(**kwargs):
+        calls.append(kwargs)
+        return {"schema": "hive.control_input_receipt", "status": "applying"}
+
+    monkeypatch.setattr("app.services.session_live_input.submit_live_cancel_input", fake_submit_live_cancel_input)
+    db = _CanonicalDB()
+    result = await runtime.cancel_web_chat_run(
+        db=db,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        session_id=session_id,
+        run_id=run_id,
+        user_id=user_id,
+    )
+
+    assert result["run_id"] == run_id.hex
+    assert result["status"] == "running"
+    assert result["control_input"]["status"] == "applying"
+    assert runtime_task.status == "running"
+    assert calls[0]["agent"] is agent
+    assert calls[0]["user"] is user
+    assert calls[0]["session"] is session
+    assert calls[0]["run_id"] == run_id
+
+
+@pytest.mark.asyncio
+async def test_cancel_web_chat_run_does_not_broadcast_terminal_before_worker_terminal(monkeypatch):
+    import app.services.web_chat_runtime as runtime
+
+    run_id = uuid4()
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    session_id = uuid4()
+    user_id = uuid4()
+    runtime_task = SimpleNamespace(
+        id=run_id,
+        task_type="web_chat_turn",
+        tenant_id=tenant_id,
+        status="running",
+        parent_agent_id=agent_id,
+        parent_session_id=str(session_id),
+        metadata_json={"user_id": str(user_id), "session_id": str(session_id)},
+        result_summary=None,
+        completed_at=None,
+        created_at=None,
+        started_at=None,
+    )
+    agent = SimpleNamespace(id=agent_id, tenant_id=tenant_id)
+    user = SimpleNamespace(id=user_id, tenant_id=tenant_id)
+    session = SimpleNamespace(id=session_id, tenant_id=tenant_id, agent_id=agent_id)
+    broadcasts = []
+
+    class _CanonicalDB(_FakeDB):
+        def __init__(self):
+            super().__init__(active_run=runtime_task)
+            self.rows = [agent, user, session]
+
+        async def scalar(self, _stmt):
+            return self.rows.pop(0)
+
+        async def get(self, _model, _key):
+            return runtime_task
+
+    async def fake_submit_live_cancel_input(**_kwargs):
+        return {"schema": "hive.control_input_receipt", "status": "applying"}
+
+    async def fake_broadcast(*args, **kwargs):
+        broadcasts.append((args, kwargs))
+
+    monkeypatch.setattr("app.services.session_live_input.submit_live_cancel_input", fake_submit_live_cancel_input)
+    monkeypatch.setattr(runtime, "broadcast_web_chat_event", fake_broadcast)
+    result = await runtime.cancel_web_chat_run(
+        db=_CanonicalDB(),
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        session_id=session_id,
+        run_id=run_id,
+        user_id=user_id,
+    )
+
+    assert result["status"] == "running"
+    assert broadcasts == []
+
+
+@pytest.mark.asyncio
+async def test_cancel_web_chat_run_propagates_canonical_adapter_failure_without_terminal_mutation(monkeypatch):
+    import app.services.web_chat_runtime as runtime
+
+    run_id = uuid4()
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    session_id = uuid4()
+    user_id = uuid4()
+    runtime_task = SimpleNamespace(
+        id=run_id,
+        task_type="web_chat_turn",
+        tenant_id=tenant_id,
+        status="running",
+        parent_agent_id=agent_id,
+        parent_session_id=str(session_id),
+        metadata_json={"user_id": str(user_id), "session_id": str(session_id)},
+        result_summary=None,
+        completed_at=None,
+    )
+    agent = SimpleNamespace(id=agent_id, tenant_id=tenant_id)
+    user = SimpleNamespace(id=user_id, tenant_id=tenant_id)
+    session = SimpleNamespace(id=session_id, tenant_id=tenant_id, agent_id=agent_id)
+
+    class _CanonicalDB(_FakeDB):
+        def __init__(self):
+            super().__init__(active_run=runtime_task)
+            self.rows = [agent, user, session]
+
+        async def scalar(self, _stmt):
+            return self.rows.pop(0)
+
+        async def get(self, _model, _key):
+            return runtime_task
+
+    async def fail_canonical_adapter(**_kwargs):
+        raise RuntimeError("durable commit failed")
+
+    monkeypatch.setattr("app.services.session_live_input.submit_live_cancel_input", fail_canonical_adapter)
+    with pytest.raises(RuntimeError, match="durable commit failed"):
+        await runtime.cancel_web_chat_run(
+            db=_CanonicalDB(),
+            tenant_id=tenant_id,
             agent_id=agent_id,
             session_id=session_id,
             run_id=run_id,
             user_id=user_id,
         )
 
-        assert result["run_id"] == run_id.hex
-        assert result["status"] == "killed"
-        assert cancel_event.is_set() is True
-        assert runtime_task.status == "killed"
-        assert runtime_task.metadata_json["cancelled_by_user"] is True
-        assert published_cancels[0]["run_id"] == run_id.hex
-        assert published_cancels[0]["agent_id"] == str(agent_id)
-        assert db.commits == 1
-    finally:
-        runtime.unregister_web_chat_run_for_test(run_id.hex)
+    assert runtime_task.status == "running"
 
 
 @pytest.mark.asyncio
@@ -2419,6 +2656,7 @@ async def test_tool_card_finalization_preserves_exact_file_change_evidence(monke
     finalized = await runtime._finalize_web_chat_run_without_assistant(
         run_uuid=run_id,
         agent_id=agent_id,
+        session_id=session_id,
         status="completed",
         result_summary="awaiting_user_clarification",
         file_change_paths=["workspace/report.md"],
@@ -2992,6 +3230,13 @@ async def test_execute_web_chat_run_finalizes_blocking_clarification_without_emp
     async def fake_persist_tool_call(**kwargs):
         persisted_tools.append(kwargs["data"])
         ordering.append(f"persist:{kwargs['data'].get('name')}")
+        return [
+            {
+                "type": "tool_call",
+                "name": kwargs["data"].get("name"),
+                "visibility": {"audience": "direct_user"},
+            }
+        ]
 
     async def noop_async(*_args, **_kwargs):
         return None
@@ -3144,6 +3389,7 @@ async def test_execute_web_chat_run_delivers_session_permission_prompt_to_channe
     llm_model = SimpleNamespace(provider="openai", model="gpt-4.1", supports_vision=False)
     session = SimpleNamespace(delivery_target_json={"channel": "telegram", "chat_id": "100", "sender_id": "200"})
     finalized_without_assistant: list[dict] = []
+    runtime_updates: list[dict] = []
 
     async def fake_load_context(_run_uuid):
         return runtime_task, agent, user, llm_model, None, [], session
@@ -3172,11 +3418,14 @@ async def test_execute_web_chat_run_delivers_session_permission_prompt_to_channe
                 ),
             }
         )
-        raise AssertionError("session permission should pause before the model writes a refusal")
+        return SimpleNamespace(content="", reasoning_signature=None)
 
     async def fake_finalize_without_assistant(**kwargs):
         finalized_without_assistant.append(kwargs)
         return True
+
+    async def fake_update_runtime_task(_run_uuid, **kwargs):
+        runtime_updates.append(kwargs)
 
     async def noop_async(*_args, **_kwargs):
         return None
@@ -3191,14 +3440,17 @@ async def test_execute_web_chat_run_delivers_session_permission_prompt_to_channe
     monkeypatch.setattr(runtime, "_claim_pending_reply_suffix_for_session", noop_async)
     monkeypatch.setattr(runtime, "_persist_runtime_event", noop_async)
     monkeypatch.setattr(runtime, "_persist_tool_call", noop_async)
-    monkeypatch.setattr(runtime, "_update_runtime_task", noop_async)
+    monkeypatch.setattr(runtime, "_update_runtime_task", fake_update_runtime_task)
     monkeypatch.setattr(runtime, "broadcast_web_chat_event", noop_async)
     monkeypatch.setattr(runtime, "_resume_queued_plan_handoffs", noop_async)
 
     await runtime.execute_web_chat_run(run_id)
 
-    assert len(finalized_without_assistant) == 1
-    delivered_text = finalized_without_assistant[0]["channel_delivery_text"]
+    assert finalized_without_assistant == []
+    assert len(runtime_updates) == 1
+    assert runtime_updates[0]["status"] == "suspended"
+    assert runtime_updates[0]["result_summary"] == "awaiting_session_permission"
+    delivered_text = runtime_updates[0]["channel_delivery_text"]
     assert "Send Message to Agent" in delivered_text
     assert "允许" in delivered_text
     assert "本会话允许" in delivered_text
@@ -3449,6 +3701,7 @@ async def test_start_web_chat_run_creates_runtime_task_and_user_message(monkeypa
     task = next(item for item in db.added if isinstance(item, RuntimeTask))
     assert task.task_type == "web_chat_turn"
     assert task.status == "pending"
+    assert task.writer_generation == 1
     assert task.started_at is None
     assert task.parent_agent_id == agent_id
     assert task.child_agent_id == agent_id
@@ -3564,6 +3817,7 @@ async def test_start_web_chat_run_accepts_goal_continuation_task_type(monkeypatc
     assert not any(isinstance(item, ChatMessage) for item in db.added)
     assert result["status"] == "pending"
     assert task.status == "pending"
+    assert task.writer_generation == 1
     assert not scheduled
 
 
@@ -3816,6 +4070,7 @@ async def test_start_channel_chat_run_from_saved_turn_creates_runtime_task_witho
     task = next(item for item in db.added if isinstance(item, RuntimeTask))
     assert task.task_type == "web_chat_turn"
     assert task.status == "pending"
+    assert task.writer_generation == 1
     assert task.started_at is None
     assert task.tenant_id == agent.tenant_id
     assert task.parent_session_id == str(session_id)
@@ -3832,6 +4087,7 @@ async def test_start_channel_chat_run_from_saved_turn_creates_runtime_task_witho
         "mode": "bypassPermissions",
         "allowed_tools": ["web_search"],
         "writable_roots": ["workspace/"],
+        "session_grants": [],
     }
     assert task.metadata_json["initial_user_message"]["content"] == "处理这条飞书消息"
     assert task.metadata_json["initial_user_message"]["source"] == "feishu"
@@ -3906,7 +4162,7 @@ async def test_channel_ingress_replay_reuses_the_exact_runtime_task(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_channel_ingress_replay_does_not_queue_the_same_mid_run_message_twice(monkeypatch):
+async def test_channel_ingress_active_run_uses_stable_canonical_input_identity(monkeypatch):
     import app.services.web_chat_runtime as runtime
     from app.models.runtime_task import RuntimeTask
     from app.services.channel_ingress_context import use_channel_ingress_context
@@ -3916,7 +4172,6 @@ async def test_channel_ingress_replay_does_not_queue_the_same_mid_run_message_tw
     agent_id = uuid4()
     user_id = uuid4()
     session_id = uuid4()
-    pending_id = f"channel-ingress:{event_id}"
     active = RuntimeTask(
         id=uuid4(),
         task_type="web_chat_turn",
@@ -3926,15 +4181,7 @@ async def test_channel_ingress_replay_does_not_queue_the_same_mid_run_message_tw
         parent_session_id=str(session_id),
         child_session_id=str(session_id),
         tenant_id=tenant_id,
-        metadata_json={
-            "pending_user_messages": [
-                {
-                    "id": pending_id,
-                    "content": "queued once",
-                    "source": "slack",
-                }
-            ]
-        },
+        metadata_json={"turn_id": "turn-active"},
     )
 
     class _SequenceDB(_FakeDB):
@@ -3964,8 +4211,15 @@ async def test_channel_ingress_replay_does_not_queue_the_same_mid_run_message_tw
     async def fake_broadcast(*_args, **_kwargs):
         return None
 
+    captured = {}
+
+    async def fake_canonical(**kwargs):
+        captured.update(kwargs)
+        return await _fake_canonical_active_input(**kwargs)
+
     monkeypatch.setattr(runtime, "_lock_session_runtime_mutation", fake_lock)
     monkeypatch.setattr(runtime, "broadcast_web_chat_event", fake_broadcast)
+    monkeypatch.setattr(runtime, "_submit_active_session_input", fake_canonical)
 
     with use_channel_ingress_context(
         event_id=event_id,
@@ -3981,8 +4235,9 @@ async def test_channel_ingress_replay_does_not_queue_the_same_mid_run_message_tw
             source_channel="slack",
         )
 
-    assert len(active.metadata_json["pending_user_messages"]) == 1
-    assert result["queued_user_message"]["id"] == pending_id
+    assert captured["idempotency_key"] == f"channel-ingress:{event_id}"
+    assert "pending_user_messages" not in active.metadata_json
+    assert result["queued_user_message"]["status"] == "queued"
     assert ingress.runtime_task_id == active.id
 
 
@@ -4069,6 +4324,7 @@ async def test_start_web_chat_run_queues_user_message_when_run_is_active(monkeyp
         metadata_json={},
     )
     db = _FakeDB(active_run=active_run)
+    monkeypatch.setattr(runtime, "_submit_active_session_input", _fake_canonical_active_input)
     monkeypatch.setattr("app.memory.t0.ledger.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
 
     with pytest.raises(runtime.ActiveWebChatRunExists) as exc_info:
@@ -4083,9 +4339,9 @@ async def test_start_web_chat_run_queues_user_message_when_run_is_active(monkeyp
     assert exc_info.value.run["run_id"] == existing_run_id.hex
     assert exc_info.value.run["status"] == "running"
     assert exc_info.value.run["queued_user_message"]["content"] == "second message"
-    assert any(isinstance(item, ChatMessage) and item.role == "user" for item in db.added)
-    assert active_run.metadata_json["pending_user_messages"][0]["content"] == "second message"
-    assert db.commits == 1
+    assert not any(isinstance(item, ChatMessage) for item in db.added)
+    assert "pending_user_messages" not in active_run.metadata_json
+    assert db.commits == 0
     events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path)
     assert events == []
 
@@ -4112,6 +4368,7 @@ async def test_start_web_chat_run_preserves_structured_mid_run_attachment_queue(
         metadata_json={},
     )
     db = _FakeDB(active_run=active_run)
+    monkeypatch.setattr(runtime, "_submit_active_session_input", _fake_canonical_active_input)
     monkeypatch.setattr("app.memory.t0.ledger.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
 
     with pytest.raises(runtime.ActiveWebChatRunExists) as exc_info:
@@ -4131,10 +4388,8 @@ async def test_start_web_chat_run_preserves_structured_mid_run_attachment_queue(
     assert queued["llm_content"] == "[File: bank.pdf]\nFull extracted text\n\nQuestion: summarize"
     assert queued["display_content"] == "[file:bank.pdf]\nsummarize"
     assert queued["attachments"] == [{"name": "bank.pdf", "path": "workspace/bank.pdf"}]
-    assert any(isinstance(item, ChatMessage) and item.role == "user" for item in db.added)
-    pending = active_run.metadata_json["pending_user_messages"][0]
-    assert pending["llm_content"] == "[File: bank.pdf]\nFull extracted text\n\nQuestion: summarize"
-    assert pending["attachments"] == [{"name": "bank.pdf", "path": "workspace/bank.pdf"}]
+    assert not any(isinstance(item, ChatMessage) for item in db.added)
+    assert "pending_user_messages" not in active_run.metadata_json
 
 
 @pytest.mark.asyncio
@@ -4160,6 +4415,7 @@ async def test_steer_active_web_chat_turn_queues_message_for_matching_turn(monke
         metadata_json={"turn_id": "turn-1"},
     )
     db = _FakeDB(active_run=active_run)
+    monkeypatch.setattr(runtime, "_submit_active_session_input", _fake_canonical_active_input)
     monkeypatch.setattr("app.memory.t0.ledger.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
 
     result = await runtime.steer_active_web_chat_turn(
@@ -4174,10 +4430,10 @@ async def test_steer_active_web_chat_turn_queues_message_for_matching_turn(monke
     assert result["run_id"] == existing_run_id.hex
     assert result["turn_id"] == "turn-1"
     assert result["queued"]["content"] == "Use the stricter interpretation."
-    assert result["steer_strategy"] == "pending_mid_run_user_message"
-    assert any(isinstance(item, ChatMessage) and item.role == "user" for item in db.added)
-    assert active_run.metadata_json["pending_user_messages"][0]["content"] == "Use the stricter interpretation."
-    assert db.commits == 1
+    assert result["steer_strategy"] == "canonical_session_v2_input"
+    assert not any(isinstance(item, ChatMessage) for item in db.added)
+    assert "pending_user_messages" not in active_run.metadata_json
+    assert db.commits == 0
     events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path)
     assert events == []
 
@@ -4220,107 +4476,7 @@ async def test_steer_active_web_chat_turn_rejects_stale_turn_id():
 
 
 @pytest.mark.asyncio
-async def test_worker_claim_materializes_pending_mid_run_user_messages(monkeypatch, tmp_path):
-    import app.services.web_chat_runtime as runtime
-    from app.models.audit import ChatMessage
-    from app.models.chat_transcript_event import ChatTranscriptEvent
-
-    agent_id = uuid4()
-    tenant_id = uuid4()
-    user_id = uuid4()
-    session_id = uuid4()
-    run_id = uuid4()
-    message_id = uuid4()
-    task = SimpleNamespace(
-        id=run_id,
-        parent_agent_id=agent_id,
-        tenant_id=tenant_id,
-        parent_session_id=str(session_id),
-        metadata_json={
-            "pending_user_messages": [
-                {
-                    "id": message_id.hex,
-                    "content": "Use the stricter interpretation.",
-                    "llm_content": "Use the stricter interpretation.",
-                    "display_content": "Use the stricter interpretation.",
-                    "role": "user",
-                    "source": "web",
-                    "user_id": str(user_id),
-                    "attachments": [],
-                    "parts": [],
-                    "metadata": {"turn_id": "turn-1"},
-                    "t0_materialized": False,
-                }
-            ],
-            "pending_user_message_count": 1,
-        },
-    )
-
-    class _Session:
-        def __init__(self):
-            self.added = []
-            self.commits = 0
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *_args):
-            return False
-
-        async def execute(self, _stmt):
-            return _ScalarResult(task)
-
-        def add(self, value):
-            self.added.append(value)
-
-        async def flush(self):
-            return None
-
-        async def commit(self):
-            self.commits += 1
-
-    class _TenantContext:
-        async def __aenter__(self):
-            return session
-
-        async def __aexit__(self, *_args):
-            await session.commit()
-            return False
-
-    session = _Session()
-
-    async def resolve_run_tenant(_run_id, **_kwargs):
-        return tenant_id
-
-    monkeypatch.setattr(runtime, "resolve_tenant_for_runtime_task", resolve_run_tenant)
-    monkeypatch.setattr(runtime, "tenant_scoped_session", lambda *a, **k: _TenantContext())
-    monkeypatch.setattr("app.memory.t0.ledger.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
-
-    drained = await runtime._claim_pending_mid_run_user_messages(run_id)
-
-    assert drained == [
-        {
-            "role": "user",
-            "content": "Use the stricter interpretation.",
-            "display_content": "Use the stricter interpretation.",
-            "attachments": [],
-            "parts": [],
-        }
-    ]
-    assert task.metadata_json["pending_user_messages"] == []
-    assert task.metadata_json["pending_user_message_count"] == 0
-    assert session.commits == 1
-    assert not any(isinstance(item, ChatMessage) for item in session.added)
-    events = [item for item in session.added if isinstance(item, ChatTranscriptEvent)]
-    assert [(event.event_type, event.content) for event in events] == [
-        ("user_message", "Use the stricter interpretation.")
-    ]
-    assert events[0].run_id == run_id
-    assert events[0].projection_status == "pending"
-
-
-@pytest.mark.asyncio
-async def test_persist_tool_call_appends_typed_transcript_tool_result(monkeypatch, tmp_path):
+async def test_persist_legacy_tool_call_appends_typed_transcript_tool_result(monkeypatch, tmp_path):
     import app.services.tenant_resolver as tenant_resolver
     import app.services.web_chat_runtime as runtime
     from app.models.chat_transcript_event import ChatTranscriptEvent
@@ -4352,7 +4508,7 @@ async def test_persist_tool_call_appends_typed_transcript_tool_result(monkeypatc
     monkeypatch.setattr("app.memory.t0.ledger.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
 
     full_result = "file content\n" + ("R" * 60000) + "\nEND_OF_PERSISTED_TOOL_RESULT"
-    await runtime._persist_tool_call(
+    await runtime._persist_legacy_tool_call(
         agent_id=agent_id,
         user_id=user_id,
         session_id=session_id,
@@ -4418,7 +4574,7 @@ async def test_persist_personal_kb_tool_keeps_full_evidence_but_replays_pointer(
     monkeypatch.setattr(runtime, "tenant_scoped_session", lambda _tenant_id: _Session())
     monkeypatch.setattr("app.memory.t0.ledger.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
 
-    await runtime._persist_tool_call(
+    await runtime._persist_legacy_tool_call(
         agent_id=agent_id,
         user_id=user_id,
         session_id=session_id,
@@ -4459,7 +4615,7 @@ async def test_persist_personal_kb_tool_keeps_full_evidence_but_replays_pointer(
 
 
 @pytest.mark.asyncio
-async def test_persist_tool_call_attaches_written_artifact_parts(monkeypatch, tmp_path):
+async def test_persist_legacy_tool_call_attaches_written_artifact_parts(monkeypatch, tmp_path):
     import app.services.tenant_resolver as tenant_resolver
     import app.services.web_chat_runtime as runtime
     from app.models.chat_artifact import ChatArtifact
@@ -4507,7 +4663,7 @@ async def test_persist_tool_call_attaches_written_artifact_parts(monkeypatch, tm
     monkeypatch.setattr(runtime, "get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
     monkeypatch.setattr("app.memory.t0.ledger.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
 
-    await runtime._persist_tool_call(
+    await runtime._persist_legacy_tool_call(
         agent_id=agent_id,
         user_id=user_id,
         session_id=session_id,
@@ -4536,7 +4692,7 @@ async def test_persist_tool_call_attaches_written_artifact_parts(monkeypatch, tm
 
 
 @pytest.mark.asyncio
-async def test_persist_tool_call_appends_running_step_contract(monkeypatch, tmp_path):
+async def test_persist_legacy_tool_call_appends_running_step_contract(monkeypatch, tmp_path):
     import app.services.tenant_resolver as tenant_resolver
     import app.services.web_chat_runtime as runtime
     from app.models.chat_transcript_event import ChatTranscriptEvent
@@ -4568,7 +4724,7 @@ async def test_persist_tool_call_appends_running_step_contract(monkeypatch, tmp_
     monkeypatch.setattr(runtime, "tenant_scoped_session", lambda _tenant_id: _Session())
     monkeypatch.setattr("app.memory.t0.ledger.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
 
-    persisted = await runtime._persist_tool_call(
+    persisted = await runtime._persist_legacy_tool_call(
         agent_id=agent_id,
         user_id=user_id,
         session_id=session_id,
@@ -4599,7 +4755,7 @@ async def test_persist_tool_call_appends_running_step_contract(monkeypatch, tmp_
 
 
 @pytest.mark.asyncio
-async def test_persist_tool_call_done_contract_includes_stable_ids_and_duration(monkeypatch, tmp_path):
+async def test_persist_legacy_tool_call_done_contract_includes_stable_ids_and_duration(monkeypatch, tmp_path):
     import app.services.tenant_resolver as tenant_resolver
     import app.services.web_chat_runtime as runtime
     from app.models.chat_transcript_event import ChatTranscriptEvent
@@ -4631,7 +4787,7 @@ async def test_persist_tool_call_done_contract_includes_stable_ids_and_duration(
     monkeypatch.setattr(runtime, "tenant_scoped_session", lambda _tenant_id: _Session())
     monkeypatch.setattr("app.memory.t0.ledger.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
 
-    await runtime._persist_tool_call(
+    await runtime._persist_legacy_tool_call(
         agent_id=agent_id,
         user_id=user_id,
         session_id=session_id,
@@ -4698,6 +4854,8 @@ async def test_start_web_chat_run_queues_when_active_run_unique_index_conflicts(
             self.rollbacks = 0
 
         async def execute(self, _stmt):
+            if "session_writer_epochs" in str(_stmt):
+                return await super().execute(_stmt)
             self.execute_calls += 1
             return _ScalarResult(None if self.execute_calls == 1 else active_run)
 
@@ -4717,6 +4875,7 @@ async def test_start_web_chat_run_queues_when_active_run_unique_index_conflicts(
         broadcasts.append(event)
 
     monkeypatch.setattr(runtime, "broadcast_web_chat_event", fake_broadcast)
+    monkeypatch.setattr(runtime, "_submit_active_session_input", _fake_canonical_active_input)
     monkeypatch.setattr("app.memory.t0.ledger.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
 
     with pytest.raises(runtime.ActiveWebChatRunExists) as exc_info:
@@ -4732,10 +4891,10 @@ async def test_start_web_chat_run_queues_when_active_run_unique_index_conflicts(
     assert exc_info.value.run["status"] == "running"
     assert exc_info.value.run["queued_user_message"]["content"] == "race message"
     assert db.rollbacks == 1
-    assert db.commits == 2
+    assert db.commits == 1
     assert not any(isinstance(item, ChatMessage) for item in db.added)
     assert not any(isinstance(item, RuntimeTask) for item in db.added)
-    assert active_run.metadata_json["pending_user_messages"][0]["content"] == "race message"
+    assert "pending_user_messages" not in active_run.metadata_json
     assert broadcasts[-1]["type"] == "user_message_queued"
     events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path)
     assert events == []
@@ -4936,6 +5095,87 @@ def test_reclaimed_web_chat_claim_builds_durable_resume_context(monkeypatch):
     assert metadata["resumed_after_restart"] is True
     assert metadata["recovery_state"] == "recovering"
     assert metadata["restart_resume_context"] == {"resume_prompt": "resume once", "task": run_id.hex}
+
+
+@pytest.mark.asyncio
+async def test_claimed_web_chat_run_quarantines_after_recovery_budget_is_exhausted(monkeypatch):
+    import app.services.web_chat_runtime as runtime
+
+    run_id = uuid4()
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    session_id = uuid4()
+    task = SimpleNamespace(
+        id=run_id,
+        tenant_id=tenant_id,
+        task_type="web_chat_turn",
+        status="running",
+        parent_agent_id=agent_id,
+        parent_session_id=str(session_id),
+        attempt_count=4,
+        claimed_by="recovery-worker",
+        claim_expires_at=datetime.now(timezone.utc),
+        created_at=None,
+        started_at=None,
+        completed_at=None,
+        result_summary=None,
+        metadata_json={"reclaimed_expired_claim": True, "lease_reclaim_count": 3},
+    )
+
+    class _DB:
+        def __init__(self):
+            self.calls = 0
+            self.commits = 0
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def execute(self, _stmt):
+            self.calls += 1
+            return _ScalarResult(task if self.calls == 1 else None)
+
+        async def commit(self):
+            self.commits += 1
+
+    persisted_events: list[dict] = []
+    broadcasts: list[dict] = []
+    db = _DB()
+
+    async def fake_resolve(*_args, **_kwargs):
+        return tenant_id
+
+    async def fake_append_session_event(**kwargs):
+        persisted_events.append(kwargs)
+
+    async def fake_broadcast(_agent_id, _session_id, event):
+        broadcasts.append(event)
+
+    monkeypatch.setattr(runtime, "resolve_tenant_for_runtime_task", fake_resolve)
+    monkeypatch.setattr(runtime, "tenant_scoped_session", lambda *a, **k: db)
+    monkeypatch.setattr(runtime, "append_session_event", fake_append_session_event)
+    monkeypatch.setattr(runtime, "broadcast_web_chat_event", fake_broadcast)
+    monkeypatch.setattr(
+        runtime,
+        "get_settings",
+        lambda: SimpleNamespace(RUNTIME_TASK_WEB_CHAT_MAX_EXECUTION_ATTEMPTS=3),
+    )
+
+    stopped = await runtime._reconcile_claimed_web_chat_terminal_ghost(run_id)
+
+    assert stopped is True
+    assert task.status == "needs_reconciliation"
+    assert task.completed_at is not None
+    assert task.claimed_by is None
+    assert task.claim_expires_at is None
+    assert task.metadata_json["automatic_retry_allowed"] is False
+    assert task.metadata_json["reconciliation_reason"] == "web_chat_recovery_attempts_exhausted"
+    assert persisted_events[0]["event_type"] == "error"
+    assert persisted_events[0]["metadata"]["status"] == "needs_reconciliation"
+    assert db.commits == 1
+    assert [event["type"] for event in broadcasts] == ["error", "phase"]
 
 
 @pytest.mark.asyncio
@@ -5358,8 +5598,27 @@ async def test_maybe_handle_plan_mode_entry_does_not_auto_enter_without_explicit
     assert "plan_mode" not in session_context.metadata
 
 
+@pytest.mark.parametrize(
+    ("invoke_error", "expected_reason"),
+    [
+        pytest.param(
+            LLMError("provider stream closed"),
+            "provider_error",
+            id="provider",
+        ),
+        pytest.param(
+            SQLAlchemyError("database unavailable"),
+            "persistence_error",
+            id="persistence",
+        ),
+    ],
+)
 @pytest.mark.asyncio
-async def test_execute_web_chat_run_persists_visible_error_on_uncancelled_exception(monkeypatch):
+async def test_execute_web_chat_run_persists_typed_failure_without_platform_authored_assistant(
+    monkeypatch,
+    invoke_error: Exception,
+    expected_reason: str,
+):
     import app.services.web_chat_runtime as runtime
 
     run_id = uuid4()
@@ -5385,7 +5644,7 @@ async def test_execute_web_chat_run_persists_visible_error_on_uncancelled_except
     )
     user = SimpleNamespace(id=user_id, display_name="Rocky", username="rocky")
     llm_model = SimpleNamespace(provider="openai", model="gpt-4.1", supports_vision=False)
-    finalized: list[dict] = []
+    finalized_without_assistant: list[dict] = []
     updates: list[tuple] = []
     broadcasts: list[dict] = []
 
@@ -5393,10 +5652,13 @@ async def test_execute_web_chat_run_persists_visible_error_on_uncancelled_except
         return runtime_task, agent, user, llm_model, None, []
 
     async def fake_invoke(_request):
-        raise RuntimeError("provider stream closed")
+        raise invoke_error
 
-    async def fake_finalize(**kwargs):
-        finalized.append(kwargs)
+    async def fail_assistant_finalize(**_kwargs):
+        raise AssertionError("runtime infrastructure failure must not become assistant prose")
+
+    async def fake_finalize_without_assistant(**kwargs):
+        finalized_without_assistant.append(kwargs)
         return True
 
     async def fake_update(run_uuid, **kwargs):
@@ -5411,29 +5673,32 @@ async def test_execute_web_chat_run_persists_visible_error_on_uncancelled_except
     monkeypatch.setattr(runtime, "_load_runtime_context", fake_load_context)
     monkeypatch.setattr(runtime, "_maybe_handle_plan_mode_entry", noop_async)
     monkeypatch.setattr(runtime, "invoke_agent", fake_invoke)
-    monkeypatch.setattr(runtime, "_finalize_web_chat_run_with_assistant", fake_finalize)
+    monkeypatch.setattr(runtime, "_finalize_web_chat_run_with_assistant", fail_assistant_finalize)
+    monkeypatch.setattr(runtime, "_finalize_web_chat_run_without_assistant", fake_finalize_without_assistant)
     monkeypatch.setattr(runtime, "_update_runtime_task", fake_update)
     monkeypatch.setattr(runtime, "broadcast_web_chat_event", fake_broadcast)
     monkeypatch.setattr(runtime, "_resume_queued_plan_handoffs", noop_async)
 
     await runtime.execute_web_chat_run(run_id)
 
-    assert finalized == [
+    assert finalized_without_assistant == [
         {
             "run_uuid": run_id,
             "agent_id": agent_id,
-            "user_id": user_id,
             "session_id": session_id,
-            "content": "[LLM Error] AI 模型调用异常，请稍后重试。",
-            "thinking": None,
-            "thinking_signature": None,
             "status": "failed",
-            "result_summary": "Web chat run failed: RuntimeError",
-            "metadata_json": {"error": "provider stream closed", "terminal_reason": "provider_error"},
+            "result_summary": f"Web chat run failed: {type(invoke_error).__name__}",
+            "metadata_json": {"error": str(invoke_error), "terminal_reason": expected_reason},
         }
     ]
     assert updates == []
-    assert {"type": "error", "content": "[LLM Error] AI 模型调用异常，请稍后重试。"} in broadcasts
+    assert {
+        "type": "runtime_failure",
+        "status": "failed",
+        "reason": expected_reason,
+        "retryable": True,
+    } in broadcasts
+    assert all("content" not in event for event in broadcasts if event.get("type") == "runtime_failure")
     # The RuntimePhase backstop settles the stream after the visible error event.
     phase_broadcasts = [event for event in broadcasts if event.get("type") == "phase"]
     assert phase_broadcasts[-1]["phase"] == "failed"

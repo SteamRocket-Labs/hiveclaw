@@ -89,6 +89,9 @@ class Settings(BaseSettings):
     RUNTIME_TASK_CLAIM_LEASE_SECONDS: int = 180
     RUNTIME_TASK_CLAIM_POLL_SECONDS: float = 1.0
     RUNTIME_TASK_WAKEUP_CHANNEL: str = "hive:runtime_tasks:wakeup"
+    # Initial execution plus safe lease-recovery attempts. A later expired
+    # claim is quarantined instead of replaying model/tool work indefinitely.
+    RUNTIME_TASK_WEB_CHAT_MAX_EXECUTION_ATTEMPTS: int = 3
     # Requests slower than this log a structured `slow_request` warning.
     SLOW_REQUEST_WARN_SECONDS: float = 1.0
 

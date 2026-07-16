@@ -13,6 +13,7 @@ from app.core.events import get_redis
 WEB_CHAT_STREAM_SCHEMA = "hive.web_chat.stream.v1"
 WEB_CHAT_STREAM_LIVE_CHANNEL = "hive:web_chat:stream:live"
 WEB_CHAT_STREAM_MAXLEN = 10_000
+SESSION_EVENT_LIVE_CHANNEL = "hive:session:event:v2:live"
 WEB_CHAT_STREAM_RECONNECT_SECONDS = 2.0
 _FORWARDER_STATE: dict[str, Any] = {
     "running": False,
@@ -22,6 +23,19 @@ _FORWARDER_STATE: dict[str, Any] = {
     "restart_count": 0,
     "last_restart_at": None,
 }
+
+
+async def publish_canonical_session_event(payload: dict[str, Any]) -> None:
+    """Broadcast one DB-sequenced canonical envelope without inventing a sequence."""
+
+    required = {"event_id", "session_id", "sequence", "envelope_sha256", "envelope"}
+    if not required.issubset(payload):
+        raise ValueError("canonical_session_event_delivery_fields_missing")
+    redis = await get_redis()
+    await redis.publish(
+        SESSION_EVENT_LIVE_CHANNEL,
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str),
+    )
 
 
 def web_chat_run_stream_key(run_id: str) -> str:
@@ -78,18 +92,33 @@ async def _listen_web_chat_stream_once() -> None:
 
     redis = await get_redis()
     pubsub = redis.pubsub()
-    await pubsub.subscribe(WEB_CHAT_STREAM_LIVE_CHANNEL)
+    await pubsub.subscribe(WEB_CHAT_STREAM_LIVE_CHANNEL, SESSION_EVENT_LIVE_CHANNEL)
     async for message in pubsub.listen():
         if message.get("type") != "message":
             continue
         try:
             raw = message.get("data")
             envelope = json.loads(raw if isinstance(raw, str) else raw.decode("utf-8"))
-            payload = dict(envelope.get("payload") or {})
-            agent_id = envelope.get("agent_id")
-            session_id = envelope.get("session_id")
+            if envelope.get("schema") == "hive.session_event.delivery":
+                payload = dict(envelope.get("envelope") or {})
+                agent_id = envelope.get("agent_id")
+                session_id = envelope.get("session_id")
+                if (
+                    payload.get("schema") != "hive.session_event"
+                    or str(payload.get("event_id") or "") != str(envelope.get("event_id") or "")
+                    or int(payload.get("sequence") or 0) != int(envelope.get("sequence") or 0)
+                ):
+                    raise ValueError("canonical_session_event_delivery_mismatch")
+            else:
+                payload = dict(envelope.get("payload") or {})
+                agent_id = envelope.get("agent_id")
+                session_id = envelope.get("session_id")
             if not agent_id:
                 continue
+            if payload.get("schema") == "hive.session_event":
+                audience = str((payload.get("visibility") or {}).get("audience") or "")
+                if audience not in {"direct_user", "participants"}:
+                    continue
             await web_chat_broker.send_session_message(str(agent_id), str(session_id) if session_id else None, payload)
             _FORWARDER_STATE["forwarded"] = int(_FORWARDER_STATE.get("forwarded") or 0) + 1
             _FORWARDER_STATE["last_sequence"] = envelope.get("sequence")

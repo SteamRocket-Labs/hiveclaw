@@ -10,6 +10,12 @@ from sqlalchemy.pool import NullPool
 
 
 MIGRATION = Path(__file__).resolve().parents[2] / "alembic" / "versions" / "session_v2_0716.py"
+INPUT_CONTROL_MIGRATION = (
+    Path(__file__).resolve().parents[2] / "alembic" / "versions" / "session_v2_input_control_0716.py"
+)
+ADMISSION_REVISION_MIGRATION = (
+    Path(__file__).resolve().parents[2] / "alembic" / "versions" / "session_v2_admission_revision_0716.py"
+)
 
 SESSION_V2_TRIGGER_FUNCTIONS = (
     "enforce_session_event_v2_contract",
@@ -25,6 +31,9 @@ SESSION_V2_EXISTING_TRANSCRIPT_INDEXES = (
     "ix_chat_transcript_events_invocation_id",
     "uq_chat_transcript_tool_result_invocation",
 )
+
+SESSION_V2_PARENT_REVISION = "hr_runtime_authority_0715"
+SESSION_V2_HEAD_REVISION = "session_v2_permission_tool_0716"
 
 
 def test_session_v2_migration_is_the_single_head_and_secure_downgrade_preserves_evidence() -> None:
@@ -58,20 +67,24 @@ def test_session_v2_migration_is_the_single_head_and_secure_downgrade_preserves_
     assert "build_session_event_contract_function_sql" in session_contract_body
 
 
-def test_session_v2_revision_snapshot_matches_live_contract_at_revision_cut() -> None:
+def test_session_v2_revision_snapshots_match_their_owned_live_contracts() -> None:
     from app.services.session_event_contract import (
         SESSION_V2_AUTHORITY_TABLES as live_authority_tables,
         SESSION_V2_TRIGGER_FUNCTION_SIGNATURES as live_function_signatures,
-        build_session_event_contract_function_sql as build_live_event_sql,
-        build_session_tenant_binding_function_sql as build_live_authority_sql,
         build_session_writer_epoch_function_sql as build_live_writer_sql,
     )
     from migration_snapshots.session_v2_contract_0716 import (
         SESSION_V2_AUTHORITY_TABLES as frozen_authority_tables,
         SESSION_V2_TRIGGER_FUNCTION_SIGNATURES as frozen_function_signatures,
+        build_session_writer_epoch_function_sql as build_frozen_writer_sql,
+    )
+    from migration_snapshots.session_v2_admission_revision_contract_0716 import (
         build_session_event_contract_function_sql as build_frozen_event_sql,
         build_session_tenant_binding_function_sql as build_frozen_authority_sql,
-        build_session_writer_epoch_function_sql as build_frozen_writer_sql,
+    )
+    from app.services.session_event_contract import (
+        build_session_event_contract_function_sql as build_live_event_sql,
+        build_session_tenant_binding_function_sql as build_live_authority_sql,
     )
 
     assert frozen_authority_tables == live_authority_tables
@@ -79,6 +92,274 @@ def test_session_v2_revision_snapshot_matches_live_contract_at_revision_cut() ->
     assert build_frozen_event_sql() == build_live_event_sql()
     assert build_frozen_writer_sql() == build_live_writer_sql()
     assert build_frozen_authority_sql() == build_live_authority_sql()
+
+
+def test_session_v2_input_control_migration_is_additive_and_schema_preserving() -> None:
+    source = INPUT_CONTROL_MIGRATION.read_text(encoding="utf-8")
+    assert 'revision = "session_v2_input_control_0716"' in source
+    assert 'down_revision = "session_v2_0716"' in source
+    assert "session_v2_input_control_contract_0716" in source
+    assert 'alter_column("session_turn_replacements", "cancel_control_id", nullable=True)' in source
+    assert 'alter_column("session_turn_replacements", "cancel_command_id", nullable=True)' in source
+    downgrade = source.split("def downgrade()", 1)[1]
+    assert "session_v2_input_control_downgrade_blocked" in source
+    assert "DROP TABLE" not in downgrade
+    assert "DELETE FROM session_turn_replacements" not in downgrade
+    assert "UPDATE session_turn_replacements" not in downgrade
+
+
+def test_session_v2_admission_revision_migration_is_additive_and_schema_preserving() -> None:
+    source = ADMISSION_REVISION_MIGRATION.read_text(encoding="utf-8")
+    assert 'revision = "session_v2_admission_revision_0716"' in source
+    assert 'down_revision = "session_v2_input_control_0716"' in source
+    assert "SET input_revision=1" in source
+    assert "SET input_revision=input.revision" not in source
+    assert "legacy_input_revision_admission_ambiguous" in source
+    assert "uq_session_input_admissions_input_revision" in source
+    downgrade = source.split("def downgrade()", 1)[1]
+    assert "session_v2_admission_revision_downgrade_blocked" in downgrade
+    assert "input_revision > 1" in downgrade
+    assert "GROUP BY input_id HAVING count(*) > 1" in downgrade
+    assert "DELETE FROM" not in downgrade
+
+
+@pytest.mark.asyncio
+async def test_session_v2_input_control_exact_parent_upgrade_is_nullable_and_current_head(
+    session_v2_input_control_parent_migrated_pg_url: str,
+) -> None:
+    engine = create_async_engine(session_v2_input_control_parent_migrated_pg_url, poolclass=NullPool)
+    try:
+        async with engine.connect() as connection:
+            assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == SESSION_V2_HEAD_REVISION
+            nullable = dict(
+                (
+                    await connection.execute(
+                        text(
+                            """
+                            SELECT column_name,is_nullable
+                            FROM information_schema.columns
+                            WHERE table_schema='public'
+                              AND table_name='session_turn_replacements'
+                              AND column_name IN ('cancel_control_id','cancel_command_id')
+                            """
+                        )
+                    )
+                ).all()
+            )
+            assert nullable == {"cancel_control_id": "YES", "cancel_command_id": "YES"}
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_session_v2_admission_revision_backfills_legacy_attempt_without_relabeling_current_bytes(
+    session_v2_admission_revision_parent_pg_url: str,
+) -> None:
+    from app.models.agent import Agent
+    from app.models.chat_session import ChatSession
+    from app.models.tenant import Tenant
+    from app.models.user import User
+    from tests.migrations.conftest import _alembic_downgrade, _alembic_upgrade
+
+    tenant_id, user_id, agent_id, session_id, command_id, input_id, admission_id = (uuid.uuid4() for _ in range(7))
+    original_hook_run_id = uuid.uuid4()
+    engine = create_async_engine(session_v2_admission_revision_parent_pg_url, poolclass=NullPool)
+    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    try:
+        async with session_factory() as db:
+            db.add(Tenant(id=tenant_id, name="Admission Revision", slug=f"admission-rev-{tenant_id.hex[:8]}"))
+            db.add(
+                User(
+                    id=user_id,
+                    username=f"admission-rev-{user_id.hex[:8]}",
+                    email=f"{user_id.hex[:8]}@admission-revision.test",
+                    password_hash="x",
+                    display_name="Admission Revision",
+                    tenant_id=tenant_id,
+                )
+            )
+            await db.flush()
+            db.add(Agent(id=agent_id, tenant_id=tenant_id, name="Admission Revision Agent", creator_id=user_id))
+            await db.flush()
+            db.add(ChatSession(id=session_id, agent_id=agent_id, tenant_id=tenant_id, user_id=user_id))
+            await db.flush()
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO session_commands(
+                      id,tenant_id,principal_id,session_id,namespace,idempotency_key,
+                      command_kind,request_hash,target_hash,request_json,target_json,
+                      status,receipt_ref
+                    ) VALUES (
+                      :id,:tenant_id,:principal_id,:session_id,'human_input',:idempotency_key,
+                      'start_turn',:request_hash,:target_hash,'{}'::jsonb,'{}'::jsonb,
+                      'accepted',:receipt_ref
+                    )
+                    """
+                ),
+                {
+                    "id": command_id,
+                    "tenant_id": tenant_id,
+                    "principal_id": user_id,
+                    "session_id": session_id,
+                    "idempotency_key": f"legacy:{input_id}",
+                    "request_hash": "a" * 64,
+                    "target_hash": "b" * 64,
+                    "receipt_ref": f"session-command:{command_id}",
+                },
+            )
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO session_turn_inputs(
+                      id,tenant_id,session_id,command_id,intent,content_parts_json,
+                      content_hash,queue_priority,queue_ordinal,revision,status
+                    ) VALUES (
+                      :id,:tenant_id,:session_id,:command_id,'start_turn',
+                      '[{"type":"text","text":"revision three"}]'::jsonb,
+                      :content_hash,'next',1,3,'accepted'
+                    )
+                    """
+                ),
+                {
+                    "id": input_id,
+                    "tenant_id": tenant_id,
+                    "session_id": session_id,
+                    "command_id": command_id,
+                    "content_hash": "c" * 64,
+                },
+            )
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO session_input_admissions(
+                      id,tenant_id,session_id,command_id,input_id,state,hook_run_id,
+                      hook_idempotency_key,hook_result_hash,additional_context_refs_json,
+                      carry_forward
+                    ) VALUES (
+                      :id,:tenant_id,:session_id,:command_id,:input_id,'admitted',:hook_run_id,
+                      :hook_idempotency_key,:hook_result_hash,'[]'::jsonb,'none'
+                    )
+                    """
+                ),
+                {
+                    "id": admission_id,
+                    "tenant_id": tenant_id,
+                    "session_id": session_id,
+                    "command_id": command_id,
+                    "input_id": input_id,
+                    "hook_run_id": original_hook_run_id,
+                    "hook_idempotency_key": f"legacy-hook:{input_id}",
+                    "hook_result_hash": "d" * 64,
+                },
+            )
+            await db.commit()
+    finally:
+        await engine.dispose()
+
+    _alembic_upgrade(
+        session_v2_admission_revision_parent_pg_url,
+        "session_v2_admission_revision_0716",
+    )
+
+    engine = create_async_engine(session_v2_admission_revision_parent_pg_url, poolclass=NullPool)
+    try:
+        async with engine.connect() as connection:
+            assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == (
+                "session_v2_admission_revision_0716"
+            )
+            backfill = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT admission.input_revision,admission.state,admission.hook_run_id,
+                               input.revision,input.status,input.recovery_owner,
+                               command.status,command.rejection_json->>'reason_code'
+                        FROM session_input_admissions AS admission
+                        JOIN session_turn_inputs AS input ON input.id=admission.input_id
+                        JOIN session_commands AS command ON command.id=admission.command_id
+                        WHERE admission.id=:admission_id
+                        """
+                    ),
+                    {"admission_id": admission_id},
+                )
+            ).one()
+            assert tuple(backfill) == (
+                1,
+                "admitted",
+                original_hook_run_id,
+                3,
+                "needs_reconciliation",
+                "session_v2_admission_revision_backfill",
+                "needs_reconciliation",
+                "legacy_input_revision_admission_ambiguous",
+            )
+            constraints = {
+                row[0]
+                for row in (
+                    await connection.execute(
+                        text(
+                            """
+                            SELECT conname FROM pg_constraint
+                            WHERE conrelid='session_input_admissions'::regclass
+                              AND conname LIKE 'uq_session_input_admissions_input%'
+                            """
+                        )
+                    )
+                ).all()
+            }
+            assert constraints == {"uq_session_input_admissions_input_revision"}
+
+        second_admission_id = uuid.uuid4()
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    """
+                    INSERT INTO session_input_admissions(
+                      id,tenant_id,session_id,command_id,input_id,input_revision,state,
+                      hook_run_id,hook_idempotency_key,additional_context_refs_json,carry_forward
+                    ) VALUES (
+                      :id,:tenant_id,:session_id,:command_id,:input_id,2,'admission_pending',
+                      :hook_run_id,:hook_idempotency_key,'[]'::jsonb,'none'
+                    )
+                    """
+                ),
+                {
+                    "id": second_admission_id,
+                    "tenant_id": tenant_id,
+                    "session_id": session_id,
+                    "command_id": command_id,
+                    "input_id": input_id,
+                    "hook_run_id": uuid.uuid4(),
+                    "hook_idempotency_key": f"revision-two:{input_id}",
+                },
+            )
+    finally:
+        await engine.dispose()
+
+    with pytest.raises(pytest.fail.Exception, match="session_v2_admission_revision_downgrade_blocked"):
+        _alembic_downgrade(session_v2_admission_revision_parent_pg_url, "session_v2_input_control_0716")
+
+    engine = create_async_engine(session_v2_admission_revision_parent_pg_url, poolclass=NullPool)
+    try:
+        async with engine.connect() as connection:
+            assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == (
+                "session_v2_admission_revision_0716"
+            )
+            attempts = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT input_revision,state FROM session_input_admissions
+                        WHERE input_id=:input_id ORDER BY input_revision
+                        """
+                    ),
+                    {"input_id": input_id},
+                )
+            ).all()
+            assert [tuple(row) for row in attempts] == [(1, "admitted"), (2, "admission_pending")]
+    finally:
+        await engine.dispose()
 
 
 def test_migration_downgrade_is_a_fence_relaxation_not_evidence_destruction(monkeypatch) -> None:
@@ -539,7 +820,6 @@ async def test_revision_recovers_invalid_concurrent_index_residue_without_rebuil
     from tests.migrations.conftest import (
         _alembic_downgrade,
         _alembic_upgrade,
-        _current_head_parent,
     )
 
     tenant_id, user_id, agent_id, session_id, invocation_id = (uuid.uuid4() for _ in range(5))
@@ -680,8 +960,7 @@ async def test_revision_recovers_invalid_concurrent_index_residue_without_rebuil
     finally:
         await engine.dispose()
 
-    parent = _current_head_parent()
-    _alembic_downgrade(session_v2_invalid_index_pg_url, parent)
+    _alembic_downgrade(session_v2_invalid_index_pg_url, SESSION_V2_PARENT_REVISION)
     _alembic_upgrade(session_v2_invalid_index_pg_url, "head")
 
     verified = create_async_engine(session_v2_invalid_index_pg_url, poolclass=NullPool)
@@ -724,7 +1003,7 @@ async def test_revision_recovers_invalid_concurrent_index_residue_without_rebuil
                 "((schema_version = 2) AND ((item_kind)::text = 'tool_result'::text) "
                 "AND ((lifecycle)::text = 'completed'::text))"
             )
-            assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == "session_v2_0716"
+            assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == SESSION_V2_HEAD_REVISION
     finally:
         await verified.dispose()
 
@@ -742,7 +1021,6 @@ async def test_schema_preserving_downgrade_and_reupgrade_keep_session_v2_evidenc
     from tests.migrations.conftest import (
         _alembic_downgrade,
         _alembic_upgrade,
-        _current_head_parent,
     )
 
     tenant_id, user_id, agent_id, session_id, command_id = (uuid.uuid4() for _ in range(5))
@@ -813,7 +1091,7 @@ async def test_schema_preserving_downgrade_and_reupgrade_keep_session_v2_evidenc
     finally:
         await engine.dispose()
 
-    parent = _current_head_parent()
+    parent = SESSION_V2_PARENT_REVISION
     _alembic_downgrade(session_v2_roundtrip_pg_url, parent)
 
     downgraded_function_contract: dict[str, tuple[str, bool, tuple[str, ...], bool]] = {}
@@ -923,7 +1201,7 @@ async def test_schema_preserving_downgrade_and_reupgrade_keep_session_v2_evidenc
     restored = create_async_engine(session_v2_roundtrip_pg_url, poolclass=NullPool)
     try:
         async with restored.connect() as connection:
-            assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == "session_v2_0716"
+            assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == SESSION_V2_HEAD_REVISION
             assert (
                 await connection.scalar(
                     text("SELECT request_json->>'evidence' FROM session_commands WHERE id=:command_id"),
@@ -990,7 +1268,13 @@ async def test_schema_preserving_downgrade_and_reupgrade_keep_session_v2_evidenc
                 )
                 for row in restored_rows
             }
-            assert restored_function_contract == downgraded_function_contract
+            assert set(restored_function_contract) == set(SESSION_V2_TRIGGER_FUNCTIONS)
+            for function_name, contract in restored_function_contract.items():
+                definition, security_definer, function_config, public_execute = contract
+                assert "SECURITY DEFINER" in definition, function_name
+                assert security_definer is True, function_name
+                assert function_config == ("search_path=pg_catalog",), function_name
+                assert public_execute is False, function_name
     finally:
         await restored.dispose()
 
@@ -1005,7 +1289,12 @@ async def test_downgrade_rejects_any_v2_event_even_before_cutover(
     from app.models.chat_session import ChatSession
     from app.models.tenant import Tenant
     from app.models.user import User
-    from tests.migrations.conftest import _alembic_downgrade, _alembic_upgrade, _current_head_parent
+    from tests.migrations.conftest import _alembic_downgrade, _alembic_upgrade
+
+    # This test belongs to the original Session V2 revision.  Put the shared
+    # database on that revision explicitly before exercising its downgrade
+    # guard; the additive input/control head has its own rollback contract.
+    _alembic_downgrade(migrated_pg_url, "session_v2_0716")
 
     tenant_id, user_id, agent_id, session_id, event_id = (uuid.uuid4() for _ in range(5))
     engine = create_async_engine(migrated_pg_url, poolclass=NullPool)
@@ -1068,7 +1357,7 @@ async def test_downgrade_rejects_any_v2_event_even_before_cutover(
 
     try:
         with pytest.raises(pytest.fail.Exception, match="session_v2_downgrade_blocked"):
-            _alembic_downgrade(migrated_pg_url, _current_head_parent())
+            _alembic_downgrade(migrated_pg_url, SESSION_V2_PARENT_REVISION)
 
         engine = create_async_engine(migrated_pg_url, poolclass=NullPool)
         try:
@@ -1111,7 +1400,11 @@ async def test_downgrade_rejects_after_generation_two_facts_without_mutating_hea
     from app.models.tenant import Tenant
     from app.models.user import User
     from app.services.session_v2_persistence import SessionEventDraft, append_session_events
-    from tests.migrations.conftest import _alembic_downgrade, _alembic_upgrade, _current_head_parent
+    from tests.migrations.conftest import _alembic_downgrade, _alembic_upgrade
+
+    # Keep this legacy-revision rollback proof independent from the additive
+    # input/control head introduced later in the chain.
+    _alembic_downgrade(migrated_pg_url, "session_v2_0716")
 
     tenant_id, user_id, agent_id, session_id, run_id, event_id = (uuid.uuid4() for _ in range(6))
     engine = create_async_engine(migrated_pg_url, poolclass=NullPool)
@@ -1249,7 +1542,7 @@ async def test_downgrade_rejects_after_generation_two_facts_without_mutating_hea
         await engine.dispose()
 
         with pytest.raises(pytest.fail.Exception, match="session_v2_downgrade_blocked"):
-            _alembic_downgrade(migrated_pg_url, _current_head_parent())
+            _alembic_downgrade(migrated_pg_url, SESSION_V2_PARENT_REVISION)
 
         engine = create_async_engine(migrated_pg_url, poolclass=NullPool)
         async with engine.connect() as connection:
@@ -1384,7 +1677,7 @@ async def test_database_event_guard_rejects_scope_phase_and_hook_drift(migrated_
                     parent_session_id=str(session_id),
                     tenant_id=tenant_id,
                     status="running",
-                    writer_generation=1,
+                    writer_generation=2,
                 )
             )
             await db.commit()
@@ -1572,7 +1865,7 @@ async def test_database_binds_event_cursor_and_v2_rows_to_canonical_session_auth
             delegation_chain_json,depth,priority,attempt_count,claim_version,
             root_idempotency_key,config_snapshot_hash,policy_snapshot_hash,metadata_json
           ) VALUES (
-            :id,'delegation',:agent_id,:tenant_id,'running',1,:session_id,
+            :id,'delegation',:agent_id,:tenant_id,'running',2,:session_id,
             '[]'::jsonb,1,0,0,0,:root_key,repeat('a',64),repeat('b',64),
             jsonb_build_object('turn_id',CAST(:turn_id AS text))
           )
@@ -1667,11 +1960,12 @@ async def test_database_binds_event_cursor_and_v2_rows_to_canonical_session_auth
             await connection.execute(
                 text("""
                   INSERT INTO session_input_admissions(
-                    id,tenant_id,session_id,command_id,input_id,state,hook_run_id,
-                    hook_idempotency_key,additional_context_refs_json,carry_forward,version
+                    id,tenant_id,session_id,command_id,input_id,input_revision,state,hook_run_id,
+                    hook_idempotency_key,additional_context_refs_json,carry_forward,
+                    dispatch_state,dispatch_receipt_json,dispatch_attempts,version
                   ) VALUES (
-                    :id,:tenant_id,:session_id,:command_id,:input_id,'admitted',:hook_run_id,
-                    :hook_key,'[]'::jsonb,'next_admitted_turn',1
+                    :id,:tenant_id,:session_id,:command_id,:input_id,1,'admitted',:hook_run_id,
+                    :hook_key,'[]'::jsonb,'next_admitted_turn','pending','{}'::jsonb,0,1
                   )
                 """),
                 {
@@ -1729,7 +2023,7 @@ async def test_database_binds_event_cursor_and_v2_rows_to_canonical_session_auth
                   ) VALUES (
                     :id,:tenant_id,:session_id,:command_id,'turn-b',:run_id,
                     :control_id,:cancel_command_id,'replacement-turn-b',:input_id,
-                    'requested',1
+                    'cancel_accepted',1
                   )
                 """),
                 {
@@ -1745,15 +2039,16 @@ async def test_database_binds_event_cursor_and_v2_rows_to_canonical_session_auth
             )
             await connection.execute(
                 text("""
-                  INSERT INTO session_tool_invocations(
-                    id,tenant_id,session_id,run_id,round_id,provider_request_id,
-                    provider_tool_use_id,invocation_item_id,args_hash,authority_snapshot_hash,
-                    effect_idempotency_key,effect_state
-                  ) VALUES (
-                    :id,:tenant_id,:session_id,:run_id,'round-b',:provider_request,
-                    :tool_use_id,:item_id,repeat('e',64),repeat('f',64),:effect_key,
-                    'prepared_not_started'
-                  )
+                      INSERT INTO session_tool_invocations(
+                        id,tenant_id,session_id,run_id,round_id,provider_request_id,
+                        provider_tool_use_id,provider_arguments_json,invocation_item_id,
+                        args_hash,authority_snapshot_hash,
+                        effect_idempotency_key,effect_state
+                      ) VALUES (
+                        :id,:tenant_id,:session_id,:run_id,'round-b',:provider_request,
+                        :tool_use_id,'{}'::jsonb,:item_id,repeat('e',64),repeat('f',64),:effect_key,
+                        'prepared_not_started'
+                      )
                 """),
                 {
                     "id": invocation_b,

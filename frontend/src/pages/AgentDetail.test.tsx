@@ -140,13 +140,12 @@ describe('AgentDetail session permission state', () => {
 });
 
 describe('AgentDetail realtime refresh contract', () => {
-  it('refreshes durable session history after terminal websocket events', async () => {
+  it('reduces terminal websocket events without replacing the hydrated message array', async () => {
     const source = await readSource('./agent-detail/sessionSocketEventProjector.ts');
 
-    expect(source).toContain('isTerminalRealtimeChatEvent');
     expect(source).toContain('applyTranscriptToSession(agentId, sessionId, transcriptEvent, isActiveRuntime)');
-    expect(source).toContain('if (isActiveRuntime && isTerminalRealtimeChatEvent(transcriptEvent))');
-    expect(source).toContain('void selectSession(session)');
+    expect(source).not.toContain('void selectSession(session)');
+    expect(source).not.toContain("parseChatMsg({ role: 'assistant', content: `⚠️ ${message}` })");
   });
 
   it('keeps the initial transcript read window slim', async () => {

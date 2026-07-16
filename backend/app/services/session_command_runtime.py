@@ -33,7 +33,8 @@ from app.services.session_workspace_snapshot import (
     finalize_workspace_restore,
     restore_session_workspace_snapshot,
 )
-from app.services.web_chat_runtime import cancel_web_chat_run, get_active_web_chat_run, steer_active_web_chat_turn
+from app.services.session_live_input import submit_live_cancel_input, submit_live_human_input
+from app.services.web_chat_runtime import get_active_web_chat_run
 
 SESSION_COMMAND_NAMES = frozenset(
     {
@@ -479,12 +480,14 @@ async def _prepare_rewind_mutation(
         if raw_run_id:
             run_id = _parse_uuid_argument(raw_run_id, field="run_id")
             try:
-                await cancel_web_chat_run(
+                await submit_live_cancel_input(
                     db=db,
-                    agent_id=agent.id,
-                    session_id=session.id,
+                    agent=agent,
+                    user=user,
+                    session=session,
                     run_id=run_id,
-                    user_id=user.id,
+                    source="session_command_rewind",
+                    idempotency_key=str(arguments.get("idempotency_key") or f"session-command-rewind:{run_id}"),
                 )
                 interrupted_run_id = str(run_id)
             except HTTPException as exc:
@@ -1004,15 +1007,25 @@ async def _handle_steer(context: SessionCommandContext, session: ChatSession, co
     content = str(arguments.get("content") or arguments.get("message") or arguments.get("input") or "").strip()
     if not content:
         raise HTTPException(status_code=400, detail="content is required")
-    result = await steer_active_web_chat_turn(
+    active = await get_active_web_chat_run(db=context.db, agent_id=context.agent.id, session_id=session.id)
+    if not active or not active.get("run_id") or not active.get("turn_id"):
+        raise HTTPException(status_code=404, detail="No active turn to steer")
+    input_id = _parse_uuid_argument(arguments.get("input_id") or uuid.uuid4(), field="input_id")
+    result = await submit_live_human_input(
         db=context.db,
         agent=context.agent,
         user=context.user,
         session=session,
         content=content,
+        source="session_command_steer",
+        input_id=input_id,
+        idempotency_key=str(arguments.get("idempotency_key") or f"session-command-steer:{input_id}"),
+        requested_kind="steer_current_turn",
+        expected_turn_id=str(active["turn_id"]),
+        expected_run_id=_parse_uuid_argument(active["run_id"], field="run_id"),
+        terminal_fallback=str(arguments.get("terminal_fallback") or "queue_next_turn"),
         display_content=str(arguments.get("display_content") or ""),
         file_name=str(arguments.get("file_name") or ""),
-        expected_turn_id=str(arguments.get("expected_turn_id") or "") or None,
         attachments=arguments.get("attachments") if isinstance(arguments.get("attachments"), list) else None,
         parts=arguments.get("parts") if isinstance(arguments.get("parts"), list) else None,
     )
@@ -1030,19 +1043,22 @@ async def _handle_interrupt(context: SessionCommandContext, session: ChatSession
     run_id = context.arguments.get("run_id") or (active or {}).get("run_id")
     if not run_id:
         raise HTTPException(status_code=404, detail="No active turn to interrupt")
-    result = await cancel_web_chat_run(
+    result = await submit_live_cancel_input(
         db=context.db,
-        agent_id=context.agent.id,
-        session_id=session.id,
+        agent=context.agent,
+        user=context.user,
+        session=session,
         run_id=_parse_uuid_argument(run_id, field="run_id"),
-        user_id=context.user.id,
+        source="session_command_interrupt",
+        idempotency_key=str(context.arguments.get("idempotency_key") or f"session-command-interrupt:{run_id}"),
+        control_id=context.arguments.get("control_id"),
     )
     return _typed_result(
         command="interrupt",
         action="active_turn_interrupted",
         session_id=session.id,
         ui_action={"type": "toast", "level": "success", "message": "Active turn interrupted."},
-        interrupt_strategy="cancel_active_web_chat_run",
+        interrupt_strategy="session_v2_control_input",
         **result,
     )
 
@@ -1377,6 +1393,7 @@ async def _handle_compact(context: SessionCommandContext, session: ChatSession, 
         )
     await emit_hook(
         HookEvent.PRE_COMPACTION,
+        evidence_mode="independent",
         agent_id=agent.id,
         session_id=str(session.id),
         source="command",
@@ -1430,6 +1447,7 @@ async def _handle_compact(context: SessionCommandContext, session: ChatSession, 
     await context.db.flush()
     await emit_hook(
         HookEvent.POST_COMPACTION,
+        evidence_db=context.db,
         agent_id=agent.id,
         session_id=str(session.id),
         source="command",

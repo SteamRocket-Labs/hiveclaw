@@ -602,7 +602,17 @@ async def test_kernel_skill_fork_handoff_calls_real_spawn_tool_and_records_child
         memory_session_id=str(parent_session_id),
     )
 
-    async def execute_tool(tool_name, args, _request, _emit_event, *, tool_call_id=None):
+    async def execute_tool(
+        tool_name,
+        args,
+        _request,
+        _emit_event,
+        *,
+        tool_call_id=None,
+        trace_metadata_sink=None,
+    ):
+        trace_metadata_sink["tool_decision"] = {"outcome": "allow"}
+        trace_metadata_sink["tool_execution_frame"] = {"status": "completed"}
         if tool_name == "load_skill":
             return "Loaded Research"
         if tool_name == "spawn_subagent":

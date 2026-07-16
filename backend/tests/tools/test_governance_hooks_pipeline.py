@@ -28,7 +28,37 @@ def _context(tool_name: str = "write_file", arguments: dict | None = None) -> To
         tool_name=tool_name,
         arguments=arguments if arguments is not None else {"path": "workspace/notes.md", "content": "x"},
         session_id="session-1",
+        runtime_task_id=str(uuid.uuid4()),
     )
+
+
+@pytest.mark.asyncio
+async def test_permission_denied_hook_carries_trace_authority_join_keys(monkeypatch) -> None:
+    from app.runtime import hooks
+    from app.tools import governance
+
+    context = _context()
+    captured: list[tuple[object, dict]] = []
+
+    async def fake_emit_hook(event, **kwargs):
+        captured.append((event, kwargs))
+        return None
+
+    monkeypatch.setattr(hooks, "emit_hook", fake_emit_hook)
+
+    await governance._emit_permission_denied_hook(
+        context=context,
+        permission_request={"request_id": "permission-1"},
+        reason="denied by policy",
+        capability="workspace.write",
+        mode="default",
+    )
+
+    assert captured[0][1]["evidence_mode"] == "independent"
+    metadata = captured[0][1]["metadata"]
+    assert metadata["tenant_id"] == context.tenant_id
+    assert metadata["user_id"] == str(context.user_id)
+    assert metadata["runtime_task_id"] == context.runtime_task_id
 
 
 def _allow_all_capability(*_args):

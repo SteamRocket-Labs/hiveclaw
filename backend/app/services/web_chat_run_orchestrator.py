@@ -8,12 +8,28 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
-from app.kernel.contracts import ExecutionIdentityRef, TerminalReason
+from app.database import PostgresTextContractError
+from app.kernel.contracts import ExecutionIdentityRef, ProviderRequestNeedsReconciliation, TerminalReason
 from app.runtime.invoker import AgentInvocationRequest
 from app.runtime.runtime_phase import RunPhaseEmitter, RuntimePhase
+from app.services.llm_client import LLMError
 from app.services.runtime_budget_failover import runtime_budget_model_notice, runtime_budget_payload
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeExceptionFailure:
+    terminal_reason: str
+
+
+def _runtime_exception_failure(exc: Exception) -> RuntimeExceptionFailure:
+    """Classify runtime failures from authoritative exception types, never message text."""
+    if isinstance(exc, (SQLAlchemyError, PostgresTextContractError)):
+        return RuntimeExceptionFailure(terminal_reason=TerminalReason.PERSISTENCE_ERROR.value)
+    if isinstance(exc, LLMError):
+        return RuntimeExceptionFailure(terminal_reason=TerminalReason.PROVIDER_ERROR.value)
+    return RuntimeExceptionFailure(terminal_reason=TerminalReason.TURN_ABORT.value)
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,7 +48,6 @@ class WebChatContextPorts:
     maybe_enter_plan_mode: Callable[..., Any]
     claim_pending_reply_suffix: Callable[..., Any]
     runtime_excluded_tools: Callable[..., Any]
-    claim_mid_run_messages: Callable[..., Any]
     active_channel_delivery_target: Callable[..., Any]
     is_web_origin_turn: Callable[..., bool]
     channel_permission_prompt: Callable[..., Any]
@@ -91,11 +106,9 @@ class WebChatRuntimePorts:
     invoke_agent: Callable[..., Any]
     tenant_scoped_session: Callable[..., Any]
     plan_mode_core: Any
-    is_llm_error_message: Callable[..., bool]
     interactive_pause_summary: Callable[..., Any]
     cancel_events: dict[str, asyncio.Event]
     broadcast_run_context: Any
-    user_visible_error: str
     logger: Any
 
 
@@ -145,7 +158,9 @@ class _WebChatRunState:
     excluded_tool_names_for_turn: Any = None
     plan_mode_submitted: bool = False
     interactive_pause_summary: str | None = None
+    interactive_pause_channel_text: str | None = None
     terminal_tool_card_finalized: bool = False
+    active_provider_request_id: str | None = None
 
 
 async def run_web_chat_task(
@@ -322,6 +337,7 @@ async def _handle_budget_unavailable_before_model(state: _WebChatRunState) -> bo
     await state.ports.terminal.finalize_without_assistant(
         run_uuid=state.run_uuid,
         agent_id=state.agent.id,
+        session_id=state.session_id,
         status="failed",
         result_summary="Runtime budget admission unavailable; autonomous execution did not start.",
         metadata_json={
@@ -377,11 +393,30 @@ async def _handle_pre_invocation_terminal(state: _WebChatRunState) -> bool:
     if state.llm_model is not None:
         return False
     state.terminal_phase_hint = RuntimePhase.FAILED
-    response = (
-        f"[LLM Error] {state.agent.name} has no LLM model configured. "
-        "Please select a model in the agent's Settings tab."
+    finalized = await state.ports.terminal.finalize_without_assistant(
+        run_uuid=state.run_uuid,
+        agent_id=state.agent.id,
+        session_id=state.session_id,
+        status="failed",
+        result_summary="llm_model_missing",
+        metadata_json={
+            "terminal_reason": TerminalReason.PROVIDER_ERROR.value,
+            "error_code": "llm_model_missing",
+            "retryable": False,
+        },
+        **_file_change_kwargs(state),
     )
-    await _finalize_pre_invocation_response(state, response, status="failed", reason="llm_model_missing")
+    if finalized:
+        await state.ports.events.broadcast(
+            state.agent.id,
+            state.session_id,
+            {
+                "type": "runtime_failure",
+                "status": "unavailable",
+                "reason": "llm_model_missing",
+                "retryable": False,
+            },
+        )
     return True
 
 
@@ -429,21 +464,30 @@ class _WebChatCallbacks:
 
     async def send_stream_event(self, kind: str, text: str, *, reset: bool = False) -> None:
         state, events = self.state, self.state.ports.events
-        event = events.build_thinking(text) if kind == "thinking" else events.build_chunk(text, reset=reset)
-        if text and not reset:
-            persisted = await events.persist_stream_step(
-                agent_id=state.agent.id,
-                tenant_id=state.agent.tenant_id,
-                user_id=state.actor_user_id,
-                external_principal_id=state.actor_external_principal_id,
-                session_id=state.session_id,
-                run_uuid=state.run_uuid,
-                event_type=kind,
-                content=text,
-                part=event.get("part") if isinstance(event.get("part"), dict) else None,
-            )
-            _apply_persisted_event(event, persisted, kind, text)
-        await events.broadcast(state.agent.id, state.session_id, event)
+        if not state.active_provider_request_id:
+            raise RuntimeError("model_stream_arrived_without_prepared_provider_request")
+        phase = "reasoning_private" if kind == "thinking" else "unknown"
+        persisted = await events.persist_stream_step(
+            agent_id=state.agent.id,
+            tenant_id=state.agent.tenant_id,
+            user_id=state.actor_user_id,
+            external_principal_id=state.actor_external_principal_id,
+            session_id=state.session_id,
+            run_uuid=state.run_uuid,
+            provider_request_id=state.active_provider_request_id,
+            phase=phase,
+            lifecycle="snapshot" if reset else "delta",
+            event_type=kind,
+            content=text,
+            part=None,
+        )
+        # No committed envelope means there is nothing truthful to publish.
+        if not persisted:
+            return
+        audience = str((persisted.get("visibility") or {}).get("audience") or "")
+        if audience not in {"direct_user", "participants"}:
+            return
+        await events.broadcast(state.agent.id, state.session_id, persisted)
 
     async def stream(self, text: str) -> None:
         state = self.state
@@ -489,17 +533,20 @@ class _WebChatCallbacks:
             return
         await _transition_for_tool_event(state, data)
         await self.flush()
+        data = dict(data)
+        data["provider_request_id"] = state.active_provider_request_id
         data = events.tool_step_contract(data, fallback_run_id=state.run_uuid)
-        persisted = await events.persist_tool_call(
+        persisted_envelopes = await events.persist_tool_call(
             agent_id=state.agent.id,
             user_id=state.actor_user_id,
             external_principal_id=state.actor_external_principal_id,
             session_id=state.session_id,
             data=data,
         )
-        ws_event = events.build_tool_call(data)
-        _apply_persisted_tool_event(ws_event, persisted, done=data.get("status") == "done")
-        await events.broadcast(state.agent.id, state.session_id, ws_event)
+        for envelope in persisted_envelopes or []:
+            audience = str((envelope.get("visibility") or {}).get("audience") or "")
+            if audience in {"direct_user", "participants"}:
+                await events.broadcast(state.agent.id, state.session_id, envelope)
         if data.get("status") != "done":
             return
         await self._consume_completed_tool(data)
@@ -526,12 +573,17 @@ class _WebChatCallbacks:
         if not pause:
             return
         state.interactive_pause_summary = pause
-        channel_prompt = None
-        if pause == "awaiting_session_permission" and not state.ports.context.is_web_origin_turn(
-            state.metadata, state.runtime_session_context
-        ):
-            channel_prompt = state.ports.context.channel_permission_prompt(data)
-        await self.finalize_terminal_card(pause, channel_delivery_text=channel_prompt)
+        if pause == "awaiting_session_permission":
+            # The kernel must finish persisting every matching result in the
+            # current Provider tool batch before the Run may suspend. Raising
+            # here used to strand already-executed parallel siblings.
+            if not state.ports.context.is_web_origin_turn(
+                state.metadata,
+                state.runtime_session_context,
+            ):
+                state.interactive_pause_channel_text = state.ports.context.channel_permission_prompt(data)
+            return
+        await self.finalize_terminal_card(pause)
         raise events.terminal_signal_type(pause)
 
     async def finalize_terminal_card(
@@ -546,9 +598,25 @@ class _WebChatCallbacks:
         cancelled = bool(state.cancel_event.is_set())
         state.terminal_phase_hint = state.ports.terminal.phase_for_pause(summary, cancelled=cancelled)
         metadata = _interactive_pause_metadata(state, summary)
+        if summary == "awaiting_session_permission" and not cancelled:
+            # Approval is an open Tool/Run/Turn obligation, not a completed
+            # turn. Release the worker lease without inventing a terminal
+            # outcome; the same RuntimeTask becomes resumable after the typed
+            # permission response and unique matching tool result commit.
+            await state.ports.terminal.update_runtime_task(
+                state.run_uuid,
+                status="suspended",
+                result_summary=summary,
+                metadata_json=metadata,
+                channel_delivery_text=channel_delivery_text or state.interactive_pause_channel_text,
+            )
+            state.terminal_tool_card_finalized = True
+            await self.flush()
+            return True
         finalized = await state.ports.terminal.finalize_without_assistant(
             run_uuid=state.run_uuid,
             agent_id=state.agent.id,
+            session_id=state.session_id,
             status="killed" if cancelled else "completed",
             result_summary=summary,
             metadata_json=metadata,
@@ -803,12 +871,150 @@ def _agent_invocation_request(
         cancel_event=state.cancel_event,
         session_context=state.runtime_session_context,
         system_prompt_suffix=suffix,
-        mid_run_message_drain=lambda: state.ports.context.claim_mid_run_messages(state.run_uuid),
+        round_input_bind=lambda round_index: _bind_session_round_inputs(state, round_index),
+        model_request_prepare=lambda **payload: _prepare_session_model_request(state, **payload),
+        model_response_commit=lambda **payload: _commit_session_model_response(state, **payload),
+        model_request_fail=lambda **payload: _fail_session_model_request(state, **payload),
+        initial_round_index=max(0, int(state.metadata.get("session_resume_round_index") or 0)),
         disable_tools=state.disable_tools_for_turn,
         excluded_tool_names=state.excluded_tool_names_for_turn,
         model_routing_locked=bool(state.metadata.get("model_routing_locked")),
         emit_turn_stop=False,
     )
+
+
+def _session_turn_id(state: _WebChatRunState) -> str:
+    return str(state.metadata.get("turn_id") or f"turn-{state.run_uuid.hex}")
+
+
+async def _bind_session_round_inputs(state: _WebChatRunState, round_index: int) -> list[dict[str, Any]]:
+    from app.services.session_model_round import bind_round_inputs
+
+    async with state.ports.runtime.tenant_scoped_session(state.agent.tenant_id) as db:
+        messages = await bind_round_inputs(
+            db,
+            tenant_id=state.agent.tenant_id,
+            agent_id=state.agent.id,
+            session_id=uuid.UUID(str(state.session_id)),
+            run_id=state.run_uuid,
+            turn_id=_session_turn_id(state),
+            round_index=round_index,
+        )
+        await db.commit()
+        return messages
+
+
+async def _prepare_session_model_request(state: _WebChatRunState, **payload: Any) -> str:
+    from app.services.session_model_round import ModelRoundNeedsReconciliation, prepare_model_request
+
+    async with state.ports.runtime.tenant_scoped_session(state.agent.tenant_id) as db:
+        try:
+            round_index = int(payload["round_index"])
+            logical_round_id = f"{state.run_uuid}:round:{round_index}"
+            logical_root_result_id = uuid.uuid5(
+                state.run_uuid,
+                f"session-model-result:{logical_round_id}",
+            )
+            provider_request_id = await prepare_model_request(
+                db,
+                tenant_id=state.agent.tenant_id,
+                agent_id=state.agent.id,
+                session_id=uuid.UUID(str(state.session_id)),
+                run_id=state.run_uuid,
+                turn_id=_session_turn_id(state),
+                round_index=round_index,
+                messages=payload["messages"],
+                tools=payload.get("tools"),
+                provider=str(payload.get("provider") or ""),
+                model=str(payload.get("model") or ""),
+                wire_request=dict(payload.get("wire_request") or {}),
+                continuation_index=int(payload.get("continuation_index") or 0),
+                logical_root_result_id=payload.get("logical_root_result_id") or logical_root_result_id,
+                provider_idempotency_supported=bool(payload.get("provider_idempotency_supported")),
+                provider_idempotency_key_applied=bool(payload.get("provider_idempotency_key_applied")),
+                attempt_owner=(
+                    f"{getattr(state.runtime_task, 'claimed_by', None) or 'unclaimed'}:"
+                    f"{getattr(state.runtime_task, 'claim_version', 0)}:"
+                    f"{getattr(state.runtime_task, 'attempt_count', 0)}"
+                ),
+            )
+        except ModelRoundNeedsReconciliation:
+            await db.commit()
+            raise
+        await db.commit()
+        state.active_provider_request_id = provider_request_id
+        return provider_request_id
+
+
+async def _commit_session_model_response(state: _WebChatRunState, **payload: Any) -> dict[str, Any]:
+    from app.services.session_model_round import (
+        ModelRoundNeedsReconciliation,
+        commit_sealed_model_round,
+        seal_model_response,
+    )
+
+    async with state.ports.runtime.tenant_scoped_session(state.agent.tenant_id) as db:
+        try:
+            seal = await seal_model_response(
+                db,
+                tenant_id=state.agent.tenant_id,
+                agent_id=state.agent.id,
+                session_id=uuid.UUID(str(state.session_id)),
+                run_id=state.run_uuid,
+                turn_id=_session_turn_id(state),
+                round_index=int(payload["round_index"]),
+                provider_request_id=str(payload["provider_request_id"]),
+                response=dict(payload.get("response") or {}),
+                continuation_index=int(payload.get("continuation_index") or 0),
+                logical_round_complete=bool(payload.get("logical_round_complete", True)),
+                pending_obligations=list(payload.get("pending_obligations") or []),
+            )
+        except ModelRoundNeedsReconciliation:
+            await db.commit()
+            raise
+        await db.commit()
+    # The result seal is deliberately durable before the round registry.  A
+    # crash between these transactions is recovered without re-sending the
+    # Provider request.
+    async with state.ports.runtime.tenant_scoped_session(state.agent.tenant_id) as db:
+        try:
+            await commit_sealed_model_round(
+                db,
+                tenant_id=state.agent.tenant_id,
+                agent_id=state.agent.id,
+                session_id=uuid.UUID(str(state.session_id)),
+                run_id=state.run_uuid,
+                turn_id=_session_turn_id(state),
+                round_index=int(payload["round_index"]),
+                provider_request_id=str(payload["provider_request_id"]),
+                continuation_index=int(payload.get("continuation_index") or 0),
+            )
+        except ModelRoundNeedsReconciliation:
+            await db.commit()
+            raise
+        await db.commit()
+    return seal
+
+
+async def _fail_session_model_request(state: _WebChatRunState, **payload: Any) -> None:
+    from app.services.session_model_round import fail_model_request
+
+    async with state.ports.runtime.tenant_scoped_session(state.agent.tenant_id) as db:
+        await fail_model_request(
+            db,
+            tenant_id=state.agent.tenant_id,
+            agent_id=state.agent.id,
+            session_id=uuid.UUID(str(state.session_id)),
+            run_id=state.run_uuid,
+            turn_id=_session_turn_id(state),
+            round_index=int(payload["round_index"]),
+            provider_request_id=str(payload["provider_request_id"]),
+            error_class=str(payload.get("error_class") or "provider_error"),
+            delivery_state=str(payload.get("delivery_state") or "unknown"),
+            retry_safe=bool(payload.get("retry_safe")),
+            continuation_index=int(payload.get("continuation_index") or 0),
+        )
+        await db.commit()
 
 
 def _execution_identity_type(state: _WebChatRunState) -> str:
@@ -818,7 +1024,7 @@ def _execution_identity_type(state: _WebChatRunState) -> str:
 
 
 async def _finalize_invocation_result(state: _WebChatRunState, result: Any) -> None:
-    if result is None and state.interactive_pause_summary:
+    if state.interactive_pause_summary:
         await _finalize_interactive_pause(state, state.interactive_pause_summary)
         return
     response = result.content
@@ -828,10 +1034,16 @@ async def _finalize_invocation_result(state: _WebChatRunState, result: Any) -> N
         else state.ports.terminal.plan_mode_terminal_error(state.runtime_session_context)
     )
     if plan_error:
-        response = plan_error
         state.ports.terminal.clear_interactive_plan_mode(state.runtime_session_context)
-    thinking = "".join(state.thinking_content) if state.thinking_content else None
-    failed = bool(plan_error) or state.ports.runtime.is_llm_error_message(response)
+    # Terminal status is a typed runtime fact.  Natural-language response
+    # bytes are never scanned to decide success or failure.
+    terminal_reason = getattr(result, "terminal_reason", TerminalReason.TURN_STOP)
+    terminal_reason_value = getattr(terminal_reason, "value", str(terminal_reason))
+    failed = bool(plan_error) or terminal_reason_value not in {
+        TerminalReason.TURN_STOP.value,
+        TerminalReason.CLARIFICATION_REQUIRED.value,
+    }
+    thinking = None
     status = "killed" if state.cancel_event.is_set() else ("failed" if failed else "completed")
     state.terminal_phase_hint = state.ports.terminal.phase_for_status(status)
     metadata = {
@@ -841,7 +1053,7 @@ async def _finalize_invocation_result(state: _WebChatRunState, result: Any) -> N
             result_reason=getattr(result, "terminal_reason", None),
             cancelled_by_user=bool(state.cancel_event.is_set()),
             plan_mode_terminal_error=bool(plan_error),
-            llm_error=state.ports.runtime.is_llm_error_message(response),
+            llm_error=terminal_reason_value == TerminalReason.PROVIDER_ERROR.value,
         ),
         "turn_tokens_used": int(getattr(result, "tokens_used", 0) or 0),
         **state.ports.artifacts.prompt_metadata(state.runtime_session_context),
@@ -879,9 +1091,19 @@ async def _finalize_interactive_pause(state: _WebChatRunState, summary: str) -> 
     cancelled = bool(state.cancel_event.is_set())
     state.terminal_phase_hint = state.ports.terminal.phase_for_pause(summary, cancelled=cancelled)
     metadata = _interactive_pause_metadata(state, summary)
+    if summary == "awaiting_session_permission" and not cancelled:
+        await state.ports.terminal.update_runtime_task(
+            state.run_uuid,
+            status="suspended",
+            result_summary=summary,
+            metadata_json=metadata,
+            channel_delivery_text=state.interactive_pause_channel_text,
+        )
+        return
     finalized = await state.ports.terminal.finalize_without_assistant(
         run_uuid=state.run_uuid,
         agent_id=state.agent.id,
+        session_id=state.session_id,
         status="killed" if cancelled else "completed",
         result_summary=summary,
         metadata_json=metadata,
@@ -921,6 +1143,7 @@ async def _finalize_empty_interactive_response(
     finalized = await state.ports.terminal.finalize_without_assistant(
         run_uuid=state.run_uuid,
         agent_id=state.agent.id,
+        session_id=state.session_id,
         status=status,
         result_summary=summary,
         metadata_json=metadata,
@@ -950,6 +1173,66 @@ async def _finalize_assistant_response(
     metadata: dict[str, Any],
 ) -> None:
     artifacts = state.ports.artifacts
+    model_receipt = getattr(result, "model_result_receipt", None)
+    if status == "completed" and isinstance(model_receipt, dict) and model_receipt.get("result_id"):
+        committed = await _commit_canonical_terminal_outcome(state, model_receipt)
+        if not committed:
+            return
+        # Hooks, metrics, ChatMessage projections and transport delivery are
+        # sidecars after the canonical outcome transaction.  Their failure may
+        # be retried but can never rewrite the model-authored outcome.
+        try:
+            await state.ports.terminal.emit_terminal_hook(
+                agent_id=state.agent.id,
+                session_id=state.session_id,
+                run_uuid=state.run_uuid,
+                runtime_metadata=state.metadata,
+                status=status,
+                reason="invoke_complete",
+                source=state.runtime_session_context.source,
+                extra_metadata=metadata,
+            )
+        except Exception as exc:
+            state.ports.runtime.logger.warning(
+                "[WebChatRun] terminal sidecar hook failed after committed outcome run={}: {}",
+                state.run_uuid.hex,
+                exc,
+            )
+        try:
+            await state.ports.events.broadcast(
+                state.agent.id,
+                state.session_id,
+                state.ports.events.build_done(response, artifacts=metadata.get("artifacts")),
+            )
+        except Exception as exc:
+            state.ports.runtime.logger.warning(
+                "[WebChatRun] terminal delivery failed after committed outcome run={}: {}",
+                state.run_uuid.hex,
+                exc,
+            )
+        return
+    if status != "completed":
+        finalized = await state.ports.terminal.finalize_without_assistant(
+            run_uuid=state.run_uuid,
+            agent_id=state.agent.id,
+            session_id=state.session_id,
+            status=status,
+            result_summary=str(metadata.get("terminal_reason") or status),
+            metadata_json=metadata,
+            **_file_change_kwargs(state),
+        )
+        if finalized:
+            await state.ports.events.broadcast(
+                state.agent.id,
+                state.session_id,
+                {
+                    "type": "runtime_failure",
+                    "status": status,
+                    "reason": metadata.get("terminal_reason"),
+                    "retryable": status != "killed",
+                },
+            )
+        return
     try:
         finalized = await state.ports.terminal.finalize_with_assistant(
             run_uuid=state.run_uuid,
@@ -994,6 +1277,77 @@ async def _finalize_assistant_response(
     )
 
 
+async def _commit_canonical_terminal_outcome(
+    state: _WebChatRunState,
+    model_receipt: dict[str, Any],
+) -> bool:
+    from app.services.session_terminal_outcome import (
+        TerminalOutcomeIneligible,
+        TerminalOutcomeNeedsReconciliation,
+        commit_terminal_outcome,
+        prepare_and_seal_run_outcome,
+    )
+
+    result_id = uuid.UUID(str(model_receipt["result_id"]))
+    try:
+        async with state.ports.runtime.tenant_scoped_session(state.agent.tenant_id) as db:
+            outcome = await prepare_and_seal_run_outcome(
+                db,
+                tenant_id=state.agent.tenant_id,
+                agent_id=state.agent.id,
+                session_id=uuid.UUID(str(state.session_id)),
+                turn_id=_session_turn_id(state),
+                run_id=state.run_uuid,
+                terminal_result_id=result_id,
+            )
+            outcome_id = outcome.id
+            await db.commit()
+        # A separately durable outcome seal is the recovery fence for the
+        # all-or-nothing Run/Turn/final transaction below.
+        async with state.ports.runtime.tenant_scoped_session(state.agent.tenant_id) as db:
+            await commit_terminal_outcome(
+                db,
+                tenant_id=state.agent.tenant_id,
+                agent_id=state.agent.id,
+                session_id=uuid.UUID(str(state.session_id)),
+                run_id=state.run_uuid,
+                outcome_id=outcome_id,
+            )
+            await db.commit()
+        return True
+    except TerminalOutcomeIneligible as exc:
+        state.ports.runtime.logger.info(
+            "[WebChatRun] terminal candidate held for continuation run={}: {}",
+            state.run_uuid.hex,
+            exc,
+        )
+        await state.ports.events.broadcast(
+            state.agent.id,
+            state.session_id,
+            {
+                "type": "result.commit_pending",
+                "run_id": str(state.run_uuid),
+                "result_id": str(result_id),
+                "reason": "terminal_ineligible",
+            },
+        )
+        return False
+    except TerminalOutcomeNeedsReconciliation as exc:
+        await state.ports.terminal.update_runtime_task(
+            state.run_uuid,
+            status="needs_reconciliation",
+            result_summary="Canonical terminal outcome requires reconciliation.",
+            metadata_json={
+                "session_v2_reconciliation": {
+                    "reason": "terminal_outcome_commit",
+                    "result_id": str(result_id),
+                    "error_class": type(exc).__name__,
+                }
+            },
+        )
+        return False
+
+
 async def _handle_web_chat_failure(state: _WebChatRunState, exc: Exception) -> None:
     state.ports.runtime.logger.exception("[WebChatRun] Run {} failed", state.run_uuid.hex)
     cancelled = state.cancel_event.is_set()
@@ -1001,22 +1355,22 @@ async def _handle_web_chat_failure(state: _WebChatRunState, exc: Exception) -> N
     if cancelled:
         await _handle_cancelled_failure(state)
         return
+    if isinstance(exc, ProviderRequestNeedsReconciliation):
+        await _handle_provider_reconciliation_required(state, exc)
+        return
     summary = f"Web chat run failed: {type(exc).__name__}"
-    metadata = {"error": str(exc), "terminal_reason": TerminalReason.PROVIDER_ERROR.value}
+    failure = _runtime_exception_failure(exc)
+    metadata = {"error": str(exc), "terminal_reason": failure.terminal_reason}
     try:
         if state.stream_batcher is not None:
             await state.stream_batcher.flush()
         runtime_task, agent, user, *_ = await state.ports.context.load_runtime_context(state.run_uuid)
         session_id = str(runtime_task.parent_session_id)
         changes = _failed_file_change_kwargs(state)
-        finalized = await state.ports.terminal.finalize_with_assistant(
+        finalized = await state.ports.terminal.finalize_without_assistant(
             run_uuid=state.run_uuid,
             agent_id=agent.id,
-            user_id=state.ports.context.actor_user_id(user),
             session_id=session_id,
-            content=state.ports.runtime.user_visible_error,
-            thinking=None,
-            thinking_signature=None,
             status="failed",
             result_summary=summary,
             metadata_json=metadata,
@@ -1038,10 +1392,50 @@ async def _handle_web_chat_failure(state: _WebChatRunState, exc: Exception) -> N
         await state.ports.events.broadcast(
             agent.id,
             session_id,
-            {"type": "error", "content": state.ports.runtime.user_visible_error},
+            {
+                "type": "runtime_failure",
+                "status": "failed",
+                "reason": failure.terminal_reason,
+                "retryable": True,
+            },
         )
     except Exception as terminal_exc:
         await _handle_terminal_persistence_failure(state, exc, terminal_exc)
+
+
+async def _handle_provider_reconciliation_required(
+    state: _WebChatRunState,
+    exc: ProviderRequestNeedsReconciliation,
+) -> None:
+    """Fence an ambiguous provider send without inventing an assistant answer."""
+
+    metadata = {
+        "terminal_reason": "provider_send_ambiguous",
+        "session_v2_reconciliation": {
+            "reason": "ambiguous_provider_send",
+            "provider_request_id": exc.provider_request_id,
+            "error_class": exc.error_class,
+        },
+    }
+    await state.ports.terminal.update_runtime_task(
+        state.run_uuid,
+        status="needs_reconciliation",
+        result_summary="Provider send outcome is ambiguous; operator reconciliation is required.",
+        metadata_json=metadata,
+    )
+    if state.agent is None or not state.session_id:
+        return
+    await state.ports.events.broadcast(
+        state.agent.id,
+        state.session_id,
+        {
+            "type": "runtime_reconciliation_required",
+            "run_id": str(state.run_uuid),
+            "provider_request_id": exc.provider_request_id,
+            "error_class": exc.error_class,
+            "retryable": False,
+        },
+    )
 
 
 async def _handle_cancelled_failure(state: _WebChatRunState) -> None:

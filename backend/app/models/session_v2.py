@@ -183,11 +183,19 @@ class SessionTurnInput(Base):
 class SessionInputAdmission(Base):
     __tablename__ = "session_input_admissions"
     __table_args__ = (
-        UniqueConstraint("input_id", name="uq_session_input_admissions_input"),
+        UniqueConstraint(
+            "input_id",
+            "input_revision",
+            name="uq_session_input_admissions_input_revision",
+        ),
         UniqueConstraint("hook_run_id", name="uq_session_input_admissions_hook_run"),
         CheckConstraint(
             "state IN ('admission_pending','hook_running','hook_result_committed','admitted','rejected','cancelled','needs_reconciliation')",
             name="ck_session_input_admissions_state",
+        ),
+        CheckConstraint(
+            "dispatch_state IN ('not_applicable','pending','dispatching','dispatched','needs_reconciliation')",
+            name="ck_session_input_admissions_dispatch_state",
         ),
     )
 
@@ -204,6 +212,7 @@ class SessionInputAdmission(Base):
     input_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("session_turn_inputs.id", ondelete="CASCADE"), nullable=False
     )
+    input_revision: Mapped[int] = mapped_column(Integer, nullable=False)
     state: Mapped[str] = mapped_column(
         String(40), nullable=False, default="admission_pending", server_default=text("'admission_pending'")
     )
@@ -215,6 +224,12 @@ class SessionInputAdmission(Base):
     carry_forward: Mapped[str] = mapped_column(
         String(40), nullable=False, default="none", server_default=text("'none'")
     )
+    dispatch_state: Mapped[str] = mapped_column(
+        String(40), nullable=False, default="not_applicable", server_default=text("'not_applicable'")
+    )
+    dispatch_receipt_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    dispatch_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
+    dispatch_last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     lease_owner: Mapped[str | None] = mapped_column(String(200), nullable=True)
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     recovery_owner: Mapped[str | None] = mapped_column(String(200), nullable=True)
@@ -334,9 +349,9 @@ class SessionTurnReplacement(Base):
     )
     old_turn_id: Mapped[str] = mapped_column(String(200), nullable=False)
     old_run_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("runtime_tasks.id"), nullable=False)
-    cancel_control_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
-    cancel_command_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("session_commands.id"), nullable=False
+    cancel_control_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    cancel_command_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("session_commands.id"), nullable=True
     )
     replacement_turn_id: Mapped[str] = mapped_column(String(200), nullable=False)
     replacement_input_id: Mapped[uuid.UUID] = mapped_column(
@@ -362,6 +377,10 @@ class SessionToolInvocation(Base):
             "effect_state IN ('prepared_not_started','effect_started','effect_committed','failed','needs_reconciliation')",
             name="ck_session_tool_effect_state",
         ),
+        CheckConstraint(
+            "permission_state IN ('not_required','waiting','approved','denied','expired','cancelled')",
+            name="ck_session_tool_permission_state",
+        ),
     )
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
     tenant_id: Mapped[uuid.UUID] = mapped_column(
@@ -376,8 +395,12 @@ class SessionToolInvocation(Base):
     round_id: Mapped[str] = mapped_column(String(200), nullable=False)
     provider_request_id: Mapped[str] = mapped_column(String(300), nullable=False)
     provider_tool_use_id: Mapped[str] = mapped_column(String(300), nullable=False)
+    tool_name: Mapped[str] = mapped_column(String(200), nullable=False, default="", server_default=text("''"))
+    provider_arguments_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     invocation_item_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     args_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    effective_arguments_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    effective_args_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     authority_snapshot_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     effect_idempotency_key: Mapped[str] = mapped_column(String(300), nullable=False)
     effect_state: Mapped[str] = mapped_column(
@@ -389,6 +412,17 @@ class SessionToolInvocation(Base):
         UUID(as_uuid=True), ForeignKey("chat_transcript_events.id"), nullable=True, unique=True
     )
     recovery_owner: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    permission_item_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    permission_state: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="not_required", server_default=text("'not_required'")
+    )
+    permission_request_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    permission_authority_snapshot_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    permission_response_schema: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    permission_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    permission_receipt_ref: Mapped[str | None] = mapped_column(String(300), nullable=True)
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default=text("1"))
 
 
@@ -474,7 +508,25 @@ class SessionRoundObligation(Base):
 class SessionNextRoundPlan(Base):
     __tablename__ = "session_next_round_plans"
     __table_args__ = (
-        UniqueConstraint("run_id", "next_round_id", name="uq_session_next_round_plan_round"),
+        UniqueConstraint(
+            "run_id",
+            "next_round_id",
+            "plan_generation",
+            name="uq_session_next_round_plan_generation",
+        ),
+        UniqueConstraint(
+            "run_id",
+            "next_round_id",
+            "plan_hash",
+            name="uq_session_next_round_plan_hash",
+        ),
+        Index(
+            "uq_session_next_round_plan_current",
+            "run_id",
+            "next_round_id",
+            unique=True,
+            postgresql_where=text("state IN ('committed','dispatched','needs_reconciliation')"),
+        ),
         CheckConstraint(
             "state IN ('prepared','committed','dispatched','abandoned','needs_reconciliation')",
             name="ck_session_next_round_plan_state",
@@ -494,6 +546,7 @@ class SessionNextRoundPlan(Base):
         UUID(as_uuid=True), ForeignKey("session_model_results.id", ondelete="CASCADE"), nullable=False
     )
     next_round_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    plan_generation: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default=text("1"))
     obligation_ids_json: Mapped[list] = mapped_column(JSONB, nullable=False)
     ordered_sources_json: Mapped[list] = mapped_column(JSONB, nullable=False)
     fences_json: Mapped[dict] = mapped_column(JSONB, nullable=False)

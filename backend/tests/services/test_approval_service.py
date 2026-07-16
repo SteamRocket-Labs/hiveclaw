@@ -309,6 +309,10 @@ async def test_resolve_approval_atomically_enqueues_durable_execution_job(monkey
         assert runtime_task_id == approval.execution_task_id
         events.append("wake")
 
+    async def assign_writer_generation(_db, task):
+        task.writer_generation = 1
+        return 1
+
     class _Service(ApprovalService):
         async def _execute_approved_action(self, *args, **kwargs):
             raise AssertionError("approved actions must not execute in the resolving HTTP request")
@@ -316,6 +320,10 @@ async def test_resolve_approval_atomically_enqueues_durable_execution_job(monkey
     monkeypatch.setattr("app.core.policy.write_audit_event", fake_write_audit_event)
     monkeypatch.setattr("app.services.notification_service.send_notification", fake_send_notification)
     monkeypatch.setattr("app.services.runtime_task_worker.notify_runtime_task_worker", fake_notify_worker)
+    monkeypatch.setattr(
+        "app.services.session_writer_epoch.assign_runtime_task_writer_generation",
+        assign_writer_generation,
+    )
 
     resolved = await _Service().resolve_approval(db, approval.id, user, "approve")  # type: ignore[arg-type]
 

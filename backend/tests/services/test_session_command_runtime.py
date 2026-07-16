@@ -572,7 +572,7 @@ async def test_rewind_interrupts_active_run_then_applies_under_stable_revision(m
         return SimpleNamespace(event_id=uuid4(), sequence=4)
 
     monkeypatch.setattr(runtime, "get_active_web_chat_run", fake_active)
-    monkeypatch.setattr(runtime, "cancel_web_chat_run", fake_cancel)
+    monkeypatch.setattr(runtime, "submit_live_cancel_input", fake_cancel)
     monkeypatch.setattr(runtime, "_read_rewind_revision", fake_revision, raising=False)
     monkeypatch.setattr(runtime, "_lock_rewind_session_row", fake_session_lock, raising=False)
     monkeypatch.setattr(runtime, "append_session_event", fake_append)
@@ -631,7 +631,7 @@ async def test_rewind_rejects_when_revision_changes_while_interrupting(monkeypat
         appended.append(kwargs)
 
     monkeypatch.setattr(runtime, "get_active_web_chat_run", fake_active)
-    monkeypatch.setattr(runtime, "cancel_web_chat_run", fake_cancel)
+    monkeypatch.setattr(runtime, "submit_live_cancel_input", fake_cancel)
     monkeypatch.setattr(runtime, "_read_rewind_revision", fake_revision, raising=False)
     monkeypatch.setattr(runtime, "append_session_event", fake_append)
 
@@ -1306,16 +1306,20 @@ async def test_turn_steer_command_queues_message_to_active_turn(monkeypatch):
     db = _DB(session)
     captured = {}
 
-    async def fake_steer_active_web_chat_turn(**kwargs):
+    async def fake_active(**_kwargs):
+        return {"run_id": str(uuid4()), "turn_id": "turn-1", "status": "running"}
+
+    async def fake_submit_live_human_input(**kwargs):
         captured.update(kwargs)
         return {
-            "run_id": "run-1",
-            "turn_id": "turn-1",
-            "queued": {"content": kwargs["content"]},
-            "steer_strategy": "pending_mid_run_user_message",
+            "target_run_id": str(kwargs["expected_run_id"]),
+            "target_turn_id": kwargs["expected_turn_id"],
+            "dispatch_status": "mailbox_queued",
+            "status": "queued",
         }
 
-    monkeypatch.setattr(runtime, "steer_active_web_chat_turn", fake_steer_active_web_chat_turn)
+    monkeypatch.setattr(runtime, "get_active_web_chat_run", fake_active)
+    monkeypatch.setattr(runtime, "submit_live_human_input", fake_submit_live_human_input)
 
     result = await _run_session_command(
         runtime.execute_session_command,
@@ -1331,8 +1335,8 @@ async def test_turn_steer_command_queues_message_to_active_turn(monkeypatch):
     assert captured["session"] is session
     assert captured["content"] == "Use the stricter interpretation."
     assert captured["expected_turn_id"] == "turn-1"
-    assert result["steer_strategy"] == "pending_mid_run_user_message"
-    assert result["queued"]["content"] == "Use the stricter interpretation."
+    assert captured["requested_kind"] == "steer_current_turn"
+    assert result["dispatch_status"] == "mailbox_queued"
 
 
 @pytest.mark.asyncio
@@ -1349,12 +1353,12 @@ async def test_interrupt_command_cancels_current_active_turn(monkeypatch):
     async def fake_get_active_web_chat_run(**kwargs):
         return {"run_id": str(run_id), "status": "running"}
 
-    async def fake_cancel_web_chat_run(**kwargs):
+    async def fake_submit_live_cancel_input(**kwargs):
         captured.update(kwargs)
-        return {"run_id": str(kwargs["run_id"]), "status": "killed"}
+        return {"control_id": str(uuid4()), "status": "applying", "target_run_id": str(kwargs["run_id"])}
 
     monkeypatch.setattr(runtime, "get_active_web_chat_run", fake_get_active_web_chat_run)
-    monkeypatch.setattr(runtime, "cancel_web_chat_run", fake_cancel_web_chat_run)
+    monkeypatch.setattr(runtime, "submit_live_cancel_input", fake_submit_live_cancel_input)
 
     result = await _run_session_command(
         runtime.execute_session_command,
@@ -1367,12 +1371,12 @@ async def test_interrupt_command_cancels_current_active_turn(monkeypatch):
         arguments={},
     )
 
-    assert captured["agent_id"] == agent.id
-    assert captured["session_id"] == session.id
+    assert captured["agent"] is agent
+    assert captured["session"] is session
     assert captured["run_id"] == run_id
-    assert captured["user_id"] == user.id
-    assert result["status"] == "killed"
-    assert result["interrupt_strategy"] == "cancel_active_web_chat_run"
+    assert captured["user"] is user
+    assert result["status"] == "applying"
+    assert result["interrupt_strategy"] == "session_v2_control_input"
 
 
 @pytest.mark.asyncio

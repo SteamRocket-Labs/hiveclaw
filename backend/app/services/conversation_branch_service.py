@@ -337,6 +337,8 @@ async def create_conversation_branch(
     title: str | None = None,
     attachments: list[dict[str, Any]] | None = None,
     parts: list[dict[str, Any]] | None = None,
+    branch_session_id: uuid.UUID | str | None = None,
+    include_anchor_override: bool | None = None,
 ) -> ConversationBranchResult:
     mode_text = str(mode)
     anchor_uuid = _uuid(anchor_event_id)
@@ -348,22 +350,53 @@ async def create_conversation_branch(
     )
     _validate_branch_request(mode=mode_text, anchor=anchor, content=content)
 
+    deterministic_branch_id = _uuid(branch_session_id) if branch_session_id is not None else None
+    if deterministic_branch_id is not None:
+        existing_branch = await db.get(ChatSession, deterministic_branch_id)
+        if existing_branch is not None:
+            metadata = dict(getattr(existing_branch, "transcript_metadata_json", None) or {})
+            if (
+                existing_branch.parent_session_id != source_session.id
+                or metadata.get("branch_mode") != mode_text
+                or metadata.get("anchor_event_id") != str(anchor.id)
+            ):
+                raise HTTPException(status_code=409, detail="Branch request id is already bound to another branch")
+            return ConversationBranchResult(
+                session=existing_branch,
+                branch={
+                    "mode": mode_text,
+                    "source_session_id": str(source_session.id),
+                    "root_session_id": str(existing_branch.root_session_id or source_session.id),
+                    "session_id": str(existing_branch.id),
+                    "anchor_event_id": str(anchor.id),
+                    "draft_content": "",
+                    "copied_event_ids": list(metadata.get("copied_event_ids") or []),
+                    "replayed": True,
+                },
+                run_request=None,
+            )
+
     prefix_events = await _load_prefix_events(
         db=db,
         source_session_id=source_session.id,
         anchor=anchor,
-        include_anchor=_prefix_includes_anchor(mode_text, anchor=anchor),
+        include_anchor=(
+            include_anchor_override
+            if include_anchor_override is not None
+            else _prefix_includes_anchor(mode_text, anchor=anchor)
+        ),
     )
     root_session_id = getattr(source_session, "root_session_id", None) or source_session.id
     now = datetime.now(timezone.utc)
     contract_overrides = _session_contract_overrides(source_session, mode_text)
-    branch_session_id = uuid.uuid4()
+    branch_session_id = deterministic_branch_id or uuid.uuid4()
     tenant_id = getattr(agent, "tenant_id", getattr(source_session, "tenant_id", None))
     target_workspace_uri = f"session://{branch_session_id}/workspace"
     from app.runtime.hooks import HookEvent, emit_hook
 
     create_hook = await emit_hook(
         HookEvent.WORKTREE_CREATE,
+        evidence_mode="independent",
         agent_id=agent.id,
         session_id=str(source_session.id),
         source="conversation_branch_service",
@@ -436,6 +469,9 @@ async def create_conversation_branch(
         agent_id=agent.id,
         copied_event_map=copied_event_map,
     )
+    branch_metadata = dict(branch_session.transcript_metadata_json or {})
+    branch_metadata["copied_event_ids"] = list(copied_event_ids)
+    branch_session.transcript_metadata_json = branch_metadata
     workspace_change_metadata = {
         "tenant_id": str(tenant_id) if tenant_id else None,
         "user_id": str(getattr(user, "id", "") or "") or None,
@@ -448,6 +484,7 @@ async def create_conversation_branch(
     }
     await emit_hook(
         HookEvent.CWD_CHANGED,
+        evidence_db=db,
         agent_id=agent.id,
         session_id=str(branch_session.id),
         source="conversation_branch_service",
@@ -455,6 +492,7 @@ async def create_conversation_branch(
     )
     await emit_hook(
         HookEvent.WORKSPACE_CONTEXT_CHANGED,
+        evidence_db=db,
         agent_id=agent.id,
         session_id=str(branch_session.id),
         source="conversation_branch_service",

@@ -16,6 +16,98 @@ class ToolDecisionOutcome(str, Enum):
     ALLOW_PREPARE_ONLY = "allow_prepare_only"
     REQUIRE_APPROVAL = "require_approval"
     DENY = "deny"
+    UNAVAILABLE = "unavailable"
+
+
+class ToolBoundaryBlock(str):
+    """Display-compatible block carrying the exact machine outcome.
+
+    The string value is only model/user-facing explanation.  Runtime state is
+    derived exclusively from the typed attributes below, never from words in
+    the explanation.
+    """
+
+    outcome: ToolDecisionOutcome
+    reason_code: str
+    status: str
+    retryable: bool
+
+    def __new__(
+        cls,
+        message: str,
+        *,
+        outcome: ToolDecisionOutcome,
+        reason_code: str,
+        status: str,
+        retryable: bool,
+    ) -> "ToolBoundaryBlock":
+        value = str.__new__(cls, str(message))
+        value.outcome = outcome
+        value.reason_code = str(reason_code)
+        value.status = str(status)
+        value.retryable = bool(retryable)
+        return value
+
+
+_APPROVAL_BOUNDARY_STATUSES = frozenset(
+    {"approval_required", "session_permission_required", "permission_required", "ask"}
+)
+_DENIED_BOUNDARY_STATUSES = frozenset(
+    {
+        "deny",
+        "denied",
+        "permission_denied",
+        "capability_denied",
+        "delegation_token_denied",
+        "governance_hook_denied",
+        "guard_policy_denied",
+        "approval_decision_mismatch",
+        "rejected",
+        "blocked",
+    }
+)
+_UNAVAILABLE_BOUNDARY_STATUSES = frozenset(
+    {"unavailable", "governance_unavailable", "dependency_unavailable", "authority_unavailable"}
+)
+
+
+def boundary_block_from_machine_value(value: Any) -> ToolBoundaryBlock | None:
+    """Decode an exact structured boundary receipt without reading prose."""
+
+    if isinstance(value, ToolBoundaryBlock):
+        return value
+    payload: dict[str, Any]
+    if isinstance(value, dict):
+        payload = value
+    elif isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except (TypeError, ValueError):
+            return None
+        if not isinstance(parsed, dict):
+            return None
+        payload = parsed
+    else:
+        return None
+
+    status = str(payload.get("status") or "").strip().lower()
+    explicit = str(payload.get("outcome") or payload.get("decision") or "").strip().lower()
+    error_class = str(payload.get("error_class") or "").strip().lower()
+    if explicit in {"require_approval", "approval_required", "ask"} or status in _APPROVAL_BOUNDARY_STATUSES:
+        outcome = ToolDecisionOutcome.REQUIRE_APPROVAL
+    elif explicit == "unavailable" or status in _UNAVAILABLE_BOUNDARY_STATUSES or error_class.endswith("_unavailable"):
+        outcome = ToolDecisionOutcome.UNAVAILABLE
+    elif explicit in {"deny", "denied"} or status in _DENIED_BOUNDARY_STATUSES:
+        outcome = ToolDecisionOutcome.DENY
+    else:
+        return None
+    return ToolBoundaryBlock(
+        str(value),
+        outcome=outcome,
+        reason_code=error_class or status or explicit,
+        status=status or explicit,
+        retryable=bool(payload.get("retryable", False)),
+    )
 
 
 def _hash(value: Any) -> str:

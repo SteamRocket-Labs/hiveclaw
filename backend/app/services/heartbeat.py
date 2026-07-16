@@ -701,7 +701,11 @@ async def _route_heartbeat_reflection_learning(
     }
 
     async def _emit() -> None:
-        await runtime_hooks.emit_hook(runtime_hooks.HookEvent.RESPONSE_COMPLETE, **hook_kwargs)
+        await runtime_hooks.emit_hook(
+            runtime_hooks.HookEvent.RESPONSE_COMPLETE,
+            evidence_mode="independent",
+            **hook_kwargs,
+        )
 
     if await_hook:
         await _emit()
@@ -1081,6 +1085,7 @@ async def _run_heartbeat_core_and_persist(
 
         await emit_hook(
             HookEvent.HEARTBEAT_TICK_END,
+            evidence_mode="independent",
             agent_id=agent.id,
             session_id=str(session_id),
             messages=[],

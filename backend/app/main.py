@@ -247,11 +247,11 @@ async def _resume_runtime_tasks_after_startup(done_event=None) -> None:
     """Resume/reconcile durable runtime work without blocking FastAPI health startup."""
     try:
         from app.agents.orchestrator import resume_persisted_async_delegations
-        from app.api.chat_sessions import expire_stale_session_permission_requests
         from app.database import async_session as _session_permission_scan
         from app.services.heartbeat import resume_persisted_heartbeat_runs
         from app.services.approval_ticket import reconcile_stuck_approval_tickets
         from app.services.runtime_task_service import reconcile_orphaned_runtime_tasks
+        from app.services.session_permission_runtime import expire_stale_session_permission_requests
         from app.services.subagent_run_service import resume_persisted_subagent_runs
         from app.services.trigger_daemon import resume_persisted_trigger_runs
         from app.services.web_chat_runtime import resume_persisted_web_chat_runs
@@ -659,6 +659,9 @@ async def lifespan(app: FastAPI):
         startup_background_tasks = [
             ("code_execution_sandbox_probe_scheduler", start_code_execution_sandbox_probe_scheduler()),
         ]
+        from app.services.session_writer_epoch import start_session_writer_heartbeat_loop
+
+        startup_background_tasks.append(("session_writer_heartbeat", start_session_writer_heartbeat_loop()))
         if _runtime_execution_startup_enabled():
             startup_background_tasks.append(
                 ("runtime_startup_resume", _resume_runtime_tasks_after_startup(runtime_startup_resume_done))
@@ -897,7 +900,7 @@ app.include_router(metrics_router)
 @app.get("/api/health", response_model=HealthResponse, tags=["health"])
 async def health_check():
     """Health check endpoint."""
-    from app.database import snapshot_db_pool
+    from app.database import snapshot_db_pool, snapshot_postgres_text_contract
     from app.services.daemon_liveness import daemon_health_status, daemon_liveness_snapshot
     from app.services.event_loop_monitor import event_loop_lag_monitor
     from app.services.rls_runtime_guard import latest_runtime_rls_role_health
@@ -939,6 +942,7 @@ async def health_check():
             "runtime_task_worker": runtime_task_worker_snapshot(),
             "web_chat_stream_forwarder": web_chat_stream_forwarder_snapshot(),
             "db_pool": db_pool,
+            "postgres_text_contract": snapshot_postgres_text_contract(),
             "event_loop": event_loop_lag_monitor.snapshot(),
         },
     )

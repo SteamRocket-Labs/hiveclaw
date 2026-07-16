@@ -227,6 +227,7 @@ async def register_session_command(
     request_payload: Mapping[str, Any],
     target_payload: Mapping[str, Any],
     causation_command_id: uuid.UUID | str | None = None,
+    command_id: uuid.UUID | str | None = None,
 ) -> RegisteredCommand:
     """Read-or-create a command under the session lock without committing."""
 
@@ -271,9 +272,12 @@ async def register_session_command(
             raise IdempotencyConflict(command=existing)
         return RegisteredCommand(existing, True)
 
-    command_id = uuid.uuid4()
+    command_uuid = _uuid(command_id, "command_id") if command_id is not None else uuid.uuid4()
+    command_id_owner = await db.get(SessionCommand, command_uuid)
+    if command_id_owner is not None:
+        raise IdempotencyConflict(command=command_id_owner)
     command = SessionCommand(
-        id=command_id,
+        id=command_uuid,
         tenant_id=tenant_uuid,
         principal_id=principal_uuid,
         session_id=session_uuid,
@@ -286,7 +290,7 @@ async def register_session_command(
         request_json=request_json,
         target_json=target_json,
         status="accepted",
-        receipt_ref=f"session-command:{command_id}",
+        receipt_ref=f"session-command:{command_uuid}",
     )
     db.add(command)
     await db.flush()
@@ -536,6 +540,7 @@ async def accept_human_input(
             "request_item_id",
             "fork_after_sequence",
             "terminal_fallback",
+            "runtime_metadata",
         )
         if intent.get(key) is not None
     }
@@ -603,17 +608,18 @@ async def accept_human_input(
     )
     db.add(row)
     await db.flush()
-    admission_id = uuid.uuid4()
-    hook_run_id = uuid.uuid5(command.id, "UserPromptSubmit")
+    admission_id = uuid.uuid5(command.id, "input-admission:revision:1")
+    hook_run_id = uuid.uuid5(command.id, "UserPromptSubmit:revision:1")
     admission = SessionInputAdmission(
         id=admission_id,
         tenant_id=tenant_uuid,
         session_id=session_uuid,
         command_id=command.id,
         input_id=input_id,
+        input_revision=1,
         state="admission_pending",
         hook_run_id=hook_run_id,
-        hook_idempotency_key=f"user-prompt-submit:{command.id}",
+        hook_idempotency_key=f"user-prompt-submit:{command.id}:revision:1",
         additional_context_refs_json=[],
         carry_forward="none",
         version=1,
@@ -635,6 +641,7 @@ async def accept_human_input(
                 actor={"type": "user", "id": str(authority.principal_id)},
                 payload={
                     "input_id": str(input_id),
+                    "input_revision": 1,
                     "revision": 1,
                     "intent": kind,
                     "content_parts": content_parts,
@@ -667,20 +674,3 @@ async def accept_human_input(
     )
     command.receipt_ref = f"session-input:{input_id}:accepted:{events[0].sequence}"
     return _receipt_from_input(command, row, accepted_sequence=events[0].sequence, replayed=False)
-
-
-async def pending_outbox_envelopes(
-    db: AsyncSession,
-    *,
-    limit: int = 200,
-) -> list[SessionEventOutbox]:
-    """Lock a bounded outbox batch; publishing occurs only after source commit."""
-
-    result = await db.execute(
-        select(SessionEventOutbox)
-        .where(SessionEventOutbox.status.in_(("pending", "failed")), SessionEventOutbox.available_at <= func.now())
-        .order_by(SessionEventOutbox.created_at, SessionEventOutbox.sequence)
-        .limit(max(1, min(limit, 1000)))
-        .with_for_update(skip_locked=True)
-    )
-    return list(result.scalars().all())

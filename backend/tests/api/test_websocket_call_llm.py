@@ -33,7 +33,7 @@ def test_history_rehydration_maps_stored_thinking_to_reasoning_content():
     ]
 
 
-def test_history_rehydration_skips_llm_error_assistant_rows():
+def test_history_rehydration_preserves_platform_like_assistant_bytes_without_inference():
     from app.api.websocket import _conversation_from_history_messages
 
     entries = _conversation_from_history_messages(
@@ -48,6 +48,10 @@ def test_history_rehydration_skips_llm_error_assistant_rows():
 
     assert entries == [
         {"role": "user", "content": "请继续"},
+        {
+            "role": "assistant",
+            "content": "[LLM Error] AI 模型额度已耗尽，请联系管理员检查模型额度。",
+        },
         {"role": "assistant", "content": "之前真实完成的结果"},
     ]
 
@@ -342,15 +346,19 @@ async def test_call_llm_auto_close_emits_session_close(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_call_llm_auto_close_emits_turn_abort_for_llm_error(monkeypatch):
+async def test_call_llm_auto_close_emits_turn_abort_from_typed_terminal_reason(monkeypatch):
     from app.api.websocket import call_llm
+    from app.kernel.contracts import TerminalReason
     from app.runtime.hooks import HookEvent
 
     captured = {"events": []}
 
     async def fake_invoke_agent(request):
         captured["request"] = request
-        return SimpleNamespace(content="[LLM Error] model quota exceeded")
+        return SimpleNamespace(
+            content="Provider failure display without a magic prefix",
+            terminal_reason=TerminalReason.PROVIDER_ERROR,
+        )
 
     async def fake_emit_hook(event, **kwargs):
         captured["events"].append((event, kwargs))
@@ -380,7 +388,7 @@ async def test_call_llm_auto_close_emits_turn_abort_for_llm_error(monkeypatch):
         session_channel="feishu",
     )
 
-    assert result == "[LLM Error] model quota exceeded"
+    assert result == "Provider failure display without a magic prefix"
     assert captured["request"].emit_turn_stop is False
     assert len(captured["events"]) == 1
     event, payload = captured["events"][0]
@@ -391,3 +399,48 @@ async def test_call_llm_auto_close_emits_turn_abort_for_llm_error(monkeypatch):
     assert payload["metadata"]["checkpoint_kind"] == "turn_abort"
     assert payload["metadata"]["semantic_memory_eligible"] is False
     assert payload["messages"] == [{"role": "user", "content": "hello"}]
+
+
+@pytest.mark.asyncio
+async def test_call_llm_auto_close_does_not_infer_abort_from_model_authored_prefix(monkeypatch):
+    from app.api.websocket import call_llm
+    from app.kernel.contracts import TerminalReason
+    from app.runtime.hooks import HookEvent
+
+    captured = {"events": []}
+
+    async def fake_invoke_agent(_request):
+        return SimpleNamespace(
+            content="[LLM Error] is the literal format being discussed by the model.",
+            terminal_reason=TerminalReason.TURN_STOP,
+        )
+
+    async def fake_emit_hook(event, **kwargs):
+        captured["events"].append((event, kwargs))
+
+    monkeypatch.setattr("app.api.websocket.invoke_agent", fake_invoke_agent)
+    monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit_hook)
+    model = SimpleNamespace(
+        provider="openai",
+        model="gpt-4.1",
+        api_key="key",
+        base_url=None,
+        max_output_tokens=None,
+    )
+
+    result = await call_llm(
+        model=model,
+        messages=[{"role": "user", "content": "Explain the legacy format"}],
+        agent_name="Agent",
+        role_description="desc",
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        session_id="session-prefix-is-content",
+        memory_messages=[{"role": "user", "content": "Explain the legacy format"}],
+        auto_close_session=True,
+    )
+
+    assert result == "[LLM Error] is the literal format being discussed by the model."
+    event, payload = captured["events"][0]
+    assert event == HookEvent.TURN_STOP
+    assert payload["messages"][-1]["content"] == result

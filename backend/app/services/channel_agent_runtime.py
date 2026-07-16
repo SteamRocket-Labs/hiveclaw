@@ -6,6 +6,7 @@ import traceback
 import uuid
 import inspect
 import json
+import re
 from types import SimpleNamespace
 from typing import Any
 
@@ -15,6 +16,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.permissions import is_agent_expired
+
+
+_PERMISSION_ID_PATTERN = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
 
 
 def _uuid_or_none(value: Any) -> uuid.UUID | None:
@@ -142,7 +146,11 @@ def _parse_channel_permission_action(text: str) -> str | None:
     clean = str(text or "").strip().rstrip("。.!！")
     if not clean:
         return None
-    lowered = clean.lower()
+    command_text = clean
+    command_parts = clean.rsplit(maxsplit=1)
+    if len(command_parts) == 2 and re.fullmatch(_PERMISSION_ID_PATTERN, command_parts[1]):
+        command_text = command_parts[0]
+    lowered = command_text.lower()
     exact_commands = {
         "允许": "allow_once",
         "允许一次": "allow_once",
@@ -157,16 +165,11 @@ def _parse_channel_permission_action(text: str) -> str | None:
         "allow session": "allow_session",
         "deny": "deny",
         "reject": "deny",
-    }
-    if lowered in exact_commands:
-        return exact_commands[lowered]
-
-    command = lowered.split(maxsplit=1)[0]
-    return {
         "/allow": "allow_once",
         "/allow-session": "allow_session",
         "/deny": "deny",
-    }.get(command)
+    }
+    return exact_commands.get(lowered)
 
 
 _CHANNEL_PERMISSION_MODE_LABELS = {
@@ -296,7 +299,7 @@ async def try_handle_channel_permission_mode_command(
             .where(
                 RuntimeTask.parent_agent_id == agent_id,
                 RuntimeTask.parent_session_id == str(session_uuid),
-                RuntimeTask.status.in_(("pending", "running")),
+                RuntimeTask.status.in_(("pending", "running", "suspended", "resumable")),
             )
             .order_by(RuntimeTask.created_at.desc())
             .limit(1)
@@ -352,13 +355,8 @@ async def try_resolve_channel_session_permission_from_text(
     if user is None:
         return "权限确认需要可审计的用户身份。请先绑定账号，或到 Web 端会话内确认。"
 
-    import re
-    from app.api import chat_sessions as chat_sessions_api
-    from app.models.chat_transcript_event import ChatTranscriptEvent
-
-    permission_id_pattern = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
     explicit_permission_id = None
-    match = re.search(permission_id_pattern, user_text or "")
+    match = re.search(_PERMISSION_ID_PATTERN, user_text or "")
     if match:
         try:
             explicit_permission_id = uuid.UUID(match.group(0))
@@ -370,72 +368,87 @@ async def try_resolve_channel_session_permission_from_text(
     except ValueError:
         return None
 
-    result = await db.execute(
-        select(ChatTranscriptEvent)
-        .where(ChatTranscriptEvent.agent_id == agent_id, ChatTranscriptEvent.session_id == session_uuid)
-        .order_by(ChatTranscriptEvent.created_at.desc())
-        .limit(300)
+    from fastapi import HTTPException
+
+    from app.models.runtime_task import RuntimeTask
+    from app.models.session_v2 import SessionToolInvocation
+    from app.services.runtime_task_worker import notify_runtime_task_worker
+    from app.services.session_permission_runtime import resolve_session_tool_permission
+    from app.services.session_v2_persistence import IdempotencyConflict, resolve_session_mutation_authority
+
+    try:
+        authority = await resolve_session_mutation_authority(
+            db,
+            user=user,
+            agent_id=agent_id,
+            session_id=session_uuid,
+            action="respond_tool_permission",
+        )
+    except (HTTPException, PermissionError, ValueError):
+        return "无法验证这条权限指令对应的用户、Agent 与 Session 权威，请在已绑定账号的原会话中重试。"
+
+    statement = (
+        select(SessionToolInvocation)
+        .join(RuntimeTask, RuntimeTask.id == SessionToolInvocation.run_id)
+        .where(
+            SessionToolInvocation.tenant_id == authority.tenant_id,
+            SessionToolInvocation.session_id == authority.session_id,
+            SessionToolInvocation.permission_state == "waiting",
+            SessionToolInvocation.effect_state == "prepared_not_started",
+            SessionToolInvocation.permission_item_id.is_not(None),
+            RuntimeTask.tenant_id == authority.tenant_id,
+            RuntimeTask.parent_agent_id == authority.agent_id,
+            RuntimeTask.parent_session_id == str(authority.session_id),
+            RuntimeTask.status.in_(("running", "suspended", "resumable")),
+        )
+        .order_by(SessionToolInvocation.permission_expires_at, SessionToolInvocation.id)
     )
-    resolved_ids: set[str] = set()
-    pending_id: uuid.UUID | None = None
-    pending_tool_name = ""
-    if hasattr(result, "scalars"):
-        permission_events = result.scalars().all()
-    elif hasattr(result, "all"):
-        permission_events = result.all()
-    elif hasattr(result, "scalar_one_or_none"):
-        item = result.scalar_one_or_none()
-        permission_events = [] if item is None else [item]
-    else:
-        permission_events = []
+    if explicit_permission_id is not None:
+        statement = statement.where(SessionToolInvocation.permission_item_id == explicit_permission_id)
+    pending = list((await db.execute(statement)).scalars())
+    if not pending:
+        suffix = f"（request_id={explicit_permission_id}）" if explicit_permission_id else ""
+        return f"当前会话没有匹配且仍待处理的权限请求{suffix}。"
+    if explicit_permission_id is None and len(pending) != 1:
+        choices = "、".join(f"{row.tool_name}（{row.permission_item_id}）" for row in pending)
+        return f"当前有多个待处理权限请求，请使用 /allow、/allow-session 或 /deny 加 request_id：{choices}"
 
-    for event in permission_events:
-        metadata = dict(getattr(event, "metadata_json", None) or {})
-        decision_request_id = metadata.get("permission_request_id")
-        if decision_request_id and getattr(event, "event_type", "") in {
-            "session_permission_decision",
-            "permission_resolved",
-        }:
-            resolved_ids.add(str(decision_request_id))
-            continue
-
-        parsed = chat_sessions_api._permission_request_payload_from_event(event)
-        if parsed is None:
-            continue
-        request_payload, _tool_payload = parsed
-        request_id = str(request_payload.get("permission_request_id") or "")
-        if not request_id or request_id in resolved_ids:
-            continue
-        if explicit_permission_id and request_id != str(explicit_permission_id):
-            continue
-        try:
-            pending_id = uuid.UUID(request_id)
-        except ValueError:
-            continue
-        pending_tool_name = str(request_payload.get("tool_display_name") or request_payload.get("tool_name") or "")
-        break
-
+    invocation = pending[0]
+    pending_id = invocation.permission_item_id
     if pending_id is None:
-        return None
+        return "权限请求缺少稳定 request_id，已停止处理并等待系统恢复。"
+    try:
+        receipt = await resolve_session_tool_permission(
+            db,
+            authority=authority,
+            permission_request_id=pending_id,
+            decision=action,
+        )
+    except IdempotencyConflict as exc:
+        await db.rollback()
+        return f"该权限请求已经存在不同决定（command_id={exc.command_id}），未覆盖原决定。"
+    except ValueError as exc:
+        await db.rollback()
+        code = str(exc)
+        if code == "tool_permission_request_expired":
+            return f"权限请求已过期（request_id={pending_id}），系统会按未执行效果收敛原运行。"
+        return f"权限指令未应用（request_id={pending_id}，code={code}）。"
 
-    body = chat_sessions_api.ResolveSessionPermissionIn(action=action, feedback=f"resolved via {session_source}")
-    result_payload = await chat_sessions_api.resolve_session_permission(
-        agent_id=agent_id,
-        session_id=session_uuid,
-        permission_request_id=pending_id,
-        body=body,
-        current_user=user,
-        db=db,
-    )
-    status = str(result_payload.get("status") or "")
-    tool_label = f"：{pending_tool_name}" if pending_tool_name else ""
-    if status == "denied":
-        return f"已拒绝本次权限请求{tool_label}。"
-    if status == "failed":
-        return f"权限请求处理失败{tool_label}：{result_payload.get('error') or 'unknown error'}"
+    if receipt.run_status == "resumable":
+        await notify_runtime_task_worker(
+            reason=f"session_permission_resolved:{session_source}",
+            runtime_task_id=receipt.run_id,
+        )
+    tool_label = f"：{invocation.tool_name}" if invocation.tool_name else ""
+    if receipt.status == "needs_reconciliation":
+        return f"权限决定已记录{tool_label}，但工具效果状态需要核对；原运行已冻结且不会重复执行。"
+    if receipt.status == "waiting_for_sibling_permissions":
+        return f"权限决定已记录{tool_label}；原运行仍在等待同一轮的其他权限请求。"
+    if action == "deny":
+        return f"已拒绝本次权限请求{tool_label}，原运行将继续处理该拒绝结果。"
     if action == "allow_session":
-        return f"已在本会话允许权限请求{tool_label}，我会继续执行。"
-    return f"已允许本次权限请求{tool_label}，我会继续执行。"
+        return f"已对本会话记录这项精确权限{tool_label}，原运行将从同一工具轮继续。"
+    return f"已允许本次权限请求{tool_label}，原运行将从同一工具轮继续。"
 
 
 async def call_agent_llm(
@@ -454,6 +467,7 @@ async def call_agent_llm(
     durable_run: bool = False,
     durable_session: Any = None,
     durable_user: Any = None,
+    ingress_event_id: uuid.UUID | str | None = None,
 ) -> str:
     """Call the agent runtime from an external channel turn."""
     from app.api.websocket import call_llm
@@ -509,30 +523,76 @@ async def call_agent_llm(
         return plan_confirmation_reply
 
     if durable_run:
-        from app.services.web_chat_runtime import start_channel_chat_run_from_saved_turn
+        from app.models.chat_session import ChatSession
+        from app.services.channel_ingress_context import (
+            bind_channel_ingress_runtime_result,
+            current_channel_ingress_context,
+        )
+        from app.services.session_live_input import submit_live_human_input
 
         if durable_session is None:
             return "⚠️ 无法启动后台任务: missing channel session"
+        ingress_context = current_channel_ingress_context()
+        canonical_ingress_id = _uuid_or_none(ingress_event_id) or (
+            ingress_context.event_id if ingress_context is not None else None
+        )
+        if canonical_ingress_id is None:
+            return "⚠️ 后台任务启动失败: missing stable channel ingress identity"
+        durable_session_id = _uuid_or_none(session_id)
+        if durable_session_id is None:
+            return "⚠️ 后台任务启动失败: missing server-known channel session identity"
+        # A channel handler may have committed or rolled back earlier durable
+        # work on this AsyncSession.  Never carry the caller's ORM instance
+        # across that transaction boundary: it may be expired and attribute
+        # access would trigger sync lazy IO (MissingGreenlet).  Re-load inside
+        # the authenticated agent/tenant frame from the server-known ID.
+        durable_session = await db.scalar(
+            select(ChatSession).where(
+                ChatSession.id == durable_session_id,
+                ChatSession.agent_id == agent_id,
+                ChatSession.tenant_id == agent.tenant_id,
+            )
+        )
+        if durable_session is None:
+            return "⚠️ 无法启动后台任务: channel session authority mismatch"
         durable_user = durable_user or SimpleNamespace(
             id=effective_user_id,
             username=str(effective_user_id),
             display_name="",
         )
         try:
-            run = await start_channel_chat_run_from_saved_turn(
+            receipt = await submit_live_human_input(
                 db=db,
                 agent=agent,
                 user=durable_user,
                 session=durable_session,
                 content=user_text,
-                source_channel=session_channel or session_source or "channel",
+                source=session_channel or session_source or "channel",
+                input_id=canonical_ingress_id,
+                idempotency_key=(
+                    f"channel:{str(session_channel or session_source or 'channel').strip().lower()}"
+                    f":ingress:{canonical_ingress_id}"
+                ),
+                runtime_metadata={
+                    "source": session_source,
+                    "channel": session_channel,
+                    "channel_ingress_event_id": str(canonical_ingress_id),
+                    "budget_interactive": False,
+                },
             )
         except Exception as exc:
-            logger.error("[ChannelRuntime] Failed to start durable channel run: %s", exc, exc_info=True)
+            logger.error("[ChannelRuntime] Failed to start durable channel run: {}", exc, exc_info=True)
             return f"⚠️ 后台任务启动失败: {type(exc).__name__}"
-        if run.get("queued_user_message"):
-            return f"已接收补充消息，并排队到当前任务（run_id={run.get('run_id')}）。完成后我会回到当前会话。"
-        return f"已接收，正在后台处理（run_id={run.get('run_id')}）。完成后我会回到当前会话。"
+        run = dict(receipt.get("run") or {})
+        run_id = run.get("run_id") or receipt.get("target_run_id")
+        if run_id is not None:
+            bind_channel_ingress_runtime_result(
+                runtime_task_id=run_id,
+                session_id=durable_session.id,
+            )
+        if str(receipt.get("dispatch_status") or "").startswith("mailbox_"):
+            return f"已接收补充消息，并排队到当前任务（run_id={run_id}）。完成后我会回到当前会话。"
+        return f"已接收，正在后台处理（run_id={run_id}）。完成后我会回到当前会话。"
 
     from app.services import plan_mode_core
 
@@ -864,6 +924,7 @@ async def call_agent_llm(
 
                 await emit_hook(
                     HookEvent.TURN_STOP,
+                    evidence_db=db,
                     agent_id=agent_id,
                     session_id=str(ledger_session_id),
                     source=session_source,

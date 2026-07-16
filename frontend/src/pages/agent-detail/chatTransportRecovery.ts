@@ -1,4 +1,4 @@
-export type ChatTransportPhase = 'connected' | 'reconnecting' | 'degraded' | 'offline' | 'auth_failed';
+export type ChatTransportPhase = 'initializing' | 'connected' | 'reconnecting' | 'degraded' | 'offline' | 'auth_failed';
 
 export const CHAT_TRANSPORT_DEGRADED_AFTER_ATTEMPTS = 5;
 export const CHAT_TRANSPORT_MAX_RECONNECT_DELAY_MS = 60_000;
@@ -17,12 +17,14 @@ export function chatTransportPhase(input: {
   online: boolean;
   connected: boolean;
   attempts: number;
+  everReady: boolean;
   authFailed?: boolean;
 }): ChatTransportPhase {
   if (input.authFailed) return 'auth_failed';
   if (!input.online) return 'offline';
   if (input.connected) return 'connected';
-  return input.attempts >= CHAT_TRANSPORT_DEGRADED_AFTER_ATTEMPTS ? 'degraded' : 'reconnecting';
+  if (input.attempts >= CHAT_TRANSPORT_DEGRADED_AFTER_ATTEMPTS) return 'degraded';
+  return input.everReady ? 'reconnecting' : 'initializing';
 }
 
 export function transportPollIntervalMs(phase: ChatTransportPhase, hasActiveRun: boolean): number | null {

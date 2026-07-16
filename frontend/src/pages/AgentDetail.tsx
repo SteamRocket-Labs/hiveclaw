@@ -77,6 +77,8 @@ import {
     type SessionTransportCallbacks,
 } from './agent-detail/useSessionTransportController';
 import { projectSessionSocketEvent } from './agent-detail/sessionSocketEventProjector';
+import { consumeSessionEnvelope } from './agent-detail/sessionEventConsumer';
+import type { SessionEventStore } from './session-workbench/sessionEventStore';
 import {
     buildAssignmentHandoff,
     buildAssignmentSessionTitle,
@@ -287,7 +289,9 @@ function AgentDetailInner() {
     const sessionUiStateRef = useRef<Record<SessionRuntimeKey, SessionUiState>>({});
     const transcriptReplayStateRef = useRef<Record<SessionRuntimeKey, TranscriptReplayState>>({});
     const transcriptEventsRef = useRef<Record<SessionRuntimeKey, ChatTranscriptEventPayload[]>>({});
-    const transcriptBackfillInFlightRef = useRef<Record<SessionRuntimeKey, Promise<void> | undefined>>({});
+    const sessionEventStoresRef = useRef<Record<SessionRuntimeKey, SessionEventStore>>({});
+    const sessionEventFullHydrationKeysRef = useRef<Set<SessionRuntimeKey>>(new Set());
+    const transcriptBackfillInFlightRef = useRef<Record<SessionRuntimeKey, Promise<number | void> | undefined>>({});
     const toolCallInvalidateAtRef = useRef<Record<SessionRuntimeKey, number>>({});
     const [transcriptHasOlder, setTranscriptHasOlder] = useState<Record<SessionRuntimeKey, boolean>>({});
     const [olderMessagesLoading, setOlderMessagesLoading] = useState(false);
@@ -302,6 +306,7 @@ function AgentDetailInner() {
     const locallyTerminalRunIdsRef = useRef<Set<string>>(new Set());
     const locallyTerminalSessionKeysRef = useRef<Set<string>>(new Set());
     const [activeRunStateBySession, setActiveRunStateBySession] = useState<Record<SessionRuntimeKey, SessionRunState>>({});
+    const [transportHydratedKeys, setTransportHydratedKeys] = useState<Record<SessionRuntimeKey, boolean>>({});
 
     const transportCallbacksRef = useRef<SessionTransportCallbacks>({
         onBackfill: () => undefined,
@@ -318,7 +323,9 @@ function AgentDetailInner() {
         resetActiveTransportState,
         syncActiveSocketState,
     } = useSessionTransportController({
-        enabled: canLoadAgentScopedData && activeTab === 'chat',
+        enabled: canLoadAgentScopedData && activeTab === 'chat' && Boolean(
+            id && activeSession?.id && transportHydratedKeys[`${id}:${String(activeSession.id)}`],
+        ),
         agentId: id,
         token,
         activeSession,
@@ -331,6 +338,15 @@ function AgentDetailInner() {
         shouldKeepalive: (key) => {
             const uiState = sessionUiStateRef.current[key];
             return Boolean(activeRunStateRef.current[key] || uiState?.isWaiting || uiState?.isStreaming);
+        },
+        getHighestContiguousSequence: (key) => (
+            sessionEventStoresRef.current[key]?.highestContiguousSequence
+            ?? latestTranscriptSequence(transcriptEventsRef.current[key] || [])
+        ),
+        getProjectionPhase: (key) => sessionEventStoresRef.current[key]?.projection.phase,
+        needsProjectionRecovery: (key) => {
+            const store = sessionEventStoresRef.current[key];
+            return store?.recoveryRequired === 'full_hydration' || store?.projection.phase === 'gap_detected';
         },
         onAgentExpired: () => setAgentExpired(true),
         onSocketDisposed: (key) => {
@@ -441,25 +457,39 @@ function AgentDetailInner() {
     ) => {
         const key = buildSessionRuntimeKey(agentId, sessionId);
         const existingEvents = transcriptEventsRef.current[key] || [];
-        const sequenceAlreadyApplied = typeof event.sequence === 'number'
-            && event.sequence > 0
-            && existingEvents.some((candidate) => candidate.sequence === event.sequence);
+        let projectionEvent: ChatTranscriptEventPayload;
+        try {
+            const consumed = consumeSessionEnvelope(
+                event,
+                sessionEventStoresRef.current[key],
+                sessionEventFullHydrationKeysRef.current.has(key) ? 0 : latestTranscriptSequence(existingEvents),
+            );
+            if (consumed.sessionEnvelope && consumed.store === sessionEventStoresRef.current[key]) return;
+            if (consumed.store) sessionEventStoresRef.current[key] = consumed.store;
+            projectionEvent = consumed.projectionEvent;
+        } catch (error) {
+            console.warn(`[SessionEventV2] Rejected invalid envelope for ${key}:`, error);
+            return;
+        }
+        const sequenceAlreadyApplied = typeof projectionEvent.sequence === 'number'
+            && projectionEvent.sequence > 0
+            && existingEvents.some((candidate) => candidate.sequence === projectionEvent.sequence);
         if (sequenceAlreadyApplied) {
-            transcriptEventsRef.current[key] = mergeTranscriptBackfill(existingEvents, [event]);
+            transcriptEventsRef.current[key] = mergeTranscriptBackfill(existingEvents, [projectionEvent]);
             return;
         }
         const previous = transcriptReplayStateRef.current[key] || createEmptyTranscriptReplayState();
-        const next = applyTranscriptEvent(previous, event);
+        const next = applyTranscriptEvent(previous, projectionEvent);
         if (next === previous) return;
         transcriptReplayStateRef.current[key] = next;
         transcriptEventsRef.current[key] = mergeTranscriptBackfill(
             transcriptEventsRef.current[key] || [],
-            [event],
+            [projectionEvent],
         );
         sessionUiStateRef.current[key] = next.ui;
         runtimeActivityAtRef.current[key] = Date.now();
 
-        const eventType = event.event_type || event.type;
+        const eventType = projectionEvent.event_type || projectionEvent.type;
         const lastMessage = next.messages[next.messages.length - 1];
         const terminal =
             eventType === 'assistant_message'
@@ -469,7 +499,7 @@ function AgentDetailInner() {
             || eventType === 'quota_exceeded'
             || isTerminalTranscriptToolMessage(lastMessage);
         if (terminal) {
-            markActiveRunTerminal(key, getTerminalRunIdFromTranscriptEvent(event));
+            markActiveRunTerminal(key, getTerminalRunIdFromTranscriptEvent(projectionEvent));
         }
 
         if (isActiveRuntime) {
@@ -491,12 +521,20 @@ function AgentDetailInner() {
         if (inFlight) return inFlight;
 
         const task = (async () => {
-            let afterSequence = latestTranscriptSequence(transcriptEventsRef.current[key] || []);
+            if (sessionEventStoresRef.current[key]?.recoveryRequired === 'full_hydration') {
+                delete sessionEventStoresRef.current[key];
+                sessionEventFullHydrationKeysRef.current.add(key);
+            }
+            let afterSequence = sessionEventFullHydrationKeysRef.current.has(key)
+                ? 0
+                : sessionEventStoresRef.current[key]?.highestContiguousSequence
+                    ?? latestTranscriptSequence(transcriptEventsRef.current[key] || []);
             let pageSize = 0;
             do {
                 const events = await chatApi.getSessionTranscript(agentId, sessionId, {
                     afterSequence,
                     limit: 1000,
+                    schemaVersion: 2,
                     ...(sess?.operator_view
                         ? { operatorView: true, operatorReason: 'Agent session administration' }
                         : undefined),
@@ -511,9 +549,12 @@ function AgentDetailInner() {
                 afterSequence = nextSequence;
             } while (pageSize === 1000);
             invalidateSessionRuntimeQueries(agentId, sessionId);
+            return sessionEventStoresRef.current[key]?.highestContiguousSequence ?? afterSequence;
         })().catch((error) => {
             console.warn(`[WS] Durable transcript backfill failed for ${key}:`, error);
+            throw error;
         }).finally(() => {
+            sessionEventFullHydrationKeysRef.current.delete(key);
             delete transcriptBackfillInFlightRef.current[key];
         });
         transcriptBackfillInFlightRef.current[key] = task;
@@ -579,6 +620,9 @@ function AgentDetailInner() {
             key: runtimeKey,
             surface: transcriptSurface,
         };
+        if (!transcriptReplayStateRef.current[runtimeKey]) {
+            setTransportHydratedKeys((current) => ({ ...current, [runtimeKey]: false }));
+        }
         activeSessionIdRef.current = sessionId;
         setCreatedAgentId(null);
         if (writableSession) {
@@ -683,6 +727,7 @@ function AgentDetailInner() {
                 setHistoryMessagesSessionId(sessionId);
                 setHistoryMsgs(preParsed);
             }
+            setTransportHydratedKeys((current) => ({ ...current, [runtimeKey]: true }));
         } catch (err: any) {
             if (err?.name === 'AbortError') return;
             if (loadSeq !== sessionLoadSeqRef.current) return;
@@ -703,6 +748,7 @@ function AgentDetailInner() {
                 setHistoryMessagesSessionId(sessionId);
                 setHistoryMsgs([failureMessage]);
             }
+            setTransportHydratedKeys((current) => ({ ...current, [runtimeKey]: true }));
         } finally {
             const currentLoad = sessionTranscriptLoadRef.current;
             if (
@@ -1688,7 +1734,6 @@ function AgentDetailInner() {
     const sendChatMsg = async () => {
         if (!id || !activeSession?.id) return;
         if (!chatInput.trim() && attachedFiles.length === 0) return;
-        
         let userMsg = chatInput.trim();
         const goalObjective = userMsg;
         let contentForLLM = userMsg;
@@ -1711,8 +1756,9 @@ function AgentDetailInner() {
                     ...prev,
                     parseChatMsg({ role: 'user', content: userMsg, timestamp: new Date().toISOString() }),
                     parseChatMsg({
-                        role: 'assistant',
-                        content: `⚠️ ${err instanceof Error ? err.message : t('agent.chat.commands.invalid', 'Invalid slash command.')}`,
+                        role: 'event',
+                        content: err instanceof Error ? err.message : t('agent.chat.commands.invalid', 'Invalid slash command.'),
+                        eventType: 'runtime_action_failed', eventStatus: 'command_invalid',
                     }),
                 ]);
                 setChatInput('');
@@ -1726,7 +1772,7 @@ function AgentDetailInner() {
                 } catch (err: any) {
                     const msg = err?.message || t('agent.chat.sessionCreateFailed', 'Failed to create session');
                     setChatMessagesSessionId(String(activeSession.id));
-                    setChatMessagesAfterQueued(prev => [...prev, parseChatMsg({ role: 'assistant', content: `⚠️ ${msg}` })]);
+                    setChatMessagesAfterQueued(prev => [...prev, parseChatMsg({ role: 'event', content: msg, eventType: 'runtime_action_failed', eventStatus: 'session_create_failed' })]);
                     return;
                 }
                 if (!commandSession?.id) return;
@@ -1786,7 +1832,7 @@ function AgentDetailInner() {
                     invalidateSessionRuntimeQueries(id, commandSessionId);
                 } catch (err: any) {
                     const msg = err?.message || t('agent.chat.commands.failed', 'Failed to run command');
-                    setChatMessagesAfterQueued(prev => [...prev, parseChatMsg({ role: 'assistant', content: `⚠️ ${msg}` })]);
+                    setChatMessagesAfterQueued(prev => [...prev, parseChatMsg({ role: 'event', content: msg, eventType: 'runtime_action_failed', eventStatus: 'command_failed' })]);
                 } finally {
                     if (!commandStartedRun) {
                         syncActivePhase('idle');
@@ -1897,7 +1943,7 @@ function AgentDetailInner() {
             setIsStreaming(false);
             const msg = err?.message || t('agent.chat.runStartFailed', 'Failed to start run');
             setChatMessagesSessionId(String(activeSession.id));
-            setChatMessagesAfterQueued(prev => [...prev, parseChatMsg({ role: 'assistant', content: `⚠️ ${msg}` })]);
+            setChatMessagesAfterQueued(prev => [...prev, parseChatMsg({ role: 'event', content: msg, eventType: 'runtime_action_failed', eventStatus: 'run_start_failed' })]);
         }
     };
 
@@ -1937,7 +1983,7 @@ function AgentDetailInner() {
             setIsStreaming(false);
             const msg = err?.message || t('agent.chat.runStartFailed', 'Failed to start run');
             setChatMessagesSessionId(String(activeSession.id));
-            setChatMessagesAfterQueued(prev => [...prev, parseChatMsg({ role: 'assistant', content: `⚠️ ${msg}` })]);
+            setChatMessagesAfterQueued(prev => [...prev, parseChatMsg({ role: 'event', content: msg, eventType: 'runtime_action_failed', eventStatus: 'run_start_failed' })]);
             throw err;
         }
     };

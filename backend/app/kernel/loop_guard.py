@@ -66,18 +66,6 @@ def _abort_threshold(warn_threshold: int) -> int:
     return math.ceil(warn_threshold * _ABORT_MULTIPLIER)
 
 
-def _is_failure(result: str) -> bool:
-    lowered = (result or "").strip().lower()
-    return (
-        lowered.startswith("[tool execution error]")
-        or lowered.startswith("[error]")
-        or "traceback" in lowered
-        or "timeout" in lowered
-        or "failed" in lowered
-        or "exception" in lowered
-    )
-
-
 @dataclass
 class _PatternCheck:
     """One detection outcome: where the count sits relative to warn/abort."""
@@ -156,11 +144,21 @@ class LoopGuard:
         args: dict[str, Any] | None,
         result: str,
         *,
+        machine_outcome: str | None = None,
         side_effect_free: bool = False,
         retry_exhausted: bool = False,
         progress_token: str | None = None,
     ) -> LoopGuardDecision | None:
-        if not _is_failure(str(result)):
+        # Failure counting is a mechanical outcome and therefore comes only
+        # from the typed tool-execution receipt. Natural-language tool output
+        # may legitimately discuss timeouts, failures, or exceptions.
+        if str(machine_outcome or "").strip().lower() not in {
+            "failed",
+            "denied",
+            "unavailable",
+            "cancelled",
+            "aborted",
+        }:
             return None
         self.failed_tool_calls += 1
         canonical = _canonical_args(args)

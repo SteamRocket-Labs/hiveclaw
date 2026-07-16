@@ -7,6 +7,7 @@ artifact and is projected exactly-once from committed transcript rows.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -16,6 +17,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.database import schedule_after_commit
 from app.memory.t0.ledger import T0AppendResult
 from app.models.audit import ChatMessage
 from app.models.chat_transcript_event import ChatTranscriptEvent
@@ -28,6 +30,7 @@ from app.services.thread_items import classify_thread_item, classify_thread_item
 
 
 CHAT_MESSAGE_ROLES = {"user", "assistant", "system", "tool_call"}
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -329,23 +332,29 @@ async def append_session_event(
     if bridge_to_t0:
         event_metadata = {**event_metadata, "t0_bridge_pending": True}
         transcript_event.metadata_json = event_metadata
-        try:
+
+        async def _publish_committed_transcript_event() -> None:
             from app.services.runtime_control_bus import publish_transcript_t0_bridge
 
-            await publish_transcript_t0_bridge(
-                transcript_event_id=event_id,
-                agent_id=agent_uuid,
-                session_id=session_uuid,
-                tenant_id=tenant_uuid,
-            )
-        except Exception as exc:  # noqa: BLE001 - transcript stays durable; runtime sweep/ops can observe pending state.
-            projection_error = f"{type(exc).__name__}: {exc}"
-            event_metadata = {
-                **event_metadata,
-                "t0_bridge_publish_error": projection_error,
-            }
-            transcript_event.metadata_json = event_metadata
-            transcript_event.projection_error = projection_error
+            try:
+                await publish_transcript_t0_bridge(
+                    transcript_event_id=event_id,
+                    agent_id=agent_uuid,
+                    session_id=session_uuid,
+                    tenant_id=tenant_uuid,
+                )
+            except Exception as exc:  # pending projection is durably recovered by the T0 sweeper.
+                logger.warning(
+                    "[ChatTranscript] post-commit T0 bridge publish failed event=%s: %s",
+                    event_id,
+                    exc,
+                )
+
+        schedule_after_commit(
+            db,
+            _publish_committed_transcript_event,
+            description=f"transcript-t0-bridge:{event_id}",
+        )
     return AppendSessionEventResult(
         event_id=event_id,
         sequence=sequence,

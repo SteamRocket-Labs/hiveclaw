@@ -2229,6 +2229,7 @@ async def run_soft_dream(agent_id: uuid.UUID) -> dict:
 async def _finish_degraded_dream(
     *,
     agent_id: uuid.UUID,
+    tenant_id: uuid.UUID,
     before_count: int,
     reason: str,
     coverage: dict,
@@ -2254,9 +2255,11 @@ async def _finish_degraded_dream(
 
         await emit_hook(
             HookEvent.DREAM_END,
+            evidence_mode="independent",
             agent_id=agent_id,
             source="dream",
             metadata={
+                "tenant_id": str(tenant_id),
                 "status": "degraded",
                 "retryable": True,
                 "reason": reason,
@@ -2344,6 +2347,7 @@ async def run_dream(agent_id: uuid.UUID, tenant_id: uuid.UUID) -> dict:
     if llm_decision is None:
         return await _finish_degraded_dream(
             agent_id=agent_id,
+            tenant_id=tenant_id,
             before_count=before_count,
             reason="semantic_consolidator_unavailable",
             coverage=incomplete_coverage,
@@ -2385,6 +2389,7 @@ async def run_dream(agent_id: uuid.UUID, tenant_id: uuid.UUID) -> dict:
         logger.warning("[Dream] Failed to apply LLM decisions for %s: %s", agent_id, type(exc).__name__)
         return await _finish_degraded_dream(
             agent_id=agent_id,
+            tenant_id=tenant_id,
             before_count=before_count,
             reason="semantic_apply_failed",
             coverage=coverage,
@@ -2467,9 +2472,11 @@ async def run_dream(agent_id: uuid.UUID, tenant_id: uuid.UUID) -> dict:
 
         await emit_hook(
             HookEvent.DREAM_END,
+            evidence_mode="independent",
             agent_id=agent_id,
             source="dream",
             metadata={
+                "tenant_id": str(tenant_id),
                 "t3_processed": after_count,
                 "deduped": t3_removed,
                 "promoted_to_soul": promoted_to_soul,

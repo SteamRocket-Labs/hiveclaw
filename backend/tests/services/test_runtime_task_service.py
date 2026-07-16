@@ -67,6 +67,21 @@ class _FailingSession:
         # nor the "should not be called" guard — they are infra, not the query.
         if "app.current_tenant_id" in str(_query):
             return None
+        if "session_writer_epochs" in str(_query):
+            return _OneTaskResult(
+                type(
+                    "SessionWriterEpochStub",
+                    (),
+                    {
+                        "state": "legacy_open",
+                        "new_run_generation": 1,
+                        "allowed_existing_generations_json": [1, 2],
+                        "enforcement_mode": "observe",
+                        "version": 1,
+                        "release_id": None,
+                    },
+                )()
+            )
         if self.fail_on == "execute":
             raise RuntimeError("db execute failed")
         raise AssertionError("execute should not be called in this test")

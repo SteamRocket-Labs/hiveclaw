@@ -15,21 +15,18 @@ from app.core.permissions import check_agent_access, is_agent_expired
 from app.core.security import get_current_user
 from app.database import get_db, tenant_scoped_session
 from app.services.tenant_resolver import resolve_tenant_for_agent
-from app.kernel.contracts import ExecutionIdentityRef
+from app.kernel.contracts import ExecutionIdentityRef, TerminalReason
 from app.models.audit import ChatMessage
 from app.models.llm import LLMModel
 from app.models.user import User
 from app.runtime.invoker import AgentInvocationRequest, invoke_agent
 from app.runtime.session import SessionContext
-from app.services.llm_error_policy import is_llm_error_message
 from app.services.web_chat_broker import web_chat_broker
 from app.services.web_chat_runtime import (
-    ActiveWebChatRunExists,
-    cancel_web_chat_run,
     conversation_from_history_messages as _conversation_from_history_messages,
     get_active_web_chat_run,
-    start_web_chat_run,
 )
+from app.services.session_live_input import submit_live_cancel_input, submit_live_human_input
 from app.services.web_session_contract import apply_web_session_contract
 
 router = APIRouter(tags=["websocket"])
@@ -69,6 +66,7 @@ async def _emit_ws_session_lifecycle_hook(
     hook_event = HookEvent(event) if isinstance(event, str) else event
     await emit_hook(
         hook_event,
+        evidence_mode="independent",
         agent_id=agent_id,
         session_id=session_id,
         messages=messages,
@@ -337,23 +335,38 @@ async def call_llm(
 
     if auto_close_session and agent_id is not None:
         close_messages = list(runtime_memory_messages or runtime_messages)
-        llm_error = is_llm_error_message(result.content)
-        if not llm_error:
+        terminal_reason = getattr(result, "terminal_reason", TerminalReason.TURN_STOP)
+        try:
+            typed_terminal_reason = (
+                terminal_reason if isinstance(terminal_reason, TerminalReason) else TerminalReason(str(terminal_reason))
+            )
+        except ValueError:
+            # An untyped/unknown terminal receipt cannot be inferred from the
+            # model-authored bytes. Treat the lifecycle authority as failed.
+            typed_terminal_reason = TerminalReason.TURN_ABORT
+        turn_aborted = typed_terminal_reason not in {
+            TerminalReason.TURN_STOP,
+            TerminalReason.CLARIFICATION_REQUIRED,
+        }
+        if not turn_aborted:
             close_messages.append({"role": "assistant", "content": result.content})
         try:
             from app.runtime.hooks import HookEvent, emit_hook
 
             await emit_hook(
-                HookEvent.TURN_ABORT if llm_error else HookEvent.TURN_STOP,
+                HookEvent.TURN_ABORT if turn_aborted else HookEvent.TURN_STOP,
+                evidence_mode="independent",
                 agent_id=agent_id,
                 session_id=effective_session_context.session_id or session_id,
                 source=effective_session_context.source,
                 messages=close_messages,
                 metadata={
-                    "reason": "invoke_failed" if llm_error else "invoke_complete",
+                    "tenant_id": effective_session_context.metadata.get("tenant_id"),
+                    "reason": "invoke_failed" if turn_aborted else "invoke_complete",
                     "channel": effective_session_context.channel,
-                    "checkpoint_kind": "turn_abort" if llm_error else "user_turn_stop",
-                    "semantic_memory_eligible": False if llm_error else True,
+                    "checkpoint_kind": "turn_abort" if turn_aborted else "user_turn_stop",
+                    "semantic_memory_eligible": not turn_aborted,
+                    "terminal_reason": typed_terminal_reason.value,
                     "turn_id": effective_session_context.metadata.get("turn_id"),
                     "intent_id": effective_session_context.metadata.get("intent_id"),
                     "runtime_task_id": effective_session_context.metadata.get("runtime_task_id"),
@@ -377,236 +390,149 @@ async def websocket_chat(
     """WebSocket endpoint for real-time chat with an agent.
 
     Flow:
-    1. Client connects with JWT token + optional session_id as query params
-    2. Server accepts immediately so browser onopen fires quickly
-    3. Server authenticates and checks agent access
-    4. If session_id provided, uses it; otherwise finds/creates the user's latest session
-    5. Client sends messages as JSON: {"content": "..."}
-    6. Server calls the agent's configured LLM and sends response back
-    7. Messages are persisted to chat_messages table under the session
+    1. Decode JWT, accept the transport, then require ``session.subscribe``.
+    2. Resolve tenant/principal/Agent/Session authority without loading a model.
+    3. Register a live buffer, capture the DB watermark and send ``session.ready``.
+    4. Stream complete catch-up pages, drain the live buffer, then remain live.
+    5. New user/control input enters the durable Session V2 command plane.
     """
-    # Authenticate BEFORE accepting — reject unauthenticated connections immediately
+    from app.services.session_subscription import (
+        SESSION_SUBSCRIPTION_CLOSE_CODES,
+        SessionSubscriptionError,
+        build_session_ready,
+        iter_session_catchup_events,
+        load_session_catchup_window,
+        parse_session_subscribe,
+        session_subscription_error_frame,
+    )
+
+    async def close_subscription(error: SessionSubscriptionError) -> None:
+        await websocket.send_json(session_subscription_error_frame(error))
+        await websocket.close(code=SESSION_SUBSCRIPTION_CLOSE_CODES[error.code], reason=error.code)
+
+    # Decode before accept when possible; once accepted, every failure is typed.
     try:
         payload = decode_access_token(token)
         user_id = uuid.UUID(payload["sub"])
     except Exception:
         await websocket.accept()
-        await websocket.send_json({"type": "error", "content": "Authentication failed"})
-        await websocket.close(code=4001)
+        await close_subscription(SessionSubscriptionError("auth_failed"))
         return
 
     await websocket.accept()
-
-    # Verify access and load agent + model
-    agent_name = ""
-    agent_type = ""
-    welcome_message = ""
-    llm_model = None
-    fallback_llm_model = None
-    history_messages = []
-
+    subscription_registered = False
     try:
-        # WS path has NO TenantMiddleware → request ContextVar is unset. Resolve
-        # the tenant from the path agent_id (narrow audited bypass single-row read)
-        # so the whole bootstrap block runs under the agent's tenant GUC. A
-        # cross-tenant user is rejected by check_agent_access regardless.
-        _ws_tenant_id = await resolve_tenant_for_agent(agent_id)
-        async with tenant_scoped_session(_ws_tenant_id) as db:
-            logger.info(f"[WS] Looking up user {user_id}")
-            result = await db.execute(select(User).where(User.id == user_id))
-            user = result.scalar_one_or_none()
-            if not user:
-                logger.info("[WS] User not found")
-                await websocket.send_json({"type": "error", "content": "User not found"})
-                await websocket.close(code=4001)
-                return
+        subscribe_payload = await websocket.receive_json()
+        expected_session_id = session_id or (
+            subscribe_payload.get("session_id") if isinstance(subscribe_payload, dict) else None
+        )
+        subscription = parse_session_subscribe(
+            subscribe_payload,
+            expected_session_id=expected_session_id,
+        )
+        from app.core.execution_context import set_delegated_user_identity
+        from app.models.chat_session import ChatSession
 
-            # Set execution identity for audit trail
-            from app.core.execution_context import set_delegated_user_identity
-
+        ws_tenant_id = await resolve_tenant_for_agent(agent_id)
+        async with tenant_scoped_session(ws_tenant_id) as db:
+            user = await db.scalar(select(User).where(User.id == user_id))
+            if user is None:
+                raise SessionSubscriptionError("auth_failed")
             set_delegated_user_identity(user.id, user.display_name or user.username, channel="web")
-
-            logger.info(f"[WS] Checking agent access for {agent_id}")
-            agent, _ = await check_agent_access(db, user, agent_id)
-            # Check agent expiry
+            agent, _access_level = await check_agent_access(db, user, agent_id)
             if is_agent_expired(agent):
-                await websocket.send_json(
-                    {
-                        "type": "error",
-                        "content": "This Agent has expired and is off duty. Please contact your admin to extend its service.",
-                    }
+                raise SessionSubscriptionError("session_forbidden")
+            active_session = await db.scalar(
+                select(ChatSession).where(
+                    ChatSession.id == subscription.session_id,
+                    ChatSession.agent_id == agent_id,
                 )
-                await websocket.close(code=4003)
-                return
-            agent_name = agent.name
-            agent_type = agent.agent_type or ""
-            welcome_message = agent.welcome_message or ""
-            logger.info(f"[WS] Agent: {agent_name}, type: {agent_type}, model_id: {agent.primary_model_id}")
+            )
+            if active_session is None:
+                raise SessionSubscriptionError("session_not_found")
+            if active_session.user_id != user.id:
+                raise SessionSubscriptionError("session_forbidden")
+            await apply_web_session_contract(db, session=active_session, agent_id=agent_id, user=user)
+            await db.commit()
 
-            # Load the agent's primary model (tenant-scoped)
-            if agent.primary_model_id:
-                model_result = await db.execute(
-                    select(LLMModel).where(LLMModel.id == agent.primary_model_id, LLMModel.tenant_id == agent.tenant_id)
+            await manager.begin_session_subscription(str(agent_id), websocket, str(active_session.id))
+            subscription_registered = True
+            catchup = await load_session_catchup_window(
+                db,
+                session_id=active_session.id,
+                after_sequence=subscription.after_sequence,
+            )
+            active_run = await get_active_web_chat_run(
+                db=db,
+                agent_id=agent_id,
+                session_id=active_session.id,
+            )
+            ready = build_session_ready(
+                session_id=active_session.id,
+                connection_attempt_id=subscription.connection_attempt_id,
+                accepted_after_sequence=subscription.after_sequence,
+                last_committed_sequence=catchup.last_committed_sequence,
+                active_run=active_run,
+            )
+            await websocket.send_json(ready)
+            async for event in iter_session_catchup_events(
+                db,
+                session_id=active_session.id,
+                after_sequence=subscription.after_sequence,
+                through_sequence=catchup.last_committed_sequence,
+                audience="user",
+            ):
+                await websocket.send_json(event)
+            await manager.activate_session_subscription(
+                websocket,
+                delivered_through_sequence=catchup.last_committed_sequence,
+            )
+
+            history_result = await db.execute(
+                select(ChatMessage)
+                .where(
+                    ChatMessage.agent_id == agent_id,
+                    ChatMessage.conversation_id == str(active_session.id),
                 )
-                llm_model = model_result.scalar_one_or_none()
-                logger.info(f"[WS] Primary model loaded: {llm_model.model if llm_model else 'None'}")
-
-            # Load fallback model (tenant-scoped)
-            if agent.fallback_model_id:
-                fb_result = await db.execute(
-                    select(LLMModel).where(
-                        LLMModel.id == agent.fallback_model_id, LLMModel.tenant_id == agent.tenant_id
-                    )
-                )
-                fallback_llm_model = fb_result.scalar_one_or_none()
-                if fallback_llm_model:
-                    logger.info(f"[WS] Fallback model loaded: {fallback_llm_model.model}")
-
-            # Fail loud: a configured primary that cannot be resolved (deleted /
-            # disabled / cross-tenant) must NOT be silently swapped for the fallback —
-            # silent swap masks the misconfig and can collapse the context window
-            # (Web3 researcher outage). Surface it so the owner fixes the config.
-            from app.services.model_resolution import primary_model_unavailable
-
-            if primary_model_unavailable(agent, llm_model):
-                logger.error(
-                    f"[WS] Primary model {agent.primary_model_id} unavailable for agent "
-                    f"{agent_id} (deleted/disabled/cross-tenant) — failing loud instead of silent fallback"
-                )
-                await websocket.send_json(
-                    {
-                        "type": "error",
-                        "content": (
-                            "你为该数字员工配置的主模型当前不可用(可能已删除、被禁用,或不属于本公司),"
-                            "请在「设置 → 模型」中重新选择一个本公司可用的模型。"
-                        ),
-                    }
-                )
-                await websocket.close(code=4002)
-                return
-
-            # Config-level fallback: primary missing -> use fallback
-            if not llm_model and fallback_llm_model:
-                llm_model = fallback_llm_model
-                fallback_llm_model = None  # No further fallback available
-                logger.info(f"[WS] Primary model unavailable, using fallback: {llm_model.model}")
-
-            # Runtime fallback: if the configured fallback is missing/duplicated, use tenant default.
-            if llm_model and agent.tenant_id:
-                from app.services.model_resolution import choose_runtime_model_pair, resolve_default_model_for_tenant
-
-                default_runtime_model = await resolve_default_model_for_tenant(
-                    db,
-                    agent.tenant_id,
-                    exclude_model_id=llm_model.id,
-                )
-                previous_fallback = fallback_llm_model
-                llm_model, fallback_llm_model = choose_runtime_model_pair(
-                    llm_model,
-                    fallback_llm_model,
-                    default_runtime_model,
-                )
-                if fallback_llm_model and fallback_llm_model is not previous_fallback:
-                    logger.info(f"[WS] Tenant default fallback loaded: {fallback_llm_model.model}")
-
-            # Resolve or create chat session
-            from app.models.chat_session import ChatSession
-            from sqlalchemy import select as _sel
-            from datetime import datetime as _dt, timezone as _tz
-
-            conv_id = session_id
-            _active_session = None
-            if conv_id:
-                # Validate the session belongs to this agent AND this user
-                _sr = await db.execute(
-                    _sel(ChatSession).where(
-                        ChatSession.id == uuid.UUID(conv_id),
-                        ChatSession.agent_id == agent_id,
-                        ChatSession.user_id == user_id,
-                    )
-                )
-                _existing = _sr.scalar_one_or_none()
-                if not _existing:
-                    conv_id = None  # fall through to create
-                else:
-                    _active_session = _existing
-            if not conv_id:
-                # Find most recent session for this user+agent
-                _sr = await db.execute(
-                    _sel(ChatSession)
-                    .where(ChatSession.agent_id == agent_id, ChatSession.user_id == user_id)
-                    .order_by(ChatSession.last_message_at.desc().nulls_last(), ChatSession.created_at.desc())
-                    .limit(1)
-                )
-                _latest = _sr.scalar_one_or_none()
-                if _latest:
-                    conv_id = str(_latest.id)
-                    _active_session = _latest
-                else:
-                    # Create a default session
-                    now = _dt.now(_tz.utc)
-                    _new_session = ChatSession(
-                        agent_id=agent_id,
-                        tenant_id=agent.tenant_id,
-                        user_id=user_id,
-                        title=f"Session {now.strftime('%m-%d %H:%M')}",
-                        source_channel="web",
-                        created_at=now,
-                    )
-                    db.add(_new_session)
-                    await db.commit()
-                    await db.refresh(_new_session)
-                    conv_id = str(_new_session.id)
-                    _active_session = _new_session
-                    logger.info(f"[WS] Created default session {conv_id}")
-
-            if _active_session is not None:
-                await apply_web_session_contract(db, session=_active_session, agent_id=agent_id, user=user)
-                await db.commit()
-
-            try:
-                # Dynamic history limit based on model context window
-                from app.services.memory_service import compute_history_limit
-
-                _hist_limit = compute_history_limit(
-                    llm_model.provider if llm_model else "openai",
-                    llm_model.model if llm_model else "",
-                    getattr(llm_model, "max_input_tokens", None) if llm_model else None,
-                )
-                history_result = await db.execute(
-                    select(ChatMessage)
-                    .where(ChatMessage.agent_id == agent_id, ChatMessage.conversation_id == conv_id)
-                    .order_by(ChatMessage.created_at.desc())
-                    .limit(_hist_limit)
-                )
-                history_messages = list(reversed(history_result.scalars().all()))
-                logger.info(f"[WS] Loaded {len(history_messages)}/{_hist_limit} history messages for session {conv_id}")
-            except Exception as e:
-                logger.warning(f"[WS] History load failed (non-fatal): {e}")
-    except Exception as e:
-        logger.error(f"[WS] Setup error: {type(e).__name__}: {e}")
-        import traceback
-
-        traceback.print_exc()
-        await websocket.send_json({"type": "error", "content": "Setup failed"})
-        await websocket.close(code=4002)  # Config error — client should NOT retry
+                .order_by(ChatMessage.created_at.asc())
+            )
+            history_messages = list(history_result.scalars().all())
+    except WebSocketDisconnect:
+        if subscription_registered:
+            await manager.disconnect(str(agent_id), websocket)
+        return
+    except SessionSubscriptionError as error:
+        if subscription_registered:
+            await manager.disconnect(str(agent_id), websocket)
+        await close_subscription(error)
+        return
+    except Exception as error:
+        logger.exception("[WS] Session subscription bootstrap failed: {}", error)
+        if subscription_registered:
+            await manager.disconnect(str(agent_id), websocket)
+        await close_subscription(SessionSubscriptionError("event_store_retryable", retryable=True))
         return
 
+    conv_id = str(active_session.id)
+    _active_session = active_session
+    agent_name = agent.name
     agent_id_str = str(agent_id)
-    if agent_id_str not in manager.active_connections:
-        manager.active_connections[agent_id_str] = []
-    manager.active_connections[agent_id_str].append((websocket, conv_id))
-    logger.info(f"[WS] Ready! Agent={agent_name}")
-
-    # Build conversation context from history.
-    # IMPORTANT: Include tool_call messages so the LLM maintains tool-calling behavior.
     conversation = _conversation_from_history_messages(history_messages)
+    logger.info("[WS] Session ready agent={} session={}", agent_name, conv_id)
+
+    async def send_control_error(code: str, *, retryable: bool) -> None:
+        await websocket.send_json(
+            {
+                "type": "session.error",
+                "error": {
+                    "code": code,
+                    "retryable": retryable,
+                    "message_key": f"session.{code}",
+                },
+            }
+        )
 
     try:
-        # Send welcome message on new session (no history)
-        if welcome_message and not history_messages:
-            await websocket.send_json({"type": "done", "role": "assistant", "content": welcome_message})
-
         # Session idle detection: two-phase timeout
         # Phase 1: After IDLE seconds of no input → SESSION_IDLE hook (T0 segment boundary)
         # Phase 2: After WS_IDLE_TIMEOUT seconds total → SESSION_CLOSE + disconnect
@@ -715,17 +641,26 @@ async def websocket_chat(
                             )
                             run_id = active_run.get("run_id") if active_run else None
                         if run_id:
-                            payload = await cancel_web_chat_run(
+                            payload = await submit_live_cancel_input(
                                 db=run_db,
-                                agent_id=agent_id,
-                                session_id=conv_id,
+                                agent=agent,
+                                user=user,
+                                session=_active_session,
                                 run_id=run_id,
-                                user_id=user_id,
+                                source="websocket_abort",
+                                idempotency_key=data.get("idempotency_key"),
+                                control_id=data.get("control_id"),
                             )
-                            await websocket.send_json({"type": "run_cancelled", **payload})
+                            await websocket.send_json(
+                                {
+                                    "type": "session.control_receipt",
+                                    "kind": "cancel",
+                                    "receipt": payload,
+                                }
+                            )
                 except Exception as abort_err:
                     logger.warning("[WS] Failed to cancel web chat run: {}", abort_err)
-                    await websocket.send_json({"type": "error", "content": "Failed to stop run"})
+                    await send_control_error("control_input_retryable", retryable=True)
                 continue
             logger.info(f"[WS] Received: {content[:50]}")
 
@@ -746,23 +681,32 @@ async def websocket_chat(
                     )
                     run_session = session_result.scalar_one_or_none()
                     if not run_session:
-                        await websocket.send_json({"type": "error", "content": "Session not found"})
+                        await send_control_error("session_not_found", retryable=False)
                         continue
-                    payload = await start_web_chat_run(
+                    receipt = await submit_live_human_input(
                         db=run_db,
                         agent=agent,
                         user=user,
                         session=run_session,
                         content=content,
+                        source="websocket_message",
+                        input_id=data.get("input_id"),
+                        idempotency_key=data.get("idempotency_key"),
                         display_content=display_content,
                         file_name=file_name,
+                        attachments=data.get("attachments") if isinstance(data.get("attachments"), list) else None,
+                        parts=data.get("parts") if isinstance(data.get("parts"), list) else None,
                     )
-                await websocket.send_json({"type": "run_started", **payload})
-            except ActiveWebChatRunExists as active_err:
-                await websocket.send_json({"type": "user_message_queued", **active_err.run})
+                await websocket.send_json(
+                    {
+                        "type": "session.control_receipt",
+                        "kind": "human_input",
+                        "receipt": receipt,
+                    }
+                )
             except Exception as run_err:
                 logger.error("[WS] Failed to start durable web chat run: {}", run_err)
-                await websocket.send_json({"type": "error", "content": "Failed to start run"})
+                await send_control_error("input_dispatch_retryable", retryable=True)
             continue
 
     except WebSocketDisconnect:

@@ -68,6 +68,7 @@ async def _emit_agent_config_change_hook(
     after = {field: update_data[field] for field in changed_fields}
     result = await emit_hook(
         HookEvent.CONFIG_CHANGE,
+        evidence_mode="independent",
         agent_id=agent.id,
         source="agent_settings_api",
         metadata={

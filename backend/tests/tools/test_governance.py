@@ -190,6 +190,9 @@ async def test_governance_emits_capability_denied_and_audit():
 
     # B1 teaching denial: tool + capability + original reason + next steps
     assert message is not None
+    assert message.outcome.value == "deny"
+    assert message.status == "capability_denied"
+    assert message.retryable is False
     assert "execute_code" in message
     assert "workspace.code.execute" in message  # the capability the model should learn
     assert "not allowed for this agent" in message  # original policy reason preserved
@@ -279,6 +282,9 @@ async def test_governance_creates_enterprise_approval_when_capability_policy_req
     )
 
     assert message is not None
+    assert message.outcome.value == "require_approval"
+    assert message.status == "approval_required"
+    assert message.retryable is False
     assert "send_feishu_message" in message
     assert "channel.feishu.message" in message
     assert "approval_required" in message
@@ -902,6 +908,9 @@ async def test_governance_timeout_is_typed_unavailable_not_policy_denied(monkeyp
     )
 
     assert "<tool_error>" in message
+    assert message.outcome.value == "unavailable"
+    assert message.status == "unavailable"
+    assert message.retryable is True
     assert '"error_class": "governance_dependency_unavailable"' in message
     assert '"outcome": "unavailable"' in message
     assert "policy denied" not in message.lower()

@@ -24,6 +24,7 @@ from app.kernel.contracts import (
     ChunkCallback,
     InvocationRequest,
     InvocationResult,
+    ModelRequestPrepare,
     RuntimeConfig,
     TerminalReason,
     ThinkingCallback,
@@ -285,7 +286,7 @@ def _schedule_runtime_hook(event: Any, *, metric_source: str = "kernel", **kwarg
     try:
         from app.runtime.hooks import emit_hook
 
-        task = asyncio.ensure_future(emit_hook(event, **kwargs))
+        task = asyncio.ensure_future(emit_hook(event, evidence_mode="independent", **kwargs))
         task.add_done_callback(lambda finished: _observe_runtime_hook_task(finished, event, source=metric_source))
     except Exception as exc:
         _log_runtime_hook_failure(event, source=metric_source, exc=exc)
@@ -295,7 +296,7 @@ async def _emit_runtime_hook(event: Any, *, metric_source: str = "kernel", **kwa
     try:
         from app.runtime.hooks import emit_hook
 
-        return await emit_hook(event, **kwargs)
+        return await emit_hook(event, evidence_mode="independent", **kwargs)
     except Exception as exc:
         _log_runtime_hook_failure(event, source=metric_source, exc=exc)
         return None
@@ -541,7 +542,10 @@ def _build_persisted_memory_messages(
     else:
         base_messages = list(request.memory_messages or request.messages)
     base_messages.extend(_build_runtime_memory_event_messages(request.session_context))
-    if final_content and not final_content.startswith("[LLM") and not final_content.startswith("[Error]"):
+    # This helper is reached only for a typed successful model outcome. Model
+    # prose is evidence, even when it quotes a legacy error-looking prefix;
+    # machine status must never be inferred from natural-language bytes.
+    if final_content:
         base_messages.append({"role": "assistant", "content": final_content})
     return base_messages
 
@@ -931,30 +935,45 @@ async def _execute_tool_call_with_cancel(
     *,
     tool_call_id: str | None = None,
     trace_metadata_sink: dict[str, Any] | None = None,
+    pre_effect_callback: Callable[[dict[str, Any]], Any] | None = None,
 ) -> Any:
-    def _call_execute_tool() -> Any:
+    async def _call_execute_tool() -> Any:
         try:
             params = inspect.signature(execute_tool).parameters
             accepts_kwargs = any(param.kind == inspect.Parameter.VAR_KEYWORD for param in params.values())
         except (TypeError, ValueError):
             params = {}
             accepts_kwargs = False
+        kwargs: dict[str, Any] = {}
         if tool_call_id is not None and (accepts_kwargs or "tool_call_id" in params):
-            kwargs = {"tool_call_id": tool_call_id}
-            if trace_metadata_sink is not None and (accepts_kwargs or "trace_metadata_sink" in params):
-                kwargs["trace_metadata_sink"] = trace_metadata_sink
-            return execute_tool(tool_name, effective_args, request, emit_event, **kwargs)
+            kwargs["tool_call_id"] = tool_call_id
         if trace_metadata_sink is not None and (accepts_kwargs or "trace_metadata_sink" in params):
-            return execute_tool(tool_name, effective_args, request, emit_event, trace_metadata_sink=trace_metadata_sink)
+            kwargs["trace_metadata_sink"] = trace_metadata_sink
+        if pre_effect_callback is not None and (accepts_kwargs or "pre_effect_callback" in params):
+            kwargs["pre_effect_callback"] = pre_effect_callback
+        elif pre_effect_callback is not None:
+            # Test/dedicated executors without an internal governance pipeline
+            # are themselves the effect boundary.
+            await _maybe_await(
+                pre_effect_callback(
+                    {
+                        "tool_call_id": tool_call_id,
+                        "tool_name": tool_name,
+                        "arguments": dict(effective_args),
+                    }
+                )
+            )
+        if kwargs:
+            return execute_tool(tool_name, effective_args, request, emit_event, **kwargs)
         return execute_tool(tool_name, effective_args, request, emit_event)
 
     cancel_event = request.cancel_event
     if cancel_event is None:
-        return await _maybe_await(_call_execute_tool())
+        return await _maybe_await(await _call_execute_tool())
     if cancel_event.is_set():
         raise _KernelCancelledError
 
-    value = _call_execute_tool()
+    value = await _call_execute_tool()
     if not inspect.isawaitable(value):
         return value
 
@@ -984,46 +1003,6 @@ def _normalize_tool_result_for_llm(result: Any) -> str:
     if not result_str.strip():
         return _EMPTY_TOOL_RESULT_MESSAGE
     return result_str
-
-
-def _empty_assistant_fallback(collected_parts: list[dict[str, Any]]) -> str:
-    """Produce a recovery-oriented terminal message without exposing raw tool payloads."""
-    last_tool_part = next(
-        (part for part in reversed(collected_parts) if isinstance(part, dict) and part.get("type") == "tool_call"),
-        None,
-    )
-    if last_tool_part is None:
-        return "[LLM Error] 模型没有返回可显示的回复。你可以重试本轮，运行证据已保留。"
-
-    tool_name = str(last_tool_part.get("name") or "tool").strip() or "tool"
-    raw_result = last_tool_part.get("result")
-    parsed_result: dict[str, Any] | None = raw_result if isinstance(raw_result, dict) else None
-    if parsed_result is None and isinstance(raw_result, str):
-        try:
-            candidate = json.loads(raw_result)
-        except (TypeError, ValueError):
-            candidate = None
-        if isinstance(candidate, dict):
-            parsed_result = candidate
-
-    error_message = ""
-    if parsed_result is not None and str(parsed_result.get("status") or "").lower() in {
-        "error",
-        "failed",
-        "rejected",
-    }:
-        error_message = str(parsed_result.get("message") or parsed_result.get("reason") or "").strip()
-    elif isinstance(raw_result, str):
-        normalized = raw_result.strip()
-        if normalized.lower().startswith(("error", "failed", "[tool execution error]")) or normalized.startswith("❌"):
-            error_message = normalized.lstrip("❌ ")
-
-    if error_message:
-        return (
-            f"[LLM Error] 模型在 {tool_name} 未完成后没有返回最终说明：{error_message} "
-            "你可以重试本轮；完整错误和运行证据已保留在技术详情中。"
-        )
-    return f"[LLM Error] 模型在 {tool_name} 完成后没有返回最终说明。工具结果已保留，你可以重试本轮。"
 
 
 def _extract_tool_side_effects(raw_result: Any) -> dict[str, Any] | None:
@@ -1588,9 +1567,7 @@ def _persist_recovery_manifest_checkpoint(
         from app.runtime.recovery_manifest_store import unavailable_recovery_result
 
         logger.warning("[Kernel] Recovery manifest checkpoint failed (non-fatal): %s", exc)
-        request.recovery_manifest_result = unavailable_recovery_result(
-            "checkpoint_persist_unavailable"
-        )
+        request.recovery_manifest_result = unavailable_recovery_result("checkpoint_persist_unavailable")
         if metadata is not None:
             metadata["recovery_manifest_persist"] = {
                 "schema": "hive.recovery_manifest_persist_status.v1",
@@ -1620,6 +1597,52 @@ def _merge_trace_metadata_sink(span_metadata: dict[str, Any], trace_metadata_sin
         value = trace_metadata_sink.get(key)
         if value:
             span_metadata[key] = value
+
+
+def _tool_execution_evidence(
+    *,
+    tool_name: str,
+    tool_args: dict[str, Any],
+    trace_metadata: dict[str, Any] | None,
+    machine_status: str,
+    retryable: bool = False,
+    pre_effect_fence_ref: str | None = None,
+) -> dict[str, Any]:
+    """Project exact tool runtime facts for the Session V2 settlement writer."""
+
+    trace = dict(trace_metadata or {})
+    decision = trace.get("tool_decision")
+    if not isinstance(decision, dict) and machine_status in {"denied", "unavailable"}:
+        from app.tools.decision import ToolDecisionOutcome, build_tool_decision
+
+        typed_outcome = ToolDecisionOutcome.DENY if machine_status == "denied" else ToolDecisionOutcome.UNAVAILABLE
+        decision = build_tool_decision(
+            decision_id=f"kernel:{machine_status}:{hashlib.sha256(json.dumps([tool_name, tool_args], sort_keys=True, default=str).encode()).hexdigest()}",
+            tenant_id=None,
+            agent_id="runtime",
+            actor_user_id="runtime",
+            tool_name=tool_name,
+            arguments=tool_args,
+            policy_snapshot={"source": "kernel_exact_boundary"},
+            capability_snapshot={"tool_name": tool_name},
+            outcome=typed_outcome,
+            reason_codes=(f"kernel_{machine_status}",),
+            idempotency_key=None,
+        ).to_dict()
+    frame = trace.get("tool_execution_frame")
+    return {
+        "schema": "hive.tool_execution_evidence.v1",
+        "status": machine_status,
+        "retryable": bool(retryable),
+        "tool_decision": dict(decision) if isinstance(decision, dict) else None,
+        "decision_id": trace.get("decision_id") or (decision or {}).get("decision_id"),
+        "execution_frame": dict(frame) if isinstance(frame, dict) else None,
+        "authority_snapshot_hash": trace.get("authority_snapshot_hash"),
+        "policy_snapshot_hash": trace.get("policy_snapshot_hash"),
+        "capability_snapshot_hash": trace.get("capability_snapshot_hash"),
+        "effect_idempotency_key": trace.get("idempotency_key"),
+        "pre_effect_fence_ref": pre_effect_fence_ref,
+    }
 
 
 def _record_tool_result_ledger_entry(
@@ -1866,6 +1889,7 @@ async def _execute_tool_with_hooks(
     }
     hook_result = await emit_hook(
         HookEvent.PRE_TOOL_USE,
+        evidence_mode="independent",
         agent_id=request.agent_id,
         session_id=request.memory_session_id,
         tool_name=tool_name,
@@ -1933,6 +1957,13 @@ async def _execute_tool_with_hooks(
                 started_at_ms=monotonic_ms(),
                 metadata=span_metadata,
             )
+        if side_effect_sink is not None:
+            side_effect_sink["tool_execution_evidence"] = _tool_execution_evidence(
+                tool_name=tool_name,
+                tool_args=effective_args,
+                trace_metadata=None,
+                machine_status="denied",
+            )
         return blocked_result, effective_args, False
 
     tool_started_ms = monotonic_ms()
@@ -1944,6 +1975,24 @@ async def _execute_tool_with_hooks(
     )
     _persist_recovery_manifest_checkpoint(request)
     trace_metadata_sink: dict[str, Any] = {}
+
+    async def _persist_pre_effect_fence(_runtime_payload: dict[str, Any]) -> None:
+        if request.on_tool_call is None:
+            return
+        # The governed tool pipeline invokes this only after its exact
+        # authority decision and preflight pass, immediately before handing
+        # control to the executor. Persistence failure is intentionally fatal.
+        await _maybe_await(
+            request.on_tool_call(
+                {
+                    "name": tool_name,
+                    "args": effective_args,
+                    "status": "effect_started",
+                    "tool_call_id": tool_call_id,
+                }
+            )
+        )
+
     token = None
     try:
         trusted_decline_metadata = _session_trusted_plan_decline_metadata(request, tool_name)
@@ -1960,6 +2009,7 @@ async def _execute_tool_with_hooks(
                 emit_event,
                 tool_call_id=tool_call_id,
                 trace_metadata_sink=trace_metadata_sink,
+                pre_effect_callback=_persist_pre_effect_fence,
             )
         except _KernelCancelledError:
             runtime_failure_policy = build_runtime_failure_policy(
@@ -2014,6 +2064,13 @@ async def _execute_tool_with_hooks(
                     name=tool_name,
                     started_at_ms=tool_started_ms,
                     metadata=span_metadata,
+                )
+            if side_effect_sink is not None:
+                side_effect_sink["tool_execution_evidence"] = _tool_execution_evidence(
+                    tool_name=tool_name,
+                    tool_args=effective_args,
+                    trace_metadata=trace_metadata_sink,
+                    machine_status="cancelled",
                 )
             raise
         except Exception as exc:
@@ -2084,6 +2141,7 @@ async def _execute_tool_with_hooks(
             }
             await emit_hook(
                 HookEvent.POST_TOOL_FAILURE,
+                evidence_mode="independent",
                 agent_id=request.agent_id,
                 session_id=request.memory_session_id,
                 tool_name=tool_name,
@@ -2094,6 +2152,14 @@ async def _execute_tool_with_hooks(
             )
             _clear_pending_tool_frame_for_recovery(request, tool_call_id=tool_call_id)
             _persist_recovery_manifest_checkpoint(request, delete_if_empty=True)
+            if side_effect_sink is not None:
+                side_effect_sink["tool_execution_evidence"] = _tool_execution_evidence(
+                    tool_name=tool_name,
+                    tool_args=effective_args,
+                    trace_metadata=trace_metadata_sink,
+                    machine_status="failed",
+                    retryable=bool(runtime_failure_policy.get("retryable", False)),
+                )
             return err, effective_args, False
     finally:
         if token is not None:
@@ -2199,6 +2265,7 @@ async def _execute_tool_with_hooks(
     }
     post_tool_hook_result = await emit_hook(
         HookEvent.POST_TOOL_USE,
+        evidence_mode="independent",
         agent_id=request.agent_id,
         session_id=request.memory_session_id,
         tool_name=tool_name,
@@ -2368,9 +2435,26 @@ async def _execute_tool_with_hooks(
         _captured_side_effects = _extract_tool_side_effects(result)
         if _captured_side_effects:
             side_effect_sink.update(_captured_side_effects)
+        execution_frame = trace_metadata_sink.get("tool_execution_frame")
+        frame_status = str(execution_frame.get("status") or "") if isinstance(execution_frame, dict) else ""
+        machine_status = "failed" if frame_status == "failed" else "settled"
+        side_effect_sink["tool_execution_evidence"] = _tool_execution_evidence(
+            tool_name=tool_name,
+            tool_args=effective_args,
+            trace_metadata=trace_metadata_sink,
+            machine_status=machine_status,
+        )
+    decision_payload = trace_metadata_sink.get("tool_decision")
+    decision_outcome = str(decision_payload.get("outcome") or "") if isinstance(decision_payload, dict) else ""
+    execution_frame = trace_metadata_sink.get("tool_execution_frame")
+    execution_status = str(execution_frame.get("status") or "") if isinstance(execution_frame, dict) else ""
+    effect_executed = decision_outcome in {"allow", "allow_prepare_only"} and execution_status in {
+        "completed",
+        "failed",
+    }
     _clear_pending_tool_frame_for_recovery(request, tool_call_id=tool_call_id)
     _persist_recovery_manifest_checkpoint(request, delete_if_empty=True)
-    return result_str, effective_args, True
+    return result_str, effective_args, effect_executed
 
 
 async def _execute_pending_skill_fork_handoffs(
@@ -3604,9 +3688,15 @@ async def _continue_after_output_cap(
     on_chunk: ChunkCallback | None,
     on_thinking: ThinkingCallback | None,
     reasoning_kwargs: dict[str, Any],
-) -> LLMResponse:
+    round_index: int | None = None,
+    model_request_prepare: ModelRequestPrepare | None = None,
+    provider: str = "",
+    model: str = "",
+    provider_idempotency_supported: bool = False,
+) -> tuple[LLMResponse, list[dict[str, Any]]]:
     continuation_max_tokens = _resolve_continuation_max_tokens(active_model)
     attempts = 0
+    receipts: list[dict[str, Any]] = []
     while (
         _is_output_cap_finish_reason(getattr(response, "finish_reason", None))
         and not (getattr(response, "tool_calls", None) or [])
@@ -3623,6 +3713,30 @@ async def _continue_after_output_cap(
             ),
             LLMMessage(role="user", content=_STREAM_OUTPUT_CONTINUATION_PROMPT),
         ]
+        continuation_request_id: str | None = None
+        wire_request = {
+            "messages": _llm_messages_to_dicts(continuation_messages),
+            "tools": [],
+            "temperature": resolve_temperature(active_model),
+            "max_tokens": continuation_max_tokens,
+            "reasoning": dict(reasoning_kwargs),
+        }
+        if model_request_prepare is not None and round_index is not None:
+            continuation_request_id = str(
+                await _maybe_await(
+                    model_request_prepare(
+                        round_index=round_index,
+                        continuation_index=attempts,
+                        messages=continuation_messages,
+                        tools=None,
+                        provider=provider,
+                        model=model,
+                        wire_request=wire_request,
+                        provider_idempotency_supported=provider_idempotency_supported,
+                        provider_idempotency_key_applied=False,
+                    )
+                )
+            )
         continuation = await _stream_with_cancel(
             client,
             cancel_event=cancel_event,
@@ -3634,10 +3748,26 @@ async def _continue_after_output_cap(
             on_thinking=on_thinking,
             **reasoning_kwargs,
         )
+        receipts.append(
+            {
+                "continuation_index": attempts,
+                "provider_request_id": continuation_request_id,
+                "wire_request": wire_request,
+                "response": {
+                    "content": continuation.content or "",
+                    "reasoning_content": getattr(continuation, "reasoning_content", None),
+                    "reasoning_signature": getattr(continuation, "reasoning_signature", None),
+                    "tool_calls": list(getattr(continuation, "tool_calls", None) or []),
+                    "finish_reason": getattr(continuation, "finish_reason", None),
+                    "usage": dict(getattr(continuation, "usage", None) or {}),
+                    "model": getattr(continuation, "model", None),
+                },
+            }
+        )
         response = _merge_continuation_response(response, continuation)
         if getattr(response, "tool_calls", None):
             break
-    return response
+    return response, receipts
 
 
 class AgentKernel:

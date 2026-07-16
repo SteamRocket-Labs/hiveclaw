@@ -150,6 +150,39 @@ async def test_global_hook_boundary_persists_invocation_span_evidence_even_witho
     assert captured[0]["metadata"]["decision"] == "observed"
 
 
+@pytest.mark.asyncio
+async def test_global_hook_boundary_reuses_caller_transaction_for_evidence(monkeypatch) -> None:
+    """Post-effect hooks must not open a second transaction behind a locked caller."""
+    import uuid
+
+    from app.runtime import hooks
+
+    evidence_db = object()
+    captured: list[dict] = []
+
+    async def fake_persist(**kwargs):
+        captured.append(kwargs)
+
+    monkeypatch.setattr("app.services.invocation_trace.persist_invocation_span", fake_persist)
+    hooks.hook_registry.clear()
+
+    await hooks.emit_hook(
+        HookEvent.FILE_CHANGED,
+        evidence_db=evidence_db,
+        agent_id=uuid.uuid4(),
+        session_id=str(uuid.uuid4()),
+        source="web_chat_runtime",
+        metadata={
+            "tenant_id": str(uuid.uuid4()),
+            "runtime_task_id": str(uuid.uuid4()),
+            "file_path": "workspace/report.md",
+        },
+    )
+
+    assert len(captured) == 1
+    assert captured[0]["db"] is evidence_db
+
+
 def test_permission_denied_reports_live_not_disabled_noop() -> None:
     """B-5 regression guard: PERMISSION_DENIED is live-emitted by tool governance
     (governance.py) and the chat-session permission path (chat_sessions.py), so the
@@ -281,17 +314,25 @@ async def test_hook_emit_records_hook_lifecycle_v1_for_modified_args() -> None:
 @pytest.mark.asyncio
 async def test_stop_handler_failure_emits_stop_failure() -> None:
     registry = HookRegistry()
-    calls: list[tuple[str, str]] = []
+    calls: list[tuple[str, str, object | None]] = []
+    evidence_db = object()
 
     def broken(ctx: HookContext) -> None:
         raise RuntimeError("boom")
 
     def failure(ctx: HookContext) -> None:
-        calls.append((ctx.event.value, ctx.error or ""))
+        calls.append((ctx.event.value, ctx.error or "", ctx._evidence_db))
 
     registry.register(HookEvent.STOP, broken)
     registry.register(HookEvent.STOP_FAILURE, failure)
 
-    await registry.emit(HookContext(event=HookEvent.STOP, session_id="s1", last_assistant_message="draft"))
+    await registry.emit(
+        HookContext(
+            event=HookEvent.STOP,
+            session_id="s1",
+            last_assistant_message="draft",
+            _evidence_db=evidence_db,
+        )
+    )
 
-    assert calls == [("stop_failure", "RuntimeError: boom")]
+    assert calls == [("stop_failure", "RuntimeError: boom", evidence_db)]

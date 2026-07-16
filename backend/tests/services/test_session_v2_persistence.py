@@ -162,6 +162,163 @@ async def test_event_group_and_outbox_are_atomic_and_allocate_a_contiguous_range
         ]
 
 
+async def test_session_event_outbox_retries_publish_ack_gap_with_stable_event_identity(
+    owner_sessionmaker,
+) -> None:
+    from app.models.session_v2 import SessionEventOutbox
+    from app.services.session_event_outbox import SessionEventOutboxPublisher
+    from app.services.session_v2_persistence import SessionEventDraft, append_session_events
+
+    tenant_id, _user_id, agent_id, session_id = await _seed_session(owner_sessionmaker)
+    async with owner_sessionmaker() as db:
+        events = await append_session_events(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            drafts=[
+                SessionEventDraft(
+                    item_id=uuid.uuid4(),
+                    item_kind="runtime_failure",
+                    lifecycle="recorded",
+                    scope={"level": "session", "session_id": str(session_id), "thread_id": str(session_id)},
+                    actor={"type": "runtime"},
+                    payload={"domain": "fixture", "code": "publish-ack-gap"},
+                )
+            ],
+        )
+        await db.commit()
+
+    deliveries: list[dict] = []
+    downstream_event_ids: set[str] = set()
+
+    async def publish(payload: dict) -> None:
+        deliveries.append(payload)
+        downstream_event_ids.add(payload["event_id"])
+        assert payload["session_id"] == str(session_id)
+        assert payload["sequence"] == events[0].sequence
+        assert len(payload["envelope_sha256"]) == 64
+        assert payload["envelope"]["event_id"] == payload["event_id"]
+        if len(deliveries) == 1:
+            raise RuntimeError("ack_lost_after_publish")
+
+    publisher = SessionEventOutboxPublisher(
+        session_factory=owner_sessionmaker,
+        retry_base_seconds=0,
+        max_attempts=3,
+    )
+    first = await publisher.drain_once(
+        worker_id="session-event-publisher-a", publish_callback=publish, tenant_id=tenant_id
+    )
+    second = await publisher.drain_once(
+        worker_id="session-event-publisher-b", publish_callback=publish, tenant_id=tenant_id
+    )
+    assert first == {"claimed": 1, "published": 0, "retried": 1, "dead_lettered": 0}
+    assert second == {"claimed": 1, "published": 1, "retried": 0, "dead_lettered": 0}
+    assert len(deliveries) == 2
+    assert len(downstream_event_ids) == 1
+    assert deliveries[0] == deliveries[1]
+    async with owner_sessionmaker() as db:
+        row = await db.scalar(select(SessionEventOutbox).where(SessionEventOutbox.event_id == events[0].id))
+        assert row is not None and row.status == "published" and row.attempts == 2
+
+
+async def test_session_event_outbox_dead_letters_after_typed_bounded_retries(owner_sessionmaker) -> None:
+    from app.models.session_v2 import SessionEventOutbox
+    from app.services.session_event_outbox import SessionEventOutboxPublisher
+    from app.services.session_v2_persistence import SessionEventDraft, append_session_events
+
+    tenant_id, _user_id, agent_id, session_id = await _seed_session(owner_sessionmaker)
+    async with owner_sessionmaker() as db:
+        events = await append_session_events(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            drafts=[
+                SessionEventDraft(
+                    item_id=uuid.uuid4(),
+                    item_kind="runtime_failure",
+                    lifecycle="recorded",
+                    scope={"level": "session", "session_id": str(session_id), "thread_id": str(session_id)},
+                    actor={"type": "runtime"},
+                    payload={"domain": "fixture", "code": "dead-letter"},
+                )
+            ],
+        )
+        await db.commit()
+
+    async def unavailable(_payload: dict) -> None:
+        raise RuntimeError("redis_unavailable")
+
+    publisher = SessionEventOutboxPublisher(
+        session_factory=owner_sessionmaker,
+        retry_base_seconds=0,
+        max_attempts=2,
+    )
+    await publisher.drain_once(worker_id="session-event-publisher-a", publish_callback=unavailable, tenant_id=tenant_id)
+    outcome = await publisher.drain_once(
+        worker_id="session-event-publisher-b", publish_callback=unavailable, tenant_id=tenant_id
+    )
+    assert outcome == {"claimed": 1, "published": 0, "retried": 0, "dead_lettered": 1}
+    terminal_replay = await publisher.drain_once(
+        worker_id="session-event-publisher-c",
+        publish_callback=unavailable,
+        tenant_id=tenant_id,
+    )
+    assert terminal_replay == {"claimed": 0, "published": 0, "retried": 0, "dead_lettered": 0}
+    async with owner_sessionmaker() as db:
+        row = await db.scalar(select(SessionEventOutbox).where(SessionEventOutbox.event_id == events[0].id))
+        assert row is not None and row.status == "failed" and row.attempts == 2
+        assert "redis_unavailable" in str(row.last_error)
+
+
+async def test_session_event_outbox_reclaims_only_expired_publishing_lease(owner_sessionmaker) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from app.services.session_event_outbox import SessionEventOutboxPublisher
+    from app.services.session_v2_persistence import SessionEventDraft, append_session_events
+
+    tenant_id, _user_id, agent_id, session_id = await _seed_session(owner_sessionmaker)
+    async with owner_sessionmaker() as db:
+        await append_session_events(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            drafts=[
+                SessionEventDraft(
+                    item_id=uuid.uuid4(),
+                    item_kind="runtime_failure",
+                    lifecycle="recorded",
+                    scope={"level": "session", "session_id": str(session_id), "thread_id": str(session_id)},
+                    actor={"type": "runtime"},
+                    payload={"domain": "fixture", "code": "expired-publisher"},
+                )
+            ],
+        )
+        await db.commit()
+
+    publisher = SessionEventOutboxPublisher(session_factory=owner_sessionmaker, lease_seconds=10)
+    now = datetime.now(UTC)
+    first = await publisher.claim_batch(worker_id="publisher-before-crash", now=now, tenant_id=tenant_id)
+    before_expiry = await publisher.claim_batch(
+        worker_id="publisher-too-early",
+        now=now + timedelta(seconds=9),
+        tenant_id=tenant_id,
+    )
+    after_expiry = await publisher.claim_batch(
+        worker_id="publisher-recovery",
+        now=now + timedelta(seconds=11),
+        tenant_id=tenant_id,
+    )
+    assert len(first) == 1
+    assert before_expiry == []
+    assert len(after_expiry) == 1
+    assert after_expiry[0].event_id == first[0].event_id
+    assert after_expiry[0].attempt == 2
+
+
 async def test_32_concurrent_emitters_have_no_sequence_collision_or_gap(owner_sessionmaker) -> None:
     from app.services.session_v2_persistence import SessionEventDraft, append_session_events
 
@@ -554,10 +711,9 @@ async def test_cancel_and_terminal_finalizer_converge_to_one_monotonic_outcome(
     monkeypatch,
     terminal_kind: str,
 ) -> None:
-    from fastapi import HTTPException
-
     from app.models.audit import ChatMessage
     from app.models.runtime_task import RuntimeTask
+    from app.models.session_v2 import SessionCommand, SessionControlInput
     from app.services import tenant_resolver, web_chat_runtime
 
     tenant_id, user_id, agent_id, session_id = await _seed_session(owner_sessionmaker)
@@ -612,8 +768,27 @@ async def test_cancel_and_terminal_finalizer_converge_to_one_monotonic_outcome(
 
     monkeypatch.setattr(web_chat_runtime, "_lock_session_runtime_mutation", synchronized_session_lock)
 
+    async with owner_sessionmaker() as cancel_db:
+        accepted_cancel = await web_chat_runtime.cancel_web_chat_run(
+            db=cancel_db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            run_id=run_id,
+            user_id=user_id,
+        )
+    assert accepted_cancel["control_input"]["status"] == "applying"
+    control_id = accepted_cancel["control_input"]["control_id"]
+
+    cancelled_terminal = web_chat_runtime._finalize_web_chat_run_without_assistant(
+        run_uuid=run_id,
+        agent_id=agent_id,
+        session_id=str(session_id),
+        status="killed",
+        result_summary="cancel effect committed",
+    )
     if terminal_kind == "assistant":
-        terminal = web_chat_runtime._finalize_web_chat_run_with_assistant(
+        ordinary_terminal = web_chat_runtime._finalize_web_chat_run_with_assistant(
             run_uuid=run_id,
             agent_id=agent_id,
             user_id=user_id,
@@ -624,7 +799,7 @@ async def test_cancel_and_terminal_finalizer_converge_to_one_monotonic_outcome(
             result_summary="assistant completed",
         )
     else:
-        terminal = web_chat_runtime._finalize_web_chat_run_without_assistant(
+        ordinary_terminal = web_chat_runtime._finalize_web_chat_run_without_assistant(
             run_uuid=run_id,
             agent_id=agent_id,
             session_id=str(session_id),
@@ -632,20 +807,19 @@ async def test_cancel_and_terminal_finalizer_converge_to_one_monotonic_outcome(
             result_summary="tool terminal completed",
         )
 
-    async with owner_sessionmaker() as cancel_db:
-        cancel = web_chat_runtime.cancel_web_chat_run(
-            db=cancel_db,
-            tenant_id=tenant_id,
-            agent_id=agent_id,
-            session_id=session_id,
-            run_id=run_id,
-            user_id=user_id,
-        )
-        cancel_result, terminal_result = await asyncio.gather(cancel, terminal, return_exceptions=True)
+    cancelled_result, ordinary_result = await asyncio.gather(
+        cancelled_terminal,
+        ordinary_terminal,
+        return_exceptions=True,
+    )
 
     async with owner_sessionmaker() as db:
         task = await db.get(RuntimeTask, run_id)
         assert task is not None
+        control = await db.get(SessionControlInput, control_id)
+        assert control is not None
+        command = await db.get(SessionCommand, control.command_id)
+        assert command is not None
         assistant_count = await db.scalar(
             select(func.count(ChatMessage.id)).where(
                 ChatMessage.conversation_id == str(session_id),
@@ -654,16 +828,18 @@ async def test_cancel_and_terminal_finalizer_converge_to_one_monotonic_outcome(
         )
 
     if task.status == "killed":
-        assert isinstance(cancel_result, dict)
-        assert terminal_result is False
+        assert cancelled_result is True
+        assert ordinary_result is False
         assert task.metadata_json["cancelled_by_user"] is True
+        assert control.status == command.status == "applied"
         assert assistant_count == 0
     else:
         assert task.status == "completed"
-        assert terminal_result is True
-        assert isinstance(cancel_result, HTTPException)
-        assert cancel_result.status_code == 404
+        assert ordinary_result is True
+        assert cancelled_result is False
         assert "cancelled_by_user" not in (task.metadata_json or {})
+        assert control.status == command.status == "rejected"
+        assert (command.rejection_json or {})["reason_code"] == "run_terminal_before_cancel_effect"
         assert assistant_count == (1 if terminal_kind == "assistant" else 0)
 
 

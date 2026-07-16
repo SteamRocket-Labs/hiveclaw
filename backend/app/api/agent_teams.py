@@ -28,11 +28,12 @@ from app.services.agent_team_runtime_service import (
     team_close_projection,
 )
 from app.services.runtime_notification_outbox import CompletionNotification, enqueue_completion_notification
+from app.services.session_live_input import IdempotencyConflict, submit_live_human_input
 from app.services.team_runtime import TeamIndex, TeamMemberIndex, plan_team_close_consolidation
-from app.services.web_chat_runtime import ActiveWebChatRunExists, start_web_chat_run
 
 router = APIRouter(prefix="/agents/{agent_id}/agent-teams", tags=["agent-teams"])
 AdminOverrideReason = Annotated[str | None, Header(alias="X-Session-Admin-Reason")]
+_TEAM_MEMBER_INPUT_NAMESPACE = uuid.UUID("5696831d-b64e-4dd0-8558-9ec067f7c29a")
 
 
 class CreateAgentTeamIn(BaseModel):
@@ -52,6 +53,8 @@ class CreateAgentTeamEventIn(BaseModel):
 class StartAgentTeamMemberRunIn(BaseModel):
     content: str = Field(min_length=1)
     display_content: str = ""
+    input_id: uuid.UUID | None = None
+    idempotency_key: str | None = Field(default=None, min_length=1, max_length=200)
 
 
 class MessageAgentTeamMemberIn(BaseModel):
@@ -414,6 +417,7 @@ async def create_agent_team_event(
     if body.event_type == "permission_request":
         await emit_hook(
             HookEvent.PERMISSION_REQUEST,
+            evidence_db=db,
             agent_id=agent_id,
             session_id=str(team.parent_session_id),
             source="agent_team",
@@ -428,6 +432,7 @@ async def create_agent_team_event(
     elif body.event_type in {"idle", "blocked"}:
         await emit_hook(
             HookEvent.TEAMMATE_IDLE,
+            evidence_db=db,
             agent_id=agent_id,
             session_id=str(team.parent_session_id),
             source="agent_team",
@@ -574,6 +579,7 @@ async def start_agent_team_member_run(
     team_id: uuid.UUID,
     member_id: uuid.UUID,
     body: StartAgentTeamMemberRunIn,
+    idempotency_key_header: str | None = Header(default=None, alias="Idempotency-Key"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     admin_override_reason: AdminOverrideReason = None,
@@ -603,24 +609,45 @@ async def start_agent_team_member_run(
         "member_role": member.member_role,
         "parent_session_id": str(team.parent_session_id),
     }
+    header_key = idempotency_key_header if isinstance(idempotency_key_header, str) else None
+    supplied_key = str(body.idempotency_key or header_key or "").strip()
+    input_id = body.input_id or (
+        uuid.uuid5(_TEAM_MEMBER_INPUT_NAMESPACE, supplied_key) if supplied_key else uuid.uuid4()
+    )
+    idempotency_key = supplied_key or f"agent-team-member-run:{input_id}"
     try:
-        run = await start_web_chat_run(
+        input_receipt = await submit_live_human_input(
             db=db,
             agent=agent,
             user=current_user,
             session=session,
             content=body.content,
+            source="agent_team_member_run",
+            input_id=input_id,
+            idempotency_key=idempotency_key,
             display_content=body.display_content,
-            runtime_task_type="team_member",
-            budget_interactive=False,
-            extra_metadata=metadata,
+            runtime_metadata={
+                **metadata,
+                "runtime_task_type": "team_member",
+                "budget_interactive": False,
+            },
         )
-        status_value = str(run.get("status") or "running")
-        event_type = "member_run_started"
-    except ActiveWebChatRunExists as exc:
-        run = {"status": "queued", **exc.run}
-        status_value = "queued"
-        event_type = "member_message_queued"
+    except IdempotencyConflict as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "idempotency_conflict",
+                "command_id": str(exc.command_id),
+                "receipt_ref": exc.receipt_ref,
+            },
+        ) from exc
+    run = dict(input_receipt.get("run") or {})
+    if not run and input_receipt.get("target_run_id"):
+        run = {"run_id": input_receipt["target_run_id"], "status": "queued"}
+    run["input_receipt"] = input_receipt
+    status_value = str(run.get("status") or "queued")
+    event_type = "member_run_started" if input_receipt.get("intent") == "start_turn" else "member_message_queued"
 
     _stamp_member_run(member, run_id=run.get("run_id"), status=status_value, payload=run)
     db.add(

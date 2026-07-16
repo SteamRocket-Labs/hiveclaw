@@ -37,6 +37,7 @@ class ToolExecutionRequest:
     plan_mode_unattended_available: bool = False
     emit_runtime_hooks: bool = True
     trace_metadata_sink: dict[str, Any] | None = None
+    pre_effect_callback: Callable[[dict[str, Any]], Any] | None = None
     workspace_override: Any | None = None
     approval_decision: ApprovalDecisionSet | None = None
     expected_asset_refs: tuple[Any, ...] | None = None
@@ -544,6 +545,8 @@ async def _resolve_assets(state: _ToolExecutionState) -> _Stop | None:
 
 
 async def _apply_governance(state: _ToolExecutionState) -> _Stop | None:
+    from app.tools.decision import ToolDecisionOutcome, boundary_block_from_machine_value
+
     request, ports, service = state.request, state.ports, state.service
     kwargs: dict[str, Any] = {
         "runtime_context": state.runtime_context,
@@ -569,12 +572,18 @@ async def _apply_governance(state: _ToolExecutionState) -> _Stop | None:
     )
     if block:
         _record_lifecycle(state, "blocked", "governance_block")
-        outcome = (
-            ports.decision_outcome_type.REQUIRE_APPROVAL
-            if "approval_required" in str(block) or "session_permission_required" in str(block)
-            else ports.decision_outcome_type.DENY
-        )
-        _record_final_decision(state, outcome=outcome, reasons=("governance_block",))
+        typed_block = boundary_block_from_machine_value(block)
+        if typed_block is not None:
+            outcome = typed_block.outcome
+            reason_code = typed_block.reason_code
+        else:
+            # A legacy/custom runner that returns only prose has violated the
+            # boundary contract.  Keep the effect fail-closed, but record an
+            # unavailable dependency instead of inventing denial/approval from
+            # natural-language substrings.
+            outcome = ToolDecisionOutcome.UNAVAILABLE
+            reason_code = "untyped_governance_block"
+        _record_final_decision(state, outcome=outcome, reasons=(reason_code,))
         return _Stop(block)
     _record_lifecycle(state, "governed")
     preflight_block = await service._preflight_tool_execution(
@@ -585,12 +594,14 @@ async def _apply_governance(state: _ToolExecutionState) -> _Stop | None:
     )
     if preflight_block:
         _record_lifecycle(state, "blocked", "preflight_block")
-        outcome = (
-            ports.decision_outcome_type.REQUIRE_APPROVAL
-            if "ASK" in str(preflight_block) or "PREPARE_ONLY" in str(preflight_block)
-            else ports.decision_outcome_type.DENY
-        )
-        _record_final_decision(state, outcome=outcome, reasons=("action_preflight_block",))
+        typed_block = boundary_block_from_machine_value(preflight_block)
+        if typed_block is not None:
+            outcome = typed_block.outcome
+            reason_code = typed_block.reason_code
+        else:
+            outcome = ToolDecisionOutcome.UNAVAILABLE
+            reason_code = "untyped_preflight_block"
+        _record_final_decision(state, outcome=outcome, reasons=(reason_code,))
         return _Stop(preflight_block)
     _record_lifecycle(state, "preflight")
     _record_final_decision(
@@ -606,8 +617,23 @@ async def _execute_tool(state: _ToolExecutionState) -> Any:
 
     request, ports, service = state.request, state.ports, state.service
     timeout_seconds = tool_execution_policy(request.tool_name).timeout_seconds
+    await ports.renew_runtime_lease()
+    if request.pre_effect_callback is not None:
+        # Governance/preflight and the worker lease are already valid. The
+        # callback is the durable authority fence; its failure must propagate
+        # before executor entry, not be rewritten as an executor failure.
+        await ports.maybe_await(
+            request.pre_effect_callback(
+                {
+                    "tool_call_id": state.tool_call_id,
+                    "tool_name": request.tool_name,
+                    "arguments": dict(state.arguments),
+                    "decision_id": (request.trace_metadata_sink or {}).get("decision_id"),
+                    "idempotency_key": (request.trace_metadata_sink or {}).get("idempotency_key"),
+                }
+            )
+        )
     try:
-        await ports.renew_runtime_lease()
         _record_lifecycle(state, "executing")
         result = await ports.asyncio.wait_for(
             service.execute_with_context(

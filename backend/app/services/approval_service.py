@@ -217,6 +217,9 @@ class ApprovalService:
                     approval,
                     approved_by_user_id=user.id,
                 )
+                from app.services.session_writer_epoch import assign_runtime_task_writer_generation
+
+                await assign_runtime_task_writer_generation(db, execution_task)
                 db.add(execution_task)
                 # The scalar FK is intentionally used instead of an ORM
                 # relationship; insert the durable job first so PostgreSQL can

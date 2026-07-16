@@ -49,7 +49,7 @@ def _agent_session(*, state: str = "open", session_kind: str = "subagent", runti
 
 
 @pytest.mark.asyncio
-async def test_agent_session_continuation_active_run_queues_to_midrun_consumer(monkeypatch):
+async def test_agent_session_continuation_active_run_queues_to_session_v2_round(monkeypatch):
     import app.services.agent_session_continuation as svc
 
     db = _DB()
@@ -75,7 +75,7 @@ async def test_agent_session_continuation_active_run_queues_to_midrun_consumer(m
 
     monkeypatch.setattr(svc, "append_session_event", fake_append)
     monkeypatch.setattr(svc, "_find_active_run", fake_find_active)
-    monkeypatch.setattr(svc, "_queue_saved_mid_run_user_message", fake_queue)
+    monkeypatch.setattr(svc, "_submit_active_session_input", fake_queue)
 
     result = await svc.continue_agent_session_from_mailbox(
         db=db,
@@ -87,7 +87,7 @@ async def test_agent_session_continuation_active_run_queues_to_midrun_consumer(m
     )
 
     assert result["status"] == "queued"
-    assert result["consumer"] == "mid_run_message_drain"
+    assert result["consumer"] == "session_v2_round_input"
     assert captured["append"]["event_type"] == "agent_session_message"
     assert captured["append"]["role"] == "user"
     assert captured["append"]["metadata"]["mailbox_kind"] == "followup"
@@ -351,7 +351,7 @@ async def test_task_notification_active_parent_run_queues_to_midrun_consumer(mon
 
     monkeypatch.setattr(svc, "append_session_event", fake_append)
     monkeypatch.setattr(svc, "_find_active_run", fake_find_active)
-    monkeypatch.setattr(svc, "_queue_saved_mid_run_user_message", fake_queue)
+    monkeypatch.setattr(svc, "_submit_active_session_input", fake_queue)
     monkeypatch.setattr(svc, "start_web_chat_run", fake_start)
 
     result = await svc.continue_parent_session_with_task_notification(
@@ -369,7 +369,7 @@ async def test_task_notification_active_parent_run_queues_to_midrun_consumer(mon
     )
 
     assert result["status"] == "queued"
-    assert result["consumer"] == "mid_run_message_drain"
+    assert result["consumer"] == "session_v2_round_input"
     assert captured["append"]["event_type"] == "agent_task_notification"
     assert captured["append"]["role"] == "system"
     assert captured["append"]["materialize_chat_message"] is False

@@ -49,15 +49,25 @@ export interface SessionSocketProjectionDependencies {
   invalidateQuery: (queryKey: unknown[]) => void;
 }
 
+function isCanonicalSessionEvent(value: any): boolean {
+  return Boolean(
+    value
+    && value.schema === 'hive.session_event'
+    && value.schema_version === 2
+    && typeof value.event_id === 'string'
+    && typeof value.sequence === 'number'
+    && typeof value.kind === 'string',
+  );
+}
+
 export function projectSessionSocketEvent(
   context: SessionSocketMessageContext,
   dependencies: SessionSocketProjectionDependencies,
 ): void {
-  const { data, session, agentId, sessionId, key, isActiveRuntime } = context;
+  const { data, agentId, sessionId, key, isActiveRuntime } = context;
   const d = data;
   const {
     applyTranscriptToSession,
-    selectSession,
     fetchMySessions,
     setSessionPhase,
     sessionPhaseOf,
@@ -69,6 +79,24 @@ export function projectSessionSocketEvent(
     normalizeToolCallMessage,
     parseChatMsg,
   } = dependencies;
+
+  if (isCanonicalSessionEvent(d)) {
+    const transcriptEvent: ChatTranscriptEventPayload = {
+      ...d,
+      id: d.event_id,
+      event_type: d.kind,
+      content: typeof d.payload?.content === 'string' ? d.payload.content : '',
+      metadata: {
+        ...(d.payload?.metadata || {}),
+        session_event: d,
+        item_id: d.item_id,
+        item_kind: d.item_kind,
+        lifecycle: d.lifecycle,
+      },
+    };
+    applyTranscriptToSession(agentId, sessionId, transcriptEvent, isActiveRuntime);
+    return;
+  }
 
   if (
     typeof d === 'object'
@@ -84,9 +112,22 @@ export function projectSessionSocketEvent(
     };
     applyTranscriptToSession(agentId, sessionId, transcriptEvent, isActiveRuntime);
     if (isActiveRuntime && isTerminalRealtimeChatEvent(transcriptEvent)) {
-      void selectSession(session);
       void fetchMySessions(true, agentId);
     }
+    return;
+  }
+
+  if (d?.type === 'session.error') {
+    const error = d.error && typeof d.error === 'object' ? d.error : {};
+    const code = typeof error.code === 'string' ? error.code : 'event_store_retryable';
+    dependencies.setTransportNotice(
+      typeof error.message_key === 'string' ? error.message_key : `session.${code}`,
+    );
+    if (code === 'auth_failed') context.failAuthentication(key, false);
+    return;
+  }
+
+  if (d?.type === 'session.control_receipt') {
     return;
   }
 
@@ -116,7 +157,6 @@ export function projectSessionSocketEvent(
     setSessionPhase(key, 'cancelled');
     if (isActiveRuntime) {
       syncActivePhase('cancelled');
-      void selectSession(session);
     }
     void fetchMySessions(true, agentId);
     return;
@@ -201,29 +241,24 @@ export function projectSessionSocketEvent(
   if (d.type === 'done') {
     dependencies.setChatMessagesAfterQueued((messages) => applyRuntimeDoneEvent(messages, d).map(parseChatMsg));
     void fetchMySessions(true, agentId);
-    void selectSession(session);
     return;
   }
 
   if (d.type === 'error' || d.type === 'quota_exceeded') {
     const message = d.content || d.detail || d.message || 'Request denied';
-    dependencies.setChatMessagesAfterQueued((messages) => {
-      const last = messages[messages.length - 1];
-      if (last?.role === 'assistant' && last.content === `⚠️ ${message}`) return messages;
-      return [...messages, parseChatMsg({ role: 'assistant', content: `⚠️ ${message}` })];
-    });
-    void selectSession(session);
-    if (message.includes('expired')) {
-      context.failAuthentication(key, true);
-      dependencies.setAgentExpired(true);
-    }
+    dependencies.setTransportNotice(String(message));
     return;
   }
 
   if (d.type === 'trigger_notification') {
     dependencies.enqueueChatMessagesUpdate((messages) => [
       ...messages,
-      parseChatMsg({ role: 'assistant', content: d.content }),
+      parseChatMsg({
+        role: 'event',
+        content: typeof d.content === 'string' ? d.content : '',
+        eventType: 'trigger_notification',
+        eventStatus: 'trigger_notification',
+      }),
     ]);
     void fetchMySessions(true, agentId);
     dependencies.invalidateQuery(['autonomy-overview', agentId]);

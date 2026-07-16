@@ -6,11 +6,22 @@ import {
   type RuntimePhase,
 } from './chatRuntime';
 import {
-  chatTransportPhase,
+  CHAT_TRANSPORT_DEGRADED_AFTER_ATTEMPTS,
   reconnectDelayMs,
   transportPollIntervalMs,
   type ChatTransportPhase,
 } from './chatTransportRecovery';
+import {
+  beginConnectionAttempt,
+  buildSessionSubscribeMessage,
+  connectionClosed,
+  connectionFailed,
+  createSessionConnectionState,
+  observeHighestContiguousSequence,
+  parseSessionReady,
+  receiveSessionReady,
+  type SessionConnectionState,
+} from './sessionConnectionStore';
 
 type SessionRuntimeKey = string;
 
@@ -26,7 +37,7 @@ export interface SessionSocketMessageContext {
 }
 
 export interface SessionTransportCallbacks {
-  onBackfill: (session: any, agentId: string) => void | Promise<void>;
+  onBackfill: (session: any, agentId: string) => number | void | Promise<number | void>;
   onDisconnected: (input: {
     key: SessionRuntimeKey;
     phase: RuntimePhase;
@@ -43,12 +54,20 @@ interface SessionTransportControllerOptions {
   writableSession: boolean;
   isRunActive: (key: SessionRuntimeKey) => boolean;
   shouldKeepalive: (key: SessionRuntimeKey) => boolean;
+  getHighestContiguousSequence: (key: SessionRuntimeKey) => number;
+  getProjectionPhase: (key: SessionRuntimeKey) => SessionConnectionState['projection']['phase'] | undefined;
+  needsProjectionRecovery: (key: SessionRuntimeKey) => boolean;
   onAgentExpired: () => void;
   onSocketDisposed: (key: SessionRuntimeKey) => void;
   callbacks: SessionTransportCallbacks;
 }
 
 const runtimeKey = (agentId: string, sessionId: string) => `${agentId}:${sessionId}`;
+
+function newConnectionAttemptId(): string {
+  if (typeof globalThis.crypto?.randomUUID === 'function') return globalThis.crypto.randomUUID();
+  return `connection-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
 
 export function useSessionTransportController(options: SessionTransportControllerOptions) {
   const optionsRef = useRef(options);
@@ -59,15 +78,86 @@ export function useSessionTransportController(options: SessionTransportControlle
   const keepaliveTimersRef = useRef<Record<SessionRuntimeKey, ReturnType<typeof setInterval> | null>>({});
   const reconnectDisabledRef = useRef<Record<SessionRuntimeKey, boolean>>({});
   const reconnectAttemptsRef = useRef<Record<SessionRuntimeKey, number>>({});
+  const projectionRecoveryInFlightRef = useRef<Set<SessionRuntimeKey>>(new Set());
+  const connectionStatesRef = useRef<Record<SessionRuntimeKey, SessionConnectionState>>({});
   const activeSocketRef = useRef<WebSocket | null>(null);
   const [wsConnected, setWsConnected] = useState(false);
-  const [transportPhase, setTransportPhase] = useState<ChatTransportPhase>('reconnecting');
+  const [transportPhase, setTransportPhase] = useState<ChatTransportPhase>('initializing');
   const [transportReconnectAttempt, setTransportReconnectAttempt] = useState(0);
 
   const isActiveRuntime = (agentId: string, sessionId: string) => (
     optionsRef.current.agentId === agentId
     && String(optionsRef.current.activeSession?.id || '') === sessionId
   );
+
+  const connectionState = (key: SessionRuntimeKey) => {
+    const current = connectionStatesRef.current[key];
+    if (current) return current;
+    const created = createSessionConnectionState(
+      optionsRef.current.getHighestContiguousSequence(key),
+    );
+    connectionStatesRef.current[key] = created;
+    return created;
+  };
+
+  const commitConnectionState = (
+    key: SessionRuntimeKey,
+    state: SessionConnectionState,
+    agentId: string,
+    sessionId: string,
+  ) => {
+    connectionStatesRef.current[key] = state;
+    if (!isActiveRuntime(agentId, sessionId)) return;
+    setTransportPhase(state.transport.phase);
+    setTransportReconnectAttempt(Math.max(0, state.transport.attempt - 1));
+    setWsConnected(state.transport.phase === 'connected');
+  };
+
+  const syncProjectionCursor = (key: SessionRuntimeKey, agentId: string, sessionId: string) => {
+    const next = observeHighestContiguousSequence(
+      connectionState(key),
+      optionsRef.current.getHighestContiguousSequence(key),
+      optionsRef.current.getProjectionPhase(key),
+    );
+    commitConnectionState(key, next, agentId, sessionId);
+  };
+
+  const recoverProjectionIfNeeded = (
+    key: SessionRuntimeKey,
+    session: any,
+    agentId: string,
+    sessionId: string,
+  ) => {
+    if (!optionsRef.current.needsProjectionRecovery(key) || projectionRecoveryInFlightRef.current.has(key)) return;
+    projectionRecoveryInFlightRef.current.add(key);
+    void Promise.resolve(optionsRef.current.callbacks.onBackfill(session, agentId))
+      .then(() => {
+        syncProjectionCursor(key, agentId, sessionId);
+        if (optionsRef.current.needsProjectionRecovery(key)) {
+          const attemptId = connectionState(key).transport.connectionAttemptId;
+          if (attemptId) {
+            commitConnectionState(
+              key,
+              connectionFailed(connectionState(key), attemptId, 'degraded'),
+              agentId,
+              sessionId,
+            );
+          }
+        }
+      })
+      .catch(() => {
+        const attemptId = connectionState(key).transport.connectionAttemptId;
+        if (attemptId) {
+          commitConnectionState(
+            key,
+            connectionFailed(connectionState(key), attemptId, 'degraded'),
+            agentId,
+            sessionId,
+          );
+        }
+      })
+      .finally(() => projectionRecoveryInFlightRef.current.delete(key));
+  };
 
   const clearReconnectTimer = (key: SessionRuntimeKey) => {
     const timer = reconnectTimersRef.current[key];
@@ -99,8 +189,15 @@ export function useSessionTransportController(options: SessionTransportControlle
     clearKeepaliveTimer(key);
     delete reconnectAttemptsRef.current[key];
     const socket = socketsRef.current[key];
-    if (socket && socket.readyState !== WebSocket.CLOSED) socket.close();
+    if (socket) {
+      socket.onclose = null;
+      socket.onerror = null;
+      socket.onmessage = null;
+      socket.onopen = null;
+      if (socket.readyState !== WebSocket.CLOSED) socket.close();
+    }
     delete socketsRef.current[key];
+    delete connectionStatesRef.current[key];
     optionsRef.current.onSocketDisposed(key);
   };
 
@@ -109,8 +206,11 @@ export function useSessionTransportController(options: SessionTransportControlle
     clearReconnectTimer(key);
     const [agentId = '', sessionId = ''] = key.split(':', 2);
     if (isActiveRuntime(agentId, sessionId)) {
-      setWsConnected(false);
-      setTransportPhase('auth_failed');
+      const attemptId = connectionState(key).transport.connectionAttemptId;
+      const next = attemptId
+        ? connectionFailed(connectionState(key), attemptId, 'auth_failed')
+        : { ...connectionState(key), transport: { ...connectionState(key).transport, phase: 'auth_failed' as const } };
+      commitConnectionState(key, next, agentId, sessionId);
     }
     if (expired) optionsRef.current.onAgentExpired();
   };
@@ -128,16 +228,10 @@ export function useSessionTransportController(options: SessionTransportControlle
     const key = runtimeKey(agentId, String(session.id));
     const socket = socketsRef.current[key];
     activeSocketRef.current = socket ?? null;
-    const connected = Boolean(socket && socket.readyState === WebSocket.OPEN);
-    const attempts = reconnectAttemptsRef.current[key] || 0;
-    setWsConnected(connected);
-    setTransportReconnectAttempt(attempts);
-    setTransportPhase(chatTransportPhase({
-      online: typeof navigator === 'undefined' || navigator.onLine !== false,
-      connected,
-      attempts,
-      authFailed: Boolean(reconnectDisabledRef.current[key]),
-    }));
+    const state = connectionState(key);
+    setWsConnected(Boolean(socket && state.transport.phase === 'connected'));
+    setTransportReconnectAttempt(Math.max(0, state.transport.attempt - 1));
+    setTransportPhase(state.transport.phase);
   };
 
   const ensureSessionSocket = (session: any, agentId: string, authToken: string) => {
@@ -155,8 +249,11 @@ export function useSessionTransportController(options: SessionTransportControlle
       if (typeof navigator !== 'undefined' && navigator.onLine === false) {
         clearReconnectTimer(key);
         if (isActiveRuntime(agentId, sessionId)) {
-          setTransportPhase('offline');
-          setTransportReconnectAttempt(reconnectAttemptsRef.current[key] || 0);
+          const attemptId = connectionState(key).transport.connectionAttemptId;
+          const next = attemptId
+            ? connectionFailed(connectionState(key), attemptId, 'offline')
+            : connectionState(key);
+          commitConnectionState(key, next, agentId, sessionId);
         }
         return;
       }
@@ -165,12 +262,24 @@ export function useSessionTransportController(options: SessionTransportControlle
       reconnectAttemptsRef.current[key] = attempts;
       if (isActiveRuntime(agentId, sessionId)) {
         setTransportReconnectAttempt(attempts);
-        setTransportPhase(chatTransportPhase({ online: true, connected: false, attempts }));
+        if (attempts >= CHAT_TRANSPORT_DEGRADED_AFTER_ATTEMPTS) {
+          const attemptId = connectionState(key).transport.connectionAttemptId;
+          if (attemptId) {
+            commitConnectionState(
+              key,
+              connectionFailed(connectionState(key), attemptId, 'degraded'),
+              agentId,
+              sessionId,
+            );
+          }
+        }
       }
       clearReconnectTimer(key);
       reconnectTimersRef.current[key] = setTimeout(() => {
         reconnectTimersRef.current[key] = null;
-        if (!reconnectDisabledRef.current[key]) ensureSessionSocket(session, agentId, authToken);
+        if (!reconnectDisabledRef.current[key]) {
+          void hydrateAndConnect(session, agentId, authToken);
+        }
       }, reconnectDelayMs(previousAttempts));
     };
 
@@ -186,21 +295,30 @@ export function useSessionTransportController(options: SessionTransportControlle
       return;
     }
     socketsRef.current[key] = socket;
+    const attemptId = newConnectionAttemptId();
+    commitConnectionState(
+      key,
+      beginConnectionAttempt(connectionState(key), attemptId),
+      agentId,
+      sessionId,
+    );
+    let subscribedAfterSequence: number | null = null;
 
     socket.onopen = () => {
       if (reconnectDisabledRef.current[key]) {
         socket.close();
         return;
       }
-      reconnectAttemptsRef.current[key] = 0;
       startKeepaliveTimer(key, socket);
       if (isActiveRuntime(agentId, sessionId)) {
         activeSocketRef.current = socket;
-        setWsConnected(true);
-        setTransportPhase('connected');
-        setTransportReconnectAttempt(0);
       }
-      void optionsRef.current.callbacks.onBackfill(session, agentId);
+      subscribedAfterSequence = optionsRef.current.getHighestContiguousSequence(key);
+      socket.send(JSON.stringify(buildSessionSubscribeMessage(
+        sessionId,
+        subscribedAfterSequence,
+        attemptId,
+      )));
     };
 
     socket.onclose = (event) => {
@@ -209,19 +327,18 @@ export function useSessionTransportController(options: SessionTransportControlle
       const active = isActiveRuntime(agentId, sessionId);
       const phase: RuntimePhase = optionsRef.current.isRunActive(key) ? 'resuming' : 'idle';
       optionsRef.current.callbacks.onDisconnected({ key, phase, isActiveRuntime: active });
-      if (active) {
-        activeSocketRef.current = null;
-        setWsConnected(false);
-      }
-      if (event.code === 4003 || event.code === 4002) {
+      const unexpected = !reconnectDisabledRef.current[key] && event.code !== 1000;
+      const next = connectionClosed(connectionState(key), attemptId, unexpected);
+      commitConnectionState(key, next, agentId, sessionId);
+      if (active) activeSocketRef.current = null;
+      if (event.code === 4401 || event.code === 4403 || event.code === 4003 || event.code === 4002) {
         failAuthentication(key, event.code === 4003);
         return;
       }
-      scheduleReconnect();
+      if (unexpected) scheduleReconnect();
     };
 
     socket.onerror = (error) => {
-      if (isActiveRuntime(agentId, sessionId)) setWsConnected(false);
       console.warn(`WebSocket error for session ${sessionId}:`, error);
     };
 
@@ -231,6 +348,46 @@ export function useSessionTransportController(options: SessionTransportControlle
         data = JSON.parse(event.data);
       } catch (error) {
         console.warn(`Invalid WebSocket payload for session ${sessionId}:`, error);
+        return;
+      }
+      if (data?.type === 'session.ready') {
+        try {
+          if (subscribedAfterSequence === null) throw new Error('session_ready_before_subscribe');
+          const ready = parseSessionReady(data, sessionId, attemptId, subscribedAfterSequence);
+          reconnectAttemptsRef.current[key] = 0;
+          commitConnectionState(
+            key,
+            receiveSessionReady(
+              connectionState(key),
+              attemptId,
+              ready.subscriptionId,
+              ready.lastCommittedSequence,
+            ),
+            agentId,
+            sessionId,
+          );
+        } catch (error) {
+          console.warn(`Invalid Session ready frame for ${sessionId}:`, error);
+          reconnectDisabledRef.current[key] = true;
+          socket.close(4406, 'schema_unsupported');
+        }
+        return;
+      }
+      if (data?.type === 'session.error') {
+        const retryable = data.error?.retryable === true;
+        const code = typeof data.error?.code === 'string' ? data.error.code : 'event_store_retryable';
+        if (!retryable) reconnectDisabledRef.current[key] = true;
+        optionsRef.current.callbacks.onMessage({
+          data,
+          session,
+          agentId,
+          sessionId,
+          key,
+          isActiveRuntime: isActiveRuntime(agentId, sessionId),
+          closeSessionSocket,
+          failAuthentication,
+        });
+        if (code === 'auth_failed') failAuthentication(key, false);
         return;
       }
       optionsRef.current.callbacks.onMessage({
@@ -243,7 +400,30 @@ export function useSessionTransportController(options: SessionTransportControlle
         closeSessionSocket,
         failAuthentication,
       });
+      syncProjectionCursor(key, agentId, sessionId);
+      recoverProjectionIfNeeded(key, session, agentId, sessionId);
     };
+  };
+
+  const hydrateAndConnect = async (session: any, agentId: string, authToken: string) => {
+    const sessionId = String(session.id);
+    const key = runtimeKey(agentId, sessionId);
+    try {
+      await optionsRef.current.callbacks.onBackfill(session, agentId);
+      syncProjectionCursor(key, agentId, sessionId);
+      if (!reconnectDisabledRef.current[key]) ensureSessionSocket(session, agentId, authToken);
+    } catch (error) {
+      console.warn(`Session hydration failed for ${sessionId}:`, error);
+      const attemptId = connectionState(key).transport.connectionAttemptId;
+      if (attemptId) {
+        commitConnectionState(
+          key,
+          connectionFailed(connectionState(key), attemptId, 'degraded'),
+          agentId,
+          sessionId,
+        );
+      }
+    }
   };
 
   const reconnectActiveTransport = () => {
@@ -266,15 +446,17 @@ export function useSessionTransportController(options: SessionTransportControlle
     activeSocketRef.current = null;
     setWsConnected(false);
     setTransportReconnectAttempt(0);
-    setTransportPhase(typeof navigator !== 'undefined' && navigator.onLine === false ? 'offline' : 'reconnecting');
-    void optionsRef.current.callbacks.onBackfill(activeSession, agentId);
-    ensureSessionSocket(activeSession, agentId, token);
+    connectionStatesRef.current[key] = createSessionConnectionState(
+      optionsRef.current.getHighestContiguousSequence(key),
+    );
+    setTransportPhase(typeof navigator !== 'undefined' && navigator.onLine === false ? 'offline' : 'initializing');
+    void hydrateAndConnect(activeSession, agentId, token);
   };
 
   const resetActiveTransportState = () => {
     activeSocketRef.current = null;
     setWsConnected(false);
-    setTransportPhase('reconnecting');
+    setTransportPhase('initializing');
     setTransportReconnectAttempt(0);
   };
 
@@ -291,8 +473,13 @@ export function useSessionTransportController(options: SessionTransportControlle
     reconnectDisabledRef.current[key] = false;
     reconnectAttemptsRef.current[key] = 0;
     setTransportReconnectAttempt(0);
-    setTransportPhase(typeof navigator !== 'undefined' && navigator.onLine === false ? 'offline' : 'reconnecting');
-    ensureSessionSocket(activeSession, agentId, token);
+    const prior = connectionState(key);
+    setTransportPhase(
+      typeof navigator !== 'undefined' && navigator.onLine === false
+        ? 'offline'
+        : prior.transport.everReady ? 'reconnecting' : 'initializing',
+    );
+    void hydrateAndConnect(activeSession, agentId, token);
     syncActiveSocketState(activeSession, agentId);
   }, [options.enabled, options.agentId, options.token, options.activeSession?.id, options.activeSession?.operator_view, options.writableSession]);
 
@@ -303,10 +490,9 @@ export function useSessionTransportController(options: SessionTransportControlle
     const wake = () => {
       if (reconnectDisabledRef.current[key]) return;
       clearReconnectTimer(key);
-      setTransportPhase('reconnecting');
+      setTransportPhase(connectionState(key).transport.everReady ? 'reconnecting' : 'initializing');
       setTransportReconnectAttempt(reconnectAttemptsRef.current[key] || 0);
-      void optionsRef.current.callbacks.onBackfill(activeSession, agentId);
-      ensureSessionSocket(activeSession, agentId, token);
+      void hydrateAndConnect(activeSession, agentId, token);
       // Browsers may emit an offline/online pair without closing an already
       // open WebSocket. In that case ensureSessionSocket is intentionally a
       // no-op, so resync the existing socket instead of leaving the UI stuck
@@ -315,12 +501,24 @@ export function useSessionTransportController(options: SessionTransportControlle
     };
     const handleOffline = () => {
       clearReconnectTimer(key);
-      setWsConnected(false);
-      setTransportPhase('offline');
+      const attemptId = connectionState(key).transport.connectionAttemptId;
+      if (attemptId) {
+        commitConnectionState(
+          key,
+          connectionFailed(connectionState(key), attemptId, 'offline'),
+          agentId,
+          String(activeSession.id),
+        );
+      } else {
+        setWsConnected(false);
+        setTransportPhase('offline');
+      }
     };
     const handleVisibility = () => {
       if (document.visibilityState !== 'visible') return;
-      void optionsRef.current.callbacks.onBackfill(activeSession, agentId);
+      void Promise.resolve(optionsRef.current.callbacks.onBackfill(activeSession, agentId)).then(() => {
+        syncProjectionCursor(key, agentId, String(activeSession.id));
+      });
       const socket = socketsRef.current[key];
       if (!socket || socket.readyState === WebSocket.CLOSED || socket.readyState === WebSocket.CLOSING) wake();
     };
@@ -346,6 +544,7 @@ export function useSessionTransportController(options: SessionTransportControlle
       if (cancelled) return;
       if (typeof navigator === 'undefined' || navigator.onLine !== false) {
         await optionsRef.current.callbacks.onBackfill(activeSession, agentId);
+        syncProjectionCursor(key, agentId, String(activeSession.id));
       }
       if (cancelled) return;
       const nextInterval = transportPollIntervalMs(transportPhase, optionsRef.current.isRunActive(key));
@@ -362,7 +561,12 @@ export function useSessionTransportController(options: SessionTransportControlle
     Object.keys(reconnectDisabledRef.current).forEach((key) => { reconnectDisabledRef.current[key] = true; });
     Object.keys(reconnectTimersRef.current).forEach(clearReconnectTimer);
     Object.keys(keepaliveTimersRef.current).forEach(clearKeepaliveTimer);
+    projectionRecoveryInFlightRef.current.clear();
     Object.values(socketsRef.current).forEach((socket) => {
+      socket.onclose = null;
+      socket.onerror = null;
+      socket.onmessage = null;
+      socket.onopen = null;
       if (socket.readyState !== WebSocket.CLOSED) socket.close();
     });
     socketsRef.current = {};

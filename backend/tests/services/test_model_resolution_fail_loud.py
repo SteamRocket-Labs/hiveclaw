@@ -29,16 +29,21 @@ def test_no_fail_when_no_primary_configured():
     assert primary_model_unavailable(agent, None) is False
 
 
-def test_websocket_fails_loud_before_silent_fallback():
-    """回归防护:web chat 里 fail-loud 判定必须在 config-level fallback 之前,
-    否则主模型失效会先被静默 fallback 吃掉(Web3研究员事故)。"""
+def test_websocket_subscription_is_independent_of_model_resolution():
+    """Session transport must become ready before model/provider resolution.
+
+    Model fail-loud remains a RuntimeTask outcome; it must not close or delay
+    an otherwise authorized replay subscription.
+    """
     import inspect
 
     import app.api.websocket as ws
 
     src = inspect.getsource(ws.websocket_chat)
-    assert "primary_model_unavailable" in src
-    assert src.index("primary_model_unavailable") < src.index("Config-level fallback")
+    assert "build_session_ready" in src
+    assert "load_session_catchup_window" in src
+    assert "primary_model_unavailable" not in src
+    assert "select(LLMModel)" not in src
 
 
 def test_feishu_fails_loud_before_silent_fallback():

@@ -132,7 +132,14 @@ async def test_failed_legacy_skill_result_emits_no_instruction_or_asset_usage(mo
     monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit)
     service = object.__new__(ToolRuntimeService)
     service.asset_usage_recorder = lambda **kwargs: usage.append(kwargs)
-    result = "❌ load_skill: not_found: Skill not found: missing"
+    from app.tools.result_envelope import render_tool_error
+
+    result = render_tool_error(
+        tool_name="load_skill",
+        error_class="not_found",
+        message="Skill not found: missing",
+        retryable=False,
+    )
 
     await service._emit_loaded_instruction_hook(
         tool_name="load_skill", arguments={"name": "missing"}, context=context, tool_call_id="call-1", result=result
@@ -1470,6 +1477,250 @@ async def test_tool_runtime_service_returns_governance_block_without_registry_ca
 
     assert result == "BLOCKED"
     assert registry.calls == []
+
+
+@pytest.mark.asyncio
+async def test_pre_effect_fence_runs_only_after_governance_allows_execution():
+    from app.tools.governance import ToolGovernanceContext
+    from app.tools.runtime import ToolExecutionContext
+    from app.tools.service import ToolRuntimeService
+
+    context = ToolExecutionContext(
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        tenant_id="tenant-1",
+        workspace=Path("/tmp/ws"),
+    )
+    governance_context = ToolGovernanceContext(
+        agent_id=context.agent_id,
+        user_id=context.user_id,
+        tenant_id=context.tenant_id,
+        tool_name="read_file",
+        arguments={"path": "workspace/notes.md"},
+    )
+    order: list[str] = []
+
+    class _OrderedRegistry(_FakeRegistry):
+        async def try_execute(self, request):
+            order.append("executor")
+            return await super().try_execute(request)
+
+    async def allow_governance(*_args, **_kwargs):
+        order.append("governance")
+        return None
+
+    async def durable_pre_effect_fence(payload):
+        assert payload["tool_name"] == "read_file"
+        assert payload["tool_call_id"]
+        order.append("pre_effect_fence")
+
+    service = ToolRuntimeService(
+        runtime_resolver=_FakeRuntimeResolver(context),
+        governance_resolver=_FakeGovernanceResolver(governance_context, SimpleNamespace()),
+        registry=_OrderedRegistry("file contents"),
+        ensure_registry=lambda: None,
+        governance_runner=allow_governance,
+        fallback_executor=lambda *_args, **_kwargs: "fallback",
+        direct_fallback_executor=lambda *_args, **_kwargs: "direct-fallback",
+        activity_logger=None,
+    )
+
+    result = await service.execute(
+        "read_file",
+        {"path": "workspace/notes.md"},
+        agent_id=context.agent_id,
+        user_id=context.user_id,
+        pre_effect_callback=durable_pre_effect_fence,
+    )
+
+    assert result == "file contents"
+    assert order == ["governance", "pre_effect_fence", "executor"]
+
+
+@pytest.mark.asyncio
+async def test_pre_effect_fence_is_not_granted_when_governance_requires_approval():
+    from app.tools.decision import ToolBoundaryBlock, ToolDecisionOutcome
+    from app.tools.governance import ToolGovernanceContext
+    from app.tools.runtime import ToolExecutionContext
+    from app.tools.service import ToolRuntimeService
+
+    context = ToolExecutionContext(
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        tenant_id="tenant-1",
+        workspace=Path("/tmp/ws"),
+    )
+    governance_context = ToolGovernanceContext(
+        agent_id=context.agent_id,
+        user_id=context.user_id,
+        tenant_id=context.tenant_id,
+        tool_name="send_feishu_message",
+        arguments={"message": "hi"},
+    )
+    registry = _FakeRegistry("SHOULD_NOT_RUN")
+    fence_calls: list[dict] = []
+
+    async def require_approval(*_args, **_kwargs):
+        return ToolBoundaryBlock(
+            "Approval is required.",
+            outcome=ToolDecisionOutcome.REQUIRE_APPROVAL,
+            reason_code="company_policy_requires_approval",
+            status="approval_required",
+            retryable=False,
+        )
+
+    service = ToolRuntimeService(
+        runtime_resolver=_FakeRuntimeResolver(context),
+        governance_resolver=_FakeGovernanceResolver(governance_context, SimpleNamespace()),
+        registry=registry,
+        ensure_registry=lambda: None,
+        governance_runner=require_approval,
+        fallback_executor=lambda *_args, **_kwargs: "fallback",
+        direct_fallback_executor=lambda *_args, **_kwargs: "direct-fallback",
+        activity_logger=None,
+    )
+
+    result = await service.execute(
+        "send_feishu_message",
+        {"message": "hi"},
+        agent_id=context.agent_id,
+        user_id=context.user_id,
+        pre_effect_callback=lambda payload: fence_calls.append(payload),
+    )
+
+    assert str(result) == "Approval is required."
+    assert fence_calls == []
+    assert registry.calls == []
+
+
+@pytest.mark.asyncio
+async def test_governance_decision_never_comes_from_block_message_text():
+    from app.tools.governance import ToolGovernanceContext
+    from app.tools.runtime import ToolExecutionContext
+    from app.tools.service import ToolRuntimeService
+
+    context = ToolExecutionContext(
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        tenant_id="tenant-1",
+        workspace=Path("/tmp/ws"),
+    )
+    governance_context = ToolGovernanceContext(
+        agent_id=context.agent_id,
+        user_id=context.user_id,
+        tenant_id=context.tenant_id,
+        tool_name="send_feishu_message",
+        arguments={"message": "hi"},
+    )
+    registry = _FakeRegistry("SHOULD_NOT_RUN")
+    trace: dict = {}
+
+    async def legacy_untyped_block(_context, _deps, *, event_callback=None):
+        # The words below previously forced REQUIRE_APPROVAL. An untyped legacy
+        # return must instead be a typed infrastructure-contract failure.
+        return "benign prose mentions approval_required and session_permission_required"
+
+    service = ToolRuntimeService(
+        runtime_resolver=_FakeRuntimeResolver(context),
+        governance_resolver=_FakeGovernanceResolver(governance_context, SimpleNamespace()),
+        registry=registry,
+        ensure_registry=lambda: None,
+        governance_runner=legacy_untyped_block,
+        fallback_executor=lambda *_args, **_kwargs: "fallback",
+        direct_fallback_executor=lambda *_args, **_kwargs: "direct-fallback",
+        activity_logger=None,
+    )
+
+    result = await service.execute(
+        "send_feishu_message",
+        {"message": "hi"},
+        agent_id=context.agent_id,
+        user_id=context.user_id,
+        trace_metadata_sink=trace,
+    )
+
+    assert str(result).startswith("benign prose")
+    assert trace["tool_decision"]["outcome"] == "unavailable"
+    assert trace["tool_decision"]["reason_codes"] == ("untyped_governance_block",)
+    assert registry.calls == []
+
+
+@pytest.mark.asyncio
+async def test_governance_decision_consumes_typed_block_outcome():
+    from app.tools.decision import ToolBoundaryBlock, ToolDecisionOutcome
+    from app.tools.governance import ToolGovernanceContext
+    from app.tools.runtime import ToolExecutionContext
+    from app.tools.service import ToolRuntimeService
+
+    context = ToolExecutionContext(
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        tenant_id="tenant-1",
+        workspace=Path("/tmp/ws"),
+    )
+    governance_context = ToolGovernanceContext(
+        agent_id=context.agent_id,
+        user_id=context.user_id,
+        tenant_id=context.tenant_id,
+        tool_name="send_feishu_message",
+        arguments={"message": "hi"},
+    )
+    trace: dict = {}
+
+    async def typed_block(_context, _deps, *, event_callback=None):
+        return ToolBoundaryBlock(
+            "No approval keywords are needed in this display string.",
+            outcome=ToolDecisionOutcome.REQUIRE_APPROVAL,
+            reason_code="company_policy_requires_approval",
+            status="approval_required",
+            retryable=False,
+        )
+
+    service = ToolRuntimeService(
+        runtime_resolver=_FakeRuntimeResolver(context),
+        governance_resolver=_FakeGovernanceResolver(governance_context, SimpleNamespace()),
+        registry=_FakeRegistry("SHOULD_NOT_RUN"),
+        ensure_registry=lambda: None,
+        governance_runner=typed_block,
+        fallback_executor=lambda *_args, **_kwargs: "fallback",
+        direct_fallback_executor=lambda *_args, **_kwargs: "direct-fallback",
+        activity_logger=None,
+    )
+
+    await service.execute(
+        "send_feishu_message",
+        {"message": "hi"},
+        agent_id=context.agent_id,
+        user_id=context.user_id,
+        trace_metadata_sink=trace,
+    )
+
+    assert trace["tool_decision"]["outcome"] == "require_approval"
+    assert trace["tool_decision"]["reason_codes"] == ("company_policy_requires_approval",)
+
+
+def test_tool_result_failure_classification_uses_typed_machine_contract_only():
+    """Benign model/tool prose must never become a hard outcome by keyword or emoji."""
+
+    from app.tools.service import _tool_result_failed
+
+    assert _tool_result_failed("❌ This heading discusses failure modes, but is not a tool failure receipt.") is False
+    assert _tool_result_failed('{"status":"ok","message":"failed examples are documented"}') is False
+    assert _tool_result_failed('{"status":"failed","message":"typed failure"}') is True
+
+
+def test_tool_result_failure_classification_accepts_rendered_typed_error_receipt():
+    from app.tools.result_envelope import render_tool_error
+    from app.tools.service import _tool_result_failed
+
+    receipt = render_tool_error(
+        tool_name="read_file",
+        error_class="not_found",
+        message="The requested file does not exist.",
+        retryable=False,
+    )
+
+    assert _tool_result_failed(receipt) is True
 
 
 @pytest.mark.asyncio

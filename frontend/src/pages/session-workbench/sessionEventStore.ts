@@ -34,6 +34,16 @@ export type SessionEventV2 = {
   persisted_at: string;
 };
 
+export type SessionCompatibilityEvent = {
+  schema: 'hive.session_event_compatibility';
+  schema_version: 1;
+  compatibility_status: 'needs_reconciliation';
+  event_id: string;
+  sequence: number;
+  reason: string;
+  [key: string]: unknown;
+};
+
 export type SessionItemV2 = {
   id: string;
   kind: string;
@@ -60,9 +70,13 @@ export type SessionEventStore = {
   highestContiguousSequence: number;
   projection: ProjectionSyncState;
   bufferedEvents: Record<number, SessionEventV2>;
+  bufferedCompatibilityEvents: Record<number, SessionCompatibilityEvent>;
   eventIdBySequence: Record<number, string>;
   seenEventIds: Record<string, true>;
   ignoredEventIds: string[];
+  compatibilityQuarantine: Array<{ eventId: string; sequence: number; reason: string }>;
+  gapBufferLimit: number;
+  recoveryRequired?: 'full_hydration';
   consistencyIncident?: { sequence: number; existingEventId: string; incomingEventId: string };
 };
 
@@ -108,12 +122,42 @@ const SCOPE_REQUIRED_IDS: Record<SessionScopeV2['level'], readonly string[]> =
   SESSION_EVENT_CONTRACT.scope_required_ids;
 const ASSISTANT_PHASES: Record<string, string> = SESSION_EVENT_CONTRACT.assistant_phases;
 
-export function createSessionEventStore(): SessionEventStore {
+export function createSessionEventStore(
+  highestContiguousSequence = 0,
+  gapBufferLimit = 10_000,
+): SessionEventStore {
   return {
-    items: {}, highestContiguousSequence: 0,
-    projection: { phase: 'hydrating', highest_contiguous_sequence: 0, buffered_sequences: [] },
-    bufferedEvents: {}, eventIdBySequence: {}, seenEventIds: {}, ignoredEventIds: [],
+    items: {}, highestContiguousSequence,
+    projection: {
+      phase: 'hydrating',
+      highest_contiguous_sequence: highestContiguousSequence,
+      buffered_sequences: [],
+    },
+    bufferedEvents: {}, bufferedCompatibilityEvents: {},
+    eventIdBySequence: {}, seenEventIds: {}, ignoredEventIds: [], compatibilityQuarantine: [],
+    gapBufferLimit: Math.max(1, Math.floor(gapBufferLimit)),
   };
+}
+
+function requireFullHydration(store: SessionEventStore): SessionEventStore {
+  return {
+    ...store,
+    bufferedEvents: {},
+    bufferedCompatibilityEvents: {},
+    eventIdBySequence: Object.fromEntries(
+      Object.entries(store.eventIdBySequence).filter(([sequence]) => Number(sequence) <= store.highestContiguousSequence),
+    ),
+    recoveryRequired: 'full_hydration',
+    projection: {
+      phase: 'stale',
+      highest_contiguous_sequence: store.highestContiguousSequence,
+      buffered_sequences: [],
+    },
+  };
+}
+
+function bufferedCount(store: SessionEventStore): number {
+  return Object.keys(store.bufferedEvents).length + Object.keys(store.bufferedCompatibilityEvents).length;
 }
 
 function assertEnvelope(event: SessionEventV2): void {
@@ -200,10 +244,72 @@ function reduceContiguous(store: SessionEventStore, event: SessionEventV2): Sess
   };
 }
 
+function reduceCompatibilityContiguous(
+  store: SessionEventStore,
+  event: SessionCompatibilityEvent,
+): SessionEventStore {
+  return {
+    ...store,
+    highestContiguousSequence: event.sequence,
+    eventIdBySequence: { ...store.eventIdBySequence, [event.sequence]: event.event_id },
+    seenEventIds: { ...store.seenEventIds, [event.event_id]: true },
+    compatibilityQuarantine: [
+      ...store.compatibilityQuarantine,
+      { eventId: event.event_id, sequence: event.sequence, reason: event.reason },
+    ],
+  };
+}
+
+function finalizeBufferedProjection(store: SessionEventStore): SessionEventStore {
+  const bufferedSequences = [
+    ...Object.keys(store.bufferedEvents).map(Number),
+    ...Object.keys(store.bufferedCompatibilityEvents).map(Number),
+  ].sort((a, b) => a - b);
+  return {
+    ...store,
+    projection: {
+      phase: bufferedSequences.length
+        ? 'gap_detected'
+        : store.compatibilityQuarantine.length ? 'stale' : 'current',
+      highest_contiguous_sequence: store.highestContiguousSequence,
+      buffered_sequences: bufferedSequences,
+    },
+  };
+}
+
+function drainBuffered(store: SessionEventStore): SessionEventStore {
+  let next = store;
+  const bufferedEvents = { ...next.bufferedEvents };
+  const bufferedCompatibilityEvents = { ...next.bufferedCompatibilityEvents };
+  while (true) {
+    const sequence = next.highestContiguousSequence + 1;
+    const canonical = bufferedEvents[sequence];
+    const compatibility = bufferedCompatibilityEvents[sequence];
+    if (!canonical && !compatibility) break;
+    if (canonical) {
+      delete bufferedEvents[sequence];
+      next = reduceContiguous(
+        { ...next, bufferedEvents, bufferedCompatibilityEvents },
+        canonical,
+      );
+    } else {
+      delete bufferedCompatibilityEvents[sequence];
+      next = reduceCompatibilityContiguous(
+        { ...next, bufferedEvents, bufferedCompatibilityEvents },
+        compatibility,
+      );
+    }
+  }
+  return finalizeBufferedProjection({ ...next, bufferedEvents, bufferedCompatibilityEvents });
+}
+
 export function reduceSessionEvent(store: SessionEventStore, event: SessionEventV2): SessionEventStore {
   assertEnvelope(event);
+  if (store.recoveryRequired) return store;
   if (store.seenEventIds[event.event_id]) return store;
-  const existingEventId = store.eventIdBySequence[event.sequence] ?? store.bufferedEvents[event.sequence]?.event_id;
+  const existingEventId = store.eventIdBySequence[event.sequence]
+    ?? store.bufferedEvents[event.sequence]?.event_id
+    ?? store.bufferedCompatibilityEvents[event.sequence]?.event_id;
   if (existingEventId && existingEventId !== event.event_id) {
     return {
       ...store,
@@ -213,30 +319,57 @@ export function reduceSessionEvent(store: SessionEventStore, event: SessionEvent
   }
   if (event.sequence <= store.highestContiguousSequence) return store;
   if (event.sequence > store.highestContiguousSequence + 1) {
+    if (bufferedCount(store) >= store.gapBufferLimit) return requireFullHydration(store);
     const bufferedEvents = { ...store.bufferedEvents, [event.sequence]: event };
-    const bufferedSequences = Object.keys(bufferedEvents).map(Number).sort((a, b) => a - b);
-    return {
+    return finalizeBufferedProjection({
       ...store, bufferedEvents,
       eventIdBySequence: { ...store.eventIdBySequence, [event.sequence]: event.event_id },
       seenEventIds: { ...store.seenEventIds, [event.event_id]: true },
-      projection: { phase: 'gap_detected', highest_contiguous_sequence: store.highestContiguousSequence, buffered_sequences: bufferedSequences },
-    };
+    });
   }
 
-  let next = reduceContiguous(store, event);
-  const bufferedEvents = { ...next.bufferedEvents };
-  while (bufferedEvents[next.highestContiguousSequence + 1]) {
-    const contiguous = bufferedEvents[next.highestContiguousSequence + 1];
-    delete bufferedEvents[contiguous.sequence];
-    next = reduceContiguous({ ...next, bufferedEvents }, contiguous);
+  return drainBuffered(reduceContiguous(store, event));
+}
+
+export function reduceSessionCompatibilityEvent(
+  store: SessionEventStore,
+  event: SessionCompatibilityEvent,
+): SessionEventStore {
+  if (
+    event.schema !== 'hive.session_event_compatibility'
+    || event.schema_version !== 1
+    || event.compatibility_status !== 'needs_reconciliation'
+    || !event.event_id
+    || !Number.isSafeInteger(event.sequence)
+    || event.sequence <= 0
+    || !event.reason
+  ) {
+    throw new Error('invalid_session_compatibility_event');
   }
-  const bufferedSequences = Object.keys(bufferedEvents).map(Number).sort((a, b) => a - b);
-  return {
-    ...next, bufferedEvents,
-    projection: {
-      phase: bufferedSequences.length ? 'gap_detected' : 'current',
-      highest_contiguous_sequence: next.highestContiguousSequence,
-      buffered_sequences: bufferedSequences,
-    },
-  };
+  if (store.recoveryRequired) return store;
+  if (store.seenEventIds[event.event_id]) return store;
+  const existingEventId = store.eventIdBySequence[event.sequence]
+    ?? store.bufferedEvents[event.sequence]?.event_id
+    ?? store.bufferedCompatibilityEvents[event.sequence]?.event_id;
+  if (existingEventId && existingEventId !== event.event_id) {
+    return {
+      ...store,
+      projection: { ...store.projection, phase: 'stale' },
+      consistencyIncident: { sequence: event.sequence, existingEventId, incomingEventId: event.event_id },
+    };
+  }
+  if (event.sequence <= store.highestContiguousSequence) return store;
+  if (event.sequence > store.highestContiguousSequence + 1) {
+    if (bufferedCount(store) >= store.gapBufferLimit) return requireFullHydration(store);
+    return finalizeBufferedProjection({
+      ...store,
+      bufferedCompatibilityEvents: {
+        ...store.bufferedCompatibilityEvents,
+        [event.sequence]: event,
+      },
+      eventIdBySequence: { ...store.eventIdBySequence, [event.sequence]: event.event_id },
+      seenEventIds: { ...store.seenEventIds, [event.event_id]: true },
+    });
+  }
+  return drainBuffered(reduceCompatibilityContiguous(store, event));
 }

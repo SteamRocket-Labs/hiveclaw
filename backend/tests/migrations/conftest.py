@@ -268,6 +268,103 @@ def revision_parent_migrated_pg_url(pg_container) -> str:  # noqa: F811  (pytest
 
 
 @pytest.fixture(scope="session")
+def session_v2_input_control_parent_migrated_pg_url(pg_container) -> str:  # noqa: F811
+    """Exercise the exact ``session_v2_0716`` parent → current-head edge.
+
+    The ordinary release fixture proves the complete Session V2 revision from
+    its projected parent.  This dedicated database additionally downgrades an
+    empty current schema to the immediate parent of the input/control delta,
+    verifies that parent shape, then performs an ordinary upgrade to head.
+    """
+
+    code, output = pg_container.exec(
+        ["psql", "-U", "test", "-d", "postgres", "-c", "CREATE DATABASE sessionv2inputcontrolparent"]
+    )
+    if code != 0:
+        pytest.fail(f"failed to create sessionv2inputcontrolparent database: {output}")
+    async_url = (
+        make_url(_async_url(pg_container))
+        .set(database="sessionv2inputcontrolparent")
+        .render_as_string(hide_password=False)
+    )
+    _bootstrap_current_head(async_url)
+    _alembic_downgrade(async_url, "session_v2_0716")
+    query = """
+      SELECT
+        (SELECT version_num FROM alembic_version),
+        (SELECT is_nullable FROM information_schema.columns
+          WHERE table_schema='public' AND table_name='session_turn_replacements'
+            AND column_name='cancel_control_id'),
+        (SELECT is_nullable FROM information_schema.columns
+          WHERE table_schema='public' AND table_name='session_turn_replacements'
+            AND column_name='cancel_command_id')
+    """
+    code, output = pg_container.exec(
+        ["psql", "-U", "test", "-d", "sessionv2inputcontrolparent", "-At", "-F", "|", "-c", query]
+    )
+    if code != 0:
+        pytest.fail(f"failed to inspect Session V2 input/control parent: {output}")
+    evidence = (output.decode() if isinstance(output, bytes) else str(output)).strip()
+    if evidence != "session_v2_0716|NO|NO":
+        pytest.fail(f"input/control parent projection is not exact: {evidence!r}")
+    _alembic_upgrade(async_url, "head")
+    return async_url
+
+
+@pytest.fixture(scope="session")
+def session_v2_admission_revision_parent_pg_url(pg_container) -> str:  # noqa: F811
+    """Dedicated immediate-parent database for admission revision backfill.
+
+    The fixture stops at ``session_v2_input_control_0716`` so the test can
+    insert a production-shaped legacy revision-3 input with its single
+    immutable admission attempt before executing the ordinary head upgrade.
+    """
+
+    code, output = pg_container.exec(
+        ["psql", "-U", "test", "-d", "postgres", "-c", "CREATE DATABASE sessionv2admissionrevisionparent"]
+    )
+    if code != 0:
+        pytest.fail(f"failed to create sessionv2admissionrevisionparent database: {output}")
+    async_url = (
+        make_url(_async_url(pg_container))
+        .set(database="sessionv2admissionrevisionparent")
+        .render_as_string(hide_password=False)
+    )
+    _bootstrap_current_head(async_url)
+    _alembic_downgrade(async_url, "session_v2_input_control_0716")
+    query = """
+      SELECT
+        (SELECT version_num FROM alembic_version),
+        (SELECT count(*) FROM information_schema.columns
+          WHERE table_schema='public' AND table_name='session_input_admissions'
+            AND column_name='input_revision'),
+        (SELECT count(*) FROM pg_constraint
+          WHERE conrelid='session_input_admissions'::regclass
+            AND conname='uq_session_input_admissions_input')
+    """
+    code, output = pg_container.exec(
+        [
+            "psql",
+            "-U",
+            "test",
+            "-d",
+            "sessionv2admissionrevisionparent",
+            "-At",
+            "-F",
+            "|",
+            "-c",
+            query,
+        ]
+    )
+    if code != 0:
+        pytest.fail(f"failed to inspect Session V2 admission parent: {output}")
+    evidence = (output.decode() if isinstance(output, bytes) else str(output)).strip()
+    if evidence != "session_v2_input_control_0716|0|1":
+        pytest.fail(f"admission revision parent projection is not exact: {evidence!r}")
+    return async_url
+
+
+@pytest.fixture(scope="session")
 def session_v2_roundtrip_pg_url(pg_container) -> str:  # noqa: F811  (pytest fixture injection)
     """Dedicated parent→head database for downgrade/re-upgrade evidence tests."""
 

@@ -225,6 +225,10 @@ ThinkingCallback = Callable[[str], Coroutine[Any, Any, None]]
 class LLMClient(ABC):
     """Abstract base class for LLM clients."""
 
+    # None of the currently wired provider transports accepts a Hive-generated
+    # request id as an authoritative provider idempotency key.
+    supports_request_idempotency = False
+
     def __init__(
         self,
         api_key: str,
@@ -405,8 +409,24 @@ def _record_output_cap_hit(*, provider: str, model: str, finish_reason: str | No
     )
 
 
+_AUTHORITATIVE_PROVIDER_REJECTION_STATUSES = frozenset({400, 401, 403, 404, 413, 422, 429})
+
+
+def delivery_state_from_http_status(status_code: int) -> Literal["rejected", "unknown"]:
+    """Map only explicit client-side provider rejections to replay-safe state.
+
+    A 5xx/529/408/transport status does not prove that generation was never
+    accepted, executed, or billed. Those outcomes stay unknown and must be
+    reconciled instead of replayed.
+    """
+
+    return "rejected" if int(status_code) in _AUTHORITATIVE_PROVIDER_REJECTION_STATUSES else "unknown"
+
+
 def _is_retryable_http_status(status_code: int) -> bool:
-    return status_code in {408, 409, 425, 429, 500, 502, 503, 504, 529}
+    # Automatic transport retry is allowed only for an explicit rate-limit
+    # rejection. Semantic 4xx repair belongs to the kernel/model path.
+    return int(status_code) == 429
 
 
 def _retry_backoff_seconds(attempt_index: int) -> float:
@@ -444,18 +464,13 @@ async def _post_with_status_retries(
         try:
             response = await client.post(url, json=payload, headers=headers)
         except (httpx.ConnectError, httpx.ReadError, httpx.ConnectTimeout, httpx.ReadTimeout) as exc:
-            if attempt >= max_retries - 1:
-                raise
-            wait = _retry_backoff_seconds(attempt)
-            logger.warning(
-                "LLM provider network error {}, retrying request attempt {}/{} in {}s...",
-                type(exc).__name__,
-                attempt + 2,
-                max_retries,
-                wait,
-            )
-            await asyncio.sleep(wait)
-            continue
+            # httpx does not expose whether request bytes reached the provider.
+            # Replaying here can duplicate a completed generation, so the
+            # durable caller must reconcile the unknown delivery outcome.
+            raise LLMError(
+                f"Provider network delivery is unknown: {type(exc).__name__}: {exc}",
+                delivery_state="unknown",
+            ) from exc
         if response.status_code < 400:
             return response
         if not _is_retryable_http_status(response.status_code) or attempt >= max_retries - 1:
@@ -817,12 +832,16 @@ class OpenAICompatibleClient(LLMClient):
 
         if response.status_code >= 400:
             error_text = response.text
-            raise LLMError(f"HTTP {response.status_code}: {error_text}")
+            raise LLMError(
+                f"HTTP {response.status_code}: {error_text}",
+                delivery_state=delivery_state_from_http_status(response.status_code),
+                http_status=response.status_code,
+            )
 
         data = response.json()
 
         if "error" in data:
-            raise LLMError(f"API error: {data['error']}")
+            raise LLMError(f"API error: {data['error']}", delivery_state="rejected")
 
         choice = data.get("choices", [{}])[0]
         msg = choice.get("message", {})
@@ -900,7 +919,11 @@ class OpenAICompatibleClient(LLMClient):
                             await asyncio.sleep(wait)
                             await reset_partial_stream_for_retry()
                             continue
-                        raise LLMError(f"HTTP {resp.status_code}: {error_body}")
+                        raise LLMError(
+                            f"HTTP {resp.status_code}: {error_body}",
+                            delivery_state=delivery_state_from_http_status(resp.status_code),
+                            http_status=resp.status_code,
+                        )
 
                     async for line in resp.aiter_lines():
                         chunk, in_think, tag_buffer = self._parse_stream_line(line, in_think, tag_buffer)
@@ -964,17 +987,22 @@ class OpenAICompatibleClient(LLMClient):
                         await asyncio.sleep(wait)
                         await reset_partial_stream_for_retry()
                     else:
-                        raise LLMError(f"Rate limited after {max_retries} attempts: {e}")
+                        raise LLMError(
+                            f"Rate limited after {max_retries} attempts: {e}",
+                            delivery_state=delivery_state_from_http_status(e.response.status_code),
+                            http_status=e.response.status_code,
+                        )
                 else:
-                    raise LLMError(f"HTTP {e.response.status_code}: {e.response.text}")
+                    raise LLMError(
+                        f"HTTP {e.response.status_code}: {e.response.text}",
+                        delivery_state=delivery_state_from_http_status(e.response.status_code),
+                        http_status=e.response.status_code,
+                    )
             except (httpx.ConnectError, httpx.ReadError, httpx.ConnectTimeout, httpx.ReadTimeout) as e:
-                if attempt < max_retries - 1:
-                    wait = _retry_backoff_seconds(attempt)
-                    logger.warning(f"Stream attempt {attempt + 1} failed ({type(e).__name__}), retrying in {wait}s...")
-                    await asyncio.sleep(wait)
-                    await reset_partial_stream_for_retry()
-                else:
-                    raise LLMError(f"Connection failed after {max_retries} attempts: {e}")
+                raise LLMError(
+                    f"Provider stream delivery is unknown: {type(e).__name__}: {e}",
+                    delivery_state="unknown",
+                ) from e
 
         # Clean up any remaining think tags
         full_content = re.sub(r"<think>[\s\S]*?</think>\s*", "", full_content).strip()
@@ -1255,7 +1283,11 @@ class OpenAIResponsesClient(LLMClient):
 
         if response.status_code >= 400:
             error_text = response.text
-            raise LLMError(f"HTTP {response.status_code}: {error_text}")
+            raise LLMError(
+                f"HTTP {response.status_code}: {error_text}",
+                delivery_state=delivery_state_from_http_status(response.status_code),
+                http_status=response.status_code,
+            )
 
         data = response.json()
         api_error = self._extract_api_error(data)
@@ -1266,7 +1298,7 @@ class OpenAIResponsesClient(LLMClient):
                 api_error,
                 ctx,
             )
-            raise LLMError(api_error)
+            raise LLMError(api_error, delivery_state="rejected")
 
         return self._parse_response_data(data)
 
@@ -1674,11 +1706,15 @@ class GeminiClient(LLMClient):
 
         if response.status_code >= 400:
             error_text = response.text
-            raise LLMError(f"HTTP {response.status_code}: {error_text}")
+            raise LLMError(
+                f"HTTP {response.status_code}: {error_text}",
+                delivery_state=delivery_state_from_http_status(response.status_code),
+                http_status=response.status_code,
+            )
 
         data = response.json()
         if isinstance(data, dict) and data.get("error"):
-            raise LLMError(f"API error: {data['error']}")
+            raise LLMError(f"API error: {data['error']}", delivery_state="rejected")
 
         return self._parse_response_data(data)
 
@@ -1750,7 +1786,11 @@ class GeminiClient(LLMClient):
                             final_usage = None
                             final_finish_reason = None
                             continue
-                        raise LLMError(f"HTTP {resp.status_code}: {error_body}")
+                        raise LLMError(
+                            f"HTTP {resp.status_code}: {error_body}",
+                            delivery_state=delivery_state_from_http_status(resp.status_code),
+                            http_status=resp.status_code,
+                        )
 
                     async for line in resp.aiter_lines():
                         if not line.startswith("data:"):
@@ -1806,15 +1846,10 @@ class GeminiClient(LLMClient):
                 break
 
             except (httpx.ConnectError, httpx.ReadError, httpx.ConnectTimeout, httpx.ReadTimeout) as e:
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(_retry_backoff_seconds(attempt))
-                    full_text = ""
-                    tool_calls = []
-                    seen_tool_calls = set()
-                    final_usage = None
-                    final_finish_reason = None
-                    continue
-                raise LLMError(f"Connection failed after {max_retries} attempts: {e}") from e
+                raise LLMError(
+                    f"Provider stream delivery is unknown: {type(e).__name__}: {e}",
+                    delivery_state="unknown",
+                ) from e
 
         return LLMResponse(
             content=full_text,
@@ -1968,11 +2003,15 @@ class AnthropicClient(LLMClient):
 
         if response.status_code >= 400:
             error_text = response.text
-            raise LLMError(f"HTTP {response.status_code}: {error_text}")
+            raise LLMError(
+                f"HTTP {response.status_code}: {error_text}",
+                delivery_state=delivery_state_from_http_status(response.status_code),
+                http_status=response.status_code,
+            )
 
         data = response.json()
         if data.get("type") == "error":
-            raise LLMError(f"API error: {data.get('error', {})}")
+            raise LLMError(f"API error: {data.get('error', {})}", delivery_state="rejected")
 
         full_content = ""
         full_reasoning = ""
@@ -2067,7 +2106,11 @@ class AnthropicClient(LLMClient):
                             final_usage = None
                             final_model = self.model
                             continue
-                        raise LLMError(f"HTTP {resp.status_code}: {error_body}")
+                        raise LLMError(
+                            f"HTTP {resp.status_code}: {error_body}",
+                            delivery_state=delivery_state_from_http_status(resp.status_code),
+                            http_status=resp.status_code,
+                        )
 
                     current_event = None
 
@@ -2157,20 +2200,10 @@ class AnthropicClient(LLMClient):
                 break  # Stream completed successfully
 
             except (httpx.ConnectError, httpx.ReadError, httpx.ConnectTimeout, httpx.ReadTimeout) as e:
-                if attempt < max_retries - 1:
-                    logger.warning("[Anthropic] Stream attempt %d failed, retrying: %s", attempt + 1, e)
-                    await asyncio.sleep(_retry_backoff_seconds(attempt))
-                    # Reset accumulators for clean retry
-                    full_content = ""
-                    full_reasoning = ""
-                    full_signature = None
-                    tool_calls_data = []
-                    tool_call_index_map = {}
-                    last_finish_reason = None
-                    final_usage = None
-                    final_model = self.model
-                else:
-                    raise LLMError(f"Anthropic connection failed after {max_retries} attempts: {e}")
+                raise LLMError(
+                    f"Provider stream delivery is unknown: {type(e).__name__}: {e}",
+                    delivery_state="unknown",
+                ) from e
 
         # Normalize stop reason to OpenAI style (optional but helpful for consistency)
         if last_finish_reason == "end_turn":
@@ -2628,7 +2661,20 @@ MAX_TOKENS_BY_MODEL: dict[str, int] = {
 class LLMError(Exception):
     """Base exception for LLM client errors."""
 
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        delivery_state: Literal["rejected", "unknown"] = "unknown",
+        http_status: int | None = None,
+        provider_request_id: str | None = None,
+        provider_receipt: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.delivery_state = delivery_state
+        self.http_status = http_status
+        self.provider_request_id = provider_request_id
+        self.provider_receipt = dict(provider_receipt or {})
 
 
 def get_provider_base_url(provider: str, custom_base_url: str | None = None) -> str | None:

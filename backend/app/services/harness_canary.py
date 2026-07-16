@@ -302,26 +302,28 @@ async def run_harness_canary(
                 }
             )
 
-        db.add(
-            RuntimeTask(
-                id=runtime_task_id,
-                task_type="harness_canary",
-                tenant_id=agent.tenant_id,
-                parent_agent_id=agent.id,
-                child_agent_id=None,
-                child_agent_name=None,
-                status="completed",
-                prompt="Harness canary verifies H4/H5 evidence paths without changing behavior.",
-                result_summary="Harness canary completed; no behavior change was promoted.",
-                trace_id=f"harness-canary:{runtime_task_id.hex}",
-                parent_session_id=None,
-                child_session_id=None,
-                depth=0,
-                started_at=generated_at,
-                completed_at=_now(),
-                metadata_json=metadata,
-            )
+        runtime_task = RuntimeTask(
+            id=runtime_task_id,
+            task_type="harness_canary",
+            tenant_id=agent.tenant_id,
+            parent_agent_id=agent.id,
+            child_agent_id=None,
+            child_agent_name=None,
+            status="completed",
+            prompt="Harness canary verifies H4/H5 evidence paths without changing behavior.",
+            result_summary="Harness canary completed; no behavior change was promoted.",
+            trace_id=f"harness-canary:{runtime_task_id.hex}",
+            parent_session_id=None,
+            child_session_id=None,
+            depth=0,
+            started_at=generated_at,
+            completed_at=_now(),
+            metadata_json=metadata,
         )
+        from app.services.session_writer_epoch import assign_runtime_task_writer_generation
+
+        await assign_runtime_task_writer_generation(db, runtime_task)
+        db.add(runtime_task)
         await db.commit()
         results.append(
             _result(

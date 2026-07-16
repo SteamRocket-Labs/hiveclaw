@@ -35,8 +35,9 @@ async def test_notification_service_emits_notification_hook_with_tenant_evidence
         return None
 
     monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit)
+    db = _FakeDB(tenant_id)
     notification = await notification_service.send_notification(
-        db=_FakeDB(tenant_id),
+        db=db,
         user_id=user_id,
         type="approval_pending",
         title="Approval required",
@@ -49,6 +50,7 @@ async def test_notification_service_emits_notification_hook_with_tenant_evidence
         (
             "notification",
             {
+                "evidence_db": db,
                 "source": "notification_service",
                 "metadata": {
                     "tenant_id": str(tenant_id),

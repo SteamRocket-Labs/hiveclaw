@@ -70,6 +70,7 @@ async def mark_latest_pending_clarification_answered(
     }
     hook_result = await emit_hook(
         HookEvent.ELICITATION_RESULT,
+        evidence_db=db,
         agent_id=agent_id,
         session_id=str(session_id),
         prompt=answer_text,

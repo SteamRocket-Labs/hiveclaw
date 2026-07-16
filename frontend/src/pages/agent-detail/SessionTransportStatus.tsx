@@ -19,7 +19,9 @@ export function SessionTransportStatus({
 }: SessionTransportStatusProps) {
   const { t } = useTranslation();
 
-  const message = phase === 'offline'
+  const message = phase === 'initializing'
+    ? t('agent.chat.transport.initializing', 'Loading durable session history...')
+    : phase === 'offline'
     ? t(
         'agent.chat.transport.offline',
         'You are offline. The task is still running in the background and durable history will catch up automatically when the network returns.',

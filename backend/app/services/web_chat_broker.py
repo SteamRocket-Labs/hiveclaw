@@ -6,14 +6,22 @@ from typing import Any
 from app.runtime.session import SessionContext
 
 
+class SessionLiveBufferOverflow(RuntimeError):
+    """Live delivery exceeded its bounded pre-ready buffer; DB replay owns recovery."""
+
+
 class WebChatBroker:
     """Session-scoped WebSocket broadcaster for web chat runs."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, live_buffer_limit: int = 10_000) -> None:
         self.active_connections: dict[str, list[tuple[Any, str | None]]] = {}
         self._runtime_sessions: dict[str, SessionContext] = {}
         self._runtime_session_order: list[str] = []
         self._lock = asyncio.Lock()
+        self._subscription_buffers: dict[int, list[dict[str, Any]]] = {}
+        self._subscription_draining: set[int] = set()
+        self._subscription_overflowed: set[int] = set()
+        self._live_buffer_limit = max(1, int(live_buffer_limit))
 
     @staticmethod
     def _runtime_session_key(agent_id: str, session_id: str | None) -> str | None:
@@ -33,6 +41,72 @@ class WebChatBroker:
             self.active_connections[agent_id] = [
                 (ws, sid) for ws, sid in self.active_connections[agent_id] if ws != websocket
             ]
+            self._subscription_buffers.pop(id(websocket), None)
+            self._subscription_draining.discard(id(websocket))
+            self._subscription_overflowed.discard(id(websocket))
+
+    async def begin_session_subscription(
+        self,
+        agent_id: str,
+        websocket: Any,
+        session_id: str,
+    ) -> None:
+        """Register a socket in buffering mode before reading its DB watermark."""
+
+        async with self._lock:
+            connections = self.active_connections.setdefault(agent_id, [])
+            if not any(ws is websocket for ws, _sid in connections):
+                connections.append((websocket, session_id))
+            self._subscription_buffers[id(websocket)] = []
+            self._subscription_overflowed.discard(id(websocket))
+
+    async def activate_session_subscription(
+        self,
+        websocket: Any,
+        *,
+        delivered_through_sequence: int,
+    ) -> None:
+        """Drain watermark-newer live frames, then atomically switch to live mode."""
+
+        socket_key = id(websocket)
+        if socket_key in self._subscription_overflowed:
+            raise SessionLiveBufferOverflow("session_live_buffer_overflow")
+        self._subscription_draining.add(socket_key)
+        cursor = int(delivered_through_sequence)
+        while True:
+            async with self._lock:
+                pending = self._subscription_buffers.get(socket_key)
+                if pending is None:
+                    self._subscription_draining.discard(socket_key)
+                    return
+                if socket_key in self._subscription_overflowed:
+                    raise SessionLiveBufferOverflow("session_live_buffer_overflow")
+                batch = list(pending)
+                pending.clear()
+                if not batch:
+                    self._subscription_buffers.pop(socket_key, None)
+                    self._subscription_draining.discard(socket_key)
+                    return
+            canonical = [
+                frame
+                for frame in batch
+                if frame.get("schema") == "hive.session_event"
+                and isinstance(frame.get("sequence"), int)
+                and int(frame["sequence"]) > cursor
+            ]
+            passthrough = [frame for frame in batch if frame.get("schema") != "hive.session_event"]
+            canonical.sort(key=lambda frame: int(frame["sequence"]))
+            seen_event_ids_by_sequence: dict[int, str] = {}
+            for frame in canonical:
+                sequence = int(frame["sequence"])
+                event_id = str(frame.get("event_id") or "")
+                if seen_event_ids_by_sequence.get(sequence) == event_id:
+                    continue
+                seen_event_ids_by_sequence[sequence] = event_id
+                await websocket.send_json(frame)
+                cursor = max(cursor, sequence)
+            for frame in passthrough:
+                await websocket.send_json(frame)
 
     async def send_message(self, agent_id: str, message: dict[str, Any]) -> None:
         await self.send_session_message(agent_id, None, message, include_agent_wide=True)
@@ -55,7 +129,14 @@ class WebChatBroker:
                 if session_id is None and not include_agent_wide and sid is not None:
                     continue
                 try:
-                    await ws.send_json(message)
+                    buffer = self._subscription_buffers.get(id(ws))
+                    if buffer is not None:
+                        if len(buffer) >= self._live_buffer_limit:
+                            self._subscription_overflowed.add(id(ws))
+                        else:
+                            buffer.append(dict(message))
+                    else:
+                        await ws.send_json(message)
                 except Exception:
                     dead.append((ws, sid))
             for item in dead:

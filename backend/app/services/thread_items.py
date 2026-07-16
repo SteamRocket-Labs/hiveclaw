@@ -605,7 +605,10 @@ def _user_summary(
     if item_type in {"user_message", "agent_message"}:
         return content
     if item_type == "reasoning":
-        return "Agent 正在整理思路。"
+        # A UI label may name this typed Item, but the platform must not write
+        # prose that impersonates the model's reasoning. Private reasoning
+        # bytes are intentionally absent from the user projection.
+        return ""
     if item_type == "tool_call":
         return f"正在使用：{tool}"
     if item_type == "tool_result":

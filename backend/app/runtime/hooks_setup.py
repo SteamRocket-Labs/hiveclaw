@@ -405,6 +405,7 @@ def _with_t0_runtime_session(ctx: HookContext, session_id: str) -> HookContext:
         metadata=ctx.metadata,
         messages=ctx.messages,
         source=ctx.source,
+        _evidence_db=ctx._evidence_db,
     )
 
 

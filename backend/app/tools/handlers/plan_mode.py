@@ -548,6 +548,7 @@ async def ask_user_question(request: ToolExecutionRequest) -> str:
     }
     hook_result = await emit_hook(
         HookEvent.ELICITATION,
+        evidence_mode="independent",
         agent_id=request.context.agent_id,
         session_id=request.context.session_id,
         prompt=normalized[0]["question"],

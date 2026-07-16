@@ -263,8 +263,10 @@ async def confirm_hr_creation_draft(
     created_task: RuntimeTask | None = None
     if draft.status != "completed" and draft.provisioning_task_id is None:
         from app.services.hr_provisioning_runtime import build_hr_provisioning_runtime_task
+        from app.services.session_writer_epoch import assign_runtime_task_writer_generation
 
         created_task = build_hr_provisioning_runtime_task(draft)
+        await assign_runtime_task_writer_generation(db, created_task)
         db.add(created_task)
         await db.flush()
         draft.provisioning_task_id = created_task.id

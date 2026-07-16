@@ -168,9 +168,17 @@ async def test_web_chat_turn_api_queues_db_only_before_worker_dispatch_accepted_
     async def fake_broadcast(*_args, **_kwargs):
         return None
 
+    async def assign_writer_generation(_db, task):
+        task.writer_generation = 1
+        return 1
+
     monkeypatch.setattr(runtime, "append_session_event", recording_append)
     monkeypatch.setattr(runtime.asyncio, "create_task", recording_create_task)
     monkeypatch.setattr(runtime, "broadcast_web_chat_event", fake_broadcast)
+    monkeypatch.setattr(
+        "app.services.session_writer_epoch.assign_runtime_task_writer_generation",
+        assign_writer_generation,
+    )
     monkeypatch.setattr("app.memory.t0.ledger.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
 
     result = await runtime.start_web_chat_run(
@@ -294,8 +302,16 @@ async def test_web_chat_goal_continuation_queues_before_worker_dispatch_accepted
     async def fake_broadcast(*_args, **_kwargs):
         return None
 
+    async def assign_writer_generation(_db, task):
+        task.writer_generation = 1
+        return 1
+
     monkeypatch.setattr(runtime.asyncio, "create_task", recording_create_task)
     monkeypatch.setattr(runtime, "broadcast_web_chat_event", fake_broadcast)
+    monkeypatch.setattr(
+        "app.services.session_writer_epoch.assign_runtime_task_writer_generation",
+        assign_writer_generation,
+    )
     monkeypatch.setattr("app.memory.t0.ledger.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
 
     result = await runtime.start_web_chat_run(
@@ -446,7 +462,7 @@ async def test_agent_session_continuation_appends_before_midrun_consume_accepted
 
     monkeypatch.setattr(svc, "append_session_event", recording_append)
     monkeypatch.setattr(svc, "_find_active_run", fake_find_active)
-    monkeypatch.setattr(svc, "_queue_saved_mid_run_user_message", fake_queue)
+    monkeypatch.setattr(svc, "_submit_active_session_input", fake_queue)
 
     result = await svc.continue_agent_session_from_mailbox(
         db=_DB(),
@@ -458,7 +474,7 @@ async def test_agent_session_continuation_appends_before_midrun_consume_accepted
     )
 
     assert result["status"] == "queued"
-    assert result["consumer"] == "mid_run_message_drain"
+    assert result["consumer"] == "session_v2_round_input"
     assert order[0] == "append"
     assert "consume" in order
     assert order.index("append") < order.index("consume")

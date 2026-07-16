@@ -859,6 +859,7 @@ async def _persist_delegation_terminal_evidence(
     identity = _execution_identity_to_metadata(request.execution_identity) or {}
     duration_ms = max(0.0, (datetime.now(timezone.utc) - started_at).total_seconds() * 1000.0)
     await persist_invocation_span(
+        db=None,
         tenant_id=request.tenant_id,
         trace_id=trace_id,
         span_id=receipt["span_id"],
@@ -1684,10 +1685,13 @@ async def _delegate_after_cycle_check(
 
             await emit_hook(
                 HookEvent.DELEGATION_START,
+                evidence_mode="independent",
                 agent_id=request.target.id,
                 session_id=child_session_id,
                 source="agent",
                 metadata={
+                    "tenant_id": str(request.tenant_id) if request.tenant_id else None,
+                    "runtime_task_id": request.runtime_task_id,
                     "from_agent": str(request.parent_agent_id) if request.parent_agent_id else None,
                     "to_agent": str(request.target.id),
                     "to_agent_name": request.target.name,
@@ -2129,6 +2133,7 @@ async def _delegate_after_cycle_check(
 
             await emit_hook(
                 HookEvent.DELEGATION_END,
+                evidence_mode="independent",
                 agent_id=request.target.id,
                 session_id=child_session_id,
                 messages=[],

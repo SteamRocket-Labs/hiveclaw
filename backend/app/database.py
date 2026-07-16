@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
+import threading
 import uuid
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextvars import ContextVar, Token
+from datetime import datetime, timezone
+from typing import Any
 
-from sqlalchemy import event, text
+from sqlalchemy import JSON, event, text
+from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Session as SyncSession
 
@@ -16,6 +22,187 @@ from app.runtime.tenant_admission import RuntimeTenantPreconditionError
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+POSTGRES_NUL_ESCAPE = "\\u0000"
+_POSTGRES_TEXT_CONTRACT_STATE: dict[str, Any] = {
+    "repair_events": 0,
+    "repaired_codepoints": 0,
+    "last_repair_at": None,
+    "last_surface": None,
+}
+_POSTGRES_TEXT_CONTRACT_LOCK = threading.Lock()
+
+
+class PostgresTextContractError(ValueError):
+    """Raised when PostgreSQL-compatible repair would destroy evidence."""
+
+
+def repair_postgres_nul(value: Any) -> tuple[Any, int]:
+    """Encode U+0000 without silently dropping model/user/external evidence.
+
+    PostgreSQL rejects U+0000 in Text, JSON, and JSONB. Replacing it with the
+    visible literal ``\\u0000`` is an exact machine-contract repair, not a
+    semantic judgment. Binary values are intentionally untouched because
+    PostgreSQL BYTEA supports zero bytes.
+    """
+    if isinstance(value, str):
+        replacement_count = value.count("\x00")
+        if replacement_count:
+            return value.replace("\x00", POSTGRES_NUL_ESCAPE), replacement_count
+        return value, 0
+    if isinstance(value, dict):
+        repaired: dict[Any, Any] = {}
+        replacement_count = 0
+        for raw_key, raw_value in value.items():
+            repaired_key, key_count = repair_postgres_nul(raw_key)
+            repaired_value, value_count = repair_postgres_nul(raw_value)
+            if repaired_key in repaired:
+                raise PostgresTextContractError(
+                    "PostgreSQL NUL repair would cause a JSON object key collision; evidence was not persisted"
+                )
+            repaired[repaired_key] = repaired_value
+            replacement_count += key_count + value_count
+        return repaired, replacement_count
+    if isinstance(value, list):
+        repaired_items: list[Any] = []
+        replacement_count = 0
+        for item in value:
+            repaired_item, item_count = repair_postgres_nul(item)
+            repaired_items.append(repaired_item)
+            replacement_count += item_count
+        return repaired_items, replacement_count
+    if isinstance(value, tuple):
+        repaired_items: list[Any] = []
+        replacement_count = 0
+        for item in value:
+            repaired_item, item_count = repair_postgres_nul(item)
+            repaired_items.append(repaired_item)
+            replacement_count += item_count
+        return tuple(repaired_items), replacement_count
+    return value, 0
+
+
+def _record_postgres_text_repair(*, replacement_count: int, surface: str) -> None:
+    if replacement_count <= 0:
+        return
+    with _POSTGRES_TEXT_CONTRACT_LOCK:
+        _POSTGRES_TEXT_CONTRACT_STATE["repair_events"] = int(_POSTGRES_TEXT_CONTRACT_STATE["repair_events"]) + 1
+        _POSTGRES_TEXT_CONTRACT_STATE["repaired_codepoints"] = (
+            int(_POSTGRES_TEXT_CONTRACT_STATE["repaired_codepoints"]) + replacement_count
+        )
+        _POSTGRES_TEXT_CONTRACT_STATE["last_repair_at"] = datetime.now(timezone.utc).isoformat()
+        _POSTGRES_TEXT_CONTRACT_STATE["last_surface"] = surface
+    logger.warning(
+        "[DB] repaired %s PostgreSQL-incompatible U+0000 codepoint(s) at %s",
+        replacement_count,
+        surface,
+    )
+
+
+def snapshot_postgres_text_contract() -> dict[str, Any]:
+    with _POSTGRES_TEXT_CONTRACT_LOCK:
+        state = dict(_POSTGRES_TEXT_CONTRACT_STATE)
+    return {
+        "encoding": "literal_unicode_escape",
+        "replacement": POSTGRES_NUL_ESCAPE,
+        **state,
+    }
+
+
+def _postgres_json_serializer(value: Any) -> str:
+    encoded = json.dumps(value)
+    if POSTGRES_NUL_ESCAPE not in encoded:
+        return encoded
+    repaired, replacement_count = repair_postgres_nul(value)
+    _record_postgres_text_repair(replacement_count=replacement_count, surface="json_serializer")
+    return json.dumps(repaired) if replacement_count else encoded
+
+
+def _compiled_bind_types(context: Any) -> tuple[list[Any], dict[str, Any]]:
+    compiled = getattr(context, "compiled", None)
+    if compiled is None:
+        return [], {}
+    binds = getattr(compiled, "binds", {}) or {}
+    positional_types: list[Any] = []
+    for name in getattr(compiled, "positiontup", None) or ():
+        bind = binds.get(name)
+        positional_types.append(getattr(bind, "type", None))
+    named_types = {str(name): getattr(bind, "type", None) for name, bind in binds.items()}
+    return positional_types, named_types
+
+
+def _repair_dbapi_value(value: Any, bind_type: Any) -> tuple[Any, int]:
+    if isinstance(bind_type, JSON) and isinstance(value, str):
+        if POSTGRES_NUL_ESCAPE not in value:
+            return value, 0
+        try:
+            decoded = json.loads(value)
+        except (TypeError, ValueError):
+            return repair_postgres_nul(value)
+        repaired, replacement_count = repair_postgres_nul(decoded)
+        if replacement_count:
+            return json.dumps(repaired), replacement_count
+        return value, 0
+    return repair_postgres_nul(value)
+
+
+def _repair_dbapi_parameter_set(
+    parameters: Any,
+    *,
+    positional_types: list[Any],
+    named_types: dict[str, Any],
+) -> tuple[Any, int]:
+    if isinstance(parameters, tuple):
+        repaired: list[Any] = []
+        replacement_count = 0
+        for index, value in enumerate(parameters):
+            bind_type = positional_types[index] if index < len(positional_types) else None
+            repaired_value, value_count = _repair_dbapi_value(value, bind_type)
+            repaired.append(repaired_value)
+            replacement_count += value_count
+        return tuple(repaired), replacement_count
+    if isinstance(parameters, dict):
+        repaired: dict[Any, Any] = {}
+        replacement_count = 0
+        for key, value in parameters.items():
+            repaired_value, value_count = _repair_dbapi_value(value, named_types.get(str(key)))
+            repaired[key] = repaired_value
+            replacement_count += value_count
+        return repaired, replacement_count
+    return _repair_dbapi_value(parameters, None)
+
+
+@event.listens_for(Engine, "before_cursor_execute", retval=True)
+def _repair_postgres_dbapi_parameters(
+    _connection,
+    _cursor,
+    statement,
+    parameters,
+    context,
+    executemany,
+):
+    """Last authoritative guard for ORM and Core Text/JSON/JSONB writes."""
+    positional_types, named_types = _compiled_bind_types(context)
+    if executemany and isinstance(parameters, list):
+        repaired_batches: list[Any] = []
+        replacement_count = 0
+        for parameter_set in parameters:
+            repaired_set, set_count = _repair_dbapi_parameter_set(
+                parameter_set,
+                positional_types=positional_types,
+                named_types=named_types,
+            )
+            repaired_batches.append(repaired_set)
+            replacement_count += set_count
+        repaired_parameters: Any = repaired_batches
+    else:
+        repaired_parameters, replacement_count = _repair_dbapi_parameter_set(
+            parameters,
+            positional_types=positional_types,
+            named_types=named_types,
+        )
+    _record_postgres_text_repair(replacement_count=replacement_count, surface="dbapi_parameters")
+    return statement, repaired_parameters
 
 
 def _normalize_async_url(url: str) -> str:
@@ -39,6 +226,7 @@ def _engine_pool_kwargs(settings) -> dict[str, int]:
 engine = create_async_engine(
     _normalize_async_url(settings.DATABASE_URL),
     echo=settings.DEBUG,
+    json_serializer=_postgres_json_serializer,
     **_engine_pool_kwargs(settings),
 )
 
@@ -76,7 +264,13 @@ _schema_url = _normalize_async_url(settings.SCHEMA_DATABASE_URL or settings.DATA
 schema_engine = (
     engine
     if _schema_url == _normalize_async_url(settings.DATABASE_URL)
-    else create_async_engine(_schema_url, echo=settings.DEBUG, pool_size=2, max_overflow=2)
+    else create_async_engine(
+        _schema_url,
+        echo=settings.DEBUG,
+        pool_size=2,
+        max_overflow=2,
+        json_serializer=_postgres_json_serializer,
+    )
 )
 
 # Context variable to carry the current tenant_id through the request lifecycle.
@@ -84,6 +278,91 @@ schema_engine = (
 _current_tenant_id: ContextVar[str | None] = ContextVar("_current_tenant_id", default=None)
 _RLS_TENANT_INFO_KEY = "hive_rls_tenant_id"
 _RLS_BYPASS_VALUE = "BYPASS"
+_AFTER_COMMIT_CALLBACKS_KEY = "hive_after_commit_callbacks"
+AfterCommitCallback = Callable[[], Awaitable[None]]
+AfterCommitEntry = tuple[object, str, AfterCommitCallback]
+_after_commit_tasks: set[asyncio.Task[None]] = set()
+
+
+async def _run_after_commit_callback(callback: AfterCommitCallback, description: str) -> None:
+    try:
+        await callback()
+    except Exception as exc:  # noqa: BLE001 - committed truth is recovered by each consumer's sweeper/outbox.
+        logger.warning("[DB] after-commit callback failed (%s): %s", description, exc)
+
+
+def schedule_after_commit(
+    session: AsyncSession,
+    callback: AfterCommitCallback,
+    *,
+    description: str,
+) -> bool:
+    """Run an async side effect only after the caller's outer commit succeeds.
+
+    The callback must carry immutable identifiers, never ORM instances or the
+    live session. Outer rollback discards it. Nested savepoint commits do not
+    dispatch it, which prevents consumers from observing uncommitted rows.
+    """
+    sync_session = getattr(session, "sync_session", None)
+    if sync_session is None:
+        # The durable pending/outbox row remains the recovery authority. This
+        # path also lets structural test doubles exercise transcript assembly
+        # without pretending they implement SQLAlchemy transaction events.
+        logger.debug("[DB] after-commit wake-up unavailable for %s; durable sweeper will recover", description)
+        return False
+    transaction = sync_session.get_nested_transaction() or sync_session.get_transaction()
+    if transaction is None:
+        logger.warning(
+            "[DB] after-commit wake-up has no active transaction for %s; durable sweeper will recover", description
+        )
+        return False
+    callbacks: list[AfterCommitEntry] = sync_session.info.setdefault(_AFTER_COMMIT_CALLBACKS_KEY, [])
+    callbacks.append((transaction, str(description), callback))
+    return True
+
+
+@event.listens_for(SyncSession, "after_commit")
+def _dispatch_after_outer_commit(session: SyncSession) -> None:
+    # SQLAlchemy fires after_commit for RELEASE SAVEPOINT too. At that point
+    # in_nested_transaction() is still true; only the outer commit may publish.
+    if session.in_nested_transaction():
+        return
+    callbacks = session.info.pop(_AFTER_COMMIT_CALLBACKS_KEY, [])
+    if not callbacks:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        logger.error("[DB] cannot dispatch %s after-commit callback(s): no running event loop", len(callbacks))
+        return
+    for _transaction, description, callback in callbacks:
+        task = loop.create_task(
+            _run_after_commit_callback(callback, description),
+            name=f"db-after-commit:{description}"[:100],
+        )
+        _after_commit_tasks.add(task)
+        task.add_done_callback(_after_commit_tasks.discard)
+
+
+@event.listens_for(SyncSession, "after_soft_rollback")
+def _discard_after_outer_rollback(session: SyncSession, previous_transaction) -> None:
+    if previous_transaction.parent is None:
+        session.info.pop(_AFTER_COMMIT_CALLBACKS_KEY, None)
+        return
+
+    callbacks: list[AfterCommitEntry] = session.info.get(_AFTER_COMMIT_CALLBACKS_KEY, [])
+
+    def _belongs_to_rolled_back_savepoint(transaction: object) -> bool:
+        current = transaction
+        while current is not None:
+            if current is previous_transaction:
+                return True
+            current = getattr(current, "parent", None)
+        return False
+
+    session.info[_AFTER_COMMIT_CALLBACKS_KEY] = [
+        entry for entry in callbacks if not _belongs_to_rolled_back_savepoint(entry[0])
+    ]
 
 
 def stamp_new_tenant_owned_rows(session: SyncSession) -> None:

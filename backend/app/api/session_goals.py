@@ -15,12 +15,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.permissions import authorize_session_action
 from app.core.security import get_current_user
 from app.database import get_db
+from app.models.agent import Agent
 from app.models.agent_session_goal import AgentSessionGoal
+from app.models.chat_session import ChatSession
 from app.models.user import User
 from app.services.chat_transcript import append_session_event
 from app.services.goal_continuation_service import continue_session_goal
 from app.services.session_goal_projection import build_session_goal_projection
-from app.services.web_chat_runtime import cancel_web_chat_run, start_web_chat_run
+from app.services.session_live_input import submit_live_cancel_input
+from app.services.web_chat_runtime import start_web_chat_run
 
 router = APIRouter(prefix="/agents/{agent_id}/sessions/{session_id}/goals", tags=["session-goals"])
 
@@ -158,26 +161,24 @@ async def _append_goal_transition_event(
 async def _cancel_last_goal_run_if_active(
     *,
     db: AsyncSession,
-    agent_id: uuid.UUID,
-    session_id: uuid.UUID,
-    user_id: uuid.UUID,
+    agent: Agent,
+    session: ChatSession,
+    user: User,
     goal: AgentSessionGoal,
 ) -> None:
     metadata = goal.metadata_json or {}
     run_id = str(metadata.get("last_continuation_run_id") or metadata.get("last_goal_run_id") or "").strip()
     if not run_id:
         return
-    try:
-        await cancel_web_chat_run(
-            db=db,
-            agent_id=agent_id,
-            session_id=session_id,
-            run_id=run_id,
-            user_id=user_id,
-        )
-    except HTTPException as exc:
-        if exc.status_code != 404:
-            raise
+    await submit_live_cancel_input(
+        db=db,
+        agent=agent,
+        user=user,
+        session=session,
+        run_id=run_id,
+        source="session_goal_transition",
+        idempotency_key=f"goal:{goal.id}:cancel-run:{run_id}",
+    )
 
 
 @router.post("")
@@ -313,9 +314,9 @@ async def transition_goal(
         goal.status = "paused"
         await _cancel_last_goal_run_if_active(
             db=db,
-            agent_id=agent_id,
-            session_id=session_id,
-            user_id=current_user.id,
+            agent=decision.agent,
+            session=decision.session,
+            user=current_user,
             goal=goal,
         )
     elif body.action == "resume":
@@ -335,9 +336,9 @@ async def transition_goal(
             goal.completed_at = datetime.now(timezone.utc)
             await _cancel_last_goal_run_if_active(
                 db=db,
-                agent_id=agent_id,
-                session_id=session_id,
-                user_id=current_user.id,
+                agent=decision.agent,
+                session=decision.session,
+                user=current_user,
                 goal=goal,
             )
 

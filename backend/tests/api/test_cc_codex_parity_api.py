@@ -1594,7 +1594,7 @@ async def test_goals_api_transitions_are_semantic_and_recoverable(
         calls["event"] += 1
 
     monkeypatch.setattr(goals_api, "authorize_session_action", fake_authorize)
-    monkeypatch.setattr(goals_api, "cancel_web_chat_run", fake_cancel)
+    monkeypatch.setattr(goals_api, "submit_live_cancel_input", fake_cancel)
     monkeypatch.setattr(goals_api, "continue_session_goal", fake_continue)
     monkeypatch.setattr(goals_api, "_append_goal_transition_event", fake_event)
 

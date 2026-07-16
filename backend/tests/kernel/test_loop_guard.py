@@ -59,12 +59,24 @@ def test_loop_guard_failure_heuristic_does_not_abort_without_progress_proof() ->
     guard = LoopGuard(repeated_failure_threshold=2)  # warn 2, abort ceil(3)=3
     args = {"q": "x"}
     err = "[Tool execution error] timeout"
-    guard.observe_tool_result("web_search", args, err)
-    warn = guard.observe_tool_result("web_search", args, err)
+    guard.observe_tool_result("web_search", args, err, machine_outcome="failed")
+    warn = guard.observe_tool_result("web_search", args, err, machine_outcome="failed")
     assert warn is not None and warn.severity == "warn"
 
     for _ in range(10):
-        assert guard.observe_tool_result("web_search", args, err) is None
+        assert guard.observe_tool_result("web_search", args, err, machine_outcome="failed") is None
+
+
+def test_loop_guard_does_not_infer_failure_from_benign_tool_result_prose() -> None:
+    from app.kernel.loop_guard import LoopGuard
+
+    guard = LoopGuard(repeated_failure_threshold=2)
+    result = "Postmortem text: the previous timeout failed with an exception, but this query succeeded."
+
+    for _ in range(8):
+        assert guard.observe_tool_result("search_docs", {"q": "failure words"}, result) is None
+
+    assert guard.failed_tool_calls == 0
 
 
 def test_loop_guard_total_tool_heuristic_never_substitutes_for_explicit_round_budget() -> None:
@@ -90,6 +102,7 @@ def test_loop_guard_only_aborts_on_provable_side_effect_free_retry_exhaustion() 
         "web_search",
         args,
         err,
+        machine_outcome="failed",
         side_effect_free=True,
         retry_exhausted=True,
         progress_token="provider-state-v1",
@@ -98,6 +111,7 @@ def test_loop_guard_only_aborts_on_provable_side_effect_free_retry_exhaustion() 
         "web_search",
         args,
         err,
+        machine_outcome="failed",
         side_effect_free=True,
         retry_exhausted=True,
         progress_token="provider-state-v1",
@@ -106,6 +120,7 @@ def test_loop_guard_only_aborts_on_provable_side_effect_free_retry_exhaustion() 
         "web_search",
         args,
         err,
+        machine_outcome="failed",
         side_effect_free=True,
         retry_exhausted=True,
         progress_token="provider-state-v1",
@@ -132,6 +147,7 @@ def test_loop_guard_compares_complete_failure_evidence_before_declaring_identica
             "web_search",
             {"q": "full-evidence"},
             result,
+            machine_outcome="failed",
             side_effect_free=True,
             retry_exhausted=True,
             progress_token="provider-state-v1",
@@ -151,6 +167,7 @@ def test_loop_guard_never_hard_stops_a_side_effecting_tool() -> None:
             "send_email",
             {"to": "owner@example.com"},
             "[Tool execution error] timeout",
+            machine_outcome="failed",
             side_effect_free=False,
             retry_exhausted=True,
             progress_token="same",
@@ -162,8 +179,10 @@ def test_loop_guard_detects_repeated_tool_failures() -> None:
     from app.kernel.loop_guard import LoopGuard
 
     guard = LoopGuard(repeated_failure_threshold=2)
-    guard.observe_tool_result("web_search", {"q": "deploy"}, "[Tool execution error] timeout")
-    decision = guard.observe_tool_result("web_search", {"q": "deploy"}, "[Tool execution error] timeout")
+    guard.observe_tool_result("web_search", {"q": "deploy"}, "[Tool execution error] timeout", machine_outcome="failed")
+    decision = guard.observe_tool_result(
+        "web_search", {"q": "deploy"}, "[Tool execution error] timeout", machine_outcome="failed"
+    )
 
     assert decision is not None
     assert decision.reason == "repeated_tool_failure"
@@ -204,10 +223,10 @@ def test_loop_guard_default_allows_short_retry_burst_for_same_failure() -> None:
 
     for _ in range(3):
         assert guard.observe_tool_call("feishu_approval_query", args) is None
-        assert guard.observe_tool_result("feishu_approval_query", args, result) is None
+        assert guard.observe_tool_result("feishu_approval_query", args, result, machine_outcome="failed") is None
 
     assert guard.observe_tool_call("feishu_approval_query", args) is None
-    decision = guard.observe_tool_result("feishu_approval_query", args, result)
+    decision = guard.observe_tool_result("feishu_approval_query", args, result, machine_outcome="failed")
 
     assert decision is not None
     assert decision.reason == "repeated_tool_failure"

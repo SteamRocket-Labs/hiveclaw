@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+from contextlib import asynccontextmanager
 import json
 from types import SimpleNamespace
 from uuid import uuid4
@@ -7,6 +9,48 @@ from uuid import uuid4
 import pytest
 
 from app.runtime.session import SessionContext
+
+
+@pytest.mark.asyncio
+async def test_independent_span_persistence_is_time_bounded_and_observable(monkeypatch) -> None:
+    import app.database as database
+    from app.services import invocation_trace
+
+    @asynccontextmanager
+    async def fake_tenant_session(_tenant_id):
+        yield object()
+
+    async def blocked_record(*_args, **_kwargs) -> None:
+        await asyncio.Event().wait()
+
+    metrics: list[dict] = []
+    monkeypatch.setattr(database, "tenant_scoped_session", fake_tenant_session)
+    monkeypatch.setattr(invocation_trace, "record_invocation_span", blocked_record)
+    monkeypatch.setattr(invocation_trace, "_record_span_metric", lambda **kwargs: metrics.append(kwargs))
+
+    await asyncio.wait_for(
+        invocation_trace.persist_invocation_span(
+            tenant_id=uuid4(),
+            trace_id="trace-timeout",
+            span_id="span-timeout",
+            parent_span_id=None,
+            parent_trace_id=None,
+            span_type="hook",
+            name="hook.file_changed",
+            status="ok",
+            duration_ms=0.0,
+            agent_id=None,
+            user_id=None,
+            runtime_task_id=None,
+            session_id="session-timeout",
+            request_id=None,
+            metadata={"source": "test"},
+            timeout_seconds=0.01,
+        ),
+        timeout=0.25,
+    )
+
+    assert metrics[-1]["status"] == "persist_timeout"
 
 
 class _FakeSpanDB:

@@ -1081,6 +1081,7 @@ async def execute_tool(
     plan_mode_unattended_available: bool = False,
     emit_runtime_hooks: bool = True,
     trace_metadata_sink: dict[str, Any] | None = None,
+    pre_effect_callback: Callable[[dict[str, Any]], Any] | None = None,
     workspace_override: Path | str | None = None,
 ) -> str | ToolContentEnvelope:
     """Execute a tool call and return the result (str, or a typed content envelope)."""
@@ -1106,6 +1107,7 @@ async def execute_tool(
         plan_mode_unattended_available=plan_mode_unattended_available,
         emit_runtime_hooks=emit_runtime_hooks,
         trace_metadata_sink=trace_metadata_sink,
+        pre_effect_callback=pre_effect_callback,
         workspace_override=workspace_override,
     )
 
@@ -1124,6 +1126,8 @@ async def execute_session_permission_tool(
     origin_channel: str | None = None,
     round_state: dict[str, Any] | None = None,
     t0_refs: tuple[str, ...] = (),
+    pre_effect_callback: Callable[[dict[str, Any]], Any] | None = None,
+    trace_metadata_sink: dict[str, Any] | None = None,
 ) -> str | ToolContentEnvelope:
     """Replay a session-approved tool through the public governed runtime boundary."""
     return await execute_tool(
@@ -1139,6 +1143,8 @@ async def execute_session_permission_tool(
         origin_channel=origin_channel,
         round_state=round_state,
         t0_refs=t0_refs,
+        pre_effect_callback=pre_effect_callback,
+        trace_metadata_sink=trace_metadata_sink,
     )
 
 

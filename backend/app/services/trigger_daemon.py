@@ -2194,6 +2194,7 @@ async def _invoke_agent_for_triggers(
 
             await emit_hook(
                 HookEvent.TRIGGER_END,
+                evidence_mode="independent",
                 agent_id=agent_id,
                 session_id=str(session_id),
                 messages=[],

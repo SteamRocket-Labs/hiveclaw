@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import runpy
 from pathlib import Path
 from uuid import uuid4
 
@@ -24,7 +23,9 @@ def test_approval_continuation_migration_has_reversible_constraint_and_backfill(
     assert "ON CONFLICT ON CONSTRAINT uq_runtime_notification_outbox_delivery DO NOTHING" in source
 
 
-async def test_approval_continuation_constraint_is_installed_in_real_postgres(revision_parent_migrated_pg_url: str) -> None:
+async def test_approval_continuation_constraint_is_installed_in_real_postgres(
+    revision_parent_migrated_pg_url: str,
+) -> None:
     engine = create_async_engine(revision_parent_migrated_pg_url, poolclass=NullPool)
     try:
         async with engine.connect() as connection:
@@ -43,10 +44,12 @@ async def test_approval_continuation_backfills_terminal_legacy_job(owner_session
     from app.models.audit import ApprovalRequest
     from app.models.chat_session import ChatSession
     from app.models.runtime_notification_outbox import RuntimeNotificationOutbox
+    from app.models.runtime_result import RuntimeResultObject
     from app.models.runtime_task import RuntimeTask
+    from app.services.runtime_notification_outbox import RuntimeNotificationOutboxService
+    from app.services.runtime_result_store import decode_runtime_result_payload
     from tests.services.test_approval_execution_runtime import _seed_execution_job
 
-    namespace = runpy.run_path(str(MIGRATION))
     tenant_id, user_id, agent_id, approval_id, task_id = await _seed_execution_job(owner_sessionmaker)
     session_id = uuid4()
     async with owner_sessionmaker() as db:
@@ -80,9 +83,11 @@ async def test_approval_continuation_backfills_terminal_legacy_job(owner_session
             text("DELETE FROM runtime_notification_outbox WHERE source_run_id = :task_id"),
             {"task_id": str(task_id)},
         )
-        await db.execute(text(namespace["_BACKFILL_OUTBOX_SQL"]))
-        await db.execute(text(namespace["_BACKFILL_RECEIPT_SQL"]))
         await db.commit()
+
+    repaired = await RuntimeNotificationOutboxService(session_factory=owner_sessionmaker).reconcile_terminal_tasks_once(
+        limit=100
+    )
 
     async with owner_sessionmaker() as db:
         row = (
@@ -91,10 +96,16 @@ async def test_approval_continuation_backfills_terminal_legacy_job(owner_session
             )
         ).scalar_one()
         approval = await db.get(ApprovalRequest, approval_id)
+        result_object = await db.get(RuntimeResultObject, row.result_object_id)
+    assert repaired >= 1
     assert row.source_kind == "approval"
     assert row.parent_session_id == session_id
     assert row.metadata_json["approval_id"] == str(approval_id)
-    assert row.metadata_json["reconciled_from_legacy_approval_execution"] is True
+    assert row.metadata_json["reconciled_from_terminal_runtime_task"] is True
+    assert "model_context" not in row.metadata_json
+    assert result_object is not None
+    result_payload = decode_runtime_result_payload(result_object.payload_bytes)
+    assert "legacy approved result" in result_payload["metadata"]["model_context"]
     assert approval is not None
     assert approval.execution_receipt["continuation_status"] == "queued"
     assert approval.execution_receipt["continuation_outbox_id"] == str(row.id)

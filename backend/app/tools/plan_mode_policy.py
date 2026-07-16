@@ -27,6 +27,7 @@ PLAN_MODE_READONLY_TOOLS: frozenset[str] = frozenset(
         "list_files",
         "read_file",
         "read_context_resource",
+        "read_runtime_result",
         "glob_search",
         "grep_search",
         "fs_list",

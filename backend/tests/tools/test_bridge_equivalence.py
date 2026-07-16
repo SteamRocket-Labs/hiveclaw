@@ -117,6 +117,7 @@ def test_combined_openai_tools_matches_registered_builtin_surface():
         "read_emails",
         "read_file",
         "read_context_resource",
+        "read_runtime_result",
         "read_personal_kb",
         "read_ledger",
         "record_finding",

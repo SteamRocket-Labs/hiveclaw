@@ -275,7 +275,7 @@ async def claim_and_dispatch_once(*, worker_id: str | None = None) -> list[str]:
 async def drain_runtime_notification_outbox_once(*, worker_id: str) -> dict[str, int]:
     service = RuntimeNotificationOutboxService()
     reconciled = await service.reconcile_terminal_tasks_once(limit=100)
-    counts = await service.drain_once(worker_id=worker_id, limit=20)
+    counts = await service.drain_once(worker_id=worker_id, limit=100)
     counts["reconciled"] = reconciled
     _STATE["outbox_reconciled"] = int(_STATE.get("outbox_reconciled") or 0) + reconciled
     for key in ("claimed", "delivered", "retried", "deferred", "dead_lettered"):

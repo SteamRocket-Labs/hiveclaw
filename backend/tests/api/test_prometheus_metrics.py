@@ -17,10 +17,16 @@ def test_prometheus_metrics_endpoint_returns_text_plain():
         record_runtime_budget_root_failure,
         reset_runtime_budget_failover_metrics,
     )
+    from app.services.runtime_result_metrics import (
+        record_runtime_result_observed,
+        record_runtime_result_page,
+        reset_runtime_result_metrics,
+    )
 
     reset_all()
     reset_office_preview_metrics()
     reset_runtime_budget_failover_metrics()
+    reset_runtime_result_metrics()
     record_extract_task_failure("web", "RuntimeError")
     record_office_preview(
         source_kind="artifact_snapshot",
@@ -33,6 +39,12 @@ def test_prometheus_metrics_endpoint_returns_text_plain():
         error_code=None,
     )
     record_runtime_budget_root_failure(source="web", decision="interactive_degraded")
+    record_runtime_result_observed(source_kind="subagent", size_bytes=2048)
+    record_runtime_result_page(
+        delivery_mode="parent_continuation",
+        outcome="delivered",
+        item_count=25,
+    )
 
     app = FastAPI()
     app.include_router(router)
@@ -48,8 +60,15 @@ def test_prometheus_metrics_endpoint_returns_text_plain():
     assert 'office_preview_cache_hits_total{source_kind="artifact_snapshot"} 1' in response.text
     assert 'office_preview_render_seconds_count{format="docx",preview_mode="html"} 1' in response.text
     assert 'office_preview_output_bytes_sum{format="docx",preview_mode="html"} 1024' in response.text
+    assert 'runtime_budget_root_failures_total{decision="interactive_degraded",source="interactive"} 1' in response.text
+    assert 'runtime_results_observed_total{source_kind="subagent"} 1' in response.text
+    assert 'runtime_result_bytes_observed_total{source_kind="subagent"} 2048' in response.text
     assert (
-        'runtime_budget_root_failures_total{decision="interactive_degraded",source="interactive"} 1'
+        'runtime_result_integration_pages_total{delivery_mode="parent_continuation",outcome="delivered"} 1'
+        in response.text
+    )
+    assert (
+        'runtime_result_integration_items_total{delivery_mode="parent_continuation",outcome="delivered"} 25'
         in response.text
     )
 

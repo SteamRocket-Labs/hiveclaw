@@ -169,9 +169,11 @@ async def test_terminal_approval_atomically_enqueues_one_origin_continuation(
     from app.models.audit import ApprovalRequest
     from app.models.chat_session import ChatSession
     from app.models.runtime_notification_outbox import RuntimeNotificationOutbox
+    from app.models.runtime_result import RuntimeResultObject
     from app.models.runtime_task import RuntimeTask
     from app.services.approval_execution_runtime import execute_claimed_approval_execution
     from app.services.approval_ticket import complete_approval_ticket, consume_approval_ticket
+    from app.services.runtime_result_store import decode_runtime_result_payload
 
     tenant_id, user_id, agent_id, approval_id, task_id = await _seed_execution_job(owner_sessionmaker)
     session_id = uuid4()
@@ -244,12 +246,16 @@ async def test_terminal_approval_atomically_enqueues_one_origin_continuation(
                 )
             )
         ).scalar_one()
+        result_object = await db.get(RuntimeResultObject, rows[0].result_object_id)
+        assert result_object is not None
+        result_payload = decode_runtime_result_payload(result_object.payload_bytes)
     assert count == 1
     assert len(rows) == 1
     assert rows[0].parent_session_id == session_id
     assert rows[0].delivery_mode == "parent_continuation"
     assert rows[0].metadata_json["approval_id"] == str(approval_id)
-    assert "wrote workspace/report.md" in rows[0].metadata_json["model_context"]
+    assert "model_context" not in rows[0].metadata_json
+    assert "wrote workspace/report.md" in result_payload["metadata"]["model_context"]
     assert approval is not None
     assert approval.execution_receipt["continuation_status"] == "queued"
     assert approval.execution_receipt["continuation_outbox_id"] == str(rows[0].id)

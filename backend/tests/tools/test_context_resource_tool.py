@@ -98,11 +98,20 @@ def test_context_resource_tool_is_always_available_but_excludes_personal_kb():
     schema = next(
         tool["function"] for tool in collected.openai_tools if tool["function"]["name"] == "read_context_resource"
     )
+    result_schema = next(
+        tool["function"] for tool in collected.openai_tools if tool["function"]["name"] == "read_runtime_result"
+    )
 
     assert "read_context_resource" in CORE_TOOL_NAMES
     assert "read_context_resource" in _CAPABILITY_GATE_EXEMPT_TOOLS
     assert "read_context_resource" in _STATIC_SAFE_TOOLS
     assert "read_context_resource" in PLAN_MODE_READONLY_TOOLS
+    assert "read_runtime_result" in CORE_TOOL_NAMES
+    assert "read_runtime_result" in _CAPABILITY_GATE_EXEMPT_TOOLS
+    assert "read_runtime_result" in _STATIC_SAFE_TOOLS
+    assert "read_runtime_result" in PLAN_MODE_READONLY_TOOLS
+    assert result_schema["parameters"]["required"] == ["result_ref"]
+    assert "callers cannot select another principal" in result_schema["description"]
     ref_schema = schema["parameters"]["properties"]["ref"]
     static_refs = ref_schema["anyOf"][0]["enum"]
     assert static_refs == [
@@ -209,7 +218,11 @@ async def test_context_resource_tool_rejects_tampered_recovery_snapshot(monkeypa
     from types import SimpleNamespace
 
     from app.runtime.ccplus_contracts import permission_profile_snapshot_hash
-    from app.runtime.recovery_manifest_store import RecoveryAuthorityFrame, load_recovery_manifest, persist_recovery_manifest
+    from app.runtime.recovery_manifest_store import (
+        RecoveryAuthorityFrame,
+        load_recovery_manifest,
+        persist_recovery_manifest,
+    )
     from app.runtime.session import SessionContext
     from app.tools.handlers.context_resources import read_context_resource
     from app.tools.runtime import ToolExecutionContext, ToolExecutionRequest

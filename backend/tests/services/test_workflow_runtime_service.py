@@ -712,6 +712,8 @@ async def test_completed_workflow_wakes_parent_session_with_task_notification(
     from app.models.agent import Agent
     from app.models.chat_session import ChatSession
     from app.models.runtime_notification_outbox import RuntimeNotificationOutbox
+    from app.models.runtime_result import RuntimeResultObject
+    from app.services.runtime_result_store import decode_runtime_result_payload
 
     parent_session_id = uuid.uuid4()
     async with tenant_scoped_session(str(tenant_id), session_factory=owner_sessionmaker) as session:
@@ -751,15 +753,20 @@ async def test_completed_workflow_wakes_parent_session_with_task_notification(
             .scalars()
             .all()
         )
+        result_object = await session.get(RuntimeResultObject, rows[0].result_object_id)
+        assert result_object is not None
+        result_payload = decode_runtime_result_payload(result_object.payload_bytes)
     assert len(rows) == 1
     notification = rows[0]
     assert notification.status == "pending"
     assert notification.parent_session_id == parent_session_id
     assert notification.task_type == "workflow"
     assert notification.terminal_status == "completed"
-    assert "Workflow run" in notification.summary
-    assert "scan" in notification.summary
-    assert "report" in notification.summary
+    assert "Workflow run" in result_payload["summary"]
+    assert "scan" in result_payload["summary"]
+    assert "report" in result_payload["summary"]
+    assert notification.result_ref.endswith(f"/{notification.result_sha256}")
+    assert "model_context" not in notification.metadata_json
 
 
 # ── §A-6: a headless run (no parent session) becomes session-visible ──────

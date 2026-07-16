@@ -1762,7 +1762,15 @@ async def test_agent_teams_api_lists_enters_and_requests_lead_synthesis(monkeypa
         assert requested_agent_id == agent_id
         return SimpleNamespace(id=agent_id, tenant_id=tenant_id), "manage"
 
+    notification_id = uuid4()
+    notifications = []
+
+    async def fake_enqueue(_db, notification):
+        notifications.append(notification)
+        return notification_id
+
     monkeypatch.setattr(teams_api, "check_agent_access", fake_access)
+    monkeypatch.setattr(teams_api, "enqueue_completion_notification", fake_enqueue)
 
     listed = await teams_api.list_agent_teams(
         agent_id=agent_id,
@@ -1796,6 +1804,10 @@ async def test_agent_teams_api_lists_enters_and_requests_lead_synthesis(monkeypa
     assert closed["consolidation_plan"]["merge_mode"] == "summary_with_t0_refs"
     assert closed["consolidation_plan"]["member_summaries"][0]["t0_refs"] == ["t0://critic/1"]
     assert team.metadata_json["close_summary_ref"] == f"agent_team_close:{team_id}:1"
+    assert team.metadata_json["close_notification_id"] == str(notification_id)
+    assert len(notifications) == 1
+    assert notifications[0].source_kind == "agent_team"
+    assert notifications[0].parent_session_id == parent_session_id
 
 
 @pytest.mark.asyncio

@@ -326,6 +326,212 @@ def build_task_notification_runtime_context(
     return "\n".join(lines)
 
 
+def build_result_integration_runtime_context(manifest: dict[str, Any]) -> str:
+    """Render one ref-only durable fan-in page for the parent model.
+
+    The platform reports ordering, terminal states, hashes and coverage.  It
+    does not summarize child meaning.  The parent model can load any complete
+    result through the governed reader when it needs the body.
+    """
+
+    coverage = dict(manifest.get("coverage") or {})
+    terminal = int(coverage.get("terminal") or 0)
+    expected = int(coverage.get("expected") or 0)
+    lines = [
+        "Runtime result integration page.",
+        "This is internal runtime context, not a user message or a platform-authored conclusion.",
+        f"Integration epoch: {int(manifest.get('integration_epoch') or 0)}",
+        f"Root coverage: terminal={terminal}/expected={expected}",
+        "Complete child result bytes are stored outside the prompt. Use read_runtime_result with a result_ref "
+        "when the corresponding evidence is needed; do not infer an unread result from its status or size.",
+        "Result references in mailbox order:",
+    ]
+    for item in list(manifest.get("items") or []):
+        if not isinstance(item, dict):
+            continue
+        child_name = str(item.get("child_agent_name") or item.get("task_type") or "child")
+        lines.append(
+            "- "
+            f"seq={int(item.get('mailbox_sequence') or 0)} "
+            f"child={child_name} status={str(item.get('terminal_status') or 'unknown')} "
+            f"bytes={int(item.get('result_size_bytes') or 0)} "
+            f"artifacts={int(item.get('artifact_count') or 0)} "
+            f"ref={str(item.get('result_ref') or '')}"
+        )
+    lines.append(
+        "Integrate only after reading the result bodies needed for the task. Partial, failed, cancelled and late "
+        "results remain separate typed facts; decide their meaning yourself."
+    )
+    return "\n".join(lines)
+
+
+def _build_result_runtime_action_payload(item: dict[str, Any]) -> dict[str, Any] | None:
+    task_type = _text(item.get("task_type")) or "background_task"
+    source_kind = _text(item.get("source_kind")) or "runtime_result"
+    if _task_notification_has_dedicated_projection(task_type, source_kind):
+        return None
+    status = _text(item.get("terminal_status")).lower() or "completed"
+    source_run_id = _text(item.get("source_run_id"))
+    child_name = _text(item.get("child_agent_name")) or task_type
+    size_bytes = max(0, int(item.get("result_size_bytes") or 0))
+    payload: dict[str, Any] = {
+        "type": _TASK_RUNTIME_ACTION_STATUS_MAP.get(status, "runtime_action_progress"),
+        "status": status,
+        "message": f"{child_name} {status}: durable result ready ({size_bytes} bytes).",
+        "action_kind": _task_notification_runtime_action_kind(task_type, source_kind),
+        "notification_source": source_kind,
+        "runtime_task_id": source_run_id or None,
+        "task_id": source_run_id or None,
+        "task_type": task_type,
+        "child_session_id": _text(item.get("child_session_id")) or None,
+        "target_agent_name": _text(item.get("child_agent_name")) or None,
+        "result_ref": _text(item.get("result_ref")),
+        "result_sha256": _text(item.get("result_sha256")),
+        "result_size_bytes": size_bytes,
+        "artifact_count": max(0, int(item.get("artifact_count") or 0)),
+        "mailbox_sequence": int(item.get("mailbox_sequence") or 0),
+    }
+    if payload["action_kind"] == "workflow":
+        payload["workflow_run_id"] = source_run_id or None
+    return payload
+
+
+def build_result_integration_message(manifest: dict[str, Any]) -> str:
+    """Build a replayable ref-only envelope without copying result bodies."""
+
+    item_rows: list[str] = []
+    for item in list(manifest.get("items") or []):
+        if not isinstance(item, dict):
+            continue
+        item_rows.append(
+            "<result-ref>"
+            + _task_notification_xml_field("mailbox-sequence", item.get("mailbox_sequence"))
+            + _task_notification_xml_field("task-type", item.get("task_type"))
+            + _task_notification_xml_field("status", item.get("terminal_status"))
+            + _task_notification_xml_field("sha256", item.get("result_sha256"))
+            + _task_notification_xml_field("bytes", item.get("result_size_bytes"))
+            + _task_notification_xml_field("ref", item.get("result_ref"))
+            + "</result-ref>"
+        )
+    return (
+        "<runtime-result-integration>\n"
+        + _task_notification_xml_field("integration-epoch", manifest.get("integration_epoch"))
+        + _task_notification_xml_field("root-runtime-task-id", manifest.get("root_runtime_task_id"))
+        + "\n"
+        + "\n".join(item_rows)
+        + "\n</runtime-result-integration>"
+    )
+
+
+async def continue_parent_session_with_result_page(
+    *,
+    db: AsyncSession,
+    agent: Agent,
+    user: User,
+    session: ChatSession,
+    integration_page_id: uuid.UUID,
+    manifest: dict[str, Any],
+    inherited_budget_run_id: uuid.UUID | None = None,
+    resume_parent: bool = True,
+) -> dict[str, Any]:
+    """Project one durable result page and wake the parent at most once."""
+
+    items = [item for item in list(manifest.get("items") or []) if isinstance(item, dict)]
+    coverage = dict(manifest.get("coverage") or {})
+    display_content = (
+        f"{len(items)} runtime result(s) ready in integration epoch "
+        f"{int(manifest.get('integration_epoch') or 0)} "
+        f"(terminal={int(coverage.get('terminal') or 0)}/expected={int(coverage.get('expected') or 0)})."
+    )
+    envelope = build_result_integration_message(manifest)
+    runtime_context = build_result_integration_runtime_context(manifest)
+    metadata = {
+        "runtime_result_integration_page": True,
+        "integration_page_id": str(integration_page_id),
+        "integration_epoch": int(manifest.get("integration_epoch") or 0),
+        "manifest_sha256": str(manifest.get("manifest_sha256") or ""),
+        "root_runtime_task_id": manifest.get("root_runtime_task_id"),
+        "coverage": coverage,
+        "result_manifest": manifest,
+        "result_refs": [str(item.get("result_ref") or "") for item in items],
+        "mailbox_sequence_start": manifest.get("mailbox_sequence_start"),
+        "mailbox_sequence_end": manifest.get("mailbox_sequence_end"),
+        "item_count": len(items),
+        "task_notification": True,
+        "task_type": "runtime_result_integration",
+        "status": "ready",
+        "message": display_content,
+        "display_content": display_content,
+        "causation_id": str(integration_page_id),
+        **({"budget_run_id": str(inherited_budget_run_id)} if inherited_budget_run_id is not None else {}),
+    }
+    for item in items:
+        runtime_action_payload = _build_result_runtime_action_payload(item)
+        if runtime_action_payload is None:
+            continue
+        runtime_event = build_session_native_event(runtime_action_payload)
+        await _append_mailbox_event(
+            db=db,
+            agent=agent,
+            user=user,
+            session=session,
+            event_type=str(runtime_action_payload["type"]),
+            message=str(runtime_action_payload["message"]),
+            parent_session_id=getattr(session, "parent_session_id", None) or getattr(session, "id", None),
+            metadata={
+                **runtime_action_payload,
+                "runtime_action_from_result_integration": True,
+                "integration_page_id": str(integration_page_id),
+                "integration_epoch": int(manifest.get("integration_epoch") or 0),
+                "causation_id": _text(item.get("outbox_id")) or str(integration_page_id),
+            },
+            role="system",
+            parts=[runtime_event["part"]] if isinstance(runtime_event.get("part"), dict) else None,
+            materialize_chat_message=False,
+            source="runtime_result_integration",
+        )
+    if not resume_parent:
+        await _append_mailbox_event(
+            db=db,
+            agent=agent,
+            user=user,
+            session=session,
+            event_type="agent_task_notification",
+            message=display_content,
+            parent_session_id=getattr(session, "parent_session_id", None) or getattr(session, "id", None),
+            metadata={**metadata, "consumer": "session_projection"},
+            role="system",
+            materialize_chat_message=False,
+            source="runtime_result_integration",
+        )
+        await db.commit()
+        return {
+            "ok": True,
+            "status": "projected",
+            "consumer": "session_projection",
+            "integration_page_id": str(integration_page_id),
+        }
+    return await continue_agent_session_from_mailbox(
+        db=db,
+        agent=agent,
+        user=user,
+        session=session,
+        message=envelope,
+        parent_session_id=getattr(session, "parent_session_id", None) or getattr(session, "id", None),
+        display_content=display_content,
+        event_type="agent_task_notification",
+        mailbox_kind="runtime_result_integration",
+        materialize_chat_message=False,
+        source_channel="runtime_result_integration",
+        extra_metadata=metadata,
+        event_content=display_content,
+        llm_content=runtime_context,
+        mailbox_role="system",
+        model_message_role="system",
+        budget_admission_status_override=("approved" if inherited_budget_run_id is not None else None),
+    )
+
+
 async def continue_agent_session_from_mailbox(
     *,
     db: AsyncSession,

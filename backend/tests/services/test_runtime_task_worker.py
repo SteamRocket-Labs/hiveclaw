@@ -400,7 +400,7 @@ async def test_runtime_worker_drains_completion_outbox_and_records_counts(monkey
 
     result = await worker.drain_runtime_notification_outbox_once(worker_id="runtime-worker")
 
-    assert captured == {"reconcile_limit": 100, "worker_id": "runtime-worker", "limit": 20}
+    assert captured == {"reconcile_limit": 100, "worker_id": "runtime-worker", "limit": 100}
     assert result["claimed"] == 3
     assert result["reconciled"] == 4
     assert worker._STATE["outbox_delivered"] == before_delivered + 2

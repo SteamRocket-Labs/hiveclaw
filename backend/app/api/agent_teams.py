@@ -797,6 +797,7 @@ async def close_agent_team(
             terminal_status="completed",
             task_type="agent_team_close",
             summary=f"Agent Team '{team.name}' collected {len(member_outputs)} member outputs for lead synthesis.",
+            root_runtime_task_id=team_metadata.get("root_runtime_task_id"),
             delivery_mode="parent_continuation",
             artifacts=artifacts,
             metadata={

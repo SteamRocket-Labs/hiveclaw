@@ -108,9 +108,26 @@ def _project_head_to_session_v2_parent(container, *, database: str) -> None:
 
     revision = _session_v2_revision_module()
     statements = [
+        # Post-Group-4 durable result/fan-in head artifacts. Reconstruct the
+        # legacy outbox payload shape before replaying the ordinary migration.
+        "DROP TABLE IF EXISTS runtime_result_integration_pages CASCADE",
+        "DROP TABLE IF EXISTS runtime_result_mailbox_cursors CASCADE",
+        "DROP TABLE IF EXISTS runtime_result_objects CASCADE",
+        "ALTER TABLE runtime_notification_outbox DROP COLUMN IF EXISTS integration_page_id CASCADE",
+        "ALTER TABLE runtime_notification_outbox DROP COLUMN IF EXISTS lease_expires_at CASCADE",
+        "ALTER TABLE runtime_notification_outbox DROP COLUMN IF EXISTS claim_token CASCADE",
+        "ALTER TABLE runtime_notification_outbox DROP COLUMN IF EXISTS mailbox_sequence CASCADE",
+        "ALTER TABLE runtime_notification_outbox DROP COLUMN IF EXISTS artifact_count CASCADE",
+        "ALTER TABLE runtime_notification_outbox DROP COLUMN IF EXISTS result_size_bytes CASCADE",
+        "ALTER TABLE runtime_notification_outbox DROP COLUMN IF EXISTS result_sha256 CASCADE",
+        "ALTER TABLE runtime_notification_outbox DROP COLUMN IF EXISTS result_ref CASCADE",
+        "ALTER TABLE runtime_notification_outbox DROP COLUMN IF EXISTS result_object_id CASCADE",
+        "ALTER TABLE runtime_notification_outbox DROP COLUMN IF EXISTS root_runtime_task_id CASCADE",
+        "ALTER TABLE runtime_notification_outbox ADD COLUMN IF NOT EXISTS summary TEXT NOT NULL DEFAULT 'legacy result'",
+        "ALTER TABLE runtime_notification_outbox ADD COLUMN IF NOT EXISTS artifacts_json JSONB NOT NULL DEFAULT '[]'::jsonb",
         # Post-Session-V2 Group 3 head artifact. The release fixture projects
         # back through Session V2 and must not leave the newest table behind
-        # before the ordinary upgrade replays runtime_root_ledger_0716.
+        # before the ordinary upgrade replays the current closure head.
         "DROP TABLE IF EXISTS runtime_root_items CASCADE",
         "DROP TRIGGER IF EXISTS trg_session_writer_epoch ON runtime_tasks",
         "DROP TRIGGER IF EXISTS trg_session_event_v2_contract ON chat_transcript_events",

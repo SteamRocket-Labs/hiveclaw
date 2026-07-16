@@ -12,6 +12,7 @@ from app.models.agent_team import AgentTeam, AgentTeamEvent
 from app.models.chat_session import ChatSession
 from app.models.chat_transcript_event import ChatTranscriptEvent
 from app.models.runtime_notification_outbox import RuntimeNotificationOutbox
+from app.models.runtime_result import RuntimeResultIntegrationPage, RuntimeResultMailboxCursor, RuntimeResultObject
 from app.models.runtime_task import RuntimeTask
 from app.models.tenant import Tenant
 from app.models.user import User
@@ -20,6 +21,8 @@ from app.services.runtime_notification_outbox import (
     RuntimeNotificationOutboxService,
     enqueue_completion_notification,
 )
+from app.services.runtime_result_store import decode_runtime_result_payload
+from app.services.runtime_result_metrics import render_runtime_result_prometheus, reset_runtime_result_metrics
 
 
 async def _seed_parent_session(owner_sessionmaker):
@@ -73,6 +76,9 @@ async def _seed_parent_session(owner_sessionmaker):
 async def _clear_outbox(owner_sessionmaker) -> None:
     async with owner_sessionmaker() as db:
         await db.execute(delete(RuntimeNotificationOutbox))
+        await db.execute(delete(RuntimeResultIntegrationPage))
+        await db.execute(delete(RuntimeResultMailboxCursor))
+        await db.execute(delete(RuntimeResultObject))
         await db.commit()
 
 
@@ -119,6 +125,78 @@ async def test_enqueue_is_deterministic_and_unique(owner_sessionmaker):
 
     assert first == second
     assert count == 1
+
+
+@pytest.mark.usefixtures("migrated_pg_url")
+async def test_same_source_payload_can_be_delivered_to_two_parent_mailboxes(owner_sessionmaker):
+    await _clear_outbox(owner_sessionmaker)
+    tenant_id, user_id, agent_id, first_session_id = await _seed_parent_session(owner_sessionmaker)
+    second_session_id = uuid.uuid4()
+    async with tenant_scoped_session(tenant_id, session_factory=owner_sessionmaker) as db:
+        db.add(
+            ChatSession(
+                id=second_session_id,
+                tenant_id=tenant_id,
+                agent_id=agent_id,
+                user_id=user_id,
+                title="Second Parent Session",
+                source_channel="web",
+                session_kind="human_chat",
+                actor_type="user",
+                runtime_source="web_chat",
+                visibility_scope="direct_user",
+                listed_surface="chat",
+            )
+        )
+        await db.commit()
+
+    async with tenant_scoped_session(tenant_id, session_factory=owner_sessionmaker) as db:
+        first_id = await enqueue_completion_notification(
+            db,
+            _notification(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                agent_id=agent_id,
+                session_id=first_session_id,
+                source_run_id="shared-source-result",
+            ),
+        )
+        second_id = await enqueue_completion_notification(
+            db,
+            _notification(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                agent_id=agent_id,
+                session_id=second_session_id,
+                source_run_id="shared-source-result",
+            ),
+        )
+        await db.commit()
+
+    async with owner_sessionmaker() as db:
+        rows = list(
+            (
+                await db.execute(
+                    select(RuntimeNotificationOutbox)
+                    .where(RuntimeNotificationOutbox.id.in_((first_id, second_id)))
+                    .order_by(RuntimeNotificationOutbox.parent_session_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        result_count = (
+            await db.execute(
+                select(func.count())
+                .select_from(RuntimeResultObject)
+                .where(RuntimeResultObject.source_run_id == "shared-source-result")
+            )
+        ).scalar_one()
+
+    assert len(rows) == 2
+    assert rows[0].result_object_id == rows[1].result_object_id
+    assert rows[0].result_ref == rows[1].result_ref
+    assert result_count == 1
 
 
 @pytest.mark.usefixtures("migrated_pg_url")
@@ -174,10 +252,93 @@ async def test_authoritative_enqueue_upgrades_reconciled_payload_by_rank(owner_s
         stored = (
             await db.execute(select(RuntimeNotificationOutbox).where(RuntimeNotificationOutbox.id == outbox_id))
         ).scalar_one()
-    assert stored.summary == "rich result"
+        result_object = await db.get(RuntimeResultObject, stored.result_object_id)
+        result_count = (
+            await db.execute(
+                select(func.count())
+                .select_from(RuntimeResultObject)
+                .where(
+                    RuntimeResultObject.tenant_id == tenant_id,
+                    RuntimeResultObject.source_kind == "a2a_delegation",
+                    RuntimeResultObject.source_run_id == "ranked-run",
+                )
+            )
+        ).scalar_one()
+    assert result_object is not None
+    payload = decode_runtime_result_payload(result_object.payload_bytes)
+    assert payload["summary"] == "rich result"
     assert stored.payload_rank == 100
-    assert stored.artifacts_json == [{"path": "workspace/report.md"}]
-    assert stored.metadata_json == {"artifact_contract": "fulfilled"}
+    assert payload["artifacts"] == [{"path": "workspace/report.md"}]
+    assert payload["metadata"] == {"artifact_contract": "fulfilled"}
+    assert stored.artifact_count == 1
+    assert stored.metadata_json == {}
+    assert result_count == 2
+
+
+@pytest.mark.usefixtures("migrated_pg_url")
+async def test_rejected_lower_rank_payload_cannot_overwrite_runtime_task_result_ref(owner_sessionmaker):
+    await _clear_outbox(owner_sessionmaker)
+    tenant_id, user_id, agent_id, session_id = await _seed_parent_session(owner_sessionmaker)
+    task_id = uuid.uuid4()
+    async with tenant_scoped_session(tenant_id, session_factory=owner_sessionmaker) as db:
+        db.add(
+            RuntimeTask(
+                id=task_id,
+                tenant_id=tenant_id,
+                task_type="subagent",
+                status="completed",
+                parent_agent_id=agent_id,
+                parent_session_id=str(session_id),
+                root_user_id=user_id,
+                result_summary="authoritative result",
+            )
+        )
+        await db.flush()
+        base = dict(
+            tenant_id=tenant_id,
+            source_kind="subagent",
+            source_run_id=str(task_id),
+            parent_session_id=session_id,
+            parent_agent_id=agent_id,
+            parent_user_id=user_id,
+            terminal_status="completed",
+            task_type="subagent",
+            delivery_mode="parent_continuation",
+        )
+        outbox_id = await enqueue_completion_notification(
+            db,
+            CompletionNotification(
+                **base,
+                summary="authoritative result",
+                metadata={"trace_id": "authoritative"},
+                payload_rank=100,
+            ),
+        )
+        await enqueue_completion_notification(
+            db,
+            CompletionNotification(
+                **base,
+                summary="late generic result",
+                metadata={"trace_id": "late-generic"},
+                payload_rank=10,
+            ),
+        )
+        await db.commit()
+
+    async with owner_sessionmaker() as db:
+        row = await db.get(RuntimeNotificationOutbox, outbox_id)
+        task = await db.get(RuntimeTask, task_id)
+        assert row is not None and task is not None
+        result_object = await db.get(RuntimeResultObject, row.result_object_id)
+        assert result_object is not None
+        payload = decode_runtime_result_payload(result_object.payload_bytes)
+
+    assert payload["summary"] == "authoritative result"
+    assert row.metadata_json == {"trace_id": "authoritative"}
+    assert task.metadata_json["runtime_result_ref"] == row.result_ref
+    assert task.metadata_json["runtime_result_sha256"] == row.result_sha256
+    assert row.result_ref in task.result_summary
+    assert "late generic result" not in task.result_summary
 
 
 @pytest.mark.usefixtures("migrated_pg_url")
@@ -390,7 +551,7 @@ async def test_team_close_waits_for_idle_parent_before_lead_synthesis(owner_sess
 
     monkeypatch.setattr("app.services.web_chat_runtime.get_active_web_chat_run", active_run)
     monkeypatch.setattr(
-        "app.services.agent_session_continuation.continue_parent_session_with_task_notification",
+        "app.services.agent_session_continuation.continue_parent_session_with_result_page",
         unexpected_continuation,
     )
     service = RuntimeNotificationOutboxService(
@@ -413,6 +574,7 @@ async def test_team_close_waits_for_idle_parent_before_lead_synthesis(owner_sess
 
 @pytest.mark.usefixtures("migrated_pg_url")
 async def test_expired_processing_lease_is_reclaimed(owner_sessionmaker):
+    reset_runtime_result_metrics()
     await _clear_outbox(owner_sessionmaker)
     tenant_id, user_id, agent_id, session_id = await _seed_parent_session(owner_sessionmaker)
     notification = _notification(
@@ -435,6 +597,62 @@ async def test_expired_processing_lease_is_reclaimed(owner_sessionmaker):
     assert before_expiry == []
     assert [item.id for item in reclaimed] == [outbox_id]
     assert reclaimed[0].attempt_count == 2
+    metrics = render_runtime_result_prometheus()
+    assert 'runtime_results_observed_total{source_kind="subagent"} 1' in metrics
+
+
+@pytest.mark.usefixtures("migrated_pg_url")
+async def test_prepared_page_retry_waits_until_row_available_at(owner_sessionmaker):
+    reset_runtime_result_metrics()
+    await _clear_outbox(owner_sessionmaker)
+    tenant_id, user_id, agent_id, session_id = await _seed_parent_session(owner_sessionmaker)
+    async with tenant_scoped_session(tenant_id, session_factory=owner_sessionmaker) as db:
+        await enqueue_completion_notification(
+            db,
+            _notification(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                agent_id=agent_id,
+                session_id=session_id,
+                source_run_id="page-retry-delay",
+            ),
+        )
+        await db.commit()
+
+    service = RuntimeNotificationOutboxService(
+        session_factory=owner_sessionmaker,
+        retry_base_seconds=60,
+        max_attempts=3,
+    )
+    claimed = await service.claim_batch(worker_id="retry-worker-a", limit=1)
+    page = (await service.prepare_integration_pages(worker_id="retry-worker-a", claimed=claimed))[0]
+    assert await service._mark_page_failed(
+        page=page,
+        worker_id="retry-worker-a",
+        error=RuntimeError("provider unavailable"),
+    ) == ("retry", 1)
+
+    async with owner_sessionmaker() as db:
+        row = await db.get(RuntimeNotificationOutbox, claimed[0].id)
+        assert row is not None
+        available_at = row.available_at
+    assert (
+        await service.claim_batch(
+            worker_id="retry-worker-early",
+            now=available_at - timedelta(microseconds=1),
+            limit=1,
+        )
+        == []
+    )
+    reclaimed = await service.claim_batch(
+        worker_id="retry-worker-b",
+        now=available_at + timedelta(microseconds=1),
+        limit=1,
+    )
+    assert [item.id for item in reclaimed] == [claimed[0].id]
+    metrics = render_runtime_result_prometheus()
+    assert 'runtime_result_integration_pages_total{delivery_mode="session_projection",outcome="prepared"} 1' in metrics
+    assert 'runtime_result_integration_pages_total{delivery_mode="session_projection",outcome="retry"} 1' in metrics
 
 
 @pytest.mark.usefixtures("migrated_pg_url")
@@ -456,7 +674,7 @@ async def test_delivery_event_dedupes_when_ack_fails_after_commit(owner_sessionm
         retry_base_seconds=0,
         max_attempts=3,
     )
-    original_mark_delivered = service._mark_delivered
+    original_mark_delivered = service._mark_page_delivered
     failed_once = False
 
     async def fail_first_ack(*args, **kwargs):
@@ -466,7 +684,7 @@ async def test_delivery_event_dedupes_when_ack_fails_after_commit(owner_sessionm
             raise RuntimeError("worker crashed before ack")
         return await original_mark_delivered(*args, **kwargs)
 
-    monkeypatch.setattr(service, "_mark_delivered", fail_first_ack)
+    monkeypatch.setattr(service, "_mark_page_delivered", fail_first_ack)
     first = await service.drain_once(worker_id="worker-a")
     second = await service.drain_once(worker_id="worker-b")
 
@@ -563,13 +781,17 @@ async def test_reconciler_backfills_terminal_runtime_task_missing_outbox(owner_s
                 select(RuntimeNotificationOutbox).where(RuntimeNotificationOutbox.source_run_id == str(task_id))
             )
         ).scalar_one()
+        result_object = await db.get(RuntimeResultObject, row.result_object_id)
 
     assert repaired >= 1
     assert row.source_kind == "workflow"
     assert row.parent_session_id == session_id
     assert row.parent_user_id == user_id
-    assert row.summary == "workflow result"
-    assert row.artifacts_json == [{"type": "artifact", "path": "workspace/result.md"}]
+    assert result_object is not None
+    payload = decode_runtime_result_payload(result_object.payload_bytes)
+    assert payload["summary"] == "workflow result"
+    assert payload["artifacts"] == [{"type": "artifact", "path": "workspace/result.md"}]
+    assert row.artifact_count == 1
 
 
 @pytest.mark.usefixtures("migrated_pg_url")
@@ -685,6 +907,6 @@ async def test_parent_continuation_waits_for_budget_approval_then_resumes(owner_
                 )
             )
         ).scalar_one()
-    assert resumed["delivered"] == 1
+    assert resumed["delivered"] == 1, (resumed, delivered.last_error)
     assert delivered.status == "delivered"
     assert event_count == 1

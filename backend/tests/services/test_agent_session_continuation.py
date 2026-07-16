@@ -204,6 +204,82 @@ async def test_task_notification_continuation_is_system_runtime_context_not_user
 
 
 @pytest.mark.asyncio
+async def test_result_page_preserves_runtime_action_projection_without_copying_result_bytes(monkeypatch):
+    import app.services.agent_session_continuation as svc
+
+    db = _DB()
+    session = _agent_session(state="open")
+    agent = SimpleNamespace(id=session.agent_id, tenant_id=session.tenant_id, name="Lead")
+    user = SimpleNamespace(id=session.user_id)
+    appended: list[dict] = []
+    captured: dict = {}
+    result_ref = f"runtime-result://{uuid4()}/{'a' * 64}"
+    manifest = {
+        "schema": "hive.runtime_result_integration_page.v1",
+        "integration_epoch": 4,
+        "manifest_sha256": "b" * 64,
+        "root_runtime_task_id": str(uuid4()),
+        "mailbox_sequence_start": 9,
+        "mailbox_sequence_end": 9,
+        "coverage": {"expected": 1, "terminal": 1, "conserved": True},
+        "items": [
+            {
+                "outbox_id": str(uuid4()),
+                "mailbox_sequence": 9,
+                "source_kind": "workflow",
+                "source_run_id": "workflow-run-9",
+                "task_type": "workflow",
+                "terminal_status": "completed",
+                "child_agent_name": "Reporter",
+                "result_ref": result_ref,
+                "result_sha256": "a" * 64,
+                "result_size_bytes": 1_048_576,
+                "artifact_count": 1,
+            }
+        ],
+    }
+
+    async def fake_append(**kwargs):
+        appended.append(kwargs)
+        return SimpleNamespace(event_id=uuid4())
+
+    async def fake_find_active(**_kwargs):
+        return None
+
+    async def fake_start(**kwargs):
+        captured["start"] = kwargs
+        return {"run_id": "result-integration-run", "status": "running"}
+
+    monkeypatch.setattr(svc, "append_session_event", fake_append)
+    monkeypatch.setattr(svc, "_find_active_run", fake_find_active)
+    monkeypatch.setattr(svc, "start_web_chat_run", fake_start)
+
+    result = await svc.continue_parent_session_with_result_page(
+        db=db,
+        agent=agent,
+        user=user,
+        session=session,
+        integration_page_id=uuid4(),
+        manifest=manifest,
+    )
+
+    assert result["status"] == "started"
+    assert [event["event_type"] for event in appended] == [
+        "runtime_action_completed",
+        "agent_task_notification",
+    ]
+    action = appended[0]
+    assert action["metadata"]["result_ref"] == result_ref
+    assert action["metadata"]["runtime_task_id"] == "workflow-run-9"
+    assert action["metadata"]["workflow_run_id"] == "workflow-run-9"
+    assert "summary" not in action["metadata"]
+    assert "artifacts" not in action["metadata"]
+    assert result_ref in captured["start"]["content"]
+    assert "read_runtime_result" in captured["start"]["content"]
+    assert "decisive child body" not in captured["start"]["content"]
+
+
+@pytest.mark.asyncio
 async def test_task_notification_projects_runtime_action_before_mailbox(monkeypatch):
     import app.services.agent_session_continuation as svc
 

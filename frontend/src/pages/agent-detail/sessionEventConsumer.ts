@@ -285,17 +285,51 @@ export function hydrateSessionTranscriptEvents(
   return { store, messages: ordered, ui: compatibilityReplay.ui };
 }
 
+function transcriptSuffixBaseline(events: ChatTranscriptEventPayload[]): number {
+  const sequences = events
+    .map((event) => Number(event.sequence ?? 0))
+    .filter((sequence) => Number.isSafeInteger(sequence) && sequence > 0);
+  return sequences.length > 0 ? Math.max(0, Math.min(...sequences) - 1) : 0;
+}
+
 export function projectCanonicalSessionSnapshot(
   event: ChatTranscriptEventPayload,
   store: SessionEventStore,
-): { messages: AgentChatMessage[]; terminal: boolean; runId: string | null } {
+  transcriptEvents?: ChatTranscriptEventPayload[],
+): {
+  messages: AgentChatMessage[];
+  projectMessages: boolean;
+  terminal: boolean;
+  runTerminal: boolean;
+  runId: string | null;
+} {
   const envelope = event as unknown as SessionEventV2;
-  const terminal = envelope.item_kind === 'run'
+  const runTerminal = envelope.item_kind === 'run'
     && ['completed', 'failed', 'cancelled'].includes(envelope.lifecycle);
+  const terminalMetadataOnly = (
+    envelope.item_kind === 'turn'
+    && ['completed', 'failed', 'cancelled'].includes(envelope.lifecycle)
+  ) || (
+    envelope.item_kind === 'run_outcome'
+    && envelope.lifecycle === 'terminal_committed'
+  );
+  // A live tail can start after older V1/compatibility events. At a terminal
+  // boundary, use the same complete replay projection as reload so the final
+  // answer seals (rather than erases) the process disclosure. The first
+  // locally retained durable sequence is the truthful baseline for this
+  // presentation suffix; it is not a second event authority.
+  const messages = runTerminal && transcriptEvents?.length
+    ? hydrateSessionTranscriptEvents(
+      transcriptEvents,
+      transcriptSuffixBaseline(transcriptEvents),
+    ).messages
+    : projectSessionEventStoreToMessages(store);
   return {
-    messages: projectSessionEventStoreToMessages(store),
-    terminal,
-    runId: terminal && envelope.scope.level !== 'session' && envelope.scope.level !== 'turn'
+    messages,
+    projectMessages: !terminalMetadataOnly,
+    terminal: runTerminal,
+    runTerminal,
+    runId: runTerminal && envelope.scope.level !== 'session' && envelope.scope.level !== 'turn'
       ? envelope.scope.run_id
       : null,
   };
@@ -304,17 +338,20 @@ export function projectCanonicalSessionSnapshot(
 export function applyCanonicalSessionSnapshot(options: {
   event: ChatTranscriptEventPayload;
   store: SessionEventStore;
+  transcriptEvents?: ChatTranscriptEventPayload[];
   active: boolean;
   onTranscript: () => void;
   onActivity: () => void;
   onTerminal: (runId: string | null) => void;
   onMessages: (messages: AgentChatMessage[], terminal: boolean) => void;
 }): void {
-  const snapshot = projectCanonicalSessionSnapshot(options.event, options.store);
+  const snapshot = projectCanonicalSessionSnapshot(options.event, options.store, options.transcriptEvents);
   options.onTranscript();
   options.onActivity();
-  if (snapshot.terminal) options.onTerminal(snapshot.runId);
-  if (options.active) options.onMessages(snapshot.messages, snapshot.terminal);
+  if (snapshot.runTerminal) options.onTerminal(snapshot.runId);
+  if (options.active && snapshot.projectMessages) {
+    options.onMessages(snapshot.messages, snapshot.terminal);
+  }
 }
 
 export function consumeSessionEnvelope(

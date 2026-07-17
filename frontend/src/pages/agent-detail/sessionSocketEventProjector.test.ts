@@ -187,6 +187,8 @@ describe('session socket event projector', () => {
       'session-1',
     );
     expect(harness.dependencies.fetchMySessions).toHaveBeenCalledWith(true, 'agent-1');
+    expect(harness.dependencies.setSessionPhase).toHaveBeenCalledWith('agent-1:session-1', 'done');
+    expect(harness.dependencies.syncActivePhase).toHaveBeenCalledWith('done');
   });
 
   it('closes a background session socket only after a terminal stream event is durably projected', () => {

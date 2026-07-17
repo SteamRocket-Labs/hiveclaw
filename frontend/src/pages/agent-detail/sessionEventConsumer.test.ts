@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { ChatTranscriptEventPayload } from './chatRuntime';
 import { buildRunTimelineFromMessages } from './chatDisclosureReducer';
 import {
+  applyCanonicalSessionSnapshot,
   consumeSessionEnvelope,
   hydrateSessionTranscriptEvents,
   projectSessionEventStoreToMessages,
@@ -56,6 +57,128 @@ function replay(events: SessionEventV2[]): SessionEventStore {
 }
 
 describe('canonical Session event consumer', () => {
+  it('replays the complete transcript when a live terminal event seals a partial canonical tail', () => {
+    const legacyThinking = {
+      schema: 'hive.session_event_compatibility',
+      schema_version: 1,
+      compatibility_status: 'needs_reconciliation',
+      event_id: 'legacy-thinking-1',
+      sequence: 3400,
+      reason: 'rolling_v1_projection',
+      legacy_event_type: 'thinking',
+      payload: {
+        content: 'LIVE_TERMINAL_PROCESS_0718',
+        metadata: { role: 'assistant' },
+      },
+    } as unknown as ChatTranscriptEventPayload;
+    const source: SessionEventV2 = {
+      ...event(3401, 'completed'),
+      ordinal: undefined,
+      item_id: 'terminal-source-1',
+      payload: { phase: 'unknown', content: 'LIVE_TERMINAL_FINAL_0718' },
+    };
+    const final: SessionEventV2 = {
+      ...event(3402, 'completed'),
+      ordinal: undefined,
+      item_id: 'terminal-final-1',
+      item_kind: 'assistant_final',
+      kind: 'assistant_final.completed',
+      lifecycle: 'completed',
+      payload_schema: 'hive.session.payload.assistant_final.completed.v2',
+      payload: {
+        phase: 'final',
+        render_owner_id: 'terminal-owner-1',
+        source_blocks: [{ item_id: 'terminal-source-1', block_index: 0, content_hash: 'hash-1' }],
+      },
+    };
+    const runCompleted: SessionEventV2 = {
+      ...event(3403, 'completed'),
+      ordinal: undefined,
+      item_id: 'run-1',
+      item_kind: 'run',
+      kind: 'run.completed',
+      lifecycle: 'completed',
+      payload_schema: 'hive.session.payload.run.completed.v2',
+      scope: {
+        level: 'run',
+        session_id: 'session-1',
+        thread_id: 'session-1',
+        turn_id: 'turn-1',
+        run_id: 'run-1',
+      },
+      actor: { type: 'runtime' },
+      payload: {},
+    };
+    const terminalCommitted: SessionEventV2 = {
+      ...event(3404, 'completed'),
+      ordinal: undefined,
+      item_id: 'outcome-1',
+      item_kind: 'run_outcome',
+      kind: 'run_outcome.terminal_committed',
+      lifecycle: 'terminal_committed',
+      payload_schema: 'hive.session.payload.run_outcome.terminal_committed.v2',
+      scope: {
+        level: 'run',
+        session_id: 'session-1',
+        thread_id: 'session-1',
+        turn_id: 'turn-1',
+        run_id: 'run-1',
+      },
+      actor: { type: 'runtime' },
+      payload: { outcome_id: 'outcome-1', terminal_result_id: 'result-1', terminal_event_count: 4 },
+    } as SessionEventV2;
+    const transcriptEvents = [
+      legacyThinking,
+      source as unknown as ChatTranscriptEventPayload,
+      final as unknown as ChatTranscriptEventPayload,
+      runCompleted as unknown as ChatTranscriptEventPayload,
+      terminalCommitted as unknown as ChatTranscriptEventPayload,
+    ];
+    let store: SessionEventStore | undefined;
+    for (const envelope of transcriptEvents) {
+      store = consumeSessionEnvelope(envelope, store, 3399).store;
+    }
+    if (!store) throw new Error('fixture_did_not_create_store');
+    let projectedMessages = [] as ReturnType<typeof projectSessionEventStoreToMessages>;
+
+    applyCanonicalSessionSnapshot({
+      event: runCompleted as unknown as ChatTranscriptEventPayload,
+      store,
+      transcriptEvents,
+      active: true,
+      onTranscript: () => undefined,
+      onActivity: () => undefined,
+      onTerminal: () => undefined,
+      onMessages: (messages) => { projectedMessages = messages; },
+    });
+
+    expect(projectedMessages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: 'assistant', thinking: 'LIVE_TERMINAL_PROCESS_0718' }),
+      expect.objectContaining({ role: 'assistant', content: 'LIVE_TERMINAL_FINAL_0718' }),
+    ]));
+    expect(buildRunTimelineFromMessages(projectedMessages)).toMatchObject({
+      status: 'done',
+      steps: [expect.objectContaining({ kind: 'reasoning' })],
+    });
+
+    let terminalMetadataProjected = false;
+    applyCanonicalSessionSnapshot({
+      event: terminalCommitted as unknown as ChatTranscriptEventPayload,
+      store,
+      transcriptEvents,
+      active: true,
+      onTranscript: () => undefined,
+      onActivity: () => undefined,
+      onTerminal: () => undefined,
+      onMessages: () => { terminalMetadataProjected = true; },
+    });
+    expect(terminalMetadataProjected).toBe(false);
+    expect(buildRunTimelineFromMessages(projectedMessages)).toMatchObject({
+      status: 'done',
+      steps: [expect.objectContaining({ kind: 'reasoning' })],
+    });
+  });
+
   it('uses the backend canonical rendering contract for multipart user input', () => {
     expect(sessionPayloadContent({
       content_parts: [

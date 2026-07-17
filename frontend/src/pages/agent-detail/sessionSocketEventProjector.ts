@@ -37,6 +37,13 @@ const RUNTIME_QUERY_EVENT_KINDS = new Set([
 ]);
 const TERMINAL_RUN_LIFECYCLES = new Set(['completed', 'failed', 'cancelled']);
 
+function terminalPhaseForRunLifecycle(lifecycle: string): RuntimePhase | null {
+  if (lifecycle === 'completed') return 'done';
+  if (lifecycle === 'failed') return 'failed';
+  if (lifecycle === 'cancelled') return 'cancelled';
+  return null;
+}
+
 export interface SessionSocketProjectionDependencies {
   applyTranscriptToSession: (
     agentId: string,
@@ -129,6 +136,11 @@ export function projectSessionSocketEvent(
       invalidateSessionRuntimeQueries(agentId, sessionId);
     }
     if (itemKind === 'run' && TERMINAL_RUN_LIFECYCLES.has(lifecycle)) {
+      const terminalPhase = terminalPhaseForRunLifecycle(lifecycle);
+      if (terminalPhase) {
+        setSessionPhase(key, terminalPhase);
+        if (isActiveRuntime) syncActivePhase(terminalPhase);
+      }
       void fetchMySessions(true, agentId);
     }
     return;

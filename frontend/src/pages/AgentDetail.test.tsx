@@ -147,8 +147,10 @@ describe('AgentDetail realtime refresh contract', () => {
     expect(source).toContain('applyTranscriptToSession(agentId, sessionId, transcriptEvent, isActiveRuntime)');
     expect(source).not.toContain('void selectSession(session)');
     expect(source).not.toContain("parseChatMsg({ role: 'assistant', content: `⚠️ ${message}` })");
-    expect(pageSource).toContain('applyCanonicalSessionSnapshot({ event: projectionEvent, store: consumed.store');
     expect(pageSource).toContain('if (consumed.canonical && consumed.store)');
+    expect(pageSource).toContain('const nextTranscriptEvents = mergeTranscriptBackfill(existingEvents, [projectionEvent])');
+    expect(pageSource).toContain('transcriptEvents: nextTranscriptEvents');
+    expect(pageSource).toContain('onTerminal: (runId) => markActiveRunTerminal(key, runId)');
   });
 
   it('hydrates the complete canonical Session V2 transcript without a manual older-message gate', async () => {

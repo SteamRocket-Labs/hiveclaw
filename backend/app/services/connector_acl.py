@@ -485,25 +485,72 @@ def source_items_from_tool_call(
                 return value
         return ""
 
+    def feishu_path_token(value: str, *kinds: str) -> str:
+        if not value or not kinds:
+            return value
+        kind_pattern = "|".join(re.escape(kind) for kind in kinds)
+        match = re.search(rf"/(?:{kind_pattern})/([^/?#]+)", value)
+        return match.group(1) if match else value
+
     if normalized_tool.startswith("feishu_"):
         raw_url = first_arg("url", "spreadsheet_url", "document_url")
         if raw_url:
             add(raw_url, connector="feishu", resource_type="url")
 
-        if normalized_tool == "feishu_doc_read":
-            token = first_arg("document_token", "doc_token", "doc_id", "token")
+        if normalized_tool == "feishu_wiki_list":
+            node_token = first_arg("node_token")
+            space_id = first_arg("space_id")
+            space_match = re.search(r"/wiki/space/([^/?#]+)", space_id or node_token)
+            node_match = re.search(r"/wiki/(?!space/)([^/?#]+)", node_token)
+            if space_match:
+                space_id = space_match.group(1)
+                node_token = ""
+            elif node_match:
+                node_token = node_match.group(1)
+            if node_token:
+                add(f"feishu://wiki/node/{node_token}", connector="feishu", resource_type="wiki_node")
+            elif space_id:
+                add(f"feishu://wiki/space/{space_id}", connector="feishu", resource_type="wiki_space")
+        elif normalized_tool == "feishu_doc_read":
+            token = feishu_path_token(
+                first_arg("document_token", "doc_token", "doc_id", "token"),
+                "wiki",
+                "docx",
+                "doc",
+            )
             if token:
                 add(f"feishu://doc/{token}", connector="feishu", resource_type="doc")
         elif normalized_tool == "feishu_drive_file_read":
-            token = first_arg("file_token", "file_id", "token")
+            token = feishu_path_token(
+                first_arg("file_token", "file_id", "token"),
+                "file",
+                "docx",
+                "doc",
+                "sheets",
+                "spreadsheets",
+                "base",
+                "bitable",
+            )
             if token:
                 add(f"feishu://drive/{token}", connector="feishu", resource_type="drive_file")
         elif normalized_tool in {"feishu_sheet_info", "feishu_sheet_read"}:
-            token = first_arg("spreadsheet_token", "token")
+            token = feishu_path_token(
+                first_arg("spreadsheet_token", "spreadsheet_url", "token"),
+                "sheets",
+                "spreadsheets",
+            )
             if token:
                 add(f"feishu://sheet/{token}", connector="feishu", resource_type="sheet")
-        elif normalized_tool.startswith("feishu_base_"):
-            token = first_arg("base_token", "app_token", "token")
+        elif normalized_tool in {
+            "feishu_base_table_list",
+            "feishu_base_record_list",
+            "feishu_base_field_list",
+        }:
+            token = feishu_path_token(
+                first_arg("base_token", "app_token", "token"),
+                "base",
+                "bitable",
+            )
             table_id = first_arg("table_id")
             if token and table_id:
                 add(f"feishu://base/{token}/{table_id}", connector="feishu", resource_type="base_table")

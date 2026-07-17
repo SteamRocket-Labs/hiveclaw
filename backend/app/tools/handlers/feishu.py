@@ -87,12 +87,25 @@ async def _check_feishu_cli_access() -> bool:
         adapter="agent_args",
     )
 )
-async def feishu_wiki_list(agent_id: uuid.UUID, arguments: dict) -> str:
+async def feishu_wiki_list(
+    agent_id: uuid.UUID,
+    arguments: dict,
+    tenant_id: uuid.UUID | str | None = None,
+    *,
+    user_id: uuid.UUID | None = None,
+) -> str:
     if not await _check_feishu_office_access(agent_id):
         return _FEISHU_NOT_CONFIGURED_MSG
     from app.services.agent_tools import _feishu_wiki_list
 
-    return await _feishu_wiki_list(agent_id, arguments)
+    if tenant_id is None and user_id is None:
+        return await _feishu_wiki_list(agent_id, arguments)
+    return await _feishu_wiki_list(
+        agent_id,
+        arguments,
+        tenant_id=tenant_id,
+        current_user_id=user_id,
+    )
 
 
 # -- feishu_doc_read ----------------------------------------------------------
@@ -380,12 +393,25 @@ async def feishu_url_read(
         adapter="agent_args",
     )
 )
-async def feishu_drive_file_read(agent_id: uuid.UUID, arguments: dict) -> str:
+async def feishu_drive_file_read(
+    agent_id: uuid.UUID,
+    arguments: dict,
+    tenant_id: uuid.UUID | str | None = None,
+    *,
+    user_id: uuid.UUID | None = None,
+) -> str:
     if not await _check_feishu_office_access(agent_id):
         return _FEISHU_NOT_CONFIGURED_MSG
     from app.services.agent_tools import _feishu_drive_file_read
 
-    return await _feishu_drive_file_read(agent_id, arguments)
+    if tenant_id is None and user_id is None:
+        return await _feishu_drive_file_read(agent_id, arguments)
+    return await _feishu_drive_file_read(
+        agent_id,
+        arguments,
+        tenant_id=tenant_id,
+        current_user_id=user_id,
+    )
 
 
 # -- feishu_sheet_info --------------------------------------------------------
@@ -422,12 +448,25 @@ async def feishu_drive_file_read(agent_id: uuid.UUID, arguments: dict) -> str:
         governance="safe",
     )
 )
-async def feishu_sheet_info(agent_id: uuid.UUID, arguments: dict) -> str:
+async def feishu_sheet_info(
+    agent_id: uuid.UUID,
+    arguments: dict,
+    tenant_id: uuid.UUID | str | None = None,
+    *,
+    user_id: uuid.UUID | None = None,
+) -> str:
     if not await _check_feishu_office_access(agent_id):
         return _FEISHU_NOT_CONFIGURED_MSG
     from app.services.agent_tools import _feishu_sheet_info
 
-    return await _feishu_sheet_info(agent_id, arguments)
+    if tenant_id is None and user_id is None:
+        return await _feishu_sheet_info(agent_id, arguments)
+    return await _feishu_sheet_info(
+        agent_id,
+        arguments,
+        tenant_id=tenant_id,
+        current_user_id=user_id,
+    )
 
 
 # -- feishu_sheet_read --------------------------------------------------------
@@ -477,12 +516,25 @@ async def feishu_sheet_info(agent_id: uuid.UUID, arguments: dict) -> str:
         governance="safe",
     )
 )
-async def feishu_sheet_read(agent_id: uuid.UUID, arguments: dict) -> str:
+async def feishu_sheet_read(
+    agent_id: uuid.UUID,
+    arguments: dict,
+    tenant_id: uuid.UUID | str | None = None,
+    *,
+    user_id: uuid.UUID | None = None,
+) -> str:
     if not await _check_feishu_office_access(agent_id):
         return _FEISHU_NOT_CONFIGURED_MSG
     from app.services.agent_tools import _feishu_sheet_read
 
-    return await _feishu_sheet_read(agent_id, arguments)
+    if tenant_id is None and user_id is None:
+        return await _feishu_sheet_read(agent_id, arguments)
+    return await _feishu_sheet_read(
+        agent_id,
+        arguments,
+        tenant_id=tenant_id,
+        current_user_id=user_id,
+    )
 
 
 # -- feishu_base_table_list ---------------------------------------------------
@@ -570,12 +622,25 @@ async def feishu_base_app_create(agent_id: uuid.UUID, arguments: dict) -> str:
         governance="safe",
     )
 )
-async def feishu_base_table_list(agent_id: uuid.UUID, arguments: dict) -> str:
+async def feishu_base_table_list(
+    agent_id: uuid.UUID,
+    arguments: dict,
+    tenant_id: uuid.UUID | str | None = None,
+    *,
+    user_id: uuid.UUID | None = None,
+) -> str:
     if not await _check_feishu_office_access(agent_id):
         return _FEISHU_NOT_CONFIGURED_MSG
     from app.services.agent_tools import _feishu_base_table_list
 
-    return await _feishu_base_table_list(agent_id, arguments)
+    if tenant_id is None and user_id is None:
+        return await _feishu_base_table_list(agent_id, arguments)
+    return await _feishu_base_table_list(
+        agent_id,
+        arguments,
+        tenant_id=tenant_id,
+        current_user_id=user_id,
+    )
 
 
 # -- feishu_base_record_list --------------------------------------------------
@@ -654,12 +719,25 @@ async def feishu_base_table_list(agent_id: uuid.UUID, arguments: dict) -> str:
         governance="safe",
     )
 )
-async def feishu_base_record_list(agent_id: uuid.UUID, arguments: dict) -> str:
+async def feishu_base_record_list(
+    agent_id: uuid.UUID,
+    arguments: dict,
+    tenant_id: uuid.UUID | str | None = None,
+    *,
+    user_id: uuid.UUID | None = None,
+) -> str:
     if not await _check_feishu_office_access(agent_id):
         return _FEISHU_NOT_CONFIGURED_MSG
     from app.services.agent_tools import _feishu_base_record_list
 
-    return await _feishu_base_record_list(agent_id, arguments)
+    if tenant_id is None and user_id is None:
+        return await _feishu_base_record_list(agent_id, arguments)
+    return await _feishu_base_record_list(
+        agent_id,
+        arguments,
+        tenant_id=tenant_id,
+        current_user_id=user_id,
+    )
 
 
 # -- feishu_base_record_upsert ------------------------------------------------
@@ -804,12 +882,25 @@ async def feishu_base_record_delete(agent_id: uuid.UUID, arguments: dict) -> str
         governance="safe",
     )
 )
-async def feishu_base_field_list(agent_id: uuid.UUID, arguments: dict) -> str:
+async def feishu_base_field_list(
+    agent_id: uuid.UUID,
+    arguments: dict,
+    tenant_id: uuid.UUID | str | None = None,
+    *,
+    user_id: uuid.UUID | None = None,
+) -> str:
     if not await _check_feishu_office_access(agent_id):
         return _FEISHU_NOT_CONFIGURED_MSG
     from app.services.agent_tools import _feishu_base_field_list
 
-    return await _feishu_base_field_list(agent_id, arguments)
+    if tenant_id is None and user_id is None:
+        return await _feishu_base_field_list(agent_id, arguments)
+    return await _feishu_base_field_list(
+        agent_id,
+        arguments,
+        tenant_id=tenant_id,
+        current_user_id=user_id,
+    )
 
 
 # -- feishu_base_field_create --------------------------------------------------

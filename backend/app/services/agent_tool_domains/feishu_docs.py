@@ -10,11 +10,13 @@ from app.services.agent_tool_domains.feishu_cli import (
     _feishu_cli_api_request,
     _feishu_cli_available,
 )
+from app.services.agent_tool_domains.feishu_acl import with_feishu_alias_for_verified_result
 from app.services.agent_tool_domains.feishu_helpers import _get_feishu_token
 from app.services.agent_tool_domains.feishu_wiki import _feishu_wiki_get_node, _feishu_wiki_get_node_via_cli
 from app.services.connector_acl import (
     CONNECTOR_SOURCE_ITEMS_METADATA_KEY,
     authoritative_connector_source_item,
+    extract_connector_source_items,
     with_connector_source_items,
 )
 from app.tools.result_envelope import render_tool_error, render_tool_fallback
@@ -39,7 +41,13 @@ def _wiki_non_doc_hint(node_info: dict, routed_result: str) -> str:
     )
 
 
-async def _route_wiki_non_doc_node(agent_id: uuid.UUID, node_info: dict) -> str | None:
+async def _route_wiki_non_doc_node(
+    agent_id: uuid.UUID,
+    node_info: dict,
+    *,
+    tenant_id: uuid.UUID | str | None = None,
+    current_user_id: uuid.UUID | str | None = None,
+) -> str | None:
     obj_type = (node_info.get("obj_type") or "").lower()
     obj_token = node_info.get("obj_token", "")
     if not obj_token or obj_type in ("", "doc", "docx"):
@@ -47,21 +55,54 @@ async def _route_wiki_non_doc_node(agent_id: uuid.UUID, node_info: dict) -> str 
     if obj_type == "sheet":
         from app.services.agent_tool_domains.feishu_sheets import _feishu_sheet_info
 
-        routed_result = await _feishu_sheet_info(agent_id, {"spreadsheet_token": obj_token})
-        return _wiki_non_doc_hint(node_info, routed_result)
+        arguments = {"spreadsheet_token": obj_token}
+        if tenant_id is None and current_user_id is None:
+            routed_result = await _feishu_sheet_info(agent_id, arguments)
+        else:
+            routed_result = await _feishu_sheet_info(
+                agent_id,
+                arguments,
+                tenant_id=tenant_id,
+                current_user_id=current_user_id,
+            )
+        return with_connector_source_items(
+            _wiki_non_doc_hint(node_info, routed_result),
+            extract_connector_source_items(routed_result),
+        )
     if obj_type == "bitable":
         from app.services.agent_tool_domains.feishu_base import _feishu_base_table_list
 
-        routed_result = await _feishu_base_table_list(agent_id, {"base_token": obj_token})
-        return _wiki_non_doc_hint(node_info, routed_result)
+        arguments = {"base_token": obj_token}
+        if tenant_id is None and current_user_id is None:
+            routed_result = await _feishu_base_table_list(agent_id, arguments)
+        else:
+            routed_result = await _feishu_base_table_list(
+                agent_id,
+                arguments,
+                tenant_id=tenant_id,
+                current_user_id=current_user_id,
+            )
+        return with_connector_source_items(
+            _wiki_non_doc_hint(node_info, routed_result),
+            extract_connector_source_items(routed_result),
+        )
     if obj_type == "file":
         from app.services.agent_tool_domains.feishu_drive import _feishu_drive_file_read
 
-        routed_result = await _feishu_drive_file_read(
-            agent_id,
-            {"file_token": obj_token, "file_name": node_info.get("title") or ""},
+        arguments = {"file_token": obj_token, "file_name": node_info.get("title") or ""}
+        if tenant_id is None and current_user_id is None:
+            routed_result = await _feishu_drive_file_read(agent_id, arguments)
+        else:
+            routed_result = await _feishu_drive_file_read(
+                agent_id,
+                arguments,
+                tenant_id=tenant_id,
+                current_user_id=current_user_id,
+            )
+        return with_connector_source_items(
+            _wiki_non_doc_hint(node_info, routed_result),
+            extract_connector_source_items(routed_result),
         )
-        return _wiki_non_doc_hint(node_info, routed_result)
     return _wiki_non_doc_hint(node_info, "")
 
 
@@ -150,18 +191,20 @@ async def _feishu_doc_read_via_openapi(
     wiki_hint = ""
     node_info = await _feishu_wiki_get_node(document_token, token)
     if node_info and node_info.get("obj_token"):
-        routed = await _route_wiki_non_doc_node(agent_id, node_info)
+        routed = await _route_wiki_non_doc_node(
+            agent_id,
+            node_info,
+            tenant_id=tenant_id,
+            current_user_id=current_user_id,
+        )
         if routed:
-            return with_connector_source_items(
+            return with_feishu_alias_for_verified_result(
                 routed,
-                _feishu_doc_source_items(
-                    agent_id,
-                    document_token,
-                    node_info.get("obj_token"),
-                    tenant_id=tenant_id,
-                    current_user_id=current_user_id,
-                    protected_text=str(routed),
-                ),
+                source=f"feishu://doc/{document_token}",
+                resource_type="wiki_node",
+                agent_id=agent_id,
+                tenant_id=tenant_id,
+                current_user_id=current_user_id,
             )
         read_token = node_info["obj_token"]
         if node_info.get("has_child"):
@@ -247,18 +290,20 @@ async def _feishu_doc_read(
         except FeishuCliError:
             node_info = None
         if node_info and node_info.get("obj_token"):
-            routed = await _route_wiki_non_doc_node(agent_id, node_info)
+            routed = await _route_wiki_non_doc_node(
+                agent_id,
+                node_info,
+                tenant_id=tenant_id,
+                current_user_id=current_user_id,
+            )
             if routed:
-                return with_connector_source_items(
+                return with_feishu_alias_for_verified_result(
                     routed,
-                    _feishu_doc_source_items(
-                        agent_id,
-                        document_token,
-                        node_info.get("obj_token"),
-                        tenant_id=tenant_id,
-                        current_user_id=current_user_id,
-                        protected_text=str(routed),
-                    ),
+                    source=f"feishu://doc/{document_token}",
+                    resource_type="wiki_node",
+                    agent_id=agent_id,
+                    tenant_id=tenant_id,
+                    current_user_id=current_user_id,
                 )
             read_token = node_info["obj_token"]
             if node_info.get("has_child"):

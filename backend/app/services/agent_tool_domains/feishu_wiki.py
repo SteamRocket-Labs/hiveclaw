@@ -9,6 +9,10 @@ from app.services.agent_tool_domains.feishu_cli import (
     _feishu_cli_api_request,
     _feishu_cli_available,
 )
+from app.services.agent_tool_domains.feishu_acl import (
+    preserve_feishu_fallback_authority,
+    with_feishu_read_authority,
+)
 from app.services.agent_tool_domains.feishu_helpers import _get_feishu_token
 from app.tools.result_envelope import render_tool_fallback
 
@@ -172,7 +176,13 @@ async def _feishu_wiki_get_node_via_cli(token_str: str) -> dict | None:
     }
 
 
-async def _feishu_wiki_list_via_openapi(agent_id: uuid.UUID, arguments: dict) -> str:
+async def _feishu_wiki_list_via_openapi(
+    agent_id: uuid.UUID,
+    arguments: dict,
+    *,
+    tenant_id: uuid.UUID | str | None = None,
+    current_user_id: uuid.UUID | str | None = None,
+) -> str:
     """List sub-pages of a Feishu Wiki node, optionally recursive."""
     import httpx
 
@@ -270,14 +280,37 @@ async def _feishu_wiki_list_via_openapi(agent_id: uuid.UUID, arguments: dict) ->
     pages, error = await _list_children(parent_token, 0)
     if error:
         return _format_wiki_list_error(target_kind, target_id, error)
-    if not pages:
-        return _format_empty_wiki_listing(target_kind, target_id)
-    return _format_wiki_pages(target_kind, target_id, pages)
+    rendered = (
+        _format_wiki_pages(target_kind, target_id, pages)
+        if pages
+        else _format_empty_wiki_listing(target_kind, target_id)
+    )
+    source = f"feishu://wiki/node/{node_token}" if node_token else f"feishu://wiki/space/{space_id}"
+    return with_feishu_read_authority(
+        rendered,
+        sources=[(source, "wiki_node" if node_token else "wiki_space")],
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        current_user_id=current_user_id,
+    )
 
 
-async def _feishu_wiki_list(agent_id: uuid.UUID, arguments: dict) -> str:
+async def _feishu_wiki_list(
+    agent_id: uuid.UUID,
+    arguments: dict,
+    *,
+    tenant_id: uuid.UUID | str | None = None,
+    current_user_id: uuid.UUID | str | None = None,
+) -> str:
     if not await _feishu_cli_available():
-        return await _feishu_wiki_list_via_openapi(agent_id, arguments)
+        if tenant_id is None and current_user_id is None:
+            return await _feishu_wiki_list_via_openapi(agent_id, arguments)
+        return await _feishu_wiki_list_via_openapi(
+            agent_id,
+            arguments,
+            tenant_id=tenant_id,
+            current_user_id=current_user_id,
+        )
 
     node_token, space_id = _parse_wiki_locator(arguments)
     recursive = bool(arguments.get("recursive", False))
@@ -363,12 +396,30 @@ async def _feishu_wiki_list(agent_id: uuid.UUID, arguments: dict) -> str:
         pages, error = await _list_children_cli(space_id, parent_token, 0)
         if error:
             return _format_wiki_list_error(target_kind, target_id, error)
-        if not pages:
-            return _format_empty_wiki_listing(target_kind, target_id)
-        return _format_wiki_pages(target_kind, target_id, pages)
+        rendered = (
+            _format_wiki_pages(target_kind, target_id, pages)
+            if pages
+            else _format_empty_wiki_listing(target_kind, target_id)
+        )
+        source = f"feishu://wiki/node/{node_token}" if node_token else f"feishu://wiki/space/{space_id}"
+        return with_feishu_read_authority(
+            rendered,
+            sources=[(source, "wiki_node" if node_token else "wiki_space")],
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            current_user_id=current_user_id,
+        )
     except FeishuCliError as exc:
-        fallback_result = await _feishu_wiki_list_via_openapi(agent_id, arguments)
-        return render_tool_fallback(
+        if tenant_id is None and current_user_id is None:
+            fallback_result = await _feishu_wiki_list_via_openapi(agent_id, arguments)
+        else:
+            fallback_result = await _feishu_wiki_list_via_openapi(
+                agent_id,
+                arguments,
+                tenant_id=tenant_id,
+                current_user_id=current_user_id,
+            )
+        rendered = render_tool_fallback(
             tool_name="feishu_wiki_list",
             error_class=exc.error_class,
             message=str(exc),
@@ -378,3 +429,4 @@ async def _feishu_wiki_list(agent_id: uuid.UUID, arguments: dict) -> str:
             retryable=exc.retryable,
             actionable_hint=exc.actionable_hint,
         )
+        return preserve_feishu_fallback_authority(rendered, fallback_result)

@@ -6,18 +6,41 @@ import json
 import logging
 import mimetypes
 import re
+import uuid
 from pathlib import Path
 
 import httpx
 
 from app.config import get_settings
 from app.services.agent_tool_domains.feishu_cli import FeishuCliError, _feishu_cli_available, _run_feishu_cli_command
+from app.services.agent_tool_domains.feishu_acl import with_feishu_read_authority
 from app.services.agent_tool_domains.feishu_helpers import _get_feishu_token
 from app.tools.result_envelope import render_tool_error
 
 logger = logging.getLogger(__name__)
 
 FEISHU_API = "https://open.feishu.cn/open-apis"
+
+
+def _with_base_read_authority(
+    result,
+    *,
+    agent_id,
+    base_token: str,
+    table_id: str | None = None,
+    tenant_id: uuid.UUID | str | None = None,
+    current_user_id: uuid.UUID | str | None = None,
+):
+    sources = [(f"feishu://base/{base_token}", "base")]
+    if table_id:
+        sources.append((f"feishu://base/{base_token}/{table_id}", "base_table"))
+    return with_feishu_read_authority(
+        result,
+        sources=sources,
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        current_user_id=current_user_id,
+    )
 
 
 # ── Render helpers (unchanged) ───────────────────────────────────────
@@ -557,7 +580,13 @@ async def _base_api_delete(token: str, path: str) -> dict:
 # ── Public entry points (OpenAPI first, CLI fallback) ────────────────
 
 
-async def _feishu_base_table_list(agent_id, arguments: dict) -> str:
+async def _feishu_base_table_list(
+    agent_id,
+    arguments: dict,
+    *,
+    tenant_id: uuid.UUID | str | None = None,
+    current_user_id: uuid.UUID | str | None = None,
+) -> str:
     base_token = str(arguments.get("base_token") or "").strip()
     if not base_token:
         return "❌ Missing required argument 'base_token'"
@@ -583,7 +612,13 @@ async def _feishu_base_table_list(agent_id, arguments: dict) -> str:
             items = [
                 {"table_id": table.get("table_id", ""), "table_name": table.get("name", "")} for table in raw_items
             ]
-            return _render_base_tables(base_token, items, total=total)
+            return _with_base_read_authority(
+                _render_base_tables(base_token, items, total=total),
+                agent_id=agent_id,
+                base_token=base_token,
+                tenant_id=tenant_id,
+                current_user_id=current_user_id,
+            )
         except Exception as exc:
             openapi_error = exc
             logger.warning("[FeishuBase] OpenAPI table_list failed, trying CLI: %s", exc)
@@ -607,7 +642,13 @@ async def _feishu_base_table_list(agent_id, arguments: dict) -> str:
         offset=offset,
         result_limit=result_limit,
     )
-    return _render_base_tables(base_token, items, total=total)
+    return _with_base_read_authority(
+        _render_base_tables(base_token, items, total=total),
+        agent_id=agent_id,
+        base_token=base_token,
+        tenant_id=tenant_id,
+        current_user_id=current_user_id,
+    )
 
 
 async def _feishu_base_app_create(agent_id, arguments: dict) -> str:
@@ -641,7 +682,13 @@ async def _feishu_base_app_create(agent_id, arguments: dict) -> str:
     return _render_base_app_create(payload)
 
 
-async def _feishu_base_field_list(agent_id, arguments: dict) -> str:
+async def _feishu_base_field_list(
+    agent_id,
+    arguments: dict,
+    *,
+    tenant_id: uuid.UUID | str | None = None,
+    current_user_id: uuid.UUID | str | None = None,
+) -> str:
     base_token = str(arguments.get("base_token") or "").strip()
     table_id = str(arguments.get("table_id") or "").strip()
     if not base_token:
@@ -666,7 +713,14 @@ async def _feishu_base_field_list(agent_id, arguments: dict) -> str:
                 offset=offset,
                 result_limit=result_limit,
             )
-            return _render_base_fields(table_id, items, total=total)
+            return _with_base_read_authority(
+                _render_base_fields(table_id, items, total=total),
+                agent_id=agent_id,
+                base_token=base_token,
+                table_id=table_id,
+                tenant_id=tenant_id,
+                current_user_id=current_user_id,
+            )
         except Exception as exc:
             openapi_error = exc
             logger.warning("[FeishuBase] OpenAPI field_list failed, trying CLI: %s", exc)
@@ -689,7 +743,14 @@ async def _feishu_base_field_list(agent_id, arguments: dict) -> str:
         offset=offset,
         result_limit=result_limit,
     )
-    return _render_base_fields(table_id, items, total=total)
+    return _with_base_read_authority(
+        _render_base_fields(table_id, items, total=total),
+        agent_id=agent_id,
+        base_token=base_token,
+        table_id=table_id,
+        tenant_id=tenant_id,
+        current_user_id=current_user_id,
+    )
 
 
 async def _feishu_base_field_create(agent_id, arguments: dict) -> str:
@@ -727,13 +788,29 @@ async def _feishu_base_field_create(agent_id, arguments: dict) -> str:
     return _not_configured_error(tn)
 
 
-async def _feishu_base_record_list(agent_id, arguments: dict) -> str:
+async def _feishu_base_record_list(
+    agent_id,
+    arguments: dict,
+    *,
+    tenant_id: uuid.UUID | str | None = None,
+    current_user_id: uuid.UUID | str | None = None,
+) -> str:
     base_token = str(arguments.get("base_token") or "").strip()
     table_id = str(arguments.get("table_id") or "").strip()
     if not base_token:
         return "❌ Missing required argument 'base_token'"
     if not table_id:
         return "❌ Missing required argument 'table_id'"
+
+    def authorize(result):
+        return _with_base_read_authority(
+            result,
+            agent_id=agent_id,
+            base_token=base_token,
+            table_id=table_id,
+            tenant_id=tenant_id,
+            current_user_id=current_user_id,
+        )
 
     limit = min(max(1, int(arguments.get("limit", 100))), 200)
     view_id = str(arguments.get("view_id") or "").strip()
@@ -804,15 +881,17 @@ async def _feishu_base_record_list(agent_id, arguments: dict) -> str:
                     expected=filter_value,
                 )
                 display_items = [_project_record_fields(item, field_names) for item in filtered_items]
-                return _render_base_records(
-                    table_id,
-                    display_items,
-                    total=total,
-                    has_more=has_more,
-                    next_page_token=next_page if has_more and next_page else None,
-                    field_names=field_names,
-                    scanned_count=len(scanned_items),
-                    matched_count=len(filtered_items) if has_filter else None,
+                return authorize(
+                    _render_base_records(
+                        table_id,
+                        display_items,
+                        total=total,
+                        has_more=has_more,
+                        next_page_token=next_page if has_more and next_page else None,
+                        field_names=field_names,
+                        scanned_count=len(scanned_items),
+                        matched_count=len(filtered_items) if has_filter else None,
+                    )
                 )
 
             if offset and not page_token:
@@ -862,15 +941,17 @@ async def _feishu_base_record_list(agent_id, arguments: dict) -> str:
                     expected=filter_value,
                 )
                 display_items = [_project_record_fields(item, field_names) for item in filtered_items]
-                return _render_base_records(
-                    table_id,
-                    display_items,
-                    total=total,
-                    has_more=has_more,
-                    next_offset=offset + len(collected) if has_more else None,
-                    field_names=field_names,
-                    scanned_count=len(collected),
-                    matched_count=len(filtered_items) if has_filter else None,
+                return authorize(
+                    _render_base_records(
+                        table_id,
+                        display_items,
+                        total=total,
+                        has_more=has_more,
+                        next_offset=offset + len(collected) if has_more else None,
+                        field_names=field_names,
+                        scanned_count=len(collected),
+                        matched_count=len(filtered_items) if has_filter else None,
+                    )
                 )
 
             data = await _base_api_get(
@@ -894,16 +975,18 @@ async def _feishu_base_record_list(agent_id, arguments: dict) -> str:
                 expected=filter_value,
             )
             display_items = [_project_record_fields(item, field_names) for item in filtered_items]
-            return _render_base_records(
-                table_id,
-                display_items,
-                total=data.get("total"),
-                has_more=has_more,
-                next_page_token=next_page_token or None,
-                next_offset=offset + len(items) if has_more and not next_page_token else None,
-                field_names=field_names,
-                scanned_count=len(items) if has_filter else None,
-                matched_count=len(filtered_items) if has_filter else None,
+            return authorize(
+                _render_base_records(
+                    table_id,
+                    display_items,
+                    total=data.get("total"),
+                    has_more=has_more,
+                    next_page_token=next_page_token or None,
+                    next_offset=offset + len(items) if has_more and not next_page_token else None,
+                    field_names=field_names,
+                    scanned_count=len(items) if has_filter else None,
+                    matched_count=len(filtered_items) if has_filter else None,
+                )
             )
         except Exception as exc:
             logger.warning("[FeishuBase] OpenAPI record_list failed, trying CLI: %s", exc)
@@ -955,15 +1038,17 @@ async def _feishu_base_record_list(agent_id, arguments: dict) -> str:
 
         filtered_items = _filter_records(items, field_name=filter_field, op=filter_op, expected=filter_value)
         display_items = [_project_record_fields(item, field_names) for item in filtered_items]
-        return _render_base_records(
-            table_id,
-            display_items,
-            total=total,
-            has_more=has_more,
-            next_offset=offset + len(items) if has_more else None,
-            field_names=field_names,
-            scanned_count=len(items),
-            matched_count=len(filtered_items) if has_filter else None,
+        return authorize(
+            _render_base_records(
+                table_id,
+                display_items,
+                total=total,
+                has_more=has_more,
+                next_offset=offset + len(items) if has_more else None,
+                field_names=field_names,
+                scanned_count=len(items),
+                matched_count=len(filtered_items) if has_filter else None,
+            )
         )
 
     payload = await _run_feishu_base_shortcut(_cli_command(requested_offset=offset, requested_limit=limit))
@@ -972,13 +1057,15 @@ async def _feishu_base_record_list(agent_id, arguments: dict) -> str:
         items = []
     filtered_items = _filter_records(items, field_name=filter_field, op=filter_op, expected=filter_value)
     display_items = [_project_record_fields(item, field_names) for item in filtered_items]
-    return _render_base_records(
-        table_id,
-        display_items,
-        total=payload.get("total"),
-        field_names=field_names,
-        scanned_count=len(items) if has_filter else None,
-        matched_count=len(filtered_items) if has_filter else None,
+    return authorize(
+        _render_base_records(
+            table_id,
+            display_items,
+            total=payload.get("total"),
+            field_names=field_names,
+            scanned_count=len(items) if has_filter else None,
+            matched_count=len(filtered_items) if has_filter else None,
+        )
     )
 
 

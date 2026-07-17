@@ -11,6 +11,7 @@ import uuid
 
 import httpx
 
+from app.services.agent_tool_domains.feishu_acl import with_feishu_alias_for_verified_result
 from app.services.agent_tool_domains.feishu_helpers import _get_feishu_token
 from app.services.agent_tool_domains.feishu_wiki import _feishu_wiki_get_node
 from app.services.connector_acl import authoritative_connector_source_item, with_connector_source_items
@@ -308,6 +309,24 @@ def _feishu_url_source_items(
     ]
 
 
+def _with_verified_url_alias(
+    result,
+    *,
+    agent_id: uuid.UUID | str,
+    target: FeishuUrlTarget,
+    tenant_id: uuid.UUID | str | None,
+    current_user_id: uuid.UUID | str | None,
+):
+    return with_feishu_alias_for_verified_result(
+        result,
+        source=target.url,
+        resource_type=_target_read_type(target) or "url",
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        current_user_id=current_user_id,
+    )
+
+
 async def _feishu_url_resolve(
     agent_id: uuid.UUID | str,
     arguments: dict,
@@ -349,13 +368,26 @@ async def _feishu_url_read(
     if target.kind == "wiki_space":
         from app.services.agent_tool_domains.feishu_wiki import _feishu_wiki_list
 
-        return await _feishu_wiki_list(
-            agent_id,
-            {
-                "space_id": target.space_id or token,
-                "recursive": bool(arguments.get("recursive", True)),
-                "scope": arguments.get("scope", "space"),
-            },
+        wiki_args = {
+            "space_id": target.space_id or token,
+            "recursive": bool(arguments.get("recursive", True)),
+            "scope": arguments.get("scope", "space"),
+        }
+        if tenant_id is None and current_user_id is None:
+            result = await _feishu_wiki_list(agent_id, wiki_args)
+        else:
+            result = await _feishu_wiki_list(
+                agent_id,
+                wiki_args,
+                tenant_id=tenant_id,
+                current_user_id=current_user_id,
+            )
+        return _with_verified_url_alias(
+            result,
+            agent_id=agent_id,
+            target=target,
+            tenant_id=tenant_id,
+            current_user_id=current_user_id,
         )
 
     if read_type == "docx":
@@ -371,15 +403,12 @@ async def _feishu_url_read(
                 tenant_id=tenant_id,
                 current_user_id=current_user_id,
             )
-        return with_connector_source_items(
+        return _with_verified_url_alias(
             result,
-            _feishu_url_source_items(
-                agent_id,
-                target,
-                tenant_id=tenant_id,
-                current_user_id=current_user_id,
-                protected_text=str(result),
-            ),
+            agent_id=agent_id,
+            target=target,
+            tenant_id=tenant_id,
+            current_user_id=current_user_id,
         )
 
     if read_type == "doc":
@@ -398,52 +427,88 @@ async def _feishu_url_read(
                 tenant_id=tenant_id,
                 current_user_id=current_user_id,
             )
-        return with_connector_source_items(
+        return _with_verified_url_alias(
             result,
-            _feishu_url_source_items(
-                agent_id,
-                target,
-                tenant_id=tenant_id,
-                current_user_id=current_user_id,
-                protected_text=str(result),
-            ),
+            agent_id=agent_id,
+            target=target,
+            tenant_id=tenant_id,
+            current_user_id=current_user_id,
         )
 
     if read_type == "sheet":
         if arguments.get("export") or arguments.get("file_extension"):
-            return await _feishu_drive_file_read(
-                agent_id,
-                {
-                    "token": token,
-                    "type": "sheet",
-                    "file_extension": arguments.get("file_extension", "xlsx"),
-                    "sub_id": arguments.get("sub_id"),
-                    "max_chars": max_chars,
-                },
+            drive_args = {
+                "token": token,
+                "type": "sheet",
+                "file_extension": arguments.get("file_extension", "xlsx"),
+                "sub_id": arguments.get("sub_id"),
+                "max_chars": max_chars,
+            }
+            if tenant_id is None and current_user_id is None:
+                result = await _feishu_drive_file_read(agent_id, drive_args)
+            else:
+                result = await _feishu_drive_file_read(
+                    agent_id,
+                    drive_args,
+                    tenant_id=tenant_id,
+                    current_user_id=current_user_id,
+                )
+            return _with_verified_url_alias(
+                result,
+                agent_id=agent_id,
+                target=target,
+                tenant_id=tenant_id,
+                current_user_id=current_user_id,
             )
         from app.services.agent_tool_domains.feishu_sheets import _feishu_sheet_read
 
-        return await _feishu_sheet_read(
-            agent_id,
-            {
-                "spreadsheet_token": token,
-                "sheet_id": arguments.get("sheet_id", ""),
-                "range": arguments.get("range", ""),
-                "value_render_option": arguments.get("value_render_option", ""),
-            },
+        sheet_args = {
+            "spreadsheet_token": token,
+            "sheet_id": arguments.get("sheet_id", ""),
+            "range": arguments.get("range", ""),
+            "value_render_option": arguments.get("value_render_option", ""),
+        }
+        if tenant_id is None and current_user_id is None:
+            result = await _feishu_sheet_read(agent_id, sheet_args)
+        else:
+            result = await _feishu_sheet_read(
+                agent_id,
+                sheet_args,
+                tenant_id=tenant_id,
+                current_user_id=current_user_id,
+            )
+        return _with_verified_url_alias(
+            result,
+            agent_id=agent_id,
+            target=target,
+            tenant_id=tenant_id,
+            current_user_id=current_user_id,
         )
 
     if read_type == "bitable":
         if arguments.get("export") or arguments.get("file_extension"):
-            return await _feishu_drive_file_read(
-                agent_id,
-                {
-                    "token": token,
-                    "type": "bitable",
-                    "file_extension": arguments.get("file_extension", "xlsx"),
-                    "sub_id": arguments.get("sub_id") or arguments.get("table_id"),
-                    "max_chars": max_chars,
-                },
+            drive_args = {
+                "token": token,
+                "type": "bitable",
+                "file_extension": arguments.get("file_extension", "xlsx"),
+                "sub_id": arguments.get("sub_id") or arguments.get("table_id"),
+                "max_chars": max_chars,
+            }
+            if tenant_id is None and current_user_id is None:
+                result = await _feishu_drive_file_read(agent_id, drive_args)
+            else:
+                result = await _feishu_drive_file_read(
+                    agent_id,
+                    drive_args,
+                    tenant_id=tenant_id,
+                    current_user_id=current_user_id,
+                )
+            return _with_verified_url_alias(
+                result,
+                agent_id=agent_id,
+                target=target,
+                tenant_id=tenant_id,
+                current_user_id=current_user_id,
             )
         table_id = (
             _clean_token(arguments.get("table_id"))
@@ -488,11 +553,42 @@ async def _feishu_url_read(
                 and arguments.get("max_records") is None
             ):
                 record_args["fetch_all"] = True
-            return await _feishu_base_record_list(agent_id, record_args)
+            if tenant_id is None and current_user_id is None:
+                result = await _feishu_base_record_list(agent_id, record_args)
+            else:
+                result = await _feishu_base_record_list(
+                    agent_id,
+                    record_args,
+                    tenant_id=tenant_id,
+                    current_user_id=current_user_id,
+                )
+            return _with_verified_url_alias(
+                result,
+                agent_id=agent_id,
+                target=target,
+                tenant_id=tenant_id,
+                current_user_id=current_user_id,
+            )
 
         from app.services.agent_tool_domains.feishu_base import _feishu_base_table_list
 
-        return await _feishu_base_table_list(agent_id, {"base_token": token})
+        table_args = {"base_token": token}
+        if tenant_id is None and current_user_id is None:
+            result = await _feishu_base_table_list(agent_id, table_args)
+        else:
+            result = await _feishu_base_table_list(
+                agent_id,
+                table_args,
+                tenant_id=tenant_id,
+                current_user_id=current_user_id,
+            )
+        return _with_verified_url_alias(
+            result,
+            agent_id=agent_id,
+            target=target,
+            tenant_id=tenant_id,
+            current_user_id=current_user_id,
+        )
 
     if read_type == "file":
         drive_args = {
@@ -509,22 +605,33 @@ async def _feishu_url_read(
                 tenant_id=tenant_id,
                 current_user_id=current_user_id,
             )
-        return with_connector_source_items(
+        return _with_verified_url_alias(
             result,
-            _feishu_url_source_items(
-                agent_id,
-                target,
-                tenant_id=tenant_id,
-                current_user_id=current_user_id,
-                protected_text=str(result),
-            ),
+            agent_id=agent_id,
+            target=target,
+            tenant_id=tenant_id,
+            current_user_id=current_user_id,
         )
 
     if read_type == "folder":
         from app.services.agent_tool_domains.feishu_wiki import _feishu_wiki_list
 
-        return await _feishu_wiki_list(
-            agent_id, {"node_token": token, "recursive": bool(arguments.get("recursive", False))}
+        wiki_args = {"node_token": token, "recursive": bool(arguments.get("recursive", False))}
+        if tenant_id is None and current_user_id is None:
+            result = await _feishu_wiki_list(agent_id, wiki_args)
+        else:
+            result = await _feishu_wiki_list(
+                agent_id,
+                wiki_args,
+                tenant_id=tenant_id,
+                current_user_id=current_user_id,
+            )
+        return _with_verified_url_alias(
+            result,
+            agent_id=agent_id,
+            target=target,
+            tenant_id=tenant_id,
+            current_user_id=current_user_id,
         )
 
     if target.kind == "external_url":
@@ -744,13 +851,11 @@ async def _feishu_drive_file_read(
     tenant_id: uuid.UUID | str | None = None,
     current_user_id: uuid.UUID | str | None = None,
 ) -> str:
-    raw_file = (
+    raw_file = _clean_token(
         arguments.get("file_token") or arguments.get("token") or arguments.get("file_url") or arguments.get("url") or ""
     )
-    parsed = _parse_feishu_url(str(raw_file))
-    token = _clean_token(
-        arguments.get("file_token") or arguments.get("token") or (parsed.token if parsed else raw_file)
-    )
+    parsed = _parse_feishu_url(raw_file)
+    token = _clean_token(parsed.token if parsed else raw_file)
     if not token:
         return _error(
             "feishu_drive_file_read",
@@ -808,7 +913,7 @@ async def _feishu_drive_file_read(
             extra={"file_name": filename, "file_token": token},
         )
 
-    return with_connector_source_items(
+    result = with_connector_source_items(
         _render_file_text(filename, token, text, _max_chars(arguments), str(meta.get("source") or "drive")),
         _feishu_drive_source_items(
             agent_id,
@@ -818,3 +923,13 @@ async def _feishu_drive_file_read(
             protected_text=text,
         ),
     )
+    if parsed and parsed.kind not in {"unknown", "external_url"} and parsed.url != token:
+        return with_feishu_alias_for_verified_result(
+            result,
+            source=parsed.url,
+            resource_type=_target_read_type(parsed) or "drive_file",
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            current_user_id=current_user_id,
+        )
+    return result

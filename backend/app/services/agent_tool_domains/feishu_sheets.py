@@ -14,6 +14,10 @@ from app.services.agent_tool_domains.feishu_cli import (
     _feishu_cli_available,
     _run_feishu_cli_command,
 )
+from app.services.agent_tool_domains.feishu_acl import (
+    preserve_feishu_fallback_authority,
+    with_feishu_read_authority,
+)
 from app.services.agent_tool_domains.feishu_helpers import _get_feishu_token
 from app.tools.result_envelope import render_tool_fallback
 
@@ -29,6 +33,14 @@ def _extract_spreadsheet_token(value: str) -> str:
     if match:
         return match.group(1)
     return normalized
+
+
+def _sheet_read_sources(arguments: dict, spreadsheet_token: str) -> list[tuple[str, str]]:
+    sources = [(f"feishu://sheet/{spreadsheet_token}", "sheet")]
+    spreadsheet_url = str(arguments.get("spreadsheet_url") or "").strip()
+    if spreadsheet_url:
+        sources.append((spreadsheet_url, "sheet"))
+    return sources
 
 
 def _normalize_sheet_range(sheet_id: str, range_value: str) -> str:
@@ -115,7 +127,13 @@ async def _get_first_sheet_id_via_openapi(spreadsheet_token: str, token: str) ->
     return sheets[0].get("sheet_id", "")
 
 
-async def _feishu_sheet_info_via_openapi(agent_id: uuid.UUID, arguments: dict) -> str:
+async def _feishu_sheet_info_via_openapi(
+    agent_id: uuid.UUID,
+    arguments: dict,
+    *,
+    tenant_id: uuid.UUID | str | None = None,
+    current_user_id: uuid.UUID | str | None = None,
+) -> str:
     spreadsheet_token = _extract_spreadsheet_token(
         arguments.get("spreadsheet_token") or arguments.get("spreadsheet_url") or ""
     )
@@ -151,14 +169,27 @@ async def _feishu_sheet_info_via_openapi(agent_id: uuid.UUID, arguments: dict) -
     spreadsheet_data = spreadsheet_payload.get("data", {})
     spreadsheet = spreadsheet_data.get("spreadsheet", spreadsheet_data)
     sheets = sheets_payload.get("data", {}).get("sheets", [])
-    return _format_sheet_info(
+    rendered = _format_sheet_info(
         spreadsheet_token=spreadsheet.get("spreadsheet_token", spreadsheet_token),
         title=spreadsheet.get("title"),
         sheets=sheets,
     )
+    return with_feishu_read_authority(
+        rendered,
+        sources=_sheet_read_sources(arguments, spreadsheet_token),
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        current_user_id=current_user_id,
+    )
 
 
-async def _feishu_sheet_info(agent_id: uuid.UUID, arguments: dict) -> str:
+async def _feishu_sheet_info(
+    agent_id: uuid.UUID,
+    arguments: dict,
+    *,
+    tenant_id: uuid.UUID | str | None = None,
+    current_user_id: uuid.UUID | str | None = None,
+) -> str:
     spreadsheet_token = _extract_spreadsheet_token(
         arguments.get("spreadsheet_token") or arguments.get("spreadsheet_url") or ""
     )
@@ -166,7 +197,14 @@ async def _feishu_sheet_info(agent_id: uuid.UUID, arguments: dict) -> str:
         return "❌ Missing required argument 'spreadsheet_token' or 'spreadsheet_url'"
 
     if not await _feishu_cli_available():
-        return await _feishu_sheet_info_via_openapi(agent_id, arguments)
+        if tenant_id is None and current_user_id is None:
+            return await _feishu_sheet_info_via_openapi(agent_id, arguments)
+        return await _feishu_sheet_info_via_openapi(
+            agent_id,
+            arguments,
+            tenant_id=tenant_id,
+            current_user_id=current_user_id,
+        )
 
     cli_args = ["sheets", "+info", "--spreadsheet-token", spreadsheet_token]
     if arguments.get("spreadsheet_url"):
@@ -179,14 +217,29 @@ async def _feishu_sheet_info(agent_id: uuid.UUID, arguments: dict) -> str:
             spreadsheet = spreadsheet["spreadsheet"]
         sheets_payload = payload.get("sheets", [])
         sheets = sheets_payload.get("sheets", []) if isinstance(sheets_payload, dict) else sheets_payload
-        return _format_sheet_info(
+        rendered = _format_sheet_info(
             spreadsheet_token=spreadsheet.get("spreadsheet_token", payload.get("spreadsheet_token", spreadsheet_token)),
             title=spreadsheet.get("title"),
             sheets=sheets,
         )
+        return with_feishu_read_authority(
+            rendered,
+            sources=_sheet_read_sources(arguments, spreadsheet_token),
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            current_user_id=current_user_id,
+        )
     except FeishuCliError as exc:
-        fallback_result = await _feishu_sheet_info_via_openapi(agent_id, arguments)
-        return render_tool_fallback(
+        if tenant_id is None and current_user_id is None:
+            fallback_result = await _feishu_sheet_info_via_openapi(agent_id, arguments)
+        else:
+            fallback_result = await _feishu_sheet_info_via_openapi(
+                agent_id,
+                arguments,
+                tenant_id=tenant_id,
+                current_user_id=current_user_id,
+            )
+        rendered = render_tool_fallback(
             tool_name="feishu_sheet_info",
             error_class=exc.error_class,
             message=str(exc),
@@ -196,9 +249,16 @@ async def _feishu_sheet_info(agent_id: uuid.UUID, arguments: dict) -> str:
             retryable=exc.retryable,
             actionable_hint=exc.actionable_hint,
         )
+        return preserve_feishu_fallback_authority(rendered, fallback_result)
 
 
-async def _feishu_sheet_read_via_openapi(agent_id: uuid.UUID, arguments: dict) -> str:
+async def _feishu_sheet_read_via_openapi(
+    agent_id: uuid.UUID,
+    arguments: dict,
+    *,
+    tenant_id: uuid.UUID | str | None = None,
+    current_user_id: uuid.UUID | str | None = None,
+) -> str:
     spreadsheet_token = _extract_spreadsheet_token(
         arguments.get("spreadsheet_token") or arguments.get("spreadsheet_url") or ""
     )
@@ -240,10 +300,23 @@ async def _feishu_sheet_read_via_openapi(agent_id: uuid.UUID, arguments: dict) -
     values = value_range.get("values", [])
     truncated = bool(value_range.get("truncated", False))
     total_rows = value_range.get("total_rows")
-    return _format_sheet_values(actual_range, values, truncated=truncated, total_rows=total_rows)
+    rendered = _format_sheet_values(actual_range, values, truncated=truncated, total_rows=total_rows)
+    return with_feishu_read_authority(
+        rendered,
+        sources=_sheet_read_sources(arguments, spreadsheet_token),
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        current_user_id=current_user_id,
+    )
 
 
-async def _feishu_sheet_read(agent_id: uuid.UUID, arguments: dict) -> str:
+async def _feishu_sheet_read(
+    agent_id: uuid.UUID,
+    arguments: dict,
+    *,
+    tenant_id: uuid.UUID | str | None = None,
+    current_user_id: uuid.UUID | str | None = None,
+) -> str:
     spreadsheet_token = _extract_spreadsheet_token(
         arguments.get("spreadsheet_token") or arguments.get("spreadsheet_url") or ""
     )
@@ -254,7 +327,14 @@ async def _feishu_sheet_read(agent_id: uuid.UUID, arguments: dict) -> str:
     read_range = _normalize_sheet_range(sheet_id, str(arguments.get("range") or ""))
 
     if not await _feishu_cli_available():
-        return await _feishu_sheet_read_via_openapi(agent_id, arguments)
+        if tenant_id is None and current_user_id is None:
+            return await _feishu_sheet_read_via_openapi(agent_id, arguments)
+        return await _feishu_sheet_read_via_openapi(
+            agent_id,
+            arguments,
+            tenant_id=tenant_id,
+            current_user_id=current_user_id,
+        )
 
     cli_args = ["sheets", "+read", "--spreadsheet-token", spreadsheet_token]
     if arguments.get("spreadsheet_url"):
@@ -272,10 +352,25 @@ async def _feishu_sheet_read(agent_id: uuid.UUID, arguments: dict) -> str:
         values = payload.get("values", [])
         truncated = bool(payload.get("truncated", False))
         total_rows = payload.get("total_rows")
-        return _format_sheet_values(actual_range, values, truncated=truncated, total_rows=total_rows)
+        rendered = _format_sheet_values(actual_range, values, truncated=truncated, total_rows=total_rows)
+        return with_feishu_read_authority(
+            rendered,
+            sources=_sheet_read_sources(arguments, spreadsheet_token),
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            current_user_id=current_user_id,
+        )
     except FeishuCliError as exc:
-        fallback_result = await _feishu_sheet_read_via_openapi(agent_id, arguments)
-        return render_tool_fallback(
+        if tenant_id is None and current_user_id is None:
+            fallback_result = await _feishu_sheet_read_via_openapi(agent_id, arguments)
+        else:
+            fallback_result = await _feishu_sheet_read_via_openapi(
+                agent_id,
+                arguments,
+                tenant_id=tenant_id,
+                current_user_id=current_user_id,
+            )
+        rendered = render_tool_fallback(
             tool_name="feishu_sheet_read",
             error_class=exc.error_class,
             message=str(exc),
@@ -285,3 +380,4 @@ async def _feishu_sheet_read(agent_id: uuid.UUID, arguments: dict) -> str:
             retryable=exc.retryable,
             actionable_hint=exc.actionable_hint,
         )
+        return preserve_feishu_fallback_authority(rendered, fallback_result)

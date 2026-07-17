@@ -495,6 +495,82 @@ async def test_tool_invocation_has_pre_effect_fence_and_exactly_one_typed_result
         assert [event.id for event in replay] == [event.id for event in result_events]
 
 
+async def test_report_progress_commits_one_public_commentary_item_before_effect_execution(
+    owner_sessionmaker,
+    monkeypatch,
+) -> None:
+    from sqlalchemy import select
+
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.models.session_v2 import SessionEventOutbox
+    from app.services import session_tool_runtime
+
+    tenant_id, agent_id, session_id, run_id, turn_id = await _seed(owner_sessionmaker)
+    public_message = "LIVE_PROGRESS_REPLAY_0717: validating the durable Session projection."
+    async with owner_sessionmaker() as db:
+        request_id, _ = await _prepare(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            run_id=run_id,
+            turn_id=turn_id,
+        )
+        commentary_draft = session_tool_runtime._progress_commentary_draft
+        monkeypatch.setattr(session_tool_runtime, "_progress_commentary_draft", lambda **_kwargs: None)
+        invocation = await session_tool_runtime.prepare_tool_invocation(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            run_id=run_id,
+            provider_request_id=request_id,
+            provider_tool_use_id=f"tool-progress-{run_id.hex}",
+            tool_name="report_progress",
+            arguments={"message": public_message},
+        )
+        monkeypatch.setattr(session_tool_runtime, "_progress_commentary_draft", commentary_draft)
+        replayed = await session_tool_runtime.prepare_tool_invocation(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            run_id=run_id,
+            provider_request_id=request_id,
+            provider_tool_use_id=f"tool-progress-{run_id.hex}",
+            tool_name="report_progress",
+            arguments={"message": public_message},
+        )
+        await db.commit()
+
+        events = list(
+            (
+                await db.execute(
+                    select(ChatTranscriptEvent)
+                    .where(ChatTranscriptEvent.invocation_id == invocation.id)
+                    .order_by(ChatTranscriptEvent.sequence)
+                )
+            ).scalars()
+        )
+        commentary = [event for event in events if event.item_kind == "assistant_commentary"]
+        tool_calls = [event for event in events if event.item_kind == "tool_call"]
+        assert replayed.id == invocation.id
+        assert len(commentary) == 1
+        assert commentary[0].lifecycle == "completed"
+        assert commentary[0].content == public_message
+        assert commentary[0].visibility_scope == "direct_user"
+        assert commentary[0].parent_item_id == invocation.invocation_item_id
+        assert len(tool_calls) == 1
+        assert "args" not in tool_calls[0].metadata_json["v2_payload"]
+
+        envelope = await db.scalar(
+            select(SessionEventOutbox.envelope_json).where(SessionEventOutbox.event_id == commentary[0].id)
+        )
+        assert envelope is not None
+        assert envelope["item_kind"] == "assistant_commentary"
+        assert envelope["payload"] == {"phase": "commentary", "content": public_message}
+
+
 async def test_approval_waiting_invocation_gets_one_real_result_only_after_user_allows(
     owner_sessionmaker,
 ) -> None:

@@ -98,12 +98,12 @@ def _has_write_scope(plan_id: str | None, runtime_task_id: str | None, session_i
     )
 )
 async def report_progress(request: ToolExecutionRequest) -> str:
-    """Acknowledge public model text; the canonical tool event owns persistence.
+    """Acknowledge public model text after its canonical commentary commit.
 
-    The runtime already commits the original tool arguments with stable event
-    identity before the result is consumed. Keeping this handler semantic-free
-    avoids a second prose source while still giving every provider an explicit
-    public progress channel.
+    The Session tool runtime projects the original ``message`` bytes into one
+    ``assistant_commentary`` item in the same pre-effect transaction. Keeping
+    this handler semantic-free avoids a second prose source while still giving
+    every provider an explicit public progress channel.
     """
 
     message = request.arguments.get("message")

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -203,6 +204,72 @@ def test_legacy_adapter_is_explicit_byte_faithful_and_never_reads_language_for_s
     assert "provider_private_reasoning" not in event["payload"]["metadata"]
     assert event["payload"]["metadata"]["tool_call_id"] == "call-1"
     assert "arguments" not in event["payload"]["metadata"]
+
+
+@pytest.mark.parametrize(
+    ("event_type", "item_status", "envelope", "expected_lifecycle"),
+    [
+        (
+            "tool_call",
+            "running",
+            {
+                "name": "report_progress",
+                "args": {"message": "Public progress survives canonical replay."},
+                "status": "running",
+                "tool_call_id": "progress-call-1",
+            },
+            "started",
+        ),
+        (
+            "tool_result",
+            "succeeded",
+            {
+                "name": "report_progress",
+                "args": {"message": "Public progress survives canonical replay."},
+                "status": "done",
+                "result": '{"acknowledged":true,"ok":true}',
+                "tool_call_id": "progress-call-1",
+            },
+            "completed",
+        ),
+    ],
+)
+def test_legacy_tool_envelope_is_lifted_without_rewriting_model_authored_arguments(
+    event_type: str,
+    item_status: str,
+    envelope: dict[str, object],
+    expected_lifecycle: str,
+) -> None:
+    from app.services.session_event_contract import serialize_session_event
+
+    raw_content = json.dumps(envelope, ensure_ascii=False, sort_keys=True)
+    event = serialize_session_event(
+        _legacy_row(
+            actor_type="tool",
+            event_type=event_type,
+            item_type=event_type,
+            item_status=item_status,
+            content=raw_content,
+            parts_json=[],
+            metadata_json={
+                "role": "tool_call",
+                "round_id": f"round-{uuid.uuid4().hex}-1",
+                "tool_name": "report_progress",
+                "tool_call_id": "progress-call-1",
+            },
+        ),
+        audience="user",
+    )
+
+    assert event["item_kind"] == event_type
+    assert event["lifecycle"] == expected_lifecycle
+    assert event["payload"]["content"] == raw_content
+    assert event["payload"]["tool_name"] == "report_progress"
+    assert event["payload"]["args"] == envelope["args"]
+    assert event["payload"]["status"] == envelope["status"]
+    assert event["payload"]["tool_call_id"] == "progress-call-1"
+    if event_type == "tool_result":
+        assert event["payload"]["result"] == envelope["result"]
 
 
 def test_reducer_keeps_one_item_and_terminal_semantic_outcome_is_monotonic() -> None:

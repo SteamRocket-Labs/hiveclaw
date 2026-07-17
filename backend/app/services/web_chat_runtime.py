@@ -3750,11 +3750,12 @@ async def _persist_tool_call(
             event_ids = list(
                 (
                     await db.execute(
-                        select(ChatTranscriptEvent.id).where(
+                        select(ChatTranscriptEvent.id)
+                        .where(
                             ChatTranscriptEvent.invocation_id == invocation.id,
-                            ChatTranscriptEvent.item_kind == "tool_call",
-                            ChatTranscriptEvent.lifecycle == "started",
+                            ChatTranscriptEvent.event_type.in_(("assistant_commentary.completed", "tool_call.started")),
                         )
+                        .order_by(ChatTranscriptEvent.sequence)
                     )
                 ).scalars()
             )

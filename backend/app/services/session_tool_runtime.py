@@ -60,6 +60,36 @@ def _run_scope(result: SessionModelResult) -> dict[str, str]:
     }
 
 
+def _progress_commentary_draft(
+    *,
+    invocation_id: uuid.UUID,
+    item_id: uuid.UUID,
+    result: SessionModelResult,
+    clean_tool_name: str,
+    clean_tool_use_id: str,
+    args_payload: Mapping[str, Any],
+) -> SessionEventDraft | None:
+    """Project model-authored public progress without exposing generic tool arguments."""
+
+    if clean_tool_name != "report_progress":
+        return None
+    public_message = args_payload.get("message")
+    if not isinstance(public_message, str) or not public_message.strip():
+        return None
+    return SessionEventDraft(
+        item_id=uuid.uuid5(invocation_id, "public-progress-commentary"),
+        item_kind="assistant_commentary",
+        lifecycle="completed",
+        scope=_scope(result),
+        actor={"type": "assistant"},
+        payload={"phase": "commentary", "content": public_message},
+        result_id=result.id,
+        invocation_id=invocation_id,
+        provider_tool_use_id=clean_tool_use_id,
+        parent_item_id=item_id,
+    )
+
+
 async def _result_for_invocation(
     db: AsyncSession,
     invocation: SessionToolInvocation,
@@ -127,6 +157,14 @@ async def prepare_tool_invocation(
         }
     )
     effect_key = f"session-tool:{invocation_id}"
+    progress_draft = _progress_commentary_draft(
+        invocation_id=invocation_id,
+        item_id=item_id,
+        result=result,
+        clean_tool_name=clean_tool_name,
+        clean_tool_use_id=clean_tool_use_id,
+        args_payload=args_payload,
+    )
     invocation = await db.scalar(
         select(SessionToolInvocation)
         .where(
@@ -143,6 +181,24 @@ async def prepare_tool_invocation(
             or invocation.run_id != run_id
         ):
             raise RuntimeError("provider_tool_use_id_conflict")
+        if progress_draft is not None:
+            commentary_exists = await db.scalar(
+                select(ChatTranscriptEvent.id).where(
+                    ChatTranscriptEvent.tenant_id == tenant_id,
+                    ChatTranscriptEvent.session_id == session_id,
+                    ChatTranscriptEvent.invocation_id == invocation_id,
+                    ChatTranscriptEvent.item_id == progress_draft.item_id,
+                    ChatTranscriptEvent.item_kind == "assistant_commentary",
+                )
+            )
+            if commentary_exists is None:
+                await append_session_events(
+                    db,
+                    tenant_id=tenant_id,
+                    agent_id=agent_id,
+                    session_id=session_id,
+                    drafts=[progress_draft],
+                )
         return invocation
 
     invocation = SessionToolInvocation(
@@ -164,35 +220,39 @@ async def prepare_tool_invocation(
     )
     db.add(invocation)
     await db.flush()
+    drafts: list[SessionEventDraft] = []
+    if progress_draft is not None:
+        drafts.append(progress_draft)
+    drafts.append(
+        SessionEventDraft(
+            item_id=item_id,
+            item_kind="tool_call",
+            lifecycle="started",
+            scope=_scope(result),
+            actor={"type": "tool"},
+            payload={
+                "tool_name": clean_tool_name,
+                "invocation_id": str(invocation_id),
+                "provider_request_id": result.provider_request_id,
+                "provider_tool_use_id": clean_tool_use_id,
+                "args_hash": args_hash,
+                "authority_snapshot_hash": authority_snapshot_hash,
+                "authority_snapshot_ref": f"session-model-result:{result.id}",
+                "effect_idempotency_key": effect_key,
+                "effect_state": "prepared_not_started",
+            },
+            result_id=result.id,
+            invocation_id=invocation_id,
+            provider_tool_use_id=clean_tool_use_id,
+            content_hash=args_hash,
+        )
+    )
     await append_session_events(
         db,
         tenant_id=tenant_id,
         agent_id=agent_id,
         session_id=session_id,
-        drafts=[
-            SessionEventDraft(
-                item_id=item_id,
-                item_kind="tool_call",
-                lifecycle="started",
-                scope=_scope(result),
-                actor={"type": "tool"},
-                payload={
-                    "tool_name": clean_tool_name,
-                    "invocation_id": str(invocation_id),
-                    "provider_request_id": result.provider_request_id,
-                    "provider_tool_use_id": clean_tool_use_id,
-                    "args_hash": args_hash,
-                    "authority_snapshot_hash": authority_snapshot_hash,
-                    "authority_snapshot_ref": f"session-model-result:{result.id}",
-                    "effect_idempotency_key": effect_key,
-                    "effect_state": "prepared_not_started",
-                },
-                result_id=result.id,
-                invocation_id=invocation_id,
-                provider_tool_use_id=clean_tool_use_id,
-                content_hash=args_hash,
-            )
-        ],
+        drafts=drafts,
     )
     return invocation
 

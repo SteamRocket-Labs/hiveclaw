@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { ChatTranscriptEventPayload } from './chatRuntime';
+import { buildRunTimelineFromMessages } from './chatDisclosureReducer';
 import {
   consumeSessionEnvelope,
   projectSessionEventStoreToMessages,
@@ -181,6 +182,83 @@ describe('canonical Session event consumer', () => {
       toolResult: 'file bytes',
       sessionItem: { id: 'tool-call-1', kind: 'tool_call' },
     });
+  });
+
+  it('recovers a legacy persisted tool envelope during a rolling canonical replay', () => {
+    const progress = 'LIVE_PROGRESS_REPLAY_0717: checking the durable Session path.';
+    const legacyToolCall: SessionEventV2 = {
+      ...event(1, 'started'),
+      ordinal: undefined,
+      item_id: 'legacy-progress-call-1',
+      item_kind: 'tool_call',
+      kind: 'tool_call.started',
+      lifecycle: 'started',
+      payload_schema: 'hive.session.payload.tool_call.started.v2',
+      actor: { type: 'tool' },
+      payload: {
+        content: JSON.stringify({
+          name: 'report_progress',
+          args: { message: progress },
+          status: 'running',
+          tool_call_id: 'progress-call-1',
+        }),
+        parts: [],
+        metadata: { tool_name: 'report_progress', tool_call_id: 'progress-call-1' },
+        legacy: true,
+      },
+    };
+
+    const messages = projectSessionEventStoreToMessages(replay([legacyToolCall]));
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      role: 'tool_call',
+      toolName: 'report_progress',
+      toolArgs: { message: progress },
+      toolStatus: 'running',
+    });
+    expect(buildRunTimelineFromMessages(messages).steps).toEqual([
+      expect.objectContaining({
+        kind: 'commentary',
+        title: 'Progress update',
+        details: progress,
+      }),
+    ]);
+  });
+
+  it('projects a native report_progress commentary item identically after live delivery and replay', () => {
+    const progress = 'LIVE_PROGRESS_NATIVE_0717: validating live delivery and reload.';
+    const commentary: SessionEventV2 = {
+      ...event(1, 'completed'),
+      ordinal: undefined,
+      item_id: 'progress-commentary-1',
+      item_kind: 'assistant_commentary',
+      kind: 'assistant_commentary.completed',
+      lifecycle: 'completed',
+      payload_schema: 'hive.session.payload.assistant_commentary.completed.v2',
+      invocation_id: 'progress-invocation-1',
+      parent_item_id: 'progress-tool-call-1',
+      actor: { type: 'assistant' },
+      payload: { phase: 'commentary', content: progress },
+    };
+
+    const messages = projectSessionEventStoreToMessages(replay([commentary]));
+    const timeline = buildRunTimelineFromMessages(messages);
+
+    expect(messages).toEqual([
+      expect.objectContaining({
+        role: 'assistant',
+        content: progress,
+        eventType: 'assistant_commentary',
+      }),
+    ]);
+    expect(timeline.steps).toEqual([
+      expect.objectContaining({
+        kind: 'commentary',
+        title: 'Progress update',
+        details: progress,
+      }),
+    ]);
   });
 
   it('preserves no-phase public model text as assistant_text without forging commentary semantics', () => {

@@ -324,8 +324,8 @@ flowchart TD
 
 - `report_progress(message)` 的 `message` 由 LLM 自己写，语义所有者仍是模型；
 - 工具形态只解决 Provider protocol 没有 public commentary phase 的可达性问题，不能启动工作、授权 effect、改变 Task 或生成平台结论；
-- canonical tool event 保存原始 arguments、stable event/item identity 和顺序，handler 只回机械 ACK，不复制或改写 message；
-- frontend 将该 exact message 投影为公开 Markdown commentary；空 message 只产生 typed error/不渲染，不能用 fallback prose 补洞；
+- 通用原始 arguments 继续只保存在受控 `SessionToolInvocation`，不得为了 UI 公开任意工具参数；仅 `report_progress.message` 在 pre-effect 同一事务中按原字节提交为 stable `assistant_commentary` + outbox，handler 只回机械 ACK，不复制或改写 message；
+- frontend 直接消费该 canonical commentary；rolling deploy 中旧实例已创建、但未投影 commentary 的 invocation 由新实例在同一 row lock 下按 stable item ID 幂等修复；rolling V1 row 仅按持久化 JSON machine envelope 恢复，不从自然语言猜字段。空 message 只产生 typed error/不渲染，不能用 fallback prose 补洞；
 - 该表达通道以 `agent.session.progress` 进入 capability taxonomy 供 registry/audit 守恒，但不进入 admin policy definitions，不得伪装成可关闭的外部 effect 开关；Plan Mode 也不得禁止它，因为它等价于普通 assistant public text；authority、secret ingress 和 Session visibility 仍照常约束哪些字节可以进入模型和谁能看到 Session。
 
 这不是让平台“强迫模型暴露思维链”。模型只报告已观察进展、决定和下一动作；provider-private reasoning 继续隔离。完整实现与生产证据统一回填 Session V2 §28.5 和总报告 `EVID-G2-016/017`。

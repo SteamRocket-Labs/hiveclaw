@@ -1303,6 +1303,47 @@ def _legacy_lifecycle(row: Any, item_kind: str, metadata: Mapping[str, Any]) -> 
     return None
 
 
+_LEGACY_TOOL_ENVELOPE_FIELDS = (
+    "args",
+    "status",
+    "result",
+    "tool_call_id",
+    "step_id",
+    "visibility",
+    "started_at",
+    "completed_at",
+    "duration_ms",
+    "content_replacement",
+)
+
+
+def _legacy_tool_payload(row: Any, metadata: Mapping[str, Any]) -> dict[str, Any]:
+    """Lift the exact persisted tool envelope into canonical payload fields.
+
+    V1 web-chat rows store the vendor-neutral tool envelope as JSON in
+    ``content``.  Live WebSocket consumers receive its ``name`` and ``args``
+    directly, so replay must expose the same machine fields rather than asking
+    the UI to infer them from display text.  Invalid/non-object JSON remains
+    byte-faithful in ``payload.content`` and contributes no canonical fields.
+    """
+
+    content = str(_value(row, "content", "") or "")
+    try:
+        parsed = json.loads(content)
+    except (TypeError, ValueError):
+        parsed = None
+    envelope = parsed if isinstance(parsed, Mapping) else {}
+
+    tool_name = _text(envelope.get("name")) or _text(envelope.get("tool_name")) or _text(metadata.get("tool_name"))
+    payload: dict[str, Any] = {}
+    if tool_name:
+        payload["tool_name"] = tool_name
+    for field_name in _LEGACY_TOOL_ENVELOPE_FIELDS:
+        if field_name in envelope:
+            payload[field_name] = copy.deepcopy(envelope[field_name])
+    return payload
+
+
 def _legacy_scope(row: Any, item_kind: str, metadata: Mapping[str, Any]) -> dict[str, str] | None:
     session_id = _text(_value(row, "session_id")) or ""
     turn_id = _text(_value(row, "turn_id")) or _text(metadata.get("turn_id"))
@@ -1535,6 +1576,8 @@ def serialize_session_event(row: Any, *, audience: str = "operator") -> dict[str
         "metadata": projected_metadata,
         "legacy": True,
     }
+    if item_kind in {"tool_call", "tool_result"}:
+        payload.update(_legacy_tool_payload(row, projected_metadata))
     if item_kind == "assistant_text":
         payload["phase"] = "unknown"
     elif item_kind == "assistant_commentary":

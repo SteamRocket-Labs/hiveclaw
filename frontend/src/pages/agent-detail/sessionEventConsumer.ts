@@ -44,6 +44,35 @@ function finalDisplayContent(item: SessionItemV2, store: SessionEventStore): str
     .join('');
 }
 
+function recordValue(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function persistedToolEnvelope(payload: Record<string, unknown>): Record<string, unknown> {
+  const direct = recordValue(payload);
+  let content: Record<string, unknown> | undefined;
+  if (typeof payload.content === 'string' && payload.content.trim()) {
+    try {
+      content = recordValue(JSON.parse(payload.content));
+    } catch {
+      content = undefined;
+    }
+  }
+  const parts = Array.isArray(payload.parts) ? payload.parts : [];
+  const toolPart = parts
+    .map(recordValue)
+    .find((part) => part?.type === 'tool_call');
+  const metadata = recordValue(payload.metadata);
+  return {
+    ...(metadata || {}),
+    ...(toolPart || {}),
+    ...(content || {}),
+    ...(direct || {}),
+  };
+}
+
 function projectCanonicalItem(
   item: SessionItemV2,
   store: SessionEventStore,
@@ -95,19 +124,18 @@ function projectCanonicalItem(
     };
   }
   if (item.kind === 'tool_call' || item.kind === 'tool_result') {
+    const toolEnvelope = persistedToolEnvelope(item.payload);
     const pairedResult = item.kind === 'tool_call'
       ? toolResultByCall.get(item.id) || (item.invocationId ? toolResultByCall.get(item.invocationId) : undefined)
       : item;
-    const toolName = typeof item.payload.tool_name === 'string'
-      ? item.payload.tool_name
-      : typeof item.payload.name === 'string' ? item.payload.name : undefined;
-    const toolResult = typeof pairedResult?.payload.result === 'string'
-      ? pairedResult.payload.result
+    const pairedEnvelope = pairedResult ? persistedToolEnvelope(pairedResult.payload) : undefined;
+    const toolName = typeof toolEnvelope.tool_name === 'string'
+      ? toolEnvelope.tool_name
+      : typeof toolEnvelope.name === 'string' ? toolEnvelope.name : undefined;
+    const toolResult = typeof pairedEnvelope?.result === 'string'
+      ? pairedEnvelope.result
       : pairedResult ? itemDisplayContent(pairedResult) : undefined;
-    const rawToolArgs = item.payload.args ?? item.payload.arguments ?? item.payload.input;
-    const toolArgs = rawToolArgs && typeof rawToolArgs === 'object' && !Array.isArray(rawToolArgs)
-      ? rawToolArgs as Record<string, unknown>
-      : undefined;
+    const toolArgs = recordValue(toolEnvelope.args ?? toolEnvelope.arguments ?? toolEnvelope.input);
     return {
       role: 'tool_call',
       content: '',

@@ -100,6 +100,13 @@ Use only these completion states:
 
 Completion status must be supported by current-checkout code paths and verification evidence. Documentation, schemas, routes, or UI shells alone are never sufficient evidence.
 
+**两条必须主动证伪的"假完成"信号（owner 反复咬到的病根，2026-07-17 固化）：**
+
+1. **写了函数 ≠ 接入生产（wiring proof）**：函数/模块/类存在——甚至有调用点、有 `@tool`/handler 注册、有 import——都不等于它在真实生产入口的执行路径上。判"执行（Execution）"原子闭环前，必须 grep 从 live entry（HTTP handler / 前端首屏加载 / daemon lifespan / hook / 工具注册点）一路追到该代码**真被调用**，排除孤儿、deferred、默认 `None` 短路。新写一个 service/函数从来不是接线证据。
+2. **绿测试 ≠ 走过真实路径（path proof）**：测试通过只证明被测代码在测试构造的条件下正确，不等于生产真走这条路径。测试可能 pin 了生产永不走的路径、用注入 fake / 手写格式掩盖未接线、或用 `assert x == None` 把缺陷钉成契约；验收环境还可能 Docker-off 把该红的真 PG 测试整体 skip。判"验收（Acceptance）"原子前必须三问：生产入口真接线了吗？fake 是否掩盖 wiring？断言是否钉死 bug？并确认验收跑全（Docker-on / 真 PG）、部署依赖完整（Dockerfile/env）。
+
+违反任一条，该能力仍是"断点/局部闭环"，不得标"闭环"。孤儿检测（每个新模块 trace 到 live entry point）对 daemon↔consumer、前端函数↔首屏路径尤其要查。
+
 ## AI-Native Design Law (最高设计法律 — judges every architectural decision)
 
 Hive is an **AI-native system**. Three layers, in strict priority order:

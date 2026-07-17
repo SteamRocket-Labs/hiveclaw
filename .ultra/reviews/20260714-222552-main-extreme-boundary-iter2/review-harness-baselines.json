@@ -1,0 +1,663 @@
+{
+  "schema_version": "hive.extreme_boundary.harness_baseline_review.v1",
+  "artifact_kind": "read_only_source_comparison",
+  "generated_at": "2026-07-14T22:35:24+08:00",
+  "scope": {
+    "objective": "对 CC/FreeCode、Codex 与 Hive 的上下文、发现、并发汇流、失败恢复和 typed state 进行可复核源码对照，为 CCPlus 极端边界审计提供事实底座。",
+    "dimensions": [
+      "context_window_and_compaction",
+      "tool_mcp_skill_discovery",
+      "subagent_concurrency_and_result_fanin",
+      "failure_retry_and_resume",
+      "typed_state_and_deferred_tools",
+      "cross_channel_a2a"
+    ],
+    "mutation_scope": "仅创建本 JSON；未修改业务代码。",
+    "hive_snapshot_note": "Hive worktree 在审计前已脏；Hive 证据行号指向本次读取时的 current worktree，HEAD 仅是基线，不应把这些行误称为纯 HEAD 内容。"
+  },
+  "provenance": [
+    {
+      "system": "hive",
+      "repo": "/Users/rocky243/vc-saas/hiveclaw-main",
+      "head": "501db6555dae374e5fcf43a6fdcfe8a3dd89343e",
+      "state": "dirty_current_worktree",
+      "worktree_status_hash_at_review_start": "86488874d33bac3c52f1a4518f7553f81af027430e6df93bde05a7ea971f9059"
+    },
+    {
+      "system": "freecode",
+      "repo": "/Users/rocky243/vc-saas/free-code-main",
+      "head": "7dc15d6c8fb0c40c7fcc02ce9b58204324252632",
+      "state": "source_checkout"
+    },
+    {
+      "system": "claude_code_snapshot",
+      "repo": "/Users/rocky243/Context Engineering/claude-code-org",
+      "head": "a99de1bb3c0c301b83b784abbcdb7a3674b2cd45",
+      "state": "readable_2026_03_31_sourcemap_snapshot",
+      "caveat": "README 明示这是 2026-03-31 sourcemap 泄漏快照；本次检查的七个核心文件与 FreeCode 对应文件 byte-identical，但不能据此认证当前 Claude Code 二进制。"
+    },
+    {
+      "system": "claude_code_installed_binary",
+      "path": "/Users/rocky243/.local/share/claude/versions/2.1.209",
+      "version": "2.1.209 (Claude Code)",
+      "state": "Mach-O arm64 binary; source parity unverified"
+    },
+    {
+      "system": "codex",
+      "repo": "/Users/rocky243/Context Engineering/codex",
+      "head": "5c19155cbd93bfa099016e7487259f61669823ff",
+      "state": "official_source_checkout"
+    }
+  ],
+  "source_facts": [
+    {
+      "id": "SF-CCF-CTX-01",
+      "systems": ["claude_code_snapshot", "freecode"],
+      "dimension": "context_window_and_compaction",
+      "claim_type": "source_fact",
+      "statement": "自动压缩预算从模型物理窗口扣除最多 20K summary output reserve，再保留固定 13K buffer；环境变量只能把窗口调低，不能抬高。",
+      "evidence": [
+        {"repo": "freecode", "path": "src/services/compact/autoCompact.ts", "symbol": "getEffectiveContextWindowSize", "lines": "30-49"},
+        {"repo": "freecode", "path": "src/services/compact/autoCompact.ts", "symbol": "getAutoCompactThreshold", "lines": "62-91"},
+        {"repo": "claude_code_snapshot", "path": "src/services/compact/autoCompact.ts", "symbol": "getEffectiveContextWindowSize/getAutoCompactThreshold", "lines": "30-91", "verification": "byte-identical to FreeCode at reviewed commits"}
+      ]
+    },
+    {
+      "id": "SF-CCF-CTX-02",
+      "systems": ["claude_code_snapshot", "freecode"],
+      "dimension": "failure_retry_and_resume",
+      "claim_type": "source_fact",
+      "statement": "AutoCompactTrackingState 记录连续失败，3 次后打开 circuit breaker；源码注释给出历史 retry storm 事实：单 session 最多 3272 次失败、每天约 250K 浪费调用。",
+      "evidence": [
+        {"repo": "freecode", "path": "src/services/compact/autoCompact.ts", "symbol": "AutoCompactTrackingState/MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES", "lines": "51-70"},
+        {"repo": "freecode", "path": "src/services/compact/autoCompact.ts", "symbol": "autoCompactIfNeeded", "lines": "241-351"}
+      ]
+    },
+    {
+      "id": "SF-CCF-CTX-03",
+      "systems": ["claude_code_snapshot", "freecode"],
+      "dimension": "failure_retry_and_resume",
+      "claim_type": "source_fact",
+      "statement": "Prompt-too-long 使用真实 API 413 驱动一次 collapse drain 和一次 reactive compact；恢复失败后直接返回，不运行 stop hooks，并跨 stop-hook continuation 保留 reactive-compact guard，专门防止 error→hook→retry 死循环。",
+      "evidence": [
+        {"repo": "freecode", "path": "src/query.ts", "symbol": "query loop prompt-too-long recovery", "lines": "1065-1182"},
+        {"repo": "freecode", "path": "src/query.ts", "symbol": "API error stop-hook guard", "lines": "1258-1265"},
+        {"repo": "freecode", "path": "src/query.ts", "symbol": "stop-hook reactive compact guard", "lines": "1292-1297"}
+      ]
+    },
+    {
+      "id": "SF-CCF-CTX-04",
+      "systems": ["claude_code_snapshot", "freecode"],
+      "dimension": "context_window_and_compaction",
+      "claim_type": "source_fact",
+      "statement": "CC/FreeCode 存在物理窗口前的 blocking limit，但 query preflight 在自动恢复可用时会跳过合成 preempt，让真实 413 进入恢复链；用户 task token budget 是自动续跑节奏而不是输入 Prompt 上限。",
+      "evidence": [
+        {"repo": "freecode", "path": "src/query.ts", "symbol": "blocking limit preflight", "lines": "592-647"},
+        {"repo": "freecode", "path": "src/query/tokenBudget.ts", "symbol": "task token budget", "lines": "45-93"}
+      ]
+    },
+    {
+      "id": "SF-CCF-DISC-01",
+      "systems": ["claude_code_snapshot", "freecode"],
+      "dimension": "tool_mcp_skill_discovery",
+      "claim_type": "source_fact",
+      "statement": "默认 ToolSearch 模式会延迟 MCP 和 shouldDefer tools；已发现工具名跨 compaction 保存并恢复，不要求所有 schema 常驻初始 Prompt。",
+      "evidence": [
+        {"repo": "freecode", "path": "src/utils/toolSearch.ts", "symbol": "getToolSearchMode", "lines": "154-198"},
+        {"repo": "freecode", "path": "src/tools/ToolSearchTool/prompt.ts", "symbol": "isDeferredTool", "lines": "55-108"},
+        {"repo": "freecode", "path": "src/utils/toolSearch.ts", "symbol": "extractDiscoveredToolNames", "lines": "524-591"}
+      ]
+    },
+    {
+      "id": "SF-CCF-DISC-02",
+      "systems": ["claude_code_snapshot", "freecode"],
+      "dimension": "tool_mcp_skill_discovery",
+      "claim_type": "source_fact",
+      "statement": "ToolSearch keyword 默认返回 5 条，但 max_results schema 没有上界；select:A,B,C 路径也没有数量上限，搜索会遍历并 materialize deferred tool descriptions。",
+      "evidence": [
+        {"repo": "freecode", "path": "src/tools/ToolSearchTool/ToolSearchTool.ts", "symbol": "inputSchema", "lines": "21-34"},
+        {"repo": "freecode", "path": "src/tools/ToolSearchTool/ToolSearchTool.ts", "symbol": "searchToolsWithKeywords", "lines": "186-302"},
+        {"repo": "freecode", "path": "src/tools/ToolSearchTool/ToolSearchTool.ts", "symbol": "direct select", "lines": "358-405"}
+      ]
+    },
+    {
+      "id": "SF-CCF-SKILL-01",
+      "systems": ["claude_code_snapshot", "freecode"],
+      "dimension": "tool_mcp_skill_discovery",
+      "claim_type": "source_fact",
+      "statement": "Skill catalog 使用约 1% context 的软预算：极端情况下非 bundled skill 退化到 names-only，但仍保留全部名字；当名字本身超过预算时函数会超预算返回，而不是删除技能。",
+      "evidence": [
+        {"repo": "freecode", "path": "src/tools/SkillTool/prompt.ts", "symbol": "getCharBudget", "lines": "20-40"},
+        {"repo": "freecode", "path": "src/tools/SkillTool/prompt.ts", "symbol": "formatCommandsWithinBudget", "lines": "70-171"}
+      ]
+    },
+    {
+      "id": "SF-CCF-FANIN-01",
+      "systems": ["claude_code_snapshot", "freecode"],
+      "dimension": "subagent_concurrency_and_result_fanin",
+      "claim_type": "source_fact",
+      "statement": "StreamingToolExecutor 只检查 concurrent-safe/unsafe 互斥，没有数值并发上限；AgentTool 是 concurrency-safe，因此同一模型响应中的大量 Agent calls 可同时启动。",
+      "evidence": [
+        {"repo": "freecode", "path": "src/services/tools/StreamingToolExecutor.ts", "symbol": "canExecuteTool/processQueue", "lines": "129-150"},
+        {"repo": "freecode", "path": "src/tools/AgentTool/AgentTool.tsx", "symbol": "isConcurrencySafe", "lines": "1264-1275"}
+      ]
+    },
+    {
+      "id": "SF-CCF-FANIN-02",
+      "systems": ["claude_code_snapshot", "freecode"],
+      "dimension": "subagent_concurrency_and_result_fanin",
+      "claim_type": "source_fact",
+      "statement": "AgentTool 返回最终 assistant text 而非完整 transcript，但成功结论没有 fan-in 总量预算；单工具 50K chars、单 message 聚合 200K chars 的 spill 机制存在，不过聚合机制受 feature flag 控制且默认关闭。",
+      "evidence": [
+        {"repo": "freecode", "path": "src/tools/AgentTool/agentToolUtils.ts", "symbol": "finalizeAgentTool", "lines": "276-356"},
+        {"repo": "freecode", "path": "src/constants/toolLimits.ts", "symbol": "DEFAULT_MAX_RESULT_SIZE_CHARS/MAX_TOOL_RESULTS_PER_MESSAGE_CHARS", "lines": "6-49"},
+        {"repo": "freecode", "path": "src/utils/toolResultStorage.ts", "symbol": "provisionContentReplacementState", "lines": "447-462"}
+      ]
+    },
+    {
+      "id": "SF-CODEX-CTX-01",
+      "systems": ["codex"],
+      "dimension": "context_window_and_compaction",
+      "claim_type": "source_fact",
+      "statement": "Codex auto-compact 默认阈值为 resolved context window 的 90%，配置值只能取更低值；token status 同时追踪 active context、auto-compact scope 与 full window。",
+      "evidence": [
+        {"repo": "codex", "path": "codex-rs/protocol/src/openai_models.rs", "symbol": "ModelInfo::auto_compact_token_limit", "lines": "447-463"},
+        {"repo": "codex", "path": "codex-rs/core/src/session/context_window.rs", "symbol": "context_window_token_status", "lines": "24-92"}
+      ]
+    },
+    {
+      "id": "SF-CODEX-CTX-02",
+      "systems": ["codex"],
+      "dimension": "failure_retry_and_resume",
+      "claim_type": "source_fact",
+      "statement": "Codex pre-turn compaction 明确留有 TODO：当前未估算即将注入的 context update 和新 user input；采样遇到 ContextWindowExceeded 时当轮立即返回错误，不做同轮 reactive compact retry。",
+      "evidence": [
+        {"repo": "codex", "path": "codex-rs/core/src/session/turn.rs", "symbol": "run_turn", "lines": "143-165"},
+        {"repo": "codex", "path": "codex-rs/core/src/session/turn.rs", "symbol": "run_sampling_request", "lines": "1113-1207"}
+      ]
+    },
+    {
+      "id": "SF-CODEX-CTX-03",
+      "systems": ["codex"],
+      "dimension": "context_window_and_compaction",
+      "claim_type": "source_fact",
+      "statement": "Codex compaction 自身超窗时逐个删除最旧 history item；remote compaction 还会把 tool output 替换为固定文本、清空 ToolSearch tools，并可按 token 截断 message text，未附可重读原文的 durable recovery ref。",
+      "evidence": [
+        {"repo": "codex", "path": "codex-rs/core/src/compact.rs", "symbol": "run_compact_task_inner_impl", "lines": "220-299"},
+        {"repo": "codex", "path": "codex-rs/core/src/compact_remote.rs", "symbol": "trim_function_call_history_to_fit_context_window", "lines": "368-459"},
+        {"repo": "codex", "path": "codex-rs/core/src/compact_remote_v2.rs", "symbol": "truncate_message_text_to_token_budget", "lines": "511-560"}
+      ]
+    },
+    {
+      "id": "SF-CODEX-DISC-01",
+      "systems": ["codex"],
+      "dimension": "tool_mcp_skill_discovery",
+      "claim_type": "source_fact",
+      "statement": "启用 tool_search 时 Codex 将 MCP tools 全部放到 deferred exposure；ToolSearch 建 BM25 index，默认 limit=8，只拒绝 0，没有 schema-level/runtime upper bound。",
+      "evidence": [
+        {"repo": "codex", "path": "codex-rs/core/src/mcp_tool_exposure.rs", "symbol": "build_mcp_tool_exposure", "lines": "19-45"},
+        {"repo": "codex", "path": "codex-rs/core/src/tools/handlers/tool_search.rs", "symbol": "ToolSearchHandler::new/handle_call", "lines": "68-152"},
+        {"repo": "codex", "path": "codex-rs/tools/src/tool_discovery.rs", "symbol": "TOOL_SEARCH_DEFAULT_LIMIT", "lines": "5-8"}
+      ]
+    },
+    {
+      "id": "SF-CODEX-SKILL-01",
+      "systems": ["codex"],
+      "dimension": "tool_mcp_skill_discovery",
+      "claim_type": "source_fact",
+      "statement": "Codex Skill metadata 默认占 2% context；当 minimum lines 仍超预算时会真正 omit skills，并只通过 warning/report 告知，这意味着被省略技能不再对该模型轮可发现。",
+      "evidence": [
+        {"repo": "codex", "path": "codex-rs/core-skills/src/render.rs", "symbol": "default_skill_metadata_budget", "lines": "138-153"},
+        {"repo": "codex", "path": "codex-rs/core-skills/src/render.rs", "symbol": "render_minimum_skill_lines_until_budget", "lines": "376-412"}
+      ]
+    },
+    {
+      "id": "SF-CODEX-FANIN-01",
+      "systems": ["codex"],
+      "dimension": "subagent_concurrency_and_result_fanin",
+      "claim_type": "source_fact",
+      "statement": "Codex interactive multi-agent 默认 V1 6 threads、V2 每 session 4 threads（root 占一席）；无容量时返回 typed AgentLimitReached。Durable AgentJob 路径会把 item 留为 pending，而 interactive spawn 直接把限制错误返给模型。",
+      "evidence": [
+        {"repo": "codex", "path": "codex-rs/core/src/config/mod.rs", "symbol": "DEFAULT_AGENT_MAX_THREADS/DEFAULT_MULTI_AGENT_V2_MAX_CONCURRENT_THREADS_PER_SESSION", "lines": "203-211"},
+        {"repo": "codex", "path": "codex-rs/core/src/agent/control/execution.rs", "symbol": "ensure_execution_capacity", "lines": "59-72"},
+        {"repo": "codex", "path": "codex-rs/core/src/tools/handlers/agent_jobs.rs", "symbol": "agent job spawn loop", "lines": "185-227"}
+      ]
+    },
+    {
+      "id": "SF-CODEX-FANIN-02",
+      "systems": ["codex"],
+      "dimension": "subagent_concurrency_and_result_fanin",
+      "claim_type": "source_fact",
+      "statement": "成功子 Agent completion 克隆完整 message（只截断 error），进入无容量上限的 in-memory VecDeque；get_pending_input 一次 drain 全部 mailbox，并把 inter-agent communication 转成 Message，而 history truncation 对 Message 直接 clone。",
+      "evidence": [
+        {"repo": "codex", "path": "codex-rs/core/src/session_prefix.rs", "symbol": "format_inter_agent_completion_message", "lines": "27-44"},
+        {"repo": "codex", "path": "codex-rs/core/src/session/input_queue.rs", "symbol": "enqueue_mailbox_communication/drain_mailbox_input_items/get_pending_input", "lines": "72-102,197-224"},
+        {"repo": "codex", "path": "codex-rs/core/src/context_manager/history.rs", "symbol": "process_item", "lines": "370-412"}
+      ]
+    },
+    {
+      "id": "SF-CODEX-FAIL-01",
+      "systems": ["codex"],
+      "dimension": "failure_retry_and_resume",
+      "claim_type": "source_fact",
+      "statement": "Codex 为 stream disconnect 等 retryable errors 提供 bounded backoff、UI state 和 WebSocket→HTTPS transport fallback；ContextWindowExceeded、SessionBudgetExceeded、AgentLimitReached 等是 typed errors。",
+      "evidence": [
+        {"repo": "codex", "path": "codex-rs/core/src/responses_retry.rs", "symbol": "handle_retryable_response_stream_error", "lines": "20-79"},
+        {"repo": "codex", "path": "codex-rs/protocol/src/error.rs", "symbol": "CodexErr", "lines": "67-100"}
+      ]
+    },
+    {
+      "id": "SF-HIVE-CTX-01",
+      "systems": ["hive"],
+      "dimension": "context_window_and_compaction",
+      "claim_type": "source_fact",
+      "statement": "Hive 单独计算 system prompt hard budget：默认窗口的 20%×3.5 chars/token，最少 15K、最多 350K chars；assemble_runtime_prompt 超过该预算直接 raise PromptBudgetExceededError，而不是交给物理 context window 或可恢复压缩链。",
+      "evidence": [
+        {"repo": "hive", "path": "backend/app/runtime/context_budget.py", "symbol": "compute_system_prompt_budget", "lines": "8-34", "content_sha256": "8774613923677b6faff71f6e3b0e06f5665d3f3bb01c5b6e7c0c95477967d88e"},
+        {"repo": "hive", "path": "backend/app/runtime/prompt_builder.py", "symbol": "PromptBudgetExceededError/assemble_runtime_prompt", "lines": "48-59,754-817", "content_sha256": "b94ea50e92e10fc00947c4a747d40f5b38c2972bf8d01b22bdbf2ac616458bf6"}
+      ]
+    },
+    {
+      "id": "SF-HIVE-CTX-02",
+      "systems": ["hive"],
+      "dimension": "context_window_and_compaction",
+      "claim_type": "source_fact",
+      "statement": "Hive dynamic section 的 per-section budgets 已改为 advisory：选择器保留完整内容并记录 selected_over_advisory_budget；Skill catalog、A2A collaborators、deferred tool index 也明确不机械裁剪。",
+      "evidence": [
+        {"repo": "hive", "path": "backend/app/runtime/prompt_builder.py", "symbol": "_select_context_section_candidates/_trim_block", "lines": "132-172", "content_sha256": "b94ea50e92e10fc00947c4a747d40f5b38c2972bf8d01b22bdbf2ac616458bf6"},
+        {"repo": "hive", "path": "backend/app/runtime/prompt_sections/skills_catalog.py", "symbol": "build_skills_catalog_section", "lines": "6-30"},
+        {"repo": "hive", "path": "backend/app/runtime/prompt_sections/a2a_collaborators.py", "symbol": "build_a2a_collaborators_section", "lines": "18-70"},
+        {"repo": "hive", "path": "backend/app/runtime/prompt_builder.py", "symbol": "_render_deferred_tool_index", "lines": "410-426", "content_sha256": "b94ea50e92e10fc00947c4a747d40f5b38c2972bf8d01b22bdbf2ac616458bf6"}
+      ]
+    },
+    {
+      "id": "SF-HIVE-CTX-03",
+      "systems": ["hive"],
+      "dimension": "context_window_and_compaction",
+      "claim_type": "source_fact",
+      "statement": "Hive request-preflight tool-result budget 只有在原文已含完整 artifact path+sha256+char_range 时才替换为可恢复 pointer；未持久化语义证据不会被机械丢弃。",
+      "evidence": [
+        {"repo": "hive", "path": "backend/app/runtime/session_context_controller.py", "symbol": "_recoverable_tool_result_pointer/_compact_tool_result_content", "lines": "158-185", "content_sha256": "d83273845adde5de708d53f0c7dece77a38c56b05c5612b8b4d2be0c994965a4"},
+        {"repo": "hive", "path": "backend/app/runtime/session_context_controller.py", "symbol": "apply_tool_result_budget", "lines": "275-375", "content_sha256": "d83273845adde5de708d53f0c7dece77a38c56b05c5612b8b4d2be0c994965a4"}
+      ]
+    },
+    {
+      "id": "SF-HIVE-CTX-04",
+      "systems": ["hive"],
+      "dimension": "failure_retry_and_resume",
+      "claim_type": "source_fact",
+      "statement": "Hive PTL 最多 3 次：先做 model-led full compress，不足时在有 durable artifact_dir 的前提下机械 drop oldest round-groups并记录 recovery receipt；但 ContextPolicy 中声明的 autocompact_failure_breaker_limit/breaker_half_open_seconds 在 backend/app 的 live code 搜索中没有消费点。",
+      "evidence": [
+        {"repo": "hive", "path": "backend/app/runtime/ccplus_contracts.py", "symbol": "ContextPolicyV1", "lines": "114-128", "content_sha256": "4f0df6b3e528dfb359d5fc1475f44deaaf49fb42f26ba43d3fcfd8068fa81427"},
+        {"repo": "hive", "path": "backend/app/kernel/turn_orchestrator.py", "symbol": "PTL reactive retry", "lines": "1209-1488", "content_sha256": "4153d04afe2cff0fcb6131964e4937dd3b3f178389db18b9aab597d4f0324a63"},
+        {"repo": "hive", "path": "backend/app", "symbol": "rg autocompact_failure_breaker|breaker_half_open", "lines": "only declarations in ccplus_contracts.py; no runtime consumer found"}
+      ]
+    },
+    {
+      "id": "SF-HIVE-DISC-01",
+      "systems": ["hive"],
+      "dimension": "tool_mcp_skill_discovery",
+      "claim_type": "source_fact",
+      "statement": "Hive tool_search 用同一函数同时驱动文本结果和 schema expansion，已发现 tool names 累积在 SessionContext 并跨恢复镜像；available_deferred_tool_names 的 limit 参数被明确忽略，避免 top-N 隐藏能力。",
+      "evidence": [
+        {"repo": "hive", "path": "backend/app/services/agent_tools.py", "symbol": "discoverable_tool_names_for_query/available_deferred_tool_names_for_agent", "lines": "596-680", "content_sha256": "bca2325c2dd95351f50d75d91a2915cf30f734769fe6ca730961cf65aeb13e5a"},
+        {"repo": "hive", "path": "backend/app/runtime/invoker.py", "symbol": "_resolve_tool_expansion", "lines": "932-988", "content_sha256": "0c857e4f381b8bca982574a993fd300a971902b1ebf2b18145e1e3bf0608e269"},
+        {"repo": "hive", "path": "backend/app/runtime/session.py", "symbol": "SessionContext.track_discovered_tools", "lines": "141-143,237-249"}
+      ]
+    },
+    {
+      "id": "SF-HIVE-DISC-02",
+      "systems": ["hive"],
+      "dimension": "tool_mcp_skill_discovery",
+      "claim_type": "source_fact",
+      "statement": "Hive tool_search 只有 query 字符串，无 max_results/selector-count 参数；空 query 会列出所有 reachable deferred/MCP tools 和匹配的 skills/subagents，并把全部匹配 schemas 加入当前 session。",
+      "evidence": [
+        {"repo": "hive", "path": "backend/app/tools/handlers/skills.py", "symbol": "tool_search ToolMeta/handler", "lines": "242-275"},
+        {"repo": "hive", "path": "backend/app/services/agent_tool_domains/workspace.py", "symbol": "_tool_search", "lines": "1287-1351"},
+        {"repo": "hive", "path": "backend/app/services/agent_tools.py", "symbol": "discoverable_tool_names_for_query", "lines": "635-669", "content_sha256": "bca2325c2dd95351f50d75d91a2915cf30f734769fe6ca730961cf65aeb13e5a"}
+      ]
+    },
+    {
+      "id": "SF-HIVE-SUB-01",
+      "systems": ["hive"],
+      "dimension": "subagent_concurrency_and_result_fanin",
+      "claim_type": "source_fact",
+      "statement": "Background spawn_subagent 先创建 durable queued RuntimeTask，再由 worker claim/execute；运行额度达到 interactive 上限时可进入 waiting_budget_approval，并向模型返回可继续的 typed state。",
+      "evidence": [
+        {"repo": "hive", "path": "backend/app/tools/handlers/subagent.py", "symbol": "spawn_subagent_tool background branch", "lines": "722-790"},
+        {"repo": "hive", "path": "backend/app/services/subagent_run_service.py", "symbol": "start_subagent_run", "lines": "249-340,430-450", "content_sha256": "117536db8ee48df940afeebd06a498a9547a091cf2f4a12f052fd6ccf0eeb969"}
+      ]
+    },
+    {
+      "id": "SF-HIVE-SUB-02",
+      "systems": ["hive"],
+      "dimension": "subagent_concurrency_and_result_fanin",
+      "claim_type": "source_fact",
+      "statement": "Subagent 只把 conclusion 返回父级、不中继中间 tool turns；legacy max_output_chars/max_sources 是 advisory，不截断成功语义输出。Background worker 使用 semaphore（默认由 runtime worker limit 派生为 16），所以并发被限流而不是同时跑 100 个。",
+      "evidence": [
+        {"repo": "hive", "path": "backend/app/agents/subagent.py", "symbol": "SubagentBudget/SubagentResult", "lines": "490-531", "content_sha256": "df31df3fbd90cc980158d28841aa1a741f302f93bde43d8628619499c51d3bd7"},
+        {"repo": "hive", "path": "backend/app/agents/subagent.py", "symbol": "_background_subagent_capacity/_background_subagent_semaphore", "lines": "1294-1331", "content_sha256": "df31df3fbd90cc980158d28841aa1a741f302f93bde43d8628619499c51d3bd7"}
+      ]
+    },
+    {
+      "id": "SF-HIVE-SUB-03",
+      "systems": ["hive"],
+      "dimension": "subagent_concurrency_and_result_fanin",
+      "claim_type": "source_fact",
+      "statement": "Subagent completion 将完整 result.content 写入 durable CoordinationSignal 和 RuntimeNotificationOutbox summary；wake daemon 每 tick 每 parent 最多唤醒一次、全局最多 10 个 parent，但 notification delivery 最终仍把完整 summary 注入 parent runtime context，没有 per-parent fan-in byte/token envelope 或 result-ref spill。",
+      "evidence": [
+        {"repo": "hive", "path": "backend/app/agents/subagent.py", "symbol": "_emit_completion_signal", "lines": "1334-1364", "content_sha256": "df31df3fbd90cc980158d28841aa1a741f302f93bde43d8628619499c51d3bd7"},
+        {"repo": "hive", "path": "backend/app/services/subagent_wake_consumer.py", "symbol": "drain_subagent_completion_wakes", "lines": "154-222,305-351", "content_sha256": "df2cea3c41713662501e8a8e0c06432473c01556f776d0c56d17c1b69a99bd58"},
+        {"repo": "hive", "path": "backend/app/services/runtime_notification_outbox.py", "symbol": "CompletionNotification/_deliver", "lines": "44-80,510-624", "content_sha256": "7f5a5647aeea73de9b02d926e8aec141b03ad5b31f61456994e31d9923b3d730"},
+        {"repo": "hive", "path": "backend/app/services/agent_session_continuation.py", "symbol": "build_task_notification_runtime_context", "lines": "259-325", "content_sha256": "2e530861877964e3b29472ec117bc57836a07f870cee06a1ede83dc301bacd9d"}
+      ]
+    },
+    {
+      "id": "SF-HIVE-BUDGET-01",
+      "systems": ["hive"],
+      "dimension": "typed_state_and_deferred_tools",
+      "claim_type": "source_fact",
+      "statement": "Hive runtime budget profile 对 interactive 默认 max_subagents=24、max_delegations=16、max_background_tasks=24；超限根据 fail_mode 转成 waiting_budget_approval、summary_only 或 exhausted，且保留一条 summary turn lane。",
+      "evidence": [
+        {"repo": "hive", "path": "backend/app/services/runtime_budget_service.py", "symbol": "_BUILTIN_PROFILE_DEFAULTS", "lines": "68-137", "content_sha256": "f535ae2089f66a1e3712d57a85095d89bdf04acef89d506c61d8071f4618c392"},
+        {"repo": "hive", "path": "backend/app/services/runtime_budget_service.py", "symbol": "RuntimeBudgetService.reserve", "lines": "544-705", "content_sha256": "f535ae2089f66a1e3712d57a85095d89bdf04acef89d506c61d8071f4618c392"}
+      ]
+    },
+    {
+      "id": "SF-HIVE-A2A-01",
+      "systems": ["hive"],
+      "dimension": "cross_channel_a2a",
+      "claim_type": "source_fact",
+      "statement": "Hive A2A delegation request/receipt 持久化 tenant、owner、source/target agent、root session/task、delegation chain、idempotency replay key 与 result refs；artifact 以 producer workspace reference 投影到 parent，不复制文件。",
+      "evidence": [
+        {"repo": "hive", "path": "backend/app/agents/orchestrator.py", "symbol": "AgentDelegationRequest/_build_delegation_execution_receipt/_delegation_chain", "lines": "561-684", "content_sha256": "89f2de3989e49f32f0c0b7417fbabf0480343e442cf521d237814e68d02af619"},
+        {"repo": "hive", "path": "backend/app/agents/orchestrator.py", "symbol": "_build_runtime_task_metadata", "lines": "1000-1087", "content_sha256": "89f2de3989e49f32f0c0b7417fbabf0480343e442cf521d237814e68d02af619"},
+        {"repo": "hive", "path": "backend/app/agents/orchestrator.py", "symbol": "_project_a2a_artifact_refs_to_parent_session", "lines": "1961-2033", "content_sha256": "89f2de3989e49f32f0c0b7417fbabf0480343e442cf521d237814e68d02af619"}
+      ]
+    },
+    {
+      "id": "SF-HIVE-A2A-02",
+      "systems": ["hive"],
+      "dimension": "cross_channel_a2a",
+      "claim_type": "source_fact",
+      "statement": "外部 channel terminal delivery 有独立 durable outbox，按 tenant/runtime_task/delivery_kind/target_hash 去重，并保存 target snapshot 与 per-part receipts；但 A2A delegation envelope 本身没有 channel hop/provider message ID/跨渠道 causal sequence 字段。",
+      "evidence": [
+        {"repo": "hive", "path": "backend/app/models/channel_delivery_outbox.py", "symbol": "ChannelDeliveryOutbox", "lines": "15-96", "content_sha256": "610adeb20c35b792f4678911c3f13a9e4816a0401ee7756d47817270b9f2c1d1"},
+        {"repo": "hive", "path": "backend/app/agents/orchestrator.py", "symbol": "AgentDelegationRequest/_delegation_request_hash", "lines": "561-619", "content_sha256": "89f2de3989e49f32f0c0b7417fbabf0480343e442cf521d237814e68d02af619"}
+      ]
+    },
+    {
+      "id": "SF-HIVE-TEST-01",
+      "systems": ["hive"],
+      "dimension": "acceptance_coverage",
+      "claim_type": "source_fact",
+      "statement": "本次对 backend/tests 的精确搜索没有找到 100-agent completion storm、300/400 skills、200 MCP、或 DingTalk+Feishu+Slack A2A 同场景测试。",
+      "evidence": [
+        {"repo": "hive", "path": "backend/tests", "symbol": "rg extreme scenario terms", "lines": "no matches except unrelated completion_tokens=100 fixtures"}
+      ]
+    }
+  ],
+  "inferences": [
+    {
+      "id": "IF-01",
+      "claim_type": "inference",
+      "severity": "high",
+      "derived_from": ["SF-CCF-CTX-01", "SF-CCF-CTX-03", "SF-CCF-CTX-04", "SF-HIVE-CTX-01"],
+      "statement": "用户关于 CC '除 context window 外不设独立 Prompt hard cap' 的核心判断成立：CC/FreeCode 的硬线围绕物理窗口与保留恢复空间；Hive 的独立 system_prompt_budget_chars raise 是额外的 pre-model hard failure，不能用 CC parity 为其背书。"
+    },
+    {
+      "id": "IF-02",
+      "claim_type": "inference",
+      "severity": "critical",
+      "derived_from": ["SF-HIVE-CTX-01", "SF-HIVE-CTX-02", "SF-HIVE-DISC-02"],
+      "statement": "Hive 当前出现自相矛盾：各 section 坚持完整、不裁剪，但最终 assembler 用 20% system-prompt hard cap 整体拒绝。400 skills+200 MCP+大量 collaborator/workflow metadata 会在模型看到任何内容前直接失败，这是极端配置的确定性断点。"
+    },
+    {
+      "id": "IF-03",
+      "claim_type": "inference",
+      "severity": "critical",
+      "derived_from": ["SF-CCF-FANIN-01", "SF-CCF-FANIN-02"],
+      "statement": "CC/FreeCode 不能直接照抄为 Hive 的极端并发答案：它保护 parent context 的方式主要是只回 final conclusion，但同轮 Agent concurrency 无数字 admission，且 aggregate spill 默认可能关闭；100-Agent completion storm 仍可能把下一轮上下文压爆。"
+    },
+    {
+      "id": "IF-04",
+      "claim_type": "inference",
+      "severity": "high",
+      "derived_from": ["SF-CODEX-FANIN-01", "SF-CODEX-FANIN-02"],
+      "statement": "Codex 用小并发 hard cap 避免 100 个 interactive agents 同时运行，但它没有解决被提高 cap 或结果积压后的 fan-in：成功 payload 全量、mailbox 无界且一次 drain 全部。Codex 的 typed AgentLimitReached 与 durable AgentJob pending 是工程参考，不是完整语义答案。"
+    },
+    {
+      "id": "IF-05",
+      "claim_type": "inference",
+      "severity": "critical",
+      "derived_from": ["SF-HIVE-SUB-01", "SF-HIVE-SUB-02", "SF-HIVE-SUB-03", "SF-HIVE-BUDGET-01"],
+      "statement": "Hive 已比 CC 多了 durable queue、semaphore、approval/summary-only state 与 wake-storm guard，但缺失真正的 result fan-in protocol：每个完整 summary 仍进入 parent context。并发 admission 解决 '同时跑多少'，没有解决 '最终返回多少 bytes/tokens、怎样分波合并、怎样按 ref 重读'。"
+    },
+    {
+      "id": "IF-06",
+      "claim_type": "inference",
+      "severity": "critical",
+      "derived_from": ["SF-CCF-SKILL-01", "SF-CODEX-SKILL-01", "SF-HIVE-CTX-01", "SF-HIVE-CTX-02", "SF-HIVE-DISC-01", "SF-HIVE-DISC-02"],
+      "statement": "300-400 skills + 200 MCP 下三个 baseline 都不完整：CC 保名字但描述降级；Codex 会 omit skills；Hive 不隐藏但最终 Prompt hard fail，且空 tool_search 可一次加载全部 schema。CCPlus 应保留 complete discovery ledger/reference，同时只按需 materialize bounded schema wave。"
+    },
+    {
+      "id": "IF-07",
+      "claim_type": "inference",
+      "severity": "high",
+      "derived_from": ["SF-CCF-CTX-02", "SF-CCF-CTX-03", "SF-HIVE-CTX-04"],
+      "statement": "Hive 的 PTL retry 有 recovery receipt，但宣称的 AutoCompact circuit breaker 目前只是 contract 字段，没有 live state machine；因此 compactor 本身连续失败、跨轮重入、hook 叠加的闭环还不能按 CC 的 incident-proven breaker 认证。"
+    },
+    {
+      "id": "IF-08",
+      "claim_type": "inference",
+      "severity": "critical",
+      "derived_from": ["SF-HIVE-A2A-01", "SF-HIVE-A2A-02", "SF-HIVE-TEST-01"],
+      "statement": "Hive 分别具备 A2A execution lineage 与 channel delivery outbox，但尚未从已读代码证明存在一条统一的 cross-channel coordination frame，把 A/B/C/D 的 channel hop、provider receipt、causal order、retry/idempotency、owner/principal 和 parent fan-in 绑定为单一可回放图。该场景必须视为 Unverified，而不是已闭环。"
+    },
+    {
+      "id": "IF-09",
+      "claim_type": "inference",
+      "severity": "high",
+      "derived_from": ["SF-CCF-DISC-02", "SF-CODEX-DISC-01", "SF-HIVE-DISC-02"],
+      "statement": "三套 harness 的 tool search 都存在极端 query amplification：CC/FreeCode max_results/direct-select 无上界，Codex limit 无 upper bound，Hive 空 query 全加载。Selector 数量与返回 wave 可以是软目标，但 materialization 必须有 provider-window-aware repair/continuation 协议，不能原地炸 Prompt。"
+    },
+    {
+      "id": "IF-10",
+      "claim_type": "inference",
+      "severity": "high",
+      "derived_from": ["SF-CODEX-CTX-03", "SF-HIVE-CTX-03"],
+      "statement": "Hive 的 recoverable artifact pointer 比 Codex 的 blind truncation 更符合 CCPlus；应保留这个 Hive-native 优势，并把相同协议扩展到 subagent/A2A result fan-in、skill/tool catalog 和 cross-channel receipts。"
+    },
+    {
+      "id": "IF-11",
+      "claim_type": "inference",
+      "severity": "medium",
+      "derived_from": ["SF-CODEX-FAIL-01", "SF-HIVE-BUDGET-01"],
+      "statement": "失败边界必须让模型看见 typed state、剩余额度、可重试/可批准/可降级选项。Codex typed errors 与 Hive waiting_budget_approval/summary_only 都是可复用工程形状；不能把这些状态简化成固定失败 prose 或直接 exception。"
+    },
+    {
+      "id": "IF-12",
+      "claim_type": "inference",
+      "severity": "high",
+      "derived_from": ["SF-CCF-CTX-01", "SF-CODEX-CTX-01", "SF-HIVE-CTX-01", "SF-HIVE-CTX-03", "SF-HIVE-SUB-01"],
+      "statement": "没有一个 baseline 可以整套照搬：CC/FreeCode 提供模型优先与成熟 overflow loop，Codex 提供 typed state/deferred tools/durable job backpressure，Hive 已有 authority/outbox/recovery refs。CCPlus 必须组合这些优点，同时拒绝 CC 无界 fanout、Codex blind truncation/skill omission、Hive pre-model prompt hard cap。"
+    }
+  ],
+  "ccplus_design_requirements": [
+    {
+      "id": "CR-01",
+      "priority": "P0",
+      "requirement": "移除独立于物理 context window 的 system-prompt hard fail；section/system budgets 只做 telemetry、warning、model-visible planning hint。真正无法装入窗口时进入 typed capacity recovery，而不是 PromptBudgetExceededError。"
+    },
+    {
+      "id": "CR-02",
+      "priority": "P0",
+      "requirement": "建立统一 ResultEnvelope：inline preview + durable result_ref + sha256/range + status/retryability + producer/principal/causation。Subagent、A2A、Workflow、MCP/tool output、channel receipt 共用同一 recoverable contract。"
+    },
+    {
+      "id": "CR-03",
+      "priority": "P0",
+      "requirement": "Parent fan-in 使用 durable mailbox + per-parent byte/token watermarks + completion waves；每轮只 materialize 模型可处理的一波，完整结果留在引用中，模型可按需 read。禁止 drain-all full summaries。"
+    },
+    {
+      "id": "CR-04",
+      "priority": "P0",
+      "requirement": "并发数、tool count、skill count、wake count、provider call count默认是软目标和 admission signal；超出时 queue/hold/approval/degrade/summary-only，必须保留任务与恢复地址。只有 authority、side effect、isolation、物理窗口、明确成本上限等 hard invariant 才能 hard block。"
+    },
+    {
+      "id": "CR-05",
+      "priority": "P0",
+      "requirement": "把 ContextPolicy 的 auto-compact breaker 做成 live、session-scoped、持久可观测 state machine；覆盖 proactive compact、reactive 413、hook continuation、fallback model 与 restart。"
+    },
+    {
+      "id": "CR-06",
+      "priority": "P1",
+      "requirement": "Capability discovery 必须 complete-but-lazy：完整 catalog ledger 可查询，initial prompt 只放 lossless locator/coverage count；tool_search 一次只 materialize window-aware wave，返回 remaining cursor/continuation，而不是 top-N 永久隐藏或 select-all。"
+    },
+    {
+      "id": "CR-07",
+      "priority": "P0",
+      "requirement": "定义 CrossChannelCoordinationEnvelope，绑定 root principal/owner、source/target agent、channel/provider target snapshot、provider receipt ID、causation/sequence、idempotency key、delivery status、retry cursor、artifact/result refs。"
+    },
+    {
+      "id": "CR-08",
+      "priority": "P1",
+      "requirement": "所有 capacity failure 都以 typed state 回到模型：reason、authoritative limit source、used/reserved/remaining、retry_after、approval_ref、queued_work_ref、safe next actions。平台不得代写任务结论。"
+    }
+  ],
+  "paired_replay_tests": [
+    {
+      "id": "PR-01",
+      "status": "unverified",
+      "scenario": "100 个 subagents 在 5 秒内完成，每个成功结论 20K chars。",
+      "systems": ["claude_code_installed_binary", "freecode", "codex", "hive"],
+      "faults": ["completion burst", "parent already active", "out-of-order completion"],
+      "assertions": [
+        "parent 单轮输入不超过物理窗口",
+        "100/100 结果都有 durable ref 且无丢失/重复",
+        "completion 按 wave 消费而非 full drain-all",
+        "parent 能区分 completed/failed/denied/retryable",
+        "进程重启后继续 fan-in"
+      ]
+    },
+    {
+      "id": "PR-02",
+      "status": "unverified",
+      "scenario": "256K 模型配置 400 skills、200 MCP tools、100 subagent definitions、100 workflows 与超大 Memory。",
+      "systems": ["claude_code_installed_binary", "freecode", "codex", "hive"],
+      "assertions": [
+        "首轮不因非物理 hard budget 失败",
+        "catalog coverage ledger 证明 400/400、200/200 可发现",
+        "尾部技能/MCP 在精确 query 下可命中",
+        "一次 discovery 不加载全部 schema",
+        "compaction 后已发现能力仍可恢复"
+      ]
+    },
+    {
+      "id": "PR-03",
+      "status": "unverified",
+      "scenario": "system prompt 超过 Hive 当前 20%/350K hard budget，但总 Prompt 仍小于模型物理窗口。",
+      "systems": ["freecode", "codex", "hive"],
+      "assertions": [
+        "Hive 不抛 PromptBudgetExceededError",
+        "模型收到完整 authorized discovery references",
+        "budget overshoot 仅产生 telemetry/warning",
+        "若 provider 最终拒绝则进入 typed recovery"
+      ]
+    },
+    {
+      "id": "PR-04",
+      "status": "unverified",
+      "scenario": "连续 4 次 compactor failure，随后真实 413；同时 stop hook 会返回 blocking error。",
+      "systems": ["claude_code_installed_binary", "freecode", "codex", "hive"],
+      "assertions": [
+        "最多规定次数后 breaker 打开",
+        "无 error→hook→compact 无限循环",
+        "原始 evidence/recovery refs 保留",
+        "模型或用户看到 typed retry/hold 状态",
+        "half-open 成功后 breaker 可恢复"
+      ]
+    },
+    {
+      "id": "PR-05",
+      "status": "unverified",
+      "scenario": "模型调用 tool_search 空 query、max_results=100000 或 select: 后列出全部 200 MCP。",
+      "systems": ["claude_code_installed_binary", "freecode", "codex", "hive"],
+      "assertions": [
+        "不会一次 materialize 全部 schema",
+        "返回 cursor/remaining count/coverage ledger",
+        "直接 selector 仍受 authority gate",
+        "模型可继续请求下一 wave",
+        "无永久隐藏的 top-N 语义"
+      ]
+    },
+    {
+      "id": "PR-06",
+      "status": "unverified",
+      "scenario": "A/B/C/D 同 owner A2A：A 走 DingTalk，B 走 Feishu，C 走 Slack，D 汇总；注入 duplicate、out-of-order、provider timeout 与 retry-after。",
+      "systems": ["hive"],
+      "assertions": [
+        "每个 channel hop 保留 root principal/owner/agent lineage",
+        "provider receipt 与 A2A causation/sequence 可机械关联",
+        "重复 provider callback 不重复 side effect",
+        "失败 channel 不阻塞其它 agent reasoning",
+        "D 只消费已授权结果 refs，并能区分 pending/denied/unavailable/retryable"
+      ]
+    },
+    {
+      "id": "PR-07",
+      "status": "unverified",
+      "scenario": "child 已写 terminal RuntimeTask，但在 enqueue parent notification 前 crash；以及 outbox enqueue 已 commit、consume signal 前 crash。",
+      "systems": ["hive", "codex"],
+      "assertions": [
+        "sweeper 重建缺失 intent",
+        "parent 最终 exactly-once consumption",
+        "重复 delivery 由 causation/idempotency 去重",
+        "artifact/result refs 仍可读"
+      ]
+    },
+    {
+      "id": "PR-08",
+      "status": "unverified",
+      "scenario": "interactive run 请求第 25 个 subagent 与第 17 个 delegation，管理员延迟批准后重启 worker。",
+      "systems": ["hive", "codex"],
+      "assertions": [
+        "任务进入 waiting/queued 而不是丢失",
+        "模型知道 used/reserved/remaining 与 approval_ref",
+        "批准后从 durable state 自动继续",
+        "拒绝只约束新 side effect，不删除已完成结果",
+        "保留一个最终 summary lane"
+      ]
+    },
+    {
+      "id": "PR-09",
+      "status": "unverified",
+      "scenario": "超长输入的决定性证据只出现在最后 1%，同时含 50 个大 tool results。",
+      "systems": ["claude_code_installed_binary", "freecode", "codex", "hive"],
+      "assertions": [
+        "无 silent head/tail drop",
+        "所有机械替换都有 exact recovery ref",
+        "coverage ledger 包含尾部证据",
+        "最终模型结论可引用原始 evidence"
+      ]
+    },
+    {
+      "id": "PR-10",
+      "status": "unverified",
+      "scenario": "对同一 transcript/config/fault schedule 做 CC 2.1.209、FreeCode、Codex、Hive paired replay。",
+      "systems": ["claude_code_installed_binary", "freecode", "codex", "hive"],
+      "assertions": [
+        "记录 model-visible bytes、tool schemas、compaction boundaries、retry states、result refs",
+        "区分 current CC binary 与 2026-03-31 snapshot",
+        "以行为差异而不是源码相似度判断 CCPlus",
+        "任何 Hive hard gate 都指名 authoritative invariant"
+      ]
+    }
+  ],
+  "limitations": [
+    "当前 Claude Code 2.1.209 只有本机二进制；本报告不能把 2026-03-31 sourcemap snapshot 的行为冒充为 current binary 行为。",
+    "本报告是源码静态对照，不是上述 paired replay 的执行结果；所有 PR-* 明确保持 unverified。",
+    "Hive worktree 正被其它工作流并发修改；关键 Hive evidence 附 current-worktree SHA-256，整合报告时应避免只按 HEAD 复述。",
+    "未做生产流量、数据库或真实 DingTalk/Feishu/Slack provider fault injection，因此 cross-channel 闭环不能宣称已验证。"
+  ]
+}

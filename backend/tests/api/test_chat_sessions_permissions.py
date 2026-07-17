@@ -378,7 +378,7 @@ async def test_list_sessions_mine_keeps_empty_owned_web_sessions_writable(monkey
         agent=agent,
         sessions=[session],
         message_counts={session_id: 0},
-        user_message_counts={session_id: 0},
+        user_message_counts={session_id: 1},
     )
 
     async def fake_check_agent_access(_db, _user, _agent_id):
@@ -485,7 +485,7 @@ async def test_list_sessions_projects_session_full_access_without_auxiliary_gran
         agent=agent,
         sessions=[session],
         message_counts={session_id: 2},
-        user_message_counts={session_id: 1},
+        user_message_counts={session_id: 0},
     )
 
     async def fake_check_agent_access(_db, _user, _agent_id):

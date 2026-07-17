@@ -1,0 +1,1074 @@
+{
+  "schema_version": "hive.extreme-boundary.atomic-review.v1",
+  "review_id": "20260714-222552-main-extreme-boundary-iter2-context-budget",
+  "reviewer_scope": "current-checkout context assembly, provider request capacity, capability discovery, MCP loading, dynamic Memory, compaction boundary, output continuation, tool-result paging, limit semantics, observation pressure, and single-model recovery",
+  "snapshot": {
+    "branch": "main",
+    "head": "501db6555dae374e5fcf43a6fdcfe8a3dd89343e",
+    "snapshot_time": "2026-07-14T22:25:52+08:00",
+    "worktree_status_hash": "86488874d33bac3c52f1a4518f7553f81af027430e6df93bde05a7ea971f9059",
+    "prompt_path": "docs/reusable-agent-native-atomic-review-prompt.md",
+    "prompt_sha256": "c66363d02fd3a7f2b58aa21b95515739c736955e9ccd24f04ad394b3ae4d6be9",
+    "dirty_worktree_notice": "The worktree was already dirty. This reviewer changed only this review artifact."
+  },
+  "method": {
+    "discovery": "codebase-memory graph first, then targeted current-source line reads and focused rg for literals/tests",
+    "business_code_mutation": false,
+    "counting_rule": "Only a distinct current root seam is a new canonical leaf. Existing IDs, related families, scenarios, aliases, Missing, Excluded, and coverage gaps do not increase the breakpoint denominator.",
+    "test_interpretation": "Existing tests that assert the current limit behavior are evidence of current state, not proof that the extreme-boundary acceptance invariant is correct."
+  },
+  "summary": {
+    "overall_status": "BREAKPOINT",
+    "new_canonical_leaf_count": 8,
+    "existing_leaf_extension_count": 2,
+    "severity_counts": {
+      "P1": 7,
+      "P2": 1
+    },
+    "core_judgment": "The runtime is loss-averse inside several individual components, but it has no single provider-request capacity authority and no uniform paused/progress/resume contract. Complete catalogs and Memory are eagerly materialized, then an application-owned 20 percent system-prompt cliff or provider error terminates the attempt. This is the central chemical reaction between capability preservation and hard limits.",
+    "highest_risk_chain": [
+      "400 Skill plus 200 MCP plus large Memory are fully materialized",
+      "section budgets are advisory and preserve all bytes",
+      "the final system prompt is hard-capped at context_window multiplied by 20 percent and at most 350000 characters",
+      "the later provider preflight omits tool schemas, transient reminders, typed media bytes, and exact provider tokenization",
+      "overflow becomes an exception or generic provider failure rather than a durable context-rebuild pause",
+      "single-model sessions receive platform prose and have no progress certificate or authoritative resume edge"
+    ],
+    "positive_controls_to_preserve": [
+      "Text tool results can be externalized to a hash-pinned workspace artifact, and complete inline evidence is retained if artifact persistence fails.",
+      "MCP transport is created on actual tool execution rather than connecting to every configured server at startup.",
+      "Loop-guard heuristic counters only warn; a hard loop outcome requires side-effect-free execution, retry exhaustion, and a progress token, followed by a model-authored final round.",
+      "Primary model routing is not downgraded from user wording or prompt length.",
+      "Web streaming chunks are micro-batched and persisted before broadcast on the web-chat path."
+    ]
+  },
+  "ratings": {
+    "extreme_tests": [
+      {
+        "id": "X-CAP",
+        "status": "FAIL",
+        "mapped_findings": [
+          "XCB-CTX-001",
+          "XCB-CAP-001",
+          "XCB-MEM-001"
+        ],
+        "basis": "Startup/request assembly materializes complete Skill, deferred-tool/MCP, and Memory surfaces. The directory can exceed an application-owned prompt cap before the provider request is attempted."
+      },
+      {
+        "id": "X-DISC",
+        "status": "FAIL",
+        "mapped_findings": [
+          "XCB-CAP-001"
+        ],
+        "basis": "Deferred tools have exact select lookup, but Skill discovery depends on a fully inline catalog, duplicate display names are collapsed, and neither surface has end-to-end page coverage or a 400/200 exact-needle acceptance test."
+      },
+      {
+        "id": "X-MCP",
+        "status": "FAIL",
+        "mapped_findings": [
+          "XCB-MCP-001"
+        ],
+        "basis": "Connection establishment is lazy and bounded per request, but execution uses the imported DB schema/name directly and does not fresh-check server schema/version before tools/call. Drift is collapsed into a generic tool error."
+      },
+      {
+        "id": "X-MEM",
+        "status": "FAIL",
+        "mapped_findings": [
+          "XCB-MEM-001"
+        ],
+        "basis": "Retrieval deletes all configured limits, loads all prior session summaries and all matching pages/overlay entries, and returns all candidates when the selector is unavailable. Prompt and RSS can grow linearly with total Memory."
+      },
+      {
+        "id": "X-CTX",
+        "status": "FAIL",
+        "mapped_findings": [
+          "XCB-CTX-001",
+          "XCB-MEM-001",
+          "XCB-RESULT-001"
+        ],
+        "basis": "Soft-watermark compaction exists, but the final system-prompt cliff is not a provider hard fact and request preflight does not account for the exact request surface. Typed media is especially undercounted."
+      },
+      {
+        "id": "X-OUT",
+        "status": "FAIL",
+        "mapped_findings": [
+          "XCB-OUT-001"
+        ],
+        "basis": "After three continuation calls a still-length response is finalized as complete; complete-mode cap handling can append platform text to model output; retry-reset state is not durable."
+      },
+      {
+        "id": "X-ONE",
+        "status": "FAIL",
+        "mapped_findings": [
+          "XCB-CTX-001",
+          "XCB-OUT-001",
+          "XCB-LIM-001"
+        ],
+        "existing_leaf_dependencies": [
+          "G-01",
+          "A-01"
+        ],
+        "basis": "Without a fallback model, prompt overflow/provider unavailability becomes a terminal error result and web-run failure; no typed paused state, preserved progress certificate, or same-model resume owner is returned."
+      },
+      {
+        "id": "X-RESULT",
+        "status": "FAIL",
+        "mapped_findings": [
+          "XCB-RESULT-001"
+        ],
+        "basis": "Text paging is partially strong, but raw text is duplicated in callback/parts/transcript surfaces, and binary/document blocks bypass eviction and byte/decompressed-byte accounting."
+      },
+      {
+        "id": "X-LIM",
+        "status": "FAIL",
+        "mapped_findings": [
+          "XCB-CTX-001",
+          "XCB-LIM-001"
+        ],
+        "basis": "The system-prompt ratio and max_tool_rounds create threshold cliffs. The former throws; the latter ends the turn with platform-authored prose. Neither is a scoped provider/policy fact that pauses only the current attempt."
+      },
+      {
+        "id": "X-OBS",
+        "status": "FAIL",
+        "mapped_findings": [
+          "XCB-OUT-001",
+          "XCB-RESULT-001",
+          "XCB-OBS-001"
+        ],
+        "existing_leaf_dependencies": [
+          "G-01",
+          "A-01"
+        ],
+        "basis": "Pressure decisions are debug-only, per-invocation chunk/thinking/part lists are unbounded, repeated observations are not aggregated into material epochs, and several failures surface as assistant-like prose."
+      }
+    ],
+    "liveness_gates": [
+      {
+        "id": "LB-1",
+        "status": "FAIL",
+        "mapped_findings": [
+          "XCB-CTX-001",
+          "XCB-LIM-001"
+        ],
+        "basis": "Application constants, including a 20 percent prompt allocation and max_tool_rounds, produce hard outcomes without an external provider/policy fact."
+      },
+      {
+        "id": "LB-2",
+        "status": "FAIL",
+        "mapped_findings": [
+          "XCB-OUT-001",
+          "XCB-LIM-001"
+        ],
+        "existing_leaf_dependencies": [
+          "G-01",
+          "A-01"
+        ],
+        "basis": "Attempt exhaustion, logical task completion, web-run status, and final delivery are not represented by one typed state machine. A length-capped or tool-round-limited turn can be finalized as completed."
+      },
+      {
+        "id": "LB-3",
+        "status": "FAIL",
+        "mapped_findings": [
+          "XCB-CTX-001",
+          "XCB-OUT-001",
+          "XCB-LIM-001"
+        ],
+        "existing_leaf_dependencies": [
+          "G-01"
+        ],
+        "basis": "Context rebuild, output continuation exhaustion, and single-provider unavailability do not return a progress certificate with resume owner, condition, preserved refs, and next valid actions."
+      },
+      {
+        "id": "LB-4",
+        "status": "UNVERIFIED",
+        "mapped_coverage_gap": "CG-05",
+        "basis": "Parent/child queue admission and expected-set ordering were outside this focused artifact and must not be inferred from context-runtime evidence."
+      },
+      {
+        "id": "LB-5",
+        "status": "UNVERIFIED",
+        "mapped_coverage_gap": "CG-05",
+        "basis": "Worker permits, hold-and-wait edges, resource acquisition order, and lease recovery were not traced in this focused artifact."
+      },
+      {
+        "id": "LB-6",
+        "status": "FAIL",
+        "mapped_findings": [
+          "XCB-CTX-001",
+          "XCB-OUT-001",
+          "XCB-MCP-001"
+        ],
+        "basis": "Prompt-too-long and output continuations use local counters without durable fingerprints or monotonic progress receipts; MCP drift/unavailability is reduced to generic retryability."
+      },
+      {
+        "id": "LB-7",
+        "status": "UNVERIFIED",
+        "mapped_coverage_gap": "CG-05",
+        "basis": "Fan-in full barriers, partial/late/deadline/cancel policy, and cross-channel join state were assigned to the multi-agent review scope."
+      },
+      {
+        "id": "LB-8",
+        "status": "FAIL",
+        "mapped_findings": [
+          "XCB-OUT-001",
+          "XCB-RESULT-001"
+        ],
+        "basis": "Text artifacts are committed before model paging, but output-attempt completion/reset state is not durably committed before finalization and raw result payloads are still copied through transient surfaces."
+      },
+      {
+        "id": "LB-9",
+        "status": "FAIL",
+        "mapped_findings": [
+          "XCB-OBS-001"
+        ],
+        "basis": "Material context decisions are debug-only and repeated chunks/events/parts are retained individually without a bounded durable aggregation contract."
+      },
+      {
+        "id": "LB-10",
+        "status": "FAIL",
+        "mapped_findings": [
+          "XCB-CTX-001",
+          "XCB-OUT-001",
+          "XCB-LIM-001"
+        ],
+        "existing_leaf_dependencies": [
+          "G-01",
+          "A-01"
+        ],
+        "basis": "Single-model prompt overflow and provider unavailability do not become a durable pause that can resume with the same model; output and tool-round exhaustion likewise lack a logical-task continuation state."
+      }
+    ]
+  },
+  "findings": [
+    {
+      "id": "XCB-CTX-001",
+      "title": "Application-owned 20 percent system-prompt cliff conflicts with incomplete provider-request accounting",
+      "severity": "P1",
+      "state": "breakpoint",
+      "canonical_leaf": true,
+      "confidence": "high",
+      "atomic_seam": "Input/Execution -> Evidence/Recovery",
+      "tests": [
+        "X-CAP",
+        "X-CTX",
+        "X-ONE",
+        "X-LIM"
+      ],
+      "liveness_gates": [
+        "LB-1",
+        "LB-3",
+        "LB-6",
+        "LB-10"
+      ],
+      "root_cause": "Prompt sections intentionally preserve complete bytes, but final assembly is hard-capped by an application heuristic of context_window times 0.20, clamped to 15000..350000 characters. That exception occurs before a capacity planner has measured the exact provider request. The later preflight counts only system and message content characters; tool schemas, transient reminders, dynamic notices, typed media bytes, provider tokenization, and exact output reserve interaction are absent. The complete ledger is built only after a successful provider response.",
+      "failure_path": "Large authorized catalog/Memory -> complete dynamic prompt -> PromptBudgetExceededError before model call, or underestimated request -> provider prompt-too-long -> three local retries -> generic error/fallback. The model does not receive the pressure fact and the logical task has no durable context-rebuild pause.",
+      "north_star_conflict": "An internal planning ratio becomes a hard task outcome. This is neither a provider physical limit nor an explicit tenant/user resource authority and therefore violates capability-preserving determinism.",
+      "evidence_ids": [
+        "EV-CTX-01",
+        "EV-CTX-02",
+        "EV-CTX-03",
+        "EV-CTX-04"
+      ],
+      "old_report_relation": {
+        "classification": "new_leaf",
+        "related_ids": [
+          "A-03"
+        ],
+        "why_not_duplicate": "A-03 concerns active compaction projection/replay. This finding is the distinct pre-provider capacity authority and hard-cliff seam."
+      },
+      "repair": {
+        "design": [
+          "Create one pre-provider capacity plan from the exact serialized request surface: all messages, tool schemas, transient notices, cache transforms, typed media bytes, provider tokenizer/model manifest, and requested output reserve.",
+          "Treat every application ratio, section budget, compaction threshold, and catalog watermark as soft: warning, defer-to-reference, batch, retrieve, or model-led compaction only.",
+          "Permit a hard rebuild/pause only when the exact provider window or an explicit authenticated quota/cost fact is reached. Persist a context-rebuild checkpoint, coverage ledger, refs, bundle hash, remaining capacity, resume owner, and next valid actions.",
+          "Build and persist the provider prompt ledger before the request; reconcile it with provider usage after the response rather than creating it only afterward.",
+          "Do not solve the issue by truncating frozen identity, tail evidence, or arbitrary first-N catalog entries."
+        ],
+        "primary_touchpoints": [
+          "backend/app/runtime/context_budget.py",
+          "backend/app/runtime/prompt_builder.py",
+          "backend/app/runtime/provider_prompt_ledger.py",
+          "backend/app/runtime/session_context_controller.py",
+          "backend/app/kernel/turn_orchestrator.py",
+          "backend/app/kernel/contracts.py"
+        ],
+        "acceptance": [
+          "For 256K and 1M fixtures, vary every soft watermark at threshold-1, threshold, threshold+1, 0.5x, 1x, and 2x; no logical task terminality may change.",
+          "A decisive tail in the last coverage chunk remains recoverable and model-visible.",
+          "The preflight total includes tool schemas, transient reminders, base64/media bytes, and output reserve and is within an agreed tokenizer error bound.",
+          "A real provider overflow produces typed context_rebuild_required with preserved refs and same-model resume; it never produces an assistant final or asks the user to discard the session."
+        ]
+      }
+    },
+    {
+      "id": "XCB-CAP-001",
+      "title": "Skill and deferred Tool/MCP discovery scale by full inline materialization rather than bounded searchable catalogs",
+      "severity": "P1",
+      "state": "breakpoint",
+      "canonical_leaf": true,
+      "confidence": "high",
+      "atomic_seam": "Input/Consumption -> Execution",
+      "tests": [
+        "X-CAP",
+        "X-DISC"
+      ],
+      "liveness_gates": [],
+      "root_cause": "SkillRegistry renders every model-visible Skill name, full description, and path and deletes the catalog budget. Deferred tools likewise delete the limit and render every candidate in the dynamic prompt. MCP enumeration loads all enabled MCP Tool and AgentTool rows before filtering. Skill registry keys use first-wins display names and there is no model-usable non-inline Skill search/page coverage path.",
+      "failure_path": "400 Skill plus 200 MCP/deferred definitions -> O(N) filesystem/DB materialization and a full inline catalog every invocation -> prompt cliff or large uncached suffix. A correct last-page Skill cannot be discovered if the catalog is externalized today, while duplicate names can be collapsed before the model sees a namespace.",
+      "north_star_conflict": "Progressive disclosure exists for full schema/body but not for the discovery index itself. Preserving capability does not require putting the entire directory in every prompt; it requires truthful, lossless, searchable discovery.",
+      "evidence_ids": [
+        "EV-CAP-01",
+        "EV-CAP-02",
+        "EV-CAP-03",
+        "EV-CAP-04"
+      ],
+      "old_report_relation": {
+        "classification": "new_leaf",
+        "related_ids": [],
+        "why_not_duplicate": "Neither prior report counted catalog-scale discovery or exact-needle coverage as a leaf."
+      },
+      "repair": {
+        "design": [
+          "Introduce a stable namespaced capability catalog contract with kind, namespace, canonical name, aliases, version, risk, auth state, source ref, schema/body pointer, and bundle hash.",
+          "Keep the startup inline index bounded and deterministic, but expose model-usable paginated search plus exact lookup for Skill, Tool, MCP, Sub-agent, and Workflow catalogs. Reuse tool_search/load_skill execution surfaces where possible rather than creating a parallel authority.",
+          "Persist page/namespace coverage so the model and acceptance harness can prove the final item was not hidden. Search batches are retrieval batches, never claims of total semantic completeness.",
+          "Fresh-check authorization and version when loading or executing a selected item. Treat imported descriptions as untrusted data, not system instruction."
+        ],
+        "primary_touchpoints": [
+          "backend/app/skills/registry.py",
+          "backend/app/services/agent_context.py",
+          "backend/app/services/agent_tools.py",
+          "backend/app/runtime/prompt_builder.py",
+          "backend/app/tools/handlers/workspace.py"
+        ],
+        "acceptance": [
+          "Generate 400 Skills and 200 MCP tools with duplicates, aliases, malicious descriptions, revoked entries, and a correct final-page needle.",
+          "Startup prompt bytes remain bounded while exact-needle discoverability and namespace/page coverage equal 100 percent.",
+          "Only selected body/schema bytes enter the provider request; revoked authorization is rejected on fresh load/execution.",
+          "Catalog ordering and bundle hash are deterministic across turns; one version change does not rewrite unrelated catalog pages."
+        ]
+      }
+    },
+    {
+      "id": "XCB-MEM-001",
+      "title": "Dynamic Memory retrieval eagerly materializes the full authorized corpus and returns it all on selector failure",
+      "severity": "P1",
+      "state": "breakpoint",
+      "canonical_leaf": true,
+      "confidence": "high",
+      "atomic_seam": "Input/Execution -> Recovery/Consumption",
+      "tests": [
+        "X-CAP",
+        "X-MEM",
+        "X-CTX"
+      ],
+      "liveness_gates": [],
+      "root_cause": "MemoryRetriever explicitly deletes limit and retrieval_profile, requests unlimited overlay and knowledge-page results, loads every prior ChatSession summary with result.all, and assembles every model-selected item without enforcing budget. If the semantic selector is missing or fails, every prepared candidate is returned and then rendered.",
+      "failure_path": "10^3..10^6 Memory entries -> all source layers materialized in process -> all full candidates serialized into semantic-selection chunks -> selector failure returns all -> assembler renders all -> final prompt hard-fails. The cold tail is not exposed through an iterative query contract; it is protected only by attempting whole-corpus coverage.",
+      "north_star_conflict": "Complete authorized evidence availability is confused with eager byte injection. Lossless discoverable references and a coverage ledger can preserve model agency without O(total corpus) prompt/RSS growth.",
+      "evidence_ids": [
+        "EV-MEM-01",
+        "EV-MEM-02",
+        "EV-MEM-03",
+        "EV-MEM-04",
+        "EV-MEM-05"
+      ],
+      "old_report_relation": {
+        "classification": "new_leaf",
+        "related_ids": [
+          "P1-008"
+        ],
+        "why_not_duplicate": "P1-008 is the orthogonal availability-to-authority freeze bug. This finding is the retrieval/materialization scalability and selector-failure seam."
+      },
+      "repair": {
+        "design": [
+          "Make every Memory source cursor/page based and avoid result.all over unbounded session history. Preserve source refs, authority facts, revision, sensitivity, and conflict metadata per candidate.",
+          "Let the LLM iterate retrieval batches and request more evidence. Use full-coverage map/reduce only for the explicitly selected bounded evidence set, with a durable coverage ledger.",
+          "When the selector is unavailable, keep resident identity/constraints and return a typed memory_selection_unavailable state plus a lossless searchable index/ref. Do not inline the entire corpus and do not mechanically pick semantic winners.",
+          "Bound peak prompt/RSS by batch and externalized refs, not by total stored Memory; make cold-tail exact lookup and conflict expansion model-usable."
+        ],
+        "primary_touchpoints": [
+          "backend/app/memory/retriever.py",
+          "backend/app/memory/assembler.py",
+          "backend/app/services/memory_service.py",
+          "backend/app/memory/wiki_retrieval.py",
+          "backend/app/memory/explicit_overlay.py",
+          "backend/app/runtime/prompt_builder.py"
+        ],
+        "acceptance": [
+          "Parameterize 10^3, 10^4, 10^5, and 10^6 entries with a decisive cold-tail fact, conflicts, revoked sensitivity, and malicious text.",
+          "Peak prompt bytes and process RSS grow with configured batch size, not total corpus size.",
+          "The model can discover the cold tail through iterative retrieval and receives complete provenance/coverage.",
+          "Selector unavailable/timeout produces held or degraded typed state with a same-path retry, never all-corpus prompt injection or a mechanical semantic decision."
+        ]
+      }
+    },
+    {
+      "id": "XCB-OUT-001",
+      "title": "Output-cap recovery has a fixed three-continuation cliff and no durable incomplete-output state",
+      "severity": "P1",
+      "state": "breakpoint",
+      "canonical_leaf": true,
+      "confidence": "high",
+      "atomic_seam": "Execution/Evidence -> Recovery/Consumption",
+      "tests": [
+        "X-OUT",
+        "X-ONE",
+        "X-OBS"
+      ],
+      "liveness_gates": [
+        "LB-2",
+        "LB-3",
+        "LB-6",
+        "LB-8",
+        "LB-10"
+      ],
+      "root_cause": "Streaming output recovery loops at most three times. If the merged response still ends with length/max_tokens, the caller does not inspect that finish reason before finalizing an ordinary InvocationResult. Complete-mode recovery can append a platform-authored truncation marker to model output. Web chunks are persisted in micro-batches, but stream reset/tombstone is broadcast without durable reset state and continuation attempts have no persisted cursor/fingerprint.",
+      "failure_path": "Provider repeatedly reaches physical output cap or replays chunks after interruption -> three same-model continuations -> still capped response marked final/completed, or complete-mode output modified by platform text. Restart cannot reconstruct an authoritative incomplete-output cursor, and prior persisted chunks can survive a non-durable reset.",
+      "north_star_conflict": "A fixed attempt counter is allowed as a soft scheduling boundary, not as authority to declare model output complete or to append platform semantics.",
+      "evidence_ids": [
+        "EV-OUT-01",
+        "EV-OUT-02",
+        "EV-OUT-03",
+        "EV-OUT-04"
+      ],
+      "old_report_relation": {
+        "classification": "new_leaf",
+        "related_ids": [
+          "G-01",
+          "A-01"
+        ],
+        "why_not_duplicate": "G-01/A-01 cover platform error prose and prose-derived task status. This leaf is the distinct output-attempt durability, continuation, dedupe, and false-final seam."
+      },
+      "repair": {
+        "design": [
+          "Persist OutputAttempt with attempt_id, provider call id, chunk sequence, content hash/range, finish reason, continuation cursor, duplicate/reset ledger, model identity, and status incomplete/complete before terminal delivery.",
+          "Treat continuation count as a soft attempt scheduler. If another call is unsafe or unavailable, pause the logical task with preserved partial bytes and same-model resume; never mark length as final.",
+          "Persist retry-reset/tombstone state and deduplicate chunks by sequence/provider call id across restart.",
+          "Remove platform-authored truncation text from model output. Express incomplete state through typed runtime evidence and let a later model turn author the user-facing conclusion."
+        ],
+        "primary_touchpoints": [
+          "backend/app/kernel/engine.py",
+          "backend/app/kernel/turn_orchestrator.py",
+          "backend/app/kernel/contracts.py",
+          "backend/app/services/llm_client.py",
+          "backend/app/services/web_chat_runtime.py",
+          "backend/app/services/web_chat_run_orchestrator.py"
+        ],
+        "acceptance": [
+          "Force four or more consecutive length finishes on one model; the result remains incomplete/paused and resumes to exact complete output.",
+          "Inject repeated, out-of-order, and replayed chunks plus restart before/after reset; durable projection contains each logical byte once.",
+          "No platform marker is appended to model-authored content.",
+          "Provider unavailable after partial output preserves the partial artifact and returns retryable same-model resume state instead of failed assistant prose."
+        ]
+      }
+    },
+    {
+      "id": "XCB-LIM-001",
+      "title": "max_tool_rounds is a logical-task cliff and its typed reason is misconsumed as a completed assistant response",
+      "severity": "P1",
+      "state": "breakpoint",
+      "canonical_leaf": true,
+      "confidence": "high",
+      "atomic_seam": "Execution -> Evidence/Recovery/Consumption",
+      "tests": [
+        "X-LIM",
+        "X-ONE",
+        "X-OBS"
+      ],
+      "liveness_gates": [
+        "LB-1",
+        "LB-2",
+        "LB-3",
+        "LB-10"
+      ],
+      "root_cause": "The agent/default max_tool_rounds value directly bounds the kernel loop. At the boundary the platform writes first-person prose, persists it, and returns TerminalReason.TOOL_BUDGET. The web consumer decides failed/completed from prose prefixes rather than the terminal reason, so this message is normally stored as a completed assistant response. A derived turn_token_budget is present in RuntimeConfig but has no live enforcement/observation consumer.",
+      "failure_path": "Legitimate long task reaches round N -> no final model chance unless a separately proven loop-guard path is active -> platform prose claims a result -> state persisted and web run completed despite unfinished logical work. Raising a DB number is the only documented continuation mechanism.",
+      "north_star_conflict": "Resource ceilings may end an attempt, but an application default may not author task semantics or terminalize the Session. The model must see pressure before the boundary and the logical task must remain resumable.",
+      "evidence_ids": [
+        "EV-LIM-01",
+        "EV-LIM-02",
+        "EV-LIM-03",
+        "EV-LIM-04"
+      ],
+      "old_report_relation": {
+        "classification": "new_leaf_with_old_consumer_dependency",
+        "related_ids": [
+          "A-01",
+          "G-01"
+        ],
+        "why_not_duplicate": "A-01/G-01 already own prose-derived status and platform assistant error. The hard max_tool_rounds authority and attempt-to-task cliff were not previously counted."
+      },
+      "repair": {
+        "design": [
+          "Model max_tool_rounds as an attempt scheduling watermark unless backed by an explicit cost/quota/cancellation/provider hard fact.",
+          "Before the watermark, inject a bounded model-visible pressure observation with completed work, pending work, remaining authorized resources, and recommended checkpoint/replan actions.",
+          "At attempt exhaustion, persist a progress certificate and continuation address and return typed paused/resource_limited without an assistant row. A continuation turn uses the same logical task and preserved approvals/effects.",
+          "Make web status consume typed outcome/terminal state. Retire prose scanning and remove dead turn_token_budget or connect it to the same soft-pressure ledger without creating a second authority."
+        ],
+        "primary_touchpoints": [
+          "backend/app/models/agent.py",
+          "backend/app/runtime/invoker.py",
+          "backend/app/kernel/contracts.py",
+          "backend/app/kernel/turn_orchestrator.py",
+          "backend/app/kernel/engine.py",
+          "backend/app/services/web_chat_run_orchestrator.py",
+          "backend/app/services/llm_error_policy.py"
+        ],
+        "acceptance": [
+          "Run threshold-1, threshold, threshold+1, 0.5x, 1x, and 2x with useful progress at every round; no logical task is falsely completed or failed.",
+          "The model receives pressure before the boundary and authors any final explanation.",
+          "Attempt exhaustion produces no assistant row and has a durable resume edge with preserved tool receipts, approvals, and idempotency state.",
+          "An explicit authenticated cost ceiling or user cancel still hard-stops only its authorized scope and remains distinguishable from the soft watermark."
+        ]
+      }
+    },
+    {
+      "id": "XCB-RESULT-001",
+      "title": "Large Tool result paging protects model text but raw payloads still fan out through callbacks/parts and media bypasses eviction",
+      "severity": "P1",
+      "state": "breakpoint",
+      "canonical_leaf": true,
+      "confidence": "high",
+      "atomic_seam": "Execution/Evidence -> Consumption/Recovery",
+      "tests": [
+        "X-RESULT",
+        "X-CTX",
+        "X-OBS"
+      ],
+      "liveness_gates": [
+        "LB-8",
+        "LB-9"
+      ],
+      "root_cause": "Text results over the threshold are written to a hash-pinned workspace file and the model receives a preview/ref. However done_payload.result still carries the complete raw result into the callback, persisted tool event, websocket event, collected_parts, and final InvocationResult. ToolContentEnvelope image/document blocks are explicitly never evicted, and preflight length accounting treats list content as a small item count rather than base64 bytes. There is no common compressed/decompressed byte admission contract.",
+      "failure_path": "A 1 MiB log or 100 parallel results are externalized for the model but still duplicated across process memory/event serialization/transcript/UI return surfaces. A large Office/binary block bypasses text budgets entirely and enters the provider adapter as base64, allowing request overflow or memory exhaustion.",
+      "north_star_conflict": "Durable evidence must be complete, but every consumer does not need the complete blob inline. The evidence atom needs one durable payload plus typed refs, not N raw copies.",
+      "evidence_ids": [
+        "EV-RESULT-01",
+        "EV-RESULT-02",
+        "EV-RESULT-03",
+        "EV-RESULT-04"
+      ],
+      "old_report_relation": {
+        "classification": "new_leaf",
+        "related_ids": [],
+        "why_not_duplicate": "Prior reports discussed artifact consumption and sensitive transcript propagation, not the large-result inline duplication/media capacity seam."
+      },
+      "repair": {
+        "design": [
+          "Create one durable ToolResultManifest committed before notification with result_id, content type/schema, artifact/object ref, size, decompressed size, hash, row/page coverage, preview/summary ref, authority, and query/read cursor.",
+          "Pass the manifest/ref through callbacks, transcript parts, parent returns, UI events, and provider messages; do not duplicate the raw blob. Preserve an operator-only path to exact bytes.",
+          "Stream large text/table results to durable storage and enforce transport bytes plus decompressed bytes before materialization. Store binary/Office data as Artifact/Object Storage, never base64-inline by default.",
+          "Keep the current fail-safe rule that unpersisted semantic text is not silently truncated; instead pause with typed artifact_persistence_unavailable and retry."
+        ],
+        "primary_touchpoints": [
+          "backend/app/kernel/engine.py",
+          "backend/app/kernel/turn_orchestrator.py",
+          "backend/app/tools/result_envelope.py",
+          "backend/app/services/chat_message_parts.py",
+          "backend/app/services/web_chat_run_orchestrator.py",
+          "backend/app/runtime/provider_prompt_ledger.py",
+          "backend/app/runtime/session_context_controller.py"
+        ],
+        "acceptance": [
+          "Exercise large logs, 10000-row tables, binary/Office artifacts, malformed media, and high-compression payloads at threshold-1/equal/+1 and 0.5x/1x/2x.",
+          "One durable exact payload exists; parent, transcript, websocket, InvocationResult, and provider carry only bounded manifests/previews.",
+          "Model paging/query recovers arbitrary tail rows with hash and coverage; UI opens/downloads the artifact.",
+          "Transport and decompressed-byte limits prevent bombs without losing an admitted durable result or falsely claiming completeness."
+        ]
+      }
+    },
+    {
+      "id": "XCB-MCP-001",
+      "title": "MCP execution fresh-checks policy and credential rows but not remote schema/version",
+      "severity": "P2",
+      "state": "breakpoint",
+      "canonical_leaf": true,
+      "confidence": "high",
+      "atomic_seam": "Authority/Input -> Execution/Recovery",
+      "tests": [
+        "X-MCP"
+      ],
+      "liveness_gates": [
+        "LB-6"
+      ],
+      "root_cause": "call_mcp_tool re-reads the Tool assignment, metadata trust, enabled state, policy mode, URL, and credential, then sends tools/call using the imported remote name. It does not compare the live tools/list schema or a server revision to the imported schema used by the model. Remote schema errors become generic provider_error or operation_failed results without a schema-drift refresh/reload contract.",
+      "failure_path": "One of 200 servers changes tool name/schema after import -> model loads stale DB schema -> execution calls stale remote contract -> generic error, optional repeated retries, no catalog invalidation or model-visible fresh schema. A slow/down server is isolated to the selected call, but drift recovery is not closed.",
+      "north_star_conflict": "This is not a reason to synchronously connect to 200 servers. It requires selected-item freshness and a recoverable schema-drift state at the narrow execution boundary.",
+      "evidence_ids": [
+        "EV-MCP-01",
+        "EV-MCP-02",
+        "EV-MCP-03"
+      ],
+      "old_report_relation": {
+        "classification": "new_leaf",
+        "related_ids": [],
+        "why_not_duplicate": "The existing report marks MCP authz and metadata injection isolation as strengths; it does not count selected-tool schema drift/recovery."
+      },
+      "repair": {
+        "design": [
+          "Store server/tool schema revision or fingerprint and last successful live validation in the catalog manifest.",
+          "At selected load/execution, fresh-check policy/auth every time and validate schema by revision/TTL or a bounded selected-server tools/list request. Never enumerate all servers synchronously.",
+          "Return typed mcp_schema_drift with old/new fingerprints, refreshed schema ref, retryability, and next action so the model can repair arguments in the same Session.",
+          "Add per-server timeout/circuit state and bounded global MCP connection concurrency without allowing one server to block catalog discovery."
+        ],
+        "primary_touchpoints": [
+          "backend/app/tools/handlers/mcp.py",
+          "backend/app/services/mcp_client.py",
+          "backend/app/services/agent_tools.py",
+          "backend/app/services/mcp_server_service.py",
+          "backend/app/models/tool.py"
+        ],
+        "acceptance": [
+          "Simulate 200 healthy/slow/down/auth-expired/schema-drift servers without opening 200 startup connections.",
+          "One slow/down server does not block other catalog/search/Session work.",
+          "Auth revocation and schema drift are fresh at selected execution and remain distinct typed outcomes.",
+          "A refreshed schema can be loaded and retried in the same Session without stale cache execution."
+        ]
+      }
+    },
+    {
+      "id": "XCB-OBS-001",
+      "title": "Runtime pressure/event accumulation is unbounded and material context state is debug-only rather than model-visible",
+      "severity": "P1",
+      "state": "breakpoint",
+      "canonical_leaf": true,
+      "confidence": "high",
+      "atomic_seam": "Evidence -> Consumption/Recovery",
+      "tests": [
+        "X-OBS"
+      ],
+      "liveness_gates": [
+        "LB-9"
+      ],
+      "root_cause": "Each invocation retains collected_parts, streamed_chunks, and streamed_thinking as unbounded Python lists. Every converted runtime event is appended to collected_parts, and complete tool results can be embedded in parts. Context-window and compaction decisions are emitted with debug visibility and are not injected as a bounded model-visible material pressure state. There is no pressure-epoch aggregation contract.",
+      "failure_path": "Ten thousand repeated limit/backpressure events or long streaming output -> unbounded in-process lists and large terminal parts -> event/transcript/UI amplification. The model either sees no material pressure transition or receives repeated ad hoc reminders, while operators get raw event volume rather than a converged state.",
+      "north_star_conflict": "Observability must make failure visible without becoming another context/event storm. Raw facts can remain auditable while model/UI consumption is a bounded material-transition projection.",
+      "evidence_ids": [
+        "EV-OBS-01",
+        "EV-OBS-02",
+        "EV-OBS-03"
+      ],
+      "old_report_relation": {
+        "classification": "new_leaf",
+        "related_ids": [
+          "A-04",
+          "F-OBS1"
+        ],
+        "why_not_duplicate": "A-04 is Redis cancellation observability and F-OBS1 is stale Memory health. This leaf is invocation pressure/event aggregation and model visibility."
+      },
+      "repair": {
+        "design": [
+          "Persist raw deltas/events as an append-only audit stream, but maintain a bounded PressureEpoch projection keyed by kind/scope/fingerprint with count, first/last sequence, material state, refs, and recovery action.",
+          "Only material transitions enter model context and normal UI; repeated observations increment the durable epoch and remain inspectable by ref.",
+          "Replace unbounded terminal lists with streaming persistence plus bounded rolling buffers/manifests. Final InvocationResult references durable event ranges rather than copying every raw part.",
+          "Expose typed soft pressure, hard fact, context rebuild, connector unavailable, approval pause, and resume states through one runtime outcome contract."
+        ],
+        "primary_touchpoints": [
+          "backend/app/kernel/turn_orchestrator.py",
+          "backend/app/kernel/contracts.py",
+          "backend/app/services/web_chat_runtime.py",
+          "backend/app/services/web_chat_run_orchestrator.py",
+          "backend/app/runtime/session_context_controller.py",
+          "backend/app/services/chat_message_parts.py"
+        ],
+        "acceptance": [
+          "Inject 10000 identical observations with only three material state changes; raw count remains auditable and model/UI inline transitions equal three.",
+          "Process RSS and terminal payload size remain bounded by configured buffers, not event count.",
+          "Every material transition has event/span/metric, model-visible state, UI projection, durable ref, and resume action.",
+          "Final and recovery events cannot be lost by coalescing."
+        ]
+      }
+    }
+  ],
+  "evidence": [
+    {
+      "id": "EV-CTX-01",
+      "path": "backend/app/runtime/context_budget.py",
+      "lines": "8-12,29-34,244-318",
+      "fact": "System prompt budget is context_window times 0.20 times 3.5 chars/token and clamped to 15000..350000 chars; section budgets/limits derive from additional fixed ratios and clamps."
+    },
+    {
+      "id": "EV-CTX-02",
+      "path": "backend/app/runtime/prompt_builder.py",
+      "lines": "132-172,550-675,754-817",
+      "fact": "Sections preserve full content and record budget_enforced=false; final assembly throws PromptBudgetExceededError when the combined system prompt exceeds the heuristic budget."
+    },
+    {
+      "id": "EV-CTX-03",
+      "path": "backend/app/kernel/turn_orchestrator.py",
+      "lines": "757-829,1038-1106",
+      "fact": "Request preflight estimates only system plus message content chars. Transient reminders, dynamic notice, vision transform, cache transform, and tools are attached after or outside that estimator."
+    },
+    {
+      "id": "EV-CTX-04",
+      "path": "backend/app/kernel/turn_orchestrator.py",
+      "lines": "1107-1163,1209-1488",
+      "fact": "The complete provider prompt ledger is created only after a successful provider call; prompt-too-long recovery uses three local retries and then falls into fallback/error handling."
+    },
+    {
+      "id": "EV-CAP-01",
+      "path": "backend/app/skills/registry.py",
+      "lines": "35-63,93-129",
+      "fact": "Skill registry is first-wins by display name and render_catalog deletes budget_chars and renders every visible name, description, and file."
+    },
+    {
+      "id": "EV-CAP-02",
+      "path": "backend/app/services/agent_context.py",
+      "lines": "165-227,230-263",
+      "fact": "Every Skill from both workspaces is loaded/ranked/registered and the complete registry catalog is inserted into the dynamic Skill section."
+    },
+    {
+      "id": "EV-CAP-03",
+      "path": "backend/app/runtime/prompt_builder.py",
+      "lines": "410-426,635-665",
+      "fact": "Deferred-tool catalog rendering deletes its budget and renders every candidate; the complete Skill catalog is another dynamic prompt candidate."
+    },
+    {
+      "id": "EV-CAP-04",
+      "path": "backend/app/services/agent_tools.py",
+      "lines": "596-680,730-746,796-862,919-1010",
+      "fact": "Deferred-tool limit is deleted, MCP listing loads all matching Tool and AgentTool rows, and get_agent_tools_for_llm materializes all enabled tools before core/requested filtering."
+    },
+    {
+      "id": "EV-MEM-01",
+      "path": "backend/app/memory/retriever.py",
+      "lines": "38-88,90-140",
+      "fact": "Retriever deletes limit/retrieval_profile, gathers every source layer, and requests unlimited knowledge-page results."
+    },
+    {
+      "id": "EV-MEM-02",
+      "path": "backend/app/memory/retriever.py",
+      "lines": "142-220",
+      "fact": "Missing or failed semantic selector returns every prepared authorized candidate."
+    },
+    {
+      "id": "EV-MEM-03",
+      "path": "backend/app/memory/retriever.py",
+      "lines": "275-380",
+      "fact": "Every full candidate is serialized for model selection and complete-input coverage; selector output has no item-count target."
+    },
+    {
+      "id": "EV-MEM-04",
+      "path": "backend/app/memory/retriever.py",
+      "lines": "559-580,584-662",
+      "fact": "Explicit overlay uses limit=None and previous session summaries execute an unbounded query followed by result.all."
+    },
+    {
+      "id": "EV-MEM-05",
+      "path": "backend/app/memory/assembler.py",
+      "lines": "47-83",
+      "fact": "MemoryAssembler deletes budget_chars and renders all selected items."
+    },
+    {
+      "id": "EV-OUT-01",
+      "path": "backend/app/kernel/engine.py",
+      "lines": "102-111,3461-3504",
+      "fact": "Streaming output continuation is limited to three attempts and returns the still-capped response unchanged after exhaustion."
+    },
+    {
+      "id": "EV-OUT-02",
+      "path": "backend/app/kernel/turn_orchestrator.py",
+      "lines": "1086-1106,1617-1760",
+      "fact": "Continuation result is consumed without a remaining finish_reason check; a no-tool response is finalized as an ordinary successful InvocationResult."
+    },
+    {
+      "id": "EV-OUT-03",
+      "path": "backend/app/services/llm_client.py",
+      "lines": "475-569",
+      "fact": "Complete-mode cap retry can append a platform truncation marker to model content; stream mode only records the cap hit."
+    },
+    {
+      "id": "EV-OUT-04",
+      "path": "backend/app/services/web_chat_runtime.py",
+      "lines": "197-287",
+      "secondary_path": "backend/app/services/web_chat_run_orchestrator.py:398-425",
+      "fact": "Web deltas are micro-batched and persisted before broadcast, but reset_chunk emits an empty reset without persisting it; continuation/reset identity is not a durable output-attempt state."
+    },
+    {
+      "id": "EV-LIM-01",
+      "path": "backend/app/runtime/invoker.py",
+      "lines": "403-485",
+      "fact": "RuntimeConfig uses max_tool_rounds default 200 and derives turn_token_budget."
+    },
+    {
+      "id": "EV-LIM-02",
+      "path": "backend/app/kernel/turn_orchestrator.py",
+      "lines": "951-966,2521-2530",
+      "fact": "The loop breaks at max_tool_rounds, persists platform-authored prose, and returns TerminalReason.TOOL_BUDGET."
+    },
+    {
+      "id": "EV-LIM-03",
+      "path": "backend/app/kernel/engine.py",
+      "lines": "610-630,1029-1033",
+      "fact": "Error/limit output is an InvocationResult containing platform prose; the turn-token message helper exists but has no live kernel consumer."
+    },
+    {
+      "id": "EV-LIM-04",
+      "path": "backend/app/services/web_chat_run_orchestrator.py",
+      "lines": "783-818",
+      "secondary_path": "backend/app/services/web_chat_runtime.py:690-712",
+      "fact": "Web status is failed only for plan error or prose-prefix classifier. A tool-budget result is therefore completed while its metadata terminal_reason remains tool_budget."
+    },
+    {
+      "id": "EV-RESULT-01",
+      "path": "backend/app/kernel/engine.py",
+      "lines": "3237-3335",
+      "fact": "Large text output is saved to an exclusive hash-pinned workspace file; if persistence fails, complete text stays inline."
+    },
+    {
+      "id": "EV-RESULT-02",
+      "path": "backend/app/kernel/turn_orchestrator.py",
+      "lines": "1964-2003,2246-2307",
+      "fact": "Even after model-facing eviction, done_payload.result contains the raw result and flows to callbacks/parts while model_seen_result contains the bounded replacement."
+    },
+    {
+      "id": "EV-RESULT-03",
+      "path": "backend/app/services/chat_message_parts.py",
+      "lines": "115-125,445-448",
+      "fact": "Tool-call parts copy data.result directly, so final parts retain the raw tool payload."
+    },
+    {
+      "id": "EV-RESULT-04",
+      "path": "backend/app/kernel/engine.py",
+      "lines": "1007-1026",
+      "secondary_path": "backend/app/runtime/provider_prompt_ledger.py:22-52",
+      "fact": "Typed image/document blocks are never evicted. Provider surface token estimation does not count their base64 data as text."
+    },
+    {
+      "id": "EV-MCP-01",
+      "path": "backend/app/services/agent_tools.py",
+      "lines": "796-862",
+      "fact": "MCP discovery is DB metadata enumeration and does not connect to remote servers."
+    },
+    {
+      "id": "EV-MCP-02",
+      "path": "backend/app/tools/handlers/mcp.py",
+      "lines": "315-429",
+      "fact": "Execution fresh-reads assignment, trust, enablement, policy, URL, credential, and remote name, then directly calls the remote tool without live schema/version comparison."
+    },
+    {
+      "id": "EV-MCP-03",
+      "path": "backend/app/services/mcp_client.py",
+      "lines": "79-118,268-365",
+      "fact": "MCPClient is instantiated per selected use with bounded HTTP timeouts and lazy transport detection. tools/call does not invoke tools/list; failures are generic provider/connection errors."
+    },
+    {
+      "id": "EV-OBS-01",
+      "path": "backend/app/kernel/turn_orchestrator.py",
+      "lines": "498-555,831-876",
+      "fact": "collected_parts, streamed_chunks, and streamed_thinking are unbounded lists; every event part and every chunk/thinking delta is appended."
+    },
+    {
+      "id": "EV-OBS-02",
+      "path": "backend/app/kernel/turn_orchestrator.py",
+      "lines": "717-755",
+      "fact": "Context-window/compaction decisions are emitted with visibility=debug and are not a bounded model-visible pressure state."
+    },
+    {
+      "id": "EV-OBS-03",
+      "path": "backend/app/services/web_chat_run_orchestrator.py",
+      "lines": "440-470",
+      "fact": "Runtime and tool events flush streaming, persist individually when eligible, and broadcast; no pressure-epoch aggregation is applied here."
+    }
+  ],
+  "refutations": [
+    {
+      "id": "RF-01",
+      "claim_refuted": "The runtime blindly truncates every over-budget section.",
+      "evidence": "backend/app/runtime/prompt_builder.py:132-172,754-817",
+      "finding": "Section budgets are advisory and decisive tails are preserved. The defect is the later hard exception without a rebuild/pause path, not silent section truncation."
+    },
+    {
+      "id": "RF-02",
+      "claim_refuted": "Configuring 200 MCP servers opens 200 network connections at startup.",
+      "evidence": "backend/app/services/agent_tools.py:796-862; backend/app/tools/handlers/mcp.py:416-419",
+      "finding": "Catalog assembly reads DB metadata only. MCPClient is created only for a selected tool call. X-MCP still fails schema freshness and large-scale transport acceptance."
+    },
+    {
+      "id": "RF-03",
+      "claim_refuted": "Large textual tool results are always silently truncated.",
+      "evidence": "backend/app/kernel/engine.py:3237-3335",
+      "finding": "The exact text is stored with hash/range, and persistence failure keeps complete inline evidence. The remaining defect is raw duplication across consumers and unbounded media."
+    },
+    {
+      "id": "RF-04",
+      "claim_refuted": "Loop-guard keyword/counter heuristics directly hard-stop normal work.",
+      "evidence": "backend/app/kernel/loop_guard.py:127-215,282-378; backend/app/kernel/turn_orchestrator.py:2328-2363",
+      "finding": "Heuristics emit one warning. Abort requires side-effect-free, retry_exhausted, progress_token proof and then gives the model a final tool-free summary round. This positive path must not be confused with max_tool_rounds."
+    },
+    {
+      "id": "RF-05",
+      "claim_refuted": "The runtime always silently changes model under pressure.",
+      "evidence": "backend/app/runtime/context_budget.py:187-237",
+      "finding": "The configured primary is retained and user lock is honored. A configured provider-failure fallback is separate and observable; the single-model recovery path remains broken."
+    },
+    {
+      "id": "RF-06",
+      "claim_refuted": "Web streaming has no persistence or coalescing.",
+      "evidence": "backend/app/services/web_chat_runtime.py:197-287; backend/app/services/web_chat_run_orchestrator.py:398-414",
+      "finding": "The web path micro-batches deltas and persists each batch before broadcast. The unresolved seam is durable incomplete/reset/continuation state plus unbounded duplicate in-memory lists."
+    }
+  ],
+  "coverage_gaps": [
+    {
+      "id": "CG-01",
+      "status": "UNVERIFIED",
+      "scope": "400 Skill plus 200 MCP exact-needle scale",
+      "reason": "No parameterized end-to-end test creates the complete catalog, runs real model-visible search/load, revokes authorization, and proves page/namespace coverage.",
+      "required_harness": "Deterministic generated catalog, fake model that searches the final page, current DB/RLS fixture, bundle hash metrics, and prompt/RSS curve."
+    },
+    {
+      "id": "CG-02",
+      "status": "UNVERIFIED",
+      "scope": "10^3 to 10^6 Memory capacity curve",
+      "reason": "Current tests use small fixtures and explicitly assert all-candidate fallback; no RSS/DB/query/prompt growth curve or cold-tail retrieval acceptance exists.",
+      "required_harness": "Synthetic Markdown/DB Memory generator, cursor-aware retriever fixture, fake selector failure, cold-tail/conflict/sensitivity corpus, and peak RSS/prompt telemetry."
+    },
+    {
+      "id": "CG-03",
+      "status": "UNVERIFIED",
+      "scope": "Exact provider request capacity and smaller-model resume",
+      "reason": "The local ledger uses approximate chars/token and no live provider tokenizer/manifests or large-to-small model Session compatibility test was run.",
+      "required_harness": "Provider-specific tokenizer fixtures, serialized request capture including tools/media/cache transforms, physical overflow injection, and durable same/smaller-model resume."
+    },
+    {
+      "id": "CG-04",
+      "status": "UNVERIFIED",
+      "scope": "Binary/Office/decompression bomb and durable eviction storage",
+      "reason": "No controlled high-compression/binary payload test or production proof that AGENT_DATA_DIR tool-result files remain durable across replica/restart was obtained.",
+      "required_harness": "Streaming fake tool transport with compressed/decompressed counters, object-storage/volume restart fixture, artifact UI consumer, and malicious archive fixtures."
+    },
+    {
+      "id": "CG-05",
+      "status": "UNVERIFIED",
+      "scope": "LB-4 Admission, LB-5 Resources, and LB-7 Join",
+      "reason": "Parent/child queue admission, worker permits/leases, fan-in barriers, late results, and cross-channel join paths belong to the parallel multi-agent review and were not traced here.",
+      "required_harness": "100-way durable queue/fan-in test with virtual clock, kill/restart, partial/late/duplicate results, resource accounting, and cross-channel receipts."
+    },
+    {
+      "id": "CG-06",
+      "status": "UNVERIFIED",
+      "scope": "200 live MCP server fault isolation",
+      "reason": "Static code proves lazy connection and stale-schema execution, but no 200-server healthy/slow/down/auth-expired/schema-drift transport test was run.",
+      "required_harness": "Local deterministic MCP server farm, bounded sockets/process counters, virtual timeouts, schema revisions, and per-server circuit telemetry."
+    },
+    {
+      "id": "CG-07",
+      "status": "UNVERIFIED",
+      "scope": "UI consumption of typed pressure and recovery",
+      "reason": "This focused backend audit found no unified typed contract to exercise; browser/UI acceptance must follow the backend state-machine repair.",
+      "required_harness": "Frontend fixture for soft pressure, context rebuild, output incomplete, tool-result artifact, provider unavailable, resume action, and operator details."
+    }
+  ],
+  "old_id_mapping": [
+    {
+      "old_id": "G-01",
+      "relation": "exact_existing_leaf_extended_by_current_evidence",
+      "current_evidence": "backend/app/services/web_chat_run_orchestrator.py:960-1006",
+      "counting": "do_not_add",
+      "note": "Provider/runtime exceptions are still finalized with platform-authored assistant content and failed status. Single-model provider-unavailable recovery is an extreme-case extension of this existing leaf."
+    },
+    {
+      "old_id": "A-01",
+      "relation": "exact_existing_consumer_leaf_extended_by_current_evidence",
+      "current_evidence": "backend/app/services/web_chat_run_orchestrator.py:783-818; backend/app/services/llm_error_policy.py:138-143",
+      "counting": "do_not_add",
+      "note": "Web task status still depends on assistant prose prefixes rather than consuming the complete typed terminal outcome. This old leaf amplifies XCB-LIM-001 and XCB-OUT-001 but is not recounted."
+    },
+    {
+      "old_id": "A-03",
+      "relation": "related_not_duplicate",
+      "new_id": "XCB-CTX-001",
+      "counting": "count_new_leaf",
+      "note": "A-03 is active projection/replay after compaction; XCB-CTX-001 is exact pre-provider capacity authority and application hard-cliff handling."
+    },
+    {
+      "old_id": "P1-008",
+      "relation": "related_not_duplicate",
+      "new_id": "XCB-MEM-001",
+      "counting": "count_new_leaf",
+      "note": "P1-008 is Memory availability incorrectly freezing unrelated effects; XCB-MEM-001 is eager corpus materialization and selector-failure behavior."
+    },
+    {
+      "old_id": "A-04",
+      "relation": "related_not_duplicate",
+      "new_id": "XCB-OBS-001",
+      "counting": "count_new_leaf",
+      "note": "A-04 is cross-process cancel observability; XCB-OBS-001 is unbounded invocation pressure/event aggregation and model visibility."
+    },
+    {
+      "old_id": "F-OBS1",
+      "relation": "related_not_duplicate",
+      "new_id": "XCB-OBS-001",
+      "counting": "count_new_leaf",
+      "note": "F-OBS1 is stale Memory projection health; XCB-OBS-001 is a separate live invocation event/pressure seam."
+    }
+  ],
+  "verification": [
+    {
+      "command": "cd backend && source .venv/bin/activate && pytest -q tests/runtime/test_prompt_builder.py::test_final_system_prompt_budget_never_blind_trims_frozen_contract tests/runtime/test_prompt_builder.py::test_skills_catalog_section_preserves_complete_discovery_index tests/runtime/test_prompt_builder.py::test_agent_skill_catalog_preserves_complete_ranked_descriptions tests/runtime/test_context_budget.py::test_compute_context_budget_256k_research_is_more_aggressive tests/runtime/test_context_budget.py::test_compute_context_budget_1m_model_uses_long_context_capacity tests/runtime/test_provider_prompt_ledger.py tests/kernel/test_engine.py::test_kernel_continues_streaming_output_after_output_cap tests/kernel/test_engine.py::test_large_tool_result_evicted_in_kernel_loop tests/kernel/test_engine.py::test_persist_memory_called_on_max_rounds_exceeded tests/kernel/test_engine.py::test_turn_token_budget_does_not_preempt_tool_followup tests/services/test_agent_tools.py::test_available_deferred_tool_names_never_applies_platform_top_n",
+      "result": "12 passed in 0.59s",
+      "interpretation": "Confirms current hard prompt exception, complete catalog preservation, one-step output continuation, large-result fallback, max-round persistence, dead/non-preemptive turn token budget, and no deferred top-N."
+    },
+    {
+      "command": "cd backend && source .venv/bin/activate && pytest -q tests/memory/test_retrieval_pipeline.py::test_model_selector_failure_returns_every_authorized_candidate_observably tests/memory/test_retrieval_pipeline.py::test_missing_selector_model_returns_all_candidates_instead_of_mechanical_top_k tests/memory/test_assembler.py::TestAssembleBudgetAdvisory tests/runtime/test_session_context_controller.py",
+      "result": "13 passed in 0.28s",
+      "interpretation": "Confirms all-candidate Memory fallback, budget-ignoring Memory assembly, and current context-controller behavior. These passing assertions are current-state evidence, not X-MEM/X-CTX acceptance."
+    }
+  ],
+  "recommended_fix_order": [
+    {
+      "order": 1,
+      "scope": "Existing G-01/A-01 plus typed attempt/outcome/progress envelope",
+      "reason": "All new limit and single-model repairs require attempt/task/session separation, model-visible pressure, durable progress certificate, and a non-assistant paused state."
+    },
+    {
+      "order": 2,
+      "scope": "XCB-CTX-001 exact pre-provider capacity planner",
+      "reason": "This removes the arbitrary 20 percent hard cliff and establishes the one physical/provider capacity authority used by every later externalization path."
+    },
+    {
+      "order": 3,
+      "scope": "XCB-CAP-001 and XCB-MEM-001 bounded discovery/retrieval",
+      "reason": "Catalog and Memory must stop producing O(total corpus) prompt/RSS before stress tests can meaningfully validate provider capacity."
+    },
+    {
+      "order": 4,
+      "scope": "XCB-RESULT-001 unified durable result manifest",
+      "reason": "Large tool/subagent returns need one durable ref-first envelope before output, fan-in, transcript, and UI can be bounded."
+    },
+    {
+      "order": 5,
+      "scope": "XCB-OUT-001 durable incomplete-output state",
+      "reason": "Output continuation and replay dedupe depend on the typed progress envelope and durable result/event references."
+    },
+    {
+      "order": 6,
+      "scope": "XCB-LIM-001 soft round pressure and logical-task continuation",
+      "reason": "Once capacity/progress contracts exist, max_tool_rounds can end an attempt without falsely completing the task."
+    },
+    {
+      "order": 7,
+      "scope": "XCB-MCP-001 selected-server schema freshness",
+      "reason": "Keep lazy transport, add narrow fresh validation and typed drift recovery without introducing 200-server startup work."
+    },
+    {
+      "order": 8,
+      "scope": "XCB-OBS-001 pressure epoch aggregation",
+      "reason": "Project all repaired states into bounded model/UI observations while retaining raw audit evidence."
+    },
+    {
+      "order": 9,
+      "scope": "Extreme acceptance harness",
+      "reason": "Run 400/200/10^6, threshold mutation, binary bomb, output replay, single-model provider outage, and the separately owned 100-way queue/fan-in suite before any CCPlus completion claim."
+    }
+  ],
+  "counting_notes": [
+    "This artifact contributes eight new canonical leaves: seven P1 and one P2.",
+    "G-01 and A-01 remain existing ledger items and receive stronger extreme-case evidence only; they are not added again.",
+    "LB-4, LB-5, and LB-7 are coverage gaps here, not breakpoints from absence of review evidence.",
+    "X-CAP/X-MEM/X-CTX aliases that participate in the same overflow chain are not multiplied into separate leaves beyond the distinct catalog, Memory, and capacity-authority root seams.",
+    "Positive controls and passing unit tests do not erase an extreme acceptance failure, but they constrain the repair so capability, byte preservation, lazy MCP transport, loop proof, and stream persistence are not regressed."
+  ]
+}

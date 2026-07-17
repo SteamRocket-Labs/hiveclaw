@@ -1,0 +1,190 @@
+{
+  "schema_version": "1.0",
+  "artifact_kind": "agent_native_extreme_concurrency_a2a_review",
+  "snapshot": {
+    "repo": "/Users/rocky243/vc-saas/hiveclaw-main",
+    "head": "501db6555dae374e5fcf43a6fdcfe8a3dd89343e",
+    "state": "dirty_current_worktree",
+    "review_date": "2026-07-14",
+    "method": "current-source static trace; real 100-agent and real channel fault injection not executed"
+  },
+  "counting_contract": {
+    "count_unit": "independently reproducible, repairable, rollbackable and acceptable canonical leaf seam",
+    "scenario_is_not_leaf": true,
+    "missing_is_not_breakpoint": true,
+    "canonical_leaf_count": 14,
+    "severity_counts": {
+      "P1": 14
+    }
+  },
+  "findings": [
+    {
+      "id": "CONC-FANIN-001",
+      "severity": "P1",
+      "status": "current_source_confirmed",
+      "seam": "Full child, delegation and workflow result bytes propagate through RuntimeTask, completion outbox and parent continuation context without a result manifest or fan-in byte envelope.",
+      "evidence": [
+        "backend/app/services/subagent_run_service.py:453-495,534-649,711-747",
+        "backend/app/services/runtime_notification_outbox.py:44-129",
+        "backend/app/services/agent_session_continuation.py:222-325,483-623",
+        "backend/app/services/web_chat_runtime.py:1104-1153,1924-1989",
+        "backend/app/services/workflow_runtime_service.py:1494-1566"
+      ],
+      "scenarios": ["X-FAN-01", "X-FAN-02", "X-RESULT-01"],
+      "live_scale_unverified": true
+    },
+    {
+      "id": "CONC-WAKE-002",
+      "severity": "P1",
+      "status": "current_source_confirmed",
+      "seam": "Each child terminal creates a separate global-FIFO continuation wake; there is no parent/run coalescing or tenant fairness.",
+      "evidence": [
+        "backend/app/services/runtime_notification_outbox.py:245-286,530-680",
+        "backend/app/services/runtime_task_worker.py:242-259,520-562"
+      ],
+      "scenarios": ["X-FAN-02", "X-FAN-05", "X-QUEUE-01"],
+      "live_scale_unverified": true
+    },
+    {
+      "id": "A2A-ADMISSION-001",
+      "severity": "P1",
+      "status": "current_source_confirmed",
+      "seam": "Async delegation can emit queued and return a handle after durable RuntimeTask creation fails, producing a ghost delegation.",
+      "evidence": ["backend/app/agents/orchestrator.py:2538-2794"],
+      "scenarios": ["X-LIVE-01", "X-A2A-01"],
+      "live_scale_unverified": false
+    },
+    {
+      "id": "SUBAGENT-ADMISSION-001",
+      "severity": "P1",
+      "status": "current_source_confirmed",
+      "seam": "Background subagent child ChatSession commits before RuntimeTask; task creation failure leaves a visible ghost child session.",
+      "evidence": ["backend/app/services/subagent_run_service.py:165-245,249-450"],
+      "scenarios": ["X-FAN-02", "X-LIVE-01"],
+      "live_scale_unverified": false
+    },
+    {
+      "id": "A2A-CYCLE-001",
+      "severity": "P1",
+      "status": "current_source_confirmed",
+      "seam": "Durable delegation_chain is not used for cycle rejection; the live guard is process-local and is cleared after the call.",
+      "evidence": ["backend/app/agents/orchestrator.py:654-663,1377-1440,2538-2794"],
+      "scenarios": ["X-FAN-03", "X-LOOP-01"],
+      "live_scale_unverified": false
+    },
+    {
+      "id": "A2A-TERMINAL-001",
+      "severity": "P1",
+      "status": "current_source_confirmed",
+      "seam": "Generic RuntimeTask terminal writes have no monotonic compare-and-set, allowing late completion to overwrite cancel or kill outside the web-chat private guard.",
+      "evidence": [
+        "backend/app/services/runtime_task_service.py:468-543",
+        "backend/app/agents/orchestrator.py:2265-2439,2910-3062",
+        "backend/app/services/subagent_run_service.py:453-531,1177-1191"
+      ],
+      "scenarios": ["X-FAN-04", "X-A2A-02"],
+      "live_scale_unverified": false
+    },
+    {
+      "id": "CHANNEL-FAIRNESS-001",
+      "severity": "P1",
+      "status": "current_source_confirmed_fairness_absent",
+      "seam": "Channel ingress and delivery use global FIFO batches without tenant or channel fairness or reserved interactive headroom.",
+      "evidence": [
+        "backend/app/services/channel_ingress_inbox.py:297-337",
+        "backend/app/services/channel_delivery_outbox.py:236-276,544-571"
+      ],
+      "scenarios": ["X-A2A-02", "X-QUEUE-01"],
+      "live_scale_unverified": true
+    },
+    {
+      "id": "TEAM-FANOUT-001",
+      "severity": "P1",
+      "status": "current_source_confirmed",
+      "seam": "Agent Team launches members sequentially and can retain a partially started prefix without a complete requested, admitted and deferred ledger.",
+      "evidence": [
+        "backend/app/services/agent_team_runtime_service.py:964-1055",
+        "backend/app/services/agent_session_continuation.py:328-480",
+        "backend/app/services/web_chat_runtime.py:1707-1921"
+      ],
+      "scenarios": ["X-FAN-02", "X-FAN-03"],
+      "live_scale_unverified": false
+    },
+    {
+      "id": "WF-HARDLIMIT-001",
+      "severity": "P1",
+      "status": "current_source_confirmed",
+      "seam": "Fixed workflow fanout, concurrency, leaf, wallclock and token defaults hard-reject preflight without split, defer, checkpoint or model replan.",
+      "evidence": [
+        "backend/app/config.py:187-195",
+        "backend/app/runtime/workflow_admission.py:1-7,130-185"
+      ],
+      "scenarios": ["X-WF-01", "X-LIM-01"],
+      "live_scale_unverified": false
+    },
+    {
+      "id": "WF-PARTIAL-001",
+      "severity": "P1",
+      "status": "current_source_confirmed",
+      "seam": "Workflow fanout creates the whole coroutine/result set and does not return successful leaf coverage as a complete parent outcome when another leaf fails.",
+      "evidence": [
+        "backend/app/runtime/workflow_engine.py:432-539",
+        "backend/app/services/workflow_runtime_service.py:1494-1566"
+      ],
+      "scenarios": ["X-WF-01", "X-FAN-02"],
+      "live_scale_unverified": true
+    },
+    {
+      "id": "BUD-BREAKER-001",
+      "severity": "P1",
+      "status": "current_source_confirmed",
+      "seam": "Fixed failure and reconciliation thresholds mechanically hard-stop a budget run and cancel pending work without a model recovery lane.",
+      "evidence": ["backend/app/services/runtime_budget_service.py:58-137,311-379,544-728,1620-1685"],
+      "scenarios": ["X-BUD-02", "X-LIVE-01"],
+      "live_scale_unverified": false
+    },
+    {
+      "id": "BUD-ROOT-001",
+      "severity": "P1",
+      "status": "current_source_confirmed",
+      "seam": "Web-chat root budget creation failure returns None and the run continues without consuming the policy decision that requires work-amplifying tools to be disabled.",
+      "evidence": [
+        "backend/app/services/web_chat_runtime.py:124-189,1768-1846",
+        "backend/app/services/runtime_budget_service.py:287-302",
+        "backend/app/runtime/invoker.py:1245-1254"
+      ],
+      "scenarios": ["X-SAFE-01", "X-LIVE-01"],
+      "live_scale_unverified": false
+    },
+    {
+      "id": "SUBAGENT-APPROVAL-001",
+      "severity": "P1",
+      "status": "current_source_confirmed",
+      "seam": "Foreground subagent budget approval returns waiting without a durable exact child intent or RuntimeTask that can resume idempotently after approval.",
+      "evidence": ["backend/app/tools/handlers/subagent.py:794-841"],
+      "scenarios": ["X-LIVE-01", "X-REC-01"],
+      "live_scale_unverified": false
+    },
+    {
+      "id": "CONC-MAILBOX-001",
+      "severity": "P1",
+      "status": "current_source_confirmed",
+      "seam": "Concurrent parent messages update a RuntimeTask JSON list by read-copy-write and commit without row lock or CAS, permitting lost child completion messages.",
+      "evidence": ["backend/app/services/web_chat_runtime.py:1104-1153,1924-1989"],
+      "scenarios": ["X-FAN-01", "X-FAN-02", "X-FAN-05"],
+      "live_scale_unverified": true
+    }
+  ],
+  "known_missing": [
+    {
+      "id": "MISS-XCHANNEL-A2A-001",
+      "reason": "No complete root-task multi-channel route plan, causal DAG and unified result/delivery ledger was found; this is classified as Missing rather than counted as a breakpoint."
+    }
+  ],
+  "coverage_gaps": [
+    "Real 100-agent same-second completion and streaming storm not executed.",
+    "Real DingTalk, Feishu, Slack and Web credentials and callbacks not fault-injected.",
+    "Queue throughput, latency and starvation severity are not quantified with production telemetry.",
+    "codebase-memory MCP was unavailable with Transport closed; source tracing used targeted text and file reads."
+  ]
+}

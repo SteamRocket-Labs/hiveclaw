@@ -4,7 +4,8 @@ _Auto-maintained by session_trail.py. Each line records a session that edited co
 
 ## Sessions
 
-- 2026-07-14T04:01Z [sid:09cfb5ac]; branch:main; 12 files (orphan-trail.md, AGENTS.md, CLAUDE.md, +9); last commit: 09fcca1aa Fix OfficeCLI structured text previews
+- 2026-07-15T06:38Z [sid:b02ae85d]; branch:main; 66 files (orphan-trail.md, orchestrator.py, subagent.py, +63); last commit: 7fd2835de docs(review): close KB-PROP-001 evidence
+- 2026-07-14T13:12Z [sid:09cfb5ac]; branch:main; 64 files (orphan-trail.md, orchestrator.py, subagent.py, +61); last commit: 501db6555 Simplify memory and workflow boundaries
 - 2026-07-14T03:50Z [sid:61677159]; branch:main; 12 files (orphan-trail.md, AGENTS.md, CLAUDE.md, +9); last commit: ab6c19c42 Replace Office Online with OfficeCLI previews
 - 2026-07-14T03:47Z [sid:09cfb5ac]; branch:main; 11 files (orphan-trail.md, AGENTS.md, CLAUDE.md, +8); last commit: ab6c19c42 Replace Office Online with OfficeCLI previews
 - 2026-07-14T03:47Z [sid:3f5831c6]; branch:main; 11 files (orphan-trail.md, AGENTS.md, CLAUDE.md, +8); last commit: ab6c19c42 Replace Office Online with OfficeCLI previews
@@ -103,4 +104,3 @@ _Auto-maintained by session_trail.py. Each line records a session that edited co
 - 2026-07-09T01:14Z [sid:73c71880]; branch:main; 8 files (orphan-trail.md, evolution_daemon.py, activation_cleanup.py, +5); last commit: 3726b3b53 complete personal kb owner-agent read guard
 - 2026-07-09T01:04Z [sid:0a0c04a4]; branch:main; 4 files (orphan-trail.md, activation_cleanup.py, atomic-repo-review-2026-07-08.md, +1); last commit: 5e27d7f7d feat: add legacy pack migration dry run
 - 2026-07-09T01:00Z [sid:7228cd37]; branch:main; 3 files (orphan-trail.md, activation_cleanup.py, atomic-repo-review-2026-07-08.md); last commit: 5e27d7f7d feat: add legacy pack migration dry run
-- 2026-07-08T17:46Z [sid:be200f52]; branch:main; 8 files (orphan-trail.md, db_bootstrap.py, activation_cleanup.py, +5); last commit: 650e8adf4 feat: add external marketplace discovery sources

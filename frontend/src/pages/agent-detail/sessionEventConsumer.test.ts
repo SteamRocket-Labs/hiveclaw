@@ -4,6 +4,7 @@ import type { ChatTranscriptEventPayload } from './chatRuntime';
 import { buildRunTimelineFromMessages } from './chatDisclosureReducer';
 import {
   consumeSessionEnvelope,
+  hydrateSessionTranscriptEvents,
   projectSessionEventStoreToMessages,
 } from './sessionEventConsumer';
 import {
@@ -349,5 +350,143 @@ describe('canonical Session event consumer', () => {
         },
       ],
     });
+  });
+
+  it('keeps a legacy message at its original sequence when later compatibility events add no message', () => {
+    const legacyAssistant = {
+      schema: 'hive.session_event_compatibility',
+      schema_version: 1,
+      compatibility_status: 'needs_reconciliation',
+      event_id: 'legacy-assistant-1',
+      sequence: 1,
+      reason: 'legacy_generation',
+      legacy_event_type: 'assistant_message',
+      payload: {
+        content: 'OLDER_LEGACY_FINAL',
+        legacy_run_id: 'run-old',
+        metadata: {},
+      },
+    } as unknown as ChatTranscriptEventPayload;
+    const acceptedInput: SessionEventV2 = {
+      ...event(2, 'completed'),
+      ordinal: undefined,
+      item_id: 'input-new',
+      item_kind: 'human_input',
+      kind: 'human_input.accepted',
+      lifecycle: 'accepted',
+      payload_schema: 'hive.session.payload.human_input.accepted.v2',
+      scope: { level: 'session', session_id: 'session-1', thread_id: 'session-1' },
+      actor: { type: 'user', id: 'user-1' },
+      payload: { content: 'NEWER_USER_PROMPT' },
+    };
+    const latestProgress: SessionEventV2 = {
+      ...event(3, 'completed'),
+      ordinal: undefined,
+      item_id: 'latest-progress',
+      item_kind: 'assistant_commentary',
+      kind: 'assistant_commentary.completed',
+      lifecycle: 'completed',
+      payload_schema: 'hive.session.payload.assistant_commentary.completed.v2',
+      payload: { phase: 'commentary', content: 'LATEST_NATIVE_PROGRESS' },
+    };
+    const laterCompatibilityPhase = {
+      schema: 'hive.session_event_compatibility',
+      schema_version: 1,
+      compatibility_status: 'needs_reconciliation',
+      event_id: 'legacy-phase-4',
+      sequence: 4,
+      reason: 'legacy_generation',
+      legacy_event_type: 'phase',
+      payload: { content: '', metadata: { phase: 'done' } },
+    } as unknown as ChatTranscriptEventPayload;
+
+    const hydrated = hydrateSessionTranscriptEvents([
+      legacyAssistant,
+      acceptedInput as unknown as ChatTranscriptEventPayload,
+      latestProgress as unknown as ChatTranscriptEventPayload,
+      laterCompatibilityPhase,
+    ]);
+
+    expect(hydrated.messages.map((message) => message.content)).toEqual([
+      'OLDER_LEGACY_FINAL',
+      'NEWER_USER_PROMPT',
+      'LATEST_NATIVE_PROGRESS',
+    ]);
+  });
+
+  it('lets a canonical assistant_final supersede a legacy assistant_message bound to the same run', () => {
+    const unrelatedLegacy = {
+      schema: 'hive.session_event_compatibility',
+      schema_version: 1,
+      compatibility_status: 'needs_reconciliation',
+      event_id: 'legacy-final-unrelated',
+      sequence: 1,
+      reason: 'legacy_generation',
+      legacy_event_type: 'assistant_message',
+      payload: {
+        content: 'UNRELATED_LEGACY_FINAL',
+        legacy_run_id: 'run-unrelated',
+        metadata: {},
+      },
+    } as unknown as ChatTranscriptEventPayload;
+    const source: SessionEventV2 = {
+      ...event(2, 'completed'),
+      ordinal: undefined,
+      item_id: 'canonical-source',
+      item_kind: 'assistant_text',
+      kind: 'assistant_text.completed',
+      lifecycle: 'completed',
+      payload_schema: 'hive.session.payload.assistant_text.completed.v2',
+      payload: { phase: 'unknown', content: 'CANONICAL_FINAL_BYTES' },
+    };
+    const final: SessionEventV2 = {
+      ...event(3, 'completed'),
+      ordinal: undefined,
+      item_id: 'canonical-final',
+      item_kind: 'assistant_final',
+      kind: 'assistant_final.completed',
+      lifecycle: 'completed',
+      payload_schema: 'hive.session.payload.assistant_final.completed.v2',
+      payload: {
+        phase: 'final',
+        render_owner_id: 'canonical-render-owner',
+        source_blocks: [
+          { item_id: 'canonical-source', block_index: 0, content_hash: 'hash-1' },
+        ],
+      },
+    };
+    const legacyDuplicate = {
+      schema: 'hive.session_event_compatibility',
+      schema_version: 1,
+      compatibility_status: 'needs_reconciliation',
+      event_id: 'legacy-final-duplicate',
+      sequence: 4,
+      reason: 'legacy_generation',
+      legacy_event_type: 'assistant_message',
+      payload: {
+        content: 'STALE_LEGACY_PROJECTION',
+        legacy_run_id: 'run-1',
+        metadata: {},
+      },
+    } as unknown as ChatTranscriptEventPayload;
+
+    const hydrated = hydrateSessionTranscriptEvents([
+      unrelatedLegacy,
+      source as unknown as ChatTranscriptEventPayload,
+      final as unknown as ChatTranscriptEventPayload,
+      legacyDuplicate,
+    ]);
+
+    expect(hydrated.messages).toEqual([
+      expect.objectContaining({
+        role: 'assistant',
+        content: 'UNRELATED_LEGACY_FINAL',
+      }),
+      expect.objectContaining({
+        role: 'assistant',
+        content: 'CANONICAL_FINAL_BYTES',
+        sessionItem: expect.objectContaining({ kind: 'assistant_final' }),
+      }),
+    ]);
   });
 });

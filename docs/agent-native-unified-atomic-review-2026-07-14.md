@@ -4,7 +4,7 @@
 >
 > 原始审查冻结快照：`main@501db6555dae374e5fcf43a6fdcfe8a3dd89343e` + 2026-07-14 当时未提交工作树；后续施工不改写这个审查锚点，每条 `EVID-*` 另记自己的开工 HEAD、工作树与生产快照
 >
-> 修复账本滚动更新：2026-07-17；Group 0 与 Group 4 的既有证据门保持关闭。对当前 checkout 和线上 A2A 故障截图做 wiring/path 复核后，旧的 43/103 完成声明被主动撤销：`P1-004`、`SES-CONSUMER-001`、`A2A-TERMINAL-001`、`TEAM-FANOUT-001`、`ROOT-TREE-001` 五个 leaf 因 server-side read-only 未执行、Peer A2A 仍被并入 Sub-agent、terminal outcome 未关闭 root item、Team member model 未进入 worker、Team member implementation Session 暴露到普通列表而重开。当前五个回归均已推进到 `in_progress-local-green`：server authority、root terminal、Team model/surface、backend runtime section、canonical ThreadItem 与 frontend `timelineModel`/right rail 已把 Sub-agent、Agent Team、Peer A2A 机械三分；backend full=`7567 passed, 2 skipped`，real-PG migration=`214 passed`，frontend full=`120 files / 709 tests`，production build/bundle budget 全绿。additive migration 尚未生产 apply，三服务尚未同源部署，browser/production canary 尚未执行，因此当前业务 leaf 仍为 **38/103 closed**，不是 43/103；本轮未新增 canonical ID，也未把未部署或本地 Green 冒充生产闭环。Group 4 exact-source commit=`4e385d423`，production migration head=`runtime_result_fanin_0717`；本轮本地 head=`collaboration_runtime_closure_0717`。Group 4 的既有三服务生产发布、147 条历史 outbox 无损 ref-only 回填、schema/RLS/health/source-hash 与 return-storm/recovery 证据仍记录在 `EVID-G4-*`。2026-07-15T13:37Z 因 production `backend-volume` 在重启批次中从约 24.8 GB 急升到 28.65 GB，Group 1 曾显式暂停；`EVID-G8-PRE-001/002/003` 已分别关闭继续写放大、transaction lifecycle 与当次容量事故处置，核心数据停止门成立。B-01 发布后同挂载点 `df -B1 /data/agents` 为 used=`11,360,583,680` bytes（24%），未执行新的清理或核心数据删除。三个 Group 8 前置证据仍不关闭任何 Group 8 leaf 或 `MISS-RETENTION-001`；Object Storage、snapshot CAS、sealed T0 archive、T2 authority/replay 与跨资产 retention 仍未完成。
+> 修复账本滚动更新：2026-07-17；Group 0 与 Group 4 的既有证据门保持关闭。对当前 checkout 和线上 A2A 故障截图做 wiring/path 复核后，旧的 43/103 完成声明被主动撤销：`P1-004`、`SES-CONSUMER-001`、`A2A-TERMINAL-001`、`TEAM-FANOUT-001`、`ROOT-TREE-001` 五个 leaf 因 server-side read-only 未执行、Peer A2A 仍被并入 Sub-agent、terminal outcome 未关闭 root item、Team member model 未进入 worker、Team member implementation Session 暴露到普通列表而重开。五个回归的代码、迁移、typed consumer 与测试已由 commit `b9852f37f` 进入 production；backend=`a64092a1-395b-48c2-9853-83ff9b45c2ae`、backend-api=`ab14d317-3c29-4b74-9d31-341e778f92b7`、frontend=`3ff852aa-e078-464c-80c7-7568b1272a2a` 均 `SUCCESS`。production migration actual/expected head 均为 `collaboration_runtime_closure_0717`，148-table/4-trigger readiness `issues=[]/ready=true`，backend health=`ok`、RLS=`app_rls/strict/non-superuser/non-BYPASSRLS`、三个 daemon 与 sandbox healthy，frontend HTTP 200。首次 backend-api deployment `3c50f41e-aa94-4ff2-96d6-1f518d3b4919` 在 writer migration 前按设计 fail-closed；schema ready 后从同一 commit archive 重提成功，没有放宽 readiness 或改写业务数据。由于 authenticated deny/read、真实 Team model route、terminal/root reconciliation 与三类协作 browser canary 尚未执行，五个 leaf 当前统一记为 `in_progress-deployed-pending-canary`，业务分母仍为 **38/103 closed**，不是 43/103；本轮未新增 canonical ID，也未把“部署成功”冒充行为验收完成。Group 4 exact-source commit=`4e385d423` 的既有 return-storm/recovery 证据仍记录在 `EVID-G4-*`。2026-07-15T13:37Z 因 production `backend-volume` 在重启批次中从约 24.8 GB 急升到 28.65 GB，Group 1 曾显式暂停；`EVID-G8-PRE-001/002/003` 已分别关闭继续写放大、transaction lifecycle 与当次容量事故处置，核心数据停止门成立。B-01 发布后同挂载点 `df -B1 /data/agents` 为 used=`11,360,583,680` bytes（24%），未执行新的清理或核心数据删除。三个 Group 8 前置证据仍不关闭任何 Group 8 leaf 或 `MISS-RETENTION-001`；Object Storage、snapshot CAS、sealed T0 archive、T2 authority/replay 与跨资产 retention 仍未完成。
 >
 > 组合输入：`agent-native-atomic-review-2026-07-14.md`、`agent-native-extreme-boundary-atomic-review-2026-07-14.md`、`unified-context-assembly-and-progressive-disclosure-2026-07-14.md`、`session-v2-cc-codex-alignment-contract-2026-07-14.md`、修订后的 `reusable-agent-native-atomic-review-prompt.md`，以及当前 Hive / FreeCode / Codex 本地源码。
 >
@@ -636,9 +636,9 @@ Group 摘要不能替代以下两份文档：
 | Group | owner canonical leaf | owner Missing | 当前状态 |
 |---:|---:|---:|---|
 | 0 | 0（全局门） | 0 | closed：`EVID-G0-002/003/004/005/006`，Git truth、机器账本、11 个上下文包/90 个 `@` 文档入口、跨仓快照与 clean-checkout harness 已闭环 |
-| 1 | 16 | 0 | in progress：15/16 保持 closed；`P1-004` 已由 `EVID-G1-017` local Green，尚待同源发布与 production deny/read canary |
-| 2 | 14 | 0 | in progress：13/14 保持 closed；`SES-CONSUMER-001` 已由 `EVID-G2-015` local Green，尚待并行前端基线稳定后的 full/build/browser 与 production canary |
-| 3 | 7 | 0 | in progress：4/7 保持 closed；`A2A-TERMINAL-001`、`TEAM-FANOUT-001`、`ROOT-TREE-001` 已由 `EVID-G3-008` local Green，尚待 migration apply、同源发布与 production reconciliation canary |
+| 1 | 16 | 0 | in progress：15/16 保持 closed；`P1-004` 已同源发布，尚待 authenticated production deny/read canary |
+| 2 | 14 | 0 | in progress：13/14 保持 closed；`SES-CONSUMER-001` 已同源发布且 full/build 完成，尚待真实 browser collaboration canary |
+| 3 | 7 | 0 | in progress：4/7 保持 closed；`A2A-TERMINAL-001`、`TEAM-FANOUT-001`、`ROOT-TREE-001` 的 migration/apply/deploy 已完成，尚待 production model-route/reconciliation canary |
 | 4 | 6 | 0 | closed：6/6 owner leaf 已由 `EVID-G4-001`–`EVID-G4-006` 独立关闭；immutable result object、ref-only outbox、mailbox sequence/CAS、lease/claim、integration epoch/page、governed reader 与 100-way return-storm recovery 已部署 |
 | 5 | 2 | 0 | open |
 | 6 | 10 | 0 | in progress：`XCB-MEM-001` 已本地 Green（`EVID-G6-001`），仍待 production canary；其余 9 leaf open |
@@ -690,7 +690,7 @@ Group 摘要不能替代以下两份文档：
 
 **Owner leaf（16）**：`P0-F1`、`P0-F2`、`E-1`、`P1-004`、`P1-F4`、`KB-AUTH-001`、`KB-EXTRACT-001`、`KB-PROP-001`、`AUDIT-IMM-001`、`AUDIT-TENANT-001`、`F-PLAINTEXT`、`P2-F8`、`P2-F6`、`KB-CONTRACT-001`、`B-01`、`BUD-ROOT-001`。
 
-**当前回归状态（2026-07-17）**：15/16 保持 closed；`P1-004` 因 `delegation_run` 只在 DTO/UI 声明 read-only、server mutation 仍可执行而重开。`EVID-G1-017` 已完成 exact `session_kind` mutation gate、manager 不可绕过和 live API wiring 的本地 Green；三服务部署与 production deny canary 前仍是 `in_progress-local-green`。
+**当前回归状态（2026-07-17）**：15/16 保持 closed；`P1-004` 因 `delegation_run` 只在 DTO/UI 声明 read-only、server mutation 仍可执行而重开。`EVID-G1-017` 已完成 exact `session_kind` mutation gate、manager 不可绕过、live API wiring、三服务同源部署与 schema/health 验收；authenticated production deny/read canary 前仍是 `in_progress-deployed-pending-canary`。
 
 **依赖 Group**：Group 0。P0/P1 家族自身闭环后立即发布，不等待 Group 2–10。
 
@@ -731,7 +731,7 @@ Group 摘要不能替代以下两份文档：
 
 **Owner leaf（14）**：`G-01A`、`A-01`、`A-04`、`B-02`、`B-03`、`G-01B`、`B-04`、`D-KB4`、`SES-ACCEPT-001`、`SES-ITEM-001`、`SES-PROJECTION-001`、`SES-PROSE-001`、`SES-TRANSPORT-001`、`SES-CONSUMER-001`。
 
-**当前回归状态（2026-07-17）**：13/14 保持 closed；`SES-CONSUMER-001` 因 backend 把 Peer A2A `delegation` 投到 `subagents`、frontend `timelineModel` 也没有 `peer_a2a` typed section 而重开。`EVID-G2-015` 已完成 backend section/envelope、三类 canonical ThreadItem、frontend reducer/timeline/right rail，并在并行 Session UI commit `92500e4c0` 落定后通过 frontend full/build；browser 与 production canary 完成前仍不得标 closed。
+**当前回归状态（2026-07-17）**：13/14 保持 closed；`SES-CONSUMER-001` 因 backend 把 Peer A2A `delegation` 投到 `subagents`、frontend `timelineModel` 也没有 `peer_a2a` typed section 而重开。`EVID-G2-015` 已完成 backend section/envelope、三类 canonical ThreadItem、frontend reducer/timeline/right rail、frontend full/build 与三服务同源部署；真实 browser collaboration canary 完成前仍为 `in_progress-deployed-pending-canary`，不得标 closed。
 
 **依赖 Group**：Group 0、Group 1。Session envelope 必须携带 Group 1 收敛后的 principal/authority，不得先建一个无可信身份的第二事实语言。
 
@@ -769,7 +769,7 @@ Group 摘要不能替代以下两份文档：
 
 **Owner leaf（7）**：`A2A-ADMISSION-001`、`SUBAGENT-ADMISSION-001`、`A2A-CYCLE-001`、`A2A-TERMINAL-001`、`TEAM-FANOUT-001`、`SUBAGENT-APPROVAL-001`、`ROOT-TREE-001`。
 
-**当前状态（2026-07-17）**：4/7 保持 closed；`A2A-TERMINAL-001`、`TEAM-FANOUT-001`、`ROOT-TREE-001` 因 terminal outcome/root item 漂移、Team model 配置未被 worker 消费、Team implementation Session 暴露到普通列表而重开。`EVID-G3-008` 已完成同事务 root terminal、Team model authority、hidden surface 与历史 backfill 的本地 Green；部署、migration apply 与 production canary 前仍为 `in_progress-local-green`。Group 4 仍唯一拥有 durable result payload、mailbox、integration epoch 与 100-way return storm，不能由本 Group越权关闭。
+**当前状态（2026-07-17）**：4/7 保持 closed；`A2A-TERMINAL-001`、`TEAM-FANOUT-001`、`ROOT-TREE-001` 因 terminal outcome/root item 漂移、Team model 配置未被 worker 消费、Team implementation Session 暴露到普通列表而重开。`EVID-G3-008` 已完成同事务 root terminal、Team model authority、hidden surface、历史 backfill、production migration apply 与三服务同源部署；真实 Team model route、terminal/root reconciliation 与 Session surface canary 前仍为 `in_progress-deployed-pending-canary`。Group 4 仍唯一拥有 durable result payload、mailbox、integration epoch 与 100-way return storm，不能由本 Group越权关闭。
 
 **依赖 Group**：Group 0–2。root ledger、approval 与 terminal 必须复用 Group 2 的 canonical event/item 和 Group 1 的 authority frame。
 
@@ -1271,7 +1271,7 @@ Group 0 是全局证据门，不拥有业务 leaf。下面 103 行必须与 cano
 - P0 | P0-F1 | closed:EVID-G1-001 | governed egress commit `10b74360a` 已随 `1b822eb766` 三服务同源部署；public/redirect allow 与 metadata/downgrade typed deny production canary 已绿
 - P1 | P0-F2 | closed:EVID-G1-002 | deployed-source reconciliation `f7902ab7b` 与 fail-closed readiness `5ad6ff3c6` 已随 `1b822eb766` 部署；schema/startup/runtime-role/cross-tenant production canary 已绿
 - P1 | E-1 | closed:EVID-G1-003 | durable requester authority commit `3b3b281543bc` 已部署；production actual-data + exact-code spawn/wake canary、creator drift hold、1,499 条 legacy `retain_needs_reconciliation` disposition 与零副作用 rollback drill 已绿
-- P1 | P1-004 | in_progress-local-green:EVID-G1-017 | 旧 typed A2A authority frame 保留；本轮补上 `delegation_run` server-side read-only mutation gate、manager 不可绕过与 live start-run wiring，待三服务部署和 production deny canary
+- P1 | P1-004 | in_progress-deployed-pending-canary:EVID-G1-017 | 旧 typed A2A authority frame 保留；`delegation_run` server-side read-only gate 已随 `b9852f37f` 部署，待 authenticated production deny/read canary
 - P1 | P1-F4 | closed:EVID-G1-005 | signed authority frame commit `67a0bcdcb` 已部署；54/54 legacy exact-byte quarantine、direct/restart/compact/nested A2A/foreign authority、metrics、replay no-duplicate-effect 与 tamper/rollback canary 全绿
 - P1 | C-BP1 | inherited-current-evidence | terminal hook 同步 T2 LLM 阻塞完成
 - P1 | P1-008 | inherited-current-evidence | Memory dependency failure 冻结无关 effect
@@ -1353,16 +1353,16 @@ Group 0 是全局证据门，不拥有业务 leaf。下面 103 行必须与 cano
 - P1 | A2A-ADMISSION-001 | closed:EVID-G3-001 | A2A 在 coordination signal/wakeup 前持久化 budget admission、RuntimeTask、root item 与 exact recovery identity；lease expiry 复用原 signal，不再产生 ghost delegation
 - P1 | SUBAGENT-ADMISSION-001 | closed:EVID-G3-002 | Subagent 先落 durable task/root admission 再投影 child session；approval wait 不唤醒 worker，projection crash 可从原 task 恢复
 - P1 | A2A-CYCLE-001 | closed:EVID-G3-003 | delegation path/cycle 成为 durable root item 事实；restart 后仍按同一路径拒绝 cycle，拒绝态不产生 child effect
-- P1 | A2A-TERMINAL-001 | in_progress-local-green:EVID-G3-008 | `SessionRunOutcome` terminal transaction 现在同事务关闭对应 root item 并写 outcome/result/event refs；历史漂移有 additive backfill，待部署与 production reconciliation canary
+- P1 | A2A-TERMINAL-001 | in_progress-deployed-pending-canary:EVID-G3-008 | `SessionRunOutcome` terminal transaction 同事务关闭 root item；additive backfill 已生产 apply，待 production reconciliation canary
 - P1 | CHANNEL-FAIRNESS-001 | reclassified-plane-current | channel ingress/delivery 全局 FIFO
-- P1 | TEAM-FANOUT-001 | in_progress-local-green:EVID-G3-008 | requested/admission 守恒保持；本轮补上 tenant-bound enabled member model 解析、worker override 消费和 `listed_surface=parent`，待部署与历史 backfill canary
+- P1 | TEAM-FANOUT-001 | in_progress-deployed-pending-canary:EVID-G3-008 | requested/admission 守恒保持；tenant-bound member model、worker override 与 hidden Session 已部署，待真实 model-route/历史 surface canary
 - P1 | WF-HARDLIMIT-001 | inherited-current-evidence | Workflow 固定方便性上限 hard fail
 - P1 | WF-PARTIAL-001 | closed:EVID-G4-005 | Workflow/Team/Subagent/A2A 共用 typed result status/ref 与 partial/late/duplicate/revision contract；terminal coverage 可重算且 late result 不伪造 root terminal
 - P1 | BUD-BREAKER-001 | inherited-current-evidence | runtime breaker 机械终止/cancel
 - P1 | BUD-ROOT-001 | closed:EVID-G1-009 | commit `3c1998607` 建立 typed budget-root unavailable contract：交互回合保留 direct reasoning/answer、work-amplification 双层禁用，后台/自治入口 fail-closed；三服务部署、production exact-code canary、指标、零 legacy active task inventory 与 health 已绿
 - P1 | SUBAGENT-APPROVAL-001 | closed:EVID-G3-006 | foreground approval 绑定 exact RuntimeTask/root item/approval ref；approve/reject 幂等推进同一 intent，等待期不执行
 - P1 | CONC-MAILBOX-001 | closed:EVID-G4-006 | parent mailbox 从 RuntimeTask JSON 改为独立 cursor/outbox/page rows；唯一 sequence、CAS version、claim token、lease 与 stale-ack fence 关闭 lost update
-- P1 | ROOT-TREE-001 | in_progress-local-green:EVID-G3-008 | mixed-runtime root identity 保持；本轮修复 web/session terminal task 已 completed 但 root item 仍 running 的 transaction seam，待部署与 production coverage 重算
+- P1 | ROOT-TREE-001 | in_progress-deployed-pending-canary:EVID-G3-008 | mixed-runtime root identity 保持；terminal/root transaction 与历史 backfill 已部署，待 production coverage 重算与幂等 canary
 - P1 | FLEET-SCHED-001 | added-current-confirmed | RuntimeTask 全局 priority/FIFO 无 tenant/root fairness
 - P2 | FLEET-TRIGGER-001 | added-current-confirmed | trigger daemon 全量 O(N) scan 无 page/shard/cursor
 - P2 | SES-ACCEPT-001 | closed:EVID-G2-009 | accepted input、command、canonical event 与 outbox 在 admission transaction 中成立，worker 只 claim/apply
@@ -1370,7 +1370,7 @@ Group 0 是全局证据门，不拥有业务 leaf。下面 103 行必须与 cano
 - P1 | SES-PROJECTION-001 | closed:EVID-G2-011 | user/live projection 精确 redaction content 但保留 item、parent、invocation、result 与 sequence identity
 - P2 | SES-PROSE-001 | closed:EVID-G2-012 | unknown/summary/private/final phase 保持 typed；平台不生成固定 reasoning/final prose
 - P2 | SES-TRANSPORT-001 | closed:EVID-G2-013 | persist-before-publish、transactional outbox、ready/highest-contiguous cursor 与 gap recovery 共用 canonical envelope
-- P1 | SES-CONSUMER-001 | in_progress-local-green:EVID-G2-015 | backend envelope、canonical ThreadItem、frontend reducer/timeline/right rail 已将 Sub-agent、Agent Team、Peer A2A 三分；frontend full=`120 files / 709 tests` 与 production build/bundle budget 已绿，仍待 browser/deploy/production canary
+- P1 | SES-CONSUMER-001 | in_progress-deployed-pending-canary:EVID-G2-015 | backend envelope、canonical ThreadItem、frontend reducer/timeline/right rail 已将 Sub-agent、Agent Team、Peer A2A 三分并同源部署；仍待 browser collaboration canary
 <!-- canonical-ledger-end -->
 
 ### 12.3 Group 修复证据索引
@@ -1381,9 +1381,9 @@ Group 0 是全局证据门，不拥有业务 leaf。下面 103 行必须与 cano
 | Group | 证据前缀 | Owner 范围 | 当前证据状态 | 下一次写入要求 |
 |---:|---|---|---|---|
 | 0 | `EVID-G0-*` | 0 leaf / 0 Missing | `closed`：`EVID-G0-001/002/003/004/005/006`；文档 Git truth、owner/path/decision/scenario CI、11 个 Group 上下文包、90 个去重 `@` 文档入口、跨仓快照与 fake-provider/PG/Redis harness 基座成立 | 后续任何新增本地 `@docs` 必须先进入 Git 并同步上下文包索引；业务场景 Green 仍由 owner Group 负责 |
-| 1 | `EVID-G1-*` | 16 leaf / 0 Missing | `in_progress`：15/16 closed；`P1-004` 由 `EVID-G1-017` 重开并已 local Green，尚未三服务部署/production canary | 发布后验证 `delegation_run` 的 start/steer/rename/delete/Team/Workflow/Plan 等 mutation 均返回 typed 409，owner 与 manager 都不能接管只读 peer Session；read transcript/workbench/export 必须保持可用 |
-| 2 | `EVID-G2-*` | 14 leaf / 0 Missing | `in_progress`：13/14 closed；`SES-CONSUMER-001` 由 `EVID-G2-015` 重开并已 local Green。backend section/envelope、canonical ThreadItem、frontend reducer/timeline/right rail、full suite 与 build 已完成 | 执行真实 browser 路径后，三服务同源部署并验证 Sub-agent/Team/Peer A2A 三分、read-only A2A window 与 failure terminal；不得用其它 Session commit 冒充本 leaf 的生产证据 |
-| 3 | `EVID-G3-*` | 7 leaf / 0 Missing | `in_progress`：4/7 closed；`A2A-TERMINAL-001`、`TEAM-FANOUT-001`、`ROOT-TREE-001` 由 `EVID-G3-008` 重开并已 local Green，尚未部署/migration apply/canary | 三服务同源发布后执行 migration head、Team model route、旧 Team Session hidden、terminal task/root coverage 重算和 restart/idempotency canary；Group 4 只消费 admitted item/result refs，不另造 root ledger |
+| 1 | `EVID-G1-*` | 16 leaf / 0 Missing | `in_progress`：15/16 closed；`P1-004` 已由 `b9852f37f` 同源部署，状态为 `deployed-pending-canary` | 验证 `delegation_run` 的 start/steer/rename/delete/Team/Workflow/Plan 等 mutation 均返回 typed 409，owner 与 manager 都不能接管只读 peer Session；read transcript/workbench/export 必须保持可用 |
+| 2 | `EVID-G2-*` | 14 leaf / 0 Missing | `in_progress`：13/14 closed；`SES-CONSUMER-001` 的 backend/frontend typed consumer、full/build 与三服务部署已完成 | 执行真实 browser 路径，验证 Sub-agent/Team/Peer A2A 三分、read-only A2A window 与 failure terminal；不得用 deployment success 冒充行为 canary |
+| 3 | `EVID-G3-*` | 7 leaf / 0 Missing | `in_progress`：4/7 closed；三项 regression 的 migration/apply/deploy 已完成，状态为 `deployed-pending-canary` | 执行 Team model route、旧 Team Session hidden、terminal task/root coverage 重算和 restart/idempotency canary；Group 4 只消费 admitted item/result refs，不另造 root ledger |
 | 4 | `EVID-G4-*` | 6 leaf / 0 Missing | `closed`：`EVID-G4-001`–`006`；code/migration、real-PG sequence/CAS/lease/epoch、100×1 MiB ref-only fan-in、partial/late/duplicate/revision/crash recovery、backend/frontend 全量回归、三服务 exact-source deployment 与 production backfill/schema/RLS/hash/health 证据齐全 | 后续 Group 若恢复 inline result bytes、另造 parent mailbox、破坏 ref reader authority、epoch order 或 result immutability，必须重开对应 leaf；当前下一施工入口为 Group 5 |
 | 5 | `EVID-G5-*` | 2 leaf / 0 Missing | `open` | 写 fleet scheduler/trigger benchmark、公平性、分页续扫与 control-plane reserve |
 | 6 | `EVID-G6-*` | 10 leaf / 0 Missing | `in_progress`：`XCB-MEM-001` 已 `in_progress-local-green:EVID-G6-001`；0/10 production closed | 先完成 Memory 三服务 exact-source deploy/长 Session canary，再继续 CTX-A–F 剩余 leaf、capacity ledger、compaction/output recovery 与尾部证据覆盖 |
@@ -2698,8 +2698,8 @@ context_read_receipt:
 - Green：`app/core/permissions.py::require_writable_session` 以 canonical `session_kind=delegation_run` 返回 typed `409 session_read_only`；`authorize_session_action(require_writable=True)`、Session V2 mutation authority与全部 legacy mutation API 在 effect 前调用同一硬闸。read transcript/workbench/export/feedback sidecar 仍可用。
 - path proof：新增 REST `start_session_run` 回归证明 live route 在 `submit_live_human_input` 前拒绝；owner 与 manager override 双向测试证明 governance 不能把 read-only 变 writable。
 - tests：初始家族 Red 属本轮 `9 failed`；authority leak 的独立 Red 为 outsider 在 read-only gate 提前执行时错误得到 409 而不是 403。修复后协作族 focused backend=`382 passed in 11.84s`，其中 owner/manager mutation typed 409、outsider 403、read transcript/workbench allow 均有 exact route 回归；backend full=`7567 passed, 2 skipped in 371.77s`。
-- commit / deploy：实现、测试与本证据位于同一非自引用原子 commit，Git history 是 commit/hash 事实源；尚未部署，production deny/allow canary 未执行。
-- status：`in_progress-local-green`。
+- commit / deploy：原子实现 commit=`b9852f37f`；backend=`a64092a1-395b-48c2-9853-83ff9b45c2ae`、backend-api=`ab14d317-3c29-4b74-9d31-341e778f92b7`、frontend=`3ff852aa-e078-464c-80c7-7568b1272a2a` 均 `SUCCESS`。首次 backend-api=`3c50f41e-aa94-4ff2-96d6-1f518d3b4919` 在 writer migration 前按设计 fail-closed，schema ready 后同 commit archive 重提成功；production deny/read canary 未执行。
+- status：`in_progress-deployed-pending-canary`。
 
 #### EVID-G2-015：Sub-agent、Agent Team 与 Peer A2A typed runtime section 分流
 
@@ -2730,8 +2730,8 @@ context_read_receipt:
 - frontend path proof：`timelineModel` 同时消费 envelope `.items` 与兼容 raw array，分别建立 `agentTeams/peerA2A/subagents`；Runtime Console 具有独立 A2A segment、typed waiter/failure、可进入 read-only `delegation_run` window。`threadItemReducer` 与 `ThreadItemRenderer` 消费同一 generated discriminated union，不从标题或 summary 猜类型。
 - migration/backfill：`collaboration_runtime_closure_0717` 仅对命中 exact event/metadata markers 的历史 collaboration rows 重分类，不全表把 `child_session` 粗暴改写；Peer A2A 历史 child Session 通过 tenant + normalized UUID + RuntimeTask task_type 精确绑定。
 - tests：backend 协作族=`382 passed in 11.84s`；backend full=`7567 passed, 2 skipped in 371.77s`；frontend ThreadItem/reducer/timeline=`3 files / 51 passed`，A2A runtime-panel exact test=`1 passed / 108 skipped`，frontend full=`120 files / 709 tests`。`npm run build` 通过，7363 modules，AgentDetail=`335499/380000` bytes、gzip=`92583/115000`，vendor=`591449/620000`、gzip=`186474/200000`。
-- commit / deploy：backend、frontend A2A typed consumer、migration、测试与证据进入同一原子 commit；Session disclosure 独立 commit `92500e4c0` 仅作为稳定 frontend 基线。尚未部署或执行 browser/production canary。
-- status：`in_progress-local-green`。
+- commit / deploy：backend、frontend A2A typed consumer、migration、测试与证据进入原子 commit `b9852f37f`；Session disclosure 独立 commit `92500e4c0` 是其父级稳定 frontend 基线。三服务 deployment IDs 与 `EVID-G1-017` 相同且均 `SUCCESS`；browser collaboration canary 未执行。
+- status：`in_progress-deployed-pending-canary`。
 
 #### EVID-G3-008：terminal root、Team model 与 hidden member Session 回归闭环
 
@@ -2761,8 +2761,8 @@ context_read_receipt:
 - Team model Green：spawn 前按 tenant + enabled + exact UUID/label/model 校验 member selector；不可用/歧义/跨 tenant 在 durable admission 前拒绝；resolved model ID 进入 `RuntimeTask.metadata.runtime_model_id`，worker loader重新校验 tenant/enabled 后实际使用，fallback/default pair 逻辑保留。
 - surface Green：新 Team member Session 使用 `listed_surface=parent`；additive migration 将历史 `session_kind/runtime_source/source_channel` Team variants 回填为 parent-hidden，并以 exact RuntimeTask binding 修复旧 Peer A2A `delegation_run` surface。migration 同时把 terminal RuntimeTask 对应的 nonterminal root item修复为 completed/failed/killed/cancelled/not_admitted，保留 evidence metadata，downgrade 不重新暴露/重开真相。
 - tests：初始家族 Red 属本轮 `9 failed`；migration Red 为 missing revision `1 failed`，A2A legacy-surface backfill 另以 missing builder 先红。Green：协作族 backend=`382 passed in 11.84s`；完整 real-PG migration suite=`214 passed in 160.31s`，其中新增真实 downgrade→seed legacy rows→upgrade→verify backfill；backend full=`7567 passed, 2 skipped in 371.77s`；Alembic single head=`collaboration_runtime_closure_0717`。
-- commit / deploy：实现、migration、回填测试与本证据位于同一非自引用原子 commit；尚未 apply production migration 或部署。
-- status：`in_progress-local-green`。
+- commit / deploy：实现、migration、回填测试与本证据位于原子 commit `b9852f37f`。production 已执行 `peer_a2a_session_authority_0717 -> collaboration_runtime_closure_0717`；actual/expected head 一致，148-table/4-trigger readiness `issues=[]/ready=true`，三服务 IDs 与 `EVID-G1-017` 相同并均 `SUCCESS`。真实 Team model route、root reconciliation 与历史 Session surface canary 未执行。
+- status：`in_progress-deployed-pending-canary`。
 
 #### EVID-G6-001：XCB-MEM-001 CC 式 Memory 自动披露与 Session 软预算
 

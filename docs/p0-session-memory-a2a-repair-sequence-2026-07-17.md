@@ -66,7 +66,7 @@ Session V2 重构（AA 总账 Group 1–4，229 文件 / ~4 万行）**方向正
 5. 完整授权 evidence 始终可经 `search_memory` / `load_memory` 读取；selector/ledger/assembler 不可用时产生 typed degraded state，不把整个 Session 判失败，也不冻结仍有正常 authority 的无关 effect。
 6. selector failure 只保留 candidate ID/hash/coverage receipt，绝不恢复“全部正文兜底”。
 
-**本地状态**：P0 切片已完成 Red→Green、Memory/runtime 定向 `104 passed`、architecture `198 passed`、backend 全量 `7543 passed, 2 skipped`、frontend 当前 checkout `693 passed` 与 production build/bundle budget。完整结果写入本文提交的 commit body 与 AA `EVID-G6-001`。当前仍不得写“生产闭环”，因为三服务 exact-source deploy、真实长 Session canary 与 production prompt-pressure 指标尚未执行。
+**当前状态**：P0 切片已完成 Red→Green、Memory/runtime 定向 `104 passed`、architecture `198 passed`、backend 全量 `7543 passed, 2 skipped`、frontend 对应 checkout `693 passed` 与 production build/bundle budget；当前 `HEAD b9852f37f` 已随 backend=`a64092a1-395b-48c2-9853-83ff9b45c2ae`、backend-api=`ab14d317-3c29-4b74-9d31-341e778f92b7`、frontend=`3ff852aa-e078-464c-80c7-7568b1272a2a` 同源发布。完整结果写入本文提交的 commit body 与 AA `EVID-G6-001`。当前仍不得写“生产闭环”，因为真实长 Session canary 与 production prompt-pressure/actual-token 指标尚未执行。
 
 **验收门**：`unified-context-assembly` §0/§1.2/§10 与 §18.10；memory 数量增长时 resident/automatic bytes 有界；selector prompt 不含全量 body；selector failure 无 body；同 Session 多 turn 不超过 60KiB；预算耗尽后 conversation/search/load 可继续；无 `prompt too long` 整轮失败。
 **native 回归门**：模型仍能通过 ref/search/load 读取全部授权 memory 证据，不因"不爆"而删除决定性尾部、冲突或 provenance；4KiB 自动 excerpt 是 recoverable preview，不是事实源替代。
@@ -90,7 +90,7 @@ Session V2 重构（AA 总账 Group 1–4，229 文件 / ~4 万行）**方向正
 **验收门**：`session-v2-alignment` §8.5 那张"用户问题 → 永久修复 → 验收"表逐条对上；live / reconnect / replay / reload / resume 五路同构（§18）。
 **native 回归门**：native 直播能看到的，刷新后必须还能看到（final regression 指标恒 0，false-provider-error 恒 0）。
 
-**当前本地状态**：`06f340c4c` 已实装 newest-first canonical hydration、自动 backfill、live/backfill merge、typed retry 与 optimistic input identity；`7b6798933` 修复 legacy session-scoped event replay。仍待统一发布后的 live / reconnect / reload / resume browser canary，不能仅凭本地 Green 宣称生产闭环。
+**当前状态**：`06f340c4c` 已实装 newest-first canonical hydration、自动 backfill、live/backfill merge、typed retry 与 optimistic input identity；`7b6798933` 修复 legacy session-scoped event replay，上述代码已包含在 `b9852f37f` 三服务 production archive。仍待 live / reconnect / reload / resume browser canary，不能仅凭部署成功宣称生产闭环。
 
 ### P0-3 · A2A 三层各自跑通（当前回归落在 Group 1/2/3；跨渠道 Missing 留在 Group 7）
 
@@ -114,7 +114,7 @@ Session V2 重构（AA 总账 Group 1–4，229 文件 / ~4 万行）**方向正
 **验收门**：修正后的 §16 三层 + §8.5；三层各自有独立 golden 轨迹；cycle/depth/budget/principal 治理不变。
 **native 回归门**：三层在改动前能 spawn/委派/回传的，改动后必须仍能，且治理（principal/cycle/budget）不被削弱。
 
-**当前本地状态**：既有 `06f340c4c` / `2b3e05011` / `7b6798933` substrate 保持；本轮五个 regression seam 已完成代码、typed consumer、additive migration/backfill 与 Red→Green。协作 backend family=`382 passed`，backend full=`7567 passed, 2 skipped`，真实 PostgreSQL migration suite=`214 passed`，frontend typed consumer=`51+1 passed`，frontend full=`120 files / 709 tests`，production build/bundle budget 全绿。未执行三服务部署、production migration、真实跨员工委派/browser canary 前，Group 1/2/3 对应 leaf 仍是 `in_progress-local-green`，不得写成 production closed。
+**当前状态**：既有 `06f340c4c` / `2b3e05011` / `7b6798933` substrate 保持；本轮五个 regression seam 已完成代码、typed consumer、additive migration/backfill 与 Red→Green。协作 backend family=`382 passed`，backend full=`7567 passed, 2 skipped`，真实 PostgreSQL migration suite=`214 passed`，frontend typed consumer=`51+1 passed`，frontend full=`120 files / 709 tests`，production build/bundle budget 全绿。commit `b9852f37f` 已三服务同源部署，production migration head=`collaboration_runtime_closure_0717`，readiness 与 health 全绿；真实跨员工委派、authenticated read-only deny、Team model route、terminal/root reconciliation 与 browser canary 未执行，因此 Group 1/2/3 对应 leaf 为 `in_progress-deployed-pending-canary`，不得写成 production closed。
 
 ## 4. 排序与并行性
 
@@ -124,7 +124,7 @@ Session V2 重构（AA 总账 Group 1–4，229 文件 / ~4 万行）**方向正
 2. **P0-2 Session**（体验断裂，能跑完但看不见）。
 3. **P0-3 A2A**（影响跨员工委派这一条路径）。
 
-代码可独立提交，但上线前必须合并执行一次 backend 全量、frontend 全量/build、migration readiness、三服务 exact-source deploy 与三个用户路径 canary。任一切片本地闭环后不等待其它 103 leaf；任一切片未通过自己的七原子，也不得被另两个切片的 Green 掩盖。
+代码可独立提交；本轮 backend 全量、frontend 全量/build、migration readiness 与三服务 exact-source deploy 已完成，剩余发布验收是三个用户路径各自的 authenticated/browser/production canary。任一切片本地闭环后不等待其它 103 leaf；任一切片未通过自己的七原子，也不得被另两个切片的 Green 或 deployment success 掩盖。
 
 ## 5. 暂缓项
 

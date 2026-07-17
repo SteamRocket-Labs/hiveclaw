@@ -1,6 +1,6 @@
 # Hive Session V2：CC 底线与 Codex 抽象对齐契约（2026-07-14）
 
-> 状态：设计权威；Group 2/3/4 substrate 已分别形成并部署，但 2026-07-17 live-entry/path 复核重新打开 `P1-004`、`SES-CONSUMER-001`、`A2A-TERMINAL-001`、`TEAM-FANOUT-001`、`ROOT-TREE-001` 五个回归 leaf。当前修复已 local Green，未部署/canary 前总报告仍按 Group 1/2/3 `in_progress` 记账；完整 Session V2 继续由 Group 6/7/8/9/10 验收。
+> 状态：设计权威；Group 2/3/4 substrate 已分别形成并部署，但 2026-07-17 live-entry/path 复核重新打开 `P1-004`、`SES-CONSUMER-001`、`A2A-TERMINAL-001`、`TEAM-FANOUT-001`、`ROOT-TREE-001` 五个回归 leaf。当前修复已随 commit `b9852f37f` 三服务同源部署并完成 production migration/readiness/health；authenticated/browser 行为 canary 前总报告仍按 Group 1/2/3 `in_progress-deployed-pending-canary` 记账，完整 Session V2 继续由 Group 6/7/8/9/10 验收。
 >
 > 集成关系：本文裁决 Session Event / Item / Reducer，不独立定义当前断点总数或程序施工顺序。fleet、单根 Session 的 100-way root execution、Context Resource Plane、跨渠道 A2A 与 canonical ledger 统一以 `docs/agent-native-unified-atomic-review-2026-07-14.md` 为准。
 >
@@ -3170,19 +3170,19 @@ flowchart LR
 | CC / Codex 源码基线核对 | 已完成 | 使用冻结 commit；已补 steer/input queue 与 typed history/recovery 对照 |
 | 2026-07-15 生产事故取证 | 局部完成 | Railway 已证实 1.13 秒内 5 次 WS accepted；保留日志不足以唯一确认某个 PermissionError，未作伪结论 |
 | Session V2 完整目标契约 | 已完成 | 本文已覆盖 CC semantic floor、Codex additive delta、exact event/hook matrix、Turn/Run/Round、typed reconciliation、input admission/carry-forward、command/result/outcome/obligation/assembly/saga/tool aggregates、可重放 child progress、writer epoch、四状态、steer/queue/replace/Stop/feedback、迁移与验收 |
-| 当前 Hive 七原子审计 | 已完成并持续更新；5 leaf 回归本地 Green、生产仍 open | 2026-07-17 wiring/path 复核发现 server read-only、Peer A2A consumer、terminal root、Team model 与 Team Session surface 五个真实回归；代码、additive migration、三类 typed consumer 已 local Green，但未部署/canary，因此总报告仍维持 38/103，详见 §28.4 |
+| 当前 Hive 七原子审计 | 已完成并持续更新；5 leaf 已部署、行为验收仍 open | 2026-07-17 wiring/path 复核发现 server read-only、Peer A2A consumer、terminal root、Team model 与 Team Session surface 五个真实回归；代码、additive migration、三类 typed consumer 与三服务发布已完成，但 authenticated/browser canary 未执行，因此总报告仍维持 38/103，详见 §28.4 |
 | Runtime/Event V2 | Group 2 闭环 | accepted input、command、event/outbox、stable item/lifecycle/ordinal、typed projection 与 writer epoch substrate 已进入 live path；Group 9 仍拥有全历史 backfill、V1 writer 退出与最终 cleanup |
 | Model result/sidecar isolation | Group 2 + Group 4 闭环 | Group 2 已建立 per-Round model result、obligation/assembly、tool pair、RunOutcomeSeal 与 terminal reconciliation；Group 4 已把高压 child result 收敛为 immutable bytes + ref-only ordered pages，trace/metric/T0 等 sidecar 失败不改写模型结果。Group 6/8 仍分别验收完整 context plane 与 durable evidence consumer |
 | WebSocket ready + contiguous recovery | Group 2 协议闭环 | 服务端 `session.ready`、attempt/generation、highest-contiguous cursor、gap/duplicate/out-of-order reducer 已实现；Group 9 仍拥有多标签页、真实浏览器重连和长时生产观察 |
 | HumanInput intent/mailbox | Group 2 闭环；Group 4 result mailbox 闭环 | start/steer/queue/replace/answer/fork 继续使用 Group 2 durable command/Hook admission/mailbox settlement；100-way child completion 使用 Group 4 独立 result mailbox cursor/page，不另造输入事实语言，也不把 input queue 与 result fan-in 混为一表 |
-| Mixed-runtime root admission/coverage | Group 3 regression local Green；Group 4 保持闭环 | direct/Subagent/A2A/Team/Workflow 的统一 root identity 保持；本轮补上 `SessionRunOutcome` terminal transaction 对 `RuntimeRootItem` 的同事务 closure 与历史 backfill，部署/canary 前不恢复 Group 3 closed 声明 |
+| Mixed-runtime root admission/coverage | Group 3 regression 已部署、pending canary；Group 4 保持闭环 | direct/Subagent/A2A/Team/Workflow 的统一 root identity 保持；`SessionRunOutcome` 对 `RuntimeRootItem` 的同事务 closure 与历史 backfill 已生产 apply，reconciliation canary 前不恢复 Group 3 closed 声明 |
 | Durable result / parent fan-in | Group 4 闭环 | 100×1 MiB synthetic return storm 形成 4 个 25-ref page；完整 bytes 只在 immutable result truth，通过 governed reader 恢复；parent Prompt 不线性承载 raw child bytes。真实 100 个付费 child provider 曲线仍是独立 coverage gap |
 | Stop contract | Group 2 闭环 | cancel 使用 typed ControlInput receipt，accepted 后才进入 cancelling，terminal settlement/ACK 丢失重查/幂等恢复均有测试；前端不再乐观伪造 cancelled |
 | Evaluation Feedback V2 | 局部闭环 | 有 useful/misleading 和 feedback/memory sidecar；无 item/result target、文本/更新/撤回完整合同，且不得与 steer 混用 |
-| Frontend typed projection | canonical reducer 保持；Peer A2A consumer local Green | canonical V2 event 单 reducer与 byte-faithful final 保持；`agent_team_activity`、`peer_a2a_activity`、`subagent_activity` 已成为三种 discriminated ThreadItem，`timelineModel`/right rail 也分别消费 `agent_teams/peer_a2a/subagents`。frontend full/build 已绿；browser/deploy/canary 未完成前 `SES-CONSUMER-001` 仍不得 closed |
-| 数据迁移/backfill/cleanup | 局部完成；本地新 head 待发布 | Group 4 已部署 head=`runtime_result_fanin_0717` 保持；本轮本地 additive head=`collaboration_runtime_closure_0717` 回填 Team hidden surface、Peer A2A task-bound Session identity、terminal root drift 与历史 collaboration ThreadItem；完整真实 PG migration suite 已绿但 production 尚未 apply |
+| Frontend typed projection | canonical reducer 与 Peer A2A consumer 已部署、pending browser canary | canonical V2 event 单 reducer与 byte-faithful final 保持；`agent_team_activity`、`peer_a2a_activity`、`subagent_activity` 已成为三种 discriminated ThreadItem，`timelineModel`/right rail 分别消费 `agent_teams/peer_a2a/subagents`。frontend full/build/deploy 已绿；browser canary 未完成前 `SES-CONSUMER-001` 仍不得 closed |
+| 数据迁移/backfill/cleanup | 本轮 additive head 已生产 apply；完整历史 cleanup 仍局部 | production head=`collaboration_runtime_closure_0717`；Team hidden surface、Peer A2A task-bound Session identity、terminal root drift 与历史 collaboration ThreadItem backfill 已由 writer migration 执行，148-table/4-trigger readiness clean；Group 9 的全历史/V1 cleanup 仍未完成 |
 | 自动化黄金轨迹验收 | 既有 Group 4 保持；本轮 regression local Green | 本轮初始 `9 failed` + migration missing revision `1 failed`，另有 authority-order 与 legacy A2A backfill 精确 Red；修复后 backend collaboration focused=`382 passed`、backend full=`7567 passed, 2 skipped`、real-PG migration=`214 passed`、frontend typed consumer=`51+1 passed`、frontend full=`120 files / 709 tests`，production build/bundle budget 全绿 |
-| Railway 行为修复与生产验收 | 旧 Group 4 证据有效；本轮 5 leaf 未部署 | 既有 deployment 不能证明本轮 regression 已修；必须在前后端同源、migration head、deny/allow、Team model、root coverage 与三类 collaboration UI canary 通过后才恢复 closed 声明 |
+| Railway 行为修复与生产验收 | 本轮三服务同源部署与 schema/health 已绿；行为 canary 未完成 | backend=`a64092a1-395b-48c2-9853-83ff9b45c2ae`、backend-api=`ab14d317-3c29-4b74-9d31-341e778f92b7`、frontend=`3ff852aa-e078-464c-80c7-7568b1272a2a` 均 `SUCCESS`。仍须完成 deny/read、Team model、root coverage 与三类 collaboration UI canary 才恢复 closed 声明 |
 
 ### 28.1 Group 2 实现与验收记录（2026-07-16）
 
@@ -3225,7 +3225,7 @@ Group 4 严格消费 Group 2 的 canonical Session event/item 与 Group 3 的 ro
 
 ### 28.4 三类协作运行时回归校正（2026-07-17）
 
-本节撤销“Sub-agent、Agent Team 与 Peer Digital Employee A2A 已经彻底区分”的过强结论。当前源码重新做 live-entry/path proof 后，确认产品语义虽已在 §7.4/§16 写清，已部署生产实现仍有五个 seam；下述代码修复尚未部署，因此不能用本地 Green 改写生产事实：
+本节撤销“Sub-agent、Agent Team 与 Peer Digital Employee A2A 已经彻底区分”的过强结论。当前源码重新做 live-entry/path proof 后，确认产品语义虽已在 §7.4/§16 写清，原生产实现仍有五个 seam；下述代码修复现已部署，但 authenticated/browser 行为 canary 尚未完成，因此不能用 deployment success 改写七原子完成事实：
 
 1. `delegation_run` DTO/UI 标注 `read_only=true`，server authority 却未阻止 start/steer/rename/delete/Team/Workflow/Plan 等 mutation；这让调用方仍可能接管另一个数字员工的 task-scoped Session。
 2. backend `runtime_sections` 把 `task_type=delegation` 算作 `subagents`，frontend `timelineModel` 也没有 `peer_a2a` section；截图中的 Child Session/Workers/Working 因此混淆了 Peer A2A、内部 worker 和 terminal state。
@@ -3241,7 +3241,7 @@ Group 4 严格消费 Group 2 的 canonical Session event/item 与 Group 3 的 ro
 - **Root terminal**：`SessionRunOutcome`、`RuntimeTask`、`RuntimeRootItem` 在一个 transaction 中单调收敛；root 缺失/冲突进入 reconciliation，不能留 ghost running，也不能伪造完成。
 - **产品消费**：backend 必须分别输出 `agent_teams`、`peer_a2a`、`subagents`、`workflows`、`background`；canonical ThreadItem 必须分别使用 `agent_team_activity`、`peer_a2a_activity`、`subagent_activity`；frontend 只通过 generated union + canonical reducer 消费同名 typed section，不从标题、summary 或自然语言猜类型。runtime section 的 wire shape 是 `{schema,key,count,items}`，consumer 不能把 envelope 当 raw array 后静默读成空。
 
-当前实现状态：backend authority、terminal/root、Team model、hidden surface、typed runtime section、三类 canonical ThreadItem、frontend `timelineModel`/right rail 与 additive backfill 均已 local Green；migration single head=`collaboration_runtime_closure_0717`。并行 Session disclosure 已由独立 commit `92500e4c0` 落定，本项只提交其后的 A2A typed consumer diff。当前 focused backend=`382 passed`、backend full=`7567 passed, 2 skipped`、完整 real-PG migration=`214 passed`、frontend typed consumer=`51+1 passed`、frontend full=`120 files / 709 tests`，production build/bundle budget 全绿。在 browser 与三服务同源 production canary 完成前，总报告保持 `P1-004/SES-CONSUMER-001/A2A-TERMINAL-001/TEAM-FANOUT-001/ROOT-TREE-001` 重开。详细 Red→Green、命令、ownership 与部署缺口只写在统一总报告 `EVID-G1-017`、`EVID-G2-015`、`EVID-G3-008`，避免本文形成第二份施工账本。
+当前实现状态：backend authority、terminal/root、Team model、hidden surface、typed runtime section、三类 canonical ThreadItem、frontend `timelineModel`/right rail 与 additive backfill 均已由 commit `b9852f37f` 部署；migration single head=`collaboration_runtime_closure_0717`。并行 Session disclosure 已由父级 commit `92500e4c0` 落定。focused backend=`382 passed`、backend full=`7567 passed, 2 skipped`、完整 real-PG migration=`214 passed`、frontend typed consumer=`51+1 passed`、frontend full=`120 files / 709 tests`，production build/bundle budget 全绿。production writer/API readiness、RLS/health 与 frontend HTTP 已绿；authenticated deny/read、真实 Team model route、terminal/root reconciliation 与三类 collaboration browser canary 完成前，总报告保持 `P1-004/SES-CONSUMER-001/A2A-TERMINAL-001/TEAM-FANOUT-001/ROOT-TREE-001` 重开。详细 Red→Green、deployment IDs、ownership 与残余 canary 只写在统一总报告 `EVID-G1-017`、`EVID-G2-015`、`EVID-G3-008`，避免本文形成第二份施工账本。
 
 ---
 

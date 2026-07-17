@@ -24,6 +24,7 @@ import AgentChatSection, {
   isPendingEmptyArtifactPreview,
   isUserFacingDeliveryArtifact,
   isClarificationCardAnsweredByLaterUserMessage,
+  isInlineToolCardMessage,
   pickFocusedCheckpointIdForScroll,
   permissionOnceOnlyMessageKey,
   sessionPermissionModeOptions,
@@ -2836,9 +2837,9 @@ describe('AgentDetail extracted sections', () => {
       />,
     );
 
-    expect(markup).toContain('Processed');
-    expect(markup).not.toContain('Edit document');
-    expect(markup).not.toContain('proposal.docx');
+    expect(markup).not.toContain('Processed');
+    expect(markup).toContain('Edit document');
+    expect(markup).toContain('proposal.docx');
     expect(markup).not.toContain('{&quot;ok&quot;: true}');
     expect(markup).toContain('No delivered artifacts in this session yet.');
     expect(markup).not.toContain('data-testid="session-workspace-documents-unattributed"');
@@ -2948,10 +2949,10 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).not.toContain('Thinking');
     expect(markup).not.toContain('Inspect code before answering.');
     expect(markup).toContain('Read 1 file');
-    expect(markup).toContain('Ran 1 command');
+    expect(markup).not.toContain('Ran 1 command');
     expect(markup).not.toContain('Read file');
     expect(markup).not.toContain('Context Compacted');
-    expect(markup).not.toContain('Run command');
+    expect(markup).toContain('Run command');
     expect(markup).not.toContain('RAW READ FILE CONTENT');
     expect(markup).not.toContain('RAW COMMAND OUTPUT');
   });
@@ -3044,7 +3045,7 @@ describe('AgentDetail extracted sections', () => {
       />,
     );
 
-    expect(markup).toContain('Permission Gate');
+    expect(markup).toContain('Approval required');
     expect(markup).toContain('send_email');
     expect(markup).toContain('The agent needs permission to use send_email.');
     expect(markup).not.toContain('Tool &#x27;send_email&#x27; requires session permission');
@@ -3136,7 +3137,7 @@ describe('AgentDetail extracted sections', () => {
       />,
     );
 
-    expect(markup).toContain('Permission Gate');
+    expect(markup).toContain('Approval required');
     expect(markup).toContain('run_command');
     expect(markup).toContain('Allow once');
     expect(markup).not.toContain('Allow for this session');
@@ -5390,6 +5391,53 @@ describe('AgentDetail extracted sections', () => {
 
     expect(isClarificationCardAnsweredByLaterUserMessage(messages, 0)).toBe(true);
     expect(isClarificationCardAnsweredByLaterUserMessage(messages, 1)).toBe(false);
+  });
+
+  it('routes questions, workflow confirmations, and permission tools to dedicated inline cards', () => {
+    expect(isInlineToolCardMessage({
+      role: 'tool_call',
+      content: '',
+      toolName: 'ask_user_question',
+      toolMeta: {
+        kind: 'user_clarification',
+        questions: [{ question: 'Scope?', header: 'Scope', options: [], multiSelect: false }],
+        blocking: true,
+        nextAction: null,
+      },
+    })).toBe(true);
+    expect(isInlineToolCardMessage({
+      role: 'tool_call',
+      content: '',
+      toolName: 'preview_workflow',
+      toolMeta: {
+        kind: 'workflow_preview',
+        previewId: 'preview-1',
+        sessionId: 'session-1',
+        previewStatus: 'ready',
+        proposalId: null,
+        candidateId: null,
+        confirmationRequired: true,
+        confirmationReasons: [],
+        plannedLeafCalls: 1,
+        budgetTokens: 1000,
+      },
+    })).toBe(true);
+    expect(isInlineToolCardMessage({
+      role: 'tool_call',
+      content: '',
+      toolName: 'delete_file',
+      sessionPermissionRequest: {
+        permission_request_id: 'permission-1',
+        tool_name: 'delete_file',
+        arguments: {},
+      },
+    })).toBe(true);
+    expect(isInlineToolCardMessage({
+      role: 'tool_call',
+      content: '',
+      toolName: 'read_file',
+      toolStatus: 'running',
+    })).toBe(false);
   });
 
   it('treats durable clarification answer metadata as answered after refresh', () => {

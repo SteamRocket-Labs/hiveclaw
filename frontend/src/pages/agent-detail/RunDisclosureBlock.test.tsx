@@ -117,7 +117,7 @@ describe('RunDisclosureBlock', () => {
     expect(markup).not.toContain('RAW FILE CONTENT');
   });
 
-  it('keeps completed Thinking and A2A progress inside the collapsed disclosure', () => {
+  it('collapses completed Thinking while keeping A2A lifecycle progress visible', () => {
     const markup = renderToStaticMarkup(
       <RunDisclosureBlock
         timeline={{
@@ -130,6 +130,7 @@ describe('RunDisclosureBlock', () => {
               status: 'done',
               summary: 'Verified the delegated artifact and prepared the handoff.',
               visibility: 'collapsed',
+              presentation: 'process',
             },
             {
               id: 'a2a-1',
@@ -138,6 +139,7 @@ describe('RunDisclosureBlock', () => {
               status: 'done',
               summary: 'Delegated to Web3 researcher.',
               visibility: 'collapsed',
+              presentation: 'surface',
             },
           ],
         }}
@@ -146,8 +148,69 @@ describe('RunDisclosureBlock', () => {
 
     expect(markup).not.toContain('Thinking');
     expect(markup).not.toContain('Verified the delegated artifact');
-    expect(markup).not.toContain('Action Started');
-    expect(markup).not.toContain('Delegated to Web3 researcher');
+    expect(markup).toContain('Action Started');
+    expect(markup).toContain('Delegated to Web3 researcher');
+  });
+
+  it('never duplicates an externally rendered Ask User Question card inside the process disclosure', () => {
+    const markup = renderToStaticMarkup(
+      <RunDisclosureBlock
+        timeline={{
+          ...baseTimeline,
+          status: 'blocked',
+          steps: [
+            {
+              id: 'question-1',
+              kind: 'question',
+              title: 'Ask User Question',
+              status: 'blocked',
+              summary: '1 question',
+              details: { questions: [{ question: 'Which scope?' }] },
+              visibility: 'visible',
+              blocking: true,
+              presentation: 'external',
+            },
+          ],
+        }}
+      />,
+    );
+
+    expect(markup).not.toContain('Ask User Question');
+    expect(markup).not.toContain('Which scope?');
+  });
+
+  it('keeps failed commands and other surfaced tool outcomes visible after the process disclosure closes', () => {
+    const markup = renderToStaticMarkup(
+      <RunDisclosureBlock
+        timeline={{
+          ...baseTimeline,
+          steps: [
+            step({
+              id: 'reasoning-1',
+              kind: 'reasoning',
+              title: 'Thinking',
+              summary: 'Private process detail',
+              presentation: 'process',
+            }),
+            step({
+              id: 'command-1',
+              kind: 'command',
+              title: 'Run command',
+              status: 'failed',
+              summary: 'npm test',
+              details: { command: 'npm test', output: '1 failed', exit_code: 1 },
+              presentation: 'surface',
+            }),
+          ],
+        }}
+      />,
+    );
+
+    expect(markup).toContain('Processed');
+    expect(markup).not.toContain('Private process detail');
+    expect(markup).toContain('Run command');
+    expect(markup).toContain('npm test');
+    expect(markup).toContain('1 failed');
   });
 
   it('expands active runs and keeps raw non-command payloads behind the tool history surface', () => {

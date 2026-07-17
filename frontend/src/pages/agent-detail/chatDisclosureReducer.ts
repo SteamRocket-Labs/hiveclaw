@@ -23,6 +23,16 @@ export type RunStepKind =
 
 export type RunStepStatus = 'queued' | 'running' | 'blocked' | 'done' | 'failed' | 'cancelled';
 
+/**
+ * Presentation is intentionally independent from the runtime kind.
+ *
+ * - process: turn-local reasoning/commentary/compaction; follows the turn disclosure.
+ * - tool_history: low-risk retrieval/discovery calls; one-line current activity + expandable history.
+ * - surface: lifecycle, mutation, command, failure, or recovery state; never hidden by the turn disclosure.
+ * - external: an existing interactive/dedicated renderer owns the step (question, approval, plan, etc.).
+ */
+export type RunStepPresentation = 'process' | 'tool_history' | 'surface' | 'external';
+
 export interface RunStepSnapshot {
   id: string;
   toolCallId?: string | null;
@@ -37,6 +47,7 @@ export interface RunStepSnapshot {
   details?: unknown;
   visibility: 'visible' | 'collapsed' | 'debug';
   blocking?: boolean;
+  presentation?: RunStepPresentation;
 }
 
 export interface RunTimelineSnapshot {
@@ -55,9 +66,128 @@ type TimelineBuildOptions = {
   answer?: AgentChatMessage;
 };
 
-const FILE_TOOL_PREFIXES = ['read_', 'write_', 'edit_', 'list_', 'delete_'];
+const FILE_TOOL_NAMES = new Set([
+  'delete_file',
+  'edit_file',
+  'fs_list',
+  'fs_read',
+  'fs_write',
+  'list_files',
+  'read_document',
+  'read_file',
+  'write_file',
+]);
 const SEARCH_TOOL_PREFIXES = ['web_', 'search', 'firecrawl', 'xcrawl'];
 const COMMAND_TOOLS = new Set(['execute_code', 'run_command']);
+const A2A_TOOLS = new Set([
+  'cancel_async_task',
+  'check_async_task',
+  'delegate_to_agent',
+  'list_async_tasks',
+  'send_agent_session_message',
+  'send_message_to_agent',
+]);
+const SUBAGENT_TOOLS = new Set(['check_subagent', 'spawn_subagent']);
+
+// Source-checked against the 144 canonical @tool registrations on 2026-07-17.
+// This is deliberately an allowlist: new/unknown tools stay surfaced until a
+// human classifies them as non-blocking retrieval. That prevents an interactive
+// or side-effecting tool from silently disappearing into generic history.
+export const FOLDABLE_RETRIEVAL_TOOL_NAMES: ReadonlySet<string> = new Set([
+  'advanced_web_fetch',
+  'advanced_web_search',
+  'anysearch_batch_search',
+  'anysearch_extract',
+  'anysearch_get_sub_domains',
+  'anysearch_search',
+  'discover_resources',
+  'exa_fetch',
+  'exa_search',
+  'feishu_approval_definition',
+  'feishu_approval_get',
+  'feishu_approval_query',
+  'feishu_base_field_list',
+  'feishu_base_record_list',
+  'feishu_base_table_list',
+  'feishu_calendar_list',
+  'feishu_doc_read',
+  'feishu_drive_file_read',
+  'feishu_sheet_info',
+  'feishu_sheet_read',
+  'feishu_task_list',
+  'feishu_url_read',
+  'feishu_url_resolve',
+  'feishu_user_search',
+  'feishu_wiki_list',
+  'firecrawl_fetch',
+  'firecrawl_search',
+  'fs_list',
+  'fs_read',
+  'get_current_time',
+  'get_goal',
+  'glob_search',
+  'grep_search',
+  'inspect_mcp_tool',
+  'list_files',
+  'list_mcp_tools',
+  'load_memory',
+  'load_skill',
+  'mcp_auth_status',
+  'mcp_get_prompt',
+  'mcp_list_prompts',
+  'mcp_list_resources',
+  'mcp_read_resource',
+  'office_document_dump',
+  'office_document_query',
+  'office_document_validate',
+  'office_document_view',
+  'plaza_get_new_posts',
+  'read_context_resource',
+  'read_document',
+  'read_emails',
+  'read_file',
+  'read_ledger',
+  'read_personal_kb',
+  'read_runtime_result',
+  'search_clawhub',
+  'search_memory',
+  'search_personal_kb',
+  'task_get',
+  'task_list',
+  'task_output',
+  'tavily_extract',
+  'tavily_search',
+  'tool_search',
+  'web_fetch',
+  'web_search',
+  'xcrawl_scrape',
+]);
+
+const DEDICATED_TOOL_CARD_META_KINDS = new Set([
+  'create_employee_success',
+  'dynamic_workflow_proposal',
+  'hr_preview',
+  'plan_mode_request',
+  'plan_proposal',
+  'user_clarification',
+  'workflow_preview',
+]);
+
+export function isDedicatedToolCardMessage(message: AgentChatMessage): boolean {
+  if (message.role !== 'tool_call') return false;
+  if (message.sessionPermissionRequest) return true;
+  return Boolean(message.toolMeta && DEDICATED_TOOL_CARD_META_KINDS.has(message.toolMeta.kind));
+}
+
+export function getToolStepPresentation(
+  message: AgentChatMessage,
+  status: RunStepStatus,
+): RunStepPresentation {
+  if (isDedicatedToolCardMessage(message)) return 'external';
+  if (status === 'failed' || status === 'blocked' || status === 'cancelled') return 'surface';
+  const name = String(message.toolName || '').trim().toLowerCase();
+  return FOLDABLE_RETRIEVAL_TOOL_NAMES.has(name) ? 'tool_history' : 'surface';
+}
 const SESSION_NATIVE_DISCLOSURE_EVENTS = new Set([
   'permission',
   'permission_request',
@@ -143,7 +273,7 @@ function summarizeToolCompletion(message: AgentChatMessage): string {
   const name = (message.toolName || '').toLowerCase();
   if (COMMAND_TOOLS.has(name)) return '';
 
-  const isFileTool = FILE_TOOL_PREFIXES.some((prefix) => name.startsWith(prefix));
+  const isFileTool = FILE_TOOL_NAMES.has(name);
   if (isFileTool) {
     const isOperationalReceipt =
       /^(written|wrote|created|updated|edited|patched|deleted|saved|copied|moved|renamed|applied|validated)\b/i.test(text)
@@ -169,7 +299,7 @@ function summarizeToolMessage(message: AgentChatMessage): string {
   const completionSummary = summarizeToolCompletion(message);
   if (completionSummary) return completionSummary;
   if (COMMAND_TOOLS.has(name)) return summarizeCommandTool(message);
-  if (FILE_TOOL_PREFIXES.some((prefix) => name.startsWith(prefix))) return summarizeFileTool(message);
+  if (FILE_TOOL_NAMES.has(name)) return summarizeFileTool(message);
   if (SEARCH_TOOL_PREFIXES.some((prefix) => name.startsWith(prefix))) return summarizeSearchTool(message);
   const path = stringArg(message, ['path', 'file_path', 'target_path', 'source_path']);
   if (path) return compactText(basename(path), 120);
@@ -219,41 +349,50 @@ export function getDisclosureStepSummary(message: AgentChatMessage): string {
 function kindForToolMessage(message: AgentChatMessage): RunStepKind {
   if (message.toolMeta?.kind === 'user_clarification') return 'question';
   if (message.toolMeta?.kind === 'plan_mode_request' || message.toolMeta?.kind === 'plan_proposal') return 'plan';
-  if (message.toolMeta?.kind === 'dynamic_workflow_proposal') return 'workflow';
+  if (message.toolMeta?.kind === 'dynamic_workflow_proposal' || message.toolMeta?.kind === 'workflow_preview') return 'workflow';
 
   const name = (message.toolName || '').toLowerCase();
   if (COMMAND_TOOLS.has(name)) return 'command';
-  if (FILE_TOOL_PREFIXES.some((prefix) => name.startsWith(prefix))) return 'file';
+  if (FILE_TOOL_NAMES.has(name)) return 'file';
   if (SEARCH_TOOL_PREFIXES.some((prefix) => name.startsWith(prefix))) return 'search';
   if (name.includes('workflow')) return 'workflow';
-  if (name === 'delegate_to_agent' || name.includes('a2a')) return 'a2a';
-  if (name.includes('subagent')) return 'subagent';
+  if (A2A_TOOLS.has(name) || name.includes('a2a')) return 'a2a';
+  if (SUBAGENT_TOOLS.has(name) || name.includes('subagent')) return 'subagent';
   if (name.includes('trigger') || name.includes('schedule')) return 'trigger';
+  if (name === 'request_shell_escalation') return 'permission';
+  if (name.includes('plan')) return 'plan';
   return 'tool';
 }
 
 function titleForToolMessage(message: AgentChatMessage): string {
   if (message.toolName === 'tool_search') return 'Loading tools';
   const name = (message.toolName || '').toLowerCase();
-  if (name === 'read_file') return 'Read file';
-  if (name === 'write_file') return 'Write file';
+  if (name === 'read_file' || name === 'fs_read' || name === 'read_document') return 'Read file';
+  if (name === 'write_file' || name === 'fs_write') return 'Write file';
   if (name === 'edit_file') return 'Edit file';
   if (name === 'delete_file') return 'Delete file';
-  if (name === 'list_files') return 'List files';
+  if (name === 'list_files' || name === 'fs_list') return 'List files';
+  if (name === 'grep_search' || name === 'glob_search') return 'Search files';
   if (name === 'web_search') return 'Search web';
   if (name === 'web_fetch' || name === 'firecrawl_fetch' || name === 'xcrawl_scrape') return 'Fetch web page';
   if (COMMAND_TOOLS.has(name)) return 'Run command';
   if (name === 'office_document_apply') return 'Edit document';
   if (name.includes('workflow')) return 'Workflow step';
-  if (name === 'delegate_to_agent' || name.includes('a2a')) return 'A2A step';
-  if (name.includes('subagent')) return 'Sub-agent step';
+  if (A2A_TOOLS.has(name) || name.includes('a2a')) return 'A2A step';
+  if (SUBAGENT_TOOLS.has(name) || name.includes('subagent')) return 'Sub-agent step';
   if (name.includes('trigger') || name.includes('schedule')) return 'Schedule step';
+  if (name === 'request_shell_escalation') return 'Permission request';
+  if (name.includes('plan')) return 'Plan step';
   return message.toolName || 'Tool call';
 }
 
 function kindForEventMessage(message: AgentChatMessage): RunStepKind {
   if (message.eventType === 'session_compact' || message.eventType === 'context_compaction') return 'compaction';
-  if (message.eventType === 'permission') return 'permission';
+  if (
+    message.eventType === 'permission'
+    || message.eventType === 'permission_request'
+    || message.eventType === 'permission_resolved'
+  ) return 'permission';
   if (String(message.eventType || '').startsWith('runtime_action_')) {
     const source = String(message.eventNotificationSource || '').toLowerCase();
     if (source.includes('workflow')) return 'workflow';
@@ -264,7 +403,11 @@ function kindForEventMessage(message: AgentChatMessage): RunStepKind {
     if (source.includes('a2a')) return 'a2a';
     return 'event';
   }
-  if (message.eventType === 'tool_group_activation' || message.eventType === 'pack_activation') return 'tool';
+  if (
+    message.eventType === 'tool_group_activation'
+    || message.eventType === 'pack_activation'
+    || message.eventType === 'deferred_tools_delta'
+  ) return 'tool';
   if (message.eventType === 'workflow_run' || message.eventType === 'workflow_step' || message.eventType === 'dynamic_workflow') return 'workflow';
   if (
     message.eventType === 'child_session'
@@ -290,10 +433,43 @@ function kindForEventMessage(message: AgentChatMessage): RunStepKind {
   return 'event';
 }
 
+const EXTERNALLY_RENDERED_THREAD_ITEM_TYPES = new Set(['approval_request', 'error', 'plan', 'warning']);
+
+function eventHasDedicatedConversationSurface(message: AgentChatMessage): boolean {
+  if (message.sessionPermissionRequest && message.eventStatus === 'session_permission_required') return true;
+  const item = message.threadItem;
+  if (!item) return false;
+  if (EXTERNALLY_RENDERED_THREAD_ITEM_TYPES.has(item.item_type)) return true;
+  return Boolean(item.user_action && item.user_action.kind !== 'open_artifact');
+}
+
+function getEventStepPresentation(
+  message: AgentChatMessage,
+  kind: RunStepKind,
+  status: RunStepStatus,
+): RunStepPresentation {
+  if (eventHasDedicatedConversationSurface(message)) return 'external';
+  if (kind === 'compaction') return 'process';
+  if (kind === 'permission' && status === 'blocked') return 'external';
+  if (kind === 'tool') return 'tool_history';
+  if (
+    message.eventType === 'hook_progress'
+    || message.eventType === 'hook_summary'
+    || message.eventType === 'hook_attachment'
+  ) return 'process';
+  return 'surface';
+}
+
 function statusForMessage(message: AgentChatMessage): RunStepStatus {
   if (message.role === 'tool_call') {
     if (message.toolMeta?.kind === 'user_clarification' && message.toolMeta.blocking) return 'blocked';
-    if (message.toolMeta?.kind === 'runtime_step' && message.toolMeta.status === 'failed') return 'failed';
+    if (message.toolMeta?.kind === 'runtime_step') {
+      const status = String(message.toolMeta.status || '').toLowerCase();
+      if (status === 'failed' || status === 'error') return 'failed';
+      if (status === 'blocked' || status === 'approval_required') return 'blocked';
+      if (status === 'cancelled' || status === 'canceled') return 'cancelled';
+      if (status === 'running' || status === 'pending' || status === 'in_progress') return 'running';
+    }
     return message.toolStatus === 'running' ? 'running' : 'done';
   }
   if (message.role === 'assistant') {
@@ -349,6 +525,7 @@ function buildStep(message: AgentChatMessage, index: number): RunStepSnapshot | 
       summary: message.content?.trim() ? compactText(message.content) : 'Provider-private reasoning was used.',
       details: message.content?.trim() || undefined,
       visibility: 'collapsed',
+      presentation: 'process',
     };
   }
 
@@ -363,6 +540,7 @@ function buildStep(message: AgentChatMessage, index: number): RunStepSnapshot | 
       summary,
       details: message.content || undefined,
       visibility: 'collapsed',
+      presentation: 'process',
     };
   }
 
@@ -377,6 +555,7 @@ function buildStep(message: AgentChatMessage, index: number): RunStepSnapshot | 
       summary,
       details: message.content || undefined,
       visibility: 'visible',
+      presentation: 'process',
     };
   }
 
@@ -395,6 +574,7 @@ function buildStep(message: AgentChatMessage, index: number): RunStepSnapshot | 
       summary,
       details: message.thinking,
       visibility: 'collapsed',
+      presentation: 'process',
     };
   }
 
@@ -419,12 +599,14 @@ function buildStep(message: AgentChatMessage, index: number): RunStepSnapshot | 
         ? message.toolMeta.visibility
         : 'collapsed',
       blocking: status === 'blocked',
+      presentation: getToolStepPresentation(message, status),
     };
   }
 
+  const kind = kindForEventMessage(message);
   return {
     id: stepIdForMessage(message, index),
-    kind: kindForEventMessage(message),
+    kind,
     title: eventTitle(message),
     status,
     startedAt: message.timestamp,
@@ -434,6 +616,8 @@ function buildStep(message: AgentChatMessage, index: number): RunStepSnapshot | 
       ? undefined
       : message.content || undefined,
     visibility: 'collapsed',
+    blocking: status === 'blocked',
+    presentation: getEventStepPresentation(message, kind, status),
   };
 }
 
@@ -469,9 +653,10 @@ function formatCount(count: number, singular: string, plural: string): string {
 }
 
 function buildAggregateSummary(steps: RunStepSnapshot[]): string {
-  const fileCount = steps.filter((step) => step.kind === 'file').length;
-  const searchCount = steps.filter((step) => step.kind === 'search').length;
-  const commandCount = steps.filter((step) => step.kind === 'command').length;
+  const hiddenProcessTools = steps.filter((step) => step.presentation === 'tool_history');
+  const fileCount = hiddenProcessTools.filter((step) => step.kind === 'file').length;
+  const searchCount = hiddenProcessTools.filter((step) => step.kind === 'search').length;
+  const commandCount = hiddenProcessTools.filter((step) => step.kind === 'command').length;
   const parts: string[] = [];
 
   if (fileCount > 0) parts.push(`Read ${fileCount} ${formatCount(fileCount, 'file', 'files')}`);

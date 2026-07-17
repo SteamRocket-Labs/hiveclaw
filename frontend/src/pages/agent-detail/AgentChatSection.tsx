@@ -121,6 +121,7 @@ import {
   WorkflowRunFocusPanel,
 } from './SessionRuntimePanel';
 import { InlinePlanCard, StructuredToolResultBody } from './StructuredToolResult';
+import { isDedicatedToolCardMessage } from './chatDisclosureReducer';
 
 export type { BranchLineageItem, BranchLineageRow } from './SessionLineageSurface';
 export {
@@ -485,6 +486,13 @@ export function isClarificationCardAnsweredByLaterUserMessage(messages: AgentCha
   return messages
     .slice(index + 1)
     .some((candidate) => candidate.role === 'user' && String(candidate.content || '').trim().length > 0);
+}
+
+export function isInlineToolCardMessage(message: AgentChatMessage): boolean {
+  return message.role === 'tool_call' && (
+    isDedicatedToolCardMessage(message)
+    || Boolean(message.artifacts?.some((artifact) => isUserFacingDeliveryArtifact(artifact, 'tool')))
+  );
 }
 
 export function findRetryAnchorMessage(
@@ -1492,20 +1500,6 @@ function AgentChatSection({
       />
     </div>
   );
-
-
-  const isInlineToolCardMessage = (message: AgentChatMessage) => (
-    message.role === 'tool_call' && (
-      Boolean(message.artifacts?.some((artifact) => isUserFacingDeliveryArtifact(artifact, 'tool'))) ||
-      message.toolMeta?.kind === 'plan_proposal' ||
-      message.toolMeta?.kind === 'dynamic_workflow_proposal' ||
-      message.toolMeta?.kind === 'user_clarification' ||
-      message.toolMeta?.kind === 'plan_mode_request' ||
-      message.toolMeta?.kind === 'create_employee_success' ||
-      message.toolMeta?.kind === 'hr_preview'
-    )
-  );
-
 	  const renderConversationMessage = (
     message: AgentChatMessage,
     index: number,

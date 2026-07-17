@@ -255,7 +255,7 @@ describe('chatDisclosureReducer', () => {
       },
     ]);
 
-    expect(timeline.summary).toBe('Read 2 files · Searched web 1 time · Ran 1 command');
+    expect(timeline.summary).toBe('Read 2 files · Searched web 1 time');
   });
 
   it('summarizes tool discovery without exposing raw select queries', () => {
@@ -324,6 +324,140 @@ describe('chatDisclosureReducer', () => {
       'trigger',
     ]);
     expect(timeline.status).toBe('running');
+  });
+
+  it('folds only low-risk retrieval tools and surfaces every interactive, mutating, or lifecycle tool', () => {
+    const questionMeta = {
+      kind: 'user_clarification' as const,
+      blocking: true,
+      nextAction: 'Answer to continue.',
+      questions: [
+        {
+          question: 'Which scope should I use?',
+          header: 'Scope',
+          multiSelect: false,
+          options: [{ label: 'Current session', description: '' }],
+        },
+      ],
+    };
+    const messages = [
+      { role: 'tool_call', content: '', toolName: 'tool_search', toolStatus: 'done' },
+      { role: 'tool_call', content: '', toolName: 'read_file', toolStatus: 'done' },
+      { role: 'tool_call', content: '', toolName: 'grep_search', toolStatus: 'done' },
+      { role: 'tool_call', content: '', toolName: 'web_search', toolStatus: 'done' },
+      { role: 'tool_call', content: '', toolName: 'load_skill', toolStatus: 'done' },
+      { role: 'tool_call', content: '', toolName: 'ask_user_question', toolStatus: 'done', toolMeta: questionMeta },
+      { role: 'tool_call', content: '', toolName: 'write_file', toolStatus: 'done' },
+      { role: 'tool_call', content: '', toolName: 'run_command', toolStatus: 'done' },
+      { role: 'tool_call', content: '', toolName: 'call_mcp_tool', toolStatus: 'done' },
+      { role: 'tool_call', content: '', toolName: 'delegate_to_agent', toolStatus: 'done' },
+      { role: 'tool_call', content: '', toolName: 'spawn_subagent', toolStatus: 'done' },
+      { role: 'tool_call', content: '', toolName: 'check_subagent', toolStatus: 'done' },
+      { role: 'tool_call', content: '', toolName: 'start_workflow', toolStatus: 'done' },
+      { role: 'tool_call', content: '', toolName: 'set_trigger', toolStatus: 'done' },
+      { role: 'tool_call', content: '', toolName: 'future_unknown_tool', toolStatus: 'done' },
+    ] as AgentChatMessage[];
+
+    const timeline = buildRunTimelineFromMessages(messages);
+
+    expect(timeline.steps.map((step) => [step.title, step.presentation])).toEqual([
+      ['Loading tools', 'tool_history'],
+      ['Read file', 'tool_history'],
+      ['Search files', 'tool_history'],
+      ['Search web', 'tool_history'],
+      ['load_skill', 'tool_history'],
+      ['ask_user_question', 'external'],
+      ['Write file', 'surface'],
+      ['Run command', 'surface'],
+      ['call_mcp_tool', 'surface'],
+      ['A2A step', 'surface'],
+      ['Sub-agent step', 'surface'],
+      ['Sub-agent step', 'surface'],
+      ['Workflow step', 'surface'],
+      ['Schedule step', 'surface'],
+      ['future_unknown_tool', 'surface'],
+    ]);
+  });
+
+  it('promotes a failed retrieval call out of generic tool history for recovery', () => {
+    const timeline = buildRunTimelineFromMessages([
+      {
+        role: 'tool_call',
+        content: '',
+        toolName: 'read_file',
+        toolStatus: 'done',
+        toolMeta: {
+          kind: 'runtime_step',
+          toolCallId: 'tool-read-failed',
+          stepId: 'tool:read-failed',
+          status: 'failed',
+          visibility: 'collapsed',
+        },
+      } as AgentChatMessage,
+    ]);
+
+    expect(timeline.steps[0]).toMatchObject({
+      kind: 'file',
+      status: 'failed',
+      presentation: 'surface',
+    });
+  });
+
+  it('routes every dedicated interactive tool result to its usable card surface', () => {
+    const toolMetas = [
+      { kind: 'user_clarification', questions: [], blocking: true, nextAction: null },
+      { kind: 'plan_mode_request', reason: 'Plan first', nextAction: null },
+      { kind: 'plan_proposal', summary: 'Review this plan', nextAction: null },
+      { kind: 'dynamic_workflow_proposal', goal: 'Run a governed workflow', nextAction: null },
+      { kind: 'workflow_preview' },
+      { kind: 'hr_preview' },
+      { kind: 'create_employee_success' },
+    ];
+    const messages = toolMetas.map((toolMeta, index) => ({
+      role: 'tool_call',
+      content: '',
+      toolName: `interactive_tool_${index}`,
+      toolStatus: 'done',
+      toolMeta,
+    })) as unknown as AgentChatMessage[];
+
+    const timeline = buildRunTimelineFromMessages(messages);
+
+    expect(timeline.steps.map((step) => step.presentation)).toEqual(toolMetas.map(() => 'external'));
+  });
+
+  it('keeps lifecycle and artifact events surfaced while compaction stays in the process disclosure', () => {
+    const timeline = buildRunTimelineFromMessages([
+      { role: 'event', content: '', eventType: 'context_compaction', eventStatus: 'completed' },
+      { role: 'event', content: '', eventType: 'tool_group_activation', eventStatus: 'completed' },
+      {
+        role: 'event',
+        content: 'Delegated worker is running.',
+        eventType: 'runtime_action_started',
+        eventStatus: 'running',
+        eventNotificationSource: 'a2a',
+      },
+      { role: 'event', content: 'file_changes', eventType: 'file_changes', eventStatus: 'info' },
+      {
+        role: 'event',
+        content: 'Permission required.',
+        eventType: 'permission',
+        eventStatus: 'session_permission_required',
+        sessionPermissionRequest: {
+          permission_request_id: 'permission-1',
+          tool_name: 'delete_file',
+          arguments: {},
+        },
+      },
+    ] as AgentChatMessage[]);
+
+    expect(timeline.steps.map((step) => [step.kind, step.presentation])).toEqual([
+      ['compaction', 'process'],
+      ['tool', 'tool_history'],
+      ['a2a', 'surface'],
+      ['artifact', 'surface'],
+      ['permission', 'external'],
+    ]);
   });
 
   it('keeps A2A delegation separate from CC-style subagent steps', () => {

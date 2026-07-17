@@ -14,22 +14,33 @@ import {
 } from '@tabler/icons-react';
 
 import MarkdownRenderer from '../../components/MarkdownRenderer';
-import type { RunStepKind, RunStepSnapshot, RunTimelineSnapshot } from './chatDisclosureReducer';
+import type {
+  RunStepKind,
+  RunStepPresentation,
+  RunStepSnapshot,
+  RunTimelineSnapshot,
+} from './chatDisclosureReducer';
 
 // One Session turn owns one disclosure. Live or failed work opens for immediate
 // inspection; terminal successful work folds behind its processed summary.
 
 const EXEC_CLIP_LINES = 5;
-const TOOL_ACTIVITY_KINDS = new Set<RunStepKind>(['tool', 'search', 'file', 'command']);
-
 type RunRenderItem =
   | { kind: 'tool_group'; id: string; steps: RunStepSnapshot[] }
   | { kind: 'step'; id: string; step: RunStepSnapshot };
 
+export function getRunStepPresentation(step: RunStepSnapshot): RunStepPresentation {
+  if (step.presentation) return step.presentation;
+  if (step.status === 'failed' || step.status === 'blocked' || step.status === 'cancelled') return 'surface';
+  if (step.kind === 'reasoning' || step.kind === 'commentary' || step.kind === 'compaction') return 'process';
+  if (step.kind === 'tool' || step.kind === 'search' || step.kind === 'file') return 'tool_history';
+  return 'surface';
+}
+
 function groupRunSteps(steps: RunStepSnapshot[]): RunRenderItem[] {
   const items: RunRenderItem[] = [];
   for (const step of steps) {
-    if (!TOOL_ACTIVITY_KINDS.has(step.kind)) {
+    if (getRunStepPresentation(step) !== 'tool_history') {
       items.push({ kind: 'step', id: step.id, step });
       continue;
     }
@@ -89,11 +100,28 @@ type ExecDetails = {
   duration_ms?: number;
 };
 
-function asExecDetails(details: unknown): ExecDetails | null {
+function asExecDetails(details: unknown, kind?: RunStepKind): ExecDetails | null {
   if (!details || typeof details !== 'object') return null;
   const record = details as Record<string, unknown>;
   const hasExecShape =
     typeof record.output === 'string' || typeof record.command === 'string' || typeof record.exit_code === 'number';
+  if (!hasExecShape && kind === 'command') {
+    const args = record.args && typeof record.args === 'object'
+      ? record.args as Record<string, unknown>
+      : {};
+    const command = typeof args.cmd === 'string'
+      ? args.cmd
+      : typeof args.command === 'string'
+        ? args.command
+        : undefined;
+    const output = typeof record.result === 'string'
+      ? record.result
+      : typeof record.rawResult === 'string'
+        ? record.rawResult
+        : undefined;
+    if (!command && !output) return null;
+    return { command, output };
+  }
   if (!hasExecShape) return null;
   return {
     command: typeof record.command === 'string' ? record.command : undefined,
@@ -150,7 +178,7 @@ function ExecOutput({ exec }: { exec: ExecDetails }) {
 }
 
 function RunStepDetails({ step }: { step: RunStepSnapshot }) {
-  const exec = asExecDetails(step.details);
+  const exec = asExecDetails(step.details, step.kind);
   if (exec) return <ExecOutput exec={exec} />;
   const detailText = typeof step.details === 'string' ? step.details : JSON.stringify(step.details ?? {}, null, 2);
   if (!detailText || detailText === '{}') return null;
@@ -159,7 +187,7 @@ function RunStepDetails({ step }: { step: RunStepSnapshot }) {
 
 function RunStepRow({ step }: { step: RunStepSnapshot }) {
   const running = step.status === 'running';
-  const exec = asExecDetails(step.details);
+  const exec = asExecDetails(step.details, step.kind);
   const [expanded, setExpanded] = React.useState(
     (Boolean(exec) && (running || step.status === 'failed'))
       || step.blocking === true
@@ -167,7 +195,11 @@ function RunStepRow({ step }: { step: RunStepSnapshot }) {
   );
   const hasDetails = step.details != null;
   return (
-    <div data-testid="run-disclosure-step" className="run-step">
+    <div
+      data-testid="run-disclosure-step"
+      data-presentation={getRunStepPresentation(step)}
+      className={getRunStepPresentation(step) === 'surface' ? 'run-step is-surfaced' : 'run-step'}
+    >
       <span className={running ? 'run-step-icon is-running' : 'run-step-icon'}>
         <StepIcon kind={step.kind} running={running} />
       </span>
@@ -347,7 +379,8 @@ export default function RunDisclosureBlock({ timeline }: { timeline: RunTimeline
     }
   }, [opensForAttention, timeline.id, timeline.status]);
 
-  if (timeline.steps.length === 0) return null;
+  const visibleSteps = timeline.steps.filter((step) => getRunStepPresentation(step) !== 'external');
+  if (visibleSteps.length === 0) return null;
   const duration = running ? liveElapsed : formatDuration(timeline.durationMs);
   const title = running
     ? t('agent.chat.disclosure.working', 'Working')
@@ -358,32 +391,39 @@ export default function RunDisclosureBlock({ timeline }: { timeline: RunTimeline
         : timeline.status === 'cancelled'
           ? t('agent.chat.disclosure.stopped', 'Stopped')
           : t('agent.chat.disclosure.processed', 'Processed');
-  const stepCount = t('agent.chat.disclosure.stepCount', '{{count}} steps', { count: timeline.steps.length });
+  const collapsibleStepCount = visibleSteps.filter((step) => getRunStepPresentation(step) !== 'surface').length;
+  const stepCount = t('agent.chat.disclosure.stepCount', '{{count}} steps', { count: collapsibleStepCount });
   const live = timeline.status === 'running' || timeline.status === 'blocked';
-  const renderItems = groupRunSteps(timeline.steps);
+  const renderItems = groupRunSteps(visibleSteps);
+  const hasCollapsibleSteps = collapsibleStepCount > 0;
+  const hasSurfacedSteps = visibleSteps.some((step) => getRunStepPresentation(step) === 'surface');
 
   return (
     <div data-testid="run-disclosure-block" data-status={timeline.status} className="run-disclosure">
       <div className={live ? 'run-disclosure-frame is-live' : 'run-disclosure-frame'}>
-        <button
-          type="button"
-          className="run-disclosure-header"
-          aria-expanded={expanded}
-          onClick={() => setExpanded((value) => !value)}
-        >
-          {expanded ? <IconChevronDown size={13} stroke={2.2} /> : <IconChevronRight size={13} stroke={2.2} />}
-          <span className={running ? 'session-tui-shimmer run-disclosure-title' : 'run-disclosure-title'}>
-            {title}
-          </span>
-          {duration && <span className="run-disclosure-duration">{duration}</span>}
-          {timeline.summary && <span className="run-disclosure-summary">{timeline.summary}</span>}
-          <span className="run-disclosure-count">{stepCount}</span>
-        </button>
-        {expanded && (
+        {hasCollapsibleSteps && (
+          <button
+            type="button"
+            className="run-disclosure-header"
+            aria-expanded={expanded}
+            onClick={() => setExpanded((value) => !value)}
+          >
+            {expanded ? <IconChevronDown size={13} stroke={2.2} /> : <IconChevronRight size={13} stroke={2.2} />}
+            <span className={running ? 'session-tui-shimmer run-disclosure-title' : 'run-disclosure-title'}>
+              {title}
+            </span>
+            {duration && <span className="run-disclosure-duration">{duration}</span>}
+            {timeline.summary && <span className="run-disclosure-summary">{timeline.summary}</span>}
+            <span className="run-disclosure-count">{stepCount}</span>
+          </button>
+        )}
+        {(expanded || hasSurfacedSteps) && (
           <div className="run-disclosure-steps">
-            {renderItems.map((item) => (
-              <RunTimelineItem key={item.id} item={item} />
-            ))}
+            {renderItems.map((item) => {
+              const surfaced = item.kind === 'step' && getRunStepPresentation(item.step) === 'surface';
+              if (!expanded && !surfaced) return null;
+              return <RunTimelineItem key={item.id} item={item} />;
+            })}
           </div>
         )}
       </div>

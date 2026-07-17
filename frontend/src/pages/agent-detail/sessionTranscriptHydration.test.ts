@@ -197,6 +197,30 @@ describe('loadCanonicalSessionTranscript', () => {
     });
   });
 
+  it('releases live subscription after the first safe newest suffix without awaiting older pages', async () => {
+    const newest = Array.from({ length: 1000 }, (_, index) => ({
+      id: `event-${index + 1206}`,
+      sequence: index + 1206,
+    }));
+    let releaseOlder!: () => void;
+    const olderBlocked = new Promise<void>((resolve) => { releaseOlder = resolve; });
+    const fetchPage = vi.fn(async ({ beforeSequence }: { beforeSequence?: number }) => {
+      if (beforeSequence == null) return newest;
+      await olderBlocked;
+      return [];
+    });
+
+    const hydration = loadCanonicalSessionTranscript(
+      fetchPage,
+      (snapshot) => Number(snapshot.at(-1)?.sequence ?? 0),
+    );
+
+    await expect(hydration.liveReady).resolves.toBe(2205);
+    expect(fetchPage).toHaveBeenCalledTimes(2);
+    releaseOlder();
+    await expect(hydration).resolves.toHaveLength(1000);
+  });
+
   it('fails observably when an older-page cursor cannot move toward sequence one', async () => {
     const fetchPage = vi.fn(async () => Array.from({ length: 1000 }, (_, index) => ({
       id: `event-${index + 1}`,

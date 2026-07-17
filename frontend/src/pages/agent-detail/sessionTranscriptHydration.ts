@@ -30,7 +30,11 @@ type TranscriptPageFetcher = (
 type TranscriptSnapshotConsumer = (
   events: ChatTranscriptEventPayload[],
   state: CanonicalTranscriptHydrationState,
-) => void | Promise<void>;
+) => number | null | void | Promise<number | null | void>;
+
+export type CanonicalTranscriptHydration = Promise<ChatTranscriptEventPayload[]> & {
+  liveReady: Promise<number>;
+};
 
 function eventSequence(event: ChatTranscriptEventPayload): number {
   const sequence = Number(event.sequence ?? 0);
@@ -99,42 +103,79 @@ export function projectCanonicalTranscriptSnapshot(options: {
  * automatically. Pagination remains an API transport detail and never becomes
  * a user-operated visibility boundary or a blank-screen prerequisite.
  */
-export async function loadCanonicalSessionTranscript(
+export function loadCanonicalSessionTranscript(
   fetchPage: TranscriptPageFetcher,
   onSnapshot?: TranscriptSnapshotConsumer,
-): Promise<ChatTranscriptEventPayload[]> {
-  const eventsById = new Map<string, ChatTranscriptEventPayload>();
-  let beforeSequence: number | undefined;
-  let previousOldestSequence: number | undefined;
-  let pageCount = 0;
+): CanonicalTranscriptHydration {
+  let settleLive!: (sequence: number) => void;
+  let failLive!: (error: unknown) => void;
+  let liveSettled = false;
+  const liveReady = new Promise<number>((resolve, reject) => {
+    settleLive = resolve;
+    failLive = reject;
+  });
+  // Some read-only consumers only await full hydration. Keep the independent
+  // live-readiness rejection observable without creating an unhandled promise.
+  void liveReady.catch(() => undefined);
 
-  while (true) {
-    const page = await fetchPage({
-      ...(beforeSequence == null ? {} : { beforeSequence }),
-      direction: 'backward',
-      limit: CANONICAL_TRANSCRIPT_PAGE_SIZE,
-      schemaVersion: 2,
-    });
-    pageCount += 1;
-    for (const event of page) {
-      const sequence = eventSequence(event);
-      const eventId = String((event as unknown as Record<string, unknown>).event_id || event.id || `${sequence}`);
-      eventsById.set(eventId, event);
-    }
+  const completion = (async () => {
+    const eventsById = new Map<string, ChatTranscriptEventPayload>();
+    let beforeSequence: number | undefined;
+    let previousOldestSequence: number | undefined;
+    let pageCount = 0;
 
-    const snapshot = [...eventsById.values()]
-      .sort((left, right) => eventSequence(left) - eventSequence(right));
-    const complete = page.length < CANONICAL_TRANSCRIPT_PAGE_SIZE;
-    if (pageCount === 1 || complete) {
-      await onSnapshot?.(snapshot, { complete, pageCount });
-    }
-    if (complete) return snapshot;
+    try {
+      while (true) {
+        const page = await fetchPage({
+          ...(beforeSequence == null ? {} : { beforeSequence }),
+          direction: 'backward',
+          limit: CANONICAL_TRANSCRIPT_PAGE_SIZE,
+          schemaVersion: 2,
+        });
+        pageCount += 1;
+        for (const event of page) {
+          const sequence = eventSequence(event);
+          const eventId = String((event as unknown as Record<string, unknown>).event_id || event.id || `${sequence}`);
+          eventsById.set(eventId, event);
+        }
 
-    const oldestSequence = Math.min(...page.map(eventSequence));
-    if (previousOldestSequence != null && oldestSequence >= previousOldestSequence) {
-      throw new Error('session_transcript_pagination_stalled');
+        const snapshot = [...eventsById.values()]
+          .sort((left, right) => eventSequence(left) - eventSequence(right));
+        const complete = page.length < CANONICAL_TRANSCRIPT_PAGE_SIZE;
+        let liveWatermark: number | null | void = undefined;
+        if (pageCount === 1 || complete) {
+          liveWatermark = await onSnapshot?.(snapshot, { complete, pageCount });
+        }
+        if (!liveSettled && Number.isSafeInteger(liveWatermark) && Number(liveWatermark) >= 0) {
+          liveSettled = true;
+          settleLive(Number(liveWatermark));
+        }
+        if (complete) {
+          if (!liveSettled && (snapshot.length === 0 || liveWatermark === undefined)) {
+            liveSettled = true;
+            settleLive(snapshot.length === 0 ? 0 : eventSequence(snapshot.at(-1)!));
+          } else if (!liveSettled) {
+            liveSettled = true;
+            failLive(new Error('session_live_tail_unavailable'));
+          }
+          return snapshot;
+        }
+
+        const oldestSequence = Math.min(...page.map(eventSequence));
+        if (previousOldestSequence != null && oldestSequence >= previousOldestSequence) {
+          throw new Error('session_transcript_pagination_stalled');
+        }
+        previousOldestSequence = oldestSequence;
+        beforeSequence = oldestSequence;
+      }
+    } catch (error) {
+      if (!liveSettled) {
+        liveSettled = true;
+        failLive(error);
+      }
+      throw error;
     }
-    previousOldestSequence = oldestSequence;
-    beforeSequence = oldestSequence;
-  }
+  })();
+
+  return Object.assign(completion, { liveReady });
 }

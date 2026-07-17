@@ -701,8 +701,8 @@ function AgentDetailInner() {
                     setHistoryMsgs(preParsed);
                 }
                 setTransportHydratedKeys((current) => ({ ...current, [runtimeKey]: true }));
+                return liveSubscriptionWatermark(projected.store);
             };
-
             const canonicalHydration = loadCanonicalSessionTranscript(
                 (page) => chatApi.getSessionTranscript(targetAgentId, sessionId, {
                     ...page,
@@ -711,7 +711,7 @@ function AgentDetailInner() {
                 }) as Promise<ChatTranscriptEventPayload[]>,
                 publishCanonicalSnapshot,
             );
-            canonicalHydrationInFlight = canonicalHydration.then((events) => latestTranscriptSequence(events));
+            canonicalHydrationInFlight = canonicalHydration.liveReady;
             transcriptBackfillInFlightRef.current[runtimeKey] = canonicalHydrationInFlight;
             const transcriptEvents = await canonicalHydration;
             if (controller.signal.aborted || loadSeq !== sessionLoadSeqRef.current) return;

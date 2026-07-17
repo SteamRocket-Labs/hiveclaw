@@ -161,6 +161,14 @@ describe('AgentDetail realtime refresh contract', () => {
     expect(sectionSource).not.toContain('load-older-messages');
   });
 
+  it('opens live transport from the first safe newest suffix while older history keeps recovering', async () => {
+    const source = await readSource('./AgentDetail.tsx');
+
+    expect(source).toContain('canonicalHydrationInFlight = canonicalHydration.liveReady');
+    expect(source).toContain('return liveSubscriptionWatermark(projected.store)');
+    expect(source).not.toContain('canonicalHydrationInFlight = canonicalHydration.then');
+  });
+
   it('never gives up transient reconnects and recovers missed durable transcript events', async () => {
     const source = await readSource('./agent-detail/useSessionTransportController.ts');
     const pageSource = await readSource('./AgentDetail.tsx');

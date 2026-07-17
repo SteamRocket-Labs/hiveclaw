@@ -8,6 +8,7 @@ from app.services.session_subscription import (
     SessionSubscriptionError,
     build_session_ready,
     parse_session_subscribe,
+    resolve_subscription_cursor,
 )
 from app.services.web_chat_broker import SessionLiveBufferOverflow, WebChatBroker
 
@@ -50,6 +51,37 @@ def test_subscribe_contract_requires_exact_session_schema_cursor_and_attempt() -
             expected_session_id=session_id,
         )
     assert unsupported.value.code == "schema_unsupported"
+
+
+def test_live_tail_subscription_uses_server_watermark_without_replaying_unbounded_history() -> None:
+    session_id = uuid4()
+    request = parse_session_subscribe(
+        {
+            "type": "session.subscribe",
+            "session_id": str(session_id),
+            "after_sequence": 0,
+            "cursor_mode": "live_tail",
+            "schema_version": 2,
+            "connection_attempt_id": "attempt-tail",
+        },
+        expected_session_id=session_id,
+    )
+
+    assert request.cursor_mode == "live_tail"
+    assert resolve_subscription_cursor(request, last_committed_sequence=3200) == 3200
+
+    resume = parse_session_subscribe(
+        {
+            "type": "session.subscribe",
+            "session_id": str(session_id),
+            "after_sequence": 41,
+            "schema_version": 2,
+            "connection_attempt_id": "attempt-resume",
+        },
+        expected_session_id=session_id,
+    )
+    assert resume.cursor_mode == "resume"
+    assert resolve_subscription_cursor(resume, last_committed_sequence=3200) == 41
 
 
 def test_ready_binds_watermark_and_projection_hint_without_model_dependency() -> None:
@@ -148,3 +180,15 @@ def test_live_endpoint_registers_buffer_before_watermark_and_activates_after_cat
     assert source.index("send_json(ready)") < catchup_loop
     assert catchup_loop < source.index("activate_session_subscription")
     assert "select(LLMModel)" not in source
+
+
+def test_live_endpoint_skips_history_replay_only_for_typed_live_tail_bootstrap() -> None:
+    import inspect
+
+    from app.api.websocket import websocket_chat
+
+    source = inspect.getsource(websocket_chat)
+    assert "resolve_subscription_cursor" in source
+    assert 'subscription.cursor_mode == "resume"' in source
+    assert "accepted_after_sequence=accepted_after_sequence" in source
+    assert "delivered_through_sequence=catchup.last_committed_sequence" in source

@@ -67,6 +67,16 @@ export function liveSubscriptionWatermark(store: SessionEventStore | undefined):
   return Number.isSafeInteger(sequence) && sequence > 0 ? sequence : null;
 }
 
+export function realtimeSubscriptionCursor(
+  store: SessionEventStore | undefined,
+  latestSequence: number,
+  fullHydrationRequired: boolean,
+): number | null {
+  if (fullHydrationRequired || store?.recoveryRequired === 'full_hydration') return 0;
+  if (store) return store.highestContiguousSequence;
+  return latestSequence > 0 ? latestSequence : null;
+}
+
 export function projectCanonicalTranscriptSnapshot(options: {
   existing: ChatTranscriptEventPayload[];
   snapshot: ChatTranscriptEventPayload[];

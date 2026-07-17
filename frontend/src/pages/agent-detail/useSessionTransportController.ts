@@ -38,6 +38,11 @@ export interface SessionSocketMessageContext {
 
 export interface SessionTransportCallbacks {
   onBackfill: (session: any, agentId: string) => number | void | Promise<number | void>;
+  onLiveTailReady: (input: {
+    key: SessionRuntimeKey;
+    sessionId: string;
+    acceptedAfterSequence: number;
+  }) => void;
   onDisconnected: (input: {
     key: SessionRuntimeKey;
     phase: RuntimePhase;
@@ -55,6 +60,7 @@ interface SessionTransportControllerOptions {
   isRunActive: (key: SessionRuntimeKey) => boolean;
   shouldKeepalive: (key: SessionRuntimeKey) => boolean;
   getHighestContiguousSequence: (key: SessionRuntimeKey) => number;
+  getLiveSubscriptionCursor: (key: SessionRuntimeKey) => number | null;
   getProjectionPhase: (key: SessionRuntimeKey) => SessionConnectionState['projection']['phase'] | undefined;
   needsProjectionRecovery: (key: SessionRuntimeKey) => boolean;
   onAgentExpired: () => void;
@@ -302,7 +308,7 @@ export function useSessionTransportController(options: SessionTransportControlle
       agentId,
       sessionId,
     );
-    let subscribedAfterSequence: number | null = null;
+    let subscribedAfterSequence: number | null | undefined;
 
     socket.onopen = () => {
       if (reconnectDisabledRef.current[key]) {
@@ -313,7 +319,7 @@ export function useSessionTransportController(options: SessionTransportControlle
       if (isActiveRuntime(agentId, sessionId)) {
         activeSocketRef.current = socket;
       }
-      subscribedAfterSequence = optionsRef.current.getHighestContiguousSequence(key);
+      subscribedAfterSequence = optionsRef.current.getLiveSubscriptionCursor(key);
       socket.send(JSON.stringify(buildSessionSubscribeMessage(
         sessionId,
         subscribedAfterSequence,
@@ -352,13 +358,26 @@ export function useSessionTransportController(options: SessionTransportControlle
       }
       if (data?.type === 'session.ready') {
         try {
-          if (subscribedAfterSequence === null) throw new Error('session_ready_before_subscribe');
+          if (subscribedAfterSequence === undefined) throw new Error('session_ready_before_subscribe');
           const ready = parseSessionReady(data, sessionId, attemptId, subscribedAfterSequence);
           reconnectAttemptsRef.current[key] = 0;
+          let readyState = connectionState(key);
+          if (ready.cursorMode === 'live_tail') {
+            optionsRef.current.callbacks.onLiveTailReady({
+              key,
+              sessionId,
+              acceptedAfterSequence: ready.acceptedAfterSequence,
+            });
+            readyState = observeHighestContiguousSequence(
+              readyState,
+              ready.acceptedAfterSequence,
+              'current',
+            );
+          }
           commitConnectionState(
             key,
             receiveSessionReady(
-              connectionState(key),
+              readyState,
               attemptId,
               ready.subscriptionId,
               ready.lastCommittedSequence,
@@ -408,22 +427,15 @@ export function useSessionTransportController(options: SessionTransportControlle
   const hydrateAndConnect = async (session: any, agentId: string, authToken: string) => {
     const sessionId = String(session.id);
     const key = runtimeKey(agentId, sessionId);
-    try {
-      await optionsRef.current.callbacks.onBackfill(session, agentId);
-      syncProjectionCursor(key, agentId, sessionId);
-      if (!reconnectDisabledRef.current[key]) ensureSessionSocket(session, agentId, authToken);
-    } catch (error) {
-      console.warn(`Session hydration failed for ${sessionId}:`, error);
-      const attemptId = connectionState(key).transport.connectionAttemptId;
-      if (attemptId) {
-        commitConnectionState(
-          key,
-          connectionFailed(connectionState(key), attemptId, 'degraded'),
-          agentId,
-          sessionId,
-        );
-      }
-    }
+    void Promise.resolve(optionsRef.current.callbacks.onBackfill(session, agentId))
+      .then(() => syncProjectionCursor(key, agentId, sessionId))
+      .catch((error) => {
+        // Historical recovery and live delivery are independent. A failed
+        // REST page remains observable in the projection UI, but must never
+        // prevent the typed WebSocket subscription from becoming ready.
+        console.warn(`Session history recovery failed for ${sessionId}:`, error);
+      });
+    if (!reconnectDisabledRef.current[key]) ensureSessionSocket(session, agentId, authToken);
   };
 
   const reconnectActiveTransport = () => {

@@ -2,7 +2,6 @@ import React, { useState, useEffect, useRef, Component, ErrorInfo, lazy, Suspens
 import { useParams, useLocation, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-
 import ConfirmModal from '../components/ConfirmModal';
 import AgentChatSection, {
     type SessionCommandCheckpoint,
@@ -78,8 +77,8 @@ import {
 } from './agent-detail/useSessionTransportController';
 import { projectSessionSocketEvent } from './agent-detail/sessionSocketEventProjector';
 import { applyCanonicalSessionSnapshot, consumeSessionEnvelope } from './agent-detail/sessionEventConsumer';
-import { liveSubscriptionWatermark, loadCanonicalSessionTranscript, projectCanonicalTranscriptSnapshot } from './agent-detail/sessionTranscriptHydration';
-import type { SessionEventStore } from './session-workbench/sessionEventStore';
+import { liveSubscriptionWatermark, loadCanonicalSessionTranscript, projectCanonicalTranscriptSnapshot, realtimeSubscriptionCursor } from './agent-detail/sessionTranscriptHydration';
+import { createSessionEventStore, type SessionEventStore } from './session-workbench/sessionEventStore';
 import {
     buildAssignmentHandoff,
     buildAssignmentSessionTitle,
@@ -303,10 +302,9 @@ function AgentDetailInner() {
     const locallyTerminalRunIdsRef = useRef<Set<string>>(new Set());
     const locallyTerminalSessionKeysRef = useRef<Set<string>>(new Set());
     const [activeRunStateBySession, setActiveRunStateBySession] = useState<Record<SessionRuntimeKey, SessionRunState>>({});
-    const [transportHydratedKeys, setTransportHydratedKeys] = useState<Record<SessionRuntimeKey, boolean>>({});
-
     const transportCallbacksRef = useRef<SessionTransportCallbacks>({
         onBackfill: () => undefined,
+        onLiveTailReady: () => undefined,
         onDisconnected: () => undefined,
         onMessage: () => undefined,
     });
@@ -320,9 +318,7 @@ function AgentDetailInner() {
         resetActiveTransportState,
         syncActiveSocketState,
     } = useSessionTransportController({
-        enabled: canLoadAgentScopedData && activeTab === 'chat' && Boolean(
-            id && activeSession?.id && transportHydratedKeys[`${id}:${String(activeSession.id)}`],
-        ),
+        enabled: canLoadAgentScopedData && activeTab === 'chat' && Boolean(id && activeSession?.id),
         agentId: id,
         token,
         activeSession,
@@ -340,6 +336,7 @@ function AgentDetailInner() {
             sessionEventStoresRef.current[key]?.highestContiguousSequence
             ?? latestTranscriptSequence(transcriptEventsRef.current[key] || [])
         ),
+        getLiveSubscriptionCursor: (key) => realtimeSubscriptionCursor(sessionEventStoresRef.current[key], latestTranscriptSequence(transcriptEventsRef.current[key] || []), sessionEventFullHydrationKeysRef.current.has(key)),
         getProjectionPhase: (key) => sessionEventStoresRef.current[key]?.projection.phase,
         needsProjectionRecovery: (key) => {
             const store = sessionEventStoresRef.current[key];
@@ -353,11 +350,11 @@ function AgentDetailInner() {
         },
         callbacks: {
             onBackfill: (session, agentId) => transportCallbacksRef.current.onBackfill(session, agentId),
+            onLiveTailReady: (input) => transportCallbacksRef.current.onLiveTailReady(input),
             onDisconnected: (input) => transportCallbacksRef.current.onDisconnected(input),
             onMessage: (context) => transportCallbacksRef.current.onMessage(context),
         },
     });
-
     const buildSessionRuntimeKey = (agentId: string, sessionId: string) => `${agentId}:${sessionId}`;
     const isLiveRun = (run?: SessionRun | null) => !!run && ['pending', 'running'].includes(String(run.status || '').toLowerCase());
 
@@ -618,9 +615,6 @@ function AgentDetailInner() {
             key: runtimeKey,
             surface: transcriptSurface,
         };
-        if (!transcriptReplayStateRef.current[runtimeKey]) {
-            setTransportHydratedKeys((current) => ({ ...current, [runtimeKey]: false }));
-        }
         activeSessionIdRef.current = sessionId;
         setCreatedAgentId(null);
         if (writableSession) {
@@ -700,7 +694,6 @@ function AgentDetailInner() {
                     setHistoryMessagesSessionId(sessionId);
                     setHistoryMsgs(preParsed);
                 }
-                setTransportHydratedKeys((current) => ({ ...current, [runtimeKey]: true }));
                 return liveSubscriptionWatermark(projected.store);
             };
             const canonicalHydration = loadCanonicalSessionTranscript(
@@ -750,7 +743,6 @@ function AgentDetailInner() {
                     setHistoryMessagesSessionId(sessionId);
                     setHistoryMsgs(preParsed);
                 }
-                setTransportHydratedKeys((current) => ({ ...current, [runtimeKey]: true }));
             }
         } catch (err: any) {
             if (err?.name === 'AbortError') return;
@@ -766,7 +758,6 @@ function AgentDetailInner() {
                         'Latest activity is visible, but older session evidence is still recovering.',
                     ),
                 );
-                setTransportHydratedKeys((current) => ({ ...current, [runtimeKey]: true }));
                 return;
             }
             const failureMessage = buildSessionTranscriptLoadFailureMessage(
@@ -782,7 +773,6 @@ function AgentDetailInner() {
                 setHistoryMessagesSessionId(sessionId);
                 setHistoryMsgs([failureMessage]);
             }
-            setTransportHydratedKeys((current) => ({ ...current, [runtimeKey]: true }));
         } finally {
             if (transcriptBackfillInFlightRef.current[runtimeKey] === canonicalHydrationInFlight) {
                 delete transcriptBackfillInFlightRef.current[runtimeKey];
@@ -1607,6 +1597,16 @@ function AgentDetailInner() {
 
     transportCallbacksRef.current = {
         onBackfill: backfillSessionTranscript,
+        onLiveTailReady: ({ key, sessionId, acceptedAfterSequence }) => {
+            sessionEventStoresRef.current[key] ??= createSessionEventStore(acceptedAfterSequence);
+            transcriptReplayStateRef.current[key] ??= createEmptyTranscriptReplayState();
+            if (activeSessionIdRef.current !== sessionId) return;
+            setChatMessagesSessionId(sessionId);
+            setTransportNotice(t(
+                'agent.chat.sessionBackfillIncomplete',
+                'Live updates are connected while older session evidence continues recovering.',
+            ));
+        },
         onDisconnected: ({ key, phase, isActiveRuntime }) => {
             setSessionPhase(key, phase);
             if (isActiveRuntime) syncActivePhase(phase);

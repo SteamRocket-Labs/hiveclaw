@@ -24,27 +24,30 @@ export type SessionReadyFrame = {
   acceptedAfterSequence: number;
   lastCommittedSequence: number;
   connectionAttemptId: string;
+  cursorMode: 'resume' | 'live_tail';
 };
 
 export function buildSessionSubscribeMessage(
   sessionId: string,
-  afterSequence: number,
+  afterSequence: number | null,
   connectionAttemptId: string,
 ): Record<string, string | number> {
-  return {
+  const message: Record<string, string | number> = {
     type: 'session.subscribe',
     session_id: sessionId,
-    after_sequence: Math.max(0, Math.floor(afterSequence)),
+    after_sequence: afterSequence == null ? 0 : Math.max(0, Math.floor(afterSequence)),
     schema_version: 2,
     connection_attempt_id: connectionAttemptId,
   };
+  if (afterSequence == null) message.cursor_mode = 'live_tail';
+  return message;
 }
 
 export function parseSessionReady(
   value: unknown,
   expectedSessionId: string,
   expectedConnectionAttemptId: string,
-  expectedAfterSequence: number,
+  expectedAfterSequence: number | null,
 ): SessionReadyFrame {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('invalid_session_ready');
@@ -69,7 +72,11 @@ export function parseSessionReady(
   ) {
     throw new Error('invalid_session_ready');
   }
-  if (acceptedAfterSequence !== expectedAfterSequence) {
+  const cursorMode = expectedAfterSequence == null ? 'live_tail' : 'resume';
+  if (
+    (cursorMode === 'resume' && acceptedAfterSequence !== expectedAfterSequence)
+    || (cursorMode === 'live_tail' && acceptedAfterSequence !== lastCommittedSequence)
+  ) {
     throw new Error('session_ready_cursor_mismatch');
   }
   return {
@@ -77,6 +84,7 @@ export function parseSessionReady(
     acceptedAfterSequence,
     lastCommittedSequence,
     connectionAttemptId: expectedConnectionAttemptId,
+    cursorMode,
   };
 }
 

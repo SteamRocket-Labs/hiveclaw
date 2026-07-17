@@ -59,4 +59,30 @@ describe('Session connection generation and ready fence', () => {
       connection_attempt_id: 'attempt-1',
     }, 'session-1', 'attempt-2', 7)).toThrow('session_ready_attempt_mismatch');
   });
+
+  it('asks the server for a live-tail watermark when canonical history has no safe cursor yet', () => {
+    expect(buildSessionSubscribeMessage('session-1', null, 'attempt-tail')).toEqual({
+      type: 'session.subscribe',
+      session_id: 'session-1',
+      after_sequence: 0,
+      cursor_mode: 'live_tail',
+      schema_version: 2,
+      connection_attempt_id: 'attempt-tail',
+    });
+
+    expect(parseSessionReady({
+      type: 'session.ready',
+      session_id: 'session-1',
+      subscription_id: 'subscription-tail',
+      accepted_after_sequence: 3200,
+      last_committed_sequence: 3200,
+      schema_version: 2,
+      connection_attempt_id: 'attempt-tail',
+    }, 'session-1', 'attempt-tail', null)).toMatchObject({
+      subscriptionId: 'subscription-tail',
+      acceptedAfterSequence: 3200,
+      lastCommittedSequence: 3200,
+      cursorMode: 'live_tail',
+    });
+  });
 });

@@ -169,6 +169,16 @@ describe('AgentDetail realtime refresh contract', () => {
     expect(source).not.toContain('canonicalHydrationInFlight = canonicalHydration.then');
   });
 
+  it('does not make REST transcript hydration a prerequisite for the live Session transport', async () => {
+    const pageSource = await readSource('./AgentDetail.tsx');
+    const controllerSource = await readSource('./agent-detail/useSessionTransportController.ts');
+
+    expect(pageSource).not.toContain('transportHydratedKeys');
+    expect(controllerSource).not.toContain('await optionsRef.current.callbacks.onBackfill(session, agentId)');
+    expect(controllerSource).toContain('onLiveTailReady');
+    expect(controllerSource).toContain('getLiveSubscriptionCursor');
+  });
+
   it('never gives up transient reconnects and recovers missed durable transcript events', async () => {
     const source = await readSource('./agent-detail/useSessionTransportController.ts');
     const pageSource = await readSource('./AgentDetail.tsx');

@@ -35,6 +35,7 @@ class SessionSubscriptionError(ValueError):
 class SessionSubscribeRequest:
     session_id: uuid.UUID
     after_sequence: int
+    cursor_mode: str
     schema_version: int
     connection_attempt_id: str
 
@@ -66,15 +67,40 @@ def parse_session_subscribe(
     after_sequence = value.get("after_sequence")
     if isinstance(after_sequence, bool) or not isinstance(after_sequence, int) or after_sequence < 0:
         raise SessionSubscriptionError("schema_unsupported")
+    cursor_mode = value.get("cursor_mode", "resume")
+    if cursor_mode not in {"resume", "live_tail"}:
+        raise SessionSubscriptionError("schema_unsupported")
+    if cursor_mode == "live_tail" and after_sequence != 0:
+        raise SessionSubscriptionError("schema_unsupported")
     connection_attempt_id = str(value.get("connection_attempt_id") or "").strip()
     if not connection_attempt_id or len(connection_attempt_id) > 200:
         raise SessionSubscriptionError("schema_unsupported")
     return SessionSubscribeRequest(
         session_id=session_id,
         after_sequence=after_sequence,
+        cursor_mode=cursor_mode,
         schema_version=SESSION_SUBSCRIPTION_SCHEMA_VERSION,
         connection_attempt_id=connection_attempt_id,
     )
+
+
+def resolve_subscription_cursor(
+    request: SessionSubscribeRequest,
+    *,
+    last_committed_sequence: int,
+) -> int:
+    """Choose the authoritative cursor for replay or live-tail bootstrap.
+
+    ``live_tail`` is used only when the client has no safe canonical history
+    cursor yet. The server captures the current watermark after registering the
+    live buffer, so old history can keep recovering independently without
+    dropping any event committed after this fence.
+    """
+
+    watermark = max(0, int(last_committed_sequence))
+    if request.cursor_mode == "live_tail":
+        return watermark
+    return request.after_sequence
 
 
 def build_session_ready(

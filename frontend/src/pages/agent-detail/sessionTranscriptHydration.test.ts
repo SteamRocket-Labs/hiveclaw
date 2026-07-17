@@ -6,9 +6,10 @@ import {
   liveSubscriptionWatermark,
   loadCanonicalSessionTranscript,
   projectCanonicalTranscriptSnapshot,
+  realtimeSubscriptionCursor,
 } from './sessionTranscriptHydration';
 import { consumeSessionEnvelope, projectSessionEventStoreToMessages } from './sessionEventConsumer';
-import type { SessionEventV2 } from '../session-workbench/sessionEventStore';
+import { createSessionEventStore, type SessionEventV2 } from '../session-workbench/sessionEventStore';
 
 function canonicalEvent(options: {
   sequence: number;
@@ -147,6 +148,13 @@ describe('loadCanonicalSessionTranscript', () => {
     });
     expect(liveSubscriptionWatermark(projected.store)).toBeNull();
     expect(projected.messages.map((message) => message.content)).toEqual(['Start the suffix.']);
+  });
+
+  it('uses live-tail only when no canonical or compatibility cursor exists', () => {
+    expect(realtimeSubscriptionCursor(undefined, 0, false)).toBeNull();
+    expect(realtimeSubscriptionCursor(undefined, 41, false)).toBe(41);
+    expect(realtimeSubscriptionCursor(createSessionEventStore(57), 0, false)).toBe(57);
+    expect(realtimeSubscriptionCursor(createSessionEventStore(57), 0, true)).toBe(0);
   });
 
   it('renders the newest canonical page first, then automatically backfills every older page', async () => {

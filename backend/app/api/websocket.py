@@ -403,6 +403,7 @@ async def websocket_chat(
         iter_session_catchup_events,
         load_session_catchup_window,
         parse_session_subscribe,
+        resolve_subscription_cursor,
         session_subscription_error_frame,
     )
 
@@ -462,6 +463,10 @@ async def websocket_chat(
                 session_id=active_session.id,
                 after_sequence=subscription.after_sequence,
             )
+            accepted_after_sequence = resolve_subscription_cursor(
+                subscription,
+                last_committed_sequence=catchup.last_committed_sequence,
+            )
             active_run = await get_active_web_chat_run(
                 db=db,
                 agent_id=agent_id,
@@ -470,19 +475,20 @@ async def websocket_chat(
             ready = build_session_ready(
                 session_id=active_session.id,
                 connection_attempt_id=subscription.connection_attempt_id,
-                accepted_after_sequence=subscription.after_sequence,
+                accepted_after_sequence=accepted_after_sequence,
                 last_committed_sequence=catchup.last_committed_sequence,
                 active_run=active_run,
             )
             await websocket.send_json(ready)
-            async for event in iter_session_catchup_events(
-                db,
-                session_id=active_session.id,
-                after_sequence=subscription.after_sequence,
-                through_sequence=catchup.last_committed_sequence,
-                audience="user",
-            ):
-                await websocket.send_json(event)
+            if subscription.cursor_mode == "resume":
+                async for event in iter_session_catchup_events(
+                    db,
+                    session_id=active_session.id,
+                    after_sequence=subscription.after_sequence,
+                    through_sequence=catchup.last_committed_sequence,
+                    audience="user",
+                ):
+                    await websocket.send_json(event)
             await manager.activate_session_subscription(
                 websocket,
                 delivered_through_sequence=catchup.last_committed_sequence,

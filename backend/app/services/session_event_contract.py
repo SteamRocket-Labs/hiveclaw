@@ -1543,6 +1543,12 @@ def serialize_session_event(row: Any, *, audience: str = "operator") -> dict[str
         payload["phase"] = "final"
     if item_kind == "hook":
         payload["boundary"] = metadata["boundary"]
+    legacy_run_id = _text(_value(row, "run_id"))
+    if legacy_run_id is not None and scope["level"] not in {"run", "round"}:
+        # V1 associated accepted input/session evidence with the run it later
+        # started. V2 keeps that evidence byte-for-byte, but its top-level
+        # run_id is reserved for an actual run/round authority scope.
+        payload["legacy_run_id"] = legacy_run_id
 
     actor_type = _text(_value(row, "actor_type")) or "system"
     if actor_type not in _ACTOR_TYPES:
@@ -1571,8 +1577,8 @@ def serialize_session_event(row: Any, *, audience: str = "operator") -> dict[str
         "occurred_at": created_at,
         "persisted_at": created_at,
     }
-    if _value(row, "run_id") is not None:
-        event["run_id"] = _text(_value(row, "run_id"))
+    if legacy_run_id is not None and scope["level"] in {"run", "round"}:
+        event["run_id"] = legacy_run_id
     for target, source in (
         ("ordinal", "ordinal"),
         ("command_id", "command_id"),

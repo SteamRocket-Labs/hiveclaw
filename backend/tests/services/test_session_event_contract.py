@@ -510,3 +510,23 @@ def test_legacy_multi_scope_kind_uses_only_the_most_specific_scope_with_real_ids
     )
     assert unprovable["schema"] == "hive.session_event_compatibility"
     assert unprovable["reason"] == "insufficient_legacy_scope"
+
+
+def test_legacy_session_scope_preserves_run_evidence_without_forging_v2_run_authority() -> None:
+    from app.services.session_event_contract import serialize_session_event
+
+    source = _legacy_row(
+        event_type="user_message",
+        item_type="user_message",
+        item_status="succeeded",
+        actor_type="user",
+        metadata_json={},
+    )
+
+    event = serialize_session_event(source)
+
+    assert event["schema"] == "hive.session_event"
+    assert event["item_kind"] == "human_input"
+    assert event["scope"]["level"] == "session"
+    assert "run_id" not in event
+    assert event["payload"]["legacy_run_id"] == str(source.run_id)

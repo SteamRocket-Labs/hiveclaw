@@ -257,6 +257,50 @@ describe('chatDisclosureReducer', () => {
     expect(timeline.steps.some((step) => step.kind === 'commentary')).toBe(false);
   });
 
+  it('renders model-authored report_progress tool text as public commentary without exposing its receipt', () => {
+    const publicMessage = 'I found the first root cause.\n\nNext I am validating the live Session path.';
+    const timeline = buildRunTimelineFromMessages([
+      {
+        role: 'tool_call',
+        content: '',
+        id: 'progress-tool-1',
+        toolName: 'report_progress',
+        toolArgs: {
+          message: publicMessage,
+        },
+        toolResult: '{"ok":true,"acknowledged":true}',
+        toolStatus: 'done',
+      },
+    ] as AgentChatMessage[]);
+
+    expect(timeline.steps).toEqual([
+      expect.objectContaining({
+        id: 'progress-tool-1',
+        kind: 'commentary',
+        title: 'Progress update',
+        details: publicMessage,
+        visibility: 'visible',
+        presentation: 'process',
+      }),
+    ]);
+    expect(JSON.stringify(timeline.steps[0])).not.toContain('acknowledged');
+  });
+
+  it('does not fabricate commentary when report_progress has no model-authored message', () => {
+    const timeline = buildRunTimelineFromMessages([
+      {
+        role: 'tool_call',
+        content: '',
+        id: 'progress-tool-empty',
+        toolName: 'report_progress',
+        toolArgs: {},
+        toolStatus: 'done',
+      },
+    ] as AgentChatMessage[]);
+
+    expect(timeline.steps).toEqual([]);
+  });
+
   it('adds a turn-level aggregate summary for repeated tool groups', () => {
     const timeline = buildRunTimelineFromMessages([
       {

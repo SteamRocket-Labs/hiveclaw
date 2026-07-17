@@ -137,6 +137,7 @@ def test_minimal_kernel_tool_set_stays_small_and_explicit():
         "track_todo",
         "record_finding",
         "read_ledger",
+        "report_progress",
         # CC/Codex command wrappers are core command-layer primitives, not
         # disableable command_pack extensions.
         "task_create",

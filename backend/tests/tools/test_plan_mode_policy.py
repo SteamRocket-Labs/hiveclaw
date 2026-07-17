@@ -76,7 +76,7 @@ def test_planning_ledger_tools_allowed_in_plan_mode():
     # CC parity: TodoWrite is allowed in plan mode. The work ledger is the agent's
     # private working memory (scratchpad), not an external/workspace mutation, so
     # the agent can organize its planning while exploring read-only.
-    for name in ("track_todo", "record_finding", "read_ledger"):
+    for name in ("track_todo", "record_finding", "read_ledger", "report_progress"):
         assert is_plan_mode_tool_allowed(name) is True, name
         assert name in PLAN_MODE_READONLY_TOOLS
 

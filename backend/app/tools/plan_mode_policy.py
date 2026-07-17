@@ -64,6 +64,7 @@ PLAN_MODE_READONLY_TOOLS: frozenset[str] = frozenset(
         "track_todo",
         "record_finding",
         "read_ledger",
+        "report_progress",
     }
 )
 

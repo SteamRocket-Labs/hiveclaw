@@ -4,7 +4,9 @@ docs/agent-task-cognitive-scaffold.md §5.2 Delta-1 / §5.4 / §5.6 / §7:
 
 ``track_todo`` / ``record_finding`` / ``read_ledger`` give the agent a CC-style
 ``TaskCreate`` / ``TaskUpdate`` / ``TaskList`` entry into the *existing* governed
-Work Ledger. They are **cognitive** actions, not governance actions:
+Work Ledger. ``report_progress`` gives providers without a public commentary
+channel an explicit model-authored Session progress surface. They are
+**cognitive** actions, not governance actions:
 
 * never ``governance="sensitive"`` and never tagged ``plan_gate_action_kind`` —
   writing a todo is a thought, not a request to act (the defining difference
@@ -63,6 +65,57 @@ def _missing_scope_error() -> str:
 
 def _has_write_scope(plan_id: str | None, runtime_task_id: str | None, session_id: str | None) -> bool:
     return bool(plan_id or runtime_task_id or session_id)
+
+
+@tool(
+    ToolMeta(
+        name="report_progress",
+        description=(
+            "Publish one concise, model-authored progress update to the current Session. "
+            "Use this before the first non-progress tool on multi-step work and again at "
+            "meaningful milestones when your provider does not expose a public commentary "
+            "channel. The `message` is user-visible public text: state observed progress, "
+            "a decision, or the next action. Never put hidden chain-of-thought or "
+            "provider-private reasoning here. This tool only reports progress; it does not "
+            "start work, authorize an effect, or change a Task."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "message": {
+                    "type": "string",
+                    "description": "The concise public progress update, authored by you for the user.",
+                },
+            },
+            "required": ["message"],
+        },
+        category="work_ledger",
+        display_name="Report Progress",
+        icon="💬",
+        read_only=True,
+        governance="safe",
+        adapter="request",
+    )
+)
+async def report_progress(request: ToolExecutionRequest) -> str:
+    """Acknowledge public model text; the canonical tool event owns persistence.
+
+    The runtime already commits the original tool arguments with stable event
+    identity before the result is consumed. Keeping this handler semantic-free
+    avoids a second prose source while still giving every provider an explicit
+    public progress channel.
+    """
+
+    message = request.arguments.get("message")
+    if not isinstance(message, str) or not message.strip():
+        return _json(
+            {
+                "ok": False,
+                "error_code": "missing_progress_message",
+                "error": "`message` must contain the model-authored public progress update.",
+            }
+        )
+    return _json({"ok": True, "acknowledged": True})
 
 
 @tool(

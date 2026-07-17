@@ -318,6 +318,18 @@ flowchart TD
 
 两个文件的规范块必须保持 byte-identical；如果未来只修改其中一个，应由 contract test 直接失败。
 
+### 5.5 跨 Provider 的公开进度仍必须由模型写（2026-07-17）
+
+真实 production canary 证明：部分 Provider 只返回 private reasoning 和 tool calls，即使用户明确要求“先公开说一句再调用工具”，也可能完全不产生 public commentary/text。平台不能因此把 private reasoning 展示成过程，更不能补一条固定的“正在思考”。正确的 Hive/Codex additive delta 是一个始终可见的模型表达通道：
+
+- `report_progress(message)` 的 `message` 由 LLM 自己写，语义所有者仍是模型；
+- 工具形态只解决 Provider protocol 没有 public commentary phase 的可达性问题，不能启动工作、授权 effect、改变 Task 或生成平台结论；
+- canonical tool event 保存原始 arguments、stable event/item identity 和顺序，handler 只回机械 ACK，不复制或改写 message；
+- frontend 将该 exact message 投影为公开 Markdown commentary；空 message 只产生 typed error/不渲染，不能用 fallback prose 补洞；
+- 该表达通道以 `agent.session.progress` 进入 capability taxonomy 供 registry/audit 守恒，但不进入 admin policy definitions，不得伪装成可关闭的外部 effect 开关；Plan Mode 也不得禁止它，因为它等价于普通 assistant public text；authority、secret ingress 和 Session visibility 仍照常约束哪些字节可以进入模型和谁能看到 Session。
+
+这不是让平台“强迫模型暴露思维链”。模型只报告已观察进展、决定和下一动作；provider-private reasoning 继续隔离。完整实现与生产证据统一回填 Session V2 §28.5 和总报告 `EVID-G2-016/017`。
+
 ---
 
 ## 6. 全量限制清单与裁决

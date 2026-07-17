@@ -175,7 +175,7 @@ def test_collect_real_handlers_include_memory_tools():
     # F-2 single-board convergence: the agent-facing DB-Task tools are retired
     # from the LLM tool face (agent board is Work Ledger only).
     assert not ({"list_tasks", "get_task", "manage_tasks"} & names)
-    assert {"track_todo", "read_ledger", "record_finding"} <= names
+    assert {"track_todo", "read_ledger", "record_finding", "report_progress"} <= names
 
     delegate_schema = next(tool for tool in collected.openai_tools if tool["function"]["name"] == "delegate_to_agent")
     profile_enum = delegate_schema["function"]["parameters"]["properties"]["tool_profile"]["enum"]

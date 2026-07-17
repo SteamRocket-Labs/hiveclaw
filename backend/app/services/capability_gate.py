@@ -35,6 +35,12 @@ DYNAMIC_CAPABILITY_TOOLS: dict[str, list[str]] = {
 
 _HR_SYSTEM_AGENT_DEFAULT_CAPABILITIES: frozenset[str] = frozenset({"agent.employee.create"})
 
+# The model-authored bytes in these tools are ordinary current-Session
+# expression, not an enterprise effect. The tool form only supplies a public
+# channel for providers that expose private reasoning but no commentary phase.
+_MODEL_EXPRESSION_TOOLS: frozenset[str] = frozenset({"report_progress"})
+_NON_POLICY_CAPABILITIES: frozenset[str] = frozenset({"agent.session.progress"})
+
 
 # P1-W2-8: counter exposed via /api/admin/metrics for unmapped tool drift.
 # Per-tool because it lets operators see *which* tool is missing — a single
@@ -339,6 +345,12 @@ async def check_capability(
     Returns CapabilityCheckResult with allowed/denied/escalate flags.
     """
     capability = _resolve_capability(tool_name)
+    if tool_name in _MODEL_EXPRESSION_TOOLS:
+        return CapabilityCheckResult(
+            allowed=True,
+            capability=capability or "",
+            policy_found=False,
+        )
     if not capability:
         capability = await _resolve_dynamic_capability(db, tenant_id, tool_name)
     if not capability:
@@ -543,10 +555,12 @@ def resolve_no_policy_decision(profile: "PermissionProfileV1 | None") -> str:
 
 
 def get_all_capabilities() -> list[dict]:
-    """Return all known capability definitions for the admin UI."""
+    """Return policy-configurable capability definitions for the admin UI."""
     # Deduplicate capabilities and group tools
     cap_tools: dict[str, list[str]] = {}
     for tool, cap in CAPABILITY_MAP.items():
+        if cap in _NON_POLICY_CAPABILITIES:
+            continue
         cap_tools.setdefault(cap, []).append(tool)
     for cap, tools in SYNTHETIC_CAPABILITY_TOOLS.items():
         cap_tools.setdefault(cap, []).extend(tools)

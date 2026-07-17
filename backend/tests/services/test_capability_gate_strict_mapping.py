@@ -87,6 +87,25 @@ async def test_mapped_tool_does_not_touch_counter(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_report_progress_is_model_expression_not_an_enterprise_effect_policy() -> None:
+    class FailIfQueried:
+        async def execute(self, _stmt):
+            raise AssertionError("public Session expression must not query effect capability policy")
+
+    result = await capability_gate.check_capability(
+        db=FailIfQueried(),
+        tenant_id=uuid.uuid4(),
+        agent_id=uuid.uuid4(),
+        tool_name="report_progress",
+    )
+
+    assert result.allowed is True
+    assert result.denied is False
+    assert result.capability == "agent.session.progress"
+    assert result.policy_found is False
+
+
+@pytest.mark.asyncio
 async def test_mapped_tool_without_policy_or_tool_enablement_source_escalates() -> None:
     """Mapped capabilities without policy or tool-toggle state fall back to session permission."""
 
@@ -412,7 +431,7 @@ def test_audit_handles_collector_failure_gracefully(monkeypatch) -> None:
 
 
 def test_t1_core_promoted_tools_have_capability_mappings() -> None:
-    """The six T1 tools (source capabilities + work ledger) are promoted to
+    """The T1 source, ledger, and progress tools are promoted to
     CORE_TOOL_NAMES; under STRICT_CAPABILITY_MAPPING an unmapped tool is
     denied at call time, so their mappings are pinned here against drift."""
     for tool_name in (

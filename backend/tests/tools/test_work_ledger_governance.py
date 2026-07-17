@@ -1,7 +1,8 @@
 """Governance + registration tests for the agent-authored Work Ledger tools.
 
 docs/agent-task-cognitive-scaffold.md §5.6 / §8 invariant 1 — the load-bearing
-contract of 切口①: ``track_todo`` / ``record_finding`` / ``read_ledger`` are
+contract of 切口①: ``track_todo`` / ``record_finding`` / ``read_ledger`` plus
+the model-authored ``report_progress`` Session surface are
 *cognitive* actions, NOT governance actions. They must never be ``sensitive``,
 never carry a ``plan_gate_action_kind``, and never be hard-gated by the service
 gate. This is exactly what distinguishes them from ``manage_tasks`` (sensitive +
@@ -15,7 +16,7 @@ import importlib
 
 import pytest
 
-WORK_LEDGER_TOOLS = ("track_todo", "record_finding", "read_ledger")
+WORK_LEDGER_TOOLS = ("track_todo", "record_finding", "read_ledger", "report_progress")
 WRITE_TOOLS = ("track_todo", "record_finding")
 
 
@@ -70,15 +71,22 @@ def test_read_ledger_is_safe_read_only_parallel():
     assert "read_ledger" in collected.parallel_safe_names
 
 
+def test_report_progress_is_safe_read_only_expression_but_stays_ordered():
+    collected = _collect()
+    assert "report_progress" in collected.safe_tools
+    assert "report_progress" in collected.read_only_names
+    assert "report_progress" not in collected.parallel_safe_names
+
+
 def test_write_tools_are_not_read_only():
-    """track_todo / record_finding mutate the ledger; they must not advertise read_only."""
+    """Cognitive ledger writes must not advertise read_only."""
     collected = _collect()
     for tool_name in WRITE_TOOLS:
         assert tool_name not in collected.read_only_names
 
 
 def test_work_ledger_tools_carry_no_plan_gate_tag():
-    """The decorator-level fact: none of the three is tagged plan_gate_action_kind."""
+    """The decorator-level fact: none is tagged plan_gate_action_kind."""
     _collect()
     from app.tools.decorator import get_all_registered_tools
 

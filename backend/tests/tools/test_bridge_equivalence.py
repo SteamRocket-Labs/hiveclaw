@@ -121,6 +121,7 @@ def test_combined_openai_tools_matches_registered_builtin_surface():
         "read_personal_kb",
         "read_ledger",
         "record_finding",
+        "report_progress",
         "reply_email",
         "retire_memory",
         "run_skill_tool",

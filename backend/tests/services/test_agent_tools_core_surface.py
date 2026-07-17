@@ -20,7 +20,7 @@ from types import SimpleNamespace
 import pytest
 
 SOURCE_CAPABILITY_TOOLS = {"spawn_subagent", "propose_dynamic_workflow", "preview_workflow", "start_workflow"}
-WORK_LEDGER_TOOLS = {"track_todo", "record_finding", "read_ledger"}
+WORK_LEDGER_TOOLS = {"track_todo", "record_finding", "read_ledger", "report_progress"}
 COMMAND_PARITY_TOOLS = {
     "task_create",
     "task_update",

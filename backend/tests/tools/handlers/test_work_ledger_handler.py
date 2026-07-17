@@ -24,13 +24,14 @@ def _request(
     tmp_path: Path,
     arguments: dict,
     *,
+    tool_name: str = "track_todo",
     agent_id: uuid.UUID | None = None,
     session_id: str | None = "sess-1",
 ):
     from app.tools.runtime import ToolExecutionContext, ToolExecutionRequest
 
     return ToolExecutionRequest(
-        tool_name="track_todo",
+        tool_name=tool_name,
         arguments=arguments,
         context=ToolExecutionContext(
             agent_id=agent_id or uuid.uuid4(),
@@ -131,6 +132,32 @@ async def test_track_todo_add_requires_title(tmp_path, monkeypatch):
     payload = json.loads(result)
     assert payload["ok"] is False
     assert "title" in payload["error"].lower()
+
+
+@pytest.mark.asyncio
+async def test_report_progress_acknowledges_model_authored_public_text_without_rewriting_it(tmp_path):
+    from app.tools.handlers.work_ledger import report_progress
+
+    message = "I found the Session delivery gap; next I am checking live replay."
+    request = _request(tmp_path, {"message": message}, tool_name="report_progress")
+
+    payload = json.loads(await report_progress(request))
+
+    assert request.arguments["message"] == message
+    assert payload == {"ok": True, "acknowledged": True}
+
+
+@pytest.mark.asyncio
+async def test_report_progress_rejects_blank_text_instead_of_inventing_platform_prose(tmp_path):
+    from app.tools.handlers.work_ledger import report_progress
+
+    request = _request(tmp_path, {"message": "  \n"}, tool_name="report_progress")
+
+    payload = json.loads(await report_progress(request))
+
+    assert payload["ok"] is False
+    assert payload["error_code"] == "missing_progress_message"
+    assert "message" in payload["error"]
 
 
 @pytest.mark.asyncio

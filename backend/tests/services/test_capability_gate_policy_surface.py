@@ -110,6 +110,7 @@ def test_capability_map_covers_cc_codex_command_tools():
         "team_create": "agent.team.modify",
         "advanced_plan": "agent.plan.modify",
         "verify_plan": "agent.plan.read",
+        "report_progress": "agent.session.progress",
     }
 
     for tool_name, capability in expected.items():
@@ -138,6 +139,10 @@ def test_capability_definitions_expose_policy_capabilities_for_frontend():
     # F-2: agent.task.modify retired with manage_tasks; the surviving agent
     # task-domain capability is agent.task.track (track_todo / record_finding).
     assert "agent.task.track" in definitions
+    # report_progress has a stable audit taxonomy, but current-Session model
+    # expression is not an enterprise effect and must not become a fake policy
+    # toggle in the admin UI.
+    assert "agent.session.progress" not in definitions
     assert "channel.feishu.document" in definitions
     assert "channel.feishu.base" in definitions
     assert "run_command" in definitions["workspace.command.execute"]

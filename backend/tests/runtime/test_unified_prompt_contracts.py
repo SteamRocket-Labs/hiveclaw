@@ -17,6 +17,7 @@ def test_system_prompt_includes_vendor_neutral_behavior_contract() -> None:
         "Progress claims require evidence from this run",
         "Pause only for destructive or irreversible actions",
         "user-visible progress update before the first tool call",
+        "call `report_progress` before the first non-progress tool",
         "Never expose hidden reasoning",
         "Do not ask the model to reveal or reproduce hidden reasoning",
     ]:

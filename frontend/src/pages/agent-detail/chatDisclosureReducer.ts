@@ -91,7 +91,7 @@ const A2A_TOOLS = new Set([
 const SUBAGENT_TOOLS = new Set(['check_subagent', 'spawn_subagent']);
 const TASK_LEDGER_MUTATION_TOOLS = new Set(['task_create', 'task_stop', 'task_update']);
 
-// Source-checked against the 144 canonical @tool registrations on 2026-07-17.
+// Source-checked against the 145 canonical @tool registrations on 2026-07-17.
 // This is deliberately an allowlist: new/unknown tools stay surfaced until a
 // human classifies them as non-blocking retrieval. That prevents an interactive
 // or side-effecting tool from silently disappearing into generic history.
@@ -610,6 +610,24 @@ function buildStep(message: AgentChatMessage, index: number): RunStepSnapshot | 
   }
 
   if (message.role === 'tool_call') {
+    if (String(message.toolName || '').trim().toLowerCase() === 'report_progress') {
+      const publicMessage = message.toolArgs?.message;
+      if (typeof publicMessage !== 'string' || !publicMessage.trim()) return null;
+      return {
+        id: stepIdForMessage(message, index),
+        toolCallId: message.toolMeta?.kind === 'runtime_step' ? message.toolMeta.toolCallId : undefined,
+        kind: 'commentary',
+        title: 'Progress update',
+        status,
+        startedAt: message.timestamp,
+        completedAt: status === 'done' ? message.timestamp : undefined,
+        durationMs: message.toolMeta?.kind === 'runtime_step' ? message.toolMeta.durationMs ?? undefined : undefined,
+        summary: publicMessage,
+        details: publicMessage,
+        visibility: 'visible',
+        presentation: 'process',
+      };
+    }
     return {
       id: stepIdForMessage(message, index),
       toolCallId: message.toolMeta?.kind === 'runtime_step' ? message.toolMeta.toolCallId : undefined,

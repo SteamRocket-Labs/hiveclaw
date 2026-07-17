@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import type { ChatTranscriptEventPayload } from './chatRuntime';
+import type { AgentChatMessage, ChatTranscriptEventPayload } from './chatRuntime';
 import { buildRunTimelineFromMessages } from './chatDisclosureReducer';
 import {
   applyCanonicalSessionSnapshot,
   consumeSessionEnvelope,
   hydrateSessionTranscriptEvents,
+  mergeCanonicalTerminalMessages,
   projectSessionEventStoreToMessages,
 } from './sessionEventConsumer';
 import {
@@ -57,7 +58,127 @@ function replay(events: SessionEventV2[]): SessionEventStore {
 }
 
 describe('canonical Session event consumer', () => {
-  it('replays the complete transcript when a live terminal event seals a partial canonical tail', () => {
+  it('seals the already-visible live process with the canonical final without rebuilding gapped history', () => {
+    const user: AgentChatMessage = {
+      id: 'input-live-1',
+      role: 'user',
+      content: 'Run the production canary.',
+    };
+    const liveProgress: AgentChatMessage = {
+      id: 'live-progress-1',
+      role: 'assistant',
+      content: 'LIVE_TERMINAL_PROCESS_0718',
+      eventType: 'assistant_commentary',
+      eventStatus: 'completed',
+    };
+    const unrelatedHistoricalFinal: AgentChatMessage = {
+      id: 'historical-final-1',
+      role: 'assistant',
+      content: 'Earlier answer.',
+      eventType: 'assistant_message',
+    };
+    const canonicalFinal: AgentChatMessage = {
+      id: 'canonical-final-1',
+      role: 'assistant',
+      content: 'LIVE_TERMINAL_FINAL_0718',
+      sessionItem: {
+        id: 'assistant-final-item-1',
+        kind: 'assistant_final',
+        scope: {
+          level: 'run',
+          session_id: 'session-1',
+          thread_id: 'session-1',
+          turn_id: 'turn-1',
+          run_id: 'run-1',
+        },
+        lifecycle: 'completed',
+        terminal: true,
+        revision: 1,
+        content: 'LIVE_TERMINAL_FINAL_0718',
+        payload: {},
+        actor: { type: 'assistant' },
+        visibility: { audience: 'direct_user' },
+        occurredAt: '2026-07-18T00:00:03Z',
+        first_sequence: 3536,
+        last_sequence: 3536,
+      },
+    };
+
+    const merged = mergeCanonicalTerminalMessages(
+      [unrelatedHistoricalFinal, user, liveProgress],
+      [canonicalFinal],
+      'run-1',
+    );
+
+    expect(merged).toEqual([
+      unrelatedHistoricalFinal,
+      user,
+      liveProgress,
+      canonicalFinal,
+    ]);
+    expect(buildRunTimelineFromMessages(merged.slice(2))).toMatchObject({
+      status: 'done',
+      steps: [expect.objectContaining({ kind: 'commentary' })],
+    });
+  });
+
+  it('uses one canonical render owner when the compatibility final arrived first', () => {
+    const prior = [
+      { id: 'input-1', role: 'user', content: 'Do it.' },
+      {
+        id: 'progress-1',
+        role: 'assistant',
+        content: 'Checking production.',
+        eventType: 'assistant_commentary',
+      },
+      {
+        id: 'legacy-final-event-1',
+        role: 'assistant',
+        content: 'Exact final bytes.',
+        eventType: 'assistant_message',
+      },
+    ] as AgentChatMessage[];
+    const canonical = [{
+      id: 'render-owner-1',
+      role: 'assistant',
+      content: 'Exact final bytes.',
+      sessionItem: {
+        id: 'final-item-1',
+        kind: 'assistant_final',
+        scope: {
+          level: 'round',
+          session_id: 'session-1',
+          thread_id: 'session-1',
+          turn_id: 'turn-1',
+          run_id: 'run-1',
+          round_id: 'round-1',
+        },
+        lifecycle: 'completed',
+        terminal: true,
+        revision: 1,
+        content: 'Exact final bytes.',
+        payload: {},
+        actor: { type: 'assistant' },
+        visibility: { audience: 'direct_user' },
+        occurredAt: '2026-07-18T00:00:03Z',
+        first_sequence: 100,
+        last_sequence: 100,
+      },
+    }] as AgentChatMessage[];
+
+    const merged = mergeCanonicalTerminalMessages(prior, canonical, 'run-1');
+
+    expect(merged.filter((message) => message.content === 'Exact final bytes.')).toHaveLength(1);
+    expect(merged.at(-1)).toMatchObject({
+      id: 'render-owner-1',
+      sessionItem: { kind: 'assistant_final' },
+    });
+    expect(merged).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'progress-1', eventType: 'assistant_commentary' }),
+    ]));
+  });
+
+  it('seals compatibility process already visible beside a partial canonical tail', () => {
     const legacyThinking = {
       schema: 'hive.session_event_compatibility',
       schema_version: 1,
@@ -139,17 +260,25 @@ describe('canonical Session event consumer', () => {
       store = consumeSessionEnvelope(envelope, store, 3399).store;
     }
     if (!store) throw new Error('fixture_did_not_create_store');
-    let projectedMessages = [] as ReturnType<typeof projectSessionEventStoreToMessages>;
+    let projectedMessages = [{
+      id: 'legacy-thinking-message-1',
+      role: 'assistant',
+      content: '',
+      thinking: 'LIVE_TERMINAL_PROCESS_0718',
+    }] as ReturnType<typeof projectSessionEventStoreToMessages>;
 
     applyCanonicalSessionSnapshot({
       event: runCompleted as unknown as ChatTranscriptEventPayload,
       store,
-      transcriptEvents,
       active: true,
       onTranscript: () => undefined,
       onActivity: () => undefined,
       onTerminal: () => undefined,
-      onMessages: (messages) => { projectedMessages = messages; },
+      onMessages: (messages, terminal, runId) => {
+        projectedMessages = terminal
+          ? mergeCanonicalTerminalMessages(projectedMessages, messages, runId)
+          : messages;
+      },
     });
 
     expect(projectedMessages).toEqual(expect.arrayContaining([
@@ -165,7 +294,6 @@ describe('canonical Session event consumer', () => {
     applyCanonicalSessionSnapshot({
       event: terminalCommitted as unknown as ChatTranscriptEventPayload,
       store,
-      transcriptEvents,
       active: true,
       onTranscript: () => undefined,
       onActivity: () => undefined,

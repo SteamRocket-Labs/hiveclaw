@@ -140,7 +140,7 @@ describe('AgentDetail session permission state', () => {
 });
 
 describe('AgentDetail realtime refresh contract', () => {
-  it('reduces terminal websocket events without replacing the hydrated message array', async () => {
+  it('seals terminal websocket events onto the visible live process without rebuilding gapped history', async () => {
     const source = await readSource('./agent-detail/sessionSocketEventProjector.ts');
     const pageSource = await readSource('./AgentDetail.tsx');
 
@@ -149,7 +149,8 @@ describe('AgentDetail realtime refresh contract', () => {
     expect(source).not.toContain("parseChatMsg({ role: 'assistant', content: `⚠️ ${message}` })");
     expect(pageSource).toContain('if (consumed.canonical && consumed.store)');
     expect(pageSource).toContain('const nextTranscriptEvents = mergeTranscriptBackfill(existingEvents, [projectionEvent])');
-    expect(pageSource).toContain('transcriptEvents: nextTranscriptEvents');
+    expect(pageSource).toContain('mergeCanonicalTerminalMessages(previous, messages, runId)');
+    expect(pageSource).not.toContain('transcriptEvents: nextTranscriptEvents');
     expect(pageSource).toContain('onTerminal: (runId) => markActiveRunTerminal(key, runId)');
   });
 

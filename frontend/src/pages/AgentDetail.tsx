@@ -76,7 +76,7 @@ import {
     type SessionTransportCallbacks,
 } from './agent-detail/useSessionTransportController';
 import { projectSessionSocketEvent } from './agent-detail/sessionSocketEventProjector';
-import { applyCanonicalSessionSnapshot, consumeSessionEnvelope } from './agent-detail/sessionEventConsumer';
+import { applyCanonicalSessionSnapshot, consumeSessionEnvelope, mergeCanonicalTerminalMessages } from './agent-detail/sessionEventConsumer';
 import { liveSubscriptionWatermark, loadCanonicalSessionTranscript, projectCanonicalTranscriptSnapshot, realtimeSubscriptionCursor } from './agent-detail/sessionTranscriptHydration';
 import { createSessionEventStore, type SessionEventStore } from './session-workbench/sessionEventStore';
 import {
@@ -459,7 +459,7 @@ function AgentDetailInner() {
             if (consumed.sessionEnvelope && consumed.store === sessionEventStoresRef.current[key]) return;
             if (consumed.store) sessionEventStoresRef.current[key] = consumed.store;
             projectionEvent = consumed.projectionEvent;
-            if (consumed.canonical && consumed.store) { const nextTranscriptEvents = mergeTranscriptBackfill(existingEvents, [projectionEvent]); return applyCanonicalSessionSnapshot({ event: projectionEvent, store: consumed.store, transcriptEvents: nextTranscriptEvents, active: isActiveRuntime, onTranscript: () => { transcriptEventsRef.current[key] = nextTranscriptEvents; }, onActivity: () => { runtimeActivityAtRef.current[key] = Date.now(); }, onTerminal: (runId) => markActiveRunTerminal(key, runId), onMessages: (messages, terminal) => { setChatMessagesSessionId(sessionId); (terminal ? setChatMessagesAfterQueuedForSession : enqueueChatMessagesUpdateForSession)(sessionId, () => mergePendingForSession(key, messages)); } }); }
+            if (consumed.canonical && consumed.store) { const nextTranscriptEvents = mergeTranscriptBackfill(existingEvents, [projectionEvent]); return applyCanonicalSessionSnapshot({ event: projectionEvent, store: consumed.store, active: isActiveRuntime, onTranscript: () => { transcriptEventsRef.current[key] = nextTranscriptEvents; }, onActivity: () => { runtimeActivityAtRef.current[key] = Date.now(); }, onTerminal: (runId) => markActiveRunTerminal(key, runId), onMessages: (messages, terminal, runId) => { setChatMessagesSessionId(sessionId); (terminal ? setChatMessagesAfterQueuedForSession : enqueueChatMessagesUpdateForSession)(sessionId, (previous) => mergePendingForSession(key, terminal ? mergeCanonicalTerminalMessages(previous, messages, runId) : messages)); } }); }
         } catch (error) {
             console.warn(`[SessionEventV2] Rejected invalid envelope for ${key}:`, error);
             return;

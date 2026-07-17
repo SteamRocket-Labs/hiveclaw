@@ -285,17 +285,71 @@ export function hydrateSessionTranscriptEvents(
   return { store, messages: ordered, ui: compatibilityReplay.ui };
 }
 
-function transcriptSuffixBaseline(events: ChatTranscriptEventPayload[]): number {
-  const sequences = events
-    .map((event) => Number(event.sequence ?? 0))
-    .filter((sequence) => Number.isSafeInteger(sequence) && sequence > 0);
-  return sequences.length > 0 ? Math.max(0, Math.min(...sequences) - 1) : 0;
+function canonicalMessageRunId(message: AgentChatMessage): string | null {
+  const scope = message.sessionItem?.scope;
+  if (!scope || scope.level === 'session' || scope.level === 'turn') return null;
+  return scope.run_id || null;
+}
+
+function isRenderedAssistantAnswer(message: AgentChatMessage): boolean {
+  if (message.role !== 'assistant' || !message.content?.trim()) return false;
+  if (message.sessionItem) {
+    return message.sessionItem.kind === 'assistant_final' && message.sessionItem.terminal;
+  }
+  if (message.eventType === 'assistant_message' || message.eventType === 'assistant_final') return true;
+  if (message.eventType?.startsWith('assistant_')) return false;
+  return true;
+}
+
+function messagesShareIdentity(left: AgentChatMessage, right: AgentChatMessage): boolean {
+  if (left.sessionItem?.id && right.sessionItem?.id && left.sessionItem.id === right.sessionItem.id) return true;
+  const rightIdentities = new Set(messageIdentities(right));
+  return messageIdentities(left).some((identity) => rightIdentities.has(identity));
+}
+
+/**
+ * Seal one live run without rebuilding the whole Session from a locally
+ * retained transcript array. Live transport and automatic older-history
+ * hydration are intentionally independent, so that array may contain a
+ * truthful gap while the newest suffix is already current. The visible live
+ * process is therefore retained and the canonical assistant_final becomes the
+ * single terminal render owner.
+ */
+export function mergeCanonicalTerminalMessages(
+  previous: AgentChatMessage[],
+  canonical: AgentChatMessage[],
+  terminalRunId: string | null,
+): AgentChatMessage[] {
+  let latestUserIndex = -1;
+  for (let index = previous.length - 1; index >= 0; index -= 1) {
+    if (previous[index]?.role === 'user') {
+      latestUserIndex = index;
+      break;
+    }
+  }
+
+  const prefix = latestUserIndex >= 0 ? previous.slice(0, latestUserIndex + 1) : [];
+  const liveTail = latestUserIndex >= 0 ? previous.slice(latestUserIndex + 1) : previous;
+  const canonicalRun = terminalRunId
+    ? canonical.filter((message) => canonicalMessageRunId(message) === terminalRunId)
+    : canonical;
+  const canonicalFinal = [...canonicalRun].reverse().find(isRenderedAssistantAnswer);
+  const liveFinal = [...liveTail].reverse().find(isRenderedAssistantAnswer);
+  const process = liveTail.filter((message) => !isRenderedAssistantAnswer(message));
+
+  for (const message of canonicalRun) {
+    if (isRenderedAssistantAnswer(message) || message.role === 'user') continue;
+    if (process.some((existing) => messagesShareIdentity(existing, message))) continue;
+    process.push(message);
+  }
+
+  const terminalAnswer = canonicalFinal || liveFinal;
+  return terminalAnswer ? [...prefix, ...process, terminalAnswer] : [...prefix, ...process];
 }
 
 export function projectCanonicalSessionSnapshot(
   event: ChatTranscriptEventPayload,
   store: SessionEventStore,
-  transcriptEvents?: ChatTranscriptEventPayload[],
 ): {
   messages: AgentChatMessage[];
   projectMessages: boolean;
@@ -313,17 +367,7 @@ export function projectCanonicalSessionSnapshot(
     envelope.item_kind === 'run_outcome'
     && envelope.lifecycle === 'terminal_committed'
   );
-  // A live tail can start after older V1/compatibility events. At a terminal
-  // boundary, use the same complete replay projection as reload so the final
-  // answer seals (rather than erases) the process disclosure. The first
-  // locally retained durable sequence is the truthful baseline for this
-  // presentation suffix; it is not a second event authority.
-  const messages = runTerminal && transcriptEvents?.length
-    ? hydrateSessionTranscriptEvents(
-      transcriptEvents,
-      transcriptSuffixBaseline(transcriptEvents),
-    ).messages
-    : projectSessionEventStoreToMessages(store);
+  const messages = projectSessionEventStoreToMessages(store);
   return {
     messages,
     projectMessages: !terminalMetadataOnly,
@@ -338,19 +382,18 @@ export function projectCanonicalSessionSnapshot(
 export function applyCanonicalSessionSnapshot(options: {
   event: ChatTranscriptEventPayload;
   store: SessionEventStore;
-  transcriptEvents?: ChatTranscriptEventPayload[];
   active: boolean;
   onTranscript: () => void;
   onActivity: () => void;
   onTerminal: (runId: string | null) => void;
-  onMessages: (messages: AgentChatMessage[], terminal: boolean) => void;
+  onMessages: (messages: AgentChatMessage[], terminal: boolean, runId: string | null) => void;
 }): void {
-  const snapshot = projectCanonicalSessionSnapshot(options.event, options.store, options.transcriptEvents);
+  const snapshot = projectCanonicalSessionSnapshot(options.event, options.store);
   options.onTranscript();
   options.onActivity();
   if (snapshot.runTerminal) options.onTerminal(snapshot.runId);
   if (options.active && snapshot.projectMessages) {
-    options.onMessages(snapshot.messages, snapshot.terminal);
+    options.onMessages(snapshot.messages, snapshot.terminal, snapshot.runId);
   }
 }
 

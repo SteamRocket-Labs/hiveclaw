@@ -196,6 +196,7 @@ async def _resolve_workflow_preview_session(
             agent_id=agent.id,
             session_id=requested_session_id,
             action="workflow:preview",
+            require_writable=True,
         )
         return authority.session
     session = ChatSession(
@@ -252,6 +253,7 @@ async def _preview_dynamic_workflow_candidate(
         agent_id=agent.id,
         session_id=proposal.session_id,
         action="workflow:candidate_preview",
+        require_writable=True,
     )
     preview_id = workflow_candidate_preview_id(
         proposal_id=proposal.id,
@@ -680,6 +682,7 @@ async def _authorize_workflow_run_action(
         agent_id=agent.id,
         session_id=session_id,
         action=action,
+        require_writable=True,
     )
 
 

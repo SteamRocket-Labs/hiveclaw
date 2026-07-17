@@ -162,7 +162,7 @@ def build_transcript_item_contract(
 ) -> tuple[str, str]:
     """Map runtime events into a small vendor-neutral ThreadItem contract."""
     data = dict(metadata or {})
-    item_type = classify_thread_item(event_type=event_type, role=role)
+    item_type = classify_thread_item(event_type=event_type, role=role, metadata=data)
     item_status = classify_thread_item_status(item_type=item_type, event_type=event_type, metadata=data)
     return item_type, item_status
 

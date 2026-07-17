@@ -330,6 +330,7 @@ async def _authorize_plan_action(
             action=action,
             allow_manager_override=True,
             manager_override_reason=manager_override_reason,
+            require_writable=True,
         )
         return decision.authority_source
 
@@ -443,6 +444,7 @@ async def create_plan(
             agent_id=agent_id,
             session_id=session_id,
             action="plan:create",
+            require_writable=True,
         )
     service = get_plan_mode_service()
     try:

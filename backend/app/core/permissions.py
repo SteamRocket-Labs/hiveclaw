@@ -151,6 +151,29 @@ class SessionActionDecision:
     action: str
 
 
+_READ_ONLY_SESSION_KINDS = frozenset({"delegation_run"})
+
+
+def require_writable_session(session: ChatSession, *, action: str) -> None:
+    """Reject mutation of product read-only Session kinds.
+
+    This is an exact machine-contract gate.  It deliberately does not infer
+    mutability from titles, messages, or other natural-language content.
+    """
+
+    session_kind = str(getattr(session, "session_kind", "") or "").strip().lower()
+    if session_kind not in _READ_ONLY_SESSION_KINDS:
+        return
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail={
+            "code": "session_read_only",
+            "session_kind": session_kind,
+            "action": str(action),
+        },
+    )
+
+
 async def authorize_session_action(
     db: AsyncSession,
     user: User,
@@ -160,6 +183,7 @@ async def authorize_session_action(
     action: str,
     allow_manager_override: bool = False,
     manager_override_reason: str | None = None,
+    require_writable: bool = False,
 ) -> SessionActionDecision:
     """Bind an action to both Agent authority and the session's user.
 
@@ -178,8 +202,9 @@ async def authorize_session_action(
     session = result.scalar_one_or_none()
     if session is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chat session not found")
-
     if str(session.user_id) == str(user.id):
+        if require_writable:
+            require_writable_session(session, action=action)
         return SessionActionDecision(
             agent=agent,
             session=session,
@@ -190,6 +215,8 @@ async def authorize_session_action(
 
     reason = str(manager_override_reason or "").strip()
     if access_level == "manage" and allow_manager_override and reason:
+        if require_writable:
+            require_writable_session(session, action=action)
         from app.services.audit_logger import write_audit_log
 
         await write_audit_log(

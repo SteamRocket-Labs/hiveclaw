@@ -144,6 +144,7 @@ async def send_inter_agent_message(
             agent_id=agent_id,
             session_id=data.root_session_id,
             action="a2a_message",
+            require_writable=True,
         )
     try:
         return await collaboration_service.send_message_between_agents(

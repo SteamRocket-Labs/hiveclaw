@@ -4544,6 +4544,59 @@ def _enforce_runtime_context_tenant_boundary(
     return metadata_updates
 
 
+async def _resolve_runtime_models_for_task(
+    db: AsyncSession,
+    *,
+    agent: Agent,
+    metadata: dict[str, Any],
+) -> tuple[LLMModel | None, LLMModel | None]:
+    override_value = metadata.get("runtime_model_id")
+    override_model_id = _uuid_or_none(override_value)
+    if override_value is not None and override_model_id is None:
+        raise RuntimeError("RuntimeTask has an invalid runtime_model_id")
+
+    primary_model_id = override_model_id or agent.primary_model_id
+    primary_model = None
+    fallback_model = None
+    if primary_model_id:
+        primary_filters = [
+            LLMModel.id == primary_model_id,
+            LLMModel.tenant_id == agent.tenant_id,
+        ]
+        if override_model_id is not None:
+            primary_filters.append(LLMModel.enabled.is_(True))
+        primary_result = await db.execute(select(LLMModel).where(*primary_filters))
+        primary_model = primary_result.scalar_one_or_none()
+        if override_model_id is not None and primary_model is None:
+            raise RuntimeError("RuntimeTask model override is unavailable in the Agent tenant")
+
+    if agent.fallback_model_id and agent.fallback_model_id != primary_model_id:
+        fallback_result = await db.execute(
+            select(LLMModel).where(
+                LLMModel.id == agent.fallback_model_id,
+                LLMModel.tenant_id == agent.tenant_id,
+            )
+        )
+        fallback_model = fallback_result.scalar_one_or_none()
+    if not primary_model and fallback_model:
+        primary_model = fallback_model
+        fallback_model = None
+    if primary_model and agent.tenant_id:
+        from app.services.model_resolution import choose_runtime_model_pair, resolve_default_model_for_tenant
+
+        default_runtime_model = await resolve_default_model_for_tenant(
+            db,
+            agent.tenant_id,
+            exclude_model_id=primary_model.id,
+        )
+        primary_model, fallback_model = choose_runtime_model_pair(
+            primary_model,
+            fallback_model,
+            default_runtime_model,
+        )
+    return primary_model, fallback_model
+
+
 async def _load_runtime_context(
     run_uuid: uuid.UUID,
 ) -> tuple[RuntimeTask, Agent, User, LLMModel | None, LLMModel | None, list[ChatMessage], ChatSession | None]:
@@ -4644,34 +4697,11 @@ async def _load_runtime_context(
             session=session,
         )
 
-        primary_model = None
-        fallback_model = None
-        if agent.primary_model_id:
-            primary_result = await db.execute(
-                select(LLMModel).where(LLMModel.id == agent.primary_model_id, LLMModel.tenant_id == agent.tenant_id)
-            )
-            primary_model = primary_result.scalar_one_or_none()
-        if agent.fallback_model_id:
-            fallback_result = await db.execute(
-                select(LLMModel).where(LLMModel.id == agent.fallback_model_id, LLMModel.tenant_id == agent.tenant_id)
-            )
-            fallback_model = fallback_result.scalar_one_or_none()
-        if not primary_model and fallback_model:
-            primary_model = fallback_model
-            fallback_model = None
-        if primary_model and agent.tenant_id:
-            from app.services.model_resolution import choose_runtime_model_pair, resolve_default_model_for_tenant
-
-            default_runtime_model = await resolve_default_model_for_tenant(
-                db,
-                agent.tenant_id,
-                exclude_model_id=primary_model.id,
-            )
-            primary_model, fallback_model = choose_runtime_model_pair(
-                primary_model,
-                fallback_model,
-                default_runtime_model,
-            )
+        primary_model, fallback_model = await _resolve_runtime_models_for_task(
+            db,
+            agent=agent,
+            metadata=metadata,
+        )
 
         from app.services.memory_service import compute_history_limit
 

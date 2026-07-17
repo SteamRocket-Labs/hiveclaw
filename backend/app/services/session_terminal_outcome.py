@@ -15,6 +15,7 @@ from app.models.chat_transcript_event import ChatTranscriptEvent
 from app.models.runtime_task import RuntimeTask
 from app.models.session_v2 import SessionModelResult, SessionRunOutcome
 from app.services.session_round_obligation import current_run_fences, unresolved_round_obligations
+from app.services.runtime_root_ledger import transition_runtime_root_item_by_task
 from app.services.session_v2_persistence import SessionEventDraft, append_session_events
 
 
@@ -24,6 +25,37 @@ class TerminalOutcomeIneligible(RuntimeError):
 
 class TerminalOutcomeNeedsReconciliation(RuntimeError):
     """A terminal transaction has an ambiguous durable outcome."""
+
+
+async def _close_runtime_root_item(
+    db: AsyncSession,
+    *,
+    run_id: uuid.UUID,
+    outcome: SessionRunOutcome,
+    terminal_result_id: uuid.UUID | None,
+    terminal_event_id: uuid.UUID | None,
+) -> None:
+    refs = [f"session-run-outcome://{outcome.id}"]
+    if terminal_result_id is not None:
+        refs.append(f"session-model-result://{terminal_result_id}")
+    if terminal_event_id is not None:
+        refs.append(f"session-event://{terminal_event_id}")
+    item, _decision = await transition_runtime_root_item_by_task(
+        db,
+        runtime_task_id=run_id,
+        requested_state="completed",
+        reason_code="session_v2_terminal_outcome_committed",
+        result_refs=refs,
+        metadata={
+            "session_v2_outcome_id": str(outcome.id),
+            "terminal_result_id": str(terminal_result_id) if terminal_result_id else None,
+            "terminal_event_id": str(terminal_event_id) if terminal_event_id else None,
+        },
+    )
+    if item is None:
+        raise TerminalOutcomeNeedsReconciliation("runtime root item missing during terminal commit")
+    if item.state != "completed":
+        raise TerminalOutcomeNeedsReconciliation(f"runtime root item conflicts with terminal outcome: {item.state}")
 
 
 def _canonical(value: Any) -> Any:
@@ -304,6 +336,13 @@ async def commit_terminal_outcome(
     if outcome is None:
         raise TerminalOutcomeNeedsReconciliation("run outcome not found")
     if outcome.state == "terminal_committed":
+        await _close_runtime_root_item(
+            db,
+            run_id=run_id,
+            outcome=outcome,
+            terminal_result_id=outcome.terminal_result_id,
+            terminal_event_id=outcome.terminal_event_id,
+        )
         return outcome
     if outcome.state != "sealed" or not outcome.seal_json:
         raise TerminalOutcomeIneligible("run outcome is not sealed")
@@ -409,6 +448,13 @@ async def commit_terminal_outcome(
     }
     task.metadata_json = metadata
     task.claim_version = int(task.claim_version or 0) + 1
+    await _close_runtime_root_item(
+        db,
+        run_id=run_id,
+        outcome=outcome,
+        terminal_result_id=result.id,
+        terminal_event_id=events[0].id,
+    )
     outcome.state = "terminal_committed"
     outcome.terminal_event_id = events[0].id
     outcome.reconciliation_owner = None

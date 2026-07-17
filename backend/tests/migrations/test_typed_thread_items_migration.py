@@ -20,7 +20,22 @@ def test_typed_thread_item_backfill_keeps_its_historical_map_as_runtime_subset()
 
     assert migration.revision == "typed_thread_items_0710"
     assert migration.down_revision == "personal_kb_local_receipts_0710"
-    assert migration.EVENT_THREAD_ITEM_TYPES.items() <= EVENT_THREAD_ITEM_TYPES.items()
+    assert migration.EVENT_THREAD_ITEM_TYPES.keys() <= EVENT_THREAD_ITEM_TYPES.keys()
+    reclassified_collaboration_events = {
+        "delegation_run",
+        "team_member",
+        "member_spawned",
+        "member_idle",
+        "member_message_queued",
+        "member_message_rejected",
+        "member_run_started",
+    }
+    for event_type, historical_item_type in migration.EVENT_THREAD_ITEM_TYPES.items():
+        if event_type not in reclassified_collaboration_events:
+            assert EVENT_THREAD_ITEM_TYPES[event_type] == historical_item_type
+    assert EVENT_THREAD_ITEM_TYPES["delegation_run"] == "peer_a2a_activity"
+    assert EVENT_THREAD_ITEM_TYPES["team_member"] == "agent_team_activity"
+    assert EVENT_THREAD_ITEM_TYPES["subagent_task_started"] == "subagent_activity"
     assert EVENT_THREAD_ITEM_TYPES["memory_context_degraded"] == "warning"
     assert EVENT_THREAD_ITEM_TYPES["memory_context_unavailable"] == "error"
     sql = migration._backfill_sql()

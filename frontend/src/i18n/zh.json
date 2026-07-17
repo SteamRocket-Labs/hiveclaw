@@ -45,6 +45,8 @@
         "plan": "计划",
         "workflow_activity": "Workflow",
         "subagent_activity": "Sub-agent",
+        "agent_team_activity": "Agent Team",
+        "peer_a2a_activity": "A2A 数字员工",
         "context_compaction": "上下文压缩",
         "artifact": "交付物",
         "boundary": "运行边界",
@@ -164,6 +166,7 @@
       "runStatus": "运行状态",
       "agentTeams": "Agent Team",
       "noAgentTeams": "当前会话没有 Agent Team 容器。",
+      "noPeerA2A": "当前会话没有与其他数字员工的 A2A 委托。",
       "noTeamMembers": "还没有 Team member 启动。",
       "subagents": "Sub-agent",
       "noSubagents": "当前会话没有一次性 Sub-agent worker。",
@@ -190,6 +193,7 @@
       "waiterOpenTitle": "打开等待中的会话",
       "runtimeSegments": {
         "team": "Team",
+        "a2a": "A2A",
         "workers": "Workers",
         "workflow": "Workflow",
         "activity": "Activity"

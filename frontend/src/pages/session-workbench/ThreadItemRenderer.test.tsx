@@ -34,6 +34,8 @@ const DATA_BY_TYPE: Record<ThreadItemType, Record<string, unknown>> = {
   plan: { plan_id: 'plan-1', phase: 'confirmed' },
   workflow_activity: { workflow_run_id: 'workflow-1', label: 'Review' },
   subagent_activity: { runtime_task_id: 'task-1', target_agent_name: 'researcher' },
+  agent_team_activity: { runtime_task_id: 'task-team', member_name: 'reviewer' },
+  peer_a2a_activity: { runtime_task_id: 'task-a2a', target_agent_name: 'researcher', read_only: true },
   context_compaction: {
     original_message_count: 120,
     kept_message_count: 24,

@@ -613,7 +613,7 @@ describe('session workbench timeline model', () => {
     expect(model.items[0].source).toBe('agent_team_read_model');
   });
 
-  it('keeps agent teams, subagents, workflow leaves, background agents, notifications, runs, and raw events in separate runtime sections', () => {
+  it('keeps peer A2A, agent teams, subagents, workflow leaves, background agents, notifications, runs, and raw events in separate runtime sections', () => {
     const model = buildRuntimeSectionsModel({
       runtime_sections: {
         agent_teams: [
@@ -650,6 +650,16 @@ describe('session workbench timeline model', () => {
             status: 'completed',
             enterable: true,
             child_session_id: 'subagent-session',
+          },
+        ],
+        peer_a2a: [
+          {
+            id: 'a2a-1',
+            runtime_kind: 'peer_a2a',
+            label: 'Finance digital employee',
+            status: 'blocked',
+            enterable: true,
+            child_session_id: 'a2a-session',
           },
         ],
         workflows: [
@@ -742,6 +752,15 @@ describe('session workbench timeline model', () => {
         enterable: false,
       }),
     ]);
+    expect(model.peerA2A).toEqual([
+      expect.objectContaining({
+        id: 'a2a-1',
+        runtimeKind: 'peer_a2a',
+        childSessionId: 'a2a-session',
+        enterable: true,
+        status: 'blocked',
+      }),
+    ]);
     expect(model.workflows[0].leafCalls).toEqual([
       expect.objectContaining({
         id: 'leaf-1',
@@ -753,7 +772,7 @@ describe('session workbench timeline model', () => {
     expect(model.notifications.map((item) => item.runtimeKind)).toEqual(['notification']);
     expect(model.runs.map((item) => item.runtimeKind)).toEqual(['runtime_task']);
     expect(model.raw.map((item) => item.runtimeKind)).toEqual(['raw_event']);
-    expect(model.summary.total).toBe(7);
+    expect(model.summary.total).toBe(8);
     expect(model.summary.running).toBe(3);
   });
 
@@ -781,7 +800,46 @@ describe('session workbench timeline model', () => {
     ]);
   });
 
-  it('projects runtime sections into Team, Workers, Workflow, and Activity console segments', () => {
+  it('consumes the canonical backend runtime-section envelope instead of a test-only bare array', () => {
+    const model = buildRuntimeSectionsModel({
+      runtime_sections: {
+        peer_a2a: {
+          schema: 'hive.ccplus.runtime_section.v1',
+          key: 'peer_a2a',
+          count: 1,
+          items: [{
+            id: 'a2a-live-1',
+            runtime_kind: 'peer_a2a',
+            label: 'Live peer employee',
+            status: 'failed',
+            child_session_id: 'a2a-live-session',
+            enterable: true,
+          }],
+        },
+        subagents: {
+          schema: 'hive.ccplus.runtime_section.v1',
+          key: 'subagents',
+          count: 1,
+          items: [{
+            id: 'subagent-live-1',
+            runtime_kind: 'subagent',
+            label: 'Live one-shot worker',
+            status: 'completed',
+          }],
+        },
+      },
+    });
+
+    expect(model.peerA2A).toEqual([
+      expect.objectContaining({ id: 'a2a-live-1', childSessionId: 'a2a-live-session', enterable: true }),
+    ]);
+    expect(model.subagents).toEqual([
+      expect.objectContaining({ id: 'subagent-live-1', enterable: false }),
+    ]);
+    expect(model.summary.total).toBe(2);
+  });
+
+  it('projects peer A2A separately from Team, Workers, Workflow, and Activity console segments', () => {
     const rightPanel = buildSessionRightPanelModel({
       messages: [],
       sessionWorkbench: {
@@ -817,6 +875,17 @@ describe('session workbench timeline model', () => {
               enterable: true,
             },
           ],
+          peer_a2a: [
+            {
+              id: 'a2a-1',
+              runtime_kind: 'peer_a2a',
+              label: 'Finance digital employee',
+              status: 'blocked',
+              child_session_id: 'a2a-session',
+              enterable: true,
+              summary: 'The target model provider rejected the request.',
+            },
+          ],
           workflows: [
             {
               id: 'workflow-1',
@@ -836,17 +905,18 @@ describe('session workbench timeline model', () => {
 
     expect(rightPanel.runtimeConsole.segments.map((segment) => [segment.key, segment.count])).toEqual([
       ['team', 1],
+      ['a2a', 1],
       ['workers', 1],
       ['workflow', 1],
       ['activity', 3],
     ]);
-    expect(rightPanel.runtimeConsole.defaultSegment).toBe('workflow');
+    expect(rightPanel.runtimeConsole.defaultSegment).toBe('a2a');
     expect(rightPanel.runtimeConsole.summary).toMatchObject({
-      state: 'waiting',
-      totalCount: 6,
+      state: 'blocked',
+      totalCount: 7,
       runningCount: 2,
       waitingCount: 1,
-      blockedCount: 0,
+      blockedCount: 1,
       elapsedLabel: '2m 5s',
       tokenLabel: '4.2K',
       toolUseLabel: '3',
@@ -860,11 +930,18 @@ describe('session workbench timeline model', () => {
       childSessionId: 'subagent-session',
       enterable: false,
     });
+    expect(rightPanel.runtimeConsole.peerA2A.items[0]).toMatchObject({
+      id: 'a2a-1',
+      childSessionId: 'a2a-session',
+      enterable: true,
+      status: 'blocked',
+    });
     expect(rightPanel.runtimeConsole.workflow.items[0]).toMatchObject({
       id: 'workflow-1',
       status: 'waiting',
     });
     expect(rightPanel.runtimeConsole.waiters.map((waiter) => [waiter.segment, waiter.label])).toEqual([
+      ['a2a', 'Finance digital employee'],
       ['workflow', 'Gate review'],
     ]);
     expect(rightPanel.runtimeConsole.activity.background.map((item) => item.id)).toEqual(['background-1']);
@@ -1005,6 +1082,16 @@ describe('session workbench timeline model', () => {
           eventChildSessionId: 'child-subagent-1',
         },
         {
+          id: 'evt-a2a-blocked',
+          role: 'event',
+          content: 'Peer delegation was blocked by the target provider.',
+          eventType: 'child_session',
+          eventStatus: 'blocked',
+          eventNotificationSource: 'a2a',
+          eventRuntimeTaskId: 'run-a2a-1',
+          eventChildSessionId: 'child-a2a-1',
+        },
+        {
           id: 'evt-workflow-started',
           role: 'event',
           content: 'Dynamic workflow is waiting on a gate.',
@@ -1028,12 +1115,13 @@ describe('session workbench timeline model', () => {
     });
 
     expect(rightPanel.runtimeConsole.summary).toMatchObject({
-      state: 'waiting',
-      totalCount: 3,
+      state: 'blocked',
+      totalCount: 4,
       runningCount: 2,
       waitingCount: 1,
+      blockedCount: 1,
     });
-    expect(rightPanel.runtimeConsole.defaultSegment).toBe('workflow');
+    expect(rightPanel.runtimeConsole.defaultSegment).toBe('a2a');
     expect(rightPanel.runtimeConsole.workers.items).toEqual([
       expect.objectContaining({
         id: 'run-subagent-1',
@@ -1047,6 +1135,14 @@ describe('session workbench timeline model', () => {
         id: 'workflow-1',
         runtimeKind: 'workflow',
         status: 'waiting',
+      }),
+    ]);
+    expect(rightPanel.runtimeConsole.peerA2A.items).toEqual([
+      expect.objectContaining({
+        id: 'run-a2a-1',
+        runtimeKind: 'peer_a2a',
+        childSessionId: 'child-a2a-1',
+        enterable: true,
       }),
     ]);
     expect(rightPanel.runtimeConsole.team.items).toEqual([
@@ -1146,6 +1242,14 @@ describe('session workbench timeline model', () => {
       title: 'Research Team / Reviewer',
       transcript_metadata_json: { team_id: 'team-1', member_name: 'Reviewer', member_role: 'audit' },
     }, 'running');
+    const peerA2AWindow = buildSessionWindowModel({
+      id: 'a2a-session',
+      session_kind: 'delegation_run',
+      source_channel: 'agent',
+      runtime_source: 'delegation',
+      title: 'Finance digital employee',
+      transcript_metadata_json: { runtime_task_id: 'a2a-task-1' },
+    }, 'failed');
     const checkpointNodes = buildCheckpointTimelineNodes({
       checkpoints: [
         { id: 'cp-1', checkpoint_event_id: 'evt-1', checkpoint_kind: 'user_turn_stop' },
@@ -1169,6 +1273,14 @@ describe('session workbench timeline model', () => {
       teamId: 'team-1',
       sessionId: 'member-session',
     });
+    expect(peerA2AWindow).toMatchObject({
+      id: 'a2a-session',
+      kind: 'peer_a2a',
+      label: 'Finance digital employee',
+      activeTabLabel: 'A2A: Finance digital employee',
+      tabTone: 'failed',
+      runtimeTaskId: 'a2a-task-1',
+    });
     expect(checkpointNodes).toEqual([
       expect.objectContaining({ id: 'evt-1', sequence: 1, state: 'current_head', branchSessionIds: ['branch-1'] }),
       expect.objectContaining({ id: 'evt-2', sequence: 2, state: 'compacted_scope', compacted: true }),
@@ -1178,6 +1290,7 @@ describe('session workbench timeline model', () => {
     expect(rightPanel.workspaceDocuments.unattributed.items.map((item) => item.name)).toEqual(['scratch.txt']);
     expect(rightPanel.runtimeTables.map((section) => section.key)).toEqual([
       'agent_teams',
+      'peer_a2a',
       'subagents',
       'workflows',
       'background',

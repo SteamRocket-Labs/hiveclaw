@@ -175,6 +175,13 @@ export interface MessageAgentTeamMemberInput {
   interrupt?: boolean;
 }
 
+export interface SessionRuntimeSection {
+  schema?: string;
+  key?: string;
+  count?: number;
+  items: Record<string, unknown>[];
+}
+
 export interface SessionWorkbench {
   schema: string;
   audience?: 'user' | 'operator';
@@ -222,6 +229,7 @@ export interface SessionWorkbench {
   };
   controls: Record<string, unknown>;
   active_run?: Record<string, unknown> | null;
+  runtime_sections?: Record<string, SessionRuntimeSection | Record<string, unknown>[]>;
   runtime_tasks: Record<string, unknown>[];
   completion_wake_policy?: Record<string, unknown>;
   completion_wake_summary?: Record<string, unknown>;

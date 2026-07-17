@@ -52,6 +52,7 @@ async def test_plan_verify_api_persists_last_verification(monkeypatch):
             "action": "plan:verify",
             "allow_manager_override": True,
             "manager_override_reason": None,
+            "require_writable": True,
         }
         return SimpleNamespace(authority_source="session_owner")
 

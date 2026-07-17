@@ -195,6 +195,7 @@ async def start_session_goal(
         agent_id=agent_id,
         session_id=session_id,
         action="goal:start",
+        require_writable=True,
     )
     agent = decision.agent
     goal, created = await _create_or_load_goal(
@@ -275,6 +276,7 @@ async def continue_goal(
         agent_id=agent_id,
         session_id=session_id,
         action="goal:continue",
+        require_writable=True,
     )
     agent = decision.agent
     goal = await _load_goal(db, agent_id=agent_id, session_id=session_id, goal_id=goal_id)
@@ -303,6 +305,7 @@ async def transition_goal(
         agent_id=agent_id,
         session_id=session_id,
         action=f"goal:{body.action}",
+        require_writable=True,
     )
     goal = await _load_goal(db, agent_id=agent_id, session_id=session_id, goal_id=goal_id)
     status = str(goal.status or "active")

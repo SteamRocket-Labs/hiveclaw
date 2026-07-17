@@ -47,7 +47,7 @@ _AGENT_TOKEN_QUOTA_COLUMNS = (
     "quota_tokens_per_day",
     "quota_tokens_per_month",
 )
-_CURRENT_CLOSURE_HEAD = "peer_a2a_session_authority_0717"
+_CURRENT_CLOSURE_HEAD = "collaboration_runtime_closure_0717"
 
 
 async def _seed_tenant(owner_engine, tenant_id: uuid.UUID, label: str) -> None:

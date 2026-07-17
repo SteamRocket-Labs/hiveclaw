@@ -17,6 +17,8 @@ export const THREAD_ITEM_TYPES: readonly ThreadItemType[] = [
   'plan',
   'workflow_activity',
   'subagent_activity',
+  'agent_team_activity',
+  'peer_a2a_activity',
   'context_compaction',
   'artifact',
   'boundary',
@@ -88,7 +90,26 @@ function isCanonicalThreadItem(value: unknown): value is ThreadItem {
     && isRecord(item.item_data);
 }
 
-function legacyItemType(eventType: string, role: string): ThreadItemType {
+function legacyItemType(eventType: string, role: string, data: Record<string, unknown>): ThreadItemType {
+  const markers = [
+    data.action_kind,
+    data.interaction_type,
+    data.notification_source,
+    data.runtime_kind,
+    data.runtime_source,
+    data.runtime_task_type,
+    data.source,
+    data.task_type,
+  ].map((value) => String(value || '').trim().toLowerCase());
+  if (markers.some((marker) => ['agent_team', 'agent_team_member', 'team', 'team_member'].includes(marker))) {
+    return 'agent_team_activity';
+  }
+  if (markers.some((marker) => ['a2a', 'a2a_delegation', 'delegation', 'peer_a2a'].includes(marker))) {
+    return 'peer_a2a_activity';
+  }
+  if (markers.some((marker) => ['lightweight_subagent', 'subagent', 'subagent_wake'].includes(marker))) {
+    return 'subagent_activity';
+  }
   const mapped = LEGACY_THREAD_ITEM_TYPE_MAP[eventType];
   if (mapped) return mapped;
   if (role === 'user') return 'user_message';
@@ -183,11 +204,17 @@ function legacyItemData(itemType: ThreadItemType, eventType: string, data: Recor
         label: text(data.label || data.title || data.name),
       };
     case 'subagent_activity':
+    case 'agent_team_activity':
+    case 'peer_a2a_activity':
       return {
         runtime_task_id: text(data.runtime_task_id || data.task_id),
         child_session_id: text(data.child_session_id),
         parent_session_id: text(data.parent_session_id),
         target_agent_name: text(data.target_agent_name || data.child_agent_name),
+        team_id: text(data.team_id),
+        team_member_id: text(data.team_member_id || data.member_id),
+        member_name: text(data.member_name),
+        read_only: itemType === 'peer_a2a_activity',
       };
     case 'context_compaction':
       return {
@@ -243,6 +270,9 @@ function legacyUserSummary(
       : 'The task stopped because it needs attention.';
   }
   if (itemType === 'context_compaction') return 'Conversation context was organized and the task can continue.';
+  if (itemType === 'subagent_activity') return 'Sub-agent status updated.';
+  if (itemType === 'agent_team_activity') return 'Agent Team status updated.';
+  if (itemType === 'peer_a2a_activity') return 'A2A digital employee status updated.';
   if (itemType === 'event') return 'Runtime status updated.';
   return content;
 }
@@ -263,7 +293,7 @@ export function normalizeThreadItemPayload(value: unknown): ThreadItem | null {
   const nestedPermission = asRecord(payload.permission_request || eventPart(parts).permission_request);
   const data = { ...metadata, ...eventPart(parts), ...payload, ...nestedPermission };
   const role = text(payload.role) || (eventType === 'assistant_message' || eventType === 'thinking' ? 'assistant' : 'system');
-  const itemType = legacyItemType(eventType, role);
+  const itemType = legacyItemType(eventType, role, data);
   const sequence = finiteNumber(payload.sequence) || 0;
   const id = text(payload.id || payload.transcript_event_id)
     || `legacy:${text(payload.session_id) || 'session'}:${sequence}:${eventType}`;
@@ -463,12 +493,14 @@ export function threadItemToAgentChatMessage(item: ThreadItem): AgentChatMessage
         eventTitle: item.item_data.label || base.eventTitle,
       };
     case 'subagent_activity':
+    case 'agent_team_activity':
+    case 'peer_a2a_activity':
       return {
         ...base,
         eventRuntimeTaskId: item.item_data.runtime_task_id || undefined,
         eventChildSessionId: item.item_data.child_session_id || undefined,
         eventParentSessionId: item.item_data.parent_session_id || base.eventParentSessionId,
-        eventTitle: item.item_data.target_agent_name || base.eventTitle,
+        eventTitle: item.item_data.member_name || item.item_data.target_agent_name || base.eventTitle,
       };
     case 'context_compaction':
       return {

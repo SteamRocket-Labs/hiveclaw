@@ -654,6 +654,22 @@ vi.mock('@tanstack/react-query', () => ({
                 enterable: true,
               },
             ],
+            peer_a2a: {
+              schema: 'hive.ccplus.runtime_section.v1',
+              key: 'peer_a2a',
+              count: 1,
+              items: [
+                {
+                  id: 'a2a-task-1',
+                  runtime_kind: 'peer_a2a',
+                  label: 'Finance digital employee',
+                  status: 'blocked',
+                  child_session_id: 'a2a-session-1',
+                  enterable: true,
+                  summary: 'The target model provider rejected the request.',
+                },
+              ],
+            },
             workflows: [
               {
                 id: 'workflow-run-1',
@@ -3893,7 +3909,7 @@ describe('AgentDetail extracted sections', () => {
     expect(markup.indexOf('Deliverables')).toBeLessThan(markup.indexOf('Run status'));
     expect(markup).toContain('data-testid="session-runtime-console"');
     expect(markup).toContain('data-testid="session-runtime-summary-strip"');
-    expect(markup).toContain('data-runtime-state="waiting"');
+    expect(markup).toContain('data-runtime-state="blocked"');
     expect(markup).toContain('Runtime panel session');
     expect(markup).toContain('3 running');
     expect(markup).toContain('3 waiting');
@@ -3908,12 +3924,15 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('8.7K');
     expect(markup).toContain('8');
     expect(markup).toContain('data-testid="session-runtime-segment-team"');
+    expect(markup).toContain('data-testid="session-runtime-segment-a2a"');
     expect(markup).toContain('data-testid="session-runtime-segment-workers"');
     expect(markup).toContain('data-testid="session-runtime-segment-workflow"');
     expect(markup).toContain('data-testid="session-runtime-segment-activity"');
-    expect(markup).toContain('data-testid="session-runtime-segment-body-workflow"');
+    expect(markup).toContain('data-testid="session-runtime-segment-body-a2a"');
+    expect(markup).toContain('Finance digital employee');
+    expect(markup).toContain('The target model provider rejected the request.');
     expect(markup).not.toContain('workflow-run-1');
-    expect(markup).toContain('ccplus-closure-audit');
+    expect(markup).not.toContain('ccplus-closure-audit');
     expect(markup).toContain('Review plan');
     expect(markup).not.toContain('data-testid="session-runtime-main-row"');
     expect(markup).not.toContain('data-testid="session-runtime-metrics"');

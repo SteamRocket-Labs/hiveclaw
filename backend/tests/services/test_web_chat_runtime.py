@@ -1321,6 +1321,173 @@ async def test_load_runtime_context_resolves_model_inside_tenant_transaction(mon
 
 
 @pytest.mark.asyncio
+async def test_load_runtime_context_uses_validated_team_member_model_override(monkeypatch):
+    import app.services.web_chat_runtime as runtime
+
+    run_id = uuid4()
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    user_id = uuid4()
+    session_id = uuid4()
+    primary_model_id = uuid4()
+    team_model_id = uuid4()
+    task = SimpleNamespace(
+        id=run_id,
+        tenant_id=tenant_id,
+        parent_agent_id=agent_id,
+        parent_session_id=str(session_id),
+        status="pending",
+        started_at=None,
+        budget_run_id=None,
+        budget_admission_status=None,
+        budget_snapshot_json=None,
+        metadata_json={
+            "user_id": str(user_id),
+            "runtime_model_id": str(team_model_id),
+            "runtime_model_source": "agent_team_member",
+        },
+    )
+    session_row = SimpleNamespace(
+        id=session_id,
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        transcript_metadata_json={},
+    )
+    agent = SimpleNamespace(
+        id=agent_id,
+        name="Agent",
+        tenant_id=tenant_id,
+        primary_model_id=primary_model_id,
+        fallback_model_id=None,
+        sponsor=None,
+        deleted_at=None,
+        deactivated_at=None,
+    )
+    user = SimpleNamespace(id=user_id, tenant_id=tenant_id)
+    team_model = SimpleNamespace(
+        id=team_model_id,
+        tenant_id=tenant_id,
+        enabled=True,
+        provider="openai",
+        model="team-review-model",
+        max_input_tokens=200000,
+    )
+    captured = {}
+
+    class _Session:
+        def __init__(self):
+            self.calls = 0
+
+        async def execute(self, _stmt):
+            self.calls += 1
+            values = [task, session_row, agent, user, []]
+            return _QueuedScalarResult(values[self.calls - 1] if self.calls <= len(values) else [])
+
+        async def commit(self):
+            return None
+
+    class _TenantContext:
+        async def __aenter__(self):
+            return db
+
+        async def __aexit__(self, *_args):
+            await db.commit()
+            return False
+
+    async def resolve_models(_db, *, agent, metadata):
+        captured["agent"] = agent
+        captured["metadata"] = dict(metadata)
+        return team_model, None
+
+    async def noop_materialize(**_kwargs):
+        return None
+
+    async def noop_projection(_db, _session, messages):
+        return messages
+
+    async def resolve_run_tenant(_run_id, **_kwargs):
+        return tenant_id
+
+    db = _Session()
+    monkeypatch.setattr(runtime, "resolve_tenant_for_runtime_task", resolve_run_tenant)
+    monkeypatch.setattr(runtime, "tenant_scoped_session", lambda *a, **k: _TenantContext())
+    monkeypatch.setattr(runtime, "_materialize_initial_user_turn_for_worker", noop_materialize)
+    monkeypatch.setattr(runtime, "_apply_active_projection_to_history", noop_projection)
+    monkeypatch.setattr(runtime, "_resolve_runtime_models_for_task", resolve_models)
+
+    _task, _agent, _user, resolved_model, fallback, _history, _session = await runtime._load_runtime_context(run_id)
+
+    assert resolved_model is team_model
+    assert fallback is None
+    assert captured["agent"] is agent
+    assert captured["metadata"]["runtime_model_id"] == str(team_model_id)
+
+
+@pytest.mark.asyncio
+async def test_runtime_model_resolver_honors_exact_enabled_team_member_model(monkeypatch):
+    import app.services.model_resolution as model_resolution
+    import app.services.web_chat_runtime as runtime
+
+    tenant_id = uuid4()
+    primary_model_id = uuid4()
+    team_model_id = uuid4()
+    agent = SimpleNamespace(
+        tenant_id=tenant_id,
+        primary_model_id=primary_model_id,
+        fallback_model_id=None,
+    )
+    team_model = SimpleNamespace(id=team_model_id, tenant_id=tenant_id, enabled=True)
+
+    class _ModelDB:
+        async def execute(self, _statement):
+            return _ScalarResult(team_model)
+
+    async def no_default_model(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(model_resolution, "resolve_default_model_for_tenant", no_default_model)
+
+    primary, fallback = await runtime._resolve_runtime_models_for_task(
+        _ModelDB(),
+        agent=agent,
+        metadata={"runtime_model_id": str(team_model_id)},
+    )
+
+    assert primary is team_model
+    assert fallback is None
+
+
+@pytest.mark.asyncio
+async def test_runtime_model_resolver_rejects_invalid_or_unavailable_override() -> None:
+    import app.services.web_chat_runtime as runtime
+
+    tenant_id = uuid4()
+    agent = SimpleNamespace(
+        tenant_id=tenant_id,
+        primary_model_id=uuid4(),
+        fallback_model_id=None,
+    )
+
+    class _MissingModelDB:
+        async def execute(self, _statement):
+            return _ScalarResult(None)
+
+    with pytest.raises(RuntimeError, match="invalid runtime_model_id"):
+        await runtime._resolve_runtime_models_for_task(
+            _MissingModelDB(),
+            agent=agent,
+            metadata={"runtime_model_id": "not-a-uuid"},
+        )
+
+    with pytest.raises(RuntimeError, match="unavailable in the Agent tenant"):
+        await runtime._resolve_runtime_models_for_task(
+            _MissingModelDB(),
+            agent=agent,
+            metadata={"runtime_model_id": str(uuid4())},
+        )
+
+
+@pytest.mark.asyncio
 async def test_load_runtime_context_rejects_runtime_task_agent_tenant_mismatch(monkeypatch):
     import app.services.web_chat_runtime as runtime
 
@@ -5143,12 +5310,15 @@ def test_tool_settlement_uses_runtime_effective_arguments_for_decision_hash() ->
         "_requester_user_id": "user-1",
     }
 
-    assert _tool_settlement_arguments(
-        {
-            "args": provider_args,
-            "tool_execution_evidence": {"effective_arguments": effective_args},
-        }
-    ) == effective_args
+    assert (
+        _tool_settlement_arguments(
+            {
+                "args": provider_args,
+                "tool_execution_evidence": {"effective_arguments": effective_args},
+            }
+        )
+        == effective_args
+    )
 
 
 @pytest.mark.asyncio

@@ -61,6 +61,8 @@ def test_thread_item_union_exposes_discriminator_and_all_renderer_variants() -> 
         "plan",
         "workflow_activity",
         "subagent_activity",
+        "agent_team_activity",
+        "peer_a2a_activity",
         "context_compaction",
         "artifact",
         "boundary",
@@ -184,6 +186,8 @@ def test_user_thread_projection_never_echoes_raw_reasoning_or_unknown_runtime_co
         ("thinking", "assistant", "reasoning"),
         ("workflow_failed", "system", "workflow_activity"),
         ("subagent_task_started", "system", "subagent_activity"),
+        ("team_member", "system", "agent_team_activity"),
+        ("delegation_run", "system", "peer_a2a_activity"),
         ("session_compact", "system", "context_compaction"),
         ("artifact_delivery", "system", "artifact"),
         ("run_cancelled", "system", "boundary"),
@@ -204,7 +208,7 @@ def test_thread_item_classification_is_explicit_and_vendor_neutral(event_type: s
     [
         ("error", "denial", "failed"),
         ("tool_result", "tool_failure", "failed"),
-        ("subagent_activity", "member_run_started", "running"),
+        ("agent_team_activity", "member_run_started", "running"),
         ("boundary", "run_cancelled", "cancelled"),
         ("approval_request", "permission_request", "waiting_user"),
         ("warning", "memory_context_degraded", "succeeded"),
@@ -218,6 +222,27 @@ def test_thread_item_status_matches_the_historical_backfill(
     from app.services.thread_items import classify_thread_item_status
 
     assert classify_thread_item_status(item_type=item_type, event_type=event_type, metadata={}) == expected
+
+
+def test_child_session_classification_uses_typed_collaboration_metadata() -> None:
+    from app.services.chat_transcript import build_transcript_item_contract
+
+    assert (
+        build_transcript_item_contract(
+            event_type="child_session",
+            role="system",
+            metadata={"source": "subagent"},
+        )[0]
+        == "subagent_activity"
+    )
+    assert (
+        build_transcript_item_contract(
+            event_type="child_session",
+            role="system",
+            metadata={"action_kind": "a2a_delegation", "notification_source": "a2a"},
+        )[0]
+        == "peer_a2a_activity"
+    )
 
 
 @pytest.mark.asyncio

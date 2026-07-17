@@ -1398,6 +1398,7 @@ async def execute_agent_command(
             action=f"command:{command.name}",
             allow_manager_override=True,
             manager_override_reason=admin_override_reason,
+            require_writable=True,
         )
 
     if command.handler_ref.startswith("skill:"):

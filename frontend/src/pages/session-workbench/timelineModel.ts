@@ -170,6 +170,7 @@ export interface CompletionWakeModel {
 
 export type RuntimeSectionName =
   | 'agent_teams'
+  | 'peer_a2a'
   | 'subagents'
   | 'workflows'
   | 'background'
@@ -177,7 +178,7 @@ export type RuntimeSectionName =
   | 'runs'
   | 'raw';
 
-export type SessionWindowKind = 'main' | 'team_member' | 'subagent' | 'workflow' | 'background';
+export type SessionWindowKind = 'main' | 'team_member' | 'peer_a2a' | 'subagent' | 'workflow' | 'background';
 export type SessionWindowStatus = 'running' | 'waiting' | 'blocked' | 'completed' | 'failed' | 'cancelled' | 'idle' | 'unknown';
 export type SessionWindowTone = 'neutral' | 'running' | 'waiting' | 'blocked' | 'completed' | 'failed';
 
@@ -258,7 +259,7 @@ export interface RuntimeSectionModel {
   runningCount: number;
 }
 
-export type RuntimeConsoleSegmentKey = 'team' | 'workers' | 'workflow' | 'activity';
+export type RuntimeConsoleSegmentKey = 'team' | 'a2a' | 'workers' | 'workflow' | 'activity';
 export type RuntimeConsoleState = 'idle' | 'running' | 'waiting' | 'blocked';
 
 export interface RuntimeConsoleGroupModel {
@@ -314,6 +315,7 @@ export interface RuntimeConsoleModel {
   segments: RuntimeConsoleSegmentModel[];
   waiters: RuntimeConsoleWaiterModel[];
   team: RuntimeConsoleGroupModel;
+  peerA2A: RuntimeConsoleGroupModel;
   workers: RuntimeConsoleGroupModel;
   workflow: RuntimeConsoleGroupModel;
   activity: RuntimeConsoleActivityModel;
@@ -363,6 +365,7 @@ export interface SessionRightPanelModel {
   commands: Record<string, unknown> | null;
   runs: RuntimeSectionModel;
   team: RuntimeSectionModel;
+  peerA2A: RuntimeSectionModel;
   subagents: RuntimeSectionModel;
   workflow: RuntimeSectionModel;
   artifacts: WorkspaceDocumentsModel;
@@ -405,6 +408,7 @@ export interface WorkflowRunControlsModel {
 
 export interface RuntimeSectionsModel {
   agentTeams: RuntimeSectionItemModel[];
+  peerA2A: RuntimeSectionItemModel[];
   subagents: RuntimeSectionItemModel[];
   workflows: RuntimeSectionItemModel[];
   background: RuntimeSectionItemModel[];
@@ -414,6 +418,7 @@ export interface RuntimeSectionsModel {
   summary: {
     total: number;
     agentTeams: number;
+    peerA2A: number;
     subagents: number;
     workflows: number;
     background: number;
@@ -578,7 +583,9 @@ function readBoolean(source: Record<string, unknown>, key: string): boolean | nu
 
 function readRuntimeSectionArray(sections: Record<string, unknown> | null, key: RuntimeSectionName): unknown[] {
   const value = sections?.[key];
-  return Array.isArray(value) ? value : [];
+  if (Array.isArray(value)) return value;
+  const envelope = asRecord(value);
+  return Array.isArray(envelope?.items) ? envelope.items : [];
 }
 
 function normalizeRuntimeSectionItem(
@@ -651,6 +658,7 @@ function flattenRuntimeItems(items: RuntimeSectionItemModel[]): RuntimeSectionIt
 function runtimeMetricItems(sections: Omit<RuntimeSectionsModel, 'summary'>): RuntimeSectionItemModel[] {
   return [
     ...sections.agentTeams.flatMap((team) => [team, ...team.members]),
+    ...sections.peerA2A,
     ...sections.subagents,
     ...sections.workflows,
     ...sections.background,
@@ -725,12 +733,14 @@ function legacyRuntimeSections(sessionWorkbench?: Record<string, unknown> | null
   const teams = normalizeRuntimeSectionItems(Array.isArray(sessionWorkbench?.teams) ? sessionWorkbench.teams : [], 'agent_team');
   const tasks = normalizeRuntimeSectionItems(rawTasks, 'runtime_task');
   const workflows = tasks.filter((item) => item.runtimeKind.includes('workflow') || String(item.raw.task_type || '').includes('workflow'));
-  const subagents = tasks.filter((item) => item.runtimeKind.includes('subagent') || String(item.raw.task_type || '').includes('subagent'));
-  const runs = tasks.filter((item) => !workflows.includes(item) && !subagents.includes(item));
+  const peerA2A = tasks.filter((item) => ['delegation', 'a2a_delegation'].includes(String(item.raw.task_type || '').toLowerCase()));
+  const subagents = tasks.filter((item) => item.runtimeKind.includes('subagent') || String(item.raw.task_type || '').toLowerCase() === 'subagent');
+  const runs = tasks.filter((item) => !workflows.includes(item) && !peerA2A.includes(item) && !subagents.includes(item));
   const background = normalizeRuntimeSectionItems(Array.isArray(sessionWorkbench?.completion_wakes) ? sessionWorkbench.completion_wakes : [], 'background_agent');
 
   return buildRuntimeSectionsSummary({
     agentTeams: teams,
+    peerA2A,
     subagents,
     workflows,
     background,
@@ -744,6 +754,7 @@ function buildRuntimeSectionsSummary(sections: Omit<RuntimeSectionsModel, 'summa
   const metricItems = runtimeMetricItems(sections);
   const summary = {
     agentTeams: sections.agentTeams.length,
+    peerA2A: sections.peerA2A.length,
     subagents: sections.subagents.length,
     workflows: sections.workflows.length,
     background: sections.background.length,
@@ -756,7 +767,7 @@ function buildRuntimeSectionsSummary(sections: Omit<RuntimeSectionsModel, 'summa
     ...sections,
     summary: {
       ...summary,
-      total: summary.agentTeams + summary.subagents + summary.workflows + summary.background + summary.notifications + summary.runs + summary.raw,
+      total: summary.agentTeams + summary.peerA2A + summary.subagents + summary.workflows + summary.background + summary.notifications + summary.runs + summary.raw,
     },
   };
 }
@@ -778,11 +789,15 @@ function runtimeSectionFallbackFromMessage(
     section = 'workflows';
     runtimeKind = 'workflow';
     fallbackKind = 'workflow';
-  } else if (['team_member', 'member_spawned', 'member_idle', 'member_run_started', 'member_message_queued', 'member_message_rejected'].includes(eventType)) {
+  } else if (itemType === 'agent_team_activity' || ['team_member', 'member_spawned', 'member_idle', 'member_run_started', 'member_message_queued', 'member_message_rejected'].includes(eventType)) {
     section = 'agent_teams';
     runtimeKind = 'team_member';
     fallbackKind = runtimeKind;
-  } else if (itemType === 'subagent_activity' || ['subagent', 'child_session', 'agent_task_notification', 'delegation_run'].includes(eventType) || source === 'subagent_wake') {
+  } else if (itemType === 'peer_a2a_activity' || eventType === 'delegation_run' || source === 'a2a' || source === 'peer_a2a') {
+    section = 'peer_a2a';
+    runtimeKind = 'peer_a2a';
+    fallbackKind = 'peer_a2a';
+  } else if (itemType === 'subagent_activity' || ['subagent', 'child_session', 'agent_task_notification'].includes(eventType) || source === 'subagent_wake') {
     section = 'subagents';
     runtimeKind = 'subagent';
     fallbackKind = 'subagent';
@@ -801,7 +816,7 @@ function runtimeSectionFallbackFromMessage(
   const record = message as unknown as Record<string, unknown>;
   const identityKeys = section === 'workflows'
     ? ['eventWorkflowRunId', 'eventRuntimeTaskId', 'eventWorkflowStepId', 'id']
-    : section === 'subagents'
+    : section === 'subagents' || section === 'peer_a2a'
       ? ['eventRuntimeTaskId', 'eventChildSessionId', 'id']
       : section === 'agent_teams'
         ? ['eventRuntimeTaskId', 'eventChildSessionId', 'id']
@@ -834,6 +849,7 @@ function runtimeSectionFallbackFromMessage(
 function runtimeSectionsFromMessages(messages: AgentChatMessage[]): RuntimeSectionsModel {
   const buckets: Record<RuntimeSectionName, Map<string, Record<string, unknown>>> = {
     agent_teams: new Map(),
+    peer_a2a: new Map(),
     subagents: new Map(),
     workflows: new Map(),
     background: new Map(),
@@ -851,6 +867,7 @@ function runtimeSectionsFromMessages(messages: AgentChatMessage[]): RuntimeSecti
 
   return buildRuntimeSectionsSummary({
     agentTeams: normalizeRuntimeSectionItems(Array.from(buckets.agent_teams.values()), 'agent_team'),
+    peerA2A: normalizeRuntimeSectionItems(Array.from(buckets.peer_a2a.values()), 'peer_a2a'),
     subagents: normalizeRuntimeSectionItems(Array.from(buckets.subagents.values()), 'subagent'),
     workflows: normalizeRuntimeSectionItems(Array.from(buckets.workflows.values()), 'workflow'),
     background: normalizeRuntimeSectionItems(Array.from(buckets.background.values()), 'background_agent'),
@@ -882,6 +899,7 @@ function mergeRuntimeItemLists(
 function mergeRuntimeSections(primary: RuntimeSectionsModel, fallback: RuntimeSectionsModel): RuntimeSectionsModel {
   return buildRuntimeSectionsSummary({
     agentTeams: mergeRuntimeItemLists(primary.agentTeams, fallback.agentTeams),
+    peerA2A: mergeRuntimeItemLists(primary.peerA2A, fallback.peerA2A),
     subagents: mergeRuntimeItemLists(primary.subagents, fallback.subagents),
     workflows: mergeRuntimeItemLists(primary.workflows, fallback.workflows),
     background: mergeRuntimeItemLists(primary.background, fallback.background),
@@ -893,6 +911,7 @@ function mergeRuntimeSections(primary: RuntimeSectionsModel, fallback: RuntimeSe
 
 const RUNTIME_SECTION_TITLES: Record<RuntimeSectionName, string> = {
   agent_teams: 'Agent Teams',
+  peer_a2a: 'Peer A2A',
   subagents: 'Sub-agents',
   workflows: 'Dynamic Workflow',
   background: 'Background agents',
@@ -914,6 +933,7 @@ function runtimeSectionModel(key: RuntimeSectionName, items: RuntimeSectionItemM
 function buildRuntimeSectionModels(runtimeSections: RuntimeSectionsModel): RuntimeSectionModel[] {
   return [
     runtimeSectionModel('agent_teams', runtimeSections.agentTeams),
+    runtimeSectionModel('peer_a2a', runtimeSections.peerA2A),
     runtimeSectionModel('subagents', runtimeSections.subagents),
     runtimeSectionModel('workflows', runtimeSections.workflows),
     runtimeSectionModel('background', runtimeSections.background),
@@ -929,6 +949,7 @@ export function buildRuntimeSectionsModel(sessionWorkbench?: Record<string, unkn
 
   return buildRuntimeSectionsSummary({
     agentTeams: normalizeRuntimeSectionItems(readRuntimeSectionArray(runtimeSections, 'agent_teams'), 'agent_team'),
+    peerA2A: normalizeRuntimeSectionItems(readRuntimeSectionArray(runtimeSections, 'peer_a2a'), 'peer_a2a'),
     subagents: normalizeRuntimeSectionItems(readRuntimeSectionArray(runtimeSections, 'subagents'), 'subagent'),
     workflows: normalizeRuntimeSectionItems(readRuntimeSectionArray(runtimeSections, 'workflows'), 'workflow'),
     background: normalizeRuntimeSectionItems(readRuntimeSectionArray(runtimeSections, 'background'), 'background_agent'),
@@ -1103,6 +1124,7 @@ function runtimeWaitersFromItem(
 function buildRuntimeConsoleWaiters(runtimeSections: RuntimeSectionsModel): RuntimeConsoleWaiterModel[] {
   return [
     ...runtimeSections.agentTeams.flatMap((item) => runtimeWaitersFromItem(item, 'team')),
+    ...runtimeSections.peerA2A.flatMap((item) => runtimeWaitersFromItem(item, 'a2a')),
     ...runtimeSections.subagents.flatMap((item) => runtimeWaitersFromItem(item, 'workers')),
     ...runtimeSections.workflows.flatMap((item) => runtimeWaitersFromItem(item, 'workflow')),
     ...[
@@ -1117,6 +1139,7 @@ function buildRuntimeConsoleModel(
   metrics: RuntimeMetricModel & { runningCount: number; totalCount: number },
 ): RuntimeConsoleModel {
   const team = runtimeConsoleGroup(runtimeSections.agentTeams);
+  const peerA2A = runtimeConsoleGroup(runtimeSections.peerA2A);
   const workers = runtimeConsoleGroup(runtimeSections.subagents);
   const workflow = runtimeConsoleGroup(runtimeSections.workflows);
   const activityItems = [
@@ -1135,6 +1158,7 @@ function buildRuntimeConsoleModel(
 
   const operationalItems = [
     ...runtimeSections.agentTeams.flatMap((item) => flattenRuntimeItems([item])),
+    ...runtimeSections.peerA2A.flatMap((item) => flattenRuntimeItems([item])),
     ...runtimeSections.subagents.flatMap((item) => flattenRuntimeItems([item])),
     ...runtimeSections.workflows.flatMap((item) => flattenRuntimeItems([item])),
     ...runtimeSections.background.flatMap((item) => flattenRuntimeItems([item])),
@@ -1144,21 +1168,25 @@ function buildRuntimeConsoleModel(
   const waiters = buildRuntimeConsoleWaiters(runtimeSections);
   const waitingCount = waiters.filter((waiter) => isWaitingStatusText(String(waiter.status || '').toLowerCase())).length;
   const blockedCount = waiters.filter((waiter) => isBlockedStatusText(String(waiter.status || '').toLowerCase())).length;
-  const defaultSegment: RuntimeConsoleSegmentKey = hasActiveRuntimeItem(runtimeSections.workflows)
-    ? 'workflow'
-    : hasActiveRuntimeItem(runtimeSections.agentTeams)
-      ? 'team'
-      : hasActiveRuntimeItem(runtimeSections.subagents)
-        ? 'workers'
-        : hasActiveRuntimeItem([...runtimeSections.background, ...runtimeSections.runs])
-          ? 'activity'
-          : team.count > 0
-            ? 'team'
-            : workers.count > 0
-              ? 'workers'
-              : workflow.count > 0
-                ? 'workflow'
-                : 'activity';
+  const defaultSegment: RuntimeConsoleSegmentKey = hasActiveRuntimeItem(runtimeSections.peerA2A)
+    ? 'a2a'
+    : hasActiveRuntimeItem(runtimeSections.workflows)
+      ? 'workflow'
+      : hasActiveRuntimeItem(runtimeSections.agentTeams)
+        ? 'team'
+        : hasActiveRuntimeItem(runtimeSections.subagents)
+          ? 'workers'
+          : hasActiveRuntimeItem([...runtimeSections.background, ...runtimeSections.runs])
+            ? 'activity'
+            : peerA2A.count > 0
+              ? 'a2a'
+              : team.count > 0
+                ? 'team'
+                : workers.count > 0
+                  ? 'workers'
+                  : workflow.count > 0
+                    ? 'workflow'
+                    : 'activity';
 
   const segmentModel = (
     key: RuntimeConsoleSegmentKey,
@@ -1174,6 +1202,7 @@ function buildRuntimeConsoleModel(
   });
   const segments: RuntimeConsoleSegmentModel[] = [
     segmentModel('team', 'Team', team),
+    segmentModel('a2a', 'A2A', peerA2A),
     segmentModel('workers', 'Workers', workers),
     segmentModel('workflow', 'Workflow', workflow),
     segmentModel('activity', 'Activity', activityBase),
@@ -1183,7 +1212,7 @@ function buildRuntimeConsoleModel(
     defaultSegment,
     summary: {
       state: runtimeConsoleState({ runningCount, waitingCount, blockedCount }),
-      totalCount: team.count + workers.count + workflow.count + activity.count,
+      totalCount: team.count + peerA2A.count + workers.count + workflow.count + activity.count,
       runningCount,
       waitingCount,
       blockedCount,
@@ -1194,6 +1223,7 @@ function buildRuntimeConsoleModel(
     segments,
     waiters,
     team,
+    peerA2A,
     workers,
     workflow,
     activity,
@@ -1225,16 +1255,20 @@ export function buildSessionWindowModel(
 ): SessionWindowModel | null {
   if (!session) return null;
   const metadata = asRecord(session.transcript_metadata_json) ?? asRecord(session.metadata_json) ?? asRecord(session.metadata) ?? {};
-  const sourceChannel = readString(session, ['source_channel', 'runtime_source', 'session_kind'], '').toLowerCase();
-  const kind: SessionWindowKind = sourceChannel.includes('team_member') || (metadata.team_id && metadata.member_name)
+  const sessionRuntimeIdentity = [session.source_channel, session.runtime_source, session.session_kind]
+    .map((value) => String(value || '').toLowerCase())
+    .join(' ');
+  const kind: SessionWindowKind = sessionRuntimeIdentity.includes('team_member') || (metadata.team_id && metadata.member_name)
     ? 'team_member'
-    : sourceChannel.includes('subagent')
-      ? 'subagent'
-      : sourceChannel.includes('workflow')
-        ? 'workflow'
-        : sourceChannel.includes('background')
-          ? 'background'
-          : 'main';
+    : sessionRuntimeIdentity.includes('delegation_run') || sessionRuntimeIdentity.includes('a2a') || sessionRuntimeIdentity.includes('delegation')
+      ? 'peer_a2a'
+      : sessionRuntimeIdentity.includes('subagent')
+        ? 'subagent'
+        : sessionRuntimeIdentity.includes('workflow')
+          ? 'workflow'
+          : sessionRuntimeIdentity.includes('background')
+            ? 'background'
+            : 'main';
   const id = readString(session, ['id', 'chat_session_id', 'session_id'], 'session');
   const memberName = readString(metadata, ['member_name', 'name'], '') || readString(session, ['member_name'], '');
   const label = memberName || readString(session, ['title', 'name'], id).split('/').pop()?.trim() || id;
@@ -1246,7 +1280,7 @@ export function buildSessionWindowModel(
     label,
     status,
     selected: true,
-    activeTabLabel: kind === 'team_member' ? `Agent: ${label}` : label,
+    activeTabLabel: kind === 'team_member' ? `Agent: ${label}` : kind === 'peer_a2a' ? `A2A: ${label}` : label,
     tabTone: sessionWindowTone(status),
     teamId: readString(metadata, ['team_id'], '') || undefined,
     memberId: readString(metadata, ['member_id'], '') || readString(session, ['member_id'], '') || undefined,
@@ -1345,6 +1379,7 @@ export function buildSessionRightPanelModel({
     commands: asRecord(workbenchRecord?.controls),
     runs: sectionByKey.get('runs') ?? fallbackSection('runs'),
     team: sectionByKey.get('agent_teams') ?? fallbackSection('agent_teams'),
+    peerA2A: sectionByKey.get('peer_a2a') ?? fallbackSection('peer_a2a'),
     subagents: sectionByKey.get('subagents') ?? fallbackSection('subagents'),
     workflow: sectionByKey.get('workflows') ?? fallbackSection('workflows'),
     artifacts: workspaceDocuments,

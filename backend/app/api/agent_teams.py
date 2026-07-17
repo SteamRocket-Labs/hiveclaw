@@ -197,6 +197,7 @@ async def _authorize_team_action(
     team: AgentTeam,
     action: str,
     manager_override_reason: str | None = None,
+    require_writable: bool = False,
 ):
     return await authorize_session_action(
         db,
@@ -206,6 +207,7 @@ async def _authorize_team_action(
         action=action,
         allow_manager_override=True,
         manager_override_reason=manager_override_reason,
+        require_writable=require_writable,
     )
 
 
@@ -339,6 +341,7 @@ async def create_agent_team(
         agent_id=agent_id,
         session_id=body.parent_session_id,
         action="team:create",
+        require_writable=True,
     )
     agent = authority.agent
     parent_session = authority.session
@@ -401,6 +404,7 @@ async def create_agent_team_event(
         team=team,
         action="team:event:create",
         manager_override_reason=admin_override_reason,
+        require_writable=True,
     )
     members = await _load_team_members(db, team_id=team.id)
     _ensure_member_belongs(team.id, body.sender_member_id, members)
@@ -593,6 +597,7 @@ async def start_agent_team_member_run(
         team=team,
         action="team:member:run",
         manager_override_reason=admin_override_reason,
+        require_writable=True,
     )
     if team.status != "active":
         raise HTTPException(status_code=409, detail=f"Agent team is {team.status}")
@@ -686,6 +691,7 @@ async def message_agent_team_member(
         team=team,
         action="team:member:message",
         manager_override_reason=admin_override_reason,
+        require_writable=True,
     )
     if team.status != "active":
         raise HTTPException(status_code=409, detail=f"Agent team is {team.status}")
@@ -727,6 +733,7 @@ async def close_agent_team(
         team=team,
         action="team:close",
         manager_override_reason=admin_override_reason,
+        require_writable=True,
     )
     members = await _load_team_members(db, team_id=team.id)
     team_metadata = dict(team.metadata_json or {})

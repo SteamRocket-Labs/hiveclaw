@@ -713,6 +713,26 @@ async def test_runtime_sections_separate_agent_team_subagent_background_workflow
             },
         },
     )
+    peer_a2a_task = SimpleNamespace(
+        id=uuid4(),
+        task_type="delegation",
+        status="failed",
+        parent_agent_id=agent_id,
+        child_agent_id=uuid4(),
+        parent_session_id=str(session_id),
+        child_session_id=str(uuid4()),
+        trace_id="trace-peer-a2a",
+        created_at=now,
+        started_at=now,
+        completed_at=now,
+        result_summary="target provider rejected the request",
+        token_usage={"total": 3},
+        metadata_json={
+            "interaction_type": "delegation",
+            "target_agent_name": "Web3 researcher",
+            "root_item_reason_code": "provider_error",
+        },
+    )
     background_task = SimpleNamespace(
         id=uuid4(),
         task_type="long_task",
@@ -780,7 +800,7 @@ async def test_runtime_sections_separate_agent_team_subagent_background_workflow
         return {"schema": "hive.session_index.v1", "checkpoints": []}
 
     async def fake_runtime_tasks(*_args, **_kwargs):
-        return [subagent_task, background_task, workflow_task]
+        return [subagent_task, peer_a2a_task, background_task, workflow_task]
 
     async def fake_goals(*_args, **_kwargs):
         return []
@@ -832,6 +852,7 @@ async def test_runtime_sections_separate_agent_team_subagent_background_workflow
     sections = result["runtime_sections"]
     assert list(sections.keys()) == [
         "agent_teams",
+        "peer_a2a",
         "subagents",
         "workflows",
         "background",
@@ -843,6 +864,10 @@ async def test_runtime_sections_separate_agent_team_subagent_background_workflow
     assert sections["agent_teams"]["items"][0]["team_outcome"] == "running"
     assert sections["agent_teams"]["items"][0]["lead_required_actions"] == ["wait_for_members"]
     assert sections["agent_teams"]["items"][0]["members"][0]["runtime_kind"] == "team_member"
+    assert sections["peer_a2a"]["items"][0]["runtime_kind"] == "peer_a2a"
+    assert sections["peer_a2a"]["items"][0]["child_session_id"] == peer_a2a_task.child_session_id
+    assert sections["peer_a2a"]["items"][0]["status"] == "failed"
+    assert sections["peer_a2a"]["items"][0]["summary"] == "target provider rejected the request"
     assert sections["subagents"]["items"][0]["label"] == "critic"
     assert sections["subagents"]["items"][0]["return_contract"] == "background_completion_wake"
     assert sections["subagents"]["items"][0]["subagent_return_contract"]["fallback_tool"] == "check_subagent"
@@ -870,8 +895,10 @@ async def test_runtime_sections_separate_agent_team_subagent_background_workflow
     assert workflow["leaf_calls"][0]["leaf_id"] == "case-1"
     assert workflow["leaf_calls"][0]["enterable"] is False
     assert sections["notifications"]["items"]
-    assert {row["runtime_task_id"] for row in sections["runs"]["items"]} == {
+    assert sections["runs"]["items"] == []
+    assert {row["id"] for row in sections["raw"]["items"][0]["runtime_tasks"]} == {
         str(subagent_task.id),
+        str(peer_a2a_task.id),
         str(background_task.id),
         str(workflow_run_id),
     }

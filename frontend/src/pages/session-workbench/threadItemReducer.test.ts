@@ -53,6 +53,8 @@ describe('typed ThreadItem reducer', () => {
       'plan',
       'workflow_activity',
       'subagent_activity',
+      'agent_team_activity',
+      'peer_a2a_activity',
       'context_compaction',
       'artifact',
       'boundary',
@@ -102,6 +104,17 @@ describe('typed ThreadItem reducer', () => {
     });
 
     expect(item?.item_type).toBe('event');
+  });
+
+  it('keeps Sub-agent, Agent Team, and Peer A2A as distinct typed collaboration items', () => {
+    expect(normalizeThreadItemPayload({ type: 'subagent_task_started' })?.item_type).toBe('subagent_activity');
+    expect(normalizeThreadItemPayload({ type: 'team_member' })?.item_type).toBe('agent_team_activity');
+    expect(normalizeThreadItemPayload({ type: 'delegation_run' })?.item_type).toBe('peer_a2a_activity');
+    expect(normalizeThreadItemPayload({
+      type: 'child_session',
+      action_kind: 'a2a_delegation',
+      notification_source: 'a2a',
+    })?.item_type).toBe('peer_a2a_activity');
   });
 
   it.each([
@@ -196,6 +209,16 @@ describe('typed ThreadItem reducer', () => {
         item_data: { runtime_task_id: 'task-subagent', child_session_id: 'child-1' },
       } as Partial<ThreadItem>)),
       threadItemToAgentChatMessage(canonical({
+        item_type: 'agent_team_activity',
+        event_type: 'team_member',
+        item_data: { runtime_task_id: 'task-team', child_session_id: 'team-child', member_name: 'Reviewer' },
+      } as Partial<ThreadItem>)),
+      threadItemToAgentChatMessage(canonical({
+        item_type: 'peer_a2a_activity',
+        event_type: 'delegation_run',
+        item_data: { runtime_task_id: 'task-a2a', child_session_id: 'a2a-child', target_agent_name: 'Researcher', read_only: true },
+      } as Partial<ThreadItem>)),
+      threadItemToAgentChatMessage(canonical({
         item_type: 'boundary',
         event_type: 'run_cancelled',
         item_status: 'cancelled',
@@ -212,7 +235,9 @@ describe('typed ThreadItem reducer', () => {
     expect(projections[0]).toMatchObject({ eventStatus: 'confirmed', threadItem: { item_type: 'plan' } });
     expect(projections[1]).toMatchObject({ eventWorkflowRunId: 'workflow-1', eventRuntimeTaskId: 'task-workflow' });
     expect(projections[2]).toMatchObject({ eventChildSessionId: 'child-1', eventRuntimeTaskId: 'task-subagent' });
-    expect(projections[3]).toMatchObject({ eventStatus: 'cancelled', eventReason: 'user_stop' });
-    expect(projections[4]).toMatchObject({ eventStatus: 'failed', eventRetryable: true, eventReason: 'Timed out' });
+    expect(projections[3]).toMatchObject({ eventChildSessionId: 'team-child', eventRuntimeTaskId: 'task-team' });
+    expect(projections[4]).toMatchObject({ eventChildSessionId: 'a2a-child', eventRuntimeTaskId: 'task-a2a' });
+    expect(projections[5]).toMatchObject({ eventStatus: 'cancelled', eventReason: 'user_stop' });
+    expect(projections[6]).toMatchObject({ eventStatus: 'failed', eventRetryable: true, eventReason: 'Timed out' });
   });
 });

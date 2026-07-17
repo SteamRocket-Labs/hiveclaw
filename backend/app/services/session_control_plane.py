@@ -768,6 +768,7 @@ def _completion_wake_policy_payload() -> dict[str, Any]:
 
 _RUNTIME_SECTION_KEYS = (
     "agent_teams",
+    "peer_a2a",
     "subagents",
     "workflows",
     "background",
@@ -776,11 +777,16 @@ _RUNTIME_SECTION_KEYS = (
     "raw",
 )
 
-_SUBAGENT_TASK_TYPES = {"subagent", "delegation"}
+_PEER_A2A_TASK_TYPES = {"delegation", "a2a_delegation"}
+_SUBAGENT_TASK_TYPES = {"subagent"}
 _WORKFLOW_TASK_TYPES = {"workflow"}
 _AGENT_TEAM_TASK_TYPES = {"team_member"}
 _BACKGROUND_TASK_TYPES = (
-    _BACKGROUND_COMPLETION_TASK_TYPES - _SUBAGENT_TASK_TYPES - _WORKFLOW_TASK_TYPES - _AGENT_TEAM_TASK_TYPES
+    _BACKGROUND_COMPLETION_TASK_TYPES
+    - _PEER_A2A_TASK_TYPES
+    - _SUBAGENT_TASK_TYPES
+    - _WORKFLOW_TASK_TYPES
+    - _AGENT_TEAM_TASK_TYPES
 )
 
 
@@ -1035,6 +1041,7 @@ def _runtime_sections_payload(
 ) -> dict[str, dict[str, Any]]:
     workflow_journals = _mapping(workflow_journals)
     agent_teams = [_agent_team_section_item(team) for team in teams]
+    peer_a2a: list[dict[str, Any]] = []
     subagents: list[dict[str, Any]] = []
     workflows: list[dict[str, Any]] = []
     background: list[dict[str, Any]] = []
@@ -1042,21 +1049,36 @@ def _runtime_sections_payload(
         task_type = str(getattr(task, "task_type", "") or "")
         if task_type in _WORKFLOW_TASK_TYPES:
             workflows.append(_workflow_section_item(task, workflow_journals.get(str(getattr(task, "id", "")))))
+        elif task_type in _PEER_A2A_TASK_TYPES:
+            peer_a2a.append(_runtime_task_runtime_row(task, runtime_kind="peer_a2a"))
         elif task_type in _SUBAGENT_TASK_TYPES:
             subagents.append(_runtime_task_runtime_row(task, runtime_kind="subagent"))
         elif task_type in _BACKGROUND_TASK_TYPES:
             background.append(_runtime_task_runtime_row(task, runtime_kind="background_agent"))
 
-    runs = [_runtime_task_payload(task) for task in runtime_tasks]
+    categorized_task_types = (
+        _PEER_A2A_TASK_TYPES
+        | _SUBAGENT_TASK_TYPES
+        | _WORKFLOW_TASK_TYPES
+        | _AGENT_TEAM_TASK_TYPES
+        | _BACKGROUND_TASK_TYPES
+    )
+    runs = [
+        _runtime_task_payload(task)
+        for task in runtime_tasks
+        if str(getattr(task, "task_type", "") or "") not in categorized_task_types
+    ]
+    all_runtime_tasks = [_runtime_task_payload(task) for task in runtime_tasks]
     raw = [
         {
-            "runtime_tasks": runs,
+            "runtime_tasks": all_runtime_tasks,
             "completion_wakes": completion_wakes,
             "teams": teams,
         }
     ]
     return {
         "agent_teams": _runtime_section_payload("agent_teams", agent_teams),
+        "peer_a2a": _runtime_section_payload("peer_a2a", peer_a2a),
         "subagents": _runtime_section_payload("subagents", subagents),
         "workflows": _runtime_section_payload("workflows", workflows),
         "background": _runtime_section_payload("background", background),

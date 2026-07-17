@@ -852,6 +852,7 @@ async def _get_run_session_and_agent(
     action: str = "use_session",
     operator_view: bool = False,
     operator_reason: str | None = None,
+    require_writable: bool = False,
 ) -> tuple[ChatSession, Agent, str]:
     result = await db.execute(select(ChatSession).where(ChatSession.id == session_id, ChatSession.agent_id == agent_id))
     session = result.scalar_one_or_none()
@@ -867,6 +868,7 @@ async def _get_run_session_and_agent(
         action=action,
         operator_view=operator_view,
         operator_reason=operator_reason,
+        require_writable=require_writable,
     )
     return session, agent, authority_source
 
@@ -880,10 +882,15 @@ async def _authorize_loaded_session(
     action: str,
     operator_view: bool = False,
     operator_reason: str | None = None,
+    require_writable: bool = False,
 ) -> str:
     reason = operator_reason if isinstance(operator_reason, str) else None
     reason = str(reason or "").strip()
     if access_level == "manage" and operator_view is True and reason:
+        if require_writable:
+            from app.core.permissions import require_writable_session
+
+            require_writable_session(session, action=action)
         from app.services.audit_logger import write_audit_log
 
         await write_audit_log(
@@ -900,6 +907,10 @@ async def _authorize_loaded_session(
         )
         return "manager_override"
     if str(session.user_id) == str(current_user.id):
+        if require_writable:
+            from app.core.permissions import require_writable_session
+
+            require_writable_session(session, action=action)
         return "session_owner"
     raise HTTPException(status_code=403, detail="This session belongs to a different user")
 
@@ -1118,6 +1129,7 @@ async def rename_session(
         access_level=access_level,
         current_user=current_user,
         action="rename_session",
+        require_writable=True,
     )
 
     session.title = body.title
@@ -1139,6 +1151,8 @@ async def update_session_permission_profile(
         agent_id=agent_id,
         session_id=session_id,
         current_user=current_user,
+        action="update_session_permission_profile",
+        require_writable=True,
     )
     permission_metadata = _session_permission_metadata(body.permission_mode, session)
     session_metadata = dict(session.transcript_metadata_json or {})
@@ -1333,6 +1347,8 @@ async def start_session_run(
         agent_id=agent_id,
         session_id=session_id,
         current_user=current_user,
+        action="start_session_run",
+        require_writable=True,
     )
     try:
         receipt = await submit_live_human_input(
@@ -1379,6 +1395,8 @@ async def branch_session(
         agent_id=agent_id,
         session_id=session_id,
         current_user=current_user,
+        action="branch_session",
+        require_writable=True,
     )
     branch_result = await create_conversation_branch(
         db=db,
@@ -1705,6 +1723,8 @@ async def _submit_session_human_input(
         agent_id=agent_id,
         session_id=session_id,
         current_user=current_user,
+        action="submit_session_human_input",
+        require_writable=True,
     )
     try:
         receipt = await submit_live_human_input(
@@ -2104,6 +2124,8 @@ async def _cancel_session_run_v2(
         agent_id=agent_id,
         session_id=session_id,
         current_user=current_user,
+        action="cancel_session_run",
+        require_writable=True,
     )
     try:
         return await submit_live_cancel_input(
@@ -2189,6 +2211,7 @@ async def delete_session(
         access_level=access_level,
         current_user=current_user,
         action="delete_session",
+        require_writable=True,
     )
 
     parent_session_id = getattr(session, "parent_session_id", None)

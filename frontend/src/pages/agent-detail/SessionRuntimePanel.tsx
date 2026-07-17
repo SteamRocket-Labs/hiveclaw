@@ -579,6 +579,18 @@ export function SessionRuntimePanel({
     </div>
   );
 
+  const renderA2ASegment = () => (
+    <div data-testid="session-runtime-segment-body-a2a" className="session-runtime-segment-body" role="tabpanel">
+      {runtimeConsole.peerA2A.items.length === 0 ? (
+        <div className="session-runtime-empty">
+          {t('sessionWorkbench.rightPanel.noPeerA2A', 'No peer digital-employee delegations in this session.')}
+        </div>
+      ) : (
+        runtimeConsole.peerA2A.items.map((delegation, index) => renderRuntimeItem(delegation, `peer-a2a-${index + 1}`))
+      )}
+    </div>
+  );
+
   const renderWorkersSegment = () => (
     <div data-testid="session-runtime-segment-body-workers" className="session-runtime-segment-body" role="tabpanel">
       {runtimeConsole.workers.items.length === 0 ? (
@@ -632,6 +644,7 @@ export function SessionRuntimePanel({
 
   const renderRuntimeConsoleBody = () => {
     if (selectedRuntimeSegment === 'team') return renderTeamSegment();
+    if (selectedRuntimeSegment === 'a2a') return renderA2ASegment();
     if (selectedRuntimeSegment === 'workers') return renderWorkersSegment();
     if (selectedRuntimeSegment === 'workflow') return renderWorkflowSegment();
     return renderActivitySegment();

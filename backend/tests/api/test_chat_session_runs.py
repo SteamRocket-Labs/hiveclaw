@@ -184,6 +184,42 @@ def test_start_session_run_routes_to_runtime_service(monkeypatch):
     }
 
 
+def test_start_session_run_rejects_read_only_peer_a2a_session_before_runtime_dispatch(monkeypatch):
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    user_id = uuid4()
+    session_id = uuid4()
+    agent = SimpleNamespace(id=agent_id, creator_id=uuid4(), tenant_id=tenant_id)
+    user = SimpleNamespace(id=user_id, role="member", tenant_id=tenant_id)
+    session = SimpleNamespace(
+        id=session_id,
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        session_kind="delegation_run",
+        runtime_source="delegation",
+    )
+    db = _FakeDB(session)
+
+    async def must_not_submit(**_kwargs):
+        raise AssertionError("read-only peer A2A Session must fail before runtime dispatch")
+
+    monkeypatch.setattr(chat_sessions_api, "submit_live_human_input", must_not_submit)
+    client = _client(monkeypatch, db=db, user=user, agent=agent)
+
+    response = client.post(
+        f"/agents/{agent_id}/sessions/{session_id}/runs",
+        json={"content": "try to take over the peer employee", "display_content": "try", "file_name": ""},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == {
+        "code": "session_read_only",
+        "session_kind": "delegation_run",
+        "action": "start_session_run",
+    }
+
+
 def test_create_session_run_atomically_creates_human_session_and_starts_runtime(monkeypatch):
     agent_id = uuid4()
     tenant_id = uuid4()

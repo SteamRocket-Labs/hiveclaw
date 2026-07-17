@@ -136,6 +136,17 @@ class _ExistingMembersDB(_DB):
         return _ScalarMany(self.members)
 
 
+class _TeamModelDB(_DB):
+    def __init__(self, model) -> None:
+        super().__init__()
+        self.model = model
+        self.executes = 0
+
+    async def execute(self, _stmt):
+        self.executes += 1
+        return _ScalarMany([] if self.executes == 1 else ([self.model] if self.model is not None else []))
+
+
 class _FailingFlushDB(_DB):
     async def flush(self) -> None:
         raise RuntimeError("flush failed")
@@ -305,6 +316,7 @@ async def test_agenttool_teammate_spawn_creates_member_session_and_starts_runtim
     member_session = next(item for item in db.added if isinstance(item, ChatSession))
     assert member.team_id == created.team.id
     assert member.chat_session_id == member_session.id
+    assert member_session.listed_surface == "parent"
     assert member.status == "running"
     assert continued and continued[0]["session"].id == member_session.id
     assert continued[0]["message"] == "Review the AgentTool implementation."
@@ -312,6 +324,87 @@ async def test_agenttool_teammate_spawn_creates_member_session_and_starts_runtim
     assert "member_spawned" in event_types
     assert "member_message_queued" in event_types
     assert parent_events and parent_events[0]["event_type"] == "team_member"
+
+
+@pytest.mark.asyncio
+async def test_teammate_model_is_validated_and_propagated_to_runtime_loader(monkeypatch):
+    from app.models.agent_team import AgentTeamMember
+    from app.services.agent_team_runtime_service import TeamMemberCreateSpec, spawn_agent_team_member_runtime
+
+    tenant_id = uuid4()
+    model_id = uuid4()
+    model = SimpleNamespace(
+        id=model_id,
+        tenant_id=tenant_id,
+        enabled=True,
+        label="Review model",
+        model="review-model-v1",
+    )
+    db = _TeamModelDB(model)
+    agent = SimpleNamespace(id=uuid4(), tenant_id=tenant_id)
+    user = SimpleNamespace(id=uuid4())
+    parent_session = SimpleNamespace(id=uuid4(), root_session_id=None)
+    team = SimpleNamespace(id=uuid4(), name="Review Team", parent_session_id=parent_session.id)
+    captured = {}
+
+    async def fake_append_session_event(**_kwargs):
+        return SimpleNamespace(event_id=uuid4())
+
+    async def fake_continue_agent_session_from_mailbox(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True, "status": "queued", "run_id": str(kwargs["run_id"])}
+
+    monkeypatch.setattr("app.services.agent_team_runtime_service.append_session_event", fake_append_session_event)
+    monkeypatch.setattr(
+        "app.services.agent_team_runtime_service.continue_agent_session_from_mailbox",
+        fake_continue_agent_session_from_mailbox,
+    )
+
+    await spawn_agent_team_member_runtime(
+        db=db,
+        agent=agent,
+        user=user,
+        parent_session=parent_session,
+        team=team,
+        spec=TeamMemberCreateSpec(name="critic", role="Review", model_id=model_id),
+        prompt="Review the implementation.",
+        source="unit_test",
+    )
+
+    member = next(item for item in db.added if isinstance(item, AgentTeamMember))
+    assert member.model_id == model_id
+    assert captured["extra_metadata"]["runtime_model_id"] == str(model_id)
+    assert captured["extra_metadata"]["runtime_model_source"] == "agent_team_member"
+
+
+@pytest.mark.asyncio
+async def test_teammate_model_rejects_missing_or_cross_tenant_selection_before_persist(monkeypatch):
+    from app.services.agent_team_runtime_service import TeamMemberCreateSpec, spawn_agent_team_member_runtime
+
+    tenant_id = uuid4()
+    db = _TeamModelDB(None)
+
+    async def must_not_continue(**_kwargs):
+        raise AssertionError("invalid model must fail before runtime admission")
+
+    monkeypatch.setattr(
+        "app.services.agent_team_runtime_service.continue_agent_session_from_mailbox",
+        must_not_continue,
+    )
+
+    with pytest.raises(ValueError, match="Team member model is unavailable"):
+        await spawn_agent_team_member_runtime(
+            db=db,
+            agent=SimpleNamespace(id=uuid4(), tenant_id=tenant_id),
+            user=SimpleNamespace(id=uuid4()),
+            parent_session=SimpleNamespace(id=uuid4(), root_session_id=None),
+            team=SimpleNamespace(id=uuid4(), name="Review Team"),
+            spec=TeamMemberCreateSpec(name="critic", model_id=uuid4()),
+            prompt="Review the implementation.",
+            source="unit_test",
+        )
+
+    assert db.added == []
 
 
 @pytest.mark.asyncio

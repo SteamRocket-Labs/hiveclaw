@@ -45,6 +45,8 @@
         "plan": "Plan",
         "workflow_activity": "Workflow",
         "subagent_activity": "Sub-agent",
+        "agent_team_activity": "Agent Team",
+        "peer_a2a_activity": "A2A digital employee",
         "context_compaction": "Context compaction",
         "artifact": "Artifact",
         "boundary": "Run boundary",
@@ -164,6 +166,7 @@
       "runStatus": "Run status",
       "agentTeams": "Agent Teams",
       "noAgentTeams": "No Agent Team containers in this session.",
+      "noPeerA2A": "No peer digital-employee delegations in this session.",
       "noTeamMembers": "No team members have started yet.",
       "subagents": "Sub-agents",
       "noSubagents": "No one-shot Sub-agent workers in this session.",
@@ -190,6 +193,7 @@
       "waiterOpenTitle": "Open waiting session",
       "runtimeSegments": {
         "team": "Team",
+        "a2a": "A2A",
         "workers": "Workers",
         "workflow": "Workflow",
         "activity": "Activity"

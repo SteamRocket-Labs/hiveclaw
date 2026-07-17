@@ -94,6 +94,7 @@ async def resolve_session_mutation_authority(
         action=action,
         allow_manager_override=allow_manager_override,
         manager_override_reason=manager_override_reason,
+        require_writable=True,
     )
     tenant_id = decision.session.tenant_id
     if tenant_id is None or decision.agent.tenant_id != tenant_id:

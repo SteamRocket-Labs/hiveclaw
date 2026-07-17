@@ -13,6 +13,7 @@ async def _seed(owner_sessionmaker):
     from app.models.agent import Agent
     from app.models.chat_session import ChatSession
     from app.models.runtime_task import RuntimeTask
+    from app.models.runtime_root_item import RuntimeRootItem
     from app.models.tenant import Tenant
     from app.models.user import User
 
@@ -34,21 +35,37 @@ async def _seed(owner_sessionmaker):
         db.add(Agent(id=agent_id, tenant_id=tenant_id, name="Round Outcome Agent", creator_id=user_id))
         await db.flush()
         db.add(ChatSession(id=session_id, agent_id=agent_id, tenant_id=tenant_id, user_id=user_id))
+        task = RuntimeTask(
+            id=run_id,
+            task_type="web_chat_turn",
+            status="running",
+            parent_agent_id=agent_id,
+            child_agent_id=agent_id,
+            tenant_id=tenant_id,
+            parent_session_id=str(session_id),
+            child_session_id=str(session_id),
+            root_user_id=user_id,
+            root_session_id=str(session_id),
+            root_runtime_task_id=run_id,
+            prompt="produce exact result",
+            metadata_json={"turn_id": turn_id},
+        )
+        db.add(task)
+        await db.flush()
         db.add(
-            RuntimeTask(
-                id=run_id,
-                task_type="web_chat_turn",
-                status="running",
-                parent_agent_id=agent_id,
-                child_agent_id=agent_id,
+            RuntimeRootItem(
                 tenant_id=tenant_id,
-                parent_session_id=str(session_id),
-                child_session_id=str(session_id),
+                root_runtime_task_id=run_id,
+                runtime_task_id=run_id,
+                source_agent_id=agent_id,
                 root_user_id=user_id,
                 root_session_id=str(session_id),
-                root_runtime_task_id=run_id,
-                prompt="produce exact result",
-                metadata_json={"turn_id": turn_id},
+                intent_key=f"web-chat:{run_id}",
+                work_type="web_chat_turn",
+                target_ref=f"agent:{agent_id}",
+                path_json=[f"agent:{agent_id}", f"session:{session_id}"],
+                state="running",
+                admission_disposition="admitted",
             )
         )
         await db.commit()
@@ -745,6 +762,7 @@ async def test_fence_drift_preserves_abandoned_plan_and_requires_new_generation(
 async def test_terminal_outcome_is_zero_copy_atomic_and_idempotent(owner_sessionmaker) -> None:
     from app.models.chat_transcript_event import ChatTranscriptEvent
     from app.models.runtime_task import RuntimeTask
+    from app.models.runtime_root_item import RuntimeRootItem
     from app.models.session_v2 import SessionModelResult, SessionRunOutcome
     from app.services.session_model_round import commit_model_response
     from app.services.session_terminal_outcome import commit_terminal_outcome, prepare_and_seal_run_outcome
@@ -823,9 +841,13 @@ async def test_terminal_outcome_is_zero_copy_atomic_and_idempotent(owner_session
 
     async with owner_sessionmaker() as db:
         task = await db.get(RuntimeTask, run_id)
+        root_item = await db.scalar(select(RuntimeRootItem).where(RuntimeRootItem.runtime_task_id == run_id))
         outcome = await db.scalar(select(SessionRunOutcome).where(SessionRunOutcome.run_id == run_id))
         result = await db.scalar(select(SessionModelResult).where(SessionModelResult.provider_request_id == request_id))
         assert task is not None and task.status == "completed"
+        assert root_item is not None and root_item.state == "completed"
+        assert root_item.reason_code == "session_v2_terminal_outcome_committed"
+        assert f"session-run-outcome://{outcome.id}" in root_item.result_refs_json
         assert task.result_summary == exact_final
         assert outcome is not None and outcome.state == "terminal_committed"
         assert result is not None
@@ -895,6 +917,7 @@ async def test_recovery_finishes_sealed_round_and_same_terminal_candidate_withou
     owner_sessionmaker,
 ) -> None:
     from app.models.runtime_task import RuntimeTask
+    from app.models.runtime_root_item import RuntimeRootItem
     from app.models.session_v2 import SessionModelResult, SessionRunOutcome
     from app.services.session_model_round import seal_model_response
     from app.services.runtime_task_worker import (
@@ -948,6 +971,7 @@ async def test_recovery_finishes_sealed_round_and_same_terminal_candidate_withou
     }
     async with owner_sessionmaker() as db:
         task = await db.get(RuntimeTask, run_id)
+        root_item = await db.scalar(select(RuntimeRootItem).where(RuntimeRootItem.runtime_task_id == run_id))
         outcome = await db.scalar(select(SessionRunOutcome).where(SessionRunOutcome.run_id == run_id))
         result_count = len(
             list(
@@ -959,5 +983,6 @@ async def test_recovery_finishes_sealed_round_and_same_terminal_candidate_withou
             )
         )
         assert task is not None and task.status == "completed"
+        assert root_item is not None and root_item.state == "completed"
         assert outcome is not None and outcome.state == "terminal_committed"
         assert result_count == 1

@@ -26,6 +26,8 @@ const TITLES: Record<ThreadItemType, string> = {
   plan: 'Plan',
   workflow_activity: 'Workflow',
   subagent_activity: 'Sub-agent',
+  agent_team_activity: 'Agent Team',
+  peer_a2a_activity: 'A2A digital employee',
   context_compaction: 'Context compaction',
   artifact: 'Artifact',
   boundary: 'Run boundary',
@@ -89,7 +91,14 @@ function detailsFor(item: ThreadItem, t: (key: string, fallback: string) => stri
     case 'workflow_activity':
       return [{ label: 'label', value: item.item_data.label }];
     case 'subagent_activity':
-      return [{ label: 'agent', value: item.item_data.target_agent_name }];
+      return [{ label: 'sub-agent', value: item.item_data.target_agent_name }];
+    case 'agent_team_activity':
+      return [{ label: 'team member', value: item.item_data.member_name || item.item_data.target_agent_name }];
+    case 'peer_a2a_activity':
+      return [
+        { label: 'digital employee', value: item.item_data.target_agent_name },
+        { label: 'session', value: item.item_data.read_only ? 'read-only' : null },
+      ];
     case 'context_compaction':
       return [];
     case 'artifact':
@@ -115,7 +124,15 @@ function detailsFor(item: ThreadItem, t: (key: string, fallback: string) => stri
 }
 
 function shouldCollapse(item: ThreadItem): boolean {
-  return ['tool_call', 'tool_result', 'workflow_activity', 'subagent_activity', 'reasoning'].includes(item.item_type);
+  return [
+    'tool_call',
+    'tool_result',
+    'workflow_activity',
+    'subagent_activity',
+    'agent_team_activity',
+    'peer_a2a_activity',
+    'reasoning',
+  ].includes(item.item_type);
 }
 
 export interface ThreadItemRendererProps {

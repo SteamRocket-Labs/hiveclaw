@@ -21,6 +21,7 @@ from app.database import tenant_scoped_session
 from app.models.agent import Agent
 from app.models.agent_team import AgentTeam, AgentTeamEvent, AgentTeamMember
 from app.models.chat_session import ChatSession
+from app.models.llm import LLMModel
 from app.models.user import User
 from app.runtime.decision_ledger import build_agent_cycle_decision_entry
 from app.runtime.hooks import HookEvent, emit_hook
@@ -76,6 +77,42 @@ def _uuid_or_none(value: Any) -> uuid.UUID | None:
         return uuid.UUID(text)
     except ValueError:
         return None
+
+
+async def _resolve_team_member_model_id(
+    db: Any,
+    *,
+    tenant_id: uuid.UUID | None,
+    spec: TeamMemberCreateSpec,
+) -> tuple[uuid.UUID | None, str | None]:
+    selector_value = spec.model_id
+    if selector_value is None and isinstance(spec.metadata, dict):
+        selector_value = spec.metadata.get("model")
+    selector = str(selector_value or "").strip()
+    if not selector or selector.lower() in {"inherit", "default"}:
+        return None, None
+    if tenant_id is None:
+        raise ValueError("Agent tenant is required for Team member model selection")
+
+    selector_uuid = _uuid_or_none(selector)
+    identity_filter = (
+        LLMModel.id == selector_uuid
+        if selector_uuid is not None
+        else or_(LLMModel.label == selector, LLMModel.model == selector)
+    )
+    result = await db.execute(
+        select(LLMModel)
+        .where(
+            LLMModel.tenant_id == tenant_id,
+            LLMModel.enabled.is_(True),
+            identity_filter,
+        )
+        .order_by(LLMModel.id)
+    )
+    matches = list(result.scalars().all())
+    if len(matches) != 1:
+        raise ValueError("Team member model is unavailable or ambiguous in this tenant")
+    return matches[0].id, selector
 
 
 def _team_member_payload(member: AgentTeamMember) -> dict[str, Any]:
@@ -350,7 +387,7 @@ def _build_team_member_records(
         actor_type="agent",
         runtime_source="team_member",
         visibility_scope="team",
-        listed_surface="chat",
+        listed_surface="parent",
         parent_session_id=parent_session_id,
         root_session_id=root_session_id,
         transcript_metadata_json={
@@ -617,16 +654,26 @@ async def spawn_agent_team_member_runtime(
         )
         existing_members = list(existing_result.scalars().all())
     unique_name = _unique_member_name(spec.name, existing_members)
+    resolved_model_id, requested_model = await _resolve_team_member_model_id(
+        db,
+        tenant_id=getattr(agent, "tenant_id", None),
+        spec=spec,
+    )
 
     member_spec = TeamMemberCreateSpec(
         name=unique_name,
         role=spec.role,
-        model_id=spec.model_id,
+        model_id=resolved_model_id,
         tool_policy=spec.tool_policy,
         budget=spec.budget,
         prompt=spec.prompt,
         display_content=spec.display_content,
-        metadata={**(spec.metadata or {}), "agent_tool_branch": "teammate_spawn", "mode": mode},
+        metadata={
+            **(spec.metadata or {}),
+            "agent_tool_branch": "teammate_spawn",
+            "mode": mode,
+            **({"requested_model": requested_model} if requested_model else {}),
+        },
     )
     member, member_session = _build_team_member_records(
         agent=agent,
@@ -1201,6 +1248,14 @@ async def message_agent_team_members_runtime(
                     "root_runtime_task_id": str(root_id),
                     "team_operation_id": operation,
                     "team_root_item_intent_key": item["intent_key"],
+                    **(
+                        {
+                            "runtime_model_id": str(member.model_id),
+                            "runtime_model_source": "agent_team_member",
+                        }
+                        if getattr(member, "model_id", None)
+                        else {}
+                    ),
                 },
                 run_id=None if active_run is not None else item["run_id"],
                 root_item_intent=None if active_run is not None else root_intent,

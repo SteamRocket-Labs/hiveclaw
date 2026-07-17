@@ -72,6 +72,17 @@ export interface BoundaryItemData {
   reason?: string | null;
 }
 
+export interface CollaborationItemData {
+  runtime_task_id?: string | null;
+  child_session_id?: string | null;
+  parent_session_id?: string | null;
+  target_agent_name?: string | null;
+  team_id?: string | null;
+  team_member_id?: string | null;
+  member_name?: string | null;
+  read_only: boolean;
+}
+
 export interface CompactionItemData {
   original_message_count?: number | null;
   kept_message_count?: number | null;
@@ -113,13 +124,6 @@ export interface PlanItemData {
 
 export interface ReasoningItemData {
   signature?: string | null;
-}
-
-export interface SubagentItemData {
-  runtime_task_id?: string | null;
-  child_session_id?: string | null;
-  parent_session_id?: string | null;
-  target_agent_name?: string | null;
 }
 
 export interface ToolCallItemData {
@@ -199,7 +203,17 @@ export interface WorkflowThreadItem extends ThreadItemBase {
 
 export interface SubagentThreadItem extends ThreadItemBase {
   item_type: "subagent_activity";
-  item_data: SubagentItemData;
+  item_data: CollaborationItemData;
+}
+
+export interface AgentTeamThreadItem extends ThreadItemBase {
+  item_type: "agent_team_activity";
+  item_data: CollaborationItemData;
+}
+
+export interface PeerA2AThreadItem extends ThreadItemBase {
+  item_type: "peer_a2a_activity";
+  item_data: CollaborationItemData;
 }
 
 export interface CompactionThreadItem extends ThreadItemBase {
@@ -243,6 +257,8 @@ export type ThreadItem =
   | PlanThreadItem
   | WorkflowThreadItem
   | SubagentThreadItem
+  | AgentTeamThreadItem
+  | PeerA2AThreadItem
   | CompactionThreadItem
   | ArtifactThreadItem
   | BoundaryThreadItem
@@ -264,7 +280,7 @@ export const LEGACY_THREAD_ITEM_TYPE_MAP: Readonly<Record<string, ThreadItemType
   "assistant_message": "agent_message",
   "child_session": "subagent_activity",
   "circuit_break": "error",
-  "delegation_run": "subagent_activity",
+  "delegation_run": "peer_a2a_activity",
   "denial": "error",
   "done": "boundary",
   "dynamic_workflow": "workflow_activity",
@@ -273,11 +289,11 @@ export const LEGACY_THREAD_ITEM_TYPE_MAP: Readonly<Record<string, ThreadItemType
   "file_changes": "artifact",
   "hard_stopped": "error",
   "loop": "error",
-  "member_idle": "subagent_activity",
-  "member_message_queued": "subagent_activity",
-  "member_message_rejected": "subagent_activity",
-  "member_run_started": "subagent_activity",
-  "member_spawned": "subagent_activity",
+  "member_idle": "agent_team_activity",
+  "member_message_queued": "agent_team_activity",
+  "member_message_rejected": "agent_team_activity",
+  "member_run_started": "agent_team_activity",
+  "member_spawned": "agent_team_activity",
   "memory_context_degraded": "warning",
   "memory_context_unavailable": "error",
   "permission": "approval_request",
@@ -308,9 +324,13 @@ export const LEGACY_THREAD_ITEM_TYPE_MAP: Readonly<Record<string, ThreadItemType
   "session_workspace_rewind": "boundary",
   "subagent": "subagent_activity",
   "subagent_task_completed": "subagent_activity",
+  "subagent_task_failed": "subagent_activity",
   "subagent_task_started": "subagent_activity",
   "summary_turn": "context_compaction",
-  "team_member": "subagent_activity",
+  "team_close_delivery_failed": "agent_team_activity",
+  "team_close_requested": "agent_team_activity",
+  "team_created": "agent_team_activity",
+  "team_member": "agent_team_activity",
   "thinking": "reasoning",
   "tool_call": "tool_call",
   "tool_failure": "tool_result",

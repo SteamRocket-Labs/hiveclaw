@@ -22,6 +22,8 @@ THREAD_ITEM_TYPES = {
     "plan",
     "workflow_activity",
     "subagent_activity",
+    "agent_team_activity",
+    "peer_a2a_activity",
     "context_compaction",
     "artifact",
     "boundary",
@@ -60,18 +62,22 @@ EVENT_THREAD_ITEM_TYPES: dict[str, str] = {
     "workflow_completed": "workflow_activity",
     "workflow_failed": "workflow_activity",
     "dynamic_workflow": "workflow_activity",
-    "delegation_run": "subagent_activity",
+    "delegation_run": "peer_a2a_activity",
     "child_session": "subagent_activity",
     "agent_task_notification": "subagent_activity",
     "subagent": "subagent_activity",
     "subagent_task_started": "subagent_activity",
     "subagent_task_completed": "subagent_activity",
-    "team_member": "subagent_activity",
-    "member_spawned": "subagent_activity",
-    "member_idle": "subagent_activity",
-    "member_message_queued": "subagent_activity",
-    "member_message_rejected": "subagent_activity",
-    "member_run_started": "subagent_activity",
+    "subagent_task_failed": "subagent_activity",
+    "team_member": "agent_team_activity",
+    "team_created": "agent_team_activity",
+    "team_close_requested": "agent_team_activity",
+    "team_close_delivery_failed": "agent_team_activity",
+    "member_spawned": "agent_team_activity",
+    "member_idle": "agent_team_activity",
+    "member_message_queued": "agent_team_activity",
+    "member_message_rejected": "agent_team_activity",
+    "member_run_started": "agent_team_activity",
     "session_compact": "context_compaction",
     "summary_turn": "context_compaction",
     "artifact_update": "artifact",
@@ -172,11 +178,15 @@ class WorkflowItemData(_ThreadModel):
     label: str | None = None
 
 
-class SubagentItemData(_ThreadModel):
+class CollaborationItemData(_ThreadModel):
     runtime_task_id: str | None = None
     child_session_id: str | None = None
     parent_session_id: str | None = None
     target_agent_name: str | None = None
+    team_id: str | None = None
+    team_member_id: str | None = None
+    member_name: str | None = None
+    read_only: bool = False
 
 
 class CompactionItemData(_ThreadModel):
@@ -312,7 +322,17 @@ class WorkflowThreadItem(ThreadItemBase):
 
 class SubagentThreadItem(ThreadItemBase):
     item_type: Literal["subagent_activity"]
-    item_data: SubagentItemData
+    item_data: CollaborationItemData
+
+
+class AgentTeamThreadItem(ThreadItemBase):
+    item_type: Literal["agent_team_activity"]
+    item_data: CollaborationItemData
+
+
+class PeerA2AThreadItem(ThreadItemBase):
+    item_type: Literal["peer_a2a_activity"]
+    item_data: CollaborationItemData
 
 
 class CompactionThreadItem(ThreadItemBase):
@@ -356,6 +376,8 @@ ThreadItem = Annotated[
     | PlanThreadItem
     | WorkflowThreadItem
     | SubagentThreadItem
+    | AgentTeamThreadItem
+    | PeerA2AThreadItem
     | CompactionThreadItem
     | ArtifactThreadItem
     | BoundaryThreadItem
@@ -408,8 +430,56 @@ def _merged_data(metadata: dict[str, Any], parts: list[dict[str, Any]]) -> dict[
     return data
 
 
-def classify_thread_item(*, event_type: str, role: str | None) -> str:
+def _collaboration_thread_item_type(*, event_type: str, metadata: dict[str, Any] | None) -> str | None:
+    normalized = str(event_type or "").strip().lower()
+    data = dict(metadata or {})
+    markers = {
+        str(data.get(key) or "").strip().lower()
+        for key in (
+            "action_kind",
+            "interaction_type",
+            "notification_source",
+            "runtime_kind",
+            "runtime_source",
+            "runtime_task_type",
+            "source",
+            "task_type",
+        )
+    }
+    if normalized in {
+        "team_member",
+        "team_created",
+        "team_close_requested",
+        "team_close_delivery_failed",
+        "member_spawned",
+        "member_idle",
+        "member_message_queued",
+        "member_message_rejected",
+        "member_run_started",
+    } or markers.intersection({"agent_team", "agent_team_member", "team", "team_member"}):
+        return "agent_team_activity"
+    if normalized == "delegation_run" or markers.intersection({"a2a", "a2a_delegation", "delegation", "peer_a2a"}):
+        return "peer_a2a_activity"
+    if normalized in {
+        "subagent",
+        "subagent_task_started",
+        "subagent_task_completed",
+        "subagent_task_failed",
+    } or markers.intersection({"lightweight_subagent", "subagent", "subagent_wake"}):
+        return "subagent_activity"
+    return None
+
+
+def classify_thread_item(
+    *,
+    event_type: str,
+    role: str | None,
+    metadata: dict[str, Any] | None = None,
+) -> str:
     normalized = str(event_type or "event").strip().lower()
+    collaboration_type = _collaboration_thread_item_type(event_type=normalized, metadata=metadata)
+    if collaboration_type is not None:
+        return collaboration_type
     explicit = EVENT_THREAD_ITEM_TYPES.get(normalized)
     if explicit:
         return explicit
@@ -510,12 +580,16 @@ def _item_data(item_type: str, *, event_type: str, data: dict[str, Any]) -> dict
             "runtime_task_id": _text(data.get("runtime_task_id") or data.get("task_id")),
             "label": _text(data.get("label") or data.get("title") or data.get("name")),
         }
-    if item_type == "subagent_activity":
+    if item_type in {"subagent_activity", "agent_team_activity", "peer_a2a_activity"}:
         return {
             "runtime_task_id": _text(data.get("runtime_task_id") or data.get("task_id")),
             "child_session_id": _text(data.get("child_session_id")),
             "parent_session_id": _text(data.get("parent_session_id")),
             "target_agent_name": _text(data.get("target_agent_name") or data.get("child_agent_name")),
+            "team_id": _text(data.get("team_id")),
+            "team_member_id": _text(data.get("team_member_id") or data.get("member_id")),
+            "member_name": _text(data.get("member_name")),
+            "read_only": item_type == "peer_a2a_activity",
         }
     if item_type == "context_compaction":
         sections = data.get("continuity_sections_injected")
@@ -624,7 +698,13 @@ def _user_summary(
         return f"工作流：{label}" if label else "工作流状态已更新。"
     if item_type == "subagent_activity":
         label = _text(data.get("target_agent_name") or data.get("child_agent_name"))
-        return f"协作 Agent：{label}" if label else "协作 Agent 状态已更新。"
+        return f"Sub-agent：{label}" if label else "Sub-agent 状态已更新。"
+    if item_type == "agent_team_activity":
+        label = _text(data.get("member_name") or data.get("target_agent_name") or data.get("child_agent_name"))
+        return f"Agent Team：{label}" if label else "Agent Team 状态已更新。"
+    if item_type == "peer_a2a_activity":
+        label = _text(data.get("target_agent_name") or data.get("child_agent_name"))
+        return f"A2A 数字员工：{label}" if label else "A2A 数字员工状态已更新。"
     if item_type == "context_compaction":
         return "已整理会话上下文，任务会继续。"
     if item_type == "artifact":
@@ -714,10 +794,12 @@ def _user_item_data(item_type: str, item_data: dict[str, Any]) -> dict[str, Any]
         clean["workflow_run_id"] = None
         clean["workflow_step_id"] = None
         clean["runtime_task_id"] = None
-    elif item_type == "subagent_activity":
+    elif item_type in {"subagent_activity", "agent_team_activity", "peer_a2a_activity"}:
         clean["runtime_task_id"] = None
         clean["child_session_id"] = None
         clean["parent_session_id"] = None
+        clean["team_id"] = None
+        clean["team_member_id"] = None
     elif item_type == "context_compaction":
         clean["original_message_count"] = None
         clean["kept_message_count"] = None
@@ -827,6 +909,7 @@ def build_thread_item(
         else classify_thread_item(
             event_type=event_type,
             role=clean_role,
+            metadata=clean_metadata,
         )
     )
     persisted_status = str(getattr(event, "item_status", None) or "")
@@ -887,8 +970,8 @@ def build_live_thread_item(
 ) -> dict[str, Any]:
     event_type = str(event.get("event_type") or event.get("type") or "event")
     role = str(event.get("role") or ("assistant" if event_type in {"thinking", "assistant_message"} else "system"))
-    item_type = classify_thread_item(event_type=event_type, role=role)
     metadata = dict(event)
+    item_type = classify_thread_item(event_type=event_type, role=role, metadata=metadata)
     transient = type(
         "LiveThreadEvent",
         (),

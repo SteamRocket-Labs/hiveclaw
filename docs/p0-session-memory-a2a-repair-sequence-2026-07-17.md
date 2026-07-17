@@ -8,8 +8,8 @@
 
 Session V2 重构（AA 总账 Group 1–4，229 文件 / ~4 万行）**方向正确、施工序错误**。
 
-- **已完成的是后端事实底座**：Group 1（安全/principal/authority）、Group 2（Session 机械事实语言）、Group 3（root admission/coverage）、Group 4（durable result/fan-in）——全部是用户看不见的运行时权威层，且已上生产。
-- **用户真正痛的东西全部押在未完成的 Group 6/7/9**：Session 前端呈现（Group 9）、跨渠道/跨员工 A2A（Group 7）、上下文/Memory 披露（Group 6）。
+- **已部署的是后端事实底座，不是永不回归的完成声明**：Group 1（安全/principal/authority）、Group 2（Session 机械事实语言）、Group 3（root admission/coverage）、Group 4（durable result/fan-in）已经形成并上生产；但本轮 live-entry/path 复核重新打开了 Group 1/2/3 的五个协作 leaf，必须按当前源码修复，不能用旧 deployment 证据掩盖。
+- **用户真正痛的垂直切片跨越多个 Group**：Session 前端呈现主要在 Group 9；Memory 披露在 Group 6；当前 Peer A2A 故障落在 Group 1/2/3 的 authority、consumer 与 terminal/Team seam。Group 7 继续拥有跨渠道 route/result/delivery Missing，但不是当前单渠道 A2A 瘫痪的兜底桶。
 - **两个平面因此断裂**：写路径换成了 v2 事实语言，但把 v2 接到用户眼睛上的读路径/前端收口（Group 9）没做；先上了后端底座却没有产品验收门兜底，断裂直接暴露给用户。
 
 这就是 owner 观察到的"用户需要的东西和正在修的东西处于两个不同平面"的机制性根因：**水平分层序（先把所有底层做完再往上）取代了垂直切片（每次交付一个用户可见的端到端闭环）**，违反北极星第 1 条（Goal 1 产品先建先判）、第 7 条（产品消费是操作面）与"垂直切片/走通骨架优先"。
@@ -24,7 +24,7 @@ Session V2 重构（AA 总账 Group 1–4，229 文件 / ~4 万行）**方向正
 |---|---|---|---|---|
 | ① 模型自主性 / 别把 native 改挂 | `runtime-model-agency-constraint-audit-2026-07-13.md` | Group 1 | 已闭环（C-01~C-20 上生产，删掉了 post-hoc final-answer rewriter） | 老根因已修；本轮作为**回归门**贯穿所有切片 |
 | ② 上下文组装 / Memory 不爆 | `unified-context-assembly-and-progressive-disclosure-2026-07-14.md` | Group 6 | **P0 Memory 自动披露切片本地 Green；完整 Group 6 仍未完成，待生产验收** | **Memory 爆炸** |
-| ③ Session V2 CC/Codex 对齐 | `session-v2-cc-codex-alignment-contract-2026-07-14.md` | Group 2/3/4 ✅ + Group 7/9 | Session replay/首屏 hydration/Peer A2A Session 已由 `06f340c4c`、`2b3e05011`、`7b6798933` 实装；待本轮统一生产验收 | Session 呈现、Desktop 交付、A2A 层级 |
+| ③ Session V2 CC/Codex 对齐 | `session-v2-cc-codex-alignment-contract-2026-07-14.md` | Group 1/2/3 当前回归 + Group 7/9 后续验收 | 既有 Session/A2A substrate 保留；本轮补 server read-only、三类 typed consumer、terminal root、Team model/hidden surface 与历史 backfill，当前 local Green、待生产验收 | Session 呈现、Desktop 交付、A2A 层级 |
 
 ## 2. A2A 的正确层级：三层，不是两层
 
@@ -92,24 +92,29 @@ Session V2 重构（AA 总账 Group 1–4，229 文件 / ~4 万行）**方向正
 
 **当前本地状态**：`06f340c4c` 已实装 newest-first canonical hydration、自动 backfill、live/backfill merge、typed retry 与 optimistic input identity；`7b6798933` 修复 legacy session-scoped event replay。仍待统一发布后的 live / reconnect / reload / resume browser canary，不能仅凭本地 Green 宣称生产闭环。
 
-### P0-3 · A2A 三层各自跑通（落在 Group 7 + Group 3 残留）
+### P0-3 · A2A 三层各自跑通（当前回归落在 Group 1/2/3；跨渠道 Missing 留在 Group 7）
 
 **症状**：大 A2A 委派（`delegate_to_agent` 给另一位数字员工）失败/卡住；父会话看不到对方执行（read-only 语义"没了"）。
 
-**本轮修复前的根因（已核实，卡的是第 ③ 层）**：
-- 授权 receipt 门：`current_principal is None` 就无条件硬失败（principal 来自 args `_execution_principal`，turn_orchestrator 重写易弄丢）。
-- 协调租约门：task 建成 `status="suspended"`（`orchestrator.py:3423`），但 `CLAIMABLE_RUNTIME_TASK_STATUSES = ("pending","resumable")`（`app/services/runtime_task_claim_service.py:15`）**不含 `suspended`**，且无 suspended→resumable 激活路径 → worker 永远认领不到；租约 TTL 长达 ~1h，占租约期间同一 A2A 重试全被静默 skip。
-- 真 gap：父会话从不加载子 `delegation_run` transcript → owner 看不到对方执行（read-only 派生本身仍在，没删）。
+**本轮修复前的当前根因（live-entry/path proof，而不是沿用已修历史根因）**：
+
+1. `delegation_run` 只在 DTO/UI 声明 read-only，server mutation 仍能 start/steer/rename/delete/Team/Workflow/Plan，另一个数字员工的 task-scoped Session 仍可被接管。
+2. backend 把 `task_type=delegation` 归到 `subagents`，frontend 也没有 `peer_a2a` typed section；右栏因此把 Peer A2A、内部 worker 与 terminal state 混成 Child Session/Workers/Working。
+3. `SessionRunOutcome` 完成 `RuntimeTask` 后没有同事务关闭对应 `RuntimeRootItem`，provider 已失败/任务已结束时 root coverage 仍可长期显示 Working。
+4. `AgentTeamMember.model_id` 已保存但没有进入 worker model loader，具名 teammate 实际仍可能使用 lead Agent primary model。
+5. Team member implementation Session 使用 `listed_surface=chat`，进入普通 Session 列表，违背“父上下文内具名 teammate”的产品身份。
 
 **当前 checkout 的实装与剩余验收**（按 §2 三层拆成三个独立验收对象）：
-- ① sub-agent：保持独立 spawn/返回/progress 产品语义，不在 Peer A2A 修复中改写成普通用户 Session。
-- ② agent team：保持具名 teammate 的寻址/roster/回收合同，走 `spawn_subagent` 机制，不与 ③ 合并成 generic delegation。
-- ③ A2A 到 employee：`06f340c4c` 已实装 task-scoped read-only `delegation_run`、pre-dispatch terminal projection、parent receipt 与 repair 工具；`2b3e05011` 已将 child Session writer 绑定 exact RuntimeTask authority；`7b6798933` 保留 legacy session-scoped event replay。剩余门是三层独立 golden 轨迹、repair dry-run、真实跨员工委派与 production canary，不是再回到旧 root cause 重写一遍。
+
+- ① Sub-agent：保持独立 spawn/return/progress，backend `subagents` 与 canonical `subagent_activity` 只承载轻量内部 worker；不制造普通用户可导航 Session。
+- ② Agent Team：保持同一 lead Agent 的具名 teammate、roster 与回收合同；member model 在 spawn 前按 tenant + enabled + exact UUID/label/model 校验，resolved ID 进入 RuntimeTask 并由 worker 真正消费；member Session 改为 `listed_surface=parent`。
+- ③ Peer A2A：保持跨 `agent_id` 的 governed delegation；`delegation_run` 由 server exact `session_kind` 强制 read-only，owner/manager 均不可 mutation，read transcript/workbench/export 仍可用；backend `peer_a2a`、canonical `peer_a2a_activity` 与 frontend A2A segment 消费独立 typed truth。
+- 共同 terminal/recovery：`SessionRunOutcome`、`RuntimeTask`、`RuntimeRootItem` 同事务单调收敛；additive migration `collaboration_runtime_closure_0717` 回填历史 Team surface、exact task-bound Peer A2A Session、root terminal drift 与 collaboration ThreadItem，downgrade 不重新暴露或重开已修真相。
 
 **验收门**：修正后的 §16 三层 + §8.5；三层各自有独立 golden 轨迹；cycle/depth/budget/principal 治理不变。
 **native 回归门**：三层在改动前能 spawn/委派/回传的，改动后必须仍能，且治理（principal/cycle/budget）不被削弱。
 
-**当前本地状态**：`06f340c4c` 已实装 Peer Digital Employee task-scoped read-only `delegation_run`、pre-dispatch terminal projection、parent receipt 与 repair 工具；`2b3e05011` 把 child Session event writer 绑定到 exact RuntimeTask authority；`7b6798933` 保留 legacy replay。Sub-agent、Agent Team 与 Peer A2A 仍按三条产品语义独立验收；真实跨员工委派和生产 repair dry-run 尚未执行。
+**当前本地状态**：既有 `06f340c4c` / `2b3e05011` / `7b6798933` substrate 保持；本轮五个 regression seam 已完成代码、typed consumer、additive migration/backfill 与 Red→Green。协作 backend family=`382 passed`，backend full=`7567 passed, 2 skipped`，真实 PostgreSQL migration suite=`214 passed`，frontend typed consumer=`51+1 passed`，frontend full=`120 files / 709 tests`，production build/bundle budget 全绿。未执行三服务部署、production migration、真实跨员工委派/browser canary 前，Group 1/2/3 对应 leaf 仍是 `in_progress-local-green`，不得写成 production closed。
 
 ## 4. 排序与并行性
 
@@ -128,5 +133,5 @@ AA 总账 Group 5（Fleet 公平/Trigger 扫描）、Group 10（Goal 1 行为门
 ## 6. 与 AA 总账的关系
 
 - AA 总账 §9 的依赖表、Group 定义、leaf、`EVID-*` 证据合同**全部保留有效**。
-- 本文只在 AA 总账 §9 前插入"P0 止血序"引用本文，并在 Group 7 把 A2A 更正为三层验收对象。
-- 本文三个 P0 切片闭环后，其证据仍按 AA 总账 §0.2 回填到对应 Group（P0-1→Group 6、P0-2→Group 9、P0-3→Group 7/3）的 `EVID-*`，不另造第二套证据账本。
+- 本文只在 AA 总账 §9 前插入"P0 止血序"引用本文，并把三类协作产品身份写成共同验收合同；它不改变 canonical owner。
+- 本文三个 P0 切片闭环后，其证据仍按 AA 总账 §0.2 回填到对应 Group：P0-1→Group 6，P0-2→Group 9，P0-3 当前回归→Group 1/2/3；真正的跨渠道 route/result/delivery Missing→Group 7。不得另造第二套证据账本。

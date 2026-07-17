@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from app.memory.assembler import MemoryAssembler, _freshness_suffix
 from app.memory.types import MemoryItem, MemoryKind
 
@@ -82,47 +84,52 @@ class TestAssembleGroupsByKind:
         assert result.index("raw score loser") < result.index("raw score winner")
 
 
-class TestAssembleBudgetAdvisory:
-    """Prompt budgets never decide which authorized memories the model sees."""
+class TestAssembleBoundedAutomaticSurfacing:
+    """Automatic body surfacing is bounded; full memory stays reachable by ref."""
 
-    def test_budget_does_not_prune_memory_items(self) -> None:
-        items = [_make_item(MemoryKind.SEMANTIC, f"fact number {i} with extra padding words") for i in range(100)]
-        assembler = MemoryAssembler()
-        result = assembler.assemble(items, budget_chars=200)
+    def test_more_than_five_model_selected_items_is_a_contract_error(self) -> None:
+        items = [_make_item(MemoryKind.SEMANTIC, f"fact {index}", entry_id=f"memory-{index}") for index in range(6)]
 
-        assert "[Semantic Memory]" in result
-        assert "fact number 0" in result
-        assert "fact number 99" in result
+        with pytest.raises(ValueError, match="at most 5"):
+            MemoryAssembler().assemble(items)
 
-    def test_small_budget_still_produces_output(self) -> None:
-        items = [_make_item(MemoryKind.EPISODIC, "short")]
-        assembler = MemoryAssembler()
-        result = assembler.assemble(items, budget_chars=50)
+    def test_single_item_is_at_most_four_kib_and_two_hundred_lines(self) -> None:
+        content = "\n".join(f"line-{index}-" + ("界" * 80) for index in range(500))
+        item = _make_item(MemoryKind.SEMANTIC, content, entry_id="memory-large")
 
-        assert "[Episodic Memory]" in result
-        assert "short" in result
+        result = MemoryAssembler().assemble([item], budget_chars=20_000)
 
-    def test_budget_preserves_every_memory_section(self) -> None:
+        assert len(result.encode("utf-8")) <= 4096
+        assert len(result.splitlines()) <= 200
+        assert "memory-large" in result
+        assert 'load_memory(ids=["memory-large"])' in result
+        assert "line-499" not in result
+
+    def test_five_items_are_at_most_twenty_kib_per_turn(self) -> None:
+        items = [_make_item(MemoryKind.SEMANTIC, "证据" * 5000, entry_id=f"memory-{index}") for index in range(5)]
+
+        result = MemoryAssembler().assemble(items, budget_chars=100_000)
+
+        assert len(result.encode("utf-8")) <= 5 * 4096
+        assert all(f"memory-{index}" in result for index in range(5))
+
+    def test_representation_budget_keeps_selected_refs_without_dumping_all_bodies(self) -> None:
         items = [
-            _make_item(MemoryKind.EPISODIC, "A" * 100),
-            _make_item(MemoryKind.EXTERNAL, "B" * 100),
+            _make_item(MemoryKind.EPISODIC, "A" * 1000, entry_id="memory-a"),
+            _make_item(MemoryKind.EXTERNAL, "B" * 1000, entry_id="memory-b"),
         ]
-        assembler = MemoryAssembler()
-        result = assembler.assemble(items, budget_chars=120)
+        result = MemoryAssembler().assemble(items, budget_chars=700)
 
-        assert "[Episodic Memory]" in result
-        assert "B" * 100 in result
+        assert len(result.encode("utf-8")) <= 700
+        assert "memory-a" in result
+        assert "memory-b" in result
+        assert "A" * 1000 not in result
+        assert "B" * 1000 not in result
 
-    def test_budget_preserves_lower_scored_authorized_items_too(self) -> None:
-        items = [
-            _make_item(MemoryKind.SEMANTIC, "very long but high score " + ("A" * 80), score=0.95),
-            _make_item(MemoryKind.SEMANTIC, "very long but low score " + ("B" * 80), score=0.10),
-        ]
-        assembler = MemoryAssembler()
-        result = assembler.assemble(items, budget_chars=120)
+    def test_exhausted_session_budget_surfaces_no_dynamic_body(self) -> None:
+        item = _make_item(MemoryKind.SEMANTIC, "short", entry_id="memory-short")
 
-        assert "very long but high score" in result
-        assert "very long but low score" in result
+        assert MemoryAssembler().assemble([item], budget_chars=0) == ""
 
     def test_all_activation_reasons_are_visible(self) -> None:
         item = _make_item(MemoryKind.SEMANTIC, "fact")

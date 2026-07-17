@@ -19,6 +19,63 @@ from app.runtime.context_budget import ContextBudget
 
 logger = logging.getLogger(__name__)
 
+MAX_AUTOMATIC_MEMORY_ITEMS = 5
+MAX_SELECTION_DESCRIPTOR_BYTES = 512
+
+
+def _bounded_descriptor_text(value: object, *, max_bytes: int = MAX_SELECTION_DESCRIPTOR_BYTES) -> str:
+    compact = " ".join(str(value or "").split())
+    encoded = compact.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return compact
+    return encoded[:max_bytes].decode("utf-8", errors="ignore").rstrip()
+
+
+def _selection_descriptor(item: MemoryItem) -> dict[str, object]:
+    """Return a bounded CC-style name/description manifest entry.
+
+    The selector chooses files/pages from this index. It never receives every
+    candidate body merely to decide which bodies should enter the main prompt.
+    Full authorized bytes remain bound to the stable load ref and are read only
+    for the at-most-five selected entries.
+    """
+
+    metadata = item.metadata
+    candidate_id = str(metadata["selection_candidate_id"])
+    entry_id = str(metadata.get("entry_id") or metadata.get("page_id") or "").strip()
+    session_id = str(metadata.get("session_id") or "").strip()
+    source_type = str(metadata.get("source_type") or item.kind.value)
+    name = _bounded_descriptor_text(
+        metadata.get("title")
+        or metadata.get("target_hint")
+        or (f"Session {session_id}" if session_id else "")
+        or metadata.get("category")
+        or item.source
+        or candidate_id,
+        max_bytes=256,
+    )
+    description = _bounded_descriptor_text(
+        metadata.get("description") or metadata.get("preview") or metadata.get("summary") or item.content
+    )
+    return {
+        "candidate_id": candidate_id,
+        "kind": item.kind.value,
+        "name": name,
+        "description": description,
+        "source_type": source_type,
+        "load_ref": {
+            "entry_id": entry_id or None,
+            "session_id": session_id or None,
+            "source": item.source,
+        },
+        "observations": {
+            "score": item.score,
+            "activation_reasons": metadata.get("activation_reasons") or [],
+            "category": metadata.get("category"),
+            "timestamp": metadata.get("timestamp"),
+        },
+    }
+
 
 class MemoryRetriever:
     """Four-layer memory retrieval pipeline.
@@ -50,11 +107,43 @@ class MemoryRetriever:
         """Gather complete authorized evidence, then let the model select semantics.
 
         Mechanical scores, graph propagation, recency, and working-set heat are
-        observable ranking evidence only. They never cap, filter, deduplicate,
-        or make the final semantic selection. If the selector is unavailable,
-        every authorized candidate is returned instead of falling back to top-k.
+        observable ranking evidence only. They never make the semantic
+        selection. The model may choose at most five bodies for automatic
+        surfacing; every other authorized item remains losslessly reachable via
+        search/load refs and the persisted coverage receipt.
         """
         del limit, retrieval_profile  # compatibility-only; never semantic cutoffs
+        items = await self._gather_authorized_candidates(
+            agent_id,
+            query,
+            session_id,
+            tenant_id,
+            activation_context=activation_context,
+        )
+        return await self._select_candidates(
+            items,
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            query=query,
+            model_config=rerank_model_config,
+        )
+
+    async def _gather_authorized_candidates(
+        self,
+        agent_id: uuid.UUID,
+        query: str,
+        session_id: str | None,
+        tenant_id: str | None,
+        *,
+        activation_context: ActivationContext | None = None,
+    ) -> list[MemoryItem]:
+        """Return ranking evidence before model-owned automatic selection.
+
+        This internal seam exists for the deterministic offline recall eval.
+        Live prompt assembly must call :meth:`retrieve`, which adds the model
+        selector and the ref-only failure contract.
+        """
+
         items: list[MemoryItem] = []
         items.extend(self._retrieve_explicit_overlay(agent_id, query=query) or [])
         items.extend(self._retrieve_knowledge_pages(agent_id, query=query) or [])
@@ -79,13 +168,7 @@ class MemoryRetriever:
 
         if activation_context:
             items = self._apply_activation(items, activation_context, agent_id=agent_id)
-        return await self._select_candidates(
-            items,
-            agent_id=agent_id,
-            tenant_id=tenant_id,
-            query=query,
-            model_config=rerank_model_config,
-        )
+        return items
 
     def _retrieve_knowledge_pages(
         self, agent_id: uuid.UUID, *, query: str = "", limit: int | None = None
@@ -128,6 +211,7 @@ class MemoryRetriever:
                         "page_id": page_id,
                         "entry_id": page_id,
                         "title": title,
+                        "description": str(hit.get("preview") or title),
                         "page_kind": page_kind,
                         "source_ref": source_ref,
                         "source_type": "knowledge_ppr",
@@ -148,7 +232,7 @@ class MemoryRetriever:
         query: str,
         model_config: dict | None,
     ) -> list[MemoryItem]:
-        """Apply model-owned semantic selection with a complete-input fallback."""
+        """Apply model-owned semantic selection with a ref-only failure path."""
 
         self.last_selection_error = None
         self.last_selection_receipt = None
@@ -161,15 +245,14 @@ class MemoryRetriever:
         selection_run_id = uuid.uuid4().hex
         if not model_config:
             self.last_selection_status = "model_unavailable"
-            fallback = self._annotate_selection(prepared, status="model_unavailable")
             self._record_selection_receipt(
                 agent_id=agent_id,
                 run_id=selection_run_id,
                 candidates=prepared,
-                selected=fallback,
+                selected=[],
                 status="model_unavailable",
             )
-            return fallback
+            return []
 
         try:
             selected_ids, reason = await self._select_with_model(
@@ -182,6 +265,10 @@ class MemoryRetriever:
             )
             if not isinstance(selected_ids, list) or any(not isinstance(value, str) for value in selected_ids):
                 raise ValueError("memory selector selected_ids must be a string list")
+            if len(selected_ids) > MAX_AUTOMATIC_MEMORY_ITEMS:
+                raise ValueError(
+                    f"memory selector may automatically surface at most {MAX_AUTOMATIC_MEMORY_ITEMS} items"
+                )
             by_id = {str(item.metadata["selection_candidate_id"]): item for item in prepared}
             unknown = [candidate_id for candidate_id in selected_ids if candidate_id not in by_id]
             if unknown:
@@ -205,19 +292,18 @@ class MemoryRetriever:
             )
             return selected
         except Exception as exc:  # model failure must never trigger mechanical semantic selection
-            logger.warning("[Retriever] model semantic selection failed; exposing all candidates: %s", exc)
+            logger.warning("[Retriever] model semantic selection failed; preserving ref-only coverage: %s", exc)
             self.last_selection_status = "failed"
             self.last_selection_error = type(exc).__name__
-            fallback = self._annotate_selection(prepared, status="failed", error=type(exc).__name__)
             self._record_selection_receipt(
                 agent_id=agent_id,
                 run_id=selection_run_id,
                 candidates=prepared,
-                selected=fallback,
+                selected=[],
                 status="failed",
                 error=f"{type(exc).__name__}: {exc}",
             )
-            return fallback
+            return []
 
     @staticmethod
     def _attach_selection_candidate_ids(items: list[MemoryItem]) -> list[MemoryItem]:
@@ -305,16 +391,9 @@ class MemoryRetriever:
 
             sections: list[tuple[str, str]] = []
             for item in items:
-                candidate_id = str(item.metadata["selection_candidate_id"])
-                payload = {
-                    "candidate_id": candidate_id,
-                    "kind": item.kind.value,
-                    "content": item.content,
-                    "source": item.source,
-                    "score_observation": item.score,
-                    "metadata": item.metadata,
-                }
-                sections.append((candidate_id, json.dumps(payload, ensure_ascii=False, indent=2, default=str)))
+                descriptor = _selection_descriptor(item)
+                candidate_id = str(descriptor["candidate_id"])
+                sections.append((candidate_id, json.dumps(descriptor, ensure_ascii=False, indent=2, default=str)))
 
             async def review_chunk(_phase: str, prompt: str) -> str:
                 response = await client.complete(
@@ -322,8 +401,8 @@ class MemoryRetriever:
                         LLMMessage(
                             role="system",
                             content=(
-                                "Preserve every memory candidate ID, complete fact, exception, conflict, provenance, "
-                                "authority-relevant detail, and decisive tail for the final semantic selector. "
+                                "Preserve every memory candidate ID, bounded description, load ref, provenance, "
+                                "and observable activation signal for the final semantic selector. "
                                 "Scores, order, recency, and graph signals are observations only."
                             ),
                         ),
@@ -355,10 +434,13 @@ class MemoryRetriever:
                     LLMMessage(
                         role="system",
                         content=(
-                            "You are the semantic authority for prompt-memory selection. Review the complete "
-                            "authorized candidate evidence. Select every candidate needed to answer the current "
-                            "query faithfully, including constraints, exceptions, conflicts, and non-lexical "
-                            "connections; select none when none is useful. There is no item-count target or limit. "
+                            "You are the semantic authority for prompt-memory discovery. Review the complete "
+                            "authorized memory index: candidate names, bounded descriptions, and load refs. Select "
+                            "the candidates most likely to help answer the current query; select none when none is "
+                            "useful. Select at most five candidate bodies for "
+                            "automatic prompt surfacing. If more evidence may matter, choose the five best starting "
+                            "points; the conversation model can continue with search_memory/load_memory. Do not "
+                            "claim the index description is the full memory body. "
                             "Mechanical scores, order, recency, and graph signals are observations only. Return raw "
                             'JSON only: {"selected_ids":["memory_candidate:..."],"reason":"complete rationale"}'
                         ),
@@ -564,6 +646,9 @@ class MemoryRetriever:
                 "entry_id": fact.get("id", ""),
                 "category": fact.get("category", "general"),
                 "target_hint": fact.get("target_hint", "unknown"),
+                "description": fact.get("target_hint")
+                if str(fact.get("target_hint") or "").strip() not in {"", "unknown"}
+                else fact.get("preview", ""),
                 "source_type": "explicit_overlay",
                 "sensitivity": fact.get("sensitivity", "PL1_public"),
                 "timestamp": fact.get("timestamp", ""),
@@ -621,7 +706,11 @@ class MemoryRetriever:
                                 content=row[0],
                                 score=1.0,
                                 source="current_session",
-                                metadata={"session_id": str(row[1]), "is_current_session": True},
+                                metadata={
+                                    "session_id": str(row[1]),
+                                    "is_current_session": True,
+                                    "description": _bounded_descriptor_text(row[0]),
+                                },
                             )
                         )
 
@@ -652,6 +741,7 @@ class MemoryRetriever:
                                 metadata={
                                     "session_id": str(row[1]),
                                     "timestamp": _last_msg_at.isoformat() if _last_msg_at else None,
+                                    "description": _bounded_descriptor_text(row[0]),
                                 },
                             )
                         )

@@ -129,10 +129,10 @@ async def test_same_query_recalls_differently_under_different_working_sets(tmp_p
     def _context(working_set: tuple[tuple[str, float], ...]) -> ActivationContext:
         return ActivationContext(query=query, principal_stack=PrincipalStack(), now=NOW, working_set=working_set)
 
-    neutral = await retriever.retrieve(
+    neutral = await retriever._gather_authorized_candidates(
         agent_id, query, session_id=None, tenant_id=None, activation_context=_context(())
     )
-    governance_context = await retriever.retrieve(
+    governance_context = await retriever._gather_authorized_candidates(
         agent_id,
         query,
         session_id=None,

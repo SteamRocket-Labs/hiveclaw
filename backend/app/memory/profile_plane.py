@@ -1,8 +1,10 @@
 """Profile-plane resident memory reader (Part A read side, spec §4.2/§3.2).
 
 The profile plane (self + profiles + soul) is small and always relevant, so it
-is loaded WHOLE into the prompt — no retrieval, no per-entry scoring, no LLM,
-and NEVER trimmed here: an over-budget resident block is a write-side
+is loaded WHOLE into the prompt — no retrieval, no per-entry scoring, no LLM.
+Explicit overlay bodies are not part of that identity plane: a bounded
+ID/preview index stays resident and full entries remain available through
+``load_memory``. An over-budget identity block is a write-side
 convergence failure (工序 4 signal), so the reader raises a one-shot
 ``memory_resident_over_budget`` alert and keeps the text intact.
 
@@ -36,6 +38,8 @@ RESIDENT_SECTION_FILES: tuple[tuple[str, str], ...] = (
     ("profiles/domain", "profiles/domain.md"),
 )
 DEFAULT_RESIDENT_BUDGET_CHARS = 12_000.0
+RESIDENT_INDEX_MAX_LINES = 200
+RESIDENT_INDEX_MAX_BYTES = 25_000
 
 _FAILURE_SECTION_RE = re.compile(r"^##\s+失败模式\s*$")
 _SECTION_HEADER_RE = re.compile(r"^##\s+")
@@ -87,24 +91,15 @@ def load_resident_memory(
         blocks.append(f"### {section_name} ({rel_path})\n{content}")
 
     if include_overlay:
-        overlay_lines: list[str] = []
         try:
-            for entry in load_explicit_overlay_entries(Path(data_root), agent_id):
-                if entry.status != "active":
-                    continue
-                # Sensitive entries never ride the always-on resident block; they
-                # remain reachable through retrieval + activation gating (§4.5).
-                if str(entry.sensitivity or "").startswith(("PL3", "PL4")):
-                    continue
-                content = entry.content.strip()
-                if content:
-                    overlay_lines.append(f"- [{entry.category}] {content} ({entry.entry_id})")
+            overlay_index = _render_resident_explicit_index(load_explicit_overlay_entries(Path(data_root), agent_id))
         except Exception as exc:  # explicit overlay is governed but not identity-critical
             logger.warning("Resident explicit overlay unavailable for %s: %s", agent_id, exc)
             read_errors.append("explicit_overlay")
-        if overlay_lines:
+            overlay_index = ""
+        if overlay_index:
             sections.append("explicit_overlay")
-            blocks.append("### Explicit Overlay (active)\n" + "\n".join(overlay_lines))
+            blocks.append("### Explicit Memory Index (active)\n" + overlay_index)
 
     if not blocks:
         return ResidentMemory(
@@ -131,6 +126,42 @@ def load_resident_memory(
         active_failure_modes=active_failures,
         read_errors=tuple(read_errors),
     )
+
+
+def _render_resident_explicit_index(entries) -> str:
+    """Render the CC-style resident index without leaking sensitive previews."""
+
+    active = [
+        entry
+        for entry in entries
+        if entry.status == "active" and not str(entry.sensitivity or "").startswith(("PL3", "PL4"))
+    ]
+    if not active:
+        return ""
+    active.sort(key=lambda entry: (str(entry.created_at or ""), entry.entry_id), reverse=True)
+    lines = [
+        f"{len(active)} active entries. This is a bounded navigation index, not full memory bodies.",
+        "Use search_memory(query=...) to discover all matches and load_memory(ids=[...]) for full text.",
+    ]
+    shown = 0
+    for entry in active:
+        compact = re.sub(r"\s+", " ", entry.content or "").strip()
+        preview = compact if len(compact) <= 90 else compact[:87].rstrip() + "..."
+        line = f'- id={entry.entry_id} [{entry.category}] {preview} load_memory(ids=["{entry.entry_id}"])'
+        coverage = f"Showing {shown + 1} of {len(active)} active entries; search_memory covers the remainder."
+        candidate = "\n".join([*lines, line, coverage])
+        if len(lines) + 2 > RESIDENT_INDEX_MAX_LINES or len(candidate.encode("utf-8")) > RESIDENT_INDEX_MAX_BYTES:
+            break
+        lines.append(line)
+        shown += 1
+    lines.append(f"Showing {shown} of {len(active)} active entries; search_memory covers the remainder.")
+    rendered = "\n".join(lines)
+    if (
+        len(rendered.encode("utf-8")) > RESIDENT_INDEX_MAX_BYTES
+        or len(rendered.splitlines()) > RESIDENT_INDEX_MAX_LINES
+    ):
+        raise RuntimeError("resident_explicit_index_budget_invariant")
+    return rendered
 
 
 def extract_active_failure_modes(self_md: str) -> str:

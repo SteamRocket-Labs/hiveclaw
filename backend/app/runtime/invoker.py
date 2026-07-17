@@ -245,13 +245,7 @@ def _prefixed_turn_id(prefix: str, value: Any) -> str:
 
 def _ensure_turn_metadata(request: AgentInvocationRequest) -> dict[str, Any]:
     metadata = _session_metadata(request.session_context)
-    seed = (
-        metadata.get("turn_id")
-        or metadata.get("runtime_task_id")
-        or metadata.get("request_id")
-        or request.memory_session_id
-        or uuid.uuid4().hex
-    )
+    seed = metadata.get("turn_id") or metadata.get("runtime_task_id") or metadata.get("request_id") or uuid.uuid4().hex
     turn_id = _prefixed_turn_id("turn", metadata.get("turn_id") or seed)
     intent_seed = metadata.get("intent_id") or metadata.get("request_id") or turn_id.removeprefix("turn-")
     intent_id = _prefixed_turn_id("intent", intent_seed)
@@ -711,6 +705,7 @@ async def _resolve_memory_context(
     budget_profile = _resolve_context_budget(request)
     context_window_tokens = getattr(request.model, "max_input_tokens", None) if request.model else None
     query = _last_user_query(request.messages)
+    turn_metadata = _ensure_turn_metadata(request) if session_id else _session_metadata(request.session_context)
 
     if request.agent_id and tenant_id:
         _memory_kwargs = {
@@ -731,6 +726,8 @@ async def _resolve_memory_context(
             _memory_kwargs["current_user_name"] = current_user_name
         if "return_result" in _memory_sig:
             _memory_kwargs["return_result"] = True
+        if "turn_id" in _memory_sig:
+            _memory_kwargs["turn_id"] = turn_metadata.get("turn_id")
         memory_value = await build_memory_context(request.agent_id, tenant_id, **_memory_kwargs)
         runtime_memory_result = (
             memory_value
@@ -754,17 +751,23 @@ async def _resolve_memory_context(
                 )
             )
         if runtime_memory_result.status != "ready":
+            effect_state = (
+                "When memory authority is unavailable, external effects are frozen."
+                if not runtime_memory_result.external_effects_available
+                else "External effects remain governed by their normal authority and approval boundaries."
+            )
             parts.append(
                 _context_engine().inject(
                     request.session_context,
                     kind="memory_runtime_status",
                     source="memory_provider:degraded",
                     content=(
-                        "[Memory runtime degraded] Some governed memory context is temporarily unavailable. "
+                        f"[Memory runtime degraded: {runtime_memory_result.code}] "
+                        f"{runtime_memory_result.user_message} "
                         f"Authority context available: {runtime_memory_result.authority_context_available}. "
                         f"Durable writes available: {runtime_memory_result.durable_write_available}. "
                         f"External effects available: {runtime_memory_result.external_effects_available}. "
-                        "When authority context is unavailable, external effects are frozen. "
+                        f"{effect_state} "
                         "Continue reasoning from visible evidence, do not assume complete recall, "
                         "state uncertainty, and ask for missing facts when they matter."
                     ),
@@ -845,6 +848,11 @@ async def _consume_memory_context_status(
         "authority_context_available": result.authority_context_available,
         "durable_write_available": result.durable_write_available,
         "external_effects_available": result.external_effects_available,
+        "auto_surfaced_bytes": result.auto_surfaced_bytes,
+        "auto_surface_total_bytes": result.auto_surface_total_bytes,
+        "auto_surface_remaining_bytes": result.auto_surface_remaining_bytes,
+        "auto_surface_selected_count": result.auto_surface_selected_count,
+        "selection_receipt": result.selection_receipt,
     }
     metadata["memory_context_status"] = status_fact
     if result.status == "ready":

@@ -706,6 +706,122 @@ async def test_build_memory_context_uses_adaptive_budget_profile(monkeypatch, tm
 
 
 @pytest.mark.asyncio
+async def test_build_memory_context_exhausts_only_session_auto_surface_budget(monkeypatch, tmp_path) -> None:
+    from app.memory.activation import ActivationContext
+    from app.memory.session_surfacing import (
+        SESSION_AUTO_SURFACE_BUDGET_BYTES,
+        SESSION_AUTO_SURFACE_MIN_USEFUL_BYTES,
+    )
+    from app.memory.types import MemoryItem, MemoryKind
+    from app.services import memory_service
+    from app.services.principal_context import PrincipalStack
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    session_id = str(uuid4())
+
+    class _Retriever:
+        last_selection_status = "model_selected"
+
+        async def retrieve(self, *_args, **_kwargs):
+            return [
+                MemoryItem(
+                    kind=MemoryKind.SEMANTIC,
+                    content="记忆正文" * 5000,
+                    source="explicit",
+                    metadata={"entry_id": "mem-large", "source_type": "explicit_overlay"},
+                )
+            ]
+
+    async def activation(**kwargs):
+        return ActivationContext(query=kwargs["query"], principal_stack=PrincipalStack())
+
+    monkeypatch.setattr(
+        memory_service,
+        "get_settings",
+        lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path), MEMORY_RESIDENT_BUDGET_CHARS=25_000),
+    )
+    monkeypatch.setattr(memory_service, "MemoryRetriever", lambda **_kwargs: _Retriever())
+    monkeypatch.setattr(memory_service, "_resolve_activation_context", activation)
+    monkeypatch.setattr(
+        memory_service,
+        "_get_rerank_model_config",
+        lambda _tenant_id: {"provider": "fake", "model": "fake"},
+    )
+
+    results = []
+    for index in range(20):
+        result = await memory_service.build_memory_context(
+            agent_id,
+            tenant_id,
+            session_id=session_id,
+            turn_id=f"turn-{index}",
+            query="继续当前任务",
+            return_result=True,
+        )
+        results.append(result)
+        if result.code == "memory_auto_surface_budget_exhausted":
+            break
+
+    final = results[-1]
+    assert len(results) > 1
+    assert final.auto_surface_total_bytes <= SESSION_AUTO_SURFACE_BUDGET_BYTES
+    assert final.auto_surface_total_bytes + final.auto_surface_remaining_bytes == SESSION_AUTO_SURFACE_BUDGET_BYTES
+    assert final.auto_surface_remaining_bytes < SESSION_AUTO_SURFACE_MIN_USEFUL_BYTES
+    assert final.code == "memory_auto_surface_budget_exhausted"
+    assert final.status == "degraded"
+    assert final.conversation_available is True
+    assert final.external_effects_available is True
+    assert "search_memory" in final.user_message
+    assert "load_memory" in final.user_message
+    assert all(len(result.content.encode("utf-8")) <= 4096 for result in results)
+
+
+@pytest.mark.asyncio
+async def test_missing_memory_selector_is_ref_only_typed_degradation(monkeypatch, tmp_path) -> None:
+    from app.memory.activation import ActivationContext
+    from app.services import memory_service
+    from app.services.principal_context import PrincipalStack
+
+    class _Retriever:
+        last_selection_status = "model_unavailable"
+        last_selection_receipt = "memory/control/selection_receipts/receipt.json"
+
+        async def retrieve(self, *_args, **_kwargs):
+            return []
+
+    async def activation(**kwargs):
+        return ActivationContext(query=kwargs["query"], principal_stack=PrincipalStack())
+
+    monkeypatch.setattr(
+        memory_service,
+        "get_settings",
+        lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path), MEMORY_RESIDENT_BUDGET_CHARS=25_000),
+    )
+    monkeypatch.setattr(memory_service, "MemoryRetriever", lambda **_kwargs: _Retriever())
+    monkeypatch.setattr(memory_service, "_resolve_activation_context", activation)
+    monkeypatch.setattr(memory_service, "_get_rerank_model_config", lambda _tenant_id: None)
+
+    result = await memory_service.build_memory_context(
+        uuid4(),
+        uuid4(),
+        session_id=str(uuid4()),
+        turn_id="turn-selector-unavailable",
+        query="use relevant memory",
+        return_result=True,
+    )
+
+    assert result.content == ""
+    assert result.status == "degraded"
+    assert result.code == "memory_semantic_selection_unavailable"
+    assert result.retryable is True
+    assert result.conversation_available is True
+    assert result.external_effects_available is True
+    assert "search_memory" in result.user_message
+    assert "load_memory" in result.user_message
+
+
+@pytest.mark.asyncio
 async def test_build_memory_context_evolves_session_working_set(monkeypatch, tmp_path):
     """M4 wiring: each turn loads W_t into the activation context and advances
     it with the refs actually activated — the working set must not be an
@@ -738,12 +854,21 @@ async def test_build_memory_context_evolves_session_working_set(monkeypatch, tmp
         return ActivationContext(query=kwargs.get("query", ""), principal_stack=PrincipalStack())
 
     monkeypatch.setattr(memory_service, "_resolve_activation_context", fake_resolver)
+    monkeypatch.setattr(
+        memory_service,
+        "_get_rerank_model_config",
+        lambda _tenant_id: {"provider": "fake", "model": "fake"},
+    )
 
     import functools
 
     from app.memory.retriever import MemoryRetriever
 
     original_retrieve = MemoryRetriever.retrieve
+
+    async def select_railway(self, *, items, **_kwargs):
+        selected = next(item for item in items if "Railway Deployment" in item.content)
+        return [selected.metadata["selection_candidate_id"]], "railway page answers the query"
 
     @functools.wraps(original_retrieve)
     async def spying_retrieve(self, *args, **kwargs):
@@ -752,6 +877,7 @@ async def test_build_memory_context_evolves_session_working_set(monkeypatch, tmp
         return await original_retrieve(self, *args, **kwargs)
 
     monkeypatch.setattr(MemoryRetriever, "retrieve", spying_retrieve)
+    monkeypatch.setattr(MemoryRetriever, "_select_with_model", select_railway)
 
     first = await memory_service.build_memory_context(
         agent_id, tenant_id, session_id=session_id, query="railway production deploy"

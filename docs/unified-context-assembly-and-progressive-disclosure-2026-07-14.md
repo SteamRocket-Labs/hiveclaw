@@ -5,7 +5,7 @@
 > 施工消费合同：后续实现必须先读本文全文，不得用 Group 摘要、旧审查结论或单个参数表替代。总报告 §8.1 维护本文章节交叉表与 `CTX-A`–`CTX-F` 决策归属；§9 的 Group 6 是 Context/Capability 主实现，Group 4 已消费并关闭 durable result/ref-only fan-in 子合同，Group 1/2/3/7/8/9 消费各资源域子合同，Group 10 做最终重认证；§12 维护 canonical owner、状态与对应 `EVID-G*` 证据。任何实现、测试、容量曲线、迁移或裁决变化都必须回填总报告，并同步更新本文对应设计状态；两边不一致时不得宣称闭环。
 
 - 日期：2026-07-14
-- 状态：设计权威；Group 4 durable result/ref-only fan-in 子域已于 2026-07-17 闭环，Group 6 完整 Context Resource Plane 仍未完成
+- 状态：设计权威 + 滚动实现记录；Group 4 durable result/ref-only fan-in 已闭环，Group 6 的 `XCB-MEM-001` P0 自动披露切片已于 2026-07-17 本地 Green，完整 Context Resource Plane 与生产验收仍未完成
 - 范围：Agent Memory、Skill、Tool / MCP、Sub-agent / Agent Team、Workflow、Knowledge、Hooks、会话历史、Tool Result 与 Provider Prompt 组装
 - 基准模型：256K context window；同时要求 128K、512K、1M 窗口可按同一公式工作
 - 目标：在资源数量近似无限时，首轮常驻上下文仍保持有界，全部授权资源保持真实可发现、可读取、可恢复、可审计，且不做静默硬截断
@@ -24,7 +24,7 @@
 2. **常驻上下文目标设为模型窗口的 5%–10%，默认中心值为 8%。** 对 256K 模型，目标是 12,800–25,600 tokens，默认约 20,480 tokens。这个区间只约束“每轮都常驻的内核”，不限制模型按任务需要加载的动态证据。
 3. **把上下文组装重定义为 Context Resource Disclosure（上下文资源披露），而不是字符串拼接。** 资源可以不在 prompt 正文里，但必须由真实、可发现、无损、可恢复的 ref 代表。
 4. **首轮 prompt 的增长必须相对于资源总量保持 O(1)。** 一百万条 Memory、一万个 Skill、十万个 Tool、十万个 Workflow 不能让首轮 prompt 随资源数量线性增长。
-5. **Memory 正文默认不再自动注入。** 常驻层只保留身份核心、当前任务工作态和可加载的 Memory 地址/激活提示；T2/T3、跨会话 transcript、T0 残余证据通过 `search_memory -> load_memory` 或已知 ref 的直接 `load_memory` 按需进入。
+5. **Memory 对齐 CC 的“常驻索引 + 有界自动正文 + 全量按需读取”，不是 descriptor-only。** 常驻层保留身份核心、当前任务工作态和 bounded Memory index；selector 每轮从 name/description/load-ref manifest 最多选择 5 条，每条自动正文最多 4KiB/200 行、每轮合计最多 20KiB、单 Session 最多 60KiB。完整 T2/T3、跨会话 transcript 与 T0 证据始终可经 `search_memory -> load_memory` 或 exact ref 读取。
 6. **保留领域 public tools，但统一内部协议。** 不强行发明一个包办一切的 `context_search` public tool；`tool_search`、`load_skill`、`search_memory/load_memory`、`read_context_resource`、Workflow preview/start 继续表达不同语义，但共享 descriptor、page、hash、coverage、ledger、pressure contract。
 7. **“跳数”表示披露成本，不表示真相等级或价值等级。** 0-hop 只是首轮必须知道；3-hop 的 T0 原始证据可能比 0-hop 的导航摘要更权威。相关性由模型在授权证据内判断，权威性由 source/ACL/provenance 决定。
 8. **压力处理顺序是：延迟 schema/body -> 分页 -> 外置大结果 -> 模型主导压缩 -> 完整覆盖的 map-reduce -> 最终 provider 物理拒绝。** 禁止把“返回全部候选”当 selector 失败兜底，也禁止把“最后统一报 prompt too long”当正常容量管理。
@@ -89,9 +89,9 @@ recovery = switch_model | compact_history | repair_resident_source
 | `provider_prompt_ledger.py` + `services/token_tracker.py` | 当前 live `RuntimeBudgetedLLMClient` 已按 messages、tools 与 extra surfaces 构建 provider prompt ledger；已有 CJK-aware estimator | system prompt planner 仍是字符比例；`runtime_budget_llm.py` 中保留的 `len(text)/4` helper 当前没有 live caller，但多套估算/预算 authority 仍未收敛成同一个 token-native admission truth |
 | `prompt_builder._select_context_section_candidates()` | 有 section ledger 与选择原因 | section 超预算仍标记 `selected_over_advisory_budget` 并完整保留；预算没有驱动“内联或引用”的实际决策 |
 | `assemble_runtime_prompt()` | 明确拒绝 blind truncation | 它是最后一道错误闸门，不是渐进式披露控制器；上游全部保留时只能整轮失败 |
-| `MemoryRetriever` | 语义选择归 LLM，保留 coverage receipt | model 不可用或 selector 失败会返回全部候选；候选正文越多，失败兜底越危险 |
-| `MemoryAssembler` | 保留分类与 activation reason | `del budget_chars` 后渲染全部已选正文；无法产生 descriptor/page/deferred packet |
-| `runtime/invoker._resolve_memory_context()` | Memory 作为 dynamic suffix，避免污染 frozen cache；降级态可见 | 每轮仍主动构建并注入 Memory body；与“模型按需搜索/读取”的目标不一致 |
+| `MemoryRetriever` | 语义选择归 LLM，保留 coverage receipt | **P0 已修**：selector 只看 bounded descriptor manifest、最多选 5 条；不可用/失败返回空 body + candidate hash/receipt。剩余缺口是百万级目录 cursor 与统一 typed directory contract |
+| `MemoryAssembler` | 保留分类、activation reason 与 recoverable ref | **P0 已修**：每条 4KiB/200 行、每轮 20KiB，并执行真实 UTF-8 byte invariant。剩余缺口是通用 packet/page/hash contract |
+| `runtime/invoker._resolve_memory_context()` | Memory 保持 dynamic suffix，不污染 frozen cache | **P0 已修**：传 durable turn identity、记录 60KiB Session 自动披露账本与 typed pressure；budget/selector 失败不再让整个 turn 失败。完整 token-native admission 仍属 Group 6 |
 | `search_memory` | 已有 facts/session 两类搜索与 `load_memory` hint | 默认无隐藏 result cap，Session Recall 可直接返回完整 transcript；search 和 load 边界被打穿 |
 | `load_memory` | 能按 ID 读取 T3/profile 与 explicit overlay | 尚无统一 typed ref、hash-pinned page、session/T0 source traversal 与 cursor contract |
 | Skill catalog | `load_skill` 与执行工具边界已写清 | `SkillRegistry.render_catalog()` 和 section builder 明确渲染每个可见 Skill 的完整 description，预算参数被丢弃 |
@@ -441,7 +441,8 @@ D_available = C_input
 - 当前 turn/session 的 working-set refs，不存正文；
 - 用户本轮显式提供或显式 pin 的 task-local facts；
 - Memory capability hint：如何 search/load、当前 availability/authority 状态；
-- 少量 warm descriptors，含 ref/title/reason/size，不含 T2/T3 body。
+- bounded Memory index（最多 200 行 / 25,000 bytes），含 ID/title/short description/load action；它是导航，不是事实源；
+- 每轮 selector 可基于完整 authorized descriptor manifest 自动选择最多 5 条正文 excerpt；这不是 resident body，也不是平台 top-k。
 
 #### 按需
 
@@ -472,7 +473,7 @@ verification:
 
 - `search_memory` 只返回 descriptor/preview，不再返回完整 transcript；
 - `load_memory` 支持 typed ref、session/T0/artifact source、分页、SHA-256 与 complete flag；
-- 自动 activation 只产生排序后的地址提示，不直接产生全部正文；
+- 自动 activation 先产出 name/description/load-ref manifest，再由模型最多选择 5 条；每条自动 excerpt 最多 4KiB/200 行、每轮 20KiB、Session 60KiB；
 - working set 只在真实 load/consume 后更新，candidate 出现不等于已使用；
 - selector 不可用时返回 `selection_unavailable + searchable directory`，禁止返回全部正文；
 - exhaustive memory 请求走完整 coverage job/map-reduce，而不是超大单 prompt。
@@ -865,7 +866,7 @@ test_exhaustive_request_emits_complete_coverage_ledger
 |---|---|---|
 | FreeCode / CC runnable baseline | `/Users/rocky243/vc-saas/free-code-main` @ `7dc15d6c8fb0c40c7fcc02ce9b58204324252632` | 裁决 CC 的 agent loop、context、tool、Skill、subagent、compaction 语义底座 |
 | Codex Rust | `/Users/rocky243/Context Engineering/codex/codex-rs` @ `5c19155cbd93bfa099016e7487259f61669823ff` | 只提取不削弱 CC 能力面的 typed state、approval、sandbox、replay、deferred tools 等工程增量 |
-| Hive current checkout | 本仓库 @ `501db6555dae374e5fcf43a6fdcfe8a3dd89343e` 加当前 worktree | 判断 Hive 当前真实消费路径；不能把文档、schema 或未接入口的模块当作闭环 |
+| Hive current checkout | 本仓库 @ `7b67989336c5` 加本轮 Memory worktree | 判断 Hive 当前真实消费路径；不能把文档、schema 或未接入口的模块当作闭环 |
 
 对齐目标不是逐行复刻，而是：先保住 CC 的完整生命周期语义，再吸收 Codex 的控制与恢复能力，最后把 Hive-native Memory / Workflow / A2A / enterprise authority 接入同一个 Runtime。
 
@@ -902,7 +903,7 @@ CC 并非“不限量全部注入”，而是按资源域采用不同机制：
 | 资源域 | FreeCode 当前机制 | 做对了什么 | 规模上仍未解决什么 |
 |---|---|---|---|
 | Project instructions / memory files | `src/context.ts` 经 `getClaudeMds()` 注入文件正文；`MAX_MEMORY_CHARACTER_COUNT=40000` 只告警，不截断 | 保证项目规则完整、缓存边界稳定 | 文件数量/正文仍可线性增长；40K 是警告线，不是无限资源协议 |
-| Auto memory | manifest 最多扫描 200 个文件；辅助模型从 manifest 选文件；最多附加 5 个，每个只给 bounded preview 并提示用 Read 读完整内容 | 已经是“先地址、一跳再读正文”的原型 | 200/5/单文件 preview/会话累计字节都是固定边界；selector 失败为空，且不提供跨资源统一 coverage |
+| Auto memory | `MEMORY.md` 常驻索引 200 行/25,000 bytes；最多扫描 200 个 memory header；辅助模型只从 filename/description manifest 选最多 5 个文件；每个自动正文最多 4,096 bytes/200 行，每轮合计 20KiB，Session 累计 60KiB；完整文件用 Read 读取 | 已经形成“索引常驻 + 每轮少量自动正文 + 全文按需读取”，selector failure 返回空 | 200/5/4KiB/60KiB 是 CC 自己的固定边界；没有 Hive 所需的跨资源 authority/cursor/hash/coverage，也没有百万资源目录 |
 | Tool Search | deferred MCP/tool metadata；`ToolSearch` 默认返回 5 个；精确 `select:` 或关键词搜索；命中后用 provider-native `tool_reference` 激活 schema | 把“已注册”与“当前模型可见 schema”分开 | 依赖 provider 能力，只覆盖 tools；不是 Memory/Skill/Workflow 的统一 resource plane |
 | Skill | Skill metadata 预算约为 context 的 1%；优先保住名字，再缩 description；调用后加载完整 Skill，invoked skills 跨 compaction 保留 | Progressive disclosure 与 durable active set 成立 | 大规模时仍存在 O(N) 名称目录；预算退化主要靠 description/name 压缩而非可分页目录 |
 | Sub-agent | Agent tool 暴露 agent definitions，支持 fork/fresh context、sidechain、resume、background/worktree | delegation 是一等 runtime capability，不是 prompt 模拟 | agent catalog 本身仍会随数量增长，没有统一 discovery/page/coverage contract |
@@ -943,7 +944,7 @@ Codex 的优势主要不在“给模型塞更多上下文”，而在 **控制�
 | System/context assembly | cached stable prefix + dynamic suffix | typed reference context、prompt cache key | **局部闭环**：section/manifest/ledger 已有；上游仍可能全量正文，最后 gate 才失败 | token-native projection + O(1) resident kernel + resource packets |
 | Tool discovery | deferred schema + ToolSearch | runtime registry 与 model-visible schema 明确分离，BM25 | **局部闭环**：已有 deferred manifest，但搜索/renderer/activation 仍可能线性扩大 | registered / discoverable / active / executable 四态，分页且只激活明确选择 |
 | Skill disclosure | budgeted catalog + load full Skill | explicit structured mention、budgeted metadata | **断点**：`render_catalog()` 忽略 budget 并渲染全部可见 description | bounded Skill directory + `search_skills` + `load_skill`，执行仍走治理工具 |
-| Memory recall | project context + bounded auto-memory one-hop | 无统一长期 Memory 解法 | **断点**：selector failure 可暴露全部候选；assembler 忽略 budget；每轮仍主动注入 body | warm descriptors + model-directed search/load + T0/T2/T3 source traversal |
+| Memory recall | resident index + descriptor selector + bounded auto-memory one-hop | typed pressure/receipt/replay | **局部闭环**：P0 已实现 200行/25KB index、descriptor-only selector、≤5、4KiB/200行、20KiB/turn、60KiB/Session、ref-only failure；但 search/load cursor/hash/T0 traversal、token-native admission 与 production canary 仍缺 | 保留 CC 自动召回质量，并扩展为 governed cursor/hash/coverage/source traversal |
 | Sub-agent | fork/fresh context、sidechain、resume | typed collaboration state/worktree/event | **局部闭环**：运行能力存在；custom definitions 的首轮 listing 仍线性 | bounded directory + scoped context refs + result distillation + replay-safe pending frame |
 | Workflow | 非核心确定性 orchestration substrate | typed event/state/recovery 可借鉴 | **局部闭环**：Hive-native durable preview/start/journal 已有，discovery/context projection 未统一 | 保持独立 Workflow authority，并接入 descriptor/packet/ledger |
 | Compaction / recovery | model-led compaction + loaded state preservation | typed compact events、replay/fork | **局部闭环**：`SessionContextController` 与 recoverable tool artifacts 是强资产，但尚未覆盖所有 resource domains | working-set lease、coverage、source refs、pending frames 全部跨 compact 恢复 |
@@ -977,7 +978,7 @@ CC Plus Runtime
 
 ## 14. 一轮完整实现的精确代码触点
 
-本文当前只写设计，不改实现。讨论拍板后，必须按 TDD 在一轮交付中同时完成协议、迁移兼容、压力测试、观测和 UI 消费，不做隐藏在 flag 后的半成品。
+本文同时是设计权威和滚动实现记录。2026-07-17 已完成 Memory P0 自动披露切片；下列未标“P0 已实现”的触点仍是 Group 6 待办，不能因为一个切片 Green 就把完整协议、迁移兼容、压力测试、观测或 UI 消费标成闭环。
 
 ### 14.1 Capacity 与 Prompt Assembly
 
@@ -1002,20 +1003,26 @@ CC Plus Runtime
 ### 14.2 Memory
 
 - `backend/app/services/memory_service.py`
-  - 自动路径改为 resident core + activation descriptors；不再默认返回全部 selected bodies。
+  - **P0 已实现**：resident core/index + model-selected bounded excerpts + durable Session budget；typed degraded 不终止 conversation。
 - `backend/app/memory/retriever.py`
-  - selector failure 不返回全量 body；
-  - 输出 typed directory/selection receipt；
+  - **P0 已实现**：selector 只看 bounded descriptor manifest、最多 5 条；failure 不返回全量 body并持久化 selection receipt；
+  - **仍待**：统一 typed directory/cursor/coverage job，而不是把本轮私有 receipt 当成全域协议；
   - exhaustive path 使用 coverage job。
 - `backend/app/memory/assembler.py`
-  - 从纯字符串 renderer 改为 packet/descriptor assembler；移除 `del budget_chars` 语义。
+  - **P0 已实现**：移除 `del budget_chars`，执行 4KiB/item、200 lines/item、20KiB/turn 的 UTF-8 byte invariant并保留 load ref；
+  - **仍待**：通用 packet/page/hash assembler。
+- `backend/app/memory/profile_plane.py`
+  - **P0 已实现**：identity profile 保持完整；explicit overlay body 改为 200行/25KB bounded resident index，PL3/PL4 不在 resident preview 泄露。
+- `backend/app/memory/session_surfacing.py`
+  - **P0 已实现**：60KiB/Session 自动披露账本、durable turn 幂等、跨进程锁、typed exhaustion；控制 sidecar 不复制正文。
 - `backend/app/tools/handlers/memory.py`
   - `search_memory` descriptor-only + cursor/coverage；
   - `load_memory` typed refs + paging + SHA + T2/T3/session/T0 source traversal。
 - `backend/app/memory/session_working_set.py`
   - 只在真实 load/use 后更新 refs/strength，不存正文。
 - `backend/app/runtime/invoker.py`
-  - `_resolve_memory_context()` 消费 descriptors/status，不再无条件注入全部 body。
+  - **P0 已实现**：传播 durable turn identity，消费 bounded body/status/receipt，selector/预算失败不再无条件冻结正常 effect或终止 turn；
+  - **仍待**：所有资源域统一 token-native provider admission。
 
 ### 14.3 Skill / Tool Search
 
@@ -1101,9 +1108,9 @@ Session Workbench / context diagnostics 展示：
 
 ### 决策 A：T2/T3 Memory body 是否允许自动 0-hop 注入
 
-**推荐：不允许，除非是用户本轮显式提供/显式 pin 的 task-local fact。**
+**已拍板：允许 CC 式有界自动披露，不允许全量或机械 top-k 正文注入。**
 
-原因：只要允许“挑几条自动注入”，系统就会继续围绕 top-k、失败兜底和 budget patch 打转。更稳的机制是自动注入 warm descriptors，由模型一跳读取正文。这样召回排序仍有价值，但排序只决定地址提示，不决定真相进入 prompt。
+常驻的是 index；辅助模型从完整 authorized name/description/load-ref manifest 中最多选 5 条，正文每条 4KiB/200 行、每轮 20KiB、Session 60KiB。4KiB 是带完整 ref 的 recoverable excerpt，不是事实源替换；模型随时可 `search_memory/load_memory` 读取完整授权 bytes。selector 不可用时返回 typed ref-only degradation，绝不把全量 body 塞回 prompt。
 
 ### 决策 B：常驻默认中心值用 8% 还是更保守的 6%
 
@@ -1119,9 +1126,9 @@ Session Workbench / context diagnostics 展示：
 
 ### 决策 D：是否允许后台 Memory 召回自动影响首轮
 
-**推荐：允许自动生成 bounded warm descriptors，不允许自动注入 Memory body。**
+**已拍板：允许辅助模型从 bounded descriptor index 选择最多 5 条自动正文 excerpt；不允许平台分数直接选择正文。**
 
-后台 index、embedding、graph relation、recency 与 session working set 可以为模型提出“可能相关的地址”，但必须同时给出 source ref、原因与可用状态。它们只决定首轮提示哪些地址，不替模型决定事实重要性；selector 不可用时返回 typed degrade，绝不能退回全量正文。
+后台 index、embedding、graph relation、recency 与 session working set 只生成排序观察和地址；最终自动选择归 LLM。入选 excerpt 必须携带 source/load ref并受 4KiB/200行、20KiB/turn、60KiB/Session 限制。selector 不可用时 typed degrade + search/load，不退回全量正文。
 
 ### 决策 E：provider-native Tool Search 是否成为唯一标准
 
@@ -1315,8 +1322,8 @@ T0 raw evidence
 - `soul.md` 中稳定身份核心可以常驻；
 - 当前用户显式给出的事实与 task-local pin 可以 0-hop；
 - 其他 T2/T3 body、跨会话 transcript、capability evidence 默认不常驻；
-- 自动召回只能产生 warm descriptors；
-- 模型 load 后，packet 才进入 working set；
+- 自动召回先基于 warm descriptors，由辅助模型最多选择 5 条 bounded excerpt；
+- 主模型通过 `load_memory` 读取完整 packet 后进入 working set；自动 excerpt 只记录为 surfaced evidence，不等价于已完整消费 source；
 - compaction 时可把 packet 正文 externalize 成 hash/source refs，但不得丢失来源；
 - Memory 写入仍遵循：模型判断/提炼，平台证据、权限、去重、审计、落盘。
 
@@ -1326,7 +1333,7 @@ T0 raw evidence
 
 | Hive-native 能力 | 常驻只保留 | 按需加载/执行 | Runtime truth |
 |---|---|---|---|
-| Memory | namespace、availability、warm descriptor count | `search_memory` / `load_memory` / source traversal | T0/T2/T3 + source refs |
+| Memory | namespace、availability、bounded index；每轮最多 5 条 bounded excerpt | `search_memory` / `load_memory` / source traversal | T0/T2/T3 + source refs |
 | Skill | capability namespace、少量 task-local pins | `search_skills` / `load_skill`；组件走各自治理 runtime | versioned Skill package |
 | Sub-agent / A2A | delegation capability、pending mailbox summary | `search_subagents` / `spawn_subagent` / `delegate_to_agent` | child RuntimeTask / sidechain / typed receipt |
 | Workflow | workflow capability、active gate/step summary | `search_workflows` / `preview_workflow` / `start_workflow` | durable preview + journal |
@@ -1390,6 +1397,35 @@ Group 4 只关闭本架构中的“大型 child/runtime result 如何无损外�
 
 仍由 Group 6 唯一拥有的断点包括：所有 Skill/MCP/Sub-agent/Workflow/Memory/Knowledge/Hook/Workspace 资源的统一 descriptor/index/cursor、registered/discoverable/active/executable 四态、provider snapshot、pressure ledger、LLM-primary compaction/output continuation、跨资源 eviction/replay 与百万资源 tail reachability。Group 4 的 result store/page 可以被 Group 6 复用，但不能被外推为 CTX-A–CTX-F 已关闭。
 
+### 18.10 Group 6 Memory P0 自动披露切片（2026-07-17，本地 Green）
+
+**断点与 CC current-source 合同**
+
+- 历史 Hive live path 是 `invoker -> build_memory_context -> MemoryRetriever -> MemoryAssembler`：resident explicit overlay、selector input 和 assembler output 都携带 full body；selector unavailable 还会回退全部正文，最终由 prompt hard gate 整轮报错。
+- FreeCode 基线固定为 `7dc15d6c8fb0c40c7fcc02ce9b58204324252632`：`memdir.ts` 的 `MEMORY.md` 是 index（200 lines / 25,000 bytes）；`findRelevantMemories.ts` 只把 filename/description manifest 给 selector并最多选 5；`attachments.ts` 将单条正文限制为 4,096 bytes/200 lines、每轮 20KiB、Session 60KiB，完整文件通过 Read 继续可达。对应源文件 SHA-256 为 `244cd4a01a4c82660dbeffe6f60808a45a12482d6342601f2b640542604f3e7c`、`360c291993881d94eb3b427ed60f25e61abfcce020292b4fd528c97908bf52ed`、`fa103be6cc512b9210fe50695c8de5554d7438d5f0cba831d42b08d134b3401f`。
+
+**已接入的生产入口代码**
+
+- `profile_plane.py`：identity profile 保持完整；explicit overlay 变成 bounded resident ID/preview/load index，PL3/PL4 不进入 resident preview。
+- `retriever.py`：selector 读取 bounded descriptor manifest 而不是 candidate bodies；最多 5 条；missing/failure/oversized selection 返回零 body并写 candidate ID/full-body SHA/coverage receipt。
+- `assembler.py`：每条 contribution 包含 ref 后仍不超过 4KiB/200 行；五条连 section/ref 总开销不超过 20KiB；按 UTF-8 bytes验算。
+- `session_surfacing.py` + `memory_service.py`：60KiB Session 自动披露 sidecar，durable turn idempotency、跨进程 lock、typed exhaustion；sidecar 只写计数与 turn，不复制 Memory prose。
+- `invoker.py`：live provider suffix 消费上述结果；将 selected count/bytes/remaining/receipt 写入 runtime metadata。selector/预算/ledger failure 允许 conversation 与 `search_memory/load_memory` 继续；只有真实 authority unavailable 才冻结不能证明权限的 effect。
+
+**Red→Green**
+
+- 初始新合同：`ModuleNotFoundError: app.memory.session_surfacing`；排除新模块后 `9 failed, 45 passed`；wiring 继续 `3 failed`。
+- aggregate byte Red：五条自动正文实际为 `20,497 bytes > 20KiB`；Green 后严格 `<= 20,480 bytes`。
+- turn identity Red：无 `SessionContext` 时两个不同 turn 都退化为 `turn-session-shared`；Green 后仅 durable `turn_id/request_id/runtime_task_id` 可复用，普通不同 turn 不再串账。
+- selector manifest Red：旧 `_select_with_model()` 把 `item.content` 全文放进 side-query；Green 测试证明 descriptor prompt 不含 `FULL_MEMORY_BODY_DO_NOT_SEND_TO_SELECTOR`。
+- 当前验收：定向 Memory/runtime suite → `104 passed in 1.13s`；完整 architecture suite → `198 passed in 13.03s`；backend 全量 → `7543 passed, 2 skipped in 361.73s`；frontend 当前 checkout 全量 → `120 files / 693 tests passed`；production build 及 AgentDetail/vendor bundle budget 全部通过。
+
+**七原子与完成边界**
+
+- Input：当前 authenticated Agent/Session/user query + authorized Memory index；Authority：既有 `ActivationContext/PrincipalStack/sensitivity` 在 descriptor/body ingress 前生效；Execution：唯一 live `build_memory_context()`/invoker dynamic suffix；Evidence：selection decision/coverage receipt、Session byte ledger、runtime metadata；Recovery：turn idempotency、cross-process lock、typed retry/degrade、full ref search/load；Consumption：真实 provider prompt suffix与 Memory tools；Acceptance：上述 Red→Green、相关 suite、后续 backend full和 production canary。
+- 无 DB schema migration或历史正文 backfill：新增 sidecar 位于既有 `memory/control/`，首次 Session 自动创建；旧 Memory truth不重写。rollback 可保留无害计数 sidecar，旧版本不会消费它。
+- 本节只把 `XCB-MEM-001` 标为 `in_progress-local-green`。尚未执行三服务 exact-source deploy、长 Session production canary、provider actual-token曲线、百万 descriptor、search/load cursor/hash/T0 traversal，因此不能把 Group 6 或生产状态标成 closed。
+
 ---
 
 ## 19. 源码证据索引
@@ -1425,9 +1461,9 @@ Group 4 只关闭本架构中的“大型 child/runtime result 如何无损外�
 
 1. **接受 `CC semantic kernel + Codex control envelope + Hive resource plane` 作为 Runtime 总体公式。**
 2. **接受资源总量与首轮 prompt 解耦作为真正的 CC Plus 差异点。**
-3. **接受 Memory body 默认不常驻、warm descriptor 可自动、模型按需 load 的边界。**
+3. **接受 CC 式 Memory 合同：index 常驻、辅助模型每轮最多选择 5 条、单条 4KiB/200 行、每轮 20KiB、Session 60KiB，完整证据继续按需 load。**
 4. **接受 Tool registered / discoverable / active / executable 四态。**
 5. **接受内部统一 Context Resource Protocol，外部保留领域 tools。**
 6. **接受 8% 只是 Resident review center，不是新的输入硬上限。**
-7. **拒绝局部 35K/65K patch；Group 6 必须按第 10、11、14、18 节一次完成剩余 Context Resource Plane 的测试、实现、观测与消费闭环。**
+7. **拒绝局部 35K/65K patch；Memory P0 切片可独立发布止血，但 Group 6 仍须按第 10、11、14、18 节完成剩余 Context Resource Plane，不能用 `XCB-MEM-001` 局部 Green 冒充全组完成。**
 8. **接受 Group 4 `4e385d423` 的 immutable result + ref-only page 作为已验证子合同；后续只能复用/扩展，不能恢复 inline raw result、静默截断或平台 summary。**

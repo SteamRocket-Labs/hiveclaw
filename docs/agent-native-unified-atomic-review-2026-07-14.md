@@ -150,12 +150,12 @@ context_read_receipt:
 
 <!-- group-context-route-inventory-start -->
 - root=1
-- local=80
+- local=81
 - external=8
-- total=89
+- total=90
 <!-- group-context-route-inventory-end -->
 
-当前 `§9` 的完整 Group 路由共有 **89 个去重后的可执行文档入口**：仓库根 `@AGENTS.md` 1 份、本仓 `@docs` 80 份、固定 Hive Connect snapshot 8 份。这个数字是路由完整性快照，不是要求每个 leaf 一次加载 89 份文档：执行者只读取本 Group 的 `@必须先读`，再按实际触及的子域展开 `@按需读取`；实际消费必须写进 `Context Read Receipt`。本仓入口必须全部 Git-tracked，跨仓入口必须通过 §0.3 的 commit + SHA-256 registry；`backend/tests/architecture/test_agent_native_repair_ledger.py` 负责验证 11/11 Group、路径可读性、唯一 owner 与证据往返。
+当前 `§9` 的完整 Group 路由共有 **90 个去重后的可执行文档入口**：仓库根 `@AGENTS.md` 1 份、本仓 `@docs` 81 份、固定 Hive Connect snapshot 8 份。这个数字是路由完整性快照，不是要求每个 leaf 一次加载 90 份文档：执行者只读取本 Group 的 `@必须先读`，再按实际触及的子域展开 `@按需读取`；实际消费必须写进 `Context Read Receipt`。本仓入口必须全部 Git-tracked，跨仓入口必须通过 §0.3 的 commit + SHA-256 registry；`backend/tests/architecture/test_agent_native_repair_ledger.py` 负责验证 11/11 Group、路径可读性、唯一 owner 与证据往返。
 
 如果施工中发现一份真正影响目标状态、迁移、运行或验收的文档未出现在当前 Group 的完整 `@` 路由中，必须先更新本 Group 路由、`Context Read Receipt` 和 architecture validator，再写业务代码；禁止把未登记文档当隐藏权威。反之，纯历史叙述、已被新合同覆盖的旧方案或无 live consumer 的文档只留在 `@原始断点证据`/archive，不得塞进 `@必须先读` 增加上下文噪声。
 
@@ -512,7 +512,7 @@ Group 摘要不能替代以下两份文档：
 | Context 文档范围 | 主 owner Group | 必须被消费的其它 Group | 不可丢失的合同 |
 |---|---:|---|---|
 | §0–§6、§8–§9、§17–§20 | 6 | 0、2、3、4 | hard/soft 精确定义、五层披露、token authority、capacity ledger、descriptor/page/packet/cursor/hash/coverage |
-| §7.1 Memory | 6 | 8 | body 默认不常驻、warm descriptor、source refs、selector unavailable typed degrade |
+| §7.1 Memory | 6 | 8 | CC 式 bounded index 常驻、LLM 每轮最多选 5 条有界 excerpt、全文按需 load、source refs、selector unavailable typed degrade |
 | §7.2 Skill、§7.3 Tool/MCP | 6 | 1、9 | registered/discoverable/active/executable 四态、schema lazy-load、execution-time auth fresh-check |
 | §7.4 Sub-agent/Agent Team/A2A | 6 | 3、4、7 | definition 可发现、child intent/admission/result ref、parent bounded consumption |
 | §7.5 Workflow | 6 | 3、4 | DAG/leaf 可发现，执行仍由 Workflow authority；partial/result 不全量塞 Prompt |
@@ -526,10 +526,10 @@ Group 摘要不能替代以下两份文档：
 #### Context 六项决策 owner map
 
 <!-- context-decision-map-start -->
-- CTX-A | Group 6 | T2/T3 Memory body 默认不允许自动 0-hop；显式 task-local pin 除外
+- CTX-A | Group 6 | T2/T3 Memory 不全量常驻；允许 CC 式 bounded index + LLM 每轮最多 5 条有界 excerpt，完整 body 继续按需 load
 - CTX-B | Group 6 | 8% 仅为 256K resident review center，不是硬配额或填充目标
 - CTX-C | Group 6 | 暂不新增统一 public context_search/context_load；统一内部合同，保留领域工具
-- CTX-D | Group 6 | 后台 Memory 只可生成 bounded warm descriptor，不可自动注入 body
+- CTX-D | Group 6 | 后台只生成 descriptor/排序观察；正文必须由 LLM 从 authorized manifest 选择，并受 5 条、4KiB/200 行、20KiB/turn、60KiB/Session 自动披露上限约束
 - CTX-E | Group 6 | provider-native Tool Search 仅为 adapter，不成为唯一标准
 - CTX-F | Group 6 | tool_search 只发现 executable schema；Memory/Skill/Workflow/Agent/Knowledge 保留领域入口
 <!-- context-decision-map-end -->
@@ -625,15 +625,23 @@ Group 摘要不能替代以下两份文档：
 
 下面是依赖顺序，不是把 103 个 leaf 绑成一个发布列车。每个开工 leaf/同根家族必须一次完成 Red→Green、migration/backfill、fault injection、observability、recovery/rollback、真实消费与发布验收。P0/P1 自身闭环后立即独立发布。
 
+> **本轮执行序（2026-07-17 重排）**：下表是**正确性依赖序**（谁不能先于谁闭环），**不是本轮施工先后**。Group 1–4（后端事实底座）已闭环并上生产，但用户可见的痛点全部押在未完成的 Group 6/7/9——写路径已 v2 化而读路径/前端收口未跟上，两平面断裂（首屏 REST 仍走 v1 → 白屏即此因）。本轮改为**用户痛点垂直切片序**，优先交付三个 P0 止血切片，唯一执行入口见 `@docs/p0-session-memory-a2a-repair-sequence-2026-07-17.md`：
+>
+> - **P0-1 Memory 不爆** → Group 6 子集：已实装 CC 式“bounded index 常驻 + LLM 每轮最多 5 条有界 excerpt + 全文 `search/load` + 60KiB Session ledger”，当前为 `in_progress-local-green:EVID-G6-001`；不再等到 `_MAX_SYSTEM_PROMPT_BUDGET` 才整轮失败，但完整 token-native admission 与 production canary 仍属 Group 6。
+> - **P0-2 Session 能看见** → Group 9 前端收口子集：首屏 REST 走 `schema_version=2` canonical、前端只经 `SessionEventStore` 一次归约、删 load-earlier 可见性边界、固定 Codex 呈现序（Thinking→Text→Tool→Final）。
+> - **P0-3 A2A 三层各自跑通** → Group 7 + Group 3 残留：① sub-agent / ② agent team / ③ A2A-to-employee 三个独立验收对象（见 Group 7 修正）。
+>
+> 三切片各挂 native 回归门（改前能跑/能看/能用的改后必须仍能）；证据仍回填到对应 Group 的 `EVID-*`，不另造账本。Group 5/10 等无对应痛点的纯工程深化本轮暂缓。
+
 | Group | owner canonical leaf | owner Missing | 当前状态 |
 |---:|---:|---:|---|
-| 0 | 0（全局门） | 0 | closed：`EVID-G0-002/003/004/005/006`，Git truth、机器账本、11 个上下文包/89 个 `@` 文档入口、跨仓快照与 clean-checkout harness 已闭环 |
+| 0 | 0（全局门） | 0 | closed：`EVID-G0-002/003/004/005/006`，Git truth、机器账本、11 个上下文包/90 个 `@` 文档入口、跨仓快照与 clean-checkout harness 已闭环 |
 | 1 | 16 | 0 | closed：16/16 owner leaf 均有独立 `EVID-G1-001`–`EVID-G1-016`；0 pending、0 deployed-but-open；最后一项 `B-01` 已由 immutable runtime authority、migration、并发恢复、全量回归、三服务 exact-source 与 production canary 闭环 |
 | 2 | 14 | 0 | closed：14/14 owner leaf 已由 `EVID-G2-001`–`EVID-G2-014` 独立关闭；完整 Session V2 与 103 总账仍未完成 |
 | 3 | 7 | 0 | closed：7/7 owner leaf 已由 `EVID-G3-001`–`EVID-G3-007` 独立关闭；统一 root admission/coverage、durable cycle/approval、单调终态与 Team fanout recovery 已部署，Group 4 的 result/fan-in 不在本状态内 |
 | 4 | 6 | 0 | closed：6/6 owner leaf 已由 `EVID-G4-001`–`EVID-G4-006` 独立关闭；immutable result object、ref-only outbox、mailbox sequence/CAS、lease/claim、integration epoch/page、governed reader 与 100-way return-storm recovery 已部署 |
 | 5 | 2 | 0 | open |
-| 6 | 10 | 0 | open |
+| 6 | 10 | 0 | in progress：`XCB-MEM-001` 已本地 Green（`EVID-G6-001`），仍待 production canary；其余 9 leaf open |
 | 7 | 1 | 1 | open |
 | 8 | 9 | 2 | open |
 | 9 | 19 | 1 | open |
@@ -856,6 +864,8 @@ Group 摘要不能替代以下两份文档：
 
 **Owner leaf（10）**：`A-03`、`XCB-CTX-001`、`XCB-CAP-001`、`XCB-MEM-001`、`XCB-OUT-001`、`XCB-LIM-001`、`XCB-MCP-001`、`XCB-OBS-001`、`WF-HARDLIMIT-001`、`BUD-BREAKER-001`。
 
+**滚动状态（2026-07-17）**：`XCB-MEM-001` 的 P0 自动披露切片已接入 live `invoker -> memory_service -> retriever/assembler -> provider suffix` 并通过定向回归，记为 `in_progress-local-green:EVID-G6-001`。该状态不代表 Group 6 关闭，也不代表生产已验收；其余 9 leaf、三服务 exact-source deploy、真实长 Session/provider token 曲线仍须独立补齐。
+
 **依赖 Group**：Group 0–2、Group 4。Context Resource Plane 复用 authority、typed pressure/session state 与 durable result refs；Group 3/5 的 admission/fairness 是极端验收输入，但不是删除非法 Prompt hard cap 的发布阻塞项。
 
 **AA 开工入口**：本文 `§2.3`、`§3.4`、`§6`、`§7.4`、`§8–§8.1` 中 CTX-A–F、`§11` context stress matrix 与 `§12.1–§12.3` Group 6 行。
@@ -889,6 +899,8 @@ Group 摘要不能替代以下两份文档：
 ### Group 7：跨渠道 A2A 与 Delivery Plane
 
 **Owner leaf（1）**：`CHANNEL-FAIRNESS-001`。**Owner Missing（1）**：`MISS-XCHANNEL-A2A-001`。
+
+**A2A 三层验收对象（2026-07-17 修正）**：A2A 不是"两条路"，是三层，必须拆成三个独立验收对象，禁止 ② 和 ③ 一锅端（依据 `@docs/session-v2-cc-codex-alignment-contract-2026-07-14.md` §16）：**①** sub-agent（`spawn_subagent`，`app/agents/subagent.py:1460`，`source="subagent"`）；**②** agent team（同一 lead agent 的具名 teammate，`spawn_subagent(team_name+name)` → `spawn_agent_team_member_runtime`，`app/services/agent_team_runtime_service.py:588`，`source="subagent"`）；**③** A2A 到 peer employee（跨 agent，`orchestrator.delegate_async`，`app/agents/orchestrator.py:3287`，`source="agent"`，principal/depth/cycle/budget + `delegation_run` read-only）。② 与 ③ 只在 `invoke_agent()` 内核汇合，编排层是两条独立的路。本轮修复前的 **③** 根因包括 task claim/协调、principal、父子 Session 投影与 writer authority 断点；当前 checkout 已由 `06f340c4c`、`2b3e05011`、`7b6798933` 接入 task-scoped read-only `delegation_run`、exact RuntimeTask writer authority 与 legacy replay，但真实跨员工委派、repair dry-run 与生产 canary 仍是独立验收门，不得仍用“当前代码完全未修”或“生产已闭环”任一失实口径。
 
 **依赖 Group**：Group 0–4。跨渠道必须建立在唯一 principal、canonical Session、root admission 与 durable result 上；与 Group 5 的 fleet fairness 分账验收，不互相冒充闭环。
 
@@ -1326,7 +1338,7 @@ Group 0 是全局证据门，不拥有业务 leaf。下面 103 行必须与 cano
 - P3 | D-KB4 | closed:EVID-G2-008 | Knowledge/tool failure 通过通用 typed denied/unavailable/not-found result envelope 进入 Session，不合并成自由文本 warning
 - P1 | XCB-CTX-001 | inherited-current-evidence | pre-model 20% Prompt hard cap
 - P1 | XCB-CAP-001 | inherited-current-evidence | capability catalog 无 progressive wave/cursor
-- P1 | XCB-MEM-001 | inherited-current-evidence | Memory 全量候选与 resident 聚合
+- P1 | XCB-MEM-001 | in_progress-local-green:EVID-G6-001 | CC 式 bounded index + LLM 最多 5 条有界 excerpt + 20KiB/turn + 60KiB/Session 已接 live path；production canary 与通用 Context Resource Plane 仍待完成
 - P1 | XCB-OUT-001 | inherited-current-evidence | output continuation 固定三次后假 final
 - P1 | XCB-LIM-001 | inherited-current-evidence | tool-round cliff/平台终答/预算假接线
 - P1 | XCB-RESULT-001 | closed:EVID-G4-002 | 完整 result bytes 仅驻留 immutable `runtime_result_objects`；outbox/page/prompt 只保留 hash-pinned ref、size 与机械路由事实，旧 ref 可继续读取
@@ -1364,13 +1376,13 @@ Group 0 是全局证据门，不拥有业务 leaf。下面 103 行必须与 cano
 <!-- group-evidence-index-start -->
 | Group | 证据前缀 | Owner 范围 | 当前证据状态 | 下一次写入要求 |
 |---:|---|---|---|---|
-| 0 | `EVID-G0-*` | 0 leaf / 0 Missing | `closed`：`EVID-G0-001/002/003/004/005/006`；文档 Git truth、owner/path/decision/scenario CI、11 个 Group 上下文包、89 个去重 `@` 文档入口、跨仓快照与 fake-provider/PG/Redis harness 基座成立 | 后续任何新增本地 `@docs` 必须先进入 Git 并同步上下文包索引；业务场景 Green 仍由 owner Group 负责 |
+| 0 | `EVID-G0-*` | 0 leaf / 0 Missing | `closed`：`EVID-G0-001/002/003/004/005/006`；文档 Git truth、owner/path/decision/scenario CI、11 个 Group 上下文包、90 个去重 `@` 文档入口、跨仓快照与 fake-provider/PG/Redis harness 基座成立 | 后续任何新增本地 `@docs` 必须先进入 Git 并同步上下文包索引；业务场景 Green 仍由 owner Group 负责 |
 | 1 | `EVID-G1-*` | 16 leaf / 0 Missing | `closed`：16/16 owner leaf 已由 `EVID-G1-001`–`EVID-G1-016` 分别关闭；0 pending、0 deployed-but-open；code/docs/migration/backfill-or-quarantine、fault/concurrency、全量回归、exact-source deployment 与适用 production canary 均有独立记录 | Group 1 只在其 authority/security 合同被后续 Group 改动时重开；Group 2–4 已在其上完成，当前下一施工入口为 Group 5，禁止用 43 个 closed leaf 冒充 103 清零 |
 | 2 | `EVID-G2-*` | 14 leaf / 0 Missing | `closed`：14/14 owner leaf 已由 `EVID-G2-001`–`EVID-G2-014` 分别关闭；三次 code commit、六个 additive migration、fault/recovery、backend/frontend 全量回归、三服务 exact-source deployment 与 production projection/health 证据齐全 | 后续 Group 若改变 canonical event/item/reducer、writer epoch 或 final byte-faithful contract 必须重开受影响 leaf；Group 9 继续全历史 backfill/V1 cleanup/browser 终验，不得反向恢复 legacy reducer |
 | 3 | `EVID-G3-*` | 7 leaf / 0 Missing | `closed`：`EVID-G3-001`–`007`；code/migration、real-PG RLS/authority、lease/crash recovery、1/10/25/50/100 mixed fanout、backend/frontend 全量回归、三服务 exact-source deployment 与 production schema/health 证据齐全 | 后续 Group 若改变 root identity、coverage conservation、cycle/path、approval intent 或 terminal monotonicity 必须重开对应 leaf；Group 4 只消费 admitted item/result refs，不得另造 root ledger |
 | 4 | `EVID-G4-*` | 6 leaf / 0 Missing | `closed`：`EVID-G4-001`–`006`；code/migration、real-PG sequence/CAS/lease/epoch、100×1 MiB ref-only fan-in、partial/late/duplicate/revision/crash recovery、backend/frontend 全量回归、三服务 exact-source deployment 与 production backfill/schema/RLS/hash/health 证据齐全 | 后续 Group 若恢复 inline result bytes、另造 parent mailbox、破坏 ref reader authority、epoch order 或 result immutability，必须重开对应 leaf；当前下一施工入口为 Group 5 |
 | 5 | `EVID-G5-*` | 2 leaf / 0 Missing | `open` | 写 fleet scheduler/trigger benchmark、公平性、分页续扫与 control-plane reserve |
-| 6 | `EVID-G6-*` | 10 leaf / 0 Missing | `open` | 写 CTX-A–F、capacity ledger、progressive disclosure、compaction/output recovery 与尾部证据覆盖 |
+| 6 | `EVID-G6-*` | 10 leaf / 0 Missing | `in_progress`：`XCB-MEM-001` 已 `in_progress-local-green:EVID-G6-001`；0/10 production closed | 先完成 Memory 三服务 exact-source deploy/长 Session canary，再继续 CTX-A–F 剩余 leaf、capacity ledger、compaction/output recovery 与尾部证据覆盖 |
 | 7 | `EVID-G7-*` | 1 leaf / 1 Missing | `open` | 写跨渠道 execution/delivery ledger、逐 hop authority、fault matrix 与真实/沙箱 channel 分层证据 |
 | 8 | `EVID-G8-*` | 9 leaf / 2 Missing | `open；已有 EVID-G8-PRE-001/002/003 三个前置子闭环，事故清理已停止` | 写 T0→T2→T3→soul、durable intelligence job、Enterprise Knowledge、retention/legal hold 与恢复证据 |
 | 9 | `EVID-G9-*` | 19 leaf / 1 Missing | `open` | 写 canonical UI consumer、legacy 退出、historical backfill、Artifact/AI Asset 与浏览器/生产验收 |
@@ -1594,11 +1606,11 @@ context_read_receipt:
 - 七原子：Input=Group/leaf/Missing；Authority=L0/L1 + §9 完整路由；Execution=primary→detail→源码/Red；Evidence=Context Read Receipt + EVID；Recovery=稳定章节、Git-tracked docs、跨仓 pinned snapshot 与 route delta；Consumption=后续每个 Group 的开工流程；Acceptance=当次 11/11 index、79/79 本仓路由、8/8 跨仓 hash、10 tests、ruff、diff check；当前新增的第 80 份本仓路由由 `EVID-G0-006` 的 89/89 守恒门承接。
 - 残余风险：文档路由只能保证施工者拿到正确上下文和回填位置，不能证明任何业务 leaf 已 Green；Group 1 仍是 5 个 local Green/production gate open，Group 2–10 状态不因本记录改变。
 
-#### EVID-G0-006：89 个 `@` 文档入口与防漂移开工索引终校
+#### EVID-G0-006：90 个 `@` 文档入口与防漂移开工索引终校
 
 - `leaf_ids` / `missing_ids`：无；本记录只收紧 AA 的施工导航和证据回流，不改变 103 个 breakpoint、5 个 Missing、severity、owner 或业务状态。
 - owner Group / 依赖 Group：Group 0 / 无。
-- 当前状态：`closed`；11/11 Group 的完整上下文包继续以 §9 为唯一事实源，当前 89 个去重入口已有显式 inventory 与机器守恒。
+- 当前状态：`closed`；11/11 Group 的完整上下文包继续以 §9 为唯一事实源，当前 90 个去重入口已有显式 inventory 与机器守恒。
 - 证据 owner / 更新时间：主 Agent / 2026-07-15。
 - 冻结事实：开工 HEAD=`bba729daf790645cd8bdc96e565da04cc6b56956`；共享工作树有其它 session 的 tracked/untracked 改动。本项 owned paths 仅为本文与 `backend/tests/architecture/test_agent_native_repair_ledger.py`，没有接管、覆盖或 stage 其它路径。
 - Context Read Receipt：
@@ -1629,7 +1641,7 @@ context_read_receipt:
 ```
 
 - Red：先新增 `test_group_context_route_inventory_is_explicit_and_current`，执行 `pytest -q tests/architecture/test_agent_native_repair_ledger.py::test_group_context_route_inventory_is_explicit_and_current` → `1 failed`；正确失败为 AA 缺少 `group-context-route-inventory` machine-readable region，证明“全部 `@` 出来”只有 prose/路径存在性，没有总量防漂移门。
-- 实现：§0.6 显式声明 11 个 Group 当前共有 root 1、本仓 80、跨仓 8、总计 89 个去重入口；保留 `@必须先读` 与 `@按需读取` 的软披露边界，不要求单 leaf 全量加载。Group 1 快速状态同步为 14/16 closed、2/16 pending；AA 开工入口以 §12.3 索引读取 §12.4 全部当前证据，不再硬编码易漂移编号。
+- 实现：§0.6 当前显式声明 11 个 Group 共有 root 1、本仓 81、跨仓 8、总计 90 个去重入口；新增的第 90 个本仓入口是本轮三个用户 P0 垂直切片的 `@docs/p0-session-memory-a2a-repair-sequence-2026-07-17.md`。保留 `@必须先读` 与 `@按需读取` 的软披露边界，不要求单 leaf 全量加载。
 - Green：targeted inventory gate → `1 passed`；写回最终证据后的完整 ledger validator → `11 passed`；`ruff check tests/architecture/test_agent_native_repair_ledger.py` → `All checks passed!`。
 - migration / deploy / rollback：纯 Markdown 导航与 architecture validator，无 schema/data/runtime migration 或三服务部署。回退必须同时回退 inventory 文字、machine region 与 validator；不得只删一侧制造假 Green。
 - 七原子：Input=Group/leaf；Authority=L0/L1 + §9 唯一路由；Execution=AA→primary→完整 Group 包→源码/Red；Evidence=inventory test + Context Read Receipt + EVID；Recovery=Git history、stable section、route delta；Consumption=所有后续 Group 开工；Acceptance=11/11 Group、89/89 路由、11 tests、Ruff。业务 leaf 状态不因本记录改变。
@@ -2655,6 +2667,20 @@ context_read_receipt:
 - migration/rollback：real-PG migration 证明旧 `summary/artifacts_json/metadata` lossless upgrade 为 immutable bytes + ref-only routing，并可 downgrade 恢复旧列/内容；三张新表和 outbox 约束、FK、RLS/FORCE RLS 均通过。production schema-owner 首发迁移被旧已停止 backend PID `20758` 的未提交 outbox reader transaction 阻塞；只读锁图确认它是 migration PID `24309` 的直接 blocker 后，执行带 `20758 = ANY(pg_blocking_pids(24309))` 前置条件的单 PID terminate，PostgreSQL 只回滚该旧事务，未删除或改写客户结果。随后 head/readiness 正常前进，未放宽 schema gate。
 - exact-source production：backend=`b16d1c5b-c28a-480e-896b-a8dd2ffd153a`、backend-api=`da84f7ae-0157-4551-95d0-4f93dbe0f029`、frontend=`96090a47-4267-488a-b0f5-94a5c18e6667`，均 `SUCCESS` 且 deployment message 指向 `4e385d423`。backend/backend-api 的 `runtime_notification_outbox.py`、`runtime_result.py`、migration SHA-256 与本地逐文件完全一致；production actual/expected head=`runtime_result_fanin_0717`、148 tables/4 triggers、issues=`[]`，四张相关表 RLS ENABLE+FORCE、四条 tenant policy、29 个关键 FK/unique/check 约束在位。public backend health=`ok`、runtime role=`app_rls/strict/non-superuser/non-BYPASSRLS`、三 daemon/sandbox/worker healthy，frontend HTTP/2 200；backend-api 日志为 `Application startup complete`。
 - 七原子：Input=admitted child/runtime terminal；Authority=Group 1 principal + Group 3 root/item + tenant RLS；Execution=immutable result commit→ref-only outbox→ordered page→parent continuation；Evidence=result hash/size、sequence/epoch、manifest、receipt、metrics、canonical Session event；Recovery=claim/lease/CAS、stale fence、retry/dead-letter、revision、old-ref reader、migration downgrade；Consumption=A2A/Subagent/Team/Workflow/Trigger/Approval/RuntimeTask parent Session + governed tool read；Acceptance=Red→Green、real-PG、100×1 MiB、full backend/frontend、migration/backfill/rollback、三服务 exact-source 与 production canary。Group 4 因此为 6/6 closed；Group 5 fleet fairness、Group 6 全 Context Resource Plane、Group 7 跨渠道与 Group 9 最终 UI/browser 仍独立 open。
+
+#### EVID-G6-001：XCB-MEM-001 CC 式 Memory 自动披露与 Session 软预算
+
+- `leaf_ids`：`XCB-MEM-001`；owner/依赖：Group 6 / Group 0–2、4；当前状态：`in_progress-local-green`，不关闭 Group 6 其余 9 leaf，也不冒充 production closed。
+- Context Read Receipt：以 `@docs/p0-session-memory-a2a-repair-sequence-2026-07-17.md` §3 P0-1 为本轮垂直切片入口，全文消费 `@docs/unified-context-assembly-and-progressive-disclosure-2026-07-14.md`，消费 `@docs/runtime-model-agency-constraint-audit-2026-07-13.md` C-13/Model Agency 边界，并以 FreeCode/CC current source 裁决自动召回语义。Session V2 只提供 durable Session/turn identity 与 typed pressure 消费，不成为 Memory truth。
+- 冻结基线：Hive `7b67989336c5` + 本轮 owned worktree；FreeCode `7dc15d6c8fb0c40c7fcc02ce9b58204324252632`。FreeCode `memdir.ts` / `findRelevantMemories.ts` / `attachments.ts` SHA-256 分别为 `244cd4a01a4c82660dbeffe6f60808a45a12482d6342601f2b640542604f3e7c`、`360c291993881d94eb3b427ed60f25e61abfcce020292b4fd528c97908bf52ed`、`fa103be6cc512b9210fe50695c8de5554d7438d5f0cba831d42b08d134b3401f`。
+- 根因：修复前 live `invoker._resolve_memory_context -> build_memory_context -> MemoryRetriever -> MemoryAssembler` 同时存在 resident explicit-overlay full body、selector 输入 full candidate body、selector unavailable 返回全部正文、assembler `del budget_chars` 四个线性放大点；最后的 prompt hard gate 只能把整个 turn 判失败。这不是“Memory 太多”的数据问题，而是把资源库误当每轮 Prompt 附件的组装边界问题。
+- 实装与 live wiring：`profile_plane.py` 保持完整 identity profile，将 explicit overlay 变为 200 行/25,000-byte bounded index；`retriever.py` 只给 LLM name/description/load-ref descriptor manifest、最多选 5 条；`assembler.py` 执行单条 4,096 UTF-8 bytes/200 行与每轮 20KiB 含 ref 总上限；新 `session_surfacing.py` 与 `memory_service.py` 以 durable turn identity 记录 60KiB/Session 计数账本、跨进程锁与 typed exhaustion，不复制正文；`invoker.py` 将 selected count/bytes/remaining/receipt 进入真实 provider suffix metadata。完整授权 bytes 仍由 `search_memory/load_memory` 读取。
+- Model Agency / failure：4KiB、20KiB、60KiB 只是“自动披露表示”的资源上限，不删除、重写、降级 Memory truth；平台排序不直接选 body，语义选择归 LLM。selector missing/failure、ledger/assembler failure 和 Session budget exhaustion 只产生 typed degraded/pressure，conversation 与正常 authority 下的无关 effect 继续；不允许“失败则塞回全量 body”。
+- Red→Green：新合同首跑为 `ModuleNotFoundError: app.memory.session_surfacing`；排除新模块后为 `9 failed, 45 passed`，wiring 阶段为 `3 failed`。容量 Red 实测 5 条聚合为 `20,497 bytes > 20,480`；turn identity Red 证明不同 turn 曾共用 `turn-session-shared`；selector Red 证明 full-body marker 曾进入 `_select_with_model()` prompt。Green 后五条含 section/ref 总大小 `<=20,480`，只有 durable `turn_id/request_id/runtime_task_id` 可幂等复用，selector prompt 不含 candidate body。
+- Green：定向 Memory/runtime suite → `104 passed in 1.13s`；完整 architecture suite → `198 passed in 13.03s`；backend 全量 `pytest tests -q` → `7543 passed, 2 skipped in 361.73s`；frontend 当前 checkout 全量 → `120 files / 693 tests passed`；`npm run build` 通过，AgentDetail=`322860/380000` bytes、gzip=`89493/115000`，vendor=`591449/620000`、gzip=`186474/200000`。scoped Ruff check/format、ledger/doc route 机器门与 diff check 均进入本 commit 验收。
+- migration / backfill / rollback：无 DB schema migration，无历史 Memory 正文 backfill，旧 T0/T2/T3/soul truth 不重写。sidecar 位于既有 `memory/control/session_surfacing/`、按 Session 首次访问惰性创建；rollback 后旧版不消费该无正文计数文件，可保留或由受治清理器删除。
+- 七原子：Input=当前 authenticated Agent/Session/query + authorized Memory index；Authority=既有 activation/principal/sensitivity 在 descriptor/body ingress 前生效；Execution=唯一 live `build_memory_context()` + invoker dynamic suffix；Evidence=selection/coverage receipt + Session byte ledger + runtime metadata；Recovery=turn 幂等、file lock、typed degrade、full-ref search/load；Consumption=真实 provider prompt suffix 与 Memory tools；Acceptance=定向 Green + 待回填的仓级验收与 production canary。
+- 残余门：尚未部署三服务，尚未执行真实长 Session、provider actual-token/prompt-pressure 曲线、百万 descriptor 尾页到达、通用 cursor/hash/T0 traversal。因此 canonical 行保持 `in_progress-local-green:EVID-G6-001`，0/10 production closed；完整 Group 6 出口门仍不变。
 
 #### EVID-G8-PRE-001：backend-volume default Skill startup 写放大止血
 

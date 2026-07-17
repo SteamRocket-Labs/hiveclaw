@@ -665,6 +665,20 @@ Memory storage、resident context 或 authority projection 临时失败，被放
 - 不允许 regex fallback 对未完整阅读的语义内容做最终拒绝；fallback 只能标记 `review_required / quarantined`；
 - output budget 由任务规模决定，不能固定饥饿。
 
+#### C-13 补充裁决：Memory 自动披露上限不是语义删除（2026-07-17）
+
+本项需要区分“把所有授权证据交给一个具体智能任务”与“每轮把所有 Memory body 自动塞进主模型 prompt”。后者不是完整输入可见性，而是把资源库误当 prompt，最终会让 provider physical window 把整个 Session 判失败。
+
+FreeCode / CC 当前源码合同是：`MEMORY.md` index 常驻（200 lines / 25,000 bytes）；辅助模型只从 filename/description manifest 选择最多 5 个文件；每个自动正文最多 4,096 bytes/200 lines、每轮合计 20KiB、Session 60KiB；完整文件仍可通过 Read 到达。Hive 因此采用同一能力语义并保留 Hive-native authority/source refs：
+
+- hard fact：4KiB/200行、20KiB/turn、60KiB/Session 只约束**自动披露表示**，权威事实源是 provider/resource budget 与 durable Session byte ledger；它不删除、拒绝、降级或重写 Memory truth；
+- semantic choice：selector 只看完整 authorized name/description/load-ref manifest，由 LLM 最多选择 5 条；平台 score/recency/graph 只是观察，不能直接选 body；
+- recoverability：每条 excerpt 带 stable ref和 `search_memory/load_memory` action；4KiB preview 之后的决定性尾部仍可完整读取；
+- failure：selector unavailable/invalid、Session budget exhausted或ledger failure只产生 typed pressure/degrade，conversation 与正常 authority 下的无关 effect继续；绝不回退全量正文，也不产生平台伪造结论；
+- output：模型 final 不被扫描、追加、替换或截断。
+
+2026-07-17 本地实现已进入 `profile_plane.py`、`retriever.py`、`assembler.py`、`session_surfacing.py`、`memory_service.py` 与 `invoker.py`；定向回归 `104 passed`，backend 全量 `7543 passed, 2 skipped`，frontend 当前 checkout `693 passed` 且 production build 通过。它仍是 `in_progress-local-green`：三服务 exact-source deploy、production 长 Session canary 与 provider actual-token 曲线未完成，因此不得把本补充项写成 production closed。完整实现/证据以 `unified-context-assembly-and-progressive-disclosure-2026-07-14.md` §18.10 与 AA `EVID-G6-001` 为准。
+
 ### C-14：Skill 静态语义硬拒绝
 
 **代码位置**

@@ -484,7 +484,10 @@ async def run_retriever_pipeline_eval(
         # must not leak usage history from one case into the next, so the
         # sidecar is restored after each case (seeded telemetry stays fixed).
         with _sidecar_snapshot(data_root, agent_id):
-            items = await retriever.retrieve(
+            # This scorecard measures deterministic candidate ranking, not
+            # live automatic body selection. Production prompt assembly uses
+            # ``retrieve`` and therefore still requires the model selector.
+            items = await retriever._gather_authorized_candidates(
                 agent_id,
                 case.query,
                 session_id=None,

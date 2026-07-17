@@ -2128,9 +2128,18 @@ Final answer
 
 ---
 
-## 16. Sub-agent、A2A 与 Workflow 的层级表达
+## 16. Sub-agent、Agent Team、A2A 与 Workflow 的层级表达
 
-### 16.1 Sub-agent 不扁平化
+Agent 协作有**三层**，禁止压成"轻量 sub-agent vs peer A2A"两层——中间的 **Agent Team** 必须有独立表达。三层加 Workflow：
+
+- **① Sub-agent**（§16.1）：主 agent 内部临时开的匿名 worker，走 `spawn_subagent`（`app/agents/subagent.py:1460`），`SessionContext.source="subagent"`。
+- **② Agent Team**（§16.2）：同一个 lead agent 在当前环境瞬间开出的多个**具名可寻址** teammate child session，走 `spawn_subagent(team_name+name)` → `spawn_agent_team_member_runtime`（`app/services/agent_team_runtime_service.py:588`，`command="spawn_subagent"`），仍是 lead agent 这套系统，建在 ① 之上。
+- **③ A2A 到 peer employee**（§16.3）：委派给**另一位不同的数字员工**（不同 agent_id），走 `orchestrator.delegate_async`（`app/agents/orchestrator.py:3287`），`SessionContext.source="agent"`，带 principal/depth/cycle/budget 治理。
+- **Workflow**（§16.4）：确定性 step/gate 编排，与自主协作分离。
+
+② 与 ③ 只在最底层 `invoke_agent()` → `AgentKernel.handle()` 汇合，编排层是**两条独立的路**：② 复用 sub-agent 机制（同一 lead agent 的具名 teammate），③ 是跨 agent 的独立治理路径。对齐 CC/FreeCode：`AgentTool.tsx:284` 靠 `name` 参数二选一 teammate vs sub-agent，in-process teammate 复用同一个 `runAgent()`/`query()` 用主 agent system。
+
+### 16.1 第 ① 层 Sub-agent 不扁平化
 
 父时间线不能只在结束后出现一行 terminal summary；CC 的 AgentTool 在运行中持续投影 child progress、最近活动、tool-use count 和 token usage，并允许在父上下文里展开 child sidechain。Hive 父时间线至少要实时呈现：
 
@@ -2184,9 +2193,22 @@ type SubagentProgressPayloadV2 = {
 - 父进程重启或重连后，从 child canonical events 按 `child_snapshot_through_sequence` 重建，或读取已提交 snapshot，再继续追 gap；terminal child 必须提交最后一个 progress snapshot 与结果 receipt，二者顺序/因果可验证；
 - usage 必须标明 Provider receipt 还是 runtime estimate，不能把估算 token 当作账单事实；child generation 变化代表显式 retry/new attempt，计数不得跨 generation 静默累加。
 
-### 16.2 A2A 保留 authority 与 receipt
+### 16.2 第 ② 层 Agent Team 是同一 lead agent 的具名 teammate 群
 
-Peer Digital Employee A2A 与上面的轻量 Sub-agent 不同：目标是另一位真实数字员工，所以每个 admitted task 必须在 coordination publish 前创建或复用一个 task-scoped、owner 可见、read-only 的 `delegation_run` Session。即使 admission 被 cycle/lease 阻断、目标 runtime 不可用或执行失败，该 Session 和父投影也必须留下 typed terminal evidence，不能让用户只看到永久 `running`。父 Item 必须保留：
+Agent Team 建在 Sub-agent 机制之上，但语义不同：它是**同一个 lead agent** 在当前 parent session 下瞬间开出的多个**具名、可寻址、可常驻**的 teammate child session（`spawn_subagent(team_name+name)` → `spawn_agent_team_member_runtime`，member 挂 `lead_agent_id`、`runtime_task_type="team_member"`、`member_runtime_policy="enterable_chat_session"`）。它不是"匿名一次性 worker"，也不是"另一位数字员工"。
+
+父时间线对 Team 的表达在 §16.1 的可重放 typed progress 之上，还必须表达 team 特有的结构：
+
+- **roster 与寻址**：每个 teammate 有稳定 `member_name`，可被 `SendMessage(to=name)` 等 team 工具寻址；父 Session 要能呈现 roster（谁在、状态、最近活动），不是一堆匿名 child。
+- **同一 lead 身份**：teammate 用 lead agent 的 system/soul/工具（member_spec 可覆盖 model/tool_policy），不是不同 agent 的独立身份；因此它们共享 lead 的 authority 边界，不走跨 agent A2A 的 principal/cycle 治理。
+- **enterable child session**：teammate child session 可进入查看，但保持非列表面（`listed_surface=parent` 或等价），不作为普通数字员工会话出现在会话列表。
+- **协作与回收**：teammate 之间经 mailbox/共享任务表协调；Team 的创建/派发/回收（TeamCreate 只建容器，spawn 才起 teammate）必须有 typed 生命周期事件，父投影不能只在结束时出现一行 terminal。
+
+Team 与 ③ A2A 的分界必须显式：**同一 lead agent 的具名并行 = Team；跨到不同 agent_id = A2A delegation**。两者禁止合并成同一个 generic "delegation" 表达。
+
+### 16.3 第 ③ 层 A2A 到 peer employee 保留 authority 与 receipt
+
+Peer Digital Employee A2A 与 ① Sub-agent 和 ② Agent Team 都不同：目标是另一位真实数字员工，所以每个 admitted task 必须在 coordination publish 前创建或复用一个 task-scoped、owner 可见、read-only 的 `delegation_run` Session。即使 admission 被 cycle/lease 阻断、目标 runtime 不可用或执行失败，该 Session 和父投影也必须留下 typed terminal evidence，不能让用户只看到永久 `running`。父 Item 必须保留：
 
 - delegator principal；
 - target agent；
@@ -2196,7 +2218,7 @@ Peer Digital Employee A2A 与上面的轻量 Sub-agent 不同：目标是另一�
 - completion receipt；
 - artifact/result refs。
 
-### 16.3 Workflow 与 Agent 协作分离
+### 16.4 Workflow 与 Agent 协作分离
 
 Workflow 展示确定性 step/gate；Sub-agent 展示自主协作活动。二者可以互相引用，但不能合并成同一个 generic activity 类型。
 

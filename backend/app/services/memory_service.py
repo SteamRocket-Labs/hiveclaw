@@ -24,6 +24,10 @@ from app.config import get_settings
 from app.database import tenant_scoped_session
 from app.memory.activation import ActivationContext
 from app.memory import MemoryAssembler, MemoryRetriever
+from app.memory.session_surfacing import (
+    SESSION_AUTO_SURFACE_BUDGET_BYTES,
+    surface_with_session_budget,
+)
 from app.models.agent import Agent
 from app.models.chat_session import ChatSession
 from app.models.llm import LLMModel
@@ -55,6 +59,11 @@ class MemoryContextResult:
     attempts: int = 1
     degraded_components: tuple[str, ...] = ()
     error_class: str | None = None
+    auto_surfaced_bytes: int = 0
+    auto_surface_total_bytes: int = 0
+    auto_surface_remaining_bytes: int = SESSION_AUTO_SURFACE_BUDGET_BYTES
+    auto_surface_selected_count: int = 0
+    selection_receipt: str | None = None
 
 
 # ============================================================================
@@ -99,6 +108,7 @@ async def build_memory_context(
     tenant_id: uuid.UUID,
     *,
     session_id: str | None = None,
+    turn_id: str | None = None,
     query: str = "",
     context_window_tokens: int | None = None,
     budget_profile: ContextBudget | None = None,
@@ -118,6 +128,7 @@ async def build_memory_context(
         agent_id,
         tenant_id,
         session_id=session_id,
+        turn_id=turn_id,
         query=query,
         context_window_tokens=context_window_tokens,
         budget_profile=budget_profile,
@@ -133,6 +144,7 @@ async def _build_memory_context_result(
     tenant_id: uuid.UUID,
     *,
     session_id: str | None,
+    turn_id: str | None,
     query: str,
     context_window_tokens: int | None,
     budget_profile: ContextBudget | None,
@@ -332,6 +344,7 @@ async def _build_memory_context_result(
         )
 
     selection_status = str(getattr(retriever, "last_selection_status", "not_reported"))
+    selection_receipt = str(getattr(retriever, "last_selection_receipt", "") or "") or None
     if selection_status in {"model_unavailable", "failed"}:
         degraded_components.append("memory_semantic_selection")
 
@@ -357,30 +370,95 @@ async def _build_memory_context_result(
             logger.warning("Memory working set checkpoint failed for agent %s: %s", agent_id, type(exc).__name__)
             degraded_components.append("working_set_checkpoint")
 
-    if resident.text:
-        items = [item for item in items if getattr(item, "metadata", {}).get("source_type") != "explicit_overlay"]
-
     try:
         assembler = MemoryAssembler()
-        assemble_kwargs = {}
-        if "budget_chars" in inspect.signature(assembler.assemble).parameters:
-            retrieval_budget = max(2_000, retrieval_profile.memory_budget_chars - resident.chars)
-            assemble_kwargs["budget_chars"] = retrieval_budget
-        assembled = assembler.assemble(items, **assemble_kwargs) or ""
+        retrieval_budget = max(0, int(retrieval_profile.memory_budget_chars - resident.chars))
+
+        def _render_selected_memory(remaining_session_bytes: int) -> str:
+            assemble_kwargs = {}
+            if "budget_chars" in inspect.signature(assembler.assemble).parameters:
+                assemble_kwargs["budget_chars"] = min(retrieval_budget, max(0, remaining_session_bytes))
+            return assembler.assemble(items, **assemble_kwargs) or ""
+
+        surfacing = surface_with_session_budget(
+            data_root=data_root_settings,
+            agent_id=agent_id,
+            session_id=str(session_id) if session_id else None,
+            turn_id=turn_id,
+            render=_render_selected_memory,
+        )
+        assembled = surfacing.content
     except Exception as exc:
         logger.warning("Memory assembly failed for agent %s: %s", agent_id, type(exc).__name__)
         return MemoryContextResult(
             content=resident.text,
             status="degraded",
-            code="semantic_assembly_unavailable",
-            user_message="Some recalled memory could not be assembled. Resident identity and owner constraints remain active.",
+            code="memory_auto_surface_unavailable",
+            user_message=(
+                "Automatic memory surfacing is temporarily unavailable. Resident identity remains active; "
+                "conversation can continue and search_memory/load_memory remain available."
+            ),
             retryable=True,
             attempts=attempts,
-            degraded_components=tuple(dict.fromkeys((*degraded_components, "semantic_assembly"))),
+            degraded_components=tuple(dict.fromkeys((*degraded_components, "memory_auto_surface"))),
             error_class=type(exc).__name__,
+            auto_surface_selected_count=len(items),
+            selection_receipt=selection_receipt,
         )
 
     content = f"{resident.text}\n\n{assembled}" if resident.text and assembled else (resident.text or assembled)
+    common_surfacing = {
+        "auto_surfaced_bytes": surfacing.surfaced_bytes,
+        "auto_surface_total_bytes": surfacing.total_surfaced_bytes,
+        "auto_surface_remaining_bytes": surfacing.remaining_bytes,
+        "auto_surface_selected_count": len(items),
+        "selection_receipt": selection_receipt,
+    }
+    if selection_status in {"model_unavailable", "failed"}:
+        return MemoryContextResult(
+            content=content,
+            status="degraded",
+            code="memory_semantic_selection_unavailable",
+            user_message=(
+                "Automatic semantic memory selection is temporarily unavailable, so no recalled bodies were "
+                "prefetched. Conversation can continue and search_memory/load_memory remain available."
+            ),
+            retryable=True,
+            attempts=attempts,
+            degraded_components=tuple(dict.fromkeys(degraded_components)),
+            error_class=str(getattr(retriever, "last_selection_error", "") or "") or None,
+            **common_surfacing,
+        )
+    if surfacing.exhausted:
+        degraded_components.append("memory_auto_surface_budget")
+        return MemoryContextResult(
+            content=content,
+            status="degraded",
+            code="memory_auto_surface_budget_exhausted",
+            user_message=(
+                "Session automatic memory surfacing budget is exhausted; conversation can continue and "
+                "search_memory/load_memory remain available for full authorized evidence."
+            ),
+            retryable=False,
+            attempts=attempts,
+            degraded_components=tuple(dict.fromkeys(degraded_components)),
+            **common_surfacing,
+        )
+    if items and not assembled:
+        degraded_components.append("memory_auto_surface_turn_budget")
+        return MemoryContextResult(
+            content=content,
+            status="degraded",
+            code="memory_auto_surface_turn_budget_unavailable",
+            user_message=(
+                "This turn has no remaining automatic memory surfacing budget. Conversation can continue and "
+                "search_memory/load_memory remain available for full authorized evidence."
+            ),
+            retryable=False,
+            attempts=attempts,
+            degraded_components=tuple(dict.fromkeys(degraded_components)),
+            **common_surfacing,
+        )
     if degraded_components:
         return MemoryContextResult(
             content=content,
@@ -390,6 +468,7 @@ async def _build_memory_context_result(
             retryable=True,
             attempts=attempts,
             degraded_components=tuple(dict.fromkeys(degraded_components)),
+            **common_surfacing,
         )
     return MemoryContextResult(
         content=content,
@@ -397,6 +476,7 @@ async def _build_memory_context_result(
         code="memory_context_ready",
         user_message="Memory context is ready.",
         attempts=attempts,
+        **common_surfacing,
     )
 
 

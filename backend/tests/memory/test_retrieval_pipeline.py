@@ -11,12 +11,13 @@ from __future__ import annotations
 import json
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from app.memory.activation import ActivationContext
-from app.memory.retriever import MemoryRetriever
-from app.memory.types import MemoryKind
+from app.memory.retriever import MAX_SELECTION_DESCRIPTOR_BYTES, MemoryRetriever, _selection_descriptor
+from app.memory.types import MemoryItem, MemoryKind
 from app.services.principal_context import Principal, PrincipalRole, PrincipalStack
 
 
@@ -124,6 +125,87 @@ def test_legacy_read_knobs_are_retired() -> None:
         assert retired not in params
     for retired_method in ("_retrieve_t3_direct", "_retrieve_t3_index_first", "retrieve_t3_index_shadow"):
         assert not hasattr(MemoryRetriever, retired_method)
+
+
+def test_memory_selector_manifest_uses_bounded_descriptors_not_full_bodies() -> None:
+    body = "full-body-prefix " + ("sensitive-tail " * 200)
+    item = MemoryItem(
+        kind=MemoryKind.SEMANTIC,
+        content=body,
+        score=0.9,
+        source="memory/knowledge/payroll.md",
+        metadata={
+            "selection_candidate_id": "memory_candidate:semantic:0:abc",
+            "title": "Payroll exception",
+            "description": "One-line hook for the governed payroll exception.",
+            "entry_id": "knowledge/payroll",
+            "source_type": "knowledge_ppr",
+        },
+    )
+
+    descriptor = _selection_descriptor(item)
+    serialized = json.dumps(descriptor, ensure_ascii=False)
+
+    assert descriptor["name"] == "Payroll exception"
+    assert descriptor["description"] == "One-line hook for the governed payroll exception."
+    assert len(descriptor["description"].encode("utf-8")) <= MAX_SELECTION_DESCRIPTOR_BYTES
+    assert "full-body-prefix" not in serialized
+    assert "sensitive-tail" not in serialized
+    assert descriptor["load_ref"]["entry_id"] == "knowledge/payroll"
+
+
+@pytest.mark.asyncio
+async def test_model_selector_call_receives_only_descriptor_manifest(monkeypatch, tmp_path) -> None:
+    observed: dict[str, str] = {}
+    candidate_id = "memory_candidate:semantic:0:abc"
+    item = MemoryItem(
+        kind=MemoryKind.SEMANTIC,
+        content="FULL_MEMORY_BODY_DO_NOT_SEND_TO_SELECTOR " + ("tail " * 1000),
+        score=0.9,
+        source="memory/knowledge/payroll.md",
+        metadata={
+            "selection_candidate_id": candidate_id,
+            "title": "Payroll exception",
+            "description": "Bounded manifest hook",
+            "entry_id": "knowledge/payroll",
+            "source_type": "knowledge_ppr",
+        },
+    )
+
+    async def fake_covered_input(*, sections, **_kwargs):
+        payload = "\n".join(section for _section_id, section in sections)
+        observed["manifest"] = payload
+        return payload
+
+    class _Client:
+        async def complete(self, *, messages, **_kwargs):
+            observed["final_prompt"] = messages[-1].content
+            return SimpleNamespace(content=json.dumps({"selected_ids": [candidate_id], "reason": "manifest match"}))
+
+        async def close(self):
+            return None
+
+    monkeypatch.setattr(
+        "app.services.semantic_input_coverage.prepare_covered_semantic_input",
+        fake_covered_input,
+    )
+    monkeypatch.setattr("app.services.llm_client.create_llm_client_from_config", lambda _config: _Client())
+    monkeypatch.setattr("app.services.llm_client.with_llm_usage_context", lambda config, **_kwargs: config)
+
+    selected, reason = await MemoryRetriever(data_root=tmp_path)._select_with_model(
+        items=[item],
+        agent_id=uuid.uuid4(),
+        tenant_id=None,
+        query="payroll",
+        model_config={"provider": "fake", "model": "fake"},
+        selection_run_id="selection-test",
+    )
+
+    assert selected == [candidate_id]
+    assert reason == "manifest match"
+    assert "Bounded manifest hook" in observed["manifest"]
+    assert "FULL_MEMORY_BODY_DO_NOT_SEND_TO_SELECTOR" not in observed["manifest"]
+    assert "FULL_MEMORY_BODY_DO_NOT_SEND_TO_SELECTOR" not in observed["final_prompt"]
 
 
 def test_plane_read_legacy_t3_fallback_is_observable(data_root: Path, agent_id: uuid.UUID) -> None:
@@ -247,7 +329,7 @@ async def test_model_selector_sees_every_authorized_candidate_and_can_choose_a_l
 
 
 @pytest.mark.asyncio
-async def test_model_selector_failure_returns_every_authorized_candidate_observably(
+async def test_model_selector_failure_surfaces_no_bodies_but_keeps_observable_coverage(
     data_root: Path, agent_id: uuid.UUID, retriever: MemoryRetriever, monkeypatch
 ) -> None:
     _write_complete_overlay_fixture(data_root, agent_id)
@@ -264,14 +346,14 @@ async def test_model_selector_failure_returns_every_authorized_candidate_observa
         rerank_model_config={"provider": "fake", "model": "fake"},
     )
 
-    assert len(items) == 12
-    assert {item.metadata["semantic_selection_status"] for item in items} == {"failed"}
+    assert items == []
     assert retriever.last_selection_status == "failed"
     assert retriever.last_selection_error == "RuntimeError"
+    assert retriever.last_selection_receipt
 
 
 @pytest.mark.asyncio
-async def test_missing_selector_model_returns_all_candidates_instead_of_mechanical_top_k(
+async def test_missing_selector_model_surfaces_no_bodies_instead_of_dumping_candidates(
     data_root: Path, agent_id: uuid.UUID, retriever: MemoryRetriever
 ) -> None:
     _write_complete_overlay_fixture(data_root, agent_id)
@@ -284,9 +366,32 @@ async def test_missing_selector_model_returns_all_candidates_instead_of_mechanic
         rerank_model_config=None,
     )
 
-    assert len(items) == 12
-    assert {item.metadata["semantic_selection_status"] for item in items} == {"model_unavailable"}
+    assert items == []
     assert retriever.last_selection_status == "model_unavailable"
+    assert retriever.last_selection_receipt
+
+
+@pytest.mark.asyncio
+async def test_selector_cannot_bypass_five_item_auto_surface_contract(
+    data_root: Path, agent_id: uuid.UUID, retriever: MemoryRetriever, monkeypatch
+) -> None:
+    _write_complete_overlay_fixture(data_root, agent_id)
+
+    async def oversized_selection(*, items, **_kwargs):
+        return [item.metadata["selection_candidate_id"] for item in items[:6]], "six items"
+
+    monkeypatch.setattr(retriever, "_select_with_model", oversized_selection, raising=False)
+    items = await retriever.retrieve(
+        agent_id,
+        "salary planning",
+        session_id=None,
+        tenant_id=None,
+        rerank_model_config={"provider": "fake", "model": "fake"},
+    )
+
+    assert items == []
+    assert retriever.last_selection_status == "failed"
+    assert retriever.last_selection_error == "ValueError"
 
 
 def test_memory_retriever_exposes_only_live_retrieval_entrypoints(data_root: Path) -> None:
@@ -327,7 +432,7 @@ async def test_activation_context_suppresses_pl3_when_current_user_is_not_owner(
 
 @pytest.mark.asyncio
 async def test_activation_context_adds_reasons_and_score(
-    data_root: Path, agent_id: uuid.UUID, retriever: MemoryRetriever
+    data_root: Path, agent_id: uuid.UUID, retriever: MemoryRetriever, monkeypatch
 ) -> None:
     _write_overlay_entry(
         data_root,
@@ -337,12 +442,18 @@ async def test_activation_context_adds_reasons_and_score(
         metadata={"retention_score": "0.5", "confidence": "0.9"},
     )
 
+    async def select_open_loop(*, items, **_kwargs):
+        candidate = next(item for item in items if "open loop" in item.content)
+        return [candidate.metadata["selection_candidate_id"]], "open loop is relevant"
+
+    monkeypatch.setattr(retriever, "_select_with_model", select_open_loop, raising=False)
     items = await retriever.retrieve(
         agent_id,
         "salary planning",
         session_id=None,
         tenant_id=None,
         activation_context=_activation_context(),
+        rerank_model_config={"provider": "fake", "model": "fake"},
     )
 
     semantic_items = [item for item in items if item.kind == MemoryKind.SEMANTIC]
@@ -377,7 +488,7 @@ async def test_activation_suppresses_conflicted_entries(
 
 @pytest.mark.asyncio
 async def test_knowledge_plane_feeds_semantic_items(
-    data_root: Path, agent_id: uuid.UUID, retriever: MemoryRetriever
+    data_root: Path, agent_id: uuid.UUID, retriever: MemoryRetriever, monkeypatch
 ) -> None:
     kdir = data_root / str(agent_id) / "memory" / "knowledge"
     kdir.mkdir(parents=True, exist_ok=True)
@@ -387,7 +498,18 @@ async def test_knowledge_plane_feeds_semantic_items(
         encoding="utf-8",
     )
 
-    items = await retriever.retrieve(agent_id, "salary planning", session_id=None, tenant_id=None)
+    async def select_knowledge(*, items, **_kwargs):
+        candidate = next(item for item in items if item.metadata.get("source_type") == "knowledge_ppr")
+        return [candidate.metadata["selection_candidate_id"]], "knowledge claim is relevant"
+
+    monkeypatch.setattr(retriever, "_select_with_model", select_knowledge, raising=False)
+    items = await retriever.retrieve(
+        agent_id,
+        "salary planning",
+        session_id=None,
+        tenant_id=None,
+        rerank_model_config={"provider": "fake", "model": "fake"},
+    )
 
     knowledge = [item for item in items if item.metadata.get("source_type") == "knowledge_ppr"]
     assert knowledge

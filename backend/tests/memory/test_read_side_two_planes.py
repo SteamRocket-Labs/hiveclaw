@@ -1,9 +1,8 @@
 """Read-side tests for complete evidence and model-owned semantic selection.
 
-- Resident plane (P0, no retrieval, no LLM): self/self.md + profiles/*.md +
-  active explicit overlay entries go into the prompt WHOLE — never trimmed
-  per-entry; self's active failure modes float to the very top. Over-budget
-  is a WRITE-side convergence failure signal (one-shot alert, no hard trim).
+- Resident plane (P0, no retrieval, no LLM): self/self.md + profiles/*.md stay
+  resident; explicit overlay contributes a bounded ID/preview index, never all
+  bodies. Full entries remain recoverable through load_memory.
 - Retrieval plane: knowledge/milestones pages expose every active page and its
   complete Markdown to the model selector. BM25/PPR remain ranking evidence;
   they never choose a top-k or hide zero-score pages from model judgment.
@@ -75,7 +74,7 @@ def _write_knowledge_page(tmp_path: Path, agent_id, *, slug: str, title: str, bo
 # --- resident plane ---
 
 
-def test_resident_memory_loads_whole_files_with_active_failures_on_top(tmp_path: Path) -> None:
+def test_resident_memory_loads_profiles_and_explicit_index_with_active_failures_on_top(tmp_path: Path) -> None:
     from app.memory.profile_plane import load_resident_memory
 
     agent_id = uuid4()
@@ -89,14 +88,36 @@ def test_resident_memory_loads_whole_files_with_active_failures_on_top(tmp_path:
     assert "硬编码配置" not in resident.active_failure_modes
     # active failures float above the full self text
     assert resident.text.index("需求含糊时爱自己猜") < resident.text.index("深度研究")
-    # whole files, in order: self → profiles → overlay
+    # Whole identity profiles remain resident; explicit memory is an index.
     assert "偏好简洁中文汇报" in resident.text
     assert "Web3 研究领域" in resident.text
     assert "周报永远用中文" in resident.text
+    assert "ex-lang" in resident.text
+    assert 'load_memory(ids=["ex-lang"])' in resident.text
     assert resident.text.index("深度研究") < resident.text.index("偏好简洁中文汇报")
     assert "self" in resident.sections
     assert "profiles/owner" in resident.sections
     assert resident.over_budget is False
+
+
+def test_explicit_resident_index_is_bounded_to_cc_index_limits(tmp_path: Path) -> None:
+    from app.memory.profile_plane import (
+        RESIDENT_INDEX_MAX_BYTES,
+        RESIDENT_INDEX_MAX_LINES,
+        load_resident_memory,
+    )
+
+    agent_id = uuid4()
+    for index in range(400):
+        _write_overlay_entry(tmp_path, agent_id, entry_id=f"ex-{index:04d}")
+
+    resident = load_resident_memory(agent_id=agent_id, data_root=tmp_path, budget_chars=50_000)
+    index = resident.text.split("### Explicit Memory Index (active)\n", 1)[1]
+
+    assert len(index.encode("utf-8")) <= RESIDENT_INDEX_MAX_BYTES
+    assert len(index.splitlines()) <= RESIDENT_INDEX_MAX_LINES
+    assert "400 active entries" in index
+    assert "search_memory" in index
 
 
 def test_resident_memory_empty_for_new_agent(tmp_path: Path) -> None:
@@ -312,11 +333,16 @@ async def test_build_memory_context_prepends_resident_untrimmed(tmp_path: Path, 
     async def fake_activation(**_kwargs):
         return ActivationContext(query="rollup", principal_stack=_Principal())
 
-    async def no_rerank(_tenant_id):
-        return None
+    async def fake_rerank(_tenant_id):
+        return {"provider": "fake", "model": "fake"}
+
+    async def select_knowledge(self, *, items, **_kwargs):
+        candidate = next(item for item in items if item.metadata.get("source_type") == "knowledge_ppr")
+        return [candidate.metadata["selection_candidate_id"]], "knowledge page answers the query"
 
     monkeypatch.setattr(memory_service, "_resolve_activation_context", lambda **kw: fake_activation(**kw))
-    monkeypatch.setattr(memory_service, "_get_rerank_model_config", no_rerank)
+    monkeypatch.setattr(memory_service, "_get_rerank_model_config", fake_rerank)
+    monkeypatch.setattr(memory_service.MemoryRetriever, "_select_with_model", select_knowledge)
     monkeypatch.setattr(
         memory_service,
         "get_settings",

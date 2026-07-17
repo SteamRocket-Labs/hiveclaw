@@ -2860,9 +2860,9 @@ describe('AgentDetail extracted sections', () => {
       />,
     );
 
-    expect(markup).not.toContain('Processed');
-    expect(markup).toContain('Edit document');
-    expect(markup).toContain('proposal.docx');
+    expect(markup).toContain('Processed');
+    expect(markup).not.toContain('Edit document');
+    expect(markup).not.toContain('proposal.docx');
     expect(markup).not.toContain('{&quot;ok&quot;: true}');
     expect(markup).toContain('No delivered artifacts in this session yet.');
     expect(markup).not.toContain('data-testid="session-workspace-documents-unattributed"');
@@ -2975,7 +2975,7 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).not.toContain('Ran 1 command');
     expect(markup).not.toContain('Read file');
     expect(markup).not.toContain('Context Compacted');
-    expect(markup).toContain('Run command');
+    expect(markup).not.toContain('Run command');
     expect(markup).not.toContain('RAW READ FILE CONTENT');
     expect(markup).not.toContain('RAW COMMAND OUTPUT');
   });

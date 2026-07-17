@@ -117,7 +117,7 @@ describe('RunDisclosureBlock', () => {
     expect(markup).not.toContain('RAW FILE CONTENT');
   });
 
-  it('keeps model-authored public commentary visible after completed tool history folds', () => {
+  it('folds model-authored public commentary with completed process history', () => {
     const markup = renderToStaticMarkup(
       <RunDisclosureBlock
         timeline={{
@@ -146,8 +146,8 @@ describe('RunDisclosureBlock', () => {
 
     expect(markup).toContain('Processed');
     expect(markup).toContain('aria-expanded="false"');
-    expect(markup).toContain('data-testid="run-disclosure-commentary"');
-    expect(markup).toContain('The durable Session event is committed; I am validating the consumer now.');
+    expect(markup).not.toContain('data-testid="run-disclosure-commentary"');
+    expect(markup).not.toContain('The durable Session event is committed; I am validating the consumer now.');
     expect(markup).not.toContain('Read file');
     expect(markup).not.toContain('sessionEventConsumer.ts');
     expect(markup).not.toContain('RAW FILE CONTENT');
@@ -174,7 +174,7 @@ describe('RunDisclosureBlock', () => {
     expect(markup).not.toContain('Progress update');
   });
 
-  it('collapses completed Thinking while keeping A2A lifecycle progress visible', () => {
+  it('folds completed Thinking and A2A lifecycle progress behind the process summary', () => {
     const markup = renderToStaticMarkup(
       <RunDisclosureBlock
         timeline={{
@@ -205,8 +205,8 @@ describe('RunDisclosureBlock', () => {
 
     expect(markup).not.toContain('Thinking');
     expect(markup).not.toContain('Verified the delegated artifact');
-    expect(markup).toContain('Action Started');
-    expect(markup).toContain('Delegated to Web3 researcher');
+    expect(markup).not.toContain('Action Started');
+    expect(markup).not.toContain('Delegated to Web3 researcher');
   });
 
   it('never duplicates an externally rendered Ask User Question card inside the process disclosure', () => {
@@ -236,7 +236,7 @@ describe('RunDisclosureBlock', () => {
     expect(markup).not.toContain('Which scope?');
   });
 
-  it('keeps failed commands and other surfaced tool outcomes visible after the process disclosure closes', () => {
+  it('folds intermediate command failures when the overall run completes successfully', () => {
     const markup = renderToStaticMarkup(
       <RunDisclosureBlock
         timeline={{
@@ -265,9 +265,9 @@ describe('RunDisclosureBlock', () => {
 
     expect(markup).toContain('Processed');
     expect(markup).not.toContain('Private process detail');
-    expect(markup).toContain('Run command');
-    expect(markup).toContain('npm test');
-    expect(markup).toContain('1 failed');
+    expect(markup).not.toContain('Run command');
+    expect(markup).not.toContain('npm test');
+    expect(markup).not.toContain('1 failed');
   });
 
   it('expands active runs and keeps raw non-command payloads behind the tool history surface', () => {
@@ -352,15 +352,15 @@ describe('RunDisclosureBlock', () => {
     expect(compaction).toBeLessThan(secondCommentary);
   });
 
-  it('folds successful internal history after final while preserving public commentary', () => {
+  it('folds the complete successful process after final while preserving only the summary toggle', () => {
     const timeline = { ...liveTimeline(), status: 'done' as const };
     const markup = renderToStaticMarkup(<RunDisclosureBlock timeline={timeline} />);
 
     expect(markup).toContain('Processed');
     expect(markup).toContain('aria-expanded="false"');
-    expect(markup.match(/data-testid="run-disclosure-commentary"/g)).toHaveLength(2);
-    expect(markup).toContain('I found the <strong>projection bug</strong>');
-    expect(markup).toContain('The regression is now isolated.');
+    expect(markup).not.toContain('data-testid="run-disclosure-commentary"');
+    expect(markup).not.toContain('I found the <strong>projection bug</strong>');
+    expect(markup).not.toContain('The regression is now isolated.');
     expect(markup).not.toContain('Read file');
     expect(markup).not.toContain('Context was automatically compacted');
   });

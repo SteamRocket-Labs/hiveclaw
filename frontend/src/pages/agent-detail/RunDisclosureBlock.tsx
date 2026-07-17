@@ -42,12 +42,6 @@ export function getRunStepPresentation(step: RunStepSnapshot): RunStepPresentati
   return 'surface';
 }
 
-function isPersistentRunStep(step: RunStepSnapshot): boolean {
-  return step.kind === 'commentary'
-    || step.kind === 'prose'
-    || getRunStepPresentation(step) === 'surface';
-}
-
 function groupRunSteps(steps: RunStepSnapshot[]): RunRenderItem[] {
   const items: RunRenderItem[] = [];
   for (const step of steps) {
@@ -406,39 +400,30 @@ export default function RunDisclosureBlock({ timeline }: { timeline: RunTimeline
         : timeline.status === 'cancelled'
           ? t('agent.chat.disclosure.stopped', 'Stopped')
           : t('agent.chat.disclosure.processed', 'Processed');
-  const collapsibleStepCount = visibleSteps.filter((step) => !isPersistentRunStep(step)).length;
-  const stepCount = t('agent.chat.disclosure.stepCount', '{{count}} steps', { count: collapsibleStepCount });
+  const stepCount = t('agent.chat.disclosure.stepCount', '{{count}} steps', { count: visibleSteps.length });
   const live = timeline.status === 'running' || timeline.status === 'blocked';
   const renderItems = groupRunSteps(visibleSteps);
-  const hasCollapsibleSteps = collapsibleStepCount > 0;
-  const hasPersistentSteps = visibleSteps.some(isPersistentRunStep);
 
   return (
     <div data-testid="run-disclosure-block" data-status={timeline.status} className="run-disclosure">
       <div className={live ? 'run-disclosure-frame is-live' : 'run-disclosure-frame'}>
-        {hasCollapsibleSteps && (
-          <button
-            type="button"
-            className="run-disclosure-header"
-            aria-expanded={expanded}
-            onClick={() => setExpanded((value) => !value)}
-          >
-            {expanded ? <IconChevronDown size={13} stroke={2.2} /> : <IconChevronRight size={13} stroke={2.2} />}
-            <span className={running ? 'session-tui-shimmer run-disclosure-title' : 'run-disclosure-title'}>
-              {title}
-            </span>
-            {duration && <span className="run-disclosure-duration">{duration}</span>}
-            {timeline.summary && <span className="run-disclosure-summary">{timeline.summary}</span>}
-            <span className="run-disclosure-count">{stepCount}</span>
-          </button>
-        )}
-        {(expanded || hasPersistentSteps) && (
+        <button
+          type="button"
+          className="run-disclosure-header"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((value) => !value)}
+        >
+          {expanded ? <IconChevronDown size={13} stroke={2.2} /> : <IconChevronRight size={13} stroke={2.2} />}
+          <span className={running ? 'session-tui-shimmer run-disclosure-title' : 'run-disclosure-title'}>
+            {title}
+          </span>
+          {duration && <span className="run-disclosure-duration">{duration}</span>}
+          {timeline.summary && <span className="run-disclosure-summary">{timeline.summary}</span>}
+          <span className="run-disclosure-count">{stepCount}</span>
+        </button>
+        {expanded && (
           <div className="run-disclosure-steps">
-            {renderItems.map((item) => {
-              const persistent = item.kind === 'step' && isPersistentRunStep(item.step);
-              if (!expanded && !persistent) return null;
-              return <RunTimelineItem key={item.id} item={item} />;
-            })}
+            {renderItems.map((item) => <RunTimelineItem key={item.id} item={item} />)}
           </div>
         )}
       </div>

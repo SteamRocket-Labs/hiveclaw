@@ -2253,6 +2253,26 @@ Artifacts / Deliverables（如果存在）
 - 用户消息不与前一轮 run 混合；
 - 相同 item ID 在任何视图只出现一次。
 
+### 17.1.1 Tool、Task 与 commentary 的唯一消费矩阵
+
+本矩阵是 Session consumer 的硬合同，不是可替换的视觉偏好。源码裁决来自：
+
+- FreeCode `src/Tool.ts` 明确规定：没有 `renderToolResultMessage` 的工具不渲染结果，`TodoWrite` 的结果由 todo panel 消费而不是 transcript；
+- FreeCode `src/tools/TodoWriteTool/TodoWriteTool.ts`、`TaskCreateTool/TaskCreateTool.ts`、`TaskUpdateTool/TaskUpdateTool.ts` 的成功 use renderer 均返回 `null`，创建/更新后直接展开任务面板；
+- Codex `codex-rs/core/src/tools/handlers/plan.rs` 把 `update_plan` 作为 typed checklist update，`codex-rs/tui/src/history_cell/plans.rs::PlanUpdateCell` 只渲染人类可读的状态清单，不公开原始 function arguments/ACK；
+- 两者都允许失败、拒绝、取消和需要用户动作的工具以可恢复证据出现，但不允许同一成功状态在 Task 面板和 transcript 中重复消费。
+
+| 事实类型 | Session 默认表达 | 是否折叠 | 唯一消费规则 |
+|---|---|---:|---|
+| 用户输入、模型公开 `assistant_text/commentary`、final | 正文，保持原字节与顺序 | 否 | 不得改写成 `Thinking`；`report_progress.message` 显示为 commentary，不显示其 tool call/ACK |
+| approval、question、denied、failed、blocked、cancelled、reconciliation | typed card，包含状态、原因、下一动作 | 否 | 这是恢复面，不能因为对应工具另有专用面而隐藏 |
+| A2A、Sub-agent、Agent Team、Workflow 生命周期与结果 | typed collaboration card/section | 活动时展开，terminal 可折叠 | 展示业务身份、状态、receipt/ref；不展示 raw tool JSON |
+| 成功的一般工具调用（读取、搜索、文件、命令等） | 一行人类可读 activity；详情中保留受治理参数/结果 | running 展开，terminal 归入折叠 Run history | 未分类或有 side effect 的工具默认保持可见，不能因名称猜测而静默隐藏 |
+| 成功的 `track_todo/task_create/task_update/task_stop` | Composer 上方 durable Task ledger | 活动时常驻，terminal 原生折叠 | **不得**再生成 Run tool row；失败/阻塞例外，回到 typed recovery card |
+| private reasoning body、内部 ACK、raw schema/ID/hash、已被专用 card 消费的重复 receipt | 不进入普通用户主时间线 | 不适用 | 原始证据保留在受控 transcript/audit/operator 面，不能伪装成模型正文 |
+
+“不折叠的工具”不是把原始函数调用平铺出来。它必须表现为稳定的 typed cell：简短动作名、当前/终态、必要的用户动作和可展开详情。只有当前活动、交互阻塞、失败恢复或真实交付会占据主时间线；成功的认知记账和专用面 mutation 不得制造第二条产品事实。
+
 ### 17.2 “Thinking” 的显示
 
 界面必须区分三种模型内容，不能只靠一个 `Thinking` 标签兜底：
@@ -3265,14 +3285,15 @@ Group 4 严格消费 Group 2 的 canonical Session event/item 与 Group 3 的 ro
 
 1. `session_model_round.seal_model_response()` 在 response/outbox 同事务提交后返回 public content event IDs；`web_chat_run_orchestrator._commit_session_model_response()` 从已提交 outbox 读取同一 envelope，在 round registry commit 后即时 broadcast。broadcast 失败只记录 warning 并由 durable outbox 重放，不得反向把已成功模型 round 改成失败。
 2. `sessionEventConsumer` 与 `chatDisclosureReducer` 把 canonical `assistant_text` 投影为 Markdown 过程正文；terminal final 的 source item 由 final render owner 去重，正文不会同时出现在 process/final。private reasoning 继续与公开文字分离。
-3. `ChatWorkLedgerDock` 在 live Run 中固定常驻 Composer 上方并显示全量授权 task；terminal 时保留固定摘要、明细进入原生 `<details>`。正常 task mutation 进入可恢复 tool history，失败/blocked 仍直接 surface。
+3. `ChatWorkLedgerDock` 在 live Run 中固定常驻 Composer 上方并显示全量授权 task；terminal 时保留固定摘要、明细进入原生 `<details>`。正常 `track_todo/task_create/task_update/task_stop` 只由该专用面消费，不再生成 Run tool row；失败/blocked/cancelled 仍直接 surface。
 4. `sessionSocketEventProjector` 在 canonical task `tool_call` 开始、所有 committed `tool_result`、runtime kind 变化与 terminal run 上失效 Session/Runtime/Work-Ledger query；5 秒 polling 只是 socket/query 失效遗漏时的降级恢复。E2E 先完成 REST hydration，再注入 sequence 连续的 live canonical event，证明不是 fixture 覆盖 live store。
 5. terminal outcome 不再只携带 final text：模型声明且本 turn 已写、tenant/agent/session/run/root-user/root-session 全匹配、`authority_state=owned` 的 `ChatArtifact` 才进入 `assistant_final.parts`。seal→commit 间 authority/manifest 漂移进入 `needs_reconciliation`，不展示未授权或陈旧文件。
 6. Runtime behavior contract 要求多步任务在首次工具调用前及关键里程碑发送简短公开进度；这只要求模型公开可见工作说明，不要求或泄露 hidden reasoning。
 7. production canary 证明第 6 条仅靠 prompt 对无 commentary Provider 不充分：MiniMax M3 在强指令下仍直接从 private reasoning 进入 `track_todo`。`report_progress(message)` 因此作为 Codex additive engineering channel 进入 core tool surface；message 由模型写，通用原始参数继续只在受控 `SessionToolInvocation`，而该工具唯一公开字段在同一 pre-effect transaction 中原字节提交成 `assistant_commentary.completed` + outbox；handler 只 ACK，frontend 直接消费 canonical commentary。rolling deploy 中 old binary 已写 invocation、新 binary 重放时，在同一 invocation row lock 下按 stable item ID 幂等补齐 commentary；V1 rolling row 只按 exact JSON machine envelope 恢复，不扫描自然语言。它不是平台 reasoning fallback，不受 effect capability/Plan Mode 阻断，也不改变 CC 的 raw block/unknown-phase 底线。
 8. authenticated production reload 进一步暴露 compatibility reducer 的 timeline 漂移：每处理一条后续兼容事件都给已累积消息重写 sequence，旧 final 因而漂到最新 Turn；同一 run 的 legacy `assistant_message` 与 canonical `assistant_final` 还会同时成为 render owner。修复只消费机械 identity：消息 sequence 固定为首次物化 sequence；同一 typed `run_id` 存在 terminal canonical final 时只保留 canonical render owner，不做正文比较。
+9. owner 截图与 live canary 再次暴露两个前端接线错误：真实 Hive 工具名 `track_todo` 漏出 task mutation 集合，因此 Task dock 与 Run 同时展示；消息 store updater 又从可能滞后的 active selection 猜 Session，导致 Task query 已实时变化而 user input/commentary 直到 terminal/reload 才出现。修复按 socket/accepted-run 携带的 exact `sessionId` 路由 canonical、legacy、optimistic update；成功 task mutation 归专用 Task 面，失败态仍保留恢复证据。
 
-**Red→Green 与验收：** task `tool_result` 不刷新 read model、artifact authority 在 outcome seal 后漂移、即时 broadcast 失败污染已提交 round 三条新增回归均先按预期失败，再分别转绿。第一版 `report_progress` 发布后，真实 hard-reload canary 又证明 canonical tool event 不含 public args；follow-up real-PG、legacy serializer、frontend rolling replay 以及 old-binary existing-invocation early-return Red 均先失败，再由原生 commentary transaction、幂等 rolling repair + V1 exact-envelope adapter 转绿。commit `a456932ec` 的 production DB/browser 又证明 commentary 本身已 durable/renderable，同时抓到旧消息 sequence 漂移和同 run 双 render owner；两个 production-shaped frontend Red 均先失败，再由 first-materialization sequence 与 typed-run canonical ownership 转绿。当前总证据：backend full=`7577 passed, 2 skipped`；final frontend focused=`61 passed`、full=`120 files / 726 tests`；`npm run build` 通过，AgentDetail=`338415/380000` bytes、gzip=`93254/115000`，vendor=`591449/620000`、gzip=`186474/200000`；既有 Playwright Workbench=`12 passed`、architecture ledger=`11 passed`，diff 全绿。最终 consumer patch 尚未部署，仍不得写 production closed。
+**Red→Green 与验收：** task `tool_result` 不刷新 read model、artifact authority 在 outcome seal 后漂移、即时 broadcast 失败污染已提交 round 三条新增回归均先按预期失败，再分别转绿。第一版 `report_progress` 发布后，真实 hard-reload canary 又证明 canonical tool event 不含 public args；follow-up real-PG、legacy serializer、frontend rolling replay 以及 old-binary existing-invocation early-return Red 均先失败，再由原生 commentary transaction、幂等 rolling repair + V1 exact-envelope adapter 转绿。commit `a456932ec` 的 production DB/browser 又证明 commentary 本身已 durable/renderable，同时抓到旧消息 sequence 漂移和同 run 双 render owner；两个 production-shaped frontend Red 均先失败，再由 first-materialization sequence 与 typed-run canonical ownership 转绿。本轮 task/live-route 5 个 Red 也先按预期失败，Green 后 focused=`149 passed`、frontend full=`120 files / 728 tests`、architecture ledger=`11 passed`；`npm run build` 通过，AgentDetail=`338559/380000` bytes、gzip=`93282/115000`，vendor=`591449/620000`、gzip=`186474/200000`，diff 全绿。新 exact-source deploy 与 authenticated no-refresh/hard-reload canary 前仍不得写 production closed。
 
 **七原子：** Input=provider public text、model-authored `report_progress.message`、canonical task/tool events、current-turn artifact declarations；Authority=Session visibility + exact RuntimeTask/ChatArtifact ownership，progress expression 不被 effect capability 接管；Execution=round seal/outbox→socket、core progress tool、pre-effect commentary commit、single Session reducer、ledger query 与 terminal outcome；Evidence=SessionEventOutbox、stable commentary/item/invocation/run ID、first-materialization sequence、受控 tool arguments、RuntimeTask metadata、artifact manifest hash；Recovery=outbox replay、V1 exact-envelope adapter、canonical render ownership、query invalidation/polling、reload/reconnect reducer、typed reconciliation；Consumption=Run disclosure Markdown、Composer Task dock、right-rail deliverables；Acceptance=Red→Green、full frontend/backend、production build、browser live/reload/canary。`EVID-G2-016` 为 deployed-canary-partial，`017` final consumer patch 发布和真实 progress live/reload/ordering canary 前 `SES-CONSUMER-001` 仍不 closed。
 

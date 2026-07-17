@@ -89,7 +89,7 @@ const A2A_TOOLS = new Set([
   'send_message_to_agent',
 ]);
 const SUBAGENT_TOOLS = new Set(['check_subagent', 'spawn_subagent']);
-const TASK_LEDGER_MUTATION_TOOLS = new Set(['task_create', 'task_stop', 'task_update']);
+const TASK_LEDGER_MUTATION_TOOLS = new Set(['task_create', 'task_stop', 'task_update', 'track_todo']);
 
 // Source-checked against the 145 canonical @tool registrations on 2026-07-17.
 // This is deliberately an allowlist: new/unknown tools stay surfaced until a
@@ -188,7 +188,10 @@ export function getToolStepPresentation(
   if (isDedicatedToolCardMessage(message)) return 'external';
   if (status === 'failed' || status === 'blocked' || status === 'cancelled') return 'surface';
   const name = String(message.toolName || '').trim().toLowerCase();
-  if (TASK_LEDGER_MUTATION_TOOLS.has(name)) return 'tool_history';
+  // CC/FreeCode and Codex consume successful task mutations through their
+  // dedicated task/plan surface. Repeating the raw tool call in the Session
+  // creates two conflicting product truths. Failures remain surfaced above.
+  if (TASK_LEDGER_MUTATION_TOOLS.has(name)) return 'external';
   return FOLDABLE_RETRIEVAL_TOOL_NAMES.has(name) ? 'tool_history' : 'surface';
 }
 const SESSION_NATIVE_DISCLOSURE_EVENTS = new Set([

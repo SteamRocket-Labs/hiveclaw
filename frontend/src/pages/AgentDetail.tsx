@@ -418,11 +418,10 @@ function AgentDetailInner() {
     };
 
     const appendOptimisticUserMessage = (
-        key: SessionRuntimeKey,
-        messageInput: AgentChatMessage,
+        key: SessionRuntimeKey, sessionId: string, messageInput: AgentChatMessage,
     ) => {
         const message = parseChatMsg(messageInput);
-        setChatMessagesAfterQueued(prev => {
+        setChatMessagesAfterQueuedForSession(sessionId, prev => {
             pendingUserMessagesRef.current[key] = [
                 ...(pendingUserMessagesRef.current[key] || []),
                 { message, anchorMessageCount: prev.length },
@@ -463,7 +462,7 @@ function AgentDetailInner() {
             if (consumed.sessionEnvelope && consumed.store === sessionEventStoresRef.current[key]) return;
             if (consumed.store) sessionEventStoresRef.current[key] = consumed.store;
             projectionEvent = consumed.projectionEvent;
-            if (consumed.canonical && consumed.store) return applyCanonicalSessionSnapshot({ event: projectionEvent, store: consumed.store, active: isActiveRuntime, onTranscript: () => { transcriptEventsRef.current[key] = mergeTranscriptBackfill(existingEvents, [projectionEvent]); }, onActivity: () => { runtimeActivityAtRef.current[key] = Date.now(); }, onTerminal: (runId) => markActiveRunTerminal(key, runId), onMessages: (messages, terminal) => { setChatMessagesSessionId(sessionId); (terminal ? setChatMessagesAfterQueued : enqueueChatMessagesUpdate)(() => mergePendingForSession(key, messages)); } });
+            if (consumed.canonical && consumed.store) return applyCanonicalSessionSnapshot({ event: projectionEvent, store: consumed.store, active: isActiveRuntime, onTranscript: () => { transcriptEventsRef.current[key] = mergeTranscriptBackfill(existingEvents, [projectionEvent]); }, onActivity: () => { runtimeActivityAtRef.current[key] = Date.now(); }, onTerminal: (runId) => markActiveRunTerminal(key, runId), onMessages: (messages, terminal) => { setChatMessagesSessionId(sessionId); (terminal ? setChatMessagesAfterQueuedForSession : enqueueChatMessagesUpdateForSession)(sessionId, () => mergePendingForSession(key, messages)); } });
         } catch (error) {
             console.warn(`[SessionEventV2] Rejected invalid envelope for ${key}:`, error);
             return;
@@ -501,8 +500,10 @@ function AgentDetailInner() {
 
         if (isActiveRuntime) {
             setChatMessagesSessionId(sessionId);
-            const commitChatMessages = terminal ? setChatMessagesAfterQueued : enqueueChatMessagesUpdate;
-            commitChatMessages(() => mergePendingForSession(key, next.messages.map(parseChatMsg)));
+            const commitChatMessages = terminal
+                ? setChatMessagesAfterQueuedForSession
+                : enqueueChatMessagesUpdateForSession;
+            commitChatMessages(sessionId, () => mergePendingForSession(key, next.messages.map(parseChatMsg)));
             setActivePhase(next.ui.phase);
             setIsWaiting(next.ui.isWaiting);
             setIsStreaming(next.ui.isStreaming);
@@ -1249,17 +1250,19 @@ function AgentDetailInner() {
     }
     const sessionMessageStore = sessionMessageStoreRef.current;
     const chatMessages = useSessionMessages(sessionMessageStore, chatMessagesSessionId);
+    const enqueueChatMessagesUpdateForSession = React.useCallback((sessionId: string | null | undefined, update: ChatMessagesUpdater) => sessionMessageStore.enqueueUpdate(sessionId, update), [sessionMessageStore]);
+    const setChatMessagesAfterQueuedForSession = React.useCallback((sessionId: string | null | undefined, update: ChatMessagesUpdater) => sessionMessageStore.updateAfterQueued(sessionId, update), [sessionMessageStore]);
     const resolveCurrentChatMessagesSessionId = React.useCallback(() => (
         activeSessionIdRef.current
         || chatMessagesSessionId
         || (activeSession?.id ? String(activeSession.id) : null)
     ), [activeSession?.id, chatMessagesSessionId]);
     const enqueueChatMessagesUpdate = React.useCallback((update: ChatMessagesUpdater) => {
-        sessionMessageStore.enqueueUpdate(resolveCurrentChatMessagesSessionId(), update);
-    }, [resolveCurrentChatMessagesSessionId, sessionMessageStore]);
+        enqueueChatMessagesUpdateForSession(resolveCurrentChatMessagesSessionId(), update);
+    }, [enqueueChatMessagesUpdateForSession, resolveCurrentChatMessagesSessionId]);
     const setChatMessagesAfterQueued = React.useCallback((update: ChatMessagesUpdater) => {
-        sessionMessageStore.updateAfterQueued(resolveCurrentChatMessagesSessionId(), update);
-    }, [resolveCurrentChatMessagesSessionId, sessionMessageStore]);
+        setChatMessagesAfterQueuedForSession(resolveCurrentChatMessagesSessionId(), update);
+    }, [resolveCurrentChatMessagesSessionId, setChatMessagesAfterQueuedForSession]);
     useEffect(() => () => {
         sessionMessageStore.clearAll();
     }, [sessionMessageStore]);
@@ -1629,8 +1632,8 @@ function AgentDetailInner() {
             parseChatMsg,
             setChatMessagesSessionId,
             setTransportNotice,
-            enqueueChatMessagesUpdate,
-            setChatMessagesAfterQueued,
+            enqueueChatMessagesUpdate: enqueueChatMessagesUpdateForSession,
+            setChatMessagesAfterQueued: setChatMessagesAfterQueuedForSession,
             setCreatedAgentId,
             setAgentExpired,
             invalidateQuery: (queryKey) => {
@@ -1921,7 +1924,7 @@ function AgentDetailInner() {
             setTransportNotice(null);
             setSessionPhase(activeRuntimeKey, 'queued');
             setChatMessagesSessionId(runSessionId);
-            appendOptimisticUserMessage(activeRuntimeKey, {
+            appendOptimisticUserMessage(activeRuntimeKey, runSessionId, {
                 role: 'user',
                 id: acceptedInputId,
                 content: userMsg,
@@ -1974,7 +1977,7 @@ function AgentDetailInner() {
             setTransportNotice(null);
             setSessionPhase(activeRuntimeKey, 'queued');
             setChatMessagesSessionId(runSessionId);
-            appendOptimisticUserMessage(activeRuntimeKey, {
+            appendOptimisticUserMessage(activeRuntimeKey, runSessionId, {
                 role: 'user',
                 id: acceptedInputId,
                 content: userMsg,

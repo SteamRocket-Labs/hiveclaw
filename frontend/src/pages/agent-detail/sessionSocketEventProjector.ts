@@ -20,9 +20,12 @@ import { sessionRunStateFromPayload } from './runtimeBudgetState';
 import { sessionPayloadContent } from '../session-workbench/sessionEventStore';
 import type { SessionSocketMessageContext } from './useSessionTransportController';
 
-type MessageUpdater = (updater: (messages: AgentChatMessage[]) => AgentChatMessage[]) => void;
+type MessageUpdater = (
+  sessionId: string,
+  updater: (messages: AgentChatMessage[]) => AgentChatMessage[],
+) => void;
 
-const TASK_LEDGER_MUTATION_TOOLS = new Set(['task_create', 'task_update', 'task_stop']);
+const TASK_LEDGER_MUTATION_TOOLS = new Set(['task_create', 'task_update', 'task_stop', 'track_todo']);
 const RUNTIME_QUERY_EVENT_KINDS = new Set([
   'run',
   'subagent',
@@ -228,12 +231,12 @@ export function projectSessionSocketEvent(
 
   const runtimeEvent = getRuntimeEventMessage({ ...d, timestamp: new Date().toISOString() });
   if (runtimeEvent) {
-    dependencies.enqueueChatMessagesUpdate((messages) => [...messages, parseChatMsg(runtimeEvent)]);
+    dependencies.enqueueChatMessagesUpdate(sessionId, (messages) => [...messages, parseChatMsg(runtimeEvent)]);
     return;
   }
 
   if (d.type === 'thinking') {
-    dependencies.enqueueChatMessagesUpdate((messages) => {
+    dependencies.enqueueChatMessagesUpdate(sessionId, (messages) => {
       const last = messages[messages.length - 1];
       if (last && last.role === 'assistant' && (last as any)._streaming) {
         return [...messages.slice(0, -1), { ...last, thinking: (last.thinking || '') + d.content } as any];
@@ -262,17 +265,20 @@ export function projectSessionSocketEvent(
       syncActivePhase('awaiting_approval');
     }
     if (normalizedResult.createdAgentId) dependencies.setCreatedAgentId(normalizedResult.createdAgentId);
-    dependencies.enqueueChatMessagesUpdate((messages) => appendToolCallMessage(messages, toolMessage));
+    dependencies.enqueueChatMessagesUpdate(sessionId, (messages) => appendToolCallMessage(messages, toolMessage));
     return;
   }
 
   if (d.type === 'chunk') {
-    dependencies.enqueueChatMessagesUpdate((messages) => applyStreamingChunkEvent(messages, d));
+    dependencies.enqueueChatMessagesUpdate(sessionId, (messages) => applyStreamingChunkEvent(messages, d));
     return;
   }
 
   if (d.type === 'done') {
-    dependencies.setChatMessagesAfterQueued((messages) => applyRuntimeDoneEvent(messages, d).map(parseChatMsg));
+    dependencies.setChatMessagesAfterQueued(
+      sessionId,
+      (messages) => applyRuntimeDoneEvent(messages, d).map(parseChatMsg),
+    );
     void fetchMySessions(true, agentId);
     return;
   }
@@ -284,7 +290,7 @@ export function projectSessionSocketEvent(
   }
 
   if (d.type === 'trigger_notification') {
-    dependencies.enqueueChatMessagesUpdate((messages) => [
+    dependencies.enqueueChatMessagesUpdate(sessionId, (messages) => [
       ...messages,
       parseChatMsg({
         role: 'event',
@@ -300,7 +306,7 @@ export function projectSessionSocketEvent(
   }
 
   if (typeof d.content === 'string' && (d.role === 'assistant' || d.role === 'user')) {
-    dependencies.enqueueChatMessagesUpdate((messages) => [
+    dependencies.enqueueChatMessagesUpdate(sessionId, (messages) => [
       ...messages,
       parseChatMsg({ role: d.role, content: d.content }),
     ]);

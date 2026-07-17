@@ -14,6 +14,15 @@ describe('UX-04 orchestration and composition boundaries', () => {
     expect(source).not.toContain('reconnectTimersRef');
   });
 
+  it('routes live and optimistic messages by the exact durable Session identity', () => {
+    const source = read('../AgentDetail.tsx');
+
+    expect(source).toContain('(terminal ? setChatMessagesAfterQueuedForSession : enqueueChatMessagesUpdateForSession)(sessionId');
+    expect(source).toContain('commitChatMessages(sessionId, () => mergePendingForSession');
+    expect(source).toContain('appendOptimisticUserMessage(activeRuntimeKey, runSessionId, {');
+    expect(source).not.toContain('(terminal ? setChatMessagesAfterQueued : enqueueChatMessagesUpdate)(');
+  });
+
   it('loads inactive workbench domains on demand and keeps FileBrowser out of the route entry', () => {
     const source = read('../AgentDetail.tsx');
 

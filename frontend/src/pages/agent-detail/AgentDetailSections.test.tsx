@@ -2738,6 +2738,13 @@ describe('AgentDetail extracted sections', () => {
           {
             role: 'tool_call',
             content: '',
+            toolName: 'track_todo',
+            toolStatus: 'done',
+            toolArgs: { title: 'Close the real Session path', status: 'completed' },
+          },
+          {
+            role: 'tool_call',
+            content: '',
             toolName: 'read_file',
             toolArgs: { path: 'workspace/report.md' },
             toolStatus: 'done',
@@ -3604,9 +3611,11 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('data-testid="chat-work-ledger-panel"');
     expect(markup).toContain('data-presentation="persistent"');
     expect(markup).toContain('Task 1-2 of 2');
-    expect(markup).toContain('data-testid="run-disclosure-tool-group"');
-    expect(markup).toContain('Used tools: Update tasks');
+    expect(markup).not.toContain('data-testid="run-disclosure-tool-group"');
+    expect(markup).not.toContain('Used tools: Update tasks');
+    expect(markup).not.toContain('Update tasks');
     expect(markup).not.toContain('data-presentation="surface"');
+    expect(markup).not.toContain('track_todo');
     expect(markup).not.toContain('task_create');
     expect(markup).not.toContain('task_update');
     expect(markup).not.toContain('Start goal');

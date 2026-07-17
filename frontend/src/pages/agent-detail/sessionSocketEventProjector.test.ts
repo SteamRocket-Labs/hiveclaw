@@ -5,7 +5,8 @@ import type { AgentChatMessage } from './chatRuntime';
 import type { SessionSocketMessageContext } from './useSessionTransportController';
 
 function makeHarness(data: Record<string, unknown>, isActiveRuntime = true) {
-  let messages: AgentChatMessage[] = [];
+  const messagesBySession = new Map<string, AgentChatMessage[]>();
+  const targetedSessions: string[] = [];
   const closeSessionSocket = vi.fn();
   const failAuthentication = vi.fn();
   const context: SessionSocketMessageContext = {
@@ -34,8 +35,14 @@ function makeHarness(data: Record<string, unknown>, isActiveRuntime = true) {
     parseChatMsg: vi.fn((message) => message),
     setChatMessagesSessionId: vi.fn(),
     setTransportNotice: vi.fn(),
-    enqueueChatMessagesUpdate: (updater) => { messages = updater(messages); },
-    setChatMessagesAfterQueued: (updater) => { messages = updater(messages); },
+    enqueueChatMessagesUpdate: (sessionId, updater) => {
+      targetedSessions.push(sessionId);
+      messagesBySession.set(sessionId, updater(messagesBySession.get(sessionId) || []));
+    },
+    setChatMessagesAfterQueued: (sessionId, updater) => {
+      targetedSessions.push(sessionId);
+      messagesBySession.set(sessionId, updater(messagesBySession.get(sessionId) || []));
+    },
     setCreatedAgentId: vi.fn(),
     setAgentExpired: vi.fn(),
     invalidateQuery: vi.fn(),
@@ -45,7 +52,8 @@ function makeHarness(data: Record<string, unknown>, isActiveRuntime = true) {
     dependencies,
     closeSessionSocket,
     failAuthentication,
-    messages: () => messages,
+    messages: (sessionId = 'session-1') => messagesBySession.get(sessionId) || [],
+    targetedSessions: () => targetedSessions,
   };
 }
 
@@ -96,7 +104,7 @@ describe('session socket event projector', () => {
       scope: { level: 'round', session_id: 'session-1', thread_id: 'session-1', turn_id: 'turn-1', run_id: 'run-1', round_id: 'round-1' },
       actor: { type: 'assistant' },
       visibility: { audience: 'direct_user' },
-      payload: { tool_name: 'task_update', arguments: { task_id: 'task-1', status: 'completed' } },
+      payload: { tool_name: 'track_todo', arguments: { todo_id: 'task-1', status: 'completed' } },
       occurred_at: '2026-07-16T00:00:00Z',
       persisted_at: '2026-07-16T00:00:00Z',
     });
@@ -110,6 +118,17 @@ describe('session socket event projector', () => {
       'session-1',
       false,
     );
+  });
+
+  it('routes legacy live commentary to the exact Session carried by the socket event', () => {
+    const harness = makeHarness({ type: 'thinking', content: 'Inspecting the exact live Session path.' });
+
+    projectSessionSocketEvent(harness.context, harness.dependencies);
+
+    expect(harness.targetedSessions()).toEqual(['session-1']);
+    expect(harness.messages()).toEqual([
+      expect.objectContaining({ thinking: 'Inspecting the exact live Session path.' }),
+    ]);
   });
 
   it('refreshes session read models after a canonical tool result commits', () => {

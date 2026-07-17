@@ -457,8 +457,15 @@ describe('chatDisclosureReducer', () => {
     ]);
   });
 
-  it('routes successful Task ledger mutations into recoverable tool history instead of permanent timeline rows', () => {
+  it('routes successful Task ledger mutations exclusively to the persistent Task surface', () => {
     const timeline = buildRunTimelineFromMessages([
+      {
+        role: 'tool_call',
+        content: '',
+        toolName: 'track_todo',
+        toolArgs: { title: 'Close the real Session path', status: 'completed' },
+        toolStatus: 'done',
+      },
       {
         role: 'tool_call',
         content: '',
@@ -485,18 +492,23 @@ describe('chatDisclosureReducer', () => {
     expect(timeline.steps).toEqual([
       expect.objectContaining({
         title: 'Update tasks',
+        summary: 'Close the real Session path',
+        presentation: 'external',
+      }),
+      expect.objectContaining({
+        title: 'Update tasks',
         summary: 'Inspecting the live Session path',
-        presentation: 'tool_history',
+        presentation: 'external',
       }),
       expect.objectContaining({
         title: 'Update tasks',
         summary: 'Fixing the live Session path',
-        presentation: 'tool_history',
+        presentation: 'external',
       }),
       expect.objectContaining({
         title: 'Update tasks',
         summary: 'Task legacy-task',
-        presentation: 'tool_history',
+        presentation: 'external',
       }),
     ]);
   });
@@ -506,7 +518,7 @@ describe('chatDisclosureReducer', () => {
       {
         role: 'tool_call',
         content: '',
-        toolName: 'task_update',
+        toolName: 'track_todo',
         toolArgs: { task_id: '1', status: 'completed' },
         toolStatus: 'done',
         toolMeta: {

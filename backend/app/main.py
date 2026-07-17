@@ -116,6 +116,18 @@ def _runtime_execution_startup_enabled() -> bool:
     return _process_role() not in {"api", "read_model"}
 
 
+def _web_chat_stream_startup_enabled() -> bool:
+    """Run the Redis-to-WebSocket bridge in every role that serves chat sockets.
+
+    Canonical Session events are published through Redis by the durable outbox,
+    but ``web_chat_broker`` owns process-local WebSocket connections.  Starting
+    this bridge only in the API role leaves sockets accepted by the runtime role
+    permanently stale until the browser reloads from PostgreSQL.
+    """
+
+    return _process_role() in {"runtime", "api"}
+
+
 def _volume_bound_startup_enabled() -> bool:
     return _process_role() != "api"
 
@@ -692,7 +704,7 @@ async def lifespan(app: FastAPI):
         if _runtime_execution_startup_enabled():
             startup_background_tasks.append(("runtime_budget_daemon", start_runtime_budget_daemon()))
             startup_background_tasks.append(("channel_ingress_daemon", start_channel_ingress_daemon()))
-        if _process_role() == "api":
+        if _web_chat_stream_startup_enabled():
             from app.services.web_chat_stream_bus import start_web_chat_stream_forwarder
 
             startup_background_tasks.append(("web_chat_stream_forwarder", start_web_chat_stream_forwarder()))

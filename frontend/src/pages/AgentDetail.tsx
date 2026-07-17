@@ -695,7 +695,7 @@ function AgentDetailInner() {
                 publishedCanonicalSnapshot = true;
                 if (writableSession) {
                     setChatMessagesSessionId(sessionId);
-                    setChatMessagesAfterQueued(() => mergePendingForSession(runtimeKey, preParsed));
+                    setChatMessagesAfterQueuedForSession(sessionId, () => mergePendingForSession(runtimeKey, preParsed));
                 } else {
                     setHistoryMessagesSessionId(sessionId);
                     setHistoryMsgs(preParsed);
@@ -745,7 +745,7 @@ function AgentDetailInner() {
                 }
                 if (writableSession) {
                     setChatMessagesSessionId(sessionId);
-                    setChatMessagesAfterQueued(() => mergePendingForSession(runtimeKey, preParsed));
+                    setChatMessagesAfterQueuedForSession(sessionId, () => mergePendingForSession(runtimeKey, preParsed));
                 } else {
                     setHistoryMessagesSessionId(sessionId);
                     setHistoryMsgs(preParsed);
@@ -777,7 +777,7 @@ function AgentDetailInner() {
             );
             if (writableSession) {
                 setChatMessagesSessionId(sessionId);
-                setChatMessagesAfterQueued(() => mergePendingForSession(runtimeKey, [failureMessage]));
+                setChatMessagesAfterQueuedForSession(sessionId, () => mergePendingForSession(runtimeKey, [failureMessage]));
             } else {
                 setHistoryMessagesSessionId(sessionId);
                 setHistoryMsgs([failureMessage]);

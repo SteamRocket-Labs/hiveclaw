@@ -8,6 +8,8 @@
 >
 > 最新 Session live presentation 复核继续重开同一个 `SES-CONSUMER-001`，不增加分母：`EVID-G2-016` 已由 commit `11001f133` 同源发布，backend=`16228d84-e601-4c1f-a1f1-7d5e0274d7a6`、backend-api=`af01ed4a-d085-4efc-8d52-bf531ea44405`、frontend=`cd99db27-d1fe-4791-833f-ce01a5c13d3a` 均 `SUCCESS`。authenticated browser canary 已证明 Task 无刷新实时变化、live final、terminal 原生折叠、reload canonical replay 和 Peer A2A read-only window；但 MiniMax M3 在“先公开进度”强指令下仍只产生 provider-private reasoning 后直接调用工具，证明无 commentary Provider 还缺模型可用的公开表达通道。第一版 `report_progress` commit `69b4127b7` 已三服务发布并证明模型会调用该工具；同一 canary 又发现实时 raw tool 可见、hard reload 后 public message 消失，因为新 Session V2 只把参数保存在 `SessionToolInvocation`，canonical `tool_call` 仅携带 hash。`EVID-G2-017` follow-up 已在 pre-effect 同事务生成原生 `assistant_commentary` 并补 V1 rolling-read 兼容；新 source 发布和 live/reload canary 前状态仍为 `in_progress-deployed-canary-partial`，38/103 分母不变。
 >
+> 2026-07-18 真实生产无刷新 canary 又把同一 leaf 的最后一层 live wiring 证伪：commit `80711401f` 已收敛 successful `track_todo/task_create/task_update/task_stop` 到专用 Task ledger，并让 canonical/legacy/optimistic update 使用 exact Session identity；hard reload 后 Task、公开 commentary 与 final 均正确且 raw task/progress tool row 不再出现，但运行中仍要等 reload 才看到 commentary。production health 的机械证据是 `process_role=runtime`、`session_event_outbox_published=93`，同时 `web_chat_stream_forwarder.running=false/forwarded=0`：durable event 已发布到 Redis，而持有 process-local WebSocket 的 runtime 没启动 Redis→socket bridge。`EVID-G2-018` 已完成 runtime/api 双 socket role bridge 与 initial hydration exact-Session 路由的 Red→Green；三服务发布和同页无刷新 canary 前保持 `in_progress-local-green-live-bridge`，不增加或关闭 canonical leaf。
+>
 > 组合输入：`agent-native-atomic-review-2026-07-14.md`、`agent-native-extreme-boundary-atomic-review-2026-07-14.md`、`unified-context-assembly-and-progressive-disclosure-2026-07-14.md`、`session-v2-cc-codex-alignment-contract-2026-07-14.md`、修订后的 `reusable-agent-native-atomic-review-prompt.md`，以及当前 Hive / FreeCode / Codex 本地源码。
 >
 > 本地基线快照：FreeCode `7dc15d6c8fb0c40c7fcc02ce9b58204324252632`；claw-code Python/Rust `d229a9b022d4845d28a728677e6a6b7c22ec5a2e`；claude-code-org `a99de1bb3c0c301b83b784abbcdb7a3674b2cd45`；Codex `5c19155cbd93bfa099016e7487259f61669823ff`。四个对照仓库的 tracked source 均无 diff；各自仅有未跟踪的本地索引、审查文档或 assistant 配置，不作为源码证据。
@@ -639,7 +641,7 @@ Group 摘要不能替代以下两份文档：
 |---:|---:|---:|---|
 | 0 | 0（全局门） | 0 | closed：`EVID-G0-002/003/004/005/006`，Git truth、机器账本、11 个上下文包/90 个 `@` 文档入口、跨仓快照与 clean-checkout harness 已闭环 |
 | 1 | 16 | 0 | in progress：15/16 保持 closed；`P1-004` 已同源发布，尚待 authenticated production deny/read canary |
-| 2 | 14 | 0 | in progress：13/14 保持 closed；`SES-CONSUMER-001` 已同源发布且 full/build 完成，尚待真实 browser collaboration canary |
+| 2 | 14 | 0 | in progress：13/14 保持 closed；`SES-CONSUMER-001` 的 Task/折叠/持久 replay 已部署，Redis→runtime WebSocket bridge 本地 Green，尚待三服务发布与真实 no-refresh browser canary |
 | 3 | 7 | 0 | in progress：4/7 保持 closed；`A2A-TERMINAL-001`、`TEAM-FANOUT-001`、`ROOT-TREE-001` 的 migration/apply/deploy 已完成，尚待 production model-route/reconciliation canary |
 | 4 | 6 | 0 | closed：6/6 owner leaf 已由 `EVID-G4-001`–`EVID-G4-006` 独立关闭；immutable result object、ref-only outbox、mailbox sequence/CAS、lease/claim、integration epoch/page、governed reader 与 100-way return-storm recovery 已部署 |
 | 5 | 2 | 0 | open |
@@ -733,7 +735,7 @@ Group 摘要不能替代以下两份文档：
 
 **Owner leaf（14）**：`G-01A`、`A-01`、`A-04`、`B-02`、`B-03`、`G-01B`、`B-04`、`D-KB4`、`SES-ACCEPT-001`、`SES-ITEM-001`、`SES-PROJECTION-001`、`SES-PROSE-001`、`SES-TRANSPORT-001`、`SES-CONSUMER-001`。
 
-**当前回归状态（2026-07-17）**：13/14 保持 closed；`SES-CONSUMER-001` 因 backend 把 Peer A2A `delegation` 投到 `subagents`、frontend `timelineModel` 也没有 `peer_a2a` typed section 而重开。`EVID-G2-015` 已完成 backend section/envelope、三类 canonical ThreadItem、frontend reducer/timeline/right rail、frontend full/build 与三服务同源部署；真实 browser collaboration canary 完成前仍为 `in_progress-deployed-pending-canary`，不得标 closed。
+**当前回归状态（2026-07-18）**：13/14 保持 closed；`SES-CONSUMER-001` 已依次关闭三类协作 typed consumer、公开 commentary 持久化、Task 专用消费、terminal folding 与 reload replay，但 production runtime WebSocket 进程未启动 canonical Redis forwarder，导致 live progress 仍需刷新。`EVID-G2-018` 已在本地把 bridge 绑定到所有 socket-serving role，并把 initial hydration/failure commit 锁定到 exact Session；三服务发布与 authenticated no-refresh/reload canary 前不得标 closed。
 
 **依赖 Group**：Group 0、Group 1。Session envelope 必须携带 Group 1 收敛后的 principal/authority，不得先建一个无可信身份的第二事实语言。
 
@@ -1372,7 +1374,7 @@ Group 0 是全局证据门，不拥有业务 leaf。下面 103 行必须与 cano
 - P1 | SES-PROJECTION-001 | closed:EVID-G2-011 | user/live projection 精确 redaction content 但保留 item、parent、invocation、result 与 sequence identity
 - P2 | SES-PROSE-001 | closed:EVID-G2-012 | unknown/summary/private/final phase 保持 typed；平台不生成固定 reasoning/final prose
 - P2 | SES-TRANSPORT-001 | closed:EVID-G2-013 | persist-before-publish、transactional outbox、ready/highest-contiguous cursor 与 gap recovery 共用 canonical envelope
-- P1 | SES-CONSUMER-001 | in_progress-deployed-canary-partial:EVID-G2-016/017 | 三类协作、固定 Task、live query、final artifact、Peer A2A read-only 与 canonical commentary persist/render 已绿；rolling compatibility sequence 与同 run render-owner 漂移已 local Green，待 final consumer exact-source 发布与 live/reload/ordering canary
+- P1 | SES-CONSUMER-001 | in_progress-local-green-live-bridge:EVID-G2-016/017/018 | 三类协作、固定 Task、final artifact、Peer A2A read-only、canonical commentary persist/render、rolling sequence/render ownership 与 exact Session store 已绿；production runtime 缺 Redis→WebSocket forwarder 的根因已本地修复，待三服务发布与 no-refresh/reload/ordering canary
 <!-- canonical-ledger-end -->
 
 ### 12.3 Group 修复证据索引
@@ -1384,7 +1386,7 @@ Group 0 是全局证据门，不拥有业务 leaf。下面 103 行必须与 cano
 |---:|---|---|---|---|
 | 0 | `EVID-G0-*` | 0 leaf / 0 Missing | `closed`：`EVID-G0-001/002/003/004/005/006`；文档 Git truth、owner/path/decision/scenario CI、11 个 Group 上下文包、90 个去重 `@` 文档入口、跨仓快照与 fake-provider/PG/Redis harness 基座成立 | 后续任何新增本地 `@docs` 必须先进入 Git 并同步上下文包索引；业务场景 Green 仍由 owner Group 负责 |
 | 1 | `EVID-G1-*` | 16 leaf / 0 Missing | `in_progress`：15/16 closed；`P1-004` 已由 `b9852f37f` 同源部署，状态为 `deployed-pending-canary` | 验证 `delegation_run` 的 start/steer/rename/delete/Team/Workflow/Plan 等 mutation 均返回 typed 409，owner 与 manager 都不能接管只读 peer Session；read transcript/workbench/export 必须保持可用 |
-| 2 | `EVID-G2-*` | 14 leaf / 0 Missing | `in_progress`：13/14 closed；`EVID-G2-016` 已部署且 Task/live/reload/read-only A2A canary 通过；`EVID-G2-017` commentary source 已部署并由 DB/browser 证明，final compatibility consumer local Green | 发布 final consumer exact source；真实模型必须无刷新显示模型所写 progress，Task/final 继续实时，reload 后 exact progress 顺序不漂移且 legacy/canonical final 不重复；不得用 fixture 或 deployment success 代替 browser path proof |
+| 2 | `EVID-G2-*` | 14 leaf / 0 Missing | `in_progress`：13/14 closed；`EVID-G2-016/017` 已证明 Task、commentary persistence/replay 与 A2A read-only；`EVID-G2-018` 以 production health 坐实 runtime live bridge 缺失并已本地 Green | 发布 runtime/api WebSocket forwarder 与 exact-Session hydration source；真实模型必须无刷新显示 progress/Task/final，raw task/progress tool 不出现，reload 后顺序、折叠和 render ownership 等价；不得用 fixture、REST reload 或 deployment success 代替 live browser path proof |
 | 3 | `EVID-G3-*` | 7 leaf / 0 Missing | `in_progress`：4/7 closed；三项 regression 的 migration/apply/deploy 已完成，状态为 `deployed-pending-canary` | 执行 Team model route、旧 Team Session hidden、terminal task/root coverage 重算和 restart/idempotency canary；Group 4 只消费 admitted item/result refs，不另造 root ledger |
 | 4 | `EVID-G4-*` | 6 leaf / 0 Missing | `closed`：`EVID-G4-001`–`006`；code/migration、real-PG sequence/CAS/lease/epoch、100×1 MiB ref-only fan-in、partial/late/duplicate/revision/crash recovery、backend/frontend 全量回归、三服务 exact-source deployment 与 production backfill/schema/RLS/hash/health 证据齐全 | 后续 Group 若恢复 inline result bytes、另造 parent mailbox、破坏 ref reader authority、epoch order 或 result immutability，必须重开对应 leaf；当前下一施工入口为 Group 5 |
 | 5 | `EVID-G5-*` | 2 leaf / 0 Missing | `open` | 写 fleet scheduler/trigger benchmark、公平性、分页续扫与 control-plane reserve |
@@ -2803,6 +2805,34 @@ context_read_receipt:
 - final local tests/build：backend commentary substrate full=`7577 passed, 2 skipped`；本轮 task/live-route focused=`149 passed`，frontend full=`120 files / 728 tests`；production `tsc + vite build + bundle budget` 通过，AgentDetail=`338559/380000` bytes、gzip=`93282/115000`，vendor=`591449/620000`、gzip=`186474/200000`。architecture ledger=`11 passed`，diff check 全绿；新 exact-source commit、三服务部署与 authenticated no-refresh/hard-reload ordering canary 尚待写回。
 - migration/backfill/rollback：无 schema migration。第一版发布前不存在产品级 `report_progress` 历史；该次 authenticated canary 的参数仍保存在 `SessionToolInvocation`，不把一次测试消息伪造成新的业务迁移。V1 rolling rows由 read adapter 原位恢复，无 DB rewrite；滚动发布期间由旧实例创建、仍会进入 prepare replay 的 invocation 在 row lock 下幂等补齐 commentary，不做全表扫描。rollback 删除 commentary projection/兼容 consumer 可恢复旧行为，但会重新打开 refresh 后丢 public progress 的断点；既有 invocation/event/outbox 不删除。
 - status：`in_progress-local-green-live-route`；必须在新 exact source 上看到真实模型调用、无需刷新显示 exact commentary、raw `track_todo/report_progress` 均不出现、Task/final 继续 live，且 hard reload 后同一 message 顺序稳定、同 run final 唯一，才能关闭 `SES-CONSUMER-001`。
+
+#### EVID-G2-018：canonical Redis event 到 process-local WebSocket 的 live bridge
+
+```yaml
+context_read_receipt:
+  aa_entry: "§9 Group 2 + §12.1/§12.2 SES-TRANSPORT-001/SES-CONSUMER-001"
+  leaf_ids: ["SES-CONSUMER-001"]
+  documents:
+    - ref: "@docs/session-v2-cc-codex-alignment-contract-2026-07-14.md §17.2 / §18 / §28.5"
+      role: "session-design-and-acceptance"
+      decision_consumed: "durable event、live socket、reload replay 与 exact Session store 必须同源且行为等价"
+    - ref: "@docs/runtime-model-agency-constraint-audit-2026-07-13.md §5.5"
+      role: "model-agency"
+      decision_consumed: "平台只可靠传递模型 authored progress，不生成或改写其语义"
+  source_baselines:
+    hive_head: "1ff80c4ed + owned live-bridge diff; prior Session source=80711401f"
+    freecode_head: "7dc15d6c8fb0c40c7fcc02ce9b58204324252632"
+    codex_head: "5c19155cbd93bfa099016e7487259f61669823ff"
+  evidence_sink: "EVID-G2-018"
+```
+
+- production path proof：authenticated canary 在 hard reload 后能恢复 exact commentary、Task、final 和 terminal folding，证明 DB/outbox/reducer/replay 已接线；但同一 run 在 reload 前不显示 commentary。修复前 production health 的同一 runtime snapshot 为 `process_role=runtime`、`runtime_task_worker.session_event_outbox_claimed=93/published=93/retried=0/dead_lettered=0`，而 `web_chat_stream_forwarder.running=false/forwarded=0/last_error=null/restart_count=0`。这不是 Provider 没写、前端没 render 或 event 丢失，而是 durable Redis publish 与 process-local WebSocket consumer 之间没有运行中的 bridge。
+- verified root cause：`web_chat_broker` 的 connection registry 是进程内对象，browser `/ws/chat/{agent_id}` 由 production runtime role 接收；`main.lifespan()` 却只在 `HIVE_PROCESS_ROLE=api` 时启动 `start_web_chat_stream_forwarder()`。outbox worker 发布 `hive:session:event:v2:live` 后，API 进程收到事件但没有该 browser connection，runtime 进程持有 connection 却没有 subscriber，所以只能在 REST hydration/hard reload 后读到 PostgreSQL 事实。
+- Red→Green：backend Red 要求每个 websocket-serving role（`runtime`、`api`）启动 forwarder、`read_model` 不启动，修前因缺 helper 确定失败；Green 后 lifespan 只通过 `_web_chat_stream_startup_enabled()` 注册 bridge。frontend architecture Red 又锁定 newest-page snapshot、legacy fallback 与 typed failure 三条 initial hydration path 必须调用 `setChatMessagesAfterQueuedForSession(sessionId, ...)`，禁止从可能已切换的 active selection 推断写入目标。
+- CC/Codex/产品裁决：FreeCode 成功 Todo/Task mutation 不重复渲染 result row，Codex `PlanUpdateCell` 把计划更新投到 typed checklist；Hive 因此保持 successful `track_todo/task_create/task_update/task_stop` 只进入 Composer Task ledger，失败/blocked/cancelled 才回主时间线。普通成功工具在 active Run 展开、terminal Run 折叠；model-authored public progress/final、approval/question、typed failure/recovery 与 deliverable 始终是用户可见事实。private CoT、raw ACK/JSON/内部 ID 与重复 receipt 不进入产品时间线。
+- local acceptance：backend startup/stream/health/Session-ingress/repair-ledger=`46 passed`；frontend focused Session bridge=`4 files / 20 tests`，frontend full=`120 files / 728 tests`；`tsc + vite build + bundle budget` 通过，AgentDetail=`338565/380000` bytes、gzip=`93292/115000`，vendor=`591449/620000`、gzip=`186474/200000`；scoped Ruff、format 与 diff check 全绿。仓级 backend final result、commit、三服务 deployment ID 与 authenticated live/reload canary 在形成后继续写入本记录。
+- migration/backfill/rollback：无 schema migration、无历史数据 rewrite。missed live delivery 的 bytes 已在 `ChatTranscriptEvent + SessionEventOutbox`，reload/reconnect 可从 canonical REST 恢复；部署只恢复 subscriber wiring。代码 rollback 不损坏 durable evidence，但会重新打开“只在刷新后出现”的消费断点；观察 bridge `running/forwarded/last_error/restart_count` 即可机械识别。
+- status：`in_progress-local-green-live-bridge`。只有新 deployment 上 health 证明 runtime forwarder running，并由真实模型在同一未刷新页面完成 `report_progress → track_todo add/start/complete → final`，同时验证 raw task/progress tool 不出现、active/terminal 折叠正确、hard reload 等价，才能关闭 `SES-CONSUMER-001`。
 
 #### EVID-G3-008：terminal root、Team model 与 hidden member Session 回归闭环
 

@@ -57,6 +57,17 @@ def test_api_role_disables_volume_bound_startup(monkeypatch):
     assert main_mod._data_bootstrap_startup_enabled() is True
 
 
+def test_web_chat_stream_forwarder_runs_in_every_websocket_serving_role(monkeypatch):
+    import app.main as main_mod
+
+    for role in ("runtime", "api"):
+        monkeypatch.setattr(main_mod.settings, "HIVE_PROCESS_ROLE", role)
+        assert main_mod._web_chat_stream_startup_enabled() is True
+
+    monkeypatch.setattr(main_mod.settings, "HIVE_PROCESS_ROLE", "read_model")
+    assert main_mod._web_chat_stream_startup_enabled() is False
+
+
 def test_api_role_path_boundary_allows_control_plane_and_rejects_volume_paths():
     import app.main as main_mod
 

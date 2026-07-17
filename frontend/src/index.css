@@ -2663,8 +2663,157 @@
 
 .run-disclosure-steps {
   display: grid;
-  gap: 4px;
+  gap: 6px;
   padding: 0 10px 8px;
+}
+
+.run-commentary {
+  min-width: 0;
+  padding: 4px 0;
+  color: var(--text-primary);
+  font-size: var(--text-body);
+}
+
+.run-commentary-content {
+  color: inherit;
+  font-size: inherit;
+}
+
+.run-tool-group {
+  min-width: 0;
+}
+
+.run-tool-group-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 2px 0;
+  color: var(--text-secondary);
+  cursor: pointer;
+  list-style: none;
+}
+
+.run-tool-group-toggle::-webkit-details-marker {
+  display: none;
+}
+
+.run-tool-group-toggle::marker {
+  content: '';
+}
+
+.run-tool-group-toggle .run-step-icon {
+  padding-top: 0;
+}
+
+.run-tool-group-label {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: var(--text-row);
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.run-tool-group-chevron {
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+  transition: transform var(--transition-fast);
+}
+
+.run-tool-group[open] .run-tool-group-chevron {
+  transform: rotate(90deg);
+}
+
+.run-tool-history {
+  display: grid;
+  gap: 4px;
+  padding: 5px 0 2px 26px;
+}
+
+.run-tool-history-item {
+  display: grid;
+  grid-template-columns: 18px auto minmax(0, 1fr);
+  gap: 6px;
+  align-items: start;
+  min-width: 0;
+}
+
+.run-tool-history-item.has-exec {
+  display: block;
+}
+
+.run-tool-history-exec-summary {
+  display: grid;
+  grid-template-columns: 18px auto minmax(0, 1fr) 14px;
+  gap: 6px;
+  align-items: start;
+  min-width: 0;
+  cursor: pointer;
+  list-style: none;
+}
+
+.run-tool-history-exec-summary::-webkit-details-marker {
+  display: none;
+}
+
+.run-tool-history-exec-summary::marker {
+  content: '';
+}
+
+.run-tool-history-exec-chevron {
+  margin-top: 2px;
+  color: var(--text-tertiary);
+  transition: transform var(--transition-fast);
+}
+
+.run-tool-history-exec[open] .run-tool-history-exec-chevron {
+  transform: rotate(90deg);
+}
+
+.run-tool-history-exec .session-tui-exec-output {
+  margin: 5px 0 2px 24px;
+}
+
+.run-tool-history-title {
+  color: var(--text-secondary);
+  font-size: var(--text-row);
+  white-space: nowrap;
+}
+
+.run-tool-history-summary {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-tertiary);
+  font-size: var(--text-meta);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.run-compaction {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  padding: 2px 0;
+  color: var(--text-tertiary);
+}
+
+.run-compaction.is-running {
+  color: var(--accent-primary);
+}
+
+.run-compaction-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding-top: 2px;
+}
+
+.run-compaction-label {
+  color: var(--text-tertiary);
+  font-size: var(--text-row);
 }
 
 .run-step {

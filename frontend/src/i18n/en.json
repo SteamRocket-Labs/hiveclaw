@@ -1589,7 +1589,25 @@
         "showCompleteOutput": "Show complete output",
         "waiting": "Waiting for input",
         "stepCount": "{{count}} steps",
-        "working": "Working"
+        "working": "Working",
+        "contextCompacting": "Automatically compacting context",
+        "contextCompacted": "Context was automatically compacted",
+        "toolRunning": "Using {{tool}}",
+        "toolCompleted": "Used tools: {{tools}}",
+        "toolHistory": "Tool call history",
+        "toolTitle": {
+          "loading": "Loading tools",
+          "readFile": "Read file",
+          "writeFile": "Write file",
+          "editFile": "Edit file",
+          "deleteFile": "Delete file",
+          "listFiles": "List files",
+          "searchWeb": "Search web",
+          "fetchWebPage": "Fetch web page",
+          "runCommand": "Run command",
+          "editDocument": "Edit document",
+          "toolCall": "Tool call"
+        }
       },
       "artifacts": {
         "open": "Open",

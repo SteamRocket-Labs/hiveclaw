@@ -5,7 +5,11 @@ import {
   consumeSessionEnvelope,
   projectSessionEventStoreToMessages,
 } from './sessionEventConsumer';
-import type { SessionEventStore, SessionEventV2 } from '../session-workbench/sessionEventStore';
+import {
+  sessionPayloadContent,
+  type SessionEventStore,
+  type SessionEventV2,
+} from '../session-workbench/sessionEventStore';
 
 function event(sequence: number, lifecycle: 'started' | 'delta' | 'completed'): SessionEventV2 {
   return {
@@ -50,6 +54,15 @@ function replay(events: SessionEventV2[]): SessionEventStore {
 }
 
 describe('canonical Session event consumer', () => {
+  it('uses the backend canonical rendering contract for multipart user input', () => {
+    expect(sessionPayloadContent({
+      content_parts: [
+        { type: 'text', text: '研究这个文件' },
+        { type: 'file', z: 2, a: 'report.pdf' },
+      ],
+    })).toBe('[{"text":"研究这个文件","type":"text"},{"a":"report.pdf","type":"file","z":2}]');
+  });
+
   it('uses the same highest-contiguous reducer for history, live, reconnect, and duplicate delivery', () => {
     const started = event(1, 'started');
     const delta = event(2, 'delta');
@@ -82,7 +95,7 @@ describe('canonical Session event consumer', () => {
       payload_schema: 'hive.session.payload.human_input.accepted.v2',
       scope: { level: 'session', session_id: 'session-1', thread_id: 'session-1' },
       actor: { type: 'user', id: 'user-1' },
-      payload: { content: 'do the work', intent: 'start_turn' },
+      payload: { content_parts: [{ type: 'text', text: 'do the work' }], intent: 'start_turn' },
     };
     const finalEnvelope: SessionEventV2 = {
       ...event(5, 'completed'),

@@ -208,6 +208,7 @@ export function userFacingRuntimeStatus(status: unknown): string {
   const normalized = String(status || '').trim().toLowerCase();
   const labels: Record<string, string> = {
     idle: 'Ready',
+    ready: 'Ready',
     queued: 'Queued',
     pending: 'Queued',
     running: 'Working',
@@ -220,6 +221,11 @@ export function userFacingRuntimeStatus(status: unknown): string {
     completed: 'Completed',
     succeeded: 'Completed',
     failed: 'Needs attention',
+    blocked: 'Needs attention',
+    provider_error: 'Needs attention',
+    not_admitted: 'Skipped',
+    skipped: 'Skipped',
+    suspended: 'Paused',
     killed: 'Stopped',
     cancelled: 'Cancelled',
     exhausted: 'Paused',

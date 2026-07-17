@@ -39,6 +39,22 @@ class TestLease:
         assert again.acquired is False
         assert again.existing_lease_id == result.lease.id
 
+    @pytest.mark.asyncio
+    async def test_release_lease_wraps_owner_checked_runtime(self, gateway: InProcessCoordinationGateway) -> None:
+        result = await gateway.acquire_lease(task_key="t-release", agent_id="runtime-task:1", ttl_seconds=60)
+        assert result.lease is not None
+
+        assert await gateway.release_lease(
+            task_key="t-release",
+            agent_id="runtime-task:1",
+            lease_id=result.lease.id,
+        ) is True
+        assert (await gateway.acquire_lease(
+            task_key="t-release",
+            agent_id="runtime-task:2",
+            ttl_seconds=60,
+        )).acquired is True
+
 
 class TestSignals:
     @pytest.mark.asyncio

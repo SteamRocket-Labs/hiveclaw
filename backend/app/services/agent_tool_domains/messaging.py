@@ -147,7 +147,10 @@ def _delegation_runtime_failure_outcome(
     result: Any,
 ) -> A2AOutcome | None:
     """Preserve a child runtime's typed failure instead of treating its prose as a reply."""
-    if not bool(getattr(result, "failed", False)):
+    terminal_reason = getattr(result, "terminal_reason", None)
+    terminal_reason_value = str(getattr(terminal_reason, "value", terminal_reason) or "")
+    runtime_failed = bool(getattr(result, "failed", False)) or terminal_reason_value not in {"", "turn_stop"}
+    if not runtime_failed:
         return None
     parts = getattr(result, "parts", ()) or ()
     runtime_status = next(
@@ -155,7 +158,7 @@ def _delegation_runtime_failure_outcome(
         {},
     )
     error_code = str(
-        runtime_status.get("error_code") or getattr(result, "terminal_reason", None) or "a2a_child_runtime_failed"
+        runtime_status.get("error_code") or terminal_reason_value or "a2a_child_runtime_failed"
     )
     return _a2a_failure(
         operation,

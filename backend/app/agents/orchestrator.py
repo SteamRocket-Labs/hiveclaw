@@ -19,7 +19,7 @@ from app.agents.coordination_wiring import gateway_scope
 from app.agents.delegation_token import DEFAULT_DELEGATION_TTL_SECONDS, issue_delegation_token
 from app.agents.tool_policies import DELEGATED_WORKER_BASE_EXCLUDED_TOOLS
 from app.core.execution_context import A2A_TOOL_AUTHORITY_FRAME_SCHEMA, ExecutionPrincipal
-from app.kernel.contracts import ExecutionIdentityRef
+from app.kernel.contracts import ExecutionIdentityRef, TerminalReason
 from app.runtime.ccplus_contracts import permission_profile_snapshot, permission_profile_snapshot_hash
 from app.runtime.invoker import AgentInvocationRequest, invoke_agent
 from app.runtime.session import SessionContext
@@ -599,6 +599,9 @@ class AgentDelegationRequest:
     edit_mode: str | None = None
     budget_run_id: str | None = None
     execution_receipt: dict[str, Any] | None = None
+    coordination_task_key: str | None = None
+    coordination_lease_id: str | None = None
+    coordination_gateway: CoordinationGateway | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -2015,6 +2018,14 @@ async def _delegate_after_cycle_check(
         )
         result_parts = getattr(result, "parts", None) or []
         terminal_reason = getattr(result, "terminal_reason", None)
+        terminal_reason_value = (
+            terminal_reason.value
+            if getattr(terminal_reason, "value", None)
+            else str(terminal_reason or "") or None
+        )
+        terminal_failed = terminal_reason_value not in {None, TerminalReason.TURN_STOP.value}
+        if terminal_failed:
+            _delegation_status = "error"
         delegation_result = AgentDelegationResult(
             content=result.content or "",
             child_session_id=child_session_id,
@@ -2032,9 +2043,8 @@ async def _delegate_after_cycle_check(
                 )
                 if ref
             ),
-            terminal_reason=(
-                terminal_reason.value if getattr(terminal_reason, "value", None) else str(terminal_reason or "") or None
-            ),
+            failed=terminal_failed,
+            terminal_reason=terminal_reason_value,
         )
     except asyncio.TimeoutError:
         _delegation_status = "timeout"
@@ -2781,6 +2791,14 @@ def _spawn_async_delegation_task(
                 failed=True,
             )
         finally:
+            await _release_delegation_coordination_lease(
+                task_id=task_id,
+                tenant_id=request.tenant_id,
+                task_key=request.coordination_task_key,
+                lease_id=request.coordination_lease_id,
+                reason="delegation_terminal",
+                coordination_gateway=request.coordination_gateway,
+            )
             if tenant_token is not None:
                 reset_current_tenant(tenant_token)
 
@@ -3078,6 +3096,8 @@ async def _build_delegation_request_from_runtime_record(record: dict[str, Any]) 
         execution_receipt=metadata.get("execution_receipt")
         if isinstance(metadata.get("execution_receipt"), dict)
         else None,
+        coordination_task_key=str(metadata.get("coordination_task_key") or "").strip() or None,
+        coordination_lease_id=str(metadata.get("coordination_lease_id") or "").strip() or None,
     )
 
 
@@ -3133,6 +3153,67 @@ class _DelegationCoordinationAdmission:
     signal_thread_id: str | None = None
 
 
+async def _release_delegation_coordination_lease(
+    *,
+    task_id: str,
+    tenant_id: uuid.UUID | str | None,
+    task_key: str | None,
+    lease_id: str | None,
+    reason: str,
+    coordination_gateway: CoordinationGateway | None = None,
+) -> bool:
+    """Release one task's exact A2A admission lease without masking its terminal result."""
+    if not task_key:
+        return False
+    released = False
+    release_error: Exception | None = None
+    try:
+        async with gateway_scope(coordination_gateway, tenant_id=tenant_id) as gateway:
+            released = await gateway.release_lease(
+                task_key=task_key,
+                agent_id=f"runtime-task:{task_id}",
+                lease_id=lease_id,
+            )
+    except Exception as exc:
+        release_error = exc
+        logger.error(
+            "[Orchestrator] Failed to release coordination lease for %s (%s): %s",
+            task_id,
+            reason,
+            exc,
+        )
+
+    metadata = {
+        "coordination_release_state": "failed" if release_error is not None else "released" if released else "not_owned",
+        "coordination_release_reason": reason,
+        "coordination_released_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if release_error is not None:
+        metadata["coordination_release_error_class"] = type(release_error).__name__
+    try:
+        await update_runtime_task_record(task_id, metadata_json=metadata)
+    except Exception as exc:
+        logger.warning("[Orchestrator] Failed to persist coordination release evidence for %s: %s", task_id, exc)
+    return released
+
+
+async def _release_delegation_coordination_lease_from_record(
+    record: dict[str, Any],
+    *,
+    reason: str,
+) -> bool:
+    metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
+    if not metadata and isinstance(record.get("metadata_json"), dict):
+        metadata = record["metadata_json"]
+    return await _release_delegation_coordination_lease(
+        task_id=str(record.get("task_id") or record.get("id") or ""),
+        tenant_id=metadata.get("tenant_id") or record.get("tenant_id"),
+        task_key=str(metadata.get("coordination_task_key") or "").strip() or None,
+        lease_id=str(metadata.get("coordination_lease_id") or "").strip() or None,
+        reason=reason,
+    )
+
+
 async def _ensure_delegation_coordination_published(
     *,
     task_id: str,
@@ -3159,35 +3240,57 @@ async def _ensure_delegation_coordination_published(
                 blocked_by_lease_id=lease_result.existing_lease_id,
                 task_key=coordination_key,
             )
-
-        existing_signals = await gateway.read_signals(
-            str(getattr(request.target, "id", "")),
-            thread_id=str(request.trace_id or "") or None,
-        )
-        signal = next(
-            (
-                item
-                for item in existing_signals
-                if str((getattr(item, "metadata", None) or {}).get("runtime_task_id") or "") == task_id
-            ),
-            None,
-        )
-        if signal is None:
-            signal = await gateway.send_signal(
-                from_agent_id=str(request.parent_agent_id or request.owner_id),
-                to_agent_id=str(getattr(request.target, "id", "")),
-                content=(request.conversation_messages[-1].get("content", "") if request.conversation_messages else ""),
-                signal_type="delegation_started",
-                thread_id=request.trace_id,
-                metadata={
-                    "runtime_task_id": task_id,
-                    "root_runtime_task_id": request.root_runtime_task_id,
-                },
-            )
         lease = lease_result.lease
+        lease_id = lease.id if lease is not None else lease_result.existing_lease_id
+        try:
+            existing_signals = await gateway.read_signals(
+                str(getattr(request.target, "id", "")),
+                thread_id=str(request.trace_id or "") or None,
+            )
+            signal = next(
+                (
+                    item
+                    for item in existing_signals
+                    if str((getattr(item, "metadata", None) or {}).get("runtime_task_id") or "") == task_id
+                ),
+                None,
+            )
+            if signal is None:
+                signal = await gateway.send_signal(
+                    from_agent_id=str(request.parent_agent_id or request.owner_id),
+                    to_agent_id=str(getattr(request.target, "id", "")),
+                    content=(
+                        request.conversation_messages[-1].get("content", "")
+                        if request.conversation_messages
+                        else ""
+                    ),
+                    signal_type="delegation_started",
+                    thread_id=request.trace_id,
+                    metadata={
+                        "runtime_task_id": task_id,
+                        "root_runtime_task_id": request.root_runtime_task_id,
+                    },
+                )
+        except Exception:
+            try:
+                await gateway.release_lease(
+                    task_key=coordination_key,
+                    agent_id=lease_owner,
+                    lease_id=lease_id,
+                )
+            except Exception:
+                logger.warning(
+                    "[Orchestrator] Coordination publish rollback could not release lease for %s",
+                    task_id,
+                    exc_info=True,
+                )
+            raise
+        request.coordination_task_key = coordination_key
+        request.coordination_lease_id = lease_id
+        request.coordination_gateway = coordination_gateway
         return _DelegationCoordinationAdmission(
             published=True,
-            lease_id=lease.id if lease is not None else lease_result.existing_lease_id,
+            lease_id=lease_id,
             task_key=coordination_key,
             signal_id=signal.id,
             signal_thread_id=signal.thread_id,
@@ -3207,6 +3310,10 @@ async def dispatch_persisted_async_delegation(task_id: str) -> bool:
         return False
     request = await _build_delegation_request_from_runtime_record(record)
     if request is None:
+        await _release_delegation_coordination_lease_from_record(
+            record,
+            reason="dispatch_request_unavailable",
+        )
         return False
     authority_failure = _delegation_authority_receipt_failure(request, required=True)
     if authority_failure is not None:
@@ -3215,6 +3322,13 @@ async def dispatch_persisted_async_delegation(task_id: str) -> bool:
             record=record,
             request=request,
             failure=authority_failure,
+        )
+        await _release_delegation_coordination_lease(
+            task_id=task_id,
+            tenant_id=request.tenant_id,
+            task_key=request.coordination_task_key,
+            lease_id=request.coordination_lease_id,
+            reason="dispatch_authority_unavailable",
         )
         return False
     metadata = dict(record.get("metadata") or {})
@@ -3276,6 +3390,13 @@ async def dispatch_persisted_async_delegation(task_id: str) -> bool:
         },
     )
     if advanced is False:
+        await _release_delegation_coordination_lease(
+            task_id=task_id,
+            tenant_id=request.tenant_id,
+            task_key=request.coordination_task_key,
+            lease_id=request.coordination_lease_id,
+            reason="dispatch_not_advanced",
+        )
         return False
     _spawn_async_delegation_task(task_id=task_id, request=request, trace_id=request.trace_id or uuid.uuid4().hex)
     return True
@@ -3373,6 +3494,7 @@ async def delegate_async(
         ],
         edit_mode=_normalize_delegation_edit_mode(edit_mode),
         budget_run_id=str(budget_uuid) if budget_uuid is not None else None,
+        coordination_gateway=coordination_gateway,
     )
     plan_allowed, plan_reason = await _delegation_plan_gate_allows(request)
     if not plan_allowed:
@@ -3637,14 +3759,33 @@ async def delegate_async(
                 ttl_seconds=max(lease_ttl, 60),
             )
             if lease_result.acquired:
-                signal = await gateway.send_signal(
-                    from_agent_id=str(parent_agent_id or owner_id),
-                    to_agent_id=str(getattr(target, "id", "")),
-                    content=conversation_messages[-1].get("content", "") if conversation_messages else "",
-                    signal_type="delegation_started",
-                    thread_id=real_trace_id,
-                    metadata={"runtime_task_id": task_id, "root_runtime_task_id": request.root_runtime_task_id},
-                )
+                request.coordination_task_key = coordination_key
+                request.coordination_lease_id = lease_result.lease.id if lease_result.lease else None
+                try:
+                    signal = await gateway.send_signal(
+                        from_agent_id=str(parent_agent_id or owner_id),
+                        to_agent_id=str(getattr(target, "id", "")),
+                        content=conversation_messages[-1].get("content", "") if conversation_messages else "",
+                        signal_type="delegation_started",
+                        thread_id=real_trace_id,
+                        metadata={"runtime_task_id": task_id, "root_runtime_task_id": request.root_runtime_task_id},
+                    )
+                except Exception:
+                    try:
+                        await gateway.release_lease(
+                            task_key=coordination_key,
+                            agent_id=f"runtime-task:{task_id}",
+                            lease_id=request.coordination_lease_id,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "[Orchestrator] Coordination enqueue rollback could not release lease for %s",
+                            task_id,
+                            exc_info=True,
+                        )
+                    request.coordination_task_key = None
+                    request.coordination_lease_id = None
+                    raise
             else:
                 signal = None
     except Exception as exc:
@@ -3734,6 +3875,14 @@ async def delegate_async(
         },
     )
     if admission_committed is False:
+        await _release_delegation_coordination_lease(
+            task_id=task_id,
+            tenant_id=tenant_id,
+            task_key=request.coordination_task_key,
+            lease_id=request.coordination_lease_id,
+            reason="admission_not_advanced",
+            coordination_gateway=coordination_gateway,
+        )
         raise RuntimeError("durable A2A admission could not be advanced after coordination publish")
 
     _remember_async_task_parent(
@@ -4126,10 +4275,18 @@ async def resume_persisted_async_delegations(*, limit: int = 50) -> list[str]:
                 logger.warning(
                     "[Orchestrator] Failed to persist non-replay-safe resume failure for %s: %s", task_id, exc
                 )
+            await _release_delegation_coordination_lease_from_record(
+                record,
+                reason="restart_replay_not_safe",
+            )
             continue
 
         request = await _build_delegation_request_from_runtime_record(record)
         if request is None:
+            await _release_delegation_coordination_lease_from_record(
+                record,
+                reason="resume_request_unavailable",
+            )
             continue
         authority_failure = _delegation_authority_receipt_failure(request, required=True)
         if authority_failure is not None:
@@ -4138,6 +4295,13 @@ async def resume_persisted_async_delegations(*, limit: int = 50) -> list[str]:
                 record=record,
                 request=request,
                 failure=authority_failure,
+            )
+            await _release_delegation_coordination_lease(
+                task_id=task_id,
+                tenant_id=request.tenant_id,
+                task_key=request.coordination_task_key,
+                lease_id=request.coordination_lease_id,
+                reason="resume_authority_unavailable",
             )
             continue
 
@@ -4192,6 +4356,13 @@ async def resume_persisted_async_delegations(*, limit: int = 50) -> list[str]:
                 },
             )
             if advanced is False:
+                await _release_delegation_coordination_lease(
+                    task_id=task_id,
+                    tenant_id=request.tenant_id,
+                    task_key=request.coordination_task_key,
+                    lease_id=request.coordination_lease_id,
+                    reason="resume_not_advanced",
+                )
                 continue
             from app.services.runtime_task_worker import notify_runtime_task_worker
 

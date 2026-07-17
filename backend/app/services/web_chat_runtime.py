@@ -3697,6 +3697,13 @@ async def _emit_terminal_turn_hook(
         logger.debug("[WebChatRun] {} hook failed (non-fatal): {}", terminal_event.upper(), exc)
 
 
+def _tool_settlement_arguments(payload: dict[str, Any]) -> dict[str, Any]:
+    evidence = payload.get("tool_execution_evidence")
+    if isinstance(evidence, dict) and isinstance(evidence.get("effective_arguments"), dict):
+        return dict(evidence["effective_arguments"])
+    return dict(payload["args"]) if isinstance(payload.get("args"), dict) else {}
+
+
 async def _persist_tool_call(
     *,
     agent_id: uuid.UUID,
@@ -3818,7 +3825,7 @@ async def _persist_tool_call(
                         if isinstance(payload.get("tool_execution_evidence"), dict)
                         else None
                     ),
-                    effective_arguments=(payload.get("args") if isinstance(payload.get("args"), dict) else None),
+                    effective_arguments=_tool_settlement_arguments(payload),
                     parts=artifact_parts,
                 )
             else:

@@ -8,6 +8,81 @@ import {
 import type { AgentChatMessage } from './chatRuntime';
 
 describe('chatDisclosureReducer', () => {
+  it('projects canonical commentary and compaction without treating progress prose as the final answer', () => {
+    const messages = [
+      {
+        role: 'assistant',
+        content: 'I found the first root cause and am checking the adjacent path.',
+        id: 'commentary-1',
+        eventType: 'assistant_commentary',
+        eventStatus: 'completed',
+        sessionItem: {
+          id: 'commentary-1',
+          kind: 'assistant_commentary',
+          lifecycle: 'completed',
+          terminal: true,
+        } as AgentChatMessage['sessionItem'],
+      },
+      {
+        role: 'event',
+        content: 'The active working state was preserved.',
+        id: 'compaction-1',
+        eventType: 'context_compaction',
+        eventTitle: 'Context compaction',
+        eventStatus: 'completed',
+        sessionItem: {
+          id: 'compaction-1',
+          kind: 'context_compaction',
+          lifecycle: 'completed',
+          terminal: true,
+        } as AgentChatMessage['sessionItem'],
+      },
+    ] as AgentChatMessage[];
+
+    expect(isDisclosureStepMessage(messages[1])).toBe(true);
+
+    const timeline = buildRunTimelineFromMessages(messages);
+
+    expect(timeline.steps).toEqual([
+      expect.objectContaining({
+        kind: 'commentary',
+        details: 'I found the first root cause and am checking the adjacent path.',
+        visibility: 'visible',
+      }),
+      expect.objectContaining({ kind: 'compaction', visibility: 'collapsed' }),
+    ]);
+    expect(timeline.answerMessageId).toBeUndefined();
+  });
+
+  it('keeps legacy commentary in the process stream and legacy assistant_message as the final answer', () => {
+    const timeline = buildRunTimelineFromMessages([
+      {
+        id: 'legacy-commentary',
+        role: 'assistant',
+        content: 'I am checking the older transcript projection.',
+        eventType: 'assistant_commentary',
+        eventStatus: 'completed',
+      },
+      {
+        id: 'legacy-final',
+        role: 'assistant',
+        content: 'The historical Session replay is complete.',
+        eventType: 'assistant_message',
+        eventStatus: 'completed',
+      },
+    ] as AgentChatMessage[]);
+
+    expect(timeline.steps).toEqual([
+      expect.objectContaining({
+        id: 'legacy-commentary',
+        kind: 'commentary',
+        details: 'I am checking the older transcript projection.',
+      }),
+    ]);
+    expect(timeline.status).toBe('done');
+    expect(timeline.answerMessageId).toBe('legacy-final');
+  });
+
   it('projects thinking, ordinary tool calls, and compaction events into visible timeline steps', () => {
     const messages: AgentChatMessage[] = [
       { role: 'assistant', content: '', thinking: 'I need to inspect the current code.', timestamp: '2026-06-22T10:00:00Z' },
@@ -114,7 +189,7 @@ describe('chatDisclosureReducer', () => {
     expect(timeline.answerMessageId).toBe('answer-0');
   });
 
-  it('keeps canonical private reasoning and response composition as fixed lifecycle rows', () => {
+  it('keeps canonical private reasoning but leaves response bytes to the final answer surface', () => {
     const messages = [
       {
         role: 'event',
@@ -142,10 +217,10 @@ describe('chatDisclosureReducer', () => {
 
     const timeline = buildRunTimelineFromMessages(messages);
 
-    expect(timeline.steps).toEqual(expect.arrayContaining([
+    expect(timeline.steps).toEqual([
       expect.objectContaining({ kind: 'reasoning', title: 'Thinking', summary: 'Provider-private reasoning was used.' }),
-      expect.objectContaining({ kind: 'reasoning', title: 'Writing response', summary: 'The answer bytes are being composed.' }),
-    ]));
+    ]);
+    expect(timeline.steps.some((step) => step.title === 'Writing response')).toBe(false);
   });
 
   it('adds a turn-level aggregate summary for repeated tool groups', () => {

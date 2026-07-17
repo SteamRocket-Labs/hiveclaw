@@ -588,6 +588,88 @@ async def test_coordination_recovery_reuses_existing_signal_after_lease_expiry()
 
 
 @pytest.mark.asyncio
+async def test_coordination_publish_failure_releases_newly_acquired_lease() -> None:
+    from app.agents.coordination import CoordinationRuntime
+    from app.agents.coordination_gateway import InProcessCoordinationGateway
+    from app.agents.orchestrator import (
+        AgentDelegationRequest,
+        _delegation_coordination_key,
+        _ensure_delegation_coordination_published,
+    )
+
+    runtime = CoordinationRuntime()
+
+    class FailingGateway(InProcessCoordinationGateway):
+        async def send_signal(self, **_kwargs):
+            raise RuntimeError("signal transport unavailable")
+
+    task_id = uuid4().hex
+    request = AgentDelegationRequest(
+        target=SimpleNamespace(id=uuid4(), name="Target", role_description=""),
+        target_model=SimpleNamespace(provider="openai", model="gpt-4.1"),
+        conversation_messages=[{"role": "user", "content": "inspect"}],
+        owner_id=uuid4(),
+        session_id="child-publish-failure",
+        parent_agent_id=uuid4(),
+        trace_id="trace-publish-failure",
+        runtime_task_id=task_id,
+    )
+    gateway = FailingGateway(runtime)
+
+    with pytest.raises(RuntimeError, match="signal transport unavailable"):
+        await _ensure_delegation_coordination_published(
+            task_id=task_id,
+            request=request,
+            coordination_gateway=gateway,
+        )
+
+    assert runtime.acquire_lease(
+        task_key=_delegation_coordination_key(request),
+        agent_id="runtime-task:retry",
+        ttl_seconds=60,
+    ).acquired is True
+
+
+@pytest.mark.asyncio
+async def test_terminal_coordination_release_records_evidence_and_unblocks_retry(monkeypatch) -> None:
+    from app.agents.coordination import CoordinationRuntime
+    from app.agents.coordination_gateway import InProcessCoordinationGateway
+    from app.agents.orchestrator import _release_delegation_coordination_lease
+
+    runtime = CoordinationRuntime()
+    gateway = InProcessCoordinationGateway(runtime)
+    task_id = uuid4().hex
+    task_key = "delegate:parent:worker:instruction"
+    lease = await gateway.acquire_lease(
+        task_key=task_key,
+        agent_id=f"runtime-task:{task_id}",
+        ttl_seconds=60,
+    )
+    updates: list[dict] = []
+
+    async def fake_update(_task_id, **fields):
+        updates.append(fields)
+        return True
+
+    monkeypatch.setattr("app.agents.orchestrator.update_runtime_task_record", fake_update)
+
+    assert await _release_delegation_coordination_lease(
+        task_id=task_id,
+        tenant_id=uuid4(),
+        task_key=task_key,
+        lease_id=lease.lease.id if lease.lease else None,
+        reason="delegation_terminal",
+        coordination_gateway=gateway,
+    ) is True
+    assert updates[-1]["metadata_json"]["coordination_release_state"] == "released"
+    assert (await gateway.acquire_lease(
+        task_key=task_key,
+        agent_id="runtime-task:retry",
+        ttl_seconds=60,
+    )).acquired is True
+
+
+@pytest.mark.asyncio
 async def test_delegate_async_enqueue_failure_cannot_publish_or_return_queued(monkeypatch):
     from app.agents.orchestrator import delegate_async
 
@@ -2429,6 +2511,31 @@ async def test_delegate_cleans_up_visited_set_after_completion(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_delegate_marks_non_turn_stop_terminal_reason_as_failed(monkeypatch):
+    from app.agents.orchestrator import _delegate, _visited_agents_by_trace
+    from app.kernel.contracts import TerminalReason
+
+    _visited_agents_by_trace.clear()
+    target = SimpleNamespace(id=uuid4(), name="ProviderFailure", role_description="x")
+
+    async def _provider_failure(_request):
+        return SimpleNamespace(
+            content="[LLM Error] AI 模型额度或余额不足。",
+            parts=[],
+            tokens_used=0,
+            final_tools=None,
+            terminal_reason=TerminalReason.PROVIDER_ERROR,
+        )
+
+    monkeypatch.setattr("app.agents.orchestrator.invoke_agent", _provider_failure)
+
+    result = await _delegate(_delegation_request(target=target, owner_id=uuid4()))
+
+    assert result.failed is True
+    assert result.terminal_reason == "provider_error"
+
+
+@pytest.mark.asyncio
 async def test_delegate_cleans_up_visited_set_after_invoke_exception(monkeypatch):
     """If the underlying invoke_agent raises, finally still clears the agent
     from the visited set so a retry on the same trace isn't false-positively
@@ -3088,6 +3195,7 @@ async def test_spawn_async_delegation_task_wires_parent_projection_on_completion
     )
 
     projected: list[dict] = []
+    released: list[dict] = []
 
     async def fake_delegate(request):
         return AgentDelegationResult(
@@ -3106,10 +3214,15 @@ async def test_spawn_async_delegation_task_wires_parent_projection_on_completion
     async def fake_plan_gate(_request):
         return True, None
 
+    async def fake_release(**kwargs):
+        released.append(kwargs)
+        return True
+
     monkeypatch.setattr("app.agents.orchestrator._delegate", fake_delegate)
     monkeypatch.setattr("app.agents.orchestrator.update_runtime_task_record", fake_update_runtime_task_record)
     monkeypatch.setattr("app.agents.orchestrator._project_delegation_completion_to_parent", fake_project)
     monkeypatch.setattr("app.agents.orchestrator._delegation_plan_gate_allows", fake_plan_gate)
+    monkeypatch.setattr("app.agents.orchestrator._release_delegation_coordination_lease", fake_release)
 
     from app.agents.orchestrator import AgentDelegationRequest
 
@@ -3126,6 +3239,8 @@ async def test_spawn_async_delegation_task_wires_parent_projection_on_completion
         depth=1,
         tenant_id=uuid4(),
         runtime_task_id=task_id,
+        coordination_task_key="delegate:parent:worker:instruction",
+        coordination_lease_id="lease-wire-1",
     )
 
     _spawn_async_delegation_task(task_id=task_id, request=request, trace_id="trace-wire")
@@ -3137,3 +3252,13 @@ async def test_spawn_async_delegation_task_wires_parent_projection_on_completion
     assert projected[0]["task_id"] == task_id
     assert projected[0]["status"] == "completed"
     assert projected[0]["summary"] == "child output"
+    assert released == [
+        {
+            "task_id": task_id,
+            "tenant_id": request.tenant_id,
+            "task_key": request.coordination_task_key,
+            "lease_id": request.coordination_lease_id,
+            "reason": "delegation_terminal",
+            "coordination_gateway": None,
+        }
+    ]

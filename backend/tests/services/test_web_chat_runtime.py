@@ -5133,6 +5133,24 @@ def test_reclaimed_web_chat_claim_builds_durable_resume_context(monkeypatch):
     assert metadata["restart_resume_context"] == {"resume_prompt": "resume once", "task": run_id.hex}
 
 
+def test_tool_settlement_uses_runtime_effective_arguments_for_decision_hash() -> None:
+    from app.services.web_chat_runtime import _tool_settlement_arguments
+
+    provider_args = {"agent_name": "Web3", "message": "research"}
+    effective_args = {
+        **provider_args,
+        "parent_session_id": "session-1",
+        "_requester_user_id": "user-1",
+    }
+
+    assert _tool_settlement_arguments(
+        {
+            "args": provider_args,
+            "tool_execution_evidence": {"effective_arguments": effective_args},
+        }
+    ) == effective_args
+
+
 @pytest.mark.asyncio
 async def test_claimed_web_chat_run_quarantines_after_recovery_budget_is_exhausted(monkeypatch):
     import app.services.web_chat_runtime as runtime

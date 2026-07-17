@@ -32,6 +32,19 @@ def classify_llm_error(exc: Exception) -> LLMErrorClassification:
     lower = msg.lower()
 
     if (
+        "insufficient balance" in lower
+        or "insufficient_balance" in lower
+        or "balance is insufficient" in lower
+        or "credit balance" in lower
+        or "余额不足" in msg
+    ):
+        return LLMErrorClassification(
+            kind="quota_exhausted",
+            user_message="[LLM Error] AI 模型额度或余额不足，请联系管理员检查账户余额、模型额度或切换模型。",
+            requires_user_decision=True,
+        )
+
+    if (
         "quota" in lower
         or "insufficient_quota" in lower
         or "quotaexhausted" in lower

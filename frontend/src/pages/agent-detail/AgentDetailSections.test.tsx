@@ -61,6 +61,9 @@ import { AGENT_WORKBENCH_AREAS } from './agentDetailPolicy';
 describe('userFacingRuntimeStatus', () => {
   it('maps known states and never falls back to raw runtime values', () => {
     expect(userFacingRuntimeStatus('waiting_budget_approval')).toBe('Waiting for approval');
+    expect(userFacingRuntimeStatus('blocked')).toBe('Needs attention');
+    expect(userFacingRuntimeStatus('not_admitted')).toBe('Skipped');
+    expect(userFacingRuntimeStatus('ready')).toBe('Ready');
     expect(userFacingRuntimeStatus('provider_stream_half_closed_internal')).toBe('Working');
   });
 });
@@ -1264,8 +1267,8 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('data-testid="run-disclosure-block"');
     expect(markup).toContain('Processed');
     expect(markup).toContain('Checkpoint trail updated.');
-    expect(markup).toContain('Thinking');
-    expect(markup).toContain('I checked the current branch state.');
+    expect(markup).not.toContain('Thinking');
+    expect(markup).not.toContain('I checked the current branch state.');
     expect(markup).toContain('aria-expanded="false"');
     expect(markup).not.toContain('rgba(16,185,129');
     expect(markup).not.toContain('147, 130, 220');
@@ -2750,8 +2753,8 @@ describe('AgentDetail extracted sections', () => {
     );
 
     expect(markup).toContain('Processed');
-    expect(markup).toContain('Read file');
-    expect(markup).toContain('report.md');
+    expect(markup).not.toContain('Read file');
+    expect(markup).not.toContain('report.md');
     expect(markup).toContain('aria-expanded="false"');
     expect(markup).not.toContain('path:');
     expect(markup).not.toContain('RAW FILE CONTENT SHOULD NOT BE INLINE');
@@ -2834,8 +2837,8 @@ describe('AgentDetail extracted sections', () => {
     );
 
     expect(markup).toContain('Processed');
-    expect(markup).toContain('Edit document');
-    expect(markup).toContain('proposal.docx');
+    expect(markup).not.toContain('Edit document');
+    expect(markup).not.toContain('proposal.docx');
     expect(markup).not.toContain('{&quot;ok&quot;: true}');
     expect(markup).toContain('No delivered artifacts in this session yet.');
     expect(markup).not.toContain('data-testid="session-workspace-documents-unattributed"');
@@ -2942,13 +2945,13 @@ describe('AgentDetail extracted sections', () => {
     expect(markup.match(/data-testid="run-disclosure-block"/g)?.length).toBe(1);
     expect(markup).toContain('Processed');
     expect(markup).toContain('最终答案已经完成。');
-    expect(markup).toContain('Thinking');
-    expect(markup).toContain('Inspect code before answering.');
+    expect(markup).not.toContain('Thinking');
+    expect(markup).not.toContain('Inspect code before answering.');
     expect(markup).toContain('Read 1 file');
     expect(markup).toContain('Ran 1 command');
-    expect(markup).toContain('Read file');
-    expect(markup).toContain('Context Compacted');
-    expect(markup).toContain('Run command');
+    expect(markup).not.toContain('Read file');
+    expect(markup).not.toContain('Context Compacted');
+    expect(markup).not.toContain('Run command');
     expect(markup).not.toContain('RAW READ FILE CONTENT');
     expect(markup).not.toContain('RAW COMMAND OUTPUT');
   });

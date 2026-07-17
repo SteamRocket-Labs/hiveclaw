@@ -26,10 +26,12 @@ class _ExecuteResult:
         first: Any = None,
         scalar: Any = None,
         scalars: list[Any] | None = None,
+        rowcount: int = 0,
     ) -> None:
         self._first = first
         self._scalar = scalar
         self._scalars = scalars
+        self.rowcount = rowcount
 
     def first(self):
         return self._first
@@ -130,6 +132,28 @@ class TestLease:
         assert result.lease is not None
         assert result.lease.agent_id == "agent_a"
         assert result.lease.expires_at == expires_at
+
+    @pytest.mark.asyncio
+    async def test_release_deletes_only_the_exact_owned_lease(
+        self, session: _FakeSession, tenant_id: uuid.UUID, now: datetime
+    ) -> None:
+        repo = CoordinationRepository(session, tenant_id=tenant_id, now=lambda: now)
+        lease_id = uuid.uuid4()
+        session.queue(_ExecuteResult(rowcount=1))
+
+        released = await repo.release_lease(
+            task_key="task-1",
+            agent_id="runtime-task:1",
+            lease_id=str(lease_id),
+        )
+
+        assert released is True
+        assert session.flushes == 1
+        compiled = str(session.execute_calls[0])
+        assert "coordination_leases.tenant_id" in compiled
+        assert "coordination_leases.task_key" in compiled
+        assert "coordination_leases.agent_id" in compiled
+        assert "coordination_leases.id" in compiled
 
 
 async def _acquire_with_known_id(

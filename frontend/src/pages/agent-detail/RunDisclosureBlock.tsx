@@ -1,5 +1,6 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import {
   IconChevronDown,
   IconChevronRight,
@@ -12,13 +13,35 @@ import {
   IconTool,
 } from '@tabler/icons-react';
 
+import MarkdownRenderer from '../../components/MarkdownRenderer';
 import type { RunStepKind, RunStepSnapshot, RunTimelineSnapshot } from './chatDisclosureReducer';
 
-// Session V2 disclosure semantics: lifecycle rows remain anchored. Individual
-// tool/reasoning payloads may fold, but the turn-level container never hides
-// Thinking, commentary, writing, or A2A progress.
+// One Session turn owns one disclosure. Live or failed work opens for immediate
+// inspection; terminal successful work folds behind its processed summary.
 
 const EXEC_CLIP_LINES = 5;
+const TOOL_ACTIVITY_KINDS = new Set<RunStepKind>(['tool', 'search', 'file', 'command']);
+
+type RunRenderItem =
+  | { kind: 'tool_group'; id: string; steps: RunStepSnapshot[] }
+  | { kind: 'step'; id: string; step: RunStepSnapshot };
+
+function groupRunSteps(steps: RunStepSnapshot[]): RunRenderItem[] {
+  const items: RunRenderItem[] = [];
+  for (const step of steps) {
+    if (!TOOL_ACTIVITY_KINDS.has(step.kind)) {
+      items.push({ kind: 'step', id: step.id, step });
+      continue;
+    }
+    const previous = items[items.length - 1];
+    if (previous?.kind === 'tool_group') {
+      previous.steps.push(step);
+      continue;
+    }
+    items.push({ kind: 'tool_group', id: `tool-group:${step.id}`, steps: [step] });
+  }
+  return items;
+}
 
 function formatDuration(durationMs?: number): string {
   if (!durationMs || durationMs < 1000) return '';
@@ -137,8 +160,11 @@ function RunStepDetails({ step }: { step: RunStepSnapshot }) {
 function RunStepRow({ step }: { step: RunStepSnapshot }) {
   const running = step.status === 'running';
   const exec = asExecDetails(step.details);
-  // exec 步骤直接展示裁剪后的输出（Codex 语义：命令输出即摘要）；其它详情按需展开。
-  const [expanded, setExpanded] = React.useState(Boolean(exec) || step.visibility === 'visible');
+  const [expanded, setExpanded] = React.useState(
+    (Boolean(exec) && (running || step.status === 'failed'))
+      || step.blocking === true
+      || (step.visibility === 'visible' && step.status !== 'done'),
+  );
   const hasDetails = step.details != null;
   return (
     <div data-testid="run-disclosure-step" className="run-step">
@@ -167,10 +193,159 @@ function RunStepRow({ step }: { step: RunStepSnapshot }) {
   );
 }
 
+function commentaryText(step: RunStepSnapshot): string {
+  if (typeof step.details === 'string' && step.details.trim()) return step.details.trim();
+  return step.summary?.trim() || '';
+}
+
+function RunCommentary({ step }: { step: RunStepSnapshot }) {
+  const content = commentaryText(step);
+  if (!content) return null;
+  return (
+    <article data-testid="run-disclosure-commentary" className="run-commentary">
+      <MarkdownRenderer content={content} className="run-commentary-content" />
+    </article>
+  );
+}
+
+function RunCompactionBoundary({ step }: { step: RunStepSnapshot }) {
+  const { t } = useTranslation();
+  const running = step.status === 'running';
+  const label = running
+    ? t('agent.chat.disclosure.contextCompacting', 'Automatically compacting context')
+    : t('agent.chat.disclosure.contextCompacted', 'Context was automatically compacted');
+  return (
+    <div
+      data-testid="run-disclosure-compaction"
+      data-status={step.status}
+      className={running ? 'run-compaction is-running' : 'run-compaction'}
+    >
+      <span className="run-compaction-icon">
+        {running
+          ? <IconLoader2 size={14} stroke={2.1} className="session-tui-step-spinner" aria-hidden="true" />
+          : <IconFileText size={14} stroke={2.1} aria-hidden="true" />}
+      </span>
+      <span className="run-compaction-label">{label}</span>
+    </div>
+  );
+}
+
+const TOOL_TITLE_KEYS: Record<string, [string, string]> = {
+  'Loading tools': ['agent.chat.disclosure.toolTitle.loading', 'Loading tools'],
+  'Read file': ['agent.chat.disclosure.toolTitle.readFile', 'Read file'],
+  'Write file': ['agent.chat.disclosure.toolTitle.writeFile', 'Write file'],
+  'Edit file': ['agent.chat.disclosure.toolTitle.editFile', 'Edit file'],
+  'Delete file': ['agent.chat.disclosure.toolTitle.deleteFile', 'Delete file'],
+  'List files': ['agent.chat.disclosure.toolTitle.listFiles', 'List files'],
+  'Search web': ['agent.chat.disclosure.toolTitle.searchWeb', 'Search web'],
+  'Fetch web page': ['agent.chat.disclosure.toolTitle.fetchWebPage', 'Fetch web page'],
+  'Run command': ['agent.chat.disclosure.toolTitle.runCommand', 'Run command'],
+  'Edit document': ['agent.chat.disclosure.toolTitle.editDocument', 'Edit document'],
+  'Tool call': ['agent.chat.disclosure.toolTitle.toolCall', 'Tool call'],
+};
+
+function localizedToolTitle(step: RunStepSnapshot, t: TFunction): string {
+  const translated = TOOL_TITLE_KEYS[step.title];
+  return translated ? t(translated[0], translated[1]) : step.title;
+}
+
+function toolStepLabel(step: RunStepSnapshot, t: TFunction): string {
+  const title = localizedToolTitle(step, t);
+  return step.summary ? `${title} · ${step.summary}` : title;
+}
+
+function toolGroupStatus(steps: RunStepSnapshot[]): RunStepSnapshot['status'] {
+  if (steps.some((step) => step.status === 'running')) return 'running';
+  if (steps.some((step) => step.status === 'failed')) return 'failed';
+  if (steps.some((step) => step.status === 'blocked')) return 'blocked';
+  if (steps.some((step) => step.status === 'cancelled')) return 'cancelled';
+  return 'done';
+}
+
+function ToolHistoryItem({ step }: { step: RunStepSnapshot }) {
+  const { t } = useTranslation();
+  const exec = asExecDetails(step.details);
+  const row = (
+    <>
+      <span className={step.status === 'running' ? 'run-step-icon is-running' : 'run-step-icon'}>
+        <StepIcon kind={step.kind} running={step.status === 'running'} />
+      </span>
+      <span className="run-tool-history-title">{localizedToolTitle(step, t)}</span>
+      {step.summary && <span className="run-tool-history-summary">{step.summary}</span>}
+    </>
+  );
+
+  if (!exec) {
+    return (
+      <div className="run-tool-history-item" role="listitem" data-status={step.status}>
+        {row}
+      </div>
+    );
+  }
+
+  return (
+    <div className="run-tool-history-item has-exec" role="listitem" data-status={step.status}>
+      <details className="run-tool-history-exec" open={step.status === 'running' || step.status === 'failed'}>
+        <summary className="run-tool-history-exec-summary">
+          {row}
+          <IconChevronRight className="run-tool-history-exec-chevron" size={12} stroke={2.2} aria-hidden="true" />
+        </summary>
+        <ExecOutput exec={exec} />
+      </details>
+    </div>
+  );
+}
+
+function ToolActivityGroup({ steps }: { steps: RunStepSnapshot[] }) {
+  const { t } = useTranslation();
+  const status = toolGroupStatus(steps);
+  const currentStep = [...steps].reverse().find((step) => step.status === 'running') || steps[steps.length - 1];
+  const completedActions = Array.from(new Set(steps.map((step) => localizedToolTitle(step, t)))).join(' · ');
+  const label = status === 'running'
+    ? t('agent.chat.disclosure.toolRunning', 'Using {{tool}}', { tool: toolStepLabel(currentStep, t) })
+    : t('agent.chat.disclosure.toolCompleted', 'Used tools: {{tools}}', { tools: completedActions });
+  return (
+    <details data-testid="run-disclosure-tool-group" data-status={status} className="run-tool-group">
+      <summary data-testid="run-disclosure-tool-group-toggle" className="run-tool-group-toggle">
+        <span className={status === 'running' ? 'run-step-icon is-running' : 'run-step-icon'}>
+          <StepIcon kind={currentStep.kind} running={status === 'running'} />
+        </span>
+        <span className="run-tool-group-label">{label}</span>
+        <IconChevronRight className="run-tool-group-chevron" size={13} stroke={2.2} aria-hidden="true" />
+      </summary>
+      <div
+        className="run-tool-history"
+        role="list"
+        aria-label={t('agent.chat.disclosure.toolHistory', 'Tool call history')}
+      >
+        {steps.map((step) => <ToolHistoryItem key={step.id} step={step} />)}
+      </div>
+    </details>
+  );
+}
+
+function RunTimelineItem({ item }: { item: RunRenderItem }) {
+  if (item.kind === 'tool_group') return <ToolActivityGroup steps={item.steps} />;
+  if (item.step.kind === 'commentary') return <RunCommentary step={item.step} />;
+  if (item.step.kind === 'compaction') return <RunCompactionBoundary step={item.step} />;
+  return <RunStepRow step={item.step} />;
+}
+
 export default function RunDisclosureBlock({ timeline }: { timeline: RunTimelineSnapshot }) {
   const { t } = useTranslation();
   const running = timeline.status === 'running';
   const liveElapsed = useLiveElapsed(timeline.startedAt, running);
+  const opensForAttention = running || timeline.status === 'blocked' || timeline.status === 'failed';
+  const [expanded, setExpanded] = React.useState(opensForAttention);
+  const previousTimeline = React.useRef({ id: timeline.id, status: timeline.status });
+
+  React.useEffect(() => {
+    const previous = previousTimeline.current;
+    if (previous.id !== timeline.id || previous.status !== timeline.status) {
+      setExpanded(opensForAttention);
+      previousTimeline.current = { id: timeline.id, status: timeline.status };
+    }
+  }, [opensForAttention, timeline.id, timeline.status]);
 
   if (timeline.steps.length === 0) return null;
   const duration = running ? liveElapsed : formatDuration(timeline.durationMs);
@@ -178,26 +353,39 @@ export default function RunDisclosureBlock({ timeline }: { timeline: RunTimeline
     ? t('agent.chat.disclosure.working', 'Working')
     : timeline.status === 'blocked'
       ? t('agent.chat.disclosure.waiting', 'Waiting for input')
-      : t('agent.chat.disclosure.processed', 'Processed');
+      : timeline.status === 'failed'
+        ? t('agent.chat.disclosure.needsAttention', 'Needs attention')
+        : timeline.status === 'cancelled'
+          ? t('agent.chat.disclosure.stopped', 'Stopped')
+          : t('agent.chat.disclosure.processed', 'Processed');
   const stepCount = t('agent.chat.disclosure.stepCount', '{{count}} steps', { count: timeline.steps.length });
   const live = timeline.status === 'running' || timeline.status === 'blocked';
+  const renderItems = groupRunSteps(timeline.steps);
 
   return (
     <div data-testid="run-disclosure-block" data-status={timeline.status} className="run-disclosure">
       <div className={live ? 'run-disclosure-frame is-live' : 'run-disclosure-frame'}>
-        <div className="run-disclosure-header">
+        <button
+          type="button"
+          className="run-disclosure-header"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((value) => !value)}
+        >
+          {expanded ? <IconChevronDown size={13} stroke={2.2} /> : <IconChevronRight size={13} stroke={2.2} />}
           <span className={running ? 'session-tui-shimmer run-disclosure-title' : 'run-disclosure-title'}>
             {title}
           </span>
           {duration && <span className="run-disclosure-duration">{duration}</span>}
           {timeline.summary && <span className="run-disclosure-summary">{timeline.summary}</span>}
           <span className="run-disclosure-count">{stepCount}</span>
-        </div>
-        <div className="run-disclosure-steps">
-          {timeline.steps.map((step) => (
-            <RunStepRow key={step.id} step={step} />
-          ))}
-        </div>
+        </button>
+        {expanded && (
+          <div className="run-disclosure-steps">
+            {renderItems.map((item) => (
+              <RunTimelineItem key={item.id} item={item} />
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

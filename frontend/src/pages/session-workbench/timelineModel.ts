@@ -1541,7 +1541,10 @@ function isRenderableAssistantAnswer(message: AgentChatMessage): boolean {
       && message.sessionItem.terminal
       && Boolean(message.content?.trim());
   }
-  return message.role === 'assistant' && Boolean(message.content?.trim());
+  if (message.role !== 'assistant' || !message.content?.trim()) return false;
+  if (message.eventType === 'assistant_message' || message.eventType === 'assistant_final') return true;
+  if (message.eventType?.startsWith('assistant_')) return false;
+  return true;
 }
 
 function isCanonicalSessionProcessItem(message: AgentChatMessage): boolean {
@@ -1587,11 +1590,16 @@ function buildRunCell(
   sourceMessages: Array<{ message: AgentChatMessage; index: number }>,
   answer?: { message: AgentChatMessage; index: number },
 ): Extract<ThreadTimelineCell, { kind: 'active_run' }> {
-  const timelineMessages = answer ? [...sourceMessages.map((entry) => entry.message), answer.message] : sourceMessages.map((entry) => entry.message);
+  const timeline = buildRunTimelineFromMessages(
+    sourceMessages.map((entry) => entry.message),
+    { answer: answer?.message },
+  );
   return {
     kind: 'active_run',
     id: `run-${runIndex}-${sourceMessages[0]?.index ?? answer?.index ?? 0}`,
-    timeline: buildRunTimelineFromMessages(timelineMessages),
+    timeline: answer
+      ? { ...timeline, answerMessageId: messageId(answer.message, `assistant-${answer.index}`) }
+      : timeline,
     sourceMessages,
   };
 }
@@ -1639,7 +1647,7 @@ function buildPendingRunCell(
   const phase = liveRunPhase(input);
   if (!input.isWaiting && !input.isStreaming && !activeRunStatus && !phase) return null;
   const status: RunTimelineSnapshot['status'] = activeRunStatus === 'failed' ? 'failed' : 'running';
-  const title = phase === 'responding' || input.isStreaming ? 'Writing response' : 'Thinking';
+  const title = phase === 'responding' || input.isStreaming ? 'Working' : 'Thinking';
   const summary = activeRunStatus
     ? `Active run: ${activeRunStatus}`
     : input.isStreaming
@@ -1665,6 +1673,34 @@ function buildPendingRunCell(
       ],
     },
   };
+}
+
+function keepLatestProcessRunActive(
+  cells: ThreadTimelineCell[],
+  input: BuildThreadTimelineInput,
+  activeRunStatus: string | null,
+): boolean {
+  const phase = liveRunPhase(input);
+  if (!input.isWaiting && !input.isStreaming && !activeRunStatus && !phase) return false;
+  const index = cells.length - 1;
+  const cell = cells[index];
+  if (!cell || cell.kind !== 'active_run' || cell.timeline.answerMessageId) return false;
+
+  const status: RunTimelineSnapshot['status'] = activeRunStatus === 'failed'
+    ? 'failed'
+    : cell.timeline.status === 'blocked'
+      ? 'blocked'
+      : 'running';
+  cells[index] = {
+    ...cell,
+    ...(phase ? { phase } : {}),
+    timeline: {
+      ...cell.timeline,
+      status,
+      completedAt: status === 'failed' ? cell.timeline.completedAt : undefined,
+    },
+  };
+  return true;
 }
 
 function buildCells(messages: AgentChatMessage[]): ThreadTimelineCell[] {
@@ -1804,6 +1840,12 @@ function sameCellIdentity(previous: ThreadTimelineCell, next: ThreadTimelineCell
   }
   if (previous.kind === 'active_run' && next.kind === 'active_run') {
     if (previous.phase !== next.phase) return false;
+    if (previous.timeline.status !== next.timeline.status) return false;
+    if (previous.timeline.answerMessageId !== next.timeline.answerMessageId) return false;
+    if (previous.timeline.steps.length !== next.timeline.steps.length) return false;
+    if (previous.timeline.steps.some((step, index) => (
+      step.id !== next.timeline.steps[index]?.id || step.status !== next.timeline.steps[index]?.status
+    ))) return false;
     if (previous.sourceMessages.length !== next.sourceMessages.length) return false;
     return previous.sourceMessages.every((entry, index) => (
       entry.index === next.sourceMessages[index]?.index && entry.message === next.sourceMessages[index]?.message
@@ -1838,8 +1880,9 @@ export function createThreadTimelineCache(): ThreadTimelineCache {
 export function buildThreadTimeline(input: BuildThreadTimelineInput): ThreadTimelineModel {
   const cells = buildCells(input.messages);
   const activeRunStatus = mainTurnActiveRunStatus(input, cells);
+  const retainedProcessRun = keepLatestProcessRunActive(cells, input, activeRunStatus);
   const pendingRunCell = buildPendingRunCell(input, activeRunStatus);
-  if (pendingRunCell && !hasOpenRunCell(cells)) {
+  if (pendingRunCell && !retainedProcessRun && !hasOpenRunCell(cells)) {
     cells.push(pendingRunCell);
   }
   const livePhase = liveRunPhase(input);

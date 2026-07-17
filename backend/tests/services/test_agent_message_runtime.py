@@ -529,6 +529,25 @@ def test_delegation_runtime_failure_maps_typed_unavailable():
     assert outcome.retryable is False
 
 
+def test_delegation_runtime_provider_error_cannot_be_reported_as_success():
+    from app.services.agent_tool_domains.messaging import _delegation_runtime_failure_outcome
+
+    outcome = _delegation_runtime_failure_outcome(
+        "consult",
+        SimpleNamespace(
+            failed=False,
+            content="[LLM Error] AI 模型额度或余额不足。",
+            terminal_reason="provider_error",
+            parts=(),
+        ),
+    )
+
+    assert outcome is not None
+    assert outcome.ok is False
+    assert outcome.status == "failed"
+    assert outcome.error_code == "provider_error"
+
+
 @pytest.mark.asyncio
 async def test_delegate_async_reserves_budget_before_creating_runtime_task(monkeypatch):
     from app.agents import orchestrator

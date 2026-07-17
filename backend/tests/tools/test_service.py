@@ -1361,11 +1361,13 @@ async def test_tool_runtime_service_threads_session_permission_context_into_agen
         activity_logger=None,
     )
 
+    trace_metadata: dict = {}
     result = await service.execute(
         "send_message_to_agent",
         {"agent_name": "Knowledge", "message": "查一下飞书知识库"},
         agent_id=context.agent_id,
         user_id=context.user_id,
+        trace_metadata_sink=trace_metadata,
     )
 
     assert result == "MESSAGE"
@@ -1378,6 +1380,8 @@ async def test_tool_runtime_service_threads_session_permission_context_into_agen
             "web_search",
             "feishu_doc_read",
         ]
+    assert trace_metadata["effective_arguments"] == executed_arguments
+    assert trace_metadata["tool_decision"]["input_hash"] == trace_metadata["input_hash"]
 
 
 @pytest.mark.asyncio

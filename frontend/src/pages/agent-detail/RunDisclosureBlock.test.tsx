@@ -3,20 +3,92 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 
 import RunDisclosureBlock from './RunDisclosureBlock';
-import type { RunTimelineSnapshot } from './chatDisclosureReducer';
+import type { RunStepSnapshot, RunTimelineSnapshot } from './chatDisclosureReducer';
 
-// Session V2 contract: lifecycle rows remain anchored in the timeline. Tool
-// payloads can fold independently, but Thinking/writing/progress stages cannot
-// disappear behind a second turn-level disclosure.
+// A turn owns one disclosure: live work starts open, while completed work
+// collapses behind its processed summary and can be reopened by the user.
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
-    t: (_key: string, fallback?: string, options?: Record<string, unknown>) => {
-      if (fallback?.includes('{{count}}')) return fallback.replace('{{count}}', String(options?.count ?? ''));
-      return fallback || _key;
+    t: (_key: string, fallback: string, values?: Record<string, unknown>) => {
+      if (typeof fallback !== 'string') return _key;
+      return Object.entries(values || {}).reduce(
+        (text, [name, value]) => text.replace(`{{${name}}}`, String(value)),
+        fallback,
+      );
     },
   }),
 }));
+
+function step(overrides: Partial<RunStepSnapshot>): RunStepSnapshot {
+  return {
+    id: 'step-1',
+    kind: 'tool',
+    title: 'Tool call',
+    status: 'done',
+    visibility: 'collapsed',
+    ...overrides,
+  };
+}
+
+function liveTimeline(): RunTimelineSnapshot {
+  return {
+    id: 'run-1',
+    status: 'running',
+    startedAt: '2026-07-17T08:00:00Z',
+    steps: [
+      step({
+        id: 'commentary-1',
+        kind: 'commentary' as RunStepSnapshot['kind'],
+        title: 'Progress update',
+        details: 'I found the **projection bug** and am checking the adjacent path.',
+        visibility: 'visible',
+      }),
+      step({
+        id: 'tool-search-1',
+        kind: 'tool',
+        title: 'Loading tools',
+        summary: 'Checking available tools',
+        details: {
+          args: { query: 'select:read_file' },
+        },
+      }),
+      step({
+        id: 'tool-read-1',
+        kind: 'file',
+        title: 'Read file',
+        summary: 'RunDisclosureBlock.tsx',
+        details: {
+          args: { path: 'frontend/src/pages/agent-detail/RunDisclosureBlock.tsx' },
+          result: 'RAW TOOL RESULT THAT MUST STAY COLLAPSED',
+        },
+      }),
+      step({
+        id: 'tool-read-2',
+        kind: 'file',
+        title: 'Read file',
+        summary: 'chatDisclosureReducer.ts',
+        status: 'running',
+        details: {
+          args: { path: 'frontend/src/pages/agent-detail/chatDisclosureReducer.ts' },
+        },
+      }),
+      step({
+        id: 'compaction-1',
+        kind: 'compaction',
+        title: 'Context compaction',
+        details: 'INTERNAL COMPACTION DETAILS',
+      }),
+      step({
+        id: 'commentary-2',
+        kind: 'commentary' as RunStepSnapshot['kind'],
+        title: 'Progress update',
+        details: 'The regression is now isolated.',
+        visibility: 'visible',
+      }),
+    ],
+  };
+}
 
 describe('RunDisclosureBlock', () => {
   const baseTimeline: RunTimelineSnapshot = {
@@ -35,16 +107,17 @@ describe('RunDisclosureBlock', () => {
     ],
   };
 
-  it('keeps completed run steps visible while tool payload details remain folded', () => {
+  it('collapses a completed run behind one turn-level disclosure', () => {
     const markup = renderToStaticMarkup(<RunDisclosureBlock timeline={baseTimeline} />);
 
     expect(markup).toContain('Processed');
-    expect(markup).toContain('read_file');
-    expect(markup).toContain('AgentChatSection.tsx');
+    expect(markup).toContain('aria-expanded="false"');
+    expect(markup).not.toContain('read_file');
+    expect(markup).not.toContain('AgentChatSection.tsx');
     expect(markup).not.toContain('RAW FILE CONTENT');
   });
 
-  it('keeps Thinking and A2A progress anchored after completion', () => {
+  it('keeps completed Thinking and A2A progress inside the collapsed disclosure', () => {
     const markup = renderToStaticMarkup(
       <RunDisclosureBlock
         timeline={{
@@ -71,13 +144,13 @@ describe('RunDisclosureBlock', () => {
       />,
     );
 
-    expect(markup).toContain('Thinking');
-    expect(markup).toContain('Verified the delegated artifact');
-    expect(markup).toContain('Action Started');
-    expect(markup).toContain('Delegated to Web3 researcher');
+    expect(markup).not.toContain('Thinking');
+    expect(markup).not.toContain('Verified the delegated artifact');
+    expect(markup).not.toContain('Action Started');
+    expect(markup).not.toContain('Delegated to Web3 researcher');
   });
 
-  it('expands active runs and shows a shimmering Working header with live elapsed', () => {
+  it('expands active runs and keeps raw non-command payloads behind the tool history surface', () => {
     const startedAt = new Date(Date.now() - 12000).toISOString();
     const markup = renderToStaticMarkup(
       <RunDisclosureBlock
@@ -92,6 +165,10 @@ describe('RunDisclosureBlock', () => {
 
     expect(markup).toContain('session-tui-shimmer');
     expect(markup).toContain('Working');
+    expect(markup).toContain('aria-expanded="true"');
+    expect(markup).toContain('Using read_file · path: frontend/src/pages/agent-detail/AgentChatSection.tsx');
+    expect(markup).toContain('Tool call history');
+    expect(markup).not.toContain('RAW FILE CONTENT');
     expect(markup).toMatch(/1[0-9]s/); // live elapsed derived from startedAt
   });
 
@@ -101,7 +178,7 @@ describe('RunDisclosureBlock', () => {
       <RunDisclosureBlock
         timeline={{
           ...baseTimeline,
-          status: 'failed',
+          status: 'running',
           steps: [
             {
               id: 'cmd-1',
@@ -117,7 +194,6 @@ describe('RunDisclosureBlock', () => {
       />,
     );
 
-    // failed runs stay expanded; the command detail is structured
     expect(markup).toContain('aria-expanded="true"');
     expect(markup).toContain('session-tui-exec-output');
     expect(markup).toContain('line-1');
@@ -126,5 +202,44 @@ describe('RunDisclosureBlock', () => {
     expect(markup).toContain('Show complete output');
     expect(markup).toContain('line-10'); // full evidence remains recoverable
     expect(markup).toContain('exit 1');
+  });
+
+  it('renders a live turn as one expanded chronological stream of prose, tool rows, and compaction boundaries', () => {
+    const markup = renderToStaticMarkup(<RunDisclosureBlock timeline={liveTimeline()} />);
+
+    expect(markup).toContain('data-testid="run-disclosure-block"');
+    expect(markup).toContain('aria-expanded="true"');
+    expect(markup.match(/data-testid="run-disclosure-commentary"/g)).toHaveLength(2);
+    expect(markup).toContain('I found the <strong>projection bug</strong>');
+    expect(markup).not.toContain('Progress update');
+    expect(markup.match(/data-testid="run-disclosure-tool-group"/g)).toHaveLength(1);
+    expect(markup).toContain('data-testid="run-disclosure-tool-group-toggle"');
+    expect(markup).toContain('data-status="running"');
+    expect(markup).toContain('Using Read file · chatDisclosureReducer.ts');
+    expect(markup).toContain('RunDisclosureBlock.tsx');
+    expect(markup).toContain('chatDisclosureReducer.ts');
+    expect(markup).toContain('data-testid="run-disclosure-compaction"');
+    expect(markup).toContain('Context was automatically compacted');
+    expect(markup).not.toContain('INTERNAL COMPACTION DETAILS');
+    expect(markup).not.toContain('RAW TOOL RESULT THAT MUST STAY COLLAPSED');
+
+    const firstCommentary = markup.indexOf('I found the <strong>projection bug</strong>');
+    const tool = markup.indexOf('Using Read file · chatDisclosureReducer.ts');
+    const compaction = markup.indexOf('Context was automatically compacted');
+    const secondCommentary = markup.indexOf('The regression is now isolated.');
+    expect(firstCommentary).toBeLessThan(tool);
+    expect(tool).toBeLessThan(compaction);
+    expect(compaction).toBeLessThan(secondCommentary);
+  });
+
+  it('collapses the whole successful turn after the final answer settles it', () => {
+    const timeline = { ...liveTimeline(), status: 'done' as const };
+    const markup = renderToStaticMarkup(<RunDisclosureBlock timeline={timeline} />);
+
+    expect(markup).toContain('Processed');
+    expect(markup).toContain('aria-expanded="false"');
+    expect(markup).not.toContain('run-disclosure-commentary');
+    expect(markup).not.toContain('Read file');
+    expect(markup).not.toContain('Context was automatically compacted');
   });
 });

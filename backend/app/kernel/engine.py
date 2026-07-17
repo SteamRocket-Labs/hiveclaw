@@ -1635,6 +1635,11 @@ def _tool_execution_evidence(
         "status": machine_status,
         "retryable": bool(retryable),
         "tool_decision": dict(decision) if isinstance(decision, dict) else None,
+        "effective_arguments": (
+            dict(trace["effective_arguments"])
+            if isinstance(trace.get("effective_arguments"), dict)
+            else dict(tool_args)
+        ),
         "decision_id": trace.get("decision_id") or (decision or {}).get("decision_id"),
         "execution_frame": dict(frame) if isinstance(frame, dict) else None,
         "authority_snapshot_hash": trace.get("authority_snapshot_hash"),

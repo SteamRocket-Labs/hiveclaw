@@ -16,7 +16,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any, Callable
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -115,6 +115,30 @@ class CoordinationRepository:
             lease=existing_lease,
             existing_lease_id=existing_lease.id if existing_lease is not None else None,
         )
+
+    async def release_lease(
+        self,
+        *,
+        task_key: str,
+        agent_id: str,
+        lease_id: str | None = None,
+    ) -> bool:
+        """Delete only a tenant-scoped lease still owned by this exact task."""
+        conditions = [
+            CoordinationLease.tenant_id == self._tenant_id,
+            CoordinationLease.task_key == task_key,
+            CoordinationLease.agent_id == agent_id,
+        ]
+        if lease_id is not None:
+            try:
+                conditions.append(CoordinationLease.id == uuid.UUID(str(lease_id)))
+            except (TypeError, ValueError, AttributeError):
+                return False
+        result = await self._session.execute(delete(CoordinationLease).where(*conditions))
+        released = bool(result.rowcount)
+        if released:
+            await self._session.flush()
+        return released
 
     async def send_signal(
         self,

@@ -2651,6 +2651,11 @@ async def test_execute_tool_with_hooks_writes_trace_metadata_sink_to_span(monkey
         assert tool_call_id == "call-send"
         assert isinstance(trace_metadata_sink, dict)
         _record_governed_tool_success(trace_metadata_sink)
+        trace_metadata_sink["effective_arguments"] = {
+            "to": "user@example.com",
+            "body": "hi",
+            "_requester_user_id": "runtime-user",
+        }
         trace_metadata_sink["evidence_refs"] = ["truth://policy/email-confirmation"]
         trace_metadata_sink["truth_evidence"] = [{"evidence_id": "truth://policy/email-confirmation"}]
         return "sent"
@@ -2661,6 +2666,7 @@ async def test_execute_tool_with_hooks_writes_trace_metadata_sink_to_span(monkey
     async def emit_event(_event):
         return None
 
+    side_effects: dict = {}
     result, _effective_args, executed = await _execute_tool_with_hooks(
         execute_tool=fake_execute_tool,
         request=request,
@@ -2670,12 +2676,18 @@ async def test_execute_tool_with_hooks_writes_trace_metadata_sink_to_span(monkey
         tool_call_id="call-send",
         emit_event=emit_event,
         record_span=record_span,
+        side_effect_sink=side_effects,
     )
 
     assert result == "sent"
     assert executed is True
     assert spans[-1]["metadata"]["evidence_refs"] == ["truth://policy/email-confirmation"]
     assert spans[-1]["metadata"]["truth_evidence"] == [{"evidence_id": "truth://policy/email-confirmation"}]
+    assert side_effects["tool_execution_evidence"]["effective_arguments"] == {
+        "to": "user@example.com",
+        "body": "hi",
+        "_requester_user_id": "runtime-user",
+    }
 
 
 @pytest.mark.asyncio

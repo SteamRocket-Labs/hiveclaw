@@ -62,6 +62,11 @@ def _execution_evidence(trace: dict[str, Any]) -> dict[str, Any]:
         "status": "settled" if frame_status in {"completed", "failed"} else "unavailable",
         "retryable": frame_status == "failed",
         "tool_decision": dict(decision) if isinstance(decision, dict) else None,
+        "effective_arguments": (
+            dict(trace["effective_arguments"])
+            if isinstance(trace.get("effective_arguments"), dict)
+            else None
+        ),
         "execution_frame": dict(frame) if isinstance(frame, dict) else None,
         "decision_id": trace.get("decision_id"),
         "authority_snapshot_hash": trace.get("authority_snapshot_hash"),
@@ -711,7 +716,11 @@ async def resolve_session_tool_permission(
                 invocation_id=invocation.id,
                 provider_result_content=_result_text(tool_result),
                 execution_evidence=evidence,
-                effective_arguments=effective_arguments,
+                effective_arguments=(
+                    evidence.get("effective_arguments")
+                    if isinstance(evidence.get("effective_arguments"), dict)
+                    else effective_arguments
+                ),
             )
         await db.commit()
         await db.refresh(invocation)

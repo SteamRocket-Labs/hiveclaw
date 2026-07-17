@@ -127,6 +127,7 @@ describe('session workbench timeline model', () => {
     expect(runCell.kind).toBe('active_run');
     if (runCell.kind !== 'active_run') throw new Error('expected active run cell');
     expect(runCell.timeline.steps.map((step) => step.kind)).toEqual(['reasoning', 'file']);
+    expect(runCell.timeline.steps.some((step) => step.title === 'Writing response')).toBe(false);
     const answerCell = model.cells[2];
     expect(answerCell.kind).toBe('assistant_final');
     if (answerCell.kind !== 'assistant_final') throw new Error('expected assistant final cell');
@@ -158,6 +159,106 @@ describe('session workbench timeline model', () => {
     expect(model.cells[0]?.kind).toBe('user_turn');
     expect(model.cells.filter((cell) => cell.kind === 'active_run').length).toBeGreaterThanOrEqual(1);
     expect(model.cells.some((cell) => cell.kind === 'assistant_final')).toBe(false);
+  });
+
+  it('keeps one canonical process stream open until the typed final answer arrives', () => {
+    const messages: AgentChatMessage[] = [
+      { id: 'u1', role: 'user', content: 'Fix the Session presentation.' },
+      {
+        id: 'commentary-1',
+        role: 'assistant',
+        content: 'I reproduced the projection problem and am checking the renderer.',
+        eventType: 'assistant_commentary',
+        eventStatus: 'completed',
+        sessionItem: {
+          id: 'commentary-1',
+          kind: 'assistant_commentary',
+          lifecycle: 'completed',
+          terminal: true,
+        } as AgentChatMessage['sessionItem'],
+      },
+      {
+        id: 'tool-1',
+        role: 'tool_call',
+        content: '',
+        toolName: 'read_file',
+        toolArgs: { path: 'frontend/src/pages/agent-detail/RunDisclosureBlock.tsx' },
+        toolStatus: 'done',
+        sessionItem: {
+          id: 'tool-1',
+          kind: 'tool_call',
+          lifecycle: 'completed',
+          terminal: true,
+        } as AgentChatMessage['sessionItem'],
+      },
+      {
+        id: 'compaction-1',
+        role: 'event',
+        content: 'The active working state was preserved.',
+        eventType: 'context_compaction',
+        eventTitle: 'Context compaction',
+        eventStatus: 'completed',
+        sessionItem: {
+          id: 'compaction-1',
+          kind: 'context_compaction',
+          lifecycle: 'completed',
+          terminal: true,
+        } as AgentChatMessage['sessionItem'],
+      },
+    ];
+
+    const model = buildThreadTimeline({
+      messages,
+      activeSession: { id: 'session-1', title: 'Canonical process stream' },
+      isWaiting: true,
+      isStreaming: false,
+      activeRunStatus: 'running',
+    });
+
+    expect(model.cells.map((cell) => cell.kind)).toEqual(['user_turn', 'active_run']);
+    const runCell = model.cells[1];
+    expect(runCell.kind).toBe('active_run');
+    if (runCell.kind !== 'active_run') throw new Error('expected active run cell');
+    expect(runCell.timeline.status).toBe('running');
+    expect(runCell.timeline.answerMessageId).toBeUndefined();
+    expect(runCell.timeline.steps.map((step) => step.kind)).toEqual(['commentary', 'file', 'compaction']);
+  });
+
+  it('keeps legacy assistant_commentary inside the run and assistant_message on the final surface', () => {
+    const messages: AgentChatMessage[] = [
+      { id: 'u1', role: 'user', content: 'Open the older Session transcript.' },
+      {
+        id: 'legacy-commentary',
+        role: 'assistant',
+        content: 'I am restoring the historical tool stream.',
+        eventType: 'assistant_commentary',
+        eventStatus: 'completed',
+      },
+      {
+        id: 'legacy-final',
+        role: 'assistant',
+        content: 'The historical Session transcript is restored.',
+        eventType: 'assistant_message',
+        eventStatus: 'completed',
+      },
+    ];
+
+    const model = buildThreadTimeline({
+      messages,
+      activeSession: { id: 'session-1', title: 'Legacy process stream' },
+      isWaiting: false,
+      isStreaming: false,
+      activeRunStatus: null,
+    });
+
+    expect(model.cells.map((cell) => cell.kind)).toEqual(['user_turn', 'active_run', 'assistant_final']);
+    const runCell = model.cells[1];
+    expect(runCell.kind).toBe('active_run');
+    if (runCell.kind !== 'active_run') throw new Error('expected active run cell');
+    expect(runCell.timeline.steps).toEqual([
+      expect.objectContaining({ id: 'legacy-commentary', kind: 'commentary' }),
+    ]);
+    expect(runCell.timeline.answerMessageId).toBe('legacy-final');
   });
 
   it('keeps completed run steps in interleaved thinking/tool sequence', () => {

@@ -92,6 +92,16 @@ class CoordinationRuntime:
         self._leases[task_key] = lease
         return LeaseAcquireResult(acquired=True, lease=lease)
 
+    def release_lease(self, *, task_key: str, agent_id: str, lease_id: str | None = None) -> bool:
+        """Release only the exact lease owned by this runtime task."""
+        existing = self._leases.get(task_key)
+        if existing is None or existing.agent_id != agent_id:
+            return False
+        if lease_id is not None and existing.id != lease_id:
+            return False
+        del self._leases[task_key]
+        return True
+
     def reset(self) -> None:
         self._leases.clear()
         self._signals.clear()

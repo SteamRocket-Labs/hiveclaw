@@ -132,6 +132,35 @@ const SCOPE_REQUIRED_IDS: Record<SessionScopeV2['level'], readonly string[]> =
   SESSION_EVENT_CONTRACT.scope_required_ids;
 const ASSISTANT_PHASES: Record<string, string> = SESSION_EVENT_CONTRACT.assistant_phases;
 
+function canonicalJsonValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalJsonValue);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+        .map(([key, entry]) => [key, canonicalJsonValue(entry)]),
+    );
+  }
+  return value;
+}
+
+/** Mirror the backend Session V2 input rendering contract exactly. */
+export function sessionPayloadContent(payload: Record<string, unknown> | null | undefined): string {
+  if (!payload) return '';
+  if (typeof payload.content === 'string') return payload.content;
+  if (!Array.isArray(payload.content_parts)) return '';
+  const contentParts = payload.content_parts;
+  const onlyPart = contentParts.length === 1 && contentParts[0] && typeof contentParts[0] === 'object'
+    ? contentParts[0] as Record<string, unknown>
+    : null;
+  if (onlyPart) {
+    for (const key of ['text', 'content'] as const) {
+      if (typeof onlyPart[key] === 'string') return onlyPart[key];
+    }
+  }
+  return JSON.stringify(canonicalJsonValue(contentParts)) ?? '';
+}
+
 export function createSessionEventStore(
   highestContiguousSequence = 0,
   gapBufferLimit = 10_000,
@@ -228,7 +257,7 @@ function reduceContiguous(store: SessionEventStore, event: SessionEventV2): Sess
   if (prior?.terminal || (prior?.last_ordinal !== undefined && ordinal !== undefined && ordinal <= prior.last_ordinal)) {
     ignoredEventIds = [...ignoredEventIds, event.event_id];
   } else {
-    const contentDelta = typeof event.payload.content === 'string' ? event.payload.content : '';
+    const contentDelta = sessionPayloadContent(event.payload);
     const content = prior
       ? event.lifecycle === 'snapshot' ? contentDelta : `${prior.content}${contentDelta}`
       : contentDelta;

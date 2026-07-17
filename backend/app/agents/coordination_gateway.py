@@ -56,6 +56,14 @@ class CoordinationGateway(Protocol):
 
     async def acquire_lease(self, *, task_key: str, agent_id: str, ttl_seconds: int) -> LeaseAcquireResult: ...
 
+    async def release_lease(
+        self,
+        *,
+        task_key: str,
+        agent_id: str,
+        lease_id: str | None = None,
+    ) -> bool: ...
+
     async def send_signal(
         self,
         *,
@@ -92,6 +100,15 @@ class InProcessCoordinationGateway:
 
     async def acquire_lease(self, *, task_key: str, agent_id: str, ttl_seconds: int) -> LeaseAcquireResult:
         return self._runtime.acquire_lease(task_key=task_key, agent_id=agent_id, ttl_seconds=ttl_seconds)
+
+    async def release_lease(
+        self,
+        *,
+        task_key: str,
+        agent_id: str,
+        lease_id: str | None = None,
+    ) -> bool:
+        return self._runtime.release_lease(task_key=task_key, agent_id=agent_id, lease_id=lease_id)
 
     async def send_signal(
         self,

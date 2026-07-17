@@ -2,6 +2,7 @@ import type { AgentChatMessage } from './chatRuntime';
 
 export type RunStepKind =
   | 'reasoning'
+  | 'commentary'
   | 'tool'
   | 'search'
   | 'file'
@@ -51,6 +52,7 @@ export interface RunTimelineSnapshot {
 
 type TimelineBuildOptions = {
   now?: Date;
+  answer?: AgentChatMessage;
 };
 
 const FILE_TOOL_PREFIXES = ['read_', 'write_', 'edit_', 'list_', 'delete_'];
@@ -61,6 +63,7 @@ const SESSION_NATIVE_DISCLOSURE_EVENTS = new Set([
   'permission_request',
   'permission_resolved',
   'session_compact',
+  'context_compaction',
   'tool_group_activation',
   'pack_activation',
   'deferred_tools_delta',
@@ -249,7 +252,7 @@ function titleForToolMessage(message: AgentChatMessage): string {
 }
 
 function kindForEventMessage(message: AgentChatMessage): RunStepKind {
-  if (message.eventType === 'session_compact') return 'compaction';
+  if (message.eventType === 'session_compact' || message.eventType === 'context_compaction') return 'compaction';
   if (message.eventType === 'permission') return 'permission';
   if (String(message.eventType || '').startsWith('runtime_action_')) {
     const source = String(message.eventNotificationSource || '').toLowerCase();
@@ -293,7 +296,16 @@ function statusForMessage(message: AgentChatMessage): RunStepStatus {
     if (message.toolMeta?.kind === 'runtime_step' && message.toolMeta.status === 'failed') return 'failed';
     return message.toolStatus === 'running' ? 'running' : 'done';
   }
-  if (message.role === 'assistant') return 'done';
+  if (message.role === 'assistant') {
+    if (message.sessionItem && !message.sessionItem.terminal) return 'running';
+    const status = String(message.eventStatus || '').toLowerCase();
+    if (status === 'started' || status === 'delta' || status === 'running' || status === 'in_progress' || status === 'pending') {
+      return 'running';
+    }
+    if (status === 'failed' || status === 'error') return 'failed';
+    if (status === 'cancelled' || status === 'canceled') return 'cancelled';
+    return 'done';
+  }
   if (message.role === 'event') {
     const status = String(message.eventStatus || '').toLowerCase();
     if (status === 'running' || status === 'in_progress' || status === 'pending') return 'running';
@@ -311,7 +323,9 @@ export function isDisclosureStepMessage(message: AgentChatMessage): boolean {
     || canonicalKind.startsWith('a2a_')
   )) return true;
   if (message.role === 'tool_call') return true;
-  if (message.role === 'assistant') return Boolean(message.thinking?.trim());
+  if (message.role === 'assistant') {
+    return message.eventType === 'assistant_commentary' || Boolean(message.thinking?.trim());
+  }
   if (message.role === 'event') {
     return Boolean(message.eventType && SESSION_NATIVE_DISCLOSURE_EVENTS.has(message.eventType));
   }
@@ -352,10 +366,10 @@ function buildStep(message: AgentChatMessage, index: number): RunStepSnapshot | 
     };
   }
 
-  if (canonicalKind === 'assistant_commentary') {
+  if (canonicalKind === 'assistant_commentary' || (!canonicalKind && message.eventType === 'assistant_commentary')) {
     return {
       id: stepIdForMessage(message, index),
-      kind: 'reasoning',
+      kind: 'commentary',
       title: 'Progress update',
       status,
       startedAt: message.timestamp,
@@ -367,17 +381,7 @@ function buildStep(message: AgentChatMessage, index: number): RunStepSnapshot | 
   }
 
   if (canonicalKind === 'assistant_text' || canonicalKind === 'assistant_final') {
-    return {
-      id: stepIdForMessage(message, index),
-      kind: 'reasoning',
-      title: 'Writing response',
-      status,
-      startedAt: message.timestamp,
-      completedAt: status === 'done' ? message.timestamp : undefined,
-      summary: canonicalKind === 'assistant_final' ? 'Response completed.' : summary,
-      details: canonicalKind === 'assistant_text' ? message.content || undefined : undefined,
-      visibility: 'visible',
-    };
+    return null;
   }
 
   if (message.role === 'assistant') {
@@ -426,7 +430,9 @@ function buildStep(message: AgentChatMessage, index: number): RunStepSnapshot | 
     startedAt: message.timestamp,
     completedAt: message.timestamp,
     summary,
-    details: message,
+    details: message.sessionPermissionRequest && message.eventStatus === 'session_permission_required'
+      ? undefined
+      : message.content || undefined,
     visibility: 'collapsed',
   };
 }
@@ -438,12 +444,24 @@ function getTimestampMs(value?: string): number | null {
 }
 
 function getTimelineStatus(steps: RunStepSnapshot[], hasAnswer: boolean): RunTimelineSnapshot['status'] {
+  if (hasAnswer) return 'done';
   if (steps.some((step) => step.status === 'failed')) return 'failed';
   if (steps.some((step) => step.status === 'blocked')) return 'blocked';
-  if (hasAnswer) return 'done';
   if (steps.some((step) => step.status === 'running')) return 'running';
   if (steps.length > 0 || hasAnswer) return 'done';
   return 'idle';
+}
+
+function isAssistantAnswer(message: AgentChatMessage): boolean {
+  if (!message.content?.trim()) return false;
+  if (message.sessionItem) {
+    return message.sessionItem.kind === 'assistant_final' && message.sessionItem.terminal;
+  }
+  if (message.eventType) {
+    if (message.eventType === 'assistant_final' || message.eventType === 'assistant_message') return true;
+    if (message.eventType.startsWith('assistant_')) return false;
+  }
+  return message.role === 'assistant';
 }
 
 function formatCount(count: number, singular: string, plural: string): string {
@@ -470,12 +488,13 @@ export function buildRunTimelineFromMessages(
   const steps = messages
     .map((message, index) => buildStep(message, index))
     .filter((step): step is RunStepSnapshot => Boolean(step));
-  const answerIndex = messages.findIndex((message) => message.role === 'assistant' && Boolean(message.content?.trim()));
-  const answer = answerIndex >= 0 ? messages[answerIndex] : null;
+  const answerIndex = messages.findIndex(isAssistantAnswer);
+  const answer = options.answer || (answerIndex >= 0 ? messages[answerIndex] : null);
   const status = getTimelineStatus(steps, Boolean(answer));
   const firstTime = steps.map((step) => getTimestampMs(step.startedAt)).find((time): time is number => time != null);
   const lastStepTime = [...steps].reverse().map((step) => getTimestampMs(step.completedAt || step.startedAt)).find((time): time is number => time != null);
-  const completedAt = status === 'running' ? undefined : lastStepTime;
+  const answerTime = getTimestampMs(answer?.timestamp);
+  const completedAt = status === 'running' ? undefined : answerTime ?? lastStepTime;
   const nowMs = options.now?.getTime();
   const durationEnd = completedAt ?? nowMs;
 
@@ -487,6 +506,8 @@ export function buildRunTimelineFromMessages(
     durationMs: firstTime != null && durationEnd != null ? Math.max(0, durationEnd - firstTime) : undefined,
     summary: buildAggregateSummary(steps) || undefined,
     steps,
-    answerMessageId: answer ? answer.id || `answer-${answerIndex}` : undefined,
+    answerMessageId: answer
+      ? answer.id || (answerIndex >= 0 ? `answer-${answerIndex}` : 'answer-external')
+      : undefined,
   };
 }

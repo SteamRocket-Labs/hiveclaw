@@ -17,6 +17,7 @@ import {
 } from './chatRuntime';
 import { normalizeToolCallResult } from './toolResultEnvelope';
 import { sessionRunStateFromPayload } from './runtimeBudgetState';
+import { sessionPayloadContent } from '../session-workbench/sessionEventStore';
 import type { SessionSocketMessageContext } from './useSessionTransportController';
 
 type MessageUpdater = (updater: (messages: AgentChatMessage[]) => AgentChatMessage[]) => void;
@@ -85,7 +86,7 @@ export function projectSessionSocketEvent(
       ...d,
       id: d.event_id,
       event_type: d.kind,
-      content: typeof d.payload?.content === 'string' ? d.payload.content : '',
+      content: sessionPayloadContent(d.payload),
       metadata: {
         ...(d.payload?.metadata || {}),
         session_event: d,

@@ -576,6 +576,7 @@ def _record_final_tool_decision(
         trace_metadata_sink.update(
             {
                 "tool_decision": payload,
+                "effective_arguments": _json_safe_runtime_value(arguments),
                 "decision_id": decision.decision_id,
                 "input_hash": decision.input_hash,
                 "policy_snapshot_hash": decision.policy_snapshot_hash,

@@ -16,6 +16,29 @@ def test_lease_serializes_same_task() -> None:
     assert second.existing_lease_id == first.lease.id
 
 
+def test_lease_release_requires_matching_owner_and_lease_identity() -> None:
+    runtime = CoordinationRuntime(now=lambda: datetime(2026, 5, 22, tzinfo=UTC))
+    acquired = runtime.acquire_lease(task_key="task-1", agent_id="runtime-task:1", ttl_seconds=60)
+
+    assert acquired.lease is not None
+    assert runtime.release_lease(
+        task_key="task-1",
+        agent_id="runtime-task:other",
+        lease_id=acquired.lease.id,
+    ) is False
+    assert runtime.release_lease(
+        task_key="task-1",
+        agent_id="runtime-task:1",
+        lease_id="stale-lease-id",
+    ) is False
+    assert runtime.release_lease(
+        task_key="task-1",
+        agent_id="runtime-task:1",
+        lease_id=acquired.lease.id,
+    ) is True
+    assert runtime.acquire_lease(task_key="task-1", agent_id="runtime-task:2", ttl_seconds=60).acquired is True
+
+
 def test_signal_threads_messages_between_agents() -> None:
     runtime = CoordinationRuntime(now=lambda: datetime(2026, 5, 22, tzinfo=UTC))
 

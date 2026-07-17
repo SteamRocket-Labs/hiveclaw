@@ -1589,7 +1589,25 @@
         "showCompleteOutput": "查看完整输出",
         "waiting": "等待输入",
         "stepCount": "{{count}} 个步骤",
-        "working": "处理中"
+        "working": "处理中",
+        "contextCompacting": "正在自动压缩上下文",
+        "contextCompacted": "上下文已自动压缩",
+        "toolRunning": "正在调用 {{tool}}",
+        "toolCompleted": "已调用工具：{{tools}}",
+        "toolHistory": "工具调用历史",
+        "toolTitle": {
+          "loading": "加载工具",
+          "readFile": "读取文件",
+          "writeFile": "写入文件",
+          "editFile": "编辑文件",
+          "deleteFile": "删除文件",
+          "listFiles": "列出文件",
+          "searchWeb": "搜索网页",
+          "fetchWebPage": "读取网页",
+          "runCommand": "运行命令",
+          "editDocument": "编辑文档",
+          "toolCall": "调用工具"
+        }
       },
       "artifacts": {
         "open": "打开",

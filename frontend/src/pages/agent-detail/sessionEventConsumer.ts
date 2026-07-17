@@ -9,6 +9,7 @@ import {
   createSessionEventStore,
   reduceSessionCompatibilityEvent,
   reduceSessionEvent,
+  sessionPayloadContent,
   type SessionCompatibilityEvent,
   type SessionEventStore,
   type SessionItemV2,
@@ -269,7 +270,7 @@ export function consumeSessionEnvelope(
       ...event,
       id: String(envelope.event_id || ''),
       event_type: String(envelope.legacy_event_type || ''),
-      content: typeof payload.content === 'string' ? payload.content : '',
+      content: sessionPayloadContent(payload),
       parts: Array.isArray(payload.parts) ? payload.parts as Array<Record<string, unknown>> : [],
       metadata: payload.metadata && typeof payload.metadata === 'object'
         ? payload.metadata as Record<string, unknown>

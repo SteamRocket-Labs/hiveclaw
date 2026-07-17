@@ -78,7 +78,7 @@ import {
 } from './agent-detail/useSessionTransportController';
 import { projectSessionSocketEvent } from './agent-detail/sessionSocketEventProjector';
 import { applyCanonicalSessionSnapshot, consumeSessionEnvelope } from './agent-detail/sessionEventConsumer';
-import { loadCanonicalSessionTranscript, projectCanonicalTranscriptSnapshot } from './agent-detail/sessionTranscriptHydration';
+import { liveSubscriptionWatermark, loadCanonicalSessionTranscript, projectCanonicalTranscriptSnapshot } from './agent-detail/sessionTranscriptHydration';
 import type { SessionEventStore } from './session-workbench/sessionEventStore';
 import {
     buildAssignmentHandoff,
@@ -516,7 +516,7 @@ function AgentDetailInner() {
         const key = buildSessionRuntimeKey(agentId, sessionId);
         if (!transcriptReplayStateRef.current[key]) return;
         const inFlight = transcriptBackfillInFlightRef.current[key];
-        if (inFlight) return inFlight;
+        if (inFlight) return liveSubscriptionWatermark(sessionEventStoresRef.current[key]) ?? inFlight;
 
         const task = (async () => {
             if (sessionEventStoresRef.current[key]?.recoveryRequired === 'full_hydration') {

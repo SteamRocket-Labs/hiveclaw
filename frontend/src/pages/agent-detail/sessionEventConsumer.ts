@@ -223,6 +223,7 @@ export function projectSessionEventStoreToMessages(store: SessionEventStore): Ag
 
 export function hydrateSessionTranscriptEvents(
   events: ChatTranscriptEventPayload[],
+  baselineSequence = 0,
 ): { store: SessionEventStore | undefined; messages: AgentChatMessage[]; ui: SessionUiState } {
   let store: SessionEventStore | undefined;
   let compatibilityReplay = createEmptyTranscriptReplayState();
@@ -231,7 +232,7 @@ export function hydrateSessionTranscriptEvents(
 
   for (const event of events) {
     const sequence = Number(event.sequence ?? 0);
-    const consumed = consumeSessionEnvelope(event, store, 0);
+    const consumed = consumeSessionEnvelope(event, store, baselineSequence);
     if (consumed.store) store = consumed.store;
     if (!consumed.canonical) {
       compatibilityReplay = applyTranscriptEvent(compatibilityReplay, consumed.projectionEvent);

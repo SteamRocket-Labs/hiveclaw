@@ -1,8 +1,154 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { loadCanonicalSessionTranscript } from './sessionTranscriptHydration';
+import type { ChatSession } from '../../api/domains/chat';
+import type { AgentChatMessage, ChatTranscriptEventPayload } from './chatRuntime';
+import {
+  liveSubscriptionWatermark,
+  loadCanonicalSessionTranscript,
+  projectCanonicalTranscriptSnapshot,
+} from './sessionTranscriptHydration';
+import { consumeSessionEnvelope, projectSessionEventStoreToMessages } from './sessionEventConsumer';
+import type { SessionEventV2 } from '../session-workbench/sessionEventStore';
+
+function canonicalEvent(options: {
+  sequence: number;
+  itemId: string;
+  itemKind: 'human_input' | 'assistant_commentary';
+  lifecycle: 'accepted' | 'completed';
+  content: string;
+}): SessionEventV2 {
+  const sessionScope = options.itemKind === 'human_input';
+  return {
+    schema: 'hive.session_event',
+    schema_version: 2,
+    event_id: `event-${options.sequence}`,
+    sequence: options.sequence,
+    tenant_id: 'tenant-1',
+    scope: sessionScope
+      ? { level: 'session', session_id: 'session-1', thread_id: 'session-1' }
+      : {
+          level: 'round',
+          session_id: 'session-1',
+          thread_id: 'session-1',
+          turn_id: 'turn-1',
+          run_id: 'run-1',
+          round_id: 'round-1',
+        },
+    item_id: options.itemId,
+    item_kind: options.itemKind,
+    kind: `${options.itemKind}.${options.lifecycle}`,
+    lifecycle: options.lifecycle,
+    payload_schema: `hive.session.payload.${options.itemKind}.${options.lifecycle}.v2`,
+    actor: options.itemKind === 'human_input'
+      ? { type: 'user', id: 'user-1' }
+      : { type: 'assistant' },
+    visibility: { audience: 'direct_user' },
+    payload: options.itemKind === 'human_input'
+      ? { content_parts: [{ type: 'text', text: options.content }], intent: 'start_turn' }
+      : { phase: 'commentary', content: options.content },
+    occurred_at: '2026-07-18T02:00:00Z',
+    persisted_at: '2026-07-18T02:00:00Z',
+  };
+}
+
+const session: ChatSession = {
+  id: 'session-1',
+  agent_id: 'agent-1',
+  title: 'Newest-page hydration',
+  created_at: '2026-07-18T02:00:00Z',
+  updated_at: '2026-07-18T02:00:00Z',
+};
 
 describe('loadCanonicalSessionTranscript', () => {
+  it('projects a newest-page suffix immediately and keeps the live cursor contiguous', () => {
+    const accepted = canonicalEvent({
+      sequence: 1206,
+      itemId: 'input-1',
+      itemKind: 'human_input',
+      lifecycle: 'accepted',
+      content: 'Do not wait for sequence one.',
+    });
+    const commentary = canonicalEvent({
+      sequence: 1207,
+      itemId: 'commentary-1',
+      itemKind: 'assistant_commentary',
+      lifecycle: 'completed',
+      content: 'The newest durable progress is visible now.',
+    });
+
+    const projected = projectCanonicalTranscriptSnapshot({
+      existing: [],
+      snapshot: [
+        accepted as unknown as ChatTranscriptEventPayload,
+        commentary as unknown as ChatTranscriptEventPayload,
+      ],
+      session,
+      parseMessage: (message: AgentChatMessage) => message,
+    });
+
+    expect(projected.messages.map((message) => [message.role, message.content])).toEqual([
+      ['user', 'Do not wait for sequence one.'],
+      ['assistant', 'The newest durable progress is visible now.'],
+    ]);
+    expect(projected.store).toMatchObject({
+      highestContiguousSequence: 1207,
+      projection: { buffered_sequences: [] },
+    });
+    expect(liveSubscriptionWatermark(projected.store)).toBe(1207);
+
+    const live = canonicalEvent({
+      sequence: 1208,
+      itemId: 'commentary-2',
+      itemKind: 'assistant_commentary',
+      lifecycle: 'completed',
+      content: 'Live progress continues without a reload.',
+    });
+    const liveStore = consumeSessionEnvelope(
+      live as unknown as ChatTranscriptEventPayload,
+      projected.store,
+      0,
+    ).store;
+
+    expect(liveStore?.highestContiguousSequence).toBe(1208);
+    if (!liveStore) throw new Error('live suffix event did not produce a canonical store');
+    expect(projectSessionEventStoreToMessages(liveStore).map((message) => message.content)).toEqual([
+      'Do not wait for sequence one.',
+      'The newest durable progress is visible now.',
+      'Live progress continues without a reload.',
+    ]);
+  });
+
+  it('still detects a real gap inside a newest-page suffix', () => {
+    const projected = projectCanonicalTranscriptSnapshot({
+      existing: [],
+      snapshot: [
+        canonicalEvent({
+          sequence: 1206,
+          itemId: 'input-1',
+          itemKind: 'human_input',
+          lifecycle: 'accepted',
+          content: 'Start the suffix.',
+        }) as unknown as ChatTranscriptEventPayload,
+        canonicalEvent({
+          sequence: 1208,
+          itemId: 'commentary-1',
+          itemKind: 'assistant_commentary',
+          lifecycle: 'completed',
+          content: 'This must wait for sequence 1207.',
+        }) as unknown as ChatTranscriptEventPayload,
+      ],
+      session,
+      parseMessage: (message: AgentChatMessage) => message,
+    });
+
+    expect(projected.store).toMatchObject({
+      highestContiguousSequence: 1206,
+      projection: { phase: 'gap_detected', buffered_sequences: [1208] },
+    });
+    expect(liveSubscriptionWatermark(projected.store)).toBeNull();
+    expect(projected.messages.map((message) => message.content)).toEqual(['Start the suffix.']);
+  });
+
   it('renders the newest canonical page first, then automatically backfills every older page', async () => {
     const events = Array.from({ length: 2205 }, (_, index) => ({
       id: `event-${index + 1}`,

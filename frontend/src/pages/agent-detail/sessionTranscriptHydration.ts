@@ -7,6 +7,7 @@ import {
 import { mergeTranscriptBackfill } from './chatTransportRecovery';
 import { applySessionActiveProjection } from './agentDetailPolicy';
 import { hydrateSessionTranscriptEvents } from './sessionEventConsumer';
+import type { SessionEventStore } from '../session-workbench/sessionEventStore';
 
 export const CANONICAL_TRANSCRIPT_PAGE_SIZE = 1000;
 
@@ -39,6 +40,29 @@ function eventSequence(event: ChatTranscriptEventPayload): number {
   return sequence;
 }
 
+function projectionBaselineSequence(events: ChatTranscriptEventPayload[]): number {
+  const firstSequence = events.reduce<number | undefined>((lowest, event) => {
+    const sequence = Number(event.sequence ?? 0);
+    if (!Number.isSafeInteger(sequence) || sequence <= 0) return lowest;
+    return lowest == null || sequence < lowest ? sequence : lowest;
+  }, undefined);
+  return firstSequence == null ? 0 : firstSequence - 1;
+}
+
+/**
+ * Return the durable watermark that is safe for a live Session subscription.
+ *
+ * A newest-first transcript page is already a truthful, contiguous tail even
+ * while older pages continue loading. It must not block realtime delivery.
+ * Actual gaps, stale projections, and forced full recovery remain hard stops.
+ */
+export function liveSubscriptionWatermark(store: SessionEventStore | undefined): number | null {
+  if (!store || store.recoveryRequired === 'full_hydration') return null;
+  if (store.projection.phase === 'gap_detected' || store.projection.phase === 'stale') return null;
+  const sequence = Number(store.highestContiguousSequence);
+  return Number.isSafeInteger(sequence) && sequence > 0 ? sequence : null;
+}
+
 export function projectCanonicalTranscriptSnapshot(options: {
   existing: ChatTranscriptEventPayload[];
   snapshot: ChatTranscriptEventPayload[];
@@ -46,7 +70,11 @@ export function projectCanonicalTranscriptSnapshot(options: {
   parseMessage: (message: AgentChatMessage) => AgentChatMessage;
 }) {
   const events = mergeTranscriptBackfill(options.existing, options.snapshot);
-  const hydration = hydrateSessionTranscriptEvents(events);
+  // Transcript hydration intentionally publishes the newest durable page
+  // before older history has finished loading. Treat the omitted prefix as a
+  // projection baseline so the latest page and subsequent live events can be
+  // reduced immediately. A real gap inside the fetched suffix remains a gap.
+  const hydration = hydrateSessionTranscriptEvents(events, projectionBaselineSequence(events));
   const activeProjection = applySessionActiveProjection(
     options.session,
     hydration.messages.map(options.parseMessage),

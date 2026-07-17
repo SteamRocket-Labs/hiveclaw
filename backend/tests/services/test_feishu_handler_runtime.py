@@ -29,6 +29,59 @@ async def test_feishu_doc_read_handler_allows_cli_without_channel(monkeypatch: p
 
 
 @pytest.mark.asyncio
+async def test_feishu_doc_read_handler_forwards_trusted_runtime_acl_subject(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from pathlib import Path
+
+    from app.tools.adapters import adapt_and_call
+    from app.tools.handlers import feishu as feishu_handler
+    from app.tools.runtime import ToolExecutionContext, ToolExecutionRequest
+
+    agent_id = uuid.uuid4()
+    tenant_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+
+    async def fake_check_feishu_office_access(_agent_id: uuid.UUID) -> bool:
+        return True
+
+    async def fake_doc_read(
+        received_agent_id: uuid.UUID,
+        arguments: dict,
+        *,
+        tenant_id: uuid.UUID | str | None = None,
+        current_user_id: uuid.UUID | str | None = None,
+    ) -> str:
+        assert received_agent_id == agent_id
+        assert arguments == {"document_token": "doc-token"}
+        assert tenant_id == str(tenant_id_expected)
+        assert current_user_id == user_id
+        return "authorized doc"
+
+    tenant_id_expected = tenant_id
+    monkeypatch.setattr(feishu_handler, "_check_feishu_office_access", fake_check_feishu_office_access)
+    monkeypatch.setattr("app.services.agent_tools._feishu_doc_read", fake_doc_read)
+
+    request = ToolExecutionRequest(
+        tool_name="feishu_doc_read",
+        arguments={"document_token": "doc-token"},
+        context=ToolExecutionContext(
+            agent_id=agent_id,
+            user_id=user_id,
+            tenant_id=str(tenant_id),
+            workspace=Path("."),
+        ),
+    )
+    result = await adapt_and_call(
+        feishu_handler.feishu_doc_read.meta,
+        feishu_handler.feishu_doc_read,
+        request,
+    )
+
+    assert result == "authorized doc"
+
+
+@pytest.mark.asyncio
 async def test_feishu_sheet_info_handler_allows_cli_without_channel(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.tools.handlers import feishu as feishu_handler
 

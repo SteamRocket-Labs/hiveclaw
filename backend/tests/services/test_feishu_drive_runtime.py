@@ -47,6 +47,40 @@ async def test_feishu_url_resolve_unwraps_wiki_file_node(monkeypatch: pytest.Mon
 
 
 @pytest.mark.asyncio
+async def test_feishu_url_resolve_binds_resolved_wiki_metadata_to_authenticated_runtime_principal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.agent_tool_domains import feishu_drive
+
+    async def fake_get_feishu_token(_agent_id: uuid.UUID | str) -> tuple[str, str]:
+        return ("app", "tenant-token")
+
+    async def fake_wiki_get_node(_node_token: str, _tenant_access_token: str) -> dict:
+        return {
+            "node_token": "wiki-node",
+            "title": "Knowledge article",
+            "obj_type": "docx",
+            "obj_token": "doc-token",
+        }
+
+    monkeypatch.setattr(feishu_drive, "_get_feishu_token", fake_get_feishu_token)
+    monkeypatch.setattr(feishu_drive, "_feishu_wiki_get_node", fake_wiki_get_node)
+
+    url = "https://example.feishu.cn/wiki/wiki-node"
+    result = await feishu_drive._feishu_url_resolve(
+        "agent-1",
+        {"url": url},
+        tenant_id="tenant-1",
+        current_user_id="user-1",
+    )
+
+    source_item = result.metadata["connector_source_items"][0]
+    assert source_item["source"] == url
+    assert source_item["acl"] == {"tenant_ids": ["tenant-1"], "user_ids": ["user-1"]}
+    assert source_item["metadata"]["acl_authority"] == "connector_verified"
+
+
+@pytest.mark.asyncio
 async def test_feishu_url_read_routes_docx_url_to_doc_reader(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.services.agent_tool_domains import feishu_docs, feishu_drive
 
@@ -63,6 +97,54 @@ async def test_feishu_url_read_routes_docx_url_to_doc_reader(monkeypatch: pytest
     )
 
     assert result == "DOC CONTENT"
+
+
+@pytest.mark.asyncio
+async def test_feishu_url_read_preserves_doc_acl_and_authorizes_original_url_alias(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.agent_tool_domains import feishu_docs, feishu_drive
+    from app.services.connector_acl import authoritative_connector_source_item, with_connector_source_items
+
+    async def fake_doc_read(
+        agent_id: uuid.UUID | str,
+        arguments: dict,
+        *,
+        tenant_id: uuid.UUID | str | None = None,
+        current_user_id: uuid.UUID | str | None = None,
+    ):
+        assert agent_id == "agent-1"
+        assert arguments == {"document_token": "doc-token", "max_chars": None}
+        assert tenant_id == "tenant-1"
+        assert current_user_id == "user-1"
+        return with_connector_source_items(
+            "DOC CONTENT",
+            [
+                authoritative_connector_source_item(
+                    source="feishu://doc/doc-token",
+                    connector="feishu",
+                    resource_type="doc",
+                    tenant_id=tenant_id,
+                    current_user_id=current_user_id,
+                    agent_id=agent_id,
+                    protected_text="DOC CONTENT",
+                )
+            ],
+        )
+
+    monkeypatch.setattr(feishu_docs, "_feishu_doc_read", fake_doc_read)
+
+    url = "https://example.feishu.cn/docx/doc-token"
+    result = await feishu_drive._feishu_url_read(
+        "agent-1",
+        {"url": url},
+        tenant_id="tenant-1",
+        current_user_id="user-1",
+    )
+
+    source_items = result.metadata["connector_source_items"]
+    assert {item["source"] for item in source_items} == {url, "feishu://doc/doc-token"}
+    assert all(item["metadata"]["acl_authority"] == "connector_verified" for item in source_items)
 
 
 @pytest.mark.asyncio

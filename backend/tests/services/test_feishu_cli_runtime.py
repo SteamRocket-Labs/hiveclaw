@@ -47,6 +47,103 @@ async def test_feishu_doc_read_prefers_cli_when_available(monkeypatch: pytest.Mo
 
 
 @pytest.mark.asyncio
+async def test_feishu_doc_read_binds_successful_content_to_authenticated_runtime_principal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.agent_tool_domains import feishu_docs
+    from app.services.connector_acl import extract_connector_source_items, filter_connector_payload_for_prompt
+
+    async def fake_cli_available() -> bool:
+        return True
+
+    async def fake_cli_api_request(method: str, path: str, *, params=None, body=None):
+        assert method == "GET"
+        assert path == "/open-apis/docx/v1/documents/doc-token/raw_content"
+        assert params == {"lang": 0}
+        assert body is None
+        return {"code": 0, "data": {"content": "authenticated Feishu content"}}
+
+    monkeypatch.setattr(feishu_docs, "_feishu_cli_available", fake_cli_available)
+    monkeypatch.setattr(feishu_docs, "_feishu_cli_api_request", fake_cli_api_request)
+
+    result = await feishu_docs._feishu_doc_read(
+        "agent-1",
+        {"document_token": "doc-token"},
+        tenant_id="tenant-1",
+        current_user_id="user-1",
+    )
+
+    source_item = result.metadata["connector_source_items"][0]
+    assert source_item["acl"] == {"tenant_ids": ["tenant-1"], "user_ids": ["user-1"]}
+    assert source_item["metadata"]["acl_authority"] == "connector_verified"
+
+    prompt_filter = filter_connector_payload_for_prompt(
+        result,
+        source_items=extract_connector_source_items(result, origin="tool:feishu_doc_read"),
+        tenant_id="tenant-1",
+        current_user_id="user-1",
+        agent_id="agent-1",
+    )
+    assert prompt_filter.forbidden_sources == ()
+    assert "authenticated Feishu content" in str(prompt_filter.payload)
+
+    mismatched_principal = filter_connector_payload_for_prompt(
+        result,
+        source_items=extract_connector_source_items(result, origin="tool:feishu_doc_read"),
+        tenant_id="tenant-1",
+        current_user_id="different-user",
+        agent_id="agent-1",
+    )
+    assert mismatched_principal.forbidden_sources == ("feishu://doc/doc-token",)
+    assert "authenticated Feishu content" not in str(mismatched_principal.payload)
+    assert "source_permission_denied" in str(mismatched_principal.payload)
+
+
+@pytest.mark.asyncio
+async def test_feishu_doc_openapi_read_binds_authenticated_runtime_principal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import httpx
+
+    from app.services.agent_tool_domains import feishu_docs
+
+    async def fake_get_feishu_token(_agent_id):
+        return ("app-id", "tenant-token")
+
+    async def fake_wiki_get_node(_document_token: str, _tenant_access_token: str):
+        return None
+
+    class FakeAsyncClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return False
+
+        async def get(self, url: str, *, headers: dict, params: dict):
+            assert url.endswith("/docx/v1/documents/doc-token/raw_content")
+            assert headers == {"Authorization": "Bearer tenant-token"}
+            assert params == {"lang": 0}
+            return httpx.Response(200, json={"code": 0, "data": {"content": "OpenAPI document body"}})
+
+    monkeypatch.setattr(feishu_docs, "_get_feishu_token", fake_get_feishu_token)
+    monkeypatch.setattr(feishu_docs, "_feishu_wiki_get_node", fake_wiki_get_node)
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **_kwargs: FakeAsyncClient())
+
+    result = await feishu_docs._feishu_doc_read_via_openapi(
+        "agent-1",
+        {"document_token": "doc-token"},
+        tenant_id="tenant-1",
+        current_user_id="user-1",
+    )
+
+    source_item = result.metadata["connector_source_items"][0]
+    assert "OpenAPI document body" in result
+    assert source_item["acl"] == {"tenant_ids": ["tenant-1"], "user_ids": ["user-1"]}
+    assert source_item["metadata"]["acl_authority"] == "connector_verified"
+
+
+@pytest.mark.asyncio
 async def test_feishu_doc_read_falls_back_to_openapi_when_cli_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.services.agent_tool_domains import feishu_docs
     from app.services.agent_tool_domains.feishu_cli import FeishuCliError

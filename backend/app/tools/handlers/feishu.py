@@ -132,12 +132,25 @@ async def feishu_wiki_list(agent_id: uuid.UUID, arguments: dict) -> str:
         adapter="agent_args",
     )
 )
-async def feishu_doc_read(agent_id: uuid.UUID, arguments: dict) -> str:
+async def feishu_doc_read(
+    agent_id: uuid.UUID,
+    arguments: dict,
+    tenant_id: uuid.UUID | str | None = None,
+    *,
+    user_id: uuid.UUID | None = None,
+) -> str:
     if not await _check_feishu_office_access(agent_id):
         return _FEISHU_NOT_CONFIGURED_MSG
     from app.services.agent_tools import _feishu_doc_read
 
-    return await _feishu_doc_read(agent_id, arguments)
+    if tenant_id is None and user_id is None:
+        return await _feishu_doc_read(agent_id, arguments)
+    return await _feishu_doc_read(
+        agent_id,
+        arguments,
+        tenant_id=tenant_id,
+        current_user_id=user_id,
+    )
 
 
 # -- feishu_url_resolve -------------------------------------------------------
@@ -172,12 +185,25 @@ async def feishu_doc_read(agent_id: uuid.UUID, arguments: dict) -> str:
         adapter="agent_args",
     )
 )
-async def feishu_url_resolve(agent_id: uuid.UUID, arguments: dict) -> str:
+async def feishu_url_resolve(
+    agent_id: uuid.UUID,
+    arguments: dict,
+    tenant_id: uuid.UUID | str | None = None,
+    *,
+    user_id: uuid.UUID | None = None,
+) -> str:
     if not await _check_feishu_office_access(agent_id):
         return _FEISHU_NOT_CONFIGURED_MSG
     from app.services.agent_tools import _feishu_url_resolve
 
-    return await _feishu_url_resolve(agent_id, arguments)
+    if tenant_id is None and user_id is None:
+        return await _feishu_url_resolve(agent_id, arguments)
+    return await _feishu_url_resolve(
+        agent_id,
+        arguments,
+        tenant_id=tenant_id,
+        current_user_id=user_id,
+    )
 
 
 # -- feishu_url_read ----------------------------------------------------------
@@ -276,12 +302,25 @@ async def feishu_url_resolve(agent_id: uuid.UUID, arguments: dict) -> str:
         adapter="agent_args",
     )
 )
-async def feishu_url_read(agent_id: uuid.UUID, arguments: dict) -> str:
+async def feishu_url_read(
+    agent_id: uuid.UUID,
+    arguments: dict,
+    tenant_id: uuid.UUID | str | None = None,
+    *,
+    user_id: uuid.UUID | None = None,
+) -> str:
     if not await _check_feishu_office_access(agent_id):
         return _FEISHU_NOT_CONFIGURED_MSG
     from app.services.agent_tools import _feishu_url_read
 
-    return await _feishu_url_read(agent_id, arguments)
+    if tenant_id is None and user_id is None:
+        return await _feishu_url_read(agent_id, arguments)
+    return await _feishu_url_read(
+        agent_id,
+        arguments,
+        tenant_id=tenant_id,
+        current_user_id=user_id,
+    )
 
 
 # -- feishu_drive_file_read ---------------------------------------------------

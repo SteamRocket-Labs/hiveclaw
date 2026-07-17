@@ -285,14 +285,59 @@ def _format_resolved_target(target: FeishuUrlTarget) -> str:
     return "\n".join(lines)
 
 
-async def _feishu_url_resolve(agent_id: uuid.UUID | str, arguments: dict) -> str:
+def _feishu_url_source_items(
+    agent_id: uuid.UUID | str,
+    target: FeishuUrlTarget,
+    *,
+    tenant_id: uuid.UUID | str | None = None,
+    current_user_id: uuid.UUID | str | None = None,
+    protected_text: str | None = None,
+) -> list[dict]:
+    if not target.url or not (tenant_id and current_user_id):
+        return []
+    return [
+        authoritative_connector_source_item(
+            source=target.url,
+            connector="feishu",
+            resource_type=_target_read_type(target) or "url",
+            tenant_id=tenant_id,
+            current_user_id=current_user_id,
+            agent_id=agent_id,
+            protected_text=protected_text,
+        )
+    ]
+
+
+async def _feishu_url_resolve(
+    agent_id: uuid.UUID | str,
+    arguments: dict,
+    *,
+    tenant_id: uuid.UUID | str | None = None,
+    current_user_id: uuid.UUID | str | None = None,
+) -> str:
     target = await _resolve_target(agent_id, arguments)
     if isinstance(target, str):
         return target
-    return _format_resolved_target(target)
+    rendered = _format_resolved_target(target)
+    return with_connector_source_items(
+        rendered,
+        _feishu_url_source_items(
+            agent_id,
+            target,
+            tenant_id=tenant_id,
+            current_user_id=current_user_id,
+            protected_text=rendered,
+        ),
+    )
 
 
-async def _feishu_url_read(agent_id: uuid.UUID | str, arguments: dict) -> str:
+async def _feishu_url_read(
+    agent_id: uuid.UUID | str,
+    arguments: dict,
+    *,
+    tenant_id: uuid.UUID | str | None = None,
+    current_user_id: uuid.UUID | str | None = None,
+) -> str:
     target = await _resolve_target(agent_id, arguments)
     if isinstance(target, str):
         return target.replace("feishu_url_resolve", "feishu_url_read")
@@ -316,17 +361,52 @@ async def _feishu_url_read(agent_id: uuid.UUID | str, arguments: dict) -> str:
     if read_type == "docx":
         from app.services.agent_tool_domains.feishu_docs import _feishu_doc_read
 
-        return await _feishu_doc_read(agent_id, {"document_token": token, "max_chars": max_chars})
+        document_args = {"document_token": token, "max_chars": max_chars}
+        if tenant_id is None and current_user_id is None:
+            result = await _feishu_doc_read(agent_id, document_args)
+        else:
+            result = await _feishu_doc_read(
+                agent_id,
+                document_args,
+                tenant_id=tenant_id,
+                current_user_id=current_user_id,
+            )
+        return with_connector_source_items(
+            result,
+            _feishu_url_source_items(
+                agent_id,
+                target,
+                tenant_id=tenant_id,
+                current_user_id=current_user_id,
+                protected_text=str(result),
+            ),
+        )
 
     if read_type == "doc":
-        return await _feishu_drive_file_read(
-            agent_id,
-            {
-                "token": token,
-                "type": "doc",
-                "file_extension": arguments.get("file_extension", "docx"),
-                "max_chars": max_chars,
-            },
+        drive_args = {
+            "token": token,
+            "type": "doc",
+            "file_extension": arguments.get("file_extension", "docx"),
+            "max_chars": max_chars,
+        }
+        if tenant_id is None and current_user_id is None:
+            result = await _feishu_drive_file_read(agent_id, drive_args)
+        else:
+            result = await _feishu_drive_file_read(
+                agent_id,
+                drive_args,
+                tenant_id=tenant_id,
+                current_user_id=current_user_id,
+            )
+        return with_connector_source_items(
+            result,
+            _feishu_url_source_items(
+                agent_id,
+                target,
+                tenant_id=tenant_id,
+                current_user_id=current_user_id,
+                protected_text=str(result),
+            ),
         )
 
     if read_type == "sheet":
@@ -415,13 +495,29 @@ async def _feishu_url_read(agent_id: uuid.UUID | str, arguments: dict) -> str:
         return await _feishu_base_table_list(agent_id, {"base_token": token})
 
     if read_type == "file":
-        return await _feishu_drive_file_read(
-            agent_id,
-            {
-                "file_token": token,
-                "file_name": target.title or arguments.get("file_name", ""),
-                "max_chars": max_chars,
-            },
+        drive_args = {
+            "file_token": token,
+            "file_name": target.title or arguments.get("file_name", ""),
+            "max_chars": max_chars,
+        }
+        if tenant_id is None and current_user_id is None:
+            result = await _feishu_drive_file_read(agent_id, drive_args)
+        else:
+            result = await _feishu_drive_file_read(
+                agent_id,
+                drive_args,
+                tenant_id=tenant_id,
+                current_user_id=current_user_id,
+            )
+        return with_connector_source_items(
+            result,
+            _feishu_url_source_items(
+                agent_id,
+                target,
+                tenant_id=tenant_id,
+                current_user_id=current_user_id,
+                protected_text=str(result),
+            ),
         )
 
     if read_type == "folder":
@@ -619,7 +715,12 @@ def _render_file_text(filename: str, token: str, text: str, max_chars: int | Non
 
 
 def _feishu_drive_source_items(
-    agent_id: uuid.UUID | str, token: str, *, protected_text: str | None = None
+    agent_id: uuid.UUID | str,
+    token: str,
+    *,
+    tenant_id: uuid.UUID | str | None = None,
+    current_user_id: uuid.UUID | str | None = None,
+    protected_text: str | None = None,
 ) -> list[dict]:
     if not token:
         return []
@@ -628,13 +729,21 @@ def _feishu_drive_source_items(
             source=f"feishu://drive/{token}",
             connector="feishu",
             resource_type="drive_file",
+            tenant_id=tenant_id,
+            current_user_id=current_user_id,
             agent_id=agent_id,
             protected_text=protected_text,
         )
     ]
 
 
-async def _feishu_drive_file_read(agent_id: uuid.UUID | str, arguments: dict) -> str:
+async def _feishu_drive_file_read(
+    agent_id: uuid.UUID | str,
+    arguments: dict,
+    *,
+    tenant_id: uuid.UUID | str | None = None,
+    current_user_id: uuid.UUID | str | None = None,
+) -> str:
     raw_file = (
         arguments.get("file_token") or arguments.get("token") or arguments.get("file_url") or arguments.get("url") or ""
     )
@@ -701,5 +810,11 @@ async def _feishu_drive_file_read(agent_id: uuid.UUID | str, arguments: dict) ->
 
     return with_connector_source_items(
         _render_file_text(filename, token, text, _max_chars(arguments), str(meta.get("source") or "drive")),
-        _feishu_drive_source_items(agent_id, token, protected_text=text),
+        _feishu_drive_source_items(
+            agent_id,
+            token,
+            tenant_id=tenant_id,
+            current_user_id=current_user_id,
+            protected_text=text,
+        ),
     )

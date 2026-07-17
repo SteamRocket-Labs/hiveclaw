@@ -100,6 +100,8 @@ def _feishu_doc_source_items(
     document_token: str,
     read_token: str | None = None,
     *,
+    tenant_id: uuid.UUID | str | None = None,
+    current_user_id: uuid.UUID | str | None = None,
     protected_text: str | None = None,
 ) -> list[dict]:
     items: list[dict] = []
@@ -110,6 +112,8 @@ def _feishu_doc_source_items(
                     source=f"feishu://doc/{token}",
                     connector="feishu",
                     resource_type="doc",
+                    tenant_id=tenant_id,
+                    current_user_id=current_user_id,
                     agent_id=agent_id,
                     protected_text=protected_text,
                 )
@@ -117,7 +121,13 @@ def _feishu_doc_source_items(
     return items
 
 
-async def _feishu_doc_read_via_openapi(agent_id: uuid.UUID, arguments: dict) -> str:
+async def _feishu_doc_read_via_openapi(
+    agent_id: uuid.UUID,
+    arguments: dict,
+    *,
+    tenant_id: uuid.UUID | str | None = None,
+    current_user_id: uuid.UUID | str | None = None,
+) -> str:
     import httpx
 
     document_token = arguments.get("document_token", "").strip()
@@ -142,7 +152,17 @@ async def _feishu_doc_read_via_openapi(agent_id: uuid.UUID, arguments: dict) -> 
     if node_info and node_info.get("obj_token"):
         routed = await _route_wiki_non_doc_node(agent_id, node_info)
         if routed:
-            return routed
+            return with_connector_source_items(
+                routed,
+                _feishu_doc_source_items(
+                    agent_id,
+                    document_token,
+                    node_info.get("obj_token"),
+                    tenant_id=tenant_id,
+                    current_user_id=current_user_id,
+                    protected_text=str(routed),
+                ),
+            )
         read_token = node_info["obj_token"]
         if node_info.get("has_child"):
             wiki_hint = (
@@ -165,7 +185,13 @@ async def _feishu_doc_read_via_openapi(agent_id: uuid.UUID, arguments: dict) -> 
     if not content:
         return with_connector_source_items(
             f"📄 Document '{document_token}' is empty.{wiki_hint}",
-            _feishu_doc_source_items(agent_id, document_token, read_token),
+            _feishu_doc_source_items(
+                agent_id,
+                document_token,
+                read_token,
+                tenant_id=tenant_id,
+                current_user_id=current_user_id,
+            ),
         )
 
     truncated = ""
@@ -175,11 +201,24 @@ async def _feishu_doc_read_via_openapi(agent_id: uuid.UUID, arguments: dict) -> 
 
     return with_connector_source_items(
         f"📄 **Document content** (`{document_token}`):\n\n{content}{truncated}{wiki_hint}",
-        _feishu_doc_source_items(agent_id, document_token, read_token, protected_text=content),
+        _feishu_doc_source_items(
+            agent_id,
+            document_token,
+            read_token,
+            tenant_id=tenant_id,
+            current_user_id=current_user_id,
+            protected_text=content,
+        ),
     )
 
 
-async def _feishu_doc_read(agent_id: uuid.UUID, arguments: dict) -> str:
+async def _feishu_doc_read(
+    agent_id: uuid.UUID,
+    arguments: dict,
+    *,
+    tenant_id: uuid.UUID | str | None = None,
+    current_user_id: uuid.UUID | str | None = None,
+) -> str:
     document_token = arguments.get("document_token", "").strip()
     if not document_token:
         return "❌ Missing required argument 'document_token'"
@@ -191,7 +230,14 @@ async def _feishu_doc_read(agent_id: uuid.UUID, arguments: dict) -> str:
     max_chars = _max_chars(arguments)
 
     if not await _feishu_cli_available():
-        return await _feishu_doc_read_via_openapi(agent_id, arguments)
+        if tenant_id is None and current_user_id is None:
+            return await _feishu_doc_read_via_openapi(agent_id, arguments)
+        return await _feishu_doc_read_via_openapi(
+            agent_id,
+            arguments,
+            tenant_id=tenant_id,
+            current_user_id=current_user_id,
+        )
 
     try:
         read_token = document_token
@@ -203,7 +249,17 @@ async def _feishu_doc_read(agent_id: uuid.UUID, arguments: dict) -> str:
         if node_info and node_info.get("obj_token"):
             routed = await _route_wiki_non_doc_node(agent_id, node_info)
             if routed:
-                return routed
+                return with_connector_source_items(
+                    routed,
+                    _feishu_doc_source_items(
+                        agent_id,
+                        document_token,
+                        node_info.get("obj_token"),
+                        tenant_id=tenant_id,
+                        current_user_id=current_user_id,
+                        protected_text=str(routed),
+                    ),
+                )
             read_token = node_info["obj_token"]
             if node_info.get("has_child"):
                 wiki_hint = (
@@ -221,7 +277,13 @@ async def _feishu_doc_read(agent_id: uuid.UUID, arguments: dict) -> str:
         if not content:
             return with_connector_source_items(
                 f"📄 Document '{document_token}' is empty.{wiki_hint}",
-                _feishu_doc_source_items(agent_id, document_token, read_token),
+                _feishu_doc_source_items(
+                    agent_id,
+                    document_token,
+                    read_token,
+                    tenant_id=tenant_id,
+                    current_user_id=current_user_id,
+                ),
             )
         truncated = ""
         if max_chars is not None and len(content) > max_chars:
@@ -229,10 +291,25 @@ async def _feishu_doc_read(agent_id: uuid.UUID, arguments: dict) -> str:
             truncated = f"\n\n_(Truncated to {max_chars} chars)_"
         return with_connector_source_items(
             f"📄 **Document content** (`{document_token}`):\n\n{content}{truncated}{wiki_hint}",
-            _feishu_doc_source_items(agent_id, document_token, read_token, protected_text=content),
+            _feishu_doc_source_items(
+                agent_id,
+                document_token,
+                read_token,
+                tenant_id=tenant_id,
+                current_user_id=current_user_id,
+                protected_text=content,
+            ),
         )
     except FeishuCliError as exc:
-        fallback_result = await _feishu_doc_read_via_openapi(agent_id, arguments)
+        if tenant_id is None and current_user_id is None:
+            fallback_result = await _feishu_doc_read_via_openapi(agent_id, arguments)
+        else:
+            fallback_result = await _feishu_doc_read_via_openapi(
+                agent_id,
+                arguments,
+                tenant_id=tenant_id,
+                current_user_id=current_user_id,
+            )
         fallback_source_items = []
         fallback_metadata = getattr(fallback_result, "metadata", None)
         if isinstance(fallback_metadata, dict):

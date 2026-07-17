@@ -7,7 +7,7 @@ implements the local mirror used before connector content enters the model.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 import json
 import re
@@ -280,14 +280,36 @@ def authoritative_connector_source_item(
     return item
 
 
-def with_connector_source_items(text: str, source_items: list[dict[str, Any]]) -> Any:
+def with_connector_source_items(text: Any, source_items: list[dict[str, Any]]) -> Any:
     """Attach connector source ACL metadata while preserving the text result."""
 
     if not source_items:
         return text
     from app.tools.result_envelope import ToolContentEnvelope
 
-    return ToolContentEnvelope(text=text, metadata={CONNECTOR_SOURCE_ITEMS_METADATA_KEY: source_items})
+    if isinstance(text, ToolContentEnvelope):
+        metadata = dict(text.metadata or {})
+        existing = metadata.get(CONNECTOR_SOURCE_ITEMS_METADATA_KEY)
+        merged: list[dict[str, Any]] = []
+        source_indexes: dict[str, int] = {}
+        for item in [*(existing if isinstance(existing, list) else []), *source_items]:
+            if not isinstance(item, dict):
+                continue
+            source = _source_id(item)
+            key = source.lower()
+            if not key:
+                continue
+            index = source_indexes.get(key)
+            if index is None:
+                source_indexes[key] = len(merged)
+                merged.append(item)
+                continue
+            if _authoritative_acl_payload(merged[index]) is None and _authoritative_acl_payload(item) is not None:
+                merged[index] = item
+        metadata[CONNECTOR_SOURCE_ITEMS_METADATA_KEY] = merged
+        return replace(text, metadata=metadata)
+
+    return ToolContentEnvelope(text=str(text), metadata={CONNECTOR_SOURCE_ITEMS_METADATA_KEY: source_items})
 
 
 def extract_connector_source_items(

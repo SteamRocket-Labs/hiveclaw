@@ -85,6 +85,39 @@ def _user_projected_delivery(event: dict) -> dict:
     }
 
 
+def _compatibility_delivery(sequence: int) -> dict:
+    from app.services.execution_receipts import canonical_payload_hash
+
+    event = {
+        "schema": "hive.session_event_compatibility",
+        "schema_version": 1,
+        "compatibility_status": "needs_reconciliation",
+        "reason": "unmapped_legacy_kind",
+        "legacy_kind": "legacy_unknown",
+        "legacy_lifecycle": "legacy_unknown",
+        "legacy_event_type": "provider_call_ledger",
+        "legacy_item_type": "runtime_event",
+        "legacy_item_status": "succeeded",
+        "event_id": f"legacy-event-{sequence}",
+        "sequence": sequence,
+        "tenant_id": "tenant-live-continuity",
+        "session_id": "session-live-continuity",
+        "payload": {"content": "", "parts": [], "metadata": {"source": "runtime"}},
+        "occurred_at": "2026-07-18T00:00:00Z",
+    }
+    return {
+        "schema": "hive.session_event.delivery",
+        "schema_version": 1,
+        "event_id": event["event_id"],
+        "agent_id": "agent-live-continuity",
+        "session_id": event["session_id"],
+        "sequence": sequence,
+        "envelope_ref": f"session-event:{event['event_id']}",
+        "envelope_sha256": canonical_payload_hash(event),
+        "envelope": event,
+    }
+
+
 class _FakeRedis:
     def __init__(self):
         self.increments: dict[str, int] = {}
@@ -247,6 +280,72 @@ async def test_canonical_live_forwarder_preserves_redacted_sequence_continuity(m
     assert forwarded[4]["payload"]["content"] == "public progress three"
     assert "provider-private-reasoning-secret" not in repr(forwarded)
     assert "new-publisher-private-secret" not in repr(forwarded)
+
+
+@pytest.mark.asyncio
+async def test_legacy_compatibility_event_advances_the_same_live_sequence(monkeypatch):
+    import app.services.web_chat_broker as broker_module
+    import app.services.web_chat_stream_bus as bus
+
+    redis = _FakeRedis()
+
+    async def fake_publish_redis():
+        return redis
+
+    monkeypatch.setattr(bus, "get_redis", fake_publish_redis)
+    compatibility = _compatibility_delivery(2)
+    await bus.publish_canonical_session_event(compatibility)
+    published = json.loads(redis.published[0][1])
+    assert published["projection_audience"] == "user"
+    assert published["envelope"]["schema"] == "hive.session_event_compatibility"
+    assert published["envelope"]["sequence"] == 2
+
+    class FinitePubSub:
+        async def subscribe(self, *_args):
+            return None
+
+        async def listen(self):
+            for delivery in (
+                _canonical_delivery(
+                    _canonical_content_event(
+                        1,
+                        item_kind="assistant_commentary",
+                        audience="direct_user",
+                        content="public before legacy event",
+                    )
+                ),
+                published,
+                _canonical_delivery(
+                    _canonical_content_event(
+                        3,
+                        item_kind="assistant_commentary",
+                        audience="direct_user",
+                        content="public after legacy event",
+                    )
+                ),
+            ):
+                yield {"type": "message", "data": json.dumps(delivery)}
+
+    class FakeRedisWithPubSub:
+        def pubsub(self):
+            return FinitePubSub()
+
+    forwarded: list[dict] = []
+
+    async def fake_forward_redis():
+        return FakeRedisWithPubSub()
+
+    async def fake_send_session_message(_agent_id, _session_id, payload):
+        forwarded.append(payload)
+
+    monkeypatch.setattr(bus, "get_redis", fake_forward_redis)
+    monkeypatch.setattr(broker_module.web_chat_broker, "send_session_message", fake_send_session_message)
+
+    await bus._listen_web_chat_stream_once()
+
+    assert [event["sequence"] for event in forwarded] == [1, 2, 3]
+    assert forwarded[1]["schema"] == "hive.session_event_compatibility"
+    assert forwarded[2]["payload"]["content"] == "public after legacy event"
 
 
 @pytest.mark.asyncio

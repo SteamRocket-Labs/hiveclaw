@@ -9,7 +9,11 @@ from loguru import logger
 
 from app.core.events import get_redis
 from app.services.execution_receipts import canonical_payload_hash
-from app.services.session_event_contract import serialize_session_event
+from app.services.session_event_contract import (
+    SESSION_EVENT_COMPATIBILITY_SCHEMA,
+    SESSION_EVENT_SCHEMA,
+    serialize_session_event,
+)
 
 
 WEB_CHAT_STREAM_SCHEMA = "hive.web_chat.stream.v1"
@@ -25,6 +29,26 @@ _FORWARDER_STATE: dict[str, Any] = {
     "restart_count": 0,
     "last_restart_at": None,
 }
+
+
+def _user_live_projection(envelope: dict[str, Any]) -> dict[str, Any]:
+    schema = envelope.get("schema")
+    if schema == SESSION_EVENT_SCHEMA:
+        return serialize_session_event(envelope, audience="user")
+    if schema == SESSION_EVENT_COMPATIBILITY_SCHEMA:
+        if (
+            envelope.get("schema_version") != 1
+            or envelope.get("compatibility_status") != "needs_reconciliation"
+            or not envelope.get("event_id")
+            or int(envelope.get("sequence") or 0) <= 0
+            or not envelope.get("session_id")
+        ):
+            raise ValueError("compatibility_session_event_delivery_invalid")
+        # V1 compatibility rows are serialized as the user projection when
+        # they enter the outbox because they do not carry canonical V2
+        # redaction metadata. Their durable DB row remains operator truth.
+        return dict(envelope)
+    raise ValueError("unsupported_session_event_delivery_schema")
 
 
 async def publish_canonical_session_event(payload: dict[str, Any]) -> None:
@@ -45,7 +69,7 @@ async def publish_canonical_session_event(payload: dict[str, Any]) -> None:
     source_envelope_sha256 = str(payload.get("envelope_sha256") or "")
     if canonical_payload_hash(source_envelope) != source_envelope_sha256:
         raise ValueError("canonical_session_event_source_hash_mismatch")
-    user_envelope = serialize_session_event(source_envelope, audience="user")
+    user_envelope = _user_live_projection(source_envelope)
     delivery = {
         **payload,
         "projection_audience": "user",
@@ -133,12 +157,12 @@ async def _listen_web_chat_stream_once() -> None:
                 payload = (
                     delivered_envelope
                     if envelope.get("projection_audience") == "user"
-                    else serialize_session_event(delivered_envelope, audience="user")
+                    else _user_live_projection(delivered_envelope)
                 )
                 agent_id = envelope.get("agent_id")
                 session_id = envelope.get("session_id")
                 if (
-                    payload.get("schema") != "hive.session_event"
+                    payload.get("schema") not in {SESSION_EVENT_SCHEMA, SESSION_EVENT_COMPATIBILITY_SCHEMA}
                     or str(payload.get("event_id") or "") != str(envelope.get("event_id") or "")
                     or int(payload.get("sequence") or 0) != int(envelope.get("sequence") or 0)
                 ):

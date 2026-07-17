@@ -25,7 +25,10 @@ async def test_append_session_event_writes_typed_transcript_and_queues_t0_projec
     from app.memory.t0.ledger import replay_t0_session_events
     from app.models.audit import ChatMessage
     from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.models.session_v2 import SessionEventOutbox
     from app.services.chat_transcript import append_session_event
+    from app.services.execution_receipts import canonical_payload_hash
+    from app.services.session_event_outbox import ClaimedSessionEvent, SessionEventOutboxPublisher
 
     agent_id = uuid4()
     tenant_id = uuid4()
@@ -71,6 +74,7 @@ async def test_append_session_event_writes_typed_transcript_and_queues_t0_projec
 
     chat_messages = [item for item in db.added if isinstance(item, ChatMessage)]
     transcript_events = [item for item in db.added if isinstance(item, ChatTranscriptEvent)]
+    live_outbox = [item for item in db.added if isinstance(item, SessionEventOutbox)]
     assert len(chat_messages) == 1
     assert chat_messages[0].id == message_id
     assert chat_messages[0].content == "final answer"
@@ -87,6 +91,27 @@ async def test_append_session_event_writes_typed_transcript_and_queues_t0_projec
     assert transcript_events[0].item_status == "succeeded"
     assert transcript_events[0].turn_id == "turn-1"
     assert transcript_events[0].projection_status == "pending"
+    assert len(live_outbox) == 1
+    assert live_outbox[0].event_id == result.event_id
+    assert live_outbox[0].session_id == session_id
+    assert live_outbox[0].sequence == result.sequence
+    assert live_outbox[0].envelope_json["schema"] == "hive.session_event_compatibility"
+    assert live_outbox[0].envelope_json["event_id"] == str(result.event_id)
+    assert live_outbox[0].envelope_json["sequence"] == result.sequence
+    assert live_outbox[0].envelope_json["payload"]["content"] == "final answer"
+    assert live_outbox[0].envelope_sha256 == canonical_payload_hash(live_outbox[0].envelope_json)
+    SessionEventOutboxPublisher._validate_claim(
+        ClaimedSessionEvent(
+            outbox_id=uuid4(),
+            agent_id=agent_id,
+            event_id=result.event_id,
+            session_id=session_id,
+            sequence=result.sequence,
+            envelope_sha256=live_outbox[0].envelope_sha256,
+            envelope=live_outbox[0].envelope_json,
+            attempt=1,
+        )
+    )
 
     events = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path)
     assert events == []

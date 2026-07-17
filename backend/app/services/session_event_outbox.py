@@ -154,7 +154,12 @@ class SessionEventOutboxPublisher:
         envelope = item.envelope
         if str(envelope.get("event_id") or "") != str(item.event_id):
             raise ValueError("session_event_outbox_event_id_mismatch")
-        if str((envelope.get("scope") or {}).get("session_id") or "") != str(item.session_id):
+        envelope_session_id = (
+            envelope.get("session_id")
+            if envelope.get("schema") == "hive.session_event_compatibility"
+            else (envelope.get("scope") or {}).get("session_id")
+        )
+        if str(envelope_session_id or "") != str(item.session_id):
             raise ValueError("session_event_outbox_session_id_mismatch")
         if int(envelope.get("sequence") or 0) != item.sequence:
             raise ValueError("session_event_outbox_sequence_mismatch")

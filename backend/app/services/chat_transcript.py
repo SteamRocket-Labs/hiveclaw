@@ -167,6 +167,50 @@ def build_transcript_item_contract(
     return item_type, item_status
 
 
+def _queue_legacy_session_event_outbox(
+    db: Any,
+    *,
+    transcript_event: ChatTranscriptEvent,
+) -> None:
+    """Put a V1-written row on the same ordered live plane as native V2.
+
+    V1 and V2 share one per-Session sequence authority.  If a V1 row consumes
+    a sequence without an outbox record, the browser's highest-contiguous
+    reducer must hold every later V2 event until REST replay fills the gap.
+    Persist the operator envelope here; the Redis publication boundary applies
+    the user projection and exact redactions after commit.
+    """
+
+    from app.models.session_v2 import SessionEventOutbox
+    from app.services.execution_receipts import canonical_payload_hash
+    from app.services.session_event_contract import SESSION_EVENT_COMPATIBILITY_SCHEMA, serialize_session_event
+
+    if transcript_event.tenant_id is None:
+        # Production AsyncSession writes cannot reach this branch: the
+        # authoritative Session allocation above requires a tenant.  Keep the
+        # legacy tenant-less recording-session compatibility used by channel
+        # unit tests from manufacturing an invalid live authority envelope.
+        return
+
+    envelope = serialize_session_event(transcript_event, audience="operator")
+    if envelope.get("schema") == SESSION_EVENT_COMPATIBILITY_SCHEMA:
+        # Compatibility envelopes do not carry the canonical V2 visibility
+        # object needed for a second projection at Redis time. Persist the
+        # already-redacted user view; the DB row remains the operator truth.
+        envelope = serialize_session_event(transcript_event, audience="user")
+    db.add(
+        SessionEventOutbox(
+            tenant_id=transcript_event.tenant_id,
+            session_id=transcript_event.session_id,
+            event_id=transcript_event.id,
+            sequence=int(transcript_event.sequence),
+            envelope_json=envelope,
+            envelope_sha256=canonical_payload_hash(envelope),
+            status="pending",
+        )
+    )
+
+
 async def append_session_event(
     *,
     db: AsyncSession,
@@ -355,6 +399,7 @@ async def append_session_event(
             _publish_committed_transcript_event,
             description=f"transcript-t0-bridge:{event_id}",
         )
+    _queue_legacy_session_event_outbox(db, transcript_event=transcript_event)
     return AppendSessionEventResult(
         event_id=event_id,
         sequence=sequence,

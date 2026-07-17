@@ -415,11 +415,13 @@ def build_session_event_contract_function_sql() -> str:
                 AND legacy_run.tenant_id=NEW.tenant_id
                 AND (
                   (
-                    legacy_run.parent_session_id=NEW.session_id::text
+                    replace(lower(legacy_run.parent_session_id),'-','')
+                      = replace(lower(NEW.session_id::text),'-','')
                     AND legacy_run.parent_agent_id=NEW.agent_id
                   )
                   OR (
-                    legacy_run.child_session_id=NEW.session_id::text
+                    replace(lower(legacy_run.child_session_id),'-','')
+                      = replace(lower(NEW.session_id::text),'-','')
                     AND COALESCE(legacy_run.child_agent_id, legacy_run.parent_agent_id)=NEW.agent_id
                   )
                 )
@@ -484,8 +486,18 @@ def build_session_event_contract_function_sql() -> str:
             SELECT 1 FROM public.runtime_tasks AS run
             WHERE run.id=NEW.run_id
               AND run.tenant_id=NEW.tenant_id
-              AND run.parent_session_id=NEW.session_id::text
-              AND run.parent_agent_id=NEW.agent_id
+              AND (
+                (
+                  replace(lower(run.parent_session_id),'-','')
+                    = replace(lower(NEW.session_id::text),'-','')
+                  AND run.parent_agent_id=NEW.agent_id
+                )
+                OR (
+                  replace(lower(run.child_session_id),'-','')
+                    = replace(lower(NEW.session_id::text),'-','')
+                  AND COALESCE(run.child_agent_id, run.parent_agent_id)=NEW.agent_id
+                )
+              )
           ) THEN
             RAISE EXCEPTION 'session_event_run_authority_mismatch' USING ERRCODE='23514';
           END IF;

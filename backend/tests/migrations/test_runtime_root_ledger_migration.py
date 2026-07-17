@@ -182,8 +182,12 @@ async def test_runtime_task_legacy_event_authority_pairs_parent_and_child_agent_
                     status="running",
                     parent_agent_id=parent_agent_id,
                     child_agent_id=child_agent_id,
-                    parent_session_id=str(parent_session_id),
-                    child_session_id=str(child_session_id),
+                    # RuntimeTask IDs historically persisted UUIDs as 32-char
+                    # hex while transcript rows use PostgreSQL UUID text.
+                    # The authority trigger must compare UUID identity, not
+                    # presentation formatting.
+                    parent_session_id=parent_session_id.hex,
+                    child_session_id=child_session_id.hex,
                     writer_generation=1,
                 )
             )

@@ -8,6 +8,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from app.database import PostgresTextContractError
@@ -947,12 +948,14 @@ async def _prepare_session_model_request(state: _WebChatRunState, **payload: Any
 
 
 async def _commit_session_model_response(state: _WebChatRunState, **payload: Any) -> dict[str, Any]:
+    from app.models.session_v2 import SessionEventOutbox
     from app.services.session_model_round import (
         ModelRoundNeedsReconciliation,
         commit_sealed_model_round,
         seal_model_response,
     )
 
+    live_visible_envelopes: list[dict[str, Any]] = []
     async with state.ports.runtime.tenant_scoped_session(state.agent.tenant_id) as db:
         try:
             seal = await seal_model_response(
@@ -972,6 +975,14 @@ async def _commit_session_model_response(state: _WebChatRunState, **payload: Any
         except ModelRoundNeedsReconciliation:
             await db.commit()
             raise
+        visible_event_ids = [uuid.UUID(str(event_id)) for event_id in seal.get("live_visible_event_ids", [])]
+        if visible_event_ids:
+            result = await db.execute(
+                select(SessionEventOutbox.envelope_json)
+                .where(SessionEventOutbox.event_id.in_(visible_event_ids))
+                .order_by(SessionEventOutbox.sequence)
+            )
+            live_visible_envelopes = [dict(envelope or {}) for envelope in result.scalars()]
         await db.commit()
     # The result seal is deliberately durable before the round registry.  A
     # crash between these transactions is recovered without re-sending the
@@ -993,6 +1004,18 @@ async def _commit_session_model_response(state: _WebChatRunState, **payload: Any
             await db.commit()
             raise
         await db.commit()
+    # The durable outbox remains the recovery authority. This immediate replay
+    # gives an attached Session socket the same committed commentary without a
+    # refresh; duplicate delivery is harmless because event_id is stable.
+    for envelope in live_visible_envelopes:
+        try:
+            await state.ports.events.broadcast(state.agent.id, state.session_id, envelope)
+        except Exception as exc:
+            state.ports.runtime.logger.warning(
+                "[WebChatRun] Immediate Session event broadcast failed; durable outbox will recover event {}: {}",
+                envelope.get("event_id"),
+                exc,
+            )
     return seal
 
 
@@ -1175,7 +1198,7 @@ async def _finalize_assistant_response(
     artifacts = state.ports.artifacts
     model_receipt = getattr(result, "model_result_receipt", None)
     if status == "completed" and isinstance(model_receipt, dict) and model_receipt.get("result_id"):
-        committed = await _commit_canonical_terminal_outcome(state, model_receipt)
+        committed = await _commit_canonical_terminal_outcome(state, model_receipt, response)
         if not committed:
             return
         # Hooks, metrics, ChatMessage projections and transport delivery are
@@ -1280,6 +1303,7 @@ async def _finalize_assistant_response(
 async def _commit_canonical_terminal_outcome(
     state: _WebChatRunState,
     model_receipt: dict[str, Any],
+    response: str,
 ) -> bool:
     from app.services.session_terminal_outcome import (
         TerminalOutcomeIneligible,
@@ -1290,6 +1314,7 @@ async def _commit_canonical_terminal_outcome(
 
     result_id = uuid.UUID(str(model_receipt["result_id"]))
     try:
+        await _record_canonical_terminal_artifact_selection(state, response)
         async with state.ports.runtime.tenant_scoped_session(state.agent.tenant_id) as db:
             outcome = await prepare_and_seal_run_outcome(
                 db,
@@ -1346,6 +1371,81 @@ async def _commit_canonical_terminal_outcome(
             },
         )
         return False
+
+
+async def _record_canonical_terminal_artifact_selection(
+    state: _WebChatRunState,
+    response: str,
+) -> None:
+    """Bind model-declared, current-turn artifacts before the outcome seal."""
+
+    from app.models.chat_artifact import ChatArtifact
+    from app.models.runtime_task import RuntimeTask
+    from app.services.chat_artifact_delivery import artifact_part_from_model
+    from app.services.session_terminal_outcome import TerminalOutcomeNeedsReconciliation
+
+    selected_paths = state.ports.artifacts.artifact_paths(state.runtime_session_context, response)
+    declared_paths = state.ports.artifacts.declared_paths(response)
+    rejected_paths = state.ports.artifacts.rejected_paths(state.runtime_session_context, response)
+    session_id = uuid.UUID(str(state.session_id))
+    async with state.ports.runtime.tenant_scoped_session(state.agent.tenant_id) as db:
+        task = await db.scalar(
+            select(RuntimeTask)
+            .where(
+                RuntimeTask.id == state.run_uuid,
+                RuntimeTask.tenant_id == state.agent.tenant_id,
+                RuntimeTask.parent_agent_id == state.agent.id,
+                RuntimeTask.parent_session_id == str(session_id),
+            )
+            .with_for_update()
+        )
+        if task is None:
+            raise TerminalOutcomeNeedsReconciliation("canonical terminal artifact selection has no RuntimeTask")
+        rows: list[ChatArtifact] = []
+        if selected_paths:
+            artifact_statement = select(ChatArtifact).where(
+                ChatArtifact.tenant_id == state.agent.tenant_id,
+                ChatArtifact.agent_id == state.agent.id,
+                ChatArtifact.session_id == session_id,
+                ChatArtifact.runtime_task_id == state.run_uuid,
+                ChatArtifact.authority_state == "owned",
+                ChatArtifact.path.in_(selected_paths),
+            )
+            if task.root_user_id is not None:
+                artifact_statement = artifact_statement.where(ChatArtifact.owner_user_id == task.root_user_id)
+            try:
+                root_session_id = uuid.UUID(str(task.root_session_id)) if task.root_session_id else session_id
+            except (TypeError, ValueError, AttributeError):
+                root_session_id = session_id
+            artifact_statement = artifact_statement.where(ChatArtifact.root_session_id == root_session_id)
+            rows = list(
+                (
+                    await db.execute(
+                        artifact_statement.order_by(
+                            ChatArtifact.created_at.desc(), ChatArtifact.id.desc()
+                        ).with_for_update()
+                    )
+                ).scalars()
+            )
+        newest_by_path: dict[str, ChatArtifact] = {}
+        for row in rows:
+            newest_by_path.setdefault(row.path, row)
+        selected = [newest_by_path[path] for path in selected_paths if path in newest_by_path]
+        missing_paths = [path for path in selected_paths if path not in newest_by_path]
+        artifact_parts = [artifact_part_from_model(row) for row in selected]
+        metadata = dict(task.metadata_json or {})
+        metadata.update(
+            {
+                "declared_artifact_paths": declared_paths,
+                "rejected_artifact_paths": list(dict.fromkeys([*rejected_paths, *missing_paths])),
+                "artifact_ids": [part["artifact_id"] for part in artifact_parts],
+                "artifact_paths": [part["path"] for part in artifact_parts],
+                "artifacts": artifact_parts,
+                "artifact_attachment_policy": "model_declared_current_turn_writes_only",
+            }
+        )
+        task.metadata_json = metadata
+        await db.commit()
 
 
 async def _handle_web_chat_failure(state: _WebChatRunState, exc: Exception) -> None:

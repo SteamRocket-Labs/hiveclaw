@@ -253,11 +253,27 @@ async def test_production_invocation_request_wires_session_v2_round_callbacks(mo
     agent_id = uuid4()
     session_id = uuid4()
     run_id = uuid4()
+    visible_event_id = uuid4()
+    visible_envelope = {
+        "schema": "hive.session_event",
+        "schema_version": 2,
+        "event_id": str(visible_event_id),
+        "sequence": 42,
+        "item_id": str(uuid4()),
+        "item_kind": "assistant_text",
+        "kind": "assistant_text.snapshot",
+        "lifecycle": "snapshot",
+        "visibility": {"audience": "direct_user"},
+        "payload": {"content": "I found the failing path."},
+    }
     calls: list[tuple[str, dict]] = []
 
     class _DB:
         async def commit(self):
             calls.append(("db.commit", {}))
+
+        async def execute(self, _statement):
+            return SimpleNamespace(scalars=lambda: [visible_envelope])
 
     class _TenantSession:
         async def __aenter__(self):
@@ -276,13 +292,24 @@ async def test_production_invocation_request_wires_session_v2_round_callbacks(mo
 
     async def fake_seal(_db, **kwargs):
         calls.append(("response.sealed", kwargs))
-        return {"result_id": str(uuid4())}
+        return {
+            "result_id": str(uuid4()),
+            "live_visible_event_ids": [str(visible_event_id)],
+        }
 
     async def fake_round_commit(_db, **kwargs):
         calls.append(("response.round_committed", kwargs))
 
     async def fake_fail(_db, **kwargs):
         calls.append(("failure", kwargs))
+
+    async def fake_broadcast(agent_id, session_id, envelope):
+        calls.append(
+            (
+                "broadcast",
+                {"agent_id": agent_id, "session_id": session_id, "envelope": envelope},
+            )
+        )
 
     monkeypatch.setattr(session_model_round, "bind_round_inputs", fake_bind)
     monkeypatch.setattr(session_model_round, "prepare_model_request", fake_prepare)
@@ -312,7 +339,10 @@ async def test_production_invocation_request_wires_session_v2_round_callbacks(mo
         metadata={"turn_id": "turn-live"},
         disable_tools_for_turn=False,
         excluded_tool_names_for_turn=(),
-        ports=SimpleNamespace(runtime=SimpleNamespace(tenant_scoped_session=lambda _tenant_id: _TenantSession())),
+        ports=SimpleNamespace(
+            runtime=SimpleNamespace(tenant_scoped_session=lambda _tenant_id: _TenantSession()),
+            events=SimpleNamespace(broadcast=fake_broadcast),
+        ),
     )
     callbacks = SimpleNamespace(stream=None, tool_call=None, thinking=None, runtime_event=None)
     request = orchestrator._agent_invocation_request(state, callbacks, "")
@@ -345,11 +375,96 @@ async def test_production_invocation_request_wires_session_v2_round_callbacks(mo
         "prepare",
         "response.sealed",
         "response.round_committed",
+        "broadcast",
         "failure",
     ]
     assert calls[0][1]["run_id"] == run_id
     assert calls[0][1]["turn_id"] == "turn-live"
     assert calls[0][1]["round_index"] == 2
+    assert next(payload for name, payload in calls if name == "broadcast") == {
+        "agent_id": agent_id,
+        "session_id": str(session_id),
+        "envelope": visible_envelope,
+    }
+
+
+@pytest.mark.asyncio
+async def test_committed_visible_envelope_broadcast_failure_defers_to_durable_outbox(monkeypatch):
+    from app.services import session_model_round
+    from app.services import web_chat_run_orchestrator as orchestrator
+
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    session_id = uuid4()
+    run_id = uuid4()
+    visible_event_id = uuid4()
+    visible_envelope = {
+        "schema": "hive.session_event",
+        "schema_version": 2,
+        "event_id": str(visible_event_id),
+        "sequence": 7,
+        "item_id": str(uuid4()),
+        "item_kind": "assistant_text",
+        "kind": "assistant_text.snapshot",
+        "lifecycle": "snapshot",
+        "visibility": {"audience": "direct_user"},
+        "payload": {"content": "The committed update remains recoverable."},
+    }
+    warnings: list[tuple[object, ...]] = []
+
+    class _DB:
+        async def commit(self):
+            return None
+
+        async def execute(self, _statement):
+            return SimpleNamespace(scalars=lambda: [visible_envelope])
+
+    class _TenantSession:
+        async def __aenter__(self):
+            return _DB()
+
+        async def __aexit__(self, *_args):
+            return False
+
+    async def fake_seal(_db, **_kwargs):
+        return {
+            "result_id": str(uuid4()),
+            "live_visible_event_ids": [str(visible_event_id)],
+        }
+
+    async def fake_round_commit(_db, **_kwargs):
+        return None
+
+    async def failing_broadcast(*_args):
+        raise RuntimeError("socket transport unavailable")
+
+    monkeypatch.setattr(session_model_round, "seal_model_response", fake_seal)
+    monkeypatch.setattr(session_model_round, "commit_sealed_model_round", fake_round_commit)
+
+    state = SimpleNamespace(
+        agent=SimpleNamespace(id=agent_id, tenant_id=tenant_id),
+        session_id=str(session_id),
+        run_uuid=run_id,
+        metadata={"turn_id": "turn-outbox-recovery"},
+        ports=SimpleNamespace(
+            runtime=SimpleNamespace(
+                tenant_scoped_session=lambda _tenant_id: _TenantSession(),
+                logger=SimpleNamespace(warning=lambda *args: warnings.append(args)),
+            ),
+            events=SimpleNamespace(broadcast=failing_broadcast),
+        ),
+    )
+
+    seal = await orchestrator._commit_session_model_response(
+        state,
+        round_index=1,
+        provider_request_id="provider-request-outbox-recovery",
+        response={"content_present": True},
+    )
+
+    assert seal["live_visible_event_ids"] == [str(visible_event_id)]
+    assert warnings
+    assert "durable outbox" in str(warnings[0][0]).lower()
 
 
 @pytest.mark.asyncio
@@ -454,7 +569,7 @@ async def test_committed_outcome_is_not_rewritten_when_sidecars_fail(monkeypatch
     warnings: list[tuple] = []
     legacy_calls: list[dict] = []
 
-    async def committed(_state, _receipt):
+    async def committed(_state, _receipt, _response):
         return True
 
     async def sidecar_failure(**_kwargs):

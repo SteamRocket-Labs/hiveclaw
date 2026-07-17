@@ -280,6 +280,7 @@ async function bootstrap(page: Page, options: {
   const transcript = transcriptFor(audience, scenario);
   const lineage = lineageFor(session, scenario);
   const consoleErrors: string[] = [];
+  let sessionSocketSend: ((payload: string) => void) | null = null;
   page.on('console', (message) => {
     if (message.type() === 'error') consoleErrors.push(message.text());
   });
@@ -302,7 +303,28 @@ async function bootstrap(page: Page, options: {
 
   await page.routeWebSocket('**/ws/chat/**', (socket) => {
     socket.onMessage((message) => {
-      if (String(message).includes('ping')) socket.send(JSON.stringify({ type: 'pong' }));
+      let payload: Record<string, unknown> | null = null;
+      try {
+        payload = JSON.parse(String(message)) as Record<string, unknown>;
+      } catch {
+        payload = null;
+      }
+      if (payload?.type === 'ping') {
+        socket.send(JSON.stringify({ type: 'pong' }));
+        return;
+      }
+      if (payload?.type === 'session.subscribe') {
+        sessionSocketSend = (eventPayload) => socket.send(eventPayload);
+        socket.send(JSON.stringify({
+          type: 'session.ready',
+          schema_version: 2,
+          session_id: SESSION_ID,
+          subscription_id: 'e2e-session-subscription',
+          accepted_after_sequence: Number(payload.after_sequence || 0),
+          last_committed_sequence: transcript.length,
+          connection_attempt_id: payload.connection_attempt_id,
+        }));
+      }
     });
   });
 
@@ -419,7 +441,13 @@ async function bootstrap(page: Page, options: {
   } else {
     await expect(page.getByTestId('session-runtime-deliverables')).toContainText('No delivered artifacts');
   }
-  return { consoleErrors };
+  return {
+    consoleErrors,
+    emitLiveSessionEvents(events: Array<Record<string, unknown>>) {
+      if (sessionSocketSend === null) throw new Error('canonical Session websocket is not subscribed');
+      for (const event of events) sessionSocketSend(JSON.stringify(event));
+    },
+  };
 }
 
 async function scrollTimelineToBottom(page: Page) {
@@ -469,6 +497,9 @@ for (const viewport of [
     await expect(page.getByTestId('session-runtime-segment-team')).toContainText('1');
     await expect(page.getByTestId('session-runtime-segment-workers')).toContainText('1');
     await expect(page.getByTestId('session-runtime-segment-workflow')).toContainText('1');
+    await expect(page.getByTestId('chat-work-ledger-dock')).toHaveAttribute('data-presentation', 'persistent');
+    await expect(page.getByTestId('chat-work-ledger-panel')).toBeVisible();
+    await expect(page.getByTestId('agent-task-list')).toContainText('Publish final report');
     await expectVisual(page, `workbench-user-active-${viewport.name}.png`);
     expect(consoleErrors).toEqual([]);
   });
@@ -494,6 +525,7 @@ for (const viewport of [
     }
     await expect(page.getByTestId('thread-item-inspector')).toContainText('permission-1');
     await expect(page.locator('[data-thread-item-type="workflow_activity"]')).toBeVisible();
+    await expect(page.getByTestId('chat-work-ledger-dock')).toHaveCount(0);
     await expectVisual(page, `workbench-operator-active-${viewport.name}.png`);
     expect(consoleErrors).toEqual([]);
   });
@@ -510,9 +542,65 @@ for (const audience of ['user', 'operator'] as const) {
 test('ordinary user active dark desktop visual and accessibility contract', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 980 });
   const { consoleErrors } = await bootstrap(page, { audience: 'user', scenario: 'active', theme: 'dark' });
+  await expect(page.getByTestId('chat-work-ledger-dock')).toHaveAttribute('data-presentation', 'persistent');
+  await expect(page.getByTestId('chat-work-ledger-panel')).toBeVisible();
   await expectVisual(page, 'workbench-user-active-dark-desktop.png');
   await expectNoSeriousAccessibilityViolations(page);
   expect(consoleErrors).toEqual([]);
+});
+
+test('canonical assistant text becomes visible live without a refresh or a Thinking label', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 980 });
+  const progress = 'I isolated the projection gap and am validating the live Session update path.';
+  const common = {
+    schema: 'hive.session_event',
+    schema_version: 2,
+    item_id: '00000000-0000-4000-8000-000000000088',
+    item_kind: 'assistant_text',
+    tenant_id: '00000000-0000-4000-8000-000000000099',
+    scope: {
+      level: 'round',
+      session_id: SESSION_ID,
+      thread_id: SESSION_ID,
+      turn_id: 'turn-live-prose',
+      run_id: RUN_ID,
+      round_id: 'round-live-prose',
+    },
+    actor: { type: 'assistant', agent_id: AGENT_ID },
+    visibility: { audience: 'direct_user' },
+    occurred_at: '2026-07-17T12:08:00Z',
+    persisted_at: '2026-07-17T12:08:00Z',
+  };
+  const { emitLiveSessionEvents } = await bootstrap(page, {
+    audience: 'user',
+    scenario: 'active',
+  });
+  emitLiveSessionEvents([
+      {
+        ...common,
+        event_id: '00000000-0000-4000-8000-000000000088',
+        sequence: 8,
+        ordinal: 0,
+        kind: 'assistant_text.snapshot',
+        lifecycle: 'snapshot',
+        payload_schema: 'hive.session.payload.assistant_text.snapshot.v2',
+        payload: { phase: 'unknown', content: progress, block_index: 0 },
+      },
+      {
+        ...common,
+        event_id: '00000000-0000-4000-8000-000000000089',
+        sequence: 9,
+        ordinal: 1,
+        kind: 'assistant_text.completed',
+        lifecycle: 'completed',
+        payload_schema: 'hive.session.payload.assistant_text.completed.v2',
+        payload: { phase: 'unknown', content: '', block_index: 0 },
+      },
+    ]);
+
+  await expect(page.getByTestId('run-disclosure-prose')).toContainText(progress);
+  await expect(page.getByTestId('run-disclosure-prose')).not.toContainText('Thinking');
+  await expect(page.getByTestId('chat-work-ledger-dock')).toHaveAttribute('data-presentation', 'persistent');
 });
 
 test('slow transcript and offline reconnect preserve the durable session projection', async ({ page }) => {

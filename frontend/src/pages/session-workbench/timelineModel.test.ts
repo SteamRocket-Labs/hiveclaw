@@ -159,6 +159,14 @@ describe('session workbench timeline model', () => {
     expect(model.cells[0]?.kind).toBe('user_turn');
     expect(model.cells.filter((cell) => cell.kind === 'active_run').length).toBeGreaterThanOrEqual(1);
     expect(model.cells.some((cell) => cell.kind === 'assistant_final')).toBe(false);
+    const activeRun = model.cells.find((cell) => cell.kind === 'active_run');
+    if (!activeRun || activeRun.kind !== 'active_run') throw new Error('expected active run cell');
+    expect(activeRun.timeline.steps).toEqual([
+      expect.objectContaining({
+        kind: 'prose',
+        details: 'This is provider text with no final phase.',
+      }),
+    ]);
   });
 
   it('keeps one canonical process stream open until the typed final answer arrives', () => {
@@ -1336,6 +1344,38 @@ describe('session workbench timeline model', () => {
         expect.objectContaining({ action: 'reject_gate', stepId: 'approve-send' }),
       ],
     });
+  });
+
+  it('shows a tool-produced workspace artifact immediately as a file change, not a declared deliverable', () => {
+    const rightPanel = buildSessionRightPanelModel({
+      messages: [
+        {
+          role: 'tool_call',
+          content: '',
+          toolName: 'write_file',
+          artifacts: [
+            {
+              id: 'artifact-live',
+              name: 'live-report.md',
+              path: 'workspace/live-report.md',
+              source: 'workspace_write',
+              runtimeTaskId: 'run-live',
+              snapshotHash: 'sha-live',
+            },
+          ],
+        },
+      ],
+      sessionWorkbench: {
+        runtime_sections: {
+          runs: [{ id: 'run-live', runtime_task_id: 'run-live', runtime_kind: 'runtime_task', status: 'running' }],
+        },
+      } as unknown as SessionWorkbench,
+    });
+
+    expect(rightPanel.workspaceDocuments.currentSession.items).toEqual([]);
+    expect(rightPanel.workspaceDocuments.unattributed.items).toEqual([
+      expect.objectContaining({ name: 'live-report.md', path: 'workspace/live-report.md' }),
+    ]);
   });
 });
 

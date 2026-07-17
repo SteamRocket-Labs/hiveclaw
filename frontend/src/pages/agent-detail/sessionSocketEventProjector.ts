@@ -22,6 +22,18 @@ import type { SessionSocketMessageContext } from './useSessionTransportControlle
 
 type MessageUpdater = (updater: (messages: AgentChatMessage[]) => AgentChatMessage[]) => void;
 
+const TASK_LEDGER_MUTATION_TOOLS = new Set(['task_create', 'task_update', 'task_stop']);
+const RUNTIME_QUERY_EVENT_KINDS = new Set([
+  'run',
+  'subagent',
+  'a2a_delegation',
+  'a2a_receipt',
+  'workflow_run',
+  'workflow_step',
+  'workflow_gate',
+]);
+const TERMINAL_RUN_LIFECYCLES = new Set(['completed', 'failed', 'cancelled']);
+
 export interface SessionSocketProjectionDependencies {
   applyTranscriptToSession: (
     agentId: string,
@@ -96,6 +108,26 @@ export function projectSessionSocketEvent(
       },
     };
     applyTranscriptToSession(agentId, sessionId, transcriptEvent, isActiveRuntime);
+    const itemKind = String(d.item_kind || '').toLowerCase();
+    const lifecycle = String(d.lifecycle || '').toLowerCase();
+    const payload = d.payload && typeof d.payload === 'object' ? d.payload : {};
+    const toolName = String(payload.tool_name || payload.name || '').toLowerCase();
+    if (
+      itemKind === 'tool_call'
+      && TASK_LEDGER_MUTATION_TOOLS.has(toolName)
+      && dependencies.shouldInvalidateToolCall(key)
+    ) {
+      invalidateSessionRuntimeQueries(agentId, sessionId, false);
+    } else if (itemKind === 'tool_result') {
+      // The started tool_call can arrive before the tool mutates the Work
+      // Ledger. The committed result is the authoritative refresh boundary.
+      invalidateSessionRuntimeQueries(agentId, sessionId, false);
+    } else if (RUNTIME_QUERY_EVENT_KINDS.has(itemKind)) {
+      invalidateSessionRuntimeQueries(agentId, sessionId);
+    }
+    if (itemKind === 'run' && TERMINAL_RUN_LIFECYCLES.has(lifecycle)) {
+      void fetchMySessions(true, agentId);
+    }
     return;
   }
 

@@ -185,7 +185,7 @@ describe('ChatWorkLedgerDock', () => {
     expect(markup).not.toContain('Loading work state...');
   });
 
-  it('renders a composer-adjacent task progress strip with hover details only', () => {
+  it('keeps the complete task ledger persistently visible beside the composer while work is live', () => {
     queryHarness.sessionData = {
       schema: 'agent_work_ledger_view.v1',
       runtime_task_id: 'task-current',
@@ -221,11 +221,12 @@ describe('ChatWorkLedgerDock', () => {
 
     expect(markup).toContain('data-testid="agent-task-list"');
     expect(markup).toContain('data-testid="chat-work-ledger-summary"');
-    expect(markup).toContain('data-testid="chat-work-ledger-popover"');
+    expect(markup).toContain('data-testid="chat-work-ledger-panel"');
+    expect(markup).toContain('data-presentation="persistent"');
     expect(markup).toContain('Task 2-3 of 3');
     expect(markup).toContain('Collecting and grading sources');
-    expect(markup).not.toContain('aria-expanded');
-    expect(markup).not.toContain('chat-work-ledger-toggle');
+    expect(markup).not.toContain('chat-work-ledger-popover');
+    expect(markup).not.toContain('<details');
     expect(markup).not.toContain('files changed');
     expect(markup).not.toContain('Agent tasks');
     expect(markup).not.toContain('3 tasks');
@@ -240,7 +241,7 @@ describe('ChatWorkLedgerDock', () => {
     expect(markup).not.toContain('Temporary source timeout');
   });
 
-  it('keeps task details in the hover popover instead of a click-collapsed panel', () => {
+  it('keeps the terminal task summary anchored and exposes details through an explicit disclosure', () => {
     queryHarness.sessionData = ledger('task-current', 'Collapsible todo');
 
     const markup = renderToStaticMarkup(
@@ -255,6 +256,35 @@ describe('ChatWorkLedgerDock', () => {
     expect(markup).toContain('Todo');
     expect(markup).toContain('data-testid="agent-task-list"');
     expect(markup).toContain('Collapsible todo');
-    expect(markup).not.toContain('aria-expanded');
+    expect(markup).toContain('data-presentation="disclosure"');
+    expect(markup).toContain('<details');
+    expect(markup).toContain('<summary');
+    expect(markup).not.toContain('chat-work-ledger-popover');
+  });
+
+  it('keeps every authorized task recoverable instead of silently truncating the ledger', () => {
+    queryHarness.sessionData = {
+      schema: 'agent_work_ledger_view.v1',
+      runtime_task_id: 'task-current',
+      status: 'in_progress',
+      current_phase: 'Task 12',
+      todo_items: Array.from({ length: 12 }, (_, index) => ({
+        id: String(index + 1),
+        title: `Task ${index + 1}`,
+        status: index === 11 ? 'in_progress' : 'pending',
+        required: true,
+      })),
+      counts: { todos_total: 12, todos_complete: 0, todos_open: 12 },
+    };
+
+    const markup = renderToStaticMarkup(
+      <ChatWorkLedgerDock agentId="agent-1" sessionId="session-1" runtimeTaskId="task-current" live />,
+    );
+
+    expect(markup).toContain('Task 1');
+    expect(markup).toContain('Task 10');
+    expect(markup).toContain('Task 11');
+    expect(markup).toContain('Task 12');
+    expect(markup).not.toContain('... +');
   });
 });

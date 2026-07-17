@@ -182,4 +182,94 @@ describe('canonical Session event consumer', () => {
       sessionItem: { id: 'tool-call-1', kind: 'tool_call' },
     });
   });
+
+  it('preserves no-phase public model text as assistant_text without forging commentary semantics', () => {
+    const progress = 'I found the failing path. Next I am checking the durable task state.';
+    const delta = {
+      ...event(1, 'delta'),
+      payload: { phase: 'unknown', content: progress },
+    } as SessionEventV2;
+    const snapshot = {
+      ...event(2, 'completed'),
+      item_kind: 'assistant_text',
+      kind: 'assistant_text.snapshot',
+      lifecycle: 'snapshot',
+      payload_schema: 'hive.session.payload.assistant_text.snapshot.v2',
+      payload: { phase: 'unknown', content: progress },
+    } as SessionEventV2;
+    const completed = {
+      ...event(3, 'completed'),
+      item_kind: 'assistant_text',
+      kind: 'assistant_text.completed',
+      lifecycle: 'completed',
+      payload_schema: 'hive.session.payload.assistant_text.completed.v2',
+      payload: { phase: 'unknown', content: '' },
+    } as SessionEventV2;
+
+    const messages = projectSessionEventStoreToMessages(replay([delta, snapshot, completed]));
+
+    expect(messages).toEqual([
+      expect.objectContaining({
+        role: 'assistant',
+        content: progress,
+        eventType: 'assistant_text',
+        eventStatus: 'completed',
+        sessionItem: expect.objectContaining({ kind: 'assistant_text' }),
+      }),
+    ]);
+  });
+
+  it('projects durable artifact parts on the canonical final message', () => {
+    const source = {
+      ...event(1, 'completed'),
+      item_id: 'assistant-source-1',
+      item_kind: 'assistant_text',
+      kind: 'assistant_text.completed',
+      lifecycle: 'completed',
+      payload_schema: 'hive.session.payload.assistant_text.completed.v2',
+      actor: { type: 'assistant' as const },
+      payload: { content: 'Final answer' },
+    };
+    const final = {
+      ...event(2, 'completed'),
+      item_id: 'assistant-final-1',
+      item_kind: 'assistant_final',
+      kind: 'assistant_final.completed',
+      lifecycle: 'completed',
+      payload_schema: 'hive.session.payload.assistant_final.completed.v2',
+      actor: { type: 'assistant' as const },
+      payload: {
+        source_blocks: [{ item_id: 'assistant-source-1', block_index: 0, content_hash: 'hash-1' }],
+        parts: [
+          {
+            type: 'artifact',
+            artifact_id: 'artifact-1',
+            path: 'workspace/final-report.md',
+            name: 'final-report.md',
+            preview_kind: 'markdown',
+            source: 'workspace_write',
+            runtime_task_id: 'run-1',
+          },
+        ],
+      },
+    };
+
+    const messages = projectSessionEventStoreToMessages(replay([source, final]));
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      role: 'assistant',
+      content: 'Final answer',
+      artifacts: [
+        {
+          id: 'artifact-1',
+          path: 'workspace/final-report.md',
+          name: 'final-report.md',
+          previewKind: 'markdown',
+          source: 'workspace_write',
+          runtimeTaskId: 'run-1',
+        },
+      ],
+    });
+  });
 });

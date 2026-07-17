@@ -219,8 +219,42 @@ describe('chatDisclosureReducer', () => {
 
     expect(timeline.steps).toEqual([
       expect.objectContaining({ kind: 'reasoning', title: 'Thinking', summary: 'Provider-private reasoning was used.' }),
+      expect.objectContaining({
+        kind: 'prose',
+        title: 'Assistant update',
+        details: 'The answer bytes are being composed.',
+        visibility: 'visible',
+      }),
     ]);
     expect(timeline.steps.some((step) => step.title === 'Writing response')).toBe(false);
+  });
+
+  it('keeps canonical no-phase public text visible without relabeling it as Thinking or commentary', () => {
+    const timeline = buildRunTimelineFromMessages([
+      {
+        role: 'assistant',
+        content: 'I found the Session projection gap. Next I am validating live delivery.',
+        id: 'assistant-text-1',
+        eventType: 'assistant_text',
+        eventStatus: 'completed',
+        sessionItem: {
+          id: 'assistant-text-1',
+          kind: 'assistant_text',
+          lifecycle: 'completed',
+          terminal: true,
+        } as AgentChatMessage['sessionItem'],
+      },
+    ] as AgentChatMessage[]);
+
+    expect(timeline.steps).toEqual([
+      expect.objectContaining({
+        kind: 'prose',
+        title: 'Assistant update',
+        details: 'I found the Session projection gap. Next I am validating live delivery.',
+      }),
+    ]);
+    expect(timeline.steps.some((step) => step.title === 'Thinking')).toBe(false);
+    expect(timeline.steps.some((step) => step.kind === 'commentary')).toBe(false);
   });
 
   it('adds a turn-level aggregate summary for repeated tool groups', () => {
@@ -377,6 +411,76 @@ describe('chatDisclosureReducer', () => {
       ['Schedule step', 'surface'],
       ['future_unknown_tool', 'surface'],
     ]);
+  });
+
+  it('routes successful Task ledger mutations into recoverable tool history instead of permanent timeline rows', () => {
+    const timeline = buildRunTimelineFromMessages([
+      {
+        role: 'tool_call',
+        content: '',
+        toolName: 'task_create',
+        toolArgs: { subject: 'Inspect the live Session path', activeForm: 'Inspecting the live Session path' },
+        toolStatus: 'done',
+      },
+      {
+        role: 'tool_call',
+        content: '',
+        toolName: 'task_update',
+        toolArgs: { task_id: '1', status: 'in_progress', activeForm: 'Fixing the live Session path' },
+        toolStatus: 'done',
+      },
+      {
+        role: 'tool_call',
+        content: '',
+        toolName: 'task_stop',
+        toolArgs: { task_id: 'legacy-task' },
+        toolStatus: 'done',
+      },
+    ] as AgentChatMessage[]);
+
+    expect(timeline.steps).toEqual([
+      expect.objectContaining({
+        title: 'Update tasks',
+        summary: 'Inspecting the live Session path',
+        presentation: 'tool_history',
+      }),
+      expect.objectContaining({
+        title: 'Update tasks',
+        summary: 'Fixing the live Session path',
+        presentation: 'tool_history',
+      }),
+      expect.objectContaining({
+        title: 'Update tasks',
+        summary: 'Task legacy-task',
+        presentation: 'tool_history',
+      }),
+    ]);
+  });
+
+  it('keeps a failed Task ledger mutation surfaced with its recovery evidence', () => {
+    const timeline = buildRunTimelineFromMessages([
+      {
+        role: 'tool_call',
+        content: '',
+        toolName: 'task_update',
+        toolArgs: { task_id: '1', status: 'completed' },
+        toolStatus: 'done',
+        toolMeta: {
+          kind: 'runtime_step',
+          toolCallId: 'task-update-failed',
+          stepId: 'tool:task-update-failed',
+          status: 'failed',
+          durationMs: null,
+          visibility: 'collapsed',
+        },
+      },
+    ] as AgentChatMessage[]);
+
+    expect(timeline.steps[0]).toMatchObject({
+      title: 'Update tasks',
+      status: 'failed',
+      presentation: 'surface',
+    });
   });
 
   it('promotes a failed retrieval call out of generic tool history for recovery', () => {

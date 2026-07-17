@@ -3520,7 +3520,7 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('数字员工已创建完成。');
   });
 
-  it('renders running task todos as a composer-adjacent hover strip, not side chrome', () => {
+  it('renders the real running Task ledger as a persistent composer panel and folds raw Task tool calls', () => {
     const markup = renderToStaticMarkup(
       <AgentChatSection
         agent={{ id: 'agent-1', name: 'Research Bot' }}
@@ -3557,15 +3557,23 @@ describe('AgentDetail extracted sections', () => {
           {
             role: 'tool_call',
             content: '',
-            toolName: 'start_workflow',
+            toolName: 'task_create',
             toolStatus: 'done',
-            toolResult: 'Workflow running',
+            toolArgs: { subject: 'Collect and grade sources' },
+          },
+          {
+            role: 'tool_call',
+            content: '',
+            toolName: 'task_update',
+            toolStatus: 'done',
+            toolArgs: { task_id: '1', status: 'in_progress' },
           },
         ]}
         chatMessagesSessionId="session-1"
         runtimeSummary={null}
         transportNotice={null}
         isWaiting={false}
+        activeRunStatus="running"
         chatEndRef={React.createRef<HTMLDivElement>()}
         showScrollBtn={false}
         onScrollToBottom={vi.fn()}
@@ -3593,8 +3601,14 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).not.toContain('data-testid="session-native-controls"');
     expect(markup).toContain('data-testid="chat-work-ledger-dock"');
     expect(markup).toContain('data-testid="chat-work-ledger-summary"');
-    expect(markup).toContain('data-testid="chat-work-ledger-popover"');
+    expect(markup).toContain('data-testid="chat-work-ledger-panel"');
+    expect(markup).toContain('data-presentation="persistent"');
     expect(markup).toContain('Task 1-2 of 2');
+    expect(markup).toContain('data-testid="run-disclosure-tool-group"');
+    expect(markup).toContain('Used tools: Update tasks');
+    expect(markup).not.toContain('data-presentation="surface"');
+    expect(markup).not.toContain('task_create');
+    expect(markup).not.toContain('task_update');
     expect(markup).not.toContain('Start goal');
     expect(markup).not.toContain('Create team');
   });
@@ -3747,7 +3761,7 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).not.toContain('data-testid="session-native-controls"');
     expect(markup).toContain('data-testid="chat-work-ledger-dock"');
     expect(markup).toContain('data-testid="chat-work-ledger-summary"');
-    expect(markup).toContain('data-testid="chat-work-ledger-popover"');
+    expect(markup).toContain('data-testid="chat-work-ledger-panel"');
   });
 
   it('renders grouped workspace documents and the segmented runtime console in the right panel', () => {
@@ -3893,6 +3907,7 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).not.toContain('data-session-command="branch"');
     expect(markup).toContain('data-testid="chat-work-ledger-dock"');
     expect(markup).toContain('data-testid="chat-work-ledger-summary"');
+    expect(markup).toContain('data-testid="chat-work-ledger-panel"');
     expect(markup).toContain('Task 1-2 of 2');
     expect(markup).toContain('Deliverables');
     expect(markup).toContain('data-testid="session-workspace-documents-current"');

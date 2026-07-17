@@ -213,6 +213,98 @@ async def test_stream_batches_are_canonical_before_publish_and_share_result_iden
         assert item.lifecycle == "completed"
 
 
+async def test_tool_round_public_text_remains_durable_unknown_assistant_text(
+    owner_sessionmaker,
+) -> None:
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.models.session_v2 import SessionEventOutbox, SessionModelResult
+    from app.services.session_model_round import append_model_stream_delta, seal_model_response
+
+    tenant_id, agent_id, session_id, run_id, turn_id = await _seed(owner_sessionmaker)
+    progress = "I found the failing live path. Next I am checking the durable task state."
+    async with owner_sessionmaker() as db:
+        request_id, _ = await _prepare(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            run_id=run_id,
+            turn_id=turn_id,
+        )
+        await append_model_stream_delta(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            run_id=run_id,
+            provider_request_id=request_id,
+            content=progress,
+            phase="unknown",
+        )
+
+        seal = await seal_model_response(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            run_id=run_id,
+            turn_id=turn_id,
+            round_index=1,
+            provider_request_id=request_id,
+            response={
+                "content": progress,
+                "tool_calls": [
+                    {
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {"name": "read_file", "arguments": '{"path":"report.md"}'},
+                    }
+                ],
+                "finish_reason": "tool_calls",
+                "usage": {},
+            },
+        )
+        await db.commit()
+
+        result = await db.scalar(select(SessionModelResult).where(SessionModelResult.provider_request_id == request_id))
+        events = list(
+            (
+                await db.execute(
+                    select(ChatTranscriptEvent)
+                    .where(ChatTranscriptEvent.result_id == result.id)
+                    .order_by(ChatTranscriptEvent.sequence)
+                )
+            ).scalars()
+        )
+        commentary = [event for event in events if event.item_kind == "assistant_commentary"]
+        streamed_text = [event for event in events if event.item_kind == "assistant_text"]
+
+        assert commentary == []
+        assert [(event.lifecycle, event.content) for event in streamed_text] == [
+            ("delta", progress),
+            ("snapshot", progress),
+            ("completed", ""),
+        ]
+        assert all(event.visibility_scope == "direct_user" for event in streamed_text)
+        assert seal["block_ledger"][0]["kind"] == "assistant_text"
+        assert seal["live_visible_event_ids"] == [str(event.id) for event in streamed_text[1:]]
+
+        envelopes = list(
+            (
+                await db.execute(
+                    select(SessionEventOutbox.envelope_json)
+                    .where(SessionEventOutbox.event_id.in_([event.id for event in streamed_text[1:]]))
+                    .order_by(SessionEventOutbox.sequence)
+                )
+            ).scalars()
+        )
+        assert [envelope["kind"] for envelope in envelopes] == [
+            "assistant_text.snapshot",
+            "assistant_text.completed",
+        ]
+        assert envelopes[0]["payload"]["content"] == progress
+
+
 async def test_private_reasoning_is_durable_but_redacted_from_user_projection(
     owner_sessionmaker,
 ) -> None:
@@ -760,12 +852,19 @@ async def test_fence_drift_preserves_abandoned_plan_and_requires_new_generation(
 
 
 async def test_terminal_outcome_is_zero_copy_atomic_and_idempotent(owner_sessionmaker) -> None:
+    from app.models.audit import ChatMessage
+    from app.models.chat_artifact import ChatArtifact
+    from app.models.chat_session import ChatSession
     from app.models.chat_transcript_event import ChatTranscriptEvent
     from app.models.runtime_task import RuntimeTask
     from app.models.runtime_root_item import RuntimeRootItem
     from app.models.session_v2 import SessionModelResult, SessionRunOutcome
     from app.services.session_model_round import commit_model_response
-    from app.services.session_terminal_outcome import commit_terminal_outcome, prepare_and_seal_run_outcome
+    from app.services.session_terminal_outcome import (
+        TerminalOutcomeNeedsReconciliation,
+        commit_terminal_outcome,
+        prepare_and_seal_run_outcome,
+    )
 
     tenant_id, agent_id, session_id, run_id, turn_id = await _seed(owner_sessionmaker)
     exact_final = "模型原始终答字节\nsecond block line"
@@ -789,6 +888,72 @@ async def test_terminal_outcome_is_zero_copy_atomic_and_idempotent(owner_session
             provider_request_id=request_id,
             response={"content": exact_final, "tool_calls": [], "finish_reason": "stop", "usage": {}},
         )
+        session = await db.get(ChatSession, session_id)
+        tool_message = ChatMessage(
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            user_id=session.user_id,
+            role="tool_call",
+            content="workspace write completed",
+            conversation_id=str(session_id),
+        )
+        db.add(tool_message)
+        await db.flush()
+        artifact = ChatArtifact(
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            message_id=tool_message.id,
+            runtime_task_id=run_id,
+            owner_user_id=session.user_id,
+            root_session_id=session_id,
+            authority_state="owned",
+            path="workspace/final-report.md",
+            name="final-report.md",
+            mime_type="text/markdown",
+            size=128,
+            modified_at="2026-07-17T12:00:00+00:00",
+            preview_kind="markdown",
+            source="workspace_write",
+            snapshot_hash="artifact-snapshot-hash",
+            snapshot_json={
+                "content_hash": "artifact-content-hash",
+                "snapshot_storage_path": "runtime_artifacts/chat_artifact_snapshots/final-report.md",
+                "owner_agent_id": str(agent_id),
+                "source_agent_id": str(agent_id),
+                "download_agent_id": str(agent_id),
+            },
+        )
+        db.add(artifact)
+        await db.flush()
+        task = await db.get(RuntimeTask, run_id)
+        task.metadata_json = {
+            **dict(task.metadata_json or {}),
+            "artifact_ids": [str(artifact.id)],
+            "artifact_paths": [artifact.path],
+            "artifact_attachment_policy": "model_declared_current_turn_writes_only",
+        }
+        outcome = await prepare_and_seal_run_outcome(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            turn_id=turn_id,
+            run_id=run_id,
+            terminal_result_id=uuid.UUID(seal["result_id"]),
+        )
+        artifact.authority_state = "quarantined"
+        await db.flush()
+        with pytest.raises(TerminalOutcomeNeedsReconciliation, match="artifact authority changed"):
+            await commit_terminal_outcome(
+                db,
+                tenant_id=tenant_id,
+                agent_id=agent_id,
+                session_id=session_id,
+                run_id=run_id,
+                outcome_id=outcome.id,
+            )
+        artifact.authority_state = "owned"
         outcome = await prepare_and_seal_run_outcome(
             db,
             tenant_id=tenant_id,
@@ -866,6 +1031,37 @@ async def test_terminal_outcome_is_zero_copy_atomic_and_idempotent(owner_session
         assert payload["zero_copy"] is True
         assert "content" not in payload
         assert payload["source_blocks"] == outcome.seal_json["source_blocks"]
+        assert payload["artifact_refs"] == [str(artifact.id)]
+        assert payload["parts"] == [
+            expect
+            for expect in [
+                {
+                    "type": "artifact",
+                    "artifact_id": str(artifact.id),
+                    "path": "workspace/final-report.md",
+                    "name": "final-report.md",
+                    "mime_type": "text/markdown",
+                    "size": 128,
+                    "modified_at": "2026-07-17T12:00:00+00:00",
+                    "preview_kind": "markdown",
+                    "source": "workspace_write",
+                    "runtime_task_id": str(run_id),
+                    "owner_agent_id": str(agent_id),
+                    "source_agent_id": str(agent_id),
+                    "download_agent_id": str(agent_id),
+                    "delivery_agent_id": None,
+                    "created_at": artifact.created_at.isoformat(),
+                    "revision_id": "artifact-snapshot-hash",
+                    "content_hash": "artifact-content-hash",
+                    "snapshot_storage_path": "runtime_artifacts/chat_artifact_snapshots/final-report.md",
+                    "action": None,
+                    "tool_call_id": None,
+                    "diff_summary": None,
+                    "preview_snapshot_content": None,
+                    "preview_snapshot_truncated": None,
+                }
+            ]
+        ]
 
 
 async def test_unresolved_obligation_blocks_terminal_outcome(owner_sessionmaker) -> None:

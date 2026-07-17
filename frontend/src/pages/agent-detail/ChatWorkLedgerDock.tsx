@@ -1,6 +1,6 @@
 import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
-import { IconCheck, IconSquare, IconSquareFilled } from '@tabler/icons-react';
+import { IconCheck, IconChevronRight, IconSquare, IconSquareFilled } from '@tabler/icons-react';
 
 import { autonomyApi, type RuntimeWorkLedgerItem, type RuntimeWorkLedgerView } from '../../api/domains/autonomy';
 
@@ -10,8 +10,6 @@ interface ChatWorkLedgerDockProps {
   sessionId?: string | null;
   live?: boolean;
   operatorView?: boolean;
-  /** Deprecated: task details are now revealed by hover/focus, not click collapse. */
-  initialCollapsed?: boolean;
 }
 
 type CanonicalTaskStatus = 'pending' | 'in_progress' | 'completed';
@@ -141,57 +139,72 @@ export default function ChatWorkLedgerDock({
   }
   const counts = taskCounts(displayItems);
   const countLabel = taskProgressLabel(displayItems, t);
+  const summary = (
+    <span data-testid="chat-work-ledger-summary" className="chat-work-ledger-summary" aria-live="polite">
+      <span className={`chat-work-ledger-dot ${counts.inProgress > 0 ? 'is-running' : ''}`} aria-hidden="true" />
+      <span className="chat-work-ledger-heading">{t('agent.chat.workLedger.todoTitle', 'Todo')}</span>
+      <span className="chat-work-ledger-progress">{countLabel}</span>
+    </span>
+  );
+
+  if (live) {
+    return (
+      <section
+        data-testid="chat-work-ledger-dock"
+        data-presentation="persistent"
+        className="chat-work-ledger-dock is-live"
+        aria-label={t('agent.chat.workLedger.title', 'Agent work ledger')}
+      >
+        {summary}
+        <div data-testid="chat-work-ledger-panel" className="chat-work-ledger-panel">
+          <TaskList items={displayItems} prioritizeActive />
+        </div>
+      </section>
+    );
+  }
 
   return (
-    <div data-testid="chat-work-ledger-dock" className="chat-work-ledger-dock" tabIndex={0}>
-      <div data-testid="chat-work-ledger-summary" className="chat-work-ledger-summary">
-        <span className={`chat-work-ledger-dot ${counts.inProgress > 0 ? 'is-running' : ''}`} aria-hidden="true" />
-        <span>{countLabel}</span>
-      </div>
-      <div data-testid="chat-work-ledger-popover" className="chat-work-ledger-popover">
-        <div className="chat-work-ledger-popover-title">
-          {t('agent.chat.workLedger.todoTitle', 'Todo')}
-        </div>
+    <details
+      data-testid="chat-work-ledger-dock"
+      data-presentation="disclosure"
+      className="chat-work-ledger-dock is-terminal"
+    >
+      <summary className="chat-work-ledger-disclosure-toggle">
+        {summary}
+        <IconChevronRight className="chat-work-ledger-chevron" size={14} stroke={2.2} aria-hidden="true" />
+      </summary>
+      <div data-testid="chat-work-ledger-panel" className="chat-work-ledger-panel">
         <TaskList items={displayItems} />
       </div>
-    </div>
+    </details>
   );
 }
 
-function TaskList({ items }: { items: RuntimeWorkLedgerItem[] }) {
+function TaskList({
+  items,
+  prioritizeActive = false,
+}: {
+  items: RuntimeWorkLedgerItem[];
+  prioritizeActive?: boolean;
+}) {
   if (items.length === 0) return null;
 
-  const maxDisplay = 10;
-  const sorted = [...items].sort(byTaskIdAsc);
-  const needsTruncation = sorted.length > maxDisplay;
-  const visibleItems = needsTruncation
-    ? [...items]
-        .sort((a, b) => {
-          const statusOrder: Record<CanonicalTaskStatus, number> = {
-            in_progress: 0,
-            pending: 1,
-            completed: 2,
-          };
-          const byStatus = statusOrder[taskStatus(a.status)] - statusOrder[taskStatus(b.status)];
-          return byStatus || byTaskIdAsc(a, b);
-        })
-        .slice(0, maxDisplay)
-    : sorted;
-  const hiddenItems = needsTruncation ? items.filter((item) => !visibleItems.some((visible) => visible.id === item.id)) : [];
-  const hiddenCounts = taskCounts(hiddenItems);
-  const hiddenSummary = hiddenItems.length
-    ? [
-        hiddenCounts.inProgress ? `${hiddenCounts.inProgress} in progress` : '',
-        hiddenCounts.pending ? `${hiddenCounts.pending} pending` : '',
-        hiddenCounts.completed ? `${hiddenCounts.completed} completed` : '',
-      ]
-        .filter(Boolean)
-        .join(', ')
-    : '';
+  const statusOrder: Record<CanonicalTaskStatus, number> = {
+    in_progress: 0,
+    pending: 1,
+    completed: 2,
+  };
+  const visibleItems = [...items].sort((a, b) => {
+    if (prioritizeActive) {
+      const byStatus = statusOrder[taskStatus(a.status)] - statusOrder[taskStatus(b.status)];
+      if (byStatus) return byStatus;
+    }
+    return byTaskIdAsc(a, b);
+  });
 
   return (
-    <div id="agent-task-list" data-testid="agent-task-list" style={{ marginTop: '8px' }}>
-      <div style={{ display: 'grid', gap: '6px' }}>
+    <div id="agent-task-list" data-testid="agent-task-list" className="chat-work-ledger-list">
+      <div className="chat-work-ledger-list-grid">
         {visibleItems.map((item) => {
           const status = taskStatus(item.status);
           const blockedBy = item.blockedBy ?? [];
@@ -201,48 +214,32 @@ function TaskList({ items }: { items: RuntimeWorkLedgerItem[] }) {
           return (
             <div
               key={item.id}
-              style={{
-                display: 'grid',
-                gridTemplateColumns: '18px minmax(0, 1fr)',
-                gap: '8px',
-                alignItems: 'start',
-                fontSize: '11px',
-                lineHeight: 1.45,
-              }}
+              className={`chat-work-ledger-item is-${status}${isBlocked ? ' is-blocked' : ''}`}
             >
               <TaskStatusIcon status={status} />
-              <div style={{ minWidth: 0 }}>
-                <span
-                  style={{
-                    color: isCompleted || isBlocked ? 'var(--text-tertiary)' : 'var(--text-secondary)',
-                    fontWeight: isInProgress ? 700 : 500,
-                    textDecoration: isCompleted ? 'line-through' : 'none',
-                  }}
-                >
+              <div className="chat-work-ledger-item-body">
+                <span className="chat-work-ledger-item-title">
                   {taskText(item)}
                 </span>
                 {item.owner && (
-                  <span style={{ color: 'var(--text-tertiary)' }}>
+                  <span className="chat-work-ledger-item-meta">
                     {' '}
                     (@{item.owner})
                   </span>
                 )}
                 {isBlocked && (
-                  <span style={{ color: 'var(--text-tertiary)' }}>
+                  <span className="chat-work-ledger-item-meta">
                     {' '}
                     blocked by {blockedBy.map((id) => `#${id}`).join(', ')}
                   </span>
                 )}
                 {isInProgress && !isBlocked && taskActiveText(item) !== taskText(item) && (
-                  <div style={{ color: 'var(--text-tertiary)', marginTop: '1px' }}>{taskActiveText(item)}...</div>
+                  <div className="chat-work-ledger-active-form">{taskActiveText(item)}...</div>
                 )}
               </div>
             </div>
           );
         })}
-        {hiddenSummary && (
-          <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>... +{hiddenSummary}</div>
-        )}
       </div>
     </div>
   );

@@ -6,6 +6,8 @@
 >
 > 修复账本滚动更新：2026-07-17；Group 0 与 Group 4 的既有证据门保持关闭。对当前 checkout 和线上 A2A 故障截图做 wiring/path 复核后，旧的 43/103 完成声明被主动撤销：`P1-004`、`SES-CONSUMER-001`、`A2A-TERMINAL-001`、`TEAM-FANOUT-001`、`ROOT-TREE-001` 五个 leaf 因 server-side read-only 未执行、Peer A2A 仍被并入 Sub-agent、terminal outcome 未关闭 root item、Team member model 未进入 worker、Team member implementation Session 暴露到普通列表而重开。五个回归的代码、迁移、typed consumer 与测试已由 commit `b9852f37f` 进入 production；backend=`a64092a1-395b-48c2-9853-83ff9b45c2ae`、backend-api=`ab14d317-3c29-4b74-9d31-341e778f92b7`、frontend=`3ff852aa-e078-464c-80c7-7568b1272a2a` 均 `SUCCESS`。production migration actual/expected head 均为 `collaboration_runtime_closure_0717`，148-table/4-trigger readiness `issues=[]/ready=true`，backend health=`ok`、RLS=`app_rls/strict/non-superuser/non-BYPASSRLS`、三个 daemon 与 sandbox healthy，frontend HTTP 200。首次 backend-api deployment `3c50f41e-aa94-4ff2-96d6-1f518d3b4919` 在 writer migration 前按设计 fail-closed；schema ready 后从同一 commit archive 重提成功，没有放宽 readiness 或改写业务数据。由于 authenticated deny/read、真实 Team model route、terminal/root reconciliation 与三类协作 browser canary 尚未执行，五个 leaf 当前统一记为 `in_progress-deployed-pending-canary`，业务分母仍为 **38/103 closed**，不是 43/103；本轮未新增 canonical ID，也未把“部署成功”冒充行为验收完成。Group 4 exact-source commit=`4e385d423` 的既有 return-storm/recovery 证据仍记录在 `EVID-G4-*`。2026-07-15T13:37Z 因 production `backend-volume` 在重启批次中从约 24.8 GB 急升到 28.65 GB，Group 1 曾显式暂停；`EVID-G8-PRE-001/002/003` 已分别关闭继续写放大、transaction lifecycle 与当次容量事故处置，核心数据停止门成立。B-01 发布后同挂载点 `df -B1 /data/agents` 为 used=`11,360,583,680` bytes（24%），未执行新的清理或核心数据删除。三个 Group 8 前置证据仍不关闭任何 Group 8 leaf 或 `MISS-RETENTION-001`；Object Storage、snapshot CAS、sealed T0 archive、T2 authority/replay 与跨资产 retention 仍未完成。
 >
+> 最新 Session live presentation 复核继续重开同一个 `SES-CONSUMER-001`，不增加分母：生产截图证明旧 `EVID-G2-015` 的 typed section 部署并未覆盖公开 assistant prose、Composer Task ledger、socket read-model invalidation 与 canonical final artifact 消费。当前代码已按 `EVID-G2-016` 完成本地 Red→Green、frontend full/build 与浏览器 E2E，但三服务发布和 authenticated production canary 尚未完成，因此 canonical 状态为 `in_progress-local-green`，38/103 分母不变。
+>
 > 组合输入：`agent-native-atomic-review-2026-07-14.md`、`agent-native-extreme-boundary-atomic-review-2026-07-14.md`、`unified-context-assembly-and-progressive-disclosure-2026-07-14.md`、`session-v2-cc-codex-alignment-contract-2026-07-14.md`、修订后的 `reusable-agent-native-atomic-review-prompt.md`，以及当前 Hive / FreeCode / Codex 本地源码。
 >
 > 本地基线快照：FreeCode `7dc15d6c8fb0c40c7fcc02ce9b58204324252632`；claw-code Python/Rust `d229a9b022d4845d28a728677e6a6b7c22ec5a2e`；claude-code-org `a99de1bb3c0c301b83b784abbcdb7a3674b2cd45`；Codex `5c19155cbd93bfa099016e7487259f61669823ff`。四个对照仓库的 tracked source 均无 diff；各自仅有未跟踪的本地索引、审查文档或 assistant 配置，不作为源码证据。
@@ -1370,7 +1372,7 @@ Group 0 是全局证据门，不拥有业务 leaf。下面 103 行必须与 cano
 - P1 | SES-PROJECTION-001 | closed:EVID-G2-011 | user/live projection 精确 redaction content 但保留 item、parent、invocation、result 与 sequence identity
 - P2 | SES-PROSE-001 | closed:EVID-G2-012 | unknown/summary/private/final phase 保持 typed；平台不生成固定 reasoning/final prose
 - P2 | SES-TRANSPORT-001 | closed:EVID-G2-013 | persist-before-publish、transactional outbox、ready/highest-contiguous cursor 与 gap recovery 共用 canonical envelope
-- P1 | SES-CONSUMER-001 | in_progress-deployed-pending-canary:EVID-G2-015 | backend envelope、canonical ThreadItem、frontend reducer/timeline/right rail 已将 Sub-agent、Agent Team、Peer A2A 三分并同源部署；仍待 browser collaboration canary
+- P1 | SES-CONSUMER-001 | in_progress-local-green:EVID-G2-016 | 三类协作 typed section 保持；新增公开 assistant prose、固定 Task ledger、live query invalidation 与 canonical final artifact consumer 已本地 Green，待三服务发布和 authenticated browser canary
 <!-- canonical-ledger-end -->
 
 ### 12.3 Group 修复证据索引
@@ -1382,7 +1384,7 @@ Group 0 是全局证据门，不拥有业务 leaf。下面 103 行必须与 cano
 |---:|---|---|---|---|
 | 0 | `EVID-G0-*` | 0 leaf / 0 Missing | `closed`：`EVID-G0-001/002/003/004/005/006`；文档 Git truth、owner/path/decision/scenario CI、11 个 Group 上下文包、90 个去重 `@` 文档入口、跨仓快照与 fake-provider/PG/Redis harness 基座成立 | 后续任何新增本地 `@docs` 必须先进入 Git 并同步上下文包索引；业务场景 Green 仍由 owner Group 负责 |
 | 1 | `EVID-G1-*` | 16 leaf / 0 Missing | `in_progress`：15/16 closed；`P1-004` 已由 `b9852f37f` 同源部署，状态为 `deployed-pending-canary` | 验证 `delegation_run` 的 start/steer/rename/delete/Team/Workflow/Plan 等 mutation 均返回 typed 409，owner 与 manager 都不能接管只读 peer Session；read transcript/workbench/export 必须保持可用 |
-| 2 | `EVID-G2-*` | 14 leaf / 0 Missing | `in_progress`：13/14 closed；`SES-CONSUMER-001` 的 backend/frontend typed consumer、full/build 与三服务部署已完成 | 执行真实 browser 路径，验证 Sub-agent/Team/Peer A2A 三分、read-only A2A window 与 failure terminal；不得用 deployment success 冒充行为 canary |
+| 2 | `EVID-G2-*` | 14 leaf / 0 Missing | `in_progress`：13/14 closed；`SES-CONSUMER-001` 的 live prose/Task/query/artifact consumer 已 `in_progress-local-green:EVID-G2-016` | 先完成三服务 exact-source 发布，再执行真实 browser 路径：公开 prose 无刷新出现、Task 常驻/terminal 折叠、交付物可见，并复核 Sub-agent/Team/Peer A2A 三分与 read-only A2A window；不得用组件 fixture 或 deployment success 冒充行为 canary |
 | 3 | `EVID-G3-*` | 7 leaf / 0 Missing | `in_progress`：4/7 closed；三项 regression 的 migration/apply/deploy 已完成，状态为 `deployed-pending-canary` | 执行 Team model route、旧 Team Session hidden、terminal task/root coverage 重算和 restart/idempotency canary；Group 4 只消费 admitted item/result refs，不另造 root ledger |
 | 4 | `EVID-G4-*` | 6 leaf / 0 Missing | `closed`：`EVID-G4-001`–`006`；code/migration、real-PG sequence/CAS/lease/epoch、100×1 MiB ref-only fan-in、partial/late/duplicate/revision/crash recovery、backend/frontend 全量回归、三服务 exact-source deployment 与 production backfill/schema/RLS/hash/health 证据齐全 | 后续 Group 若恢复 inline result bytes、另造 parent mailbox、破坏 ref reader authority、epoch order 或 result immutability，必须重开对应 leaf；当前下一施工入口为 Group 5 |
 | 5 | `EVID-G5-*` | 2 leaf / 0 Missing | `open` | 写 fleet scheduler/trigger benchmark、公平性、分页续扫与 control-plane reserve |
@@ -2732,6 +2734,42 @@ context_read_receipt:
 - tests：backend 协作族=`382 passed in 11.84s`；backend full=`7567 passed, 2 skipped in 371.77s`；frontend ThreadItem/reducer/timeline=`3 files / 51 passed`，A2A runtime-panel exact test=`1 passed / 108 skipped`，frontend full=`120 files / 709 tests`。`npm run build` 通过，7363 modules，AgentDetail=`335499/380000` bytes、gzip=`92583/115000`，vendor=`591449/620000`、gzip=`186474/200000`。
 - commit / deploy：backend、frontend A2A typed consumer、migration、测试与证据进入原子 commit `b9852f37f`；Session disclosure 独立 commit `92500e4c0` 是其父级稳定 frontend 基线。三服务 deployment IDs 与 `EVID-G1-017` 相同且均 `SUCCESS`；browser collaboration canary 未执行。
 - status：`in_progress-deployed-pending-canary`。
+
+#### EVID-G2-016：公开 assistant prose、固定 Task ledger、实时 query 与 canonical artifact 消费
+
+```yaml
+context_read_receipt:
+  aa_entry: "§9 Group 2 + §12.1/§12.2 SES-CONSUMER-001"
+  leaf_ids: ["SES-CONSUMER-001"]
+  documents:
+    - ref: "@docs/session-v2-cc-codex-alignment-contract-2026-07-14.md §17.2 / §17.7 / §18 / §28.5"
+      role: "design-and-acceptance"
+      decision_consumed: "公开 assistant text、private reasoning、Task durable ledger、live/reload/reconnect 与 final artifact 必须由 canonical Session truth 一致投影"
+    - ref: "@docs/runtime-model-agency-constraint-audit-2026-07-13.md"
+      role: "model-agency"
+      decision_consumed: "平台不能把公开模型正文改写成 Thinking，也不能让 transport/projection failure 反向改写模型 round"
+  source_baselines:
+    hive_head: "5d9f18fe2"
+    freecode_head: "7dc15d6c8fb0c40c7fcc02ce9b58204324252632"
+    codex_head: "5c19155cbd93bfa099016e7487259f61669823ff"
+  conflicts_or_deltas:
+    - "FreeCode/CC 保留并展示公开 assistant text，但不强制 phase；Codex MessagePhase 明确允许 None，只有显式 Commentary 才有 typed commentary 语义"
+    - "旧 ChatWorkLedgerDock 依赖 hover/focus、静默最多 10 条；task mutation 同时作为普通工具行重复展示"
+    - "canonical Session event 已进 reducer，但 socket projector 未在 authoritative tool_result 后刷新 read model；用户必须刷新才看见 Task/状态变化"
+    - "terminal final 只引用文字 source block，没有把已治理 current-turn ChatArtifact 作为 canonical parts 交给 frontend deliverables consumer"
+  evidence_sink: "EVID-G2-016"
+```
+
+- 原始症状/path proof：production 截图中公开进度全部退化为重复 `Thinking / Provider-private reasoning was used`，`task_create/task_update/A2A step` 成为平铺日志，Composer 上方没有常驻 Task，状态与交付物要刷新后才变化。源码追踪确认 `session_model_round → SessionEventOutbox → web_chat_run_orchestrator → sessionSocketEventProjector → SessionEventStore → chatDisclosureReducer/ChatWorkLedgerDock/right rail` 是唯一应修 live path；只改 fixture/CSS 不算接线。
+- Red：canonical `tool_result` 到达后 read-model invalidation 缺失；artifact 在 outcome seal 后从 `owned` 漂移为 `quarantined` 仍可能被 final 投影；已提交 public envelope 的即时 broadcast 抛错会把成功模型 round 反向报错。三条测试分别先得到预期失败，再进入 Green。既有前端 Red 还覆盖 hover-only Task、静默 top-10、无 phase assistant text 被丢/标 Thinking、Task mutation 永久占行与 live socket 必须刷新。
+- public prose Green：`seal_model_response()` 只把 direct-user public content snapshot/completed event ID 放入 `live_visible_event_ids`；private reasoning 不进入该集合。round/outbox 与 registry 均 commit 后即时广播同一 durable envelope；即时 transport 失败只记录 warning，由 outbox 以 stable event ID 重放。frontend 把 `assistant_text(unknown)` 渲染为 Markdown prose，显式 commentary 保持 commentary，private reasoning 保持克制 `Thinking`；terminal source item 由 final render owner 去重。
+- Task/live Green：`ChatWorkLedgerDock` 在 `pending/queued/running/waiting` 常驻 Composer 上方并显示全量 authorized ledger，terminal 保留摘要且用原生 `<details>` 折叠；成功 `task_create/update/stop` 进入 tool history，failed/blocked 继续 surface。canonical task call、committed tool result、runtime kind、terminal run 使 Session/Runtime/Work-Ledger query 失效；live 时另有 5 秒 polling 作恢复兜底，不作为唯一更新机制。
+- artifact Green：`_record_canonical_terminal_artifact_selection()` 在 outcome seal 前只绑定模型声明/唯一 current-turn write 且匹配 tenant/agent/session/run/root-user/root-session、`authority_state=owned` 的 artifact；`prepare_and_seal_run_outcome()` 保存 refs/parts/manifest hash，`commit_terminal_outcome()` 重新锁行校验。authority/manifest 漂移进入 typed reconciliation；frontend final 从 canonical `parts` 投影 deliverables，不从文件名或任意历史 write 猜交付物。
+- Prompt/北极星：多步任务的 behavior contract 要求首次工具调用前和关键里程碑给简洁公开进度，但明确禁止 hidden reasoning/provider-private CoT。该要求恢复 CC 可见工作过程，不强迫模型暴露推理，也不让平台 authored prose 冒充模型。
+- tests/build：backend focused=`34 passed in 6.76s`，仓级 full=`7569 passed, 2 skipped in 374.14s`；architecture ledger=`11 passed`；scoped Ruff check/format 全绿。frontend focused=`7 files / 197 tests`；full Vitest=`120 files / 720 tests`；Playwright Workbench desktop/narrow/dark、a11y、offline reconnect、live canonical prose 与 1000 artifacts=`12 passed`；production build/budget 通过，AgentDetail=`336836/380000` bytes、gzip=`92843/115000`，vendor=`591449/620000`、gzip=`186474/200000`。Markdown/diff check 在 commit 前必须全绿。
+- migration/backfill/rollback：本项不新增 DB schema，不重写历史 transcript/Task/artifact。旧 canonical events 通过同一 reducer 在 reload 时获得新呈现；Task/Artifact truth 不复制。代码回滚可恢复旧 consumer，但会重新打开 live visibility/refresh/deliverable 断点；durable outbox/events/artifacts 保持可重放，不需删除数据。
+- 七原子：Input=public provider text + canonical tool/task events + current-turn artifact declaration；Authority=Session visibility、RuntimeTask/ChatArtifact exact ownership；Execution=round seal/outbox→socket、single reducer、ledger query、terminal outcome；Evidence=event/item ID、outbox envelope、task metadata、artifact manifest hash；Recovery=outbox replay、query invalidation/polling、reload/reconnect、typed reconciliation；Consumption=Run disclosure、Composer Task、right-rail deliverables；Acceptance=Red→Green、full/backend/frontend/build/E2E、三服务 exact-source 和 authenticated browser live/reload canary。
+- status：`in_progress-local-green`；代码提交、三服务发布与 production browser canary 完成前不得改为 closed，38/103 分母不变。
 
 #### EVID-G3-008：terminal root、Team model 与 hidden member Session 回归闭环
 

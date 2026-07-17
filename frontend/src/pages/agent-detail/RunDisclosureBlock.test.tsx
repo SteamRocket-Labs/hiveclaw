@@ -117,6 +117,27 @@ describe('RunDisclosureBlock', () => {
     expect(markup).not.toContain('RAW FILE CONTENT');
   });
 
+  it('renders canonical assistant prose verbatim instead of labeling it as Thinking', () => {
+    const markup = renderToStaticMarkup(<RunDisclosureBlock timeline={{
+      id: 'run-prose',
+      status: 'running',
+      steps: [step({
+        id: 'assistant-text-1',
+        kind: 'prose',
+        title: 'Assistant update',
+        status: 'done',
+        details: 'I found the projection gap and am validating live delivery.',
+        visibility: 'visible',
+        presentation: 'process',
+      })],
+    }} />);
+
+    expect(markup).toContain('data-testid="run-disclosure-prose"');
+    expect(markup).toContain('I found the projection gap and am validating live delivery.');
+    expect(markup).not.toContain('Thinking');
+    expect(markup).not.toContain('Progress update');
+  });
+
   it('collapses completed Thinking while keeping A2A lifecycle progress visible', () => {
     const markup = renderToStaticMarkup(
       <RunDisclosureBlock

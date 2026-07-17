@@ -3,6 +3,7 @@ import type { AgentChatMessage } from './chatRuntime';
 export type RunStepKind =
   | 'reasoning'
   | 'commentary'
+  | 'prose'
   | 'tool'
   | 'search'
   | 'file'
@@ -88,6 +89,7 @@ const A2A_TOOLS = new Set([
   'send_message_to_agent',
 ]);
 const SUBAGENT_TOOLS = new Set(['check_subagent', 'spawn_subagent']);
+const TASK_LEDGER_MUTATION_TOOLS = new Set(['task_create', 'task_stop', 'task_update']);
 
 // Source-checked against the 144 canonical @tool registrations on 2026-07-17.
 // This is deliberately an allowlist: new/unknown tools stay surfaced until a
@@ -186,6 +188,7 @@ export function getToolStepPresentation(
   if (isDedicatedToolCardMessage(message)) return 'external';
   if (status === 'failed' || status === 'blocked' || status === 'cancelled') return 'surface';
   const name = String(message.toolName || '').trim().toLowerCase();
+  if (TASK_LEDGER_MUTATION_TOOLS.has(name)) return 'tool_history';
   return FOLDABLE_RETRIEVAL_TOOL_NAMES.has(name) ? 'tool_history' : 'surface';
 }
 const SESSION_NATIVE_DISCLOSURE_EVENTS = new Set([
@@ -286,6 +289,18 @@ function summarizeToolCompletion(message: AgentChatMessage): string {
 function summarizeToolMessage(message: AgentChatMessage): string {
   const name = (message.toolName || '').toLowerCase();
   if (message.toolName === 'tool_search') return 'Checking available tools';
+  if (TASK_LEDGER_MUTATION_TOOLS.has(name)) {
+    const taskLabel = stringArg(message, [
+      'activeForm',
+      'active_form',
+      'subject',
+      'title',
+      'content',
+    ]);
+    if (taskLabel) return compactText(taskLabel, 120);
+    const taskId = stringArg(message, ['task_id', 'taskId', 'id']);
+    return taskId ? `Task ${compactText(taskId, 100)}` : 'Task ledger updated';
+  }
   if (message.toolMeta?.kind === 'user_clarification') {
     const count = message.toolMeta.questions.length;
     return count === 1 ? '1 question' : `${count} questions`;
@@ -367,6 +382,7 @@ function kindForToolMessage(message: AgentChatMessage): RunStepKind {
 function titleForToolMessage(message: AgentChatMessage): string {
   if (message.toolName === 'tool_search') return 'Loading tools';
   const name = (message.toolName || '').toLowerCase();
+  if (TASK_LEDGER_MUTATION_TOOLS.has(name)) return 'Update tasks';
   if (name === 'read_file' || name === 'fs_read' || name === 'read_document') return 'Read file';
   if (name === 'write_file' || name === 'fs_write') return 'Write file';
   if (name === 'edit_file') return 'Edit file';
@@ -559,7 +575,22 @@ function buildStep(message: AgentChatMessage, index: number): RunStepSnapshot | 
     };
   }
 
-  if (canonicalKind === 'assistant_text' || canonicalKind === 'assistant_final') {
+  if (canonicalKind === 'assistant_text') {
+    return {
+      id: stepIdForMessage(message, index),
+      kind: 'prose',
+      title: 'Assistant update',
+      status,
+      startedAt: message.timestamp,
+      completedAt: status === 'done' ? message.timestamp : undefined,
+      summary,
+      details: message.content || undefined,
+      visibility: 'visible',
+      presentation: 'process',
+    };
+  }
+
+  if (canonicalKind === 'assistant_final') {
     return null;
   }
 

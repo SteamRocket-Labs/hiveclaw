@@ -32,7 +32,12 @@ type RunRenderItem =
 export function getRunStepPresentation(step: RunStepSnapshot): RunStepPresentation {
   if (step.presentation) return step.presentation;
   if (step.status === 'failed' || step.status === 'blocked' || step.status === 'cancelled') return 'surface';
-  if (step.kind === 'reasoning' || step.kind === 'commentary' || step.kind === 'compaction') return 'process';
+  if (
+    step.kind === 'reasoning'
+    || step.kind === 'commentary'
+    || step.kind === 'prose'
+    || step.kind === 'compaction'
+  ) return 'process';
   if (step.kind === 'tool' || step.kind === 'search' || step.kind === 'file') return 'tool_history';
   return 'surface';
 }
@@ -225,16 +230,20 @@ function RunStepRow({ step }: { step: RunStepSnapshot }) {
   );
 }
 
-function commentaryText(step: RunStepSnapshot): string {
+function proseText(step: RunStepSnapshot): string {
   if (typeof step.details === 'string' && step.details.trim()) return step.details.trim();
   return step.summary?.trim() || '';
 }
 
-function RunCommentary({ step }: { step: RunStepSnapshot }) {
-  const content = commentaryText(step);
+function RunProse({ step }: { step: RunStepSnapshot }) {
+  const content = proseText(step);
   if (!content) return null;
   return (
-    <article data-testid="run-disclosure-commentary" className="run-commentary">
+    <article
+      data-testid={step.kind === 'commentary' ? 'run-disclosure-commentary' : 'run-disclosure-prose'}
+      data-kind={step.kind}
+      className="run-commentary"
+    >
       <MarkdownRenderer content={content} className="run-commentary-content" />
     </article>
   );
@@ -358,7 +367,7 @@ function ToolActivityGroup({ steps }: { steps: RunStepSnapshot[] }) {
 
 function RunTimelineItem({ item }: { item: RunRenderItem }) {
   if (item.kind === 'tool_group') return <ToolActivityGroup steps={item.steps} />;
-  if (item.step.kind === 'commentary') return <RunCommentary step={item.step} />;
+  if (item.step.kind === 'commentary' || item.step.kind === 'prose') return <RunProse step={item.step} />;
   if (item.step.kind === 'compaction') return <RunCompactionBoundary step={item.step} />;
   return <RunStepRow step={item.step} />;
 }

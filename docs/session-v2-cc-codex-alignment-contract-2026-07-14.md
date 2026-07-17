@@ -1,6 +1,6 @@
 # Hive Session V2：CC 底线与 Codex 抽象对齐契约（2026-07-14）
 
-> 状态：设计权威；Group 2/3/4 substrate 已分别形成并部署，但 2026-07-17 live-entry/path 复核重新打开 `P1-004`、`SES-CONSUMER-001`、`A2A-TERMINAL-001`、`TEAM-FANOUT-001`、`ROOT-TREE-001` 五个回归 leaf。当前修复已随 commit `b9852f37f` 三服务同源部署并完成 production migration/readiness/health；authenticated/browser 行为 canary 前总报告仍按 Group 1/2/3 `in_progress-deployed-pending-canary` 记账，完整 Session V2 继续由 Group 6/7/8/9/10 验收。
+> 状态：设计权威；Group 2/3/4 substrate 已分别形成并部署，但 2026-07-17 live-entry/path 复核重新打开 `P1-004`、`SES-CONSUMER-001`、`A2A-TERMINAL-001`、`TEAM-FANOUT-001`、`ROOT-TREE-001` 五个回归 leaf。协作类型修复已随 commit `b9852f37f` 三服务同源部署并完成 production migration/readiness/health；随后真实截图再次证明 `SES-CONSUMER-001` 的公开 prose、Task、live refresh 与 artifact 消费仍未闭环，当前 §28.5 / `EVID-G2-016` 仅为 `in_progress-local-green`。新代码发布和 authenticated/browser 行为 canary 前，总报告不得恢复 Group 2 closed；完整 Session V2 继续由 Group 6/7/8/9/10 验收。
 >
 > 集成关系：本文裁决 Session Event / Item / Reducer，不独立定义当前断点总数或程序施工顺序。fleet、单根 Session 的 100-way root execution、Context Resource Plane、跨渠道 A2A 与 canonical ledger 统一以 `docs/agent-native-unified-atomic-review-2026-07-14.md` 为准。
 >
@@ -2255,13 +2255,15 @@ Artifacts / Deliverables（如果存在）
 
 ### 17.2 “Thinking” 的显示
 
-界面可显示：
+界面必须区分三种模型内容，不能只靠一个 `Thinking` 标签兜底：
 
-- `Thinking`：公开 commentary 或 provider-safe reasoning summary；
+- **公开 assistant text**：CC / FreeCode 不要求 provider 提供 phase；无 phase 的模型公开 text 以 `assistant_text(unknown)` 原字节持久化并直接渲染为过程正文，不标成 `Thinking`，也不伪造成 Codex `Commentary`；
+- **显式 commentary**：只有 provider 明确给出 commentary phase 时才使用 typed `assistant_commentary`，仍以公开正文展示；
+- `Thinking`：只表达 private reasoning 曾发生或 provider-safe reasoning summary；不得显示私有 Chain of Thought，也不得拿它承载本应公开的 assistant text；
 - `Working`：当前工具/Hook/Workflow/Sub-agent 活动；
 - `Processed`：已完成的过程组。
 
-展开层必须标明内容语义，避免把 commentary 冒充 raw reasoning。
+展开层必须标明内容语义，避免把公开正文冒充 raw reasoning。CC/FreeCode 的能力底线是保留并展示公开 assistant text；Codex `MessagePhase::Commentary` 只能作为显式 phase 的加法，不能反向要求所有 provider 都提供该字段。
 
 ### 17.3 右侧运行面板
 
@@ -2321,6 +2323,16 @@ Composer 随 Run 状态改变提交合同：
 - Stop 请求若丢失 ACK，显示“正在确认停止请求”，用原 idempotency key 查询 receipt；不能直接回到 running，也不能换 key 再发一次；
 - `interrupt_and_replace` 不是“同时发送消息并乐观 Stop”，而是一个服务端编排的原子意图：旧 Run settlement 后启动新 Turn；
 - final 下方的点赞/点踩属于 `EvaluationFeedbackV2`，与 Composer、steer queue 和 ChatMessage 分开；支持填写理由、修改和撤回。
+
+### 17.7 Composer 上方的 Task 是 durable ledger，不是过程日志
+
+`task_create` / `task_update` / `task_stop` 是对 Agent Work Ledger 的 mutation；它们的结果必须由同一个 durable ledger 投影到 Composer 上方，不能各自变成一条长期占据主时间线的 `task_create`/`task_update` 日志。
+
+- Run 为 `pending/queued/running/waiting` 时，Task 面板固定常驻在 Composer 上方，完整显示全部授权 task；in-progress 优先，但不得静默只留前 10 条或把其余 task 变成不可恢复的 `+N` 文案；
+- Run terminal 后，摘要仍固定存在，明细改为显式可访问的 disclosure；默认折叠只改变呈现，不删除 ledger、状态、依赖或 owner；
+- 正常成功的 task mutation 归入可展开 tool history，不重复成为永久主行；mutation 失败/blocked/reconciliation 必须立即 surface，并保留恢复证据；
+- canonical `tool_call` 只表示 mutation 开始，真正刷新 ledger 的权威边界是 committed `tool_result`；socket event 应使 Session/Runtime/Work-Ledger query 失效，5 秒 polling 只能作为 transport 降级兜底；
+- live、reload、reconnect、history 必须看到同一个 task 集合和状态；CSS hover 不是可访问性或持久性的替代品。
 
 ---
 
@@ -3170,7 +3182,7 @@ flowchart LR
 | CC / Codex 源码基线核对 | 已完成 | 使用冻结 commit；已补 steer/input queue 与 typed history/recovery 对照 |
 | 2026-07-15 生产事故取证 | 局部完成 | Railway 已证实 1.13 秒内 5 次 WS accepted；保留日志不足以唯一确认某个 PermissionError，未作伪结论 |
 | Session V2 完整目标契约 | 已完成 | 本文已覆盖 CC semantic floor、Codex additive delta、exact event/hook matrix、Turn/Run/Round、typed reconciliation、input admission/carry-forward、command/result/outcome/obligation/assembly/saga/tool aggregates、可重放 child progress、writer epoch、四状态、steer/queue/replace/Stop/feedback、迁移与验收 |
-| 当前 Hive 七原子审计 | 已完成并持续更新；5 leaf 已部署、行为验收仍 open | 2026-07-17 wiring/path 复核发现 server read-only、Peer A2A consumer、terminal root、Team model 与 Team Session surface 五个真实回归；代码、additive migration、三类 typed consumer 与三服务发布已完成，但 authenticated/browser canary 未执行，因此总报告仍维持 38/103，详见 §28.4 |
+| 当前 Hive 七原子审计 | 已完成并持续更新；5 leaf 仍 open | §28.4 五个协作回归已部署但行为验收 open；§28.5 又以真实截图坐实 `SES-CONSUMER-001` 的 live presentation/product-consumption 缺口。最新代码仅 local Green，三服务发布与 authenticated browser canary 前总报告仍维持 38/103 |
 | Runtime/Event V2 | Group 2 闭环 | accepted input、command、event/outbox、stable item/lifecycle/ordinal、typed projection 与 writer epoch substrate 已进入 live path；Group 9 仍拥有全历史 backfill、V1 writer 退出与最终 cleanup |
 | Model result/sidecar isolation | Group 2 + Group 4 闭环 | Group 2 已建立 per-Round model result、obligation/assembly、tool pair、RunOutcomeSeal 与 terminal reconciliation；Group 4 已把高压 child result 收敛为 immutable bytes + ref-only ordered pages，trace/metric/T0 等 sidecar 失败不改写模型结果。Group 6/8 仍分别验收完整 context plane 与 durable evidence consumer |
 | WebSocket ready + contiguous recovery | Group 2 协议闭环 | 服务端 `session.ready`、attempt/generation、highest-contiguous cursor、gap/duplicate/out-of-order reducer 已实现；Group 9 仍拥有多标签页、真实浏览器重连和长时生产观察 |
@@ -3179,10 +3191,10 @@ flowchart LR
 | Durable result / parent fan-in | Group 4 闭环 | 100×1 MiB synthetic return storm 形成 4 个 25-ref page；完整 bytes 只在 immutable result truth，通过 governed reader 恢复；parent Prompt 不线性承载 raw child bytes。真实 100 个付费 child provider 曲线仍是独立 coverage gap |
 | Stop contract | Group 2 闭环 | cancel 使用 typed ControlInput receipt，accepted 后才进入 cancelling，terminal settlement/ACK 丢失重查/幂等恢复均有测试；前端不再乐观伪造 cancelled |
 | Evaluation Feedback V2 | 局部闭环 | 有 useful/misleading 和 feedback/memory sidecar；无 item/result target、文本/更新/撤回完整合同，且不得与 steer 混用 |
-| Frontend typed projection | canonical reducer 与 Peer A2A consumer 已部署、pending browser canary | canonical V2 event 单 reducer与 byte-faithful final 保持；`agent_team_activity`、`peer_a2a_activity`、`subagent_activity` 已成为三种 discriminated ThreadItem，`timelineModel`/right rail 分别消费 `agent_teams/peer_a2a/subagents`。frontend full/build/deploy 已绿；browser canary 未完成前 `SES-CONSUMER-001` 仍不得 closed |
+| Frontend typed projection | `in_progress-local-green:EVID-G2-016` | 三类协作 discriminated ThreadItem 保持；最新 local 实现新增公开 prose、Composer Task、canonical query invalidation 与 final artifact parts consumer，full/build/Playwright 已绿。该 source 尚未部署，production browser canary 前 `SES-CONSUMER-001` 不得 closed |
 | 数据迁移/backfill/cleanup | 本轮 additive head 已生产 apply；完整历史 cleanup 仍局部 | production head=`collaboration_runtime_closure_0717`；Team hidden surface、Peer A2A task-bound Session identity、terminal root drift 与历史 collaboration ThreadItem backfill 已由 writer migration 执行，148-table/4-trigger readiness clean；Group 9 的全历史/V1 cleanup 仍未完成 |
-| 自动化黄金轨迹验收 | 既有 Group 4 保持；本轮 regression local Green | 本轮初始 `9 failed` + migration missing revision `1 failed`，另有 authority-order 与 legacy A2A backfill 精确 Red；修复后 backend collaboration focused=`382 passed`、backend full=`7567 passed, 2 skipped`、real-PG migration=`214 passed`、frontend typed consumer=`51+1 passed`、frontend full=`120 files / 709 tests`，production build/bundle budget 全绿 |
-| Railway 行为修复与生产验收 | 本轮三服务同源部署与 schema/health 已绿；行为 canary 未完成 | backend=`a64092a1-395b-48c2-9853-83ff9b45c2ae`、backend-api=`ab14d317-3c29-4b74-9d31-341e778f92b7`、frontend=`3ff852aa-e078-464c-80c7-7568b1272a2a` 均 `SUCCESS`。仍须完成 deny/read、Team model、root coverage 与三类 collaboration UI canary 才恢复 closed 声明 |
+| 自动化黄金轨迹验收 | 既有 Group 4 保持；最新 live presentation local Green | `EVID-G2-016`：backend focused=`34 passed`、full=`7569 passed, 2 skipped`；frontend focused=`197`、full=`720`；Playwright Workbench=`12 passed`；build/budget、Ruff 与 architecture ledger 全绿。旧协作 migration/real-PG 证据仍保留在 §28.4 |
+| Railway 行为修复与生产验收 | 旧协作 source 已部署；最新 live presentation source 未部署 | 当前 production 仍是 `b9852f37f` 这一轮的 backend=`a64092a1-395b-48c2-9853-83ff9b45c2ae`、backend-api=`ab14d317-3c29-4b74-9d31-341e778f92b7`、frontend=`3ff852aa-e078-464c-80c7-7568b1272a2a`。必须发布 `EVID-G2-016` 的新 commit 并完成公开 prose/Task/live/artifact browser canary后才能更新本行 |
 
 ### 28.1 Group 2 实现与验收记录（2026-07-16）
 
@@ -3242,6 +3254,25 @@ Group 4 严格消费 Group 2 的 canonical Session event/item 与 Group 3 的 ro
 - **产品消费**：backend 必须分别输出 `agent_teams`、`peer_a2a`、`subagents`、`workflows`、`background`；canonical ThreadItem 必须分别使用 `agent_team_activity`、`peer_a2a_activity`、`subagent_activity`；frontend 只通过 generated union + canonical reducer 消费同名 typed section，不从标题、summary 或自然语言猜类型。runtime section 的 wire shape 是 `{schema,key,count,items}`，consumer 不能把 envelope 当 raw array 后静默读成空。
 
 当前实现状态：backend authority、terminal/root、Team model、hidden surface、typed runtime section、三类 canonical ThreadItem、frontend `timelineModel`/right rail 与 additive backfill 均已由 commit `b9852f37f` 部署；migration single head=`collaboration_runtime_closure_0717`。并行 Session disclosure 已由父级 commit `92500e4c0` 落定。focused backend=`382 passed`、backend full=`7567 passed, 2 skipped`、完整 real-PG migration=`214 passed`、frontend typed consumer=`51+1 passed`、frontend full=`120 files / 709 tests`，production build/bundle budget 全绿。production writer/API readiness、RLS/health 与 frontend HTTP 已绿；authenticated deny/read、真实 Team model route、terminal/root reconciliation 与三类 collaboration browser canary 完成前，总报告保持 `P1-004/SES-CONSUMER-001/A2A-TERMINAL-001/TEAM-FANOUT-001/ROOT-TREE-001` 重开。详细 Red→Green、deployment IDs、ownership 与残余 canary 只写在统一总报告 `EVID-G1-017`、`EVID-G2-015`、`EVID-G3-008`，避免本文形成第二份施工账本。
+
+### 28.5 Session live presentation 与交付物消费闭环（2026-07-17）
+
+本节由真实生产截图再次证伪：先前组件 fixture 能渲染，不代表生产 Session 真消费了同一条事实。线上仍出现公开工作说明丢失、重复 `Thinking`、`task_create/task_update` 占据时间线、Task 仅 hover/截断、状态必须刷新才变化、最终交付物为 0。该回归继续归 `SES-CONSUMER-001`，不新增 canonical leaf，也不把 Group 9 的完整历史/V1 cleanup 偷并进 Group 2。
+
+**CC / Codex 裁决：** FreeCode/CC 的 `sdkMessageAdapter.ts`、`REPL.tsx` 保留并流式展示模型公开 assistant text，但没有强制 commentary/final phase；Codex `protocol/src/models.rs::MessagePhase` 明确允许 `None` 以兼容 provider/legacy，并只把显式 `Commentary` 作为 additive typed phase。Hive 因此采用：无 phase 公开文字=`assistant_text(unknown)` 原字节；显式 commentary=`assistant_commentary`；private reasoning=`assistant_reasoning_private`。前两者是用户可见正文，只有最后一种可显示克制的 `Thinking` 存在性/安全摘要。
+
+**实现与 live wiring：**
+
+1. `session_model_round.seal_model_response()` 在 response/outbox 同事务提交后返回 public content event IDs；`web_chat_run_orchestrator._commit_session_model_response()` 从已提交 outbox 读取同一 envelope，在 round registry commit 后即时 broadcast。broadcast 失败只记录 warning 并由 durable outbox 重放，不得反向把已成功模型 round 改成失败。
+2. `sessionEventConsumer` 与 `chatDisclosureReducer` 把 canonical `assistant_text` 投影为 Markdown 过程正文；terminal final 的 source item 由 final render owner 去重，正文不会同时出现在 process/final。private reasoning 继续与公开文字分离。
+3. `ChatWorkLedgerDock` 在 live Run 中固定常驻 Composer 上方并显示全量授权 task；terminal 时保留固定摘要、明细进入原生 `<details>`。正常 task mutation 进入可恢复 tool history，失败/blocked 仍直接 surface。
+4. `sessionSocketEventProjector` 在 canonical task `tool_call` 开始、所有 committed `tool_result`、runtime kind 变化与 terminal run 上失效 Session/Runtime/Work-Ledger query；5 秒 polling 只是 socket/query 失效遗漏时的降级恢复。E2E 先完成 REST hydration，再注入 sequence 连续的 live canonical event，证明不是 fixture 覆盖 live store。
+5. terminal outcome 不再只携带 final text：模型声明且本 turn 已写、tenant/agent/session/run/root-user/root-session 全匹配、`authority_state=owned` 的 `ChatArtifact` 才进入 `assistant_final.parts`。seal→commit 间 authority/manifest 漂移进入 `needs_reconciliation`，不展示未授权或陈旧文件。
+6. Runtime behavior contract 要求多步任务在首次工具调用前及关键里程碑发送简短公开进度；这只要求模型公开可见工作说明，不要求或泄露 hidden reasoning。
+
+**Red→Green 与验收：** task `tool_result` 不刷新 read model、artifact authority 在 outcome seal 后漂移、即时 broadcast 失败污染已提交 round 三条新增回归均先按预期失败，再分别转绿。backend focused=`34 passed`、仓级 full=`7569 passed, 2 skipped`；frontend focused=`7 files / 197 tests`、full=`120 files / 720 tests`；Playwright Workbench desktop/narrow/dark/a11y/offline/live-prose/1000-artifact=`12 passed`；`npm run build` 通过，AgentDetail=`336836/380000` bytes、gzip=`92843/115000`，vendor=`591449/620000`、gzip=`186474/200000`；architecture ledger=`11 passed`，scoped Ruff 全绿。当前仍不得把本地 Green 写成 production closed。
+
+**七原子：** Input=provider public text、canonical task/tool events、current-turn artifact declarations；Authority=Session visibility + exact RuntimeTask/ChatArtifact ownership；Execution=round seal/outbox→socket、single Session reducer、ledger query 与 terminal outcome；Evidence=SessionEventOutbox、stable event/item ID、RuntimeTask metadata、artifact manifest hash；Recovery=outbox replay、query invalidation+polling、authority drift reconciliation、reload/reconnect reducer；Consumption=Run disclosure、Composer Task dock、right-rail deliverables；Acceptance=Red→Green、full frontend/backend、production build、browser live/reload/canary。部署和真实浏览器 canary 完成前，状态为 `in_progress-local-green:EVID-G2-016`。
 
 ---
 

@@ -646,6 +646,8 @@ async def seal_model_response(
     drafts: list[SessionEventDraft] = []
     prior_content_first_sequence: int | None = None
     prior_content_last_ordinal: int | None = None
+    content_draft_start = 0
+    content_draft_end = 0
     if int(continuation_index) == 0 and content_bytes:
         prior_content_first_sequence, prior_content_last_ordinal = (
             await db.execute(
@@ -660,6 +662,7 @@ async def seal_model_response(
             )
         ).one()
         next_ordinal = int(prior_content_last_ordinal) + 1 if prior_content_last_ordinal is not None else 0
+        content_draft_start = len(drafts)
         drafts.extend(
             [
                 SessionEventDraft(
@@ -696,7 +699,7 @@ async def seal_model_response(
                 ),
             ]
         )
-    visible_content_draft_count = len(drafts)
+        content_draft_end = len(drafts)
     private_reasoning = response_payload.get("reasoning_content")
     private_reasoning_bytes = private_reasoning if isinstance(private_reasoning, str) else ""
     if private_reasoning_bytes:
@@ -808,7 +811,7 @@ async def seal_model_response(
         ],
     )
     assistant_events = sealed_events[: len(drafts)]
-    content_events = sealed_events[:visible_content_draft_count]
+    content_events = sealed_events[content_draft_start:content_draft_end]
     first_sequence = min((event.sequence for event in sealed_events), default=0)
     last_content_sequence = max((event.sequence for event in assistant_events), default=0)
     if block_ledger and content_events:
@@ -823,6 +826,7 @@ async def seal_model_response(
         "last_content_sequence": last_content_sequence,
         "content_hash": content_hash,
         "block_ledger": block_ledger,
+        "live_visible_event_ids": [str(event.id) for event in content_events],
         "finish_reason": str(response_payload.get("finish_reason") or "unknown"),
         "usage": _canonical(response_payload.get("usage") or {}),
         "continuation": {

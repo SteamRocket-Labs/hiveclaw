@@ -11,11 +11,13 @@ from typing import Any, Mapping
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.chat_artifact import ChatArtifact
 from app.models.chat_transcript_event import ChatTranscriptEvent
 from app.models.runtime_task import RuntimeTask
 from app.models.session_v2 import SessionModelResult, SessionRunOutcome
-from app.services.session_round_obligation import current_run_fences, unresolved_round_obligations
+from app.services.chat_artifact_delivery import artifact_part_from_model
 from app.services.runtime_root_ledger import transition_runtime_root_item_by_task
+from app.services.session_round_obligation import current_run_fences, unresolved_round_obligations
 from app.services.session_v2_persistence import SessionEventDraft, append_session_events
 
 
@@ -129,6 +131,59 @@ def _allowed_source_blocks(seal: Mapping[str, Any]) -> list[dict[str, Any]]:
     return allowed
 
 
+async def _declared_artifact_parts(
+    db: AsyncSession,
+    *,
+    task: RuntimeTask,
+    tenant_id: uuid.UUID,
+    agent_id: uuid.UUID,
+    session_id: uuid.UUID,
+    run_id: uuid.UUID,
+) -> list[dict[str, Any]]:
+    """Resolve only the run's already-governed terminal artifact selection."""
+
+    metadata = dict(task.metadata_json or {})
+    raw_ids = list(metadata.get("artifact_ids") or [])
+    if not raw_ids:
+        raw_ids = [
+            part.get("artifact_id")
+            for part in metadata.get("artifacts") or []
+            if isinstance(part, dict) and part.get("artifact_id")
+        ]
+    artifact_ids: list[uuid.UUID] = []
+    for value in raw_ids:
+        try:
+            parsed = uuid.UUID(str(value))
+        except (TypeError, ValueError, AttributeError) as exc:
+            raise TerminalOutcomeNeedsReconciliation("terminal artifact selection contains an invalid id") from exc
+        if parsed not in artifact_ids:
+            artifact_ids.append(parsed)
+    if not artifact_ids:
+        return []
+
+    statement = select(ChatArtifact).where(
+        ChatArtifact.id.in_(artifact_ids),
+        ChatArtifact.tenant_id == tenant_id,
+        ChatArtifact.agent_id == agent_id,
+        ChatArtifact.session_id == session_id,
+        ChatArtifact.runtime_task_id == run_id,
+        ChatArtifact.authority_state == "owned",
+    )
+    if task.root_user_id is not None:
+        statement = statement.where(ChatArtifact.owner_user_id == task.root_user_id)
+    root_session_id = None
+    try:
+        root_session_id = uuid.UUID(str(task.root_session_id)) if task.root_session_id else session_id
+    except (TypeError, ValueError, AttributeError):
+        root_session_id = session_id
+    statement = statement.where(ChatArtifact.root_session_id == root_session_id)
+    rows = list((await db.execute(statement.with_for_update())).scalars())
+    by_id = {row.id: row for row in rows}
+    if any(artifact_id not in by_id for artifact_id in artifact_ids):
+        raise TerminalOutcomeNeedsReconciliation("terminal artifact selection is not authority-complete")
+    return [artifact_part_from_model(by_id[artifact_id]) for artifact_id in artifact_ids]
+
+
 async def _lock_terminal_result(
     db: AsyncSession,
     *,
@@ -200,10 +255,21 @@ async def prepare_and_seal_run_outcome(
     if not source_blocks and isinstance(semantic_content, str) and semantic_content:
         raise TerminalOutcomeNeedsReconciliation("terminal content has no canonical source block")
     result_content_hash = _sha256([block["content_hash"] for block in source_blocks])
+    artifact_parts = await _declared_artifact_parts(
+        db,
+        task=task,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        session_id=session_id,
+        run_id=run_id,
+    )
+    artifact_refs = [str(part["artifact_id"]) for part in artifact_parts]
+    artifact_manifest_hash = _sha256(artifact_parts)
     eligibility = {
         "terminal_result_id": str(result.id),
         "result_version": int(result.version),
         "result_content_hash": result_content_hash,
+        "artifact_manifest_hash": artifact_manifest_hash,
         "obligation_ids": [],
         "fences": fences,
         "task_claim_version": int(task.claim_version or 0),
@@ -279,6 +345,9 @@ async def prepare_and_seal_run_outcome(
                     "render_owner_id": str(_render_owner_id(result.id)),
                     "source_blocks": source_blocks,
                     "result_content_hash": result_content_hash,
+                    "artifact_refs": artifact_refs,
+                    "parts": artifact_parts,
+                    "artifact_manifest_hash": artifact_manifest_hash,
                 },
                 content_hash=result_content_hash,
             ),
@@ -302,6 +371,9 @@ async def prepare_and_seal_run_outcome(
         "render_owner_id": str(_render_owner_id(result.id)),
         "source_blocks": source_blocks,
         "result_content_hash": result_content_hash,
+        "artifact_refs": artifact_refs,
+        "parts": artifact_parts,
+        "artifact_manifest_hash": artifact_manifest_hash,
         "semantic_content_hash": str(result.seal_json.get("content_hash") or ""),
         "sealed_at": datetime.now(timezone.utc).isoformat(),
         "eligibility": eligibility,
@@ -372,7 +444,28 @@ async def commit_terminal_outcome(
         outcome.reconciliation_owner = "session_terminal_outcome:eligibility_drift"
         outcome.version = int(outcome.version) + 1
         raise TerminalOutcomeIneligible("terminal eligibility changed after outcome seal")
+    try:
+        current_artifact_parts = await _declared_artifact_parts(
+            db,
+            task=task,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            run_id=run_id,
+        )
+    except TerminalOutcomeNeedsReconciliation as exc:
+        outcome.state = "needs_reconciliation"
+        outcome.reconciliation_owner = "session_terminal_outcome:artifact_authority_drift"
+        outcome.version = int(outcome.version) + 1
+        raise TerminalOutcomeNeedsReconciliation("terminal artifact authority changed after outcome seal") from exc
+    if _sha256(current_artifact_parts) != eligibility.get("artifact_manifest_hash"):
+        outcome.state = "needs_reconciliation"
+        outcome.reconciliation_owner = "session_terminal_outcome:artifact_manifest_drift"
+        outcome.version = int(outcome.version) + 1
+        raise TerminalOutcomeNeedsReconciliation("terminal artifact authority changed after outcome seal")
     source_blocks = list(outcome.seal_json.get("source_blocks") or [])
+    artifact_refs = list(outcome.seal_json.get("artifact_refs") or [])
+    artifact_parts = list(outcome.seal_json.get("parts") or [])
     expected_hash = _sha256([block["content_hash"] for block in source_blocks])
     if expected_hash != outcome.seal_json.get("result_content_hash"):
         outcome.state = "needs_reconciliation"
@@ -400,6 +493,8 @@ async def commit_terminal_outcome(
                     "render_owner_id": outcome.seal_json["render_owner_id"],
                     "source_blocks": source_blocks,
                     "result_content_hash": outcome.seal_json["result_content_hash"],
+                    "artifact_refs": artifact_refs,
+                    "parts": artifact_parts,
                 },
                 result_id=result.id,
                 content_hash=str(outcome.seal_json["result_content_hash"]),

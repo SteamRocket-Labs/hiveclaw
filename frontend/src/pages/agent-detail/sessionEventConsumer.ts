@@ -1,6 +1,7 @@
 import {
   applyTranscriptEvent,
   createEmptyTranscriptReplayState,
+  extractArtifactParts,
   type AgentChatMessage,
   type ChatTranscriptEventPayload,
   type SessionUiState,
@@ -77,6 +78,7 @@ function projectCanonicalItem(
       id: item.renderOwnerId || item.id,
       transcriptEventId: item.id,
       timestamp: item.occurredAt,
+      artifacts: extractArtifactParts(item.payload),
       sessionItem: item,
     };
   }

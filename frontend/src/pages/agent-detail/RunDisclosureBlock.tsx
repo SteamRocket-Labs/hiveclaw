@@ -42,6 +42,12 @@ export function getRunStepPresentation(step: RunStepSnapshot): RunStepPresentati
   return 'surface';
 }
 
+function isPersistentRunStep(step: RunStepSnapshot): boolean {
+  return step.kind === 'commentary'
+    || step.kind === 'prose'
+    || getRunStepPresentation(step) === 'surface';
+}
+
 function groupRunSteps(steps: RunStepSnapshot[]): RunRenderItem[] {
   const items: RunRenderItem[] = [];
   for (const step of steps) {
@@ -400,12 +406,12 @@ export default function RunDisclosureBlock({ timeline }: { timeline: RunTimeline
         : timeline.status === 'cancelled'
           ? t('agent.chat.disclosure.stopped', 'Stopped')
           : t('agent.chat.disclosure.processed', 'Processed');
-  const collapsibleStepCount = visibleSteps.filter((step) => getRunStepPresentation(step) !== 'surface').length;
+  const collapsibleStepCount = visibleSteps.filter((step) => !isPersistentRunStep(step)).length;
   const stepCount = t('agent.chat.disclosure.stepCount', '{{count}} steps', { count: collapsibleStepCount });
   const live = timeline.status === 'running' || timeline.status === 'blocked';
   const renderItems = groupRunSteps(visibleSteps);
   const hasCollapsibleSteps = collapsibleStepCount > 0;
-  const hasSurfacedSteps = visibleSteps.some((step) => getRunStepPresentation(step) === 'surface');
+  const hasPersistentSteps = visibleSteps.some(isPersistentRunStep);
 
   return (
     <div data-testid="run-disclosure-block" data-status={timeline.status} className="run-disclosure">
@@ -426,11 +432,11 @@ export default function RunDisclosureBlock({ timeline }: { timeline: RunTimeline
             <span className="run-disclosure-count">{stepCount}</span>
           </button>
         )}
-        {(expanded || hasSurfacedSteps) && (
+        {(expanded || hasPersistentSteps) && (
           <div className="run-disclosure-steps">
             {renderItems.map((item) => {
-              const surfaced = item.kind === 'step' && getRunStepPresentation(item.step) === 'surface';
-              if (!expanded && !surfaced) return null;
+              const persistent = item.kind === 'step' && isPersistentRunStep(item.step);
+              if (!expanded && !persistent) return null;
               return <RunTimelineItem key={item.id} item={item} />;
             })}
           </div>

@@ -117,6 +117,42 @@ describe('RunDisclosureBlock', () => {
     expect(markup).not.toContain('RAW FILE CONTENT');
   });
 
+  it('keeps model-authored public commentary visible after completed tool history folds', () => {
+    const markup = renderToStaticMarkup(
+      <RunDisclosureBlock
+        timeline={{
+          ...baseTimeline,
+          steps: [
+            step({
+              id: 'commentary-1',
+              kind: 'commentary',
+              title: 'Progress update',
+              details: 'The durable Session event is committed; I am validating the consumer now.',
+              visibility: 'visible',
+              presentation: 'process',
+            }),
+            step({
+              id: 'file-1',
+              kind: 'file',
+              title: 'Read file',
+              summary: 'sessionEventConsumer.ts',
+              details: { result: 'RAW FILE CONTENT' },
+              presentation: 'tool_history',
+            }),
+          ],
+        }}
+      />,
+    );
+
+    expect(markup).toContain('Processed');
+    expect(markup).toContain('aria-expanded="false"');
+    expect(markup).toContain('data-testid="run-disclosure-commentary"');
+    expect(markup).toContain('The durable Session event is committed; I am validating the consumer now.');
+    expect(markup).not.toContain('Read file');
+    expect(markup).not.toContain('sessionEventConsumer.ts');
+    expect(markup).not.toContain('RAW FILE CONTENT');
+  });
+
   it('renders canonical assistant prose verbatim instead of labeling it as Thinking', () => {
     const markup = renderToStaticMarkup(<RunDisclosureBlock timeline={{
       id: 'run-prose',
@@ -316,13 +352,15 @@ describe('RunDisclosureBlock', () => {
     expect(compaction).toBeLessThan(secondCommentary);
   });
 
-  it('collapses the whole successful turn after the final answer settles it', () => {
+  it('folds successful internal history after final while preserving public commentary', () => {
     const timeline = { ...liveTimeline(), status: 'done' as const };
     const markup = renderToStaticMarkup(<RunDisclosureBlock timeline={timeline} />);
 
     expect(markup).toContain('Processed');
     expect(markup).toContain('aria-expanded="false"');
-    expect(markup).not.toContain('run-disclosure-commentary');
+    expect(markup.match(/data-testid="run-disclosure-commentary"/g)).toHaveLength(2);
+    expect(markup).toContain('I found the <strong>projection bug</strong>');
+    expect(markup).toContain('The regression is now isolated.');
     expect(markup).not.toContain('Read file');
     expect(markup).not.toContain('Context was automatically compacted');
   });

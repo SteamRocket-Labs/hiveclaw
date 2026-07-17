@@ -8,6 +8,8 @@ from typing import Any
 from loguru import logger
 
 from app.core.events import get_redis
+from app.services.execution_receipts import canonical_payload_hash
+from app.services.session_event_contract import serialize_session_event
 
 
 WEB_CHAT_STREAM_SCHEMA = "hive.web_chat.stream.v1"
@@ -26,15 +28,35 @@ _FORWARDER_STATE: dict[str, Any] = {
 
 
 async def publish_canonical_session_event(payload: dict[str, Any]) -> None:
-    """Broadcast one DB-sequenced canonical envelope without inventing a sequence."""
+    """Broadcast one DB-sequenced user projection without inventing a sequence.
+
+    The durable outbox owns the operator envelope and validates its source hash
+    before this boundary.  Redis and WebSocket are user-delivery transports, so
+    provider-private bytes must be removed before publication.  The redacted
+    event is still delivered with its original identity and sequence: dropping
+    a private event would create a gap that makes the browser buffer every later
+    public commentary/final event until a REST replay repairs the cursor.
+    """
 
     required = {"event_id", "session_id", "sequence", "envelope_sha256", "envelope"}
     if not required.issubset(payload):
         raise ValueError("canonical_session_event_delivery_fields_missing")
+    source_envelope = dict(payload.get("envelope") or {})
+    source_envelope_sha256 = str(payload.get("envelope_sha256") or "")
+    if canonical_payload_hash(source_envelope) != source_envelope_sha256:
+        raise ValueError("canonical_session_event_source_hash_mismatch")
+    user_envelope = serialize_session_event(source_envelope, audience="user")
+    delivery = {
+        **payload,
+        "projection_audience": "user",
+        "source_envelope_sha256": source_envelope_sha256,
+        "envelope_sha256": canonical_payload_hash(user_envelope),
+        "envelope": user_envelope,
+    }
     redis = await get_redis()
     await redis.publish(
         SESSION_EVENT_LIVE_CHANNEL,
-        json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str),
+        json.dumps(delivery, ensure_ascii=False, sort_keys=True, default=str),
     )
 
 
@@ -100,7 +122,19 @@ async def _listen_web_chat_stream_once() -> None:
             raw = message.get("data")
             envelope = json.loads(raw if isinstance(raw, str) else raw.decode("utf-8"))
             if envelope.get("schema") == "hive.session_event.delivery":
-                payload = dict(envelope.get("envelope") or {})
+                delivered_envelope = dict(envelope.get("envelope") or {})
+                if canonical_payload_hash(delivered_envelope) != str(envelope.get("envelope_sha256") or ""):
+                    raise ValueError("canonical_session_event_delivery_hash_mismatch")
+                # Rolling-deploy compatibility: an older runtime publisher may
+                # still put the operator envelope on Redis while a newer API
+                # forwarder is already serving sockets.  Project it here too;
+                # new publishers mark their already-redacted envelope so the
+                # non-idempotent JSON-pointer redaction is not applied twice.
+                payload = (
+                    delivered_envelope
+                    if envelope.get("projection_audience") == "user"
+                    else serialize_session_event(delivered_envelope, audience="user")
+                )
                 agent_id = envelope.get("agent_id")
                 session_id = envelope.get("session_id")
                 if (
@@ -115,10 +149,6 @@ async def _listen_web_chat_stream_once() -> None:
                 session_id = envelope.get("session_id")
             if not agent_id:
                 continue
-            if payload.get("schema") == "hive.session_event":
-                audience = str((payload.get("visibility") or {}).get("audience") or "")
-                if audience not in {"direct_user", "participants"}:
-                    continue
             await web_chat_broker.send_session_message(str(agent_id), str(session_id) if session_id else None, payload)
             _FORWARDER_STATE["forwarded"] = int(_FORWARDER_STATE.get("forwarded") or 0) + 1
             _FORWARDER_STATE["last_sequence"] = envelope.get("sequence")

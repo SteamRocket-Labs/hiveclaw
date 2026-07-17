@@ -83,6 +83,38 @@ describe('canonical Session event consumer', () => {
     });
   });
 
+  it('advances live public commentary across a redacted provider-private continuity event', () => {
+    const started = event(1, 'started');
+    const privateContinuity: SessionEventV2 = {
+      ...event(2, 'delta'),
+      item_id: 'private-reasoning-1',
+      item_kind: 'assistant_reasoning_private',
+      kind: 'assistant_reasoning_private.delta',
+      payload_schema: 'hive.session.payload.assistant_reasoning_private.delta.v2',
+      visibility: {
+        audience: 'private_provider',
+        redacted_fields: ['/payload/content'],
+      },
+      payload: { phase: 'reasoning_private' },
+    };
+    const publicDelta = event(3, 'delta');
+
+    const store = replay([started, privateContinuity, publicDelta]);
+    const messages = projectSessionEventStoreToMessages(store);
+
+    expect(store.highestContiguousSequence).toBe(3);
+    expect(store.projection).toMatchObject({ phase: 'current', buffered_sequences: [] });
+    expect(store.items['private-reasoning-1']).toMatchObject({
+      content: '',
+      visibility: { audience: 'private_provider' },
+    });
+    expect(messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: 'event', content: '', eventType: 'assistant_reasoning_private' }),
+      expect.objectContaining({ role: 'assistant', content: 'exact bytes' }),
+    ]));
+    expect(JSON.stringify(messages)).not.toContain('provider-private-reasoning-secret');
+  });
+
   it('projects canonical items from the shared reducer without reclassifying unknown text as final', () => {
     const assistantStarted = event(2, 'started');
     const assistantDelta = event(3, 'delta');

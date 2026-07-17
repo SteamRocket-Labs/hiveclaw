@@ -151,11 +151,14 @@ describe('AgentDetail realtime refresh contract', () => {
     expect(pageSource).toContain('if (consumed.canonical && consumed.store)');
   });
 
-  it('keeps the initial transcript read window slim', async () => {
-    const source = await readSource('./agent-detail/agentDetailPolicy.ts');
+  it('hydrates the complete canonical Session V2 transcript without a manual older-message gate', async () => {
+    const source = await readSource('./AgentDetail.tsx');
+    const sectionSource = await readSource('./agent-detail/AgentChatSection.tsx');
 
-    expect(source).toContain('export const TRANSCRIPT_INITIAL_WINDOW = 25;');
-    expect(source).toContain('export const TRANSCRIPT_OLDER_PAGE = 50;');
+    expect(source).toContain('loadCanonicalSessionTranscript');
+    expect(source).not.toContain("direction: 'backward'");
+    expect(source).not.toContain('loadOlderMessages');
+    expect(sectionSource).not.toContain('load-older-messages');
   });
 
   it('never gives up transient reconnects and recovers missed durable transcript events', async () => {

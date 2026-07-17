@@ -1639,7 +1639,7 @@ function buildPendingRunCell(
   const phase = liveRunPhase(input);
   if (!input.isWaiting && !input.isStreaming && !activeRunStatus && !phase) return null;
   const status: RunTimelineSnapshot['status'] = activeRunStatus === 'failed' ? 'failed' : 'running';
-  const title = input.isStreaming ? 'Streaming response' : 'Waiting for model';
+  const title = phase === 'responding' || input.isStreaming ? 'Writing response' : 'Thinking';
   const summary = activeRunStatus
     ? `Active run: ${activeRunStatus}`
     : input.isStreaming

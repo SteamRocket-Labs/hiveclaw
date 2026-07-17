@@ -114,6 +114,40 @@ describe('chatDisclosureReducer', () => {
     expect(timeline.answerMessageId).toBe('answer-0');
   });
 
+  it('keeps canonical private reasoning and response composition as fixed lifecycle rows', () => {
+    const messages = [
+      {
+        role: 'event',
+        content: '',
+        id: 'reasoning-1',
+        eventType: 'assistant_reasoning_private',
+        eventStatus: 'completed',
+        sessionItem: {
+          id: 'reasoning-1', kind: 'assistant_reasoning_private', lifecycle: 'completed', terminal: true,
+          visibility: { audience: 'private_provider' }, payload: {}, content: '',
+        },
+      },
+      {
+        role: 'assistant',
+        content: 'The answer bytes are being composed.',
+        id: 'text-1',
+        eventType: 'assistant_text',
+        eventStatus: 'completed',
+        sessionItem: {
+          id: 'text-1', kind: 'assistant_text', lifecycle: 'completed', terminal: true,
+          visibility: { audience: 'direct_user' }, payload: {}, content: 'The answer bytes are being composed.',
+        },
+      },
+    ] as AgentChatMessage[];
+
+    const timeline = buildRunTimelineFromMessages(messages);
+
+    expect(timeline.steps).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'reasoning', title: 'Thinking', summary: 'Provider-private reasoning was used.' }),
+      expect.objectContaining({ kind: 'reasoning', title: 'Writing response', summary: 'The answer bytes are being composed.' }),
+    ]));
+  });
+
   it('adds a turn-level aggregate summary for repeated tool groups', () => {
     const timeline = buildRunTimelineFromMessages([
       {
@@ -255,7 +289,7 @@ describe('chatDisclosureReducer', () => {
       kind: 'a2a',
       title: 'Action Started',
       status: 'running',
-      summary: '已委派给 Web3研究员，后台执行中。 · child:child-1 · run:task-1',
+      summary: '已委派给 Web3研究员，后台执行中。',
     });
   });
 

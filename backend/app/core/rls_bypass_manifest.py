@@ -393,6 +393,22 @@ RLS_BYPASS_ALLOWLIST = (
     ),
     _grant(
         *(
+            "app/services/delegation_session_repair.py",
+            "_projection_truth",
+            "'peer delegation Session repair verification'",
+            ("select:RuntimeTask", "select:ChatSession.id", "select:ChatTranscriptEvent.run_id"),
+        )
+    ),
+    _grant(
+        *(
+            "app/services/delegation_session_repair.py",
+            "repair_peer_delegation_session_projections",
+            "'peer delegation Session repair scan'",
+            ("select:RuntimeTask",),
+        )
+    ),
+    _grant(
+        *(
             "app/services/code_execution/probe.py",
             "store_latest_sandbox_probe_evidence",
             "'code execution sandbox probe latest evidence write'",

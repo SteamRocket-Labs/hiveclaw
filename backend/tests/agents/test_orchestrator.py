@@ -4,7 +4,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -97,6 +97,7 @@ def _persisted_a2a_authority_metadata(
         status="pending",
     )
     return {
+        "tenant_id": str(tenant_id),
         "execution_principal": principal.to_evidence(),
         "execution_receipt": request.execution_receipt,
     }
@@ -262,10 +263,20 @@ async def test_delegate_async_serializes_duplicate_work_with_coordination_lease(
     async def fake_persist_delegation_event(**_kwargs):
         return None
 
+    projected: list[dict] = []
+
+    async def fake_project_terminal(**kwargs):
+        projected.append(kwargs)
+
     monkeypatch.setattr("app.agents.orchestrator.create_runtime_task_record", fake_create_runtime_task_record)
     monkeypatch.setattr("app.agents.orchestrator.update_runtime_task_record", fake_update_runtime_task_record)
     monkeypatch.setattr("app.agents.orchestrator._persist_delegation_event", fake_persist_delegation_event)
     monkeypatch.setattr("app.agents.orchestrator._spawn_async_delegation_task", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        "app.agents.orchestrator._project_delegation_request_terminal_to_parent",
+        fake_project_terminal,
+        raising=False,
+    )
 
     kwargs = {
         "target": target,
@@ -288,6 +299,14 @@ async def test_delegate_async_serializes_duplicate_work_with_coordination_lease(
     assert second.status == "blocked_by_lease"
     assert second.blocked_by_lease_id == first.coordination_lease_id
     assert coordination_runtime.read_signals(str(target.id), thread_id=first.signal_thread_id)
+    assert projected == [
+        {
+            "request": projected[0]["request"],
+            "status": "blocked",
+            "summary": "Delegation was not admitted because equivalent work holds the coordination lease.",
+            "reason": "blocked_by_coordination_lease",
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -446,6 +465,11 @@ async def test_delegate_async_commits_enqueue_before_coordination_publish_and_wo
         created.update(kwargs)
         return kwargs["task_id"]
 
+    async def fake_admit_peer_session(_request, *, state):
+        assert state == "queued"
+        order.append("session_admission")
+        return True
+
     async def fake_notify_runtime_task_worker(**_kwargs):
         order.append("worker_wake")
 
@@ -457,6 +481,11 @@ async def test_delegate_async_commits_enqueue_before_coordination_publish_and_wo
         return None
 
     monkeypatch.setattr("app.agents.orchestrator.create_runtime_task_record", fake_create_runtime_task_record)
+    monkeypatch.setattr(
+        "app.agents.orchestrator._ensure_peer_delegation_session",
+        fake_admit_peer_session,
+        raising=False,
+    )
     monkeypatch.setattr("app.agents.orchestrator.update_runtime_task_record", fake_update_runtime_task_record)
     monkeypatch.setattr("app.agents.orchestrator._persist_delegation_event", fake_persist_delegation_event)
     monkeypatch.setattr("app.services.runtime_task_worker.notify_runtime_task_worker", fake_notify_runtime_task_worker)
@@ -481,7 +510,7 @@ async def test_delegate_async_commits_enqueue_before_coordination_publish_and_wo
     )
 
     assert handle.status == "queued"
-    assert order == ["enqueue", "lease", "signal", "admission_commit", "worker_wake"]
+    assert order == ["enqueue", "session_admission", "lease", "signal", "admission_commit", "worker_wake"]
     assert created["root_item_intent_key"] == f"a2a:{handle.task_id}"
     assert created["root_item_work_type"] == "a2a"
     assert created["root_item_state"] == "queued"
@@ -706,7 +735,8 @@ async def test_approved_a2a_task_publishes_coordination_before_worker_execution(
             },
         }
 
-    async def fake_resolve_target_runtime(_child_agent_id):
+    async def fake_resolve_target_runtime(_child_agent_id, *, tenant_id):
+        assert tenant_id
         return target, model
 
     async def fake_publish(**_kwargs):
@@ -736,6 +766,68 @@ async def test_approved_a2a_task_publishes_coordination_before_worker_execution(
 
     assert await dispatch_persisted_async_delegation(task_id) is True
     assert order == ["coordination", "running_commit", "execute"]
+
+
+@pytest.mark.asyncio
+async def test_unavailable_resumable_target_projects_terminal_parent_state(monkeypatch):
+    import app.agents.orchestrator as orchestrator
+
+    task_id = uuid4().hex
+    parent_session_id = uuid4()
+    child_session_id = uuid4()
+    parent_agent_id = uuid4()
+    child_agent_id = uuid4()
+    owner_id = uuid4()
+    tenant_id = uuid4()
+    record = {
+        "task_id": task_id,
+        "task_type": "delegation",
+        "status": "pending",
+        "tenant_id": str(tenant_id),
+        "parent_agent_id": str(parent_agent_id),
+        "child_agent_id": str(child_agent_id),
+        "child_agent_name": "Unavailable Researcher",
+        "parent_session_id": str(parent_session_id),
+        "child_session_id": str(child_session_id),
+        "metadata": {
+            "owner_id": str(owner_id),
+            "tenant_id": str(tenant_id),
+            "target_agent_id": str(child_agent_id),
+            "conversation_messages": [{"role": "user", "content": "research"}],
+        },
+    }
+    updates: list[dict] = []
+    projections: list[dict] = []
+    resolved_tenants: list[UUID] = []
+
+    async def fake_resolve(_target_agent_id, *, tenant_id):
+        resolved_tenants.append(tenant_id)
+        return None
+
+    async def fake_update(_task_id, **kwargs):
+        updates.append(kwargs)
+        return True
+
+    async def fake_project(**kwargs):
+        projections.append(kwargs)
+
+    monkeypatch.setattr(orchestrator, "_resolve_resumable_target_runtime", fake_resolve)
+    monkeypatch.setattr(orchestrator, "update_runtime_task_record", fake_update)
+    monkeypatch.setattr(orchestrator, "_project_delegation_record_terminal_to_parent", fake_project, raising=False)
+
+    request = await orchestrator._build_delegation_request_from_runtime_record(record)
+
+    assert request is None
+    assert resolved_tenants == [tenant_id]
+    assert updates[0]["status"] == "failed"
+    assert projections == [
+        {
+            "record": record,
+            "status": "failed",
+            "summary": "Task could not be dispatched because the target agent runtime is unavailable.",
+            "reason": "target_runtime_unavailable",
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -1478,8 +1570,9 @@ async def test_resume_persisted_async_delegations_rehydrates_tasks(monkeypatch):
             }
         ]
 
-    async def fake_resolve_target_runtime(child_agent_id):
+    async def fake_resolve_target_runtime(child_agent_id, *, tenant_id):
         assert child_agent_id == target.id
+        assert tenant_id == target.tenant_id
         return target, model
 
     async def fake_invoke(invocation):
@@ -1547,7 +1640,7 @@ async def test_resume_persisted_async_delegations_refuses_mutating_profile_witho
             }
         ]
 
-    async def fake_resolve_target_runtime(_child_agent_id):  # pragma: no cover - must not run
+    async def fake_resolve_target_runtime(_child_agent_id, *, tenant_id):  # pragma: no cover - must not run
         raise AssertionError("non replay-safe delegation must not resolve/replay the child runtime")
 
     async def fake_update_runtime_task_record(task_id_arg, **kwargs):
@@ -1624,7 +1717,7 @@ async def test_resume_persisted_async_delegations_reconciles_worker_safe_even_wi
             }
         ]
 
-    async def fake_resolve_target_runtime(_child_agent_id):  # pragma: no cover - must not run
+    async def fake_resolve_target_runtime(_child_agent_id, *, tenant_id):  # pragma: no cover - must not run
         raise AssertionError("mutating delegation must not resolve/replay the child runtime")
 
     async def fake_invoke(_invocation):  # pragma: no cover - must not run
@@ -1690,7 +1783,7 @@ async def test_resume_persisted_async_delegations_refuses_mutating_contract_with
             }
         ]
 
-    async def fake_resolve_target_runtime(_child_agent_id):  # pragma: no cover - must not run
+    async def fake_resolve_target_runtime(_child_agent_id, *, tenant_id):  # pragma: no cover - must not run
         raise AssertionError("mutating delegation without replay journal must not be replayed")
 
     async def fake_update_runtime_task_record(task_id_arg, **kwargs):
@@ -1986,12 +2079,14 @@ async def test_delegate_async_handles_failure(monkeypatch):
                 "target_agent_id": str(target.id),
                 "conversation_messages": [{"role": "user", "content": "crash"}],
                 "tool_profile": "review_readonly",
+                "coordination_publish_state": "published",
                 **authority_metadata,
             },
         }
 
-    async def fake_resolve_target_runtime(child_agent_id):
+    async def fake_resolve_target_runtime(child_agent_id, *, tenant_id):
         assert child_agent_id == target.id
+        assert tenant_id == target.tenant_id
         return target, model
 
     async def fake_update_runtime_task_record(task_id_arg, **kwargs):
@@ -2155,12 +2250,14 @@ async def test_delegate_async_persists_runtime_task_lifecycle(monkeypatch):
                 "target_agent_id": str(target.id),
                 "conversation_messages": [{"role": "user", "content": "do research"}],
                 "tool_profile": "review_readonly",
+                "coordination_publish_state": "published",
                 **authority_metadata,
             },
         }
 
-    async def fake_resolve_target_runtime(child_agent_id):
+    async def fake_resolve_target_runtime(child_agent_id, *, tenant_id):
         assert child_agent_id == target.id
+        assert tenant_id == target.tenant_id
         return target, model
 
     async def fake_invoke(_invocation):
@@ -2191,7 +2288,7 @@ async def test_delegate_async_persists_runtime_task_lifecycle(monkeypatch):
     assert spans == [
         {
             "db": None,
-            "tenant_id": None,
+            "tenant_id": target.tenant_id,
             "trace_id": "trace-runtime",
             "span_id": f"remote-action:{task_id}",
             "parent_span_id": None,

@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Awaitable, Callable
 
 from app.agents.coordination_gateway import CoordinationGateway
@@ -1339,7 +1340,11 @@ async def _delegation_plan_gate_allows(request: AgentDelegationRequest) -> tuple
     return decision.allowed, decision.reason
 
 
-async def _resolve_resumable_target_runtime(child_agent_id: uuid.UUID) -> tuple[Any, Any] | None:
+async def _resolve_resumable_target_runtime(
+    child_agent_id: uuid.UUID,
+    *,
+    tenant_id: uuid.UUID,
+) -> tuple[Any, Any] | None:
     """Resolve a resumable native target agent and its model from persisted state."""
     from sqlalchemy import select
 
@@ -1347,10 +1352,11 @@ async def _resolve_resumable_target_runtime(child_agent_id: uuid.UUID) -> tuple[
     from app.models.agent import Agent
     from app.models.llm import LLMModel
 
-    # No explicit tenant here: resume runs inside a context where the tenant
-    # ContextVar was pinned by the caller (daemon resume sets it from the
-    # persisted RuntimeTask record).
-    async with tenant_scoped_session() as db:
+    async with tenant_scoped_session(
+        tenant_id,
+        require_tenant=True,
+        source="resumable_delegation_target_runtime",
+    ) as db:
         result = await db.execute(select(Agent).where(Agent.id == child_agent_id))
         target = result.scalar_one_or_none()
         if not target:
@@ -1921,93 +1927,7 @@ async def _delegate_after_cycle_check(
             await db.commit()
 
     if is_delegation and transcript_tenant_id is not None and transcript_session_id is not None:
-        from sqlalchemy import select
-
-        from app.database import tenant_scoped_session
-        from app.models.chat_session import ChatSession
-        from app.models.participant import Participant
-        from app.services.chat_transcript import append_session_event
-
-        async with tenant_scoped_session(transcript_tenant_id) as db:
-            result = await db.execute(select(ChatSession).where(ChatSession.id == transcript_session_id))
-            session = result.scalar_one_or_none()
-            if session is None:
-                participant_result = await db.execute(
-                    select(Participant).where(Participant.type == "agent", Participant.ref_id == request.target.id)
-                )
-                target_participant = participant_result.scalar_one_or_none()
-                session = ChatSession(
-                    id=transcript_session_id,
-                    agent_id=request.target.id,
-                    tenant_id=transcript_tenant_id,
-                    user_id=request.owner_id,
-                    participant_id=target_participant.id if target_participant else None,
-                    peer_agent_id=_maybe_uuid(request.parent_agent_id),
-                    source_channel="agent",
-                    session_kind="delegation_run",
-                    actor_type="agent",
-                    runtime_source="delegation",
-                    visibility_scope="agent_owner",
-                    listed_surface="chat",
-                    parent_session_id=transcript_parent_session_id,
-                    root_session_id=transcript_parent_session_id,
-                    runtime_task_id=transcript_runtime_task_id,
-                    title=f"Delegation: {request.target.name}"[:200],
-                    transcript_metadata_json={
-                        "source": "agent",
-                        "interaction_type": request.interaction_type,
-                        "trace_id": trace_id,
-                        "depth": request.depth,
-                        "from_agent": str(request.parent_agent_id) if request.parent_agent_id else None,
-                        "to_agent": str(request.target.id),
-                        "to_agent_name": request.target.name,
-                        **authority_metadata,
-                        **artifact_contract,
-                        **(
-                            {
-                                "permission_profile": permission_profile,
-                                "permission_mode": session_metadata.get("permission_mode"),
-                            }
-                            if permission_profile
-                            else {}
-                        ),
-                    },
-                )
-                db.add(session)
-                await db.flush()
-            transcript_enabled = True
-            await append_session_event(
-                db=db,
-                agent_id=request.target.id,
-                tenant_id=transcript_tenant_id,
-                session_id=transcript_session_id,
-                run_id=transcript_runtime_task_id,
-                actor_type="user",
-                event_type="user_message",
-                role="user",
-                user_id=request.owner_id,
-                content=delegation_user_message,
-                parent_session_id=transcript_parent_session_id,
-                root_session_id=transcript_parent_session_id or transcript_session_id,
-                source="agent",
-                visibility_scope="agent_owner",
-                listed_surface="chat",
-                metadata={
-                    "source": "agent",
-                    "interaction_type": request.interaction_type,
-                    "delegation": True,
-                    "trace_id": trace_id,
-                    "depth": request.depth,
-                    "from_agent": str(request.parent_agent_id) if request.parent_agent_id else None,
-                    "to_agent": str(request.target.id),
-                    "to_agent_name": request.target.name,
-                    "runtime_task_id": request.runtime_task_id,
-                    **artifact_contract,
-                    "semantic_memory_eligible": True,
-                },
-            )
-            session.last_message_at = datetime.now(timezone.utc)
-            await db.commit()
+        transcript_enabled = await _ensure_peer_delegation_session(request, state="running")
     elif is_delegation:
         logger.warning(
             "[Orchestrator] Delegation transcript disabled: tenant/session missing target=%s session=%s tenant=%s",
@@ -2191,6 +2111,162 @@ async def _delegate_after_cycle_check(
     return delegation_result
 
 
+async def _ensure_peer_delegation_session(
+    request: AgentDelegationRequest,
+    *,
+    state: str,
+) -> bool:
+    """Admit one peer digital-employee A2A run onto its task-scoped Session.
+
+    This is deliberately scoped to ``interaction_type=delegation``. Lightweight
+    subagents, Agent Team members, Workflow runs, and Local Agent Channel work
+    keep their own transcript/session substrates.
+
+    The RuntimeTask must exist before this function is called, so
+    ``runtime_task_id`` is a valid durable foreign key. The first instruction is
+    persisted once, before coordination publish, which makes blocked/failed
+    pre-dispatch attempts visible and keeps the read-only Session addressable.
+    """
+
+    if request.interaction_type != "delegation":
+        return False
+    tenant_id = _maybe_uuid(request.tenant_id) or _maybe_uuid(getattr(request.target, "tenant_id", None))
+    session_id = _maybe_uuid(request.session_id)
+    target_agent_id = _maybe_uuid(getattr(request.target, "id", None))
+    if tenant_id is None or session_id is None or target_agent_id is None:
+        return False
+
+    from sqlalchemy import select
+
+    from app.database import tenant_scoped_session
+    from app.models.chat_session import ChatSession
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.models.participant import Participant
+    from app.services.chat_transcript import append_session_event
+
+    parent_session_id = _maybe_uuid(request.parent_session_id)
+    runtime_task_id = _maybe_uuid(request.runtime_task_id)
+    try:
+        child_principal = _child_execution_principal(request)
+    except (KeyError, TypeError, ValueError):
+        # Recovery of a historical terminal row may lack a now-required
+        # principal snapshot. Preserve that missing authority as metadata; do
+        # not invent one merely to render a mechanical failure receipt.
+        child_principal = None
+    authority_metadata = _a2a_authority_metadata(request, child_principal=child_principal)
+    artifact_contract = _delegation_artifact_contract_metadata(request)
+    permission_profile = _permission_profile_metadata(request.permission_profile)
+    instruction = _delegation_user_message(request.conversation_messages)
+    task_marker = str(request.runtime_task_id or "").strip() or None
+
+    async with tenant_scoped_session(tenant_id) as db:
+        result = await db.execute(select(ChatSession).where(ChatSession.id == session_id).with_for_update())
+        session = result.scalar_one_or_none()
+        if session is None:
+            participant_result = await db.execute(
+                select(Participant).where(Participant.type == "agent", Participant.ref_id == target_agent_id)
+            )
+            target_participant = participant_result.scalar_one_or_none()
+            session = ChatSession(
+                id=session_id,
+                agent_id=target_agent_id,
+                tenant_id=tenant_id,
+                user_id=request.owner_id,
+                participant_id=target_participant.id if target_participant else None,
+                peer_agent_id=_maybe_uuid(request.parent_agent_id),
+                source_channel="agent",
+                session_kind="delegation_run",
+                actor_type="agent",
+                runtime_source="delegation",
+                visibility_scope="agent_owner",
+                listed_surface="chat",
+                parent_session_id=parent_session_id,
+                root_session_id=parent_session_id or session_id,
+                runtime_task_id=runtime_task_id,
+                title=f"Delegation: {getattr(request.target, 'name', 'Agent')}"[:200],
+                transcript_metadata_json={},
+            )
+            db.add(session)
+            await db.flush()
+        elif session.agent_id != target_agent_id or session.tenant_id != tenant_id:
+            raise ValueError("delegation Session identity conflicts with the durable RuntimeTask")
+
+        session_metadata = dict(session.transcript_metadata_json or {})
+        session_metadata.update(
+            {
+                "source": "agent",
+                "interaction_type": request.interaction_type,
+                "trace_id": request.trace_id,
+                "depth": request.depth,
+                "from_agent": str(request.parent_agent_id) if request.parent_agent_id else None,
+                "to_agent": str(target_agent_id),
+                "to_agent_name": getattr(request.target, "name", None),
+                "runtime_task_id": task_marker,
+                "delegation_state": state,
+                **authority_metadata,
+                **artifact_contract,
+            }
+        )
+        if permission_profile:
+            session_metadata["permission_profile"] = permission_profile
+            permission_mode = _permission_profile_mode(request.permission_profile)
+            if permission_mode:
+                session_metadata["permission_mode"] = permission_mode
+
+        instruction_persisted = bool(
+            task_marker and session_metadata.get("delegation_instruction_runtime_task_id") == task_marker
+        )
+        if not instruction_persisted and runtime_task_id is not None:
+            prior = await db.execute(
+                select(ChatTranscriptEvent.id)
+                .where(
+                    ChatTranscriptEvent.session_id == session_id,
+                    ChatTranscriptEvent.run_id == runtime_task_id,
+                    ChatTranscriptEvent.event_type == "user_message",
+                )
+                .limit(1)
+            )
+            instruction_persisted = prior.scalar_one_or_none() is not None
+
+        if not instruction_persisted:
+            await append_session_event(
+                db=db,
+                agent_id=target_agent_id,
+                tenant_id=tenant_id,
+                session_id=session_id,
+                run_id=runtime_task_id,
+                actor_type="user",
+                event_type="user_message",
+                role="user",
+                user_id=request.owner_id,
+                content=instruction,
+                parent_session_id=parent_session_id,
+                root_session_id=parent_session_id or session_id,
+                source="agent",
+                visibility_scope="agent_owner",
+                listed_surface="chat",
+                metadata={
+                    "source": "agent",
+                    "interaction_type": request.interaction_type,
+                    "delegation": True,
+                    "trace_id": request.trace_id,
+                    "depth": request.depth,
+                    "from_agent": str(request.parent_agent_id) if request.parent_agent_id else None,
+                    "to_agent": str(target_agent_id),
+                    "to_agent_name": getattr(request.target, "name", None),
+                    "runtime_task_id": task_marker,
+                    **artifact_contract,
+                    "semantic_memory_eligible": True,
+                },
+            )
+            session.last_message_at = datetime.now(timezone.utc)
+        if task_marker:
+            session_metadata["delegation_instruction_runtime_task_id"] = task_marker
+        session.transcript_metadata_json = session_metadata
+        await db.commit()
+    return True
+
+
 async def _collect_delegation_child_artifact_parts(
     *,
     tenant_id: uuid.UUID,
@@ -2304,6 +2380,7 @@ async def _project_delegation_completion_to_parent(
     task_id: str,
     status: str,
     summary: str,
+    reason: str | None = None,
 ) -> None:
     """Project an async-delegation terminal state onto the parent session timeline.
 
@@ -2362,11 +2439,15 @@ async def _project_delegation_completion_to_parent(
         projected_status = "blocked"
         projected_summary = contract_mismatch
     if projected_status == "completed":
-        reason = "delegation_completed"
+        projected_reason = "delegation_completed"
+    elif contract_mismatch:
+        projected_reason = "delegation_artifact_contract_mismatch"
+    elif reason:
+        projected_reason = reason
     elif projected_status == "blocked":
-        reason = "delegation_artifact_contract_mismatch"
+        projected_reason = "delegation_blocked"
     else:
-        reason = "delegation_failed"
+        projected_reason = "delegation_failed"
     parent_event_payload = {
         "type": "child_session",
         "message": projected_summary,
@@ -2375,7 +2456,7 @@ async def _project_delegation_completion_to_parent(
         "child_session_id": str(child_session_uuid),
         "parent_session_id": str(parent_session_uuid),
         "root_session_id": str(parent_session_uuid),
-        "reason": reason,
+        "reason": projected_reason,
         "interaction_type": request.interaction_type,
         "to_agent": str(request.target.id),
         "to_agent_name": request.target.name,
@@ -2391,6 +2472,25 @@ async def _project_delegation_completion_to_parent(
 
     try:
         async with tenant_scoped_session(tenant_uuid) as db:
+            projection_exists = False
+            task_uuid = _maybe_uuid(task_id)
+            if task_uuid is not None:
+                from sqlalchemy import select
+                from sqlalchemy.ext.asyncio import AsyncSession
+
+                from app.models.chat_transcript_event import ChatTranscriptEvent
+
+                if isinstance(db, AsyncSession):
+                    existing_projection = await db.execute(
+                        select(ChatTranscriptEvent.id)
+                        .where(
+                            ChatTranscriptEvent.session_id == parent_session_uuid,
+                            ChatTranscriptEvent.run_id == task_uuid,
+                            ChatTranscriptEvent.event_type == "child_session",
+                        )
+                        .limit(1)
+                    )
+                    projection_exists = existing_projection.scalar_one_or_none() is not None
             runtime_event_type = _delegation_runtime_action_event_type(projected_status)
             runtime_event_message = _delegation_runtime_action_message(
                 target_name=request.target.name,
@@ -2408,7 +2508,7 @@ async def _project_delegation_completion_to_parent(
                 "child_session_id": str(child_session_uuid),
                 "parent_session_id": str(parent_session_uuid),
                 "root_session_id": str(parent_session_uuid),
-                "reason": reason,
+                "reason": projected_reason,
                 "target_agent_name": request.target.name,
                 "artifact_paths": [part.get("path") for part in artifact_parts if part.get("path")],
                 "artifact_ids": [part.get("artifact_id") for part in artifact_parts if part.get("artifact_id")],
@@ -2416,54 +2516,55 @@ async def _project_delegation_completion_to_parent(
                 **artifact_contract,
             }
             runtime_event = build_session_native_event(runtime_event_payload)
-            await append_session_event(
-                db=db,
-                agent_id=parent_agent_uuid,
-                tenant_id=tenant_uuid,
-                session_id=parent_session_uuid,
-                actor_type="system",
-                event_type=runtime_event_type,
-                content=runtime_event_message,
-                role="system",
-                user_id=request.owner_id,
-                run_id=task_id,
-                runtime_task_id=task_id,
-                root_session_id=parent_session_uuid,
-                parent_session_id=parent_session_uuid,
-                parts=[runtime_event["part"]],
-                metadata={
-                    **runtime_event_payload,
-                    "source": "agent",
-                    "delegation_session_state": projected_status,
-                },
-                visibility_scope="team",
-                listed_surface="chat",
-                source="agent",
-            )
-            await append_session_event(
-                db=db,
-                agent_id=parent_agent_uuid,
-                tenant_id=tenant_uuid,
-                session_id=parent_session_uuid,
-                actor_type="system",
-                event_type="child_session",
-                content=projected_summary,
-                role="system",
-                user_id=request.owner_id,
-                run_id=task_id,
-                runtime_task_id=task_id,
-                root_session_id=parent_session_uuid,
-                parent_session_id=parent_session_uuid,
-                parts=[parent_event["part"], *artifact_parts],
-                metadata={
-                    **parent_event_payload,
-                    "source": "agent",
-                    "delegation_session_state": projected_status,
-                },
-                visibility_scope="team",
-                listed_surface="chat",
-                source="agent",
-            )
+            if not projection_exists:
+                await append_session_event(
+                    db=db,
+                    agent_id=parent_agent_uuid,
+                    tenant_id=tenant_uuid,
+                    session_id=parent_session_uuid,
+                    actor_type="system",
+                    event_type=runtime_event_type,
+                    content=runtime_event_message,
+                    role="system",
+                    user_id=request.owner_id,
+                    run_id=task_id,
+                    runtime_task_id=task_id,
+                    root_session_id=parent_session_uuid,
+                    parent_session_id=parent_session_uuid,
+                    parts=[runtime_event["part"]],
+                    metadata={
+                        **runtime_event_payload,
+                        "source": "agent",
+                        "delegation_session_state": projected_status,
+                    },
+                    visibility_scope="team",
+                    listed_surface="chat",
+                    source="agent",
+                )
+                await append_session_event(
+                    db=db,
+                    agent_id=parent_agent_uuid,
+                    tenant_id=tenant_uuid,
+                    session_id=parent_session_uuid,
+                    actor_type="system",
+                    event_type="child_session",
+                    content=projected_summary,
+                    role="system",
+                    user_id=request.owner_id,
+                    run_id=task_id,
+                    runtime_task_id=task_id,
+                    root_session_id=parent_session_uuid,
+                    parent_session_id=parent_session_uuid,
+                    parts=[parent_event["part"], *artifact_parts],
+                    metadata={
+                        **parent_event_payload,
+                        "source": "agent",
+                        "delegation_session_state": projected_status,
+                    },
+                    visibility_scope="team",
+                    listed_surface="chat",
+                    source="agent",
+                )
             await _wake_parent_session_from_delegation_completion(
                 db=db,
                 request=request,
@@ -2704,23 +2805,231 @@ def _spawn_async_delegation_task(
     )
 
 
+def _delegation_projection_request_from_record(record: dict[str, Any]) -> AgentDelegationRequest | None:
+    """Rebuild only the authority/evidence fields needed for terminal projection.
+
+    Unlike worker dispatch, this path does not require a live target model. It
+    exists so a task that fails before runtime resolution can still create its
+    read-only peer Session and publish a truthful terminal receipt.
+    """
+
+    metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
+    if not metadata and isinstance(record.get("metadata_json"), dict):
+        metadata = dict(record["metadata_json"])
+    task_id = str(record.get("task_id") or record.get("id") or "").strip()
+    target_agent_id = _maybe_uuid(metadata.get("target_agent_id") or record.get("child_agent_id"))
+    owner_id = _maybe_uuid(metadata.get("owner_id") or metadata.get("root_user_id") or record.get("root_user_id"))
+    child_session_id = _maybe_uuid(record.get("child_session_id") or metadata.get("child_session_id"))
+    if not task_id or target_agent_id is None or owner_id is None or child_session_id is None:
+        return None
+    tenant_id = _maybe_uuid(metadata.get("tenant_id") or record.get("tenant_id"))
+    messages = metadata.get("conversation_messages")
+    if not isinstance(messages, list):
+        prompt = str(record.get("prompt") or metadata.get("prompt") or "").strip()
+        messages = [{"role": "user", "content": prompt}] if prompt else []
+    target = SimpleNamespace(
+        id=target_agent_id,
+        name=str(record.get("child_agent_name") or metadata.get("target_agent_name") or "Target agent"),
+        tenant_id=tenant_id,
+        role_description="",
+    )
+    return AgentDelegationRequest(
+        target=target,
+        target_model=None,
+        conversation_messages=messages,
+        owner_id=owner_id,
+        session_id=str(child_session_id),
+        parent_agent_id=record.get("parent_agent_id") or metadata.get("parent_agent_id"),
+        parent_agent_name=metadata.get("parent_agent_name"),
+        parent_session_id=str(record.get("parent_session_id") or metadata.get("parent_session_id") or "") or None,
+        trace_id=str(record.get("trace_id") or metadata.get("trace_id") or "") or None,
+        depth=int(record.get("depth") or metadata.get("depth") or 1),
+        policy=OrchestrationPolicy(
+            timeout_seconds=float(metadata.get("timeout_seconds") or ASYNC_DELEGATION_TIMEOUT_SECONDS),
+            tool_profile=str(metadata.get("tool_profile") or "worker_safe"),
+        ),
+        interaction_type="delegation",
+        execution_principal=(
+            dict(metadata.get("execution_principal")) if isinstance(metadata.get("execution_principal"), dict) else None
+        ),
+        root_runtime_task_id=str(metadata.get("root_runtime_task_id") or record.get("root_runtime_task_id") or "")
+        or None,
+        tenant_id=tenant_id,
+        ledger_todo_id=metadata.get("ledger_todo_id"),
+        runtime_task_id=task_id,
+        permission_profile=metadata.get("permission_profile"),
+        target_artifact_path=metadata.get("target_artifact_path"),
+        target_artifacts=(
+            metadata.get("target_artifacts") if isinstance(metadata.get("target_artifacts"), list) else []
+        ),
+        edit_mode=metadata.get("edit_mode"),
+        budget_run_id=str(record.get("budget_run_id") or metadata.get("budget_run_id") or "") or None,
+        execution_receipt=(
+            dict(metadata.get("execution_receipt")) if isinstance(metadata.get("execution_receipt"), dict) else None
+        ),
+    )
+
+
+async def _append_peer_delegation_terminal_state(
+    *,
+    request: AgentDelegationRequest,
+    status: str,
+    summary: str,
+    reason: str,
+) -> None:
+    tenant_id = _maybe_uuid(request.tenant_id) or _maybe_uuid(getattr(request.target, "tenant_id", None))
+    session_id = _maybe_uuid(request.session_id)
+    target_agent_id = _maybe_uuid(getattr(request.target, "id", None))
+    if tenant_id is None or session_id is None or target_agent_id is None:
+        return
+
+    from sqlalchemy import select
+
+    from app.database import tenant_scoped_session
+    from app.models.chat_session import ChatSession
+    from app.services.chat_message_parts import build_session_native_event
+    from app.services.chat_transcript import append_session_event
+
+    projection_key = f"{request.runtime_task_id or request.session_id}:{status}:{reason}"
+    async with tenant_scoped_session(tenant_id) as db:
+        result = await db.execute(select(ChatSession).where(ChatSession.id == session_id).with_for_update())
+        session = result.scalar_one_or_none()
+        if session is None:
+            return
+        metadata = dict(session.transcript_metadata_json or {})
+        if metadata.get("delegation_terminal_projection_key") == projection_key:
+            return
+        event_type = _delegation_runtime_action_event_type(status)
+        message = _delegation_runtime_action_message(
+            target_name=getattr(request.target, "name", "Target agent"),
+            status=status,
+            summary=summary,
+        )
+        payload = {
+            "type": event_type,
+            "message": message,
+            "status": status,
+            "runtime_task_id": request.runtime_task_id,
+            "task_id": request.runtime_task_id,
+            "action_kind": "a2a_delegation",
+            "notification_source": "a2a",
+            "child_session_id": str(session_id),
+            "parent_session_id": request.parent_session_id,
+            "reason": reason,
+            "target_agent_name": getattr(request.target, "name", None),
+            "trace_id": request.trace_id,
+        }
+        native_event = build_session_native_event(payload)
+        await append_session_event(
+            db=db,
+            agent_id=target_agent_id,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            actor_type="system",
+            event_type=event_type,
+            content=message,
+            role="system",
+            user_id=request.owner_id,
+            run_id=request.runtime_task_id,
+            runtime_task_id=request.runtime_task_id,
+            root_session_id=_maybe_uuid(request.parent_session_id) or session_id,
+            parent_session_id=_maybe_uuid(request.parent_session_id),
+            parts=[native_event["part"]],
+            metadata={**payload, "source": "agent", "delegation_session_state": status},
+            visibility_scope="agent_owner",
+            listed_surface="chat",
+            source="agent",
+        )
+        metadata.update(
+            {
+                "delegation_state": status,
+                "delegation_terminal_reason": reason,
+                "delegation_terminal_projection_key": projection_key,
+            }
+        )
+        session.transcript_metadata_json = metadata
+        session.last_message_at = datetime.now(timezone.utc)
+        await db.commit()
+
+
+async def _project_delegation_request_terminal_to_parent(
+    *,
+    request: AgentDelegationRequest,
+    status: str,
+    summary: str,
+    reason: str,
+) -> None:
+    await _ensure_peer_delegation_session(request, state=status)
+    await _append_peer_delegation_terminal_state(
+        request=request,
+        status=status,
+        summary=summary,
+        reason=reason,
+    )
+    await _project_delegation_completion_to_parent(
+        request=request,
+        task_id=str(request.runtime_task_id or ""),
+        status=status,
+        summary=summary,
+        reason=reason,
+    )
+
+
+async def _project_delegation_record_terminal_to_parent(
+    *,
+    record: dict[str, Any],
+    status: str,
+    summary: str,
+    reason: str,
+) -> None:
+    request = _delegation_projection_request_from_record(record)
+    if request is None:
+        logger.warning(
+            "[Orchestrator] Terminal A2A task %s lacks the identity needed for Session projection",
+            record.get("task_id"),
+        )
+        return
+    await _project_delegation_request_terminal_to_parent(
+        request=request,
+        status=status,
+        summary=summary,
+        reason=reason,
+    )
+
+
 async def _build_delegation_request_from_runtime_record(record: dict[str, Any]) -> AgentDelegationRequest | None:
     task_id = str(record.get("task_id") or "")
     metadata = record.get("metadata") or {}
     target_agent_id = _maybe_uuid(metadata.get("target_agent_id") or record.get("child_agent_id"))
     owner_id = _maybe_uuid(metadata.get("owner_id"))
+    tenant_id = _maybe_uuid(metadata.get("tenant_id") or record.get("tenant_id"))
     conversation_messages = metadata.get("conversation_messages")
-    if not task_id or target_agent_id is None or owner_id is None or not isinstance(conversation_messages, list):
+    if (
+        not task_id
+        or target_agent_id is None
+        or owner_id is None
+        or tenant_id is None
+        or not isinstance(conversation_messages, list)
+    ):
         logger.warning("[Orchestrator] Runtime task %s missing delegation claim metadata; cannot dispatch", task_id)
         return None
 
-    resolved = await _resolve_resumable_target_runtime(target_agent_id)
+    resolved = await _resolve_resumable_target_runtime(target_agent_id, tenant_id=tenant_id)
     if resolved is None:
+        summary = "Task could not be dispatched because the target agent runtime is unavailable."
         await update_runtime_task_record(
             task_id,
             status="failed",
-            result_summary="Task could not be dispatched because the target agent runtime is unavailable.",
-            metadata_json={"dispatch_failed": True},
+            result_summary=summary,
+            root_item_state="failed",
+            root_item_reason_code="target_runtime_unavailable",
+            metadata_json={"dispatch_failed": True, "dispatch_failure_reason": "target_runtime_unavailable"},
+        )
+        await _project_delegation_record_terminal_to_parent(
+            record=record,
+            status="failed",
+            summary=summary,
+            reason="target_runtime_unavailable",
         )
         return None
 
@@ -2755,7 +3064,7 @@ async def _build_delegation_request_from_runtime_record(record: dict[str, Any]) 
         if isinstance(metadata.get("plan_authorization"), dict)
         else None,
         plan_exempt_reason=metadata.get("plan_exempt_reason"),
-        tenant_id=metadata.get("tenant_id") or record.get("tenant_id"),
+        tenant_id=tenant_id,
         ledger_todo_id=metadata.get("ledger_todo_id"),
         runtime_task_id=task_id,
         budget_run_id=str(record.get("budget_run_id") or metadata.get("budget_run_id") or "") or None,
@@ -2930,16 +3239,23 @@ async def dispatch_persisted_async_delegation(task_id: str) -> bool:
             )
             return False
         if not admission.published:
+            lease_summary = "Equivalent A2A work already holds the coordination lease."
             await update_runtime_task_record(
                 task_id,
                 status="skipped",
-                result_summary="Equivalent A2A work already holds the coordination lease.",
+                result_summary=lease_summary,
                 root_item_state="not_admitted",
                 root_item_reason_code="blocked_by_coordination_lease",
                 metadata_json={
                     "coordination_publish_state": "blocked",
                     "blocked_by_lease_id": admission.blocked_by_lease_id,
                 },
+            )
+            await _project_delegation_request_terminal_to_parent(
+                request=request,
+                status="blocked",
+                summary=lease_summary,
+                reason="blocked_by_coordination_lease",
             )
             return False
         coordination_metadata = {
@@ -3213,7 +3529,49 @@ async def delegate_async(
                 )
         raise
 
+    try:
+        await _ensure_peer_delegation_session(
+            request,
+            state=(
+                "blocked"
+                if path_decision.cycle_detected
+                else "waiting_approval"
+                if budget_admission_status == "waiting_budget_approval"
+                else "queued"
+            ),
+        )
+    except Exception as exc:
+        await update_runtime_task_record(
+            task_id,
+            status="needs_reconciliation",
+            result_summary="The peer A2A Session could not be admitted before coordination publish.",
+            root_item_state="needs_reconciliation",
+            root_item_reason_code="delegation_session_admission_failed",
+            metadata_json={
+                "session_admission_state": "failed",
+                "session_admission_error_class": type(exc).__name__,
+            },
+        )
+        if budget_uuid is not None and budget_reservation_key and reservation_service is not None:
+            await reservation_service.settle(
+                RuntimeBudgetSettlement(
+                    budget_run_id=budget_uuid,
+                    reservation_key=budget_reservation_key,
+                    reason="delegation_session_admission_failed",
+                    runtime_task_id=uuid.UUID(task_id),
+                )
+            )
+        raise
+
     if path_decision.cycle_detected:
+        cycle_summary = "Delegation was not admitted because the durable execution path contains an Agent cycle."
+        await update_runtime_task_record(
+            task_id,
+            status="skipped",
+            result_summary=cycle_summary,
+            root_item_state="not_admitted",
+            root_item_reason_code=path_decision.reason_code,
+        )
         _remember_async_task_parent(
             task_id,
             parent_agent_id,
@@ -3229,6 +3587,12 @@ async def delegate_async(
             child_agent_name=target.name,
             trace_id=real_trace_id,
             status="cycle_blocked",
+        )
+        await _project_delegation_request_terminal_to_parent(
+            request=request,
+            status="blocked",
+            summary=cycle_summary,
+            reason=path_decision.reason_code or "runtime_root_cycle_detected",
         )
         return AsyncDelegationHandle(
             task_id=task_id,
@@ -3284,10 +3648,11 @@ async def delegate_async(
             else:
                 signal = None
     except Exception as exc:
+        coordination_summary = "Coordination publish failed after durable A2A enqueue; reconciliation is required."
         await update_runtime_task_record(
             task_id,
             status="needs_reconciliation",
-            result_summary="Coordination publish failed after durable A2A enqueue.",
+            result_summary=coordination_summary,
             root_item_state="needs_reconciliation",
             root_item_reason_code="coordination_publish_failed",
             metadata_json={
@@ -3304,13 +3669,20 @@ async def delegate_async(
                     runtime_task_id=uuid.UUID(task_id),
                 )
             )
+        await _project_delegation_request_terminal_to_parent(
+            request=request,
+            status="blocked",
+            summary=coordination_summary,
+            reason="coordination_publish_failed",
+        )
         raise
 
     if not lease_result.acquired:
+        lease_summary = "Delegation was not admitted because equivalent work holds the coordination lease."
         await update_runtime_task_record(
             task_id,
             status="skipped",
-            result_summary="Delegation was not admitted because equivalent work holds the coordination lease.",
+            result_summary=lease_summary,
             root_item_state="not_admitted",
             root_item_reason_code="blocked_by_coordination_lease",
             metadata_json={
@@ -3327,6 +3699,12 @@ async def delegate_async(
                     runtime_task_id=uuid.UUID(task_id),
                 )
             )
+        await _project_delegation_request_terminal_to_parent(
+            request=request,
+            status="blocked",
+            summary=lease_summary,
+            reason="blocked_by_coordination_lease",
+        )
         await _persist_delegation_event(
             task_id=task_id,
             parent_agent_id=parent_agent_id,

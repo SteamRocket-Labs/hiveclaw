@@ -168,6 +168,8 @@ function summarizeToolMessage(message: AgentChatMessage): string {
   if (COMMAND_TOOLS.has(name)) return summarizeCommandTool(message);
   if (FILE_TOOL_PREFIXES.some((prefix) => name.startsWith(prefix))) return summarizeFileTool(message);
   if (SEARCH_TOOL_PREFIXES.some((prefix) => name.startsWith(prefix))) return summarizeSearchTool(message);
+  const path = stringArg(message, ['path', 'file_path', 'target_path', 'source_path']);
+  if (path) return compactText(basename(path), 120);
   return message.toolArgs && Object.keys(message.toolArgs).length > 0 ? 'Details available' : '';
 }
 
@@ -187,25 +189,9 @@ function eventTitle(message: AgentChatMessage): string {
   return message.eventTitle || message.eventType || 'Runtime event';
 }
 
-function eventMetadataSummary(message: AgentChatMessage): string {
-  const parts = [
-    message.eventChildSessionId ? `child:${message.eventChildSessionId}` : '',
-    message.eventRuntimeTaskId ? `run:${message.eventRuntimeTaskId}` : '',
-    message.eventWorkflowRunId ? `workflow:${message.eventWorkflowRunId}` : '',
-    message.eventWorkflowStepId ? `step:${message.eventWorkflowStepId}` : '',
-    message.eventScheduleFireId ? `fire:${message.eventScheduleFireId}` : '',
-    message.eventScheduleId ? `schedule:${message.eventScheduleId}` : '',
-    message.eventGoalId ? `goal:${message.eventGoalId}` : '',
-    message.eventOnceId ? `once:${message.eventOnceId}` : '',
-    message.eventArtifactId ? `artifact:${message.eventArtifactId}` : '',
-    message.eventRevisionId ? `rev:${message.eventRevisionId}` : '',
-  ].filter(Boolean);
-  return parts.join(' · ');
-}
-
 export function getDisclosureStepSummary(message: AgentChatMessage): string {
   if (message.role === 'assistant') {
-    return compactText(message.thinking || '');
+    return compactText(message.thinking || message.content || '');
   }
 
   if (message.role === 'tool_call') {
@@ -221,9 +207,7 @@ export function getDisclosureStepSummary(message: AgentChatMessage): string {
         'this tool';
       return `Permission needed for ${tool}`;
     }
-    return [compactText(message.content || message.eventReason || message.eventNextStep || ''), eventMetadataSummary(message)]
-      .filter(Boolean)
-      .join(' · ');
+    return compactText(message.content || message.eventReason || message.eventNextStep || '');
   }
 
   return '';
@@ -256,6 +240,7 @@ function titleForToolMessage(message: AgentChatMessage): string {
   if (name === 'web_search') return 'Search web';
   if (name === 'web_fetch' || name === 'firecrawl_fetch' || name === 'xcrawl_scrape') return 'Fetch web page';
   if (COMMAND_TOOLS.has(name)) return 'Run command';
+  if (name === 'office_document_apply') return 'Edit document';
   if (name.includes('workflow')) return 'Workflow step';
   if (name === 'delegate_to_agent' || name.includes('a2a')) return 'A2A step';
   if (name.includes('subagent')) return 'Sub-agent step';
@@ -320,6 +305,11 @@ function statusForMessage(message: AgentChatMessage): RunStepStatus {
 }
 
 export function isDisclosureStepMessage(message: AgentChatMessage): boolean {
+  const canonicalKind = message.sessionItem?.kind;
+  if (canonicalKind && (
+    canonicalKind.startsWith('assistant_')
+    || canonicalKind.startsWith('a2a_')
+  )) return true;
   if (message.role === 'tool_call') return true;
   if (message.role === 'assistant') return Boolean(message.thinking?.trim());
   if (message.role === 'event') {
@@ -332,6 +322,63 @@ function buildStep(message: AgentChatMessage, index: number): RunStepSnapshot | 
   if (!isDisclosureStepMessage(message)) return null;
   const status = statusForMessage(message);
   const summary = getDisclosureStepSummary(message);
+  const canonicalKind = message.sessionItem?.kind;
+
+  if (canonicalKind === 'assistant_reasoning_private') {
+    return {
+      id: stepIdForMessage(message, index),
+      kind: 'reasoning',
+      title: 'Thinking',
+      status,
+      startedAt: message.timestamp,
+      completedAt: status === 'done' ? message.timestamp : undefined,
+      summary: message.content?.trim() ? compactText(message.content) : 'Provider-private reasoning was used.',
+      details: message.content?.trim() || undefined,
+      visibility: 'collapsed',
+    };
+  }
+
+  if (canonicalKind === 'assistant_reasoning_summary') {
+    return {
+      id: stepIdForMessage(message, index),
+      kind: 'reasoning',
+      title: 'Thinking',
+      status,
+      startedAt: message.timestamp,
+      completedAt: status === 'done' ? message.timestamp : undefined,
+      summary,
+      details: message.content || undefined,
+      visibility: 'collapsed',
+    };
+  }
+
+  if (canonicalKind === 'assistant_commentary') {
+    return {
+      id: stepIdForMessage(message, index),
+      kind: 'reasoning',
+      title: 'Progress update',
+      status,
+      startedAt: message.timestamp,
+      completedAt: status === 'done' ? message.timestamp : undefined,
+      summary,
+      details: message.content || undefined,
+      visibility: 'visible',
+    };
+  }
+
+  if (canonicalKind === 'assistant_text' || canonicalKind === 'assistant_final') {
+    return {
+      id: stepIdForMessage(message, index),
+      kind: 'reasoning',
+      title: 'Writing response',
+      status,
+      startedAt: message.timestamp,
+      completedAt: status === 'done' ? message.timestamp : undefined,
+      summary: canonicalKind === 'assistant_final' ? 'Response completed.' : summary,
+      details: canonicalKind === 'assistant_text' ? message.content || undefined : undefined,
+      visibility: 'visible',
+    };
+  }
 
   if (message.role === 'assistant') {
     return {

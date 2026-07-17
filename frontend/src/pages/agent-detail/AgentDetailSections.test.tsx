@@ -898,9 +898,6 @@ describe('AgentDetail extracted sections', () => {
         historyContainerRef={React.createRef<HTMLDivElement>()}
         onHistoryScroll={vi.fn()}
         historyMsgs={[]}
-        onLoadOlderMessages={vi.fn()}
-        olderMessagesLoading={false}
-        hasOlderMessages={false}
         historyMessagesSessionId="session-2"
         showHistoryScrollBtn={false}
         onScrollHistoryToBottom={vi.fn()}
@@ -973,9 +970,6 @@ describe('AgentDetail extracted sections', () => {
         historyContainerRef={React.createRef<HTMLDivElement>()}
         onHistoryScroll={vi.fn()}
         historyMsgs={[]}
-        onLoadOlderMessages={vi.fn()}
-        olderMessagesLoading={false}
-        hasOlderMessages={false}
         historyMessagesSessionId={null}
         showHistoryScrollBtn={false}
         onScrollHistoryToBottom={vi.fn()}
@@ -1076,9 +1070,6 @@ describe('AgentDetail extracted sections', () => {
         historyContainerRef={React.createRef<HTMLDivElement>()}
         onHistoryScroll={vi.fn()}
         historyMsgs={[]}
-        onLoadOlderMessages={vi.fn()}
-        olderMessagesLoading={false}
-        hasOlderMessages={false}
         historyMessagesSessionId={null}
         showHistoryScrollBtn={false}
         onScrollHistoryToBottom={vi.fn()}
@@ -1148,9 +1139,6 @@ describe('AgentDetail extracted sections', () => {
         historyContainerRef={React.createRef<HTMLDivElement>()}
         onHistoryScroll={vi.fn()}
         historyMsgs={[]}
-        onLoadOlderMessages={vi.fn()}
-        olderMessagesLoading={false}
-        hasOlderMessages={false}
         historyMessagesSessionId={null}
         showHistoryScrollBtn={false}
         onScrollHistoryToBottom={vi.fn()}
@@ -1229,9 +1217,6 @@ describe('AgentDetail extracted sections', () => {
         historyContainerRef={React.createRef<HTMLDivElement>()}
         onHistoryScroll={vi.fn()}
         historyMsgs={[]}
-        onLoadOlderMessages={vi.fn()}
-        olderMessagesLoading={false}
-        hasOlderMessages={false}
         historyMessagesSessionId={null}
         showHistoryScrollBtn={false}
         onScrollHistoryToBottom={vi.fn()}
@@ -1279,7 +1264,9 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('data-testid="run-disclosure-block"');
     expect(markup).toContain('Processed');
     expect(markup).toContain('Checkpoint trail updated.');
-    expect(markup).not.toContain('I checked the current branch state.');
+    expect(markup).toContain('Thinking');
+    expect(markup).toContain('I checked the current branch state.');
+    expect(markup).toContain('aria-expanded="false"');
     expect(markup).not.toContain('rgba(16,185,129');
     expect(markup).not.toContain('147, 130, 220');
   });
@@ -2400,9 +2387,6 @@ describe('AgentDetail extracted sections', () => {
         historyContainerRef={React.createRef<HTMLDivElement>()}
         onHistoryScroll={vi.fn()}
         historyMsgs={[]}
-        onLoadOlderMessages={vi.fn()}
-        olderMessagesLoading={false}
-        hasOlderMessages={false}
         historyMessagesSessionId={null}
         showHistoryScrollBtn={false}
         onScrollHistoryToBottom={vi.fn()}
@@ -2511,9 +2495,6 @@ describe('AgentDetail extracted sections', () => {
         historyContainerRef={React.createRef<HTMLDivElement>()}
         onHistoryScroll={vi.fn()}
         historyMsgs={[]}
-        onLoadOlderMessages={vi.fn()}
-        olderMessagesLoading={false}
-        hasOlderMessages={false}
         historyMessagesSessionId={null}
         showHistoryScrollBtn={false}
         onScrollHistoryToBottom={vi.fn()}
@@ -2582,9 +2563,6 @@ describe('AgentDetail extracted sections', () => {
         historyContainerRef={React.createRef<HTMLDivElement>()}
         onHistoryScroll={vi.fn()}
         historyMsgs={[]}
-        onLoadOlderMessages={vi.fn()}
-        olderMessagesLoading={false}
-        hasOlderMessages={false}
         historyMessagesSessionId={null}
         showHistoryScrollBtn={false}
         onScrollHistoryToBottom={vi.fn()}
@@ -2648,9 +2626,6 @@ describe('AgentDetail extracted sections', () => {
         historyContainerRef={React.createRef<HTMLDivElement>()}
         onHistoryScroll={vi.fn()}
         historyMsgs={[]}
-        onLoadOlderMessages={vi.fn()}
-        olderMessagesLoading={false}
-        hasOlderMessages={false}
         historyMessagesSessionId={null}
         showHistoryScrollBtn={false}
         onScrollHistoryToBottom={vi.fn()}
@@ -2734,9 +2709,6 @@ describe('AgentDetail extracted sections', () => {
         historyContainerRef={React.createRef<HTMLDivElement>()}
         onHistoryScroll={vi.fn()}
         historyMsgs={[]}
-        onLoadOlderMessages={vi.fn()}
-        olderMessagesLoading={false}
-        hasOlderMessages={false}
         historyMessagesSessionId={null}
         showHistoryScrollBtn={false}
         onScrollHistoryToBottom={vi.fn()}
@@ -2778,8 +2750,9 @@ describe('AgentDetail extracted sections', () => {
     );
 
     expect(markup).toContain('Processed');
-    expect(markup).not.toContain('Read file');
-    expect(markup).not.toContain('report.md');
+    expect(markup).toContain('Read file');
+    expect(markup).toContain('report.md');
+    expect(markup).toContain('aria-expanded="false"');
     expect(markup).not.toContain('path:');
     expect(markup).not.toContain('RAW FILE CONTENT SHOULD NOT BE INLINE');
   });
@@ -2812,9 +2785,6 @@ describe('AgentDetail extracted sections', () => {
         historyContainerRef={React.createRef<HTMLDivElement>()}
         onHistoryScroll={vi.fn()}
         historyMsgs={[]}
-        onLoadOlderMessages={vi.fn()}
-        olderMessagesLoading={false}
-        hasOlderMessages={false}
         historyMessagesSessionId={null}
         showHistoryScrollBtn={false}
         onScrollHistoryToBottom={vi.fn()}
@@ -2864,8 +2834,9 @@ describe('AgentDetail extracted sections', () => {
     );
 
     expect(markup).toContain('Processed');
-    expect(markup).not.toContain('office_document_apply');
-    expect(markup).not.toContain('proposal.docx');
+    expect(markup).toContain('Edit document');
+    expect(markup).toContain('proposal.docx');
+    expect(markup).not.toContain('{&quot;ok&quot;: true}');
     expect(markup).toContain('No delivered artifacts in this session yet.');
     expect(markup).not.toContain('data-testid="session-workspace-documents-unattributed"');
     expect(markup).not.toContain('data-testid="session-workspace-documents-current"');
@@ -2900,9 +2871,6 @@ describe('AgentDetail extracted sections', () => {
         historyContainerRef={React.createRef<HTMLDivElement>()}
         onHistoryScroll={vi.fn()}
         historyMsgs={[]}
-        onLoadOlderMessages={vi.fn()}
-        olderMessagesLoading={false}
-        hasOlderMessages={false}
         historyMessagesSessionId={null}
         showHistoryScrollBtn={false}
         onScrollHistoryToBottom={vi.fn()}
@@ -2974,12 +2942,13 @@ describe('AgentDetail extracted sections', () => {
     expect(markup.match(/data-testid="run-disclosure-block"/g)?.length).toBe(1);
     expect(markup).toContain('Processed');
     expect(markup).toContain('最终答案已经完成。');
-    expect(markup).not.toContain('Thinking');
-    expect(markup).not.toContain('Read 1 file');
-    expect(markup).not.toContain('Ran 1 command');
-    expect(markup).not.toContain('Read file');
-    expect(markup).not.toContain('Context Compacted');
-    expect(markup).not.toContain('Run command');
+    expect(markup).toContain('Thinking');
+    expect(markup).toContain('Inspect code before answering.');
+    expect(markup).toContain('Read 1 file');
+    expect(markup).toContain('Ran 1 command');
+    expect(markup).toContain('Read file');
+    expect(markup).toContain('Context Compacted');
+    expect(markup).toContain('Run command');
     expect(markup).not.toContain('RAW READ FILE CONTENT');
     expect(markup).not.toContain('RAW COMMAND OUTPUT');
   });
@@ -3021,9 +2990,6 @@ describe('AgentDetail extracted sections', () => {
         historyContainerRef={React.createRef<HTMLDivElement>()}
         onHistoryScroll={vi.fn()}
         historyMsgs={[]}
-        onLoadOlderMessages={vi.fn()}
-        olderMessagesLoading={false}
-        hasOlderMessages={false}
         historyMessagesSessionId={null}
         showHistoryScrollBtn={false}
         onScrollHistoryToBottom={vi.fn()}
@@ -3113,9 +3079,6 @@ describe('AgentDetail extracted sections', () => {
         historyContainerRef={React.createRef<HTMLDivElement>()}
         onHistoryScroll={vi.fn()}
         historyMsgs={[]}
-        onLoadOlderMessages={vi.fn()}
-        olderMessagesLoading={false}
-        hasOlderMessages={false}
         historyMessagesSessionId={null}
         showHistoryScrollBtn={false}
         onScrollHistoryToBottom={vi.fn()}
@@ -3206,9 +3169,6 @@ describe('AgentDetail extracted sections', () => {
         historyContainerRef={React.createRef<HTMLDivElement>()}
         onHistoryScroll={vi.fn()}
         historyMsgs={[]}
-        onLoadOlderMessages={vi.fn()}
-        olderMessagesLoading={false}
-        hasOlderMessages={false}
         historyMessagesSessionId={null}
         showHistoryScrollBtn={false}
         onScrollHistoryToBottom={vi.fn()}
@@ -3257,7 +3217,7 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('Child Session');
     expect(markup).toContain('Research worker completed.');
     expect(markup).not.toContain('session:child-session-1');
-    expect(markup).not.toContain('run-1');
+    expect(markup).not.toContain('run:run-1');
   });
 
   it('routes chat artifacts to the session inspector only when the file type is previewable', () => {
@@ -3325,9 +3285,6 @@ describe('AgentDetail extracted sections', () => {
         historyContainerRef={React.createRef<HTMLDivElement>()}
         onHistoryScroll={vi.fn()}
         historyMsgs={[]}
-        onLoadOlderMessages={vi.fn()}
-        olderMessagesLoading={false}
-        hasOlderMessages={false}
         historyMessagesSessionId={null}
         showHistoryScrollBtn={false}
         onScrollHistoryToBottom={vi.fn()}
@@ -3400,9 +3357,6 @@ describe('AgentDetail extracted sections', () => {
         historyContainerRef={React.createRef<HTMLDivElement>()}
         onHistoryScroll={vi.fn()}
         historyMsgs={[]}
-        onLoadOlderMessages={vi.fn()}
-        olderMessagesLoading={false}
-        hasOlderMessages={false}
         historyMessagesSessionId={null}
         showHistoryScrollBtn={false}
         onScrollHistoryToBottom={vi.fn()}
@@ -3494,9 +3448,6 @@ describe('AgentDetail extracted sections', () => {
         historyContainerRef={React.createRef<HTMLDivElement>()}
         onHistoryScroll={vi.fn()}
         historyMsgs={[]}
-        onLoadOlderMessages={vi.fn()}
-        olderMessagesLoading={false}
-        hasOlderMessages={false}
         historyMessagesSessionId={null}
         showHistoryScrollBtn={false}
         onScrollHistoryToBottom={vi.fn()}
@@ -3577,9 +3528,6 @@ describe('AgentDetail extracted sections', () => {
         historyContainerRef={React.createRef<HTMLDivElement>()}
         onHistoryScroll={vi.fn()}
         historyMsgs={[]}
-        onLoadOlderMessages={vi.fn()}
-        olderMessagesLoading={false}
-        hasOlderMessages={false}
         historyMessagesSessionId={null}
         showHistoryScrollBtn={false}
         onScrollHistoryToBottom={vi.fn()}
@@ -3662,9 +3610,6 @@ describe('AgentDetail extracted sections', () => {
           historyContainerRef={React.createRef<HTMLDivElement>()}
           onHistoryScroll={vi.fn()}
           historyMsgs={[]}
-        onLoadOlderMessages={vi.fn()}
-        olderMessagesLoading={false}
-        hasOlderMessages={false}
           historyMessagesSessionId={null}
           showHistoryScrollBtn={false}
           onScrollHistoryToBottom={vi.fn()}
@@ -3739,9 +3684,6 @@ describe('AgentDetail extracted sections', () => {
         historyContainerRef={React.createRef<HTMLDivElement>()}
         onHistoryScroll={vi.fn()}
         historyMsgs={[]}
-        onLoadOlderMessages={vi.fn()}
-        olderMessagesLoading={false}
-        hasOlderMessages={false}
         historyMessagesSessionId={null}
         showHistoryScrollBtn={false}
         onScrollHistoryToBottom={vi.fn()}
@@ -3843,9 +3785,6 @@ describe('AgentDetail extracted sections', () => {
         historyContainerRef={React.createRef<HTMLDivElement>()}
         onHistoryScroll={vi.fn()}
         historyMsgs={[]}
-        onLoadOlderMessages={vi.fn()}
-        olderMessagesLoading={false}
-        hasOlderMessages={false}
         historyMessagesSessionId={null}
         showHistoryScrollBtn={false}
         onScrollHistoryToBottom={vi.fn()}
@@ -4024,9 +3963,6 @@ describe('AgentDetail extracted sections', () => {
         historyContainerRef={React.createRef<HTMLDivElement>()}
         onHistoryScroll={vi.fn()}
         historyMsgs={[]}
-        onLoadOlderMessages={vi.fn()}
-        olderMessagesLoading={false}
-        hasOlderMessages={false}
         historyMessagesSessionId={null}
         showHistoryScrollBtn={false}
         onScrollHistoryToBottom={vi.fn()}
@@ -4132,9 +4068,6 @@ describe('AgentDetail extracted sections', () => {
         historyContainerRef={React.createRef<HTMLDivElement>()}
         onHistoryScroll={vi.fn()}
         historyMsgs={[]}
-        onLoadOlderMessages={vi.fn()}
-        olderMessagesLoading={false}
-        hasOlderMessages={false}
         historyMessagesSessionId={null}
         showHistoryScrollBtn={false}
         onScrollHistoryToBottom={vi.fn()}
@@ -4248,9 +4181,6 @@ describe('AgentDetail extracted sections', () => {
         historyContainerRef={React.createRef<HTMLDivElement>()}
         onHistoryScroll={vi.fn()}
         historyMsgs={[]}
-        onLoadOlderMessages={vi.fn()}
-        olderMessagesLoading={false}
-        hasOlderMessages={false}
         historyMessagesSessionId={null}
         showHistoryScrollBtn={false}
         onScrollHistoryToBottom={vi.fn()}
@@ -4544,9 +4474,6 @@ describe('AgentDetail extracted sections', () => {
         historyContainerRef={React.createRef<HTMLDivElement>()}
         onHistoryScroll={vi.fn()}
         historyMsgs={[]}
-        onLoadOlderMessages={vi.fn()}
-        olderMessagesLoading={false}
-        hasOlderMessages={false}
         historyMessagesSessionId={null}
         showHistoryScrollBtn={false}
         onScrollHistoryToBottom={vi.fn()}
@@ -4623,9 +4550,6 @@ describe('AgentDetail extracted sections', () => {
         historyContainerRef={React.createRef<HTMLDivElement>()}
         onHistoryScroll={vi.fn()}
         historyMsgs={[]}
-        onLoadOlderMessages={vi.fn()}
-        olderMessagesLoading={false}
-        hasOlderMessages={false}
         historyMessagesSessionId={null}
         showHistoryScrollBtn={false}
         onScrollHistoryToBottom={vi.fn()}
@@ -4659,7 +4583,9 @@ describe('AgentDetail extracted sections', () => {
     );
 
     expect(markup).toContain('data-testid="active-run-cell"');
-    expect(markup).toContain('Waiting for model');
+    expect(markup).toContain('Working');
+    expect(markup).toContain('Thinking');
+    expect(markup).toContain('Active run: running');
     expect(markup).not.toContain('thinking-indicator');
     expect(markup).toContain('btn-stop-generation');
   });
@@ -4692,9 +4618,6 @@ describe('AgentDetail extracted sections', () => {
         historyContainerRef={React.createRef<HTMLDivElement>()}
         onHistoryScroll={vi.fn()}
         historyMsgs={[]}
-        onLoadOlderMessages={vi.fn()}
-        olderMessagesLoading={false}
-        hasOlderMessages={false}
         historyMessagesSessionId={null}
         showHistoryScrollBtn={false}
         onScrollHistoryToBottom={vi.fn()}
@@ -4760,9 +4683,6 @@ describe('AgentDetail extracted sections', () => {
         historyContainerRef={React.createRef<HTMLDivElement>()}
         onHistoryScroll={vi.fn()}
         historyMsgs={[]}
-        onLoadOlderMessages={vi.fn()}
-        olderMessagesLoading={false}
-        hasOlderMessages={false}
         historyMessagesSessionId={null}
         showHistoryScrollBtn={false}
         onScrollHistoryToBottom={vi.fn()}
@@ -4833,9 +4753,6 @@ describe('AgentDetail extracted sections', () => {
         historyContainerRef={React.createRef<HTMLDivElement>()}
         onHistoryScroll={vi.fn()}
         historyMsgs={[]}
-        onLoadOlderMessages={vi.fn()}
-        olderMessagesLoading={false}
-        hasOlderMessages={false}
         historyMessagesSessionId={null}
         showHistoryScrollBtn={false}
         onScrollHistoryToBottom={vi.fn()}
@@ -4951,9 +4868,6 @@ describe('AgentDetail extracted sections', () => {
         historyContainerRef={React.createRef<HTMLDivElement>()}
         onHistoryScroll={vi.fn()}
         historyMsgs={[{ id: 'msg-1', role: 'assistant', sender_name: 'Researcher', content: 'Done.' }]}
-        onLoadOlderMessages={vi.fn()}
-        olderMessagesLoading={false}
-        hasOlderMessages={false}
         historyMessagesSessionId="a2a-session-1"
         showHistoryScrollBtn={false}
         onScrollHistoryToBottom={vi.fn()}
@@ -5022,9 +4936,6 @@ describe('AgentDetail extracted sections', () => {
         historyContainerRef={React.createRef<HTMLDivElement>()}
         onHistoryScroll={vi.fn()}
         historyMsgs={[]}
-        onLoadOlderMessages={vi.fn()}
-        olderMessagesLoading={false}
-        hasOlderMessages={false}
         historyMessagesSessionId={null}
         showHistoryScrollBtn={false}
         onScrollHistoryToBottom={vi.fn()}
@@ -5096,9 +5007,6 @@ describe('AgentDetail extracted sections', () => {
         historyContainerRef={React.createRef<HTMLDivElement>()}
         onHistoryScroll={vi.fn()}
         historyMsgs={[]}
-        onLoadOlderMessages={vi.fn()}
-        olderMessagesLoading={false}
-        hasOlderMessages={false}
         historyMessagesSessionId={null}
         showHistoryScrollBtn={false}
         onScrollHistoryToBottom={vi.fn()}
@@ -5172,9 +5080,6 @@ describe('AgentDetail extracted sections', () => {
         historyContainerRef={React.createRef<HTMLDivElement>()}
         onHistoryScroll={vi.fn()}
         historyMsgs={[]}
-        onLoadOlderMessages={vi.fn()}
-        olderMessagesLoading={false}
-        hasOlderMessages={false}
         historyMessagesSessionId={null}
         showHistoryScrollBtn={false}
         onScrollHistoryToBottom={vi.fn()}
@@ -5240,9 +5145,6 @@ describe('AgentDetail extracted sections', () => {
         historyContainerRef={React.createRef<HTMLDivElement>()}
         onHistoryScroll={vi.fn()}
         historyMsgs={[]}
-        onLoadOlderMessages={vi.fn()}
-        olderMessagesLoading={false}
-        hasOlderMessages={false}
         historyMessagesSessionId={null}
         showHistoryScrollBtn={false}
         onScrollHistoryToBottom={vi.fn()}
@@ -5314,9 +5216,6 @@ describe('AgentDetail extracted sections', () => {
         historyContainerRef={React.createRef<HTMLDivElement>()}
         onHistoryScroll={vi.fn()}
         historyMsgs={[]}
-        onLoadOlderMessages={vi.fn()}
-        olderMessagesLoading={false}
-        hasOlderMessages={false}
         historyMessagesSessionId={null}
         showHistoryScrollBtn={false}
         onScrollHistoryToBottom={vi.fn()}

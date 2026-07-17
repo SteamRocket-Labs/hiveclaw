@@ -45,10 +45,6 @@ export function defaultSessionPermissionModeFromAgent(
 
 // B4 transcript windowing: first screen loads a slim newest window; older
 // history pages in on demand.
-export const TRANSCRIPT_INITIAL_WINDOW = 25;
-
-export const TRANSCRIPT_OLDER_PAGE = 50;
-
 export function objectValue(value: unknown): Record<string, unknown> {
     return value && typeof value === 'object' ? value as Record<string, unknown> : {};
 }

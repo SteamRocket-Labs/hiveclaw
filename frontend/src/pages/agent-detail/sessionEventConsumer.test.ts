@@ -140,7 +140,7 @@ describe('canonical Session event consumer', () => {
       payload_schema: 'hive.session.payload.tool_call.started.v2',
       invocation_id: 'invocation-1',
       actor: { type: 'assistant' },
-      payload: { tool_name: 'read_file' },
+      payload: { tool_name: 'read_file', arguments: { path: 'workspace/report.md' } },
     };
     const toolResult: SessionEventV2 = {
       ...event(2, 'completed'),
@@ -163,6 +163,7 @@ describe('canonical Session event consumer', () => {
       role: 'tool_call',
       id: 'invocation-1',
       toolName: 'read_file',
+      toolArgs: { path: 'workspace/report.md' },
       toolStatus: 'done',
       toolResult: 'file bytes',
       sessionItem: { id: 'tool-call-1', kind: 'tool_call' },

@@ -14,12 +14,9 @@ import {
 
 import type { RunStepKind, RunStepSnapshot, RunTimelineSnapshot } from './chatDisclosureReducer';
 
-// Codex-parity disclosure semantics:
-// - running: shimmering "Working" header + live elapsed seconds, expanded.
-// - done: collapses to one line by default — finished process recedes, the
-//   final answer is the star. blocked/failed stay expanded (they need eyes).
-// - command steps render structured exec output (preview + recoverable complete
-//   output + exit code), never a raw JSON blob or an irreversible truncation.
+// Session V2 disclosure semantics: lifecycle rows remain anchored. Individual
+// tool/reasoning payloads may fold, but the turn-level container never hides
+// Thinking, commentary, writing, or A2A progress.
 
 const EXEC_CLIP_LINES = 5;
 
@@ -141,7 +138,7 @@ function RunStepRow({ step }: { step: RunStepSnapshot }) {
   const running = step.status === 'running';
   const exec = asExecDetails(step.details);
   // exec 步骤直接展示裁剪后的输出（Codex 语义：命令输出即摘要）；其它详情按需展开。
-  const [expanded, setExpanded] = React.useState(Boolean(exec));
+  const [expanded, setExpanded] = React.useState(Boolean(exec) || step.visibility === 'visible');
   const hasDetails = step.details != null;
   return (
     <div data-testid="run-disclosure-step" className="run-step">
@@ -151,6 +148,7 @@ function RunStepRow({ step }: { step: RunStepSnapshot }) {
       <div className="run-step-body">
         <button
           type="button"
+          aria-expanded={hasDetails ? expanded : undefined}
           disabled={!hasDetails}
           onClick={() => setExpanded((value) => !value)}
           className={hasDetails ? 'run-step-toggle has-details' : 'run-step-toggle'}
@@ -169,44 +167,10 @@ function RunStepRow({ step }: { step: RunStepSnapshot }) {
   );
 }
 
-function shouldExpandTimeline(timeline: RunTimelineSnapshot): boolean {
-  // Codex parity: only live/problem states stay open. A finished run always
-  // recedes to one boundary line; the answer and delivery cards stay outside
-  // the folded process.
-  return timeline.status === 'running' || timeline.status === 'blocked' || timeline.status === 'failed';
-}
-
-function CompactStepSummary({ steps }: { steps: RunStepSnapshot[] }) {
-  const visibleSteps = steps.slice(0, 5);
-  const remaining = steps.length - visibleSteps.length;
-  return (
-    <div data-testid="run-disclosure-compact-summary" className="run-compact-steps">
-      {visibleSteps.map((step) => (
-        <span
-          key={step.id}
-          className="run-compact-step"
-          title={step.summary ? `${step.title} · ${step.summary}` : step.title}
-        >
-          <StepIcon kind={step.kind} running={step.status === 'running'} />
-          <span className="run-compact-step-title">{step.title}</span>
-          {step.summary && <span className="run-compact-step-summary">{step.summary}</span>}
-        </span>
-      ))}
-      {remaining > 0 && <span className="run-compact-more">+{remaining}</span>}
-    </div>
-  );
-}
-
 export default function RunDisclosureBlock({ timeline }: { timeline: RunTimelineSnapshot }) {
   const { t } = useTranslation();
-  const defaultExpanded = shouldExpandTimeline(timeline);
-  const [expanded, setExpanded] = React.useState(defaultExpanded);
   const running = timeline.status === 'running';
   const liveElapsed = useLiveElapsed(timeline.startedAt, running);
-
-  React.useEffect(() => {
-    setExpanded(defaultExpanded);
-  }, [defaultExpanded, timeline.id]);
 
   if (timeline.steps.length === 0) return null;
   const duration = running ? liveElapsed : formatDuration(timeline.durationMs);
@@ -217,33 +181,23 @@ export default function RunDisclosureBlock({ timeline }: { timeline: RunTimeline
       : t('agent.chat.disclosure.processed', 'Processed');
   const stepCount = t('agent.chat.disclosure.stepCount', '{{count}} steps', { count: timeline.steps.length });
   const live = timeline.status === 'running' || timeline.status === 'blocked';
-  const processFullyFolded = timeline.status === 'done' && !expanded;
 
   return (
     <div data-testid="run-disclosure-block" data-status={timeline.status} className="run-disclosure">
       <div className={live ? 'run-disclosure-frame is-live' : 'run-disclosure-frame'}>
-        <button
-          type="button"
-          aria-expanded={expanded}
-          onClick={() => setExpanded((value) => !value)}
-          className="run-disclosure-header"
-        >
-          {expanded ? <IconChevronDown size={14} stroke={2.2} /> : <IconChevronRight size={14} stroke={2.2} />}
+        <div className="run-disclosure-header">
           <span className={running ? 'session-tui-shimmer run-disclosure-title' : 'run-disclosure-title'}>
             {title}
           </span>
           {duration && <span className="run-disclosure-duration">{duration}</span>}
-          {!processFullyFolded && timeline.summary && <span className="run-disclosure-summary">{timeline.summary}</span>}
-          {!processFullyFolded && <span className="run-disclosure-count">{stepCount}</span>}
-        </button>
-        {expanded && (
-          <div className="run-disclosure-steps">
-            {timeline.steps.map((step) => (
-              <RunStepRow key={step.id} step={step} />
-            ))}
-          </div>
-        )}
-        {!expanded && !processFullyFolded && <CompactStepSummary steps={timeline.steps} />}
+          {timeline.summary && <span className="run-disclosure-summary">{timeline.summary}</span>}
+          <span className="run-disclosure-count">{stepCount}</span>
+        </div>
+        <div className="run-disclosure-steps">
+          {timeline.steps.map((step) => (
+            <RunStepRow key={step.id} step={step} />
+          ))}
+        </div>
       </div>
     </div>
   );

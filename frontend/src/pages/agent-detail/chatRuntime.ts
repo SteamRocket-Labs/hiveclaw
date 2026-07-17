@@ -573,6 +573,11 @@ function normalizedUserContent(message: AgentChatMessage): string {
 }
 
 function hasMatchingDurableUserMessage(messages: AgentChatMessage[], pending: PendingUserMessage): boolean {
+  const pendingId = String(pending.message.id || '').trim();
+  if (pendingId && messages.some((message) => (
+    message.role === 'user'
+    && [message.id, message.messageId, message.transcriptEventId].some((identity) => String(identity || '') === pendingId)
+  ))) return true;
   const pendingContent = normalizedUserContent(pending.message);
   if (!pendingContent) return false;
   return messages.some((message) => (

@@ -78,6 +78,7 @@ import {
 } from './agent-detail/useSessionTransportController';
 import { projectSessionSocketEvent } from './agent-detail/sessionSocketEventProjector';
 import { applyCanonicalSessionSnapshot, consumeSessionEnvelope } from './agent-detail/sessionEventConsumer';
+import { loadCanonicalSessionTranscript, projectCanonicalTranscriptSnapshot } from './agent-detail/sessionTranscriptHydration';
 import type { SessionEventStore } from './session-workbench/sessionEventStore';
 import {
     buildAssignmentHandoff,
@@ -89,8 +90,6 @@ import {
     AGENT_TAB_LABELS,
     AGENT_WORKBENCH_AREAS,
     DEFAULT_SESSION_PERMISSION_MODE,
-    TRANSCRIPT_INITIAL_WINDOW,
-    TRANSCRIPT_OLDER_PAGE,
     applySessionActiveProjection,
     branchDraftContent,
     buildAgentDetailTabNavigation,
@@ -293,8 +292,6 @@ function AgentDetailInner() {
     const sessionEventFullHydrationKeysRef = useRef<Set<SessionRuntimeKey>>(new Set());
     const transcriptBackfillInFlightRef = useRef<Record<SessionRuntimeKey, Promise<number | void> | undefined>>({});
     const toolCallInvalidateAtRef = useRef<Record<SessionRuntimeKey, number>>({});
-    const [transcriptHasOlder, setTranscriptHasOlder] = useState<Record<SessionRuntimeKey, boolean>>({});
-    const [olderMessagesLoading, setOlderMessagesLoading] = useState(false);
     const activeRunStateRef = useRef<Record<SessionRuntimeKey, SessionRunState>>({});
     const pendingUserMessagesRef = useRef<Record<SessionRuntimeKey, PendingUserMessage[]>>({});
     const runtimeActivityAtRef = useRef<Record<SessionRuntimeKey, number>>({});
@@ -668,79 +665,115 @@ function AgentDetailInner() {
             ...nextTranscriptLoad,
             loadSeq,
         };
+        let canonicalHydrationInFlight: Promise<number | void> | undefined;
+        let publishedCanonicalSnapshot = false;
         try {
-            // First screen loads the newest window; older history pages in on demand (plan B4).
-            const transcriptEvents = await chatApi.getSessionTranscript(targetAgentId, sessionId, {
-                direction: 'backward',
-                limit: TRANSCRIPT_INITIAL_WINDOW,
-                signal: controller.signal,
-                ...operatorOptions,
-            });
+            const publishCanonicalSnapshot = (snapshot: ChatTranscriptEventPayload[]) => {
+                if (snapshot.length === 0) return;
+                if (controller.signal.aborted || loadSeq !== sessionLoadSeqRef.current) return;
+                if (currentAgentIdRef.current !== targetAgentId) return;
+                if (activeSessionIdRef.current !== sessionId) return;
+                const projected = projectCanonicalTranscriptSnapshot({
+                    existing: transcriptEventsRef.current[runtimeKey] || [],
+                    snapshot,
+                    session: sess,
+                    parseMessage: parseChatMsg,
+                });
+                transcriptEventsRef.current[runtimeKey] = projected.events;
+                if (projected.store) sessionEventStoresRef.current[runtimeKey] = projected.store;
+                transcriptReplayStateRef.current[runtimeKey] = projected.replay;
+                sessionUiStateRef.current[runtimeKey] = projected.ui;
+                const preParsed = projected.messages;
+                const activeProjection = projected.activeProjection;
+                if (activeProjection.checkpointEventId) {
+                    if (activeProjection.draftContent) setChatInput(activeProjection.draftContent);
+                    if (activeProjection.shouldScrollToProjectionTail && !publishedCanonicalSnapshot) {
+                        setProjectionTailScrollNonce(prev => prev + 1);
+                    }
+                }
+                publishedCanonicalSnapshot = true;
+                if (writableSession) {
+                    setChatMessagesSessionId(sessionId);
+                    setChatMessagesAfterQueued(() => mergePendingForSession(runtimeKey, preParsed));
+                } else {
+                    setHistoryMessagesSessionId(sessionId);
+                    setHistoryMsgs(preParsed);
+                }
+                setTransportHydratedKeys((current) => ({ ...current, [runtimeKey]: true }));
+            };
+
+            const canonicalHydration = loadCanonicalSessionTranscript(
+                (page) => chatApi.getSessionTranscript(targetAgentId, sessionId, {
+                    ...page,
+                    signal: controller.signal,
+                    ...operatorOptions,
+                }) as Promise<ChatTranscriptEventPayload[]>,
+                publishCanonicalSnapshot,
+            );
+            canonicalHydrationInFlight = canonicalHydration.then((events) => latestTranscriptSequence(events));
+            transcriptBackfillInFlightRef.current[runtimeKey] = canonicalHydrationInFlight;
+            const transcriptEvents = await canonicalHydration;
             if (controller.signal.aborted || loadSeq !== sessionLoadSeqRef.current) return;
             if (currentAgentIdRef.current !== targetAgentId) return;
             if (activeSessionIdRef.current !== sessionId) return;
-            let preParsed: AgentChatMessage[];
-            if (transcriptEvents.length > 0) {
-                transcriptEventsRef.current[runtimeKey] = transcriptEvents as ChatTranscriptEventPayload[];
-                setTranscriptHasOlder((prev) => ({
-                    ...prev,
-                    [runtimeKey]: transcriptEvents.length >= TRANSCRIPT_INITIAL_WINDOW,
-                }));
-                const replay = replayTranscriptEvents(transcriptEvents as ChatTranscriptEventPayload[]);
-                transcriptReplayStateRef.current[runtimeKey] = replay;
-                sessionUiStateRef.current[runtimeKey] = replay.ui;
-                preParsed = replay.messages.map(parseChatMsg);
-            } else {
+            if (transcriptEvents.length === 0) {
                 const msgs = await chatApi.getSessionMessages(targetAgentId, sessionId, {
                     signal: controller.signal,
                     ...operatorOptions,
                 });
                 if (controller.signal.aborted || loadSeq !== sessionLoadSeqRef.current) return;
-                preParsed = msgs.map((m: any) => parseChatMsg(normalizeStoredChatMessage(m)));
+                let preParsed = msgs.map((m: any) => parseChatMsg(normalizeStoredChatMessage(m)));
                 transcriptReplayStateRef.current[runtimeKey] = {
                     ...createEmptyTranscriptReplayState(),
                     messages: preParsed,
                 };
-            }
-            const activeProjection = applySessionActiveProjection(sess, preParsed);
-            preParsed = activeProjection.messages;
-            if (activeProjection.checkpointEventId) {
-                const replay = transcriptReplayStateRef.current[runtimeKey];
-                if (replay) {
-                    transcriptReplayStateRef.current[runtimeKey] = {
-                        ...replay,
-                        messages: activeProjection.messages,
-                    };
+                const activeProjection = applySessionActiveProjection(sess, preParsed);
+                preParsed = activeProjection.messages;
+                if (activeProjection.checkpointEventId) {
+                    const replay = transcriptReplayStateRef.current[runtimeKey];
+                    if (replay) {
+                        transcriptReplayStateRef.current[runtimeKey] = {
+                            ...replay,
+                            messages: activeProjection.messages,
+                        };
+                    }
+                    if (activeProjection.draftContent) setChatInput(activeProjection.draftContent);
+                    if (activeProjection.shouldScrollToProjectionTail) {
+                        setProjectionTailScrollNonce(prev => prev + 1);
+                    }
                 }
-                if (activeProjection.draftContent) {
-                    setChatInput(activeProjection.draftContent);
+                if (writableSession) {
+                    setChatMessagesSessionId(sessionId);
+                    setChatMessagesAfterQueued(() => mergePendingForSession(runtimeKey, preParsed));
+                } else {
+                    setHistoryMessagesSessionId(sessionId);
+                    setHistoryMsgs(preParsed);
                 }
-                if (activeProjection.shouldScrollToProjectionTail) {
-                    setProjectionTailScrollNonce(prev => prev + 1);
-                }
+                setTransportHydratedKeys((current) => ({ ...current, [runtimeKey]: true }));
             }
-            
-            if (writableSession) {
-                setChatMessagesSessionId(sessionId);
-                setChatMessagesAfterQueued(() => mergePendingForSession(runtimeKey, preParsed));
-            } else {
-                setHistoryMessagesSessionId(sessionId);
-                setHistoryMsgs(preParsed);
-            }
-            setTransportHydratedKeys((current) => ({ ...current, [runtimeKey]: true }));
         } catch (err: any) {
             if (err?.name === 'AbortError') return;
             if (loadSeq !== sessionLoadSeqRef.current) return;
             if (currentAgentIdRef.current !== targetAgentId) return;
             if (activeSessionIdRef.current !== sessionId) return;
             console.error('Failed to load session messages:', err);
+            if (publishedCanonicalSnapshot) {
+                sessionEventFullHydrationKeysRef.current.add(runtimeKey);
+                setTransportNotice(
+                    t(
+                        'agent.chat.sessionBackfillIncomplete',
+                        'Latest activity is visible, but older session evidence is still recovering.',
+                    ),
+                );
+                setTransportHydratedKeys((current) => ({ ...current, [runtimeKey]: true }));
+                return;
+            }
             const failureMessage = buildSessionTranscriptLoadFailureMessage(
                 t(
                     'agent.chat.sessionLoadFailed',
                     'Conversation failed to load. Please retry this session or refresh the page.',
                 ),
             );
-            setTranscriptHasOlder((prev) => ({ ...prev, [runtimeKey]: false }));
             if (writableSession) {
                 setChatMessagesSessionId(sessionId);
                 setChatMessagesAfterQueued(() => mergePendingForSession(runtimeKey, [failureMessage]));
@@ -750,6 +783,9 @@ function AgentDetailInner() {
             }
             setTransportHydratedKeys((current) => ({ ...current, [runtimeKey]: true }));
         } finally {
+            if (transcriptBackfillInFlightRef.current[runtimeKey] === canonicalHydrationInFlight) {
+                delete transcriptBackfillInFlightRef.current[runtimeKey];
+            }
             const currentLoad = sessionTranscriptLoadRef.current;
             if (
                 currentLoad?.key === runtimeKey
@@ -758,47 +794,6 @@ function AgentDetailInner() {
             ) {
                 sessionTranscriptLoadRef.current = null;
             }
-        }
-    };
-
-    const loadOlderMessages = async () => {
-        const targetAgentId = currentAgentIdRef.current;
-        const sessionId = activeSessionIdRef.current;
-        if (!targetAgentId || !sessionId || olderMessagesLoading) return;
-        const runtimeKey = buildSessionRuntimeKey(targetAgentId, sessionId);
-        const existing = transcriptEventsRef.current[runtimeKey] || [];
-        const earliestSequence = existing.length > 0 ? Number(existing[0]?.sequence ?? 0) : 0;
-        if (!earliestSequence || earliestSequence <= 1) {
-            setTranscriptHasOlder((prev) => ({ ...prev, [runtimeKey]: false }));
-            return;
-        }
-        setOlderMessagesLoading(true);
-        try {
-            const older = await chatApi.getSessionTranscript(targetAgentId, sessionId, {
-                beforeSequence: earliestSequence,
-                limit: TRANSCRIPT_OLDER_PAGE,
-                ...(activeSession?.operator_view
-                    ? { operatorView: true, operatorReason: 'Agent session administration' }
-                    : undefined),
-            });
-            if (activeSessionIdRef.current !== sessionId) return;
-            setTranscriptHasOlder((prev) => ({ ...prev, [runtimeKey]: older.length >= TRANSCRIPT_OLDER_PAGE }));
-            if (older.length === 0) return;
-            const merged = [...(older as ChatTranscriptEventPayload[]), ...existing];
-            transcriptEventsRef.current[runtimeKey] = merged;
-            const replay = replayTranscriptEvents(merged);
-            transcriptReplayStateRef.current[runtimeKey] = replay;
-            sessionUiStateRef.current[runtimeKey] = replay.ui;
-            const preParsed = replay.messages.map(parseChatMsg);
-            if (chatMessagesSessionId === sessionId) {
-                setChatMessagesAfterQueued(() => mergePendingForSession(runtimeKey, preParsed));
-            } else if (historyMessagesSessionId === sessionId) {
-                setHistoryMsgs(preParsed);
-            }
-        } catch (err) {
-            console.warn('Failed to load older transcript window:', err);
-        } finally {
-            setOlderMessagesLoading(false);
         }
     };
 
@@ -1876,6 +1871,7 @@ function AgentDetailInner() {
 
         const fileName = attachedFiles.map(f => f.name).join(', ');
         let completedGoalRequestId: string | null = null;
+        let acceptedInputId: string = globalThis.crypto.randomUUID();
         try {
             let started: { session: ChatSession; run: SessionRun } | null;
             if (goalModeRequested) {
@@ -1904,6 +1900,7 @@ function AgentDetailInner() {
                 const run = goal.run as SessionRun | null | undefined;
                 if (!run?.run_id) throw new Error(t('agent.chat.goalStartFailed', 'The goal was created but its first turn did not start.'));
                 completedGoalRequestId = goalRequestId;
+                acceptedInputId = goalRequestId;
                 started = { session: goalSession as ChatSession, run };
             } else {
                 started = await startRunForActiveSession({
@@ -1913,6 +1910,8 @@ function AgentDetailInner() {
                     attachments: attachmentPayload,
                     plan_mode_requested: planModeRequested,
                     permission_mode: sessionPermissionMode,
+                    input_id: acceptedInputId,
+                    idempotency_key: `session-input:${acceptedInputId}`,
                 });
             }
             if (!started?.session?.id) return;
@@ -1924,6 +1923,7 @@ function AgentDetailInner() {
             setChatMessagesSessionId(runSessionId);
             appendOptimisticUserMessage(activeRuntimeKey, {
                 role: 'user',
+                id: acceptedInputId,
                 content: userMsg,
                 fileName,
                 imageUrl: attachedFiles.length === 1 ? attachedFiles[0].imageUrl : undefined,
@@ -1957,12 +1957,15 @@ function AgentDetailInner() {
     const sendChatMessageText = async (text: string, options?: { planMode?: boolean }) => {
         const userMsg = text.trim();
         if (!id || !activeSession?.id || !userMsg) return;
+        const acceptedInputId = globalThis.crypto.randomUUID();
         try {
             const started = await startRunForActiveSession({
                 content: userMsg,
                 display_content: userMsg,
                 ...(options?.planMode ? { plan_mode_requested: true } : {}),
                 permission_mode: sessionPermissionMode,
+                input_id: acceptedInputId,
+                idempotency_key: `session-input:${acceptedInputId}`,
             });
             if (!started?.session?.id) return;
             const runSessionId = String(started.session.id);
@@ -1973,6 +1976,7 @@ function AgentDetailInner() {
             setChatMessagesSessionId(runSessionId);
             appendOptimisticUserMessage(activeRuntimeKey, {
                 role: 'user',
+                id: acceptedInputId,
                 content: userMsg,
                 timestamp: new Date().toISOString(),
             });
@@ -2625,13 +2629,6 @@ function AgentDetailInner() {
                             onHistoryScroll={handleHistoryScroll}
                             historyMsgs={historyMsgs}
                             historyMessagesSessionId={historyMessagesSessionId}
-                            onLoadOlderMessages={loadOlderMessages}
-                            olderMessagesLoading={olderMessagesLoading}
-                            hasOlderMessages={Boolean(
-                                activeSession?.id
-                                && id
-                                && transcriptHasOlder[buildSessionRuntimeKey(id, String(activeSession.id))],
-                            )}
                             showHistoryScrollBtn={showHistoryScrollBtn}
                             onScrollHistoryToBottom={scrollHistoryToBottom}
                             chatContainerRef={chatContainerRef}

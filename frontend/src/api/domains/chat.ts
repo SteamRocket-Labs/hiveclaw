@@ -151,6 +151,8 @@ export interface StartSessionRunInput {
   model_routing_locked?: boolean;
   attachments?: Array<Record<string, unknown>>;
   parts?: Array<Record<string, unknown>>;
+  input_id?: string;
+  idempotency_key?: string;
 }
 
 export interface CreateSessionRunInput extends StartSessionRunInput {

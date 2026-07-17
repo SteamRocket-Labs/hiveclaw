@@ -102,6 +102,7 @@ import {
   downloadChatArtifact,
   getArtifactOpenMode,
   getEffectiveArtifactPreviewKind,
+  isUserFacingDeliveryArtifact,
   loadOfficeArtifactPreview,
   type ArtifactPreviewState,
 } from './ArtifactSurface';
@@ -411,9 +412,6 @@ interface AgentChatSectionProps {
   onHistoryScroll: () => void;
   historyMsgs: AgentChatMessage[];
   historyMessagesSessionId: string | null;
-  onLoadOlderMessages: () => void;
-  olderMessagesLoading: boolean;
-  hasOlderMessages: boolean;
   showHistoryScrollBtn: boolean;
   onScrollHistoryToBottom: () => void;
   chatContainerRef: React.RefObject<HTMLDivElement | null>;
@@ -1110,9 +1108,6 @@ function AgentChatSection({
   onHistoryScroll,
   historyMsgs,
   historyMessagesSessionId,
-  onLoadOlderMessages,
-  olderMessagesLoading,
-  hasOlderMessages,
   showHistoryScrollBtn,
   onScrollHistoryToBottom,
   chatContainerRef,
@@ -1501,7 +1496,7 @@ function AgentChatSection({
 
   const isInlineToolCardMessage = (message: AgentChatMessage) => (
     message.role === 'tool_call' && (
-      Boolean(message.artifacts?.length) ||
+      Boolean(message.artifacts?.some((artifact) => isUserFacingDeliveryArtifact(artifact, 'tool'))) ||
       message.toolMeta?.kind === 'plan_proposal' ||
       message.toolMeta?.kind === 'dynamic_workflow_proposal' ||
       message.toolMeta?.kind === 'user_clarification' ||
@@ -1926,29 +1921,6 @@ function AgentChatSection({
         onNavigateBranch={onSelectBranchSession}
       />
       <div className="session-tui-history-content">
-        {hasOlderMessages && !activeSessionHydrating ? (
-          <div style={{ textAlign: 'center', marginBottom: '10px' }}>
-            <button
-              type="button"
-              data-testid="load-older-messages"
-              onClick={onLoadOlderMessages}
-              disabled={olderMessagesLoading}
-              style={{
-                fontSize: '12px',
-                padding: '4px 12px',
-                borderRadius: '12px',
-                border: '1px solid var(--border-default)',
-                background: 'var(--bg-secondary)',
-                color: 'var(--text-secondary)',
-                cursor: olderMessagesLoading ? 'wait' : 'pointer',
-              }}
-            >
-              {olderMessagesLoading
-                ? t('common.loading', 'Loading')
-                : t('agent.chat.loadOlderMessages', 'Load earlier messages')}
-            </button>
-          </div>
-        ) : null}
         {children}
       </div>
     </div>

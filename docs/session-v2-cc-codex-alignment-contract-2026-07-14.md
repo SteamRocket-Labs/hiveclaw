@@ -59,7 +59,7 @@
 | Hook/权限 | SessionStart、UserPromptSubmit、PreToolUse、Stop/SubagentStop 各有不同 blocking/prevent 语义 | Codex 的 typed approval/request/item 表达可改善呈现，不改变 CC Hook 行为 | boundary-specific Hook state + versioned approval/control receipt；executor warning 不冒充模型失败 |
 | Compaction | transcript 证据保留；model input 固定为 boundary → summary → preserved → attachments → hook results | typed compaction/history item 与稳定 Workbench 表达可采纳 | UI/Audit history 与 Context Projection 分离；coverage ledger、source refs、Pre/SessionStart/Post Hook 完整 |
 | Resume | 从 transcript 恢复；修复 unresolved tool use/orphan result/thinking 与中断 continuation，不能发 half-pair | Thread/Turn state、stable item identity、active lock 与 replay reducer 提升工程确定性 | highest-contiguous replay + result/input/saga reconciliation + Provider API-validity gate |
-| Sub-agent | 父层能看到 child live progress、最近活动、tool count/tokens，并进入 sidechain | typed collaboration items/active tail 可改善层级呈现 | 父 Item 实时摘要 + child Session 权威；不全量扁平化，也不只剩 terminal 摘要 |
+| Sub-agent | 父层能看到 child live progress、最近活动、tool count/tokens，并展开 sidechain | typed collaboration items/active tail 可改善层级呈现 | 父 Item 实时摘要 + 内部 child execution stream；它不是普通用户可导航的数字员工 Session，不全量扁平化，也不只剩 terminal 摘要 |
 | 用户呈现 | queue preview、按发生顺序的 messages/tool groups、可展开完整 transcript；状态回答“收到/在做/已采用/可恢复” | 稳定历史 + active tail、pending input、typed failure/approval，减少 UI 猜测 | Codex 风格克制 Workbench；Run/Turn/Transport/Projection 四状态正交，错误域与恢复动作可理解 |
 
 所以“对齐 Codex”绝不等于把 CC 改成 Codex：**先证明 CC 的输入、循环、Hook、tool pair、compact、resume、subagent 行为没有丢，再用 Codex 的类型、稳定 identity、active tail 和 UI 把它做得更清楚。**
@@ -704,12 +704,17 @@ Memory 的发现、加载、引用、写入候选、审查和 durable commit 必
 
 ### 7.4 Sub-agent、A2A 与 Agent Team
 
-- 父 Session 记录 delegation Item；
-- 子 Agent 拥有自己的 child Session/Turn/Item 流；
-- 父 Item 保存 child session refs、状态、结果摘要、artifact refs；
-- 子对话不能全部扁平复制到父时间线；
-- denied、waiting、running、completed、failed、cancelled 分开；
-- A2A receipt、delegation authority 和结果来源必须可审计。
+这四种协作不能再共用一个含糊的 “child session” 产品语义：
+
+| 类型 | 权威执行形态 | 用户 Session 产品面 | 父级消费 |
+|---|---|---|---|
+| Peer Digital Employee A2A | 目标数字员工自己的 governed RuntimeTask + task-scoped event stream | **必须有**独立 `delegation_run`，owner 可见且 read-only；它代表真实的另一位数字员工，不接管对方输入权 | 父 Session 保存 delegation Item、只读 Session ref、typed terminal receipt、artifact/result refs，并可进入该只读窗口 |
+| Lightweight Sub-agent | 父 Agent 权威下的内部 child execution stream/sidechain | **不得进入普通 Session 列表**；实现可复用内部 ChatSession 存储，但必须是 `listed_surface=parent` 或等价隐藏面，不能冒充另一位数字员工会话 | 父 Item 投影 live progress、最近活动、tool/usage 与 terminal result；展开在父上下文内完成 |
+| Agent Team | Team run + member ledger/fanout result | 不为每个 member 自动制造普通用户 Session；Team 面板消费成员状态与可恢复 refs | 父级消费 Team requested/admitted/terminal coverage、成员进度与聚合结果 |
+| Workflow | deterministic step/gate journal | 不变形成聊天 Session；只在 Workflow/父 Session 中投影必要状态 | 父级消费 step/gate/wait/resume/terminal 与交付物 |
+| Local Agent Channel | 远端/本地 Agent transport channel 自己的连接与回执合同 | 保持独立 channel surface；不能用 `source="a2a"` 偷渡成 Peer A2A 或 Sub-agent Session | 父级只消费经过 authority 绑定的 channel receipt/result |
+
+共同要求：子过程不能全部扁平复制到父时间线；`denied`、`waiting`、`running`、`completed`、`failed`、`cancelled` 必须分态；Peer A2A receipt、delegation authority 和结果来源必须可审计。`Session` 是否存在由上述产品身份决定，不由底层是否复用了同一张 `chat_sessions` 表决定。
 
 ### 7.5 Workflow
 
@@ -2127,21 +2132,21 @@ Final answer
 
 ### 16.1 Sub-agent 不扁平化
 
-父时间线不能只在结束后出现一行 terminal summary；CC 的 AgentTool 在运行中持续投影 child progress、最近活动、tool-use count 和 token usage，并允许展开 child 消息。Hive 父时间线至少要实时呈现：
+父时间线不能只在结束后出现一行 terminal summary；CC 的 AgentTool 在运行中持续投影 child progress、最近活动、tool-use count 和 token usage，并允许在父上下文里展开 child sidechain。Hive 父时间线至少要实时呈现：
 
 ```text
 Sub-agent：核对后端 Session truth             running
-├─ child session: session_xxx
+├─ internal sidechain: child_xxx
 ├─ 最近活动：读取 QueryEngine.ts
 ├─ 12 tool uses · 18.4k tokens
-└─ 展开实时 child progress / 进入完整 sidechain
+└─ 展开实时 child progress
 
 Sub-agent：核对后端 Session truth             completed
 ├─ 发现：3 个事实断点
 └─ artifact: backend-session-audit.md
 ```
 
-点击后可展开经过权限投影的实时 child progress，或进入完整 child Session/sidechain；terminal 后收敛为结果摘要和 artifact。父 Session 不复制 child 的每一个 raw tool delta，但也绝不能只保留 terminal 摘要，让用户在几十分钟内看不到子任务状态。
+点击后可在父 Session 内展开经过权限投影的实时 child progress；terminal 后收敛为结果摘要和 artifact。内部实现可以保存可恢复的 child event stream/ChatSession，但它必须保持 `listed_surface=parent`（或等价的非列表面），不能作为普通可导航 Session 出现在数字员工会话列表。父 Session 不复制 child 的每一个 raw tool delta，也绝不能只保留 terminal 摘要，让用户在几十分钟内看不到子任务状态。
 
 父时间线中的 live progress 必须是可重放的 typed snapshot/delta，而不是内存计数器或一句临时文案：
 
@@ -2181,7 +2186,7 @@ type SubagentProgressPayloadV2 = {
 
 ### 16.2 A2A 保留 authority 与 receipt
 
-父 Item 必须保留：
+Peer Digital Employee A2A 与上面的轻量 Sub-agent 不同：目标是另一位真实数字员工，所以每个 admitted task 必须在 coordination publish 前创建或复用一个 task-scoped、owner 可见、read-only 的 `delegation_run` Session。即使 admission 被 cycle/lease 阻断、目标 runtime 不可用或执行失败，该 Session 和父投影也必须留下 typed terminal evidence，不能让用户只看到永久 `running`。父 Item 必须保留：
 
 - delegator principal；
 - target agent；

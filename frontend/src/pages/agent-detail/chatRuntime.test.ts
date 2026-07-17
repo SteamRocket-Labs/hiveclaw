@@ -740,6 +740,17 @@ describe('chatRuntime helpers', () => {
     expect(merged.pending).toEqual([]);
   });
 
+  it('reconciles an optimistic prompt by the accepted input identity even when display text is normalized differently', () => {
+    const merged = mergePendingUserMessages(
+      [{ id: 'input-1', role: 'user', content: 'Durable display content' }],
+      [{ message: { id: 'input-1', role: 'user', content: 'Optimistic display content' }, anchorMessageCount: 0 }],
+    );
+
+    expect(merged.messages).toHaveLength(1);
+    expect(merged.messages[0].content).toBe('Durable display content');
+    expect(merged.pending).toEqual([]);
+  });
+
   it('defers stale active-run clearing during recent runtime activity', () => {
     expect(shouldClearStaleRuntimeState({
       hasStaleRuntimeState: true,

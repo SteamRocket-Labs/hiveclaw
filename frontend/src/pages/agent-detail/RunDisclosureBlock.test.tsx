@@ -5,12 +5,9 @@ import { describe, expect, it, vi } from 'vitest';
 import RunDisclosureBlock from './RunDisclosureBlock';
 import type { RunTimelineSnapshot } from './chatDisclosureReducer';
 
-// Codex-parity contract:
-// - running: shimmering "Working" header + live elapsed seconds
-// - done: ALWAYS collapses by default to a single boundary row (process
-//   recedes; the answer is the star) — including runs that contain reasoning/a2a steps
-// - command details render a concise preview plus a recoverable complete output,
-//   not a raw JSON blob or an irreversible middle-section deletion
+// Session V2 contract: lifecycle rows remain anchored in the timeline. Tool
+// payloads can fold independently, but Thinking/writing/progress stages cannot
+// disappear behind a second turn-level disclosure.
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -38,18 +35,16 @@ describe('RunDisclosureBlock', () => {
     ],
   };
 
-  it('collapses completed runs by default to a single boundary row', () => {
+  it('keeps completed run steps visible while tool payload details remain folded', () => {
     const markup = renderToStaticMarkup(<RunDisclosureBlock timeline={baseTimeline} />);
 
-    expect(markup).toContain('aria-expanded="false"');
     expect(markup).toContain('Processed');
-    expect(markup).not.toContain('read_file');
-    expect(markup).not.toContain('AgentChatSection.tsx');
+    expect(markup).toContain('read_file');
+    expect(markup).toContain('AgentChatSection.tsx');
     expect(markup).not.toContain('RAW FILE CONTENT');
-    expect(markup).not.toContain('run-disclosure-compact-summary');
   });
 
-  it('collapses completed runs even when they contain reasoning or A2A steps', () => {
+  it('keeps Thinking and A2A progress anchored after completion', () => {
     const markup = renderToStaticMarkup(
       <RunDisclosureBlock
         timeline={{
@@ -76,12 +71,10 @@ describe('RunDisclosureBlock', () => {
       />,
     );
 
-    // Codex parity: finished work recedes into one line; details come back
-    // only when the user expands the same ordered step stream.
-    expect(markup).toContain('aria-expanded="false"');
-    expect(markup).not.toContain('Verified the delegated artifact');
-    expect(markup).not.toContain('Delegated to Web3 researcher');
-    expect(markup).not.toContain('run-disclosure-compact-summary');
+    expect(markup).toContain('Thinking');
+    expect(markup).toContain('Verified the delegated artifact');
+    expect(markup).toContain('Action Started');
+    expect(markup).toContain('Delegated to Web3 researcher');
   });
 
   it('expands active runs and shows a shimmering Working header with live elapsed', () => {
@@ -97,7 +90,6 @@ describe('RunDisclosureBlock', () => {
       />,
     );
 
-    expect(markup).toContain('aria-expanded="true"');
     expect(markup).toContain('session-tui-shimmer');
     expect(markup).toContain('Working');
     expect(markup).toMatch(/1[0-9]s/); // live elapsed derived from startedAt

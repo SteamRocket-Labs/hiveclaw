@@ -1,4 +1,10 @@
-import type { AgentChatMessage, ChatTranscriptEventPayload } from './chatRuntime';
+import {
+  applyTranscriptEvent,
+  createEmptyTranscriptReplayState,
+  type AgentChatMessage,
+  type ChatTranscriptEventPayload,
+  type SessionUiState,
+} from './chatRuntime';
 import {
   createSessionEventStore,
   reduceSessionCompatibilityEvent,
@@ -95,6 +101,10 @@ function projectCanonicalItem(
     const toolResult = typeof pairedResult?.payload.result === 'string'
       ? pairedResult.payload.result
       : pairedResult ? itemDisplayContent(pairedResult) : undefined;
+    const rawToolArgs = item.payload.args ?? item.payload.arguments ?? item.payload.input;
+    const toolArgs = rawToolArgs && typeof rawToolArgs === 'object' && !Array.isArray(rawToolArgs)
+      ? rawToolArgs as Record<string, unknown>
+      : undefined;
     return {
       role: 'tool_call',
       content: '',
@@ -102,6 +112,7 @@ function projectCanonicalItem(
       transcriptEventId: item.id,
       timestamp: item.occurredAt,
       toolName,
+      toolArgs,
       toolStatus: pairedResult || item.terminal ? 'done' : 'running',
       toolResult,
       eventType: item.kind,
@@ -155,6 +166,42 @@ export function projectSessionEventStoreToMessages(store: SessionEventStore): Ag
         || (item.invocationId && toolCallInvocations.has(item.invocationId))))
     .map((item) => projectCanonicalItem(item, store, toolResultByCall))
     .filter((message): message is AgentChatMessage => message !== null);
+}
+
+export function hydrateSessionTranscriptEvents(
+  events: ChatTranscriptEventPayload[],
+): { store: SessionEventStore | undefined; messages: AgentChatMessage[]; ui: SessionUiState } {
+  let store: SessionEventStore | undefined;
+  let compatibilityReplay = createEmptyTranscriptReplayState();
+  const sequenceByIdentity = new Map<string, number>();
+
+  for (const event of events) {
+    const sequence = Number(event.sequence ?? 0);
+    const consumed = consumeSessionEnvelope(event, store, 0);
+    if (consumed.store) store = consumed.store;
+    if (!consumed.canonical) {
+      compatibilityReplay = applyTranscriptEvent(compatibilityReplay, consumed.projectionEvent);
+      for (const message of compatibilityReplay.messages) {
+        for (const identity of [message.transcriptEventId, message.messageId, message.id]) {
+          if (identity) sequenceByIdentity.set(String(identity), sequence);
+        }
+      }
+    }
+  }
+
+  const canonicalMessages = store ? projectSessionEventStoreToMessages(store) : [];
+  const ordered = [...compatibilityReplay.messages, ...canonicalMessages]
+    .map((message, index) => ({
+      message,
+      index,
+      sequence: message.sessionItem?.first_sequence
+        ?? sequenceByIdentity.get(String(message.transcriptEventId || message.messageId || message.id || ''))
+        ?? Number.MAX_SAFE_INTEGER,
+    }))
+    .sort((left, right) => left.sequence - right.sequence || left.index - right.index)
+    .map(({ message }) => message);
+
+  return { store, messages: ordered, ui: compatibilityReplay.ui };
 }
 
 export function projectCanonicalSessionSnapshot(

@@ -43,6 +43,61 @@ class _SequenceDB:
 
 
 @pytest.mark.asyncio
+async def test_process_feishu_event_never_impersonates_agent_creator_when_sender_identity_is_missing(monkeypatch):
+    import app.api.feishu as feishu_api
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    creator_id = uuid4()
+    agent = SimpleNamespace(id=agent_id, creator_id=creator_id, tenant_id=tenant_id, name="飞书助手")
+    db = _SequenceDB([agent])
+    sent_messages: list[str] = []
+
+    async def fake_resolve_sender_profile(*_args, **_kwargs):
+        return {"name": "", "open_id": "", "user_id": "", "email": ""}
+
+    async def fail_resolve_feishu_user(*_args, **_kwargs):
+        raise AssertionError("an unverified Feishu sender must not be provisioned as a User")
+
+    async def fail_history(*_args, **_kwargs):
+        raise AssertionError("identity failure must stop before session or history access")
+
+    async def fake_send_message(_app_id, _app_secret, _receive_id, _msg_type, content, **_kwargs):
+        sent_messages.append(content)
+        return {"data": {"message_id": "identity_failure"}}
+
+    monkeypatch.setattr(feishu_api, "_resolve_feishu_sender_profile", fake_resolve_sender_profile)
+    monkeypatch.setattr(
+        "app.services.channel_user_service.channel_user_service.resolve_or_create_feishu_user",
+        fail_resolve_feishu_user,
+    )
+    monkeypatch.setattr("app.services.memory_service.compute_history_limit_for_agent", fail_history)
+    monkeypatch.setattr(feishu_api.feishu_service, "send_message", fake_send_message)
+
+    result = await feishu_api.process_feishu_event(
+        agent_id,
+        {
+            "header": {"event_type": "im.message.receive_v1", "event_id": "evt_missing_identity"},
+            "event": {
+                "sender": {"sender_id": {}},
+                "message": {
+                    "message_type": "text",
+                    "chat_type": "p2p",
+                    "content": json.dumps({"text": "你好"}),
+                    "chat_id": "",
+                },
+            },
+        },
+        db,
+        tenant_channel_config=SimpleNamespace(app_id="app", app_secret="secret", extra_config={}),
+    )
+
+    assert result == {"code": 0, "msg": "sender identity unavailable"}
+    assert sent_messages
+    assert "身份" in sent_messages[0]
+
+
+@pytest.mark.asyncio
 async def test_process_feishu_event_text_approval_resolves_latest_pending_without_llm(monkeypatch):
     import app.api.feishu as feishu_api
 

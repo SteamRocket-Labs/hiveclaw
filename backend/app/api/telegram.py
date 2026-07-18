@@ -577,7 +577,7 @@ async def telegram_webhook(
     history = [{"role": m.role, "content": m.content} for m in reversed(hist_r.scalars().all())]
 
     # Call agent LLM (same function used by Feishu/Slack/DingTalk channels)
-    from app.services.channel_agent_runtime import call_agent_llm
+    from app.services.channel_agent_runtime import call_agent_llm, should_persist_channel_reply_as_assistant
     from app.services.agent_tools import channel_file_sender as _cfs_t
     from app.services.channel_delivery_service import channel_delivery_target as _cdt_t
 
@@ -609,18 +609,18 @@ async def telegram_webhook(
         _cfs_t.reset(_cfs_t_token)
         _cdt_t.reset(_cdt_token)
 
-    # Save assistant reply + update session timestamp in one commit
-    db.add(
-        ChatMessage(
-            agent_id=agent_id,
-            tenant_id=agent_obj.tenant_id,
-            conversation_id=str(session.id),
-            role="assistant",
-            content=reply,
-            user_id=runtime_actor.id,
-            external_principal_id=external_principal_id,
+    if should_persist_channel_reply_as_assistant(reply):
+        db.add(
+            ChatMessage(
+                agent_id=agent_id,
+                tenant_id=agent_obj.tenant_id,
+                conversation_id=str(session.id),
+                role="assistant",
+                content=reply,
+                user_id=runtime_actor.id,
+                external_principal_id=external_principal_id,
+            )
         )
-    )
     session.last_message_at = datetime.now(timezone.utc)
     await db.commit()
 

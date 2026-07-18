@@ -254,7 +254,7 @@ ASSISTANT_PHASES = {
     "assistant_reasoning_private": "reasoning_private",
     "assistant_final": "final",
 }
-ACTOR_TYPES = _words("user assistant runtime tool hook workflow agent system")
+ACTOR_TYPES = _words("user external_principal assistant runtime tool hook workflow agent system")
 AUDIENCES = _words("direct_user participants operator private_provider")
 
 

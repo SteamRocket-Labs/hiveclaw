@@ -223,6 +223,8 @@ class FeishuWSManager:
     ) -> None:
         """Persist Feishu websocket health so bad credentials do not restart forever."""
         now = datetime.now(timezone.utc)
+        registration_session_id: str | None = None
+        persisted_is_configured = False
         try:
             # Daemon/stream context — no request GUC. Resolve the owning tenant so
             # the SELECT+UPDATE works after the stage-3 non-owner role flip
@@ -254,9 +256,42 @@ class FeishuWSManager:
                     extra.pop("last_connection_error", None)
                     extra.pop("last_connection_error_at", None)
                 config.extra_config = extra
+                registration_session_id = str(extra.get("registration_session_id") or "") or None
+                persisted_is_configured = bool(config.is_configured)
                 await db.commit()
         except Exception as exc:
             logger.debug(f"[Feishu WS] Failed to persist channel status for {agent_id}: {exc}")
+            return
+
+        # Close the QR session from the transport's authoritative status event,
+        # even when the browser was closed before the socket connected.
+        if registration_session_id:
+            try:
+                from app.services.feishu_app_registration import (
+                    FeishuRegistrationError,
+                    feishu_app_registration_manager,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[Feishu WS] Registration status bridge import failed for "
+                    f"agent={agent_id} error_type={type(exc).__name__}"
+                )
+                return
+            try:
+                registration = await feishu_app_registration_manager.get_session(registration_session_id)
+                await feishu_app_registration_manager.reconcile_channel_status(
+                    registration,
+                    is_connected=is_connected,
+                    is_configured=persisted_is_configured,
+                    connection_status=connection_status,
+                )
+            except FeishuRegistrationError as exc:
+                logger.debug(f"[Feishu WS] Registration status bridge unavailable for agent={agent_id} code={exc.code}")
+            except Exception as exc:
+                logger.warning(
+                    "[Feishu WS] Registration status bridge failed for "
+                    f"agent={agent_id} error_type={type(exc).__name__}"
+                )
 
     def _create_event_handler(self, agent_id: uuid.UUID) -> lark.EventDispatcherHandler:
         """Create an event dispatcher for a specific agent."""

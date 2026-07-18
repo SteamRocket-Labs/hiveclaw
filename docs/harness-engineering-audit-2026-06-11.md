@@ -2482,6 +2482,19 @@ npm run test
 
 当前结果:聚焦 LLM-write-gate/deployment 红线 `8 passed`;memory/team/deployment 相关回归 `46 passed,3 warnings`;extraction/ledger/queue/memory integration `149 passed,3 warnings`;subagent memory/evolution 相关回归 `69 passed,4 warnings`;全量 ruff `All checks passed!`;compileall 通过;后端全量真 PG `4152 passed,7 skipped,4 warnings`;frontend build 通过;Vitest `39 passed` test files / `198 passed` tests。warnings 来自第三方 `lark_oapi` / `websockets` deprecation,与本次改动无关。
 
+## 2026-07-18 durable IM 终态回发与身份闭环
+
+生产取证发现两个共用断点：渠道 handler 把“已接收，正在后台处理”平台 ACK 写成 `assistant` 历史，导致 ACK 进入后续模型请求；Session V2 canonical terminal commit 虽将任务和结果原子化提交，却没有同时创建 `channel_delivery_outbox`，因此微信、Feishu/Lark 及其他 durable IM 只能收到接收回执，收不到最终答案。两个生产 run 均已完成，其中一个已有 3137 字终答但 outbox 为零，另一个模型请求明确包含 ACK 并将其逐字提交为 terminal candidate。
+
+修复后的机械契约如下：
+
+- 所有 durable IM 接收回执使用 typed `ChannelTransportReceipt`，只允许发给 provider，不得写入模型可见的 `ChatMessage(role="assistant")`；Slack/Feishu 文件接收 ACK 同样不进入 assistant 历史。
+- `commit_terminal_outcome` 在同一数据库事务内根据 `ChatSession.delivery_target_json` 创建 immutable、deterministic、幂等的 terminal delivery intent；正常提交、sealed outcome 恢复、terminal candidate 恢复和已提交 outcome 的显式重放均复用同一入口。
+- 外部 sender authority 使用 `(tenant, provider, installation, subject)` principal，并把 `principal_type` 带入 Session command、event actor、恢复与 dispatch；微信连接成功即验证并落 `self_identity_user_id`，Feishu/Lark 扫码注册创建并验证 app/channel 配置。
+- 生产路径验收覆盖 WeChat Personal、Feishu/Lark、WeCom、Slack、Teams、Telegram、Discord、DingTalk；outbox 唯一约束保证同一 run/target/kind exactly-once，provider 发送仍由可重试 outbox worker 承担。
+
+本轮 Red 证据为 4 个聚焦回归同时失败（typed ACK helper 缺失、九个 IM handler 未隔离 ACK、normal terminal outbox 为零、recovery terminal outbox 为零）。Green 证据：后端相关矩阵 `294 passed`，完整 `test_web_chat_runtime.py` `117 passed`，前端渠道扫码/配置 `12 passed`，`tsc + vite build + AgentDetail bundle budget` 全部通过。
+
 ---
 
 ## 附录 A:基准控制元素精要(三方研究全文另存,此处录审计实际引用项)

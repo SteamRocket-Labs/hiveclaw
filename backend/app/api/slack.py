@@ -378,17 +378,6 @@ async def slack_event_webhook(
         # Files were present but all downloads failed — still send ack so user knows we got the file event
         _file_names = ", ".join(_sf.get("name", "file") for _sf in slack_files)
         _ack = f"收到了文件 {_file_names}，不过我暂时无法下载其内容，请检查 Slack App 是否已授权 files:read 权限。"
-        db.add(
-            ChatMessage(
-                agent_id=agent_id,
-                tenant_id=agent_obj.tenant_id,
-                user_id=platform_user_id,
-                external_principal_id=external_principal_id,
-                role="assistant",
-                content=_ack,
-                conversation_id=session_conv_id,
-            )
-        )
         sess.last_message_at = datetime.now(timezone.utc)
         await db.commit()
         if _bot_token and channel_id:
@@ -411,17 +400,6 @@ async def slack_event_webhook(
         )
         await _asyncio.sleep(_random.uniform(1.0, 2.0))
         _ack = _random.choice(_FILE_ACK_MESSAGES)
-        db.add(
-            ChatMessage(
-                agent_id=agent_id,
-                tenant_id=agent_obj.tenant_id,
-                user_id=platform_user_id,
-                external_principal_id=external_principal_id,
-                role="assistant",
-                content=_ack,
-                conversation_id=session_conv_id,
-            )
-        )
         sess.last_message_at = datetime.now(timezone.utc)
         await db.commit()
         if _bot_token and channel_id:
@@ -481,7 +459,7 @@ async def slack_event_webhook(
     _cdt_s_token = _cdt_s.set(delivery_target)
 
     # Call LLM
-    from app.services.channel_agent_runtime import call_agent_llm
+    from app.services.channel_agent_runtime import call_agent_llm, should_persist_channel_reply_as_assistant
 
     try:
         reply_text = await call_agent_llm(
@@ -503,18 +481,18 @@ async def slack_event_webhook(
         _cfs_s.reset(_cfs_s_token)
     logger.info(f"[Slack] LLM reply: {reply_text[:80]}")
 
-    # Save reply
-    db.add(
-        ChatMessage(
-            agent_id=agent_id,
-            tenant_id=agent_obj.tenant_id,
-            user_id=platform_user_id,
-            external_principal_id=external_principal_id,
-            role="assistant",
-            content=reply_text,
-            conversation_id=session_conv_id,
+    if should_persist_channel_reply_as_assistant(reply_text):
+        db.add(
+            ChatMessage(
+                agent_id=agent_id,
+                tenant_id=agent_obj.tenant_id,
+                user_id=platform_user_id,
+                external_principal_id=external_principal_id,
+                role="assistant",
+                content=reply_text,
+                conversation_id=session_conv_id,
+            )
         )
-    )
     sess.last_message_at = datetime.now(timezone.utc)
     await db.commit()
 

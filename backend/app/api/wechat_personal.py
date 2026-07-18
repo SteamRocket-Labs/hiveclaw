@@ -11,6 +11,7 @@ Provides QR-code-based login flow and channel lifecycle management:
 from __future__ import annotations
 
 import uuid
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from loguru import logger
@@ -28,6 +29,7 @@ from app.services.wechat_personal_service import (
     disconnect_channel,
     disconnect_duplicate_account_bindings,
     get_channel_credentials,
+    get_channel_identity_status,
     retrieve_confirmed_credentials,
     start_qr_login,
     wait_qr_login,
@@ -65,6 +67,10 @@ class StatusResponse(BaseModel):
     connected: bool
     account_id: str | None = None
     channel_type: str = "wechat_personal"
+    transport_connected: bool = False
+    identity_status: Literal["disconnected", "verified", "rebind_required", "access_denied"] = "disconnected"
+    requires_rebind: bool = False
+    requires_access_recovery: bool = False
 
 
 # ── Routes ───────────────────────────────────────────────
@@ -88,7 +94,15 @@ async def qr_start(
     )
     existing_config = existing.scalar_one_or_none()
     if existing_config and existing_config.is_connected:
-        raise HTTPException(status_code=409, detail="WeChat already connected. Disconnect first.")
+        from app.services.wechat_personal_stream import wechat_personal_stream_manager
+
+        identity = await get_channel_identity_status(
+            db,
+            existing_config,
+            transport_running=wechat_personal_stream_manager.is_client_running(agent_id),
+        )
+        if identity["connected"]:
+            raise HTTPException(status_code=409, detail="WeChat already connected. Disconnect first.")
 
     result = await start_qr_login(agent_id)
     return QrStartResponse(
@@ -132,6 +146,8 @@ async def connect(
     creds = await retrieve_confirmed_credentials(body.session_key)
     if not creds or not creds["bot_token"]:
         raise HTTPException(status_code=400, detail="No confirmed QR session found. Please scan again.")
+    if not str(creds.get("user_id") or "").strip():
+        raise HTTPException(status_code=400, detail="WeChat did not return a verifiable user identity. Please scan again.")
 
     stale_agent_ids = await disconnect_duplicate_account_bindings(
         db=db,
@@ -154,13 +170,16 @@ async def connect(
     )
     await db.commit()
 
-    # Start the streaming client
-    try:
-        from app.services.wechat_personal_stream import wechat_personal_stream_manager
+    from app.services.wechat_personal_stream import wechat_personal_stream_manager
 
-        for stale_agent_id in stale_agent_ids:
+    for stale_agent_id in stale_agent_ids:
+        try:
             await wechat_personal_stream_manager.stop_client(stale_agent_id)
+        except Exception as e:
+            logger.warning(f"[WeChatPersonal] Failed to stop stale stream {stale_agent_id}: {e}")
 
+    stream_running = False
+    try:
         decrypted = get_channel_credentials(config)
         if decrypted and decrypted["bot_token"]:
             await wechat_personal_stream_manager.start_client(
@@ -168,10 +187,20 @@ async def connect(
                 bot_token=decrypted["bot_token"],
                 base_url=decrypted["base_url"],
             )
+            stream_running = wechat_personal_stream_manager.is_client_running(agent_id)
     except Exception as e:
         logger.error(f"[WeChatPersonal] Failed to start stream after connect: {e}")
 
-    return StatusResponse(connected=True, account_id=creds["account_id"])
+    if not stream_running:
+        config.is_connected = False
+        await db.commit()
+
+    identity = await get_channel_identity_status(
+        db,
+        config,
+        transport_running=stream_running,
+    )
+    return StatusResponse(account_id=creds["account_id"], **identity)
 
 
 @router.get("/agents/{agent_id}/wechat-personal/status", response_model=StatusResponse)
@@ -191,12 +220,16 @@ async def status(
     )
     config = result.scalar_one_or_none()
 
-    if config is None or not config.is_connected:
-        return StatusResponse(connected=False)
+    from app.services.wechat_personal_stream import wechat_personal_stream_manager
 
-    creds = get_channel_credentials(config)
+    identity = await get_channel_identity_status(
+        db,
+        config,
+        transport_running=wechat_personal_stream_manager.is_client_running(agent_id),
+    )
+    creds = get_channel_credentials(config) if config is not None else None
     account_id = creds["bot_id"] if creds else None
-    return StatusResponse(connected=True, account_id=account_id)
+    return StatusResponse(account_id=account_id, **identity)
 
 
 @router.delete("/agents/{agent_id}/wechat-personal", response_model=StatusResponse)

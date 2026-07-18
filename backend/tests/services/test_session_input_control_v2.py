@@ -168,6 +168,154 @@ async def test_live_rest_ws_adapter_persists_full_human_input_authority(owner_se
         assert outbox_count == len(events)
 
 
+@pytest.mark.parametrize(
+    ("provider", "channel_type"),
+    [
+        ("discord", "discord"),
+        ("dingtalk", "dingtalk"),
+        ("slack", "slack"),
+        ("teams", "microsoft_teams"),
+        ("telegram", "telegram"),
+        ("wechat_personal", "wechat_personal"),
+        ("wecom", "wecom"),
+    ],
+)
+async def test_unbound_external_channel_input_uses_principal_authority_and_safe_runtime(
+    provider,
+    channel_type,
+    owner_sessionmaker,
+    monkeypatch,
+) -> None:
+    from app.models.agent import Agent
+    from app.models.channel_config import ChannelConfig
+    from app.models.chat_session import ChatSession
+    from app.models.chat_transcript_event import ChatTranscriptEvent
+    from app.models.runtime_task import RuntimeTask
+    from app.models.session_v2 import SessionCommand, SessionInputAdmission, SessionTurnInput
+    from app.models.tenant import Tenant
+    from app.models.user import User
+    from app.services import web_chat_runtime
+    from app.services.external_principal_service import resolve_or_create_external_principal
+    from app.services.runtime_budget_failover import not_applicable_runtime_budget_root_binding
+    from app.services.session_live_input import submit_live_human_input
+
+    async def admitted_budget(**_kwargs):
+        return not_applicable_runtime_budget_root_binding()
+
+    monkeypatch.setattr(web_chat_runtime, "_create_runtime_budget_root_run_for_chat", admitted_budget)
+
+    tenant_id, owner_id, agent_id, config_id, session_id, input_id = (uuid.uuid4() for _ in range(6))
+    async with owner_sessionmaker() as db:
+        db.add(Tenant(id=tenant_id, name="External Input Tenant", slug=f"external-input-{tenant_id.hex[:8]}"))
+        db.add(
+            User(
+                id=owner_id,
+                username=f"external-owner-{owner_id.hex[:8]}",
+                email=f"{owner_id.hex[:8]}@external-input.test",
+                password_hash="x",
+                display_name="External Owner",
+                tenant_id=tenant_id,
+            )
+        )
+        await db.flush()
+        db.add(Agent(id=agent_id, tenant_id=tenant_id, name="External Input Agent", creator_id=owner_id))
+        db.add(
+            ChannelConfig(
+                id=config_id,
+                tenant_id=tenant_id,
+                agent_id=agent_id,
+                channel_type=channel_type,
+                is_configured=True,
+                is_connected=False,
+                extra_config={},
+            )
+        )
+        await db.flush()
+        resolved = await resolve_or_create_external_principal(
+            db,
+            tenant_id=tenant_id,
+            provider=provider,
+            installation_ref=str(config_id),
+            channel_config_id=config_id,
+            subject_id=f"{provider}-user-42",
+            display_name=f"{provider} Guest",
+        )
+        session = ChatSession(
+            id=session_id,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            user_id=None,
+            external_principal_id=resolved.principal.id,
+            title="External input",
+            source_channel=channel_type,
+            external_conv_id=f"{provider}_42",
+            session_kind="human_chat",
+            actor_type="external_principal",
+            runtime_source="channel_chat",
+            visibility_scope="direct_user",
+            listed_surface="chat",
+        )
+        db.add(session)
+        await db.commit()
+
+    async with owner_sessionmaker() as db:
+        agent = await db.get(Agent, agent_id)
+        session = await db.get(ChatSession, session_id)
+        actor = await resolve_or_create_external_principal(
+            db,
+            tenant_id=tenant_id,
+            provider=provider,
+            installation_ref=str(config_id),
+            channel_config_id=config_id,
+            subject_id=f"{provider}-user-42",
+            display_name=f"{provider} Guest",
+        )
+        assert agent is not None and session is not None
+        receipt = await submit_live_human_input(
+            db=db,
+            agent=agent,
+            user=actor.actor,
+            session=session,
+            content="Summarize the public message safely",
+            source=channel_type,
+            input_id=input_id,
+            idempotency_key=f"{provider}:{input_id}",
+            runtime_metadata={"channel": channel_type, "budget_interactive": False},
+        )
+        assert receipt["admission_state"] == "admitted"
+        admission = await db.scalar(
+            select(SessionInputAdmission).where(SessionInputAdmission.input_id == input_id)
+        )
+        assert admission is not None
+        assert receipt["run"] is not None, {
+            "receipt": receipt,
+            "dispatch_last_error": admission.dispatch_last_error,
+        }
+        assert receipt["run"]["run_id"]
+
+    async with owner_sessionmaker() as db:
+        turn_input = await db.get(SessionTurnInput, input_id)
+        assert turn_input is not None
+        command = await db.get(SessionCommand, turn_input.command_id)
+        assert command is not None
+        assert command.principal_type == "external_principal"
+        assert command.principal_id == resolved.principal.id
+        accepted = await db.scalar(
+            select(ChatTranscriptEvent).where(
+                ChatTranscriptEvent.command_id == command.id,
+                ChatTranscriptEvent.item_kind == "human_input",
+                ChatTranscriptEvent.lifecycle == "accepted",
+            )
+        )
+        assert accepted is not None and accepted.actor_type == "external_principal"
+        task = await db.get(RuntimeTask, uuid.UUID(receipt["run"]["run_id"]))
+        assert task is not None
+        assert task.metadata_json["external_principal_id"] == str(resolved.principal.id)
+        assert task.metadata_json["external_authority_bound"] is False
+        assert task.metadata_json["disable_tools"] is True
+        assert task.metadata_json["tool_policy"] == "disabled_for_unbound_external_principal"
+
+
 async def test_live_input_id_cannot_rebind_to_another_session(owner_sessionmaker) -> None:
     from app.models.agent import Agent
     from app.models.chat_session import ChatSession
@@ -432,7 +580,11 @@ async def test_channel_durable_ingress_persists_canonical_human_input(owner_sess
             durable_user=user,
             ingress_event_id=ingress_event_id,
         )
-        assert "IdempotencyConflict" in conflict_reply
+        assert conflict_reply == (
+            "⚠️ 这条 IM 消息与已接收消息使用了相同事件标识但内容不同；"
+            "为防止重复执行，本次未启动。请重新发送。"
+        )
+        assert "IdempotencyConflict" not in conflict_reply
 
     async with owner_sessionmaker() as db:
         row = await db.scalar(

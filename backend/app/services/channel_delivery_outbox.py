@@ -22,6 +22,7 @@ from app.models.audit import AuditLog
 from app.models.channel_config import ChannelConfig
 from app.models.channel_delivery_outbox import ChannelDeliveryOutbox
 from app.models.chat_artifact import ChatArtifact
+from app.models.chat_session import ChatSession
 from app.models.external_principal import ExternalPrincipal
 from app.services.channel_delivery_service import ChannelDeliveryService, DeliveryResult
 from app.services.knowledge_provenance import (
@@ -185,6 +186,111 @@ async def enqueue_channel_delivery(db: AsyncSession, intent: ChannelDeliveryInte
     )
     await db.execute(stmt)
     return values["id"]
+
+
+async def enqueue_terminal_delivery_for_task(
+    db: AsyncSession,
+    *,
+    task: Any,
+    content: str,
+    terminal_status: str,
+    artifact_parts: list[dict[str, Any]] | None = None,
+    metadata: dict[str, Any] | None = None,
+    agent_id: uuid.UUID | str | None = None,
+    session_id: uuid.UUID | str | None = None,
+    user_id: uuid.UUID | str | None = None,
+    external_principal_id: uuid.UUID | str | None = None,
+    delivery_kind: DeliveryKind = "terminal_result",
+) -> uuid.UUID | None:
+    """Project canonical terminal truth into one immutable external delivery intent.
+
+    ``ChatSession.delivery_target_json`` is the transport authority.  Runtime
+    source labels are intentionally not used as a gate because legacy sessions
+    may still say ``web`` even though they have a valid external target.
+    """
+
+    session_id = _uuid(
+        session_id or getattr(task, "parent_session_id", None), field="parent_session_id", optional=True
+    )
+    agent_id = _uuid(agent_id or getattr(task, "parent_agent_id", None), field="parent_agent_id", optional=True)
+    tenant_id = _uuid(getattr(task, "tenant_id", None), field="tenant_id", optional=True)
+    if session_id is None or agent_id is None or tenant_id is None:
+        return None
+    session = (
+        await db.execute(
+            select(ChatSession).where(
+                ChatSession.id == session_id,
+                ChatSession.agent_id == agent_id,
+                ChatSession.tenant_id == tenant_id,
+            )
+        )
+    ).scalar_one_or_none()
+    target = dict(getattr(session, "delivery_target_json", None) or {}) if session is not None else {}
+    normalized_target = ChannelDeliveryService.normalize_reply_target(target)
+    if not normalized_target or str(normalized_target.get("channel") or "").lower() == "web":
+        return None
+
+    text_content = str(content or "")
+    if not text_content.strip():
+        return None
+    channel = str(normalized_target["channel"])
+    channel_config = (
+        await db.execute(
+            select(ChannelConfig).where(
+                ChannelConfig.agent_id == agent_id,
+                ChannelConfig.tenant_id == tenant_id,
+                ChannelConfig.channel_type == channel,
+            )
+        )
+    ).scalar_one_or_none()
+    artifact_ids = [
+        _uuid(part.get("artifact_id"), field="artifact_id")
+        for part in (artifact_parts or [])
+        if isinstance(part, dict) and part.get("artifact_id")
+    ]
+    if not artifact_ids and delivery_kind == "terminal_result":
+        artifact_ids = list(
+            (
+                await db.execute(
+                    select(ChatArtifact.id).where(
+                        ChatArtifact.tenant_id == tenant_id,
+                        ChatArtifact.agent_id == agent_id,
+                        ChatArtifact.session_id == session_id,
+                        ChatArtifact.runtime_task_id == task.id,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    task_metadata = dict(getattr(task, "metadata_json", None) or {})
+    resolved_external_principal_id = (
+        external_principal_id
+        or task_metadata.get("external_principal_id")
+        or getattr(session, "external_principal_id", None)
+        or normalized_target.get("external_principal_id")
+    )
+    resolved_user_id = user_id or getattr(task, "root_user_id", None) or getattr(session, "user_id", None)
+    delivery_metadata = dict(metadata or {})
+    delivery_metadata.setdefault("source", "canonical_terminal_outcome")
+    return await enqueue_channel_delivery(
+        db,
+        ChannelDeliveryIntent(
+            tenant_id=tenant_id,
+            runtime_task_id=task.id,
+            agent_id=agent_id,
+            session_id=session_id,
+            user_id=resolved_user_id,
+            external_principal_id=resolved_external_principal_id,
+            channel_config_id=getattr(channel_config, "id", None),
+            delivery_target=normalized_target,
+            text=text_content,
+            artifact_ids=[value for value in artifact_ids if value is not None],
+            terminal_status=terminal_status,
+            delivery_kind=delivery_kind,
+            metadata=delivery_metadata,
+        ),
+    )
 
 
 def _claimed(row: ChannelDeliveryOutbox) -> ClaimedChannelDelivery:

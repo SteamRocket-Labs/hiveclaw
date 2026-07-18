@@ -145,6 +145,13 @@ def _runtime_actor_authority_bound(user: Any) -> bool:
     return bool(getattr(user, "authority_bound", False) and _runtime_actor_user_id(user) is not None)
 
 
+def _runtime_actor_session_principal(user: Any) -> tuple[str, uuid.UUID | None]:
+    external_principal_id = _runtime_actor_external_principal_id(user)
+    if external_principal_id is not None:
+        return "external_principal", external_principal_id
+    return "user", _runtime_actor_user_id(user)
+
+
 async def _lock_session_runtime_mutation(db: AsyncSession, *, session_id: uuid.UUID) -> None:
     """Serialize run admission with transcript mutations such as Rewind.
 
@@ -1987,6 +1994,20 @@ async def start_web_chat_run(
     saved_content = _saved_user_content(content=content, display_content=display_content, file_name=file_name)
     message_id = uuid.uuid4()
     supplied_metadata = dict(extra_metadata or {})
+    actor_user_id = _runtime_actor_user_id(user)
+    actor_external_principal_id = _runtime_actor_external_principal_id(user)
+    actor_authority_bound = _runtime_actor_authority_bound(user)
+    actor_principal_type, actor_principal_id = _runtime_actor_session_principal(user)
+    supplied_metadata["user_id"] = str(actor_user_id) if actor_user_id else None
+    supplied_metadata["external_principal_id"] = (
+        str(actor_external_principal_id) if actor_external_principal_id else None
+    )
+    supplied_metadata["external_authority_bound"] = (
+        actor_authority_bound if actor_external_principal_id else None
+    )
+    if actor_external_principal_id is not None and not actor_authority_bound:
+        supplied_metadata["disable_tools"] = True
+        supplied_metadata["tool_policy"] = "disabled_for_unbound_external_principal"
     turn_id = str(supplied_metadata.get("turn_id") or f"turn-{run_uuid.hex}")
     intent_id = str(supplied_metadata.get("intent_id") or f"intent-{message_id.hex}")
     source = str(
@@ -2046,7 +2067,7 @@ async def start_web_chat_run(
         trace_id=f"{runtime_task_type}:{run_uuid.hex}",
         parent_session_id=str(session.id),
         child_session_id=str(session.id),
-        root_user_id=user.id,
+        root_user_id=actor_user_id,
         root_session_id=str(getattr(session, "root_session_id", None) or session.id),
         root_runtime_task_id=_uuid_or_none(supplied_metadata.get("root_runtime_task_id")) or run_uuid,
         delegation_chain_json=list(supplied_metadata.get("delegation_chain") or [])
@@ -2061,7 +2082,7 @@ async def start_web_chat_run(
         ),
         budget_snapshot_json=(dict(budget_binding.payload) if budget_binding.status != "not_applicable" else None),
         metadata_json={
-            "user_id": str(user.id),
+            "user_id": str(actor_user_id) if actor_user_id else None,
             "session_id": str(session.id),
             "runtime_task_id": run_uuid.hex,
             "request_id": str(run_uuid),
@@ -2131,7 +2152,7 @@ async def start_web_chat_run(
                 id=message_id,
                 agent_id=agent.id,
                 tenant_id=getattr(agent, "tenant_id", None),
-                user_id=user.id,
+                user_id=actor_user_id,
                 role="user",
                 content=saved_content,
                 conversation_id=str(session.id),
@@ -2194,7 +2215,8 @@ async def start_web_chat_run(
                     or replacement_saga.replacement_turn_id != turn_id
                     or replacement_saga.state != "replacement_queued"
                     or admission.command_id != input_row.command_id
-                    or command.principal_id != user.id
+                    or command.principal_type != actor_principal_type
+                    or command.principal_id != actor_principal_id
                 ):
                     raise HTTPException(status_code=409, detail="Session V2 replacement input is not queueable")
                 authority = await resolve_session_mutation_authority(
@@ -2222,7 +2244,8 @@ async def start_web_chat_run(
                 )
                 or (input_row.intent == "steer_current_turn" and input_row.rolled_over_to_turn_id != turn_id)
                 or admission.command_id != input_row.command_id
-                or command.principal_id != user.id
+                or command.principal_type != actor_principal_type
+                or command.principal_id != actor_principal_id
             ):
                 raise HTTPException(status_code=409, detail="Session V2 start input is not admitted")
             else:
@@ -2328,7 +2351,8 @@ async def start_web_chat_run(
                 or input_row.target_turn_id != turn_id
                 or input_row.target_run_id is not None
                 or admission.command_id != input_row.command_id
-                or command.principal_id != user.id
+                or command.principal_type != actor_principal_type
+                or command.principal_id != actor_principal_id
                 or command.receipt_ref != input_row.settlement_ref
             ):
                 raise HTTPException(status_code=409, detail="Session V2 rollover successor is not admitted")
@@ -3080,83 +3104,26 @@ async def _enqueue_terminal_channel_delivery(
     delivery_kind: str = "terminal_result",
 ) -> uuid.UUID | None:
     """Write the channel handoff in the same transaction as terminal truth."""
-    from app.models.channel_config import ChannelConfig
-    from app.models.chat_artifact import ChatArtifact
-    from app.services.channel_delivery_outbox import ChannelDeliveryIntent, enqueue_channel_delivery
-    from app.services.channel_delivery_service import ChannelDeliveryService
+    from app.services.channel_delivery_outbox import enqueue_terminal_delivery_for_task
 
-    runtime_metadata = dict(getattr(task, "metadata_json", None) or {})
-    source = str(runtime_metadata.get("source") or "web").strip().lower()
-    if delivery_kind == "terminal_result" and source in {"", "web", "web_chat"}:
-        return None
-    session_uuid = uuid.UUID(str(session_id))
-    session = (
-        await db.execute(
-            select(ChatSession).where(
-                ChatSession.id == session_uuid,
-                ChatSession.agent_id == agent_id,
-                ChatSession.tenant_id == task.tenant_id,
-            )
-        )
-    ).scalar_one_or_none()
-    target = dict(getattr(session, "delivery_target_json", None) or {}) if session is not None else {}
-    normalized_target = ChannelDeliveryService.normalize_reply_target(target)
-    if not normalized_target or normalized_target.get("channel") == "web":
-        return None
-
-    channel = str(normalized_target["channel"])
-    channel_config = (
-        await db.execute(
-            select(ChannelConfig).where(
-                ChannelConfig.agent_id == agent_id,
-                ChannelConfig.tenant_id == task.tenant_id,
-                ChannelConfig.channel_type == channel,
-            )
-        )
-    ).scalar_one_or_none()
-    artifact_ids = [
-        uuid.UUID(str(part["artifact_id"]))
-        for part in artifact_parts
-        if isinstance(part, dict) and part.get("artifact_id")
-    ]
-    if not artifact_ids and delivery_kind == "terminal_result":
-        artifact_ids = list(
-            (
-                await db.execute(
-                    select(ChatArtifact.id).where(
-                        ChatArtifact.tenant_id == task.tenant_id,
-                        ChatArtifact.agent_id == agent_id,
-                        ChatArtifact.session_id == session_uuid,
-                        ChatArtifact.runtime_task_id == task.id,
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        )
     metadata = dict(metadata_json or {})
-    return await enqueue_channel_delivery(
+    return await enqueue_terminal_delivery_for_task(
         db,
-        ChannelDeliveryIntent(
-            tenant_id=task.tenant_id,
-            runtime_task_id=task.id,
-            agent_id=agent_id,
-            session_id=session_uuid,
-            user_id=user_id,
-            external_principal_id=external_principal_id,
-            channel_config_id=getattr(channel_config, "id", None),
-            delivery_target=normalized_target,
-            text=content,
-            artifact_ids=artifact_ids,
-            terminal_status=status,
-            delivery_kind=delivery_kind,  # type: ignore[arg-type]
-            metadata={
-                "source": "web_chat_runtime",
-                "terminal_reason": metadata.get("terminal_reason"),
-                "turn_id": metadata.get("turn_id"),
-                "final_decision_trace_id": metadata.get("final_decision_trace_id"),
-            },
-        ),
+        task=task,
+        content=content,
+        terminal_status=status,
+        artifact_parts=artifact_parts,
+        agent_id=agent_id,
+        session_id=session_id,
+        user_id=user_id,
+        external_principal_id=external_principal_id,
+        delivery_kind=delivery_kind,  # type: ignore[arg-type]
+        metadata={
+            "source": "web_chat_runtime",
+            "terminal_reason": metadata.get("terminal_reason"),
+            "turn_id": metadata.get("turn_id"),
+            "final_decision_trace_id": metadata.get("final_decision_trace_id"),
+        },
     )
 
 

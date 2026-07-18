@@ -193,6 +193,13 @@ async def test_connect_channel_rotates_reused_installation_identity(monkeypatch)
         "app.services.external_principal_service.revoke_channel_config_external_principals",
         fake_revoke,
     )
+    async def fake_bind_self_identity(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "app.services.external_principal_service.bind_authenticated_self_channel_principal",
+        fake_bind_self_identity,
+    )
     monkeypatch.setattr("app.services.wechat_personal_service._encrypt", lambda value: f"encrypted:{value}")
 
     config = await connect_channel(
@@ -200,6 +207,7 @@ async def test_connect_channel_rotates_reused_installation_identity(monkeypatch)
         agent_id,
         account_id="bot-new",
         bot_token="token-new",
+        user_id="wx-owner",
         tenant_id=tenant_id,
         actor_user_id=actor_user_id,
     )
@@ -210,6 +218,252 @@ async def test_connect_channel_rotates_reused_installation_identity(monkeypatch)
     assert config.id != old_config.id
     assert config.is_connected is True
     assert db.added == [config]
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("migrated_pg_url")
+async def test_connect_channel_atomically_binds_authenticated_wechat_identity(
+    monkeypatch,
+    owner_sessionmaker,
+):
+    from sqlalchemy import select
+
+    from app.models.agent import Agent
+    from app.models.external_principal import ExternalPrincipal, ExternalPrincipalBindingEvent
+    from app.models.tenant import Tenant
+    from app.models.user import User
+    from app.services.wechat_personal_service import connect_channel, get_channel_identity_status
+
+    tenant_id, owner_id, agent_id = uuid4(), uuid4(), uuid4()
+    async with owner_sessionmaker() as db:
+        db.add(Tenant(id=tenant_id, name="WeChat Identity", slug=f"wechat-identity-{tenant_id.hex[:8]}"))
+        db.add(
+            User(
+                id=owner_id,
+                username=f"wechat-owner-{owner_id.hex[:8]}",
+                email=f"{owner_id.hex[:8]}@wechat-identity.test",
+                password_hash="x",
+                display_name="WeChat Owner",
+                tenant_id=tenant_id,
+            )
+        )
+        await db.flush()
+        db.add(Agent(id=agent_id, tenant_id=tenant_id, name="WeChat Agent", creator_id=owner_id))
+        await db.commit()
+
+    monkeypatch.setattr("app.services.wechat_personal_service._encrypt", lambda value: f"encrypted:{value}")
+    async with owner_sessionmaker() as db:
+        config = await connect_channel(
+            db,
+            agent_id,
+            account_id="bot-self",
+            bot_token="token-self",
+            user_id="wechat-self-subject",
+            tenant_id=tenant_id,
+            actor_user_id=owner_id,
+        )
+        await db.commit()
+        config_id = config.id
+
+    async with owner_sessionmaker() as db:
+        config = await db.get(type(config), config_id)
+        principal = await db.scalar(
+            select(ExternalPrincipal).where(
+                ExternalPrincipal.channel_config_id == config_id,
+                ExternalPrincipal.provider == "wechat_personal",
+                ExternalPrincipal.subject_id == "wechat-self-subject",
+            )
+        )
+        event = await db.scalar(
+            select(ExternalPrincipalBindingEvent).where(
+                ExternalPrincipalBindingEvent.external_principal_id == principal.id,
+                ExternalPrincipalBindingEvent.action == "linked",
+            )
+        )
+        identity_status = await get_channel_identity_status(db, config)
+
+    assert config is not None
+    assert config.self_identity_user_id == owner_id
+    assert config.self_identity_verified_at is not None
+    assert principal is not None and principal.linked_user_id == owner_id
+    assert event is not None
+    assert event.actor_user_id == owner_id
+    assert event.new_user_id == owner_id
+    assert identity_status == {
+        "connected": True,
+        "transport_connected": True,
+        "identity_status": "verified",
+        "requires_rebind": False,
+        "requires_access_recovery": False,
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("migrated_pg_url")
+async def test_reconnecting_wechat_identity_rebinds_existing_session_to_new_installation(
+    monkeypatch,
+    owner_sessionmaker,
+):
+    from sqlalchemy import select
+
+    from app.models.agent import Agent
+    from app.models.chat_session import ChatSession
+    from app.models.external_principal import ExternalPrincipal
+    from app.models.tenant import Tenant
+    from app.models.user import User
+    from app.services.channel_session import find_or_create_channel_session
+    from app.services.wechat_personal_service import connect_channel
+
+    tenant_id, owner_id, agent_id = uuid4(), uuid4(), uuid4()
+    async with owner_sessionmaker() as db:
+        db.add(Tenant(id=tenant_id, name="WeChat Reconnect", slug=f"wechat-reconnect-{tenant_id.hex[:8]}"))
+        db.add(
+            User(
+                id=owner_id,
+                username=f"wechat-reconnect-{owner_id.hex[:8]}",
+                email=f"{owner_id.hex[:8]}@wechat-reconnect.test",
+                password_hash="x",
+                display_name="WeChat Reconnect Owner",
+                tenant_id=tenant_id,
+            )
+        )
+        await db.flush()
+        db.add(Agent(id=agent_id, tenant_id=tenant_id, name="WeChat Reconnect Agent", creator_id=owner_id))
+        await db.commit()
+
+    monkeypatch.setattr("app.services.wechat_personal_service._encrypt", lambda value: f"encrypted:{value}")
+    async with owner_sessionmaker() as db:
+        first = await connect_channel(
+            db,
+            agent_id,
+            account_id="bot-first",
+            bot_token="token-first",
+            user_id="wechat-stable-subject",
+            tenant_id=tenant_id,
+            actor_user_id=owner_id,
+        )
+        first_principal = await db.scalar(
+            select(ExternalPrincipal).where(ExternalPrincipal.channel_config_id == first.id)
+        )
+        session = await find_or_create_channel_session(
+            db=db,
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            user_id=owner_id,
+            external_principal_id=first_principal.id,
+            external_conv_id="wechat_p2p_wechat-stable-subject",
+            source_channel="wechat_personal",
+            first_message_title="before reconnect",
+        )
+        await db.commit()
+        session_id = session.id
+        first_principal_id = first_principal.id
+
+    async with owner_sessionmaker() as db:
+        second = await connect_channel(
+            db,
+            agent_id,
+            account_id="bot-second",
+            bot_token="token-second",
+            user_id="wechat-stable-subject",
+            tenant_id=tenant_id,
+            actor_user_id=owner_id,
+        )
+        await db.commit()
+        second_config_id = second.id
+
+    async with owner_sessionmaker() as db:
+        old_principal = await db.get(ExternalPrincipal, first_principal_id)
+        new_principal = await db.scalar(
+            select(ExternalPrincipal).where(ExternalPrincipal.channel_config_id == second_config_id)
+        )
+        rebound_session = await db.get(ChatSession, session_id)
+
+    assert old_principal is not None and old_principal.status == "revoked"
+    assert new_principal is not None and new_principal.linked_user_id == owner_id
+    assert rebound_session is not None
+    assert rebound_session.external_principal_id == new_principal.id
+    assert rebound_session.user_id == owner_id
+
+
+@pytest.mark.asyncio
+async def test_wechat_transport_without_verified_self_identity_requires_rebind_without_db_guessing():
+    from app.services.wechat_personal_service import get_channel_identity_status
+
+    class _NoQueryDB:
+        async def scalar(self, _stmt):
+            raise AssertionError("legacy transport state must not guess an identity from other tables")
+
+    config = SimpleNamespace(
+        is_configured=True,
+        is_connected=True,
+        extra_config={"ilink_user_id": "wechat-owner"},
+        self_identity_user_id=None,
+        self_identity_verified_at=None,
+    )
+
+    status = await get_channel_identity_status(_NoQueryDB(), config)
+
+    assert status == {
+        "connected": False,
+        "transport_connected": True,
+        "identity_status": "rebind_required",
+        "requires_rebind": True,
+        "requires_access_recovery": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_wechat_verified_identity_reports_revoked_agent_authority(monkeypatch):
+    from fastapi import HTTPException
+
+    from app.services.wechat_personal_service import get_channel_identity_status
+
+    tenant_id = uuid4()
+    user_id = uuid4()
+    config = SimpleNamespace(
+        id=uuid4(),
+        agent_id=uuid4(),
+        tenant_id=tenant_id,
+        is_configured=True,
+        is_connected=True,
+        extra_config={"ilink_user_id": "wechat-owner"},
+        self_identity_user_id=user_id,
+        self_identity_verified_at=object(),
+    )
+    principal = SimpleNamespace(linked_user_id=user_id)
+    user = SimpleNamespace(id=user_id, tenant_id=tenant_id, is_active=True)
+
+    class _IdentityDB:
+        def __init__(self):
+            self._values = [principal, user]
+
+        async def scalar(self, _stmt):
+            return self._values.pop(0)
+
+    async def deny_agent_access(*_args, **_kwargs):
+        raise HTTPException(status_code=403, detail="Agent access revoked")
+
+    monkeypatch.setattr("app.core.permissions.check_agent_access", deny_agent_access)
+    status = await get_channel_identity_status(_IdentityDB(), config)
+
+    assert status == {
+        "connected": False,
+        "transport_connected": True,
+        "identity_status": "access_denied",
+        "requires_rebind": False,
+        "requires_access_recovery": True,
+    }
+
+
+def test_wechat_access_denied_message_routes_user_to_channel_recovery_without_admin_approval_language():
+    import app.services.wechat_personal_stream as wechat_stream
+
+    message = wechat_stream._channel_identity_failure_message("access_denied")
+
+    assert message == "⚠️ 当前渠道已失效，请到 Hive 的 Agent 渠道页面处理后再试。"
+    assert "管理员" not in message
+    assert "授权" not in message
 
 
 @pytest.mark.asyncio
@@ -280,6 +534,9 @@ async def test_connect_wechat_replaces_stale_account_streams(monkeypatch):
         async def start_client(self, **kwargs):
             calls.append(("start", kwargs["agent_id"], kwargs["bot_token"], kwargs["base_url"]))
 
+        def is_client_running(self, checked_agent_id):
+            return checked_agent_id == agent_id
+
     async def fake_require_manage(_db, current_user, checked_agent_id):
         assert checked_agent_id == agent_id
         return SimpleNamespace(id=agent_id, tenant_id=tenant_id, owner_user_id=current_user.id)
@@ -299,7 +556,16 @@ async def test_connect_wechat_replaces_stale_account_streams(monkeypatch):
 
     async def fake_connect_channel(**kwargs):
         captured["connect_kwargs"] = kwargs
-        return SimpleNamespace(extra_config={"ilink_bot_token": "encrypted"})
+        return SimpleNamespace(is_connected=True, extra_config={"ilink_bot_token": "encrypted"})
+
+    async def fake_identity_status(_db, _config, *, transport_running=None):
+        return {
+            "connected": bool(transport_running),
+            "transport_connected": bool(transport_running),
+            "identity_status": "verified",
+            "requires_rebind": not bool(transport_running),
+            "requires_access_recovery": False,
+        }
 
     monkeypatch.setattr(wechat_api, "require_agent_manage_access", fake_require_manage)
     monkeypatch.setattr(wechat_api, "retrieve_confirmed_credentials", fake_retrieve_confirmed_credentials)
@@ -310,6 +576,7 @@ async def test_connect_wechat_replaces_stale_account_streams(monkeypatch):
         raising=False,
     )
     monkeypatch.setattr(wechat_api, "connect_channel", fake_connect_channel)
+    monkeypatch.setattr(wechat_api, "get_channel_identity_status", fake_identity_status)
     monkeypatch.setattr(
         wechat_api,
         "get_channel_credentials",
@@ -341,6 +608,110 @@ async def test_connect_wechat_replaces_stale_account_streams(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_connect_wechat_never_reports_connected_when_stream_start_fails(monkeypatch):
+    import app.api.wechat_personal as wechat_api
+    import app.services.wechat_personal_stream as stream_mod
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    config = SimpleNamespace(
+        agent_id=agent_id,
+        is_connected=True,
+        extra_config={"ilink_bot_token": "encrypted"},
+    )
+
+    class _CommitDB:
+        def __init__(self):
+            self.commits = 0
+
+        async def commit(self):
+            self.commits += 1
+
+    class _FailingStreamManager:
+        async def stop_client(self, _agent_id):
+            return None
+
+        async def start_client(self, **_kwargs):
+            raise RuntimeError("poll loop failed during startup")
+
+        def is_client_running(self, _agent_id):
+            return False
+
+    async def fake_require_manage(_db, current_user, checked_agent_id):
+        assert checked_agent_id == agent_id
+        return SimpleNamespace(id=agent_id, tenant_id=tenant_id, owner_user_id=current_user.id)
+
+    async def fake_retrieve_confirmed_credentials(_session_key):
+        return {
+            "account_id": "bot-1",
+            "bot_token": "token-1",
+            "base_url": "https://ilink.example",
+            "user_id": "wx-owner",
+        }
+
+    async def fake_identity_status(_db, checked_config, *, transport_running=None):
+        assert checked_config is config
+        return {
+            "connected": bool(transport_running),
+            "transport_connected": bool(transport_running),
+            "identity_status": "verified",
+            "requires_rebind": not bool(transport_running),
+            "requires_access_recovery": False,
+        }
+
+    async def fake_disconnect_duplicate_account_bindings(**_kwargs):
+        return []
+
+    async def fake_connect_channel(**_kwargs):
+        return config
+
+    monkeypatch.setattr(wechat_api, "require_agent_manage_access", fake_require_manage)
+    monkeypatch.setattr(wechat_api, "retrieve_confirmed_credentials", fake_retrieve_confirmed_credentials)
+    monkeypatch.setattr(wechat_api, "disconnect_duplicate_account_bindings", fake_disconnect_duplicate_account_bindings)
+    monkeypatch.setattr(wechat_api, "connect_channel", fake_connect_channel)
+    monkeypatch.setattr(
+        wechat_api,
+        "get_channel_credentials",
+        lambda _config: {"bot_token": "token-1", "base_url": "https://ilink.example"},
+    )
+    monkeypatch.setattr(wechat_api, "get_channel_identity_status", fake_identity_status)
+    monkeypatch.setattr(stream_mod, "wechat_personal_stream_manager", _FailingStreamManager())
+
+    db = _CommitDB()
+    result = await wechat_api.connect(
+        agent_id=agent_id,
+        body=wechat_api.ConnectRequest(session_key="session-1"),
+        current_user=SimpleNamespace(id=uuid4()),
+        db=db,
+    )
+
+    assert result.connected is False
+    assert result.transport_connected is False
+    assert result.identity_status == "verified"
+    assert result.requires_rebind is True
+    assert config.is_connected is False
+    assert db.commits == 2
+
+
+@pytest.mark.asyncio
+async def test_wechat_stream_manager_propagates_immediate_startup_failure(monkeypatch):
+    import app.services.wechat_personal_stream as stream_mod
+
+    manager = stream_mod.WeChatPersonalStreamManager()
+    agent_id = uuid4()
+
+    async def fail_immediately(*_args, **_kwargs):
+        raise RuntimeError("immediate poll failure")
+
+    monkeypatch.setattr(manager, "_run_poll_loop", fail_immediately)
+
+    with pytest.raises(RuntimeError, match="immediate poll failure"):
+        await manager.start_client(agent_id, "token", "https://ilink.example")
+
+    assert manager.is_client_running(agent_id) is False
+
+
+@pytest.mark.asyncio
 async def test_process_wechat_message_sets_sender_scoped_identity_and_session_contract(monkeypatch):
     import app.services.wechat_personal_stream as wechat_stream
     from app.core.execution_context import clear_execution_identity
@@ -352,7 +723,12 @@ async def test_process_wechat_message_sets_sender_scoped_identity_and_session_co
     external_principal_id = uuid4()
     creator_id = uuid4()
     session_id = uuid4()
-    config = SimpleNamespace(id=uuid4())
+    config = SimpleNamespace(
+        id=uuid4(),
+        extra_config={"ilink_user_id": "wxid_abc"},
+        self_identity_user_id=platform_user_id,
+        self_identity_verified_at=object(),
+    )
     captured: dict[str, object] = {}
 
     db = _SequenceSession(
@@ -379,6 +755,14 @@ async def test_process_wechat_message_sets_sender_scoped_identity_and_session_co
                 is_active=True,
             ),
         )
+
+    async def fake_identity_status(*_args, **_kwargs):
+        return {
+            "connected": True,
+            "transport_connected": True,
+            "identity_status": "verified",
+            "requires_rebind": False,
+        }
 
     async def fake_find_or_create_channel_session(*, delivery_target=None, external_conv_id=None, **_kwargs):
         captured["external_conv_id"] = external_conv_id
@@ -411,6 +795,10 @@ async def test_process_wechat_message_sets_sender_scoped_identity_and_session_co
     monkeypatch.setattr(
         "app.services.external_principal_service.resolve_or_create_external_principal",
         fake_resolve_external_principal,
+    )
+    monkeypatch.setattr(
+        "app.services.wechat_personal_service.get_channel_identity_status",
+        fake_identity_status,
     )
     monkeypatch.setattr("app.services.channel_agent_runtime.call_agent_llm", fake_call_agent_llm)
 
@@ -464,6 +852,104 @@ async def test_process_wechat_message_sets_sender_scoped_identity_and_session_co
     assert captured["execution_identity"].identity_id == platform_user_id
     assert captured["execution_identity"].label == "WeChat wxid_abc via wechat_personal"
     assert captured["execution_identity"].identity_id != creator_id
+
+
+@pytest.mark.asyncio
+async def test_verified_wechat_installation_allows_distinct_unbound_sender_in_safe_runtime(monkeypatch):
+    import app.services.wechat_personal_stream as wechat_stream
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    owner_user_id = uuid4()
+    external_principal_id = uuid4()
+    session_id = uuid4()
+    config = SimpleNamespace(
+        id=uuid4(),
+        extra_config={"ilink_user_id": "wechat-owner"},
+        self_identity_user_id=owner_user_id,
+        self_identity_verified_at=object(),
+    )
+    captured: dict[str, object] = {}
+    db = _SequenceSession(
+        [
+            _ScalarResult(SimpleNamespace(id=agent_id, tenant_id=tenant_id, creator_id=owner_user_id)),
+            _ScalarResult(config),
+            _RowsResult([]),
+        ]
+    )
+
+    async def fake_identity_status(*_args, **_kwargs):
+        return {
+            "connected": True,
+            "transport_connected": True,
+            "identity_status": "verified",
+            "requires_rebind": False,
+        }
+
+    async def fake_resolve_external_principal(*_args, **kwargs):
+        captured["principal_kwargs"] = kwargs
+        return SimpleNamespace(
+            principal=SimpleNamespace(id=external_principal_id),
+            actor=SimpleNamespace(
+                id=None,
+                external_principal_id=external_principal_id,
+                tenant_id=tenant_id,
+                username="wechat_guest",
+                display_name="WeChat Guest",
+                role="external",
+                department_id=None,
+                authority_bound=False,
+                is_active=True,
+            ),
+        )
+
+    async def fake_find_or_create_channel_session(**kwargs):
+        captured["session_kwargs"] = kwargs
+        return SimpleNamespace(id=session_id, last_message_at=None, delivery_target_json=kwargs.get("delivery_target"))
+
+    async def fake_call_agent_llm(_db, _agent_id, _user_text, **kwargs):
+        captured["llm_kwargs"] = kwargs
+        return "safe guest reply"
+
+    async def fake_compute_history_limit_for_agent(_agent_id):
+        return 10
+
+    async def fake_resolve_tenant(_agent_id, *_args, **_kwargs):
+        return tenant_id
+
+    monkeypatch.setattr("app.database.async_session", lambda: db)
+    monkeypatch.setattr("app.services.wechat_personal_stream.tenant_scoped_session", lambda *_a, **_k: db)
+    monkeypatch.setattr("app.services.wechat_personal_stream.resolve_tenant_for_agent", fake_resolve_tenant)
+    monkeypatch.setattr(
+        "app.services.wechat_personal_service.get_channel_identity_status",
+        fake_identity_status,
+    )
+    monkeypatch.setattr(
+        "app.services.memory_service.compute_history_limit_for_agent",
+        fake_compute_history_limit_for_agent,
+    )
+    monkeypatch.setattr(
+        "app.services.channel_session.find_or_create_channel_session",
+        fake_find_or_create_channel_session,
+    )
+    monkeypatch.setattr(
+        "app.services.external_principal_service.resolve_or_create_external_principal",
+        fake_resolve_external_principal,
+    )
+    monkeypatch.setattr("app.services.channel_agent_runtime.call_agent_llm", fake_call_agent_llm)
+
+    reply = await wechat_stream._process_wechat_message(
+        agent_id=agent_id,
+        sender_id="wechat-guest",
+        user_text="请只回答公开信息",
+        delivery_target={"channel": "wechat_personal", "to_user_id": "wechat-guest"},
+    )
+
+    assert reply == "safe guest reply"
+    assert captured["principal_kwargs"]["subject_id"] == "wechat-guest"
+    assert captured["session_kwargs"]["user_id"] is None
+    assert captured["session_kwargs"]["external_principal_id"] == external_principal_id
+    assert captured["llm_kwargs"]["durable_user"].authority_bound is False
 
 
 @pytest.mark.asyncio

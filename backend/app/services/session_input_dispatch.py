@@ -22,9 +22,11 @@ from app.models.agent import Agent
 from app.models.chat_session import ChatSession
 from app.models.runtime_task import RuntimeTask
 from app.models.session_v2 import SessionCommand, SessionInputAdmission, SessionTurnInput
-from app.models.user import User
 from app.services.chat_transcript import lock_transcript_session
-from app.services.session_v2_persistence import AuthenticatedSessionAuthority, resolve_session_mutation_authority
+from app.services.session_v2_persistence import (
+    AuthenticatedSessionAuthority,
+    resolve_session_command_authority,
+)
 
 
 _ACTIVE_RUN_STATUSES = frozenset({"pending", "running"})
@@ -64,7 +66,7 @@ async def _dispatch_context(
     SessionCommand,
     AuthenticatedSessionAuthority,
     Agent,
-    User,
+    Any,
     ChatSession,
 ]:
     admission = await db.get(SessionInputAdmission, admission_id)
@@ -83,24 +85,15 @@ async def _dispatch_context(
         or command.principal_id is None
     ):
         raise RuntimeError("input_dispatch_authority_chain_broken")
-    agent = await db.get(Agent, session.agent_id)
-    user = await db.get(User, command.principal_id)
-    if (
-        agent is None
-        or user is None
-        or agent.tenant_id != admission.tenant_id
-        or user.tenant_id != admission.tenant_id
-        or session.tenant_id != admission.tenant_id
-    ):
+    if session.tenant_id != admission.tenant_id:
         raise RuntimeError("input_dispatch_authority_mismatch")
-    authority = await resolve_session_mutation_authority(
+    context = await resolve_session_command_authority(
         db,
-        user=user,
-        agent_id=agent.id,
-        session_id=session.id,
+        command=command,
+        session=session,
         action="mutate_session_input",
     )
-    return admission, row, command, authority, agent, user, session
+    return admission, row, command, context.authority, context.agent, context.actor, session
 
 
 def _runtime_metadata(command: SessionCommand) -> dict[str, Any]:
@@ -113,7 +106,7 @@ async def _start_input_runtime(
     row: SessionTurnInput,
     command: SessionCommand,
     agent: Agent,
-    user: User,
+    user: Any,
     session: ChatSession,
     successor: bool,
 ) -> dict[str, Any]:
@@ -166,7 +159,7 @@ async def _start_fifo_successor_if_ready(
     row: SessionTurnInput,
     command: SessionCommand,
     agent: Agent,
-    user: User,
+    user: Any,
     session: ChatSession,
 ) -> dict[str, Any] | None:
     await lock_transcript_session(db, session_id=session.id)

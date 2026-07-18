@@ -4,10 +4,12 @@ import asyncio
 import time
 import uuid
 from collections.abc import Awaitable, Callable
+from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import HTMLResponse
 from loguru import logger
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,12 +25,22 @@ from app.models.user import User
 from app.schemas.schemas import ChannelConfigCreate, ChannelConfigOut, TokenResponse, UserOut
 from app.services.auth_provider import feishu_auth_provider
 from app.services.channel_user_service import channel_user_service
-from app.services.feishu_identity_maintenance import build_feishu_p2p_conv_id, list_legacy_feishu_conv_ids
+from app.services.feishu_app_registration import (
+    FeishuRegistrationConflict,
+    FeishuRegistrationError,
+    FeishuRegistrationForbidden,
+    FeishuRegistrationNotCancellable,
+    FeishuRegistrationNotFound,
+    FeishuRegistrationStateUnavailable,
+    FeishuRegistrationState,
+    feishu_app_registration_manager,
+)
 from app.services.feishu_contacts_cache import upsert_feishu_contact_cache
+from app.services.feishu_identity_maintenance import build_feishu_p2p_conv_id, list_legacy_feishu_conv_ids
 from app.services.feishu_platform import resolve_feishu_platform
 from app.services.feishu_service import feishu_service
 from app.services.approval_service import approval_service
-from app.services.channel_agent_runtime import call_agent_llm
+from app.services.channel_agent_runtime import call_agent_llm, should_persist_channel_reply_as_assistant
 
 router = APIRouter(tags=["feishu"])
 
@@ -531,6 +543,185 @@ async def bind_feishu_account(
 # ─── Channel Config (per-agent Feishu bot) ──────────────
 
 
+class FeishuAppRegistrationStart(BaseModel):
+    platform_region: Literal["feishu_cn", "lark_global"]
+
+
+class FeishuAppRegistrationOut(BaseModel):
+    session_id: str
+    status: str
+    platform_region: Literal["feishu_cn", "lark_global"]
+    resolved_platform_region: Literal["feishu_cn", "lark_global"] | None = None
+    verification_url: str | None = None
+    qr_expires_at: str | None = None
+    connection_status: str | None = None
+    message: str | None = None
+    error_code: str | None = None
+    connected: bool
+    cancellable: bool
+    created_at: str
+    updated_at: str
+
+
+def _registration_http_error(exc: FeishuRegistrationError) -> HTTPException:
+    if isinstance(exc, (FeishuRegistrationNotFound, FeishuRegistrationForbidden)):
+        status_code = status.HTTP_404_NOT_FOUND
+    elif isinstance(exc, (FeishuRegistrationConflict, FeishuRegistrationNotCancellable)):
+        status_code = status.HTTP_409_CONFLICT
+    elif isinstance(exc, FeishuRegistrationStateUnavailable):
+        status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    elif exc.code == "invalid_platform_region":
+        status_code = status.HTTP_422_UNPROCESSABLE_ENTITY
+    else:
+        status_code = status.HTTP_400_BAD_REQUEST
+    return HTTPException(
+        status_code=status_code,
+        detail={"code": exc.code, "message": exc.message},
+        headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
+    )
+
+
+def _registration_response(state: FeishuRegistrationState) -> FeishuAppRegistrationOut:
+    return FeishuAppRegistrationOut(**state.to_public_dict())
+
+
+def _disable_registration_response_cache(response: Response) -> None:
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+
+
+async def _reconcile_registration_channel_status(
+    db: AsyncSession,
+    state: FeishuRegistrationState,
+) -> FeishuRegistrationState:
+    if state.status not in {"credentials_received", "connecting"}:
+        return state
+    result = await db.execute(
+        select(ChannelConfig).where(
+            ChannelConfig.agent_id == uuid.UUID(state.agent_id),
+            ChannelConfig.channel_type == "feishu",
+        )
+    )
+    config = result.scalar_one_or_none()
+    if config is None:
+        return state
+    extra_config = dict(config.extra_config or {})
+    if str(extra_config.get("registration_session_id") or "") != state.session_id:
+        return state
+    return await feishu_app_registration_manager.reconcile_channel_status(
+        state,
+        is_connected=bool(config.is_connected),
+        is_configured=bool(config.is_configured),
+        connection_status=str(extra_config.get("connection_status") or "") or None,
+    )
+
+
+@router.post(
+    "/agents/{agent_id}/channel/registration/start",
+    response_model=FeishuAppRegistrationOut,
+    status_code=status.HTTP_201_CREATED,
+)
+async def start_feishu_app_registration(
+    agent_id: uuid.UUID,
+    data: FeishuAppRegistrationStart,
+    response: Response,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Start the official Agent Detail QR flow for Feishu or Lark."""
+    _disable_registration_response_cache(response)
+    agent = await require_agent_manage_access(db, current_user, agent_id)
+    try:
+        registration = await feishu_app_registration_manager.start_registration(
+            tenant_id=agent.tenant_id,
+            agent_id=agent_id,
+            actor_user_id=current_user.id,
+            platform_region=data.platform_region,
+            agent_name=agent.name,
+        )
+    except FeishuRegistrationError as exc:
+        raise _registration_http_error(exc) from exc
+    return _registration_response(registration)
+
+
+@router.get(
+    "/agents/{agent_id}/channel/registration/active",
+    response_model=FeishuAppRegistrationOut,
+)
+async def get_active_feishu_app_registration(
+    agent_id: uuid.UUID,
+    response: Response,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Resume the current user's active registration after a page reload."""
+    _disable_registration_response_cache(response)
+    agent = await require_agent_manage_access(db, current_user, agent_id)
+    try:
+        registration = await feishu_app_registration_manager.get_active_registration(
+            tenant_id=agent.tenant_id,
+            agent_id=agent_id,
+            actor_user_id=current_user.id,
+        )
+        registration = await _reconcile_registration_channel_status(db, registration)
+    except FeishuRegistrationError as exc:
+        raise _registration_http_error(exc) from exc
+    return _registration_response(registration)
+
+
+@router.get(
+    "/agents/{agent_id}/channel/registration/{session_id}",
+    response_model=FeishuAppRegistrationOut,
+)
+async def get_feishu_app_registration(
+    agent_id: uuid.UUID,
+    session_id: uuid.UUID,
+    response: Response,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Poll one actor-bound registration and reconcile real WebSocket truth."""
+    _disable_registration_response_cache(response)
+    agent = await require_agent_manage_access(db, current_user, agent_id)
+    try:
+        registration = await feishu_app_registration_manager.get_registration_for_actor(
+            session_id,
+            tenant_id=agent.tenant_id,
+            agent_id=agent_id,
+            actor_user_id=current_user.id,
+        )
+        registration = await _reconcile_registration_channel_status(db, registration)
+    except FeishuRegistrationError as exc:
+        raise _registration_http_error(exc) from exc
+    return _registration_response(registration)
+
+
+@router.post(
+    "/agents/{agent_id}/channel/registration/{session_id}/cancel",
+    response_model=FeishuAppRegistrationOut,
+)
+async def cancel_feishu_app_registration(
+    agent_id: uuid.UUID,
+    session_id: uuid.UUID,
+    response: Response,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Cancel a pre-credential QR flow using a Redis compare-and-swap fence."""
+    _disable_registration_response_cache(response)
+    agent = await require_agent_manage_access(db, current_user, agent_id)
+    try:
+        registration = await feishu_app_registration_manager.cancel_registration(
+            session_id,
+            tenant_id=agent.tenant_id,
+            agent_id=agent_id,
+            actor_user_id=current_user.id,
+        )
+    except FeishuRegistrationError as exc:
+        raise _registration_http_error(exc) from exc
+    return _registration_response(registration)
+
+
 @router.post("/agents/{agent_id}/channel", response_model=ChannelConfigOut, status_code=status.HTTP_201_CREATED)
 async def configure_channel(
     agent_id: uuid.UUID,
@@ -552,6 +743,8 @@ async def configure_channel(
     existing_extra = existing.extra_config if existing else {}
     incoming_extra = {**(existing_extra or {}), **(data.extra_config or {})}
     incoming_extra["platform_region"] = resolve_feishu_platform(incoming_extra).region
+    incoming_extra["setup_method"] = "manual"
+    incoming_extra.pop("registration_session_id", None)
     connection_mode = incoming_extra.get("connection_mode", existing_extra.get("connection_mode", "webhook"))
     app_id = resolve_secret_value(data.app_id, existing.app_id if existing else None, preserve_missing=True)
     app_secret = resolve_secret_value(data.app_secret, existing.app_secret if existing else None, preserve_missing=True)
@@ -1068,8 +1261,10 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
 
             agent_r = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
             agent_obj = agent_r.scalar_one_or_none()
-            creator_id = agent_obj.creator_id if agent_obj else agent_id
-            agent_tenant_id = agent_obj.tenant_id if agent_obj else None
+            if agent_obj is None:
+                logger.error(f"[Feishu] Agent not found while resolving sender identity: agent_id={agent_id}")
+                return {"code": 1, "msg": "Agent not found"}
+            agent_tenant_id = agent_obj.tenant_id
             sender_profile = await _resolve_feishu_sender_profile(
                 agent_id,
                 config=config,
@@ -1099,14 +1294,35 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
             }
 
             # Resolve identity before history/LLM work so Feishu text approvals are handled in-channel.
-            resolved_user = None
-            if sender_profile.get("open_id") or sender_profile.get("user_id") or sender_profile.get("email"):
-                resolved_user = await channel_user_service.resolve_or_create_feishu_user(
-                    db,
-                    tenant_id=agent_tenant_id,
-                    profile=sender_profile,
-                )
-            platform_user_id = resolved_user.id if resolved_user else creator_id
+            if not (sender_profile.get("open_id") or sender_profile.get("user_id") or sender_profile.get("email")):
+                logger.warning(f"[Feishu] Rejecting message without a verified sender identifier: agent_id={agent_id}")
+                try:
+                    await feishu_service.send_message(
+                        config.app_id,
+                        config.app_secret,
+                        delivery_target["receive_id"],
+                        "text",
+                        json.dumps(
+                            {"text": "⚠️ 无法验证当前飞书身份，请重新进入会话后再试，或联系管理员检查飞书应用权限。"},
+                            ensure_ascii=False,
+                        ),
+                        receive_id_type=delivery_target["receive_id_type"],
+                        stage="sender_identity_unavailable",
+                        extra_config=_feishu_platform_extra(config),
+                    )
+                except Exception as send_error:
+                    logger.error(
+                        f"[Feishu] Failed to deliver sender identity error: {send_error}",
+                        exc_info=True,
+                    )
+                return {"code": 0, "msg": "sender identity unavailable"}
+
+            resolved_user = await channel_user_service.resolve_or_create_feishu_user(
+                db,
+                tenant_id=agent_tenant_id,
+                profile=sender_profile,
+            )
+            platform_user_id = resolved_user.id
 
             if _is_feishu_new_session_command(user_text):
                 _new_sess = await start_new_channel_session(
@@ -1740,17 +1956,17 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                 detail={"channel": "feishu", "user_text": user_text[:200], "reply": reply_text[:500]},
             )
 
-            # Save assistant reply to history (use platform_user_id so messages stay in one session)
-            db.add(
-                ChatMessage(
-                    agent_id=agent_id,
-                    tenant_id=agent_tenant_id,
-                    user_id=platform_user_id,
-                    role="assistant",
-                    content=reply_text,
-                    conversation_id=session_conv_id,
+            if should_persist_channel_reply_as_assistant(reply_text):
+                db.add(
+                    ChatMessage(
+                        agent_id=agent_id,
+                        tenant_id=agent_tenant_id,
+                        user_id=platform_user_id,
+                        role="assistant",
+                        content=reply_text,
+                        conversation_id=session_conv_id,
+                    )
                 )
-            )
             _sess.last_message_at = _dt.now(_tz.utc)
             await db.commit()
 
@@ -2071,19 +2287,19 @@ async def _handle_feishu_file(
             except Exception as _e_fb:
                 logger.error(f"[Feishu] Failed to send image reply: {_e_fb}")
 
-        # Save assistant reply in DB
-        async with _tenant_scoped_session(_feishu_tenant_id) as _db_save:
-            _db_save.add(
-                ChatMessage(
-                    agent_id=agent_id,
-                    tenant_id=_feishu_tenant_id,
-                    user_id=platform_user_id,
-                    role="assistant",
-                    content=reply_text,
-                    conversation_id=session_conv_id,
+        if should_persist_channel_reply_as_assistant(reply_text):
+            async with _tenant_scoped_session(_feishu_tenant_id) as _db_save:
+                _db_save.add(
+                    ChatMessage(
+                        agent_id=agent_id,
+                        tenant_id=_feishu_tenant_id,
+                        user_id=platform_user_id,
+                        role="assistant",
+                        content=reply_text,
+                        conversation_id=session_conv_id,
+                    )
                 )
-            )
-            await _db_save.commit()
+                await _db_save.commit()
 
         # Log activity
         from app.services.activity_logger import log_activity
@@ -2123,19 +2339,8 @@ async def _handle_feishu_file(
     except Exception as e:
         logger.error(f"[Feishu] Failed to send ack: {e}")
 
-    # Store ack in DB
-    async with _tenant_scoped_session(_feishu_tenant_id) as db2:
-        db2.add(
-            ChatMessage(
-                agent_id=agent_id,
-                tenant_id=_feishu_tenant_id,
-                user_id=platform_user_id,
-                role="assistant",
-                content=ack,
-                conversation_id=session_conv_id,
-            )
-        )
-        await db2.commit()
+    # Provider receipt only: never place platform-authored ACK text in the
+    # model-visible assistant history.
 
 
 async def _download_post_images(agent_id, config, message_id, image_keys):

@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, ForeignKey, String, UniqueConstraint, func
+from sqlalchemy import CheckConstraint, DateTime, Enum, ForeignKey, String, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -37,7 +37,14 @@ class ChannelConfig(Base):
         nullable=False,
     )
 
-    __table_args__ = (UniqueConstraint("agent_id", "channel_type", name="uq_channel_configs_agent_channel"),)
+    __table_args__ = (
+        UniqueConstraint("agent_id", "channel_type", name="uq_channel_configs_agent_channel"),
+        CheckConstraint(
+            "self_identity_user_id IS NULL OR "
+            "(channel_type = 'wechat_personal' AND self_identity_verified_at IS NOT NULL)",
+            name="ck_channel_configs_self_identity_channel",
+        ),
+    )
 
     # Feishu specific config
     app_id: Mapped[str | None] = mapped_column(String(255))
@@ -49,6 +56,13 @@ class ChannelConfig(Base):
     is_configured: Mapped[bool] = mapped_column(default=False)
     is_connected: Mapped[bool] = mapped_column(default=False)
     last_tested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    self_identity_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    self_identity_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Additional config as JSON for extensibility
     extra_config: Mapped[dict] = mapped_column(EncryptedChannelJSON(), default={})

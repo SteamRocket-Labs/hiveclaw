@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -28,6 +29,82 @@ class _FakeAwaitableConnection:
 
     async def close(self):
         self.closed = True
+
+
+@pytest.mark.asyncio
+async def test_channel_status_update_closes_qr_registration_without_browser_polling(monkeypatch):
+    import app.services.feishu_app_registration as registration_service
+    import app.services.feishu_ws as feishu_ws
+
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    registration_id = uuid4()
+    config = SimpleNamespace(
+        is_connected=False,
+        is_configured=True,
+        last_tested_at=None,
+        extra_config={
+            "connection_status": "connecting",
+            "registration_session_id": str(registration_id),
+        },
+    )
+    committed = False
+    reconciled: list[dict[str, object]] = []
+
+    class Result:
+        def scalar_one_or_none(self):
+            return config
+
+    class DB:
+        async def execute(self, _statement):
+            return Result()
+
+        async def commit(self):
+            nonlocal committed
+            committed = True
+
+    @asynccontextmanager
+    async def fake_tenant_session(received_tenant_id):
+        assert received_tenant_id == tenant_id
+        yield DB()
+
+    async def fake_get_session(session_id):
+        assert str(session_id) == str(registration_id)
+        return SimpleNamespace(status="connecting", session_id=str(registration_id))
+
+    async def fake_reconcile(state, **kwargs):
+        assert committed is True
+        reconciled.append({"state": state, **kwargs})
+        return state
+
+    monkeypatch.setattr(feishu_ws, "resolve_tenant_for_agent", lambda _agent_id: _async_value(tenant_id))
+    monkeypatch.setattr(feishu_ws, "tenant_scoped_session", fake_tenant_session)
+    monkeypatch.setattr(registration_service.feishu_app_registration_manager, "get_session", fake_get_session)
+    monkeypatch.setattr(
+        registration_service.feishu_app_registration_manager,
+        "reconcile_channel_status",
+        fake_reconcile,
+    )
+
+    await feishu_ws.FeishuWSManager()._mark_channel_status(
+        agent_id,
+        is_connected=True,
+        connection_status="connected",
+    )
+
+    assert config.is_connected is True
+    assert config.extra_config["connection_status"] == "connected"
+    assert len(reconciled) == 1
+    assert reconciled[0]["state"].session_id == str(registration_id)
+    assert {key: value for key, value in reconciled[0].items() if key != "state"} == {
+        "is_connected": True,
+        "is_configured": True,
+        "connection_status": "connected",
+    }
+
+
+async def _async_value(value):
+    return value
 
 
 @pytest.mark.asyncio

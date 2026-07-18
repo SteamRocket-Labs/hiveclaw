@@ -929,6 +929,8 @@ async def test_fence_drift_preserves_abandoned_plan_and_requires_new_generation(
 
 async def test_terminal_outcome_is_zero_copy_atomic_and_idempotent(owner_sessionmaker) -> None:
     from app.models.audit import ChatMessage
+    from app.models.channel_config import ChannelConfig
+    from app.models.channel_delivery_outbox import ChannelDeliveryOutbox
     from app.models.chat_artifact import ChatArtifact
     from app.models.chat_session import ChatSession
     from app.models.chat_transcript_event import ChatTranscriptEvent
@@ -965,6 +967,16 @@ async def test_terminal_outcome_is_zero_copy_atomic_and_idempotent(owner_session
             response={"content": exact_final, "tool_calls": [], "finish_reason": "stop", "usage": {}},
         )
         session = await db.get(ChatSession, session_id)
+        session.delivery_target_json = {"channel": "feishu", "chat_id": "oc_terminal"}
+        db.add(
+            ChannelConfig(
+                agent_id=agent_id,
+                tenant_id=tenant_id,
+                channel_type="feishu",
+                is_configured=True,
+                is_connected=True,
+            )
+        )
         tool_message = ChatMessage(
             agent_id=agent_id,
             tenant_id=tenant_id,
@@ -1005,6 +1017,7 @@ async def test_terminal_outcome_is_zero_copy_atomic_and_idempotent(owner_session
         task = await db.get(RuntimeTask, run_id)
         task.metadata_json = {
             **dict(task.metadata_json or {}),
+            "source": "feishu",
             "artifact_ids": [str(artifact.id)],
             "artifact_paths": [artifact.path],
             "artifact_attachment_policy": "model_declared_current_turn_writes_only",
@@ -1049,6 +1062,18 @@ async def test_terminal_outcome_is_zero_copy_atomic_and_idempotent(owner_session
         )
         await db.commit()
 
+        deliveries = list(
+            (
+                await db.execute(
+                    select(ChannelDeliveryOutbox).where(ChannelDeliveryOutbox.runtime_task_id == run_id)
+                )
+            ).scalars()
+        )
+        assert len(deliveries) == 1
+        assert deliveries[0].text_content == exact_final
+        assert deliveries[0].delivery_target_json == {"channel": "feishu", "chat_id": "oc_terminal"}
+        assert deliveries[0].artifact_ids_json == [str(artifact.id)]
+
         # ACK loss/read-after-write reuses the same outcome and creates no
         # second final or terminal event.
         event_count = len(
@@ -1067,6 +1092,18 @@ async def test_terminal_outcome_is_zero_copy_atomic_and_idempotent(owner_session
             outcome_id=outcome.id,
         )
         await db.commit()
+        assert (
+            len(
+                list(
+                    (
+                        await db.execute(
+                            select(ChannelDeliveryOutbox).where(ChannelDeliveryOutbox.runtime_task_id == run_id)
+                        )
+                    ).scalars()
+                )
+            )
+            == 1
+        )
         assert (
             len(
                 list(
@@ -1188,6 +1225,9 @@ async def test_unresolved_obligation_blocks_terminal_outcome(owner_sessionmaker)
 async def test_recovery_finishes_sealed_round_and_same_terminal_candidate_without_provider_replay(
     owner_sessionmaker,
 ) -> None:
+    from app.models.channel_config import ChannelConfig
+    from app.models.channel_delivery_outbox import ChannelDeliveryOutbox
+    from app.models.chat_session import ChatSession
     from app.models.runtime_task import RuntimeTask
     from app.models.runtime_root_item import RuntimeRootItem
     from app.models.session_v2 import SessionModelResult, SessionRunOutcome
@@ -1199,6 +1239,19 @@ async def test_recovery_finishes_sealed_round_and_same_terminal_candidate_withou
 
     tenant_id, agent_id, session_id, run_id, turn_id = await _seed(owner_sessionmaker)
     async with owner_sessionmaker() as db:
+        session = await db.get(ChatSession, session_id)
+        session.delivery_target_json = {"channel": "wechat_personal", "to_user_id": "wx-recovery"}
+        task = await db.get(RuntimeTask, run_id)
+        task.metadata_json = {**dict(task.metadata_json or {}), "source": "wechat_personal"}
+        db.add(
+            ChannelConfig(
+                agent_id=agent_id,
+                tenant_id=tenant_id,
+                channel_type="wechat_personal",
+                is_configured=True,
+                is_connected=True,
+            )
+        )
         request_id, _ = await _prepare(
             db,
             tenant_id=tenant_id,
@@ -1245,6 +1298,13 @@ async def test_recovery_finishes_sealed_round_and_same_terminal_candidate_withou
         task = await db.get(RuntimeTask, run_id)
         root_item = await db.scalar(select(RuntimeRootItem).where(RuntimeRootItem.runtime_task_id == run_id))
         outcome = await db.scalar(select(SessionRunOutcome).where(SessionRunOutcome.run_id == run_id))
+        deliveries = list(
+            (
+                await db.execute(
+                    select(ChannelDeliveryOutbox).where(ChannelDeliveryOutbox.runtime_task_id == run_id)
+                )
+            ).scalars()
+        )
         result_count = len(
             list(
                 (
@@ -1257,4 +1317,7 @@ async def test_recovery_finishes_sealed_round_and_same_terminal_candidate_withou
         assert task is not None and task.status == "completed"
         assert root_item is not None and root_item.state == "completed"
         assert outcome is not None and outcome.state == "terminal_committed"
+        assert len(deliveries) == 1
+        assert deliveries[0].text_content == "recover exact bytes"
+        assert deliveries[0].channel == "wechat_personal"
         assert result_count == 1

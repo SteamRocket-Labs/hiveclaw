@@ -23,7 +23,7 @@ from app.models.audit import ChatMessage
 from app.models.channel_config import ChannelConfig
 from app.models.user import User
 from app.schemas.schemas import ChannelConfigOut
-from app.services.channel_agent_runtime import call_agent_llm
+from app.services.channel_agent_runtime import call_agent_llm, should_persist_channel_reply_as_assistant
 from app.services.channel_session import find_or_create_channel_session
 from app.services.agent_tools import channel_file_sender as _cfs_s
 from pathlib import Path as _Path
@@ -625,19 +625,20 @@ async def teams_event_webhook(
             _cdt_s.reset(_cdt_s_token)
             _cfs_s.reset(_cfs_s_token)
 
-        # Save reply
+        # Transport receipts are not assistant-authored conversation content.
         try:
-            db.add(
-                ChatMessage(
-                    agent_id=agent_id,
-                    tenant_id=agent_tenant_id,
-                    user_id=platform_user_id,
-                    external_principal_id=external_principal_id,
-                    role="assistant",
-                    content=reply_text,
-                    conversation_id=session_conv_id,
+            if should_persist_channel_reply_as_assistant(reply_text):
+                db.add(
+                    ChatMessage(
+                        agent_id=agent_id,
+                        tenant_id=agent_tenant_id,
+                        user_id=platform_user_id,
+                        external_principal_id=external_principal_id,
+                        role="assistant",
+                        content=reply_text,
+                        conversation_id=session_conv_id,
+                    )
                 )
-            )
             sess.last_message_at = datetime.now(timezone.utc)
             await db.commit()
             logger.info(f"Teams: Saved reply to database for conversation {conversation_id}")

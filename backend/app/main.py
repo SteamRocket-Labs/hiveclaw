@@ -341,6 +341,7 @@ async def lifespan(app: FastAPI):
     from app.services.runtime_budget_daemon import start_runtime_budget_daemon
     from app.services.trigger_daemon import start_trigger_daemon
     from app.services.tool_seeder import seed_builtin_tools
+    from app.services.feishu_app_registration import feishu_app_registration_manager
     from app.services.feishu_ws import feishu_ws_manager
     from app.services.dingtalk_stream import dingtalk_stream_manager
     from app.services.wecom_stream import wecom_stream_manager
@@ -764,6 +765,7 @@ async def lifespan(app: FastAPI):
         request_default_workflow_drain()
     except Exception as exc:
         logger.warning(f"Workflow daemon drain request failed: {exc}")
+    await feishu_app_registration_manager.shutdown()
     await wechat_personal_stream_manager.stop_all()
     await close_redis()
     try:

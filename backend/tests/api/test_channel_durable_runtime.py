@@ -10,7 +10,10 @@ import pytest
 
 @pytest.mark.asyncio
 async def test_call_agent_llm_durable_starts_channel_runtime(monkeypatch) -> None:
-    from app.services.channel_agent_runtime import call_agent_llm
+    from app.services.channel_agent_runtime import (
+        call_agent_llm,
+        should_persist_channel_reply_as_assistant,
+    )
 
     agent_id = uuid4()
     user_id = uuid4()
@@ -60,6 +63,7 @@ async def test_call_agent_llm_durable_starts_channel_runtime(monkeypatch) -> Non
     )
 
     assert "已接收" in reply
+    assert should_persist_channel_reply_as_assistant(reply) is False
     assert captured["agent"] is agent
     assert captured["user"] is user
     assert captured["session"] is session
@@ -67,6 +71,63 @@ async def test_call_agent_llm_durable_starts_channel_runtime(monkeypatch) -> Non
     assert captured["source"] == "feishu"
     assert captured["input_id"] == ingress_event_id
     assert captured["idempotency_key"] == f"channel:feishu:ingress:{ingress_event_id}"
+
+
+@pytest.mark.asyncio
+async def test_call_agent_llm_durable_surfaces_typed_channel_authority_denial(monkeypatch) -> None:
+    from fastapi import HTTPException
+
+    from app.services.channel_agent_runtime import call_agent_llm
+
+    agent_id = uuid4()
+    user_id = uuid4()
+    session_id = uuid4()
+    ingress_event_id = uuid4()
+    agent = SimpleNamespace(
+        id=agent_id,
+        name="Agent",
+        tenant_id=uuid4(),
+        agent_type="chat",
+        role_description="",
+    )
+    session = SimpleNamespace(id=session_id, delivery_target_json={"channel": "feishu"})
+    user = SimpleNamespace(id=user_id, username="feishu_u", display_name="Feishu User")
+
+    class _Result:
+        def scalar_one_or_none(self):
+            return agent
+
+    class _DB:
+        async def execute(self, _stmt):
+            return _Result()
+
+        async def scalar(self, _stmt):
+            return session
+
+    async def deny_submit(**_kwargs):
+        raise HTTPException(status_code=403, detail="No access to this agent")
+
+    monkeypatch.setattr(
+        "app.services.session_live_input.submit_live_human_input",
+        deny_submit,
+    )
+
+    reply = await call_agent_llm(
+        _DB(),
+        agent_id,
+        "长任务",
+        user_id=user_id,
+        session_id=str(session_id),
+        session_source="feishu",
+        session_channel="feishu",
+        durable_run=True,
+        durable_session=session,
+        durable_user=user,
+        ingress_event_id=ingress_event_id,
+    )
+
+    assert reply == "⚠️ 当前 IM 账号已无法使用这个数字员工。请登录 Hive 检查账号与 Agent 访问权限后再试。"
+    assert "HTTPException" not in reply
 
 
 @pytest.mark.asyncio
@@ -444,6 +505,16 @@ def test_all_im_call_sites_opt_into_durable_runtime() -> None:
         call_count = len(re.findall(r"(?<![A-Za-z0-9_])(?:_call_agent_llm|call_agent_llm)\(", source))
         if call_count > 0:
             assert source.count("durable_run=True") >= call_count, path
+            assert source.count("should_persist_channel_reply_as_assistant(") >= call_count, path
+
+
+def test_platform_file_receipts_do_not_enter_assistant_history() -> None:
+    root = Path(__file__).resolve().parents[2]
+    slack_source = (root / "app" / "api" / "slack.py").read_text(encoding="utf-8")
+    feishu_source = (root / "app" / "api" / "feishu.py").read_text(encoding="utf-8")
+
+    assert "content=_ack" not in slack_source
+    assert "content=ack," not in feishu_source
 
 
 def test_non_feishu_channels_do_not_import_feishu_runtime_helper() -> None:

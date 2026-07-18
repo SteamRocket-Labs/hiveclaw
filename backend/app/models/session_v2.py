@@ -81,11 +81,16 @@ class SessionCommand(Base):
     __table_args__ = (
         UniqueConstraint(
             "tenant_id",
+            "principal_type",
             "principal_id",
             "session_id",
             "namespace",
             "idempotency_key",
             name="uq_session_commands_idempotency",
+        ),
+        CheckConstraint(
+            "principal_type IN ('user','external_principal')",
+            name="ck_session_commands_principal_type",
         ),
         CheckConstraint(
             "namespace IN ('human_input','control_input','evaluation_feedback','turn_replacement')",
@@ -100,6 +105,9 @@ class SessionCommand(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tenant_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    principal_type: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="user", server_default=text("'user'")
     )
     principal_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
     session_id: Mapped[uuid.UUID] = mapped_column(

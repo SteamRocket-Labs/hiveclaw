@@ -407,16 +407,10 @@ async def commit_terminal_outcome(
     )
     if outcome is None:
         raise TerminalOutcomeNeedsReconciliation("run outcome not found")
-    if outcome.state == "terminal_committed":
-        await _close_runtime_root_item(
-            db,
-            run_id=run_id,
-            outcome=outcome,
-            terminal_result_id=outcome.terminal_result_id,
-            terminal_event_id=outcome.terminal_event_id,
-        )
-        return outcome
-    if outcome.state != "sealed" or not outcome.seal_json:
+    already_committed = outcome.state == "terminal_committed"
+    if not already_committed and outcome.state != "sealed":
+        raise TerminalOutcomeIneligible("run outcome is not sealed")
+    if not outcome.seal_json:
         raise TerminalOutcomeIneligible("run outcome is not sealed")
     task = await db.scalar(
         select(RuntimeTask)
@@ -436,6 +430,25 @@ async def commit_terminal_outcome(
         run_id=run_id,
         terminal_result_id=outcome.terminal_result_id,
     )
+    if already_committed:
+        from app.services.channel_delivery_outbox import enqueue_terminal_delivery_for_task
+
+        await enqueue_terminal_delivery_for_task(
+            db,
+            task=task,
+            content=str(result.seal_json.get("semantic_content") or ""),
+            terminal_status="completed",
+            artifact_parts=list(outcome.seal_json.get("parts") or []),
+            metadata={"source": "session_terminal_outcome_recovery", "outcome_id": str(outcome.id)},
+        )
+        await _close_runtime_root_item(
+            db,
+            run_id=run_id,
+            outcome=outcome,
+            terminal_result_id=outcome.terminal_result_id,
+            terminal_event_id=outcome.terminal_event_id,
+        )
+        return outcome
     unresolved = await unresolved_round_obligations(db, tenant_id=tenant_id, run_id=run_id)
     current_fences = await current_run_fences(db, tenant_id=tenant_id, run_id=run_id)
     eligibility = dict(outcome.seal_json.get("eligibility") or {})
@@ -543,6 +556,21 @@ async def commit_terminal_outcome(
     }
     task.metadata_json = metadata
     task.claim_version = int(task.claim_version or 0) + 1
+    from app.services.channel_delivery_outbox import enqueue_terminal_delivery_for_task
+
+    await enqueue_terminal_delivery_for_task(
+        db,
+        task=task,
+        content=semantic_content,
+        terminal_status="completed",
+        artifact_parts=artifact_parts,
+        metadata={
+            "source": "session_terminal_outcome",
+            "outcome_id": str(outcome.id),
+            "turn_id": turn_id,
+            "terminal_result_id": str(result.id),
+        },
+    )
     await _close_runtime_root_item(
         db,
         run_id=run_id,

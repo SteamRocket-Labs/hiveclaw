@@ -19,7 +19,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.chat_transcript_event import ChatTranscriptEvent
 from app.models.invocation_span import InvocationSpan
-from app.models.agent import Agent
 from app.models.chat_session import ChatSession
 from app.models.session_v2 import (
     SessionCarryForward,
@@ -27,14 +26,13 @@ from app.models.session_v2 import (
     SessionInputAdmission,
     SessionTurnInput,
 )
-from app.models.user import User
 from app.runtime.hooks import HookEvent, HookResult, emit_hook
 from app.services.chat_transcript import lock_transcript_session
 from app.services.session_v2_persistence import (
     AuthenticatedSessionAuthority,
     SessionEventDraft,
     append_session_events,
-    resolve_session_mutation_authority,
+    resolve_session_command_authority,
 )
 
 
@@ -616,23 +614,15 @@ async def _recovery_authority(
         or command.principal_id is None
     ):
         raise RuntimeError("input_admission_recovery_authority_chain_broken")
-    agent = await db.get(Agent, session.agent_id)
-    user = await db.get(User, command.principal_id)
-    if (
-        agent is None
-        or user is None
-        or agent.tenant_id != admission.tenant_id
-        or user.tenant_id != admission.tenant_id
-        or session.tenant_id != admission.tenant_id
-    ):
+    if session.tenant_id != admission.tenant_id:
         raise RuntimeError("input_admission_recovery_authority_mismatch")
-    return await resolve_session_mutation_authority(
+    context = await resolve_session_command_authority(
         db,
-        user=user,
-        agent_id=agent.id,
-        session_id=session.id,
+        command=command,
+        session=session,
         action="mutate_session_input",
     )
+    return context.authority
 
 
 async def recover_stale_input_admissions_once(
@@ -785,6 +775,7 @@ async def run_user_prompt_admission(
                 source="session_input_admission",
                 metadata={
                     "tenant_id": str(authority.tenant_id),
+                    "principal_type": authority.principal_type,
                     "principal_id": str(authority.principal_id),
                     "command_id": str(input_row.command_id),
                     "input_id": str(input_uuid),

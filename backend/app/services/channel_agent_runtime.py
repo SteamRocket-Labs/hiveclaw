@@ -10,6 +10,7 @@ import re
 from types import SimpleNamespace
 from typing import Any
 
+from fastapi import HTTPException
 from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,6 +20,22 @@ from app.core.permissions import is_agent_expired
 
 
 _PERMISSION_ID_PATTERN = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+
+
+class ChannelTransportReceipt(str):
+    """Provider-facing acknowledgement that must never become assistant history."""
+
+    def __new__(cls, text: str, *, run_id: Any = None, dispatch_status: str | None = None):
+        value = super().__new__(cls, text)
+        value.run_id = str(run_id) if run_id is not None else None
+        value.dispatch_status = dispatch_status
+        return value
+
+
+def should_persist_channel_reply_as_assistant(reply: Any) -> bool:
+    """Keep transport receipts outside model-visible conversation history."""
+
+    return not isinstance(reply, ChannelTransportReceipt)
 
 
 def _uuid_or_none(value: Any) -> uuid.UUID | None:
@@ -529,6 +546,7 @@ async def call_agent_llm(
             current_channel_ingress_context,
         )
         from app.services.session_live_input import submit_live_human_input
+        from app.services.session_v2_persistence import IdempotencyConflict
 
         if durable_session is None:
             return "⚠️ 无法启动后台任务: missing channel session"
@@ -580,9 +598,37 @@ async def call_agent_llm(
                     "budget_interactive": False,
                 },
             )
+        except IdempotencyConflict as exc:
+            logger.warning(
+                "[ChannelRuntime] Rejected conflicting channel ingress replay: channel={} session_id={} command_id={}",
+                session_channel or session_source,
+                durable_session_id,
+                exc.command_id,
+            )
+            return "⚠️ 这条 IM 消息与已接收消息使用了相同事件标识但内容不同；为防止重复执行，本次未启动。请重新发送。"
+        except HTTPException as exc:
+            logger.warning(
+                "[ChannelRuntime] Durable channel authority rejected: status={} channel={} session_id={}",
+                exc.status_code,
+                session_channel or session_source,
+                durable_session_id,
+            )
+            if exc.status_code in {401, 403}:
+                return "⚠️ 当前 IM 账号已无法使用这个数字员工。请登录 Hive 检查账号与 Agent 访问权限后再试。"
+            if exc.status_code in {404, 409}:
+                return "⚠️ 当前 IM 连接或会话身份已失效，请回到 Agent 渠道页面重新绑定后再试。"
+            return "⚠️ IM 后台任务暂时无法启动，请稍后重试。"
+        except PermissionError as exc:
+            logger.warning(
+                "[ChannelRuntime] Durable channel identity rejected: channel={} session_id={} error={}",
+                session_channel or session_source,
+                durable_session_id,
+                type(exc).__name__,
+            )
+            return "⚠️ 当前 IM 连接的身份验证已失效，请回到 Agent 渠道页面重新绑定后再试。"
         except Exception as exc:
             logger.error("[ChannelRuntime] Failed to start durable channel run: {}", exc, exc_info=True)
-            return f"⚠️ 后台任务启动失败: {type(exc).__name__}"
+            return "⚠️ IM 后台任务暂时无法启动，请稍后重试。"
         run = dict(receipt.get("run") or {})
         run_id = run.get("run_id") or receipt.get("target_run_id")
         if run_id is not None:
@@ -590,9 +636,18 @@ async def call_agent_llm(
                 runtime_task_id=run_id,
                 session_id=durable_session.id,
             )
-        if str(receipt.get("dispatch_status") or "").startswith("mailbox_"):
-            return f"已接收补充消息，并排队到当前任务（run_id={run_id}）。完成后我会回到当前会话。"
-        return f"已接收，正在后台处理（run_id={run_id}）。完成后我会回到当前会话。"
+        dispatch_status = str(receipt.get("dispatch_status") or "")
+        if dispatch_status.startswith("mailbox_"):
+            return ChannelTransportReceipt(
+                f"已接收补充消息，并排队到当前任务（run_id={run_id}）。完成后我会回到当前会话。",
+                run_id=run_id,
+                dispatch_status=dispatch_status,
+            )
+        return ChannelTransportReceipt(
+            f"已接收，正在后台处理（run_id={run_id}）。完成后我会回到当前会话。",
+            run_id=run_id,
+            dispatch_status=dispatch_status,
+        )
 
     from app.services import plan_mode_core
 

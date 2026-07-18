@@ -150,7 +150,7 @@ async def process_dingtalk_message(
     from app.models.agent import Agent as AgentModel
     from app.models.audit import ChatMessage
     from app.models.channel_config import ChannelConfig
-    from app.services.channel_agent_runtime import call_agent_llm
+    from app.services.channel_agent_runtime import call_agent_llm, should_persist_channel_reply_as_assistant
     from app.services.channel_session import find_or_create_channel_session
 
     # Webhook bg path has no TenantMiddleware GUC. Resolve the tenant from the
@@ -306,18 +306,18 @@ async def process_dingtalk_message(
             except Exception as e2:
                 logger.error(f"[DingTalk] Fallback text reply also failed: {e2}")
 
-        # Save assistant reply
-        db.add(
-            ChatMessage(
-                agent_id=agent_id,
-                tenant_id=agent_obj.tenant_id,
-                user_id=platform_user_id,
-                external_principal_id=external_principal_id,
-                role="assistant",
-                content=reply_text,
-                conversation_id=session_conv_id,
+        if should_persist_channel_reply_as_assistant(reply_text):
+            db.add(
+                ChatMessage(
+                    agent_id=agent_id,
+                    tenant_id=agent_obj.tenant_id,
+                    user_id=platform_user_id,
+                    external_principal_id=external_principal_id,
+                    role="assistant",
+                    content=reply_text,
+                    conversation_id=session_conv_id,
+                )
             )
-        )
         sess.last_message_at = datetime.now(timezone.utc)
         await db.commit()
 

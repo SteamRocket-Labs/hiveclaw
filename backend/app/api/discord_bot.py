@@ -293,7 +293,7 @@ async def discord_interaction_webhook(
         async def handle_in_background():
             from app.models.audit import ChatMessage
             from app.models.agent import Agent as AgentModel
-            from app.services.channel_agent_runtime import call_agent_llm
+            from app.services.channel_agent_runtime import call_agent_llm, should_persist_channel_reply_as_assistant
             from app.services.channel_session import find_or_create_channel_session
             from app.database import tenant_scoped_session
             from app.services.tenant_resolver import resolve_tenant_for_agent
@@ -404,18 +404,18 @@ async def discord_interaction_webhook(
                     _cdt.reset(_cdt_token)
                 logger.info(f"[Discord] LLM reply: {reply_text[:80]}")
 
-                # Save reply
-                bg_db.add(
-                    ChatMessage(
-                        agent_id=agent_id,
-                        tenant_id=agent_obj.tenant_id,
-                        user_id=platform_user_id,
-                        external_principal_id=external_principal_id,
-                        role="assistant",
-                        content=reply_text,
-                        conversation_id=session_conv_id,
+                if should_persist_channel_reply_as_assistant(reply_text):
+                    bg_db.add(
+                        ChatMessage(
+                            agent_id=agent_id,
+                            tenant_id=agent_obj.tenant_id,
+                            user_id=platform_user_id,
+                            external_principal_id=external_principal_id,
+                            role="assistant",
+                            content=reply_text,
+                            conversation_id=session_conv_id,
+                        )
                     )
-                )
                 sess.last_message_at = datetime.now(timezone.utc)
                 await bg_db.commit()
 

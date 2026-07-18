@@ -11,6 +11,7 @@ from typing import Any, Mapping, Sequence
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.models.chat_session import ChatSession
 from app.models.chat_transcript_event import ChatTranscriptEvent
@@ -59,6 +60,7 @@ class AuthenticatedSessionAuthority:
 
     tenant_id: uuid.UUID
     agent_id: uuid.UUID
+    principal_type: str
     principal_id: uuid.UUID
     session_id: uuid.UUID
     authority_source: str
@@ -68,6 +70,117 @@ class AuthenticatedSessionAuthority:
     def __post_init__(self) -> None:
         if self._seal is not _AUTHORITY_SEAL:
             raise ValueError("untrusted_session_authority")
+        if self.principal_type not in {"user", "external_principal"}:
+            raise ValueError("unsupported_session_principal_type")
+
+    def event_actor(self) -> dict[str, str]:
+        return {"type": self.principal_type, "id": str(self.principal_id)}
+
+
+@dataclass(frozen=True, slots=True)
+class SessionCommandAuthorityContext:
+    authority: AuthenticatedSessionAuthority
+    agent: Any
+    actor: Any
+    session: ChatSession
+
+
+_EXTERNAL_PROVIDER_CHANNELS = {
+    "discord": "discord",
+    "dingtalk": "dingtalk",
+    "slack": "slack",
+    "teams": "microsoft_teams",
+    "telegram": "telegram",
+    "wechat_personal": "wechat_personal",
+    "wecom": "wecom",
+}
+
+
+async def _resolve_external_session_mutation_authority(
+    db: AsyncSession,
+    *,
+    actor: Any,
+    agent_id: uuid.UUID,
+    session_id: uuid.UUID,
+    action: str,
+) -> AuthenticatedSessionAuthority:
+    """Authorize one external sender only through its exact installation + Session.
+
+    An unbound external principal is deliberately allowed to submit HumanInput
+    to the Agent installation that received it.  The runtime keeps tools
+    disabled for that actor.  This does not grant platform User authority and
+    never permits control/approval mutations.
+    """
+
+    if action != "mutate_session_input":
+        raise PermissionError("external_principal_action_not_allowed")
+
+    from app.core.permissions import check_agent_access, require_writable_session
+    from app.models.agent import Agent
+    from app.models.channel_config import ChannelConfig
+    from app.models.external_principal import ExternalPrincipal
+    from app.models.user import User
+
+    principal_id = _uuid(getattr(actor, "external_principal_id", None), "external_principal_id")
+    session = await db.scalar(
+        select(ChatSession).where(ChatSession.id == session_id, ChatSession.agent_id == agent_id)
+    )
+    principal = await db.get(ExternalPrincipal, principal_id)
+    agent = await db.get(Agent, agent_id)
+    if session is None or principal is None or agent is None:
+        raise PermissionError("external_principal_authority_not_found")
+    if principal.status != "active" or not bool(getattr(actor, "is_active", False)):
+        raise PermissionError("external_principal_inactive")
+    if (
+        principal.tenant_id != session.tenant_id
+        or principal.tenant_id != agent.tenant_id
+        or getattr(actor, "tenant_id", None) != principal.tenant_id
+    ):
+        raise PermissionError("external_principal_tenant_mismatch")
+    if session.external_principal_id != principal.id:
+        raise PermissionError("external_principal_session_mismatch")
+
+    config = await db.get(ChannelConfig, principal.channel_config_id) if principal.channel_config_id else None
+    expected_channel_type = _EXTERNAL_PROVIDER_CHANNELS.get(principal.provider)
+    if (
+        config is None
+        or expected_channel_type is None
+        or config.id != principal.channel_config_id
+        or config.tenant_id != principal.tenant_id
+        or config.agent_id != agent.id
+        or config.channel_type != expected_channel_type
+        or not config.is_configured
+        or str(session.source_channel or "").strip().lower() != expected_channel_type
+    ):
+        raise PermissionError("external_principal_installation_mismatch")
+
+    linked_user_id = principal.linked_user_id
+    if linked_user_id is None:
+        if getattr(actor, "id", None) is not None or bool(getattr(actor, "authority_bound", False)):
+            raise PermissionError("external_principal_snapshot_mismatch")
+        if session.user_id is not None:
+            raise PermissionError("external_principal_session_user_mismatch")
+    else:
+        if getattr(actor, "id", None) != linked_user_id or not bool(getattr(actor, "authority_bound", False)):
+            raise PermissionError("external_principal_snapshot_mismatch")
+        linked_user = await db.get(User, linked_user_id)
+        if linked_user is None or not linked_user.is_active or linked_user.tenant_id != principal.tenant_id:
+            raise PermissionError("external_principal_linked_user_inactive")
+        await check_agent_access(db, linked_user, agent.id)
+        if session.user_id != linked_user.id:
+            raise PermissionError("external_principal_session_user_mismatch")
+
+    require_writable_session(session, action=action)
+    return AuthenticatedSessionAuthority(
+        tenant_id=principal.tenant_id,
+        agent_id=agent.id,
+        principal_type="external_principal",
+        principal_id=principal.id,
+        session_id=session.id,
+        authority_source="external_principal_session",
+        action=action,
+        _seal=_AUTHORITY_SEAL,
+    )
 
 
 async def resolve_session_mutation_authority(
@@ -86,6 +199,14 @@ async def resolve_session_mutation_authority(
 
     agent_uuid = _uuid(agent_id, "agent_id")
     session_uuid = _uuid(session_id, "session_id")
+    if getattr(user, "external_principal_id", None) is not None:
+        return await _resolve_external_session_mutation_authority(
+            db,
+            actor=user,
+            agent_id=agent_uuid,
+            session_id=session_uuid,
+            action=action,
+        )
     decision = await authorize_session_action(
         db,
         user,
@@ -102,12 +223,64 @@ async def resolve_session_mutation_authority(
     return AuthenticatedSessionAuthority(
         tenant_id=tenant_id,
         agent_id=decision.agent.id,
+        principal_type="user",
         principal_id=user.id,
         session_id=decision.session.id,
         authority_source=decision.authority_source,
         action=decision.action,
         _seal=_AUTHORITY_SEAL,
     )
+
+
+async def resolve_session_command_authority(
+    db: AsyncSession,
+    *,
+    command: SessionCommand,
+    session: ChatSession,
+    action: str,
+) -> SessionCommandAuthorityContext:
+    """Rebuild the original typed authority for recovery and dispatch workers."""
+
+    from app.models.agent import Agent
+    from app.models.user import User
+
+    if command.tenant_id != session.tenant_id or command.session_id != session.id:
+        raise RuntimeError("session_command_authority_chain_broken")
+    agent = await db.scalar(
+        select(Agent)
+        .options(selectinload(Agent.sponsor))
+        .where(Agent.id == session.agent_id)
+    )
+    if agent is None or agent.tenant_id != command.tenant_id:
+        raise RuntimeError("session_command_agent_authority_mismatch")
+
+    principal_type = str(getattr(command, "principal_type", "user") or "user")
+    if principal_type == "user":
+        actor = await db.get(User, command.principal_id)
+        if actor is None or actor.tenant_id != command.tenant_id:
+            raise RuntimeError("session_command_user_authority_mismatch")
+    elif principal_type == "external_principal":
+        from app.services.external_principal_service import load_external_runtime_actor
+
+        actor = await load_external_runtime_actor(
+            db,
+            tenant_id=command.tenant_id,
+            principal_id=command.principal_id,
+            expected_user_id=session.user_id,
+        )
+    else:
+        raise RuntimeError("session_command_principal_type_unsupported")
+
+    authority = await resolve_session_mutation_authority(
+        db,
+        user=actor,
+        agent_id=agent.id,
+        session_id=session.id,
+        action=action,
+    )
+    if authority.principal_type != principal_type or authority.principal_id != command.principal_id:
+        raise RuntimeError("session_command_principal_authority_mismatch")
+    return SessionCommandAuthorityContext(authority=authority, agent=agent, actor=actor, session=session)
 
 
 @dataclass(frozen=True, slots=True)
@@ -248,11 +421,16 @@ async def register_session_command(
         tenant_id=tenant_uuid,
         agent_id=authority.agent_id,
     )
-    if authority.authority_source == "session_owner" and locked_session.user_id != principal_uuid:
-        raise ValueError("session_principal_mismatch")
+    if authority.principal_type == "user" and authority.authority_source == "session_owner":
+        if locked_session.user_id != principal_uuid:
+            raise ValueError("session_principal_mismatch")
+    if authority.principal_type == "external_principal":
+        if locked_session.external_principal_id != principal_uuid:
+            raise ValueError("session_external_principal_mismatch")
     result = await db.execute(
         select(SessionCommand).where(
             SessionCommand.tenant_id == tenant_uuid,
+            SessionCommand.principal_type == authority.principal_type,
             SessionCommand.principal_id == principal_uuid,
             SessionCommand.session_id == session_uuid,
             SessionCommand.namespace == namespace,
@@ -280,6 +458,7 @@ async def register_session_command(
     command = SessionCommand(
         id=command_uuid,
         tenant_id=tenant_uuid,
+        principal_type=authority.principal_type,
         principal_id=principal_uuid,
         session_id=session_uuid,
         namespace=namespace,
@@ -639,7 +818,7 @@ async def accept_human_input(
                 item_kind="human_input",
                 lifecycle="accepted",
                 scope=scope,
-                actor={"type": "user", "id": str(authority.principal_id)},
+                actor=authority.event_actor(),
                 payload={
                     "input_id": str(input_id),
                     "input_revision": 1,

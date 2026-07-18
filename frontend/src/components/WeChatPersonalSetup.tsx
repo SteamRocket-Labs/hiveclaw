@@ -1,23 +1,51 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { QRCodeSVG } from 'qrcode.react';
-import { channelApi } from '../api/domains/channels';
+import { channelApi, type WeChatPersonalStatus } from '../api/domains/channels';
 
 interface WeChatPersonalSetupProps {
     agentId: string;
     onConnected?: () => void;
 }
 
-type Phase = 'idle' | 'loading-qr' | 'scanning' | 'connecting' | 'done' | 'error';
+type Phase = 'checking' | 'idle' | 'rebind-required' | 'access-recovery-required' | 'loading-qr' | 'scanning' | 'connecting' | 'done' | 'error';
+
+export function phaseFromWeChatPersonalStatus(status: WeChatPersonalStatus | null): Phase {
+    if (!status) return 'idle';
+    if (status.requires_access_recovery || status.identity_status === 'access_denied') {
+        return 'access-recovery-required';
+    }
+    if (status.connected && status.identity_status === 'verified' && !status.requires_rebind) {
+        return 'done';
+    }
+    if (status.requires_rebind || status.connected || (status.transport_connected && !status.connected)) {
+        return 'rebind-required';
+    }
+    return 'idle';
+}
 
 export default function WeChatPersonalSetup({ agentId, onConnected }: WeChatPersonalSetupProps) {
     const { t } = useTranslation();
-    const [phase, setPhase] = useState<Phase>('idle');
+    const [phase, setPhase] = useState<Phase>('checking');
     const [qrUrl, setQrUrl] = useState<string | null>(null);
     const [sessionKey, setSessionKey] = useState<string>('');
     const [errorMsg, setErrorMsg] = useState<string>('');
     const [statusMsg, setStatusMsg] = useState<string>('');
     const pollRef = useRef(false);
+
+    useEffect(() => {
+        let cancelled = false;
+        const loadStatus = async () => {
+            const status = await channelApi.wechatPersonalStatus(agentId);
+            if (!cancelled) {
+                setPhase(phaseFromWeChatPersonalStatus(status));
+            }
+        };
+        void loadStatus();
+        return () => {
+            cancelled = true;
+        };
+    }, [agentId]);
 
     const startQrFlow = useCallback(async () => {
         setPhase('loading-qr');
@@ -62,9 +90,22 @@ export default function WeChatPersonalSetup({ agentId, onConnected }: WeChatPers
                         setPhase('connecting');
                         setStatusMsg(res.message);
                         try {
-                            await channelApi.wechatPersonalConnect(agentId, res.session_key);
-                            setPhase('done');
-                            onConnected?.();
+                            const status = await channelApi.wechatPersonalConnect(agentId, res.session_key);
+                            const nextPhase = phaseFromWeChatPersonalStatus(status);
+                            setPhase(nextPhase);
+                            if (nextPhase === 'done') {
+                                onConnected?.();
+                            } else {
+                                setErrorMsg(nextPhase === 'access-recovery-required'
+                                    ? t(
+                                        'wechatPersonal.qr.accessRecoveryRequired',
+                                        'The bound Hive account has lost access to this Agent. Restore its Agent access or rebind WeChat with an account that has access.',
+                                    )
+                                    : t(
+                                        'wechatPersonal.qr.identityNotVerified',
+                                        'WeChat is not ready to receive messages. Please bind it again.',
+                                    ));
+                            }
                         } catch (e: unknown) {
                             setPhase('error');
                             setErrorMsg(String(e));
@@ -168,6 +209,35 @@ export default function WeChatPersonalSetup({ agentId, onConnected }: WeChatPers
                         {t('wechatPersonal.qr.startBtn', 'Connect WeChat')}
                     </button>
                 </>
+            )}
+
+            {phase === 'checking' && (
+                <div style={statusStyle}>
+                    {t('wechatPersonal.qr.checking', 'Checking connection identity...')}
+                </div>
+            )}
+
+            {phase === 'rebind-required' && (
+                <>
+                    <div style={errorStyle}>
+                        {t(
+                            'wechatPersonal.qr.rebindRequired',
+                            'The WeChat transport is still present, but its user identity is not verified. Scan again to restore this channel.',
+                        )}
+                    </div>
+                    <button style={btnStyle} onClick={startQrFlow}>
+                        {t('wechatPersonal.qr.rebindBtn', 'Rebind WeChat')}
+                    </button>
+                </>
+            )}
+
+            {phase === 'access-recovery-required' && (
+                <div style={errorStyle}>
+                    {t(
+                        'wechatPersonal.qr.accessRecoveryRequired',
+                        'The bound Hive account has lost access to this Agent. Restore its Agent access or rebind WeChat with an account that has access.',
+                    )}
+                </div>
             )}
 
             {phase === 'loading-qr' && (

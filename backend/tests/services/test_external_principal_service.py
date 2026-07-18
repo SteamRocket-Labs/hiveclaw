@@ -8,11 +8,14 @@ from sqlalchemy import func, select
 
 from app.database import tenant_scoped_session
 from app.models.agent import Agent
+from app.models.audit import ChatMessage
+from app.models.chat_session import ChatSession
 from app.models.channel_config import ChannelConfig
 from app.models.external_principal import ExternalPrincipal, ExternalPrincipalBindingEvent
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.services.external_principal_service import (
+    ExternalPrincipalAuthorityError,
     ExternalPrincipalRevokedError,
     link_external_principal,
     load_external_runtime_actor,
@@ -195,6 +198,171 @@ async def test_link_and_unlink_are_explicit_audited_authority_transitions(owner_
     assert [event.action for event in events] == ["linked", "unlinked"]
     assert events[0].new_user_id == owner_id
     assert events[1].previous_user_id == owner_id
+
+
+@pytest.mark.usefixtures("migrated_pg_url")
+async def test_link_and_unlink_atomically_rebind_existing_channel_sessions(owner_sessionmaker):
+    tenant_id, owner_id, agent_id = await _seed_tenant_agent(owner_sessionmaker)
+    async with tenant_scoped_session(tenant_id, session_factory=owner_sessionmaker) as db:
+        config = ChannelConfig(
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            channel_type="slack",
+            is_configured=True,
+            is_connected=True,
+            extra_config={},
+        )
+        db.add(config)
+        await db.flush()
+        resolved = await resolve_or_create_external_principal(
+            db,
+            tenant_id=tenant_id,
+            provider="slack",
+            installation_ref=str(config.id),
+            channel_config_id=config.id,
+            subject_id="U-existing-session",
+            display_name="Existing Slack User",
+        )
+        session = ChatSession(
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            user_id=None,
+            external_principal_id=resolved.principal.id,
+            title="Existing channel session",
+            source_channel="slack",
+            external_conv_id="slack-existing-session",
+            session_kind="human_chat",
+            actor_type="external_principal",
+            runtime_source="channel_chat",
+            visibility_scope="direct_user",
+            listed_surface="chat",
+        )
+        db.add(session)
+        await db.flush()
+        message = ChatMessage(
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            user_id=None,
+            external_principal_id=resolved.principal.id,
+            role="user",
+            content="hello before binding",
+            conversation_id=str(session.id),
+        )
+        db.add(message)
+        await db.commit()
+        principal_id, session_id, message_id = resolved.principal.id, session.id, message.id
+
+    async with tenant_scoped_session(tenant_id, session_factory=owner_sessionmaker) as db:
+        await link_external_principal(
+            db,
+            tenant_id=tenant_id,
+            principal_id=principal_id,
+            user_id=owner_id,
+            actor_user_id=owner_id,
+            reason="bind existing channel session",
+        )
+        await db.commit()
+
+    async with owner_sessionmaker() as db:
+        linked_session = await db.get(ChatSession, session_id)
+        linked_message = await db.get(ChatMessage, message_id)
+        assert linked_session is not None and linked_session.user_id == owner_id
+        assert linked_message is not None and linked_message.user_id == owner_id
+
+    async with tenant_scoped_session(tenant_id, session_factory=owner_sessionmaker) as db:
+        await unlink_external_principal(
+            db,
+            tenant_id=tenant_id,
+            principal_id=principal_id,
+            actor_user_id=owner_id,
+            reason="unlink existing channel session",
+        )
+        await db.commit()
+
+    async with owner_sessionmaker() as db:
+        unlinked_session = await db.get(ChatSession, session_id)
+        unlinked_message = await db.get(ChatMessage, message_id)
+        assert unlinked_session is not None and unlinked_session.user_id is None
+        assert unlinked_message is not None and unlinked_message.user_id is None
+
+        denied_user_id = uuid.uuid4()
+        db.add(
+            User(
+                id=denied_user_id,
+                username=f"denied-{denied_user_id.hex[:10]}",
+                email=f"{denied_user_id.hex[:12]}@external.test",
+                password_hash="x",
+                display_name="Denied External User",
+                tenant_id=tenant_id,
+            )
+        )
+        await db.commit()
+
+    async with tenant_scoped_session(tenant_id, session_factory=owner_sessionmaker) as db:
+        with pytest.raises(
+            ExternalPrincipalAuthorityError,
+            match="binding target does not have access to the channel Agent",
+        ):
+            await link_external_principal(
+                db,
+                tenant_id=tenant_id,
+                principal_id=principal_id,
+                user_id=denied_user_id,
+                actor_user_id=owner_id,
+                reason="must not create unusable binding",
+            )
+
+
+@pytest.mark.usefixtures("migrated_pg_url")
+async def test_personal_wechat_identity_rejects_enterprise_manual_link_and_unlink(owner_sessionmaker):
+    tenant_id, owner_id, agent_id = await _seed_tenant_agent(owner_sessionmaker)
+    async with tenant_scoped_session(tenant_id, session_factory=owner_sessionmaker) as db:
+        config = ChannelConfig(
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            channel_type="wechat_personal",
+            is_configured=True,
+            is_connected=True,
+            extra_config={"ilink_user_id": "wechat-self"},
+        )
+        db.add(config)
+        await db.flush()
+        resolved = await resolve_or_create_external_principal(
+            db,
+            tenant_id=tenant_id,
+            provider="wechat_personal",
+            installation_ref=str(config.id),
+            channel_config_id=config.id,
+            subject_id="wechat-self",
+            display_name="WeChat Self",
+        )
+
+        with pytest.raises(
+            ExternalPrincipalAuthorityError,
+            match="managed by the authenticated user from the Agent channel",
+        ):
+            await link_external_principal(
+                db,
+                tenant_id=tenant_id,
+                principal_id=resolved.principal.id,
+                user_id=owner_id,
+                actor_user_id=owner_id,
+                reason="enterprise manual link must be rejected",
+            )
+
+        resolved.principal.linked_user_id = owner_id
+        resolved.principal.linked_at = datetime.now(UTC)
+        with pytest.raises(
+            ExternalPrincipalAuthorityError,
+            match="managed by the authenticated user from the Agent channel",
+        ):
+            await unlink_external_principal(
+                db,
+                tenant_id=tenant_id,
+                principal_id=resolved.principal.id,
+                actor_user_id=owner_id,
+                reason="enterprise manual unlink must be rejected",
+            )
 
 
 @pytest.mark.usefixtures("migrated_pg_url")

@@ -142,16 +142,23 @@ class WeChatPersonalStreamManager:
 
             started = 0
             for config in configs:
-                creds = get_channel_credentials(config)
-                if not creds or not creds["bot_token"]:
-                    logger.warning(f"[WeChatPersonal Stream] No credentials for agent {config.agent_id}")
-                    continue
-                await self.start_client(
-                    agent_id=config.agent_id,
-                    bot_token=creds["bot_token"],
-                    base_url=creds["base_url"],
-                )
-                started += 1
+                try:
+                    creds = get_channel_credentials(config)
+                    if not creds or not creds["bot_token"]:
+                        logger.warning(f"[WeChatPersonal Stream] No credentials for agent {config.agent_id}")
+                        await self._mark_disconnected(config.agent_id)
+                        continue
+                    await self.start_client(
+                        agent_id=config.agent_id,
+                        bot_token=creds["bot_token"],
+                        base_url=creds["base_url"],
+                    )
+                    started += 1
+                except Exception as exc:
+                    logger.error(
+                        f"[WeChatPersonal Stream] Failed to start client for agent {config.agent_id}: {exc}"
+                    )
+                    await self._mark_disconnected(config.agent_id)
 
             if started:
                 logger.info(f"[WeChatPersonal Stream] Started {started} client(s)")
@@ -174,7 +181,37 @@ class WeChatPersonalStreamManager:
             name=f"wechat-personal-{str(agent_id)[:8]}",
         )
         self._tasks[agent_id] = task
+        # Give the poll task one scheduler turn so constructor/setup failures
+        # cannot be reported to the UI as a successful connection.
+        await asyncio.sleep(0)
+        if task.done():
+            self._tasks.pop(agent_id, None)
+            if task.cancelled():
+                raise RuntimeError("WeChat Personal stream was cancelled during startup")
+            error = task.exception()
+            if error is not None:
+                raise error
+            raise RuntimeError("WeChat Personal stream stopped during startup")
+        task.add_done_callback(lambda completed: self._on_client_done(agent_id, completed))
         logger.info(f"[WeChatPersonal Stream] Client started for agent {agent_id}")
+
+    def is_client_running(self, agent_id: uuid.UUID) -> bool:
+        task = self._tasks.get(agent_id)
+        return bool(task is not None and not task.done())
+
+    def _on_client_done(self, agent_id: uuid.UUID, task: asyncio.Task) -> None:
+        if self._tasks.get(agent_id) is task:
+            self._tasks.pop(agent_id, None)
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is None:
+            return
+        logger.error(f"[WeChatPersonal Stream] Client crashed for agent {agent_id}: {error}")
+        asyncio.create_task(
+            self._mark_disconnected(agent_id),
+            name=f"wechat-personal-disconnect-{str(agent_id)[:8]}",
+        )
 
     async def stop_client(self, agent_id: uuid.UUID) -> None:
         """Stop the poll loop for a single agent."""
@@ -506,6 +543,13 @@ class WeChatPersonalStreamManager:
 # ── Message processing (follows wecom_stream.py pattern) ─
 
 
+def _channel_identity_failure_message(identity_status: str) -> str:
+    """Return a user-actionable channel recovery message without exposing internal approval semantics."""
+    if identity_status == "access_denied":
+        return "⚠️ 当前渠道已失效，请到 Hive 的 Agent 渠道页面处理后再试。"
+    return "⚠️ 微信身份验证未完成，请回到 Hive 的 Agent 渠道页面重新绑定微信。"
+
+
 async def _process_wechat_message(
     agent_id: uuid.UUID,
     sender_id: str,
@@ -517,7 +561,7 @@ async def _process_wechat_message(
 
     from sqlalchemy import select as _select
 
-    from app.services.channel_agent_runtime import call_agent_llm
+    from app.services.channel_agent_runtime import call_agent_llm, should_persist_channel_reply_as_assistant
     from app.models.agent import Agent as AgentModel
     from app.models.audit import ChatMessage
     from app.models.channel_config import ChannelConfig
@@ -547,6 +591,17 @@ async def _process_wechat_message(
                 )
             )
         ).scalar_one_or_none()
+        from app.services.wechat_personal_service import get_channel_identity_status
+
+        identity_status = await get_channel_identity_status(db, config)
+        if not identity_status["connected"]:
+            logger.warning(
+                "[WeChatPersonal Stream] Rejected message for unverified channel identity: agent={} status={}",
+                agent_id,
+                identity_status["identity_status"],
+            )
+            return _channel_identity_failure_message(str(identity_status["identity_status"]))
+
         from app.services.channel_ingress_context import current_channel_ingress_context
         from app.services.external_principal_service import resolve_or_create_external_principal
 
@@ -649,18 +704,20 @@ async def _process_wechat_message(
             _cdt.reset(_cdt_token)
         logger.info(f"[WeChatPersonal Stream] LLM reply: {reply_text[:100]}")
 
-        # Save assistant reply
-        db.add(
-            ChatMessage(
-                agent_id=agent_id,
-                tenant_id=agent_obj.tenant_id,
-                user_id=platform_user_id,
-                external_principal_id=external_principal_id,
-                role="assistant",
-                content=reply_text,
-                conversation_id=session_conv_id,
+        # Transport receipts are provider-facing only; model-visible history
+        # must contain the eventual canonical assistant result, not the ACK.
+        if should_persist_channel_reply_as_assistant(reply_text):
+            db.add(
+                ChatMessage(
+                    agent_id=agent_id,
+                    tenant_id=agent_obj.tenant_id,
+                    user_id=platform_user_id,
+                    external_principal_id=external_principal_id,
+                    role="assistant",
+                    content=reply_text,
+                    conversation_id=session_conv_id,
+                )
             )
-        )
         sess.last_message_at = datetime.now(timezone.utc)
         await db.commit()
 

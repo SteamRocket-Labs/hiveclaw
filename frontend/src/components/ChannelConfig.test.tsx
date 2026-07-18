@@ -1,8 +1,12 @@
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import ChannelConfig from './ChannelConfig';
+
+const testState = vi.hoisted(() => ({
+  feishuConfig: null as Record<string, unknown> | null,
+}));
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -18,6 +22,9 @@ vi.mock('react-i18next', () => ({
 vi.mock('@tanstack/react-query', () => ({
   useQuery: ({ queryKey }: { queryKey: unknown[] }) => {
     const key = String(queryKey[0]);
+    if (key === 'channel' && queryKey[1] === 'agent-1') {
+      return { data: testState.feishuConfig };
+    }
     if (key === 'feishu-runtime-status' && queryKey[1] === 'agent-1') {
       return {
         data: {
@@ -61,6 +68,10 @@ vi.mock('../api/domains/channels', () => ({
 }));
 
 describe('ChannelConfig', () => {
+  beforeEach(() => {
+    testState.feishuConfig = null;
+  });
+
   it('surfaces Feishu runtime status within the Feishu channel module', () => {
     vi.stubGlobal('window', { location: { origin: 'http://localhost:3008' } });
     const markup = renderToStaticMarkup(<ChannelConfig mode="edit" agentId="agent-1" />);
@@ -70,8 +81,6 @@ describe('ChannelConfig', () => {
     expect(markup).toContain('Channel Auth');
     expect(markup).toContain('CardKit Dependencies');
     expect(markup).toContain('CardKit Verified');
-    expect(markup).toContain('Basic Permissions');
-    expect(markup).toContain('Full Permissions');
   });
 
   it('shows an explicit Feishu or Lark platform selector for the IM channel', () => {
@@ -82,6 +91,31 @@ describe('ChannelConfig', () => {
     expect(markup).toContain('Platform');
     expect(markup).toContain('Feishu (China)');
     expect(markup).toContain('Lark (Global)');
+  });
+
+  it('uses QR registration as the primary Agent Detail setup path', () => {
+    const markup = renderToStaticMarkup(<ChannelConfig mode="edit" agentId="agent-1" />);
+
+    expect(markup).toContain('Scan to create or bind the app');
+    expect(markup).toContain('Manual configuration (advanced)');
+  });
+
+  it('does not present saved credentials as a live WebSocket connection', () => {
+    testState.feishuConfig = {
+      is_configured: true,
+      is_connected: false,
+      app_id: 'cli_connecting',
+      extra_config: {
+        connection_mode: 'websocket',
+        connection_status: 'connecting',
+        platform_region: 'lark_global',
+      },
+    };
+
+    const markup = renderToStaticMarkup(<ChannelConfig mode="edit" agentId="agent-1" />);
+
+    expect(markup).toContain('App created; connecting WebSocket');
+    expect(markup).not.toContain('WebSocket connected');
   });
 
   it('does not expose the retired Atlassian Rovo channel', async () => {

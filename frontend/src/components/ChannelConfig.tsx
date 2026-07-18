@@ -1,8 +1,13 @@
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { channelApi } from '../api/domains/channels';
+import {
+    channelApi,
+    type AgentChannelConfig,
+    type FeishuPlatformRegion,
+} from '../api/domains/channels';
 import { toolsApi, type FeishuRuntimeStatus } from '../api/domains/tools';
+import FeishuAppRegistrationSetup from './FeishuAppRegistrationSetup';
 import FeishuRuntimeStatusCard from './FeishuRuntimeStatusCard';
 import WeChatPersonalSetup from './WeChatPersonalSetup';
 import './ChannelConfig.css';
@@ -61,8 +66,6 @@ interface ChannelDef {
     // QR scan mode (no form fields, renders a QR scan component instead)
     qrScanMode?: boolean;
 }
-
-type FeishuPlatformRegion = 'feishu_cn' | 'lark_global';
 
 const DEFAULT_FEISHU_PLATFORM_REGION: FeishuPlatformRegion = 'feishu_cn';
 const FEISHU_PLATFORM_OPTIONS: Array<{ value: FeishuPlatformRegion; labelKey: string; fallback: string }> = [
@@ -359,6 +362,7 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
     const [feishuPlatformRegions, setFeishuPlatformRegions] = useState<Record<string, FeishuPlatformRegion>>({
         feishu: DEFAULT_FEISHU_PLATFORM_REGION,
     });
+    const [feishuQrOpen, setFeishuQrOpen] = useState(false);
 
     // Password visibility
     const [showPwds, setShowPwds] = useState<Record<string, boolean>>({});
@@ -377,6 +381,15 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
         queryKey: ['channel', agentId],
         queryFn: () => channelApi.get(agentId!),
         enabled: enabled,
+        refetchInterval: (query) => {
+            if (feishuQrOpen) return 2000;
+            const channel = query.state.data as AgentChannelConfig | null | undefined;
+            return channel?.is_configured
+                && channel?.extra_config?.connection_mode === 'websocket'
+                && !channel?.is_connected
+                ? 2000
+                : false;
+        },
     });
     const { data: feishuWebhook } = useQuery({
         queryKey: ['webhook-url', agentId],
@@ -443,11 +456,25 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
         queryFn: () => channelApi.getChannelWebhook(agentId!, 'telegram-channel'),
         enabled: enabled,
     });
+    const { data: wechatPersonalStatus } = useQuery({
+        queryKey: ['wechat-personal-status', agentId],
+        queryFn: () => channelApi.wechatPersonalStatus(agentId!),
+        enabled: enabled,
+    });
     const { data: feishuRuntimeStatus } = useQuery<FeishuRuntimeStatus | null>({
         queryKey: ['feishu-runtime-status', agentId],
         queryFn: () => toolsApi.getAgentFeishuRuntimeStatus(agentId!),
         enabled: enabled,
     });
+
+    useEffect(() => {
+        const configuredRegion = feishuConfig?.extra_config?.platform_region;
+        if (!configuredRegion) return;
+        setFeishuPlatformRegions(prev => ({
+            ...prev,
+            feishu: normalizeFeishuPlatformRegion(configuredRegion),
+        }));
+    }, [feishuConfig?.extra_config?.platform_region]);
 
 
     // Helper: get config data for a channel
@@ -461,6 +488,7 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
             case 'wecom': return wecomConfig;
             case 'agentbay': return agentbayConfig;
             case 'telegram': return telegramConfig;
+            case 'wechat_personal': return wechatPersonalStatus;
             default: return null;
         }
     };
@@ -781,10 +809,36 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
         const isOpen = openChannels[ch.id] || false;
         const isEditing = editingChannels[ch.id] || false;
         const form = getForm(ch.id);
-        const isConfigured = ch.id === 'feishu' ? config?.is_configured : config?.is_configured;
+        const isConfigured = ch.id === 'wechat_personal'
+            ? Boolean(
+                config?.connected
+                && config?.identity_status === 'verified'
+                && !config?.requires_rebind,
+            )
+            : Boolean(config?.is_configured);
+        const requiresRebind = ch.id === 'wechat_personal' && Boolean(
+            config?.requires_rebind
+            || (config?.connected && config?.identity_status !== 'verified'),
+        );
+        const requiresAccessRecovery = ch.id === 'wechat_personal' && Boolean(
+            config?.requires_access_recovery
+            || config?.identity_status === 'access_denied',
+        );
         const connMode = connectionModes[ch.id] || 'websocket';
         const isWs = ch.connectionMode && connMode === 'websocket';
         const configConnMode = config?.extra_config?.connection_mode;
+        const feishuConnectionStatus = String(config?.extra_config?.connection_status || '');
+        const feishuWebSocketConnected = ch.id === 'feishu'
+            && configConnMode === 'websocket'
+            && Boolean(config?.is_connected);
+        const feishuWebSocketFailed = ch.id === 'feishu'
+            && configConnMode === 'websocket'
+            && (!config?.is_configured || feishuConnectionStatus === 'invalid_credentials');
+        const feishuWebSocketConnecting = ch.id === 'feishu'
+            && configConnMode === 'websocket'
+            && !feishuWebSocketConnected
+            && !feishuWebSocketFailed
+            && ['connecting', 'transient_error'].includes(feishuConnectionStatus);
         const selectedFeishuPlatformRegion = normalizeFeishuPlatformRegion(feishuPlatformRegions[ch.id]);
         const currentConfigFeishuPlatformRegion = normalizeFeishuPlatformRegion(config?.extra_config?.platform_region);
         const currentConfigFeishuPlatformOption = getFeishuPlatformOption(currentConfigFeishuPlatformRegion);
@@ -823,7 +877,29 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                         </div>
                     </div>
                     <div className="channel-config-hstack">
-                        {config && <span className={`badge ${isConfigured ? 'badge-success' : 'badge-warning'}`}>{isConfigured ? t('agent.settings.channel.configured') : t('agent.settings.channel.notConfigured')}</span>}
+                        {config && (
+                            <span className={`badge ${
+                                ch.id === 'feishu' && configConnMode === 'websocket'
+                                    ? feishuWebSocketConnected ? 'badge-success' : 'badge-warning'
+                                    : isConfigured ? 'badge-success' : 'badge-warning'
+                            }`}>
+                                {requiresAccessRecovery
+                                    ? t('agent.settings.channel.accessRecoveryRequired', 'Bound account access lost')
+                                    : requiresRebind
+                                    ? t('agent.settings.channel.rebindRequired', 'Rebind required')
+                                    : ch.id === 'feishu' && configConnMode === 'websocket'
+                                        ? feishuWebSocketConnected
+                                            ? t('agent.settings.channel.registration.statusConnected', 'WebSocket connected')
+                                            : feishuWebSocketFailed
+                                                ? t('agent.settings.channel.registration.statusError', 'WebSocket connection failed; scan again')
+                                                : feishuWebSocketConnecting
+                                                    ? t('agent.settings.channel.registration.statusConnecting', 'App created; connecting WebSocket')
+                                                    : t('agent.settings.channel.registration.statusDisconnected', 'App configured, but WebSocket is not connected')
+                                    : isConfigured
+                                        ? t('agent.settings.channel.configured')
+                                        : t('agent.settings.channel.notConfigured')}
+                            </span>
+                        )}
                         <span className={`channel-config-chevron${isOpen ? ' is-open' : ''}`}>&#9660;</span>
                     </div>
                 </div>
@@ -843,6 +919,25 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                     queryClient.invalidateQueries({ queryKey: ['wechat-personal-status', agentId] });
                                 }}
                             />
+                        ) : ch.id === 'feishu' && !isEditing && (!isConfigured || feishuQrOpen) ? (
+                            <div className="channel-config-vstack">
+                                {renderFeishuPlatformSelector(ch.id, selectedFeishuPlatformRegion, region => {
+                                    setFeishuPlatformRegions(prev => ({ ...prev, [ch.id]: region }));
+                                })}
+                                <FeishuAppRegistrationSetup
+                                    agentId={agentId!}
+                                    platformRegion={selectedFeishuPlatformRegion}
+                                    onConnected={() => {
+                                        queryClient.invalidateQueries({ queryKey: ['channel', agentId] });
+                                        setFeishuQrOpen(false);
+                                    }}
+                                    onManualConfigure={() => {
+                                        setFeishuQrOpen(false);
+                                        setEditing(ch.id, true);
+                                    }}
+                                    onClose={isConfigured ? () => setFeishuQrOpen(false) : undefined}
+                                />
+                            </div>
                         ) : isConfigured && !isEditing ? (
                             /* ── Configured view ── */
                             <div>
@@ -850,8 +945,22 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                 {ch.id === 'feishu' && configConnMode === 'websocket' && (
                                     <div className="channel-config-status-box">
                                         <div className="channel-config-status-line">
-                                            <span className="channel-config-dot"></span>
-                                            <span className="u-secondary">Connected via WebSocket (No callback URL needed)</span>
+                                            <span className={`channel-config-dot${
+                                                feishuWebSocketConnected
+                                                    ? ''
+                                                    : feishuWebSocketFailed
+                                                        ? ' is-error'
+                                                        : ' is-warning'
+                                            }`}></span>
+                                            <span className="u-secondary">
+                                                {feishuWebSocketConnected
+                                                    ? t('agent.settings.channel.registration.statusConnected', 'WebSocket connected')
+                                                    : feishuWebSocketFailed
+                                                        ? t('agent.settings.channel.registration.statusError', 'WebSocket connection failed; scan again')
+                                                        : feishuWebSocketConnecting
+                                                            ? t('agent.settings.channel.registration.statusConnecting', 'App created; connecting WebSocket')
+                                                            : t('agent.settings.channel.registration.statusDisconnected', 'App configured, but WebSocket is not connected')}
+                                            </span>
                                         </div>
                                         <div className="channel-config-meta-line">
                                             {t('agent.settings.channel.platform', 'Platform')}: <strong>{t(currentConfigFeishuPlatformOption.labelKey, currentConfigFeishuPlatformOption.fallback)}</strong>
@@ -937,6 +1046,21 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                             {agentbayTesting ? 'Testing...' : 'Test Connection'}
                                         </button>
                                     )}
+                                    {ch.id === 'feishu' && (
+                                        <button
+                                            type="button"
+                                            className="btn btn-primary"
+                                            onClick={() => {
+                                                setFeishuPlatformRegions(prev => ({
+                                                    ...prev,
+                                                    feishu: currentConfigFeishuPlatformRegion,
+                                                }));
+                                                setFeishuQrOpen(true);
+                                            }}
+                                        >
+                                            {t('agent.settings.channel.registration.reconnect', 'Reconnect by QR code')}
+                                        </button>
+                                    )}
                                     <button className="btn btn-secondary"
                                         onClick={() => {
                                             // Populate form with existing config data
@@ -989,7 +1113,11 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                             }
                                             setForms(prev => ({ ...prev, [ch.id]: prefill }));
                                             setEditing(ch.id, true);
-                                        }}>Edit</button>
+                                        }}>
+                                        {ch.id === 'feishu'
+                                            ? t('agent.settings.channel.registration.manual', 'Manual configuration (advanced)')
+                                            : 'Edit'}
+                                    </button>
                                     <button className="btn btn-danger"
                                         onClick={() => deleteMutation.mutate({ ch })}>Disconnect</button>
                                 </div>

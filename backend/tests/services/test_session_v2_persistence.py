@@ -1109,6 +1109,7 @@ async def test_command_principal_is_server_derived_and_agent_grant_cannot_cross_
         AuthenticatedSessionAuthority(
             tenant_id=tenant_id,
             agent_id=agent_id,
+            principal_type="user",
             principal_id=owner_id,
             session_id=session_id,
             authority_source="session_owner",

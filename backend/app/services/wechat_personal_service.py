@@ -259,6 +259,9 @@ async def wait_qr_login(agent_id: uuid.UUID, session_key: str) -> dict:
         if not result.ilink_bot_id:
             await _delete_qr_session(session_key)
             return {"connected": False, "message": "登录失败：服务器未返回 bot ID"}
+        if not result.ilink_user_id:
+            await _delete_qr_session(session_key)
+            return {"connected": False, "message": "登录失败：服务器未返回可验证的微信用户身份"}
 
         # Store credentials server-side — bot_token NEVER sent to frontend
         await _store_qr_session(
@@ -318,6 +321,12 @@ async def connect_channel(
 
     Creates or updates the wechat_personal ChannelConfig for the agent.
     """
+    if tenant_id is None or actor_user_id is None:
+        raise ValueError("WeChat connection requires authenticated tenant and user authority")
+    provider_user_id = str(user_id or "").strip()
+    if not provider_user_id:
+        raise ValueError("WeChat connection requires a verified provider user identity")
+
     result = await db.execute(
         select(ChannelConfig).where(
             ChannelConfig.agent_id == agent_id,
@@ -330,7 +339,7 @@ async def connect_channel(
         "ilink_bot_id": account_id,
         "ilink_bot_token": _encrypt(bot_token),
         "ilink_base_url": base_url or DEFAULT_ILINK_BASE_URL,
-        "ilink_user_id": user_id or "",
+        "ilink_user_id": provider_user_id,
         "bot_type": "3",
     }
 
@@ -361,8 +370,105 @@ async def connect_channel(
     db.add(config)
 
     await db.flush()
+    from app.services.external_principal_service import bind_authenticated_self_channel_principal
+
+    await bind_authenticated_self_channel_principal(
+        db,
+        tenant_id=tenant_id,
+        config=config,
+        provider_subject_id=provider_user_id,
+        user_id=actor_user_id,
+        actor_user_id=actor_user_id,
+    )
     logger.info(f"[WeChatPersonal] Channel connected for agent {agent_id}")
     return config
+
+
+async def get_channel_identity_status(
+    db: AsyncSession,
+    config: ChannelConfig | None,
+    *,
+    transport_running: bool | None = None,
+) -> dict[str, object]:
+    """Return independently verified transport, identity, and Agent authority."""
+
+    if config is None or not config.is_configured:
+        return {
+            "connected": False,
+            "transport_connected": False,
+            "identity_status": "disconnected",
+            "requires_rebind": False,
+            "requires_access_recovery": False,
+        }
+
+    transport_connected = bool(
+        config.is_connected
+        and (transport_running if transport_running is not None else True)
+    )
+
+    subject_id = str((config.extra_config or {}).get("ilink_user_id") or "").strip()
+    bound_user_id = getattr(config, "self_identity_user_id", None)
+    if not subject_id or bound_user_id is None or getattr(config, "self_identity_verified_at", None) is None:
+        return {
+            "connected": False,
+            "transport_connected": transport_connected,
+            "identity_status": "rebind_required",
+            "requires_rebind": True,
+            "requires_access_recovery": False,
+        }
+
+    from app.models.external_principal import ExternalPrincipal
+    from app.models.user import User
+
+    principal = await db.scalar(
+        select(ExternalPrincipal)
+        .where(
+            ExternalPrincipal.channel_config_id == config.id,
+            ExternalPrincipal.tenant_id == config.tenant_id,
+            ExternalPrincipal.provider == "wechat_personal",
+            ExternalPrincipal.subject_id == subject_id,
+            ExternalPrincipal.status == "active",
+            ExternalPrincipal.linked_user_id == bound_user_id,
+        )
+        .order_by(ExternalPrincipal.updated_at.desc())
+        .limit(1)
+    )
+    user = await db.scalar(
+        select(User).where(
+            User.id == bound_user_id,
+            User.tenant_id == config.tenant_id,
+            User.is_active.is_(True),
+        )
+    )
+    identity_verified = principal is not None and user is not None
+    authority_verified = False
+    if identity_verified:
+        from fastapi import HTTPException
+
+        from app.core.permissions import check_agent_access
+
+        try:
+            await check_agent_access(db, user, config.agent_id)
+            authority_verified = True
+        except (HTTPException, PermissionError):
+            authority_verified = False
+
+    if identity_verified and not authority_verified:
+        return {
+            "connected": False,
+            "transport_connected": transport_connected,
+            "identity_status": "access_denied",
+            "requires_rebind": False,
+            "requires_access_recovery": True,
+        }
+
+    return {
+        "connected": bool(identity_verified and transport_connected),
+        "transport_connected": transport_connected,
+        "identity_status": "verified" if identity_verified else "rebind_required",
+        "requires_rebind": bool(not identity_verified or not transport_connected),
+        "requires_access_recovery": False,
+    }
 
 
 async def disconnect_duplicate_account_bindings(

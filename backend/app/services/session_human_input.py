@@ -198,7 +198,7 @@ async def revise_unbound_human_input(
             item_kind="human_input",
             lifecycle="revised",
             scope=_session_scope(authority.session_id),
-            actor={"type": "user", "id": str(authority.principal_id)},
+            actor=authority.event_actor(),
             payload={
                 "input_id": str(row.id),
                 "revision": row.revision,
@@ -294,7 +294,7 @@ async def cancel_unbound_human_input(
             item_kind="human_input",
             lifecycle="cancelled",
             scope=_session_scope(authority.session_id),
-            actor={"type": "user", "id": str(authority.principal_id)},
+            actor=authority.event_actor(),
             payload={
                 "input_id": str(row.id),
                 "revision": row.revision,

@@ -2506,6 +2506,7 @@ npm run test
 - tenant admin 的 link API、前端 member 选择器和 service 公开 link 入口已删除；管理员只能 unlink。unlink 会同事务清除 session/message User 投影，停止 WeChat/Feishu transport，并让 Agent Detail 明确显示“需要重新绑定”。
 - Feishu text/file/card 入站统一消费 installation-scoped ExternalPrincipal，不再根据 email/org profile 制造 User；group session 增加 sender subject 维度，避免群内多人共用一个 User authority。
 - migration 只保留具有 `identity_source=authenticated_channel_connect` provenance 的旧 WeChat QR 绑定；不信任上一版可能由管理员指定反推出的 self-identity 投影。所有无 proof 绑定都会保留 audit event 后解除；旧 Feishu/Lark 配置转为 `identity_rebind_required`，需要用户回到 Agent Detail 重新扫码。
+- 首次生产迁移后的只读验收进一步发现：旧 WeChat config 可能从未有过 self-identity 投影却仍把 transport 标为 connected。后续 migration `im_unverified_transport_0719` 对所有不存在精确 `wechat_personal↔wechat_qr` principal proof 的配置统一设置 `is_connected=false` 与 `identity_rebind_required`；startup manager 同时只枚举带同 installation proof 的配置，防止 schema 漂移或旧数据再次启动假连接。
 
 验收证据：官方 `open.feishu.cn` / `open.larksuite.com` QR host 回归、scanner `open_id` 缺失 fail-closed、用户自绑/管理员仅解绑、Feishu text/file/group/card authority、session/message 同步、provider-proof 数据库约束、parent→head migration 和前端管理面均有可执行回归；Ruff、Alembic 单 head、TypeScript/Vite build 和 AgentDetail bundle budget 通过。
 

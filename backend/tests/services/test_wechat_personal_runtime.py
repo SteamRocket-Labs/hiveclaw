@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -709,6 +711,109 @@ async def test_wechat_stream_manager_propagates_immediate_startup_failure(monkey
         await manager.start_client(agent_id, "token", "https://ilink.example")
 
     assert manager.is_client_running(agent_id) is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("migrated_pg_url")
+async def test_wechat_stream_startup_only_starts_provider_proven_bindings(
+    monkeypatch,
+    owner_sessionmaker,
+):
+    import app.services.wechat_personal_stream as stream_mod
+    from app.models.agent import Agent
+    from app.models.channel_config import ChannelConfig
+    from app.models.external_principal import ExternalPrincipal
+    from app.models.tenant import Tenant
+    from app.models.user import User
+
+    tenant_id, owner_id = uuid4(), uuid4()
+    verified_agent_id, unverified_agent_id = uuid4(), uuid4()
+    verified_config_id, unverified_config_id = uuid4(), uuid4()
+    now = datetime.now(UTC)
+    async with owner_sessionmaker() as db:
+        db.add(Tenant(id=tenant_id, name="WeChat Startup Proof", slug=f"wechat-proof-{tenant_id.hex[:8]}"))
+        db.add(
+            User(
+                id=owner_id,
+                username=f"wechat-proof-{owner_id.hex[:8]}",
+                email=f"{owner_id.hex[:8]}@wechat-proof.test",
+                password_hash="x",
+                display_name="WeChat Proof Owner",
+                tenant_id=tenant_id,
+            )
+        )
+        await db.flush()
+        db.add_all(
+            [
+                Agent(id=verified_agent_id, tenant_id=tenant_id, name="Verified Startup", creator_id=owner_id),
+                Agent(id=unverified_agent_id, tenant_id=tenant_id, name="Unverified Startup", creator_id=owner_id),
+            ]
+        )
+        await db.flush()
+        db.add_all(
+            [
+                ChannelConfig(
+                    id=verified_config_id,
+                    tenant_id=tenant_id,
+                    agent_id=verified_agent_id,
+                    channel_type="wechat_personal",
+                    is_configured=True,
+                    is_connected=True,
+                    self_identity_user_id=owner_id,
+                    self_identity_verified_at=now,
+                    extra_config={"ilink_user_id": "verified-subject"},
+                ),
+                ChannelConfig(
+                    id=unverified_config_id,
+                    tenant_id=tenant_id,
+                    agent_id=unverified_agent_id,
+                    channel_type="wechat_personal",
+                    is_configured=True,
+                    is_connected=True,
+                    extra_config={"ilink_user_id": "unverified-subject"},
+                ),
+            ]
+        )
+        await db.flush()
+        db.add(
+            ExternalPrincipal(
+                id=uuid4(),
+                tenant_id=tenant_id,
+                provider="wechat_personal",
+                installation_ref=str(verified_config_id),
+                channel_config_id=verified_config_id,
+                subject_id="verified-subject",
+                display_name="Verified owner",
+                linked_user_id=owner_id,
+                linked_at=now,
+                binding_method="wechat_qr",
+                binding_verified_at=now,
+            )
+        )
+        await db.commit()
+
+    @asynccontextmanager
+    async def no_bypass(db, **_kwargs):
+        yield db
+
+    started: list = []
+
+    async def capture_start(*, agent_id, **_kwargs):
+        started.append(agent_id)
+
+    monkeypatch.setattr(stream_mod, "async_session", owner_sessionmaker)
+    monkeypatch.setattr(stream_mod, "enter_rls_bypass", no_bypass)
+    monkeypatch.setattr(stream_mod, "get_channel_credentials", lambda _config: {
+        "bot_token": "token",
+        "base_url": "https://ilink.example",
+    })
+    manager = stream_mod.WeChatPersonalStreamManager()
+    monkeypatch.setattr(manager, "start_client", capture_start)
+
+    await manager.start_all()
+
+    assert verified_agent_id in started
+    assert unverified_agent_id not in started
 
 
 @pytest.mark.asyncio

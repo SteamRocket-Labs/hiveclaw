@@ -429,6 +429,8 @@ async def get_channel_identity_status(
             ExternalPrincipal.subject_id == subject_id,
             ExternalPrincipal.status == "active",
             ExternalPrincipal.linked_user_id == bound_user_id,
+            ExternalPrincipal.binding_method == "wechat_qr",
+            ExternalPrincipal.binding_verified_at.is_not(None),
         )
         .order_by(ExternalPrincipal.updated_at.desc())
         .limit(1)

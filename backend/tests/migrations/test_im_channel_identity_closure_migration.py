@@ -296,9 +296,13 @@ async def test_parent_upgrade_backfills_only_existing_verified_wechat_binding(
             assert verified is not None
             assert verified.self_identity_user_id == identity_user_id
             assert verified.self_identity_verified_at is not None
+            assert verified.is_connected is True
             assert unbound is not None
             assert unbound.self_identity_user_id is None
             assert unbound.self_identity_verified_at is None
+            assert unbound.is_connected is False
+            assert unbound.extra_config["connection_status"] == "identity_rebind_required"
+            assert unbound.extra_config["identity_status"] == "rebind_required"
             admin_assigned = await db.get(ChannelConfig, admin_assigned_config_id)
             admin_assigned_principal = await db.get(ExternalPrincipal, admin_assigned_principal_id)
             assert admin_assigned is not None

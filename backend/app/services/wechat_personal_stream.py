@@ -20,11 +20,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import exists, select
 
 from app.database import async_session, enter_rls_bypass, tenant_scoped_session
 from app.config import get_settings
 from app.models.channel_config import ChannelConfig
+from app.models.external_principal import ExternalPrincipal
 from app.services.tenant_resolver import resolve_tenant_for_agent
 from app.services.wechat_ilink_client import (
     ERROR_BACKOFF_SECONDS,
@@ -136,6 +137,19 @@ class WeChatPersonalStreamManager:
                     select(ChannelConfig).where(
                         ChannelConfig.channel_type == "wechat_personal",
                         ChannelConfig.is_connected.is_(True),
+                        ChannelConfig.self_identity_user_id.is_not(None),
+                        ChannelConfig.self_identity_verified_at.is_not(None),
+                        exists(
+                            select(ExternalPrincipal.id).where(
+                                ExternalPrincipal.channel_config_id == ChannelConfig.id,
+                                ExternalPrincipal.tenant_id == ChannelConfig.tenant_id,
+                                ExternalPrincipal.provider == "wechat_personal",
+                                ExternalPrincipal.status == "active",
+                                ExternalPrincipal.linked_user_id == ChannelConfig.self_identity_user_id,
+                                ExternalPrincipal.binding_method == "wechat_qr",
+                                ExternalPrincipal.binding_verified_at.is_not(None),
+                            )
+                        ),
                     )
                 )
                 configs = result.scalars().all()

@@ -42,6 +42,17 @@ class _SequenceDB:
         pass
 
 
+def _principal_resolution(*, platform_user_id, display_name="张三"):
+    principal_id = uuid4()
+    actor = SimpleNamespace(
+        id=platform_user_id,
+        external_principal_id=principal_id,
+        display_name=display_name,
+        authority_bound=platform_user_id is not None,
+    )
+    return SimpleNamespace(actor=actor, principal=SimpleNamespace(id=principal_id))
+
+
 @pytest.mark.asyncio
 async def test_process_feishu_event_never_impersonates_agent_creator_when_sender_identity_is_missing(monkeypatch):
     import app.api.feishu as feishu_api
@@ -56,8 +67,8 @@ async def test_process_feishu_event_never_impersonates_agent_creator_when_sender
     async def fake_resolve_sender_profile(*_args, **_kwargs):
         return {"name": "", "open_id": "", "user_id": "", "email": ""}
 
-    async def fail_resolve_feishu_user(*_args, **_kwargs):
-        raise AssertionError("an unverified Feishu sender must not be provisioned as a User")
+    async def fail_resolve_external_principal(*_args, **_kwargs):
+        raise AssertionError("a sender without a provider identity must not create any principal")
 
     async def fail_history(*_args, **_kwargs):
         raise AssertionError("identity failure must stop before session or history access")
@@ -68,8 +79,8 @@ async def test_process_feishu_event_never_impersonates_agent_creator_when_sender
 
     monkeypatch.setattr(feishu_api, "_resolve_feishu_sender_profile", fake_resolve_sender_profile)
     monkeypatch.setattr(
-        "app.services.channel_user_service.channel_user_service.resolve_or_create_feishu_user",
-        fail_resolve_feishu_user,
+        "app.services.external_principal_service.resolve_or_create_external_principal",
+        fail_resolve_external_principal,
     )
     monkeypatch.setattr("app.services.memory_service.compute_history_limit_for_agent", fail_history)
     monkeypatch.setattr(feishu_api.feishu_service, "send_message", fake_send_message)
@@ -106,7 +117,7 @@ async def test_process_feishu_event_text_approval_resolves_latest_pending_withou
     creator_id = uuid4()
     approval_id = uuid4()
     agent = SimpleNamespace(id=agent_id, creator_id=creator_id, tenant_id=tenant_id, name="Alisa 2")
-    resolved_user = SimpleNamespace(id=creator_id, display_name="审批人")
+    principal_resolution = _principal_resolution(platform_user_id=creator_id, display_name="审批人")
     approval = SimpleNamespace(
         id=approval_id,
         agent_id=agent_id,
@@ -119,12 +130,12 @@ async def test_process_feishu_event_text_approval_resolves_latest_pending_withou
     async def fake_resolve_sender_profile(*_args, **_kwargs):
         return {"name": "审批人", "open_id": "ou_123", "user_id": "u_123"}
 
-    async def fake_resolve_feishu_user(*_args, **_kwargs):
-        return resolved_user
+    async def fake_resolve_external_principal(*_args, **_kwargs):
+        return principal_resolution
 
     async def fake_resolve_approval(_db, target_approval_id, user, action):
         assert target_approval_id == approval_id
-        assert user is resolved_user
+        assert user is principal_resolution.actor
         assert action == "approve"
         approval.status = "approved"
         return approval
@@ -149,8 +160,8 @@ async def test_process_feishu_event_text_approval_resolves_latest_pending_withou
 
     monkeypatch.setattr(feishu_api, "_resolve_feishu_sender_profile", fake_resolve_sender_profile)
     monkeypatch.setattr(
-        "app.services.channel_user_service.channel_user_service.resolve_or_create_feishu_user",
-        fake_resolve_feishu_user,
+        "app.services.external_principal_service.resolve_or_create_external_principal",
+        fake_resolve_external_principal,
     )
     monkeypatch.setattr(feishu_api.approval_service, "resolve_approval", fake_resolve_approval)
     monkeypatch.setattr(feishu_api.feishu_service, "send_message", fake_send_message)
@@ -191,7 +202,7 @@ async def test_process_feishu_event_text_binds_execution_identity_and_session_co
     platform_user_id = uuid4()
     session_id = uuid4()
     agent = SimpleNamespace(id=agent_id, creator_id=uuid4(), tenant_id=tenant_id, name="飞书助手")
-    resolved_user = SimpleNamespace(id=platform_user_id, display_name="张三")
+    principal_resolution = _principal_resolution(platform_user_id=platform_user_id)
     captured: dict[str, object] = {}
 
     db = _SequenceDB(
@@ -208,6 +219,7 @@ async def test_process_feishu_event_text_binds_execution_identity_and_session_co
     async def fake_find_or_create_channel_session(*, delivery_target=None, external_conv_id=None, **_kwargs):
         captured["external_conv_id"] = external_conv_id
         captured["session_delivery_target"] = dict(delivery_target or {})
+        captured["session_kwargs"] = _kwargs
         return SimpleNamespace(
             id=session_id, last_message_at=None, delivery_target_json=delivery_target, title="Session"
         )
@@ -232,13 +244,14 @@ async def test_process_feishu_event_text_binds_execution_identity_and_session_co
     async def fake_resolve_sender_profile(*_args, **_kwargs):
         return {"name": "张三", "open_id": "ou_123", "user_id": "u_123"}
 
-    async def fake_resolve_feishu_user(*_args, **_kwargs):
-        return resolved_user
+    async def fake_resolve_external_principal(*_args, **kwargs):
+        captured["principal_kwargs"] = kwargs
+        return principal_resolution
 
     monkeypatch.setattr(feishu_api, "_resolve_feishu_sender_profile", fake_resolve_sender_profile)
     monkeypatch.setattr(
-        "app.services.channel_user_service.channel_user_service.resolve_or_create_feishu_user",
-        fake_resolve_feishu_user,
+        "app.services.external_principal_service.resolve_or_create_external_principal",
+        fake_resolve_external_principal,
     )
     monkeypatch.setattr(
         "app.services.memory_service.compute_history_limit_for_agent", fake_compute_history_limit_for_agent
@@ -276,6 +289,13 @@ async def test_process_feishu_event_text_binds_execution_identity_and_session_co
     assert captured["external_conv_id"] == "feishu_p2p_u_123"
     assert captured["session_delivery_target"]["channel"] == "feishu"
     assert captured["session_delivery_target"]["user_id"] == "u_123"
+    assert captured["session_delivery_target"]["external_principal_id"] == str(
+        principal_resolution.principal.id
+    )
+    assert captured["principal_kwargs"]["provider"] == "feishu"
+    assert captured["session_kwargs"]["user_id"] == platform_user_id
+    assert captured["session_kwargs"]["external_principal_id"] == principal_resolution.principal.id
+    assert captured["llm_kwargs"]["durable_user"] is principal_resolution.actor
     assert captured["llm_kwargs"]["session_id"] == str(session_id)
     assert captured["llm_kwargs"]["session_source"] == "feishu"
     assert captured["llm_kwargs"]["session_channel"] == "feishu"
@@ -286,15 +306,14 @@ async def test_process_feishu_event_text_binds_execution_identity_and_session_co
 
 
 @pytest.mark.asyncio
-async def test_process_feishu_event_new_command_starts_fresh_session_without_llm(monkeypatch):
+async def test_unbound_group_sender_starts_a_principal_scoped_session_without_llm(monkeypatch):
     import app.api.feishu as feishu_api
 
     agent_id = uuid4()
     tenant_id = uuid4()
-    platform_user_id = uuid4()
     session_id = uuid4()
     agent = SimpleNamespace(id=agent_id, creator_id=uuid4(), tenant_id=tenant_id, name="飞书助手")
-    resolved_user = SimpleNamespace(id=platform_user_id, display_name="张三")
+    principal_resolution = _principal_resolution(platform_user_id=None)
     captured: dict[str, object] = {}
     sent_messages: list[dict] = []
 
@@ -303,12 +322,13 @@ async def test_process_feishu_event_new_command_starts_fresh_session_without_llm
     async def fake_resolve_sender_profile(*_args, **_kwargs):
         return {"name": "张三", "open_id": "ou_123", "user_id": "u_123"}
 
-    async def fake_resolve_feishu_user(*_args, **_kwargs):
-        return resolved_user
+    async def fake_resolve_external_principal(*_args, **_kwargs):
+        return principal_resolution
 
     async def fake_start_new_channel_session(*, delivery_target=None, external_conv_id=None, **_kwargs):
         captured["external_conv_id"] = external_conv_id
         captured["delivery_target"] = dict(delivery_target or {})
+        captured["session_kwargs"] = _kwargs
         return SimpleNamespace(
             id=session_id, last_message_at=None, delivery_target_json=delivery_target, title="New Session"
         )
@@ -336,8 +356,8 @@ async def test_process_feishu_event_new_command_starts_fresh_session_without_llm
 
     monkeypatch.setattr(feishu_api, "_resolve_feishu_sender_profile", fake_resolve_sender_profile)
     monkeypatch.setattr(
-        "app.services.channel_user_service.channel_user_service.resolve_or_create_feishu_user",
-        fake_resolve_feishu_user,
+        "app.services.external_principal_service.resolve_or_create_external_principal",
+        fake_resolve_external_principal,
     )
     monkeypatch.setattr(
         "app.services.channel_session.start_new_channel_session",
@@ -358,9 +378,9 @@ async def test_process_feishu_event_new_command_starts_fresh_session_without_llm
                 "sender": {"sender_id": {"open_id": "ou_123", "user_id": "u_123"}},
                 "message": {
                     "message_type": "text",
-                    "chat_type": "p2p",
+                    "chat_type": "group",
                     "content": json.dumps({"text": "/new"}),
-                    "chat_id": "",
+                    "chat_id": "oc_group_1",
                 },
             },
         },
@@ -370,7 +390,10 @@ async def test_process_feishu_event_new_command_starts_fresh_session_without_llm
 
     assert result == {"code": 0, "msg": "new session created"}
     assert db.commits == 1
-    assert captured["external_conv_id"] == "feishu_p2p_u_123"
+    assert captured["external_conv_id"] == "feishu_group_oc_group_1_ou_123"
     assert captured["delivery_target"]["user_id"] == "u_123"
+    assert captured["delivery_target"]["external_principal_id"] == str(principal_resolution.principal.id)
+    assert captured["session_kwargs"]["user_id"] is None
+    assert captured["session_kwargs"]["external_principal_id"] == principal_resolution.principal.id
     assert sent_messages
     assert "新会话" in sent_messages[0]["content"]

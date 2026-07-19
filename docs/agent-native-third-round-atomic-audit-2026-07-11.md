@@ -183,13 +183,13 @@ Task logs 在 `backend/app/api/tasks.py:181-207` 只按 task_id 查写，没有�
 
 ### SA-06：Slack/Telegram/Discord 外部联系人被伪造成平台 User — P0
 
-**修复状态（2026-07-11）**：**闭环**。Slack、Telegram、Discord、Teams、WeCom HTTP/stream、DingTalk 与 WeChat Personal 现在统一解析为 tenant/provider/installation/subject 四维 `ExternalPrincipal`；外部主体默认没有平台 User 权限，也不进入成员/license 表面。只有公司管理员把该主体显式绑定到同租户、已受邀且 active 的 User 后，运行时才获得该 User 的代理权限；解绑、渠道删除、worker 恢复和 approval replay 都会重新校验绑定，失效即 fail closed。Feishu 保留已有 tenant-scoped `ExternalIdentity` 正确路径，不被错误降级为新模型。
+**修复状态（2026-07-19 权威修订）**：**闭环**。Slack、Telegram、Discord、Teams、WeCom HTTP/stream、DingTalk、WeChat Personal 与 Feishu/Lark 现在统一解析为 tenant/provider/installation/subject 四维 `ExternalPrincipal`；外部主体默认没有平台 User 权限，也不进入成员/license 表面。User 权限只能在已认证的 Agent Detail 渠道扫码流程中，由 provider 返回的 scanner subject 与当前 Hive User 原子绑定后获得；管理员不再能指定 User，只能查看或解除绑定。解绑、渠道删除、worker 恢复和 approval replay 都会重新校验 provider proof，失效即 fail closed。
 
 **机械事实**：User 的 username/email 全局唯一；Slack 在 `backend/app/api/slack.py:245-287` 建 `slack_<sender>` active member，Telegram 在 `telegram.py:485-508`、Discord 在 `discord_bot.py:289-300` 同样处理。它们没有 tenant/installation/account 维度。Feishu 已有 `ExternalIdentity` 路径，说明项目内已有更正确的邻近实现。
 
 **断链**：同一 provider subject 在两个 tenant 或两个 bot installation 中碰撞；外部联系人污染公司成员、license、治理和 ownership 语义。
 
-**一次性关闭**：建立 `ExternalPrincipal(tenant, provider, installation/account, subject)`，只在明确邀请/绑定后关联 User；消息 session、approval requester、audit actor 支持 external principal，不再创建假 member。
+**一次性关闭**：建立 `ExternalPrincipal(tenant, provider, installation/account, subject)`，只在 provider-authenticated QR callback 完成用户自证后关联 User；消息 session、approval requester、audit actor 支持 external principal，不再创建假 member，也不再接受管理员代指 User。
 
 **验收**：相同 sender 跨租户/跨 bot、外部人后续受邀绑定、解绑、删除 provider、历史 transcript 回填、license 统计不污染。
 
@@ -1019,13 +1019,13 @@ alembic heads
 
 七原子证据：
 
-1. **输入**：Slack、Telegram、Discord、Teams、WeCom HTTP/stream、DingTalk 与 WeChat Personal 的 sender 统一进入 `resolve_or_create_external_principal()`；canonical identity 固定为 tenant、provider、installation/config、subject 四元组，显示名和 provider profile 只作为可更新属性。相同 sender 跨 tenant 或跨 installation 得到不同 deterministic UUID；Feishu 继续使用已有 tenant-scoped `ExternalIdentity`，没有重复事实源。
-2. **权威**：外部主体默认 `user_id=None`、`authority_bound=false`、tools disabled；公司管理员只能通过 tenant-scoped `/enterprise/external-principals/{id}/link|unlink` 把主体绑定到同租户 active User，link/unlink 都写 append-only binding event。worker reload 使用任务中 immutable expected user snapshot，当前绑定漂移即降为无权限。Approval envelope 保存 `external_principal_bound` identity，并在请求和消费时重新校验 tenant、active status 与 linked User；解绑或撤销后旧 approval 不能执行。
-3. **执行**：八个渠道不再调用 `hash_password` 或创建 `@*.local` User，唯一身份入口是 ExternalPrincipal service；ChatSession、ChatMessage、RuntimeBudget、Audit、Approval 和 ChannelIngress 都接收 external principal。渠道配置删除/WeChat disconnect 先调用 `revoke_channel_config_external_principals()`，再移除或清空 provider config；数据库 trigger 是升级部署旧 caller 的第二道 fail-closed safety net，不是第二业务入口。
+1. **输入**：Slack、Telegram、Discord、Teams、WeCom HTTP/stream、DingTalk、WeChat Personal 与 Feishu/Lark 的 sender 统一进入 `resolve_or_create_external_principal()`；canonical identity 固定为 tenant、provider、installation/config、subject 四元组，显示名和 provider profile 只作为可更新属性。相同 sender 跨 tenant 或跨 installation 得到不同 deterministic UUID。
+2. **权威**：外部主体默认 `user_id=None`、`authority_bound=false`、tools disabled；唯一 link 入口是 WeChat Personal 或 Feishu/Lark 官方扫码回调中的用户自证，并持久化 `binding_method` 与 `binding_verified_at`。tenant admin API/UI 已删除 link 能力，只保留 unlink；worker reload 使用任务中 immutable expected user snapshot，当前证明漂移即降为无权限。Approval envelope 保存 `external_principal_bound` identity，并在请求和消费时重新校验 tenant、active status、proof 与 linked User；解绑或撤销后旧 approval 不能执行。
+3. **执行**：九个渠道不再调用 `hash_password` 或创建 `@*.local` User，唯一身份入口是 ExternalPrincipal service；ChatSession、ChatMessage、RuntimeBudget、Audit、Approval 和 ChannelIngress 都接收 external principal。渠道配置删除、管理员解绑或重新扫码会先撤销旧 principal 并清理 session/message User 投影，再停止旧 transport。
 4. **证据**：`external_principals` 是当前绑定状态，`external_principal_binding_events` 是 linked/unlinked/revoked 的 append-only 机械账本；session/message/transcript、ingress receipt、runtime budget、approval ticket 和 general AuditLog 均保存 external principal FK。Invocation/approval execution identity 同时保留 external principal 与已绑定 User，不再把 Agent ID 或 synthetic User 当 actor。
 5. **恢复**：identity 使用 deterministic UUID + PostgreSQL conflict-safe insert，重复 webhook/worker restart 幂等；相同 identity 的 config drift、revoked installation、stale binding 均 fail closed。WeChat disconnect、reconnect 和账号迁移会撤销并删除旧 config，使新扫码获得新的 installation identity，不会复用 revoked config。migration 对 legacy synthetic users 做非破坏回填：session/message/ingress/budget/audit/approval 投影改指 ExternalPrincipal，active runtime 进入 reconciliation，旧 User 仅 deactive 供历史兼容；历史 pending/approved approval 进入 `needs_reapproval`，downgrade 精确恢复原 User、session/message、approval status/execution/details。真实 parent→head→parent 故障注入覆盖 RLS bypass、enum/text、JSON/JSONB、asyncpg 单语句和 bootstrap-generated FK name。
-6. **消费**：Web Chat Runtime 实际把 unbound external request 以 `execution_identity=external_principal` 且 `disable_tools=true` 交给模型；绑定后同时消费 external actor 与 User authority。公司成员后台新增独立“外部渠道身份”模块，可选择已受邀 active member 绑定/解绑，且不显示内部 installation/config UUID。成员列表排除 legacy synthetic external users，企业统计只计 active Users，因此不会污染成员或 license 语义。
-7. **验收**：覆盖同 sender 跨 tenant/installation、幂等创建、显式绑定/解绑、RLS、config 删除撤销、worker restart、read-only invoke、session/transcript/audit/approval/budget/ingress 投影、历史 backfill/downgrade、八渠道 AST 边界、管理员 API/UI、成员过滤、前端全量、生产 build、后端全量与 Alembic 单 head。
+6. **消费**：Web Chat Runtime 实际把 unbound external request 以 `execution_identity=external_principal` 且 `disable_tools=true` 交给模型；绑定后同时消费 external actor 与 User authority。Agent Detail 在旧 proof 失效时明确显示“需要重新绑定”并回到扫码流程；公司后台的“外部渠道身份”只展示已验证状态与解除操作，不再提供 member 选择器。成员列表排除 legacy synthetic external users，企业统计只计 active Users，因此不会污染成员或 license 语义。
+7. **验收**：覆盖同 sender 跨 tenant/installation、幂等创建、WeChat/Feishu/Lark provider-proof 自绑、管理员仅解绑、RLS、config 删除撤销、worker restart、read-only invoke、session/transcript/audit/approval/budget/ingress 投影、历史 backfill/downgrade、九渠道边界、管理员 API/UI、成员过滤、官方二维码 host 校验、前端生产 build、后端专项与 Alembic 单 head。
 
 RED 证据（修复前由新增回归测试稳定复现）：
 

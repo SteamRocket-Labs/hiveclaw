@@ -94,14 +94,12 @@
   font-size: var(--text-row);
 }
 
-.external-principal-select {
-  min-width: 180px;
-  max-width: 260px;
-  font-size: var(--text-row);
-}
-
 .external-principal-action {
   white-space: nowrap;
+}
+
+.external-principal-pending {
+  color: var(--text-tertiary);
 }
 
 .external-principal-revoked {

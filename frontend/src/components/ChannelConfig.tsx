@@ -816,9 +816,17 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                 && !config?.requires_rebind,
             )
             : Boolean(config?.is_configured);
-        const requiresRebind = ch.id === 'wechat_personal' && Boolean(
-            config?.requires_rebind
-            || (config?.connected && config?.identity_status !== 'verified'),
+        const configConnMode = config?.extra_config?.connection_mode;
+        const feishuConnectionStatus = String(config?.extra_config?.connection_status || '');
+        const requiresRebind = Boolean(
+            (ch.id === 'wechat_personal' && (
+                config?.requires_rebind
+                || (config?.connected && config?.identity_status !== 'verified')
+            ))
+            || (ch.id === 'feishu' && (
+                feishuConnectionStatus === 'identity_rebind_required'
+                || config?.extra_config?.identity_status === 'unverified_manual'
+            )),
         );
         const requiresAccessRecovery = ch.id === 'wechat_personal' && Boolean(
             config?.requires_access_recovery
@@ -826,13 +834,12 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
         );
         const connMode = connectionModes[ch.id] || 'websocket';
         const isWs = ch.connectionMode && connMode === 'websocket';
-        const configConnMode = config?.extra_config?.connection_mode;
-        const feishuConnectionStatus = String(config?.extra_config?.connection_status || '');
         const feishuWebSocketConnected = ch.id === 'feishu'
             && configConnMode === 'websocket'
             && Boolean(config?.is_connected);
         const feishuWebSocketFailed = ch.id === 'feishu'
             && configConnMode === 'websocket'
+            && feishuConnectionStatus !== 'identity_rebind_required'
             && (!config?.is_configured || feishuConnectionStatus === 'invalid_credentials');
         const feishuWebSocketConnecting = ch.id === 'feishu'
             && configConnMode === 'websocket'
@@ -1213,7 +1220,7 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
             <h4 className="channel-config-mb-3">{t('agent.settings.channel.title')}</h4>
             <p className="channel-config-subtitle">{t('agent.settings.channel.title')}</p>
             <div className="channel-config-sync-hint">
-                {t('agent.settings.channel.syncHint', 'Before configuring the Feishu bot, please sync your organization structure in Enterprise Settings → Org Structure first. This ensures the bot can identify message senders.')}
+                {t('agent.settings.channel.syncHint', 'A user identity is trusted only after that user completes the channel QR connection. Organization sync never assigns an IM identity; administrators can only revoke a verified binding.')}
             </div>
             {feishuRuntimeStatus ? (
                 <div className="channel-config-mb-4">

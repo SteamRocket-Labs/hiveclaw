@@ -1961,6 +1961,7 @@
           "cancelled": "已取消注册。",
           "interrupted": "注册进程已中断，请重新生成二维码。",
           "accessLost": "你的 Agent 管理权限发生了变化，请恢复权限后重新开始。",
+          "identityMissing": "飞书/Lark 没有返回已验证的扫码身份，请重新生成二维码并扫码。",
           "credentialsRejected": "飞书/Lark 拒绝了应用凭证，请重新扫码。",
           "unavailable": "注册服务暂时不可用，请稍后重试。",
           "conflict": "另一位管理员正在为这个 Agent 注册渠道。",
@@ -1973,7 +1974,7 @@
           "statusError": "WebSocket 连接失败，请重新扫码",
           "statusDisconnected": "应用已配置，但 WebSocket 未连接"
         },
-        "syncHint": "连接飞书机器人之前，请先在公司设置 → 组织架构中同步组织结构。这样机器人才能识别消息发送者。"
+        "syncHint": "只有用户本人完成渠道扫码连接后，该 IM 身份才会被信任。组织架构同步不会分配 IM 身份，管理员只能解除已验证的绑定。"
       },
       "localBridge": {
         "title": "本地 Agent 通道",
@@ -2913,17 +2914,15 @@
     "period_weekly": "每周",
     "period_monthly": "每月",
     "externalPrincipalsTitle": "外部渠道身份",
-    "externalPrincipalsDescription": "外部发送者默认不占用成员席位；只有管理员将其显式绑定到已受邀账号后，才继承该成员权限。",
+    "externalPrincipalsDescription": "用户必须在渠道连接流程中自行验证 IM 身份；管理员只能查看或解除绑定，不能代替用户指定身份。",
     "externalPrincipalsEmpty": "尚无外部渠道身份。",
     "externalPrincipalRevoked": "渠道访问已撤销",
-    "externalPrincipalBoundTo": "已绑定至",
-    "externalPrincipalMember": "已受邀成员",
-    "externalPrincipalChooseMember": "选择已受邀成员",
-    "externalPrincipalBind": "绑定到已受邀成员",
+    "externalPrincipalBoundTo": "已验证为",
+    "externalPrincipalBoundUserUnavailable": "成员已不可用",
+    "externalPrincipalAwaitingVerification": "等待用户从渠道连接流程完成身份验证",
     "externalPrincipalUnlink": "解除绑定",
     "externalPrincipalUnlinkTitle": "解除外部身份绑定",
     "externalPrincipalUnlinkConfirm": "外部发送者将立即失去所绑定成员的权限。是否继续？",
-    "externalPrincipalLinked": "外部身份已绑定",
     "externalPrincipalUnlinked": "外部身份已解除绑定"
   },
   "account": {

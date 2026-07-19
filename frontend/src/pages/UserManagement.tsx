@@ -91,25 +91,6 @@ export default function UserManagement() {
         void loadExternalPrincipals();
     }, []);
 
-    const handleExternalPrincipalLink = async (principalId: string, userId: string) => {
-        setBusyExternalPrincipalId(principalId);
-        try {
-            await externalPrincipalsApi.link(
-                principalId,
-                userId,
-                'Explicit tenant-admin binding to an invited member',
-                selectedTenantId(),
-            );
-            setToast(`✅ ${t('userManagement.externalPrincipalLinked', 'External identity linked')}`);
-            await loadExternalPrincipals();
-        } catch (e: any) {
-            setToast(`❌ ${e.message}`);
-        } finally {
-            setBusyExternalPrincipalId(null);
-            setTimeout(() => setToast(''), 3000);
-        }
-    };
-
     const handleExternalPrincipalUnlink = async (principalId: string) => {
         const confirmed = await requestAppConfirm({
             title: t('userManagement.externalPrincipalUnlinkTitle', 'Unlink external identity'),
@@ -253,7 +234,6 @@ export default function UserManagement() {
                     users={users}
                     loading={externalPrincipalsLoading}
                     busyPrincipalId={busyExternalPrincipalId}
-                    onLink={handleExternalPrincipalLink}
                     onUnlink={handleExternalPrincipalUnlink}
                 />
             )}

@@ -166,6 +166,11 @@ export default function FeishuAppRegistrationSetup({
         return t('agent.settings.channel.registration.interrupted', 'The registration worker stopped. Generate a new QR code.');
       case 'registration_authorization_lost':
         return t('agent.settings.channel.registration.accessLost', 'Your Agent management access changed. Start again after access is restored.');
+      case 'registration_identity_missing':
+        return t(
+          'agent.settings.channel.registration.identityMissing',
+          'Feishu/Lark did not return your verified scanner identity. Generate a new QR code and scan again.',
+        );
       case 'websocket_credentials_rejected':
         return t('agent.settings.channel.registration.credentialsRejected', 'Feishu/Lark rejected the app credentials. Scan again.');
       case 'registration_state_unavailable':

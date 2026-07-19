@@ -178,6 +178,14 @@ RLS_BYPASS_ALLOWLIST = (
     ),
     _grant(
         *(
+            "app/services/feishu_app_registration.py",
+            "_persist_registered_credentials",
+            "f'Feishu registration actor revalidation for {context.session_id}'",
+            ("select:User",),
+        )
+    ),
+    _grant(
+        *(
             "app/services/startup_bootstrap.py",
             "ensure_default_tenant",
             "'startup default tenant bootstrap'",

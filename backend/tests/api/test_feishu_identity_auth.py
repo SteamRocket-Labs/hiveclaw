@@ -70,6 +70,9 @@ class _FakeDB:
 
         return _Result(value)
 
+    async def scalar(self, statement):
+        return (await self.execute(statement)).scalar_one_or_none()
+
     async def commit(self):
         self.committed = True
 
@@ -367,7 +370,7 @@ def test_bind_feishu_account_uses_provider_binding():
     bind_mock.assert_awaited_once()
 
 
-def test_feishu_card_callback_resolves_user_via_channel_user_service():
+def test_feishu_card_callback_requires_the_agent_installations_verified_principal():
     from app import database
 
     tenant_id = uuid4()
@@ -376,7 +379,14 @@ def test_feishu_card_callback_resolves_user_via_channel_user_service():
     current_user = _fake_user(tenant_id)
     approval = SimpleNamespace(id=approval_id, agent_id=agent_id, action_type="publish")
     agent = SimpleNamespace(id=agent_id, tenant_id=tenant_id)
-    db = _FakeDB(execute_results=[approval, agent])
+    config = SimpleNamespace(id=uuid4(), agent_id=agent_id, tenant_id=tenant_id)
+    principal = SimpleNamespace(id=uuid4(), linked_user_id=current_user.id)
+    runtime_actor = SimpleNamespace(
+        id=current_user.id,
+        external_principal_id=principal.id,
+        authority_bound=True,
+    )
+    db = _FakeDB(session=current_user, execute_results=[approval, agent, config, principal])
     app = _build_app(db)
 
     callback_body = {
@@ -387,10 +397,10 @@ def test_feishu_card_callback_resolves_user_via_channel_user_service():
 
     with (
         patch(
-            "app.api.feishu.channel_user_service.resolve_feishu_user",
+            "app.services.external_principal_service.load_external_runtime_actor",
             new_callable=AsyncMock,
-            return_value=current_user,
-        ) as resolve_user_mock,
+            return_value=runtime_actor,
+        ) as load_actor_mock,
         patch(
             "app.services.approval_service.approval_service.resolve_approval",
             new_callable=AsyncMock,
@@ -405,7 +415,7 @@ def test_feishu_card_callback_resolves_user_via_channel_user_service():
         response = client.post("/channel/feishu/card-callback", json=callback_body)
 
     assert response.status_code == 200
-    resolve_user_mock.assert_awaited_once()
+    load_actor_mock.assert_awaited_once()
     resolve_approval_mock.assert_awaited_once()
     assert db.sync_session.info[database._RLS_TENANT_INFO_KEY] == str(tenant_id)
     assert any(f"SET LOCAL app.current_tenant_id = '{tenant_id}'" in str(stmt) for stmt in db.statements)

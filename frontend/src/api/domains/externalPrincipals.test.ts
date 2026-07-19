@@ -4,7 +4,7 @@ describe('external principal API adapter', () => {
   beforeEach(() => vi.resetModules());
   afterEach(() => vi.restoreAllMocks());
 
-  it('uses tenant-scoped list and explicit link/unlink decisions', async () => {
+  it('uses tenant-scoped list and exposes admin unlink without an assignment call', async () => {
     vi.doMock('../core', async () => {
       const actual = await vi.importActual<typeof import('../core')>('../core');
       return { ...actual, get: vi.fn(), post: vi.fn() };
@@ -20,7 +20,6 @@ describe('external principal API adapter', () => {
       status: 'active',
       linked: false,
     });
-    await externalPrincipalsApi.link('principal-1', 'user-1', 'accepted invitation', 'tenant-1');
     await externalPrincipalsApi.unlink('principal-1', 'admin revoked mapping', 'tenant-1');
 
     expect(get).toHaveBeenCalledWith(
@@ -28,11 +27,6 @@ describe('external principal API adapter', () => {
     );
     expect(post).toHaveBeenNthCalledWith(
       1,
-      '/enterprise/external-principals/principal-1/link?tenant_id=tenant-1',
-      { user_id: 'user-1', reason: 'accepted invitation' },
-    );
-    expect(post).toHaveBeenNthCalledWith(
-      2,
       '/enterprise/external-principals/principal-1/unlink?tenant_id=tenant-1',
       { reason: 'admin revoked mapping' },
     );

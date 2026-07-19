@@ -15,11 +15,11 @@ from app.core.security import get_current_admin
 from app.core.tenant_scope import resolve_and_pin_tenant_scope
 from app.database import get_db
 from app.models.external_principal import ExternalPrincipal
+from app.models.channel_config import ChannelConfig
 from app.models.user import User
 from app.services.external_principal_service import (
     ExternalPrincipalAuthorityError,
     ExternalPrincipalRevokedError,
-    link_external_principal,
     unlink_external_principal,
 )
 
@@ -35,6 +35,8 @@ class ExternalPrincipalOut(BaseModel):
     subject_id: str
     display_name: str
     linked_user_id: uuid.UUID | None
+    binding_method: str | None
+    binding_verified_at: datetime | None
     status: str
     first_seen_at: datetime
     last_seen_at: datetime
@@ -42,11 +44,6 @@ class ExternalPrincipalOut(BaseModel):
     revoked_at: datetime | None
 
     model_config = {"from_attributes": True}
-
-
-class ExternalPrincipalLinkIn(BaseModel):
-    user_id: uuid.UUID
-    reason: str = Field(min_length=1, max_length=1000)
 
 
 class ExternalPrincipalUnlinkIn(BaseModel):
@@ -88,30 +85,6 @@ async def list_external_principals(
     return [ExternalPrincipalOut.model_validate(item) for item in result.scalars().all()]
 
 
-@router.post("/enterprise/external-principals/{principal_id}/link", response_model=ExternalPrincipalOut)
-async def link_external_principal_route(
-    principal_id: uuid.UUID,
-    data: ExternalPrincipalLinkIn,
-    tenant_id: str | None = None,
-    current_user: User = Depends(get_current_admin),
-    db: AsyncSession = Depends(get_db),
-):
-    target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
-    try:
-        resolution = await link_external_principal(
-            db,
-            tenant_id=target_tenant_id,
-            principal_id=principal_id,
-            user_id=data.user_id,
-            actor_user_id=current_user.id,
-            reason=data.reason,
-        )
-    except (LookupError, ExternalPrincipalRevokedError, ExternalPrincipalAuthorityError) as exc:
-        raise _service_error(exc) from exc
-    await db.commit()
-    return ExternalPrincipalOut.model_validate(resolution.principal)
-
-
 @router.post("/enterprise/external-principals/{principal_id}/unlink", response_model=ExternalPrincipalOut)
 async def unlink_external_principal_route(
     principal_id: uuid.UUID,
@@ -131,7 +104,19 @@ async def unlink_external_principal_route(
         )
     except (LookupError, ExternalPrincipalRevokedError, ExternalPrincipalAuthorityError) as exc:
         raise _service_error(exc) from exc
+    transport_agent_id = None
+    if resolution.principal.provider in {"wechat_personal", "feishu"} and resolution.principal.channel_config_id:
+        config = await db.get(ChannelConfig, resolution.principal.channel_config_id)
+        transport_agent_id = config.agent_id if config is not None else None
     await db.commit()
+    if transport_agent_id is not None and resolution.principal.provider == "wechat_personal":
+        from app.services.wechat_personal_stream import wechat_personal_stream_manager
+
+        await wechat_personal_stream_manager.stop_client(transport_agent_id)
+    elif transport_agent_id is not None and resolution.principal.provider == "feishu":
+        from app.services.feishu_ws import feishu_ws_manager
+
+        await feishu_ws_manager.stop_client(transport_agent_id)
     return ExternalPrincipalOut.model_validate(resolution.principal)
 
 

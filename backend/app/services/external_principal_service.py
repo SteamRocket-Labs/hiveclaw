@@ -124,7 +124,12 @@ async def _runtime_actor(
             )
         ).scalar_one_or_none()
 
-    bound = user is not None and principal.status == "active"
+    bound = bool(
+        user is not None
+        and principal.status == "active"
+        and principal.binding_method in {"wechat_qr", "feishu_qr"}
+        and principal.binding_verified_at is not None
+    )
     return ChannelRuntimeActor(
         id=user.id if bound else None,
         external_principal_id=principal.id,
@@ -281,7 +286,7 @@ async def _synchronize_external_principal_session_users(
     )
 
 
-async def link_external_principal(
+async def _link_verified_external_principal(
     db: AsyncSession,
     *,
     tenant_id: uuid.UUID | str,
@@ -289,8 +294,15 @@ async def link_external_principal(
     user_id: uuid.UUID | str,
     actor_user_id: uuid.UUID | str,
     reason: str,
-    allow_self_managed_channel: bool = False,
+    binding_method: str,
 ) -> ExternalPrincipalResolution:
+    """Persist a provider-proven self binding from a trusted connect callback.
+
+    This helper is intentionally private: there is no admin/API assignment
+    path. The authenticated actor must be the target user and the proof method
+    must match the concrete provider installation.
+    """
+
     tenant_uuid = _uuid(tenant_id, field="tenant_id")
     principal_uuid = _uuid(principal_id, field="principal_id")
     user_uuid = _uuid(user_id, field="user_id")
@@ -309,10 +321,11 @@ async def link_external_principal(
         raise LookupError("external principal not found")
     if principal.status != "active":
         raise ExternalPrincipalRevokedError("external principal is revoked")
-    if principal.provider == "wechat_personal" and not allow_self_managed_channel:
-        raise ExternalPrincipalAuthorityError(
-            "Personal WeChat identity must be managed by the authenticated user from the Agent channel"
-        )
+    expected_method = {"wechat_personal": "wechat_qr", "feishu": "feishu_qr"}.get(principal.provider)
+    if expected_method is None or binding_method != expected_method:
+        raise ExternalPrincipalAuthorityError("external identity binding lacks matching provider proof")
+    if actor_uuid != user_uuid:
+        raise ExternalPrincipalAuthorityError("external identity must bind the authenticated user")
     user = (
         await db.execute(
             select(User).where(
@@ -328,6 +341,8 @@ async def link_external_principal(
     if previous != user.id:
         principal.linked_user_id = user.id
         principal.linked_at = datetime.now(UTC)
+        principal.binding_method = binding_method
+        principal.binding_verified_at = principal.linked_at
         db.add(
             ExternalPrincipalBindingEvent(
                 tenant_id=tenant_uuid,
@@ -337,8 +352,12 @@ async def link_external_principal(
                 new_user_id=user.id,
                 actor_user_id=actor_uuid,
                 reason=str(reason or "explicit binding"),
+                metadata_json={"binding_method": binding_method},
             )
         )
+    elif principal.binding_method != binding_method or principal.binding_verified_at is None:
+        principal.binding_method = binding_method
+        principal.binding_verified_at = datetime.now(UTC)
     await _synchronize_external_principal_session_users(db, principal=principal, user=user)
     return ExternalPrincipalResolution(principal=principal, actor=await _runtime_actor(db, principal))
 
@@ -350,7 +369,6 @@ async def unlink_external_principal(
     principal_id: uuid.UUID | str,
     actor_user_id: uuid.UUID | str,
     reason: str,
-    allow_self_managed_channel: bool = False,
 ) -> ExternalPrincipalResolution:
     tenant_uuid = _uuid(tenant_id, field="tenant_id")
     principal_uuid = _uuid(principal_id, field="principal_id")
@@ -367,14 +385,12 @@ async def unlink_external_principal(
     ).scalar_one_or_none()
     if principal is None:
         raise LookupError("external principal not found")
-    if principal.provider == "wechat_personal" and not allow_self_managed_channel:
-        raise ExternalPrincipalAuthorityError(
-            "Personal WeChat identity must be managed by the authenticated user from the Agent channel"
-        )
     previous = principal.linked_user_id
     if previous is not None:
         principal.linked_user_id = None
         principal.linked_at = None
+        principal.binding_method = None
+        principal.binding_verified_at = None
         db.add(
             ExternalPrincipalBindingEvent(
                 tenant_id=tenant_uuid,
@@ -386,6 +402,22 @@ async def unlink_external_principal(
                 reason=str(reason or "explicit unlink"),
             )
         )
+    if principal.channel_config_id is not None:
+        from app.models.channel_config import ChannelConfig
+
+        config = await db.get(ChannelConfig, principal.channel_config_id)
+        if config is not None and config.self_identity_user_id == previous:
+            config.self_identity_user_id = None
+            config.self_identity_verified_at = None
+            if principal.provider in {"wechat_personal", "feishu"}:
+                config.is_connected = False
+            if principal.provider == "feishu":
+                config.is_configured = False
+                config.extra_config = {
+                    **dict(config.extra_config or {}),
+                    "connection_status": "identity_rebind_required",
+                    "identity_status": "rebind_required",
+                }
     await _synchronize_external_principal_session_users(db, principal=principal, user=None)
     return ExternalPrincipalResolution(principal=principal, actor=await _runtime_actor(db, principal))
 
@@ -401,10 +433,12 @@ async def bind_authenticated_self_channel_principal(
 ) -> ExternalPrincipalResolution:
     """Bind a provider-authenticated personal account during channel connect.
 
-    This contract is intentionally limited to self-identity channels.  Bot and
-    group installations do not prove that every future sender is the installer
-    and must continue to create independent ExternalPrincipal rows.
+    This contract only accepts provider-authenticated QR connect callbacks.
+    Future senders still receive independent ExternalPrincipal rows; only the
+    scanner subject inherits the authenticated Hive user's authority.
     """
+
+    from fastapi import HTTPException
 
     from app.core.permissions import check_agent_access
     from app.models.chat_session import ChatSession
@@ -416,7 +450,11 @@ async def bind_authenticated_self_channel_principal(
     agent_id = getattr(config, "agent_id", None)
     channel_type = str(getattr(config, "channel_type", "") or "").strip().lower()
     subject_id = str(provider_subject_id or "").strip()
-    if channel_type != "wechat_personal":
+    provider_and_method = {
+        "wechat_personal": ("wechat_personal", "wechat_qr", "Authenticated WeChat Personal QR connection"),
+        "feishu": ("feishu", "feishu_qr", "Authenticated Feishu/Lark QR registration"),
+    }.get(channel_type)
+    if provider_and_method is None:
         raise ExternalPrincipalAuthorityError("channel does not prove a self identity")
     if not config_id or not agent_id or not subject_id:
         raise ExternalPrincipalAuthorityError("self channel identity requires config, agent, and provider subject")
@@ -434,40 +472,51 @@ async def bind_authenticated_self_channel_principal(
     )
     if user is None:
         raise ExternalPrincipalAuthorityError("self channel binding target must be an active same-tenant user")
-    _agent, access_level = await check_agent_access(db, user, agent_id)
+    try:
+        _agent, access_level = await check_agent_access(db, user, agent_id)
+    except (HTTPException, PermissionError) as exc:
+        raise ExternalPrincipalAuthorityError("self channel installation requires Agent manage access") from exc
     if access_level != "manage":
         raise ExternalPrincipalAuthorityError("self channel installation requires Agent manage access")
 
+    provider, binding_method, reason = provider_and_method
     resolved = await resolve_or_create_external_principal(
         db,
         tenant_id=tenant_uuid,
-        provider="wechat_personal",
+        provider=provider,
         installation_ref=str(config_id),
         channel_config_id=config_id,
         subject_id=subject_id,
         display_name=user.display_name or user.username,
-        profile={"identity_source": "authenticated_channel_connect"},
+        profile={
+            "identity_source": "authenticated_channel_connect",
+            "binding_method": binding_method,
+        },
     )
-    linked = await link_external_principal(
+    linked = await _link_verified_external_principal(
         db,
         tenant_id=tenant_uuid,
         principal_id=resolved.principal.id,
         user_id=user.id,
         actor_user_id=actor_uuid,
-        reason="Authenticated WeChat Personal QR connection",
-        allow_self_managed_channel=True,
+        reason=reason,
+        binding_method=binding_method,
     )
 
     now = datetime.now(UTC)
     config.self_identity_user_id = user.id
     config.self_identity_verified_at = now
 
+    if provider != "wechat_personal":
+        await db.flush()
+        return linked
+
     prior_principal_ids = list(
         (
             await db.execute(
                 select(ExternalPrincipal.id).where(
                     ExternalPrincipal.tenant_id == tenant_uuid,
-                    ExternalPrincipal.provider == "wechat_personal",
+                    ExternalPrincipal.provider == provider,
                     ExternalPrincipal.subject_id == subject_id,
                     ExternalPrincipal.id != linked.principal.id,
                 )
@@ -537,10 +586,13 @@ async def revoke_external_principals_for_installation(
     now = datetime.now(UTC)
     for principal in principals:
         previous = principal.linked_user_id
+        await _synchronize_external_principal_session_users(db, principal=principal, user=None)
         principal.status = "revoked"
         principal.revoked_at = now
         principal.linked_user_id = None
         principal.linked_at = None
+        principal.binding_method = None
+        principal.binding_verified_at = None
         db.add(
             ExternalPrincipalBindingEvent(
                 tenant_id=tenant_uuid,
@@ -576,6 +628,7 @@ async def revoke_channel_config_external_principals(
         "wecom",
         "dingtalk",
         "wechat_personal",
+        "feishu",
     }:
         raise ValueError(f"unsupported external principal channel type: {channel_type or '<empty>'}")
     config_id = getattr(config, "id", None)
@@ -598,7 +651,6 @@ __all__ = [
     "ExternalPrincipalResolution",
     "ExternalPrincipalRevokedError",
     "bind_authenticated_self_channel_principal",
-    "link_external_principal",
     "load_external_runtime_actor",
     "platform_member_user_predicate",
     "resolve_or_create_external_principal",

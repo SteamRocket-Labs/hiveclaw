@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -65,9 +66,21 @@ async def test_parent_upgrade_backfills_only_existing_verified_wechat_binding(
 
     engine = create_async_engine(revision_parent_migrated_pg_url, poolclass=NullPool)
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-    tenant_id, owner_id, identity_user_id, verified_agent_id, unbound_agent_id = (uuid4() for _ in range(5))
-    verified_config_id, unbound_config_id = uuid4(), uuid4()
-    verified_principal_id, unbound_principal_id = uuid4(), uuid4()
+    (
+        tenant_id,
+        owner_id,
+        identity_user_id,
+        verified_agent_id,
+        unbound_agent_id,
+        admin_assigned_agent_id,
+        legacy_feishu_agent_id,
+    ) = (uuid4() for _ in range(7))
+    verified_config_id, unbound_config_id, admin_assigned_config_id, legacy_feishu_config_id = (
+        uuid4() for _ in range(4)
+    )
+    verified_principal_id, unbound_principal_id, admin_assigned_principal_id, legacy_feishu_principal_id = (
+        uuid4() for _ in range(4)
+    )
     legacy_session_id, legacy_command_id = uuid4(), uuid4()
     try:
         async with session_factory() as db:
@@ -107,6 +120,18 @@ async def test_parent_upgrade_backfills_only_existing_verified_wechat_binding(
                         name="Unbound WeChat",
                         creator_id=owner_id,
                     ),
+                    Agent(
+                        id=admin_assigned_agent_id,
+                        tenant_id=tenant_id,
+                        name="Admin-assigned WeChat",
+                        creator_id=owner_id,
+                    ),
+                    Agent(
+                        id=legacy_feishu_agent_id,
+                        tenant_id=tenant_id,
+                        name="Legacy Feishu",
+                        creator_id=owner_id,
+                    ),
                 ]
             )
             await db.flush()
@@ -130,6 +155,24 @@ async def test_parent_upgrade_backfills_only_existing_verified_wechat_binding(
                         is_connected=True,
                         extra_config={"ilink_user_id": "unbound-subject"},
                     ),
+                    ChannelConfig(
+                        id=admin_assigned_config_id,
+                        tenant_id=tenant_id,
+                        agent_id=admin_assigned_agent_id,
+                        channel_type="wechat_personal",
+                        is_configured=True,
+                        is_connected=True,
+                        extra_config={"ilink_user_id": "admin-assigned-subject"},
+                    ),
+                    ChannelConfig(
+                        id=legacy_feishu_config_id,
+                        tenant_id=tenant_id,
+                        agent_id=legacy_feishu_agent_id,
+                        channel_type="feishu",
+                        is_configured=True,
+                        is_connected=True,
+                        extra_config={"connection_mode": "websocket"},
+                    ),
                 ]
             )
             await db.flush()
@@ -143,8 +186,11 @@ async def test_parent_upgrade_backfills_only_existing_verified_wechat_binding(
                         channel_config_id=verified_config_id,
                         subject_id="verified-subject",
                         display_name="Verified",
+                        profile_json={"identity_source": "authenticated_channel_connect"},
                         linked_user_id=identity_user_id,
                         linked_at=datetime.now(UTC),
+                        binding_method="wechat_qr",
+                        binding_verified_at=datetime.now(UTC),
                     ),
                     ExternalPrincipal(
                         id=unbound_principal_id,
@@ -155,6 +201,32 @@ async def test_parent_upgrade_backfills_only_existing_verified_wechat_binding(
                         subject_id="unbound-subject",
                         display_name="Unbound",
                         linked_user_id=None,
+                    ),
+                    ExternalPrincipal(
+                        id=admin_assigned_principal_id,
+                        tenant_id=tenant_id,
+                        provider="wechat_personal",
+                        installation_ref=str(admin_assigned_config_id),
+                        channel_config_id=admin_assigned_config_id,
+                        subject_id="admin-assigned-subject",
+                        display_name="Admin assigned",
+                        linked_user_id=identity_user_id,
+                        linked_at=datetime.now(UTC),
+                        binding_method="wechat_qr",
+                        binding_verified_at=datetime.now(UTC),
+                    ),
+                    ExternalPrincipal(
+                        id=legacy_feishu_principal_id,
+                        tenant_id=tenant_id,
+                        provider="feishu",
+                        installation_ref=str(legacy_feishu_config_id),
+                        channel_config_id=legacy_feishu_config_id,
+                        subject_id="ou_legacy_feishu",
+                        display_name="Legacy Feishu",
+                        linked_user_id=identity_user_id,
+                        linked_at=datetime.now(UTC),
+                        binding_method="feishu_qr",
+                        binding_verified_at=datetime.now(UTC),
                     ),
                 ]
             )
@@ -198,6 +270,24 @@ async def test_parent_upgrade_backfills_only_existing_verified_wechat_binding(
             await db.commit()
 
         _alembic_downgrade(revision_parent_migrated_pg_url, "collaboration_runtime_closure_0717")
+        # Reconstruct the exact pre-proof production state after the safe
+        # downgrade removed Feishu authority. These rows have a linked User but
+        # no typed provider proof columns yet.
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "UPDATE external_principals SET linked_user_id = :user_id, linked_at = NOW() "
+                    "WHERE id = :principal_id"
+                ),
+                {"user_id": identity_user_id, "principal_id": legacy_feishu_principal_id},
+            )
+            await connection.execute(
+                text(
+                    "UPDATE channel_configs SET is_configured = TRUE, is_connected = TRUE, "
+                    "extra_config = '{\"connection_mode\":\"websocket\"}'::json WHERE id = :config_id"
+                ),
+                {"config_id": legacy_feishu_config_id},
+            )
         _alembic_upgrade(revision_parent_migrated_pg_url, "head")
 
         async with session_factory() as db:
@@ -209,6 +299,24 @@ async def test_parent_upgrade_backfills_only_existing_verified_wechat_binding(
             assert unbound is not None
             assert unbound.self_identity_user_id is None
             assert unbound.self_identity_verified_at is None
+            admin_assigned = await db.get(ChannelConfig, admin_assigned_config_id)
+            admin_assigned_principal = await db.get(ExternalPrincipal, admin_assigned_principal_id)
+            assert admin_assigned is not None
+            assert admin_assigned.self_identity_user_id is None
+            assert admin_assigned.is_connected is False
+            assert admin_assigned_principal is not None
+            assert admin_assigned_principal.linked_user_id is None
+            assert admin_assigned_principal.binding_method is None
+            legacy_feishu = await db.get(ChannelConfig, legacy_feishu_config_id)
+            legacy_feishu_principal = await db.get(ExternalPrincipal, legacy_feishu_principal_id)
+            assert legacy_feishu is not None
+            assert legacy_feishu.is_configured is False
+            assert legacy_feishu.is_connected is False
+            assert legacy_feishu.extra_config["connection_status"] == "identity_rebind_required"
+            assert legacy_feishu.extra_config["identity_status"] == "rebind_required"
+            assert legacy_feishu_principal is not None
+            assert legacy_feishu_principal.linked_user_id is None
+            assert legacy_feishu_principal.binding_method is None
             migrated_command = await db.get(SessionCommand, legacy_command_id)
             assert migrated_command is not None
             assert migrated_command.principal_type == "external_principal"

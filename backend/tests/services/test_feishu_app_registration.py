@@ -62,10 +62,35 @@ async def _wait_for_status(manager, session_id, expected: str, *, timeout: float
 
 
 @pytest.mark.parametrize(
-    ("region", "expected_domain", "expected_lark_domain"),
+    "verification_url",
     [
-        ("feishu_cn", "https://accounts.feishu.cn", "https://accounts.larksuite.com"),
-        ("lark_global", "https://accounts.larksuite.com", "https://accounts.larksuite.com"),
+        "https://open.feishu.cn/open-apis/authen/v1/index?redirect_uri=registration-ticket",
+        "https://open.larksuite.com/open-apis/authen/v1/index?redirect_uri=registration-ticket",
+    ],
+)
+def test_registration_accepts_the_official_qr_hosts_returned_by_the_provider(
+    verification_url: str,
+) -> None:
+    from app.services.feishu_app_registration import _validate_verification_url
+
+    assert _validate_verification_url(verification_url) == verification_url
+
+
+@pytest.mark.parametrize(
+    ("region", "expected_domain", "expected_lark_domain", "expected_qr_host"),
+    [
+        (
+            "feishu_cn",
+            "https://accounts.feishu.cn",
+            "https://accounts.larksuite.com",
+            "https://open.feishu.cn",
+        ),
+        (
+            "lark_global",
+            "https://accounts.larksuite.com",
+            "https://accounts.larksuite.com",
+            "https://open.larksuite.com",
+        ),
     ],
 )
 @pytest.mark.asyncio
@@ -73,6 +98,7 @@ async def test_agent_channel_registration_uses_official_qr_flow_for_feishu_and_l
     region: str,
     expected_domain: str,
     expected_lark_domain: str,
+    expected_qr_host: str,
 ) -> None:
     from app.services.feishu_app_registration import FeishuAppRegistrationManager
 
@@ -84,7 +110,7 @@ async def test_agent_channel_registration_uses_official_qr_flow_for_feishu_and_l
         captured_runner_kwargs.update(kwargs)
         kwargs["on_qr_code"](
             {
-                "url": f"{expected_domain}/page/launcher?ticket=registration-ticket",
+                "url": f"{expected_qr_host}/page/launcher?ticket=registration-ticket",
                 "expire_in": 600,
             }
         )
@@ -92,7 +118,10 @@ async def test_agent_channel_registration_uses_official_qr_flow_for_feishu_and_l
         return {
             "client_id": "cli_registered",
             "client_secret": "never-store-in-redis",
-            "user_info": {"tenant_brand": "lark" if region == "lark_global" else "feishu"},
+            "user_info": {
+                "open_id": "ou_installer",
+                "tenant_brand": "lark" if region == "lark_global" else "feishu",
+            },
         }
 
     async def fake_persister(context, credentials, resolved_region):
@@ -146,7 +175,7 @@ async def test_cancelled_registration_cannot_persist_when_original_worker_finish
         return {
             "client_id": "cli_stale",
             "client_secret": "stale-secret",
-            "user_info": {"tenant_brand": "feishu"},
+            "user_info": {"open_id": "ou_stale_installer", "tenant_brand": "feishu"},
         }
 
     async def fake_persister(*args):
@@ -225,6 +254,45 @@ async def test_registration_rejects_qr_urls_outside_official_accounts_domains() 
 
 
 @pytest.mark.asyncio
+async def test_registration_refuses_credentials_without_the_scanner_identity() -> None:
+    from app.services.feishu_app_registration import FeishuAppRegistrationManager
+
+    redis = _FakeRedis()
+    persisted: list[object] = []
+
+    async def runner_without_identity(**kwargs):
+        kwargs["on_qr_code"](
+            {"url": "https://open.feishu.cn/page/launcher?ticket=missing-user", "expire_in": 600}
+        )
+        return {
+            "client_id": "cli_without_identity",
+            "client_secret": "secret",
+            "user_info": {"tenant_brand": "feishu"},
+        }
+
+    async def fake_persister(*args):
+        persisted.append(args)
+
+    manager = FeishuAppRegistrationManager(
+        redis_getter=lambda: redis,
+        registration_runner=runner_without_identity,
+        credential_persister=fake_persister,
+    )
+    started = await manager.start_registration(
+        tenant_id=uuid4(),
+        agent_id=uuid4(),
+        actor_user_id=uuid4(),
+        platform_region="feishu_cn",
+        agent_name="Agent",
+    )
+
+    failed = await _wait_for_status(manager, started.session_id, "failed")
+
+    assert failed.error_code == "registration_identity_missing"
+    assert persisted == []
+
+
+@pytest.mark.asyncio
 async def test_credential_persistence_rechecks_manage_access_audits_and_starts_ws_after_commit(
     monkeypatch,
 ) -> None:
@@ -239,6 +307,10 @@ async def test_credential_persistence_rechecks_manage_access_audits_and_starts_w
     actor = SimpleNamespace(id=actor_user_id, tenant_id=tenant_id, role="member")
     agent = SimpleNamespace(id=agent_id, tenant_id=tenant_id, name="Agent")
     existing_config = SimpleNamespace(
+        id=uuid4(),
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        channel_type="feishu",
         app_id="old-app",
         app_secret="old-secret",
         encrypt_key="old-encrypt-key",
@@ -250,6 +322,10 @@ async def test_credential_persistence_rechecks_manage_access_audits_and_starts_w
     committed = False
     audit_calls: list[dict[str, object]] = []
     ws_calls: list[dict[str, object]] = []
+    added: list[object] = []
+    deleted: list[object] = []
+    binding_calls: list[dict[str, object]] = []
+    revoke_calls: list[dict[str, object]] = []
 
     class Result:
         def __init__(self, value):
@@ -268,8 +344,11 @@ async def test_credential_persistence_rechecks_manage_access_audits_and_starts_w
         async def flush(self):
             return None
 
-        def add(self, _value):
-            raise AssertionError("the existing ChannelConfig should be updated")
+        def add(self, value):
+            added.append(value)
+
+        async def delete(self, value):
+            deleted.append(value)
 
     db = DB()
 
@@ -290,6 +369,15 @@ async def test_credential_persistence_rechecks_manage_access_audits_and_starts_w
     async def fake_write_audit_event(_db, **kwargs):
         audit_calls.append(kwargs)
 
+    async def fake_revoke(_db, **kwargs):
+        revoke_calls.append(kwargs)
+        return 1
+
+    async def fake_bind(_db, **kwargs):
+        binding_calls.append(kwargs)
+        kwargs["config"].self_identity_user_id = actor_user_id
+        return SimpleNamespace(principal=SimpleNamespace(id=uuid4()))
+
     async def fake_start_client(received_agent_id, app_id, app_secret, **kwargs):
         assert committed is True
         ws_calls.append(
@@ -304,6 +392,14 @@ async def test_credential_persistence_rechecks_manage_access_audits_and_starts_w
     monkeypatch.setattr("app.database.tenant_scoped_session", fake_tenant_session)
     monkeypatch.setattr("app.core.permissions.require_agent_manage_access", fake_require_manage)
     monkeypatch.setattr("app.core.policy.write_audit_event", fake_write_audit_event)
+    monkeypatch.setattr(
+        "app.services.external_principal_service.revoke_channel_config_external_principals",
+        fake_revoke,
+    )
+    monkeypatch.setattr(
+        "app.services.external_principal_service.bind_authenticated_self_channel_principal",
+        fake_bind,
+    )
     monkeypatch.setattr("app.services.feishu_ws.feishu_ws_manager.start_client", fake_start_client)
 
     context = FeishuRegistrationContext(
@@ -316,19 +412,30 @@ async def test_credential_persistence_rechecks_manage_access_audits_and_starts_w
     )
     await _persist_registered_credentials(
         context,
-        {"client_id": "cli_new", "client_secret": "new-secret"},
+        {
+            "client_id": "cli_new",
+            "client_secret": "new-secret",
+            "user_info": {"open_id": "ou_installer", "tenant_brand": "lark"},
+        },
         "lark_global",
     )
 
-    assert existing_config.app_id == "cli_new"
-    assert existing_config.app_secret == "new-secret"
-    assert existing_config.encrypt_key is None
-    assert existing_config.verification_token is None
-    assert existing_config.is_configured is True
-    assert existing_config.is_connected is False
-    assert existing_config.extra_config["connection_mode"] == "websocket"
-    assert existing_config.extra_config["platform_region"] == "lark_global"
-    assert existing_config.extra_config["registration_session_id"] == "registration-session"
+    assert deleted == [existing_config]
+    assert len(added) == 1
+    replacement_config = added[0]
+    assert replacement_config.app_id == "cli_new"
+    assert replacement_config.app_secret == "new-secret"
+    assert replacement_config.encrypt_key is None
+    assert replacement_config.verification_token is None
+    assert replacement_config.is_configured is True
+    assert replacement_config.is_connected is False
+    assert replacement_config.extra_config["connection_mode"] == "websocket"
+    assert replacement_config.extra_config["platform_region"] == "lark_global"
+    assert replacement_config.extra_config["identity_status"] == "verified"
+    assert replacement_config.extra_config["registration_session_id"] == "registration-session"
+    assert binding_calls[0]["provider_subject_id"] == "ou_installer"
+    assert binding_calls[0]["user_id"] == actor_user_id
+    assert revoke_calls[0]["config"] is existing_config
     assert "new-secret" not in json.dumps(audit_calls, default=str)
     assert audit_calls[0]["event_type"] == "channel.feishu_qr_registered"
     assert ws_calls == [
@@ -336,7 +443,7 @@ async def test_credential_persistence_rechecks_manage_access_audits_and_starts_w
             "agent_id": agent_id,
             "app_id": "cli_new",
             "app_secret": "new-secret",
-            "extra_config": existing_config.extra_config,
+            "extra_config": replacement_config.extra_config,
         }
     ]
 
@@ -365,7 +472,7 @@ async def test_pinned_lark_sdk_accepts_hive_registration_preset_without_network(
         return {
             "client_id": "cli_from_sdk",
             "client_secret": "sdk-secret",
-            "user_info": {"tenant_brand": "feishu"},
+            "user_info": {"open_id": "ou_sdk_installer", "tenant_brand": "feishu"},
         }
 
     async def fake_persister(_context, credentials, resolved_region):
@@ -394,7 +501,7 @@ async def test_pinned_lark_sdk_accepts_hive_registration_preset_without_network(
             {
                 "client_id": "cli_from_sdk",
                 "client_secret": "sdk-secret",
-                "user_info": {"tenant_brand": "feishu"},
+                "user_info": {"open_id": "ou_sdk_installer", "tenant_brand": "feishu"},
             },
             "feishu_cn",
         )

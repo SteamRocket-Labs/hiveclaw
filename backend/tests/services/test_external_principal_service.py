@@ -5,6 +5,7 @@ import uuid
 
 import pytest
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 
 from app.database import tenant_scoped_session
 from app.models.agent import Agent
@@ -15,9 +16,9 @@ from app.models.external_principal import ExternalPrincipal, ExternalPrincipalBi
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.services.external_principal_service import (
+    bind_authenticated_self_channel_principal,
     ExternalPrincipalAuthorityError,
     ExternalPrincipalRevokedError,
-    link_external_principal,
     load_external_runtime_actor,
     resolve_or_create_external_principal,
     revoke_channel_config_external_principals,
@@ -139,53 +140,81 @@ async def test_identity_scope_includes_tenant_and_installation(owner_sessionmake
 
 
 @pytest.mark.usefixtures("migrated_pg_url")
-async def test_link_and_unlink_are_explicit_audited_authority_transitions(owner_sessionmaker):
+async def test_database_rejects_binding_proof_from_the_wrong_provider(owner_sessionmaker):
     tenant_id, owner_id, _agent_id = await _seed_tenant_agent(owner_sessionmaker)
     async with tenant_scoped_session(tenant_id, session_factory=owner_sessionmaker) as db:
-        resolved = await resolve_or_create_external_principal(
-            db,
-            tenant_id=tenant_id,
-            provider="discord",
-            installation_ref="config-a",
-            subject_id="discord-user",
-            display_name="Discord Person",
+        now = datetime.now(UTC)
+        db.add(
+            ExternalPrincipal(
+                id=uuid.uuid4(),
+                tenant_id=tenant_id,
+                provider="slack",
+                installation_ref="slack-installation",
+                subject_id="U-proof-mismatch",
+                display_name="Invalid binding",
+                linked_user_id=owner_id,
+                linked_at=now,
+                binding_method="feishu_qr",
+                binding_verified_at=now,
+            )
         )
-        linked = await link_external_principal(
+        with pytest.raises(IntegrityError):
+            await db.flush()
+        await db.rollback()
+
+
+@pytest.mark.usefixtures("migrated_pg_url")
+async def test_qr_self_binding_and_admin_unlink_are_audited_authority_transitions(owner_sessionmaker):
+    tenant_id, owner_id, agent_id = await _seed_tenant_agent(owner_sessionmaker)
+    async with tenant_scoped_session(tenant_id, session_factory=owner_sessionmaker) as db:
+        config = ChannelConfig(
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            channel_type="feishu",
+            is_configured=True,
+            is_connected=True,
+            extra_config={"setup_method": "qr_registration"},
+        )
+        db.add(config)
+        await db.flush()
+        linked = await bind_authenticated_self_channel_principal(
             db,
             tenant_id=tenant_id,
-            principal_id=resolved.principal.id,
+            config=config,
+            provider_subject_id="ou_installer",
             user_id=owner_id,
             actor_user_id=owner_id,
-            reason="accepted invitation",
         )
         await db.commit()
 
     assert linked.actor.id == owner_id
     assert linked.actor.authority_bound is True
-    assert linked.actor.external_principal_id == resolved.principal.id
+    assert linked.principal.binding_method == "feishu_qr"
+    assert linked.principal.binding_verified_at is not None
 
     async with tenant_scoped_session(tenant_id, session_factory=owner_sessionmaker) as db:
         actor = await load_external_runtime_actor(
             db,
             tenant_id=tenant_id,
-            principal_id=resolved.principal.id,
+            principal_id=linked.principal.id,
             expected_user_id=owner_id,
         )
         unlinked = await unlink_external_principal(
             db,
             tenant_id=tenant_id,
-            principal_id=resolved.principal.id,
+            principal_id=linked.principal.id,
             actor_user_id=owner_id,
             reason="account disconnected",
         )
         await db.commit()
 
     async with owner_sessionmaker() as db:
+        stored_config = await db.get(ChannelConfig, config.id)
         events = (
             (
                 await db.execute(
                     select(ExternalPrincipalBindingEvent)
-                    .where(ExternalPrincipalBindingEvent.external_principal_id == resolved.principal.id)
+                    .where(ExternalPrincipalBindingEvent.external_principal_id == linked.principal.id)
                     .order_by(ExternalPrincipalBindingEvent.created_at)
                 )
             )
@@ -198,6 +227,10 @@ async def test_link_and_unlink_are_explicit_audited_authority_transitions(owner_
     assert [event.action for event in events] == ["linked", "unlinked"]
     assert events[0].new_user_id == owner_id
     assert events[1].previous_user_id == owner_id
+    assert stored_config is not None and stored_config.is_connected is False
+    assert stored_config.is_configured is False
+    assert stored_config.self_identity_user_id is None
+    assert stored_config.extra_config["connection_status"] == "identity_rebind_required"
 
 
 @pytest.mark.usefixtures("migrated_pg_url")
@@ -207,7 +240,7 @@ async def test_link_and_unlink_atomically_rebind_existing_channel_sessions(owner
         config = ChannelConfig(
             tenant_id=tenant_id,
             agent_id=agent_id,
-            channel_type="slack",
+            channel_type="feishu",
             is_configured=True,
             is_connected=True,
             extra_config={},
@@ -217,11 +250,11 @@ async def test_link_and_unlink_atomically_rebind_existing_channel_sessions(owner
         resolved = await resolve_or_create_external_principal(
             db,
             tenant_id=tenant_id,
-            provider="slack",
+            provider="feishu",
             installation_ref=str(config.id),
             channel_config_id=config.id,
-            subject_id="U-existing-session",
-            display_name="Existing Slack User",
+            subject_id="ou_existing_session",
+            display_name="Existing Feishu User",
         )
         session = ChatSession(
             tenant_id=tenant_id,
@@ -229,8 +262,8 @@ async def test_link_and_unlink_atomically_rebind_existing_channel_sessions(owner
             user_id=None,
             external_principal_id=resolved.principal.id,
             title="Existing channel session",
-            source_channel="slack",
-            external_conv_id="slack-existing-session",
+            source_channel="feishu",
+            external_conv_id="feishu-existing-session",
             session_kind="human_chat",
             actor_type="external_principal",
             runtime_source="channel_chat",
@@ -250,16 +283,16 @@ async def test_link_and_unlink_atomically_rebind_existing_channel_sessions(owner
         )
         db.add(message)
         await db.commit()
-        principal_id, session_id, message_id = resolved.principal.id, session.id, message.id
+        principal_id, config_id, session_id, message_id = resolved.principal.id, config.id, session.id, message.id
 
     async with tenant_scoped_session(tenant_id, session_factory=owner_sessionmaker) as db:
-        await link_external_principal(
+        await bind_authenticated_self_channel_principal(
             db,
             tenant_id=tenant_id,
-            principal_id=principal_id,
+            config=await db.get(ChannelConfig, config_id),
+            provider_subject_id="ou_existing_session",
             user_id=owner_id,
             actor_user_id=owner_id,
-            reason="bind existing channel session",
         )
         await db.commit()
 
@@ -301,20 +334,20 @@ async def test_link_and_unlink_atomically_rebind_existing_channel_sessions(owner
     async with tenant_scoped_session(tenant_id, session_factory=owner_sessionmaker) as db:
         with pytest.raises(
             ExternalPrincipalAuthorityError,
-            match="binding target does not have access to the channel Agent",
+            match="self channel installation requires Agent manage access",
         ):
-            await link_external_principal(
+            await bind_authenticated_self_channel_principal(
                 db,
                 tenant_id=tenant_id,
-                principal_id=principal_id,
+                config=await db.get(ChannelConfig, config_id),
+                provider_subject_id="ou_existing_session",
                 user_id=denied_user_id,
-                actor_user_id=owner_id,
-                reason="must not create unusable binding",
+                actor_user_id=denied_user_id,
             )
 
 
 @pytest.mark.usefixtures("migrated_pg_url")
-async def test_personal_wechat_identity_rejects_enterprise_manual_link_and_unlink(owner_sessionmaker):
+async def test_admin_unlink_disconnects_verified_personal_wechat_identity(owner_sessionmaker):
     tenant_id, owner_id, agent_id = await _seed_tenant_agent(owner_sessionmaker)
     async with tenant_scoped_session(tenant_id, session_factory=owner_sessionmaker) as db:
         config = ChannelConfig(
@@ -327,42 +360,32 @@ async def test_personal_wechat_identity_rejects_enterprise_manual_link_and_unlin
         )
         db.add(config)
         await db.flush()
-        resolved = await resolve_or_create_external_principal(
+        linked = await bind_authenticated_self_channel_principal(
             db,
             tenant_id=tenant_id,
-            provider="wechat_personal",
-            installation_ref=str(config.id),
-            channel_config_id=config.id,
-            subject_id="wechat-self",
-            display_name="WeChat Self",
+            config=config,
+            provider_subject_id="wechat-self",
+            user_id=owner_id,
+            actor_user_id=owner_id,
         )
+        await unlink_external_principal(
+            db,
+            tenant_id=tenant_id,
+            principal_id=linked.principal.id,
+            actor_user_id=owner_id,
+            reason="admin revoked compromised WeChat binding",
+        )
+        await db.commit()
 
-        with pytest.raises(
-            ExternalPrincipalAuthorityError,
-            match="managed by the authenticated user from the Agent channel",
-        ):
-            await link_external_principal(
-                db,
-                tenant_id=tenant_id,
-                principal_id=resolved.principal.id,
-                user_id=owner_id,
-                actor_user_id=owner_id,
-                reason="enterprise manual link must be rejected",
-            )
+    async with owner_sessionmaker() as db:
+        stored_config = await db.get(ChannelConfig, config.id)
+        stored_principal = await db.get(ExternalPrincipal, linked.principal.id)
 
-        resolved.principal.linked_user_id = owner_id
-        resolved.principal.linked_at = datetime.now(UTC)
-        with pytest.raises(
-            ExternalPrincipalAuthorityError,
-            match="managed by the authenticated user from the Agent channel",
-        ):
-            await unlink_external_principal(
-                db,
-                tenant_id=tenant_id,
-                principal_id=resolved.principal.id,
-                actor_user_id=owner_id,
-                reason="enterprise manual unlink must be rejected",
-            )
+    assert stored_config is not None and stored_config.is_connected is False
+    assert stored_config.self_identity_user_id is None
+    assert stored_config.self_identity_verified_at is None
+    assert stored_principal is not None and stored_principal.linked_user_id is None
+    assert stored_principal.binding_method is None
 
 
 @pytest.mark.usefixtures("migrated_pg_url")

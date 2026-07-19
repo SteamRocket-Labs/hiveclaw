@@ -2495,6 +2495,20 @@ npm run test
 
 本轮 Red 证据为 4 个聚焦回归同时失败（typed ACK helper 缺失、九个 IM handler 未隔离 ACK、normal terminal outbox 为零、recovery terminal outbox 为零）。Green 证据：后端相关矩阵 `294 passed`，完整 `test_web_chat_runtime.py` `117 passed`，前端渠道扫码/配置 `12 passed`，`tsc + vite build + AgentDetail bundle budget` 全部通过。
 
+## 2026-07-19 IM 用户自证与 Feishu/Lark 二维码线上修订
+
+生产 Agent Detail 扫码失败的直接原因是本地 allowlist 只接受 `accounts.feishu.cn` / `accounts.larksuite.com`，而官方 `lark-oapi==1.7.1` 注册 SDK 实际返回 `open.feishu.cn` / `open.larksuite.com` 的二维码 URL。身份断点更深：Feishu inbound 会根据 sender profile 自动创建/填充平台 User，公司后台还能把任意 ExternalPrincipal 指定给任意 member，两条路径都没有 provider 证明“这个 IM subject 就是这个 Hive User”。
+
+修订后的机械契约：
+
+- WeChat Personal 与 Feishu/Lark 只能在已认证的 Agent Detail QR connect callback 中完成用户自绑；provider scanner subject、当前 Hive User、Agent manage authority、ChannelConfig 和加密凭证在同一事务中落库。
+- `external_principals` 新增 `binding_method` / `binding_verified_at`，数据库约束强制 `wechat_personal↔wechat_qr` 和 `feishu↔feishu_qr` 精确匹配；没有 proof 的 `linked_user_id` 无法写入。
+- tenant admin 的 link API、前端 member 选择器和 service 公开 link 入口已删除；管理员只能 unlink。unlink 会同事务清除 session/message User 投影，停止 WeChat/Feishu transport，并让 Agent Detail 明确显示“需要重新绑定”。
+- Feishu text/file/card 入站统一消费 installation-scoped ExternalPrincipal，不再根据 email/org profile 制造 User；group session 增加 sender subject 维度，避免群内多人共用一个 User authority。
+- migration 只保留具有 `identity_source=authenticated_channel_connect` provenance 的旧 WeChat QR 绑定；不信任上一版可能由管理员指定反推出的 self-identity 投影。所有无 proof 绑定都会保留 audit event 后解除；旧 Feishu/Lark 配置转为 `identity_rebind_required`，需要用户回到 Agent Detail 重新扫码。
+
+验收证据：官方 `open.feishu.cn` / `open.larksuite.com` QR host 回归、scanner `open_id` 缺失 fail-closed、用户自绑/管理员仅解绑、Feishu text/file/group/card authority、session/message 同步、provider-proof 数据库约束、parent→head migration 和前端管理面均有可执行回归；Ruff、Alembic 单 head、TypeScript/Vite build 和 AgentDetail bundle budget 通过。
+
 ---
 
 ## 附录 A:基准控制元素精要(三方研究全文另存,此处录审计实际引用项)

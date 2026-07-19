@@ -41,7 +41,7 @@ class ChannelConfig(Base):
         UniqueConstraint("agent_id", "channel_type", name="uq_channel_configs_agent_channel"),
         CheckConstraint(
             "self_identity_user_id IS NULL OR "
-            "(channel_type = 'wechat_personal' AND self_identity_verified_at IS NOT NULL)",
+            "(channel_type IN ('wechat_personal','feishu') AND self_identity_verified_at IS NOT NULL)",
             name="ck_channel_configs_self_identity_channel",
         ),
     )

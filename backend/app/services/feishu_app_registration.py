@@ -30,7 +30,14 @@ FEISHU_REGISTRATION_REGION_LARK = "lark_global"
 
 FEISHU_ACCOUNTS_DOMAIN = "https://accounts.feishu.cn"
 LARK_ACCOUNTS_DOMAIN = "https://accounts.larksuite.com"
-_ALLOWED_QR_HOSTS = frozenset({"accounts.feishu.cn", "accounts.larksuite.com"})
+_ALLOWED_QR_HOSTS = frozenset(
+    {
+        "accounts.feishu.cn",
+        "accounts.larksuite.com",
+        "open.feishu.cn",
+        "open.larksuite.com",
+    }
+)
 
 REGISTRATION_SESSION_TTL_SECONDS = 30 * 60
 REGISTRATION_STALE_AFTER_SECONDS = 90
@@ -274,14 +281,25 @@ async def _persist_registered_credentials(
     from app.database import enter_rls_bypass, tenant_scoped_session
     from app.models.channel_config import ChannelConfig
     from app.models.user import User
+    from app.services.external_principal_service import (
+        bind_authenticated_self_channel_principal,
+        revoke_channel_config_external_principals,
+    )
     from app.services.feishu_ws import feishu_ws_manager
 
     app_id = str(credentials.get("client_id") or "").strip()
     app_secret = str(credentials.get("client_secret") or "").strip()
+    user_info = credentials.get("user_info")
+    installer_open_id = str(user_info.get("open_id") if isinstance(user_info, dict) else "").strip()
     if not app_id or not app_secret:
         raise FeishuRegistrationError(
             "registration_credentials_missing",
             "The registration provider did not return complete app credentials.",
+        )
+    if not installer_open_id:
+        raise FeishuRegistrationError(
+            "registration_identity_missing",
+            "Feishu/Lark did not return the scanner identity. Start a new QR registration.",
         )
 
     tenant_uuid = uuid.UUID(context.tenant_id)
@@ -334,18 +352,29 @@ async def _persist_registered_credentials(
             "connection_mode": "websocket",
             "platform_region": resolved_region,
             "setup_method": "qr_registration",
+            "identity_status": "verified",
             "registration_session_id": context.session_id,
             "connection_status": "connecting",
             "registered_at": registered_at,
         }
 
-        if config is None:
-            config = ChannelConfig(
-                agent_id=agent_uuid,
+        if config is not None:
+            await revoke_channel_config_external_principals(
+                db,
                 tenant_id=tenant_uuid,
-                channel_type="feishu",
+                config=config,
+                actor_user_id=actor_uuid,
+                reason="Feishu/Lark channel re-registered with a new verified installation",
             )
-            db.add(config)
+            await db.delete(config)
+            await db.flush()
+
+        config = ChannelConfig(
+            agent_id=agent_uuid,
+            tenant_id=tenant_uuid,
+            channel_type="feishu",
+        )
+        db.add(config)
 
         config.app_id = app_id
         config.app_secret = app_secret
@@ -355,6 +384,14 @@ async def _persist_registered_credentials(
         config.is_configured = True
         config.is_connected = False
         await db.flush()
+        await bind_authenticated_self_channel_principal(
+            db,
+            tenant_id=tenant_uuid,
+            config=config,
+            provider_subject_id=installer_open_id,
+            user_id=actor_uuid,
+            actor_user_id=actor_uuid,
+        )
 
         await write_audit_event(
             db,
@@ -372,6 +409,7 @@ async def _persist_registered_credentials(
                 "resolved_platform_region": resolved_region,
                 "registration_session_id": context.session_id,
                 "app_id": app_id,
+                "identity_binding_method": "feishu_qr",
             },
         )
 
@@ -825,6 +863,12 @@ class FeishuAppRegistrationManager:
                 raise FeishuRegistrationError(
                     "registration_credentials_missing",
                     "The registration provider did not return complete app credentials.",
+                )
+            user_info = credentials.get("user_info")
+            if not isinstance(user_info, dict) or not str(user_info.get("open_id") or "").strip():
+                raise FeishuRegistrationError(
+                    "registration_identity_missing",
+                    "Feishu/Lark did not return the scanner identity. Start a new QR registration.",
                 )
             region = _resolved_region(credentials, context.requested_platform_region)
             fenced = await self._compare_and_swap(

@@ -11,7 +11,7 @@ vi.mock('react-i18next', () => ({
 }));
 
 describe('ExternalPrincipalBindingsPanel', () => {
-  it('keeps external people separate from members and exposes explicit binding only', () => {
+  it('keeps external people separate and lets admins revoke but never assign identity', () => {
     const markup = renderToStaticMarkup(
       <ExternalPrincipalBindingsPanel
         principals={[
@@ -23,6 +23,8 @@ describe('ExternalPrincipalBindingsPanel', () => {
             subject_id: 'U123',
             display_name: 'Slack Guest',
             linked_user_id: null,
+            binding_method: null,
+            binding_verified_at: null,
             status: 'active',
             first_seen_at: '2026-07-11T10:00:00Z',
             last_seen_at: '2026-07-11T11:00:00Z',
@@ -37,6 +39,8 @@ describe('ExternalPrincipalBindingsPanel', () => {
             subject_id: '42',
             display_name: 'Telegram Rocky',
             linked_user_id: 'user-1',
+            binding_method: 'feishu_qr',
+            binding_verified_at: '2026-07-11T10:30:00Z',
             status: 'active',
             first_seen_at: '2026-07-11T10:00:00Z',
             last_seen_at: '2026-07-11T11:00:00Z',
@@ -50,16 +54,17 @@ describe('ExternalPrincipalBindingsPanel', () => {
         ]}
         loading={false}
         busyPrincipalId={null}
-        onLink={vi.fn()}
         onUnlink={vi.fn()}
       />,
     );
 
     expect(markup).toContain('External channel identities');
     expect(markup).toContain('Slack Guest');
-    expect(markup).toContain('Bind to invited member');
+    expect(markup).toContain('Waiting for the user to verify this identity from the channel connection flow');
     expect(markup).toContain('Rocky');
     expect(markup).toContain('Unlink');
+    expect(markup).not.toContain('Bind to invited member');
+    expect(markup).not.toContain('<select');
     expect(markup).not.toContain('Inactive');
     expect(markup).not.toContain('technical-installation-uuid');
     expect(markup).not.toContain('technical-config-uuid');

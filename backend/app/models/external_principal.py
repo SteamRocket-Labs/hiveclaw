@@ -25,6 +25,14 @@ class ExternalPrincipal(Base):
             name="uq_external_principals_tenant_provider_installation_subject",
         ),
         CheckConstraint("status IN ('active','revoked')", name="ck_external_principals_status"),
+        CheckConstraint(
+            "linked_user_id IS NULL OR ("
+            "linked_at IS NOT NULL AND "
+            "((provider = 'wechat_personal' AND binding_method = 'wechat_qr') OR "
+            "(provider = 'feishu' AND binding_method = 'feishu_qr')) AND "
+            "binding_verified_at IS NOT NULL)",
+            name="ck_external_principals_verified_binding",
+        ),
         Index("ix_external_principals_tenant_provider_status", "tenant_id", "provider", "status"),
     )
 
@@ -48,6 +56,8 @@ class ExternalPrincipal(Base):
     linked_user_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    binding_method: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    binding_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     status: Mapped[str] = mapped_column(
         String(20), nullable=False, default="active", server_default=text("'active'"), index=True
     )

@@ -118,6 +118,44 @@ describe('ChannelConfig', () => {
     expect(markup).not.toContain('WebSocket connected');
   });
 
+  it('sends an admin-unlinked Feishu identity back to QR verification', () => {
+    testState.feishuConfig = {
+      is_configured: false,
+      is_connected: false,
+      app_id: 'cli_requires_rebind',
+      extra_config: {
+        connection_mode: 'websocket',
+        connection_status: 'identity_rebind_required',
+        platform_region: 'feishu_cn',
+      },
+    };
+
+    const markup = renderToStaticMarkup(<ChannelConfig mode="edit" agentId="agent-1" />);
+
+    expect(markup).toContain('Rebind required');
+    expect(markup).toContain('Scan to create or bind the app');
+    expect(markup).not.toContain('WebSocket connection failed; scan again');
+  });
+
+  it('marks manually configured Feishu transport as requiring user QR verification', () => {
+    testState.feishuConfig = {
+      is_configured: true,
+      is_connected: true,
+      app_id: 'cli_manual',
+      extra_config: {
+        connection_mode: 'websocket',
+        connection_status: 'connected',
+        identity_status: 'unverified_manual',
+        platform_region: 'lark_global',
+      },
+    };
+
+    const markup = renderToStaticMarkup(<ChannelConfig mode="edit" agentId="agent-1" />);
+
+    expect(markup).toContain('Rebind required');
+    expect(markup).toContain('Reconnect by QR code');
+  });
+
   it('does not expose the retired Atlassian Rovo channel', async () => {
     const { channelApi } = await import('../api/domains/channels');
     const markup = renderToStaticMarkup(<ChannelConfig mode="edit" agentId="agent-1" />);

@@ -6,7 +6,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def test_web_chat_terminal_delivery_uses_durable_outbox_not_direct_provider_send():
     source = (ROOT / "app/services/web_chat_runtime.py").read_text(encoding="utf-8")
-    assert "enqueue_channel_delivery" in source
+    assert "enqueue_terminal_delivery_for_task" in source
     assert "async def _deliver_run_result_to_channel" not in source
     assert "await ChannelDeliveryService.send_text" not in source
 

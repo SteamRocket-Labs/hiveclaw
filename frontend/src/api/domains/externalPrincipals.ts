@@ -8,6 +8,8 @@ export interface ExternalPrincipal {
   subject_id: string;
   display_name: string;
   linked_user_id: string | null;
+  binding_method: 'wechat_qr' | 'feishu_qr' | null;
+  binding_verified_at: string | null;
   status: 'active' | 'revoked';
   first_seen_at: string;
   last_seen_at: string;
@@ -39,11 +41,6 @@ export const externalPrincipalsApi = {
     const query = params.toString();
     return get<ExternalPrincipal[]>(`/enterprise/external-principals${query ? `?${query}` : ''}`);
   },
-  link: (principalId: string, userId: string, reason: string, tenantId?: string) =>
-    post<ExternalPrincipal>(
-      `/enterprise/external-principals/${encodeURIComponent(principalId)}/link${tenantSuffix(tenantId)}`,
-      { user_id: userId, reason },
-    ),
   unlink: (principalId: string, reason: string, tenantId?: string) =>
     post<ExternalPrincipal>(
       `/enterprise/external-principals/${encodeURIComponent(principalId)}/unlink${tenantSuffix(tenantId)}`,

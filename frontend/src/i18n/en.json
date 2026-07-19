@@ -1995,6 +1995,7 @@
           "cancelled": "Registration cancelled.",
           "interrupted": "The registration worker stopped. Generate a new QR code.",
           "accessLost": "Your Agent management access changed. Start again after access is restored.",
+          "identityMissing": "Feishu/Lark did not return your verified scanner identity. Generate a new QR code and scan again.",
           "credentialsRejected": "Feishu/Lark rejected the app credentials. Scan again.",
           "unavailable": "Registration is temporarily unavailable. Try again shortly.",
           "conflict": "Another manager is already registering this Agent channel.",
@@ -2007,7 +2008,7 @@
           "statusError": "WebSocket connection failed; scan again",
           "statusDisconnected": "App configured, but WebSocket is not connected"
         },
-        "syncHint": "Before connecting a Feishu bot, sync your organization in Company Settings → Org Structure first. This helps the bot identify who's messaging."
+        "syncHint": "A user identity is trusted only after that user completes the channel QR connection. Organization sync never assigns an IM identity; administrators can only revoke a verified binding."
       },
       "localBridge": {
         "title": "Local Agent Channel",
@@ -2886,17 +2887,15 @@
     "period_weekly": "Weekly",
     "period_monthly": "Monthly",
     "externalPrincipalsTitle": "External channel identities",
-    "externalPrincipalsDescription": "External senders stay separate from licensed members until an admin explicitly binds an invited account.",
+    "externalPrincipalsDescription": "Users verify their own IM identity from the channel connection flow. Admins can review or revoke a binding, but cannot assign one.",
     "externalPrincipalsEmpty": "No external channel identities yet.",
     "externalPrincipalRevoked": "Provider access revoked",
-    "externalPrincipalBoundTo": "Bound to",
-    "externalPrincipalMember": "Invited member",
-    "externalPrincipalChooseMember": "Choose invited member",
-    "externalPrincipalBind": "Bind to invited member",
+    "externalPrincipalBoundTo": "Verified as",
+    "externalPrincipalBoundUserUnavailable": "Unavailable member",
+    "externalPrincipalAwaitingVerification": "Waiting for the user to verify this identity from the channel connection flow",
     "externalPrincipalUnlink": "Unlink",
     "externalPrincipalUnlinkTitle": "Unlink external identity",
     "externalPrincipalUnlinkConfirm": "The external sender will immediately lose the linked member authority. Continue?",
-    "externalPrincipalLinked": "External identity linked",
     "externalPrincipalUnlinked": "External identity unlinked"
   },
   "account": {

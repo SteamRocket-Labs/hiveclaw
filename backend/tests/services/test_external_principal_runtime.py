@@ -10,12 +10,13 @@ from app.database import tenant_scoped_session
 from app.models.agent import Agent
 from app.models.audit import AuditLog, ChatMessage
 from app.models.chat_session import ChatSession
+from app.models.channel_config import ChannelConfig
 from app.models.runtime_task import RuntimeTask
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.services.chat_transcript import append_session_event
 from app.services.external_principal_service import (
-    link_external_principal,
+    bind_authenticated_self_channel_principal,
     resolve_or_create_external_principal,
 )
 
@@ -53,22 +54,33 @@ async def _seed(owner_sessionmaker):
 async def _principal_session(owner_sessionmaker, *, linked: bool):
     tenant_id, user_id, agent_id = await _seed(owner_sessionmaker)
     async with tenant_scoped_session(tenant_id, session_factory=owner_sessionmaker) as db:
+        config = ChannelConfig(
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            channel_type="feishu",
+            is_configured=True,
+            is_connected=True,
+            extra_config={"setup_method": "qr_registration"},
+        )
+        db.add(config)
+        await db.flush()
         resolved = await resolve_or_create_external_principal(
             db,
             tenant_id=tenant_id,
-            provider="slack",
-            installation_ref="runtime-config",
-            subject_id="U-runtime",
+            provider="feishu",
+            installation_ref=str(config.id),
+            channel_config_id=config.id,
+            subject_id="ou_runtime",
             display_name="Runtime Guest",
         )
         if linked:
-            resolved = await link_external_principal(
+            resolved = await bind_authenticated_self_channel_principal(
                 db,
                 tenant_id=tenant_id,
-                principal_id=resolved.principal.id,
+                config=config,
+                provider_subject_id="ou_runtime",
                 user_id=user_id,
                 actor_user_id=user_id,
-                reason="runtime test binding",
             )
         session = ChatSession(
             tenant_id=tenant_id,
@@ -76,7 +88,7 @@ async def _principal_session(owner_sessionmaker, *, linked: bool):
             user_id=resolved.actor.id,
             external_principal_id=resolved.principal.id,
             title="External runtime",
-            source_channel="slack",
+            source_channel="feishu",
             external_conv_id=f"external:{resolved.principal.id}",
             session_kind="human_chat",
             actor_type="external_principal",

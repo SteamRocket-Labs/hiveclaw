@@ -18,6 +18,7 @@ from app.models.chat_session import ChatSession
 from app.models.chat_transcript_event import ChatTranscriptEvent
 from app.models.external_principal import ExternalPrincipal
 from app.models.runtime_task import RuntimeTask
+from app.models.session_v2 import SessionCommand  # noqa: F401  (register transcript FK target)
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.services.channel_delivery_outbox import (
@@ -98,7 +99,6 @@ async def _seed_delivery(
                     subject_id="sender-1",
                     display_name="Telegram sender",
                     channel_config_id=config_id,
-                    linked_user_id=user_id,
                     status="active",
                 )
             )
@@ -108,7 +108,7 @@ async def _seed_delivery(
                 id=session_id,
                 tenant_id=tenant_id,
                 agent_id=agent_id,
-                user_id=user_id,
+                user_id=None if external else user_id,
                 external_principal_id=principal_id,
                 title="Telegram delivery",
                 source_channel="telegram",
@@ -138,7 +138,7 @@ async def _seed_delivery(
                 id=message_id,
                 tenant_id=tenant_id,
                 agent_id=agent_id,
-                user_id=user_id,
+                user_id=None if external else user_id,
                 external_principal_id=principal_id,
                 role="assistant",
                 content="Final answer",
@@ -190,7 +190,7 @@ def _intent(seed: dict, *, text: str = "Final answer") -> ChannelDeliveryIntent:
         runtime_task_id=seed["run_id"],
         agent_id=seed["agent_id"],
         session_id=seed["session_id"],
-        user_id=seed["user_id"],
+        user_id=None if seed["principal_id"] else seed["user_id"],
         external_principal_id=seed["principal_id"],
         channel_config_id=seed["config_id"],
         delivery_target={"channel": "telegram", "chat_id": "chat-1", "sender_id": "sender-1"},

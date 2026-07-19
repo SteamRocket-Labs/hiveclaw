@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import type { ExternalPrincipal } from '../api/domains/externalPrincipals';
@@ -16,7 +16,6 @@ interface Props {
   users: BindableUser[];
   loading: boolean;
   busyPrincipalId: string | null;
-  onLink: (principalId: string, userId: string) => void | Promise<void>;
   onUnlink: (principalId: string) => void | Promise<void>;
 }
 
@@ -25,13 +24,10 @@ export default function ExternalPrincipalBindingsPanel({
   users,
   loading,
   busyPrincipalId,
-  onLink,
   onUnlink,
 }: Props) {
   const { t } = useTranslation();
-  const [selectedUsers, setSelectedUsers] = useState<Record<string, string>>({});
-  const activeUsers = useMemo(() => users.filter((user) => user.is_active), [users]);
-  const usersById = useMemo(() => new Map(activeUsers.map((user) => [user.id, user])), [activeUsers]);
+  const usersById = useMemo(() => new Map(users.map((user) => [user.id, user])), [users]);
 
   return (
     <section className="external-principal-panel" aria-label={t(
@@ -43,7 +39,7 @@ export default function ExternalPrincipalBindingsPanel({
           <h3>{t('userManagement.externalPrincipalsTitle', 'External channel identities')}</h3>
           <p>{t(
             'userManagement.externalPrincipalsDescription',
-            'External senders stay separate from licensed members until an admin explicitly binds an invited account.',
+            'Users verify their own IM identity from the channel connection flow. Admins can review or revoke a binding, but cannot assign one.',
           )}</p>
         </div>
         <span className="external-principal-count">{principals.length}</span>
@@ -61,7 +57,6 @@ export default function ExternalPrincipalBindingsPanel({
             const linkedUser = principal.linked_user_id
               ? usersById.get(principal.linked_user_id)
               : undefined;
-            const selectedUserId = selectedUsers[principal.id] ?? '';
             const busy = busyPrincipalId === principal.id;
             return (
               <div className="external-principal-row" key={principal.id}>
@@ -75,10 +70,14 @@ export default function ExternalPrincipalBindingsPanel({
                     <span className="external-principal-revoked">
                       {t('userManagement.externalPrincipalRevoked', 'Provider access revoked')}
                     </span>
-                  ) : linkedUser ? (
+                  ) : principal.linked_user_id ? (
                     <>
                       <span>
-                        {t('userManagement.externalPrincipalBoundTo', 'Bound to')} <strong>{linkedUser.display_name || linkedUser.username}</strong>
+                        {t('userManagement.externalPrincipalBoundTo', 'Verified as')}{' '}
+                        <strong>{linkedUser?.display_name || linkedUser?.username || t(
+                          'userManagement.externalPrincipalBoundUserUnavailable',
+                          'Unavailable member',
+                        )}</strong>
                       </span>
                       <button
                         className="btn btn-secondary external-principal-action"
@@ -90,32 +89,12 @@ export default function ExternalPrincipalBindingsPanel({
                       </button>
                     </>
                   ) : (
-                    <>
-                      <select
-                        className="form-input external-principal-select"
-                        aria-label={t('userManagement.externalPrincipalMember', 'Invited member')}
-                        value={selectedUserId}
-                        onChange={(event) => setSelectedUsers((current) => ({
-                          ...current,
-                          [principal.id]: event.target.value,
-                        }))}
-                      >
-                        <option value="">{t('userManagement.externalPrincipalChooseMember', 'Choose invited member')}</option>
-                        {activeUsers.map((user) => (
-                          <option key={user.id} value={user.id}>
-                            {user.display_name || user.username}
-                          </option>
-                        ))}
-                      </select>
-                      <button
-                        className="btn btn-primary external-principal-action"
-                        type="button"
-                        disabled={!selectedUserId || busy}
-                        onClick={() => void onLink(principal.id, selectedUserId)}
-                      >
-                        {t('userManagement.externalPrincipalBind', 'Bind to invited member')}
-                      </button>
-                    </>
+                    <span className="external-principal-pending">
+                      {t(
+                        'userManagement.externalPrincipalAwaitingVerification',
+                        'Waiting for the user to verify this identity from the channel connection flow',
+                      )}
+                    </span>
                   )}
                 </div>
               </div>

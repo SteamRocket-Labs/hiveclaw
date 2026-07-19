@@ -24,7 +24,6 @@ from app.models.identity import SSOScanSession
 from app.models.user import User
 from app.schemas.schemas import ChannelConfigCreate, ChannelConfigOut, TokenResponse, UserOut
 from app.services.auth_provider import feishu_auth_provider
-from app.services.channel_user_service import channel_user_service
 from app.services.feishu_app_registration import (
     FeishuRegistrationConflict,
     FeishuRegistrationError,
@@ -744,6 +743,7 @@ async def configure_channel(
     incoming_extra = {**(existing_extra or {}), **(data.extra_config or {})}
     incoming_extra["platform_region"] = resolve_feishu_platform(incoming_extra).region
     incoming_extra["setup_method"] = "manual"
+    incoming_extra["identity_status"] = "unverified_manual"
     incoming_extra.pop("registration_session_id", None)
     connection_mode = incoming_extra.get("connection_mode", existing_extra.get("connection_mode", "webhook"))
     app_id = resolve_secret_value(data.app_id, existing.app_id if existing else None, preserve_missing=True)
@@ -763,6 +763,17 @@ async def configure_channel(
     if connection_mode == "webhook" and not encrypt_key and not verification_token:
         raise HTTPException(status_code=422, detail="Webhook mode requires encrypt_key or verification_token")
     if existing:
+        from app.services.external_principal_service import revoke_channel_config_external_principals
+
+        await revoke_channel_config_external_principals(
+            db,
+            tenant_id=agent.tenant_id,
+            config=existing,
+            actor_user_id=current_user.id,
+            reason="Feishu/Lark channel credentials changed through manual configuration",
+        )
+        existing.self_identity_user_id = None
+        existing.self_identity_verified_at = None
         existing.app_id = app_id
         existing.app_secret = app_secret
         existing.encrypt_key = encrypt_key
@@ -868,7 +879,7 @@ async def delete_channel_config(
     db: AsyncSession = Depends(get_db),
 ):
     """Remove Feishu bot configuration for an agent."""
-    await require_agent_manage_access(db, current_user, agent_id)
+    agent = await require_agent_manage_access(db, current_user, agent_id)
     result = await db.execute(
         select(ChannelConfig).where(
             ChannelConfig.agent_id == agent_id,
@@ -878,7 +889,19 @@ async def delete_channel_config(
     config = result.scalar_one_or_none()
     if not config:
         raise HTTPException(status_code=404, detail="Channel not configured")
+    from app.services.external_principal_service import revoke_channel_config_external_principals
+    from app.services.feishu_ws import feishu_ws_manager
+
+    await revoke_channel_config_external_principals(
+        db,
+        tenant_id=agent.tenant_id,
+        config=config,
+        actor_user_id=current_user.id,
+        reason="Feishu/Lark channel configuration deleted",
+    )
     await db.delete(config)
+    await db.flush()
+    await feishu_ws_manager.stop_client(agent_id)
 
 
 # ─── Feishu Event Webhook ───────────────────────────────
@@ -1029,19 +1052,49 @@ async def feishu_card_callback(request: Request, db: AsyncSession = Depends(get_
         if getattr(approval_record, "tenant_id", None) is None:
             approval_record.tenant_id = tenant_id
 
-        # Find the Feishu user who clicked the button
+        # Resolve the clicker only through this Agent's provider-proven binding.
         open_id = body.get("open_id", "")
         operator = body.get("operator", {})
         feishu_open_id = operator.get("open_id", open_id)
-        user = await channel_user_service.resolve_feishu_user(
-            db,
-            tenant_id=tenant_id,
-            provider_open_id=feishu_open_id or None,
+        from app.models.external_principal import ExternalPrincipal
+        from app.services.external_principal_service import load_external_runtime_actor
+
+        config = await db.scalar(
+            select(ChannelConfig).where(
+                ChannelConfig.agent_id == approval_record.agent_id,
+                ChannelConfig.tenant_id == tenant_id,
+                ChannelConfig.channel_type == "feishu",
+            )
         )
-        if not user:
+        principal = None
+        if config is not None and feishu_open_id:
+            principal = await db.scalar(
+                select(ExternalPrincipal).where(
+                    ExternalPrincipal.tenant_id == tenant_id,
+                    ExternalPrincipal.provider == "feishu",
+                    ExternalPrincipal.installation_ref == str(config.id),
+                    ExternalPrincipal.subject_id == feishu_open_id,
+                    ExternalPrincipal.status == "active",
+                )
+            )
+        runtime_actor = None
+        if principal is not None and principal.linked_user_id is not None:
+            runtime_actor = await load_external_runtime_actor(
+                db,
+                tenant_id=tenant_id,
+                principal_id=principal.id,
+                expected_user_id=principal.linked_user_id,
+            )
+        if runtime_actor is None or not runtime_actor.authority_bound or runtime_actor.id is None:
             return {
-                "toast": {"type": "error", "content": "User not found. Please use the web platform to approve."},
+                "toast": {
+                    "type": "error",
+                    "content": "Identity is not bound. Scan again from the Agent channel page or use the web platform.",
+                },
             }
+        user = await db.get(User, runtime_actor.id)
+        if user is None:
+            return {"toast": {"type": "error", "content": "Bound user is no longer active."}}
 
         approval = await approval_service.resolve_approval(db, approval_uuid, user, action_type)
 
@@ -1273,9 +1326,16 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
             )
             sender_name = sender_profile.get("name", "")
             sender_user_id_feishu = sender_profile.get("user_id", "") or sender_user_id_from_event
+            sender_subject_id = (
+                sender_profile.get("open_id")
+                or sender_open_id
+                or sender_user_id_feishu
+                or sender_profile.get("email")
+                or ""
+            )
 
             if chat_type == "group" and chat_id:
-                conv_id = f"feishu_group_{chat_id}"
+                conv_id = f"feishu_group_{chat_id}_{sender_subject_id}"
                 legacy_conv_ids: list[str] = []
             else:
                 conv_id = (
@@ -1317,12 +1377,24 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                     )
                 return {"code": 0, "msg": "sender identity unavailable"}
 
-            resolved_user = await channel_user_service.resolve_or_create_feishu_user(
+            from app.services.channel_ingress_inbox import channel_installation_ref
+            from app.services.external_principal_service import resolve_or_create_external_principal
+
+            principal_resolution = await resolve_or_create_external_principal(
                 db,
                 tenant_id=agent_tenant_id,
+                provider="feishu",
+                installation_ref=channel_installation_ref(config, fallback=f"feishu:{agent_id}"),
+                channel_config_id=getattr(config, "id", None),
+                subject_id=sender_subject_id,
+                display_name=sender_name or f"Feishu {sender_open_id[:8]}",
                 profile=sender_profile,
             )
-            platform_user_id = resolved_user.id
+            runtime_actor = principal_resolution.actor
+            platform_user_id = runtime_actor.id
+            external_principal_id = principal_resolution.principal.id
+            delivery_target["external_principal_id"] = str(external_principal_id)
+            delivery_target["user_label"] = runtime_actor.display_name or sender_name or sender_open_id[:8]
 
             if _is_feishu_new_session_command(user_text):
                 _new_sess = await start_new_channel_session(
@@ -1330,6 +1402,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                     agent_id=agent_id,
                     tenant_id=agent_tenant_id,
                     user_id=platform_user_id,
+                    external_principal_id=external_principal_id,
                     external_conv_id=conv_id,
                     source_channel="feishu",
                     title="New Session",
@@ -1356,7 +1429,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                 db=db,
                 agent=agent_obj,
                 user_text=user_text,
-                resolved_user=resolved_user,
+                resolved_user=runtime_actor if runtime_actor.authority_bound else None,
                 config=config,
                 receive_id=delivery_target["receive_id"],
                 receive_id_type=delivery_target["receive_id_type"],
@@ -1400,12 +1473,13 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
             try:
                 from app.core.execution_context import set_delegated_user_identity
 
-                _sender_label = sender_name or getattr(resolved_user, "display_name", "") or sender_open_id[:8]
-                set_delegated_user_identity(
-                    user_id=platform_user_id,
-                    user_name=_sender_label,
-                    channel="feishu",
-                )
+                if platform_user_id is not None:
+                    _sender_label = sender_name or runtime_actor.display_name or sender_open_id[:8]
+                    set_delegated_user_identity(
+                        user_id=platform_user_id,
+                        user_name=_sender_label,
+                        channel="feishu",
+                    )
             except Exception as _ei_err:
                 logger.debug(f"[Feishu] Failed to set execution identity: {_ei_err}")
 
@@ -1417,6 +1491,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                 agent_id=agent_id,
                 tenant_id=agent_tenant_id,
                 user_id=platform_user_id,
+                external_principal_id=external_principal_id,
                 external_conv_id=conv_id,
                 source_channel="feishu",
                 first_message_title=user_text,
@@ -1433,6 +1508,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                     agent_id=agent_id,
                     tenant_id=agent_tenant_id,
                     user_id=platform_user_id,
+                    external_principal_id=external_principal_id,
                     role="user",
                     content=user_text,
                     conversation_id=session_conv_id,
@@ -1840,7 +1916,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                     allow_bare_plan_confirmation=True,
                     durable_run=True,
                     durable_session=_sess,
-                    durable_user=resolved_user,
+                    durable_user=runtime_actor,
                 )
             except Exception as _llm_err:
                 logger.error(f"[Feishu] LLM invocation failed for agent {agent_id}: {_llm_err}")
@@ -1962,6 +2038,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                         agent_id=agent_id,
                         tenant_id=agent_tenant_id,
                         user_id=platform_user_id,
+                        external_principal_id=external_principal_id,
                         role="assistant",
                         content=reply_text,
                         conversation_id=session_conv_id,
@@ -2088,30 +2165,51 @@ async def _handle_feishu_file(
             sender_user_id=sender_user_id_from_event,
         )
         sender_user_id_feishu = sender_profile.get("user_id", "") or sender_user_id_from_event
+        sender_subject_id = (
+            sender_profile.get("open_id")
+            or sender_open_id
+            or sender_user_id_feishu
+            or sender_profile.get("email")
+            or ""
+        )
+        if not sender_subject_id:
+            logger.warning(f"[Feishu] Rejecting file without a verified sender identifier: agent_id={agent_id}")
+            return
 
-        resolved_user = await channel_user_service.resolve_or_create_feishu_user(
+        from app.services.channel_ingress_inbox import channel_installation_ref
+        from app.services.external_principal_service import resolve_or_create_external_principal
+
+        principal_resolution = await resolve_or_create_external_principal(
             db,
-            tenant_id=agent_obj.tenant_id if agent_obj else None,
+            tenant_id=agent_obj.tenant_id if agent_obj else _feishu_tenant_id,
+            provider="feishu",
+            installation_ref=channel_installation_ref(config, fallback=f"feishu:{agent_id}"),
+            channel_config_id=getattr(config, "id", None),
+            subject_id=sender_subject_id,
+            display_name=sender_profile.get("name") or f"Feishu {sender_open_id[:8]}",
             profile=sender_profile,
         )
-        platform_user_id = resolved_user.id
+        runtime_actor = principal_resolution.actor
+        platform_user_id = runtime_actor.id
+        external_principal_id = principal_resolution.principal.id
 
         # Set execution identity — delegated user action via Feishu
         try:
             from app.core.execution_context import set_delegated_user_identity
 
-            _sender_label = getattr(resolved_user, "display_name", "") or sender_open_id[:8]
-            set_delegated_user_identity(
-                user_id=platform_user_id,
-                user_name=_sender_label,
-                channel="feishu",
-            )
+            if platform_user_id is not None:
+                _sender_label = runtime_actor.display_name or sender_open_id[:8]
+                set_delegated_user_identity(
+                    user_id=platform_user_id,
+                    user_name=_sender_label,
+                    channel="feishu",
+                )
         except Exception as _ei_err:
             logger.debug(f"[Feishu] Failed to set execution identity: {_ei_err}")
 
         # Conv ID — prefer user_id for session continuity
         if chat_type == "group" and chat_id:
-            conv_id = f"feishu_group_{chat_id}"
+            conv_id = f"feishu_group_{chat_id}_{sender_subject_id}"
             legacy_conv_ids = []
         else:
             conv_id = build_feishu_p2p_conv_id(sender_user_id_feishu, sender_open_id) or f"feishu_p2p_{sender_open_id}"
@@ -2124,7 +2222,8 @@ async def _handle_feishu_file(
             "chat_type": chat_type,
             "open_id": sender_open_id,
             "user_id": sender_user_id_feishu,
-            "user_label": getattr(resolved_user, "display_name", "") or sender_open_id[:8],
+            "user_label": runtime_actor.display_name or sender_open_id[:8],
+            "external_principal_id": str(external_principal_id),
         }
 
         # Find-or-create session
@@ -2133,6 +2232,7 @@ async def _handle_feishu_file(
             agent_id=agent_id,
             tenant_id=_feishu_tenant_id,
             user_id=platform_user_id,
+            external_principal_id=external_principal_id,
             external_conv_id=conv_id,
             source_channel="feishu",
             first_message_title=f"[文件] {filename}",
@@ -2157,6 +2257,7 @@ async def _handle_feishu_file(
                 agent_id=agent_id,
                 tenant_id=_feishu_tenant_id,
                 user_id=platform_user_id,
+                external_principal_id=external_principal_id,
                 role="user",
                 content=user_msg_content if msg_type != "image" else f"[file:{filename}]",
                 conversation_id=session_conv_id,
@@ -2252,7 +2353,7 @@ async def _handle_feishu_file(
                     allow_bare_plan_confirmation=True,
                     durable_run=True,
                     durable_session=_sess,
-                    durable_user=resolved_user,
+                    durable_user=runtime_actor,
                 )
             finally:
                 _cdt_img.reset(_cdt_img_token)
@@ -2294,6 +2395,7 @@ async def _handle_feishu_file(
                         agent_id=agent_id,
                         tenant_id=_feishu_tenant_id,
                         user_id=platform_user_id,
+                        external_principal_id=external_principal_id,
                         role="assistant",
                         content=reply_text,
                         conversation_id=session_conv_id,

@@ -26,12 +26,16 @@ class _FakeDB:
     def __init__(self, rows=()):
         self.rows = list(rows)
         self.commits = 0
+        self.get_result = None
 
     async def execute(self, _statement):
         return _Rows(self.rows)
 
     async def commit(self):
         self.commits += 1
+
+    async def get(self, _model, _identifier):
+        return self.get_result
 
 
 def _client(*, rows=()):
@@ -64,6 +68,8 @@ def _principal(*, tenant_id, linked_user_id=None):
         subject_id="U123",
         display_name="External Rocky",
         linked_user_id=linked_user_id,
+        binding_method="feishu_qr" if linked_user_id else None,
+        binding_verified_at=now if linked_user_id else None,
         status="active",
         first_seen_at=now,
         last_seen_at=now,
@@ -97,6 +103,8 @@ def test_list_external_principals_is_tenant_scoped_and_filters(monkeypatch):
             "subject_id": "U123",
             "display_name": "External Rocky",
             "linked_user_id": None,
+            "binding_method": None,
+            "binding_verified_at": None,
             "status": "active",
             "first_seen_at": principal.first_seen_at.isoformat().replace("+00:00", "Z"),
             "last_seen_at": principal.last_seen_at.isoformat().replace("+00:00", "Z"),
@@ -107,7 +115,7 @@ def test_list_external_principals_is_tenant_scoped_and_filters(monkeypatch):
     assert captured["scope"][1] is user
 
 
-def test_link_and_unlink_routes_require_explicit_admin_action_and_commit(monkeypatch):
+def test_admin_cannot_assign_an_external_identity_but_can_unlink_it(monkeypatch):
     client, db, user, api = _client()
     principal_id = uuid4()
     linked_user_id = uuid4()
@@ -118,21 +126,18 @@ def test_link_and_unlink_routes_require_explicit_admin_action_and_commit(monkeyp
     async def fake_pin(_db, _current_user, _requested):
         return user.tenant_id
 
-    async def fake_link(_db, **kwargs):
-        calls.append(("link", kwargs))
-        return SimpleNamespace(principal=principal, actor=SimpleNamespace(authority_bound=True))
-
     async def fake_unlink(_db, **kwargs):
         calls.append(("unlink", kwargs))
         principal.linked_user_id = None
         principal.linked_at = None
+        principal.binding_method = None
+        principal.binding_verified_at = None
         return SimpleNamespace(principal=principal, actor=SimpleNamespace(authority_bound=False))
 
     monkeypatch.setattr(api, "resolve_and_pin_tenant_scope", fake_pin)
-    monkeypatch.setattr(api, "link_external_principal", fake_link)
     monkeypatch.setattr(api, "unlink_external_principal", fake_unlink)
 
-    linked = client.post(
+    forbidden_assignment = client.post(
         f"/enterprise/external-principals/{principal_id}/link",
         json={"user_id": str(linked_user_id), "reason": "accepted invitation"},
     )
@@ -141,21 +146,10 @@ def test_link_and_unlink_routes_require_explicit_admin_action_and_commit(monkeyp
         json={"reason": "admin revoked mapping"},
     )
 
-    assert linked.status_code == 200
-    assert linked.json()["linked_user_id"] == str(linked_user_id)
+    assert forbidden_assignment.status_code == 404
     assert unlinked.status_code == 200
     assert unlinked.json()["linked_user_id"] is None
     assert calls == [
-        (
-            "link",
-            {
-                "tenant_id": user.tenant_id,
-                "principal_id": principal_id,
-                "user_id": linked_user_id,
-                "actor_user_id": user.id,
-                "reason": "accepted invitation",
-            },
-        ),
         (
             "unlink",
             {
@@ -166,20 +160,16 @@ def test_link_and_unlink_routes_require_explicit_admin_action_and_commit(monkeyp
             },
         ),
     ]
-    assert db.commits == 2
+    assert db.commits == 1
 
 
-def test_link_route_maps_cross_tenant_or_missing_principal_to_not_found(monkeypatch):
+def test_removed_admin_link_route_is_not_part_of_the_api_contract(monkeypatch):
     client, _db, user, api = _client()
 
     async def fake_pin(_db, _current_user, _requested):
         return user.tenant_id
 
-    async def fake_link(*_args, **_kwargs):
-        raise LookupError("external principal not found")
-
     monkeypatch.setattr(api, "resolve_and_pin_tenant_scope", fake_pin)
-    monkeypatch.setattr(api, "link_external_principal", fake_link)
 
     response = client.post(
         f"/enterprise/external-principals/{uuid4()}/link",
@@ -187,4 +177,79 @@ def test_link_route_maps_cross_tenant_or_missing_principal_to_not_found(monkeypa
     )
 
     assert response.status_code == 404
-    assert response.json() == {"detail": "External principal not found"}
+    assert response.json() == {"detail": "Not Found"}
+
+
+def test_admin_unlink_stops_a_personal_wechat_transport_after_commit(monkeypatch):
+    client, db, user, api = _client()
+    principal = _principal(tenant_id=user.tenant_id, linked_user_id=uuid4())
+    principal.provider = "wechat_personal"
+    principal.binding_method = "wechat_qr"
+    config = SimpleNamespace(id=principal.channel_config_id, agent_id=uuid4())
+    db.get_result = config
+    stopped: list[object] = []
+
+    async def fake_pin(_db, _current_user, _requested):
+        return user.tenant_id
+
+    async def fake_unlink(_db, **_kwargs):
+        principal.linked_user_id = None
+        principal.linked_at = None
+        principal.binding_method = None
+        principal.binding_verified_at = None
+        return SimpleNamespace(principal=principal, actor=SimpleNamespace(authority_bound=False))
+
+    async def fake_stop(agent_id):
+        assert db.commits == 1
+        stopped.append(agent_id)
+
+    monkeypatch.setattr(api, "resolve_and_pin_tenant_scope", fake_pin)
+    monkeypatch.setattr(api, "unlink_external_principal", fake_unlink)
+    monkeypatch.setattr(
+        "app.services.wechat_personal_stream.wechat_personal_stream_manager.stop_client",
+        fake_stop,
+    )
+
+    response = client.post(
+        f"/enterprise/external-principals/{principal.id}/unlink",
+        json={"reason": "revoke compromised binding"},
+    )
+
+    assert response.status_code == 200
+    assert stopped == [config.agent_id]
+
+
+def test_admin_unlink_stops_feishu_transport_after_commit(monkeypatch):
+    client, db, user, api = _client()
+    principal = _principal(tenant_id=user.tenant_id, linked_user_id=uuid4())
+    principal.provider = "feishu"
+    principal.binding_method = "feishu_qr"
+    config = SimpleNamespace(id=principal.channel_config_id, agent_id=uuid4())
+    db.get_result = config
+    stopped: list[object] = []
+
+    async def fake_pin(_db, _current_user, _requested):
+        return user.tenant_id
+
+    async def fake_unlink(_db, **_kwargs):
+        principal.linked_user_id = None
+        principal.linked_at = None
+        principal.binding_method = None
+        principal.binding_verified_at = None
+        return SimpleNamespace(principal=principal, actor=SimpleNamespace(authority_bound=False))
+
+    async def fake_stop(agent_id):
+        assert db.commits == 1
+        stopped.append(agent_id)
+
+    monkeypatch.setattr(api, "resolve_and_pin_tenant_scope", fake_pin)
+    monkeypatch.setattr(api, "unlink_external_principal", fake_unlink)
+    monkeypatch.setattr("app.services.feishu_ws.feishu_ws_manager.stop_client", fake_stop)
+
+    response = client.post(
+        f"/enterprise/external-principals/{principal.id}/unlink",
+        json={"reason": "revoke compromised Feishu binding"},
+    )
+
+    assert response.status_code == 200
+    assert stopped == [config.agent_id]

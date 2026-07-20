@@ -7,7 +7,9 @@ import {
 } from './chatRuntime';
 import {
   CHAT_TRANSPORT_DEGRADED_AFTER_ATTEMPTS,
+  isSessionSocketAuthClose,
   reconnectDelayMs,
+  shouldReconnectSessionSocket,
   transportPollIntervalMs,
   type ChatTransportPhase,
 } from './chatTransportRecovery';
@@ -333,15 +335,18 @@ export function useSessionTransportController(options: SessionTransportControlle
       const active = isActiveRuntime(agentId, sessionId);
       const phase: RuntimePhase = optionsRef.current.isRunActive(key) ? 'resuming' : 'idle';
       optionsRef.current.callbacks.onDisconnected({ key, phase, isActiveRuntime: active });
-      const unexpected = !reconnectDisabledRef.current[key] && event.code !== 1000;
-      const next = connectionClosed(connectionState(key), attemptId, unexpected);
+      const reconnect = shouldReconnectSessionSocket(
+        event.code,
+        Boolean(reconnectDisabledRef.current[key]),
+      );
+      const next = connectionClosed(connectionState(key), attemptId, reconnect);
       commitConnectionState(key, next, agentId, sessionId);
       if (active) activeSocketRef.current = null;
-      if (event.code === 4401 || event.code === 4403 || event.code === 4003 || event.code === 4002) {
+      if (isSessionSocketAuthClose(event.code)) {
         failAuthentication(key, event.code === 4003);
         return;
       }
-      if (unexpected) scheduleReconnect();
+      if (reconnect) scheduleReconnect();
     };
 
     socket.onerror = (error) => {

@@ -1,8 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { projectSessionSocketEvent, type SessionSocketProjectionDependencies } from './sessionSocketEventProjector';
-import type { AgentChatMessage } from './chatRuntime';
+import {
+  applyTranscriptEvent,
+  createEmptyTranscriptReplayState,
+  type AgentChatMessage,
+} from './chatRuntime';
+import { consumeSessionEnvelope } from './sessionEventConsumer';
 import type { SessionSocketMessageContext } from './useSessionTransportController';
+import type { SessionEventStore } from '../session-workbench/sessionEventStore';
 
 function makeHarness(data: Record<string, unknown>, isActiveRuntime = true) {
   const messagesBySession = new Map<string, AgentChatMessage[]>();
@@ -87,6 +93,54 @@ describe('session socket event projector', () => {
       true,
     );
     expect(harness.dependencies.selectSession).not.toHaveBeenCalled();
+  });
+
+  it('projects a live compatibility assistant_message instead of dropping it until refresh', () => {
+    const harness = makeHarness({
+      schema: 'hive.session_event_compatibility',
+      schema_version: 1,
+      compatibility_status: 'needs_reconciliation',
+      reason: 'unprovable_scope',
+      event_id: 'legacy-final-1',
+      sequence: 48,
+      session_id: 'session-1',
+      run_id: 'run-1',
+      legacy_event_type: 'assistant_message',
+      legacy_kind: 'assistant_final',
+      legacy_lifecycle: 'completed',
+      payload: {
+        content: 'This answer must appear without a page refresh.',
+        metadata: { legacy_run_id: 'run-1' },
+      },
+    });
+    let store: SessionEventStore | undefined;
+    let replay = createEmptyTranscriptReplayState();
+    harness.dependencies.applyTranscriptToSession = vi.fn((_agentId, _sessionId, event) => {
+      const consumed = consumeSessionEnvelope(event, store, 47);
+      store = consumed.store;
+      replay = applyTranscriptEvent(replay, consumed.projectionEvent);
+    });
+
+    projectSessionSocketEvent(harness.context, harness.dependencies);
+
+    expect(harness.dependencies.applyTranscriptToSession).toHaveBeenCalledWith(
+      'agent-1',
+      'session-1',
+      expect.objectContaining({
+        id: 'legacy-final-1',
+        event_type: 'assistant_message',
+        content: 'This answer must appear without a page refresh.',
+      }),
+      true,
+    );
+    expect(store?.highestContiguousSequence).toBe(48);
+    expect(replay.messages).toEqual([
+      expect.objectContaining({
+        role: 'assistant',
+        content: 'This answer must appear without a page refresh.',
+      }),
+    ]);
+    expect(harness.dependencies.fetchMySessions).toHaveBeenCalledWith(true, 'agent-1');
   });
 
   it('invalidates the live task ledger when a canonical task tool event arrives', () => {

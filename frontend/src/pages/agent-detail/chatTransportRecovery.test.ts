@@ -4,6 +4,7 @@ import {
   chatTransportPhase,
   mergeTranscriptBackfill,
   reconnectDelayMs,
+  shouldReconnectSessionSocket,
   transportPollIntervalMs,
 } from './chatTransportRecovery';
 
@@ -13,6 +14,18 @@ describe('chat transport recovery policy', () => {
     expect(reconnectDelayMs(5, 1)).toBe(60000);
     expect(reconnectDelayMs(200, 1)).toBe(60000);
     expect(reconnectDelayMs(200, 0)).toBe(30000);
+  });
+
+  it('reconnects after a server normal close unless the client explicitly disposed the socket', () => {
+    expect(shouldReconnectSessionSocket(1000, false)).toBe(true);
+    expect(shouldReconnectSessionSocket(1000, true)).toBe(false);
+    expect(shouldReconnectSessionSocket(1011, false)).toBe(true);
+  });
+
+  it('never reconnects an authentication or authorization close', () => {
+    for (const code of [4002, 4003, 4401, 4403]) {
+      expect(shouldReconnectSessionSocket(code, false)).toBe(false);
+    }
   });
 
   it('separates offline, reconnecting, degraded, connected, and auth-failed states', () => {

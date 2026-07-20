@@ -83,6 +83,17 @@ function isCanonicalSessionEvent(value: any): boolean {
   );
 }
 
+function isCompatibilitySessionEvent(value: any): boolean {
+  return Boolean(
+    value
+    && value.schema === 'hive.session_event_compatibility'
+    && value.schema_version === 1
+    && typeof value.event_id === 'string'
+    && typeof value.sequence === 'number'
+    && typeof value.legacy_event_type === 'string',
+  );
+}
+
 export function projectSessionSocketEvent(
   context: SessionSocketMessageContext,
   dependencies: SessionSocketProjectionDependencies,
@@ -141,6 +152,24 @@ export function projectSessionSocketEvent(
         setSessionPhase(key, terminalPhase);
         if (isActiveRuntime) syncActivePhase(terminalPhase);
       }
+      void fetchMySessions(true, agentId);
+    }
+    return;
+  }
+
+  if (isCompatibilitySessionEvent(d)) {
+    const payload = d.payload && typeof d.payload === 'object' ? d.payload : {};
+    const transcriptEvent: ChatTranscriptEventPayload = {
+      ...d,
+      id: d.event_id,
+      event_type: d.legacy_event_type,
+      content: sessionPayloadContent(payload),
+      metadata: payload.metadata && typeof payload.metadata === 'object'
+        ? payload.metadata
+        : {},
+    };
+    applyTranscriptToSession(agentId, sessionId, transcriptEvent, isActiveRuntime);
+    if (isActiveRuntime && isTerminalRealtimeChatEvent(transcriptEvent)) {
       void fetchMySessions(true, agentId);
     }
     return;

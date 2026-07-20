@@ -620,10 +620,11 @@ async def call_agent_llm(
             return "⚠️ IM 后台任务暂时无法启动，请稍后重试。"
         except PermissionError as exc:
             logger.warning(
-                "[ChannelRuntime] Durable channel identity rejected: channel={} session_id={} error={}",
+                "[ChannelRuntime] Durable channel identity rejected: channel={} session_id={} error={} code={}",
                 session_channel or session_source,
                 durable_session_id,
                 type(exc).__name__,
+                str(exc),
             )
             return "⚠️ 当前 IM 连接的身份验证已失效，请回到 Agent 渠道页面重新绑定后再试。"
         except Exception as exc:

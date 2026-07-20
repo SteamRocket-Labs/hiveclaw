@@ -88,6 +88,7 @@ class SessionCommandAuthorityContext:
 _EXTERNAL_PROVIDER_CHANNELS = {
     "discord": "discord",
     "dingtalk": "dingtalk",
+    "feishu": "feishu",
     "slack": "slack",
     "teams": "microsoft_teams",
     "telegram": "telegram",

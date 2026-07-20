@@ -173,6 +173,7 @@ async def test_live_rest_ws_adapter_persists_full_human_input_authority(owner_se
     [
         ("discord", "discord"),
         ("dingtalk", "dingtalk"),
+        ("feishu", "feishu"),
         ("slack", "slack"),
         ("teams", "microsoft_teams"),
         ("telegram", "telegram"),
@@ -314,6 +315,121 @@ async def test_unbound_external_channel_input_uses_principal_authority_and_safe_
         assert task.metadata_json["external_authority_bound"] is False
         assert task.metadata_json["disable_tools"] is True
         assert task.metadata_json["tool_policy"] == "disabled_for_unbound_external_principal"
+
+
+async def test_verified_feishu_qr_input_uses_bound_principal_authority(
+    owner_sessionmaker,
+    monkeypatch,
+) -> None:
+    from app.models.agent import Agent
+    from app.models.channel_config import ChannelConfig
+    from app.models.chat_session import ChatSession
+    from app.models.runtime_task import RuntimeTask
+    from app.models.session_v2 import SessionInputAdmission
+    from app.models.tenant import Tenant
+    from app.models.user import User
+    from app.services import web_chat_runtime
+    from app.services.external_principal_service import (
+        bind_authenticated_self_channel_principal,
+        resolve_or_create_external_principal,
+    )
+    from app.services.runtime_budget_failover import not_applicable_runtime_budget_root_binding
+    from app.services.session_live_input import submit_live_human_input
+
+    async def admitted_budget(**_kwargs):
+        return not_applicable_runtime_budget_root_binding()
+
+    monkeypatch.setattr(web_chat_runtime, "_create_runtime_budget_root_run_for_chat", admitted_budget)
+
+    tenant_id, owner_id, agent_id, config_id, session_id, input_id = (uuid.uuid4() for _ in range(6))
+    async with owner_sessionmaker() as db:
+        db.add(Tenant(id=tenant_id, name="Feishu QR Tenant", slug=f"feishu-qr-{tenant_id.hex[:8]}"))
+        db.add(
+            User(
+                id=owner_id,
+                username=f"feishu-owner-{owner_id.hex[:8]}",
+                email=f"{owner_id.hex[:8]}@feishu-qr.test",
+                password_hash="x",
+                display_name="Feishu Owner",
+                tenant_id=tenant_id,
+            )
+        )
+        await db.flush()
+        db.add(Agent(id=agent_id, tenant_id=tenant_id, name="Feishu QR Agent", creator_id=owner_id))
+        config = ChannelConfig(
+            id=config_id,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            channel_type="feishu",
+            is_configured=True,
+            is_connected=True,
+            extra_config={"connection_mode": "websocket", "identity_status": "verified"},
+        )
+        db.add(config)
+        await db.flush()
+        resolved = await bind_authenticated_self_channel_principal(
+            db,
+            tenant_id=tenant_id,
+            config=config,
+            provider_subject_id="ou_verified_scanner",
+            user_id=owner_id,
+            actor_user_id=owner_id,
+        )
+        db.add(
+            ChatSession(
+                id=session_id,
+                tenant_id=tenant_id,
+                agent_id=agent_id,
+                user_id=owner_id,
+                external_principal_id=resolved.principal.id,
+                title="Verified Feishu input",
+                source_channel="feishu",
+                external_conv_id="feishu_verified_scanner",
+                session_kind="human_chat",
+                actor_type="external_principal",
+                runtime_source="channel_chat",
+                visibility_scope="direct_user",
+                listed_surface="chat",
+            )
+        )
+        await db.commit()
+
+    async with owner_sessionmaker() as db:
+        agent = await db.get(Agent, agent_id)
+        session = await db.get(ChatSession, session_id)
+        resolved = await resolve_or_create_external_principal(
+            db,
+            tenant_id=tenant_id,
+            provider="feishu",
+            installation_ref=str(config_id),
+            channel_config_id=config_id,
+            subject_id="ou_verified_scanner",
+            display_name="Feishu Owner",
+        )
+        assert agent is not None and session is not None
+        assert resolved.actor.authority_bound is True
+        receipt = await submit_live_human_input(
+            db=db,
+            agent=agent,
+            user=resolved.actor,
+            session=session,
+            content="hi",
+            source="feishu",
+            input_id=input_id,
+            idempotency_key=f"feishu:{input_id}",
+            runtime_metadata={"channel": "feishu", "budget_interactive": False},
+        )
+        admission = await db.scalar(
+            select(SessionInputAdmission).where(SessionInputAdmission.input_id == input_id)
+        )
+        assert admission is not None
+        assert receipt["admission_state"] == "admitted"
+        assert receipt["run"] is not None, admission.dispatch_last_error
+        task = await db.get(RuntimeTask, uuid.UUID(receipt["run"]["run_id"]))
+        assert task is not None
+        assert task.metadata_json["external_principal_id"] == str(resolved.principal.id)
+        assert task.metadata_json["external_authority_bound"] is True
+        assert task.metadata_json.get("disable_tools") is not True
 
 
 async def test_live_input_id_cannot_rebind_to_another_session(owner_sessionmaker) -> None:

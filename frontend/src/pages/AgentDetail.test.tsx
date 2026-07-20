@@ -188,6 +188,9 @@ describe('AgentDetail realtime refresh contract', () => {
 
     expect(source).not.toContain('attempts >= 20');
     expect(source).not.toContain('Giving up reconnect');
+    expect(source).not.toContain('event.code !== 1000');
+    expect(source).toContain('const reconnect = shouldReconnectSessionSocket(');
+    expect(source).toContain('if (reconnect) scheduleReconnect()');
     expect(source).toContain('reconnectDelayMs(previousAttempts)');
     expect(source).toContain("window.addEventListener('online', wake)");
     expect(source).toContain("window.addEventListener('offline', handleOffline)");

@@ -2,6 +2,15 @@ export type ChatTransportPhase = 'initializing' | 'connected' | 'reconnecting' |
 
 export const CHAT_TRANSPORT_DEGRADED_AFTER_ATTEMPTS = 5;
 export const CHAT_TRANSPORT_MAX_RECONNECT_DELAY_MS = 60_000;
+const SESSION_SOCKET_AUTH_CLOSE_CODES = new Set([4002, 4003, 4401, 4403]);
+
+export function isSessionSocketAuthClose(code: number): boolean {
+  return SESSION_SOCKET_AUTH_CLOSE_CODES.has(code);
+}
+
+export function shouldReconnectSessionSocket(code: number, reconnectDisabled: boolean): boolean {
+  return !reconnectDisabled && !isSessionSocketAuthClose(code);
+}
 
 export function reconnectDelayMs(attempt: number, randomValue: number = Math.random()): number {
   const safeAttempt = Math.max(0, Math.floor(attempt));

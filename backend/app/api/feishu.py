@@ -781,6 +781,10 @@ async def configure_channel(
         existing.extra_config = incoming_extra or existing.extra_config or {}
         existing.is_configured = True
         await db.flush()
+        # The websocket supervisor persists health from a separate session.
+        # Publish the new credential/identity state before it can observe and
+        # overwrite a stale QR-registration snapshot.
+        await db.commit()
 
         # Start/Stop WS client in background
         from app.services.feishu_ws import feishu_ws_manager
@@ -814,6 +818,7 @@ async def configure_channel(
     )
     db.add(config)
     await db.flush()
+    await db.commit()
 
     # Start WS client in background
     from app.services.feishu_ws import feishu_ws_manager

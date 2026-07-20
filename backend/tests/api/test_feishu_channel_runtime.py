@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -51,6 +53,94 @@ def _principal_resolution(*, platform_user_id, display_name="张三"):
         authority_bound=platform_user_id is not None,
     )
     return SimpleNamespace(actor=actor, principal=SimpleNamespace(id=principal_id))
+
+
+@pytest.mark.asyncio
+async def test_manual_feishu_config_commits_before_starting_websocket(monkeypatch):
+    import app.api.feishu as feishu_api
+    from app.schemas.schemas import ChannelConfigCreate
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    user_id = uuid4()
+    existing = SimpleNamespace(
+        id=uuid4(),
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        channel_type="feishu",
+        app_id="cli_old",
+        app_secret="old-secret",
+        encrypt_key=None,
+        verification_token=None,
+        is_configured=True,
+        is_connected=True,
+        last_tested_at=None,
+        extra_config={
+            "connection_mode": "websocket",
+            "connection_status": "connected",
+            "identity_status": "verified",
+            "registration_session_id": str(uuid4()),
+        },
+        created_at=datetime.now(timezone.utc),
+        self_identity_user_id=user_id,
+        self_identity_verified_at=datetime.now(timezone.utc),
+    )
+    db = _SequenceDB([existing])
+    websocket_started = asyncio.Event()
+    observed: dict[str, object] = {}
+
+    async def fake_require_agent_manage_access(_db, _user, received_agent_id):
+        assert received_agent_id == agent_id
+        return SimpleNamespace(id=agent_id, tenant_id=tenant_id)
+
+    async def fake_revoke(*_args, **_kwargs):
+        return 1
+
+    async def fake_start_client(received_agent_id, app_id, app_secret, *, extra_config):
+        observed.update(
+            {
+                "agent_id": received_agent_id,
+                "app_id": app_id,
+                "app_secret": app_secret,
+                "identity_status": extra_config.get("identity_status"),
+                "registration_session_present": "registration_session_id" in extra_config,
+                "commits_before_start": db.commits,
+            }
+        )
+        websocket_started.set()
+
+    monkeypatch.setattr(feishu_api, "require_agent_manage_access", fake_require_agent_manage_access)
+    monkeypatch.setattr(
+        "app.services.external_principal_service.revoke_channel_config_external_principals",
+        fake_revoke,
+    )
+    monkeypatch.setattr(
+        "app.services.feishu_ws.feishu_ws_manager.start_client",
+        fake_start_client,
+    )
+
+    response = await feishu_api.configure_channel(
+        agent_id,
+        ChannelConfigCreate(
+            channel_type="feishu",
+            app_id="cli_new",
+            app_secret="new-secret",
+            extra_config={"connection_mode": "websocket", "platform_region": "feishu_cn"},
+        ),
+        current_user=SimpleNamespace(id=user_id),
+        db=db,
+    )
+    await asyncio.wait_for(websocket_started.wait(), timeout=1)
+
+    assert response.app_id == "cli_new"
+    assert observed == {
+        "agent_id": agent_id,
+        "app_id": "cli_new",
+        "app_secret": "new-secret",
+        "identity_status": "unverified_manual",
+        "registration_session_present": False,
+        "commits_before_start": 1,
+    }
 
 
 @pytest.mark.asyncio

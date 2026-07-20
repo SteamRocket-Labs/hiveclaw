@@ -170,13 +170,13 @@ export function observeHighestContiguousSequence(
 export function connectionClosed(
   state: SessionConnectionState,
   connectionAttemptId: string,
-  unexpected: boolean,
+  shouldReconnect: boolean,
 ): SessionConnectionState {
   if (state.transport.connectionAttemptId !== connectionAttemptId) return state;
   return {
     ...state,
     transport: {
-      phase: unexpected
+      phase: shouldReconnect
         ? state.transport.everReady ? 'reconnecting' : 'initializing'
         : 'offline',
       attempt: state.transport.attempt,

@@ -80,32 +80,61 @@ class _LifecycleDb:
         self.flushes += 1
 
 
-def test_lifecycle_block_reason_covers_deleted_deactivated_and_inactive_sponsor() -> None:
+def test_lifecycle_block_reason_uses_current_owner_not_historical_sponsor() -> None:
     from app.services.agent_identity_lifecycle import get_agent_lifecycle_block_reason
 
     assert (
         get_agent_lifecycle_block_reason(
-            SimpleNamespace(deleted_at=object(), deactivated_at=None, sponsor=SimpleNamespace(is_active=True))
+            SimpleNamespace(deleted_at=object(), deactivated_at=None, owner=SimpleNamespace(is_active=True))
         )
         == "deleted"
     )
     assert (
         get_agent_lifecycle_block_reason(
-            SimpleNamespace(deleted_at=None, deactivated_at=object(), sponsor=SimpleNamespace(is_active=True))
+            SimpleNamespace(deleted_at=None, deactivated_at=object(), owner=SimpleNamespace(is_active=True))
         )
         == "deactivated"
     )
     assert (
         get_agent_lifecycle_block_reason(
-            SimpleNamespace(deleted_at=None, deactivated_at=None, sponsor=SimpleNamespace(is_active=False))
+            SimpleNamespace(
+                deleted_at=None,
+                deactivated_at=None,
+                owner_user_id=uuid4(),
+                owner=SimpleNamespace(is_active=False),
+                sponsor=SimpleNamespace(is_active=True),
+            )
         )
-        == "inactive_sponsor"
+        == "inactive_owner"
     )
     assert (
         get_agent_lifecycle_block_reason(
-            SimpleNamespace(deleted_at=None, deactivated_at=None, sponsor=SimpleNamespace(is_active=True))
+            SimpleNamespace(
+                deleted_at=None,
+                deactivated_at=None,
+                owner_user_id=uuid4(),
+                owner=SimpleNamespace(is_active=True),
+                sponsor=SimpleNamespace(is_active=False),
+            )
         )
         is None
+    )
+
+
+def test_lifecycle_legacy_owner_fallback_uses_creator_activity() -> None:
+    from app.services.agent_identity_lifecycle import get_agent_lifecycle_block_reason
+
+    assert (
+        get_agent_lifecycle_block_reason(
+            SimpleNamespace(
+                deleted_at=None,
+                deactivated_at=None,
+                owner_user_id=None,
+                owner=None,
+                creator=SimpleNamespace(is_active=False),
+            )
+        )
+        == "inactive_owner"
     )
 
 

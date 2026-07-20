@@ -433,7 +433,9 @@ async def execute_task(
 
     # Step 2: Load agent + model
     async with tenant_scoped_session(tenant_id) as db:
-        agent_result = await db.execute(select(Agent).options(selectinload(Agent.sponsor)).where(Agent.id == agent_id))
+        agent_result = await db.execute(
+            select(Agent).options(selectinload(Agent.owner), selectinload(Agent.creator)).where(Agent.id == agent_id)
+        )
         agent = agent_result.scalar_one_or_none()
         if not agent:
             await _log_error(task_id, "数字员工未找到", tenant_id=tenant_id)

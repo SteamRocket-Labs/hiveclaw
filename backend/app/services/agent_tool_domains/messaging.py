@@ -191,7 +191,6 @@ def _effective_a2a_requester(source_agent: Any, principal: ExecutionPrincipal | 
     requester = principal.requester_user_id if principal is not None else None
     fallback = (
         getattr(source_agent, "owner_user_id", None)
-        or getattr(source_agent, "sponsor_user_id", None)
         or getattr(source_agent, "creator_id", None)
     )
     owner_id = requester or fallback
@@ -1701,12 +1700,10 @@ async def _delegate_to_local_agent_channel(
         raise ValueError("cross-tenant local-agent delegation is forbidden")
     source_owner_id = (
         getattr(source_agent, "owner_user_id", None)
-        or getattr(source_agent, "sponsor_user_id", None)
         or getattr(source_agent, "creator_id", None)
     )
     target_owner_id = (
         getattr(target_agent, "owner_user_id", None)
-        or getattr(target_agent, "sponsor_user_id", None)
         or getattr(target_agent, "creator_id", None)
     )
     if source_owner_id is None or target_owner_id is None:

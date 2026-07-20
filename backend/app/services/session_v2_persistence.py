@@ -249,7 +249,7 @@ async def resolve_session_command_authority(
         raise RuntimeError("session_command_authority_chain_broken")
     agent = await db.scalar(
         select(Agent)
-        .options(selectinload(Agent.sponsor))
+        .options(selectinload(Agent.owner), selectinload(Agent.creator))
         .where(Agent.id == session.agent_id)
     )
     if agent is None or agent.tenant_id != command.tenant_id:

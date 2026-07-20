@@ -13,11 +13,12 @@ from app.core.permissions import (
     authorize_session_action,
     check_agent_access,
     effective_agent_owner_id,
-    require_agent_manage_access,
+    require_agent_owner_or_admin,
 )
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.user import User
+from app.services.agent_ownership_service import transfer_agent_owner
 from app.services.collaboration import collaboration_service
 
 router = APIRouter(tags=["advanced"])
@@ -170,6 +171,9 @@ async def send_inter_agent_message(
 
 class HandoverRequest(BaseModel):
     new_owner_id: uuid.UUID = Field(validation_alias=AliasChoices("new_owner_id", "new_creator_id"))
+    expected_owner_id: uuid.UUID | None = None
+    reason: str = Field(default="Manual ownership transfer", min_length=3, max_length=500)
+    request_id: str | None = Field(default=None, min_length=1, max_length=200)
 
 
 @router.get("/agents/{agent_id}/handover-candidates")
@@ -179,7 +183,7 @@ async def list_handover_candidates(
     db: AsyncSession = Depends(get_db),
 ):
     """List eligible users who can receive ownership of this digital employee."""
-    agent = await require_agent_manage_access(db, current_user, agent_id)
+    agent = await require_agent_owner_or_admin(db, current_user, agent_id)
 
     result = await db.execute(
         select(User)
@@ -209,43 +213,24 @@ async def handover_agent(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Transfer ownership of a digital employee to another user."""
-    from app.models.audit import AuditLog
-
-    agent = await require_agent_manage_access(db, current_user, agent_id)
-
-    # Creator is immutable provenance. Handover changes only current ownership.
-    new_owner_result = await db.execute(select(User).where(User.id == data.new_owner_id))
-    new_owner = new_owner_result.scalar_one_or_none()
-    if not new_owner:
-        raise HTTPException(status_code=404, detail="Target user not found")
-    if not new_owner.is_active:
-        raise HTTPException(status_code=400, detail="Target user is inactive")
-    if str(new_owner.tenant_id) != str(agent.tenant_id):
-        raise HTTPException(status_code=400, detail="Target user must belong to the same company")
-
-    old_owner_id = effective_agent_owner_id(agent)
-    agent.owner_user_id = data.new_owner_id
-
-    db.add(
-        AuditLog(
-            user_id=current_user.id,
-            agent_id=agent_id,
-            tenant_id=agent.tenant_id,
-            action="agent:handover",
-            details={
-                "creator_id": str(agent.creator_id),
-                "from_owner": str(old_owner_id),
-                "to_owner": str(data.new_owner_id),
-            },
-        )
+    """Transfer current ownership without rewriting creator/sponsor provenance."""
+    receipt = await transfer_agent_owner(
+        db,
+        agent_id=agent_id,
+        new_owner_id=data.new_owner_id,
+        actor=current_user,
+        reason=data.reason,
+        expected_owner_id=data.expected_owner_id,
+        request_id=data.request_id,
     )
-    await db.flush()
-
     return {
-        "status": "transferred",
-        "agent_name": agent.name,
-        "new_owner": new_owner.display_name,
+        "status": receipt.status,
+        "agent_id": str(receipt.agent_id),
+        "agent_name": receipt.agent_name,
+        "old_owner_id": str(receipt.old_owner_id) if receipt.old_owner_id else None,
+        "new_owner_id": str(receipt.new_owner_id),
+        "new_owner": receipt.new_owner_name,
+        "request_id": receipt.request_id,
     }
 
 

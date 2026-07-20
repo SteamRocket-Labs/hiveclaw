@@ -166,7 +166,7 @@ async def upload_file(
 
 def _owner_user_id_for_upload(*, agent, current_user: User) -> uuid.UUID | None:
     if agent is not None:
-        for attr in ("owner_user_id", "sponsor_user_id", "creator_id"):
+        for attr in ("owner_user_id", "creator_id"):
             value = getattr(agent, attr, None)
             if value is not None:
                 return uuid.UUID(str(value))

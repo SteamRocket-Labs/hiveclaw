@@ -1,7 +1,8 @@
 """Agent identity and lifecycle invariants.
 
-This module owns the durable link between an Agent row, its sponsor user, and
-its Participant identity. Creation paths should call ``ensure_agent_identity``
+This module owns the durable link between an Agent row, its current owner,
+immutable creation/delegation provenance, and its Participant identity.
+Creation paths should call ``ensure_agent_identity``
 before the first flush; delete paths should call ``soft_delete_agent`` instead
 of deleting agent/participant rows.
 """
@@ -13,7 +14,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import and_, or_, select, update
+from sqlalchemy import and_, inspect as sqlalchemy_inspect, or_, select, update
+from sqlalchemy.exc import NoInspectionAvailable
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import enter_rls_bypass
@@ -31,6 +33,25 @@ def _uuid_or_new(value: uuid.UUID | None) -> uuid.UUID:
     return value if value is not None else uuid.uuid4()
 
 
+def _loaded_relationship(instance: Any, name: str) -> Any | None:
+    """Read an ORM relationship only when already loaded.
+
+    Lifecycle checks are also used on detached runtime payloads. Triggering a
+    lazy load here would either perform hidden IO or raise MissingGreenlet /
+    DetachedInstanceError, so production entry points eager-load the owner and
+    this helper treats an unavailable projection as unknown rather than active
+    evidence of deactivation.
+    """
+
+    try:
+        state = sqlalchemy_inspect(instance)
+    except NoInspectionAvailable:
+        return getattr(instance, name, None)
+    if name in state.unloaded:
+        return None
+    return getattr(instance, name, None)
+
+
 def get_agent_lifecycle_block_reason(agent: Any) -> str | None:
     """Return why an agent may not be used, or ``None`` when active."""
     if getattr(agent, "deleted_at", None) is not None:
@@ -38,13 +59,17 @@ def get_agent_lifecycle_block_reason(agent: Any) -> str | None:
     if getattr(agent, "deactivated_at", None) is not None:
         return "deactivated"
 
-    sponsor = getattr(agent, "sponsor", None)
-    if sponsor is not None and getattr(sponsor, "is_active", True) is False:
-        return "inactive_sponsor"
+    # ``sponsor_user_id`` is immutable delegation provenance. Runtime
+    # availability follows the mutable current owner, with creator used only
+    # for legacy rows that predate ``owner_user_id``.
+    owner_user_id = getattr(agent, "owner_user_id", None)
+    owner = _loaded_relationship(agent, "owner" if owner_user_id is not None else "creator")
+    if owner is not None and getattr(owner, "is_active", True) is False:
+        return "inactive_owner"
 
-    sponsor_is_active = getattr(agent, "sponsor_is_active", None)
-    if sponsor_is_active is False:
-        return "inactive_sponsor"
+    owner_is_active = getattr(agent, "owner_is_active", None)
+    if owner_is_active is False:
+        return "inactive_owner"
 
     return None
 
@@ -59,8 +84,11 @@ def agent_lifecycle_active_clause():
         Agent.deleted_at.is_(None),
         Agent.deactivated_at.is_(None),
         or_(
-            Agent.sponsor_user_id.is_(None),
-            Agent.sponsor_user_id.in_(select(User.id).where(User.is_active.is_(True))),
+            Agent.owner_user_id.in_(select(User.id).where(User.is_active.is_(True))),
+            and_(
+                Agent.owner_user_id.is_(None),
+                Agent.creator_id.in_(select(User.id).where(User.is_active.is_(True))),
+            ),
         ),
     )
 
@@ -99,8 +127,9 @@ async def ensure_agent_identity(
     if getattr(agent, "id", None) is None:
         agent.id = uuid.uuid4()
 
-    owner_user_id = getattr(agent, "owner_user_id", None) or agent.creator_id
-    sponsor_id = getattr(agent, "sponsor_user_id", None) or owner_user_id
+    # Legacy rows were historically repaired from owner first. This is only a
+    # provenance backfill and never participates in current Owner authority.
+    sponsor_id = getattr(agent, "sponsor_user_id", None) or getattr(agent, "owner_user_id", None) or agent.creator_id
     agent.sponsor_user_id = sponsor_id
 
     participant = None

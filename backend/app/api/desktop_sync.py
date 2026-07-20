@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.permissions import agent_owned_by_clause, effective_agent_owner_id
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.agent import Agent
@@ -91,11 +92,16 @@ async def _get_user_agents(db: AsyncSession, user: User) -> list[AgentProjection
     """Load the user's agents (tenant-isolated)."""
     result = await db.execute(
         select(Agent).where(
-            Agent.owner_user_id == user.id,
+            agent_owned_by_clause(user.id),
             Agent.tenant_id == user.tenant_id,
         )
     )
-    return [AgentProjection.model_validate(a) for a in result.scalars().all()]
+    return [
+        AgentProjection.model_validate(agent).model_copy(
+            update={"owner_user_id": effective_agent_owner_id(agent)}
+        )
+        for agent in result.scalars().all()
+    ]
 
 
 async def _get_llm_config(db: AsyncSession, tenant_id: uuid.UUID | None) -> list[LLMConfigItem]:

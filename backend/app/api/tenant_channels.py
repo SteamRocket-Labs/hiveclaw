@@ -14,6 +14,7 @@ from pydantic import BaseModel, field_serializer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.permissions import agent_owned_by_clause
 from app.core.security import get_current_admin
 from app.database import get_db, pin_rls_tenant_context
 from app.models.agent import Agent
@@ -278,7 +279,7 @@ async def _resolve_sender_agent(
     result = await db.execute(
         select(Agent.id)
         .where(
-            Agent.owner_user_id == user.id,
+            agent_owned_by_clause(user.id),
             Agent.tenant_id == tenant_id,
         )
         .limit(1)

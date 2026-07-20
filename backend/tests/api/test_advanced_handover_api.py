@@ -49,11 +49,11 @@ async def test_list_handover_candidates_returns_active_same_tenant_users(monkeyp
     candidate_id = uuid4()
     agent = SimpleNamespace(id=agent_id, creator_id=creator_id, owner_user_id=creator_id, tenant_id=tenant_id)
 
-    async def fake_require_manage(db, current_user, requested_agent_id):
+    async def fake_require_owner_or_admin(db, current_user, requested_agent_id, **_kwargs):
         assert requested_agent_id == agent_id
         return agent
 
-    monkeypatch.setattr(advanced_api, "require_agent_manage_access", fake_require_manage)
+    monkeypatch.setattr(advanced_api, "require_agent_owner_or_admin", fake_require_owner_or_admin)
 
     db = _FakeDB(
         [
@@ -90,6 +90,7 @@ async def test_list_handover_candidates_returns_active_same_tenant_users(monkeyp
 @pytest.mark.asyncio
 async def test_handover_rejects_target_user_from_other_tenant(monkeypatch):
     import app.api.advanced as advanced_api
+    import app.services.agent_ownership_service as ownership_service
 
     tenant_id = uuid4()
     creator_id = uuid4()
@@ -99,6 +100,7 @@ async def test_handover_rejects_target_user_from_other_tenant(monkeypatch):
         id=agent_id,
         creator_id=creator_id,
         owner_user_id=creator_id,
+        sponsor_user_id=creator_id,
         tenant_id=tenant_id,
         name="Ops Bot",
     )
@@ -109,18 +111,18 @@ async def test_handover_rejects_target_user_from_other_tenant(monkeypatch):
         display_name="Bob",
     )
 
-    async def fake_require_manage(db, current_user, requested_agent_id):
+    async def fake_require_owner_or_admin(db, current_user, requested_agent_id, **_kwargs):
         assert requested_agent_id == agent_id
         return agent
 
-    monkeypatch.setattr(advanced_api, "require_agent_manage_access", fake_require_manage)
+    monkeypatch.setattr(ownership_service, "require_agent_owner_or_admin", fake_require_owner_or_admin)
 
     db = _FakeDB([_ScalarResult(foreign_user)])
 
     with pytest.raises(HTTPException) as exc:
         await advanced_api.handover_agent(
             agent_id=agent_id,
-            data=SimpleNamespace(new_owner_id=target_user_id),
+            data=advanced_api.HandoverRequest(new_owner_id=target_user_id, reason="Manual transfer"),
             current_user=SimpleNamespace(id=creator_id, tenant_id=tenant_id),
             db=db,
         )
@@ -131,6 +133,7 @@ async def test_handover_rejects_target_user_from_other_tenant(monkeypatch):
 @pytest.mark.asyncio
 async def test_handover_changes_current_owner_without_rewriting_creator_provenance(monkeypatch):
     import app.api.advanced as advanced_api
+    import app.services.agent_ownership_service as ownership_service
 
     tenant_id = uuid4()
     creator_id = uuid4()
@@ -140,6 +143,7 @@ async def test_handover_changes_current_owner_without_rewriting_creator_provenan
         id=agent_id,
         creator_id=creator_id,
         owner_user_id=creator_id,
+        sponsor_user_id=creator_id,
         tenant_id=tenant_id,
         name="Ops Bot",
     )
@@ -150,17 +154,31 @@ async def test_handover_changes_current_owner_without_rewriting_creator_provenan
         display_name="Bob",
     )
 
-    async def fake_require_manage(db, current_user, requested_agent_id):
+    async def fake_require_owner_or_admin(db, current_user, requested_agent_id, **_kwargs):
         assert requested_agent_id == agent_id
         return agent
 
-    monkeypatch.setattr(advanced_api, "require_agent_manage_access", fake_require_manage)
+    monkeypatch.setattr(ownership_service, "require_agent_owner_or_admin", fake_require_owner_or_admin)
+
+    async def fake_register_agent_asset(*_args, **_kwargs):
+        return None
+
+    async def fake_rebind(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr(ownership_service, "register_agent_asset", fake_register_agent_asset)
+    monkeypatch.setattr(ownership_service, "_rebind_active_collaboration_memberships", fake_rebind)
 
     db = _FakeDB([_ScalarResult(target_user)])
 
     result = await advanced_api.handover_agent(
         agent_id=agent_id,
-        data=SimpleNamespace(new_owner_id=target_user_id),
+        data=advanced_api.HandoverRequest(
+            new_owner_id=target_user_id,
+            expected_owner_id=creator_id,
+            reason="Manual transfer",
+            request_id="handover-1",
+        ),
         current_user=SimpleNamespace(id=creator_id, tenant_id=tenant_id),
         db=db,
     )
@@ -169,4 +187,5 @@ async def test_handover_changes_current_owner_without_rewriting_creator_provenan
     assert result["new_owner"] == "Bob"
     assert agent.owner_user_id == target_user_id
     assert agent.creator_id == creator_id
+    assert agent.sponsor_user_id == creator_id
     assert db.flushed is True

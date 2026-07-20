@@ -164,7 +164,7 @@ async def test_agent_team_handoff_requires_confirmed_plan(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_agent_team_agent_loader_eager_loads_sponsor_for_lifecycle_check():
+async def test_agent_team_agent_loader_eager_loads_owner_and_creator_for_lifecycle_check():
     import app.services.plan_mode_agent_team_handoff as mod
 
     db = _AgentLoaderProbeDB()
@@ -172,4 +172,5 @@ async def test_agent_team_agent_loader_eager_loads_sponsor_for_lifecycle_check()
     await mod._load_agent(db, uuid4())
 
     option_paths = [str(getattr(option, "path", "")) for option in getattr(db.statement, "_with_options", ())]
-    assert any("Agent.sponsor" in path for path in option_paths)
+    assert any("Agent.owner" in path for path in option_paths)
+    assert any("Agent.creator" in path for path in option_paths)

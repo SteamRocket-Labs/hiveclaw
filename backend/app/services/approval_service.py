@@ -37,9 +37,8 @@ def _same_uuid(left: object, right: object) -> bool:
 def _can_resolve_agent_approval(agent: Agent, user: User) -> bool:
     """Return whether user can resolve approvals for this agent."""
     user_id = getattr(user, "id", None)
-    if any(
-        _same_uuid(getattr(agent, field, None), user_id) for field in ("creator_id", "owner_user_id", "sponsor_user_id")
-    ):
+    owner_user_id = getattr(agent, "owner_user_id", None) or getattr(agent, "creator_id", None)
+    if _same_uuid(owner_user_id, user_id):
         return True
     if getattr(user, "role", None) == "platform_admin":
         return True

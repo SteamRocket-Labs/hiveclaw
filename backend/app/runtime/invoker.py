@@ -507,7 +507,9 @@ async def _resolve_runtime_config(agent_id: uuid.UUID | None) -> RuntimeConfig:
             require_tenant=True,
             source="agent_runtime_config_bootstrap",
         ) as db:
-            result = await db.execute(select(Agent).options(selectinload(Agent.sponsor)).where(Agent.id == agent_id))
+            result = await db.execute(
+                select(Agent).options(selectinload(Agent.owner), selectinload(Agent.creator)).where(Agent.id == agent_id)
+            )
             agent = result.scalar_one_or_none()
             if not agent:
                 logger.warning("[Invoker] Agent %s not found in DB — fail-closed", agent_id)

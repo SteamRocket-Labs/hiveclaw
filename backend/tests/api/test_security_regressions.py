@@ -98,7 +98,9 @@ def test_api_routes_do_not_register_duplicate_path_method_pairs():
 def test_legacy_openclaw_gateway_routes_are_removed():
     from app.main import app
 
-    paths = {route.path for route in app.routes}
+    # FastAPI 0.139 keeps included routers as lazy route wrappers. OpenAPI is
+    # the stable flattened public path surface across eager and lazy routers.
+    paths = set(app.openapi()["paths"])
 
     assert not any(path.startswith("/api/gateway") for path in paths)
     assert not any(path.startswith("/api/v1/gateway") for path in paths)

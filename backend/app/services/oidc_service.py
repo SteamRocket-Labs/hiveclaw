@@ -153,6 +153,8 @@ async def login_or_register(
     user = result.scalar_one_or_none()
 
     if user:
+        if not user.is_active:
+            raise ValueError("User account is inactive")
         # Update profile info from IdP
         if oidc_user.get("picture"):
             user.avatar_url = oidc_user["picture"]
@@ -171,6 +173,8 @@ async def login_or_register(
         result = await db.execute(select(User).where(User.email == email, User.tenant_id == tenant_id))
         user = result.scalar_one_or_none()
         if user:
+            if not user.is_active:
+                raise ValueError("User account is inactive")
             # Bind OIDC identity to existing user
             user.oidc_sub = sub
             user.oidc_issuer = issuer

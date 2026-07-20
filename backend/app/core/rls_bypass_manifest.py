@@ -262,6 +262,14 @@ RLS_BYPASS_ALLOWLIST = (
     ),
     _grant(
         *(
+            "app/core/permissions.py",
+            "require_agent_owner_or_admin",
+            "f'platform-admin agent ownership lookup for {agent_id}'",
+            ("session-state-only",),
+        )
+    ),
+    _grant(
+        *(
             "app/core/security.py",
             "verify_refresh_token",
             "'refresh token lookup'",
@@ -840,7 +848,7 @@ RLS_BYPASS_ALLOWLIST = (
             "app/services/wechat_personal_stream.py",
             "start_all",
             "'wechat_personal start_all — enumerate all connected channels across tenants'",
-            ("select:ChannelConfig",),
+            ("select:ChannelConfig", "select:ExternalPrincipal.id"),
         )
     ),
     _grant(

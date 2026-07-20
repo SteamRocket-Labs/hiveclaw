@@ -87,7 +87,6 @@ def project_agent(agent: Any) -> AIAssetProjection:
         raise ValueError("tenant-owned Agent is required for AI asset registration")
     owner_id = _uuid(
         getattr(agent, "owner_user_id", None)
-        or getattr(agent, "sponsor_user_id", None)
         or getattr(agent, "creator_id", None)
     )
     config = {field: _json_value(getattr(agent, field, None)) for field in _AGENT_CONFIG_FIELDS}

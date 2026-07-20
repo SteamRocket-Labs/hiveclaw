@@ -450,6 +450,37 @@ describe('request cleanup adapters', () => {
     expect(get).toHaveBeenCalledWith('/agents/agent-1/capability-installs');
   });
 
+  it('routes governed Agent owner transfers through agentApi', async () => {
+    vi.doMock('./core/request', async () => {
+      const actual = await vi.importActual<typeof import('./core/request')>('./core/request');
+      return {
+        ...actual,
+        get: vi.fn(),
+        post: vi.fn(),
+      };
+    });
+    const { agentApi } = await import('./domains/agents');
+    const { get, post } = await import('./core/request');
+    vi.mocked(get).mockResolvedValue([]);
+    vi.mocked(post).mockResolvedValue({});
+
+    await agentApi.getOwnerCandidates('agent-1');
+    await agentApi.transferOwnership('agent-1', {
+      new_owner_id: 'user-2',
+      expected_owner_id: 'user-1',
+      reason: 'Responsibility changed',
+      request_id: 'handover-1',
+    });
+
+    expect(get).toHaveBeenCalledWith('/agents/agent-1/handover-candidates');
+    expect(post).toHaveBeenCalledWith('/agents/agent-1/handover', {
+      new_owner_id: 'user-2',
+      expected_owner_id: 'user-1',
+      reason: 'Responsibility changed',
+      request_id: 'handover-1',
+    });
+  });
+
   it('wraps skill adapter string arguments in backend payload shapes', async () => {
     vi.doMock('./core/request', async () => {
       const actual = await vi.importActual<typeof import('./core/request')>('./core/request');
@@ -496,20 +527,39 @@ describe('request cleanup adapters', () => {
         ...actual,
         get: vi.fn(),
         patch: vi.fn(),
+        post: vi.fn(),
       };
     });
     const { usersApi } = await import('./domains/users');
-    const { get, patch } = await import('./core/request');
+    const { get, patch, post } = await import('./core/request');
     vi.mocked(get).mockResolvedValue([]);
     vi.mocked(patch).mockResolvedValue({});
+    vi.mocked(post).mockResolvedValue({});
 
     await usersApi.list('tenant-1');
-    await usersApi.updateQuota('user-1', { quota_message_limit: 10 });
-    await usersApi.updateRole('user-1', 'org_admin');
+    await usersApi.updateQuota('user-1', { quota_tokens_per_day: 10, quota_tokens_per_month: 100 });
+    await usersApi.updateRole('user-1', 'org_admin', 'tenant-1');
+    await usersApi.previewOffboarding('user-1', 'tenant-1');
+    await usersApi.offboard('user-1', {
+      successor_user_id: 'admin-1',
+      expected_agent_ids: ['agent-1'],
+      reason: 'Member departed',
+      request_id: 'offboard-1',
+    }, 'tenant-1');
 
     expect(get).toHaveBeenCalledWith('/users/?tenant_id=tenant-1');
-    expect(patch).toHaveBeenCalledWith('/users/user-1/quota', { quota_message_limit: 10 });
-    expect(patch).toHaveBeenCalledWith('/org/users/user-1', { role: 'org_admin' });
+    expect(patch).toHaveBeenCalledWith('/users/user-1/quota', {
+      quota_tokens_per_day: 10,
+      quota_tokens_per_month: 100,
+    });
+    expect(patch).toHaveBeenCalledWith('/users/user-1/role?tenant_id=tenant-1', { role: 'org_admin' });
+    expect(get).toHaveBeenCalledWith('/users/user-1/offboarding-preview?tenant_id=tenant-1');
+    expect(post).toHaveBeenCalledWith('/users/user-1/offboard?tenant_id=tenant-1', {
+      successor_user_id: 'admin-1',
+      expected_agent_ids: ['agent-1'],
+      reason: 'Member departed',
+      request_id: 'offboard-1',
+    });
   });
 
   it('routes plaza data access through plazaApi', async () => {

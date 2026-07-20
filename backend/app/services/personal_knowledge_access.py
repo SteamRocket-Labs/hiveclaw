@@ -146,7 +146,7 @@ def _owner_agent_predicate(*, tenant_id: uuid.UUID, owner_user_id: uuid.UUID, ag
             Agent.id == agent_id,
             Agent.tenant_id == tenant_id,
             Agent.deleted_at.is_(None),
-            func.coalesce(Agent.owner_user_id, Agent.sponsor_user_id, Agent.creator_id) == owner_user_id,
+            func.coalesce(Agent.owner_user_id, Agent.creator_id) == owner_user_id,
         )
     )
 
@@ -380,7 +380,7 @@ async def resolve_personal_knowledge_permission(
                         Agent.id == principal.agent_id,
                         Agent.tenant_id == tenant_id,
                         Agent.deleted_at.is_(None),
-                        func.coalesce(Agent.owner_user_id, Agent.sponsor_user_id, Agent.creator_id) == owner_user_id,
+                        func.coalesce(Agent.owner_user_id, Agent.creator_id) == owner_user_id,
                     )
                 )
             ).scalar_one_or_none()

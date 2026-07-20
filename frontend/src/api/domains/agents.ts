@@ -54,6 +54,30 @@ export interface HrAgentInfo {
   status: string;
 }
 
+export interface AgentOwnerCandidate {
+  id: string;
+  display_name: string;
+  email: string;
+  role: string;
+}
+
+export interface AgentOwnerTransferRequest {
+  new_owner_id: string;
+  expected_owner_id?: string;
+  reason: string;
+  request_id?: string;
+}
+
+export interface AgentOwnerTransferReceipt {
+  status: 'transferred' | 'unchanged';
+  agent_id: string;
+  agent_name: string;
+  old_owner_id?: string | null;
+  new_owner_id: string;
+  new_owner: string;
+  request_id?: string | null;
+}
+
 export interface AgentCapabilityInstall {
   id: string;
   agent_id?: string;
@@ -104,6 +128,9 @@ export const agentApi = {
   stop: (id: string) => post<Agent>(`/agents/${id}/stop`),
   getMetrics: (id: string) => get<AgentMetrics>(`/agents/${id}/metrics`),
   getPermissions: (id: string) => get<AgentPermissions>(`/agents/${id}/permissions`),
+  getOwnerCandidates: (id: string) => get<AgentOwnerCandidate[]>(`/agents/${id}/handover-candidates`),
+  transferOwnership: (id: string, data: AgentOwnerTransferRequest) =>
+    post<AgentOwnerTransferReceipt>(`/agents/${id}/handover`, data),
   updatePermissions: (id: string, data: { scope_type: string; scope_ids?: string[]; access_level: string }) =>
     put<void>(`/agents/${id}/permissions`, data),
   getApprovals: (id: string) => get<unknown[]>(`/agents/${id}/approvals`),

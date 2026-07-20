@@ -983,7 +983,7 @@ def test_interactive_owner_agent_search_uses_requester_bound_owner_chain() -> No
     assert "agents.tenant_id" in compiled
     assert "agents.deleted_at IS NULL" in compiled
     assert "agents.owner_user_id" in compiled
-    assert "agents.sponsor_user_id" in compiled
+    assert "agents.sponsor_user_id" not in compiled
     assert "agents.creator_id" in compiled
     assert "knowledge_grants" in compiled
     assert "knowledge_documents.agent_searchable IS true" in compiled

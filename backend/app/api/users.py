@@ -3,7 +3,7 @@
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,15 +12,33 @@ from app.core.security import get_current_user
 from app.core.permissions import agent_owned_by_clause
 from app.database import enter_rls_bypass, get_db, pin_rls_tenant_context
 from app.models.agent import Agent
+from app.models.audit import AuditLog
 from app.models.user import User
 from app.services.external_principal_service import platform_member_user_predicate
+from app.services.user_offboarding_service import (
+    build_user_offboarding_preview,
+    find_user_offboarding_replay,
+    offboard_loaded_user,
+    publish_user_offboarding_runtime_cancellations,
+)
 
 router = APIRouter(prefix="/users", tags=["users"])
 
 
 class UserQuotaUpdate(BaseModel):
-    quota_tokens_per_day: int | None = None
-    quota_tokens_per_month: int | None = None
+    quota_tokens_per_day: int | None = Field(default=None, ge=0)
+    quota_tokens_per_month: int | None = Field(default=None, ge=0)
+
+
+class UserRoleUpdate(BaseModel):
+    role: str = Field(pattern="^(member|org_admin)$")
+
+
+class UserOffboardingRequest(BaseModel):
+    successor_user_id: uuid.UUID
+    expected_agent_ids: list[uuid.UUID]
+    reason: str = Field(min_length=3, max_length=500)
+    request_id: str = Field(min_length=1, max_length=200)
 
 
 class UserOut(BaseModel):
@@ -44,6 +62,77 @@ class UserOut(BaseModel):
     source: str = "registered"
 
     model_config = {"from_attributes": True}
+
+
+def _offboarding_response(receipt) -> dict:
+    return {
+        "status": receipt.status,
+        "user_id": str(receipt.user_id),
+        "successor_user_id": str(receipt.successor_user_id),
+        "transferred_agent_ids": [str(value) for value in receipt.transferred_agent_ids],
+        "transferred_agent_count": len(receipt.transferred_agent_ids),
+        "revocations": {
+            "agent_permissions": receipt.revocations.agent_permissions,
+            "resource_permissions": receipt.revocations.resource_permissions,
+            "knowledge_grants": receipt.revocations.knowledge_grants,
+            "refresh_tokens": receipt.revocations.refresh_tokens,
+            "external_principals": receipt.revocations.external_principals,
+            "local_bridge_connections": receipt.revocations.local_bridge_connections,
+            "runtime_tasks": receipt.revocations.runtime_tasks,
+            "pending_approvals": receipt.revocations.pending_approvals,
+        },
+        "request_id": receipt.request_id,
+    }
+
+
+async def _agent_count(db: AsyncSession, user: User) -> int:
+    result = await db.execute(
+        select(func.count())
+        .select_from(Agent)
+        .where(
+            agent_owned_by_clause(user.id),
+            Agent.tenant_id == user.tenant_id,
+        )
+    )
+    return int(result.scalar() or 0)
+
+
+def _user_out(user: User, *, agents_count: int) -> UserOut:
+    return UserOut(
+        id=user.id,
+        username=user.username,
+        email=user.email,
+        display_name=user.display_name,
+        role=user.role,
+        is_active=user.is_active,
+        quota_tokens_per_day=user.quota_tokens_per_day,
+        quota_tokens_per_month=user.quota_tokens_per_month,
+        tokens_used_today=user.tokens_used_today,
+        tokens_used_month=user.tokens_used_month,
+        tokens_used_total=user.tokens_used_total,
+        agents_count=agents_count,
+        feishu_open_id=getattr(user, "feishu_open_id", None),
+        created_at=user.created_at.isoformat() if getattr(user, "created_at", None) else None,
+        source="feishu" if getattr(user, "feishu_open_id", None) else "registered",
+    )
+
+
+async def _load_target_user(
+    db: AsyncSession,
+    *,
+    current_user: User,
+    user_id: uuid.UUID,
+    tenant_id: str | None,
+    lock: bool = False,
+) -> User:
+    target_tenant_id = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    stmt = select(User).where(User.id == user_id, User.tenant_id == target_tenant_id)
+    if lock:
+        stmt = stmt.with_for_update()
+    target_user = (await db.execute(stmt)).scalar_one_or_none()
+    if target_user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return target_user
 
 
 @router.get("/", response_model=list[UserOut])
@@ -72,35 +161,155 @@ async def list_users(
 
     out = []
     for u in users:
-        count_result = await db.execute(
+        out.append(_user_out(u, agents_count=await _agent_count(db, u)))
+    return out
+
+
+@router.patch("/{user_id}/role", response_model=UserOut)
+async def update_user_role(
+    user_id: uuid.UUID,
+    data: UserRoleUpdate,
+    tenant_id: str | None = None,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Change a tenant member role without trusting a browser-side role guess."""
+    if current_user.role not in ("platform_admin", "org_admin"):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    target = await _load_target_user(
+        db,
+        current_user=current_user,
+        user_id=user_id,
+        tenant_id=tenant_id,
+        lock=True,
+    )
+    if target.role == "platform_admin":
+        raise HTTPException(status_code=403, detail="Platform administrator role cannot be changed here")
+    if target.id == current_user.id and data.role != "org_admin":
+        remaining = await db.execute(
             select(func.count())
-            .select_from(Agent)
+            .select_from(User)
             .where(
-                agent_owned_by_clause(u.id),
-                Agent.tenant_id == tid,
+                User.tenant_id == target.tenant_id,
+                User.is_active.is_(True),
+                User.role == "org_admin",
+                User.id != target.id,
             )
         )
-        agents_count = count_result.scalar() or 0
+        if int(remaining.scalar() or 0) == 0:
+            raise HTTPException(status_code=409, detail="Assign another company administrator before changing this role")
+    old_role = target.role
+    target.role = data.role
+    db.add(
+        AuditLog(
+            user_id=current_user.id,
+            tenant_id=target.tenant_id,
+            action="user:role_changed",
+            details={"target_user_id": str(target.id), "from_role": old_role, "to_role": data.role},
+        )
+    )
+    await db.flush()
+    return _user_out(target, agents_count=await _agent_count(db, target))
 
-        user_dict = {
-            "id": u.id,
-            "username": u.username,
-            "email": u.email,
-            "display_name": u.display_name,
-            "role": u.role,
-            "is_active": u.is_active,
-            "quota_tokens_per_day": u.quota_tokens_per_day,
-            "quota_tokens_per_month": u.quota_tokens_per_month,
-            "tokens_used_today": u.tokens_used_today,
-            "tokens_used_month": u.tokens_used_month,
-            "tokens_used_total": u.tokens_used_total,
-            "agents_count": agents_count,
-            "feishu_open_id": getattr(u, "feishu_open_id", None),
-            "created_at": u.created_at.isoformat() if u.created_at else None,
-            "source": "feishu" if getattr(u, "feishu_open_id", None) else "registered",
-        }
-        out.append(UserOut(**user_dict))
-    return out
+
+@router.get("/{user_id}/offboarding-preview")
+async def preview_user_offboarding(
+    user_id: uuid.UUID,
+    tenant_id: str | None = None,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return the exact impact and eligible successor set before offboarding."""
+    if current_user.role not in ("platform_admin", "org_admin"):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    target = await _load_target_user(
+        db,
+        current_user=current_user,
+        user_id=user_id,
+        tenant_id=tenant_id,
+    )
+    if target.role == "platform_admin":
+        raise HTTPException(status_code=400, detail="Platform administrators cannot be offboarded from a tenant")
+    if target.id == current_user.id:
+        raise HTTPException(status_code=400, detail="Administrators cannot offboard their own account")
+    preview = await build_user_offboarding_preview(db, target_user=target, actor=current_user)
+    return {
+        "user_id": str(preview.user_id),
+        "display_name": preview.display_name,
+        "is_active": preview.is_active,
+        "owned_agents": preview.owned_agents,
+        "eligible_successors": preview.eligible_successors,
+        "default_successor_id": str(preview.default_successor_id) if preview.default_successor_id else None,
+        "revocations": {
+            "agent_permissions": preview.agent_permissions,
+            "resource_permissions": preview.resource_permissions,
+            "knowledge_grants": preview.knowledge_grants,
+            "refresh_tokens": preview.refresh_tokens,
+            "external_principals": preview.external_principals,
+            "local_bridge_connections": preview.local_bridge_connections,
+            "runtime_tasks": preview.runtime_tasks,
+            "pending_approvals": preview.pending_approvals,
+        },
+        "blockers": [] if preview.eligible_successors else ["No active company administrator can receive ownership"],
+    }
+
+
+@router.post("/{user_id}/offboard")
+async def offboard_user(
+    user_id: uuid.UUID,
+    data: UserOffboardingRequest,
+    tenant_id: str | None = None,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Atomically transfer Agent ownership, revoke authority, and deactivate a User."""
+    if current_user.role not in ("platform_admin", "org_admin"):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    target = await _load_target_user(
+        db,
+        current_user=current_user,
+        user_id=user_id,
+        tenant_id=tenant_id,
+        lock=True,
+    )
+    if target.id == current_user.id:
+        raise HTTPException(status_code=400, detail="Administrators cannot offboard their own account")
+    replay = await find_user_offboarding_replay(
+        db,
+        target_user=target,
+        successor_user_id=data.successor_user_id,
+        expected_agent_ids=data.expected_agent_ids,
+        reason=data.reason,
+        request_id=data.request_id,
+    )
+    if replay is not None:
+        await db.commit()
+        await publish_user_offboarding_runtime_cancellations(replay)
+        return _offboarding_response(replay)
+    successor = (
+        await db.execute(
+            select(User)
+            .where(User.id == data.successor_user_id, User.tenant_id == target.tenant_id)
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    if successor is None:
+        raise HTTPException(status_code=404, detail="Successor not found")
+    receipt = await offboard_loaded_user(
+        db,
+        target_user=target,
+        successor=successor,
+        actor=current_user,
+        expected_agent_ids=data.expected_agent_ids,
+        reason=data.reason,
+        request_id=data.request_id,
+    )
+    # Commit the complete authority change before advisory cross-process stop
+    # signals are published. The RuntimeTask status + claim-version fence is
+    # authoritative even when Redis is unavailable.
+    await db.commit()
+    await publish_user_offboarding_runtime_cancellations(receipt)
+    return _offboarding_response(receipt)
 
 
 @router.patch("/{user_id}/quota", response_model=UserOut)
@@ -133,9 +342,9 @@ async def update_user_quota(
     if current_user.role != "platform_admin" and user.tenant_id != current_user.tenant_id:
         raise HTTPException(status_code=403, detail="Cannot modify users outside your organization")
 
-    if data.quota_tokens_per_day is not None:
+    if "quota_tokens_per_day" in data.model_fields_set:
         user.quota_tokens_per_day = data.quota_tokens_per_day
-    if data.quota_tokens_per_month is not None:
+    if "quota_tokens_per_month" in data.model_fields_set:
         user.quota_tokens_per_month = data.quota_tokens_per_month
 
     await db.commit()
@@ -151,17 +360,4 @@ async def update_user_quota(
     )
     agents_count = count_result.scalar() or 0
 
-    return UserOut(
-        id=user.id,
-        username=user.username,
-        email=user.email,
-        display_name=user.display_name,
-        role=user.role,
-        is_active=user.is_active,
-        quota_tokens_per_day=user.quota_tokens_per_day,
-        quota_tokens_per_month=user.quota_tokens_per_month,
-        tokens_used_today=user.tokens_used_today,
-        tokens_used_month=user.tokens_used_month,
-        tokens_used_total=user.tokens_used_total,
-        agents_count=agents_count,
-    )
+    return _user_out(user, agents_count=agents_count)

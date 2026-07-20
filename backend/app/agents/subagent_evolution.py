@@ -509,7 +509,7 @@ async def _notify_owner(agent_id: object, spec_name: str, proposal_id: str, *, a
         agent = (await db.execute(select(Agent).where(Agent.id == agent_id))).scalar_one_or_none()
         if agent is None:
             return
-        recipient = agent.owner_user_id
+        recipient = agent.owner_user_id or agent.creator_id
         if recipient is None:
             return
         title = (

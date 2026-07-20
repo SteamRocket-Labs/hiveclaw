@@ -238,6 +238,9 @@ class FeishuAuthProvider:
         if not user:
             user = await self._find_user_by_legacy_fields(db, tenant_id, profile)
 
+        if user is not None and not user.is_active:
+            raise ValueError("User account is inactive")
+
         if not user:
             user = await self._create_user(db, tenant_id, profile)
 

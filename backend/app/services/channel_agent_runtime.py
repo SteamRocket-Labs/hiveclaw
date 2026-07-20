@@ -491,7 +491,9 @@ async def call_agent_llm(
     from app.models.agent import Agent
     from app.models.llm import LLMModel
 
-    agent_result = await db.execute(select(Agent).options(selectinload(Agent.sponsor)).where(Agent.id == agent_id))
+    agent_result = await db.execute(
+        select(Agent).options(selectinload(Agent.owner), selectinload(Agent.creator)).where(Agent.id == agent_id)
+    )
     agent = agent_result.scalar_one_or_none()
     if not agent:
         return "⚠️ 数字员工未找到"

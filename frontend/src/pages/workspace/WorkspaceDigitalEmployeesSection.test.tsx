@@ -46,6 +46,7 @@ vi.mock('@tanstack/react-query', () => ({
             role_description: 'System HR',
             status: 'running',
             creator_id: 'admin-1',
+            owner_user_id: 'admin-1',
             created_at: '2026-06-20T00:00:00Z',
             agent_type: 'native',
           },
@@ -55,8 +56,41 @@ vi.mock('@tanstack/react-query', () => ({
             role_description: 'Product analysis',
             status: 'idle',
             creator_id: 'admin-1',
+            owner_user_id: 'owner-2',
             created_at: '2026-06-20T00:00:00Z',
             agent_type: 'native',
+          },
+        ],
+        isLoading: false,
+        error: null,
+      };
+    }
+    if (String(queryKey[0]) === 'users') {
+      return {
+        data: [
+          {
+            id: 'admin-1',
+            username: 'admin',
+            display_name: 'Company Admin',
+            email: 'admin@example.com',
+            role: 'org_admin',
+            is_active: true,
+            tokens_used_today: 0,
+            tokens_used_month: 0,
+            tokens_used_total: 0,
+            agents_count: 1,
+          },
+          {
+            id: 'owner-2',
+            username: 'owner',
+            display_name: 'Agent Owner',
+            email: 'owner@example.com',
+            role: 'member',
+            is_active: true,
+            tokens_used_today: 0,
+            tokens_used_month: 0,
+            tokens_used_total: 0,
+            agents_count: 1,
           },
         ],
         isLoading: false,
@@ -84,7 +118,9 @@ describe('WorkspaceDigitalEmployeesSection', () => {
 
     expect(markup).toContain('Digital Employee Management');
     expect(markup).toContain('AI Product Manager');
+    expect(markup).toContain('Agent Owner');
     expect(markup).toContain('href="/agents/agent-1"');
+    expect(markup).toContain('Change owner');
     expect(markup).toContain('Delete employee');
     expect(markup).toContain('System protected');
     expect(markup).not.toContain('Delete __system_hr__');

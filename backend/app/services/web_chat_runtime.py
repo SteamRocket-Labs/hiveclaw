@@ -4600,7 +4600,9 @@ async def _load_runtime_context(
                 session = session_result.scalar_one_or_none()
 
         agent_result = await db.execute(
-            select(Agent).options(selectinload(Agent.sponsor)).where(Agent.id == runtime_task.parent_agent_id)
+            select(Agent)
+            .options(selectinload(Agent.owner), selectinload(Agent.creator))
+            .where(Agent.id == runtime_task.parent_agent_id)
         )
         agent = agent_result.scalar_one_or_none()
         if agent is None:

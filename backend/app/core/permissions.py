@@ -35,10 +35,12 @@ async def check_agent_access(db: AsyncSession, user: User, agent_id: uuid.UUID) 
             actor_id=str(user.id),
         ) as bypass_db:
             result = await bypass_db.execute(
-                select(Agent).options(selectinload(Agent.sponsor)).where(Agent.id == agent_id)
+                select(Agent).options(selectinload(Agent.owner), selectinload(Agent.creator)).where(Agent.id == agent_id)
             )
     else:
-        result = await db.execute(select(Agent).options(selectinload(Agent.sponsor)).where(Agent.id == agent_id))
+        result = await db.execute(
+            select(Agent).options(selectinload(Agent.owner), selectinload(Agent.creator)).where(Agent.id == agent_id)
+        )
     agent = result.scalar_one_or_none()
     if not agent:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
@@ -138,6 +140,57 @@ async def require_agent_manage_access(db: AsyncSession, user: User, agent_id: uu
     if access_level != "manage":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Manage access to this agent is required")
     return agent
+
+
+async def require_agent_owner_or_admin(
+    db: AsyncSession,
+    user: User,
+    agent_id: uuid.UUID,
+    *,
+    lock: bool = False,
+) -> Agent:
+    """Require root ownership authority, excluding delegated ``manage`` grants.
+
+    Ownership changes are stronger than ordinary configuration management.
+    They are available only to the current owner, a same-tenant org admin, or
+    a platform admin. The lookup intentionally ignores inactive-owner lifecycle
+    blocking so an administrator can recover an orphaned Agent.
+    """
+
+    stmt = (
+        select(Agent)
+        .options(selectinload(Agent.owner), selectinload(Agent.creator))
+        .where(Agent.id == agent_id)
+    )
+    if lock:
+        stmt = stmt.with_for_update()
+
+    if user.role == "platform_admin":
+        async with enter_rls_bypass(
+            db,
+            reason=f"platform-admin agent ownership lookup for {agent_id}",
+            actor_id=str(user.id),
+        ) as bypass_db:
+            result = await bypass_db.execute(stmt)
+    else:
+        result = await db.execute(stmt)
+    agent = result.scalar_one_or_none()
+    if agent is None or agent.deleted_at is not None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
+    if agent.tenant_id is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
+
+    if user.role == "platform_admin":
+        await pin_rls_tenant_context(db, agent.tenant_id)
+        return agent
+    if user.tenant_id is None or user.tenant_id != agent.tenant_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
+    if user.role == "org_admin" or effective_agent_owner_id(agent) == user.id:
+        return agent
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Only the current owner or an administrator can transfer Agent ownership",
+    )
 
 
 @dataclass(frozen=True)

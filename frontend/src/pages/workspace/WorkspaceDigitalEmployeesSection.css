@@ -100,6 +100,20 @@
   white-space: nowrap;
 }
 
+.ws-employees-owner-name {
+  font-weight: 500;
+}
+
+.ws-employees-owner-email {
+  max-width: 220px;
+  margin-top: 2px;
+  overflow: hidden;
+  color: var(--text-tertiary);
+  font-size: var(--text-meta);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .ws-employees-actions {
   display: inline-flex;
   align-items: center;
@@ -113,4 +127,30 @@
 
 .ws-employees-del {
   color: var(--error);
+}
+
+.ws-employees-owner-modal {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.ws-employees-owner-note {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-row);
+  line-height: 1.55;
+}
+
+.ws-employees-owner-reason {
+  min-height: 96px;
+  resize: vertical;
+}
+
+.ws-employees-owner-empty {
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--warning-subtle);
+  color: var(--warning);
+  font-size: var(--text-row);
 }

@@ -1,9 +1,12 @@
+import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
 
-import { agentApi } from '../../api/domains/agents';
+import { agentApi, type AgentOwnerCandidate } from '../../api/domains/agents';
+import { usersApi } from '../../api/domains/users';
 import { requestAppConfirm, showAppToast } from '../../components/AppDialogs';
+import { Modal } from '../../components/ui';
 import { useAuthStore } from '../../stores';
 import type { Agent } from '../../types';
 
@@ -18,6 +21,11 @@ export default function WorkspaceDigitalEmployeesSection({ selectedTenantId }: W
     const queryClient = useQueryClient();
     const currentUser = useAuthStore((state) => state.user);
     const canManageEmployees = currentUser?.role === 'org_admin' || currentUser?.role === 'platform_admin';
+    const [ownershipAgent, setOwnershipAgent] = useState<Agent | null>(null);
+    const [ownerCandidates, setOwnerCandidates] = useState<AgentOwnerCandidate[]>([]);
+    const [newOwnerId, setNewOwnerId] = useState('');
+    const [ownershipReason, setOwnershipReason] = useState('');
+    const [ownerCandidatesLoading, setOwnerCandidatesLoading] = useState(false);
 
     const { data: hrAgent } = useQuery({
         queryKey: ['hr-agent', selectedTenantId],
@@ -32,6 +40,14 @@ export default function WorkspaceDigitalEmployeesSection({ selectedTenantId }: W
         enabled: canManageEmployees,
     });
 
+    const { data: users = [] } = useQuery({
+        queryKey: ['users', selectedTenantId, 'agent-owner-display'],
+        queryFn: () => usersApi.list(selectedTenantId || undefined),
+        enabled: canManageEmployees,
+    });
+
+    const userById = new Map(users.map((user) => [user.id, user]));
+
     const deleteAgentMutation = useMutation({
         mutationFn: (agentId: string) => agentApi.remove(agentId),
         onSuccess: () => {
@@ -42,6 +58,34 @@ export default function WorkspaceDigitalEmployeesSection({ selectedTenantId }: W
         },
         onError: (error: any) => {
             showAppToast(error?.message || t('workspace.digitalEmployees.employeeDeleteFailed', 'Failed to delete digital employee.'), 'error');
+        },
+    });
+
+    const transferOwnerMutation = useMutation({
+        mutationFn: ({ agent, ownerId, reason }: { agent: Agent; ownerId: string; reason: string }) =>
+            agentApi.transferOwnership(agent.id, {
+                new_owner_id: ownerId,
+                expected_owner_id: agent.owner_user_id || agent.creator_id,
+                reason,
+                request_id: globalThis.crypto?.randomUUID?.() || `handover-${Date.now()}`,
+            }),
+        onSuccess: async (receipt) => {
+            await queryClient.invalidateQueries({ queryKey: ['agents'] });
+            await queryClient.invalidateQueries({ queryKey: ['agents', selectedTenantId, 'admin-management'] });
+            setOwnershipAgent(null);
+            setOwnerCandidates([]);
+            setNewOwnerId('');
+            setOwnershipReason('');
+            showAppToast(
+                t('workspace.digitalEmployees.ownerChanged', 'Owner changed to {{name}}.', { name: receipt.new_owner }),
+                'success',
+            );
+        },
+        onError: (error: any) => {
+            showAppToast(
+                error?.message || t('workspace.digitalEmployees.ownerChangeFailed', 'Failed to change owner.'),
+                'error',
+            );
         },
     });
 
@@ -61,6 +105,36 @@ export default function WorkspaceDigitalEmployeesSection({ selectedTenantId }: W
         });
         if (!confirmed) return;
         await deleteAgentMutation.mutateAsync(agent.id);
+    };
+
+    const openOwnershipModal = async (agent: Agent) => {
+        setOwnershipAgent(agent);
+        setNewOwnerId('');
+        setOwnershipReason('');
+        setOwnerCandidates([]);
+        setOwnerCandidatesLoading(true);
+        try {
+            const candidates = await agentApi.getOwnerCandidates(agent.id);
+            setOwnerCandidates(candidates);
+            if (candidates.length === 1) setNewOwnerId(candidates[0].id);
+        } catch (error: any) {
+            setOwnershipAgent(null);
+            showAppToast(
+                error?.message || t('workspace.digitalEmployees.ownerCandidatesFailed', 'Failed to load eligible owners.'),
+                'error',
+            );
+        } finally {
+            setOwnerCandidatesLoading(false);
+        }
+    };
+
+    const submitOwnershipTransfer = async () => {
+        if (!ownershipAgent || !newOwnerId || !ownershipReason.trim()) return;
+        await transferOwnerMutation.mutateAsync({
+            agent: ownershipAgent,
+            ownerId: newOwnerId,
+            reason: ownershipReason.trim(),
+        });
     };
 
     if (!canManageEmployees) {
@@ -105,6 +179,7 @@ export default function WorkspaceDigitalEmployeesSection({ selectedTenantId }: W
                             <thead>
                                 <tr className="ws-employees-thead-row">
                                     <th className="ws-employees-th">{t('workspace.digitalEmployees.employeeName', 'Employee')}</th>
+                                    <th className="ws-employees-th">{t('workspace.digitalEmployees.employeeOwner', 'Owner')}</th>
                                     <th className="ws-employees-th">{t('workspace.digitalEmployees.employeeStatus', 'Status')}</th>
                                     <th className="ws-employees-th">{t('workspace.digitalEmployees.employeeType', 'Type')}</th>
                                     <th className="ws-employees-th-right">{t('workspace.digitalEmployees.employeeActions', 'Actions')}</th>
@@ -113,6 +188,8 @@ export default function WorkspaceDigitalEmployeesSection({ selectedTenantId }: W
                             <tbody>
                                 {(agents as Agent[]).map((agent) => {
                                     const protectedAgent = isSystemProtectedAgent(agent);
+                                    const ownerId = agent.owner_user_id || agent.creator_id;
+                                    const owner = userById.get(ownerId);
                                     return (
                                         <tr key={agent.id} className="ws-employees-row">
                                             <td className="ws-employees-td">
@@ -121,6 +198,12 @@ export default function WorkspaceDigitalEmployeesSection({ selectedTenantId }: W
                                                     {agent.role_description || t('employees.noRole', 'No role description yet')}
                                                 </div>
                                             </td>
+                                            <td className="ws-employees-td">
+                                                <div className="ws-employees-owner-name">
+                                                    {owner?.display_name || owner?.email || t('workspace.digitalEmployees.ownerUnknown', 'Unknown user')}
+                                                </div>
+                                                {owner?.email && <div className="ws-employees-owner-email">{owner.email}</div>}
+                                            </td>
                                             <td className="ws-employees-td">{agent.status}</td>
                                             <td className="ws-employees-td">{agent.agent_type || 'native'}</td>
                                             <td className="ws-employees-td-right">
@@ -128,6 +211,13 @@ export default function WorkspaceDigitalEmployeesSection({ selectedTenantId }: W
                                                     <Link to={`/agents/${agent.id}`} className="btn btn-ghost">
                                                         {t('employees.actions.detail', 'Detail')}
                                                     </Link>
+                                                    <button
+                                                        type="button"
+                                                        className="btn btn-ghost"
+                                                        onClick={() => void openOwnershipModal(agent)}
+                                                    >
+                                                        {t('workspace.digitalEmployees.changeOwner', 'Change owner')}
+                                                    </button>
                                                     {protectedAgent ? (
                                                         <span className="ws-employees-protected">
                                                             {t('workspace.digitalEmployees.systemProtected', 'System protected')}
@@ -157,6 +247,94 @@ export default function WorkspaceDigitalEmployeesSection({ selectedTenantId }: W
                     </div>
                 )}
             </div>
+            <Modal
+                open={Boolean(ownershipAgent)}
+                onClose={() => {
+                    if (!transferOwnerMutation.isPending) setOwnershipAgent(null);
+                }}
+                title={t('workspace.digitalEmployees.changeOwnerTitle', 'Change Agent owner')}
+                width={520}
+                footer={(
+                    <>
+                        <button
+                            type="button"
+                            className="btn btn-secondary"
+                            onClick={() => setOwnershipAgent(null)}
+                            disabled={transferOwnerMutation.isPending}
+                        >
+                            {t('common.cancel', 'Cancel')}
+                        </button>
+                        <button
+                            type="button"
+                            className="btn btn-primary"
+                            onClick={() => void submitOwnershipTransfer()}
+                            disabled={
+                                ownerCandidatesLoading
+                                || !newOwnerId
+                                || !ownershipReason.trim()
+                                || transferOwnerMutation.isPending
+                            }
+                        >
+                            {transferOwnerMutation.isPending
+                                ? t('common.loading', 'Saving...')
+                                : t('workspace.digitalEmployees.confirmOwnerChange', 'Confirm transfer')}
+                        </button>
+                    </>
+                )}
+            >
+                <div className="ws-employees-owner-modal">
+                    <p className="ws-employees-owner-note">
+                        {t(
+                            'workspace.digitalEmployees.changeOwnerNote',
+                            'Only current responsibility changes. Creator and sponsor history remain unchanged.',
+                        )}
+                    </p>
+                    <div className="form-group">
+                        <label className="form-label" htmlFor="agent-owner-candidate">
+                            {t('workspace.digitalEmployees.newOwner', 'New owner')}
+                        </label>
+                        <select
+                            id="agent-owner-candidate"
+                            className="form-input"
+                            value={newOwnerId}
+                            onChange={(event) => setNewOwnerId(event.target.value)}
+                            disabled={ownerCandidatesLoading || transferOwnerMutation.isPending}
+                        >
+                            <option value="">
+                                {ownerCandidatesLoading
+                                    ? t('common.loading', 'Loading...')
+                                    : t('workspace.digitalEmployees.selectOwner', 'Select an active company member')}
+                            </option>
+                            {ownerCandidates.map((candidate) => (
+                                <option key={candidate.id} value={candidate.id}>
+                                    {candidate.display_name} · {candidate.email}
+                                </option>
+                            ))}
+                        </select>
+                    </div>
+                    <div className="form-group">
+                        <label className="form-label" htmlFor="agent-owner-reason">
+                            {t('workspace.digitalEmployees.ownerChangeReason', 'Reason')}
+                        </label>
+                        <textarea
+                            id="agent-owner-reason"
+                            className="form-input ws-employees-owner-reason"
+                            value={ownershipReason}
+                            onChange={(event) => setOwnershipReason(event.target.value)}
+                            maxLength={500}
+                            placeholder={t(
+                                'workspace.digitalEmployees.ownerChangeReasonPlaceholder',
+                                'Explain why responsibility is being transferred',
+                            )}
+                        />
+                    </div>
+                    {!ownerCandidatesLoading && ownerCandidates.length === 0 && (
+                        <div className="ws-employees-owner-empty">
+                            {t('workspace.digitalEmployees.noOwnerCandidates', 'No other active company member is eligible.')}
+                        </div>
+                    )}
+                </div>
+            </Modal>
         </div>
     );
 }

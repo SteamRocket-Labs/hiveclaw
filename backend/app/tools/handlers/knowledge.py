@@ -55,7 +55,7 @@ async def _resolve_agent_owner(
     # authenticated requester for this exact runtime invocation.
     if is_hr_agent(agent):
         return _coerce_uuid(requester_user_id)
-    return agent.owner_user_id or agent.sponsor_user_id or agent.creator_id
+    return agent.owner_user_id or agent.creator_id
 
 
 def _proposal_idempotency_key(request: ToolExecutionRequest) -> str:

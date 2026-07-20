@@ -171,6 +171,7 @@ class Agent(Base):
     # Relationships
     creator: Mapped["User"] = relationship("User", back_populates="created_agents", foreign_keys=[creator_id])
     sponsor: Mapped["User"] = relationship("User", foreign_keys=[sponsor_user_id])
+    owner: Mapped["User | None"] = relationship("User", foreign_keys=[owner_user_id])
     participant: Mapped["Participant"] = relationship("Participant", foreign_keys=[participant_id])
     permissions: Mapped[list["AgentPermission"]] = relationship(back_populates="agent", cascade="all, delete-orphan")
     tasks: Mapped[list["Task"]] = relationship(back_populates="agent", cascade="all, delete-orphan")
@@ -261,6 +262,9 @@ def _ensure_agent_identity_before_flush(session: Session, _flush_context, _insta
         if obj.id is None:
             obj.id = uuid.uuid4()
         if obj.sponsor_user_id is None:
+            # New rows enter before any handover, so this preserves the
+            # historical owner-first legacy backfill without making Sponsor a
+            # runtime authority fallback.
             obj.sponsor_user_id = obj.owner_user_id or obj.creator_id
         if obj.participant_id is None:
             participant = Participant(

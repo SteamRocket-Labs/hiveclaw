@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.permissions import effective_agent_owner_id
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.agent import Agent
@@ -79,7 +80,7 @@ async def _get_owned_sub_agent(db: AsyncSession, user: User, agent_id: uuid.UUID
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
     if get_agent_lifecycle_block_reason(agent):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
-    if agent.owner_user_id != user.id:
+    if effective_agent_owner_id(agent) != user.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not your agent")
     if agent.parent_agent_id is None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Desktop can only modify sub-agents")

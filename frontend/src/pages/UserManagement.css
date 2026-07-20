@@ -8,7 +8,8 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-  --umg-cols: 1.4fr 1.4fr 0.8fr 0.7fr 0.7fr 0.8fr 0.8fr 0.8fr 0.8fr 100px;
+  overflow-x: auto;
+  --umg-cols: 1.25fr 1.35fr 0.8fr 0.65fr 0.75fr 0.7fr 0.5fr 0.85fr 0.85fr 170px;
 }
 
 /* ── Toast — 浮层通知 ──────────────────────────────── */
@@ -61,6 +62,7 @@
   color: var(--text-tertiary);
   text-transform: uppercase;
   letter-spacing: 0.05em;
+  min-width: 1180px;
 }
 .user-mgmt-th-sort {
   cursor: pointer;
@@ -79,6 +81,10 @@
   gap: 10px;
   align-items: center;
   padding: var(--space-3) var(--space-4);
+  min-width: 1180px;
+}
+.user-mgmt-row.is-inactive {
+  opacity: 0.68;
 }
 .user-mgmt-name {
   font-weight: 500;
@@ -97,11 +103,6 @@
   color: var(--text-secondary);
   font-variant-numeric: tabular-nums;
 }
-.user-mgmt-cell-ttl {
-  font-size: var(--text-row);
-  font-variant-numeric: tabular-nums;
-}
-
 /* ── Role badge / selector / text ──────────────────── */
 .user-mgmt-role-badge {
   margin-left: var(--space-1);
@@ -129,6 +130,24 @@
   color: var(--text-secondary);
 }
 
+/* ── Account state ─────────────────────────────────── */
+.user-mgmt-status {
+  display: inline-flex;
+  align-items: center;
+  border-radius: var(--radius-sm);
+  padding: 2px 7px;
+  font-size: var(--text-tiny);
+  white-space: nowrap;
+}
+.user-mgmt-status.is-active {
+  background: var(--success-subtle);
+  color: var(--success);
+}
+.user-mgmt-status.is-inactive {
+  background: var(--bg-tertiary);
+  color: var(--text-tertiary);
+}
+
 /* ── Source pill ───────────────────────────────────── */
 .user-mgmt-source {
   font-size: var(--text-tiny);
@@ -145,20 +164,29 @@
   color: var(--success);
 }
 
-/* ── Quota fractions ───────────────────────────────── */
-.user-mgmt-quota-used {
-  font-size: var(--text-body);
-  font-weight: 500;
+/* ── Counts and token quotas ───────────────────────── */
+.user-mgmt-number,
+.user-mgmt-quota-value {
+  font-size: var(--text-row);
   font-variant-numeric: tabular-nums;
 }
-.user-mgmt-quota-total {
-  font-size: var(--text-meta);
-  color: var(--text-tertiary);
-  font-variant-numeric: tabular-nums;
+.user-mgmt-number {
+  font-weight: 600;
 }
 
+.user-mgmt-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-1);
+}
 .user-mgmt-edit-btn {
   padding: var(--space-1) 10px;
+  font-size: var(--text-meta);
+}
+.user-mgmt-offboard-btn {
+  color: var(--error);
+  padding: var(--space-1) 8px;
   font-size: var(--text-meta);
 }
 
@@ -170,7 +198,7 @@
 }
 .user-mgmt-edit-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr 1fr;
+  grid-template-columns: 1fr 1fr;
   gap: var(--space-4);
 }
 .user-mgmt-edit-label {
@@ -197,4 +225,80 @@
 }
 .user-mgmt-page-num {
   min-width: 32px;
+}
+
+/* ── Governed member offboarding ───────────────────── */
+.user-mgmt-offboard-loading {
+  padding: var(--space-6) 0;
+  text-align: center;
+  color: var(--text-secondary);
+}
+.user-mgmt-offboard-modal {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.user-mgmt-offboard-summary,
+.user-mgmt-offboard-recovery {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-row);
+  line-height: 1.55;
+}
+.user-mgmt-offboard-agents {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.user-mgmt-offboard-agents span {
+  border-radius: var(--radius-sm);
+  padding: 3px 8px;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-size: var(--text-meta);
+}
+.user-mgmt-offboard-impact {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: var(--space-2);
+}
+.user-mgmt-offboard-impact > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+}
+.user-mgmt-offboard-impact strong {
+  font-size: var(--text-title);
+  font-variant-numeric: tabular-nums;
+}
+.user-mgmt-offboard-impact span {
+  color: var(--text-tertiary);
+  font-size: var(--text-tiny);
+}
+.user-mgmt-offboard-blocker {
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--error-subtle);
+  color: var(--error);
+  font-size: var(--text-row);
+}
+.user-mgmt-offboard-reason {
+  min-height: 88px;
+  resize: vertical;
+}
+.user-mgmt-offboard-recovery {
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--warning-subtle);
+  color: var(--warning);
+}
+
+@media (max-width: 700px) {
+  .user-mgmt-edit-grid,
+  .user-mgmt-offboard-impact {
+    grid-template-columns: 1fr 1fr;
+  }
 }

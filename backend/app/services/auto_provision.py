@@ -11,6 +11,7 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.permissions import agent_owned_by_clause
 from app.models.agent import Agent, AgentTemplate
 from app.models.user import User
 from app.services.agent_identity_lifecycle import agent_lifecycle_active_clause, ensure_agent_identity
@@ -28,7 +29,7 @@ async def ensure_main_agent(db: AsyncSession, user: User) -> Agent | None:
 
     existing_result = await db.execute(
         select(Agent).where(
-            Agent.owner_user_id == user.id,
+            agent_owned_by_clause(user.id),
             Agent.tenant_id == user.tenant_id,
             Agent.parent_agent_id.is_(None),
             agent_lifecycle_active_clause(),

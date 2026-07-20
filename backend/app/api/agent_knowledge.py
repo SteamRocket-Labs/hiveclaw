@@ -120,7 +120,6 @@ def _data_root() -> Path:
 def _owner_user_id_for_personal_kb(agent: Agent) -> uuid.UUID:
     owner_id = (
         getattr(agent, "owner_user_id", None)
-        or getattr(agent, "sponsor_user_id", None)
         or getattr(agent, "creator_id", None)
     )
     if owner_id is None:

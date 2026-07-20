@@ -236,10 +236,11 @@ async def test_detached_target_creates_once_background_trigger(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_current_session_agent_loader_eager_loads_sponsor_for_lifecycle_check():
+async def test_current_session_agent_loader_eager_loads_owner_and_creator_for_lifecycle_check():
     db = _AgentLoaderProbeDB()
 
     await mod._load_agent(db, uuid4())
 
     option_paths = [str(getattr(option, "path", "")) for option in getattr(db.statement, "_with_options", ())]
-    assert any("Agent.sponsor" in path for path in option_paths)
+    assert any("Agent.owner" in path for path in option_paths)
+    assert any("Agent.creator" in path for path in option_paths)

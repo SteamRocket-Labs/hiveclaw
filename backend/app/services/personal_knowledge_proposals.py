@@ -193,7 +193,6 @@ def _proposal_view(row: PersonalKnowledgeProposal) -> PersonalKnowledgeProposalV
 def _owner_id(agent: Any) -> uuid.UUID | None:
     raw = (
         getattr(agent, "owner_user_id", None)
-        or getattr(agent, "sponsor_user_id", None)
         or getattr(agent, "creator_id", None)
     )
     return uuid.UUID(str(raw)) if raw else None

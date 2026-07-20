@@ -361,7 +361,7 @@ def test_org_admin_cannot_resolve_other_tenant_agent_approval() -> None:
     assert _can_resolve_agent_approval(agent, user) is False
 
 
-def test_local_agent_owner_or_sponsor_can_resolve_approval() -> None:
+def test_only_current_owner_not_creator_or_sponsor_can_resolve_approval() -> None:
     from app.services.approval_service import _can_resolve_agent_approval
 
     tenant_id = uuid4()
@@ -379,7 +379,11 @@ def test_local_agent_owner_or_sponsor_can_resolve_approval() -> None:
         agent,
         SimpleNamespace(id=owner_id, tenant_id=tenant_id, role="member"),
     )
-    assert _can_resolve_agent_approval(
+    assert not _can_resolve_agent_approval(
         agent,
         SimpleNamespace(id=sponsor_id, tenant_id=tenant_id, role="member"),
+    )
+    assert not _can_resolve_agent_approval(
+        agent,
+        SimpleNamespace(id=agent.creator_id, tenant_id=tenant_id, role="member"),
     )

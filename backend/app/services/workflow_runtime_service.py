@@ -1033,14 +1033,13 @@ class WorkflowRuntimeService:
         try:
             async with self._session(tenant_id) as session:
                 agent = (await session.execute(select(Agent).where(Agent.id == agent_id))).scalar_one_or_none()
-                # Headless runs may carry no user; the agent always has an owning
-                # principal (owner → creator → sponsor) — a valid users.id FK so
+                # Headless runs may carry no user; current owner (or creator for
+                # legacy rows) is the active principal and a valid users.id FK so
                 # the multi-tenant ChatSession row is well-formed.
                 if resolved_user is None and agent is not None:
                     owner = (
                         getattr(agent, "owner_user_id", None)
                         or getattr(agent, "creator_id", None)
-                        or getattr(agent, "sponsor_user_id", None)
                     )
                     resolved_user = str(owner) if owner else None
                 if resolved_user is None:

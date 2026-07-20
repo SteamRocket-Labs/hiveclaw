@@ -148,6 +148,30 @@ async def test_require_agent_manage_access_rejects_use_only_grant(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_require_agent_owner_or_admin_rejects_non_owner_manage_grantee():
+    import app.core.permissions as permissions_module
+
+    tenant_id = uuid4()
+    agent = SimpleNamespace(
+        id=uuid4(),
+        creator_id=uuid4(),
+        owner_user_id=uuid4(),
+        tenant_id=tenant_id,
+        deleted_at=None,
+    )
+    user = SimpleNamespace(id=uuid4(), role="member", tenant_id=tenant_id, department_id=None)
+    db = _PermissionsDB(
+        agent=agent,
+        permissions=[SimpleNamespace(scope_type="user", scope_id=user.id, access_level="manage")],
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await permissions_module.require_agent_owner_or_admin(db, user, agent.id)
+
+    assert exc.value.status_code == 403
+
+
+@pytest.mark.asyncio
 async def test_check_agent_access_allows_org_admin_to_audit_same_tenant_private_agent():
     import app.core.permissions as permissions_module
 
@@ -233,7 +257,7 @@ async def test_check_agent_access_hides_soft_deleted_agent_before_role_grants():
 
 
 @pytest.mark.asyncio
-async def test_check_agent_access_rejects_inactive_sponsor_agent():
+async def test_check_agent_access_rejects_inactive_current_owner_agent():
     import app.core.permissions as permissions_module
 
     tenant_id = uuid4()
@@ -241,10 +265,11 @@ async def test_check_agent_access_rejects_inactive_sponsor_agent():
     agent = SimpleNamespace(
         id=agent_id,
         creator_id=uuid4(),
+        owner_user_id=uuid4(),
         tenant_id=tenant_id,
         deleted_at=None,
         deactivated_at=None,
-        sponsor=SimpleNamespace(is_active=False),
+        owner=SimpleNamespace(is_active=False),
     )
     user = SimpleNamespace(id=uuid4(), role="org_admin", tenant_id=tenant_id, department_id=None)
     db = _PermissionsDB(agent=agent)

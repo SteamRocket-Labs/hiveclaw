@@ -694,7 +694,6 @@ async def _agent_capability_names(
     ).scalar_one_or_none()
     owner_id = (
         getattr(agent, "owner_user_id", None)
-        or getattr(agent, "sponsor_user_id", None)
         or getattr(agent, "creator_id", None)
         if agent is not None
         else None

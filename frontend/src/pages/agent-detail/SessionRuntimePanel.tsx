@@ -223,6 +223,8 @@ export function userFacingRuntimeStatus(status: unknown): string {
     failed: 'Needs attention',
     blocked: 'Needs attention',
     provider_error: 'Needs attention',
+    quota_denied: 'Needs attention',
+    quota_unavailable: 'Needs attention',
     not_admitted: 'Skipped',
     skipped: 'Skipped',
     suspended: 'Paused',

@@ -508,7 +508,9 @@ async def _resolve_runtime_config(agent_id: uuid.UUID | None) -> RuntimeConfig:
             source="agent_runtime_config_bootstrap",
         ) as db:
             result = await db.execute(
-                select(Agent).options(selectinload(Agent.owner), selectinload(Agent.creator)).where(Agent.id == agent_id)
+                select(Agent)
+                .options(selectinload(Agent.owner), selectinload(Agent.creator))
+                .where(Agent.id == agent_id)
             )
             agent = result.scalar_one_or_none()
             if not agent:
@@ -1526,10 +1528,13 @@ async def _enforce_invocation_quota(request: AgentInvocationRequest) -> AgentInv
         return None
     except QuotaExceeded as exc:
         event = {
-            "type": "quota",
+            "type": "quota_exceeded",
+            "title": "Token quota reached",
             "status": "denied",
+            "code": "token_quota_exceeded",
             "quota_type": exc.quota_type,
             "message": exc.message,
+            "retryable": False,
         }
         if request.on_event:
             await _maybe_await(request.on_event(event))
@@ -1537,10 +1542,22 @@ async def _enforce_invocation_quota(request: AgentInvocationRequest) -> AgentInv
         return AgentInvocationResult(content=exc.message, tokens_used=0, terminal_reason=TerminalReason.QUOTA_DENIED)
     except Exception as exc:  # noqa: BLE001 — quota check is a hard admission gate
         logger.exception("[Invoker] Token quota check failed — blocking invocation")
+        message = "Token quota could not be verified. Retry when quota service is available."
+        event = {
+            "type": "quota_exceeded",
+            "title": "Quota service unavailable",
+            "status": "unavailable",
+            "code": "token_quota_unavailable",
+            "message": message,
+            "retryable": True,
+            "error_type": type(exc).__name__,
+        }
+        if request.on_event:
+            await _maybe_await(request.on_event(event))
         return AgentInvocationResult(
-            content=f"Unable to verify token quota; request blocked ({type(exc).__name__}).",
+            content=message,
             tokens_used=0,
-            terminal_reason=TerminalReason.PROVIDER_ERROR,
+            terminal_reason=TerminalReason.QUOTA_UNAVAILABLE,
         )
 
 

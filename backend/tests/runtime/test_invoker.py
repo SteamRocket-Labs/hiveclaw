@@ -53,6 +53,7 @@ async def test_invoke_agent_enforces_user_token_quota_before_kernel(monkeypatch)
 
     user_id = uuid4()
     kernel_called = False
+    events: list[dict] = []
 
     async def fake_check_user_token_quota(checked_user_id):
         assert checked_user_id == user_id
@@ -75,12 +76,75 @@ async def test_invoke_agent_enforces_user_token_quota_before_kernel(monkeypatch)
             role_description="desc",
             agent_id=uuid4(),
             user_id=user_id,
+            on_event=events.append,
         )
     )
 
     assert kernel_called is False
     assert result.tokens_used == 0
+    assert result.terminal_reason.value == "quota_denied"
     assert "Daily token limit reached" in result.content
+    assert events == [
+        {
+            "type": "quota_exceeded",
+            "title": "Token quota reached",
+            "status": "denied",
+            "code": "token_quota_exceeded",
+            "quota_type": "tokens_daily",
+            "message": "Daily token limit reached (10/10).",
+            "retryable": False,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_invoke_agent_reports_quota_authority_unavailable_without_calling_kernel(monkeypatch):
+    from app.runtime.invoker import AgentInvocationRequest, invoke_agent
+
+    user_id = uuid4()
+    kernel_called = False
+    events: list[dict] = []
+
+    async def unavailable_quota_authority(_checked_user_id, **_kwargs):
+        raise RuntimeError("database credentials must not leak")
+
+    class FakeKernel:
+        async def handle(self, _request):
+            nonlocal kernel_called
+            kernel_called = True
+            raise AssertionError("kernel must not run when quota authority is unavailable")
+
+    monkeypatch.setattr("app.runtime.invoker.check_user_token_quota", unavailable_quota_authority)
+    monkeypatch.setattr("app.runtime.invoker._resolve_kernel_for_request", lambda _request: FakeKernel())
+
+    result = await invoke_agent(
+        AgentInvocationRequest(
+            model=SimpleNamespace(provider="openai", model="gpt-4.1", api_key="key", base_url=None),
+            messages=[{"role": "user", "content": "hello"}],
+            agent_name="Agent",
+            role_description="desc",
+            agent_id=uuid4(),
+            user_id=user_id,
+            on_event=events.append,
+        )
+    )
+
+    assert kernel_called is False
+    assert result.tokens_used == 0
+    assert result.terminal_reason.value == "quota_unavailable"
+    assert result.content == "Token quota could not be verified. Retry when quota service is available."
+    assert "database credentials" not in result.content
+    assert events == [
+        {
+            "type": "quota_exceeded",
+            "title": "Quota service unavailable",
+            "status": "unavailable",
+            "code": "token_quota_unavailable",
+            "message": "Token quota could not be verified. Retry when quota service is available.",
+            "retryable": True,
+            "error_type": "RuntimeError",
+        }
+    ]
 
 
 @pytest.mark.asyncio

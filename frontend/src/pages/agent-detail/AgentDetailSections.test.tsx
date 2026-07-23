@@ -65,6 +65,8 @@ describe('userFacingRuntimeStatus', () => {
     expect(userFacingRuntimeStatus('blocked')).toBe('Needs attention');
     expect(userFacingRuntimeStatus('not_admitted')).toBe('Skipped');
     expect(userFacingRuntimeStatus('ready')).toBe('Ready');
+    expect(userFacingRuntimeStatus('quota_denied')).toBe('Needs attention');
+    expect(userFacingRuntimeStatus('quota_unavailable')).toBe('Needs attention');
     expect(userFacingRuntimeStatus('provider_stream_half_closed_internal')).toBe('Working');
   });
 });

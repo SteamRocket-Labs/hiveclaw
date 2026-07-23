@@ -44,6 +44,7 @@ class TerminalReason(str, Enum):
     HOOK_STOPPED = "hook_stopped"
     CLARIFICATION_REQUIRED = "clarification_required"
     QUOTA_DENIED = "quota_denied"
+    QUOTA_UNAVAILABLE = "quota_unavailable"
     TENANT_RESOLUTION_ERROR = "tenant_resolution_error"
     MEMORY_UNAVAILABLE = "memory_unavailable"
 

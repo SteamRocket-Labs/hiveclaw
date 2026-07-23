@@ -394,6 +394,37 @@ def test_build_session_native_event_preserves_generic_metadata():
     }
 
 
+def test_quota_exceeded_is_a_durable_session_native_event():
+    from app.services.chat_message_parts import (
+        SESSION_NATIVE_EVENT_TYPES,
+        build_session_native_event,
+    )
+
+    event = build_session_native_event(
+        {
+            "type": "quota_exceeded",
+            "title": "Quota service unavailable",
+            "message": "Token quota could not be verified. Retry when quota service is available.",
+            "status": "unavailable",
+            "code": "token_quota_unavailable",
+            "retryable": True,
+            "error_type": "RuntimeError",
+        }
+    )
+
+    assert "quota_exceeded" in SESSION_NATIVE_EVENT_TYPES
+    assert event["part"] == {
+        "type": "event",
+        "event_type": "quota_exceeded",
+        "title": "Quota service unavailable",
+        "text": "Token quota could not be verified. Retry when quota service is available.",
+        "status": "unavailable",
+        "code": "token_quota_unavailable",
+        "retryable": True,
+        "error_type": "RuntimeError",
+    }
+
+
 def test_build_session_native_event_preserves_task_notification_source():
     from app.services.chat_message_parts import build_session_native_event
 

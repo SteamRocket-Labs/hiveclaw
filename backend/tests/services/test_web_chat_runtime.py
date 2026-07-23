@@ -180,6 +180,26 @@ def test_terminal_status_never_comes_from_assistant_natural_language_prefix():
     assert runtime._terminal_status_from_transcript_event(event) == "completed"
 
 
+def test_quota_unavailable_is_a_failed_terminal_event_with_preserved_reason():
+    import app.services.web_chat_runtime as runtime
+    from app.kernel.contracts import TerminalReason
+
+    event = SimpleNamespace(
+        event_type="quota_exceeded",
+        metadata_json={"status": "unavailable", "retryable": True},
+        content="Token quota could not be verified.",
+    )
+
+    assert runtime._terminal_status_from_transcript_event(event) == "failed"
+    assert (
+        runtime._terminal_reason_value_for_web_run(
+            status="failed",
+            result_reason=TerminalReason.QUOTA_UNAVAILABLE,
+        )
+        == TerminalReason.QUOTA_UNAVAILABLE.value
+    )
+
+
 def test_terminal_task_update_persists_and_projects_terminal_reason():
     import app.services.web_chat_runtime as runtime
     from app.kernel.contracts import TerminalReason

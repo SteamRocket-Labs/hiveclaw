@@ -40,6 +40,7 @@ SESSION_NATIVE_EVENT_TITLES: dict[str, str] = {
     "runtime_action_completed": "Action Completed",
     "runtime_action_blocked": "Action Blocked",
     "runtime_action_failed": "Action Failed",
+    "quota_exceeded": "Token Quota",
 }
 SESSION_NATIVE_EVENT_TYPES = set(SESSION_NATIVE_EVENT_TITLES)
 
@@ -50,9 +51,12 @@ SESSION_NATIVE_EVENT_METADATA_KEYS = (
     "capability",
     "approval_required",
     "reason",
+    "code",
     "next_step",
     "retryable",
     "retry_reason",
+    "quota_type",
+    "error_type",
     "permission_request_id",
     "permission_request",
     "original_message_count",

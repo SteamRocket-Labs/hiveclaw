@@ -164,6 +164,7 @@ async def _record_token_usage_event(
     tokens: int,
     usage: dict | None,
     details: dict | None,
+    raise_on_error: bool = False,
 ) -> None:
     if tokens <= 0:
         return
@@ -171,17 +172,37 @@ async def _record_token_usage_event(
         from app.database import tenant_scoped_session
         from app.models.tenant import Tenant
         from app.models.token_usage_event import TokenUsageEvent
+        from app.models.user import User
         from sqlalchemy import select
 
         async with tenant_scoped_session(tenant_id) as db:
             now = datetime.now(timezone.utc)
             if tenant_id is not None:
-                tenant = (await db.execute(select(Tenant).where(Tenant.id == tenant_id))).scalar_one_or_none()
+                tenant = (
+                    await db.execute(select(Tenant).where(Tenant.id == tenant_id).with_for_update())
+                ).scalar_one_or_none()
                 if tenant:
                     _reset_user_or_tenant_counter(tenant, now=now)
                     tenant.tokens_used_today = (tenant.tokens_used_today or 0) + tokens
                     tenant.tokens_used_month = (tenant.tokens_used_month or 0) + tokens
                     tenant.tokens_used_total = (tenant.tokens_used_total or 0) + tokens
+            if user_id is not None:
+                user = (
+                    await db.execute(
+                        select(User)
+                        .where(
+                            User.id == user_id,
+                            User.tenant_id == tenant_id,
+                        )
+                        .with_for_update()
+                    )
+                ).scalar_one_or_none()
+                if user:
+                    _reset_user_or_tenant_counter(user, now=now)
+                    user.tokens_used_today = (user.tokens_used_today or 0) + tokens
+                    user.tokens_used_month = (user.tokens_used_month or 0) + tokens
+                    user.tokens_used_total = (user.tokens_used_total or 0) + tokens
+                    user.tokens_reset_at = now
             db.add(
                 TokenUsageEvent(
                     tenant_id=tenant_id,
@@ -197,6 +218,8 @@ async def _record_token_usage_event(
             )
             await db.commit()
     except Exception as e:
+        if raise_on_error:
+            raise
         logger.warning(f"Failed to record token usage event: {e}")
 
 
@@ -211,6 +234,7 @@ async def record_token_usage(
     tenant_id: uuid.UUID | None = None,
     usage: dict | None = None,
     details: dict | None = None,
+    raise_on_error: bool = False,
 ) -> None:
     """Record token consumption for an agent and its owner user.
 
@@ -290,6 +314,8 @@ async def record_token_usage(
             await db.commit()
             logger.debug(f"Recorded {tokens:,} tokens for agent {agent_id}" + (f" / user {user_id}" if user_id else ""))
     except Exception as e:
+        if raise_on_error:
+            raise
         logger.warning(f"Failed to record token usage: {e}")
 
 
@@ -303,6 +329,7 @@ async def record_autonomous_llm_token_usage(
     tenant_id: uuid.UUID | str | None = None,
     user_id: uuid.UUID | str | None = None,
     metadata: dict[str, Any] | None = None,
+    raise_on_error: bool = False,
 ) -> None:
     """Record usage for LLM calls that bypass AgentKernel.invoke_agent().
 
@@ -328,6 +355,7 @@ async def record_autonomous_llm_token_usage(
             tenant_id=coerced_tenant_id,
             usage=usage,
             details=metadata,
+            raise_on_error=raise_on_error,
         )
         return
 
@@ -341,4 +369,5 @@ async def record_autonomous_llm_token_usage(
         tokens=tokens,
         usage=usage,
         details=metadata,
+        raise_on_error=raise_on_error,
     )

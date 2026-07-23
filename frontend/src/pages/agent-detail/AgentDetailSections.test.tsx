@@ -292,6 +292,43 @@ vi.mock('@tanstack/react-query', () => ({
         refetch: vi.fn(),
       };
     }
+    if (key === 'owner-action-policy') {
+      return {
+        data: {
+          schema: 'hive.owner_action_policy.v1',
+          actions: {
+            'tool.external_effect': 'confirm_first',
+            'tool.local_read': 'full_authority',
+            'tool.local_write': 'full_authority',
+          },
+          version: 1,
+          revision_id: 'policy-revision-1',
+          content_hash: 'policy-hash-1',
+          source: 'migration',
+          valid: true,
+          error_code: null,
+          can_manage: true,
+        },
+        isLoading: false,
+        error: null,
+      };
+    }
+    if (key === 'owner-action-policy-history') {
+      return {
+        data: {
+          items: [
+            {
+              version: 1,
+              is_active: true,
+              change_source: 'migration',
+              created_at: '2026-07-24T00:00:00Z',
+            },
+          ],
+        },
+        isLoading: false,
+        error: null,
+      };
+    }
     if (key === 'local-bridge-connections') {
       return {
         data: {
@@ -2202,6 +2239,9 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).not.toContain('value="deny" selected=""');
     expect(markup).not.toContain('value="L2"');
     expect(markup).toContain('Access Permissions');
+    expect(markup).toContain('Action boundaries');
+    expect(markup).toContain('External actions');
+    expect(markup).toContain('Ask first');
     expect(markup).toContain('New conversation default');
     expect(markup).toContain('name="default_session_permission_mode"');
     expect(markup).toContain('value="default"');

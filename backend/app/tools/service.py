@@ -1567,6 +1567,9 @@ class ToolRuntimeService:
             ),
         )
         preflight_trace = preflight.as_decision_trace_preflight()
+        owner_action_policy = runtime_context.owner_action_policy
+        if owner_action_policy is not None:
+            preflight_trace["owner_action_policy"] = owner_action_policy.trace_payload(preflight_input.action)
         approval_decision = runtime_context.approval_decision
         approval_satisfied = (
             approval_decision is not None
@@ -1693,7 +1696,12 @@ def _build_tool_preflight_input(
     sensitivity = privacy.sensitivity
     company_conflict = bool(getattr(runtime_context, "company_boundary_conflict", False))
     execution_identity = getattr(runtime_context, "execution_identity", None) if runtime_context is not None else None
-    from app.tools.registry import tool_execution_policy
+    from app.services.owner_action_policy import (
+        ACTION_EXTERNAL_EFFECT,
+        ACTION_LOCAL_READ,
+        ACTION_LOCAL_WRITE,
+    )
+    from app.tools.registry import is_read_only_tool, tool_execution_policy
 
     execution_policy = tool_execution_policy(tool_name)
     explicit_user_authorized = bool(
@@ -1702,29 +1710,52 @@ def _build_tool_preflight_input(
     )
 
     if execution_policy.external_visible:
-        return ActionPreflightInput(
-            action=f"send external message via {tool_name}",
-            reversibility=BoundaryAxisLevel.MEDIUM,
-            representativeness=BoundaryAxisLevel.HIGH,
-            judgment_density=BoundaryAxisLevel.HIGH,
-            visibility=BoundaryAxisLevel.HIGH,
-            domain_specialization=BoundaryAxisLevel.MEDIUM,
-            charter_zone=CharterZone.CONFIRM_FIRST,
-            sensitivity=sensitivity,
-            company_boundary_conflict=company_conflict,
-            explicit_user_authorized=explicit_user_authorized,
-        )
+        action_id = ACTION_EXTERNAL_EFFECT
+        action_effectful = True
+        default_zone = CharterZone.CONFIRM_FIRST
+        reversibility = BoundaryAxisLevel.MEDIUM
+        representativeness = BoundaryAxisLevel.HIGH
+        judgment_density = BoundaryAxisLevel.HIGH
+        visibility = BoundaryAxisLevel.HIGH
+        domain_specialization = BoundaryAxisLevel.MEDIUM
+    elif is_read_only_tool(tool_name):
+        action_id = ACTION_LOCAL_READ
+        action_effectful = False
+        default_zone = CharterZone.FULL_AUTHORITY
+        reversibility = BoundaryAxisLevel.LOW
+        representativeness = BoundaryAxisLevel.LOW
+        judgment_density = BoundaryAxisLevel.LOW
+        visibility = BoundaryAxisLevel.LOW
+        domain_specialization = BoundaryAxisLevel.LOW
+    else:
+        action_id = ACTION_LOCAL_WRITE
+        action_effectful = True
+        default_zone = CharterZone.FULL_AUTHORITY
+        reversibility = BoundaryAxisLevel.LOW
+        representativeness = BoundaryAxisLevel.LOW
+        judgment_density = BoundaryAxisLevel.LOW
+        visibility = BoundaryAxisLevel.LOW
+        domain_specialization = BoundaryAxisLevel.LOW
+
+    owner_action_policy = getattr(runtime_context, "owner_action_policy", None)
+    charter_zone = owner_action_policy.zone_for(action_id) if owner_action_policy is not None else default_zone
+    charter_policy_valid = bool(getattr(owner_action_policy, "valid", True))
+    charter_policy_error = getattr(owner_action_policy, "error_code", None)
 
     return ActionPreflightInput(
-        action=f"execute local tool {tool_name}",
-        reversibility=BoundaryAxisLevel.LOW,
-        representativeness=BoundaryAxisLevel.LOW,
-        judgment_density=BoundaryAxisLevel.LOW,
-        visibility=BoundaryAxisLevel.LOW,
-        domain_specialization=BoundaryAxisLevel.LOW,
-        charter_zone=CharterZone.FULL_AUTHORITY,
+        action=action_id,
+        action_effectful=action_effectful,
+        reversibility=reversibility,
+        representativeness=representativeness,
+        judgment_density=judgment_density,
+        visibility=visibility,
+        domain_specialization=domain_specialization,
+        charter_zone=charter_zone,
         sensitivity=sensitivity,
         company_boundary_conflict=company_conflict,
+        explicit_user_authorized=explicit_user_authorized,
+        charter_policy_valid=charter_policy_valid,
+        charter_policy_error=charter_policy_error,
     )
 
 

@@ -1970,6 +1970,96 @@ async def test_execute_approved_does_not_override_preflight_refuse_and_marks_tic
 
 
 @pytest.mark.asyncio
+async def test_execute_approved_does_not_override_owner_never_do_policy():
+    from app.services.action_preflight import CharterZone
+    from app.services.approval_ticket import ApprovalExecutionTicket
+    from app.services.decision_trace import DecisionTraceStore
+    from app.services.owner_action_policy import (
+        ACTION_EXTERNAL_EFFECT,
+        ACTION_LOCAL_READ,
+        ACTION_LOCAL_WRITE,
+        build_owner_action_policy,
+    )
+    from app.tools.decision import ToolDecisionOutcome
+    from app.tools.runtime import ToolExecutionContext
+    from app.tools.service import ToolRuntimeService
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    requested_by = uuid4()
+    approved_by = uuid4()
+    approval_id = uuid4()
+    arguments = {"open_id": "ou_example", "message": "This must remain blocked."}
+    context = ToolExecutionContext(
+        agent_id=agent_id,
+        user_id=requested_by,
+        tenant_id=str(tenant_id),
+        workspace=Path("/tmp/owner-never-do"),
+        owner_action_policy=build_owner_action_policy(
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            actions={
+                ACTION_EXTERNAL_EFFECT: CharterZone.NEVER_DO,
+                ACTION_LOCAL_READ: CharterZone.FULL_AUTHORITY,
+                ACTION_LOCAL_WRITE: CharterZone.FULL_AUTHORITY,
+            },
+            version=5,
+            content_hash="owner-policy-v5",
+        ),
+    )
+    completions = []
+    registry = _FakeRegistry("SHOULD_NOT_RUN")
+
+    async def consume_ticket(**_kwargs):
+        return ApprovalExecutionTicket(
+            approval_id=approval_id,
+            agent_id=agent_id,
+            requested_by_user_id=requested_by,
+            approved_by_user_id=approved_by,
+            policy_snapshot_hash="approval-policy-hash",
+            idempotency_key=f"approval:{approval_id}",
+            decision_id="approval-before-never-do",
+            **_approved_ticket_runtime_fields(
+                context,
+                tool_name="send_feishu_message",
+                arguments=arguments,
+            ),
+        )
+
+    async def complete_ticket(**kwargs):
+        completions.append(kwargs)
+
+    service = ToolRuntimeService(
+        runtime_resolver=_FakeRuntimeResolver(context),
+        governance_resolver=_FakeGovernanceResolver(SimpleNamespace(), SimpleNamespace()),
+        registry=registry,
+        ensure_registry=lambda: None,
+        governance_runner=lambda *_args, **_kwargs: None,
+        fallback_executor=lambda *_args, **_kwargs: "fallback",
+        direct_fallback_executor=lambda *_args, **_kwargs: "direct-fallback",
+        activity_logger=None,
+        approval_ticket_consumer=consume_ticket,
+        approval_ticket_completer=complete_ticket,
+        decision_trace_store=DecisionTraceStore(),
+    )
+
+    result = await service.execute_approved(
+        approval_id=approval_id,
+        expected_agent_id=agent_id,
+        approved_by_user_id=approved_by,
+    )
+
+    assert result.outcome == ToolDecisionOutcome.DENY
+    assert result.reason_code == "preflight_refuse"
+    assert registry.calls == []
+    assert completions[0]["status"] == "failed"
+    policy_trace = completions[0]["receipt"]["runtime_evidence"]["preflight"]["owner_action_policy"]
+    assert policy_trace["action_id"] == ACTION_EXTERNAL_EFFECT
+    assert policy_trace["zone"] == "never_do"
+    assert policy_trace["version"] == 5
+
+
+@pytest.mark.asyncio
 async def test_execute_approved_restores_external_execution_identity(monkeypatch):
     from app.core.execution_context import ExecutionIdentity
     from app.services.approval_ticket import ApprovalExecutionTicket
@@ -2339,6 +2429,74 @@ async def test_tool_runtime_service_preflight_asks_before_external_visible_tool(
     assert decisions[0].preflight["decision"] == "ask"
     assert "checkpoint_id" not in decisions[0].preflight
     assert "evidence_refs" not in decisions[0].preflight
+
+
+@pytest.mark.asyncio
+async def test_tool_runtime_service_executes_external_effect_under_owner_full_authority():
+    from app.services.action_preflight import CharterZone
+    from app.services.owner_action_policy import (
+        ACTION_EXTERNAL_EFFECT,
+        ACTION_LOCAL_READ,
+        ACTION_LOCAL_WRITE,
+        build_owner_action_policy,
+    )
+    from app.tools.runtime import ToolExecutionContext
+    from app.tools.service import ToolRuntimeService
+
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    context = ToolExecutionContext(
+        agent_id=agent_id,
+        user_id=uuid4(),
+        tenant_id=str(tenant_id),
+        workspace=Path("/tmp/owner-full-authority"),
+        owner_action_policy=build_owner_action_policy(
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            actions={
+                ACTION_EXTERNAL_EFFECT: CharterZone.FULL_AUTHORITY,
+                ACTION_LOCAL_READ: CharterZone.FULL_AUTHORITY,
+                ACTION_LOCAL_WRITE: CharterZone.FULL_AUTHORITY,
+            },
+            version=3,
+            content_hash="owner-policy-v3",
+        ),
+    )
+    registry = _FakeRegistry("SENT")
+    trace = {}
+    service = ToolRuntimeService(
+        runtime_resolver=_FakeRuntimeResolver(context),
+        governance_resolver=_FakeGovernanceResolver(SimpleNamespace(), SimpleNamespace()),
+        registry=registry,
+        ensure_registry=lambda: None,
+        governance_runner=lambda *_args, **_kwargs: None,
+        fallback_executor=lambda *_args, **_kwargs: "fallback",
+        direct_fallback_executor=lambda *_args, **_kwargs: "direct-fallback",
+        activity_logger=None,
+    )
+
+    result = await service.execute(
+        "send_feishu_message",
+        {"message": "Send the owner-authorized external update."},
+        agent_id=context.agent_id,
+        user_id=context.user_id,
+        trace_metadata_sink=trace,
+    )
+
+    assert result == "SENT"
+    assert len(registry.calls) == 1
+    assert trace["preflight"]["decision"] == "do"
+    assert trace["preflight"]["owner_action_policy"] == {
+        "schema": "hive.owner_action_policy.v1",
+        "action_id": "tool.external_effect",
+        "zone": "full_authority",
+        "version": 3,
+        "revision_id": None,
+        "content_hash": "owner-policy-v3",
+        "source": "runtime",
+        "valid": True,
+        "error_code": None,
+    }
 
 
 @pytest.mark.asyncio

@@ -548,6 +548,7 @@ async def build_agent_context(
     budget_profile: ContextBudget | None = None,
     invocation_scope: str = "conversation",
     tenant_id: uuid.UUID | str | None = None,
+    owner_action_policy_section: str = "",
 ) -> str:
     """Build a rich system prompt incorporating agent's full context.
 
@@ -666,6 +667,7 @@ async def build_agent_context(
 
     rendered_parts = [
         identity_section,
+        owner_action_policy_section,
         operating_contract,
         subagent_listing,
         tone_style,

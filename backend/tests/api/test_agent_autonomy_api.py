@@ -45,6 +45,33 @@ class _SessionDB:
         return _ScalarOneResult(self.session)
 
 
+class _PolicySnapshot:
+    def __init__(self, *, version=1, source="migration"):
+        self.version = version
+        self.revision_id = uuid4()
+        self.content_hash = f"hash-v{version}"
+        self.source = source
+        self.valid = True
+        self.error_code = None
+
+    def response_payload(self, *, can_manage):
+        return {
+            "schema": "hive.owner_action_policy.v1",
+            "actions": {
+                "tool.external_effect": "confirm_first",
+                "tool.local_read": "full_authority",
+                "tool.local_write": "full_authority",
+            },
+            "version": self.version,
+            "revision_id": str(self.revision_id),
+            "content_hash": self.content_hash,
+            "source": self.source,
+            "valid": self.valid,
+            "error_code": self.error_code,
+            "can_manage": can_manage,
+        }
+
+
 def _client(monkeypatch, db=None, *, user=None, access_level="manage", agent=None):
     app = FastAPI()
     app.include_router(autonomy_api.router)
@@ -143,6 +170,189 @@ def test_agent_autonomy_diagnostics_explicitly_includes_diagnostics(monkeypatch)
     assert response.status_code == 200
     assert captured["include_diagnostics"] is True
     assert response.json()["triggers"][0]["diagnostics"]["trigger_class"] == "scheduled_job"
+
+
+def test_owner_action_policy_read_is_business_level_and_access_scoped(monkeypatch):
+    agent_id = uuid4()
+    captured = {}
+
+    async def fake_load(db, *, agent_id, tenant_id, create_default):
+        captured.update(
+            {
+                "db": db,
+                "agent_id": agent_id,
+                "tenant_id": tenant_id,
+                "create_default": create_default,
+            }
+        )
+        return _PolicySnapshot()
+
+    monkeypatch.setattr(autonomy_api, "load_owner_action_policy", fake_load)
+    client, user = _client(monkeypatch, access_level="use")
+
+    response = client.get(f"/agents/{agent_id}/autonomy/action-policy")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["schema"] == "hive.owner_action_policy.v1"
+    assert payload["can_manage"] is False
+    assert payload["actions"]["tool.external_effect"] == "confirm_first"
+    assert "handler_name" not in str(payload)
+    assert "hook" not in str(payload).lower()
+    assert captured["agent_id"] == agent_id
+    assert captured["tenant_id"] == user.tenant_id
+    assert captured["create_default"] is True
+
+
+def test_owner_action_policy_update_requires_manage_and_writes_audit(monkeypatch):
+    agent_id = uuid4()
+    actions = {
+        "tool.external_effect": "full_authority",
+        "tool.local_read": "full_authority",
+        "tool.local_write": "confirm_first",
+    }
+    save_calls = []
+
+    async def fake_save(db, **kwargs):
+        save_calls.append({"db": db, **kwargs})
+        return _PolicySnapshot(version=2, source="user")
+
+    monkeypatch.setattr(autonomy_api, "save_owner_action_policy", fake_save)
+
+    denied_client, _ = _client(monkeypatch, access_level="use")
+    denied = denied_client.put(
+        f"/agents/{agent_id}/autonomy/action-policy",
+        json={"actions": actions, "expected_version": 1},
+    )
+    assert denied.status_code == 403
+    assert save_calls == []
+
+    audit_db = _AuditDB()
+    manager_client, manager = _client(monkeypatch, db=audit_db, access_level="manage")
+    allowed = manager_client.put(
+        f"/agents/{agent_id}/autonomy/action-policy",
+        json={"actions": actions, "expected_version": 1},
+    )
+
+    assert allowed.status_code == 200
+    assert allowed.json()["version"] == 2
+    assert allowed.json()["can_manage"] is True
+    assert save_calls[0]["agent_id"] == agent_id
+    assert save_calls[0]["tenant_id"] == manager.tenant_id
+    assert save_calls[0]["changed_by_user_id"] == manager.id
+    assert save_calls[0]["expected_version"] == 1
+    audit = audit_db.added[0]
+    assert audit.action == "agent.owner_action_policy.updated"
+    assert audit.user_id == manager.id
+    assert audit.agent_id == agent_id
+    assert audit.details["revision_version"] == 2
+    assert audit.details["content_hash"] == "hash-v2"
+    assert audit_db.flushed is True
+
+
+def test_owner_action_policy_update_rejects_non_exact_action_contract(monkeypatch):
+    agent_id = uuid4()
+    client, _ = _client(monkeypatch, access_level="manage")
+
+    response = client.put(
+        f"/agents/{agent_id}/autonomy/action-policy",
+        json={
+            "actions": {
+                "tool.external_effect": "confirm_first",
+                "tool.local_read": "full_authority",
+            },
+            "expected_version": 1,
+        },
+    )
+
+    assert response.status_code == 422
+    assert "exact action ids" in response.json()["detail"]
+
+
+def test_owner_action_policy_mutations_require_optimistic_version_binding(monkeypatch):
+    agent_id = uuid4()
+    client, _ = _client(monkeypatch, access_level="manage")
+    actions = {
+        "tool.external_effect": "confirm_first",
+        "tool.local_read": "full_authority",
+        "tool.local_write": "full_authority",
+    }
+
+    update = client.put(
+        f"/agents/{agent_id}/autonomy/action-policy",
+        json={"actions": actions},
+    )
+    rollback = client.post(
+        f"/agents/{agent_id}/autonomy/action-policy/rollback",
+        json={"target_version": 1, "reason": "Restore approved policy"},
+    )
+
+    assert update.status_code == 422
+    assert rollback.status_code == 422
+
+
+def test_owner_action_policy_history_is_manage_only_and_tenant_scoped(monkeypatch):
+    agent_id = uuid4()
+    history_calls = []
+
+    async def fake_history(db, entity_type, entity_id, *, limit, tenant_id):
+        history_calls.append(
+            {
+                "db": db,
+                "entity_type": entity_type,
+                "entity_id": entity_id,
+                "limit": limit,
+                "tenant_id": tenant_id,
+            }
+        )
+        return [{"version": 2, "content_hash": "hash-v2", "is_active": True}]
+
+    monkeypatch.setattr(autonomy_api, "get_history", fake_history)
+    denied_client, _ = _client(monkeypatch, access_level="use")
+    denied = denied_client.get(f"/agents/{agent_id}/autonomy/action-policy/history")
+    assert denied.status_code == 403
+    assert history_calls == []
+
+    manager_client, manager = _client(monkeypatch, access_level="manage")
+    allowed = manager_client.get(
+        f"/agents/{agent_id}/autonomy/action-policy/history",
+        params={"limit": 7},
+    )
+
+    assert allowed.status_code == 200
+    assert allowed.json()["items"][0]["version"] == 2
+    assert history_calls[0]["entity_type"] == "owner_action_policy"
+    assert history_calls[0]["entity_id"] == agent_id
+    assert history_calls[0]["limit"] == 7
+    assert history_calls[0]["tenant_id"] == manager.tenant_id
+
+
+def test_owner_action_policy_rollback_requires_manage_and_audits_new_revision(monkeypatch):
+    agent_id = uuid4()
+    rollback_calls = []
+
+    async def fake_rollback(db, **kwargs):
+        rollback_calls.append({"db": db, **kwargs})
+        return _PolicySnapshot(version=4, source="rollback")
+
+    monkeypatch.setattr(autonomy_api, "rollback_owner_action_policy", fake_rollback)
+    audit_db = _AuditDB()
+    client, manager = _client(monkeypatch, db=audit_db, access_level="manage")
+
+    response = client.post(
+        f"/agents/{agent_id}/autonomy/action-policy/rollback",
+        json={"target_version": 2, "expected_version": 3, "reason": "Restore approved policy"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["version"] == 4
+    assert rollback_calls[0]["target_version"] == 2
+    assert rollback_calls[0]["expected_version"] == 3
+    assert rollback_calls[0]["changed_by_user_id"] == manager.id
+    audit = audit_db.added[0]
+    assert audit.action == "agent.owner_action_policy.rolled_back"
+    assert audit.details["target_version"] == 2
+    assert audit.details["revision_version"] == 4
 
 
 def test_agent_runtime_tasks_endpoint_passes_filters(monkeypatch):

@@ -1,4 +1,42 @@
-import { get } from '../core';
+import { get, post, put } from '../core';
+
+export type OwnerActionZone = 'full_authority' | 'confirm_first' | 'never_do';
+export type OwnerActionId = 'tool.external_effect' | 'tool.local_read' | 'tool.local_write';
+export type OwnerActionPolicyActions = Record<OwnerActionId, OwnerActionZone>;
+
+export interface OwnerActionPolicy {
+  schema: 'hive.owner_action_policy.v1';
+  actions: OwnerActionPolicyActions;
+  version: number;
+  revision_id: string | null;
+  content_hash: string;
+  source: string;
+  valid: boolean;
+  error_code: string | null;
+  can_manage: boolean;
+}
+
+export interface OwnerActionPolicyUpdate {
+  actions: OwnerActionPolicyActions;
+  expected_version: number;
+}
+
+export interface OwnerActionPolicyRollback {
+  target_version: number;
+  expected_version: number;
+  reason: string;
+}
+
+export interface OwnerActionPolicyHistoryItem {
+  version: number;
+  is_active: boolean;
+  change_source: string;
+  created_at: string | null;
+}
+
+export interface OwnerActionPolicyHistory {
+  items: OwnerActionPolicyHistoryItem[];
+}
 
 export interface AutonomyQuery {
   lookbackHours?: number;
@@ -107,6 +145,16 @@ export const autonomyApi = {
     get<any>(withParams(`/agents/${agentId}/autonomy/diagnostics`, {
       lookback_hours: query.lookbackHours,
     })),
+  getActionPolicy: (agentId: string) =>
+    get<OwnerActionPolicy>(`/agents/${agentId}/autonomy/action-policy`),
+  updateActionPolicy: (agentId: string, input: OwnerActionPolicyUpdate) =>
+    put<OwnerActionPolicy>(`/agents/${agentId}/autonomy/action-policy`, input),
+  getActionPolicyHistory: (agentId: string, limit = 20) =>
+    get<OwnerActionPolicyHistory>(
+      withParams(`/agents/${agentId}/autonomy/action-policy/history`, { limit }),
+    ),
+  rollbackActionPolicy: (agentId: string, input: OwnerActionPolicyRollback) =>
+    post<OwnerActionPolicy>(`/agents/${agentId}/autonomy/action-policy/rollback`, input),
   listRuntimeTasks: (agentId: string, query: RuntimeTaskQuery = {}) =>
     get<any[]>(withParams(`/agents/${agentId}/runtime-tasks`, {
       task_type: query.taskType,

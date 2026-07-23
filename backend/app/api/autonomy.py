@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,9 +23,32 @@ from app.services.autonomy_overview import (
     read_agent_trigger_artifact_view,
 )
 from app.services.agent_work_ledger import read_agent_work_ledger_view, read_latest_session_work_ledger_view
+from app.services.action_preflight import CharterZone
+from app.services.config_versioning import get_history
+from app.services.owner_action_policy import (
+    OWNER_ACTION_POLICY_ENTITY_TYPE,
+    OwnerActionPolicyRevisionNotFound,
+    OwnerActionPolicyValidationError,
+    OwnerActionPolicyVersionConflict,
+    load_owner_action_policy,
+    rollback_owner_action_policy,
+    save_owner_action_policy,
+    validate_owner_action_policy_actions,
+)
 from app.services.runtime_task_authority import authorize_runtime_task_record
 
 router = APIRouter(prefix="/agents", tags=["autonomy"])
+
+
+class OwnerActionPolicyUpdateRequest(BaseModel):
+    actions: dict[str, CharterZone]
+    expected_version: int = Field(ge=1)
+
+
+class OwnerActionPolicyRollbackRequest(BaseModel):
+    target_version: int = Field(ge=1)
+    expected_version: int = Field(ge=1)
+    reason: str = Field(min_length=1, max_length=500)
 
 
 def _runtime_task_authority_record(task: RuntimeTask) -> dict:
@@ -206,6 +230,135 @@ async def get_agent_autonomy_diagnostics(
         resource_user=current_user,
         agent_access=(agent, access_level),
     )
+
+
+@router.get("/{agent_id}/autonomy/action-policy")
+async def get_agent_owner_action_policy(
+    agent_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return the business-level action policy; never expose runtime Hook internals."""
+    agent, access_level = await check_agent_access(db, current_user, agent_id)
+    policy = await load_owner_action_policy(
+        db,
+        agent_id=agent.id,
+        tenant_id=agent.tenant_id,
+        create_default=True,
+    )
+    return policy.response_payload(can_manage=access_level == "manage")
+
+
+@router.put("/{agent_id}/autonomy/action-policy")
+async def update_agent_owner_action_policy(
+    agent_id: uuid.UUID,
+    data: OwnerActionPolicyUpdateRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Replace the exact typed policy through a manage-only, versioned boundary."""
+    agent, access_level = await check_agent_access(db, current_user, agent_id)
+    if access_level != "manage":
+        raise HTTPException(status_code=403, detail="Manage access is required to update action policy")
+    try:
+        actions = validate_owner_action_policy_actions(data.actions)
+        policy = await save_owner_action_policy(
+            db,
+            agent_id=agent.id,
+            tenant_id=agent.tenant_id,
+            actions=actions,
+            changed_by_user_id=current_user.id,
+            expected_version=data.expected_version,
+        )
+    except OwnerActionPolicyValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except OwnerActionPolicyVersionConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    db.add(
+        AuditLog(
+            user_id=current_user.id,
+            agent_id=agent.id,
+            tenant_id=agent.tenant_id,
+            action="agent.owner_action_policy.updated",
+            details={
+                "revision_version": policy.version,
+                "revision_id": str(policy.revision_id) if policy.revision_id else None,
+                "content_hash": policy.content_hash,
+                "action_ids": sorted(actions),
+            },
+        )
+    )
+    await db.flush()
+    return policy.response_payload(can_manage=True)
+
+
+@router.get("/{agent_id}/autonomy/action-policy/history")
+async def get_agent_owner_action_policy_history(
+    agent_id: uuid.UUID,
+    limit: int = Query(default=20, ge=1, le=100),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return immutable revision metadata for Owner recovery and audit."""
+    agent, access_level = await check_agent_access(db, current_user, agent_id)
+    if access_level != "manage":
+        raise HTTPException(status_code=403, detail="Manage access is required to view action policy history")
+    items = await get_history(
+        db,
+        OWNER_ACTION_POLICY_ENTITY_TYPE,
+        agent.id,
+        limit=limit,
+        tenant_id=agent.tenant_id,
+    )
+    return {"items": items}
+
+
+@router.post("/{agent_id}/autonomy/action-policy/rollback")
+async def rollback_agent_owner_action_policy(
+    agent_id: uuid.UUID,
+    data: OwnerActionPolicyRollbackRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Restore a historical policy as a new immutable revision."""
+    agent, access_level = await check_agent_access(db, current_user, agent_id)
+    if access_level != "manage":
+        raise HTTPException(status_code=403, detail="Manage access is required to roll back action policy")
+    try:
+        policy = await rollback_owner_action_policy(
+            db,
+            agent_id=agent.id,
+            tenant_id=agent.tenant_id,
+            target_version=data.target_version,
+            changed_by_user_id=current_user.id,
+            expected_version=data.expected_version,
+            reason=data.reason.strip(),
+        )
+    except OwnerActionPolicyValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except OwnerActionPolicyVersionConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except OwnerActionPolicyRevisionNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    db.add(
+        AuditLog(
+            user_id=current_user.id,
+            agent_id=agent.id,
+            tenant_id=agent.tenant_id,
+            action="agent.owner_action_policy.rolled_back",
+            details={
+                "target_version": data.target_version,
+                "revision_version": policy.version,
+                "revision_id": str(policy.revision_id) if policy.revision_id else None,
+                "content_hash": policy.content_hash,
+                "reason": data.reason.strip(),
+            },
+        )
+    )
+    await db.flush()
+    return policy.response_payload(can_manage=True)
 
 
 @router.get("/{agent_id}/runtime-tasks")

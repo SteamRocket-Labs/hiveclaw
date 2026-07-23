@@ -645,6 +645,12 @@ async def _build_system_prompt(
         current_user_name = await _resolve_current_user_name(request.user_id)
     budget_profile = _resolve_context_budget(request)
     context_window_tokens = getattr(request.model, "max_input_tokens", None) if request.model else None
+    from app.services.owner_action_policy import resolve_owner_action_policy_prompt_section
+
+    owner_action_policy_section = await resolve_owner_action_policy_prompt_section(
+        agent_id=request.agent_id,
+        tenant_id=tenant_id,
+    )
     agent_context = await build_agent_context(
         agent_id=request.agent_id,
         agent_name=request.agent_name,
@@ -657,6 +663,7 @@ async def _build_system_prompt(
         budget_profile=budget_profile,
         invocation_scope=request.invocation_scope or "conversation",
         tenant_id=tenant_id,
+        owner_action_policy_section=owner_action_policy_section,
     )
     return build_frozen_prompt_prefix(
         agent_context=agent_context,

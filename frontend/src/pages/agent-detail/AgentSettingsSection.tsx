@@ -7,6 +7,7 @@ import ConfirmModal from '../../components/ConfirmModal';
 import { agentApi, type AgentPermissions } from '../../api/domains/agents';
 import { planApi, type PlanRecommendationCreateInput } from '../../api/domains/plans';
 import { triggerApi } from '../../api/domains/triggers';
+import AgentActionPolicyCard from './AgentActionPolicyCard';
 import HookRuntimeControlCard from './HookRuntimeControlCard';
 import './AgentSettingsSection.css';
 
@@ -442,6 +443,7 @@ export default function AgentSettingsSection({
       </div>
 
       <HookRuntimeControlCard agentId={agentId} canManage={canManage} />
+      <AgentActionPolicyCard agentId={agentId} canManage={canManage} />
 
       <div className="card agent-settings-card">
         <div className="agent-settings-card-head">

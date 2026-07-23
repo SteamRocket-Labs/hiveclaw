@@ -186,7 +186,15 @@ async def test_build_system_prompt_uses_static_agent_context_only(monkeypatch):
         captured["kwargs"] = kwargs
         return "STATIC_AGENT_CONTEXT"
 
+    async def fake_owner_action_policy_section(**kwargs):
+        captured["policy_kwargs"] = kwargs
+        return "## Owner Action Policy\npolicy"
+
     monkeypatch.setattr("app.runtime.invoker.build_agent_context", fake_build_agent_context)
+    monkeypatch.setattr(
+        "app.services.owner_action_policy.resolve_owner_action_policy_prompt_section",
+        fake_owner_action_policy_section,
+    )
 
     request = AgentInvocationRequest(
         model=SimpleNamespace(provider="openai", model="gpt-4.1", api_key="key", base_url=None, max_output_tokens=None),
@@ -211,6 +219,11 @@ async def test_build_system_prompt_uses_static_agent_context_only(monkeypatch):
     assert "## System" in prompt
     assert captured["kwargs"]["include_memory_file"] is False
     assert captured["kwargs"]["include_runtime_metadata"] is False
+    assert captured["kwargs"]["owner_action_policy_section"] == "## Owner Action Policy\npolicy"
+    assert captured["policy_kwargs"] == {
+        "agent_id": request.agent_id,
+        "tenant_id": captured["kwargs"]["tenant_id"],
+    }
 
 
 @pytest.mark.asyncio

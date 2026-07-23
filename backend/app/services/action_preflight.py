@@ -41,10 +41,13 @@ class ActionPreflightInput:
     visibility: BoundaryAxisLevel
     domain_specialization: BoundaryAxisLevel
     charter_zone: CharterZone
+    action_effectful: bool = True
     sensitivity: SensitivityLevel = SensitivityLevel.PL1_PUBLIC
     runtime_permission_allowed: bool = True
     company_boundary_conflict: bool = False
     explicit_user_authorized: bool = False
+    charter_policy_valid: bool = True
+    charter_policy_error: str | None = None
     truth_evidence: tuple[TruthEvidencePackV1, ...] = ()
 
 
@@ -128,6 +131,16 @@ class ActionPreflightService:
                 evidence_trace=evidence_trace,
             )
 
+        if not request.charter_policy_valid and request.action_effectful:
+            error_code = request.charter_policy_error or "unavailable"
+            return ActionPreflightResult(
+                decision=PreflightDecision.REFUSE,
+                reasons=[f"owner_action_policy_invalid:{error_code}"],
+                requires_audit=True,
+                evidence_refs=evidence_refs,
+                evidence_trace=evidence_trace,
+            )
+
         if request.charter_zone == CharterZone.NEVER_DO:
             return ActionPreflightResult(
                 decision=PreflightDecision.REFUSE,
@@ -170,6 +183,16 @@ class ActionPreflightService:
                 evidence_trace=evidence_trace,
             )
 
+        medium_axes = _axes_at_level(request, BoundaryAxisLevel.MEDIUM)
+        if request.charter_zone == CharterZone.FULL_AUTHORITY and (high_axes or medium_axes):
+            return ActionPreflightResult(
+                decision=PreflightDecision.DO,
+                reasons=["charter_full_authority"],
+                requires_audit=True,
+                evidence_refs=evidence_refs,
+                evidence_trace=evidence_trace,
+            )
+
         if high_axes:
             return ActionPreflightResult(
                 decision=PreflightDecision.ASK,
@@ -190,7 +213,6 @@ class ActionPreflightService:
                 evidence_trace=evidence_trace,
             )
 
-        medium_axes = _axes_at_level(request, BoundaryAxisLevel.MEDIUM)
         if medium_axes:
             return ActionPreflightResult(
                 decision=PreflightDecision.PREPARE_ONLY,

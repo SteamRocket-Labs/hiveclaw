@@ -37,6 +37,7 @@ async def test_tool_runtime_resolver_builds_execution_context(monkeypatch):
     )
 
     authority_scope = object()
+    action_policy = object()
 
     async def fake_workspace_authority_loader(**kwargs):
         assert kwargs == {
@@ -47,7 +48,17 @@ async def test_tool_runtime_resolver_builds_execution_context(monkeypatch):
         }
         return authority_scope
 
-    resolver = ToolRuntimeResolver(workspace_authority_loader=fake_workspace_authority_loader)
+    async def fake_owner_action_policy_loader(**kwargs):
+        assert kwargs == {
+            "tenant_id": tenant_id,
+            "agent_id": agent_id,
+        }
+        return action_policy
+
+    resolver = ToolRuntimeResolver(
+        workspace_authority_loader=fake_workspace_authority_loader,
+        owner_action_policy_loader=fake_owner_action_policy_loader,
+    )
     context = await resolver.resolve(agent_id=agent_id, user_id=user_id)
 
     assert context.agent_id == agent_id
@@ -58,6 +69,49 @@ async def test_tool_runtime_resolver_builds_execution_context(monkeypatch):
     assert context.execution_identity.identity_type == "delegated_user"
     assert context.execution_identity.identity_id == user_id
     assert context.workspace_authority_scope is authority_scope
+    assert context.owner_action_policy is action_policy
+
+
+@pytest.mark.asyncio
+async def test_tool_runtime_resolver_degrades_policy_dependency_without_blocking_read_only_tools(monkeypatch):
+    from app.services.action_preflight import CharterZone
+    from app.services.owner_action_policy import (
+        ACTION_EXTERNAL_EFFECT,
+        ACTION_LOCAL_READ,
+        ACTION_LOCAL_WRITE,
+    )
+    from app.tools.resolver import ToolRuntimeResolver
+
+    agent_id = uuid4()
+    user_id = uuid4()
+    tenant_id = uuid4()
+
+    async def fake_resolve_tenant_for_agent(_agent_id):
+        return tenant_id
+
+    async def fake_ensure_workspace(_agent_id, tenant_id=None):
+        return Path("/tmp/agent-ws")
+
+    async def fake_workspace_authority_loader(**_kwargs):
+        return object()
+
+    async def unavailable_policy_loader(**_kwargs):
+        raise RuntimeError("policy database unavailable")
+
+    monkeypatch.setattr("app.tools.resolver.resolve_tenant_for_agent", fake_resolve_tenant_for_agent)
+    monkeypatch.setattr("app.tools.resolver.ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr("app.tools.resolver.get_execution_identity", lambda: None)
+
+    context = await ToolRuntimeResolver(
+        workspace_authority_loader=fake_workspace_authority_loader,
+        owner_action_policy_loader=unavailable_policy_loader,
+    ).resolve(agent_id=agent_id, user_id=user_id)
+
+    assert context.owner_action_policy.valid is False
+    assert context.owner_action_policy.error_code == "policy_dependency_unavailable"
+    assert context.owner_action_policy.zone_for(ACTION_EXTERNAL_EFFECT) == CharterZone.NEVER_DO
+    assert context.owner_action_policy.zone_for(ACTION_LOCAL_READ) == CharterZone.FULL_AUTHORITY
+    assert context.owner_action_policy.zone_for(ACTION_LOCAL_WRITE) == CharterZone.NEVER_DO
 
 
 @pytest.mark.asyncio

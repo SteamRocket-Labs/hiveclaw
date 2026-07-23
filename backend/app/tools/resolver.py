@@ -56,8 +56,9 @@ async def _resolve_budget_run_id_from_runtime_task(runtime_task_id: str | None) 
 class ToolRuntimeResolver:
     """Build ToolExecutionContext from agent/user identifiers."""
 
-    def __init__(self, *, workspace_authority_loader=None) -> None:
+    def __init__(self, *, workspace_authority_loader=None, owner_action_policy_loader=None) -> None:
         self.workspace_authority_loader = workspace_authority_loader or _load_workspace_authority_scope
+        self.owner_action_policy_loader = owner_action_policy_loader or _load_owner_action_policy
 
     async def resolve(
         self,
@@ -108,6 +109,24 @@ class ToolRuntimeResolver:
             user_id=user_id,
             session_id=session_uuid,
         )
+        try:
+            owner_action_policy = await self.owner_action_policy_loader(
+                tenant_id=tenant,
+                agent_id=agent_id,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[Governance] Owner action policy resolution failed for agent %s: %s",
+                agent_id,
+                exc,
+            )
+            from app.services.owner_action_policy import build_unavailable_owner_action_policy
+
+            owner_action_policy = build_unavailable_owner_action_policy(
+                agent_id=agent_id,
+                tenant_id=tenant,
+                error_code="policy_dependency_unavailable",
+            )
         resolved_budget_run_id = (
             str(budget_run_id) if budget_run_id else await _resolve_budget_run_id_from_runtime_task(runtime_task_id)
         )
@@ -126,6 +145,28 @@ class ToolRuntimeResolver:
             round_state=dict(round_state or {}),
             t0_refs=tuple(str(ref) for ref in (t0_refs or ()) if str(ref).strip()),
             workspace_authority_scope=workspace_authority_scope,
+            owner_action_policy=owner_action_policy,
+        )
+
+
+async def _load_owner_action_policy(
+    *,
+    tenant_id: uuid.UUID,
+    agent_id: uuid.UUID,
+):
+    from app.services.owner_action_policy import load_owner_action_policy
+
+    async with tenant_scoped_session(
+        tenant_id,
+        session_factory=async_session,
+        require_tenant=True,
+        source="tool_owner_action_policy",
+    ) as policy_db:
+        return await load_owner_action_policy(
+            policy_db,
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            create_default=True,
         )
 
 

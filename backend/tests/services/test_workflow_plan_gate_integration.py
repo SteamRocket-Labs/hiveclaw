@@ -55,10 +55,13 @@ def _ctx(**overrides) -> SubagentSpawnContext:
 # ── PlanModeGate decoupling ───────────────────────────────────────
 
 
-def test_start_workflow_is_not_a_plan_action_kind():
+def test_start_workflow_is_a_plan_action_kind_without_becoming_a_generic_hard_gate():
     from app.services.plan_mode_core import ACTION_KINDS
+    from app.tools.plan_gate_registry import BRIDGE_SELF, hard_gated_action_kind, plan_gated_tool_action_kinds
 
-    assert "start_workflow" not in ACTION_KINDS
+    assert "start_workflow" in ACTION_KINDS
+    assert plan_gated_tool_action_kinds()["start_workflow"] == BRIDGE_SELF
+    assert hard_gated_action_kind("start_workflow", {"preview_id": str(uuid.uuid4())}) is None
 
 
 # ── confirmation inspection ───────────────────────────────────────

@@ -28,6 +28,7 @@ def test_first_batch_tools_are_tagged_with_expected_action_kinds():
     assert tagged["set_trigger"] == "create_enabled_trigger"
     assert tagged["update_trigger"] == "create_enabled_trigger"
     assert tagged["delegate_to_agent"] == BRIDGE_SELF
+    assert tagged["start_workflow"] == BRIDGE_SELF
     # F-2: manage_tasks is retired from the agent tool face — no tool-side
     # binding to start_long_task remains (REST/manual trigger keep the action_kind).
     assert "manage_tasks" not in tagged
@@ -145,6 +146,7 @@ def test_bridge_self_tools_are_not_hard_gated():
     from app.tools.plan_gate_registry import hard_gated_action_kind
 
     assert hard_gated_action_kind("delegate_to_agent") is None
+    assert hard_gated_action_kind("start_workflow", {"preview_id": "preview-1"}) is None
 
 
 def test_low_risk_sync_tools_are_not_plan_gated():

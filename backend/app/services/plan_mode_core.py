@@ -45,6 +45,7 @@ ACTION_KINDS: tuple[str, ...] = (
     "enable_autonomous_wake",
     "start_long_task",
     "start_delegation",
+    "start_workflow",
 )
 
 #: action_kind -> intent_type. Trigger/wake creation maps to a recurring
@@ -55,6 +56,7 @@ _ACTION_INTENT: dict[str, str] = {
     "enable_autonomous_wake": "autonomous_wake",
     "start_long_task": "in_session_execution",
     "start_delegation": "delegation",
+    "start_workflow": "in_session_execution",
 }
 
 

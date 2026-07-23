@@ -30,6 +30,7 @@ def test_action_kinds_are_the_documented_set():
         "enable_autonomous_wake",
         "start_long_task",
         "start_delegation",
+        "start_workflow",
     }
 
 
@@ -40,6 +41,7 @@ def test_action_kinds_are_the_documented_set():
         ("enable_autonomous_wake", "autonomous_wake"),
         ("start_long_task", "in_session_execution"),
         ("start_delegation", "delegation"),
+        ("start_workflow", "in_session_execution"),
     ],
 )
 def test_intent_type_for_action_maps_action_kind_to_intent(action_kind, expected_intent):

@@ -19,7 +19,8 @@ Two flavours of tag exist:
 * :data:`BRIDGE_SELF` — the tool is *registered* as plan-governed (visible,
   auditable, future-proof) but keeps its **own** confirmation gate; the service
   must not double-block it. ``delegate_to_agent`` owns a runtime backstop that can inspect
-  whether the delegation came from a real user or an unattended agent wake.
+  whether the delegation came from a real user or an unattended agent wake;
+  ``start_workflow`` owns the durable preview/explicit-start confirmation path.
 """
 
 from __future__ import annotations
@@ -36,6 +37,7 @@ _PLAN_GATED_TOOL_NAMES: frozenset[str] = frozenset(
         "set_trigger",
         "update_trigger",
         "delegate_to_agent",
+        "start_workflow",
         # manage_tasks removed (F-2): agent-facing DB-Task tool retired.
         # start_long_task action_kind kept — REST api/tasks.py and manual trigger
         # still use it for the plan gate on human-initiated task creation.

@@ -14,22 +14,23 @@
 | Hook 产品边界文档校正（SA-04/UI-09） | 已完成 | commit `b4712dcc`；撤销“员工自定义 Hook 缺失”，冻结员工/Owner、Operator/Auditor、Platform Developer 三层边界 | 本项仅为产品与审查文档校正；UI/API 实现仍登记在 UI-09 |
 | GV-01/GV-02 确认车道 | **代码闭环；本地真 PG 验收待补** | `request_action_preflight_approval` 把 typed ASK/ESCALATE 接入 durable Approval ticket；移除 ToolRuntimeService 的 InProcess gateway 默认回填与孤立 checkpoint 写入；immutable approval 只消解 ASK/ESCALATE，不覆盖 REFUSE/PREPARE_ONLY；approved boundary block 统一把票据记为 `failed`。测试命令：`backend/.venv/bin/pytest -q backend/tests/tools/test_service.py backend/tests/tools/test_tool_runtime_preflight.py backend/tests/services/test_action_preflight.py backend/tests/services/test_approval_execution_runtime.py backend/tests/tools/test_governance.py backend/tests/tools/test_governance_resolver.py` → `103 passed, 4 skipped` | 4 项均因本机 Docker/Testcontainers 不可用而 skip；实际 ToolRuntimeService registry 执行 seam 未 monkeypatch 的 ASK→批准→效果发生与 REFUSE→failed 组合测试已通过，真 PG 事务/worker 组合仍保留在 §11 |
 | GV-03 typed Owner action policy | **代码闭环；真 PG 并发验收待补** | 新增唯一机器合同 `hive.owner_action_policy.v1`，以三个 exact action id 映射 `full_authority/confirm_first/never_do`；`ConfigRevision` 保存不可变版本、actor、hash、history/rollback，legacy agent 在模型输入、工具执行或管理 API 首次消费时幂等回填默认版本；真实 prompt assembly、ToolContextResolver、ToolRuntimeService preflight、Approval ticket 与员工业务设置卡已贯通，Owner/Manager 可两步确认恢复上一版。后端聚合测试 `168 passed`，Ruff 通过；前端定向测试 `115 passed`，生产 build 与 bundle budget 通过 | 未新增 schema/Alembic 迁移，复用现有 `config_revisions`；本机无 Docker，尚未实测两个 PG worker 同时首次回填与事务 rollback。员工设置只显示业务动作政策和恢复动作，不显示 action id/revision ID/Hook；UI-09 的既有 raw Hook 卡仍是独立未修项 |
+| SA-05 Workflow confirmed-plan handoff | **代码闭环；真 PG lease 验收待补** | `start_workflow` 加入 canonical `ACTION_KINDS/_ACTION_INTENT` 并映射 `in_session_execution`；工具注册为 `bridge:self`，继续由 durable preview/显式 start 自行确认，不触发通用 Plan Mode 硬门。新增 REST 真实路径测试，覆盖 preview→claim→真实 `PlanModeGate.check`→lease→launch；13 个相关 test 文件聚合 `239 passed`，Ruff 通过 | 无 schema、数据或配置迁移；10 个 PlanAuthorizationLease 真 PG 用例因本机 Docker/Testcontainers 不可用全部 skip，不能外推为生产事务验收 |
 
 ## 1. 执行摘要与上线判断
 
 原始审查从当前源码重新建立结论，不继承既有完成声明，覆盖 14 个审计面（CC/FreeCode 基线、kernel 与模型循环、会话生命周期、工具治理、session 中段五能力、记忆系统、自进化、A2A、知识平面、企业治理、Hive Connect、前端消费、Codex/hermes 对照、验收面）。Codex current-source 复核确认了六个原始 P0 所指向的代码事实，同时发现一项漏判的 live Model Agency 违规、两项 Hive Connect source-boundary 误报、一项前端产品状态误分类、一项员工设置的运行时实现与权限边界泄漏，以及若干不能由现有证据支持的上线表述。
 
-**总体判断：Hive 的单 Agent 机制主干在当前源码上有较强接线证据，多处实现也体现了 CCPlus/Hive-native 增量；但“Goal 1 智能质量至少达到 hermes”尚无行为级对比证据。原始七个上线阻断项中 GV-01/GV-02 已完成代码修复，当前仍有五个未修 P0，其中 GV-08 是原报告漏判的 live Model Agency 违规。当前裁决仍为 NO-GO；修复这些阻断项只会恢复进入验收的资格，不自动构成上线判断。**
+**总体判断：Hive 的单 Agent 机制主干在当前源码上有较强接线证据，多处实现也体现了 CCPlus/Hive-native 增量；但“Goal 1 智能质量至少达到 hermes”尚无行为级对比证据。原始七个上线阻断项中 GV-01/GV-02/SA-05 已完成代码修复，当前仍有四个未修 P0，其中 GV-08 是原报告漏判的 live Model Agency 违规。当前裁决仍为 NO-GO；修复这些阻断项只会恢复进入验收的资格，不自动构成上线判断。**
 
 核心结论：
 
 - **单 Agent 机制主干有较强源码证据，但行为质量未证实。** kernel 模型循环唯一接线、compaction 带 coverage ledger（强于 CC 单摘要与 Codex 单 turn 摘要）、LoopGuard 只告警且终态解释仍由模型撰写、记忆系统 T0→T2→T3→soul 以 LLM-primary 为主、Plan Mode/Subagent/Work Ledger/Skill 均有真实接线。不过不能据此推导“智能质量至少达到 hermes”；该主张仍需同模型、同任务、同证据条件下的行为级对比。
 - **治理自伤 GV-01/GV-02 已完成代码修复**：Preflight ASK/ESCALATE 现复用 durable Approval ticket 的单次消费、hash 绑定与精确重放；ToolRuntimeService 不再创建孤立内存 checkpoint；approved replay 只把 ASK/ESCALATE 转为可执行，不绕过 REFUSE/PREPARE_ONLY；任何 typed boundary block 都不再误记 `succeeded`。本机 Docker 不可用，因此真 PG worker 事务验收仍待补。
-- **当前五个未修 P0 上线阻断项**：SA-05（REST 带 confirmed_plan_id 启动 workflow 生产 500）、GV-04（platform_admin 跨租户化身无审计）、GV-05（桌面 llm_proxy 无配额无计量）、HC-01（A2A 委派本地执行结果孤立，源 Agent 永不知结果）、GV-08（对任意工具参数做凭据模式扫描并据此整调用 REFUSE）。
+- **当前四个未修 P0 上线阻断项**：GV-04（platform_admin 跨租户化身无审计）、GV-05（桌面 llm_proxy 无配额无计量）、HC-01（A2A 委派本地执行结果孤立，源 Agent 永不知结果）、GV-08（对任意工具参数做凭据模式扫描并据此整调用 REFUSE）。SA-05 的 REST confirmed-plan 500 已完成代码修复，真 PG lease 验收仍在发布边界中保留。
 - **文档假完成集中爆发**：AGENTS.md 与当前源码漂移严重——`proactive_employee_loop`、`policy_replay`、`viking_client`、`knowledge_inject`、`extract_queue`、`extract_agent`、`scheduler`、Objective 实体均已不存在或被替换；迁移数 79→实际 178、前端测试 39→实际 123、Office 专用编辑面已被当前前端测试合同明确退役、"turn-level token budget gates"声明与源码矛盾。这些必须按"已知缺失/已退役"改写，否则后续审计会继续继承假完成。
 - **Hook 产品边界被放反（UI-09）**：`Runtime hooks` 是平台内部生命周期、证据、恢复与治理机制，不是员工或其 Owner/Manager 的产品心智。当前员工设置却直接展示 handler 名、event、failure mode 与失败 receipt，并允许 `manage/owner` 逐项持久化禁用。原报告把“员工侧没有用户自定义 hook”判为缺失，方向相反：员工面必须移除内部 Hook 细节和开关；若 CCPlus 需要可扩展 Hook，应另建受治理的 Platform Developer/Extension 面，且不得与平台内置 Hook 混用。
 - **Codex/hermes 对照**：Hive 已吸收大部分工程增量（sandbox provider、approval 路由、resume/fork、compaction）；可吸收但未做的：unified exec（PTY/持久 shell 会话）、execpolicy 命令级声明策略、hermes 的 session_search（跨会话原文检索）与 verify-on-stop。无"错误改变 CC 语义"的吸收。
-- **上线判断**：**NO-GO / Acceptance incomplete**。当前五个未修 P0 完成后，仍必须重新核生产接线并完成 §11 中 Goal 1 行为对标、真 PG、多进程、自治批准回放、GV-08 Model Agency 回归和真实 Hive Connect 安装态验收；不得从“代码修复完成”直接跳到 GO。
+- **上线判断**：**NO-GO / Acceptance incomplete**。当前四个未修 P0 完成后，仍必须重新核生产接线并完成 §11 中 Goal 1 行为对标、真 PG、多进程、自治批准回放、GV-08 Model Agency 回归和真实 Hive Connect 安装态验收；不得从“代码修复完成”直接跳到 GO。
 
 ---
 
@@ -133,7 +134,7 @@
 | 24 | 多模型路由 | 主循环覆盖 + 429/529 fallback（`model.ts:95`、`withRetry.ts:163`） | 429-only 重试×10+Retry-After、overload→fallback_model、账户类错误不 fallback（`llm_client.py:426-487`、`turn_orchestrator.py:1816-1907`） | 语义等价 | 闭环 |
 | 25 | Team/多 agent | 进程内 teammate + 消息（`TeamCreateTool`、`SendMessageTool`） | A2A：send_message_to_agent 同步咨询 + delegate_to_agent 异步委派 + Lease/Signal 原语 + 权限收缩（DelegationToken） | 主动超越（但见 HC-01/A2A-03） | 局部闭环 |
 | 26 | 定时/触发 | cron 调度工具（`ScheduleCronTool`） | trigger_daemon 15s tick + fire lease + RuntimeTask | 工程增强 | 局部闭环（SA-03） |
-| 27 | Workflow | FreeCode 侧为 stub（`tools/WorkflowTool/` 仅 constants）——**非 CC parity 债务** | Hive-native workflow：RuntimeTask+PG step/leaf journal+quota+gate+trigger+admin ops | 主动超越 | 局部闭环（SA-05/SA-06） |
+| 27 | Workflow | FreeCode 侧为 stub（`tools/WorkflowTool/` 仅 constants）——**非 CC parity 债务** | Hive-native workflow：RuntimeTask+PG step/leaf journal+quota+gate+trigger+admin ops | 主动超越 | 局部闭环（SA-06） |
 | 28 | 输出样式/statusline | output style 注入系统提示（`outputStyles/`） | 前端表达层承担（userFacingRuntimeStatus 人性化） | 可接受差异 | 闭环 |
 | 29 | 会话恢复中断检测 | TurnInterruptionState（`sessionRestore.ts:409`） | terminal ghost 对账 + 尝试上限隔离（`web_chat_runtime.py:4880,4911`） | 工程增强 | 闭环 |
 | 30 | 远程会话 teleport/CCR | 依赖 Anthropic 托管远程执行（`main.tsx:735-764`） | — | **排除**（供应商私有远程能力，依据充分） | 排除 |
@@ -169,11 +170,13 @@
 
 **SA-04（撤销“员工用户自定义 hook 缺失”，重分类为产品边界）**：FreeCode 的 Hook 是本地开发者 harness 扩展面，不能直接映射为企业员工设置。Hive 员工与其 Owner/Manager 应配置业务可理解的权限、审批、自主性和故障结果，不应知道或选择 `turn_stop`、`post_compaction`、handler key、required/advisory 等运行时实现。若 CCPlus 后续确认需要 Hook 扩展能力，应单独定义 Platform Developer/Extension 面：只承载显式安装的扩展，声明目的、事件、权限、数据可见性、副作用、审计、版本与回滚；平台内置 Hook 与扩展 Hook 必须分 namespace、分权限、分消费面，且不得开放任意本机命令。该扩展面尚无已接受产品契约，因此本报告不再把它登记为当前缺失；当前已证实缺陷记为 UI-09。
 
-**SA-05（断点，主审复核确认）REST 带 confirmed_plan_id 启动 workflow 生产 500。**
-- 断裂原子：Execution↔Acceptance。严重级：高（用户可见 500）。
-- 证据：`api/workflows.py:501-517` 在 `confirmed_plan_id` 存在时调 PlanModeGate `action_kind="start_workflow"` → `plan_mode_core.py:1042` 抛 ValueError（`ACTION_KINDS` 四元组不含 start_workflow，`plan_mode_core.py:43-48`，主审 grep 复核确认）。
-- 验收造假信号：`tests/api/test_workflows.py:405` 用 `fake_gate_check` 替换 seam 并断言 `action_kind=="start_workflow"`——绿测试钉住生产必炸的接线（fake 掩盖 wiring 的教科书例）。
-- 最小闭环：`start_workflow` 注册进 `ACTION_KINDS`/`_ACTION_INTENT`（或改走 lease 直验），并把该测试改为真 gate 集成测试。
+**SA-05（代码闭环；真 PG lease 验收待补）REST confirmed-plan handoff 不再 500。**
+- 原断裂原子：Execution↔Acceptance。修复前 `api/workflows.py` 传入 `action_kind="start_workflow"`，`intent_type_for_action` 因 canonical vocabulary 缺项抛 `ValueError`；原 API 测试用 fake gate 遮蔽了生产分支。
+- 当前接线：`plan_mode_core.ACTION_KINDS/_ACTION_INTENT` 将 `start_workflow` 精确映射为 `in_session_execution`；`ToolMeta.plan_gate_action_kind="bridge:self"` 与 registry 明确记录它是 plan-governed 自有确认面。ToolRuntimeService 仍不对 start_workflow 施加通用硬门，durable `preview_workflow`→显式 `start_workflow` 语义和“不自动进入 Plan Mode”合同未改变。
+- 路径证据：`test_confirmed_plan_reaches_real_gate_and_starts_exact_workflow_preview` 不再 monkeypatch `_plan_gate_check`，完整走 REST preview、durable claim、生产 `_plan_gate_check`、真实 `PlanModeGate.check/intent_type_for_action`、authorization lease port、`start_ephemeral_workflow_for_agent`，断言 exact preview hashes/target binding 后返回 200。旧 fake 测试保留为 API 参数投影单测，不再承担 wiring proof。
+- 命令证据：7 个直接相关 test 文件聚合 → `146 passed, 1 warning`；再加入 `test_exit_plan_mode_tool.py`、`test_plan_authorization_lease.py`、`test_plan_mode_service.py`、`test_plan_mode_delegation_handoff.py`、`test_plan_gate_helper.py`、`test_plan_mode_rest_gate.py` 的 13 文件合并命令 → `239 passed, 1 warning`；相关 Ruff → `All checks passed!`。
+- 数据/恢复：无 schema、存量数据或配置变更；preview claim、lease evidence 与 workflow launch 仍沿既有 durable authority，修复只补 canonical action vocabulary 和真实消费测试。
+- Acceptance 边界：`test_plan_authorization_lease_postgres.py -rs` 的 10 项真 PG 用例均因 Docker connection refused skip；本地已证明 500 根因与真实 gate wiring 消除，不宣称 PG 事务验收闭环。
 
 **SA-06（局部闭环）tool 路径 start_workflow 确认强度弱**：确认证据是 agent 自己所在 turn 的 `turn_id`（`handlers/workflow.py:165-180`），`claim_workflow_preview_record` 只校验非空。"preview 后须用户同意"靠工具描述约束，无机械强制；高风险动作另有 preflight/capability gate 兜底，故定性为确认强度弱于文档表述，非治理绕过。
 
@@ -336,7 +339,7 @@ Agent/Skill/Workflow/外部能力资产管理闭环（revision/usage 投影接�
 | Web chat 会话生命周期 | ● | ● | ● | ● | ● | ● | ● |
 | 工具治理平面 | ● | ◐(GV-08) | ◐(GV-08) | ◐(GV-06/09) | ◐(GV-01/03 真 PG 待补) | ◐(GV-09) | ○(GV-08 fake-pin 测试；GV-01/02/03 真 PG 待补) |
 | Plan/Subagent/Ledger/Skill | ● | ● | ● | ● | ● | ● | ● |
-| Workflow | ● | ● | ○(SA-05) | ● | ● | ● | ◐(SA-05 测试) |
+| Workflow | ● | ◐(SA-06) | ● | ● | ● | ● | ◐(SA-06 用户确认强度) |
 | Hooks | ● | ○(UI-09) | ◐(UI-09) | ● | ● | ○(UI-09 暴露错层) | ◐(禁用契约测试钉错) |
 | Memory T0/T2/T3/soul | ● | ● | ● | ● | ● | ◐(SA-07/08) | ● |
 | 自进化（skill/dream） | ● | ● | ● | ● | ● | ● | ● |
@@ -355,7 +358,7 @@ Agent/Skill/Workflow/外部能力资产管理闭环（revision/usage 投影接�
 |---|---|---|---|---|---|
 | GV-01 | 工具治理 | **代码闭环；PG 验收待补** | 原 P0 | Evidence→Recovery→Consumption | ASK 已进入 durable Approval ticket；孤立 checkpoint 已删除 |
 | GV-02 | 工具治理 | **代码闭环；PG 验收待补** | 原 P0 | Evidence→Recovery | exact approval 消解 ASK/ESCALATE；硬拒绝保持且票据失败 |
-| SA-05 | Workflow | 断点 | P0 | Execution↔Acceptance | REST confirmed_plan_id 启动 500，测试 fake 钉住 |
+| SA-05 | Workflow | **代码闭环；真 PG lease 验收待补** | 原 P0 | Execution↔Acceptance | canonical action 已注册；REST 走真实 PlanModeGate 后 200，fake 不再充当 wiring proof |
 | GV-04 | 治理 | 断点 | P0 | Authority→Evidence | platform_admin 跨租户化身无审计 |
 | GV-05 | 治理 | 断点 | P0 | Authority→Acceptance | llm_proxy 无配额无计量（假完成 docstring） |
 | HC-01 | Connect | 断点 | P0 | Consumption | A2A 委派本地执行结果孤立，源 agent 永不知 |
@@ -443,7 +446,7 @@ AGENTS.md 必须按当前源码改写以下条目（均经 current-source 复核
 |---|---|---|---|
 | GV-01+GV-02（确认车道） | **已实现**：preflight ASK/ESCALATE 并入 Approval ticket；exact approval audit-evidence 后放行；REFUSE/PREPARE_ONLY 不可由 approval 覆盖；typed block 票据失败 | 内存 checkpoint 无持久化存量；InProcess 默认回填与孤立 checkpoint 创建已删除 | 本地真实 execution seam 组合测试已通过；真 PG worker 4 项因 Docker 不可用 skip，CI/验收环境必须补绿 |
 | GV-03（typed Owner action policy） | **已实现**：prompt 与 preflight 消费同一 exact schema/action/zone；full_authority 不被 advisory 风险轴反向收紧，confirm_first 走同一 Approval ticket，never_do/损坏合同对效果型动作在普通 approval 前 fail-closed；依赖故障保留无关只读能力 | 复用 `ConfigRevision`，无 schema migration；legacy agent 首次 live 消费幂等回填；Owner manage API 强制 expected-version、支持 history/rollback 并写 audit；员工设置消费保存与两步确认恢复，隐藏机器 ID | 后端相关聚合 `168 passed`、Ruff 绿；前端 `115 passed`、build/bundle budget 绿；真 PG 双 worker 首次回填竞争与 rollback 仍待验收环境补绿 |
-| SA-05 | `start_workflow` 注册 ACTION_KINDS/_ACTION_INTENT | — | fake_gate 测试改真 gate 集成测试；REST confirmed_plan_id 启动 200 |
+| SA-05 | **已实现**：`start_workflow` 注册 ACTION_KINDS/_ACTION_INTENT，并以 `bridge:self` 保持 Workflow 自有 durable preview/显式 start 确认，不引入自动 Plan Mode | 无 schema/数据/config 迁移 | 真实 REST→PlanModeGate→lease→launch 测试返回 200；13 文件相关聚合 `239 passed`、Ruff 绿；10 项真 PG lease 测试因 Docker 不可用 skip |
 | GV-04 | 化身建立时写 operator 审计事件 | 历史化身无证据可回填（如实声明） | 审计面可查 impersonation 事件含 actor/target/request_id |
 | GV-05 | llm_proxy 接入 quota+SSE usage 记账+rate limit | — | 配额耗尽 typed 拒绝；token_tracker 出现代理路径用量行 |
 | GV-08 | 把模式扫描降为候选/audit；硬拒绝仅消费当前 principal 无权披露的精确 secret bytes/refs，输出只遮蔽精确禁止字节 | 识别并删除钉住 benign 模式误伤的测试契约；无需数据迁移 | benign 示例可写入；真实未授权 secret fail-closed；嵌套参数与最终表达保持非禁止字节 byte-faithful |
@@ -464,15 +467,16 @@ AGENTS.md 必须按当前源码改写以下条目（均经 current-source 复核
 - `alembic heads` → **单头** `completion_outbox_index_0721`；文件系统计数为 **178 个迁移文件**。原报告的“140 个含回填”未在本次复核中建立统一机械口径，不能与已复现事实混写。
 - Codex 复跑 `.venv/bin/pytest tests -q --tb=short`：**7089 passed / 594 skipped / 4 failed（60.51s）**，与原报告数量一致。4 个失败逐一定性：①`test_feishu_streaming_cards` 硬编码已失效绝对路径；②③`test_agent_native_repair_ledger` 与 ④`test_schema_startup_gate` 因当前 `.git` worktree 指针损坏而在 `git ls-files` 失败。594 skipped 含 Docker-off 真 PG 测试，不能视为 acceptance green。
 - 当前规模复现为 **923 个 test 文件 / 7278 个 test function 定义 / 7687 个 pytest collected cases**。AGENTS.md "4223 passed" 基线已过时。
-- 直接调用 `intent_type_for_action("start_workflow")` 可复现 `ValueError`；但 `test_confirmed_plan_is_consumed_for_the_exact_workflow_preview` 因 fake gate 仍绿。`test_tool_runtime_service_preflight_refuses_credential_arguments` 也仍绿，证明测试正在钉住 GV-08 违规。两项 targeted tests 合计 **2 passed**，不能作为路径正确证据。
+- 修复前直接调用 `intent_type_for_action("start_workflow")` 可复现 `ValueError`，而 `test_confirmed_plan_is_consumed_for_the_exact_workflow_preview` 因 fake gate 仍绿；SA-05 已用真实 gate REST 回归替换这项 wiring proof。`test_tool_runtime_service_preflight_refuses_credential_arguments` 仍绿，继续证明 GV-08 测试在钉住违规。
 - `npm view @hiveclaw243/hive-connect version bin` 返回 **0.1.9** / `hive-connect: run.js`；对应源码 `npm/package.json` 同版本。`go test ./platform/hive ./daemon ./cmd/cc-connect` 三包全部通过，反证 HC-02/HC-04 的“未实现”结论。
 - 子审实测：kernel+invoker 195 项全绿；knowledge 平面 134 项全绿。
 - GV-03 后端聚合实测：`backend/.venv/bin/pytest -q backend/tests/services/test_owner_action_policy.py backend/tests/services/test_action_preflight.py backend/tests/services/test_agent_context.py backend/tests/runtime/test_invoker.py backend/tests/tools/test_tool_runtime_preflight.py backend/tests/tools/test_resolver.py backend/tests/tools/test_service.py backend/tests/api/test_agent_autonomy_api.py` → **168 passed / 0 failed / 1 Starlette deprecation warning**；对应 Ruff 命令 → **All checks passed**。
 - GV-03 前端实测：`npm test -- --run src/api/domains/autonomy.test.ts src/pages/agent-detail/AgentActionPolicyCard.test.tsx src/pages/agent-detail/AgentDetailSections.test.tsx` → **3 files / 115 tests passed**；`npm run build` → **成功**，AgentDetail 与 shared vendor raw/gzip 四项 budget 全部通过。
+- SA-05 实测：13 个 Plan Mode/Workflow 相关 test 文件合并运行 → **239 passed / 0 failed / 1 Starlette deprecation warning**，Ruff → **All checks passed**；其中新增 REST 用例使用真实 `PlanModeGate`。`backend/tests/integration/test_plan_authorization_lease_postgres.py -rs` → **10 skipped**，原因均为 Docker/Testcontainers connection refused。
 
 ### 14.2 未证实项汇总
 
-T0 磁盘实物抽样与 T0_STARTUP_BACKFILL 生产执行；Redis 传输不可用时 bridge 仅靠 sweep 兜底的行为；后台 subagent 完成唤醒 payload 上限；`skill_candidate_loop_v1` 生产 FeatureFlag 行真实状态；GV-01/GV-02 的真 PG request→approve→worker→continuation exactly-once；GV-03 的真 PG 双 worker 首次 legacy policy 回填竞争与 transaction rollback；MCP `row.config["api_key"]` 明文 vs 加密；enterprise.py 32 端点逐一租户作用域；审批无人值守恢复全程；desktop_* 消费者；canonical Hive Connect 的真实机器安装/自启/presence；FreeCode 运行期行为；最近一次 CI run 状态；多实例 Railway 部署拓扑。
+T0 磁盘实物抽样与 T0_STARTUP_BACKFILL 生产执行；Redis 传输不可用时 bridge 仅靠 sweep 兜底的行为；后台 subagent 完成唤醒 payload 上限；`skill_candidate_loop_v1` 生产 FeatureFlag 行真实状态；GV-01/GV-02 的真 PG request→approve→worker→continuation exactly-once；GV-03 的真 PG 双 worker 首次 legacy policy 回填竞争与 transaction rollback；SA-05 confirmed workflow 的真 PG lease consumption/rollback；MCP `row.config["api_key"]` 明文 vs 加密；enterprise.py 32 端点逐一租户作用域；审批无人值守恢复全程；desktop_* 消费者；canonical Hive Connect 的真实机器安装/自启/presence；FreeCode 运行期行为；最近一次 CI run 状态；多实例 Railway 部署拓扑。
 
 ### 14.3 残余风险
 
@@ -480,7 +484,7 @@ git metadata 已从远端 main 精确恢复且现可逐项 diff/commit；恢复�
 
 ### 14.4 证据边界声明
 
-不再使用“约 90%”这类不可机械复算的单值置信度。当前证据分层如下：原始六个 P0 的代码事实与新增 GV-08 有 current-source 证据；其中 GV-01/GV-02 已有 source diff、typed receipts 与不替换执行 seam 的组合回归，但真 PG worker 验收仍缺。GV-03 已有 prompt→resolver→preflight→Approval/registry、revision/history/rollback/audit 与业务 UI 的 current-source 和本地可执行证据，真 PG 并发验收仍缺；HC-02/HC-04 已被 canonical source 反证；UI-01 已被当前可执行测试合同重分类；UI-09 有用户提供的生产页面截图、前后端 current-source 接线和错误契约单测三类证据，但本次未独立操作浏览器；测试、迁移头与包级 Go tests 有命令 receipt。Goal 1 行为质量、生产 DB、浏览器端到端、多进程、Railway 和真实设备态仍未证实。发布裁决必须消费 §11 中与本次变更相关的全部 receipt，不能只取前三项或把 full-suite 计数当替代品。
+不再使用“约 90%”这类不可机械复算的单值置信度。当前证据分层如下：原始六个 P0 的代码事实与新增 GV-08 有 current-source 证据；其中 GV-01/GV-02 已有 source diff、typed receipts 与不替换执行 seam 的组合回归，但真 PG worker 验收仍缺。GV-03 已有 prompt→resolver→preflight→Approval/registry、revision/history/rollback/audit 与业务 UI 的 current-source 和本地可执行证据，真 PG 并发验收仍缺；SA-05 已有真实 REST→PlanModeGate→lease port→launch 的 current-source/可执行证据，真 PG lease 验收仍缺；HC-02/HC-04 已被 canonical source 反证；UI-01 已被当前可执行测试合同重分类；UI-09 有用户提供的生产页面截图、前后端 current-source 接线和错误契约单测三类证据，但本次未独立操作浏览器；测试、迁移头与包级 Go tests 有命令 receipt。Goal 1 行为质量、生产 DB、浏览器端到端、多进程、Railway 和真实设备态仍未证实。发布裁决必须消费 §11 中与本次变更相关的全部 receipt，不能只取前三项或把 full-suite 计数当替代品。
 
 ---
 

@@ -450,6 +450,7 @@ async def preview_workflow(request: ToolExecutionRequest) -> str:
         display_name="Start Workflow",
         governance="sensitive",
         work_amplifying=True,
+        plan_gate_action_kind="bridge:self",
     )
 )
 async def start_workflow(request: ToolExecutionRequest) -> str:

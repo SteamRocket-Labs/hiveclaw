@@ -66,7 +66,15 @@ def _arg_bound_definition() -> dict:
     return definition
 
 
-def _client(user, monkeypatch, *, gate_allowed=True, gate_reason=None, access_level="manage"):
+def _client(
+    user,
+    monkeypatch,
+    *,
+    gate_allowed=True,
+    gate_reason=None,
+    access_level="manage",
+    real_gate=None,
+):
     from app.models.workflow_confirmation import WorkflowPreviewArtifact
     from app.services.workflow_confirmation_service import (
         WorkflowStartClaim,
@@ -236,7 +244,12 @@ def _client(user, monkeypatch, *, gate_allowed=True, gate_reason=None, access_le
         )
 
     fake_gate_check.calls = []
-    monkeypatch.setattr(workflows_api, "_plan_gate_check", fake_gate_check)
+    if real_gate is None:
+        monkeypatch.setattr(workflows_api, "_plan_gate_check", fake_gate_check)
+    else:
+        from app.services import plan_mode_gate as gate_module
+
+        monkeypatch.setattr(gate_module, "get_plan_mode_gate", lambda: real_gate)
 
     client = TestClient(api)
     client.fake_launch = fake_launch
@@ -422,6 +435,74 @@ def test_confirmed_plan_is_consumed_for_the_exact_workflow_preview(monkeypatch):
         "session_id": preview["session_id"],
         "runtime_task_id": None,
         "evidence_id": launch_kwargs["run_metadata"]["plan_authorization"]["evidence_id"],
+    }
+    assert len(client.fake_launch.calls) == 1
+
+
+def test_confirmed_plan_reaches_real_gate_and_starts_exact_workflow_preview(monkeypatch):
+    from app.services import plan_mode_gate as gate_module
+    from app.services.plan_mode_gate import PlanModeGate
+
+    agent_id = uuid.uuid4()
+    user = _user()
+    plan_id = uuid.uuid4()
+    plan = SimpleNamespace(
+        id=plan_id,
+        agent_id=agent_id,
+        tenant_id=user.tenant_id,
+        requested_by_user_id=user.id,
+        confirmed_by_user_id=user.id,
+        intent_type="in_session_execution",
+        status="confirmed",
+        plan_version=2,
+        plan_hash="sha256:workflow-plan",
+    )
+    consumed = {}
+
+    class _RealWorkflowGate(PlanModeGate):
+        async def _load_plan(self, _db, requested_plan_id):
+            assert str(requested_plan_id) == str(plan_id)
+            return plan
+
+    async def consume_plan_authorization_lease(**kwargs):
+        consumed.update(kwargs)
+        return SimpleNamespace(
+            lease_id=uuid.uuid4(),
+            binding=SimpleNamespace(
+                plan_id=plan_id,
+                plan_version=2,
+                plan_hash="sha256:workflow-plan",
+                canonical_args_hash="sha256:workflow-preview-args",
+                target_ref=kwargs["target_ref"],
+            ),
+        )
+
+    monkeypatch.setattr(gate_module, "consume_plan_authorization_lease", consume_plan_authorization_lease)
+    client = _client(user, monkeypatch, real_gate=_RealWorkflowGate())
+    preview = client.post(
+        f"/agents/{agent_id}/workflows/preview",
+        json={"definition": _high_risk_definition(), "args": {}},
+    ).json()
+
+    response = client.post(
+        f"/agents/{agent_id}/workflows/runs",
+        json={
+            "preview_id": preview["preview_id"],
+            "confirmed_plan_id": str(plan_id),
+            "plan_version": 2,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "completed"
+    assert consumed["action_kind"] == "start_workflow"
+    assert consumed["target_ref"] == f"workflow-preview:{preview['preview_id']}"
+    assert consumed["action_artifact"] == {
+        "preview_id": preview["preview_id"],
+        "definition_hash": preview["definition_hash"],
+        "args_hash": preview["args_hash"],
+        "artifact_version": preview["artifact_version"],
+        "artifact_hash": preview["artifact_hash"],
     }
     assert len(client.fake_launch.calls) == 1
 

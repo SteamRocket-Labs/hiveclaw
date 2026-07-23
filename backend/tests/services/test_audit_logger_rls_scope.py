@@ -70,7 +70,7 @@ async def test_platform_security_audit_uses_operator_bypass_and_preserves_envelo
 
     actor_id = uuid4()
     resource_id = uuid4()
-    request_id = uuid4()
+    request_id = "trace-tenant-override"
     event_id = await audit_logger.write_platform_security_audit_event(
         event_type="auth.login_failed",
         severity="warn",
@@ -106,7 +106,7 @@ async def test_platform_security_audit_uses_operator_bypass_and_preserves_envelo
         "resource": {"type": "session", "id": str(resource_id)},
         "details": {"reason": "invalid_password"},
         "ip_address": "192.0.2.10",
-        "request_id": str(request_id),
+        "request_id": request_id,
         "execution_identity": {
             "type": "delegated_user",
             "id": str(actor_id),

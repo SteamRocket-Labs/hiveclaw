@@ -87,6 +87,59 @@ async def _load_user_with_tenant_status(db: AsyncSession, user_id: uuid.UUID):
     return result.first()
 
 
+def _request_audit_id(request: Request) -> str:
+    """Return the request correlation id already established by middleware."""
+    request_state = getattr(request, "state", None)
+    trace_id = getattr(request_state, "trace_id", None)
+    if not trace_id:
+        headers = getattr(request, "headers", {})
+        trace_id = headers.get("x-trace-id") or headers.get("X-Trace-Id")
+    normalized = str(trace_id or uuid.uuid4()).strip()
+    return normalized[:128] or str(uuid.uuid4())
+
+
+async def _audit_platform_admin_tenant_impersonation(
+    *,
+    request: Request,
+    actor_id: uuid.UUID,
+    actor_home_tenant_id: uuid.UUID | None,
+    target_tenant_id: uuid.UUID,
+) -> None:
+    """Write the fail-closed operator receipt for a cross-tenant identity frame."""
+    request_state = getattr(request, "state", None)
+    if (
+        request_state is not None
+        and getattr(request_state, "tenant_impersonation_target_id", None) == str(target_tenant_id)
+    ):
+        return
+
+    from app.services.audit_logger import write_platform_security_audit_event
+
+    client = getattr(request, "client", None)
+    url = getattr(request, "url", None)
+    event_id = await write_platform_security_audit_event(
+        event_type="tenant_impersonation",
+        severity="warn",
+        actor_type="user",
+        actor_id=actor_id,
+        action="tenant_impersonation",
+        resource_type="tenant",
+        resource_id=target_tenant_id,
+        details={
+            "actor_role": "platform_admin",
+            "actor_home_tenant_id": str(actor_home_tenant_id) if actor_home_tenant_id is not None else None,
+            "target_tenant_id": str(target_tenant_id),
+            "request_method": str(getattr(request, "method", "")),
+            "request_path": str(getattr(url, "path", "")),
+        },
+        ip_address=str(getattr(client, "host", "")) or None,
+        request_id=_request_audit_id(request),
+    )
+    if request_state is not None:
+        request_state.tenant_impersonation_target_id = str(target_tenant_id)
+        request_state.tenant_impersonation_audit_event_id = str(event_id)
+
+
 async def get_current_user(
     request: Request,
     credentials: HTTPAuthorizationCredentials = Depends(security),
@@ -160,13 +213,28 @@ async def get_current_user(
             raise HTTPException(status_code=404, detail="Target tenant not found")
         if not target_active:
             raise HTTPException(status_code=403, detail="Target tenant is disabled")
-        if user.tenant_id is None or str(user.tenant_id) != requested_tenant:
+        actor_home_tenant_id = user.tenant_id
+        is_cross_tenant_impersonation = actor_home_tenant_id is None or actor_home_tenant_id != target_id
+        if is_cross_tenant_impersonation:
             # Detach user from ORM session and override tenant_id in-memory.
             # The active DB session is then pinned to the selected tenant for
             # the endpoint's actual tenant-scoped data access.
             db.expunge(user)
             user.tenant_id = target_id
         await _set_session_tenant(db, target_id)
+        if is_cross_tenant_impersonation:
+            try:
+                await _audit_platform_admin_tenant_impersonation(
+                    request=request,
+                    actor_id=user.id,
+                    actor_home_tenant_id=actor_home_tenant_id,
+                    target_tenant_id=target_id,
+                )
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Security audit unavailable; tenant impersonation was not established",
+                ) from exc
     elif requested_tenant and user.tenant_id and str(user.tenant_id) != requested_tenant:
         # A stale token may still claim platform_admin after the DB role was
         # downgraded. Ignore the selected tenant and restore the user's own

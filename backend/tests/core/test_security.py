@@ -112,18 +112,129 @@ async def test_platform_admin_selected_tenant_override_can_still_resolve_admin_i
         is_active=True,
     )
     db = _TenantOverrideDB(user)
-    request = SimpleNamespace(headers={"x-tenant-id": str(selected_tenant_id)})
+    request = SimpleNamespace(
+        headers={"x-tenant-id": str(selected_tenant_id)},
+        state=SimpleNamespace(trace_id="trace-tenant-override"),
+        method="GET",
+        url=SimpleNamespace(path="/api/agents"),
+        client=SimpleNamespace(host="192.0.2.40"),
+    )
     credentials = SimpleNamespace(credentials="jwt")
+    audit_events: list[dict[str, object]] = []
 
-    with patch(
-        "app.core.security.decode_access_token",
-        return_value={"sub": str(user_id), "role": "platform_admin", "tid": str(home_tenant_id)},
+    async def capture_platform_audit(**kwargs):
+        audit_events.append(kwargs)
+        return uuid4()
+
+    with (
+        patch(
+            "app.core.security.decode_access_token",
+            return_value={"sub": str(user_id), "role": "platform_admin", "tid": str(home_tenant_id)},
+        ),
+        patch(
+            "app.services.audit_logger.write_platform_security_audit_event",
+            side_effect=capture_platform_audit,
+        ),
     ):
         current_user = await get_current_user(request=request, credentials=credentials, db=db)
 
     assert current_user.tenant_id == selected_tenant_id
     assert db.expunged == [user]
     assert any("app.current_tenant_id = 'BYPASS'" in statement for statement in db.statements)
+    assert len(audit_events) == 1
+    assert audit_events[0] == {
+        "event_type": "tenant_impersonation",
+        "severity": "warn",
+        "actor_type": "user",
+        "actor_id": user_id,
+        "action": "tenant_impersonation",
+        "resource_type": "tenant",
+        "resource_id": selected_tenant_id,
+        "details": {
+            "actor_role": "platform_admin",
+            "actor_home_tenant_id": str(home_tenant_id),
+            "target_tenant_id": str(selected_tenant_id),
+            "request_method": "GET",
+            "request_path": "/api/agents",
+        },
+        "ip_address": "192.0.2.40",
+        "request_id": "trace-tenant-override",
+    }
+    assert request.state.tenant_impersonation_audit_event_id
+
+
+@pytest.mark.asyncio
+async def test_platform_admin_home_tenant_selection_does_not_emit_impersonation_audit():
+    home_tenant_id = uuid4()
+    user_id = uuid4()
+    user = SimpleNamespace(
+        id=user_id,
+        role="platform_admin",
+        tenant_id=home_tenant_id,
+        is_active=True,
+    )
+    db = _TenantOverrideDB(user)
+    request = SimpleNamespace(
+        headers={"x-tenant-id": str(home_tenant_id)},
+        state=SimpleNamespace(trace_id="trace-home-tenant"),
+        method="GET",
+        url=SimpleNamespace(path="/api/agents"),
+        client=SimpleNamespace(host="192.0.2.41"),
+    )
+    credentials = SimpleNamespace(credentials="jwt")
+
+    with (
+        patch(
+            "app.core.security.decode_access_token",
+            return_value={"sub": str(user_id), "role": "platform_admin", "tid": str(home_tenant_id)},
+        ),
+        patch(
+            "app.services.audit_logger.write_platform_security_audit_event",
+        ) as write_platform_audit,
+    ):
+        current_user = await get_current_user(request=request, credentials=credentials, db=db)
+
+    assert current_user.tenant_id == home_tenant_id
+    write_platform_audit.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_platform_admin_cross_tenant_override_fails_closed_when_operator_audit_is_unavailable():
+    home_tenant_id = uuid4()
+    selected_tenant_id = uuid4()
+    user_id = uuid4()
+    user = SimpleNamespace(
+        id=user_id,
+        role="platform_admin",
+        tenant_id=home_tenant_id,
+        is_active=True,
+    )
+    db = _TenantOverrideDB(user)
+    request = SimpleNamespace(
+        headers={"x-tenant-id": str(selected_tenant_id)},
+        state=SimpleNamespace(trace_id="trace-audit-down"),
+        method="DELETE",
+        url=SimpleNamespace(path="/api/agents/target"),
+        client=SimpleNamespace(host="192.0.2.42"),
+    )
+    credentials = SimpleNamespace(credentials="jwt")
+
+    with (
+        patch(
+            "app.core.security.decode_access_token",
+            return_value={"sub": str(user_id), "role": "platform_admin", "tid": str(home_tenant_id)},
+        ),
+        patch(
+            "app.services.audit_logger.write_platform_security_audit_event",
+            side_effect=RuntimeError("operator audit unavailable"),
+        ),
+        pytest.raises(HTTPException) as exc_info,
+    ):
+        await get_current_user(request=request, credentials=credentials, db=db)
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.detail == "Security audit unavailable; tenant impersonation was not established"
+    assert not hasattr(request.state, "tenant_impersonation_audit_event_id")
 
 
 @pytest.mark.asyncio

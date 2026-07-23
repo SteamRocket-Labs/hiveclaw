@@ -50,7 +50,7 @@ async def write_platform_security_audit_event(
     resource_id: uuid.UUID | None = None,
     details: dict | None = None,
     ip_address: str | None = None,
-    request_id: uuid.UUID | None = None,
+    request_id: uuid.UUID | str | None = None,
     execution_identity_type: str | None = None,
     execution_identity_id: uuid.UUID | None = None,
     execution_identity_label: str | None = None,

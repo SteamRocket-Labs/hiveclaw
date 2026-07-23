@@ -733,6 +733,22 @@ RLS_BYPASS_ALLOWLIST = (
     ),
     _grant(
         *(
+            "app/services/platform_security_audit.py",
+            "query_platform_security_audit_events",
+            "'operator platform security audit query'",
+            ("session-state-only",),
+        )
+    ),
+    _grant(
+        *(
+            "app/services/platform_security_audit.py",
+            "verify_persisted_platform_security_audit_chain",
+            "'operator platform security audit chain verification'",
+            ("session-state-only",),
+        )
+    ),
+    _grant(
+        *(
             "app/services/skill_seeder.py",
             "seed_skills",
             "'startup builtin skill registry seed'",

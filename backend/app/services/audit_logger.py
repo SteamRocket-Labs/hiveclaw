@@ -19,8 +19,11 @@ async def _insert_audit_row(
     agent_id: uuid.UUID | None,
     user_id: uuid.UUID | None,
     tenant_id: uuid.UUID | None,
+    event_id: uuid.UUID | None = None,
+    created_at: datetime | None = None,
 ) -> uuid.UUID:
-    event_id = uuid.uuid4()
+    event_id = event_id or uuid.uuid4()
+    created_at = created_at or datetime.now(timezone.utc)
     await db.execute(
         text(
             "INSERT INTO audit_logs (id, action, details, agent_id, user_id, tenant_id, created_at) "
@@ -33,7 +36,7 @@ async def _insert_audit_row(
             "agent_id": agent_id,
             "user_id": user_id,
             "tenant_id": tenant_id,
-            "created_at": datetime.now(timezone.utc),
+            "created_at": created_at,
         },
     )
     return event_id
@@ -55,7 +58,7 @@ async def write_platform_security_audit_event(
     execution_identity_id: uuid.UUID | None = None,
     execution_identity_label: str | None = None,
 ) -> uuid.UUID:
-    """Persist a tenantless security event in the operator-only audit plane.
+    """Persist a chained tenantless event in the operator-only audit plane.
 
     Actor identifiers stay in the immutable envelope instead of tenant-bound
     foreign-key columns. This keeps the independent platform audit commit from
@@ -69,8 +72,7 @@ async def write_platform_security_audit_event(
             "id": str(execution_identity_id) if execution_identity_id is not None else None,
             "label": execution_identity_label,
         }
-    envelope = {
-        "schema_version": "hive.platform_security_audit.v1",
+    base_envelope = {
         "event_type": event_type,
         "severity": severity,
         "actor": {
@@ -91,13 +93,78 @@ async def write_platform_security_audit_event(
         async_session() as db,
         enter_rls_bypass(db, reason="operator platform security audit insert") as bypass_db,
     ):
+        from app.services.platform_security_audit import (
+            acquire_platform_security_chain_lock,
+            compute_legacy_platform_audit_anchor,
+            load_legacy_platform_security_rows,
+            load_platform_security_chain_head,
+            platform_security_chain_position,
+            seal_platform_security_envelope,
+        )
+
+        await acquire_platform_security_chain_lock(bypass_db)
+        legacy_rows = await load_legacy_platform_security_rows(bypass_db)
+        legacy_anchor = compute_legacy_platform_audit_anchor(legacy_rows)
+        chain_head = await load_platform_security_chain_head(bypass_db)
+        if chain_head is None:
+            cutover_event_id = uuid.uuid4()
+            cutover_created_at = datetime.now(timezone.utc)
+            cutover_action = "platform_security.chain_cutover"
+            cutover_envelope = seal_platform_security_envelope(
+                event_id=cutover_event_id,
+                row_action=cutover_action,
+                base_envelope={
+                    "event_type": "chain_cutover",
+                    "severity": "info",
+                    "actor": {"type": "system", "id": None},
+                    "action": "chain_cutover",
+                    "resource": {"type": "platform_security_audit", "id": None},
+                    "details": legacy_anchor,
+                    "legacy_anchor": legacy_anchor,
+                    "ip_address": None,
+                    "request_id": None,
+                    "execution_identity": None,
+                },
+                sequence_num=1,
+                prev_hash="genesis",
+                recorded_at=cutover_created_at,
+            )
+            await _insert_audit_row(
+                bypass_db,
+                action=cutover_action,
+                details=cutover_envelope,
+                agent_id=None,
+                user_id=None,
+                tenant_id=None,
+                event_id=cutover_event_id,
+                created_at=cutover_created_at,
+            )
+            previous_sequence = 1
+            previous_hash = cutover_envelope["event_hash"]
+        else:
+            previous_sequence, previous_hash = platform_security_chain_position(chain_head)
+
+        event_id = uuid.uuid4()
+        created_at = datetime.now(timezone.utc)
+        row_action = f"platform_security.{event_type}"
+        base_envelope["legacy_anchor"] = legacy_anchor
+        envelope = seal_platform_security_envelope(
+            event_id=event_id,
+            row_action=row_action,
+            base_envelope=base_envelope,
+            sequence_num=previous_sequence + 1,
+            prev_hash=previous_hash,
+            recorded_at=created_at,
+        )
         event_id = await _insert_audit_row(
             bypass_db,
-            action=f"platform_security.{event_type}",
+            action=row_action,
             details=envelope,
             agent_id=None,
             user_id=None,
             tenant_id=None,
+            event_id=event_id,
+            created_at=created_at,
         )
         await bypass_db.commit()
     return event_id
@@ -109,10 +176,12 @@ async def write_audit_log(
     agent_id: uuid.UUID | None = None,
     user_id: uuid.UUID | None = None,
 ) -> None:
-    """Write a single audit log entry using raw SQL.
+    """Write a best-effort operational audit row using raw SQL.
 
     Uses raw SQL to avoid ORM foreign-key resolution issues when
     called from background tasks where not all models may be loaded.
+    Canonical platform-security evidence is not accepted here because this
+    compatibility sink intentionally remains fail-soft.
 
     Args:
         action: Short action string, e.g. "trigger_fire", "schedule_execute".
@@ -120,6 +189,8 @@ async def write_audit_log(
         agent_id: Optional agent UUID.
         user_id: Optional user UUID.
     """
+    if action.startswith("platform_security."):
+        raise ValueError("platform_security.* events must use write_platform_security_audit_event")
     try:
         # RLS stage-2b: audit_logs is now policied (USING-only). Derive tenant_id
         # from the agent so the row is tenant-scoped after the non-owner role flip;

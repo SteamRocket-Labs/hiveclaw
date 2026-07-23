@@ -195,11 +195,12 @@ async def test_tenantless_security_event_writes_operator_row_under_app_rls(
     monkeypatch,
 ):
     from app.core.policy import write_audit_event
-    from app.services import audit_logger
+    from app.services import audit_logger, platform_security_audit
 
     actor_id = uuid.uuid4()
     marker = uuid.uuid4().hex
     monkeypatch.setattr(audit_logger, "async_session", app_user_sessionmaker)
+    monkeypatch.setattr(platform_security_audit, "async_session", app_user_sessionmaker)
 
     async with app_user_sessionmaker() as request_db:
         receipt = await write_audit_event(
@@ -221,6 +222,25 @@ async def test_tenantless_security_event_writes_operator_row_under_app_rls(
     assert row.action == "platform_security.auth.login_failed"
     assert row.user_id is None
     assert row.agent_id is None
-    assert row.details["schema_version"] == "hive.platform_security_audit.v1"
+    assert row.details["schema_version"] == "hive.platform_security_audit.v2"
+    assert row.details["sequence_num"] >= 2
+    assert len(row.details["event_hash"]) == 64
     assert row.details["actor"] == {"type": "user", "id": str(actor_id)}
     assert row.details["details"] == {"marker": marker}
+
+    queried = await platform_security_audit.query_platform_security_audit_events(
+        event_type="auth.login_failed",
+        severity="warn",
+        actor_id=actor_id,
+        request_id=None,
+        limit=10,
+        offset=0,
+    )
+    assert queried["total"] == 1
+    assert queried["items"][0]["id"] == str(receipt.event_id)
+    assert queried["items"][0]["chain_status"] == "chained"
+
+    verification = await platform_security_audit.verify_persisted_platform_security_audit_chain()
+    assert verification["valid"] is True
+    assert verification["total_events"] >= 2
+    assert verification["first_invalid_event_id"] is None

@@ -7,7 +7,7 @@ import uuid
 
 import anyio
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import select, func
@@ -555,6 +555,49 @@ async def resolve_approval(
 
 
 # ─── Audit Logs ─────────────────────────────────────────
+
+
+def _require_platform_admin(current_user: User) -> None:
+    if current_user.role != "platform_admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Platform administrator access required",
+        )
+
+
+@router.get("/platform-security-audit")
+async def list_platform_security_audit_events(
+    event_type: str | None = Query(default=None, max_length=100),
+    severity: str | None = Query(default=None, max_length=20),
+    actor_id: uuid.UUID | None = None,
+    request_id: str | None = Query(default=None, max_length=200),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    current_user: User = Depends(get_current_admin),
+):
+    """Query the tenantless, tamper-evident operator security audit plane."""
+    _require_platform_admin(current_user)
+    from app.services.platform_security_audit import query_platform_security_audit_events
+
+    return await query_platform_security_audit_events(
+        event_type=event_type,
+        severity=severity,
+        actor_id=actor_id,
+        request_id=request_id,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.get("/platform-security-audit/verify")
+async def verify_platform_security_audit_chain(
+    current_user: User = Depends(get_current_admin),
+):
+    """Verify the complete operator security chain and its immutable legacy anchor."""
+    _require_platform_admin(current_user)
+    from app.services.platform_security_audit import verify_persisted_platform_security_audit_chain
+
+    return await verify_persisted_platform_security_audit_chain()
 
 
 @router.get("/audit-logs", response_model=list[AuditLogOut])

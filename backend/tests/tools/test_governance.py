@@ -1330,8 +1330,8 @@ async def test_governance_skips_token_check_when_no_token():
 #
 # The MCP tool mode (auto / approval / deny) was resolved at execution time
 # but only deny was enforced — approval behaved exactly like auto, a silent
-# governance promise. The gate now lives in governance preflight so the
-# post-approval replay path (execute_approved skips preflight) cannot loop.
+# governance promise. The gate now consumes the immutable decision on the
+# post-approval replay path, so the full pipeline cannot open a second request.
 
 
 def _mcp_gate_deps(resolve_mcp_tool_mode, request_approval=None):

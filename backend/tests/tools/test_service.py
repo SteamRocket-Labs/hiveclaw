@@ -1819,6 +1819,157 @@ async def test_tool_runtime_service_execute_approved_logs_approval_metadata():
 
 
 @pytest.mark.asyncio
+async def test_execute_approved_satisfies_preflight_ask_and_executes_exact_external_effect():
+    from app.services.approval_ticket import ApprovalExecutionTicket
+    from app.services.decision_trace import DecisionTraceStore
+    from app.tools.runtime import ToolExecutionContext
+    from app.tools.service import ToolRuntimeService
+
+    agent_id = uuid4()
+    requested_by = uuid4()
+    approved_by = uuid4()
+    approval_id = uuid4()
+    arguments = {
+        "open_id": "ou_example",
+        "message": "Send the approved external vendor update.",
+    }
+    context = ToolExecutionContext(
+        agent_id=agent_id,
+        user_id=requested_by,
+        tenant_id=str(uuid4()),
+        workspace=Path("/tmp/approved-preflight"),
+    )
+    completions = []
+    registry = _FakeRegistry("SENT")
+
+    async def consume_ticket(**_kwargs):
+        return ApprovalExecutionTicket(
+            approval_id=approval_id,
+            agent_id=agent_id,
+            requested_by_user_id=requested_by,
+            approved_by_user_id=approved_by,
+            policy_snapshot_hash="policy-hash",
+            idempotency_key=f"approval:{approval_id}",
+            decision_id="preflight-decision-approved",
+            **_approved_ticket_runtime_fields(
+                context,
+                tool_name="send_feishu_message",
+                arguments=arguments,
+            ),
+        )
+
+    async def complete_ticket(**kwargs):
+        completions.append(kwargs)
+
+    service = ToolRuntimeService(
+        runtime_resolver=_FakeRuntimeResolver(context),
+        governance_resolver=_FakeGovernanceResolver(SimpleNamespace(), SimpleNamespace()),
+        registry=registry,
+        ensure_registry=lambda: None,
+        governance_runner=lambda *_args, **_kwargs: None,
+        fallback_executor=lambda *_args, **_kwargs: "fallback",
+        direct_fallback_executor=lambda *_args, **_kwargs: "direct-fallback",
+        activity_logger=None,
+        approval_ticket_consumer=consume_ticket,
+        approval_ticket_completer=complete_ticket,
+        decision_trace_store=DecisionTraceStore(),
+    )
+
+    result = await service.execute_approved(
+        approval_id=approval_id,
+        expected_agent_id=agent_id,
+        approved_by_user_id=approved_by,
+    )
+
+    assert result == "SENT"
+    assert len(registry.calls) == 1
+    assert registry.calls[0].tool_name == "send_feishu_message"
+    assert completions[0]["status"] == "succeeded"
+    preflight = completions[0]["receipt"]["runtime_evidence"]["preflight"]
+    assert preflight["decision"] == "ask"
+    assert preflight["approval_satisfied"] is True
+    assert preflight["approval_id"] == str(approval_id)
+
+
+@pytest.mark.asyncio
+async def test_execute_approved_does_not_override_preflight_refuse_and_marks_ticket_failed():
+    from app.services.action_preflight import ActionPreflightResult, PreflightDecision
+    from app.services.approval_ticket import ApprovalExecutionTicket
+    from app.services.decision_trace import DecisionTraceStore
+    from app.tools.decision import ToolDecisionOutcome
+    from app.tools.runtime import ToolExecutionContext
+    from app.tools.service import ToolRuntimeService
+
+    agent_id = uuid4()
+    requested_by = uuid4()
+    approved_by = uuid4()
+    approval_id = uuid4()
+    arguments = {"path": "workspace/blocked.md", "content": "blocked"}
+    context = ToolExecutionContext(
+        agent_id=agent_id,
+        user_id=requested_by,
+        tenant_id=str(uuid4()),
+        workspace=Path("/tmp/approved-preflight-refuse"),
+    )
+    completions = []
+    registry = _FakeRegistry("SHOULD_NOT_RUN")
+
+    class _RefusingPreflight:
+        def evaluate(self, _request):
+            return ActionPreflightResult(
+                decision=PreflightDecision.REFUSE,
+                reasons=["hard_authority_denied"],
+                requires_audit=True,
+            )
+
+    async def consume_ticket(**_kwargs):
+        return ApprovalExecutionTicket(
+            approval_id=approval_id,
+            agent_id=agent_id,
+            requested_by_user_id=requested_by,
+            approved_by_user_id=approved_by,
+            policy_snapshot_hash="policy-hash",
+            idempotency_key=f"approval:{approval_id}",
+            decision_id="preflight-refuse-approved",
+            **_approved_ticket_runtime_fields(
+                context,
+                tool_name="write_file",
+                arguments=arguments,
+            ),
+        )
+
+    async def complete_ticket(**kwargs):
+        completions.append(kwargs)
+
+    service = ToolRuntimeService(
+        runtime_resolver=_FakeRuntimeResolver(context),
+        governance_resolver=_FakeGovernanceResolver(SimpleNamespace(), SimpleNamespace()),
+        registry=registry,
+        ensure_registry=lambda: None,
+        governance_runner=lambda *_args, **_kwargs: None,
+        fallback_executor=lambda *_args, **_kwargs: "fallback",
+        direct_fallback_executor=lambda *_args, **_kwargs: "direct-fallback",
+        activity_logger=None,
+        preflight_service=_RefusingPreflight(),
+        approval_ticket_consumer=consume_ticket,
+        approval_ticket_completer=complete_ticket,
+        decision_trace_store=DecisionTraceStore(),
+    )
+
+    result = await service.execute_approved(
+        approval_id=approval_id,
+        expected_agent_id=agent_id,
+        approved_by_user_id=approved_by,
+    )
+
+    assert result.outcome == ToolDecisionOutcome.DENY
+    assert registry.calls == []
+    assert completions[0]["status"] == "failed"
+    assert completions[0]["receipt"]["boundary_outcome"] == "deny"
+    assert completions[0]["receipt"]["boundary_reason_code"] == "preflight_refuse"
+
+
+@pytest.mark.asyncio
 async def test_execute_approved_restores_external_execution_identity(monkeypatch):
     from app.core.execution_context import ExecutionIdentity
     from app.services.approval_ticket import ApprovalExecutionTicket
@@ -2104,6 +2255,7 @@ def _extract_tool_error_payload(result: str) -> dict:
 
 @pytest.mark.asyncio
 async def test_tool_runtime_service_preflight_asks_before_external_visible_tool():
+    from app.tools.governance import GovernanceDependencies, ToolGovernanceContext
     from app.services.decision_trace import DecisionTraceStore
     from app.tools.runtime import ToolExecutionContext
     from app.tools.service import ToolRuntimeService
@@ -2117,10 +2269,40 @@ async def test_tool_runtime_service_preflight_asks_before_external_visible_tool(
     )
     registry = _FakeRegistry("SHOULD_NOT_RUN")
     traces = DecisionTraceStore()
+    approval_id = uuid4()
+    approval_requests = []
+    governance_context = ToolGovernanceContext(
+        agent_id=context.agent_id,
+        user_id=context.user_id,
+        tenant_id=context.tenant_id,
+        tool_name="send_feishu_message",
+        arguments={"message": "Send external vendor reply about pricing"},
+        execution_envelope={"schema": "hive.approval_execution_envelope.v1"},
+    )
+
+    async def request_approval(**kwargs):
+        approval_requests.append(kwargs)
+        return {"allowed": False, "approval_id": str(approval_id)}
+
+    async def resolve_security_zone(_agent_id):
+        return "standard"
+
+    async def check_capability(_tenant_id, _agent_id, _tool_name):
+        return SimpleNamespace(allowed=True)
+
+    async def write_audit_event(**_kwargs):
+        return None
+
+    dependencies = GovernanceDependencies(
+        resolve_security_zone=resolve_security_zone,
+        check_capability=check_capability,
+        write_audit_event=write_audit_event,
+        request_approval=request_approval,
+    )
 
     service = ToolRuntimeService(
         runtime_resolver=_FakeRuntimeResolver(context),
-        governance_resolver=_FakeGovernanceResolver(SimpleNamespace(), SimpleNamespace()),
+        governance_resolver=_FakeGovernanceResolver(governance_context, dependencies),
         registry=registry,
         ensure_registry=lambda: None,
         governance_runner=lambda *_args, **_kwargs: None,
@@ -2137,11 +2319,15 @@ async def test_tool_runtime_service_preflight_asks_before_external_visible_tool(
         user_id=context.user_id,
     )
 
-    assert result.startswith("[Preflight:ask]")
-    assert "send_feishu_message" in result
-    assert "checkpoint=" in result
-    assert "decision=decision/" in result
+    payload = json.loads(result)
+    assert payload["status"] == "approval_required"
+    assert payload["approval_id"] == str(approval_id)
+    assert payload["tool_name"] == "send_feishu_message"
     assert registry.calls == []
+    assert len(approval_requests) == 1
+    assert approval_requests[0]["approval_origin_type"] == "action_preflight"
+    assert approval_requests[0]["execution_envelope"] == governance_context.execution_envelope
+    assert approval_requests[0]["decision_id"] == governance_context.decision_id
     decisions = traces.decisions()
     assert len(decisions) == 1
     assert decisions[0].chosen == "ask"
@@ -2151,7 +2337,7 @@ async def test_tool_runtime_service_preflight_asks_before_external_visible_tool(
     assert decisions[0].session_id == "session-1"
     assert decisions[0].tool_name == "send_feishu_message"
     assert decisions[0].preflight["decision"] == "ask"
-    assert decisions[0].preflight["checkpoint_id"]
+    assert "checkpoint_id" not in decisions[0].preflight
     assert "evidence_refs" not in decisions[0].preflight
 
 
@@ -2202,6 +2388,65 @@ async def test_tool_runtime_service_allows_delegated_user_feishu_message():
     assert len(registry.calls) == 1
     assert registry.calls[0].tool_name == "send_feishu_message"
     assert traces.decisions() == []
+
+
+@pytest.mark.asyncio
+async def test_tool_runtime_service_fails_typed_when_preflight_approval_ticket_cannot_be_created():
+    from app.services.decision_trace import DecisionTraceStore
+    from app.tools.decision import ToolDecisionOutcome
+    from app.tools.governance import GovernanceDependencies, ToolGovernanceContext
+    from app.tools.runtime import ToolExecutionContext
+    from app.tools.service import ToolRuntimeService
+
+    context = ToolExecutionContext(
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        tenant_id="tenant-1",
+        workspace=Path("/tmp/ws"),
+        session_id="session-1",
+    )
+    governance_context = ToolGovernanceContext(
+        agent_id=context.agent_id,
+        user_id=context.user_id,
+        tenant_id=context.tenant_id,
+        tool_name="send_feishu_message",
+        arguments={"message": "Send external vendor reply about pricing"},
+        execution_envelope={"schema": "hive.approval_execution_envelope.v1"},
+    )
+
+    async def request_approval(**_kwargs):
+        return {"allowed": False, "message": "approval database unavailable"}
+
+    dependencies = GovernanceDependencies(
+        resolve_security_zone=lambda _agent_id: "standard",
+        check_capability=lambda *_args: SimpleNamespace(allowed=True),
+        write_audit_event=lambda **_kwargs: None,
+        request_approval=request_approval,
+    )
+    registry = _FakeRegistry("SHOULD_NOT_RUN")
+    service = ToolRuntimeService(
+        runtime_resolver=_FakeRuntimeResolver(context),
+        governance_resolver=_FakeGovernanceResolver(governance_context, dependencies),
+        registry=registry,
+        ensure_registry=lambda: None,
+        governance_runner=lambda *_args, **_kwargs: None,
+        fallback_executor=lambda *_args, **_kwargs: "fallback",
+        direct_fallback_executor=lambda *_args, **_kwargs: "direct-fallback",
+        activity_logger=None,
+        decision_trace_store=DecisionTraceStore(),
+    )
+
+    result = await service.execute(
+        "send_feishu_message",
+        {"message": "Send external vendor reply about pricing"},
+        agent_id=context.agent_id,
+        user_id=context.user_id,
+    )
+
+    assert result.outcome == ToolDecisionOutcome.UNAVAILABLE
+    assert result.reason_code == "approval_ticket_unavailable"
+    assert result.retryable is True
+    assert registry.calls == []
 
 
 @pytest.mark.asyncio

@@ -1,27 +1,34 @@
 # Kimi 独立原子化审查报告 — CCPlus / Agent-Native（2026-07-24）
 
 原始审查者：Kimi Code（独立审查，非实现参与方）
-当前版本：Codex current-source 复核修订版（2026-07-24）
+当前版本：Codex current-source 复核与逐项修复台账（2026-07-24）
 审查依据：`docs/ccplus-agent-native-independent-review-prompt.md`（可复用正文全文执行）
-本报告原始版本由 Kimi 新建；Codex 复核仅修订本报告，不修改业务代码、数据库或部署配置。修订遵循“保留原编号、正文同步改正、撤销项留痕”的审计规则。
+本报告原始版本由 Kimi 新建；Codex 先完成 current-source 复核，随后按用户授权逐项修复。修订遵循“保留原编号、正文同步改正、撤销项留痕、每个修复部分附机械证据并独立提交”的审计规则。
 
 ---
+
+## 0. 修复执行台账
+
+| 部分 | 状态 | 变更与机械证据 | 验收边界 |
+|---|---|---|---|
+| Hook 产品边界文档校正（SA-04/UI-09） | 已完成 | commit `b4712dcc`；撤销“员工自定义 Hook 缺失”，冻结员工/Owner、Operator/Auditor、Platform Developer 三层边界 | 本项仅为产品与审查文档校正；UI/API 实现仍登记在 UI-09 |
+| GV-01/GV-02 确认车道 | **代码闭环；本地真 PG 验收待补** | `request_action_preflight_approval` 把 typed ASK/ESCALATE 接入 durable Approval ticket；移除 ToolRuntimeService 的 InProcess gateway 默认回填与孤立 checkpoint 写入；immutable approval 只消解 ASK/ESCALATE，不覆盖 REFUSE/PREPARE_ONLY；approved boundary block 统一把票据记为 `failed`。测试命令：`backend/.venv/bin/pytest -q backend/tests/tools/test_service.py backend/tests/tools/test_tool_runtime_preflight.py backend/tests/services/test_action_preflight.py backend/tests/services/test_approval_execution_runtime.py backend/tests/tools/test_governance.py backend/tests/tools/test_governance_resolver.py` → `103 passed, 4 skipped` | 4 项均因本机 Docker/Testcontainers 不可用而 skip；实际 ToolRuntimeService registry 执行 seam 未 monkeypatch 的 ASK→批准→效果发生与 REFUSE→failed 组合测试已通过，真 PG 事务/worker 组合仍保留在 §11 |
 
 ## 1. 执行摘要与上线判断
 
 原始审查从当前源码重新建立结论，不继承既有完成声明，覆盖 14 个审计面（CC/FreeCode 基线、kernel 与模型循环、会话生命周期、工具治理、session 中段五能力、记忆系统、自进化、A2A、知识平面、企业治理、Hive Connect、前端消费、Codex/hermes 对照、验收面）。Codex current-source 复核确认了六个原始 P0 所指向的代码事实，同时发现一项漏判的 live Model Agency 违规、两项 Hive Connect source-boundary 误报、一项前端产品状态误分类、一项员工设置的运行时实现与权限边界泄漏，以及若干不能由现有证据支持的上线表述。
 
-**总体判断：Hive 的单 Agent 机制主干在当前源码上有较强接线证据，多处实现也体现了 CCPlus/Hive-native 增量；但“Goal 1 智能质量至少达到 hermes”尚无行为级对比证据。当前存在七个上线阻断项，其中 GV-08 是原报告漏判的 live Model Agency 违规。当前裁决为 NO-GO；修复这些阻断项只会恢复进入验收的资格，不自动构成上线判断。**
+**总体判断：Hive 的单 Agent 机制主干在当前源码上有较强接线证据，多处实现也体现了 CCPlus/Hive-native 增量；但“Goal 1 智能质量至少达到 hermes”尚无行为级对比证据。原始七个上线阻断项中 GV-01/GV-02 已完成代码修复，当前仍有五个未修 P0，其中 GV-08 是原报告漏判的 live Model Agency 违规。当前裁决仍为 NO-GO；修复这些阻断项只会恢复进入验收的资格，不自动构成上线判断。**
 
 核心结论：
 
 - **单 Agent 机制主干有较强源码证据，但行为质量未证实。** kernel 模型循环唯一接线、compaction 带 coverage ledger（强于 CC 单摘要与 Codex 单 turn 摘要）、LoopGuard 只告警且终态解释仍由模型撰写、记忆系统 T0→T2→T3→soul 以 LLM-primary 为主、Plan Mode/Subagent/Work Ledger/Skill 均有真实接线。不过不能据此推导“智能质量至少达到 hermes”；该主张仍需同模型、同任务、同证据条件下的行为级对比。
-- **最重的断点是治理自伤（GV-01/GV-02）**：Preflight ASK 创建的 CoordinationCheckpoint 写入内存网关（永不落 PG）且全仓无任何批准/恢复消费者——自治车道（trigger/heartbeat/任务执行）发起的外部可见动作被 ASK 后**永远执行不了**；企业 Approval 票证批准后重入执行管道时又可能被 preflight 二次 ASK，且 ASK 裸文本被误判 `succeeded`——**效果未发生但票据记成功**。这直接削弱北极星 Goal 1 的"自治数字员工"能力。
-- **七个 P0 上线阻断项**：GV-01（preflight checkpoint 死信）、GV-02（approval×preflight 票据误记）、SA-05（REST 带 confirmed_plan_id 启动 workflow 生产 500）、GV-04（platform_admin 跨租户化身无审计）、GV-05（桌面 llm_proxy 无配额无计量）、HC-01（A2A 委派本地执行结果孤立，源 Agent 永不知结果）、GV-08（对任意工具参数做凭据模式扫描并据此整调用 REFUSE）。
+- **治理自伤 GV-01/GV-02 已完成代码修复**：Preflight ASK/ESCALATE 现复用 durable Approval ticket 的单次消费、hash 绑定与精确重放；ToolRuntimeService 不再创建孤立内存 checkpoint；approved replay 只把 ASK/ESCALATE 转为可执行，不绕过 REFUSE/PREPARE_ONLY；任何 typed boundary block 都不再误记 `succeeded`。本机 Docker 不可用，因此真 PG worker 事务验收仍待补。
+- **当前五个未修 P0 上线阻断项**：SA-05（REST 带 confirmed_plan_id 启动 workflow 生产 500）、GV-04（platform_admin 跨租户化身无审计）、GV-05（桌面 llm_proxy 无配额无计量）、HC-01（A2A 委派本地执行结果孤立，源 Agent 永不知结果）、GV-08（对任意工具参数做凭据模式扫描并据此整调用 REFUSE）。
 - **文档假完成集中爆发**：AGENTS.md 与当前源码漂移严重——`proactive_employee_loop`、`policy_replay`、`viking_client`、`knowledge_inject`、`extract_queue`、`extract_agent`、`scheduler`、Objective 实体均已不存在或被替换；迁移数 79→实际 178、前端测试 39→实际 123、Office 专用编辑面已被当前前端测试合同明确退役、"turn-level token budget gates"声明与源码矛盾。这些必须按"已知缺失/已退役"改写，否则后续审计会继续继承假完成。
 - **Hook 产品边界被放反（UI-09）**：`Runtime hooks` 是平台内部生命周期、证据、恢复与治理机制，不是员工或其 Owner/Manager 的产品心智。当前员工设置却直接展示 handler 名、event、failure mode 与失败 receipt，并允许 `manage/owner` 逐项持久化禁用。原报告把“员工侧没有用户自定义 hook”判为缺失，方向相反：员工面必须移除内部 Hook 细节和开关；若 CCPlus 需要可扩展 Hook，应另建受治理的 Platform Developer/Extension 面，且不得与平台内置 Hook 混用。
 - **Codex/hermes 对照**：Hive 已吸收大部分工程增量（sandbox provider、approval 路由、resume/fork、compaction）；可吸收但未做的：unified exec（PTY/持久 shell 会话）、execpolicy 命令级声明策略、hermes 的 session_search（跨会话原文检索）与 verify-on-stop。无"错误改变 CC 语义"的吸收。
-- **上线判断**：**NO-GO / Acceptance incomplete**。七个 P0 修复后，仍必须重新核生产接线并完成 §11 中 Goal 1 行为对标、真 PG、多进程、自治批准回放、GV-08 Model Agency 回归和真实 Hive Connect 安装态验收；不得从“代码修复完成”直接跳到 GO。
+- **上线判断**：**NO-GO / Acceptance incomplete**。当前五个未修 P0 完成后，仍必须重新核生产接线并完成 §11 中 Goal 1 行为对标、真 PG、多进程、自治批准回放、GV-08 Model Agency 回归和真实 Hive Connect 安装态验收；不得从“代码修复完成”直接跳到 GO。
 
 ---
 
@@ -30,7 +37,7 @@
 ### 2.1 环境记录
 
 - 仓库根：`/Users/rocky243/vc-saas/hiveclaw-main`；证据时间点：2026-07-24 01:34（+0800）。
-- **git 元数据损坏**：`.git` 指向不存在的 worktree gitdir（`/Users/rocky243/vc-saas/hiveclaw/.git/worktrees/hiveclaw-main`），HEAD 与 diff 不可得。本审查以当前工作树文件为唯一事实源；无法做"相对某基线的变更"分析。
+- **git 元数据已恢复且未覆盖工作树**：原 `.git` 指向不存在的 worktree gitdir；修复阶段从远端 `main@211dbdadd2735280f76d39e88905423917d5f159` 重建 metadata/index，并在 `codex/kimi-review-remediation-20260724` 上逐项提交。恢复前的 broken pointer 保存在 `/tmp/hiveclaw-git-recovery.WeuVmt/original-git-pointer.txt`；原有其他 session 脏文件保持未暂存。
 - 基线源码均可访问：FreeCode（`/Users/rocky243/vc-saas/free-code-main`）、claude-code-org、claw-code（Py/Rust）、codex-rs、hermes-agent。原报告未读取 Skill 实际安装的 canonical `/Users/rocky243/vc-saas/hive-connect`，导致 HC-02/HC-04 source-boundary 误报；本修订已补读对应 `0.1.9` 源码。
 - 只读验证已执行：`alembic heads` → 单头 `completion_outbox_index_0721`；178 个迁移文件；923 个后端测试文件 / 7278 个测试函数 / 7687 个收集后用例；全量后端 pytest 已复跑；canonical Hive Connect 的 Hive adapter、daemon 与 CLI 包测试已执行（结果见 §14）。
 - 子审查员实跑测试证据：kernel+invoker 195 项全绿；knowledge 平面 134 项全绿（13 项 Docker-off skip）。
@@ -72,7 +79,7 @@
 
 扣分面（实证）：
 
-- **GV-01 使自治车道外部动作功能性卡死**——一个"治理更复杂但实际更容易卡住"的实证，正是北极星警告的反模式。自治 Agent（trigger/heartbeat/委派执行）发起 `send_feishu_message` 等外部可见动作时被 preflight ASK，checkpoint 写内存、无批准入口、无恢复路径、重启即丢。Agent 越自治，越撞这堵墙。
+- **GV-01/GV-02 的原扣分事实已由本轮代码修复移除**：自治 Agent 的外部可见动作 ASK 进入 durable Approval ticket；批准后沿同一 ToolRuntimeService kernel 精确重放并执行，硬拒绝仍保持拒绝。真 PG worker 事务验收因 Docker 不可用仍是 Acceptance 缺口，不能把本地代码闭环外推为生产闭环。
 - **GV-08 在 live 工具路径上以凭据模式正则产生整调用 REFUSE**——它会把文档、测试样例或模板中的形似凭据当成真实未授权 secret，并剥夺模型在已认证执行框架内的语义与表达能力。该行为违反 Model Agency Boundary 的“精确未授权字节”边界。
 - SA-01：turn 级 token 预算护栏空转（派生但无消费者），`AGENTS.md` 声明与源码矛盾。
 - HN-01/HN-02：宣称的主动管理循环（proactive_employee_loop、policy_replay）在源码中不存在；当前 heartbeat 已收窄为纯记忆固化（无工具执行器）——这是更保守的安全姿态，但必须改文档而不是假装存在。
@@ -250,19 +257,18 @@ RLS 真实强制（60+ 迁移 ENABLE+FORCE、`database.py:491-496` pin + after_b
 
 ### 7.2 断点
 
-**GV-01（断点，P0，主审复核确认）Preflight ASK → Checkpoint 死信，自治车道外部动作功能性不可执行。**
-- 断裂原子：Evidence→Recovery→Consumption。严重级：阻断（P0）。
-- 证据：`ToolRuntimeService.__post_init__` 默认回填 `InProcessCoordinationGateway`（`tools/service.py:737-738`，主审 Read 复核），`gateway_scope` explicit gateway 恒胜（`coordination_wiring.py:91-93`）→ preflight ASK 创建的 checkpoint（`service.py:1576-1592`）永不落 `coordination_checkpoints` PG 表（表存在且 workflow gate 在用）；全仓无 `get_checkpoint`/`escalate_expired_checkpoints` 的生产消费者，无审批 API、无前端。模型只收到 `[Preflight:ask] ... checkpoint=<id>` 文本，重试仍被 ASK（identity 不变）。
-- 用户影响：trigger/heartbeat/任务执行车道的 `send_feishu_message` 等外部可见动作**永远执行不了**；`send_email`/`reply_email`/`plaza_*` 缺 `delegated_user_authorized` flag（`email.py:12-52`、`plaza.py:47-48`），连 web 聊天 delegated_user 车道也必被 ASK 卡死。进程重启后 checkpoint 蒸发，decision_trace 里的 checkpoint_id 成悬垂引用。
-- 根因权威事实源：`tools/service.py` 网关注入决策 vs `coordination_checkpoints` 表。
-- 最小闭环：preflight ASK 改走既有 session/enterprise approval 车道（复用 approval ticket 精确重放），或 checkpoint 持久化 PG + 批准 API + 批准后精确重放；删除孤立 checkpoint 创建以消除与 decision_trace 的双事实源。
-- 反证记录：已查全部 `escalate_expired_checkpoints`/`get_checkpoint` 调用点，确认无任何读取方；无法反证。
+**GV-01（代码闭环，原 P0）Preflight ASK 已并入 durable Approval ticket。**
+- 原断裂原子：Evidence→Recovery→Consumption。
+- 当前接线：`request_action_preflight_approval`（`tools/governance.py:754-794`）复用既有 ApprovalService request port，并固定 `approval_origin_type="action_preflight"`；`execution_pipeline.py:589-625` 只消费 typed `REQUIRE_APPROVAL`，返回带 `approval_id` 的可恢复票据结果。`ToolRuntimeService` 已删除 `coordination_runtime`/`coordination_gateway` 字段与 InProcess 默认回填（`tools/service.py:700-730`），preflight 决策不再写 `checkpoint_id`（`service.py:1608-1628`）。
+- 数据处理：旧 checkpoint 只存在进程内存，无 PG 存量可回填；源代码删除后无第二事实源。DecisionTrace 继续保留 ASK 机械证据，但不再持有悬垂 checkpoint 引用。
+- 回归证据：`test_tool_runtime_service_preflight_asks_before_external_visible_tool` 验证 ASK 返回 durable `approval_id`、绑定 execution envelope/decision id、registry 未执行、DecisionTrace 无 `checkpoint_id`；`test_tool_runtime_service_fails_typed_when_preflight_approval_ticket_cannot_be_created` 验证票据依赖失败返回 typed `UNAVAILABLE`，不伪装审批成功。
+- Acceptance：本地代码路径闭环；真 PG request→approve→worker 事务测试因 Docker 不可用 skip，仍在 §11 保留，不宣称生产闭环。
 
-**GV-02（断点，P0，主审复核确认）Approval×Preflight 顺序冲突，票据误记成功。**
-- 断裂原子：Evidence→Recovery。严重级：阻断（P0）。
-- 证据：`execute_approved` 走完整 pipeline，`execution_pipeline.py:589` preflight 无 approval 感知——票证目标是 external_visible 工具且 envelope 身份为 agent_bot（trigger 车道），或工具缺 `delegated_user_authorized` 时，preflight 必返 ASK（`action_preflight.py:173-181`）；更糟：ASK block 是裸文本无 `<tool_error>`，`service.py:1102-1104`（主审 Read 复核）判 `execution_status="succeeded"`——**效果未发生但票据记成功**，并触发 continuation 告知源会话"已完成"。
-- 验收造假信号：`test_approval_execution_runtime.py` 全部 monkeypatch 掉 `execute_approved_tool`，无任何测试覆盖 approved-execution×preflight 组合。
-- 最小闭环：approved 执行将 preflight 降级为 audit-only（approval 本身已是 confirm 事实），或 ASK 文本按失败完成票据；补真路径组合测试。
+**GV-02（代码闭环，原 P0）Immutable approval 可消解 ASK/ESCALATE，硬拒绝不被覆盖，票据终态不再误记。**
+- 原断裂原子：Evidence→Recovery。
+- 当前接线：`service.py:1569-1602` 仅当 exact immutable `approval_decision` 存在且 preflight 为 ASK/ESCALATE 时把 effective decision 记为 DO，并在 runtime evidence 写 `approval_satisfied`/`approval_id`；REFUSE/PREPARE_ONLY 保持原裁决。`service.py:1093-1121` 对任何 typed `ToolBoundaryBlock` 把 Approval ticket 完成为 `failed`，并写 `boundary_outcome`/`boundary_reason_code`，不再依赖展示文本或 `<tool_error>` 才识别失败。
+- 回归证据：`test_execute_approved_satisfies_preflight_ask_and_executes_exact_external_effect` 使用真实 `ToolRuntimeService.execute_approved → pipeline → registry` seam（未 monkeypatch `execute`/registry），验证 agent-bot external-visible 请求批准后效果返回 `SENT`、registry 恰执行一次、票据 `succeeded`；`test_execute_approved_does_not_override_preflight_refuse_and_marks_ticket_failed` 验证 REFUSE 不执行且票据 `failed`。
+- 命令证据：`backend/.venv/bin/pytest -q backend/tests/tools/test_service.py backend/tests/tools/test_tool_runtime_preflight.py backend/tests/services/test_action_preflight.py backend/tests/services/test_approval_execution_runtime.py backend/tests/tools/test_governance.py backend/tests/tools/test_governance_resolver.py` → `103 passed, 4 skipped`；`-rs` 复核 4 项均为 Docker/Testcontainers connection refused。
 
 **GV-03（断点）Owner charter 未接入执行治理（主审复核确认）**：`AgentAccountabilityContext.action_posture`/`zone_for` 零生产调用（主审 grep 复核：仅 `agency_charter.py` 自身命中）；`tools/service.py:1689-1713` 对一切 external-visible 工具硬编码 `CharterZone.CONFIRM_FIRST`、其余 `FULL_AUTHORITY`。owner 自定义的 full_authority/confirm_first/never_do 只进 prompt 不做机械裁决——owner 放宽的动作仍被 preflight 拦下（治理粒度回退）。最小闭环：preflight 输入装配按 agent 查 charter（typed action id），zone 仍由平台裁决。
 
@@ -338,8 +344,8 @@ Agent/Skill/Workflow/外部能力资产管理闭环（revision/usage 投影接�
 
 | 编号 | 模块 | 状态 | 严重级 | 断裂原子 | 一句话 |
 |---|---|---|---|---|---|
-| GV-01 | 工具治理 | 断点 | P0 | Evidence→Recovery→Consumption | preflight ASK checkpoint 内存死信，自治车道外部动作永不可执行 |
-| GV-02 | 工具治理 | 断点 | P0 | Evidence→Recovery | approved 执行被 preflight 二次 ASK 且票据误记 succeeded |
+| GV-01 | 工具治理 | **代码闭环；PG 验收待补** | 原 P0 | Evidence→Recovery→Consumption | ASK 已进入 durable Approval ticket；孤立 checkpoint 已删除 |
+| GV-02 | 工具治理 | **代码闭环；PG 验收待补** | 原 P0 | Evidence→Recovery | exact approval 消解 ASK/ESCALATE；硬拒绝保持且票据失败 |
 | SA-05 | Workflow | 断点 | P0 | Execution↔Acceptance | REST confirmed_plan_id 启动 500，测试 fake 钉住 |
 | GV-04 | 治理 | 断点 | P0 | Authority→Evidence | platform_admin 跨租户化身无审计 |
 | GV-05 | 治理 | 断点 | P0 | Authority→Acceptance | llm_proxy 无配额无计量（假完成 docstring） |
@@ -375,8 +381,8 @@ Agent/Skill/Workflow/外部能力资产管理闭环（revision/usage 投影接�
 
 ### 10.1 可删除/合并清单（保留能力不变，每项均给出迁移与回归证明方式）
 
-1. **InProcessCoordinationGateway 作为 ToolRuntimeService 默认回填**（`service.py:737`）——GV-01 根因。改为惰性 `gateway_scope` 决策或删除；回归：preflight ASK 集成测试走真 PG gateway。
-2. **preflight CoordinationCheckpoint 写入**（`service.py:1576-1592`）——无消费者；与 decision_trace 构成双事实源。按 GV-01 闭环方向二选一后删除另一半。
+1. **InProcessCoordinationGateway 作为 ToolRuntimeService 默认回填（已删除）**——GV-01 根因已移除；其他 coordination 消费者仍按自身持久化边界使用 gateway，不受本修复影响。
+2. **preflight CoordinationCheckpoint 写入（已删除）**——ASK 已收敛到 durable Approval ticket；DecisionTrace 只保留决策证据，不再保存悬垂 checkpoint id。
 3. **Sentinel 全家**（`agents/coordination.py` 约 60 行+单测）——零生产消费者。删除；AGENTS.md 同步。
 4. **`AgentAgentRelationship` 孤儿表**（`models/org.py:80`）——已被 AgentCollaborationGroup 取代。迁移删除（alembic drop + db_bootstrap 清理）。
 5. **`agent_work_ledgers` 死表**（`models/work_ledger.py`）——真实账本在 AGENT_DATA_DIR 文件。退役或接线，二选一，消除双事实源隐患。
@@ -399,7 +405,7 @@ AGENTS.md 必须按当前源码改写以下条目（均经 current-source 复核
 
 未发现需要架构重做的点。现有分层（kernel 无 DB / ToolRuntimeService 唯一执行面 / RuntimeTask 唯一后台执行记录 / ChatTranscriptEvent+T0 双投影 / Memory Gate+Platform Gate 双门）是健康的能力保持型结构。三个结构性收敛建议：
 
-- **确认车道统一**：session permission、enterprise approval ticket、workflow gate、preflight ASK 四种"请求人类确认"机制应共享同一票据与重放底座（approval ticket 已具备单次消费+hash 绑定+精确重放），preflight ASK 并入即同时修复 GV-01/GV-02/GV-03。
+- **确认车道统一**：preflight ASK 已并入 enterprise Approval ticket 的单次消费+hash 绑定+精确重放底座，GV-01/GV-02 代码断点已消除。GV-03 仍需把 typed owner action policy 接到 preflight 装配；session permission 与 workflow gate 保留各自语义，但不得再产生无恢复消费者的新确认对象。
 - **Secret egress 回到精确事实边界**：PrivacyLayer 的模式识别只能提供候选/audit 信号；硬拒绝必须来自当前 principal 无权披露的真实 credential bytes 或可信 secret reference。对最终表达只遮蔽精确禁止字节，不得因自然语言像 secret 而重写或拒绝整个工具调用。
 - **execpolicy 与 unified exec 吸收**（Codex 增量，不冲突 CC 语义）：命令级声明式策略 DSL（`codex-rs execpolicy/src/decision.rs`）补 GuardPolicy 与 capability 之间的粒度空档；PTY/持久 shell 会话（`core/src/unified_exec/`）补长交互式命令场景（当前 run_command 一次性）。turn diff tracker 为次要 UI 增量。
 
@@ -412,7 +418,7 @@ AGENTS.md 必须按当前源码改写以下条目（均经 current-source 复核
 1. **单 Agent 智能对标 hermes 的端到端质量主张**（北极星 Goal 1 核心）。已有证据：记忆/压缩/技能机制源码闭环且多处更强。缺口：无行为级对比 trace。应比基线：hermes-agent 当前 checkout。必须机械验证的硬不变量：记忆召回命中后续 turn、skill 晋升后真实被加载使用；开放判断：回答质量。环境：双 checkout + 相同模型。不验证的风险：Goal 1"至少一样好"停留在架构宣称。
 2. **真 PG 故障注入**：reclaim exactly-once（`test_runtime_task_claim_fencing_postgres.py` 本次 Docker-off skip）、RLS 跨 owner 拒绝、迁移回填（97 个真 PG 测试文件本地静默 skip）。已有证据：CI ubuntu runner 有 Docker；缺口：本 checkout 无运行证据。不验证的风险：多 worker 并发与 RLS 边界缺陷被 skip 掩盖。
 3. **多进程部署行为**：Redis cancel bus cross_process 分支、WS fanout 进程内实现多实例丢失、`_summary_breaker` 进程内 dict。需双进程验收证据。
-4. **GV-01/GV-02 修复后的自治车道端到端**：agent_bot 车道外部动作 ASK→人类批准→精确重放→效果发生→票据正确。当前无证据（功能不可执行）。修复后必须补真路径组合测试，不得再 monkeypatch 掉执行 seam。
+4. **GV-01/GV-02 真 PG 自治车道端到端**：本轮已有不 monkeypatch ToolRuntimeService execution/registry seam 的组合测试，覆盖 ASK→批准→效果发生→票据 succeeded 与 REFUSE→票据 failed；但 request→approve→RuntimeTask worker 的真 PG 事务测试在本机因 Docker/Testcontainers 不可用全部 skip。生产闭环前必须在 Docker-on/CI 环境跑过该链及 continuation exactly-once。
 5. **GV-08 Model Agency 修复验收**：benign 文档/fixture 中出现 `api_key=sk-...`、真实活跃 secret、嵌套参数、工具出参与最终表达都要覆盖；硬拒绝只能由精确 unauthorized bytes/refs 驱动，非禁止字节保持 byte-faithful。
 6. **KB 检索召回质量**：词法检索在真实 owner 语料上的命中率；L2 发现链（tool_search→schema 扩展）生产命中率无 trace。
 7. **Hive Connect 真实设备端到端**：canonical `@hiveclaw243/hive-connect@0.1.9` 的 ping 与 daemon source 已验证；仍需在真实登录设备验证 install→restart→presence、消息/文件/回执，以及 Desktop 对 `desktop_*` router 的真实消费。
@@ -426,7 +432,8 @@ AGENTS.md 必须按当前源码改写以下条目（均经 current-source 复核
 
 | 项 | 最小完整闭环方向 | 迁移/回填/清理 | 验收要求 |
 |---|---|---|---|
-| GV-01+GV-02+GV-03（确认车道统一） | preflight ASK 并入 approval ticket 车道（单次消费+hash 绑定+精确重放）；approved 执行 preflight 降级 audit-only；preflight 装配按 agent 查 charter | 内存 checkpoint 存量无持久化无需回填；删除 InProcess 默认回填与孤立 checkpoint 创建 | 真路径组合测试（禁 monkeypatch 执行 seam）：agent_bot 车道 ASK→批准→效果发生→票据 succeeded；拒绝→票据 failed；charter full_authority 动作不被拦 |
+| GV-01+GV-02（确认车道） | **已实现**：preflight ASK/ESCALATE 并入 Approval ticket；exact approval audit-evidence 后放行；REFUSE/PREPARE_ONLY 不可由 approval 覆盖；typed block 票据失败 | 内存 checkpoint 无持久化存量；InProcess 默认回填与孤立 checkpoint 创建已删除 | 本地真实 execution seam 组合测试已通过；真 PG worker 4 项因 Docker 不可用 skip，CI/验收环境必须补绿 |
+| GV-03（typed Owner action policy） | preflight 装配按 agent 的明确 action id 查结构化 charter zone；禁止自然语言模糊/正则裁决 | 需给 legacy agent 回填默认 typed policy，并保持 owner 自定义可管理、可审计 | full_authority 外部 action 不 ASK；confirm_first 走同一 Approval ticket；never_do 即使已有普通 approval 仍拒绝 |
 | SA-05 | `start_workflow` 注册 ACTION_KINDS/_ACTION_INTENT | — | fake_gate 测试改真 gate 集成测试；REST confirmed_plan_id 启动 200 |
 | GV-04 | 化身建立时写 operator 审计事件 | 历史化身无证据可回填（如实声明） | 审计面可查 impersonation 事件含 actor/target/request_id |
 | GV-05 | llm_proxy 接入 quota+SSE usage 记账+rate limit | — | 配额耗尽 typed 拒绝；token_tracker 出现代理路径用量行 |
@@ -454,15 +461,15 @@ AGENTS.md 必须按当前源码改写以下条目（均经 current-source 复核
 
 ### 14.2 未证实项汇总
 
-T0 磁盘实物抽样与 T0_STARTUP_BACKFILL 生产执行；Redis 传输不可用时 bridge 仅靠 sweep 兜底的行为；后台 subagent 完成唤醒 payload 上限；`skill_candidate_loop_v1` 生产 FeatureFlag 行真实状态；tenant 是否真对 external_visible 配置了 requires_approval（GV-02 触发面）；MCP `row.config["api_key"]` 明文 vs 加密；enterprise.py 32 端点逐一租户作用域；审批无人值守恢复全程；desktop_* 消费者；canonical Hive Connect 的真实机器安装/自启/presence；FreeCode 运行期行为；最近一次 CI run 状态；多实例 Railway 部署拓扑。
+T0 磁盘实物抽样与 T0_STARTUP_BACKFILL 生产执行；Redis 传输不可用时 bridge 仅靠 sweep 兜底的行为；后台 subagent 完成唤醒 payload 上限；`skill_candidate_loop_v1` 生产 FeatureFlag 行真实状态；GV-01/GV-02 的真 PG request→approve→worker→continuation exactly-once；MCP `row.config["api_key"]` 明文 vs 加密；enterprise.py 32 端点逐一租户作用域；审批无人值守恢复全程；desktop_* 消费者；canonical Hive Connect 的真实机器安装/自启/presence；FreeCode 运行期行为；最近一次 CI run 状态；多实例 Railway 部署拓扑。
 
 ### 14.3 残余风险
 
-git 元数据损坏使本次无法做变更面分析，也无法排除"工作树与某 HEAD 漂移"；4 个测试失败中 feishu 测试遮盖了 cardkit 主流程断言；594 skip 中可能藏着只有真 PG 才暴露的缺陷；前端浏览器行为、生产 DB、Railway、多进程与真实 Hive Connect 设备态均未经实测。上述缺口意味着本报告可以给出 NO-GO 与修复清单，但不能给出 GO。
+git metadata 已从远端 main 精确恢复且现可逐项 diff/commit；恢复前无法建立的历史变更归属仍不能倒推。原全量测试的 4 个失败与 594 个 skip 仍需在最终验收重新复跑，其中 Docker-off skip 可能藏着只有真 PG 才暴露的缺陷；前端浏览器行为、生产 DB、Railway、多进程与真实 Hive Connect 设备态均未经实测。上述缺口意味着本报告可以给出 NO-GO 与修复清单，但不能给出 GO。
 
 ### 14.4 证据边界声明
 
-不再使用“约 90%”这类不可机械复算的单值置信度。当前证据分层如下：六个原始 P0 的代码事实与新增 GV-08 有 current-source 证据；HC-02/HC-04 已被 canonical source 反证；UI-01 已被当前可执行测试合同重分类；UI-09 有用户提供的生产页面截图、前后端 current-source 接线和错误契约单测三类证据，但本次未独立操作浏览器；测试、迁移头与包级 Go tests 有命令 receipt。Goal 1 行为质量、生产 DB、浏览器端到端、多进程、Railway 和真实设备态仍未证实。发布裁决必须消费 §11 中与本次变更相关的全部 receipt，不能只取前三项或把 full-suite 计数当替代品。
+不再使用“约 90%”这类不可机械复算的单值置信度。当前证据分层如下：原始六个 P0 的代码事实与新增 GV-08 有 current-source 证据；其中 GV-01/GV-02 已有 source diff、typed receipts 与不替换执行 seam 的组合回归，但真 PG worker 验收仍缺；HC-02/HC-04 已被 canonical source 反证；UI-01 已被当前可执行测试合同重分类；UI-09 有用户提供的生产页面截图、前后端 current-source 接线和错误契约单测三类证据，但本次未独立操作浏览器；测试、迁移头与包级 Go tests 有命令 receipt。Goal 1 行为质量、生产 DB、浏览器端到端、多进程、Railway 和真实设备态仍未证实。发布裁决必须消费 §11 中与本次变更相关的全部 receipt，不能只取前三项或把 full-suite 计数当替代品。
 
 ---
 
@@ -475,9 +482,9 @@ git 元数据损坏使本次无法做变更面分析，也无法排除"工作树
 | C-03 | HC-04 daemon install 未实现 | 撤销 | `cmd/cc-connect/daemon.go:16-105`、`daemon/launchd.go:42-78`；daemon/CLI tests 通过 |
 | C-04 | UI-01 Office 专用面缺失是 P1 产品断点 | 重分类为 DOC-01 | 两个前端测试合同显式要求退役该 tab/section |
 | C-05 | i18n 精确缺失数为 349 | 精确库存未证实 | 原审两种口径为 349/306，未留下唯一可复现提取器 |
-| C-06 | 修复六个 P0 后可进入 GO | 当前仍为 NO-GO / Acceptance incomplete | 七个 P0 + Goal 1/PG/多进程/浏览器/Railway/真实设备验收缺口 |
+| C-06 | 修复六个 P0 后可进入 GO | 当前仍为 NO-GO / Acceptance incomplete；GV-01/GV-02 代码已修，仍有五个 P0 | 剩余 P0 + Goal 1/PG/多进程/浏览器/Railway/真实设备验收缺口 |
 | C-07 | 员工用户自定义 hook 无注册面是 P2 缺失 | 撤销该员工产品缺失；新增 UI-09 P1 边界断点 | `AgentSettingsSection.tsx:444`、`HookRuntimeControlCard.tsx:20-117`、`api/hooks.py:120-197`、`hook_runtime_config.py:40-94`、错误契约单测及用户提供的生产截图 |
 
 ### 附：审查过程声明
 
-原始报告由 Kimi 的并行只读源码审计、主审复核与实跑验证合成。Codex current-source 复核发现原报告并非所有关键断点都完成了正确 source-boundary 与 product-boundary 反证，因此已在正文、矩阵、登记册、落地方向和验收边界中同步修订，并保留撤销项追溯。整个复核只修改本报告，没有修改业务代码、数据库或部署配置。
+原始报告由 Kimi 的并行只读源码审计、主审复核与实跑验证合成。Codex current-source 复核发现原报告并非所有关键断点都完成了正确 source-boundary 与 product-boundary 反证，因此先在正文、矩阵、登记册、落地方向和验收边界中同步修订并保留撤销项追溯；随后进入逐项修复。每个修复部分都必须在本报告 §0 与对应 finding 中记录源码、测试、迁移/清理和残余验收边界，再独立提交；不得把后续尚未完成项混入已完成状态。

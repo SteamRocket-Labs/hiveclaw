@@ -593,7 +593,6 @@ async def _apply_governance(state: _ToolExecutionState) -> _Stop | None:
         trace_metadata_sink=request.trace_metadata_sink,
     )
     if preflight_block:
-        _record_lifecycle(state, "blocked", "preflight_block")
         typed_block = boundary_block_from_machine_value(preflight_block)
         if typed_block is not None:
             outcome = typed_block.outcome
@@ -601,6 +600,27 @@ async def _apply_governance(state: _ToolExecutionState) -> _Stop | None:
         else:
             outcome = ToolDecisionOutcome.UNAVAILABLE
             reason_code = "untyped_preflight_block"
+        if outcome == ToolDecisionOutcome.REQUIRE_APPROVAL:
+            from app.tools.governance import request_action_preflight_approval
+
+            approval_block = await request_action_preflight_approval(
+                state.governance_context,
+                dependencies,
+                reason_code=reason_code,
+                event_callback=request.event_callback,
+            )
+            if approval_block is None:
+                _record_lifecycle(state, "preflight", "preflight_preauthorized")
+                _record_final_decision(
+                    state,
+                    outcome=ports.decision_outcome_type.ALLOW,
+                    reasons=("governance_allow", "preflight_preauthorized"),
+                )
+                return None
+            preflight_block = approval_block
+            outcome = approval_block.outcome
+            reason_code = approval_block.reason_code
+        _record_lifecycle(state, "blocked", "preflight_block")
         _record_final_decision(state, outcome=outcome, reasons=(reason_code,))
         return _Stop(preflight_block)
     _record_lifecycle(state, "preflight")

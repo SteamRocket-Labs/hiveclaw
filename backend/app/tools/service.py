@@ -11,14 +11,11 @@ import re
 import traceback
 import uuid
 from dataclasses import asdict, dataclass, is_dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from app.agents.coordination import CoordinationRuntime, coordination_runtime
-from app.agents.coordination_gateway import CoordinationGateway, InProcessCoordinationGateway
-from app.agents.coordination_wiring import gateway_scope
 from app.core.execution_context import A2AToolAuthorityFrame, ExecutionPrincipal
 from app.runtime.decision_ledger import build_authorization_decision_entry
 from app.runtime.ccplus_contracts import (
@@ -704,8 +701,6 @@ class ToolRuntimeService:
     backend: ToolRuntimeBackend | None = None
     preflight_service: ActionPreflightService | None = None
     decision_trace_store: Any | None = None
-    coordination_runtime: CoordinationRuntime | None = None
-    coordination_gateway: CoordinationGateway | None = None
     capability_group_policy_loader: (
         Callable[[ToolExecutionContext], Awaitable[dict[str, bool]] | dict[str, bool]] | None
     ) = None
@@ -732,10 +727,6 @@ class ToolRuntimeService:
             self.preflight_service = ActionPreflightService()
         if self.decision_trace_store is None:
             self.decision_trace_store = TenantScopedSqlDecisionTraceStore()
-        if self.coordination_runtime is None:
-            self.coordination_runtime = coordination_runtime
-        if self.coordination_gateway is None:
-            self.coordination_gateway = InProcessCoordinationGateway(self.coordination_runtime)
         if self.plan_mode_gate is None:
             self.plan_mode_gate = get_plan_mode_gate()
         if self.plan_mode_session_factory is None:
@@ -1101,7 +1092,8 @@ class ToolRuntimeService:
             raise
         result_text = str(result)
         tool_error = _extract_tool_error_payload(result_text)
-        execution_status = "failed" if tool_error else "succeeded"
+        boundary_block = result if isinstance(result, ToolBoundaryBlock) else None
+        execution_status = "failed" if tool_error or boundary_block is not None else "succeeded"
         await _maybe_await(
             self.approval_ticket_completer(
                 approval_id=ticket.approval_id,
@@ -1114,6 +1106,15 @@ class ToolRuntimeService:
                     "tool_decision": trace_metadata.get("tool_decision"),
                     "runtime_evidence": trace_metadata,
                     **({"error": tool_error} if tool_error else {}),
+                    **(
+                        {
+                            "boundary_outcome": boundary_block.outcome.value,
+                            "boundary_reason_code": boundary_block.reason_code,
+                            "error": result_text,
+                        }
+                        if boundary_block is not None
+                        else {}
+                    ),
                 },
             )
         )
@@ -1565,37 +1566,47 @@ class ToolRuntimeService:
                 f"{tool_name} was not executed. reasons={','.join(preflight.reasons) or 'unspecified'}"
             ),
         )
+        preflight_trace = preflight.as_decision_trace_preflight()
+        approval_decision = runtime_context.approval_decision
+        approval_satisfied = (
+            approval_decision is not None
+            and preflight.decision in {PreflightDecision.ASK, PreflightDecision.ESCALATE}
+        )
+        if approval_satisfied:
+            approval_id = str(approval_decision.approval_id)
+            preflight_trace.update(
+                {
+                    "approval_satisfied": True,
+                    "approval_id": approval_id,
+                    "effective_decision": PreflightDecision.DO.value,
+                }
+            )
+            authorization_decision_entry.update(
+                {
+                    "result": "allow",
+                    "reason": "immutable_approval_satisfied_preflight",
+                    "approval_id": approval_id,
+                }
+            )
         if trace_metadata_sink is not None:
-            trace_metadata_sink["preflight"] = preflight.as_decision_trace_preflight()
+            trace_metadata_sink["preflight"] = preflight_trace
             trace_metadata_sink["authorization_decision_entry"] = authorization_decision_entry
+        if approval_satisfied:
+            await self._log_preflight_decision(
+                tool_name,
+                runtime_context,
+                preflight,
+                approval_satisfied=True,
+                approval_id=str(approval_decision.approval_id),
+            )
+            return None
         if preflight.decision == PreflightDecision.DO:
             if preflight.requires_audit:
                 await self._log_preflight_decision(tool_name, runtime_context, preflight)
             return None
 
-        checkpoint_id = ""
-        if preflight.requires_checkpoint:
-            tenant_id = getattr(runtime_context, "tenant_id", None)
-            async with gateway_scope(self.coordination_gateway, tenant_id=tenant_id) as gateway:
-                checkpoint = await gateway.create_checkpoint(
-                    action=preflight_input.action,
-                    approver_id=str(runtime_context.user_id),
-                    escalation_chain=[preflight.escalation_target or "company_admin"],
-                    deadline_at=datetime.now(UTC) + timedelta(minutes=30),
-                    metadata={
-                        "tool_name": tool_name,
-                        "agent_id": str(runtime_context.agent_id),
-                        "decision": preflight.decision.value,
-                        "evidence_refs": list(preflight.evidence_refs),
-                    },
-                )
-            checkpoint_id = checkpoint.id
-
         decision_ref = ""
         if self.decision_trace_store is not None:
-            preflight_trace = preflight.as_decision_trace_preflight()
-            if checkpoint_id:
-                preflight_trace["checkpoint_id"] = checkpoint_id
             decision = await _maybe_await(
                 self.decision_trace_store.record_decision(
                     action=preflight_input.action,
@@ -1611,7 +1622,7 @@ class ToolRuntimeService:
                     user_id=str(runtime_context.user_id),
                     session_id=runtime_context.session_id,
                     tool_name=tool_name,
-                    checkpoint_id=checkpoint_id or None,
+                    checkpoint_id=None,
                 )
             )
             decision_ref = f"decision/{decision.id}"
@@ -1620,7 +1631,6 @@ class ToolRuntimeService:
         rendered = _render_preflight_block(
             tool_name,
             preflight,
-            checkpoint_id=checkpoint_id,
             decision_ref=decision_ref,
             authorization_decision_entry=authorization_decision_entry,
         )
@@ -1643,6 +1653,9 @@ class ToolRuntimeService:
         tool_name: str,
         runtime_context: ToolExecutionContext,
         preflight: ActionPreflightResult,
+        *,
+        approval_satisfied: bool = False,
+        approval_id: str | None = None,
     ) -> None:
         if not self.activity_logger:
             return
@@ -1662,6 +1675,8 @@ class ToolRuntimeService:
                     "requires_audit": preflight.requires_audit,
                     "escalation_target": preflight.escalation_target,
                     "evidence_refs": preflight.evidence_refs,
+                    "approval_satisfied": approval_satisfied,
+                    "approval_id": approval_id,
                 },
             )
         )

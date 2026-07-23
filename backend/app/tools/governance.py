@@ -200,8 +200,8 @@ class GovernanceDependencies:
     # Closure A2 — MCP server-policy gate. Resolves the effective MCP mode
     # (auto / approval / deny / None) for (agent_id, tool_name, arguments);
     # None means "not an MCP-governed call" and falls through. Lives in
-    # preflight so the post-approval replay path (execute_approved skips
-    # governance) cannot loop back into a fresh approval request.
+    # preflight so the post-approval replay path can consume the immutable
+    # approval decision without opening a fresh approval request.
     resolve_mcp_tool_mode: Callable[[uuid.UUID, str, dict], Awaitable[str | None] | str | None] | None = None
     # §1 tenant governance hooks (2026-07-09 unified design). Loads the approved
     # hook specs for (tenant_id, agent_id, tool_name); None disables the lane.
@@ -748,6 +748,49 @@ async def _emit_enterprise_approval_result(
         },
         ensure_ascii=False,
         sort_keys=True,
+    )
+
+
+async def request_action_preflight_approval(
+    context: ToolGovernanceContext,
+    deps: GovernanceDependencies,
+    *,
+    reason_code: str,
+    event_callback: EventCallback | None = None,
+) -> ToolBoundaryBlock | None:
+    """Route a typed ActionPreflight confirmation through a durable ticket."""
+
+    message = await _emit_enterprise_approval_result(
+        context,
+        deps,
+        capability=f"tool.action_preflight.{context.tool_name}",
+        reason=reason_code,
+        event_callback=event_callback,
+        approval_origin_type="action_preflight",
+    )
+    if message is None:
+        return None
+    if not context.approval_id:
+        return ToolBoundaryBlock(
+            render_tool_error(
+                tool_name=context.tool_name,
+                error_class="approval_ticket_unavailable",
+                message="The required approval ticket could not be created.",
+                provider="action_preflight",
+                retryable=True,
+                actionable_hint="Retry after the approval service recovers; the tool was not executed.",
+            ),
+            outcome=ToolDecisionOutcome.UNAVAILABLE,
+            reason_code="approval_ticket_unavailable",
+            status="unavailable",
+            retryable=True,
+        )
+    return ToolBoundaryBlock(
+        message,
+        outcome=ToolDecisionOutcome.REQUIRE_APPROVAL,
+        reason_code="action_preflight_requires_approval",
+        status="approval_required",
+        retryable=False,
     )
 
 

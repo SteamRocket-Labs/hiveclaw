@@ -333,6 +333,28 @@ describe('request cleanup adapters', () => {
     });
   });
 
+  it('routes session decision history through the authorized chat adapter', async () => {
+    vi.doMock('./core/request', async () => {
+      const actual = await vi.importActual<typeof import('./core/request')>('./core/request');
+      return {
+        ...actual,
+        get: vi.fn(),
+      };
+    });
+    const { chatApi } = await import('./domains/chat');
+    const { get } = await import('./core/request');
+    vi.mocked(get).mockResolvedValue([]);
+
+    await chatApi.listSessionDecisions('agent-1', 'session-1', {
+      operatorView: true,
+      operatorReason: 'Investigate approval behavior',
+    });
+
+    expect(get).toHaveBeenCalledWith(
+      '/agents/agent-1/sessions/session-1/decisions?operator_view=true&operator_reason=Investigate+approval+behavior',
+    );
+  });
+
   it('routes notification center queries through notificationsApi with query params', async () => {
     vi.doMock('./core/request', async () => {
       const actual = await vi.importActual<typeof import('./core/request')>('./core/request');

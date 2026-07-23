@@ -28,6 +28,101 @@ def test_session_feedback_default_writer_is_explicit_overlay_not_t3_adapter() ->
 
 
 @pytest.mark.asyncio
+async def test_decision_linked_feedback_defaults_to_request_scoped_sql_store(tmp_path, monkeypatch) -> None:
+    from types import SimpleNamespace as T3AppendResult
+
+    import app.services.session_feedback as session_feedback
+
+    db = _FakeDB()
+    agent_id = uuid.uuid4()
+    tenant_id = uuid.uuid4()
+    session_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    decision_id = f"decision-{uuid.uuid4().hex}"
+    calls: list[tuple[str, object]] = []
+
+    class FakeSqlDecisionTraceStore:
+        def __init__(self, session) -> None:
+            calls.append(("session", session))
+
+        async def get_decision(self, requested_id: str):
+            calls.append(("get", requested_id))
+            return SimpleNamespace(
+                id=decision_id,
+                tenant_id=str(tenant_id),
+                agent_id=str(agent_id),
+                session_id=str(session_id),
+            )
+
+        async def record_feedback(self, **kwargs):
+            calls.append(("feedback", kwargs))
+            return SimpleNamespace(id=str(uuid.uuid4()))
+
+    async def fake_append_memory(*_args, **_kwargs):
+        return T3AppendResult(status="overlay", category="feedback", entry_id="decision-feedback")
+
+    monkeypatch.setattr(session_feedback, "SqlDecisionTraceStore", FakeSqlDecisionTraceStore, raising=False)
+
+    result = await session_feedback.record_session_feedback(
+        db,
+        agent=SimpleNamespace(id=agent_id, tenant_id=tenant_id),
+        session=SimpleNamespace(id=session_id, agent_id=agent_id, tenant_id=tenant_id, source_channel="web"),
+        current_user=SimpleNamespace(id=user_id),
+        label="useful",
+        reason="The approval boundary was correct.",
+        decision_id=decision_id,
+        data_root=tmp_path,
+        append_memory=fake_append_memory,
+    )
+
+    assert calls[0] == ("session", db)
+    assert ("get", decision_id) in calls
+    feedback_call = next(payload for kind, payload in calls if kind == "feedback")
+    assert feedback_call["decision_id"] == decision_id
+    assert feedback_call["reaction"] == "useful"
+    assert result["decision_ref"] == f"decision/{decision_id}"
+
+
+@pytest.mark.asyncio
+async def test_decision_linked_feedback_requires_exact_tenant_agent_and_session_scope(tmp_path) -> None:
+    from app.services.session_feedback import record_session_feedback
+    from tests.decision_trace_fake import InMemoryDecisionTraceStore
+
+    db = _FakeDB()
+    agent_id = uuid.uuid4()
+    tenant_id = uuid.uuid4()
+    session_id = uuid.uuid4()
+    store = InMemoryDecisionTraceStore()
+    decision = store.record_decision(
+        action="send_feishu_message",
+        chosen="ask",
+        reasoning="External-visible action.",
+        alternatives_considered=["send", "ask"],
+        situational_factors=["charter_confirm_first"],
+        charter_zone="confirm_first",
+        preflight={"decision": "ask"},
+        sensitivity="PL1_public",
+        tenant_id=str(tenant_id),
+        agent_id=str(agent_id),
+        session_id=None,
+    )
+
+    with pytest.raises(ValueError, match="does not belong to this session"):
+        await record_session_feedback(
+            db,
+            agent=SimpleNamespace(id=agent_id, tenant_id=tenant_id),
+            session=SimpleNamespace(id=session_id, agent_id=agent_id, tenant_id=tenant_id, source_channel="web"),
+            current_user=SimpleNamespace(id=uuid.uuid4()),
+            label="useful",
+            decision_id=decision.id,
+            data_root=tmp_path,
+            decision_trace_store=store,
+        )
+
+    assert store.feedback_for_decision(decision.id) == []
+
+
+@pytest.mark.asyncio
 async def test_record_useful_session_feedback_persists_event_audit_and_t3(tmp_path) -> None:
     from types import SimpleNamespace as T3AppendResult
     from app.models.audit import AuditLog
@@ -209,15 +304,15 @@ async def test_activation_feedback_sidecar_writer_prunes_to_retention_limit(tmp_
 async def test_record_session_feedback_links_to_verified_decision_trace(tmp_path) -> None:
     from types import SimpleNamespace as T3AppendResult
     from app.models.session_feedback import SessionFeedbackEvent
-    from app.services.decision_trace import DecisionTraceStore
     from app.services.session_feedback import record_session_feedback
+    from tests.decision_trace_fake import InMemoryDecisionTraceStore
 
     db = _FakeDB()
     agent_id = uuid.uuid4()
     tenant_id = uuid.uuid4()
     session_id = uuid.uuid4()
     user_id = uuid.uuid4()
-    decision_store = DecisionTraceStore()
+    decision_store = InMemoryDecisionTraceStore()
     decision = decision_store.record_decision(
         action="send_feishu_message",
         chosen="ask",
@@ -262,14 +357,14 @@ async def test_record_session_feedback_links_to_verified_decision_trace(tmp_path
 @pytest.mark.asyncio
 async def test_record_session_feedback_rejects_cross_session_decision_trace(tmp_path) -> None:
     from types import SimpleNamespace as T3AppendResult
-    from app.services.decision_trace import DecisionTraceStore
     from app.services.session_feedback import record_session_feedback
+    from tests.decision_trace_fake import InMemoryDecisionTraceStore
 
     db = _FakeDB()
     agent_id = uuid.uuid4()
     tenant_id = uuid.uuid4()
     user_id = uuid.uuid4()
-    decision_store = DecisionTraceStore()
+    decision_store = InMemoryDecisionTraceStore()
     decision = decision_store.record_decision(
         action="send_feishu_message",
         chosen="ask",

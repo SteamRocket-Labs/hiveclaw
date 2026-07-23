@@ -1440,38 +1440,3 @@ def test_auto_dream_does_not_use_legacy_evolution_ledger_for_soul_writeback() ->
     assert "sync_t3_to_memory_enhancement" not in source
     assert "_review_blocklist" not in source
     assert "blocklist.md" not in source
-
-
-def test_feedback_decision_chains_propose_charter_calibration_without_mutation() -> None:
-    from app.services.auto_dream import propose_charter_calibrations_from_feedback
-    from app.services.decision_trace import DecisionTraceStore
-
-    store = DecisionTraceStore()
-    decision = store.record_decision(
-        action="send external vendor reply",
-        chosen="ask",
-        reasoning="External-visible reply needed owner confirmation.",
-        alternatives_considered=["send directly"],
-        situational_factors=["charter_confirm_first"],
-        charter_zone="confirm_first",
-        preflight={"decision": "ask"},
-        sensitivity="PL1_public",
-    )
-    store.record_feedback(
-        decision_id=decision.id,
-        reaction="approved",
-        polarity="positive",
-        source="direct_owner",
-        rationale_from_owner="Asking first was correct this time.",
-    )
-
-    proposals = propose_charter_calibrations_from_feedback(store)
-
-    assert proposals == [
-        {
-            "decision_id": decision.id,
-            "action": "send external vendor reply",
-            "proposal": "consider_full_authority",
-            "reason": "Owner approved a confirm-first action; repeated evidence may justify broader authority.",
-        }
-    ]

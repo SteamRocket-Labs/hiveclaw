@@ -83,6 +83,34 @@ def test_record_session_feedback_api_calls_persistent_service(monkeypatch) -> No
     assert seen["decision_id"] == "decision/dec-1"
 
 
+def test_record_session_feedback_hides_missing_or_out_of_scope_decision(monkeypatch) -> None:
+    client, _fake_db, _current_user = _build_client()
+    agent_id = uuid.uuid4()
+    session_id = uuid.uuid4()
+    tenant_id = uuid.uuid4()
+
+    async def fake_get_session_and_agent(**_kwargs):
+        return (
+            SimpleNamespace(id=session_id, agent_id=agent_id, tenant_id=tenant_id, source_channel="web"),
+            SimpleNamespace(id=agent_id, tenant_id=tenant_id),
+            "session_owner",
+        )
+
+    async def missing_decision(**_kwargs):
+        raise KeyError("decision-not-visible")
+
+    monkeypatch.setattr(chat_sessions_api, "_get_run_session_and_agent", fake_get_session_and_agent)
+    monkeypatch.setattr(chat_sessions_api, "record_session_feedback", missing_decision)
+
+    response = client.post(
+        f"/agents/{agent_id}/sessions/{session_id}/feedback",
+        json={"label": "useful", "decision_id": "decision-not-visible"},
+    )
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Decision not found in this session"}
+
+
 def test_get_session_activation_feedback_api_calls_read_model(monkeypatch) -> None:
     client, fake_db, current_user = _build_client()
     agent_id = uuid.uuid4()
@@ -126,3 +154,75 @@ def test_get_session_activation_feedback_api_calls_read_model(monkeypatch) -> No
     assert seen["kwargs"]["session_id"] == session_id
     assert seen["kwargs"]["limit"] == 25
     assert seen["kwargs"]["newest_first"] is True
+
+
+def test_list_session_decisions_api_uses_authorized_session_scope(monkeypatch) -> None:
+    client, fake_db, current_user = _build_client()
+    agent_id = uuid.uuid4()
+    session_id = uuid.uuid4()
+    tenant_id = uuid.uuid4()
+    decision_id = f"decision-{uuid.uuid4().hex}"
+    seen = {}
+
+    async def fake_get_session_and_agent(**kwargs):
+        seen["authority"] = kwargs
+        return (
+            SimpleNamespace(id=session_id, agent_id=agent_id, tenant_id=tenant_id, source_channel="web"),
+            SimpleNamespace(id=agent_id, tenant_id=tenant_id),
+            "session_owner",
+        )
+
+    async def fake_list_decisions(**kwargs):
+        seen["list"] = kwargs
+        return [
+            {
+                "id": decision_id,
+                "action": "send_feishu_message",
+                "tool_name": "send_feishu_message",
+                "outcome": "ask",
+                "reason_codes": ["charter_confirm_first"],
+                "created_at": "2026-07-24T01:00:00+00:00",
+                "feedback_count": 0,
+            }
+        ]
+
+    monkeypatch.setattr(chat_sessions_api, "_get_run_session_and_agent", fake_get_session_and_agent)
+    monkeypatch.setattr(chat_sessions_api, "list_session_decision_traces", fake_list_decisions, raising=False)
+
+    response = client.get(f"/agents/{agent_id}/sessions/{session_id}/decisions?limit=25")
+
+    assert response.status_code == 200
+    assert response.json() == [
+        {
+            "id": decision_id,
+            "action": "send_feishu_message",
+            "tool_name": "send_feishu_message",
+            "outcome": "ask",
+            "reason_codes": ["charter_confirm_first"],
+            "created_at": "2026-07-24T01:00:00+00:00",
+            "feedback_count": 0,
+        }
+    ]
+    assert seen["authority"]["action"] == "read_decision_history"
+    assert seen["list"] == {
+        "db": fake_db,
+        "tenant_id": tenant_id,
+        "agent_id": agent_id,
+        "session_id": session_id,
+        "limit": 25,
+    }
+
+
+def test_list_session_decisions_api_has_typed_product_response_contract() -> None:
+    client, _fake_db, _current_user = _build_client()
+
+    schema = client.get("/openapi.json").json()
+    response_schema = schema["paths"]["/agents/{agent_id}/sessions/{session_id}/decisions"]["get"]["responses"]["200"][
+        "content"
+    ]["application/json"]["schema"]
+
+    assert response_schema == {
+        "items": {"$ref": "#/components/schemas/SessionDecisionTraceOut"},
+        "type": "array",
+        "title": "Response List Decisions For Session Agents  Agent Id  Sessions  Session Id  Decisions Get",
+    }

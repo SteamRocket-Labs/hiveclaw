@@ -1821,9 +1821,9 @@ async def test_tool_runtime_service_execute_approved_logs_approval_metadata():
 @pytest.mark.asyncio
 async def test_execute_approved_satisfies_preflight_ask_and_executes_exact_external_effect():
     from app.services.approval_ticket import ApprovalExecutionTicket
-    from app.services.decision_trace import DecisionTraceStore
     from app.tools.runtime import ToolExecutionContext
     from app.tools.service import ToolRuntimeService
+    from tests.decision_trace_fake import InMemoryDecisionTraceStore
 
     agent_id = uuid4()
     requested_by = uuid4()
@@ -1872,7 +1872,7 @@ async def test_execute_approved_satisfies_preflight_ask_and_executes_exact_exter
         activity_logger=None,
         approval_ticket_consumer=consume_ticket,
         approval_ticket_completer=complete_ticket,
-        decision_trace_store=DecisionTraceStore(),
+        decision_trace_store=InMemoryDecisionTraceStore(),
     )
 
     result = await service.execute_approved(
@@ -1895,10 +1895,10 @@ async def test_execute_approved_satisfies_preflight_ask_and_executes_exact_exter
 async def test_execute_approved_does_not_override_preflight_refuse_and_marks_ticket_failed():
     from app.services.action_preflight import ActionPreflightResult, PreflightDecision
     from app.services.approval_ticket import ApprovalExecutionTicket
-    from app.services.decision_trace import DecisionTraceStore
     from app.tools.decision import ToolDecisionOutcome
     from app.tools.runtime import ToolExecutionContext
     from app.tools.service import ToolRuntimeService
+    from tests.decision_trace_fake import InMemoryDecisionTraceStore
 
     agent_id = uuid4()
     requested_by = uuid4()
@@ -1953,7 +1953,7 @@ async def test_execute_approved_does_not_override_preflight_refuse_and_marks_tic
         preflight_service=_RefusingPreflight(),
         approval_ticket_consumer=consume_ticket,
         approval_ticket_completer=complete_ticket,
-        decision_trace_store=DecisionTraceStore(),
+        decision_trace_store=InMemoryDecisionTraceStore(),
     )
 
     result = await service.execute_approved(
@@ -1973,7 +1973,6 @@ async def test_execute_approved_does_not_override_preflight_refuse_and_marks_tic
 async def test_execute_approved_does_not_override_owner_never_do_policy():
     from app.services.action_preflight import CharterZone
     from app.services.approval_ticket import ApprovalExecutionTicket
-    from app.services.decision_trace import DecisionTraceStore
     from app.services.owner_action_policy import (
         ACTION_EXTERNAL_EFFECT,
         ACTION_LOCAL_READ,
@@ -1983,6 +1982,7 @@ async def test_execute_approved_does_not_override_owner_never_do_policy():
     from app.tools.decision import ToolDecisionOutcome
     from app.tools.runtime import ToolExecutionContext
     from app.tools.service import ToolRuntimeService
+    from tests.decision_trace_fake import InMemoryDecisionTraceStore
 
     agent_id = uuid4()
     tenant_id = uuid4()
@@ -2040,7 +2040,7 @@ async def test_execute_approved_does_not_override_owner_never_do_policy():
         activity_logger=None,
         approval_ticket_consumer=consume_ticket,
         approval_ticket_completer=complete_ticket,
-        decision_trace_store=DecisionTraceStore(),
+        decision_trace_store=InMemoryDecisionTraceStore(),
     )
 
     result = await service.execute_approved(
@@ -2346,9 +2346,9 @@ def _extract_tool_error_payload(result: str) -> dict:
 @pytest.mark.asyncio
 async def test_tool_runtime_service_preflight_asks_before_external_visible_tool():
     from app.tools.governance import GovernanceDependencies, ToolGovernanceContext
-    from app.services.decision_trace import DecisionTraceStore
     from app.tools.runtime import ToolExecutionContext
     from app.tools.service import ToolRuntimeService
+    from tests.decision_trace_fake import InMemoryDecisionTraceStore
 
     context = ToolExecutionContext(
         agent_id=uuid4(),
@@ -2358,7 +2358,7 @@ async def test_tool_runtime_service_preflight_asks_before_external_visible_tool(
         session_id="session-1",
     )
     registry = _FakeRegistry("SHOULD_NOT_RUN")
-    traces = DecisionTraceStore()
+    traces = InMemoryDecisionTraceStore()
     approval_id = uuid4()
     approval_requests = []
     governance_context = ToolGovernanceContext(
@@ -2502,9 +2502,9 @@ async def test_tool_runtime_service_executes_external_effect_under_owner_full_au
 @pytest.mark.asyncio
 async def test_tool_runtime_service_allows_delegated_user_feishu_message():
     from app.core.execution_context import ExecutionIdentity
-    from app.services.decision_trace import DecisionTraceStore
     from app.tools.runtime import ToolExecutionContext
     from app.tools.service import ToolRuntimeService
+    from tests.decision_trace_fake import InMemoryDecisionTraceStore
 
     context = ToolExecutionContext(
         agent_id=uuid4(),
@@ -2518,7 +2518,7 @@ async def test_tool_runtime_service_allows_delegated_user_feishu_message():
         ),
     )
     registry = _FakeRegistry("SENT")
-    traces = DecisionTraceStore()
+    traces = InMemoryDecisionTraceStore()
 
     service = ToolRuntimeService(
         runtime_resolver=_FakeRuntimeResolver(context),
@@ -2550,11 +2550,11 @@ async def test_tool_runtime_service_allows_delegated_user_feishu_message():
 
 @pytest.mark.asyncio
 async def test_tool_runtime_service_fails_typed_when_preflight_approval_ticket_cannot_be_created():
-    from app.services.decision_trace import DecisionTraceStore
     from app.tools.decision import ToolDecisionOutcome
     from app.tools.governance import GovernanceDependencies, ToolGovernanceContext
     from app.tools.runtime import ToolExecutionContext
     from app.tools.service import ToolRuntimeService
+    from tests.decision_trace_fake import InMemoryDecisionTraceStore
 
     context = ToolExecutionContext(
         agent_id=uuid4(),
@@ -2591,7 +2591,7 @@ async def test_tool_runtime_service_fails_typed_when_preflight_approval_ticket_c
         fallback_executor=lambda *_args, **_kwargs: "fallback",
         direct_fallback_executor=lambda *_args, **_kwargs: "direct-fallback",
         activity_logger=None,
-        decision_trace_store=DecisionTraceStore(),
+        decision_trace_store=InMemoryDecisionTraceStore(),
     )
 
     result = await service.execute(
@@ -2609,9 +2609,9 @@ async def test_tool_runtime_service_fails_typed_when_preflight_approval_ticket_c
 
 @pytest.mark.asyncio
 async def test_tool_runtime_service_preflight_refuses_credential_arguments():
-    from app.services.decision_trace import DecisionTraceStore
     from app.tools.runtime import ToolExecutionContext
     from app.tools.service import ToolRuntimeService
+    from tests.decision_trace_fake import InMemoryDecisionTraceStore
 
     context = ToolExecutionContext(
         agent_id=uuid4(),
@@ -2620,7 +2620,7 @@ async def test_tool_runtime_service_preflight_refuses_credential_arguments():
         workspace=Path("/tmp/ws"),
     )
     registry = _FakeRegistry("SHOULD_NOT_RUN")
-    traces = DecisionTraceStore()
+    traces = InMemoryDecisionTraceStore()
 
     service = ToolRuntimeService(
         runtime_resolver=_FakeRuntimeResolver(context),

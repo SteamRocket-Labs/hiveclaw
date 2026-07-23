@@ -7,7 +7,7 @@ from dataclasses import asdict
 from datetime import datetime, timezone as tz
 from typing import Any, Literal, Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import or_, select, func
@@ -42,6 +42,7 @@ from app.services.web_chat_broker import web_chat_broker
 from app.services.conversation_branch_service import create_conversation_branch
 from app.services.session_index import read_session_index
 from app.services.session_feedback import read_activation_feedback_sidecar, record_session_feedback
+from app.services.decision_trace import list_session_decision_traces
 from app.services.session_control_plane import build_session_json_export, build_session_workbench
 from app.services.session_live_input import IdempotencyConflict, submit_live_cancel_input, submit_live_human_input
 
@@ -535,6 +536,16 @@ class RecordSessionFeedbackIn(BaseModel):
     reason: str = ""
     message_id: Optional[uuid.UUID] = None
     decision_id: Optional[str] = None
+
+
+class SessionDecisionTraceOut(BaseModel):
+    id: str
+    action: str
+    tool_name: Optional[str] = None
+    outcome: str
+    reason_codes: list[str] = Field(default_factory=list)
+    created_at: str
+    feedback_count: int = Field(ge=0)
 
 
 def _transcript_role_for_event(event: ChatTranscriptEvent) -> str:
@@ -1227,18 +1238,59 @@ async def record_feedback_for_session(
         session_id=session_id,
         current_user=current_user,
     )
-    result = await record_session_feedback(
-        db=db,
-        agent=agent,
-        session=session,
-        current_user=current_user,
-        label=body.label,
-        reason=body.reason,
-        message_id=body.message_id,
-        decision_id=body.decision_id,
-    )
+    try:
+        result = await record_session_feedback(
+            db=db,
+            agent=agent,
+            session=session,
+            current_user=current_user,
+            label=body.label,
+            reason=body.reason,
+            message_id=body.message_id,
+            decision_id=body.decision_id,
+        )
+    except (KeyError, ValueError) as exc:
+        if body.decision_id is None:
+            raise
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Decision not found in this session",
+        ) from exc
     await db.commit()
     return result
+
+
+@router.get(
+    "/{agent_id}/sessions/{session_id}/decisions",
+    response_model=list[SessionDecisionTraceOut],
+)
+async def list_decisions_for_session(
+    agent_id: uuid.UUID,
+    session_id: uuid.UUID,
+    limit: int = Query(50, ge=1, le=100),
+    operator_view: bool = Query(default=False),
+    operator_reason: str | None = Query(default=None),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """List governed action decisions for the authorized session."""
+
+    session, agent, _authority_source = await _get_run_session_and_agent(
+        db=db,
+        agent_id=agent_id,
+        session_id=session_id,
+        current_user=current_user,
+        action="read_decision_history",
+        operator_view=operator_view is True,
+        operator_reason=operator_reason,
+    )
+    return await list_session_decision_traces(
+        db=db,
+        tenant_id=agent.tenant_id,
+        agent_id=agent.id,
+        session_id=session.id,
+        limit=limit,
+    )
 
 
 @router.get("/{agent_id}/sessions/{session_id}/feedback/activation-sidecar")

@@ -186,6 +186,16 @@ export interface RecordSessionFeedbackInput {
   decision_id?: string | null;
 }
 
+export interface SessionDecisionTrace {
+  id: string;
+  action: string;
+  tool_name?: string | null;
+  outcome: 'ask' | 'escalate' | 'prepare_only' | 'refuse' | string;
+  reason_codes: string[];
+  created_at: string;
+  feedback_count: number;
+}
+
 export interface BranchSessionInput {
   mode: ConversationBranchMode;
   anchor_event_id: string;
@@ -324,6 +334,10 @@ export const chatApi = {
     post<BranchSessionResponse>(`/agents/${agentId}/sessions/${sessionId}/branches`, input),
   recordSessionFeedback: (agentId: string, sessionId: string, input: RecordSessionFeedbackInput) =>
     post<unknown>(`/agents/${agentId}/sessions/${sessionId}/feedback`, input),
+  listSessionDecisions: (agentId: string, sessionId: string, options?: SessionOperatorOptions) =>
+    get<SessionDecisionTrace[]>(
+      withSessionOperatorQuery(`/agents/${agentId}/sessions/${sessionId}/decisions`, options),
+    ),
   listSessionBranches: (agentId: string, sessionId: string, options?: SessionOperatorOptions) =>
     get<ChatSession[]>(withSessionOperatorQuery(`/agents/${agentId}/sessions/${sessionId}/branches`, options)),
   getSessionLineage: (agentId: string, sessionId: string, options?: SessionOperatorOptions) =>

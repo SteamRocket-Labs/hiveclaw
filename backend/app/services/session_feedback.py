@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
+import inspect
 import logging
 import uuid
 from pathlib import Path
@@ -17,7 +18,7 @@ from app.models.audit import AuditLog
 from app.models.chat_session import ChatSession
 from app.models.session_feedback import SessionFeedbackEvent
 from app.models.user import User
-from app.services.decision_trace import DecisionTraceStore, decision_id_from_ref, normalize_decision_ref
+from app.services.decision_trace import SqlDecisionTraceStore, decision_id_from_ref, normalize_decision_ref
 
 logger = logging.getLogger(__name__)
 
@@ -382,7 +383,7 @@ async def record_session_feedback(
     decision_id: str | None = None,
     data_root: Path | None = None,
     append_memory: AppendMemory = write_session_feedback_overlay,
-    decision_trace_store: DecisionTraceStore | None = None,
+    decision_trace_store: Any | None = None,
 ) -> dict[str, Any]:
     """Persist a Useful/Misleading event and route it to explicit memory overlay."""
 
@@ -398,21 +399,24 @@ async def record_session_feedback(
     if decision_id:
         normalized_decision_id = decision_id_from_ref(decision_id)
         decision_ref = normalize_decision_ref(normalized_decision_id)
-        store = decision_trace_store or DecisionTraceStore.persistent_default()
-        decision = store.get_decision(normalized_decision_id)
-        if decision.tenant_id and str(decision.tenant_id) != str(agent.tenant_id):
+        store = decision_trace_store or SqlDecisionTraceStore(db)
+        decision_result = store.get_decision(normalized_decision_id)
+        decision = await decision_result if inspect.isawaitable(decision_result) else decision_result
+        if str(decision.tenant_id or "") != str(agent.tenant_id):
             raise ValueError("decision_id does not belong to this tenant")
-        if decision.agent_id and str(decision.agent_id) != str(agent.id):
+        if str(decision.agent_id or "") != str(agent.id):
             raise ValueError("decision_id does not belong to this agent")
-        if decision.session_id and str(decision.session_id) != str(session.id):
+        if str(decision.session_id or "") != str(session.id):
             raise ValueError("decision_id does not belong to this session")
-        store.record_feedback(
+        feedback_result = store.record_feedback(
             decision_id=normalized_decision_id,
             reaction=normalized_label,
             polarity=_feedback_polarity(normalized_label),
             source="session_feedback",
             rationale_from_owner=(reason or "").strip(),
         )
+        if inspect.isawaitable(feedback_result):
+            await feedback_result
         source_refs.append(decision_ref)
     memory_result = await append_memory(
         agent.id,

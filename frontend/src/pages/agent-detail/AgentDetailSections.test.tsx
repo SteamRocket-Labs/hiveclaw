@@ -15,6 +15,7 @@ import AgentChatSection, {
   SessionCommandControlPanel,
   StructuredToolResultBody,
   WorkflowRunFocusPanel,
+  buildMessageFeedbackInput,
   buildSessionRewindCommandArgs,
   buildBranchLineageRows,
   extractPlanIdFromPlanModeMessage,
@@ -31,6 +32,7 @@ import AgentChatSection, {
   sessionCheckpointPreview,
   subagentWorkerRecoveryModel,
   userFacingRuntimeStatus,
+  SessionDecisionHistory,
 } from './AgentChatSection';
 import AgentMindSection from './AgentMindSection';
 import AgentSettingsSection, {
@@ -58,6 +60,7 @@ import {
 } from '../AgentDetail';
 import type { PlanRequest } from '../../api/domains/plans';
 import { AGENT_WORKBENCH_AREAS } from './agentDetailPolicy';
+import zh from '../../i18n/zh.json';
 
 describe('userFacingRuntimeStatus', () => {
   it('maps known states and never falls back to raw runtime values', () => {
@@ -68,6 +71,58 @@ describe('userFacingRuntimeStatus', () => {
     expect(userFacingRuntimeStatus('quota_denied')).toBe('Needs attention');
     expect(userFacingRuntimeStatus('quota_unavailable')).toBe('Needs attention');
     expect(userFacingRuntimeStatus('provider_stream_half_closed_internal')).toBe('Working');
+  });
+});
+
+describe('SessionDecisionHistory', () => {
+  it('shows understandable action decisions without exposing internal ids or reason codes', () => {
+    const decisionId = 'decision-3a620b2c4f844d7f9b52753ab4ef9338';
+    const markup = renderToStaticMarkup(
+      <SessionDecisionHistory
+        decisions={[
+          {
+            id: decisionId,
+            action: 'send_feishu_message',
+            tool_name: 'send_feishu_message',
+            outcome: 'ask',
+            reason_codes: ['charter_confirm_first', 'high_risk_axis:visibility'],
+            created_at: '2026-07-24T01:00:00Z',
+            feedback_count: 0,
+          },
+        ]}
+        onFeedback={vi.fn()}
+      />,
+    );
+
+    expect(markup).toContain('Action decisions');
+    expect(markup).toContain('Send Feishu Message');
+    expect(markup).toContain('Approval needed');
+    expect(markup).toContain('Your settings require approval');
+    expect(markup).toContain('Externally visible action');
+    expect(markup).toContain('Helpful');
+    expect(markup).toContain('Misleading');
+    expect(markup).not.toContain(decisionId);
+    expect(markup).not.toContain('charter_confirm_first');
+    expect(markup).not.toContain('high_risk_axis:visibility');
+  });
+
+  it('has employee-facing Chinese copy for decisions instead of raw tool or policy identifiers', () => {
+    expect(zh.sessionWorkbench.rightPanel.actionDecisions).toBe('操作决策');
+    expect(zh.sessionWorkbench.rightPanel.decisionActions.send_feishu_message).toBe('发送飞书消息');
+    expect(zh.sessionWorkbench.rightPanel.decisionOutcomes.ask).toBe('需要你批准');
+    expect(zh.sessionWorkbench.rightPanel.decisionReasons.charter_confirm_first).toBe('你的设置要求先确认');
+  });
+});
+
+describe('buildMessageFeedbackInput', () => {
+  it('links only durable UUID messages and never invents a decision reference', () => {
+    expect(buildMessageFeedbackInput('assistant-stream-42', 'useful')).toEqual({
+      label: 'useful',
+    });
+    expect(buildMessageFeedbackInput('11111111-1111-4111-8111-111111111111', 'misleading')).toEqual({
+      label: 'misleading',
+      message_id: '11111111-1111-4111-8111-111111111111',
+    });
   });
 });
 
@@ -2657,7 +2712,9 @@ describe('AgentDetail extracted sections', () => {
     );
 
     expect(queryKeyCalls).toContainEqual(['chat-session-index', 'route-agent', 'session-1', 'owner']);
+    expect(queryKeyCalls).toContainEqual(['chat-session-decisions', 'route-agent', 'session-1', 'owner']);
     expect(queryKeyCalls).not.toContainEqual(['chat-session-index', 'stale-agent', 'session-1', 'owner']);
+    expect(queryKeyCalls).not.toContainEqual(['chat-session-decisions', 'stale-agent', 'session-1', 'owner']);
   });
 
   it('renders assistant artifacts directly inside the chat transcript', () => {

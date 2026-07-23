@@ -1988,37 +1988,6 @@ def _count_t3_entries(agent_id: uuid.UUID) -> int:
     return len(list_profile_entries(root, agent_id)) + len(list_knowledge_pages(root, agent_id))
 
 
-def propose_charter_calibrations_from_feedback(decision_store) -> list[dict[str, str]]:
-    """Convert explicit decision-linked feedback into charter calibration proposals.
-
-    This helper is intentionally proposal-only. Dream may surface these entries,
-    but charter mutation still requires the owner-approved path.
-    """
-    proposals: list[dict[str, str]] = []
-    for candidate in decision_store.calibration_candidates():
-        reaction = candidate.get("reaction")
-        charter_zone = candidate.get("charter_zone")
-        if reaction == "approved" and charter_zone == "confirm_first":
-            proposals.append(
-                {
-                    "decision_id": candidate["decision_id"],
-                    "action": candidate["action"],
-                    "proposal": "consider_full_authority",
-                    "reason": "Owner approved a confirm-first action; repeated evidence may justify broader authority.",
-                }
-            )
-        elif reaction in {"rejected", "corrected", "questioned"} and charter_zone == "full_authority":
-            proposals.append(
-                {
-                    "decision_id": candidate["decision_id"],
-                    "action": candidate["action"],
-                    "proposal": "tighten_to_confirm_first",
-                    "reason": "Owner pushed back on a full-authority action; repeated evidence should narrow autonomy.",
-                }
-            )
-    return proposals
-
-
 def record_heartbeat_tick(agent_id: uuid.UUID) -> None:
     """Increment heartbeat tick counter for dream gate evaluation."""
     key = agent_id.hex

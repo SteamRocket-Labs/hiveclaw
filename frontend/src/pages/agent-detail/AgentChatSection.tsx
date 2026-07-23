@@ -60,7 +60,11 @@ import {
   type WorkspaceDocumentModel,
   type ThreadTimelineModel,
 } from '../session-workbench/timelineModel';
-import { chatApi, type RecordSessionFeedbackInput } from '../../api/domains/chat';
+import {
+  chatApi,
+  type RecordSessionFeedbackInput,
+  type SessionDecisionTrace,
+} from '../../api/domains/chat';
 import { ccParityApi, type SessionContextUsage, type SessionWorkbench } from '../../api/domains/ccParity';
 import { fileApi } from '../../api/domains/files';
 import { planApi } from '../../api/domains/plans';
@@ -111,6 +115,7 @@ import {
   isRuntimeRecord,
   isTeamMemberSession,
   runtimeItemDisplayLabel,
+  SessionDecisionHistory,
   SessionRuntimePanel,
   setRuntimeLinkHighlight,
   stringValue,
@@ -141,6 +146,7 @@ export {
   ActiveTailStatusLine,
   runtimeItemDisplayMeta,
   runtimeItemDisplayStatus,
+  SessionDecisionHistory,
   subagentWorkerRecoveryModel,
   userFacingRuntimeStatus,
   WorkflowRunFocusPanel,
@@ -218,6 +224,15 @@ function getRuntimeUsageTitle(runtimeSummary: ChatRuntimeSummary | null, usageLa
 
 function isUuidLike(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
+export function buildMessageFeedbackInput(
+  messageId: string,
+  label: RecordSessionFeedbackInput['label'],
+): RecordSessionFeedbackInput {
+  const input: RecordSessionFeedbackInput = { label };
+  if (isUuidLike(messageId)) input.message_id = messageId;
+  return input;
 }
 
 function getSessionPermissionModeLabel(
@@ -1282,15 +1297,7 @@ function AgentChatSection({
       const sessionId = activeSession?.id ? String(activeSession.id) : null;
       if (!effectiveAgentId || !sessionId || !message.id) return;
       const messageId = String(message.id);
-      const input: RecordSessionFeedbackInput = {
-        label,
-        reason: 'message action bar',
-      };
-      if (isUuidLike(messageId)) {
-        input.message_id = messageId;
-      } else {
-        input.decision_id = `message:${messageId}`;
-      }
+      const input = buildMessageFeedbackInput(messageId, label);
 
       try {
         await chatApi.recordSessionFeedback(effectiveAgentId, sessionId, input);
@@ -1638,6 +1645,37 @@ function AgentChatSection({
     staleTime: 60_000,
     refetchOnWindowFocus: false,
   });
+  const { data: sessionDecisionData, refetch: refetchSessionDecisions } = useQuery({
+    queryKey: ['chat-session-decisions', effectiveAgentId, activeSessionId, sessionAuthorityMode],
+    queryFn: () => chatApi.listSessionDecisions(effectiveAgentId!, activeSessionId!, sessionOperatorOptions),
+    enabled: Boolean(effectiveAgentId && activeSessionId && !isDraftSession),
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
+  });
+  const sessionDecisions = Array.isArray(sessionDecisionData)
+    ? sessionDecisionData as SessionDecisionTrace[]
+    : [];
+  const submitDecisionFeedback = React.useCallback(
+    async (decision: SessionDecisionTrace, label: RecordSessionFeedbackInput['label']) => {
+      if (!effectiveAgentId || !activeSessionId) return;
+      try {
+        await chatApi.recordSessionFeedback(effectiveAgentId, activeSessionId, {
+          label,
+          decision_id: decision.id,
+        });
+        await refetchSessionDecisions?.();
+        showAppToast(t('agent.chat.feedback.recorded', 'Feedback recorded.'), 'success');
+      } catch (error: any) {
+        showAppToast(
+          t('agent.chat.feedback.failed', 'Failed to record feedback: {{message}}', {
+            message: error?.message || String(error),
+          }),
+          'error',
+        );
+      }
+    },
+    [activeSessionId, effectiveAgentId, refetchSessionDecisions, t],
+  );
   const handleWorkflowAction = React.useCallback(
     async (action: WorkflowRunActionModel) => {
       if (!effectiveAgentId || !action.runId) return;
@@ -2356,6 +2394,8 @@ function AgentChatSection({
           onGoalChanged={() => void refetchSessionWorkbench()}
           onTeamChanged={() => void refetchSessionWorkbench()}
           onRetrySubagent={requestSubagentRetry}
+          sessionDecisions={sessionDecisions}
+          onDecisionFeedback={submitDecisionFeedback}
         />
       ) : null}
     </div>

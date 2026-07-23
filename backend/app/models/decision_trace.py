@@ -15,9 +15,9 @@ from app.database import Base
 class DecisionTraceRecord(Base):
     """Append-only decision trace row.
 
-    JSONL remains a compatibility/debug artifact; this table is the operator
-    query surface because it carries tenant/session/tool join keys and can be
-    protected by RLS.
+    This table is the sole runtime authority. Legacy JSONL is accepted only by
+    the explicit dry-run migration command and is never read by live runtime
+    paths.
     """
 
     __tablename__ = "decision_traces"

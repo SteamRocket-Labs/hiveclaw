@@ -650,7 +650,7 @@ export default function AppSidebar({
                     {isExpanded ? <IconChevronDown size={13} stroke={1.7} /> : <IconChevronRight size={13} stroke={1.7} />}
                   </button>
                   <NavLink
-                    to={`/agents/${agent.id}#chat`}
+                    to={`/agents/${agent.id}`}
                     className={() => `sidebar-item sidebar-agent-link ${isAgentRowActive ? 'active' : ''}`}
                     title={agent.name}
                     aria-label={`Open ${agent.name}`}

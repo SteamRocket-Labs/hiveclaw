@@ -406,7 +406,8 @@ describe('Layout extracted sections', () => {
 
     expect(markup).toContain('data-testid="sidebar-agent-sessions-agent-1"');
     expect(markup).toContain('aria-label="Open AI 产品经理"');
-    expect(markup).toContain('href="/agents/agent-1#chat" class="sidebar-item sidebar-agent-link');
+    expect(markup).toContain('href="/agents/agent-1" class="sidebar-item sidebar-agent-link');
+    expect(markup).not.toContain('href="/agents/agent-1#chat" class="sidebar-item sidebar-agent-link');
     expect(markup).toContain('href="/agents/agent-1?session_id=session-1#chat"');
     expect(markup).toContain('class="sidebar-session-item active"');
     expect(markup.match(/class="sidebar-session-item active"/g) || []).toHaveLength(1);

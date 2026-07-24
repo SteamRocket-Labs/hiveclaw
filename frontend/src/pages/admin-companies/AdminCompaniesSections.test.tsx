@@ -37,6 +37,7 @@ describe('Admin companies extracted sections', () => {
     expect(markup).toContain('Notification Bar');
     expect(markup).toContain('Public URL');
     expect(markup).toContain('Allow users to create their own companies');
+    expect(markup).toContain('Feature Rollout');
   });
 
   it('renders AdminCompaniesSection as a standalone tenant management module', () => {

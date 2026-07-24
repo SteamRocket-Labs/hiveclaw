@@ -12,6 +12,7 @@ export type WorkspaceSectionTab =
   | 'org'
   | 'approvals'
   | 'audit'
+  | 'guard_policy'
   | 'invites';
 
 export type WorkspaceSettingsSectionTab = Exclude<WorkspaceSectionTab, 'dashboard'>;
@@ -38,6 +39,7 @@ export const WORKSPACE_SECTIONS: WorkspaceSection[] = [
   { tab: 'org', slug: 'org', path: '/enterprise/org', labelKey: 'enterprise.tabs.org', fallbackLabel: 'Org Structure' },
   { tab: 'approvals', slug: 'approvals', path: '/enterprise/approvals', labelKey: 'enterprise.tabs.approvals', fallbackLabel: 'Approvals' },
   { tab: 'audit', slug: 'audit', path: '/enterprise/audit', labelKey: 'enterprise.tabs.audit', fallbackLabel: 'Audit Log' },
+  { tab: 'guard_policy', slug: 'action-guardrails', path: '/enterprise/action-guardrails', labelKey: 'enterprise.tabs.guardPolicy', fallbackLabel: 'Action Guardrails' },
   { tab: 'invites', slug: 'invitations', path: '/enterprise/invitations', labelKey: 'enterprise.tabs.invites', fallbackLabel: 'Invitation Codes' },
 ];
 

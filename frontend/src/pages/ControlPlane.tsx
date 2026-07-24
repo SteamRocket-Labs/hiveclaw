@@ -30,6 +30,7 @@ interface ControlPlaneCard {
   to: string;
   title: string;
   description: string;
+  translationKey?: string;
   icon: ReactNode;
   group: 'workspace' | 'governance' | 'runtime' | 'channels';
 }
@@ -97,6 +98,15 @@ const CONTROL_PLANE_CARDS: ControlPlaneCard[] = [
     title: 'Audit Log',
     description: 'Tenant-scoped audit stream for runtime events, action traces, and background work.',
     icon: <IconFileText size={18} stroke={1.6} />,
+    group: 'governance',
+  },
+  {
+    tab: 'guard_policy',
+    to: '/enterprise/action-guardrails',
+    title: 'Action Guardrails',
+    description: 'Business-level company backstops for employee actions and outbound effects.',
+    translationKey: 'guardPolicy',
+    icon: <IconShieldCheck size={18} stroke={1.6} />,
     group: 'governance',
   },
   {
@@ -242,8 +252,16 @@ export default function ControlPlane({ tab }: ControlPlaneProps) {
             <Link key={card.to} to={card.to} className={`control-plane-card ${card.group}`}>
               <span className="control-plane-card-icon">{card.icon}</span>
               <span>
-                <strong>{t(`controlPlane.card.${card.title}`, card.title)}</strong>
-                <small>{t(`controlPlane.card.${card.title}.desc`, card.description)}</small>
+                <strong>
+                  {card.translationKey
+                    ? t(`controlPlane.cards.${card.translationKey}.title`, card.title)
+                    : t(`controlPlane.card.${card.title}`, card.title)}
+                </strong>
+                <small>
+                  {card.translationKey
+                    ? t(`controlPlane.cards.${card.translationKey}.description`, card.description)
+                    : t(`controlPlane.card.${card.title}.desc`, card.description)}
+                </small>
               </span>
             </Link>
           ))}

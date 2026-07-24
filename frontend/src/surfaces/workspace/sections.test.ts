@@ -26,6 +26,7 @@ describe('workspace section routing', () => {
       '/enterprise/org',
       '/enterprise/approvals',
       '/enterprise/audit',
+      '/enterprise/action-guardrails',
       '/enterprise/invitations',
     ]);
   });

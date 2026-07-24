@@ -589,7 +589,99 @@
       "runtime_budgets": {
         "title": "运行保护",
         "description": "公司级上限会优先于平台默认值生效。"
+      },
+      "guard_policy": {
+        "title": "行动边界",
+        "description": "为数字员工的日常动作与对外影响设置公司级业务边界。"
       }
+    },
+    "cards": {
+      "guardPolicy": {
+        "title": "行动边界",
+        "description": "为数字员工的日常动作与对外影响设置公司级业务边界。"
+      }
+    }
+  },
+  "guardrails": {
+    "eyebrow": "公司行动政策",
+    "title": "行动边界",
+    "description": "为所有数字员工设置业务级底线。这些控制只能收紧现有权限，不能授予新的访问权。",
+    "allActions": "所有员工动作",
+    "allActionsDesc": "在员工原有权限之后生效的公司级兜底边界。",
+    "externalActions": "会离开公司的动作",
+    "externalActionsDesc": "消息、文件、命令以及其他会在 Hive 外部产生影响的动作。",
+    "postures": {
+      "inherit": "遵循正常权限",
+      "inheritDesc": "使用每位员工既有的权限、审批设置与运行保护。",
+      "approval": "必须审批",
+      "approvalDesc": "暂停匹配动作，等待有权人员批准。",
+      "block": "禁止",
+      "blockDesc": "即使员工原本具备权限，也阻止匹配动作。"
+    },
+    "oneAdditionalRule": "另有 1 条托管规则",
+    "additionalRules": "条额外托管规则",
+    "additionalRulesDesc": "在这里保存不会覆盖平台插件安装的规则。",
+    "version": "政策版本 {{version}}",
+    "saved": "行动边界已保存",
+    "saveFailed": "无法保存行动边界",
+    "loadFailed": "无法加载公司行动边界。"
+  },
+  "featureRollout": {
+    "eyebrow": "平台运营",
+    "title": "功能发布",
+    "subtitle": "通过明确的受众、到期时间和平台审计凭证控制全局运行时发布。",
+    "create": "新建发布",
+    "createTitle": "新建发布",
+    "editTitle": "编辑发布",
+    "editorDescription": "平台审计凭证写入后，变更才会在全局生效。",
+    "key": "功能标识",
+    "keyRequired": "必须填写功能标识。",
+    "versionMissing": "当前发布版本不可用。",
+    "mode": "目标范围",
+    "description": "运营说明",
+    "modes": {
+      "boolean": "全部开启或关闭",
+      "percentage": "按比例发布",
+      "tenantGate": "指定公司",
+      "allowlist": "指定公司与用户"
+    },
+    "enabledGlobally": "对所有人启用",
+    "percentage": "发布比例",
+    "percentageInvalid": "发布比例必须在 0 到 100 之间。",
+    "tenantIds": "公司标识",
+    "userIds": "用户标识",
+    "onePerLine": "每行一个标识",
+    "expiresAt": "自动到期",
+    "expiresAtDesc": "留空表示永不过期。到期后的功能会按关闭处理。",
+    "overrides": "单独覆盖",
+    "overridesDesc": "无需编辑原始配置，即可强制为某个公司或用户开启或关闭。",
+    "addOverride": "添加覆盖",
+    "company": "公司",
+    "user": "用户",
+    "identifier": "标识",
+    "forceOn": "强制开启",
+    "forceOff": "强制关闭",
+    "saved": "功能发布已保存",
+    "saveFailed": "无法保存功能发布",
+    "deleted": "功能发布已删除",
+    "deleteFailed": "无法删除功能发布",
+    "deleteTitle": "删除功能发布",
+    "deleteConfirm": "删除 {{key}}？运行时消费者将回到其文档声明的默认状态。",
+    "loadFailed": "无法加载平台功能发布。",
+    "empty": "尚未配置功能发布。",
+    "expired": "已到期",
+    "active": "已配置",
+    "expires": "到期时间",
+    "audience": {
+      "percentage": "确定性发布",
+      "oneTenant": "个允许公司",
+      "tenants": "个允许公司",
+      "oneSubject": "个允许对象",
+      "subjects": "个允许对象",
+      "everyone": "对所有人启用",
+      "disabled": "已关闭",
+      "oneOverride": "条单独覆盖",
+      "overrides": "条单独覆盖"
     }
   },
   "localAgents": {
@@ -2586,6 +2678,8 @@
       "runtime_budgets": "运行保护",
       "runtimeBudgets": "运行保护",
       "quotas": "用量配额",
+      "guardPolicy": "行动边界",
+      "guard_policy": "行动边界",
       "users": "团队成员",
       "invites": "邀请码",
       "digitalEmployees": "数字员工",

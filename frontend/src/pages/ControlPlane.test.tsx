@@ -54,9 +54,11 @@ describe('ControlPlane', () => {
     expect(markup).toContain('Channels &amp; Integrations');
     expect(markup).toContain('Approval Center');
     expect(markup).toContain('Audit Log');
+    expect(markup).toContain('Action Guardrails');
     expect(markup).toContain('Local Agent Channel');
     expect(markup).toContain('href="/enterprise/hr"');
     expect(markup).toContain('href="/enterprise/digital-employees"');
+    expect(markup).toContain('href="/enterprise/action-guardrails"');
     expect(markup).toContain('href="/local-agents"');
     expect(markup).toContain('Company Knowledge Base is not implemented in this release');
     expect(markup).toContain('read-only export of retired shared files');

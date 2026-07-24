@@ -21,6 +21,7 @@ import WorkspaceQuotasSection from './workspace/WorkspaceQuotasSection';
 import WorkspaceRuntimeBudgetsSection from './workspace/WorkspaceRuntimeBudgetsSection';
 import WorkspaceExtensionsSection from './workspace/WorkspaceExtensionsSection';
 import WorkspaceHrAgentSection from './workspace/WorkspaceHrAgentSection';
+import WorkspaceGuardPolicySection from './workspace/WorkspaceGuardPolicySection';
 import WorkspaceMemorySection from './workspace/WorkspaceMemorySection';
 import WorkspaceUsersSection from './workspace/WorkspaceUsersSection';
 import type { WorkspaceSettingsSectionTab } from '../surfaces/workspace/sections';
@@ -55,6 +56,7 @@ function enterpriseTabPath(tab: EnterpriseSettingsTab) {
     if (tab === 'invites') return 'invitations';
     if (tab === 'digital_employees') return 'digital-employees';
     if (tab === 'runtime_budgets') return 'runtime-budgets';
+    if (tab === 'guard_policy') return 'action-guardrails';
     return tab;
 }
 
@@ -682,7 +684,7 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false, chrome
                         {([
                             { tabs: ['info', 'org', 'users', 'invites'] as const },
                             { tabs: ['llm', 'extensions', 'digital_employees', 'hr'] as const },
-                            { tabs: ['runtime_budgets', 'quotas', 'approvals', 'audit'] as const },
+                            { tabs: ['runtime_budgets', 'quotas', 'guard_policy', 'approvals', 'audit'] as const },
                         ]).flatMap((group, gi) => [
                             ...(gi > 0 ? [<div key={`sep-${gi}`} className="tab-separator" />] : []),
                             ...group.tabs.map(tab => (
@@ -727,6 +729,9 @@ export default function EnterpriseSettings({ forcedTab, hideTabs = false, chrome
 
                 {/* ── Audit Logs ── */}
                 {activeTab === 'audit' && <WorkspaceAuditSection selectedTenantId={selectedTenantId} />}
+
+                {/* ── Company Action Guardrails ── */}
+                {activeTab === 'guard_policy' && <WorkspaceGuardPolicySection />}
 
                 {/* ── Company Management ── */}
                 {activeTab === 'info' && (

@@ -1,0 +1,86 @@
+.workspace-guardrails {
+  display: grid;
+  gap: 18px;
+}
+
+.workspace-guardrails-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.workspace-guardrails-header span {
+  color: var(--accent-primary);
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.workspace-guardrails-header h2 {
+  margin: 6px 0;
+}
+
+.workspace-guardrails-header p {
+  max-width: 720px;
+  margin: 0;
+  color: var(--text-secondary);
+}
+
+.guardrail-controls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.guardrail-control {
+  display: grid;
+  gap: 12px;
+  padding: 18px;
+  border: 1px solid var(--border-primary);
+  border-radius: 14px;
+  background: var(--bg-secondary);
+}
+
+.guardrail-control > span {
+  display: grid;
+  gap: 5px;
+}
+
+.guardrail-control small {
+  color: var(--text-tertiary);
+  line-height: 1.45;
+}
+
+.guardrail-select {
+  width: 100%;
+}
+
+.guardrail-posture-description {
+  min-height: 40px;
+}
+
+.guardrail-managed-note {
+  padding: 12px 14px;
+  border: 1px solid var(--border-primary);
+  border-radius: 10px;
+  color: var(--text-secondary);
+  background: var(--bg-tertiary);
+  font-size: 13px;
+}
+
+.guardrail-save-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  color: var(--text-tertiary);
+  font-size: 13px;
+}
+
+@media (max-width: 800px) {
+  .guardrail-controls {
+    grid-template-columns: 1fr;
+  }
+}

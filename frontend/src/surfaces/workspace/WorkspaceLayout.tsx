@@ -17,6 +17,7 @@ const ICONS = {
   org: <IconUsers size={16} stroke={1.5} />,
   approvals: <IconShieldCheck size={16} stroke={1.5} />,
   audit: <IconFileText size={16} stroke={1.5} />,
+  guard_policy: <IconShieldCheck size={16} stroke={1.5} />,
   invites: <IconChecklist size={16} stroke={1.5} />,
 } as const;
 

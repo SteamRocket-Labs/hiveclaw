@@ -614,7 +614,99 @@
       "runtime_budgets": {
         "title": "Runtime Protection",
         "description": "Company-level limits that take priority over the platform defaults."
+      },
+      "guard_policy": {
+        "title": "Action Guardrails",
+        "description": "Business-level company backstops for employee actions and outbound effects."
       }
+    },
+    "cards": {
+      "guardPolicy": {
+        "title": "Action Guardrails",
+        "description": "Business-level company backstops for employee actions and outbound effects."
+      }
+    }
+  },
+  "guardrails": {
+    "eyebrow": "Company action policy",
+    "title": "Action Guardrails",
+    "description": "Set business-level backstops for every digital employee. These controls only narrow existing authority; they never grant new access.",
+    "allActions": "Every employee action",
+    "allActionsDesc": "A company-wide backstop applied after normal employee permissions.",
+    "externalActions": "Actions that leave the company",
+    "externalActionsDesc": "Messages, files, commands, and other actions visible outside Hive.",
+    "postures": {
+      "inherit": "Follow normal permissions",
+      "inheritDesc": "Use each employee's permissions, approval settings, and runtime protections.",
+      "approval": "Require approval",
+      "approvalDesc": "Pause matching actions until an authorized reviewer approves them.",
+      "block": "Block",
+      "blockDesc": "Prevent matching actions even when an employee would otherwise have permission."
+    },
+    "oneAdditionalRule": "1 additional managed rule",
+    "additionalRules": "additional managed rules",
+    "additionalRulesDesc": "Saving here preserves rules installed by platform extensions.",
+    "version": "Policy version {{version}}",
+    "saved": "Action guardrails saved",
+    "saveFailed": "Could not save action guardrails",
+    "loadFailed": "Could not load company action guardrails."
+  },
+  "featureRollout": {
+    "eyebrow": "Platform operations",
+    "title": "Feature Rollout",
+    "subtitle": "Control global runtime releases with typed audiences, expiry, and a durable platform audit receipt.",
+    "create": "Create rollout",
+    "createTitle": "Create rollout",
+    "editTitle": "Edit rollout",
+    "editorDescription": "Changes apply globally after the platform audit receipt is recorded.",
+    "key": "Flag key",
+    "keyRequired": "A flag key is required.",
+    "versionMissing": "The current rollout version is unavailable.",
+    "mode": "Targeting mode",
+    "description": "Operator description",
+    "modes": {
+      "boolean": "Everyone on or off",
+      "percentage": "Percentage rollout",
+      "tenantGate": "Selected companies",
+      "allowlist": "Selected companies and users"
+    },
+    "enabledGlobally": "Enabled for everyone",
+    "percentage": "Rollout percentage",
+    "percentageInvalid": "Rollout must be between 0 and 100.",
+    "tenantIds": "Company identifiers",
+    "userIds": "User identifiers",
+    "onePerLine": "One identifier per line",
+    "expiresAt": "Automatic expiry",
+    "expiresAtDesc": "Leave empty for no expiry. Expired flags evaluate as off.",
+    "overrides": "Explicit overrides",
+    "overridesDesc": "Force one company or user on or off without editing raw configuration.",
+    "addOverride": "Add override",
+    "company": "Company",
+    "user": "User",
+    "identifier": "Identifier",
+    "forceOn": "Force on",
+    "forceOff": "Force off",
+    "saved": "Feature rollout saved",
+    "saveFailed": "Could not save rollout",
+    "deleted": "Feature rollout deleted",
+    "deleteFailed": "Could not delete rollout",
+    "deleteTitle": "Delete feature rollout",
+    "deleteConfirm": "Delete {{key}}? Runtime consumers will fall back to their documented default.",
+    "loadFailed": "Could not load platform rollouts.",
+    "empty": "No feature rollouts are configured.",
+    "expired": "Expired",
+    "active": "Configured",
+    "expires": "Expires",
+    "audience": {
+      "percentage": "deterministic rollout",
+      "oneTenant": "allowed tenant",
+      "tenants": "allowed tenants",
+      "oneSubject": "allowed subject",
+      "subjects": "allowed subjects",
+      "everyone": "Enabled for everyone",
+      "disabled": "Disabled",
+      "oneOverride": "explicit override",
+      "overrides": "explicit overrides"
     }
   },
   "localAgents": {
@@ -2532,6 +2624,8 @@
       "runtime_budgets": "Runtime Budgets",
       "runtimeBudgets": "Runtime Budgets",
       "quotas": "Usage Quotas",
+      "guardPolicy": "Action Guardrails",
+      "guard_policy": "Action Guardrails",
       "users": "Team Members",
       "invites": "Invitation Codes",
       "digitalEmployees": "Digital Employees",

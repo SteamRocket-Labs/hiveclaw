@@ -17,6 +17,25 @@ class GuardPolicyVerdict:
     matched_rules: tuple[str, ...]
 
 
+def validate_guard_policy_snapshot(snapshot: dict[str, Any] | None) -> None:
+    """Validate the cloud-enforced subset without interpreting opaque Desktop keys."""
+    policy = dict(snapshot or {})
+    for lane in ("zone_guard", "egress_guard"):
+        config = policy.get(lane) or {}
+        if not isinstance(config, dict):
+            raise ValueError(f"GuardPolicy {lane} must be an object")
+        rules = config.get("tool_rules", [])
+        if not isinstance(rules, list):
+            raise ValueError(f"GuardPolicy {lane}.tool_rules must be a list")
+        for index, raw_rule in enumerate(rules):
+            if not isinstance(raw_rule, dict):
+                raise ValueError(f"GuardPolicy {lane}.tool_rules[{index}] must be an object")
+            decision = str(raw_rule.get("decision") or "").strip()
+            if decision not in _DECISION_PRIORITY:
+                raise ValueError(f"GuardPolicy rule has invalid decision: {decision or '<empty>'}")
+            _rule_matches(raw_rule, tool_name="", arguments={})
+
+
 def _rule_matches(rule: dict[str, Any], *, tool_name: str, arguments: dict[str, Any]) -> bool:
     tools = rule.get("tools")
     if not isinstance(tools, list) or not tools or not all(isinstance(value, str) for value in tools):
@@ -48,21 +67,14 @@ def evaluate_guard_policy(
     matches: list[tuple[str, str, str | None]] = []
     lanes = (("zone_guard", True), ("egress_guard", external_visible))
     try:
+        validate_guard_policy_snapshot(policy)
         for lane, enabled in lanes:
             if not enabled:
                 continue
             config = policy.get(lane) or {}
-            if not isinstance(config, dict):
-                raise ValueError(f"GuardPolicy {lane} must be an object")
             rules = config.get("tool_rules", [])
-            if not isinstance(rules, list):
-                raise ValueError(f"GuardPolicy {lane}.tool_rules must be a list")
             for index, raw_rule in enumerate(rules):
-                if not isinstance(raw_rule, dict):
-                    raise ValueError(f"GuardPolicy {lane}.tool_rules[{index}] must be an object")
                 decision = str(raw_rule.get("decision") or "").strip()
-                if decision not in _DECISION_PRIORITY:
-                    raise ValueError(f"GuardPolicy rule has invalid decision: {decision or '<empty>'}")
                 if _rule_matches(raw_rule, tool_name=tool_name, arguments=arguments):
                     reason = str(raw_rule.get("reason") or "").strip() or None
                     matches.append((f"{lane}:{index}", decision, reason))

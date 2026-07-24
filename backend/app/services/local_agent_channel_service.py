@@ -64,6 +64,7 @@ DEFAULT_CAPABILITY_SNAPSHOT_SECONDS = 24 * 60 * 60
 DEFAULT_DELIVERY_LEASE_SECONDS = 60
 DEFAULT_DELIVERY_ACTIVITY_LEASE_SECONDS = 5 * 60
 DEFAULT_MAX_DELIVERY_ATTEMPTS = 5
+DELIVERY_RECONCILIATION_ERROR = "Local Agent delivery exhausted automatic retries and requires manual reconciliation."
 
 LOCAL_CAPABILITY_SCOPE_REQUIREMENTS: dict[str, frozenset[str]] = {
     "execute": frozenset({"local_agent:receive", "local_agent:report"}),
@@ -1160,6 +1161,8 @@ async def _complete_remote_action_span(
     message: LocalAgentChannelMessage,
     receipt: dict[str, Any] | None,
     failed: bool,
+    error: str | None = None,
+    terminal_metadata: dict[str, Any] | None = None,
 ) -> None:
     if not isinstance(db, AsyncSession) or receipt is None:
         return
@@ -1179,8 +1182,12 @@ async def _complete_remote_action_span(
     span.ended_at = ended_at
     span.duration_ms = max(0.0, (ended_at - span.started_at).total_seconds() * 1000.0)
     span.side_effect_refs = list(receipt.get("result_refs") or [])
-    span.metadata_json = {**dict(span.metadata_json or {}), "execution_receipt": receipt}
-    span.error = message.result if failed else None
+    span.metadata_json = {
+        **dict(span.metadata_json or {}),
+        "execution_receipt": receipt,
+        **dict(terminal_metadata or {}),
+    }
+    span.error = (error or message.result) if failed else None
 
 
 async def mark_channel_ready(
@@ -1741,10 +1748,27 @@ async def _reconcile_stale_deliveries(
             message.status = "needs_reconciliation"
             message.delivery_lease_expires_at = None
             event_type = "delivery_reconciliation_required"
+            reconciliation = {
+                "status": "needs_reconciliation",
+                "reason": "delivery_attempt_limit",
+                "replay_key": message.replay_key,
+                "delivery_attempt_count": int(message.delivery_attempt_count or 0),
+                "retryable": False,
+                "manual_review_required": True,
+            }
+            await _complete_remote_action_span(
+                db,
+                message=message,
+                receipt=_receipt_for_message(message, receipt_status="needs_reconciliation"),
+                failed=True,
+                error=DELIVERY_RECONCILIATION_ERROR,
+                terminal_metadata={"reconciliation": reconciliation},
+            )
         else:
             message.status = "pending"
             message.delivery_lease_expires_at = None
             event_type = "delivery_requeued"
+            reconciliation = {}
         db.add(
             LocalAgentChannelEvent(
                 sequence=await _allocate_event_sequence(db, session_id=message.session_id),
@@ -1758,6 +1782,7 @@ async def _reconcile_stale_deliveries(
                 payload_json={
                     "replay_key": message.replay_key,
                     "delivery_attempt_count": int(message.delivery_attempt_count or 0),
+                    **reconciliation,
                 },
             )
         )

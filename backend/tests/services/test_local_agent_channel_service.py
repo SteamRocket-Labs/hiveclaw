@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import timedelta
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -19,6 +20,9 @@ class _ScalarResult:
 class _RowsResult:
     def __init__(self, rows):
         self.rows = rows
+
+    def scalars(self):
+        return self
 
     def all(self):
         return self.rows
@@ -738,3 +742,72 @@ async def test_record_a2a_channel_result_replay_repairs_missing_source_delivery(
     assert captured["notification"].artifacts == [{"path": "workspace/original.md"}]
     assert [obj for obj in db.added if obj.__class__.__name__ == "ChatMessage"] == []
     assert db.committed is True
+
+
+@pytest.mark.asyncio
+async def test_reconcile_stale_delivery_terminalizes_remote_action_span(monkeypatch) -> None:
+    tenant_id = uuid4()
+    owner_user_id = uuid4()
+    source_agent_id = uuid4()
+    session_id = uuid4()
+    message_id = uuid4()
+    trace_id = str(uuid4())
+    span_id = uuid4().hex
+    started_at = service.utcnow() - timedelta(seconds=2)
+    message = SimpleNamespace(
+        id=message_id,
+        tenant_id=tenant_id,
+        owner_user_id=owner_user_id,
+        source_agent_id=source_agent_id,
+        session_id=session_id,
+        direction="hive_to_local",
+        status="delivered",
+        result=None,
+        delivery_attempt_count=service.MAX_DELIVERY_ATTEMPTS,
+        delivery_lease_expires_at=service.utcnow() - timedelta(seconds=1),
+        replay_key=f"local:{message_id}",
+        request_hash="request-hash",
+        capability_snapshot_hash="snapshot-hash",
+        receipt_trace_id=trace_id,
+        receipt_span_id=span_id,
+        metadata_json={},
+    )
+    span = SimpleNamespace(
+        status="running",
+        started_at=started_at,
+        ended_at=None,
+        duration_ms=0.0,
+        side_effect_refs=[],
+        metadata_json={"execution_receipt": {"status": "delivered"}},
+        error=None,
+    )
+    db = _FakeDB([_RowsResult([message]), span])
+    context = SimpleNamespace(tenant_id=tenant_id, user_id=owner_user_id)
+
+    async def fixed_event_sequence(_db, *, session_id):
+        assert session_id == message.session_id
+        return 7
+
+    monkeypatch.setattr(service, "AsyncSession", _FakeDB)
+    monkeypatch.setattr(service, "_allocate_event_sequence", fixed_event_sequence)
+
+    assert await service._reconcile_stale_deliveries(db, context=context) == 1
+
+    assert message.status == "needs_reconciliation"
+    assert span.status == "error"
+    assert span.ended_at is not None
+    assert span.duration_ms >= 2_000
+    assert span.error == service.DELIVERY_RECONCILIATION_ERROR
+    assert span.metadata_json["execution_receipt"]["status"] == "needs_reconciliation"
+    assert span.metadata_json["reconciliation"] == {
+        "status": "needs_reconciliation",
+        "reason": "delivery_attempt_limit",
+        "replay_key": message.replay_key,
+        "delivery_attempt_count": service.MAX_DELIVERY_ATTEMPTS,
+        "retryable": False,
+        "manual_review_required": True,
+    }
+    reconciliation_event = next(obj for obj in db.added if obj.__class__.__name__ == "LocalAgentChannelEvent")
+    assert reconciliation_event.event_type == "delivery_reconciliation_required"
+    assert reconciliation_event.payload_json["reason"] == "delivery_attempt_limit"
+    assert reconciliation_event.payload_json["manual_review_required"] is True

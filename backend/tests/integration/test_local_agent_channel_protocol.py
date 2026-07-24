@@ -635,6 +635,33 @@ async def test_local_agent_delivery_reconciler_stops_automatic_replay_at_attempt
         assert await channel_service.poll_pending_channel_messages(db, context=context) == []
         await db.refresh(message)
         assert message.status == "needs_reconciliation"
+        span = (
+            await db.execute(
+                select(InvocationSpan).where(
+                    InvocationSpan.tenant_id == tenant_id,
+                    InvocationSpan.trace_id == queued["receipt"]["trace_id"],
+                    InvocationSpan.span_id == queued["receipt"]["span_id"],
+                )
+            )
+        ).scalar_one()
+        reconciliation_event = (
+            await db.execute(
+                select(LocalAgentChannelEvent).where(
+                    LocalAgentChannelEvent.message_id == message.id,
+                    LocalAgentChannelEvent.event_type == "delivery_reconciliation_required",
+                )
+            )
+        ).scalar_one()
+        assert span.status == "error"
+        assert span.ended_at is not None
+        assert span.duration_ms >= 0
+        assert span.error == channel_service.DELIVERY_RECONCILIATION_ERROR
+        assert span.metadata_json["execution_receipt"]["status"] == "needs_reconciliation"
+        assert span.metadata_json["reconciliation"]["reason"] == "delivery_attempt_limit"
+        assert span.metadata_json["reconciliation"]["retryable"] is False
+        assert span.metadata_json["reconciliation"]["manual_review_required"] is True
+        assert reconciliation_event.payload_json["reason"] == "delivery_attempt_limit"
+        assert reconciliation_event.payload_json["manual_review_required"] is True
 
 
 async def test_local_agent_explicit_agent_deny_removes_execute_from_new_snapshot(

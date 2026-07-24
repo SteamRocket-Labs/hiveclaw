@@ -29,6 +29,13 @@ def test_sa09_llm_utils_reexport_shim_is_absent() -> None:
     assert not (BACKEND_ROOT / "app/services/llm_utils.py").exists()
 
 
+def test_sa09b_database_work_ledger_authority_is_absent() -> None:
+    assert not (BACKEND_ROOT / "app/models/work_ledger.py").exists()
+
+    bootstrap = (BACKEND_ROOT / "app/db_bootstrap.py").read_text(encoding="utf-8")
+    assert '"agent_work_ledgers"' not in bootstrap
+
+
 def test_a2a04_in_process_sentinel_runtime_is_absent() -> None:
     coordination = (BACKEND_ROOT / "app/agents/coordination.py").read_text(encoding="utf-8")
     repository = (BACKEND_ROOT / "app/agents/coordination_repository.py").read_text(encoding="utf-8")

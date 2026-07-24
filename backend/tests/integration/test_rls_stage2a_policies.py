@@ -1,5 +1,5 @@
-"""Stage-2a RLS coverage against real PostgreSQL — the 21 previously-unpoliced
-tenant tables are now ENABLEd + policied, closing the silent cross-tenant leak.
+"""Stage-2a RLS coverage against real PostgreSQL for live previously-unpoliced
+tenant tables, which are now ENABLEd + policied to close the cross-tenant leak.
 
 These tables carried ``tenant_id`` but were absent from the bootstrap RLS list,
 so under the stage-3 non-owner role flip they would have stayed fully readable
@@ -30,7 +30,6 @@ _STAGE2A_TABLES = [
     "agent_plan_recommendations",
     "agent_plan_requests",
     "agent_templates",
-    "agent_work_ledgers",
     "capability_policies",
     "charter_proposals",
     "departments",

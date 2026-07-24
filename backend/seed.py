@@ -2,11 +2,12 @@
 
 import asyncio
 import sys
+
 sys.path.insert(0, ".")
 
 from app.config import get_settings
-from app.core.security import hash_password
 from app.database import Base, engine, async_session
+
 # Import ALL models so Base.metadata.create_all can resolve all FKs
 from app.models.tenant import Tenant  # noqa: F401 — must be before user
 from app.models.user import User, Department
@@ -94,9 +95,7 @@ async def seed():
         ]
 
         for tmpl in templates:
-            existing = await db.execute(
-                select(AgentTemplate).where(AgentTemplate.name == tmpl["name"])
-            )
+            existing = await db.execute(select(AgentTemplate).where(AgentTemplate.name == tmpl["name"]))
             if not existing.scalar_one_or_none():
                 db.add(AgentTemplate(**tmpl))
                 print(f"✅ Template created: {tmpl['icon']} {tmpl['name']}")
@@ -114,6 +113,7 @@ async def seed():
 
         # 4. Demo agents for platform admin (if admin has zero agents)
         from app.models.agent import Agent
+
         admin_result = await db.execute(select(User).where(User.role == "platform_admin"))
         admin_user = admin_result.scalar_one_or_none()
         if admin_user:
@@ -147,6 +147,7 @@ async def seed():
 
                     # Initialize workspace directories
                     from pathlib import Path
+
                     ws_root = Path(settings.AGENT_DATA_DIR) / str(agent.id)
                     try:
                         for sub in ["workspace", "memory", "skills"]:
@@ -156,7 +157,9 @@ async def seed():
                             soul_path.write_text(f"# {agent.name}\n\n{agent.role_description}\n", encoding="utf-8")
                         mem_path = ws_root / "memory" / "memory.md"
                         if not mem_path.exists():
-                            mem_path.write_text("# Memory\n\n_Record important information and knowledge here._\n", encoding="utf-8")
+                            mem_path.write_text(
+                                "# Memory\n\n_Record important information and knowledge here._\n", encoding="utf-8"
+                            )
                     except OSError:
                         pass  # AGENT_DATA_DIR may not be writable
                     print(f"✅ Demo agent created: {agent.name}")

@@ -91,18 +91,11 @@ def test_default_subagent_tool_rounds_match_cc_fork_capacity():
     assert SubagentBudget().max_tool_rounds == 200
 
 
-def test_background_subagent_capacity_falls_back_to_runtime_worker_limit(monkeypatch):
+def test_low_level_subagent_has_no_process_local_background_capacity_authority():
     import app.agents.subagent as subagent_module
 
-    monkeypatch.setattr(
-        "app.config.get_settings",
-        lambda: SimpleNamespace(
-            RUNTIME_TASK_WORKER_TASK_TYPE_LIMITS="workflow=16,delegation=16",
-            RUNTIME_TASK_WORKER_MAX_CONCURRENT=24,
-        ),
-    )
-
-    assert subagent_module._background_subagent_capacity() == 24
+    assert not hasattr(subagent_module, "_background_subagent_capacity")
+    assert not hasattr(subagent_module, "_background_subagent_semaphore")
 
 
 # --- tool resolution --------------------------------------------------------

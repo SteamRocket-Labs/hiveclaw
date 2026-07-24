@@ -95,6 +95,9 @@ def test_force_all_tenant_rls_migration_covers_bootstrap_force_tables() -> None:
     session_v2_module = _load_migration_module("session_v2_0716.py")
     runtime_root_module = _load_migration_module("runtime_root_ledger_0716.py")
     runtime_result_module = _load_migration_module("runtime_result_fanin_0717.py")
+    company_knowledge_module = _load_migration_module("company_knowledge_closed_loop_0724.py")
+    company_knowledge_runtime_module = _load_migration_module("company_knowledge_runtime_0724.py")
+    company_ontology_runtime_module = _load_migration_module("company_ontology_runtime_0724.py")
     migration_tables = (
         set(force_all_module._FORCE_TABLES)
         | set(remaining_module._ALL_TABLES)
@@ -120,6 +123,9 @@ def test_force_all_tenant_rls_migration_covers_bootstrap_force_tables() -> None:
         | set(session_v2_module.SESSION_V2_TENANT_TABLES)
         | set(runtime_root_module.RUNTIME_ROOT_LEDGER_TABLES)
         | set(runtime_result_module.RUNTIME_RESULT_TABLES)
+        | set(company_knowledge_module.TENANT_TABLES)
+        | {company_knowledge_runtime_module.TABLE}
+        | set(company_ontology_runtime_module._COMPANY_TENANT_TABLES)
     )
 
     missing = sorted(set(RLS_FORCED_TENANT_TABLES) - migration_tables)

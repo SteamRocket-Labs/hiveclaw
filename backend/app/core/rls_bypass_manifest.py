@@ -466,6 +466,14 @@ RLS_BYPASS_ALLOWLIST = (
     _grant(
         *(
             "app/services/evolution_daemon.py",
+            "_drain_company_kb_jobs",
+            "'company-kb import job drain — recover queued and stale claimed jobs'",
+            ("session-state-only",),
+        )
+    ),
+    _grant(
+        *(
+            "app/services/evolution_daemon.py",
             "_heartbeat_loop",
             "'pending-reply expiry sweep — expire stale contexts across all tenants'",
             ("session-state-only",),
@@ -712,7 +720,7 @@ RLS_BYPASS_ALLOWLIST = (
             "app/services/session_workspace_snapshot.py",
             "recover_workspace_restores_from_transcript",
             "'workspace restore crash recovery'",
-            ("select:ChatTranscriptEvent.id",),
+            ("select:ChatTranscriptEvent.id", "select:AuditLog.id"),
         )
     ),
     _grant(

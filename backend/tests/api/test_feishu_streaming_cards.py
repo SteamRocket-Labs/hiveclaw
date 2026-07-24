@@ -86,7 +86,7 @@ async def test_call_agent_llm_forwards_tool_callback(monkeypatch):
 
 
 def test_process_feishu_event_source_uses_cardkit_primary_flow():
-    source = Path("/Users/rocky243/vc-saas/hiveclaw/backend/app/api/feishu.py").read_text()
+    source = (Path(__file__).resolve().parents[2] / "app/api/feishu.py").read_text(encoding="utf-8")
 
     assert "create_card_entity" in source
     assert "send_card_by_card_id" in source

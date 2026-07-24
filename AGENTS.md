@@ -282,7 +282,10 @@ Current implemented closures that future work must preserve:
 - Agent-controlled code execution is provider based: local/trusted hosts use the shared OS sandbox builder (`bubblewrap` or `sandbox-exec`), while Railway production uses `HIVE_CODE_EXEC_PROVIDER=vercel_sandbox` and Vercel Sandbox credentials. Never fall back to raw subprocesses.
 - MCP authz rejects token passthrough and URL userinfo; A2A Agent Cards and `/interoperability/profile` must state unsupported OAuth/JSON-RPC surfaces as `not_exposed`.
 - Memory hygiene startup repair retires legacy shadow stores and quarantines dead stubs through a reversible shared path.
-- Latest full backend evidence before the current documentation-only update: `cd backend && source .venv/bin/activate && pytest tests -q` -> `4223 passed, 7 skipped, 4 warnings`.
+- Test counts are point-in-time evidence, not a repository contract. Re-run the
+  relevant suites in the current checkout and record the exact command, result,
+  skips, and environment in the change or audit artifact; do not copy a historical
+  pass count into this handbook.
 
 ## Commands
 
@@ -313,57 +316,66 @@ docker compose up -d --build       # Full stack → :3008
 
 ## Backend Architecture (`backend/app/`)
 
-### Codebase Stats
+### Live Inventory
 
-| Layer | Files | LOC | Purpose |
-|-------|-------|-----|---------|
-| API Routes | 62 | — | FastAPI routers |
-| Models | 43 | — | SQLAlchemy ORM (async, RLS) |
-| Services | 163 | — | Business logic |
-| Tool Domains | 21 | — | Feishu office, messaging, tasks, workspace, email |
-| Kernel | 3 | ~2.7K | Core LLM execution engine |
-| Tools | 18 handlers | — | Handler implementations; 100+ registered tool definitions |
-| Skills | 5 | ~310 | Progressive-disclosure capability capsules |
-| Memory | 25 | — | MD-first pyramid (T0/T2/T3/soul) + control plane: write gate, activation, retention, lifecycle, understanding, hygiene |
-| Migrations | 79 | — | Alembic schema versions |
+File, migration, route, tool, and test counts change frequently and are not
+maintained as hand-written facts here. Recompute them from the current tracked
+checkout when an audit needs them:
 
-### API Routers (62 files)
+```bash
+git ls-files 'backend/app/api/*.py'
+git ls-files 'backend/app/models/*.py'
+git ls-files 'backend/app/services/**/*.py' 'backend/app/services/*.py'
+git ls-files 'backend/alembic/versions/*.py'
+rg --files frontend/src | rg '\.(test|spec)\.(ts|tsx)$'
+cd backend && .venv/bin/alembic heads
+```
+
+### API Routers
 
 Core: `agents`, `auth`, `users`, `tenants`, `enterprise`, `admin`
-Agent features: `tasks`, `triggers`, `schedules`, `relationships`, `skills`, `files`, `chat_sessions`, `objectives`, `autonomy`
-Channels: `feishu`, `slack`, `discord_bot`, `dingtalk`, `wecom`, `wechat_personal`, `teams`, `telegram`, `email_channel`, `tenant_channels`
-Platform: `tools`, `packs`, `capabilities`, `plaza`, `notification`, `websocket`, `office`, `interoperability`
-Enterprise: `organization`, `memory`, `guard_policies`, `feature_flags`, `config_history`, `role_templates`
+Agent features: `tasks`, `triggers`, `schedules`, `skills`, `files`,
+`chat_sessions`, `session_goals`, `autonomy`, `a2a`, `agent_subagents`,
+`agent_teams`, `plans`, `workflows`, `workflow_definitions`
+Channels: `feishu`, `slack`, `discord_bot`, `dingtalk`, `wecom`,
+`wechat_personal`, `teams`, `telegram`, `email_channel`, `tenant_channels`
+Platform: `tools`, `packs`, `capabilities`, `plaza`, `notification`,
+`websocket`, `office`, `interoperability`, `plugins`, `mcp_servers`
+Enterprise: `organization`, `memory`, `guard_policies`, `feature_flags`,
+`config_history`, `role_templates`, `runtime_budgets`
 Desktop: `desktop_auth`, `desktop_sync`, `desktop_agents`, `desktop_audit`
-Other: `upload`, `webhooks`, `gateway`, `llm_proxy`, `oidc`, `onboarding`, `advanced`, `atlassian`
+Other: `upload`, `webhooks`, `llm_proxy`, `oidc`, `onboarding`, `advanced`
 
 Most routers are mounted under both `/api` and `/api/v1`; public webhooks and `/ws/chat/{agent_id}` are mounted without the API prefix.
 
-### Models (43 files)
+### Models
 
-Core entities: `User`, `Agent`, `Tenant`, `LLMModel`, `Tool`, `Skill`, `Task`, `RuntimeTask`, `Objective`
+Core entities: `User`, `Agent`, `Tenant`, `LLMModel`, `Tool`, `Skill`,
+`Task`, `RuntimeTask`, `AgentSessionGoal`
 Agent config: `AgentTrigger`, `AgentSchedule`, `ChannelConfig`, `AgentPermission`, `AgentTemplate`
-Relationships: `AgentRelationship`, `AgentAgentRelationship`, `OrgMember`, `OrgDepartment`, coordination lease/signal/checkpoint models
+Relationships: `AgentRelationship`, `AgentCollaborationGroup`,
+`AgentCollaborationGroupMember`, `OrgMember`, `OrgDepartment`, coordination
+lease/signal/checkpoint models
 Audit: `AuditLog`, `SecurityAuditEvent`, `ChatMessage`, `ChatSession`, `AgentActivityLog`, `InvocationSpan`, `SessionFeedbackEvent`
 Platform: `CapabilityPolicy`, `CapabilityInstall`, `GuardPolicy`, `FeatureFlag`, `Notification`
 Auth: `RefreshToken`, `InvitationCode`, `Participant`, identity provider models
 Social: `PlazaPost`, `PlazaComment`, `PlazaLike`
 
-### Services (163 files)
+### Services
 
 | Category | Services |
 |----------|---------|
 | Agent lifecycle | `agent_manager`, `agent_seeder`, `auto_dream`, `auto_provision` |
-| LLM | `llm_client` (OpenAI/Anthropic/Gemini/compatible), `llm_utils` |
-| Execution | `trigger_daemon` (15s loop), `task_executor`, `scheduler`, `heartbeat`, `evolution_daemon`, `web_chat_runtime`, `long_task_runtime`, `invocation_trace` |
+| LLM | `llm_client` (OpenAI/Anthropic/Gemini/compatible) |
+| Execution | `trigger_daemon` (15s loop), `task_executor`, `heartbeat`, `evolution_daemon`, `web_chat_runtime`, `long_task_runtime`, `invocation_trace` |
 | Channels | `feishu_service`, `feishu_ws`, `dingtalk_stream`, `wecom_stream`, `wechat_personal_stream`, `channel_delivery_service` |
 | Tools | `agent_tools`, `agent_tool_assignment_service`, `tool_seeder`, `tool_telemetry` |
 | Security | `capability_gate`, `approval_service`, `quota_guard`, `secrets_provider`, `audit_logger`, `mcp_authz`, `subprocess_sandbox`, `agent_identity_lifecycle` |
-| Memory | `memory_service`, `conversation_summarizer`, `knowledge_inject`, `extract_agent`, `extract_queue`, `agency_charter`, `decision_trace`, `session_feedback` |
-| Integration | `mcp_client`, `mcp_registry_service`, `email_service`, `viking_client`, `interoperability` |
+| Memory | `memory_service`, `conversation_summarizer`, `agency_charter`, `decision_trace`, `session_feedback` |
+| Integration | `mcp_client`, `mcp_server_service`, `email_service`, `interoperability` |
 | Multi-tenant | `enterprise_sync`, `org_sync_service`, `sync_service` |
 | Office / docs | `office_document_service`, `officecli_adapter`, `text_extractor` |
-| Other | `pack_service`, `skill_creator_content`, `token_tracker`, `objective_service`, `autonomy_repair_plan` |
+| Other | `pack_service`, `skill_creator_content`, `token_tracker`, `session_goal_service`, `goal_continuation_service`, `autonomy_overview` |
 
 ### Memory Gate + Platform Gate
 
@@ -377,8 +389,8 @@ Hive keeps the T0/T2/T3/soul Markdown memory pyramid, but runtime behavior is go
 | Dynamic activation | `memory/activation.py`, `memory/retriever.py`, `services/memory_service.py`, `runtime/invoker.py` | Prompt memory is selected by owner/company/goal/open-loop relevance and sensitivity access, not by static file inclusion alone. |
 | Decision trace + preflight | `services/action_preflight.py`, `services/decision_trace.py`, `tools/service.py` | External-visible, sensitive, irreversible, or company-conflicting tool calls must pass preflight before execution. |
 | Session feedback | `services/session_feedback.py`, `models/session_feedback.py`, `api/chat_sessions.py` | Useful/misleading feedback is persisted with tenant/session/agent context and re-enters memory through governed write paths. |
-| Coordination primitives | `agents/coordination.py`, `agents/orchestrator.py`, `tools/service.py` | Cross-agent work uses Lease/Signal; confirm-first actions create Checkpoint; Sentinel can emit Signal or Checkpoint. |
-| Proactive steward loop | `services/proactive_employee_loop.py`, `services/heartbeat.py`, `memory/policy_replay.py` | Heartbeat may prepare low-risk work, but external-visible action requires Checkpoint and policy tuning requires replay guard. |
+| Coordination primitives | `agents/orchestrator.py`, `agents/coordination_repository.py`, `models/coordination.py`, `tools/service.py` | Live cross-agent work persists Lease/Signal/Checkpoint state; do not treat the unconsumed in-process Sentinel helper as runtime authority. |
+| Heartbeat and self-evolution | `services/heartbeat.py`, `services/auto_dream.py`, `services/evolution_daemon.py` | Heartbeat follows its current direct T3/evolution paths. There is no live `proactive_employee_loop` or `memory/policy_replay`; do not cite either as implemented governance. |
 
 ### Web Chat Runtime
 
@@ -394,14 +406,17 @@ Web chat runs are durable background tasks:
 
 ### Office Runtime
 
-Office editing is a first-class runtime:
+Office document handling is a governed tool and preview runtime:
 
 - Backend API: `backend/app/api/office.py`
 - Workspace document service: `backend/app/services/office_document_service.py`
 - OfficeCLI adapter: `backend/app/services/officecli_adapter.py`
-- Frontend workbench: `frontend/src/pages/agent-detail/OfficeWorkbenchSection.tsx`
-- Required production env includes `ONLYOFFICE_DOCS_URL`, `ONLYOFFICE_JWT_SECRET`, and public base URL config.
-- Agent workspace remains file source of truth; ONLYOFFICE handles browser WYSIWYG editing and signed callbacks.
+- Governed tool handlers: `backend/app/tools/handlers/office.py`
+- Frontend preview consumer: `frontend/src/pages/agent-detail/ArtifactSurface.tsx`
+- Agent workspace files and immutable artifact snapshots remain the source facts.
+  OfficeCLI produces isolated HTML/text previews. The dedicated
+  `OfficeWorkbenchSection` and ONLYOFFICE browser WYSIWYG runtime are retired
+  and must not be presented as current product surfaces or required env.
 
 ### Kernel Engine
 
@@ -473,13 +488,18 @@ Stateless LLM loop with dependency injection. Zero DB imports — all I/O goes t
 | i18n | i18next (en + zh) |
 | Icons | Tabler Icons |
 | Charts | Recharts 3 |
-| Tests | Vitest 4 (39 frontend test files) |
+| Tests | Vitest 4; discover the current test-file inventory from the checkout |
 
 ### API Layer
 
 Core HTTP abstraction in `api/core/request.ts` — `get<T>()`, `post<T>()`, `put<T>()` with JWT auth and tenant header injection.
 
-36 files in `api/domains/` including tests and index, covering agents, enterprise, tools, chat, auth, notifications, files, tasks, skills, relationships, plaza, channels, schedules, admin, activity, users, messages, system, triggers, office, memory, knowledge, plans, workflows, subagents, extensions, autonomy, and evolution.
+Domain adapters in `api/domains/` cover agents, enterprise, tools, chat, auth,
+notifications, files, tasks, skills, relationships, plaza, channels, schedules,
+admin, activity, users, messages, system, triggers, office, memory, knowledge,
+plans, workflows, subagents, extensions, autonomy, and evolution. Discover the
+current inventory from the tracked checkout instead of relying on a hand-written
+file count.
 
 ## Conventions
 
@@ -512,7 +532,6 @@ Core HTTP abstraction in `api/core/request.ts` — `get<T>()`, `post<T>()`, `put
 | `SECRETS_MASTER_KEY` | Encrypt LLM keys and channel credentials |
 | `AGENT_DATA_DIR` | Agent workspace root |
 | `FEISHU_APP_ID` / `FEISHU_APP_SECRET` | Feishu SSO |
-| `ONLYOFFICE_DOCS_URL` / `ONLYOFFICE_INTERNAL_DOCS_URL` / `ONLYOFFICE_JWT_SECRET` | Browser Office editing |
 | `WS_IDLE_TIMEOUT_SECONDS` / `WS_IDLE_DREAM_SECONDS` | Web chat WebSocket idle and idle-hook behavior |
 | `TAVILY_API_KEY` | Web search |
 | `EXA_API_KEY` | Web search |

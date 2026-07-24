@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 import app.api.local_agent_channel as local_agent_channel_api
@@ -959,19 +959,95 @@ def test_user_scoped_local_agent_workspace_rejects_path_traversal(monkeypatch, t
 def test_bridge_token_downloads_user_scoped_channel_workspace_file(monkeypatch, tmp_path) -> None:
     tenant_id = uuid4()
     user_id = uuid4()
-    context = _context(tenant_id=tenant_id, agent_id=None, user_id=user_id)
+    context = _context(
+        tenant_id=tenant_id,
+        agent_id=uuid4(),
+        user_id=user_id,
+        scopes=("local_agent:receive",),
+    )
+    captured = {}
+
+    async def fake_require_policy(db, *, tenant_id, agent_id, capability):
+        captured.update(
+            {
+                "db": db,
+                "tenant_id": tenant_id,
+                "agent_id": agent_id,
+                "capability": capability,
+            }
+        )
+
     workspace_root = tmp_path / "local_agents" / str(tenant_id) / "users" / str(user_id)
     uploads_dir = workspace_root / "workspace" / "uploads"
     uploads_dir.mkdir(parents=True)
     (uploads_dir / "cloud-brief.md").write_text("from Hive to local runner\n", encoding="utf-8")
 
     monkeypatch.setattr(local_agent_channel_api, "settings", SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+    monkeypatch.setattr(
+        local_agent_channel_api.bridge_service,
+        "require_local_agent_capability_policy",
+        fake_require_policy,
+        raising=False,
+    )
     client = _client(monkeypatch, context=context)
 
     response = client.get("/local-bridge/channel/workspace/download?path=workspace/uploads/cloud-brief.md")
 
     assert response.status_code == 200
     assert response.content == b"from Hive to local runner\n"
+    assert captured["tenant_id"] == context.tenant_id
+    assert captured["agent_id"] == context.agent_id
+    assert captured["capability"] == "local_agent.file_download"
+
+
+def test_bridge_workspace_download_requires_receive_scope_before_file_read(monkeypatch, tmp_path) -> None:
+    tenant_id = uuid4()
+    user_id = uuid4()
+    context = _context(tenant_id=tenant_id, user_id=user_id, scopes=("local_agent:report",))
+    workspace_root = tmp_path / "local_agents" / str(tenant_id) / "users" / str(user_id)
+    uploads_dir = workspace_root / "workspace" / "uploads"
+    uploads_dir.mkdir(parents=True)
+    protected = uploads_dir / "protected.md"
+    protected.write_text("must not be returned", encoding="utf-8")
+
+    monkeypatch.setattr(local_agent_channel_api, "settings", SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+    client = _client(monkeypatch, context=context)
+
+    response = client.get("/local-bridge/channel/workspace/download?path=workspace/uploads/protected.md")
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Bridge token lacks local_agent:receive scope"
+
+
+def test_bridge_workspace_download_live_policy_deny_prevents_file_read(monkeypatch, tmp_path) -> None:
+    tenant_id = uuid4()
+    user_id = uuid4()
+    context = _context(tenant_id=tenant_id, user_id=user_id, scopes=("local_agent:receive",))
+    workspace_root = tmp_path / "local_agents" / str(tenant_id) / "users" / str(user_id)
+    uploads_dir = workspace_root / "workspace" / "uploads"
+    uploads_dir.mkdir(parents=True)
+    protected = uploads_dir / "protected.md"
+    protected.write_text("must not be returned", encoding="utf-8")
+
+    async def fake_require_policy(_db, *, tenant_id, agent_id, capability):
+        assert tenant_id == context.tenant_id
+        assert agent_id == context.agent_id
+        assert capability == "local_agent.file_download"
+        raise HTTPException(status_code=403, detail="Local Agent capability denied by live policy")
+
+    monkeypatch.setattr(local_agent_channel_api, "settings", SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+    monkeypatch.setattr(
+        local_agent_channel_api.bridge_service,
+        "require_local_agent_capability_policy",
+        fake_require_policy,
+        raising=False,
+    )
+    client = _client(monkeypatch, context=context)
+
+    response = client.get("/local-bridge/channel/workspace/download?path=workspace/uploads/protected.md")
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Local Agent capability denied by live policy"
 
 
 def test_local_agent_channel_websocket_sends_pending_messages_and_accepts_result(monkeypatch) -> None:

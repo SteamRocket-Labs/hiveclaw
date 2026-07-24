@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -139,6 +139,44 @@ class BridgeAuthContext:
     scopes: tuple[str, ...]
     client_kind: str
     device_name: str
+
+
+async def require_local_agent_capability_policy(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    agent_id: uuid.UUID | None,
+    capability: str,
+) -> CapabilityPolicy:
+    """Resolve the live tenant/Agent policy for one bridge side effect."""
+
+    if agent_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Local bridge connection is not bound to an Agent",
+        )
+    policies = (
+        (
+            await db.execute(
+                select(CapabilityPolicy).where(
+                    CapabilityPolicy.tenant_id == tenant_id,
+                    or_(CapabilityPolicy.agent_id.is_(None), CapabilityPolicy.agent_id == agent_id),
+                    CapabilityPolicy.capability == capability,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    agent_policy = next((row for row in policies if row.agent_id == agent_id), None)
+    tenant_policy = next((row for row in policies if row.agent_id is None), None)
+    policy = agent_policy or tenant_policy
+    if policy is None or not policy.allowed:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Local Agent capability denied by live policy: {capability}",
+        )
+    return policy
 
 
 def utcnow() -> datetime:

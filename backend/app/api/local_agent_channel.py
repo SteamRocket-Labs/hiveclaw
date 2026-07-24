@@ -26,6 +26,7 @@ from app.core.permissions import check_agent_access
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.user import User
+from app.services import local_bridge_service as bridge_service
 from app.services import local_agent_channel_service as channel_service
 from app.services.local_bridge_service import BridgeAuthContext
 
@@ -900,7 +901,19 @@ async def download_agent_local_agent_channel_workspace_file(
 async def download_local_bridge_channel_workspace_file(
     path: str,
     context: BridgeAuthContext = Depends(get_bridge_auth_context),
+    db: AsyncSession = Depends(get_db),
 ):
+    if "local_agent:receive" not in context.scopes:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Bridge token lacks local_agent:receive scope",
+        )
+    await bridge_service.require_local_agent_capability_policy(
+        db,
+        tenant_id=context.tenant_id,
+        agent_id=context.agent_id,
+        capability="local_agent.file_download",
+    )
     _base, target = _safe_local_agent_workspace_path_for(context.tenant_id, context.user_id, path)
     if not target.exists() or not target.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")

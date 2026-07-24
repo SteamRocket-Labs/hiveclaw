@@ -27,6 +27,7 @@ from app.models.runtime_notification_outbox import RuntimeNotificationOutbox
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.services import local_agent_channel_service as channel_service
+from app.services import local_bridge_service as bridge_service
 from app.services.local_agent_protocol import verify_capability_snapshot
 from app.services.local_bridge_service import BridgeAuthContext
 
@@ -675,5 +676,32 @@ async def test_local_agent_explicit_agent_deny_removes_execute_from_new_snapshot
                 sender_agent_id=agent_id,
                 content="This must be denied.",
                 idempotency_key="a2a:denied-task",
+            )
+        assert exc_info.value.status_code == 403
+
+
+async def test_local_agent_file_policy_rechecks_live_agent_override(
+    owner_sessionmaker,
+) -> None:
+    tenant_id, _owner_id, agent_id, _context = await _seed(owner_sessionmaker)
+    async with tenant_scoped_session(tenant_id, session_factory=owner_sessionmaker) as db:
+        await _grant_local_capabilities(db, tenant_id=tenant_id, agent_id=agent_id)
+        policy = await bridge_service.require_local_agent_capability_policy(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            capability="local_agent.file_upload",
+        )
+        assert policy.allowed is True
+
+        policy.allowed = False
+        await db.flush()
+
+        with pytest.raises(HTTPException) as exc_info:
+            await bridge_service.require_local_agent_capability_policy(
+                db,
+                tenant_id=tenant_id,
+                agent_id=agent_id,
+                capability="local_agent.file_upload",
             )
         assert exc_info.value.status_code == 403

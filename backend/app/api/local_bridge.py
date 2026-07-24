@@ -195,6 +195,12 @@ async def upload_bridge_file(
 ):
     if "files:upload" not in context.scopes:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Bridge token lacks files:upload scope")
+    await bridge_service.require_local_agent_capability_policy(
+        db,
+        tenant_id=context.tenant_id,
+        agent_id=context.agent_id,
+        capability="local_agent.file_upload",
+    )
     return await save_bridge_upload(file=file, context=context, db=db)
 
 

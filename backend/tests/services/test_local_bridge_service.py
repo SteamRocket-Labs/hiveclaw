@@ -27,6 +27,30 @@ class _ScalarResult:
         return self._value
 
 
+class _PolicyScalars:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def all(self):
+        return list(self._rows)
+
+
+class _PolicyResult:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def scalars(self):
+        return _PolicyScalars(self._rows)
+
+
+class _PolicyDB:
+    def __init__(self, rows):
+        self.rows = rows
+
+    async def execute(self, _statement):
+        return _PolicyResult(self.rows)
+
+
 class _FakeDB:
     def __init__(self, row):
         self.row = row
@@ -152,3 +176,36 @@ async def test_bridge_auth_rejects_legacy_permanent_token_without_expiry(monkeyp
     assert exc_info.value.status_code == 401
     assert connection.status == "expired"
     assert db.committed is True
+
+
+@pytest.mark.asyncio
+async def test_file_policy_resolver_prefers_agent_deny_over_tenant_allow() -> None:
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    tenant_policy = SimpleNamespace(agent_id=None, allowed=True)
+    agent_policy = SimpleNamespace(agent_id=agent_id, allowed=False)
+
+    with pytest.raises(service.HTTPException) as exc_info:
+        await service.require_local_agent_capability_policy(
+            _PolicyDB([tenant_policy, agent_policy]),
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            capability="local_agent.file_download",
+        )
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "Local Agent capability denied by live policy: local_agent.file_download"
+
+
+@pytest.mark.asyncio
+async def test_file_policy_resolver_fails_closed_for_unbound_connection() -> None:
+    with pytest.raises(service.HTTPException) as exc_info:
+        await service.require_local_agent_capability_policy(
+            _PolicyDB([]),
+            tenant_id=uuid4(),
+            agent_id=None,
+            capability="local_agent.file_upload",
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == "Local bridge connection is not bound to an Agent"

@@ -45,7 +45,12 @@ from app.services.local_agent_protocol import (
     effective_local_capabilities,
     verify_capability_snapshot,
 )
-from app.services.local_bridge_service import BridgeAuthContext, hash_secret, utcnow
+from app.services.local_bridge_service import (
+    BridgeAuthContext,
+    hash_secret,
+    require_local_agent_capability_policy,
+    utcnow,
+)
 from app.services.runtime_notification_outbox import (
     CompletionNotification,
     enqueue_completion_notification,
@@ -759,10 +764,7 @@ async def _agent_capability_names(
         )
     ).scalar_one_or_none()
     owner_id = (
-        getattr(agent, "owner_user_id", None)
-        or getattr(agent, "creator_id", None)
-        if agent is not None
-        else None
+        getattr(agent, "owner_user_id", None) or getattr(agent, "creator_id", None) if agent is not None else None
     )
     if agent is None or owner_id != context.user_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Local Agent ownership mismatch")
@@ -804,28 +806,12 @@ async def _effective_capability_policy(
     agent_id: uuid.UUID,
     capability: str,
 ) -> CapabilityPolicy:
-    policies = (
-        (
-            await db.execute(
-                select(CapabilityPolicy).where(
-                    CapabilityPolicy.tenant_id == tenant_id,
-                    or_(CapabilityPolicy.agent_id.is_(None), CapabilityPolicy.agent_id == agent_id),
-                    CapabilityPolicy.capability == capability,
-                )
-            )
-        )
-        .scalars()
-        .all()
+    return await require_local_agent_capability_policy(
+        db,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        capability=capability,
     )
-    agent_policy = next((row for row in policies if row.agent_id == agent_id), None)
-    tenant_policy = next((row for row in policies if row.agent_id is None), None)
-    policy = agent_policy or tenant_policy
-    if policy is None or not policy.allowed:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Local Agent capability denied by live policy: {capability}",
-        )
-    return policy
 
 
 def _enforce_action_conditions(
@@ -1355,8 +1341,7 @@ async def create_channel_session(
             bind = db.get_bind()
             if getattr(getattr(bind, "dialect", None), "name", "") == "postgresql":
                 lock_material = (
-                    f"{tenant_id}:{owner_user_id}:{actor_id}:{source_agent_id}:{source}:"
-                    f"{external_conversation_id}"
+                    f"{tenant_id}:{owner_user_id}:{actor_id}:{source_agent_id}:{source}:{external_conversation_id}"
                 ).encode("utf-8")
                 lock_key = int.from_bytes(hashlib.sha256(lock_material).digest()[:8], byteorder="big", signed=True)
                 await db.execute(select(func.pg_advisory_xact_lock(lock_key)))
@@ -1983,12 +1968,14 @@ async def record_channel_result(
             chat_user_id = chat_session.user_id
 
     message_result = await db.execute(
-        select(LocalAgentChannelMessage).where(
+        select(LocalAgentChannelMessage)
+        .where(
             LocalAgentChannelMessage.id == message_id,
             LocalAgentChannelMessage.session_id == session.id,
             LocalAgentChannelMessage.owner_user_id == context.user_id,
             LocalAgentChannelMessage.tenant_id == context.tenant_id,
-        ).with_for_update()
+        )
+        .with_for_update()
     )
     message = message_result.scalar_one_or_none()
     if message is None:

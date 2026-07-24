@@ -1103,6 +1103,25 @@ async def publish_proposal(
     return _payload(publication)
 
 
+@router.get("/publications")
+async def list_company_knowledge_publication_lifecycle(
+    tenant_id: uuid.UUID | None = Query(None),
+    limit: int = Query(200, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    target_tenant = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    publications = await _call(
+        _service().list_publication_lifecycle(
+            db,
+            principal=_principal(current_user, target_tenant),
+            limit=limit,
+        )
+    )
+    await db.commit()
+    return {"publications": publications}
+
+
 @router.post("/publications/{publication_id}/retire")
 async def retire_publication(
     publication_id: uuid.UUID,

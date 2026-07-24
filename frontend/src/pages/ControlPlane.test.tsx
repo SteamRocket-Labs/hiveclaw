@@ -51,6 +51,7 @@ describe('ControlPlane', () => {
     expect(markup).toContain('Models &amp; Budget');
     expect(markup).toContain('Extension Catalog');
     expect(markup).toContain('Memory Governance');
+    expect(markup).toContain('Company Knowledge');
     expect(markup).toContain('Channels &amp; Integrations');
     expect(markup).toContain('Approval Center');
     expect(markup).toContain('Audit Log');
@@ -59,11 +60,11 @@ describe('ControlPlane', () => {
     expect(markup).toContain('href="/enterprise/hr"');
     expect(markup).toContain('href="/enterprise/digital-employees"');
     expect(markup).toContain('href="/enterprise/action-guardrails"');
+    expect(markup).toContain('href="/enterprise/knowledge"');
     expect(markup).toContain('href="/local-agents"');
-    expect(markup).toContain('Company Knowledge Base is not implemented in this release');
+    expect(markup).not.toContain('Company Knowledge Base is not implemented in this release');
     expect(markup).toContain('read-only export of retired shared files');
-    expect(markup).not.toContain('enterprise knowledge controls');
-    expect(markup).not.toContain('enterprise knowledge files');
+    expect(markup).toContain('Review, publish, authorize, retire, and restore governed knowledge for employees.');
   });
 
   it('embeds legacy workspace sections inside the new control-plane shell', () => {

@@ -25,6 +25,8 @@ const Dashboard = lazy(() => import('./pages/Dashboard'));
 const DigitalEmployees = lazy(() => import('./pages/DigitalEmployees'));
 const WorkspaceFeatureHub = lazy(() => import('./pages/WorkspaceFeatureHub'));
 const PersonalKnowledge = lazy(() => import('./pages/PersonalKnowledge'));
+const CompanyKnowledgeLibrary = lazy(() => import('./pages/CompanyKnowledgeLibrary'));
+const CompanyKnowledgeControlPlane = lazy(() => import('./pages/CompanyKnowledgeControlPlane'));
 const Plaza = lazy(() => import('./pages/Plaza'));
 const AgentDetail = lazy(() => import('./pages/AgentDetail'));
 const AgentCreate = lazy(() => import('./pages/AgentCreate'));
@@ -141,6 +143,7 @@ export default function App() {
                         <Route path="plans" element={<WorkspaceFeatureHub kind="plans" />} />
                         <Route path="automations" element={<WorkspaceFeatureHub kind="automations" />} />
                         <Route path="knowledge" element={<PersonalKnowledge />} />
+                        <Route path="knowledge/company" element={<CompanyKnowledgeLibrary />} />
                         <Route path="workspace/knowledge" element={<Navigate to="/knowledge" replace />} />
                         <Route path="memory" element={<WorkspaceFeatureHub kind="memory" />} />
                         <Route path="documents" element={<WorkspaceFeatureHub kind="documents" />} />
@@ -162,6 +165,7 @@ export default function App() {
                     <Route path="/enterprise" element={<ProtectedRoute><WorkspaceGuard><WorkspaceLayout /></WorkspaceGuard></ProtectedRoute>}>
                         <Route index element={<Navigate to="dashboard" replace />} />
                         <Route path="dashboard" element={<ControlPlane />} />
+                        <Route path="knowledge" element={<CompanyKnowledgeControlPlane />} />
                         {WORKSPACE_SETTINGS_SECTIONS.map((section) => (
                             <Route
                                 key={section.tab}

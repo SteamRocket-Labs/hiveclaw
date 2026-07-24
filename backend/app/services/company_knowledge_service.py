@@ -2079,6 +2079,69 @@ class CompanyKnowledgeService:
         )
         return publication
 
+    async def list_publication_lifecycle(
+        self,
+        session: Any,
+        *,
+        principal: CompanyKnowledgePrincipal,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        """Project recoverable publication lifecycle rows for the control plane.
+
+        Every row is re-authorized for its currently available lifecycle action
+        before its title is disclosed. Forensic refs, hashes, policy snapshots,
+        and source metadata stay on the audit/evidence surfaces.
+        """
+
+        bounded_limit = max(1, min(int(limit), 500))
+        rows = (
+            await session.execute(
+                select(CompanyKnowledgePublication, KnowledgeDocument)
+                .join(
+                    KnowledgeDocument,
+                    KnowledgeDocument.id == CompanyKnowledgePublication.document_id,
+                )
+                .where(
+                    CompanyKnowledgePublication.tenant_id == principal.tenant_id,
+                    CompanyKnowledgePublication.status.in_(("active", "retired")),
+                )
+                .order_by(
+                    CompanyKnowledgePublication.published_at.desc(),
+                    CompanyKnowledgePublication.version.desc(),
+                    CompanyKnowledgePublication.id,
+                )
+                .limit(bounded_limit)
+            )
+        ).all()
+        result: list[dict[str, Any]] = []
+        for publication, document in rows:
+            available_action = "restore" if publication.status == "retired" else "retire"
+            resource = await self._publication_resource(session, publication)
+            try:
+                await self._require_permission(
+                    session,
+                    principal=principal,
+                    resource=resource,
+                    action=available_action,
+                )
+            except (LookupError, PermissionError):
+                continue
+            result.append(
+                {
+                    "publication_id": str(publication.id),
+                    "document_id": str(publication.document_id),
+                    "title": str(document.title or "Untitled knowledge"),
+                    "status": publication.status,
+                    "version": publication.version,
+                    "namespace": publication.namespace,
+                    "sensitivity": publication.sensitivity,
+                    "valid_from": publication.valid_from,
+                    "valid_until": publication.valid_until,
+                    "available_action": available_action,
+                }
+            )
+        return result
+
     async def retire_publication(
         self,
         session: Any,

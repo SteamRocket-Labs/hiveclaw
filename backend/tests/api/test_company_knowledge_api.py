@@ -674,3 +674,53 @@ def test_company_retrieval_routes_share_gateway_and_never_accept_actor_identity(
         assert principal.actor_type == "user"
         assert principal.actor_id == user.id
         assert principal.accountable_user_id != forged_user_id
+
+
+def test_company_publication_lifecycle_route_returns_only_business_projection(monkeypatch):
+    publication_id = uuid.uuid4()
+    document_id = uuid.uuid4()
+    captured = []
+
+    class _Service:
+        async def list_publication_lifecycle(self, session, *, principal, limit):
+            captured.append((session, principal, limit))
+            return [
+                {
+                    "publication_id": str(publication_id),
+                    "document_id": str(document_id),
+                    "title": "Employee Handbook",
+                    "status": "retired",
+                    "version": 3,
+                    "namespace": "company/policies",
+                    "sensitivity": "PL2_pii",
+                    "valid_from": datetime.now(timezone.utc),
+                    "valid_until": datetime.now(timezone.utc),
+                    "available_action": "restore",
+                }
+            ]
+
+    client, db, user = _client(monkeypatch, _Service())
+    response = client.get("/knowledge/company/publications?limit=25")
+
+    assert response.status_code == 200
+    publication = response.json()["publications"][0]
+    assert publication == {
+        "publication_id": str(publication_id),
+        "document_id": str(document_id),
+        "title": "Employee Handbook",
+        "status": "retired",
+        "version": 3,
+        "namespace": "company/policies",
+        "sensitivity": "PL2_pii",
+        "valid_from": publication["valid_from"],
+        "valid_until": publication["valid_until"],
+        "available_action": "restore",
+    }
+    assert "content_hash" not in response.text
+    assert "artifact_ref" not in response.text
+    assert "source_refs" not in response.text
+    assert len(captured) == 1
+    assert captured[0][0] is db
+    assert captured[0][1].tenant_id == user.tenant_id
+    assert captured[0][1].accountable_user_id == user.id
+    assert captured[0][2] == 25

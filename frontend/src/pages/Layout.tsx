@@ -8,6 +8,7 @@ import { authApi } from '../api/domains/auth';
 import { notificationsApi } from '../api/domains/notifications';
 import { systemApi } from '../api/domains/system';
 import { adminApi } from '../api/domains/admin';
+import { isChineseLanguage, nextInterfaceLanguage } from '../i18n/language';
 import AppSidebar, {
     COMPACT_SIDEBAR_MAX_WIDTH,
     isCompactSidebarViewport,
@@ -175,7 +176,7 @@ export default function Layout() {
     const navigate = useNavigate();
     const { user, logout } = useAuthStore();
     const queryClient = useQueryClient();
-    const isChinese = i18n.language?.startsWith('zh');
+    const isChinese = isChineseLanguage(i18n.language);
     const [showAccountSettings, setShowAccountSettings] = useState(false);
     const [showAccountMenu, setShowAccountMenu] = useState(false);
     const accountMenuRef = useRef<HTMLDivElement>(null);
@@ -312,7 +313,7 @@ export default function Layout() {
     };
 
     const toggleLang = () => {
-        i18n.changeLanguage(i18n.language === 'zh' ? 'en' : 'zh');
+        i18n.changeLanguage(nextInterfaceLanguage(i18n.language));
     };
 
     useEffect(() => {

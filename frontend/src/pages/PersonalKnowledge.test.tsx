@@ -283,6 +283,8 @@ describe('PersonalKnowledge', () => {
     const html = renderToStaticMarkup(<PersonalKnowledge />);
 
     expect(html).toContain('个人知识库');
+    expect(html).toContain('href="/knowledge/company"');
+    expect(html).toContain('打开公司知识库');
     expect(html).toContain('收集箱');
     expect(html).toContain('文库');
     expect(html).toContain('知识网');

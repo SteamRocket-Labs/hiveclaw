@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
+  IconBook,
   IconBrain,
   IconBuilding,
   IconChartBar,
@@ -72,8 +73,15 @@ const CONTROL_PLANE_CARDS: ControlPlaneCard[] = [
     tab: 'memory',
     to: '/enterprise/memory',
     title: 'Memory Governance',
-    description: 'Agent memory retention, hygiene, and governed writes. Company Knowledge Base is not implemented in this release.',
+    description: 'Agent memory retention, hygiene, and governed writes.',
     icon: <IconBrain size={18} stroke={1.6} />,
+    group: 'governance',
+  },
+  {
+    to: '/enterprise/knowledge',
+    title: 'Company Knowledge',
+    description: 'Review, publish, authorize, retire, and restore governed knowledge for employees.',
+    icon: <IconBook size={18} stroke={1.6} />,
     group: 'governance',
   },
   {

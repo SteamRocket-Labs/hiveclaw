@@ -1,4 +1,4 @@
-import { IconBrain, IconChecklist, IconFileText, IconLayoutDashboard, IconRobot, IconShieldCheck, IconSitemap, IconUserStar, IconUsers } from '@tabler/icons-react';
+import { IconBook, IconBrain, IconChecklist, IconFileText, IconLayoutDashboard, IconRobot, IconShieldCheck, IconSitemap, IconUserStar, IconUsers } from '@tabler/icons-react';
 
 import SurfaceLayout from '../shared/SurfaceLayout';
 import { WORKSPACE_SECTIONS } from './sections';
@@ -8,6 +8,7 @@ const ICONS = {
   info: <IconFileText size={16} stroke={1.5} />,
   llm: <IconRobot size={16} stroke={1.5} />,
   memory: <IconBrain size={16} stroke={1.5} />,
+  knowledge: <IconBook size={16} stroke={1.5} />,
   digital_employees: <IconUsers size={16} stroke={1.5} />,
   hr: <IconUserStar size={16} stroke={1.5} />,
   extensions: <IconSitemap size={16} stroke={1.5} />,

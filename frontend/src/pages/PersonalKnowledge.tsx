@@ -1,5 +1,6 @@
 import { type FormEvent, type ReactNode, useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
   IconArchive,
@@ -28,6 +29,7 @@ import {
   type PersonalKnowledgeSearchResult,
 } from '../api/domains/knowledge';
 import PersonalKnowledgeQueryState from '../components/PersonalKnowledgeQueryState';
+import PersonalKnowledgePromotionCard from './personal-knowledge/PersonalKnowledgePromotionCard';
 import './PersonalKnowledge.css';
 
 type PersonalKnowledgeLane = 'inbox' | 'proposals' | 'library' | 'graph' | 'profile' | 'grants';
@@ -799,6 +801,12 @@ function DocumentDetail({
         >
           {t('personalKnowledge.archive')}
         </button>
+        {document.status === 'ready' && (
+          <PersonalKnowledgePromotionCard
+            documentKey={document.document_id}
+            documentTitle={document.title}
+          />
+        )}
       </div>
     </aside>
   );
@@ -1028,6 +1036,10 @@ export default function PersonalKnowledge() {
           <h1>{t('personalKnowledge.title')}</h1>
           <p>{t('personalKnowledge.subtitle')}</p>
         </div>
+        <Link to="/knowledge/company" className="btn btn-secondary">
+          <IconDatabase size={15} stroke={1.7} />
+          {t('personalKnowledge.openCompanyLibrary', 'Open Company Library')}
+        </Link>
       </header>
 
       <nav className="personal-kb-tabs" role="tablist" aria-label={t('personalKnowledge.navLabel', 'Personal knowledge sections')}>

@@ -773,7 +773,7 @@ export default function AppSidebar({
                 <div className="account-dropdown-separator" />
                 <button className="account-dropdown-item" onClick={onToggleLang}>
                   <IconWorld size={15} stroke={1.5} />
-                  <span>{i18n.language === 'zh' ? 'English' : '中文'}</span>
+                  <span>{isChinese ? 'English' : '中文'}</span>
                 </button>
                 <div className="account-dropdown-separator" />
                 <button className="account-dropdown-item account-dropdown-danger" onClick={onLogout}>

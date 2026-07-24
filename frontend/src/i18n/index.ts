@@ -3,6 +3,10 @@ import { initReactI18next } from 'react-i18next';
 import LanguageDetector from 'i18next-browser-languagedetector';
 import zh from './zh.json';
 import en from './en.json';
+import { syncDocumentLanguage } from './language';
+
+i18n.on('initialized', () => syncDocumentLanguage(i18n.language));
+i18n.on('languageChanged', syncDocumentLanguage);
 
 i18n
     .use(LanguageDetector)

@@ -1,0 +1,64 @@
+.personal-kb-company-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+
+.personal-kb-company-success {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--success, #24734a);
+}
+
+.personal-kb-company-form {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  background: var(--surface-subtle);
+}
+
+.personal-kb-company-form-copy {
+  display: grid;
+  gap: 4px;
+}
+
+.personal-kb-company-form-copy small,
+.personal-kb-company-form label > span {
+  color: var(--text-secondary);
+}
+
+.personal-kb-company-form label {
+  display: grid;
+  gap: 6px;
+}
+
+.personal-kb-company-form input,
+.personal-kb-company-form select,
+.personal-kb-company-form textarea {
+  width: 100%;
+}
+
+.personal-kb-company-attestation {
+  grid-template-columns: auto 1fr;
+  align-items: start;
+}
+
+.personal-kb-company-attestation input {
+  width: auto;
+  margin-top: 3px;
+}
+
+.personal-kb-company-error {
+  color: var(--danger, #b42318);
+  font-size: 13px;
+}
+
+.personal-kb-company-form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}

@@ -858,6 +858,25 @@ async def test_company_document_ingest_review_publish_index_retire_restore_close
             reason="Policy is temporarily withdrawn.",
             trace_id="trace-retire",
         )
+        retired_lifecycle = await service.list_publication_lifecycle(
+            db,
+            principal=principal,
+        )
+        retired_view = next(item for item in retired_lifecycle if item["publication_id"] == str(retired.id))
+        assert set(retired_view) == {
+            "publication_id",
+            "document_id",
+            "title",
+            "status",
+            "version",
+            "namespace",
+            "sensitivity",
+            "valid_from",
+            "valid_until",
+            "available_action",
+        }
+        assert retired_view["status"] == "retired"
+        assert retired_view["available_action"] == "restore"
         restored = await service.restore_publication(
             db,
             principal=principal,
@@ -873,6 +892,14 @@ async def test_company_document_ingest_review_publish_index_retire_restore_close
         assert restored.version == 3
         assert restored.status == "active"
         assert restored.restored_from_publication_id == retired.id
+        restored_lifecycle = await service.list_publication_lifecycle(
+            db,
+            principal=principal,
+        )
+        restored_view = next(item for item in restored_lifecycle if item["publication_id"] == str(restored.id))
+        assert restored_view["title"] == "Employee Handbook"
+        assert restored_view["status"] == "active"
+        assert restored_view["available_action"] == "retire"
         active_count = await db.scalar(
             select(func.count(CompanyKnowledgePublication.id)).where(
                 CompanyKnowledgePublication.tenant_id == tenant_id,

@@ -206,6 +206,35 @@ describe('Layout extracted sections', () => {
     expect(markup).toContain('Version Mock');
   });
 
+  it('labels the language action with its destination when the current locale is Chinese', () => {
+    const markup = renderToStaticMarkup(
+      <AppSidebar
+        user={{ id: 'user-1', role: 'member', display_name: 'Rocky' }}
+        theme="light"
+        isSidebarCollapsed={false}
+        onToggleSidebar={vi.fn()}
+        tenants={[{ id: 'tenant-1', name: 'Company A' }]}
+        currentTenant="tenant-1"
+        onSwitchTenant={vi.fn()}
+        agents={[]}
+        isChinese
+        onToggleTheme={vi.fn()}
+        onOpenNotifications={vi.fn()}
+        unreadCount={0}
+        accountMenuRef={React.createRef<HTMLDivElement>()}
+        showAccountMenu
+        onToggleAccountMenu={vi.fn()}
+        onToggleLang={vi.fn()}
+        onOpenAccountSettings={vi.fn()}
+        onLogout={vi.fn()}
+        versionDisplay={null}
+      />,
+    );
+
+    expect(markup).toContain('English');
+    expect(markup).not.toContain('>中文<');
+  });
+
   it('keeps employee creation as a simple action below the employee tree', () => {
     const markup = renderToStaticMarkup(
       <AppSidebar

@@ -3,6 +3,7 @@ export type WorkspaceSectionTab =
   | 'info'
   | 'llm'
   | 'memory'
+  | 'knowledge'
   | 'digital_employees'
   | 'hr'
   | 'extensions'
@@ -15,7 +16,7 @@ export type WorkspaceSectionTab =
   | 'guard_policy'
   | 'invites';
 
-export type WorkspaceSettingsSectionTab = Exclude<WorkspaceSectionTab, 'dashboard'>;
+export type WorkspaceSettingsSectionTab = Exclude<WorkspaceSectionTab, 'dashboard' | 'knowledge'>;
 
 export interface WorkspaceSection {
   tab: WorkspaceSectionTab;
@@ -30,6 +31,7 @@ export const WORKSPACE_SECTIONS: WorkspaceSection[] = [
   { tab: 'info', slug: 'info', path: '/enterprise/info', labelKey: 'enterprise.tabs.info', fallbackLabel: 'Company Info' },
   { tab: 'llm', slug: 'llm', path: '/enterprise/llm', labelKey: 'enterprise.tabs.llm', fallbackLabel: 'Models' },
   { tab: 'memory', slug: 'memory', path: '/enterprise/memory', labelKey: 'enterprise.tabs.memory', fallbackLabel: 'Memory' },
+  { tab: 'knowledge', slug: 'knowledge', path: '/enterprise/knowledge', labelKey: 'enterprise.tabs.knowledge', fallbackLabel: 'Company Knowledge' },
   { tab: 'digital_employees', slug: 'digital-employees', path: '/enterprise/digital-employees', labelKey: 'enterprise.tabs.digitalEmployees', fallbackLabel: 'Digital Employees' },
   { tab: 'hr', slug: 'hr', path: '/enterprise/hr', labelKey: 'enterprise.tabs.hr', fallbackLabel: 'HR Agent' },
   { tab: 'extensions', slug: 'extensions', path: '/enterprise/extensions', labelKey: 'enterprise.tabs.extensions', fallbackLabel: 'Extensions' },
@@ -44,7 +46,8 @@ export const WORKSPACE_SECTIONS: WorkspaceSection[] = [
 ];
 
 export const WORKSPACE_SETTINGS_SECTIONS = WORKSPACE_SECTIONS.filter(
-  (section): section is WorkspaceSection & { tab: WorkspaceSettingsSectionTab } => section.tab !== 'dashboard',
+  (section): section is WorkspaceSection & { tab: WorkspaceSettingsSectionTab } =>
+    section.tab !== 'dashboard' && section.tab !== 'knowledge',
 );
 
 export const WORKSPACE_DEFAULT_PATH = WORKSPACE_SECTIONS[0].path;

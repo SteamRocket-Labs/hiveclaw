@@ -18,4 +18,15 @@ describe('application surface routes', () => {
     expect(source).toContain('DesignGallery ? (');
     expect(source).toContain('<Route path="/design-gallery" element={<Navigate to="/" replace />} />');
   });
+
+  it('mounts separate employee Company Library and governed Company Knowledge control-plane routes', () => {
+    const source = readFileSync(new URL('./App.tsx', import.meta.url), 'utf8');
+
+    expect(source).toContain("const CompanyKnowledgeLibrary = lazy(() => import('./pages/CompanyKnowledgeLibrary'))");
+    expect(source).toContain(
+      "const CompanyKnowledgeControlPlane = lazy(() => import('./pages/CompanyKnowledgeControlPlane'))",
+    );
+    expect(source).toContain('<Route path="knowledge/company" element={<CompanyKnowledgeLibrary />} />');
+    expect(source).toContain('<Route path="knowledge" element={<CompanyKnowledgeControlPlane />} />');
+  });
 });

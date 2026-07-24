@@ -9,7 +9,7 @@ import { autonomyApi } from '../../api/domains/autonomy';
 import { agentApi } from '../../api/domains/agents';
 import { listWorkflowDefinitions } from '../../api/domains/workflows';
 import { requestAppConfirm } from '../../components/AppDialogs';
-import { StructuredToolResultBody } from './AgentChatSection';
+import { StructuredToolResultBody } from './StructuredToolResult';
 import TeamMemorySummaryCard from './TeamMemorySummaryCard';
 import PlanQueueSection from './PlanQueueSection';
 import { normalizeToolCallResult } from './toolResultEnvelope';

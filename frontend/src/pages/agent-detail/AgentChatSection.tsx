@@ -115,7 +115,6 @@ import {
   isRuntimeRecord,
   isTeamMemberSession,
   runtimeItemDisplayLabel,
-  SessionDecisionHistory,
   SessionRuntimePanel,
   setRuntimeLinkHighlight,
   stringValue,
@@ -127,31 +126,6 @@ import {
 } from './SessionRuntimePanel';
 import { InlinePlanCard, StructuredToolResultBody } from './StructuredToolResult';
 import { isDedicatedToolCardMessage } from './chatDisclosureReducer';
-
-export type { BranchLineageItem, BranchLineageRow } from './SessionLineageSurface';
-export {
-  BranchLineagePanel,
-  buildBranchLineageRows,
-  getSessionGitLineDensity,
-  pickFocusedCheckpointIdForScroll,
-  sessionCheckpointPreview,
-} from './SessionLineageSurface';
-export type { ArtifactDeliveryContext, ArtifactOpenMode, ArtifactPreviewState } from './ArtifactSurface';
-export {
-  getArtifactOpenMode,
-  isPendingEmptyArtifactPreview,
-  isUserFacingDeliveryArtifact,
-} from './ArtifactSurface';
-export {
-  ActiveTailStatusLine,
-  runtimeItemDisplayMeta,
-  runtimeItemDisplayStatus,
-  SessionDecisionHistory,
-  subagentWorkerRecoveryModel,
-  userFacingRuntimeStatus,
-  WorkflowRunFocusPanel,
-} from './SessionRuntimePanel';
-export { StructuredToolResultBody } from './StructuredToolResult';
 
 type AttachedFile = {
   name: string;

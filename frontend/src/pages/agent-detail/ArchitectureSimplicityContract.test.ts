@@ -81,6 +81,7 @@ describe('UX-04 orchestration and composition boundaries', () => {
       ['./useSessionTransportController.ts', 900],
       ['./SessionLineageSurface.tsx', 700],
       ['./ArtifactSurface.tsx', 500],
+      ['./SessionDecisionHistory.tsx', 220],
       ['./SessionRuntimePanel.tsx', 1200],
       ['./StructuredToolResult.tsx', 650],
     ];

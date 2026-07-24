@@ -10,30 +10,36 @@ import AgentAwareSection, {
   workflowDefinitionOptionKey,
 } from './AgentAwareSection';
 import AgentChatSection, {
-  ActiveTailStatusLine,
-  BranchLineagePanel,
   SessionCommandControlPanel,
-  StructuredToolResultBody,
-  WorkflowRunFocusPanel,
   buildMessageFeedbackInput,
   buildSessionRewindCommandArgs,
-  buildBranchLineageRows,
   extractPlanIdFromPlanModeMessage,
   findRetryAnchorMessage,
+  isClarificationCardAnsweredByLaterUserMessage,
+  isInlineToolCardMessage,
+  permissionOnceOnlyMessageKey,
+  sessionPermissionModeOptions,
+} from './AgentChatSection';
+import {
+  BranchLineagePanel,
+  buildBranchLineageRows,
   getSessionGitLineDensity,
+  pickFocusedCheckpointIdForScroll,
+  sessionCheckpointPreview,
+} from './SessionLineageSurface';
+import {
   getArtifactOpenMode,
   isPendingEmptyArtifactPreview,
   isUserFacingDeliveryArtifact,
-  isClarificationCardAnsweredByLaterUserMessage,
-  isInlineToolCardMessage,
-  pickFocusedCheckpointIdForScroll,
-  permissionOnceOnlyMessageKey,
-  sessionPermissionModeOptions,
-  sessionCheckpointPreview,
+} from './ArtifactSurface';
+import {
+  ActiveTailStatusLine,
   subagentWorkerRecoveryModel,
   userFacingRuntimeStatus,
-  SessionDecisionHistory,
-} from './AgentChatSection';
+  WorkflowRunFocusPanel,
+} from './SessionRuntimePanel';
+import { SessionDecisionHistory } from './SessionDecisionHistory';
+import { StructuredToolResultBody } from './StructuredToolResult';
 import AgentMindSection from './AgentMindSection';
 import AgentSettingsSection, {
   buildPatrolPlanRecommendationInput,

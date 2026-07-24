@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { SessionWorkbenchHeader } from './SessionWorkbenchChrome';
 import type { RuntimeSectionItemModel, SessionWorkbenchHeaderModel } from './timelineModel';
-import { runtimeItemDisplayMeta, runtimeItemDisplayStatus } from '../agent-detail/AgentChatSection';
+import { runtimeItemDisplayMeta, runtimeItemDisplayStatus } from '../agent-detail/SessionRuntimePanel';
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({

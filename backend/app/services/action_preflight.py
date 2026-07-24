@@ -49,6 +49,7 @@ class ActionPreflightInput:
     charter_policy_valid: bool = True
     charter_policy_error: str | None = None
     truth_evidence: tuple[TruthEvidencePackV1, ...] = ()
+    unauthorized_secret_refs: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,12 +112,28 @@ class ActionPreflightService:
     """Classify whether an action may execute, must ask, or must refuse."""
 
     def evaluate(self, request: ActionPreflightInput) -> ActionPreflightResult:
-        evidence_refs = [pack.evidence_id for pack in request.truth_evidence if pack.evidence_id]
+        evidence_refs = list(
+            dict.fromkeys(
+                [
+                    *(pack.evidence_id for pack in request.truth_evidence if pack.evidence_id),
+                    *request.unauthorized_secret_refs,
+                ]
+            )
+        )
         evidence_trace = _truth_evidence_trace(request.truth_evidence)
         if not request.runtime_permission_allowed:
             return ActionPreflightResult(
                 decision=PreflightDecision.REFUSE,
                 reasons=["runtime_permission_denied"],
+                requires_audit=True,
+                evidence_refs=evidence_refs,
+                evidence_trace=evidence_trace,
+            )
+
+        if request.unauthorized_secret_refs:
+            return ActionPreflightResult(
+                decision=PreflightDecision.REFUSE,
+                reasons=["unauthorized_secret_bytes"],
                 requires_audit=True,
                 evidence_refs=evidence_refs,
                 evidence_trace=evidence_trace,

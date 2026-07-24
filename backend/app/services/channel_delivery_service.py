@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import mimetypes
 import uuid
@@ -9,6 +10,7 @@ from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 
 from loguru import logger
@@ -17,6 +19,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.channel_config import ChannelConfig
 from app.services.activity_logger import log_activity
+from app.services.exact_secret_boundary import (
+    ExactSecretBoundary,
+    boundary_from_channel_config,
+    boundary_from_reply_target,
+)
 from app.services.outbound_privacy import redact_outbound
 from app.services.privacy_layer import SensitivityLevel
 from app.services.principal_context import PrincipalStack
@@ -238,14 +245,18 @@ class ChannelDeliveryService:
             if conversation_id and sender_staff_id:
                 return f"dingtalk:{conversation_id}:{sender_staff_id}"
             webhook = str(target.get("session_webhook") or "").strip()
-            return f"dingtalk:{webhook}" if webhook else ""
+            return f"dingtalk:target-ref:{ChannelDeliveryService._secret_fingerprint(webhook)}" if webhook else ""
         if channel == "discord":
             channel_id = str(target.get("channel_id") or "").strip()
             sender_id = str(target.get("sender_id") or "").strip()
             if channel_id and sender_id:
                 return f"discord:{channel_id}:{sender_id}"
             interaction_token = str(target.get("interaction_token") or "").strip()
-            return f"discord:{interaction_token}" if interaction_token else ""
+            return (
+                f"discord:target-ref:{ChannelDeliveryService._secret_fingerprint(interaction_token)}"
+                if interaction_token
+                else ""
+            )
         if channel == "microsoft_teams":
             conversation_id = str(target.get("conversation_id") or "").strip()
             sender_id = str(target.get("sender_id") or target.get("recipient_id") or "").strip()
@@ -259,6 +270,10 @@ class ChannelDeliveryService:
             username = str(target.get("username") or "").strip()
             return f"web:{username}" if username else ""
         return ""
+
+    @staticmethod
+    def _secret_fingerprint(value: str) -> str:
+        return hashlib.sha256(value.encode("utf-8")).hexdigest()[:24]
 
     @staticmethod
     async def _load_config(db: AsyncSession, agent_id: uuid.UUID, channel: str) -> ChannelConfig | None:
@@ -278,6 +293,7 @@ class ChannelDeliveryService:
         delivery_mode: str,
         reply_target: dict[str, Any] | None,
         extra_detail: dict[str, Any] | None = None,
+        secret_boundary: ExactSecretBoundary | None = None,
     ) -> None:
         action_type = {
             "success": "channel_delivery_success",
@@ -285,18 +301,25 @@ class ChannelDeliveryService:
             "unavailable": "channel_delivery_unavailable",
             "denied": "channel_capability_denied",
         }.get(result.status, "channel_delivery_failed")
-        detail = {
-            "channel": result.channel,
-            "delivery_mode": delivery_mode,
-            "target_type": (reply_target or {}).get("channel"),
-            "message": result.message,
-            "failure_reason": None if result.ok else result.message,
-            "reply_target": reply_target,
-            **result.detail,
-        }
+        boundary = ExactSecretBoundary.combine(
+            boundary_from_reply_target(reply_target),
+            secret_boundary or ExactSecretBoundary.empty(),
+        )
+        safe_message = boundary.redact_text(result.message).text
+        detail = boundary.redact_payload(
+            {
+                "channel": result.channel,
+                "delivery_mode": delivery_mode,
+                "target_type": (reply_target or {}).get("channel"),
+                "message": safe_message,
+                "failure_reason": None if result.ok else safe_message,
+                "reply_target": reply_target,
+                **result.detail,
+            }
+        )
         if extra_detail:
-            detail.update(extra_detail)
-        await log_activity(agent_id, action_type, result.message, detail=detail)
+            detail.update(boundary.redact_payload(extra_detail))
+        await log_activity(agent_id, action_type, safe_message, detail=detail)
 
     @staticmethod
     def _success(channel: str, message: str, **detail: Any) -> DeliveryResult:
@@ -327,6 +350,7 @@ class ChannelDeliveryService:
         config: ChannelConfig | Any,
         target: dict[str, Any],
         path: Path,
+        content_sha256: str,
         message: str,
         delivery_error: Exception,
     ) -> DeliveryResult:
@@ -350,6 +374,7 @@ class ChannelDeliveryService:
         download_url = build_channel_file_download_url(
             agent_id=agent_id,
             path=rel_path,
+            content_sha256=content_sha256,
             expires_delta=timedelta(hours=24),
         )
         parts = []
@@ -382,6 +407,7 @@ class ChannelDeliveryService:
         *,
         db: AsyncSession,
         agent_id: uuid.UUID,
+        tenant_id: uuid.UUID | None = None,
         reply_target: dict[str, Any] | None,
         text: str,
         delivery_mode: str = "live",
@@ -401,15 +427,63 @@ class ChannelDeliveryService:
 
         channel = target["channel"]
 
+        config = None if channel == "web" else await ChannelDeliveryService._load_config(db, agent_id, channel)
+        exact_secret_boundary = ExactSecretBoundary.combine(
+            boundary_from_reply_target(target),
+            boundary_from_channel_config(
+                config,
+                agent_id=agent_id,
+                channel=channel,
+            ),
+        )
+        if tenant_id is not None:
+            try:
+                from app.services.credential_boundary_loader import (
+                    load_exact_secret_boundary,
+                )
+
+                exact_secret_boundary = ExactSecretBoundary.combine(
+                    exact_secret_boundary,
+                    await load_exact_secret_boundary(
+                        db,
+                        tenant_id=tenant_id,
+                        agent_id=agent_id,
+                    ),
+                )
+            except Exception as exc:
+                logger.error(
+                    "Channel credential authority unavailable for tenant {} agent {} ({})",
+                    tenant_id,
+                    agent_id,
+                    type(exc).__name__,
+                )
+                result = ChannelDeliveryService._failed(
+                    channel,
+                    "Credential authority is unavailable; outbound delivery was not attempted.",
+                    status="unavailable",
+                    retryable=True,
+                    reason_code="credential_authority_unavailable",
+                )
+                await ChannelDeliveryService._log_result(
+                    agent_id,
+                    result,
+                    delivery_mode=delivery_mode,
+                    reply_target=target,
+                    extra_detail=extra_detail,
+                    secret_boundary=exact_secret_boundary,
+                )
+                return result
         redact_decision = redact_outbound(
             text,
             channel=channel,
             principal_stack=principal_stack,
             declared_sensitivity=content_sensitivity,
+            secret_boundary=exact_secret_boundary,
         )
         redact_detail = {
             "outbound_sensitivity": redact_decision.sensitivity.value,
             "outbound_redact_reason": redact_decision.reason,
+            "secret_evidence_refs": list(redact_decision.secret_evidence_refs),
         }
         if redact_decision.rejected:
             result = ChannelDeliveryService._failed(
@@ -419,18 +493,27 @@ class ChannelDeliveryService:
                 **redact_detail,
             )
             await ChannelDeliveryService._log_result(
-                agent_id, result, delivery_mode=delivery_mode, reply_target=target, extra_detail=extra_detail
+                agent_id,
+                result,
+                delivery_mode=delivery_mode,
+                reply_target=target,
+                extra_detail=extra_detail,
+                secret_boundary=exact_secret_boundary,
             )
             return result
         text = redact_decision.text
 
-        config = None if channel == "web" else await ChannelDeliveryService._load_config(db, agent_id, channel)
         if channel != "web" and (not config or not getattr(config, "is_configured", False)):
             result = ChannelDeliveryService._failed(
                 channel, f"{channel} channel is not configured for this agent.", status="unavailable"
             )
             await ChannelDeliveryService._log_result(
-                agent_id, result, delivery_mode=delivery_mode, reply_target=target, extra_detail=extra_detail
+                agent_id,
+                result,
+                delivery_mode=delivery_mode,
+                reply_target=target,
+                extra_detail=extra_detail,
+                secret_boundary=exact_secret_boundary,
             )
             return result
 
@@ -486,7 +569,9 @@ class ChannelDeliveryService:
                         json={"msgtype": "markdown", "markdown": {"title": "AI Reply", "text": text}},
                     )
                 result = ChannelDeliveryService._success(
-                    channel, "DingTalk message delivered.", session_webhook=session_webhook
+                    channel,
+                    "DingTalk message delivered.",
+                    target_ref=ChannelDeliveryService.identity_from_delivery_target(target),
                 )
             elif channel == "discord":
                 from app.api.discord_bot import _send_discord_followup
@@ -498,7 +583,9 @@ class ChannelDeliveryService:
                     str(config.app_id or ""), str(config.app_secret or ""), interaction_token, text
                 )
                 result = ChannelDeliveryService._success(
-                    channel, "Discord message delivered.", interaction_token=interaction_token
+                    channel,
+                    "Discord message delivered.",
+                    target_ref=ChannelDeliveryService.identity_from_delivery_target(target),
                 )
             elif channel == "microsoft_teams":
                 from app.api.teams import _send_teams_message
@@ -542,7 +629,12 @@ class ChannelDeliveryService:
                         to_user_id=to_user_id,
                     )
                     await ChannelDeliveryService._log_result(
-                        agent_id, result, delivery_mode=delivery_mode, reply_target=target, extra_detail=extra_detail
+                        agent_id,
+                        result,
+                        delivery_mode=delivery_mode,
+                        reply_target=target,
+                        extra_detail=extra_detail,
+                        secret_boundary=exact_secret_boundary,
                     )
                     return result
                 client = ILinkClient(base_url)
@@ -642,7 +734,11 @@ class ChannelDeliveryService:
                                 }
                             )
                         except Exception as exc:
-                            logger.debug(f"[ChannelDelivery] Web push suppressed: {exc}")
+                            error = exact_secret_boundary.redact_text(f"{type(exc).__name__}: {exc}")
+                            logger.debug(
+                                "[ChannelDelivery] Web push suppressed: {}",
+                                error.text,
+                            )
                 result = ChannelDeliveryService._success(
                     channel,
                     "Web message delivered.",
@@ -654,11 +750,22 @@ class ChannelDeliveryService:
                     channel, f"Channel '{channel}' is not supported by unified delivery.", status="denied"
                 )
         except Exception as exc:
-            logger.warning(f"[ChannelDelivery] Text delivery failed via {channel}: {exc}")
-            result = ChannelDeliveryService._failed(channel, str(exc), retryable=True)
+            error = exact_secret_boundary.redact_text(str(exc))
+            logger.warning(f"[ChannelDelivery] Text delivery failed via {channel}: {error.text}")
+            result = ChannelDeliveryService._failed(
+                channel,
+                error.text,
+                retryable=True,
+                secret_evidence_refs=list(error.matched_refs),
+            )
 
         await ChannelDeliveryService._log_result(
-            agent_id, result, delivery_mode=delivery_mode, reply_target=target, extra_detail=extra_detail
+            agent_id,
+            result,
+            delivery_mode=delivery_mode,
+            reply_target=target,
+            extra_detail=extra_detail,
+            secret_boundary=exact_secret_boundary,
         )
         return result
 
@@ -667,6 +774,7 @@ class ChannelDeliveryService:
         *,
         db: AsyncSession,
         agent_id: uuid.UUID,
+        tenant_id: uuid.UUID | None = None,
         reply_target: dict[str, Any] | None,
         file_path: str | Path,
         message: str = "",
@@ -685,20 +793,179 @@ class ChannelDeliveryService:
 
         channel = target["channel"]
         config = await ChannelDeliveryService._load_config(db, agent_id, channel)
+        exact_secret_boundary = ExactSecretBoundary.combine(
+            boundary_from_reply_target(target),
+            boundary_from_channel_config(
+                config,
+                agent_id=agent_id,
+                channel=channel,
+            ),
+        )
+        if tenant_id is not None:
+            try:
+                from app.services.credential_boundary_loader import (
+                    load_exact_secret_boundary,
+                )
+
+                exact_secret_boundary = ExactSecretBoundary.combine(
+                    exact_secret_boundary,
+                    await load_exact_secret_boundary(
+                        db,
+                        tenant_id=tenant_id,
+                        agent_id=agent_id,
+                    ),
+                )
+            except Exception as exc:
+                logger.error(
+                    "Channel file credential authority unavailable for tenant {} agent {} ({})",
+                    tenant_id,
+                    agent_id,
+                    type(exc).__name__,
+                )
+                result = ChannelDeliveryService._failed(
+                    channel,
+                    "Credential authority is unavailable; outbound file delivery was not attempted.",
+                    status="unavailable",
+                    retryable=True,
+                    reason_code="credential_authority_unavailable",
+                )
+                await ChannelDeliveryService._log_result(
+                    agent_id,
+                    result,
+                    delivery_mode=delivery_mode,
+                    reply_target=target,
+                    extra_detail=extra_detail,
+                    secret_boundary=exact_secret_boundary,
+                )
+                return result
         if not config or not getattr(config, "is_configured", False):
             result = ChannelDeliveryService._failed(
                 channel, f"{channel} channel is not configured for this agent.", status="unavailable"
             )
             await ChannelDeliveryService._log_result(
-                agent_id, result, delivery_mode=delivery_mode, reply_target=target, extra_detail=extra_detail
+                agent_id,
+                result,
+                delivery_mode=delivery_mode,
+                reply_target=target,
+                extra_detail=extra_detail,
+                secret_boundary=exact_secret_boundary,
             )
             return result
 
-        path = Path(file_path)
-        if not path.exists():
-            result = ChannelDeliveryService._failed(channel, f"File not found: {path}", status="failed")
+        source_path = Path(file_path)
+        if not source_path.exists() or not source_path.is_file():
+            result = ChannelDeliveryService._failed(
+                channel,
+                f"File not found: {source_path}",
+                status="failed",
+            )
             await ChannelDeliveryService._log_result(
-                agent_id, result, delivery_mode=delivery_mode, reply_target=target, extra_detail=extra_detail
+                agent_id,
+                result,
+                delivery_mode=delivery_mode,
+                reply_target=target,
+                extra_detail=extra_detail,
+                secret_boundary=exact_secret_boundary,
+            )
+            return result
+
+        message_redaction = redact_outbound(
+            message,
+            channel=channel,
+            secret_boundary=exact_secret_boundary,
+        )
+        if message_redaction.rejected:
+            result = ChannelDeliveryService._failed(
+                channel,
+                message_redaction.reason or "Outbound file message blocked by privacy gate.",
+                status="denied",
+                secret_evidence_refs=list(message_redaction.secret_evidence_refs),
+            )
+            await ChannelDeliveryService._log_result(
+                agent_id,
+                result,
+                delivery_mode=delivery_mode,
+                reply_target=target,
+                extra_detail=extra_detail,
+                secret_boundary=exact_secret_boundary,
+            )
+            return result
+        message = message_redaction.text
+
+        snapshot_dir = TemporaryDirectory(prefix="hive-channel-delivery-")
+        path = Path(snapshot_dir.name) / source_path.name
+        content_digest = hashlib.sha256()
+        try:
+            with source_path.open("rb") as source, path.open("xb") as snapshot:
+                while chunk := source.read(64 * 1024):
+                    content_digest.update(chunk)
+                    snapshot.write(chunk)
+        except OSError as exc:
+            snapshot_dir.cleanup()
+            result = ChannelDeliveryService._failed(
+                channel,
+                f"File could not be read: {type(exc).__name__}",
+                status="failed",
+                retryable=False,
+            )
+            await ChannelDeliveryService._log_result(
+                agent_id,
+                result,
+                delivery_mode=delivery_mode,
+                reply_target=target,
+                extra_detail=extra_detail,
+                secret_boundary=exact_secret_boundary,
+            )
+            return result
+        except BaseException:
+            snapshot_dir.cleanup()
+            raise
+        content_sha256 = content_digest.hexdigest()
+
+        def file_chunks():
+            with path.open("rb") as handle:
+                while chunk := handle.read(64 * 1024):
+                    yield chunk
+
+        try:
+            file_secret_refs = exact_secret_boundary.match_binary_chunks(file_chunks())
+        except OSError as exc:
+            snapshot_dir.cleanup()
+            result = ChannelDeliveryService._failed(
+                channel,
+                f"File could not be read: {type(exc).__name__}",
+                status="failed",
+                retryable=False,
+            )
+            await ChannelDeliveryService._log_result(
+                agent_id,
+                result,
+                delivery_mode=delivery_mode,
+                reply_target=target,
+                extra_detail=extra_detail,
+                secret_boundary=exact_secret_boundary,
+            )
+            return result
+        except BaseException:
+            snapshot_dir.cleanup()
+            raise
+        if file_secret_refs:
+            snapshot_dir.cleanup()
+            result = ChannelDeliveryService._failed(
+                channel,
+                "Outbound file contains exact bytes from a protected credential binding.",
+                status="denied",
+                retryable=False,
+                reason_code="exact_unauthorized_secret_bytes",
+                secret_evidence_refs=list(file_secret_refs),
+            )
+            await ChannelDeliveryService._log_result(
+                agent_id,
+                result,
+                delivery_mode=delivery_mode,
+                reply_target=target,
+                extra_detail=extra_detail,
+                secret_boundary=exact_secret_boundary,
             )
             return result
 
@@ -756,8 +1023,14 @@ class ChannelDeliveryService:
                         to_user_id=to_user_id,
                     )
                     await ChannelDeliveryService._log_result(
-                        agent_id, result, delivery_mode=delivery_mode, reply_target=target, extra_detail=extra_detail
+                        agent_id,
+                        result,
+                        delivery_mode=delivery_mode,
+                        reply_target=target,
+                        extra_detail=extra_detail,
+                        secret_boundary=exact_secret_boundary,
                     )
+                    snapshot_dir.cleanup()
                     return result
                 mime = mimetypes.guess_type(str(path))[0] or ""
                 media_type = (
@@ -794,29 +1067,55 @@ class ChannelDeliveryService:
                     channel, f"Channel '{channel}' is not supported by unified file delivery.", status="denied"
                 )
         except Exception as exc:
-            logger.warning(f"[ChannelDelivery] File delivery failed via {channel}: {exc}")
+            error = exact_secret_boundary.redact_text(str(exc))
+            logger.warning(f"[ChannelDelivery] File delivery failed via {channel}: {error.text}")
             if channel == "wechat_personal":
                 try:
                     result = await ChannelDeliveryService._send_wechat_file_fallback_link(
                         agent_id=agent_id,
                         config=config,
                         target=target,
-                        path=path,
+                        path=source_path,
+                        content_sha256=content_sha256,
                         message=message,
                         delivery_error=exc,
                     )
                 except Exception as fallback_exc:
-                    logger.warning(f"[ChannelDelivery] WeChat file fallback failed: {fallback_exc}")
+                    fallback_error = exact_secret_boundary.redact_text(str(fallback_exc))
+                    logger.warning(f"[ChannelDelivery] WeChat file fallback failed: {fallback_error.text}")
                     result = ChannelDeliveryService._failed(
                         channel,
-                        f"{exc}; fallback failed: {fallback_exc}",
+                        f"{error.text}; fallback failed: {fallback_error.text}",
                         retryable=True,
                         file_name=path.name,
+                        secret_evidence_refs=list(
+                            dict.fromkeys(
+                                [
+                                    *error.matched_refs,
+                                    *fallback_error.matched_refs,
+                                ]
+                            )
+                        ),
                     )
             else:
-                result = ChannelDeliveryService._failed(channel, str(exc), retryable=True, file_name=path.name)
+                result = ChannelDeliveryService._failed(
+                    channel,
+                    error.text,
+                    retryable=True,
+                    file_name=path.name,
+                    secret_evidence_refs=list(error.matched_refs),
+                )
+        except BaseException:
+            snapshot_dir.cleanup()
+            raise
 
+        snapshot_dir.cleanup()
         await ChannelDeliveryService._log_result(
-            agent_id, result, delivery_mode=delivery_mode, reply_target=target, extra_detail=extra_detail
+            agent_id,
+            result,
+            delivery_mode=delivery_mode,
+            reply_target=target,
+            extra_detail=extra_detail,
+            secret_boundary=exact_secret_boundary,
         )
         return result

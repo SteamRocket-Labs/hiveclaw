@@ -10,6 +10,7 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
+from app.services.channel_secret_storage import EncryptedDeliveryTargetJSON
 
 
 class BudgetTransitionOutbox(Base):
@@ -58,7 +59,10 @@ class BudgetTransitionOutbox(Base):
     channel: Mapped[str] = mapped_column(String(40), nullable=False, default="web", server_default=text("'web'"))
     content: Mapped[str] = mapped_column(Text, nullable=False)
     delivery_target_json: Mapped[dict] = mapped_column(
-        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+        EncryptedDeliveryTargetJSON(postgres_jsonb=True),
+        nullable=False,
+        default=dict,
+        server_default=text("'{}'::jsonb"),
     )
     metadata_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb"))
     delivery_receipts_json: Mapped[dict] = mapped_column(

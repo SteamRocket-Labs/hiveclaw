@@ -1995,6 +1995,7 @@ async def _delegate_after_cycle_check(
         ),
         agent_name=request.target.name,
         role_description=request.target.role_description or "",
+        tenant_id=transcript_tenant_id,
         agent_id=request.target.id,
         user_id=request.owner_id,
         execution_identity=request.execution_identity or _capture_execution_identity_ref(),

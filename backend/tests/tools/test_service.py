@@ -2608,7 +2608,7 @@ async def test_tool_runtime_service_fails_typed_when_preflight_approval_ticket_c
 
 
 @pytest.mark.asyncio
-async def test_tool_runtime_service_preflight_refuses_credential_arguments():
+async def test_tool_runtime_service_executes_secret_shaped_fixture_without_binding():
     from app.tools.runtime import ToolExecutionContext
     from app.tools.service import ToolRuntimeService
     from tests.decision_trace_fake import InMemoryDecisionTraceStore
@@ -2619,7 +2619,7 @@ async def test_tool_runtime_service_preflight_refuses_credential_arguments():
         tenant_id="tenant-1",
         workspace=Path("/tmp/ws"),
     )
-    registry = _FakeRegistry("SHOULD_NOT_RUN")
+    registry = _FakeRegistry("EXECUTED")
     traces = InMemoryDecisionTraceStore()
 
     service = ToolRuntimeService(
@@ -2641,13 +2641,326 @@ async def test_tool_runtime_service_preflight_refuses_credential_arguments():
         user_id=context.user_id,
     )
 
+    assert result == "EXECUTED"
+    assert len(registry.calls) == 1
+    assert traces.decisions() == []
+
+
+@pytest.mark.asyncio
+async def test_tool_runtime_service_refuses_exact_active_secret_before_hooks_or_governance(
+    monkeypatch,
+):
+    from app.services.exact_secret_boundary import ExactSecretBoundary
+    from app.tools.runtime import ToolExecutionContext
+    from app.tools.service import ToolRuntimeService
+    from tests.decision_trace_fake import InMemoryDecisionTraceStore
+
+    active_secret = "sk-live-tool-secret-0123456789"
+    context = ToolExecutionContext(
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        tenant_id="tenant-1",
+        workspace=Path("/tmp/ws"),
+        exact_secret_boundary=ExactSecretBoundary.from_pairs(
+            (("tool-config://tenant-1/search/api_key", active_secret),)
+        ),
+    )
+    registry = _FakeRegistry("SHOULD_NOT_RUN")
+    traces = InMemoryDecisionTraceStore()
+    trace_metadata: dict[str, object] = {}
+
+    async def forbidden_hook(*_args, **_kwargs):
+        raise AssertionError("exact unauthorized bytes must stop before hook disclosure")
+
+    monkeypatch.setattr("app.runtime.hooks.emit_hook", forbidden_hook)
+    governance_resolver = _FakeGovernanceResolver(
+        SimpleNamespace(),
+        SimpleNamespace(),
+    )
+    service = ToolRuntimeService(
+        runtime_resolver=_FakeRuntimeResolver(context),
+        governance_resolver=governance_resolver,
+        registry=registry,
+        ensure_registry=lambda: None,
+        governance_runner=lambda *_args, **_kwargs: None,
+        fallback_executor=lambda *_args, **_kwargs: "fallback",
+        direct_fallback_executor=lambda *_args, **_kwargs: "direct-fallback",
+        activity_logger=None,
+        decision_trace_store=traces,
+    )
+
+    result = await service.execute(
+        "write_file",
+        {
+            "path": "notes.txt",
+            "content": f"prefix::{active_secret}::suffix",
+        },
+        agent_id=context.agent_id,
+        user_id=context.user_id,
+        trace_metadata_sink=trace_metadata,
+    )
+
     assert result.startswith("[Preflight:refuse]")
-    assert "pl4_zero_retention" in result
+    assert "unauthorized_secret_bytes" in result
     assert registry.calls == []
+    assert governance_resolver.context_calls == []
+    assert active_secret not in json.dumps(trace_metadata, ensure_ascii=False)
+    assert trace_metadata["secret_input_redaction"] == {
+        "code": "exact_unauthorized_secret_bytes",
+        "redacted_count": 1,
+        "source_refs": ["tool-config://tenant-1/search/api_key"],
+    }
     decisions = traces.decisions()
     assert len(decisions) == 1
     assert decisions[0].chosen == "refuse"
     assert decisions[0].sensitivity == "PL4_credential"
+
+
+@pytest.mark.asyncio
+async def test_tool_runtime_service_refuses_exact_secret_before_plan_mode_gate():
+    from app.services.exact_secret_boundary import ExactSecretBoundary
+    from app.tools.runtime import ToolExecutionContext
+    from app.tools.service import ToolRuntimeService
+    from tests.decision_trace_fake import InMemoryDecisionTraceStore
+
+    active_secret = "sk-live-plan-secret-0123456789"
+    context = ToolExecutionContext(
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        tenant_id="tenant-1",
+        workspace=Path("/tmp/ws"),
+        exact_secret_boundary=ExactSecretBoundary.from_pairs(
+            (("tool-config://tenant-1/search/api_key", active_secret),)
+        ),
+    )
+
+    class ForbiddenPlanGate:
+        async def check(self, *_args, **_kwargs):
+            raise AssertionError("exact unauthorized bytes must stop before plan authority")
+
+    class SessionFactory:
+        def __call__(self):
+            return self
+
+        async def __aenter__(self):
+            return SimpleNamespace()
+
+        async def __aexit__(self, *_args):
+            return False
+
+    service = ToolRuntimeService(
+        runtime_resolver=_FakeRuntimeResolver(context),
+        governance_resolver=_FakeGovernanceResolver(
+            SimpleNamespace(),
+            SimpleNamespace(),
+        ),
+        registry=_FakeRegistry("SHOULD_NOT_RUN"),
+        ensure_registry=lambda: None,
+        governance_runner=lambda *_args, **_kwargs: None,
+        fallback_executor=lambda *_args, **_kwargs: "fallback",
+        direct_fallback_executor=lambda *_args, **_kwargs: "direct-fallback",
+        activity_logger=None,
+        decision_trace_store=InMemoryDecisionTraceStore(),
+        plan_mode_gate=ForbiddenPlanGate(),
+        plan_mode_session_factory=SessionFactory(),
+    )
+
+    result = await service.execute(
+        "set_trigger",
+        {
+            "name": "Daily brief",
+            "type": "cron",
+            "config": {
+                "expr": "0 9 * * *",
+                "payload": active_secret,
+            },
+        },
+        agent_id=context.agent_id,
+        user_id=context.user_id,
+    )
+
+    assert result.startswith("[Preflight:refuse]")
+    assert "unauthorized_secret_bytes" in result
+
+
+@pytest.mark.asyncio
+async def test_tool_runtime_service_does_not_rescan_trusted_runtime_argument_injection(
+    monkeypatch,
+):
+    from app.services.exact_secret_boundary import ExactSecretBoundary
+    from app.tools.runtime import ToolExecutionContext
+    from app.tools.service import ToolRuntimeService
+    from tests.decision_trace_fake import InMemoryDecisionTraceStore
+
+    active_secret = "runtime-owned-secret-0123456789"
+    context = ToolExecutionContext(
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        tenant_id="tenant-1",
+        workspace=Path("/tmp/ws"),
+        exact_secret_boundary=ExactSecretBoundary.from_pairs((("tool-config://tenant-1/storage/path", active_secret),)),
+    )
+    registry = _FakeRegistry("EXECUTED")
+
+    def inject_runtime_path(_tool_name, arguments, _runtime_context):
+        return {**arguments, "path": active_secret}
+
+    monkeypatch.setattr(
+        "app.tools.service._inject_runtime_context_arguments",
+        inject_runtime_path,
+    )
+    service = ToolRuntimeService(
+        runtime_resolver=_FakeRuntimeResolver(context),
+        governance_resolver=_FakeGovernanceResolver(
+            SimpleNamespace(),
+            SimpleNamespace(),
+        ),
+        registry=registry,
+        ensure_registry=lambda: None,
+        governance_runner=lambda *_args, **_kwargs: None,
+        fallback_executor=lambda *_args, **_kwargs: "fallback",
+        direct_fallback_executor=lambda *_args, **_kwargs: "direct-fallback",
+        activity_logger=None,
+        decision_trace_store=InMemoryDecisionTraceStore(),
+    )
+
+    result = await service.execute(
+        "read_file",
+        {"path": "safe.txt"},
+        agent_id=context.agent_id,
+        user_id=context.user_id,
+        emit_runtime_hooks=False,
+    )
+
+    assert result == "EXECUTED"
+    assert registry.calls[0].arguments["path"] == active_secret
+
+
+@pytest.mark.asyncio
+async def test_tool_runtime_service_redacts_exact_secret_from_structured_tool_result():
+    from app.services.exact_secret_boundary import ExactSecretBoundary
+    from app.tools.result_envelope import ToolContentEnvelope, ToolResultBlock
+    from app.tools.runtime import ToolExecutionContext
+    from app.tools.service import ToolRuntimeService
+    from tests.decision_trace_fake import InMemoryDecisionTraceStore
+
+    active_secret = "sk-live-tool-result-secret-0123456789"
+    source_ref = "tool-config://tenant-1/search/api_key"
+    context = ToolExecutionContext(
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        tenant_id="tenant-1",
+        workspace=Path("/tmp/ws"),
+        exact_secret_boundary=ExactSecretBoundary.from_pairs(((source_ref, active_secret),)),
+    )
+    registry = _FakeRegistry(
+        ToolContentEnvelope(
+            text=f"prefix::{active_secret}::suffix",
+            blocks=(
+                ToolResultBlock(
+                    type="text",
+                    text=f"block::{active_secret}",
+                ),
+            ),
+            metadata={"nested": {"value": active_secret}},
+        )
+    )
+    trace_metadata: dict[str, object] = {}
+    service = ToolRuntimeService(
+        runtime_resolver=_FakeRuntimeResolver(context),
+        governance_resolver=_FakeGovernanceResolver(
+            SimpleNamespace(),
+            SimpleNamespace(),
+        ),
+        registry=registry,
+        ensure_registry=lambda: None,
+        governance_runner=lambda *_args, **_kwargs: None,
+        fallback_executor=lambda *_args, **_kwargs: "fallback",
+        direct_fallback_executor=lambda *_args, **_kwargs: "direct-fallback",
+        activity_logger=None,
+        decision_trace_store=InMemoryDecisionTraceStore(),
+    )
+
+    result = await service.execute(
+        "read_file",
+        {"path": "safe.txt"},
+        agent_id=context.agent_id,
+        user_id=context.user_id,
+        emit_runtime_hooks=False,
+        trace_metadata_sink=trace_metadata,
+    )
+
+    assert isinstance(result, ToolContentEnvelope)
+    assert str(result) == "prefix::[REDACTED_SECRET]::suffix"
+    assert result.blocks[0].text == "block::[REDACTED_SECRET]"
+    assert result.metadata == {"nested": {"value": "[REDACTED_SECRET]"}}
+    assert active_secret not in repr(result)
+    assert trace_metadata["secret_egress_redaction"] == {
+        "code": "exact_unauthorized_secret_bytes",
+        "surfaces": {"tool_result": 3},
+        "redacted_count": 3,
+        "source_refs": [source_ref],
+    }
+
+
+@pytest.mark.asyncio
+async def test_tool_runtime_service_redacts_exact_secret_from_executor_error():
+    from app.services.exact_secret_boundary import ExactSecretBoundary
+    from app.tools.runtime import ToolExecutionContext
+    from app.tools.service import ToolRuntimeService
+    from tests.decision_trace_fake import InMemoryDecisionTraceStore
+
+    active_secret = "sk-live-tool-error-secret-0123456789"
+    source_ref = "tool-config://tenant-1/search/api_key"
+    context = ToolExecutionContext(
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        tenant_id="tenant-1",
+        workspace=Path("/tmp/ws"),
+        exact_secret_boundary=ExactSecretBoundary.from_pairs(((source_ref, active_secret),)),
+    )
+
+    class RaisingRegistry:
+        async def try_execute(self, _request):
+            raise RuntimeError(f"provider rejected {active_secret}")
+
+    trace_metadata: dict[str, object] = {}
+    service = ToolRuntimeService(
+        runtime_resolver=_FakeRuntimeResolver(context),
+        governance_resolver=_FakeGovernanceResolver(
+            SimpleNamespace(),
+            SimpleNamespace(),
+        ),
+        registry=RaisingRegistry(),
+        ensure_registry=lambda: None,
+        governance_runner=lambda *_args, **_kwargs: None,
+        fallback_executor=lambda *_args, **_kwargs: "fallback",
+        direct_fallback_executor=lambda *_args, **_kwargs: "direct-fallback",
+        activity_logger=None,
+        decision_trace_store=InMemoryDecisionTraceStore(),
+    )
+
+    result = await service.execute(
+        "read_file",
+        {"path": "safe.txt"},
+        agent_id=context.agent_id,
+        user_id=context.user_id,
+        emit_runtime_hooks=False,
+        trace_metadata_sink=trace_metadata,
+    )
+
+    assert active_secret not in str(result)
+    assert "[REDACTED_SECRET]" in str(result)
+    assert trace_metadata["secret_egress_redaction"] == {
+        "code": "exact_unauthorized_secret_bytes",
+        "surfaces": {"tool_error": 1},
+        "redacted_count": 1,
+        "source_refs": [source_ref],
+    }
+    assert active_secret not in json.dumps(
+        context.tool_execution_frames,
+        ensure_ascii=False,
+    )
 
 
 @pytest.mark.asyncio

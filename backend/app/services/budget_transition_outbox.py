@@ -455,6 +455,7 @@ class BudgetTransitionOutboxService:
                 result = await self._text_sender(
                     db=db,
                     agent_id=item.agent_id,
+                    tenant_id=item.tenant_id,
                     reply_target=item.delivery_target,
                     text=item.content,
                     delivery_mode="budget_transition_outbox",

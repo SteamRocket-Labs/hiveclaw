@@ -119,19 +119,47 @@ def test_team_memory_store_append_mode_preserves_existing_content(tmp_path: Path
     assert "Verify rollback notes." in content
 
 
-def test_team_memory_store_rejects_secret_like_content(tmp_path: Path) -> None:
-    from app.services.team_memory import SecretScanError, TeamMemoryStore
+def test_team_memory_store_allows_secret_shaped_documentation_without_binding(tmp_path: Path) -> None:
+    from app.services.team_memory import TeamMemoryStore
 
     store = TeamMemoryStore(data_root=tmp_path)
 
-    with pytest.raises(SecretScanError):
+    entry = store.upsert_entry(
+        tenant_id="tenant-1",
+        workspace_key="workspace-alpha",
+        key="fixture",
+        title="Credential Fixture",
+        content="OPENAI_API_KEY=sk-example-abcdefghijklmnopqrstuvwxyz123456",
+    )
+
+    assert entry.content == "OPENAI_API_KEY=sk-example-abcdefghijklmnopqrstuvwxyz123456"
+
+
+def test_team_memory_store_rejects_exact_active_secret_binding(tmp_path: Path) -> None:
+    from app.services.exact_secret_boundary import ExactSecretBoundary
+    from app.services.team_memory import SecretScanError, TeamMemoryStore
+
+    active_secret = "sk-live-team-secret-0123456789"
+    store = TeamMemoryStore(
+        data_root=tmp_path,
+        exact_secret_boundary=ExactSecretBoundary.from_pairs((("tool-config://tenant/search/api_key", active_secret),)),
+    )
+
+    with pytest.raises(SecretScanError) as exc:
         store.upsert_entry(
             tenant_id="tenant-1",
             workspace_key="workspace-alpha",
             key="unsafe",
             title="Unsafe",
-            content="OPENAI_API_KEY=sk-live-abcdefghijklmnopqrstuvwxyz123456",
+            content=f"prefix::{active_secret}::suffix",
         )
+
+    assert active_secret not in exc.value.decision.content
+    assert exc.value.decision.metadata == {
+        "status": "rejected",
+        "decision_boundary": "exact_secret_authority",
+        "secret_evidence_refs": "tool-config://tenant/search/api_key",
+    }
 
 
 def test_team_memory_store_masks_pii_through_write_gate(tmp_path: Path) -> None:

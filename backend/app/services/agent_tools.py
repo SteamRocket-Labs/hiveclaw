@@ -1180,6 +1180,7 @@ async def _send_channel_file(agent_id: uuid.UUID, ws: Path, arguments: dict) -> 
                 result = await ChannelDeliveryService.send_file(
                     db=db,
                     agent_id=agent_id,
+                    tenant_id=tid,
                     reply_target=reply_target,
                     file_path=file_path,
                     message=accompany_msg,
@@ -1189,8 +1190,13 @@ async def _send_channel_file(agent_id: uuid.UUID, ws: Path, arguments: dict) -> 
             if result.ok:
                 return f"✅ File '{file_path.name}' sent to user via {result.channel}."
             logger.warning("[ChannelFile] Unified delivery failed: %s", result.message)
+            return f"❌ {result.message}"
         except Exception as exc:
-            logger.warning("[ChannelFile] Unified delivery error: %s", exc)
+            logger.warning(
+                "[ChannelFile] Unified delivery error: %s",
+                type(exc).__name__,
+            )
+            return "❌ Unified channel delivery is temporarily unavailable."
 
     sender = channel_file_sender.get()
     if sender is not None:
@@ -1199,7 +1205,7 @@ async def _send_channel_file(agent_id: uuid.UUID, ws: Path, arguments: dict) -> 
             await sender(file_path, accompany_msg)
             return f"✅ File '{file_path.name}' sent to user via channel."
         except Exception as e:
-            return f"❌ Failed to send file: {e}"
+            return f"❌ Failed to send file: {type(e).__name__}"
     else:
         # Web chat mode: return a download URL
         aid = channel_web_agent_id.get() or str(agent_id)
@@ -1272,6 +1278,7 @@ async def _send_channel_message(
         result = await ChannelDeliveryService.send_text(
             db=db,
             agent_id=agent_id,
+            tenant_id=tid,
             reply_target=reply_target,
             text=message,
             delivery_mode="live",

@@ -241,6 +241,591 @@ async def test_invoke_agent_does_not_prefetch_or_inject_personal_kb_before_kerne
 
 
 @pytest.mark.asyncio
+async def test_invoke_agent_redacts_only_exact_model_secret_from_stream_final_and_parts(monkeypatch):
+    from app.kernel import InvocationResult
+    from app.runtime.invoker import AgentInvocationRequest, invoke_agent
+
+    active_secret = "sk-live-model-secret-0123456789"
+    model_id = uuid4()
+    original = f"alpha::{active_secret}::omega"
+    chunks: list[str] = []
+    thinking_chunks: list[str] = []
+    tool_events: list[dict] = []
+    events: list[dict] = []
+    committed_responses: list[dict] = []
+
+    async def capture_chunk(chunk: str) -> None:
+        chunks.append(chunk)
+
+    async def capture_thinking(chunk: str) -> None:
+        thinking_chunks.append(chunk)
+
+    async def capture_tool_event(payload: dict) -> None:
+        tool_events.append(payload)
+
+    async def capture_event(payload: dict) -> None:
+        events.append(payload)
+
+    async def capture_commit(**payload):
+        committed_responses.append(payload["response"])
+        return {"sealed": True}
+
+    class FakeKernel:
+        async def handle(self, request):
+            assert request.on_chunk is not None
+            assert request.on_thinking is not None
+            assert request.on_tool_call is not None
+            assert request.on_event is not None
+            assert request.model_response_commit is not None
+            await request.on_chunk(f"alpha::{active_secret[:12]}")
+            await request.on_chunk(f"{active_secret[12:]}::omega")
+            await request.on_thinking(f"thought::{active_secret}")
+            await request.on_tool_call(
+                {
+                    "name": "write_file",
+                    "args": {"content": active_secret},
+                    "status": "running",
+                }
+            )
+            await request.on_event(
+                {
+                    "type": "provider_debug",
+                    "detail": active_secret,
+                }
+            )
+            await request.model_response_commit(
+                response={"content": original},
+            )
+            return InvocationResult(
+                content=original,
+                parts=[
+                    {"type": "text", "text": original},
+                    {"type": "event", "detail": {"summary": original}},
+                ],
+            )
+
+    monkeypatch.setattr("app.runtime.invoker._resolve_kernel_for_request", lambda _request: FakeKernel())
+
+    result = await invoke_agent(
+        AgentInvocationRequest(
+            model=SimpleNamespace(
+                id=model_id,
+                provider="openai",
+                model="gpt-4.1",
+                api_key=active_secret,
+                base_url=None,
+            ),
+            messages=[{"role": "user", "content": "Return the test payload."}],
+            agent_name="Agent",
+            role_description="desc",
+            agent_id=uuid4(),
+            user_id=uuid4(),
+            on_chunk=capture_chunk,
+            on_thinking=capture_thinking,
+            on_tool_call=capture_tool_event,
+            on_event=capture_event,
+            model_response_commit=capture_commit,
+        )
+    )
+
+    expected = "alpha::[REDACTED_SECRET]::omega"
+    assert "".join(chunks) == expected
+    assert "".join(thinking_chunks) == "thought::[REDACTED_SECRET]"
+    assert tool_events == [
+        {
+            "name": "write_file",
+            "args": {"content": "[REDACTED_SECRET]"},
+            "status": "running",
+        }
+    ]
+    assert {
+        "type": "provider_debug",
+        "detail": "[REDACTED_SECRET]",
+    } in events
+    assert committed_responses == [{"content": expected}]
+    assert result.content == expected
+    assert result.parts == [
+        {"type": "text", "text": expected},
+        {"type": "event", "detail": {"summary": expected}},
+    ]
+    secret_events = [event for event in events if event.get("type") == "secret_egress_redacted"]
+    assert secret_events == [
+        {
+            "type": "secret_egress_redacted",
+            "status": "redacted",
+            "code": "exact_unauthorized_secret_bytes",
+            "redacted_count": 8,
+            "surfaces": {
+                "stream": 1,
+                "thinking": 1,
+                "tool_event": 1,
+                "runtime_event": 1,
+                "model_response_commit": 1,
+                "content": 1,
+                "parts": 2,
+            },
+            "source_refs": [f"llm-model://{model_id}/selected/api_key"],
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_invoke_agent_records_stream_only_secret_redaction(monkeypatch):
+    from app.kernel import InvocationResult
+    from app.runtime.invoker import AgentInvocationRequest, invoke_agent
+
+    active_secret = "sk-live-stream-only-secret-0123456789"
+    model_id = uuid4()
+    chunks: list[str] = []
+    events: list[dict] = []
+
+    class FakeKernel:
+        async def handle(self, request):
+            assert request.on_chunk is not None
+            await request.on_chunk(active_secret[:9])
+            await request.on_chunk(active_secret[9:])
+            return InvocationResult(content="clean final", parts=[])
+
+    monkeypatch.setattr("app.runtime.invoker._resolve_kernel_for_request", lambda _request: FakeKernel())
+
+    result = await invoke_agent(
+        AgentInvocationRequest(
+            model=SimpleNamespace(
+                id=model_id,
+                provider="openai",
+                model="gpt-4.1",
+                api_key=active_secret,
+                base_url=None,
+            ),
+            messages=[{"role": "user", "content": "Return the test payload."}],
+            agent_name="Agent",
+            role_description="desc",
+            agent_id=uuid4(),
+            user_id=uuid4(),
+            on_chunk=chunks.append,
+            on_event=events.append,
+        )
+    )
+
+    assert chunks == ["[REDACTED_SECRET]"]
+    assert result.content == "clean final"
+    assert [event for event in events if event.get("type") == "secret_egress_redacted"] == [
+        {
+            "type": "secret_egress_redacted",
+            "status": "redacted",
+            "code": "exact_unauthorized_secret_bytes",
+            "redacted_count": 1,
+            "surfaces": {
+                "stream": 1,
+                "thinking": 0,
+                "content": 0,
+                "parts": 0,
+            },
+            "source_refs": [f"llm-model://{model_id}/selected/api_key"],
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_invoke_agent_replaces_exact_secret_in_escaping_provider_error(monkeypatch):
+    from app.runtime.invoker import AgentInvocationRequest, invoke_agent
+    from app.services.exact_secret_boundary import ExactSecretEgressError
+
+    active_secret = "sk-live-provider-error-secret-0123456789"
+    model_id = uuid4()
+    events: list[dict] = []
+
+    class FakeKernel:
+        async def handle(self, _request):
+            raise RuntimeError(f"provider rejected key {active_secret}")
+
+    monkeypatch.setattr("app.runtime.invoker._resolve_kernel_for_request", lambda _request: FakeKernel())
+
+    with pytest.raises(ExactSecretEgressError) as exc:
+        await invoke_agent(
+            AgentInvocationRequest(
+                model=SimpleNamespace(
+                    id=model_id,
+                    provider="openai",
+                    model="gpt-4.1",
+                    api_key=active_secret,
+                    base_url=None,
+                ),
+                messages=[{"role": "user", "content": "Trigger provider failure."}],
+                agent_name="Agent",
+                role_description="desc",
+                agent_id=uuid4(),
+                user_id=uuid4(),
+                on_event=events.append,
+            )
+        )
+
+    assert active_secret not in str(exc.value)
+    assert "[REDACTED_SECRET]" in str(exc.value)
+    assert exc.value.source_refs == (f"llm-model://{model_id}/selected/api_key",)
+    assert [event for event in events if event.get("type") == "secret_egress_redacted"] == [
+        {
+            "type": "secret_egress_redacted",
+            "status": "redacted",
+            "code": "exact_unauthorized_secret_bytes",
+            "redacted_count": 1,
+            "surfaces": {
+                "stream": 0,
+                "thinking": 0,
+                "error": 1,
+            },
+            "source_refs": [f"llm-model://{model_id}/selected/api_key"],
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_invoke_agent_loads_tenant_secret_boundary_before_tool_event(monkeypatch):
+    from app.kernel import InvocationResult
+    from app.runtime.invoker import AgentInvocationRequest, invoke_agent
+    from app.services.exact_secret_boundary import ExactSecretBoundary
+
+    tenant_id = uuid4()
+    agent_id = uuid4()
+    active_secret = "tool-live-invocation-secret-0123456789"
+    source_ref = "tool-config://tenant-1/search/api_key"
+    tool_events: list[dict] = []
+    runtime_events: list[dict] = []
+    loader_calls: list[dict] = []
+
+    async def fake_loader(*, tenant_id, agent_id):
+        loader_calls.append(
+            {
+                "tenant_id": tenant_id,
+                "agent_id": agent_id,
+            }
+        )
+        return ExactSecretBoundary.from_pairs(((source_ref, active_secret),))
+
+    class FakeKernel:
+        async def handle(self, request):
+            assert request.on_tool_call is not None
+            await request.on_tool_call(
+                {
+                    "name": "write_file",
+                    "args": {"content": active_secret},
+                    "status": "running",
+                }
+            )
+            return InvocationResult(content="clean final", parts=[])
+
+    monkeypatch.setattr(
+        "app.runtime.invoker._load_invocation_secret_boundary",
+        fake_loader,
+    )
+    monkeypatch.setattr("app.runtime.invoker._resolve_kernel_for_request", lambda _request: FakeKernel())
+
+    result = await invoke_agent(
+        AgentInvocationRequest(
+            model=SimpleNamespace(
+                id=uuid4(),
+                provider="openai",
+                model="gpt-4.1",
+                api_key="model-key-that-is-different-0123456789",
+                base_url=None,
+            ),
+            tenant_id=tenant_id,
+            messages=[{"role": "user", "content": "Use the configured tool."}],
+            agent_name="Agent",
+            role_description="desc",
+            agent_id=agent_id,
+            user_id=uuid4(),
+            on_tool_call=tool_events.append,
+            on_event=runtime_events.append,
+        )
+    )
+
+    assert loader_calls == [{"tenant_id": tenant_id, "agent_id": agent_id}]
+    assert result.content == "clean final"
+    assert tool_events == [
+        {
+            "name": "write_file",
+            "args": {"content": "[REDACTED_SECRET]"},
+            "status": "running",
+        }
+    ]
+    assert [event for event in runtime_events if event.get("type") == "secret_egress_redacted"] == [
+        {
+            "type": "secret_egress_redacted",
+            "status": "redacted",
+            "code": "exact_unauthorized_secret_bytes",
+            "redacted_count": 1,
+            "surfaces": {
+                "stream": 0,
+                "thinking": 0,
+                "tool_event": 1,
+                "content": 0,
+                "parts": 0,
+            },
+            "source_refs": [source_ref],
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_invoke_agent_redacts_exact_secret_before_prompt_hook_and_kernel(monkeypatch):
+    from app.kernel import InvocationResult
+    from app.runtime.hooks import HookEvent, HookResult
+    from app.runtime.invoker import AgentInvocationRequest, invoke_agent
+
+    active_secret = "sk-live-model-input-secret-0123456789"
+    model_id = uuid4()
+    prompt = f"keep-before::{active_secret}::keep-after"
+    hook_prompts: list[str] = []
+    runtime_events: list[dict] = []
+    prepared_requests: list[dict] = []
+
+    async def mid_run_message_drain():
+        return [{"role": "user", "content": f"mid-before::{active_secret}::mid-after"}]
+
+    async def round_input_bind(_round_index: int):
+        return [{"role": "user", "content": f"round-before::{active_secret}::round-after"}]
+
+    async def model_request_prepare(**payload):
+        prepared_requests.append(payload)
+        return "provider-request-1"
+
+    async def fake_emit_hook(event, **kwargs):
+        if event == HookEvent.USER_PROMPT_SUBMIT:
+            hook_prompts.append(kwargs["prompt"])
+        if event == HookEvent.SETUP:
+            return HookResult(additional_contexts=[f"hook-before::{active_secret}::hook-after"])
+        if event == HookEvent.SESSION_START:
+            return HookResult(initial_user_message=f"start-before::{active_secret}::start-after")
+        return HookResult()
+
+    class FakeKernel:
+        async def handle(self, request):
+            serialized_input = repr(
+                {
+                    "messages": request.messages,
+                    "memory_messages": request.memory_messages,
+                    "memory_context": request.memory_context,
+                    "agent_name": request.agent_name,
+                    "role_description": request.role_description,
+                    "system_prompt_suffix": request.system_prompt_suffix,
+                    "standalone_system_prompt": request.standalone_system_prompt,
+                }
+            )
+            assert active_secret not in serialized_input
+            assert request.messages == [
+                {
+                    "role": "user",
+                    "content": "start-before::[REDACTED_SECRET]::start-after",
+                    "source": "session_start_hook",
+                },
+                {
+                    "role": "user",
+                    "content": "keep-before::[REDACTED_SECRET]::keep-after",
+                },
+            ]
+            assert request.memory_messages == [
+                {
+                    "role": "user",
+                    "content": "memory-before::[REDACTED_SECRET]::memory-after",
+                }
+            ]
+            assert request.memory_context == "context-before::[REDACTED_SECRET]::context-after"
+            assert request.agent_name == "agent-before::[REDACTED_SECRET]::agent-after"
+            assert request.role_description == "role-before::[REDACTED_SECRET]::role-after"
+            assert request.system_prompt_suffix == (
+                "suffix-before::[REDACTED_SECRET]::suffix-after\n\n"
+                "## Hook Additional Context\n"
+                "hook-before::[REDACTED_SECRET]::hook-after"
+            )
+            assert request.standalone_system_prompt == ("system-before::[REDACTED_SECRET]::system-after")
+            assert await request.mid_run_message_drain() == [
+                {
+                    "role": "user",
+                    "content": "mid-before::[REDACTED_SECRET]::mid-after",
+                }
+            ]
+            assert await request.round_input_bind(1) == [
+                {
+                    "role": "user",
+                    "content": "round-before::[REDACTED_SECRET]::round-after",
+                }
+            ]
+            assert (
+                await request.model_request_prepare(
+                    wire_request={"content": f"wire-before::{active_secret}::wire-after"}
+                )
+                == "provider-request-1"
+            )
+            return InvocationResult(content="clean final", parts=[])
+
+    monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit_hook)
+    monkeypatch.setattr("app.runtime.invoker._resolve_kernel_for_request", lambda _request: FakeKernel())
+
+    result = await invoke_agent(
+        AgentInvocationRequest(
+            model=SimpleNamespace(
+                id=model_id,
+                provider="openai",
+                model="gpt-4.1",
+                api_key=active_secret,
+                base_url=None,
+            ),
+            messages=[{"role": "user", "content": prompt}],
+            memory_messages=[
+                {
+                    "role": "user",
+                    "content": f"memory-before::{active_secret}::memory-after",
+                }
+            ],
+            memory_context=f"context-before::{active_secret}::context-after",
+            agent_name=f"agent-before::{active_secret}::agent-after",
+            role_description=f"role-before::{active_secret}::role-after",
+            system_prompt_suffix=f"suffix-before::{active_secret}::suffix-after",
+            standalone_system_prompt=f"system-before::{active_secret}::system-after",
+            agent_id=uuid4(),
+            user_id=uuid4(),
+            mid_run_message_drain=mid_run_message_drain,
+            round_input_bind=round_input_bind,
+            model_request_prepare=model_request_prepare,
+            on_event=runtime_events.append,
+        )
+    )
+
+    assert hook_prompts == ["keep-before::[REDACTED_SECRET]::keep-after"]
+    assert prepared_requests == [
+        {
+            "wire_request": {
+                "content": "wire-before::[REDACTED_SECRET]::wire-after",
+            }
+        }
+    ]
+    secret_events = [event for event in runtime_events if event.get("type") == "secret_egress_redacted"]
+    assert len(secret_events) == 1
+    assert secret_events[0]["redacted_count"] == 12
+    assert secret_events[0]["surfaces"] == {
+        "stream": 0,
+        "thinking": 0,
+        "model_input_messages": 1,
+        "model_input_memory_messages": 1,
+        "model_input_memory_context": 1,
+        "model_input_agent_name": 1,
+        "model_input_role_description": 1,
+        "model_input_system_prompt": 1,
+        "model_input_standalone_prompt": 1,
+        "hook_context": 1,
+        "session_start_input": 1,
+        "mid_run_input": 1,
+        "round_input": 1,
+        "model_request_prepare": 1,
+        "content": 0,
+        "parts": 0,
+    }
+    assert secret_events[0]["source_refs"] == [f"llm-model://{model_id}/selected/api_key"]
+    assert result.content == "clean final"
+
+
+@pytest.mark.asyncio
+async def test_invoke_agent_redacts_exact_secret_from_early_hook_block(monkeypatch):
+    from app.runtime.hooks import HookEvent, HookResult
+    from app.runtime.invoker import AgentInvocationRequest, invoke_agent
+
+    active_secret = "sk-live-hook-block-secret-0123456789"
+    model_id = uuid4()
+    runtime_events: list[dict] = []
+
+    async def fake_emit_hook(event, **_kwargs):
+        if event == HookEvent.SETUP:
+            return HookResult(
+                block=True,
+                reason=f"denied-before::{active_secret}::denied-after",
+            )
+        return HookResult()
+
+    def forbidden_kernel(_request):
+        raise AssertionError("kernel must not start after setup hook block")
+
+    monkeypatch.setattr("app.runtime.hooks.emit_hook", fake_emit_hook)
+    monkeypatch.setattr("app.runtime.invoker._resolve_kernel_for_request", forbidden_kernel)
+
+    result = await invoke_agent(
+        AgentInvocationRequest(
+            model=SimpleNamespace(
+                id=model_id,
+                provider="openai",
+                model="gpt-4.1",
+                api_key=active_secret,
+                base_url=None,
+            ),
+            messages=[{"role": "user", "content": "Run the turn."}],
+            agent_name="Agent",
+            role_description="desc",
+            agent_id=uuid4(),
+            user_id=uuid4(),
+            on_event=runtime_events.append,
+        )
+    )
+
+    assert result.content == ("Blocked by setup hook: denied-before::[REDACTED_SECRET]::denied-after")
+    assert active_secret not in repr(runtime_events)
+    secret_events = [event for event in runtime_events if event.get("type") == "secret_egress_redacted"]
+    assert secret_events == [
+        {
+            "type": "secret_egress_redacted",
+            "status": "redacted",
+            "code": "exact_unauthorized_secret_bytes",
+            "redacted_count": 1,
+            "surfaces": {"hook_block_reason": 1},
+            "source_refs": [f"llm-model://{model_id}/selected/api_key"],
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_invoke_agent_fails_typed_before_kernel_when_credential_authority_is_unavailable(
+    monkeypatch,
+):
+    from app.kernel.contracts import ContextDependencyUnavailable
+    from app.runtime.invoker import AgentInvocationRequest, invoke_agent
+
+    async def unavailable_loader(**_kwargs):
+        raise RuntimeError("postgres://secret-credential-authority-detail")
+
+    def forbidden_kernel(_request):
+        raise AssertionError("kernel must not start without credential authority")
+
+    monkeypatch.setattr(
+        "app.runtime.invoker._load_invocation_secret_boundary",
+        unavailable_loader,
+    )
+    monkeypatch.setattr("app.runtime.invoker._resolve_kernel_for_request", forbidden_kernel)
+
+    with pytest.raises(ContextDependencyUnavailable) as exc:
+        await invoke_agent(
+            AgentInvocationRequest(
+                model=SimpleNamespace(
+                    id=uuid4(),
+                    provider="openai",
+                    model="gpt-4.1",
+                    api_key="model-key-0123456789",
+                    base_url=None,
+                ),
+                tenant_id=uuid4(),
+                messages=[{"role": "user", "content": "Run the turn."}],
+                agent_name="Agent",
+                role_description="desc",
+                agent_id=uuid4(),
+                user_id=uuid4(),
+            )
+        )
+
+    assert exc.value.dependency == "credential_authority"
+    assert exc.value.code == "credential_authority_unavailable"
+    assert exc.value.retryable is True
+    assert "postgres://" not in str(exc.value)
+
+
+@pytest.mark.asyncio
 async def test_build_system_prompt_uses_static_agent_context_only(monkeypatch):
     from app.runtime.invoker import AgentInvocationRequest, _build_system_prompt
 

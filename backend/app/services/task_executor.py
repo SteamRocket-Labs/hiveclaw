@@ -587,6 +587,7 @@ async def execute_task(
                 memory_messages=runtime_messages,
                 agent_name=agent_name,
                 role_description=agent.role_description or "",
+                tenant_id=tenant_id,
                 agent_id=agent_id,
                 user_id=task_requester_id,
                 execution_identity=ExecutionIdentityRef(

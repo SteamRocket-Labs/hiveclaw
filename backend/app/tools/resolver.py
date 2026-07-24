@@ -56,9 +56,16 @@ async def _resolve_budget_run_id_from_runtime_task(runtime_task_id: str | None) 
 class ToolRuntimeResolver:
     """Build ToolExecutionContext from agent/user identifiers."""
 
-    def __init__(self, *, workspace_authority_loader=None, owner_action_policy_loader=None) -> None:
+    def __init__(
+        self,
+        *,
+        workspace_authority_loader=None,
+        owner_action_policy_loader=None,
+        secret_boundary_loader=None,
+    ) -> None:
         self.workspace_authority_loader = workspace_authority_loader or _load_workspace_authority_scope
         self.owner_action_policy_loader = owner_action_policy_loader or _load_owner_action_policy
+        self.secret_boundary_loader = secret_boundary_loader or _load_exact_secret_boundary
 
     async def resolve(
         self,
@@ -110,6 +117,24 @@ class ToolRuntimeResolver:
             session_id=session_uuid,
         )
         try:
+            exact_secret_boundary = await self.secret_boundary_loader(
+                tenant_id=tenant,
+                agent_id=agent_id,
+            )
+        except Exception as exc:
+            logger.error(
+                "[Governance] credential authority resolution failed for agent %s (%s)",
+                agent_id,
+                type(exc).__name__,
+            )
+            raise RuntimeTenantPreconditionError(
+                reason_code="credential_authority_unavailable",
+                message="tool runtime is blocked because credential authority is unavailable.",
+                source="tool_runtime",
+                agent_id=agent_id,
+                tenant_id=tenant,
+            ) from exc
+        try:
             owner_action_policy = await self.owner_action_policy_loader(
                 tenant_id=tenant,
                 agent_id=agent_id,
@@ -146,6 +171,7 @@ class ToolRuntimeResolver:
             t0_refs=tuple(str(ref) for ref in (t0_refs or ()) if str(ref).strip()),
             workspace_authority_scope=workspace_authority_scope,
             owner_action_policy=owner_action_policy,
+            exact_secret_boundary=exact_secret_boundary,
         )
 
 
@@ -167,6 +193,26 @@ async def _load_owner_action_policy(
             agent_id=agent_id,
             tenant_id=tenant_id,
             create_default=True,
+        )
+
+
+async def _load_exact_secret_boundary(
+    *,
+    tenant_id: uuid.UUID,
+    agent_id: uuid.UUID,
+):
+    from app.services.credential_boundary_loader import load_exact_secret_boundary
+
+    async with tenant_scoped_session(
+        tenant_id,
+        session_factory=async_session,
+        require_tenant=True,
+        source="tool_credential_authority",
+    ) as credential_db:
+        return await load_exact_secret_boundary(
+            credential_db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
         )
 
 

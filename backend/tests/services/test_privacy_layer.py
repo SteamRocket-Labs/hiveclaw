@@ -4,15 +4,33 @@ from app.services.principal_context import Principal, PrincipalRole, PrincipalSt
 from app.services.privacy_layer import PrivacyLayer, PrivacyStore, SensitivityLevel
 
 
-def test_privacy_layer_rejects_credentials_before_memory_write() -> None:
+def test_privacy_layer_does_not_turn_a_secret_shaped_fixture_into_credential_truth() -> None:
     layer = PrivacyLayer(store=PrivacyStore())
 
-    decision = layer.classify_and_mask("Owner shared api_key=sk-1234567890abcdefghijklmnop for setup.")
+    text = "Owner documented api_key=sk-1234567890abcdefghijklmnop as a test fixture."
+    decision = layer.classify_and_mask(text)
+
+    assert decision.sensitivity == SensitivityLevel.PL1_PUBLIC
+    assert decision.rejected is False
+    assert decision.sanitized_text == text
+    assert decision.credential_candidate_count == 1
+
+
+def test_privacy_layer_rejects_only_an_exact_authoritative_secret_binding() -> None:
+    from app.services.exact_secret_boundary import ExactSecretBoundary
+
+    active_secret = "sk-live-tenant-secret-0123456789"
+    layer = PrivacyLayer(
+        store=PrivacyStore(),
+        secret_boundary=ExactSecretBoundary.from_pairs((("tool-config://tenant-1/search/api_key", active_secret),)),
+    )
+
+    decision = layer.classify_and_mask(f"Do not persist {active_secret}.")
 
     assert decision.sensitivity == SensitivityLevel.PL4_CREDENTIAL
-    assert decision.rejected
-    assert "sk-1234567890abcdefghijklmnop" not in decision.sanitized_text
-    assert "<Credential_1>" in decision.sanitized_text
+    assert decision.rejected is True
+    assert decision.sanitized_text == "Do not persist [REDACTED_SECRET]."
+    assert decision.secret_evidence_refs == ("tool-config://tenant-1/search/api_key",)
 
 
 def test_privacy_layer_uses_typed_placeholders_for_pii() -> None:

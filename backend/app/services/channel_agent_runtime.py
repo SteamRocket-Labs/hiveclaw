@@ -501,6 +501,33 @@ async def call_agent_llm(
     if is_agent_expired(agent):
         return "This Agent has expired and is off duty. Please contact your admin to extend its service."
 
+    channel_ingress_redaction_receipt = None
+    if getattr(agent, "tenant_id", None) is not None:
+        from app.services.credential_boundary_loader import (
+            RuntimeIngressSecretBoundaryUnavailable,
+            exact_secret_redaction_receipt,
+            redact_runtime_ingress_payload,
+        )
+
+        try:
+            redaction = await redact_runtime_ingress_payload(
+                db,
+                tenant_id=agent.tenant_id,
+                agent_id=agent.id,
+                payload={"user_text": user_text},
+            )
+        except RuntimeIngressSecretBoundaryUnavailable as exc:
+            logger.error(
+                "[ChannelRuntime] Credential protection boundary unavailable: error_class={}",
+                type(exc).__name__,
+            )
+            return "⚠️ 凭据保护服务暂时不可用，本次消息未写入或执行；请稍后重试。"
+        user_text = str(dict(redaction.value)["user_text"])
+        channel_ingress_redaction_receipt = exact_secret_redaction_receipt(
+            redaction,
+            phase="channel_runtime",
+        )
+
     external_principal_id = getattr(durable_user, "external_principal_id", None)
     external_authority_bound = bool(getattr(durable_user, "authority_bound", False))
     effective_user_id = user_id if external_principal_id is not None else (user_id or agent_id)
@@ -598,6 +625,13 @@ async def call_agent_llm(
                     "channel": session_channel,
                     "channel_ingress_event_id": str(canonical_ingress_id),
                     "budget_interactive": False,
+                    **(
+                        {
+                            "exact_secret_ingress_redaction": channel_ingress_redaction_receipt,
+                        }
+                        if channel_ingress_redaction_receipt is not None
+                        else {}
+                    ),
                 },
             )
         except IdempotencyConflict as exc:
@@ -836,6 +870,10 @@ async def call_agent_llm(
     session_context.metadata["intent_id"] = f"intent-{turn_seed}"
     if getattr(agent, "tenant_id", None):
         session_context.metadata["tenant_id"] = str(agent.tenant_id)
+    if channel_ingress_redaction_receipt is not None:
+        session_context.metadata["exact_secret_ingress_redaction"] = (
+            channel_ingress_redaction_receipt
+        )
     trusted_decline = plan_mode_core.trusted_decline_metadata(
         content=user_text,
         messages=history,
@@ -942,6 +980,7 @@ async def call_agent_llm(
             agent.name,
             agent.role_description or "",
             fallback_model=fallback_model,
+            tenant_id=getattr(agent, "tenant_id", None),
             agent_id=agent_id,
             user_id=effective_user_id,
             supports_vision=getattr(model, "supports_vision", False),

@@ -188,6 +188,7 @@ async def launch_system_plan_run(
                 memory_messages=[{"role": "user", "content": plan.original_request or ""}],
                 agent_name=agent.name,
                 role_description=agent.role_description or "",
+                tenant_id=plan.tenant_id,
                 agent_id=plan.agent_id,
                 user_id=user_id,
                 execution_identity=ExecutionIdentityRef(

@@ -79,6 +79,13 @@ async def test_org_admin_delete_own_tenant_detaches_users_and_requires_setup():
             _ListResult([]),  # scrub_tenant_tool_secrets: no tool-config overrides
             _ListResult([]),  # scrub_tenant_channel_secrets: no agent channels
             _ListResult([]),  # scrub_tenant_channel_secrets: no tenant channels
+            _ListResult([]),  # scrub_tenant_channel_secrets: no chat targets
+            _ListResult([]),  # scrub_tenant_channel_secrets: no outbox targets
+            _ListResult([]),  # scrub_tenant_channel_secrets: no budget targets
+            _ListResult([]),  # scrub_tenant_channel_secrets: no schedule targets
+            _ListResult([]),  # scrub_tenant_channel_secrets: no trigger targets
+            _ListResult([]),  # scrub_tenant_channel_secrets: no runtime-task targets
+            _ListResult([]),  # scrub_tenant_channel_secrets: no ingress payloads
         ]
     )
 
@@ -137,6 +144,13 @@ async def test_platform_admin_delete_tenant_returns_fallback_and_rehomes_platfor
             _ListResult([]),  # scrub_tenant_tool_secrets: no tool-config overrides
             _ListResult([]),  # scrub_tenant_channel_secrets: no agent channels
             _ListResult([]),  # scrub_tenant_channel_secrets: no tenant channels
+            _ListResult([]),  # scrub_tenant_channel_secrets: no chat targets
+            _ListResult([]),  # scrub_tenant_channel_secrets: no outbox targets
+            _ListResult([]),  # scrub_tenant_channel_secrets: no budget targets
+            _ListResult([]),  # scrub_tenant_channel_secrets: no schedule targets
+            _ListResult([]),  # scrub_tenant_channel_secrets: no trigger targets
+            _ListResult([]),  # scrub_tenant_channel_secrets: no runtime-task targets
+            _ListResult([]),  # scrub_tenant_channel_secrets: no ingress payloads
         ]
     )
     bypass_calls: list[dict] = []

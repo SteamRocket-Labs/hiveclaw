@@ -49,6 +49,11 @@ def test_channel_secret_migration_and_dry_run_contract_exist() -> None:
     assert "SECRETS_MASTER_KEY" in source
     assert "CHANNEL_SECRET_PREFIX" in source
     assert "plaintext" in script
+    assert "migrate_delivery_target_secret_rows" in script
+    assert "inspect_delivery_target_secret_rows" in script
+    assert "migrate_channel_ingress_secret_rows" in script
+    assert "inspect_channel_ingress_secret_rows" in script
+    assert "migrate_channel_ingress_exact_secret_rows" in script
     assert 'parser.add_argument("--apply"' in script
     assert 'parser.add_argument("--confirm"' in script
     assert "--apply requires --confirm" in script

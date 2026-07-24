@@ -329,7 +329,11 @@ class WeChatPersonalStreamManager:
         if not user_text and msg.voice_text:
             user_text = msg.voice_text.strip()
             if user_text:
-                logger.info(f"[WeChatPersonal Stream] Voice transcription from {from_user[:12]}...: {user_text[:80]}")
+                logger.info(
+                    "[WeChatPersonal Stream] Voice transcription received from {}...: content_length={}",
+                    from_user[:12],
+                    len(user_text),
+                )
 
         # Image: download, describe for LLM
         if msg.image_media:
@@ -388,7 +392,11 @@ class WeChatPersonalStreamManager:
         if not user_text:
             return
 
-        logger.info(f"[WeChatPersonal Stream] Message from {from_user[:12]}...: {user_text[:80]}")
+        logger.info(
+            "[WeChatPersonal Stream] Message received from {}...: content_length={}",
+            from_user[:12],
+            len(user_text),
+        )
 
         # Cache context_token (MUST be echoed in replies)
         if msg.context_token:

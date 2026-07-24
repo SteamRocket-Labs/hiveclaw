@@ -33,6 +33,13 @@ def _review_team_memory_semantics(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(team_memory, "prepare_memory_write_with_llm", reviewed_prepare)
 
+    async def empty_secret_boundary(_tenant_id):
+        from app.services.exact_secret_boundary import ExactSecretBoundary
+
+        return ExactSecretBoundary.empty()
+
+    monkeypatch.setattr("app.api.memory._load_team_memory_secret_boundary", empty_secret_boundary)
+
 
 def _build_client(*, role: str, tmp_path):
     app = FastAPI()
@@ -112,6 +119,61 @@ def test_team_memory_api_rejects_invalid_mode_via_pydantic_over_http(monkeypatch
     )
 
     assert response.status_code == 422
+
+
+def test_team_memory_api_rejects_exact_active_tenant_secret(monkeypatch, tmp_path):
+    from app.services.exact_secret_boundary import ExactSecretBoundary
+
+    monkeypatch.setattr("app.services.team_memory.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+    active_secret = "sk-live-team-api-secret-0123456789"
+
+    async def active_secret_boundary(_tenant_id):
+        return ExactSecretBoundary.from_pairs((("tool-config://tenant/search/api_key", active_secret),))
+
+    monkeypatch.setattr("app.api.memory._load_team_memory_secret_boundary", active_secret_boundary)
+    client, _user = _build_client(role="org_admin", tmp_path=tmp_path)
+
+    response = client.put(
+        "/enterprise/memory/shared",
+        json={
+            "workspace_key": "workspace-alpha",
+            "key": "unsafe",
+            "title": "Unsafe",
+            "content": f"prefix::{active_secret}::suffix",
+            "mode": "replace",
+        },
+    )
+
+    assert response.status_code == 400
+    assert active_secret not in response.text
+    assert not (tmp_path / "shared_memory").exists()
+
+
+def test_team_memory_api_fails_closed_when_credential_authority_is_unavailable(monkeypatch, tmp_path):
+    monkeypatch.setattr("app.services.team_memory.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+
+    async def unavailable_boundary(_tenant_id):
+        raise RuntimeError("database credential details must not leak")
+
+    monkeypatch.setattr("app.api.memory._load_team_memory_secret_boundary", unavailable_boundary)
+    client, _user = _build_client(role="org_admin", tmp_path=tmp_path)
+
+    response = client.put(
+        "/enterprise/memory/shared",
+        json={
+            "workspace_key": "workspace-alpha",
+            "key": "blocked",
+            "title": "Blocked",
+            "content": "Safe content that must not persist without credential authority.",
+            "mode": "replace",
+        },
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == "credential_authority_unavailable"
+    assert response.json()["detail"]["retryable"] is True
+    assert "database credential details" not in response.text
+    assert not (tmp_path / "shared_memory").exists()
 
 
 def test_team_memory_delete_requires_admin_over_http(monkeypatch, tmp_path):

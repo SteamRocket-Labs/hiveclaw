@@ -34,15 +34,32 @@ class _FakeDB:
 
 
 class TestRedactOutbound:
-    def test_pl4_credential_is_rejected(self) -> None:
+    def test_secret_shaped_documentation_is_not_rejected(self) -> None:
         decision = redact_outbound(
             "deploy with api_key=sk-AAAAAAAAAAAAAAAAAAAAAAAA",
             channel="feishu",
         )
         assert isinstance(decision, OutboundRedactDecision)
+        assert decision.rejected is False
+        assert decision.sensitivity == SensitivityLevel.PL1_PUBLIC
+        assert decision.text == "deploy with api_key=sk-AAAAAAAAAAAAAAAAAAAAAAAA"
+
+    def test_exact_active_secret_is_redacted_and_rejected(self) -> None:
+        from app.services.exact_secret_boundary import ExactSecretBoundary
+
+        active_secret = "sk-live-channel-secret-0123456789"
+        decision = redact_outbound(
+            f"prefix::{active_secret}::suffix",
+            channel="feishu",
+            secret_boundary=ExactSecretBoundary.from_pairs(
+                (("channel-config://agent-1/telegram/bot_token", active_secret),)
+            ),
+        )
+
         assert decision.rejected is True
         assert decision.sensitivity == SensitivityLevel.PL4_CREDENTIAL
-        assert "sk-AAAAAAAA" not in decision.text
+        assert decision.text == "prefix::[REDACTED_SECRET]::suffix"
+        assert decision.secret_evidence_refs == ("channel-config://agent-1/telegram/bot_token",)
 
     def test_semantic_keyword_does_not_mechanically_classify_or_strip_output(self) -> None:
         decision = redact_outbound(
@@ -96,7 +113,7 @@ class TestRedactOutbound:
 
 class TestChannelDeliveryRedaction:
     @pytest.mark.asyncio
-    async def test_send_text_blocks_pl4_credential(self, monkeypatch) -> None:
+    async def test_send_text_blocks_exact_active_channel_credential(self, monkeypatch) -> None:
         called: dict[str, object] = {}
 
         async def fake_send(bot_token, chat_id, text):
@@ -107,25 +124,75 @@ class TestChannelDeliveryRedaction:
 
         monkeypatch.setattr(telegram_mod, "_send_telegram_message", fake_send)
 
+        active_secret = "telegram-bot-token-live-0123456789"
         config = SimpleNamespace(
             channel_type="telegram",
-            app_secret="bot-token",
+            app_secret=active_secret,
             app_id="telegram",
             is_configured=True,
             is_connected=True,
             extra_config={},
+            encrypt_key=None,
+            verification_token=None,
         )
         result = await ChannelDeliveryService.send_text(
             db=_FakeDB(config),
             agent_id=uuid4(),
             reply_target={"channel": "telegram", "chat_id": 1, "sender_id": 2},
-            text="rotate api_key=sk-AAAAAAAAAAAAAAAAAAAAAAAA tomorrow",
+            text=f"prefix::{active_secret}::suffix",
         )
 
         assert result.ok is False
         assert result.status == "denied"
         assert "PL4" in result.message or "credential" in result.message.lower()
         assert called == {}
+
+    @pytest.mark.asyncio
+    async def test_send_text_blocks_exact_tenant_tool_credential_not_owned_by_channel(
+        self,
+        monkeypatch,
+    ) -> None:
+        from app.services.exact_secret_boundary import ExactSecretBoundary
+
+        active_secret = "tool-secret-live-0123456789"
+        tenant_id = uuid4()
+        agent_id = uuid4()
+        config = SimpleNamespace(
+            channel_type="telegram",
+            app_secret="telegram-bot-token-live-0123456789",
+            app_id="telegram",
+            is_configured=True,
+            is_connected=True,
+            extra_config={},
+            encrypt_key=None,
+            verification_token=None,
+        )
+
+        async def fake_load(_db, *, tenant_id: object, agent_id: object):
+            assert tenant_id == tenant_id_value
+            assert agent_id == agent_id_value
+            return ExactSecretBoundary.from_pairs((("tool-config://tenant-1/search/api_key", active_secret),))
+
+        tenant_id_value = tenant_id
+        agent_id_value = agent_id
+        monkeypatch.setattr(
+            "app.services.credential_boundary_loader.load_exact_secret_boundary",
+            fake_load,
+        )
+
+        result = await ChannelDeliveryService.send_text(
+            db=_FakeDB(config),
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            reply_target={"channel": "telegram", "chat_id": 1, "sender_id": 2},
+            text=f"prefix::{active_secret}::suffix",
+        )
+
+        assert result.ok is False
+        assert result.status == "denied"
+        assert result.detail["secret_evidence_refs"] == [
+            "tool-config://tenant-1/search/api_key",
+        ]
 
     @pytest.mark.asyncio
     async def test_send_text_preserves_ordinary_semantic_content_for_external_channel(self, monkeypatch) -> None:

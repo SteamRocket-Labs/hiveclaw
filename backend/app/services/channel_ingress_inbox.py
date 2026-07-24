@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 import hashlib
 import json
+import re
 from typing import Any
 import uuid
 
@@ -18,6 +19,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.database import async_session, enter_rls_bypass, tenant_scoped_session
 from app.models.channel_ingress_event import ChannelIngressEvent
+from app.services.channel_secret_storage import (
+    CHANNEL_INGRESS_PROVIDER_FIELD,
+    CHANNEL_INGRESS_SECRET_PATHS,
+)
+from app.services.exact_secret_boundary import ExactSecretBoundary
 
 _INGRESS_ID_NAMESPACE = uuid.UUID("cae0a095-76f4-4d84-8515-8d64370f8197")
 
@@ -65,6 +71,94 @@ def channel_installation_ref(config: Any, *, fallback: str) -> str:
     return str(getattr(config, "id", None) or fallback)
 
 
+def _channel_ingress_transport_boundary(
+    payload: dict[str, Any],
+    *,
+    provider: str,
+) -> ExactSecretBoundary:
+    pairs: list[tuple[str, str]] = []
+    for path in CHANNEL_INGRESS_SECRET_PATHS.get(
+        str(provider or "").strip().casefold(),
+        (),
+    ):
+        value: Any = payload
+        for segment in path:
+            if not isinstance(value, dict):
+                value = None
+                break
+            value = value.get(segment)
+        if isinstance(value, str) and value:
+            pairs.append(
+                (
+                    f"channel-ingress://{provider}/{'/'.join(path)}",
+                    value,
+                )
+            )
+    return ExactSecretBoundary.from_pairs(pairs)
+
+
+def _redact_channel_ingress_failure(
+    error: Exception,
+    *,
+    boundary: ExactSecretBoundary,
+) -> str:
+    """Preserve useful failure text without persisting exact credential bytes."""
+
+    detail = f"{type(error).__name__}: {error}"
+    return boundary.redact_text(detail).text
+
+
+def _protect_channel_ingress_payload(
+    payload: dict[str, Any],
+    *,
+    provider: str,
+    boundary: ExactSecretBoundary,
+    phase: str,
+) -> tuple[dict[str, Any], dict[str, Any] | None, int]:
+    """Redact exact tenant credentials while retaining typed transport secrets."""
+
+    normalized_provider = str(provider or "").strip().casefold()
+    canonical_payload, _digest = canonical_channel_payload(payload)
+    canonical_payload[CHANNEL_INGRESS_PROVIDER_FIELD] = normalized_provider
+    detached: list[tuple[tuple[str, ...], str]] = []
+    for path in CHANNEL_INGRESS_SECRET_PATHS.get(normalized_provider, ()):
+        parent: Any = canonical_payload
+        for segment in path[:-1]:
+            if not isinstance(parent, dict):
+                parent = None
+                break
+            parent = parent.get(segment)
+        if not isinstance(parent, dict):
+            continue
+        field_name = path[-1]
+        value = parent.get(field_name)
+        if isinstance(value, str) and value:
+            detached.append((path, value))
+            parent[field_name] = None
+
+    redaction = boundary.redact_payload_with_evidence(canonical_payload)
+    protected_payload = dict(redaction.value)
+    for path, value in detached:
+        parent = protected_payload
+        for segment in path[:-1]:
+            child = parent.get(segment)
+            if not isinstance(child, dict):
+                child = {}
+                parent[segment] = child
+            parent = child
+        parent[path[-1]] = value
+
+    from app.services.credential_boundary_loader import (
+        exact_secret_redaction_receipt,
+    )
+
+    return (
+        protected_payload,
+        exact_secret_redaction_receipt(redaction, phase=phase),
+        redaction.redacted_count,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class ChannelIngressSubmission:
     tenant_id: uuid.UUID | str
@@ -75,6 +169,7 @@ class ChannelIngressSubmission:
     handler_key: str
     payload: dict[str, Any]
     metadata: dict[str, Any] | None = None
+    payload_digest: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,7 +204,12 @@ def _normalized_submission(submission: ChannelIngressSubmission) -> dict[str, An
     handler_key = str(submission.handler_key or "").strip().lower()
     if not all((provider, installation_ref, provider_event_id, handler_key)):
         raise ValueError("channel ingress requires provider, installation, event id, and handler")
-    payload, payload_digest = canonical_channel_payload(submission.payload)
+    payload, computed_payload_digest = canonical_channel_payload(submission.payload)
+    payload[CHANNEL_INGRESS_PROVIDER_FIELD] = provider
+    supplied_digest = str(submission.payload_digest or "").strip().lower()
+    if supplied_digest and not re.fullmatch(r"[0-9a-f]{64}", supplied_digest):
+        raise ValueError("channel ingress payload digest must be a SHA-256 hex digest")
+    payload_digest = supplied_digest or computed_payload_digest
     identity = "|".join((str(tenant_id), provider, installation_ref, provider_event_id))
     return {
         "id": uuid.uuid5(_INGRESS_ID_NAMESPACE, identity),
@@ -195,6 +295,30 @@ async def accept_authenticated_channel_event(
 
     _payload, digest = canonical_channel_payload(body)
     stable_event_id = str(provider_event_id or "").strip() or f"payload:{digest}"
+    normalized_provider = str(provider or "").strip().casefold()
+    payload_for_redaction = {
+        CHANNEL_INGRESS_PROVIDER_FIELD: normalized_provider,
+        "body": _payload,
+    }
+
+    from app.services.credential_boundary_loader import (
+        load_exact_secret_boundary,
+    )
+
+    boundary = await load_exact_secret_boundary(
+        db,
+        tenant_id=_uuid(tenant_id, field="tenant_id"),
+        agent_id=_uuid(agent_id, field="agent_id"),
+    )
+    protected_payload, redaction_receipt, _redacted_count = _protect_channel_ingress_payload(
+        payload_for_redaction,
+        provider=normalized_provider,
+        boundary=boundary,
+        phase="channel_inbox",
+    )
+    protected_metadata = dict(metadata or {})
+    if redaction_receipt is not None:
+        protected_metadata["exact_secret_ingress_redaction"] = redaction_receipt
     receipt = await enqueue_channel_ingress_event(
         db,
         ChannelIngressSubmission(
@@ -204,8 +328,9 @@ async def accept_authenticated_channel_event(
             installation_ref=installation_ref,
             provider_event_id=stable_event_id,
             handler_key=handler_key,
-            payload={"body": body},
-            metadata=metadata,
+            payload=protected_payload,
+            metadata=protected_metadata,
+            payload_digest=digest,
         ),
     )
     await db.commit()
@@ -213,6 +338,74 @@ async def accept_authenticated_channel_event(
 
     notify_channel_ingress_daemon()
     return receipt
+
+
+async def migrate_channel_ingress_exact_secret_rows(
+    db: AsyncSession,
+    *,
+    apply: bool,
+) -> dict[str, Any]:
+    """Dry-run or redact currently bound exact credentials in legacy inbox rows."""
+
+    from app.services.credential_boundary_loader import load_exact_secret_boundary
+
+    rows = list(
+        (
+            await db.execute(
+                select(ChannelIngressEvent).order_by(
+                    ChannelIngressEvent.tenant_id,
+                    ChannelIngressEvent.agent_id,
+                    ChannelIngressEvent.received_at,
+                    ChannelIngressEvent.id,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    boundaries: dict[tuple[uuid.UUID, uuid.UUID], ExactSecretBoundary] = {}
+    rows_requiring_redaction = 0
+    redacted_values = 0
+    rows_rewritten = 0
+    for row in rows:
+        key = (row.tenant_id, row.agent_id)
+        boundary = boundaries.get(key)
+        if boundary is None:
+            boundary = await load_exact_secret_boundary(
+                db,
+                tenant_id=row.tenant_id,
+                agent_id=row.agent_id,
+            )
+            boundaries[key] = boundary
+        protected, receipt, count = _protect_channel_ingress_payload(
+            dict(row.payload_json or {}),
+            provider=row.provider,
+            boundary=boundary,
+            phase="channel_inbox_legacy_backfill",
+        )
+        if count <= 0:
+            continue
+        rows_requiring_redaction += 1
+        redacted_values += count
+        if not apply:
+            continue
+        row.payload_json = protected
+        metadata = dict(row.metadata_json or {})
+        if receipt is not None:
+            metadata["exact_secret_ingress_redaction"] = receipt
+        row.metadata_json = metadata
+        rows_rewritten += 1
+
+    if apply:
+        await db.commit()
+    return {
+        "schema": "hive.channel_ingress_exact_secret_backfill.v1",
+        "mode": "apply" if apply else "dry_run",
+        "rows_scanned": len(rows),
+        "rows_requiring_redaction": rows_requiring_redaction,
+        "redacted_values": redacted_values,
+        "rows_rewritten": rows_rewritten,
+    }
 
 
 async def wait_for_channel_ingress_result(
@@ -375,7 +568,31 @@ class ChannelIngressInboxService:
             ).scalar_one_or_none()
             if row is None or row.status != "processing" or row.locked_by != worker_id:
                 return "stale"
-            row.last_error = f"{type(error).__name__}: {error}"
+            try:
+                from app.services.credential_boundary_loader import (
+                    load_exact_secret_boundary,
+                )
+
+                tenant_boundary = await load_exact_secret_boundary(
+                    db,
+                    tenant_id=item.tenant_id,
+                    agent_id=item.agent_id,
+                )
+                boundary = ExactSecretBoundary.combine(
+                    tenant_boundary,
+                    _channel_ingress_transport_boundary(
+                        item.payload,
+                        provider=item.provider,
+                    ),
+                )
+                row.last_error = _redact_channel_ingress_failure(
+                    error,
+                    boundary=boundary,
+                )
+            except Exception:
+                # Failure handling must never persist the unsanitized exception
+                # merely because the credential authority is unavailable.
+                row.last_error = f"{type(error).__name__}: credential_boundary_unavailable"
             row.locked_by = None
             row.locked_at = None
             if int(row.attempt_count or 0) >= self._max_attempts:

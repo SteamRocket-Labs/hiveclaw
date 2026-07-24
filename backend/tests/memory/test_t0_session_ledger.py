@@ -314,7 +314,7 @@ def test_tail_replay_skips_older_segments_when_tail_is_enough(monkeypatch, tmp_p
     assert len(parse_calls) == 1, f"expected only the newest segment to be parsed, parsed: {parse_calls}"
 
 
-def test_pl4_credential_is_masked_before_it_reaches_t0_source(tmp_path: Path) -> None:
+def test_secret_shaped_fixture_is_preserved_in_raw_t0_source(tmp_path: Path) -> None:
     agent_id = uuid4()
     session_id = uuid4()
     secret = "sk-" + "A" * 24
@@ -329,12 +329,12 @@ def test_pl4_credential_is_masked_before_it_reaches_t0_source(tmp_path: Path) ->
     )
 
     content = result.path.read_text(encoding="utf-8")
-    assert secret not in content
-    assert "&lt;Credential_" in content
+    assert secret in content
+    assert "&lt;Credential_" not in content
     event = replay_t0_session_events(agent_id=agent_id, session_id=session_id, data_root=tmp_path)[0]
-    assert secret not in event.content
-    assert "<Credential_" in event.content
-    assert event.sensitivity == "PL4_credential"
+    assert secret in event.content
+    assert "<Credential_" not in event.content
+    assert event.sensitivity == "PL1_public"
 
 
 def test_legacy_t0_file_import_is_idempotent_and_quarantined_under_session_ledger(tmp_path: Path) -> None:

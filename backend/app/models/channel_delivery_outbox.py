@@ -10,6 +10,7 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
+from app.services.channel_secret_storage import EncryptedDeliveryTargetJSON
 
 
 class ChannelDeliveryOutbox(Base):
@@ -70,7 +71,10 @@ class ChannelDeliveryOutbox(Base):
     )
     terminal_status: Mapped[str] = mapped_column(String(40), nullable=False)
     delivery_target_json: Mapped[dict] = mapped_column(
-        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+        EncryptedDeliveryTargetJSON(postgres_jsonb=True),
+        nullable=False,
+        default=dict,
+        server_default=text("'{}'::jsonb"),
     )
     text_content: Mapped[str] = mapped_column(Text, nullable=False)
     artifact_ids_json: Mapped[list] = mapped_column(

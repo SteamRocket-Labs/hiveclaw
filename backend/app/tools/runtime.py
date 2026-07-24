@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from app.core.execution_context import ExecutionIdentity, ExecutionPrincipal
+from app.services.exact_secret_boundary import ExactSecretBoundary
 from app.tools.result_envelope import ToolContentEnvelope
 
 if TYPE_CHECKING:
@@ -57,6 +58,10 @@ class ToolExecutionContext:
     # Typed policy result supplied by the governed caller. Tool arguments are
     # never keyword-scanned to invent a company-boundary conflict.
     company_boundary_conflict: bool = False
+    # Runtime-only credential authority. Values never enter prompts, logs, or
+    # receipts; preflight consumes only exact-match source references.
+    exact_secret_boundary: ExactSecretBoundary = field(default_factory=ExactSecretBoundary.empty, repr=False)
+    secret_egress_events: list[dict[str, Any]] = field(default_factory=list, repr=False)
 
 
 @dataclass(slots=True)

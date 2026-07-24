@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, File as FastFile, HTTPException, UploadF
 from fastapi.responses import FileResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
+from starlette.background import BackgroundTask
 
 from app.config import get_settings
 from app.core.permissions import check_agent_access, require_agent_manage_access
@@ -21,8 +22,10 @@ from app.services.chat_artifact_delivery import (
     resolve_chat_artifact_file,
 )
 from app.services.file_download_tokens import (
+    ChannelFileContentChanged,
     InvalidChannelFileDownloadToken,
     NotChannelFileDownloadToken,
+    snapshot_channel_file_content,
     verify_channel_file_download_token,
 )
 from app.services.external_capabilities.skill_source_adapter import stage_remote_external_skill_source_review
@@ -505,7 +508,11 @@ async def download_file(
     """
     if token:
         try:
-            verify_channel_file_download_token(token=token, agent_id=agent_id, path=path)
+            channel_token = verify_channel_file_download_token(
+                token=token,
+                agent_id=agent_id,
+                path=path,
+            )
         except NotChannelFileDownloadToken:
             pass
         except InvalidChannelFileDownloadToken as exc:
@@ -521,7 +528,21 @@ async def download_file(
             target = _safe_path(agent_id, path)
             if not target.exists() or not target.is_file():
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
-            return FileResponse(path=str(target), filename=target.name)
+            try:
+                snapshot_dir, delivery_path = snapshot_channel_file_content(
+                    path=target,
+                    payload=channel_token,
+                )
+            except (ChannelFileContentChanged, OSError) as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="File changed after channel delivery authorization",
+                ) from exc
+            return FileResponse(
+                path=str(delivery_path),
+                filename=target.name,
+                background=(BackgroundTask(snapshot_dir.cleanup) if snapshot_dir is not None else None),
+            )
 
     # Resolve JWT token from either Bearer header or query param
     jwt_token = None

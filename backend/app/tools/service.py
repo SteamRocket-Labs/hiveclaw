@@ -34,7 +34,7 @@ from app.services.action_preflight import (
 from app.services.decision_trace import TenantScopedSqlDecisionTraceStore
 from app.services.plan_mode_gate import PlanModeGate, get_plan_mode_gate
 from app.services.approval_ticket import ApprovalDecisionSet, hash_tool_input
-from app.services.privacy_layer import PrivacyLayer
+from app.services.privacy_layer import SensitivityLevel
 from app.services.governance_capability_taxonomy import capability_descriptor_for_tool, is_l2_tool
 from app.services.capability_group_policy_service import (
     get_agent_capability_group_policies,
@@ -431,20 +431,41 @@ def _record_tool_lifecycle(
     truth_evidence_refs: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     descriptor = capability_descriptor_for_tool(tool_name)
+    original_redaction = runtime_context.exact_secret_boundary.redact_payload_with_evidence(
+        dict(original_arguments or {})
+    )
+    effective_redaction = runtime_context.exact_secret_boundary.redact_payload_with_evidence(
+        dict(effective_arguments or {})
+    )
+    exact_secret_refs = tuple(
+        dict.fromkeys(
+            [
+                *original_redaction.matched_refs,
+                *effective_redaction.matched_refs,
+            ]
+        )
+    )
     lifecycle = ToolCallLifecycleV1(
         session_id=str(runtime_context.session_id or ""),
         turn_id=runtime_context.turn_id,
         tool_call_id=tool_call_id,
         tool_name=tool_name,
         lifecycle_state=state,
-        original_arguments=dict(original_arguments or {}),
-        effective_arguments=dict(effective_arguments or {}),
+        original_arguments=original_redaction.value,
+        effective_arguments=effective_redaction.value,
         schema_ref=f"tool_schema:{tool_name}:parameters",
         capability=descriptor.name if descriptor else None,
         taxonomy_layer=descriptor.layer if descriptor else None,
-        governance_decisions=governance_decisions,
+        governance_decisions=tuple(
+            dict.fromkeys(
+                [
+                    *governance_decisions,
+                    *(("exact_secret_input_redacted",) if exact_secret_refs else ()),
+                ]
+            )
+        ),
         permission_request_id=permission_request_id,
-        truth_evidence_refs=truth_evidence_refs,
+        truth_evidence_refs=tuple(dict.fromkeys([*truth_evidence_refs, *exact_secret_refs])),
         t0_refs=tuple(str(ref) for ref in (runtime_context.t0_refs or ()) if str(ref).strip()),
     )
     payload = _json_safe_runtime_value(asdict(lifecycle))
@@ -511,6 +532,8 @@ def _tool_trace_metadata(
     frame = _latest_context_record(runtime_context, "tool_execution_frames")
     if frame:
         metadata["tool_execution_frame"] = frame
+    if runtime_context.secret_egress_events:
+        metadata["secret_egress_events"] = list(runtime_context.secret_egress_events)
     return metadata
 
 
@@ -569,11 +592,12 @@ def _record_final_tool_decision(
         idempotency_key=f"tool-call:{tool_call_id}",
     )
     payload = decision.to_dict()
+    safe_arguments = runtime_context.exact_secret_boundary.redact_payload(arguments)
     if trace_metadata_sink is not None:
         trace_metadata_sink.update(
             {
                 "tool_decision": payload,
-                "effective_arguments": _json_safe_runtime_value(arguments),
+                "effective_arguments": _json_safe_runtime_value(safe_arguments),
                 "decision_id": decision.decision_id,
                 "input_hash": decision.input_hash,
                 "policy_snapshot_hash": decision.policy_snapshot_hash,
@@ -747,6 +771,41 @@ class ToolRuntimeService:
 
             self.asset_ref_resolver = self.asset_ref_resolver or resolve_tool_asset_refs
             self.asset_usage_recorder = self.asset_usage_recorder or record_tool_asset_usage
+
+    @staticmethod
+    def _redact_runtime_egress(
+        value: Any,
+        *,
+        context: ToolExecutionContext,
+        surface: str,
+        trace_metadata_sink: dict[str, Any] | None,
+    ) -> tuple[Any, Any]:
+        redaction = context.exact_secret_boundary.redact_payload_with_evidence(value)
+        if not redaction.redacted_count:
+            return value, redaction
+
+        event = {
+            "code": "exact_unauthorized_secret_bytes",
+            "surface": surface,
+            "redacted_count": redaction.redacted_count,
+            "source_refs": list(redaction.matched_refs),
+        }
+        context.secret_egress_events.append(event)
+        if trace_metadata_sink is not None:
+            existing = dict(trace_metadata_sink.get("secret_egress_redaction") or {})
+            surfaces = dict(existing.get("surfaces") or {})
+            surfaces[surface] = int(surfaces.get(surface) or 0) + redaction.redacted_count
+            refs = list(existing.get("source_refs") or [])
+            for source_ref in redaction.matched_refs:
+                if source_ref not in refs:
+                    refs.append(source_ref)
+            trace_metadata_sink["secret_egress_redaction"] = {
+                "code": "exact_unauthorized_secret_bytes",
+                "surfaces": surfaces,
+                "redacted_count": sum(surfaces.values()),
+                "source_refs": refs,
+            }
+        return redaction.value, redaction
 
     @staticmethod
     async def _emit_loaded_instruction_hook(
@@ -1249,6 +1308,12 @@ class ToolRuntimeService:
                         workspace=context.workspace,
                     )
                 value = await self.backend.execute(request, _execute_request)
+                value, _redaction = self._redact_runtime_egress(
+                    value,
+                    context=context,
+                    surface="tool_result",
+                    trace_metadata_sink=trace_metadata_sink,
+                )
                 if context.workspace_authority_scope is not None:
                     from app.services.workspace_resource_authority import record_workspace_tool_mutations
 
@@ -1278,6 +1343,12 @@ class ToolRuntimeService:
             else:
                 result = await _execute_backend()
         except Exception as exc:
+            safe_error, error_redaction = self._redact_runtime_egress(
+                f"{type(exc).__name__}: {exc}",
+                context=context,
+                surface="tool_error",
+                trace_metadata_sink=trace_metadata_sink,
+            )
             _record_tool_execution_frame(
                 context,
                 tool_call_id=tool_call_id,
@@ -1285,7 +1356,7 @@ class ToolRuntimeService:
                 executor=self.backend.name if self.backend else "unknown",
                 arguments=arguments,
                 status="failed",
-                result={"error": type(exc).__name__, "message": str(exc)},
+                result={"error": type(exc).__name__, "message": safe_error},
                 started_at=started_frame.get("started_at"),
                 trace_metadata_sink=trace_metadata_sink,
             )
@@ -1299,6 +1370,13 @@ class ToolRuntimeService:
                     effective_arguments=dict(arguments or {}),
                     governance_decisions=("tool_execution_error",),
                 )
+            if error_redaction.redacted_count:
+                from app.services.exact_secret_boundary import ExactSecretEgressError
+
+                raise ExactSecretEgressError(
+                    safe_error,
+                    source_refs=error_redaction.matched_refs,
+                ) from None
             raise
         result_failed = _tool_result_failed(result)
         _record_tool_execution_frame(
@@ -1547,6 +1625,7 @@ class ToolRuntimeService:
         runtime_context: ToolExecutionContext,
         *,
         trace_metadata_sink: dict[str, Any] | None = None,
+        secret_check_payload: Any | None = None,
     ) -> ToolBoundaryBlock | None:
         if not self.preflight_enabled or self.preflight_service is None:
             return None
@@ -1555,6 +1634,7 @@ class ToolRuntimeService:
             tool_name,
             arguments,
             runtime_context=runtime_context,
+            secret_check_payload=secret_check_payload,
         )
         preflight = self.preflight_service.evaluate(preflight_input)
         authorization_decision_entry = preflight.as_authorization_decision_entry(
@@ -1571,10 +1651,10 @@ class ToolRuntimeService:
         if owner_action_policy is not None:
             preflight_trace["owner_action_policy"] = owner_action_policy.trace_payload(preflight_input.action)
         approval_decision = runtime_context.approval_decision
-        approval_satisfied = (
-            approval_decision is not None
-            and preflight.decision in {PreflightDecision.ASK, PreflightDecision.ESCALATE}
-        )
+        approval_satisfied = approval_decision is not None and preflight.decision in {
+            PreflightDecision.ASK,
+            PreflightDecision.ESCALATE,
+        }
         if approval_satisfied:
             approval_id = str(approval_decision.approval_id)
             preflight_trace.update(
@@ -1690,10 +1770,12 @@ def _build_tool_preflight_input(
     arguments: dict,
     *,
     runtime_context: ToolExecutionContext | None = None,
+    secret_check_payload: Any | None = None,
 ) -> ActionPreflightInput:
-    args_text = _json.dumps(arguments, ensure_ascii=False, default=str)
-    privacy = PrivacyLayer().classify_and_mask(args_text)
-    sensitivity = privacy.sensitivity
+    secret_boundary = getattr(runtime_context, "exact_secret_boundary", None)
+    payload = arguments if secret_check_payload is None else secret_check_payload
+    unauthorized_secret_refs = secret_boundary.match_payload(payload) if secret_boundary is not None else ()
+    sensitivity = SensitivityLevel.PL4_CREDENTIAL if unauthorized_secret_refs else SensitivityLevel.PL1_PUBLIC
     company_conflict = bool(getattr(runtime_context, "company_boundary_conflict", False))
     execution_identity = getattr(runtime_context, "execution_identity", None) if runtime_context is not None else None
     from app.services.owner_action_policy import (
@@ -1756,6 +1838,7 @@ def _build_tool_preflight_input(
         explicit_user_authorized=explicit_user_authorized,
         charter_policy_valid=charter_policy_valid,
         charter_policy_error=charter_policy_error,
+        unauthorized_secret_refs=unauthorized_secret_refs,
     )
 
 

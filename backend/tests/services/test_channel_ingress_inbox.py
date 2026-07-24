@@ -17,10 +17,14 @@ from app.services.channel_ingress_context import use_channel_ingress_context
 from app.services.channel_ingress_inbox import (
     ChannelIngressCollisionError,
     ChannelIngressInboxService,
+    ChannelIngressReceipt,
     ChannelIngressSubmission,
+    accept_authenticated_channel_event,
+    canonical_channel_payload,
     enqueue_channel_ingress_event,
     wait_for_channel_ingress_result,
 )
+from app.services.exact_secret_boundary import ExactSecretBoundary
 
 
 async def _seed_agent(owner_sessionmaker):
@@ -70,6 +74,203 @@ async def _clear(owner_sessionmaker):
     async with owner_sessionmaker() as db:
         await db.execute(delete(ChannelIngressEvent))
         await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_authenticated_ingress_redacts_bound_credentials_before_enqueue_but_preserves_transport_token(
+    monkeypatch,
+):
+    exact_secret = "tenant-ingress-secret-0123456789"
+    transport_token = "discord-interaction-token-0123456789"
+    original_body = {
+        "token": transport_token,
+        "data": {
+            "options": [
+                {
+                    "name": "message",
+                    "value": (f"Inspect {exact_secret}; preserve api_key=sk-example-not-authority."),
+                }
+            ]
+        },
+    }
+    _canonical, original_digest = canonical_channel_payload(original_body)
+    captured = {}
+
+    async def fake_load(*_args, **_kwargs):
+        return ExactSecretBoundary.from_pairs([("llm-model://model-1/api_key", exact_secret)])
+
+    async def fake_enqueue(_db, submission):
+        captured["submission"] = submission
+        return ChannelIngressReceipt(
+            event_id=uuid.uuid4(),
+            created=True,
+            payload_digest=submission.payload_digest,
+            status="received",
+        )
+
+    class FakeDB:
+        committed = False
+
+        async def commit(self):
+            self.committed = True
+
+    monkeypatch.setattr(
+        "app.services.credential_boundary_loader.load_exact_secret_boundary",
+        fake_load,
+    )
+    monkeypatch.setattr(
+        "app.services.channel_ingress_inbox.enqueue_channel_ingress_event",
+        fake_enqueue,
+    )
+    db = FakeDB()
+
+    await accept_authenticated_channel_event(
+        db,
+        tenant_id=uuid.uuid4(),
+        agent_id=uuid.uuid4(),
+        provider="discord",
+        installation_ref="discord-installation",
+        provider_event_id="discord-event-1",
+        handler_key="discord.interaction",
+        body=original_body,
+    )
+
+    submission = captured["submission"]
+    assert db.committed is True
+    assert submission.payload_digest == original_digest
+    assert submission.payload["_channel_ingress_provider"] == "discord"
+    assert submission.payload["body"]["token"] == transport_token
+    persisted_text = submission.payload["body"]["data"]["options"][0]["value"]
+    assert exact_secret not in persisted_text
+    assert persisted_text == ("Inspect [REDACTED_SECRET]; preserve api_key=sk-example-not-authority.")
+    assert submission.metadata["exact_secret_ingress_redaction"] == {
+        "schema": "hive.exact_secret_redaction_receipt",
+        "schema_version": 1,
+        "phase": "channel_inbox",
+        "redacted_count": 1,
+        "source_refs": ["llm-model://model-1/api_key"],
+    }
+
+
+def test_ingress_failure_detail_redacts_exact_tenant_and_transport_credentials():
+    from app.services.channel_ingress_inbox import _redact_channel_ingress_failure
+
+    boundary = ExactSecretBoundary.from_pairs(
+        [
+            ("llm-model://model-1/api_key", "tenant-error-secret-0123456789"),
+            (
+                "channel-ingress://discord/body/token",
+                "transport-error-secret-0123456789",
+            ),
+        ]
+    )
+
+    detail = _redact_channel_ingress_failure(
+        RuntimeError(
+            "retry tenant-error-secret-0123456789 via transport-error-secret-0123456789; preserve token=example"
+        ),
+        boundary=boundary,
+    )
+
+    assert detail == ("RuntimeError: retry [REDACTED_SECRET] via [REDACTED_SECRET]; preserve token=example")
+
+
+@pytest.mark.asyncio
+async def test_legacy_ingress_exact_secret_backfill_is_dry_run_first_and_preserves_transport_token(
+    monkeypatch,
+):
+    from types import SimpleNamespace
+
+    from app.services.channel_ingress_inbox import (
+        migrate_channel_ingress_exact_secret_rows,
+    )
+
+    tenant_id = uuid.uuid4()
+    agent_id = uuid.uuid4()
+    exact_secret = "legacy-active-secret-0123456789"
+    transport_token = "legacy-transport-token-0123456789"
+
+    class _Scalars:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def all(self):
+            return list(self._rows)
+
+    class _Result:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def scalars(self):
+            return _Scalars(self._rows)
+
+    class _DB:
+        def __init__(self, event):
+            self.event = event
+            self.commits = 0
+
+        async def execute(self, _statement):
+            return _Result([self.event])
+
+        async def commit(self):
+            self.commits += 1
+
+    def event():
+        return SimpleNamespace(
+            id=uuid.uuid4(),
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            provider="discord",
+            payload_json={
+                "_channel_ingress_provider": "discord",
+                "body": {
+                    "token": transport_token,
+                    "data": {"value": f"Use {exact_secret}; preserve token=example."},
+                },
+            },
+            metadata_json={},
+        )
+
+    async def fake_load(*_args, **_kwargs):
+        return ExactSecretBoundary.from_pairs([("llm-model://model-1/api_key", exact_secret)])
+
+    monkeypatch.setattr(
+        "app.services.credential_boundary_loader.load_exact_secret_boundary",
+        fake_load,
+    )
+
+    dry_event = event()
+    dry_db = _DB(dry_event)
+    dry_report = await migrate_channel_ingress_exact_secret_rows(
+        dry_db,
+        apply=False,
+    )
+
+    assert dry_report == {
+        "schema": "hive.channel_ingress_exact_secret_backfill.v1",
+        "mode": "dry_run",
+        "rows_scanned": 1,
+        "rows_requiring_redaction": 1,
+        "redacted_values": 1,
+        "rows_rewritten": 0,
+    }
+    assert exact_secret in str(dry_event.payload_json)
+    assert dry_db.commits == 0
+
+    apply_event = event()
+    apply_db = _DB(apply_event)
+    apply_report = await migrate_channel_ingress_exact_secret_rows(
+        apply_db,
+        apply=True,
+    )
+
+    assert apply_report["mode"] == "apply"
+    assert apply_report["rows_rewritten"] == 1
+    assert exact_secret not in str(apply_event.payload_json)
+    assert apply_event.payload_json["body"]["token"] == transport_token
+    assert apply_event.payload_json["body"]["data"]["value"] == ("Use [REDACTED_SECRET]; preserve token=example.")
+    assert apply_event.metadata_json["exact_secret_ingress_redaction"]["phase"] == ("channel_inbox_legacy_backfill")
+    assert apply_db.commits == 1
 
 
 @pytest.mark.usefixtures("migrated_pg_url")

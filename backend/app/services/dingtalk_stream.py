@@ -144,7 +144,11 @@ class DingTalkStreamManager:
                         conversation_type = incoming.conversation_type or "1"
                         session_webhook = incoming.session_webhook or ""
 
-                        logger.info(f"[DingTalk Stream] Message from {sender_staff_id}: {user_text[:80]}")
+                        logger.info(
+                            "[DingTalk Stream] Message received from {}: content_length={}",
+                            sender_staff_id,
+                            len(user_text),
+                        )
 
                         if main_loop and main_loop.is_running():
                             raw_data = callback.data if isinstance(callback.data, dict) else {}

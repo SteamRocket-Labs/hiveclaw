@@ -1127,6 +1127,7 @@ async def _spawn_one(
         # CC semantics: the definition body / type baseline IS the whole system
         # prompt — the spawned specialist does not inherit the host's identity.
         standalone_system_prompt=standalone_system_prompt,
+        tenant_id=ctx.tenant_id,
         agent_id=ctx.parent_agent_id,
         user_id=ctx.parent_user_id,
         on_tool_call=on_tool_call

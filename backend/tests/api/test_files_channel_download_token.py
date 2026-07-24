@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import timedelta
+import hashlib
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
@@ -82,6 +84,85 @@ async def test_channel_file_download_token_rejects_path_mismatch(tmp_path, monke
         )
 
     assert exc.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_channel_file_download_token_rejects_content_changed_after_authorization(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    import app.api.files as files_api
+    import app.services.file_download_tokens as token_service
+
+    settings = _settings(tmp_path)
+    monkeypatch.setattr(files_api, "settings", settings)
+    monkeypatch.setattr(token_service, "get_settings", lambda: settings)
+
+    agent_id = uuid4()
+    workspace = tmp_path / str(agent_id) / "workspace"
+    workspace.mkdir(parents=True)
+    target = workspace / "report.md"
+    target.write_text("safe report", encoding="utf-8")
+    token = token_service.make_channel_file_download_token(
+        agent_id=agent_id,
+        path="workspace/report.md",
+        content_sha256=hashlib.sha256(b"safe report").hexdigest(),
+        expires_delta=timedelta(minutes=5),
+    )
+    target.write_text("changed after authorization", encoding="utf-8")
+
+    with pytest.raises(HTTPException) as exc:
+        await files_api.download_file(
+            agent_id=agent_id,
+            path="workspace/report.md",
+            token=token,
+            credentials=None,
+            db=object(),
+        )
+
+    assert exc.value.status_code == 409
+    assert "changed" in str(exc.value.detail).lower()
+
+
+@pytest.mark.asyncio
+async def test_content_bound_channel_download_serves_the_verified_snapshot(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    import app.api.files as files_api
+    import app.services.file_download_tokens as token_service
+
+    settings = _settings(tmp_path)
+    monkeypatch.setattr(files_api, "settings", settings)
+    monkeypatch.setattr(token_service, "get_settings", lambda: settings)
+
+    agent_id = uuid4()
+    workspace = tmp_path / str(agent_id) / "workspace"
+    workspace.mkdir(parents=True)
+    target = workspace / "report.md"
+    target.write_text("safe report", encoding="utf-8")
+    token = token_service.make_channel_file_download_token(
+        agent_id=agent_id,
+        path="workspace/report.md",
+        content_sha256=hashlib.sha256(b"safe report").hexdigest(),
+        expires_delta=timedelta(minutes=5),
+    )
+
+    response = await files_api.download_file(
+        agent_id=agent_id,
+        path="workspace/report.md",
+        token=token,
+        credentials=None,
+        db=object(),
+    )
+    served_path = Path(response.path)
+    target.write_text("changed after response creation", encoding="utf-8")
+
+    assert served_path != target
+    assert served_path.read_text(encoding="utf-8") == "safe report"
+    assert response.background is not None
+    await response.background()
+    assert not served_path.exists()
 
 
 def test_build_channel_file_download_url_uses_signed_token_and_quoted_path(tmp_path, monkeypatch) -> None:

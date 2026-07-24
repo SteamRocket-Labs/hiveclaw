@@ -18,6 +18,7 @@ from app.models.audit import AuditLog
 from app.models.config_revision import ConfigRevision
 from app.models.knowledge import KnowledgeDocument, KnowledgeGrant, PersonalKnowledgeProposal
 from app.services.config_versioning import get_history, save_revision
+from app.services.exact_secret_boundary import ExactSecretBoundary
 
 from app.services.privacy_layer import (
     PrivacyLayer,
@@ -85,11 +86,13 @@ def evaluate_proposal_content(
     content: str,
     declared_sensitivity: str,
     max_chars: int,
+    exact_secret_boundary: ExactSecretBoundary | None = None,
 ) -> ProposalContentDecision:
     """Apply deterministic platform safety checks before an Agent proposal is stored.
 
     Semantic usefulness remains the Agent/owner's judgment. This function only
-    enforces mechanical size and zero-retention privacy invariants.
+    enforces mechanical size and exact-authority zero-retention privacy
+    invariants. Credential-shaped prose remains reviewable content.
     """
 
     clean_content = str(content or "").strip()
@@ -103,7 +106,9 @@ def evaluate_proposal_content(
             ("content_too_large",),
         )
 
-    privacy = PrivacyLayer().classify_and_mask(clean_content)
+    privacy = PrivacyLayer(
+        secret_boundary=exact_secret_boundary,
+    ).classify_and_mask(clean_content)
     inferred_rank = sensitivity_rank(privacy.sensitivity)
     try:
         canonical_declared = canonicalize_sensitivity(declared_sensitivity or "internal")
@@ -118,11 +123,13 @@ def evaluate_proposal_content(
     effective_sensitivity = max_sensitivity(privacy.sensitivity, canonical_declared)
     effective_rank = sensitivity_rank(effective_sensitivity)
     if privacy.rejected or effective_rank == 4:
+        reason_codes = ["credential_zero_retention"]
+        reason_codes.extend(f"credential_binding:{source_ref}" for source_ref in privacy.secret_evidence_refs)
         return ProposalContentDecision(
             "reject",
             privacy.sanitized_text,
             SensitivityLevel.PL4_CREDENTIAL.value,
-            ("credential_zero_retention",),
+            tuple(reason_codes),
         )
 
     reasons: list[str] = []
@@ -348,6 +355,7 @@ class PersonalKnowledgeProposalService:
         delegation_token: Any | None = None,
         session_id: str | None = None,
         runtime_task_id: str | None = None,
+        exact_secret_boundary: ExactSecretBoundary | None = None,
     ) -> PersonalKnowledgeProposalView:
         clean_idempotency_key = str(idempotency_key or "").strip()
         if not clean_idempotency_key:
@@ -384,6 +392,7 @@ class PersonalKnowledgeProposalService:
             content=content,
             declared_sensitivity=sensitivity,
             max_chars=self.max_content_chars,
+            exact_secret_boundary=exact_secret_boundary,
         )
         clean_title = str(title or "").strip()
         clean_purpose = str(purpose or "").strip()

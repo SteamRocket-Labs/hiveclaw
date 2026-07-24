@@ -31,7 +31,9 @@ def _write(agent_id: uuid.UUID, tmp_agent_dir: Path, **kwargs) -> Path:
 
 
 class TestT0PrivacyGate:
-    def test_pl4_credential_is_masked_in_t0_chat(self, agent_id: uuid.UUID, tmp_agent_dir: Path) -> None:
+    def test_secret_shaped_fixture_is_preserved_as_raw_t0_evidence(
+        self, agent_id: uuid.UUID, tmp_agent_dir: Path
+    ) -> None:
         secret = "sk-" + "A" * 24  # synthetic; assembled at runtime to dodge static scanners
         path = _write(
             agent_id,
@@ -44,9 +46,9 @@ class TestT0PrivacyGate:
             metadata={"source": "web", "session_id": "s-1"},
         )
         content = path.read_text(encoding="utf-8")
-        assert secret not in content
-        assert "<Credential_" in content
-        assert "t0_sensitivity: PL4_credential" in content
+        assert secret in content
+        assert "<Credential_" not in content
+        assert "t0_sensitivity: PL1_public" in content
 
     def test_semantic_keyword_does_not_mechanically_mark_pl3(self, agent_id: uuid.UUID, tmp_agent_dir: Path) -> None:
         path = _write(

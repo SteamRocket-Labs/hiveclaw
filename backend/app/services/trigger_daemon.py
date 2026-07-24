@@ -2008,6 +2008,7 @@ async def _invoke_agent_for_triggers(
                 messages=messages,
                 agent_name=agent.name,
                 role_description=agent.role_description or "",
+                tenant_id=agent_tenant_id,
                 agent_id=agent_id,
                 user_id=agent.creator_id,
                 on_chunk=on_chunk,

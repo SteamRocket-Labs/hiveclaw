@@ -4,10 +4,11 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
-from sqlalchemy.dialects.postgresql import UUID, JSONB
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
+from app.services.channel_secret_storage import EncryptedDeliveryTargetJSON
 
 
 class AgentTrigger(Base):
@@ -32,7 +33,11 @@ class AgentTrigger(Base):
     )
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     type: Mapped[str] = mapped_column(String(20), nullable=False)  # cron|once|interval|poll|on_message
-    config: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    config: Mapped[dict] = mapped_column(
+        EncryptedDeliveryTargetJSON(postgres_jsonb=True),
+        nullable=False,
+        default=dict,
+    )
     reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
     is_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     last_fired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -42,7 +47,8 @@ class AgentTrigger(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     reply_context: Mapped[dict | None] = mapped_column(
-        JSONB, nullable=True
+        EncryptedDeliveryTargetJSON(postgres_jsonb=True),
+        nullable=True,
     )  # {"channel": "feishu", "user_name": "...", "open_id": "...", "chat_type": "p2p"}
 
     __table_args__ = (UniqueConstraint("agent_id", "name", name="uq_agent_trigger_name"),)

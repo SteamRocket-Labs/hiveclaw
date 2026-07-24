@@ -12,6 +12,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.database import Base
 from app.models.chat_session import ChatSession as _ChatSession  # noqa: F401 - resolves FK metadata
 from app.models.runtime_task import RuntimeTask as _RuntimeTask  # noqa: F401 - resolves FK metadata
+from app.services.channel_secret_storage import EncryptedChannelIngressPayloadJSON
 
 
 class ChannelIngressEvent(Base):
@@ -45,7 +46,10 @@ class ChannelIngressEvent(Base):
     provider_event_id: Mapped[str] = mapped_column(String(512), nullable=False)
     handler_key: Mapped[str] = mapped_column(String(100), nullable=False)
     payload_digest: Mapped[str] = mapped_column(String(64), nullable=False)
-    payload_json: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    payload_json: Mapped[dict] = mapped_column(
+        EncryptedChannelIngressPayloadJSON(postgres_jsonb=True),
+        nullable=False,
+    )
     metadata_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb"))
 
     status: Mapped[str] = mapped_column(

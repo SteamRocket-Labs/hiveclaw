@@ -7,10 +7,12 @@ task → distill How → write back to 记忆.md. No T3 curation / soul / dream.
 
 Memory Control Plane invariant (铁律): runtime durable writes go through
 ``prepare_memory_write_with_llm`` (LLM-primary threat classification,
-privacy/sensitivity classification, PL4 rejection, lifecycle metadata). The
-sync ``prepare_memory_write`` path is retained for offline tests/migrations. A
-rejected write ABORTS — it never falls back to raw content, and the store never
-hand-assembles Markdown around the gate.
+privacy/sensitivity classification, exact-authority PL4 rejection, lifecycle
+metadata). Secret-shaped prose is never a PL4 fact by itself. Runtime ingress
+and model-output boundaries remove authority-bound credential bytes before this
+lane; the sync ``prepare_memory_write`` path is retained for offline
+tests/migrations. A rejected write ABORTS — it never falls back to raw content,
+and the store never hand-assembles Markdown around the gate.
 
 Storage is tenant-scoped (a separate ``base_dir`` per tenant). The offline daemon
 that scans the T0 session ledger and LLM-distills How is wired on top of ``distill_and_record``

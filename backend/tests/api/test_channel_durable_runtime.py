@@ -74,6 +74,90 @@ async def test_call_agent_llm_durable_starts_channel_runtime(monkeypatch) -> Non
 
 
 @pytest.mark.asyncio
+async def test_call_agent_llm_redacts_exact_secret_before_durable_channel_input(
+    monkeypatch,
+) -> None:
+    from app.services.channel_agent_runtime import call_agent_llm
+    from app.services.exact_secret_boundary import ExactSecretBoundary
+
+    exact_secret = "tenant-channel-secret-0123456789"
+    agent_id = uuid4()
+    user_id = uuid4()
+    session_id = uuid4()
+    ingress_event_id = uuid4()
+    tenant_id = uuid4()
+    agent = SimpleNamespace(
+        id=agent_id,
+        name="Agent",
+        tenant_id=tenant_id,
+        agent_type="chat",
+        role_description="",
+    )
+    session = SimpleNamespace(
+        id=session_id,
+        tenant_id=tenant_id,
+        delivery_target_json={"channel": "feishu"},
+    )
+    user = SimpleNamespace(id=user_id, username="feishu_u", display_name="Feishu User")
+
+    class _Result:
+        def scalar_one_or_none(self):
+            return agent
+
+    class _DB:
+        async def execute(self, _stmt):
+            return _Result()
+
+        async def scalar(self, _stmt):
+            return session
+
+    captured = {}
+
+    async def fake_redact(_db, *, payload, **_kwargs):
+        boundary = ExactSecretBoundary.from_pairs([("tool-config://tool-1/token", exact_secret)])
+        return boundary.redact_payload_with_evidence(payload)
+
+    async def fake_submit_live_human_input(**kwargs):
+        captured.update(kwargs)
+        return {
+            "dispatch_status": "run_queued",
+            "run": {"run_id": "abc", "status": "running"},
+        }
+
+    monkeypatch.setattr(
+        "app.services.credential_boundary_loader.redact_runtime_ingress_payload",
+        fake_redact,
+    )
+    monkeypatch.setattr(
+        "app.services.session_live_input.submit_live_human_input",
+        fake_submit_live_human_input,
+    )
+
+    await call_agent_llm(
+        _DB(),
+        agent_id,
+        f"Use {exact_secret}; preserve token=example-placeholder.",
+        user_id=user_id,
+        session_id=str(session_id),
+        session_source="feishu",
+        session_channel="feishu",
+        durable_run=True,
+        durable_session=session,
+        durable_user=user,
+        ingress_event_id=ingress_event_id,
+    )
+
+    assert captured["content"] == ("Use [REDACTED_SECRET]; preserve token=example-placeholder.")
+    assert captured["runtime_metadata"]["exact_secret_ingress_redaction"] == {
+        "schema": "hive.exact_secret_redaction_receipt",
+        "schema_version": 1,
+        "phase": "channel_runtime",
+        "redacted_count": 1,
+        "source_refs": ["tool-config://tool-1/token"],
+    }
+
+
+@pytest.mark.asyncio
 async def test_call_agent_llm_durable_surfaces_typed_channel_authority_denial(monkeypatch) -> None:
     from fastapi import HTTPException
 

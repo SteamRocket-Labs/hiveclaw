@@ -140,7 +140,7 @@ def test_unavailable_owner_policy_keeps_read_only_tool_non_effectful() -> None:
     assert ActionPreflightService().evaluate(request).decision == PreflightDecision.DO
 
 
-def test_sensitive_tool_preflight_still_refuses_credentials() -> None:
+def test_secret_shaped_fixture_does_not_make_tool_preflight_refuse() -> None:
     from app.services.action_preflight import ActionPreflightService, PreflightDecision
     from app.tools.service import _build_tool_preflight_input
 
@@ -151,7 +151,38 @@ def test_sensitive_tool_preflight_still_refuses_credentials() -> None:
         )
     )
 
+    assert preflight.decision == PreflightDecision.DO
+
+
+def test_tool_preflight_refuses_an_exact_active_secret_in_nested_arguments() -> None:
+    from app.services.action_preflight import ActionPreflightService, PreflightDecision
+    from app.services.exact_secret_boundary import ExactSecretBoundary
+    from app.tools.runtime import ToolExecutionContext
+    from app.tools.service import _build_tool_preflight_input
+
+    active_secret = "sk-live-tenant-secret-0123456789"
+    context = ToolExecutionContext(
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        tenant_id=str(uuid4()),
+        workspace=Path("/tmp/secret-boundary"),
+        exact_secret_boundary=ExactSecretBoundary.from_pairs(
+            (("tool-config://tenant-1/search/api_key", active_secret),)
+        ),
+    )
+
+    request = _build_tool_preflight_input(
+        "write_file",
+        {"document": {"content": f"prefix::{active_secret}::suffix"}},
+        runtime_context=context,
+    )
+    preflight = ActionPreflightService().evaluate(request)
+
+    assert request.sensitivity.value == "PL4_credential"
+    assert request.unauthorized_secret_refs == ("tool-config://tenant-1/search/api_key",)
     assert preflight.decision == PreflightDecision.REFUSE
+    assert preflight.reasons == ["unauthorized_secret_bytes"]
+    assert preflight.evidence_refs == ["tool-config://tenant-1/search/api_key"]
 
 
 def test_local_tool_arguments_are_not_semantically_classified_as_company_conflict() -> None:

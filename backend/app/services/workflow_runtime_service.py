@@ -1533,6 +1533,7 @@ class WorkflowRuntimeService:
                 await ChannelDeliveryService.send_text(
                     db=session,
                     agent_id=agent_id,
+                    tenant_id=tenant_id,
                     reply_target=reply_target,
                     text=text,
                     delivery_mode="async_completion",

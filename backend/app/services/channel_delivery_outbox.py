@@ -209,9 +209,7 @@ async def enqueue_terminal_delivery_for_task(
     may still say ``web`` even though they have a valid external target.
     """
 
-    session_id = _uuid(
-        session_id or getattr(task, "parent_session_id", None), field="parent_session_id", optional=True
-    )
+    session_id = _uuid(session_id or getattr(task, "parent_session_id", None), field="parent_session_id", optional=True)
     agent_id = _uuid(agent_id or getattr(task, "parent_agent_id", None), field="parent_agent_id", optional=True)
     tenant_id = _uuid(getattr(task, "tenant_id", None), field="tenant_id", optional=True)
     if session_id is None or agent_id is None or tenant_id is None:
@@ -592,6 +590,7 @@ class ChannelDeliveryOutboxService:
                 sender=self._text_sender,
                 sender_kwargs={
                     "db": db,
+                    "tenant_id": item.tenant_id,
                     "text": item.text,
                     "content_sensitivity": knowledge_content_sensitivity(item.metadata),
                     **common,
@@ -605,6 +604,7 @@ class ChannelDeliveryOutboxService:
                     sender=self._file_sender,
                     sender_kwargs={
                         "db": db,
+                        "tenant_id": item.tenant_id,
                         "artifact_id": artifact_id,
                         "file_path": file_path,
                         "message": "",

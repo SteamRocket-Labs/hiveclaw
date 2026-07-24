@@ -144,6 +144,7 @@ class AgentInvocationRequest:
     agent_name: str
     role_description: str
     fallback_model: Any | None = None
+    tenant_id: uuid.UUID | None = None
     agent_id: uuid.UUID | None = None
     user_id: uuid.UUID | None = None
     execution_identity: ExecutionIdentityRef | None = None
@@ -1663,7 +1664,28 @@ async def invoke_agent(request: AgentInvocationRequest) -> AgentInvocationResult
             skill_ranking_inputs=_skill_catalog_ranking_inputs,
             build_skill_catalog=build_skill_catalog_section_for_agent,
             combined_tools=get_combined_openai_tools,
+            load_secret_boundary=_load_invocation_secret_boundary,
             record_skill_usage=record_skill_runtime_usage_for_invocation,
             logger=logger,
         ),
     )
+
+
+async def _load_invocation_secret_boundary(
+    *,
+    tenant_id: uuid.UUID,
+    agent_id: uuid.UUID,
+):
+    from app.services.credential_boundary_loader import load_exact_secret_boundary
+
+    async with tenant_scoped_session(
+        tenant_id,
+        session_factory=async_session,
+        require_tenant=True,
+        source="invocation_credential_authority",
+    ) as db:
+        return await load_exact_secret_boundary(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+        )

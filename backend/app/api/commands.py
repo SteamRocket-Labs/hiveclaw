@@ -46,6 +46,7 @@ from app.services.plan_mode_recommendation_service import (
     PlanRecommendationError,
     require_declined_plan_recommendation,
 )
+from app.services.channel_secret_storage import redact_delivery_target
 from app.services.session_command_runtime import (
     SESSION_COMMAND_NAMES,
     SessionCommandContext,
@@ -431,7 +432,7 @@ def _schedule_command_payload(trigger: AgentTrigger) -> dict[str, Any]:
         "next_run_at": next_run_at,
         "run_count": int(trigger.fire_count or 0),
         "created_by": config.get("created_by"),
-        "delivery_target_json": trigger.reply_context or config.get("delivery_target_json"),
+        "delivery_target_json": redact_delivery_target(trigger.reply_context or config.get("delivery_target_json")),
         "created_at": trigger.created_at.isoformat() if trigger.created_at else None,
         "requires_api_persist": False,
     }

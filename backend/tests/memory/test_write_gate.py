@@ -34,20 +34,49 @@ def test_low_confidence_does_not_mechanically_become_abstention() -> None:
     assert assessment.abstained is False
 
 
-def test_prepare_memory_write_rejects_pl4_credentials() -> None:
-    from app.memory.write_gate import prepare_memory_write
+def test_prepare_memory_write_preserves_secret_shaped_documentation_for_semantic_review() -> None:
+    from app.memory.write_gate import MemoryThreatAssessment, prepare_memory_write
 
+    content = "Owner documented api_key=sk-1234567890abcdefghijklmnop as a test fixture."
     decision = prepare_memory_write(
-        "Owner Alice shared api_key=sk-1234567890abcdefghijklmnop for setup.",
+        content,
         category="reference",
         evidence_refs=["t0:behavior/chat-1.md#L4"],
+        threat_assessment=MemoryThreatAssessment(
+            rejected=False,
+            labels=[],
+            method="llm_classifier",
+            confidence=0.99,
+            rationale="Benign credential fixture documentation.",
+        ),
+    )
+
+    assert decision.rejected is False
+    assert decision.sensitivity == "PL1_public"
+    assert decision.content == content
+    assert decision.metadata["status"] == "active"
+
+
+def test_prepare_memory_write_rejects_exact_active_secret_binding() -> None:
+    from app.memory.write_gate import prepare_memory_write
+    from app.services.exact_secret_boundary import ExactSecretBoundary
+    from app.services.privacy_layer import PrivacyLayer
+
+    active_secret = "sk-live-memory-secret-0123456789"
+    decision = prepare_memory_write(
+        f"Do not persist {active_secret}.",
+        category="reference",
+        evidence_refs=["t0:behavior/chat-1.md#L4"],
+        privacy_layer=PrivacyLayer(
+            secret_boundary=ExactSecretBoundary.from_pairs((("tool-config://tenant/search/api_key", active_secret),))
+        ),
     )
 
     assert decision.rejected is True
     assert decision.sensitivity == "PL4_credential"
-    assert "sk-1234567890abcdefghijklmnop" not in decision.content
-    assert decision.metadata["sensitivity"] == "PL4_credential"
+    assert decision.content == "Do not persist [REDACTED_SECRET]."
     assert decision.metadata["status"] == "rejected"
+    assert decision.metadata["secret_evidence_refs"] == "tool-config://tenant/search/api_key"
 
 
 def test_prepare_memory_write_masks_pii_and_adds_lifecycle_metadata() -> None:

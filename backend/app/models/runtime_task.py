@@ -30,6 +30,7 @@ from sqlalchemy.dialects.postgresql import JSON, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
+from app.services.channel_secret_storage import EncryptedDeliveryTargetJSON
 
 
 class RuntimeTask(Base):
@@ -156,7 +157,10 @@ class RuntimeTask(Base):
     budget_terminal_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Metadata
-    metadata_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    metadata_json: Mapped[dict | None] = mapped_column(
+        EncryptedDeliveryTargetJSON(),
+        nullable=True,
+    )
 
     __mapper_args__ = {
         "version_id_col": claim_version,

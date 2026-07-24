@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from datetime import timedelta
+import hashlib
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -363,6 +366,100 @@ class TestSendText:
         assert logged == [("[ChannelDelivery] Text delivery failed via telegram: telegram down", ())]
 
     @pytest.mark.asyncio
+    async def test_send_text_redacts_exact_config_secret_from_error_and_activity(
+        self,
+        monkeypatch,
+    ) -> None:
+        import app.api.telegram as telegram_mod
+        import app.services.channel_delivery_service as delivery_mod
+
+        active_secret = "telegram-live-secret-0123456789"
+        logged: list[tuple[str, tuple[object, ...]]] = []
+        activities: list[dict] = []
+
+        async def fake_send(bot_token: str, *_args, **_kwargs):
+            raise RuntimeError(f"provider rejected {bot_token}")
+
+        async def fake_log_activity(_agent_id, _action_type, _description, *, detail):
+            activities.append(detail)
+
+        def fake_warning(message: str, *args: object) -> None:
+            logged.append((message, args))
+
+        monkeypatch.setattr(telegram_mod, "_send_telegram_message", fake_send)
+        monkeypatch.setattr(delivery_mod, "log_activity", fake_log_activity)
+        monkeypatch.setattr(delivery_mod.logger, "warning", fake_warning)
+
+        result = await ChannelDeliveryService.send_text(
+            db=_FakeDB(
+                SimpleNamespace(
+                    channel_type="telegram",
+                    app_secret=active_secret,
+                    app_id="telegram",
+                    is_configured=True,
+                    is_connected=True,
+                    extra_config={},
+                )
+            ),
+            agent_id=uuid4(),
+            reply_target={"channel": "telegram", "chat_id": 99887766},
+            text="hello",
+            delivery_mode="deferred",
+        )
+
+        assert result.ok is False
+        assert result.message == "provider rejected [REDACTED_SECRET]"
+        assert active_secret not in repr(logged)
+        assert active_secret not in repr(activities)
+        assert "[REDACTED_SECRET]" in repr(logged)
+        assert "[REDACTED_SECRET]" in repr(activities)
+
+    @pytest.mark.asyncio
+    async def test_send_text_activity_never_persists_reply_target_secret(
+        self,
+        monkeypatch,
+    ) -> None:
+        import app.api.discord_bot as discord_mod
+        import app.services.channel_delivery_service as delivery_mod
+
+        interaction_token = "discord-interaction-secret-0123456789"
+        activities: list[dict] = []
+
+        async def fake_send(*_args, **_kwargs):
+            return None
+
+        async def fake_log_activity(_agent_id, _action_type, _description, *, detail):
+            activities.append(detail)
+
+        monkeypatch.setattr(discord_mod, "_send_discord_followup", fake_send)
+        monkeypatch.setattr(delivery_mod, "log_activity", fake_log_activity)
+
+        result = await ChannelDeliveryService.send_text(
+            db=_FakeDB(
+                SimpleNamespace(
+                    channel_type="discord",
+                    app_secret="discord-bot-secret-0123456789",
+                    app_id="app-123",
+                    is_configured=True,
+                    is_connected=True,
+                    extra_config={},
+                )
+            ),
+            agent_id=uuid4(),
+            reply_target={
+                "channel": "discord",
+                "interaction_token": interaction_token,
+            },
+            text="done",
+            delivery_mode="deferred",
+        )
+
+        assert result.ok is True
+        assert interaction_token not in repr(result)
+        assert interaction_token not in repr(activities)
+        assert "[REDACTED_SECRET]" in repr(activities)
+
+    @pytest.mark.asyncio
     async def test_send_text_wechat_without_context_token_is_unavailable(self, monkeypatch) -> None:
         monkeypatch.setattr(
             "app.services.wechat_personal_service.get_channel_credentials",
@@ -539,6 +636,90 @@ class TestSendFile:
         assert logged == [("[ChannelDelivery] File delivery failed via telegram: telegram upload down", ())]
 
     @pytest.mark.asyncio
+    async def test_send_file_blocks_exact_config_secret_before_provider(
+        self,
+        monkeypatch,
+        tmp_path,
+    ) -> None:
+        import app.api.telegram as telegram_mod
+
+        active_secret = "telegram-file-secret-0123456789"
+        file_path = tmp_path / "credential.txt"
+        file_path.write_text(f"before::{active_secret}::after", encoding="utf-8")
+
+        async def forbidden_send(*_args, **_kwargs):
+            raise AssertionError("provider must not receive a file containing an active secret")
+
+        monkeypatch.setattr(telegram_mod, "_send_telegram_file", forbidden_send)
+
+        result = await ChannelDeliveryService.send_file(
+            db=_FakeDB(
+                SimpleNamespace(
+                    channel_type="telegram",
+                    app_secret=active_secret,
+                    app_id="telegram",
+                    is_configured=True,
+                    is_connected=True,
+                    extra_config={},
+                )
+            ),
+            agent_id=uuid4(),
+            reply_target={"channel": "telegram", "chat_id": 99887766},
+            file_path=file_path,
+            message="see attached",
+            delivery_mode="deferred",
+        )
+
+        assert result.ok is False
+        assert result.status == "denied"
+        assert result.detail["secret_evidence_refs"]
+        assert active_secret not in repr(result)
+
+    @pytest.mark.asyncio
+    async def test_send_file_provider_receives_the_scanned_immutable_snapshot(
+        self,
+        monkeypatch,
+        tmp_path,
+    ) -> None:
+        import app.api.telegram as telegram_mod
+
+        active_secret = "telegram-race-secret-0123456789"
+        file_path = tmp_path / "report.txt"
+        file_path.write_text("safe report", encoding="utf-8")
+        received_paths: list[Path] = []
+
+        async def fake_send_file(_token, _chat_id, delivered_path, _message):
+            file_path.write_text(active_secret, encoding="utf-8")
+            snapshot = Path(delivered_path)
+            received_paths.append(snapshot)
+            assert snapshot != file_path
+            assert snapshot.read_text(encoding="utf-8") == "safe report"
+
+        monkeypatch.setattr(telegram_mod, "_send_telegram_file", fake_send_file)
+
+        result = await ChannelDeliveryService.send_file(
+            db=_FakeDB(
+                SimpleNamespace(
+                    channel_type="telegram",
+                    app_secret=active_secret,
+                    app_id="telegram",
+                    is_configured=True,
+                    is_connected=True,
+                    extra_config={},
+                )
+            ),
+            agent_id=uuid4(),
+            reply_target={"channel": "telegram", "chat_id": 99887766},
+            file_path=file_path,
+            message="see attached",
+            delivery_mode="deferred",
+        )
+
+        assert result.ok is True
+        assert received_paths
+        assert not received_paths[0].exists()
+
+    @pytest.mark.asyncio
     async def test_send_file_wechat_falls_back_to_signed_download_link(self, monkeypatch, tmp_path) -> None:
         import app.services.wechat_ilink_client as ilink_mod
 
@@ -562,11 +743,21 @@ class TestSendFile:
             "app.services.wechat_personal_service.get_channel_credentials",
             lambda _config: {"base_url": "https://ilink.example", "bot_token": "bot-token"},
         )
+        download_bindings: list[dict] = []
+
+        def fake_download_url(*, agent_id, path, content_sha256, expires_delta=None):
+            download_bindings.append(
+                {
+                    "path": path,
+                    "content_sha256": content_sha256,
+                    "expires_delta": expires_delta,
+                }
+            )
+            return f"https://backend.example.com/api/agents/{agent_id}/files/download?path={path}&token=signed"
+
         monkeypatch.setattr(
             "app.services.file_download_tokens.build_channel_file_download_url",
-            lambda *, agent_id, path, expires_delta=None: (
-                f"https://backend.example.com/api/agents/{agent_id}/files/download?path={path}&token=signed"
-            ),
+            fake_download_url,
         )
 
         config = SimpleNamespace(
@@ -595,6 +786,13 @@ class TestSendFile:
         assert "微信文件直传失败" in sent_texts[-1]
         assert "token=signed" in sent_texts[-1]
         assert decisive_tail in sent_texts[-1]
+        assert download_bindings == [
+            {
+                "path": file_path.name,
+                "content_sha256": hashlib.sha256(b"report").hexdigest(),
+                "expires_delta": timedelta(hours=24),
+            }
+        ]
 
     @pytest.mark.asyncio
     async def test_send_file_wechat_uploads_and_sends_media(self, monkeypatch, tmp_path) -> None:

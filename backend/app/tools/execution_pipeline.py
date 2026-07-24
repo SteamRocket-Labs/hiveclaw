@@ -98,7 +98,13 @@ async def run_tool_execution(
         tool_call_id=request.tool_call_id or ports.new_tool_call_id(),
         arguments=dict(request.arguments or {}),
     )
-    for stage in (_prepare_runtime_context, _apply_hooks_and_assets, _apply_governance):
+    for stage in (
+        _prepare_runtime_context,
+        _apply_exact_secret_preflight,
+        _apply_plan_mode_and_runtime_arguments,
+        _apply_hooks_and_assets,
+        _apply_governance,
+    ):
         stopped = await stage(state)
         if stopped is not None:
             return stopped.value
@@ -155,32 +161,6 @@ async def _prepare_runtime_context(state: _ToolExecutionState) -> _Stop | None:
     if plan_block:
         _record_precontext_block(state, outcome=ports.decision_outcome_type.DENY, reason="plan_mode_readonly")
         return _Stop(plan_block)
-    authorization: dict[str, Any] = {}
-    plan_block = await service._plan_mode_gate_block(
-        request.tool_name,
-        state.arguments,
-        agent_id=request.agent_id,
-        user_id=request.user_id,
-        session_id=request.session_id,
-        runtime_task_id=request.runtime_task_id,
-        evidence_id=f"tool:{state.tool_call_id}",
-        authorization_sink=authorization,
-        plan_mode_interactive_available=request.plan_mode_interactive_available,
-        plan_mode_unattended_available=request.plan_mode_unattended_available,
-        consumed_plan_authorization=(approval.plan_authorization if approval is not None else None),
-        approval_tenant_id=str(getattr(approval, "tenant_id", "")) if approval is not None else None,
-    )
-    if plan_block:
-        _record_precontext_block(
-            state,
-            outcome=ports.decision_outcome_type.REQUIRE_APPROVAL,
-            reason="plan_confirmation_required",
-        )
-        return _Stop(plan_block)
-    if authorization:
-        state.arguments["_plan_authorization"] = authorization
-        if isinstance(request.trace_metadata_sink, dict):
-            request.trace_metadata_sink["plan_authorization"] = dict(authorization)
     state.runtime_context = await ports.resolve_runtime_context(
         service.runtime_resolver,
         agent_id=request.agent_id,
@@ -221,8 +201,105 @@ async def _prepare_runtime_context(state: _ToolExecutionState) -> _Stop | None:
         )
     state.original_arguments = dict(state.arguments)
     _record_lifecycle(state, "created")
-    state.arguments = ports.inject_runtime_arguments(request.tool_name, state.arguments, state.runtime_context)
-    if approval is not None and approval.input_hash != ports.hash_tool_input(request.tool_name, state.arguments):
+    return None
+
+
+async def _apply_exact_secret_preflight(
+    state: _ToolExecutionState,
+) -> _Stop | None:
+    """Stop authority-backed credential bytes before hooks, assets, or logs."""
+
+    boundary = state.runtime_context.exact_secret_boundary
+    redaction = boundary.redact_payload_with_evidence(state.original_arguments)
+    if not redaction.redacted_count:
+        return None
+
+    trace = state.request.trace_metadata_sink
+    if trace is not None:
+        trace["secret_input_redaction"] = {
+            "code": "exact_unauthorized_secret_bytes",
+            "redacted_count": redaction.redacted_count,
+            "source_refs": list(redaction.matched_refs),
+        }
+
+    block = await state.service._preflight_tool_execution(
+        state.request.tool_name,
+        state.arguments,
+        state.runtime_context,
+        trace_metadata_sink=trace,
+    )
+    if block is None:
+        from app.tools.decision import ToolBoundaryBlock, ToolDecisionOutcome
+
+        block = ToolBoundaryBlock(
+            state.ports.render_tool_error(
+                tool_name=state.request.tool_name,
+                error_class="unauthorized_secret_bytes",
+                message=("The tool request contains exact bytes from a protected credential binding."),
+                provider="exact_secret_boundary",
+                retryable=False,
+                actionable_hint=(
+                    "Use the configured credential binding; do not pass raw credential bytes in tool arguments."
+                ),
+            ),
+            outcome=ToolDecisionOutcome.DENY,
+            reason_code="unauthorized_secret_bytes",
+            status="refuse",
+            retryable=False,
+        )
+
+    _record_lifecycle(state, "blocked", "exact_secret_preflight")
+    _record_final_decision(
+        state,
+        outcome=state.ports.decision_outcome_type.DENY,
+        reasons=("unauthorized_secret_bytes",),
+    )
+    return _Stop(block)
+
+
+async def _apply_plan_mode_and_runtime_arguments(
+    state: _ToolExecutionState,
+) -> _Stop | None:
+    """Apply confirmation policy, then add trusted runtime-owned arguments."""
+
+    request, ports, service = state.request, state.ports, state.service
+    approval = request.approval_decision
+    authorization: dict[str, Any] = {}
+    plan_block = await service._plan_mode_gate_block(
+        request.tool_name,
+        state.arguments,
+        agent_id=request.agent_id,
+        user_id=request.user_id,
+        session_id=request.session_id,
+        runtime_task_id=request.runtime_task_id,
+        evidence_id=f"tool:{state.tool_call_id}",
+        authorization_sink=authorization,
+        plan_mode_interactive_available=request.plan_mode_interactive_available,
+        plan_mode_unattended_available=request.plan_mode_unattended_available,
+        consumed_plan_authorization=(approval.plan_authorization if approval is not None else None),
+        approval_tenant_id=str(getattr(approval, "tenant_id", "")) if approval is not None else None,
+    )
+    if plan_block:
+        _record_precontext_block(
+            state,
+            outcome=ports.decision_outcome_type.REQUIRE_APPROVAL,
+            reason="plan_confirmation_required",
+        )
+        return _Stop(plan_block)
+    if authorization:
+        state.arguments["_plan_authorization"] = authorization
+        if isinstance(request.trace_metadata_sink, dict):
+            request.trace_metadata_sink["plan_authorization"] = dict(authorization)
+
+    state.arguments = ports.inject_runtime_arguments(
+        request.tool_name,
+        state.arguments,
+        state.runtime_context,
+    )
+    if approval is not None and approval.input_hash != ports.hash_tool_input(
+        request.tool_name,
+        state.arguments,
+    ):
         _record_lifecycle(state, "blocked", "approval_payload_mutation")
         return _approval_error(
             state,
@@ -591,6 +668,7 @@ async def _apply_governance(state: _ToolExecutionState) -> _Stop | None:
         state.arguments,
         state.runtime_context,
         trace_metadata_sink=request.trace_metadata_sink,
+        secret_check_payload=state.original_arguments,
     )
     if preflight_block:
         typed_block = boundary_block_from_machine_value(preflight_block)
@@ -765,6 +843,12 @@ async def _run_result_hooks(state: _ToolExecutionState, result_text: str, failed
     )
     if hook_result and hook_result.output_rewrite is not None:
         rewrite = hook_result.output_rewrite
+        rewrite, _redaction = service._redact_runtime_egress(
+            rewrite,
+            context=state.runtime_context,
+            surface="post_tool_hook_rewrite",
+            trace_metadata_sink=request.trace_metadata_sink,
+        )
         return _Stop(
             rewrite if isinstance(rewrite, str) else ports.json.dumps(rewrite, ensure_ascii=False, sort_keys=True)
         )

@@ -1184,7 +1184,45 @@ async def _submit_active_session_input(
 ) -> dict[str, Any]:
     """Persist one active-turn input through the canonical Session V2 plane."""
 
+    from app.services.credential_boundary_loader import (
+        RuntimeIngressSecretBoundaryUnavailable,
+        exact_secret_redaction_receipt,
+        redact_runtime_ingress_payload,
+    )
     from app.services.session_live_input import submit_live_human_input
+
+    try:
+        redaction = await redact_runtime_ingress_payload(
+            db,
+            tenant_id=agent.tenant_id,
+            agent_id=agent.id,
+            reply_target=getattr(session, "delivery_target_json", None),
+            payload={
+                "content": content,
+                "display_content": display_content,
+                "file_name": file_name,
+                "attachments": list(attachments or ()),
+                "parts": list(parts or ()),
+            },
+        )
+    except RuntimeIngressSecretBoundaryUnavailable as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Credential protection boundary is temporarily unavailable",
+        ) from exc
+    protected = dict(redaction.value)
+    content = str(protected["content"])
+    display_content = str(protected["display_content"])
+    file_name = str(protected["file_name"])
+    attachments = list(protected["attachments"])
+    parts = list(protected["parts"])
+    protected_extra_metadata = dict(extra_metadata or {})
+    redaction_receipt = exact_secret_redaction_receipt(
+        redaction,
+        phase="active_session_input",
+    )
+    if redaction_receipt is not None:
+        protected_extra_metadata["exact_secret_ingress_redaction"] = redaction_receipt
 
     metadata = dict(getattr(active_run, "metadata_json", None) or {})
     active_turn_id = str(metadata.get("turn_id") or f"turn-{active_run.id.hex}")
@@ -1215,7 +1253,7 @@ async def _submit_active_session_input(
         parts=parts,
         role=role,
         runtime_metadata={
-            **dict(extra_metadata or {}),
+            **protected_extra_metadata,
             "source": source_channel,
             "existing_user_message_saved": bool(message_already_in_t0),
             "canonical_session_input": True,
@@ -1953,6 +1991,46 @@ async def start_web_chat_run(
         raise HTTPException(status_code=400, detail="content is required")
     if not is_executable_chat_task_type(runtime_task_type):
         raise HTTPException(status_code=400, detail=f"Unsupported executable chat task type: {runtime_task_type}")
+
+    from app.services.credential_boundary_loader import (
+        RuntimeIngressSecretBoundaryUnavailable,
+        exact_secret_redaction_receipt,
+        redact_runtime_ingress_payload,
+    )
+
+    try:
+        redaction = await redact_runtime_ingress_payload(
+            db,
+            tenant_id=agent.tenant_id,
+            agent_id=agent.id,
+            reply_target=getattr(session, "delivery_target_json", None),
+            payload={
+                "content": content,
+                "display_content": display_content,
+                "file_name": file_name,
+                "attachments": list(attachments or ()),
+                "parts": list(parts or ()),
+            },
+        )
+    except RuntimeIngressSecretBoundaryUnavailable as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Credential protection boundary is temporarily unavailable",
+        ) from exc
+    protected = dict(redaction.value)
+    content = str(protected["content"])
+    display_content = str(protected["display_content"])
+    file_name = str(protected["file_name"])
+    attachments = list(protected["attachments"])
+    parts = list(protected["parts"])
+    protected_extra_metadata = dict(extra_metadata or {})
+    redaction_receipt = exact_secret_redaction_receipt(
+        redaction,
+        phase="web_chat_run",
+    )
+    if redaction_receipt is not None:
+        protected_extra_metadata["exact_secret_ingress_redaction"] = redaction_receipt
+    extra_metadata = protected_extra_metadata
 
     await _lock_session_runtime_mutation(db, session_id=session.id)
 

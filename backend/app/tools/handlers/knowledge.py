@@ -249,6 +249,7 @@ async def propose_personal_kb_item(request: ToolExecutionRequest) -> str:
                 delegation_token=request.context.delegation_token,
                 session_id=request.context.session_id,
                 runtime_task_id=request.context.runtime_task_id,
+                exact_secret_boundary=request.context.exact_secret_boundary,
             )
         except PersonalKnowledgeProposalRejected as exc:
             return json.dumps(

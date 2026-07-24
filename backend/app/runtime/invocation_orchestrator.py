@@ -31,6 +31,7 @@ class InvocationPorts:
     skill_ranking_inputs: Callable[..., Any]
     build_skill_catalog: Callable[..., str]
     combined_tools: Callable[..., Any]
+    load_secret_boundary: Callable[..., Any]
     record_skill_usage: Callable[..., Any]
     logger: Any
 
@@ -42,10 +43,19 @@ class _InvocationState:
     kernel_request: Any
     route: dict[str, Any]
     skill_events: list[dict[str, Any]] = field(default_factory=list)
+    exact_secret_boundary: Any = None
+    secret_stream_redactor: Any = None
+    secret_thinking_redactor: Any = None
+    secret_aux_counts: dict[str, int] = field(default_factory=dict)
+    secret_aux_refs: list[str] = field(default_factory=list)
 
     def blocked(self, prefix: str, reason: str | None = None) -> AgentInvocationResult:
+        reason_redaction = self.exact_secret_boundary.redact_text(
+            reason or "policy",
+        )
+        _record_state_redaction(self, "hook_block_reason", reason_redaction)
         return self.ports.result_type(
-            content=f"{prefix}: {reason or 'policy'}",
+            content=f"{prefix}: {reason_redaction.text}",
             tokens_used=0,
             final_tools=[],
             parts=[],
@@ -67,6 +77,12 @@ async def run_agent_invocation(
     for hook_stage in (_run_setup_hook, _run_prompt_hook, _run_session_start_hook):
         blocked = await hook_stage(state)
         if blocked is not None:
+            aux_surfaces, aux_refs = _secret_aux_evidence(state)
+            await _emit_secret_egress_event(
+                state,
+                surfaces=aux_surfaces,
+                source_refs=aux_refs,
+            )
             return blocked
     return await _invoke_and_close(state)
 
@@ -76,13 +92,6 @@ async def _assemble_invocation_state(
     ports: InvocationPorts,
 ) -> _InvocationState:
     skill_events: list[dict[str, Any]] = []
-
-    async def on_tool_call(data: dict[str, Any]) -> None:
-        if isinstance(data, dict) and data.get("status") == "done":
-            skill_events.append({"name": data.get("name"), "args": data.get("args"), "status": data.get("status")})
-        if request.on_tool_call is not None:
-            await ports.maybe_await(request.on_tool_call(data))
-
     routing_config = request.smart_model_routing
     if routing_config is None and request.agent_id is not None and request.fallback_model is not None:
         routing_config = await ports.resolve_smart_routing(request.agent_id)
@@ -99,9 +108,115 @@ async def _assemble_invocation_state(
                 )
             )
         except Exception as exc:
-            ports.logger.warning("[Invoker] model-route event callback failed: %s", exc)
+            ports.logger.warning(
+                "[Invoker] model-route event callback failed: %s",
+                type(exc).__name__,
+            )
     execution_identity = _resolve_execution_identity(request, ports)
     skill_catalog = _build_skill_catalog(request, ports)
+    exact_secret_boundary = _model_secret_boundary(route)
+    if request.tenant_id is not None and request.agent_id is not None:
+        try:
+            tenant_secret_boundary = await ports.load_secret_boundary(
+                tenant_id=request.tenant_id,
+                agent_id=request.agent_id,
+            )
+        except Exception as exc:
+            ports.logger.error(
+                "[Invoker] credential authority unavailable for agent %s (%s)",
+                request.agent_id,
+                type(exc).__name__,
+            )
+            from app.kernel.contracts import ContextDependencyUnavailable
+
+            raise ContextDependencyUnavailable(
+                dependency="credential_authority",
+                code="credential_authority_unavailable",
+                user_message=("Credential authority is temporarily unavailable; the agent turn was not started."),
+                retryable=True,
+            ) from None
+        from app.services.exact_secret_boundary import ExactSecretBoundary
+
+        exact_secret_boundary = ExactSecretBoundary.combine(
+            exact_secret_boundary,
+            tenant_secret_boundary,
+        )
+    secret_aux_counts: dict[str, int] = {}
+    secret_aux_refs: list[str] = []
+
+    def record_payload_redaction(surface: str, redaction: Any) -> None:
+        if redaction.redacted_count:
+            secret_aux_counts[surface] = secret_aux_counts.get(surface, 0) + redaction.redacted_count
+            for source_ref in redaction.matched_refs:
+                if source_ref not in secret_aux_refs:
+                    secret_aux_refs.append(source_ref)
+
+    def redact_payload(surface: str, payload: Any) -> Any:
+        redaction = exact_secret_boundary.redact_payload_with_evidence(payload)
+        record_payload_redaction(surface, redaction)
+        return redaction.value
+
+    async def on_tool_call(data: dict[str, Any]) -> None:
+        safe_data = redact_payload("tool_event", data)
+        if isinstance(safe_data, dict) and safe_data.get("status") == "done":
+            skill_events.append(
+                {
+                    "name": safe_data.get("name"),
+                    "args": safe_data.get("args"),
+                    "status": safe_data.get("status"),
+                }
+            )
+        if request.on_tool_call is not None:
+            await ports.maybe_await(request.on_tool_call(safe_data))
+
+    async def on_event(data: dict[str, Any]) -> None:
+        if isinstance(data, dict) and data.get("type") == "stream_retry_tombstone":
+            for redactor in (
+                secret_stream_redactor,
+                secret_thinking_redactor,
+            ):
+                if redactor is not None:
+                    redactor.reset_pending()
+        safe_data = redact_payload("runtime_event", data)
+        if request.on_event is not None:
+            await ports.maybe_await(request.on_event(safe_data))
+
+    async def model_response_commit(**payload: Any) -> Any:
+        safe_payload = redact_payload("model_response_commit", payload)
+        if request.model_response_commit is None:
+            return None
+        receipt = await ports.maybe_await(request.model_response_commit(**safe_payload))
+        return redact_payload("model_response_receipt", receipt)
+
+    async def mid_run_message_drain() -> Any:
+        drained = await ports.maybe_await(request.mid_run_message_drain())
+        return redact_payload("mid_run_input", drained)
+
+    async def round_input_bind(*args: Any, **kwargs: Any) -> Any:
+        bound = await ports.maybe_await(request.round_input_bind(*args, **kwargs))
+        return redact_payload("round_input", bound)
+
+    async def model_request_prepare(**payload: Any) -> Any:
+        safe_payload = redact_payload("model_request_prepare", payload)
+        return await ports.maybe_await(request.model_request_prepare(**safe_payload))
+
+    secret_stream_redactor = None
+    secret_thinking_redactor = None
+    on_chunk = request.on_chunk
+    if on_chunk is not None and not exact_secret_boundary.is_empty:
+        from app.services.exact_secret_boundary import ExactSecretStreamRedactor
+
+        secret_stream_redactor = ExactSecretStreamRedactor(exact_secret_boundary, on_chunk)
+        on_chunk = secret_stream_redactor.feed
+    on_thinking = request.on_thinking
+    if on_thinking is not None and not exact_secret_boundary.is_empty:
+        from app.services.exact_secret_boundary import ExactSecretStreamRedactor
+
+        secret_thinking_redactor = ExactSecretStreamRedactor(
+            exact_secret_boundary,
+            on_thinking,
+        )
+        on_thinking = secret_thinking_redactor.feed
     kernel_request = _build_kernel_request(
         request,
         ports,
@@ -109,14 +224,64 @@ async def _assemble_invocation_state(
         execution_identity=execution_identity,
         skill_catalog=skill_catalog,
         on_tool_call=on_tool_call,
+        on_chunk=on_chunk,
+        on_thinking=on_thinking,
+        on_event=on_event if request.on_event is not None else None,
+        model_response_commit=(model_response_commit if request.model_response_commit is not None else None),
     )
+    for surface, field_name in (
+        ("model_input_messages", "messages"),
+        ("model_input_memory_messages", "memory_messages"),
+        ("model_input_memory_context", "memory_context"),
+        ("model_input_agent_name", "agent_name"),
+        ("model_input_role_description", "role_description"),
+        ("model_input_system_prompt", "system_prompt_suffix"),
+        ("model_input_standalone_prompt", "standalone_system_prompt"),
+        ("model_input_skill_catalog", "skill_catalog"),
+        ("model_input_initial_tools", "initial_tools"),
+    ):
+        setattr(
+            kernel_request,
+            field_name,
+            redact_payload(surface, getattr(kernel_request, field_name)),
+        )
+    if request.mid_run_message_drain is not None:
+        kernel_request.mid_run_message_drain = mid_run_message_drain
+    if request.round_input_bind is not None:
+        kernel_request.round_input_bind = round_input_bind
+    if request.model_request_prepare is not None:
+        kernel_request.model_request_prepare = model_request_prepare
     return _InvocationState(
         request=request,
         ports=ports,
         kernel_request=kernel_request,
         route=route,
         skill_events=skill_events,
+        exact_secret_boundary=exact_secret_boundary,
+        secret_stream_redactor=secret_stream_redactor,
+        secret_thinking_redactor=secret_thinking_redactor,
+        secret_aux_counts=secret_aux_counts,
+        secret_aux_refs=secret_aux_refs,
     )
+
+
+def _model_secret_boundary(route: dict[str, Any]):
+    from app.services.exact_secret_boundary import ExactSecretBoundary
+
+    pairs: list[tuple[str, str]] = []
+    for lane, model in (("selected", route.get("model")), ("fallback", route.get("fallback_model"))):
+        if model is None:
+            continue
+        value = str(getattr(model, "api_key", "") or "")
+        # One-character/local test sentinels are not usable provider
+        # credentials and would make exact substring redaction corrupt normal
+        # prose (for example api_key="k" rewriting "ok"). Persisted runtime
+        # credentials are still protected by the credential-store boundary.
+        if len(value) < 8:
+            continue
+        model_id = getattr(model, "id", None) or getattr(model, "model", lane)
+        pairs.append((f"llm-model://{model_id}/{lane}/api_key", value))
+    return ExactSecretBoundary.from_pairs(pairs)
 
 
 def _resolve_execution_identity(request: AgentInvocationRequest, ports: InvocationPorts) -> Any:
@@ -177,6 +342,10 @@ def _build_kernel_request(
     execution_identity: Any,
     skill_catalog: str,
     on_tool_call: Callable[..., Any],
+    on_chunk: Callable[..., Any] | None,
+    on_thinking: Callable[..., Any] | None,
+    on_event: Callable[..., Any] | None,
+    model_response_commit: Callable[..., Any] | None,
 ) -> Any:
     return ports.kernel_request_type(
         model=route["model"],
@@ -187,10 +356,10 @@ def _build_kernel_request(
         agent_id=request.agent_id,
         user_id=request.user_id,
         execution_identity=execution_identity,
-        on_chunk=request.on_chunk,
+        on_chunk=on_chunk,
         on_tool_call=on_tool_call,
-        on_thinking=request.on_thinking,
-        on_event=request.on_event,
+        on_thinking=on_thinking,
+        on_event=on_event,
         supports_vision=route["supports_vision"],
         memory_context=request.memory_context,
         memory_session_id=request.memory_session_id,
@@ -203,7 +372,7 @@ def _build_kernel_request(
         mid_run_message_drain=request.mid_run_message_drain,
         round_input_bind=request.round_input_bind,
         model_request_prepare=request.model_request_prepare,
-        model_response_commit=request.model_response_commit,
+        model_response_commit=model_response_commit,
         model_request_fail=request.model_request_fail,
         initial_round_index=max(0, int(request.initial_round_index or 0)),
         cancel_event=request.cancel_event,
@@ -230,8 +399,10 @@ def _hook_identity(state: _InvocationState) -> tuple[str, str | None, dict[str, 
 def _append_hook_context(state: _InvocationState, contexts: Any) -> None:
     hook_context = state.ports.format_hook_contexts(contexts)
     if hook_context:
+        redaction = state.exact_secret_boundary.redact_text(hook_context)
+        _record_state_redaction(state, "hook_context", redaction)
         state.kernel_request.system_prompt_suffix = "\n\n".join(
-            part for part in (state.kernel_request.system_prompt_suffix, hook_context) if part
+            part for part in (state.kernel_request.system_prompt_suffix, redaction.text) if part
         )
 
 
@@ -264,7 +435,10 @@ async def _run_setup_hook(state: _InvocationState) -> AgentInvocationResult | No
         if result and result.additional_contexts:
             _append_hook_context(state, result.additional_contexts)
     except Exception as exc:
-        state.ports.logger.error("[Invoker] required SETUP hook runtime failed closed: %s", exc)
+        state.ports.logger.error(
+            "[Invoker] required SETUP hook runtime failed closed: %s",
+            type(exc).__name__,
+        )
         return state.blocked("Blocked by required setup hook failure", type(exc).__name__)
     return None
 
@@ -280,7 +454,7 @@ async def _run_prompt_hook(state: _InvocationState) -> AgentInvocationResult | N
             evidence_mode="independent",
             agent_id=request.agent_id,
             session_id=session_id,
-            prompt=state.ports.latest_user_prompt(request.messages),
+            prompt=state.ports.latest_user_prompt(state.kernel_request.messages),
             source=source,
             metadata={
                 "tenant_id": metadata.get("tenant_id"),
@@ -298,7 +472,10 @@ async def _run_prompt_hook(state: _InvocationState) -> AgentInvocationResult | N
         if result and result.additional_contexts:
             _append_hook_context(state, result.additional_contexts)
     except Exception as exc:
-        state.ports.logger.error("[Invoker] required USER_PROMPT_SUBMIT hook runtime failed closed: %s", exc)
+        state.ports.logger.error(
+            "[Invoker] required USER_PROMPT_SUBMIT hook runtime failed closed: %s",
+            type(exc).__name__,
+        )
         return state.blocked("Blocked by required prompt hook failure", type(exc).__name__)
     return None
 
@@ -333,7 +510,10 @@ async def _run_session_start_hook(state: _InvocationState) -> AgentInvocationRes
         if result:
             _apply_session_start_result(state, result, metadata)
     except Exception as exc:
-        state.ports.logger.error("[Invoker] required SESSION_START hook runtime failed closed: %s", exc)
+        state.ports.logger.error(
+            "[Invoker] required SESSION_START hook runtime failed closed: %s",
+            type(exc).__name__,
+        )
         return state.blocked("Blocked by required session start hook failure", type(exc).__name__)
     return None
 
@@ -344,7 +524,9 @@ def _model_name(model: Any) -> str | None:
 
 def _apply_session_start_result(state: _InvocationState, result: Any, metadata: dict[str, Any]) -> None:
     if result.initial_user_message:
-        message = str(result.initial_user_message).strip()
+        redaction = state.exact_secret_boundary.redact_text(str(result.initial_user_message).strip())
+        _record_state_redaction(state, "session_start_input", redaction)
+        message = redaction.text
         if message:
             state.kernel_request.messages = [
                 {"role": "user", "content": message, "source": "session_start_hook"},
@@ -354,7 +536,9 @@ def _apply_session_start_result(state: _InvocationState, result: Any, metadata: 
         _append_hook_context(state, result.additional_contexts)
     if result.watch_paths and state.request.session_context is not None:
         existing = list(metadata.get("hook_watch_paths") or [])
-        metadata["hook_watch_paths"] = list(dict.fromkeys((*existing, *result.watch_paths)))
+        redaction = state.exact_secret_boundary.redact_payload_with_evidence(result.watch_paths)
+        _record_state_redaction(state, "hook_watch_paths", redaction)
+        metadata["hook_watch_paths"] = list(dict.fromkeys((*existing, *redaction.value)))
 
 
 def _record_skill_usage(state: _InvocationState, terminal_status: str, assistant_text: str) -> None:
@@ -375,7 +559,7 @@ def _record_skill_usage(state: _InvocationState, terminal_status: str, assistant
             "[Invoker] skill runtime usage telemetry failed: agent_id=%s session_id=%s error=%s",
             request.agent_id,
             request.session_context.session_id if request.session_context else None,
-            exc,
+            type(exc).__name__,
         )
 
 
@@ -383,10 +567,65 @@ async def _invoke_and_close(state: _InvocationState) -> AgentInvocationResult:
     try:
         result = await state.ports.resolve_kernel(state.request).handle(state.kernel_request)
     except Exception as exc:
-        _record_skill_usage(state, "failed", f"{type(exc).__name__}: {exc}")
+        await _finish_secret_streams(state)
+        error_redaction = state.exact_secret_boundary.redact_text(f"{type(exc).__name__}: {exc}")
+        _record_skill_usage(state, "failed", error_redaction.text)
+        stream_surfaces, stream_refs = _secret_stream_evidence(state)
+        aux_surfaces, aux_refs = _secret_aux_evidence(state)
+        await _emit_secret_egress_event(
+            state,
+            surfaces={
+                **stream_surfaces,
+                **aux_surfaces,
+                "error": error_redaction.redacted_count,
+            },
+            source_refs=tuple(
+                dict.fromkeys(
+                    [
+                        *stream_refs,
+                        *aux_refs,
+                        *error_redaction.matched_refs,
+                    ]
+                )
+            ),
+        )
+        if error_redaction.redacted_count:
+            from app.services.exact_secret_boundary import ExactSecretEgressError
+
+            raise ExactSecretEgressError(
+                error_redaction.text,
+                source_refs=error_redaction.matched_refs,
+            ) from None
         raise
+    await _finish_secret_streams(state)
+    redaction = state.exact_secret_boundary.redact_text(str(result.content or ""))
+    result.content = redaction.text
+    parts_redaction = state.exact_secret_boundary.redact_payload_with_evidence(result.parts)
+    result.parts = parts_redaction.value
     _record_skill_usage(state, "completed", str(result.content or ""))
     await _emit_close_hooks(state, result)
+    stream_surfaces, stream_refs = _secret_stream_evidence(state)
+    aux_surfaces, aux_refs = _secret_aux_evidence(state)
+    source_refs = tuple(
+        dict.fromkeys(
+            [
+                *stream_refs,
+                *aux_refs,
+                *redaction.matched_refs,
+                *parts_redaction.matched_refs,
+            ]
+        )
+    )
+    await _emit_secret_egress_event(
+        state,
+        surfaces={
+            **stream_surfaces,
+            **aux_surfaces,
+            "content": redaction.redacted_count,
+            "parts": parts_redaction.redacted_count,
+        },
+        source_refs=source_refs,
+    )
     return state.ports.result_type(
         content=result.content,
         tokens_used=result.tokens_used,
@@ -397,15 +636,115 @@ async def _invoke_and_close(state: _InvocationState) -> AgentInvocationResult:
     )
 
 
+def _secret_stream_evidence(
+    state: _InvocationState,
+) -> tuple[dict[str, int], tuple[str, ...]]:
+    surfaces = {
+        "stream": (state.secret_stream_redactor.redacted_count if state.secret_stream_redactor is not None else 0),
+        "thinking": (
+            state.secret_thinking_redactor.redacted_count if state.secret_thinking_redactor is not None else 0
+        ),
+    }
+    source_refs: list[str] = []
+    for redactor in (
+        state.secret_stream_redactor,
+        state.secret_thinking_redactor,
+    ):
+        if redactor is None:
+            continue
+        for source_ref in redactor.matched_refs:
+            if source_ref not in source_refs:
+                source_refs.append(source_ref)
+    return surfaces, tuple(source_refs)
+
+
+def _secret_aux_evidence(
+    state: _InvocationState,
+) -> tuple[dict[str, int], tuple[str, ...]]:
+    return dict(state.secret_aux_counts), tuple(state.secret_aux_refs)
+
+
+def _record_state_redaction(
+    state: _InvocationState,
+    surface: str,
+    redaction: Any,
+) -> None:
+    if not redaction.redacted_count:
+        return
+    state.secret_aux_counts[surface] = state.secret_aux_counts.get(surface, 0) + redaction.redacted_count
+    for source_ref in redaction.matched_refs:
+        if source_ref not in state.secret_aux_refs:
+            state.secret_aux_refs.append(source_ref)
+
+
+async def _emit_secret_egress_event(
+    state: _InvocationState,
+    *,
+    surfaces: dict[str, int],
+    source_refs: tuple[str, ...],
+) -> None:
+    redacted_count = sum(max(0, int(count)) for count in surfaces.values())
+    if not redacted_count:
+        return
+    event = {
+        "type": "secret_egress_redacted",
+        "status": "redacted",
+        "code": "exact_unauthorized_secret_bytes",
+        "redacted_count": redacted_count,
+        "surfaces": surfaces,
+        "source_refs": list(source_refs),
+    }
+    if state.request.session_context is not None:
+        receipts = state.request.session_context.metadata.setdefault(
+            "secret_boundary_receipts",
+            [],
+        )
+        if isinstance(receipts, list):
+            receipts.append(event)
+    state.ports.logger.warning(
+        "[Invoker] exact-secret boundary redacted %s occurrence(s) on %s",
+        redacted_count,
+        ",".join(surface for surface, count in surfaces.items() if count),
+    )
+    if state.request.on_event is not None:
+        try:
+            await state.ports.maybe_await(state.request.on_event(event))
+        except Exception as exc:
+            state.ports.logger.warning(
+                "[Invoker] secret-egress evidence callback failed: %s",
+                type(exc).__name__,
+            )
+
+
+async def _finish_secret_streams(state: _InvocationState) -> None:
+    for surface, redactor in (
+        ("stream", state.secret_stream_redactor),
+        ("thinking", state.secret_thinking_redactor),
+    ):
+        if redactor is None:
+            continue
+        try:
+            await redactor.finish()
+        except Exception as exc:
+            state.ports.logger.warning(
+                "[Invoker] exact-secret %s flush callback failed: %s",
+                surface,
+                type(exc).__name__,
+            )
+
+
 async def _emit_close_hooks(state: _InvocationState, result: Any) -> None:
     from app.runtime.context import ensure_runtime_assembly_state
     from app.runtime.hooks import HookEvent, emit_hook
 
     request = state.request
-    completed_messages = [*request.messages, {"role": "assistant", "content": result.content}]
+    completed_messages = [
+        *state.kernel_request.messages,
+        {"role": "assistant", "content": result.content},
+    ]
     source, _session_id, metadata = _hook_identity(state)
     hook_metadata = {
-        "agent_name": request.agent_name,
+        "agent_name": state.kernel_request.agent_name,
         "tenant_id": metadata.get("tenant_id"),
         "runtime_task_id": metadata.get("runtime_task_id") or metadata.get("task_id"),
         "request_id": metadata.get("request_id"),
@@ -426,6 +765,9 @@ async def _emit_close_hooks(state: _InvocationState, result: Any) -> None:
         if request.session_context
         else [],
     }
+    metadata_redaction = state.exact_secret_boundary.redact_payload_with_evidence(hook_metadata)
+    _record_state_redaction(state, "close_hook_metadata", metadata_redaction)
+    hook_metadata = metadata_redaction.value
     try:
         await emit_hook(
             HookEvent.SESSION_END,
@@ -447,4 +789,7 @@ async def _emit_close_hooks(state: _InvocationState, result: Any) -> None:
                 metadata=hook_metadata,
             )
     except Exception as exc:
-        state.ports.logger.debug("[Invoker] response/session close hooks failed (non-fatal): %s", exc)
+        state.ports.logger.debug(
+            "[Invoker] response/session close hooks failed (non-fatal): %s",
+            type(exc).__name__,
+        )

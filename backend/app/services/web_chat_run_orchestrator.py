@@ -853,6 +853,7 @@ def _agent_invocation_request(
         messages=state.conversation,
         agent_name=state.agent.name,
         role_description=state.agent.role_description or "",
+        tenant_id=state.agent.tenant_id,
         agent_id=state.agent.id,
         user_id=state.actor_user_id,
         execution_identity=ExecutionIdentityRef(

@@ -1,4 +1,9 @@
-"""Privacy and sensitivity gate for memory write/read paths."""
+"""Typed privacy gate with exact credential authority and advisory candidates.
+
+Credential-looking prose is not a secret fact. Only an exact value supplied by
+``ExactSecretBoundary`` can produce a PL4 hard outcome; regex matches remain
+count-only review signals.
+"""
 
 from __future__ import annotations
 
@@ -7,6 +12,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 
 from app.services.principal_context import PrincipalStack
+from app.services.exact_secret_boundary import ExactSecretBoundary
 
 
 class SensitivityLevel(StrEnum):
@@ -83,6 +89,8 @@ class PrivacyDecision:
     rejected: bool = False
     placeholders: dict[str, str] = field(default_factory=dict)
     reason: str = ""
+    credential_candidate_count: int = 0
+    secret_evidence_refs: tuple[str, ...] = ()
 
 
 class PrivacyStore:
@@ -123,27 +131,31 @@ class PrivacyLayer:
         re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
     )
 
-    def __init__(self, store: PrivacyStore | None = None) -> None:
+    def __init__(
+        self,
+        store: PrivacyStore | None = None,
+        *,
+        secret_boundary: ExactSecretBoundary | None = None,
+    ) -> None:
         self.store = store or PrivacyStore()
+        self.secret_boundary = secret_boundary or ExactSecretBoundary.empty()
 
     def classify_and_mask(self, text: str) -> PrivacyDecision:
-        sanitized = text
-        placeholders: dict[str, str] = {}
-        credential_found = False
-
-        for pattern in self._CREDENTIAL_PATTERNS:
-            sanitized, found = self._replace_matches(sanitized, pattern, "Credential", placeholders)
-            credential_found = credential_found or found
-
-        if credential_found:
+        exact = self.secret_boundary.redact_text(text)
+        credential_candidate_count = self._credential_candidate_count(text)
+        if exact.redacted_count:
             return PrivacyDecision(
                 original_text=text,
-                sanitized_text=sanitized,
+                sanitized_text=exact.text,
                 sensitivity=SensitivityLevel.PL4_CREDENTIAL,
                 rejected=True,
-                placeholders=placeholders,
-                reason="PL4 credentials have zero retention.",
+                reason="Exact unauthorized credential bytes have zero retention.",
+                credential_candidate_count=credential_candidate_count,
+                secret_evidence_refs=exact.matched_refs,
             )
+
+        sanitized = text
+        placeholders: dict[str, str] = {}
 
         sanitized, email_found = self._replace_matches(sanitized, self._EMAIL_RE, "Email", placeholders)
         sanitized, phone_found = self._replace_matches(
@@ -155,9 +167,35 @@ class PrivacyLayer:
             max_digits=15,
         )
         if email_found or phone_found:
-            return PrivacyDecision(text, sanitized, SensitivityLevel.PL2_PII, placeholders=placeholders)
+            return PrivacyDecision(
+                text,
+                sanitized,
+                SensitivityLevel.PL2_PII,
+                placeholders=placeholders,
+                credential_candidate_count=credential_candidate_count,
+            )
 
-        return PrivacyDecision(text, sanitized, SensitivityLevel.PL1_PUBLIC, placeholders=placeholders)
+        return PrivacyDecision(
+            text,
+            sanitized,
+            SensitivityLevel.PL1_PUBLIC,
+            placeholders=placeholders,
+            credential_candidate_count=credential_candidate_count,
+        )
+
+    def _credential_candidate_count(self, text: str) -> int:
+        spans: list[tuple[int, int]] = []
+        for pattern in self._CREDENTIAL_PATTERNS:
+            spans.extend((match.start(), match.end()) for match in pattern.finditer(text))
+        spans.sort()
+        merged: list[tuple[int, int]] = []
+        for start, end in spans:
+            if merged and start < merged[-1][1]:
+                previous_start, previous_end = merged[-1]
+                merged[-1] = (previous_start, max(previous_end, end))
+            else:
+                merged.append((start, end))
+        return len(merged)
 
     def _replace_matches(
         self,

@@ -25,6 +25,7 @@ from app.services.plan_mode_recommendation_service import (
     PlanRecommendationError,
     require_declined_plan_recommendation,
 )
+from app.services.channel_secret_storage import redact_delivery_target
 
 router = APIRouter(prefix="/agents/{agent_id}/schedules", tags=["schedules"])
 
@@ -171,7 +172,7 @@ def _schedule_out(
         run_count=int(trigger.fire_count or 0),
         created_by=_created_by_from_config(config),
         creator_username=creator_username,
-        delivery_target_json=trigger.reply_context or config.get("delivery_target_json"),
+        delivery_target_json=redact_delivery_target(trigger.reply_context or config.get("delivery_target_json")),
         created_at=trigger.created_at,
         authority_source=authority_source,
         operator_view=operator_view,

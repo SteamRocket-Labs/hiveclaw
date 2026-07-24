@@ -6,17 +6,38 @@ from app.services.personal_knowledge_proposals import (
 )
 
 
-def test_proposal_policy_rejects_credentials_without_persisting_plaintext() -> None:
+def test_proposal_policy_does_not_treat_secret_shaped_documentation_as_credential_truth() -> None:
     decision = evaluate_proposal_content(
         content="Deploy with api_key=sk-abcdefghijklmnopqrstuvwxyz123456",
         declared_sensitivity="internal",
         max_chars=20_000,
     )
 
+    assert decision.outcome == "ask"
+    assert decision.sensitivity == "PL1_public"
+    assert decision.reason_codes == ()
+    assert decision.content == "Deploy with api_key=sk-abcdefghijklmnopqrstuvwxyz123456"
+
+
+def test_proposal_policy_rejects_only_an_exact_authority_backed_secret() -> None:
+    from app.services.exact_secret_boundary import ExactSecretBoundary
+
+    active_secret = "sk-live-personal-memory-secret-0123456789"
+    source_ref = "tool-config://tenant-1/search/api_key"
+    decision = evaluate_proposal_content(
+        content=f"prefix::{active_secret}::suffix",
+        declared_sensitivity="internal",
+        max_chars=20_000,
+        exact_secret_boundary=ExactSecretBoundary.from_pairs(((source_ref, active_secret),)),
+    )
+
     assert decision.outcome == "reject"
     assert decision.sensitivity == "PL4_credential"
-    assert "credential_zero_retention" in decision.reason_codes
-    assert "sk-abcdefghijklmnopqrstuvwxyz123456" not in decision.content
+    assert decision.content == "prefix::[REDACTED_SECRET]::suffix"
+    assert decision.reason_codes == (
+        "credential_zero_retention",
+        f"credential_binding:{source_ref}",
+    )
 
 
 def test_proposal_policy_upgrades_underclassified_pii_and_preserves_evidence_shape() -> None:

@@ -68,13 +68,13 @@ _T0_LINT_SAMPLE_CHARS = 4000
 
 
 def _apply_t0_privacy_gate(content: str) -> str:
-    """Phase 10: mask credentials and annotate T0 frontmatter with sensitivity + form lint.
+    """Annotate accepted T0 evidence with typed privacy/form metadata.
 
-    T0 must not durably store PL4 credentials. PL2/PL3 content is preserved so
-    the behavior log remains faithful for replay, but the frontmatter now
-    carries `t0_sensitivity` so downstream extract/retriever can route by it,
-    and `t0_form_warnings` flags pronoun/relative-time fragments worth
-    rewriting before they reach T2.
+    Exact credentials must be blocked or redacted at the authority-aware ingress
+    or model-output boundary before this legacy formatter runs. This function
+    deliberately does not turn secret-shaped prose into credential truth; it
+    preserves accepted T0 bytes for replay while still masking mechanically
+    identified PII and recording `t0_sensitivity`/`t0_form_warnings`.
     """
     if not content:
         return content

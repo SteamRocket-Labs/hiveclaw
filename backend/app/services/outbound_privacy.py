@@ -1,8 +1,9 @@
 """Channel outbound redact (§16.2, §18 acceptance criterion #11).
 
 Final-mile gate that runs against every text leaving Hive over an external
-channel. PL3/PL4 content must never be sent over Feishu/Slack/Telegram/etc.
-without an explicit principal that can see it; PL4 is rejected unconditionally.
+channel. PL3 content requires typed provenance and authority. PL4 is a hard
+outcome only for typed PL4 provenance or exact bytes loaded from credential
+authority; secret-looking prose is not rewritten.
 """
 
 from __future__ import annotations
@@ -10,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from app.services.principal_context import PrincipalStack
+from app.services.exact_secret_boundary import ExactSecretBoundary
 from app.services.privacy_layer import PrivacyLayer, PrivacyStore, SensitivityLevel
 
 
@@ -29,6 +31,7 @@ class OutboundRedactDecision:
     rejected: bool = False
     reason: str = ""
     placeholders: dict[str, str] = field(default_factory=dict)
+    secret_evidence_refs: tuple[str, ...] = ()
 
 
 def redact_outbound(
@@ -38,10 +41,11 @@ def redact_outbound(
     principal_stack: PrincipalStack | None = None,
     layer: PrivacyLayer | None = None,
     declared_sensitivity: SensitivityLevel | str | None = None,
+    secret_boundary: ExactSecretBoundary | None = None,
 ) -> OutboundRedactDecision:
     """Apply PL1-PL4 strip before content leaves Hive.
 
-    Exact credentials and PII are detected mechanically. Semantic sensitivity
+    Authority-bound exact credentials and PII are detected mechanically. Semantic sensitivity
     such as PL3 must be supplied as typed provenance by the caller; prose
     keywords never become policy decisions. PL4 is rejected. PL3 is allowed
     only when the channel is
@@ -52,7 +56,10 @@ def redact_outbound(
     never — outbound always masks PII).
     """
 
-    privacy = layer or PrivacyLayer(PrivacyStore())
+    privacy = layer or PrivacyLayer(
+        PrivacyStore(),
+        secret_boundary=secret_boundary,
+    )
     classified = privacy.classify_and_mask(text)
     sensitivity = _effective_sensitivity(classified.sensitivity, declared_sensitivity)
 
@@ -67,6 +74,7 @@ def redact_outbound(
             rejected=True,
             reason="PL4 credential outbound blocked",
             placeholders=classified.placeholders,
+            secret_evidence_refs=classified.secret_evidence_refs,
         )
 
     if sensitivity == SensitivityLevel.PL3_SENSITIVE:

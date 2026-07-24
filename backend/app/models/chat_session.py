@@ -8,6 +8,7 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
+from app.services.channel_secret_storage import EncryptedDeliveryTargetJSON
 
 
 class ChatSession(Base):
@@ -44,7 +45,10 @@ class ChatSession(Base):
     )
     # For agent-to-agent sessions: the other agent in the conversation
     peer_agent_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=True)
-    delivery_target_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    delivery_target_json: Mapped[dict | None] = mapped_column(
+        EncryptedDeliveryTargetJSON(postgres_jsonb=True),
+        nullable=True,
+    )
     session_kind: Mapped[str] = mapped_column(String(64), nullable=False, default="human_chat")
     actor_type: Mapped[str] = mapped_column(String(32), nullable=False, default="user")
     runtime_source: Mapped[str] = mapped_column(String(64), nullable=False, default="web_chat")

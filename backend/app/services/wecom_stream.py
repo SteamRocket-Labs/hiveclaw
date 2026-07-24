@@ -137,7 +137,11 @@ class WeComStreamManager:
                     chat_id = body.get("chatid", "")
                     chat_type = body.get("chat_type", "single")
 
-                    logger.info(f"[WeCom Stream] Text from {sender_id}: {user_text[:80]}")
+                    logger.info(
+                        "[WeCom Stream] Text received from {}: content_length={}",
+                        sender_id,
+                        len(user_text),
+                    )
 
                     provider_event_id = str(
                         body.get("msgid") or body.get("msg_id") or body.get("id") or getattr(frame, "req_id", "") or ""

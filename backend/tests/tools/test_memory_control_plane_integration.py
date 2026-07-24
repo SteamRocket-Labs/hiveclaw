@@ -20,13 +20,17 @@ async def _safe_memory_threat_classifier(**_kwargs):
 
 
 @pytest.mark.asyncio
-async def test_save_memory_rejects_pl4_credential(tmp_path: Path) -> None:
+async def test_save_memory_preserves_secret_shaped_fixture_after_model_review(tmp_path: Path) -> None:
     from app.tools.handlers.memory import save_memory
 
     agent_id = uuid.uuid4()
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr("app.config.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
+        mp.setattr(
+            "app.memory.write_gate.classify_memory_write_threat_with_llm",
+            _safe_memory_threat_classifier,
+        )
         result = await save_memory(
             agent_id,
             {
@@ -35,9 +39,9 @@ async def test_save_memory_rejects_pl4_credential(tmp_path: Path) -> None:
             },
         )
 
-    assert result.startswith("[Rejected]")
-    assert "PL4_credential" in result
-    assert not (tmp_path / str(agent_id) / "memory" / "knowledge.md").exists()
+    assert result.startswith("Saved to explicit memory overlay")
+    entry = next((tmp_path / str(agent_id) / "memory" / "explicit" / "entries").glob("*.md"))
+    assert "sk-1234567890abcdefghijklmnop" in entry.read_text(encoding="utf-8")
 
 
 @pytest.mark.asyncio

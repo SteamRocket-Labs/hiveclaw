@@ -10,14 +10,7 @@ from pathlib import Path
 
 from app.config import get_settings
 from app.memory.write_gate import MemoryWriteDecision, prepare_memory_write, prepare_memory_write_with_llm
-
-
-_SECRET_PATTERNS = (
-    re.compile(r"sk-[A-Za-z0-9_-]{20,}", re.IGNORECASE),
-    re.compile(r"BEGIN [A-Z ]*PRIVATE KEY"),
-    re.compile(r"AKIA[0-9A-Z]{16}"),
-    re.compile(r"(?i)(api[_-]?key|secret[_-]?key)\s*[:=]\s*['\"]?[A-Za-z0-9._-]{12,}"),
-)
+from app.services.exact_secret_boundary import ExactSecretBoundary
 
 
 class TeamMemoryWriteRejectedError(ValueError):
@@ -153,8 +146,14 @@ def _coerce_deleted(metadata: dict[str, str]) -> bool:
 
 
 class TeamMemoryStore:
-    def __init__(self, *, data_root: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        data_root: str | Path | None = None,
+        exact_secret_boundary: ExactSecretBoundary | None = None,
+    ) -> None:
         self._root = Path(data_root) if data_root is not None else Path(get_settings().AGENT_DATA_DIR)
+        self._exact_secret_boundary = exact_secret_boundary or ExactSecretBoundary.empty()
 
     def _workspace_dir(self, tenant_id: str, workspace_key: str) -> Path:
         base = (self._root / "shared_memory").resolve()
@@ -172,17 +171,22 @@ class TeamMemoryStore:
         return path
 
     def _scan_for_secrets(self, text: str) -> None:
-        for pattern in _SECRET_PATTERNS:
-            if pattern.search(text):
-                decision = MemoryWriteDecision(
-                    original_content=text,
-                    content=text,
-                    category="team_memory",
-                    sensitivity="PL4_credential",
-                    rejected=True,
-                    reason="Team memory content appears to contain secret material.",
-                )
-                raise SecretScanError(decision)
+        exact = self._exact_secret_boundary.redact_text(text)
+        if exact.redacted_count:
+            decision = MemoryWriteDecision(
+                original_content=text,
+                content=exact.text,
+                category="team_memory",
+                sensitivity="PL4_credential",
+                metadata={
+                    "status": "rejected",
+                    "decision_boundary": "exact_secret_authority",
+                    "secret_evidence_refs": ",".join(exact.matched_refs),
+                },
+                rejected=True,
+                reason="Team memory content contains an exact unauthorized credential binding.",
+            )
+            raise SecretScanError(decision)
 
     def _prepare_content_for_write(
         self,

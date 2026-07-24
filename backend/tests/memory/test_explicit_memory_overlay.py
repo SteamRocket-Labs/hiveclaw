@@ -279,10 +279,14 @@ def test_explicit_overlay_activation_keys_preserve_all_semantic_concepts(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_explicit_overlay_uses_write_gate_and_refuses_pl4(tmp_path: Path) -> None:
+async def test_explicit_overlay_does_not_invent_pl4_from_secret_shaped_prose(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from app.tools.handlers.memory import save_memory
 
     agent_id = uuid.uuid4()
+    _allow_overlay_writes(monkeypatch)
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr("app.config.get_settings", lambda: SimpleNamespace(AGENT_DATA_DIR=str(tmp_path)))
@@ -294,5 +298,6 @@ async def test_explicit_overlay_uses_write_gate_and_refuses_pl4(tmp_path: Path) 
             },
         )
 
-    assert result.startswith("[Rejected]")
-    assert not (tmp_path / str(agent_id) / "memory" / "explicit" / "entries").exists()
+    assert result.startswith("Saved to explicit memory overlay")
+    entry = next((tmp_path / str(agent_id) / "memory" / "explicit" / "entries").glob("*.md"))
+    assert "sk-live-abcdef1234567890abcdef" in entry.read_text(encoding="utf-8")

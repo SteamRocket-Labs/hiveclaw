@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import get_current_admin, get_current_user
 from app.core.tenant_scope import resolve_and_pin_tenant_scope, resolve_tenant_scope
-from app.database import get_db
+from app.database import async_session, get_db, tenant_scoped_session
 from app.models.chat_session import ChatSession
 from app.models.llm import LLMModel
 from app.models.tenant_setting import TenantSetting
@@ -99,6 +99,22 @@ async def _resolve_default_memory_model_id(db: AsyncSession, tenant_id: uuid.UUI
     )
     fallback_id = fallback_result.scalar_one_or_none()
     return str(fallback_id) if fallback_id else None
+
+
+async def _load_team_memory_secret_boundary(tenant_id: uuid.UUID):
+    from app.services.credential_boundary_loader import load_exact_secret_boundary
+
+    async with tenant_scoped_session(
+        tenant_id,
+        session_factory=async_session,
+        require_tenant=True,
+        source="team_memory_credential_authority",
+    ) as db:
+        return await load_exact_secret_boundary(
+            db,
+            tenant_id=tenant_id,
+            agent_id=None,
+        )
 
 
 async def _effective_memory_config(db: AsyncSession, tenant_id: uuid.UUID, stored_config: dict | None) -> dict:
@@ -311,7 +327,23 @@ async def upsert_team_memory(
     )
 
     target_tenant_id = resolve_tenant_scope(current_user, tenant_id)
-    store = TeamMemoryStore()
+    try:
+        exact_secret_boundary = await _load_team_memory_secret_boundary(target_tenant_id)
+    except Exception as exc:
+        logger.error(
+            "Team memory credential authority unavailable for tenant %s (%s)",
+            target_tenant_id,
+            type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "credential_authority_unavailable",
+                "retryable": True,
+                "message": "Credential authority is unavailable; team memory write was not persisted.",
+            },
+        ) from exc
+    store = TeamMemoryStore(exact_secret_boundary=exact_secret_boundary)
     try:
         entry = await store.upsert_entry_async(
             tenant_id=str(target_tenant_id),

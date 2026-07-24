@@ -157,6 +157,8 @@ def prepare_memory_write(
         metadata["status"] = "rejected"
         metadata["decision_boundary"] = "deterministic_secret_boundary"
         metadata["reason"] = _sanitize_meta_value(privacy_decision.reason)
+        if privacy_decision.secret_evidence_refs:
+            metadata["secret_evidence_refs"] = ",".join(privacy_decision.secret_evidence_refs)
         return MemoryWriteDecision(
             original_content=original,
             content=privacy_decision.sanitized_text,

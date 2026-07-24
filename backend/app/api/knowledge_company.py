@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Literal
 import uuid
 
+import anyio
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, ConfigDict, Field
@@ -50,6 +51,11 @@ from app.services.company_knowledge_permissions import (
     CompanyKnowledgeResource,
     resolve_company_knowledge_permission,
 )
+from app.services.company_knowledge_promotion import (
+    CompanyKnowledgePromotionService,
+    LegacyPromotionIntakeRequest,
+    PersonalPromotionIntakeRequest,
+)
 from app.services.company_knowledge_service import (
     CompanyEvidenceIngestRequest,
     CompanyKnowledgeMaterializationRequest,
@@ -87,6 +93,13 @@ def _gateway() -> CompanyKnowledgeGateway:
 
 def _permission_service() -> CompanyKnowledgePermissionService:
     return CompanyKnowledgePermissionService(proposal_authority=_service())
+
+
+def _promotion_service() -> CompanyKnowledgePromotionService:
+    return CompanyKnowledgePromotionService(
+        data_root=Path(get_settings().AGENT_DATA_DIR),
+        company_service=_service(),
+    )
 
 
 def _ontology_service() -> CompanyOntologyService:
@@ -330,7 +343,7 @@ class ProposalMaterialize(BaseModel):
     expected_state_version: int = Field(..., ge=1)
     expected_proposed_content_hash: str = Field(..., pattern=r"^[0-9a-f]{64}$")
     title: str = Field(..., min_length=1, max_length=300)
-    markdown: str = Field(..., min_length=1, max_length=2_000_000)
+    markdown: str = Field(..., min_length=1, max_length=50 * 1024 * 1024)
     attest_candidate_applied: Literal[True]
     idempotency_key: str = Field(..., min_length=1, max_length=300)
     trace_id: str = Field(..., min_length=1, max_length=300)
@@ -402,6 +415,46 @@ class CompanyPermissionRevoke(BaseModel):
     trace_id: str = Field(..., min_length=1, max_length=300)
 
 
+class PersonalPromotionCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    document_id: uuid.UUID
+    proposed_namespace: str = Field(..., min_length=1, max_length=300)
+    purpose: str = Field(..., min_length=1, max_length=1000)
+    risk_level: str = "normal"
+    title: str | None = Field(None, max_length=300)
+    attest_scope_change: Literal[True]
+    idempotency_key: str = Field(..., min_length=1, max_length=200)
+    trace_id: str = Field(..., min_length=1, max_length=300)
+
+    def request(self) -> PersonalPromotionIntakeRequest:
+        return PersonalPromotionIntakeRequest(**self.model_dump())
+
+
+class LegacyPromotionCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    relative_path: str = Field(..., min_length=1, max_length=1000)
+    expected_sha256: str = Field(..., pattern=r"^[0-9a-f]{64}$")
+    proposed_namespace: str = Field(..., min_length=1, max_length=300)
+    proposed_sensitivity: str
+    purpose: str = Field(..., min_length=1, max_length=1000)
+    risk_level: str = "normal"
+    title: str | None = Field(None, max_length=300)
+    attest_scope_change: Literal[True]
+    idempotency_key: str = Field(..., min_length=1, max_length=200)
+    trace_id: str = Field(..., min_length=1, max_length=300)
+
+    def request(self) -> LegacyPromotionIntakeRequest:
+        return LegacyPromotionIntakeRequest(**self.model_dump())
+
+
+class PromotionRetry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    trace_id: str = Field(..., min_length=1, max_length=300)
+
+
 class CompanySearchFilters(BaseModel):
     namespaces: list[str] = Field(default_factory=list, max_length=50)
     sensitivities: list[str] = Field(default_factory=list, max_length=4)
@@ -465,6 +518,199 @@ class OntologyQueryBody(BaseModel):
 class OntologyActionSimulationBody(BaseModel):
     proposed_input: dict[str, Any]
     namespace: str | None = Field(None, max_length=300)
+
+
+def _require_legacy_promotion_admin(current_user: User) -> None:
+    if str(current_user.role) not in {"org_admin", "platform_admin"}:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="legacy_company_promotion_requires_tenant_admin",
+        )
+
+
+@router.get("/promotion-intakes")
+async def list_company_knowledge_promotion_intakes(
+    kind: str | None = Query(None),
+    limit: int = Query(100, ge=1, le=200),
+    tenant_id: uuid.UUID | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    target_tenant = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    rows = await _call(
+        _promotion_service().list_intakes(
+            db,
+            principal=_principal(current_user, target_tenant),
+            kind=kind,
+            limit=limit,
+        )
+    )
+    return {"intakes": [_payload(row) for row in rows]}
+
+
+@router.post("/promotion-intakes/personal", status_code=status.HTTP_202_ACCEPTED)
+async def create_personal_company_knowledge_promotion(
+    body: PersonalPromotionCreate,
+    background_tasks: BackgroundTasks,
+    tenant_id: uuid.UUID | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    target_tenant = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    job = await _call(
+        _promotion_service().queue_personal_promotion(
+            db,
+            principal=_principal(current_user, target_tenant),
+            request=body.request(),
+        )
+    )
+    await db.commit()
+    _schedule_import_processing(
+        background_tasks,
+        tenant_id=target_tenant,
+        job_id=job.id,
+    )
+    return {
+        "intake_id": str(job.id),
+        "status": "queued",
+        "recovery": "automatic",
+    }
+
+
+@router.get("/promotion-intakes/legacy-candidates")
+async def list_legacy_company_knowledge_promotion_candidates(
+    tenant_id: uuid.UUID | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    from app.services.legacy_company_files import (
+        LegacyCompanyFilesChangedError,
+        LegacyCompanyFilesUnavailableError,
+        scan_legacy_company_files,
+    )
+
+    _require_legacy_promotion_admin(current_user)
+    target_tenant = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    try:
+        snapshot = await anyio.to_thread.run_sync(
+            scan_legacy_company_files,
+            Path(get_settings().AGENT_DATA_DIR) / f"enterprise_info_{target_tenant}",
+        )
+    except LegacyCompanyFilesChangedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="legacy_company_promotion_source_changed",
+        ) from exc
+    except LegacyCompanyFilesUnavailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="legacy_company_promotion_source_unavailable",
+        ) from exc
+    return {
+        "candidates": [
+            {
+                "relative_path": item.relative_path,
+                "size_bytes": item.size_bytes,
+                "sha256": item.sha256,
+            }
+            for item in snapshot.files
+        ],
+        "excluded_symlink_count": snapshot.excluded_symlink_count,
+    }
+
+
+@router.post("/promotion-intakes/legacy", status_code=status.HTTP_202_ACCEPTED)
+async def create_legacy_company_knowledge_promotion(
+    body: LegacyPromotionCreate,
+    background_tasks: BackgroundTasks,
+    tenant_id: uuid.UUID | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    _require_legacy_promotion_admin(current_user)
+    target_tenant = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    job = await _call(
+        _promotion_service().queue_legacy_promotion(
+            db,
+            principal=_principal(current_user, target_tenant),
+            company_dir=Path(get_settings().AGENT_DATA_DIR) / f"enterprise_info_{target_tenant}",
+            request=body.request(),
+        )
+    )
+    await db.commit()
+    _schedule_import_processing(
+        background_tasks,
+        tenant_id=target_tenant,
+        job_id=job.id,
+    )
+    return {
+        "intake_id": str(job.id),
+        "status": "queued",
+        "recovery": "automatic",
+    }
+
+
+@router.get("/promotion-intakes/{job_id}")
+async def get_company_knowledge_promotion_intake(
+    job_id: uuid.UUID,
+    tenant_id: uuid.UUID | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    target_tenant = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    view = await _call(
+        _promotion_service().get_intake(
+            db,
+            principal=_principal(current_user, target_tenant),
+            job_id=job_id,
+        )
+    )
+    return _payload(view)
+
+
+@router.get("/promotion-intakes/{job_id}/candidate")
+async def get_company_knowledge_promotion_candidate(
+    job_id: uuid.UUID,
+    tenant_id: uuid.UUID | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    target_tenant = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    candidate = await _call(
+        _promotion_service().get_candidate(
+            db,
+            principal=_principal(current_user, target_tenant),
+            job_id=job_id,
+        )
+    )
+    return _payload(candidate)
+
+
+@router.post("/promotion-intakes/{job_id}/retry")
+async def retry_company_knowledge_promotion_intake(
+    job_id: uuid.UUID,
+    body: PromotionRetry,
+    background_tasks: BackgroundTasks,
+    tenant_id: uuid.UUID | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    target_tenant = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    view = await _call(
+        _promotion_service().retry_intake(
+            db,
+            principal=_principal(current_user, target_tenant),
+            job_id=job_id,
+            trace_id=body.trace_id,
+        )
+    )
+    await db.commit()
+    _schedule_import_processing(
+        background_tasks,
+        tenant_id=target_tenant,
+        job_id=job_id,
+    )
+    return _payload(view)
 
 
 @router.post("/search")

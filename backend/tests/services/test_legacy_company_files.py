@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import io
 import json
 import os
@@ -94,6 +95,40 @@ def test_legacy_company_file_export_is_read_only_and_contains_evidence_manifest(
     assert manifest["retired_surface"] == "/enterprise/knowledge-base"
     assert manifest["files"][0]["relative_path"] == "knowledge_base/policy.md"
     assert manifest["files"][0]["sha256"]
+
+
+def test_legacy_company_file_read_requires_exact_snapshot_and_never_accepts_traversal(tmp_path) -> None:
+    from app.services.legacy_company_files import (
+        LegacyCompanyFilesChangedError,
+        read_legacy_company_file,
+    )
+
+    source = tmp_path / "knowledge_base" / "policy.md"
+    source.parent.mkdir()
+    source.write_text("legacy policy\n", encoding="utf-8")
+    expected_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+
+    result = read_legacy_company_file(
+        tmp_path,
+        relative_path="knowledge_base/policy.md",
+        expected_sha256=expected_hash,
+    )
+
+    assert result.item.relative_path == "knowledge_base/policy.md"
+    assert result.data == b"legacy policy\n"
+    with pytest.raises(LegacyCompanyFilesChangedError):
+        read_legacy_company_file(
+            tmp_path,
+            relative_path="../outside-secret.txt",
+            expected_sha256=expected_hash,
+        )
+    source.write_text("changed\n", encoding="utf-8")
+    with pytest.raises(LegacyCompanyFilesChangedError):
+        read_legacy_company_file(
+            tmp_path,
+            relative_path="knowledge_base/policy.md",
+            expected_sha256=expected_hash,
+        )
 
 
 def test_legacy_company_file_export_uses_bounded_memory_for_large_sources(tmp_path) -> None:

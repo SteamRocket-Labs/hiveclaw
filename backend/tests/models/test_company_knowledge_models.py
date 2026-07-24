@@ -82,6 +82,10 @@ def test_company_knowledge_authority_models_are_distinct_from_personal_knowledge
     assert {"idempotency_key", "available_at", "attempt_count", "last_error"} <= {
         column.key for column in inspect(CompanyKnowledgeOutbox).columns
     }
+    assert "proposal_id" in {column.key for column in inspect(CompanyKnowledgeImportJob).columns}
+    assert {
+        "fk_company_knowledge_import_job_proposal",
+    } <= {constraint.name for constraint in inspect(CompanyKnowledgeImportJob).local_table.foreign_key_constraints}
 
 
 def test_company_ontology_models_keep_release_authority_separate_from_knowledge_publications() -> None:

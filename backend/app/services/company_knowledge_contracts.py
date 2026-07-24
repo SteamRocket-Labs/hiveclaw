@@ -146,6 +146,64 @@ class CanonicalEvidenceInput:
     ingestion_receipt_ref: str
 
 
+@dataclass(frozen=True, slots=True)
+class CompanyKnowledgePromotionHandoff:
+    """Explicit cross-scope candidate bound to one durable evidence import."""
+
+    proposal_kind: str
+    title: str
+    original_source_ref: str
+    original_source_label: str
+    source_revision_ref: str
+    proposed_namespace: str
+    proposed_sensitivity: str
+    risk_level: str
+    purpose: str
+    candidate_content_hash: str
+    explicit_scope_change_attested: bool
+    proposal_idempotency_key: str
+    trace_id: str
+    conversion_receipt: dict[str, Any]
+
+
+def validate_company_knowledge_promotion_handoff(
+    handoff: CompanyKnowledgePromotionHandoff,
+    *,
+    artifact_hash: str,
+    markdown: str,
+) -> CompanyKnowledgePromotionHandoff:
+    """Bind a Personal/legacy candidate to the exact imported Company evidence."""
+
+    if handoff.proposal_kind not in {"personal_promotion", "legacy_import"}:
+        raise ValueError("unsupported_company_knowledge_promotion_kind")
+    expected_prefix = "kb://person/" if handoff.proposal_kind == "personal_promotion" else "legacy-company-file://"
+    if not str(handoff.original_source_ref or "").startswith(expected_prefix):
+        raise ValueError("company_knowledge_promotion_source_ref_invalid")
+    required = {
+        "title": handoff.title,
+        "original_source_label": handoff.original_source_label,
+        "source_revision_ref": handoff.source_revision_ref,
+        "proposed_namespace": handoff.proposed_namespace,
+        "purpose": handoff.purpose,
+        "proposal_idempotency_key": handoff.proposal_idempotency_key,
+        "trace_id": handoff.trace_id,
+    }
+    missing = sorted(name for name, value in required.items() if not str(value or "").strip())
+    if missing:
+        raise ValueError(f"company_knowledge_promotion_fields_required:{','.join(missing)}")
+    if handoff.explicit_scope_change_attested is not True:
+        raise ValueError("company_knowledge_promotion_scope_change_attestation_required")
+    if handoff.risk_level not in {"normal", "high", "critical"}:
+        raise ValueError("unsupported_company_knowledge_risk_level")
+    canonicalize_sensitivity(handoff.proposed_sensitivity)
+    candidate_hash = _require_hash(handoff.candidate_content_hash, field="candidate_content_hash")
+    imported_hash = _require_hash(artifact_hash, field="artifact_hash")
+    markdown_hash = hashlib.sha256(str(markdown).encode("utf-8")).hexdigest()
+    if candidate_hash != imported_hash or markdown_hash != imported_hash:
+        raise ValueError("company_knowledge_promotion_candidate_artifact_mismatch")
+    return handoff
+
+
 def build_canonical_evidence_envelope(evidence: CanonicalEvidenceInput) -> dict[str, Any]:
     if evidence.evidence_kind not in _EVIDENCE_KINDS:
         raise ValueError(f"unsupported evidence_kind: {evidence.evidence_kind}")

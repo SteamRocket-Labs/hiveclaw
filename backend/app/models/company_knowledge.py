@@ -276,6 +276,16 @@ class CompanyKnowledgeImportJob(Base):
     document_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("knowledge_documents.id", ondelete="RESTRICT"), nullable=True, index=True
     )
+    proposal_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "company_knowledge_proposals.id",
+            ondelete="RESTRICT",
+            name="fk_company_knowledge_import_job_proposal",
+        ),
+        nullable=True,
+        index=True,
+    )
     created_by_type: Mapped[str] = mapped_column(String(30), nullable=False)
     created_by_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     accountable_user_id: Mapped[uuid.UUID] = mapped_column(

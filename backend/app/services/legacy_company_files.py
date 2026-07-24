@@ -20,6 +20,7 @@ import anyio
 COMPANY_CONTEXT_FILENAMES = frozenset({"company_profile.md", "org_structure.md"})
 _IGNORED_CONTROL_FILENAMES = frozenset({".gitkeep"})
 _READ_CHUNK_SIZE = 1024 * 1024
+_PROMOTION_MAX_BYTES = 50 * 1024 * 1024
 _CHANGED_ERRNOS = frozenset(
     value
     for value in (
@@ -73,6 +74,12 @@ class LegacyCompanyFilesExport:
     size_bytes: int
     filename: str
     snapshot: LegacyCompanyFilesSnapshot
+
+
+@dataclass(frozen=True, slots=True)
+class LegacyCompanyFileContent:
+    item: LegacyCompanyFile
+    data: bytes
 
 
 class LegacyCompanyFilesChangedError(RuntimeError):
@@ -219,6 +226,59 @@ def scan_legacy_company_files(company_dir: Path) -> LegacyCompanyFilesSnapshot:
     if _stat_identity(root_stat) != _stat_identity(after_root_stat):
         raise LegacyCompanyFilesChangedError("Retired shared-file quarantine root changed")
     return LegacyCompanyFilesSnapshot(files=tuple(files), excluded_symlink_count=excluded_symlinks)
+
+
+def read_legacy_company_file(
+    company_dir: Path,
+    *,
+    relative_path: str,
+    expected_sha256: str,
+    max_bytes: int = _PROMOTION_MAX_BYTES,
+) -> LegacyCompanyFileContent:
+    """Read one selected quarantine file only when its scanned identity is exact."""
+
+    normalized = str(relative_path or "").replace("\\", "/").strip().strip("/")
+    candidate_path = Path(normalized)
+    if not normalized or candidate_path.is_absolute() or any(part in {"", ".", ".."} for part in candidate_path.parts):
+        raise LegacyCompanyFilesChangedError("Retired shared-file selection changed")
+    expected_hash = str(expected_sha256 or "").strip().lower()
+    if len(expected_hash) != 64 or any(character not in "0123456789abcdef" for character in expected_hash):
+        raise LegacyCompanyFilesChangedError("Retired shared-file selection changed")
+
+    snapshot = scan_legacy_company_files(company_dir)
+    item = next((entry for entry in snapshot.files if entry.relative_path == normalized), None)
+    if item is None or item.sha256 != expected_hash:
+        raise LegacyCompanyFilesChangedError("Retired shared-file selection changed")
+    if item.size_bytes > max(1, int(max_bytes)):
+        raise ValueError("Retired shared file exceeds the promotion intake limit")
+
+    hasher = hashlib.sha256()
+    content = bytearray()
+    try:
+        source, before = _open_regular_file(item.absolute_path)
+        expected_identity = _snapshot_identity(item)
+        if expected_identity is not None and _stat_identity(before) != expected_identity:
+            source.close()
+            raise LegacyCompanyFilesChangedError("Retired shared-file selection changed")
+        with source:
+            while chunk := source.read(_READ_CHUNK_SIZE):
+                _check_worker_cancelled()
+                content.extend(chunk)
+                hasher.update(chunk)
+            after = os.fstat(source.fileno())
+    except (LegacyCompanyFilesChangedError, LegacyCompanyFilesUnavailableError):
+        raise
+    except OSError as exc:
+        _raise_mapped_file_error(exc)
+        raise AssertionError("unreachable")
+
+    if (
+        _stat_identity(before) != _stat_identity(after)
+        or len(content) != item.size_bytes
+        or hasher.hexdigest() != item.sha256
+    ):
+        raise LegacyCompanyFilesChangedError("Retired shared-file selection changed")
+    return LegacyCompanyFileContent(item=item, data=bytes(content))
 
 
 def _write_zip_entry(bundle: zipfile.ZipFile, name: str, content: bytes) -> None:

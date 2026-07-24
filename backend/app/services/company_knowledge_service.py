@@ -33,13 +33,16 @@ from app.models.company_knowledge import (
 from app.models.knowledge import KnowledgeDocument, KnowledgeSegment
 from app.services.company_knowledge_contracts import (
     CanonicalEvidenceInput,
+    CompanyKnowledgePromotionHandoff,
     SourceContractInput,
     build_canonical_evidence_envelope,
     company_knowledge_artifact_path,
     company_knowledge_proposal_requires_materialization,
     compute_source_contract_hash,
+    default_company_knowledge_review_policy,
     evaluate_company_review_set,
     next_company_proposal_status,
+    validate_company_knowledge_promotion_handoff,
     validate_source_contract,
 )
 from app.services.company_knowledge_evidence import (
@@ -92,6 +95,14 @@ def _canonical_json(value: Any) -> str:
 
 def _hash_json(value: Any) -> str:
     return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
+
+
+def _company_evidence_request_payload(request: Any) -> dict[str, Any]:
+    payload = _jsonable(asdict(request))
+    if getattr(request, "promotion_handoff", None) is None:
+        # Preserve the pre-promotion hash/JSON contract for ordinary imports.
+        payload.pop("promotion_handoff", None)
+    return payload
 
 
 def _parse_datetime(value: str | datetime | None) -> datetime | None:
@@ -182,6 +193,7 @@ class CompanyEvidenceIngestRequest:
     purpose: str
     idempotency_key: str
     trace_id: str
+    promotion_handoff: CompanyKnowledgePromotionHandoff | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -267,6 +279,14 @@ class CompanyKnowledgeService:
     ) -> CompanyKnowledgeSourceContract:
         validate_source_contract(contract_input)
         contract_hash = compute_source_contract_hash(contract_input)
+        await session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"),
+            {
+                "lock_key": (
+                    f"company-knowledge-source-contract:{principal.tenant_id}:{contract_input.stable_source_id}"
+                )
+            },
+        )
         resource = CompanyKnowledgeResource(
             tenant_id=principal.tenant_id,
             resource_type="company_knowledge_scope",
@@ -390,6 +410,10 @@ class CompanyKnowledgeService:
             raise ValueError("unsupported_company_evidence_kind")
         if not request.idempotency_key.strip() or not request.source_item_id.strip():
             raise ValueError("source_item_id_and_idempotency_key_required")
+        await session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"),
+            {"lock_key": (f"company-knowledge-import:{principal.tenant_id}:{request.idempotency_key}")},
+        )
         contract = (
             await session.execute(
                 select(CompanyKnowledgeSourceContract)
@@ -448,9 +472,18 @@ class CompanyKnowledgeService:
             payload = request.external_artifact_ref.encode("utf-8")
             suffix = ".txt"
         artifact_hash = hashlib.sha256(payload).hexdigest()
+        if request.promotion_handoff is not None:
+            if request.evidence_kind != "document":
+                raise ValueError("company_knowledge_promotion_requires_document_evidence")
+            validate_company_knowledge_promotion_handoff(
+                request.promotion_handoff,
+                artifact_hash=artifact_hash,
+                markdown=normalized,
+            )
+        request_payload = _company_evidence_request_payload(request)
         request_hash = _hash_json(
             {
-                **_jsonable(asdict(request)),
+                **request_payload,
                 "artifact_hash": artifact_hash,
                 "source_acl_snapshot_hash": source_acl_hash,
                 "principal": principal.evidence(),
@@ -482,7 +515,7 @@ class CompanyKnowledgeService:
         )
         _atomic_write(artifact_path, payload)
         serialized_request = {
-            **_jsonable(asdict(request)),
+            **request_payload,
             "evidence_id": str(evidence_id),
             "artifact_ref": str(artifact_path),
             "artifact_hash": artifact_hash,
@@ -531,6 +564,108 @@ class CompanyKnowledgeService:
             ),
         )
         return job
+
+    async def _complete_promotion_handoff(
+        self,
+        session: Any,
+        *,
+        principal: CompanyKnowledgePrincipal,
+        job: CompanyKnowledgeImportJob,
+        request: dict[str, Any],
+        source: CompanyKnowledgeSource,
+        evidence: CompanyKnowledgeEvidence,
+        document: KnowledgeDocument,
+        markdown: str,
+    ) -> CompanyKnowledgeProposal | None:
+        raw_handoff = request.get("promotion_handoff")
+        if not isinstance(raw_handoff, dict) or not raw_handoff:
+            return None
+        if principal.actor_type != "user":
+            raise PermissionError("agents_cannot_promote_personal_or_legacy_knowledge")
+        handoff = CompanyKnowledgePromotionHandoff(**raw_handoff)
+        validate_company_knowledge_promotion_handoff(
+            handoff,
+            artifact_hash=job.artifact_hash,
+            markdown=markdown,
+        )
+        evidence_ref = f"company-evidence://{evidence.id}"
+        proposal = await self.create_proposal(
+            session,
+            principal=principal,
+            request=CompanyKnowledgeProposalRequest(
+                proposal_kind=handoff.proposal_kind,
+                source_id=source.id,
+                source_document_id=document.id,
+                source_revision_ref=handoff.source_revision_ref,
+                baseline_publication_id=None,
+                baseline_version=None,
+                proposed_patch={
+                    "operation": handoff.proposal_kind,
+                    "title": handoff.title,
+                    "content_hash": handoff.candidate_content_hash,
+                    "content_ref": f"company-import://{job.id}/candidate",
+                    "original_source_ref": handoff.original_source_ref,
+                    "original_source_label": handoff.original_source_label,
+                    "source_revision_ref": handoff.source_revision_ref,
+                    "scope_change_attested": True,
+                    "reason": handoff.purpose,
+                    "conversion_receipt": dict(handoff.conversion_receipt),
+                },
+                proposed_namespace=handoff.proposed_namespace,
+                proposed_sensitivity=handoff.proposed_sensitivity,
+                source_refs=(evidence_ref,),
+                source_coverage=dict(request["coverage_ledger"]),
+                conflict_candidates=(),
+                ontology_mapping={},
+                risk_level=handoff.risk_level,
+                required_review_policy=default_company_knowledge_review_policy(
+                    proposed_sensitivity=handoff.proposed_sensitivity,
+                    risk_level=handoff.risk_level,
+                    created_by_type=principal.actor_type,
+                ),
+                idempotency_key=handoff.proposal_idempotency_key,
+                trace_id=handoff.trace_id,
+            ),
+        )
+        if (
+            proposal.source_id != source.id
+            or proposal.source_document_id != document.id
+            or tuple(proposal.source_refs_json or []) != (evidence_ref,)
+        ):
+            raise RuntimeError("company_knowledge_promotion_proposal_binding_conflict")
+        if proposal.status == "draft":
+            proposal = await self.submit_proposal(
+                session,
+                principal=principal,
+                proposal_id=proposal.id,
+                expected_state_version=proposal.state_version,
+                trace_id=handoff.trace_id,
+            )
+        elif proposal.status != "submitted":
+            raise RuntimeError("company_knowledge_promotion_proposal_state_conflict")
+        job.proposal_id = proposal.id
+        await append_company_knowledge_event(
+            session,
+            event_input=_event_input(
+                principal=principal,
+                event_type="company_knowledge.promotion_handoff_completed",
+                resource_type="import_job",
+                resource_id=job.id,
+                resource_version=job.attempt_count,
+                source_refs=(evidence_ref, handoff.original_source_ref),
+                source_hash=handoff.candidate_content_hash,
+                policy_snapshot=dict(request["permission_decision"]),
+                trace_id=handoff.trace_id,
+                idempotency_key=f"{job.idempotency_key}:promotion-handoff",
+                outcome="submitted",
+                payload={
+                    "proposal_id": str(proposal.id),
+                    "proposal_kind": proposal.proposal_kind,
+                    "status": proposal.status,
+                },
+            ),
+        )
+        return proposal
 
     async def process_import_job(
         self,
@@ -761,6 +896,7 @@ class CompanyKnowledgeService:
                     session.add(evidence)
                     await session.flush()
 
+                markdown = payload.decode("utf-8") if request["evidence_kind"] == "document" else ""
                 document = (
                     await session.execute(
                         select(KnowledgeDocument)
@@ -774,7 +910,6 @@ class CompanyKnowledgeService:
                     )
                 ).scalar_one_or_none()
                 if document is None:
-                    markdown = payload.decode("utf-8")
                     document = KnowledgeDocument(
                         tenant_id=tenant_id,
                         scope_type="company",
@@ -825,6 +960,16 @@ class CompanyKnowledgeService:
                         )
                     await session.flush()
 
+                await self._complete_promotion_handoff(
+                    session,
+                    principal=principal,
+                    job=job,
+                    request=request,
+                    source=source,
+                    evidence=evidence,
+                    document=document,
+                    markdown=markdown,
+                )
                 source.status = "ingested"
                 job.source_id = source.id
                 job.evidence_id = evidence.id

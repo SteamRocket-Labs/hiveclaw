@@ -328,6 +328,8 @@ def _metadata_list(value: Any) -> list[Any]:
 _KNOWLEDGE_TOOL_NAMES = {
     "search_personal_kb",
     "read_personal_kb",
+    "search_company_kb",
+    "read_company_kb",
 }
 
 

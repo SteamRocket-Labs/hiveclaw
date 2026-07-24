@@ -110,6 +110,7 @@ def build_knowledge_provenance(tool_name: str, raw_result: Any) -> dict[str, Any
         return None
 
     default_document_id = _source_value(payload, "document_id")
+    default_publication_id = _source_value(payload, "publication_id")
     default_source_ref = _source_value(payload, "source_ref")
     default_sensitivity = payload.get("sensitivity")
     warnings: list[str] = []
@@ -142,15 +143,16 @@ def build_knowledge_provenance(tool_name: str, raw_result: Any) -> dict[str, Any
         )
         sensitivities.append(sensitivity)
         document_id = _source_value(row, "document_id", default_document_id)
+        publication_id = _source_value(row, "publication_id", default_publication_id)
         segment_id = _source_value(row, "segment_id")
         source_ref = _source_value(row, "source_ref", default_source_ref)
         if source_ref and segment_id and "#segment=" not in source_ref:
             source_ref = f"{source_ref}#segment={segment_id}"
         source: dict[str, Any] = {
             "source_index": index,
-            "result_kind": _source_value(row, "result_kind") or (
-                "knowledge_segment" if segment_id else "knowledge_document"
-            ),
+            "result_kind": _source_value(row, "result_kind")
+            or ("knowledge_segment" if segment_id else "knowledge_document"),
+            "publication_id": publication_id,
             "document_id": document_id,
             "segment_id": segment_id,
             "source_ref": source_ref,
@@ -435,13 +437,7 @@ async def load_transcript_knowledge_provenance(
         filters.append(ChatTranscriptEvent.sequence < int(before_sequence))
 
     rows = list(
-        (
-            await db.execute(
-                select(ChatTranscriptEvent)
-                .where(*filters)
-                .order_by(ChatTranscriptEvent.sequence.asc())
-            )
-        )
+        (await db.execute(select(ChatTranscriptEvent).where(*filters).order_by(ChatTranscriptEvent.sequence.asc())))
         .scalars()
         .all()
     )
@@ -450,10 +446,6 @@ async def load_transcript_knowledge_provenance(
         metadata = getattr(row, "metadata_json", None)
         provenance = metadata.get(KNOWLEDGE_PROVENANCE_KEY) if isinstance(metadata, Mapping) else None
         if isinstance(provenance, Mapping):
-            target_ref = (
-                str(metadata.get("target_event_ref") or "").strip()
-                if isinstance(metadata, Mapping)
-                else ""
-            )
+            target_ref = str(metadata.get("target_event_ref") or "").strip() if isinstance(metadata, Mapping) else ""
             entries.append((target_ref or f"transcript://event/{row.id}", provenance))
     return merge_knowledge_provenance(entries)

@@ -1346,6 +1346,8 @@ def _resolved_tool_call_id(tc_data: dict, msg_id: Any) -> str:
 _KNOWLEDGE_TOOL_REPLAY_SCOPES = {
     "search_personal_kb": "personal",
     "read_personal_kb": "personal",
+    "search_company_kb": "company",
+    "read_company_kb": "company",
 }
 
 
@@ -1373,20 +1375,25 @@ def _knowledge_tool_replay_projection(*, tool_name: str, args: dict[str, Any], r
     result_rows = payload.get("results") if tool_name.startswith("search_") else payload.get("segments")
     rows = result_rows if isinstance(result_rows, list) else []
     default_document_id = str(payload.get("document_id") or "").strip()
+    default_publication_id = str(payload.get("publication_id") or "").strip()
     references: list[dict[str, str]] = []
-    seen_references: set[tuple[str, str, str]] = set()
+    seen_references: set[tuple[str, str, str, str]] = set()
     for row in rows:
         if not isinstance(row, dict):
             continue
         reference = {
+            "publication_id": str(row.get("publication_id") or default_publication_id).strip(),
             "document_id": str(row.get("document_id") or default_document_id).strip(),
             "segment_id": str(row.get("segment_id") or "").strip(),
             "source_ref": str(row.get("source_ref") or "").strip(),
         }
+        if scope != "company":
+            reference.pop("publication_id", None)
         reference = {key: value for key, value in reference.items() if value}
         if not reference:
             continue
         key = (
+            reference.get("publication_id", ""),
             reference.get("document_id", ""),
             reference.get("segment_id", ""),
             reference.get("source_ref", ""),
@@ -1409,7 +1416,11 @@ def _knowledge_tool_replay_projection(*, tool_name: str, args: dict[str, Any], r
             "result_count": len(rows),
             "references": references,
             "content_omitted": True,
-            "instruction": "Call search_personal_kb/read_personal_kb again if the content is needed.",
+            "instruction": (
+                "Call search_company_kb/read_company_kb again if the content is needed."
+                if scope == "company"
+                else "Call search_personal_kb/read_personal_kb again if the content is needed."
+            ),
         }
     )
     warnings = payload.get("warnings")

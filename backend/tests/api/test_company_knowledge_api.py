@@ -287,3 +287,139 @@ def test_company_proposal_review_publish_and_recovery_routes_use_exact_state_ver
     assert calls[1][1]["expected_state_version"] == 1
     assert calls[2][1]["expected_state_version"] == 2
     assert calls[3][1]["expected_state_version"] == 3
+
+
+def test_company_retrieval_routes_share_gateway_and_never_accept_actor_identity(monkeypatch):
+    publication_id = uuid.uuid4()
+    document_id = uuid.uuid4()
+    segment_id = uuid.uuid4()
+    evidence_id = uuid.uuid4()
+    calls: list[tuple[str, dict]] = []
+
+    class _Result:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def as_dict(self):
+            return self.payload
+
+    class _Gateway:
+        async def search(self, session, **kwargs):
+            calls.append(("search", kwargs))
+            return _Result(
+                {
+                    "status": "ok",
+                    "results": [
+                        {
+                            "publication_id": str(publication_id),
+                            "document_id": str(document_id),
+                            "segment_id": str(segment_id),
+                            "title": "Handbook",
+                            "snippet": "Leave policy",
+                            "source_ref": f"company-publication://{publication_id}",
+                            "sensitivity": "PL2_pii",
+                            "score": 1.0,
+                            "score_trace": {"channel": "postgres_fts"},
+                        }
+                    ],
+                    "authority": {"evaluation": "per_result_fresh"},
+                    "warnings": [],
+                }
+            )
+
+        async def list_documents(self, session, **kwargs):
+            calls.append(("documents", kwargs))
+            return _Result(
+                {
+                    "status": "ok",
+                    "documents": [
+                        {
+                            "publication_id": str(publication_id),
+                            "document_id": str(document_id),
+                            "title": "Handbook",
+                            "namespace": "company/policies",
+                            "sensitivity": "PL2_pii",
+                            "version": 1,
+                        }
+                    ],
+                    "warnings": [],
+                }
+            )
+
+        async def read(self, session, **kwargs):
+            calls.append(("read", kwargs))
+            return _Result(
+                {
+                    "status": "ok",
+                    "publication_id": str(publication_id),
+                    "document_id": str(document_id),
+                    "title": "Handbook",
+                    "segments": [
+                        {
+                            "segment_id": str(segment_id),
+                            "content": "Leave policy",
+                            "source_ref": f"company-publication://{publication_id}#segment={segment_id}",
+                        }
+                    ],
+                    "citations": [f"company-evidence://{evidence_id}"],
+                    "truncated": False,
+                    "warnings": [],
+                }
+            )
+
+        async def explain_source(self, session, **kwargs):
+            calls.append(("evidence", kwargs))
+            return _Result(
+                {
+                    "status": "ok",
+                    "evidence_id": str(evidence_id),
+                    "source_ref": f"company-evidence://{evidence_id}",
+                    "coverage": {"complete": True},
+                    "warnings": [],
+                }
+            )
+
+    client, db, user = _client(monkeypatch, SimpleNamespace())
+    monkeypatch.setattr(company_api, "_gateway", lambda: _Gateway())
+    forged_user_id = uuid.uuid4()
+    forged_tenant_id = uuid.uuid4()
+
+    searched = client.post(
+        "/knowledge/company/search",
+        json={
+            "query": "leave",
+            "filters": {
+                "namespaces": ["company/policies"],
+                "tenant_id": str(forged_tenant_id),
+                "accountable_user_id": str(forged_user_id),
+            },
+            "limit": 5,
+        },
+    )
+    documents = client.get("/knowledge/company/documents?limit=20")
+    read = client.get(f"/knowledge/company/documents/{document_id}?max_chars=1000")
+    evidence = client.get(f"/knowledge/company/evidence/{evidence_id}")
+    capabilities = client.get("/knowledge/company/capabilities")
+
+    assert [response.status_code for response in (searched, documents, read, evidence, capabilities)] == [
+        200,
+        200,
+        200,
+        200,
+        200,
+    ]
+    assert searched.json()["results"][0]["title"] == "Handbook"
+    assert documents.json()["documents"][0]["publication_id"] == str(publication_id)
+    assert read.json()["segments"][0]["content"] == "Leave policy"
+    assert evidence.json()["source_ref"] == f"company-evidence://{evidence_id}"
+    assert capabilities.json()["baseline_search"] == "postgres_fts"
+    assert capabilities.json()["external_provider_required"] is False
+    assert db.commits == 4
+    assert [name for name, _kwargs in calls] == ["search", "documents", "read", "evidence"]
+    for _name, kwargs in calls:
+        principal = kwargs["principal"]
+        assert principal.tenant_id == user.tenant_id
+        assert principal.accountable_user_id == user.id
+        assert principal.actor_type == "user"
+        assert principal.actor_id == user.id
+        assert principal.accountable_user_id != forged_user_id

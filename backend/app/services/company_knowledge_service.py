@@ -1310,6 +1310,13 @@ class CompanyKnowledgeService:
         )
         if proposal.status != "approved" or proposal.source_document_id is None:
             raise ValueError("approved_document_proposal_required")
+        if dict(proposal.proposed_patch_json or {}).get("operation") == "agent_proposed_update":
+            # An Agent-authored semantic patch is a review candidate, not a
+            # replacement document artifact. Publishing the baseline document
+            # here would falsely report the proposed change as live truth.
+            # A reviewer/materializer must create a new governed document
+            # revision and bind it to the proposal before publication.
+            raise ValueError("agent_proposed_update_materialization_required")
         source = (
             await session.execute(
                 select(CompanyKnowledgeSource).where(

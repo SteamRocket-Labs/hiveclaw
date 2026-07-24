@@ -19,6 +19,7 @@ _SHIPPED = {
     "office_pack",
     "command_pack",
     "personal_knowledge_pack",
+    "company_knowledge_pack",
 }
 
 

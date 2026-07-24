@@ -127,6 +127,25 @@ RUNTIME_L2_CAPABILITY_SPECS: tuple[RuntimeL2CapabilitySpec, ...] = (
         tools=("search_personal_kb", "read_personal_kb", "propose_personal_kb_item"),
     ),
     RuntimeL2CapabilitySpec(
+        name="company_knowledge_pack",
+        summary=(
+            "Tool-first Company Knowledge access for permission-aware active-publication search/read/citation "
+            "and evidence-backed Agent proposals. Company content is never injected into the raw context."
+        ),
+        source="system",
+        activation_mode=(
+            "Discover through tool_search when reviewed organization knowledge is relevant. Search before "
+            "bounded read; use explain_company_kb_source for lineage and propose_company_kb_update only for "
+            "evidence-backed changes that require human review."
+        ),
+        tools=(
+            "search_company_kb",
+            "read_company_kb",
+            "propose_company_kb_update",
+            "explain_company_kb_source",
+        ),
+    ),
+    RuntimeL2CapabilitySpec(
         name="web_pack",
         summary=(
             "Advanced web search and read/extract tooling: advanced_web_search and advanced_web_fetch route "
@@ -311,6 +330,10 @@ CAPABILITY_MAP: dict[str, str] = {
     "search_personal_kb": "agent.knowledge.read",
     "read_personal_kb": "agent.knowledge.read",
     "propose_personal_kb_item": "agent.knowledge.propose",
+    "search_company_kb": "agent.knowledge.read",
+    "read_company_kb": "agent.knowledge.read",
+    "explain_company_kb_source": "agent.knowledge.read",
+    "propose_company_kb_update": "agent.knowledge.propose",
     "save_memory": "agent.memory.write",
     "update_memory": "agent.memory.write",
     "retire_memory": "agent.memory.write",

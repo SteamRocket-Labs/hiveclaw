@@ -635,6 +635,58 @@ def test_personal_knowledge_read_replay_projection_omits_segment_body() -> None:
     assert "PRIVATE-BODY" not in projection
 
 
+def test_company_knowledge_replay_projection_keeps_publication_references_not_content() -> None:
+    from app.services.web_chat_runtime import _knowledge_tool_replay_projection
+
+    publication_id = str(uuid4())
+    document_id = str(uuid4())
+    segment_id = str(uuid4())
+    source_ref = f"company-publication://{publication_id}/documents/{document_id}#segment={segment_id}"
+    projection = _knowledge_tool_replay_projection(
+        tool_name="read_company_kb",
+        args={"publication_id": publication_id, "document_id": document_id},
+        raw_result=json.dumps(
+            {
+                "publication_id": publication_id,
+                "document_id": document_id,
+                "title": "COMPANY-PRIVATE-TITLE",
+                "segments": [
+                    {
+                        "document_id": document_id,
+                        "segment_id": segment_id,
+                        "content": "COMPANY-PRIVATE-BODY",
+                        "source_ref": source_ref,
+                    }
+                ],
+                "citations": ["company-evidence://private"],
+                "warnings": [],
+            }
+        ),
+    )
+
+    assert projection is not None
+    payload = json.loads(projection)
+    assert payload == {
+        "schema": "knowledge_tool_replay.v1",
+        "tool_name": "read_company_kb",
+        "scope": "company",
+        "result_count": 1,
+        "references": [
+            {
+                "publication_id": publication_id,
+                "document_id": document_id,
+                "segment_id": segment_id,
+                "source_ref": source_ref,
+            }
+        ],
+        "content_omitted": True,
+        "instruction": "Call search_company_kb/read_company_kb again if the content is needed.",
+    }
+    assert "COMPANY-PRIVATE-TITLE" not in projection
+    assert "COMPANY-PRIVATE-BODY" not in projection
+    assert "company-evidence://private" not in projection
+
+
 def test_conversation_reload_surfaces_malformed_tool_call_record() -> None:
     from app.services.web_chat_runtime import conversation_from_history_messages
 

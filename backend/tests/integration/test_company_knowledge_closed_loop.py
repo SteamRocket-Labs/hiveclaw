@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+import json
 import uuid
 
 import pytest
@@ -12,6 +14,7 @@ from app.models.company_knowledge import (
     CompanyKnowledgeEvent,
     CompanyKnowledgeImportJob,
     CompanyKnowledgeOutbox,
+    CompanyKnowledgeProposal,
     CompanyKnowledgePublication,
     CompanyKnowledgeSource,
 )
@@ -19,9 +22,17 @@ from app.models.knowledge import KnowledgeDocument, KnowledgeSegment
 from app.models.security_audit import ResourcePermission
 from app.models.tenant import Tenant
 from app.models.user import User
+from app.core.execution_context import ExecutionIdentity
 from app.services.company_knowledge_contracts import SourceContractInput
 from app.services.company_knowledge_evidence import verify_company_knowledge_event_chain
 from app.services.company_knowledge_indexer import CompanyKnowledgeIndexer
+from app.services.company_knowledge_gateway import (
+    CompanyKnowledgeDocumentListRequest,
+    CompanyKnowledgeGateway,
+    CompanyKnowledgeReadRequest,
+    CompanyKnowledgeSearchRequest,
+    CompanyKnowledgeSourceExplainRequest,
+)
 from app.services.company_knowledge_permissions import CompanyKnowledgePrincipal
 from app.services.company_knowledge_service import (
     CompanyEvidenceIngestRequest,
@@ -29,6 +40,7 @@ from app.services.company_knowledge_service import (
     CompanyKnowledgeReviewRequest,
     CompanyKnowledgeService,
 )
+from app.tools.runtime import ToolExecutionContext, ToolExecutionRequest
 
 
 def _principal(*, tenant_id: uuid.UUID, user_id: uuid.UUID) -> CompanyKnowledgePrincipal:
@@ -75,10 +87,12 @@ def _contract() -> SourceContractInput:
 @pytest.mark.asyncio
 async def test_company_document_ingest_review_publish_index_retire_restore_closed_loop(
     owner_sessionmaker,
+    monkeypatch,
     tmp_path: Path,
 ) -> None:
     tenant_id = uuid.uuid4()
     user_id = uuid.uuid4()
+    denied_user_id = uuid.uuid4()
     now = datetime.now(timezone.utc)
     service = CompanyKnowledgeService(data_root=tmp_path)
     principal = _principal(tenant_id=tenant_id, user_id=user_id)
@@ -96,6 +110,17 @@ async def test_company_document_ingest_review_publish_index_retire_restore_close
                 tenant_id=tenant_id,
             )
         )
+        db.add(
+            User(
+                id=denied_user_id,
+                username=f"company-kb-denied-{denied_user_id.hex[:10]}",
+                email=f"{denied_user_id.hex[:10]}@company-kb.test",
+                password_hash="x",
+                display_name="Company Knowledge Unprivileged User",
+                role="org_admin",
+                tenant_id=tenant_id,
+            )
+        )
         await db.flush()
         db.add(
             ResourcePermission(
@@ -104,7 +129,17 @@ async def test_company_document_ingest_review_publish_index_retire_restore_close
                 principal_id=user_id,
                 resource_type="company_knowledge_scope",
                 resource_id=tenant_id,
-                actions=["approve", "publish", "retire", "restore", "search", "read", "cite"],
+                actions=[
+                    "approve",
+                    "publish",
+                    "retire",
+                    "restore",
+                    "discover",
+                    "search",
+                    "read",
+                    "cite",
+                    "propose",
+                ],
                 conditions={},
                 effect="allow",
                 sensitivity_ceiling="PL3_sensitive",
@@ -283,6 +318,76 @@ async def test_company_document_ingest_review_publish_index_retire_restore_close
             == 2
         )
 
+    from app.tools.handlers import knowledge as knowledge_handler
+
+    @asynccontextmanager
+    async def _integration_tenant_session(target_tenant):
+        assert uuid.UUID(str(target_tenant)) == tenant_id
+        from app.database import tenant_scoped_session
+
+        async with tenant_scoped_session(
+            tenant_id,
+            session_factory=owner_sessionmaker,
+            require_tenant=True,
+            source="company_knowledge_tool_integration",
+        ) as session:
+            yield session
+
+    monkeypatch.setattr(knowledge_handler, "tenant_scoped_session", _integration_tenant_session)
+    proposed_payload = json.loads(
+        await knowledge_handler.propose_company_kb_update(
+            ToolExecutionRequest(
+                tool_name="propose_company_kb_update",
+                arguments={
+                    "source_refs": [f"company-evidence://{processed.evidence_id}"],
+                    "proposed_change": {
+                        "replace": {
+                            "annual_leave_days": 22,
+                        }
+                    },
+                    "reason": "The cited approved source supports a reviewed policy update.",
+                    "publication_id": str(publication.id),
+                    "risk_level": "normal",
+                },
+                context=ToolExecutionContext(
+                    agent_id=uuid.uuid4(),
+                    user_id=user_id,
+                    tenant_id=str(tenant_id),
+                    workspace=tmp_path,
+                    execution_identity=ExecutionIdentity(
+                        identity_type="delegated_user",
+                        identity_id=user_id,
+                        label="Company Knowledge integration user",
+                    ),
+                    session_id="company-kb-integration",
+                    runtime_task_id="company-kb-proposal-task",
+                    turn_id="company-kb-proposal-turn",
+                    authority_trace_id="company-kb-proposal-authority",
+                ),
+            )
+        )
+    )
+    assert proposed_payload["status"] == "submitted"
+    assert proposed_payload["policy_outcome"] == "ask"
+    assert proposed_payload["publication_ready"] is False
+    assert proposed_payload["materialization_required"] is True
+    assert proposed_payload["next_action"] == "human_review_required"
+    async with owner_sessionmaker() as db:
+        agent_proposal = await db.get(CompanyKnowledgeProposal, uuid.UUID(proposed_payload["proposal_id"]))
+        assert agent_proposal is not None
+        assert agent_proposal.created_by_type == "agent"
+        assert agent_proposal.status == "submitted"
+        assert agent_proposal.proposed_patch_json["proposed_change"]["replace"]["annual_leave_days"] == 22
+        assert (
+            await db.scalar(
+                select(func.count(CompanyKnowledgePublication.id)).where(
+                    CompanyKnowledgePublication.tenant_id == tenant_id,
+                    CompanyKnowledgePublication.status == "active",
+                )
+            )
+            == 1
+        )
+
     indexer = CompanyKnowledgeIndexer()
     summary = await indexer.process_pending(
         tenant_id=tenant_id,
@@ -292,6 +397,8 @@ async def test_company_document_ingest_review_publish_index_retire_restore_close
     assert summary.completed == 2
     assert summary.failed == 0
 
+    gateway = CompanyKnowledgeGateway()
+    denied_principal = _principal(tenant_id=tenant_id, user_id=denied_user_id)
     async with owner_sessionmaker() as db:
         document = await db.get(KnowledgeDocument, publication.document_id)
         segments = (
@@ -309,6 +416,136 @@ async def test_company_document_ingest_review_publish_index_retire_restore_close
         assert document.scope_type == "company"
         assert document.scope_id == tenant_id
         assert segments and all(segment.scope_type == "company" for segment in segments)
+
+        search_result = await gateway.search(
+            db,
+            principal=principal,
+            request=CompanyKnowledgeSearchRequest(
+                query="annual leave",
+                filters={"namespaces": ["company/policies"]},
+                limit=5,
+                trace_id="trace-search",
+            ),
+        )
+        assert search_result.status == "ok"
+        assert len(search_result.results) == 1
+        assert search_result.results[0].publication_id == publication.id
+        assert search_result.results[0].document_id == publication.document_id
+        assert search_result.results[0].segment_id == segments[0].id
+        assert search_result.results[0].title == "Employee Handbook"
+        assert "20 days" in search_result.results[0].snippet
+        assert search_result.results[0].source_ref.startswith(
+            f"company-publication://{publication.id}/documents/{publication.document_id}"
+        )
+        assert search_result.results[0].score_trace["channel"] == "postgres_fts"
+        assert str(document.canonical_md_path) not in search_result.results[0].source_ref
+
+        read_result = await gateway.read(
+            db,
+            principal=principal,
+            request=CompanyKnowledgeReadRequest(
+                document_id=publication.document_id,
+                publication_id=publication.id,
+                segment_ids=(segments[0].id,),
+                max_chars=20,
+                trace_id="trace-read",
+            ),
+        )
+        assert read_result.status == "ok"
+        assert read_result.truncated is True
+        assert read_result.publication_id == publication.id
+        assert read_result.segments
+        assert len(read_result.segments[0].content) == 20
+        assert read_result.segments[0].source_ref.startswith(
+            f"company-publication://{publication.id}/documents/{publication.document_id}"
+        )
+        assert read_result.citations == (f"company-evidence://{processed.evidence_id}",)
+        assert str(document.canonical_md_path) not in read_result.as_json()
+
+        explained = await gateway.explain_source(
+            db,
+            principal=principal,
+            request=CompanyKnowledgeSourceExplainRequest(
+                evidence_id=processed.evidence_id,
+                trace_id="trace-explain-source",
+            ),
+        )
+        assert explained.status == "ok"
+        assert explained.payload is not None
+        assert explained.payload["source_ref"] == f"company-evidence://{processed.evidence_id}"
+        assert explained.payload["coverage"]["complete"] is True
+        assert str(document.canonical_md_path) not in explained.as_json()
+        assert "Employees receive 20 days" not in explained.as_json()
+
+        denied_search = await gateway.search(
+            db,
+            principal=denied_principal,
+            request=CompanyKnowledgeSearchRequest(
+                query="annual leave",
+                filters={},
+                limit=5,
+                trace_id="trace-denied-search",
+            ),
+        )
+        assert denied_search.status == "empty"
+        assert denied_search.results == ()
+        assert "Employee Handbook" not in denied_search.as_json()
+        assert "score" not in denied_search.as_json()
+
+        denied_documents = await gateway.list_documents(
+            db,
+            principal=denied_principal,
+            request=CompanyKnowledgeDocumentListRequest(
+                filters={},
+                limit=20,
+                trace_id="trace-denied-documents",
+            ),
+        )
+        assert denied_documents.status == "empty"
+        assert denied_documents.documents == ()
+        assert "Employee Handbook" not in denied_documents.as_json()
+
+        denied_read = await gateway.read(
+            db,
+            principal=denied_principal,
+            request=CompanyKnowledgeReadRequest(
+                document_id=publication.document_id,
+                publication_id=None,
+                segment_ids=(),
+                max_chars=1000,
+                trace_id="trace-denied-read",
+            ),
+        )
+        assert denied_read.status == "not_found_or_denied"
+        assert denied_read.segments == ()
+        assert "Employee Handbook" not in denied_read.as_json()
+        assert "20 days" not in denied_read.as_json()
+
+        permission = (
+            await db.execute(
+                select(ResourcePermission).where(
+                    ResourcePermission.tenant_id == tenant_id,
+                    ResourcePermission.principal_id == user_id,
+                    ResourcePermission.resource_type == "company_knowledge_scope",
+                )
+            )
+        ).scalar_one()
+        permission.revoked_at = datetime.now(timezone.utc)
+        await db.flush()
+        revoked_read = await gateway.read(
+            db,
+            principal=principal,
+            request=CompanyKnowledgeReadRequest(
+                document_id=publication.document_id,
+                publication_id=publication.id,
+                segment_ids=(),
+                max_chars=1000,
+                trace_id="trace-revoked-read",
+            ),
+        )
+        assert revoked_read.status == "not_found_or_denied"
+        permission.revoked_at = None
+        await db.flush()
 
         retired = await service.retire_publication(
             db,
@@ -360,6 +597,10 @@ async def test_company_document_ingest_review_publish_index_retire_restore_close
             "company_knowledge.proposal_submitted",
             "company_knowledge.review_recorded",
             "company_knowledge.published",
+            "company_knowledge.permission_allowed",
+            "company_knowledge.permission_denied",
+            "company_knowledge.searched",
+            "company_knowledge.read",
             "company_knowledge.retired",
             "company_knowledge.restored",
         } <= {event.event_type for event in events}

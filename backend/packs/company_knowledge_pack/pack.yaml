@@ -1,0 +1,26 @@
+name: company_knowledge_pack
+version: "0.1.0"
+description: Tool-first permission-aware Company Knowledge search, read, citation, and governed proposals.
+source:
+  kind: builtin
+
+tools:
+  - name: search_company_kb
+    role: owns
+    governance:
+      security_zone: restricted
+  - name: read_company_kb
+    role: owns
+    governance:
+      security_zone: restricted
+  - name: explain_company_kb_source
+    role: owns
+    governance:
+      security_zone: restricted
+  - name: propose_company_kb_update
+    role: owns
+    governance:
+      security_zone: restricted
+
+activation:
+  default_state: active

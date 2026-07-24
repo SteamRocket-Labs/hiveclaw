@@ -24,6 +24,13 @@ from app.models.company_knowledge import (
 )
 from app.models.user import User
 from app.services.company_knowledge_contracts import SourceContractInput
+from app.services.company_knowledge_gateway import (
+    CompanyKnowledgeDocumentListRequest,
+    CompanyKnowledgeGateway,
+    CompanyKnowledgeReadRequest,
+    CompanyKnowledgeSearchRequest,
+    CompanyKnowledgeSourceExplainRequest,
+)
 from app.services.company_knowledge_permissions import CompanyKnowledgePrincipal
 from app.services.company_knowledge_service import (
     CompanyEvidenceIngestRequest,
@@ -40,6 +47,10 @@ def _service() -> CompanyKnowledgeService:
     return CompanyKnowledgeService(data_root=Path(get_settings().AGENT_DATA_DIR))
 
 
+def _gateway() -> CompanyKnowledgeGateway:
+    return CompanyKnowledgeGateway()
+
+
 def _principal(current_user: User, tenant_id: uuid.UUID) -> CompanyKnowledgePrincipal:
     return CompanyKnowledgePrincipal(
         tenant_id=tenant_id,
@@ -47,6 +58,9 @@ def _principal(current_user: User, tenant_id: uuid.UUID) -> CompanyKnowledgePrin
         accountable_role=str(current_user.role),
         actor_type="user",
         actor_id=uuid.UUID(str(current_user.id)),
+        department_id=(
+            uuid.UUID(str(current_user.department_id)) if getattr(current_user, "department_id", None) else None
+        ),
         purpose="interactive_session",
         session_id=None,
     )
@@ -239,6 +253,150 @@ class PublicationRetire(BaseModel):
 
 class PublicationRestore(PublicationRetire):
     valid_from: datetime
+
+
+class CompanySearchFilters(BaseModel):
+    namespaces: list[str] = Field(default_factory=list, max_length=50)
+    sensitivities: list[str] = Field(default_factory=list, max_length=4)
+    publication_ids: list[uuid.UUID] = Field(default_factory=list, max_length=100)
+    document_ids: list[uuid.UUID] = Field(default_factory=list, max_length=100)
+
+
+class CompanySearchRequest(BaseModel):
+    query: str = Field(..., min_length=1, max_length=4000)
+    filters: CompanySearchFilters = Field(default_factory=CompanySearchFilters)
+    limit: int = Field(10, ge=1, le=50)
+
+
+@router.post("/search")
+async def search_company_knowledge(
+    body: CompanySearchRequest,
+    tenant_id: uuid.UUID | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    target_tenant = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    result = await _call(
+        _gateway().search(
+            db,
+            principal=_principal(current_user, target_tenant),
+            request=CompanyKnowledgeSearchRequest(
+                query=body.query,
+                filters=body.filters.model_dump(mode="json"),
+                limit=body.limit,
+                trace_id=f"company-kb-api-search:{uuid.uuid4()}",
+            ),
+        )
+    )
+    await db.commit()
+    return result.as_dict()
+
+
+@router.get("/documents")
+async def list_company_knowledge_documents(
+    tenant_id: uuid.UUID | None = Query(None),
+    namespace: list[str] = Query(default=[]),
+    sensitivity: list[str] = Query(default=[]),
+    limit: int = Query(100, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    target_tenant = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    result = await _call(
+        _gateway().list_documents(
+            db,
+            principal=_principal(current_user, target_tenant),
+            request=CompanyKnowledgeDocumentListRequest(
+                filters={
+                    "namespaces": namespace,
+                    "sensitivities": sensitivity,
+                },
+                limit=limit,
+                trace_id=f"company-kb-api-documents:{uuid.uuid4()}",
+            ),
+        )
+    )
+    await db.commit()
+    return result.as_dict()
+
+
+@router.get("/documents/{document_id}")
+async def read_company_knowledge_document(
+    document_id: uuid.UUID,
+    tenant_id: uuid.UUID | None = Query(None),
+    publication_id: uuid.UUID | None = Query(None),
+    segment_id: list[uuid.UUID] = Query(default=[]),
+    max_chars: int = Query(20_000, ge=1, le=100_000),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    target_tenant = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    result = await _call(
+        _gateway().read(
+            db,
+            principal=_principal(current_user, target_tenant),
+            request=CompanyKnowledgeReadRequest(
+                document_id=document_id,
+                publication_id=publication_id,
+                segment_ids=tuple(segment_id),
+                max_chars=max_chars,
+                trace_id=f"company-kb-api-read:{uuid.uuid4()}",
+            ),
+        )
+    )
+    await db.commit()
+    return result.as_dict()
+
+
+@router.get("/evidence/{evidence_id}")
+async def explain_company_knowledge_evidence(
+    evidence_id: uuid.UUID,
+    tenant_id: uuid.UUID | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    target_tenant = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    result = await _call(
+        _gateway().explain_source(
+            db,
+            principal=_principal(current_user, target_tenant),
+            request=CompanyKnowledgeSourceExplainRequest(
+                evidence_id=evidence_id,
+                trace_id=f"company-kb-api-evidence:{uuid.uuid4()}",
+            ),
+        )
+    )
+    await db.commit()
+    return result.as_dict()
+
+
+@router.get("/capabilities")
+async def get_company_knowledge_capabilities(
+    tenant_id: uuid.UUID | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    target_tenant = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    return {
+        "schema": "hive.company_knowledge_capabilities.v1",
+        "tenant_id": str(target_tenant),
+        "baseline_search": "postgres_fts",
+        "external_provider_required": False,
+        "external_provider_status": "unconfigured",
+        "retrieval": {
+            "active_publications_only": True,
+            "fresh_permission_per_result": True,
+            "fresh_source_acl": True,
+            "complete_evidence_required": True,
+            "pointer_only_transcript_replay": True,
+        },
+        "agent_tools": [
+            "search_company_kb",
+            "read_company_kb",
+            "propose_company_kb_update",
+            "explain_company_kb_source",
+        ],
+    }
 
 
 @router.post("/source-contracts")

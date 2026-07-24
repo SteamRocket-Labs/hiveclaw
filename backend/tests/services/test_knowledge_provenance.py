@@ -105,6 +105,39 @@ def test_read_result_applies_document_sensitivity_to_every_segment() -> None:
     assert {source["sensitivity"] for source in provenance["sources"]} == {"PL2_pii"}
 
 
+def test_company_read_provenance_preserves_publication_authority_reference() -> None:
+    publication_id = str(uuid4())
+    document_id = str(uuid4())
+    segment_id = str(uuid4())
+    payload = {
+        "status": "ok",
+        "publication_id": publication_id,
+        "document_id": document_id,
+        "sensitivity": "PL2_pii",
+        "authority": {
+            "schema": "hive.company_knowledge_retrieval_authority.v1",
+            "scope": "company",
+            "evaluation": "fresh_read_and_cite",
+        },
+        "segments": [
+            {
+                "segment_id": segment_id,
+                "content": "company policy",
+                "source_ref": (f"company-publication://{publication_id}/documents/{document_id}#segment={segment_id}"),
+                "sensitivity": "PL2_pii",
+            }
+        ],
+    }
+
+    provenance = build_knowledge_provenance("read_company_kb", payload)
+
+    assert provenance is not None
+    assert provenance["scope"] == "company"
+    assert provenance["sources"][0]["publication_id"] == publication_id
+    assert provenance["sources"][0]["document_id"] == document_id
+    assert provenance["sources"][0]["segment_id"] == segment_id
+
+
 def test_invalid_typed_sensitivity_fails_closed_but_preserves_recovery_evidence() -> None:
     document_id = str(uuid4())
     payload = {

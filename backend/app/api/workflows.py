@@ -52,6 +52,7 @@ from app.runtime.workflow_admission import (
 from app.runtime.workflow_compiler import WorkflowCompileError, compile_workflow
 from app.runtime.workflow_definition import compute_definition_hash
 from app.services.workflow_confirmation_service import (
+    WORKFLOW_EXPLICIT_USER_START_SOURCE,
     WorkflowConfirmationConflict,
     WorkflowStartClaim,
     claim_workflow_preview_start,
@@ -478,7 +479,7 @@ async def start_workflow_endpoint(
             agent_id=agent_id,
             session_id=None,
             user_id=current_user.id,
-            confirmation_source="api_explicit_start",
+            confirmation_source=WORKFLOW_EXPLICIT_USER_START_SOURCE,
             confirmation_evidence_id=request_id,
         )
     except WorkflowConfirmationConflict as exc:

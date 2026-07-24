@@ -16,13 +16,28 @@ from app.runtime.workflow_definition import compute_definition_hash
 
 WORKFLOW_CONFIRMATION_TTL = timedelta(hours=24)
 WORKFLOW_START_LEASE = timedelta(minutes=5)
+WORKFLOW_EXPLICIT_USER_START_SOURCE = "api_explicit_start"
+WORKFLOW_AGENT_NO_CONFIRMATION_START_SOURCE = "agent_current_turn_no_confirmation_required"
+_WORKFLOW_START_AUTHORIZATION_SOURCES = frozenset(
+    {
+        WORKFLOW_EXPLICIT_USER_START_SOURCE,
+        WORKFLOW_AGENT_NO_CONFIRMATION_START_SOURCE,
+    }
+)
 
 
 class WorkflowConfirmationConflict(ValueError):
-    def __init__(self, code: str, message: str):
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        details: dict[str, Any] | None = None,
+    ):
         super().__init__(message)
         self.code = code
         self.message = message
+        self.details = dict(details or {})
 
 
 @dataclass(frozen=True)
@@ -89,6 +104,19 @@ def _identity_matches(
     )
 
 
+def _preview_requires_explicit_user_confirmation(preview: WorkflowPreviewArtifact) -> bool:
+    """Fail closed unless the immutable preview explicitly records no confirmation."""
+
+    return (preview.preview_json or {}).get("confirmation_required") is not False
+
+
+def _preview_confirmation_reasons(preview: WorkflowPreviewArtifact) -> list[str]:
+    raw_reasons = (preview.preview_json or {}).get("confirmation_reasons")
+    if not isinstance(raw_reasons, list):
+        return []
+    return [str(reason) for reason in raw_reasons]
+
+
 def claim_workflow_preview_record(
     preview: WorkflowPreviewArtifact,
     *,
@@ -113,6 +141,18 @@ def claim_workflow_preview_record(
             "identity_mismatch",
             "Workflow preview belongs to another tenant, agent, session, or user.",
         )
+    source = str(confirmation_source or "").strip()
+    evidence_id = str(confirmation_evidence_id or "").strip()
+    if source not in _WORKFLOW_START_AUTHORIZATION_SOURCES:
+        raise WorkflowConfirmationConflict(
+            "invalid_confirmation_source",
+            "Workflow start authorization source is not recognized.",
+        )
+    if not evidence_id:
+        raise WorkflowConfirmationConflict(
+            "confirmation_evidence_required",
+            "Workflow start requires typed authorization evidence.",
+        )
     if preview.expires_at <= current:
         preview.status = "expired"
         preview.claim_token = None
@@ -127,12 +167,14 @@ def claim_workflow_preview_record(
             "invalid_status",
             f"Workflow preview cannot start from status {preview.status}.",
         )
-    source = str(confirmation_source or "").strip()
-    evidence_id = str(confirmation_evidence_id or "").strip()
-    if not source or not evidence_id:
+    if source == WORKFLOW_AGENT_NO_CONFIRMATION_START_SOURCE and _preview_requires_explicit_user_confirmation(preview):
         raise WorkflowConfirmationConflict(
-            "confirmation_evidence_required",
-            "Workflow start requires typed user confirmation evidence.",
+            "explicit_user_confirmation_required",
+            "This workflow preview requires an authenticated user to confirm and run the exact preview.",
+            details={
+                "preview_id": str(preview.id),
+                "confirmation_reasons": _preview_confirmation_reasons(preview),
+            },
         )
 
     preview.status = "starting"
@@ -140,10 +182,14 @@ def claim_workflow_preview_record(
     preview.claim_token = uuid.uuid4()
     preview.claim_expires_at = current + lease
     preview.attempt_count = int(preview.attempt_count or 0) + 1
-    preview.confirmed_by_user_id = user_id
     preview.confirmation_source = source
     preview.confirmation_evidence_id = evidence_id
-    preview.confirmed_at = current
+    if source == WORKFLOW_EXPLICIT_USER_START_SOURCE:
+        preview.confirmed_by_user_id = user_id
+        preview.confirmed_at = current
+    else:
+        preview.confirmed_by_user_id = None
+        preview.confirmed_at = None
     preview.failure_code = None
     preview.failure_message = None
     return "claimed"

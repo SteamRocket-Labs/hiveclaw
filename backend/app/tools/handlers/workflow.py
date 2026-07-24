@@ -29,6 +29,7 @@ from app.runtime.workflow_admission import (
 from app.runtime.workflow_compiler import WorkflowCompileError, compile_workflow
 from app.runtime.workflow_definition import compute_definition_hash
 from app.services.workflow_confirmation_service import (
+    WORKFLOW_AGENT_NO_CONFIRMATION_START_SOURCE,
     WorkflowConfirmationConflict,
     WorkflowStartClaim,
     claim_workflow_preview_start,
@@ -175,7 +176,7 @@ async def _claim_workflow_start(request: ToolExecutionRequest, preview_id: uuid.
             agent_id=agent_id,
             session_id=session_id,
             user_id=user_id,
-            confirmation_source="agent_user_turn",
+            confirmation_source=WORKFLOW_AGENT_NO_CONFIRMATION_START_SOURCE,
             confirmation_evidence_id=evidence_id,
         )
 
@@ -427,8 +428,10 @@ async def preview_workflow(request: ToolExecutionRequest) -> str:
             "work to another digital employee, use delegate_to_agent.\n\n"
             "Usage:\n"
             "- preview_workflow FIRST and show the user what will run.\n"
-            "- If preview shows confirmation notes, obtain explicit user go-ahead before starting; "
-            "do not enter Plan Mode unless the user explicitly asks for it.\n"
+            "- If the preview requires confirmation, this tool cannot start it. Stop and wait for the "
+            "authenticated user to select Confirm and run on that exact preview; do not infer confirmation "
+            "from chat text or enter Plan Mode unless the user explicitly asks for it.\n"
+            "- If the preview does not require confirmation, start_workflow may start that exact preview.\n"
             "- Pass ledger_todo_id to mirror the run onto your work-ledger todo."
         ),
         parameters={
@@ -498,6 +501,20 @@ async def start_workflow(request: ToolExecutionRequest) -> str:
     try:
         claim = await _claim_workflow_start(request, preview_id)
     except WorkflowConfirmationConflict as exc:
+        if exc.code == "explicit_user_confirmation_required":
+            return json.dumps(
+                {
+                    "ok": False,
+                    "status": "requires_confirmation",
+                    "requires_confirmation": True,
+                    "error_code": exc.code,
+                    "error": exc.message,
+                    "preview_id": str(exc.details.get("preview_id") or preview_id),
+                    "confirmation_reasons": list(exc.details.get("confirmation_reasons") or []),
+                    "next_action": "Wait for the user to select Confirm and run on this exact workflow preview.",
+                },
+                ensure_ascii=False,
+            )
         return json.dumps({"ok": False, "error_code": exc.code, "error": exc.message}, ensure_ascii=False)
 
     preview = claim.preview
@@ -542,7 +559,9 @@ async def start_workflow(request: ToolExecutionRequest) -> str:
             "preview_id": str(preview.id),
             "artifact_version": preview.artifact_version,
             "artifact_hash": preview.artifact_hash,
-            "confirmed_by_user_id": str(preview.confirmed_by_user_id),
+            "confirmed_by_user_id": (
+                str(preview.confirmed_by_user_id) if preview.confirmed_by_user_id is not None else None
+            ),
             "confirmation_source": preview.confirmation_source,
             "confirmation_evidence_id": preview.confirmation_evidence_id,
         }

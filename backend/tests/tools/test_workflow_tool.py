@@ -251,7 +251,7 @@ def _durable_workflow_confirmation_backend(monkeypatch):
             agent_id=agent_id,
             session_id=session_id,
             user_id=user_id,
-            confirmation_source="agent_user_turn",
+            confirmation_source="agent_current_turn_no_confirmation_required",
             confirmation_evidence_id=str(request.context.turn_id or ""),
         )
         return WorkflowStartClaim(outcome=outcome, preview=preview)
@@ -547,6 +547,50 @@ async def test_start_workflow_low_risk_launches(monkeypatch):
     assert captured["definition"]["name"] == "read-probe"
     assert captured["parent_session_id"] == _identity_for(agent_id)[2]
     assert captured["enqueue_only"] is True
+    assert captured["run_metadata"]["workflow_confirmation"] == {
+        "preview_id": preview["preview_id"],
+        "artifact_version": 1,
+        "artifact_hash": preview["artifact_hash"],
+        "confirmed_by_user_id": None,
+        "confirmation_source": "agent_current_turn_no_confirmation_required",
+        "confirmation_evidence_id": "turn-workflow-confirmation",
+    }
+
+
+async def test_start_workflow_requires_exact_user_action_for_confirmation_preview(monkeypatch):
+    from app.tools.handlers import workflow as workflow_handlers
+
+    async def fake_launch(**_kwargs):
+        raise AssertionError("confirmation-required workflow must not launch from the agent tool")
+
+    monkeypatch.setattr(workflow_handlers, "start_ephemeral_workflow_for_agent", fake_launch)
+
+    agent_id = uuid.uuid4()
+    preview = json.loads(
+        await workflow_handlers.preview_workflow(
+            _tool_request("preview_workflow", agent_id, {"definition": _high_risk_definition(), "args": {}})
+        )
+    )
+    result = await workflow_handlers.start_workflow(
+        _start_request(
+            agent_id,
+            {
+                "preview_id": preview["preview_id"],
+            },
+        )
+    )
+    payload = json.loads(result)
+
+    assert payload == {
+        "ok": False,
+        "status": "requires_confirmation",
+        "requires_confirmation": True,
+        "error_code": "explicit_user_confirmation_required",
+        "error": "This workflow preview requires an authenticated user to confirm and run the exact preview.",
+        "preview_id": preview["preview_id"],
+        "confirmation_reasons": preview["confirmation_reasons"],
+        "next_action": "Wait for the user to select Confirm and run on this exact workflow preview.",
+    }
 
 
 async def test_start_workflow_returns_execution_shape_admission_warning(monkeypatch):

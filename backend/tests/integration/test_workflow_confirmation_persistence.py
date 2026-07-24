@@ -109,7 +109,7 @@ async def test_preview_survives_worker_restart_and_reconciles_crash_window(owner
             agent_id=agent_id,
             session_id=session_id,
             user_id=user_id,
-            confirmation_source="agent_user_turn",
+            confirmation_source="agent_current_turn_no_confirmation_required",
             confirmation_evidence_id="turn-1",
         )
         assert claim.outcome == "claimed"
@@ -124,7 +124,7 @@ async def test_preview_survives_worker_restart_and_reconciles_crash_window(owner
                 agent_id=agent_id,
                 session_id=session_id,
                 user_id=user_id,
-                confirmation_source="agent_user_turn",
+                confirmation_source="agent_current_turn_no_confirmation_required",
                 confirmation_evidence_id="turn-2",
             )
         assert exc.value.code == "start_in_progress"
@@ -162,7 +162,7 @@ async def test_preview_survives_worker_restart_and_reconciles_crash_window(owner
             agent_id=agent_id,
             session_id=session_id,
             user_id=user_id,
-            confirmation_source="agent_user_turn",
+            confirmation_source="agent_current_turn_no_confirmation_required",
             confirmation_evidence_id="turn-3",
         )
         assert recovered.outcome == "replay"

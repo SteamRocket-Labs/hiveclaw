@@ -1,0 +1,70 @@
+{
+  "schema_version": "2.0",
+  "generated_at": "2026-07-18T11:57:08.842Z",
+  "change": {
+    "id": "session-live-presentation-closure-20260717",
+    "title": "Close production Session task and disclosure presentation",
+    "kind": "incident",
+    "status": "active",
+    "intent": "Implement the user-approved production Session presentation on the real AgentDetail path: keep the Task ledger persistently anchored above the composer, prevent task lifecycle tools from rendering as redundant raw rows, keep active work expanded, fold only safe historical/process detail, preserve interactive/A2A/error/recovery surfaces, verify real production-shaped event replay and browser behavior, update the unified repair report, commit with full evidence, and deploy all three production services.",
+    "docs_impact": {
+      "status": "required",
+      "files": [
+        "docs/session-v2-cc-codex-alignment-contract-2026-07-14.md",
+        "docs/agent-native-unified-atomic-review-2026-07-14.md"
+      ],
+      "rationale": "Correct the falsely closed frontend acceptance evidence and record actual live-path/browser closure."
+    },
+    "base_commit": "5d9f18fe23f4"
+  },
+  "git": {
+    "head": "ad4a9e4bcb8cf19977bbd6349e48035bafdaa548"
+  },
+  "tasks": [],
+  "selected_task": null,
+  "specs": [],
+  "role": "plan",
+  "gate": "alignment",
+  "next_action": "Preserve the existing session live presentation closure worktree changes while handling the newly reported IM delivery incident in a separate bounded change.",
+  "readiness": {
+    "status": "ready",
+    "blockers": []
+  },
+  "context": {
+    "items": [],
+    "budget": {
+      "max_tokens": 12000,
+      "max_files": 40
+    },
+    "token_estimate": 0,
+    "file_count": 0
+  },
+  "execution_contract": {
+    "slice_kind": "integration_checkpoint",
+    "public_seam": "Session live presentation closure remains isolated from IM channel runtime changes.",
+    "verification_command": "git diff --check",
+    "context_budget_percent": 20
+  },
+  "resume": {
+    "change_id": "session-live-presentation-closure-20260717",
+    "task_id": null,
+    "task_status": null,
+    "session_id": null,
+    "role": "plan",
+    "gate": "alignment",
+    "git_head": "ad4a9e4bcb8cf19977bbd6349e48035bafdaa548"
+  },
+  "providers": {
+    "memory": {
+      "provider": "codex-memory",
+      "project": "hiveclaw-main",
+      "reference": "MEMORY.md Session runtime UI presentation entries",
+      "revision": "2026-07-17",
+      "status": "available"
+    }
+  },
+  "provider_boundary": "metadata references only; memory and code graph content remain external",
+  "tool_policy": {
+    "allowed_paths": []
+  }
+}

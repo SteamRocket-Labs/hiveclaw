@@ -1,0 +1,38 @@
+{
+  "schema": 2,
+  "captured_at": "2026-07-23T19:46:03.875197+00:00",
+  "session_id": "019f9035-b6ad-7d62-91cf-b62aca51f615",
+  "breadcrumb": {
+    "change_id": "im-durable-terminal-delivery-closure-20260718",
+    "change_status": "active",
+    "task_id": null,
+    "task_status": null,
+    "session_id": null,
+    "role": "check",
+    "gate": "verification",
+    "readiness": "blocked",
+    "blockers": [
+      "BASELINE_MIGRATION_REVIEW_REQUIRED",
+      "CONTEXT_SNAPSHOT_UPGRADE_REQUIRED",
+      "CONTEXT_HEAD_STALE",
+      "CONTEXT_TASK_CONTRACT_STALE"
+    ],
+    "warnings": [
+      "BASELINE_MIGRATION_REVIEW_REQUIRED"
+    ],
+    "next_action": "Complete or refresh the Ultra project baseline, then recompile change.context.",
+    "recommended_workflow": "ultra-init",
+    "context_manifest_path": ".ultra/changes/active/im-durable-terminal-delivery-closure-20260718/context-manifest.json",
+    "context_manifest_hash": "3ffccbc233c388a62fb4c0921348a0f6321e9073f1d7890e3d8e2a17e325080b",
+    "git_head": "ce7592cb6317514d8537e51516489be3c278e532",
+    "baseline": {
+      "id": "migrated-baseline",
+      "mode": "migrated",
+      "status": "adopting",
+      "repository_revision": null
+    },
+    "workflow": null,
+    "decision": null
+  },
+  "rendered": "[Ultra context spine]\nProject: /Users/rocky243/vc-saas/hiveclaw-main\nBaseline: migrated-baseline (migrated/adopting)\nChange: im-durable-terminal-delivery-closure-20260718 (active)\nTask: none (none)\nRole: check\nGate: verification\nReadiness: blocked\nBlockers: BASELINE_MIGRATION_REVIEW_REQUIRED, CONTEXT_SNAPSHOT_UPGRADE_REQUIRED, CONTEXT_HEAD_STALE, CONTEXT_TASK_CONTRACT_STALE\nWarnings: BASELINE_MIGRATION_REVIEW_REQUIRED\nNext: Complete or refresh the Ultra project baseline, then recompile change.context.\nRoute: ultra-init\nContext: .ultra/changes/active/im-durable-terminal-delivery-closure-20260718/context-manifest.json sha256=3ffccbc233c388a62fb4c0921348a0f6321e9073f1d7890e3d8e2a17e325080b\nAuthority: .ultra/state.db; JSON/Markdown remain projections or evidence artifacts."
+}

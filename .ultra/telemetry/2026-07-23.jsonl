@@ -1,0 +1,2 @@
+{"id":33,"ts":"2026-07-23T19:16:20.361Z","session_id":null,"event_type":"tool_call","tool_name":"system.doctor","runtime":null,"tokens_input":null,"tokens_output":null,"cost_usd":null,"task_id":null,"payload":{"duration_ms":6,"task_id":null,"error":null}}
+{"id":34,"ts":"2026-07-23T19:16:20.361Z","session_id":null,"event_type":"tool_call","tool_name":"system.doctor","runtime":null,"tokens_input":null,"tokens_output":null,"cost_usd":null,"task_id":null,"payload":{"duration_ms":2,"task_id":null,"error":null}}

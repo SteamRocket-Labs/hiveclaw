@@ -1,0 +1,129 @@
+{
+  "schema_version": "2.0",
+  "generated_at": "2026-07-19T14:46:12.908Z",
+  "change": {
+    "id": "im-durable-terminal-delivery-closure-20260718",
+    "title": "IM user-proven identity and Agent Detail QR closure",
+    "kind": "incident",
+    "status": "active",
+    "intent": "Correct the IM identity authority so users self-bind through provider proof while administrators may only unlink or revoke, and repair the production Agent Detail Feishu/Lark QR generation failure. Preserve durable transport ACK isolation and terminal delivery.",
+    "docs_impact": {
+      "status": "required",
+      "files": [
+        "docs/harness-engineering-audit-2026-06-11.md"
+      ],
+      "rationale": "Record the corrected identity authority and production acceptance evidence."
+    },
+    "base_commit": "ad4a9e4bcb8cf19977bbd6349e48035bafdaa548",
+    "baseline_bypass": null
+  },
+  "git": {
+    "head": "f901b7f29f570a7cfc6398f5394fc79208e471b4"
+  },
+  "tasks": [],
+  "selected_task": null,
+  "specs": [],
+  "role": "check",
+  "gate": "verification",
+  "next_action": "Deploy f901b7f29 to all three production services and verify zero connected unverified WeChat configs.",
+  "readiness": {
+    "status": "ready",
+    "blockers": [],
+    "warnings": [
+      "BASELINE_MIGRATION_REVIEW_REQUIRED"
+    ]
+  },
+  "context": {
+    "items": [
+      {
+        "ref": "railway://production/backend/a2ff201e-4344-4769-935d-450b1b7d465d",
+        "kind": "external",
+        "reason": "Production read-only acceptance found legacy WeChat transports connected without provider proof.",
+        "required": true,
+        "expected_digest": null,
+        "role": "check",
+        "status": "external",
+        "digest": null,
+        "estimated_tokens": 0
+      },
+      {
+        "ref": "backend/tests/services/test_wechat_personal_runtime.py",
+        "kind": "test",
+        "reason": "Executable startup filtering regression passed at final HEAD.",
+        "required": true,
+        "expected_digest": null,
+        "role": "check",
+        "status": "current",
+        "digest": "deb841be0788dec45522bff7a7c26f6251b36379f4cdd5c36643e184e06fbdb6",
+        "estimated_tokens": 10676
+      },
+      {
+        "ref": "backend/tests/migrations/test_im_channel_identity_closure_migration.py",
+        "kind": "test",
+        "reason": "Real PostgreSQL parent-to-head migration passed at final HEAD.",
+        "required": true,
+        "expected_digest": null,
+        "role": "check",
+        "status": "current",
+        "digest": "0d55a445eb09715b28db1eb844c43f0dc74ab14681a599f708c9f9bd164a9eb1",
+        "estimated_tokens": 3957
+      }
+    ],
+    "budget": {
+      "max_tokens": 18000,
+      "max_files": 60
+    },
+    "token_estimate": 14633,
+    "file_count": 2
+  },
+  "execution_contract": {
+    "slice_kind": "integration_checkpoint",
+    "public_seam": "Railway production IM channel transport startup and Agent Detail rebind status",
+    "verification_command": "cd backend && .venv/bin/python -m pytest -q tests/services/test_wechat_personal_runtime.py tests/migrations/test_im_unverified_transport_migration.py tests/migrations/test_im_channel_identity_closure_migration.py::test_parent_upgrade_backfills_only_existing_verified_wechat_binding",
+    "context_budget_percent": 20
+  },
+  "baseline": {
+    "id": "migrated-baseline",
+    "mode": "migrated",
+    "status": "adopting",
+    "repository_revision": null,
+    "health": "fail",
+    "warnings": [
+      "BASELINE_MIGRATION_REVIEW_REQUIRED"
+    ]
+  },
+  "resume": {
+    "change_id": "im-durable-terminal-delivery-closure-20260718",
+    "task_id": null,
+    "task_status": null,
+    "session_id": null,
+    "role": "check",
+    "gate": "verification",
+    "git_head": "f901b7f29f570a7cfc6398f5394fc79208e471b4"
+  },
+  "providers": {
+    "memory": {
+      "provider": "codex-memory",
+      "project": "hiveclaw-main",
+      "reference": "MEMORY.md WeChat personal and IM runtime history",
+      "status": "available",
+      "indexed_head": "ad4a9e4bcb8cf19977bbd6349e48035bafdaa548"
+    }
+  },
+  "provider_boundary": "metadata references only; memory and code graph content remain external",
+  "tool_policy": {
+    "allowed_paths": [
+      "backend/app/services/wechat_personal_service.py",
+      "backend/app/services/wechat_personal_stream.py",
+      "backend/alembic/versions/im_unverified_transport_0719.py",
+      "backend/tests/migrations/test_im_unverified_transport_migration.py",
+      "backend/tests/migrations/test_im_channel_identity_closure_migration.py",
+      "backend/tests/migrations/test_hr_runtime_authority_migration.py",
+      "backend/tests/migrations/test_session_v2_migration.py",
+      "backend/tests/migrations/test_workflow_migration.py",
+      "backend/tests/services/test_wechat_personal_runtime.py",
+      "docs/harness-engineering-audit-2026-06-11.md",
+      "docs/agent-native-third-round-atomic-audit-2026-07-11.md"
+    ]
+  }
+}

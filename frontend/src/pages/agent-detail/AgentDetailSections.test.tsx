@@ -386,6 +386,22 @@ vi.mock('@tanstack/react-query', () => ({
         error: null,
       };
     }
+    if (key === 'agent-runtime-health') {
+      return {
+        data: {
+          schema: 'hive.agent.runtime_health.v1',
+          agent_id: 'agent-1',
+          status: 'needs_attention',
+          interrupted_turns: 1,
+          observed_issues: 2,
+          retry_available: true,
+          last_issue_at: '2026-07-24T04:00:00Z',
+        },
+        isLoading: false,
+        isError: false,
+        error: null,
+      };
+    }
     if (key === 'local-bridge-connections') {
       return {
         data: {
@@ -1693,6 +1709,13 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('Recent Activity');
     expect(markup).toContain('GPT-5.4');
     expect(markup).toContain('Runtime Protection');
+    expect(markup).toContain('A recent request was safely stopped by a platform safeguard.');
+    expect(markup).toContain('Retry the original request.');
+    expect(markup).not.toContain('hook');
+    expect(markup).not.toContain('handler');
+    expect(markup).not.toContain('pre_compaction');
+    expect(zh.agent.status.runtimeSafeguardInterrupted).toBe('最近一次请求被平台安全保护中止。');
+    expect(zh.agent.status.runtimeSafeguardRetry).toBe('请重试原请求；若仍失败，请联系支持人员。');
     expect(markup).toContain('Handles release coordination.');
     expect(markup).toContain('Sent release reminder');
     expect(markup).toContain('Capability Install Status');

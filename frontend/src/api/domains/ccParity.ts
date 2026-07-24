@@ -1,4 +1,4 @@
-import { get, patch, post } from '../core';
+import { get, post } from '../core';
 import {
   withSessionOperatorQuery,
   type SessionOperatorOptions,
@@ -278,55 +278,6 @@ export interface SessionJsonExport {
   };
 }
 
-export interface HookControlPlane {
-  schema: string;
-  agent_id: string;
-  events: Array<{
-    event: string;
-    category: string;
-    handler_count: number;
-    blocking_supported: boolean;
-    standard: boolean;
-  }>;
-  registered_events: string[];
-  registrations: Array<{
-    event: string;
-    handler_name: string;
-    key?: string | null;
-    failure_mode?: 'required' | 'advisory';
-    runtime_config?: {
-      key?: string | null;
-      enabled?: boolean;
-      timeout_seconds?: number | null;
-      failure_policy?: 'inherit' | 'required' | 'advisory' | 'block' | 'continue';
-      effective_failure_mode?: 'required' | 'advisory';
-      migration_preview?: Record<string, unknown> | null;
-    };
-  }>;
-  recent_receipts?: Array<{
-    id: string;
-    hook_key: string;
-    event: string;
-    status: string;
-    failure_mode: 'required' | 'advisory';
-    retryable: boolean;
-    error?: string | null;
-    created_at?: string | null;
-  }>;
-  failure_mode_contract?: Record<string, string>;
-}
-
-export interface UpdateHookRuntimeConfigInput {
-  enabled?: boolean;
-  timeout_seconds?: number | null;
-  failure_policy?: 'inherit' | 'required' | 'advisory' | 'continue' | 'block' | null;
-}
-
-export interface UpdateHookRuntimeConfigResult {
-  ok: boolean;
-  config: Record<string, unknown>;
-}
-
 export interface AgentTeamWorkbench {
   schema: string;
   team: AgentTeam;
@@ -428,14 +379,6 @@ export const ccParityApi = {
     return get<SessionJsonExport>(
       withSessionOperatorQuery(`/agents/${agentId}/sessions/${sessionId}/export`, options),
     );
-  },
-
-  listHooks(agentId: string): Promise<HookControlPlane> {
-    return get<HookControlPlane>(`/agents/${agentId}/hooks`);
-  },
-
-  updateHookRuntimeConfig(agentId: string, hookKey: string, input: UpdateHookRuntimeConfigInput): Promise<UpdateHookRuntimeConfigResult> {
-    return patch<UpdateHookRuntimeConfigResult>(`/agents/${agentId}/hooks/${encodeURIComponent(hookKey)}`, input);
   },
 
   createTeam(agentId: string, input: CreateAgentTeamInput): Promise<AgentTeam> {

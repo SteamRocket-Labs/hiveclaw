@@ -275,6 +275,34 @@ describe('request cleanup adapters', () => {
     expect(get).toHaveBeenNthCalledWith(2, '/agents/?tenant_id=tenant-1&summary=true');
   });
 
+  it('loads the employee-safe runtime health projection without a hook diagnostics adapter', async () => {
+    vi.doMock('./core/request', async () => {
+      const actual = await vi.importActual<typeof import('./core/request')>('./core/request');
+      return {
+        ...actual,
+        get: vi.fn(),
+      };
+    });
+    const { agentApi } = await import('./domains/agents');
+    const { ccParityApi } = await import('./domains/ccParity');
+    const { get } = await import('./core/request');
+    vi.mocked(get).mockResolvedValue({
+      schema: 'hive.agent.runtime_health.v1',
+      agent_id: 'agent-1',
+      status: 'healthy',
+      interrupted_turns: 0,
+      observed_issues: 0,
+      retry_available: false,
+      last_issue_at: null,
+    });
+
+    await agentApi.getRuntimeHealth('agent-1');
+
+    expect(get).toHaveBeenCalledWith('/agents/agent-1/runtime-health');
+    expect('listHooks' in ccParityApi).toBe(false);
+    expect('updateHookRuntimeConfig' in ccParityApi).toBe(false);
+  });
+
   it('routes durable chat run APIs through chatApi', async () => {
     vi.doMock('./core/request', async () => {
       const actual = await vi.importActual<typeof import('./core/request')>('./core/request');

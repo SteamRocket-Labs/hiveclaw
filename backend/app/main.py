@@ -614,9 +614,9 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"[startup] Memory hooks registration failed: {e}")
 
-    # Required hooks are authority boundaries. If their durable registrations
-    # cannot be reconstructed, startup must fail rather than serve ungoverned
-    # agent turns; the process supervisor provides the restart/retry boundary.
+    # Required plugin-hook registrations are authority boundaries. Startup also
+    # retires legacy per-employee overrides for built-in safeguards and applies
+    # only currently registered platform extensions. Failure stays fail-closed.
     from app.services.hook_runtime_config import apply_all_persisted_hook_runtime_configs
     from app.services.plugin_hook_service import register_installed_plugin_hooks
 

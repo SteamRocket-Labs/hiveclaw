@@ -48,6 +48,16 @@ export interface AgentMetrics {
   [key: string]: any;
 }
 
+export interface AgentRuntimeHealth {
+  schema: 'hive.agent.runtime_health.v1';
+  agent_id: string;
+  status: 'healthy' | 'degraded' | 'needs_attention';
+  interrupted_turns: number;
+  observed_issues: number;
+  retry_available: boolean;
+  last_issue_at?: string | null;
+}
+
 export interface HrAgentInfo {
   id: string;
   name: string;
@@ -127,6 +137,7 @@ export const agentApi = {
   start: (id: string) => post<Agent>(`/agents/${id}/start`),
   stop: (id: string) => post<Agent>(`/agents/${id}/stop`),
   getMetrics: (id: string) => get<AgentMetrics>(`/agents/${id}/metrics`),
+  getRuntimeHealth: (id: string) => get<AgentRuntimeHealth>(`/agents/${id}/runtime-health`),
   getPermissions: (id: string) => get<AgentPermissions>(`/agents/${id}/permissions`),
   getOwnerCandidates: (id: string) => get<AgentOwnerCandidate[]>(`/agents/${id}/handover-candidates`),
   transferOwnership: (id: string, data: AgentOwnerTransferRequest) =>

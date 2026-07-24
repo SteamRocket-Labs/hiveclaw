@@ -1,6 +1,10 @@
 import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
-import type { AgentCapabilityInstall, AgentChannelCapability } from '../../api/domains/agents';
+import {
+  agentApi,
+  type AgentCapabilityInstall,
+  type AgentChannelCapability,
+} from '../../api/domains/agents';
 import { runtimeBudgetApi } from '../../api/domains/runtimeBudgets';
 import './AgentStatusSection.css';
 
@@ -53,9 +57,56 @@ export default function AgentStatusSection({
     enabled: !!agent.id,
     staleTime: 30_000,
   });
+  const runtimeHealthQuery = useQuery({
+    queryKey: ['agent-runtime-health', agent.id],
+    queryFn: () => agentApi.getRuntimeHealth(agent.id),
+    enabled: !!agent.id,
+    staleTime: 30_000,
+  });
   const runtimeRuns = runtimeBudgetQuery.data || [];
   const protectedRun = runtimeRuns.find((run) => ['exhausted', 'hard_stopped', 'expired', 'cancelled'].includes(run.status));
   const latestRun = protectedRun || runtimeRuns[0];
+  const runtimeHealth = runtimeHealthQuery.data;
+  const runtimeHealthUnavailable = runtimeHealthQuery.isError;
+  const safeguardInterrupted = runtimeHealth?.status === 'needs_attention';
+  const safeguardDegraded = runtimeHealth?.status === 'degraded';
+  const runtimeNeedsAttention = Boolean(protectedRun || safeguardInterrupted || runtimeHealthUnavailable);
+  const runtimeMain = runtimeHealthUnavailable
+    ? t('agent.status.runtimeStatusUnavailable', 'Runtime protection status is temporarily unavailable.')
+    : safeguardInterrupted
+      ? t('agent.status.runtimeSafeguardInterrupted', 'A recent request was safely stopped by a platform safeguard.')
+      : safeguardDegraded
+        ? t('agent.status.runtimeObservationLimited', 'Some background safeguards reported an issue.')
+        : latestRun
+          ? latestRun.user_status
+          : t('agent.status.runtimeHealthy', 'No protected runs');
+  const runtimeReason = runtimeHealthUnavailable
+    ? t(
+      'agent.status.runtimeStatusUnavailableDesc',
+      'Platform safeguards remain enforced even while this status view is unavailable.',
+    )
+    : safeguardInterrupted
+      ? t(
+        'agent.status.runtimeSafeguardInterruptedDesc',
+        'The request did not continue without its required protection.',
+      )
+      : safeguardDegraded
+        ? t(
+          'agent.status.runtimeObservationLimitedDesc',
+          'Requests can continue; support retains the technical diagnostics.',
+        )
+        : latestRun
+          ? latestRun.user_reason
+          : t('agent.status.runtimeHealthyDesc', 'This employee has no recent run stopped by the platform guard.');
+  const runtimeNextAction = runtimeHealthUnavailable
+    ? t('agent.status.runtimeStatusUnavailableAction', 'Refresh this page or contact support.')
+    : safeguardInterrupted
+      ? runtimeHealth?.retry_available
+        ? t('agent.status.runtimeSafeguardRetry', 'Retry the original request.')
+        : t('agent.status.runtimeSafeguardReview', 'Review the affected request and contact support.')
+      : safeguardDegraded
+        ? t('agent.status.runtimeObservationAction', 'No action is required.')
+        : latestRun?.user_next_action;
   const renderCapabilityValue = (value: boolean | string) => {
     if (value === true) return t('agent.status.capabilitySupported', 'Supported');
     if (value === false) return t('agent.status.capabilityUnsupported', 'Unsupported');
@@ -134,27 +185,19 @@ export default function AgentStatusSection({
         )}
       </div>
 
-      <div className={`card agent-status-runtime-card ${protectedRun ? 'is-warning' : 'is-healthy'}`}>
+      <div className={`card agent-status-runtime-card ${runtimeNeedsAttention ? 'is-warning' : 'is-healthy'}`}>
         <div>
           <h3 className="agent-status-card-title">{t('agent.status.runtimeProtection', 'Runtime Protection')}</h3>
-          <div className="agent-status-runtime-main">
-            {latestRun
-              ? latestRun.user_status
-              : t('agent.status.runtimeHealthy', 'No protected runs')}
-          </div>
-          <div className="agent-status-runtime-reason">
-            {latestRun
-              ? latestRun.user_reason
-              : t('agent.status.runtimeHealthyDesc', 'This employee has no recent run stopped by the platform guard.')}
-          </div>
-          {latestRun && (
+          <div className="agent-status-runtime-main">{runtimeMain}</div>
+          <div className="agent-status-runtime-reason">{runtimeReason}</div>
+          {runtimeNextAction && (
             <div className="agent-status-runtime-next">
-              {t('agent.status.nextAction', 'Next action')}: {latestRun.user_next_action}
+              {t('agent.status.nextAction', 'Next action')}: {runtimeNextAction}
             </div>
           )}
         </div>
-        <span className={`badge ${protectedRun ? 'badge-warning' : 'badge-success'}`}>
-          {protectedRun ? t('agent.status.needsAttention', 'Needs attention') : t('agent.status.ok', 'OK')}
+        <span className={`badge ${runtimeNeedsAttention ? 'badge-warning' : 'badge-success'}`}>
+          {runtimeNeedsAttention ? t('agent.status.needsAttention', 'Needs attention') : t('agent.status.ok', 'OK')}
         </span>
       </div>
 

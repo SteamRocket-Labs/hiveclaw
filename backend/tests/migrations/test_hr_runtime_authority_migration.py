@@ -305,7 +305,7 @@ async def test_real_migration_backfills_valid_snapshot_and_quarantines_invalid_a
                 and invalid_draft is not None
             )
             version = (await session.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-            assert version == "im_unverified_transport_0719"
+            assert version == "retire_agent_agent_relationships_table_0724"
             valid_issues = _runtime_authority_issues(valid_task, valid_draft)
             assert valid_issues == [], {
                 "issues": valid_issues,

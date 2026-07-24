@@ -40,6 +40,8 @@ from tests.integration.conftest import (  # noqa: F401  (re-exported fixtures)
     pg_container,
 )
 
+COMPANY_KNOWLEDGE_BASE_PARENT = "im_unverified_transport_0719"
+
 
 def _current_head_parent() -> str:
     """The down_revision of the single current head — the release-upgrade start point."""
@@ -191,6 +193,12 @@ def _assert_session_v2_parent_projection(container, *, database: str) -> None:
 
 def _prepare_session_v2_release_upgrade(container, *, database: str, database_url: str) -> None:
     _bootstrap_current_head(database_url)
+    # Fresh bootstrap installs current ORM metadata and stamps the current
+    # head. Reverse the Company Knowledge/retirement revisions through their
+    # real downgrade contracts before projecting the older Session V2 parent;
+    # otherwise their current-head tables survive the stamp and collide when
+    # the ordinary parent→head upgrade replays those revisions.
+    _alembic_downgrade(database_url, COMPANY_KNOWLEDGE_BASE_PARENT)
     _project_head_to_session_v2_parent(container, database=database)
     _assert_session_v2_parent_projection(container, database=database)
     _alembic_upgrade(database_url, "head")

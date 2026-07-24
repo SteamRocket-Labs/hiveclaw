@@ -1506,8 +1506,11 @@ def downgrade() -> None:
     op.drop_constraint("ck_resource_permissions_effect", "resource_permissions", type_="check")
     op.drop_constraint("ck_resource_permissions_resource_ref", "resource_permissions", type_="check")
     op.drop_constraint("ck_resource_permissions_principal_ref", "resource_permissions", type_="check")
-    op.drop_constraint("fk_resource_permissions_created_by_user", "resource_permissions", type_="foreignkey")
-    op.drop_constraint("fk_resource_permissions_revoked_by_user", "resource_permissions", type_="foreignkey")
+    # Historical upgrades create these explicit names. Fresh-db bootstrap uses
+    # current ORM metadata and PostgreSQL may assign different FK names; the
+    # subsequent column drops still remove those equivalent constraints.
+    op.execute("ALTER TABLE resource_permissions DROP CONSTRAINT IF EXISTS fk_resource_permissions_created_by_user")
+    op.execute("ALTER TABLE resource_permissions DROP CONSTRAINT IF EXISTS fk_resource_permissions_revoked_by_user")
     op.drop_index(op.f("ix_resource_permissions_revoked_at"), table_name="resource_permissions")
     op.drop_index("ix_resource_permissions_principal_key_resource_key", table_name="resource_permissions")
     op.drop_index(op.f("ix_resource_permissions_expires_at"), table_name="resource_permissions")

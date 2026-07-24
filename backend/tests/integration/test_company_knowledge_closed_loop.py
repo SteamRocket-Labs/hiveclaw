@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import asyncio
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 import json
@@ -16,6 +18,7 @@ from app.models.company_knowledge import (
     CompanyKnowledgeOutbox,
     CompanyKnowledgeProposal,
     CompanyKnowledgePublication,
+    CompanyKnowledgeReview,
     CompanyKnowledgeSource,
 )
 from app.models.knowledge import KnowledgeDocument, KnowledgeSegment
@@ -24,6 +27,10 @@ from app.models.tenant import Tenant
 from app.models.user import User
 from app.core.execution_context import ExecutionIdentity
 from app.services.company_knowledge_contracts import SourceContractInput
+from app.services.company_knowledge_control_plane import (
+    CompanyKnowledgePermissionGrantInput,
+    CompanyKnowledgePermissionService,
+)
 from app.services.company_knowledge_evidence import verify_company_knowledge_event_chain
 from app.services.company_knowledge_indexer import CompanyKnowledgeIndexer
 from app.services.company_knowledge_gateway import (
@@ -36,6 +43,7 @@ from app.services.company_knowledge_gateway import (
 from app.services.company_knowledge_permissions import CompanyKnowledgePrincipal
 from app.services.company_knowledge_service import (
     CompanyEvidenceIngestRequest,
+    CompanyKnowledgeMaterializationRequest,
     CompanyKnowledgeProposalRequest,
     CompanyKnowledgeReviewRequest,
     CompanyKnowledgeService,
@@ -139,6 +147,7 @@ async def test_company_document_ingest_review_publish_index_retire_restore_close
                     "read",
                     "cite",
                     "propose",
+                    "review",
                 ],
                 conditions={},
                 effect="allow",
@@ -273,6 +282,12 @@ async def test_company_document_ingest_review_publish_index_retire_restore_close
                 trace_id="trace-proposal",
             ),
         )
+        with pytest.raises(LookupError, match="company_knowledge_proposal_not_found"):
+            await service.get_proposal_for_review(
+                db,
+                principal=principal,
+                proposal_id=proposal.id,
+            )
         submitted = await service.submit_proposal(
             db,
             principal=principal,
@@ -378,6 +393,215 @@ async def test_company_document_ingest_review_publish_index_retire_restore_close
         assert agent_proposal.created_by_type == "agent"
         assert agent_proposal.status == "submitted"
         assert agent_proposal.proposed_patch_json["proposed_change"]["replace"]["annual_leave_days"] == 22
+        permission_service = CompanyKnowledgePermissionService(proposal_authority=service)
+        review_queue = await permission_service.list_review_queue(
+            db,
+            principal=principal,
+            status="submitted",
+        )
+        queued = next(item for item in review_queue if item["proposal_id"] == str(agent_proposal.id))
+        assert queued["title"] == "Employee Handbook"
+        assert queued["created_by"] == "digital_employee"
+        assert queued["materialization_required"] is True
+        denied_queue = await permission_service.list_review_queue(
+            db,
+            principal=_principal(tenant_id=tenant_id, user_id=denied_user_id),
+            status="submitted",
+        )
+        assert all(item["proposal_id"] != str(agent_proposal.id) for item in denied_queue)
+        review_candidate = await service.get_proposal_for_review(
+            db,
+            principal=principal,
+            proposal_id=agent_proposal.id,
+        )
+        assert review_candidate.id == agent_proposal.id
+        with pytest.raises(PermissionError, match="explicit_resource_permission_required"):
+            await service.get_proposal_for_review(
+                db,
+                principal=_principal(tenant_id=tenant_id, user_id=denied_user_id),
+                proposal_id=agent_proposal.id,
+            )
+        first_materialization_request = CompanyKnowledgeMaterializationRequest(
+            title="Employee Handbook",
+            markdown="# Leave Policy\n\nEmployees receive 22 days of annual leave.",
+            expected_proposed_content_hash=agent_proposal.proposed_content_hash,
+            attest_candidate_applied=True,
+            idempotency_key="materialize:employee-handbook:v2",
+        )
+        materialized = await service.materialize_proposal(
+            db,
+            principal=principal,
+            proposal_id=agent_proposal.id,
+            request=first_materialization_request,
+            expected_state_version=agent_proposal.state_version,
+            trace_id="trace-materialize-agent-proposal",
+        )
+        assert materialized.status == "submitted"
+        assert materialized.materialized_document_id is not None
+        first_materialization_hash = materialized.materialization_content_hash
+        replayed_materialization = await service.materialize_proposal(
+            db,
+            principal=principal,
+            proposal_id=agent_proposal.id,
+            request=first_materialization_request,
+            expected_state_version=agent_proposal.state_version - 1,
+            trace_id="trace-materialize-agent-proposal-replay",
+        )
+        assert replayed_materialization.state_version == materialized.state_version
+        with pytest.raises(ValueError, match="materialization_idempotency_conflict"):
+            await service.materialize_proposal(
+                db,
+                principal=principal,
+                proposal_id=agent_proposal.id,
+                request=replace(
+                    first_materialization_request,
+                    markdown="# Leave Policy\n\nEmployees receive 23 days of annual leave.",
+                ),
+                expected_state_version=materialized.state_version,
+                trace_id="trace-materialize-agent-proposal-conflict",
+            )
+        with pytest.raises(ValueError, match="review_evidence_binding_mismatch"):
+            await service.record_review(
+                db,
+                principal=principal,
+                proposal_id=agent_proposal.id,
+                request=CompanyKnowledgeReviewRequest(
+                    decision="approve",
+                    reviewer_role="org_admin",
+                    reason="An unrelated evidence reference cannot approve this candidate.",
+                    evidence_refs=(f"company-evidence://{uuid.uuid4()}",),
+                    policy_snapshot={},
+                ),
+                expected_state_version=materialized.state_version,
+                trace_id="trace-review-materialized-agent-proposal-evidence-mismatch",
+            )
+        original_receipt = dict(materialized.materialization_receipt_json)
+        materialized.materialization_receipt_json = {
+            **original_receipt,
+            "candidate_hash": "0" * 64,
+        }
+        with pytest.raises(RuntimeError, match="materialization_receipt_drift"):
+            await service.record_review(
+                db,
+                principal=principal,
+                proposal_id=agent_proposal.id,
+                request=CompanyKnowledgeReviewRequest(
+                    decision="approve",
+                    reviewer_role="org_admin",
+                    reason="A drifted materialization receipt cannot be approved.",
+                    evidence_refs=(f"company-evidence://{processed.evidence_id}",),
+                    policy_snapshot={},
+                ),
+                expected_state_version=materialized.state_version,
+                trace_id="trace-review-materialized-agent-proposal-receipt-drift",
+            )
+        materialized.materialization_receipt_json = original_receipt
+        reviewed_update = await service.record_review(
+            db,
+            principal=principal,
+            proposal_id=agent_proposal.id,
+            request=CompanyKnowledgeReviewRequest(
+                decision="approve",
+                reviewer_role="org_admin",
+                reason="The final document faithfully applies the cited Agent candidate.",
+                evidence_refs=(f"company-evidence://{processed.evidence_id}",),
+                policy_snapshot={},
+            ),
+            expected_state_version=materialized.state_version,
+            trace_id="trace-review-materialized-agent-proposal",
+        )
+        rematerialized = await service.materialize_proposal(
+            db,
+            principal=principal,
+            proposal_id=agent_proposal.id,
+            request=CompanyKnowledgeMaterializationRequest(
+                title="Employee Handbook",
+                markdown=(
+                    "# Leave Policy\n\nEmployees receive 22 days of annual leave. The update is effective immediately."
+                ),
+                expected_proposed_content_hash=agent_proposal.proposed_content_hash,
+                attest_candidate_applied=True,
+                idempotency_key="materialize:employee-handbook:v2-final",
+            ),
+            expected_state_version=reviewed_update.state_version,
+            trace_id="trace-rematerialize-agent-proposal",
+        )
+        assert rematerialized.status == "submitted"
+        with pytest.raises(ValueError, match="approved_document_proposal_required"):
+            await service.publish_proposal(
+                db,
+                principal=principal,
+                proposal_id=agent_proposal.id,
+                expected_state_version=rematerialized.state_version,
+                valid_from=now,
+                valid_until=None,
+                trace_id="trace-publish-with-stale-review",
+            )
+        reviewed_update = await service.record_review(
+            db,
+            principal=principal,
+            proposal_id=agent_proposal.id,
+            request=CompanyKnowledgeReviewRequest(
+                decision="approve",
+                reviewer_role="org_admin",
+                reason="The rematerialized document remains faithful to the cited Agent candidate.",
+                evidence_refs=(f"company-evidence://{processed.evidence_id}",),
+                policy_snapshot={},
+            ),
+            expected_state_version=rematerialized.state_version,
+            trace_id="trace-review-rematerialized-agent-proposal",
+        )
+        materialized_document = await db.get(
+            KnowledgeDocument,
+            rematerialized.materialized_document_id,
+        )
+        assert materialized_document is not None
+        materialized_artifact = Path(materialized_document.canonical_md_path)
+        original_materialized_bytes = materialized_artifact.read_bytes()
+        materialized_artifact.write_text("tampered materialization", encoding="utf-8")
+        with pytest.raises(RuntimeError, match="materialization_artifact_drift"):
+            await service.publish_proposal(
+                db,
+                principal=principal,
+                proposal_id=agent_proposal.id,
+                expected_state_version=reviewed_update.state_version,
+                valid_from=now,
+                valid_until=None,
+                trace_id="trace-publish-materialized-agent-proposal-artifact-drift",
+            )
+        materialized_artifact.write_bytes(original_materialized_bytes)
+        publication = await service.publish_proposal(
+            db,
+            principal=principal,
+            proposal_id=agent_proposal.id,
+            expected_state_version=reviewed_update.state_version,
+            valid_from=now,
+            valid_until=None,
+            trace_id="trace-publish-materialized-agent-proposal",
+        )
+        await db.commit()
+
+        assert publication.version == 2
+        assert publication.document_id == rematerialized.materialized_document_id
+        assert publication.content_hash == rematerialized.materialization_content_hash
+        review_subjects = (
+            (
+                await db.execute(
+                    select(CompanyKnowledgeReview.subject_content_hash)
+                    .where(
+                        CompanyKnowledgeReview.tenant_id == tenant_id,
+                        CompanyKnowledgeReview.proposal_id == agent_proposal.id,
+                    )
+                    .order_by(CompanyKnowledgeReview.created_at)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert review_subjects == [
+            first_materialization_hash,
+            rematerialized.materialization_content_hash,
+        ]
         assert (
             await db.scalar(
                 select(func.count(CompanyKnowledgePublication.id)).where(
@@ -394,7 +618,7 @@ async def test_company_document_ingest_review_publish_index_retire_restore_close
         session_factory=owner_sessionmaker,
         limit=20,
     )
-    assert summary.completed == 2
+    assert summary.completed == 3
     assert summary.failed == 0
 
     gateway = CompanyKnowledgeGateway()
@@ -433,7 +657,7 @@ async def test_company_document_ingest_review_publish_index_retire_restore_close
         assert search_result.results[0].document_id == publication.document_id
         assert search_result.results[0].segment_id == segments[0].id
         assert search_result.results[0].title == "Employee Handbook"
-        assert "20 days" in search_result.results[0].snippet
+        assert "22 days" in search_result.results[0].snippet
         assert search_result.results[0].source_ref.startswith(
             f"company-publication://{publication.id}/documents/{publication.document_id}"
         )
@@ -519,7 +743,87 @@ async def test_company_document_ingest_review_publish_index_retire_restore_close
         assert denied_read.status == "not_found_or_denied"
         assert denied_read.segments == ()
         assert "Employee Handbook" not in denied_read.as_json()
-        assert "20 days" not in denied_read.as_json()
+        assert "22 days" not in denied_read.as_json()
+
+        temporary_grant_request = CompanyKnowledgePermissionGrantInput(
+            principal_type="user",
+            principal_id=denied_user_id,
+            principal_key=None,
+            resource_type="company_knowledge_scope",
+            resource_id=tenant_id,
+            resource_key=None,
+            actions=("discover", "search", "read", "cite"),
+            effect="allow",
+            sensitivity_ceiling="PL2_pii",
+            purposes=("interactive_session",),
+            expires_at=None,
+            idempotency_key="permission:denied-user:temporary-read",
+        )
+        permission_summary = await permission_service.grant_permission(
+            db,
+            principal=principal,
+            request=temporary_grant_request,
+            trace_id="trace-grant-temporary-read",
+        )
+        replayed_permission = await permission_service.grant_permission(
+            db,
+            principal=principal,
+            request=temporary_grant_request,
+            trace_id="trace-grant-temporary-read-replay",
+        )
+        assert replayed_permission["permission_id"] == permission_summary["permission_id"]
+        with pytest.raises(ValueError, match="permission_idempotency_conflict"):
+            await permission_service.grant_permission(
+                db,
+                principal=principal,
+                request=replace(
+                    temporary_grant_request,
+                    actions=("discover", "search", "read", "cite", "export"),
+                ),
+                trace_id="trace-grant-temporary-read-conflict",
+            )
+        assert permission_summary["principal"]["label"] == "Company Knowledge Unprivileged User"
+        assert permission_summary["capabilities"] == ["find_and_read"]
+        temporary_read = await gateway.read(
+            db,
+            principal=denied_principal,
+            request=CompanyKnowledgeReadRequest(
+                document_id=publication.document_id,
+                publication_id=publication.id,
+                segment_ids=(),
+                max_chars=1000,
+                trace_id="trace-temporary-read",
+            ),
+        )
+        assert temporary_read.status == "ok"
+        revoke_receipt = await permission_service.revoke_permission(
+            db,
+            principal=principal,
+            permission_id=uuid.UUID(permission_summary["permission_id"]),
+            reason="Temporary review access ended.",
+            trace_id="trace-revoke-temporary-read",
+        )
+        assert revoke_receipt["status"] == "revoked"
+        replayed_revoke = await permission_service.revoke_permission(
+            db,
+            principal=principal,
+            permission_id=uuid.UUID(permission_summary["permission_id"]),
+            reason="A repeated request must not append a second authority event.",
+            trace_id="trace-revoke-temporary-read-replay",
+        )
+        assert replayed_revoke == revoke_receipt
+        denied_after_revoke = await gateway.read(
+            db,
+            principal=denied_principal,
+            request=CompanyKnowledgeReadRequest(
+                document_id=publication.document_id,
+                publication_id=publication.id,
+                segment_ids=(),
+                max_chars=1000,
+                trace_id="trace-denied-after-revoke",
+            ),
+        )
+        assert denied_after_revoke.status == "not_found_or_denied"
 
         permission = (
             await db.execute(
@@ -566,7 +870,7 @@ async def test_company_document_ingest_review_publish_index_retire_restore_close
 
         assert retired.status == "retired"
         assert restored.id != retired.id
-        assert restored.version == 2
+        assert restored.version == 3
         assert restored.status == "active"
         assert restored.restored_from_publication_id == retired.id
         active_count = await db.scalar(
@@ -595,10 +899,13 @@ async def test_company_document_ingest_review_publish_index_retire_restore_close
             "company_knowledge.ingest_completed",
             "company_knowledge.proposal_created",
             "company_knowledge.proposal_submitted",
+            "company_knowledge.proposal_materialized",
             "company_knowledge.review_recorded",
             "company_knowledge.published",
             "company_knowledge.permission_allowed",
             "company_knowledge.permission_denied",
+            "company_knowledge.permission_granted",
+            "company_knowledge.permission_revoked",
             "company_knowledge.searched",
             "company_knowledge.read",
             "company_knowledge.retired",
@@ -610,6 +917,51 @@ async def test_company_document_ingest_review_publish_index_retire_restore_close
             )
             == 1
         )
+
+    concurrent_grant = replace(
+        temporary_grant_request,
+        actions=("discover",),
+        idempotency_key="permission:denied-user:concurrent-discover",
+    )
+
+    async def grant_concurrently(trace_id: str) -> dict:
+        async with owner_sessionmaker() as concurrent_db:
+            concurrent_permissions = CompanyKnowledgePermissionService(proposal_authority=service)
+            summary = await concurrent_permissions.grant_permission(
+                concurrent_db,
+                principal=principal,
+                request=concurrent_grant,
+                trace_id=trace_id,
+            )
+            await concurrent_db.commit()
+            return summary
+
+    first_grant, second_grant = await asyncio.gather(
+        grant_concurrently("trace-concurrent-grant-1"),
+        grant_concurrently("trace-concurrent-grant-2"),
+    )
+    assert first_grant["permission_id"] == second_grant["permission_id"]
+    async with owner_sessionmaker() as db:
+        concurrent_rows = await db.scalar(
+            select(func.count(ResourcePermission.id)).where(
+                ResourcePermission.tenant_id == tenant_id,
+                ResourcePermission.conditions["company_knowledge_management"]["idempotency_key"].astext
+                == concurrent_grant.idempotency_key,
+            )
+        )
+        assert concurrent_rows == 1
+        events = (
+            (
+                await db.execute(
+                    select(CompanyKnowledgeEvent)
+                    .where(CompanyKnowledgeEvent.tenant_id == tenant_id)
+                    .order_by(CompanyKnowledgeEvent.stream_sequence)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert verify_company_knowledge_event_chain(list(events))["valid"] is True
 
 
 @pytest.mark.asyncio

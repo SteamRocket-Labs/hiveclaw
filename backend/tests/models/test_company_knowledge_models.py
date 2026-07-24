@@ -62,6 +62,22 @@ def test_company_knowledge_authority_models_are_distinct_from_personal_knowledge
     assert {"review_set_hash", "rollback_ref", "supersedes_publication_id"} <= {
         column.key for column in inspect(CompanyKnowledgePublication).columns
     }
+    assert {
+        "materialized_document_id",
+        "materialization_content_hash",
+        "materialization_receipt_json",
+        "materialization_idempotency_key",
+        "materialized_by_user_id",
+        "materialized_at",
+    } <= {column.key for column in inspect(CompanyKnowledgeProposal).columns}
+    proposal_foreign_keys = {
+        constraint.name for constraint in inspect(CompanyKnowledgeProposal).local_table.foreign_key_constraints
+    }
+    assert {
+        "fk_company_knowledge_proposal_materialized_document",
+        "fk_company_knowledge_proposal_materialized_by",
+    } <= proposal_foreign_keys
+    assert "subject_content_hash" in {column.key for column in inspect(CompanyKnowledgeReview).columns}
     assert "stream_sequence" in {column.key for column in inspect(CompanyKnowledgeEvent).columns}
     assert {"idempotency_key", "available_at", "attempt_count", "last_error"} <= {
         column.key for column in inspect(CompanyKnowledgeOutbox).columns

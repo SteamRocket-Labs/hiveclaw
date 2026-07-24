@@ -21,6 +21,7 @@ _EVIDENCE_KINDS = frozenset(
     {"document", "structured_record", "event", "living_object_revision", "external_immutable_ref"}
 )
 _SAFE_ARTIFACT_SUFFIXES = frozenset({".md", ".txt", ".json", ".bin"})
+_MATERIALIZATION_OPERATIONS = frozenset({"agent_proposed_update", "personal_promotion", "legacy_import"})
 
 
 def _jsonable(value: Any) -> Any:
@@ -259,6 +260,39 @@ def next_company_proposal_status(current: str, command: str) -> str:
         raise ValueError(f"invalid proposal transition: {current} -> {command}") from exc
 
 
+def company_knowledge_proposal_requires_materialization(
+    *,
+    proposal_kind: str,
+    proposed_patch: dict[str, Any],
+) -> bool:
+    operation = str(dict(proposed_patch or {}).get("operation") or "")
+    return operation in _MATERIALIZATION_OPERATIONS or proposal_kind in {
+        "personal_promotion",
+        "legacy_import",
+    }
+
+
+def default_company_knowledge_review_policy(
+    *,
+    proposed_sensitivity: str,
+    risk_level: str,
+    created_by_type: str,
+) -> dict[str, Any]:
+    sensitivity = canonicalize_sensitivity(proposed_sensitivity).value
+    if risk_level not in {"normal", "high", "critical"}:
+        raise ValueError("unsupported_company_knowledge_risk_level")
+    heightened = sensitivity in {"PL3_sensitive", "PL4_credential"} or risk_level in {
+        "high",
+        "critical",
+    }
+    return {
+        "minimum_approvals": 2 if heightened else 1,
+        "required_roles": ["org_admin"],
+        "separation": heightened or created_by_type == "agent",
+        "source": "server_policy_v1",
+    }
+
+
 def evaluate_company_review_set(
     reviews: list[dict[str, Any]],
     *,
@@ -317,7 +351,9 @@ __all__ = [
     "SourceContractInput",
     "build_canonical_evidence_envelope",
     "company_knowledge_artifact_path",
+    "company_knowledge_proposal_requires_materialization",
     "compute_source_contract_hash",
+    "default_company_knowledge_review_policy",
     "evaluate_company_review_set",
     "next_company_proposal_status",
     "validate_source_contract",

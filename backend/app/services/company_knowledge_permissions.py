@@ -65,12 +65,23 @@ _ACTIONS = frozenset(
 _RUNTIME_PUBLICATION_ACTIONS = frozenset(
     {"discover", "search", "read", "cite", "export", "execute_action", "query", "simulate"}
 )
-_CONTENT_ACTIONS = frozenset({"search", "read", "cite", "export", "execute_action", "query"})
+_CONTENT_ACTIONS = frozenset(
+    {
+        "search",
+        "read",
+        "cite",
+        "review",
+        "approve",
+        "publish",
+        "export",
+        "execute_action",
+        "query",
+    }
+)
 _TENANT_ADMIN_METADATA_ACTIONS = frozenset(
     {
         "discover",
         "propose",
-        "review",
         "manage_permissions",
         "install_package",
         "activate_package",

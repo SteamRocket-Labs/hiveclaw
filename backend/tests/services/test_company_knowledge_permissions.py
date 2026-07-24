@@ -167,6 +167,46 @@ async def test_company_admin_can_govern_metadata_without_inheriting_sensitive_bo
 
 
 @pytest.mark.asyncio
+async def test_company_admin_cannot_review_semantic_content_without_explicit_source_access() -> None:
+    tenant_id = uuid.uuid4()
+    admin_id = uuid.uuid4()
+    principal = _principal(tenant_id=tenant_id, user_id=admin_id, role="org_admin")
+    resource = _resource(
+        tenant_id=tenant_id,
+        sensitivity="PL3_sensitive",
+        source_acl={"role_names": ["org_admin"]},
+    )
+
+    denied = await resolve_company_knowledge_permission(
+        _Session([]),
+        principal=principal,
+        resource=resource,
+        action="review",
+    )
+    allowed = await resolve_company_knowledge_permission(
+        _Session(
+            [
+                _permission(
+                    tenant_id=tenant_id,
+                    user_id=admin_id,
+                    resource=resource,
+                    actions=["review"],
+                    sensitivity_ceiling="PL3_sensitive",
+                )
+            ]
+        ),
+        principal=principal,
+        resource=resource,
+        action="review",
+    )
+
+    assert denied.allowed is False
+    assert denied.deny_reason_code == "explicit_resource_permission_required"
+    assert allowed.allowed is True
+    assert "source_acl_snapshot" in allowed.authority_sources
+
+
+@pytest.mark.asyncio
 async def test_matching_allow_requires_tenant_source_acl_sensitivity_and_complete_evidence() -> None:
     tenant_id = uuid.uuid4()
     user_id = uuid.uuid4()

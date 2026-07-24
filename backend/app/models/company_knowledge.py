@@ -295,6 +295,11 @@ class CompanyKnowledgeProposal(Base):
     __tablename__ = "company_knowledge_proposals"
     __table_args__ = (
         UniqueConstraint("tenant_id", "idempotency_key", name="uq_company_knowledge_proposal_idempotency"),
+        UniqueConstraint(
+            "tenant_id",
+            "materialization_idempotency_key",
+            name="uq_company_knowledge_proposal_materialization_idempotency",
+        ),
         CheckConstraint(
             "proposal_kind IN ('knowledge','ontology','combined','personal_promotion','living_object','legacy_import')",
             name="ck_company_knowledge_proposal_kind",
@@ -334,6 +339,34 @@ class CompanyKnowledgeProposal(Base):
         nullable=True,
     )
     baseline_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    materialized_document_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "knowledge_documents.id",
+            ondelete="RESTRICT",
+            name="fk_company_knowledge_proposal_materialized_document",
+        ),
+        nullable=True,
+        index=True,
+    )
+    materialization_content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    materialization_receipt_json: Mapped[dict] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=dict,
+        server_default=text("'{}'::jsonb"),
+    )
+    materialization_idempotency_key: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    materialized_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "users.id",
+            ondelete="RESTRICT",
+            name="fk_company_knowledge_proposal_materialized_by",
+        ),
+        nullable=True,
+    )
+    materialized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     proposed_patch_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     proposed_content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     proposed_namespace: Mapped[str] = mapped_column(String(300), nullable=False, index=True)
@@ -392,6 +425,7 @@ class CompanyKnowledgeReview(Base):
     )
     reviewer_role: Mapped[str] = mapped_column(String(80), nullable=False)
     review_round: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    subject_content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     decision: Mapped[str] = mapped_column(String(30), nullable=False)
     reason: Mapped[str] = mapped_column(Text, nullable=False)
     evidence_refs_json: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)

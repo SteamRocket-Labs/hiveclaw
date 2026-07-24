@@ -1408,15 +1408,11 @@ class CompanyOntologyService:
         )
         if review_evaluation["approved"] is not True:
             raise ValueError("company_ontology_complete_review_set_required")
-        policy = await self._require_permission(
+        policy = await self._knowledge_service.authorize_proposal_action(
             session,
             principal=principal,
-            namespace=activation.namespace,
+            proposal=proposal,
             action="publish",
-            resource_type="company_knowledge_proposal",
-            resource_id=proposal.id,
-            resource_key=f"proposal:{proposal.id}",
-            sensitivity=proposal.proposed_sensitivity,
         )
         await self._validate_release_gate(
             session,

@@ -179,9 +179,18 @@ def test_company_proposal_review_publish_and_recovery_routes_use_exact_state_ver
             calls.append(("submit", kwargs))
             return SimpleNamespace(id=proposal_id, status="submitted", state_version=2)
 
+        async def materialize_proposal(self, session, **kwargs):
+            calls.append(("materialize", kwargs))
+            return SimpleNamespace(
+                id=proposal_id,
+                status="submitted",
+                state_version=3,
+                materialization_content_hash="b" * 64,
+            )
+
         async def record_review(self, session, **kwargs):
             calls.append(("review", kwargs))
-            return SimpleNamespace(id=proposal_id, status="approved", state_version=3)
+            return SimpleNamespace(id=proposal_id, status="approved", state_version=4)
 
         async def publish_proposal(self, session, **kwargs):
             calls.append(("publish", kwargs))
@@ -223,11 +232,6 @@ def test_company_proposal_review_publish_and_recovery_routes_use_exact_state_ver
             "conflict_candidates": [],
             "ontology_mapping": {},
             "risk_level": "normal",
-            "required_review_policy": {
-                "minimum_approvals": 1,
-                "required_roles": ["org_admin"],
-                "separation": False,
-            },
             "idempotency_key": "proposal:fixture:v1",
             "trace_id": "trace-create",
         },
@@ -236,21 +240,32 @@ def test_company_proposal_review_publish_and_recovery_routes_use_exact_state_ver
         f"/knowledge/company/proposals/{proposal_id}/submit",
         json={"expected_state_version": 1, "trace_id": "trace-submit"},
     )
+    materialized = client.post(
+        f"/knowledge/company/proposals/{proposal_id}/materialize",
+        json={
+            "expected_state_version": 2,
+            "expected_proposed_content_hash": "a" * 64,
+            "title": "Employee Handbook",
+            "markdown": "# Leave Policy\n\nEmployees receive 22 days of annual leave.",
+            "attest_candidate_applied": True,
+            "idempotency_key": "materialize:fixture:v1",
+            "trace_id": "trace-materialize",
+        },
+    )
     reviewed = client.post(
         f"/knowledge/company/proposals/{proposal_id}/review",
         json={
-            "expected_state_version": 2,
+            "expected_state_version": 3,
             "decision": "approve",
             "reason": "Reviewed complete evidence.",
             "evidence_refs": ["company-evidence://fixture"],
-            "policy_snapshot": {"policy": "v1"},
             "trace_id": "trace-review",
         },
     )
     published = client.post(
         f"/knowledge/company/proposals/{proposal_id}/publish",
         json={
-            "expected_state_version": 3,
+            "expected_state_version": 4,
             "valid_from": datetime.now(timezone.utc).isoformat(),
             "valid_until": None,
             "trace_id": "trace-publish",
@@ -269,7 +284,10 @@ def test_company_proposal_review_publish_and_recovery_routes_use_exact_state_ver
         },
     )
 
-    assert [response.status_code for response in (created, submitted, reviewed, published, retired, restored)] == [
+    assert [
+        response.status_code for response in (created, submitted, materialized, reviewed, published, retired, restored)
+    ] == [
+        200,
         200,
         200,
         200,
@@ -278,15 +296,31 @@ def test_company_proposal_review_publish_and_recovery_routes_use_exact_state_ver
         200,
     ]
     assert restored.json()["restored_from_publication_id"] == str(publication_id)
-    assert db.commits == 6
-    assert [name for name, _kwargs in calls] == ["create", "submit", "review", "publish", "retire", "restore"]
+    assert db.commits == 7
+    assert [name for name, _kwargs in calls] == [
+        "create",
+        "submit",
+        "materialize",
+        "review",
+        "publish",
+        "retire",
+        "restore",
+    ]
     for _name, kwargs in calls[1:]:
         assert kwargs["principal"].tenant_id == user.tenant_id
         assert kwargs["principal"].accountable_user_id == user.id
     assert calls[1][1]["expected_state_version"] == 1
+    assert calls[0][1]["request"].required_review_policy == {
+        "minimum_approvals": 1,
+        "required_roles": ["org_admin"],
+        "separation": False,
+        "source": "server_policy_v1",
+    }
     assert calls[2][1]["expected_state_version"] == 2
-    assert calls[2][1]["request"].reviewer_role == user.role
     assert calls[3][1]["expected_state_version"] == 3
+    assert calls[3][1]["request"].reviewer_role == user.role
+    assert calls[3][1]["request"].policy_snapshot == {}
+    assert calls[4][1]["expected_state_version"] == 4
 
 
 def test_company_review_role_is_server_derived_and_not_an_api_input(monkeypatch):
@@ -300,6 +334,7 @@ def test_company_review_role_is_server_derived_and_not_an_api_input(monkeypatch)
 
     schema = company_api.ProposalReview.model_json_schema()
     assert "reviewer_role" not in schema["properties"]
+    assert "policy_snapshot" not in schema["properties"]
 
     spoofed = client.post(
         f"/knowledge/company/proposals/{proposal_id}/review",
@@ -309,11 +344,199 @@ def test_company_review_role_is_server_derived_and_not_an_api_input(monkeypatch)
             "reviewer_role": "owner",
             "reason": "Attempt to spoof a stronger reviewer role.",
             "evidence_refs": ["company-evidence://fixture"],
-            "policy_snapshot": {"policy": "v1"},
             "trace_id": "trace-review-spoof",
         },
     )
 
+    assert spoofed.status_code == 422
+
+
+def test_company_review_rejects_client_supplied_policy_snapshot(monkeypatch):
+    proposal_id = uuid.uuid4()
+
+    class _Service:
+        async def record_review(self, session, **kwargs):
+            return SimpleNamespace(id=proposal_id, status="approved", state_version=3)
+
+    client, _db, _user = _client(monkeypatch, _Service())
+    response = client.post(
+        f"/knowledge/company/proposals/{proposal_id}/review",
+        json={
+            "expected_state_version": 2,
+            "decision": "approve",
+            "reason": "The browser must not author the authority snapshot.",
+            "evidence_refs": ["company-evidence://fixture"],
+            "policy_snapshot": {"allowed": True, "authority": "browser"},
+            "trace_id": "trace-review-policy-spoof",
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_company_proposal_rejects_client_supplied_review_policy(monkeypatch):
+    class _Service:
+        async def create_proposal(self, session, **kwargs):
+            return SimpleNamespace(id=uuid.uuid4(), status="draft", state_version=1)
+
+    client, _db, _user = _client(monkeypatch, _Service())
+    schema = company_api.ProposalCreate.model_json_schema()
+    assert "required_review_policy" not in schema["properties"]
+
+    response = client.post(
+        "/knowledge/company/proposals",
+        json={
+            "proposal_kind": "knowledge",
+            "source_id": str(uuid.uuid4()),
+            "source_document_id": str(uuid.uuid4()),
+            "proposed_patch": {"operation": "publish_document"},
+            "proposed_namespace": "company/policies",
+            "proposed_sensitivity": "PL2_pii",
+            "source_refs": ["company-evidence://fixture"],
+            "source_coverage": {
+                "complete": True,
+                "total_units": 1,
+                "covered_units": 1,
+                "missing_units": [],
+            },
+            "risk_level": "normal",
+            "required_review_policy": {
+                "minimum_approvals": 0,
+                "required_roles": [],
+                "separation": False,
+            },
+            "idempotency_key": "proposal:policy-spoof",
+            "trace_id": "trace-proposal-policy-spoof",
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_company_permission_management_uses_business_contract_and_server_identity(monkeypatch):
+    permission_id = uuid.uuid4()
+    calls: list[tuple[str, dict]] = []
+
+    class _PermissionService:
+        async def list_review_queue(self, session, **kwargs):
+            calls.append(("review_queue", kwargs))
+            return [
+                {
+                    "proposal_id": str(uuid.uuid4()),
+                    "title": "Employee handbook update",
+                    "status": "submitted",
+                    "kind": "knowledge",
+                    "namespace": "company/policies",
+                    "sensitivity": "PL2_pii",
+                    "risk_level": "normal",
+                    "reason": "Annual leave policy changed.",
+                    "created_by": "digital_employee",
+                    "state_version": 2,
+                    "materialization_required": True,
+                    "materialized": False,
+                }
+            ]
+
+        async def list_permissions(self, session, **kwargs):
+            calls.append(("list", kwargs))
+            return [
+                {
+                    "permission_id": str(permission_id),
+                    "principal": {
+                        "kind": "role",
+                        "label": "All employees",
+                    },
+                    "resource": {
+                        "kind": "namespace",
+                        "label": "Company policies",
+                    },
+                    "capabilities": ["find_and_read"],
+                    "effect": "allow",
+                    "sensitivity_ceiling": "PL2_pii",
+                    "purposes": ["interactive_session"],
+                    "expires_at": None,
+                    "active": True,
+                }
+            ]
+
+        async def grant_permission(self, session, **kwargs):
+            calls.append(("grant", kwargs))
+            return (await self.list_permissions(session, **kwargs))[0]
+
+        async def revoke_permission(self, session, **kwargs):
+            calls.append(("revoke", kwargs))
+            return {
+                "permission_id": str(permission_id),
+                "status": "revoked",
+            }
+
+    client, db, user = _client(monkeypatch, SimpleNamespace())
+    monkeypatch.setattr(company_api, "_permission_service", lambda: _PermissionService())
+
+    review_queue = client.get("/knowledge/company/proposals")
+    listed = client.get("/knowledge/company/permissions")
+    granted = client.post(
+        "/knowledge/company/permissions",
+        json={
+            "principal_type": "role",
+            "principal_key": "role:member",
+            "resource_type": "company_knowledge_namespace",
+            "resource_key": "namespace:company/policies",
+            "actions": ["discover", "search", "read", "cite"],
+            "effect": "allow",
+            "sensitivity_ceiling": "PL2_pii",
+            "purposes": ["interactive_session"],
+            "expires_at": None,
+            "idempotency_key": "permission:member:policies:v1",
+            "trace_id": "trace-permission-grant",
+        },
+    )
+    revoked = client.post(
+        f"/knowledge/company/permissions/{permission_id}/revoke",
+        json={
+            "reason": "Audience no longer needs this collection.",
+            "trace_id": "trace-permission-revoke",
+        },
+    )
+
+    assert review_queue.status_code == 200
+    assert review_queue.json()["proposals"][0]["title"] == "Employee handbook update"
+    assert "proposed_patch_json" not in review_queue.text
+    assert "required_review_policy_json" not in review_queue.text
+    assert listed.status_code == 200
+    assert granted.status_code == 200
+    assert revoked.status_code == 200
+    assert listed.json()["permissions"][0]["principal"]["label"] == "All employees"
+    assert "principal_id" not in listed.text
+    assert "conditions" not in listed.text
+    assert db.commits == 2
+    assert [name for name, _kwargs in calls] == [
+        "review_queue",
+        "list",
+        "grant",
+        "list",
+        "revoke",
+    ]
+    for _name, kwargs in calls:
+        assert kwargs["principal"].tenant_id == user.tenant_id
+        assert kwargs["principal"].actor_id == user.id
+
+    spoofed = client.post(
+        "/knowledge/company/permissions",
+        json={
+            "principal_type": "role",
+            "principal_key": "role:member",
+            "resource_type": "company_knowledge_scope",
+            "resource_id": str(user.tenant_id),
+            "actions": ["read"],
+            "effect": "allow",
+            "sensitivity_ceiling": "PL1_public",
+            "purposes": [],
+            "actor_id": str(uuid.uuid4()),
+            "idempotency_key": "permission:spoof",
+            "trace_id": "trace-permission-spoof",
+        },
+    )
     assert spoofed.status_code == 422
 
 

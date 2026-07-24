@@ -265,11 +265,15 @@ async def test_agent_proposed_update_cannot_publish_the_unchanged_baseline_docum
     proposal = SimpleNamespace(
         id=uuid.uuid4(),
         status="approved",
+        proposal_kind="knowledge",
         source_document_id=uuid.uuid4(),
         proposed_patch_json={
             "operation": "agent_proposed_update",
             "proposed_change": {"replace": {"annual_leave_days": 22}},
         },
+        materialized_document_id=None,
+        materialization_content_hash=None,
+        materialization_receipt_json={},
     )
 
     async def _locked_proposal(*_args, **_kwargs):

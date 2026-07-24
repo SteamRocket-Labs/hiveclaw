@@ -18,7 +18,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, func, or_, select, text
 
 from app.database import tenant_scoped_session
 from app.models.company_knowledge import (
@@ -36,6 +36,7 @@ from app.services.company_knowledge_contracts import (
     SourceContractInput,
     build_canonical_evidence_envelope,
     company_knowledge_artifact_path,
+    company_knowledge_proposal_requires_materialization,
     compute_source_contract_hash,
     evaluate_company_review_set,
     next_company_proposal_status,
@@ -211,6 +212,15 @@ class CompanyKnowledgeReviewRequest:
     reason: str
     evidence_refs: tuple[str, ...]
     policy_snapshot: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class CompanyKnowledgeMaterializationRequest:
+    title: str
+    markdown: str
+    expected_proposed_content_hash: str
+    attest_candidate_applied: bool
+    idempotency_key: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -1156,6 +1166,432 @@ class CompanyKnowledgeService:
         )
         return proposal
 
+    @staticmethod
+    def _requires_materialization(proposal: CompanyKnowledgeProposal) -> bool:
+        return company_knowledge_proposal_requires_materialization(
+            proposal_kind=proposal.proposal_kind,
+            proposed_patch=dict(proposal.proposed_patch_json or {}),
+        )
+
+    @staticmethod
+    def _review_subject_hash(proposal: CompanyKnowledgeProposal) -> str:
+        if CompanyKnowledgeService._requires_materialization(proposal):
+            if not proposal.materialization_content_hash or proposal.materialized_document_id is None:
+                raise ValueError("company_knowledge_materialization_required_before_review")
+            CompanyKnowledgeService._validated_materialization_receipt(proposal)
+            return str(proposal.materialization_content_hash)
+        return str(proposal.proposed_content_hash)
+
+    @staticmethod
+    def _validated_materialization_receipt(
+        proposal: CompanyKnowledgeProposal,
+    ) -> dict[str, Any]:
+        receipt = dict(proposal.materialization_receipt_json or {})
+        expected = {
+            "schema": "hive.company_knowledge_materialization.v1",
+            "candidate_hash": proposal.proposed_content_hash,
+            "content_hash": proposal.materialization_content_hash,
+            "document_id": (
+                str(proposal.materialized_document_id) if proposal.materialized_document_id is not None else None
+            ),
+            "source_refs_hash": _hash_json(list(proposal.source_refs_json or [])),
+            "attested_by_user_id": (
+                str(proposal.materialized_by_user_id) if proposal.materialized_by_user_id is not None else None
+            ),
+            "attestation": "candidate_applied",
+        }
+        if (
+            any(receipt.get(key) != value for key, value in expected.items())
+            or proposal.materialized_at is None
+            or len(str(receipt.get("request_hash") or "")) != 64
+            or len(str(receipt.get("title_hash") or "")) != 64
+        ):
+            raise RuntimeError("company_knowledge_materialization_receipt_drift")
+        return receipt
+
+    @staticmethod
+    def _company_evidence_id_from_ref(source_ref: str) -> uuid.UUID:
+        prefix = "company-evidence://"
+        rendered = str(source_ref).strip()
+        if not rendered.startswith(prefix):
+            raise PermissionError("company_knowledge_proposal_evidence_ref_invalid")
+        try:
+            return uuid.UUID(rendered.removeprefix(prefix).split("#", 1)[0])
+        except ValueError as exc:
+            raise PermissionError("company_knowledge_proposal_evidence_ref_invalid") from exc
+
+    async def _proposal_permission_resources(
+        self,
+        session: Any,
+        *,
+        proposal: CompanyKnowledgeProposal,
+    ) -> tuple[CompanyKnowledgeResource, ...]:
+        source = None
+        if proposal.source_id is not None:
+            source = (
+                await session.execute(
+                    select(CompanyKnowledgeSource).where(
+                        CompanyKnowledgeSource.id == proposal.source_id,
+                        CompanyKnowledgeSource.tenant_id == proposal.tenant_id,
+                    )
+                )
+            ).scalar_one_or_none()
+            if source is None:
+                raise LookupError("company_knowledge_source_not_found")
+            return (
+                CompanyKnowledgeResource(
+                    tenant_id=proposal.tenant_id,
+                    resource_type="company_knowledge_proposal",
+                    resource_id=proposal.id,
+                    resource_key=f"proposal:{proposal.id}",
+                    namespace=proposal.proposed_namespace,
+                    sensitivity=proposal.proposed_sensitivity,
+                    source_acl_snapshot_hash=source.source_acl_snapshot_hash,
+                    source_acl=dict(source.source_acl_snapshot_json),
+                    evidence_access_complete=bool(proposal.source_coverage_json.get("complete")),
+                    publication_status=None,
+                ),
+            )
+
+        evidence_ids = tuple(
+            sorted(
+                {self._company_evidence_id_from_ref(source_ref) for source_ref in proposal.source_refs_json or []},
+                key=str,
+            )
+        )
+        if not evidence_ids:
+            raise PermissionError("company_knowledge_proposal_source_authority_unavailable")
+        evidence_rows = (
+            (
+                await session.execute(
+                    select(CompanyKnowledgeEvidence).where(
+                        CompanyKnowledgeEvidence.tenant_id == proposal.tenant_id,
+                        CompanyKnowledgeEvidence.id.in_(evidence_ids),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        evidence_by_id = {row.id: row for row in evidence_rows}
+        if set(evidence_by_id) != set(evidence_ids) or any(row.status != "accepted" for row in evidence_rows):
+            raise PermissionError("company_knowledge_proposal_evidence_unavailable")
+        proposal_coverage_complete = bool(proposal.source_coverage_json.get("complete"))
+        return tuple(
+            CompanyKnowledgeResource(
+                tenant_id=proposal.tenant_id,
+                resource_type="company_knowledge_proposal",
+                resource_id=proposal.id,
+                resource_key=f"proposal:{proposal.id}",
+                namespace=proposal.proposed_namespace,
+                sensitivity=proposal.proposed_sensitivity,
+                source_acl_snapshot_hash=evidence_by_id[evidence_id].source_acl_snapshot_hash,
+                source_acl=dict(evidence_by_id[evidence_id].source_acl_snapshot_json),
+                evidence_access_complete=(
+                    proposal_coverage_complete
+                    and bool(evidence_by_id[evidence_id].coverage_ledger_json.get("complete"))
+                ),
+                publication_status=None,
+            )
+            for evidence_id in evidence_ids
+        )
+
+    async def authorize_proposal_action(
+        self,
+        session: Any,
+        *,
+        principal: CompanyKnowledgePrincipal,
+        proposal: CompanyKnowledgeProposal,
+        action: str,
+    ) -> dict[str, Any]:
+        """Authorize one proposal action against every bound source authority."""
+
+        decisions = [
+            await self._require_permission(
+                session,
+                principal=principal,
+                resource=resource,
+                action=action,
+            )
+            for resource in await self._proposal_permission_resources(
+                session,
+                proposal=proposal,
+            )
+        ]
+        if len(decisions) == 1:
+            return decisions[0]
+        return {
+            "schema": "hive.company_knowledge_composite_permission_decision.v1",
+            "allowed": True,
+            "requested_action": action,
+            "authority_sources": sorted(
+                {source for decision in decisions for source in decision.get("authority_sources", [])}
+            ),
+            "source_acl_snapshot_hashes": sorted(
+                {
+                    str(snapshot_hash)
+                    for decision in decisions
+                    if (snapshot_hash := decision.get("source_acl_snapshot_hash"))
+                }
+            ),
+            "decisions": decisions,
+        }
+
+    async def get_proposal_for_review(
+        self,
+        session: Any,
+        *,
+        principal: CompanyKnowledgePrincipal,
+        proposal_id: uuid.UUID,
+    ) -> CompanyKnowledgeProposal:
+        proposal = (
+            await session.execute(
+                select(CompanyKnowledgeProposal).where(
+                    CompanyKnowledgeProposal.id == proposal_id,
+                    CompanyKnowledgeProposal.tenant_id == principal.tenant_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if proposal is None:
+            raise LookupError("company_knowledge_proposal_not_found")
+        if proposal.status in {"draft", "withdrawn"}:
+            raise LookupError("company_knowledge_proposal_not_found")
+        await self.authorize_proposal_action(
+            session,
+            principal=principal,
+            proposal=proposal,
+            action="review",
+        )
+        return proposal
+
+    async def materialize_proposal(
+        self,
+        session: Any,
+        *,
+        principal: CompanyKnowledgePrincipal,
+        proposal_id: uuid.UUID,
+        request: CompanyKnowledgeMaterializationRequest,
+        expected_state_version: int,
+        trace_id: str,
+    ) -> CompanyKnowledgeProposal:
+        if principal.actor_type != "user":
+            raise PermissionError("agents_cannot_materialize_company_knowledge")
+        if request.attest_candidate_applied is not True:
+            raise ValueError("company_knowledge_materialization_attestation_required")
+        if not request.idempotency_key.strip():
+            raise ValueError("company_knowledge_materialization_idempotency_required")
+        normalized = normalize_markdown(request.markdown)
+        if not normalized:
+            raise ValueError("company_knowledge_materialization_markdown_required")
+        title = clean_title(request.title)
+        payload = normalized.encode("utf-8")
+        content_hash = hashlib.sha256(payload).hexdigest()
+        request_hash = _hash_json(
+            {
+                "proposal_id": proposal_id,
+                "expected_proposed_content_hash": request.expected_proposed_content_hash,
+                "title": title,
+                "content_hash": content_hash,
+                "attest_candidate_applied": request.attest_candidate_applied,
+            }
+        )
+        proposal = (
+            await session.execute(
+                select(CompanyKnowledgeProposal)
+                .where(
+                    CompanyKnowledgeProposal.id == proposal_id,
+                    CompanyKnowledgeProposal.tenant_id == principal.tenant_id,
+                )
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if proposal is None:
+            raise LookupError("company_knowledge_proposal_not_found")
+        if (
+            proposal.materialization_idempotency_key == request.idempotency_key
+            and dict(proposal.materialization_receipt_json or {}).get("request_hash") == request_hash
+        ):
+            return proposal
+        if proposal.materialization_idempotency_key == request.idempotency_key:
+            raise ValueError("company_knowledge_materialization_idempotency_conflict")
+        for lock_key in (
+            f"company-knowledge-materialization-key:{principal.tenant_id}:{request.idempotency_key}",
+            f"company-knowledge-materialization-content:{principal.tenant_id}:{content_hash}",
+        ):
+            await session.execute(
+                text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"),
+                {"lock_key": lock_key},
+            )
+        duplicate = (
+            await session.execute(
+                select(CompanyKnowledgeProposal.id)
+                .where(
+                    CompanyKnowledgeProposal.tenant_id == principal.tenant_id,
+                    CompanyKnowledgeProposal.materialization_idempotency_key == request.idempotency_key,
+                    CompanyKnowledgeProposal.id != proposal.id,
+                )
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if duplicate is not None:
+            raise ValueError("company_knowledge_materialization_idempotency_conflict")
+        if proposal.state_version != expected_state_version:
+            raise RuntimeError("company_knowledge_proposal_state_conflict")
+        if proposal.status not in {"submitted", "in_review", "changes_requested", "approved"}:
+            raise ValueError("company_knowledge_proposal_not_materializable")
+        if not self._requires_materialization(proposal):
+            raise ValueError("company_knowledge_proposal_does_not_require_materialization")
+        if request.expected_proposed_content_hash != proposal.proposed_content_hash:
+            raise RuntimeError("company_knowledge_materialization_candidate_drift")
+
+        policy = await self.authorize_proposal_action(
+            session,
+            principal=principal,
+            proposal=proposal,
+            action="review",
+        )
+        baseline = None
+        if proposal.source_document_id is not None:
+            baseline = (
+                await session.execute(
+                    select(KnowledgeDocument).where(
+                        KnowledgeDocument.id == proposal.source_document_id,
+                        KnowledgeDocument.tenant_id == principal.tenant_id,
+                        KnowledgeDocument.scope_type == "company",
+                        KnowledgeDocument.scope_id == principal.tenant_id,
+                    )
+                )
+            ).scalar_one_or_none()
+            if baseline is None:
+                raise LookupError("company_knowledge_document_not_found")
+        operation = str(dict(proposal.proposed_patch_json or {}).get("operation") or "")
+        if operation == "agent_proposed_update" and baseline is not None and baseline.source_sha256 == content_hash:
+            raise ValueError("agent_proposed_update_did_not_change_document")
+
+        existing_document = (
+            await session.execute(
+                select(KnowledgeDocument)
+                .where(
+                    KnowledgeDocument.tenant_id == principal.tenant_id,
+                    KnowledgeDocument.scope_type == "company",
+                    KnowledgeDocument.scope_id == principal.tenant_id,
+                    KnowledgeDocument.source_sha256 == content_hash,
+                )
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if existing_document is not None and existing_document.title != title:
+            raise ValueError("company_knowledge_materialization_title_conflict")
+        artifact_path = company_knowledge_artifact_path(
+            self._data_root,
+            tenant_id=principal.tenant_id,
+            evidence_id=proposal.id,
+            content_hash=content_hash,
+            suffix=".md",
+        )
+        if existing_document is None:
+            _atomic_write(artifact_path, payload)
+            source = None
+            if proposal.source_id is not None:
+                source = await session.get(CompanyKnowledgeSource, proposal.source_id)
+            existing_document = KnowledgeDocument(
+                tenant_id=principal.tenant_id,
+                scope_type="company",
+                scope_id=principal.tenant_id,
+                owner_user_id=None,
+                source_kind="reviewer_materialization",
+                source_uri=f"company-proposal://{proposal.id}",
+                source_sha256=content_hash,
+                artifact_hash=content_hash,
+                title=title,
+                status="ready",
+                sensitivity=proposal.proposed_sensitivity,
+                agent_searchable=True,
+                canonical_md_path=str(artifact_path),
+                canonical_md_sha256=content_hash,
+                doc_metadata_json={
+                    "company_knowledge": {
+                        "namespace": proposal.proposed_namespace,
+                        "source_id": str(proposal.source_id) if proposal.source_id else None,
+                        "source_acl_snapshot_hash": (source.source_acl_snapshot_hash if source is not None else None),
+                        "source_acl_snapshot": (dict(source.source_acl_snapshot_json) if source is not None else None),
+                        "coverage_complete": bool(proposal.source_coverage_json.get("complete")),
+                        "materialized_from_proposal_id": str(proposal.id),
+                        "materialized_from_candidate_hash": proposal.proposed_content_hash,
+                    }
+                },
+                created_by_user_id=principal.accountable_user_id,
+            )
+            session.add(existing_document)
+            await session.flush()
+            for draft in segment_markdown(normalized):
+                session.add(
+                    KnowledgeSegment(
+                        tenant_id=principal.tenant_id,
+                        document_id=existing_document.id,
+                        scope_type="company",
+                        scope_id=principal.tenant_id,
+                        position=draft.position,
+                        segment_hash=draft.segment_hash,
+                        heading_path_json=draft.heading_path,
+                        content=draft.content,
+                        token_count=draft.token_count,
+                        tsv=None,
+                        segment_metadata_json={
+                            "namespace": proposal.proposed_namespace,
+                            "materialized_from_proposal_id": str(proposal.id),
+                        },
+                    )
+                )
+            await session.flush()
+
+        previous_content_hash = proposal.materialization_content_hash
+        now = _utcnow()
+        proposal.materialized_document_id = existing_document.id
+        proposal.materialization_content_hash = content_hash
+        proposal.materialization_idempotency_key = request.idempotency_key
+        proposal.materialized_by_user_id = principal.accountable_user_id
+        proposal.materialized_at = now
+        proposal.materialization_receipt_json = {
+            "schema": "hive.company_knowledge_materialization.v1",
+            "request_hash": request_hash,
+            "candidate_hash": proposal.proposed_content_hash,
+            "content_hash": content_hash,
+            "title_hash": hashlib.sha256(title.encode("utf-8")).hexdigest(),
+            "document_id": str(existing_document.id),
+            "source_refs_hash": _hash_json(list(proposal.source_refs_json or [])),
+            "previous_content_hash": previous_content_hash,
+            "attested_by_user_id": str(principal.accountable_user_id),
+            "attestation": "candidate_applied",
+        }
+        proposal.status = "submitted"
+        proposal.submitted_at = now
+        proposal.state_version += 1
+        await append_company_knowledge_event(
+            session,
+            event_input=_event_input(
+                principal=principal,
+                event_type="company_knowledge.proposal_materialized",
+                resource_type="proposal",
+                resource_id=proposal.id,
+                resource_version=proposal.state_version,
+                source_refs=tuple(proposal.source_refs_json or []),
+                source_hash=content_hash,
+                policy_snapshot=policy,
+                trace_id=trace_id,
+                idempotency_key=f"{request.idempotency_key}:materialized",
+                outcome="submitted",
+                payload={
+                    "document_id": str(existing_document.id),
+                    "candidate_hash": proposal.proposed_content_hash,
+                    "content_hash": content_hash,
+                    "requires_fresh_review": True,
+                },
+                occurred_at=now,
+            ),
+        )
+        return proposal
+
     async def record_review(
         self,
         session: Any,
@@ -1180,29 +1616,22 @@ class CompanyKnowledgeService:
             proposal_id=proposal_id,
             expected_state_version=expected_state_version,
         )
-        resource = CompanyKnowledgeResource(
-            tenant_id=principal.tenant_id,
-            resource_type="company_knowledge_proposal",
-            resource_id=proposal.id,
-            resource_key=f"proposal:{proposal.id}",
-            namespace=proposal.proposed_namespace,
-            sensitivity=proposal.proposed_sensitivity,
-            source_acl_snapshot_hash=None,
-            source_acl=None,
-            evidence_access_complete=bool(proposal.source_coverage_json.get("complete")),
-            publication_status=None,
-        )
+        expected_evidence_refs = tuple(sorted({str(value) for value in proposal.source_refs_json or []}))
+        provided_evidence_refs = tuple(sorted({str(value) for value in request.evidence_refs}))
+        if provided_evidence_refs != expected_evidence_refs:
+            raise ValueError("company_knowledge_review_evidence_binding_mismatch")
         action = "approve" if request.decision == "approve" else "review"
-        policy = await self._require_permission(
+        policy = await self.authorize_proposal_action(
             session,
             principal=principal,
-            resource=resource,
+            proposal=proposal,
             action=action,
         )
         if proposal.status == "submitted":
             proposal.status = next_company_proposal_status(proposal.status, "begin_review")
         if proposal.status != "in_review":
             raise ValueError("company_knowledge_proposal_not_in_review")
+        subject_content_hash = self._review_subject_hash(proposal)
         review_round = (
             await session.scalar(
                 select(func.coalesce(func.max(CompanyKnowledgeReview.review_round), 0)).where(
@@ -1221,7 +1650,8 @@ class CompanyKnowledgeService:
                 "decision": request.decision,
                 "reason": request.reason,
                 "evidence_refs": request.evidence_refs,
-                "policy_snapshot": request.policy_snapshot,
+                "policy_snapshot": policy,
+                "subject_content_hash": subject_content_hash,
             }
         )
         review = CompanyKnowledgeReview(
@@ -1230,10 +1660,16 @@ class CompanyKnowledgeService:
             reviewer_user_id=principal.accountable_user_id,
             reviewer_role=request.reviewer_role,
             review_round=review_round,
+            subject_content_hash=subject_content_hash,
             decision=request.decision,
             reason=request.reason,
             evidence_refs_json=list(request.evidence_refs),
-            policy_snapshot_json=dict(request.policy_snapshot),
+            policy_snapshot_json={
+                "schema": "hive.company_knowledge_review_authority.v1",
+                "permission_decision": policy,
+                "required_review_policy": dict(proposal.required_review_policy_json or {}),
+                "subject_content_hash": subject_content_hash,
+            },
             decision_hash=decision_hash,
         )
         session.add(review)
@@ -1245,6 +1681,7 @@ class CompanyKnowledgeService:
                     .where(
                         CompanyKnowledgeReview.tenant_id == principal.tenant_id,
                         CompanyKnowledgeReview.proposal_id == proposal.id,
+                        CompanyKnowledgeReview.subject_content_hash == subject_content_hash,
                     )
                     .order_by(CompanyKnowledgeReview.created_at, CompanyKnowledgeReview.id)
                 )
@@ -1310,15 +1747,21 @@ class CompanyKnowledgeService:
             proposal_id=proposal_id,
             expected_state_version=expected_state_version,
         )
-        if proposal.status != "approved" or proposal.source_document_id is None:
+        if proposal.status != "approved":
             raise ValueError("approved_document_proposal_required")
-        if dict(proposal.proposed_patch_json or {}).get("operation") == "agent_proposed_update":
-            # An Agent-authored semantic patch is a review candidate, not a
-            # replacement document artifact. Publishing the baseline document
-            # here would falsely report the proposed change as live truth.
-            # A reviewer/materializer must create a new governed document
-            # revision and bind it to the proposal before publication.
+        requires_materialization = self._requires_materialization(proposal)
+        if requires_materialization and (
+            proposal.materialized_document_id is None
+            or not proposal.materialization_content_hash
+            or not dict(proposal.materialization_receipt_json or {})
+        ):
             raise ValueError("agent_proposed_update_materialization_required")
+        materialization_receipt = (
+            self._validated_materialization_receipt(proposal) if requires_materialization else None
+        )
+        document_id = proposal.materialized_document_id if requires_materialization else proposal.source_document_id
+        if document_id is None:
+            raise ValueError("approved_document_proposal_required")
         source = (
             await session.execute(
                 select(CompanyKnowledgeSource).where(
@@ -1330,12 +1773,32 @@ class CompanyKnowledgeService:
         document = (
             await session.execute(
                 select(KnowledgeDocument).where(
-                    KnowledgeDocument.id == proposal.source_document_id,
+                    KnowledgeDocument.id == document_id,
                     KnowledgeDocument.tenant_id == principal.tenant_id,
                     KnowledgeDocument.scope_type == "company",
                 )
             )
         ).scalar_one()
+        if requires_materialization:
+            assert materialization_receipt is not None
+            title_hash = hashlib.sha256(str(document.title).encode("utf-8")).hexdigest()
+            if (
+                document.source_sha256 != proposal.materialization_content_hash
+                or document.artifact_hash != proposal.materialization_content_hash
+                or document.canonical_md_sha256 != proposal.materialization_content_hash
+                or title_hash != materialization_receipt["title_hash"]
+            ):
+                raise RuntimeError("company_knowledge_materialization_document_drift")
+            try:
+                materialized_artifact = _ensure_relative_to(
+                    Path(document.canonical_md_path),
+                    self._data_root,
+                )
+                artifact_hash = hashlib.sha256(materialized_artifact.read_bytes()).hexdigest()
+            except (OSError, ValueError) as exc:
+                raise RuntimeError("company_knowledge_materialization_artifact_unavailable") from exc
+            if artifact_hash != proposal.materialization_content_hash:
+                raise RuntimeError("company_knowledge_materialization_artifact_drift")
         resource = CompanyKnowledgeResource(
             tenant_id=principal.tenant_id,
             resource_type="company_knowledge_proposal",
@@ -1360,6 +1823,7 @@ class CompanyKnowledgeService:
                     select(CompanyKnowledgeReview).where(
                         CompanyKnowledgeReview.tenant_id == principal.tenant_id,
                         CompanyKnowledgeReview.proposal_id == proposal.id,
+                        CompanyKnowledgeReview.subject_content_hash == self._review_subject_hash(proposal),
                     )
                 )
             )

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 import uuid
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
@@ -19,7 +19,6 @@ from app.core.tenant_scope import resolve_and_pin_tenant_scope
 from app.database import async_session, get_db
 from app.models.company_knowledge import (
     CompanyKnowledgeImportJob,
-    CompanyKnowledgeProposal,
     CompanyKnowledgeSourceContract,
 )
 from app.models.company_ontology import (
@@ -31,7 +30,14 @@ from app.models.company_ontology import (
     CompanyOntologyRelease,
 )
 from app.models.user import User
-from app.services.company_knowledge_contracts import SourceContractInput
+from app.services.company_knowledge_contracts import (
+    SourceContractInput,
+    default_company_knowledge_review_policy,
+)
+from app.services.company_knowledge_control_plane import (
+    CompanyKnowledgePermissionGrantInput,
+    CompanyKnowledgePermissionService,
+)
 from app.services.company_knowledge_gateway import (
     CompanyKnowledgeDocumentListRequest,
     CompanyKnowledgeGateway,
@@ -46,6 +52,7 @@ from app.services.company_knowledge_permissions import (
 )
 from app.services.company_knowledge_service import (
     CompanyEvidenceIngestRequest,
+    CompanyKnowledgeMaterializationRequest,
     CompanyKnowledgeProposalRequest,
     CompanyKnowledgeReviewRequest,
     CompanyKnowledgeService,
@@ -76,6 +83,10 @@ def _service() -> CompanyKnowledgeService:
 
 def _gateway() -> CompanyKnowledgeGateway:
     return CompanyKnowledgeGateway()
+
+
+def _permission_service() -> CompanyKnowledgePermissionService:
+    return CompanyKnowledgePermissionService(proposal_authority=_service())
 
 
 def _ontology_service() -> CompanyOntologyService:
@@ -258,6 +269,8 @@ class EvidenceImportCreate(BaseModel):
 
 
 class ProposalCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     proposal_kind: str
     source_id: uuid.UUID | None = None
     source_document_id: uuid.UUID | None = None
@@ -272,7 +285,6 @@ class ProposalCreate(BaseModel):
     conflict_candidates: list[dict[str, Any]] = Field(default_factory=list)
     ontology_mapping: dict[str, Any] = Field(default_factory=dict)
     risk_level: str = "normal"
-    required_review_policy: dict[str, Any]
     idempotency_key: str = Field(..., min_length=1, max_length=300)
     trace_id: str = Field(..., min_length=1, max_length=300)
 
@@ -280,6 +292,11 @@ class ProposalCreate(BaseModel):
         values = self.model_dump()
         values["source_refs"] = tuple(values["source_refs"])
         values["conflict_candidates"] = tuple(values["conflict_candidates"])
+        values["required_review_policy"] = default_company_knowledge_review_policy(
+            proposed_sensitivity=self.proposed_sensitivity,
+            risk_level=self.risk_level,
+            created_by_type="user",
+        )
         return CompanyKnowledgeProposalRequest(**values)
 
 
@@ -295,7 +312,6 @@ class ProposalReview(BaseModel):
     decision: str
     reason: str = Field(..., min_length=1, max_length=10000)
     evidence_refs: list[str] = Field(min_length=1)
-    policy_snapshot: dict[str, Any]
     trace_id: str = Field(..., min_length=1, max_length=300)
 
     def request(self, *, reviewer_role: str) -> CompanyKnowledgeReviewRequest:
@@ -304,7 +320,28 @@ class ProposalReview(BaseModel):
             reviewer_role=reviewer_role,
             reason=self.reason,
             evidence_refs=tuple(self.evidence_refs),
-            policy_snapshot=self.policy_snapshot,
+            policy_snapshot={},
+        )
+
+
+class ProposalMaterialize(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_state_version: int = Field(..., ge=1)
+    expected_proposed_content_hash: str = Field(..., pattern=r"^[0-9a-f]{64}$")
+    title: str = Field(..., min_length=1, max_length=300)
+    markdown: str = Field(..., min_length=1, max_length=2_000_000)
+    attest_candidate_applied: Literal[True]
+    idempotency_key: str = Field(..., min_length=1, max_length=300)
+    trace_id: str = Field(..., min_length=1, max_length=300)
+
+    def request(self) -> CompanyKnowledgeMaterializationRequest:
+        return CompanyKnowledgeMaterializationRequest(
+            title=self.title,
+            markdown=self.markdown,
+            expected_proposed_content_hash=self.expected_proposed_content_hash,
+            attest_candidate_applied=self.attest_candidate_applied,
+            idempotency_key=self.idempotency_key,
         )
 
 
@@ -322,6 +359,47 @@ class PublicationRetire(BaseModel):
 
 class PublicationRestore(PublicationRetire):
     valid_from: datetime
+
+
+class CompanyPermissionGrant(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    principal_type: str
+    principal_id: uuid.UUID | None = None
+    principal_key: str | None = Field(None, max_length=300)
+    resource_type: str
+    resource_id: uuid.UUID | None = None
+    resource_key: str | None = Field(None, max_length=500)
+    actions: list[str] = Field(min_length=1, max_length=30)
+    effect: str
+    sensitivity_ceiling: str
+    purposes: list[str] = Field(default_factory=list, max_length=10)
+    expires_at: datetime | None = None
+    idempotency_key: str = Field(..., min_length=1, max_length=300)
+    trace_id: str = Field(..., min_length=1, max_length=300)
+
+    def request(self) -> CompanyKnowledgePermissionGrantInput:
+        return CompanyKnowledgePermissionGrantInput(
+            principal_type=self.principal_type,
+            principal_id=self.principal_id,
+            principal_key=self.principal_key,
+            resource_type=self.resource_type,
+            resource_id=self.resource_id,
+            resource_key=self.resource_key,
+            actions=tuple(self.actions),
+            effect=self.effect,
+            sensitivity_ceiling=self.sensitivity_ceiling,
+            purposes=tuple(self.purposes),
+            expires_at=self.expires_at,
+            idempotency_key=self.idempotency_key,
+        )
+
+
+class CompanyPermissionRevoke(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(..., min_length=1, max_length=10000)
+    trace_id: str = Field(..., min_length=1, max_length=300)
 
 
 class CompanySearchFilters(BaseModel):
@@ -658,13 +736,15 @@ async def list_proposals(
     current_user: User = Depends(get_current_user),
 ):
     target_tenant = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
-    statement = select(CompanyKnowledgeProposal).where(CompanyKnowledgeProposal.tenant_id == target_tenant)
-    if proposal_status:
-        statement = statement.where(CompanyKnowledgeProposal.status == proposal_status)
-    rows = (
-        (await db.execute(statement.order_by(CompanyKnowledgeProposal.created_at.desc()).limit(limit))).scalars().all()
+    rows = await _call(
+        _permission_service().list_review_queue(
+            db,
+            principal=_principal(current_user, target_tenant),
+            status=proposal_status,
+            limit=limit,
+        )
     )
-    return {"proposals": [_payload(row) for row in rows]}
+    return {"proposals": rows}
 
 
 @router.get("/proposals/{proposal_id}")
@@ -675,16 +755,13 @@ async def get_proposal(
     current_user: User = Depends(get_current_user),
 ):
     target_tenant = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
-    row = (
-        await db.execute(
-            select(CompanyKnowledgeProposal).where(
-                CompanyKnowledgeProposal.id == proposal_id,
-                CompanyKnowledgeProposal.tenant_id == target_tenant,
-            )
+    row = await _call(
+        _service().get_proposal_for_review(
+            db,
+            principal=_principal(current_user, target_tenant),
+            proposal_id=proposal_id,
         )
-    ).scalar_one_or_none()
-    if row is None:
-        raise HTTPException(status_code=404, detail="company_knowledge_proposal_not_found")
+    )
     return _payload(row)
 
 
@@ -702,6 +779,29 @@ async def submit_proposal(
             db,
             principal=_principal(current_user, target_tenant),
             proposal_id=proposal_id,
+            expected_state_version=body.expected_state_version,
+            trace_id=body.trace_id,
+        )
+    )
+    await db.commit()
+    return _payload(proposal)
+
+
+@router.post("/proposals/{proposal_id}/materialize")
+async def materialize_proposal(
+    proposal_id: uuid.UUID,
+    body: ProposalMaterialize,
+    tenant_id: uuid.UUID | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    target_tenant = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    proposal = await _call(
+        _service().materialize_proposal(
+            db,
+            principal=_principal(current_user, target_tenant),
+            proposal_id=proposal_id,
+            request=body.request(),
             expected_state_version=body.expected_state_version,
             trace_id=body.trace_id,
         )
@@ -800,6 +900,64 @@ async def restore_publication(
     )
     await db.commit()
     return _payload(publication)
+
+
+@router.get("/permissions")
+async def list_company_knowledge_permissions(
+    tenant_id: uuid.UUID | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    target_tenant = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    permissions = await _call(
+        _permission_service().list_permissions(
+            db,
+            principal=_principal(current_user, target_tenant),
+        )
+    )
+    return {"permissions": permissions}
+
+
+@router.post("/permissions")
+async def grant_company_knowledge_permission(
+    body: CompanyPermissionGrant,
+    tenant_id: uuid.UUID | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    target_tenant = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    permission = await _call(
+        _permission_service().grant_permission(
+            db,
+            principal=_principal(current_user, target_tenant),
+            request=body.request(),
+            trace_id=body.trace_id,
+        )
+    )
+    await db.commit()
+    return permission
+
+
+@router.post("/permissions/{permission_id}/revoke")
+async def revoke_company_knowledge_permission(
+    permission_id: uuid.UUID,
+    body: CompanyPermissionRevoke,
+    tenant_id: uuid.UUID | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    target_tenant = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    receipt = await _call(
+        _permission_service().revoke_permission(
+            db,
+            principal=_principal(current_user, target_tenant),
+            permission_id=permission_id,
+            reason=body.reason,
+            trace_id=body.trace_id,
+        )
+    )
+    await db.commit()
+    return receipt
 
 
 @router.get("/ontology/packages")

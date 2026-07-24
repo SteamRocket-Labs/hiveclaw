@@ -1363,6 +1363,61 @@ def test_a2a_session_marker_without_receipt_builds_required_invalid_frame():
     assert frame.session_id == "legacy-child-session"
 
 
+def test_tool_frame_carries_runtime_owned_model_and_prompt_manifest_receipt():
+    import hashlib
+    import json
+
+    from app.runtime.invoker import _tool_frame_kwargs_from_session_context
+    from app.runtime.session import SessionContext
+
+    manifest = {
+        "schema": "hive.ccplus.prompt_assembly_manifest.v1",
+        "source_of_truth": "runtime_prompt_assembly",
+        "turn_id": "turn-ontology-1",
+        "context_usage_ledger": {"used_tokens": 123},
+    }
+    frame_kwargs = _tool_frame_kwargs_from_session_context(
+        SessionContext(
+            session_id="session-ontology-1",
+            source="web",
+            channel="web",
+            metadata={
+                "turn_id": "turn-ontology-1",
+                "runtime_task_id": "00000000-0000-0000-0000-000000000008",
+                "turn_route": {
+                    "selected_model": "provider/trusted-model",
+                    "selected_model_id": "00000000-0000-0000-0000-000000000007",
+                    "selected_provider": "provider",
+                },
+                "runtime_assembly_state": {
+                    "schema": "hive.ccplus.runtime_assembly_state.v1",
+                    "prompt_assembly_manifest": manifest,
+                },
+            },
+        )
+    )
+
+    expected_hash = hashlib.sha256(
+        json.dumps(
+            manifest,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8")
+    ).hexdigest()
+    assert frame_kwargs["round_state"]["model_execution_receipt"] == {
+        "schema": "hive.company_ontology_model_execution.v1",
+        "receipt_source": "tool_runtime",
+        "model": "provider/trusted-model",
+        "model_id": "00000000-0000-0000-0000-000000000007",
+        "provider": "provider",
+        "prompt_hash": expected_hash,
+        "turn_id": "turn-ontology-1",
+        "runtime_task_id": "00000000-0000-0000-0000-000000000008",
+    }
+
+
 @pytest.mark.asyncio
 async def test_execute_tool_receives_interactive_available_for_web_chat_session(monkeypatch):
     from app.runtime.invoker import AgentInvocationRequest, _execute_tool_with_request

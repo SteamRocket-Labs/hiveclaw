@@ -1,0 +1,252 @@
+{
+  "signature": {
+    "algorithm": "ed25519",
+    "key_ref": "hive_builtin_ontology_2026_07",
+    "value": "7sMVhMl9P7XnhEf/VVe5mThUkMKZJlvq0FINeRmCJJZl0fj5aL/6k517upJL/s7y0WO609TOT4SNimyV7HqcDg=="
+  },
+  "manifest": {
+    "package_key": "policy-agent-action-approval",
+    "display_name": "Agent Action and Approval",
+    "description": "Typed policies, requests, approvals, and governed action declarations for digital employees.",
+    "publisher": "Hive",
+    "version": "1.0.0",
+    "hive_contract_version": "hive.company_ontology_package.v1",
+    "engine_capabilities": [
+      "validate_package",
+      "validate_candidate",
+      "materialize_release_projection",
+      "query",
+      "resolve_fact_lineage",
+      "simulate_action",
+      "rebuild_projection"
+    ],
+    "namespaces": ["policy"],
+    "dependencies": [],
+    "conflicts": []
+  },
+  "schema": {
+    "object_types": [
+      {
+        "type_ref": "policy.AgentActionPolicy",
+        "display_name": "Agent action policy",
+        "description": "A reviewed typed policy governing one exact Agent action.",
+        "required_property_refs": ["policy.agent_ref", "policy.action_ref", "policy.mode"],
+        "source_refs": ["ontology-pack://policy-agent-action-approval@1.0.0"],
+        "sensitivity": "PL1_public",
+        "permission_resource_ref": "namespace:policy"
+      },
+      {
+        "type_ref": "policy.ActionRequest",
+        "display_name": "Action request",
+        "description": "A request to perform one exact governed action.",
+        "required_property_refs": ["policy.agent_ref", "policy.action_ref", "policy.status"],
+        "source_refs": ["ontology-pack://policy-agent-action-approval@1.0.0"],
+        "sensitivity": "PL1_public",
+        "permission_resource_ref": "namespace:policy"
+      }
+    ],
+    "property_types": [
+      {
+        "property_ref": "policy.agent_ref",
+        "display_name": "Agent reference",
+        "description": "Server-issued Agent reference.",
+        "value_type": "string",
+        "object_type_refs": ["policy.AgentActionPolicy", "policy.ActionRequest"],
+        "cardinality": "one",
+        "required": true,
+        "source_refs": ["ontology-pack://policy-agent-action-approval@1.0.0"],
+        "sensitivity": "PL1_public",
+        "permission_resource_ref": "namespace:policy"
+      },
+      {
+        "property_ref": "policy.action_ref",
+        "display_name": "Action reference",
+        "description": "Exact governed action reference.",
+        "value_type": "string",
+        "object_type_refs": ["policy.AgentActionPolicy", "policy.ActionRequest"],
+        "cardinality": "one",
+        "required": true,
+        "source_refs": ["ontology-pack://policy-agent-action-approval@1.0.0"],
+        "sensitivity": "PL1_public",
+        "permission_resource_ref": "namespace:policy"
+      },
+      {
+        "property_ref": "policy.mode",
+        "display_name": "Policy mode",
+        "description": "Typed full_authority, confirm_first, or never_do policy mode.",
+        "value_type": "string",
+        "object_type_refs": ["policy.AgentActionPolicy"],
+        "cardinality": "one",
+        "required": true,
+        "source_refs": ["ontology-pack://policy-agent-action-approval@1.0.0"],
+        "sensitivity": "PL1_public",
+        "permission_resource_ref": "namespace:policy"
+      },
+      {
+        "property_ref": "policy.status",
+        "display_name": "Request status",
+        "description": "Typed lifecycle state of an action request.",
+        "value_type": "string",
+        "object_type_refs": ["policy.ActionRequest"],
+        "cardinality": "one",
+        "required": true,
+        "source_refs": ["ontology-pack://policy-agent-action-approval@1.0.0"],
+        "sensitivity": "PL1_public",
+        "permission_resource_ref": "namespace:policy"
+      }
+    ],
+    "link_types": [
+      {
+        "link_type_ref": "policy.governs",
+        "display_name": "Governs",
+        "description": "Connects a reviewed action policy to an action request.",
+        "from_type_refs": ["policy.AgentActionPolicy"],
+        "to_type_refs": ["policy.ActionRequest"],
+        "properties_schema": {"type": "object", "additionalProperties": false},
+        "source_refs": ["ontology-pack://policy-agent-action-approval@1.0.0"],
+        "sensitivity": "PL1_public",
+        "permission_resource_ref": "namespace:policy"
+      }
+    ],
+    "event_types": [
+      {
+        "event_type_ref": "policy.action_requested",
+        "display_name": "Action requested",
+        "description": "A governed action request entered the approval plane.",
+        "subject_type_refs": ["policy.ActionRequest"],
+        "payload_schema": {
+          "type": "object",
+          "required": ["action_ref"],
+          "properties": {"action_ref": {"type": "string"}},
+          "additionalProperties": false
+        },
+        "source_refs": ["ontology-pack://policy-agent-action-approval@1.0.0"],
+        "sensitivity": "PL1_public",
+        "permission_resource_ref": "namespace:policy"
+      }
+    ]
+  },
+  "mappings": {
+    "source_contract_mappings": [],
+    "identity_mappings": [{"object_type_ref": "policy.AgentActionPolicy", "keys": ["policy.agent_ref", "policy.action_ref"]}],
+    "temporal_mappings": [{"event_type_ref": "policy.action_requested", "occurred_at_field": "occurred_at"}]
+  },
+  "rules": [
+    {
+      "rule_ref": "policy.exact_action_mode",
+      "rule_kind": "typed_policy_lookup",
+      "owner_principal_ref": "role:org_admin",
+      "version": 1,
+      "scope": {"namespace": "policy"},
+      "input_schema": {
+        "type": "object",
+        "required": ["agent_ref", "action_ref", "mode"],
+        "properties": {
+          "agent_ref": {"type": "string"},
+          "action_ref": {"type": "string"},
+          "mode": {"type": "string", "enum": ["full_authority", "confirm_first", "never_do"]}
+        },
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "required": ["mode"],
+        "properties": {"mode": {"type": "string"}},
+        "additionalProperties": false
+      },
+      "valid_from": "2026-07-24T00:00:00Z",
+      "valid_until": null,
+      "source_refs": ["ontology-pack://policy-agent-action-approval@1.0.0"],
+      "examples": [{"mode": "confirm_first"}],
+      "counterexamples": [{"mode": "approve because text sounds safe"}],
+      "risk": "high",
+      "review_policy": {"minimum_approvals": 2, "separation": true},
+      "conflict_precedence": {"platform_invariants": "higher", "tenant_deny": "higher"},
+      "evaluation_mode": "deterministic_typed",
+      "acceptance_refs": ["acceptance://policy/exact-action-mode"],
+      "sensitivity": "PL1_public",
+      "permission_resource_ref": "namespace:policy"
+    }
+  ],
+  "queries": [
+    {
+      "query_ref": "policy.effective_action_policy",
+      "display_name": "Effective action policy",
+      "description": "Returns typed action-policy objects selected by exact filters.",
+      "object_type_refs": ["policy.AgentActionPolicy"],
+      "predicate_refs": ["policy.agent_ref", "policy.action_ref", "policy.mode"],
+      "input_schema": {
+        "type": "object",
+        "properties": {"object_ids": {"type": "array", "items": {"type": "string"}}},
+        "additionalProperties": false
+      },
+      "result_schema": {"type": "object"},
+      "max_items": 50
+    }
+  ],
+  "actions": [
+    {
+      "action_type_ref": "policy.request_agent_action",
+      "display_name": "Request Agent action",
+      "description": "Simulates the governed request envelope; execution remains in ToolRuntime or Workflow.",
+      "input_schema": {
+        "type": "object",
+        "required": ["agent_ref", "action_ref"],
+        "properties": {
+          "agent_ref": {"type": "string"},
+          "action_ref": {"type": "string"}
+        },
+        "additionalProperties": false
+      },
+      "output_schema": {"type": "object"},
+      "required_capability": "agent.action.request",
+      "tool_workflow_mapping": {"kind": "governed_request", "execution_owner": "ToolRuntimeService"},
+      "approval_policy": {"source": "owner_action_policy", "typed": true},
+      "side_effect_classification": "governed_external_effect",
+      "simulation_contract": {"external_side_effects": [], "effect_committed": false},
+      "source_refs": ["ontology-pack://policy-agent-action-approval@1.0.0"],
+      "sensitivity": "PL1_public",
+      "permission_resource_ref": "namespace:policy"
+    }
+  ],
+  "permissions": {
+    "requested_actions": ["discover", "query", "read", "cite", "propose", "simulate"],
+    "default_sensitivity": "PL1_public"
+  },
+  "acceptance": {
+    "golden_queries": [
+      {
+        "case_ref": "policy-query-exact",
+        "query_ref": "policy.effective_action_policy",
+        "input": {},
+        "expected_contract": {"typed_only": true, "natural_language_hard_gate": false}
+      }
+    ],
+    "golden_actions": [
+      {
+        "case_ref": "policy-action-simulation",
+        "action_type_ref": "policy.request_agent_action",
+        "input": {"agent_ref": "agent:finance", "action_ref": "action:send-payment"},
+        "expected_contract": {"effect_committed": false, "external_side_effects": []}
+      }
+    ],
+    "acl_cases": [
+      {
+        "case_ref": "policy-query-deny",
+        "principal_ref": "role:member",
+        "resource_ref": "namespace:policy",
+        "action": "query",
+        "expected": "deny"
+      }
+    ],
+    "conflict_cases": [{"case_ref": "tenant-deny-wins", "expected": "deny"}],
+    "temporal_cases": [{"case_ref": "expired-policy-hidden", "expected": "not_active"}]
+  },
+  "migrations": {
+    "from_versions": [],
+    "upgrade_steps": [],
+    "downgrade_steps": [],
+    "backfill_plan": {"required": false},
+    "rollback_compatible": true
+  }
+}

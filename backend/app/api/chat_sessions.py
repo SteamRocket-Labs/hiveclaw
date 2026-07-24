@@ -330,6 +330,9 @@ _KNOWLEDGE_TOOL_NAMES = {
     "read_personal_kb",
     "search_company_kb",
     "read_company_kb",
+    "query_company_ontology",
+    "get_company_object",
+    "explain_company_fact",
 }
 
 

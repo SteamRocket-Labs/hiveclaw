@@ -11,7 +11,9 @@ from sqlalchemy import func, select, update
 
 from app.database import tenant_scoped_session
 from app.models.company_knowledge import CompanyKnowledgeOutbox
+from app.models.company_ontology import CompanyOntologyRelease
 from app.models.knowledge import KnowledgeSegment
+from app.services.company_ontology_engine import OntologyEnginePlugin, ReferenceOntologyEngine
 
 
 def _utcnow() -> datetime:
@@ -27,6 +29,9 @@ class CompanyKnowledgeIndexSummary:
 
 class CompanyKnowledgeIndexer:
     """Claims projection work and records terminal or retryable outcomes."""
+
+    def __init__(self, *, ontology_engine: OntologyEnginePlugin | None = None) -> None:
+        self._ontology_engine = ontology_engine or ReferenceOntologyEngine()
 
     async def discover_pending_tenants(
         self,
@@ -108,9 +113,9 @@ class CompanyKnowledgeIndexer:
                 outbox.attempt_count += 1
                 try:
                     payload = dict(outbox.payload_json or {})
-                    document_id = uuid.UUID(str(payload["document_id"]))
                     operation = str(payload.get("operation") or "")
                     if operation == "index_document":
+                        document_id = uuid.UUID(str(payload["document_id"]))
                         await session.execute(
                             update(KnowledgeSegment)
                             .where(
@@ -124,6 +129,47 @@ class CompanyKnowledgeIndexer:
                         # Publication status remains the query-time authority.
                         # The document can still back a later immutable restore.
                         pass
+                    elif operation == "project_ontology_release":
+                        release_id = uuid.UUID(str(payload["release_id"]))
+                        release_hash = str(payload["release_hash"])
+                        release = (
+                            await session.execute(
+                                select(CompanyOntologyRelease).where(
+                                    CompanyOntologyRelease.id == release_id,
+                                    CompanyOntologyRelease.tenant_id == tenant_id,
+                                    CompanyOntologyRelease.release_hash == release_hash,
+                                    CompanyOntologyRelease.status == "active",
+                                )
+                            )
+                        ).scalar_one_or_none()
+                        if release is None:
+                            raise ValueError("company_ontology_active_release_projection_source_unavailable")
+                        receipt = await self._ontology_engine.rebuild_projection(
+                            {
+                                "release_id": release.id,
+                                "release_hash": release.release_hash,
+                                "namespace": release.namespace,
+                            }
+                        )
+                        if receipt.get("status") != "rebuilt":
+                            raise ValueError("company_ontology_projection_rebuild_failed")
+                    elif operation == "tombstone_ontology_release":
+                        release_id = uuid.UUID(str(payload["release_id"]))
+                        release_hash = str(payload["release_hash"])
+                        release = (
+                            await session.execute(
+                                select(CompanyOntologyRelease).where(
+                                    CompanyOntologyRelease.id == release_id,
+                                    CompanyOntologyRelease.tenant_id == tenant_id,
+                                    CompanyOntologyRelease.release_hash == release_hash,
+                                )
+                            )
+                        ).scalar_one_or_none()
+                        if release is None or release.status == "active":
+                            raise ValueError("company_ontology_tombstone_source_not_terminal")
+                        # Active release rows are query-time authority. A
+                        # provider may delete its derived projection here; the
+                        # reference engine queries immutable release rows.
                     else:
                         raise ValueError("unsupported_company_knowledge_projection_operation")
                     outbox.status = "completed"

@@ -374,6 +374,43 @@ def _tool_frame_kwargs_from_session_context(
     if isinstance(t0_refs, str):
         t0_refs = (t0_refs,)
     round_state = dict(metadata.get("round_state") if isinstance(metadata.get("round_state"), dict) else {})
+    # This receipt is always rebuilt from the current runtime assembly. A
+    # stale/recovered/model-authored round-state value can never select its own
+    # model identity or prompt hash.
+    round_state.pop("model_execution_receipt", None)
+    from app.runtime.context import runtime_assembly_metadata
+
+    assembly_state = runtime_assembly_metadata(metadata)
+    prompt_manifest = assembly_state.get("prompt_assembly_manifest")
+    turn_route = metadata.get("turn_route")
+    turn_id = str(metadata.get("turn_id") or "").strip()
+    selected_model = str(turn_route.get("selected_model") or "").strip() if isinstance(turn_route, dict) else ""
+    if (
+        isinstance(prompt_manifest, dict)
+        and prompt_manifest.get("schema") == "hive.ccplus.prompt_assembly_manifest.v1"
+        and isinstance(turn_route, dict)
+        and selected_model
+        and turn_id
+    ):
+        prompt_hash = hashlib.sha256(
+            json.dumps(
+                prompt_manifest,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            ).encode("utf-8")
+        ).hexdigest()
+        round_state["model_execution_receipt"] = {
+            "schema": "hive.company_ontology_model_execution.v1",
+            "receipt_source": "tool_runtime",
+            "model": selected_model,
+            "model_id": str(turn_route.get("selected_model_id") or "").strip() or None,
+            "provider": str(turn_route.get("selected_provider") or "").strip() or None,
+            "prompt_hash": prompt_hash,
+            "turn_id": turn_id,
+            "runtime_task_id": str(metadata.get("runtime_task_id") or metadata.get("task_id") or "").strip() or None,
+        }
     turn_route = metadata.get("turn_route") if isinstance(metadata.get("turn_route"), dict) else {}
     execution_shape = str(turn_route.get("execution_shape") or metadata.get("execution_shape") or "").strip()
     if execution_shape and "execution_shape" not in round_state:

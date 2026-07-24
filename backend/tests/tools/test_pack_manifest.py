@@ -20,6 +20,7 @@ _SHIPPED = {
     "command_pack",
     "personal_knowledge_pack",
     "company_knowledge_pack",
+    "company_ontology_pack",
 }
 
 

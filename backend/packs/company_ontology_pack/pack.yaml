@@ -1,0 +1,30 @@
+name: company_ontology_pack
+version: "0.1.0"
+description: Typed, permission-aware Company Ontology query, lineage, simulation, and governed proposals.
+source:
+  kind: builtin
+
+tools:
+  - name: query_company_ontology
+    role: owns
+    governance:
+      security_zone: restricted
+  - name: get_company_object
+    role: owns
+    governance:
+      security_zone: restricted
+  - name: explain_company_fact
+    role: owns
+    governance:
+      security_zone: restricted
+  - name: simulate_company_action
+    role: owns
+    governance:
+      security_zone: restricted
+  - name: propose_ontology_change
+    role: owns
+    governance:
+      security_zone: restricted
+
+activation:
+  default_state: active

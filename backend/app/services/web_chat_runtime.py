@@ -50,6 +50,7 @@ from app.services.chat_artifact_delivery import create_chat_artifacts_for_messag
 from app.services.chat_transcript import append_session_event, lock_transcript_session
 from app.services.conversation_interaction_service import mark_latest_pending_clarification_answered
 from app.services.llm_utils import STREAM_RETRY_TOMBSTONE
+from app.services.knowledge_provenance import ontology_result_source_rows
 from app.services import plan_mode_core
 from app.services.plan_mode_file import provision_agent_plan_file_slot
 from app.services.long_task_runtime import build_long_task_resume_context
@@ -1348,6 +1349,9 @@ _KNOWLEDGE_TOOL_REPLAY_SCOPES = {
     "read_personal_kb": "personal",
     "search_company_kb": "company",
     "read_company_kb": "company",
+    "query_company_ontology": "company",
+    "get_company_object": "company",
+    "explain_company_fact": "company",
 }
 
 
@@ -1372,12 +1376,16 @@ def _knowledge_tool_replay_projection(*, tool_name: str, args: dict[str, Any], r
         except (TypeError, ValueError):
             payload = {}
 
-    result_rows = payload.get("results") if tool_name.startswith("search_") else payload.get("segments")
-    rows = result_rows if isinstance(result_rows, list) else []
+    ontology_rows = ontology_result_source_rows(tool_name, payload)
+    if ontology_rows is not None:
+        rows = ontology_rows[0]
+    else:
+        result_rows = payload.get("results") if tool_name.startswith("search_") else payload.get("segments")
+        rows = result_rows if isinstance(result_rows, list) else []
     default_document_id = str(payload.get("document_id") or "").strip()
     default_publication_id = str(payload.get("publication_id") or "").strip()
     references: list[dict[str, str]] = []
-    seen_references: set[tuple[str, str, str, str]] = set()
+    seen_references: set[tuple[str, ...]] = set()
     for row in rows:
         if not isinstance(row, dict):
             continue
@@ -1385,6 +1393,10 @@ def _knowledge_tool_replay_projection(*, tool_name: str, args: dict[str, Any], r
             "publication_id": str(row.get("publication_id") or default_publication_id).strip(),
             "document_id": str(row.get("document_id") or default_document_id).strip(),
             "segment_id": str(row.get("segment_id") or "").strip(),
+            "release_id": str(row.get("release_id") or "").strip(),
+            "object_id": str(row.get("object_id") or "").strip(),
+            "assertion_id": str(row.get("assertion_id") or "").strip(),
+            "link_id": str(row.get("link_id") or "").strip(),
             "source_ref": str(row.get("source_ref") or "").strip(),
         }
         if scope != "company":
@@ -1396,6 +1408,10 @@ def _knowledge_tool_replay_projection(*, tool_name: str, args: dict[str, Any], r
             reference.get("publication_id", ""),
             reference.get("document_id", ""),
             reference.get("segment_id", ""),
+            reference.get("release_id", ""),
+            reference.get("object_id", ""),
+            reference.get("assertion_id", ""),
+            reference.get("link_id", ""),
             reference.get("source_ref", ""),
         )
         if key in seen_references:
@@ -1417,9 +1433,18 @@ def _knowledge_tool_replay_projection(*, tool_name: str, args: dict[str, Any], r
             "references": references,
             "content_omitted": True,
             "instruction": (
-                "Call search_company_kb/read_company_kb again if the content is needed."
-                if scope == "company"
-                else "Call search_personal_kb/read_personal_kb again if the content is needed."
+                ("Call query_company_ontology/get_company_object/explain_company_fact again if the content is needed.")
+                if tool_name
+                in {
+                    "query_company_ontology",
+                    "get_company_object",
+                    "explain_company_fact",
+                }
+                else (
+                    "Call search_company_kb/read_company_kb again if the content is needed."
+                    if scope == "company"
+                    else "Call search_personal_kb/read_personal_kb again if the content is needed."
+                )
             ),
         }
     )

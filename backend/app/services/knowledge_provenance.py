@@ -28,8 +28,18 @@ _KNOWLEDGE_TOOL_SCOPES = {
     "read_personal_kb": "personal",
     "search_company_kb": "company",
     "read_company_kb": "company",
+    "query_company_ontology": "company",
+    "get_company_object": "company",
+    "explain_company_fact": "company",
 }
 KNOWLEDGE_TOOL_NAMES = frozenset(_KNOWLEDGE_TOOL_SCOPES)
+_ONTOLOGY_KNOWLEDGE_TOOLS = frozenset(
+    {
+        "query_company_ontology",
+        "get_company_object",
+        "explain_company_fact",
+    }
+)
 _KNOWLEDGE_PROVENANCE_FORWARDING_TOOLS = {
     "spawn_subagent",
     "check_subagent",
@@ -77,6 +87,148 @@ def _canonical_source_sensitivity(
         return SensitivityLevel.PL4_CREDENTIAL, declared
 
 
+def ontology_result_source_rows(
+    tool_name: str,
+    payload: Mapping[str, Any],
+) -> tuple[list[dict[str, Any]], bool] | None:
+    """Flatten typed ontology results into evidence-bearing source records.
+
+    The returned records contain identifiers, source refs, and declared
+    sensitivity only; semantic object/fact/link content never enters replay
+    projections. Missing lineage or a missing source ref makes coverage
+    incomplete so downstream consumers fail closed.
+    """
+
+    normalized_tool_name = str(tool_name or "").strip()
+    if normalized_tool_name not in _ONTOLOGY_KNOWLEDGE_TOOLS:
+        return None
+
+    rows: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    coverage_complete = True
+
+    def append_item(
+        raw_item: Any,
+        *,
+        result_kind: str,
+        inherited: Mapping[str, Any] | None = None,
+        source_refs: Any = None,
+    ) -> None:
+        nonlocal coverage_complete
+        if not isinstance(raw_item, Mapping):
+            coverage_complete = False
+            rows.append(
+                {
+                    "result_kind": "invalid_source_record",
+                    "sensitivity": None,
+                }
+            )
+            return
+        item = dict(raw_item)
+        parent = dict(inherited or {})
+        refs = source_refs if source_refs is not None else item.get("source_refs")
+        normalized_refs = (
+            [str(value).strip() for value in refs if str(value).strip()] if isinstance(refs, list | tuple) else []
+        )
+        if not normalized_refs:
+            coverage_complete = False
+            normalized_refs = [None]
+        identifiers = {
+            key: item.get(key, parent.get(key)) for key in ("release_id", "object_id", "assertion_id", "link_id")
+        }
+        stable_id = next(
+            (
+                str(identifiers[key])
+                for key in ("assertion_id", "link_id", "object_id", "release_id")
+                if identifiers.get(key)
+            ),
+            "",
+        )
+        for source_ref in normalized_refs:
+            dedupe_key = (result_kind, stable_id, str(source_ref or ""))
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            rows.append(
+                {
+                    "result_kind": result_kind,
+                    **{key: value for key, value in identifiers.items() if value is not None},
+                    "source_ref": source_ref,
+                    "sensitivity": item.get("sensitivity"),
+                }
+            )
+
+    def append_object(raw_object: Any) -> None:
+        nonlocal coverage_complete
+        if not isinstance(raw_object, Mapping):
+            append_item(raw_object, result_kind="invalid_source_record")
+            return
+        obj = dict(raw_object)
+        append_item(obj, result_kind="ontology_object")
+        for fact in obj.get("facts") or []:
+            append_item(
+                fact,
+                result_kind="ontology_assertion",
+                inherited={
+                    "release_id": obj.get("release_id"),
+                    "object_id": obj.get("object_id"),
+                },
+            )
+        for link in obj.get("links") or []:
+            append_item(
+                link,
+                result_kind="ontology_link",
+                inherited={
+                    "release_id": obj.get("release_id"),
+                    "object_id": obj.get("object_id"),
+                },
+            )
+
+    if normalized_tool_name == "query_company_ontology":
+        raw_objects = payload.get("objects")
+        if not isinstance(raw_objects, list):
+            return ([], False)
+        for raw_object in raw_objects:
+            append_object(raw_object)
+    elif normalized_tool_name == "get_company_object":
+        raw_object = payload.get("object")
+        if raw_object is None:
+            return ([], True)
+        append_object(raw_object)
+    else:
+        raw_fact = payload.get("fact")
+        if raw_fact is None:
+            return ([], True)
+        if not isinstance(raw_fact, Mapping):
+            append_item(raw_fact, result_kind="invalid_source_record")
+        else:
+            fact = dict(raw_fact)
+            lineage = fact.get("lineage")
+            lineage_map = dict(lineage) if isinstance(lineage, Mapping) else {}
+            lineage_refs = lineage_map.get("source_refs")
+            if not lineage_refs:
+                raw_evidence = lineage_map.get("evidence")
+                lineage_refs = (
+                    [
+                        row.get("evidence_ref")
+                        for row in raw_evidence
+                        if isinstance(row, Mapping) and row.get("evidence_ref")
+                    ]
+                    if isinstance(raw_evidence, list)
+                    else []
+                )
+            append_item(
+                fact,
+                result_kind="ontology_assertion",
+                source_refs=fact.get("source_refs") or lineage_refs,
+            )
+            lineage_coverage = lineage_map.get("coverage")
+            if not isinstance(lineage_coverage, Mapping) or lineage_coverage.get("complete") is not True:
+                coverage_complete = False
+
+    return rows, coverage_complete
+
+
 def build_knowledge_provenance(tool_name: str, raw_result: Any) -> dict[str, Any] | None:
     """Project one trusted Knowledge tool result into typed provenance.
 
@@ -93,19 +245,24 @@ def build_knowledge_provenance(tool_name: str, raw_result: Any) -> dict[str, Any
     if payload is None:
         return None
 
-    is_search = normalized_tool_name.startswith("search_")
-    raw_rows = payload.get("results" if is_search else "segments")
-    rows = list(raw_rows) if isinstance(raw_rows, list) else []
-    if not rows and payload.get("credential_reference"):
-        rows = [
-            {
-                "result_kind": "credential_reference",
-                "document_id": payload.get("document_id"),
-                "credential_reference": payload.get("credential_reference"),
-                "sensitivity": payload.get("sensitivity") or SensitivityLevel.PL4_CREDENTIAL.value,
-                "source_ref": payload.get("source_ref"),
-            }
-        ]
+    ontology_rows = ontology_result_source_rows(normalized_tool_name, payload)
+    if ontology_rows is not None:
+        rows, coverage_complete = ontology_rows
+    else:
+        is_search = normalized_tool_name.startswith("search_")
+        raw_rows = payload.get("results" if is_search else "segments")
+        rows = list(raw_rows) if isinstance(raw_rows, list) else []
+        coverage_complete = True
+        if not rows and payload.get("credential_reference"):
+            rows = [
+                {
+                    "result_kind": "credential_reference",
+                    "document_id": payload.get("document_id"),
+                    "credential_reference": payload.get("credential_reference"),
+                    "sensitivity": payload.get("sensitivity") or SensitivityLevel.PL4_CREDENTIAL.value,
+                    "source_ref": payload.get("source_ref"),
+                }
+            ]
     if not rows:
         return None
 
@@ -116,7 +273,6 @@ def build_knowledge_provenance(tool_name: str, raw_result: Any) -> dict[str, Any
     warnings: list[str] = []
     sources: list[dict[str, Any]] = []
     sensitivities: list[SensitivityLevel] = []
-    coverage_complete = True
 
     for index, raw_row in enumerate(rows):
         if not isinstance(raw_row, Mapping):
@@ -158,6 +314,10 @@ def build_knowledge_provenance(tool_name: str, raw_result: Any) -> dict[str, Any
             "source_ref": source_ref,
             "sensitivity": sensitivity.value,
         }
+        for identifier_key in ("release_id", "object_id", "assertion_id", "link_id"):
+            identifier = _source_value(row, identifier_key)
+            if identifier is not None:
+                source[identifier_key] = identifier
         if invalid_declared is not None:
             source["declared_sensitivity"] = invalid_declared
             coverage_complete = False

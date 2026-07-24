@@ -9,7 +9,7 @@ import uuid
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from fastapi.encoders import jsonable_encoder
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,6 +22,14 @@ from app.models.company_knowledge import (
     CompanyKnowledgeProposal,
     CompanyKnowledgeSourceContract,
 )
+from app.models.company_ontology import (
+    CompanyOntologyActivation,
+    CompanyOntologyCurationRun,
+    CompanyOntologyPackage,
+    CompanyOntologyPackageInstallation,
+    CompanyOntologyPackageVersion,
+    CompanyOntologyRelease,
+)
 from app.models.user import User
 from app.services.company_knowledge_contracts import SourceContractInput
 from app.services.company_knowledge_gateway import (
@@ -31,12 +39,31 @@ from app.services.company_knowledge_gateway import (
     CompanyKnowledgeSearchRequest,
     CompanyKnowledgeSourceExplainRequest,
 )
-from app.services.company_knowledge_permissions import CompanyKnowledgePrincipal
+from app.services.company_knowledge_permissions import (
+    CompanyKnowledgePrincipal,
+    CompanyKnowledgeResource,
+    resolve_company_knowledge_permission,
+)
 from app.services.company_knowledge_service import (
     CompanyEvidenceIngestRequest,
     CompanyKnowledgeProposalRequest,
     CompanyKnowledgeReviewRequest,
     CompanyKnowledgeService,
+)
+from app.services.company_ontology_contracts import load_builtin_ontology_catalog
+from app.services.company_ontology_engine import OntologyEngineUnavailable, ReferenceOntologyEngine
+from app.services.company_ontology_gateway import (
+    CompanyOntologyGateway,
+    OntologyActionSimulationRequest,
+    OntologyFactExplainRequest,
+    OntologyObjectReadRequest,
+    OntologyQueryRequest,
+)
+from app.services.company_ontology_service import (
+    CompanyOntologyService,
+    OntologyActivationRequest,
+    OntologyPackageInstallRequest,
+    OntologyReleaseLifecycleRequest,
 )
 
 
@@ -49,6 +76,14 @@ def _service() -> CompanyKnowledgeService:
 
 def _gateway() -> CompanyKnowledgeGateway:
     return CompanyKnowledgeGateway()
+
+
+def _ontology_service() -> CompanyOntologyService:
+    return CompanyOntologyService(knowledge_service=_service())
+
+
+def _ontology_gateway() -> CompanyOntologyGateway:
+    return CompanyOntologyGateway()
 
 
 def _principal(current_user: User, tenant_id: uuid.UUID) -> CompanyKnowledgePrincipal:
@@ -76,6 +111,11 @@ def _payload(value: Any) -> dict[str, Any]:
 async def _call(awaitable: Any) -> Any:
     try:
         return await awaitable
+    except OntologyEngineUnavailable as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="company_ontology_engine_unavailable",
+        ) from exc
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except LookupError as exc:
@@ -84,6 +124,34 @@ async def _call(awaitable: Any) -> Any:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+async def _require_ontology_discover(
+    db: AsyncSession,
+    *,
+    principal: CompanyKnowledgePrincipal,
+    namespace: str,
+) -> dict[str, Any]:
+    decision = await resolve_company_knowledge_permission(
+        db,
+        principal=principal,
+        resource=CompanyKnowledgeResource(
+            tenant_id=principal.tenant_id,
+            resource_type="company_ontology_namespace",
+            resource_id=None,
+            resource_key=f"namespace:{namespace}",
+            namespace=namespace,
+            sensitivity="PL1_public",
+            source_acl_snapshot_hash=None,
+            source_acl=None,
+            evidence_access_complete=True,
+            publication_status=None,
+        ),
+        action="discover",
+    )
+    if not decision.allowed:
+        raise HTTPException(status_code=403, detail="company_ontology_metadata_denied")
+    return decision.evidence()
 
 
 async def _process_import(*, tenant_id: uuid.UUID, job_id: uuid.UUID) -> None:
@@ -221,18 +289,19 @@ class ProposalSubmit(BaseModel):
 
 
 class ProposalReview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     expected_state_version: int = Field(..., ge=1)
     decision: str
-    reviewer_role: str = Field(..., min_length=1, max_length=80)
     reason: str = Field(..., min_length=1, max_length=10000)
     evidence_refs: list[str] = Field(min_length=1)
     policy_snapshot: dict[str, Any]
     trace_id: str = Field(..., min_length=1, max_length=300)
 
-    def request(self) -> CompanyKnowledgeReviewRequest:
+    def request(self, *, reviewer_role: str) -> CompanyKnowledgeReviewRequest:
         return CompanyKnowledgeReviewRequest(
             decision=self.decision,
-            reviewer_role=self.reviewer_role,
+            reviewer_role=reviewer_role,
             reason=self.reason,
             evidence_refs=tuple(self.evidence_refs),
             policy_snapshot=self.policy_snapshot,
@@ -266,6 +335,58 @@ class CompanySearchRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=4000)
     filters: CompanySearchFilters = Field(default_factory=CompanySearchFilters)
     limit: int = Field(10, ge=1, le=50)
+
+
+class OntologyPackageInstallCreate(BaseModel):
+    package_key: str = Field(..., min_length=1, max_length=240)
+    version: str = Field(..., min_length=1, max_length=120)
+    idempotency_key: str = Field(..., min_length=1, max_length=300)
+    trace_id: str = Field(..., min_length=1, max_length=300)
+
+
+class OntologyActivationCreate(BaseModel):
+    installation_id: uuid.UUID
+    namespace: str = Field(..., min_length=1, max_length=300)
+    configuration: dict[str, Any] = Field(default_factory=dict)
+    idempotency_key: str = Field(..., min_length=1, max_length=300)
+    trace_id: str = Field(..., min_length=1, max_length=300)
+
+
+class OntologyActivationDryRun(BaseModel):
+    idempotency_key: str = Field(..., min_length=1, max_length=300)
+    trace_id: str = Field(..., min_length=1, max_length=300)
+
+
+class OntologyReleasePublish(BaseModel):
+    valid_from: datetime
+    valid_until: datetime | None = None
+    trace_id: str = Field(..., min_length=1, max_length=300)
+
+
+class OntologyReleaseRetire(BaseModel):
+    reason: str = Field(..., min_length=1, max_length=10000)
+    trace_id: str = Field(..., min_length=1, max_length=300)
+
+
+class OntologyReleaseRestore(OntologyReleaseRetire):
+    approved_proposal_id: uuid.UUID
+    valid_from: datetime
+
+
+class OntologyQueryBody(BaseModel):
+    namespaces: list[str] = Field(default_factory=list, max_length=50)
+    query_ref: str | None = Field(None, max_length=500)
+    query_input: dict[str, Any] = Field(default_factory=dict)
+    object_type_refs: list[str] = Field(default_factory=list, max_length=100)
+    object_ids: list[uuid.UUID] = Field(default_factory=list, max_length=200)
+    limit: int = Field(50, ge=1, le=200)
+    include_facts: bool = True
+    include_links: bool = True
+
+
+class OntologyActionSimulationBody(BaseModel):
+    proposed_input: dict[str, Any]
+    namespace: str | None = Field(None, max_length=300)
 
 
 @router.post("/search")
@@ -603,7 +724,7 @@ async def review_proposal(
             db,
             principal=_principal(current_user, target_tenant),
             proposal_id=proposal_id,
-            request=body.request(),
+            request=body.request(reviewer_role=str(current_user.role)),
             expected_state_version=body.expected_state_version,
             trace_id=body.trace_id,
         )
@@ -679,6 +800,650 @@ async def restore_publication(
     )
     await db.commit()
     return _payload(publication)
+
+
+@router.get("/ontology/packages")
+async def list_company_ontology_packages(
+    tenant_id: uuid.UUID | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    target_tenant = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    del target_tenant
+    catalog = load_builtin_ontology_catalog()
+    return {
+        "schema": "hive.company_ontology_package_catalog.v1",
+        "packages": [
+            {
+                "package_key": bundle.manifest.package_key,
+                "display_name": bundle.manifest.display_name,
+                "description": bundle.manifest.description,
+                "publisher": bundle.manifest.publisher,
+                "version": bundle.manifest.version,
+                "namespaces": list(bundle.manifest.namespaces),
+                "content_hash": bundle.content_hash,
+                "signature_key_ref": bundle.signature.key_ref,
+                "signature_valid": True,
+                "declarative_only": True,
+            }
+            for bundle in catalog.all()
+        ],
+    }
+
+
+@router.post("/ontology/package-installations")
+async def install_company_ontology_package(
+    body: OntologyPackageInstallCreate,
+    tenant_id: uuid.UUID | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    target_tenant = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    installation = await _call(
+        _ontology_service().install_package(
+            db,
+            principal=_principal(current_user, target_tenant),
+            request=OntologyPackageInstallRequest(
+                package_key=body.package_key,
+                version=body.version,
+                idempotency_key=body.idempotency_key,
+                trace_id=body.trace_id,
+            ),
+        )
+    )
+    await db.commit()
+    return _payload(installation)
+
+
+@router.get("/ontology/package-installations")
+async def list_company_ontology_installations(
+    tenant_id: uuid.UUID | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    target_tenant = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    principal = _principal(current_user, target_tenant)
+    rows = (
+        await db.execute(
+            select(
+                CompanyOntologyPackageInstallation,
+                CompanyOntologyPackageVersion,
+                CompanyOntologyPackage,
+            )
+            .join(
+                CompanyOntologyPackageVersion,
+                CompanyOntologyPackageVersion.id == CompanyOntologyPackageInstallation.package_version_id,
+            )
+            .join(
+                CompanyOntologyPackage,
+                CompanyOntologyPackage.id == CompanyOntologyPackageVersion.package_id,
+            )
+            .where(
+                CompanyOntologyPackageInstallation.tenant_id == target_tenant,
+                CompanyOntologyPackageVersion.tenant_id == target_tenant,
+                CompanyOntologyPackage.tenant_id == target_tenant,
+            )
+            .order_by(
+                CompanyOntologyPackage.package_key,
+                CompanyOntologyPackageVersion.version,
+            )
+        )
+    ).all()
+    visible: list[dict[str, Any]] = []
+    for installation, version, package in rows:
+        namespaces = list(version.namespaces_json or [])
+        if not namespaces:
+            continue
+        await _require_ontology_discover(
+            db,
+            principal=principal,
+            namespace=str(namespaces[0]),
+        )
+        visible.append(
+            {
+                "installation": _payload(installation),
+                "package_key": package.package_key,
+                "display_name": package.display_name,
+                "version": version.version,
+                "content_hash": version.content_hash,
+                "namespaces": namespaces,
+            }
+        )
+    return {"installations": visible}
+
+
+@router.get("/ontology/package-installations/{installation_id}")
+async def get_company_ontology_installation(
+    installation_id: uuid.UUID,
+    tenant_id: uuid.UUID | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    target_tenant = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    row = (
+        await db.execute(
+            select(
+                CompanyOntologyPackageInstallation,
+                CompanyOntologyPackageVersion,
+                CompanyOntologyPackage,
+            )
+            .join(
+                CompanyOntologyPackageVersion,
+                CompanyOntologyPackageVersion.id == CompanyOntologyPackageInstallation.package_version_id,
+            )
+            .join(
+                CompanyOntologyPackage,
+                CompanyOntologyPackage.id == CompanyOntologyPackageVersion.package_id,
+            )
+            .where(
+                CompanyOntologyPackageInstallation.id == installation_id,
+                CompanyOntologyPackageInstallation.tenant_id == target_tenant,
+                CompanyOntologyPackageVersion.tenant_id == target_tenant,
+                CompanyOntologyPackage.tenant_id == target_tenant,
+            )
+        )
+    ).one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="company_ontology_installation_not_found")
+    installation, version, package = row
+    namespaces = list(version.namespaces_json or [])
+    await _require_ontology_discover(
+        db,
+        principal=_principal(current_user, target_tenant),
+        namespace=str(namespaces[0]) if namespaces else package.package_key,
+    )
+    return {
+        "installation": _payload(installation),
+        "package_key": package.package_key,
+        "display_name": package.display_name,
+        "version": version.version,
+        "content_hash": version.content_hash,
+        "namespaces": namespaces,
+    }
+
+
+@router.post("/ontology/activations")
+async def create_company_ontology_activation(
+    body: OntologyActivationCreate,
+    tenant_id: uuid.UUID | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    target_tenant = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    activation = await _call(
+        _ontology_service().create_activation(
+            db,
+            principal=_principal(current_user, target_tenant),
+            request=OntologyActivationRequest(
+                installation_id=body.installation_id,
+                namespace=body.namespace,
+                configuration=body.configuration,
+                idempotency_key=body.idempotency_key,
+                trace_id=body.trace_id,
+            ),
+        )
+    )
+    await db.commit()
+    return _payload(activation)
+
+
+@router.get("/ontology/activations")
+async def list_company_ontology_activations(
+    tenant_id: uuid.UUID | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    target_tenant = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    principal = _principal(current_user, target_tenant)
+    rows = (
+        (
+            await db.execute(
+                select(CompanyOntologyActivation)
+                .where(CompanyOntologyActivation.tenant_id == target_tenant)
+                .order_by(
+                    CompanyOntologyActivation.namespace,
+                    CompanyOntologyActivation.activation_version.desc(),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    visible: list[dict[str, Any]] = []
+    for row in rows:
+        await _require_ontology_discover(
+            db,
+            principal=principal,
+            namespace=row.namespace,
+        )
+        visible.append(_payload(row))
+    return {"activations": visible}
+
+
+@router.post("/ontology/activations/{activation_id}/dry-run")
+async def dry_run_company_ontology_activation(
+    activation_id: uuid.UUID,
+    body: OntologyActivationDryRun,
+    tenant_id: uuid.UUID | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    target_tenant = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    activation = await _call(
+        _ontology_service().dry_run_activation(
+            db,
+            principal=_principal(current_user, target_tenant),
+            activation_id=activation_id,
+            idempotency_key=body.idempotency_key,
+            trace_id=body.trace_id,
+        )
+    )
+    await db.commit()
+    return _payload(activation)
+
+
+@router.get("/ontology/curation-runs")
+async def list_company_ontology_curation_runs(
+    tenant_id: uuid.UUID | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    target_tenant = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    principal = _principal(current_user, target_tenant)
+    rows = (
+        (
+            await db.execute(
+                select(CompanyOntologyCurationRun)
+                .where(CompanyOntologyCurationRun.tenant_id == target_tenant)
+                .order_by(CompanyOntologyCurationRun.created_at.desc())
+                .limit(200)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        activation = await db.get(CompanyOntologyActivation, row.activation_id)
+        if activation is None or activation.tenant_id != target_tenant:
+            continue
+        await _require_ontology_discover(
+            db,
+            principal=principal,
+            namespace=activation.namespace,
+        )
+        result.append(
+            {
+                "id": str(row.id),
+                "activation_id": str(row.activation_id),
+                "baseline_release_id": (str(row.baseline_release_id) if row.baseline_release_id else None),
+                "candidate_patch_ref": row.candidate_patch_ref,
+                "candidate_patch_hash": row.candidate_patch_hash,
+                "coverage": dict(row.coverage_ledger_json or {}),
+                "conflicts": dict(row.conflict_ledger_json or {}),
+                "unresolved_questions": list(row.unresolved_questions_json or []),
+                "acceptance": dict(row.acceptance_result_json or {}),
+                "status": row.status,
+                "error_code": row.error_code,
+                "created_at": row.created_at,
+                "updated_at": row.updated_at,
+            }
+        )
+    return {"curation_runs": result}
+
+
+@router.get("/ontology/curation-runs/{run_id}")
+async def get_company_ontology_curation_run(
+    run_id: uuid.UUID,
+    tenant_id: uuid.UUID | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    target_tenant = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    row = (
+        await db.execute(
+            select(CompanyOntologyCurationRun).where(
+                CompanyOntologyCurationRun.id == run_id,
+                CompanyOntologyCurationRun.tenant_id == target_tenant,
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="company_ontology_curation_run_not_found")
+    activation = await db.get(CompanyOntologyActivation, row.activation_id)
+    if activation is None or activation.tenant_id != target_tenant:
+        raise HTTPException(status_code=404, detail="company_ontology_curation_run_not_found")
+    await _require_ontology_discover(
+        db,
+        principal=_principal(current_user, target_tenant),
+        namespace=activation.namespace,
+    )
+    return {
+        "id": str(row.id),
+        "activation_id": str(row.activation_id),
+        "baseline_release_id": (str(row.baseline_release_id) if row.baseline_release_id else None),
+        "candidate_patch_ref": row.candidate_patch_ref,
+        "candidate_patch_hash": row.candidate_patch_hash,
+        "coverage": dict(row.coverage_ledger_json or {}),
+        "conflicts": dict(row.conflict_ledger_json or {}),
+        "unresolved_questions": list(row.unresolved_questions_json or []),
+        "acceptance": dict(row.acceptance_result_json or {}),
+        "status": row.status,
+        "error_code": row.error_code,
+        "created_at": row.created_at,
+        "updated_at": row.updated_at,
+    }
+
+
+@router.post("/ontology/curation-runs/{run_id}/publish")
+async def publish_company_ontology_curation_run(
+    run_id: uuid.UUID,
+    body: OntologyReleasePublish,
+    tenant_id: uuid.UUID | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    target_tenant = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    release = await _call(
+        _ontology_service().publish_curation_run(
+            db,
+            principal=_principal(current_user, target_tenant),
+            run_id=run_id,
+            valid_from=body.valid_from,
+            valid_until=body.valid_until,
+            trace_id=body.trace_id,
+        )
+    )
+    await db.commit()
+    return _payload(release)
+
+
+@router.post("/ontology/query")
+async def query_company_ontology(
+    body: OntologyQueryBody,
+    tenant_id: uuid.UUID | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    target_tenant = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    result = await _call(
+        _ontology_gateway().query(
+            db,
+            principal=_principal(current_user, target_tenant),
+            request=OntologyQueryRequest(
+                namespaces=tuple(body.namespaces),
+                query_ref=body.query_ref,
+                query_input=body.query_input,
+                object_type_refs=tuple(body.object_type_refs),
+                object_ids=tuple(body.object_ids),
+                limit=body.limit,
+                include_facts=body.include_facts,
+                include_links=body.include_links,
+                trace_id=f"company-ontology-api-query:{uuid.uuid4()}",
+            ),
+        )
+    )
+    await db.commit()
+    return result.as_dict()
+
+
+@router.get("/ontology/types")
+async def list_company_ontology_types(
+    tenant_id: uuid.UUID | None = Query(None),
+    namespace: list[str] = Query(default=[]),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    target_tenant = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    result = await _call(
+        _ontology_gateway().list_types(
+            db,
+            principal=_principal(current_user, target_tenant),
+            namespaces=tuple(namespace),
+            trace_id=f"company-ontology-api-types:{uuid.uuid4()}",
+        )
+    )
+    await db.commit()
+    return result.as_dict()
+
+
+@router.get("/ontology/objects")
+async def list_company_ontology_objects(
+    tenant_id: uuid.UUID | None = Query(None),
+    namespace: list[str] = Query(default=[]),
+    object_type_ref: list[str] = Query(default=[]),
+    limit: int = Query(50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    target_tenant = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    result = await _call(
+        _ontology_gateway().query(
+            db,
+            principal=_principal(current_user, target_tenant),
+            request=OntologyQueryRequest(
+                namespaces=tuple(namespace),
+                object_type_refs=tuple(object_type_ref),
+                limit=limit,
+                trace_id=f"company-ontology-api-objects:{uuid.uuid4()}",
+            ),
+        )
+    )
+    await db.commit()
+    return result.as_dict()
+
+
+@router.get("/ontology/objects/{object_id}")
+async def get_company_ontology_object(
+    object_id: uuid.UUID,
+    tenant_id: uuid.UUID | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    target_tenant = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    result = await _call(
+        _ontology_gateway().get_object(
+            db,
+            principal=_principal(current_user, target_tenant),
+            request=OntologyObjectReadRequest(
+                object_id=object_id,
+                trace_id=f"company-ontology-api-object:{uuid.uuid4()}",
+            ),
+        )
+    )
+    await db.commit()
+    return result.as_dict()
+
+
+@router.get("/ontology/facts/{assertion_id}/evidence")
+async def explain_company_ontology_fact(
+    assertion_id: uuid.UUID,
+    tenant_id: uuid.UUID | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    target_tenant = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    result = await _call(
+        _ontology_gateway().explain_fact(
+            db,
+            principal=_principal(current_user, target_tenant),
+            request=OntologyFactExplainRequest(
+                assertion_id=assertion_id,
+                trace_id=f"company-ontology-api-fact:{uuid.uuid4()}",
+            ),
+        )
+    )
+    await db.commit()
+    return result.as_dict()
+
+
+@router.post("/ontology/actions/{action_type_ref}/simulate")
+async def simulate_company_ontology_action(
+    action_type_ref: str,
+    body: OntologyActionSimulationBody,
+    tenant_id: uuid.UUID | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    target_tenant = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    result = await _call(
+        _ontology_gateway().simulate_action(
+            db,
+            principal=_principal(current_user, target_tenant),
+            request=OntologyActionSimulationRequest(
+                action_type_ref=action_type_ref,
+                proposed_input=body.proposed_input,
+                namespace=body.namespace,
+                trace_id=f"company-ontology-api-simulate:{uuid.uuid4()}",
+            ),
+        )
+    )
+    await db.commit()
+    return result.as_dict()
+
+
+@router.get("/ontology/releases")
+async def list_company_ontology_releases(
+    tenant_id: uuid.UUID | None = Query(None),
+    namespace: list[str] = Query(default=[]),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    target_tenant = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    statement = select(CompanyOntologyRelease).where(CompanyOntologyRelease.tenant_id == target_tenant)
+    if namespace:
+        statement = statement.where(CompanyOntologyRelease.namespace.in_(namespace))
+    rows = (
+        (
+            await db.execute(
+                statement.order_by(
+                    CompanyOntologyRelease.namespace,
+                    CompanyOntologyRelease.version.desc(),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    principal = _principal(current_user, target_tenant)
+    visible: list[dict[str, Any]] = []
+    for row in rows:
+        await _require_ontology_discover(
+            db,
+            principal=principal,
+            namespace=row.namespace,
+        )
+        visible.append(_payload(row))
+    return {"releases": visible}
+
+
+@router.get("/ontology/releases/{release_id}")
+async def get_company_ontology_release(
+    release_id: uuid.UUID,
+    tenant_id: uuid.UUID | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    target_tenant = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    release = (
+        await db.execute(
+            select(CompanyOntologyRelease).where(
+                CompanyOntologyRelease.id == release_id,
+                CompanyOntologyRelease.tenant_id == target_tenant,
+            )
+        )
+    ).scalar_one_or_none()
+    if release is None:
+        raise HTTPException(status_code=404, detail="company_ontology_release_not_found")
+    await _require_ontology_discover(
+        db,
+        principal=_principal(current_user, target_tenant),
+        namespace=release.namespace,
+    )
+    return _payload(release)
+
+
+@router.post("/ontology/releases/{release_id}/retire")
+async def retire_company_ontology_release(
+    release_id: uuid.UUID,
+    body: OntologyReleaseRetire,
+    tenant_id: uuid.UUID | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    target_tenant = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    release = await _call(
+        _ontology_service().retire_release(
+            db,
+            principal=_principal(current_user, target_tenant),
+            release_id=release_id,
+            request=OntologyReleaseLifecycleRequest(
+                reason=body.reason,
+                trace_id=body.trace_id,
+            ),
+        )
+    )
+    await db.commit()
+    return _payload(release)
+
+
+@router.post("/ontology/releases/{release_id}/restore")
+async def restore_company_ontology_release(
+    release_id: uuid.UUID,
+    body: OntologyReleaseRestore,
+    tenant_id: uuid.UUID | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    target_tenant = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    release = await _call(
+        _ontology_service().restore_release(
+            db,
+            principal=_principal(current_user, target_tenant),
+            release_id=release_id,
+            request=OntologyReleaseLifecycleRequest(
+                reason=body.reason,
+                trace_id=body.trace_id,
+                approved_proposal_id=body.approved_proposal_id,
+                valid_from=body.valid_from,
+            ),
+        )
+    )
+    await db.commit()
+    return _payload(release)
+
+
+@router.get("/ontology/capabilities")
+async def get_company_ontology_capabilities(
+    tenant_id: uuid.UUID | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    target_tenant = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
+    del target_tenant
+    engine = await ReferenceOntologyEngine().capability_status()
+    catalog = load_builtin_ontology_catalog()
+    return {
+        "schema": "hive.company_ontology_capabilities.v1",
+        "engine": engine,
+        "domain_packs": [
+            {
+                "package_key": key,
+                "versions": list(catalog.versions(key)),
+            }
+            for key in catalog.package_keys
+        ],
+        "agent_tools": [
+            "query_company_ontology",
+            "get_company_object",
+            "explain_company_fact",
+            "propose_ontology_change",
+            "simulate_company_action",
+        ],
+        "administrative_actions_agent_exposed": False,
+        "release_authority": "hive_postgresql",
+        "projection_rebuildable": True,
+    }
 
 
 __all__ = ["router"]

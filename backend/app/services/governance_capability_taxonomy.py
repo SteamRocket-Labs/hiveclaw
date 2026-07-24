@@ -146,6 +146,28 @@ RUNTIME_L2_CAPABILITY_SPECS: tuple[RuntimeL2CapabilitySpec, ...] = (
         ),
     ),
     RuntimeL2CapabilitySpec(
+        name="company_ontology_pack",
+        summary=(
+            "Typed Company Ontology access for permission-aware active-release query, object and fact lineage, "
+            "side-effect-free action simulation, and evidence-backed Agent proposals. Administrative package, "
+            "activation, publication, release lifecycle, permission, and provider operations are never Agent tools."
+        ),
+        source="system",
+        activation_mode=(
+            "Discover through tool_search when reviewed organization objects, relationships, facts, policies, "
+            "or action declarations are relevant. Query before bounded object/fact reads; use simulation only "
+            "to inspect a declared action contract and propose_ontology_change only for complete evidence-backed "
+            "candidates requiring human review."
+        ),
+        tools=(
+            "query_company_ontology",
+            "get_company_object",
+            "explain_company_fact",
+            "simulate_company_action",
+            "propose_ontology_change",
+        ),
+    ),
+    RuntimeL2CapabilitySpec(
         name="web_pack",
         summary=(
             "Advanced web search and read/extract tooling: advanced_web_search and advanced_web_fetch route "
@@ -334,6 +356,11 @@ CAPABILITY_MAP: dict[str, str] = {
     "read_company_kb": "agent.knowledge.read",
     "explain_company_kb_source": "agent.knowledge.read",
     "propose_company_kb_update": "agent.knowledge.propose",
+    "query_company_ontology": "agent.knowledge.read",
+    "get_company_object": "agent.knowledge.read",
+    "explain_company_fact": "agent.knowledge.read",
+    "simulate_company_action": "agent.knowledge.read",
+    "propose_ontology_change": "agent.knowledge.propose",
     "save_memory": "agent.memory.write",
     "update_memory": "agent.memory.write",
     "retire_memory": "agent.memory.write",

@@ -241,7 +241,6 @@ def test_company_proposal_review_publish_and_recovery_routes_use_exact_state_ver
         json={
             "expected_state_version": 2,
             "decision": "approve",
-            "reviewer_role": "org_admin",
             "reason": "Reviewed complete evidence.",
             "evidence_refs": ["company-evidence://fixture"],
             "policy_snapshot": {"policy": "v1"},
@@ -286,7 +285,36 @@ def test_company_proposal_review_publish_and_recovery_routes_use_exact_state_ver
         assert kwargs["principal"].accountable_user_id == user.id
     assert calls[1][1]["expected_state_version"] == 1
     assert calls[2][1]["expected_state_version"] == 2
+    assert calls[2][1]["request"].reviewer_role == user.role
     assert calls[3][1]["expected_state_version"] == 3
+
+
+def test_company_review_role_is_server_derived_and_not_an_api_input(monkeypatch):
+    proposal_id = uuid.uuid4()
+
+    class _Service:
+        async def record_review(self, session, **kwargs):
+            return SimpleNamespace(id=proposal_id, status="approved", state_version=3)
+
+    client, _db, _user = _client(monkeypatch, _Service())
+
+    schema = company_api.ProposalReview.model_json_schema()
+    assert "reviewer_role" not in schema["properties"]
+
+    spoofed = client.post(
+        f"/knowledge/company/proposals/{proposal_id}/review",
+        json={
+            "expected_state_version": 2,
+            "decision": "approve",
+            "reviewer_role": "owner",
+            "reason": "Attempt to spoof a stronger reviewer role.",
+            "evidence_refs": ["company-evidence://fixture"],
+            "policy_snapshot": {"policy": "v1"},
+            "trace_id": "trace-review-spoof",
+        },
+    )
+
+    assert spoofed.status_code == 422
 
 
 def test_company_retrieval_routes_share_gateway_and_never_accept_actor_identity(monkeypatch):

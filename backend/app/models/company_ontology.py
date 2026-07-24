@@ -146,10 +146,14 @@ class CompanyOntologyActivation(Base):
     __table_args__ = (
         UniqueConstraint(
             "tenant_id",
-            "installation_id",
             "namespace",
             "activation_version",
             name="uq_company_ontology_activation_version",
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "idempotency_key",
+            name="uq_company_ontology_activation_idempotency",
         ),
         CheckConstraint(
             "status IN ('draft','dry_run_passed','active','superseded','retired','blocked')",
@@ -176,6 +180,7 @@ class CompanyOntologyActivation(Base):
     )
     namespace: Mapped[str] = mapped_column(String(300), nullable=False)
     activation_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(300), nullable=False)
     configuration_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     dry_run_receipt_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="draft", index=True)
@@ -233,6 +238,7 @@ class CompanyOntologyCurationRun(Base):
     model_prompt_receipts_json: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     candidate_patch_ref: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     candidate_patch_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    candidate_patch_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     coverage_ledger_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     conflict_ledger_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     unresolved_questions_json: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
@@ -497,7 +503,12 @@ class CompanyOntologyObject(Base):
 
     __tablename__ = "company_ontology_objects"
     __table_args__ = (
-        UniqueConstraint("tenant_id", "stable_object_key", name="uq_company_ontology_object_key"),
+        UniqueConstraint(
+            "tenant_id",
+            "release_id",
+            "stable_object_key",
+            name="uq_company_ontology_object_release_key",
+        ),
         CheckConstraint(_SENSITIVITY_CHECK, name="ck_company_ontology_object_sensitivity"),
         CheckConstraint(
             "status IN ('candidate','active','held','superseded','retired','revoked')",
@@ -541,9 +552,10 @@ class CompanyOntologyObjectIdentity(Base):
     __table_args__ = (
         UniqueConstraint(
             "tenant_id",
+            "object_id",
             "source_contract_id",
             "source_identity_key",
-            name="uq_company_ontology_source_identity",
+            name="uq_company_ontology_source_identity_object",
         ),
         CheckConstraint(
             "status IN ('active','merged','split','held','revoked')",
@@ -578,6 +590,12 @@ class CompanyOntologyAssertion(Base):
 
     __tablename__ = "company_ontology_assertions"
     __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "release_id",
+            "stable_assertion_key",
+            name="uq_company_ontology_assertion_release_key",
+        ),
         CheckConstraint(
             "assertion_kind IN ('sourced','derived','tenant_authored')",
             name="ck_company_ontology_assertion_kind",
@@ -594,6 +612,7 @@ class CompanyOntologyAssertion(Base):
     tenant_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    stable_assertion_key: Mapped[str] = mapped_column(String(500), nullable=False)
     subject_object_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("company_ontology_objects.id", ondelete="RESTRICT"), nullable=False, index=True
     )
@@ -626,6 +645,12 @@ class CompanyOntologyAssertion(Base):
 class CompanyOntologyLink(Base):
     __tablename__ = "company_ontology_links"
     __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "release_id",
+            "stable_link_key",
+            name="uq_company_ontology_link_release_key",
+        ),
         CheckConstraint(
             "status IN ('candidate','active','superseded','held','revoked')",
             name="ck_company_ontology_link_status",
@@ -639,6 +664,7 @@ class CompanyOntologyLink(Base):
     tenant_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    stable_link_key: Mapped[str] = mapped_column(String(500), nullable=False)
     link_type_ref: Mapped[str] = mapped_column(String(500), nullable=False)
     from_object_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("company_ontology_objects.id", ondelete="RESTRICT"), nullable=False
@@ -669,7 +695,12 @@ class CompanyOntologyLink(Base):
 class CompanyOntologyEvent(Base):
     __tablename__ = "company_ontology_events"
     __table_args__ = (
-        UniqueConstraint("tenant_id", "stable_event_key", name="uq_company_ontology_event_key"),
+        UniqueConstraint(
+            "tenant_id",
+            "release_id",
+            "stable_event_key",
+            name="uq_company_ontology_event_release_key",
+        ),
         CheckConstraint(
             "status IN ('candidate','active','superseded','held','revoked')",
             name="ck_company_ontology_event_status",

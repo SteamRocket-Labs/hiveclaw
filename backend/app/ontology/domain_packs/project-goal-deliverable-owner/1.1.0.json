@@ -1,0 +1,276 @@
+{
+  "signature": {
+    "algorithm": "ed25519",
+    "key_ref": "hive_builtin_ontology_2026_07",
+    "value": "zGXCXA6PZsefxxDFH3yD0mvA+GXTOpPgNuQvtl/P0FHC2j0oF0XvUptAN3FmPBVlbWkzAwA4SFuCz91kLMT8BA=="
+  },
+  "manifest": {
+    "package_key": "project-goal-deliverable-owner",
+    "display_name": "Project, Goal, Deliverable, and Owner",
+    "description": "Typed project delivery semantics with evidence-bound ownership, priority, and governed assignment declarations.",
+    "publisher": "Hive",
+    "version": "1.1.0",
+    "hive_contract_version": "hive.company_ontology_package.v1",
+    "engine_capabilities": [
+      "validate_package",
+      "validate_candidate",
+      "materialize_release_projection",
+      "query",
+      "resolve_fact_lineage",
+      "simulate_action",
+      "rebuild_projection"
+    ],
+    "namespaces": ["project"],
+    "dependencies": [],
+    "conflicts": []
+  },
+  "schema": {
+    "object_types": [
+      {
+        "type_ref": "project.Project",
+        "display_name": "Project",
+        "description": "A governed project object.",
+        "required_property_refs": ["project.name", "project.status", "project.priority"],
+        "source_refs": ["ontology-pack://project-goal-deliverable-owner@1.1.0"],
+        "sensitivity": "PL1_public",
+        "permission_resource_ref": "namespace:project"
+      },
+      {
+        "type_ref": "project.Goal",
+        "display_name": "Goal",
+        "description": "A typed project goal.",
+        "required_property_refs": ["project.name", "project.status"],
+        "source_refs": ["ontology-pack://project-goal-deliverable-owner@1.1.0"],
+        "sensitivity": "PL1_public",
+        "permission_resource_ref": "namespace:project"
+      },
+      {
+        "type_ref": "project.Deliverable",
+        "display_name": "Deliverable",
+        "description": "A versioned prioritized project deliverable.",
+        "required_property_refs": ["project.name", "project.status", "project.priority"],
+        "source_refs": ["ontology-pack://project-goal-deliverable-owner@1.1.0"],
+        "sensitivity": "PL1_public",
+        "permission_resource_ref": "namespace:project"
+      },
+      {
+        "type_ref": "project.Owner",
+        "display_name": "Owner",
+        "description": "An accountable owner reference.",
+        "required_property_refs": ["project.name"],
+        "source_refs": ["ontology-pack://project-goal-deliverable-owner@1.1.0"],
+        "sensitivity": "PL1_public",
+        "permission_resource_ref": "namespace:project"
+      }
+    ],
+    "property_types": [
+      {
+        "property_ref": "project.name",
+        "display_name": "Name",
+        "description": "Human-readable business name.",
+        "value_type": "string",
+        "object_type_refs": ["project.Project", "project.Goal", "project.Deliverable", "project.Owner"],
+        "cardinality": "one",
+        "required": true,
+        "source_refs": ["ontology-pack://project-goal-deliverable-owner@1.1.0"],
+        "sensitivity": "PL1_public",
+        "permission_resource_ref": "namespace:project"
+      },
+      {
+        "property_ref": "project.status",
+        "display_name": "Status",
+        "description": "Typed delivery lifecycle state.",
+        "value_type": "string",
+        "object_type_refs": ["project.Project", "project.Goal", "project.Deliverable"],
+        "cardinality": "one",
+        "required": true,
+        "source_refs": ["ontology-pack://project-goal-deliverable-owner@1.1.0"],
+        "sensitivity": "PL1_public",
+        "permission_resource_ref": "namespace:project"
+      },
+      {
+        "property_ref": "project.priority",
+        "display_name": "Priority",
+        "description": "Exact tenant-reviewed integer priority.",
+        "value_type": "integer",
+        "object_type_refs": ["project.Project", "project.Deliverable"],
+        "cardinality": "one",
+        "required": true,
+        "source_refs": ["ontology-pack://project-goal-deliverable-owner@1.1.0"],
+        "sensitivity": "PL1_public",
+        "permission_resource_ref": "namespace:project"
+      }
+    ],
+    "link_types": [
+      {
+        "link_type_ref": "project.has_goal",
+        "display_name": "Has goal",
+        "description": "Connects a project to a goal.",
+        "from_type_refs": ["project.Project"],
+        "to_type_refs": ["project.Goal"],
+        "properties_schema": {"type": "object", "additionalProperties": false},
+        "source_refs": ["ontology-pack://project-goal-deliverable-owner@1.1.0"],
+        "sensitivity": "PL1_public",
+        "permission_resource_ref": "namespace:project"
+      },
+      {
+        "link_type_ref": "project.has_deliverable",
+        "display_name": "Has deliverable",
+        "description": "Connects a goal to a deliverable.",
+        "from_type_refs": ["project.Goal"],
+        "to_type_refs": ["project.Deliverable"],
+        "properties_schema": {"type": "object", "additionalProperties": false},
+        "source_refs": ["ontology-pack://project-goal-deliverable-owner@1.1.0"],
+        "sensitivity": "PL1_public",
+        "permission_resource_ref": "namespace:project"
+      },
+      {
+        "link_type_ref": "project.owned_by",
+        "display_name": "Owned by",
+        "description": "Connects a deliverable to an accountable owner.",
+        "from_type_refs": ["project.Deliverable"],
+        "to_type_refs": ["project.Owner"],
+        "properties_schema": {"type": "object", "additionalProperties": false},
+        "source_refs": ["ontology-pack://project-goal-deliverable-owner@1.1.0"],
+        "sensitivity": "PL2_pii",
+        "permission_resource_ref": "namespace:project"
+      }
+    ],
+    "event_types": [
+      {
+        "event_type_ref": "project.deliverable_completed",
+        "display_name": "Deliverable completed",
+        "description": "A deliverable reached its reviewed completion state.",
+        "subject_type_refs": ["project.Deliverable"],
+        "payload_schema": {
+          "type": "object",
+          "required": ["status"],
+          "properties": {"status": {"type": "string", "enum": ["completed"]}},
+          "additionalProperties": false
+        },
+        "source_refs": ["ontology-pack://project-goal-deliverable-owner@1.1.0"],
+        "sensitivity": "PL1_public",
+        "permission_resource_ref": "namespace:project"
+      }
+    ]
+  },
+  "mappings": {
+    "source_contract_mappings": [],
+    "identity_mappings": [{"object_type_ref": "project.Project", "keys": ["source_project_id"]}],
+    "temporal_mappings": [{"event_type_ref": "project.deliverable_completed", "occurred_at_field": "occurred_at"}]
+  },
+  "rules": [
+    {
+      "rule_ref": "project.delivery_status",
+      "rule_kind": "typed_status_projection",
+      "owner_principal_ref": "role:org_admin",
+      "version": 2,
+      "scope": {"namespace": "project"},
+      "input_schema": {
+        "type": "object",
+        "required": ["status", "priority"],
+        "properties": {"status": {"type": "string"}, "priority": {"type": "integer"}},
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "required": ["status", "priority"],
+        "properties": {"status": {"type": "string"}, "priority": {"type": "integer"}},
+        "additionalProperties": false
+      },
+      "valid_from": "2026-07-24T00:00:00Z",
+      "valid_until": null,
+      "source_refs": ["ontology-pack://project-goal-deliverable-owner@1.1.0"],
+      "examples": [{"status": "completed", "priority": 1}],
+      "counterexamples": [{"status": "probably done", "priority": "high"}],
+      "risk": "normal",
+      "review_policy": {"minimum_approvals": 1, "separation": false},
+      "conflict_precedence": {"newer_authoritative_source": "higher"},
+      "evaluation_mode": "deterministic_typed",
+      "acceptance_refs": ["acceptance://project/delivery-status-v2"],
+      "sensitivity": "PL1_public",
+      "permission_resource_ref": "namespace:project"
+    }
+  ],
+  "queries": [
+    {
+      "query_ref": "project.delivery_map",
+      "display_name": "Project delivery map",
+      "description": "Returns projects and exact typed delivery objects selected by filters.",
+      "object_type_refs": ["project.Project", "project.Goal", "project.Deliverable", "project.Owner"],
+      "predicate_refs": ["project.name", "project.status", "project.priority"],
+      "input_schema": {
+        "type": "object",
+        "properties": {"object_ids": {"type": "array", "items": {"type": "string"}}},
+        "additionalProperties": false
+      },
+      "result_schema": {"type": "object"},
+      "max_items": 100
+    }
+  ],
+  "actions": [
+    {
+      "action_type_ref": "project.assign_deliverable_owner",
+      "display_name": "Assign deliverable owner",
+      "description": "Simulates an assignment request; execution requires a governed workflow.",
+      "input_schema": {
+        "type": "object",
+        "required": ["deliverable_ref", "owner_ref"],
+        "properties": {
+          "deliverable_ref": {"type": "string"},
+          "owner_ref": {"type": "string"}
+        },
+        "additionalProperties": false
+      },
+      "output_schema": {"type": "object"},
+      "required_capability": "project.assignment.request",
+      "tool_workflow_mapping": {"kind": "workflow_request", "execution_owner": "Workflow"},
+      "approval_policy": {"required": true, "source": "project_owner_policy"},
+      "side_effect_classification": "governed_internal_effect",
+      "simulation_contract": {"external_side_effects": [], "effect_committed": false},
+      "source_refs": ["ontology-pack://project-goal-deliverable-owner@1.1.0"],
+      "sensitivity": "PL2_pii",
+      "permission_resource_ref": "namespace:project"
+    }
+  ],
+  "permissions": {
+    "requested_actions": ["discover", "query", "read", "cite", "propose", "simulate"],
+    "default_sensitivity": "PL2_pii"
+  },
+  "acceptance": {
+    "golden_queries": [
+      {
+        "case_ref": "project-delivery-map-priority",
+        "query_ref": "project.delivery_map",
+        "input": {},
+        "expected_contract": {"typed_only": true, "priority_present": true}
+      }
+    ],
+    "golden_actions": [
+      {
+        "case_ref": "project-assignment-simulation",
+        "action_type_ref": "project.assign_deliverable_owner",
+        "input": {"deliverable_ref": "deliverable:launch", "owner_ref": "user:owner"},
+        "expected_contract": {"effect_committed": false, "external_side_effects": []}
+      }
+    ],
+    "acl_cases": [
+      {
+        "case_ref": "owner-field-deny",
+        "principal_ref": "role:member",
+        "resource_ref": "namespace:project",
+        "action": "query",
+        "expected": "deny"
+      }
+    ],
+    "conflict_cases": [{"case_ref": "conflicting-owner-held", "expected": "hold"}],
+    "temporal_cases": [{"case_ref": "expired-deliverable-hidden", "expected": "not_active"}]
+  },
+  "migrations": {
+    "from_versions": ["1.0.0"],
+    "upgrade_steps": [{"operation": "require_property", "property_ref": "project.priority", "default": 0}],
+    "downgrade_steps": [{"operation": "remove_property", "property_ref": "project.priority"}],
+    "backfill_plan": {"required": true, "source": "previous_release_membership"},
+    "rollback_compatible": true
+  }
+}

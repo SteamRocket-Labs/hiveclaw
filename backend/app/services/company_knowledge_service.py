@@ -1170,6 +1170,8 @@ class CompanyKnowledgeService:
             raise ValueError("unsupported_company_knowledge_review_decision")
         if principal.actor_type != "user" or request.reviewer_role == "agent":
             raise PermissionError("agents_cannot_review_company_knowledge")
+        if request.reviewer_role != principal.accountable_role:
+            raise PermissionError("company_knowledge_reviewer_role_mismatch")
         if not request.reason.strip() or not request.evidence_refs:
             raise ValueError("review_reason_and_evidence_required")
         proposal = await self._locked_proposal(

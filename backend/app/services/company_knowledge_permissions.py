@@ -33,6 +33,11 @@ CompanyKnowledgeAction: TypeAlias = Literal[
     "manage_permissions",
     "export",
     "execute_action",
+    "install_package",
+    "activate_package",
+    "curate",
+    "query",
+    "simulate",
 ]
 
 _ACTIONS = frozenset(
@@ -50,11 +55,28 @@ _ACTIONS = frozenset(
         "manage_permissions",
         "export",
         "execute_action",
+        "install_package",
+        "activate_package",
+        "curate",
+        "query",
+        "simulate",
     }
 )
-_RUNTIME_PUBLICATION_ACTIONS = frozenset({"discover", "search", "read", "cite", "export", "execute_action"})
-_CONTENT_ACTIONS = frozenset({"search", "read", "cite", "export", "execute_action"})
-_TENANT_ADMIN_METADATA_ACTIONS = frozenset({"discover", "propose", "review", "manage_permissions"})
+_RUNTIME_PUBLICATION_ACTIONS = frozenset(
+    {"discover", "search", "read", "cite", "export", "execute_action", "query", "simulate"}
+)
+_CONTENT_ACTIONS = frozenset({"search", "read", "cite", "export", "execute_action", "query"})
+_TENANT_ADMIN_METADATA_ACTIONS = frozenset(
+    {
+        "discover",
+        "propose",
+        "review",
+        "manage_permissions",
+        "install_package",
+        "activate_package",
+        "curate",
+    }
+)
 _ADMIN_ROLES = frozenset({"platform_admin", "org_admin"})
 
 

@@ -1,13 +1,15 @@
 """File management API routes for agent workspaces."""
 
+import asyncio
 import uuid
 from pathlib import Path
+from urllib.parse import quote
 
 import aiofiles
-from fastapi import APIRouter, Depends, File as FastFile, HTTPException, UploadFile as UploadFileType, status
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, File as FastFile, HTTPException, Query, UploadFile as UploadFileType, status
+from fastapi.responses import FileResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 from starlette.background import BackgroundTask
 
 from app.config import get_settings
@@ -15,7 +17,9 @@ from app.core.permissions import check_agent_access, require_agent_manage_access
 from app.core.resource_authority import authorize_resource_action
 from app.core.security import get_current_user
 from app.database import get_db, pin_rls_tenant_context
+from app.models.audit import AuditLog
 from app.models.chat_artifact import ChatArtifact
+from app.models.chat_session import ChatSession
 from app.models.user import User
 from app.services.chat_artifact_delivery import (
     read_chat_artifact_snapshot_content,
@@ -29,7 +33,7 @@ from app.services.file_download_tokens import (
     verify_channel_file_download_token,
 )
 from app.services.external_capabilities.skill_source_adapter import stage_remote_external_skill_source_review
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 settings = get_settings()
@@ -60,6 +64,65 @@ class FileContent(BaseModel):
 
 class FileWrite(BaseModel):
     content: str
+
+
+class FileVersionCurrentState(BaseModel):
+    exists: bool
+    content_hash: str | None = None
+    size: int = 0
+
+
+class FileVersionSummary(BaseModel):
+    version_id: str
+    created_at: str
+    state: str
+    size: int
+    content_hash: str | None = None
+    restorable: bool
+
+
+class FileVersionPage(BaseModel):
+    path: str
+    current: FileVersionCurrentState
+    versions: list[FileVersionSummary]
+    total: int
+    offset: int
+    limit: int
+    has_more: bool
+    coverage_complete: bool
+
+
+class FileVersionContent(BaseModel):
+    path: str
+    version_id: str
+    state: str
+    content: str | None = None
+    content_hash: str | None = None
+    size: int
+    is_binary: bool = False
+
+
+class FileVersionRestoreRequest(BaseModel):
+    expected_current_exists: bool
+    expected_current_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def validate_expected_state(self):
+        if self.expected_current_exists and self.expected_current_hash is None:
+            raise ValueError("expected_current_hash is required when the current file exists")
+        if not self.expected_current_exists and self.expected_current_hash is not None:
+            raise ValueError("expected_current_hash must be null when the current file does not exist")
+        return self
+
+
+class FileVersionRestoreResult(BaseModel):
+    status: str
+    path: str
+    version_id: str
+    current: FileVersionCurrentState
+
+
+_MAX_VERSION_SESSION_SCAN = 500
 
 
 def _agent_base_dir(agent_id: uuid.UUID) -> Path:
@@ -103,6 +166,16 @@ def _is_governed_memory_path(path: str) -> bool:
 def _is_user_workspace_path(path: str) -> bool:
     normalized = _normalized_rel_path(path)
     return normalized == "workspace" or normalized.startswith("workspace/")
+
+
+def _require_workspace_file_path(path: str) -> str:
+    normalized = _normalized_rel_path(path)
+    if not normalized.startswith("workspace/") or normalized == "workspace":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"code": "workspace_file_path_required", "message": "Choose one file below workspace/."},
+        )
+    return normalized
 
 
 def _workspace_authority_http_error(exc: Exception) -> HTTPException:
@@ -253,6 +326,80 @@ def _raise_raw_system_read_guard(path: str, *, access_level: str) -> None:
             "RuntimeTask, Skill, Activity, or Evolution read model instead."
         ),
     )
+
+
+async def _authorized_workspace_version_sessions(
+    *,
+    agent_id: uuid.UUID,
+    path: str,
+    action: str,
+    operator_view: bool,
+    operator_reason: str | None,
+    current_user: User,
+    db: AsyncSession,
+    for_update: bool = False,
+):
+    normalized = _require_workspace_file_path(path)
+    agent_access = await check_agent_access(db, current_user, agent_id)
+    target = _safe_path(agent_id, normalized)
+    from app.services.workspace_resource_authority import authorize_workspace_path
+
+    try:
+        decision = await authorize_workspace_path(
+            db,
+            current_user,
+            agent_id=agent_id,
+            path=normalized,
+            action=action,
+            path_exists=target.is_file(),
+            allow_manager_override=operator_view,
+            manager_override_reason=operator_reason,
+            for_update=for_update,
+            agent_access=agent_access,
+        )
+    except Exception as exc:
+        raise _workspace_authority_http_error(exc) from exc
+
+    query = select(ChatSession).where(
+        ChatSession.agent_id == agent_id,
+        ChatSession.transcript_metadata_json.is_not(None),
+    )
+    if decision.root_session_id is not None:
+        query = query.where(
+            or_(
+                ChatSession.id == decision.root_session_id,
+                ChatSession.root_session_id == decision.root_session_id,
+            )
+        )
+    elif not decision.operator_view:
+        query = query.where(ChatSession.user_id == (decision.owner_user_id or current_user.id))
+    query = query.order_by(ChatSession.created_at.desc()).limit(_MAX_VERSION_SESSION_SCAN + 1)
+    sessions = (await db.execute(query)).scalars().all()
+    coverage_complete = len(sessions) <= _MAX_VERSION_SESSION_SCAN
+    return agent_access, decision, list(sessions[:_MAX_VERSION_SESSION_SCAN]), coverage_complete
+
+
+def _version_summary(record) -> FileVersionSummary:
+    return FileVersionSummary(
+        version_id=record.version_id,
+        created_at=record.created_at,
+        state=record.state,
+        size=record.size,
+        content_hash=record.content_hash,
+        restorable=record.restorable,
+    )
+
+
+def _current_file_version_state(agent_id: uuid.UUID, path: str) -> dict:
+    from app.services.session_workspace_snapshot import workspace_file_state
+
+    try:
+        return workspace_file_state(agent_id=agent_id, path=path)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "workspace_file_version_unavailable", "message": str(exc)},
+        ) from exc
 
 
 @router.get("/", response_model=list[FileInfo])
@@ -412,6 +559,354 @@ async def read_file(
         authority_source=resource_decision.authority_source if resource_decision else None,
         operator_view=bool(resource_decision and resource_decision.operator_view),
     )
+
+
+@router.get("/versions", response_model=FileVersionPage)
+async def list_file_versions(
+    agent_id: uuid.UUID,
+    path: str,
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=100),
+    operator_view: bool = False,
+    operator_reason: str | None = None,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """List authorized, checkpoint-backed versions for one workspace file."""
+    normalized = _require_workspace_file_path(path)
+    _agent_access, _decision, sessions, coverage_complete = await _authorized_workspace_version_sessions(
+        agent_id=agent_id,
+        path=normalized,
+        action="read",
+        operator_view=operator_view,
+        operator_reason=operator_reason,
+        current_user=current_user,
+        db=db,
+    )
+    from app.services.workspace_file_versions import collect_workspace_file_versions
+
+    versions = await asyncio.to_thread(
+        collect_workspace_file_versions,
+        agent_id=agent_id,
+        path=normalized,
+        sessions=sessions,
+    )
+    page = versions[offset : offset + limit]
+    current = _current_file_version_state(agent_id, normalized)
+    return FileVersionPage(
+        path=normalized,
+        current=FileVersionCurrentState(
+            exists=bool(current.get("exists")),
+            content_hash=current.get("sha256"),
+            size=int(current.get("size") or 0),
+        ),
+        versions=[_version_summary(record) for record in page],
+        total=len(versions),
+        offset=offset,
+        limit=limit,
+        has_more=offset + len(page) < len(versions),
+        coverage_complete=coverage_complete,
+    )
+
+
+@router.get("/versions/{version_id}/content", response_model=FileVersionContent)
+async def read_file_version(
+    agent_id: uuid.UUID,
+    version_id: str,
+    path: str,
+    operator_view: bool = False,
+    operator_reason: str | None = None,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Read the exact bytes of one authorized checkpoint version when textual."""
+    normalized = _require_workspace_file_path(path)
+    _agent_access, _decision, sessions, _coverage_complete = await _authorized_workspace_version_sessions(
+        agent_id=agent_id,
+        path=normalized,
+        action="read",
+        operator_view=operator_view,
+        operator_reason=operator_reason,
+        current_user=current_user,
+        db=db,
+    )
+    from app.services.workspace_file_versions import (
+        WorkspaceFileVersionNotFound,
+        WorkspaceFileVersionUnavailable,
+        read_workspace_file_version,
+    )
+
+    try:
+        version = await asyncio.to_thread(
+            read_workspace_file_version,
+            agent_id=agent_id,
+            path=normalized,
+            version_id=version_id,
+            sessions=sessions,
+        )
+    except WorkspaceFileVersionNotFound as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File version not found") from exc
+    except WorkspaceFileVersionUnavailable as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "workspace_file_version_unavailable", "message": str(exc)},
+        ) from exc
+
+    content: str | None = None
+    is_binary = False
+    if version.content is not None:
+        try:
+            content = version.content.decode("utf-8")
+            is_binary = "\x00" in content
+            if is_binary:
+                content = None
+        except UnicodeDecodeError:
+            is_binary = True
+    return FileVersionContent(
+        path=normalized,
+        version_id=version.version_id,
+        state=version.state,
+        content=content,
+        content_hash=version.content_hash,
+        size=version.size,
+        is_binary=is_binary,
+    )
+
+
+@router.get("/versions/{version_id}/download")
+async def download_file_version(
+    agent_id: uuid.UUID,
+    version_id: str,
+    path: str,
+    operator_view: bool = False,
+    operator_reason: str | None = None,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Download an authorized checkpoint file without exposing snapshot paths."""
+    normalized = _require_workspace_file_path(path)
+    _agent_access, _decision, sessions, _coverage_complete = await _authorized_workspace_version_sessions(
+        agent_id=agent_id,
+        path=normalized,
+        action="read",
+        operator_view=operator_view,
+        operator_reason=operator_reason,
+        current_user=current_user,
+        db=db,
+    )
+    from app.services.workspace_file_versions import (
+        WorkspaceFileVersionNotFound,
+        WorkspaceFileVersionUnavailable,
+        read_workspace_file_version,
+    )
+
+    try:
+        version = await asyncio.to_thread(
+            read_workspace_file_version,
+            agent_id=agent_id,
+            path=normalized,
+            version_id=version_id,
+            sessions=sessions,
+        )
+    except WorkspaceFileVersionNotFound as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File version not found") from exc
+    except WorkspaceFileVersionUnavailable as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "workspace_file_version_unavailable", "message": str(exc)},
+        ) from exc
+    if version.state != "available" or version.content is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "workspace_file_version_unavailable", "message": "This version has no downloadable file."},
+        )
+    filename = quote(Path(normalized).name, safe="")
+    return Response(
+        content=version.content,
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"},
+    )
+
+
+@router.post("/versions/{version_id}/restore", response_model=FileVersionRestoreResult)
+async def restore_file_version(
+    agent_id: uuid.UUID,
+    version_id: str,
+    path: str,
+    data: FileVersionRestoreRequest,
+    operator_view: bool = False,
+    operator_reason: str | None = None,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Restore one file from a checkpoint with exact-current-state protection."""
+    normalized = _require_workspace_file_path(path)
+    from app.services.session_workspace_snapshot import (
+        async_agent_workspace_lock,
+        finalize_workspace_restore_locked,
+        restore_workspace_snapshot_locked,
+    )
+    from app.services.workspace_file_versions import (
+        WorkspaceFileVersionNotFound,
+        resolve_workspace_file_version,
+    )
+    from app.services.workspace_resource_authority import (
+        authorize_workspace_path,
+        mark_workspace_path_deleted,
+        register_workspace_path,
+    )
+
+    async with async_agent_workspace_lock(agent_id):
+        agent_access, _read_decision, sessions, _coverage_complete = await _authorized_workspace_version_sessions(
+            agent_id=agent_id,
+            path=normalized,
+            action="read",
+            operator_view=operator_view,
+            operator_reason=operator_reason,
+            current_user=current_user,
+            db=db,
+            for_update=True,
+        )
+        agent = agent_access[0]
+        try:
+            version = await asyncio.to_thread(
+                resolve_workspace_file_version,
+                agent_id=agent_id,
+                path=normalized,
+                version_id=version_id,
+                sessions=sessions,
+            )
+        except WorkspaceFileVersionNotFound as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File version not found") from exc
+        if not version.restorable or version.state == "unavailable":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "workspace_file_version_unavailable",
+                    "message": "This checkpoint is incomplete or no longer verifiable.",
+                },
+            )
+
+        current = _current_file_version_state(agent_id, normalized)
+        expected_signature = (data.expected_current_exists, data.expected_current_hash)
+        actual_signature = (bool(current.get("exists")), current.get("sha256"))
+        if actual_signature != expected_signature:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "workspace_file_version_conflict",
+                    "message": "The file changed after version history was opened. Refresh before restoring.",
+                },
+            )
+
+        try:
+            mutation_decision = await authorize_workspace_path(
+                db,
+                current_user,
+                agent_id=agent_id,
+                path=normalized,
+                action="delete" if version.state == "deleted" else "write",
+                path_exists=bool(current.get("exists")),
+                allow_manager_override=operator_view,
+                manager_override_reason=operator_reason,
+                for_update=True,
+                agent_access=agent_access,
+            )
+        except Exception as exc:
+            raise _workspace_authority_http_error(exc) from exc
+
+        restore = await asyncio.to_thread(
+            restore_workspace_snapshot_locked,
+            agent_id=agent_id,
+            snapshot=version.snapshot,
+            restore_paths=[normalized],
+            expected_current_states={normalized: current},
+            require_lineage=False,
+            defer_finalize=True,
+        )
+        if not restore.ok:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "workspace_file_version_restore_failed",
+                    "message": restore.error or "The file version could not be restored.",
+                },
+            )
+
+        transaction_id = str(restore.transaction_id or "")
+        target_state = _current_file_version_state(agent_id, normalized)
+        try:
+            if target_state.get("exists"):
+                await register_workspace_path(
+                    db,
+                    tenant_id=agent.tenant_id,
+                    agent_id=agent_id,
+                    path=normalized,
+                    owner_user_id=mutation_decision.owner_user_id or current_user.id,
+                    root_session_id=mutation_decision.root_session_id,
+                    source="workspace_file_version_restore",
+                    content_hash=target_state.get("sha256"),
+                    allow_owner_rebind=False,
+                )
+            else:
+                await mark_workspace_path_deleted(db, agent_id=agent_id, path=normalized)
+            db.add(
+                AuditLog(
+                    tenant_id=agent.tenant_id,
+                    user_id=current_user.id,
+                    agent_id=agent_id,
+                    action="workspace_file_version_restored",
+                    details={
+                        "path": normalized,
+                        "version_id": version.version_id,
+                        "transaction_id": transaction_id or None,
+                        "previous_exists": bool(current.get("exists")),
+                        "previous_content_hash": current.get("sha256"),
+                        "target_exists": bool(target_state.get("exists")),
+                        "target_content_hash": target_state.get("sha256"),
+                        "authority_source": mutation_decision.authority_source,
+                        "operator_view": bool(mutation_decision.operator_view),
+                    },
+                )
+            )
+            await db.flush()
+            await db.commit()
+        except BaseException:
+            await db.rollback()
+            if transaction_id:
+                await asyncio.to_thread(
+                    finalize_workspace_restore_locked,
+                    agent_id=agent_id,
+                    transaction_id=transaction_id,
+                    commit=False,
+                )
+            raise
+
+        if transaction_id:
+            finalized = await asyncio.to_thread(
+                finalize_workspace_restore_locked,
+                agent_id=agent_id,
+                transaction_id=transaction_id,
+                commit=True,
+            )
+            if not finalized:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail={
+                        "code": "workspace_file_version_restore_needs_reconciliation",
+                        "message": "The restore was committed and requires startup reconciliation.",
+                    },
+                )
+        return FileVersionRestoreResult(
+            status="unchanged" if not transaction_id else "restored",
+            path=normalized,
+            version_id=version.version_id,
+            current=FileVersionCurrentState(
+                exists=bool(target_state.get("exists")),
+                content_hash=target_state.get("sha256"),
+                size=int(target_state.get("size") or 0),
+            ),
+        )
 
 
 async def _load_chat_artifact_or_404(

@@ -26,6 +26,56 @@ export interface FileContent {
   operator_view?: boolean;
 }
 
+export type FileVersionState = 'available' | 'deleted' | 'unavailable';
+
+export interface FileVersionCurrentState {
+  exists: boolean;
+  content_hash: string | null;
+  size: number;
+}
+
+export interface FileVersionSummary {
+  version_id: string;
+  created_at: string;
+  state: FileVersionState;
+  size: number;
+  content_hash: string | null;
+  restorable: boolean;
+}
+
+export interface FileVersionPage {
+  path: string;
+  current: FileVersionCurrentState;
+  versions: FileVersionSummary[];
+  total: number;
+  offset: number;
+  limit: number;
+  has_more: boolean;
+  coverage_complete: boolean;
+}
+
+export interface FileVersionContent {
+  path: string;
+  version_id: string;
+  state: FileVersionState;
+  content: string | null;
+  content_hash: string | null;
+  size: number;
+  is_binary: boolean;
+}
+
+export interface FileVersionRestoreRequest {
+  expected_current_exists: boolean;
+  expected_current_hash: string | null;
+}
+
+export interface FileVersionRestoreResult {
+  status: 'restored' | 'unchanged';
+  path: string;
+  version_id: string;
+  current: FileVersionCurrentState;
+}
+
 export interface ResourceAuthorityOptions {
   operatorView?: boolean;
   reason?: string;
@@ -55,6 +105,48 @@ export const fileApi = {
   },
   read: (agentId: string, path: string, authority?: ResourceAuthorityOptions) =>
     get<FileContent>(withAuthority(`/agents/${agentId}/files/content?path=${encodeURIComponent(path)}`, authority)),
+  versions: (
+    agentId: string,
+    path: string,
+    offset = 0,
+    limit = 20,
+    authority?: ResourceAuthorityOptions,
+  ) =>
+    get<FileVersionPage>(withAuthority(
+      `/agents/${agentId}/files/versions?path=${encodeURIComponent(path)}&offset=${offset}&limit=${limit}`,
+      authority,
+    )),
+  readVersion: (
+    agentId: string,
+    path: string,
+    versionId: string,
+    authority?: ResourceAuthorityOptions,
+  ) =>
+    get<FileVersionContent>(withAuthority(
+      `/agents/${agentId}/files/versions/${encodeURIComponent(versionId)}/content?path=${encodeURIComponent(path)}`,
+      authority,
+    )),
+  restoreVersion: (
+    agentId: string,
+    path: string,
+    versionId: string,
+    request: FileVersionRestoreRequest,
+    authority?: ResourceAuthorityOptions,
+  ) =>
+    post<FileVersionRestoreResult>(withAuthority(
+      `/agents/${agentId}/files/versions/${encodeURIComponent(versionId)}/restore?path=${encodeURIComponent(path)}`,
+      authority,
+    ), request),
+  downloadVersion: (
+    agentId: string,
+    path: string,
+    versionId: string,
+    authority?: ResourceAuthorityOptions,
+  ) =>
+    getBlob(withAuthority(
+      `/agents/${agentId}/files/versions/${encodeURIComponent(versionId)}/download?path=${encodeURIComponent(path)}`,
+      authority,
+    )),
   readArtifact: (agentId: string, artifactId: string, authority?: ResourceAuthorityOptions) =>
     get<FileContent>(withAuthority(
       `/agents/${agentId}/files/artifacts/${encodeURIComponent(artifactId)}/content`,

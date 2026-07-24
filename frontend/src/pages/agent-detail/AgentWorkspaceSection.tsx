@@ -19,6 +19,11 @@ export default function AgentWorkspaceSection({ agentId, canUseOperatorView = fa
     return {
       list: (path) => fileApi.list(agentId, path, authority),
       read: (path) => fileApi.read(agentId, path, authority),
+      versions: (path, offset, limit) => fileApi.versions(agentId, path, offset, limit, authority),
+      readVersion: (path, versionId) => fileApi.readVersion(agentId, path, versionId, authority),
+      restoreVersion: (path, versionId, request) =>
+        fileApi.restoreVersion(agentId, path, versionId, request, authority),
+      downloadVersion: (path, versionId) => fileApi.downloadVersion(agentId, path, versionId, authority),
       write: (path, content) => fileApi.write(agentId, path, content, authority),
       delete: (path) => fileApi.delete(agentId, path, authority),
       upload: (file, path, onProgress) => fileApi.upload(agentId, file, `${path}/`, onProgress, authority),

@@ -1787,7 +1787,29 @@
       "edit": "编辑",
       "cancel": "取消",
       "showingFiles": "正在显示 {{visible}} / {{total}} 个文件",
-      "showMoreFiles": "显示更多"
+      "showMoreFiles": "显示更多",
+      "fileHistory": {
+        "title": "版本历史",
+        "available": "可用",
+        "deleted": "此检查点中没有该文件",
+        "unavailable": "检查点不可用",
+        "loadMore": "加载更多版本",
+        "coverageWarning": "更早的会话尚未扫描。请先收窄 Owner 范围，再将此列表作为完整历史使用。",
+        "deletedPreview": "该文件在此检查点中不存在。",
+        "binaryPreview": "二进制版本可通过下载核对。",
+        "selectVersion": "选择一个检查点以核对其内容。",
+        "restoreAction": "恢复此版本",
+        "confirmTitle": "恢复此版本？",
+        "confirmBody": "仅当当前文件未发生变化时，才会替换当前内容。",
+        "restoring": "正在恢复…",
+        "confirmAction": "确认恢复",
+        "empty": "暂时没有包含此文件的持久检查点。",
+        "loadFailed": "无法加载版本历史。",
+        "readFailed": "无法读取此检查点。",
+        "restoreFailed": "无法恢复文件版本。",
+        "restored": "文件版本已恢复",
+        "downloadFailed": "版本下载失败。"
+      }
     },
     "chat": {
       "mySessions": "我的对话",

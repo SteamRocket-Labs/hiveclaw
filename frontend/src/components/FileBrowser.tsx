@@ -5,10 +5,18 @@
  */
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
+import type {
+    FileVersionContent,
+    FileVersionPage,
+    FileVersionRestoreRequest,
+    FileVersionRestoreResult,
+} from '../api/domains/files';
 import MarkdownRenderer from './MarkdownRenderer';
+import FileVersionHistoryPanel from './FileVersionHistoryPanel';
 import { saveBlob } from '../utils/authenticatedResource';
 import { buildNewSkillFilePath } from './fileBrowserPaths';
 import { FILE_LIST_PAGE_SIZE, visibleFileWindow } from './fileBrowserWindow';
+import { useFileVersionHistory } from './useFileVersionHistory';
 import './FileBrowser.css';
 
 // ─── Types ─────────────────────────────────────────────
@@ -27,6 +35,14 @@ export interface FileBrowserApi {
     delete: (path: string) => Promise<any>;
     upload?: (file: File, path: string, onProgress?: (pct: number) => void) => Promise<any>;
     download?: (path: string) => Promise<Blob>;
+    versions?: (path: string, offset: number, limit: number) => Promise<FileVersionPage>;
+    readVersion?: (path: string, versionId: string) => Promise<FileVersionContent>;
+    restoreVersion?: (
+        path: string,
+        versionId: string,
+        request: FileVersionRestoreRequest,
+    ) => Promise<FileVersionRestoreResult>;
+    downloadVersion?: (path: string, versionId: string) => Promise<Blob>;
 }
 
 export interface FileBrowserProps {
@@ -98,6 +114,7 @@ export default function FileBrowser({
     const [loading, setLoading] = useState(false);
     const [contentLoaded, setContentLoaded] = useState(false);
     const [viewing, setViewing] = useState<string | null>(singleFile || null);
+    const [viewRevision, setViewRevision] = useState(0);
     const [content, setContent] = useState('');
     const [editing, setEditing] = useState(false);
     const [editContent, setEditContent] = useState('');
@@ -163,7 +180,7 @@ export default function FileBrowser({
         api.read(viewing).then(data => {
             setContent(data.content || '');
         }).catch(() => setContent(''));
-    }, [viewing, api, singleFile]);
+    }, [viewing, api, singleFile, viewRevision]);
 
     useEffect(() => {
         if (!viewing || !isImage(viewing) || !api.download) {
@@ -183,7 +200,7 @@ export default function FileBrowser({
             active = false;
             if (objectUrl) URL.revokeObjectURL(objectUrl);
         };
-    }, [api, viewing]);
+    }, [api, viewing, viewRevision]);
 
     const handleDownload = useCallback(async (path: string) => {
         if (!api.download) return;
@@ -194,6 +211,24 @@ export default function FileBrowser({
             showToast(error instanceof Error ? error.message : String(error), 'error');
         }
     }, [api, showToast]);
+
+    const fileHistory = useFileVersionHistory({
+        api,
+        path: singleFile ? null : viewing,
+        onRestored: (restoredContent) => {
+            setContent(restoredContent);
+            setEditing(false);
+            setViewRevision((revision) => revision + 1);
+        },
+        onDeleted: () => {
+            setViewing(null);
+            setEditing(false);
+            void reload();
+        },
+        onDownload: saveBlob,
+        onRefresh,
+        showToast,
+    });
 
     // ─── Actions ──────────────────────────────────────
 
@@ -449,6 +484,11 @@ export default function FileBrowser({
                             ⬇ {t('common.download', 'Download')}
                         </button>
                     )}
+                    {fileHistory.available && !editing && (
+                        <button className="btn btn-secondary" onClick={fileHistory.openHistory}>
+                            ↺ {t('agent.workspace.fileHistory.title', 'Version history')}
+                        </button>
+                    )}
                     {canDelete && (
                         <button className="btn btn-danger"
                             onClick={() => setDeleteTarget({ path: viewing, name: viewing.split('/').pop() || viewing })}>×</button>
@@ -492,6 +532,27 @@ export default function FileBrowser({
                         </div>
                     )}
                 </div>
+                {fileHistory.open && (
+                    <FileVersionHistoryPanel
+                        path={viewing}
+                        page={fileHistory.historyPage}
+                        selected={fileHistory.selected}
+                        selectedVersionId={fileHistory.selectedVersionId}
+                        restoreCandidate={fileHistory.restoreCandidate}
+                        loading={fileHistory.loading}
+                        selectedLoading={fileHistory.selectedLoading}
+                        restoring={fileHistory.restoring}
+                        error={fileHistory.error}
+                        onClose={fileHistory.close}
+                        onRetry={fileHistory.retry}
+                        onSelect={fileHistory.selectVersion}
+                        onRequestRestore={fileHistory.requestRestore}
+                        onConfirmRestore={fileHistory.confirmRestore}
+                        onCancelRestore={fileHistory.cancelRestore}
+                        onLoadMore={fileHistory.loadMore}
+                        onDownload={fileHistory.downloadVersion}
+                    />
+                )}
                 {renderDeleteModal()}
                 {renderToast()}
             </div>

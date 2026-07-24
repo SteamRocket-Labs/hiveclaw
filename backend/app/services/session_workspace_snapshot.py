@@ -680,6 +680,23 @@ def finalize_workspace_restore(
             lease.release()
 
 
+def finalize_workspace_restore_locked(
+    *,
+    agent_id: Any,
+    transaction_id: str,
+    commit: bool,
+    data_root: Path | str | None = None,
+) -> bool:
+    """Finalize a restore transaction while the caller owns the workspace lock."""
+
+    return _finalize_workspace_restore_locked(
+        agent_id=agent_id,
+        transaction_id=transaction_id,
+        commit=commit,
+        data_root=data_root,
+    )
+
+
 def recover_workspace_restore_transactions(
     *,
     committed_transaction_ids: set[str],
@@ -767,6 +784,7 @@ async def recover_workspace_restores_from_transcript(
     from sqlalchemy import select
 
     from app.database import async_session, enter_rls_bypass
+    from app.models.audit import AuditLog
     from app.models.chat_transcript_event import ChatTranscriptEvent
 
     committed: set[str] = set()
@@ -795,6 +813,18 @@ async def recover_workspace_restores_from_transcript(
                         .limit(1)
                     )
                 ).scalar_one_or_none()
+                if event_id is None:
+                    event_id = (
+                        await bypass_db.execute(
+                            select(AuditLog.id)
+                            .where(
+                                AuditLog.agent_id == agent_id,
+                                AuditLog.action == "workspace_file_version_restored",
+                                AuditLog.details.contains({"transaction_id": transaction_id}),
+                            )
+                            .limit(1)
+                        )
+                    ).scalar_one_or_none()
                 if event_id is not None:
                     committed.add(transaction_id)
         await db.rollback()
@@ -804,20 +834,21 @@ async def recover_workspace_restores_from_transcript(
     )
 
 
-def restore_workspace_snapshot(
+def _restore_workspace_snapshot_impl(
     *,
     agent_id: Any,
     snapshot: dict[str, Any],
     restore_paths: list[str] | None = None,
     expected_current_states: dict[str, dict[str, Any]] | None = None,
     expected_lineage: dict[str, list[dict[str, Any]]] | None = None,
+    require_lineage: bool = True,
     data_root: Path | str | None = None,
     defer_finalize: bool = False,
+    lease: _WorkspaceLockLease | None,
 ) -> WorkspaceRestoreResult:
-    """Atomically install a full or session-scoped workspace snapshot."""
+    """Install a workspace snapshot while the caller owns the workspace lock."""
 
     checkpoint_event_id = str(snapshot.get("checkpoint_event_id") or "")
-    lease = _acquire_workspace_lock(agent_id, data_root=data_root)
     retain_lease = False
     transaction_id: str | None = None
     try:
@@ -900,7 +931,7 @@ def restore_workspace_snapshot(
                 normalized_expected[_workspace_relative_path(raw_path)] = dict(state or {})
             except ValueError as exc:
                 return _restore_failure(checkpoint_event_id, str(exc))
-        if expected_current_states is not None:
+        if expected_current_states is not None and require_lineage:
             lineage_error = _validate_workspace_restore_lineage(
                 scoped_paths=scoped_paths,
                 manifest_by_path=manifest_by_path,
@@ -909,6 +940,7 @@ def restore_workspace_snapshot(
             )
             if lineage_error:
                 return _restore_failure(checkpoint_event_id, lineage_error)
+        if expected_current_states is not None:
             for rel in scoped_paths:
                 expected = normalized_expected.get(rel)
                 if expected is None:
@@ -1051,8 +1083,9 @@ def restore_workspace_snapshot(
             requires_finalize=defer_finalize,
         )
         if defer_finalize:
-            _ACTIVE_RESTORE_LEASES[transaction_id] = lease
-            retain_lease = True
+            if lease is not None:
+                _ACTIVE_RESTORE_LEASES[transaction_id] = lease
+                retain_lease = True
             return result
         if not _finalize_workspace_restore_locked(
             agent_id=agent_id,
@@ -1067,8 +1100,61 @@ def restore_workspace_snapshot(
             )
         return result
     finally:
-        if not retain_lease:
+        if lease is not None and not retain_lease:
             lease.release()
+
+
+def restore_workspace_snapshot_locked(
+    *,
+    agent_id: Any,
+    snapshot: dict[str, Any],
+    restore_paths: list[str] | None = None,
+    expected_current_states: dict[str, dict[str, Any]] | None = None,
+    expected_lineage: dict[str, list[dict[str, Any]]] | None = None,
+    require_lineage: bool = True,
+    data_root: Path | str | None = None,
+    defer_finalize: bool = False,
+) -> WorkspaceRestoreResult:
+    """Restore while the caller already holds the Agent workspace lock."""
+
+    return _restore_workspace_snapshot_impl(
+        agent_id=agent_id,
+        snapshot=snapshot,
+        restore_paths=restore_paths,
+        expected_current_states=expected_current_states,
+        expected_lineage=expected_lineage,
+        require_lineage=require_lineage,
+        data_root=data_root,
+        defer_finalize=defer_finalize,
+        lease=None,
+    )
+
+
+def restore_workspace_snapshot(
+    *,
+    agent_id: Any,
+    snapshot: dict[str, Any],
+    restore_paths: list[str] | None = None,
+    expected_current_states: dict[str, dict[str, Any]] | None = None,
+    expected_lineage: dict[str, list[dict[str, Any]]] | None = None,
+    require_lineage: bool = True,
+    data_root: Path | str | None = None,
+    defer_finalize: bool = False,
+) -> WorkspaceRestoreResult:
+    """Atomically install a full or session-scoped workspace snapshot."""
+
+    lease = _acquire_workspace_lock(agent_id, data_root=data_root)
+    return _restore_workspace_snapshot_impl(
+        agent_id=agent_id,
+        snapshot=snapshot,
+        restore_paths=restore_paths,
+        expected_current_states=expected_current_states,
+        expected_lineage=expected_lineage,
+        require_lineage=require_lineage,
+        data_root=data_root,
+        defer_finalize=defer_finalize,
+        lease=lease,
+    )
 
 
 def index_session_workspace_snapshot(session: Any, *, checkpoint_event_id: Any, snapshot: dict[str, Any]) -> None:

@@ -1787,7 +1787,29 @@
       "edit": "Edit",
       "cancel": "Cancel",
       "showingFiles": "Showing {{visible}} of {{total}} files",
-      "showMoreFiles": "Show more"
+      "showMoreFiles": "Show more",
+      "fileHistory": {
+        "title": "Version history",
+        "available": "Available",
+        "deleted": "File absent at this checkpoint",
+        "unavailable": "Checkpoint unavailable",
+        "loadMore": "Load more versions",
+        "coverageWarning": "Older sessions were not scanned. Refine the owner scope before relying on this as complete history.",
+        "deletedPreview": "This file did not exist at this checkpoint.",
+        "binaryPreview": "Binary versions are available by download.",
+        "selectVersion": "Select a checkpoint to inspect its content.",
+        "restoreAction": "Restore this version",
+        "confirmTitle": "Restore this version?",
+        "confirmBody": "The current file will be replaced only if it has not changed.",
+        "restoring": "Restoring…",
+        "confirmAction": "Confirm restore",
+        "empty": "No durable checkpoints contain this file yet.",
+        "loadFailed": "Version history could not be loaded.",
+        "readFailed": "This checkpoint could not be read.",
+        "restoreFailed": "File version could not be restored.",
+        "restored": "File version restored",
+        "downloadFailed": "Version download failed."
+      }
     },
     "chat": {
       "mySessions": "My Conversations",

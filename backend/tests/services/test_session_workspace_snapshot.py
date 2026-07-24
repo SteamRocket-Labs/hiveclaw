@@ -231,6 +231,111 @@ def test_scoped_workspace_restore_fails_closed_on_a_later_writer(tmp_path):
     assert (workspace / "report.md").read_text(encoding="utf-8") == "foreign-later-write"
 
 
+def test_locked_file_restore_uses_exact_current_state_without_session_lineage(tmp_path):
+    from app.services.session_workspace_snapshot import (
+        agent_workspace_lock,
+        capture_workspace_snapshot,
+        restore_workspace_snapshot_locked,
+        workspace_file_state,
+    )
+
+    agent_id = uuid4()
+    workspace = tmp_path / str(agent_id) / "workspace"
+    workspace.mkdir(parents=True)
+    report = workspace / "report.md"
+    report.write_text("checkpoint", encoding="utf-8")
+    snapshot = capture_workspace_snapshot(
+        agent_id=agent_id,
+        session_id=uuid4(),
+        checkpoint_event_id=uuid4(),
+        data_root=tmp_path,
+    )
+    report.write_text("current", encoding="utf-8")
+    current = workspace_file_state(
+        agent_id=agent_id,
+        path="workspace/report.md",
+        data_root=tmp_path,
+    )
+
+    with agent_workspace_lock(agent_id, data_root=tmp_path):
+        restored = restore_workspace_snapshot_locked(
+            agent_id=agent_id,
+            snapshot=snapshot,
+            restore_paths=["workspace/report.md"],
+            expected_current_states={"workspace/report.md": current},
+            require_lineage=False,
+            data_root=tmp_path,
+        )
+
+    assert restored.ok is True
+    assert report.read_text(encoding="utf-8") == "checkpoint"
+
+
+@pytest.mark.asyncio
+async def test_startup_recovery_accepts_committed_file_version_restore_audit(tmp_path, monkeypatch):
+    import app.database as database
+    import app.services.session_workspace_snapshot as snapshots
+
+    agent_id = uuid4()
+    workspace = tmp_path / str(agent_id) / "workspace"
+    workspace.mkdir(parents=True)
+    report = workspace / "report.md"
+    report.write_text("checkpoint", encoding="utf-8")
+    snapshot = snapshots.capture_workspace_snapshot(
+        agent_id=agent_id,
+        session_id=uuid4(),
+        checkpoint_event_id=uuid4(),
+        data_root=tmp_path,
+    )
+    report.write_text("current", encoding="utf-8")
+    restored = snapshots.restore_workspace_snapshot(
+        agent_id=agent_id,
+        snapshot=snapshot,
+        data_root=tmp_path,
+        defer_finalize=True,
+    )
+    lease = snapshots._ACTIVE_RESTORE_LEASES.pop(restored.transaction_id)
+    lease.release()
+
+    class _Result:
+        def __init__(self, value):
+            self.value = value
+
+        def scalar_one_or_none(self):
+            return self.value
+
+    class _DB:
+        def __init__(self):
+            self.queries = 0
+
+        async def execute(self, _statement):
+            self.queries += 1
+            return _Result(uuid4() if self.queries == 2 else None)
+
+        async def rollback(self):
+            return None
+
+    class _Context:
+        def __init__(self, value):
+            self.value = value
+
+        async def __aenter__(self):
+            return self.value
+
+        async def __aexit__(self, *_args):
+            return None
+
+    fake_db = _DB()
+    monkeypatch.setattr(database, "async_session", lambda: _Context(fake_db))
+    monkeypatch.setattr(database, "enter_rls_bypass", lambda *_args, **_kwargs: _Context(fake_db))
+
+    recovered = await snapshots.recover_workspace_restores_from_transcript(data_root=tmp_path)
+
+    assert fake_db.queries == 2
+    assert recovered["committed"] == 1
+    assert report.read_text(encoding="utf-8") == "checkpoint"
+
+
 def test_scoped_workspace_restore_fails_closed_on_interleaved_foreign_writer(tmp_path):
     from app.services.session_workspace_snapshot import (
         capture_workspace_snapshot,

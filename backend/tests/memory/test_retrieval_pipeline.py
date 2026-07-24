@@ -61,8 +61,17 @@ def _write_overlay_entry(
     )
 
 
-def _write_t2_package(data_root: Path, agent_id: uuid.UUID, *, package_id: str = "t2pkg-evidence") -> str:
-    package_dir = data_root / str(agent_id) / "memory" / "t2" / "sessions" / "sess-1" / "segments" / "seg-1"
+def _write_t2_package(
+    data_root: Path,
+    agent_id: uuid.UUID,
+    *,
+    session_id: str = "sess-1",
+    segment_id: str = "seg-1",
+    package_id: str = "t2pkg-evidence",
+    summary: str = "Evidence for memory runtime.",
+    source_refs: list[str] | None = None,
+) -> str:
+    package_dir = data_root / str(agent_id) / "memory" / "t2" / "sessions" / session_id / "segments" / segment_id
     package_dir.mkdir(parents=True, exist_ok=True)
     (package_dir / "manifest.json").write_text(
         json.dumps(
@@ -70,15 +79,16 @@ def _write_t2_package(data_root: Path, agent_id: uuid.UUID, *, package_id: str =
                 "schema_version": "t2.segment-package.manifest.v1",
                 "package_id": package_id,
                 "package_status": "reviewed",
-                "session_id": "sess-1",
-                "t0_segment_id": "seg-1",
+                "session_id": session_id,
+                "t0_segment_id": segment_id,
                 "created_at": "2026-07-05T00:00:00+00:00",
+                "source_refs": source_refs or [f"t0://session/{session_id}/segment/{segment_id}#seq=1..2"],
             },
             ensure_ascii=False,
         ),
         encoding="utf-8",
     )
-    (package_dir / "summary.md").write_text("# Summary\nEvidence for memory runtime.\n", encoding="utf-8")
+    (package_dir / "summary.md").write_text(f"# Summary\n{summary}\n", encoding="utf-8")
     (package_dir / "labels.md").write_text(
         f"""<t2_labels schema_version="t2.labels.v1" package_id="{package_id}">
   <continuity_state>standalone</continuity_state>
@@ -90,6 +100,91 @@ def _write_t2_package(data_root: Path, agent_id: uuid.UUID, *, package_id: str =
         encoding="utf-8",
     )
     return package_id.replace("t2pkg-", "t2-")
+
+
+@pytest.mark.asyncio
+async def test_episodic_retrieval_uses_t2_packages_without_reading_chat_session_summary(
+    data_root: Path,
+    agent_id: uuid.UUID,
+    retriever: MemoryRetriever,
+    monkeypatch,
+) -> None:
+    current_session_id = str(uuid.uuid4())
+    previous_session_id = str(uuid.uuid4())
+    current_ref = f"t0://session/{current_session_id}/segment/current#seq=1..2"
+    previous_ref = f"t0://session/{previous_session_id}/segment/previous#seq=4..6"
+    _write_t2_package(
+        data_root,
+        agent_id,
+        session_id=current_session_id,
+        segment_id="current",
+        package_id="t2pkg-current",
+        summary="Current T2 summary is canonical.",
+        source_refs=[current_ref],
+    )
+    _write_t2_package(
+        data_root,
+        agent_id,
+        session_id=previous_session_id,
+        segment_id="previous",
+        package_id="t2pkg-previous",
+        summary="Previous T2 summary is canonical.",
+        source_refs=[previous_ref],
+    )
+
+    async def reject_db_tenant_resolution(_agent_id):
+        raise AssertionError("episodic prompt retrieval must not read ChatSession.summary")
+
+    monkeypatch.setattr(
+        "app.services.tenant_resolver.resolve_tenant_for_agent",
+        reject_db_tenant_resolution,
+    )
+
+    items = await retriever._retrieve_episodic(agent_id, current_session_id)
+
+    assert len(items) == 2
+    by_session = {item.metadata["session_id"]: item for item in items}
+    assert set(by_session) == {current_session_id, previous_session_id}
+    assert by_session[current_session_id].metadata["is_current_session"] is True
+    assert by_session[previous_session_id].metadata["is_current_session"] is False
+    assert by_session[current_session_id].metadata["source_type"] == "t2_package"
+    assert by_session[current_session_id].metadata["source_refs"] == [current_ref]
+    assert "Current T2 summary is canonical." in by_session[current_session_id].content
+    assert current_ref in by_session[current_session_id].content
+    assert by_session[current_session_id].source == (f"memory/t2/sessions/{current_session_id}/segments/current")
+
+
+@pytest.mark.asyncio
+async def test_episodic_retrieval_preserves_every_authorized_t2_package(
+    data_root: Path,
+    agent_id: uuid.UUID,
+    retriever: MemoryRetriever,
+) -> None:
+    for index in range(7):
+        _write_t2_package(
+            data_root,
+            agent_id,
+            session_id=f"session-{index}",
+            segment_id=f"segment-{index}",
+            package_id=f"t2pkg-{index}",
+            summary=f"Authorized package {index}",
+        )
+
+    items = await retriever._retrieve_episodic(agent_id, None, previous_limit=1)
+
+    assert len(items) == 7
+    assert {item.metadata["session_id"] for item in items} == {f"session-{index}" for index in range(7)}
+
+
+def test_episodic_prompt_authority_is_t2_not_chat_session_summary() -> None:
+    import inspect
+
+    source = inspect.getsource(MemoryRetriever._retrieve_episodic)
+
+    assert "load_t2_package_snapshots" in source
+    assert "render_t2_package_snapshots" in source
+    assert "ChatSession" not in source
+    assert "tenant_scoped_session" not in source
 
 
 def _activation_context(*, current_user_id: str = "owner-1", owner_id: str = "owner-1") -> ActivationContext:

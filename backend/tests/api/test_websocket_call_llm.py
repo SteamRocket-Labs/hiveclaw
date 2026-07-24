@@ -64,6 +64,16 @@ def test_websocket_idle_timeout_default_allows_long_wait(monkeypatch):
     assert _get_ws_idle_timeout_seconds() >= 3600
 
 
+def test_websocket_idle_summary_write_is_bound_to_the_agent_tenant() -> None:
+    import inspect
+
+    from app.api.websocket import websocket_chat
+
+    source = inspect.getsource(websocket_chat)
+
+    assert "_save_session_summary(conv_id, _idle_summary, agent.tenant_id)" in source
+
+
 @pytest.mark.asyncio
 async def test_emit_ws_session_lifecycle_hook_api_role_publishes_runtime_control(monkeypatch):
     import app.api.websocket as websocket_api

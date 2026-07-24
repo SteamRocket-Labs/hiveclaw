@@ -586,7 +586,8 @@ async def websocket_chat(
                             ),
                             timeout=15.0,
                         )
-                        # Session summary for Episodic layer (DB) — kept for retriever._retrieve_episodic()
+                        # User-facing session-list/search summary projection.
+                        # Canonical episodic prompt memory reads T2 packages.
                         if _process_role() != "api" and agent.tenant_id and conv_id:
                             try:
                                 from app.services.memory_service import _generate_session_summary, _save_session_summary
@@ -601,7 +602,7 @@ async def websocket_chat(
                                     timeout=10.0,
                                 )
                                 if _idle_summary:
-                                    await _save_session_summary(conv_id, _idle_summary)
+                                    await _save_session_summary(conv_id, _idle_summary, agent.tenant_id)
                             except Exception as _sum_err:
                                 logger.debug("[WS] Session summary on idle failed (non-fatal): {}", _sum_err)
                         logger.info("[WS] SESSION_IDLE completed for {}", agent_name)

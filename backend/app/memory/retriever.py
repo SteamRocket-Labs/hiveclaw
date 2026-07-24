@@ -10,10 +10,12 @@ import hashlib
 import json
 import logging
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 
 from app.memory.activation import ActivationContext, ActivationScorer
 from app.memory.explicit_overlay import search_explicit_overlay_entries
+from app.memory.t2.read_model import load_t2_package_snapshots, render_t2_package_snapshots
 from app.memory.types import MemoryItem, MemoryKind
 from app.runtime.context_budget import ContextBudget
 
@@ -664,7 +666,7 @@ class MemoryRetriever:
             )
         return items
 
-    # -- Episodic layer: session summaries from DB --
+    # -- Episodic layer: canonical T2 package read model --
 
     async def _retrieve_episodic(
         self,
@@ -674,80 +676,44 @@ class MemoryRetriever:
         previous_limit: int | None = None,
     ) -> list[MemoryItem]:
         del previous_limit  # compatibility-only; model selection owns relevance
-        items: list[MemoryItem] = []
         try:
-            from app.database import tenant_scoped_session
-            from app.models.chat_session import ChatSession
-            from app.services.tenant_resolver import resolve_tenant_for_agent
-            from sqlalchemy import select
-
-            session_uuid = _parse_session_uuid(session_id)
-
-            # Retriever may run inside a daemon/background path with no request
-            # GUC. Resolve the owning tenant so these chat_sessions summary reads
-            # survive the stage-3 non-owner role flip (a bare session fail-closes
-            # → empty episodic memory).
-            tid = await resolve_tenant_for_agent(agent_id)
-            async with tenant_scoped_session(tid) as db:
-                # Current session summary
-                if session_uuid:
-                    result = await db.execute(
-                        select(ChatSession.summary, ChatSession.id).where(
-                            ChatSession.id == session_uuid,
-                            ChatSession.summary.isnot(None),
-                            (ChatSession.agent_id == agent_id) | (ChatSession.peer_agent_id == agent_id),
-                        )
-                    )
-                    row = result.first()
-                    if row and row[0]:
-                        items.append(
-                            MemoryItem(
-                                kind=MemoryKind.EPISODIC,
-                                content=row[0],
-                                score=1.0,
-                                source="current_session",
-                                metadata={
-                                    "session_id": str(row[1]),
-                                    "is_current_session": True,
-                                    "description": _bounded_descriptor_text(row[0]),
-                                },
-                            )
-                        )
-
-                # Previous session summaries — complete authorized continuity evidence.
-                prev_query = (
-                    select(ChatSession.summary, ChatSession.id, ChatSession.last_message_at)
-                    .where(
-                        (ChatSession.agent_id == agent_id) | (ChatSession.peer_agent_id == agent_id),
-                        ChatSession.summary.isnot(None),
-                    )
-                    .order_by(ChatSession.last_message_at.desc(), ChatSession.created_at.desc())
-                )
-                if session_uuid:
-                    prev_query = prev_query.where(ChatSession.id != session_uuid)
-                result = await db.execute(prev_query)
-                rows = result.all()
-                for i, row in enumerate(rows):
-                    if row[0]:
-                        # Score decays: 0.8 → 0.6 → 0.4 for older sessions
-                        score = max(0.8 - i * 0.2, 0.3)
-                        _last_msg_at = row[2]
-                        items.append(
-                            MemoryItem(
-                                kind=MemoryKind.EPISODIC,
-                                content=row[0],
-                                score=score,
-                                source=f"previous_session_{i + 1}",
-                                metadata={
-                                    "session_id": str(row[1]),
-                                    "timestamp": _last_msg_at.isoformat() if _last_msg_at else None,
-                                    "description": _bounded_descriptor_text(row[0]),
-                                },
-                            )
-                        )
-
+            snapshots, _mtimes = load_t2_package_snapshots(self.data_root, agent_id, limit=None)
         except Exception as exc:
             logger.warning("Episodic retrieval failed: %s", exc)
+            return []
+
+        current_session_id = str(session_id or "").strip()
+        current = [snapshot for snapshot in snapshots if snapshot.session_id == current_session_id]
+        previous = [snapshot for snapshot in snapshots if snapshot.session_id != current_session_id]
+        items: list[MemoryItem] = []
+        previous_index = 0
+        for snapshot in [*current, *previous]:
+            is_current = bool(current_session_id) and snapshot.session_id == current_session_id
+            if is_current:
+                score = 1.0
+            else:
+                score = max(0.8 - previous_index * 0.2, 0.3)
+                previous_index += 1
+            descriptor_source = snapshot.synthesis_md or snapshot.summary_md or snapshot.review_md
+            items.append(
+                MemoryItem(
+                    kind=MemoryKind.EPISODIC,
+                    content=render_t2_package_snapshots([snapshot]),
+                    score=score,
+                    source=snapshot.rel_path,
+                    metadata={
+                        "session_id": snapshot.session_id,
+                        "is_current_session": is_current,
+                        "source_type": "t2_package",
+                        "package_kind": snapshot.package_kind,
+                        "package_status": snapshot.package_status,
+                        "source_refs": list(snapshot.source_refs),
+                        "timestamp": datetime.fromtimestamp(snapshot.updated_mtime, tz=UTC).isoformat(),
+                        "title": f"Session {snapshot.session_id} · {Path(snapshot.rel_path).name}",
+                        "description": _bounded_descriptor_text(descriptor_source),
+                    },
+                )
+            )
 
         return items
 

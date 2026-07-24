@@ -22,6 +22,7 @@ _ACTIVE_PACKAGE_STATUSES = {"reviewed", "closed", "absorbed", "t3_absorbed"}
 @dataclass(frozen=True, slots=True)
 class T2PackageSnapshot:
     rel_path: str
+    session_id: str
     package_kind: str
     package_status: str
     source_refs: tuple[str, ...]
@@ -134,6 +135,7 @@ def _load_snapshot(*, package_dir: Path, agent_root: Path, updated_mtime: float)
     source_refs = tuple(str(ref).strip() for ref in (manifest.get("source_refs") or []) if str(ref).strip())
     return T2PackageSnapshot(
         rel_path=_relative_package_path(agent_root, package_dir),
+        session_id=package_dir.parent.parent.name,
         package_kind=package_kind,
         package_status=status,
         source_refs=source_refs,

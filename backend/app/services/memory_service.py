@@ -952,11 +952,11 @@ async def persist_runtime_memory(
     tenant_id: uuid.UUID,
     messages: list[dict],
 ) -> None:
-    """Persist session summary for any runtime entrypoint.
+    """Persist the session-list/search summary projection for any runtime entrypoint.
 
     Durable memory extraction is handled by hooks/extractor into T2 and must not
-    be duplicated here. This path only writes session summaries plus optional
-    external journal copies.
+    be duplicated here. ``ChatSession.summary`` is a user-facing projection, not
+    an episodic prompt-memory source.
     """
     if not _has_meaningful_messages(messages):
         return
@@ -1175,11 +1175,11 @@ async def _generate_session_summary(
     agent_id: uuid.UUID | None = None,
     user_id: uuid.UUID | None = None,
 ) -> str | None:
-    """Generate a session summary using LLM only.
+    """Generate the user-facing session-list/search summary using LLM only.
 
-    ChatSession.summary is user-related semantic memory. If the summary LLM is
-    unavailable or fails, hold the write instead of persisting a mechanical
-    extraction as a second memory path.
+    Canonical durable memory is the T2 package read model. If the projection LLM
+    is unavailable or fails, hold the projection write instead of persisting a
+    mechanical extraction as a second semantic path.
     """
     summary_model = await _get_summary_model_config(tenant_id)
     if summary_model:
@@ -1223,7 +1223,7 @@ async def _save_session_summary(session_id: str, summary: str, tenant_id: uuid.U
         session = result.scalar_one_or_none()
         if session:
             session.summary = safe_summary
-            # Update last_message_at so episodic retriever ranks this session correctly
+            # Keep session-list/search ordering current; prompt memory reads T2.
             from datetime import datetime, timezone
 
             session.last_message_at = datetime.now(timezone.utc)

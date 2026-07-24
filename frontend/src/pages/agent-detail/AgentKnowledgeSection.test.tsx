@@ -33,6 +33,15 @@ const overviewData = {
     explicit: { active: 2 },
   },
   pipeline: { pendingPackages: 3, heldJobs: 0, stalled: true, lastAssessedAt: '2026-07-02T10:00:00+00:00' },
+  memoryStatus: {
+    state: 'consolidating',
+    availableForRecall: true,
+    recentMemoryAvailable: true,
+    longTermMemoryAvailable: true,
+    pendingConsolidation: true,
+    pendingItems: 3,
+    issueCount: 0,
+  },
   growth: { generatedAt: '2026-07-02T11:00:00+00:00', reportPath: 'memory/control/growth_report.md' },
   distillers: {
     t2_pipeline: { name: 't2_pipeline', state: 'active', last_run_at: '' },
@@ -131,8 +140,16 @@ describe('AgentKnowledgeSection', () => {
     expect(html).toContain('里程碑');
     // failure-mode lifecycle is the "getting stronger" progress bar
     expect(html).toContain('规避中');
-    // pipeline health: a stalled consolidation shows loudly
-    expect(html).toContain('消化停滞');
+    // Product-facing memory state is explicit without exposing lifecycle implementation names.
+    expect(html).toContain('正在巩固');
+    expect(html).toContain('近期经历已可供后续对话回忆');
+    expect(html).toContain('可供对话回忆');
+    expect(html).toContain('长期记忆');
+    expect(html).toContain('正在整理 3 段经历');
+    expect(html).not.toContain('T0→T2');
+    expect(html).not.toContain('心跳消化');
+    expect(html).not.toContain('Dream 固化');
+    expect(html).not.toContain('技能蒸馏');
     // growth freshness surfaces
     expect(html).toContain('成长报告更新于');
     // pending soul approvals deep-link to the evolution tab
@@ -141,11 +158,7 @@ describe('AgentKnowledgeSection', () => {
     expect(html).not.toContain('Superseded');
     expect(html).not.toContain('Archived');
     expect(html).not.toContain('extractor');
-    // A1 (exists ≠ fresh): stale renders in warning color (class-driven → var(--warning))
-    expect(html).toContain('agent-knowledge-distiller-stale');
-    expect(html).toContain('Queued');
-    expect(html).toContain('agent-knowledge-distiller-queued');
-    expect(html).toContain('覆盖度 0/4');
+    expect(html).toContain('agent-knowledge-memory-status--consolidating');
     // Default view is Overview, not a file browser.
     expect(html).not.toContain('raw markdown browser');
   });
@@ -161,6 +174,46 @@ describe('AgentKnowledgeSection', () => {
     expect(html).not.toContain('>entries</button>');
     expect(html).not.toContain('>candidates</button>');
     expect(html).toContain('查看当前身份');
+  });
+
+  it('renders stalled memory as a business recovery state without pipeline internals', () => {
+    const original = { ...overviewData.memoryStatus };
+    Object.assign(overviewData.memoryStatus, {
+      state: 'needs_attention',
+      recentMemoryAvailable: false,
+      pendingItems: 1,
+      issueCount: 1,
+    });
+    try {
+      const html = renderToStaticMarkup(
+        <AgentKnowledgeSection agentId="agent-1" canEdit={false} onNavigateTab={() => {}} />,
+      );
+      expect(html).toContain('需要处理');
+      expect(html).toContain('部分近期经历的整理已经停滞');
+      expect(html).toContain('1 项需要处理');
+      expect(html).toContain('agent-knowledge-memory-status--needs-attention');
+      expect(html).not.toContain('t2_pipeline');
+      expect(html).not.toContain('runtime_task_id');
+    } finally {
+      Object.assign(overviewData.memoryStatus, original);
+    }
+  });
+
+  it('does not expose an unknown backend lifecycle state as employee-facing copy', () => {
+    const original = { ...overviewData.memoryStatus };
+    Object.assign(overviewData.memoryStatus, {
+      state: 't2_recovery_pending',
+      issueCount: 1,
+    });
+    try {
+      const html = renderToStaticMarkup(
+        <AgentKnowledgeSection agentId="agent-1" canEdit={false} onNavigateTab={() => {}} />,
+      );
+      expect(html).toContain('需要处理');
+      expect(html).not.toContain('t2_recovery_pending');
+    } finally {
+      Object.assign(overviewData.memoryStatus, original);
+    }
   });
 
   it('hides the Raw advanced view for use-only access', () => {

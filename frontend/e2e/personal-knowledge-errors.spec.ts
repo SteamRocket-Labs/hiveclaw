@@ -216,6 +216,15 @@ const overview = {
     explicit: { active: 0 },
   },
   pipeline: { pendingPackages: 0, heldJobs: 0, stalled: false },
+  memoryStatus: {
+    state: 'consolidating',
+    availableForRecall: true,
+    recentMemoryAvailable: true,
+    longTermMemoryAvailable: true,
+    pendingConsolidation: true,
+    pendingItems: 2,
+    issueCount: 0,
+  },
   growth: {},
   distillers: {
     t2_pipeline: { name: 't2_pipeline', state: 'active', last_run_at: '' },
@@ -226,7 +235,7 @@ const overview = {
   linkedCapabilities: { skillsReferenced: 0, workflowsReferenced: 0, mcpToolsReferenced: 0, skillCandidates: 0 },
 };
 
-async function bootstrapAgentKnowledge(page: Page, failure: AgentFailure) {
+async function bootstrapAgentKnowledge(page: Page, failure: AgentFailure | null, openPersonal = true) {
   await authenticate(page);
   await page.route('**/api/**', async (route) => {
     if (await authRoute(route)) return;
@@ -261,8 +270,30 @@ async function bootstrapAgentKnowledge(page: Page, failure: AgentFailure) {
     return route.fulfill({ json: {} });
   });
   await page.goto(`/agents/${AGENT_ID}#knowledge`);
-  await page.locator('.agent-knowledge-subviews').getByRole('button', { name: 'Personal KB' }).click();
+  if (openPersonal) {
+    await page.locator('.agent-knowledge-subviews').getByRole('button', { name: 'Personal KB' }).click();
+  }
 }
+
+test('Agent Detail exposes memory readiness without internal lifecycle names', async ({ page }) => {
+  await bootstrapAgentKnowledge(page, null, false);
+
+  const overviewGrid = page.locator('.agent-knowledge-overview-grid');
+  await expect(overviewGrid.getByText('Consolidating', { exact: true })).toBeVisible();
+  await expect(
+    overviewGrid.getByText('Recent experiences are available for future conversations', { exact: false }),
+  ).toBeVisible();
+  await expect(overviewGrid.getByText('Available for future conversations: Available', { exact: true })).toBeVisible();
+  await expect(overviewGrid.getByText('Long-term memory: Consolidated', { exact: true })).toBeVisible();
+  await expect(overviewGrid.getByText('Organizing 2 recent experiences', { exact: true })).toBeVisible();
+  await expect(overviewGrid).not.toContainText('T0→T2');
+  await expect(overviewGrid).not.toContainText('Heartbeat');
+  await expect(overviewGrid).not.toContainText('Dream');
+  await expect(overviewGrid).not.toContainText('runtime_task_id');
+
+  const accessibility = await new AxeBuilder({ page }).include('.agent-knowledge-overview-grid').analyze();
+  expect(accessibility.violations).toEqual([]);
+});
 
 for (const failure of ['documents', 'detail', 'search'] as const) {
   test(`Agent Detail exposes Personal KB ${failure} denial instead of an empty owner scope`, async ({ page }) => {

@@ -22,6 +22,8 @@ export interface DistillerStatus {
   coverage_state?: 'complete' | 'incomplete' | 'legacy_unknown' | string;
 }
 
+export type MemoryBusinessState = 'remembered' | 'consolidating' | 'needs_attention' | 'empty';
+
 export interface KnowledgeOverview {
   identity: {
     sections: number;
@@ -38,9 +40,19 @@ export interface KnowledgeOverview {
     milestones: { pages: number };
     explicit: { active: number };
   };
-  // Consolidation-debt summary — empty object until first assessed.
+  memoryStatus?: {
+    state: MemoryBusinessState;
+    availableForRecall: boolean;
+    recentMemoryAvailable: boolean;
+    longTermMemoryAvailable: boolean;
+    pendingConsolidation: boolean;
+    pendingItems: number;
+    issueCount: number;
+  };
+  // Live internal debt facts for operator/debug consumers; employee UI uses memoryStatus.
   pipeline: {
     pendingPackages?: number;
+    pendingStitchPackages?: number;
     heldJobs?: number;
     stalled?: boolean;
     lastAssessedAt?: string;

@@ -1590,6 +1590,28 @@
       "knowledgePlane": "Knowledge network",
       "milestonesPlane": "Milestones",
       "explicitPlane": "Owner-saved memories",
+      "memoryStatusCard": "Memory status",
+      "memoryState": {
+        "remembered": "Remembered",
+        "consolidating": "Consolidating",
+        "needs_attention": "Needs attention",
+        "empty": "No memory yet"
+      },
+      "memoryStateDescription": {
+        "remembered": "Usable memory is available for relevant future conversations.",
+        "consolidating": "Recent experiences are available for future conversations while they settle into long-term knowledge.",
+        "consolidating_pending": "Recent experiences are safely recorded and still being processed. They become available when processing completes.",
+        "needs_attention": "Some recent experience processing has stalled. Completed memories remain available.",
+        "empty": "No experiences or long-term memories are available for future conversations yet."
+      },
+      "availableForRecall": "Available for future conversations",
+      "available": "Available",
+      "notAvailableYet": "Not available yet",
+      "longTermMemory": "Long-term memory",
+      "remembered": "Consolidated",
+      "notConsolidatedYet": "Not consolidated yet",
+      "pendingMemoryItems": "Organizing {{count}} recent experiences",
+      "memoryIssueItems": "{{count}} items need attention",
       "pipelineCard": "Memory pipeline",
       "pipelineStalled": "Consolidation stalled",
       "pendingPackages": "backlog",

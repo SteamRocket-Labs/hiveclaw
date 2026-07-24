@@ -209,6 +209,81 @@ async def test_turn_stop_seals_user_turn_and_starts_canonical_t2_package(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_turn_stop_committed_t2_is_available_to_the_next_chat_prompt_without_heartbeat(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from app.memory.retriever import MemoryRetriever
+
+    _patch_t0_root(monkeypatch, tmp_path)
+    agent_id = uuid4()
+    tenant_id = uuid4()
+    session_id = "turn-with-new-memory"
+    event = append_t0_session_event(
+        agent_id=agent_id,
+        session_id=session_id,
+        tenant_id=tenant_id,
+        event_type="user_message",
+        role="user",
+        content="以后架构汇报请先给结论。",
+        data_root=tmp_path,
+    )
+
+    async def commit_package(**kwargs):
+        package_dir = (
+            tmp_path / str(agent_id) / "memory" / "t2" / "sessions" / session_id / "segments" / kwargs["t0_segment_id"]
+        )
+        package_dir.mkdir(parents=True, exist_ok=True)
+        (package_dir / "summary.md").write_text(
+            "<t2_summary>Owner prefers architecture reports to lead with the conclusion.</t2_summary>\n",
+            encoding="utf-8",
+        )
+        (package_dir / "labels.md").write_text("<t2_labels>owner preference</t2_labels>\n", encoding="utf-8")
+        (package_dir / "review.md").write_text(
+            "<t2_review><allowed_next>t3_intake</allowed_next></t2_review>\n",
+            encoding="utf-8",
+        )
+        (package_dir / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "t2.segment-package.manifest.v1",
+                    "package_status": "reviewed",
+                    "session_id": session_id,
+                    "t0_segment_id": kwargs["t0_segment_id"],
+                    "source_refs": [f"t0://session/{session_id}/segment/{kwargs['t0_segment_id']}#seq=1..2"],
+                }
+            ),
+            encoding="utf-8",
+        )
+        return SimpleNamespace(
+            status="committed",
+            package_dir=package_dir,
+            job_id=kwargs["job_id"],
+            issues=(),
+        )
+
+    monkeypatch.setattr("app.memory.t2.segment_package.build_t2_segment_package_with_llm", commit_package)
+
+    await _t0_turn_stop(
+        HookContext(
+            event=HookEvent.TURN_STOP,
+            agent_id=str(agent_id),
+            session_id=session_id,
+            source="web",
+            messages=[],
+            metadata={"tenant_id": str(tenant_id), "reason": "invoke_complete"},
+        )
+    )
+
+    recalled = await MemoryRetriever(data_root=tmp_path)._retrieve_episodic(agent_id, "next-chat-session")
+
+    assert len(recalled) == 1
+    assert recalled[0].metadata["session_id"] == session_id
+    assert recalled[0].metadata["source_refs"] == [f"t0://session/{session_id}/segment/{event.segment_id}#seq=1..2"]
+    assert "lead with the conclusion" in recalled[0].content
+
+
+@pytest.mark.asyncio
 async def test_turn_abort_seals_t0_without_semantic_t2_package(monkeypatch, tmp_path) -> None:
     _patch_t0_root(monkeypatch, tmp_path)
     agent_id = uuid4()

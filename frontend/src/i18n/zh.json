@@ -1590,6 +1590,28 @@
       "knowledgePlane": "知识网络",
       "milestonesPlane": "里程碑",
       "explicitPlane": "主人指令记忆",
+      "memoryStatusCard": "记忆状态",
+      "memoryState": {
+        "remembered": "已记住",
+        "consolidating": "正在巩固",
+        "needs_attention": "需要处理",
+        "empty": "暂无记忆"
+      },
+      "memoryStateDescription": {
+        "remembered": "已形成可用记忆，可在后续对话中按需回忆。",
+        "consolidating": "近期经历已可供后续对话回忆，系统正在将它们沉淀为长期认知。",
+        "consolidating_pending": "近期经历已安全记录，系统正在整理；完成后即可供后续对话回忆。",
+        "needs_attention": "部分近期经历的整理已经停滞；已完成的记忆仍可继续使用。",
+        "empty": "还没有可供后续对话回忆的经历或长期记忆。"
+      },
+      "availableForRecall": "可供对话回忆",
+      "available": "可用",
+      "notAvailableYet": "尚不可用",
+      "longTermMemory": "长期记忆",
+      "remembered": "已沉淀",
+      "notConsolidatedYet": "尚未沉淀",
+      "pendingMemoryItems": "正在整理 {{count}} 段经历",
+      "memoryIssueItems": "{{count}} 项需要处理",
       "pipelineCard": "记忆管线",
       "pipelineStalled": "消化停滞",
       "pendingPackages": "积压",

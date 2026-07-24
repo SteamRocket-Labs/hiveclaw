@@ -51,6 +51,8 @@
 
 .agent-knowledge-card-title {
   margin-bottom: var(--space-2);
+  font-size: var(--text-body);
+  font-weight: 600;
 }
 
 .agent-knowledge-card-body {
@@ -78,37 +80,45 @@
 
 /* ── Status colors — 只上小字（≤12px 元素） ────────────── */
 .agent-knowledge-fm-active {
-  color: var(--error);
+  color: var(--text-primary);
 }
 
 .agent-knowledge-fm-mitigating {
-  color: var(--warning);
+  color: var(--text-primary);
 }
 
 .agent-knowledge-fm-resolved {
-  color: var(--success);
+  color: var(--text-primary);
 }
 
-.agent-knowledge-distiller-active {
-  color: var(--success);
-}
-
-.agent-knowledge-distiller-queued {
-  color: var(--primary);
+.agent-knowledge-memory-status {
   font-weight: 600;
+  margin-bottom: var(--space-1);
 }
 
-.agent-knowledge-distiller-stale {
-  color: var(--warning);
+.agent-knowledge-memory-status--remembered {
+  color: var(--text-primary);
 }
 
-.agent-knowledge-distiller-never {
+.agent-knowledge-memory-status--consolidating {
+  color: var(--accent-text);
+}
+
+.agent-knowledge-memory-status--needs-attention {
+  color: var(--text-primary);
+}
+
+.agent-knowledge-memory-status--empty {
   color: var(--text-tertiary);
 }
 
-.agent-knowledge-pipeline-stalled {
-  color: var(--error);
-  margin-top: var(--space-1);
+.agent-knowledge-memory-description {
+  color: var(--text-secondary);
+  margin-bottom: var(--space-1);
+}
+
+.agent-knowledge-memory-issues {
+  color: var(--text-primary);
 }
 
 .agent-knowledge-growth-updated {

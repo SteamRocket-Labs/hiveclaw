@@ -295,6 +295,43 @@ def _build_distiller_statuses(root: Path) -> dict:
 _FAILURE_MODE_STATUS_KEYS = {"active": "active", "规避中": "mitigating", "已根除": "resolved"}
 
 
+def _build_memory_business_status(
+    *,
+    recallable_package_count: int,
+    explicit_active: int,
+    long_term_item_count: int,
+    debt,
+) -> dict:
+    """Project internal memory lifecycle facts into employee-facing states."""
+
+    pending_items = (
+        int(debt.pending_packages)
+        + int(debt.pending_stitch_packages)
+        + int(debt.active_explicit_entries)
+        + int(debt.held_jobs)
+    )
+    issue_count = len(set(debt.stall_reasons))
+    recent_memory_available = bool(recallable_package_count or explicit_active)
+    available_for_recall = bool(recent_memory_available or long_term_item_count)
+    if debt.stalled:
+        state = "needs_attention"
+    elif pending_items:
+        state = "consolidating"
+    elif available_for_recall:
+        state = "remembered"
+    else:
+        state = "empty"
+    return {
+        "state": state,
+        "availableForRecall": available_for_recall,
+        "recentMemoryAvailable": recent_memory_available,
+        "longTermMemoryAvailable": bool(long_term_item_count),
+        "pendingConsolidation": bool(pending_items),
+        "pendingItems": pending_items,
+        "issueCount": issue_count,
+    }
+
+
 def build_knowledge_overview(data_root: Path, agent_id: uuid.UUID) -> dict:
     """Two-plane overview: per-plane counts (with the self failure-mode
     lifecycle), pipeline health, growth freshness, distiller states. The
@@ -337,17 +374,41 @@ def build_knowledge_overview(data_root: Path, agent_id: uuid.UUID) -> dict:
         if str(manifest.get("status") or "").lower() not in {"committed", "rejected", "archived"}
     )
 
-    debt = _read_json(root / "memory" / "control" / "consolidation_debt.json")
-    pipeline = (
-        {
-            "pendingPackages": debt.get("pending_packages"),
-            "heldJobs": debt.get("held_jobs"),
-            "stalled": bool(debt.get("stalled")),
-            "lastAssessedAt": str(debt.get("generated_at") or ""),
-        }
-        if debt
-        else {}
+    from app.config import get_settings
+    from app.memory.consolidation_debt import (
+        DEFAULT_EXPLICIT_AGE_ALERT_HOURS,
+        DEFAULT_PENDING_AGE_ALERT_HOURS,
+        assess_consolidation_debt,
     )
+    from app.memory.t2.read_model import load_t2_package_snapshots
+
+    settings = get_settings()
+    assessed_at = datetime.now(timezone.utc).isoformat()
+    debt = assess_consolidation_debt(
+        agent_id=agent_id,
+        data_root=data_root,
+        pending_age_alert_hours=float(
+            getattr(settings, "MEMORY_DEBT_PENDING_AGE_ALERT_HOURS", DEFAULT_PENDING_AGE_ALERT_HOURS)
+        ),
+        explicit_age_alert_hours=float(
+            getattr(settings, "MEMORY_DEBT_EXPLICIT_AGE_ALERT_HOURS", DEFAULT_EXPLICIT_AGE_ALERT_HOURS)
+        ),
+    )
+    recallable_packages, _mtimes = load_t2_package_snapshots(data_root, agent_id, limit=None)
+    long_term_item_count = len(self_entries) + len(profile_entries) + knowledge_pages + milestone_pages
+    memory_status = _build_memory_business_status(
+        recallable_package_count=len(recallable_packages),
+        explicit_active=explicit_active,
+        long_term_item_count=long_term_item_count,
+        debt=debt,
+    )
+    pipeline = {
+        "pendingPackages": debt.pending_packages,
+        "pendingStitchPackages": debt.pending_stitch_packages,
+        "heldJobs": debt.held_jobs,
+        "stalled": debt.stalled,
+        "lastAssessedAt": assessed_at,
+    }
     growth_history = _read_jsonl(root / "memory" / "control" / "growth_metrics_history.jsonl", limit=1)
     growth = (
         {
@@ -380,6 +441,7 @@ def build_knowledge_overview(data_root: Path, agent_id: uuid.UUID) -> dict:
             "milestones": {"pages": milestone_pages},
             "explicit": {"active": explicit_active},
         },
+        "memoryStatus": memory_status,
         "pipeline": pipeline,
         "growth": growth,
         "distillers": _build_distiller_statuses(root),

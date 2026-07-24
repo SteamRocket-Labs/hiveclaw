@@ -199,6 +199,32 @@ def _write_t2_segment_manifest(root: Path, *, session_id: str = "sess-1", segmen
     return manifest
 
 
+def _write_recallable_t2_package(root: Path, *, session_id: str = "sess-1", segment_id: str = "seg-1") -> Path:
+    package_dir = root / "memory" / "t2" / "sessions" / session_id / "segments" / segment_id
+    package_dir.mkdir(parents=True, exist_ok=True)
+    (package_dir / "summary.md").write_text("<t2_summary>recent preference</t2_summary>\n", encoding="utf-8")
+    (package_dir / "labels.md").write_text("<t2_labels>preference</t2_labels>\n", encoding="utf-8")
+    (package_dir / "review.md").write_text(
+        "<t2_review><allowed_next>t3_intake</allowed_next></t2_review>\n",
+        encoding="utf-8",
+    )
+    manifest = package_dir / "manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": "t2.segment-package.manifest.v1",
+                "package_status": "reviewed",
+                "session_id": session_id,
+                "t0_segment_id": segment_id,
+                "created_at": datetime.now(UTC).isoformat(),
+                "source_refs": [f"t0://session/{session_id}/segment/{segment_id}#seq=1..2"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return manifest
+
+
 def _age_t3_files(root: Path, *, hours: float) -> None:
     for rel in ("self/self.md", "profiles/owner.md"):
         path = root / "memory" / rel
@@ -241,6 +267,60 @@ def test_overview_speaks_two_planes(tmp_path: Path) -> None:
     assert overview["linkedCapabilities"]["skillsReferenced"] == 1
     assert overview["linkedCapabilities"]["skillCandidates"] == 1
     assert overview["linkedCapabilities"]["workflowsReferenced"] == 1
+
+
+def test_overview_reports_live_business_memory_status_without_waiting_for_heartbeat(tmp_path: Path) -> None:
+    root = _seed_workspace(tmp_path)
+    _write_recallable_t2_package(root)
+
+    overview = build_knowledge_overview(tmp_path, AGENT)
+
+    assert overview["memoryStatus"] == {
+        "state": "consolidating",
+        "availableForRecall": True,
+        "recentMemoryAvailable": True,
+        "longTermMemoryAvailable": True,
+        "pendingConsolidation": True,
+        "pendingItems": 1,
+        "issueCount": 0,
+    }
+    assert overview["pipeline"]["pendingPackages"] == 1
+    assert overview["pipeline"]["lastAssessedAt"]
+
+
+def test_overview_distinguishes_retrying_memory_from_stalled_memory(tmp_path: Path) -> None:
+    root = _seed_workspace(tmp_path)
+    job_manifest = root / "memory" / ".staging" / "t2_jobs" / "job-1" / "job_manifest.json"
+    job_manifest.parent.mkdir(parents=True, exist_ok=True)
+    job_manifest.write_text(
+        json.dumps({"schema_version": "t2.segment-package-job.v1", "status": "held", "retry_count": 1}),
+        encoding="utf-8",
+    )
+
+    retrying = build_knowledge_overview(tmp_path, AGENT)
+
+    assert retrying["memoryStatus"]["state"] == "consolidating"
+    assert retrying["memoryStatus"]["pendingItems"] == 1
+    assert retrying["memoryStatus"]["issueCount"] == 0
+    assert retrying["pipeline"]["stalled"] is False
+
+    job_manifest.write_text(
+        json.dumps({"schema_version": "t2.segment-package-job.v1", "status": "held", "retry_count": 99}),
+        encoding="utf-8",
+    )
+    overview = build_knowledge_overview(tmp_path, AGENT)
+
+    assert overview["memoryStatus"] == {
+        "state": "needs_attention",
+        "availableForRecall": True,
+        "recentMemoryAvailable": False,
+        "longTermMemoryAvailable": True,
+        "pendingConsolidation": True,
+        "pendingItems": 1,
+        "issueCount": 1,
+    }
+    assert overview["pipeline"]["heldJobs"] == 1
+    assert overview["pipeline"]["stalled"] is True
 
 
 def test_pages_lists_wiki_and_scenes(tmp_path: Path) -> None:
@@ -375,6 +455,15 @@ def test_empty_workspace_returns_empty_structures(tmp_path: Path) -> None:
     overview = build_knowledge_overview(tmp_path, agent_id)
     assert overview["planes"]["self"]["entries"] == 0
     assert overview["planes"]["knowledge"]["pages"] == 0
+    assert overview["memoryStatus"] == {
+        "state": "empty",
+        "availableForRecall": False,
+        "recentMemoryAvailable": False,
+        "longTermMemoryAvailable": False,
+        "pendingConsolidation": False,
+        "pendingItems": 0,
+        "issueCount": 0,
+    }
     assert list_knowledge_pages(tmp_path, agent_id) == []
     assert list_knowledge_events(tmp_path, agent_id) == []
     assert list_knowledge_candidates(tmp_path, agent_id)["skillCandidates"] == []

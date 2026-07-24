@@ -32,25 +32,56 @@ type AgentKnowledgeSectionProps = {
   onNavigateTab?: (tab: string) => void;
 };
 
-const DISTILLER_STATE_FALLBACK: Record<string, string> = {
-  active: 'Active',
-  stale: 'Stale',
-  never_ran: 'Never run',
-};
-
-const DREAM_RUNTIME_FALLBACK: Record<string, { label: string; cls: string }> = {
-  pending: { label: 'Queued', cls: 'agent-knowledge-distiller-queued' },
-  resumable: { label: 'Queued', cls: 'agent-knowledge-distiller-queued' },
-  running: { label: 'Running', cls: 'agent-knowledge-distiller-active' },
-  failed: { label: 'Failed', cls: 'agent-knowledge-distiller-stale' },
-  needs_reconciliation: { label: 'Needs review', cls: 'agent-knowledge-distiller-stale' },
-};
-
 const FAILURE_STATUS_STYLE: Record<string, { cls: string; fallback: string }> = {
   active: { cls: 'agent-knowledge-fm-active', fallback: 'active' },
   规避中: { cls: 'agent-knowledge-fm-mitigating', fallback: 'mitigating' },
   已根除: { cls: 'agent-knowledge-fm-resolved', fallback: 'resolved' },
 };
+
+const MEMORY_STATUS_CLASS: Record<string, string> = {
+  remembered: 'agent-knowledge-memory-status--remembered',
+  consolidating: 'agent-knowledge-memory-status--consolidating',
+  needs_attention: 'agent-knowledge-memory-status--needs-attention',
+  empty: 'agent-knowledge-memory-status--empty',
+};
+
+function resolveMemoryStatus(overview: KnowledgeOverview): NonNullable<KnowledgeOverview['memoryStatus']> {
+  if (overview.memoryStatus) {
+    if (Object.prototype.hasOwnProperty.call(MEMORY_STATUS_CLASS, overview.memoryStatus.state)) {
+      return overview.memoryStatus;
+    }
+    // Unknown server states are contract failures, not employee-facing copy.
+    return {
+      ...overview.memoryStatus,
+      state: 'needs_attention',
+      issueCount: Math.max(1, overview.memoryStatus.issueCount),
+    };
+  }
+
+  // Rolling-deploy compatibility for an older backend overview response.
+  const longTermItems = overview.planes.self.entries
+    + overview.planes.profiles.entries
+    + overview.planes.knowledge.pages
+    + overview.planes.milestones.pages;
+  const pendingItems = Number(overview.pipeline?.pendingPackages || 0) + overview.planes.explicit.active;
+  const availableForRecall = Boolean(longTermItems || overview.planes.explicit.active);
+  const state = overview.pipeline?.stalled
+    ? 'needs_attention'
+    : pendingItems
+      ? 'consolidating'
+      : availableForRecall
+        ? 'remembered'
+        : 'empty';
+  return {
+    state,
+    availableForRecall,
+    recentMemoryAvailable: Boolean(overview.planes.explicit.active),
+    longTermMemoryAvailable: Boolean(longTermItems),
+    pendingConsolidation: Boolean(pendingItems),
+    pendingItems,
+    issueCount: overview.pipeline?.stalled ? 1 : 0,
+  };
+}
 
 function entryHeading(entry: KnowledgeEntry): string {
   const firstLine = (entry.content || '').split('\n').find((line) => line.startsWith('### '));
@@ -74,12 +105,16 @@ function OverviewCards({
   onNavigateTab?: (tab: string) => void;
 }) {
   const { t } = useTranslation();
-  const distillers = Object.values(overview.distillers ?? {});
   const fm = overview.planes.self.failureModes;
+  const memoryStatus = resolveMemoryStatus(overview);
+  const statusClass = MEMORY_STATUS_CLASS[memoryStatus.state] ?? MEMORY_STATUS_CLASS.empty;
+  const descriptionState = memoryStatus.state === 'consolidating' && !memoryStatus.recentMemoryAvailable
+    ? 'consolidating_pending'
+    : memoryStatus.state;
   return (
     <div className="agent-knowledge-overview-grid">
       <div className="agent-knowledge-card">
-        <h4 className="agent-knowledge-card-title">🧬 {t('agent.knowledge.identityCard')}</h4>
+        <h2 className="agent-knowledge-card-title">🧬 {t('agent.knowledge.identityCard')}</h2>
         <div className="agent-knowledge-card-body">
           <div>{t('agent.knowledge.soulSections', 'Soul sections')}: {overview.identity.sections}</div>
           {canOpenIdentity && (
@@ -102,7 +137,7 @@ function OverviewCards({
         </div>
       </div>
       <div className="agent-knowledge-card agent-knowledge-card--clickable" onClick={() => onOpenSubView('self')}>
-        <h4 className="agent-knowledge-card-title">🪞 {t('agent.knowledge.selfCard')}</h4>
+        <h2 className="agent-knowledge-card-title">🪞 {t('agent.knowledge.selfCard')}</h2>
         <div className="agent-knowledge-card-body">
           <div>{t('agent.knowledge.selfEntries')}: {overview.planes.self.entries}</div>
           <div className="agent-knowledge-row-gap">
@@ -116,7 +151,7 @@ function OverviewCards({
         </div>
       </div>
       <div className="agent-knowledge-card">
-        <h4 className="agent-knowledge-card-title">🗺 {t('agent.knowledge.planesCard')}</h4>
+        <h2 className="agent-knowledge-card-title">🗺 {t('agent.knowledge.planesCard')}</h2>
         <div className="agent-knowledge-card-body">
           <div className="agent-knowledge-plane-link" onClick={() => onOpenSubView('profiles')}>
             👥 {t('agent.knowledge.profilesPlane')}: {overview.planes.profiles.entries}
@@ -131,51 +166,38 @@ function OverviewCards({
         </div>
       </div>
       <div className="agent-knowledge-card">
-        <h4 className="agent-knowledge-card-title">🩺 {t('agent.knowledge.pipelineCard')}</h4>
+        <h2 className="agent-knowledge-card-title">🧠 {t('agent.knowledge.memoryStatusCard', 'Memory status')}</h2>
         <div className="agent-knowledge-card-body">
-          {distillers.map((status) => {
-            const runtime = status.name === 'dream' && status.runtime_status
-              ? DREAM_RUNTIME_FALLBACK[status.runtime_status]
-              : undefined;
-            return (
-              <div key={status.name}>
-                {t(`agent.knowledge.distiller.${status.name}`, status.name)}:{' '}
-                <span
-                  className={
-                    status.state === 'active'
-                      ? 'agent-knowledge-distiller-active'
-                      : status.state === 'stale'
-                        ? 'agent-knowledge-distiller-stale'
-                        : 'agent-knowledge-distiller-never'
-                  }
-                >
-                  {t(`agent.knowledge.distillerState.${status.state}`, DISTILLER_STATE_FALLBACK[status.state] ?? status.state)}
-                </span>
-                {runtime && (
-                  <span className={runtime.cls} title={status.runtime_task_id || undefined}>
-                    {' · '}{t(`agent.knowledge.dreamRuntime.${status.runtime_status}`, runtime.label)}
-                  </span>
-                )}
-                {status.name === 'dream' && Number(status.coverage_total || 0) > 0 && (
-                  <span
-                    className={status.coverage_complete ? 'agent-knowledge-distiller-active' : 'agent-knowledge-distiller-stale'}
-                    title={t('agent.knowledge.dreamCoverageHint', 'Every accepted semantic file must be reviewed before Dream can commit.')}
-                  >
-                    {' · '}{t('agent.knowledge.dreamCoverage', 'Coverage')} {status.coverage_reviewed || 0}/{status.coverage_total}
-                  </span>
-                )}
-                {status.name === 'dream' && status.runtime_task_id && status.coverage_state === 'legacy_unknown' && (
-                  <span className="agent-knowledge-distiller-stale">
-                    {' · '}{t('agent.knowledge.dreamCoverageLegacy', 'Coverage unknown (legacy run)')}
-                  </span>
-                )}
-              </div>
-            );
-          })}
-          {overview.pipeline?.stalled && (
-            <div className="agent-knowledge-pipeline-stalled">
-              ⚠ {t('agent.knowledge.pipelineStalled')} · {t('agent.knowledge.pendingPackages')}:{' '}
-              {overview.pipeline.pendingPackages ?? 0}
+          <div className={`agent-knowledge-memory-status ${statusClass}`}>
+            {t(`agent.knowledge.memoryState.${memoryStatus.state}`, memoryStatus.state)}
+          </div>
+          <div className="agent-knowledge-memory-description">
+            {t(`agent.knowledge.memoryStateDescription.${descriptionState}`, '')}
+          </div>
+          <div>
+            {t('agent.knowledge.availableForRecall', 'Available for future conversations')}:{' '}
+            {memoryStatus.availableForRecall
+              ? t('agent.knowledge.available', 'Available')
+              : t('agent.knowledge.notAvailableYet', 'Not available yet')}
+          </div>
+          <div>
+            {t('agent.knowledge.longTermMemory', 'Long-term memory')}:{' '}
+            {memoryStatus.longTermMemoryAvailable
+              ? t('agent.knowledge.remembered', 'Remembered')
+              : t('agent.knowledge.notConsolidatedYet', 'Not consolidated yet')}
+          </div>
+          {memoryStatus.pendingItems > 0 && (
+            <div>
+              {t('agent.knowledge.pendingMemoryItems', 'Organizing {{count}} recent experiences', {
+                count: memoryStatus.pendingItems,
+              })}
+            </div>
+          )}
+          {memoryStatus.issueCount > 0 && (
+            <div className="agent-knowledge-memory-issues">
+              {t('agent.knowledge.memoryIssueItems', '{{count}} items need attention', {
+                count: memoryStatus.issueCount,
+              })}
             </div>
           )}
           {overview.growth?.generatedAt && (
@@ -186,7 +208,7 @@ function OverviewCards({
         </div>
       </div>
       <div className="agent-knowledge-card">
-        <h4 className="agent-knowledge-card-title">🔗 {t('agent.knowledge.capabilitiesCard')}</h4>
+        <h2 className="agent-knowledge-card-title">🔗 {t('agent.knowledge.capabilitiesCard')}</h2>
         <div className="agent-knowledge-card-body">
           <div>{t('agent.knowledge.skillsLinked', 'Skills')}: {overview.linkedCapabilities.skillsReferenced}</div>
           <div>{t('agent.knowledge.skillCandidates', 'Skill candidates')}: {overview.linkedCapabilities.skillCandidates}</div>

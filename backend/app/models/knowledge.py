@@ -1,10 +1,11 @@
-"""Personal Knowledge records with compatibility-reserved scope columns.
+"""Shared Personal and Company Knowledge content/index records.
 
-The current runtime accepts only ``person`` scope. Team/organization values are
-reserved for the future Company KB and do not imply an implemented consumer.
-Canonical Markdown stays on disk while these tables provide searchable slices,
-relationship metadata, and permission grants. Vector indexes are intentionally
-not required, so local and production Postgres do not need pgvector to boot.
+Personal authority remains in ``KnowledgeGrant`` and
+``PersonalKnowledgeProposal``. Company authority lives in the separate
+``company_knowledge_*`` aggregates; Company content uses ``scope_type=company``
+and ``scope_id=tenant_id`` here only after a reviewed publication transaction.
+Vector indexes remain optional derived projections, so local and production
+Postgres do not need pgvector to boot.
 """
 
 from __future__ import annotations
@@ -32,7 +33,7 @@ from app.database import Base
 
 
 class KnowledgeDocument(Base):
-    """One canonical Markdown artifact; the current runtime uses person scope."""
+    """One canonical document artifact shared by Personal and Company scopes."""
 
     __tablename__ = "knowledge_documents"
     __table_args__ = (
@@ -106,7 +107,7 @@ class KnowledgeSegment(Base):
 
 
 class KnowledgeEntity(Base):
-    """Canonical entity projection extracted from person-scope knowledge."""
+    """Rebuildable entity projection extracted from a scoped document."""
 
     __tablename__ = "knowledge_entities"
     __table_args__ = (

@@ -7,15 +7,17 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 APP_ROOT = PROJECT_ROOT / "app"
 
 
-def test_unimplemented_company_kb_has_no_product_or_provider_surface() -> None:
+def test_company_knowledge_uses_native_authority_without_retired_provider_residue() -> None:
     files_source = (APP_ROOT / "api" / "files.py").read_text(encoding="utf-8")
-    main_source = (APP_ROOT / "main.py").read_text(encoding="utf-8")
     invoker_source = (APP_ROOT / "runtime" / "invoker.py").read_text(encoding="utf-8")
     tool_runtime_source = (APP_ROOT / "tools" / "service.py").read_text(encoding="utf-8")
 
+    assert (APP_ROOT / "models" / "company_knowledge.py").exists()
+    assert (APP_ROOT / "models" / "company_ontology.py").exists()
+    assert (APP_ROOT / "services" / "company_knowledge_permissions.py").exists()
+    assert (APP_ROOT / "services" / "company_knowledge_evidence.py").exists()
     assert "enterprise_kb_router" not in files_source
     assert "/enterprise/knowledge-base" not in files_source
-    assert "enterprise_kb_router" not in main_source
     assert not (APP_ROOT / "services" / "truth_search_service.py").exists()
     assert not (APP_ROOT / "services" / "viking_client.py").exists()
     assert "TruthSearchService" not in invoker_source

@@ -23,6 +23,36 @@ _CORE_APP_TABLES = {
     "llm_models",
 }
 
+COMPANY_KNOWLEDGE_TENANT_TABLES: tuple[str, ...] = (
+    "company_knowledge_source_contracts",
+    "company_knowledge_sources",
+    "company_knowledge_evidence",
+    "company_knowledge_proposals",
+    "company_knowledge_reviews",
+    "company_knowledge_publications",
+    "company_knowledge_events",
+    "company_knowledge_outbox",
+    "company_ontology_packages",
+    "company_ontology_package_versions",
+    "company_ontology_package_installations",
+    "company_ontology_activations",
+    "company_ontology_curation_runs",
+    "company_ontology_releases",
+    "company_ontology_object_types",
+    "company_ontology_property_types",
+    "company_ontology_link_types",
+    "company_ontology_event_types",
+    "company_ontology_rule_definitions",
+    "company_ontology_action_types",
+    "company_ontology_objects",
+    "company_ontology_object_identities",
+    "company_ontology_assertions",
+    "company_ontology_links",
+    "company_ontology_events",
+    "company_ontology_evidence_bindings",
+    "company_ontology_release_items",
+)
+
 # Tenant tables that must carry RLS from day one. Mirrors
 # alembic/versions/add_row_level_security.py (_TENANT_TABLES) — that historic
 # migration is immutable, so the bootstrap path keeps its own copy; keep the
@@ -190,6 +220,9 @@ _ADDITIONAL_FORCED_TENANT_TABLES: tuple[str, ...] = (
     "session_feedback_aggregates",
     # Group 3 mixed direct/Subagent/Team/Workflow/A2A admission coverage.
     "runtime_root_items",
+    # Company Knowledge and Ontology authority/recovery tables. Provider and
+    # index projections remain rebuildable, but these tenant rows are strict.
+    *COMPANY_KNOWLEDGE_TENANT_TABLES,
 )
 
 # Every table carrying ``tenant_id`` belongs to exactly one semantic class.
@@ -198,6 +231,7 @@ _ADDITIONAL_FORCED_TENANT_TABLES: tuple[str, ...] = (
 # operator-nullable tables retain NULL only for pre-tenant/system records and
 # ordinary tenant sessions never see those rows.
 STRICT_TENANT_RLS_TABLES: tuple[str, ...] = (
+    *COMPANY_KNOWLEDGE_TENANT_TABLES,
     "agent_activity_logs",
     "agent_agent_relationships",
     "agent_capability_installs",

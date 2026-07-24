@@ -265,7 +265,14 @@ T0→T2→T3→soul 全链路经生产路径验证（证据见各条目），且
 
 **HN-03（缺失/已退役）Objective 系统**：`objective_service.py`/`api/objectives.py`/`Objective` model 均不存在；继任者 `AgentSessionGoal` + `api/session_goals.py` + memory goal_terms + 前端 SessionGoalPanel 已闭环。退役成立，AGENTS.md 实体清单失真。
 
-**HN-04（已知缺失）Enterprise Knowledge 未实现**：无 `search_company_kb/read_company_kb` handler；HR 工具明示 "Company knowledge is not implemented yet"（`handlers/hr.py:73`）；退役测试钉死无 enterprise_kb 路由；施工规格 `docs/company-knowledge-base-spec-2026-07-07.md` 未落地。公司知识需求降级为 unresolved knowledge debt（`hr.py:227-237`）。按北极星这是 Goal 2 的实质性缺口，但不是回归——标已知缺失。
+**HN-04（修复中；HN-04A 权威基座已闭环）Enterprise Knowledge 原缺失正在按七原子施工。**
+- 原 finding 成立：修复前无 `search_company_kb/read_company_kb` handler，HR 工具明示 Company KB 未实现，退役测试也钉死无 Company 产品面。它是 Goal 2 的实质性已知缺失，不是既有能力回归。
+- **HN-04A Input/Authority/Evidence/Recovery 基座**：新增独立于 Personal Knowledge 的 `company_knowledge_*` authority aggregates（SourceContract、Source、lossless Evidence Envelope、Proposal、append-only Review、immutable Publication、hash-chained Event、transactional Outbox），以及独立 `company_ontology_*` Package/Installation/Activation/CurationRun/Release/type/object/assertion/link/event/evidence-binding/release-item aggregates。共享 `knowledge_*` 只承担 Company 文档内容和可重建索引，不承担 publication/release authority；`KnowledgeGrant` 仍只属于 Personal。
+- **单一权限事实源**：扩展通用 `ResourcePermission` 支持 user/agent/role/department/team/integration key、scope/namespace/document/object/field resource、allow/deny、deny precedence、sensitivity ceiling、purpose、source ACL hash、expiry/revocation 和 actor evidence。`resolve_company_knowledge_permission` 同时机械校验 tenant、显式 permission、runtime/delegation binding、publication/validity、source ACL、sensitivity 和完整 evidence bundle。org/platform admin 只天然获得 metadata governance，不因此读取 PL2–PL4 正文；自然语言从不参与 hard outcome。
+- **证据与并发恢复**：Company domain event 以 tenant row 作为首事件也可用的 stream mutex，保存 SHA-256 previous/event chain；event 与 outbox 只 `flush` 到调用者事务，不自行 commit。idempotency key 同 payload 可重放，不同 payload fail closed；outbox 保存 payload hash、claim/lease、attempt/error/terminal state。
+- **Schema/RLS**：单一 Alembic revision 创建 27 张 tenant authority/recovery 表并扩展 `resource_permissions`；每张新表在 migration 与 fresh-bootstrap 两条路径都 `ENABLE + FORCE ROW LEVEL SECURITY`。downgrade 在发现 key-only、deny、sensitivity/purpose/ACL/expiry/revocation 等新语义行时明确阻断，避免旧 runtime 静默误读；空/兼容状态可 round-trip。
+- **TDD / Acceptance evidence**：模型/权限首轮 **2 collection errors**（模块不存在），权限实现中再得到 **1 failed / 8 passed**（缺 ACL 被错误折叠为 generic missing grant）；event/outbox 首轮 **1 collection error**；migration 首轮 **1 failed**（revision 不存在）。最终 `pytest` 定向 **13 passed / 1 skipped**，唯一 skip 是 Docker/Testcontainers unavailable 的 fresh-bootstrap 真 PG fixture。另用本机临时 PostgreSQL 实际完成既有 head→upgrade→downgrade→upgrade；27/27 表存在、`tenant_id` 全 non-null、10 个 permission 扩展列存在、27/27 `relrowsecurity=true` 且 `relforcerowsecurity=true`，非 superuser/NOBYPASSRLS 角色在双 tenant fixture 下只读到当前 tenant 的 `1|one`。fresh-bootstrap 另库同样为 **27/27 FORCE RLS**。Ruff、format、compileall 全绿。
+- **尚未冒充完成**：HN-04A 只关闭权威/证据/恢复基座；Source ingest→proposal/review/publish、Agent tools/replay、Ontology engine/Domain Packs、Company Control Plane 与完整 E2E 仍在 HN-04B–E 施工。在这些真实消费者闭环前，HN-04 总体仍标“修复中”，不把 27 张表当成 Enterprise Knowledge 已完成。
 
 **HN-05（代码闭环；真 PG 验收待补，原 P2）Knowledge grant 变更已进入同事务审计**：
 
@@ -500,7 +507,7 @@ Agent/Skill/Workflow/外部能力资产管理闭环（revision/usage 投影接�
 | 主动管理循环 | ○(HN-01/02 已知缺失；文档已闭环) | — | — | — | — | — | — |
 | A2A/委派 | ● | ● | ● | ● | ● | ● | ◐(A2A-02 outbox 真 PG；A2A-03 真 PG/浏览器；HC-01 真 PG/设备唤醒待验收) |
 | Personal KB | ● | ● | ● | ● | ● | ● | ◐(HN-05 真 PG audit 与既有 authority 测试 Docker-off) |
-| Enterprise Knowledge | ○(HN-04 已知缺失) | — | — | — | — | — | — |
+| Enterprise Knowledge | ◐(HN-04A source/evidence contract) | ◐(HN-04A typed resolver/RLS) | ○(HN-04B–D 待接) | ◐(HN-04A event/outbox) | ◐(HN-04A schema/chain；业务恢复待接) | ○(HN-04C–E 待接) | ◐(HN-04A 本地真 PG；全链待验收) |
 | 企业治理（RLS/配额/审计） | ● | ● | ● | ● | ● | ● | ◐(GV-05/06 真 PG/Redis/多实例；UI-02 浏览器待补) |
 | Hive Connect | ● | ● | ● | ● | ● | ● | ◐(HC-01/03/05/06 真 PG + canonical device/双实例 E2E 未验收) |
 | 前端消费面 | ● | ● | ● | ● | ● | ● | ◐(UI-02/03/04/05/06/09 真数据/浏览器；UI-07 部署后直达验收) |
@@ -531,7 +538,7 @@ Agent/Skill/Workflow/外部能力资产管理闭环（revision/usage 投影接�
 | UI-07 | 前端 | **代码与本地生产预览闭环；部署后验收待补** | 原 P2 | Authority→Acceptance | dev-only lazy import；生产 exact route 回认证入口且 bundle 对 gallery 资产零命中 |
 | DOC-01 | 文档 | **闭环** | P1 | Evidence | live inventory 改为现场生成；幽灵服务、旧实体、旧 Office 面与历史测试数字均已收正 |
 | HN-01/02 | Native | **文档闭环；能力已知缺失** | P1（文档） | — | handbook 明确 proactive_employee_loop / policy_replay 无 live runtime，不再宣称完成 |
-| HN-04 | Native | 已知缺失 | P2 | — | Enterprise Knowledge 未实现（规格存在） |
+| HN-04 | Native | **修复中（HN-04A 权威基座闭环）** | P2 | Input/Authority/Evidence/Recovery→Execution/Consumption/Acceptance | 27 表、typed permission、hash event/outbox、FORCE RLS 已有真 PG 证据；B–E 继续接 live consumers |
 | HC-03 | Connect | **代码闭环；真 PG/真实设备文件验收待补** | 原 P2 | Authority→Execution→Acceptance | bridge 文件读写已在 I/O 前消费 scope + live policy；未绑定 connection fail-closed |
 | HC-05 | Connect | **代码闭环；真 PG/真实设备验收待补** | P2 | Execution→Acceptance | canonical capability vocabulary 已严格适配；35 个无消费者 legacy 文件/404 poller/关键词 adapter 已退役 |
 | HC-06 | Connect | **代码闭环；真 PG/真实设备/双实例验收待补** | P2 | Evidence→Acceptance | replay limit 同事务终态化 message/event/span；PG queue + runner ping/poll 保持跨实例 durable recovery |

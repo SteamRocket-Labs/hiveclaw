@@ -98,7 +98,6 @@ RLS_TENANT_TABLES: tuple[str, ...] = (
     # nullable tenant_id column + index; this list applies the policy on the
     # bootstrap (create_all) path. Keep in sync with _STAGE2B_TABLES.
     "agent_activity_logs",
-    "agent_agent_relationships",
     "agent_capability_installs",
     "agent_permissions",
     "agent_relationships",
@@ -233,7 +232,6 @@ _ADDITIONAL_FORCED_TENANT_TABLES: tuple[str, ...] = (
 STRICT_TENANT_RLS_TABLES: tuple[str, ...] = (
     *COMPANY_KNOWLEDGE_TENANT_TABLES,
     "agent_activity_logs",
-    "agent_agent_relationships",
     "agent_capability_installs",
     "agent_collaboration_group_members",
     "agent_collaboration_groups",

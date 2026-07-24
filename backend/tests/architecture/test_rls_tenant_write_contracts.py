@@ -88,7 +88,6 @@ def test_channel_runtime_chat_message_writes_must_carry_tenant_id() -> None:
 
 def test_agent_scoped_business_writes_must_carry_tenant_id() -> None:
     agent_scoped_classes = (
-        "AgentAgentRelationship",
         "AgentPermission",
         "AgentRelationship",
         "AgentTool",

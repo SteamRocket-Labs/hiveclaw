@@ -33,7 +33,6 @@ class BackfillSource:
 
 _STANDARD_TABLES = (
     "agent_activity_logs",
-    "agent_agent_relationships",
     "agent_capability_installs",
     "agent_permissions",
     "agent_relationships",

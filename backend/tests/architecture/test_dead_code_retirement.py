@@ -53,3 +53,15 @@ def test_a2a04_in_process_sentinel_runtime_is_absent() -> None:
     assert "Sentinel-emitted variants" not in repository
     assert "Sentinel state stays in-process" not in repository
     assert "unconsumed in-process Sentinel helper" not in handbook
+
+
+def test_a2a04b_legacy_agent_relationship_authority_is_absent() -> None:
+    org_models = (BACKEND_ROOT / "app/models/org.py").read_text(encoding="utf-8")
+    seed = (BACKEND_ROOT / "seed.py").read_text(encoding="utf-8")
+    bootstrap = (BACKEND_ROOT / "app/db_bootstrap.py").read_text(encoding="utf-8")
+    stage2b_backfill = (BACKEND_ROOT / "app/scripts/backfill_stage2b_tenant_id.py").read_text(encoding="utf-8")
+
+    assert "class AgentAgentRelationship" not in org_models
+    assert "AgentAgentRelationship" not in seed
+    assert '"agent_agent_relationships"' not in bootstrap
+    assert '"agent_agent_relationships"' not in stage2b_backfill

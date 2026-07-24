@@ -5,9 +5,11 @@ from __future__ import annotations
 from app.scripts.backfill_stage2b_tenant_id import BACKFILL_PLAN
 
 
-def test_plan_covers_18_distinct_tables():
-    assert len(BACKFILL_PLAN) == 18
-    assert len({s.table for s in BACKFILL_PLAN}) == 18
+def test_plan_covers_only_distinct_live_tables():
+    tables = [source.table for source in BACKFILL_PLAN]
+
+    assert len(tables) == len(set(tables))
+    assert "agent_agent_relationships" not in tables
 
 
 def test_task_logs_backfilled_after_tasks():

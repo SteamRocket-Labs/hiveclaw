@@ -353,6 +353,17 @@ vi.mock('@tanstack/react-query', () => ({
         refetch: vi.fn(),
       };
     }
+    if (key === 'agent-soul') {
+      return {
+        data: {
+          path: 'soul.md',
+          content: 'schema: hive.soul.v2\n\nOwn the verified outcome.',
+        },
+        isLoading: false,
+        isError: false,
+        refetch: vi.fn(),
+      };
+    }
     if (key === 'agent-permissions') {
       return {
         data: {
@@ -2246,11 +2257,14 @@ describe('AgentDetail extracted sections', () => {
   it('renders AgentMindSection as a standalone mind module', () => {
     const markup = renderToStaticMarkup(<AgentMindSection agentId="agent-1" canEdit />);
 
-    expect(markup).toContain('Core identity, personality, and behavior boundaries.');
+    expect(markup).toContain('The complete identity and behavior contract this employee receives at the start of every conversation.');
     expect(markup).toContain('Long-term knowledge curated from conversations. Feedback, strategies, blocked patterns, and project knowledge.');
     expect(markup).toContain('Curation history, performance scorecard, and blocked approaches.');
     expect(markup).toContain('soul.md is governed by Dream/Soul promotion.');
-    expect(markup).not.toContain('single=soul.md');
+    expect(markup).toContain('Current identity');
+    expect(markup).toContain('Read only');
+    expect(markup).toContain('schema: hive.soul.v2');
+    expect(markup).toContain('Own the verified outcome.');
     expect(markup).toContain('root=memory readOnly=true');
   });
 

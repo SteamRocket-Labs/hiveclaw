@@ -64,10 +64,12 @@ function entryStatusLine(entry: KnowledgeEntry): string {
 
 function OverviewCards({
   overview,
+  canOpenIdentity,
   onOpenSubView,
   onNavigateTab,
 }: {
   overview: KnowledgeOverview;
+  canOpenIdentity: boolean;
   onOpenSubView: (view: SubView) => void;
   onNavigateTab?: (tab: string) => void;
 }) {
@@ -80,6 +82,15 @@ function OverviewCards({
         <h4 className="agent-knowledge-card-title">🧬 {t('agent.knowledge.identityCard')}</h4>
         <div className="agent-knowledge-card-body">
           <div>{t('agent.knowledge.soulSections', 'Soul sections')}: {overview.identity.sections}</div>
+          {canOpenIdentity && (
+            <button
+              className="btn btn-sm agent-knowledge-inline-btn"
+              type="button"
+              onClick={() => onOpenSubView('raw')}
+            >
+              {t('agent.knowledge.viewCurrentIdentity')} →
+            </button>
+          )}
           <div>
             {t('agent.knowledge.pendingSoul')}: {overview.identity.pendingSoulCandidates}
             {overview.identity.pendingSoulCandidates > 0 && onNavigateTab && (
@@ -528,7 +539,12 @@ export default function AgentKnowledgeSection({ agentId, canEdit, onNavigateTab 
 
       {subView === 'overview' &&
         (overviewQuery.data ? (
-          <OverviewCards overview={overviewQuery.data} onOpenSubView={setSubView} onNavigateTab={onNavigateTab} />
+          <OverviewCards
+            overview={overviewQuery.data}
+            canOpenIdentity={canEdit}
+            onOpenSubView={setSubView}
+            onNavigateTab={onNavigateTab}
+          />
         ) : (
           <p className="agent-knowledge-loading">{t('common.loading', 'Loading…')}</p>
         ))}

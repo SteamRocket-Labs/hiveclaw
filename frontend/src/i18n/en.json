@@ -1558,6 +1558,13 @@
     },
     "mind": {
       "soulDesc": "Core identity, personality, and behavior boundaries — who this employee is.",
+      "currentIdentityTitle": "Current identity",
+      "currentIdentityDesc": "The complete identity and behavior contract this employee receives at the start of every conversation.",
+      "readOnly": "Read only",
+      "fullIdentity": "Full identity",
+      "identityLoading": "Loading current identity…",
+      "identityLoadFailed": "Current identity could not be loaded.",
+      "identityEmpty": "No identity content has been created yet.",
       "memoryDesc": "Long-term knowledge curated from conversations. Feedback, strategies, blocked patterns, and project knowledge.",
       "evolutionTitle": "Evolution",
       "evolutionDesc": "Curation history, performance scorecard, and blocked approaches.",
@@ -1571,6 +1578,7 @@
         "never_ran": "Never run"
       },
       "identityCard": "Identity",
+      "viewCurrentIdentity": "View current identity",
       "goApprove": "Review",
       "selfCard": "Self-knowledge",
       "selfEntries": "Entries",

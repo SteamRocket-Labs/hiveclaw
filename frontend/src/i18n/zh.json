@@ -1558,6 +1558,13 @@
     },
     "mind": {
       "soulDesc": "核心身份、人格和行为边界 — 定义这位员工是谁。",
+      "currentIdentityTitle": "当前身份",
+      "currentIdentityDesc": "这位员工在每次对话开始时都会收到的完整身份与行为契约。",
+      "readOnly": "只读",
+      "fullIdentity": "完整身份",
+      "identityLoading": "正在加载当前身份…",
+      "identityLoadFailed": "无法加载当前身份。",
+      "identityEmpty": "尚未创建身份内容。",
       "memoryDesc": "从对话中沉淀的长期知识 — 用户反馈、策略、已阻止的方法和项目知识。",
       "evolutionTitle": "进化",
       "evolutionDesc": "演进历史、绩效记分卡和已阻止的方法。",
@@ -1571,6 +1578,7 @@
         "never_ran": "未运行"
       },
       "identityCard": "身份",
+      "viewCurrentIdentity": "查看当前身份",
       "goApprove": "去审批",
       "selfCard": "自我认知",
       "selfEntries": "条目",

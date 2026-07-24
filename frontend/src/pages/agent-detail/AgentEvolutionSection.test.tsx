@@ -103,7 +103,7 @@ vi.mock('../../api/domains/knowledge', () => ({
   knowledgeApi: { observability: vi.fn() },
 }));
 
-import AgentEvolutionSection from './AgentEvolutionSection';
+import AgentEvolutionSection, { invalidateAgentEvolutionQueries } from './AgentEvolutionSection';
 
 describe('AgentEvolutionSection', () => {
   it('renders the growth report from production metrics', () => {
@@ -139,5 +139,25 @@ describe('AgentEvolutionSection', () => {
     expect(html).toContain('provisional');
     expect(html).toContain('2 / 3');
     expect(html).toContain('0 / 2');
+  });
+
+  it('invalidates the active identity projection after a soul decision', () => {
+    const calls: unknown[] = [];
+
+    invalidateAgentEvolutionQueries(
+      {
+        invalidateQueries: (options: unknown) => {
+          calls.push(options);
+          return Promise.resolve();
+        },
+      },
+      'agent-1',
+    );
+
+    expect(calls).toEqual([
+      { queryKey: ['agent-evolution', 'agent-1'] },
+      { queryKey: ['knowledge-overview', 'agent-1'] },
+      { queryKey: ['agent-soul', 'agent-1'] },
+    ]);
   });
 });

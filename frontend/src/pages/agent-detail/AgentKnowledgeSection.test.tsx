@@ -160,6 +160,7 @@ describe('AgentKnowledgeSection', () => {
     // the dead subview BUTTONS are gone (copy like 'Skill candidates' may remain)
     expect(html).not.toContain('>entries</button>');
     expect(html).not.toContain('>candidates</button>');
+    expect(html).toContain('查看当前身份');
   });
 
   it('hides the Raw advanced view for use-only access', () => {
@@ -168,6 +169,7 @@ describe('AgentKnowledgeSection', () => {
     );
     expect(html).toContain('overview');
     expect(html).not.toContain('raw');
+    expect(html).not.toContain('查看当前身份');
   });
 
   it('renders the Personal KB lane as read-only search, library, and source refs inside Agent Detail', () => {

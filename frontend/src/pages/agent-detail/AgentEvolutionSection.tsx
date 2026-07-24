@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
@@ -43,6 +43,15 @@ function manifestTitle(item: EvolutionManifest): string {
 
 function manifestStatus(item: EvolutionManifest): string {
   return String(item.status || item.reason || 'pending');
+}
+
+export function invalidateAgentEvolutionQueries(
+  queryClient: Pick<QueryClient, 'invalidateQueries'>,
+  agentId: string,
+) {
+  queryClient.invalidateQueries({ queryKey: ['agent-evolution', agentId] });
+  queryClient.invalidateQueries({ queryKey: ['knowledge-overview', agentId] });
+  queryClient.invalidateQueries({ queryKey: ['agent-soul', agentId] });
 }
 
 function GrowthReportCard({ metrics }: { metrics: GrowthMetrics | undefined }) {
@@ -144,8 +153,7 @@ function OwnerApprovalCard({
   const [feedback, setFeedback] = useState<string>('');
 
   const invalidate = () => {
-    queryClient.invalidateQueries({ queryKey: ['agent-evolution', agentId] });
-    queryClient.invalidateQueries({ queryKey: ['knowledge-overview', agentId] });
+    invalidateAgentEvolutionQueries(queryClient, agentId);
   };
   const approveMutation = useMutation({
     mutationFn: (candidateId: string) => evolutionApi.approveSoulCandidate(agentId, candidateId),

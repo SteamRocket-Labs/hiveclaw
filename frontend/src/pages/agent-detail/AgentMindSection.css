@@ -1,0 +1,74 @@
+.agent-mind-soul-heading {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-1);
+}
+
+.agent-mind-soul-heading h3 {
+  margin: 0;
+}
+
+.agent-mind-governed-notice {
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: var(--text-row);
+  line-height: 1.5;
+}
+
+.agent-mind-soul-card {
+  margin-top: var(--space-3);
+  padding: var(--space-4);
+}
+
+.agent-mind-soul-source {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  color: var(--text-secondary);
+  font-size: var(--text-row);
+}
+
+.agent-mind-soul-state {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-4) 0 0;
+  color: var(--text-tertiary);
+  font-size: var(--text-row);
+}
+
+.agent-mind-soul-state.is-error {
+  color: var(--error);
+}
+
+.agent-mind-soul-disclosure {
+  margin-top: var(--space-3);
+}
+
+.agent-mind-soul-disclosure summary {
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-size: var(--text-row);
+  font-weight: 500;
+}
+
+.agent-mind-soul-content {
+  max-height: min(70vh, 720px);
+  margin-top: var(--space-3);
+  padding: var(--space-4);
+  overflow: auto;
+  overscroll-behavior: contain;
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: var(--text-row);
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}

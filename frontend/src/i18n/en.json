@@ -641,6 +641,18 @@
     "needs_reapproval": "Needs reapproval",
     "unknown": "Status unavailable"
   },
+  "approvalRequest": {
+    "actions": {
+      "commandEscalation": "Run one workspace command",
+      "localAgentDispatch": "Send work to a connected local employee",
+      "planAuthorization": "Use a confirmed plan authorization",
+      "employeeAction": "Review an employee action"
+    },
+    "fields": {
+      "command": "Command",
+      "attachments": "Attachments"
+    }
+  },
   "approvalContinuation": {
     "queued": "Continuing original session",
     "continuing": "Continuing original session",

@@ -65,15 +65,6 @@
   margin-bottom: var(--space-2);
 }
 
-.agent-approvals-action {
-  font-size: var(--text-body);
-  font-weight: 500;
-}
-
-.agent-approvals-action-sm {
-  font-size: var(--text-row);
-}
-
 .agent-approvals-spacer {
   flex: 1;
 }
@@ -105,16 +96,8 @@
   color: var(--error);
 }
 
-.agent-approvals-details {
-  font-size: var(--text-row);
-  color: var(--text-secondary);
-  margin-bottom: var(--space-3);
-  line-height: 1.5;
-  max-height: 80px;
-  overflow: hidden;
-}
-
 .agent-approvals-actions {
+  margin-top: var(--space-3);
   display: flex;
   gap: var(--space-2);
   justify-content: flex-end;

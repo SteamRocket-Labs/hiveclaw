@@ -325,18 +325,28 @@ vi.mock('@tanstack/react-query', () => ({
         data: [
           {
             id: 'approval-1',
-            action_type: 'deploy_run',
+            action_type: 'workspace.command.escalation',
             status: 'pending',
             created_at: '2026-03-27T09:00:00Z',
-            details: { environment: 'prod' },
+            details: {
+              reason: 'Release the verified frontend build.',
+              command: 'railway up --service frontend',
+              requested_by: 'user-internal-123',
+              args: { command: 'railway up --service frontend' },
+              execution_envelope: { bearer_token: 'secret-token' },
+            },
           },
           {
             id: 'approval-2',
-            action_type: 'publish_post',
+            action_type: 'local_agent.execute',
             status: 'approved',
-            tool_name: 'publish_post',
+            tool_name: 'run_command',
             execution_status: 'succeeded',
             execution_receipt: { continuation_status: 'queued' },
+            details: {
+              reason: 'Send the approved brief to the connected local employee.',
+              local_agent_message_id: 'message-internal-456',
+            },
             resolved_at: '2026-03-27T09:30:00Z',
           },
         ],
@@ -1788,11 +1798,19 @@ describe('AgentDetail extracted sections', () => {
   it('renders AgentApprovalsSection as a standalone approvals module', () => {
     const markup = renderToStaticMarkup(<AgentApprovalsSection agentId="agent-1" />);
 
-    expect(markup).toContain('deploy_run');
-    expect(markup).toContain('publish_post');
-    expect(markup).toContain('prod');
+    expect(markup).toContain('Run one workspace command');
+    expect(markup).toContain('Release the verified frontend build.');
+    expect(markup).toContain('railway up --service frontend');
+    expect(markup).toContain('Send work to a connected local employee');
     expect(markup).toContain('Succeeded');
     expect(markup).toContain('Continuing original session');
+    expect(markup).not.toContain('workspace.command.escalation');
+    expect(markup).not.toContain('local_agent.execute');
+    expect(markup).not.toContain('user-internal-123');
+    expect(markup).not.toContain('message-internal-456');
+    expect(markup).not.toContain('secret-token');
+    expect(markup).not.toContain('execution_envelope');
+    expect(markup).not.toContain('&quot;command&quot;');
   });
 
   it('renders AgentSkillsSection as a standalone skills module', () => {

@@ -2,13 +2,15 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 
 import { enterpriseApi } from '../../api/domains/enterprise';
+import ApprovalRequestSummary from '../../components/ApprovalRequestSummary';
 import { approvalContinuationPresentation, approvalExecutionPresentation } from '../../utils/approvalExecution';
+import type { ApprovalRequestLike } from '../../utils/approvalRequestPresentation';
 
 interface WorkspaceApprovalsSectionProps {
   selectedTenantId: string;
 }
 
-interface WorkspaceApproval {
+interface WorkspaceApproval extends ApprovalRequestLike {
   id: string;
   action_type: string;
   agent_id: string;
@@ -51,7 +53,10 @@ export default function WorkspaceApprovalsSection({
           style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}
         >
           <div>
-            <div style={{ fontWeight: 500 }}>{approval.action_type}</div>
+            <ApprovalRequestSummary
+              approval={approval}
+              showDetails={approval.status === 'pending'}
+            />
             <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
               {approval.agent_name || `Agent ${approval.agent_id.slice(0, 8)}`} · {new Date(approval.created_at).toLocaleString()}
             </div>

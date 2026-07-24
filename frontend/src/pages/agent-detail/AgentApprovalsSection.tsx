@@ -3,11 +3,24 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 
 import { agentApi } from '../../api/domains/agents';
-import { approvalContinuationPresentation, approvalExecutionPresentation } from '../../utils/approvalExecution';
+import ApprovalRequestSummary from '../../components/ApprovalRequestSummary';
+import {
+  approvalContinuationPresentation,
+  approvalExecutionPresentation,
+  type ApprovalExecutionLike,
+} from '../../utils/approvalExecution';
+import type { ApprovalRequestLike } from '../../utils/approvalRequestPresentation';
 import './AgentApprovalsSection.css';
 
 type AgentApprovalsSectionProps = {
   agentId: string;
+};
+
+type AgentApproval = ApprovalExecutionLike & ApprovalRequestLike & {
+  id: string;
+  status: string;
+  created_at?: string | null;
+  resolved_at?: string | null;
 };
 
 export default function AgentApprovalsSection({ agentId }: AgentApprovalsSectionProps) {
@@ -30,10 +43,11 @@ export default function AgentApprovalsSection({ agentId }: AgentApprovalsSection
     },
   });
 
-  const pending = (approvals as any[]).filter((approval: any) => approval.status === 'pending');
-  const resolved = (approvals as any[]).filter((approval: any) => approval.status !== 'pending');
+  const approvalRecords = approvals as AgentApproval[];
+  const pending = approvalRecords.filter((approval) => approval.status === 'pending');
+  const resolved = approvalRecords.filter((approval) => approval.status !== 'pending');
 
-  const renderStatus = (approval: any) => {
+  const renderStatus = (approval: AgentApproval) => {
     const presentation = approvalExecutionPresentation(approval);
     return {
       ...presentation,
@@ -48,22 +62,18 @@ export default function AgentApprovalsSection({ agentId }: AgentApprovalsSection
           <h4 className="agent-approvals-heading is-alert">
             {t('agent.approvals.pendingCount', { count: pending.length })}
           </h4>
-          {pending.map((approval: any) => {
+          {pending.map((approval) => {
             const presentation = renderStatus(approval);
             return <div key={approval.id} className="card agent-approvals-item">
               <div className="agent-approvals-row agent-approvals-row-head">
                 <span className={`agent-approvals-status ${presentation.agentClassName}`}>{presentation.text}</span>
-                <span className="agent-approvals-action">{approval.action_type}</span>
+                <ApprovalRequestSummary approval={approval} />
                 <span className="agent-approvals-spacer" />
                 <span className="agent-approvals-time">
                   {approval.created_at ? new Date(approval.created_at).toLocaleString() : ''}
                 </span>
               </div>
-              {approval.details && (
-                <div className="agent-approvals-details">
-                  {typeof approval.details === 'string' ? approval.details : JSON.stringify(approval.details, null, 2)}
-                </div>
-              )}
+              <ApprovalRequestSummary approval={approval} showDetails showTitle={false} />
               <div className="agent-approvals-actions">
                 <button
                   className="btn btn-primary"
@@ -94,13 +104,13 @@ export default function AgentApprovalsSection({ agentId }: AgentApprovalsSection
           {t('agent.approvals.noRecords')}
         </div>
       )}
-      {resolved.map((approval: any) => {
+      {resolved.map((approval) => {
         const presentation = renderStatus(approval);
         const continuation = approvalContinuationPresentation(approval);
         return <div key={approval.id} className="card card-pad-sm agent-approvals-item-resolved">
           <div className="agent-approvals-row">
             <span className={`agent-approvals-status ${presentation.agentClassName}`}>{presentation.text}</span>
-            <span className="agent-approvals-action-sm">{approval.action_type}</span>
+            <ApprovalRequestSummary approval={approval} />
             <span className="agent-approvals-spacer" />
             <span className="agent-approvals-time-sm">
               {approval.resolved_at ? new Date(approval.resolved_at).toLocaleString() : ''}

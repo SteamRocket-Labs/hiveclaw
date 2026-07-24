@@ -33,15 +33,21 @@ vi.mock('@tanstack/react-query', () => ({
         data: [
           {
             id: 'approval-1',
-            action_type: 'deploy_run',
+            action_type: 'workspace.command.escalation',
             agent_id: 'agent-12345678',
             agent_name: 'Deploy Bot',
             created_at: '2026-03-27T09:00:00Z',
             status: 'pending',
+            details: {
+              reason: 'Release the verified frontend build.',
+              command: 'railway up --service frontend',
+              requested_by: 'user-internal-123',
+              execution_envelope: { bearer_token: 'secret-token' },
+            },
           },
           {
             id: 'approval-2',
-            action_type: 'publish_report',
+            action_type: 'local_agent.execute',
             agent_id: 'agent-12345678',
             agent_name: 'Deploy Bot',
             created_at: '2026-03-27T09:05:00Z',
@@ -131,9 +137,16 @@ describe('Workspace remaining sections', () => {
       <WorkspaceAuditSection selectedTenantId="tenant-1" />,
     );
 
-    expect(approvalsMarkup).toContain('deploy_run');
+    expect(approvalsMarkup).toContain('Run one workspace command');
+    expect(approvalsMarkup).toContain('Release the verified frontend build.');
+    expect(approvalsMarkup).toContain('Send work to a connected local employee');
     expect(approvalsMarkup).toContain('Succeeded');
     expect(approvalsMarkup).toContain('Continuation needs attention');
+    expect(approvalsMarkup).not.toContain('workspace.command.escalation');
+    expect(approvalsMarkup).not.toContain('local_agent.execute');
+    expect(approvalsMarkup).not.toContain('user-internal-123');
+    expect(approvalsMarkup).not.toContain('secret-token');
+    expect(approvalsMarkup).not.toContain('execution_envelope');
     expect(auditMarkup).toContain('schedule_tick');
     expect(auditMarkup).toContain('records:1');
   });

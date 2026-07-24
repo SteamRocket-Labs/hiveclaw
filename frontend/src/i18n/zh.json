@@ -616,6 +616,18 @@
     "needs_reapproval": "需要重新审批",
     "unknown": "状态不可用"
   },
+  "approvalRequest": {
+    "actions": {
+      "commandEscalation": "运行一次工作区命令",
+      "localAgentDispatch": "向已连接的本地员工派发工作",
+      "planAuthorization": "使用已确认的计划授权",
+      "employeeAction": "审核员工操作"
+    },
+    "fields": {
+      "command": "命令",
+      "attachments": "附件数"
+    }
+  },
   "approvalContinuation": {
     "queued": "正在继续原会话",
     "continuing": "正在继续原会话",

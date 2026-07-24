@@ -39,31 +39,18 @@ async def test_workflow_daemon_tick_resumes_pending_runs_and_pg_signals(monkeypa
 
     service = _FakeWorkflowService()
     signal_calls: list[object] = []
-    subagent_calls: list[object] = []
 
     async def fake_drain_signal_resumes(*, leaf_executor, service, session_factory=None):
         signal_calls.append((leaf_executor, service, session_factory))
         return ["signalled"]
 
-    async def fake_drain_subagent_completion_wakes(*, session_factory=None, invoke_parent=None, limit=50):
-        subagent_calls.append((session_factory, invoke_parent, limit))
-        return []
-
-    async def _sentinel_invoker(request):  # stand-in for the real production invoker
-        return None
-
     monkeypatch.setattr(workflow_daemon, "drain_signal_resumes", fake_drain_signal_resumes)
-    monkeypatch.setattr(workflow_daemon, "drain_subagent_completion_wakes", fake_drain_subagent_completion_wakes)
-    monkeypatch.setattr(workflow_daemon, "build_production_parent_wake_invoker", lambda: _sentinel_invoker)
 
     result = await workflow_daemon.workflow_daemon_tick(service=service, leaf_executor=_fake_leaf)
 
-    assert result == {"resumed_runs": 1, "signal_resumed_runs": 1, "subagent_woken_parents": 0}
+    assert result == {"resumed_runs": 1, "signal_resumed_runs": 1}
     assert service.resume_calls == 1
     assert signal_calls == [(_fake_leaf, service, None)]
-    # B2: tick defaults to the real production invoker — NOT None. The old
-    # `(None, None, 50)` assertion pinned the dead-wired behavior as contract.
-    assert subagent_calls == [(None, _sentinel_invoker, 50)]
 
 
 @pytest.mark.asyncio

@@ -1667,7 +1667,6 @@ async def dispatch_persisted_subagent_run(task_id: str) -> bool:
             fork=spec.isolation,
             ledger_todo_id=metadata.get("ledger_todo_id"),
             resume_messages=resume_messages or None,
-            run_in_background=False,
         )
         result = handle.result if handle is not None else None
         if result is None:

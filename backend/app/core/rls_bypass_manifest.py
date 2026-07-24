@@ -773,14 +773,6 @@ RLS_BYPASS_ALLOWLIST = (
     ),
     _grant(
         *(
-            "app/services/subagent_wake_consumer.py",
-            "drain_subagent_completion_wakes",
-            "'subagent wake daemon — enumerate completion signals'",
-            ("select:CoordinationSignal",),
-        )
-    ),
-    _grant(
-        *(
             "app/services/t0_logger.py",
             "backfill_missing_chat_transcript_t0",
             "'startup legacy chat transcript/T0 backfill enumerate'",

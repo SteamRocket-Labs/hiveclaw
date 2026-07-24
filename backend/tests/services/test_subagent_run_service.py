@@ -1492,7 +1492,7 @@ async def test_dispatch_persisted_subagent_run_uses_full_spec_snapshot(monkeypat
     assert spec.mcp_servers == ("github",)
     assert spec.hooks == {"Stop": []}
     assert calls["task"] == "review x"
-    assert calls["kwargs"]["run_in_background"] is False
+    assert "run_in_background" not in calls["kwargs"]
     assert calls["kwargs"]["fork"] == "worktree"
     assert calls["updates"][0][1]["metadata_json"]["worker_dispatched"] is True
     assert calls["updates"][-1][1]["status"] == "completed"

@@ -508,7 +508,6 @@ def test_ingress_delivery_and_governed_projections_do_not_silently_slice_semanti
         ),
         "services/personal_knowledge_service.py": ('f"personal_kb_import_worker_error:{error}"[:500]',),
         "services/workflow_confirmation_service.py": ("str(message)[:4000]",),
-        "services/subagent_wake_consumer.py": ("str(exc)[:300]",),
         "services/skill_distillation_runner.py": ("save_result[:500]",),
         "services/daemon_liveness.py": (
             "str(exc)[:500]",

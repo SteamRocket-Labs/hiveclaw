@@ -1319,103 +1319,6 @@ async def _spawn_one(
     return subagent_result
 
 
-# Background subagent tasks are tracked so the event loop keeps a strong reference
-# (asyncio best practice) until they finish and fire their completion Signal.
-_BACKGROUND_TASKS: set[asyncio.Task] = set()
-_BACKGROUND_SUBAGENT_SEMAPHORE: asyncio.Semaphore | None = None
-_BACKGROUND_SUBAGENT_SEMAPHORE_LIMIT: int | None = None
-
-# Signal type a background subagent emits to its parent on completion. The parent
-# consumes it via consume_subagent_signals instead of busy-polling check_async_task.
-SUBAGENT_COMPLETION_SIGNAL = "subagent_completed"
-
-
-def _background_subagent_capacity() -> int:
-    try:
-        from app.config import get_settings
-
-        settings = get_settings()
-        raw_limits = str(getattr(settings, "RUNTIME_TASK_WORKER_TASK_TYPE_LIMITS", "") or "")
-        for item in raw_limits.split(","):
-            if "=" not in item:
-                continue
-            task_type, value = item.split("=", 1)
-            if task_type.strip() != "subagent":
-                continue
-            return max(1, int(value.strip()))
-        worker_limit = int(getattr(settings, "RUNTIME_TASK_WORKER_MAX_CONCURRENT", 16) or 16)
-        return max(1, worker_limit)
-    except Exception:
-        return 16
-
-
-def _background_subagent_semaphore() -> asyncio.Semaphore:
-    global _BACKGROUND_SUBAGENT_SEMAPHORE, _BACKGROUND_SUBAGENT_SEMAPHORE_LIMIT
-
-    limit = _background_subagent_capacity()
-    if _BACKGROUND_SUBAGENT_SEMAPHORE is None or _BACKGROUND_SUBAGENT_SEMAPHORE_LIMIT != limit:
-        _BACKGROUND_SUBAGENT_SEMAPHORE = asyncio.Semaphore(limit)
-        _BACKGROUND_SUBAGENT_SEMAPHORE_LIMIT = limit
-    return _BACKGROUND_SUBAGENT_SEMAPHORE
-
-
-async def _emit_completion_signal(ctx: SubagentSpawnContext, result: SubagentResult) -> None:
-    """Push a completion Signal to the parent (cut ④ P0 — the anti-busy-poll path).
-
-    An async subagent announces completion via the coordination Signal bus, so the
-    parent reads it (``consume_subagent_signals``) instead of repeatedly invoking a
-    check tool. Best-effort: a failed emit must never crash the (already-finished)
-    subagent. Real scheduler-driven re-entry of the parent's next turn is a separate
-    follow-up (it needs a wake-consumer loop; see docs §5.5 / status table).
-    """
-
-    try:
-        from app.agents.coordination_wiring import gateway_scope
-
-        async with gateway_scope(tenant_id=ctx.tenant_id) as gateway:
-            await gateway.send_signal(
-                from_agent_id=f"subagent:{result.name}",
-                to_agent_id=str(ctx.parent_agent_id),
-                content=result.content or result.error or "",
-                signal_type=SUBAGENT_COMPLETION_SIGNAL,
-                thread_id=ctx.trace_id or None,
-                metadata={
-                    "subagent_run_id": ctx.subagent_run_id,
-                    "runtime_task_id": ctx.subagent_run_id,
-                    "child_session_id": ctx.child_session_id,
-                    "parent_user_id": str(ctx.parent_user_id) if ctx.parent_user_id else None,
-                    "terminal_status": result.status,
-                    **(
-                        {KNOWLEDGE_PROVENANCE_KEY: result.knowledge_provenance}
-                        if result.knowledge_provenance is not None
-                        else {}
-                    ),
-                    **({"budget_run_id": str(ctx.budget_run_id)} if ctx.budget_run_id else {}),
-                },
-            )
-    except Exception as exc:  # best-effort notification — never crash the finished worker
-        logger.warning("[Subagent] completion signal emit failed (non-fatal): %s", exc)
-
-
-def consume_subagent_signals(parent_agent_id, *, thread_id: str | None = None) -> list:
-    """Read completion Signals for a parent's background subagents (cut ④ P0).
-
-    Replaces busy-poll: the parent reads any ``subagent_completed`` Signals once,
-    O(1), instead of re-invoking a check tool every round.
-    """
-
-    from app.agents.coordination import coordination_runtime
-
-    if hasattr(coordination_runtime, "consume_signals"):
-        return coordination_runtime.consume_signals(
-            str(parent_agent_id),
-            thread_id=thread_id,
-            signal_type=SUBAGENT_COMPLETION_SIGNAL,
-        )
-    signals = coordination_runtime.read_signals(str(parent_agent_id), thread_id=thread_id)
-    return [s for s in signals if s.signal_type == SUBAGENT_COMPLETION_SIGNAL]
-
-
 def _stamp_subagent_ledger_todo(ctx: SubagentSpawnContext, spec_name: str, ledger_todo_id: str | None) -> None:
     """切口③ assign half for lightweight workers: owner = the worker's spec name.
 
@@ -1466,25 +1369,20 @@ async def spawn_subagent(
     fork: ForkLevel = "none",
     budget: SubagentBudget | None = None,
     context_brief: str | None = None,
-    run_in_background: bool = False,
     ledger_todo_id: str | None = None,
     resume_messages: list[dict[str, Any]] | None = None,
-    on_complete: Callable[[SubagentResult], Awaitable[None]] | None = None,
     invoke: InvokeAgent = invoke_agent,
 ) -> SubagentHandle:
-    """Public single-worker spawn entry (cut ② sync, cut ④ adds background).
+    """Run one lightweight worker to completion.
 
     Serves ONLY lightweight workers (术语边界 invariant) — peer delegation stays
-    in ``agents/orchestrator.py``.
+    in ``agents/orchestrator.py``. Product background execution is not implemented
+    here: ``spawn_subagent_tool(run_in_background=true)`` writes a durable
+    ``RuntimeTask`` through ``start_subagent_run``; the shared worker invokes this
+    synchronous core and publishes completion through the canonical notification
+    outbox. Keeping the fire-and-forget branch here created an unreachable second
+    completion authority split across memory and PostgreSQL.
 
-    * ``run_in_background=False`` (default) — run to completion, return a resolved
-      ``SubagentHandle`` (``result`` populated). Synchronous spawn/fan-out have no
-      busy-poll problem.
-    * ``run_in_background=True`` — fire-and-forget: schedule the worker, return an
-      unresolved handle (``result is None``) immediately, and emit a completion
-      Signal when done. The parent consumes it via ``consume_subagent_signals``
-      rather than busy-polling. Same-process via asyncio; cross-worker needs the
-      coordination postgres backend.
     * ``ledger_todo_id`` (§9 P0, 切口③ 收尾) — parent work-ledger todo this
       worker serves: spawn stamps the worker as owner, completion writes the
       terminal status back (owner-mismatch fail-closed).
@@ -1492,51 +1390,13 @@ async def spawn_subagent(
 
     job = SubagentJob(spec=spec, task=task, context_brief=context_brief, resume_messages=resume_messages)
     _stamp_subagent_ledger_todo(ctx, spec.name, ledger_todo_id)
-
-    if not run_in_background:
-        result = await _spawn_one(ctx, job, fork=fork, budget=budget, invoke=invoke)
-        _write_back_subagent_ledger_todo(ctx, spec.name, ledger_todo_id, ok=result.ok)
-        return SubagentHandle(
-            name=spec.name,
-            trace_id=ctx.trace_id or "",
-            depth=ctx.depth + 1,
-            result=result,
-        )
-
-    async def _run_and_signal() -> SubagentResult:
-        # §9 P0: pin the initiating tenant inside THIS task's context copy.
-        # Request-spawned tasks inherit it via the ContextVar snapshot, but
-        # daemon-spawned ones have no request context — ctx carries it.
-        async with _background_subagent_semaphore():
-            tenant_token = None
-            if ctx.tenant_id:
-                from app.database import reset_current_tenant, set_current_tenant
-
-                tenant_token = set_current_tenant(str(ctx.tenant_id))
-            try:
-                result = await _spawn_one(ctx, job, fork=fork, budget=budget, invoke=invoke)
-                _write_back_subagent_ledger_todo(ctx, spec.name, ledger_todo_id, ok=result.ok)
-                # Update the durable run record (if any) BEFORE the wake signal, so a parent
-                # woken by the signal already sees the terminal status via check_subagent.
-                if on_complete is not None:
-                    try:
-                        await on_complete(result)
-                    except Exception as exc:  # durable bookkeeping is best-effort, never blocks the signal
-                        logger.warning("[Subagent] on_complete callback failed (non-fatal): %s", exc)
-                await _emit_completion_signal(ctx, result)
-                return result
-            finally:
-                if tenant_token is not None:
-                    reset_current_tenant(tenant_token)
-
-    task_obj = asyncio.create_task(_run_and_signal(), name=f"subagent-{spec.name}")
-    _BACKGROUND_TASKS.add(task_obj)
-    task_obj.add_done_callback(_BACKGROUND_TASKS.discard)
+    result = await _spawn_one(ctx, job, fork=fork, budget=budget, invoke=invoke)
+    _write_back_subagent_ledger_todo(ctx, spec.name, ledger_todo_id, ok=result.ok)
     return SubagentHandle(
         name=spec.name,
         trace_id=ctx.trace_id or "",
         depth=ctx.depth + 1,
-        result=None,
+        result=result,
     )
 
 
@@ -1549,7 +1409,6 @@ async def spawn_subagent_from_definition(
     fork: ForkLevel | None = None,
     budget: SubagentBudget | None = None,
     context_brief: str | None = None,
-    run_in_background: bool = False,
     ledger_todo_id: str | None = None,
     invoke: InvokeAgent = invoke_agent,
 ) -> SubagentHandle:
@@ -1575,7 +1434,6 @@ async def spawn_subagent_from_definition(
         fork=fork or spec.isolation,
         budget=budget,
         context_brief=context_brief,
-        run_in_background=run_in_background,
         ledger_todo_id=ledger_todo_id,
         invoke=invoke,
     )

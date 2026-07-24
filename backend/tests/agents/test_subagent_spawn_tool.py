@@ -906,9 +906,11 @@ async def test_spawn_tool_agent_definition_resolves_without_tenant(monkeypatch, 
 @pytest.mark.asyncio
 async def test_spawn_tool_background_returns_child_session_and_wake_first_contract(monkeypatch):
     import app.tools.handlers.subagent as handler_mod
+    from app.config import get_settings
     from app.services import subagent_run_service as run_svc
 
     captured: dict = {}
+    monkeypatch.setattr(get_settings(), "COORDINATION_BACKEND", "memory")
 
     async def fake_resolve(agent_id):
         return (

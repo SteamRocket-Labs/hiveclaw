@@ -64,3 +64,31 @@ async def test_delegate_to_agent_routes_execution_target_local_agent(monkeypatch
     assert captured["local"]["source_agent"] is source
     assert captured["local"]["target_agent"] is target
     assert captured["local"]["message_text"] == "run this on the local machine"
+
+
+def test_check_async_task_schema_accepts_runtime_task_or_local_message_id() -> None:
+    from app.tools.handlers.communication import check_async_task
+
+    parameters = check_async_task.meta.parameters
+
+    assert parameters.get("required", []) == []
+    assert parameters["anyOf"] == [
+        {"required": ["task_id"]},
+        {"required": ["message_id"]},
+    ]
+    assert parameters["properties"]["task_id"]["type"] == "string"
+    assert parameters["properties"]["message_id"]["type"] == "string"
+
+
+@pytest.mark.asyncio
+async def test_check_async_task_requires_exactly_one_async_handle() -> None:
+    from app.services.agent_tool_domains.messaging import _check_async_task
+
+    missing = await _check_async_task(uuid4(), {})
+    ambiguous = await _check_async_task(
+        uuid4(),
+        {"task_id": "runtime-task", "message_id": str(uuid4())},
+    )
+
+    assert "exactly one of task_id or message_id" in missing
+    assert "exactly one of task_id or message_id" in ambiguous

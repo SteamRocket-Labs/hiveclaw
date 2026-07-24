@@ -329,16 +329,27 @@ async def delegate_to_agent(agent_id: uuid.UUID, arguments: dict) -> str:
     ToolMeta(
         name="check_async_task",
         max_result_chars=RESULT_CHARS_UNLIMITED,
-        description="Check the status of a previously spawned async agent task. Returns running/completed/failed plus result when available.",
+        description=(
+            "Fallback status inspection for asynchronous Agent work. Provide task_id for a cloud RuntimeTask "
+            "or message_id for a Local Agent delegation. Local results are delivered automatically to the "
+            "source session; this tool exposes pending/completed/failed and durable source-delivery status."
+        ),
         parameters={
             "type": "object",
             "properties": {
                 "task_id": {
                     "type": "string",
-                    "description": "The task_id returned by delegate_to_agent",
+                    "description": "The task_id returned by a cloud delegate_to_agent call",
+                },
+                "message_id": {
+                    "type": "string",
+                    "description": "The message_id returned by a Local Agent delegate_to_agent call",
                 },
             },
-            "required": ["task_id"],
+            "anyOf": [
+                {"required": ["task_id"]},
+                {"required": ["message_id"]},
+            ],
         },
         category="communication",
         display_name="Check Async Task",

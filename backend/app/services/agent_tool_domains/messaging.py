@@ -1793,6 +1793,8 @@ async def _delegate_to_local_agent_channel(
                 source_agent_id=target_agent.id,
                 source="a2a",
                 title=f"A2A from {getattr(source_agent, 'name', 'agent')}",
+                commit=False,
+                reuse_existing=True,
             )
             message = await local_agent_channel_service.enqueue_channel_message(
                 db,
@@ -1808,15 +1810,18 @@ async def _delegate_to_local_agent_channel(
                     "sender_agent_id": str(source_agent.id),
                     "sender_agent_name": getattr(source_agent, "name", None),
                     "target_agent_id": str(target_agent.id),
+                    "target_agent_name": getattr(target_agent, "name", None),
                     "target_owner_user_id": str(target_owner_id),
                     "expected_output": str(args.get("expected_output") or "").strip() or None,
-                    "parent_session_id": args.get("parent_session_id"),
+                    "parent_session_id": (principal.root_session_id if principal else None)
+                    or args.get("parent_session_id"),
                     "ledger_todo_id": str(args.get("ledger_todo_id") or "").strip() or None,
                     "target_artifact_path": str(args.get("target_artifact_path") or "").strip() or None,
                     "target_artifacts": target_artifacts_arg,
                     "edit_mode": str(args.get("edit_mode") or "").strip() or None,
                     "budget_run_id": str(budget_run_id) if budget_run_id else None,
                     "budget_reservation_key": budget_reservation_key,
+                    "root_runtime_task_id": principal.root_runtime_task_id if principal else None,
                     "execution_principal": principal.to_evidence() if principal else None,
                 },
                 idempotency_key=idempotency_key,
@@ -1842,8 +1847,9 @@ async def _delegate_to_local_agent_channel(
                     "The owner must approve this exact action before Hive Connect can receive it."
                     if message_status == "waiting_approval"
                     else (
-                        "The bound Hive Connect background service receives this when it is online; "
-                        "if the computer is offline, the message remains queued until the service reconnects."
+                        "The result will be delivered automatically back into this source Agent session. "
+                        "Use check_async_task with message_id only as fallback status inspection. "
+                        "If the computer is offline, the request remains queued until Hive Connect reconnects."
                     )
                 ),
             }
@@ -1873,10 +1879,36 @@ async def _check_async_task(
     *,
     principal: ExecutionPrincipal | None = None,
 ) -> str:
-    """Check a previously spawned async task."""
+    """Check a cloud RuntimeTask or a Local Agent delegation message."""
     task_id = (args.get("task_id") or "").strip()
-    if not task_id:
-        return "❌ Please provide task_id"
+    message_id = (args.get("message_id") or "").strip()
+    if bool(task_id) == bool(message_id):
+        return "❌ Please provide exactly one of task_id or message_id"
+
+    if message_id:
+        if principal is None:
+            return "❌ Local Agent delegation root authority is required"
+        try:
+            local_message_id = uuid.UUID(message_id)
+        except (TypeError, ValueError, AttributeError):
+            return "❌ Local Agent delegation message_id is invalid"
+        try:
+            principal.assert_scope(tenant_id=principal.tenant_id, source_agent_id=from_agent_id)
+            from app.services import local_agent_channel_service
+
+            async with tenant_scoped_session(principal.tenant_id) as db:
+                payload = await local_agent_channel_service.get_a2a_channel_message_status(
+                    db,
+                    message_id=local_message_id,
+                    principal=principal,
+                    source_agent_id=from_agent_id,
+                )
+            if payload is None:
+                return "❌ Local Agent delegation not found or access denied"
+            return json.dumps(payload, ensure_ascii=False, default=str)
+        except Exception as exc:
+            logger.error("check_async_task local message failed: %s", exc, exc_info=True)
+            return f"❌ Local Agent delegation authority evidence is unavailable: {exc}"
 
     try:
         from app.agents.orchestrator import check_async_delegation

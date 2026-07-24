@@ -9,10 +9,12 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy import func, select
 
+from app.core.execution_context import ExecutionPrincipal
 from app.database import tenant_scoped_session
 from app.models.agent import Agent
 from app.models.audit import ApprovalRequest
 from app.models.capability_policy import CapabilityPolicy
+from app.models.chat_session import ChatSession
 from app.models.invocation_span import InvocationSpan
 from app.models.local_agent_channel import (
     LocalAgentCapabilitySnapshot,
@@ -21,6 +23,7 @@ from app.models.local_agent_channel import (
     LocalAgentChannelSession,
 )
 from app.models.local_bridge import LocalAgentBridgeConnection
+from app.models.runtime_notification_outbox import RuntimeNotificationOutbox
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.services import local_agent_channel_service as channel_service
@@ -130,9 +133,47 @@ async def test_local_agent_protocol_is_signed_monotonic_idempotent_and_receipted
     owner_sessionmaker,
 ) -> None:
     tenant_id, owner_id, agent_id, context = await _seed(owner_sessionmaker)
+    source_agent_id = uuid.uuid4()
+    parent_session_id = uuid.uuid4()
+    principal = ExecutionPrincipal(
+        tenant_id=tenant_id,
+        source_agent_id=source_agent_id,
+        requester_user_id=owner_id,
+        root_session_id=str(parent_session_id),
+    )
 
     async with tenant_scoped_session(tenant_id, session_factory=owner_sessionmaker) as db:
         await _grant_local_capabilities(db, tenant_id=tenant_id, agent_id=agent_id)
+        db.add(
+            Agent(
+                id=source_agent_id,
+                tenant_id=tenant_id,
+                creator_id=owner_id,
+                owner_user_id=owner_id,
+                sponsor_user_id=owner_id,
+                name="Cloud Source Agent",
+                role_description="Delegates governed local work",
+                agent_type="worker",
+                status="running",
+            )
+        )
+        await db.flush()
+        db.add(
+            ChatSession(
+                id=parent_session_id,
+                tenant_id=tenant_id,
+                agent_id=source_agent_id,
+                user_id=owner_id,
+                title="Source Agent Session",
+                source_channel="web",
+                session_kind="human_chat",
+                actor_type="user",
+                runtime_source="web_chat",
+                visibility_scope="direct_user",
+                listed_surface="chat",
+            )
+        )
+        await db.flush()
         ready = await channel_service.mark_channel_ready(
             db,
             context=context,
@@ -181,10 +222,20 @@ async def test_local_agent_protocol_is_signed_monotonic_idempotent_and_receipted
             session_id=session_id,
             owner_user_id=owner_id,
             sender_user_id=owner_id,
-            sender_agent_id=agent_id,
+            sender_agent_id=source_agent_id,
             content="Inspect the repository and return evidence.",
             attachments=[],
-            metadata={"source": "a2a"},
+            metadata={
+                "source": "a2a",
+                "execution_target": "local_agent",
+                "sender_agent_id": str(source_agent_id),
+                "sender_agent_name": "Cloud Source Agent",
+                "target_agent_id": str(agent_id),
+                "target_agent_name": "Owner Mac Agent",
+                "target_owner_user_id": str(owner_id),
+                "parent_session_id": str(parent_session_id),
+                "execution_principal": principal.to_evidence(),
+            },
             idempotency_key="a2a:task-1",
         )
         replay = await channel_service.enqueue_channel_message(
@@ -192,10 +243,20 @@ async def test_local_agent_protocol_is_signed_monotonic_idempotent_and_receipted
             session_id=session_id,
             owner_user_id=owner_id,
             sender_user_id=owner_id,
-            sender_agent_id=agent_id,
+            sender_agent_id=source_agent_id,
             content="Inspect the repository and return evidence.",
             attachments=[],
-            metadata={"source": "a2a"},
+            metadata={
+                "source": "a2a",
+                "execution_target": "local_agent",
+                "sender_agent_id": str(source_agent_id),
+                "sender_agent_name": "Cloud Source Agent",
+                "target_agent_id": str(agent_id),
+                "target_agent_name": "Owner Mac Agent",
+                "target_owner_user_id": str(owner_id),
+                "parent_session_id": str(parent_session_id),
+                "execution_principal": principal.to_evidence(),
+            },
             idempotency_key="a2a:task-1",
         )
         assert replay["id"] == first["id"]
@@ -301,6 +362,21 @@ async def test_local_agent_protocol_is_signed_monotonic_idempotent_and_receipted
         assert span.input_hash == completed["receipt"]["request_hash"]
         assert span.idempotency_key == "a2a:task-1"
         assert span.side_effect_refs == ["workspace/results/evidence.md"]
+        completion_outbox = (
+            await db.execute(
+                select(RuntimeNotificationOutbox).where(
+                    RuntimeNotificationOutbox.tenant_id == tenant_id,
+                    RuntimeNotificationOutbox.source_kind == "a2a_delegation",
+                    RuntimeNotificationOutbox.source_run_id == str(message_id),
+                )
+            )
+        ).scalar_one()
+        assert completion_outbox.parent_session_id == parent_session_id
+        assert completion_outbox.parent_agent_id == source_agent_id
+        assert completion_outbox.parent_user_id == owner_id
+        assert completion_outbox.task_type == "a2a_local_delegation"
+        assert completion_outbox.delivery_mode == "parent_continuation"
+        assert completed["source_delivery"]["notification_id"] == str(completion_outbox.id)
 
 
 async def test_local_agent_missing_policy_is_denied_by_default(

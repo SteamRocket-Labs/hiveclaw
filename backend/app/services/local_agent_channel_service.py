@@ -21,6 +21,7 @@ from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
+from app.core.execution_context import ExecutionPrincipal
 from app.database import enter_rls_bypass, pin_rls_tenant_context
 from app.models.agent import Agent
 from app.models.audit import ApprovalRequest, ChatMessage
@@ -36,6 +37,7 @@ from app.models.local_agent_channel import (
     LocalAgentChannelWsTicket,
 )
 from app.models.local_bridge import LocalAgentBridgeConnection
+from app.models.runtime_notification_outbox import RuntimeNotificationOutbox
 from app.services.chat_artifact_delivery import create_or_bind_chat_session
 from app.services.local_agent_protocol import (
     build_execution_receipt,
@@ -44,6 +46,10 @@ from app.services.local_agent_protocol import (
     verify_capability_snapshot,
 )
 from app.services.local_bridge_service import BridgeAuthContext, hash_secret, utcnow
+from app.services.runtime_notification_outbox import (
+    CompletionNotification,
+    enqueue_completion_notification,
+)
 
 WS_TICKET_PREFIX = "hbt_"
 BROWSER_WS_TICKET_PREFIX = "hbwt_"
@@ -183,6 +189,66 @@ def _require_scope(context: BridgeAuthContext, *accepted_scopes: str) -> None:
 
 def _uuid(value: str | uuid.UUID) -> uuid.UUID:
     return value if isinstance(value, uuid.UUID) else uuid.UUID(str(value))
+
+
+def _a2a_local_delegation(metadata: dict[str, Any] | None) -> bool:
+    value = dict(metadata or {})
+    return value.get("source") == "a2a" and value.get("execution_target") == "local_agent"
+
+
+def _a2a_authority_conflict() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail="A2A Local Agent source authority is missing or no longer matches the parent session",
+    )
+
+
+async def _validated_a2a_source_route(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    sender_agent_id: uuid.UUID | None,
+    sender_user_id: uuid.UUID | None,
+    target_agent_id: uuid.UUID | None,
+    target_owner_user_id: uuid.UUID,
+    metadata: dict[str, Any],
+) -> tuple[ChatSession, ExecutionPrincipal]:
+    """Resolve the exact source mailbox from server-issued delegation evidence."""
+
+    if sender_agent_id is None or sender_user_id is None or target_agent_id is None:
+        raise _a2a_authority_conflict()
+    try:
+        principal = ExecutionPrincipal.from_evidence(metadata.get("execution_principal"))
+        if principal is None or principal.requester_user_id is None or principal.root_session_id is None:
+            raise ValueError("incomplete execution principal")
+        principal.assert_scope(tenant_id=tenant_id, source_agent_id=sender_agent_id)
+        parent_session_id = uuid.UUID(str(principal.root_session_id))
+        if str(metadata.get("parent_session_id") or "") != str(parent_session_id):
+            raise ValueError("parent session drift")
+        if str(metadata.get("sender_agent_id") or "") != str(sender_agent_id):
+            raise ValueError("sender Agent drift")
+        if str(metadata.get("target_agent_id") or "") != str(target_agent_id):
+            raise ValueError("target Agent drift")
+        if str(metadata.get("target_owner_user_id") or "") != str(target_owner_user_id):
+            raise ValueError("target owner drift")
+        if principal.requester_user_id != sender_user_id:
+            raise ValueError("requester drift")
+    except (KeyError, TypeError, ValueError, AttributeError) as exc:
+        raise _a2a_authority_conflict() from exc
+
+    parent_session = (
+        await db.execute(
+            select(ChatSession).where(
+                ChatSession.id == parent_session_id,
+                ChatSession.tenant_id == tenant_id,
+                ChatSession.agent_id == sender_agent_id,
+                ChatSession.user_id == principal.requester_user_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if parent_session is None:
+        raise _a2a_authority_conflict()
+    return parent_session, principal
 
 
 def _event_payload(event: LocalAgentChannelEvent) -> dict[str, Any]:
@@ -896,6 +962,176 @@ def _result_refs(artifacts: list[dict[str, Any]] | None) -> list[str]:
     return list(dict.fromkeys(refs))
 
 
+async def _enqueue_a2a_source_delivery(
+    db: AsyncSession,
+    *,
+    message: LocalAgentChannelMessage,
+    source_route: tuple[ChatSession, ExecutionPrincipal] | None,
+    terminal_status: str,
+    output: str,
+    artifacts: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Durably queue a local delegation result for its exact source session."""
+
+    if source_route is None:
+        return None
+    parent_session, principal = source_route
+    metadata = dict(message.metadata_json or {})
+    receipt = _receipt_for_message(message)
+    summary = str(output or "").strip()
+    if not summary:
+        summary = (
+            "The Local Agent delegation failed without a result payload."
+            if terminal_status == "failed"
+            else "The Local Agent delegation completed without a result payload."
+        )
+    notification = CompletionNotification(
+        tenant_id=message.tenant_id,
+        source_kind="a2a_delegation",
+        source_run_id=str(message.id),
+        parent_session_id=parent_session.id,
+        parent_agent_id=message.sender_agent_id,
+        parent_user_id=parent_session.user_id,
+        terminal_status=terminal_status,
+        task_type="a2a_local_delegation",
+        summary=summary,
+        root_runtime_task_id=principal.root_runtime_task_id,
+        child_agent_name=str(metadata.get("target_agent_name") or "").strip() or None,
+        delivery_mode="parent_continuation",
+        artifacts=list(artifacts),
+        metadata={
+            "execution_target": "local_agent",
+            "local_agent_message_id": str(message.id),
+            "local_agent_channel_session_id": str(message.session_id),
+            "parent_session_id": str(parent_session.id),
+            "parent_agent_id": str(message.sender_agent_id),
+            "from_agent_id": str(message.sender_agent_id),
+            "from_agent": metadata.get("sender_agent_name"),
+            "to_agent": str(message.source_agent_id),
+            "to_agent_name": metadata.get("target_agent_name"),
+            "expected_output": metadata.get("expected_output"),
+            "ledger_todo_id": metadata.get("ledger_todo_id"),
+            "budget_run_id": metadata.get("budget_run_id"),
+            "root_runtime_task_id": principal.root_runtime_task_id,
+            "trace_id": (receipt or {}).get("trace_id"),
+        },
+        payload_rank=100,
+    )
+    notification_id = await enqueue_completion_notification(db, notification)
+    source_delivery = {
+        "status": "queued",
+        "notification_id": str(notification_id),
+    }
+    message.metadata_json = {
+        **metadata,
+        "source_delivery": source_delivery,
+    }
+    return source_delivery
+
+
+async def get_a2a_channel_message_status(
+    db: AsyncSession,
+    *,
+    message_id: uuid.UUID,
+    principal: ExecutionPrincipal,
+    source_agent_id: uuid.UUID,
+) -> dict[str, Any] | None:
+    """Read one local delegation result without leaking another source session."""
+
+    principal.assert_scope(tenant_id=principal.tenant_id, source_agent_id=source_agent_id)
+    message = (
+        await db.execute(
+            select(LocalAgentChannelMessage).where(
+                LocalAgentChannelMessage.id == message_id,
+                LocalAgentChannelMessage.tenant_id == principal.tenant_id,
+                LocalAgentChannelMessage.sender_agent_id == source_agent_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if message is None or not _a2a_local_delegation(message.metadata_json):
+        return None
+    parent_session, stored_principal = await _validated_a2a_source_route(
+        db,
+        tenant_id=message.tenant_id,
+        sender_agent_id=message.sender_agent_id,
+        sender_user_id=message.sender_user_id,
+        target_agent_id=message.source_agent_id,
+        target_owner_user_id=message.owner_user_id,
+        metadata=dict(message.metadata_json or {}),
+    )
+    if (
+        principal.root_session_id != str(parent_session.id)
+        or principal.requester_user_id != parent_session.user_id
+        or str(principal.tenant_id) != str(stored_principal.tenant_id)
+        or principal.source_agent_id != stored_principal.source_agent_id
+        or principal.requester_user_id != stored_principal.requester_user_id
+    ):
+        return None
+
+    metadata = dict(message.metadata_json or {})
+    report = dict(metadata.get("report") or {})
+    artifacts = report.get("artifacts")
+    if not isinstance(artifacts, list):
+        artifacts = []
+    stored_delivery = dict(metadata.get("source_delivery") or {})
+    notification_id: uuid.UUID | None = None
+    try:
+        notification_id = uuid.UUID(str(stored_delivery.get("notification_id") or ""))
+    except (TypeError, ValueError, AttributeError):
+        notification_id = None
+    outbox = None
+    if notification_id is not None:
+        outbox = (
+            await db.execute(
+                select(RuntimeNotificationOutbox).where(
+                    RuntimeNotificationOutbox.id == notification_id,
+                    RuntimeNotificationOutbox.tenant_id == message.tenant_id,
+                    RuntimeNotificationOutbox.source_kind == "a2a_delegation",
+                    RuntimeNotificationOutbox.source_run_id == str(message.id),
+                    RuntimeNotificationOutbox.parent_session_id == parent_session.id,
+                    RuntimeNotificationOutbox.parent_agent_id == source_agent_id,
+                    RuntimeNotificationOutbox.parent_user_id == parent_session.user_id,
+                )
+            )
+        ).scalar_one_or_none()
+
+    terminal = message.status in {"completed", "failed"}
+    if outbox is not None:
+        source_delivery = {
+            "status": outbox.status,
+            "notification_id": str(outbox.id),
+            "attempt_count": int(outbox.attempt_count or 0),
+            "last_error": outbox.last_error,
+            "delivered_at": outbox.delivered_at.isoformat() if outbox.delivered_at else None,
+            "delivery_receipt": dict(outbox.delivery_receipt_json or {}),
+        }
+    elif terminal:
+        source_delivery = {
+            "status": "needs_reconciliation",
+            "notification_id": str(notification_id) if notification_id else None,
+            "last_error": "The terminal local result has no durable source-session delivery row.",
+        }
+    else:
+        source_delivery = {"status": "not_ready", "notification_id": None}
+
+    payload = {
+        "kind": "local_agent_delegation",
+        "message_id": str(message.id),
+        "status": message.status,
+        "terminal": terminal,
+        "target_agent_id": str(message.source_agent_id),
+        "target_agent": metadata.get("target_agent_name"),
+        "parent_session_id": str(parent_session.id),
+        "artifacts": artifacts,
+        "receipt": _receipt_for_message(message),
+        "source_delivery": source_delivery,
+        "retryable": message.status not in {"completed", "failed"},
+    }
+    if terminal:
+        payload["result"] = str(message.result or "")
+    return payload
+
+
 def _add_remote_action_span(
     db: AsyncSession,
     *,
@@ -1093,12 +1329,17 @@ async def create_channel_session(
     source_agent_id: uuid.UUID | None = None,
     source: str = "web",
     title: str | None = None,
+    commit: bool = True,
+    reuse_existing: bool = False,
 ) -> dict[str, Any]:
     """Create a user-owned Local Agent Channel session.
 
     Direct web chat is user-scoped and may not have a cloud agent chat session.
-    A2A calls can pass `source_agent_id`, which mirrors the transcript into the
-    calling agent's ChatSession while keeping delivery bound to the owner user.
+    A2A calls can pass `source_agent_id`, which mirrors the local-side transcript
+    into the target Local Agent's ChatSession while delivery stays bound to its
+    host owner. Source-session completion uses the separate durable outbox path.
+    Aggregate writers may set ``commit=False`` so session and first message
+    become visible atomically.
     """
 
     chat_session: ChatSession | None = None
@@ -1110,6 +1351,15 @@ async def create_channel_session(
             source_agent_id=source_agent_id,
             source=source,
         )
+        if reuse_existing and isinstance(db, AsyncSession):
+            bind = db.get_bind()
+            if getattr(getattr(bind, "dialect", None), "name", "") == "postgresql":
+                lock_material = (
+                    f"{tenant_id}:{owner_user_id}:{actor_id}:{source_agent_id}:{source}:"
+                    f"{external_conversation_id}"
+                ).encode("utf-8")
+                lock_key = int.from_bytes(hashlib.sha256(lock_material).digest()[:8], byteorder="big", signed=True)
+                await db.execute(select(func.pg_advisory_xact_lock(lock_key)))
         chat_session = await create_or_bind_chat_session(
             db=db,
             tenant_id=tenant_id,
@@ -1124,6 +1374,27 @@ async def create_channel_session(
             visibility_scope="direct_user",
             listed_surface="chat",
         )
+        if reuse_existing:
+            existing = (
+                await db.execute(
+                    select(LocalAgentChannelSession)
+                    .where(
+                        LocalAgentChannelSession.tenant_id == tenant_id,
+                        LocalAgentChannelSession.owner_user_id == owner_user_id,
+                        LocalAgentChannelSession.source_agent_id == source_agent_id,
+                        LocalAgentChannelSession.chat_session_id == chat_session.id,
+                        LocalAgentChannelSession.source == (source or "web")[:32],
+                        LocalAgentChannelSession.status == "active",
+                    )
+                    .order_by(
+                        LocalAgentChannelSession.created_at.desc(),
+                        LocalAgentChannelSession.id.desc(),
+                    )
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            if existing is not None:
+                return _session_payload(existing, chat_session)
     channel_session = LocalAgentChannelSession(
         tenant_id=tenant_id,
         owner_user_id=owner_user_id,
@@ -1134,7 +1405,8 @@ async def create_channel_session(
     )
     db.add(channel_session)
     await db.flush()
-    await db.commit()
+    if commit:
+        await db.commit()
     return {
         "id": channel_session.id,
         "chat_session_id": chat_session.id if chat_session else None,
@@ -1169,6 +1441,24 @@ async def enqueue_channel_message(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Local agent channel session not found")
     clean_attachments = list(attachments or [])
     clean_metadata = {"source": session.source, **dict(metadata or {})}
+    if _a2a_local_delegation(clean_metadata):
+        parent_session, principal = await _validated_a2a_source_route(
+            db,
+            tenant_id=session.tenant_id,
+            sender_agent_id=sender_agent_id,
+            sender_user_id=sender_user_id,
+            target_agent_id=session.source_agent_id,
+            target_owner_user_id=session.owner_user_id,
+            metadata=clean_metadata,
+        )
+        clean_metadata = {
+            **clean_metadata,
+            "sender_agent_id": str(sender_agent_id),
+            "target_agent_id": str(session.source_agent_id),
+            "target_owner_user_id": str(session.owner_user_id),
+            "parent_session_id": str(parent_session.id),
+            "execution_principal": principal.to_evidence(),
+        }
     clean_idempotency_key = str(idempotency_key or f"local:{uuid.uuid4()}").strip()[:200]
     request_hash = _canonical_hash(
         {
@@ -1698,17 +1988,44 @@ async def record_channel_result(
             LocalAgentChannelMessage.session_id == session.id,
             LocalAgentChannelMessage.owner_user_id == context.user_id,
             LocalAgentChannelMessage.tenant_id == context.tenant_id,
-        )
+        ).with_for_update()
     )
     message = message_result.scalar_one_or_none()
     if message is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Local agent channel message not found")
+    source_route: tuple[ChatSession, ExecutionPrincipal] | None = None
+    if _a2a_local_delegation(message.metadata_json):
+        source_route = await _validated_a2a_source_route(
+            db,
+            tenant_id=context.tenant_id,
+            sender_agent_id=message.sender_agent_id,
+            sender_user_id=message.sender_user_id,
+            target_agent_id=message.source_agent_id,
+            target_owner_user_id=message.owner_user_id,
+            metadata=dict(message.metadata_json or {}),
+        )
     if message.status in {"completed", "failed"}:
+        report = dict((message.metadata_json or {}).get("report") or {})
+        persisted_artifacts = report.get("artifacts")
+        if not isinstance(persisted_artifacts, list):
+            persisted_artifacts = []
+        source_delivery = await _enqueue_a2a_source_delivery(
+            db,
+            message=message,
+            source_route=source_route,
+            terminal_status=message.status,
+            output=str(message.result or ""),
+            artifacts=persisted_artifacts,
+        )
+        if source_delivery is not None:
+            await db.flush()
+            await db.commit()
         return {
             "status": message.status,
             "event": None,
             "message": _message_payload(message),
             "receipt": _receipt_for_message(message),
+            "source_delivery": source_delivery,
             "idempotent_replay": True,
         }
     if isinstance(db, AsyncSession):
@@ -1770,6 +2087,14 @@ async def record_channel_result(
         receipt=receipt,
         failed=normalized_status == "failed",
     )
+    source_delivery = await _enqueue_a2a_source_delivery(
+        db,
+        message=message,
+        source_route=source_route,
+        terminal_status=normalized_status,
+        output=output,
+        artifacts=list(artifacts or []),
+    )
     await db.flush()
     await db.commit()
     return {
@@ -1777,5 +2102,6 @@ async def record_channel_result(
         "event": _event_payload(event),
         "message": _message_payload(message),
         "receipt": receipt,
+        "source_delivery": source_delivery,
         "idempotent_replay": False,
     }

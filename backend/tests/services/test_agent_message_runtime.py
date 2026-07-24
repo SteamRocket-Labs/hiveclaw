@@ -804,6 +804,7 @@ async def test_local_agent_delegation_waits_for_budget_approval_before_channel_w
 
 @pytest.mark.asyncio
 async def test_local_agent_delegation_targets_target_owner_and_returns_stable_receipt(monkeypatch):
+    from app.core.execution_context import ExecutionPrincipal
     from app.services import local_agent_channel_service
     from app.services.agent_tool_domains import messaging
     from app.services.agent_tool_domains.messaging import _delegate_to_local_agent_channel
@@ -828,6 +829,14 @@ async def test_local_agent_delegation_targets_target_owner_and_returns_stable_re
     session_id = uuid4()
     message_id = uuid4()
     runtime_task_id = uuid4()
+    parent_session_id = uuid4()
+    principal = ExecutionPrincipal(
+        tenant_id=tenant_id,
+        source_agent_id=source_agent.id,
+        requester_user_id=source_owner_id,
+        root_session_id=str(parent_session_id),
+        root_runtime_task_id=str(runtime_task_id),
+    )
     captured = {}
 
     class FakeSession:
@@ -872,20 +881,28 @@ async def test_local_agent_delegation_targets_target_owner_and_returns_stable_re
         message_text="Inspect the target machine.",
         args={
             "_runtime_task_id": str(runtime_task_id),
-            "parent_session_id": "parent-session-1",
+            "parent_session_id": str(parent_session_id),
+            "_execution_principal": principal.to_evidence(),
         },
     )
 
     assert captured["session"]["owner_user_id"] == target_owner_id
     assert captured["session"]["actor_user_id"] == source_owner_id
     assert captured["session"]["source_agent_id"] == target_agent.id
+    assert captured["session"]["commit"] is False
+    assert captured["session"]["reuse_existing"] is True
     assert captured["message"]["owner_user_id"] == target_owner_id
     assert captured["message"]["sender_user_id"] == source_owner_id
     assert captured["message"]["sender_agent_id"] == source_agent.id
+    assert captured["message"]["metadata"]["target_agent_name"] == "Target Mac"
+    assert captured["message"]["metadata"]["parent_session_id"] == str(parent_session_id)
+    assert captured["message"]["metadata"]["execution_principal"] == principal.to_evidence()
     assert captured["message"]["idempotency_key"].startswith(f"a2a-local:{runtime_task_id}:")
     assert captured["fanout"][0] == target_owner_id
     assert result["receipt"]["schema"] == "hive.execution_receipt.v1"
     assert result["chat_session_id"] is None
+    assert "delivered automatically back into this source Agent session" in result["next_action"]
+    assert "check_async_task with message_id" in result["next_action"]
 
 
 @pytest.mark.asyncio
@@ -1197,6 +1214,121 @@ async def test_check_async_task_rejects_other_agent_when_db_lookup_unavailable(m
 
     never_finish.set()
     await check_async_delegation(handle.task_id)
+
+
+@pytest.mark.asyncio
+async def test_check_async_task_reads_authorized_local_agent_message_result(monkeypatch):
+    from app.core.execution_context import ExecutionPrincipal
+    from app.services.agent_tool_domains import messaging
+    from app.services.agent_tool_domains.messaging import _check_async_task
+
+    tenant_id = uuid4()
+    requester_user_id = uuid4()
+    source_agent_id = uuid4()
+    target_agent_id = uuid4()
+    target_owner_user_id = uuid4()
+    parent_session_id = uuid4()
+    message_id = uuid4()
+    notification_id = uuid4()
+    stored_principal = ExecutionPrincipal(
+        tenant_id=tenant_id,
+        source_agent_id=source_agent_id,
+        requester_user_id=requester_user_id,
+        root_session_id=str(parent_session_id),
+        root_runtime_task_id=str(uuid4()),
+    )
+    principal = ExecutionPrincipal(
+        tenant_id=tenant_id,
+        source_agent_id=source_agent_id,
+        requester_user_id=requester_user_id,
+        root_session_id=str(parent_session_id),
+        root_runtime_task_id=str(uuid4()),
+    )
+    message = SimpleNamespace(
+        id=message_id,
+        tenant_id=tenant_id,
+        owner_user_id=target_owner_user_id,
+        sender_agent_id=source_agent_id,
+        sender_user_id=requester_user_id,
+        source_agent_id=target_agent_id,
+        status="completed",
+        result="Local evidence is complete.",
+        metadata_json={
+            "source": "a2a",
+            "execution_target": "local_agent",
+            "sender_agent_id": str(source_agent_id),
+            "target_agent_id": str(target_agent_id),
+            "target_agent_name": "Target Mac",
+            "target_owner_user_id": str(target_owner_user_id),
+            "parent_session_id": str(parent_session_id),
+            "execution_principal": stored_principal.to_evidence(),
+            "report": {"artifacts": [{"path": "workspace/local-result.md"}]},
+            "source_delivery": {
+                "status": "queued",
+                "notification_id": str(notification_id),
+            },
+        },
+        request_hash=None,
+        capability_snapshot_hash=None,
+        replay_key="local:test",
+        receipt_trace_id=None,
+        receipt_span_id=None,
+        completed_at=None,
+    )
+    parent_session = SimpleNamespace(
+        id=parent_session_id,
+        tenant_id=tenant_id,
+        agent_id=source_agent_id,
+        user_id=requester_user_id,
+    )
+    outbox = SimpleNamespace(
+        id=notification_id,
+        status="delivered",
+        attempt_count=1,
+        last_error=None,
+        delivered_at=None,
+        delivery_receipt_json={"status": "continued"},
+    )
+
+    class _ScalarResult:
+        def __init__(self, value):
+            self.value = value
+
+        def scalar_one_or_none(self):
+            return self.value
+
+    class _Db:
+        def __init__(self):
+            self.values = [message, parent_session, outbox]
+
+        async def execute(self, _stmt):
+            return _ScalarResult(self.values.pop(0))
+
+    class _Session:
+        async def __aenter__(self):
+            return _Db()
+
+        async def __aexit__(self, *_exc):
+            return False
+
+    monkeypatch.setattr(messaging, "tenant_scoped_session", lambda *_args, **_kwargs: _Session())
+
+    result = await _check_async_task(
+        source_agent_id,
+        {"message_id": str(message_id)},
+        principal=principal,
+    )
+    payload = json.loads(result)
+
+    assert payload["kind"] == "local_agent_delegation"
+    assert payload["message_id"] == str(message_id)
+    assert payload["status"] == "completed"
+    assert payload["terminal"] is True
+    assert payload["result"] == "Local evidence is complete."
+    assert payload["artifacts"] == [{"path": "workspace/local-result.md"}]
+    assert payload["target_agent_id"] == str(target_agent_id)
+    assert payload["source_delivery"]["status"] == "delivered"
+    assert payload["source_delivery"]["notification_id"] == str(notification_id)
 
 
 @pytest.mark.asyncio

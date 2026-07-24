@@ -21,22 +21,23 @@
 | GV-07 quota admission 故障状态与消费 | **代码闭环；生产故障注入待补** | 保留 token/cost 资源权威不可验证时的 fail-closed，不再误导为“基础设施故障可降级放行”；`QuotaExceeded` 与 quota authority failure 分别产生 `quota_denied` / `quota_unavailable` 终态，以及 durable `quota_exceeded` 的 `denied` / `unavailable+retryable` 事件。web chat transcript、运行任务终态和员工页可读状态均消费同一 typed receipt，底层异常文本不回显。RED 为后端 `3 failed`、前端 `1 failed`；最终后端相邻聚合 `68 passed`、前端 `176 passed`，Ruff/format 与生产 build/bundle budget 通过 | 无 schema、配置或历史数据迁移。尚未在生产注入 quota DB/authority 故障并观察真实 WebSocket→transcript→reload，但本地 live-path 函数与投影契约已覆盖 |
 | GV-09 DecisionTrace 单一权威与员工消费 | **代码闭环；真 PG/浏览器与遗留数据 apply 待验收** | 删除 live JSONL store，SQL 成为唯一运行时权威；Decision 与 feedback 不再内部 commit，员工反馈与会话事件共用 request transaction。新增 tenant+agent+session 精确授权的 typed decisions API，并接入员工会话右栏的 “Action decisions”；中英文 UI 只显示已知业务动作、可理解结果/原因和 Helpful/Misleading，未知工具统一显示“数字员工操作”，不显示 decision ID 或 raw reason code。后端相邻聚合 `152 passed, 1 skipped`，前端 `139 passed`，Ruff/format 与生产 build/bundle budget 通过 | 既有 SQL schema 无迁移。一次性 JSONL 工具强制 dry-run hash 绑定、零坏行/孤儿、缺 tenant 显式赋权、幂等导入和可逆归档；真实本地遗留文件 dry-run 为 2 decisions/2 feedback/0 skipped/0 orphan，但两条 decision 无 tenant，因此保持原文件不动，须由 operator 明确 tenant 并在验收环境执行 `--apply` |
 | GV-08 exact-secret / Model Agency 边界 | **代码闭环；真 PG、生产凭据库存/backfill 与真实 provider 验收待补** | `PrivacyLayer` 的 credential regex 只保留 count-only 候选，不再产生 PL4/REFUSE；ToolRuntime 在 hook、Plan Mode、runtime 参数注入和执行前只按 tenant-scoped LLM/channel/tool/MCP credential authority 的 exact bytes 阻断，模型输入/流式输出/thinking/tool result/error/event/T0/Web/Session/Channel durable ingress 均只遮蔽 exact bytes，并保留 value-free receipt。typed reply target 与 Channel inbox transport token 由既有 JSON/JSONB 物理列透明加密；文件执行使用 immutable snapshot 和 SHA-bound download。最终核心/存储回归 `330 passed, 10 skipped`，入口相邻回归 `407 passed, 57 skipped`；Ruff、compileall、`git diff --check` 全绿 | 无 DDL；`migrate_channel_secrets` 升级为 v3 count-only dry-run，并在显式 `--apply --confirm` 下轮转 channel config、delivery target、ingress transport token，再对 legacy ingress 做当前 exact credential backfill。生产必须配置真实 `SECRETS_MASTER_KEY`，先审 dry-run receipt，再由 operator apply；本地 skip 不替代真 PG、真实 keyring、stream/provider、断线重试与 offboarding 验收 |
+| HC-01 本地 A2A 结果回传与恢复查询 | **代码闭环；真 PG/真实设备唤醒验收待补** | Local Agent 消息入队先校验 server-issued `ExecutionPrincipal` 与 tenant/source Agent/requester/parent session/target Agent/target owner 的 exact binding；目标 channel conversation 在 PG advisory lock 下复用，channel session 与首条 message 原子提交；本地 result 与 `a2a_delegation` completion outbox 也在同一事务提交，由既有 parent-continuation worker 自动唤醒来源 Agent。重复 result replay 以已持久化原结果幂等补齐 outbox，不接受重复 payload 覆盖；`check_async_task` 现以 `task_id` 或 `message_id` 二选一查询，并返回 Local Message、artifact、receipt 与实际 outbox 状态。相关后端邻接聚合 `111 passed`，Ruff/compileall/diff check 全绿 | 无 DDL/历史回填；复用既有 Runtime Result/Notification Outbox。新增真实 PG message→result→outbox 测试，但本机 Docker/Testcontainers connection refused 而 skip；真实 Hive Connect result→outbox worker→来源会话续跑、断线重试与 reload 仍须在 acceptance 环境验收 |
 
 ## 1. 执行摘要与上线判断
 
 原始审查从当前源码重新建立结论，不继承既有完成声明，覆盖 14 个审计面（CC/FreeCode 基线、kernel 与模型循环、会话生命周期、工具治理、session 中段五能力、记忆系统、自进化、A2A、知识平面、企业治理、Hive Connect、前端消费、Codex/hermes 对照、验收面）。Codex current-source 复核确认了六个原始 P0 所指向的代码事实，同时发现一项漏判的 live Model Agency 违规、两项 Hive Connect source-boundary 误报、一项前端产品状态误分类、一项员工设置的运行时实现与权限边界泄漏，以及若干不能由现有证据支持的上线表述。
 
-**总体判断：Hive 的单 Agent 机制主干在当前源码上有较强接线证据，多处实现也体现了 CCPlus/Hive-native 增量；但“Goal 1 智能质量至少达到 hermes”尚无行为级对比证据。GV-01/GV-02/SA-05/GV-04/GV-05/GV-08 已完成代码修复，当前只剩 HC-01 一个未修 P0。当前裁决仍为 NO-GO；本地代码闭环只恢复进入真环境验收的资格，不自动构成上线判断。**
+**总体判断：Hive 的单 Agent 机制主干在当前源码上有较强接线证据，多处实现也体现了 CCPlus/Hive-native 增量；但“Goal 1 智能质量至少达到 hermes”尚无行为级对比证据。经 current-source 确认的 P0 已全部完成代码修复，HC-01 也已接入来源会话的 durable completion outbox 与 `message_id` 恢复查询。当前裁决仍为 NO-GO；P1/P2/P3 断点尚未全部修复，且本地代码闭环只恢复进入真环境验收的资格，不自动构成上线判断。**
 
 核心结论：
 
 - **单 Agent 机制主干有较强源码证据，但行为质量未证实。** kernel 模型循环唯一接线、compaction 带 coverage ledger（强于 CC 单摘要与 Codex 单 turn 摘要）、LoopGuard 只告警且终态解释仍由模型撰写、记忆系统 T0→T2→T3→soul 以 LLM-primary 为主、Plan Mode/Subagent/Work Ledger/Skill 均有真实接线。不过不能据此推导“智能质量至少达到 hermes”；该主张仍需同模型、同任务、同证据条件下的行为级对比。
 - **治理自伤 GV-01/GV-02 已完成代码修复**：Preflight ASK/ESCALATE 现复用 durable Approval ticket 的单次消费、hash 绑定与精确重放；ToolRuntimeService 不再创建孤立内存 checkpoint；approved replay 只把 ASK/ESCALATE 转为可执行，不绕过 REFUSE/PREPARE_ONLY；任何 typed boundary block 都不再误记 `succeeded`。本机 Docker 不可用，因此真 PG worker 事务验收仍待补。
-- **当前唯一未修 P0 上线阻断项**：HC-01（A2A 委派本地执行结果孤立，源 Agent 永不知结果）。GV-08 已移除 pattern→REFUSE 违规，并以 exact authority、入口前遮蔽、输出保真、typed encrypted transport store 与可审计 backfill 形成代码闭环；它与 GV-01/02/04/05、SA-05 的真 PG、Redis、keyring、provider 和生产边界仍在 §11 保留。
+- **P0 代码修复已全部完成，但不等于 GO**：HC-01 现把本地 result 与 `a2a_delegation` outbox 同事务提交，既有 completion worker 自动续跑来源 Agent 会话；`check_async_task(message_id=...)` 提供严格 session-bound 的恢复查询。GV-08 也已移除 pattern→REFUSE 违规。HC-01 的真 PG/真实设备唤醒，以及 GV-01/02/04/05/08、SA-05 的 PG、Redis、keyring、provider 和生产边界仍在 §11 保留。
 - **文档假完成集中爆发**：AGENTS.md 与当前源码漂移严重——`proactive_employee_loop`、`policy_replay`、`viking_client`、`knowledge_inject`、`extract_queue`、`extract_agent`、`scheduler`、Objective 实体均已不存在或被替换；迁移数 79→实际 178、前端测试 39→实际 123、Office 专用编辑面已被当前前端测试合同明确退役、"turn-level token budget gates"声明与源码矛盾。这些必须按"已知缺失/已退役"改写，否则后续审计会继续继承假完成。
 - **Hook 产品边界被放反（UI-09）**：`Runtime hooks` 是平台内部生命周期、证据、恢复与治理机制，不是员工或其 Owner/Manager 的产品心智。当前员工设置却直接展示 handler 名、event、failure mode 与失败 receipt，并允许 `manage/owner` 逐项持久化禁用。原报告把“员工侧没有用户自定义 hook”判为缺失，方向相反：员工面必须移除内部 Hook 细节和开关；若 CCPlus 需要可扩展 Hook，应另建受治理的 Platform Developer/Extension 面，且不得与平台内置 Hook 混用。
 - **Codex/hermes 对照**：Hive 已吸收大部分工程增量（sandbox provider、approval 路由、resume/fork、compaction）；可吸收但未做的：unified exec（PTY/持久 shell 会话）、execpolicy 命令级声明策略、hermes 的 session_search（跨会话原文检索）与 verify-on-stop。无"错误改变 CC 语义"的吸收。
-- **上线判断**：**NO-GO / Acceptance incomplete**。HC-01 完成后，仍必须重新核生产接线并完成 §11 中 Goal 1 行为对标、真 PG、Redis、多进程、自治批准回放、GV-08 真实 keyring/backfill/provider 验收和真实 Hive Connect 安装态验收；不得从“代码修复完成”直接跳到 GO。
+- **上线判断**：**NO-GO / Acceptance incomplete**。仍须完成本报告其余 P1/P2/P3 修复，并重新核生产接线与 §11 中 Goal 1 行为对标、真 PG、Redis、多进程、自治批准回放、GV-08 真实 keyring/backfill/provider、HC-01 来源会话唤醒和真实 Hive Connect 安装态验收；不得从“P0 代码修复完成”直接跳到 GO。
 
 ---
 
@@ -141,7 +142,7 @@
 | 22 | 取消/Esc | abortController 贯穿流式与工具（`useCancelRequest.ts:63`） | durable ControlInput + 幂等键 `cancel-run:{run_id}` + Redis cancel bus + fence CAS 结算 | 工程增强 | 闭环 |
 | 23 | 成本/token 追踪 | 会话成本累计、resume 恢复（`cost-tracker.ts:278`） | token_tracker 三层配额 fail-closed（`invoker.py:1507-1537`）；**但 turn 级预算空转（SA-01）** | 可接受差异 | 局部闭环 |
 | 24 | 多模型路由 | 主循环覆盖 + 429/529 fallback（`model.ts:95`、`withRetry.ts:163`） | 429-only 重试×10+Retry-After、overload→fallback_model、账户类错误不 fallback（`llm_client.py:426-487`、`turn_orchestrator.py:1816-1907`） | 语义等价 | 闭环 |
-| 25 | Team/多 agent | 进程内 teammate + 消息（`TeamCreateTool`、`SendMessageTool`） | A2A：send_message_to_agent 同步咨询 + delegate_to_agent 异步委派 + Lease/Signal 原语 + 权限收缩（DelegationToken） | 主动超越（但见 HC-01/A2A-03） | 局部闭环 |
+| 25 | Team/多 agent | 进程内 teammate + 消息（`TeamCreateTool`、`SendMessageTool`） | A2A：send_message_to_agent 同步咨询 + delegate_to_agent 异步委派 + Lease/Signal 原语 + 权限收缩（DelegationToken）；本地委派结果已回来源 session | 主动超越（但见 A2A-03） | 局部闭环 |
 | 26 | 定时/触发 | cron 调度工具（`ScheduleCronTool`） | trigger_daemon 15s tick + fire lease + RuntimeTask | 工程增强 | 局部闭环（SA-03） |
 | 27 | Workflow | FreeCode 侧为 stub（`tools/WorkflowTool/` 仅 constants）——**非 CC parity 债务** | Hive-native workflow：RuntimeTask+PG step/leaf journal+quota+gate+trigger+admin ops | 主动超越 | 局部闭环（SA-06） |
 | 28 | 输出样式/statusline | output style 注入系统提示（`outputStyles/`） | 前端表达层承担（userFacingRuntimeStatus 人性化） | 可接受差异 | 闭环 |
@@ -244,11 +245,13 @@ T0→T2→T3→soul 全链路经生产路径验证（证据见各条目），且
 
 当前产品 Skill 安装的是 npm `@hiveclaw243/hive-connect`，不是仓内 `@hiveclaw243/hive-bridge`。两套客户端必须分开裁决，legacy 实现的缺陷不能外推为 canonical Hive Connect 缺失。闭环面：设备配对（user_code/device_code 哈希+15min+一次性）、bridge token（sha256+user/tenant 绑定+scope allowlist+可 revoke）、云→本地持久队列+WS 投递+幂等键、断线重连（delivery lease+stale 重排+5 次后 needs_reconciliation）、canonical 客户端本地 durable execution receipt、浏览器聊天 UI、文件上传。
 
-**HC-01（断点，本面最重，主审复核确认）A2A 委派本地执行结果孤立。**
-- 断裂原子：Consumption（孤立结果）。严重级：高。
-- 证据：`messaging.py:1684-1857` 入队成功返回 `queued`；但无任何消费者把本地结果送回源 agent——`record_channel_result` 只写 channel event/目标 agent ChatMessage/span（`local_agent_channel_service.py:1666-1780`），委派无 RuntimeTask，`check_async_task` 查不到（`messaging.py:1887`）。主审 grep 复核：`record_channel_result` 仅被 `api/local_agent_channel.py:942,1090` 调用，无回流消费者。
-- 用户影响：云端 Agent 委派本地任务后永远等不到回执，只能人去 Local Agents 页看——Hive Connect"不制造孤立结果"的合同被违反。
-- 最小闭环：结果到达时向 sender agent 会话注入 inbound 事件/唤醒（复用 send_message_to_agent 回送或 RuntimeTask 恢复通道），委派返回给出可轮询的 message_id 查询工具。
+**HC-01（代码闭环；真 PG/真实设备唤醒待验收，原 P0）A2A 本地结果已回到来源 Agent session。**
+- 原断裂原子：Consumption（孤立结果）。修复后状态：代码闭环。
+- 权威与输入：`enqueue_channel_message` 只在 `source=a2a + execution_target=local_agent` 时接受完整 server-issued `ExecutionPrincipal`，并把 tenant、source Agent、requester、parent `ChatSession`、target Agent 与 target owner 逐项 exact 校验；任一漂移返回 409，目标 channel session 与首条 message 一并 rollback，不产生孤立会话。相同 A2A conversation 由 transaction advisory lock 串行并复用 active channel，幂等重试不再积累无消息孤儿 session。后续 turn 允许 `root_runtime_task_id` 变化，但 tenant/source/requester/parent session 不可变化。
+- 执行与恢复：`record_channel_result` 在提交 Local Message 终态、result event、目标侧 transcript 与 span 的同一事务中调用既有 `enqueue_completion_notification`，写入 `source_kind=a2a_delegation`、`task_type=a2a_local_delegation`、`delivery_mode=parent_continuation`；既有 Runtime Result/Notification Outbox worker 因此自动续跑来源会话。重复 result 请求只重用已持久化的原 output/artifacts 幂等补齐 outbox，不允许重复 payload 改写事实。
+- 消费：本地委派仍返回 stable `message_id`，并明确“结果自动回来源 session”；`check_async_task` schema/runtime 强制 `task_id`/`message_id` 二选一，Local Message 查询绑定同一 tenant/source/requester/parent session，返回 terminal result、artifacts、execution receipt，以及 outbox 的 pending/processing/delivered/dead-letter 真实状态。
+- TDD/命令证据：原实现稳定出现 4 个失败（无 outbox、replay 不补偿、schema 只收 task_id、message_id 无法查询）；跨 turn root task、并发 result 行锁、幂等 channel 复用再分别先红，共记录 8 个失败。最终 Local Channel/A2A/agent-message/API 聚合 `57 passed`，Tool/prompt/registry 邻接聚合 `54 passed`，共 `111 passed`；相关 Ruff、compileall、`git diff --check` 全绿。
+- 验收边界：不新增 schema，不伪造历史回填。新增真实 PG `message→result→outbox` 用例，但本机 Docker/Testcontainers connection refused，`1 skipped`；真实设备 result 上报、outbox worker 唤醒来源 Agent、断线重试与 reload 仍列 §11。
 
 **HC-02（撤销，不是当前 Hive Connect 断点）presence 假离线**：原报告只读取仓内 legacy mjs/py runner，遗漏 Skill 实际安装的 canonical `@hiveclaw243/hive-connect`。对应 `0.1.9` 源码在 `platform/hive/hive.go:31,387-392,489-500` 每 25 秒启动并发送应用层 `{"type":"ping"}`，所以“在线 runner 90 秒后必假离线”不能成立。真实设备长连与 UI presence 仍需 E2E receipt，但状态应是**未验收**，不是**缺失/断点**。
 
@@ -390,11 +393,11 @@ Agent/Skill/Workflow/外部能力资产管理闭环（revision/usage 投影接�
 | Memory T0/T2/T3/soul | ● | ● | ● | ● | ● | ◐(SA-07/08) | ● |
 | 自进化（skill/dream） | ● | ● | ● | ● | ● | ● | ● |
 | 主动管理循环 | ○(HN-01/02 缺失) | — | — | — | — | — | — |
-| A2A/委派 | ● | ● | ● | ◐(A2A-02) | ● | ○(A2A-03/HC-01) | ● |
+| A2A/委派 | ● | ● | ● | ◐(A2A-02) | ● | ○(A2A-03) | ◐(HC-01 真 PG/设备唤醒待验收) |
 | Personal KB | ● | ● | ● | ◐(HN-05) | ● | ● | ◐(真 PG skip) |
 | Enterprise Knowledge | ○(HN-04 已知缺失) | — | — | — | — | — | — |
 | 企业治理（RLS/配额/审计） | ● | ● | ● | ● | ● | ◐(UI-02) | ◐(GV-05/06 真 PG/Redis/多实例待补) |
-| Hive Connect | ● | ◐(HC-03) | ◐(HC-05 legacy) | ◐(HC-06) | ● | ○(HC-01) | ◐(canonical device E2E 未验收) |
+| Hive Connect | ● | ◐(HC-03) | ◐(HC-05 legacy) | ◐(HC-06) | ● | ● | ◐(HC-01 真 PG + canonical device E2E 未验收) |
 | 前端消费面 | ● | ◐(UI-09) | ● | ● | ● | ○(UI-02/04/05/09) | ○(UI-03/09) |
 | 文档事实源 | — | — | — | ○(DOC-01) | — | — | ◐(DOC-02) |
 
@@ -410,7 +413,7 @@ Agent/Skill/Workflow/外部能力资产管理闭环（revision/usage 投影接�
 | GV-06 | 治理 | **代码闭环；真 PG/多实例验收待补** | 原 P2 | Evidence→Consumption→Acceptance | operator v2 链、legacy 锚点、platform_admin 查询/验链与 Desktop client-asserted 分层已贯通 |
 | GV-07 | 治理 | **代码闭环；生产故障注入待补** | 原 P2 | Execution→Evidence→Recovery→Consumption | fail-closed 不变；denied 与 unavailable/retryable 已形成 durable typed receipt 并进入 UI |
 | GV-09 | 工具治理 / 前端 | **代码闭环；真 PG/浏览器与遗留 apply 待验收** | 原 P2 | Evidence→Recovery→Consumption→Acceptance | SQL 单一权威与同事务反馈、精确会话 API、员工可读决策历史及 hash-bound 可逆迁移已贯通 |
-| HC-01 | Connect | 断点 | P0 | Consumption | A2A 委派本地执行结果孤立，源 agent 永不知 |
+| HC-01 | Connect | **代码闭环；真 PG/真实设备唤醒待验收** | 原 P0 | Consumption→Recovery→Acceptance | result 与来源 session outbox 同事务；自动 continuation + `message_id` 恢复查询已贯通 |
 | GV-08 | 工具治理 / Model Agency | **代码闭环；真 PG/keyring/backfill/provider 验收待补** | 原 P0 | Acceptance | pattern 仅作 audit candidate；exact inventory、最早入站/效果边界、输出保真、加密 transport store 与迁移已贯通 |
 | SA-01 | kernel | 断点 | P1 | Authority→Execution | turn_token_budget 派生但零消费者（+AGENTS.md 假完成） |
 | A2A-03 | A2A | 断点 | P1 | Consumption | 协作组后端闭环前端零消费，跨 owner 组队不可用 |
@@ -482,7 +485,7 @@ AGENTS.md 必须按当前源码改写以下条目（均经 current-source 复核
 4. **GV-01/GV-02 真 PG 自治车道端到端**：本轮已有不 monkeypatch ToolRuntimeService execution/registry seam 的组合测试，覆盖 ASK→批准→效果发生→票据 succeeded 与 REFUSE→票据 failed；但 request→approve→RuntimeTask worker 的真 PG 事务测试在本机因 Docker/Testcontainers 不可用全部 skip。生产闭环前必须在 Docker-on/CI 环境跑过该链及 continuation exactly-once。
 5. **GV-08 真环境 exact-secret 验收**：本地已覆盖 benign 文档/fixture、真实活跃 secret、嵌套参数、工具/模型出站、Web/Session/Channel durable ingress、typed transport 加密、legacy dry-run/apply 与非禁止字节 byte-faithful。Acceptance 环境仍须用真实 `SECRETS_MASTER_KEY` 审核 v3 count-only inventory，执行经 operator 确认的 backfill/rotation，并在真 PG、实际 provider stream/断线重试、Channel replay 与 tenant offboarding 中证明 plaintext 为零、exact active secret 不外泄且 benign bytes 不变。
 6. **KB 检索召回质量**：词法检索在真实 owner 语料上的命中率；L2 发现链（tool_search→schema 扩展）生产命中率无 trace。
-7. **Hive Connect 真实设备端到端**：canonical `@hiveclaw243/hive-connect@0.1.9` 的 ping 与 daemon source 已验证；仍需在真实登录设备验证 install→restart→presence、消息/文件/回执，以及 Desktop 对 `desktop_*` router 的真实消费。
+7. **Hive Connect 真实设备端到端**：canonical `@hiveclaw243/hive-connect@0.1.9` 的 ping 与 daemon source 已验证，HC-01 的 source-session outbox/查询也有本地单元与邻接回归；仍需在 Docker-on PG 与真实登录设备验证 install→restart→presence、云端 A2A 委派→本地 result→outbox worker→来源 Agent 自动续跑、断线重试/reload、消息/文件/回执，以及 Desktop 对 `desktop_*` router 的真实消费。
 8. **触发器/heartbeat needs_reconciliation 队列的运营闭环**：恢复后人工和解是否真实可操作（无 UI 入口证据）。
 
 ## 12. Frontend Experience Handoff
@@ -502,7 +505,7 @@ AGENTS.md 必须按当前源码改写以下条目（均经 current-source 复核
 | GV-07 | **已实现**：quota exhausted 与 quota authority unavailable 分别返回 `quota_denied` / `quota_unavailable`，统一产生 durable `quota_exceeded` typed event；资源权威不可验证仍 fail-closed，且不回显底层 exception message | 无 schema/config/历史数据迁移；事件复用现有 ChatTranscriptEvent/message-part 投影 | RED 后端 `3 failed`、前端 `1 failed`；最终后端相邻聚合 `68 passed`、前端 `176 passed`，Ruff/format、TypeScript/Vite build 与 bundle budget 绿；生产 authority outage→WebSocket→reload 故障注入待补 |
 | GV-09 | **已实现**：DecisionTrace 生产只写 SQL；decision feedback、SessionFeedbackEvent 与 AuditLog 共用 request transaction，既有 explicit Memory overlay 保持独立可恢复 receipt；typed session decisions API 复用 session authority 并精确绑定 tenant+agent+session；员工右栏只消费中英文人类可读动作、结果、原因与反馈，未知 tool 不暴露标识 | 既有 SQL 表无需迁移；live JSONL store 已删。旧 JSONL 只能经 dry-run SHA-256 绑定、显式补齐缺 tenant、零坏行/孤儿、幂等导入后移动到可逆 archive；本地 4 行遗留文件因无 tenant 保持不动 | 后端相邻聚合 `152 passed, 1 skipped`，唯一 skip 为 Docker-off 真 PG；前端 `139 passed`；Ruff/format、TypeScript/Vite build 和 bundle budget 绿。仍需 Docker-on PG、真实浏览器和有权 operator 确认后的遗留 apply |
 | GV-08 | **已实现**：模式扫描只生成 count-only audit candidate；tenant-scoped LLM/channel/tool/MCP inventory 提供 exact authority；ToolRuntime 在最早 pre-effect seam 拒绝原始 secret bytes，模型/工具/Web/Session/Channel/T0 ingress/egress 只遮蔽 exact bytes；typed reply target/inbox token 透明加密；扫描文件以 immutable snapshot 和 SHA receipt 绑定执行 | 无 DDL；`migrate_channel_secrets` v3 默认 count-only dry-run，`--apply --confirm` 轮转 channel config、delivery target、ingress transport token，并 backfill legacy ingress exact active secrets；offboarding 清除所有 typed target/ingress token | RED 先后为 `5 failed, 11 passed, 9 skipped`、`2 failed, 25 passed`，stream 日志和 legacy backfill 合同也先红；最终核心/存储 `330 passed, 10 skipped`、入口相邻 `407 passed, 57 skipped`，Ruff/compileall/diff check 绿；真 PG/keyring/provider/backfill acceptance 仍待补 |
-| HC-01 | record_channel_result 增加向 sender agent 会话的 inbound 注入/唤醒；委派返回可轮询 message_id | — | 委派本地执行→源 agent 被唤醒消费结果的端到端测试 |
+| HC-01 | **已实现**：入队 exact 绑定来源 authority，advisory lock 复用同一 active channel；result 与 `a2a_delegation` completion outbox 同事务；既有 parent continuation 自动唤醒；`check_async_task(message_id)` 返回本地执行与 outbox 状态 | 复用既有 Runtime Result/Notification Outbox，无 DDL/历史回填；terminal replay 以原始持久化 result 幂等修复缺 outbox 行 | 本地邻接 `111 passed`、Ruff/compileall/diff check 绿；真实 PG 用例因 Docker unavailable skip，Docker-on + 真实 Hive Connect 设备需补 result→source continuation/retry/reload receipt |
 | SA-01 | 接线 turn budget gate（cache-miss 口径）或删除字段 | — | 有预算时超限 typed 终态+持久化；test_engine 两个真空测试改真断言 |
 | A2A-03 | 协作组五操作补前端（AgentA2ASection 扩展） | — | create→invite→approve→revoke 全流 UI 可达 |
 | HC-03/05 + canonical E2E | file 策略接执行点；退役 Python/legacy gateway 实现；不重做已存在的 ping/daemon | — | 策略关闭即拒；真实设备 install→restart→presence；legacy 404 poll 不再可达 |
@@ -534,7 +537,7 @@ AGENTS.md 必须按当前源码改写以下条目（均经 current-source 复核
 
 ### 14.2 未证实项汇总
 
-T0 磁盘实物抽样与 T0_STARTUP_BACKFILL 生产执行；Redis 传输不可用时 bridge 仅靠 sweep 兜底的行为；后台 subagent 完成唤醒 payload 上限；`skill_candidate_loop_v1` 生产 FeatureFlag 行真实状态；GV-01/GV-02 的真 PG request→approve→worker→continuation exactly-once；GV-03 的真 PG 双 worker 首次 legacy policy 回填竞争与 transaction rollback；SA-05 confirmed workflow 的真 PG lease consumption/rollback；GV-05 的真 PG counter row-lock/额度边界竞争、真实 Redis sliding window 和真实 provider SSE usage；GV-06 的真 PG operator chain writer/query/verifier、滚动多实例 v1→v2 cutover 与生产 platform-admin 查询；GV-07 的真实 quota authority outage→WebSocket→durable transcript→reload；GV-08 的生产 `SECRETS_MASTER_KEY` inventory、channel/delivery/ingress v3 dry-run 与 operator-confirmed apply、真 PG plaintext-zero 查询、provider stream/断线重试、Channel replay 和 tenant offboarding；GV-09 的真 PG tenant/RLS 读写、真实浏览器 Action decisions 操作，以及由有权 operator 为两条无归属遗留 decision 明确 tenant 后执行的 hash-bound apply；MCP `row.config["api_key"]` 明文 vs 加密；enterprise.py 32 端点逐一租户作用域；审批无人值守恢复全程；desktop_* 仓外真实消费者；canonical Hive Connect 的真实机器安装/自启/presence；FreeCode 运行期行为；最近一次 CI run 状态；多实例 Railway 部署拓扑。
+T0 磁盘实物抽样与 T0_STARTUP_BACKFILL 生产执行；Redis 传输不可用时 bridge 仅靠 sweep 兜底的行为；后台 subagent 完成唤醒 payload 上限；`skill_candidate_loop_v1` 生产 FeatureFlag 行真实状态；GV-01/GV-02 的真 PG request→approve→worker→continuation exactly-once；GV-03 的真 PG 双 worker 首次 legacy policy 回填竞争与 transaction rollback；SA-05 confirmed workflow 的真 PG lease consumption/rollback；GV-05 的真 PG counter row-lock/额度边界竞争、真实 Redis sliding window 和真实 provider SSE usage；GV-06 的真 PG operator chain writer/query/verifier、滚动多实例 v1→v2 cutover 与生产 platform-admin 查询；GV-07 的真实 quota authority outage→WebSocket→durable transcript→reload；GV-08 的生产 `SECRETS_MASTER_KEY` inventory、channel/delivery/ingress v3 dry-run 与 operator-confirmed apply、真 PG plaintext-zero 查询、provider stream/断线重试、Channel replay 和 tenant offboarding；GV-09 的真 PG tenant/RLS 读写、真实浏览器 Action decisions 操作，以及由有权 operator 为两条无归属遗留 decision 明确 tenant 后执行的 hash-bound apply；HC-01 的真 PG Local Message/result/outbox 事务与真实设备 result→来源 session continuation/retry/reload；MCP `row.config["api_key"]` 明文 vs 加密；enterprise.py 32 端点逐一租户作用域；审批无人值守恢复全程；desktop_* 仓外真实消费者；canonical Hive Connect 的真实机器安装/自启/presence；FreeCode 运行期行为；最近一次 CI run 状态；多实例 Railway 部署拓扑。
 
 ### 14.3 残余风险
 
@@ -542,7 +545,7 @@ git metadata 已从远端 main 精确恢复且现可逐项 diff/commit；恢复�
 
 ### 14.4 证据边界声明
 
-不再使用“约 90%”这类不可机械复算的单值置信度。当前证据分层如下：原始六个 P0 的代码事实与新增 GV-08 有 current-source 证据；其中 GV-01/GV-02 已有 source diff、typed receipts 与不替换执行 seam 的组合回归，但真 PG worker 验收仍缺。GV-03 已有 prompt→resolver→preflight→Approval/registry、revision/history/rollback/audit 与业务 UI 的 current-source 和本地可执行证据，真 PG 并发验收仍缺；SA-05 已有真实 REST→PlanModeGate→lease port→launch 的 current-source/可执行证据，真 PG lease 验收仍缺；GV-04 已有公共身份 dependency→active target/RLS pin→独立 operator commit 的 current-source 与红绿回归，历史事件不可回填；GV-05 已有 live router→quota/rate→provider→strict meter/counters 的 current-source、红绿回归与断流恢复证据，真 PG/Redis/provider acceptance 仍缺；GV-06 已有 strict writer→v2 chain/legacy anchor→platform-admin query/verify 与 Desktop client-asserted 分层的 current-source、红绿回归及既有不可变迁移合同，真 PG/滚动多实例 acceptance 仍缺；GV-07 已有 invoker admission→typed terminal/event→durable message part/web terminal→前端状态的 current-source 与红绿回归，生产 quota authority outage/reload 验收仍缺；GV-08 已有 tenant credential inventory→Tool/Model/Web/Session/Channel/T0 exact ingress/egress→typed encrypted transport store→v3 dry-run/apply 的 current-source、红绿回归和 value-free receipt，但真 PG、生产 keyring/inventory/backfill/provider acceptance 仍缺；GV-09 已有 ToolRuntime SQL write→request-scoped feedback transaction→typed session API→AgentChat query→员工可读 UI 的 current-source、红绿回归与真实遗留 dry-run receipt，真 PG、浏览器及经 operator 确认的 apply 仍缺；HC-02/HC-04 已被 canonical source 反证；UI-01 已被当前可执行测试合同重分类；UI-09 有用户提供的生产页面截图、前后端 current-source 接线和错误契约单测三类证据，但本次未独立操作浏览器；测试、迁移头与包级 Go tests 有命令 receipt。Goal 1 行为质量、生产 DB、浏览器端到端、多进程、Railway 和真实设备态仍未证实。发布裁决必须消费 §11 中与本次变更相关的全部 receipt，不能只取前三项或把 full-suite 计数当替代品。
+不再使用“约 90%”这类不可机械复算的单值置信度。当前证据分层如下：原始六个 P0 的代码事实与新增 GV-08 有 current-source 证据，且本轮均已形成代码闭环；其中 GV-01/GV-02 已有 source diff、typed receipts 与不替换执行 seam 的组合回归，但真 PG worker 验收仍缺。GV-03 已有 prompt→resolver→preflight→Approval/registry、revision/history/rollback/audit 与业务 UI 的 current-source 和本地可执行证据，真 PG 并发验收仍缺；SA-05 已有真实 REST→PlanModeGate→lease port→launch 的 current-source/可执行证据，真 PG lease 验收仍缺；GV-04 已有公共身份 dependency→active target/RLS pin→独立 operator commit 的 current-source 与红绿回归，历史事件不可回填；GV-05 已有 live router→quota/rate→provider→strict meter/counters 的 current-source、红绿回归与断流恢复证据，真 PG/Redis/provider acceptance 仍缺；GV-06 已有 strict writer→v2 chain/legacy anchor→platform-admin query/verify 与 Desktop client-asserted 分层的 current-source、红绿回归及既有不可变迁移合同，真 PG/滚动多实例 acceptance 仍缺；GV-07 已有 invoker admission→typed terminal/event→durable message part/web terminal→前端状态的 current-source 与红绿回归，生产 quota authority outage/reload 验收仍缺；GV-08 已有 tenant credential inventory→Tool/Model/Web/Session/Channel/T0 exact ingress/egress→typed encrypted transport store→v3 dry-run/apply 的 current-source、红绿回归和 value-free receipt，但真 PG、生产 keyring/inventory/backfill/provider acceptance 仍缺；GV-09 已有 ToolRuntime SQL write→request-scoped feedback transaction→typed session API→AgentChat query→员工可读 UI 的 current-source、红绿回归与真实遗留 dry-run receipt，真 PG、浏览器及经 operator 确认的 apply 仍缺；HC-01 已有入队 authority→Local Message→result/outbox 同事务→parent continuation/`message_id` status 的 current-source、红绿回归与 Docker-on PG 测试定义，真 PG/真实设备唤醒仍缺；HC-02/HC-04 已被 canonical source 反证；UI-01 已被当前可执行测试合同重分类；UI-09 有用户提供的生产页面截图、前后端 current-source 接线和错误契约单测三类证据，但本次未独立操作浏览器；测试、迁移头与包级 Go tests 有命令 receipt。Goal 1 行为质量、生产 DB、浏览器端到端、多进程、Railway 和真实设备态仍未证实。发布裁决必须消费 §11 中与本次变更相关的全部 receipt，不能只取前三项或把 full-suite 计数当替代品。
 
 ---
 
@@ -555,7 +558,7 @@ git metadata 已从远端 main 精确恢复且现可逐项 diff/commit；恢复�
 | C-03 | HC-04 daemon install 未实现 | 撤销 | `cmd/cc-connect/daemon.go:16-105`、`daemon/launchd.go:42-78`；daemon/CLI tests 通过 |
 | C-04 | UI-01 Office 专用面缺失是 P1 产品断点 | 重分类为 DOC-01 | 两个前端测试合同显式要求退役该 tab/section |
 | C-05 | i18n 精确缺失数为 349 | 精确库存未证实 | 原审两种口径为 349/306，未留下唯一可复现提取器 |
-| C-06 | 修复六个 P0 后可进入 GO | 当前仍为 NO-GO / Acceptance incomplete；只剩 HC-01 未修 P0，但已修项仍有真环境 acceptance debt | HC-01 + Goal 1/PG/keyring/backfill/provider/多进程/浏览器/Railway/真实设备验收缺口 |
+| C-06 | 修复六个 P0 后可进入 GO | 当前仍为 NO-GO / Acceptance incomplete；P0 代码修复已完成，但其余断点与真环境 acceptance debt 仍在 | Goal 1、PG/Redis/keyring/backfill/provider、多进程、浏览器、Railway、HC-01 来源唤醒与真实设备验收缺口 |
 | C-07 | 员工用户自定义 hook 无注册面是 P2 缺失 | 撤销该员工产品缺失；新增 UI-09 P1 边界断点 | `AgentSettingsSection.tsx:444`、`HookRuntimeControlCard.tsx:20-117`、`api/hooks.py:120-197`、`hook_runtime_config.py:40-94`、错误契约单测及用户提供的生产截图 |
 
 ### 附：审查过程声明

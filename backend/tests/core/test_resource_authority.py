@@ -14,6 +14,10 @@ class _ScalarResult:
     def scalar_one_or_none(self):
         return self._value
 
+    def scalars(self):
+        values = self._value if isinstance(self._value, list) else [self._value]
+        return SimpleNamespace(all=lambda: values)
+
 
 class _DB:
     def __init__(self, session=None):
@@ -154,6 +158,45 @@ def test_workspace_resource_id_is_stable_and_path_normalized():
     assert workspace_resource_id(agent_id, "/workspace\\reports/./final.md") == workspace_resource_id(
         agent_id, "workspace/reports/final.md"
     )
+
+
+@pytest.mark.asyncio
+async def test_explicit_resource_grants_are_loaded_once_with_canonical_conditions():
+    from app.core.resource_authority import load_explicit_resource_grant_ids
+
+    tenant_id = uuid4()
+    user = SimpleNamespace(id=uuid4(), tenant_id=tenant_id, department_id=uuid4())
+    readable_id = uuid4()
+    environment_blocked_id = uuid4()
+    wrong_action_id = uuid4()
+    permissions = [
+        SimpleNamespace(resource_id=readable_id, actions=["read"], conditions={}),
+        SimpleNamespace(
+            resource_id=environment_blocked_id,
+            actions=["read"],
+            conditions={"environment": "production"},
+        ),
+        SimpleNamespace(resource_id=wrong_action_id, actions=["write"], conditions={}),
+    ]
+
+    class _GrantDB:
+        def __init__(self):
+            self.calls = 0
+
+        async def execute(self, _statement):
+            self.calls += 1
+            return _ScalarResult(permissions)
+
+    db = _GrantDB()
+    granted = await load_explicit_resource_grant_ids(
+        db,
+        user=user,
+        resource_kind="agent_activity",
+        action="read",
+    )
+
+    assert db.calls == 1
+    assert granted == {readable_id}
 
 
 @pytest.mark.asyncio

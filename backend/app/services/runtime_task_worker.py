@@ -281,6 +281,8 @@ async def drain_runtime_notification_outbox_once(*, worker_id: str) -> dict[str,
     for key in ("claimed", "delivered", "retried", "deferred", "dead_lettered"):
         state_key = f"outbox_{key}"
         _STATE[state_key] = int(_STATE.get(state_key) or 0) + int(counts.get(key) or 0)
+    if str(_STATE.get("last_error") or "").startswith("outbox:"):
+        _STATE["last_error"] = None
     return counts
 
 

@@ -397,14 +397,20 @@ async def test_runtime_worker_drains_completion_outbox_and_records_counts(monkey
     monkeypatch.setattr(worker, "RuntimeNotificationOutboxService", FakeOutboxService, raising=False)
     before_delivered = int(worker._STATE.get("outbox_delivered") or 0)
     before_retried = int(worker._STATE.get("outbox_retried") or 0)
+    previous_error = worker._STATE.get("last_error")
+    worker._STATE["last_error"] = "outbox:ConfigurationLimitExceededError: temporary file limit exceeded"
 
-    result = await worker.drain_runtime_notification_outbox_once(worker_id="runtime-worker")
+    try:
+        result = await worker.drain_runtime_notification_outbox_once(worker_id="runtime-worker")
 
-    assert captured == {"reconcile_limit": 100, "worker_id": "runtime-worker", "limit": 100}
-    assert result["claimed"] == 3
-    assert result["reconciled"] == 4
-    assert worker._STATE["outbox_delivered"] == before_delivered + 2
-    assert worker._STATE["outbox_retried"] == before_retried + 1
+        assert captured == {"reconcile_limit": 100, "worker_id": "runtime-worker", "limit": 100}
+        assert result["claimed"] == 3
+        assert result["reconciled"] == 4
+        assert worker._STATE["outbox_delivered"] == before_delivered + 2
+        assert worker._STATE["outbox_retried"] == before_retried + 1
+        assert worker._STATE["last_error"] is None
+    finally:
+        worker._STATE["last_error"] = previous_error
 
 
 @pytest.mark.asyncio

@@ -1,6 +1,7 @@
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 
 import type { ToolFailureSummary } from '../api/domains/activity';
 import type { Agent } from '../types';
@@ -114,6 +115,18 @@ const makeAgent = (overrides: Partial<Agent> = {}): Agent => ({
 });
 
 describe('Dashboard workspace homepage', () => {
+  it('uses one deduplicated overview query instead of per-agent interval fanout', () => {
+    const source = readFileSync(new URL('./Dashboard.tsx', import.meta.url), 'utf8');
+
+    expect(source).toContain('dashboardApi.getOverview');
+    expect(source).toContain("queryKey: ['dashboard-overview'");
+    expect(source).not.toContain('Promise.allSettled(agents.map');
+    expect(source).not.toContain('setInterval(fetchData');
+    expect(source).not.toContain('activityApi.list(a.id');
+    expect(source).not.toContain('activityApi.getToolFailureSummary(a.id');
+    expect(source).not.toContain('chatApi.listSessions(agent.id');
+  });
+
   it('renders the CC Design workspace home instead of the old management table', () => {
     const markup = renderToStaticMarkup(
       <DashboardHomeShell

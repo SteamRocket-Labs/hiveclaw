@@ -274,6 +274,48 @@ async def insert_agent_at_schema_revision(
     await db.execute(historical_agents.insert().values(**values))
 
 
+async def insert_runtime_task_at_schema_revision(
+    db: Any,
+    **overrides: Any,
+) -> uuid.UUID:
+    """Insert a RuntimeTask through the columns available at a historical revision.
+
+    Migration tests deliberately rewind PostgreSQL while importing the current
+    application model. Reflecting the historical table prevents later additive
+    RuntimeTask columns from leaking into an INSERT against that older schema.
+    """
+
+    connection = await db.connection()
+
+    def reflect_runtime_tasks(sync_connection):
+        return Table("runtime_tasks", MetaData(), autoload_with=sync_connection)
+
+    historical_tasks = await connection.run_sync(reflect_runtime_tasks)
+    task_id = overrides.get("id") or uuid.uuid4()
+    task_type = str(overrides.get("task_type") or "delegation")
+    values: dict[str, Any] = {
+        "id": task_id,
+        "task_type": task_type,
+        "status": "pending",
+        "writer_generation": 1,
+        "delegation_chain_json": [],
+        "depth": 1,
+        "priority": 0,
+        "attempt_count": 0,
+        "claim_version": 0,
+        "root_idempotency_key": f"{task_type}:{task_id}",
+        "config_snapshot_hash": "0" * 64,
+        "policy_snapshot_hash": "0" * 64,
+        **overrides,
+    }
+    await db.execute(
+        historical_tasks.insert().values(
+            **{name: value for name, value in values.items() if name in historical_tasks.c}
+        )
+    )
+    return task_id
+
+
 @pytest.fixture(scope="session")
 def revision_parent_migrated_pg_url(pg_container) -> str:  # noqa: F811  (pytest fixture param)
     """Prove the newest revision from its exact projected parent using normal Alembic."""

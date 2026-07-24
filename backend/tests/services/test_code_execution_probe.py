@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import asyncio
 
 import pytest
 
@@ -245,6 +246,38 @@ def test_sandbox_probe_scheduler_defaults_to_vercel_provider(monkeypatch):
     assert probe.should_run_sandbox_probe_scheduler(provider="local_os_sandbox") is True
     monkeypatch.setenv("HIVE_CODE_EXEC_PROBE_SCHEDULER_ENABLED", "false")
     assert probe.should_run_sandbox_probe_scheduler(provider="vercel_sandbox") is False
+
+
+@pytest.mark.asyncio
+async def test_sandbox_probe_scheduler_recovers_after_persistence_failure(monkeypatch):
+    from app.services.code_execution import probe
+
+    calls = 0
+
+    async def fake_run_once(*, timeout):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise TimeoutError("database pool temporarily unavailable")
+        raise asyncio.CancelledError
+
+    sleeps = []
+
+    async def no_wait(seconds):
+        sleeps.append(seconds)
+        return None
+
+    monkeypatch.setattr(probe, "configured_code_execution_provider", lambda: "vercel_sandbox")
+    monkeypatch.setattr(probe, "should_run_sandbox_probe_scheduler", lambda **_kwargs: True)
+    monkeypatch.setattr(probe, "sandbox_probe_interval_seconds", lambda: 0)
+    monkeypatch.setattr(probe, "run_scheduled_sandbox_probe_once", fake_run_once)
+    monkeypatch.setattr(probe.asyncio, "sleep", no_wait)
+
+    with pytest.raises(asyncio.CancelledError):
+        await probe.start_code_execution_sandbox_probe_scheduler()
+
+    assert calls == 2
+    assert sleeps == [0]
 
 
 def test_sandbox_probe_health_component_reports_latest_status() -> None:

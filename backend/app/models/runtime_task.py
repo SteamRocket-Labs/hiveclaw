@@ -19,6 +19,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    SmallInteger,
     String,
     Text,
     UniqueConstraint,
@@ -31,6 +32,35 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
 from app.services.channel_secret_storage import EncryptedDeliveryTargetJSON
+
+
+COMPLETION_OUTBOX_GENERATION = 1
+COMPLETION_OUTBOX_RETRY_SECONDS = 30
+COMPLETION_OUTBOX_TASK_TYPES = (
+    "subagent",
+    "team_member",
+    "workflow",
+    "delegation",
+    "a2a_delegation",
+    "trigger",
+    "approval_execution",
+)
+COMPLETION_OUTBOX_TERMINAL_STATUSES = (
+    "completed",
+    "failed",
+    "killed",
+    "skipped",
+    "needs_reconciliation",
+)
+COMPLETION_OUTBOX_PENDING_SQL = (
+    "completion_outbox_generation IS NOT NULL "
+    "AND completion_outbox_settled_at IS NULL "
+    "AND task_type IN ('subagent', 'team_member', 'workflow', 'delegation', 'a2a_delegation', "
+    "'trigger', 'approval_execution') "
+    "AND status IN ('completed', 'failed', 'killed', 'skipped', 'needs_reconciliation') "
+    "AND NOT (task_type = 'trigger' AND status = 'skipped') "
+    "AND parent_agent_id IS NOT NULL"
+)
 
 
 class RuntimeTask(Base):
@@ -75,6 +105,14 @@ class RuntimeTask(Base):
                 "AND parent_agent_id IS NOT NULL "
                 "AND parent_session_id IS NOT NULL"
             ),
+        ),
+        Index(
+            "ix_runtime_tasks_completion_outbox_pending",
+            text("(completion_outbox_attempted_at IS NOT NULL)"),
+            text("completion_outbox_attempted_at ASC"),
+            text("created_at ASC"),
+            postgresql_where=text(COMPLETION_OUTBOX_PENDING_SQL),
+            sqlite_where=text(COMPLETION_OUTBOX_PENDING_SQL),
         ),
     )
 
@@ -135,6 +173,26 @@ class RuntimeTask(Base):
     scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # Durable recovery eligibility and fairness ledger for the narrow crash
+    # gap between a terminal RuntimeTask write and its completion outbox row.
+    # Historical terminal rows intentionally retain NULL generation and are
+    # never mistaken for fresh user-visible notifications.
+    completion_outbox_generation: Mapped[int | None] = mapped_column(
+        SmallInteger,
+        nullable=True,
+        default=COMPLETION_OUTBOX_GENERATION,
+        server_default=text(str(COMPLETION_OUTBOX_GENERATION)),
+    )
+    completion_outbox_settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completion_outbox_attempted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completion_outbox_attempt_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default=text("0"),
+    )
+    completion_outbox_last_error: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
     # Cross-process queue claim / lease metadata
     priority: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"), index=True)

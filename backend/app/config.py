@@ -73,6 +73,13 @@ class Settings(BaseSettings):
     DB_POOL_SIZE: int = 20
     DB_MAX_OVERFLOW: int = 10
     DB_POOL_TIMEOUT: int = 30
+    # Per-connection query guards. The two USERSET timeouts are also sent in
+    # asyncpg startup parameters. The privileged temp/log limits are applied
+    # to the non-owner production role by grant_rls_app_role on every deploy.
+    DB_STATEMENT_TIMEOUT_MS: int = 30_000
+    DB_IDLE_IN_TRANSACTION_TIMEOUT_MS: int = 300_000
+    DB_TEMP_FILE_LIMIT_KB: int = 131_072
+    DB_LOG_TEMP_FILES_KB: int = 65_536
     # Runtime pool isolation role. Existing single-service deployments default
     # to runtime so pending RuntimeTasks still have a volume-backed executor.
     # New no-volume control-plane services must set HIVE_PROCESS_ROLE=api.

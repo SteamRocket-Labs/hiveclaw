@@ -361,6 +361,56 @@ async def test_terminal_runtime_task_enqueues_completion_in_same_transaction(mon
 
 
 @pytest.mark.asyncio
+async def test_skipped_trigger_is_durably_settled_without_completion_notification(monkeypatch):
+    from app.services.runtime_task_service import update_runtime_task_record
+
+    tenant_id = uuid4()
+    task = type(
+        "RuntimeTaskStub",
+        (),
+        {
+            "id": uuid4(),
+            "tenant_id": tenant_id,
+            "task_type": "trigger",
+            "status": "running",
+            "metadata_json": {},
+            "started_at": None,
+            "completed_at": None,
+            "trace_id": "trace",
+            "result_summary": None,
+            "claim_version": 0,
+            "root_runtime_task_id": None,
+            "completion_outbox_generation": 1,
+            "completion_outbox_settled_at": None,
+            "completion_outbox_attempted_at": None,
+            "completion_outbox_attempt_count": 0,
+            "completion_outbox_last_error": None,
+        },
+    )()
+    fake_session = _UpdateSession(task)
+    _route_runtime_accessors(monkeypatch, fake_session, tenant_id=tenant_id)
+
+    async def fake_resolve_runtime_task_tenant(*_args, **_kwargs):
+        return tenant_id
+
+    monkeypatch.setattr(
+        "app.services.runtime_task_service.resolve_tenant_for_runtime_task",
+        fake_resolve_runtime_task_tenant,
+    )
+
+    updated = await update_runtime_task_record(
+        task.id.hex,
+        status="skipped",
+        result_summary="Trigger conditions did not require a run.",
+    )
+
+    assert updated is True
+    assert task.completion_outbox_settled_at is not None
+    assert task.completion_outbox_last_error is None
+    assert fake_session.commit_calls == 1
+
+
+@pytest.mark.asyncio
 async def test_late_completion_cannot_overwrite_killed_runtime_task(monkeypatch):
     from app.services.runtime_task_service import update_runtime_task_record
 

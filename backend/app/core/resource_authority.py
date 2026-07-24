@@ -14,13 +14,14 @@ from dataclasses import dataclass
 from typing import Any, Callable, Iterable
 
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.permissions import check_agent_access
-from app.core.policy import check_permission
+from app.core.policy import check_permission, permission_allows
 from app.models.agent import Agent
 from app.models.chat_session import ChatSession
+from app.models.security_audit import ResourcePermission
 from app.models.user import User
 
 
@@ -104,6 +105,45 @@ async def _has_explicit_resource_grant(
         ):
             return True
     return False
+
+
+async def load_explicit_resource_grant_ids(
+    db: AsyncSession,
+    *,
+    user: User,
+    resource_kind: str,
+    action: str,
+) -> set[uuid.UUID]:
+    """Load all grants for one principal/resource kind in one bounded query.
+
+    List surfaces use this once and then push the resulting IDs into their SQL
+    visibility predicate. That preserves the canonical ABAC evaluator while
+    eliminating the previous one-query-per-row authorization loop.
+    """
+
+    principal_clauses = [and_(ResourcePermission.principal_type == "user", ResourcePermission.principal_id == user.id)]
+    department_id = getattr(user, "department_id", None)
+    if department_id:
+        principal_clauses.append(
+            and_(
+                ResourcePermission.principal_type == "department",
+                ResourcePermission.principal_id == department_id,
+            )
+        )
+    statement = select(ResourcePermission).where(
+        ResourcePermission.resource_type == resource_kind,
+        or_(*principal_clauses),
+    )
+    tenant_id = getattr(user, "tenant_id", None)
+    if tenant_id is not None:
+        statement = statement.where(ResourcePermission.tenant_id == tenant_id)
+    permissions = (await db.execute(statement)).scalars().all()
+    context = {"tenant_id": str(tenant_id) if tenant_id else None}
+    return {
+        permission.resource_id
+        for permission in permissions
+        if permission_allows(permission, action=action, context=context)
+    }
 
 
 async def authorize_resource_action(

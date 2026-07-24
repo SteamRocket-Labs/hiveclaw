@@ -115,21 +115,17 @@ async def test_activity_and_failure_surfaces_filter_before_consumption(monkeypat
         related_id=None,
         created_at=now,
     )
-    foreign = SimpleNamespace(**{**owned.__dict__, "id": uuid4(), "owner_user_id": uuid4(), "summary": "Foreign"})
     user = SimpleNamespace(id=owner_id, role="member", tenant_id=tenant_id, department_id=None)
     agent = SimpleNamespace(id=agent_id, tenant_id=tenant_id)
-    decisions = []
 
     async def fake_access(*_args):
         return agent, "use"
 
-    async def fake_filter(_db, _user, **kwargs):
-        decisions.append(kwargs)
-        decision = SimpleNamespace(authority_source="resource_owner", operator_view=False)
-        return [(owned, decision)]
+    async def no_grants(*_args, **_kwargs):
+        return set()
 
     monkeypatch.setattr(activity_api, "check_agent_access", fake_access)
-    monkeypatch.setattr(activity_api, "filter_authorized_resources", fake_filter, raising=False)
+    monkeypatch.setattr(activity_api, "load_explicit_resource_grant_ids", no_grants)
 
     activity = await activity_api.get_agent_activity(
         agent_id=agent_id,
@@ -137,7 +133,7 @@ async def test_activity_and_failure_surfaces_filter_before_consumption(monkeypat
         operator_view=False,
         operator_reason=None,
         current_user=user,
-        db=_QueueDB([owned, foreign]),
+        db=_QueueDB([owned]),
     )
     failures = await activity_api.get_agent_tool_failure_summary(
         agent_id=agent_id,
@@ -146,14 +142,13 @@ async def test_activity_and_failure_surfaces_filter_before_consumption(monkeypat
         operator_view=False,
         operator_reason=None,
         current_user=user,
-        db=_QueueDB([owned, foreign]),
+        db=_QueueDB([owned]),
     )
 
     assert [row["summary"] for row in activity] == ["Owned failure"]
     assert activity[0]["authority_source"] == "resource_owner"
     assert failures["total_errors"] == 1
     assert failures["recent_errors"][0]["summary"] == "Owned failure"
-    assert [call["resource_kind"] for call in decisions] == ["agent_activity", "agent_activity"]
 
 
 @pytest.mark.asyncio
@@ -190,12 +185,11 @@ async def test_activity_limit_is_applied_after_resource_authority_filter(monkeyp
     async def fake_access(*_args):
         return agent, "use"
 
-    async def fake_filter(_db, _user, **kwargs):
-        decision = SimpleNamespace(authority_source="resource_owner", operator_view=False)
-        return [(row, decision) for row in kwargs["resources"] if row.owner_user_id == owner_id]
+    async def no_grants(*_args, **_kwargs):
+        return set()
 
     monkeypatch.setattr(activity_api, "check_agent_access", fake_access)
-    monkeypatch.setattr(activity_api, "filter_authorized_resources", fake_filter)
+    monkeypatch.setattr(activity_api, "load_explicit_resource_grant_ids", no_grants)
 
     payload = await activity_api.get_agent_activity(
         agent_id=agent_id,
@@ -203,7 +197,7 @@ async def test_activity_limit_is_applied_after_resource_authority_filter(monkeyp
         operator_view=False,
         operator_reason=None,
         current_user=user,
-        db=_QueueDB([foreign], [owned]),
+        db=_QueueDB([owned]),
     )
 
     assert [row["summary"] for row in payload] == ["Owned older row"]

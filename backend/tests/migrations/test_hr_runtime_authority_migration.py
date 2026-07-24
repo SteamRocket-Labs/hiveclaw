@@ -104,6 +104,7 @@ async def test_real_migration_backfills_valid_snapshot_and_quarantines_invalid_a
     from app.models.user import User
     from app.services.hr_provisioning_runtime import _runtime_authority_issues
     from tests.integration.conftest import _async_url
+    from tests.migrations.conftest import insert_runtime_task_at_schema_revision
 
     database_name = f"hr_runtime_authority_{uuid.uuid4().hex[:10]}"
     code, output = pg_container.exec(["psql", "-U", "test", "-d", "postgres", "-c", f"CREATE DATABASE {database_name}"])
@@ -218,37 +219,36 @@ async def test_real_migration_backfills_valid_snapshot_and_quarantines_invalid_a
                 (invalid_task_id, invalid_draft_id, 1, "running"),
                 (completed_task_id, completed_draft_id, 1, "completed"),
             ):
-                session.add(
-                    RuntimeTask(
-                        id=task_id,
-                        task_type="hr_provisioning",
-                        parent_agent_id=agent_id,
-                        tenant_id=tenant_id,
-                        status=task_status,
-                        scheduled_at=confirmed_at,
-                        priority=24,
-                        prompt="Provision the authenticated canonical HR blueprint.",
-                        trace_id=f"hr-provisioning:{draft_id}",
-                        parent_session_id=str(session_id),
-                        root_user_id=user_id,
-                        root_session_id=str(session_id),
-                        delegation_chain_json=[f"agent:{agent_id}"],
-                        depth=1,
-                        root_idempotency_key=f"hr-provisioning:{draft_id}-v{version}",
-                        config_snapshot_hash="legacy-config-hash".ljust(64, "0"),
-                        policy_snapshot_hash="legacy-policy-hash".ljust(64, "0"),
-                        metadata_json={
-                            "schema": "hr_provisioning_job.v1",
-                            "draft_id": str(draft_id),
-                            "blueprint_version": version,
-                            "blueprint_hash": blueprint_hash,
-                            "phase": "queued",
-                        },
-                        claimed_by="legacy-running-worker" if task_status == "running" else None,
-                        claim_version=7 if task_status == "running" else 0,
-                        claim_expires_at=confirmed_at if task_status == "running" else None,
-                        completed_at=confirmed_at if task_status == "completed" else None,
-                    )
+                await insert_runtime_task_at_schema_revision(
+                    session,
+                    id=task_id,
+                    task_type="hr_provisioning",
+                    parent_agent_id=agent_id,
+                    tenant_id=tenant_id,
+                    status=task_status,
+                    scheduled_at=confirmed_at,
+                    priority=24,
+                    prompt="Provision the authenticated canonical HR blueprint.",
+                    trace_id=f"hr-provisioning:{draft_id}",
+                    parent_session_id=str(session_id),
+                    root_user_id=user_id,
+                    root_session_id=str(session_id),
+                    delegation_chain_json=[f"agent:{agent_id}"],
+                    depth=1,
+                    root_idempotency_key=f"hr-provisioning:{draft_id}-v{version}",
+                    config_snapshot_hash="legacy-config-hash".ljust(64, "0"),
+                    policy_snapshot_hash="legacy-policy-hash".ljust(64, "0"),
+                    metadata_json={
+                        "schema": "hr_provisioning_job.v1",
+                        "draft_id": str(draft_id),
+                        "blueprint_version": version,
+                        "blueprint_hash": blueprint_hash,
+                        "phase": "queued",
+                    },
+                    claimed_by="legacy-running-worker" if task_status == "running" else None,
+                    claim_version=7 if task_status == "running" else 0,
+                    claim_expires_at=confirmed_at if task_status == "running" else None,
+                    completed_at=confirmed_at if task_status == "completed" else None,
                 )
             await session.flush()
             valid_draft = await session.get(HrCreationDraft, valid_draft_id)
@@ -305,7 +305,7 @@ async def test_real_migration_backfills_valid_snapshot_and_quarantines_invalid_a
                 and invalid_draft is not None
             )
             version = (await session.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
-            assert version == "retire_agent_agent_relationships_table_0724"
+            assert version == "merge_incident_kimi_0725"
             valid_issues = _runtime_authority_issues(valid_task, valid_draft)
             assert valid_issues == [], {
                 "issues": valid_issues,

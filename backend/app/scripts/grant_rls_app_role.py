@@ -24,6 +24,7 @@ import os
 
 from sqlalchemy import text
 
+from app.config import get_settings
 from app.database import schema_engine
 
 # Constant SQL — role name is a literal, never interpolated.
@@ -43,6 +44,35 @@ _CREATE_ROLE_FMT = (
     "cast(:pw AS text))"
 )
 _ALTER_ROLE_FMT = "SELECT format('ALTER ROLE app_rls LOGIN PASSWORD %L NOSUPERUSER NOBYPASSRLS', cast(:pw AS text))"
+
+_ROLE_SETTING_FORMATS = (
+    (
+        "statement_timeout",
+        "SELECT format('ALTER ROLE app_rls SET statement_timeout = %L', cast(:value AS text))",
+    ),
+    (
+        "idle_in_transaction_session_timeout",
+        "SELECT format('ALTER ROLE app_rls SET idle_in_transaction_session_timeout = %L', cast(:value AS text))",
+    ),
+    (
+        "temp_file_limit",
+        "SELECT format('ALTER ROLE app_rls SET temp_file_limit = %L', cast(:value AS text))",
+    ),
+    (
+        "log_temp_files",
+        "SELECT format('ALTER ROLE app_rls SET log_temp_files = %L', cast(:value AS text))",
+    ),
+)
+
+
+def _role_setting_values() -> dict[str, str]:
+    settings = get_settings()
+    return {
+        "statement_timeout": f"{max(1, int(settings.DB_STATEMENT_TIMEOUT_MS))}ms",
+        "idle_in_transaction_session_timeout": (f"{max(1, int(settings.DB_IDLE_IN_TRANSACTION_TIMEOUT_MS))}ms"),
+        "temp_file_limit": f"{max(1, int(settings.DB_TEMP_FILE_LIMIT_KB))}kB",
+        "log_temp_files": f"{max(0, int(settings.DB_LOG_TEMP_FILES_KB))}kB",
+    }
 
 
 async def grant_rls_app_role() -> None:
@@ -67,7 +97,16 @@ async def grant_rls_app_role() -> None:
             return
         for stmt in _GRANTS:
             await conn.execute(text(stmt))
-    print("[grant_rls_app_role] grants applied to app_rls (current + default-privilege future tables)")
+        role_settings = _role_setting_values()
+        for setting_name, format_sql in _ROLE_SETTING_FORMATS:
+            ddl = (await conn.execute(text(format_sql), {"value": role_settings[setting_name]})).scalar()
+            if not ddl:
+                raise RuntimeError(f"format() returned no DDL for app_rls {setting_name}")
+            await conn.execute(text(str(ddl)))
+    print(
+        "[grant_rls_app_role] grants and bounded query defaults applied to app_rls "
+        "(current + default-privilege future tables)"
+    )
 
 
 def main() -> None:

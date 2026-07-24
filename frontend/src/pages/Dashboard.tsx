@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { agentApi } from '../api/domains/agents';
-import { activityApi } from '../api/domains/activity';
+import { dashboardApi } from '../api/domains/dashboard';
 import { chatApi, type ChatSession } from '../api/domains/chat';
 import type { ToolFailureSummary } from '../api/domains/activity';
 import type { Agent } from '../types';
@@ -156,9 +156,11 @@ export function summarizeCrossAgentToolFailures(
 export function ToolFailureOverview({
     summaries,
     onSelectAgent,
+    truncated = false,
 }: {
     summaries: AgentToolFailureSnapshot[];
     onSelectAgent?: (agentId: string) => void;
+    truncated?: boolean;
 }) {
     const { t } = useTranslation();
     const overview = summarizeCrossAgentToolFailures(summaries);
@@ -197,6 +199,7 @@ export function ToolFailureOverview({
                 </h3>
                 <span className="dashboard-failures-window">
                     {t('dashboard.toolFailuresWindow', { count: 24 })}: {overview.totalErrors}
+                    {truncated ? ` · ${t('dashboard.toolFailuresSampled', 'latest bounded sample')}` : ''}
                 </span>
             </div>
             <div className="dashboard-failures-body">
@@ -308,6 +311,8 @@ export function DashboardHomeShell({
     recentSessions,
     allActivities,
     toolFailureSnapshots,
+    sessionCount,
+    toolFailuresTruncated = false,
     onNavigate,
     onAssignWork,
     initialAssignWorkOpen = false,
@@ -317,6 +322,8 @@ export function DashboardHomeShell({
     recentSessions: ChatSession[];
     allActivities: any[];
     toolFailureSnapshots: AgentToolFailureSnapshot[];
+    sessionCount?: number;
+    toolFailuresTruncated?: boolean;
     onNavigate: (path: string) => void;
     onAssignWork?: (request: AssignWorkRequest) => Promise<void>;
     initialAssignWorkOpen?: boolean;
@@ -539,7 +546,7 @@ export function DashboardHomeShell({
                         </div>
                         <div>
                             <span>{t('dashboard.home.sessions', 'Sessions')}</span>
-                            <strong>{recentSessions.length}</strong>
+                            <strong>{sessionCount ?? recentSessions.length}</strong>
                         </div>
                         <div>
                             <span>{t('dashboard.stats.agents', 'Digital employees')}</span>
@@ -583,6 +590,7 @@ export function DashboardHomeShell({
             {toolFailureSnapshots.length > 0 && (
                 <ToolFailureOverview
                     summaries={toolFailureSnapshots}
+                    truncated={toolFailuresTruncated}
                     onSelectAgent={(agentId) => onNavigate(`/agents/${agentId}`)}
                 />
             )}
@@ -603,54 +611,17 @@ export default function Dashboard() {
         refetchInterval: 60000,
     });
 
-    const [recentSessions, setRecentSessions] = useState<ChatSession[]>([]);
-    const [allActivities, setAllActivities] = useState<any[]>([]);
-    const [agentToolFailures, setAgentToolFailures] = useState<Record<string, ToolFailureSummary>>({});
+    const { data: overview, isLoading: isOverviewLoading } = useQuery({
+        queryKey: ['dashboard-overview', currentTenant],
+        queryFn: () => dashboardApi.getOverview(currentTenant || undefined),
+        enabled: agents.length > 0,
+        staleTime: 15000,
+        refetchInterval: 30000,
+    });
 
-    useEffect(() => {
-        if (agents.length === 0) return;
-        const fetchData = async () => {
-            try {
-                const sessionResults = await Promise.allSettled(agents.map((agent) => chatApi.listSessions(agent.id)));
-                const sessions: ChatSession[] = [];
-                sessionResults.forEach((result) => {
-                    if (result.status !== 'fulfilled') return;
-                    sessions.push(...result.value.filter((session) => (
-                        (!session.session_kind || session.session_kind === 'human_chat')
-                        && (!session.actor_type || session.actor_type === 'user')
-                        && (!session.listed_surface || session.listed_surface === 'chat')
-                    )));
-                });
-                setRecentSessions(sessions);
-            } catch (e) { console.error('Failed to fetch recent sessions:', e); }
-
-            try {
-                const actResults = await Promise.allSettled(agents.map(a => activityApi.list(a.id, 5)));
-                const activities: any[] = [];
-                actResults.forEach((r, i) => {
-                    if (r.status === 'fulfilled') {
-                        activities.push(...r.value.map((v: any) => ({ ...v, agent_id: agents[i].id })));
-                    }
-                });
-                activities.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-                setAllActivities(activities.slice(0, 20));
-            } catch (e) { console.error('Failed to fetch activities:', e); }
-
-            try {
-                const summaryResults = await Promise.allSettled(agents.map(a => activityApi.getToolFailureSummary(a.id, 24, 200)));
-                const perAgentSummary: Record<string, ToolFailureSummary> = {};
-                summaryResults.forEach((r, i) => {
-                    if (r.status === 'fulfilled') {
-                        perAgentSummary[agents[i].id] = r.value;
-                    }
-                });
-                setAgentToolFailures(perAgentSummary);
-            } catch (e) { console.error('Failed to fetch tool failure summaries:', e); }
-        };
-        fetchData();
-        const interval = setInterval(fetchData, 30000);
-        return () => clearInterval(interval);
-    }, [agents.map(a => a.id).join(',')]);
+    const recentSessions = overview?.recent_sessions || [];
+    const allActivities = overview?.recent_activities || [];
+    const agentToolFailures: Record<string, ToolFailureSummary> = overview?.tool_failures || {};
 
     const toolFailureSnapshots = agents
         .filter(agent => agentToolFailures[agent.id])
@@ -671,10 +642,12 @@ export default function Dashboard() {
     return (
         <DashboardHomeShell
             agents={agents}
-            isLoading={isLoading}
+            isLoading={isLoading || (agents.length > 0 && isOverviewLoading)}
             recentSessions={recentSessions}
             allActivities={allActivities}
             toolFailureSnapshots={toolFailureSnapshots}
+            sessionCount={overview?.session_count}
+            toolFailuresTruncated={overview?.query_evidence.failure_rows_truncated || false}
             onNavigate={navigate}
             onAssignWork={assignWork}
         />

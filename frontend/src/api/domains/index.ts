@@ -10,6 +10,7 @@ export { systemApi } from './system';
 export { toolsApi } from './tools';
 export { extensionsApi } from './extensions';
 export { activityApi } from './activity';
+export { dashboardApi } from './dashboard';
 export { messageApi } from './messages';
 export { skillApi } from './skills';
 export { channelApi } from './channels';

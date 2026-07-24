@@ -141,6 +141,7 @@ class ChatMessage(Base):
             postgresql_where=text("source_ingress_event_id IS NOT NULL"),
             sqlite_where=text("source_ingress_event_id IS NOT NULL"),
         ),
+        Index("ix_chat_messages_conversation_created_at", "conversation_id", "created_at"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

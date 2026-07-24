@@ -153,17 +153,20 @@ async def check_permission(
     permissions = result.scalars().all()
 
     for perm in permissions:
-        if action not in perm.actions:
-            continue
-
-        # Evaluate ABAC conditions
-        if perm.conditions and context:
-            if not _evaluate_conditions(perm.conditions, context):
-                continue
-
-        return True
+        if permission_allows(perm, action=action, context=context):
+            return True
 
     return False
+
+
+def permission_allows(permission: ResourcePermission, *, action: str, context: dict | None = None) -> bool:
+    """Evaluate one already-loaded grant without another database round trip."""
+
+    if action not in (permission.actions or []):
+        return False
+    if permission.conditions and context and not _evaluate_conditions(permission.conditions, context):
+        return False
+    return True
 
 
 def _evaluate_conditions(conditions: dict, context: dict) -> bool:

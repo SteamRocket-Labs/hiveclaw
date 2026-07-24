@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, ForeignKey, String, func
+from sqlalchemy import DateTime, Enum, ForeignKey, Index, String, func, text
 from sqlalchemy.dialects.postgresql import JSON, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -14,6 +14,22 @@ class AgentActivityLog(Base):
     """Records every action taken by a digital employee."""
 
     __tablename__ = "agent_activity_logs"
+    __table_args__ = (
+        Index("ix_agent_activity_logs_agent_created_at", "agent_id", text("created_at DESC")),
+        Index(
+            "ix_agent_activity_logs_agent_action_created_at",
+            "agent_id",
+            "action_type",
+            text("created_at DESC"),
+        ),
+        Index("ix_agent_activity_logs_tenant_created_at", "tenant_id", text("created_at DESC")),
+        Index(
+            "ix_agent_activity_logs_tenant_action_created_at",
+            "tenant_id",
+            "action_type",
+            text("created_at DESC"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     agent_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False, index=True)

@@ -9,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 import uuid
 from typing import Any, Literal
 
-from sqlalchemy import String, and_, cast, exists, or_, select
+from sqlalchemy import and_, exists, or_, select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -24,7 +24,11 @@ from app.models.runtime_result import (
     RuntimeResultMailboxCursor,
     RuntimeResultObject,
 )
-from app.models.runtime_task import RuntimeTask
+from app.models.runtime_task import (
+    COMPLETION_OUTBOX_PENDING_SQL,
+    COMPLETION_OUTBOX_RETRY_SECONDS,
+    RuntimeTask,
+)
 from app.models.user import User
 from app.services.execution_admission import ExecutionAdmission, ExecutionAdmissionDecision
 from app.services.runtime_budget_service import RuntimeBudgetReservation, RuntimeBudgetService
@@ -257,6 +261,17 @@ async def _source_runtime_task(
     ).scalar_one_or_none()
 
 
+def _settle_runtime_task_completion_outbox(task: RuntimeTask) -> None:
+    task.completion_outbox_settled_at = datetime.now(UTC)
+    task.completion_outbox_last_error = None
+
+
+def _hold_runtime_task_completion_outbox(task: RuntimeTask, *, reason: str, attempted_at: datetime) -> None:
+    task.completion_outbox_attempted_at = attempted_at
+    task.completion_outbox_attempt_count = int(task.completion_outbox_attempt_count or 0) + 1
+    task.completion_outbox_last_error = reason[:100]
+
+
 def _explicit_root_runtime_task_id(notification: CompletionNotification) -> uuid.UUID | None:
     raw_value = notification.root_runtime_task_id or (notification.metadata or {}).get("root_runtime_task_id")
     if raw_value is None:
@@ -295,6 +310,10 @@ async def enqueue_completion_notification(
     if existing is not None and not payload_applied:
         # Equal/lower-ranked late producers cannot mutate the accepted binding
         # and must not create unreachable immutable payload objects.
+        task = await _source_runtime_task(db, tenant_id=tenant_id, source_run_id=values["source_run_id"])
+        if task is not None:
+            _settle_runtime_task_completion_outbox(task)
+            await db.flush()
         return existing.id
 
     encoded = encode_runtime_result_payload(
@@ -389,6 +408,7 @@ async def enqueue_completion_notification(
         existing.delivered_at = None
 
     if task is not None and payload_applied:
+        _settle_runtime_task_completion_outbox(task)
         task_metadata = dict(task.metadata_json or {})
         task_metadata["runtime_result_ref"] = result_ref
         task_metadata["runtime_result_sha256"] = encoded.sha256
@@ -693,35 +713,25 @@ class RuntimeNotificationOutboxService:
         terminal RuntimeTask precedes their richer parent projection.
         """
 
-        terminal_statuses = ("completed", "failed", "killed", "skipped", "needs_reconciliation")
-        supported_types = (
-            "subagent",
-            "team_member",
-            "workflow",
-            "delegation",
-            "a2a_delegation",
-            "trigger",
-            "approval_execution",
-        )
+        attempted_at = datetime.now(UTC)
+        retry_before = attempted_at - timedelta(seconds=COMPLETION_OUTBOX_RETRY_SECONDS)
         async with self._worker_session("reconcile_terminal_tasks") as db:
-            already_enqueued = exists(
-                select(RuntimeNotificationOutbox.id).where(
-                    RuntimeNotificationOutbox.tenant_id == RuntimeTask.tenant_id,
-                    RuntimeNotificationOutbox.source_run_id == cast(RuntimeTask.id, String),
-                )
-            )
             tasks = list(
                 (
                     await db.execute(
                         select(RuntimeTask)
                         .where(
-                            RuntimeTask.task_type.in_(supported_types),
-                            RuntimeTask.status.in_(terminal_statuses),
-                            RuntimeTask.tenant_id.is_not(None),
-                            RuntimeTask.parent_agent_id.is_not(None),
-                            ~already_enqueued,
+                            text(COMPLETION_OUTBOX_PENDING_SQL),
+                            or_(
+                                RuntimeTask.completion_outbox_attempted_at.is_(None),
+                                RuntimeTask.completion_outbox_attempted_at <= retry_before,
+                            ),
                         )
-                        .order_by(RuntimeTask.completed_at.desc().nullslast(), RuntimeTask.created_at.desc())
+                        .order_by(
+                            RuntimeTask.completion_outbox_attempted_at.is_not(None).asc(),
+                            RuntimeTask.completion_outbox_attempted_at.asc(),
+                            RuntimeTask.created_at.asc(),
+                        )
                         .limit(max(1, int(limit)))
                         .with_for_update(skip_locked=True)
                     )
@@ -731,6 +741,22 @@ class RuntimeNotificationOutboxService:
             )
             repaired = 0
             for task in tasks:
+                existing_outbox_id = await db.scalar(
+                    select(RuntimeNotificationOutbox.id)
+                    .where(
+                        RuntimeNotificationOutbox.tenant_id == task.tenant_id,
+                        RuntimeNotificationOutbox.source_run_id == str(task.id),
+                    )
+                    .limit(1)
+                )
+                if existing_outbox_id is not None:
+                    # A previous app revision may have committed the outbox
+                    # during a rolling deploy without knowing this settlement
+                    # ledger. The delivery intent is already durable; remove
+                    # the task from the recovery index without duplicating it.
+                    _settle_runtime_task_completion_outbox(task)
+                    repaired += 1
+                    continue
                 metadata = dict(task.metadata_json or {})
                 source_kind = {
                     "team_member": "agent_team",
@@ -746,6 +772,11 @@ class RuntimeNotificationOutboxService:
                 try:
                     target_session_id = _uuid(target_value, field="parent_session_id")
                 except ValueError:
+                    _hold_runtime_task_completion_outbox(
+                        task,
+                        reason="parent_session_id_invalid",
+                        attempted_at=attempted_at,
+                    )
                     continue
                 parent_session = (
                     await db.execute(
@@ -757,11 +788,21 @@ class RuntimeNotificationOutboxService:
                     )
                 ).scalar_one_or_none()
                 if parent_session is None:
+                    _hold_runtime_task_completion_outbox(
+                        task,
+                        reason="parent_session_not_found",
+                        attempted_at=attempted_at,
+                    )
                     continue
                 owner_value = metadata.get("user_id") or metadata.get("owner_id") or parent_session.user_id
                 try:
                     owner_id = _uuid(owner_value, field="parent_user_id")
                 except ValueError:
+                    _hold_runtime_task_completion_outbox(
+                        task,
+                        reason="parent_user_id_invalid",
+                        attempted_at=attempted_at,
+                    )
                     continue
                 child_session_id = None
                 if task.task_type != "trigger" and task.child_session_id:

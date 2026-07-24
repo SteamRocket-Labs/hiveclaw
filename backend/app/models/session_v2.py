@@ -79,6 +79,7 @@ class SessionEventOutbox(Base):
 class SessionCommand(Base):
     __tablename__ = "session_commands"
     __table_args__ = (
+        Index("ix_session_commands_principal_type_id", "principal_type", "principal_id"),
         UniqueConstraint(
             "tenant_id",
             "principal_type",

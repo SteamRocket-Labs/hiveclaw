@@ -1,7 +1,7 @@
 # Kimi 独立原子化审查报告 — CCPlus / Agent-Native（2026-07-24）
 
 原始审查者：Kimi Code（独立审查，非实现参与方）
-当前版本：Codex current-source 复核与逐项修复台账（2026-07-24）
+当前版本：Codex current-source 复核与逐项修复台账（2026-07-25）
 审查依据：`docs/ccplus-agent-native-independent-review-prompt.md`（可复用正文全文执行）
 本报告原始版本由 Kimi 新建；Codex 先完成 current-source 复核，随后按用户授权逐项修复。修订遵循“保留原编号、正文同步改正、撤销项留痕、每个修复部分附机械证据并独立提交”的审计规则。
 
@@ -11,6 +11,7 @@
 
 | 部分 | 状态 | 变更与机械证据 | 验收边界 |
 |---|---|---|---|
+| INC-0721 PostgreSQL 事故根治历史恢复 | **本地代码、迁移与验收闭环** | 7 月 21 日生产事故任务的三个已部署提交在当前 Git object/ref 中丢失，但其 45 个业务文件与当前 dirty tree 一一对应；clean `main` 仍有 Dashboard per-Agent fan-out、重叠 30 秒轮询与 activity `OFFSET` 扫描。生产只读核对为 `alembic_version=completion_outbox_index_0721`，5 个 completion ledger 字段和两个关键索引真实存在且 valid/ready，0724 Kimi 迁移链尚未执行。保留两条真实 ancestry，并新增 no-op `merge_incident_kimi_0725`，未改写任何已部署 revision 的 `down_revision`。单头 RED `1 failed`；定向 Backend `103 passed`、Frontend `5 passed`；真 PG incident/Kimi 双分支迁移集合 `10 passed`；Backend 全量 `7980 passed / 2 skipped`、Frontend 全量 `139 files / 819 passed`；i18n 八 gate=0、production build/bundle budget、42 个 Python 文件 Ruff/format 全绿 | 事故修复不能删除或重排；生产发布必须先让 backend 从 incident head 补跑 0724 分支并进入 merge，成功后才同步 `backend-api` 与 `frontend`。本轮只提交 48 个业务/测试/文档文件；`.ultra/**`、`.serena/project.yml`、`backend/uv.lock` 明确排除。尚未执行生产 migration 或新版本部署，发布验收仍按仓库三服务规则单独完成 |
 | Hook 产品边界文档校正（SA-04/UI-09） | 已完成 | commit `b4712dcc`；撤销“员工自定义 Hook 缺失”，冻结员工/Owner、Operator/Auditor、Platform Developer 三层边界 | 产品边界已由后续 UI-09 代码修复执行 |
 | GV-01/GV-02 确认车道 | **代码闭环；本地真 PG 验收待补** | `request_action_preflight_approval` 把 typed ASK/ESCALATE 接入 durable Approval ticket；移除 ToolRuntimeService 的 InProcess gateway 默认回填与孤立 checkpoint 写入；immutable approval 只消解 ASK/ESCALATE，不覆盖 REFUSE/PREPARE_ONLY；approved boundary block 统一把票据记为 `failed`。测试命令：`backend/.venv/bin/pytest -q backend/tests/tools/test_service.py backend/tests/tools/test_tool_runtime_preflight.py backend/tests/services/test_action_preflight.py backend/tests/services/test_approval_execution_runtime.py backend/tests/tools/test_governance.py backend/tests/tools/test_governance_resolver.py` → `103 passed, 4 skipped` | 4 项均因本机 Docker/Testcontainers 不可用而 skip；实际 ToolRuntimeService registry 执行 seam 未 monkeypatch 的 ASK→批准→效果发生与 REFUSE→failed 组合测试已通过，真 PG 事务/worker 组合仍保留在 §11 |
 | GV-03 typed Owner action policy | **代码闭环；真 PG 并发验收待补** | 新增唯一机器合同 `hive.owner_action_policy.v1`，以三个 exact action id 映射 `full_authority/confirm_first/never_do`；`ConfigRevision` 保存不可变版本、actor、hash、history/rollback，legacy agent 在模型输入、工具执行或管理 API 首次消费时幂等回填默认版本；真实 prompt assembly、ToolContextResolver、ToolRuntimeService preflight、Approval ticket 与员工业务设置卡已贯通，Owner/Manager 可两步确认恢复上一版。后端聚合测试 `168 passed`，Ruff 通过；前端定向测试 `115 passed`，生产 build 与 bundle budget 通过 | 未新增 schema/Alembic 迁移，复用现有 `config_revisions`；本机无 Docker，尚未实测两个 PG worker 同时首次回填与事务 rollback。员工设置只显示业务动作政策和恢复动作，不显示 action id/revision ID/Hook；原 raw Hook 卡已由 UI-09 删除 |
@@ -822,3 +823,54 @@ SA-08 已有 TURN_STOP→await canonical T2 package job→active T2 read model�
 ### 附：审查过程声明
 
 原始报告由 Kimi 的并行只读源码审计、主审复核与实跑验证合成。Codex current-source 复核发现原报告并非所有关键断点都完成了正确 source-boundary 与 product-boundary 反证，因此先在正文、矩阵、登记册、落地方向和验收边界中同步修订并保留撤销项追溯；随后进入逐项修复。每个修复部分都必须在本报告 §0 与对应 finding 中记录源码、测试、迁移/清理和残余验收边界，再独立提交；不得把后续尚未完成项混入已完成状态。
+
+---
+
+## 16. INC-0721：生产 PostgreSQL 事故根治历史恢复（2026-07-25）
+
+### 16.1 裁决
+
+这批未提交代码不是不明来源，也不是 Ultra Builder Pro 的中间产物；它是 2026-07-21 PostgreSQL 临时文件耗尽事故的完整根治。事故任务实际形成并部署过三个提交：`5f41c41ae`（Dashboard/Activity/数据库资源护栏）、`79466f900`（completion recovery generation/settlement ledger）和 `74b81002a`（planner-eligible partial index）。当前仓库的 refs/object database 已找不到这三个 commit，但三个提交的文件并集为 45 个业务文件，与当前 dirty business inventory 精确一致。该实现必须恢复到版本历史，不能随本地分支或 worktree 删除。
+
+clean `main@131d3ba931c9579f0fe3a36cb5c455a5689da433` 仍保留事故前路径：`backend/app/api/activity.py` 使用 `query.offset(offset).limit(page_size)`；`frontend/src/pages/Dashboard.tsx` 对 Agent 列表执行三组 `Promise.allSettled(agents.map(...))`，并用 `setInterval(fetchData, 30000)` 允许上一轮未完成时继续叠加。当前 dirty implementation 则把权限过滤前移到 SQL、移除无界 OFFSET、把 Dashboard 收敛为单个 bounded overview query、增加连接/查询/temp-file 硬护栏，并把 terminal completion recovery 改为 generation/settled/attempt/error 的持久账本与可命中的有界索引。这些均直接对应事故根因，不属于可选重构。
+
+### 16.2 生产事实与迁移裁决
+
+2026-07-25 从 Railway production `backend` 容器内以 read-only transaction 核对：
+
+- `alembic_version` 只有 `completion_outbox_index_0721`；
+- `runtime_tasks` 已存在 `completion_outbox_generation`、`completion_outbox_settled_at`、`completion_outbox_attempted_at`、`completion_outbox_attempt_count`、`completion_outbox_last_error`；
+- `ix_agent_activity_logs_agent_created_at` 与 `ix_runtime_tasks_completion_outbox_pending` 均为 `indisvalid=true / indisready=true`；
+- completion partial-index predicate 不含冗余 `tenant_id IS NOT NULL`，与最终生产修复一致；
+- legacy `agent_agent_relationships` 仍存在，说明 0724 Kimi retirement head 尚未在生产执行。
+
+因此，不能把 `query_resource_safety_0721.down_revision` 改到 0724 head，也不能把事故迁移复制成一条新的线性迁移；两种做法都会伪造已部署生产历史。正确图为：
+
+```text
+im_unverified_transport_0719
+├── query_resource_safety_0721
+│   └── completion_reconcile_0721
+│       └── completion_outbox_index_0721
+└── company_knowledge_closed_loop_0724
+    └── ... 0724 Company Knowledge / retirement chain ...
+        └── retire_agent_agent_relationships_table_0724
+
+completion_outbox_index_0721
+        + retire_agent_agent_relationships_table_0724
+        └── merge_incident_kimi_0725
+```
+
+`merge_incident_kimi_0725` 是无 DDL 的 Alembic merge revision，只声明两条已发生历史在此会合。生产从 incident head 发布时会补跑 0724 分支后记录 merge；已在 Kimi head 的数据库会补跑 incident 分支后记录 merge；fresh database 最终只出现一个 head。
+
+### 16.3 当前机械证据
+
+- RED：`test_alembic_single_head_is_current_closure_head` → `1 failed`，精确报告 `completion_outbox_index_0721` 与 `retire_agent_agent_relationships_table_0724` 两个 heads。
+- GREEN：`alembic heads` → 唯一 `merge_incident_kimi_0725 (head)`；single-head + merge structural contracts → `2 passed`。
+- 真 PostgreSQL：两个独立数据库分别从共同 branch point 只执行 incident 分支或 Kimi 分支，再执行 `upgrade head`；两条路径最终都为 merge head，同时保留 completion column/index 与 `company_knowledge_sources`，`3 passed in 13.93s`。
+- incident/Kimi 迁移与相邻恢复集合：receipt-loss 模拟只更新当前 incident revision，合法保留另一分支 version row；query-resource、completion-reconcile、planner-index 与 merge 集合 → `10 passed in 31.84s`。
+- 定向运行路径：Activity SQL authority、Dashboard bounded overview、DB guards、daemon recovery、completion outbox/task/worker → Backend `103 passed in 43.39s`；Dashboard adapter/UI → Frontend `2 files / 5 passed`。
+- 最终门禁：Backend `7980 passed / 2 skipped / 1 existing Starlette warning in 508.83s`；Frontend `139 files / 819 passed`；i18n Node `9 passed`、224 source files、en/zh 各 3648 keys、八项 gate=0；production build 7384 modules，AgentDetail 与 shared vendor 四项 bundle budget 全绿；42 个变更 Python 文件 Ruff/format 全绿。
+- scope inventory 为 48 个业务/测试/文档文件；`.ultra/**`、`.serena/project.yml` 与 `backend/uv.lock` 均不属于本轮提交。
+- 生产核对全程 read-only；未改数据库、未部署、未重启服务。
+
+上述证据足以关闭代码恢复与本地迁移兼容性；生产数据库补跑 0724 分支、三服务同版部署、HTTP health、执行计划与磁盘/临时文件复测仍是独立发布 gate，不能由本地全量测试替代。

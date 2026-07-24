@@ -46,6 +46,14 @@ class ResourcePermission(Base):
     __tablename__ = "resource_permissions"
     __table_args__ = (
         Index(
+            "ix_resource_permissions_principal_resource",
+            "tenant_id",
+            "principal_type",
+            "principal_id",
+            "resource_type",
+            "resource_id",
+        ),
+        Index(
             "ix_resource_permissions_principal_key_resource_key",
             "tenant_id",
             "principal_type",

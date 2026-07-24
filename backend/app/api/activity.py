@@ -3,12 +3,18 @@
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, exists, false, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.channel_message_contracts import extract_sender_label_from_message, strip_sender_label_prefix
 from app.core.permissions import check_agent_access
-from app.core.resource_authority import authorize_resource_action, filter_authorized_resources
+from app.core.resource_authority import (
+    OWNED_AUTHORITY_STATE,
+    ResourceAuthorityDecision,
+    authorize_resource_action,
+    filter_authorized_resources,
+    load_explicit_resource_grant_ids,
+)
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.activity_log import AgentActivityLog
@@ -33,37 +39,116 @@ async def _load_authorized_activity_rows(
     operator_reason: str | None,
     agent_access,
 ):
-    """Apply the caller-visible limit after authority filtering.
+    """Apply authority inside SQL and execute one limited activity scan."""
 
-    Shared Agents can have a newer foreign row window. Paging until enough
-    authorized rows are found prevents that window from starving the owner's
-    older activity without loading the whole Agent history into memory.
-    """
+    bounded_limit = max(1, int(limit))
+    if operator_view:
+        rows = (await db.execute(query.limit(bounded_limit))).scalars().all()
+        return await filter_authorized_resources(
+            db,
+            current_user,
+            agent_id=agent_id,
+            resource_kind="agent_activity",
+            action="read",
+            resources=rows,
+            operator_view=True,
+            operator_reason=operator_reason,
+            agent_access=agent_access,
+        )
 
-    page_size = max(1, int(limit))
-    offset = 0
-    authorized = []
-    while len(authorized) < limit:
-        page = (await db.execute(query.offset(offset).limit(page_size))).scalars().all()
-        if not page:
-            break
-        authorized.extend(
-            await filter_authorized_resources(
-                db,
-                current_user,
-                agent_id=agent_id,
+    visible = await load_visible_activity_rows(
+        db,
+        current_user,
+        query=query,
+        limit=bounded_limit,
+    )
+    agent, access_level = agent_access
+    return [
+        (
+            row,
+            ResourceAuthorityDecision(
+                agent=agent,
+                access_level=access_level,
                 resource_kind="agent_activity",
+                resource_id=row.id,
                 action="read",
-                resources=page,
-                operator_view=operator_view,
-                operator_reason=operator_reason,
-                agent_access=agent_access,
+                authority_source=authority_source,
+            ),
+        )
+        for row, authority_source in visible
+    ]
+
+
+def activity_visibility_clause(current_user: User, explicit_grant_ids: set[uuid.UUID]):
+    """SQL predicate matching the canonical owner/session/grant read contract."""
+
+    owner_visible = AgentActivityLog.owner_user_id == current_user.id
+    root_session_visible = exists(
+        select(ChatSession.id).where(
+            ChatSession.id == AgentActivityLog.root_session_id,
+            ChatSession.agent_id == AgentActivityLog.agent_id,
+            ChatSession.user_id == current_user.id,
+        )
+    )
+    grant_visible = AgentActivityLog.id.in_(explicit_grant_ids) if explicit_grant_ids else false()
+    return and_(
+        AgentActivityLog.authority_state == OWNED_AUTHORITY_STATE,
+        or_(owner_visible, root_session_visible, grant_visible),
+    )
+
+
+async def load_visible_activity_rows(
+    db: AsyncSession,
+    current_user: User,
+    *,
+    query,
+    limit: int,
+    explicit_grant_ids: set[uuid.UUID] | None = None,
+) -> list[tuple[AgentActivityLog, str]]:
+    """Return bounded visible rows and their authority source without N+1 IO."""
+
+    grant_ids = (
+        explicit_grant_ids
+        if explicit_grant_ids is not None
+        else await load_explicit_resource_grant_ids(
+            db,
+            user=current_user,
+            resource_kind="agent_activity",
+            action="read",
+        )
+    )
+    statement = query.where(activity_visibility_clause(current_user, grant_ids)).limit(max(1, int(limit)))
+    rows = list((await db.execute(statement)).scalars().all())
+
+    root_candidates = {
+        (row.root_session_id, row.agent_id)
+        for row in rows
+        if getattr(row, "root_session_id", None) is not None
+        and str(getattr(row, "owner_user_id", "")) != str(current_user.id)
+    }
+    owned_root_pairs: set[tuple[uuid.UUID, uuid.UUID]] = set()
+    if root_candidates:
+        root_ids = {root_id for root_id, _agent_id in root_candidates}
+        result = await db.execute(
+            select(ChatSession.id, ChatSession.agent_id).where(
+                ChatSession.id.in_(root_ids),
+                ChatSession.user_id == current_user.id,
             )
         )
-        if len(page) < page_size:
-            break
-        offset += len(page)
-    return authorized[:limit]
+        owned_root_pairs = {(root_id, root_agent_id) for root_id, root_agent_id in result.all()}
+
+    visible: list[tuple[AgentActivityLog, str]] = []
+    for row in rows:
+        if str(getattr(row, "owner_user_id", "")) == str(current_user.id):
+            authority_source = "resource_owner"
+        elif (getattr(row, "root_session_id", None), row.agent_id) in owned_root_pairs:
+            authority_source = "root_session_owner"
+        elif row.id in grant_ids:
+            authority_source = "resource_grant"
+        else:  # The SQL predicate is authoritative; this guards test doubles/drift.
+            continue
+        visible.append((row, authority_source))
+    return visible
 
 
 @router.get("/agents/{agent_id}/activity")

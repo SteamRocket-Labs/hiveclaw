@@ -47,7 +47,7 @@ _AGENT_TOKEN_QUOTA_COLUMNS = (
     "quota_tokens_per_day",
     "quota_tokens_per_month",
 )
-_CURRENT_CLOSURE_HEAD = "retire_agent_agent_relationships_table_0724"
+_CURRENT_CLOSURE_HEAD = "merge_incident_kimi_0725"
 
 
 async def _seed_tenant(owner_engine, tenant_id: uuid.UUID, label: str) -> None:

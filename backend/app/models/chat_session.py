@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, String, Text, ForeignKey, func, UniqueConstraint
+from sqlalchemy import DateTime, String, Text, ForeignKey, Index, func, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -20,7 +20,17 @@ class ChatSession(Base):
     """
 
     __tablename__ = "chat_sessions"
-    __table_args__ = (UniqueConstraint("agent_id", "external_conv_id", name="uq_chat_sessions_agent_ext_conv"),)
+    __table_args__ = (
+        UniqueConstraint("agent_id", "external_conv_id", name="uq_chat_sessions_agent_ext_conv"),
+        Index(
+            "ix_chat_sessions_dashboard_recent",
+            "tenant_id",
+            "user_id",
+            "listed_surface",
+            text("last_message_at DESC NULLS LAST"),
+            text("created_at DESC"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     agent_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False, index=True)

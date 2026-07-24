@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import tempfile
 from datetime import datetime, timezone
@@ -15,6 +16,8 @@ from app.database import async_session, enter_rls_bypass
 from app.models.system_settings import SystemSetting
 from app.services.code_execution.contracts import CodeExecutionResult
 from app.services.code_execution.service import configured_code_execution_provider, execute_agent_command
+
+logger = logging.getLogger(__name__)
 
 CODE_EXECUTION_SANDBOX_PROBE_SETTING_KEY = "code_execution_sandbox_probe.latest"
 CODE_EXECUTION_SANDBOX_PROBE_HISTORY_SETTING_KEY = "code_execution_sandbox_probe.history"
@@ -400,9 +403,23 @@ async def start_code_execution_sandbox_probe_scheduler() -> None:
         )
     except ValueError:
         timeout = CODE_EXECUTION_SANDBOX_PROBE_DEFAULT_TIMEOUT_SECONDS
+    from app.services.daemon_liveness import mark_daemon_error, mark_daemon_started, mark_daemon_tick
+
+    daemon_name = "code_execution_sandbox_probe_scheduler"
+    mark_daemon_started(daemon_name)
     while True:
-        await run_scheduled_sandbox_probe_once(timeout=timeout)
-        await asyncio.sleep(interval)
+        sleep_seconds = interval
+        try:
+            await run_scheduled_sandbox_probe_once(timeout=timeout)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # DB/provider outages must not permanently kill the scheduler.
+            mark_daemon_error(daemon_name, exc)
+            logger.exception("[CodeExecutionProbe] scheduled probe failed; retrying after bounded delay")
+            sleep_seconds = min(interval, 60)
+        else:
+            mark_daemon_tick(daemon_name)
+        await asyncio.sleep(sleep_seconds)
 
 
 def sandbox_probe_health_from_setting(

@@ -33,7 +33,7 @@ SESSION_V2_EXISTING_TRANSCRIPT_INDEXES = (
 )
 
 SESSION_V2_PARENT_REVISION = "hr_runtime_authority_0715"
-SESSION_V2_HEAD_REVISION = "retire_agent_agent_relationships_table_0724"
+SESSION_V2_HEAD_REVISION = "merge_incident_kimi_0725"
 
 
 def test_session_v2_migration_is_the_single_head_and_secure_downgrade_preserves_evidence() -> None:
@@ -819,10 +819,7 @@ async def test_revision_recovers_invalid_concurrent_index_residue_without_rebuil
     from app.models.chat_session import ChatSession
     from app.models.tenant import Tenant
     from app.models.user import User
-    from tests.migrations.conftest import (
-        _alembic_downgrade,
-        _alembic_upgrade,
-    )
+    from tests.migrations.conftest import _alembic_downgrade, _alembic_upgrade
 
     tenant_id, user_id, agent_id, session_id, invocation_id = (uuid.uuid4() for _ in range(5))
     event_ids = (uuid.uuid4(), uuid.uuid4())
@@ -1291,7 +1288,10 @@ async def test_downgrade_rejects_any_v2_event_even_before_cutover(
     from app.models.chat_session import ChatSession
     from app.models.tenant import Tenant
     from app.models.user import User
-    from tests.migrations.conftest import _alembic_downgrade, _alembic_upgrade
+    from tests.migrations.conftest import (
+        _alembic_downgrade,
+        _alembic_upgrade,
+    )
 
     # This test belongs to the original Session V2 revision.  Put the shared
     # database on that revision explicitly before exercising its downgrade
@@ -1398,11 +1398,14 @@ async def test_downgrade_rejects_after_generation_two_facts_without_mutating_hea
 
     from app.models.agent import Agent
     from app.models.chat_session import ChatSession
-    from app.models.runtime_task import RuntimeTask
     from app.models.tenant import Tenant
     from app.models.user import User
     from app.services.session_v2_persistence import SessionEventDraft, append_session_events
-    from tests.migrations.conftest import _alembic_downgrade, _alembic_upgrade
+    from tests.migrations.conftest import (
+        _alembic_downgrade,
+        _alembic_upgrade,
+        insert_runtime_task_at_schema_revision,
+    )
 
     # Keep this legacy-revision rollback proof independent from the additive
     # input/control head introduced later in the chain.
@@ -1459,17 +1462,17 @@ async def test_downgrade_rejects_after_generation_two_facts_without_mutating_hea
                     user_id=user_id,
                 )
             )
-            db.add(
-                RuntimeTask(
-                    id=run_id,
-                    task_type="web_chat_turn",
-                    tenant_id=tenant_id,
-                    parent_agent_id=agent_id,
-                    parent_session_id=str(session_id),
-                    status="running",
-                    writer_generation=2,
-                    metadata_json={"session_id": str(session_id)},
-                )
+            await db.flush()
+            await insert_runtime_task_at_schema_revision(
+                db,
+                id=run_id,
+                task_type="web_chat_turn",
+                tenant_id=tenant_id,
+                parent_agent_id=agent_id,
+                parent_session_id=str(session_id),
+                status="running",
+                writer_generation=2,
+                metadata_json={"session_id": str(session_id)},
             )
             await db.commit()
 

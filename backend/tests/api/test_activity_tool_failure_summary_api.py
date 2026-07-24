@@ -62,6 +62,11 @@ async def test_get_agent_tool_failure_summary_returns_aggregated_payload(monkeyp
 
     monkeypatch.setattr(activity_api, "check_agent_access", fake_check_agent_access)
 
+    async def no_grants(*_args, **_kwargs):
+        return set()
+
+    monkeypatch.setattr(activity_api, "load_explicit_resource_grant_ids", no_grants)
+
     payload = await activity_api.get_agent_tool_failure_summary(
         agent_id=agent_id,
         hours=24,

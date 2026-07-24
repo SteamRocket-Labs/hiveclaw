@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 
 from app.api.activity import router as activity_router
+from app.api.dashboard import router as dashboard_router
 from app.api.ai_assets import router as ai_assets_router
 from app.api.a2a import router as a2a_router
 from app.api.admin import router as admin_router
@@ -173,6 +174,8 @@ _API_ROLE_EXACT_PATHS = {
     "/api/v1/organization",
     "/api/agents",
     "/api/v1/agents",
+    "/api/dashboard/overview",
+    "/api/v1/dashboard/overview",
 }
 _API_ROLE_AGENT_PATTERNS = (
     re.compile(r"^/api/(v1/)?agents/[^/]+/?$"),
@@ -837,6 +840,7 @@ _api_routers = [
     upload_router,
     a2a_router,
     activity_router,
+    dashboard_router,
     messages_router,
     tenants_router,
     schedules_router,

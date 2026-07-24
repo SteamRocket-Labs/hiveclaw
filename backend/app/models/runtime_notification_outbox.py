@@ -62,6 +62,7 @@ class RuntimeNotificationOutbox(Base):
         ),
         Index("ix_runtime_notification_outbox_claim", "status", "available_at", "locked_at"),
         Index("ix_runtime_notification_outbox_page", "integration_page_id", "mailbox_sequence"),
+        Index("ix_runtime_notification_outbox_source_lookup", "tenant_id", "source_run_id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)

@@ -73,10 +73,13 @@ async def test_upgrade_repairs_exact_legacy_collaboration_rows(migrated_pg_url: 
     from app.models.chat_session import ChatSession
     from app.models.chat_transcript_event import ChatTranscriptEvent
     from app.models.runtime_root_item import RuntimeRootItem
-    from app.models.runtime_task import RuntimeTask
     from app.models.tenant import Tenant
     from app.models.user import User
-    from tests.migrations.conftest import _alembic_downgrade, _alembic_upgrade
+    from tests.migrations.conftest import (
+        _alembic_downgrade,
+        _alembic_upgrade,
+        insert_runtime_task_at_schema_revision,
+    )
 
     import_all_models()
     _alembic_downgrade(migrated_pg_url, "peer_a2a_session_authority_0717")
@@ -136,7 +139,8 @@ async def test_upgrade_repairs_exact_legacy_collaboration_rows(migrated_pg_url: 
                 ]
             )
             await db.flush()
-            task = RuntimeTask(
+            await insert_runtime_task_at_schema_revision(
+                db,
                 id=task_id,
                 tenant_id=tenant_id,
                 task_type="delegation",
@@ -150,7 +154,6 @@ async def test_upgrade_repairs_exact_legacy_collaboration_rows(migrated_pg_url: 
                 root_runtime_task_id=task_id,
                 metadata_json={"interaction_type": "delegation"},
             )
-            db.add(task)
             await db.flush()
             child_session = await db.get(ChatSession, child_session_id)
             assert child_session is not None

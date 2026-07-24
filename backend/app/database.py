@@ -215,11 +215,31 @@ def _normalize_async_url(url: str) -> str:
     return url
 
 
-def _engine_pool_kwargs(settings) -> dict[str, int]:
+def _engine_pool_kwargs(settings) -> dict[str, int | bool]:
     return {
         "pool_size": settings.DB_POOL_SIZE,
         "max_overflow": settings.DB_MAX_OVERFLOW,
         "pool_timeout": settings.DB_POOL_TIMEOUT,
+        "pool_pre_ping": True,
+    }
+
+
+def _engine_connect_args(settings) -> dict[str, dict[str, str]]:
+    """Build asyncpg startup settings that a non-superuser may set itself.
+
+    ``temp_file_limit`` and ``log_temp_files`` are privileged PostgreSQL
+    parameters. They are intentionally installed as ``app_rls`` role defaults
+    by ``grant_rls_app_role`` instead of being sent here, which would make every
+    production connection fail during authentication.
+    """
+
+    process_role = str(getattr(settings, "HIVE_PROCESS_ROLE", "runtime") or "runtime").strip().lower()
+    return {
+        "server_settings": {
+            "application_name": f"hive-{process_role}",
+            "statement_timeout": str(max(1, int(settings.DB_STATEMENT_TIMEOUT_MS))),
+            "idle_in_transaction_session_timeout": str(max(1, int(settings.DB_IDLE_IN_TRANSACTION_TIMEOUT_MS))),
+        }
     }
 
 
@@ -227,6 +247,7 @@ engine = create_async_engine(
     _normalize_async_url(settings.DATABASE_URL),
     echo=settings.DEBUG,
     json_serializer=_postgres_json_serializer,
+    connect_args=_engine_connect_args(settings),
     **_engine_pool_kwargs(settings),
 )
 
@@ -250,6 +271,12 @@ def snapshot_db_pool() -> dict:
         "pool_timeout_seconds": settings.DB_POOL_TIMEOUT,
         "capacity": capacity,
         "saturation_pct": round(100.0 * checked_out / max(1, capacity), 1),
+        "query_guards": {
+            "statement_timeout_ms": settings.DB_STATEMENT_TIMEOUT_MS,
+            "idle_in_transaction_timeout_ms": settings.DB_IDLE_IN_TRANSACTION_TIMEOUT_MS,
+            "temp_file_limit_kb": settings.DB_TEMP_FILE_LIMIT_KB,
+            "log_temp_files_kb": settings.DB_LOG_TEMP_FILES_KB,
+        },
     }
 
 

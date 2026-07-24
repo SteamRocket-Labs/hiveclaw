@@ -632,6 +632,16 @@ async def update_runtime_task_record(task_id: str, **fields: Any) -> bool:
                 task.started_at = now
             if status in _TERMINAL_STATUSES and task.completed_at is None:
                 task.completed_at = now
+            if (
+                status == "skipped"
+                and getattr(task, "task_type", None) == "trigger"
+                and completion_notification is None
+            ):
+                # Trigger polling creates a RuntimeTask even when no Agent run
+                # is required. That intentional no-delivery outcome must leave
+                # the recovery index instead of becoming an eternal candidate.
+                task.completion_outbox_settled_at = now
+                task.completion_outbox_last_error = None
             if completion_notification is not None:
                 if status not in _TERMINAL_STATUSES:
                     raise ValueError("completion_notification requires a terminal RuntimeTask status")

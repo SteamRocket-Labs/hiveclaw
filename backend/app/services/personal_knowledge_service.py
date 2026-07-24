@@ -17,6 +17,7 @@ from sqlalchemy import Text, cast, delete, func, or_, select, update
 
 from app.config import get_settings
 from app.models.agent import Agent
+from app.models.audit import AuditLog
 from app.models.knowledge import (
     KnowledgeAssertion,
     KnowledgeDocument,
@@ -2087,7 +2088,8 @@ class PersonalKnowledgeService:
             )
         )
         grant = result.scalar_one_or_none()
-        if not isinstance(grant, KnowledgeGrant):
+        created = not isinstance(grant, KnowledgeGrant)
+        if created:
             grant = KnowledgeGrant(
                 id=uuid.uuid4(),
                 tenant_id=tenant_id,
@@ -2117,6 +2119,32 @@ class PersonalKnowledgeService:
         if previous_revoked_at is not None:
             metadata["reactivated_from_revoked_at"] = previous_revoked_at.isoformat()
         grant.grant_metadata_json = metadata
+        session.add(
+            AuditLog(
+                tenant_id=tenant_id,
+                user_id=current_user_id,
+                agent_id=grantee_id if clean_grantee_type == "agent" else None,
+                action="personal_kb.grant.upserted",
+                details={
+                    "grant_id": str(grant.id),
+                    "operation": (
+                        "created" if created else "reactivated" if previous_revoked_at is not None else "updated"
+                    ),
+                    "resource_type": clean_resource_type,
+                    "resource_id": str(resolved_resource_id),
+                    "grantee_type": clean_grantee_type,
+                    "grantee_id": str(grantee_id),
+                    "permission": clean_permission,
+                    "requester_user_id": str(resolved_requester_id) if resolved_requester_id else None,
+                    "session_id": clean_session_id,
+                    "purpose": clean_purpose,
+                    "delegation_id": clean_delegation_id,
+                    "sensitivity_ceiling": canonical_ceiling,
+                    "expires_at": expires_at.isoformat() if expires_at is not None else None,
+                    "binding_key": binding_key,
+                },
+            )
+        )
         await session.flush()
         return self._grant_summary(grant)
 
@@ -2148,6 +2176,31 @@ class PersonalKnowledgeService:
         metadata["authority_status"] = "revoked"
         metadata["revoked_at"] = grant.revoked_at.isoformat()
         grant.grant_metadata_json = metadata
+        session.add(
+            AuditLog(
+                tenant_id=tenant_id,
+                user_id=current_user_id,
+                agent_id=grant.grantee_id if str(grant.grantee_type or "") == "agent" else None,
+                action="personal_kb.grant.revoked",
+                details={
+                    "grant_id": str(grant.id),
+                    "resource_type": str(grant.resource_type or ""),
+                    "resource_id": str(grant.resource_id),
+                    "grantee_type": str(grant.grantee_type or ""),
+                    "grantee_id": str(grant.grantee_id),
+                    "permission": str(grant.permission or ""),
+                    "requester_user_id": (
+                        str(grant.requester_user_id) if grant.requester_user_id is not None else None
+                    ),
+                    "session_id": str(grant.session_id or "") or None,
+                    "purpose": str(grant.purpose or "") or None,
+                    "delegation_id": str(grant.delegation_id or "") or None,
+                    "sensitivity_ceiling": str(grant.sensitivity_ceiling or ""),
+                    "revoked_at": grant.revoked_at.isoformat(),
+                    "binding_key": str(grant.binding_key or ""),
+                },
+            )
+        )
         await session.flush()
         return True
 

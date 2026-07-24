@@ -13,6 +13,7 @@ from app.services.personal_knowledge_access import AgentRuntimePrincipal, HumanB
 from sqlalchemy.sql.dml import Delete, Update
 from sqlalchemy.sql.selectable import Select
 
+from app.models.audit import AuditLog
 from app.models.knowledge import (
     KnowledgeAssertion,
     KnowledgeDocument,
@@ -1399,6 +1400,27 @@ async def test_create_personal_grant_writes_owner_scope_grant(tmp_path: Path) ->
     assert added_grants[-1].resource_id == owner_id
     assert added_grants[-1].binding_key.startswith("pkb:")
     assert added_grants[-1].grant_metadata_json == {"reason": "research"}
+    audit = next(obj for obj in session.added if isinstance(obj, AuditLog))
+    assert audit.action == "personal_kb.grant.upserted"
+    assert audit.tenant_id == tenant_id
+    assert audit.user_id == owner_id
+    assert audit.agent_id == agent_id
+    assert audit.details == {
+        "grant_id": str(added_grants[-1].id),
+        "operation": "created",
+        "resource_type": "scope",
+        "resource_id": str(owner_id),
+        "grantee_type": "agent",
+        "grantee_id": str(agent_id),
+        "permission": "search",
+        "requester_user_id": str(owner_id),
+        "session_id": None,
+        "purpose": "autonomous_agent",
+        "delegation_id": None,
+        "sensitivity_ceiling": "PL3_sensitive",
+        "expires_at": expires_at.isoformat(),
+        "binding_key": added_grants[-1].binding_key,
+    }
 
 
 @pytest.mark.asyncio
@@ -1485,6 +1507,26 @@ async def test_delete_personal_grant_is_auditable_soft_revoke(tmp_path: Path) ->
     assert grant.revoked_by_user_id == owner_id
     assert grant.grant_metadata_json["authority_status"] == "revoked"
     assert session.deleted == []
+    audit = next(obj for obj in session.added if isinstance(obj, AuditLog))
+    assert audit.action == "personal_kb.grant.revoked"
+    assert audit.tenant_id == grant.tenant_id
+    assert audit.user_id == owner_id
+    assert audit.agent_id is None
+    assert audit.details == {
+        "grant_id": str(grant.id),
+        "resource_type": "scope",
+        "resource_id": str(owner_id),
+        "grantee_type": "user",
+        "grantee_id": str(grant.grantee_id),
+        "permission": "read",
+        "requester_user_id": None,
+        "session_id": None,
+        "purpose": None,
+        "delegation_id": None,
+        "sensitivity_ceiling": "PL2_pii",
+        "revoked_at": grant.revoked_at.isoformat(),
+        "binding_key": "pkb:test",
+    }
 
 
 @pytest.mark.asyncio
@@ -1509,6 +1551,7 @@ async def test_non_owner_cannot_create_personal_grant(tmp_path: Path) -> None:
 
     assert grant is None
     assert [obj for obj in session.added if isinstance(obj, KnowledgeGrant)] == []
+    assert [obj for obj in session.added if isinstance(obj, AuditLog)] == []
 
 
 @pytest.mark.asyncio

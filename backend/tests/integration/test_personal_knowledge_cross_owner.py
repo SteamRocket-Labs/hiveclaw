@@ -7,9 +7,11 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from sqlalchemy import select
 
 from app.database import Base
 from app.models.agent import Agent
+from app.models.audit import AuditLog
 from app.models.knowledge import KnowledgeDocument, KnowledgeGrant, KnowledgeSegment
 from app.models.tenant import Tenant
 from app.models.user import User
@@ -607,6 +609,34 @@ async def test_owner_can_create_and_soft_revoke_a_bounded_agent_grant(complete_s
         assert stored is not None
         assert stored.revoked_at is not None
         assert stored.revoked_by_user_id == ids["ownerA"]
+        audits = (
+            (
+                await session.execute(
+                    select(AuditLog)
+                    .where(
+                        AuditLog.tenant_id == ids["tenant"],
+                        AuditLog.user_id == ids["ownerA"],
+                        AuditLog.action.in_(
+                            (
+                                "personal_kb.grant.upserted",
+                                "personal_kb.grant.revoked",
+                            )
+                        ),
+                    )
+                    .order_by(AuditLog.created_at.asc(), AuditLog.id.asc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert [audit.action for audit in audits] == [
+            "personal_kb.grant.upserted",
+            "personal_kb.grant.revoked",
+        ]
+        assert [audit.details["grant_id"] for audit in audits] == [
+            str(grant_id),
+            str(grant_id),
+        ]
 
 
 async def test_revoked_grant_cannot_auto_approve_personal_kb_proposal(complete_schema, owner_sessionmaker):

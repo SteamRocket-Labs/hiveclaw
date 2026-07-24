@@ -56,6 +56,34 @@ class _FakeDB:
         self.committed = True
 
 
+def test_reported_capability_names_adapts_canonical_hive_connect_vocabulary() -> None:
+    assert service._reported_capability_names(
+        {
+            "im": True,
+            "streaming": True,
+            "attachments": True,
+            "workspace": True,
+            "runner": "codex",
+        }
+    ) == ("event_stream", "execute", "file_upload", "result_report")
+
+
+def test_reported_capability_names_does_not_overgrant_unknown_or_disabled_aliases() -> None:
+    assert (
+        service._reported_capability_names(
+            {
+                "im": False,
+                "streaming": False,
+                "attachments": False,
+                "workspace": True,
+                "runner": "",
+                "unknown": True,
+            }
+        )
+        == ()
+    )
+
+
 @pytest.mark.asyncio
 async def test_get_or_create_default_channel_session_reuses_existing_web_session() -> None:
     tenant_id = uuid4()

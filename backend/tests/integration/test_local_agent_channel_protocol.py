@@ -180,10 +180,11 @@ async def test_local_agent_protocol_is_signed_monotonic_idempotent_and_receipted
             context=context,
             runtime_kind="codex",
             capabilities={
-                "execute": True,
-                "event_stream": True,
-                "result_report": True,
-                "file_download": True,
+                "im": True,
+                "streaming": True,
+                "attachments": True,
+                "workspace": True,
+                "runner": "codex",
             },
         )
         session = LocalAgentChannelSession(
@@ -200,7 +201,7 @@ async def test_local_agent_protocol_is_signed_monotonic_idempotent_and_receipted
     assert ready["effective_capabilities"] == [
         "event_stream",
         "execute",
-        "file_download",
+        "file_upload",
         "result_report",
     ]
     assert len(ready["snapshot_hash"]) == 64

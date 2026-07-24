@@ -74,6 +74,12 @@ LOCAL_CAPABILITY_SCOPE_REQUIREMENTS: dict[str, frozenset[str]] = {
     "file_upload": frozenset({"local_agent:report"}),
 }
 
+CANONICAL_HIVE_CONNECT_CAPABILITY_ALIASES: dict[str, frozenset[str]] = {
+    "im": frozenset({"result_report"}),
+    "streaming": frozenset({"event_stream"}),
+    "attachments": frozenset({"file_upload"}),
+}
+
 settings = get_settings()
 MAX_DELIVERY_ATTEMPTS = max(
     1,
@@ -121,6 +127,12 @@ def _reported_capability_names(capabilities: dict[str, Any] | None) -> tuple[str
         for name, enabled in payload.items()
         if name in LOCAL_CAPABILITY_SCOPE_REQUIREMENTS and enabled is True
     }
+    for alias, mapped_capabilities in CANONICAL_HIVE_CONNECT_CAPABILITY_ALIASES.items():
+        if payload.get(alias) is True:
+            reported.update(mapped_capabilities)
+    runner = payload.get("runner")
+    if runner is True or (isinstance(runner, str) and runner.strip()):
+        reported.add("execute")
     nested = payload.get("capabilities")
     if isinstance(nested, list):
         reported.update(

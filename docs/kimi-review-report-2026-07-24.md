@@ -31,6 +31,7 @@
 | HC-05 canonical Connect 边界与 legacy retirement | **代码闭环；真 PG/真实设备验收待补** | 后端把 canonical `hive-connect@0.1.9` 上报的 `runner/im/streaming/attachments` 严格映射为 `execute/result_report/event_stream/file_upload`，`workspace` 与未知/disabled 值不产生授权；最终权限仍是 bridge token scope、Agent policy 与 runner report 的三方交集。仓内无消费者的 Python/npm `hive-bridge`、404 gateway poller、关键词 auto adapter、两份重复 Skill 和测试共 35 个 tracked 文件（145,418 bytes）全部退役。TDD RED `2 failed, 1 passed`；扩大回归 `49 passed, 8 skipped`，canonical Go package 通过 | 无 DDL、配置、数据回填或外部仓写入；8 skip 为 Docker/Testcontainers unavailable 的真 PG 协议文件。外部仓固定在 `6cf0b591c037`，真实登录设备仍需验证 ready_ack effective capabilities、message→ack/result、附件上传与 reconnect |
 | A2A-03 协作组管理与 Owner 确认 | **代码闭环；真 PG/浏览器验收待补** | 修正原报告“后端已闭环、仅缺前端”的误判：runtime callable read model 正确隐藏 pending/rejected/revoked，但此前没有独立 human management projection，目标 Owner 因而看不到邀请，也拿不到真实 membership key。新增 manager-only、tenant-scoped management/candidate API；create/invite/approve/reject/revoke 全部进入 `AgentA2ASection`，普通 use-only 员工不加载管理查询。目标 Owner 或带必填治理理由的 org/platform admin 才能确认；path Agent 必须就是目标 member Agent，状态转换 fail-closed，过期群组禁止邀请/批准，群主 membership 禁止撤销，重新邀请清除旧 approval/reject/revoke 状态，五类变更与 canonical tenant audit 同事务提交。后端定向 `17 passed, 1 skipped`，前端 `143 passed`，Ruff/format、生产 build/bundle budget 通过 | 无 DDL、迁移或历史回填；复用既有 group/member 表和 SecurityAuditEvent。管理 API 会传输动作所需 member/agent key，但 UI 不渲染 raw id/owner id；runtime prompt/read model 未接入管理数据。唯一 skip 是 Docker/Testcontainers unavailable 的真 PG “pending 仅管理可见、runtime 不可调用”用例；真实浏览器仍须跑 create→search→invite→另一 Owner approve→callable→revoke→消失 |
 | DOC-01 / HN-01/02 文档事实源 | **闭环；缺失能力保持如实登记** | `AGENTS.md` 删除手填代码/迁移/测试计数与过时 `4223 passed` 基线，改为 current-checkout inventory 命令；清除不存在的 scheduler/extract/knowledge/viking 服务、Objective、legacy relationship 与 ONLYOFFICE 员工面宣称，改为 `AgentSessionGoal`、Collaboration Group、OfficeCLI preview 等真实路径。`proactive_employee_loop` / `policy_replay` 明确标成没有 live runtime，不再伪装完成；Sentinel 只注明不可作为 authority。硬编码旧仓库路径的 Feishu 测试 RED `1 failed, 5 passed`，改为 `__file__` 相对定位后 `6 passed`，Ruff/format 通过 | 文档与测试基础设施修复，无 schema/config/数据迁移。逐项文件存在性检查确认 16 个新声明路径存在、8 个退役/缺失路径仍不存在；规模数字以后必须现场生成，不能重新复制进 handbook |
+| DOC-02 幽灵登记项 | **撤销；报告一致性闭环** | 对原始报告 commit `b4712dcc` 与修复前 HEAD 做 exact inventory：两版均只有七原子矩阵和聚合登记册两处 `DOC-02`，没有 finding 正文、源码证据、断裂原子、严重级依据或验收合同。保留撤销记录，但不虚构代码任务 | 仅修正文档账本，无源码/schema/config/data 变化；未来若发现新的文档问题必须以独立、完整 finding 登记，不能复用这个未定义编号 |
 | UI-10 前端组件极简性 | **闭环** | 不提高既有行数阈值；把 Action decisions 的标签/理由/反馈组件从 `SessionRuntimePanel` 提取为 163 行的 `SessionDecisionHistory` domain owner，并把测试/相邻组件从 `AgentChatSection` 代理 re-export 改为直接依赖真实 owner。`AgentChatSection` 2405→2379 行，`SessionRuntimePanel` 1225→1069 行；Architecture 合同 RED `2 failed, 5 passed` → GREEN `7 passed`，12 文件 chat/runtime 邻接 `285 passed`，TypeScript/Vite build 与 bundle budget 通过 | 纯前端结构重构，无 API/schema/i18n/data 迁移；行为与现有 decision feedback、runtime panel、artifact/lineage/tool result 合同保持不变 |
 | UI-02 治理产品消费面 | **代码闭环；真 PG/Redis/浏览器验收待补** | 修正“三个治理 router 均无前端”的误判：`config_history` 是只接受 `ai_asset` 的退役兼容 adapter，canonical `/enterprise/ai-assets/*` 的 revision/detail/rollback/reconcile 已由 `WorkspaceAIAssetsSection` 消费；新增 Company Control Plane 的 Action Guardrails 和 Platform Admin 的 Feature Rollout。GuardPolicy 强制 expected version、完整 known-subset 校验、row/advisory lock 与同事务 tenant audit；global FeatureFlag 收紧为 `platform_admin`，加入 typed targeting/expiry、空更新拒绝、row lock + `updated_at` 冲突、效果前 strict platform audit 与 commit 后 cache invalidation。RED backend `8 failed, 5 passed`，另有 audit/首写锁/stale/empty-update 四轮各 `1 failed`；frontend 5 个文件全红且 build 暴露类型/route/icon 合同。仅暂存树最终 backend `88 passed, 30 skipped`、frontend `10 files / 34 passed`，Ruff/format、locale JSON、TypeScript/Vite build 与四项 bundle budget 全绿 | 无 DDL、迁移或回填；复用既有 `feature_flags.expires_at`、GuardPolicy/SystemSetting 与 canonical audit。30 skip 均为 Docker/Testcontainers unavailable 的 Workflow/Trigger 真 PG 邻接。员工/Owner 页面不渲染 raw policy JSON、tool id 或 platform flag；真实 PG first-write/concurrency、Redis after-commit、strict audit 链和三角色浏览器旅程仍须验收 |
 | UI-03 i18n 唯一库存与双语闭环 | **代码闭环；真实双语浏览器验收待补** | 入库 AST-aware `i18n-audit`、35 条 exact 动态 key 规则（覆盖 42 个调用点）与 1 条受控 translation-wrapper 规则，CI 同时阻断静态缺 key、单边 locale、重复 JSON path、中文 literal/defaultValue fallback 和未解释动态 key。以纯 staged tree 重建的最终库存为 215 个 source files、2601 个静态调用（2122 unique）、116 个动态调用、en/zh 各 3461 key；八项 gate 全为 0，四个 inventory SHA-256 已记录在 §8/§14。合并会被 `JSON.parse` 静默覆盖的两组 `agent.extensions`，补齐双语 catalog，移除 5 个生产文件的 143 个中文默认值；测试 mock 改读真实中文 catalog。Node extractor `9 passed`，Frontend 全量 `128 files / 774 passed`，生产 build/bundle budget 全绿 | locale-only/前端/CI 变更，无 API/schema/data migration；动态规则必须以精确 source+expression+reason 更新，wrapper 必须以 exact source+callee+reason 登记，runtime fallback 不能豁免。AST 与 catalog 闭环不替代真实中英文浏览器旅程，后者仍在 §12 |
@@ -503,7 +504,7 @@ Agent/Skill/Workflow/外部能力资产管理闭环（revision/usage 投影接�
 | 企业治理（RLS/配额/审计） | ● | ● | ● | ● | ● | ● | ◐(GV-05/06 真 PG/Redis/多实例；UI-02 浏览器待补) |
 | Hive Connect | ● | ● | ● | ● | ● | ● | ◐(HC-01/03/05/06 真 PG + canonical device/双实例 E2E 未验收) |
 | 前端消费面 | ● | ● | ● | ● | ● | ● | ◐(UI-02/03/04/05/06/09 真数据/浏览器；UI-07 部署后直达验收) |
-| 文档事实源 | — | — | — | ●(DOC-01) | — | — | ◐(DOC-02) |
+| 文档事实源 | — | — | — | ●(DOC-01) | — | — | ●(DOC-01；DOC-02 幽灵项已撤销) |
 
 ### 9.2 断点登记册（按严重级排序；均含反证记录与最小闭环方向，详见各模块章节）
 
@@ -539,7 +540,7 @@ Agent/Skill/Workflow/外部能力资产管理闭环（revision/usage 投影接�
 | UI-05 | 前端/Workspace | **代码与本地浏览器闭环；真 PG/生产验收待补** | 原 P2 | Acceptance | 既有 checkpoint authority 已有文件级 read/download/CAS restore、AuditLog/crash recovery 与 Agent Workspace 消费 |
 | SA-07 | Memory | **代码闭环；生产回填验收待补** | 原 P2 | Authority→Execution→Consumption→Acceptance | 自动 episodic 只读 T2；DB summary 降为投影；sealed T0 dry-run/exact-confirm canonical backfill 可恢复 |
 | SA-08 | Memory / 前端 | **代码与本地浏览器闭环；真数据验收待补** | 原 P2 | Consumption→Acceptance | TURN_STOP committed T2 可被下一 turn 直接发现；员工只看业务记忆状态，不看内部管线 |
-| SA-03、DOC-02 | 各 | 局部闭环 | P2 | 各异 | 见各模块章节 |
+| SA-03 | Session/Trigger | 局部闭环 | P2 | Recovery→Consumption | trigger/heartbeat 进程内执行，重启后需人工和解，见 §5.2 |
 | A2A-04、HN-07、SA-09、UI-08 | 各 | 死代码/孤儿 | P3 | — | 无生产消费者，可删除（见 §10） |
 
 ### 9.3 撤销或重分类项
@@ -550,6 +551,7 @@ Agent/Skill/Workflow/外部能力资产管理闭环（revision/usage 投影接�
 | HC-04 | `hive-connect daemon install` 未实现 | **撤销**。canonical CLI、launchd/systemd/Windows service manager 均有实现；仅真实机器安装与重启 E2E 未验收 |
 | UI-01 | Office 专用浏览器编辑面缺失是产品断点 | **重分类为 DOC-01 且已闭环**。当前前端测试合同明确要求退役该面；AGENTS.md 已同步到 OfficeCLI preview 与 ArtifactSurface |
 | SA-04 | 员工用户自定义 hook 无注册面是 P2 缺失 | **撤销为员工产品缺失；UI-09 已代码修复**。本地开发者 Hook 不能直接映射到员工设置；内部 Hook 与禁用权已移除，受治理通用扩展面仍需另立产品契约 |
+| DOC-02 | 未定义的“文档事实源局部闭环” | **撤销幽灵编号**。原始报告只在矩阵和聚合登记册引用该编号，从未给出 finding、证据或验收合同；不得据此制造实现工作 |
 
 ---
 
@@ -578,6 +580,8 @@ Agent/Skill/Workflow/外部能力资产管理闭环（revision/usage 投影接�
 `AGENTS.md` 已按 current source 完成以下收正：删除迁移、router/model/service、前端 test file 和历史 pass count 等手填数字，改为 `git ls-files` / `rg --files` / `alembic heads` 现场生成；从 live catalog 删除 `scheduler`、`extract_queue`、`extract_agent`、`knowledge_inject`、`viking_client` 等不存在项；将 Objective 改为 `AgentSessionGoal`，A2A 关系改为 `AgentCollaborationGroup`/member；`proactive_employee_loop` / `policy_replay` 明确为无 live runtime；Sentinel 只保留“不可作为运行权威”的事实说明，不再宣称消费；Office 改为 backend OfficeCLI tool/preview + frontend `ArtifactSurface`，并明确专用 `OfficeWorkbenchSection` 与 ONLYOFFICE WYSIWYG/env 已退役。另将 `test_feishu_streaming_cards.py` 的旧机器绝对路径改为 `__file__` 相对定位。
 
 Evidence：Feishu 定向 RED `1 failed, 5 passed`，修复后 `6 passed`；Ruff/format 通过。结构检查确认 handbook 中 16 个 live path 均存在、8 个 retired/missing path 均不存在；stale active tokens（`4223 passed`、`Migrations | 79`、`Vitest 4 (39...)`、旧服务/实体/ONLYOFFICE env）零命中。Office retirement/Artifact preview 三文件 `116 passed`，Architecture 中对应 lazy-boundary 契约 `1 passed, 6 skipped`。未过滤的四文件组合还暴露 2 个无关行数预算失败，已独立登记 UI-10，不把它伪装成 DOC-01 失败或静默吞掉。该闭环不把 HN-01/HN-02 的未建设能力伪装成实现。
+
+DOC-02 经原始报告与修复前 HEAD 的 exact inventory 复核，均只有两处交叉引用，且不存在任何定义段落。它不是 DOC-01 的第二阶段，也没有独立 source boundary 或 acceptance debt；现已从七原子欠账与断点登记册撤销，仅在 §9.3/§15 保留纠错轨迹。
 
 ### 10.3 目标架构判断
 
@@ -728,6 +732,7 @@ SA-08 已有 TURN_STOP→await canonical T2 package job→active T2 read model�
 | C-12 | UI-05 概括为“无 version 端点，因此无回滚能力” | 原因修正并代码闭环：修复前没有文件级 API/UI 属实，但 session workspace checkpoint/rewind 已是可恢复 authority；缺口是文件级投影与消费，不应另建版本事实源 | 复用 snapshot manifest/lock/journal/startup recovery，新增 opaque owner-scoped API、CAS restore、AuditLog 与 Workspace UI；staged backend `96 passed`、Frontend `785 passed`、Chromium E2E `1 passed` |
 | C-13 | SA-07 正确识别 DB/T2 双摘要，但仅给出“DB 降为 UI 投影”的方向 | 代码与历史恢复边界补全：automatic episodic 已只读 T2；DB summary 明确为列表/搜索/API projection；不能直接复制旧 summary，因此新增 sealed T0 dry-run/exact-confirm canonical LLM backfill，而不是删数据或静默丢失覆盖 | Runtime/backfill RED 合计 7 项；最终相邻 `444 passed, 6 skipped`，Ruff/format/compileall/diff check 绿；production dry-run/apply 待 operator 验收 |
 | C-14 | SA-08 判断新知识必须等待 heartbeat/dream 才能被下一次对话记住，并把内部管线状态建议给员工 UI | 原因撤销并完成正确产品边界：TURN_STOP 已等待 canonical T2 job，active T2 会在下一 turn 直接进入 automatic episodic；员工只消费由当前 T2/Explicit/T3/job/debt 实物计算的“已记住/正在巩固/需要处理/暂无记忆”，内部/未知 lifecycle 均不进入 DOM | RED backend `2 failed`、frontend 两轮各 `1 failed`；纯 staged tree backend `70 passed`、frontend `787 passed`、i18n/build 绿、Chromium `1 passed` 且 Axe 零 violation；production true-data journey 待验收 |
+| C-15 | DOC-02 被列为 P2 局部闭环，但正文没有对应 finding | 撤销，不创建虚假修复项；文档欠账由已定义且已闭环的 DOC-01 承担，新的问题必须另立完整编号 | `git show b4712dcc:docs/kimi-review-report-2026-07-24.md` 与修复前 HEAD 对 `DOC-02` 均精确命中 2 处，仅为矩阵/聚合行；定义标题与正文命中 0 |
 
 ### 附：审查过程声明
 

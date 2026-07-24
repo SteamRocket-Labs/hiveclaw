@@ -174,7 +174,6 @@ export const enterpriseApi = {
   /** LLM models */
   listLLMModels: (tenantId?: string) => get<LLMModel[]>(`/enterprise/llm-models${tenantId ? `?tenant_id=${tenantId}` : ''}`),
   llmModels: (tenantId?: string) => get<LLMModel[]>(`/enterprise/llm-models${tenantId ? `?tenant_id=${tenantId}` : ''}`),
-  templates: () => get<unknown[]>('/role-templates'),
   createLLMModel: (data: Partial<LLMModel> & { api_key?: string; tenant_id?: string }, tenantId?: string) =>
     post<LLMModel>(`/enterprise/llm-models${tenantId ? `?tenant_id=${tenantId}` : ''}`, data),
   updateLLMModel: (id: string, data: Partial<LLMModel> & { api_key?: string }) =>

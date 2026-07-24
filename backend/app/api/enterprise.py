@@ -39,7 +39,7 @@ from app.schemas.schemas import (
 from app.services.approval_service import approval_service
 from app.services.enterprise_approval_visibility import enterprise_visible_approval_filter
 from app.services.enterprise_sync import enterprise_sync_service
-from app.services.llm_utils import get_provider_manifest
+from app.services.llm_client import get_provider_manifest
 from app.services.secrets_provider import get_secrets_provider
 
 logger = logging.getLogger(__name__)

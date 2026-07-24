@@ -46,7 +46,7 @@ from app.services.chat_message_parts import (
 from app.services.chat_artifact_delivery import tool_session_write_paths
 from app.services.llm_error_policy import classify_llm_error, should_surface_without_model_fallback
 from app.services.llm_reasoning import build_reasoning_kwargs, resolve_temperature
-from app.services.llm_utils import LLMError, LLMMessage, LLMResponse, STREAM_RETRY_TOMBSTONE
+from app.services.llm_client import LLMError, LLMMessage, LLMResponse, STREAM_RETRY_TOMBSTONE
 from app.services.governance_capability_taxonomy import CORE_TOOL_NAMES
 from app.memory.metrics import record_prompt_cache_metrics
 from app.services.prompt_cache import PROMPT_CACHE_BOUNDARY, extract_cache_metrics
@@ -3091,12 +3091,6 @@ _POST_COMPACT_PER_FILE_CAP = 8000  # chars per file — was 5K
 # kernel/reminder_scheduler.py. The engine only: builds one scheduler per
 # invocation, feeds observe(tool_names) each round, collects the transient
 # texts before each LLM call, and resets the scheduler after a compaction.
-def _parse_interactive_plan_signal(result_str: str) -> dict[str, Any] | None:
-    """Legacy parser kept for compatibility; tool results never activate Plan Mode."""
-    _ = result_str
-    return None
-
-
 def _tool_result_requests_user_clarification(tool_name: str, result_str: str) -> bool:
     """True when a blocking interaction card is the intended terminal output.
 
@@ -3119,23 +3113,6 @@ def _tool_result_requests_user_clarification(tool_name: str, result_str: str) ->
     if tool_name == "request_plan_mode":
         return data.get("status") == "plan_mode_entry_requested"
     return data.get("status") == "awaiting_user_clarification" and data.get("blocking", True) is not False
-
-
-def _is_live_interactive_chat(session_context: Any | None) -> bool:
-    """True for a live interactive chat session.
-
-    Kept for explicit Plan Mode channel-boundary tests. Tool results no longer
-    use this to activate Plan Mode.
-    """
-    from app.runtime.session import is_interactive_plan_eligible
-
-    return is_interactive_plan_eligible(session_context)
-
-
-def _maybe_activate_interactive_plan_from_tool_result(request: Any, result_str: str) -> Any:
-    """Tool results may block or ask for confirmation, but never enter Plan Mode."""
-    _ = (request, result_str)
-    return None
 
 
 def _recoverable_context_file(

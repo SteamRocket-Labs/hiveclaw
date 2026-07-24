@@ -508,7 +508,7 @@ async def test_coordinator_and_delegation_suffixes_have_independent_budgets(monk
 async def test_prompt_too_long_retry_preserves_dynamic_context_blocks(tmp_path):
     from app.kernel.contracts import InvocationRequest, RuntimeConfig
     from app.kernel.engine import AgentKernel, KernelDependencies
-    from app.services.llm_utils import LLMError
+    from app.services.llm_client import LLMError
 
     fake_client = _FakeClient(
         [

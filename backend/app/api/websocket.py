@@ -5,28 +5,26 @@ import os
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 from loguru import logger
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.security import decode_access_token
 from app.core.permissions import check_agent_access, is_agent_expired
-from app.core.security import get_current_user
-from app.database import get_db, tenant_scoped_session
-from app.services.tenant_resolver import resolve_tenant_for_agent
+from app.core.security import decode_access_token
+from app.database import tenant_scoped_session
 from app.kernel.contracts import ExecutionIdentityRef, TerminalReason
 from app.models.audit import ChatMessage
 from app.models.llm import LLMModel
 from app.models.user import User
 from app.runtime.invoker import AgentInvocationRequest, invoke_agent
 from app.runtime.session import SessionContext
+from app.services.session_live_input import submit_live_cancel_input, submit_live_human_input
+from app.services.tenant_resolver import resolve_tenant_for_agent
 from app.services.web_chat_broker import web_chat_broker
 from app.services.web_chat_runtime import (
     conversation_from_history_messages as _conversation_from_history_messages,
     get_active_web_chat_run,
 )
-from app.services.session_live_input import submit_live_cancel_input, submit_live_human_input
 from app.services.web_session_contract import apply_web_session_contract
 
 router = APIRouter(tags=["websocket"])
@@ -73,81 +71,6 @@ async def _emit_ws_session_lifecycle_hook(
         source=source,
         metadata=metadata or {},
     )
-
-
-class ConnectionManager:
-    """Manage WebSocket connections per agent."""
-
-    def __init__(self):
-        # agent_id_str -> list of (WebSocket, session_id_str | None)
-        self.active_connections: dict[str, list[tuple]] = {}
-        self._runtime_sessions: dict[str, SessionContext] = {}
-        self._runtime_session_order: list[str] = []
-        self._lock = asyncio.Lock()
-
-    def _runtime_session_key(self, agent_id: str, session_id: str | None) -> str | None:
-        if not session_id:
-            return None
-        return f"{agent_id}:{session_id}"
-
-    async def connect(self, agent_id: str, websocket: WebSocket, session_id: str | None = None):
-        await websocket.accept()
-        async with self._lock:
-            if agent_id not in self.active_connections:
-                self.active_connections[agent_id] = []
-            self.active_connections[agent_id].append((websocket, session_id))
-
-    async def disconnect(self, agent_id: str, websocket: WebSocket):
-        async with self._lock:
-            if agent_id in self.active_connections:
-                self.active_connections[agent_id] = [
-                    (ws, sid) for ws, sid in self.active_connections[agent_id] if ws != websocket
-                ]
-
-    async def send_message(self, agent_id: str, message: dict):
-        async with self._lock:
-            if agent_id in self.active_connections:
-                dead = []
-                for ws, _sid in self.active_connections[agent_id]:
-                    try:
-                        await ws.send_json(message)
-                    except Exception:
-                        dead.append((ws, _sid))
-                for d in dead:
-                    self.active_connections[agent_id] = [c for c in self.active_connections[agent_id] if c != d]
-
-    async def get_active_session_ids(self, agent_id: str) -> list[str]:
-        """Return distinct session IDs for all active WS connections of an agent."""
-        async with self._lock:
-            if agent_id not in self.active_connections:
-                return []
-            return list(set(sid for _ws, sid in self.active_connections[agent_id] if sid))
-
-    async def get_or_create_runtime_session(self, agent_id: str, session_id: str | None) -> SessionContext:
-        """Return a stable SessionContext for a chat session across turns/reconnects."""
-        if not session_id:
-            return SessionContext(source="web", channel="web")
-
-        async with self._lock:
-            key = self._runtime_session_key(agent_id, session_id)
-            assert key is not None
-            session = self._runtime_sessions.get(key)
-            if session is None:
-                session = SessionContext(
-                    session_id=session_id,
-                    source="web",
-                    channel="web",
-                )
-                self._runtime_sessions[key] = session
-                self._runtime_session_order.append(key)
-                if len(self._runtime_session_order) > 200:
-                    evict_key = self._runtime_session_order.pop(0)
-                    self._runtime_sessions.pop(evict_key, None)
-            else:
-                if key in self._runtime_session_order:
-                    self._runtime_session_order.remove(key)
-                self._runtime_session_order.append(key)
-            return session
 
 
 manager = web_chat_broker
@@ -201,64 +124,6 @@ async def _has_active_web_chat_run(agent_id: uuid.UUID, session_id: str | uuid.U
     except Exception as exc:
         logger.debug("[WS] Active web chat run check failed during idle handling: {}", exc)
         return False
-
-
-async def _claim_pending_reply_suffix_for_session(
-    db: AsyncSession,
-    *,
-    agent_id: uuid.UUID,
-    session_id: str | None,
-) -> str:
-    if not session_id:
-        return ""
-
-    from app.models.chat_session import ChatSession
-    from app.services.pending_reply_service import (
-        claim_and_fulfill_pending_replies,
-        format_pending_reply_context,
-        sender_identity_from_session,
-    )
-
-    session_result = await db.execute(select(ChatSession).where(ChatSession.id == uuid.UUID(str(session_id))))
-    session = session_result.scalar_one_or_none()
-    sender_identity = sender_identity_from_session(session)
-    if not sender_identity:
-        return ""
-
-    claimed = await claim_and_fulfill_pending_replies(db, agent_id=agent_id, sender_identity=sender_identity)
-    if not claimed:
-        return ""
-    await db.commit()
-    return format_pending_reply_context(claimed)
-
-
-@router.get("/chat/{agent_id}/history")
-async def get_chat_history(
-    agent_id: uuid.UUID,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """Return web chat message history for this user + agent."""
-    from app.services.chat_message_parts import serialize_chat_message
-
-    # check_agent_access already verifies tenant ownership (H-17)
-    await check_agent_access(db, current_user, agent_id)
-    conv_id = f"web_{current_user.id}"
-    result = await db.execute(
-        select(ChatMessage)
-        .where(
-            ChatMessage.agent_id == agent_id,
-            ChatMessage.conversation_id == conv_id,
-            ChatMessage.user_id == current_user.id,
-        )
-        .order_by(ChatMessage.created_at.asc())
-        .limit(200)
-    )
-    messages = result.scalars().all()
-    out = []
-    for m in messages:
-        out.append(serialize_chat_message(m))
-    return out
 
 
 async def call_llm(

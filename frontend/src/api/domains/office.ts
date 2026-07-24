@@ -1,19 +1,5 @@
-import { getBlob, post } from '../core';
+import { getBlob } from '../core';
 import type { ResourceAuthorityOptions } from './files';
-
-export type OfficeKind = 'docx' | 'xlsx' | 'pptx';
-export interface OfficeDocumentCreateInput {
-  path: string;
-  kind: OfficeKind;
-  template_path?: string;
-}
-
-export interface OfficeDocumentCreateResponse {
-  status: 'ok';
-  path: string;
-  kind: OfficeKind;
-  size: number;
-}
 
 function authorityParams(authority?: ResourceAuthorityOptions): URLSearchParams {
   const params = new URLSearchParams();
@@ -25,9 +11,6 @@ function authorityParams(authority?: ResourceAuthorityOptions): URLSearchParams 
 }
 
 export const officeApi = {
-  createDocument: (agentId: string, data: OfficeDocumentCreateInput) =>
-    post<OfficeDocumentCreateResponse>(`/agents/${agentId}/office/documents`, data),
-
   getWorkspacePreview: (agentId: string, path: string, authority?: ResourceAuthorityOptions) => {
     const params = authorityParams(authority);
     params.set('path', path);

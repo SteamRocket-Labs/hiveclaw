@@ -33,7 +33,7 @@ class _SwitchableClient:
 async def test_agent_kernel_retries_once_with_fallback_model():
     from app.kernel.contracts import InvocationRequest
     from app.kernel.engine import AgentKernel, KernelDependencies, RuntimeConfig
-    from app.services.llm_utils import LLMError
+    from app.services.llm_client import LLMError
 
     primary_model = SimpleNamespace(
         provider="openai",
@@ -114,7 +114,7 @@ async def test_agent_kernel_retries_once_with_fallback_model():
 async def test_agent_kernel_uses_fallback_for_provider_overloaded_529():
     from app.kernel.contracts import InvocationRequest
     from app.kernel.engine import AgentKernel, KernelDependencies, RuntimeConfig
-    from app.services.llm_utils import LLMError
+    from app.services.llm_client import LLMError
 
     primary_model = SimpleNamespace(
         provider="openai",
@@ -211,7 +211,7 @@ async def test_agent_kernel_uses_fallback_for_provider_overloaded_529():
 async def test_agent_kernel_does_not_fallback_for_provider_account_errors(error, expected):
     from app.kernel.contracts import InvocationRequest
     from app.kernel.engine import AgentKernel, KernelDependencies, RuntimeConfig
-    from app.services.llm_utils import LLMError
+    from app.services.llm_client import LLMError
 
     primary_model = SimpleNamespace(
         provider="openai",

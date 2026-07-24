@@ -32,7 +32,7 @@ def test_agent_invocation_result_can_propagate_terminal_reason():
 def test_seal_orphan_tool_uses_appends_synthetic_tool_results():
     from app.kernel.contracts import TerminalReason
     from app.kernel.engine import _seal_orphan_tool_uses
-    from app.services.llm_utils import LLMMessage
+    from app.services.llm_client import LLMMessage
 
     messages = [
         LLMMessage(
@@ -53,7 +53,7 @@ def test_seal_orphan_tool_uses_appends_synthetic_tool_results():
 def test_seal_orphan_tool_uses_does_not_duplicate_existing_results():
     from app.kernel.contracts import TerminalReason
     from app.kernel.engine import _seal_orphan_tool_uses
-    from app.services.llm_utils import LLMMessage
+    from app.services.llm_client import LLMMessage
 
     messages = [
         LLMMessage(

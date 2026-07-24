@@ -73,7 +73,7 @@ from app.services.agent_tools import (
     get_combined_openai_tools,
 )
 from app.services.feature_flags import is_enabled as is_feature_enabled
-from app.services.llm_utils import LLMMessage, create_llm_client, get_max_tokens
+from app.services.llm_client import LLMMessage, create_llm_client, get_max_tokens
 from app.services.runtime_budget_llm import RuntimeBudgetedLLMClient
 from app.services.invocation_trace import persist_invocation_span
 from app.services.governance_capability_taxonomy import capability_descriptor_for_name, iter_runtime_l2_capabilities

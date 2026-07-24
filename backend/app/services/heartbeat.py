@@ -1607,16 +1607,3 @@ async def _workspace_full_sweep_loop():
     while True:
         await _workspace_full_sweep()
         await asyncio.sleep(3600)
-
-
-async def start_heartbeat():
-    """Start background loops: heartbeat (60s) + workspace dirty-sync + full-sweep + dirty Redis listener."""
-    from app.services.workspace_sync_dirty import start_redis_listener
-
-    logger.info("💓 Agent heartbeat service started (60s tick)")
-    await start_redis_listener()
-    asyncio.create_task(_workspace_sync_loop())
-    asyncio.create_task(_workspace_full_sweep_loop())
-    while True:
-        await _heartbeat_tick()
-        await asyncio.sleep(60)

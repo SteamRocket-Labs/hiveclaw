@@ -364,7 +364,7 @@ async def test_kernel_continues_streaming_output_after_output_cap() -> None:
 @pytest.mark.asyncio
 async def test_kernel_converts_stream_retry_tombstone_to_runtime_event() -> None:
     from app.kernel import AgentKernel, InvocationRequest, KernelDependencies, RuntimeConfig
-    from app.services.llm_utils import STREAM_RETRY_TOMBSTONE
+    from app.services.llm_client import STREAM_RETRY_TOMBSTONE
 
     class _TombstoneClient:
         async def stream(self, **kwargs):
@@ -719,7 +719,7 @@ async def test_kernel_binds_round_inputs_and_commits_exact_provider_request_rece
 async def test_kernel_never_retries_an_ambiguous_provider_send_on_a_fallback_model() -> None:
     from app.kernel import AgentKernel, InvocationRequest, KernelDependencies, RuntimeConfig
     from app.kernel.contracts import ProviderRequestNeedsReconciliation
-    from app.services.llm_utils import LLMError
+    from app.services.llm_client import LLMError
 
     primary_model = SimpleNamespace(provider="openai", model="gpt-4.1", api_key="key", base_url=None)
     fallback_model = SimpleNamespace(provider="anthropic", model="claude-sonnet", api_key="key", base_url=None)
@@ -790,7 +790,7 @@ async def test_kernel_never_retries_an_ambiguous_provider_send_on_a_fallback_mod
 async def test_provider_error_text_cannot_authorize_replay_without_typed_rejection() -> None:
     from app.kernel import AgentKernel, InvocationRequest, KernelDependencies, RuntimeConfig
     from app.kernel.contracts import ProviderRequestNeedsReconciliation
-    from app.services.llm_utils import LLMError
+    from app.services.llm_client import LLMError
 
     primary_model = SimpleNamespace(provider="openai", model="gpt-4.1", api_key="key", base_url=None)
     fallback_model = SimpleNamespace(provider="anthropic", model="claude-sonnet", api_key="key", base_url=None)
@@ -946,7 +946,7 @@ def test_expand_concatenated_tool_calls_passes_through_clean_payloads():
 
 def test_humanize_llm_error_reports_quota_instead_of_auth_for_403_quota():
     from app.kernel.engine import _humanize_llm_error
-    from app.services.llm_utils import LLMError
+    from app.services.llm_client import LLMError
 
     message = _humanize_llm_error(
         LLMError('HTTP 403: {"error":{"message":"Your token-plan quota has been exhausted."}}')
@@ -957,7 +957,7 @@ def test_humanize_llm_error_reports_quota_instead_of_auth_for_403_quota():
 
 def test_humanize_llm_error_reports_model_not_found_separately():
     from app.kernel.engine import _humanize_llm_error
-    from app.services.llm_utils import LLMError
+    from app.services.llm_client import LLMError
 
     message = _humanize_llm_error(LLMError('HTTP 404: {"error":{"message":"Model Not Exist"}}'))
 
@@ -966,7 +966,7 @@ def test_humanize_llm_error_reports_model_not_found_separately():
 
 def test_humanize_llm_error_reports_provider_bad_request_separately():
     from app.kernel.engine import _humanize_llm_error
-    from app.services.llm_utils import LLMError
+    from app.services.llm_client import LLMError
 
     message = _humanize_llm_error(LLMError('HTTP 400: {"error":{"message":"invalid model parameter"}}'))
 
@@ -3534,7 +3534,7 @@ async def test_runtime_invoker_delegates_to_agent_kernel(monkeypatch):
 async def test_agent_kernel_emits_ptl_full_compress_before_round_group_retry_event():
     from app.kernel.contracts import InvocationRequest
     from app.kernel.engine import AgentKernel, KernelDependencies, RuntimeConfig
-    from app.services.llm_utils import LLMError
+    from app.services.llm_client import LLMError
 
     runtime_events: list[dict] = []
     model = SimpleNamespace(
@@ -3626,7 +3626,7 @@ async def test_agent_kernel_emits_ptl_full_compress_before_round_group_retry_eve
 async def test_agent_kernel_emits_runtime_fallback_event_after_prompt_too_long():
     from app.kernel.contracts import InvocationRequest
     from app.kernel.engine import AgentKernel, KernelDependencies, RuntimeConfig
-    from app.services.llm_utils import LLMError
+    from app.services.llm_client import LLMError
 
     runtime_events: list[dict] = []
     primary_model = SimpleNamespace(
@@ -4884,7 +4884,7 @@ async def test_persist_memory_called_on_llm_error():
     """persist_memory must be called when LLM returns an error (after fallback exhausted)."""
     from app.kernel.contracts import InvocationRequest
     from app.kernel.engine import AgentKernel, KernelDependencies, RuntimeConfig
-    from app.services.llm_utils import LLMError
+    from app.services.llm_client import LLMError
 
     model = SimpleNamespace(
         provider="openai",

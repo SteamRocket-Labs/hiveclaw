@@ -2256,25 +2256,6 @@ def test_record_skill_runtime_usage_for_invocation_collects_web_chat_loaded_skil
 
 
 @pytest.mark.asyncio
-async def test_disconnect_does_not_cancel_registered_web_chat_run():
-    from app.services.web_chat_runtime import (
-        handle_web_chat_disconnect,
-        register_web_chat_run_for_test,
-        unregister_web_chat_run_for_test,
-    )
-
-    run_id = uuid4().hex
-    cancel_event = asyncio.Event()
-    register_web_chat_run_for_test(run_id, cancel_event=cancel_event)
-
-    try:
-        await handle_web_chat_disconnect(run_id)
-        assert cancel_event.is_set() is False
-    finally:
-        unregister_web_chat_run_for_test(run_id)
-
-
-@pytest.mark.asyncio
 async def test_cancel_web_chat_run_compatibility_facade_uses_canonical_control_input(monkeypatch):
     import app.services.web_chat_runtime as runtime
 

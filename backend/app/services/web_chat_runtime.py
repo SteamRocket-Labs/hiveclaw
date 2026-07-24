@@ -49,7 +49,7 @@ from app.services.chat_message_parts import (
 from app.services.chat_artifact_delivery import create_chat_artifacts_for_message, tool_session_write_paths
 from app.services.chat_transcript import append_session_event, lock_transcript_session
 from app.services.conversation_interaction_service import mark_latest_pending_clarification_answered
-from app.services.llm_utils import STREAM_RETRY_TOMBSTONE
+from app.services.llm_client import STREAM_RETRY_TOMBSTONE
 from app.services.knowledge_provenance import ontology_result_source_rows
 from app.services import plan_mode_core
 from app.services.plan_mode_file import provision_agent_plan_file_slot
@@ -1863,11 +1863,6 @@ def dispatch_web_chat_run(
     _TASKS[run_key] = task
     task.add_done_callback(lambda _task, run_id=run_key: _TASKS.pop(run_id, None))
     return True
-
-
-async def handle_web_chat_disconnect(_run_id: str | None = None) -> None:
-    """Disconnecting a subscriber must not cancel the underlying background run."""
-    return None
 
 
 async def broadcast_web_chat_event(

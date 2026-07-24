@@ -8,6 +8,8 @@
     "build": "tsc && vite build && node scripts/check-agent-detail-bundle.mjs",
     "preview": "vite preview",
     "test": "NODE_OPTIONS=--no-experimental-webstorage vitest run",
+    "i18n:inventory": "node scripts/i18n-audit.mjs --json",
+    "i18n:check": "node --test scripts/i18n-audit.node.mjs && node scripts/i18n-audit.mjs --check",
     "test:e2e": "env -u NO_COLOR playwright test",
     "test:e2e:journeys": "env -u NO_COLOR playwright test --config playwright.journeys.config.ts"
   },

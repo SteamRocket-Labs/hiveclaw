@@ -1,9 +1,16 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 
+import zh from '../i18n/zh.json';
+import { translateFromCatalog } from '../test/i18nMock';
+
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
-    t: (key: string, fallback?: string) => fallback ?? key,
+    t: (
+      key: string,
+      fallbackOrOptions?: string | Record<string, unknown>,
+      options?: Record<string, unknown>,
+    ) => translateFromCatalog(zh, key, fallbackOrOptions, options),
     i18n: { language: 'zh', changeLanguage: vi.fn() },
   }),
 }));

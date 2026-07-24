@@ -34,6 +34,9 @@ jobs:
       - name: Production dependency audit
         run: npm audit --omit=dev
 
+      - name: I18n inventory and catalog gate
+        run: npm run i18n:check
+
       - name: Frontend unit and contract tests
         run: npm test -- --run
 

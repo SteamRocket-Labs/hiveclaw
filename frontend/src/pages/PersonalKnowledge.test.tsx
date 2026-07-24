@@ -2,12 +2,18 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ApiError } from '../api/core';
+import zh from '../i18n/zh.json';
+import { translateFromCatalog } from '../test/i18nMock';
 
 const queryState = vi.hoisted(() => ({ errors: {} as Record<string, unknown> }));
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
-    t: (key: string, fallback?: string) => fallback ?? key,
+    t: (
+      key: string,
+      fallbackOrOptions?: string | Record<string, unknown>,
+      options?: Record<string, unknown>,
+    ) => translateFromCatalog(zh, key, fallbackOrOptions, options),
   }),
 }));
 
@@ -426,7 +432,7 @@ describe('PersonalKnowledge', () => {
     const html = renderToStaticMarkup(<PersonalKnowledge />);
 
     expect(html).toContain('data-personal-knowledge-state="forbidden"');
-    expect(html).toContain('This is not an empty knowledge base');
+    expect(html).toContain('这不是空知识库');
     expect(html).not.toContain('0 文档');
     expect(html).not.toContain('个人知识库为空');
   });

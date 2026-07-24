@@ -107,7 +107,7 @@ export function AIAssetDetailPanel({
               {revision.change_message && <p>{revision.change_message}</p>}
               {!revision.is_active && (
                 <button type="button" className="btn btn-secondary" disabled={busy} onClick={() => void onRollback(revision.version)}>
-                  {t('enterprise.extensions.aiAssetsRollbackVersion', `Rollback to v${revision.version}`)}
+                  {t('enterprise.extensions.aiAssetsRollbackVersion', { version: revision.version })}
                 </button>
               )}
             </article>
@@ -168,7 +168,7 @@ export default function WorkspaceAIAssetsSection({ selectedTenantId }: Props) {
     if (!detail) return;
     const confirmed = await requestAppConfirm({
       title: t('enterprise.extensions.aiAssetsRollbackTitle', 'Rollback AI asset'),
-      message: t('enterprise.extensions.aiAssetsRollbackConfirm', `Apply revision v${version} to the native asset and create a new revision?`),
+      message: t('enterprise.extensions.aiAssetsRollbackConfirm', { version }),
       confirmLabel: t('enterprise.extensions.aiAssetsRollback', 'Rollback'),
       danger: true,
     });

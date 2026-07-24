@@ -107,7 +107,9 @@
         "reversible": "可逆或只读",
         "retryable": "可重试",
         "notRetryable": "不可重试"
-      }
+      },
+      "inspectTechnicalDetails": "查看技术详情",
+      "operatorOnly": "技术详情仅在运营视图中可用。"
     },
     "inspectorTitle": "会话上下文",
     "events": "事件",
@@ -280,7 +282,14 @@
       "workerContinue": "继续",
       "workerContinueTitle": "打开 worker 会话发送后续消息",
       "workerContinueDisabled": "没有可继续的 worker 会话",
-      "resize": "拖拽调整右栏宽度"
+      "resize": "拖拽调整右栏宽度",
+      "agentTeam": "Agent 团队",
+      "collapseRuntime": "收起运行面板",
+      "documentAuthor": "作者：{{name}}",
+      "expandRuntime": "展开运行面板",
+      "noAdditionalDetails": "暂无更多详情",
+      "workerRetry": "使用新 Worker 重试",
+      "workerRetryTitle": "让主 Agent 检查失败，并在安全时创建新的单次 Worker"
     },
     "workflowRunWindow": {
       "title": "Workflow Run Window",
@@ -301,7 +310,11 @@
       "promote": "提交审批",
       "noActions": "当前没有可用的 Workflow 操作。",
       "actionQueued": "Workflow 操作已提交。",
-      "actionFailed": "Workflow 操作失败：{{message}}"
+      "actionFailed": "Workflow 操作失败：{{message}}",
+      "approveGate": "批准",
+      "noLeafDetails": "暂无更多详情",
+      "noStepDetails": "暂无更多详情",
+      "rejectGate": "拒绝"
     },
     "status": {
       "idle": "空闲",
@@ -313,7 +326,31 @@
     },
     "permission": "权限",
     "governance": "治理",
-    "activeProjection": "上下文投影"
+    "activeProjection": "上下文投影",
+    "failedGuidance": "请查看下方失败步骤并重试或检查详情。",
+    "rewind": {
+      "activeRunBlocked": "回退前请先停止当前轮次；仍可创建分支。"
+    },
+    "team": {
+      "close": "关闭团队",
+      "closeFailed": "无法关闭此团队。",
+      "closeWait": "关闭团队前等待正在运行的成员结束",
+      "closing": "正在关闭…",
+      "messageFailed": "无法向此成员发送工作。",
+      "messageLabel": "分配给团队成员的工作",
+      "messagePlaceholder": "发送后续工作…",
+      "resumeDisplay": "恢复 {{member}}",
+      "resumeFailed": "无法恢复此成员。",
+      "resuming": "正在恢复…",
+      "sendAction": "发送工作",
+      "sending": "正在发送…"
+    },
+    "teamMemberWindow": {
+      "breadcrumb": "主会话 > Agent：{{name}}",
+      "composerTarget": "输入目标",
+      "composerTargetValue": "Agent 团队成员"
+    },
+    "waitingGuidance": "请查看下方请求并选择下一步。"
   },
   "login": {
     "hero": {
@@ -394,7 +431,12 @@
     "member": "成员",
     "language": "语言",
     "plaza": "Agent圈",
-    "localAgents": "本地 Agent"
+    "localAgents": "本地 Agent",
+    "collapseAgentSessions": "收起会话",
+    "expandAgentSessions": "展开会话",
+    "logout": "退出登录",
+    "sessionImBadge": "IM",
+    "settings": "设置"
   },
   "employees": {
     "eyebrow": "Agent 控制面",
@@ -438,6 +480,17 @@
       "team": "Team",
       "local": "本地",
       "detail": "详情"
+    },
+    "hrRecovery": {
+      "description": "恢复原 HR 会话或直接恢复创建流程，无需模型重新表述。",
+      "eyebrow": "HR 恢复",
+      "operatorRequired": "重试前需要运营人员完成核查。",
+      "remove": "移除未完成员工",
+      "removeConfirm": "移除 {{name}} 并停止其未完成的创建流程？审计历史会保留。",
+      "removeTitle": "移除未完成员工",
+      "resume": "恢复 HR 会话",
+      "retry": "重试创建",
+      "title": "中断的创建任务"
     }
   },
   "agentCreate": {
@@ -546,7 +599,8 @@
       "title": "A2A / Team",
       "eyebrow": "委派与协作",
       "subtitle": "会话内 Team、Subagent 定义、Peer 关系和本地运行时 Agent 都可见，但不会混淆各自归属边界。"
-    }
+    },
+    "newAutomation": "新建自动化"
   },
   "approvalExecution": {
     "pending": "待审批",
@@ -748,7 +802,8 @@
     "workspaceUploadError": "上传 workspace 文件失败。",
     "workspaceUp": "上一级",
     "workspaceUpload": "上传",
-    "workspaceEmpty": "这个本地 Agent workspace 还没有文件。"
+    "workspaceEmpty": "这个本地 Agent workspace 还没有文件。",
+    "messageWaitingApproval": "等待 Owner 批准：{{approvalId}}"
   },
   "plaza": {
     "title": "Agent圈",
@@ -848,7 +903,8 @@
     "companyName": "公司名称",
     "create": "创建",
     "myCompany": "我的公司",
-    "logout": "退出登录"
+    "logout": "退出登录",
+    "switchTenant": "切换公司"
   },
   "dashboard": {
     "greeting": {
@@ -890,7 +946,31 @@
       "viewAllTasks": "查看全部",
       "noInProgress": "当前没有正在运行的工作。",
       "activityEyebrow": "最近动态",
-      "activity": "最近动态"
+      "activity": "最近动态",
+      "assignFailed": "无法启动这项工作。",
+      "assignRequired": "请选择一位员工并描述工作。",
+      "assignTo": "分配给",
+      "assignWork": "分配工作",
+      "assignWorkDesc": "选择一位数字员工并开始新会话。",
+      "digitalEmployee": "数字员工",
+      "executeNow": "立即执行",
+      "executionMode": "执行模式",
+      "knowledge": "知识库",
+      "knowledgeDesc": "搜索和管理你的个人知识库。",
+      "localAgents": "本地 Agent",
+      "localAgentsDesc": "连接本地运行时并继续工作。",
+      "newSession": "新会话",
+      "noRecentWork": "暂无会话。分配一项工作即可开始。",
+      "openSession": "打开会话",
+      "planFirst": "先规划",
+      "recentWork": "最近工作",
+      "recentWorkEyebrow": "会话",
+      "request": "工作要求",
+      "requestPlaceholder": "描述你希望这位员工交付的结果。",
+      "runAsGoal": "作为目标运行",
+      "sessions": "会话",
+      "starting": "正在启动…",
+      "viewAllEmployees": "查看全部"
     },
     "labels": {
       "task": "任务"
@@ -929,7 +1009,8 @@
     "createFirst": "创建你的第一个数字员工",
     "emptyTitle": "欢迎使用 HiveClaw",
     "emptyDesc": "数字员工可以搜索网络、撰写文档、发送消息、分析数据，并通过飞书、Slack 等渠道自主工作。",
-    "emptyHint": "告诉入职助手你的需求，它会为你创建合适的员工。"
+    "emptyHint": "告诉入职助手你的需求，它会为你创建合适的员工。",
+    "toolFailuresSampled": "最新有限样本"
   },
   "agent": {
     "status": {
@@ -1118,46 +1199,6 @@
         "reconcile": "无法记录核查决定。"
       }
     },
-    "extensions": {
-      "title": "能力",
-      "tabsLabel": "能力类型",
-      "tabs": {
-        "catalog": "目录",
-        "mcp": "MCP 与插件",
-        "skills": "技能",
-        "subagents": "子代理",
-        "factors": "自产候选"
-      },
-      "externalSnapshots": "已批准外部快照",
-      "noExternalSnapshots": "暂无已激活的外部快照",
-      "catalogLoadFailed": "插件目录加载失败",
-      "catalogActivated": "插件已激活",
-      "catalogActivateFailed": "插件激活失败",
-      "catalogDeactivated": "插件已停用",
-      "catalogDeactivateFailed": "插件停用失败",
-      "catalogTryActivated": "已在当前对话启用插件",
-      "catalogTryFailed": "在当前对话试用插件失败",
-      "catalogEmpty": "暂无可安装的已审批可选插件。",
-      "catalogActive": "已启用",
-      "catalogAvailable": "可用",
-      "catalogDeactivate": "停用",
-      "catalogTryInChat": "在对话中试用",
-      "catalogInstall": "安装",
-      "factorsLoadFailed": "能力因子加载失败",
-      "factorNameRequired": "候选名称不能为空",
-      "factorCaptured": "能力因子已捕获",
-      "factorCaptureFailed": "能力因子捕获失败",
-      "factorNamePlaceholder": "候选名称",
-      "factorSummaryPlaceholder": "为什么值得复用",
-      "captureFactor": "捕获",
-      "selfGrownCandidates": "自产候选",
-      "noCapabilityFactors": "还没有捕获自产能力候选。",
-      "factorKind": {
-        "skill_candidate": "技能候选",
-        "subagent_candidate": "子代理候选",
-        "external_usage_factor": "外部使用反馈"
-      }
-    },
     "detail": {
       "loading": "加载中...",
       "notFound": "找不到此数字员工",
@@ -1178,7 +1219,9 @@
       "peer": "同事",
       "assistant": "助理",
       "direct_leader": "直属领导",
-      "other": "其他"
+      "other": "其他",
+      "accessDenied": "你无权访问这位数字员工。",
+      "loadFailed": "暂时无法加载这位数字员工。"
     },
     "relationships": {
       "owner": "归属人",
@@ -1442,7 +1485,8 @@
         "skipped": "已确认,但执行未能启动",
         "failed": "已确认,但执行启动失败",
         "preparing": "已确认,准备启动",
-        "runtimeTask": "运行任务:{{id}}"
+        "runtimeTask": "运行任务:{{id}}",
+        "retry": "重试执行"
       },
       "queueTitle": "计划队列",
       "queueDesc": "在自主执行开始前等待你确认的计划。",
@@ -1470,7 +1514,9 @@
         "rejected": "该计划已被拒绝。",
         "superseded": "该计划已被新版本替代。",
         "expired": "该计划在确认前已过期。"
-      }
+      },
+      "approvedActions": "已批准动作",
+      "singleUse": "单次使用"
     },
     "clarification": {
       "badge": "需要你的确认",
@@ -1500,7 +1546,9 @@
       "soulDesc": "核心身份、人格和行为边界 — 定义这位员工是谁。",
       "memoryDesc": "从对话中沉淀的长期知识 — 用户反馈、策略、已阻止的方法和项目知识。",
       "evolutionTitle": "进化",
-      "evolutionDesc": "演进历史、绩效记分卡和已阻止的方法。"
+      "evolutionDesc": "演进历史、绩效记分卡和已阻止的方法。",
+      "heartbeatTitle": "心跳",
+      "soulGovernedNotice": "soul.md 由 Dream/Soul 晋升流程治理。"
     },
     "knowledge": {
       "distillerState": {
@@ -1552,7 +1600,17 @@
         "heartbeat": "心跳消化",
         "dream": "Dream 固化",
         "skill_distiller": "技能蒸馏"
-      }
+      },
+      "capabilitiesCard": "关联能力",
+      "linkedPages": "关联页面",
+      "noEvents": "尚无记忆事件记录。",
+      "noPages": "还没有知识页——证据积累后由整理器生成。",
+      "pageNotCreated": "页面尚未创建",
+      "pendingSoul": "待审批的 soul 候选",
+      "skillCandidates": "Skill 候选",
+      "skillsLinked": "Skills",
+      "soulSections": "Soul 分区",
+      "workflowCandidates": "Workflow 候选"
     },
     "evolution": {
       "title": "进化",
@@ -1631,7 +1689,9 @@
       "approveRefused": "门禁拒绝",
       "rejectDone": "已驳回。",
       "provisionalHeading": "技能试用中",
-      "provisionalHint": "已生效并受监控:真实使用积累后自动转正,负信号超阈自动回滚。"
+      "provisionalHint": "已生效并受监控:真实使用积累后自动转正,负信号超阈自动回滚。",
+      "trialNegative": "负向",
+      "trialPositive": "正向"
     },
     "skills": {
       "title": "技能定义",
@@ -1661,7 +1721,10 @@
       "noMcpCapabilities": "暂无 MCP 支撑能力。",
       "plugins": "插件",
       "noPlugins": "暂无已分配插件。",
-      "toolsUnit": "工具"
+      "toolsUnit": "工具",
+      "governedNotice": "已激活的 Skill 包由 Skill 晋升治理。请通过导入与 Evolution 候选变更能力，不要直接编辑已激活的 Skill 文件。",
+      "importDesc": "选择预置 Skill 导入此员工；全部 Skill 文件都会复制到员工的 skills 目录。",
+      "importPreset": "从预置导入"
     },
     "toolMgmt": {
       "title": "可用操作",
@@ -1700,7 +1763,9 @@
       "delete": "删除",
       "save": "保存",
       "edit": "编辑",
-      "cancel": "取消"
+      "cancel": "取消",
+      "showingFiles": "正在显示 {{visible}} / {{total}} 个文件",
+      "showMoreFiles": "显示更多"
     },
     "chat": {
       "mySessions": "我的对话",
@@ -1757,7 +1822,10 @@
         "schedulePrefix": "创建一个定时任务：",
         "planPlaceholder": "描述需要 agent 先规划的事情...",
         "goalPlaceholder": "定义这个会话的目标...",
-        "schedulePlaceholder": "描述定时计划、触发条件和任务..."
+        "schedulePlaceholder": "描述定时计划、触发条件和任务...",
+        "goalModeOnDesc": "创建持久目标并启动第一轮",
+        "localModelTitle": "本地 Agent 运行时",
+        "localPermissionDesc": "访问由已连接本地 Agent 的策略治理。"
       },
       "permission": {
         "allowOnce": "本次允许",
@@ -1768,7 +1836,8 @@
         "updateFailed": "更新会话权限模式失败",
         "fullAccessTitle": "为当前会话使用完全访问？",
         "fullAccessMessage": "完全访问会跳过常规会话审批提示；企业访问控制、安全规则和危险操作确认仍始终生效。",
-        "fullAccessConfirm": "使用完全访问"
+        "fullAccessConfirm": "使用完全访问",
+        "resolveFailed": "处理权限请求失败"
       },
       "actions": {
         "like": "喜欢",
@@ -1790,7 +1859,8 @@
         "composeTitle": "创建分支",
         "createBranch": "创建分支",
         "branches": "分支",
-        "failed": "创建分支失败"
+        "failed": "创建分支失败",
+        "mainSession": "主会话"
       },
       "disclosure": {
         "processing": "处理中",
@@ -1816,7 +1886,9 @@
           "runCommand": "运行命令",
           "editDocument": "编辑文档",
           "toolCall": "调用工具"
-        }
+        },
+        "needsAttention": "需要处理",
+        "stopped": "已停止"
       },
       "artifacts": {
         "open": "打开",
@@ -1829,7 +1901,9 @@
         "legacyCurrentFilePreview": "正在预览当前 workspace 文件；该交付物没有保存快照",
         "workspaceChanged": "workspace 文件已在交付后变化",
         "missingNoSnapshot": "这个文件已不在 workspace 中。",
-        "emptyPending": "文件当前还是空的。会话权限通过或写入完成后，内容会显示在这里。"
+        "emptyPending": "文件当前还是空的。会话权限通过或写入完成后，内容会显示在这里。",
+        "downloadFailed": "下载失败：{{message}}",
+        "openNamed": "打开 {{name}}"
       },
       "toolResults": {
         "blueprintPreviewTitle": "Agent 蓝图预览",
@@ -1861,7 +1935,16 @@
         "budgetTokens": "预算 token",
         "confirmationRequired": "需要确认",
         "recommended": "推荐",
-        "rawOutput": "原始输出"
+        "rawOutput": "原始输出",
+        "cancelProvisioning": "取消创建",
+        "candidateFallback": "候选 {{index}}",
+        "dynamicWorkflowNotStarted": "请选择候选以生成可审查预览；当前尚未运行任何内容。",
+        "provisioned": "已创建",
+        "provisioning": "正在创建…",
+        "provisioningProgress": "创建进度",
+        "retryingProvisioning": "正在重试…",
+        "retryProvisioning": "重试创建",
+        "selectAndPreview": "选择并预览"
       },
       "workLedger": {
         "title": "Agent 工作账本",
@@ -1936,6 +2019,37 @@
       "loadOlderMessages": "加载更早的消息",
       "gitline": {
         "rewoundTail": "已回退 — 当前头在此点之前"
+      },
+      "filterUsers": "筛选用户或来源…",
+      "goalStartFailed": "目标已创建，但第一轮未能启动。",
+      "operatorView": "运营视图",
+      "operatorViewDesc": "对其他用户会话的只读审计访问。",
+      "session": "会话",
+      "sessionBackfillIncomplete": "最新活动已可见，较早的会话证据仍在恢复。",
+      "sessionCreateFailed": "创建会话失败",
+      "transport": {
+        "authFailed": "实时更新授权失败。请重新登录以恢复此会话。",
+        "degraded": "实时更新暂不可用。任务仍在后台运行，本页面正从持久历史恢复。",
+        "initializing": "正在加载持久会话历史…",
+        "offline": "当前网络离线。任务仍在后台运行，网络恢复后持久历史会自动追上。",
+        "reconnecting": "正在重新连接实时更新…",
+        "retryNow": "立即重试"
+      },
+      "workflowPreview": {
+        "confirmAndRun": "确认并运行",
+        "confirmationReasons": "需要确认的原因",
+        "expired": "已过期",
+        "failed": "可以重试",
+        "previewFailed": "无法创建工作流预览，可以安全重试。",
+        "ready": "已就绪",
+        "review": "运行前请先审查工作流。",
+        "run": "运行工作流",
+        "started": "已启动",
+        "startFailed": "工作流未能启动，可以安全重试。",
+        "starting": "正在启动",
+        "title": "工作流已可运行",
+        "tokenBudget": "Token 预算 {{count}}",
+        "workUnits": "计划 {{count}} 个工作单元"
       }
     },
     "activityLog": {
@@ -2179,7 +2293,10 @@
           "statusError": "WebSocket 连接失败，请重新扫码",
           "statusDisconnected": "应用已配置，但 WebSocket 未连接"
         },
-        "syncHint": "只有用户本人完成渠道扫码连接后，该 IM 身份才会被信任。组织架构同步不会分配 IM 身份，管理员只能解除已验证的绑定。"
+        "syncHint": "只有用户本人完成渠道扫码连接后，该 IM 身份才会被信任。组织架构同步不会分配 IM 身份，管理员只能解除已验证的绑定。",
+        "mode": "连接模式",
+        "modeWebhook": "Webhook",
+        "modeWs": "WebSocket（推荐）"
       },
       "localBridge": {
         "title": "本地 Agent 通道",
@@ -2321,13 +2438,76 @@
         "success": "上传完成",
         "failed": "上传失败，请重试",
         "uploading": "上传中..."
-      }
+      },
+      "actionPolicy": {
+        "description": "选择这位员工可直接执行、需要你批准以及始终禁止的动作。",
+        "invalid": "已保存策略需要修复；管理员保存有效策略前，效果型动作会保持阻断。",
+        "loadError": "无法加载动作边界。",
+        "loading": "正在加载动作边界…",
+        "restore": "恢复",
+        "restoreConfirm": "将上一版动作边界恢复为新的当前策略？",
+        "restoreError": "恢复上一版策略失败，请刷新后重试。",
+        "restorePrevious": "恢复上一版策略",
+        "restoring": "正在恢复…",
+        "save": "保存动作策略",
+        "saved": "策略已保存",
+        "saveError": "保存动作策略失败，请刷新后重试。",
+        "saving": "正在保存…",
+        "title": "动作边界"
+      },
+      "executionMode": {
+        "coordinator": "协调者",
+        "coordinatorStrict": "严格协调者",
+        "description": "协调者引导不会移除直接工具；严格协调者是明确的仅调度边界。",
+        "label": "执行模式",
+        "standard": "标准",
+        "title": "执行模式"
+      },
+      "modelDisabledWarning": "此模型已被管理员禁用，员工将自动使用回退模型。"
     },
     "tools": {
       "platformTools": "内置操作",
       "agentInstalled": "员工自行添加的操作"
     },
     "extensions": {
+      "title": "能力",
+      "tabsLabel": "能力类型",
+      "tabs": {
+        "catalog": "目录",
+        "mcp": "MCP 与插件",
+        "skills": "技能",
+        "subagents": "子代理",
+        "factors": "自产候选"
+      },
+      "externalSnapshots": "已批准外部快照",
+      "noExternalSnapshots": "暂无已激活的外部快照",
+      "catalogLoadFailed": "插件目录加载失败",
+      "catalogActivated": "插件已激活",
+      "catalogActivateFailed": "插件激活失败",
+      "catalogDeactivated": "插件已停用",
+      "catalogDeactivateFailed": "插件停用失败",
+      "catalogTryActivated": "已在当前对话启用插件",
+      "catalogTryFailed": "在当前对话试用插件失败",
+      "catalogEmpty": "暂无可安装的已审批可选插件。",
+      "catalogActive": "已启用",
+      "catalogAvailable": "可用",
+      "catalogDeactivate": "停用",
+      "catalogTryInChat": "在对话中试用",
+      "catalogInstall": "安装",
+      "factorsLoadFailed": "能力因子加载失败",
+      "factorNameRequired": "候选名称不能为空",
+      "factorCaptured": "能力因子已捕获",
+      "factorCaptureFailed": "能力因子捕获失败",
+      "factorNamePlaceholder": "候选名称",
+      "factorSummaryPlaceholder": "为什么值得复用",
+      "captureFactor": "捕获",
+      "selfGrownCandidates": "自产候选",
+      "noCapabilityFactors": "还没有捕获自产能力候选。",
+      "factorKind": {
+        "skill_candidate": "技能候选",
+        "subagent_candidate": "子代理候选",
+        "external_usage_factor": "外部使用反馈"
+      },
       "skills": "技能",
       "plugins": "插件",
       "mcpServers": "MCP 服务器",
@@ -2367,7 +2547,9 @@
         "configured": "已配置",
         "expired": "已过期",
         "error": "错误"
-      }
+      },
+      "metadataApproved": "元数据已批准",
+      "metadataReviewRequired": "需要审查元数据"
     },
     "toolCategories": {
       "file": "文件",
@@ -2430,7 +2612,15 @@
       "rejectButton": "拒绝",
       "autoApprove": "自动吸收改进",
       "autoApproveHint": "开启后，定义改进提案将自动应用——校验与审计路径与人工批准完全相同，仅跳过手动点击。"
-    }
+    },
+    "approvals": {
+      "approve": "批准",
+      "history": "审批历史",
+      "noRecords": "暂无审批记录。",
+      "pendingCount": "{{count}} 项待审批",
+      "reject": "拒绝"
+    },
+    "details": "详情"
   },
   "wizard": {
     "steps": {
@@ -2569,7 +2759,8 @@
     "send": "发送",
     "deleteSession": "删除对话",
     "deleteConfirm": "删除这段对话和所有消息？此操作无法撤销。",
-    "deleteConfirmWithTitle": "删除「{{title}}」和其中所有消息？此操作无法撤销。"
+    "deleteConfirmWithTitle": "删除「{{title}}」和其中所有消息？此操作无法撤销。",
+    "stop": "停止"
   },
   "messages": {
     "title": "通知中心",
@@ -2625,7 +2816,13 @@
     "summaryCacheMiss": "非缓存 Token",
     "approveContinue": "允许继续",
     "stopRun": "暂停",
-    "emptyRuns": "还没有运行保护记录。"
+    "emptyRuns": "还没有运行保护记录。",
+    "confirmDelivered": "确认已送达",
+    "deliveryDecisionRecorded": "面向用户的状态已记录；外部送达仍需运营决策。",
+    "deliveryIssues": "送达需要审查",
+    "deliveryIssuesDesc": "运行决策安全且已记录；请确认外部消息或明确重试送达。",
+    "rejectContinue": "拒绝",
+    "retryDelivery": "重试送达"
   },
   "enterprise": {
     "title": "公司后台",
@@ -2661,7 +2858,9 @@
       "minPollInterval": "最小检查间隔（分钟）",
       "minPollIntervalDesc": "全公司下限 — 员工检查外部来源的最短间隔",
       "maxWebhookRate": "最大接收事件数（/分钟）",
-      "maxWebhookRateDesc": "全公司上限 — 每位员工每分钟接收的最大事件数"
+      "maxWebhookRateDesc": "全公司上限 — 每位员工每分钟接收的最大事件数",
+      "subtitle": "新员工的默认 Token 限额；管理员可在用户管理中按用户覆盖。",
+      "title": "员工 Token 限额"
     },
     "tabs": {
       "dashboard": "工作台",
@@ -2791,7 +2990,9 @@
       "components": "组件",
       "reject": "拒绝",
       "revoke": "撤销",
-      "approve": "通过"
+      "approve": "通过",
+      "aiAssetsRollbackConfirm": "将修订版 v{{version}} 应用到原生资产并创建新修订版？",
+      "aiAssetsRollbackVersion": "回滚到 v{{version}}"
     },
     "memory": {
       "title": "记忆设置",
@@ -2885,7 +3086,15 @@
       "testing": "测试中...",
       "testSuccess": "连接正常 ({{latency}}ms)",
       "testFailed": "连接失败: {{error}}\n\n响应时间: {{latency}}ms",
-      "testError": "无法连接: {{message}}"
+      "testError": "无法连接: {{message}}",
+      "clickToDisable": "点击禁用",
+      "clickToEnable": "点击启用",
+      "default": "默认",
+      "deleteModelTitle": "删除模型",
+      "setDefault": "设为默认",
+      "temperature": "Temperature",
+      "temperatureDesc": "留空则使用提供商默认值；o1/o3 推理模型通常要求 1.0。",
+      "temperaturePlaceholder": "例如 0.7 或 1.0（留空使用默认值）"
     },
     "tools": {
       "title": "工具与扩展",
@@ -2994,7 +3203,21 @@
       "githubUrlPlaceholder": "https://github.com/owner/repo/tree/main/skills/my-skill",
       "preview": "预览",
       "loading": "加载中...",
-      "edit": "编辑"
+      "edit": "编辑",
+      "approveFingerprint": "批准指纹",
+      "canonicalDescription": "运行时权威描述",
+      "deleteConnector": "删除连接器",
+      "import": "导入",
+      "importFailed": "导入失败",
+      "importing": "正在导入…",
+      "mcpMetadataAdminOnly": "仅管理员可见的证据",
+      "mcpMetadataReview": "元数据审查",
+      "mcpRuntimeApproved": "运行时已批准",
+      "mcpRuntimeBlocked": "运行时已阻断",
+      "noMcpMetadata": "未找到 MCP 工具元数据。",
+      "rawRemoteEvidence": "原始远端证据",
+      "reviewMcpMetadata": "审查元数据",
+      "toolsEnabled": "已启用"
     },
     "org": {
       "feishuSync": "飞书通讯录同步",
@@ -3008,7 +3231,8 @@
       "searchMembers": "搜索团队成员...",
       "member": "成员",
       "admin": "管理员",
-      "noMembers": "暂无成员"
+      "noMembers": "暂无成员",
+      "feishuSyncDesc": "从飞书/Lark 同步部门与成员数据。"
     },
     "config": {
       "title": "平台配置",
@@ -3074,7 +3298,16 @@
       "createTitle": "新建公司库定义",
       "editTitle": "编辑公司库定义",
       "deleteConfirm": "删除公司库定义 \"{{name}}\"？已被 agent 级副本遮蔽的员工不受影响。"
-    }
+    },
+    "broadcast": {
+      "bodyPlaceholder": "可选详情…",
+      "description": "向此公司的全部用户与员工发送通知。",
+      "send": "发送广播",
+      "sent": "已发送给 {{users}} 位用户和 {{agents}} 位员工",
+      "title": "广播通知",
+      "titlePlaceholder": "通知标题"
+    },
+    "deleteCompanyConfirm": "确定删除此公司及其全部数据吗？此操作无法撤销。"
   },
   "notifications": {
     "title": "通知",
@@ -3201,7 +3434,8 @@
       "resetDefault": "重置为默认",
       "resetConfirm": "重置入职助手为默认模板？当前自定义将丢失。",
       "saveFailed": "保存失败：",
-      "noAgent": "入职助手不可用。请先在 AI 模型中配置至少一个模型。"
+      "noAgent": "入职助手不可用。请先在 AI 模型中配置至少一个模型。",
+      "soulGovernedNotice": "soul.md 由 Dream/Soul 晋升流程治理。"
     },
     "digitalEmployees": {
       "title": "数字员工管理",
@@ -3272,7 +3506,10 @@
       "cardkitLastError": "最近一次 CardKit 探测错误",
       "docsReady": "文档 / Wiki / 表格",
       "baseReady": "数据库 / 任务",
-      "NotVerified": "未验证"
+      "NotVerified": "未验证",
+      "allReady": "全部飞书办公能力均可用。",
+      "docsOnly": "文档、知识库和表格可用；当前平台未启用多维表格与任务。",
+      "notAvailable": "当前平台无法使用飞书办公能力。"
     }
   },
   "common": {
@@ -3312,7 +3549,16 @@
       "email": "邮箱",
       "wechatPersonal": "个人微信",
       "localBridge": "本地 Bridge"
-    }
+    },
+    "cancelling": "正在取消…",
+    "disabled": "关闭",
+    "enabled": "开启",
+    "minutes": "分钟",
+    "refresh": "刷新",
+    "remove": "移除",
+    "required": "必填",
+    "saved": "已保存",
+    "saveFailed": "保存失败"
   },
   "admin": {
     "title": "公司管理",
@@ -3356,6 +3602,22 @@
       "resolve": "已处理",
       "archive": "归档",
       "retry": "重试"
+    },
+    "action": "操作",
+    "all": "全部",
+    "disableCompanyTitle": "停用公司",
+    "filterStatus": "按状态筛选",
+    "noFilterResults": "没有公司符合当前筛选条件。",
+    "orgAdmin": "管理员邮箱",
+    "platformSettingsDesc": "管理平台级设置与公司租户。",
+    "publicUrl": {
+      "desc": "用于 Webhook 回调（Slack、飞书、Discord 等）及发布页面链接的外部 URL。请包含协议，例如 https://example.com。",
+      "title": "公共 URL"
+    },
+    "tab": {
+      "companies": "公司",
+      "dashboard": "仪表盘",
+      "platform": "平台"
     }
   },
   "companySetup": {
@@ -3581,7 +3843,17 @@
     "profileEmpty": "后端尚未产出 profile plane。",
     "createGrant": "创建授权",
     "revoke": "撤销",
-    "noGrants": "还没有额外授权。"
+    "noGrants": "还没有额外授权。",
+    "approveProposal": "批准并写入",
+    "grantExpiresAt": "到期时间",
+    "grantPurpose": "授权用途",
+    "noRevisions": "尚无可回滚版本。",
+    "rejectProposal": "拒绝",
+    "revisionHistory": "版本历史",
+    "revokedOrExpired": "已撤销/过期",
+    "rollbackVersion": "回滚到此版本",
+    "sensitivityCeiling": "敏感级别上限",
+    "version": "版本"
   },
   "workflows": {
     "intro": "工作流由这位数字员工在工作中编排生成并自动归档。运行发起人可冻结并提交有效证据，由另一位管理员审批后发布为可复用模板。",
@@ -3655,6 +3927,15 @@
     "cancel": "取消运行",
     "fork": "派生微调",
     "deprecate": "弃用",
-    "revoke": "吊销"
+    "revoke": "吊销",
+    "explicitConfirmationRequired": "请查看下方原因，再确认此精确预览。",
+    "previewRequired": "运行前请先预览此工作流。"
+  },
+  "sessionGoal": {
+    "pause": "暂停",
+    "resume": "继续",
+    "stop": "停止",
+    "title": "目标",
+    "transitionFailed": "无法更新此目标。"
   }
 }

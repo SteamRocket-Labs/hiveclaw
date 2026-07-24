@@ -44,26 +44,25 @@ export function AuthShell({ children, languageLabel, onToggleLanguage }: AuthShe
 
                 <div className="login-brand-copy">
                     <h1>
-                        {t('auth.brandTitleLine1', '让每个人都')}
+                        {t('auth.brandTitleLine1')}
                         <br />
-                        {t('auth.brandTitleLine2Prefix', '拥有一支')}
-                        <span>{t('auth.brandTitleHighlight', '数字员工')}</span>
-                        {t('auth.brandTitleLine2Suffix', '团队')}
+                        {t('auth.brandTitleLine2Prefix')}
+                        <span>{t('auth.brandTitleHighlight')}</span>
+                        {t('auth.brandTitleLine2Suffix')}
                     </h1>
                     <p>
                         {t(
                             'auth.brandDescription',
-                            '创建、配置、交办任务。Hive 的数字员工会先给出计划、经你确认后执行，并在需要时彼此协作。',
                         )}
                     </p>
                     <div className="login-brand-chips" aria-label={t('auth.brandPillGroup', 'Platform principles')}>
-                        <span>{t('auth.brandPillPlan', '先计划后执行')}</span>
-                        <span>{t('auth.brandPillA2A', 'A2A 协作')}</span>
-                        <span>{t('auth.brandPillGovernance', '企业级治理')}</span>
+                        <span>{t('auth.brandPillPlan')}</span>
+                        <span>{t('auth.brandPillA2A')}</span>
+                        <span>{t('auth.brandPillGovernance')}</span>
                     </div>
                 </div>
 
-                <div className="login-brand-footer">{t('auth.brandFooter', '2026 Hive · 企业 AI 数字员工平台')}</div>
+                <div className="login-brand-footer">{t('auth.brandFooter')}</div>
             </aside>
 
             <main className="login-auth-surface">

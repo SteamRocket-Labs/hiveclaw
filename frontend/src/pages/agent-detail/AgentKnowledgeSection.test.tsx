@@ -3,6 +3,8 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 
 import { ApiError } from '../../api/core';
+import zh from '../../i18n/zh.json';
+import { translateFromCatalog } from '../../test/i18nMock';
 
 // 记忆 tab IA tests (two-plane world, memory spec v1.2):
 // - overview renders per-plane counts + failure-mode lifecycle + pipeline health
@@ -12,8 +14,12 @@ import { ApiError } from '../../api/core';
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
-    t: (key: string, fallback?: string) => fallback ?? key.split('.').pop() ?? key,
-    i18n: { language: 'en' },
+    t: (
+      key: string,
+      fallbackOrOptions?: string | Record<string, unknown>,
+      options?: Record<string, unknown>,
+    ) => translateFromCatalog(zh, key, fallbackOrOptions, options),
+    i18n: { language: 'zh' },
   }),
 }));
 
@@ -139,7 +145,7 @@ describe('AgentKnowledgeSection', () => {
     expect(html).toContain('agent-knowledge-distiller-stale');
     expect(html).toContain('Queued');
     expect(html).toContain('agent-knowledge-distiller-queued');
-    expect(html).toContain('Coverage 0/4');
+    expect(html).toContain('覆盖度 0/4');
     // Default view is Overview, not a file browser.
     expect(html).not.toContain('raw markdown browser');
   });
@@ -148,7 +154,7 @@ describe('AgentKnowledgeSection', () => {
     const html = renderToStaticMarkup(
       <AgentKnowledgeSection agentId="agent-1" canEdit onNavigateTab={() => {}} />,
     );
-    for (const view of ['overview', 'self', 'profiles', 'personal', 'knowledge', 'milestones', 'timeline', 'raw']) {
+    for (const view of ['overview', '自我认知', '人际与领域', '个人知识库', '知识网络', '里程碑', 'timeline', 'raw']) {
       expect(html).toContain(view);
     }
     // the dead subview BUTTONS are gone (copy like 'Skill candidates' may remain)
@@ -234,7 +240,7 @@ describe('AgentKnowledgeSection', () => {
     );
 
     expect(html).toContain('Personal KB');
-    expect(html).toContain('Read-only owner-scope view');
+    expect(html).toContain('Owner 级只读视图');
     expect(html).toContain('Taste notes');
     expect(html).toContain('Use source refs and ACL');
     expect(html).toContain('kb://person/user-1/documents/doc-1#segment=seg-1');
@@ -260,7 +266,7 @@ describe('AgentKnowledgeSection', () => {
     );
 
     expect(html).toContain('data-personal-knowledge-state="forbidden"');
-    expect(html).toContain('This is not an empty knowledge base');
-    expect(html).not.toContain('Personal KB is empty for this owner scope.');
+    expect(html).toContain('这不是空知识库');
+    expect(html).not.toContain('当前 owner scope 的个人知识库为空。');
   });
 });

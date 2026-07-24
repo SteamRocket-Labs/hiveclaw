@@ -107,7 +107,9 @@
         "reversible": "reversible or read-only",
         "retryable": "retryable",
         "notRetryable": "not retryable"
-      }
+      },
+      "inspectTechnicalDetails": "Inspect technical details",
+      "operatorOnly": "Technical details are available only in Operator View."
     },
     "inspectorTitle": "Session context",
     "events": "events",
@@ -280,7 +282,14 @@
       "workerContinue": "Continue",
       "workerContinueTitle": "Open worker session to send a follow-up",
       "workerContinueDisabled": "No worker session is available",
-      "resize": "Resize runtime panel"
+      "resize": "Resize runtime panel",
+      "agentTeam": "Agent Team",
+      "collapseRuntime": "Collapse runtime panel",
+      "documentAuthor": "By {{name}}",
+      "expandRuntime": "Expand runtime panel",
+      "noAdditionalDetails": "No additional details",
+      "workerRetry": "Retry with new worker",
+      "workerRetryTitle": "Ask the main Agent to inspect the failure and create a new one-shot worker if safe"
     },
     "workflowRunWindow": {
       "title": "Workflow Run Window",
@@ -301,7 +310,11 @@
       "promote": "Submit for approval",
       "noActions": "No workflow actions available.",
       "actionQueued": "Workflow action queued.",
-      "actionFailed": "Workflow action failed: {{message}}"
+      "actionFailed": "Workflow action failed: {{message}}",
+      "approveGate": "Approve",
+      "noLeafDetails": "No additional details",
+      "noStepDetails": "No additional details",
+      "rejectGate": "Reject"
     },
     "status": {
       "idle": "idle",
@@ -313,7 +326,31 @@
     },
     "permission": "permission",
     "governance": "governance",
-    "activeProjection": "projection"
+    "activeProjection": "projection",
+    "failedGuidance": "Review the failed step below to retry or inspect details.",
+    "rewind": {
+      "activeRunBlocked": "Stop the current turn before rewinding. Branch remains available."
+    },
+    "team": {
+      "close": "Close team",
+      "closeFailed": "Could not close this Team.",
+      "closeWait": "Wait for running members before closing the Team",
+      "closing": "Closing…",
+      "messageFailed": "Could not send work to this member.",
+      "messageLabel": "Work for team member",
+      "messagePlaceholder": "Send follow-up work…",
+      "resumeDisplay": "Resume {{member}}",
+      "resumeFailed": "Could not resume this member.",
+      "resuming": "Resuming…",
+      "sendAction": "Send work",
+      "sending": "Sending…"
+    },
+    "teamMemberWindow": {
+      "breadcrumb": "Main > Agent: {{name}}",
+      "composerTarget": "Composer target",
+      "composerTargetValue": "Agent Team member"
+    },
+    "waitingGuidance": "Review the request below and choose the next action."
   },
   "login": {
     "hero": {
@@ -419,7 +456,12 @@
     "member": "Member",
     "language": "Language",
     "plaza": "Agent Circle",
-    "localAgents": "Local Agent"
+    "localAgents": "Local Agent",
+    "collapseAgentSessions": "Collapse sessions",
+    "expandAgentSessions": "Expand sessions",
+    "logout": "Log out",
+    "sessionImBadge": "IM",
+    "settings": "Settings"
   },
   "employees": {
     "eyebrow": "Agent control surface",
@@ -463,6 +505,17 @@
       "team": "Team",
       "local": "Local",
       "detail": "Detail"
+    },
+    "hrRecovery": {
+      "description": "Resume the original HR session or recover provisioning directly—no model restatement required.",
+      "eyebrow": "HR recovery",
+      "operatorRequired": "Operator reconciliation is required before retry.",
+      "remove": "Remove unfinished employee",
+      "removeConfirm": "Remove {{name}} and stop its unfinished provisioning? Audit history is preserved.",
+      "removeTitle": "Remove unfinished employee",
+      "resume": "Resume HR session",
+      "retry": "Retry provisioning",
+      "title": "Interrupted creations"
     }
   },
   "agentCreate": {
@@ -571,7 +624,8 @@
       "title": "A2A / Team",
       "eyebrow": "Delegation and collaboration",
       "subtitle": "Session-local team work, subagent definitions, peer relationships, and local-runtime agents stay visible without mixing their ownership boundaries."
-    }
+    },
+    "newAutomation": "New automation"
   },
   "approvalExecution": {
     "pending": "Pending",
@@ -773,7 +827,8 @@
     "workspaceUploadError": "Failed to upload workspace file.",
     "workspaceUp": "Up",
     "workspaceUpload": "Upload",
-    "workspaceEmpty": "No files in this local agent workspace yet."
+    "workspaceEmpty": "No files in this local agent workspace yet.",
+    "messageWaitingApproval": "Waiting for owner approval: {{approvalId}}"
   },
   "auth": {
     "login": "Sign In",
@@ -848,7 +903,8 @@
     "companyName": "Company Name",
     "create": "Create",
     "myCompany": "My Company",
-    "logout": "Sign Out"
+    "logout": "Sign Out",
+    "switchTenant": "Switch company"
   },
   "dashboard": {
     "greeting": {
@@ -890,7 +946,31 @@
       "viewAllTasks": "View all",
       "noInProgress": "No active work is running.",
       "activityEyebrow": "Activity",
-      "activity": "Activity"
+      "activity": "Activity",
+      "assignFailed": "Could not start this work.",
+      "assignRequired": "Choose an employee and describe the work.",
+      "assignTo": "Assign to",
+      "assignWork": "Assign work",
+      "assignWorkDesc": "Choose a digital employee and start a new session.",
+      "digitalEmployee": "Digital employee",
+      "executeNow": "Execute now",
+      "executionMode": "Execution mode",
+      "knowledge": "Knowledge",
+      "knowledgeDesc": "Search and manage your personal knowledge base.",
+      "localAgents": "Local Agents",
+      "localAgentsDesc": "Connect and continue work on local runtimes.",
+      "newSession": "New session",
+      "noRecentWork": "No sessions yet. Assign work to get started.",
+      "openSession": "Open session",
+      "planFirst": "Plan first",
+      "recentWork": "Recent work",
+      "recentWorkEyebrow": "Sessions",
+      "request": "Request",
+      "requestPlaceholder": "Describe the outcome you want this employee to deliver.",
+      "runAsGoal": "Run as goal",
+      "sessions": "Sessions",
+      "starting": "Starting…",
+      "viewAllEmployees": "View all"
     },
     "labels": {
       "task": "Task"
@@ -929,7 +1009,8 @@
     "createFirst": "Create your first digital employee",
     "emptyTitle": "Welcome to HiveClaw",
     "emptyDesc": "Digital employees can search the web, write documents, send messages, analyze data, and work autonomously across Feishu, Slack, and other channels.",
-    "emptyHint": "Tell the onboarding assistant what you need, and it will create the right employee for you."
+    "emptyHint": "Tell the onboarding assistant what you need, and it will create the right employee for you.",
+    "toolFailuresSampled": "latest bounded sample"
   },
   "agent": {
     "status": {
@@ -1118,46 +1199,6 @@
         "reconcile": "Could not record the reconciliation decision."
       }
     },
-    "extensions": {
-      "title": "Capabilities",
-      "tabsLabel": "Capability types",
-      "tabs": {
-        "catalog": "Catalog",
-        "mcp": "MCP & Plugins",
-        "skills": "Skills",
-        "subagents": "Sub-agents",
-        "factors": "Self-grown"
-      },
-      "externalSnapshots": "Approved External Snapshots",
-      "noExternalSnapshots": "No approved external snapshots activated",
-      "catalogLoadFailed": "Failed to load extension catalog",
-      "catalogActivated": "Extension activated",
-      "catalogActivateFailed": "Failed to activate extension",
-      "catalogDeactivated": "Extension deactivated",
-      "catalogDeactivateFailed": "Failed to deactivate extension",
-      "catalogTryActivated": "Extension enabled for this chat",
-      "catalogTryFailed": "Failed to try extension in chat",
-      "catalogEmpty": "No approved optional extensions are available yet.",
-      "catalogActive": "Active",
-      "catalogAvailable": "Available",
-      "catalogDeactivate": "Deactivate",
-      "catalogTryInChat": "Try in chat",
-      "catalogInstall": "Install",
-      "factorsLoadFailed": "Failed to load capability factors",
-      "factorNameRequired": "Factor name is required",
-      "factorCaptured": "Capability factor captured",
-      "factorCaptureFailed": "Failed to capture capability factor",
-      "factorNamePlaceholder": "Candidate name",
-      "factorSummaryPlaceholder": "Why this is reusable",
-      "captureFactor": "Capture",
-      "selfGrownCandidates": "Self-grown candidates",
-      "noCapabilityFactors": "No self-grown capability candidates have been captured yet.",
-      "factorKind": {
-        "skill_candidate": "Skill candidate",
-        "subagent_candidate": "Sub-agent candidate",
-        "external_usage_factor": "External usage"
-      }
-    },
     "detail": {
       "loading": "Loading...",
       "notFound": "Digital employee not found",
@@ -1178,7 +1219,9 @@
       "peer": "Peer",
       "assistant": "Assistant",
       "direct_leader": "Direct Leader",
-      "other": "Other"
+      "other": "Other",
+      "accessDenied": "You do not have access to this employee.",
+      "loadFailed": "Unable to load this employee right now."
     },
     "relationships": {
       "owner": "Owner",
@@ -1442,7 +1485,8 @@
         "skipped": "Confirmed, but execution did not start",
         "failed": "Confirmed, but execution failed to start",
         "preparing": "Confirmed — preparing to start",
-        "runtimeTask": "Run: {{id}}"
+        "runtimeTask": "Run: {{id}}",
+        "retry": "Retry execution"
       },
       "queueTitle": "Plan Queue",
       "queueDesc": "Plans awaiting your confirmation before autonomous work can begin.",
@@ -1470,7 +1514,9 @@
         "rejected": "This plan was rejected.",
         "superseded": "This plan was replaced by a newer version.",
         "expired": "This plan expired before confirmation."
-      }
+      },
+      "approvedActions": "Approved actions",
+      "singleUse": "single use"
     },
     "clarification": {
       "badge": "Needs your input",
@@ -1500,7 +1546,9 @@
       "soulDesc": "Core identity, personality, and behavior boundaries — who this employee is.",
       "memoryDesc": "Long-term knowledge curated from conversations. Feedback, strategies, blocked patterns, and project knowledge.",
       "evolutionTitle": "Evolution",
-      "evolutionDesc": "Curation history, performance scorecard, and blocked approaches."
+      "evolutionDesc": "Curation history, performance scorecard, and blocked approaches.",
+      "heartbeatTitle": "Heartbeat",
+      "soulGovernedNotice": "soul.md is governed by Dream/Soul promotion."
     },
     "knowledge": {
       "distillerState": {
@@ -1552,7 +1600,17 @@
         "heartbeat": "Heartbeat curation",
         "dream": "Dream consolidation",
         "skill_distiller": "Skill distiller"
-      }
+      },
+      "capabilitiesCard": "Linked capabilities",
+      "linkedPages": "Linked pages",
+      "noEvents": "No memory events recorded yet.",
+      "noPages": "No knowledge pages yet — the curator creates them after evidence accumulates.",
+      "pageNotCreated": "Page not created yet",
+      "pendingSoul": "Pending soul candidates",
+      "skillCandidates": "Skill candidates",
+      "skillsLinked": "Skills",
+      "soulSections": "Soul sections",
+      "workflowCandidates": "Workflow candidates"
     },
     "evolution": {
       "title": "Evolution",
@@ -1631,7 +1689,9 @@
       "approveRefused": "Gate refused",
       "rejectDone": "Rejected.",
       "provisionalHeading": "Skills on trial",
-      "provisionalHint": "Live and monitored: real usage promotes automatically; negative signals auto-rollback."
+      "provisionalHint": "Live and monitored: real usage promotes automatically; negative signals auto-rollback.",
+      "trialNegative": "Negative",
+      "trialPositive": "Positive"
     },
     "skills": {
       "title": "Skill Definitions",
@@ -1661,7 +1721,10 @@
       "noMcpCapabilities": "No MCP-backed capabilities.",
       "plugins": "Plugins",
       "noPlugins": "No plugins assigned.",
-      "toolsUnit": "tools"
+      "toolsUnit": "tools",
+      "governedNotice": "Active skill packages are governed by Skill promotion. Use imports and Evolution candidates instead of editing active skill files directly.",
+      "importDesc": "Select a preset skill to import into this agent. All skill files will be copied to the agent's skills folder.",
+      "importPreset": "Import from Presets"
     },
     "toolMgmt": {
       "title": "Available Actions",
@@ -1700,7 +1763,9 @@
       "delete": "Delete",
       "save": "Save",
       "edit": "Edit",
-      "cancel": "Cancel"
+      "cancel": "Cancel",
+      "showingFiles": "Showing {{visible}} of {{total}} files",
+      "showMoreFiles": "Show more"
     },
     "chat": {
       "mySessions": "My Conversations",
@@ -1757,7 +1822,10 @@
         "schedulePrefix": "Create a scheduled task: ",
         "planPlaceholder": "Describe what the agent should plan first...",
         "goalPlaceholder": "Define the goal for this session...",
-        "schedulePlaceholder": "Describe the schedule, trigger, and task..."
+        "schedulePlaceholder": "Describe the schedule, trigger, and task...",
+        "goalModeOnDesc": "Create a durable goal and start its first turn",
+        "localModelTitle": "Local Agent runtime",
+        "localPermissionDesc": "Access is governed by the connected Local Agent policy."
       },
       "permission": {
         "allowOnce": "Allow once",
@@ -1768,7 +1836,8 @@
         "updateFailed": "Failed to update session permission mode",
         "fullAccessTitle": "Use Full access for this session?",
         "fullAccessMessage": "Full access skips routine session approval prompts. Enterprise access, safety, and destructive-action rules always apply.",
-        "fullAccessConfirm": "Use Full access"
+        "fullAccessConfirm": "Use Full access",
+        "resolveFailed": "Failed to resolve permission request"
       },
       "actions": {
         "like": "Like",
@@ -1790,7 +1859,8 @@
         "composeTitle": "Create branch",
         "createBranch": "Create branch",
         "branches": "Branches",
-        "failed": "Failed to create branch"
+        "failed": "Failed to create branch",
+        "mainSession": "Main session"
       },
       "disclosure": {
         "processing": "Processing",
@@ -1816,7 +1886,9 @@
           "runCommand": "Run command",
           "editDocument": "Edit document",
           "toolCall": "Tool call"
-        }
+        },
+        "needsAttention": "Needs attention",
+        "stopped": "Stopped"
       },
       "artifacts": {
         "open": "Open",
@@ -1829,7 +1901,9 @@
         "legacyCurrentFilePreview": "Previewing current workspace file; no delivery snapshot exists",
         "workspaceChanged": "Workspace file changed after delivery",
         "missingNoSnapshot": "This file is no longer available in the workspace.",
-        "emptyPending": "This file is empty for now. Its content will appear here after the session permission is approved or the write finishes."
+        "emptyPending": "This file is empty for now. Its content will appear here after the session permission is approved or the write finishes.",
+        "downloadFailed": "Download failed: {{message}}",
+        "openNamed": "Open {{name}}"
       },
       "toolResults": {
         "blueprintPreviewTitle": "Agent Blueprint Preview",
@@ -1861,7 +1935,16 @@
         "budgetTokens": "Budget tokens",
         "confirmationRequired": "Confirmation required",
         "recommended": "Recommended",
-        "rawOutput": "Raw output"
+        "rawOutput": "Raw output",
+        "cancelProvisioning": "Cancel provisioning",
+        "candidateFallback": "Candidate {{index}}",
+        "dynamicWorkflowNotStarted": "Select a candidate to create a reviewable preview. Nothing has run yet.",
+        "provisioned": "Provisioned",
+        "provisioning": "Provisioning…",
+        "provisioningProgress": "Provisioning progress",
+        "retryingProvisioning": "Retrying…",
+        "retryProvisioning": "Retry provisioning",
+        "selectAndPreview": "Select and preview"
       },
       "workLedger": {
         "title": "Agent work ledger",
@@ -1936,6 +2019,37 @@
       "loadOlderMessages": "Load earlier messages",
       "gitline": {
         "rewoundTail": "rewound — head moved before this point"
+      },
+      "filterUsers": "Filter users or sources...",
+      "goalStartFailed": "The goal was created but its first turn did not start.",
+      "operatorView": "Operator View",
+      "operatorViewDesc": "Audited, read-only access to another user’s session.",
+      "session": "Session",
+      "sessionBackfillIncomplete": "Latest activity is visible, but older session evidence is still recovering.",
+      "sessionCreateFailed": "Failed to create session",
+      "transport": {
+        "authFailed": "Live updates could not be authorized. Sign in again to restore this session.",
+        "degraded": "Live updates are unavailable. The task is still running in the background; this view is recovering from durable history.",
+        "initializing": "Loading durable session history...",
+        "offline": "You are offline. The task is still running in the background and durable history will catch up automatically when the network returns.",
+        "reconnecting": "Live updates reconnecting...",
+        "retryNow": "Retry now"
+      },
+      "workflowPreview": {
+        "confirmAndRun": "Confirm and run",
+        "confirmationReasons": "Why confirmation is needed",
+        "expired": "Expired",
+        "failed": "Retry available",
+        "previewFailed": "Workflow preview could not be created. You can retry safely.",
+        "ready": "Ready",
+        "review": "Review the workflow before running it.",
+        "run": "Run workflow",
+        "started": "Started",
+        "startFailed": "Workflow could not start. You can retry safely.",
+        "starting": "Starting",
+        "title": "Workflow ready to run",
+        "tokenBudget": "Token budget {{count}}",
+        "workUnits": "{{count}} planned work units"
       }
     },
     "activityLog": {
@@ -2213,7 +2327,10 @@
           "statusError": "WebSocket connection failed; scan again",
           "statusDisconnected": "App configured, but WebSocket is not connected"
         },
-        "syncHint": "A user identity is trusted only after that user completes the channel QR connection. Organization sync never assigns an IM identity; administrators can only revoke a verified binding."
+        "syncHint": "A user identity is trusted only after that user completes the channel QR connection. Organization sync never assigns an IM identity; administrators can only revoke a verified binding.",
+        "mode": "Connection Mode",
+        "modeWebhook": "Webhook",
+        "modeWs": "WebSocket (Recommended)"
       },
       "localBridge": {
         "title": "Local Agent Channel",
@@ -2294,6 +2411,58 @@
         "useAccessDesc": "Can chat, assign tasks, and use tools",
         "manageAccess": "Manage",
         "manageAccessDesc": "Full access including settings, personality, and connections"
+      },
+      "actionPolicy": {
+        "description": "Choose what this employee can do directly, what needs your approval, and what is always prohibited.",
+        "invalid": "The saved policy needs repair. Effectful actions remain blocked until a manager saves a valid policy.",
+        "loadError": "Action boundaries could not be loaded.",
+        "loading": "Loading action boundaries...",
+        "restore": "Restore",
+        "restoreConfirm": "Restore the previous action boundaries as the new current policy?",
+        "restoreError": "Failed to restore the previous policy. Refresh and try again.",
+        "restorePrevious": "Restore previous policy",
+        "restoring": "Restoring...",
+        "save": "Save action policy",
+        "saved": "Policy saved",
+        "saveError": "Failed to save action policy. Refresh and try again.",
+        "saving": "Saving...",
+        "title": "Action boundaries"
+      },
+      "executionMode": {
+        "coordinator": "Coordinator",
+        "coordinatorStrict": "Strict coordinator",
+        "description": "Coordinator guidance does not remove direct tools. Strict coordinator is an explicit dispatcher-only boundary.",
+        "label": "Execution Mode",
+        "standard": "Standard",
+        "title": "Execution Mode"
+      },
+      "modelDisabledWarning": "This model has been disabled by admin. The agent will automatically use the fallback model.",
+      "toolCategories": {
+        "communication": "Messaging",
+        "custom": "Custom",
+        "email": "Email",
+        "feishu": "Feishu / Lark",
+        "file": "Files",
+        "filesystem": "Filesystem",
+        "general": "General",
+        "hr": "HR",
+        "mcp": "MCP",
+        "memory": "Memory",
+        "plaza": "Agent Circle",
+        "search": "Search",
+        "skills": "Skills",
+        "task": "Tasks",
+        "tasks": "Tasks",
+        "triggers": "Triggers"
+      },
+      "tools": {
+        "agentInstalled": "Employee-Added Actions",
+        "platformTools": "Built-in Actions"
+      },
+      "upload": {
+        "failed": "Upload failed — please try again",
+        "success": "Upload complete",
+        "uploading": "Uploading..."
       }
     },
     "tools": {
@@ -2301,6 +2470,44 @@
       "agentInstalled": "Employee-Added Actions"
     },
     "extensions": {
+      "title": "Capabilities",
+      "tabsLabel": "Capability types",
+      "tabs": {
+        "catalog": "Catalog",
+        "mcp": "MCP & Plugins",
+        "skills": "Skills",
+        "subagents": "Sub-agents",
+        "factors": "Self-grown"
+      },
+      "externalSnapshots": "Approved External Snapshots",
+      "noExternalSnapshots": "No approved external snapshots activated",
+      "catalogLoadFailed": "Failed to load extension catalog",
+      "catalogActivated": "Extension activated",
+      "catalogActivateFailed": "Failed to activate extension",
+      "catalogDeactivated": "Extension deactivated",
+      "catalogDeactivateFailed": "Failed to deactivate extension",
+      "catalogTryActivated": "Extension enabled for this chat",
+      "catalogTryFailed": "Failed to try extension in chat",
+      "catalogEmpty": "No approved optional extensions are available yet.",
+      "catalogActive": "Active",
+      "catalogAvailable": "Available",
+      "catalogDeactivate": "Deactivate",
+      "catalogTryInChat": "Try in chat",
+      "catalogInstall": "Install",
+      "factorsLoadFailed": "Failed to load capability factors",
+      "factorNameRequired": "Factor name is required",
+      "factorCaptured": "Capability factor captured",
+      "factorCaptureFailed": "Failed to capture capability factor",
+      "factorNamePlaceholder": "Candidate name",
+      "factorSummaryPlaceholder": "Why this is reusable",
+      "captureFactor": "Capture",
+      "selfGrownCandidates": "Self-grown candidates",
+      "noCapabilityFactors": "No self-grown capability candidates have been captured yet.",
+      "factorKind": {
+        "skill_candidate": "Skill candidate",
+        "subagent_candidate": "Sub-agent candidate",
+        "external_usage_factor": "External usage"
+      },
       "skills": "Skills",
       "plugins": "Plugins",
       "mcpServers": "MCP Servers",
@@ -2340,7 +2547,9 @@
         "configured": "configured",
         "expired": "expired",
         "error": "error"
-      }
+      },
+      "metadataApproved": "Metadata approved",
+      "metadataReviewRequired": "Metadata review required"
     },
     "toolCategories": {
       "file": "Files",
@@ -2403,7 +2612,15 @@
       "rejectButton": "Reject",
       "autoApprove": "Auto-apply improvements",
       "autoApproveHint": "When on, definition-improvement proposals apply automatically through the same validation and audit path — only the manual click is skipped."
-    }
+    },
+    "approvals": {
+      "approve": "Approve",
+      "history": "Approval history",
+      "noRecords": "No approval records yet.",
+      "pendingCount": "{{count}} pending approvals",
+      "reject": "Reject"
+    },
+    "details": "Details"
   },
   "wizard": {
     "templates": {
@@ -2542,7 +2759,8 @@
     "send": "Send",
     "deleteSession": "Delete conversation",
     "deleteConfirm": "Delete this conversation and all its messages? This cannot be undone.",
-    "deleteConfirmWithTitle": "Delete \"{{title}}\" and all its messages? This cannot be undone."
+    "deleteConfirmWithTitle": "Delete \"{{title}}\" and all its messages? This cannot be undone.",
+    "stop": "Stop"
   },
   "messages": {
     "title": "Notifications",
@@ -2598,7 +2816,13 @@
     "summaryCacheMiss": "Cache miss",
     "approveContinue": "Approve",
     "stopRun": "Stop",
-    "emptyRuns": "No runtime budget runs yet."
+    "emptyRuns": "No runtime budget runs yet.",
+    "confirmDelivered": "Confirm delivered",
+    "deliveryDecisionRecorded": "The user-facing status is recorded; external delivery needs an operator decision.",
+    "deliveryIssues": "Delivery needs review",
+    "deliveryIssuesDesc": "The run decision is safe and recorded. Confirm the external message or explicitly retry it.",
+    "rejectContinue": "Reject",
+    "retryDelivery": "Retry delivery"
   },
   "enterprise": {
     "title": "Company Admin",
@@ -2737,7 +2961,9 @@
       "components": "components",
       "reject": "Reject",
       "revoke": "Revoke",
-      "approve": "Approve"
+      "approve": "Approve",
+      "aiAssetsRollbackConfirm": "Apply revision v{{version}} to the native asset and create a new revision?",
+      "aiAssetsRollbackVersion": "Rollback to v{{version}}"
     },
     "memory": {
       "title": "Memory Settings",
@@ -2796,7 +3022,9 @@
       "minPollInterval": "Min Check Interval (min)",
       "minPollIntervalDesc": "Company-wide minimum — employees can't check external sources faster than this",
       "maxWebhookRate": "Max Incoming Events (/min)",
-      "maxWebhookRateDesc": "Company-wide maximum — limits incoming events per employee per minute"
+      "maxWebhookRateDesc": "Company-wide maximum — limits incoming events per employee per minute",
+      "subtitle": "Default token limits for new employees. Admins can override per-user in User Management.",
+      "title": "Employee Token Quotas"
     },
     "stats": {
       "users": "{{count}} team members",
@@ -2858,7 +3086,15 @@
       "testing": "Testing...",
       "testSuccess": "Working ({{latency}}ms)",
       "testFailed": "Connection failed: {{error}}\n\nResponse time: {{latency}}ms",
-      "testError": "Could not connect: {{message}}"
+      "testError": "Could not connect: {{message}}",
+      "clickToDisable": "Click to disable",
+      "clickToEnable": "Click to enable",
+      "default": "Default",
+      "deleteModelTitle": "Delete model",
+      "setDefault": "Set as Default",
+      "temperature": "Temperature",
+      "temperatureDesc": "Leave empty to use the provider default. o1/o3 reasoning models usually require 1.0",
+      "temperaturePlaceholder": "e.g. 0.7 or 1.0 (Leave empty for default)"
     },
     "tools": {
       "title": "Tools & Extensions",
@@ -2967,7 +3203,21 @@
       "githubUrlPlaceholder": "https://github.com/owner/repo/tree/main/skills/my-skill",
       "preview": "Preview",
       "loading": "Loading...",
-      "edit": "Edit"
+      "edit": "Edit",
+      "approveFingerprint": "Approve fingerprint",
+      "canonicalDescription": "Canonical runtime description",
+      "deleteConnector": "Delete connector",
+      "import": "Import",
+      "importFailed": "Import failed",
+      "importing": "Importing...",
+      "mcpMetadataAdminOnly": "Administrator-only evidence",
+      "mcpMetadataReview": "Metadata review",
+      "mcpRuntimeApproved": "Runtime approved",
+      "mcpRuntimeBlocked": "Runtime blocked",
+      "noMcpMetadata": "No MCP tool metadata found.",
+      "rawRemoteEvidence": "Raw remote evidence",
+      "reviewMcpMetadata": "Review metadata",
+      "toolsEnabled": "enabled"
     },
     "org": {
       "feishuSync": "Feishu Directory Sync",
@@ -2981,7 +3231,8 @@
       "searchMembers": "Search team members...",
       "member": "Member",
       "admin": "Admin",
-      "noMembers": "No members found"
+      "noMembers": "No members found",
+      "feishuSyncDesc": "Sync department and member data from Feishu/Lark."
     },
     "config": {
       "title": "Platform Configuration",
@@ -3047,7 +3298,16 @@
       "createTitle": "New company definition",
       "editTitle": "Edit company definition",
       "deleteConfirm": "Delete company definition \"{{name}}\"? Agents whose agent-level copy shadows it are unaffected."
-    }
+    },
+    "broadcast": {
+      "bodyPlaceholder": "Optional details...",
+      "description": "Send a notification to all users and agents in this company.",
+      "send": "Send Broadcast",
+      "sent": "Sent to {{users}} users and {{agents}} agents",
+      "title": "Broadcast Notification",
+      "titlePlaceholder": "Notification title"
+    },
+    "deleteCompanyConfirm": "Are you sure you want to delete this company and ALL its data? This cannot be undone."
   },
   "notifications": {
     "title": "Notifications",
@@ -3174,7 +3434,8 @@
       "resetDefault": "Reset to Default",
       "resetConfirm": "Reset the onboarding assistant to its default template? Your customizations will be lost.",
       "saveFailed": "Could not save: ",
-      "noAgent": "Onboarding assistant is not available. Please configure at least one AI model first."
+      "noAgent": "Onboarding assistant is not available. Please configure at least one AI model first.",
+      "soulGovernedNotice": "soul.md is governed by Dream/Soul promotion."
     },
     "digitalEmployees": {
       "title": "Digital Employee Management",
@@ -3245,7 +3506,10 @@
       "cardkitLastError": "Last CardKit probe error",
       "docsReady": "Docs / Wiki / Sheets",
       "baseReady": "Database / Tasks",
-      "NotVerified": "Not Verified"
+      "NotVerified": "Not Verified",
+      "allReady": "All Feishu office capabilities are available.",
+      "docsOnly": "Docs / Wiki / Sheets are available. Base / Tasks are not enabled on this platform.",
+      "notAvailable": "Feishu office capabilities are not available on this platform."
     }
   },
   "common": {
@@ -3285,7 +3549,16 @@
       "email": "Email",
       "wechatPersonal": "WeChat",
       "localBridge": "Local Bridge"
-    }
+    },
+    "cancelling": "Cancelling…",
+    "disabled": "Off",
+    "enabled": "On",
+    "minutes": "min",
+    "refresh": "Refresh",
+    "remove": "Remove",
+    "required": "Required",
+    "saved": "Saved",
+    "saveFailed": "Save failed"
   },
   "admin": {
     "title": "Company Management",
@@ -3329,6 +3602,22 @@
       "resolve": "Resolve",
       "archive": "Archive",
       "retry": "Retry"
+    },
+    "action": "Action",
+    "all": "All",
+    "disableCompanyTitle": "Disable company",
+    "filterStatus": "Filter by status",
+    "noFilterResults": "No companies match the current filter.",
+    "orgAdmin": "Admin Email",
+    "platformSettingsDesc": "Manage platform-wide settings and company tenants.",
+    "publicUrl": {
+      "desc": "The external URL used for webhook callbacks (Slack, Feishu, Discord, etc.) and published page links. Include the protocol (e.g. https://example.com).",
+      "title": "Public URL"
+    },
+    "tab": {
+      "companies": "Companies",
+      "dashboard": "Dashboard",
+      "platform": "Platform"
     }
   },
   "companySetup": {
@@ -3554,7 +3843,17 @@
     "profileEmpty": "The backend has not produced a profile plane yet.",
     "createGrant": "Create grant",
     "revoke": "Revoke",
-    "noGrants": "No additional grants yet."
+    "noGrants": "No additional grants yet.",
+    "approveProposal": "Approve and write",
+    "grantExpiresAt": "Expires at",
+    "grantPurpose": "Grant purpose",
+    "noRevisions": "No rollback versions yet.",
+    "rejectProposal": "Reject",
+    "revisionHistory": "Revision history",
+    "revokedOrExpired": "Revoked / expired",
+    "rollbackVersion": "Rollback to this version",
+    "sensitivityCeiling": "Sensitivity ceiling",
+    "version": "Version"
   },
   "workflows": {
     "intro": "Workflows are composed by this digital employee while it works and archived here automatically. A run owner can submit proven evidence; a different manager reviews it before a reusable template is published.",
@@ -3628,6 +3927,15 @@
     "cancel": "Cancel run",
     "fork": "Fork & adjust",
     "deprecate": "Deprecate",
-    "revoke": "Revoke"
+    "revoke": "Revoke",
+    "explicitConfirmationRequired": "Review the reasons below, then confirm this exact preview.",
+    "previewRequired": "Preview this workflow before running it."
+  },
+  "sessionGoal": {
+    "pause": "Pause",
+    "resume": "Resume",
+    "stop": "Stop",
+    "title": "Goal",
+    "transitionFailed": "Could not update this goal."
   }
 }

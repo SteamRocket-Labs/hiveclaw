@@ -93,7 +93,7 @@ function SearchResults({ results }: { results: PersonalKnowledgeSearchResult[] }
   return (
     <section className="personal-kb-panel personal-kb-search-results">
       <div className="personal-kb-panel-heading">
-        <h2>{t('personalKnowledge.searchResults', '搜索结果')}</h2>
+        <h2>{t('personalKnowledge.searchResults')}</h2>
       </div>
       {results.map((result) => (
         <div key={result.segment_id} className="personal-kb-result">
@@ -119,7 +119,7 @@ function ImportJobs({
 }) {
   const { t } = useTranslation();
   if (jobs.length === 0) {
-    return <EmptyBlock>{t('personalKnowledge.noJobs', '还没有导入任务。')}</EmptyBlock>;
+    return <EmptyBlock>{t('personalKnowledge.noJobs')}</EmptyBlock>;
   }
   return (
     <div className="personal-kb-jobs">
@@ -131,7 +131,7 @@ function ImportJobs({
             <div>
               <strong>{filename}</strong>
               <span>
-                {job.stage} · {job.status} · {t('personalKnowledge.attempts', '尝试')} {job.attempt_count}
+                {job.stage} · {job.status} · {t('personalKnowledge.attempts')} {job.attempt_count}
               </span>
               {job.error_message && <code>{job.error_message}</code>}
             </div>
@@ -143,7 +143,7 @@ function ImportJobs({
                 onClick={() => onRetry(job.job_id)}
               >
                 <IconRefresh size={14} stroke={1.7} />
-                {t('personalKnowledge.retry', '重试')}
+                {t('personalKnowledge.retry')}
               </button>
             )}
           </div>
@@ -201,8 +201,8 @@ function InboxPanel({
     <section className="personal-kb-panel personal-kb-intake">
       <div className="personal-kb-panel-heading">
         <div>
-          <h2>{t('personalKnowledge.inboxTitle', '收集箱')}</h2>
-          <p>{t('personalKnowledge.inboxDesc', '文件、URL、Markdown、聊天附件都进入同一条后端摄取管线；失败和降级会在任务里可见。')}</p>
+          <h2>{t('personalKnowledge.inboxTitle')}</h2>
+          <p>{t('personalKnowledge.inboxDesc')}</p>
         </div>
         <IconDatabase size={18} stroke={1.7} />
       </div>
@@ -217,8 +217,8 @@ function InboxPanel({
           onDragOver={(event) => event.preventDefault()}
         >
           <IconUpload size={18} stroke={1.7} />
-          <strong>{t('personalKnowledge.dropOrChoose', '拖拽或选择文件')}</strong>
-          <span>{selectedFile ? selectedFile.name : t('personalKnowledge.dropHelper', 'PDF、DOCX、CSV、HTML、Markdown、音频、视频或图片')}</span>
+          <strong>{t('personalKnowledge.dropOrChoose')}</strong>
+          <span>{selectedFile ? selectedFile.name : t('personalKnowledge.dropHelper')}</span>
           <input
             type="file"
             onChange={(event) => onFileChange(event.target.files?.[0] ?? null)}
@@ -233,14 +233,14 @@ function InboxPanel({
           ))}
         </div>
         <button type="submit" className="btn btn-primary" disabled={!selectedFile || filePending}>
-          {filePending ? t('personalKnowledge.importing', '导入中') : t('personalKnowledge.importFile', '导入文件')}
+          {filePending ? t('personalKnowledge.importing') : t('personalKnowledge.importFile')}
         </button>
       </form>
 
       <form className="personal-kb-url-form" onSubmit={onUrlSubmit}>
         <div>
-          <strong>{t('personalKnowledge.urlImport', 'URL 导入')}</strong>
-          <span>{t('personalKnowledge.urlImportDesc', '网页会由后端转换为 canonical Markdown。')}</span>
+          <strong>{t('personalKnowledge.urlImport')}</strong>
+          <span>{t('personalKnowledge.urlImportDesc')}</span>
         </div>
         <input
           value={url}
@@ -249,7 +249,7 @@ function InboxPanel({
         />
         <button type="submit" className="btn btn-secondary" disabled={!url.trim() || urlPending}>
           <IconWorld size={14} stroke={1.7} />
-          {t('personalKnowledge.importUrl', '导入 URL')}
+          {t('personalKnowledge.importUrl')}
         </button>
       </form>
 
@@ -257,22 +257,22 @@ function InboxPanel({
         <input
           value={title}
           onChange={(event) => onTitleChange(event.target.value)}
-          placeholder={t('personalKnowledge.titlePlaceholder', '文档标题')}
+          placeholder={t('personalKnowledge.titlePlaceholder')}
         />
         <textarea
           value={markdown}
           onChange={(event) => onMarkdownChange(event.target.value)}
-          placeholder={t('personalKnowledge.markdownPlaceholder', '粘贴 Markdown、会议纪要、研究笔记或可归档内容...')}
+          placeholder={t('personalKnowledge.markdownPlaceholder')}
         />
         <div className="personal-kb-panel-actions">
           <button type="submit" className="btn btn-primary" disabled={!markdown.trim() || pastePending}>
-            {pastePending ? t('common.saving', 'Saving...') : t('personalKnowledge.feed', '+ 投喂')}
+            {pastePending ? t('common.saving', 'Saving...') : t('personalKnowledge.feed')}
           </button>
         </div>
       </form>
 
       <div className="personal-kb-subsection">
-        <h3>{t('personalKnowledge.importJobs', '导入任务')}</h3>
+        <h3>{t('personalKnowledge.importJobs')}</h3>
         {jobsError ? (
           <PersonalKnowledgeQueryState error={jobsError} onRetry={onRetryJobsQuery} />
         ) : jobsLoading ? (
@@ -301,14 +301,14 @@ function LibraryPanel({
     <section className="personal-kb-panel">
       <div className="personal-kb-panel-heading">
         <div>
-          <h2>{t('personalKnowledge.libraryTitle', '文库')}</h2>
-          <p>{t('personalKnowledge.libraryDesc', '这里是 Owner scope 的 canonical documents，不属于任何单个 Agent。')}</p>
+          <h2>{t('personalKnowledge.libraryTitle')}</h2>
+          <p>{t('personalKnowledge.libraryDesc')}</p>
         </div>
         <IconFileText size={18} stroke={1.7} />
       </div>
       {isLoading && <EmptyBlock>{t('common.loading', 'Loading...')}</EmptyBlock>}
       {!isLoading && documents.length === 0 && (
-        <EmptyBlock>{t('personalKnowledge.empty', '个人知识库为空。先从收集箱投喂一条内容。')}</EmptyBlock>
+        <EmptyBlock>{t('personalKnowledge.empty')}</EmptyBlock>
       )}
       <div className="personal-kb-document-list">
         {documents.map((document) => (
@@ -328,7 +328,7 @@ function LibraryPanel({
             <span className="personal-kb-doc-meta">
               {formatDate(document.created_at)}
               {formatDate(document.created_at) ? ' · ' : ''}
-              {document.segment_count} {t('personalKnowledge.segmentUnit', '段落')} · {document.sensitivity}
+              {document.segment_count} {t('personalKnowledge.segmentUnit')} · {document.sensitivity}
             </span>
             <code>{document.source_ref}</code>
           </button>
@@ -347,8 +347,8 @@ function GraphPanel({ graph }: { graph?: PersonalKnowledgeGraphSummary }) {
     <section className="personal-kb-panel">
       <div className="personal-kb-panel-heading">
         <div>
-          <h2>{t('personalKnowledge.graph', '知识网')}</h2>
-          <p>{t('personalKnowledge.graphDesc', '实体、关系和断言都来自后端抽取结果，空状态不在前端伪造语义。')}</p>
+          <h2>{t('personalKnowledge.graph')}</h2>
+          <p>{t('personalKnowledge.graphDesc')}</p>
         </div>
         <IconSitemap size={18} stroke={1.7} />
       </div>
@@ -358,7 +358,7 @@ function GraphPanel({ graph }: { graph?: PersonalKnowledgeGraphSummary }) {
         <span>{assertions.length} assertions</span>
       </div>
       {entities.length === 0 ? (
-        <EmptyBlock>{t('personalKnowledge.graphEmpty', '还没有实体图谱。导入并完成抽取后会出现在这里。')}</EmptyBlock>
+        <EmptyBlock>{t('personalKnowledge.graphEmpty')}</EmptyBlock>
       ) : (
         <div className="personal-kb-graph-list">
           {entities.map((entity) => (
@@ -445,8 +445,8 @@ export function GrantsPanel({
     <section className="personal-kb-panel">
       <div className="personal-kb-panel-heading">
         <div>
-          <h2>{t('personalKnowledge.grants', '授权')}</h2>
-          <p>{t('personalKnowledge.grantsDesc', 'Owner 直接交互可读 PL1–PL3；自动、共享与跨用户 Agent 必须绑定 requester、session/purpose、到期时间与 sensitivity ceiling。PL4 始终只返回 credential reference。')}</p>
+          <h2>{t('personalKnowledge.grants')}</h2>
+          <p>{t('personalKnowledge.grantsDesc')}</p>
         </div>
         <IconShieldCheck size={18} stroke={1.7} />
       </div>
@@ -463,7 +463,7 @@ export function GrantsPanel({
         </select>
         <select
           value={sensitivityCeiling}
-          aria-label={t('personalKnowledge.sensitivityCeiling', '敏感级别上限')}
+          aria-label={t('personalKnowledge.sensitivityCeiling')}
           onChange={(event) => onSensitivityCeilingChange(event.target.value as PersonalKnowledgeSensitivityCeiling)}
         >
           <option value="PL1_public">PL1_public</option>
@@ -475,7 +475,7 @@ export function GrantsPanel({
           <>
             <select
               value={purpose}
-              aria-label={t('personalKnowledge.grantPurpose', '授权用途')}
+              aria-label={t('personalKnowledge.grantPurpose')}
               onChange={(event) => onPurposeChange(event.target.value as PersonalKnowledgeGrantPurpose)}
             >
               <option value="autonomous_agent">autonomous_agent</option>
@@ -505,7 +505,7 @@ export function GrantsPanel({
               />
             )}
             <label>
-              <span>{t('personalKnowledge.grantExpiresAt', '到期时间')}</span>
+              <span>{t('personalKnowledge.grantExpiresAt')}</span>
               <input
                 type="datetime-local"
                 value={expiresAt}
@@ -516,7 +516,7 @@ export function GrantsPanel({
           </>
         )}
         <button type="submit" className="btn btn-primary" disabled={createDisabled}>
-          {t('personalKnowledge.createGrant', '创建授权')}
+          {t('personalKnowledge.createGrant')}
         </button>
       </form>
       <div className="personal-kb-grant-list">
@@ -527,7 +527,7 @@ export function GrantsPanel({
               <span>
                 {grant.permission} · {grant.resource_type} · {grant.sensitivity_ceiling}
                 {grant.purpose ? ` · ${grant.purpose}` : ''}
-                {grant.active ? '' : ` · ${t('personalKnowledge.revokedOrExpired', '已撤销/过期')}`}
+                {grant.active ? '' : ` · ${t('personalKnowledge.revokedOrExpired')}`}
               </span>
               {grant.requester_user_id && <code>requester:{grant.requester_user_id}</code>}
               {grant.session_id && <code>session:{grant.session_id}</code>}
@@ -541,11 +541,11 @@ export function GrantsPanel({
               onClick={() => onDelete(grant.grant_id)}
             >
               <IconTrash size={14} stroke={1.7} />
-              {t('personalKnowledge.revoke', '撤销')}
+              {t('personalKnowledge.revoke')}
             </button>
           </div>
         ))}
-        {grants.length === 0 && <EmptyBlock>{t('personalKnowledge.noGrants', '还没有额外授权。')}</EmptyBlock>}
+        {grants.length === 0 && <EmptyBlock>{t('personalKnowledge.noGrants')}</EmptyBlock>}
       </div>
     </section>
   );
@@ -565,8 +565,8 @@ export function ProposalReviewPanel({
     <section className="personal-kb-panel">
       <div className="personal-kb-panel-heading">
         <div>
-          <h2>{t('personalKnowledge.proposals', 'Agent 提案')}</h2>
-          <p>{t('personalKnowledge.proposalsDesc', 'Agent 只能提交候选；Owner 在这里核对 diff、来源和敏感级别后决定是否写入。')}</p>
+          <h2>{t('personalKnowledge.proposals')}</h2>
+          <p>{t('personalKnowledge.proposalsDesc')}</p>
         </div>
         <IconShieldCheck size={18} stroke={1.7} />
       </div>
@@ -581,8 +581,8 @@ export function ProposalReviewPanel({
               <span className="ui-chip">{proposal.policy_outcome}</span>
             </div>
             <p>{proposal.purpose}</p>
-            <div className="personal-kb-preview-title">{t('personalKnowledge.proposalDiff', '候选 diff')}</div>
-            <pre className="personal-kb-diff" aria-label={t('personalKnowledge.proposalDiff', '候选 diff')}>
+            <div className="personal-kb-preview-title">{t('personalKnowledge.proposalDiff')}</div>
+            <pre className="personal-kb-diff" aria-label={t('personalKnowledge.proposalDiff')}>
               {proposal.diff_unified || proposal.content}
             </pre>
             <div className="personal-kb-proposal-evidence">
@@ -602,7 +602,7 @@ export function ProposalReviewPanel({
                   disabled={busyProposalId === proposal.proposal_id}
                   onClick={() => onDecision(proposal.proposal_id, 'approve')}
                 >
-                  {t('personalKnowledge.approveProposal', '批准并写入')}
+                  {t('personalKnowledge.approveProposal')}
                 </button>
                 <button
                   type="button"
@@ -610,14 +610,14 @@ export function ProposalReviewPanel({
                   disabled={busyProposalId === proposal.proposal_id}
                   onClick={() => onDecision(proposal.proposal_id, 'reject')}
                 >
-                  {t('personalKnowledge.rejectProposal', '拒绝')}
+                  {t('personalKnowledge.rejectProposal')}
                 </button>
               </div>
             )}
           </article>
         ))}
         {proposals.length === 0 && (
-          <EmptyBlock>{t('personalKnowledge.noProposals', '当前没有 Agent 提案。')}</EmptyBlock>
+          <EmptyBlock>{t('personalKnowledge.noProposals')}</EmptyBlock>
         )}
       </div>
     </section>
@@ -636,11 +636,11 @@ export function RevisionHistory({
   const { t } = useTranslation();
   return (
     <div className="personal-kb-revisions">
-      <div className="personal-kb-preview-title">{t('personalKnowledge.revisionHistory', '版本历史')}</div>
+      <div className="personal-kb-preview-title">{t('personalKnowledge.revisionHistory')}</div>
       {revisions.map((revision, index) => (
         <div key={revision.id} className="personal-kb-revision-row">
           <div>
-            <strong>{t('personalKnowledge.version', '版本')} {revision.version}</strong>
+            <strong>{t('personalKnowledge.version')} {revision.version}</strong>
             <span>{revision.change_source}</span>
             {revision.change_message && <small>{revision.change_message}</small>}
           </div>
@@ -651,12 +651,12 @@ export function RevisionHistory({
               disabled={busyVersion === revision.version}
               onClick={() => onRollback(revision.version)}
             >
-              {t('personalKnowledge.rollbackVersion', '回滚到此版本')}
+              {t('personalKnowledge.rollbackVersion')}
             </button>
           )}
         </div>
       ))}
-      {revisions.length === 0 && <small>{t('personalKnowledge.noRevisions', '尚无可回滚版本。')}</small>}
+      {revisions.length === 0 && <small>{t('personalKnowledge.noRevisions')}</small>}
     </div>
   );
 }
@@ -712,7 +712,7 @@ function DocumentDetail({
   if (!document) {
     return (
       <aside className="personal-kb-detail">
-        <EmptyBlock>{t('personalKnowledge.selectDocument', '选择一条文档查看 source refs 和段落证据。')}</EmptyBlock>
+        <EmptyBlock>{t('personalKnowledge.selectDocument')}</EmptyBlock>
       </aside>
     );
   }
@@ -721,14 +721,14 @@ function DocumentDetail({
     <aside className="personal-kb-detail">
       <div className="personal-kb-detail-head">
         <div>
-          <span className="personal-kb-eyebrow">{t('personalKnowledge.detailEyebrow', '文档详情')}</span>
+          <span className="personal-kb-eyebrow">{t('personalKnowledge.detailEyebrow')}</span>
           <h2>{document.title}</h2>
         </div>
         <span className="ui-chip">{document.status}</span>
       </div>
       {imagePreview && (
         <div className="personal-kb-source-preview">
-          <div className="personal-kb-preview-title">{t('personalKnowledge.sourceImagePreview', '源图片预览')}</div>
+          <div className="personal-kb-preview-title">{t('personalKnowledge.sourceImagePreview')}</div>
           {imagePreviewUrl ? (
             <img src={imagePreviewUrl} alt={imagePreview.filename} />
           ) : imagePreviewQuery.isError ? (
@@ -738,14 +738,14 @@ function DocumentDetail({
             />
           ) : (
             <div className="personal-kb-source-preview-placeholder">
-              {t('personalKnowledge.sourceImagePreviewLoading', '正在加载源图片...')}
+              {t('personalKnowledge.sourceImagePreviewLoading')}
             </div>
           )}
           <small>{imagePreview.filename}</small>
         </div>
       )}
       <div className="personal-kb-preview">
-        <div className="personal-kb-preview-title">{t('personalKnowledge.mdPreview', 'MD 预览')}</div>
+        <div className="personal-kb-preview-title">{t('personalKnowledge.mdPreview')}</div>
         {document.segments.slice(0, 4).map((segment) => (
           <div key={segment.segment_id} className="personal-kb-segment">
             <span>
@@ -756,7 +756,7 @@ function DocumentDetail({
         ))}
       </div>
       <div className="personal-kb-evidence">
-        <h3>{t('personalKnowledge.evidenceChain', '证据链')}</h3>
+        <h3>{t('personalKnowledge.evidenceChain')}</h3>
         <code>{document.source_ref}</code>
         <small>{document.canonical_md_path}</small>
       </div>
@@ -779,7 +779,7 @@ function DocumentDetail({
           onClick={() => onRebuild(document.document_id)}
         >
           <IconRefresh size={14} stroke={1.7} />
-          {t('personalKnowledge.rebuildIndex', '重建索引')}
+          {t('personalKnowledge.rebuildIndex')}
         </button>
         <button
           type="button"
@@ -788,8 +788,8 @@ function DocumentDetail({
           onClick={() => onToggleAgentSearchable(document)}
         >
           {document.agent_searchable
-            ? t('personalKnowledge.blockAgentSearch', '禁止 Agent 检索')
-            : t('personalKnowledge.allowAgentSearch', '允许 Agent 检索')}
+            ? t('personalKnowledge.blockAgentSearch')
+            : t('personalKnowledge.allowAgentSearch')}
         </button>
         <button
           type="button"
@@ -797,7 +797,7 @@ function DocumentDetail({
           disabled={patchPending}
           onClick={() => onArchive(document.document_id)}
         >
-          {t('personalKnowledge.archive', '归档')}
+          {t('personalKnowledge.archive')}
         </button>
       </div>
     </aside>
@@ -883,7 +883,7 @@ export default function PersonalKnowledge() {
   const ingestMutation = useMutation({
     mutationFn: () =>
       knowledgeApi.myPersonalIngest({
-        title: title.trim() || t('personalKnowledge.untitled', '未命名笔记'),
+        title: title.trim() || t('personalKnowledge.untitled'),
         markdown,
         source_kind: 'paste',
         source_uri: 'browser://knowledge/personal',
@@ -1012,12 +1012,12 @@ export default function PersonalKnowledge() {
   };
 
   const lanes: Array<{ key: PersonalKnowledgeLane; label: string; helper: string }> = [
-    { key: 'inbox', label: t('personalKnowledge.inbox', '收集箱'), helper: t('personalKnowledge.inboxHelper', '投喂与管线') },
-    { key: 'proposals', label: t('personalKnowledge.proposals', 'Agent 提案'), helper: t('personalKnowledge.proposalsHelper', '审批与 diff') },
-    { key: 'library', label: t('personalKnowledge.library', '文库'), helper: t('personalKnowledge.libraryHelper', 'canonical MD') },
-    { key: 'graph', label: t('personalKnowledge.graph', '知识网'), helper: t('personalKnowledge.graphHelper', '实体与关系') },
-    { key: 'profile', label: t('personalKnowledge.profile', '画像'), helper: t('personalKnowledge.profileHelper', 'taste / profile') },
-    { key: 'grants', label: t('personalKnowledge.grants', '授权'), helper: t('personalKnowledge.grantsHelper', 'Agent 检索边界') },
+    { key: 'inbox', label: t('personalKnowledge.inbox'), helper: t('personalKnowledge.inboxHelper') },
+    { key: 'proposals', label: t('personalKnowledge.proposals'), helper: t('personalKnowledge.proposalsHelper') },
+    { key: 'library', label: t('personalKnowledge.library'), helper: t('personalKnowledge.libraryHelper', 'canonical MD') },
+    { key: 'graph', label: t('personalKnowledge.graph'), helper: t('personalKnowledge.graphHelper') },
+    { key: 'profile', label: t('personalKnowledge.profile'), helper: t('personalKnowledge.profileHelper', 'taste / profile') },
+    { key: 'grants', label: t('personalKnowledge.grants'), helper: t('personalKnowledge.grantsHelper') },
   ];
 
   const pageChrome = (
@@ -1025,8 +1025,8 @@ export default function PersonalKnowledge() {
       <header className="personal-kb-header">
         <div>
           <span className="personal-kb-eyebrow">HIVE · Personal Knowledge</span>
-          <h1>{t('personalKnowledge.title', '个人知识库')}</h1>
-          <p>{t('personalKnowledge.subtitle', 'Owner 级别的一份真相：文档、笔记、画像、授权入口都从这里进入。')}</p>
+          <h1>{t('personalKnowledge.title')}</h1>
+          <p>{t('personalKnowledge.subtitle')}</p>
         </div>
       </header>
 
@@ -1082,18 +1082,18 @@ export default function PersonalKnowledge() {
           <input
             value={searchInput}
             onChange={(event) => setSearchInput(event.target.value)}
-            placeholder={t('personalKnowledge.searchPlaceholder', '搜索你的一切经手信息...')}
+            placeholder={t('personalKnowledge.searchPlaceholder')}
           />
         </form>
         <button type="button" className="btn btn-primary" onClick={() => setActiveLane('inbox')}>
-          {t('personalKnowledge.feed', '+ 投喂')}
+          {t('personalKnowledge.feed')}
         </button>
       </section>
 
       <div className="personal-kb-stats" aria-label={t('personalKnowledge.stats', 'Personal knowledge stats')}>
-        <span>{stats.documents} {t('personalKnowledge.docUnit', '文档')}</span>
-        <span>{stats.segments} {t('personalKnowledge.segmentUnit', '段落')}</span>
-        <span>{stats.searchable} {t('personalKnowledge.searchableUnit', 'Agent 可检索')}</span>
+        <span>{stats.documents} {t('personalKnowledge.docUnit')}</span>
+        <span>{stats.segments} {t('personalKnowledge.segmentUnit')}</span>
+        <span>{stats.searchable} {t('personalKnowledge.searchableUnit')}</span>
       </div>
 
       <div className="personal-kb-shell">
@@ -1178,12 +1178,12 @@ export default function PersonalKnowledge() {
             <section className="personal-kb-panel">
               <div className="personal-kb-panel-heading">
                 <div>
-                  <h2>{t('personalKnowledge.profile', '画像')}</h2>
-                  <p>{t('personalKnowledge.profileDesc', '画像来自后端抽取和归档结果；当前页面只显示 Owner scope 的入口与状态，不在前端手写语义。')}</p>
+                  <h2>{t('personalKnowledge.profile')}</h2>
+                  <p>{t('personalKnowledge.profileDesc')}</p>
                 </div>
                 <IconBrain size={18} stroke={1.7} />
               </div>
-              <EmptyBlock>{t('personalKnowledge.profileEmpty', '后端尚未产出 profile plane。')}</EmptyBlock>
+              <EmptyBlock>{t('personalKnowledge.profileEmpty')}</EmptyBlock>
             </section>
           )}
 

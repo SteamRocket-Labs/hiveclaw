@@ -4,9 +4,18 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { AIAssetDetailPanel } from './WorkspaceAIAssetsSection';
 
+const { translationSpy } = vi.hoisted(() => ({ translationSpy: vi.fn() }));
+
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
-    t: (key: string, fallback?: string) => fallback ?? key.split('.').pop() ?? key,
+    t: (key: string, fallbackOrOptions?: string | { version?: number }) => {
+      translationSpy(key, fallbackOrOptions);
+      if (typeof fallbackOrOptions === 'string') return fallbackOrOptions;
+      if (key === 'enterprise.extensions.aiAssetsRollbackVersion') {
+        return `Rollback to v${fallbackOrOptions?.version}`;
+      }
+      return key.split('.').pop() ?? key;
+    },
   }),
 }));
 
@@ -55,5 +64,9 @@ describe('AIAssetDetailPanel', () => {
     expect(html).toContain('legacy');
     expect(html).toContain('Rollback to v2');
     expect(html).toContain('Reconcile');
+    expect(translationSpy).toHaveBeenCalledWith(
+      'enterprise.extensions.aiAssetsRollbackVersion',
+      { version: 2 },
+    );
   });
 });

@@ -51,10 +51,10 @@ function GrowthReportCard({ metrics }: { metrics: GrowthMetrics | undefined }) {
     return (
       <div className="agent-evolution-card">
         <h4 className="agent-evolution-heading">
-          <IconChartLine size={16} /> {t('agent.evolution.growthHeading', '成长报告')}
+          <IconChartLine size={16} /> {t('agent.evolution.growthHeading')}
         </h4>
         <p className="agent-evolution-muted-p">
-          {t('agent.evolution.growthEmpty', '还没有成长报告 — 随心跳自动生成,数字来自真实工作证据。')}
+          {t('agent.evolution.growthEmpty')}
         </p>
       </div>
     );
@@ -69,7 +69,7 @@ function GrowthReportCard({ metrics }: { metrics: GrowthMetrics | undefined }) {
     <div className="agent-evolution-card">
       <div className="agent-evolution-report-head">
         <h4 className="agent-evolution-heading-flush">
-          <IconChartLine size={16} /> {t('agent.evolution.growthHeading', '成长报告')}
+          <IconChartLine size={16} /> {t('agent.evolution.growthHeading')}
         </h4>
         <span className="u-meta u-tertiary">
           {(metrics.generated_at ?? '').slice(0, 16)}
@@ -80,11 +80,11 @@ function GrowthReportCard({ metrics }: { metrics: GrowthMetrics | undefined }) {
         <table className="agent-evolution-table">
           <thead>
             <tr className="agent-evolution-thead-row">
-              <th className="agent-evolution-th">{t('agent.evolution.failureMode', '失败模式')}</th>
-              <th className="agent-evolution-th">{t('agent.evolution.fmStatus', '状态')}</th>
-              <th className="agent-evolution-th">{t('agent.evolution.recurred', '复发')}</th>
-              <th className="agent-evolution-th">{t('agent.evolution.avoided', '规避')}</th>
-              <th className="agent-evolution-th">{t('agent.evolution.avoidanceRate', '规避率')}</th>
+              <th className="agent-evolution-th">{t('agent.evolution.failureMode')}</th>
+              <th className="agent-evolution-th">{t('agent.evolution.fmStatus')}</th>
+              <th className="agent-evolution-th">{t('agent.evolution.recurred')}</th>
+              <th className="agent-evolution-th">{t('agent.evolution.avoided')}</th>
+              <th className="agent-evolution-th">{t('agent.evolution.avoidanceRate')}</th>
             </tr>
           </thead>
           <tbody>
@@ -103,26 +103,26 @@ function GrowthReportCard({ metrics }: { metrics: GrowthMetrics | undefined }) {
         </table>
       ) : (
         <p className="u-row u-tertiary">
-          {t('agent.evolution.noFailureSignals', '暂无失败模式信号。')}
+          {t('agent.evolution.noFailureSignals')}
         </p>
       )}
 
       <div className="agent-evolution-metrics-grid">
         <div>
-          📚 {t('agent.evolution.reuse', '知识复用')}: {reuse.total_citations ?? 0} {t('agent.evolution.citations', '次引用')} / {reuse.knowledge_pages ?? 0} {t('agent.evolution.pages', '页')}
+          📚 {t('agent.evolution.reuse')}: {reuse.total_citations ?? 0} {t('agent.evolution.citations')} / {reuse.knowledge_pages ?? 0} {t('agent.evolution.pages')}
         </div>
         <div>
-          🔁 {t('agent.evolution.reworkRate', '返工率')}: {rework.recent_rate != null ? `${Math.round((rework.recent_rate as number) * 100)}%` : '—'}
-          {rework.previous_rate != null && ` (${t('agent.evolution.previously', '此前')} ${Math.round((rework.previous_rate as number) * 100)}%)`}
+          🔁 {t('agent.evolution.reworkRate')}: {rework.recent_rate != null ? `${Math.round((rework.recent_rate as number) * 100)}%` : '—'}
+          {rework.previous_rate != null && ` (${t('agent.evolution.previously')} ${Math.round((rework.previous_rate as number) * 100)}%)`}
         </div>
         <div>
-          👍 {t('agent.evolution.feedback', '主人反馈')}: {polarity.recent?.useful ?? 0} useful / {polarity.recent?.misleading ?? 0} misleading
+          👍 {t('agent.evolution.feedback')}: {polarity.recent?.useful ?? 0} useful / {polarity.recent?.misleading ?? 0} misleading
         </div>
         <div>
-          ⚡ {t('agent.evolution.taskVolume', '任务量')}: {volume.recent_invocations ?? 0} / {volume.window_days ?? 7}d
+          ⚡ {t('agent.evolution.taskVolume')}: {volume.recent_invocations ?? 0} / {volume.window_days ?? 7}d
         </div>
         <div>
-          🧬 {t('agent.evolution.promotions', '晋升')}: {evolution.promotions ?? 0} · {t('agent.evolution.rollbacks', '回滚')}: {evolution.rollbacks ?? 0}
+          🧬 {t('agent.evolution.promotions')}: {evolution.promotions ?? 0} · {t('agent.evolution.rollbacks')}: {evolution.rollbacks ?? 0}
         </div>
       </div>
     </div>
@@ -152,8 +152,8 @@ function OwnerApprovalCard({
     onSuccess: (result) => {
       setFeedback(
         result.status === 'committed'
-          ? t('agent.evolution.approveDone', '已批准并写入 soul（可回滚）。')
-          : `${t('agent.evolution.approveRefused', '门禁拒绝')}: ${result.reason ?? ''}`,
+          ? t('agent.evolution.approveDone')
+          : `${t('agent.evolution.approveRefused')}: ${result.reason ?? ''}`,
       );
       invalidate();
     },
@@ -161,7 +161,7 @@ function OwnerApprovalCard({
   const rejectMutation = useMutation({
     mutationFn: (candidateId: string) => evolutionApi.rejectSoulCandidate(agentId, candidateId, ''),
     onSuccess: () => {
-      setFeedback(t('agent.evolution.rejectDone', '已驳回。'));
+      setFeedback(t('agent.evolution.rejectDone'));
       invalidate();
     },
   });
@@ -174,12 +174,11 @@ function OwnerApprovalCard({
   return (
     <div className="agent-evolution-card agent-evolution-card-accent">
       <h4 className="agent-evolution-heading">
-        <IconShieldCheck size={16} /> {t('agent.evolution.approvalHeading', '待你审批 — soul 变更提名')}
+        <IconShieldCheck size={16} /> {t('agent.evolution.approvalHeading')}
       </h4>
       <p className="u-row u-tertiary">
         {t(
           'agent.evolution.approvalHint',
-          '这些提名触碰敏感面,agent 不能自行写入。批准会经过硬门禁并保留回滚快照。',
         )}
       </p>
       {feedback && <p className="u-row u-secondary">{feedback}</p>}
@@ -198,7 +197,7 @@ function OwnerApprovalCard({
                 </div>
                 <div className="agent-evolution-actions">
                   <button className="btn btn-sm" onClick={() => setExpanded(isOpen ? null : candidateId)}>
-                    {isOpen ? t('agent.evolution.collapse', '收起') : t('agent.evolution.viewPitch', '看提名理由')}
+                    {isOpen ? t('agent.evolution.collapse') : t('agent.evolution.viewPitch')}
                   </button>
                   {canManage && (
                     <>
@@ -207,14 +206,14 @@ function OwnerApprovalCard({
                         disabled={approveMutation.isPending}
                         onClick={() => approveMutation.mutate(candidateId)}
                       >
-                        {t('agent.evolution.approve', '批准')}
+                        {t('agent.evolution.approve')}
                       </button>
                       <button
                         className="btn btn-sm"
                         disabled={rejectMutation.isPending}
                         onClick={() => rejectMutation.mutate(candidateId)}
                       >
-                        {t('agent.evolution.reject', '驳回')}
+                        {t('agent.evolution.reject')}
                       </button>
                     </>
                   )}
@@ -299,11 +298,10 @@ export default function AgentEvolutionSection({ agentId, active, canManage = fal
 
           {provisionalSkills.length > 0 && (
             <div className="agent-evolution-card agent-evolution-card-accent">
-              <h4 className="agent-evolution-heading-plain">🧪 {t('agent.evolution.provisionalHeading', '技能试用中')}</h4>
+              <h4 className="agent-evolution-heading-plain">🧪 {t('agent.evolution.provisionalHeading')}</h4>
               <p className="u-row u-tertiary">
                 {t(
                   'agent.evolution.provisionalHint',
-                  '已生效并受监控:真实使用积累后自动转正,负信号超阈自动回滚。',
                 )}
               </p>
               <div className="agent-evolution-list">
@@ -319,9 +317,9 @@ export default function AgentEvolutionSection({ agentId, active, canManage = fal
                       <span className="agent-evolution-item-right">
                         {trial && (
                           <span className="u-meta u-tertiary">
-                            {t('agent.evolution.trialPositive', '正向')} {trial.positive_count} / {trial.positive_threshold}
+                            {t('agent.evolution.trialPositive')} {trial.positive_count} / {trial.positive_threshold}
                             {' · '}
-                            {t('agent.evolution.trialNegative', '负向')} {trial.negative_count} / {trial.negative_threshold}
+                            {t('agent.evolution.trialNegative')} {trial.negative_count} / {trial.negative_threshold}
                           </span>
                         )}
                         <span className="agent-evolution-state-badge agent-evolution-state-info">

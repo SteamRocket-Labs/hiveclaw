@@ -2,6 +2,9 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 
+import zh from '../../i18n/zh.json';
+import { translateFromCatalog } from '../../test/i18nMock';
+
 // 进化 tab tests: the first screen answers "有没有变强、有什么等我批".
 // - growth report renders real metrics (failure-mode recurrence/avoidance)
 // - held+requires_owner_approval soul candidates get approve/reject actions
@@ -10,9 +13,12 @@ import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
-    t: (key: string, fallback?: string | Record<string, unknown>) =>
-      typeof fallback === 'string' ? fallback : (key.split('.').pop() ?? key),
-    i18n: { language: 'en' },
+    t: (
+      key: string,
+      fallbackOrOptions?: string | Record<string, unknown>,
+      options?: Record<string, unknown>,
+    ) => translateFromCatalog(zh, key, fallbackOrOptions, options),
+    i18n: { language: 'zh' },
   }),
 }));
 

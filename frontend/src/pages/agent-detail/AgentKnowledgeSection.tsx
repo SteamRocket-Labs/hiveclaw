@@ -77,50 +77,50 @@ function OverviewCards({
   return (
     <div className="agent-knowledge-overview-grid">
       <div className="agent-knowledge-card">
-        <h4 className="agent-knowledge-card-title">🧬 {t('agent.knowledge.identityCard', '身份 Identity')}</h4>
+        <h4 className="agent-knowledge-card-title">🧬 {t('agent.knowledge.identityCard')}</h4>
         <div className="agent-knowledge-card-body">
           <div>{t('agent.knowledge.soulSections', 'Soul sections')}: {overview.identity.sections}</div>
           <div>
-            {t('agent.knowledge.pendingSoul', '待审批 soul 候选')}: {overview.identity.pendingSoulCandidates}
+            {t('agent.knowledge.pendingSoul')}: {overview.identity.pendingSoulCandidates}
             {overview.identity.pendingSoulCandidates > 0 && onNavigateTab && (
               <button className="btn btn-sm agent-knowledge-inline-btn" onClick={() => onNavigateTab('evolution')}>
-                {t('agent.knowledge.goApprove', '去审批')} →
+                {t('agent.knowledge.goApprove')} →
               </button>
             )}
           </div>
         </div>
       </div>
       <div className="agent-knowledge-card agent-knowledge-card--clickable" onClick={() => onOpenSubView('self')}>
-        <h4 className="agent-knowledge-card-title">🪞 {t('agent.knowledge.selfCard', '自我认知')}</h4>
+        <h4 className="agent-knowledge-card-title">🪞 {t('agent.knowledge.selfCard')}</h4>
         <div className="agent-knowledge-card-body">
-          <div>{t('agent.knowledge.selfEntries', '条目')}: {overview.planes.self.entries}</div>
+          <div>{t('agent.knowledge.selfEntries')}: {overview.planes.self.entries}</div>
           <div className="agent-knowledge-row-gap">
-            {t('agent.knowledge.failureModes', '失败模式')}:{' '}
+            {t('agent.knowledge.failureModes')}:{' '}
             <span className="agent-knowledge-fm-active">{fm.active} active</span>
             {' · '}
-            <span className="agent-knowledge-fm-mitigating">{fm.mitigating} {t('agent.knowledge.mitigating', '规避中')}</span>
+            <span className="agent-knowledge-fm-mitigating">{fm.mitigating} {t('agent.knowledge.mitigating')}</span>
             {' · '}
-            <span className="agent-knowledge-fm-resolved">{fm.resolved} {t('agent.knowledge.resolved', '已根除')}</span>
+            <span className="agent-knowledge-fm-resolved">{fm.resolved} {t('agent.knowledge.resolved')}</span>
           </div>
         </div>
       </div>
       <div className="agent-knowledge-card">
-        <h4 className="agent-knowledge-card-title">🗺 {t('agent.knowledge.planesCard', '记忆版图')}</h4>
+        <h4 className="agent-knowledge-card-title">🗺 {t('agent.knowledge.planesCard')}</h4>
         <div className="agent-knowledge-card-body">
           <div className="agent-knowledge-plane-link" onClick={() => onOpenSubView('profiles')}>
-            👥 {t('agent.knowledge.profilesPlane', '人际与领域')}: {overview.planes.profiles.entries}
+            👥 {t('agent.knowledge.profilesPlane')}: {overview.planes.profiles.entries}
           </div>
           <div className="agent-knowledge-plane-link" onClick={() => onOpenSubView('knowledge')}>
-            📚 {t('agent.knowledge.knowledgePlane', '知识网络')}: {overview.planes.knowledge.pages}
+            📚 {t('agent.knowledge.knowledgePlane')}: {overview.planes.knowledge.pages}
           </div>
           <div className="agent-knowledge-plane-link" onClick={() => onOpenSubView('milestones')}>
-            🏁 {t('agent.knowledge.milestonesPlane', '里程碑')}: {overview.planes.milestones.pages}
+            🏁 {t('agent.knowledge.milestonesPlane')}: {overview.planes.milestones.pages}
           </div>
-          <div>📌 {t('agent.knowledge.explicitPlane', '主人指令记忆')}: {overview.planes.explicit.active}</div>
+          <div>📌 {t('agent.knowledge.explicitPlane')}: {overview.planes.explicit.active}</div>
         </div>
       </div>
       <div className="agent-knowledge-card">
-        <h4 className="agent-knowledge-card-title">🩺 {t('agent.knowledge.pipelineCard', '记忆管线')}</h4>
+        <h4 className="agent-knowledge-card-title">🩺 {t('agent.knowledge.pipelineCard')}</h4>
         <div className="agent-knowledge-card-body">
           {distillers.map((status) => {
             const runtime = status.name === 'dream' && status.runtime_status
@@ -163,19 +163,19 @@ function OverviewCards({
           })}
           {overview.pipeline?.stalled && (
             <div className="agent-knowledge-pipeline-stalled">
-              ⚠ {t('agent.knowledge.pipelineStalled', '消化停滞')} · {t('agent.knowledge.pendingPackages', '积压')}:{' '}
+              ⚠ {t('agent.knowledge.pipelineStalled')} · {t('agent.knowledge.pendingPackages')}:{' '}
               {overview.pipeline.pendingPackages ?? 0}
             </div>
           )}
           {overview.growth?.generatedAt && (
             <div className="agent-knowledge-growth-updated">
-              {t('agent.knowledge.growthUpdated', '成长报告更新于')} {overview.growth.generatedAt.slice(0, 16)}
+              {t('agent.knowledge.growthUpdated')} {overview.growth.generatedAt.slice(0, 16)}
             </div>
           )}
         </div>
       </div>
       <div className="agent-knowledge-card">
-        <h4 className="agent-knowledge-card-title">🔗 {t('agent.knowledge.capabilitiesCard', '关联能力')}</h4>
+        <h4 className="agent-knowledge-card-title">🔗 {t('agent.knowledge.capabilitiesCard')}</h4>
         <div className="agent-knowledge-card-body">
           <div>{t('agent.knowledge.skillsLinked', 'Skills')}: {overview.linkedCapabilities.skillsReferenced}</div>
           <div>{t('agent.knowledge.skillCandidates', 'Skill candidates')}: {overview.linkedCapabilities.skillCandidates}</div>
@@ -538,7 +538,6 @@ export default function AgentKnowledgeSection({ agentId, canEdit, onNavigateTab 
           entries={selfEntries}
           emptyText={t(
             'agent.knowledge.noSelf',
-            '还没有自我认知条目 — 能力、方法和失败模式会随经历由记忆管线长出来。',
           )}
         />
       )}
@@ -546,7 +545,7 @@ export default function AgentKnowledgeSection({ agentId, canEdit, onNavigateTab 
       {subView === 'profiles' && (
         <PlaneEntriesView
           entries={profileEntries}
-          emptyText={t('agent.knowledge.noProfiles', '还没有主人/协作者/领域侧写条目。')}
+          emptyText={t('agent.knowledge.noProfiles')}
         />
       )}
 
@@ -578,7 +577,7 @@ export default function AgentKnowledgeSection({ agentId, canEdit, onNavigateTab 
           selectedPageId={selectedPageId}
           onSelect={setSelectedPageId}
           pageDetail={pageQuery.data}
-          emptyText={t('agent.knowledge.noPages', '还没有知识页 — 证据积累后由整理器生成。')}
+          emptyText={t('agent.knowledge.noPages')}
         />
       )}
 
@@ -588,7 +587,7 @@ export default function AgentKnowledgeSection({ agentId, canEdit, onNavigateTab 
           selectedPageId={selectedPageId}
           onSelect={setSelectedPageId}
           pageDetail={pageQuery.data}
-          emptyText={t('agent.knowledge.noMilestones', '还没有里程碑 — 首次成功、重大失败或主人反馈会沉淀在这里。')}
+          emptyText={t('agent.knowledge.noMilestones')}
         />
       )}
 

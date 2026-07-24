@@ -193,11 +193,11 @@ export default function Login() {
                     </div>
 
                     <div className="login-form-header">
-                        <h2 className="login-form-title">{isRegister ? t('auth.createAccountTitle', '创建你的账户') : t('auth.welcomeBack', '欢迎回来')}</h2>
+                        <h2 className="login-form-title">{isRegister ? t('auth.createAccountTitle') : t('auth.welcomeBack')}</h2>
                         <p className="login-form-subtitle">
                             {isRegister
-                                ? t('auth.subtitleRegister', '注册后即可加入或创建一个 workspace。')
-                                : t('auth.subtitleLogin', '登录以继续你的数字员工工作区。')}
+                                ? t('auth.subtitleRegister')
+                                : t('auth.subtitleLogin')}
                         </p>
                     </div>
 
@@ -223,7 +223,7 @@ export default function Login() {
 
                     <form onSubmit={handleSubmit} className="login-form">
                         <div className="login-field">
-                            <label>{isRegister ? t('auth.username') : t('auth.identifierLabel', '用户名或邮箱')}</label>
+                            <label>{isRegister ? t('auth.username') : t('auth.identifierLabel')}</label>
                             <input
                                 value={form.username}
                                 onChange={(e) => setForm({ ...form, username: e.target.value })}
@@ -300,7 +300,7 @@ export default function Login() {
 
                     {isRegister && (
                         <p className="login-legal">
-                            {t('auth.legalPrefix', '注册即代表同意 Hive 的企业使用条款与隐私政策。')}
+                            {t('auth.legalPrefix')}
                         </p>
                     )}
                 </section>

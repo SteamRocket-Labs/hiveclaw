@@ -871,9 +871,7 @@ async def call_agent_llm(
     if getattr(agent, "tenant_id", None):
         session_context.metadata["tenant_id"] = str(agent.tenant_id)
     if channel_ingress_redaction_receipt is not None:
-        session_context.metadata["exact_secret_ingress_redaction"] = (
-            channel_ingress_redaction_receipt
-        )
+        session_context.metadata["exact_secret_ingress_redaction"] = channel_ingress_redaction_receipt
     trusted_decline = plan_mode_core.trusted_decline_metadata(
         content=user_text,
         messages=history,

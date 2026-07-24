@@ -2020,9 +2020,7 @@ async def _delegate_after_cycle_check(
         result_parts = getattr(result, "parts", None) or []
         terminal_reason = getattr(result, "terminal_reason", None)
         terminal_reason_value = (
-            terminal_reason.value
-            if getattr(terminal_reason, "value", None)
-            else str(terminal_reason or "") or None
+            terminal_reason.value if getattr(terminal_reason, "value", None) else str(terminal_reason or "") or None
         )
         terminal_failed = terminal_reason_value not in {None, TerminalReason.TURN_STOP.value}
         if terminal_failed:
@@ -3185,7 +3183,11 @@ async def _release_delegation_coordination_lease(
         )
 
     metadata = {
-        "coordination_release_state": "failed" if release_error is not None else "released" if released else "not_owned",
+        "coordination_release_state": "failed"
+        if release_error is not None
+        else "released"
+        if released
+        else "not_owned",
         "coordination_release_reason": reason,
         "coordination_released_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -3261,9 +3263,7 @@ async def _ensure_delegation_coordination_published(
                     from_agent_id=str(request.parent_agent_id or request.owner_id),
                     to_agent_id=str(getattr(request.target, "id", "")),
                     content=(
-                        request.conversation_messages[-1].get("content", "")
-                        if request.conversation_messages
-                        else ""
+                        request.conversation_messages[-1].get("content", "") if request.conversation_messages else ""
                     ),
                     signal_type="delegation_started",
                     thread_id=request.trace_id,

@@ -107,9 +107,8 @@ async def _audit_platform_admin_tenant_impersonation(
 ) -> None:
     """Write the fail-closed operator receipt for a cross-tenant identity frame."""
     request_state = getattr(request, "state", None)
-    if (
-        request_state is not None
-        and getattr(request_state, "tenant_impersonation_target_id", None) == str(target_tenant_id)
+    if request_state is not None and getattr(request_state, "tenant_impersonation_target_id", None) == str(
+        target_tenant_id
     ):
         return
 

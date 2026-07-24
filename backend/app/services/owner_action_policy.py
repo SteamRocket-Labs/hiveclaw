@@ -467,9 +467,7 @@ async def rollback_owner_action_policy(
     )
     target = result.scalar_one_or_none()
     if target is None:
-        raise OwnerActionPolicyRevisionNotFound(
-            f"Owner action policy version {target_version} was not found"
-        )
+        raise OwnerActionPolicyRevisionNotFound(f"Owner action policy version {target_version} was not found")
     content = _policy_content(_actions_from_content(dict(target.content or {})))
     revision = await save_revision(
         db,

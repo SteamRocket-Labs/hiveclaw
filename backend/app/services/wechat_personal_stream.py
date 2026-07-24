@@ -169,9 +169,7 @@ class WeChatPersonalStreamManager:
                     )
                     started += 1
                 except Exception as exc:
-                    logger.error(
-                        f"[WeChatPersonal Stream] Failed to start client for agent {config.agent_id}: {exc}"
-                    )
+                    logger.error(f"[WeChatPersonal Stream] Failed to start client for agent {config.agent_id}: {exc}")
                     await self._mark_disconnected(config.agent_id)
 
             if started:

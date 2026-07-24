@@ -1037,10 +1037,7 @@ class WorkflowRuntimeService:
                 # legacy rows) is the active principal and a valid users.id FK so
                 # the multi-tenant ChatSession row is well-formed.
                 if resolved_user is None and agent is not None:
-                    owner = (
-                        getattr(agent, "owner_user_id", None)
-                        or getattr(agent, "creator_id", None)
-                    )
+                    owner = getattr(agent, "owner_user_id", None) or getattr(agent, "creator_id", None)
                     resolved_user = str(owner) if owner else None
                 if resolved_user is None:
                     # No principal to attach the session to — leave it unbound

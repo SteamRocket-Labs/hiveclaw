@@ -157,9 +157,7 @@ def _delegation_runtime_failure_outcome(
         (part for part in parts if isinstance(part, dict) and str(part.get("type") or "") == "runtime_status"),
         {},
     )
-    error_code = str(
-        runtime_status.get("error_code") or terminal_reason_value or "a2a_child_runtime_failed"
-    )
+    error_code = str(runtime_status.get("error_code") or terminal_reason_value or "a2a_child_runtime_failed")
     return _a2a_failure(
         operation,
         error_code=error_code,
@@ -189,10 +187,7 @@ def _principal_from_args(
 
 def _effective_a2a_requester(source_agent: Any, principal: ExecutionPrincipal | None) -> uuid.UUID:
     requester = principal.requester_user_id if principal is not None else None
-    fallback = (
-        getattr(source_agent, "owner_user_id", None)
-        or getattr(source_agent, "creator_id", None)
-    )
+    fallback = getattr(source_agent, "owner_user_id", None) or getattr(source_agent, "creator_id", None)
     owner_id = requester or fallback
     if owner_id is None:
         raise ValueError("source Agent has no effective requester")
@@ -1698,14 +1693,8 @@ async def _delegate_to_local_agent_channel(
         raise ValueError("source/target agent has no tenant for local-agent delegation")
     if getattr(source_agent, "tenant_id", tenant_id) != getattr(target_agent, "tenant_id", tenant_id):
         raise ValueError("cross-tenant local-agent delegation is forbidden")
-    source_owner_id = (
-        getattr(source_agent, "owner_user_id", None)
-        or getattr(source_agent, "creator_id", None)
-    )
-    target_owner_id = (
-        getattr(target_agent, "owner_user_id", None)
-        or getattr(target_agent, "creator_id", None)
-    )
+    source_owner_id = getattr(source_agent, "owner_user_id", None) or getattr(source_agent, "creator_id", None)
+    target_owner_id = getattr(target_agent, "owner_user_id", None) or getattr(target_agent, "creator_id", None)
     if source_owner_id is None or target_owner_id is None:
         raise ValueError("source/target agent owner is required for local-agent delegation")
     principal = ExecutionPrincipal.from_evidence(args.get("_execution_principal"))

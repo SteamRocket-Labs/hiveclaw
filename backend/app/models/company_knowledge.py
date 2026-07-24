@@ -12,6 +12,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     DateTime,
@@ -219,6 +220,75 @@ class CompanyKnowledgeEvidence(Base):
     )
 
 
+class CompanyKnowledgeImportJob(Base):
+    """Restart-resumable conversion of one lossless source item into evidence."""
+
+    __tablename__ = "company_knowledge_import_jobs"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "idempotency_key", name="uq_company_knowledge_import_job_idempotency"),
+        CheckConstraint(
+            "status IN ('queued','running','completed','held','failed','cancelled')",
+            name="ck_company_knowledge_import_job_status",
+        ),
+        CheckConstraint(
+            "attempt_count >= 0 AND max_attempts > 0",
+            name="ck_company_knowledge_import_job_attempts",
+        ),
+        Index(
+            "ix_company_knowledge_import_job_claim",
+            "tenant_id",
+            "status",
+            "available_at",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    source_contract_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("company_knowledge_source_contracts.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    source_contract_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(300), nullable=False)
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    request_json: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    artifact_ref: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    artifact_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="queued", index=True)
+    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    claim_token: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    claim_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=5, server_default="5")
+    last_error_code: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("company_knowledge_sources.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    evidence_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("company_knowledge_evidence.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    document_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("knowledge_documents.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    created_by_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    created_by_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    accountable_user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
+    trace_id: Mapped[str] = mapped_column(String(300), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class CompanyKnowledgeProposal(Base):
     """Governed Knowledge/Ontology candidate; never published truth by itself."""
 
@@ -411,6 +481,8 @@ class CompanyKnowledgeEvent(Base):
     __tablename__ = "company_knowledge_events"
     __table_args__ = (
         UniqueConstraint("tenant_id", "idempotency_key", name="uq_company_knowledge_event_idempotency"),
+        UniqueConstraint("tenant_id", "stream_sequence", name="uq_company_knowledge_event_stream_sequence"),
+        Index("ix_company_knowledge_event_tenant_sequence", "tenant_id", "stream_sequence"),
         Index("ix_company_knowledge_event_stream", "tenant_id", "resource_type", "resource_id", "created_at"),
         Index("ix_company_knowledge_event_trace", "tenant_id", "trace_id", "created_at"),
     )
@@ -436,6 +508,7 @@ class CompanyKnowledgeEvent(Base):
     idempotency_key: Mapped[str] = mapped_column(String(300), nullable=False)
     outcome: Mapped[str] = mapped_column(String(40), nullable=False)
     payload_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    stream_sequence: Mapped[int] = mapped_column(BigInteger, nullable=False)
     prev_hash: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     event_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)

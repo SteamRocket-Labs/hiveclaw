@@ -41,6 +41,7 @@ from app.api.guard_policies import router as guard_policies_router
 from app.api.hooks import router as hooks_router
 from app.api.hr_creation import router as hr_creation_router
 from app.api.interoperability import router as interoperability_router
+from app.api.knowledge_company import router as company_knowledge_router
 from app.api.local_agent_channel import local_agent_browser_channel_ws
 from app.api.local_agent_channel import router as local_agent_channel_router
 from app.api.local_bridge import router as local_bridge_router
@@ -892,6 +893,7 @@ _api_routers = [
     tools_router,
     workflows_router,
     workflow_definitions_router,
+    company_knowledge_router,
     personal_knowledge_router,
     agent_knowledge_router,
     agent_subagents_router,

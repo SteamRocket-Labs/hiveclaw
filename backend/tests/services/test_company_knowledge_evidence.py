@@ -74,7 +74,7 @@ def _event_input(*, tenant_id: uuid.UUID, actor_id: uuid.UUID, user_id: uuid.UUI
 async def test_event_append_hash_chains_without_committing_the_callers_transaction() -> None:
     tenant_id = uuid.uuid4()
     user_id = uuid.uuid4()
-    previous = SimpleNamespace(event_hash="b" * 64)
+    previous = SimpleNamespace(event_hash="b" * 64, stream_sequence=1)
     session = _Session(previous=previous)
 
     event = await append_company_knowledge_event(
@@ -84,6 +84,7 @@ async def test_event_append_hash_chains_without_committing_the_callers_transacti
 
     assert isinstance(event, CompanyKnowledgeEvent)
     assert event.prev_hash == "b" * 64
+    assert event.stream_sequence == 2
     assert len(event.event_hash) == 64
     assert session.added == [event]
     assert session.flush_count == 1
@@ -140,6 +141,7 @@ def test_event_chain_verification_reports_the_first_exact_failure() -> None:
         payload_json=first_input.payload,
         prev_hash="",
         event_hash="",
+        stream_sequence=1,
         created_at=first_input.occurred_at,
     )
     from app.services.company_knowledge_evidence import compute_company_knowledge_event_hash
@@ -165,6 +167,7 @@ def test_event_chain_verification_reports_the_first_exact_failure() -> None:
         payload_json={"status": "draft"},
         prev_hash=first.event_hash,
         event_hash="",
+        stream_sequence=2,
         created_at=datetime(2026, 7, 24, 8, 2, tzinfo=timezone.utc),
     )
     second.event_hash = compute_company_knowledge_event_hash(second)

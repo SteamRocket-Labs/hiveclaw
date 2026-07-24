@@ -5,6 +5,7 @@ from sqlalchemy import inspect
 from app.models.company_knowledge import (
     CompanyKnowledgeEvent,
     CompanyKnowledgeEvidence,
+    CompanyKnowledgeImportJob,
     CompanyKnowledgeOutbox,
     CompanyKnowledgeProposal,
     CompanyKnowledgePublication,
@@ -41,6 +42,7 @@ def test_company_knowledge_authority_models_are_distinct_from_personal_knowledge
         CompanyKnowledgeSourceContract: "company_knowledge_source_contracts",
         CompanyKnowledgeSource: "company_knowledge_sources",
         CompanyKnowledgeEvidence: "company_knowledge_evidence",
+        CompanyKnowledgeImportJob: "company_knowledge_import_jobs",
         CompanyKnowledgeProposal: "company_knowledge_proposals",
         CompanyKnowledgeReview: "company_knowledge_reviews",
         CompanyKnowledgePublication: "company_knowledge_publications",
@@ -60,6 +62,7 @@ def test_company_knowledge_authority_models_are_distinct_from_personal_knowledge
     assert {"review_set_hash", "rollback_ref", "supersedes_publication_id"} <= {
         column.key for column in inspect(CompanyKnowledgePublication).columns
     }
+    assert "stream_sequence" in {column.key for column in inspect(CompanyKnowledgeEvent).columns}
     assert {"idempotency_key", "available_at", "attempt_count", "last_error"} <= {
         column.key for column in inspect(CompanyKnowledgeOutbox).columns
     }

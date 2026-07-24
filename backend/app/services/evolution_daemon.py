@@ -13,6 +13,7 @@ Lifespan wiring lives in `app/main.py` — the daemon is spawned alongside
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 import uuid
 from pathlib import Path
 
@@ -25,6 +26,13 @@ from sqlalchemy import select
 from app.config import get_settings
 
 _HEARTBEAT_INTERVAL_SECONDS = get_settings().HEARTBEAT_TICK_SECONDS
+
+
+@dataclass(frozen=True, slots=True)
+class CompanyKnowledgeDrainSummary:
+    imports: object
+    index_completed: int
+    index_failed: int
 
 
 async def record_and_enqueue_heartbeat_dream(
@@ -276,6 +284,11 @@ async def _heartbeat_loop() -> None:
             logger.debug(f"[EvolutionDaemon] Personal KB import drain error (non-fatal): {e}")
 
         try:
+            await _drain_company_kb_jobs()
+        except Exception as e:
+            logger.debug(f"[EvolutionDaemon] Company KB import drain error (non-fatal): {e}")
+
+        try:
             from app.services.dream_runtime import reconcile_due_dream_runtime_tasks
 
             await reconcile_due_dream_runtime_tasks(limit=200)
@@ -305,6 +318,41 @@ async def _drain_personal_kb_jobs() -> None:
         if summary.attempted:
             logger.info("[EvolutionDaemon] Personal KB import drain: {}", summary)
         await db.commit()
+
+
+async def _drain_company_kb_jobs():
+    from app.database import async_session, enter_rls_bypass
+    from app.services.company_knowledge_indexer import CompanyKnowledgeIndexer
+    from app.services.company_knowledge_service import CompanyKnowledgeService
+
+    async with (
+        async_session() as db,
+        enter_rls_bypass(db, reason="company-kb import job drain — recover queued and stale claimed jobs"),
+    ):
+        imports = await CompanyKnowledgeService(data_root=get_settings().AGENT_DATA_DIR).recover_due_import_jobs(
+            db,
+            session_factory=async_session,
+            limit=10,
+        )
+        indexer = CompanyKnowledgeIndexer()
+        index_completed = 0
+        index_failed = 0
+        for tenant_id in await indexer.discover_pending_tenants(db, limit=10):
+            index_summary = await indexer.process_pending(
+                tenant_id=tenant_id,
+                session_factory=async_session,
+                limit=20,
+            )
+            index_completed += index_summary.completed
+            index_failed += index_summary.failed
+        summary = CompanyKnowledgeDrainSummary(
+            imports=imports,
+            index_completed=index_completed,
+            index_failed=index_failed,
+        )
+        if imports.attempted or index_completed or index_failed:
+            logger.info("[EvolutionDaemon] Company KB recovery drain: {}", summary)
+        return summary
 
 
 async def start_evolution_daemon() -> None:

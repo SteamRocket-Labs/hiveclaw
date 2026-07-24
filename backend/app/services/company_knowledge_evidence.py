@@ -124,8 +124,7 @@ async def append_company_knowledge_event(
             .where(CompanyKnowledgeEvent.tenant_id == event_input.tenant_id)
             .order_by(
                 (CompanyKnowledgeEvent.idempotency_key == event_input.idempotency_key).desc(),
-                CompanyKnowledgeEvent.created_at.desc(),
-                CompanyKnowledgeEvent.id.desc(),
+                CompanyKnowledgeEvent.stream_sequence.desc(),
             )
             .limit(1)
             .with_for_update()
@@ -154,6 +153,7 @@ async def append_company_knowledge_event(
         idempotency_key=event_input.idempotency_key,
         outcome=event_input.outcome,
         payload_json=dict(event_input.payload),
+        stream_sequence=int(getattr(previous, "stream_sequence", 0) or 0) + 1,
         prev_hash=str(getattr(previous, "event_hash", "") or ""),
         event_hash="",
         created_at=event_input.occurred_at,
@@ -221,9 +221,17 @@ async def append_company_knowledge_event_with_outbox(
 
 def verify_company_knowledge_event_chain(events: list[CompanyKnowledgeEvent]) -> dict[str, Any]:
     expected_prev_hash = ""
+    expected_sequence = 1
     checked = 0
     for event in events:
         checked += 1
+        if event.stream_sequence != expected_sequence:
+            return {
+                "valid": False,
+                "checked": checked,
+                "failed_event_id": str(event.id),
+                "reason": "stream_sequence_mismatch",
+            }
         if event.prev_hash != expected_prev_hash:
             return {
                 "valid": False,
@@ -239,6 +247,7 @@ def verify_company_knowledge_event_chain(events: list[CompanyKnowledgeEvent]) ->
                 "reason": "event_hash_mismatch",
             }
         expected_prev_hash = event.event_hash
+        expected_sequence += 1
     return {"valid": True, "checked": checked, "failed_event_id": None, "reason": None}
 
 

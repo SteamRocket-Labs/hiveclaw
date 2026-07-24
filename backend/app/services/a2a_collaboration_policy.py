@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, exists, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
@@ -276,19 +276,18 @@ async def list_public_agents(db: AsyncSession, source_agent: Agent) -> list[Agen
         Agent.deleted_at.is_(None),
         Agent.status.in_(list(ACTIVE_AGENT_STATUSES)),
         _a2a_agent_sql_filter(),
-        AgentPermission.scope_type == "company",
-        or_(AgentPermission.tenant_id == source_agent.tenant_id, AgentPermission.tenant_id.is_(None)),
+        exists(
+            select(1).where(
+                AgentPermission.agent_id == Agent.id,
+                AgentPermission.scope_type == "company",
+                or_(AgentPermission.tenant_id == source_agent.tenant_id, AgentPermission.tenant_id.is_(None)),
+            )
+        ),
     ]
     if same_owner_filter is not False:
         public_filters.append(~same_owner_filter)
 
-    result = await db.execute(
-        select(Agent)
-        .join(AgentPermission, AgentPermission.agent_id == Agent.id)
-        .where(*public_filters)
-        .distinct()
-        .order_by(Agent.name.asc())
-    )
+    result = await db.execute(select(Agent).where(*public_filters).order_by(Agent.name.asc()))
     return list(result.scalars().all())
 
 

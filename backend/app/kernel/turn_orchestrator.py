@@ -13,9 +13,145 @@ if TYPE_CHECKING:
         InvocationResult,
         LLMMessage,
         LoopGuardDecision,
-        RuntimeConfig,
         ToolExpansionResult,
     )
+
+
+class _TurnTokenUsageLedger:
+    """Track one invocation's delta without double-charging a resumed turn."""
+
+    __slots__ = ("initial", "recorded")
+
+    def __init__(self, initial: Any) -> None:
+        try:
+            self.initial = max(0, int(initial or 0))
+        except (TypeError, ValueError):
+            self.initial = 0
+        self.recorded = 0
+
+    async def record(
+        self,
+        record_token_usage: Any,
+        maybe_await: Any,
+        agent_id: Any,
+        accumulated_tokens: int,
+    ) -> None:
+        invocation_tokens = max(accumulated_tokens - self.initial, 0)
+        unrecorded_tokens = max(invocation_tokens - self.recorded, 0)
+        if agent_id and unrecorded_tokens > 0:
+            await maybe_await(record_token_usage(agent_id, unrecorded_tokens))
+            self.recorded += unrecorded_tokens
+
+
+class _RuntimeSpanRecorder:
+    """Bind stable turn identity while allowing runtime config to resolve later."""
+
+    __slots__ = ("deps", "record_runtime_span", "request", "root_span_id", "runtime_config")
+
+    def __init__(self, deps: Any, request: Any, root_span_id: str, record_runtime_span: Any) -> None:
+        self.deps = deps
+        self.request = request
+        self.root_span_id = root_span_id
+        self.record_runtime_span = record_runtime_span
+        self.runtime_config: Any = None
+
+    async def __call__(self, **kwargs: Any) -> dict[str, Any] | None:
+        return await self.record_runtime_span(
+            deps=self.deps,
+            request=self.request,
+            runtime_config=self.runtime_config,
+            root_span_id=self.root_span_id,
+            **kwargs,
+        )
+
+
+def _add_response_usage(
+    deps: Any,
+    response: Any,
+    api_messages: list[Any],
+    request: Any,
+    accumulated_tokens: int,
+    context_usage_anchor_tokens: int,
+) -> tuple[int, int]:
+    real_tokens = deps.extract_usage_tokens(response.usage)
+    if real_tokens is not None:
+        accumulated_tokens += real_tokens
+    else:
+        round_chars = sum(len(message.content or "") for message in api_messages if isinstance(message.content, str))
+        accumulated_tokens += deps.estimate_tokens_from_chars(round_chars + len(response.content or ""))
+    context_usage_anchor_tokens = max(context_usage_anchor_tokens, accumulated_tokens)
+    if request.session_context is not None:
+        request.session_context.metadata["usage_anchor_tokens"] = context_usage_anchor_tokens
+    return accumulated_tokens, context_usage_anchor_tokens
+
+
+def _turn_budget_blocks_tools(token_budget: int | None, tokens_used: int, tool_calls: list[Any] | None) -> bool:
+    return bool(token_budget is not None and token_budget > 0 and tokens_used >= token_budget and tool_calls)
+
+
+def _turn_token_budget_event(
+    logical_round_index: int,
+    tokens_used: int,
+    token_budget: int,
+    blocked_tool_call_count: int,
+) -> dict[str, Any]:
+    return {
+        "type": "turn_token_budget_exhausted",
+        "status": "blocked",
+        "round": logical_round_index,
+        "tokens_used": tokens_used,
+        "token_budget": token_budget,
+        "blocked_tool_call_count": blocked_tool_call_count,
+        "retryable": True,
+        "part": {
+            "type": "event",
+            "event_type": "turn_token_budget_exhausted",
+            "title": "Turn budget reached",
+            "text": "The turn stopped before the next tool action.",
+            "status": "warning",
+            "tokens_used": tokens_used,
+            "token_budget": token_budget,
+            "retryable": True,
+        },
+    }
+
+
+def _build_turn_route_span_metadata(request: Any) -> dict[str, Any]:
+    session_metadata = (
+        request.session_context.metadata
+        if request.session_context is not None and isinstance(request.session_context.metadata, dict)
+        else {}
+    )
+    route = session_metadata.get("turn_route") if isinstance(session_metadata.get("turn_route"), dict) else {}
+    return {
+        "turn_route_reason": route.get("reason"),
+        "routing_config_source": route.get("config_source"),
+        "model_routing_locked": bool(route.get("model_routing_locked")),
+        "selected_model_id": route.get("selected_model_id"),
+    }
+
+
+def _bind_system_prompt_suffix_sections(
+    protected_sections: list[str],
+    request: Any,
+    session_ctx: Any,
+    attachment_builder: Any,
+) -> Any:
+    def build() -> list[str]:
+        return [
+            *protected_sections,
+            *attachment_builder(
+                request.agent_id,
+                session_ctx,
+                request.recovery_manifest_result,
+            ),
+        ]
+
+    return build
+
+
+def _bind_work_ledger_view_provider(request: Any, *, enabled_key: str, logger: Any) -> Any:
+    return lambda: _load_work_ledger_view(request, enabled_key=enabled_key, logger=logger)
 
 
 def _provider_response_payload(response: Any) -> dict[str, Any]:
@@ -426,33 +562,11 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
     invocation_started_ms = monotonic_ms()
     invocation_id = ""
     invocation_span_id = f"invocation-{new_invocation_id()[:16]}"
-    runtime_config_for_spans: RuntimeConfig | None = None
-    runtime_span_kwargs = {
-        "deps": self._deps,
-        "request": request,
-    }
-
-    async def _record_span(**kwargs) -> dict[str, Any] | None:
-        return await _record_runtime_span(
-            **runtime_span_kwargs,
-            runtime_config=runtime_config_for_spans,
-            root_span_id=invocation_span_id,
-            **kwargs,
-        )
+    span_recorder = _RuntimeSpanRecorder(self._deps, request, invocation_span_id, _record_runtime_span)
+    _record_span = span_recorder
 
     def _turn_route_span_metadata() -> dict[str, Any]:
-        session_metadata = (
-            request.session_context.metadata
-            if request.session_context is not None and isinstance(request.session_context.metadata, dict)
-            else {}
-        )
-        route = session_metadata.get("turn_route") if isinstance(session_metadata.get("turn_route"), dict) else {}
-        return {
-            "turn_route_reason": route.get("reason"),
-            "routing_config_source": route.get("config_source"),
-            "model_routing_locked": bool(route.get("model_routing_locked")),
-            "selected_model_id": route.get("selected_model_id"),
-        }
+        return _build_turn_route_span_metadata(request)
 
     if request.agent_id:
         metadata = request.session_context.metadata if request.session_context else {}
@@ -473,7 +587,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
             return _build_error_result("[Error] No LLM model configured — unable to invoke agent.")
 
         runtime_config = await _maybe_await(self._deps.resolve_runtime_config(request.agent_id))
-        runtime_config_for_spans = runtime_config
+        span_recorder.runtime_config = runtime_config
         # P0-1b: invoker fallback paths set tenant_resolution_error instead
         # of silently returning tenant_id=None. Abort before any tool runs;
         # governance (P0-1a) is the second line of defence if a caller
@@ -622,15 +736,12 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
             [get_coordinator_prompt(dispatcher_only=_is_strict_dispatcher)] if _is_coordinator else []
         )
 
-        def _system_prompt_suffix_sections() -> list[str]:
-            return [
-                *_protected_system_prompt_suffixes,
-                *_build_runtime_attachment_sections(
-                    request.agent_id,
-                    session_ctx,
-                    request.recovery_manifest_result,
-                ),
-            ]
+        _system_prompt_suffix_sections = _bind_system_prompt_suffix_sections(
+            _protected_system_prompt_suffixes,
+            request,
+            session_ctx,
+            _build_runtime_attachment_sections,
+        )
 
         # P0.4 Observability: prompt cache hit/miss
         logger.info(
@@ -818,20 +929,17 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
             fact_recorder=_record_compaction_fact,
         )
 
-        try:
-            initial_turn_tokens_used = max(0, int(request.initial_turn_tokens_used or 0))
-        except (TypeError, ValueError):
-            initial_turn_tokens_used = 0
+        token_usage_ledger = _TurnTokenUsageLedger(request.initial_turn_tokens_used)
+        initial_turn_tokens_used = token_usage_ledger.initial
         accumulated_tokens = initial_turn_tokens_used
-        recorded_invocation_tokens = 0
 
         async def _record_new_token_usage() -> None:
-            nonlocal recorded_invocation_tokens
-            invocation_tokens = max(accumulated_tokens - initial_turn_tokens_used, 0)
-            unrecorded_tokens = max(invocation_tokens - recorded_invocation_tokens, 0)
-            if request.agent_id and unrecorded_tokens > 0:
-                await _maybe_await(self._deps.record_token_usage(request.agent_id, unrecorded_tokens))
-                recorded_invocation_tokens += unrecorded_tokens
+            await token_usage_ledger.record(
+                self._deps.record_token_usage,
+                _maybe_await,
+                request.agent_id,
+                accumulated_tokens,
+            )
 
         collected_parts: list[dict[str, Any]] = []
         streamed_chunks: list[str] = []
@@ -844,12 +952,11 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
         reminder_scheduler = ReminderScheduler(build_default_reminder_specs())
         _round_tool_names: list[str] = []
 
-        def _work_ledger_view_provider() -> dict[str, Any] | None:
-            return _load_work_ledger_view(
-                request,
-                enabled_key=_WORK_LEDGER_ENABLED_METADATA_KEY,
-                logger=logger,
-            )
+        _work_ledger_view_provider = _bind_work_ledger_view_provider(
+            request,
+            enabled_key=_WORK_LEDGER_ENABLED_METADATA_KEY,
+            logger=logger,
+        )
 
         def _work_ledger_snapshot_provider() -> str:
             return _render_work_ledger_snapshot(_work_ledger_view_provider, logger=logger)
@@ -1935,51 +2042,26 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                             tokens_used=accumulated_tokens,
                         )
 
-                real_tokens = self._deps.extract_usage_tokens(response.usage)
-                if real_tokens is not None:
-                    accumulated_tokens += real_tokens
-                    context_usage_anchor_tokens = max(context_usage_anchor_tokens, accumulated_tokens)
-                    if request.session_context is not None:
-                        request.session_context.metadata["usage_anchor_tokens"] = context_usage_anchor_tokens
-                else:
-                    round_chars = sum(
-                        len(m.content or "") if isinstance(m.content, str) else 0 for m in api_messages
-                    ) + len(response.content or "")
-                    accumulated_tokens += self._deps.estimate_tokens_from_chars(round_chars)
-                    context_usage_anchor_tokens = max(context_usage_anchor_tokens, accumulated_tokens)
-                    if request.session_context is not None:
-                        request.session_context.metadata["usage_anchor_tokens"] = context_usage_anchor_tokens
+                accumulated_tokens, context_usage_anchor_tokens = _add_response_usage(
+                    self._deps,
+                    response,
+                    api_messages,
+                    request,
+                    accumulated_tokens,
+                    context_usage_anchor_tokens,
+                )
 
-                if (
-                    turn_token_budget is not None
-                    and turn_token_budget > 0
-                    and accumulated_tokens >= turn_token_budget
-                    and response.tool_calls
-                ):
+                if _turn_budget_blocks_tools(turn_token_budget, accumulated_tokens, response.tool_calls):
                     budget_msg = _turn_token_budget_message(
-                        tokens_used=accumulated_tokens,
-                        token_budget=turn_token_budget,
+                        tokens_used=accumulated_tokens, token_budget=turn_token_budget
                     )
                     await _emit_event(
-                        {
-                            "type": "turn_token_budget_exhausted",
-                            "status": "blocked",
-                            "round": logical_round_index,
-                            "tokens_used": accumulated_tokens,
-                            "token_budget": turn_token_budget,
-                            "blocked_tool_call_count": len(response.tool_calls),
-                            "retryable": True,
-                            "part": {
-                                "type": "event",
-                                "event_type": "turn_token_budget_exhausted",
-                                "title": "Turn budget reached",
-                                "text": "The turn stopped before the next tool action.",
-                                "status": "warning",
-                                "tokens_used": accumulated_tokens,
-                                "token_budget": turn_token_budget,
-                                "retryable": True,
-                            },
-                        }
+                        _turn_token_budget_event(
+                            logical_round_index,
+                            accumulated_tokens,
+                            turn_token_budget,
+                            len(response.tool_calls),
+                        )
                     )
                     await _record_new_token_usage()
                     await self._persist_before_exit(request, runtime_config, budget_msg, api_messages)

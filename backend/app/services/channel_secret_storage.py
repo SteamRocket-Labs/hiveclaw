@@ -8,7 +8,8 @@ from typing import Any
 import uuid
 
 from cryptography.fernet import InvalidToken
-from sqlalchemy import JSON, String, select, text
+from sqlalchemy import JSON, String, Text, select, text
+from sqlalchemy.dialects.postgresql import JSON as PostgreSQLJSON
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.engine import Dialect
 from sqlalchemy.types import TypeDecorator
@@ -776,6 +777,8 @@ class EncryptedDeliveryTargetJSON(TypeDecorator[dict[str, Any]]):
     """JSON/JSONB type that protects typed ephemeral transport credentials."""
 
     impl = JSON
+    comparator_factory = PostgreSQLJSON.Comparator
+    astext_type = Text()
     cache_ok = True
 
     def __init__(self, *, postgres_jsonb: bool = False) -> None:
@@ -801,7 +804,16 @@ class EncryptedDeliveryTargetJSON(TypeDecorator[dict[str, Any]]):
         dialect: Dialect,
     ) -> dict[str, Any] | None:
         del dialect
-        return decrypt_delivery_target(value)
+        decrypted = decrypt_delivery_target(value)
+        if decrypted is None:
+            return None
+        # PostgreSQL's legacy JSON type may return a stored ``\u0000`` escape
+        # as U+0000. Keep the global lossless text contract at this typed read
+        # boundary as well as at the DBAPI write boundary.
+        from app.database import repair_postgres_nul
+
+        repaired, _replacement_count = repair_postgres_nul(decrypted)
+        return repaired
 
     def copy(self, **kw):
         del kw

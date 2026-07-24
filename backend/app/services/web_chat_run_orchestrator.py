@@ -878,6 +878,7 @@ def _agent_invocation_request(
         model_response_commit=lambda **payload: _commit_session_model_response(state, **payload),
         model_request_fail=lambda **payload: _fail_session_model_request(state, **payload),
         initial_round_index=max(0, int(state.metadata.get("session_resume_round_index") or 0)),
+        initial_turn_tokens_used=max(0, int(state.metadata.get("session_resume_tokens_used") or 0)),
         disable_tools=state.disable_tools_for_turn,
         excluded_tool_names=state.excluded_tool_names_for_turn,
         model_routing_locked=bool(state.metadata.get("model_routing_locked")),

@@ -375,6 +375,7 @@ def _build_kernel_request(
         model_response_commit=model_response_commit,
         model_request_fail=request.model_request_fail,
         initial_round_index=max(0, int(request.initial_round_index or 0)),
+        initial_turn_tokens_used=max(0, int(request.initial_turn_tokens_used or 0)),
         cancel_event=request.cancel_event,
         initial_tools=request.initial_tools or (ports.combined_tools() if request.agent_id is None else None),
         core_tools_only=request.core_tools_only,

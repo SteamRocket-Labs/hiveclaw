@@ -280,6 +280,7 @@ async def _finalize_empty_provider_response(
     provider_request_id: str | None,
     llm_started_ms: int,
     accumulated_tokens: int,
+    initial_turn_tokens_used: int,
     tools_for_llm: list[dict[str, Any]],
     record_span: Any,
     turn_route_span_metadata: Any,
@@ -311,8 +312,9 @@ async def _finalize_empty_provider_response(
             "finish_reason": getattr(response, "finish_reason", None),
         },
     )
-    if request.agent_id and accumulated_tokens > 0:
-        await support._maybe_await(self._deps.record_token_usage(request.agent_id, accumulated_tokens))
+    invocation_tokens = max(accumulated_tokens - initial_turn_tokens_used, 0)
+    if request.agent_id and invocation_tokens > 0:
+        await support._maybe_await(self._deps.record_token_usage(request.agent_id, invocation_tokens))
     return support.InvocationResult(
         content="",
         tokens_used=accumulated_tokens,
@@ -398,6 +400,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
     _tool_execution_evidence = support._tool_execution_evidence
     _tool_result_requests_user_clarification = support._tool_result_requests_user_clarification
     _tool_round_limit_message = support._tool_round_limit_message
+    _turn_token_budget_message = support._turn_token_budget_message
     _usage_int = support._usage_int
     asyncio = support.asyncio
     build_context_policy = support.build_context_policy
@@ -815,6 +818,21 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
             fact_recorder=_record_compaction_fact,
         )
 
+        try:
+            initial_turn_tokens_used = max(0, int(request.initial_turn_tokens_used or 0))
+        except (TypeError, ValueError):
+            initial_turn_tokens_used = 0
+        accumulated_tokens = initial_turn_tokens_used
+        recorded_invocation_tokens = 0
+
+        async def _record_new_token_usage() -> None:
+            nonlocal recorded_invocation_tokens
+            invocation_tokens = max(accumulated_tokens - initial_turn_tokens_used, 0)
+            unrecorded_tokens = max(invocation_tokens - recorded_invocation_tokens, 0)
+            if request.agent_id and unrecorded_tokens > 0:
+                await _maybe_await(self._deps.record_token_usage(request.agent_id, unrecorded_tokens))
+                recorded_invocation_tokens += unrecorded_tokens
+
         collected_parts: list[dict[str, Any]] = []
         streamed_chunks: list[str] = []
         delivered_chunk_count = 0
@@ -911,8 +929,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                 delivered_chunk_count += 1
 
         async def _pause_for_user_clarification() -> InvocationResult:
-            if request.agent_id and accumulated_tokens > 0:
-                await _maybe_await(self._deps.record_token_usage(request.agent_id, accumulated_tokens))
+            await _record_new_token_usage()
             await self._persist_before_exit(request, runtime_config, "", api_messages)
             return InvocationResult(
                 content="",
@@ -926,8 +943,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
             # D-08: a tool emitted ToolContentEnvelope.terminal_signal — end the
             # turn cleanly after the current round's tool results have been
             # appended, with a TURN_STOP terminal reason carrying the signal.
-            if request.agent_id and accumulated_tokens > 0:
-                await _maybe_await(self._deps.record_token_usage(request.agent_id, accumulated_tokens))
+            await _record_new_token_usage()
             await self._persist_before_exit(request, runtime_config, content, api_messages)
             await _emit_event(
                 {
@@ -1239,7 +1255,10 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
         try:
             client = self._deps.create_client(active_model)
         except Exception as exc:
-            return _build_error_result(f"[Error] Failed to create LLM client: {exc}")
+            return _build_error_result(
+                f"[Error] Failed to create LLM client: {exc}",
+                tokens_used=accumulated_tokens,
+            )
 
         max_rounds = request.max_tool_rounds or runtime_config.max_tool_rounds
         max_tokens = self._deps.get_max_tokens(
@@ -1247,7 +1266,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
             active_model.model,
             request.max_output_tokens or getattr(active_model, "max_output_tokens", None),
         )
-        accumulated_tokens = 0
+        turn_token_budget = getattr(runtime_config, "turn_token_budget", None)
         last_model_result_receipt: dict[str, Any] | None = None
         # full_toolset tracks expanded tools after deferred-schema discovery.
         # Intentionally persists across rounds — discovered tool schemas stay active once loaded.
@@ -1262,8 +1281,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                 if round_i >= remaining_rounds and not _loop_guard_summary_pending:
                     break
                 if request.cancel_event and request.cancel_event.is_set():
-                    if request.agent_id and accumulated_tokens > 0:
-                        await _maybe_await(self._deps.record_token_usage(request.agent_id, accumulated_tokens))
+                    await _record_new_token_usage()
                     await self._persist_before_exit(request, runtime_config, "*[Generation stopped]*", api_messages)
                     return _build_cancelled_result(
                         streamed_chunks,
@@ -1431,6 +1449,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                 provider_request_id=provider_request_id,
                                 llm_started_ms=llm_started_ms,
                                 accumulated_tokens=accumulated_tokens,
+                                initial_turn_tokens_used=initial_turn_tokens_used,
                                 tools_for_llm=tools_for_llm,
                                 record_span=_record_span,
                                 turn_route_span_metadata=_turn_route_span_metadata,
@@ -1471,8 +1490,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                 "status": "cancelled",
                             },
                         )
-                        if request.agent_id and accumulated_tokens > 0:
-                            await _maybe_await(self._deps.record_token_usage(request.agent_id, accumulated_tokens))
+                        await _record_new_token_usage()
                         await self._persist_before_exit(request, runtime_config, "*[Generation stopped]*", api_messages)
                         return _build_cancelled_result(
                             streamed_chunks,
@@ -1850,8 +1868,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                             )
                             fallback_model = None
                             continue
-                        if request.agent_id and accumulated_tokens > 0:
-                            await _maybe_await(self._deps.record_token_usage(request.agent_id, accumulated_tokens))
+                        await _record_new_token_usage()
                         user_msg = _humanize_llm_error(exc)
                         await self._persist_before_exit(request, runtime_config, f"[LLM Error] {exc}", api_messages)
                         return _build_error_result(user_msg, tokens_used=accumulated_tokens)
@@ -1905,8 +1922,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                             )
                             fallback_model = None
                             continue
-                        if request.agent_id and accumulated_tokens > 0:
-                            await _maybe_await(self._deps.record_token_usage(request.agent_id, accumulated_tokens))
+                        await _record_new_token_usage()
                         user_msg = _humanize_llm_error(exc)
                         await self._persist_before_exit(
                             request,
@@ -1920,7 +1936,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                         )
 
                 real_tokens = self._deps.extract_usage_tokens(response.usage)
-                if real_tokens:
+                if real_tokens is not None:
                     accumulated_tokens += real_tokens
                     context_usage_anchor_tokens = max(context_usage_anchor_tokens, accumulated_tokens)
                     if request.session_context is not None:
@@ -1933,6 +1949,49 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                     context_usage_anchor_tokens = max(context_usage_anchor_tokens, accumulated_tokens)
                     if request.session_context is not None:
                         request.session_context.metadata["usage_anchor_tokens"] = context_usage_anchor_tokens
+
+                if (
+                    turn_token_budget is not None
+                    and turn_token_budget > 0
+                    and accumulated_tokens >= turn_token_budget
+                    and response.tool_calls
+                ):
+                    budget_msg = _turn_token_budget_message(
+                        tokens_used=accumulated_tokens,
+                        token_budget=turn_token_budget,
+                    )
+                    await _emit_event(
+                        {
+                            "type": "turn_token_budget_exhausted",
+                            "status": "blocked",
+                            "round": logical_round_index,
+                            "tokens_used": accumulated_tokens,
+                            "token_budget": turn_token_budget,
+                            "blocked_tool_call_count": len(response.tool_calls),
+                            "retryable": True,
+                            "part": {
+                                "type": "event",
+                                "event_type": "turn_token_budget_exhausted",
+                                "title": "Turn budget reached",
+                                "text": "The turn stopped before the next tool action.",
+                                "status": "warning",
+                                "tokens_used": accumulated_tokens,
+                                "token_budget": turn_token_budget,
+                                "retryable": True,
+                            },
+                        }
+                    )
+                    await _record_new_token_usage()
+                    await self._persist_before_exit(request, runtime_config, budget_msg, api_messages)
+                    result = _build_error_result(
+                        budget_msg,
+                        tokens_used=accumulated_tokens,
+                        final_tools=tools_for_llm,
+                        terminal_reason=TerminalReason.TOOL_BUDGET,
+                    )
+                    result.parts = collected_parts + result.parts
+                    result.model_result_receipt = last_model_result_receipt
+                    return result
 
                 text_loop_decision = loop_guard.observe_assistant_text(response.content)
                 if text_loop_decision:
@@ -2041,8 +2100,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                             )
                         except Exception as exc:
                             logger.error("[Kernel] Failed to persist memory for agent %s: %s", request.agent_id, exc)
-                    if request.agent_id and accumulated_tokens > 0:
-                        await _maybe_await(self._deps.record_token_usage(request.agent_id, accumulated_tokens))
+                    await _record_new_token_usage()
 
                     # ── RESPONSE_COMPLETE hook: fire-and-forget extraction trigger ──
                     # (skipped for heartbeat — SOP-driven distiller — and for
@@ -2144,8 +2202,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                     # segment. Non-safe tools wait for every previous call, so
                     # side-effecting tools still observe model order.
                     if request.cancel_event and request.cancel_event.is_set():
-                        if request.agent_id and accumulated_tokens > 0:
-                            await _maybe_await(self._deps.record_token_usage(request.agent_id, accumulated_tokens))
+                        await _record_new_token_usage()
                         await self._persist_before_exit(request, runtime_config, "*[Generation stopped]*", api_messages)
                         return _build_cancelled_result(
                             streamed_chunks,
@@ -2250,8 +2307,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                         return_exceptions=True,
                     )
                     if any(isinstance(_r, _KernelCancelledError) for _r in results):
-                        if request.agent_id and accumulated_tokens > 0:
-                            await _maybe_await(self._deps.record_token_usage(request.agent_id, accumulated_tokens))
+                        await _record_new_token_usage()
                         await self._persist_before_exit(request, runtime_config, "*[Generation stopped]*", api_messages)
                         return _build_cancelled_result(
                             streamed_chunks,
@@ -2384,8 +2440,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                     # --- Sequential execution (original logic) ---
                     for tc, tool_name, args in parsed_tool_calls:
                         if request.cancel_event and request.cancel_event.is_set():
-                            if request.agent_id and accumulated_tokens > 0:
-                                await _maybe_await(self._deps.record_token_usage(request.agent_id, accumulated_tokens))
+                            await _record_new_token_usage()
                             await self._persist_before_exit(
                                 request, runtime_config, "*[Generation stopped]*", api_messages
                             )
@@ -2454,8 +2509,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                                     side_effect_sink=_side_effects,
                                 )
                         except _KernelCancelledError:
-                            if request.agent_id and accumulated_tokens > 0:
-                                await _maybe_await(self._deps.record_token_usage(request.agent_id, accumulated_tokens))
+                            await _record_new_token_usage()
                             await self._persist_before_exit(
                                 request, runtime_config, "*[Generation stopped]*", api_messages
                             )
@@ -2889,8 +2943,7 @@ async def run_agent_turn(self, request: InvocationRequest, *, support: Any) -> I
                             api_messages,
                         )
 
-            if request.agent_id and accumulated_tokens > 0:
-                await _maybe_await(self._deps.record_token_usage(request.agent_id, accumulated_tokens))
+            await _record_new_token_usage()
             round_limit_msg = _tool_round_limit_message(max_rounds)
             await self._persist_before_exit(request, runtime_config, round_limit_msg, api_messages)
             return _build_error_result(

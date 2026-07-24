@@ -115,6 +115,10 @@ class InvocationRequest:
     # before this invocation. Recovery continues at the next round; it never
     # re-sends an already sealed Provider request.
     initial_round_index: int = 0
+    # Effective cache-miss/output tokens already consumed by those committed
+    # rounds. This is restored from durable ModelResult seals so a resumed turn
+    # cannot reset its hard resource budget.
+    initial_turn_tokens_used: int = 0
     cancel_event: asyncio.Event | None = None
     initial_tools: list[dict] | None = None
     core_tools_only: bool = True

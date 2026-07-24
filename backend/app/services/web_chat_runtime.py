@@ -1501,15 +1501,49 @@ def _round_index_from_id(round_id: str) -> int:
     return index
 
 
+def _committed_turn_usage_tokens(
+    committed_results: list[Any],
+    *,
+    resume_round_index: int,
+) -> int:
+    """Recover cumulative turn cost from logical-root ModelResult seals."""
+
+    from app.services.token_tracker import estimate_tokens_from_chars, extract_usage_tokens
+
+    turn_tokens_used = 0
+    for committed_result in committed_results:
+        seal = dict(committed_result.seal_json or {})
+        continuation_index = int(
+            seal.get("continuation_index")
+            or (committed_result.model_request_snapshot_json or {}).get("continuation_index")
+            or 0
+        )
+        if continuation_index != 0 or _round_index_from_id(committed_result.round_id) > resume_round_index:
+            continue
+        usage_tokens = extract_usage_tokens(dict(seal.get("usage") or {}))
+        if usage_tokens is None:
+            wire_request = dict((committed_result.model_request_snapshot_json or {}).get("wire_request") or {})
+            request_chars = sum(
+                len(message.get("content") or "")
+                for message in wire_request.get("messages") or []
+                if isinstance(message, dict) and isinstance(message.get("content"), str)
+            )
+            response_content = (seal.get("response") or {}).get("content")
+            response_chars = len(response_content) if isinstance(response_content, str) else 0
+            usage_tokens = estimate_tokens_from_chars(request_chars + response_chars)
+        turn_tokens_used += max(0, int(usage_tokens))
+    return turn_tokens_used
+
+
 async def _session_permission_resume_history(
     db: AsyncSession,
     runtime_task: RuntimeTask,
-) -> tuple[list[dict[str, Any]], int]:
+) -> tuple[list[dict[str, Any]], int, int]:
     """Rebuild the exact sealed assistant/tool batch before native continuation."""
 
     resume = dict((runtime_task.metadata_json or {}).get("session_permission_resume") or {})
     if not resume:
-        return [], 0
+        return [], 0, 0
     from app.models.session_v2 import SessionModelResult, SessionToolInvocation
 
     try:
@@ -1567,7 +1601,25 @@ async def _session_permission_resume_history(
         "reasoning_content": response.get("reasoning_content"),
         "reasoning_signature": response.get("reasoning_signature"),
     }
-    return [assistant_message, *tool_messages], _round_index_from_id(result.round_id)
+    resume_round_index = _round_index_from_id(result.round_id)
+    committed_results = list(
+        (
+            await db.execute(
+                select(SessionModelResult).where(
+                    SessionModelResult.tenant_id == result.tenant_id,
+                    SessionModelResult.session_id == result.session_id,
+                    SessionModelResult.run_id == result.run_id,
+                    SessionModelResult.turn_id == result.turn_id,
+                    SessionModelResult.state == "round_committed",
+                )
+            )
+        ).scalars()
+    )
+    turn_tokens_used = _committed_turn_usage_tokens(
+        committed_results,
+        resume_round_index=resume_round_index,
+    )
+    return [assistant_message, *tool_messages], resume_round_index, turn_tokens_used
 
 
 def _parse_projection_datetime(value: Any) -> datetime | None:
@@ -2080,9 +2132,7 @@ async def start_web_chat_run(
     supplied_metadata["external_principal_id"] = (
         str(actor_external_principal_id) if actor_external_principal_id else None
     )
-    supplied_metadata["external_authority_bound"] = (
-        actor_authority_bound if actor_external_principal_id else None
-    )
+    supplied_metadata["external_authority_bound"] = actor_authority_bound if actor_external_principal_id else None
     if actor_external_principal_id is not None and not actor_authority_bound:
         supplied_metadata["disable_tools"] = True
         supplied_metadata["tool_policy"] = "disabled_for_unbound_external_principal"
@@ -4769,10 +4819,13 @@ async def _load_runtime_context(
         )
         history_messages = list(reversed(history_result.scalars().all()))
         history_messages = await _apply_active_projection_to_history(db, session, history_messages)
-        resume_history, resume_round_index = await _session_permission_resume_history(db, runtime_task)
+        resume_history, resume_round_index, resume_tokens_used = await _session_permission_resume_history(
+            db, runtime_task
+        )
         if resume_history:
             history_messages = [*history_messages, *resume_history]
             metadata["session_resume_round_index"] = resume_round_index
+            metadata["session_resume_tokens_used"] = resume_tokens_used
             runtime_task.metadata_json = metadata
         return runtime_task, agent, user, primary_model, fallback_model, history_messages, session
 

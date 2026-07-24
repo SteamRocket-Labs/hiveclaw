@@ -170,6 +170,7 @@ class AgentInvocationRequest:
     model_response_commit: ModelResponseCommit | None = None
     model_request_fail: ModelRequestFail | None = None
     initial_round_index: int = 0
+    initial_turn_tokens_used: int = 0
     cancel_event: asyncio.Event | None = None
     initial_tools: list[dict] | None = None
     core_tools_only: bool = True

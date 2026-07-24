@@ -16,6 +16,73 @@ async def _noop_async(*_args, **_kwargs):
     return None
 
 
+def test_committed_turn_usage_restores_logical_rounds_without_counting_continuations_twice():
+    from app.services.web_chat_runtime import _committed_turn_usage_tokens
+
+    run_id = uuid4()
+    rows = [
+        SimpleNamespace(
+            round_id=f"{run_id}:round:1",
+            seal_json={"continuation_index": 0, "usage": {"total_tokens": 20}, "response": {}},
+            model_request_snapshot_json={"continuation_index": 0, "wire_request": {"messages": []}},
+        ),
+        SimpleNamespace(
+            round_id=f"{run_id}:round:1:output-continuation:1",
+            seal_json={"continuation_index": 1, "usage": {"total_tokens": 5}, "response": {}},
+            model_request_snapshot_json={"continuation_index": 1, "wire_request": {"messages": []}},
+        ),
+        SimpleNamespace(
+            round_id=f"{run_id}:round:2",
+            seal_json={
+                "continuation_index": 0,
+                "usage": {
+                    "total_tokens": 100,
+                    "prompt_tokens_details": {"cached_tokens": 80},
+                },
+                "response": {},
+            },
+            model_request_snapshot_json={"continuation_index": 0, "wire_request": {"messages": []}},
+        ),
+        SimpleNamespace(
+            round_id=f"{run_id}:round:3",
+            seal_json={"continuation_index": 0, "usage": {"total_tokens": 99}, "response": {}},
+            model_request_snapshot_json={"continuation_index": 0, "wire_request": {"messages": []}},
+        ),
+    ]
+
+    assert _committed_turn_usage_tokens(rows, resume_round_index=2) == 40
+
+
+def test_committed_turn_usage_preserves_trusted_zero_and_estimates_only_missing_usage():
+    from app.services.web_chat_runtime import _committed_turn_usage_tokens
+
+    run_id = uuid4()
+    rows = [
+        SimpleNamespace(
+            round_id=f"{run_id}:round:1",
+            seal_json={
+                "continuation_index": 0,
+                "usage": {"total_tokens": 100, "cached_tokens": 100},
+                "response": {"content": ""},
+            },
+            model_request_snapshot_json={
+                "continuation_index": 0,
+                "wire_request": {"messages": [{"role": "user", "content": "cached request"}]},
+            },
+        ),
+        SimpleNamespace(
+            round_id=f"{run_id}:round:2",
+            seal_json={"continuation_index": 0, "usage": {}, "response": {"content": "1234567"}},
+            model_request_snapshot_json={
+                "continuation_index": 0,
+                "wire_request": {"messages": [{"role": "user", "content": "12345678901234"}]},
+            },
+        ),
+    ]
+
+    assert _committed_turn_usage_tokens(rows, resume_round_index=2) == 6
+
+
 async def _fake_canonical_active_input(**kwargs):
     active = kwargs["active_run"]
     input_id = uuid4()

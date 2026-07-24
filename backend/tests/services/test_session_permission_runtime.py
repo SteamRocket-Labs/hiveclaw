@@ -121,7 +121,7 @@ async def _seed_waiting_batch(owner_sessionmaker, *, tool_count: int = 1) -> Sim
                 "content": None,
                 "tool_calls": calls,
                 "finish_reason": "tool_calls",
-                "usage": {},
+                "usage": {"prompt_tokens": 20, "completion_tokens": 5},
             },
         )
         await commit_sealed_model_round(
@@ -297,7 +297,7 @@ async def test_allow_once_executes_once_pairs_result_and_resumes_same_runtime_ta
                 RuntimeTask.parent_session_id == str(seed.session_id),
             )
         )
-        history, round_index = await _session_permission_resume_history(db, task)
+        history, round_index, turn_tokens_used = await _session_permission_resume_history(db, task)
 
         assert first.status == replay.status == "resolved"
         assert first.run_id == replay.run_id == str(seed.run_id)
@@ -309,6 +309,7 @@ async def test_allow_once_executes_once_pairs_result_and_resumes_same_runtime_ta
         assert executor_calls == [str(seed.run_id)]
         assert await _event_count(db, invocation_id=invocation.id, item_kind="tool_result") == 1
         assert round_index == 1
+        assert turn_tokens_used == 25
         assert history[0]["role"] == "assistant"
         assert history[0]["tool_calls"][0]["id"] == invocation.provider_tool_use_id
         assert history[1] == {

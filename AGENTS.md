@@ -416,7 +416,14 @@ Stateless LLM loop with dependency injection. Zero DB imports — all I/O goes t
 - Provider-specific cache hints
 - DB-backed invocation/generation/tool spans through `record_invocation_span`
 - Provider retry/overload fallback, output-cap telemetry, and Anthropic thinking-signature preservation
-- Turn-level token budget gates where runtime config provides a budget
+- Turn-level cache-miss token budget gate: when a provider round reaches the configured
+  `RuntimeConfig.turn_token_budget` and proposes more tools, the kernel records exact usage,
+  emits `turn_token_budget_exhausted`, persists the recovery state, and exits with typed
+  `TerminalReason.TOOL_BUDGET` before executing those new tool calls; completed model answers
+  remain byte-faithful. Permission-resumed turns reconstruct cumulative usage from committed
+  logical-root `SessionModelResult` seals (without double-counting output continuations);
+  budget receipts remain turn-cumulative while quota metering records only the resumed
+  invocation's new token delta
 
 ### Tool Handlers (18 modules / 100+ registered tool definitions)
 

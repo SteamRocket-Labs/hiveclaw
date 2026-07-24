@@ -2333,6 +2333,8 @@ async def test_invoke_agent_passes_cancel_and_fallback_to_kernel(monkeypatch):
             ),
             fallback_model=fallback_model,
             cancel_event=cancel_event,
+            initial_round_index=2,
+            initial_turn_tokens_used=37,
             messages=[{"role": "user", "content": "hello"}],
             agent_name="Agent",
             role_description="desc",
@@ -2344,6 +2346,8 @@ async def test_invoke_agent_passes_cancel_and_fallback_to_kernel(monkeypatch):
     assert result.content == "ok"
     assert captured["request"].cancel_event is cancel_event
     assert captured["request"].fallback_model is fallback_model
+    assert captured["request"].initial_round_index == 2
+    assert captured["request"].initial_turn_tokens_used == 37
 
 
 @pytest.mark.asyncio

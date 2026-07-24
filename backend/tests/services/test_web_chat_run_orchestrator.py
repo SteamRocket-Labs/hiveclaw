@@ -336,7 +336,11 @@ async def test_production_invocation_request_wires_session_v2_round_callbacks(mo
         run_uuid=run_id,
         runtime_task=SimpleNamespace(claimed_by="worker-1", claim_version=3, attempt_count=2),
         cancel_event=SimpleNamespace(),
-        metadata={"turn_id": "turn-live"},
+        metadata={
+            "turn_id": "turn-live",
+            "session_resume_round_index": 2,
+            "session_resume_tokens_used": 37,
+        },
         disable_tools_for_turn=False,
         excluded_tool_names_for_turn=(),
         ports=SimpleNamespace(
@@ -347,6 +351,8 @@ async def test_production_invocation_request_wires_session_v2_round_callbacks(mo
     callbacks = SimpleNamespace(stream=None, tool_call=None, thinking=None, runtime_event=None)
     request = orchestrator._agent_invocation_request(state, callbacks, "")
 
+    assert request.initial_round_index == 2
+    assert request.initial_turn_tokens_used == 37
     assert await request.round_input_bind(2) == [{"role": "user", "content": "bound evidence"}]
     assert (
         await request.model_request_prepare(
@@ -560,6 +566,58 @@ async def test_model_text_that_looks_like_an_error_remains_typed_success(monkeyp
 
     assert captured["status"] == "completed"
     assert captured["response"] == result.content
+
+
+@pytest.mark.asyncio
+async def test_turn_token_budget_terminal_reason_is_persisted_as_failed_without_rewriting_content(monkeypatch):
+    from app.kernel.contracts import TerminalReason
+    from app.services import web_chat_run_orchestrator as orchestrator
+
+    captured: dict = {}
+
+    async def capture_finalize(_state, _result, response, _thinking, status, metadata):
+        captured.update(response=response, status=status, metadata=metadata)
+
+    def typed_terminal_reason(**payload):
+        reason = payload.get("result_reason")
+        return getattr(reason, "value", str(reason))
+
+    monkeypatch.setattr(orchestrator, "_finalize_assistant_response", capture_finalize)
+    state = SimpleNamespace(
+        interactive_pause_summary=None,
+        plan_mode_submitted=False,
+        runtime_session_context=SimpleNamespace(),
+        thinking_content=[],
+        cancel_event=SimpleNamespace(is_set=lambda: False),
+        terminal_phase_hint=None,
+        ports=SimpleNamespace(
+            terminal=SimpleNamespace(
+                plan_mode_terminal_error=lambda _context: None,
+                clear_interactive_plan_mode=lambda _context: None,
+                phase_for_status=lambda status: status,
+                terminal_reason=typed_terminal_reason,
+            ),
+            artifacts=SimpleNamespace(prompt_metadata=lambda _context: {}),
+        ),
+    )
+    content = "[Runtime Limit] This turn stopped before the next tool action."
+    result = SimpleNamespace(
+        content=content,
+        terminal_reason=TerminalReason.TOOL_BUDGET,
+        tokens_used=50,
+    )
+
+    await orchestrator._finalize_invocation_result(state, result)
+
+    assert captured == {
+        "response": content,
+        "status": "failed",
+        "metadata": {
+            "cancelled_by_user": False,
+            "terminal_reason": TerminalReason.TOOL_BUDGET.value,
+            "turn_tokens_used": 50,
+        },
+    }
 
 
 @pytest.mark.asyncio

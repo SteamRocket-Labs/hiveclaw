@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Any, Callable, Literal
+from typing import Any, Callable
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,36 +47,12 @@ class Checkpoint:
     metadata: dict[str, str] = field(default_factory=dict)
 
 
-SentinelRuntimePath = Literal["signal", "checkpoint"]
-
-
-@dataclass(frozen=True, slots=True)
-class Sentinel:
-    id: str
-    owner_agent_id: str
-    target_agent_id: str
-    condition: str
-    runtime_path: SentinelRuntimePath
-    checkpoint_approver_id: str | None = None
-    escalation_chain: list[str] = field(default_factory=list)
-    deadline_seconds: int = 1800
-
-
-@dataclass(frozen=True, slots=True)
-class SentinelEmission:
-    kind: SentinelRuntimePath
-    sentinel: Sentinel
-    signal: Signal | None = None
-    checkpoint: Checkpoint | None = None
-
-
 class CoordinationRuntime:
     def __init__(self, now: Callable[[], datetime] | None = None) -> None:
         self._now = now or (lambda: datetime.now(UTC))
         self._leases: dict[str, Lease] = {}
         self._signals: list[Signal] = []
         self._checkpoints: dict[str, Checkpoint] = {}
-        self._sentinels: dict[str, Sentinel] = {}
 
     def acquire_lease(self, *, task_key: str, agent_id: str, ttl_seconds: int) -> LeaseAcquireResult:
         current = self._now()
@@ -106,7 +82,6 @@ class CoordinationRuntime:
         self._leases.clear()
         self._signals.clear()
         self._checkpoints.clear()
-        self._sentinels.clear()
 
     def send_signal(
         self,
@@ -185,69 +160,6 @@ class CoordinationRuntime:
 
     def get_checkpoint(self, checkpoint_id: str) -> Checkpoint:
         return self._checkpoints[checkpoint_id]
-
-    def register_sentinel(
-        self,
-        *,
-        sentinel_id: str,
-        owner_agent_id: str,
-        target_agent_id: str,
-        condition: str,
-        runtime_path: SentinelRuntimePath,
-        checkpoint_approver_id: str | None = None,
-        escalation_chain: list[str] | None = None,
-        deadline_seconds: int = 1800,
-    ) -> Sentinel:
-        if runtime_path not in ("signal", "checkpoint"):
-            raise ValueError(f"Unsupported sentinel runtime_path: {runtime_path}")
-        sentinel = Sentinel(
-            id=sentinel_id,
-            owner_agent_id=owner_agent_id,
-            target_agent_id=target_agent_id,
-            condition=condition,
-            runtime_path=runtime_path,
-            checkpoint_approver_id=checkpoint_approver_id,
-            escalation_chain=list(escalation_chain or []),
-            deadline_seconds=deadline_seconds,
-        )
-        self._sentinels[sentinel.id] = sentinel
-        return sentinel
-
-    def fire_sentinel(
-        self,
-        sentinel_id: str,
-        *,
-        content: str,
-        thread_id: str | None = None,
-        metadata: dict[str, str] | None = None,
-    ) -> SentinelEmission:
-        sentinel = self._sentinels[sentinel_id]
-        if sentinel.runtime_path == "signal":
-            signal = self.send_signal(
-                from_agent_id=sentinel.owner_agent_id,
-                to_agent_id=sentinel.target_agent_id,
-                content=content,
-                signal_type=f"sentinel:{sentinel.condition}",
-                thread_id=thread_id,
-            )
-            return SentinelEmission(kind="signal", sentinel=sentinel, signal=signal)
-
-        if not sentinel.checkpoint_approver_id:
-            raise ValueError("Checkpoint sentinel requires checkpoint_approver_id")
-        checkpoint_metadata = {
-            "sentinel_id": sentinel.id,
-            "target_agent_id": sentinel.target_agent_id,
-            "content": content,
-            **{key: str(value) for key, value in (metadata or {}).items()},
-        }
-        checkpoint = self.create_checkpoint(
-            action=sentinel.condition,
-            approver_id=sentinel.checkpoint_approver_id,
-            escalation_chain=sentinel.escalation_chain,
-            deadline_at=self._now() + timedelta(seconds=max(sentinel.deadline_seconds, 1)),
-            metadata=checkpoint_metadata,
-        )
-        return SentinelEmission(kind="checkpoint", sentinel=sentinel, checkpoint=checkpoint)
 
     def escalate_expired_checkpoints(self) -> list[str]:
         current = self._now()

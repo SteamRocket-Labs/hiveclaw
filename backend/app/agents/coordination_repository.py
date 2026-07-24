@@ -1,13 +1,9 @@
 """PostgreSQL-backed coordination repository (Phase 14 redo).
 
-Replaces the local-sqlite shim. All four primitives — Lease, Signal,
-Checkpoint, and Sentinel-emitted variants — share a single async
-session, are tenant-scoped via `tenant_id`, and rely on PostgreSQL
-semantics (`UNIQUE` + `INSERT ... ON CONFLICT`, row locks) for
-cross-worker correctness.
-
-Sentinel state stays in-process and is not persisted — it is re-derived
-per proactive-loop tick.
+Replaces the local-sqlite shim. Lease, Signal, and Checkpoint share a
+single async session, are tenant-scoped via `tenant_id`, and rely on
+PostgreSQL semantics (`UNIQUE` + `INSERT ... ON CONFLICT`, row locks)
+for cross-worker correctness.
 """
 
 from __future__ import annotations

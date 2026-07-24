@@ -27,3 +27,22 @@ def test_sa09_retired_runtime_shims_are_absent(relative_path: str, retired_fragm
 
 def test_sa09_llm_utils_reexport_shim_is_absent() -> None:
     assert not (BACKEND_ROOT / "app/services/llm_utils.py").exists()
+
+
+def test_a2a04_in_process_sentinel_runtime_is_absent() -> None:
+    coordination = (BACKEND_ROOT / "app/agents/coordination.py").read_text(encoding="utf-8")
+    repository = (BACKEND_ROOT / "app/agents/coordination_repository.py").read_text(encoding="utf-8")
+    handbook = (BACKEND_ROOT.parent / "AGENTS.md").read_text(encoding="utf-8")
+
+    for fragment in (
+        "SentinelRuntimePath",
+        "class Sentinel:",
+        "class SentinelEmission:",
+        "self._sentinels",
+        "def register_sentinel",
+        "def fire_sentinel",
+    ):
+        assert fragment not in coordination
+    assert "Sentinel-emitted variants" not in repository
+    assert "Sentinel state stays in-process" not in repository
+    assert "unconsumed in-process Sentinel helper" not in handbook

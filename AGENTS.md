@@ -389,7 +389,7 @@ Hive keeps the T0/T2/T3/soul Markdown memory pyramid, but runtime behavior is go
 | Dynamic activation | `memory/activation.py`, `memory/retriever.py`, `services/memory_service.py`, `runtime/invoker.py` | Prompt memory is selected by owner/company/goal/open-loop relevance and sensitivity access, not by static file inclusion alone. |
 | Decision trace + preflight | `services/action_preflight.py`, `services/decision_trace.py`, `tools/service.py` | External-visible, sensitive, irreversible, or company-conflicting tool calls must pass preflight before execution. |
 | Session feedback | `services/session_feedback.py`, `models/session_feedback.py`, `api/chat_sessions.py` | Useful/misleading feedback is persisted with tenant/session/agent context and re-enters memory through governed write paths. |
-| Coordination primitives | `agents/orchestrator.py`, `agents/coordination_repository.py`, `models/coordination.py`, `tools/service.py` | Live cross-agent work persists Lease/Signal/Checkpoint state; do not treat the unconsumed in-process Sentinel helper as runtime authority. |
+| Coordination primitives | `agents/orchestrator.py`, `agents/coordination_repository.py`, `models/coordination.py`, `tools/service.py` | Live cross-agent work persists Lease/Signal/Checkpoint state; no parallel in-process proactive-loop authority exists. |
 | Heartbeat and self-evolution | `services/heartbeat.py`, `services/auto_dream.py`, `services/evolution_daemon.py` | Heartbeat follows its current direct T3/evolution paths. There is no live `proactive_employee_loop` or `memory/policy_replay`; do not cite either as implemented governance. |
 
 ### Web Chat Runtime

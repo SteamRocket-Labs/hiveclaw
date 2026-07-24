@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -10,12 +9,11 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.audit import AuditLog
 from app.models.runtime_task import RuntimeTask
 
-logger = logging.getLogger(__name__)
-
 RECONCILIATION_STATUS = "needs_reconciliation"
-RECONCILED_STATUS = "reconciled"
+RESOLVED_RUNTIME_TASK_STATUS = "completed"
 _ACTIONS = {"mark_resolved", "archive", "retry"}
 
 
@@ -124,31 +122,32 @@ def _append_history(
     return updated
 
 
-async def _write_reconciliation_audit(
+def _stage_reconciliation_audit(
+    db: AsyncSession,
     task: RuntimeTask,
     *,
     tenant_id: uuid.UUID,
     action: str,
     reason: str,
     actor_user_id: uuid.UUID,
+    previous_status: str,
 ) -> None:
-    try:
-        from app.services.audit_logger import write_audit_log
-
-        await write_audit_log(
+    db.add(
+        AuditLog(
             action=f"runtime_reconciliation.{action}",
             details={
-                "tenant_id": str(tenant_id),
                 "runtime_task_id": str(task.id),
                 "task_type": task.task_type,
-                "previous_status": task.status,
+                "previous_status": previous_status,
+                "resulting_status": task.status,
+                "reconciliation_status": _metadata(task).get("reconciliation_status"),
                 "reason": reason,
             },
             agent_id=task.parent_agent_id,
             user_id=actor_user_id,
+            tenant_id=tenant_id,
         )
-    except Exception as exc:
-        logger.warning("[RuntimeReconciliation] audit write failed action=%s task=%s: %s", action, task.id, exc)
+    )
 
 
 async def apply_runtime_reconciliation_action(
@@ -165,27 +164,21 @@ async def apply_runtime_reconciliation_action(
         raise ValueError(f"Unsupported reconciliation action: {action!r}")
     runtime_task_id = _coerce_uuid(task_id)
     result = await db.execute(
-        select(RuntimeTask).where(RuntimeTask.id == runtime_task_id, RuntimeTask.tenant_id == tenant_id)
+        select(RuntimeTask)
+        .where(RuntimeTask.id == runtime_task_id, RuntimeTask.tenant_id == tenant_id)
+        .with_for_update()
     )
     task = result.scalar_one_or_none()
     if task is None:
         raise RuntimeReconciliationNotFound("Runtime reconciliation task not found")
+    if task.status != RECONCILIATION_STATUS:
+        raise RuntimeReconciliationConflict(
+            f"RuntimeTask is no longer awaiting reconciliation (status={task.status!r})"
+        )
 
     metadata = _metadata(task)
     normalized_reason = (reason or "").strip() or normalized_action
-    await _write_reconciliation_audit(
-        task,
-        tenant_id=tenant_id,
-        action=normalized_action,
-        reason=normalized_reason,
-        actor_user_id=actor_user_id,
-    )
-    metadata = _append_history(
-        metadata,
-        action=normalized_action,
-        reason=normalized_reason,
-        actor_user_id=actor_user_id,
-    )
+    previous_status = task.status
 
     now = datetime.now(timezone.utc)
     if normalized_action == "retry":
@@ -205,13 +198,28 @@ async def apply_runtime_reconciliation_action(
         metadata["reconciliation_archived_at"] = now.isoformat()
         task.result_summary = task.result_summary or f"Archived after reconciliation: {normalized_reason}"
     else:
-        task.status = RECONCILED_STATUS
+        task.status = RESOLVED_RUNTIME_TASK_STATUS
         task.completed_at = task.completed_at or now
         metadata["needs_reconciliation"] = False
         metadata["reconciliation_status"] = "resolved"
         metadata["reconciliation_resolved_at"] = now.isoformat()
         task.result_summary = f"Reconciliation resolved: {normalized_reason}"
 
+    metadata = _append_history(
+        metadata,
+        action=normalized_action,
+        reason=normalized_reason,
+        actor_user_id=actor_user_id,
+    )
     task.metadata_json = metadata
+    _stage_reconciliation_audit(
+        db,
+        task,
+        tenant_id=tenant_id,
+        action=normalized_action,
+        reason=normalized_reason,
+        actor_user_id=actor_user_id,
+        previous_status=previous_status,
+    )
     await db.flush()
     return runtime_reconciliation_view(task)

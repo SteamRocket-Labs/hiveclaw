@@ -37,4 +37,43 @@ describe('AdminRuntimeReconciliationSection', () => {
     expect(markup).toContain('Archive');
     expect(markup).not.toContain('Retry');
   });
+
+  it('exposes non-retryable trigger and heartbeat restart blockers to platform operators', () => {
+    const markup = renderToStaticMarkup(
+      <AdminRuntimeReconciliationSection
+        initialTenantId="tenant-1"
+        initialTasks={[
+          {
+            task_id: 'trigger-task',
+            tenant_id: 'tenant-1',
+            task_type: 'trigger',
+            status: 'needs_reconciliation',
+            reason: 'session_bound_mutating_trigger',
+            side_effect_risk: 'mutating',
+            retry_allowed: false,
+            created_at: '2026-07-24T00:00:00Z',
+          },
+          {
+            task_id: 'heartbeat-task',
+            tenant_id: 'tenant-1',
+            task_type: 'heartbeat',
+            status: 'needs_reconciliation',
+            reason: 'direct_core_audit_session_bound',
+            side_effect_risk: 'mutating',
+            retry_allowed: false,
+            created_at: '2026-07-24T00:01:00Z',
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain('2 open items');
+    expect(markup).toContain('trigger');
+    expect(markup).toContain('session_bound_mutating_trigger');
+    expect(markup).toContain('heartbeat');
+    expect(markup).toContain('direct_core_audit_session_bound');
+    expect(markup).toContain('Resolve');
+    expect(markup).toContain('Archive');
+    expect(markup).not.toContain('Retry');
+  });
 });

@@ -68,7 +68,7 @@ def test_admin_runtime_reconciliation_routes_delegate_to_service(monkeypatch) ->
             "reason": reason,
             "actor_user_id": actor_user_id,
         }
-        return {"task_id": str(task_id), "status": "reconciled", "action": action}
+        return {"task_id": str(task_id), "status": "completed", "action": action}
 
     monkeypatch.setattr(admin_api, "list_runtime_reconciliation_tasks", fake_list)
     monkeypatch.setattr(admin_api, "get_runtime_reconciliation_task", fake_get)
@@ -88,7 +88,7 @@ def test_admin_runtime_reconciliation_routes_delegate_to_service(monkeypatch) ->
     assert get_resp.status_code == 200
     assert get_resp.json()["status"] == "needs_reconciliation"
     assert action_resp.status_code == 200
-    assert action_resp.json()["status"] == "reconciled"
+    assert action_resp.json()["status"] == "completed"
     assert captured["list"]["tenant_id"] == tenant_id
     assert captured["list"]["limit"] == 25
     assert captured["apply"]["action"] == "mark_resolved"

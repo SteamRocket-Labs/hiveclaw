@@ -297,7 +297,6 @@ type ConversationBranchMode =
   | 'insert_after'
   | 'reply'
   | 'regenerate'
-  | 'rewind'
   | 'side_question';
 
 export interface SessionCommandCheckpoint {
@@ -587,6 +586,7 @@ export function SessionCommandControlPanel({
   onRunCommand: (command: string, args?: Record<string, unknown>) => void | Promise<unknown>;
   rewindUnavailableReason?: string | null;
 }) {
+  const { t } = useTranslation();
   const checkpoints = control?.checkpoints || [];
   const checkpointIds = checkpoints.map(checkpointId);
   const availableCheckpointIds = checkpointIds.filter(Boolean);
@@ -711,7 +711,7 @@ export function SessionCommandControlPanel({
                           ),
                         )}
                       >
-                        Rewind here
+                        {t('sessionWorkbench.rewind.sameSessionHere', 'Rewind this session here')}
                       </button>
                       <button
                         type="button"
@@ -719,7 +719,7 @@ export function SessionCommandControlPanel({
                         data-session-command="branch"
                         onClick={() => onRunCommand('branch', { anchor_event_id: id })}
                       >
-                        Branch here
+                        {t('sessionWorkbench.rewind.branchNewSession', 'Branch into new session')}
                       </button>
                     </div>
                   ) : null}
@@ -1174,7 +1174,10 @@ function AgentChatSection({
   const rewindUnavailableReason = isStreaming
     || isWaiting
     || ['created', 'pending', 'queued', 'running', 'started', 'in_progress', 'resuming', 'waiting', 'waiting_user'].includes(normalizedActiveRunStatus)
-    ? t('sessionWorkbench.rewind.activeRunBlocked', 'Stop the current turn before rewinding. Branch remains available.')
+    ? t(
+      'sessionWorkbench.rewind.activeRunBlocked',
+      'Stop the current turn before rewinding. Creating a new branch session remains available.',
+    )
     : null;
   const {
     selectedId: selectedThreadItemId,

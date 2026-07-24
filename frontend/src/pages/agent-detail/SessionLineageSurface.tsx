@@ -18,6 +18,7 @@ export function branchModeLabel(item: BranchLineageItem): string {
   const branch = item.branch || {};
   const mode = String(branch.branch_mode || branch.mode || '').trim();
   if (!mode) return 'root';
+  if (mode === 'rewind') return 'legacy rewind branch';
   return mode.replace(/_/g, ' ');
 }
 

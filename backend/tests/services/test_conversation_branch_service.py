@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from fastapi import HTTPException
 
 
 class _ScalarResult:
@@ -230,7 +231,7 @@ async def test_fork_branch_copies_prefix_through_anchor(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_rewind_branch_copies_prefix_before_user_checkpoint(monkeypatch):
+async def test_rewind_is_not_accepted_as_a_conversation_branch_mode():
     from app.services.conversation_branch_service import create_conversation_branch
 
     agent_id = uuid4()
@@ -255,43 +256,33 @@ async def test_rewind_branch_copies_prefix_before_user_checkpoint(monkeypatch):
         content="second",
     )
     db = _FakeDB(anchor=rewind_target, prefix=[first_user, assistant_event])
-    copied = []
-
-    async def fake_append_session_event(**kwargs):
-        copied.append(kwargs)
-        return SimpleNamespace(
-            event_id=uuid4(), sequence=kwargs.get("sequence", 1), message_id=kwargs.get("message_id")
+    with pytest.raises(HTTPException) as exc:
+        await create_conversation_branch(
+            db=db,
+            agent=SimpleNamespace(id=agent_id, tenant_id=tenant_id),
+            user=SimpleNamespace(id=user_id),
+            source_session=SimpleNamespace(
+                id=source_session_id,
+                agent_id=agent_id,
+                tenant_id=tenant_id,
+                user_id=user_id,
+                title="Original",
+                parent_session_id=None,
+                root_session_id=None,
+                source_channel="web",
+                session_kind="human_chat",
+                actor_type="user",
+                runtime_source="web_chat",
+                visibility_scope="direct_user",
+                listed_surface="chat",
+            ),
+            mode="rewind",
+            anchor_event_id=rewind_target.id,
         )
 
-    monkeypatch.setattr("app.services.conversation_branch_service.append_session_event", fake_append_session_event)
-
-    result = await create_conversation_branch(
-        db=db,
-        agent=SimpleNamespace(id=agent_id, tenant_id=tenant_id),
-        user=SimpleNamespace(id=user_id),
-        source_session=SimpleNamespace(
-            id=source_session_id,
-            agent_id=agent_id,
-            tenant_id=tenant_id,
-            user_id=user_id,
-            title="Original",
-            parent_session_id=None,
-            root_session_id=None,
-            source_channel="web",
-            session_kind="human_chat",
-            actor_type="user",
-            runtime_source="web_chat",
-            visibility_scope="direct_user",
-            listed_surface="chat",
-        ),
-        mode="rewind",
-        anchor_event_id=rewind_target.id,
-    )
-
-    assert [item["content"] for item in copied] == ["first", "answer"]
-    assert result.run_request is None
-    assert result.branch["mode"] == "rewind"
-    assert result.branch["anchor_event_id"] == str(rewind_target.id)
+    assert getattr(exc.value, "status_code", None) == 400
+    assert "Use the rewind session command" in str(getattr(exc.value, "detail", ""))
+    assert db.added == []
 
 
 @pytest.mark.asyncio

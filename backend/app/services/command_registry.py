@@ -179,12 +179,18 @@ def build_default_command_registry(
         ),
         _command(
             "rewind",
-            "Rewind the current session active projection to a selected user-turn checkpoint.",
+            (
+                "Rewind the current session active projection to a selected user-turn checkpoint; "
+                "this does not create a new session and preserves append-only transcript evidence."
+            ),
             category="session",
         ),
         _command(
             "rollback",
-            "Roll back N user turns by updating the current session active projection.",
+            (
+                "Roll back N user turns by updating the current session active projection; "
+                "this does not create a new session and preserves append-only transcript evidence."
+            ),
             category="session",
             input_schema={
                 "type": "object",
@@ -196,7 +202,11 @@ def build_default_command_registry(
             },
             visible_to_user=False,
         ),
-        _command("branch", "Fork a conversation from a transcript event.", category="session"),
+        _command(
+            "branch",
+            "Create a new child session from a transcript event and leave the source session unchanged.",
+            category="session",
+        ),
         _command(
             "btw",
             "Ask a one-turn side question in a durable side session without polluting the main thread.",

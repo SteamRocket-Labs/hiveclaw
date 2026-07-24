@@ -176,7 +176,6 @@ export type ConversationBranchMode =
   | 'insert_after'
   | 'reply'
   | 'regenerate'
-  | 'rewind'
   | 'side_question';
 
 export interface RecordSessionFeedbackInput {

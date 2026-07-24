@@ -62,11 +62,16 @@ def test_rewind_command_registry_describes_active_projection_not_branch():
 
     rewind = registry.get("rewind")
     rollback = registry.get("rollback")
+    branch = registry.get("branch")
 
     assert "active projection" in rewind.description
-    assert "branch" not in rewind.description.lower()
+    assert "current session" in rewind.description
+    assert "does not create a new session" in rewind.description
     assert "active projection" in rollback.description
-    assert "branch" not in rollback.description.lower()
+    assert "current session" in rollback.description
+    assert "does not create a new session" in rollback.description
+    assert "new child session" in branch.description
+    assert "source session unchanged" in branch.description
 
 
 def test_session_goal_continuation_rules_are_event_driven_and_budgeted():

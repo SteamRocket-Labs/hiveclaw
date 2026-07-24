@@ -29,12 +29,11 @@ ConversationBranchMode = Literal[
     "insert_after",
     "reply",
     "regenerate",
-    "rewind",
     "side_question",
 ]
 
 _CONTENT_REQUIRED_MODES = {"edit", "insert_before", "insert_after", "reply", "side_question"}
-_VALID_MODES = {*_CONTENT_REQUIRED_MODES, "fork", "branch", "regenerate", "rewind"}
+_VALID_MODES = {*_CONTENT_REQUIRED_MODES, "fork", "branch", "regenerate"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,13 +80,13 @@ def _event_t0_role(event: ChatTranscriptEvent, role: str | None) -> str | None:
 
 
 def _prefix_includes_anchor(mode: str, *, anchor: ChatTranscriptEvent | None = None) -> bool:
-    if anchor is not None and _event_role(anchor) == "user" and mode in {"fork", "branch", "rewind"}:
+    if anchor is not None and _event_role(anchor) == "user" and mode in {"fork", "branch"}:
         return False
     return mode in {"fork", "branch", "insert_after", "reply", "side_question"}
 
 
 def _draft_content_for_anchor(mode: str, anchor: ChatTranscriptEvent) -> str:
-    if _event_role(anchor) == "user" and mode in {"fork", "branch", "rewind"}:
+    if _event_role(anchor) == "user" and mode in {"fork", "branch"}:
         return (getattr(anchor, "content", None) or "").strip()
     return ""
 
@@ -105,7 +104,6 @@ def _branch_title(source_session: ChatSession, mode: str, title: str | None) -> 
         "insert_after": "insert",
         "reply": "reply",
         "regenerate": "regenerate",
-        "rewind": "rewind",
         "side_question": "btw",
     }.get(mode, "branch")
     return f"{source_title} ({suffix})"[:200]
@@ -310,6 +308,14 @@ def _last_user_event(events: list[ChatTranscriptEvent]) -> ChatTranscriptEvent |
 
 
 def _validate_branch_request(*, mode: str, anchor: ChatTranscriptEvent, content: str) -> None:
+    if mode == "rewind":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Use the rewind session command to move the current session projection, "
+                "or branch mode to create a new child session."
+            ),
+        )
     if mode not in _VALID_MODES:
         raise HTTPException(status_code=400, detail=f"Unsupported branch mode: {mode}")
     if mode in _CONTENT_REQUIRED_MODES and not content.strip():
@@ -319,8 +325,6 @@ def _validate_branch_request(*, mode: str, anchor: ChatTranscriptEvent, content:
         raise HTTPException(status_code=400, detail="edit requires a user message anchor")
     if mode == "regenerate" and role != "assistant":
         raise HTTPException(status_code=400, detail="regenerate requires an assistant message anchor")
-    if mode == "rewind" and role != "user":
-        raise HTTPException(status_code=400, detail="rewind requires a user message checkpoint")
 
 
 async def create_conversation_branch(

@@ -22,6 +22,7 @@ import AgentChatSection, {
 } from './AgentChatSection';
 import {
   BranchLineagePanel,
+  branchModeLabel,
   buildBranchLineageRows,
   getSessionGitLineDensity,
   pickFocusedCheckpointIdForScroll,
@@ -1434,6 +1435,10 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('data-testid="branch-lineage-panel"');
     expect(markup).toContain('Original (edit)');
     expect(markup).toContain('edit');
+    expect(branchModeLabel({
+      id: 'legacy-rewind',
+      branch: { branch_mode: 'rewind' },
+    })).toBe('legacy rewind branch');
   });
 
   it('selects the live checkpoint from the current session scroll position', () => {
@@ -1509,8 +1514,8 @@ describe('AgentDetail extracted sections', () => {
     expect(markup).toContain('data-testid="session-rewind-mode-conversation"');
     expect(markup).toContain('data-testid="session-rewind-mode-workspace"');
     expect(markup).toContain('data-testid="session-rewind-mode-both"');
-    expect(markup).toContain('Rewind here');
-    expect(markup).toContain('Branch here');
+    expect(markup).toContain('Rewind this session here');
+    expect(markup).toContain('Branch into new session');
     expect(markup).toContain('第一次输入');
     expect(markup).toContain('第二次输入');
   });

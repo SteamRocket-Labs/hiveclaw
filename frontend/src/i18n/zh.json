@@ -329,7 +329,9 @@
     "activeProjection": "上下文投影",
     "failedGuidance": "请查看下方失败步骤并重试或检查详情。",
     "rewind": {
-      "activeRunBlocked": "回退前请先停止当前轮次；仍可创建分支。"
+      "activeRunBlocked": "回退前请先停止当前轮次；仍可新建一个分支会话。",
+      "sameSessionHere": "在当前会话回退到这里",
+      "branchNewSession": "从这里新建分支会话"
     },
     "team": {
       "close": "关闭团队",

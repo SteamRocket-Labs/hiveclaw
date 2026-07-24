@@ -451,7 +451,6 @@ class BranchSessionIn(BaseModel):
         "insert_after",
         "reply",
         "regenerate",
-        "rewind",
         "side_question",
     ]
     anchor_event_id: uuid.UUID

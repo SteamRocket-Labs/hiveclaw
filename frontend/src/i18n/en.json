@@ -329,7 +329,9 @@
     "activeProjection": "projection",
     "failedGuidance": "Review the failed step below to retry or inspect details.",
     "rewind": {
-      "activeRunBlocked": "Stop the current turn before rewinding. Branch remains available."
+      "activeRunBlocked": "Stop the current turn before rewinding. Creating a new branch session remains available.",
+      "sameSessionHere": "Rewind this session here",
+      "branchNewSession": "Branch into new session"
     },
     "team": {
       "close": "Close team",

@@ -2031,7 +2031,7 @@ function AgentDetailInner() {
                 anchor_event_id: String(anchorEventId),
                 content,
                 display_content: displayContent,
-                start_run: !['fork', 'branch', 'rewind'].includes(mode),
+                start_run: !['fork', 'branch'].includes(mode),
                 permission_mode: sessionPermissionMode,
             });
             const branchSession = response.session;

@@ -2580,7 +2580,7 @@ function AgentDetailInner() {
 
                 {/* ── A2A Tab ── */}
                 {
-                    activeTab === 'a2a' && <AgentA2ASection agentId={id!} />
+                    activeTab === 'a2a' && <AgentA2ASection agentId={id!} canManage={canManage} />
                 }
 
                 {/* ── Workspace Tab ── */}

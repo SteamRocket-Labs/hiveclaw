@@ -95,6 +95,18 @@
 .agent-a2a-group-status {
   font-size: var(--text-tiny);
   color: var(--text-tertiary);
+  white-space: nowrap;
+}
+.agent-a2a-group-status.is-active {
+  color: var(--success);
+}
+.agent-a2a-group-status.is-pending_owner_confirmation {
+  color: var(--warning);
+}
+.agent-a2a-group-status.is-rejected,
+.agent-a2a-group-status.is-revoked,
+.agent-a2a-group-status.is-expired {
+  color: var(--error);
 }
 .agent-a2a-members {
   display: flex;
@@ -127,4 +139,119 @@
 .agent-a2a-member-role {
   font-size: var(--text-tiny);
   color: var(--text-tertiary);
+}
+
+/* ── Human management plane ──────────────────────────── */
+.agent-a2a-management {
+  margin-top: 22px;
+  padding-top: 2px;
+  border-top: 1px solid var(--border-subtle);
+}
+.agent-a2a-create-group {
+  display: grid;
+  grid-template-columns: minmax(150px, 0.8fr) minmax(220px, 1.4fr) auto;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.agent-a2a-create-group input {
+  min-width: 0;
+}
+.agent-a2a-managed-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.agent-a2a-managed-group {
+  padding: 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+}
+.agent-a2a-managed-members {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.agent-a2a-managed-member {
+  padding: 9px;
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+}
+.agent-a2a-managed-member-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.agent-a2a-managed-member-main .agent-a2a-member-body {
+  flex: 1;
+}
+.agent-a2a-invitation-reason {
+  margin-top: 3px;
+  font-size: var(--text-tiny);
+  color: var(--text-secondary);
+}
+.agent-a2a-member-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding-left: 30px;
+}
+.agent-a2a-member-controls input {
+  flex: 1;
+  min-width: 140px;
+}
+.agent-a2a-member-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.agent-a2a-invite {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-subtle);
+}
+.agent-a2a-invite-title {
+  font-size: var(--text-row);
+  font-weight: 600;
+}
+.agent-a2a-invite-fields {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.2fr) minmax(110px, 0.5fr) minmax(180px, 1fr);
+  gap: 8px;
+}
+.agent-a2a-invite-fields input,
+.agent-a2a-invite-fields select {
+  min-width: 0;
+}
+.agent-a2a-candidates {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+.agent-a2a-candidate {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px;
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+}
+.agent-a2a-empty.is-error {
+  color: var(--error);
+}
+
+@media (max-width: 760px) {
+  .agent-a2a-create-group,
+  .agent-a2a-invite-fields {
+    grid-template-columns: 1fr;
+  }
+  .agent-a2a-member-controls {
+    align-items: stretch;
+    flex-direction: column;
+    padding-left: 0;
+  }
 }

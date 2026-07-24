@@ -424,21 +424,54 @@ describe('request cleanup adapters', () => {
     expect(del).toHaveBeenCalledWith('/tools/agent-tool/tool-123');
   });
 
-  it('routes A2A collaborator projection through a2aApi', async () => {
+  it('routes the complete A2A collaboration control plane through a2aApi', async () => {
     vi.doMock('./core/request', async () => {
       const actual = await vi.importActual<typeof import('./core/request')>('./core/request');
       return {
         ...actual,
         get: vi.fn(),
+        post: vi.fn(),
       };
     });
     const { a2aApi } = await import('./domains/a2a');
-    const { get } = await import('./core/request');
+    const { get, post } = await import('./core/request');
     vi.mocked(get).mockResolvedValue({ same_owner_agents: [], public_agents: [], collaboration_groups: [] });
+    vi.mocked(post).mockResolvedValue({ status: 'ok' });
 
     await a2aApi.listCollaborators('agent-1');
+    await a2aApi.getManagement('agent-1');
+    await a2aApi.searchInviteCandidates('agent-1', 'group-1', 'risk');
+    await a2aApi.createGroup('agent-1', { name: 'Launch room', purpose: 'Ship together' });
+    await a2aApi.inviteGroupMember('agent-1', 'group-1', {
+      target_agent_id: 'agent-2',
+      role: 'specialist',
+      invitation_reason: 'Need risk review',
+    });
+    await a2aApi.approveGroupMember('agent-1', 'group-1', 'member-1', 'Approved by owner');
+    await a2aApi.rejectGroupMember('agent-1', 'group-1', 'member-1', 'Outside scope');
+    await a2aApi.revokeGroupMember('agent-1', 'group-1', 'member-1', 'Project complete');
 
     expect(get).toHaveBeenCalledWith('/agents/agent-1/a2a/collaborators');
+    expect(get).toHaveBeenCalledWith('/agents/agent-1/a2a/management');
+    expect(get).toHaveBeenCalledWith('/agents/agent-1/a2a/groups/group-1/invite-candidates?q=risk');
+    expect(post).toHaveBeenCalledWith('/agents/agent-1/a2a/groups', {
+      name: 'Launch room',
+      purpose: 'Ship together',
+    });
+    expect(post).toHaveBeenCalledWith('/agents/agent-1/a2a/groups/group-1/members', {
+      target_agent_id: 'agent-2',
+      role: 'specialist',
+      invitation_reason: 'Need risk review',
+    });
+    expect(post).toHaveBeenCalledWith('/agents/agent-1/a2a/groups/group-1/members/member-1/approve', {
+      reason: 'Approved by owner',
+    });
+    expect(post).toHaveBeenCalledWith('/agents/agent-1/a2a/groups/group-1/members/member-1/reject', {
+      reason: 'Outside scope',
+    });
+    expect(post).toHaveBeenCalledWith('/agents/agent-1/a2a/groups/group-1/members/member-1/revoke', {
+      reason: 'Project complete',
+    });
   });
 
   it('routes agent permission updates through agentApi with backend payload shape', async () => {

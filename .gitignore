@@ -32,8 +32,9 @@ outputs/
 _agent/
 _agents/
 
-# Internal docs
-docs/
+# Local Ultra documentation projections are not repository documentation.
+.ultra/docs/
+
 !backend/docs/
 backend/docs/*
 !backend/docs/autonomous-trigger-system.md

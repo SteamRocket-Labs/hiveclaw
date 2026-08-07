@@ -18,7 +18,7 @@ This is a **separate service** in the existing Hive Railway project (`Paimon.Fin
 **One-time setup** (Railway dashboard):
 
 1. Open the Hive project → New Service → Deploy from GitHub repo
-2. Pick `rocky2431/hiveclaw`
+2. Pick `SteamRocket-Labs/hiveclaw`
 3. Settings → Service → set **Root Directory** to `deck`
 4. Settings → Networking → **Generate Domain** (gives you `*.up.railway.app`)
 5. (Optional) Custom domain → e.g. `deck.hive.app`

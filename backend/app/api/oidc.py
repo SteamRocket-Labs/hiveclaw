@@ -126,7 +126,7 @@ async def oidc_callback(
             redirect_uri=data.redirect_uri,
         )
     except Exception as e:
-        logger.error(f"OIDC code exchange failed: {e}", exc_info=True)
+        logger.opt(exception=True).error(f"OIDC code exchange failed: {e}")
         raise HTTPException(status_code=400, detail="OIDC authentication failed")
 
     if not oidc_user.get("sub"):
@@ -199,7 +199,7 @@ async def bind_oidc_account(
             redirect_uri=data.redirect_uri,
         )
     except Exception as e:
-        logger.error(f"OIDC bind code exchange failed: {e}", exc_info=True)
+        logger.opt(exception=True).error(f"OIDC bind code exchange failed: {e}")
         raise HTTPException(status_code=400, detail="OIDC authentication failed")
 
     current_user.oidc_sub = oidc_user["sub"]

@@ -79,8 +79,8 @@ async def _get_teams_access_token(config: ChannelConfig) -> str | None:
             logger.error("Teams: azure-identity package not installed. Install it with: pip install azure-identity")
             return None
         except Exception as e:
-            logger.error(
-                f"Teams: Failed to get access token via managed identity for agent {agent_id}: {e}", exc_info=True
+            logger.opt(exception=True).error(
+                f"Teams: Failed to get access token via managed identity for agent {agent_id}: {e}"
             )
             return None
 
@@ -145,7 +145,7 @@ async def _get_teams_access_token(config: ChannelConfig) -> str | None:
         logger.error(f"Teams: Token URL={token_url}, tenant_id={tenant_id}, client_id={app_id[:20]}...")
         return None
     except Exception as e:
-        logger.error(f"Teams: Failed to get access token for agent {agent_id}: {e}", exc_info=True)
+        logger.opt(exception=True).error(f"Teams: Failed to get access token for agent {agent_id}: {e}")
         return None
 
 
@@ -619,7 +619,7 @@ async def teams_event_webhook(
             )
             logger.info(f"Teams: LLM reply generated: {reply_text[:80]}")
         except Exception as e:
-            logger.error(f"Teams: Failed to call LLM for agent {agent_id}: {e}", exc_info=True)
+            logger.opt(exception=True).error(f"Teams: Failed to call LLM for agent {agent_id}: {e}")
             reply_text = "Sorry, I encountered an error processing your message."
         finally:
             _cdt_s.reset(_cdt_s_token)
@@ -643,7 +643,7 @@ async def teams_event_webhook(
             await db.commit()
             logger.info(f"Teams: Saved reply to database for conversation {conversation_id}")
         except Exception as e:
-            logger.error(f"Teams: Failed to save reply to database: {e}", exc_info=True)
+            logger.opt(exception=True).error(f"Teams: Failed to save reply to database: {e}")
             await db.rollback()
 
         # Send to Teams
@@ -665,7 +665,7 @@ async def teams_event_webhook(
                 await _send_teams_message(config, conversation_id, reply_activity)
                 logger.info("Teams: Successfully sent reply to Teams")
             except Exception as e:
-                logger.error(f"Teams: Failed to send message to Teams: {e}", exc_info=True)
+                logger.opt(exception=True).error(f"Teams: Failed to send message to Teams: {e}")
         else:
             use_mi = config.extra_config.get("use_managed_identity", False)
             logger.warning(
@@ -674,5 +674,5 @@ async def teams_event_webhook(
 
         return {"ok": True}
     except Exception as e:
-        logger.error(f"Teams: Unhandled exception in webhook handler for agent {agent_id}: {e}", exc_info=True)
+        logger.opt(exception=True).error(f"Teams: Unhandled exception in webhook handler for agent {agent_id}: {e}")
         return Response(status_code=500, content="Internal server error")

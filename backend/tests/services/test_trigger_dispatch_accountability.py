@@ -479,3 +479,47 @@ def test_orphan_reconciliation_refuses_to_write_without_the_confirmation_phrase(
     monkeypatch.setattr("sys.argv", ["reconcile", "--apply", "--confirm", "yes"])
     assert script.main() == 2
     assert script.CONFIRM_PHRASE in capsys.readouterr().out
+
+
+# ── The 2026-07-16 breakage itself: session write authority ────────────────
+
+
+def test_trigger_binds_its_run_to_the_session_before_writing_the_first_event():
+    """Session V2 refuses a transcript write whose run is not yet bound.
+
+    ``session_event_contract`` raises ``writer_epoch_rejected legacy run
+    authority`` unless a ``runtime_tasks`` row already links ``NEW.run_id`` to
+    ``NEW.session_id``. Web chat satisfies this by construction — it creates the
+    RuntimeTask with ``parent_session_id`` already set. A trigger mints its
+    session per fire, so it must write ``child_session_id`` back *before* the
+    first ``append_session_event``.
+
+    It did not, and every trigger run has failed on that constraint since the
+    Session V2 cutover on 2026-07-16.
+    """
+    tree = ast.parse(TRIGGER_DAEMON_SOURCE.read_text(encoding="utf-8"))
+    invoke_fn = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_invoke_agent_for_triggers"
+    )
+
+    def call_lines(predicate):
+        return sorted(node.lineno for node in ast.walk(invoke_fn) if isinstance(node, ast.Call) and predicate(node))
+
+    event_lines = call_lines(lambda n: isinstance(n.func, ast.Name) and n.func.id == "append_session_event")
+    bind_lines = call_lines(
+        lambda n: (
+            isinstance(n.func, ast.Name)
+            and n.func.id == "update_runtime_task_record"
+            and any(kw.arg == "child_session_id" for kw in n.keywords)
+        )
+    )
+
+    assert event_lines, "the trigger run must still write its transcript"
+    assert bind_lines, "the trigger run must bind child_session_id on its RuntimeTask"
+    assert min(bind_lines) < min(event_lines), (
+        f"child_session_id is bound at line {min(bind_lines)} but the first session event is "
+        f"written at line {min(event_lines)}; Session V2 rejects the write with "
+        "'writer_epoch_rejected legacy run authority'"
+    )

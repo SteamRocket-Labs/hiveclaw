@@ -1206,7 +1206,7 @@ async def run_hr_provisioning(request: ToolExecutionRequest, *, support: Any) ->
             )
 
     except Exception as e:
-        logger.error(f"[HR] create_digital_employee failed: {e}", exc_info=True)
+        logger.opt(exception=True).error(f"[HR] create_digital_employee failed: {e}")
         try:
             async with tenant_scoped_session(scope_tenant_id) as failure_db:
                 failed_draft = await load_hr_creation_draft(

@@ -494,7 +494,7 @@ class WeChatPersonalStreamManager:
                 )
                 logger.info(f"[WeChatPersonal Stream] File sent via iLink: {fp.name}")
             except Exception as e:
-                logger.error(f"[WeChatPersonal Stream] File send failed for {fp.name}: {e}", exc_info=True)
+                logger.opt(exception=True).error(f"[WeChatPersonal Stream] File send failed for {fp.name}: {e}")
                 raise
 
         token_cfs = _cfs.set(_wechat_file_sender)

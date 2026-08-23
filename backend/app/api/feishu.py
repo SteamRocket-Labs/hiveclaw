@@ -1151,7 +1151,7 @@ async def feishu_card_callback(request: Request, db: AsyncSession = Depends(get_
     except ValueError as e:
         return {"toast": {"type": "error", "content": str(e)}}
     except Exception as e:
-        logger.error(f"[Feishu] Card callback failed: {e}", exc_info=True)
+        logger.opt(exception=True).error(f"[Feishu] Card callback failed: {e}")
         return {"toast": {"type": "error", "content": "Processing failed, please try again"}}
 
 
@@ -1376,10 +1376,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                         extra_config=_feishu_platform_extra(config),
                     )
                 except Exception as send_error:
-                    logger.error(
-                        f"[Feishu] Failed to deliver sender identity error: {send_error}",
-                        exc_info=True,
-                    )
+                    logger.opt(exception=True).error(f"[Feishu] Failed to deliver sender identity error: {send_error}")
                 return {"code": 0, "msg": "sender identity unavailable"}
 
             from app.services.channel_ingress_inbox import channel_installation_ref

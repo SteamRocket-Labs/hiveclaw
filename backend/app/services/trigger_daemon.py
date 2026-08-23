@@ -1899,6 +1899,31 @@ async def _invoke_agent_for_triggers(
             await db.flush()
             session_id = session.id
 
+            # Bind the run to its session before the first transcript write.
+            # Session V2 rejects a transcript row whose run is not yet linked to
+            # its session ("writer_epoch_rejected legacy run authority" in
+            # services/session_event_contract.py). Web chat satisfies that by
+            # construction because its RuntimeTask is created with
+            # parent_session_id already set; a trigger mints its session per
+            # fire, so it has to write the binding back first. Doing this after
+            # append_session_event is what broke every trigger run at the
+            # 2026-07-16 Session V2 cutover.
+            #
+            # update_runtime_task_record commits on its own connection, so the
+            # constraint (READ COMMITTED) sees the binding when the event INSERT
+            # below is flushed.
+            if runtime_task_id:
+                await update_runtime_task_record(
+                    runtime_task_id,
+                    status="running",
+                    child_session_id=str(session_id),
+                    result_summary="Trigger session started.",
+                    metadata_json={
+                        "session_id": str(session_id),
+                        "session_bound": True,
+                    },
+                )
+
             memory_messages = [{"role": "user", "content": trigger_context}]
             messages = list(memory_messages)
 
@@ -1938,17 +1963,6 @@ async def _invoke_agent_for_triggers(
             )
             session.last_message_at = datetime.now(timezone.utc)
             await db.commit()
-            if runtime_task_id:
-                await update_runtime_task_record(
-                    runtime_task_id,
-                    status="running",
-                    child_session_id=str(session_id),
-                    result_summary="Trigger session started.",
-                    metadata_json={
-                        "session_id": str(session_id),
-                        "session_bound": True,
-                    },
-                )
             # Cache participant ID + tenant for callbacks (they run after this
             # scoped session closes; stage-2b ChatMessage INSERTs must set
             # tenant_id and run under a tenant-scoped session).
@@ -2275,7 +2289,7 @@ async def _invoke_agent_for_triggers(
             logger.debug("[TriggerDaemon] TRIGGER_END hook failed (non-fatal): {}", _hook_err)
 
     except Exception as e:
-        logger.error(f"Failed to invoke agent {agent_id} for triggers: {e}", exc_info=True)
+        logger.opt(exception=True).error(f"Failed to invoke agent {agent_id} for triggers: {e}")
         failure_summary = f"Trigger invocation failed: {str(e)}"
         failure_metadata = {"error": str(e)}
         try:

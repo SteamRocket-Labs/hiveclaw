@@ -21,6 +21,13 @@ LEASE_RECLAIMABLE_RUNTIME_TASK_TYPES = (
     "approval_execution",
     "hr_provisioning",
     "dream",
+    # A trigger run whose worker died must be reachable again. Without this,
+    # 2,107 ``running`` trigger rows with no lease accumulated over 38 days with
+    # no runtime path able to touch them (only a process restart could).
+    # ``execute_claimed_trigger_runtime_task`` refuses to replay a run that
+    # already bound a session or whose intent has gone stale, so reclaim cannot
+    # duplicate external side effects or stampede historic fires.
+    "trigger",
 )
 
 

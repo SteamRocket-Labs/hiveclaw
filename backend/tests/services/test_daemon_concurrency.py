@@ -62,7 +62,13 @@ def test_fanout_settings_have_env_defaults() -> None:
 
 
 def test_daemon_fanout_dispatch_sites_are_bounded() -> None:
-    """Wiring pin: every per-agent create_task dispatch goes through run_bounded."""
+    """Wiring pin: every per-agent create_task dispatch goes through run_bounded.
+
+    Trigger runs are deliberately absent: a bounded in-process fanout still had
+    no lease and no completion callback, which is how 2,107 trigger rows sat in
+    ``running`` for 38 days. They now queue for the RuntimeTask worker instead —
+    see ``tests/services/test_trigger_dispatch_accountability.py``.
+    """
     import re
 
     root = Path(__file__).resolve().parents[2]
@@ -75,7 +81,9 @@ def test_daemon_fanout_dispatch_sites_are_bounded() -> None:
         return len(re.findall(rf'run_bounded\(\s*"{family}"', source))
 
     assert bounded_count(heartbeat_source, "heartbeat") >= 2, "heartbeat resume + tick dispatch must be bounded"
-    assert bounded_count(trigger_source, "trigger") >= 2, "trigger resume + tick dispatch must be bounded"
+    assert bounded_count(trigger_source, "trigger") == 0, "trigger runs must be queued for the worker, not fanned out"
+    assert "_queue_trigger_run_for_worker(" in trigger_source
+    assert 'task.task_type == "trigger"' in runtime_worker_source
     assert "enqueue_due_dream" in trigger_source, "trigger-side Dream must enqueue a durable RuntimeTask"
     assert "reconcile_due_dream_runtime_tasks" in evolution_source
     assert 'task.task_type == "dream"' in runtime_worker_source

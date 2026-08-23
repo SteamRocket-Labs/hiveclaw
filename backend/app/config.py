@@ -176,6 +176,12 @@ class Settings(BaseSettings):
     HEARTBEAT_MAX_CONCURRENT: int = 4
     TRIGGER_MAX_CONCURRENT: int = 8
     DREAM_MAX_CONCURRENT: int = 2
+    # How long a queued trigger intent stays worth executing. A fire is bound to
+    # a moment: replaying yesterday's "daily brief" is noise, not recovery. The
+    # claim path drops older intents as ``stale_trigger_intent`` and lets the
+    # next tick re-fire whatever is genuinely due, which also stops a backlog of
+    # historic orphans from stampeding when lease reclaim reaches them.
+    TRIGGER_MAX_INTENT_AGE_SECONDS: int = 3600
     # Platform-managed heartbeat cadence (heartbeat_policy overrides per-agent
     # rows). 2026-06-05 owner decision: 2h — T2 accumulation never kept up with
     # the old 45min digestion rhythm (most ticks idled), and in-conversation

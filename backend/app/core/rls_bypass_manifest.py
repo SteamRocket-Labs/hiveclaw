@@ -621,6 +621,14 @@ RLS_BYPASS_ALLOWLIST = (
     ),
     _grant(
         *(
+            "app/scripts/reconcile_orphaned_trigger_runs.py",
+            "_collect_orphans",
+            "'reconcile orphaned trigger runtime tasks'",
+            ("select:RuntimeTask.id,RuntimeTask.tenant_id",),
+        )
+    ),
+    _grant(
+        *(
             "app/services/hr_creation_reconciliation.py",
             "reconcile_hr_creation_drafts_once",
             "'HR draft expiry and orphaned provisioning reconciliation'",

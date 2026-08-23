@@ -309,16 +309,15 @@ async def test_fire_trigger_once_now_runs_full_fire_path(monkeypatch):
 
     monkeypatch.setattr(trigger_daemon, "_mark_trigger_fire_started", fake_mark)
 
-    scheduled: list[str] = []
+    queued: list[tuple[str, str]] = []
+
+    async def fake_queue(runtime_task_id, *, reason):
+        queued.append((runtime_task_id, reason))
 
     def fake_create_task(coro, *args, **kwargs):
-        inner = coro.cr_frame.f_locals.get("awaitable", coro)
-        scheduled.append(inner.cr_code.co_name)
-        inner.close()
-        if inner is not coro:
-            coro.close()
-        return SimpleNamespace()
+        raise AssertionError("an immediate fire must be queued for the worker, not spawned unowned")
 
+    monkeypatch.setattr(trigger_daemon, "_queue_trigger_run_for_worker", fake_queue)
     monkeypatch.setattr(trigger_daemon.asyncio, "create_task", fake_create_task)
 
     result = await trigger_daemon.fire_trigger_once_now(agent_id, trigger.id)
@@ -328,7 +327,9 @@ async def test_fire_trigger_once_now_runs_full_fire_path(monkeypatch):
     assert preflight_seen and preflight_seen[0][1] == [trigger]
     assert created and created[0]["metadata"]["immediate_fire"] is True
     assert marked == ["immediate-rt-1"]
-    assert scheduled == ["_invoke_agent_for_triggers"]
+    # ``/loop --now`` takes the same accountable path as a scheduled fire: the
+    # worker owns the lease and the completion callback.
+    assert queued == [("immediate-rt-1", "trigger_fired_immediately")]
 
 
 @pytest.mark.asyncio

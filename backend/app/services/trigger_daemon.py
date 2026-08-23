@@ -25,12 +25,12 @@ from loguru import logger
 from sqlalchemy import select
 
 from app.runtime.context_candidates import build_context_candidate_ref
-from app.services.daemon_concurrency import run_bounded
 from app.core.events import get_redis
 from app.database import async_session, enter_rls_bypass, tenant_scoped_session
 from app.models.trigger import AgentTrigger
 from app.models.agent import Agent
 from app.services.agent_identity_lifecycle import agent_lifecycle_active_clause
+from app.services.daemon_liveness import mark_daemon_outcome
 from app.services.plan_mode_core import build_plan_execution_instruction
 from app.services.tenant_resolver import resolve_tenant_for_agent
 from app.services.runtime_tenant_admission import admit_agent_runtime_tenant
@@ -66,6 +66,9 @@ MIN_POLL_INTERVAL_MINUTES = 5  # align with tenant/agent min_poll_interval_floor
 MAX_FIRES_PER_HOUR = 6  # hard cap: ~10 min minimum interval between fires
 _TRIGGER_FIRE_LEASE_TTL_SECONDS = 600
 _TRIGGER_FIRE_INFLIGHT_STALE_SECONDS = 6 * 60 * 60
+# Statuses that mean a fired trigger reached an end state. Reaching one is the
+# daemon's only real evidence of work; ticking the loop is not.
+_TERMINAL_TRIGGER_STATUSES = frozenset({"completed", "failed", "killed", "skipped", "needs_reconciliation"})
 
 # Track last invocation time per agent to enforce dedup window
 _last_invoke: dict[uuid.UUID, datetime] = {}
@@ -338,7 +341,12 @@ async def _create_trigger_runtime_task(
         persisted_task_id = await create_runtime_task_record(
             task_id=task_id,
             task_type="trigger",
-            status="pending" if admission_status == "waiting_budget_approval" else "running",
+            # Always claimable. Persisting ``running`` here put the row outside
+            # ``CLAIMABLE_RUNTIME_TASK_STATUSES`` while the daemon fire-and-forgot
+            # the coroutine, so a run that died left a row nothing could observe
+            # or reclaim. The worker owns the running transition, the lease and
+            # the completion callback.
+            status="pending",
             parent_agent_id=agent_id,
             prompt=f"Trigger wake: {', '.join(name for name in trigger_names if name) or 'unknown'}",
             trace_id=trace_id,
@@ -395,6 +403,54 @@ async def _update_trigger_runtime_task(
         await update_runtime_task_record(runtime_task_id, **fields)
     except Exception as exc:
         logger.warning("[TriggerDaemon] Failed to update trigger RuntimeTask {}: {}", runtime_task_id, exc)
+        return
+    if status in _TERMINAL_TRIGGER_STATUSES:
+        mark_daemon_outcome("trigger_daemon")
+
+
+def _stale_trigger_intent_cutoff(now: datetime | None = None) -> datetime:
+    """Oldest queue timestamp still worth executing."""
+    from app.config import get_settings
+
+    max_age = max(0, int(getattr(get_settings(), "TRIGGER_MAX_INTENT_AGE_SECONDS", 3600) or 0))
+    return (now or datetime.now(timezone.utc)) - timedelta(seconds=max_age)
+
+
+def _coerce_trigger_intent_timestamp(value: Any) -> datetime | None:
+    """Read a RuntimeTask timestamp from either an ISO payload or an ORM row."""
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str) and value.strip():
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+async def _queue_trigger_run_for_worker(runtime_task_id: str | None, *, reason: str) -> None:
+    """Hand an admitted trigger intent to the shared RuntimeTask worker.
+
+    The daemon deliberately does not execute the run itself. It used to spawn a
+    bounded background task for the agent invocation and discard the handle, so
+    the run had no owner, no lease and no completion callback — if the coroutine
+    died before writing anything, the row stayed ``running`` forever with
+    nothing able to notice. Queuing lets the worker claim it with a fence, renew
+    a lease while it runs, and settle it on every exit path.
+
+    Waking the worker is best effort: it also polls, so a failed notification
+    costs latency, never the run.
+    """
+    if not runtime_task_id:
+        return
+    from app.services.runtime_task_worker import notify_runtime_task_worker
+
+    try:
+        await notify_runtime_task_worker(reason=reason, runtime_task_id=runtime_task_id)
+    except Exception as exc:  # noqa: BLE001 - the worker's poll loop is the fallback.
+        logger.debug("[TriggerDaemon] Worker wakeup for {} failed (poll will pick it up): {}", runtime_task_id, exc)
 
 
 async def _skip_trigger_runtime_task(
@@ -437,6 +493,7 @@ async def _mark_trigger_runtime_task_needs_reconciliation(
             session_id=session_id,
         ),
     )
+    mark_daemon_outcome("trigger_daemon")
 
 
 async def _load_triggers_for_resume(agent_id: uuid.UUID, trigger_ids: list[str]) -> list[AgentTrigger]:
@@ -529,16 +586,17 @@ async def resume_persisted_trigger_runs(*, limit: int = 50) -> list[str]:
         )
         await update_runtime_task_record(
             run_id,
-            status="running",
+            # Re-queue rather than re-run in-process: the worker gives the resumed
+            # run a lease and a completion callback, so a second interruption is
+            # observable instead of silently stranding the row again.
+            status="pending",
             metadata_json={
                 "resumed_after_restart": True,
                 "restart_replay_contract": metadata.get("restart_replay_contract"),
                 "restart_replay_journal": resume_metadata.get("restart_replay_journal"),
             },
         )
-        asyncio.create_task(
-            run_bounded("trigger", _invoke_agent_for_triggers(agent_id, triggers, runtime_task_id=run_id))
-        )
+        await _queue_trigger_run_for_worker(run_id, reason="trigger_resumed_after_restart")
         resumed.append(run_id)
     return resumed
 
@@ -2280,13 +2338,57 @@ async def _settle_trigger_runtime_budget(runtime_task_id: str | None, *, status:
 
 
 async def execute_claimed_trigger_runtime_task(task_id: uuid.UUID | str) -> bool:
-    """Resume a budget-approved trigger intent from the shared RuntimeTask worker."""
+    """Run a claimed trigger intent from the shared RuntimeTask worker.
+
+    This is the only execution entry for a fired trigger. Two refusals guard it,
+    because the worker also reaches this function through lease reclaim:
+
+    * a run that already bound a child session may have executed tools and
+      written transcript rows, so replaying it could duplicate external side
+      effects — it needs reconciliation, not a retry;
+    * a fire is bound to a moment. An intent older than
+      ``TRIGGER_MAX_INTENT_AGE_SECONDS`` is stale, and running it would replay
+      history rather than recover it. The next tick re-fires whatever is still
+      genuinely due.
+    """
 
     task_uuid = uuid.UUID(str(task_id))
     record = await get_runtime_task_record(task_uuid.hex)
     if not record or record.get("task_type") != "trigger":
         return False
     metadata = dict(record.get("metadata") or {})
+
+    session_id = str(record.get("child_session_id") or metadata.get("session_id") or "").strip()
+    if session_id:
+        await _mark_trigger_runtime_task_needs_reconciliation(
+            task_uuid.hex,
+            metadata=metadata,
+            blocker="session_bound_mutating_trigger",
+            summary=(
+                "Trigger run was interrupted after binding a session; replay could duplicate side effects. "
+                "Reconciliation is required before retry."
+            ),
+            trace_id=str(record.get("trace_id") or metadata.get("trace_id") or ""),
+            session_id=session_id,
+        )
+        await _settle_trigger_runtime_budget(task_uuid.hex, status="needs_reconciliation")
+        return False
+
+    stale_after = _stale_trigger_intent_cutoff()
+    created_at = _coerce_trigger_intent_timestamp(record.get("created_at"))
+    if created_at is not None and created_at < stale_after:
+        await _skip_trigger_runtime_task(
+            task_uuid.hex,
+            skip_reason="stale_trigger_intent",
+            result_summary=(
+                f"Trigger intent from {created_at.isoformat()} is older than the execution window; "
+                "the next scheduled evaluation will re-fire it if it is still due."
+            ),
+            metadata_json={"intent_created_at": created_at.isoformat()},
+        )
+        await _settle_trigger_runtime_budget(task_uuid.hex, status="skipped")
+        return False
+
     raw_trigger_ids = list(metadata.get("trigger_ids") or [])
     trigger_ids = [value for value in (_runtime_task_uuid_or_none(item) for item in raw_trigger_ids) if value]
     agent_id = _runtime_task_uuid_or_none(record.get("parent_agent_id") or metadata.get("agent_id"))
@@ -2419,9 +2521,7 @@ async def fire_trigger_once_now(
         runtime_task_id=runtime_task_id,
         event_keys={trigger.id: event_key},
     )
-    asyncio.create_task(
-        run_bounded("trigger", _invoke_agent_for_triggers(agent_id, [trigger], runtime_task_id=runtime_task_id))
-    )
+    await _queue_trigger_run_for_worker(runtime_task_id, reason="trigger_fired_immediately")
     return {"fired": True, "runtime_task_id": runtime_task_id}
 
 
@@ -2540,11 +2640,7 @@ async def _tick():
                 )
                 continue
 
-            asyncio.create_task(
-                run_bounded(
-                    "trigger", _invoke_agent_for_triggers(agent_id, agent_triggers, runtime_task_id=runtime_task_id)
-                )
-            )
+            await _queue_trigger_run_for_worker(runtime_task_id, reason="trigger_fired")
         except Exception as _agent_err:
             logger.warning("[TriggerDaemon] Failed to process agent {}: {}", agent_id, _agent_err)
 
@@ -2560,6 +2656,19 @@ async def start_trigger_daemon():
 
     mark_daemon_started("trigger_daemon")
     logger.info(f"⚡ Trigger Daemon started ({TICK_INTERVAL}s tick)")
+
+    # Fired triggers are queued, not executed here, so some process in the
+    # deployment must be claiming them. Advisory rather than a hard gate: the
+    # claimer is usually a *different* process sharing this database, which this
+    # one cannot observe. Say it out loud so a role/flag change cannot quietly
+    # leave every fire queued forever.
+    from app.services.runtime_task_worker import runtime_task_worker_enabled
+
+    if not runtime_task_worker_enabled():
+        logger.warning(
+            "[TriggerDaemon] The RuntimeTask worker is disabled in this process. Fired triggers will queue as "
+            "'pending' and only run if another process with a runtime role claims them."
+        )
 
     while True:
         try:

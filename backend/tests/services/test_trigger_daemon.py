@@ -560,10 +560,14 @@ async def test_tick_does_not_apply_agent_level_dedup_window(monkeypatch):
     async def _fake_resolve_tenant(_agent_id, *_a, **_k):
         return None
 
+    async def fake_queue(runtime_task_id, *, reason):
+        scheduled.append(reason)
+
     monkeypatch.setattr(trigger_daemon, "resolve_tenant_for_agent", _fake_resolve_tenant)
     monkeypatch.setattr(trigger_daemon, "_evaluate_trigger", fake_evaluate_trigger)
     monkeypatch.setattr(trigger_daemon, "_acquire_trigger_fire_lease", fake_acquire_trigger_fire_lease)
     monkeypatch.setattr(trigger_daemon, "create_runtime_task_record", fake_create_runtime_task_record)
+    monkeypatch.setattr(trigger_daemon, "_queue_trigger_run_for_worker", fake_queue)
     monkeypatch.setattr(trigger_daemon.asyncio, "create_task", fake_create_task)
     _disable_completed_focus_reconciler(monkeypatch, trigger_daemon)
     trigger_daemon._last_invoke.clear()
@@ -572,7 +576,7 @@ async def test_tick_does_not_apply_agent_level_dedup_window(monkeypatch):
     await trigger_daemon._tick()
     await trigger_daemon._tick()
 
-    assert scheduled == ["_invoke_agent_for_triggers", "_invoke_agent_for_triggers"]
+    assert scheduled == ["trigger_fired", "trigger_fired"]
 
 
 @pytest.mark.asyncio
@@ -650,13 +654,11 @@ async def test_tick_creates_trigger_runtime_task_before_invocation(monkeypatch):
 
     scheduled_runtime_ids = []
 
+    async def fake_queue(runtime_task_id, *, reason):
+        scheduled_runtime_ids.append(runtime_task_id)
+
     def fake_create_task(coro, *args, **kwargs):
-        inner = coro.cr_frame.f_locals.get("awaitable", coro)
-        scheduled_runtime_ids.append(inner.cr_frame.f_locals.get("runtime_task_id"))
-        inner.close()
-        if inner is not coro:
-            coro.close()
-        return SimpleNamespace()
+        raise AssertionError("the tick must queue the run for the worker, not spawn it")
 
     monkeypatch.setattr(trigger_daemon, "async_session", fake_async_session)
     # Stage-2b: the per-agent fire-state update is now tenant-scoped — route it
@@ -671,6 +673,7 @@ async def test_tick_creates_trigger_runtime_task_before_invocation(monkeypatch):
     monkeypatch.setattr(trigger_daemon, "_evaluate_trigger", fake_evaluate_trigger)
     monkeypatch.setattr(trigger_daemon, "_acquire_trigger_fire_lease", fake_acquire_trigger_fire_lease)
     monkeypatch.setattr(trigger_daemon, "create_runtime_task_record", fake_create_runtime_task_record)
+    monkeypatch.setattr(trigger_daemon, "_queue_trigger_run_for_worker", fake_queue)
     monkeypatch.setattr(trigger_daemon.asyncio, "create_task", fake_create_task)
     _disable_completed_focus_reconciler(monkeypatch, trigger_daemon)
     trigger_daemon._last_invoke.clear()
@@ -679,7 +682,10 @@ async def test_tick_creates_trigger_runtime_task_before_invocation(monkeypatch):
     await trigger_daemon._tick()
 
     assert created[0]["task_type"] == "trigger"
-    assert created[0]["status"] == "running"
+    # Born claimable. Persisting ``running`` here kept the row out of the worker
+    # claim queue while the daemon fire-and-forgot the coroutine, so a run that
+    # died left an unobservable, unreclaimable row.
+    assert created[0]["status"] == "pending"
     assert created[0]["parent_agent_id"] == agent_id
     assert created[0]["metadata_json"]["trigger_ids"] == [str(trigger.id)]
     assert created[0]["metadata_json"]["resume_after_restart"] is True
@@ -1011,17 +1017,27 @@ async def test_resume_persisted_trigger_runs_requeues_unstarted_run(monkeypatch)
             coro.close()
         return SimpleNamespace()
 
+    queued: list[tuple[str, str]] = []
+
+    async def fake_queue(runtime_task_id, *, reason):
+        queued.append((runtime_task_id, reason))
+
     monkeypatch.setattr(trigger_daemon, "list_active_runtime_task_records", fake_list_active_runtime_task_records)
     monkeypatch.setattr(trigger_daemon, "_load_triggers_for_resume", fake_load_triggers_for_resume)
     monkeypatch.setattr(trigger_daemon, "update_runtime_task_record", fake_update_runtime_task_record)
+    monkeypatch.setattr(trigger_daemon, "_queue_trigger_run_for_worker", fake_queue)
     monkeypatch.setattr(trigger_daemon.asyncio, "create_task", fake_create_task)
 
     resumed = await trigger_daemon.resume_persisted_trigger_runs()
 
     assert resumed == [run_id]
-    assert scheduled == [(agent_id, [trigger], run_id)]
+    # A resumed run goes back on the claim queue rather than straight into an
+    # unowned background task: re-running it in-process is how the original
+    # interruption became invisible in the first place.
+    assert scheduled == []
+    assert queued == [(run_id, "trigger_resumed_after_restart")]
     assert updates[-1][0] == run_id
-    assert updates[-1][1]["status"] == "running"
+    assert updates[-1][1]["status"] == "pending"
     assert updates[-1][1]["metadata_json"]["resumed_after_restart"] is True
     assert updates[-1][1]["metadata_json"]["restart_replay_journal"][-1]["phase"] == "resume_intent_recorded"
 

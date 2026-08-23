@@ -20,9 +20,11 @@ class DaemonRecord:
     started_at: datetime | None = None
     last_heartbeat_at: datetime | None = None
     last_success_at: datetime | None = None
+    last_outcome_at: datetime | None = None
     last_error_at: datetime | None = None
     last_error: str | None = None
     tick_count: int = 0
+    outcome_count: int = 0
     error_count: int = 0
     crash_count: int = 0
 
@@ -58,15 +60,33 @@ def mark_daemon_started(name: str) -> None:
 
 
 def mark_daemon_tick(name: str) -> None:
+    """Record that the loop completed an iteration.
+
+    A tick is a liveness heartbeat, **not** a result. It deliberately does not
+    touch ``last_success_at``: the trigger daemon reported ``healthy=true`` with
+    87,928 ticks while producing zero terminal trigger outcomes for 38 days
+    (2026-07-16 → 2026-08-23), because a spinning loop was being counted as
+    success. Real work reports through :func:`mark_daemon_outcome`.
+    """
     with _LOCK:
         record = _record(name)
         now = _now()
         record.state = "running"
         record.started_at = record.started_at or now
         record.last_heartbeat_at = now
-        record.last_success_at = now
         record.last_error = None
         record.tick_count += 1
+
+
+def mark_daemon_outcome(name: str) -> None:
+    """Record that the daemon actually drove a unit of work to a terminal state."""
+    with _LOCK:
+        record = _record(name)
+        now = _now()
+        record.started_at = record.started_at or now
+        record.last_outcome_at = now
+        record.last_success_at = now
+        record.outcome_count += 1
 
 
 def mark_daemon_error(name: str, exc: BaseException | str) -> None:
@@ -122,9 +142,11 @@ def daemon_liveness_snapshot() -> dict[str, dict[str, Any]]:
                 "last_heartbeat_at": _iso(record.last_heartbeat_at),
                 "last_heartbeat_age_seconds": age,
                 "last_success_at": _iso(record.last_success_at),
+                "last_outcome_at": _iso(record.last_outcome_at),
                 "last_error_at": _iso(record.last_error_at),
                 "last_error": record.last_error,
                 "tick_count": record.tick_count,
+                "outcome_count": record.outcome_count,
                 "error_count": record.error_count,
                 "crash_count": record.crash_count,
             }

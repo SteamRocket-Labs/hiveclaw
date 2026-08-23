@@ -93,6 +93,9 @@ def test_runtime_task_claim_statement_reclaims_only_expired_active_rows():
         "approval_execution",
         "hr_provisioning",
         "dream",
+        # Added after 2,107 leaseless ``running`` trigger rows accumulated over
+        # 38 days with no runtime path able to reach them.
+        "trigger",
     ]
     assert snapshot["fence_contract"] == "claim_version+worker_id+lease"
 

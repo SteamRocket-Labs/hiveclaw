@@ -1881,7 +1881,38 @@ async def _invoke_agent_for_triggers(
             )
             agent_participant = result.scalar_one_or_none()
 
+            # Mint the session id up front so the run can be bound to it before
+            # anything takes a lock on the RuntimeTask row.
+            #
+            # Session V2 rejects a transcript row whose run is not yet linked to
+            # its session ("writer_epoch_rejected legacy run authority" in
+            # services/session_event_contract.py), so the binding has to be
+            # committed before the first append_session_event. Web chat gets
+            # this for free — its RuntimeTask is created with parent_session_id
+            # already set — but a trigger mints its session per fire.
+            #
+            # The binding must also land *before* the ChatSession INSERT:
+            # ChatSession.runtime_task_id is a foreign key, so inserting it
+            # takes FOR KEY SHARE on this RuntimeTask row and holds it until
+            # this transaction commits. update_runtime_task_record runs on its
+            # own connection and needs FOR UPDATE on the same row, which
+            # conflicts — the two connections would wait on each other inside a
+            # single coroutine until statement_timeout fired.
+            session_id = uuid.uuid4()
+            if runtime_task_id:
+                await update_runtime_task_record(
+                    runtime_task_id,
+                    status="running",
+                    child_session_id=str(session_id),
+                    result_summary="Trigger session started.",
+                    metadata_json={
+                        "session_id": str(session_id),
+                        "session_bound": True,
+                    },
+                )
+
             session = ChatSession(
+                id=session_id,
                 agent_id=agent_id,
                 tenant_id=tenant_id,
                 user_id=agent.creator_id,
@@ -1897,32 +1928,6 @@ async def _invoke_agent_for_triggers(
             )
             db.add(session)
             await db.flush()
-            session_id = session.id
-
-            # Bind the run to its session before the first transcript write.
-            # Session V2 rejects a transcript row whose run is not yet linked to
-            # its session ("writer_epoch_rejected legacy run authority" in
-            # services/session_event_contract.py). Web chat satisfies that by
-            # construction because its RuntimeTask is created with
-            # parent_session_id already set; a trigger mints its session per
-            # fire, so it has to write the binding back first. Doing this after
-            # append_session_event is what broke every trigger run at the
-            # 2026-07-16 Session V2 cutover.
-            #
-            # update_runtime_task_record commits on its own connection, so the
-            # constraint (READ COMMITTED) sees the binding when the event INSERT
-            # below is flushed.
-            if runtime_task_id:
-                await update_runtime_task_record(
-                    runtime_task_id,
-                    status="running",
-                    child_session_id=str(session_id),
-                    result_summary="Trigger session started.",
-                    metadata_json={
-                        "session_id": str(session_id),
-                        "session_bound": True,
-                    },
-                )
 
             memory_messages = [{"role": "user", "content": trigger_context}]
             messages = list(memory_messages)

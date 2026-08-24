@@ -516,10 +516,26 @@ def test_trigger_binds_its_run_to_the_session_before_writing_the_first_event():
         )
     )
 
+    insert_lines = call_lines(
+        lambda n: (
+            isinstance(n.func, ast.Attribute)
+            and n.func.attr == "add"
+            and any(isinstance(a, ast.Name) and a.id == "session" for a in n.args)
+        )
+    )
+
     assert event_lines, "the trigger run must still write its transcript"
     assert bind_lines, "the trigger run must bind child_session_id on its RuntimeTask"
     assert min(bind_lines) < min(event_lines), (
         f"child_session_id is bound at line {min(bind_lines)} but the first session event is "
         f"written at line {min(event_lines)}; Session V2 rejects the write with "
         "'writer_epoch_rejected legacy run authority'"
+    )
+    assert insert_lines, "the trigger run must still create its ChatSession"
+    assert min(bind_lines) < min(insert_lines), (
+        f"child_session_id is bound at line {min(bind_lines)} but the ChatSession is inserted at "
+        f"line {min(insert_lines)}. ChatSession.runtime_task_id is a foreign key, so that INSERT "
+        "holds FOR KEY SHARE on the RuntimeTask row until this transaction commits, while "
+        "update_runtime_task_record needs FOR UPDATE on the same row from another connection — "
+        "the two block each other inside one coroutine until statement_timeout fires."
     )

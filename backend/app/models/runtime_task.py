@@ -214,50 +214,6 @@ class RuntimeTask(Base):
     budget_snapshot_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     budget_terminal_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    # Environment Control Plane evidence refs. Historical tasks intentionally
-    # remain NULL; a retired per-command sandbox has no trustworthy logical
-    # environment identity to backfill.
-    environment_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey(
-            "execution_environments.id",
-            name="fk_runtime_tasks_environment_id",
-            ondelete="SET NULL",
-        ),
-        nullable=True,
-        index=True,
-    )
-    environment_session_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey(
-            "environment_sessions.id",
-            name="fk_runtime_tasks_environment_session_id",
-            ondelete="SET NULL",
-        ),
-        nullable=True,
-        index=True,
-    )
-    environment_lease_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey(
-            "environment_leases.id",
-            name="fk_runtime_tasks_environment_lease_id",
-            ondelete="SET NULL",
-        ),
-        nullable=True,
-        index=True,
-    )
-    environment_checkpoint_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey(
-            "environment_checkpoints.id",
-            name="fk_runtime_tasks_environment_checkpoint_id",
-            ondelete="SET NULL",
-        ),
-        nullable=True,
-        index=True,
-    )
-
     # Metadata
     metadata_json: Mapped[dict | None] = mapped_column(
         EncryptedDeliveryTargetJSON(),

@@ -202,11 +202,6 @@ _ADDITIONAL_FORCED_TENANT_TABLES: tuple[str, ...] = (
     "storage_blobs",
     "storage_blob_refs",
     "storage_gc_runs",
-    # Agent Environment authority and recovery plane.
-    "execution_environments",
-    "environment_sessions",
-    "environment_leases",
-    "environment_checkpoints",
     # Session V2 canonical command/event/recovery plane.
     "session_event_cursors",
     "session_event_outbox",
@@ -349,10 +344,6 @@ STRICT_TENANT_RLS_TABLES: tuple[str, ...] = (
     "storage_blobs",
     "storage_blob_refs",
     "storage_gc_runs",
-    "execution_environments",
-    "environment_sessions",
-    "environment_leases",
-    "environment_checkpoints",
     "task_logs",
     "tasks",
     "tenant_channel_configs",
@@ -666,144 +657,6 @@ def apply_config_revision_immutability(connection: Connection) -> None:
     )
 
 
-def apply_environment_authority_contracts(connection: Connection) -> None:
-    """Install tenant-binding guards skipped by create_all + head stamping."""
-
-    if connection.dialect.name != "postgresql":
-        return
-    existing = set(inspect(connection).get_table_names())
-    required = {
-        "agents",
-        "runtime_tasks",
-        "execution_environments",
-        "environment_sessions",
-        "environment_leases",
-        "environment_checkpoints",
-    }
-    if not required <= existing:
-        return
-
-    connection.execute(
-        text(
-            """
-            CREATE OR REPLACE FUNCTION public.enforce_environment_tenant_binding()
-            RETURNS trigger
-            LANGUAGE plpgsql
-            AS $$
-            BEGIN
-              IF TG_TABLE_NAME = 'execution_environments' THEN
-                IF NOT EXISTS (
-                  SELECT 1 FROM agents a WHERE a.id = NEW.agent_id AND a.tenant_id = NEW.tenant_id
-                ) THEN
-                  RAISE EXCEPTION 'execution environment Agent tenant mismatch' USING ERRCODE = '23514';
-                END IF;
-                IF NEW.owner_runtime_task_id IS NOT NULL AND NOT EXISTS (
-                  SELECT 1 FROM runtime_tasks r
-                  WHERE r.id = NEW.owner_runtime_task_id AND r.tenant_id = NEW.tenant_id
-                ) THEN
-                  RAISE EXCEPTION 'execution environment RuntimeTask tenant mismatch' USING ERRCODE = '23514';
-                END IF;
-              ELSIF TG_TABLE_NAME = 'environment_leases' THEN
-                IF NOT EXISTS (
-                  SELECT 1 FROM agents a WHERE a.id = NEW.agent_id AND a.tenant_id = NEW.tenant_id
-                ) OR NOT EXISTS (
-                  SELECT 1 FROM runtime_tasks r
-                  WHERE r.id = NEW.runtime_task_id AND r.tenant_id = NEW.tenant_id
-                ) THEN
-                  RAISE EXCEPTION 'environment lease authority tenant mismatch' USING ERRCODE = '23514';
-                END IF;
-              ELSIF TG_TABLE_NAME = 'environment_checkpoints' AND NEW.source_runtime_task_id IS NOT NULL THEN
-                IF NOT EXISTS (
-                  SELECT 1 FROM runtime_tasks r
-                  WHERE r.id = NEW.source_runtime_task_id AND r.tenant_id = NEW.tenant_id
-                ) THEN
-                  RAISE EXCEPTION 'environment checkpoint RuntimeTask tenant mismatch' USING ERRCODE = '23514';
-                END IF;
-              END IF;
-              RETURN NEW;
-            END;
-            $$
-            """
-        )
-    )
-    connection.execute(text("REVOKE EXECUTE ON FUNCTION public.enforce_environment_tenant_binding() FROM PUBLIC"))
-    for table in ("execution_environments", "environment_leases", "environment_checkpoints"):
-        connection.execute(text(f"DROP TRIGGER IF EXISTS trg_{table}_tenant_binding ON {table}"))
-        connection.execute(
-            text(
-                f"CREATE TRIGGER trg_{table}_tenant_binding BEFORE INSERT OR UPDATE ON {table} "
-                "FOR EACH ROW EXECUTE FUNCTION public.enforce_environment_tenant_binding()"
-            )
-        )
-
-    connection.execute(
-        text(
-            """
-            CREATE OR REPLACE FUNCTION public.enforce_runtime_task_environment_binding()
-            RETURNS trigger
-            LANGUAGE plpgsql
-            AS $$
-            BEGIN
-              IF NEW.environment_id IS NULL AND (
-                NEW.environment_session_id IS NOT NULL
-                OR NEW.environment_lease_id IS NOT NULL
-                OR NEW.environment_checkpoint_id IS NOT NULL
-              ) THEN
-                RAISE EXCEPTION 'RuntimeTask environment child ref requires environment_id' USING ERRCODE = '23514';
-              END IF;
-              IF NEW.environment_id IS NOT NULL AND NOT EXISTS (
-                SELECT 1 FROM execution_environments e
-                WHERE e.id = NEW.environment_id AND e.tenant_id = NEW.tenant_id
-              ) THEN
-                RAISE EXCEPTION 'RuntimeTask environment tenant mismatch' USING ERRCODE = '23514';
-              END IF;
-              IF NEW.environment_session_id IS NOT NULL AND NOT EXISTS (
-                SELECT 1 FROM environment_sessions s
-                WHERE s.id = NEW.environment_session_id
-                  AND s.environment_id = NEW.environment_id
-                  AND s.tenant_id = NEW.tenant_id
-              ) THEN
-                RAISE EXCEPTION 'RuntimeTask environment session mismatch' USING ERRCODE = '23514';
-              END IF;
-              IF NEW.environment_lease_id IS NOT NULL AND NOT EXISTS (
-                SELECT 1 FROM environment_leases l
-                WHERE l.id = NEW.environment_lease_id
-                  AND l.environment_id = NEW.environment_id
-                  AND l.runtime_task_id = NEW.id
-                  AND l.tenant_id = NEW.tenant_id
-              ) THEN
-                RAISE EXCEPTION 'RuntimeTask environment lease mismatch' USING ERRCODE = '23514';
-              END IF;
-              IF NEW.environment_checkpoint_id IS NOT NULL AND NOT EXISTS (
-                SELECT 1 FROM environment_checkpoints c
-                WHERE c.id = NEW.environment_checkpoint_id
-                  AND c.environment_id = NEW.environment_id
-                  AND c.tenant_id = NEW.tenant_id
-              ) THEN
-                RAISE EXCEPTION 'RuntimeTask environment checkpoint mismatch' USING ERRCODE = '23514';
-              END IF;
-              RETURN NEW;
-            END;
-            $$
-            """
-        )
-    )
-    connection.execute(
-        text("REVOKE EXECUTE ON FUNCTION public.enforce_runtime_task_environment_binding() FROM PUBLIC")
-    )
-    connection.execute(text("DROP TRIGGER IF EXISTS trg_runtime_tasks_environment_binding ON runtime_tasks"))
-    connection.execute(
-        text(
-            """
-            CREATE TRIGGER trg_runtime_tasks_environment_binding
-            BEFORE INSERT OR UPDATE OF
-              tenant_id, environment_id, environment_session_id,
-              environment_lease_id, environment_checkpoint_id
-            ON runtime_tasks
-            FOR EACH ROW EXECUTE FUNCTION public.enforce_runtime_task_environment_binding()
-            """
-        )
-    )
 def apply_hr_creation_blueprint_immutability(connection: Connection) -> None:
     """Install the confirmed HR blueprint guard skipped by create_all + stamp."""
 
@@ -1073,7 +926,6 @@ def prepare_runtime_schema(connection: Connection, metadata: MetaData) -> bool:
         return False
     metadata.create_all(bind=connection)
     apply_rls_policies(connection)
-    apply_environment_authority_contracts(connection)
     apply_config_revision_immutability(connection)
     apply_hr_creation_blueprint_immutability(connection)
     apply_workflow_promotion_immutability(connection)
@@ -1117,7 +969,6 @@ def bootstrap_database_to_head(connection: Connection, metadata: MetaData, heads
     # Apply the RLS policies explicitly so fresh deployments are not born
     # without tenant isolation (§9 P0 gap fix).
     apply_rls_policies(connection)
-    apply_environment_authority_contracts(connection)
     apply_config_revision_immutability(connection)
     apply_hr_creation_blueprint_immutability(connection)
     apply_workflow_promotion_immutability(connection)

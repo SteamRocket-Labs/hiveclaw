@@ -2,17 +2,17 @@
 
 > 建档：2026-08-24
 >
-> 状态：实施中——`ENV-OD-00` 与 `ENV-OD-02` 已确认；owner 于 2026-08-25 授权完成代码、迁移、测试、文档证据并按可独立验证部分提交；`ENV-OD-01` 仍待确认，因此 interactive capability 不进入本轮代码范围
+> 状态：**暂停、等待整体开发进度重排**——`ENV-OD-00` 与 `ENV-OD-02` 的架构结论继续有效，但 owner 于 2026-08-25 因周末资方考察改排优先级；Sandbox/Environment 不是本次展示补漏主线
 >
 > 当前源码基线：`de66ac4ea8107254e9518d5119388f6e6d9f3526`
 >
 > 上位架构：`docs/agent-environment-extension-convergence-architecture-2026-08-23.md`
 >
-> 权威边界：本文是 owner-readable planning/implementation artifact，不是 `.ultra` canonical task ledger；当前授权覆盖本地代码、数据库 migration、自动化测试、文档和本地 commit，不覆盖 push、部署、生产 migration、外部 provider 资源创建/删除或付费动作
+> 权威边界：本文现在是延期的 owner-readable planning artifact，不是 `.ultra` canonical task ledger；恢复实施前必须先通过新的整体排期确认，当前不再授权继续修改 Environment runtime/schema/provider/UI
 >
-> 维护规则：实施期间只维护这一份 WIP；稳定决策回写上位架构，完成后删除本文。每次报告必须列出未完成项
+> 维护规则：暂停期间保留本文与上位架构，不把它们误写成当前交付；恢复实施后仍只维护这一份 WIP，完成时删除本文
 
-> 验收边界：本轮先完成 code-complete 与非浏览器自动化验证；owner 明确把登录态浏览器 E2E 放在代码完成后的下一步，因此 `ENV-AC-08` 的 browser E2E、真实 OSS/Vercel provider live conformance 和生产部署证据不能在本轮伪写为已通过
+> 回退证据：未完成实现已保存于 recovery checkpoint `2a760e32`，随后从当前工作树 revert；没有运行生产 migration、部署或 provider 外部资源操作。未来恢复时可以审阅或 cherry-pick 该 checkpoint，但不能把它当作已验收实现
 
 ---
 
@@ -477,7 +477,11 @@ flowchart LR
 
 ---
 
-## 12. 下一项 owner 决策
+## 12. 恢复本 Change 前的 owner 决策
+
+### ENV-OD-03：重新排期
+
+Environment Control Plane 不再是当前 active Change。先围绕周末资方考察盘点真实展示路径、功能断点和最低可验证补漏，再统一重排完整开发顺序。只有新的排序再次把 Environment 设为 active Change 后，才恢复 A01–A11；不得因 recovery checkpoint 已存在而默认续做。
 
 ### ENV-OD-01：Interactive capability profile
 
@@ -486,60 +490,3 @@ flowchart LR
 理由：这四项引入独立的 Chromium/cookie secret、双向 WebSocket/PTY、端口 ingress、viewer UI 与断线恢复威胁面；当前生产 code execution 主路径没有必须依赖它们的消费者。先把底层 Environment Control Plane 闭环，后续可在同一领域模型上增加 `interactive_browser` capability，而不再造第二套 runtime。
 
 如果 owner 要把它们纳入 A，则需要在 accepted outcome 中同时增加 browser profile 加密与隔离、cookie/credential policy、PTY session/resize/reconnect、port grant/expiry、viewer surface、录屏/审计与相应故障验收；任务、schema、前端和安全范围都会实质扩大。
-
----
-
-## 13. 实施与证据日志
-
-### 2026-08-25 — 规划基线提交
-
-- commit：`c7a74e9f`（`docs(environment): freeze control plane implementation plan`）
-- 范围：上位架构、A01–A11、AC-01–AC-12、OSS-first provider 路线，以及代码/E2E/部署授权边界。
-- 验证：`git diff --cached --check` 通过；两份 Markdown 的 fenced code block 数量为偶数。
-
-### ENV-A01 — 当前执行路径与断点冻结
-
-当前 checkout 的唯一 provider 选择 seam 是
-`backend/app/services/code_execution/service.py::execute_agent_command`，但它还不是
-Environment Control Plane：它只按 `HIVE_CODE_EXEC_PROVIDER` 在每个 command 上选择
-`local_provider` 或 `vercel_provider`。Vercel 路径的真实语义仍是
-`AsyncSandbox.create -> tar upload -> command -> tar download -> stop`。
-
-从 live entry 追到该 seam 的消费者如下：
-
-| 消费者 | live entry / consumer | 当前 authority 输入 | 当前断点 |
-|---|---|---|---|
-| Chat `execute_code` / `run_command` | `ToolRuntimeService -> workspace_args adapter -> tools/handlers/filesystem.py -> agent_tool_domains/code_exec.py` | ToolRuntime 已解析 tenant、Agent、user、RuntimeTask、workspace authority、secret boundary | adapter 只传 workspace/tenant/authority scope；code-exec seam 看不到 tenant、Agent、RuntimeTask 或 policy snapshot |
-| Skill executable capsule | `run_skill_tool -> agent_tool_domains/skill_runtime.py` | ToolRuntime 上下文在 handler 前存在 | handler 未向 command seam 传递 Agent/RuntimeTask authority |
-| Governed command hook | `plugin_hook_service -> GovernedHookRunner` | `HookContext.metadata` 含 tenant/user/RuntimeTask/session | command executor 未收到这些字段，且默认使用 runner 级固定 work dir |
-| Governance command hook | `ToolGovernanceResolver -> run_sandboxed_governance_hook` | payload 含 tenant/Agent/RuntimeTask，workspace 由 Agent 解析 | provider seam 只收到 work dir/env/runtime/network |
-| HR external Skill intake | `hr_provisioning_runner -> _install_external_skill_from_skills_ref` | 显式 tenant/Agent | provider seam 未绑定逻辑 environment；当前使用独立临时目录 |
-| Skill evolution artifact gate | `skill_distiller -> run_artifact_execution_gate` | 这是隔离 eval，不属于 Agent durable workspace | 仍直接走同一 per-command seam；应保留 ephemeral profile，但必须通过 EnvironmentService |
-| Adversarial artifact eval | `evals/adversarial_suite -> run_artifact_execution_gate` | 这是隔离 eval | 同上 |
-| Sandbox health probe | backend lifespan / health -> scheduled probe | operator/system scope | 只对 Vercel per-command path 特判，尚未成为 provider-neutral conformance/health |
-
-静态搜索确认生产代码中只有上述八个文件引用 `execute_agent_command`；
-`backend/app/api/commands.py::execute_agent_command` 是命令注册 API 的同名 HTTP handler，
-不是 code-execution provider bypass。
-
-现有 focused 绿基线：
-
-```text
-cd backend
-.venv/bin/pytest -q \
-  tests/services/test_command_tooling.py \
-  tests/services/test_local_cloud_coding_profile.py \
-  tests/services/test_vercel_code_execution.py \
-  tests/services/test_code_execution_probe.py \
-  tests/services/test_skill_tool_runtime.py \
-  tests/runtime/test_governed_hook_runner.py \
-  tests/tools/test_governance_hook_resolver.py \
-  tests/evals/test_artifact_gate.py \
-  tests/tools/test_hr_handler.py
-
-111 passed in 1.07s
-```
-
-该结果只证明旧路径的 characterization baseline；它不证明 Environment、persistent
-resume、跨 Agent isolation、provider-loss recovery、idempotency 或 secret non-ingress 已完成。
-这些缺口必须先由新 contract tests 变红，再进入实现。

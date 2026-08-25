@@ -842,6 +842,14 @@ cd backend
 - 需要 PostgreSQL/Docker 的测试必须确认真实运行；如果被 skip，RC 不通过。
 - 前端 E2E 若依赖服务环境，记录 base URL、浏览器、principal 和运行时间。
 
+### 全量 backend 首跑证据（2026-08-26）
+
+- Codex 独立首跑：`cd backend && set -o pipefail; .venv/bin/pytest -q -rs tests 2>&1 | tail -400` → **1 failed / 8088 passed / 2 skipped / 1 warning，561.77s**。唯一失败：`tests/security/test_rls_bypass_allowlist.py::test_every_rls_bypass_callsite_is_registered_with_exact_query_shape`。
+- 确证原因：`app/core/rls_bypass_manifest.py` 仍按外层 `_drain_personal_kb_jobs` 登记 personal-KB drain bypass；而 `evolution_daemon` 中 `enter_rls_bypass` 已位于嵌套 `@asynccontextmanager _bypass_session`（作为 `session_factory` 传入 `PersonalKnowledgeService.claim_and_process_stuck_jobs`），扫描器按最近外层函数指纹，实际签名为 `_bypass_session`。属 manifest 真相漂移；运行时 RLS 边界、扫描器与 daemon 行为本已正确，均未改动。
+- 修正：manifest 单行 `_drain_personal_kb_jobs` → `_bypass_session`（reason/query shape/owner/expiry 不变；不改扫描器、不移动 RLS 边界、不改运行时行为）。
+- 验证：zCode targeted RED 复现（1 failed in 3.38s）→ 修正后 security 文件 + evolution-daemon/personal-KB 5 文件 bundle **48 passed in 25.44s**；Ruff check/format clean；`git diff --check` clean。Codex 独立复验同 bundle **48 passed in 24.38s**，Ruff/format/diff clean，verdict **PASS（仅限该单行 correction）**。
+- **状态：RC-09 gate 未通过、未 Closed** —— 本 commit 后必须重跑全量 backend 回归（及 frontend 全套门禁），全绿前不得宣称 Day-1 predeploy gate 通过；生产两遍 E2E 仍未执行。
+
 ### 生产彩排
 
 按以下顺序，从干净会话跑两遍：
@@ -986,7 +994,7 @@ Rollback / recovery:
 | RC-06 | 待验收 | — | — | — | — | — | Unknown | fanout/partial failure/UI |
 | RC-07 | 待验收 | — | — | — | — | — | Unknown | dynamic proposal through archive |
 | RC-08 | 待验收 | — | — | — | — | — | Unknown | DAG restart/resume/idempotency |
-| RC-09 | 待执行 | — | — | — | — | — | Missing | full regression + deployment rehearsal |
+| RC-09 | 进行中（correction 后全量待重跑）：全量 backend 首跑（2026-08-26）1 failed / 8088 passed / 2 skipped / 1 warning（561.77s），唯一失败为 RLS bypass allowlist manifest 命名漂移（登记外层 `_drain_personal_kb_jobs`，扫描器正确指纹嵌套 `_bypass_session`）；单行 manifest correction 已交付，详见 §7.10 首跑证据 | 本次 `fix(rc-09): align personal KB bypass grant` | zCode：targeted RED 1 failed in 3.38s → 修正后 security + evolution-daemon/personal-KB 5 文件 48 passed in 25.44s、Ruff/format/diff clean；Codex 独立同 bundle 48 passed in 24.38s | **Codex verdict: 该 correction PASS**（仅限单行修正；非 RC-09 gate 通过） | 已授权未执行 | 已授权未执行 | **Partial**：首跑唯一失败已修正；全量回归未重跑，gate 未通过、未 Closed | 本 commit 后必须重跑全量 backend 回归与 frontend 门禁；生产两遍 E2E 待执行；full regression + deployment rehearsal 未完成 |
 
 `Unknown` 表示尚未以本轮当前生产证据判定，不能等同于缺失或完成。
 

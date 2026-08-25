@@ -458,7 +458,7 @@ RLS_BYPASS_ALLOWLIST = (
     _grant(
         *(
             "app/services/evolution_daemon.py",
-            "_drain_personal_kb_jobs",
+            "_bypass_session",
             "'personal-kb import job drain — recover stale queued/running person-scope jobs'",
             ("session-state-only",),
         )

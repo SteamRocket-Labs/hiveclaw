@@ -136,16 +136,27 @@ async function bootstrap(playwright: Playwright): Promise<void> {
           label: 'Atomic Controlled Provider',
           enabled: true,
           max_output_tokens: 2048,
+          max_input_tokens: 128000,
         },
       }),
       'create controlled model',
     );
-  } else if (model.base_url !== `${HIVE_JOURNEY_FAKE_URL}/v1`) {
+  } else if (
+    model.base_url !== `${HIVE_JOURNEY_FAKE_URL}/v1` ||
+    model.max_input_tokens !== 128000 ||
+    model.max_output_tokens !== 2048
+  ) {
     model = await responseJson<Record<string, unknown>>(
       await ownerApi.put(`/api/enterprise/llm-models/${model.id}`, {
-        data: { api_key: 'atomic-controlled-key', base_url: `${HIVE_JOURNEY_FAKE_URL}/v1`, enabled: true },
+        data: {
+          api_key: 'atomic-controlled-key',
+          base_url: `${HIVE_JOURNEY_FAKE_URL}/v1`,
+          enabled: true,
+          max_input_tokens: 128000,
+          max_output_tokens: 2048,
+        },
       }),
-      'rebind controlled model to this isolated fake',
+      'rebind controlled model to this isolated fake and repair stale contract',
     );
   }
 

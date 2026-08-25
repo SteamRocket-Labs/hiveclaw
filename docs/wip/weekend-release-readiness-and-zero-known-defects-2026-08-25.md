@@ -850,6 +850,15 @@ cd backend
 - 验证：zCode targeted RED 复现（1 failed in 3.38s）→ 修正后 security 文件 + evolution-daemon/personal-KB 5 文件 bundle **48 passed in 25.44s**；Ruff check/format clean；`git diff --check` clean。Codex 独立复验同 bundle **48 passed in 24.38s**，Ruff/format/diff clean，verdict **PASS（仅限该单行 correction）**。
 - **状态：RC-09 gate 未通过、未 Closed** —— 本 commit 后必须重跑全量 backend 回归（及 frontend 全套门禁），全绿前不得宣称 Day-1 predeploy gate 通过；生产两遍 E2E 仍未执行。
 
+### J-01 旅程阻塞修正证据（2026-08-26）
+
+- 首次干净 harness 全栈跑（Codex，全新专用 PG + 空 Redis）：`npm run test:e2e:journeys` bootstrap 成功，**J-01 失败**——RuntimeTask `4fe2dd60-d6b7-5e21-8f7c-1e2814d33121` 在 provider 调用前以 `PromptBudgetExceededError` 终止（"required=66192 budget=60000. Refusing blind truncation."）。受控模型行为 `Atomic Controlled Provider | openai | gpt-4o-mini | max_input_tokens NULL | max_output_tokens 2048`。
+- 确证原因：`frontend/e2e/atomic-user-journeys.spec.ts` 创建受控假模型时未声明 `max_input_tokens`，运行时按未知窗口回退 60,000 字符（`compute_system_prompt_budget(None)`），低于 J-01 冻结 prompt 契约 66,192 字符；既有行 rebind 路径仅在 `base_url` 漂移时触发，无法自愈 NULL 输入窗口。**生产运行时、prompt 预算/内容、压缩、上下文选择、超时与 J-01 断言均未改动**——未知窗口 fail-loudly 是刻意契约且已有覆盖；不加 provider 级运行时回退（各模型窗口不同）。
+- 修正（fixture-only）：create 载荷显式声明 `max_input_tokens: 128000`（gpt-4o-mini 官方 128K 上下文窗口；预算 = int(128000×0.20×3.5) = 89,600 字符 > 66,192）；既有行 repair 谓词扩展为 `base_url` 或 `max_input_tokens` 或 `max_output_tokens`（bootstrap 已断言的受控字段）任一 stale 即 PUT 修复。后端契约先行核查：Create/Update/Out schema 均含 `max_input_tokens`，PUT handler 非 None 即持久化。
+- zCode 修复路径证据：既有专用库 `hive_weekend_rc_20260826_0448`（不重置）行内 `max_input_tokens` NULL 且 `base_url` 已正确 → 旧谓词不触发、新谓词必然触发；跑前 NULL → J-01 **1 passed (14.4s)** → 跑后 `max_input_tokens=128000` 持久化；复跑 **1 passed (12.8s)**。
+- Codex 全新创建路径证据：全新库 `hive_weekend_rc_20260826_j01_codex_0516` + 空 Redis /13 → J-01 **passed in 3.4s（1 passed in 14.6s，exit 0）**；新行 `max_input_tokens=128000 | max_output_tokens=2048 | enabled=true | fake URL`；全新 RuntimeTask `5deb2572-6a77-5341-a107-4d44def49c0e` web_chat_turn completed、summary 为受控 provider 的 J-01 终局回执；ChatTranscriptEvent 30 个有序事件（human_input.accepted → context_window_status / provider_call_ledger → assistant_final.completed → run.completed → run_outcome.terminal_committed）——路径级证明。官方契约交叉核对：OpenAI GPT-4o Mini 页面载明 128K 上下文窗口。
+- **状态：RC-09 仍为 Partial / predeploy gate 未通过** —— J-01 阻塞已修正，但 **J-02..J-15 全量跑未执行**；生产未部署、E2E 未跑。上文全量 backend 首跑与前端门禁证据保持不变，全量重跑仍待执行。
+
 ### 生产彩排
 
 按以下顺序，从干净会话跑两遍：
@@ -994,7 +1003,7 @@ Rollback / recovery:
 | RC-06 | 待验收 | — | — | — | — | — | Unknown | fanout/partial failure/UI |
 | RC-07 | 待验收 | — | — | — | — | — | Unknown | dynamic proposal through archive |
 | RC-08 | 待验收 | — | — | — | — | — | Unknown | DAG restart/resume/idempotency |
-| RC-09 | 进行中（correction 后全量待重跑）：全量 backend 首跑（2026-08-26）1 failed / 8088 passed / 2 skipped / 1 warning（561.77s），唯一失败为 RLS bypass allowlist manifest 命名漂移（登记外层 `_drain_personal_kb_jobs`，扫描器正确指纹嵌套 `_bypass_session`）；单行 manifest correction 已交付，详见 §7.10 首跑证据 | 本次 `fix(rc-09): align personal KB bypass grant` | zCode：targeted RED 1 failed in 3.38s → 修正后 security + evolution-daemon/personal-KB 5 文件 48 passed in 25.44s、Ruff/format/diff clean；Codex 独立同 bundle 48 passed in 24.38s | **Codex verdict: 该 correction PASS**（仅限单行修正；非 RC-09 gate 通过） | 已授权未执行 | 已授权未执行 | **Partial**：首跑唯一失败已修正；全量回归未重跑，gate 未通过、未 Closed | 本 commit 后必须重跑全量 backend 回归与 frontend 门禁；生产两遍 E2E 待执行；full regression + deployment rehearsal 未完成 |
+| RC-09 | 进行中（J-01 阻塞已修正，全量待重跑）：全量 backend 首跑（2026-08-26）1 failed / 8088 passed / 2 skipped / 1 warning（561.77s），唯一失败为 RLS bypass allowlist manifest 命名漂移（登记外层 `_drain_personal_kb_jobs`，扫描器正确指纹嵌套 `_bypass_session`），单行 manifest correction 已交付；随后 journey harness 首跑 J-01 失败（`required=66192 budget=60000`，受控模型 `max_input_tokens` NULL），fixture-only correction 已交付，均详见 §7.10 | `324a29ca`（manifest correction）+ 本次 `test(rc-09): declare atomic model input window`（J-01 fixture） | manifest：zCode targeted RED 1 failed in 3.38s → 修正后 security + evolution-daemon/personal-KB 5 文件 48 passed in 25.44s、Ruff/format/diff clean；Codex 独立同 bundle 48 passed in 24.38s。J-01：zCode 修复路径（既有 NULL 行，不重置库）跑前 NULL → 1 passed (14.4s) → 跑后 128000 持久化、复跑 1 passed (12.8s)；Codex 全新库创建路径 1 passed in 14.6s exit 0（RuntimeTask `5deb2572` completed、30 个有序 ChatTranscriptEvent 路径证明、官方 128K 契约核对） | **Codex verdict: 两项 correction 均 PASS**（各限其单点修正；非 RC-09 gate 通过） | 已授权未执行 | 已授权未执行 | **Partial**：首跑唯一失败与 J-01 阻塞均已修正；全量回归未重跑，gate 未通过、未 Closed | J-02..J-15 全量 journey 跑待执行；全量 backend 回归与 frontend 门禁重跑待执行；生产两遍 E2E 待执行；full regression + deployment rehearsal 未完成 |
 
 `Unknown` 表示尚未以本轮当前生产证据判定，不能等同于缺失或完成。
 

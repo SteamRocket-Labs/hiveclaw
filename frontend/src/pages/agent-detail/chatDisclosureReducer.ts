@@ -22,7 +22,18 @@ export type RunStepKind =
   | 'artifact'
   | 'event';
 
-export type RunStepStatus = 'queued' | 'running' | 'blocked' | 'done' | 'failed' | 'cancelled';
+// `interrupted` is the typed honest state for transcript steps whose lifecycle
+// never reached a terminal mark while no authoritative active run exists
+// (crashed/legacy runs). It must never render as live "processing" and never
+// fabricate a terminal outcome; duration freezes at the last durable step.
+export type RunStepStatus =
+  | 'queued'
+  | 'running'
+  | 'blocked'
+  | 'done'
+  | 'failed'
+  | 'cancelled'
+  | 'interrupted';
 
 /**
  * Presentation is intentionally independent from the runtime kind.
@@ -53,7 +64,7 @@ export interface RunStepSnapshot {
 
 export interface RunTimelineSnapshot {
   id: string;
-  status: 'idle' | 'running' | 'blocked' | 'done' | 'failed' | 'cancelled';
+  status: 'idle' | 'running' | 'blocked' | 'done' | 'failed' | 'cancelled' | 'interrupted';
   startedAt?: string;
   completedAt?: string;
   durationMs?: number;
@@ -65,6 +76,8 @@ export interface RunTimelineSnapshot {
 type TimelineBuildOptions = {
   now?: Date;
   answer?: AgentChatMessage;
+  /** True only when the authoritative runtime (runs/active poll) reports a live run for this session. */
+  activeRun?: boolean;
 };
 
 const FILE_TOOL_NAMES = new Set([
@@ -479,7 +492,9 @@ function getEventStepPresentation(
   return 'surface';
 }
 
-function statusForMessage(message: AgentChatMessage): RunStepStatus {
+function statusForMessage(message: AgentChatMessage, allowLiveRunning: boolean): RunStepStatus {
+  const live = (status: RunStepStatus): RunStepStatus =>
+    status === 'running' && !allowLiveRunning ? 'interrupted' : status;
   if (message.role === 'tool_call') {
     if (message.toolMeta?.kind === 'user_clarification' && message.toolMeta.blocking) return 'blocked';
     if (message.toolMeta?.kind === 'runtime_step') {
@@ -487,15 +502,15 @@ function statusForMessage(message: AgentChatMessage): RunStepStatus {
       if (status === 'failed' || status === 'error') return 'failed';
       if (status === 'blocked' || status === 'approval_required') return 'blocked';
       if (status === 'cancelled' || status === 'canceled') return 'cancelled';
-      if (status === 'running' || status === 'pending' || status === 'in_progress') return 'running';
+      if (status === 'running' || status === 'pending' || status === 'in_progress') return live('running');
     }
-    return message.toolStatus === 'running' ? 'running' : 'done';
+    return message.toolStatus === 'running' ? live('running') : 'done';
   }
   if (message.role === 'assistant') {
-    if (message.sessionItem && !message.sessionItem.terminal) return 'running';
+    if (message.sessionItem && !message.sessionItem.terminal) return live('running');
     const status = String(message.eventStatus || '').toLowerCase();
     if (status === 'started' || status === 'delta' || status === 'running' || status === 'in_progress' || status === 'pending') {
-      return 'running';
+      return live('running');
     }
     if (status === 'failed' || status === 'error') return 'failed';
     if (status === 'cancelled' || status === 'canceled') return 'cancelled';
@@ -503,7 +518,7 @@ function statusForMessage(message: AgentChatMessage): RunStepStatus {
   }
   if (message.role === 'event') {
     const status = String(message.eventStatus || '').toLowerCase();
-    if (status === 'running' || status === 'in_progress' || status === 'pending') return 'running';
+    if (status === 'running' || status === 'in_progress' || status === 'pending') return live('running');
     if (status === 'blocked' || status === 'approval_required' || status === 'session_permission_required') return 'blocked';
     if (status === 'failed' || status === 'error') return 'failed';
     if (status === 'cancelled' || status === 'canceled') return 'cancelled';
@@ -527,9 +542,9 @@ export function isDisclosureStepMessage(message: AgentChatMessage): boolean {
   return false;
 }
 
-function buildStep(message: AgentChatMessage, index: number): RunStepSnapshot | null {
+function buildStep(message: AgentChatMessage, index: number, allowLiveRunning: boolean): RunStepSnapshot | null {
   if (!isDisclosureStepMessage(message)) return null;
-  const status = statusForMessage(message);
+  const status = statusForMessage(message, allowLiveRunning);
   const summary = getDisclosureStepSummary(message);
   const canonicalKind = message.sessionItem?.kind;
 
@@ -684,6 +699,7 @@ function getTimelineStatus(steps: RunStepSnapshot[], hasAnswer: boolean): RunTim
   if (steps.some((step) => step.status === 'failed')) return 'failed';
   if (steps.some((step) => step.status === 'blocked')) return 'blocked';
   if (steps.some((step) => step.status === 'running')) return 'running';
+  if (steps.some((step) => step.status === 'interrupted')) return 'interrupted';
   if (steps.length > 0 || hasAnswer) return 'done';
   return 'idle';
 }
@@ -722,8 +738,9 @@ export function buildRunTimelineFromMessages(
   messages: AgentChatMessage[],
   options: TimelineBuildOptions = {},
 ): RunTimelineSnapshot {
+  const allowLiveRunning = options.activeRun === true;
   const steps = messages
-    .map((message, index) => buildStep(message, index))
+    .map((message, index) => buildStep(message, index, allowLiveRunning))
     .filter((step): step is RunStepSnapshot => Boolean(step));
   const answerIndex = messages.findIndex(isAssistantAnswer);
   const answer = options.answer || (answerIndex >= 0 ? messages[answerIndex] : null);
@@ -731,9 +748,11 @@ export function buildRunTimelineFromMessages(
   const firstTime = steps.map((step) => getTimestampMs(step.startedAt)).find((time): time is number => time != null);
   const lastStepTime = [...steps].reverse().map((step) => getTimestampMs(step.completedAt || step.startedAt)).find((time): time is number => time != null);
   const answerTime = getTimestampMs(answer?.timestamp);
-  const completedAt = status === 'running' ? undefined : answerTime ?? lastStepTime;
+  // `interrupted` must not fabricate a terminal completion: completedAt stays
+  // undefined and duration freezes at the last durable step timestamp.
+  const completedAt = status === 'running' || status === 'interrupted' ? undefined : answerTime ?? lastStepTime;
   const nowMs = options.now?.getTime();
-  const durationEnd = completedAt ?? nowMs;
+  const durationEnd = completedAt ?? (status === 'interrupted' ? lastStepTime ?? nowMs : nowMs);
 
   return {
     id: 'timeline-0',

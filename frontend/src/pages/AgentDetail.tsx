@@ -189,6 +189,7 @@ function AgentDetailInner() {
         queryFn: () => agentApi.getById(id!),
         enabled: !!id,
         retry: false,
+        refetchOnWindowFocus: true, // page stays mounted across tabs; global focus-refetch is off, this query opts in
     });
     const canLoadAgentScopedData = !!id && !!agent;
     const canManage = !!agent && ((agent as any).access_level === 'manage' || isAdmin);
@@ -2441,20 +2442,19 @@ function AgentDetailInner() {
                                     </span>
                                 )}
                                 {(agent as any).is_expired && (
-                                    <span className="agent-detail-expired-badge">Expired</span>
+                                    <span className="agent-detail-expired-badge">{t('agent.settings.expiry.expired', 'Expired')}</span>
                                 )}
                                 {(agent as any).agent_type === 'local_agent' && (
                                     <span className="agent-detail-local-badge">{t('nav.localBadge', 'Local')}</span>
                                 )}
                                 {!(agent as any).is_expired && (agent as any).expires_at && (
                                     <span className="agent-detail-expires-text">
-                                        Expires: {new Date((agent as any).expires_at).toLocaleString()}
+                                        {t('agent.settings.expiry.expiresAt', 'Expires: {{time}}', { time: new Date((agent as any).expires_at).toLocaleString() })}
                                     </span>
-                                )}
-                                {isAdmin && (
+                                )}                                {isAdmin && (
                                     <button
                                         onClick={openExpiryModal}
-                                        title="Edit expiry time"
+                                        title={t('agent.settings.expiry.editTitle', 'Edit expiry time')}
                                         className="agent-detail-expiry-edit"
                                     >✏️ {t((agent as any).expires_at || (agent as any).is_expired ? 'agent.settings.expiry.renew' : 'agent.settings.expiry.setExpiry')}</button>
                                 )}

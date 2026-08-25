@@ -121,7 +121,7 @@ import {
   subagentWorkerRecoveryModel,
   teamMemberRoleLabel,
   teamMemberSessionLabel,
-  userFacingRuntimeStatus,
+  runtimeStatusLabel,
   WorkflowRunFocusPanel,
 } from './SessionRuntimePanel';
 import { InlinePlanCard, StructuredToolResultBody } from './StructuredToolResult';
@@ -1986,7 +1986,7 @@ function AgentChatSection({
                 background: teamMemberWindow.status === 'failed' ? 'rgb(220,38,38)' : 'var(--accent-primary)',
               }}
             />
-            {userFacingRuntimeStatus(teamMemberWindow.status)}
+            {runtimeStatusLabel(teamMemberWindow.status, t)}
           </span>
         </div>
       </div>

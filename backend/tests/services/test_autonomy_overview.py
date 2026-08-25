@@ -42,10 +42,43 @@ def test_trigger_view_default_hides_internal_fields_and_surfaces_backoff():
     assert view["display_title"] == "Send the daily report"
     assert view["attention_state"] == "backoff_active"
     assert "retry" in view["next_action"]
+    assert view["schedule"]["kind"] == "cron"
     assert "trigger_class" not in view
     assert "objective_id" not in view
     assert "metadata_json" not in view
     assert "diagnostics" not in view
+
+
+def test_trigger_view_exposes_structured_schedule_for_localized_rendering():
+    from app.services.autonomy_overview import build_trigger_view
+
+    def make_trigger(trigger_type: str, config: dict):
+        return SimpleNamespace(
+            id=uuid4(),
+            name="wake",
+            type=trigger_type,
+            config=config,
+            reason="",
+            is_enabled=True,
+            fire_count=0,
+            max_fires=None,
+            cooldown_seconds=60,
+            last_fired_at=None,
+            created_at=None,
+            expires_at=None,
+        )
+
+    interval = build_trigger_view(
+        make_trigger("interval", {"minutes": 15}), attempts=[], include_diagnostics=False
+    )
+    assert interval["schedule"] == {"kind": "interval", "minutes": 15}
+    assert interval["display_schedule"] == "Every 15 minutes"
+
+    once = build_trigger_view(make_trigger("once", {"at": "2026-08-30T09:00:00Z"}), attempts=[], include_diagnostics=False)
+    assert once["schedule"] == {"kind": "once", "at": "2026-08-30T09:00:00Z"}
+
+    on_message = build_trigger_view(make_trigger("on_message", {}), attempts=[], include_diagnostics=False)
+    assert on_message["schedule"] == {"kind": "on_message"}
 
 
 def test_trigger_view_diagnostics_are_explicitly_separated():

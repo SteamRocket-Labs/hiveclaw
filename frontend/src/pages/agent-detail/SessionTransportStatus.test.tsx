@@ -39,4 +39,14 @@ describe('SessionTransportStatus', () => {
     expect(authFailed).toContain('Sign in again');
     expect(authFailed).not.toContain('session-transport-reconnect');
   });
+
+  it('gives the auth_failed state a typed recovery exit instead of a dead end', () => {
+    const authFailed = renderToStaticMarkup(
+      <SessionTransportStatus phase="auth_failed" onReload={() => {}} />,
+    );
+
+    expect(authFailed).toContain('Sign in again');
+    expect(authFailed).toContain('data-testid="session-transport-reload"');
+    expect(authFailed).toContain('Reload');
+  });
 });

@@ -533,9 +533,16 @@ export function useSessionTransportController(options: SessionTransportControlle
     };
     const handleVisibility = () => {
       if (document.visibilityState !== 'visible') return;
-      void Promise.resolve(optionsRef.current.callbacks.onBackfill(activeSession, agentId)).then(() => {
-        syncProjectionCursor(key, agentId, String(activeSession.id));
-      });
+      void Promise.resolve(optionsRef.current.callbacks.onBackfill(activeSession, agentId))
+        .then(() => {
+          syncProjectionCursor(key, agentId, String(activeSession.id));
+        })
+        .catch((error) => {
+          // A transient REST failure on tab refocus must stay a typed
+          // recoverable condition, never an unhandled rejection; the poll
+          // loop / reconnect path owns retry.
+          console.warn(`Session history refocus backfill failed for ${activeSession.id}:`, error);
+        });
       const socket = socketsRef.current[key];
       if (!socket || socket.readyState === WebSocket.CLOSED || socket.readyState === WebSocket.CLOSING) wake();
     };
@@ -560,8 +567,15 @@ export function useSessionTransportController(options: SessionTransportControlle
     const poll = async () => {
       if (cancelled) return;
       if (typeof navigator === 'undefined' || navigator.onLine !== false) {
-        await optionsRef.current.callbacks.onBackfill(activeSession, agentId);
-        syncProjectionCursor(key, agentId, String(activeSession.id));
+        try {
+          await optionsRef.current.callbacks.onBackfill(activeSession, agentId);
+          if (!cancelled) syncProjectionCursor(key, agentId, String(activeSession.id));
+        } catch (error) {
+          // One failed poll page must never kill the durable-history polling
+          // chain (the banner promises automatic recovery) nor surface as an
+          // unhandled rejection; keep rescheduling below.
+          console.warn(`Session history poll failed for ${activeSession.id}:`, error);
+        }
       }
       if (cancelled) return;
       const nextInterval = transportPollIntervalMs(transportPhase, optionsRef.current.isRunActive(key));

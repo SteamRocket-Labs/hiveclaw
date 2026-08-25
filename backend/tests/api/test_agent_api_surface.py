@@ -163,3 +163,48 @@ def test_openclaw_gateway_surface_is_retired_from_backend_contract():
     assert "GatewayMessage" not in local_bridge_source
     assert "local-bridge/work-requests" not in local_bridge_source
     assert "create_local_bridge_work_request" not in local_bridge_service_source
+
+
+@pytest.mark.asyncio
+async def test_effective_last_active_at_derives_from_durable_activity_evidence():
+    """Agent Detail must not freeze "last active" at the last lifecycle Start.
+
+    The read model takes the max of the lifecycle column, the latest activity
+    log row, and the latest session message timestamp.
+    """
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from app.api.agents import _effective_last_active_at
+    from app.models.activity_log import AgentActivityLog
+    from app.models.chat_session import ChatSession
+
+    lifecycle_at = datetime(2026, 8, 1, tzinfo=timezone.utc)
+    activity_at = datetime(2026, 8, 24, 9, 0, tzinfo=timezone.utc)
+    message_at = datetime(2026, 8, 23, 18, 0, tzinfo=timezone.utc)
+
+    captured: list = []
+
+    class _Scalar:
+        def __init__(self, value):
+            self._value = value
+
+        def scalar_one_or_none(self):
+            return self._value
+
+    class _DB:
+        async def execute(self, statement):
+            captured.append(statement)
+            return _Scalar(activity_at if len(captured) == 1 else message_at)
+
+    agent = SimpleNamespace(id=uuid4(), last_active_at=lifecycle_at)
+
+    result = await _effective_last_active_at(_DB(), agent)
+
+    assert result == activity_at
+    assert len(captured) == 2
+    first_sql = str(captured[0].compile(compile_kwargs={"literal_binds": False}))
+    second_sql = str(captured[1].compile(compile_kwargs={"literal_binds": False}))
+    assert AgentActivityLog.__tablename__ in first_sql
+    assert ChatSession.__tablename__ in second_sql

@@ -17,6 +17,77 @@ import type { SessionIndex } from '../../api/domains/chat';
 import type { SessionWorkbench } from '../../api/domains/ccParity';
 
 describe('session workbench timeline model', () => {
+  it('renders a historical non-terminal turn as interrupted with a frozen duration when no run is active', () => {
+    // UI-004 regression: replaying a session whose last turn never wrote a
+    // terminal lifecycle mark must not fabricate a live processing run with an
+    // ever-growing stopwatch; duration freezes at the last durable step.
+    const messages: AgentChatMessage[] = [
+      { id: 'u1', role: 'user', content: 'Draft the Q2 summary.' },
+      {
+        id: 'r1',
+        role: 'assistant',
+        content: '',
+        thinking: 'I need the Q2 notes.',
+        timestamp: '2026-07-17T08:00:00Z',
+        sessionItem: { id: 'r1', kind: 'assistant_reasoning_summary', terminal: false },
+      },
+      {
+        id: 't1',
+        role: 'tool_call',
+        content: '',
+        toolName: 'read_file',
+        toolArgs: { path: 'notes/q2.md' },
+        toolStatus: 'running',
+        timestamp: '2026-07-17T08:00:20Z',
+      },
+    ] as unknown as AgentChatMessage[];
+
+    const model = buildThreadTimeline({
+      messages,
+      activeSession: { id: 'session-1', title: 'Historical session' },
+      isWaiting: false,
+      isStreaming: false,
+      activeRunStatus: null,
+    });
+
+    const trailingRun = model.cells[model.cells.length - 1];
+    expect(trailingRun).toMatchObject({ kind: 'active_run' });
+    if (trailingRun.kind !== 'active_run') return;
+    expect(trailingRun.timeline.status).toBe('interrupted');
+    expect(trailingRun.timeline.completedAt).toBeUndefined();
+    expect(trailingRun.timeline.durationMs).toBe(20_000);
+    expect(model.header.status).toBe('idle');
+  });
+
+  it('upgrades the trailing run to live running when the authoritative runtime reports an active run', () => {
+    const messages: AgentChatMessage[] = [
+      { id: 'u1', role: 'user', content: 'Draft the Q2 summary.' },
+      {
+        id: 'r1',
+        role: 'assistant',
+        content: '',
+        thinking: 'I need the Q2 notes.',
+        timestamp: '2026-07-17T08:00:00Z',
+        sessionItem: { id: 'r1', kind: 'assistant_reasoning_summary', terminal: false },
+      },
+    ] as unknown as AgentChatMessage[];
+
+    const model = buildThreadTimeline({
+      messages,
+      activeSession: { id: 'session-1', title: 'Live session' },
+      isWaiting: false,
+      isStreaming: false,
+      activeRunStatus: 'running',
+    });
+
+    const trailingRun = model.cells[model.cells.length - 1];
+    expect(trailingRun).toMatchObject({ kind: 'active_run' });
+    if (trailingRun.kind !== 'active_run') return;
+    expect(trailingRun.timeline.status).toBe('running');
+    expect(trailingRun.timeline.completedAt).toBeUndefined();
+    expect(model.header.status).toBe('running');
+  });
+
   it('reuses the previous timeline model when streaming state did not change', () => {
     const messages: AgentChatMessage[] = [
       { id: 'u1', role: 'user', content: 'Profile the session renderer.' },

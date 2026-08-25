@@ -117,6 +117,31 @@ describe('RunDisclosureBlock', () => {
     expect(markup).not.toContain('RAW FILE CONTENT');
   });
 
+  it('renders an interrupted historical turn with a frozen duration and an explicit next step, never as live processing', () => {
+    // UI-004 regression: a turn whose transcript never reached a terminal mark
+    // must show the typed interrupted state with the frozen duration — no live
+    // shimmer, no growing stopwatch, and a concrete recovery affordance.
+    const timeline: RunTimelineSnapshot = {
+      id: 'run-historical',
+      status: 'interrupted',
+      startedAt: '2026-07-17T08:00:00Z',
+      durationMs: 1_200_000,
+      steps: [
+        step({ id: 'reasoning-1', kind: 'reasoning' as RunStepSnapshot['kind'], title: 'Thinking', status: 'interrupted', visibility: 'collapsed' }),
+        step({ id: 'tool-1', kind: 'file' as RunStepSnapshot['kind'], title: 'Read file', status: 'interrupted', summary: 'notes.md', visibility: 'collapsed' }),
+      ],
+    };
+
+    const markup = renderToStaticMarkup(<RunDisclosureBlock timeline={timeline} />);
+
+    expect(markup).toContain('Interrupted');
+    expect(markup).toContain('send a new message to continue');
+    // 1_200_000ms = 20m — the frozen authoritative duration renders once.
+    expect(markup).toContain('20m');
+    expect(markup).not.toContain('shimmer');
+    expect(markup).not.toContain('Working');
+  });
+
   it('folds model-authored public commentary with completed process history', () => {
     const markup = renderToStaticMarkup(
       <RunDisclosureBlock

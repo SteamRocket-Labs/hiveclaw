@@ -165,7 +165,7 @@ export function runtimeItemDisplayMeta(item: RuntimeSectionItemModel): string {
   return [role, item.summary, runtimeMetricSummary(item)].filter(Boolean).join(' · ');
 }
 
-export function runtimeItemDisplayStatus(item: RuntimeSectionItemModel): string {
+export function runtimeItemDisplayStatus(item: RuntimeSectionItemModel, t?: RuntimeStatusTranslator): string {
   const metadata = isRuntimeRecord(item.raw.metadata) ? item.raw.metadata : {};
   const status = stringValue(item.status || item.state || 'unknown').trim() || 'unknown';
   const closeStatus = item.runtimeKind === 'agent_team'
@@ -173,12 +173,13 @@ export function runtimeItemDisplayStatus(item: RuntimeSectionItemModel): string 
     : '';
   const outcome = closeStatus === 'failed' ? 'close failed' : stringValue(
     item.raw.last_turn_status
-      || item.raw.lastTurnStatus
-      || metadata.last_turn_status
-      || metadata.lastTurnStatus,
+    || item.raw.lastTurnStatus
+    || metadata.last_turn_status
+    || metadata.lastTurnStatus,
   ).trim();
-  const safeStatus = userFacingRuntimeStatus(status);
-  const safeOutcome = outcome ? userFacingRuntimeStatus(outcome) : '';
+  const format = (value: string) => (t ? runtimeStatusLabel(value, t) : userFacingRuntimeStatus(value));
+  const safeStatus = format(status);
+  const safeOutcome = outcome ? format(outcome) : '';
   return safeOutcome && safeOutcome !== safeStatus ? `${safeStatus} · ${safeOutcome}` : safeStatus;
 }
 
@@ -206,44 +207,75 @@ export function runtimeItemDisplayLabel(item: RuntimeSectionItemModel, fallback:
   return label;
 }
 
-export function userFacingRuntimeStatus(status: unknown): string {
+export type RuntimeStatusTranslator = ReturnType<typeof useTranslation>['t'];
+
+// Canonical runtime-status vocabulary. Values are translation keys; the English
+// fallback keeps the safety property that a raw runtime value never renders.
+const RUNTIME_STATUS_KEYS: Record<string, string> = {
+  idle: 'ready',
+  ready: 'ready',
+  queued: 'queued',
+  pending: 'queued',
+  running: 'working',
+  streaming: 'working',
+  resuming: 'resuming',
+  waiting: 'waiting',
+  waiting_user: 'waitingForYou',
+  awaiting_approval: 'waitingApproval',
+  waiting_budget_approval: 'waitingApproval',
+  completed: 'completed',
+  succeeded: 'completed',
+  failed: 'needsAttention',
+  blocked: 'needsAttention',
+  provider_error: 'needsAttention',
+  quota_denied: 'needsAttention',
+  quota_unavailable: 'needsAttention',
+  not_admitted: 'skipped',
+  skipped: 'skipped',
+  suspended: 'paused',
+  killed: 'stopped',
+  cancelled: 'cancelled',
+  exhausted: 'paused',
+  hard_stopped: 'stopped',
+  needs_reconciliation: 'needsAdminReview',
+};
+
+const RUNTIME_STATUS_LABELS: Record<string, string> = {
+  ready: 'Ready',
+  queued: 'Queued',
+  working: 'Working',
+  resuming: 'Resuming',
+  waiting: 'Waiting',
+  waitingForYou: 'Waiting for you',
+  waitingApproval: 'Waiting for approval',
+  completed: 'Completed',
+  needsAttention: 'Needs attention',
+  skipped: 'Skipped',
+  paused: 'Paused',
+  stopped: 'Stopped',
+  cancelled: 'Cancelled',
+  needsAdminReview: 'Needs admin review',
+};
+
+export function runtimeStatusKey(status: unknown): string {
   const normalized = String(status || '').trim().toLowerCase();
-  const labels: Record<string, string> = {
-    idle: 'Ready',
-    ready: 'Ready',
-    queued: 'Queued',
-    pending: 'Queued',
-    running: 'Working',
-    streaming: 'Working',
-    resuming: 'Resuming',
-    waiting: 'Waiting',
-    waiting_user: 'Waiting for you',
-    awaiting_approval: 'Waiting for approval',
-    waiting_budget_approval: 'Waiting for approval',
-    completed: 'Completed',
-    succeeded: 'Completed',
-    failed: 'Needs attention',
-    blocked: 'Needs attention',
-    provider_error: 'Needs attention',
-    quota_denied: 'Needs attention',
-    quota_unavailable: 'Needs attention',
-    not_admitted: 'Skipped',
-    skipped: 'Skipped',
-    suspended: 'Paused',
-    killed: 'Stopped',
-    cancelled: 'Cancelled',
-    exhausted: 'Paused',
-    hard_stopped: 'Stopped',
-    needs_reconciliation: 'Needs admin review',
-  };
-  const exact = labels[normalized];
+  const exact = RUNTIME_STATUS_KEYS[normalized];
   if (exact) return exact;
-  if (normalized.includes('approval') || normalized.includes('confirm') || normalized.includes('wait')) return 'Waiting';
-  if (normalized.includes('fail') || normalized.includes('error') || normalized.includes('reconcil')) return 'Needs attention';
-  if (normalized.includes('complete') || normalized.includes('success') || normalized.includes('done')) return 'Completed';
-  if (normalized.includes('cancel') || normalized.includes('stop') || normalized.includes('kill')) return 'Stopped';
-  if (normalized.includes('queue') || normalized.includes('pending')) return 'Queued';
-  return 'Working';
+  if (normalized.includes('approval') || normalized.includes('confirm') || normalized.includes('wait')) return 'waiting';
+  if (normalized.includes('fail') || normalized.includes('error') || normalized.includes('reconcil')) return 'needsAttention';
+  if (normalized.includes('complete') || normalized.includes('success') || normalized.includes('done')) return 'completed';
+  if (normalized.includes('cancel') || normalized.includes('stop') || normalized.includes('kill')) return 'stopped';
+  if (normalized.includes('queue') || normalized.includes('pending')) return 'queued';
+  return 'working';
+}
+
+export function userFacingRuntimeStatus(status: unknown): string {
+  return RUNTIME_STATUS_LABELS[runtimeStatusKey(status)] || 'Working';
+}
+
+export function runtimeStatusLabel(status: unknown, t: RuntimeStatusTranslator): string {
+  const key = runtimeStatusKey(status);
+  return t(`agent.runtimeStatus.${key}`, RUNTIME_STATUS_LABELS[key] || 'Working');
 }
 
 export function SessionRuntimePanel({
@@ -358,7 +390,7 @@ export function SessionRuntimePanel({
           <span className="session-runtime-row-title">{runtimeItemDisplayLabel(item, fallback)}</span>
           <span className="session-runtime-row-meta">{meta || t('sessionWorkbench.rightPanel.noAdditionalDetails', 'No additional details')}</span>
         </span>
-        <span className="session-runtime-status">{runtimeItemDisplayStatus(item)}</span>
+        <span className="session-runtime-status">{runtimeItemDisplayStatus(item, t)}</span>
       </>
     );
     const linkId = item.childSessionId || item.id;
@@ -403,7 +435,7 @@ export function SessionRuntimePanel({
           <span className="session-runtime-row-title">{blocker?.title || waiter.label}</span>
           <span className="session-runtime-row-meta">{meta || waiter.summary || waiter.label}</span>
         </span>
-        <span className="session-runtime-status">{userFacingRuntimeStatus(waiter.status || 'waiting')}</span>
+        <span className="session-runtime-status">{runtimeStatusLabel(waiter.status || 'waiting', t)}</span>
       </>
     );
     return clickable ? (
@@ -438,7 +470,7 @@ export function SessionRuntimePanel({
           <span className="session-runtime-row-title">{runtimeItemDisplayLabel(workflow, fallback)}</span>
           <span className="session-runtime-row-meta">{meta}</span>
         </span>
-        <span className="session-runtime-status">{runtimeItemDisplayStatus(workflow)}</span>
+        <span className="session-runtime-status">{runtimeItemDisplayStatus(workflow, t)}</span>
       </>
     );
     return onSelectWorkflowRun ? (
@@ -472,7 +504,7 @@ export function SessionRuntimePanel({
           <span className="session-runtime-row-title">{member.label || fallback}</span>
           <span className="session-runtime-row-meta">{meta}</span>
         </span>
-        <span className="session-runtime-status">{runtimeItemDisplayStatus(member)}</span>
+        <span className="session-runtime-status">{runtimeItemDisplayStatus(member, t)}</span>
         {agentId ? (
           <SessionAgentTeamMemberControls
             agentId={agentId}
@@ -517,7 +549,7 @@ export function SessionRuntimePanel({
           <span className="session-runtime-row-title">{worker.label || fallback}</span>
           <span className="session-runtime-row-meta">{meta}</span>
         </span>
-        <span className="session-runtime-status">{runtimeItemDisplayStatus(worker)}</span>
+        <span className="session-runtime-status">{runtimeItemDisplayStatus(worker, t)}</span>
         <span className="session-runtime-actions" data-testid="session-subagent-worker-actions">
           {workerAction(
             'inspect',
@@ -571,7 +603,7 @@ export function SessionRuntimePanel({
             <div className="session-runtime-team-header">
               <span>{runtimeItemDisplayLabel(team, t('sessionWorkbench.rightPanel.agentTeam', 'Agent Team'))}</span>
               <span className="session-agent-team-close-control">
-                <small>{runtimeItemDisplayStatus(team)}</small>
+                <small>{runtimeItemDisplayStatus(team, t)}</small>
                 {agentId ? (
                   <SessionAgentTeamCloseControl agentId={agentId} team={team} onChanged={onTeamChanged} />
                 ) : null}
@@ -839,7 +871,7 @@ export function SessionRuntimePanel({
                 </strong>
                 <small>
                   {sessionWindow
-                    ? [sessionWindow.label, userFacingRuntimeStatus(sessionWindow.status)].filter(Boolean).join(' · ')
+                    ? [sessionWindow.label, runtimeStatusLabel(sessionWindow.status, t)].filter(Boolean).join(' · ')
                     : t('sessionWorkbench.rightPanel.noMainSession', 'No selected session')}
                 </small>
               </span>
@@ -952,7 +984,7 @@ export function WorkflowRunFocusPanel({
           {step.summary || t('sessionWorkbench.workflowRunWindow.noStepDetails', 'No additional details')}
         </span>
       </span>
-      <span className="session-runtime-status">{userFacingRuntimeStatus(step.status)}</span>
+      <span className="session-runtime-status">{runtimeStatusLabel(step.status, t)}</span>
     </div>
   );
   const renderLeaf = (leaf: RuntimeSectionItemModel, index: number) => {
@@ -967,7 +999,7 @@ export function WorkflowRunFocusPanel({
             {leaf.summary || t('sessionWorkbench.workflowRunWindow.noLeafDetails', 'No additional details')}
           </span>
         </span>
-        <span className="session-runtime-status">{userFacingRuntimeStatus(leaf.status)}</span>
+        <span className="session-runtime-status">{runtimeStatusLabel(leaf.status, t)}</span>
       </>
     );
     return canEnter ? (

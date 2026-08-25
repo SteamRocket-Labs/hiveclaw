@@ -9,6 +9,7 @@ export interface SessionTransportStatusProps {
   attempt?: number;
   onReconnect?: () => void;
   runtimeBudget?: RuntimeBudgetState | null;
+  onReload?: () => void;
 }
 
 export function SessionTransportStatus({
@@ -16,6 +17,7 @@ export function SessionTransportStatus({
   attempt = 0,
   onReconnect,
   runtimeBudget,
+  onReload = () => window.location.reload(),
 }: SessionTransportStatusProps) {
   const { t } = useTranslation();
 
@@ -82,6 +84,16 @@ export function SessionTransportStatus({
               onClick={onReconnect}
             >
               {t('agent.chat.transport.retryNow', 'Retry now')}
+            </button>
+          ) : null}
+          {phase === 'auth_failed' ? (
+            <button
+              type="button"
+              className="btn btn-ghost"
+              data-testid="session-transport-reload"
+              onClick={onReload}
+            >
+              {t('agent.chat.transport.reload', 'Reload')}
             </button>
           ) : null}
         </div>

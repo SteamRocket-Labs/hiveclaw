@@ -783,7 +783,10 @@ async def _log_execution_result(
         service.activity_logger(
             request.agent_id,
             "tool_call_approved" if approval is not None else "tool_call",
-            f"{'Approved-executed' if approval is not None else 'Called tool'} {request.tool_name}: {result_text[:80]}",
+            # The summary is the user-facing sentence; the raw result payload
+            # (JSON, internal IDs) stays in the structured detail below so
+            # normal-user surfaces never render it inline.
+            f"{'Approved-executed' if approval is not None else 'Called tool'} {request.tool_name}",
             tenant_id=state.runtime_context.tenant_id,
             owner_user_id=state.runtime_context.user_id,
             root_session_id=state.runtime_context.session_id,

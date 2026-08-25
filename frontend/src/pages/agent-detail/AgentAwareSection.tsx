@@ -119,32 +119,37 @@ export default function AgentAwareSection({
       if (parts.length >= 5) {
         const [minute, hour, , , dayOfWeek] = parts;
         const timeText = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
-        if (dayOfWeek === '*' && minute !== '*' && hour !== '*') return `Every day at ${timeText}`;
-        if (dayOfWeek === '1-5' && minute !== '*' && hour !== '*') return `Weekdays at ${timeText}`;
-        if (dayOfWeek === '0' || dayOfWeek === '7') return `Sundays at ${timeText}`;
+        if (dayOfWeek === '*' && minute !== '*' && hour !== '*') return t('agent.aware.scheduleEveryDayAt', 'Every day at {{time}}', { time: timeText });
+        if (dayOfWeek === '1-5' && minute !== '*' && hour !== '*') return t('agent.aware.scheduleWeekdaysAt', 'Weekdays at {{time}}', { time: timeText });
+        if (dayOfWeek === '0' || dayOfWeek === '7') return t('agent.aware.scheduleSundaysAt', 'Sundays at {{time}}', { time: timeText });
         if (hour === '*' && minute === '0') {
-          if (dayOfWeek === '1-5') return 'Every hour on weekdays';
-          return 'Every hour';
+          if (dayOfWeek === '1-5') return t('agent.aware.scheduleHourlyWeekdays', 'Every hour on weekdays');
+          return t('agent.aware.scheduleHourly', 'Every hour');
         }
-        if (hour === '*' && minute !== '*') return `Every hour at :${String(minute).padStart(2, '0')}`;
+        if (hour === '*' && minute !== '*') return t('agent.aware.scheduleHourlyAt', 'Every hour at :{{minute}}', { minute: String(minute).padStart(2, '0') });
       }
-      return `Cron: ${expression}`;
+      return t('agent.aware.scheduleCron', 'Cron: {{expression}}', { expression });
     }
     if (trigger.type === 'once' && trigger.config?.at) {
       try {
-        return `Once at ${new Date(trigger.config.at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`;
+        const time = new Date(trigger.config.at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+        return t('agent.aware.scheduleOnceAt', 'Once at {{time}}', { time });
       } catch {
-        return `Once at ${trigger.config.at}`;
+        return t('agent.aware.scheduleOnceAt', 'Once at {{time}}', { time: String(trigger.config.at) });
       }
     }
     if (trigger.type === 'interval' && trigger.config?.minutes) {
-      const minutes = trigger.config.minutes;
-      return minutes >= 60 ? `Every ${minutes / 60}h` : `Every ${minutes} min`;
+      const minutes = Number(trigger.config.minutes);
+      if (minutes >= 60 && minutes % 60 === 0) return t('agent.aware.scheduleEveryHours', 'Every {{count}}h', { count: minutes / 60 });
+      return t('agent.aware.scheduleEveryMinutes', 'Every {{count}} min', { count: minutes });
     }
-    if (trigger.type === 'poll') return `Poll: ${trigger.config?.url?.substring(0, 40) || 'URL'}`;
-    if (trigger.type === 'on_message') return `On message from ${trigger.config?.from_agent_name || trigger.config?.from_user_name || 'unknown'}`;
-    if (trigger.type === 'webhook') return `Webhook${trigger.config?.token ? ` (${trigger.config.token.substring(0, 6)}...)` : ''}`;
-    return trigger.type;
+    if (trigger.type === 'poll') return t('agent.aware.schedulePoll', 'Poll: {{url}}', { url: trigger.config?.url?.substring(0, 40) || 'URL' });
+    if (trigger.type === 'on_message') {
+      const source = trigger.config?.from_agent_name || trigger.config?.from_user_name || t('agent.aware.scheduleUnknownSource', 'unknown');
+      return t('agent.aware.scheduleOnMessage', 'On message from {{source}}', { source });
+    }
+    if (trigger.type === 'webhook') return t('agent.aware.scheduleWebhook', 'Webhook');
+    return String(trigger.type || '');
   };
 
   const standaloneTriggers = awareTriggers;
@@ -167,7 +172,100 @@ export default function AgentAwareSection({
     if (onRefetchAutonomy) await onRefetchAutonomy();
   };
 
-  const statusLabel = (value?: string | null) => String(value || 'unknown').replace(/_/g, ' ');
+  // Trigger/wake state enums come from autonomy_overview as stable snake_case
+  // codes; map the known vocabulary to translations. Unknown codes must not be
+  // prettified into user-facing prose — normal users see a typed unknown label
+  // and the raw code stays behind the title tooltip as progressive disclosure
+  // (full operator/audit evidence lives in the activity log).
+  const statusLabel = (value?: string | null) => {
+    const code = String(value || 'unknown');
+    const known: Record<string, string> = {
+      active: t('agent.aware.stateActive', 'Active'),
+      waiting_approval: t('agent.aware.stateWaitingApproval', 'Waiting for approval'),
+      missing_model: t('agent.aware.stateMissingModel', 'Model not configured'),
+      backoff_active: t('agent.aware.stateBackoff', 'Cooling down'),
+      failed_recently: t('agent.aware.stateFailedRecently', 'Failed recently'),
+      max_fires_reached: t('agent.aware.stateMaxFires', 'Run limit reached'),
+      needs_reconciliation: t('agent.aware.stateNeedsReconciliation', 'Needs admin review'),
+      no_recent_attempt: t('agent.aware.stateNoRecentAttempt', 'No recent run'),
+      no_wake_policy: t('agent.aware.stateNoWakePolicy', 'No wake policy'),
+      has_wake_policy: t('agent.aware.stateHasWakePolicy', 'Wake policy ready'),
+      completed: t('agent.aware.stateCompleted', 'Completed'),
+      blocked: t('agent.aware.stateBlocked', 'Blocked'),
+      stale: t('agent.aware.stateStale', 'Stale'),
+      expired: t('agent.aware.stateExpired', 'Expired'),
+      paused: t('agent.aware.statePaused', 'Paused'),
+      unknown: t('agent.aware.stateUnknown', 'Unknown'),
+    };
+    if (known[code]) return known[code];
+    return code && code !== 'unknown'
+      ? t('agent.aware.stateUnknownState', 'Unknown state')
+      : known.unknown;
+  };
+
+  // User-facing reason text derives from the stable attention_state code the
+  // backend already guarantees; the backend English prose (attention_reason)
+  // and any unmapped codes stay out of the normal-user DOM and remain in the
+  // payload for operator/audit consumers.
+  const attentionReasonLabel = (state?: string | null): string | null => {
+    const code = String(state || '');
+    const known: Record<string, string> = {
+      paused: t('agent.aware.reasonPaused', 'Autonomous wake is paused.'),
+      expired: t('agent.aware.reasonExpired', 'This wake policy has expired.'),
+      max_fires_reached: t('agent.aware.reasonMaxFires', 'This wake policy reached its run limit.'),
+      backoff_active: t('agent.aware.reasonBackoff', 'Cooling down after a recent failure.'),
+      missing_model: t('agent.aware.reasonMissingModel', 'No model is configured for this autonomous run.'),
+      failed_recently: t('agent.aware.reasonFailedRecently', 'The most recent run failed or was skipped.'),
+      needs_reconciliation: t('agent.aware.reasonNeedsReconciliation', 'This run needs admin reconciliation before retry.'),
+    };
+    return known[code] || null;
+  };
+
+  const attemptReasonLabel = (status?: string | null): string | null => {
+    const code = String(status || '');
+    if (code === 'failed' || code === 'skipped') {
+      return t('agent.aware.reasonFailedRecently', 'The most recent run failed or was skipped.');
+    }
+    if (code === 'needs_reconciliation') {
+      return t('agent.aware.reasonNeedsReconciliation', 'This run needs admin reconciliation before retry.');
+    }
+    return null;
+  };
+
+  const findingMessageLabel = (finding: any): string | null => {
+    const category = String(finding?.category || '');
+    if (!category.startsWith('trigger_')) return null;
+    return attentionReasonLabel(category.slice('trigger_'.length));
+  };
+
+  // Structured schedule facts (backend `schedule` field) render localized;
+  // the English display_schedule string is a legacy/operator fallback.
+  const scheduleLabelFromView = (trigger: any): string | null => {
+    const schedule = trigger?.schedule as Record<string, unknown> | null | undefined;
+    if (schedule && typeof schedule === 'object' && typeof schedule.kind === 'string') {
+      const kind = schedule.kind;
+      if (kind === 'interval' && schedule.minutes != null) {
+        const minutes = Number(schedule.minutes);
+        if (Number.isFinite(minutes) && minutes > 0) {
+          if (minutes >= 60 && minutes % 60 === 0) {
+            return t('agent.aware.scheduleEveryHours', 'Every {{count}}h', { count: minutes / 60 });
+          }
+          return t('agent.aware.scheduleEveryMinutes', 'Every {{count}} min', { count: minutes });
+        }
+      }
+      if (kind === 'once' && typeof schedule.at === 'string' && schedule.at) {
+        return t('agent.aware.scheduleOnceAt', 'Once at {{time}}', { time: schedule.at });
+      }
+      if (kind === 'cron' && typeof schedule.expr === 'string' && schedule.expr) {
+        return t('agent.aware.scheduleCron', 'Cron: {{expression}}', { expression: schedule.expr });
+      }
+      if (kind === 'on_message') return t('agent.aware.scheduleWaitMessage', 'Wait for message');
+      if (kind === 'webhook') return t('agent.aware.scheduleWebhook', 'Webhook');
+      if (kind === 'poll') return t('agent.aware.schedulePollLabel', 'Polling');
+    }
+    const fallback = trigger?.display_schedule;
+    return typeof fallback === 'string' && fallback ? fallback : null;
+  };
 
   const kindLabel = (value?: string | null) => {
     const key = String(value || '');
@@ -407,9 +505,9 @@ export default function AgentAwareSection({
             <div className="agent-aware-findings">
               {findings.slice(0, 3).map((finding: any, index: number) => (
                 <div key={`${finding.category || 'finding'}-${index}`} className="agent-aware-finding">
-                  <strong className={stateToneClass(finding.severity === 'error' ? 'blocked' : 'waiting_approval')}>{statusLabel(finding.severity)}</strong>
+                  <strong className={stateToneClass(finding.severity === 'error' ? 'blocked' : 'waiting_approval')}>{statusLabel(finding.severity === 'error' ? 'blocked' : 'waiting_approval')}</strong>
                   {' · '}
-                  {finding.message}
+                  {findingMessageLabel(finding) || t('agent.aware.stateUnknownState', 'Unknown state')}
                 </div>
               ))}
             </div>
@@ -433,8 +531,12 @@ export default function AgentAwareSection({
                       {statusBadge(trigger.attention_state)}
                     </div>
                     <div className="agent-aware-trigger-title">{trigger.display_title}</div>
-                    {trigger.display_schedule && <div className="u-row u-tertiary agent-aware-mt2">{trigger.display_schedule}</div>}
-                    {trigger.attention_reason && <div className={`agent-aware-trigger-reason ${stateToneClass(trigger.attention_state)}`}>{trigger.attention_reason}</div>}
+                    {scheduleLabelFromView(trigger) && <div className="u-row u-tertiary agent-aware-mt2">{scheduleLabelFromView(trigger)}</div>}
+                    {attentionReasonLabel(trigger.attention_state) && (
+                      <div className={`agent-aware-trigger-reason ${stateToneClass(trigger.attention_state)}`}>
+                        {attentionReasonLabel(trigger.attention_state)}
+                      </div>
+                    )}
                     {trigger.last_attempt?.display_summary && <div className="agent-aware-trigger-summary">{trigger.last_attempt.display_summary}</div>}
                   </div>
                   <div className="agent-aware-trigger-actions">
@@ -460,8 +562,10 @@ export default function AgentAwareSection({
             {attempts.slice(0, 8).map((attempt: any, index: number) => (
               <div key={`${attempt.status || 'attempt'}-${index}`} className="agent-aware-attempt">
                 <div className="agent-aware-min0">
-                  <div className="agent-aware-attempt-title">{attempt.display_summary || attempt.attention_reason || attempt.status}</div>
-                  {attempt.attention_reason && <div className="u-meta u-tertiary agent-aware-mt2">{attempt.attention_reason}</div>}
+                  <div className="agent-aware-attempt-title">{attempt.display_summary || attemptReasonLabel(attempt.status) || statusLabel(attempt.status)}</div>
+                  {attemptReasonLabel(attempt.status) && attempt.display_summary && (
+                    <div className="u-meta u-tertiary agent-aware-mt2">{attemptReasonLabel(attempt.status)}</div>
+                  )}
                 </div>
                 {statusBadge(attempt.status)}
               </div>

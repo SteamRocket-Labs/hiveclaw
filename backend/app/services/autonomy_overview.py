@@ -63,6 +63,35 @@ def _trigger_class(trigger: Any) -> str:
     return "system_maintenance"
 
 
+def _schedule_structure(trigger: Any) -> dict[str, Any]:
+    """Structured schedule facts so clients can render localized schedule text.
+
+    ``display_schedule`` stays as the operator-facing English rendering; this
+    structure carries the machine values (kind + params) normal-user surfaces
+    translate instead of parsing composed prose.
+    """
+    cfg = _config(trigger)
+    trigger_type = str(getattr(trigger, "type", "") or "")
+    schedule: dict[str, Any] = {"kind": trigger_type or "system"}
+    if trigger_type == "cron":
+        expr = str(cfg.get("expr") or "").strip()
+        if expr:
+            schedule["expr"] = expr
+    elif trigger_type == "once":
+        at = str(cfg.get("at") or "").strip()
+        if at:
+            schedule["at"] = at
+    elif trigger_type == "interval":
+        minutes = cfg.get("minutes")
+        if minutes is not None:
+            schedule["minutes"] = minutes
+    elif trigger_type == "poll":
+        url = str(cfg.get("url") or "").strip()
+        if url:
+            schedule["url"] = url
+    return schedule
+
+
 def _schedule_text(trigger: Any) -> str:
     cfg = _config(trigger)
     trigger_type = str(getattr(trigger, "type", "") or "")
@@ -241,6 +270,7 @@ def build_trigger_view(
         "display_kind": display_kind,
         "display_title": display_title,
         "display_schedule": _schedule_text(trigger),
+        "schedule": _schedule_structure(trigger),
         "attention_state": attention_state,
         "attention_reason": attention_reason,
         "next_action": next_action,

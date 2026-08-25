@@ -1537,6 +1537,9 @@ function getHeaderStatus(
   if (lastRun?.timeline.status === 'failed') return 'failed';
   if (lastRun?.timeline.status === 'running') return 'running';
   if (lastRun?.timeline.status === 'blocked') return 'waiting';
+  // An interrupted trailing run is not fabricated into complete: the header
+  // shows the idle session state and the run block carries the typed detail.
+  if (lastRun?.timeline.status === 'interrupted') return 'idle';
   if (cells.length > 0) return 'complete';
   return 'idle';
 }
@@ -1624,10 +1627,11 @@ function buildRunCell(
   runIndex: number,
   sourceMessages: Array<{ message: AgentChatMessage; index: number }>,
   answer?: { message: AgentChatMessage; index: number },
+  activeRun = false,
 ): Extract<ThreadTimelineCell, { kind: 'active_run' }> {
   const timeline = buildRunTimelineFromMessages(
     sourceMessages.map((entry) => entry.message),
-    { answer: answer?.message },
+    { answer: answer?.message, activeRun },
   );
   return {
     kind: 'active_run',
@@ -1721,9 +1725,16 @@ function keepLatestProcessRunActive(
   const cell = cells[index];
   if (!cell || cell.kind !== 'active_run' || cell.timeline.answerMessageId) return false;
 
+  // Rebuild the trailing run with live-run authority so genuinely non-terminal
+  // steps stay running; without that authority the honest interrupted state
+  // (frozen duration, no live stopwatch) is preserved.
+  const rebuilt = buildRunTimelineFromMessages(
+    cell.sourceMessages.map((entry) => entry.message),
+    { activeRun: true },
+  );
   const status: RunTimelineSnapshot['status'] = activeRunStatus === 'failed'
     ? 'failed'
-    : cell.timeline.status === 'blocked'
+    : rebuilt.status === 'blocked'
       ? 'blocked'
       : 'running';
   cells[index] = {
@@ -1731,8 +1742,9 @@ function keepLatestProcessRunActive(
     ...(phase ? { phase } : {}),
     timeline: {
       ...cell.timeline,
+      ...rebuilt,
       status,
-      completedAt: status === 'failed' ? cell.timeline.completedAt : undefined,
+      completedAt: status === 'failed' ? rebuilt.completedAt ?? cell.timeline.completedAt : undefined,
     },
   };
   return true;

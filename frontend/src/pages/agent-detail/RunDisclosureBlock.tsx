@@ -399,7 +399,9 @@ export default function RunDisclosureBlock({ timeline }: { timeline: RunTimeline
         ? t('agent.chat.disclosure.needsAttention', 'Needs attention')
         : timeline.status === 'cancelled'
           ? t('agent.chat.disclosure.stopped', 'Stopped')
-          : t('agent.chat.disclosure.processed', 'Processed');
+          : timeline.status === 'interrupted'
+            ? t('agent.chat.disclosure.interrupted', 'Interrupted')
+            : t('agent.chat.disclosure.processed', 'Processed');
   const stepCount = t('agent.chat.disclosure.stepCount', '{{count}} steps', { count: visibleSteps.length });
   const live = timeline.status === 'running' || timeline.status === 'blocked';
   const renderItems = groupRunSteps(visibleSteps);
@@ -418,7 +420,11 @@ export default function RunDisclosureBlock({ timeline }: { timeline: RunTimeline
             {title}
           </span>
           {duration && <span className="run-disclosure-duration">{duration}</span>}
-          {timeline.summary && <span className="run-disclosure-summary">{timeline.summary}</span>}
+          {timeline.status === 'interrupted' ? (
+            <span className="run-disclosure-summary">{t('agent.chat.disclosure.interruptedHint', 'This turn has no completion record; send a new message to continue.')}</span>
+          ) : (
+            timeline.summary && <span className="run-disclosure-summary">{timeline.summary}</span>
+          )}
           <span className="run-disclosure-count">{stepCount}</span>
         </button>
         {expanded && (

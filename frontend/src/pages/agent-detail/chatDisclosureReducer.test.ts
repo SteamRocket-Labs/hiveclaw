@@ -130,7 +130,10 @@ describe('chatDisclosureReducer', () => {
     expect(isDisclosureStepMessage(message)).toBe(true);
     expect(getDisclosureStepSummary(message)).toBe('Hive chat runtime disclosure');
 
-    const timeline = buildRunTimelineFromMessages([message], { now: new Date('2026-06-22T10:00:10Z') });
+    const timeline = buildRunTimelineFromMessages([message], {
+      now: new Date('2026-06-22T10:00:10Z'),
+      activeRun: true,
+    });
 
     expect(timeline.status).toBe('running');
     expect(timeline.steps[0]).toMatchObject({
@@ -140,6 +143,61 @@ describe('chatDisclosureReducer', () => {
       summary: 'Hive chat runtime disclosure',
     });
     expect(timeline.steps[0].summary).not.toContain('query:');
+  });
+
+  it('marks a non-terminal historical turn as interrupted, never running, when no active run is authoritative', () => {
+    // UI-004 regression: a historical session whose transcript items never
+    // reached a terminal lifecycle (crashed/legacy run) must not fabricate a
+    // live "processing" state with an ever-growing stopwatch.
+    const messages: AgentChatMessage[] = [
+      {
+        role: 'assistant',
+        content: '',
+        thinking: 'I need to inspect the current code.',
+        timestamp: '2026-06-22T10:00:00Z',
+        sessionItem: { id: 'reasoning-1', kind: 'assistant_reasoning_summary', terminal: false } as AgentChatMessage['sessionItem'],
+      },
+      {
+        role: 'tool_call',
+        content: '',
+        toolName: 'web_search',
+        toolArgs: { query: 'Hive chat runtime disclosure' },
+        toolStatus: 'running',
+        timestamp: '2026-06-22T10:00:20Z',
+      },
+    ];
+
+    const timeline = buildRunTimelineFromMessages(messages, {
+      now: new Date('2026-08-30T12:00:00Z'),
+      activeRun: false,
+    });
+
+    expect(timeline.status).toBe('interrupted');
+    expect(timeline.steps.map((step) => step.status)).toEqual(['interrupted', 'interrupted']);
+    // Duration freezes at the last durable step timestamp, not `now`.
+    expect(timeline.completedAt).toBeUndefined();
+    expect(timeline.durationMs).toBe(20_000);
+  });
+
+  it('keeps a non-terminal turn genuinely running when the authoritative runtime reports an active run', () => {
+    const messages: AgentChatMessage[] = [
+      {
+        role: 'assistant',
+        content: '',
+        thinking: 'I need to inspect the current code.',
+        timestamp: '2026-06-22T10:00:00Z',
+        sessionItem: { id: 'reasoning-1', kind: 'assistant_reasoning_summary', terminal: false } as AgentChatMessage['sessionItem'],
+      },
+    ];
+
+    const timeline = buildRunTimelineFromMessages(messages, {
+      now: new Date('2026-06-22T10:00:40Z'),
+      activeRun: true,
+    });
+
+    expect(timeline.status).toBe('running');
+    expect(timeline.steps[0].status).toBe('running');
+    expect(timeline.durationMs).toBe(40_000);
   });
 
   it('surfaces compact tool completion results while keeping raw payloads collapsed', () => {
@@ -393,7 +451,7 @@ describe('chatDisclosureReducer', () => {
       { role: 'event', content: 'Schedule created', eventType: 'schedule', eventStatus: 'created', eventScheduleId: 'schedule-1' },
     ] as AgentChatMessage[];
 
-    const timeline = buildRunTimelineFromMessages(messages);
+    const timeline = buildRunTimelineFromMessages(messages, { activeRun: true });
 
     expect(timeline.steps.map((step) => step.kind)).toEqual([
       'workflow',
@@ -651,7 +709,7 @@ describe('chatDisclosureReducer', () => {
         eventRuntimeTaskId: 'task-1',
         eventChildSessionId: 'child-1',
       },
-    ] as AgentChatMessage[]);
+    ] as AgentChatMessage[], { activeRun: true });
 
     expect(timeline.status).toBe('running');
     expect(timeline.steps[0]).toMatchObject({
@@ -682,9 +740,12 @@ describe('chatDisclosureReducer', () => {
 
     expect(timeline.status).toBe('done');
     expect(timeline.answerMessageId).toBe('answer-1');
+    // The turn is delivered; the background step has no terminal mark in this
+    // transcript, so replay shows the honest interrupted state (current
+    // background status is owned by the workbench runtime evidence).
     expect(timeline.steps[0]).toMatchObject({
       kind: 'subagent',
-      status: 'running',
+      status: 'interrupted',
     });
   });
 

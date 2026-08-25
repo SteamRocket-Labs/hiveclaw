@@ -35,6 +35,7 @@ import {
 } from './ArtifactSurface';
 import {
   ActiveTailStatusLine,
+  runtimeStatusLabel,
   subagentWorkerRecoveryModel,
   userFacingRuntimeStatus,
   WorkflowRunFocusPanel,
@@ -68,6 +69,15 @@ import {
 import type { PlanRequest } from '../../api/domains/plans';
 import { AGENT_WORKBENCH_AREAS } from './agentDetailPolicy';
 import zh from '../../i18n/zh.json';
+
+describe('runtimeStatusLabel', () => {
+  it('renders through the translator so non-English locales get localized labels', () => {
+    const t = ((key: string, fallback?: string) => `zh:${fallback ?? key}`) as unknown as Parameters<typeof runtimeStatusLabel>[1];
+    expect(runtimeStatusLabel('idle', t)).toBe('zh:Ready');
+    expect(runtimeStatusLabel('waiting_budget_approval', t)).toBe('zh:Waiting for approval');
+    expect(runtimeStatusLabel('needs_reconciliation', t)).toBe('zh:Needs admin review');
+  });
+});
 
 describe('userFacingRuntimeStatus', () => {
   it('maps known states and never falls back to raw runtime values', () => {
@@ -2011,7 +2021,10 @@ describe('AgentDetail extracted sections', () => {
     );
 
     expect(markup).toContain('Daily launch report');
-    expect(markup).toContain('Waiting to retry after a recent failure.');
+    // The reason line derives from the stable attention_state code; backend
+    // English prose and raw codes never enter the normal-user DOM.
+    expect(markup).toContain('Cooling down after a recent failure.');
+    expect(markup).not.toContain('Waiting to retry after a recent failure.');
     expect(markup).toContain('Provider quota exceeded');
     expect(markup).not.toContain('trigger-internal-id');
     expect(markup).not.toContain('runtime-internal-id');

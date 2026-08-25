@@ -176,4 +176,60 @@ describe('Dashboard workspace homepage', () => {
     expect(markup).not.toContain('>Task<');
     expect(markup).not.toContain('Latest Activity</span>');
   });
+
+  it('does not expose raw tool payloads or internal agent IDs in the activity feed', () => {
+    const markup = renderToStaticMarkup(
+      <DashboardHomeShell
+        agents={[makeAgent()]}
+        isLoading={false}
+        recentSessions={[]}
+        allActivities={[
+          {
+            id: 'act-legacy-tool',
+            agent_id: '0e6d2f81-9c44-4bb1-a4b2-internal',
+            action_type: 'tool_call',
+            summary:
+              "Called tool read_file: {'file_id': 'internal-uuid-6f1c', 'chunks': ['alpha', 'beta'], 'trace': 'op-9931'}",
+            detail: { tool: 'read_file', result: "{'file_id': 'internal-uuid-6f1c'}" },
+            created_at: '2026-08-25T08:00:00Z',
+            authority_source: 'agent',
+            operator_view: false,
+          },
+          {
+            id: 'act-approved-tool',
+            agent_id: 'agent-1',
+            action_type: 'tool_call_approved',
+            summary: "Approved-executed send_email: {'message_id': 'internal-uuid-77aa'}",
+            detail: { tool: 'send_email', result: "{'message_id': 'internal-uuid-77aa'}" },
+            created_at: '2026-08-25T08:05:00Z',
+            authority_source: 'agent',
+            operator_view: false,
+          },
+          {
+            id: 'act-plain',
+            agent_id: 'agent-1',
+            action_type: 'memory',
+            summary: 'Saved Q2 research outline',
+            created_at: '2026-08-25T08:10:00Z',
+            authority_source: 'agent',
+            operator_view: false,
+          },
+        ]}
+        toolFailureSnapshots={[]}
+        onNavigate={() => {}}
+      />,
+    );
+
+    // Raw tool result payloads must never reach the normal-user feed.
+    expect(markup).not.toContain('internal-uuid-6f1c');
+    expect(markup).not.toContain('chunks');
+    expect(markup).not.toContain("{'");
+    // Internal agent UUIDs must not leak as a name fallback.
+    expect(markup).not.toContain('0e6d2f81');
+    // Clean tool labels are derived from the structured detail.
+    expect(markup).toContain('Called tool read_file');
+    expect(markup).toContain('Approved tool send_email');
+    // Non-tool summaries keep rendering verbatim.
+    expect(markup).toContain('Saved Q2 research outline');
+  });
 });

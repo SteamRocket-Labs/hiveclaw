@@ -1445,3 +1445,44 @@ def test_agent_team_section_uses_last_turn_outcome_for_idle_member_counts():
     assert item["running_count"] == 0
     assert item["terminal_count"] == 1
     assert item["members"][0]["last_turn_status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_list_runtime_tasks_includes_executor_side_child_agent_linkage():
+    """A delegation child session must show its runtime rows under the target agent.
+
+    The executor (target/child) agent's view of its own ``delegation_run``
+    session previously matched only ``parent_agent_id == agent_id`` and found
+    zero RuntimeTask rows, rendering Team/A2A/Workers/Workflow counters as 0
+    despite durable runtime evidence.
+    """
+    import app.services.session_control_plane as service
+    from app.models.runtime_task import RuntimeTask as RuntimeTaskModel
+
+    captured: dict[str, object] = {}
+
+    class _FakeResult:
+        def scalars(self):
+            return self
+
+        def all(self):
+            return []
+
+    class _FakeDB:
+        async def execute(self, statement):
+            captured["statement"] = statement
+            return _FakeResult()
+
+    agent_id = uuid4()
+    db = _FakeDB()
+    await service._list_runtime_tasks(db, agent_id=agent_id, session_id="session-child")
+
+    statement = captured["statement"]
+    assert statement.column_descriptions[0]["entity"] is RuntimeTaskModel
+    compiled = str(statement.compile(compile_kwargs={"literal_binds": False}))
+    _, _, where_clause = compiled.partition("WHERE")
+    assert where_clause, "workbench runtime task query must carry a WHERE clause"
+    assert "child_agent_id" in where_clause, (
+        "executor-side child agent linkage missing from workbench runtime task query"
+    )
+    assert "parent_agent_id" in where_clause

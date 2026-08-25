@@ -21,6 +21,8 @@ from app.core.tenant_scope import resolve_and_pin_tenant_scope
 from app.database import get_db
 from app.domain.agent_lifecycle import InvalidTransitionError, TransitionContext, transition
 from app.models.agent import Agent, AgentPermission
+from app.models.activity_log import AgentActivityLog
+from app.models.chat_session import ChatSession
 from app.models.user import User
 from app.schemas.schemas import AgentCreate, AgentOut, AgentUpdate
 from app.services.agent_identity_lifecycle import (
@@ -116,6 +118,28 @@ def _agent_out(agent: Agent) -> AgentOut:
     for field, value in normalize_agent_heartbeat_output({}).items():
         setattr(out, field, value)
     return out
+
+
+async def _effective_last_active_at(db: AsyncSession, agent: Agent) -> datetime | None:
+    """Effective last-active derived from durable evidence, not just lifecycle writes.
+
+    ``Agent.last_active_at`` is only stamped on lifecycle actions (e.g. Start),
+    so reading the column verbatim freezes "last active" at the last Start
+    click. The truthful read model is the max of the lifecycle column, the
+    latest activity log row, and the latest session message timestamp.
+    """
+    activity_row = await db.execute(
+        select(func.max(AgentActivityLog.created_at)).where(AgentActivityLog.agent_id == agent.id)
+    )
+    session_row = await db.execute(
+        select(func.max(ChatSession.last_message_at)).where(ChatSession.agent_id == agent.id)
+    )
+    candidates = (
+        getattr(agent, "last_active_at", None),
+        activity_row.scalar_one_or_none(),
+        session_row.scalar_one_or_none(),
+    )
+    return max((value for value in candidates if value is not None), default=None)
 
 
 def _agent_out_dict(agent: Agent) -> dict:
@@ -796,6 +820,7 @@ async def get_agent(
     if await _lazy_reset_token_counters(agent, db):
         await db.commit()
     out = _agent_out_dict(agent)
+    out["last_active_at"] = await _effective_last_active_at(db, agent)
     out["access_level"] = access_level
     is_owner = str(getattr(agent, "owner_user_id", None) or agent.creator_id) == str(current_user.id)
     out["is_owner"] = is_owner

@@ -230,6 +230,25 @@ export function ToolFailureOverview({
 
 /* ────── Recent Activity Feed ────── */
 
+type ActivityTranslator = ReturnType<typeof useTranslation>['t'];
+
+// Tool-call activity summaries written before the payload-hygiene fix embed the
+// raw result text. The structured detail (same durable row) carries the tool
+// name, so the normal-user feed derives a clean label from it instead of
+// rendering the raw payload; full evidence stays in the Agent Detail activity
+// log's operator view.
+function activityDisplaySummary(act: any, t: ActivityTranslator): string {
+  const actionType = String(act?.action_type || '');
+  const detail = act?.detail as Record<string, unknown> | null | undefined;
+  const toolName = typeof detail?.tool === 'string' ? String(detail.tool).trim() : '';
+  if (toolName && (actionType === 'tool_call' || actionType === 'tool_call_approved')) {
+    return actionType === 'tool_call_approved'
+      ? t('dashboard.activity.toolCallApproved', 'Approved tool {{tool}}', { tool: toolName })
+      : t('dashboard.activity.toolCall', 'Called tool {{tool}}', { tool: toolName });
+  }
+  return act?.summary || '';
+}
+
 function ActivityFeed({ activities, agents }: { activities: any[]; agents: Agent[] }) {
     const { t } = useTranslation();
     const agentMap = new Map(agents.map(a => [a.id, a]));
@@ -252,10 +271,10 @@ function ActivityFeed({ activities, agents }: { activities: any[]; agents: Agent
                             {timeAgo(act.created_at, t)}
                         </span>
                         <span className="dashboard-tag">
-                            {agent?.name || act.agent_id?.slice(0, 6)}
+                            {agent?.name || t('dashboard.activity.unknownAgent', 'Digital employee')}
                         </span>
                         <span className="dashboard-activity-summary">
-                            {act.summary}
+                            {activityDisplaySummary(act, t)}
                         </span>
                     </div>
                 );

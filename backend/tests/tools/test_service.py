@@ -1434,6 +1434,59 @@ async def test_tool_runtime_service_logs_readonly_tool_calls():
 
 
 @pytest.mark.asyncio
+async def test_tool_runtime_service_activity_summary_hides_raw_result_payload():
+    from app.tools.governance import ToolGovernanceContext
+    from app.tools.runtime import ToolExecutionContext
+    from app.tools.service import ToolRuntimeService
+
+    raw_result = {"file_id": "internal-uuid-6f1c", "chunks": ["alpha", "beta"], "trace": "op-9931"}
+    context = ToolExecutionContext(
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        tenant_id="tenant-1",
+        workspace=Path("/tmp/ws"),
+    )
+    governance_context = ToolGovernanceContext(
+        agent_id=context.agent_id,
+        user_id=context.user_id,
+        tenant_id=context.tenant_id,
+        tool_name="read_file",
+        arguments={"path": "workspace/notes.md"},
+    )
+    logged = []
+
+    async def fake_log_activity(*args, **kwargs):
+        logged.append((args, kwargs))
+
+    service = ToolRuntimeService(
+        runtime_resolver=_FakeRuntimeResolver(context),
+        governance_resolver=_FakeGovernanceResolver(governance_context, SimpleNamespace()),
+        registry=_FakeRegistry(raw_result),
+        ensure_registry=lambda: None,
+        governance_runner=lambda *_args, **_kwargs: None,
+        fallback_executor=lambda *_args, **_kwargs: "fallback",
+        direct_fallback_executor=lambda *_args, **_kwargs: "direct-fallback",
+        activity_logger=fake_log_activity,
+    )
+
+    result = await service.execute(
+        "read_file",
+        {"path": "workspace/notes.md"},
+        agent_id=context.agent_id,
+        user_id=context.user_id,
+    )
+
+    assert result == raw_result
+    assert logged
+    # The user-facing summary must stay a human-readable sentence: the raw tool
+    # result (JSON payload, internal IDs) belongs to the structured detail only.
+    assert logged[0][0][2] == "Called tool read_file"
+    assert "internal-uuid-6f1c" not in logged[0][0][2]
+    assert "chunks" not in logged[0][0][2]
+    assert logged[0][1]["detail"]["result"] == str(raw_result)
+
+
+@pytest.mark.asyncio
 async def test_tool_runtime_service_returns_governance_block_without_registry_call():
     from app.tools.governance import ToolGovernanceContext
     from app.tools.runtime import ToolExecutionContext

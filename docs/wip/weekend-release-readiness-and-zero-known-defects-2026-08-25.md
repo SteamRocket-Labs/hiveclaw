@@ -115,16 +115,17 @@ backend$ .venv/bin/pytest -q tests \
 
 | ID | 状态 | 观察结果 | 首个动作 |
 |---|---|---|---|
-| `UI-001` | 已确认 | 首页正文直接显示 `{{attention}}` | 定位 i18n/template 接线并加渲染回归 |
-| `UI-002` | 已确认 | 最近动态向普通用户展示 `Called tool ...` raw JSON 与内部 ID | 按正常用户/高级详情分层 |
-| `UI-003` | 已确认 | 存在“待命中”“设置过期”等错误或不可理解文案 | 找到真实状态语义后修 i18n，禁止只改表面字符串 |
-| `UI-004` | 已确认历史记录 | 已完成会话显示 `处理中 55705m 29s` | 用终态事实源重算并增加跨日/终态测试 |
-| `UI-005` | 待新会话复现 | 重复出现 WebSocket、durable transcript backfill、session history recovery `Failed to fetch` | 先判断历史会话特例还是全局恢复故障 |
+| `UI-001` | Reproduced → Fix Candidate（RC-00） | 首页正文直接显示 `{{attention}}` | 已修：`dashboard.home.summary` 资源与调用点变量对齐（en/zh），新增 i18n 插值契约回归（含 en↔zh 变量集一致性，顺带修 workLedger 缺 `{{total}}`） |
+| `UI-002` | Reproduced → Fix Candidate（RC-00） | 最近动态向普通用户展示 `Called tool ...` raw JSON 与内部 ID | 已修：后端 summary 不再内嵌 raw result（结构化 detail 保留全量证据）；Dashboard feed 从 `detail.tool` 派生干净标签，UUID 片段 fallback 改为通用文案 |
+| `UI-003` | Reproduced → Fix Candidate（RC-00） | 存在”待命中””设置过期”等错误或不可理解文案 | 已修：`idle`=空闲、`setExpiry`=设置有效期（真实语义：员工有效期动作）；SessionRuntimePanel/AgentDetail 硬编码英文状态全部走 i18n；Aware tab 状态/reason/schedule 按稳定 code 本地化，未知 code 只显示通用文案（raw code 不进普通 DOM，含 title/aria/data-*） |
+| `UI-004` | Reproduced → Fix Candidate（RC-00） | 已完成会话显示 `处理中 55705m 29s` | 已修：timeline 新增 typed `interrupted` 状态——无权威 active run 时不再伪造 running；duration 冻结在最后持久步骤时间戳；有权威 run 时保持真实 running；header 不伪称 complete |
+| `UI-005` | 部分 Fix Candidate；D3/D4/D5 = Observed / 未复现 | 重复出现 WebSocket、durable transcript backfill、session history recovery `Failed to fetch` | 代码级可证明缺陷已修：D1 轮询链遇错死亡+unhandled rejection、D2 visibilitychange unhandled rejection、auth_failed 增加Reload 出口。D3（backfill 与 unmount 竞态）、D4（gap 态逐消息补拉无退避）、D5（后台会话 socket 永久重连循环）未在干净会话复现，仅记录条件，不加预防性机制；等 Codex console sweep + 生产复现后处置 |
 | `PKB-001` | 已确认可见状态；根因未知 | Personal Knowledge 条目显示 `queued · 尝试 0`、0 segments | 用新 PDF 复现完整 Worker 生命周期 |
 | `CKB-001` | 已确认产品缺口 | Company Knowledge 管理后台没有直接文件导入的完整入口 | 建立管理员文件导入垂直切片 |
-| `A2A-001` | 已确认历史消费断点 | 历史 A2A 会话有大量活动，但右侧显示 Team/A2A/Workers/Workflow 全为 0 | 对齐事件事实源与 UI read model |
+| `A2A-001` | 已确认历史消费断点 → read-model 根因已修（Fix Candidate）；A2A 四路径语义留 RC-03 | 历史 A2A 会话有大量活动，但右侧显示 Team/A2A/Workers/Workflow 全为 0 | 已修：`_list_runtime_tasks` 增加 executor 侧（child_agent_id+child_session_id）链接，目标 Agent 视角能读到自己的 delegation_run 证据行；四路径生产验收仍在 RC-03 |
 | `A2A-002` | 待新会话复现 | 历史长结果写入 child workspace 后，父 Agent 无权读取，只能手工短答 | 复现长结果交付和 authority binding |
 | `ACC-001` | 验收缺口 | Plan、Team、Sub-agent、两类 Workflow 有代码与 UI，但没有本轮生产 E2E 证据 | 按 §7 的旅程逐项运行 |
+| `SHELL-001`（新增） | Reproduced → Fix Candidate（RC-00） | Agent Detail `last_active_at` 只在 Start 时写入，永远停在最后一次点击 Start | 已修：`GET /agents/{id}` 读取时取 max(生命周期列, 最新活动日志, 最新会话消息) 的持久证据推导；`['agent', id]` query 开启 focus refetch |
 
 初审记录只是复现入口，不是修复完成证据。每个 `待新会话复现` 项只有在当前生产新会话再次出现后才转为缺陷；无法复现时记录覆盖条件和证据，不为它预防性增加机制。
 
@@ -297,6 +298,46 @@ RC-03/06 ─────> RC-08 Deterministic A2A Workflow
 - 新会话刷新后 transcript 顺序和终态不变。
 - 关键页面无持续重复的 WebSocket/backfill/history error。
 - UI 展示与 RuntimeTask、transcript、invocation span 的事实一致。
+
+### RC-00 zCode 交付记录（2026-08-25）
+
+按任务逐项：
+
+1. **`{{attention}}`**：`en.json/zh.json` 的 `dashboard.home.summary` 与 DashboardHomeShell 调用点变量对齐（`{{recent}}/{{active}}`）。回归：`frontend/src/i18n/i18nInterpolation.test.ts` 用真实 i18n 资源做插值契约测试（模拟 i18next 未提供变量保留 `{{token}}` 的生产行为），并加 en↔zh 全量变量集一致性门（顺带修复 `agent.chat.workLedger.singleTaskProgress/taskRangeProgress` zh 缺 `{{total}}` 的数据遗漏）。
+2. **Raw tool JSON / 内部 ID**：根因在后端 `execution_pipeline.py` 把 `str(result)[:80]` 拼进用户可见 summary；已改为纯句式（`Called tool X` / `Approved-executed X`），全量 raw 结果保留在结构化 `detail`（operator/审计消费）。前端 Dashboard `ActivityFeed` 对 tool_call 行从 `detail.tool` 派生干净标签（覆盖存量脏行），`agent_id.slice(0,6)` UUID fallback 改为 `dashboard.activity.unknownAgent`。测试：`test_tool_runtime_service_activity_summary_hides_raw_result_payload`（后端，红→绿）+ Dashboard feed 泄漏回归（前端，红→绿）。
+3. **"待命中"/"设置过期"**：真实语义确认——`idle` = 生命周期"已就绪、当前无运行"（→ 空闲）；`setExpiry` = 管理员"设置员工有效期"动作（→ 设置有效期）。同面修复：SessionRuntimePanel 硬编码英文状态经 `runtimeStatusLabel` 本地化（zh runtimeStatus 词表 + `sessionWorkbench.rightPanel.runtimeStates` 中文化）；AgentDetail `Expired`/`Expires:`/`Edit expiry time` 走 i18n；Aware tab 状态/原因/日程按后端稳定 code（`attention_state`/`schedule.kind`）本地化，未知 code 显示通用文案且 raw code 不进普通 DOM（含 title/aria/data-*）；后端 trigger view 新增结构化 `schedule` 字段（additive）；移除 webhook token 前缀泄漏。
+4. **Duration 终态冻结**：`chatDisclosureReducer` 新增 typed `interrupted`——无权威 active run 时非终态步骤不再伪造 `running`；`completedAt` 不伪造，`durationMs` 冻结在最后持久步骤时间戳；`buildThreadTimeline` 尾部 cell 仅在权威 live 信号（isWaiting/isStreaming/activeRunStatus/phase）存在时升级为真实 running；workbench header 对 interrupted 显示 idle（不伪称 complete）。RunDisclosureBlock 渲染"已中断"+冻结时长+"发送新消息继续"出口。未使用任何年龄阈值；真实 ghost 运行由既有 claim-service 回收/隔离通道收敛（`needs_reconciliation` 为 typed terminal）。
+5. **WebSocket/backfill/history recovery**：HTTP durable transcript 保持唯一事实源、WS 仅订阅（未改）。代码级可证明缺陷修复：D1 轮询链 `await` 无 catch（一次失败永久停摆 + unhandled rejection，与横幅承诺的自动恢复矛盾）；D2 `visibilitychange` 无 `.catch`（每次聚焦失败即 unhandled rejection）；`auth_failed` 增加 Reload 出口（原来是死端文案）。**未复现项（Observed，不加机制）**：D3 backfill 与 unmount 竞态（无 AbortController）；D4 gap 态逐 WS 消息补拉无退避；D5 后台会话 socket 在服务器 idle-close(1000) 后的永久重连循环——这三项需要 Codex console sweep / 生产复现证据后再处置（D5 与 A2A/后台 run terminal event 实时投递相关，不能盲改重连策略）。
+6. **Agent Detail stale**：`last_active_at` 根因=仅 Start 时写入；`GET /agents/{id}` 现在读取时取 max(生命周期列, 最新 AgentActivityLog, 最新 ChatSession.last_message_at) 持久证据推导。`['agent', id]` query 开启 focus refetch（页面跨 tab 常驻时状态/模型/最近活跃可刷新）。AgentDetail.tsx 保持 ≤2900 行架构预算。**遗留**：Status tab 显示的是配置模型（真实配置信息，非缺陷）；lifecycle status 与 run 级实时态是两层语义，run 级活性由 chat 面承载。
+7. **Workbench 计数**：根因=`_list_runtime_tasks` 只匹配 `parent_agent_id`，executor（目标 Agent）视角查不到自己的 delegation_run 证据行 → 全 0。已加 `and_(child_agent_id == agent_id, child_session_id == session)` 分支（原条件保持，纯超集）。A2A 四路径业务语义未动，留 RC-03。遗留：legacy 无 child_session_id 的 delegation 行需既有 `delegation_session_repair` 路径补齐后才可链接。
+8. **失败状态出口**：interrupted→"发送新消息继续"；auth_failed→Reload；reconnecting/degraded→既有 Retry now；offline→自动恢复承诺（D1 修复后轮询链不再死亡）。
+
+**验证（当前 checkout 实测）**：
+
+```text
+frontend$ npx vitest run src/i18n/i18nInterpolation.test.ts src/pages/Dashboard.test.tsx
+2 files / 7 tests passed（先红后绿）
+frontend$ npm test
+Test Files 140 passed (140)；Tests 830 passed (830)
+frontend$ npm run i18n:check
+gates 全 0（missingBoth/missingEnglish/missingChinese/unresolvedDynamic 等）
+frontend$ npm run build
+tsc + vite 通过；AgentDetail 350294/380000（gzip 96762/115000）、vendor 591449/620000（gzip 186474/200000）预算通过
+backend$ .venv/bin/pytest -q tests/tools/test_service.py tests/services/test_autonomy_overview.py \
+  tests/services/test_session_control_plane.py tests/services/test_tool_telemetry.py \
+  tests/api/test_agent_api_surface.py tests/services/test_session_graph_projection.py \
+  tests/api/test_cc_codex_parity_api.py
+147 passed
+backend$ .venv/bin/pytest -q tests/services/test_activity_logger.py tests/tools/test_governance_hooks_pipeline.py \
+  tests/api/test_agent_heartbeat_contract.py tests/api/test_agent_list_summary.py
+26 passed
+backend$ .venv/bin/pytest -q tests -k "web_chat_runtime or chat_session or session_recovery"
+197 passed, 7803 deselected
+backend$ .venv/bin/ruff check <changed files> && ruff format --check <changed files>
+All checks passed
+```
+
+**剩余风险**：存量 `agent_activity_logs.summary` 中已持久化的 raw 文本仍存在于 DB（不再渲染，operator 视图可见）；Aware tab 后端英文 prose 保留在 payload 供 operator/审计；D3/D4/D5 未复现待证据；全量 backend 回归留 RC-09；生产两遍 E2E 未做（待部署授权）。
 
 ## 7.2 RC-01 — Personal Knowledge 导入、切片、索引与 Agent 消费
 
@@ -693,7 +734,7 @@ Rollback / recovery:
 
 | RC | Defect/Task | zCode commit | Targeted tests | Codex verdict | Production run 1 | Production run 2 | Seven-atom status | Remaining |
 |---|---|---|---|---|---|---|---|---|
-| RC-00 | 待开工 | — | — | — | — | — | Breakpoint | §2.3 UI/recovery findings |
+| RC-00 | UI-001/002/003/004、SHELL-001、A2A-001 read-model、UI-005(D1/D2/auth出口) | 本 commit（见 git log） | 见 §7.1 交付记录（frontend 830 全绿；backend 定向 147+26+197 全绿；ruff 干净） | 待 Codex | 待部署授权 | 待部署授权 | 局部闭环（Fix Candidate）：Input/Authority/Execution/Evidence 有当前代码路径与回归；Recovery/Consumption 待生产 E2E；Acceptance 缺生产两遍 | D3/D4/D5 未复现；全量 backend 回归留 RC-09；生产 E2E 待部署 |
 | RC-01 | 待开工 | — | — | — | — | — | Breakpoint | PDF queued/segments/Agent citation |
 | RC-02 | 待开工 | — | — | — | — | — | Missing/Breakpoint | admin file intake + preview + proposal |
 | RC-03 | 待开工 | — | — | — | — | — | Partial loop | async push + long result + UI evidence |
@@ -751,8 +792,8 @@ owner 已过稿并明确说“开始”。先提交本文件作为恢复点；�
 - [x] owner 已确认本计划顺序。
 - [x] owner 已授权 zCode 开工。
 - [ ] 尚未创建合成测试资产。
-- [ ] 尚未修改任何代码。
-- [ ] 尚未创建本计划对应 commit。
+- [x] RC-00 已完成首轮代码修改与定向回归（见 §7.1 交付记录与 §10）；尚待 Codex review/verdict。
+- [x] RC-00 计划对应 commit 已创建（本 commit）。
 - [ ] 尚未写入 Rocky 的实验室测试数据。
 - [ ] 尚未部署。
 - [ ] 尚未完成任何本轮生产 E2E。

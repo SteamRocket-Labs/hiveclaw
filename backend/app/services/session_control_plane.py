@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent import Agent
@@ -1688,11 +1688,23 @@ async def _list_runtime_tasks(
     result = await db.execute(
         select(RuntimeTask)
         .where(
-            RuntimeTask.parent_agent_id == agent_id,
             or_(
-                RuntimeTask.parent_session_id == session_key,
-                RuntimeTask.child_session_id == session_key,
-            ),
+                # Delegator-side view: this agent authored runs bound to the session.
+                and_(
+                    RuntimeTask.parent_agent_id == agent_id,
+                    or_(
+                        RuntimeTask.parent_session_id == session_key,
+                        RuntimeTask.child_session_id == session_key,
+                    ),
+                ),
+                # Executor-side view: the target agent's own delegation_run
+                # session must surface its runtime rows (Team/A2A/Workers/
+                # Workflow evidence) even though the delegator owns the task.
+                and_(
+                    RuntimeTask.child_agent_id == agent_id,
+                    RuntimeTask.child_session_id == session_key,
+                ),
+            )
         )
         .order_by(RuntimeTask.created_at.desc())
         .limit(limit)

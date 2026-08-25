@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
+import json
 import uuid
 
 import anyio
@@ -63,6 +64,7 @@ from app.services.company_knowledge_service import (
     CompanyKnowledgeProposalRequest,
     CompanyKnowledgeReviewRequest,
     CompanyKnowledgeService,
+    validate_direct_file_import_semantics,
 )
 from app.services.company_ontology_contracts import load_builtin_ontology_catalog
 from app.services.company_ontology_engine import OntologyEngineUnavailable, ReferenceOntologyEngine
@@ -144,6 +146,8 @@ async def _call(awaitable: Any) -> Any:
             detail="company_ontology_engine_unavailable",
         ) from exc
     except CompanyKnowledgeImportError as exc:
+        if exc.code == "upload_too_large":
+            raise HTTPException(status_code=status.HTTP_413_CONTENT_TOO_LARGE, detail={"code": exc.code}) from exc
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={"code": exc.code}) from exc
     except CompanyKnowledgeJobConflict as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={"code": exc.code}) from exc
@@ -1001,45 +1005,60 @@ async def create_direct_file_import(
     file: UploadFile = File(...),
     source_contract_id: uuid.UUID = Form(...),
     source_contract_version: int = Form(...),
-    title: str = Form(...),
-    proposed_namespace: str = Form(...),
+    # Absent or empty required semantic fields must reach the handler so the
+    # shared validator emits the typed 400, never a framework 422.
+    title: str | None = Form(None),
+    proposed_namespace: str | None = Form(None),
     proposed_sensitivity: str = Form("internal"),
     purpose: str = Form(""),
-    source_acl_snapshot: str = Form('{"all_tenant_members": true}'),
-    idempotency_key: str = Form(...),
+    # The ACL snapshot is a required authority input: omitting it must be a
+    # typed rejection, never a silently applied server default.
+    source_acl_snapshot: str | None = Form(None),
+    idempotency_key: str | None = Form(None),
     tenant_id: uuid.UUID | None = Query(None),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """Admin multipart file intake: bounded read, durable job, worker-side conversion."""
     _require_company_knowledge_admin(current_user)
-    if not file.filename:
-        raise HTTPException(status_code=400, detail={"code": "import_payload_invalid"})
-    data = await _read_company_upload_bounded(file, max_bytes=COMPANY_KB_MAX_UPLOAD_BYTES)
-    target_tenant = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
-    import json as _json
 
-    try:
-        acl_snapshot = _json.loads(source_acl_snapshot)
-    except _json.JSONDecodeError as exc:
-        raise HTTPException(status_code=400, detail={"code": "import_payload_invalid"}) from exc
-    if not isinstance(acl_snapshot, dict):
+    if source_acl_snapshot is None or not source_acl_snapshot.strip():
         raise HTTPException(status_code=400, detail={"code": "import_payload_invalid"})
+    try:
+        acl_snapshot = json.loads(source_acl_snapshot)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail={"code": "import_payload_invalid"}) from exc
+    try:
+        semantic = validate_direct_file_import_semantics(
+            filename=file.filename,
+            source_mime_type=file.content_type,
+            title=title,
+            proposed_namespace=proposed_namespace,
+            purpose=purpose,
+            source_acl_snapshot=acl_snapshot,
+            idempotency_key=idempotency_key,
+        )
+    except CompanyKnowledgeImportError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail={"code": exc.code}) from exc
+    data = await _read_company_upload_bounded(file, max_bytes=COMPANY_KB_MAX_UPLOAD_BYTES)
+    if not data:
+        raise HTTPException(status_code=400, detail={"code": "import_payload_invalid"})
+    target_tenant = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
     job = await _call(
         _service().queue_direct_file_import(
             db,
             principal=_principal(current_user, target_tenant),
             source_contract_id=source_contract_id,
             source_contract_version=source_contract_version,
-            filename=file.filename,
+            filename=semantic.filename,
             data=data,
-            source_mime_type=file.content_type,
-            title=title,
-            proposed_namespace=proposed_namespace,
+            source_mime_type=semantic.source_mime_type,
+            title=semantic.title,
+            proposed_namespace=semantic.proposed_namespace,
             proposed_sensitivity=proposed_sensitivity,
-            purpose=purpose,
-            source_acl_snapshot=acl_snapshot,
-            idempotency_key=idempotency_key,
+            purpose=semantic.purpose,
+            source_acl_snapshot=semantic.source_acl_snapshot,
+            idempotency_key=semantic.idempotency_key,
             trace_id=f"direct-import-{uuid.uuid4().hex[:16]}",
         )
     )

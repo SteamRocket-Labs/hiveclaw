@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from types import SimpleNamespace
+import json
 import uuid
 
 from fastapi import FastAPI
@@ -814,6 +815,7 @@ def test_direct_file_import_accepts_multipart_and_schedules_worker(monkeypatch):
             "proposed_namespace": "company/general",
             "proposed_sensitivity": "internal",
             "purpose": "RC-02",
+            "source_acl_snapshot": '{"all_tenant_members": true}',
             "idempotency_key": "ckb-upload-1",
         },
         files={"file": ("runbook.md", b"# Runbook\n\nbody", "text/markdown")},
@@ -839,13 +841,14 @@ def test_direct_file_import_rejects_oversize_with_typed_413(monkeypatch):
             "source_contract_version": "1",
             "title": "Big",
             "proposed_namespace": "company/general",
+            "source_acl_snapshot": '{"all_tenant_members": true}',
             "idempotency_key": "ckb-big-1",
         },
         files={"file": ("big.pdf", b"x" * 64, "application/pdf")},
     )
 
     assert response.status_code == 413
-    assert response.json()["detail"]["code"] == "upload_too_large"
+    assert response.json() == {"detail": {"code": "upload_too_large", "max_bytes": 16}}
 
 
 def test_direct_file_import_unsupported_type_maps_typed_400(monkeypatch):
@@ -864,6 +867,7 @@ def test_direct_file_import_unsupported_type_maps_typed_400(monkeypatch):
             "source_contract_version": "1",
             "title": "X",
             "proposed_namespace": "company/general",
+            "source_acl_snapshot": '{"all_tenant_members": true}',
             "idempotency_key": "ckb-x-1",
         },
         files={"file": ("x.csv", b"a,b", "text/csv")},
@@ -1273,3 +1277,282 @@ def test_source_contract_list_and_detail_return_summary_allowlist_only(monkeypat
     assert set(detail.json().keys()) == set(summary.keys())
     for field in forbidden:
         assert field not in detail.text, field
+
+
+# ---------------------------------------------------------------------------
+# RC-02 finding-3: direct-import payload contract (failing-first)
+# ---------------------------------------------------------------------------
+
+
+def _finding3_form(**overrides):
+    form = {
+        "source_contract_id": str(uuid.uuid4()),
+        "source_contract_version": "1",
+        "title": "Runbook",
+        "proposed_namespace": "company/general",
+        "proposed_sensitivity": "internal",
+        "purpose": "RC-02 finding-3",
+        "source_acl_snapshot": '{"all_tenant_members": true}',
+        "idempotency_key": "ckb-f3-valid",
+    }
+    form.update(overrides)
+    return form
+
+
+def _finding3_file(filename="runbook.md", data=b"# Runbook\n\nbody", mime="text/markdown"):
+    return {"file": (filename, data, mime)}
+
+
+class _UnreachableQueueService:
+    async def queue_direct_file_import(self, session, **kwargs):  # pragma: no cover - must not run
+        raise AssertionError("invalid payload must be rejected before the queue service seam")
+
+
+def _client_blocking_read_and_queue(monkeypatch):
+    """Both seams are bombed: an invalid payload must die before either one."""
+
+    async def _read_bomb(file, *, max_bytes):  # pragma: no cover - must not run
+        raise AssertionError("invalid payload must be rejected before the bounded upload read")
+
+    monkeypatch.setattr(company_api, "_read_company_upload_bounded", _read_bomb)
+    return _client_with_role(monkeypatch, _UnreachableQueueService(), role="org_admin")
+
+
+_INVALID_DIRECT_IMPORT_FORM_CASES = [
+    ("blank title", {"title": ""}),
+    ("whitespace title", {"title": "   "}),
+    ("title 301 chars", {"title": "t" * 301}),
+    ("blank namespace", {"proposed_namespace": ""}),
+    ("whitespace namespace", {"proposed_namespace": "  "}),
+    ("namespace 301 chars", {"proposed_namespace": "n" * 301}),
+    ("purpose 1001 chars", {"purpose": "p" * 1001}),
+    ("blank idempotency key", {"idempotency_key": ""}),
+    ("whitespace idempotency key", {"idempotency_key": "   "}),
+    ("idempotency key 301 chars", {"idempotency_key": "k" * 301}),
+    ("blank acl snapshot", {"source_acl_snapshot": ""}),
+    ("acl not json", {"source_acl_snapshot": "not-json"}),
+    ("acl json array", {"source_acl_snapshot": '["all_tenant_members"]'}),
+    ("acl empty object", {"source_acl_snapshot": "{}"}),
+    ("acl canonical utf8 over 16KiB", {"source_acl_snapshot": '{"k": "' + "v" * 16384 + '"}'}),
+    ("acl canonical utf8 over 16KiB multibyte", {"source_acl_snapshot": '{"k": "' + "值" * 5500 + '"}'}),
+    ("acl raw NaN", {"source_acl_snapshot": '{"x": NaN}'}),
+    ("acl raw Infinity", {"source_acl_snapshot": '{"x": Infinity}'}),
+    ("acl raw -Infinity", {"source_acl_snapshot": '{"x": -Infinity}'}),
+]
+
+_INVALID_DIRECT_IMPORT_FILE_CASES = [
+    ("filename path traversal", ("../evil.md", b"# x", "text/markdown")),
+    ("filename nested path", ("docs/evil.md", b"# x", "text/markdown")),
+    ("filename dot-dot", ("..", b"# x", "text/markdown")),
+    ("filename whitespace only", ("   ", b"# x", "text/markdown")),
+    ("filename 256 chars", ("f" * 253 + ".md", b"# x", "text/markdown")),
+    ("mime 256 chars", ("runbook.md", b"# x", "m" * 256)),
+]
+
+
+def test_direct_file_import_rejects_invalid_semantics_before_read_and_queue(monkeypatch):
+    for label, overrides in _INVALID_DIRECT_IMPORT_FORM_CASES:
+        client, db, _user, _scheduled = _client_blocking_read_and_queue(monkeypatch)
+        response = client.post(
+            "/knowledge/company/imports/file",
+            data=_finding3_form(**overrides),
+            files=_finding3_file(),
+        )
+        assert response.status_code == 400, (label, response.text)
+        assert response.json() == {"detail": {"code": "import_payload_invalid"}}, (label, response.text)
+        assert db.commits == 0, label
+
+
+def test_direct_file_import_rejects_missing_semantic_fields_before_read_and_queue(monkeypatch):
+    # Absent multipart parameters reach the handler as None (str | None Form
+    # defaults) and die at the same typed semantic boundary — never at a
+    # framework 422 — before the bounded read and the queue service.
+    for label, field in (
+        ("missing title", "title"),
+        ("missing namespace", "proposed_namespace"),
+        ("missing idempotency key", "idempotency_key"),
+        ("missing acl snapshot", "source_acl_snapshot"),
+    ):
+        client, db, _user, _scheduled = _client_blocking_read_and_queue(monkeypatch)
+        form = _finding3_form()
+        form.pop(field)
+        response = client.post(
+            "/knowledge/company/imports/file",
+            data=form,
+            files=_finding3_file(),
+        )
+        assert response.status_code == 400, (label, response.text)
+        assert response.json() == {"detail": {"code": "import_payload_invalid"}}, (label, response.text)
+        assert db.commits == 0, label
+
+
+def test_direct_file_import_rejects_invalid_file_fields_before_read_and_queue(monkeypatch):
+    for label, file_tuple in _INVALID_DIRECT_IMPORT_FILE_CASES:
+        client, db, _user, _scheduled = _client_blocking_read_and_queue(monkeypatch)
+        response = client.post(
+            "/knowledge/company/imports/file",
+            data=_finding3_form(),
+            files={"file": file_tuple},
+        )
+        assert response.status_code == 400, (label, response.text)
+        assert response.json() == {"detail": {"code": "import_payload_invalid"}}, (label, response.text)
+        assert db.commits == 0, label
+
+
+def test_direct_file_import_rejects_empty_upload_before_queue(monkeypatch):
+    # Emptiness can only be known after the bounded read, so only the queue
+    # seam is bombed here: the read must run, the service must not.
+    client, db, _user, _scheduled = _client_with_role(monkeypatch, _UnreachableQueueService(), role="org_admin")
+
+    response = client.post(
+        "/knowledge/company/imports/file",
+        data=_finding3_form(),
+        files={"file": ("empty.md", b"", "text/markdown")},
+    )
+
+    assert response.status_code == 400, response.text
+    assert response.json() == {"detail": {"code": "import_payload_invalid"}}
+    assert db.commits == 0
+
+
+def test_direct_file_import_service_upload_too_large_maps_typed_413(monkeypatch):
+    from app.services.company_knowledge_service import CompanyKnowledgeImportError
+
+    class _Service:
+        async def queue_direct_file_import(self, session, **kwargs):
+            raise CompanyKnowledgeImportError("upload_too_large")
+
+    client, db, _user, _scheduled = _client_with_role(monkeypatch, _Service(), role="org_admin")
+
+    response = client.post(
+        "/knowledge/company/imports/file",
+        data=_finding3_form(),
+        files=_finding3_file(),
+    )
+
+    assert response.status_code == 413, response.text
+    assert response.json() == {"detail": {"code": "upload_too_large"}}
+    assert db.commits == 0
+
+
+def test_direct_file_import_boundary_valid_payloads_are_normalized_and_queued(monkeypatch):
+    job_id = uuid.uuid4()
+    captured: list[dict] = []
+
+    class _RecordingService:
+        async def queue_direct_file_import(self, session, **kwargs):
+            captured.append(kwargs)
+            return SimpleNamespace(id=job_id)
+
+        async def get_import_job_summary(self, session, *, tenant_id, job_id):
+            return SimpleNamespace(**_job_summary_payload(job_id))
+
+    client, db, user, scheduled = _client_with_role(monkeypatch, _RecordingService(), role="org_admin")
+
+    canonical_acl_pad = 16384 - len(json.dumps({"k": ""}, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+    boundary_acl = {"k": "v" * canonical_acl_pad}
+    assert len(json.dumps(boundary_acl, ensure_ascii=False, sort_keys=True, separators=(",", ":"))) == 16384
+    boundary_filename = "f" * 252 + ".md"
+    assert len(boundary_filename) == 255
+
+    boundary_cases = [
+        ("title 300 chars", {"title": "t" * 300}, _finding3_file(), {"title": "t" * 300}),
+        ("title padded is stripped", {"title": "  Padded Title  "}, _finding3_file(), {"title": "Padded Title"}),
+        (
+            "namespace 300 chars",
+            {"proposed_namespace": "n" * 300},
+            _finding3_file(),
+            {"proposed_namespace": "n" * 300},
+        ),
+        (
+            "namespace padded is stripped",
+            {"proposed_namespace": "  company/general  "},
+            _finding3_file(),
+            {"proposed_namespace": "company/general"},
+        ),
+        ("purpose 1000 chars", {"purpose": "p" * 1000}, _finding3_file(), {"purpose": "p" * 1000}),
+        ("purpose blank allowed", {"purpose": ""}, _finding3_file(), {"purpose": ""}),
+        (
+            "idempotency 300 chars",
+            {"idempotency_key": "k" * 300},
+            _finding3_file(),
+            {"idempotency_key": "k" * 300},
+        ),
+        (
+            "idempotency padded is stripped",
+            {"idempotency_key": "  ckb-padded  "},
+            _finding3_file(),
+            {"idempotency_key": "ckb-padded"},
+        ),
+        (
+            "filename 255 chars",
+            {},
+            _finding3_file(filename=boundary_filename),
+            {"filename": boundary_filename},
+        ),
+        ("mime 255 chars", {}, _finding3_file(mime="m" * 255), {"source_mime_type": "m" * 255}),
+        (
+            "acl canonical exactly 16KiB",
+            {"source_acl_snapshot": json.dumps(boundary_acl)},
+            _finding3_file(),
+            {"source_acl_snapshot": boundary_acl},
+        ),
+        # Strictness must not reject valid JSON numbers.
+        (
+            "acl finite numeric value",
+            {"source_acl_snapshot": '{"max_score": 0.5}'},
+            _finding3_file(),
+            {"source_acl_snapshot": {"max_score": 0.5}},
+        ),
+    ]
+
+    for label, form_overrides, files, expected_kwargs in boundary_cases:
+        response = client.post(
+            "/knowledge/company/imports/file",
+            data=_finding3_form(**form_overrides),
+            files=files,
+        )
+        assert response.status_code == 202, (label, response.text)
+        kwargs = captured[-1]
+        assert kwargs["data"] == b"# Runbook\n\nbody", label
+        for key, value in expected_kwargs.items():
+            assert kwargs[key] == value, (label, key, kwargs.get(key))
+
+    assert len(captured) == len(boundary_cases)
+    assert db.commits == len(boundary_cases)
+    assert scheduled == [{"tenant_id": user.tenant_id, "job_id": job_id}] * len(boundary_cases)
+
+
+def test_direct_file_import_missing_mime_defaults_to_octet_stream(monkeypatch):
+    job_id = uuid.uuid4()
+    captured: list[dict] = []
+
+    class _RecordingService:
+        async def queue_direct_file_import(self, session, **kwargs):
+            captured.append(kwargs)
+            return SimpleNamespace(id=job_id)
+
+        async def get_import_job_summary(self, session, *, tenant_id, job_id):
+            return SimpleNamespace(**_job_summary_payload(job_id))
+
+    client, _db, _user, _scheduled = _client_with_role(monkeypatch, _RecordingService(), role="org_admin")
+
+    # Hand-built multipart body: the file part carries no Content-Type header.
+    boundary = "finding3boundary"
+    parts = []
+    for name, value in _finding3_form().items():
+        parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n')
+    parts.append(
+        f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="runbook.md"\r\n\r\n# Runbook\r\n'
+    )
+    body = "".join(parts) + f"--{boundary}--\r\n"
+
+    response = client.post(
+        "/knowledge/company/imports/file",
+        content=body.encode("utf-8"),
+        headers={"content-type": f"multipart/form-data; boundary={boundary}"},
+    )
+
+    assert response.status_code == 202, response.text
+    assert len(captured) == 1
+    assert captured[0]["source_mime_type"] == "application/octet-stream"

@@ -1107,3 +1107,345 @@ async def test_direct_import_idempotency_hash_covers_semantic_inputs(complete_sc
     # Leave no recoverable queued row behind for the shared fleet-wide drain.
     processed = await _process(owner_sessionmaker, service, tenant_id=tenant_id, job_id=first.id)
     assert processed.status == "completed"
+
+
+# ---------------------------------------------------------------------------
+# RC-02 finding-3: queue_direct_file_import enforces the payload contract
+# independently of the HTTP boundary (no service-caller bypass).
+# ---------------------------------------------------------------------------
+
+
+async def _expect_import_invalid(owner_sessionmaker, service, *, tenant_id, admin_id, contract, label, **overrides):
+    kwargs = {
+        "filename": "note.md",
+        "data": b"# note",
+        "source_mime_type": "text/markdown",
+        "title": "Note",
+        "proposed_namespace": NAMESPACE,
+        "proposed_sensitivity": "internal",
+        "purpose": "finding-3",
+        "source_acl_snapshot": {"all_tenant_members": True},
+        "idempotency_key": f"ckb-f3-{uuid.uuid4().hex[:8]}",
+        "trace_id": f"trace-{uuid.uuid4().hex[:12]}",
+    }
+    kwargs.update(overrides)
+    async with owner_sessionmaker() as session:
+        with pytest.raises(CompanyKnowledgeImportError) as exc:
+            await service.queue_direct_file_import(
+                session,
+                principal=_principal(tenant_id=tenant_id, user_id=admin_id),
+                source_contract_id=contract.id,
+                source_contract_version=contract.version,
+                **kwargs,
+            )
+        await session.rollback()
+    assert exc.value.code == "import_payload_invalid", (label, exc.value.code)
+
+
+async def test_direct_import_service_rejects_invalid_payload_contract(complete_schema, owner_sessionmaker, tmp_path):
+    """Every invalid semantic field raises the exact typed code before any durable write."""
+    ids = await _seed_tenant(owner_sessionmaker)
+    tenant_id, admin_id = ids["tenant"], ids["admin"]
+    service = CompanyKnowledgeService(data_root=tmp_path)
+    contract = await _register_contract(owner_sessionmaker, service, tenant_id=tenant_id, admin_id=admin_id)
+
+    invalid_cases = [
+        ("blank title", {"title": ""}),
+        ("whitespace title", {"title": "   "}),
+        ("title 301 chars", {"title": "t" * 301}),
+        ("title None", {"title": None}),
+        ("title non-string", {"title": 123}),
+        ("blank namespace", {"proposed_namespace": ""}),
+        ("whitespace namespace", {"proposed_namespace": "  "}),
+        ("namespace 301 chars", {"proposed_namespace": "n" * 301}),
+        ("namespace None", {"proposed_namespace": None}),
+        ("namespace non-string", {"proposed_namespace": 123}),
+        ("purpose non-string", {"purpose": 123}),
+        ("purpose 1001 chars", {"purpose": "p" * 1001}),
+        ("blank idempotency key", {"idempotency_key": ""}),
+        ("whitespace idempotency key", {"idempotency_key": "  "}),
+        ("idempotency key 301 chars", {"idempotency_key": "k" * 301}),
+        ("idempotency key None", {"idempotency_key": None}),
+        ("idempotency key non-string", {"idempotency_key": 123}),
+        ("filename path traversal", {"filename": "../evil.md"}),
+        ("filename nested path", {"filename": "docs/evil.md"}),
+        ("filename windows path", {"filename": "C:\\evil.md"}),
+        ("filename dot-dot", {"filename": ".."}),
+        ("filename whitespace only", {"filename": "   "}),
+        ("filename None", {"filename": None}),
+        ("filename non-string", {"filename": 123}),
+        ("filename 256 chars", {"filename": "f" * 253 + ".md"}),
+        ("mime 256 chars", {"source_mime_type": "m" * 256}),
+        ("mime non-string", {"source_mime_type": 123}),
+        ("acl empty object", {"source_acl_snapshot": {}}),
+        ("acl None", {"source_acl_snapshot": None}),
+        ("acl not an object", {"source_acl_snapshot": ["all_tenant_members"]}),
+        ("acl canonical utf8 over 16KiB", {"source_acl_snapshot": {"k": "v" * 16384}}),
+        ("acl canonical utf8 over 16KiB multibyte", {"source_acl_snapshot": {"k": "值" * 5500}}),
+        ("acl non-finite nan", {"source_acl_snapshot": {"x": float("nan")}}),
+        ("acl non-finite infinity", {"source_acl_snapshot": {"x": float("inf")}}),
+        ("acl non-finite negative infinity", {"source_acl_snapshot": {"x": float("-inf")}}),
+        ("acl unserializable value", {"source_acl_snapshot": {"k": object()}}),
+        ("empty bytes", {"data": b""}),
+    ]
+    circular_acl = {}
+    circular_acl["self"] = circular_acl
+    invalid_cases.append(("acl circular reference", {"source_acl_snapshot": circular_acl}))
+    for label, overrides in invalid_cases:
+        await _expect_import_invalid(
+            owner_sessionmaker,
+            service,
+            tenant_id=tenant_id,
+            admin_id=admin_id,
+            contract=contract,
+            label=label,
+            **overrides,
+        )
+
+    # Unsupported extension keeps its own exact typed code.
+    async with owner_sessionmaker() as session:
+        with pytest.raises(CompanyKnowledgeImportError) as unsupported:
+            await service.queue_direct_file_import(
+                session,
+                principal=_principal(tenant_id=tenant_id, user_id=admin_id),
+                source_contract_id=contract.id,
+                source_contract_version=contract.version,
+                filename="data.csv",
+                data=b"a,b",
+                source_mime_type="text/csv",
+                title="CSV",
+                proposed_namespace=NAMESPACE,
+                proposed_sensitivity="internal",
+                purpose="finding-3",
+                source_acl_snapshot={"all_tenant_members": True},
+                idempotency_key=f"ckb-f3-csv-{uuid.uuid4().hex[:8]}",
+                trace_id=f"trace-{uuid.uuid4().hex[:12]}",
+            )
+        await session.rollback()
+    assert unsupported.value.code == "unsupported_file_type"
+
+    # No rejected payload left a durable job row behind.
+    async with owner_sessionmaker() as session:
+        job_count = (
+            await session.execute(
+                select(func.count())
+                .select_from(CompanyKnowledgeImportJob)
+                .where(
+                    CompanyKnowledgeImportJob.tenant_id == tenant_id,
+                )
+            )
+        ).scalar_one()
+        await session.rollback()
+    assert int(job_count) == 0
+
+
+async def test_direct_import_service_enforces_upload_limit_independently(
+    complete_schema, owner_sessionmaker, tmp_path, monkeypatch
+):
+    """The service reads get_settings() live at queue time; HTTP is not the only size gate."""
+    import app.services.company_knowledge_service as company_service_module
+
+    ids = await _seed_tenant(owner_sessionmaker)
+    tenant_id, admin_id = ids["tenant"], ids["admin"]
+    service = CompanyKnowledgeService(data_root=tmp_path)
+    contract = await _register_contract(owner_sessionmaker, service, tenant_id=tenant_id, admin_id=admin_id)
+
+    class _Settings:
+        COMPANY_KB_MAX_UPLOAD_BYTES = 16
+
+    monkeypatch.setattr(company_service_module, "get_settings", lambda: _Settings())
+
+    async with owner_sessionmaker() as session:
+        with pytest.raises(CompanyKnowledgeImportError) as too_large:
+            await service.queue_direct_file_import(
+                session,
+                principal=_principal(tenant_id=tenant_id, user_id=admin_id),
+                source_contract_id=contract.id,
+                source_contract_version=contract.version,
+                filename="big.md",
+                data=b"x" * 17,
+                source_mime_type="text/markdown",
+                title="Big",
+                proposed_namespace=NAMESPACE,
+                proposed_sensitivity="internal",
+                purpose="finding-3",
+                source_acl_snapshot={"all_tenant_members": True},
+                idempotency_key=f"ckb-f3-big-{uuid.uuid4().hex[:8]}",
+                trace_id=f"trace-{uuid.uuid4().hex[:12]}",
+            )
+        await session.rollback()
+    assert too_large.value.code == "upload_too_large"
+
+    # Exactly at the configured ceiling queues successfully (boundary-valid).
+    async with owner_sessionmaker() as session:
+        edge_job = await service.queue_direct_file_import(
+            session,
+            principal=_principal(tenant_id=tenant_id, user_id=admin_id),
+            source_contract_id=contract.id,
+            source_contract_version=contract.version,
+            filename="edge.md",
+            data=b"x" * 16,
+            source_mime_type="text/markdown",
+            title="Edge",
+            proposed_namespace=NAMESPACE,
+            proposed_sensitivity="internal",
+            purpose="finding-3",
+            source_acl_snapshot={"all_tenant_members": True},
+            idempotency_key=f"ckb-f3-edge-{uuid.uuid4().hex[:8]}",
+            trace_id=f"trace-{uuid.uuid4().hex[:12]}",
+        )
+        await session.commit()
+    assert edge_job.status == "queued"
+
+    # Leave no recoverable queued row behind for the shared fleet-wide drain.
+    async with owner_sessionmaker() as session:
+        cancelled = await service.cancel_import_job(session, tenant_id=tenant_id, job_id=edge_job.id)
+        await session.commit()
+    assert cancelled.lifecycle_status == "cancelled"
+
+
+async def test_direct_import_service_normalizes_and_accepts_boundary_valid_payload(
+    complete_schema, owner_sessionmaker, tmp_path
+):
+    """Boundary-valid values queue; normalized title/namespace/idempotency are what persist."""
+    ids = await _seed_tenant(owner_sessionmaker)
+    tenant_id, admin_id = ids["tenant"], ids["admin"]
+    service = CompanyKnowledgeService(data_root=tmp_path)
+    contract = await _register_contract(owner_sessionmaker, service, tenant_id=tenant_id, admin_id=admin_id)
+
+    canonical_acl_pad = 16384 - len(json.dumps({"k": ""}, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+    boundary_acl = {"k": "v" * canonical_acl_pad}
+    assert len(json.dumps(boundary_acl, ensure_ascii=False, sort_keys=True, separators=(",", ":"))) == 16384
+    boundary_filename = "f" * 252 + ".md"
+    assert len(boundary_filename) == 255
+    boundary_mime = "m" * 255
+    padded_title = "  " + "t" * 300 + "  "
+    padded_key = f"  ckb-f3-boundary-{uuid.uuid4().hex[:8]}  "
+    stripped_key = padded_key.strip()
+
+    async with owner_sessionmaker() as session:
+        job = await service.queue_direct_file_import(
+            session,
+            principal=_principal(tenant_id=tenant_id, user_id=admin_id),
+            source_contract_id=contract.id,
+            source_contract_version=contract.version,
+            filename=boundary_filename,
+            data=b"# boundary",
+            source_mime_type=boundary_mime,
+            title=padded_title,
+            proposed_namespace=f"  {NAMESPACE}  ",
+            proposed_sensitivity="internal",
+            purpose="p" * 1000,
+            source_acl_snapshot=boundary_acl,
+            idempotency_key=padded_key,
+            trace_id=f"trace-{uuid.uuid4().hex[:12]}",
+        )
+        await session.commit()
+    assert job.status == "queued"
+
+    async with owner_sessionmaker() as session:
+        row = (
+            await session.execute(select(CompanyKnowledgeImportJob).where(CompanyKnowledgeImportJob.id == job.id))
+        ).scalar_one()
+        request = dict(row.request_json or {})
+        assert row.idempotency_key == stripped_key
+        assert request["title"] == "t" * 300
+        assert request["proposed_namespace"] == NAMESPACE
+        assert request["purpose"] == "p" * 1000
+        assert request["direct_file_import"]["source_filename"] == boundary_filename
+        assert request["direct_file_import"]["source_mime_type"] == boundary_mime
+        assert request["source_acl_snapshot"] == boundary_acl
+        await session.rollback()
+
+    # A missing MIME normalizes to the deterministic default at the service seam too.
+    async with owner_sessionmaker() as session:
+        defaulted = await service.queue_direct_file_import(
+            session,
+            principal=_principal(tenant_id=tenant_id, user_id=admin_id),
+            source_contract_id=contract.id,
+            source_contract_version=contract.version,
+            filename="default-mime.md",
+            data=b"# default mime",
+            source_mime_type=None,
+            title="Default MIME",
+            proposed_namespace=NAMESPACE,
+            proposed_sensitivity="internal",
+            purpose="finding-3",
+            source_acl_snapshot={"all_tenant_members": True},
+            idempotency_key=f"ckb-f3-default-mime-{uuid.uuid4().hex[:8]}",
+            trace_id=f"trace-{uuid.uuid4().hex[:12]}",
+        )
+        await session.commit()
+    async with owner_sessionmaker() as session:
+        row = (
+            await session.execute(select(CompanyKnowledgeImportJob).where(CompanyKnowledgeImportJob.id == defaulted.id))
+        ).scalar_one()
+        assert dict(row.request_json or {})["direct_file_import"]["source_mime_type"] == "application/octet-stream"
+        await session.rollback()
+
+    # Leave no recoverable queued rows behind for the shared fleet-wide drain.
+    async with owner_sessionmaker() as session:
+        for queued_job in (job, defaulted):
+            await service.cancel_import_job(session, tenant_id=tenant_id, job_id=queued_job.id)
+        await session.commit()
+
+
+async def test_direct_import_title_normalization_is_strip_only(complete_schema, owner_sessionmaker, tmp_path):
+    """Strip-only title normalization: internal whitespace survives the durable request_json and idempotency hash."""
+    ids = await _seed_tenant(owner_sessionmaker)
+    tenant_id, admin_id = ids["tenant"], ids["admin"]
+    service = CompanyKnowledgeService(data_root=tmp_path)
+    contract = await _register_contract(owner_sessionmaker, service, tenant_id=tenant_id, admin_id=admin_id)
+    principal = _principal(tenant_id=tenant_id, user_id=admin_id)
+    key = f"ckb-f3-strip-{uuid.uuid4().hex[:8]}"
+
+    async def queue_with_title(title):
+        async with owner_sessionmaker() as session:
+            queued = await service.queue_direct_file_import(
+                session,
+                principal=principal,
+                source_contract_id=contract.id,
+                source_contract_version=contract.version,
+                filename="strip.md",
+                data=b"# strip-only title",
+                source_mime_type="text/markdown",
+                title=title,
+                proposed_namespace=NAMESPACE,
+                proposed_sensitivity="internal",
+                purpose="finding-3 strip-only",
+                source_acl_snapshot={"all_tenant_members": True},
+                idempotency_key=key,
+                trace_id=f"trace-{uuid.uuid4().hex[:12]}",
+            )
+            await session.commit()
+            return queued
+
+    padded = await queue_with_title("  A   B  ")
+    async with owner_sessionmaker() as session:
+        row = (
+            await session.execute(select(CompanyKnowledgeImportJob).where(CompanyKnowledgeImportJob.id == padded.id))
+        ).scalar_one()
+        assert dict(row.request_json or {})["title"] == "A   B"
+        await session.rollback()
+
+    # A strip-equal title under the same key replays to the same job: the
+    # idempotency hash saw exactly the stripped value.
+    replay = await queue_with_title("A   B")
+    assert replay.id == padded.id
+
+    # A whitespace-collapsed title hashes differently and conflicts: the hash
+    # never collapsed the internal run of spaces.
+    with pytest.raises(ValueError, match="company_knowledge_import_idempotency_conflict"):
+        await queue_with_title("A B")
+
+    # The live worker consumer keeps the strip-only value end to end: the
+    # final document title is exactly the stripped string, never re-collapsed.
+    processed = await _process(owner_sessionmaker, service, tenant_id=tenant_id, job_id=padded.id)
+    assert processed.status == "completed", processed.last_error
+    assert processed.document_id is not None
+    async with owner_sessionmaker() as session:
+        document = (
+            await session.execute(select(KnowledgeDocument).where(KnowledgeDocument.id == processed.document_id))
+        ).scalar_one()
+        assert document.title == "A   B"
+        await session.rollback()

@@ -702,6 +702,10 @@ export const companyKnowledgeApi = {
       proposed_sensitivity: options.proposed_sensitivity,
       purpose: options.purpose,
       idempotency_key: options.idempotency_key,
+      // The backend requires the ACL snapshot explicitly; the admin-only
+      // manual upload keeps the pre-change tenant-wide default until the UI
+      // grows an ACL editor.
+      source_acl_snapshot: JSON.stringify({ all_tenant_members: true }),
     });
     return importJobSummary(raw);
   },

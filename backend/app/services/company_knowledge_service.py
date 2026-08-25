@@ -72,6 +72,15 @@ _EVIDENCE_KINDS = frozenset(
 # Direct file import accepts exactly the formats with real conversion
 # vertical proof (PDF, DOCX, Markdown, plain text).
 _DIRECT_IMPORT_EXTENSIONS = frozenset({".pdf", ".docx", ".md", ".markdown", ".txt"})
+# Bounded direct-file semantic contract shared by the HTTP multipart boundary
+# and direct service callers: exact limits, no silent truncation.
+_DIRECT_IMPORT_TITLE_MAX_CHARS = 300
+_DIRECT_IMPORT_NAMESPACE_MAX_CHARS = 300
+_DIRECT_IMPORT_PURPOSE_MAX_CHARS = 1000
+_DIRECT_IMPORT_IDEMPOTENCY_MAX_CHARS = 300
+_DIRECT_IMPORT_FILENAME_MAX_CHARS = 255
+_DIRECT_IMPORT_MIME_MAX_CHARS = 255
+_DIRECT_IMPORT_ACL_MAX_CANONICAL_BYTES = 16 * 1024
 _PROPOSAL_KINDS = frozenset(
     {"knowledge", "ontology", "combined", "personal_promotion", "living_object", "legacy_import"}
 )
@@ -268,6 +277,102 @@ class CompanyKnowledgeJobConflict(Exception):
     def __init__(self, code: str) -> None:
         super().__init__(code)
         self.code = code
+
+
+@dataclass(frozen=True, slots=True)
+class DirectFileImportSemanticInput:
+    """Validated, normalized direct-file semantic fields; one contract for every entry point."""
+
+    filename: str
+    source_mime_type: str
+    title: str
+    proposed_namespace: str
+    purpose: str
+    source_acl_snapshot: dict[str, Any]
+    idempotency_key: str
+
+
+def _direct_import_text(value: Any) -> str:
+    """Blank-normalized semantic text: ``None`` is blank; non-strings violate the contract."""
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise CompanyKnowledgeImportError("import_payload_invalid")
+    return value
+
+
+def validate_direct_file_import_semantics(
+    *,
+    filename: str | None,
+    source_mime_type: str | None,
+    title: str | None,
+    proposed_namespace: str | None,
+    purpose: str | None,
+    source_acl_snapshot: Any,
+    idempotency_key: str | None,
+) -> DirectFileImportSemanticInput:
+    """Validate and normalize the direct-file import semantic payload contract.
+
+    The HTTP multipart boundary and direct ``queue_direct_file_import`` callers
+    share this exact contract: bounded lengths with no silent truncation, an
+    already-safe basename filename, a present MIME value (``None`` maps to the
+    deterministic ``application/octet-stream`` default), and a non-empty object
+    ACL snapshot whose canonical JSON stays inside the durable budget. Required
+    text fields arriving as ``None`` (absent multipart parameter) or blank are
+    invalid, as are non-string values and unserializable ACL snapshots. Every
+    violation raises the typed ``import_payload_invalid`` code.
+    """
+    filename_text = _direct_import_text(filename)
+    try:
+        safe_name = _safe_filename(filename_text)
+    except ValueError as exc:
+        raise CompanyKnowledgeImportError("import_payload_invalid") from exc
+    if safe_name != filename_text or len(safe_name) > _DIRECT_IMPORT_FILENAME_MAX_CHARS:
+        raise CompanyKnowledgeImportError("import_payload_invalid")
+    mime = "application/octet-stream" if source_mime_type is None else _direct_import_text(source_mime_type)
+    if not mime or len(mime) > _DIRECT_IMPORT_MIME_MAX_CHARS:
+        raise CompanyKnowledgeImportError("import_payload_invalid")
+    normalized_title = _direct_import_text(title).strip()
+    if not 1 <= len(normalized_title) <= _DIRECT_IMPORT_TITLE_MAX_CHARS:
+        raise CompanyKnowledgeImportError("import_payload_invalid")
+    normalized_namespace = _direct_import_text(proposed_namespace).strip()
+    if not 1 <= len(normalized_namespace) <= _DIRECT_IMPORT_NAMESPACE_MAX_CHARS:
+        raise CompanyKnowledgeImportError("import_payload_invalid")
+    purpose_text = _direct_import_text(purpose)
+    if len(purpose_text) > _DIRECT_IMPORT_PURPOSE_MAX_CHARS:
+        raise CompanyKnowledgeImportError("import_payload_invalid")
+    normalized_key = _direct_import_text(idempotency_key).strip()
+    if not 1 <= len(normalized_key) <= _DIRECT_IMPORT_IDEMPOTENCY_MAX_CHARS:
+        raise CompanyKnowledgeImportError("import_payload_invalid")
+    if not isinstance(source_acl_snapshot, dict) or not source_acl_snapshot:
+        raise CompanyKnowledgeImportError("import_payload_invalid")
+    try:
+        # Same canonical settings as _canonical_json, but strict: non-finite
+        # floats otherwise serialize to NaN/Infinity tokens that PostgreSQL
+        # jsonb rejects at persistence time.
+        canonical_acl_bytes = json.dumps(
+            _jsonable(source_acl_snapshot),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError, RecursionError) as exc:
+        # Unserializable values raise TypeError; non-finite floats raise
+        # ValueError; circular snapshots recurse inside _jsonable before
+        # json.dumps ever runs.
+        raise CompanyKnowledgeImportError("import_payload_invalid") from exc
+    if len(canonical_acl_bytes) > _DIRECT_IMPORT_ACL_MAX_CANONICAL_BYTES:
+        raise CompanyKnowledgeImportError("import_payload_invalid")
+    return DirectFileImportSemanticInput(
+        filename=safe_name,
+        source_mime_type=mime,
+        title=normalized_title,
+        proposed_namespace=normalized_namespace,
+        purpose=purpose_text,
+        source_acl_snapshot=source_acl_snapshot,
+        idempotency_key=normalized_key,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -740,14 +845,24 @@ class CompanyKnowledgeService:
         code. The raw source bytes are spooled durably; conversion runs inside
         the worker, never inside the request transaction.
         """
-        safe_name = _safe_filename(filename)
+        semantic = validate_direct_file_import_semantics(
+            filename=filename,
+            source_mime_type=source_mime_type,
+            title=title,
+            proposed_namespace=proposed_namespace,
+            purpose=purpose,
+            source_acl_snapshot=source_acl_snapshot,
+            idempotency_key=idempotency_key,
+        )
+        safe_name = semantic.filename
         extension = Path(safe_name).suffix.lower()
         if extension not in _DIRECT_IMPORT_EXTENSIONS:
             raise CompanyKnowledgeImportError("unsupported_file_type")
         if not data:
             raise CompanyKnowledgeImportError("import_payload_invalid")
-        if not idempotency_key.strip():
-            raise ValueError("idempotency_key_required")
+        if len(data) > get_settings().COMPANY_KB_MAX_UPLOAD_BYTES:
+            raise CompanyKnowledgeImportError("upload_too_large")
+        idempotency_key = semantic.idempotency_key
         await session.execute(
             text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"),
             {"lock_key": (f"company-knowledge-import:{principal.tenant_id}:{idempotency_key}")},
@@ -766,23 +881,21 @@ class CompanyKnowledgeService:
             raise LookupError("company_source_contract_not_found")
         if contract.status != "active" or contract.version != int(source_contract_version):
             raise ValueError("company_source_contract_not_active")
-        if proposed_namespace not in set(contract.allowed_namespaces_json or []):
+        if semantic.proposed_namespace not in set(contract.allowed_namespaces_json or []):
             raise PermissionError("company_source_namespace_not_allowed")
         sensitivity = canonicalize_sensitivity(proposed_sensitivity).value
         if sensitivity_rank(sensitivity) < sensitivity_rank(contract.default_sensitivity):
             raise ValueError("company_source_declassification_not_allowed")
-        if not source_acl_snapshot:
-            raise ValueError("company_source_acl_snapshot_required")
-        source_acl_hash = _hash_json(source_acl_snapshot)
+        source_acl_hash = _hash_json(semantic.source_acl_snapshot)
         resource = CompanyKnowledgeResource(
             tenant_id=principal.tenant_id,
             resource_type="company_knowledge_namespace",
             resource_id=None,
-            resource_key=f"namespace:{proposed_namespace}",
-            namespace=proposed_namespace,
+            resource_key=f"namespace:{semantic.proposed_namespace}",
+            namespace=semantic.proposed_namespace,
             sensitivity=sensitivity,
             source_acl_snapshot_hash=source_acl_hash,
-            source_acl=dict(source_acl_snapshot),
+            source_acl=dict(semantic.source_acl_snapshot),
             evidence_access_complete=True,
             publication_status=None,
         )
@@ -804,10 +917,10 @@ class CompanyKnowledgeService:
                 # Every semantic input that changes the persisted outcome or
                 # conversion behavior participates in the key; trace/time
                 # metadata deliberately does not.
-                "title": clean_title(title),
-                "purpose": str(purpose or ""),
-                "source_mime_type": str(source_mime_type or ""),
-                "proposed_namespace": proposed_namespace,
+                "title": semantic.title,
+                "purpose": semantic.purpose,
+                "source_mime_type": semantic.source_mime_type,
+                "proposed_namespace": semantic.proposed_namespace,
                 "proposed_sensitivity": sensitivity,
                 "source_acl_snapshot_hash": source_acl_hash,
                 "principal": principal.evidence(),
@@ -845,16 +958,16 @@ class CompanyKnowledgeService:
             "import_kind": "direct_file",
             "direct_file_import": {
                 "source_filename": safe_name,
-                "source_mime_type": str(source_mime_type or ""),
+                "source_mime_type": semantic.source_mime_type,
             },
             "evidence_kind": "document",
             "source_item_id": f"file:{safe_name}",
             "source_revision": source_revision,
-            "title": clean_title(title),
-            "proposed_namespace": proposed_namespace,
+            "title": semantic.title,
+            "proposed_namespace": semantic.proposed_namespace,
             "proposed_sensitivity": sensitivity,
-            "purpose": str(purpose or ""),
-            "source_acl_snapshot": dict(source_acl_snapshot),
+            "purpose": semantic.purpose,
+            "source_acl_snapshot": dict(semantic.source_acl_snapshot),
             "source_acl_snapshot_hash": source_acl_hash,
             "coverage_ledger": {"complete": True, "covered_units": 1, "total_units": 1},
             "permission_decision": policy,
@@ -1373,7 +1486,14 @@ class CompanyKnowledgeService:
                         source_uri=str(artifact),
                         source_sha256=job.artifact_hash,
                         artifact_hash=job.artifact_hash,
-                        title=clean_title(request["title"]),
+                        # Direct-file titles are strip-normalized at the queue
+                        # boundary; collapsing here would rewrite that value.
+                        # Evidence imports keep the legacy clean_title default.
+                        title=(
+                            request["title"]
+                            if request.get("import_kind") == "direct_file"
+                            else clean_title(request["title"])
+                        ),
                         status="ready",
                         sensitivity=request["proposed_sensitivity"],
                         agent_searchable=True,

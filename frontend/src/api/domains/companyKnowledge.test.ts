@@ -327,6 +327,12 @@ describe('companyKnowledgeApi direct import endpoints', () => {
     expect(form.get('source_contract_id')).toBe('contract-1');
     expect(form.get('proposed_namespace')).toBe('company/general');
     expect(form.get('idempotency_key')).toBe('ckb-upload-1');
+    // The backend requires the ACL snapshot explicitly; the admin-only manual
+    // upload keeps the pre-change tenant-wide default until the UI grows an
+    // ACL editor.
+    const aclField = form.get('source_acl_snapshot');
+    expect(aclField).toBe(JSON.stringify({ all_tenant_members: true }));
+    expect(JSON.parse(String(aclField))).toEqual({ all_tenant_members: true });
     expect(result.lifecycleStatus).toBe('queued');
     expect(result.cancellable).toBe(true);
     expect(result.maxAttempts).toBe(5);

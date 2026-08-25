@@ -1063,3 +1063,38 @@ def test_preview_and_create_proposal_are_admin_only(monkeypatch):
     assert preview.status_code == 403
     proposal = client.post(f"/knowledge/company/import-jobs/{job_id}/create-proposal")
     assert proposal.status_code == 403
+
+
+def test_import_jobs_list_admin_success_serializes_read_models(monkeypatch):
+    job_id = uuid.uuid4()
+
+    class _Service:
+        async def list_import_jobs(self, session, *, tenant_id, limit=50):
+            assert tenant_id
+            return [SimpleNamespace(**_job_summary_payload(job_id))]
+
+    client, _db, _user, _scheduled = _client_with_role(monkeypatch, _Service(), role="org_admin")
+
+    response = client.get("/knowledge/company/import-jobs")
+
+    assert response.status_code == 200
+    jobs = response.json()["jobs"]
+    assert len(jobs) == 1
+    assert jobs[0]["job_id"] == str(job_id)
+    assert jobs[0]["lifecycle_status"] == "queued"
+    assert "request_json" not in response.text
+    assert "last_error" not in response.text
+    assert "artifact_ref" not in response.text
+
+
+def test_import_jobs_list_admin_success_with_empty_list(monkeypatch):
+    class _Service:
+        async def list_import_jobs(self, session, *, tenant_id, limit=50):
+            return []
+
+    client, _db, _user, _scheduled = _client_with_role(monkeypatch, _Service(), role="org_admin")
+
+    response = client.get("/knowledge/company/import-jobs")
+
+    assert response.status_code == 200
+    assert response.json() == {"jobs": []}

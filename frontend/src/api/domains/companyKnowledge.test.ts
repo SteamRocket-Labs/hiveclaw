@@ -273,8 +273,15 @@ const jobSummaryBody = {
 
 describe('companyKnowledgeApi direct import endpoints', () => {
   it('lists and creates source contracts for the managed file intake', async () => {
+    // The real backend wraps rows in the source_contracts envelope.
     fetchMock
-      .mockResolvedValueOnce(jsonResponse([{ id: 'contract-1', stable_source_id: 'company-file-upload', status: 'active', version: 1 }]))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          source_contracts: [
+            { id: 'contract-1', stable_source_id: 'company-file-upload', status: 'active', version: 1, allowed_namespaces_json: ['company/general'], default_sensitivity: 'PL1_public' },
+          ],
+        }),
+      )
       .mockResolvedValueOnce(jsonResponse({ id: 'contract-1', stable_source_id: 'company-file-upload', status: 'active', version: 1 }));
 
     const contracts = await companyKnowledgeApi.listSourceContracts();

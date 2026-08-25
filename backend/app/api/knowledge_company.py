@@ -1038,7 +1038,7 @@ async def list_import_jobs(
     _require_company_knowledge_admin(current_user)
     target_tenant = await resolve_and_pin_tenant_scope(db, current_user, tenant_id)
     jobs = await _call(_service().list_import_jobs(db, tenant_id=target_tenant, limit=limit))
-    return {"jobs": _payload(jobs)}
+    return {"jobs": [_payload(job) for job in jobs]}
 
 
 @router.get("/import-jobs/{job_id}")

@@ -262,6 +262,8 @@ describe('Company Knowledge direct import wizard', () => {
     }
     expect(markup).toContain('company-file-upload');
     expect(markup).toContain('type="file"');
+    // The picker only offers the formats the intake actually accepts.
+    expect(markup).toContain('accept=".pdf,.docx,.md,.markdown,.txt"');
   });
 
   it('shows lifecycle labels with cancel for queued jobs and no retry', () => {

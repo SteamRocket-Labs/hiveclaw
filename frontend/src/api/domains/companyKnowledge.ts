@@ -621,8 +621,10 @@ export const companyKnowledgeApi = {
   },
 
   async listSourceContracts(): Promise<CompanySourceContractSummary[]> {
-    const raw = await get<Array<Record<string, unknown>>>('/knowledge/company/source-contracts');
-    const rows = Array.isArray(raw) ? raw : [];
+    const raw = await get<{ source_contracts?: Array<Record<string, unknown>> }>(
+      '/knowledge/company/source-contracts',
+    );
+    const rows = raw.source_contracts ?? [];
     return rows.map((row) => ({
       contractKey: String(row.id || ''),
       stableSourceId: String(row.stable_source_id || ''),

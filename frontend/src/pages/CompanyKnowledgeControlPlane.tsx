@@ -975,6 +975,7 @@ export function DirectImportWizard({
           <span>{t('companyKnowledge.directImport.fileLabel', 'File')}</span>
           <input
             type="file"
+            accept=".pdf,.docx,.md,.markdown,.txt"
             onChange={(event) => {
               const next = event.target.files?.[0] ?? null;
               setFile(next);

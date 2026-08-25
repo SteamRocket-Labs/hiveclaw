@@ -808,6 +808,12 @@ class CompanyKnowledgeService:
                 "source_contract_version": contract.version,
                 "source_filename": safe_name,
                 "artifact_hash": artifact_hash,
+                # Every semantic input that changes the persisted outcome or
+                # conversion behavior participates in the key; trace/time
+                # metadata deliberately does not.
+                "title": clean_title(title),
+                "purpose": str(purpose or ""),
+                "source_mime_type": str(source_mime_type or ""),
                 "proposed_namespace": proposed_namespace,
                 "proposed_sensitivity": sensitivity,
                 "source_acl_snapshot_hash": source_acl_hash,

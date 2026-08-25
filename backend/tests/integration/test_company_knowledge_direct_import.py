@@ -12,6 +12,7 @@ cancel/retry, corrupt-file typed failure.
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -34,6 +35,7 @@ from app.services.company_knowledge_gateway import (
     CompanyKnowledgeGateway,
     CompanyKnowledgeReadRequest,
     CompanyKnowledgeSearchRequest,
+    CompanyKnowledgeSourceExplainRequest,
 )
 from app.services.company_knowledge_permissions import CompanyKnowledgePrincipal
 from app.services.company_knowledge_service import (
@@ -530,6 +532,29 @@ async def test_pdf_docx_txt_markdown_direct_import_vertical_evidence(complete_sc
     assert agent_read.status == "ok", agent_read.status
     assert agent_read.citations, "agent read must carry citations"
     assert MARKER_ZH in "\n".join(segment.content for segment in agent_read.segments)
+
+    # Explain: the direct-import evidence explains with source_ref, coverage,
+    # and the import receipt — never the canonical path or source bytes.
+    async with owner_sessionmaker() as session:
+        explained = await gateway.explain_source(
+            session,
+            principal=agent_principal,
+            request=CompanyKnowledgeSourceExplainRequest(
+                evidence_id=md_job.evidence_id,
+                trace_id=f"trace-{uuid.uuid4().hex[:12]}",
+            ),
+        )
+        await session.rollback()
+    assert explained.status == "ok", explained.status
+    payload = dict(explained.payload or {})
+    assert payload.get("source_ref") == f"company-evidence://{md_job.evidence_id}"
+    assert payload.get("publication_id") == str(publication.id)
+    assert dict(payload.get("coverage") or {}).get("complete") is True
+    assert payload.get("ingestion_receipt_ref") == f"company-import://{md_job.id}"
+    serialized = json.dumps(payload, ensure_ascii=False)
+    assert "canonical_md_path" not in serialized
+    assert str(tmp_path) not in serialized
+    assert MARKER_ZH not in serialized
 
     # Revoke → member loses discovery immediately; retire → agent loses read;
     # restore → consumption returns under the still-live grant.
@@ -1033,3 +1058,52 @@ async def test_non_admin_principal_cannot_queue_direct_import(complete_schema, o
                 trace_id=f"trace-{uuid.uuid4().hex[:12]}",
             )
         await session.rollback()
+
+
+async def test_direct_import_idempotency_hash_covers_semantic_inputs(complete_schema, owner_sessionmaker, tmp_path):
+    """Same key with changed title/purpose/MIME conflicts; an identical replay returns the same job."""
+    ids = await _seed_tenant(owner_sessionmaker)
+    tenant_id, admin_id = ids["tenant"], ids["admin"]
+    service = CompanyKnowledgeService(data_root=tmp_path)
+    contract = await _register_contract(owner_sessionmaker, service, tenant_id=tenant_id, admin_id=admin_id)
+    principal = _principal(tenant_id=tenant_id, user_id=admin_id)
+    key = f"ckb-idem-{uuid.uuid4().hex[:8]}"
+    data = f"# Idem\n\n{MARKER_ZH} idempotency body.".encode()
+
+    async def queue_once(*, title, purpose, mime, idem_key=key):
+        async with owner_sessionmaker() as session:
+            job = await service.queue_direct_file_import(
+                session,
+                principal=principal,
+                source_contract_id=contract.id,
+                source_contract_version=contract.version,
+                filename="idem.md",
+                data=data,
+                source_mime_type=mime,
+                title=title,
+                proposed_namespace=NAMESPACE,
+                proposed_sensitivity="internal",
+                purpose=purpose,
+                source_acl_snapshot={"all_tenant_members": True},
+                idempotency_key=idem_key,
+                trace_id=f"trace-{uuid.uuid4().hex[:12]}",
+            )
+            await session.commit()
+            return job
+
+    first = await queue_once(title="Idem", purpose="original", mime="text/markdown")
+    replay = await queue_once(title="Idem", purpose="original", mime="text/markdown")
+    assert replay.id == first.id
+
+    for changed in (
+        {"title": "Idem changed"},
+        {"purpose": "changed purpose"},
+        {"mime": "text/plain"},
+    ):
+        kwargs = {"title": "Idem", "purpose": "original", "mime": "text/markdown", **changed}
+        with pytest.raises(ValueError, match="company_knowledge_import_idempotency_conflict"):
+            await queue_once(**kwargs)
+
+    # Leave no recoverable queued row behind for the shared fleet-wide drain.
+    processed = await _process(owner_sessionmaker, service, tenant_id=tenant_id, job_id=first.id)
+    assert processed.status == "completed"

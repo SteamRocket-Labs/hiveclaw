@@ -595,6 +595,34 @@ $ git diff --check                → clean
 
 **遗留风险**：legacy `POST /imports`（JSON Markdown 路径）保持原行为（返回 raw job payload，兼容旧消费者）；held 状态在本包之外（promotion 流）保留原语义；生产两遍 E2E 与 Codex review pending；全量 backend 回归留 RC-09；检索保持现有 FTS+exact ILIKE（未引入 pg_trgm/vector）。
 
+### RC-02 Codex Review verdict: FAIL → K3 correction（2026-08-25）
+
+Codex 独立复核（基线 backend 80 passed / frontend 19 passed / tsc / Ruff 全绿，但绿色未覆盖真实接线缺陷）判定 **FAIL**，五项发现与 correction（均先红后绿）：
+
+1. **P1 import-job 列表 admin 路径 500**：`GET /import-jobs` 返回 `{"jobs": _payload(jobs)}`，而 `_payload` 只接受 dict——`python -c "from app.api.knowledge_company import _payload; _payload([])"` 直接复现 `TypeError: Company Knowledge response must be an object`。原测试只测 member 403，没有 admin list success。correction：新增 admin 非空/空列表 API 红测（含 `request_json`/`last_error`/`artifact_ref` 不泄漏断言），路由改为逐项 `_payload` 序列化。
+2. **P1 source-contract 前后端契约不一致**：后端 `GET /source-contracts` 返回 `{"source_contracts":[...]}` envelope，前端 adapter 声明裸数组——真实响应永远解析为 `[]`，向导拿不到已有 contract，主上传路径被阻断。correction：前端 fixture 改为真实 envelope 形成红测，adapter 改读 `source_contracts` envelope；后端既有 envelope 保留。
+3. **P1 direct-import idempotency hash 不完整**：`request_hash` 漏掉 `title`/`purpose`/`source_mime_type`——同 key 在这些会改变持久语义/转换行为的输入变化时静默返回旧 job。correction：三个语义输入纳入 hash（trace/time 不纳入）；真 PG 回归：同 key 同 bytes 但 title/purpose/MIME 任一变化均 `company_knowledge_import_idempotency_conflict`，完全相同请求返回同一 job。
+4. **P2 UI 文件选择器未声明真实支持格式**：`<input type=file>` 缺 `accept`。correction：精确 `accept=".pdf,.docx,.md,.markdown,.txt"` + 组件断言。
+5. **Acceptance gap：direct-file 垂直测试缺 explain**：新增 `CompanyKnowledgeGateway.explain_source` 断言（status ok、`company-evidence://{id}` source_ref、coverage.complete、`ingestion_receipt_ref == company-import://{job_id}`、序列化 payload 不含 canonical path/tmp_path/source bytes）。注：真实 Agent tool handler 的生产消费属部署后 E2E，本断言是 gateway 层证据，不写成已执行真实 Agent tool。
+
+correction 期间另发现一处测试基建缺陷（Codex 未要求、K3 主动修复并记录）：新 idempotency 测试留下一个 queued job，共享容器的 fleet-wide recovery discovery 将其计入后续 `test_company_import_hash_failure_is_durable_and_daemon_recovery_reenters_canonical_path` 的 `attempted==1` 断言（bundle 内失败、隔离运行通过）；已让该测试收尾把 job 处理到 completed，bundle 连续两轮全绿。
+
+**correction 验证（当前 checkout 实测）**：
+
+```text
+backend$ focused bundle（同 §7.3 交付记录的 11 文件）→ 83 passed, 1 warning（连续 2 轮）
+backend$ .venv/bin/pytest -q tests -k "company_knowledge or personal_knowledge or knowledge"
+364 passed, 7706 deselected
+backend$ .venv/bin/ruff check <5 个 RC-02 backend 路径> → All checks passed
+backend$ .venv/bin/ruff format --check <同上> → 5 files already formatted
+frontend$ npm test                → 141 files / 871 tests passed
+frontend$ ./node_modules/.bin/tsc --noEmit → 无错误
+frontend$ npm run i18n:check      → gates 全 0（en=zh=3846）
+frontend$ npm run build           → AgentDetail 350477/380000（gzip 96844/115000）、vendor 591449/620000 预算通过
+```
+
+**当前状态**：Codex first review **FAIL** 已完成 K3 correction（本 commit）；**Codex re-review pending**，不写 PASS；七原子保持**局部闭环**；生产两遍 E2E 仍 pending。
+
 ## 7.4 RC-03 — A2A push 与协作交付
 
 ### “A2A push”的本轮定义
@@ -901,7 +929,7 @@ Rollback / recovery:
 |---|---|---|---|---|---|---|---|---|
 | RC-00 | UI-001/002/003/004、SHELL-001、A2A-001 read-model、UI-005(D1/D2/auth出口) + Codex FAIL 六项 correction + 第二轮 FAIL（WorkspaceFeatureHub live consumer）correction + canonical attention_state 全映射、静态键渲染、gate 优先级（最终形态 `7761aedb`） | `e04f6fee`（主包）、`6e2ff99d`（Agent Detail 面 + Codex 基线）、`b0c1a95c`（review-fail correction #1）、`70190bf0`（correction #2）、`31c8f8d4`（canonical 全映射）、`e2ec5dc8`（静态键渲染）、`48dd4ccb`+`7761aedb`（gate 优先级 v1/v2）、`d71ab449`（测试格式修复） | Codex 独立复验：npm test = 141 files / 844 tests；i18n node tests 9，catalog en=3750 / zh=3750，全部 gates 0；tsc --noEmit 干净；build 7385 modules，AgentDetail 350477/380000（gzip 96848/115000）、vendor 591449/620000（gzip 186474/200000）；git diff --check 干净（仅 .ultra runtime 脏）；backend 无改动，此前独立结果 148+26+197 与 ruff check+format 仍有效 | **Codex final verdict: PASS — Verified**（两轮 FAIL 已全部 correction 后终审通过） | 已授权未执行 | 已授权未执行 | **Verified**：Input/Authority/Execution/Evidence 有当前代码路径、回归与 Codex 独立复验；Recovery/Consumption 待生产 E2E（run 1/run 2）后转 Closed | D3/D4/D5 未复现；全量 backend 回归留 RC-09；生产 E2E 两遍待执行（owner 已授权 gates 后两次三服务部署） |
 | RC-01 | PKB-001（queued/attempt 0 read-model）、final-attempt 不到达、stale-claim fencing 缺失、failed 自动重选、lifecycle/result 未分离、evolution_daemon 导入缺失、substring 错误分类、cancel/retry 时间戳、归档非消费边界（P1）、归档与 Worker 并发覆盖（P1）、intake/action 错误不可见、格式宣传超证据 | `703bd2c7`（主包）+ `f05b4cc7`（docs-only 补录） | Codex 独立证据：focused 125×3（35.78/15.33/14.28s，exit 0，首次含 Docker 冷启动）；broad 343 passed；Ruff 12 路径 check+format 通过；frontend 861 tests、tsc、i18n gates 0（en=zh=3799）、build 四项预算；`git diff 1bcd8276..f05b4cc7 --check` clean；scope 恰 19 文件 | **Codex final verdict: PASS — Verified**（代码审查与本地独立验证通过） | 已授权未执行 | 已授权未执行 | **局部闭环**：七原子均有当前代码路径与真 PG/组件回归；生产两遍 E2E 后转 Verified→Closed | 生产 E2E 两遍待执行；全量 backend 回归留 RC-09；vector provider 未生产启用（非 Day-1 blocker，未伪装已验证） |
-| RC-02 | 管理员 multipart 文件导入缺失、import-jobs raw ORM payload、无 preview/create-proposal 动作、后台无 direct-import UI、crash-at-cap 永久 running 泄漏、非 admin 入口未隔离 | 本 commit（K3 实现全部范围） | backend 80 passed（真 PG，含 8 项 direct-import integration）+ 361 passed 跨 knowledge 域；frontend 871 tests + tsc + i18n gates 0（en=zh=3846）+ build 预算；ruff check/format 5 路径全过 | 待 Codex 复验 | 已授权未执行 | 已授权未执行 | **局部闭环**：Input/Authority/Execution/Evidence/Recovery/Consumption/Acceptance 均有当前代码路径与真 PG/组件回归；生产两遍 E2E 与 Codex PASS 后转 Verified | 生产 E2E 两遍待执行；全量 backend 回归留 RC-09；检索保持 FTS+exact ILIKE（未引入 pg_trgm） |
+| RC-02 | 管理员 multipart 文件导入缺失、import-jobs raw ORM payload、无 preview/create-proposal 动作、后台无 direct-import UI、crash-at-cap 永久 running 泄漏、非 admin 入口未隔离 + Codex FAIL 五项 correction（list 500、contract envelope、idempotency hash、accept、explain 证据） | `41e0e533`（主包）+ 本 commit（correction） | backend 83 passed（真 PG，含 9 项 direct-import integration + admin list API）+ 364 passed 跨 knowledge 域；frontend 871 tests + tsc + i18n gates 0（en=zh=3846）+ build 预算；ruff check/format 5 路径全过 | **Codex first review: FAIL → correction 完成；re-review pending** | 已授权未执行 | 已授权未执行 | **局部闭环**：Input/Authority/Execution/Evidence/Recovery/Consumption/Acceptance 均有当前代码路径与真 PG/组件回归；Codex PASS 与生产两遍 E2E 后转 Verified | 生产 E2E 两遍待执行；全量 backend 回归留 RC-09；检索保持 FTS+exact ILIKE（未引入 pg_trgm）；真实 Agent tool 生产消费属部署后 E2E |
 | RC-03 | 待开工 | — | — | — | — | — | Partial loop | async push + long result + UI evidence |
 | RC-04 | 待验收 | — | — | — | — | — | Unknown | full production journey |
 | RC-05 | 待验收 | — | — | — | — | — | Unknown | failure/recovery/consumption |
@@ -963,7 +991,7 @@ owner 已过稿并明确说“开始”。先提交本文件作为恢复点；�
 - [x] RC-01 对应代码 commit 已创建（`703bd2c7`）+ docs-only 补录（`f05b4cc7`）。
 - [ ] RC-01 生产两遍 E2E 尚未执行（部署后按 §7.10 彩排执行）；可选 vector provider 未在生产启用（非 Day-1 blocker）。
 - [x] RC-02 已完成代码修改、真 PG/组件回归与前端门禁（§7.3 交付记录：backend 80 + 361、frontend 871、tsc、i18n gates 0、build 预算）。Codex 复验与生产两遍 E2E pending。
-- [x] RC-02 对应 commit 已创建（本 commit）。
+- [x] RC-02 对应 commit 已创建（`41e0e533`）；Codex first review **FAIL** 的 K3 correction commit 已创建（本 commit）；**Codex re-review pending**。
 - [ ] 尚未写入 Rocky 的实验室测试数据。
 - [ ] 尚未部署。
 - [ ] 尚未完成任何本轮生产 E2E。

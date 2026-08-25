@@ -324,7 +324,8 @@ describe('automation schedule/status display (live consumer seam)', () => {
     expect(String(status.statusKey)).not.toContain('experimental_future_state');
   });
 
-  it('maps every canonical autonomy attention_state exactly instead of collapsing to unknown', () => {    // The canonical attention_state vocabulary from autonomy_overview is a
+  it('maps every canonical autonomy attention_state exactly instead of collapsing to unknown', () => {
+    // The canonical attention_state vocabulary from autonomy_overview is a
     // closed machine set; every member carries real semantics and must map to
     // its own typed key. Only codes outside this set resolve to unknown.
     expect(automationStatus({ attention_state: 'active', is_enabled: true }, []).statusKey).toBe('active');

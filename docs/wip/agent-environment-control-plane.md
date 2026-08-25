@@ -486,3 +486,60 @@ flowchart LR
 理由：这四项引入独立的 Chromium/cookie secret、双向 WebSocket/PTY、端口 ingress、viewer UI 与断线恢复威胁面；当前生产 code execution 主路径没有必须依赖它们的消费者。先把底层 Environment Control Plane 闭环，后续可在同一领域模型上增加 `interactive_browser` capability，而不再造第二套 runtime。
 
 如果 owner 要把它们纳入 A，则需要在 accepted outcome 中同时增加 browser profile 加密与隔离、cookie/credential policy、PTY session/resize/reconnect、port grant/expiry、viewer surface、录屏/审计与相应故障验收；任务、schema、前端和安全范围都会实质扩大。
+
+---
+
+## 13. 实施与证据日志
+
+### 2026-08-25 — 规划基线提交
+
+- commit：`c7a74e9f`（`docs(environment): freeze control plane implementation plan`）
+- 范围：上位架构、A01–A11、AC-01–AC-12、OSS-first provider 路线，以及代码/E2E/部署授权边界。
+- 验证：`git diff --cached --check` 通过；两份 Markdown 的 fenced code block 数量为偶数。
+
+### ENV-A01 — 当前执行路径与断点冻结
+
+当前 checkout 的唯一 provider 选择 seam 是
+`backend/app/services/code_execution/service.py::execute_agent_command`，但它还不是
+Environment Control Plane：它只按 `HIVE_CODE_EXEC_PROVIDER` 在每个 command 上选择
+`local_provider` 或 `vercel_provider`。Vercel 路径的真实语义仍是
+`AsyncSandbox.create -> tar upload -> command -> tar download -> stop`。
+
+从 live entry 追到该 seam 的消费者如下：
+
+| 消费者 | live entry / consumer | 当前 authority 输入 | 当前断点 |
+|---|---|---|---|
+| Chat `execute_code` / `run_command` | `ToolRuntimeService -> workspace_args adapter -> tools/handlers/filesystem.py -> agent_tool_domains/code_exec.py` | ToolRuntime 已解析 tenant、Agent、user、RuntimeTask、workspace authority、secret boundary | adapter 只传 workspace/tenant/authority scope；code-exec seam 看不到 tenant、Agent、RuntimeTask 或 policy snapshot |
+| Skill executable capsule | `run_skill_tool -> agent_tool_domains/skill_runtime.py` | ToolRuntime 上下文在 handler 前存在 | handler 未向 command seam 传递 Agent/RuntimeTask authority |
+| Governed command hook | `plugin_hook_service -> GovernedHookRunner` | `HookContext.metadata` 含 tenant/user/RuntimeTask/session | command executor 未收到这些字段，且默认使用 runner 级固定 work dir |
+| Governance command hook | `ToolGovernanceResolver -> run_sandboxed_governance_hook` | payload 含 tenant/Agent/RuntimeTask，workspace 由 Agent 解析 | provider seam 只收到 work dir/env/runtime/network |
+| HR external Skill intake | `hr_provisioning_runner -> _install_external_skill_from_skills_ref` | 显式 tenant/Agent | provider seam 未绑定逻辑 environment；当前使用独立临时目录 |
+| Skill evolution artifact gate | `skill_distiller -> run_artifact_execution_gate` | 这是隔离 eval，不属于 Agent durable workspace | 仍直接走同一 per-command seam；应保留 ephemeral profile，但必须通过 EnvironmentService |
+| Adversarial artifact eval | `evals/adversarial_suite -> run_artifact_execution_gate` | 这是隔离 eval | 同上 |
+| Sandbox health probe | backend lifespan / health -> scheduled probe | operator/system scope | 只对 Vercel per-command path 特判，尚未成为 provider-neutral conformance/health |
+
+静态搜索确认生产代码中只有上述八个文件引用 `execute_agent_command`；
+`backend/app/api/commands.py::execute_agent_command` 是命令注册 API 的同名 HTTP handler，
+不是 code-execution provider bypass。
+
+现有 focused 绿基线：
+
+```text
+cd backend
+.venv/bin/pytest -q \
+  tests/services/test_command_tooling.py \
+  tests/services/test_local_cloud_coding_profile.py \
+  tests/services/test_vercel_code_execution.py \
+  tests/services/test_code_execution_probe.py \
+  tests/services/test_skill_tool_runtime.py \
+  tests/runtime/test_governed_hook_runner.py \
+  tests/tools/test_governance_hook_resolver.py \
+  tests/evals/test_artifact_gate.py \
+  tests/tools/test_hr_handler.py
+
+111 passed in 1.07s
+```
+
+该结果只证明旧路径的 characterization baseline；它不证明 Environment、persistent
+resume、跨 Agent isolation、provider-loss recovery、idempotency 或 secret non-ingress 已完成。
+这些缺口必须先由新 contract tests 变红，再进入实现。
